@@ -44,7 +44,7 @@ Louis14 is a web rendering engine built in Go, targeting ACID2 compliance throug
 
 ## Development Phases
 
-### Phase 1: Basic HTML + Simple Rendering ✓ (Session 1)
+### Phase 1: Basic HTML + Simple Rendering ✓ (Completed)
 **Goal**: Render "Hello World" with colored rectangles
 
 **Capabilities**:
@@ -71,7 +71,7 @@ Louis14 is a web rendering engine built in Go, targeting ACID2 compliance throug
 
 ---
 
-### Phase 2: Nested Elements + Box Model (Session 2)
+### Phase 2: Nested Elements + Box Model ✓ (Completed)
 **Goal**: Proper document tree and complete box model
 
 **Capabilities**:
@@ -84,7 +84,7 @@ Louis14 is a web rendering engine built in Go, targeting ACID2 compliance throug
 
 ---
 
-### Phase 3: CSS Stylesheets + Cascade (Session 3)
+### Phase 3: CSS Stylesheets + Cascade ✓ (Completed)
 **Goal**: External stylesheets and CSS cascade
 
 **Capabilities**:
@@ -97,7 +97,7 @@ Louis14 is a web rendering engine built in Go, targeting ACID2 compliance throug
 
 ---
 
-### Phase 4: Positioning (Session 4)
+### Phase 4: Positioning ✓ (Completed)
 **Goal**: Static, relative, absolute positioning
 
 **Capabilities**:
@@ -110,7 +110,7 @@ Louis14 is a web rendering engine built in Go, targeting ACID2 compliance throug
 
 ---
 
-### Phase 5: Floats (Session 5)
+### Phase 5: Floats ✓ (Completed)
 **Goal**: Float layout
 
 **Capabilities**:
@@ -123,7 +123,7 @@ Louis14 is a web rendering engine built in Go, targeting ACID2 compliance throug
 
 ---
 
-### Phase 6: Text Layout (Session 6)
+### Phase 6: Text Layout ✓ (Completed)
 **Goal**: Proper text rendering and line breaking
 
 **Capabilities**:
@@ -134,20 +134,135 @@ Louis14 is a web rendering engine built in Go, targeting ACID2 compliance throug
 
 ---
 
-### Phase 7: Tables (Session 7+)
-**Goal**: Table layout
+### Phase 7: Display Modes ✓ (Session 7)
+**Goal**: CSS display property and inline layout
 
 **Capabilities**:
-- Table structure parsing
-- Table layout algorithm
-- Cell sizing and spanning
+- `display: none/block/inline/inline-block`
+- True inline layout (ignores width/height)
+- Inline elements flowing with text
+- `vertical-align` property
+- `line-height` property
+- Inline wrapping and line boxes
+
+**Test Case**: Mixed inline/block elements with text flow
 
 ---
 
-### Phase 8+: ACID2 Specific Features
-- Advanced selectors
-- Content generation (::before, ::after)
-- Additional positioning edge cases
+### Phase 8: Images ✓ (Session 8)
+**Goal**: Image loading and rendering
+
+**Capabilities**:
+- `<img>` element support
+- Image loading from filesystem
+- Image caching
+- Natural image dimensions
+- Aspect ratio preservation
+- Image scaling and positioning
+- Floated and inline images
+
+**Test Case**: Images with various layouts and styling
+
+---
+
+### Phase 9: Tables (Upcoming)
+**Goal**: Table layout
+
+**Capabilities**:
+- `<table>`, `<tr>`, `<td>`, `<th>` element support
+- `display: table/table-row/table-cell`
+- Table layout algorithm
+- Cell sizing and spanning (`colspan`, `rowspan`)
+- Table borders and spacing
+- `border-collapse` property
+
+**Test Case**: Multi-row/column tables with spanning cells
+
+---
+
+### Phase 10: Flexbox
+**Goal**: Flexible box layout
+
+**Capabilities**:
+- `display: flex/inline-flex`
+- Flex container properties: `flex-direction`, `flex-wrap`, `justify-content`, `align-items`
+- Flex item properties: `flex-grow`, `flex-shrink`, `flex-basis`, `align-self`
+- Main axis and cross axis alignment
+- Flex line wrapping
+
+**Test Case**: Flex layouts with various alignments and wrapping
+
+---
+
+### Phase 11: Pseudo-elements
+**Goal**: Generated content
+
+**Capabilities**:
+- `::before` and `::after` pseudo-elements
+- `content` property
+- Pseudo-element styling
+- Insertion into layout tree
+
+**Test Case**: Content generation with decorative elements
+
+---
+
+### Phase 12: Advanced Borders
+**Goal**: Border styling and rounded corners
+
+**Capabilities**:
+- Border styles: `solid`, `dashed`, `dotted`, `double`
+- `border-radius` for rounded corners
+- Individual border sides styling
+- Border rendering with proper styles
+
+**Test Case**: Boxes with various border styles and rounded corners
+
+---
+
+### Phase 13: Background Images
+**Goal**: CSS background images
+
+**Capabilities**:
+- `background-image` property
+- `background-size` (cover, contain, explicit)
+- `background-position`
+- `background-repeat`
+- Multiple backgrounds
+
+**Test Case**: Elements with background images and patterns
+
+---
+
+### Phase 14: Advanced Selectors
+**Goal**: Complex CSS selectors
+
+**Capabilities**:
+- Combinators: child (`>`), adjacent sibling (`+`), general sibling (`~`)
+- Pseudo-classes: `:first-child`, `:last-child`, `:nth-child()`, `:not()`
+- Attribute selectors: `[attr]`, `[attr=value]`, `[attr^=value]`
+- Selector specificity for complex selectors
+
+**Test Case**: Complex selector matching and cascade
+
+---
+
+### Phase 15: Transforms
+**Goal**: CSS transforms
+
+**Capabilities**:
+- `transform` property
+- Transform functions: `translate()`, `rotate()`, `scale()`, `skew()`
+- Transform origin
+- 2D transforms (3D out of scope)
+
+**Test Case**: Transformed elements with various operations
+
+---
+
+### Future: ACID2 Specific Features
+- Additional edge cases and bug fixes
+- Performance optimizations
 - Any remaining ACID2 requirements
 
 ## Project Structure
@@ -220,10 +335,25 @@ PNG Image
 - `golang.org/x/image/font` - Font handling (Phase 6+)
 - Standard library for everything else
 
-## Session Budget Tracking
+## Development Progress
 
-- **Session 1** (Phase 1): ~15-30 messages
-  - Architecture + structure: ~10 messages
-  - HTML tokenizer implementation: ~10-20 messages
-  
-Each subsequent session: ~20-30 messages per phase
+### Completed Phases
+- **Phase 1**: Basic HTML + Simple Rendering ✓
+- **Phase 2**: Nested Elements + Box Model ✓
+- **Phase 3**: CSS Stylesheets + Cascade ✓
+- **Phase 4**: Positioning (static, relative, absolute, fixed, z-index) ✓
+- **Phase 5**: Floats (float, clear, text wrapping) ✓
+- **Phase 6**: Text Layout (fonts, line breaking, alignment) ✓
+- **Phase 7**: Display Modes (none, block, inline, inline-block, vertical-align) ✓
+- **Phase 8**: Images (loading, caching, scaling, aspect ratio) ✓
+
+### Upcoming Phases
+- **Phase 9**: Tables
+- **Phase 10**: Flexbox
+- **Phase 11**: Pseudo-elements
+- **Phase 12**: Advanced Borders
+- **Phase 13**: Background Images
+- **Phase 14**: Advanced Selectors
+- **Phase 15**: Transforms
+
+Total: 59 visual regression tests passing across all completed phases
