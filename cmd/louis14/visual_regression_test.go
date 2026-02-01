@@ -834,6 +834,104 @@ func TestVisualRegression_Phase9_StyledTable(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 10: Flexbox Layout Tests
+
+func TestVisualRegression_Phase10_FlexRow(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_row",
+		htmlFile:      "../../testdata/phase10/flex-row.html",
+		referenceFile: "../../testdata/phase10/reference/flex-row.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase10_FlexColumn(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_column",
+		htmlFile:      "../../testdata/phase10/flex-column.html",
+		referenceFile: "../../testdata/phase10/reference/flex-column.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase10_FlexWrap(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_wrap",
+		htmlFile:      "../../testdata/phase10/flex-wrap.html",
+		referenceFile: "../../testdata/phase10/reference/flex-wrap.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase10_JustifyContent(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "justify_content",
+		htmlFile:      "../../testdata/phase10/justify-content.html",
+		referenceFile: "../../testdata/phase10/reference/justify-content.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase10_AlignItems(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "align_items",
+		htmlFile:      "../../testdata/phase10/align-items.html",
+		referenceFile: "../../testdata/phase10/reference/align-items.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase10_FlexGrowShrink(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_grow_shrink",
+		htmlFile:      "../../testdata/phase10/flex-grow-shrink.html",
+		referenceFile: "../../testdata/phase10/reference/flex-grow-shrink.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase10_NestedFlex(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "nested_flex",
+		htmlFile:      "../../testdata/phase10/nested-flex.html",
+		referenceFile: "../../testdata/phase10/reference/nested-flex.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase10_FlexOrder(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_order",
+		htmlFile:      "../../testdata/phase10/flex-order.html",
+		referenceFile: "../../testdata/phase10/reference/flex-order.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct{
 	name          string

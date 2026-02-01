@@ -422,6 +422,8 @@ const (
 	DisplayTableHeaderGroup DisplayType = "table-header-group"
 	DisplayTableRowGroup   DisplayType = "table-row-group"
 	DisplayTableFooterGroup DisplayType = "table-footer-group"
+	DisplayFlex            DisplayType = "flex"
+	DisplayInlineFlex      DisplayType = "inline-flex"
 )
 
 // GetDisplay returns the display value (default: block)
@@ -446,6 +448,10 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayTableRowGroup
 		case "table-footer-group":
 			return DisplayTableFooterGroup
+		case "flex":
+			return DisplayFlex
+		case "inline-flex":
+			return DisplayInlineFlex
 		}
 	}
 	return DisplayBlock
@@ -512,4 +518,214 @@ func (s *Style) GetBorderSpacing() float64 {
 		return spacing
 	}
 	return 2.0 // Default border spacing
+}
+
+// Phase 10: Flexbox layout
+
+// FlexDirection represents the flex-direction property value
+type FlexDirection string
+
+const (
+	FlexDirectionRow           FlexDirection = "row"
+	FlexDirectionRowReverse    FlexDirection = "row-reverse"
+	FlexDirectionColumn        FlexDirection = "column"
+	FlexDirectionColumnReverse FlexDirection = "column-reverse"
+)
+
+// GetFlexDirection returns the flex-direction value (default: row)
+func (s *Style) GetFlexDirection() FlexDirection {
+	if dir, ok := s.Get("flex-direction"); ok {
+		switch dir {
+		case "row-reverse":
+			return FlexDirectionRowReverse
+		case "column":
+			return FlexDirectionColumn
+		case "column-reverse":
+			return FlexDirectionColumnReverse
+		}
+	}
+	return FlexDirectionRow
+}
+
+// FlexWrap represents the flex-wrap property value
+type FlexWrap string
+
+const (
+	FlexWrapNowrap      FlexWrap = "nowrap"
+	FlexWrapWrap        FlexWrap = "wrap"
+	FlexWrapWrapReverse FlexWrap = "wrap-reverse"
+)
+
+// GetFlexWrap returns the flex-wrap value (default: nowrap)
+func (s *Style) GetFlexWrap() FlexWrap {
+	if wrap, ok := s.Get("flex-wrap"); ok {
+		switch wrap {
+		case "wrap":
+			return FlexWrapWrap
+		case "wrap-reverse":
+			return FlexWrapWrapReverse
+		}
+	}
+	return FlexWrapNowrap
+}
+
+// JustifyContent represents the justify-content property value
+type JustifyContent string
+
+const (
+	JustifyContentFlexStart    JustifyContent = "flex-start"
+	JustifyContentFlexEnd      JustifyContent = "flex-end"
+	JustifyContentCenter       JustifyContent = "center"
+	JustifyContentSpaceBetween JustifyContent = "space-between"
+	JustifyContentSpaceAround  JustifyContent = "space-around"
+	JustifyContentSpaceEvenly  JustifyContent = "space-evenly"
+)
+
+// GetJustifyContent returns the justify-content value (default: flex-start)
+func (s *Style) GetJustifyContent() JustifyContent {
+	if jc, ok := s.Get("justify-content"); ok {
+		switch jc {
+		case "flex-end":
+			return JustifyContentFlexEnd
+		case "center":
+			return JustifyContentCenter
+		case "space-between":
+			return JustifyContentSpaceBetween
+		case "space-around":
+			return JustifyContentSpaceAround
+		case "space-evenly":
+			return JustifyContentSpaceEvenly
+		}
+	}
+	return JustifyContentFlexStart
+}
+
+// AlignItems represents the align-items property value
+type AlignItems string
+
+const (
+	AlignItemsFlexStart AlignItems = "flex-start"
+	AlignItemsFlexEnd   AlignItems = "flex-end"
+	AlignItemsCenter    AlignItems = "center"
+	AlignItemsStretch   AlignItems = "stretch"
+	AlignItemsBaseline  AlignItems = "baseline"
+)
+
+// GetAlignItems returns the align-items value (default: stretch)
+func (s *Style) GetAlignItems() AlignItems {
+	if ai, ok := s.Get("align-items"); ok {
+		switch ai {
+		case "flex-start":
+			return AlignItemsFlexStart
+		case "flex-end":
+			return AlignItemsFlexEnd
+		case "center":
+			return AlignItemsCenter
+		case "baseline":
+			return AlignItemsBaseline
+		}
+	}
+	return AlignItemsStretch
+}
+
+// AlignContent represents the align-content property value
+type AlignContent string
+
+const (
+	AlignContentFlexStart    AlignContent = "flex-start"
+	AlignContentFlexEnd      AlignContent = "flex-end"
+	AlignContentCenter       AlignContent = "center"
+	AlignContentStretch      AlignContent = "stretch"
+	AlignContentSpaceBetween AlignContent = "space-between"
+	AlignContentSpaceAround  AlignContent = "space-around"
+)
+
+// GetAlignContent returns the align-content value (default: stretch)
+func (s *Style) GetAlignContent() AlignContent {
+	if ac, ok := s.Get("align-content"); ok {
+		switch ac {
+		case "flex-start":
+			return AlignContentFlexStart
+		case "flex-end":
+			return AlignContentFlexEnd
+		case "center":
+			return AlignContentCenter
+		case "space-between":
+			return AlignContentSpaceBetween
+		case "space-around":
+			return AlignContentSpaceAround
+		}
+	}
+	return AlignContentStretch
+}
+
+// GetFlexGrow returns the flex-grow value (default: 0)
+func (s *Style) GetFlexGrow() float64 {
+	if grow, ok := s.GetLength("flex-grow"); ok {
+		return grow
+	}
+	return 0.0
+}
+
+// GetFlexShrink returns the flex-shrink value (default: 1)
+func (s *Style) GetFlexShrink() float64 {
+	if shrink, ok := s.GetLength("flex-shrink"); ok {
+		return shrink
+	}
+	return 1.0
+}
+
+// GetFlexBasis returns the flex-basis value (default: auto, returns -1 for auto)
+func (s *Style) GetFlexBasis() float64 {
+	if basis, ok := s.Get("flex-basis"); ok {
+		if basis == "auto" {
+			return -1 // Special value for auto
+		}
+		if length, ok := ParseLength(basis); ok {
+			return length
+		}
+	}
+	return -1 // Default to auto
+}
+
+// AlignSelf represents the align-self property value
+type AlignSelf string
+
+const (
+	AlignSelfAuto      AlignSelf = "auto"
+	AlignSelfFlexStart AlignSelf = "flex-start"
+	AlignSelfFlexEnd   AlignSelf = "flex-end"
+	AlignSelfCenter    AlignSelf = "center"
+	AlignSelfStretch   AlignSelf = "stretch"
+	AlignSelfBaseline  AlignSelf = "baseline"
+)
+
+// GetAlignSelf returns the align-self value (default: auto)
+func (s *Style) GetAlignSelf() AlignSelf {
+	if as, ok := s.Get("align-self"); ok {
+		switch as {
+		case "flex-start":
+			return AlignSelfFlexStart
+		case "flex-end":
+			return AlignSelfFlexEnd
+		case "center":
+			return AlignSelfCenter
+		case "stretch":
+			return AlignSelfStretch
+		case "baseline":
+			return AlignSelfBaseline
+		}
+	}
+	return AlignSelfAuto
+}
+
+// GetOrder returns the order value (default: 0)
+func (s *Style) GetOrder() int {
+	if order, ok := s.Get("order"); ok {
+		var o int
+		if _, err := fmt.Sscanf(order, "%d", &o); err == nil {
+			return o
+		}
+	}
+	return 0
 }
