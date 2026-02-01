@@ -240,6 +240,56 @@ func TestVisualRegression_Phase3_Cascade(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 4 visual regression tests
+
+func TestVisualRegression_Phase4_RelativePositioning(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "relative_positioning",
+		htmlFile:      "../../testdata/phase4/relative_positioning.html",
+		referenceFile: "../../testdata/phase4/reference/relative_positioning.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase4_AbsolutePositioning(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "absolute_positioning",
+		htmlFile:      "../../testdata/phase4/absolute_positioning.html",
+		referenceFile: "../../testdata/phase4/reference/absolute_positioning.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase4_Overlapping(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "overlapping",
+		htmlFile:      "../../testdata/phase4/overlapping.html",
+		referenceFile: "../../testdata/phase4/reference/overlapping.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase4_ZIndex(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "zindex",
+		htmlFile:      "../../testdata/phase4/zindex.html",
+		referenceFile: "../../testdata/phase4/reference/zindex.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct {
 	name          string

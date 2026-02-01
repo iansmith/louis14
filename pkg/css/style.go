@@ -1,6 +1,7 @@
 package css
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -83,6 +84,84 @@ func (s *Style) getLengthOrZero(property string) float64 {
 		return 0
 	}
 	return val
+}
+
+// Phase 4: Positioning helpers
+
+// Position type constants
+type PositionType string
+
+const (
+	PositionStatic   PositionType = "static"
+	PositionRelative PositionType = "relative"
+	PositionAbsolute PositionType = "absolute"
+	PositionFixed    PositionType = "fixed"
+)
+
+// GetPosition returns the position type (default: static)
+func (s *Style) GetPosition() PositionType {
+	if pos, ok := s.Get("position"); ok {
+		switch pos {
+		case "relative":
+			return PositionRelative
+		case "absolute":
+			return PositionAbsolute
+		case "fixed":
+			return PositionFixed
+		}
+	}
+	return PositionStatic
+}
+
+// GetPositionOffset returns the offset values for positioned elements
+type PositionOffset struct {
+	Top    float64
+	Right  float64
+	Bottom float64
+	Left   float64
+	HasTop    bool
+	HasRight  bool
+	HasBottom bool
+	HasLeft   bool
+}
+
+// GetPositionOffset returns positioning offset values
+func (s *Style) GetPositionOffset() PositionOffset {
+	offset := PositionOffset{}
+
+	if top, ok := s.GetLength("top"); ok {
+		offset.Top = top
+		offset.HasTop = true
+	}
+
+	if right, ok := s.GetLength("right"); ok {
+		offset.Right = right
+		offset.HasRight = true
+	}
+
+	if bottom, ok := s.GetLength("bottom"); ok {
+		offset.Bottom = bottom
+		offset.HasBottom = true
+	}
+
+	if left, ok := s.GetLength("left"); ok {
+		offset.Left = left
+		offset.HasLeft = true
+	}
+
+	return offset
+}
+
+// GetZIndex returns the z-index value (default: 0)
+func (s *Style) GetZIndex() int {
+	if zindex, ok := s.Get("z-index"); ok {
+		// Simple integer parsing
+		var z int
+		if _, err := fmt.Sscanf(zindex, "%d", &z); err == nil {
+			return z
+		}
+	}
+	return 0
 }
 
 func ParseInlineStyle(styleAttr string) *Style {

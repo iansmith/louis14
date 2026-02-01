@@ -1,6 +1,8 @@
 package render
 
 import (
+	"sort"
+
 	"github.com/fogleman/gg"
 	"louis14/pkg/css"
 	"louis14/pkg/layout"
@@ -17,19 +19,33 @@ func NewRenderer(width, height int) *Renderer {
 func (r *Renderer) Render(boxes []*layout.Box) {
 	r.context.SetRGB(1, 1, 1)
 	r.context.Clear()
-	for _, box := range boxes {
+
+	// Phase 4: Collect all boxes into flat list and sort by z-index
+	allBoxes := r.collectAllBoxes(boxes)
+	r.sortByZIndex(allBoxes)
+
+	// Render in z-index order
+	for _, box := range allBoxes {
 		r.drawBox(box)
-		// Phase 2: Recursively render children
-		r.renderBoxTree(box)
 	}
 }
 
-// renderBoxTree recursively renders a box and its children
-func (r *Renderer) renderBoxTree(box *layout.Box) {
-	for _, child := range box.Children {
-		r.drawBox(child)
-		r.renderBoxTree(child)
+// collectAllBoxes flattens the box tree into a single list
+func (r *Renderer) collectAllBoxes(boxes []*layout.Box) []*layout.Box {
+	result := make([]*layout.Box, 0)
+	for _, box := range boxes {
+		result = append(result, box)
+		result = append(result, r.collectAllBoxes(box.Children)...)
 	}
+	return result
+}
+
+// sortByZIndex sorts boxes by z-index (lower values rendered first)
+func (r *Renderer) sortByZIndex(boxes []*layout.Box) {
+	sort.SliceStable(boxes, func(i, j int) bool {
+		// If z-index is the same, preserve document order (stable sort)
+		return boxes[i].ZIndex < boxes[j].ZIndex
+	})
 }
 
 func (r *Renderer) drawBox(box *layout.Box) {

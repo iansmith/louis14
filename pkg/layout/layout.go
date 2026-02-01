@@ -16,6 +16,9 @@ type Box struct {
 	Padding  css.BoxEdge
 	Border   css.BoxEdge
 	Children []*Box   // Phase 2: Nested boxes
+	Parent   *Box     // Phase 4: Parent box for containing block
+	Position css.PositionType  // Phase 4: Position type
+	ZIndex   int      // Phase 4: Stacking order
 }
 
 type LayoutEngine struct {
@@ -23,6 +26,7 @@ type LayoutEngine struct {
 		width  float64
 		height float64
 	}
+	absoluteBoxes []*Box  // Phase 4: Track absolutely positioned boxes
 }
 
 func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
@@ -40,20 +44,29 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	boxes := make([]*Box, 0)
 	y := 0.0
 
+	// Phase 4: Track absolutely positioned boxes separately
+	le.absoluteBoxes = make([]*Box, 0)
+
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
-			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles)
+			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
 			boxes = append(boxes, box)
-			// Advance Y by the total height of this box (including margin)
-			y += le.getTotalHeight(box)
+
+			// Phase 4: Only advance Y if element is in normal flow
+			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed {
+				y += le.getTotalHeight(box)
+			}
 		}
 	}
+
+	// Phase 4: Add absolutely positioned boxes to result
+	boxes = append(boxes, le.absoluteBoxes...)
 
 	return boxes
 }
 
 // layoutNode recursively layouts a node and its children
-func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style) *Box {
+func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
 	// Phase 3: Use computed styles from cascade
 	style := computedStyles[node]
 	if style == nil {
@@ -87,17 +100,40 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		contentHeight = 50 // Default height
 	}
 
+	// Phase 4: Get positioning information
+	position := style.GetPosition()
+	zindex := style.GetZIndex()
+
 	box := &Box{
-		Node:    node,
-		Style:   style,
-		X:       x,
-		Y:       y,
-		Width:   contentWidth,
-		Height:  contentHeight,
-		Margin:  margin,
-		Padding: padding,
-		Border:  border,
+		Node:     node,
+		Style:    style,
+		X:        x,
+		Y:        y,
+		Width:    contentWidth,
+		Height:   contentHeight,
+		Margin:   margin,
+		Padding:  padding,
+		Border:   border,
 		Children: make([]*Box, 0),
+		Position: position,
+		ZIndex:   zindex,
+		Parent:   parent,
+	}
+
+	// Phase 4: Handle positioning
+	if position == css.PositionAbsolute || position == css.PositionFixed {
+		// Absolutely positioned elements
+		le.applyAbsolutePositioning(box)
+		le.absoluteBoxes = append(le.absoluteBoxes, box)
+	} else if position == css.PositionRelative {
+		// Relative positioning: offset from normal position
+		offset := style.GetPositionOffset()
+		if offset.HasTop {
+			box.Y += offset.Top
+		}
+		if offset.HasLeft {
+			box.X += offset.Left
+		}
 	}
 
 	// Phase 2: Recursively layout children
@@ -112,9 +148,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				childY,
 				childAvailableWidth,
 				computedStyles,
+				box,  // Phase 4: Pass parent
 			)
 			box.Children = append(box.Children, childBox)
-			childY += le.getTotalHeight(childBox)
+
+			// Phase 4: Only advance childY if child is in normal flow
+			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed {
+				childY += le.getTotalHeight(childBox)
+			}
 		}
 	}
 
