@@ -1006,6 +1006,80 @@ func TestVisualRegression_Phase11_ListMarkers(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 12: Advanced Borders Tests
+
+func TestVisualRegression_Phase12_BorderStyles(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "border_styles",
+		htmlFile:      "../../testdata/phase12/border-styles.html",
+		referenceFile: "../../testdata/phase12/reference/border-styles.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase12_BorderDouble(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "border_double",
+		htmlFile:      "../../testdata/phase12/border-double.html",
+		referenceFile: "../../testdata/phase12/reference/border-double.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase12_BorderRadius(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "border_radius",
+		htmlFile:      "../../testdata/phase12/border-radius.html",
+		referenceFile: "../../testdata/phase12/reference/border-radius.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase12_BorderRadiusWithBorder(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "border_radius_with_border",
+		htmlFile:      "../../testdata/phase12/border-radius-with-border.html",
+		referenceFile: "../../testdata/phase12/reference/border-radius-with-border.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase12_MixedBorderStyles(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "mixed_border_styles",
+		htmlFile:      "../../testdata/phase12/mixed-border-styles.html",
+		referenceFile: "../../testdata/phase12/reference/mixed-border-styles.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase12_ComplexBorders(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "complex_borders",
+		htmlFile:      "../../testdata/phase12/complex-borders.html",
+		referenceFile: "../../testdata/phase12/reference/complex-borders.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct{
 	name          string

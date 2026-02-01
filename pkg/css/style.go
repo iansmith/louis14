@@ -91,6 +91,62 @@ func (s *Style) getLengthOrZero(property string) float64 {
 	return val
 }
 
+// Phase 12: Border styling
+
+// BorderStyle represents the border-style property value
+type BorderStyle string
+
+const (
+	BorderStyleNone   BorderStyle = "none"
+	BorderStyleSolid  BorderStyle = "solid"
+	BorderStyleDashed BorderStyle = "dashed"
+	BorderStyleDotted BorderStyle = "dotted"
+	BorderStyleDouble BorderStyle = "double"
+)
+
+// BorderStyleEdge represents border styles for all four sides
+type BorderStyleEdge struct {
+	Top    BorderStyle
+	Right  BorderStyle
+	Bottom BorderStyle
+	Left   BorderStyle
+}
+
+// GetBorderStyle returns the border style for all four sides
+func (s *Style) GetBorderStyle() BorderStyleEdge {
+	return BorderStyleEdge{
+		Top:    s.getBorderStyleSide("border-top-style"),
+		Right:  s.getBorderStyleSide("border-right-style"),
+		Bottom: s.getBorderStyleSide("border-bottom-style"),
+		Left:   s.getBorderStyleSide("border-left-style"),
+	}
+}
+
+// getBorderStyleSide returns the border style for a specific side (default: solid)
+func (s *Style) getBorderStyleSide(property string) BorderStyle {
+	if style, ok := s.Get(property); ok {
+		switch style {
+		case "none":
+			return BorderStyleNone
+		case "dashed":
+			return BorderStyleDashed
+		case "dotted":
+			return BorderStyleDotted
+		case "double":
+			return BorderStyleDouble
+		}
+	}
+	return BorderStyleSolid // Default to solid
+}
+
+// GetBorderRadius returns the border-radius value (simplified - single value for all corners)
+func (s *Style) GetBorderRadius() float64 {
+	if radius, ok := s.GetLength("border-radius"); ok {
+		return radius
+	}
+	return 0.0 // Default no radius
+}
+
 // Phase 4: Positioning helpers
 
 // Position type constants
@@ -255,9 +311,13 @@ func expandBorderProperty(style *Style, value string) {
 			style.Set("border-right-width", part)
 			style.Set("border-bottom-width", part)
 			style.Set("border-left-width", part)
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" {
+		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" {
 			// Style
 			style.Set("border-style", part)
+			style.Set("border-top-style", part)
+			style.Set("border-right-style", part)
+			style.Set("border-bottom-style", part)
+			style.Set("border-left-style", part)
 		} else {
 			// Color
 			style.Set("border-color", part)

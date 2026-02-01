@@ -67,7 +67,13 @@ func (r *Renderer) drawBox(box *layout.Box) {
 			bgWidth := box.Width + box.Padding.Left + box.Padding.Right
 			bgHeight := box.Height + box.Padding.Top + box.Padding.Bottom
 
-			r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+			// Phase 12: Check for border-radius
+			borderRadius := box.Style.GetBorderRadius()
+			if borderRadius > 0 {
+				r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+			} else {
+				r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+			}
 			r.context.Fill()
 		}
 	}
@@ -86,9 +92,7 @@ func (r *Renderer) drawBox(box *layout.Box) {
 func (r *Renderer) drawBorder(box *layout.Box) {
 	// Check if border is specified
 	borderColor, hasBorderColor := box.Style.Get("border-color")
-	borderStyle, _ := box.Style.Get("border-style")
-
-	if !hasBorderColor || borderStyle == "" {
+	if !hasBorderColor {
 		return
 	}
 
@@ -104,50 +108,129 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		float64(color.B)/255.0,
 	)
 
-	// Border is drawn outside the background area
-	// For simplicity in Phase 2, draw as solid rectangles for each side
-	if borderStyle == "solid" {
-		// Top border
-		if box.Border.Top > 0 {
-			r.context.DrawRectangle(
-				box.X,
-				box.Y-box.Border.Top,
-				box.Width+box.Padding.Left+box.Padding.Right,
-				box.Border.Top,
-			)
-			r.context.Fill()
-		}
+	// Phase 12: Get border styles for each side
+	borderStyles := box.Style.GetBorderStyle()
 
-		// Right border
-		if box.Border.Right > 0 {
-			r.context.DrawRectangle(
-				box.X+box.Width+box.Padding.Left+box.Padding.Right,
-				box.Y-box.Border.Top,
-				box.Border.Right,
-				box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
-			)
-			r.context.Fill()
-		}
+	// Phase 12: Check for border-radius
+	borderRadius := box.Style.GetBorderRadius()
 
-		// Bottom border
-		if box.Border.Bottom > 0 {
-			r.context.DrawRectangle(
-				box.X,
-				box.Y+box.Height+box.Padding.Top+box.Padding.Bottom,
-				box.Width+box.Padding.Left+box.Padding.Right,
-				box.Border.Bottom,
-			)
-			r.context.Fill()
-		}
+	// If border-radius is set and all borders are solid, use rounded rectangle
+	if borderRadius > 0 &&
+		borderStyles.Top == css.BorderStyleSolid &&
+		borderStyles.Right == css.BorderStyleSolid &&
+		borderStyles.Bottom == css.BorderStyleSolid &&
+		borderStyles.Left == css.BorderStyleSolid &&
+		box.Border.Top == box.Border.Right &&
+		box.Border.Right == box.Border.Bottom &&
+		box.Border.Bottom == box.Border.Left {
+		// Draw rounded border (simplified - same width all around)
+		r.context.SetLineWidth(box.Border.Top)
+		borderX := box.X - box.Border.Left/2
+		borderY := box.Y - box.Border.Top/2
+		borderWidth := box.Width + box.Padding.Left + box.Padding.Right + box.Border.Left
+		borderHeight := box.Height + box.Padding.Top + box.Padding.Bottom + box.Border.Top
+		r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
+		r.context.Stroke()
+		return
+	}
 
-		// Left border
-		if box.Border.Left > 0 {
-			r.context.DrawRectangle(
-				box.X-box.Border.Left,
-				box.Y-box.Border.Top,
-				box.Border.Left,
-				box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
-			)
+	// Draw each side with its specific style
+	// Top border
+	if box.Border.Top > 0 && borderStyles.Top != css.BorderStyleNone {
+		r.drawBorderSide(
+			box.X,
+			box.Y-box.Border.Top,
+			box.Width+box.Padding.Left+box.Padding.Right,
+			box.Border.Top,
+			borderStyles.Top,
+			true, // horizontal
+		)
+	}
+
+	// Right border
+	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone {
+		r.drawBorderSide(
+			box.X+box.Width+box.Padding.Left+box.Padding.Right,
+			box.Y-box.Border.Top,
+			box.Border.Right,
+			box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
+			borderStyles.Right,
+			false, // vertical
+		)
+	}
+
+	// Bottom border
+	if box.Border.Bottom > 0 && borderStyles.Bottom != css.BorderStyleNone {
+		r.drawBorderSide(
+			box.X,
+			box.Y+box.Height+box.Padding.Top+box.Padding.Bottom,
+			box.Width+box.Padding.Left+box.Padding.Right,
+			box.Border.Bottom,
+			borderStyles.Bottom,
+			true, // horizontal
+		)
+	}
+
+	// Left border
+	if box.Border.Left > 0 && borderStyles.Left != css.BorderStyleNone {
+		r.drawBorderSide(
+			box.X-box.Border.Left,
+			box.Y-box.Border.Top,
+			box.Border.Left,
+			box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
+			borderStyles.Left,
+			false, // vertical
+		)
+	}
+}
+
+// Phase 12: drawBorderSide draws a single border side with a specific style
+func (r *Renderer) drawBorderSide(x, y, width, height float64, style css.BorderStyle, horizontal bool) {
+	switch style {
+	case css.BorderStyleSolid:
+		// Solid border - filled rectangle
+		r.context.DrawRectangle(x, y, width, height)
+		r.context.Fill()
+
+	case css.BorderStyleDashed:
+		// Dashed border - series of dashes
+		r.context.SetLineWidth(height)
+		if horizontal {
+			r.context.SetDash(10, 5)
+			r.context.DrawLine(x, y+height/2, x+width, y+height/2)
+		} else {
+			r.context.SetDash(10, 5)
+			r.context.DrawLine(x+width/2, y, x+width/2, y+height)
+		}
+		r.context.Stroke()
+		r.context.SetDash() // Reset dash
+
+	case css.BorderStyleDotted:
+		// Dotted border - series of dots
+		r.context.SetLineWidth(height)
+		if horizontal {
+			r.context.SetDash(2, 4)
+			r.context.DrawLine(x, y+height/2, x+width, y+height/2)
+		} else {
+			r.context.SetDash(2, 4)
+			r.context.DrawLine(x+width/2, y, x+width/2, y+height)
+		}
+		r.context.Stroke()
+		r.context.SetDash() // Reset dash
+
+	case css.BorderStyleDouble:
+		// Double border - two parallel lines
+		if horizontal {
+			spacing := height / 3
+			r.context.DrawRectangle(x, y, width, spacing)
+			r.context.Fill()
+			r.context.DrawRectangle(x, y+height-spacing, width, spacing)
+			r.context.Fill()
+		} else {
+			spacing := width / 3
+			r.context.DrawRectangle(x, y, spacing, height)
+			r.context.Fill()
+			r.context.DrawRectangle(x+width-spacing, y, spacing, height)
 			r.context.Fill()
 		}
 	}
