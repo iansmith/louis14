@@ -17,7 +17,8 @@ const (
 )
 
 type Document struct {
-	Root *Node
+	Root        *Node
+	Stylesheets []string // Phase 3: CSS from <style> tags
 }
 
 func NewDocument() *Document {
@@ -27,6 +28,7 @@ func NewDocument() *Document {
 			TagName:  "document",
 			Children: make([]*Node, 0),
 		},
+		Stylesheets: make([]string, 0),
 	}
 }
 

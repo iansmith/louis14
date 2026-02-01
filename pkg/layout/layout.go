@@ -33,13 +33,16 @@ func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 }
 
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
+	// Phase 3: Compute styles from stylesheets
+	computedStyles := css.ApplyStylesToDocument(doc)
+
 	// Phase 2: Recursively layout the tree starting from root's children
 	boxes := make([]*Box, 0)
 	y := 0.0
 
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
-			box := le.layoutNode(node, 0, y, le.viewport.width)
+			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles)
 			boxes = append(boxes, box)
 			// Advance Y by the total height of this box (including margin)
 			y += le.getTotalHeight(box)
@@ -50,9 +53,12 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 }
 
 // layoutNode recursively layouts a node and its children
-func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64) *Box {
-	// Parse styles
-	style := le.getStyle(node)
+func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style) *Box {
+	// Phase 3: Use computed styles from cascade
+	style := computedStyles[node]
+	if style == nil {
+		style = css.NewStyle()
+	}
 
 	// Get box model values
 	margin := style.GetMargin()
@@ -105,6 +111,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				x + border.Left + padding.Left,
 				childY,
 				childAvailableWidth,
+				computedStyles,
 			)
 			box.Children = append(box.Children, childBox)
 			childY += le.getTotalHeight(childBox)

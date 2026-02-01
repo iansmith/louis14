@@ -147,3 +147,56 @@ func TestParser_ParentReferences(t *testing.T) {
 		t.Error("div's parent should be root")
 	}
 }
+
+// Phase 3 tests: Style tag parsing
+
+func TestParser_StyleTag(t *testing.T) {
+	doc, err := Parse(`<style>div { color: red; }</style><div></div>`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Style tag should not appear in DOM tree
+	if len(doc.Root.Children) != 1 {
+		t.Fatalf("expected 1 child (div), got %d", len(doc.Root.Children))
+	}
+
+	if doc.Root.Children[0].TagName != "div" {
+		t.Errorf("expected div, got %s", doc.Root.Children[0].TagName)
+	}
+
+	// CSS should be extracted into Stylesheets
+	if len(doc.Stylesheets) != 1 {
+		t.Fatalf("expected 1 stylesheet, got %d", len(doc.Stylesheets))
+	}
+
+	if doc.Stylesheets[0] != "div { color: red; }" {
+		t.Errorf("expected CSS 'div { color: red; }', got '%s'", doc.Stylesheets[0])
+	}
+}
+
+func TestParser_MultipleStyleTags(t *testing.T) {
+	doc, err := Parse(`
+		<style>div { color: red; }</style>
+		<div></div>
+		<style>p { color: blue; }</style>
+		<p></p>
+	`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have 2 stylesheets
+	if len(doc.Stylesheets) != 2 {
+		t.Fatalf("expected 2 stylesheets, got %d", len(doc.Stylesheets))
+	}
+
+	// Whitespace is preserved in stylesheet content
+	if doc.Stylesheets[0] != "div { color: red; }" {
+		t.Errorf("first stylesheet incorrect: '%s'", doc.Stylesheets[0])
+	}
+
+	if doc.Stylesheets[1] != "p { color: blue; }" {
+		t.Errorf("second stylesheet incorrect: '%s'", doc.Stylesheets[1])
+	}
+}

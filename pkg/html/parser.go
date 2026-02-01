@@ -3,9 +3,11 @@ package html
 import "fmt"
 
 type Parser struct {
-	tokenizer *Tokenizer
-	doc       *Document
-	stack     []*Node // Phase 2: Stack for tracking nested elements
+	tokenizer       *Tokenizer
+	doc             *Document
+	stack           []*Node // Phase 2: Stack for tracking nested elements
+	inStyleTag      bool    // Phase 3: Track if we're inside a <style> tag
+	styleContent    string  // Phase 3: Accumulate style content
 }
 
 func NewParser(html string) *Parser {
@@ -30,6 +32,13 @@ func (p *Parser) Parse() (*Document, error) {
 
 		switch token.Type {
 		case TokenStartTag:
+			// Phase 3: Special handling for <style> tags
+			if token.TagName == "style" {
+				p.inStyleTag = true
+				p.styleContent = ""
+				continue // Don't add style tag to DOM tree
+			}
+
 			// Create new element node
 			node := &Node{
 				Type:       ElementNode,
@@ -49,6 +58,12 @@ func (p *Parser) Parse() (*Document, error) {
 			}
 
 		case TokenText:
+			// Phase 3: If inside style tag, accumulate CSS
+			if p.inStyleTag {
+				p.styleContent += token.Text
+				continue
+			}
+
 			// Add text to current parent
 			if token.Text != "" {
 				parent := p.currentParent()
@@ -56,6 +71,14 @@ func (p *Parser) Parse() (*Document, error) {
 			}
 
 		case TokenEndTag:
+			// Phase 3: Handle closing </style> tag
+			if token.TagName == "style" && p.inStyleTag {
+				p.doc.Stylesheets = append(p.doc.Stylesheets, p.styleContent)
+				p.inStyleTag = false
+				p.styleContent = ""
+				continue
+			}
+
 			// Pop from stack (close current element)
 			if len(p.stack) > 1 {
 				p.pop()

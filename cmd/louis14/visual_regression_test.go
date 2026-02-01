@@ -190,6 +190,56 @@ func TestVisualRegression_Phase2_MarginPaddingBorder(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 3 visual regression tests
+
+func TestVisualRegression_Phase3_BasicStylesheet(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_stylesheet",
+		htmlFile:      "../../testdata/phase3/basic_stylesheet.html",
+		referenceFile: "../../testdata/phase3/reference/basic_stylesheet.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase3_ClassSelector(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "class_selector",
+		htmlFile:      "../../testdata/phase3/class_selector.html",
+		referenceFile: "../../testdata/phase3/reference/class_selector.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase3_IDSelector(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "id_selector",
+		htmlFile:      "../../testdata/phase3/id_selector.html",
+		referenceFile: "../../testdata/phase3/reference/id_selector.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase3_Cascade(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "cascade",
+		htmlFile:      "../../testdata/phase3/cascade.html",
+		referenceFile: "../../testdata/phase3/reference/cascade.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct {
 	name          string
