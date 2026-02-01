@@ -11,11 +11,24 @@ import (
 
 func main() {
 	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <input.html> <output.png>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s <input.html> <output.png> [width] [height]\n", os.Args[0])
 		os.Exit(1)
 	}
 	inputFile := os.Args[1]
 	outputFile := os.Args[2]
+
+	// Default viewport size
+	viewportWidth := 800.0
+	viewportHeight := 2400.0 // Much taller default for typical web pages
+
+	// Parse optional width and height arguments
+	if len(os.Args) >= 4 {
+		fmt.Sscanf(os.Args[3], "%f", &viewportWidth)
+	}
+	if len(os.Args) >= 5 {
+		fmt.Sscanf(os.Args[4], "%f", &viewportHeight)
+	}
+
 	htmlContent, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
@@ -26,8 +39,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error parsing HTML: %v\n", err)
 		os.Exit(1)
 	}
-	viewportWidth := 800.0
-	viewportHeight := 600.0
 	layoutEngine := layout.NewLayoutEngine(viewportWidth, viewportHeight)
 	boxes := layoutEngine.Layout(doc)
 	renderer := render.NewRenderer(int(viewportWidth), int(viewportHeight))
@@ -37,5 +48,5 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Successfully rendered %s to %s\n", inputFile, outputFile)
-	fmt.Printf("Rendered %d boxes\n", len(boxes))
+	fmt.Printf("Viewport: %.0fx%.0f, Rendered %d boxes\n", viewportWidth, viewportHeight, len(boxes))
 }
