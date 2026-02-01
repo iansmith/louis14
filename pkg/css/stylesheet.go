@@ -9,10 +9,11 @@ import (
 
 // Selector represents a CSS selector
 type Selector struct {
-	Raw        string       // Original selector string
-	Type       SelectorType // Type of selector
-	Value      string       // The actual value (element name, class name, or id)
-	Specificity int         // Specificity score for cascade
+	Raw           string       // Original selector string
+	Type          SelectorType // Type of selector
+	Value         string       // The actual value (element name, class name, or id)
+	Specificity   int          // Specificity score for cascade
+	PseudoElement string       // Phase 11: Pseudo-element (::before, ::after)
 }
 
 type SelectorType int
@@ -122,32 +123,47 @@ func parseSelector(selectorStr string) Selector {
 		return Selector{Type: ElementSelector, Value: "", Raw: ""}
 	}
 
+	// Phase 11: Check for pseudo-element (::before, ::after)
+	pseudoElement := ""
+	if strings.Contains(selectorStr, "::before") {
+		pseudoElement = "before"
+		selectorStr = strings.Replace(selectorStr, "::before", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
+	} else if strings.Contains(selectorStr, "::after") {
+		pseudoElement = "after"
+		selectorStr = strings.Replace(selectorStr, "::after", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
+	}
+
 	// Check for ID selector (#id)
 	if strings.HasPrefix(selectorStr, "#") {
 		return Selector{
-			Type:        IDSelector,
-			Value:       selectorStr[1:], // Remove #
-			Raw:         selectorStr,
-			Specificity: 100, // ID has high specificity
+			Type:          IDSelector,
+			Value:         selectorStr[1:], // Remove #
+			Raw:           selectorStr,
+			Specificity:   100, // ID has high specificity
+			PseudoElement: pseudoElement,
 		}
 	}
 
 	// Check for class selector (.class)
 	if strings.HasPrefix(selectorStr, ".") {
 		return Selector{
-			Type:        ClassSelector,
-			Value:       selectorStr[1:], // Remove .
-			Raw:         selectorStr,
-			Specificity: 10, // Class has medium specificity
+			Type:          ClassSelector,
+			Value:         selectorStr[1:], // Remove .
+			Raw:           selectorStr,
+			Specificity:   10, // Class has medium specificity
+			PseudoElement: pseudoElement,
 		}
 	}
 
 	// Element selector (div, p, etc.)
 	return Selector{
-		Type:        ElementSelector,
-		Value:       selectorStr,
-		Raw:         selectorStr,
-		Specificity: 1, // Element has low specificity
+		Type:          ElementSelector,
+		Value:         selectorStr,
+		Raw:           selectorStr,
+		Specificity:   1, // Element has low specificity
+		PseudoElement: pseudoElement,
 	}
 }
 

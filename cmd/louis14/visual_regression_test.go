@@ -932,6 +932,80 @@ func TestVisualRegression_Phase10_FlexOrder(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 11: Pseudo-element Tests
+
+func TestVisualRegression_Phase11_BasicBefore(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_before",
+		htmlFile:      "../../testdata/phase11/basic-before.html",
+		referenceFile: "../../testdata/phase11/reference/basic-before.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase11_BasicAfter(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_after",
+		htmlFile:      "../../testdata/phase11/basic-after.html",
+		referenceFile: "../../testdata/phase11/reference/basic-after.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase11_BeforeAndAfter(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "before_and_after",
+		htmlFile:      "../../testdata/phase11/before-and-after.html",
+		referenceFile: "../../testdata/phase11/reference/before-and-after.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase11_StyledPseudo(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "styled_pseudo",
+		htmlFile:      "../../testdata/phase11/styled-pseudo.html",
+		referenceFile: "../../testdata/phase11/reference/styled-pseudo.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase11_QuoteMarks(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "quote_marks",
+		htmlFile:      "../../testdata/phase11/quote-marks.html",
+		referenceFile: "../../testdata/phase11/reference/quote-marks.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase11_ListMarkers(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "list_markers",
+		htmlFile:      "../../testdata/phase11/list-markers.html",
+		referenceFile: "../../testdata/phase11/reference/list-markers.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct{
 	name          string

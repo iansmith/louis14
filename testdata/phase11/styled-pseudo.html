@@ -1,0 +1,9 @@
+<style>
+  .item { width: 400px; height: 80px; border: 1px solid gray; padding: 15px; margin: 10px; background-color: white; }
+  .item::before { content: "✓ "; color: green; }
+  .warning::before { content: "⚠ "; color: orange; }
+  .error::before { content: "✗ "; color: red; }
+</style>
+<div class="item">Normal item</div>
+<div class="item warning">Warning item</div>
+<div class="item error">Error item</div>

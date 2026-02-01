@@ -154,47 +154,56 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 }
 
 func (r *Renderer) drawText(box *layout.Box) {
-	// Phase 6: Render text nodes properly
+	// Phase 11: Also handle pseudo-element content
+	textContent := ""
 	if box.Node.Type == html.TextNode && box.Node.Text != "" {
-		// Get text color from style
-		color := box.Style.GetColor()
-		r.context.SetRGB(
-			float64(color.R)/255.0,
-			float64(color.G)/255.0,
-			float64(color.B)/255.0,
-		)
-
-		// Get font properties from style
-		fontSize := box.Style.GetFontSize()
-		fontWeight := box.Style.GetFontWeight()
-
-		// Phase 6 Enhancement: Select font based on weight
-		fontPath := text.DefaultFontPath
-		if fontWeight == css.FontWeightBold {
-			fontPath = text.BoldFontPath
-		}
-
-		// Load font
-		if err := r.context.LoadFontFace(fontPath, fontSize); err != nil {
-			// If font loading fails, skip rendering
-			return
-		}
-
-		// Phase 6 Enhancement: Calculate X position based on text-align
-		textX := box.X
-		textAlign := box.Style.GetTextAlign()
-		if textAlign == css.TextAlignCenter {
-			textWidth, _ := r.context.MeasureString(box.Node.Text)
-			textX = box.X + (box.Width-textWidth)/2
-		} else if textAlign == css.TextAlignRight {
-			textWidth, _ := r.context.MeasureString(box.Node.Text)
-			textX = box.X + box.Width - textWidth
-		}
-
-		// Draw text at calculated position
-		// Add fontSize to Y for baseline alignment
-		r.context.DrawString(box.Node.Text, textX, box.Y+fontSize)
+		textContent = box.Node.Text
+	} else if box.PseudoContent != "" {
+		textContent = box.PseudoContent
 	}
+
+	if textContent == "" {
+		return
+	}
+
+	// Get text color from style
+	color := box.Style.GetColor()
+	r.context.SetRGB(
+		float64(color.R)/255.0,
+		float64(color.G)/255.0,
+		float64(color.B)/255.0,
+	)
+
+	// Get font properties from style
+	fontSize := box.Style.GetFontSize()
+	fontWeight := box.Style.GetFontWeight()
+
+	// Phase 6 Enhancement: Select font based on weight
+	fontPath := text.DefaultFontPath
+	if fontWeight == css.FontWeightBold {
+		fontPath = text.BoldFontPath
+	}
+
+	// Load font
+	if err := r.context.LoadFontFace(fontPath, fontSize); err != nil {
+		// If font loading fails, skip rendering
+		return
+	}
+
+	// Phase 6 Enhancement: Calculate X position based on text-align
+	textX := box.X
+	textAlign := box.Style.GetTextAlign()
+	if textAlign == css.TextAlignCenter {
+		textWidth, _ := r.context.MeasureString(textContent)
+		textX = box.X + (box.Width-textWidth)/2
+	} else if textAlign == css.TextAlignRight {
+		textWidth, _ := r.context.MeasureString(textContent)
+		textX = box.X + box.Width - textWidth
+	}
+
+	// Draw text at calculated position
+	// Add fontSize to Y for baseline alignment
+	r.context.DrawString(textContent, textX, box.Y+fontSize)
 }
 
 // Phase 8: drawImage renders an image element

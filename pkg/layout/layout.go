@@ -8,20 +8,21 @@ import (
 )
 
 type Box struct {
-	Node      *html.Node
-	Style     *css.Style
-	X         float64
-	Y         float64
-	Width     float64 // Content width
-	Height    float64 // Content height
-	Margin    css.BoxEdge
-	Padding   css.BoxEdge
-	Border    css.BoxEdge
-	Children  []*Box          // Phase 2: Nested boxes
-	Parent    *Box            // Phase 4: Parent box for containing block
-	Position  css.PositionType // Phase 4: Position type
-	ZIndex    int             // Phase 4: Stacking order
-	ImagePath string          // Phase 8: Image source path for img elements
+	Node          *html.Node
+	Style         *css.Style
+	X             float64
+	Y             float64
+	Width         float64 // Content width
+	Height        float64 // Content height
+	Margin        css.BoxEdge
+	Padding       css.BoxEdge
+	Border        css.BoxEdge
+	Children      []*Box          // Phase 2: Nested boxes
+	Parent        *Box            // Phase 4: Parent box for containing block
+	Position      css.PositionType // Phase 4: Position type
+	ZIndex        int             // Phase 4: Stacking order
+	ImagePath     string          // Phase 8: Image source path for img elements
+	PseudoContent string          // Phase 11: Content for pseudo-elements
 }
 
 type LayoutEngine struct {
@@ -31,6 +32,7 @@ type LayoutEngine struct {
 	}
 	absoluteBoxes []*Box     // Phase 4: Track absolutely positioned boxes
 	floats        []FloatInfo // Phase 5: Track floated elements
+	stylesheets   []*css.Stylesheet // Phase 11: Store stylesheets for pseudo-elements
 }
 
 // Phase 5: FloatInfo tracks information about floated elements
@@ -116,6 +118,14 @@ func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phase 3: Compute styles from stylesheets
 	computedStyles := css.ApplyStylesToDocument(doc)
+
+	// Phase 11: Parse and store stylesheets for pseudo-element styling
+	le.stylesheets = make([]*css.Stylesheet, 0)
+	for _, cssText := range doc.Stylesheets {
+		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
+			le.stylesheets = append(le.stylesheets, stylesheet)
+		}
+	}
 
 	// Phase 2: Recursively layout the tree starting from root's children
 	boxes := make([]*Box, 0)
@@ -345,6 +355,21 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		LineBoxes:  make([]*Box, 0),
 	}
 
+	// Phase 11: Generate ::before pseudo-element if it has content
+	beforeBox := le.generatePseudoElement(node, "before", inlineCtx.LineX, inlineCtx.LineY, childAvailableWidth, computedStyles, box)
+	if beforeBox != nil {
+		box.Children = append(box.Children, beforeBox)
+		// Update inline context for subsequent children
+		if display == css.DisplayInline || display == css.DisplayBlock {
+			inlineCtx.LineX += le.getTotalWidth(beforeBox)
+			if beforeBox.Height > inlineCtx.LineHeight {
+				inlineCtx.LineHeight = beforeBox.Height
+			}
+		} else {
+			inlineCtx.LineY += le.getTotalHeight(beforeBox)
+		}
+	}
+
 	for _, child := range node.Children {
 		if child.Type == html.ElementNode {
 			// Get child's computed style to check display mode
@@ -482,6 +507,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				}
 			}
 		}
+	}
+
+	// Phase 11: Generate ::after pseudo-element if it has content
+	afterBox := le.generatePseudoElement(node, "after", inlineCtx.LineX, inlineCtx.LineY, childAvailableWidth, computedStyles, box)
+	if afterBox != nil {
+		box.Children = append(box.Children, afterBox)
 	}
 
 	// If height is auto and we have children, adjust height to fit content
@@ -1477,4 +1508,47 @@ func (le *LayoutEngine) alignCrossAxis(container *FlexContainer, flexBox *Box) {
 
 		currentCrossPos += line.CrossSize
 	}
+}
+
+// Phase 11: generatePseudoElement generates a pseudo-element box if it has content
+func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
+	// Compute pseudo-element style using stored stylesheets
+	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets)
+
+	// Get content from pseudo-element style
+	content, hasContent := pseudoStyle.GetContent()
+	if !hasContent || content == "" {
+		return nil
+	}
+
+	// Create a text-like box with the content
+	margin := pseudoStyle.GetMargin()
+	padding := pseudoStyle.GetPadding()
+	border := pseudoStyle.GetBorderWidth()
+
+	// Measure text content
+	fontSize := pseudoStyle.GetFontSize()
+	fontWeight := pseudoStyle.GetFontWeight()
+	bold := fontWeight == css.FontWeightBold
+	textWidth, textHeight := text.MeasureTextWithWeight(content, fontSize, bold)
+
+	// Apply horizontal margin
+	x += margin.Left
+
+	box := &Box{
+		Node:          node, // Reference the parent node
+		Style:         pseudoStyle,
+		X:             x,
+		Y:             y + margin.Top,
+		Width:         textWidth,
+		Height:        textHeight,
+		Margin:        margin,
+		Padding:       padding,
+		Border:        border,
+		Children:      make([]*Box, 0),
+		Parent:        parent,
+		PseudoContent: content, // Store the pseudo-element content
+	}
+
+	return box
 }

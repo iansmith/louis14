@@ -729,3 +729,29 @@ func (s *Style) GetOrder() int {
 	}
 	return 0
 }
+
+// Phase 11: Pseudo-elements
+
+// GetContent returns the content property value for pseudo-elements
+// Returns the content string and true if content is set, or "", false if not
+func (s *Style) GetContent() (string, bool) {
+	if content, ok := s.Get("content"); ok {
+		// Handle "none" and "normal" (no content)
+		if content == "none" || content == "normal" {
+			return "", false
+		}
+
+		// Remove quotes from string content
+		content = strings.TrimSpace(content)
+		if len(content) >= 2 {
+			// Remove single or double quotes
+			if (content[0] == '"' && content[len(content)-1] == '"') ||
+			   (content[0] == '\'' && content[len(content)-1] == '\'') {
+				content = content[1 : len(content)-1]
+			}
+		}
+
+		return content, true
+	}
+	return "", false
+}

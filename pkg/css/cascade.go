@@ -61,6 +61,40 @@ func ApplyStylesToDocument(doc *html.Document) map[*html.Node]*Style {
 	return styles
 }
 
+// Phase 11: ComputePseudoElementStyle computes the style for a pseudo-element
+func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet) *Style {
+	finalStyle := NewStyle()
+
+	// Collect all matching rules for this pseudo-element
+	allRules := make([]Rule, 0)
+
+	for _, stylesheet := range stylesheets {
+		for _, rule := range stylesheet.Rules {
+			// Check if this rule's selector matches the node AND has the right pseudo-element
+			if rule.Selector.PseudoElement == pseudoElement {
+				// Check if the base selector matches
+				if MatchesSelector(node, rule.Selector) {
+					allRules = append(allRules, rule)
+				}
+			}
+		}
+	}
+
+	// Sort rules by specificity
+	sort.Slice(allRules, func(i, j int) bool {
+		return allRules[i].Selector.Specificity < allRules[j].Selector.Specificity
+	})
+
+	// Apply rules in order
+	for _, rule := range allRules {
+		for property, value := range rule.Declarations {
+			finalStyle.Set(property, value)
+		}
+	}
+
+	return finalStyle
+}
+
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
