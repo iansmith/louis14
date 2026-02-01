@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/text"
 )
 
 type Box struct {
@@ -26,7 +27,15 @@ type LayoutEngine struct {
 		width  float64
 		height float64
 	}
-	absoluteBoxes []*Box  // Phase 4: Track absolutely positioned boxes
+	absoluteBoxes []*Box     // Phase 4: Track absolutely positioned boxes
+	floats        []FloatInfo // Phase 5: Track floated elements
+}
+
+// Phase 5: FloatInfo tracks information about floated elements
+type FloatInfo struct {
+	Box  *Box
+	Side css.FloatType
+	Y    float64 // Y position where float starts
 }
 
 func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
@@ -47,13 +56,17 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phase 4: Track absolutely positioned boxes separately
 	le.absoluteBoxes = make([]*Box, 0)
 
+	// Phase 5: Initialize floats tracking
+	le.floats = make([]FloatInfo, 0)
+
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
 			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
 			boxes = append(boxes, box)
 
-			// Phase 4: Only advance Y if element is in normal flow
-			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed {
+			// Phase 4 & 5: Only advance Y if element is in normal flow (not absolutely positioned or floated)
+			floatType := box.Style.GetFloat()
+			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed && floatType == css.FloatNone {
 				y += le.getTotalHeight(box)
 			}
 		}
@@ -82,10 +95,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	x += margin.Left
 	y += margin.Top
 
+	// Phase 5: Check for float early to determine width calculation
+	floatType := style.GetFloat()
+
 	// Calculate content width
 	var contentWidth float64
+	hasExplicitWidth := false
 	if w, ok := style.GetLength("width"); ok {
 		contentWidth = w
+		hasExplicitWidth = true
 	} else {
 		// Default to available width minus horizontal margin, padding, border
 		contentWidth = availableWidth - margin.Left - margin.Right -
@@ -104,6 +122,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
 
+	// Phase 5: Check for clear property
+	clearType := style.GetClear()
+
+	// Phase 5: Handle clear property - move Y down past floats
+	if clearType != css.ClearNone {
+		y = le.getClearY(clearType, y)
+	}
+
 	box := &Box{
 		Node:     node,
 		Style:    style,
@@ -119,6 +145,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		ZIndex:   zindex,
 		Parent:   parent,
 	}
+
+	// Phase 5: Float positioning will be done AFTER children are laid out
+	// (to support shrink-wrapping and float drop)
 
 	// Phase 4: Handle positioning
 	if position == css.PositionAbsolute || position == css.PositionFixed {
@@ -152,9 +181,24 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			)
 			box.Children = append(box.Children, childBox)
 
-			// Phase 4: Only advance childY if child is in normal flow
-			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed {
+			// Phase 4 & 5: Only advance childY if child is in normal flow (not absolutely positioned or floated)
+			childFloatType := childBox.Style.GetFloat()
+			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatType == css.FloatNone {
 				childY += le.getTotalHeight(childBox)
+			}
+		} else if child.Type == html.TextNode {
+			// Phase 6: Layout text nodes
+			textBox := le.layoutTextNode(
+				child,
+				x + border.Left + padding.Left,
+				childY,
+				childAvailableWidth,
+				style,  // Text inherits parent's style
+				box,
+			)
+			if textBox != nil {
+				box.Children = append(box.Children, textBox)
+				childY += le.getTotalHeight(textBox)
 			}
 		}
 	}
@@ -167,6 +211,45 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			totalChildHeight += le.getTotalHeight(child)
 		}
 		box.Height = totalChildHeight
+	}
+
+	// Phase 5 Enhancement: Float shrink-wrapping
+	// If this is a float without explicit width, shrink-wrap to content
+	if floatType != css.FloatNone && !hasExplicitWidth && len(box.Children) > 0 {
+		maxChildWidth := 0.0
+		for _, child := range box.Children {
+			childWidth := le.getTotalWidth(child)
+			if childWidth > maxChildWidth {
+				maxChildWidth = childWidth
+			}
+		}
+		// Set width to fit children (but don't exceed available width)
+		if maxChildWidth > 0 && maxChildWidth < box.Width {
+			box.Width = maxChildWidth
+		}
+	}
+
+	// Phase 5: Handle float positioning AFTER children layout and shrink-wrapping
+	if floatType != css.FloatNone && position == css.PositionStatic {
+		floatTotalWidth := le.getTotalWidth(box)
+
+		// Phase 5 Enhancement: Check if float fits, apply drop if needed
+		floatY := le.getFloatDropY(floatType, floatTotalWidth, box.Y, availableWidth)
+		box.Y = floatY
+
+		// Position float horizontally
+		if floatType == css.FloatLeft {
+			// Position at left edge (accounting for existing left floats)
+			leftOffset, _ := le.getFloatOffsets(floatY)
+			box.X = x + leftOffset
+		} else if floatType == css.FloatRight {
+			// Position at right edge (accounting for existing right floats)
+			_, rightOffset := le.getFloatOffsets(floatY)
+			box.X = x + availableWidth - floatTotalWidth - rightOffset
+		}
+
+		// Add to float tracking
+		le.addFloat(box, floatType, floatY)
 	}
 
 	return box
@@ -192,4 +275,205 @@ func (le *LayoutEngine) getTotalWidth(box *Box) float64 {
 	return box.Margin.Left + box.Border.Left + box.Padding.Left +
 		box.Width +
 		box.Padding.Right + box.Border.Right + box.Margin.Right
+}
+
+// Phase 6: layoutTextNode creates a layout box for a text node
+func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth float64, parentStyle *css.Style, parent *Box) *Box {
+	// Skip empty text nodes
+	if node.Text == "" {
+		return nil
+	}
+
+	// Get font properties from parent style
+	fontSize := parentStyle.GetFontSize()
+	fontWeight := parentStyle.GetFontWeight()
+
+	// Phase 5: Adjust position and width for floats
+	adjustedX := x
+	adjustedWidth := availableWidth
+
+	// Get available space accounting for floats
+	leftOffset, rightOffset := le.getFloatOffsets(y)
+	adjustedX += leftOffset
+	adjustedWidth -= (leftOffset + rightOffset)
+
+	// Phase 6 Enhancement: Measure the text with correct font weight
+	isBold := fontWeight == css.FontWeightBold
+	width, height := text.MeasureTextWithWeight(node.Text, fontSize, isBold)
+
+	// Phase 6 Enhancement: Check if text needs line breaking
+	if width > adjustedWidth && adjustedWidth > 0 {
+		// Break text into multiple lines
+		lines := text.BreakTextIntoLines(node.Text, fontSize, isBold, adjustedWidth)
+
+		if len(lines) > 1 {
+			// Create a container box for multi-line text
+			containerBox := &Box{
+				Node:     node,
+				Style:    parentStyle,
+				X:        adjustedX,
+				Y:        y,
+				Width:    adjustedWidth,
+				Height:   float64(len(lines)) * height,
+				Margin:   css.BoxEdge{},
+				Padding:  css.BoxEdge{},
+				Border:   css.BoxEdge{},
+				Children: make([]*Box, 0),
+				Position: css.PositionStatic,
+				ZIndex:   0,
+				Parent:   parent,
+			}
+
+			// Create a box for each line
+			currentY := y
+			for _, line := range lines {
+				lineWidth, lineHeight := text.MeasureTextWithWeight(line, fontSize, isBold)
+				lineNode := &html.Node{
+					Type: html.TextNode,
+					Text: line,
+				}
+
+				lineBox := &Box{
+					Node:     lineNode,
+					Style:    parentStyle,
+					X:        adjustedX,
+					Y:        currentY,
+					Width:    lineWidth,
+					Height:   lineHeight,
+					Margin:   css.BoxEdge{},
+					Padding:  css.BoxEdge{},
+					Border:   css.BoxEdge{},
+					Children: make([]*Box, 0),
+					Position: css.PositionStatic,
+					ZIndex:   0,
+					Parent:   containerBox,
+				}
+
+				containerBox.Children = append(containerBox.Children, lineBox)
+				currentY += lineHeight
+			}
+
+			return containerBox
+		}
+	}
+
+	// Create a box for single-line text
+	box := &Box{
+		Node:     node,
+		Style:    parentStyle, // Text inherits parent's style
+		X:        adjustedX,
+		Y:        y,
+		Width:    width,
+		Height:   height,
+		Margin:   css.BoxEdge{},   // No margin for text
+		Padding:  css.BoxEdge{},   // No padding for text
+		Border:   css.BoxEdge{},   // No border for text
+		Children: make([]*Box, 0), // Text nodes have no children
+		Position: css.PositionStatic,
+		ZIndex:   0,
+		Parent:   parent,
+	}
+
+	return box
+}
+
+// Phase 5: Float layout helper methods
+
+// addFloat adds a floated element to the tracking list
+func (le *LayoutEngine) addFloat(box *Box, side css.FloatType, y float64) {
+	le.floats = append(le.floats, FloatInfo{
+		Box:  box,
+		Side: side,
+		Y:    y,
+	})
+}
+
+// getFloatOffsets returns the left and right offsets caused by floats at a given Y position
+func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset float64) {
+	leftOffset = 0
+	rightOffset = 0
+
+	for _, floatInfo := range le.floats {
+		// Check if this float affects the current Y position
+		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
+		if y >= floatInfo.Y && y < floatBottom {
+			if floatInfo.Side == css.FloatLeft {
+				floatWidth := le.getTotalWidth(floatInfo.Box)
+				if floatWidth > leftOffset {
+					leftOffset = floatWidth
+				}
+			} else if floatInfo.Side == css.FloatRight {
+				floatWidth := le.getTotalWidth(floatInfo.Box)
+				if floatWidth > rightOffset {
+					rightOffset = floatWidth
+				}
+			}
+		}
+	}
+
+	return leftOffset, rightOffset
+}
+
+// getClearY returns the Y position after clearing floats
+func (le *LayoutEngine) getClearY(clearType css.ClearType, currentY float64) float64 {
+	if clearType == css.ClearNone {
+		return currentY
+	}
+
+	maxY := currentY
+
+	for _, floatInfo := range le.floats {
+		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
+
+		shouldClear := false
+		switch clearType {
+		case css.ClearLeft:
+			shouldClear = floatInfo.Side == css.FloatLeft
+		case css.ClearRight:
+			shouldClear = floatInfo.Side == css.FloatRight
+		case css.ClearBoth:
+			shouldClear = true
+		}
+
+		if shouldClear && floatBottom > maxY {
+			maxY = floatBottom
+		}
+	}
+
+	return maxY
+}
+
+// Phase 5 Enhancement: getFloatDropY finds Y position where float of given width will fit
+func (le *LayoutEngine) getFloatDropY(floatType css.FloatType, floatWidth float64, startY float64, availableWidth float64) float64 {
+	currentY := startY
+	maxAttempts := 100 // Prevent infinite loops
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		leftOffset, rightOffset := le.getFloatOffsets(currentY)
+		remainingWidth := availableWidth - leftOffset - rightOffset
+
+		// Check if float fits at current Y
+		if floatWidth <= remainingWidth {
+			return currentY
+		}
+
+		// Find the next Y position where a float ends
+		nextY := currentY + 1 // Default small increment
+		for _, floatInfo := range le.floats {
+			floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
+			// Look for the nearest float bottom that's below current Y
+			if floatBottom > currentY && (nextY == currentY+1 || floatBottom < nextY) {
+				nextY = floatBottom
+			}
+		}
+
+		currentY = nextY
+
+		// If we've moved way down, just return current position
+		if currentY > startY+1000 {
+			return startY
+		}
+	}
+
+	return currentY
 }

@@ -1,0 +1,14 @@
+<style>
+  .container { width: 600px; padding: 10px; margin: 10px; background-color: lightgray; }
+  .float-left { float: left; width: 120px; height: 120px; background-color: red; margin: 10px; }
+  .float-right { float: right; width: 120px; height: 120px; background-color: blue; margin: 10px; }
+  .text { color: black; }
+</style>
+<div class="container">
+  <div class="float-left"></div>
+  <p class="text">This is a longer paragraph that should wrap around the floated box on the left side. The text will break into multiple lines and flow around the float element creating a nice layout effect.</p>
+</div>
+<div class="container">
+  <div class="float-right"></div>
+  <p class="text">This paragraph wraps around a right-floated box. The multi-line text should properly respect the float boundary and wrap within the available space.</p>
+</div>

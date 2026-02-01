@@ -1,0 +1,24 @@
+# Font files
+fonts/
+
+# Test reference images
+testdata/*/reference/
+
+# Build artifacts
+louis14
+cmd/louis14/louis14
+
+# Go build cache
+*.test
+*.out
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

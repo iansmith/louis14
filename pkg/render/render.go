@@ -5,7 +5,9 @@ import (
 
 	"github.com/fogleman/gg"
 	"louis14/pkg/css"
+	"louis14/pkg/html"
 	"louis14/pkg/layout"
+	"louis14/pkg/text"
 )
 
 type Renderer struct {
@@ -148,14 +150,46 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 }
 
 func (r *Renderer) drawText(box *layout.Box) {
-	if box.Node.Type != 0 {
-		text := box.Node.TagName
-		r.context.SetRGB(0, 0, 0)
-		fontSize := 12.0
-		r.context.LoadFontFace("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", fontSize)
-		textX := box.X + 10
-		textY := box.Y + 20
-		r.context.DrawString(text, textX, textY)
+	// Phase 6: Render text nodes properly
+	if box.Node.Type == html.TextNode && box.Node.Text != "" {
+		// Get text color from style
+		color := box.Style.GetColor()
+		r.context.SetRGB(
+			float64(color.R)/255.0,
+			float64(color.G)/255.0,
+			float64(color.B)/255.0,
+		)
+
+		// Get font properties from style
+		fontSize := box.Style.GetFontSize()
+		fontWeight := box.Style.GetFontWeight()
+
+		// Phase 6 Enhancement: Select font based on weight
+		fontPath := text.DefaultFontPath
+		if fontWeight == css.FontWeightBold {
+			fontPath = text.BoldFontPath
+		}
+
+		// Load font
+		if err := r.context.LoadFontFace(fontPath, fontSize); err != nil {
+			// If font loading fails, skip rendering
+			return
+		}
+
+		// Phase 6 Enhancement: Calculate X position based on text-align
+		textX := box.X
+		textAlign := box.Style.GetTextAlign()
+		if textAlign == css.TextAlignCenter {
+			textWidth, _ := r.context.MeasureString(box.Node.Text)
+			textX = box.X + (box.Width-textWidth)/2
+		} else if textAlign == css.TextAlignRight {
+			textWidth, _ := r.context.MeasureString(box.Node.Text)
+			textX = box.X + box.Width - textWidth
+		}
+
+		// Draw text at calculated position
+		// Add fontSize to Y for baseline alignment
+		r.context.DrawString(box.Node.Text, textX, box.Y+fontSize)
 	}
 }
 

@@ -290,6 +290,254 @@ func TestVisualRegression_Phase4_ZIndex(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 5 visual regression tests
+
+func TestVisualRegression_Phase5_FloatLeft(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "float_left",
+		htmlFile:      "../../testdata/phase5/float-left.html",
+		referenceFile: "../../testdata/phase5/reference/float-left.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_FloatRight(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "float_right",
+		htmlFile:      "../../testdata/phase5/float-right.html",
+		referenceFile: "../../testdata/phase5/reference/float-right.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_MultipleFloats(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "multiple_floats",
+		htmlFile:      "../../testdata/phase5/multiple-floats.html",
+		referenceFile: "../../testdata/phase5/reference/multiple-floats.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_FloatBothSides(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "float_both_sides",
+		htmlFile:      "../../testdata/phase5/float-both-sides.html",
+		referenceFile: "../../testdata/phase5/reference/float-both-sides.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_ClearProperty(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "clear_property",
+		htmlFile:      "../../testdata/phase5/clear-property.html",
+		referenceFile: "../../testdata/phase5/reference/clear-property.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_ComplexFloat(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "complex_float",
+		htmlFile:      "../../testdata/phase5/complex-float.html",
+		referenceFile: "../../testdata/phase5/reference/complex-float.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 5 enhanced features
+
+func TestVisualRegression_Phase5_FloatShrinkwrap(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "float_shrinkwrap",
+		htmlFile:      "../../testdata/phase5/float-shrinkwrap.html",
+		referenceFile: "../../testdata/phase5/reference/float-shrinkwrap.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_FloatDrop(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "float_drop",
+		htmlFile:      "../../testdata/phase5/float-drop.html",
+		referenceFile: "../../testdata/phase5/reference/float-drop.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_FloatStackingAdvanced(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "float_stacking_advanced",
+		htmlFile:      "../../testdata/phase5/float-stacking-advanced.html",
+		referenceFile: "../../testdata/phase5/reference/float-stacking-advanced.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase5_NestedFloats(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "nested_floats",
+		htmlFile:      "../../testdata/phase5/nested-floats.html",
+		referenceFile: "../../testdata/phase5/reference/nested-floats.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 6 visual regression tests
+
+func TestVisualRegression_Phase6_BasicText(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_text",
+		htmlFile:      "../../testdata/phase6/basic-text.html",
+		referenceFile: "../../testdata/phase6/reference/basic-text.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_TextColors(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "text_colors",
+		htmlFile:      "../../testdata/phase6/text-colors.html",
+		referenceFile: "../../testdata/phase6/reference/text-colors.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_TextSizes(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "text_sizes",
+		htmlFile:      "../../testdata/phase6/text-sizes.html",
+		referenceFile: "../../testdata/phase6/reference/text-sizes.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_NestedText(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "nested_text",
+		htmlFile:      "../../testdata/phase6/nested-text.html",
+		referenceFile: "../../testdata/phase6/reference/nested-text.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_MixedContent(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "mixed_content",
+		htmlFile:      "../../testdata/phase6/mixed-content.html",
+		referenceFile: "../../testdata/phase6/reference/mixed-content.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_StyledText(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "styled_text",
+		htmlFile:      "../../testdata/phase6/styled-text.html",
+		referenceFile: "../../testdata/phase6/reference/styled-text.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 6 enhanced features
+
+func TestVisualRegression_Phase6_LineBreaking(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "line_breaking",
+		htmlFile:      "../../testdata/phase6/line-breaking.html",
+		referenceFile: "../../testdata/phase6/reference/line-breaking.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_TextAlign(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "text_align",
+		htmlFile:      "../../testdata/phase6/text-align.html",
+		referenceFile: "../../testdata/phase6/reference/text-align.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_FontWeight(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "font_weight",
+		htmlFile:      "../../testdata/phase6/font-weight.html",
+		referenceFile: "../../testdata/phase6/reference/font-weight.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase6_TextWrapFloats(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "text_wrap_floats",
+		htmlFile:      "../../testdata/phase6/text-wrap-floats.html",
+		referenceFile: "../../testdata/phase6/reference/text-wrap-floats.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct {
 	name          string

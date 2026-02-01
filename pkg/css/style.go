@@ -288,3 +288,115 @@ func ParseColor(colorStr string) (Color, bool) {
 	color, ok := namedColors[colorStr]
 	return color, ok
 }
+
+// Phase 6: Text rendering helpers
+
+// GetFontSize returns the font-size in pixels (default: 16px)
+func (s *Style) GetFontSize() float64 {
+	if size, ok := s.GetLength("font-size"); ok {
+		return size
+	}
+	return 16.0 // Default font size
+}
+
+// GetColor returns the text color (default: black)
+func (s *Style) GetColor() Color {
+	if colorStr, ok := s.Get("color"); ok {
+		if color, ok := ParseColor(colorStr); ok {
+			return color
+		}
+	}
+	return Color{0, 0, 0} // Default to black
+}
+
+// Phase 5: Float layout helpers
+
+// FloatType represents the float property value
+type FloatType string
+
+const (
+	FloatNone  FloatType = "none"
+	FloatLeft  FloatType = "left"
+	FloatRight FloatType = "right"
+)
+
+// GetFloat returns the float value (default: none)
+func (s *Style) GetFloat() FloatType {
+	if floatVal, ok := s.Get("float"); ok {
+		switch floatVal {
+		case "left":
+			return FloatLeft
+		case "right":
+			return FloatRight
+		}
+	}
+	return FloatNone
+}
+
+// ClearType represents the clear property value
+type ClearType string
+
+const (
+	ClearNone  ClearType = "none"
+	ClearLeft  ClearType = "left"
+	ClearRight ClearType = "right"
+	ClearBoth  ClearType = "both"
+)
+
+// GetClear returns the clear value (default: none)
+func (s *Style) GetClear() ClearType {
+	if clearVal, ok := s.Get("clear"); ok {
+		switch clearVal {
+		case "left":
+			return ClearLeft
+		case "right":
+			return ClearRight
+		case "both":
+			return ClearBoth
+		}
+	}
+	return ClearNone
+}
+
+// Phase 6 Enhancements: Text styling
+
+// TextAlign represents the text-align property value
+type TextAlign string
+
+const (
+	TextAlignLeft   TextAlign = "left"
+	TextAlignCenter TextAlign = "center"
+	TextAlignRight  TextAlign = "right"
+)
+
+// GetTextAlign returns the text-align value (default: left)
+func (s *Style) GetTextAlign() TextAlign {
+	if align, ok := s.Get("text-align"); ok {
+		switch align {
+		case "center":
+			return TextAlignCenter
+		case "right":
+			return TextAlignRight
+		}
+	}
+	return TextAlignLeft
+}
+
+// FontWeight represents the font-weight property value
+type FontWeight string
+
+const (
+	FontWeightNormal FontWeight = "normal"
+	FontWeightBold   FontWeight = "bold"
+)
+
+// GetFontWeight returns the font-weight value (default: normal)
+func (s *Style) GetFontWeight() FontWeight {
+	if weight, ok := s.Get("font-weight"); ok {
+		switch weight {
+		case "bold", "700", "800", "900":
+			return FontWeightBold
+		}
+	}
+	return FontWeightNormal
+}
