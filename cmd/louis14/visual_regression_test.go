@@ -538,6 +538,154 @@ func TestVisualRegression_Phase6_TextWrapFloats(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 7 visual regression tests
+
+func TestVisualRegression_Phase7_DisplayNone(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "display_none",
+		htmlFile:      "../../testdata/phase7/display-none.html",
+		referenceFile: "../../testdata/phase7/reference/display-none.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_InlineBlock(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_block",
+		htmlFile:      "../../testdata/phase7/inline-block.html",
+		referenceFile: "../../testdata/phase7/reference/inline-block.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_InlineWrapping(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_wrapping",
+		htmlFile:      "../../testdata/phase7/inline-wrapping.html",
+		referenceFile: "../../testdata/phase7/reference/inline-wrapping.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_MixedInlineBlock(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "mixed_inline_block",
+		htmlFile:      "../../testdata/phase7/mixed-inline-block.html",
+		referenceFile: "../../testdata/phase7/reference/mixed-inline-block.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_InlineElements(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_elements",
+		htmlFile:      "../../testdata/phase7/inline-elements.html",
+		referenceFile: "../../testdata/phase7/reference/inline-elements.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_InlineSizes(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_sizes",
+		htmlFile:      "../../testdata/phase7/inline-sizes.html",
+		referenceFile: "../../testdata/phase7/reference/inline-sizes.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_InlineWithText(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_with_text",
+		htmlFile:      "../../testdata/phase7/inline-with-text.html",
+		referenceFile: "../../testdata/phase7/reference/inline-with-text.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 7 inline improvements
+
+func TestVisualRegression_Phase7_InlineNoDimensions(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_no_dimensions",
+		htmlFile:      "../../testdata/phase7/inline-no-dimensions.html",
+		referenceFile: "../../testdata/phase7/reference/inline-no-dimensions.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_VerticalAlign(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "vertical_align",
+		htmlFile:      "../../testdata/phase7/vertical-align.html",
+		referenceFile: "../../testdata/phase7/reference/vertical-align.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_InlineTextFlow(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_text_flow",
+		htmlFile:      "../../testdata/phase7/inline-text-flow.html",
+		referenceFile: "../../testdata/phase7/reference/inline-text-flow.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_LineHeight(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "line_height",
+		htmlFile:      "../../testdata/phase7/line-height.html",
+		referenceFile: "../../testdata/phase7/reference/line-height.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase7_InlineMargins(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_margins",
+		htmlFile:      "../../testdata/phase7/inline-margins.html",
+		referenceFile: "../../testdata/phase7/reference/inline-margins.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct {
 	name          string

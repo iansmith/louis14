@@ -38,6 +38,14 @@ type FloatInfo struct {
 	Y    float64 // Y position where float starts
 }
 
+// Phase 7: InlineContext tracks the current inline layout state
+type InlineContext struct {
+	LineX      float64 // Current X position on the line
+	LineY      float64 // Current line Y position
+	LineHeight float64 // Height of current line
+	LineBoxes  []*Box  // Boxes on current line
+}
+
 func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 	le := &LayoutEngine{}
 	le.viewport.width = viewportWidth
@@ -62,6 +70,10 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
 			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
+			// Phase 7: Skip elements with display: none (layoutNode returns nil)
+			if box == nil {
+				continue
+			}
 			boxes = append(boxes, box)
 
 			// Phase 4 & 5: Only advance Y if element is in normal flow (not absolutely positioned or floated)
@@ -86,10 +98,24 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		style = css.NewStyle()
 	}
 
+	// Phase 7: Check display mode early
+	display := style.GetDisplay()
+	if display == css.DisplayNone {
+		return nil
+	}
+
 	// Get box model values
 	margin := style.GetMargin()
 	padding := style.GetPadding()
 	border := style.GetBorderWidth()
+
+	// Phase 7 Enhancement: Inline elements ignore vertical margins and padding
+	if display == css.DisplayInline {
+		margin.Top = 0
+		margin.Bottom = 0
+		padding.Top = 0
+		padding.Bottom = 0
+	}
 
 	// Apply margin offset
 	x += margin.Left
@@ -101,7 +127,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Calculate content width
 	var contentWidth float64
 	hasExplicitWidth := false
-	if w, ok := style.GetLength("width"); ok {
+
+	// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore width property)
+	if display == css.DisplayInline {
+		// Will be calculated from children later
+		contentWidth = 0
+		hasExplicitWidth = false
+	} else if w, ok := style.GetLength("width"); ok {
 		contentWidth = w
 		hasExplicitWidth = true
 	} else {
@@ -112,7 +144,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Calculate content height
 	var contentHeight float64
-	if h, ok := style.GetLength("height"); ok {
+	// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore height property)
+	if display == css.DisplayInline {
+		// Will be calculated from children later
+		contentHeight = 0
+	} else if h, ok := style.GetLength("height"); ok {
 		contentHeight = h
 	} else {
 		contentHeight = 50 // Default height
@@ -169,36 +205,149 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	childY := y + border.Top + padding.Top
 	childAvailableWidth := contentWidth - padding.Left - padding.Right
 
+	// Phase 7: Track inline layout context
+	inlineCtx := &InlineContext{
+		LineX:      x + border.Left + padding.Left,
+		LineY:      childY,
+		LineHeight: 0,
+		LineBoxes:  make([]*Box, 0),
+	}
+
 	for _, child := range node.Children {
 		if child.Type == html.ElementNode {
+			// Get child's computed style to check display mode
+			childStyle := computedStyles[child]
+			if childStyle == nil {
+				childStyle = css.NewStyle()
+			}
+			childDisplay := childStyle.GetDisplay()
+
+			// Layout the child
 			childBox := le.layoutNode(
 				child,
-				x + border.Left + padding.Left,
-				childY,
+				inlineCtx.LineX,
+				inlineCtx.LineY,
 				childAvailableWidth,
 				computedStyles,
 				box,  // Phase 4: Pass parent
 			)
-			box.Children = append(box.Children, childBox)
 
-			// Phase 4 & 5: Only advance childY if child is in normal flow (not absolutely positioned or floated)
-			childFloatType := childBox.Style.GetFloat()
-			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatType == css.FloatNone {
-				childY += le.getTotalHeight(childBox)
+			// Phase 7: Skip elements with display: none (layoutNode returns nil)
+			if childBox != nil {
+				// Phase 7: Handle inline and inline-block elements
+				if (childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock) && childBox.Position == css.PositionStatic {
+					childTotalWidth := le.getTotalWidth(childBox)
+
+					// Check if child fits on current line
+					if inlineCtx.LineX + childTotalWidth > x + border.Left + padding.Left + childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
+						// Wrap to next line
+						inlineCtx.LineY += inlineCtx.LineHeight
+						inlineCtx.LineX = x + border.Left + padding.Left
+						inlineCtx.LineHeight = 0
+						inlineCtx.LineBoxes = make([]*Box, 0)
+
+						// Reposition child at start of new line
+						childBox.X = inlineCtx.LineX
+						childBox.Y = inlineCtx.LineY
+					}
+
+					// Add to current line
+					inlineCtx.LineBoxes = append(inlineCtx.LineBoxes, childBox)
+					childHeight := le.getTotalHeight(childBox)
+					if childHeight > inlineCtx.LineHeight {
+						inlineCtx.LineHeight = childHeight
+					}
+
+					// Advance X for next inline-block element
+					inlineCtx.LineX += childTotalWidth
+
+					box.Children = append(box.Children, childBox)
+
+					// Phase 7 Enhancement: Apply vertical-align to inline element
+					le.applyVerticalAlign(childBox, inlineCtx.LineY, inlineCtx.LineHeight)
+				} else {
+					// Block element or other display mode
+					// Finish current inline line
+					if len(inlineCtx.LineBoxes) > 0 {
+						childY = inlineCtx.LineY + inlineCtx.LineHeight
+						inlineCtx.LineBoxes = make([]*Box, 0)
+						inlineCtx.LineHeight = 0
+					} else {
+						childY = inlineCtx.LineY
+					}
+
+					// Update child position for block element
+					childBox.X = x + border.Left + padding.Left
+					childBox.Y = childY
+
+					box.Children = append(box.Children, childBox)
+
+					// Advance Y for block elements
+					childFloatType := childBox.Style.GetFloat()
+					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatType == css.FloatNone {
+						childY += le.getTotalHeight(childBox)
+					}
+
+					// Reset inline context for next line
+					inlineCtx.LineX = x + border.Left + padding.Left
+					inlineCtx.LineY = childY
+				}
 			}
 		} else if child.Type == html.TextNode {
 			// Phase 6: Layout text nodes
-			textBox := le.layoutTextNode(
-				child,
-				x + border.Left + padding.Left,
-				childY,
-				childAvailableWidth,
-				style,  // Text inherits parent's style
-				box,
-			)
-			if textBox != nil {
-				box.Children = append(box.Children, textBox)
-				childY += le.getTotalHeight(textBox)
+			// Phase 7 Enhancement: Text flows inline if there are inline elements
+			if len(inlineCtx.LineBoxes) > 0 {
+				// Continue on current inline line
+				textBox := le.layoutTextNode(
+					child,
+					inlineCtx.LineX,
+					inlineCtx.LineY,
+					x + border.Left + padding.Left + childAvailableWidth - inlineCtx.LineX,
+					style,  // Text inherits parent's style
+					box,
+				)
+				if textBox != nil {
+					box.Children = append(box.Children, textBox)
+
+					// Add text to inline flow
+					textWidth := le.getTotalWidth(textBox)
+					textHeight := le.getTotalHeight(textBox)
+
+					// Check if text fits on current line
+					if inlineCtx.LineX + textWidth > x + border.Left + padding.Left + childAvailableWidth {
+						// Wrap to new line
+						inlineCtx.LineY += inlineCtx.LineHeight
+						inlineCtx.LineX = x + border.Left + padding.Left
+						inlineCtx.LineHeight = textHeight
+						textBox.X = inlineCtx.LineX
+						textBox.Y = inlineCtx.LineY
+						inlineCtx.LineX += textWidth
+					} else {
+						// Fits on current line
+						inlineCtx.LineX += textWidth
+						if textHeight > inlineCtx.LineHeight {
+							inlineCtx.LineHeight = textHeight
+						}
+					}
+
+					inlineCtx.LineBoxes = append(inlineCtx.LineBoxes, textBox)
+				}
+			} else {
+				// No inline elements, text starts on new line
+				textBox := le.layoutTextNode(
+					child,
+					x + border.Left + padding.Left,
+					childY,
+					childAvailableWidth,
+					style,  // Text inherits parent's style
+					box,
+				)
+				if textBox != nil {
+					box.Children = append(box.Children, textBox)
+					childY += le.getTotalHeight(textBox)
+					inlineCtx.LineY = childY
+					inlineCtx.LineX = x + border.Left + padding.Left
+				}
 			}
 		}
 	}
@@ -210,6 +359,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		for _, child := range box.Children {
 			totalChildHeight += le.getTotalHeight(child)
 		}
+		box.Height = totalChildHeight
+	}
+
+	// Phase 7 Enhancement: Inline elements always shrink-wrap to children
+	if display == css.DisplayInline && len(box.Children) > 0 {
+		// Calculate width from children (horizontal sum for inline flow)
+		maxChildWidth := 0.0
+		totalChildHeight := 0.0
+		for _, child := range box.Children {
+			childWidth := le.getTotalWidth(child)
+			if childWidth > maxChildWidth {
+				maxChildWidth = childWidth
+			}
+			childHeight := le.getTotalHeight(child)
+			if childHeight > totalChildHeight {
+				totalChildHeight = childHeight
+			}
+		}
+		box.Width = maxChildWidth
 		box.Height = totalChildHeight
 	}
 
@@ -287,6 +455,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 	// Get font properties from parent style
 	fontSize := parentStyle.GetFontSize()
 	fontWeight := parentStyle.GetFontWeight()
+	lineHeight := parentStyle.GetLineHeight() // Phase 7 Enhancement
 
 	// Phase 5: Adjust position and width for floats
 	adjustedX := x
@@ -299,7 +468,8 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 
 	// Phase 6 Enhancement: Measure the text with correct font weight
 	isBold := fontWeight == css.FontWeightBold
-	width, height := text.MeasureTextWithWeight(node.Text, fontSize, isBold)
+	width, _ := text.MeasureTextWithWeight(node.Text, fontSize, isBold)
+	height := lineHeight // Phase 7 Enhancement: Use line-height for box height
 
 	// Phase 6 Enhancement: Check if text needs line breaking
 	if width > adjustedWidth && adjustedWidth > 0 {
@@ -327,7 +497,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 			// Create a box for each line
 			currentY := y
 			for _, line := range lines {
-				lineWidth, lineHeight := text.MeasureTextWithWeight(line, fontSize, isBold)
+				lineWidth, _ := text.MeasureTextWithWeight(line, fontSize, isBold)
 				lineNode := &html.Node{
 					Type: html.TextNode,
 					Text: line,
@@ -339,7 +509,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 					X:        adjustedX,
 					Y:        currentY,
 					Width:    lineWidth,
-					Height:   lineHeight,
+					Height:   lineHeight, // Phase 7: Use line-height consistently
 					Margin:   css.BoxEdge{},
 					Padding:  css.BoxEdge{},
 					Border:   css.BoxEdge{},
@@ -476,4 +646,26 @@ func (le *LayoutEngine) getFloatDropY(floatType css.FloatType, floatWidth float6
 	}
 
 	return currentY
+}
+
+// Phase 7 Enhancement: applyVerticalAlign adjusts element Y position based on vertical-align
+func (le *LayoutEngine) applyVerticalAlign(box *Box, lineY float64, lineHeight float64) {
+	valign := box.Style.GetVerticalAlign()
+	boxHeight := le.getTotalHeight(box)
+
+	switch valign {
+	case css.VerticalAlignTop:
+		// Align top of box with top of line
+		box.Y = lineY
+	case css.VerticalAlignMiddle:
+		// Center box vertically in line
+		box.Y = lineY + (lineHeight-boxHeight)/2
+	case css.VerticalAlignBottom:
+		// Align bottom of box with bottom of line
+		box.Y = lineY + lineHeight - boxHeight
+	case css.VerticalAlignBaseline:
+		// Default - already positioned at baseline (lineY)
+		// Could be enhanced with true baseline alignment in the future
+		box.Y = lineY
+	}
 }

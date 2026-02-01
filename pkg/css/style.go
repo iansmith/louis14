@@ -400,3 +400,64 @@ func (s *Style) GetFontWeight() FontWeight {
 	}
 	return FontWeightNormal
 }
+
+// Phase 7: Display modes
+
+// DisplayType represents the display property value
+type DisplayType string
+
+const (
+	DisplayBlock       DisplayType = "block"
+	DisplayInline      DisplayType = "inline"
+	DisplayInlineBlock DisplayType = "inline-block"
+	DisplayNone        DisplayType = "none"
+)
+
+// GetDisplay returns the display value (default: block)
+func (s *Style) GetDisplay() DisplayType {
+	if display, ok := s.Get("display"); ok {
+		switch display {
+		case "inline":
+			return DisplayInline
+		case "inline-block":
+			return DisplayInlineBlock
+		case "none":
+			return DisplayNone
+		}
+	}
+	return DisplayBlock
+}
+
+// VerticalAlign represents the vertical-align property value
+type VerticalAlign string
+
+const (
+	VerticalAlignBaseline VerticalAlign = "baseline"
+	VerticalAlignTop      VerticalAlign = "top"
+	VerticalAlignMiddle   VerticalAlign = "middle"
+	VerticalAlignBottom   VerticalAlign = "bottom"
+)
+
+// GetVerticalAlign returns the vertical-align value (default: baseline)
+func (s *Style) GetVerticalAlign() VerticalAlign {
+	if align, ok := s.Get("vertical-align"); ok {
+		switch align {
+		case "top":
+			return VerticalAlignTop
+		case "middle":
+			return VerticalAlignMiddle
+		case "bottom":
+			return VerticalAlignBottom
+		}
+	}
+	return VerticalAlignBaseline
+}
+
+// GetLineHeight returns the line-height in pixels (default: 1.2 * font-size)
+func (s *Style) GetLineHeight() float64 {
+	if lh, ok := s.GetLength("line-height"); ok {
+		return lh
+	}
+	// Default to 1.2x font size
+	return s.GetFontSize() * 1.2
+}
