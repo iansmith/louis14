@@ -4,6 +4,9 @@ fonts/
 # Test reference images
 testdata/*/reference/
 
+# Test image files
+testdata/phase8/images/
+
 # Build artifacts
 louis14
 cmd/louis14/louis14

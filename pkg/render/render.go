@@ -6,6 +6,7 @@ import (
 	"github.com/fogleman/gg"
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/layout"
 	"louis14/pkg/text"
 )
@@ -73,6 +74,9 @@ func (r *Renderer) drawBox(box *layout.Box) {
 
 	// Phase 2: Draw border
 	r.drawBorder(box)
+
+	// Phase 8: Draw image
+	r.drawImage(box)
 
 	// Draw text
 	r.drawText(box)
@@ -191,6 +195,52 @@ func (r *Renderer) drawText(box *layout.Box) {
 		// Add fontSize to Y for baseline alignment
 		r.context.DrawString(box.Node.Text, textX, box.Y+fontSize)
 	}
+}
+
+// Phase 8: drawImage renders an image element
+func (r *Renderer) drawImage(box *layout.Box) {
+	if box.ImagePath == "" {
+		return
+	}
+
+	// Load the image
+	img, err := images.LoadImage(box.ImagePath)
+	if err != nil {
+		// Image failed to load, draw placeholder
+		r.context.SetRGB(0.9, 0.9, 0.9) // Light gray background
+		r.context.DrawRectangle(box.X, box.Y, box.Width, box.Height)
+		r.context.Fill()
+
+		// Draw X to indicate broken image
+		r.context.SetRGB(0.5, 0.5, 0.5)
+		r.context.SetLineWidth(2)
+		r.context.DrawLine(box.X, box.Y, box.X+box.Width, box.Y+box.Height)
+		r.context.DrawLine(box.X+box.Width, box.Y, box.X, box.Y+box.Height)
+		r.context.Stroke()
+		return
+	}
+
+	// Save current context state
+	r.context.Push()
+
+	// Translate to image position
+	r.context.Translate(box.X, box.Y)
+
+	// Calculate scale factors
+	bounds := img.Bounds()
+	imgWidth := float64(bounds.Dx())
+	imgHeight := float64(bounds.Dy())
+	scaleX := box.Width / imgWidth
+	scaleY := box.Height / imgHeight
+
+	// Scale to fit box dimensions
+	r.context.Scale(scaleX, scaleY)
+
+	// Draw the image at origin (already translated)
+	r.context.DrawImage(img, 0, 0)
+
+	// Restore context state
+	r.context.Pop()
 }
 
 func (r *Renderer) SavePNG(filename string) error {

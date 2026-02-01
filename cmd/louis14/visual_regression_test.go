@@ -686,8 +686,82 @@ func TestVisualRegression_Phase7_InlineMargins(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 8 visual regression tests
+
+func TestVisualRegression_Phase8_BasicImage(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_image",
+		htmlFile:      "../../testdata/phase8/basic-image.html",
+		referenceFile: "../../testdata/phase8/reference/basic-image.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase8_ImageDimensions(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "image_dimensions",
+		htmlFile:      "../../testdata/phase8/image-dimensions.html",
+		referenceFile: "../../testdata/phase8/reference/image-dimensions.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase8_FloatedImages(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "floated_images",
+		htmlFile:      "../../testdata/phase8/floated-images.html",
+		referenceFile: "../../testdata/phase8/reference/floated-images.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase8_InlineImages(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_images",
+		htmlFile:      "../../testdata/phase8/inline-images.html",
+		referenceFile: "../../testdata/phase8/reference/inline-images.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase8_ImageBorder(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "image_border",
+		htmlFile:      "../../testdata/phase8/image-border.html",
+		referenceFile: "../../testdata/phase8/reference/image-border.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase8_MissingImage(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "missing_image",
+		htmlFile:      "../../testdata/phase8/missing-image.html",
+		referenceFile: "../../testdata/phase8/reference/missing-image.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
-type visualTestCase struct {
+type visualTestCase struct{
 	name          string
 	htmlFile      string // Path to HTML file (optional, use this OR htmlContent)
 	htmlContent   string // Inline HTML content (optional, use this OR htmlFile)

@@ -3,23 +3,25 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/text"
 )
 
 type Box struct {
-	Node     *html.Node
-	Style    *css.Style
-	X        float64
-	Y        float64
-	Width    float64  // Content width
-	Height   float64  // Content height
-	Margin   css.BoxEdge
-	Padding  css.BoxEdge
-	Border   css.BoxEdge
-	Children []*Box   // Phase 2: Nested boxes
-	Parent   *Box     // Phase 4: Parent box for containing block
-	Position css.PositionType  // Phase 4: Position type
-	ZIndex   int      // Phase 4: Stacking order
+	Node      *html.Node
+	Style     *css.Style
+	X         float64
+	Y         float64
+	Width     float64 // Content width
+	Height    float64 // Content height
+	Margin    css.BoxEdge
+	Padding   css.BoxEdge
+	Border    css.BoxEdge
+	Children  []*Box          // Phase 2: Nested boxes
+	Parent    *Box            // Phase 4: Parent box for containing block
+	Position  css.PositionType // Phase 4: Position type
+	ZIndex    int             // Phase 4: Stacking order
+	ImagePath string          // Phase 8: Image source path for img elements
 }
 
 type LayoutEngine struct {
@@ -104,6 +106,26 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		return nil
 	}
 
+	// Phase 8: Check if this is an img element
+	isImage := node.TagName == "img"
+	var imageWidth, imageHeight int
+	var imagePath string
+	if isImage {
+		// Get image source
+		if src, ok := node.GetAttribute("src"); ok {
+			imagePath = src
+			// Try to load image to get natural dimensions
+			if w, h, err := images.GetImageDimensions(src); err == nil {
+				imageWidth = w
+				imageHeight = h
+			}
+		}
+		// Images default to inline-block display
+		if display == css.DisplayBlock {
+			display = css.DisplayInlineBlock
+		}
+	}
+
 	// Get box model values
 	margin := style.GetMargin()
 	padding := style.GetPadding()
@@ -128,9 +150,28 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	var contentWidth float64
 	hasExplicitWidth := false
 
-	// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore width property)
-	if display == css.DisplayInline {
-		// Will be calculated from children later
+	// Phase 8: Images use image dimensions or explicit dimensions
+	if isImage {
+		if w, ok := style.GetLength("width"); ok {
+			contentWidth = w
+			hasExplicitWidth = true
+		} else if widthAttr, ok := node.GetAttribute("width"); ok {
+			// Parse width attribute
+			if w, ok := css.ParseLength(widthAttr); ok {
+				contentWidth = w
+				hasExplicitWidth = true
+			}
+		} else if imageWidth > 0 {
+			// Use natural image width
+			contentWidth = float64(imageWidth)
+			hasExplicitWidth = true
+		} else {
+			// Fallback for missing/broken images
+			contentWidth = 100
+			hasExplicitWidth = true
+		}
+	} else if display == css.DisplayInline {
+		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore width property)
 		contentWidth = 0
 		hasExplicitWidth = false
 	} else if w, ok := style.GetLength("width"); ok {
@@ -144,9 +185,29 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Calculate content height
 	var contentHeight float64
-	// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore height property)
-	if display == css.DisplayInline {
-		// Will be calculated from children later
+	// Phase 8: Images use image dimensions or explicit dimensions
+	if isImage {
+		if h, ok := style.GetLength("height"); ok {
+			contentHeight = h
+		} else if heightAttr, ok := node.GetAttribute("height"); ok {
+			// Parse height attribute
+			if h, ok := css.ParseLength(heightAttr); ok {
+				contentHeight = h
+			}
+		} else if imageHeight > 0 {
+			// Use natural image height, maintaining aspect ratio if width was specified
+			if hasExplicitWidth && imageWidth > 0 {
+				// Scale height to maintain aspect ratio
+				contentHeight = contentWidth * float64(imageHeight) / float64(imageWidth)
+			} else {
+				contentHeight = float64(imageHeight)
+			}
+		} else {
+			// Fallback for missing/broken images
+			contentHeight = 100
+		}
+	} else if display == css.DisplayInline {
+		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore height property)
 		contentHeight = 0
 	} else if h, ok := style.GetLength("height"); ok {
 		contentHeight = h
@@ -167,19 +228,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	box := &Box{
-		Node:     node,
-		Style:    style,
-		X:        x,
-		Y:        y,
-		Width:    contentWidth,
-		Height:   contentHeight,
-		Margin:   margin,
-		Padding:  padding,
-		Border:   border,
-		Children: make([]*Box, 0),
-		Position: position,
-		ZIndex:   zindex,
-		Parent:   parent,
+		Node:      node,
+		Style:     style,
+		X:         x,
+		Y:         y,
+		Width:     contentWidth,
+		Height:    contentHeight,
+		Margin:    margin,
+		Padding:   padding,
+		Border:    border,
+		Children:  make([]*Box, 0),
+		Position:  position,
+		ZIndex:    zindex,
+		Parent:    parent,
+		ImagePath: imagePath, // Phase 8: Store image path for rendering
 	}
 
 	// Phase 5: Float positioning will be done AFTER children are laid out

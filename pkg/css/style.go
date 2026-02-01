@@ -28,6 +28,11 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
+	return ParseLength(val)
+}
+
+// ParseLength parses a length value (e.g., "100px" or "100")
+func ParseLength(val string) (float64, bool) {
 	val = strings.TrimSpace(val)
 	val = strings.TrimSuffix(val, "px")
 	num, err := strconv.ParseFloat(val, 64)
