@@ -1,0 +1,27 @@
+<style>
+  table { width: 450px; border: 3px solid black; border-collapse: separate; border-spacing: 4px; }
+  td { border: 2px solid navy; padding: 10px; background-color: lightblue; }
+  .header { background-color: navy; color: white; }
+  .sidebar { background-color: blue; color: white; }
+</style>
+<table>
+  <tr>
+    <td colspan="4" class="header">Table Header</td>
+  </tr>
+  <tr>
+    <td rowspan="2" class="sidebar">Side</td>
+    <td>1,2</td>
+    <td>1,3</td>
+    <td>1,4</td>
+  </tr>
+  <tr>
+    <td>2,2</td>
+    <td colspan="2">2,3-4</td>
+  </tr>
+  <tr>
+    <td>3,1</td>
+    <td>3,2</td>
+    <td>3,3</td>
+    <td>3,4</td>
+  </tr>
+</table>

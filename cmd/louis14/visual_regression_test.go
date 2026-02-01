@@ -760,6 +760,80 @@ func TestVisualRegression_Phase8_MissingImage(t *testing.T) {
 	runVisualTest(t, testCase)
 }
 
+// Phase 9: Table Layout Tests
+
+func TestVisualRegression_Phase9_BasicTable(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_table",
+		htmlFile:      "../../testdata/phase9/basic-table.html",
+		referenceFile: "../../testdata/phase9/reference/basic-table.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase9_TableColspan(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "table_colspan",
+		htmlFile:      "../../testdata/phase9/table-colspan.html",
+		referenceFile: "../../testdata/phase9/reference/table-colspan.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase9_TableRowspan(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "table_rowspan",
+		htmlFile:      "../../testdata/phase9/table-rowspan.html",
+		referenceFile: "../../testdata/phase9/reference/table-rowspan.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase9_TableBorderCollapse(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "table_border_collapse",
+		htmlFile:      "../../testdata/phase9/table-border-collapse.html",
+		referenceFile: "../../testdata/phase9/reference/table-border-collapse.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase9_ComplexTable(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "complex_table",
+		htmlFile:      "../../testdata/phase9/complex-table.html",
+		referenceFile: "../../testdata/phase9/reference/complex-table.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase9_StyledTable(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "styled_table",
+		htmlFile:      "../../testdata/phase9/styled-table.html",
+		referenceFile: "../../testdata/phase9/reference/styled-table.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
 // visualTestCase defines a visual regression test
 type visualTestCase struct{
 	name          string

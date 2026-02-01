@@ -412,10 +412,16 @@ func (s *Style) GetFontWeight() FontWeight {
 type DisplayType string
 
 const (
-	DisplayBlock       DisplayType = "block"
-	DisplayInline      DisplayType = "inline"
-	DisplayInlineBlock DisplayType = "inline-block"
-	DisplayNone        DisplayType = "none"
+	DisplayBlock           DisplayType = "block"
+	DisplayInline          DisplayType = "inline"
+	DisplayInlineBlock     DisplayType = "inline-block"
+	DisplayNone            DisplayType = "none"
+	DisplayTable           DisplayType = "table"
+	DisplayTableRow        DisplayType = "table-row"
+	DisplayTableCell       DisplayType = "table-cell"
+	DisplayTableHeaderGroup DisplayType = "table-header-group"
+	DisplayTableRowGroup   DisplayType = "table-row-group"
+	DisplayTableFooterGroup DisplayType = "table-footer-group"
 )
 
 // GetDisplay returns the display value (default: block)
@@ -428,6 +434,18 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayInlineBlock
 		case "none":
 			return DisplayNone
+		case "table":
+			return DisplayTable
+		case "table-row":
+			return DisplayTableRow
+		case "table-cell":
+			return DisplayTableCell
+		case "table-header-group":
+			return DisplayTableHeaderGroup
+		case "table-row-group":
+			return DisplayTableRowGroup
+		case "table-footer-group":
+			return DisplayTableFooterGroup
 		}
 	}
 	return DisplayBlock
@@ -465,4 +483,33 @@ func (s *Style) GetLineHeight() float64 {
 	}
 	// Default to 1.2x font size
 	return s.GetFontSize() * 1.2
+}
+
+// Phase 9: Table layout
+
+// BorderCollapse represents the border-collapse property value
+type BorderCollapse string
+
+const (
+	BorderCollapseSeparate BorderCollapse = "separate"
+	BorderCollapseCollapse BorderCollapse = "collapse"
+)
+
+// GetBorderCollapse returns the border-collapse value (default: separate)
+func (s *Style) GetBorderCollapse() BorderCollapse {
+	if bc, ok := s.Get("border-collapse"); ok {
+		switch bc {
+		case "collapse":
+			return BorderCollapseCollapse
+		}
+	}
+	return BorderCollapseSeparate
+}
+
+// GetBorderSpacing returns the border-spacing value (default: 2px)
+func (s *Style) GetBorderSpacing() float64 {
+	if spacing, ok := s.GetLength("border-spacing"); ok {
+		return spacing
+	}
+	return 2.0 // Default border spacing
 }

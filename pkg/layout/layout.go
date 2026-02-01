@@ -48,6 +48,31 @@ type InlineContext struct {
 	LineBoxes  []*Box  // Boxes on current line
 }
 
+// Phase 9: TableCell tracks a cell in a table
+type TableCell struct {
+	Box     *Box
+	RowSpan int
+	ColSpan int
+	RowIdx  int
+	ColIdx  int
+}
+
+// Phase 9: TableRow tracks a row in a table
+type TableRow struct {
+	Box   *Box
+	Cells []*TableCell
+}
+
+// Phase 9: TableInfo tracks table layout information
+type TableInfo struct {
+	Rows          []*TableRow
+	NumCols       int
+	ColumnWidths  []float64
+	RowHeights    []float64
+	BorderSpacing float64
+	BorderCollapse css.BorderCollapse
+}
+
 func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 	le := &LayoutEngine{}
 	le.viewport.width = viewportWidth
@@ -261,6 +286,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if offset.HasLeft {
 			box.X += offset.Left
 		}
+	}
+
+	// Phase 9: Handle table layout specially
+	if display == css.DisplayTable {
+		le.layoutTable(box, x, y, availableWidth, computedStyles)
+		return box
 	}
 
 	// Phase 2: Recursively layout children
@@ -729,5 +760,331 @@ func (le *LayoutEngine) applyVerticalAlign(box *Box, lineY float64, lineHeight f
 		// Default - already positioned at baseline (lineY)
 		// Could be enhanced with true baseline alignment in the future
 		box.Y = lineY
+	}
+}
+
+// Phase 9: buildTableInfo analyzes table structure and creates TableInfo
+func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.Node]*css.Style) *TableInfo {
+	tableInfo := &TableInfo{
+		Rows:           make([]*TableRow, 0),
+		BorderSpacing:  tableBox.Style.GetBorderSpacing(),
+		BorderCollapse: tableBox.Style.GetBorderCollapse(),
+	}
+
+	// Scan children for rows (tr elements or display: table-row)
+	for _, child := range tableBox.Node.Children {
+		if child.Type != html.ElementNode {
+			continue
+		}
+
+		childStyle := computedStyles[child]
+		if childStyle == nil {
+			childStyle = css.NewStyle()
+		}
+
+		// Check if this is a row (tr tag or display: table-row)
+		isRow := child.TagName == "tr" || childStyle.GetDisplay() == css.DisplayTableRow
+
+		// Also check for tbody, thead, tfoot which contain rows
+		isRowGroup := child.TagName == "tbody" || child.TagName == "thead" || child.TagName == "tfoot" ||
+			childStyle.GetDisplay() == css.DisplayTableRowGroup ||
+			childStyle.GetDisplay() == css.DisplayTableHeaderGroup ||
+			childStyle.GetDisplay() == css.DisplayTableFooterGroup
+
+		if isRow {
+			tableInfo.Rows = append(tableInfo.Rows, &TableRow{Cells: make([]*TableCell, 0)})
+		} else if isRowGroup {
+			// Process rows within the group
+			for _, groupChild := range child.Children {
+				if groupChild.Type != html.ElementNode {
+					continue
+				}
+				groupChildStyle := computedStyles[groupChild]
+				if groupChildStyle == nil {
+					groupChildStyle = css.NewStyle()
+				}
+				if groupChild.TagName == "tr" || groupChildStyle.GetDisplay() == css.DisplayTableRow {
+					tableInfo.Rows = append(tableInfo.Rows, &TableRow{Cells: make([]*TableCell, 0)})
+				}
+			}
+		}
+	}
+
+	return tableInfo
+}
+
+// Phase 9: getColspan returns the colspan attribute value (default 1)
+func getColspan(node *html.Node) int {
+	if colspan, ok := node.GetAttribute("colspan"); ok {
+		if c, ok := css.ParseLength(colspan); ok {
+			col := int(c)
+			if col > 0 {
+				return col
+			}
+		}
+	}
+	return 1
+}
+
+// Phase 9: getRowspan returns the rowspan attribute value (default 1)
+func getRowspan(node *html.Node) int {
+	if rowspan, ok := node.GetAttribute("rowspan"); ok {
+		if r, ok := css.ParseLength(rowspan); ok {
+			row := int(r)
+			if row > 0 {
+				return row
+			}
+		}
+	}
+	return 1
+}
+
+// Phase 9: layoutTable performs table layout
+func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style) {
+	tableInfo := le.buildTableInfo(tableBox, computedStyles)
+
+	// Build cell grid accounting for rowspan/colspan
+	rowIdx := 0
+	cellGrid := make([][]*TableCell, 0)
+
+	// Process table structure
+	for _, child := range tableBox.Node.Children {
+		if child.Type != html.ElementNode {
+			continue
+		}
+
+		childStyle := computedStyles[child]
+		if childStyle == nil {
+			childStyle = css.NewStyle()
+		}
+
+		le.processTableRows(child, childStyle, computedStyles, &rowIdx, &cellGrid, tableInfo)
+	}
+
+	// Determine number of columns
+	numCols := 0
+	for _, row := range cellGrid {
+		if len(row) > numCols {
+			numCols = len(row)
+		}
+	}
+	tableInfo.NumCols = numCols
+
+	// Calculate column widths
+	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo)
+
+	// Calculate row heights
+	tableInfo.RowHeights = le.calculateRowHeights(cellGrid, tableInfo)
+
+	// Position cells
+	le.positionTableCells(tableBox, cellGrid, tableInfo, x, y)
+}
+
+// Phase 9: processTableRows recursively processes rows and row groups
+func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style, rowIdx *int, cellGrid *[][]*TableCell, tableInfo *TableInfo) {
+	display := style.GetDisplay()
+	isRow := node.TagName == "tr" || display == css.DisplayTableRow
+	isRowGroup := node.TagName == "tbody" || node.TagName == "thead" || node.TagName == "tfoot" ||
+		display == css.DisplayTableRowGroup ||
+		display == css.DisplayTableHeaderGroup ||
+		display == css.DisplayTableFooterGroup
+
+	if isRow {
+		// Ensure we have enough rows in the grid
+		for len(*cellGrid) <= *rowIdx {
+			*cellGrid = append(*cellGrid, make([]*TableCell, 0))
+		}
+
+		colIdx := 0
+		for _, cellNode := range node.Children {
+			if cellNode.Type != html.ElementNode {
+				continue
+			}
+
+			cellStyle := computedStyles[cellNode]
+			if cellStyle == nil {
+				cellStyle = css.NewStyle()
+			}
+
+			isCell := cellNode.TagName == "td" || cellNode.TagName == "th" ||
+				cellStyle.GetDisplay() == css.DisplayTableCell
+
+			if !isCell {
+				continue
+			}
+
+			// Skip columns occupied by rowspan from previous rows
+			for colIdx < len((*cellGrid)[*rowIdx]) && (*cellGrid)[*rowIdx][colIdx] != nil {
+				colIdx++
+			}
+
+			colspan := getColspan(cellNode)
+			rowspan := getRowspan(cellNode)
+
+			cell := &TableCell{
+				Box:     &Box{Node: cellNode, Style: cellStyle},
+				RowSpan: rowspan,
+				ColSpan: colspan,
+				RowIdx:  *rowIdx,
+				ColIdx:  colIdx,
+			}
+
+			// Mark cells in grid for this cell and its span
+			for r := 0; r < rowspan; r++ {
+				for len(*cellGrid) <= *rowIdx+r {
+					*cellGrid = append(*cellGrid, make([]*TableCell, 0))
+				}
+				for c := 0; c < colspan; c++ {
+					for len((*cellGrid)[*rowIdx+r]) <= colIdx+c {
+						(*cellGrid)[*rowIdx+r] = append((*cellGrid)[*rowIdx+r], nil)
+					}
+					(*cellGrid)[*rowIdx+r][colIdx+c] = cell
+				}
+			}
+
+			colIdx += colspan
+		}
+
+		*rowIdx++
+	} else if isRowGroup {
+		// Process rows within the group
+		for _, child := range node.Children {
+			if child.Type != html.ElementNode {
+				continue
+			}
+			childStyle := computedStyles[child]
+			if childStyle == nil {
+				childStyle = css.NewStyle()
+			}
+			le.processTableRows(child, childStyle, computedStyles, rowIdx, cellGrid, tableInfo)
+		}
+	}
+}
+
+// Phase 9: calculateColumnWidths determines column widths
+func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, availableWidth float64, tableInfo *TableInfo) []float64 {
+	numCols := tableInfo.NumCols
+	if numCols == 0 {
+		return []float64{}
+	}
+
+	// Simple algorithm: distribute available width equally
+	// Account for border spacing
+	var totalSpacing float64
+	if tableInfo.BorderCollapse == css.BorderCollapseSeparate {
+		totalSpacing = tableInfo.BorderSpacing * float64(numCols+1)
+	}
+
+	widthPerCol := (availableWidth - totalSpacing) / float64(numCols)
+	if widthPerCol < 10 {
+		widthPerCol = 10 // Minimum column width
+	}
+
+	columnWidths := make([]float64, numCols)
+	for i := 0; i < numCols; i++ {
+		columnWidths[i] = widthPerCol
+	}
+
+	return columnWidths
+}
+
+// Phase 9: calculateRowHeights determines row heights
+func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *TableInfo) []float64 {
+	numRows := len(cellGrid)
+	rowHeights := make([]float64, numRows)
+
+	// Simple algorithm: use default height or cell content height
+	for i := 0; i < numRows; i++ {
+		rowHeights[i] = 30.0 // Default row height
+	}
+
+	return rowHeights
+}
+
+// Phase 9: positionTableCells positions cells in the table
+func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCell, tableInfo *TableInfo, x, y float64) {
+	borderSpacing := tableInfo.BorderSpacing
+	if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
+		borderSpacing = 0
+	}
+
+	// Position cells
+	currentY := y + tableBox.Border.Top + tableBox.Padding.Top + borderSpacing
+	processedCells := make(map[*TableCell]bool)
+
+	for rowIdx, row := range cellGrid {
+		currentX := x + tableBox.Border.Left + tableBox.Padding.Left + borderSpacing
+		rowHeight := tableInfo.RowHeights[rowIdx]
+
+		for colIdx, cell := range row {
+			if cell == nil || processedCells[cell] {
+				// Skip empty cells or already processed cells
+				if cell == nil {
+					// Still advance X for empty cell
+					currentX += tableInfo.ColumnWidths[colIdx] + borderSpacing
+				}
+				continue
+			}
+
+			// Calculate cell width (sum of spanned columns)
+			cellWidth := 0.0
+			for c := 0; c < cell.ColSpan; c++ {
+				if colIdx+c < tableInfo.NumCols {
+					cellWidth += tableInfo.ColumnWidths[colIdx+c]
+					if c > 0 {
+						cellWidth += borderSpacing
+					}
+				}
+			}
+
+			// Calculate cell height (sum of spanned rows)
+			cellHeight := 0.0
+			for r := 0; r < cell.RowSpan; r++ {
+				if rowIdx+r < len(tableInfo.RowHeights) {
+					cellHeight += tableInfo.RowHeights[rowIdx+r]
+					if r > 0 {
+						cellHeight += borderSpacing
+					}
+				}
+			}
+
+			// Set cell box dimensions and position
+			cell.Box.X = currentX
+			cell.Box.Y = currentY
+			cell.Box.Width = cellWidth
+			cell.Box.Height = cellHeight
+			cell.Box.Margin = cell.Box.Style.GetMargin()
+			cell.Box.Padding = cell.Box.Style.GetPadding()
+			cell.Box.Border = cell.Box.Style.GetBorderWidth()
+
+			// Layout cell content (children)
+			childY := currentY + cell.Box.Border.Top + cell.Box.Padding.Top
+			childX := currentX + cell.Box.Border.Left + cell.Box.Padding.Left
+			childAvailableWidth := cellWidth - cell.Box.Padding.Left - cell.Box.Padding.Right
+
+			for _, childNode := range cell.Box.Node.Children {
+				if childNode.Type == html.TextNode {
+					// Handle text in cell
+					textBox := le.layoutTextNode(childNode, childX, childY, childAvailableWidth, cell.Box.Style, cell.Box)
+					if textBox != nil {
+						cell.Box.Children = append(cell.Box.Children, textBox)
+						childY += le.getTotalHeight(textBox)
+					}
+				}
+			}
+
+			// Add cell box to table's children
+			tableBox.Children = append(tableBox.Children, cell.Box)
+			processedCells[cell] = true
+
+			currentX += cellWidth + borderSpacing
+		}
+
+		currentY += rowHeight + borderSpacing
+	}
+
+	// Update table box height based on content
+	if len(cellGrid) > 0 {
+		tableBox.Height = currentY - y - tableBox.Border.Top - tableBox.Padding.Top
 	}
 }
