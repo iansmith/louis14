@@ -170,8 +170,8 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		}
 	}
 
-	// Phase 4: Add absolutely positioned boxes to result
-	boxes = append(boxes, le.absoluteBoxes...)
+	// Phase 4: Absolutely positioned boxes are already in the tree as children
+	// of their containing blocks, so no need to add them separately.
 
 	return boxes
 }
@@ -402,9 +402,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		offset := style.GetPositionOffset()
 		if offset.HasTop {
 			box.Y += offset.Top
+		} else if offset.HasBottom {
+			box.Y -= offset.Bottom
 		}
 		if offset.HasLeft {
 			box.X += offset.Left
+		} else if offset.HasRight {
+			box.X -= offset.Right
 		}
 	}
 

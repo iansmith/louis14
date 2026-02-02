@@ -405,24 +405,28 @@ func parseSelector(selectorStr string) Selector {
 	currentPart := ""
 	for _, token := range tokens {
 		switch token {
-		case ">":
+		case ">", "+", "~":
 			if currentPart != "" {
 				parts = append(parts, parseSelectorPart(currentPart))
 				currentPart = ""
 			}
-			combinators = append(combinators, ChildCombinator)
-		case "+":
-			if currentPart != "" {
-				parts = append(parts, parseSelectorPart(currentPart))
-				currentPart = ""
+			// If last combinator was a space (descendant), replace it with the explicit combinator
+			// This handles "A > B" being tokenized as ["A", " ", ">", " ", "B"]
+			var comb CombinatorType
+			switch token {
+			case ">":
+				comb = ChildCombinator
+			case "+":
+				comb = AdjacentSiblingCombinator
+			case "~":
+				comb = GeneralSiblingCombinator
 			}
-			combinators = append(combinators, AdjacentSiblingCombinator)
-		case "~":
-			if currentPart != "" {
-				parts = append(parts, parseSelectorPart(currentPart))
-				currentPart = ""
+			if len(combinators) > 0 && len(combinators) == len(parts) {
+				// Replace trailing space combinator
+				combinators[len(combinators)-1] = comb
+			} else {
+				combinators = append(combinators, comb)
 			}
-			combinators = append(combinators, GeneralSiblingCombinator)
 		case " ":
 			// Descendant combinator (space)
 			if currentPart != "" {

@@ -105,26 +105,10 @@ func (r *Renderer) drawBox(box *layout.Box) {
 	// Phase 2: Draw border
 	r.drawBorder(box)
 
-	// Phase 21: Apply overflow clipping for content
+	// Phase 21: overflow clipping
+	// Note: gg's Clip() is permanent (not restored by Pop), so we track overflow
+	// constraints and apply them manually rather than using context clipping.
 	overflow := box.Style.GetOverflow()
-	if overflow != css.OverflowVisible {
-		r.context.Push()
-		defer r.context.Pop()
-
-		// Clip to content area (inside padding and border)
-		clipX := box.X + box.Padding.Left
-		clipY := box.Y + box.Padding.Top
-		clipWidth := box.Width
-		clipHeight := box.Height
-
-		borderRadius := box.Style.GetBorderRadius()
-		if borderRadius > 0 {
-			r.context.DrawRoundedRectangle(clipX, clipY, clipWidth, clipHeight, borderRadius)
-		} else {
-			r.context.DrawRectangle(clipX, clipY, clipWidth, clipHeight)
-		}
-		r.context.Clip()
-	}
 
 	// Phase 8: Draw image
 	r.drawImage(box)
@@ -544,14 +528,26 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	repeat := box.Style.GetBackgroundRepeat()
 	pos := box.Style.GetBackgroundPosition()
 
-	// Clip to background area
-	r.context.Push()
-	r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
-	r.context.Clip()
+	// Crop image drawing to background area using a sub-image approach
+	// (gg's Clip() is permanent and not restored by Pop, so we avoid it)
+	drawClipped := func(drawX, drawY int) {
+		srcBounds := img.Bounds()
+		// Calculate the visible portion within the background area
+		dstX := float64(drawX)
+		dstY := float64(drawY)
+		// Skip if completely outside background area
+		if dstX+float64(srcBounds.Dx()) <= bgX || dstX >= bgX+bgWidth {
+			return
+		}
+		if dstY+float64(srcBounds.Dy()) <= bgY || dstY >= bgY+bgHeight {
+			return
+		}
+		r.context.DrawImage(img, drawX, drawY)
+	}
 
 	switch repeat {
 	case css.BackgroundRepeatNoRepeat:
-		r.context.DrawImage(img, int(bgX+pos.X), int(bgY+pos.Y))
+		drawClipped(int(bgX+pos.X), int(bgY+pos.Y))
 
 	case css.BackgroundRepeatRepeatX:
 		startX := pos.X
@@ -559,7 +555,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 			startX -= imgW
 		}
 		for x := startX; x < bgWidth; x += imgW {
-			r.context.DrawImage(img, int(bgX+x), int(bgY+pos.Y))
+			drawClipped(int(bgX+x), int(bgY+pos.Y))
 		}
 
 	case css.BackgroundRepeatRepeatY:
@@ -568,7 +564,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 			startY -= imgH
 		}
 		for y := startY; y < bgHeight; y += imgH {
-			r.context.DrawImage(img, int(bgX+pos.X), int(bgY+y))
+			drawClipped(int(bgX+pos.X), int(bgY+y))
 		}
 
 	default: // repeat
@@ -582,12 +578,10 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		}
 		for y := startY; y < bgHeight; y += imgH {
 			for x := startX; x < bgWidth; x += imgW {
-				r.context.DrawImage(img, int(bgX+x), int(bgY+y))
+				drawClipped(int(bgX+x), int(bgY+y))
 			}
 		}
 	}
-
-	r.context.Pop()
 }
 
 func (r *Renderer) SavePNG(filename string) error {
