@@ -1,0 +1,48 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: white;
+  }
+
+  /* Direct child only */
+  .parent > .child {
+    background-color: #e8f5e9;
+    border: 2px solid #4caf50;
+    padding: 15px;
+    margin: 10px;
+  }
+
+  /* Compare with descendant */
+  .parent .descendant {
+    background-color: #fce4ec;
+    border: 2px dashed #e91e63;
+    padding: 10px;
+    margin: 5px;
+  }
+
+  .wrapper > div > .child {
+    background-color: #fff9c4;
+    border: 2px solid #fbc02d;
+  }
+</style>
+
+<div class="parent">
+  <div class="child">Direct child (green)</div>
+
+  <div>
+    <div class="child">Not a direct child (no green border)</div>
+  </div>
+
+  <div class="descendant">Descendant (pink)</div>
+
+  <section>
+    <div class="descendant">Nested descendant (pink)</div>
+  </section>
+</div>
+
+<div class="wrapper">
+  <div>
+    <div class="child">Child with wrapper > div > selector (yellow)</div>
+  </div>
+</div>

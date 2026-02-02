@@ -354,12 +354,31 @@ func expandBorderProperty(style *Style, value string) {
 	}
 }
 
+// Phase 19: Enhanced color with alpha channel
 type Color struct {
 	R, G, B uint8
+	A       float64 // Alpha: 0.0 (transparent) to 1.0 (opaque), default 1.0
 }
 
 func ParseColor(colorStr string) (Color, bool) {
 	colorStr = strings.ToLower(strings.TrimSpace(colorStr))
+
+	// Phase 19: Handle rgba() format
+	if strings.HasPrefix(colorStr, "rgba(") && strings.HasSuffix(colorStr, ")") {
+		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgba("), ")")
+		parts := strings.Split(values, ",")
+		if len(parts) == 4 {
+			var r, g, b int
+			var a float64
+			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
+			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
+			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
+			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
+			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
+				return Color{uint8(r), uint8(g), uint8(b), a}, true
+			}
+		}
+	}
 
 	// Try hex color first (#RGB or #RRGGBB)
 	if strings.HasPrefix(colorStr, "#") {
@@ -372,33 +391,33 @@ func ParseColor(colorStr string) (Color, bool) {
 			r = r*16 + r
 			g = g*16 + g
 			b = b*16 + b
-			return Color{r, g, b}, true
+			return Color{r, g, b, 1.0}, true
 		} else if len(hex) == 6 {
 			// #RRGGBB format
 			fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
-			return Color{r, g, b}, true
+			return Color{r, g, b, 1.0}, true
 		}
 	}
 
 	// Try named colors
 	namedColors := map[string]Color{
-		"red":     {255, 0, 0},
-		"green":   {0, 128, 0},
-		"blue":    {0, 0, 255},
-		"yellow":  {255, 255, 0},
-		"cyan":    {0, 255, 255},
-		"magenta": {255, 0, 255},
-		"white":   {255, 255, 255},
-		"black":   {0, 0, 0},
-		"gray":    {128, 128, 128},
-		"orange":  {255, 165, 0},
-		"purple":  {128, 0, 128},
-		"pink":    {255, 192, 203},
-		"brown":   {165, 42, 42},
-		"lime":    {0, 255, 0},
-		"navy":    {0, 0, 128},
-		"teal":    {0, 128, 128},
-		"silver":  {192, 192, 192},
+		"red":     {255, 0, 0, 1.0},
+		"green":   {0, 128, 0, 1.0},
+		"blue":    {0, 0, 255, 1.0},
+		"yellow":  {255, 255, 0, 1.0},
+		"cyan":    {0, 255, 255, 1.0},
+		"magenta": {255, 0, 255, 1.0},
+		"white":   {255, 255, 255, 1.0},
+		"black":   {0, 0, 0, 1.0},
+		"gray":    {128, 128, 128, 1.0},
+		"orange":  {255, 165, 0, 1.0},
+		"purple":  {128, 0, 128, 1.0},
+		"pink":    {255, 192, 203, 1.0},
+		"brown":   {165, 42, 42, 1.0},
+		"lime":    {0, 255, 0, 1.0},
+		"navy":    {0, 0, 128, 1.0},
+		"teal":    {0, 128, 128, 1.0},
+		"silver":  {192, 192, 192, 1.0},
 	}
 	color, ok := namedColors[colorStr]
 	return color, ok
@@ -421,7 +440,7 @@ func (s *Style) GetColor() Color {
 			return color
 		}
 	}
-	return Color{0, 0, 0} // Default to black
+	return Color{0, 0, 0, 1.0} // Default to black
 }
 
 // Phase 5: Float layout helpers
@@ -514,6 +533,160 @@ func (s *Style) GetFontWeight() FontWeight {
 		}
 	}
 	return FontWeightNormal
+}
+
+// Phase 17: Text decoration
+
+// TextDecoration represents the text-decoration property value
+type TextDecoration string
+
+const (
+	TextDecorationNone        TextDecoration = "none"
+	TextDecorationUnderline   TextDecoration = "underline"
+	TextDecorationOverline    TextDecoration = "overline"
+	TextDecorationLineThrough TextDecoration = "line-through"
+)
+
+// GetTextDecoration returns the text-decoration value (default: none)
+func (s *Style) GetTextDecoration() TextDecoration {
+	if decoration, ok := s.Get("text-decoration"); ok {
+		switch decoration {
+		case "underline":
+			return TextDecorationUnderline
+		case "overline":
+			return TextDecorationOverline
+		case "line-through":
+			return TextDecorationLineThrough
+		case "none":
+			return TextDecorationNone
+		}
+	}
+	return TextDecorationNone
+}
+
+// Phase 19: Visual effects
+
+// GetOpacity returns the opacity value (0.0 to 1.0, default: 1.0)
+func (s *Style) GetOpacity() float64 {
+	if opacityStr, ok := s.Get("opacity"); ok {
+		var opacity float64
+		if _, err := fmt.Sscanf(opacityStr, "%f", &opacity); err == nil {
+			// Clamp to 0.0 - 1.0
+			if opacity < 0.0 {
+				opacity = 0.0
+			} else if opacity > 1.0 {
+				opacity = 1.0
+			}
+			return opacity
+		}
+	}
+	return 1.0 // Fully opaque by default
+}
+
+// BoxShadow represents a box-shadow effect
+type BoxShadow struct {
+	OffsetX float64
+	OffsetY float64
+	Blur    float64
+	Spread  float64
+	Color   Color
+	Inset   bool
+}
+
+// GetBoxShadow parses and returns box-shadow values
+func (s *Style) GetBoxShadow() []BoxShadow {
+	shadowStr, ok := s.Get("box-shadow")
+	if !ok || shadowStr == "none" {
+		return nil
+	}
+
+	// Parse box-shadow: offsetX offsetY blur spread color
+	// Example: "2px 2px 5px 0px rgba(0,0,0,0.3)"
+	shadows := make([]BoxShadow, 0)
+
+	// Split by comma for multiple shadows
+	parts := strings.Split(shadowStr, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		shadow := parseBoxShadowValue(part)
+		if shadow != nil {
+			shadows = append(shadows, *shadow)
+		}
+	}
+
+	return shadows
+}
+
+// parseBoxShadowValue parses a single box-shadow value
+func parseBoxShadowValue(s string) *BoxShadow {
+	s = strings.TrimSpace(s)
+	tokens := strings.Fields(s)
+
+	if len(tokens) < 2 {
+		return nil
+	}
+
+	shadow := &BoxShadow{
+		Color: Color{0, 0, 0, 0.3}, // Default shadow color
+	}
+
+	tokenIndex := 0
+
+	// Check for 'inset'
+	if tokens[tokenIndex] == "inset" {
+		shadow.Inset = true
+		tokenIndex++
+	}
+
+	// Parse offset-x
+	if tokenIndex < len(tokens) {
+		if val, ok := ParseLength(tokens[tokenIndex]); ok {
+			shadow.OffsetX = val
+			tokenIndex++
+		}
+	}
+
+	// Parse offset-y
+	if tokenIndex < len(tokens) {
+		if val, ok := ParseLength(tokens[tokenIndex]); ok {
+			shadow.OffsetY = val
+			tokenIndex++
+		}
+	}
+
+	// Parse blur radius (optional)
+	if tokenIndex < len(tokens) && !isColor(tokens[tokenIndex]) {
+		if val, ok := ParseLength(tokens[tokenIndex]); ok {
+			shadow.Blur = val
+			tokenIndex++
+		}
+	}
+
+	// Parse spread radius (optional)
+	if tokenIndex < len(tokens) && !isColor(tokens[tokenIndex]) {
+		if val, ok := ParseLength(tokens[tokenIndex]); ok {
+			shadow.Spread = val
+			tokenIndex++
+		}
+	}
+
+	// Parse color (rest of the string)
+	if tokenIndex < len(tokens) {
+		colorStr := strings.Join(tokens[tokenIndex:], " ")
+		if color, ok := ParseColor(colorStr); ok {
+			shadow.Color = color
+		}
+	}
+
+	return shadow
+}
+
+// isColor checks if a token might be a color value
+func isColor(s string) bool {
+	return strings.HasPrefix(s, "#") ||
+		   strings.HasPrefix(s, "rgb") ||
+		   strings.HasPrefix(s, "hsl") ||
+		   (s != "inset" && !strings.HasSuffix(s, "px") && !strings.HasSuffix(s, "em"))
 }
 
 // Phase 7: Display modes

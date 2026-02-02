@@ -1,0 +1,52 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: white;
+  }
+
+  .box {
+    padding: 15px;
+    margin: 10px;
+    background-color: #f5f5f5;
+    border: 2px solid #ccc;
+  }
+
+  /* Adjacent sibling - immediately after */
+  .first + .box {
+    background-color: #e1bee7;
+    border: 2px solid #9c27b0;
+  }
+
+  /* General sibling - any following sibling */
+  .trigger ~ .box {
+    background-color: #b2dfdb;
+    border: 2px solid #009688;
+  }
+
+  .special {
+    background-color: #ffeb3b;
+    border: 2px solid #f57f17;
+    padding: 15px;
+    margin: 10px;
+  }
+</style>
+
+<div>
+  <div class="first special">First (yellow)</div>
+  <div class="box">Adjacent to first (purple)</div>
+  <div class="box">Not adjacent to first (gray)</div>
+</div>
+
+<div style="margin-top: 30px;">
+  <div class="trigger special">Trigger (yellow)</div>
+  <div class="box">Sibling 1 (teal)</div>
+  <div class="box">Sibling 2 (teal)</div>
+  <p>Text node</p>
+  <div class="box">Sibling 3 (teal)</div>
+</div>
+
+<div style="margin-top: 30px;">
+  <div class="box">No trigger before (gray)</div>
+  <div class="box">Also gray</div>
+</div>

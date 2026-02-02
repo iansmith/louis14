@@ -1,0 +1,47 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: white;
+  }
+
+  /* Descendant selector - any .box inside .container */
+  .container .box {
+    background-color: #e3f2fd;
+    border: 2px solid #2196f3;
+    padding: 15px;
+    margin: 10px;
+  }
+
+  /* More specific descendant selector */
+  .container .nested .box {
+    background-color: #fff3e0;
+    border: 2px solid #ff9800;
+  }
+
+  /* Element descendant selector */
+  div p {
+    color: #d32f2f;
+    font-weight: bold;
+  }
+</style>
+
+<div class="container">
+  <div class="box">Direct child box (blue)</div>
+
+  <div class="nested">
+    <div class="box">Nested box (orange)</div>
+  </div>
+
+  <section>
+    <div class="box">Box inside section (blue)</div>
+  </section>
+</div>
+
+<div class="box">Box outside container (no style)</div>
+
+<div>
+  <p>This paragraph should be red and bold</p>
+</div>
+
+<p>This paragraph should not be styled</p>

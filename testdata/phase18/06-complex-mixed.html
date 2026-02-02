@@ -1,0 +1,75 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: #fafafa;
+  }
+
+  /* Complex: descendant + multiple classes */
+  .article .content.highlight {
+    background-color: #fff9c4;
+    padding: 15px;
+    margin: 10px 0;
+  }
+
+  /* Complex: child combinator + class */
+  .article > .section {
+    border: 2px solid #2196f3;
+    padding: 15px;
+    margin: 10px 0;
+    background-color: white;
+  }
+
+  /* Complex: descendant + child + attribute */
+  .article > .section div[data-type="card"] {
+    background-color: #e3f2fd;
+    border: 2px solid #1976d2;
+    padding: 10px;
+    margin: 5px 0;
+  }
+
+  /* Complex: adjacent sibling + multiple classes */
+  .header + .content.main {
+    border-top: 3px solid #4caf50;
+  }
+
+  /* Very complex: element + descendant + child + classes */
+  div.wrapper > div.container .item.special {
+    background-color: #f3e5f5;
+    border: 2px solid #9c27b0;
+    padding: 10px;
+    margin: 5px;
+  }
+
+  .header {
+    background-color: #1976d2;
+    color: white;
+    padding: 15px;
+    font-weight: bold;
+    margin: 10px 0;
+  }
+</style>
+
+<div class="article">
+  <div class="header">Article Header</div>
+
+  <div class="content main highlight">Content with highlight (yellow + green top border)</div>
+
+  <div class="section">
+    Direct section child (blue border)
+
+    <div data-type="card">Card in section (light blue)</div>
+    <div data-type="other">Not a card (no special style)</div>
+  </div>
+
+  <section class="section">
+    Not a div.section (no blue border)
+  </section>
+</div>
+
+<div class="wrapper">
+  <div class="container">
+    <div class="item special">Special item (purple)</div>
+    <div class="item">Regular item (no purple)</div>
+  </div>
+</div>

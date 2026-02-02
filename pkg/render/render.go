@@ -60,6 +60,17 @@ func (r *Renderer) drawBox(box *layout.Box) {
 		defer r.context.Pop() // Restore graphics state after drawing
 	}
 
+	// Phase 19: Apply opacity (wraps all drawing for this box)
+	opacity := box.Style.GetOpacity()
+	if opacity < 1.0 {
+		r.context.Push()
+		defer r.context.Pop()
+		// Note: gg doesn't have direct opacity support, we'll simulate with alpha in colors
+	}
+
+	// Phase 19: Draw box-shadow (drawn first, underneath the box)
+	r.drawBoxShadow(box)
+
 	// Phase 2: Draw background (content + padding area, not including margin)
 	if bgColor, ok := box.Style.Get("background-color"); ok {
 		if color, ok := css.ParseColor(bgColor); ok {
@@ -107,7 +118,7 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Parse border color
 	color, ok := css.ParseColor(borderColor)
 	if !ok {
-		color = css.Color{0, 0, 0} // Default to black
+		color = css.Color{0, 0, 0, 1.0} // Default to black
 	}
 
 	r.context.SetRGB(
@@ -244,6 +255,97 @@ func (r *Renderer) drawBorderSide(x, y, width, height float64, style css.BorderS
 	}
 }
 
+// Phase 19: drawBoxShadow draws box-shadow effects
+func (r *Renderer) drawBoxShadow(box *layout.Box) {
+	shadows := box.Style.GetBoxShadow()
+	if len(shadows) == 0 {
+		return
+	}
+
+	// Box dimensions (content + padding)
+	boxX := box.X
+	boxY := box.Y
+	boxWidth := box.Width + box.Padding.Left + box.Padding.Right
+	boxHeight := box.Height + box.Padding.Top + box.Padding.Bottom
+	borderRadius := box.Style.GetBorderRadius()
+
+	// Draw each shadow (in order, first shadow on bottom)
+	for _, shadow := range shadows {
+		// Calculate shadow position
+		shadowX := boxX + shadow.OffsetX
+		shadowY := boxY + shadow.OffsetY
+		shadowWidth := boxWidth + shadow.Spread*2
+		shadowHeight := boxHeight + shadow.Spread*2
+
+		// Adjust for spread
+		if shadow.Spread != 0 {
+			shadowX -= shadow.Spread
+			shadowY -= shadow.Spread
+		}
+
+		// Set shadow color with alpha
+		r.context.SetRGBA(
+			float64(shadow.Color.R)/255.0,
+			float64(shadow.Color.G)/255.0,
+			float64(shadow.Color.B)/255.0,
+			shadow.Color.A,
+		)
+
+		// For simplicity, draw shadow as a blurred rectangle
+		// (Real implementation would need proper gaussian blur)
+		if shadow.Blur > 0 {
+			// Simulate blur with multiple rectangles at decreasing opacity
+			blurSteps := int(shadow.Blur / 2)
+			if blurSteps < 1 {
+				blurSteps = 1
+			}
+			if blurSteps > 10 {
+				blurSteps = 10 // Limit for performance
+			}
+
+			baseAlpha := shadow.Color.A / float64(blurSteps)
+
+			for i := 0; i < blurSteps; i++ {
+				offset := float64(i) * 2
+				alpha := baseAlpha * (1.0 - float64(i)/float64(blurSteps))
+
+				r.context.SetRGBA(
+					float64(shadow.Color.R)/255.0,
+					float64(shadow.Color.G)/255.0,
+					float64(shadow.Color.B)/255.0,
+					alpha,
+				)
+
+				if borderRadius > 0 {
+					r.context.DrawRoundedRectangle(
+						shadowX-offset,
+						shadowY-offset,
+						shadowWidth+offset*2,
+						shadowHeight+offset*2,
+						borderRadius+offset,
+					)
+				} else {
+					r.context.DrawRectangle(
+						shadowX-offset,
+						shadowY-offset,
+						shadowWidth+offset*2,
+						shadowHeight+offset*2,
+					)
+				}
+				r.context.Fill()
+			}
+		} else {
+			// No blur, just draw solid shadow
+			if borderRadius > 0 {
+				r.context.DrawRoundedRectangle(shadowX, shadowY, shadowWidth, shadowHeight, borderRadius)
+			} else {
+				r.context.DrawRectangle(shadowX, shadowY, shadowWidth, shadowHeight)
+			}
+			r.context.Fill()
+		}
+	}
+}
+
 func (r *Renderer) drawText(box *layout.Box) {
 	// Phase 11: Also handle pseudo-element content
 	textContent := ""
@@ -294,7 +396,40 @@ func (r *Renderer) drawText(box *layout.Box) {
 
 	// Draw text at calculated position
 	// Add fontSize to Y for baseline alignment
-	r.context.DrawString(textContent, textX, box.Y+fontSize)
+	textY := box.Y + fontSize
+	r.context.DrawString(textContent, textX, textY)
+
+	// Phase 17: Draw text decorations
+	decoration := box.Style.GetTextDecoration()
+	if decoration != css.TextDecorationNone {
+		textWidth, _ := r.context.MeasureString(textContent)
+		lineThickness := fontSize / 12.0 // Standard thickness: ~1/12 of font size
+		if lineThickness < 1 {
+			lineThickness = 1
+		}
+
+		r.context.SetLineWidth(lineThickness)
+
+		switch decoration {
+		case css.TextDecorationUnderline:
+			// Draw line below text (slightly below baseline)
+			underlineY := textY + fontSize*0.1
+			r.context.DrawLine(textX, underlineY, textX+textWidth, underlineY)
+			r.context.Stroke()
+
+		case css.TextDecorationOverline:
+			// Draw line above text
+			overlineY := box.Y
+			r.context.DrawLine(textX, overlineY, textX+textWidth, overlineY)
+			r.context.Stroke()
+
+		case css.TextDecorationLineThrough:
+			// Draw line through middle of text
+			lineThroughY := box.Y + fontSize*0.5
+			r.context.DrawLine(textX, lineThroughY, textX+textWidth, lineThroughY)
+			r.context.Stroke()
+		}
+	}
 }
 
 // Phase 8: drawImage renders an image element

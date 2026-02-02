@@ -1463,3 +1463,225 @@ func TestVisualRegression_Phase16_TransformOrigin(t *testing.T) {
 
 	runVisualTest(t, testCase)
 }
+
+// Phase 17: Link Styling and Text Decoration Tests
+
+func TestVisualRegression_Phase17_BasicLinks(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_links",
+		htmlFile:      "../../testdata/phase17/01-basic-links.html",
+		referenceFile: "../../testdata/phase17/reference/01-basic-links.png",
+		width:         600,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase17_CustomLinkColors(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "custom_link_colors",
+		htmlFile:      "../../testdata/phase17/02-custom-link-colors.html",
+		referenceFile: "../../testdata/phase17/reference/02-custom-link-colors.png",
+		width:         600,
+		height:        300,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase17_NoUnderline(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "no_underline",
+		htmlFile:      "../../testdata/phase17/03-no-underline.html",
+		referenceFile: "../../testdata/phase17/reference/03-no-underline.png",
+		width:         700,
+		height:        300,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase17_TextDecorations(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "text_decorations",
+		htmlFile:      "../../testdata/phase17/04-text-decorations.html",
+		referenceFile: "../../testdata/phase17/reference/04-text-decorations.png",
+		width:         600,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase17_LinksInContext(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "links_in_context",
+		htmlFile:      "../../testdata/phase17/05-links-in-context.html",
+		referenceFile: "../../testdata/phase17/reference/05-links-in-context.png",
+		width:         800,
+		height:        700,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase17_MixedDecorations(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "mixed_decorations",
+		htmlFile:      "../../testdata/phase17/06-mixed-decorations.html",
+		referenceFile: "../../testdata/phase17/reference/06-mixed-decorations.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 18: Complex CSS Selectors Tests
+
+func TestVisualRegression_Phase18_DescendantSelectors(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "descendant_selectors",
+		htmlFile:      "../../testdata/phase18/01-descendant-selectors.html",
+		referenceFile: "../../testdata/phase18/reference/01-descendant-selectors.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase18_ChildCombinators(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "child_combinators",
+		htmlFile:      "../../testdata/phase18/02-child-combinators.html",
+		referenceFile: "../../testdata/phase18/reference/02-child-combinators.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase18_SiblingCombinators(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "sibling_combinators",
+		htmlFile:      "../../testdata/phase18/03-sibling-combinators.html",
+		referenceFile: "../../testdata/phase18/reference/03-sibling-combinators.png",
+		width:         700,
+		height:        700,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase18_MultipleClasses(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "multiple_classes",
+		htmlFile:      "../../testdata/phase18/04-multiple-classes.html",
+		referenceFile: "../../testdata/phase18/reference/04-multiple-classes.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase18_AttributeSelectors(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "attribute_selectors",
+		htmlFile:      "../../testdata/phase18/05-attribute-selectors.html",
+		referenceFile: "../../testdata/phase18/reference/05-attribute-selectors.png",
+		width:         700,
+		height:        700,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase18_ComplexMixed(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "complex_mixed",
+		htmlFile:      "../../testdata/phase18/06-complex-mixed.html",
+		referenceFile: "../../testdata/phase18/reference/06-complex-mixed.png",
+		width:         700,
+		height:        700,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 19: Visual Effects Tests
+
+func TestVisualRegression_Phase19_BasicBoxShadow(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_box_shadow",
+		htmlFile:      "../../testdata/phase19/01-basic-box-shadow.html",
+		referenceFile: "../../testdata/phase19/reference/01-basic-box-shadow.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase19_BoxShadowBlur(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "box_shadow_blur",
+		htmlFile:      "../../testdata/phase19/02-box-shadow-blur.html",
+		referenceFile: "../../testdata/phase19/reference/02-box-shadow-blur.png",
+		width:         700,
+		height:        650,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase19_BoxShadowSpread(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "box_shadow_spread",
+		htmlFile:      "../../testdata/phase19/03-box-shadow-spread.html",
+		referenceFile: "../../testdata/phase19/reference/03-box-shadow-spread.png",
+		width:         700,
+		height:        750,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase19_Opacity(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "opacity",
+		htmlFile:      "../../testdata/phase19/04-opacity.html",
+		referenceFile: "../../testdata/phase19/reference/04-opacity.png",
+		width:         700,
+		height:        700,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase19_RGBAColors(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "rgba_colors",
+		htmlFile:      "../../testdata/phase19/05-rgba-colors.html",
+		referenceFile: "../../testdata/phase19/reference/05-rgba-colors.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase19_CombinedEffects(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "combined_effects",
+		htmlFile:      "../../testdata/phase19/06-combined-effects.html",
+		referenceFile: "../../testdata/phase19/reference/06-combined-effects.png",
+		width:         700,
+		height:        750,
+	}
+
+	runVisualTest(t, testCase)
+}

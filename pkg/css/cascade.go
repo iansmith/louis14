@@ -7,9 +7,25 @@ import (
 
 // Phase 3: CSS Cascade - computing final styles for a node
 
+// Phase 17: applyUserAgentStyles applies default browser styles based on element type
+func applyUserAgentStyles(node *html.Node, style *Style) {
+	if node.Type != html.ElementNode {
+		return
+	}
+
+	// Default styles for <a> (anchor/link) elements
+	if node.TagName == "a" {
+		style.Set("color", "#0645ad")           // Standard link blue
+		style.Set("text-decoration", "underline")
+	}
+}
+
 // ComputeStyle computes the final style for a node by applying the cascade
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet) *Style {
 	finalStyle := NewStyle()
+
+	// Phase 17: Apply user agent (default browser) styles first
+	applyUserAgentStyles(node, finalStyle)
 
 	// Collect all matching rules from all stylesheets
 	allRules := make([]Rule, 0)

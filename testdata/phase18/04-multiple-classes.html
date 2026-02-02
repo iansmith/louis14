@@ -1,0 +1,50 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: white;
+  }
+
+  .box {
+    padding: 15px;
+    margin: 10px;
+    border: 2px solid #ccc;
+  }
+
+  /* Single class */
+  .box {
+    background-color: #f5f5f5;
+  }
+
+  /* Two classes required */
+  .box.highlight {
+    background-color: #fff59d;
+    border-color: #f57f17;
+  }
+
+  /* Three classes required */
+  .box.highlight.special {
+    background-color: #80deea;
+    border-color: #00838f;
+    font-weight: bold;
+  }
+
+  /* Element with multiple classes */
+  div.container.primary {
+    border: 3px solid #1976d2;
+    padding: 20px;
+    margin: 10px 0;
+  }
+</style>
+
+<div class="box">Single class (gray)</div>
+
+<div class="box highlight">Two classes (yellow)</div>
+
+<div class="box special">Box and special, but not highlight (gray)</div>
+
+<div class="box highlight special">Three classes (cyan)</div>
+
+<div class="container primary">Container with primary (blue border)</div>
+
+<div class="container">Container without primary (no border)</div>
