@@ -44,11 +44,23 @@ func (r *Renderer) collectAllBoxes(boxes []*layout.Box) []*layout.Box {
 	return result
 }
 
-// sortByZIndex sorts boxes by z-index (lower values rendered first)
+// paintLevel returns the CSS painting level for stacking order within the same z-index:
+// 0 = blocks, 1 = floats (floats paint over blocks at same z-index per CSS spec)
+func paintLevel(box *layout.Box) int {
+	if box.Style != nil && box.Style.GetFloat() != css.FloatNone {
+		return 1
+	}
+	return 0
+}
+
+// sortByZIndex sorts boxes by z-index and CSS painting order
 func (r *Renderer) sortByZIndex(boxes []*layout.Box) {
 	sort.SliceStable(boxes, func(i, j int) bool {
-		// If z-index is the same, preserve document order (stable sort)
-		return boxes[i].ZIndex < boxes[j].ZIndex
+		if boxes[i].ZIndex != boxes[j].ZIndex {
+			return boxes[i].ZIndex < boxes[j].ZIndex
+		}
+		// Within same z-index: blocks first, then floats, then inline
+		return paintLevel(boxes[i]) < paintLevel(boxes[j])
 	})
 }
 
