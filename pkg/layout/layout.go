@@ -117,7 +117,8 @@ func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phase 3: Compute styles from stylesheets
-	computedStyles := css.ApplyStylesToDocument(doc)
+	// Phase 22: Pass viewport dimensions for media query evaluation
+	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
 
 	// Phase 11: Parse and store stylesheets for pseudo-element styling
 	le.stylesheets = make([]*css.Stylesheet, 0)
@@ -1538,7 +1539,8 @@ func (le *LayoutEngine) alignCrossAxis(container *FlexContainer, flexBox *Box) {
 // Phase 11: generatePseudoElement generates a pseudo-element box if it has content
 func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
 	// Compute pseudo-element style using stored stylesheets
-	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets)
+	// Phase 22: Pass viewport dimensions for media query evaluation
+	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets, le.viewport.width, le.viewport.height)
 
 	// Get content from pseudo-element style
 	content, hasContent := pseudoStyle.GetContent()

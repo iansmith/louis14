@@ -21,7 +21,8 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 }
 
 // ComputeStyle computes the final style for a node by applying the cascade
-func ComputeStyle(node *html.Node, stylesheets []*Stylesheet) *Style {
+// Phase 22: Added viewport dimensions for media query evaluation
+func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -31,7 +32,7 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet) *Style {
 	allRules := make([]Rule, 0)
 
 	for _, stylesheet := range stylesheets {
-		matches := FindMatchingRules(node, stylesheet)
+		matches := FindMatchingRules(node, stylesheet, viewportWidth, viewportHeight)
 		allRules = append(allRules, matches...)
 	}
 
@@ -59,7 +60,8 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet) *Style {
 }
 
 // ApplyStylesToDocument applies stylesheets to all nodes in the document
-func ApplyStylesToDocument(doc *html.Document) map[*html.Node]*Style {
+// Phase 22: Added viewport dimensions for media query evaluation
+func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight float64) map[*html.Node]*Style {
 	styles := make(map[*html.Node]*Style)
 
 	// Parse all stylesheets
@@ -72,13 +74,14 @@ func ApplyStylesToDocument(doc *html.Document) map[*html.Node]*Style {
 	}
 
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles)
+	applyStylesToNode(doc.Root, stylesheets, styles, viewportWidth, viewportHeight)
 
 	return styles
 }
 
 // Phase 11: ComputePseudoElementStyle computes the style for a pseudo-element
-func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet) *Style {
+// Phase 22: Added viewport dimensions for media query evaluation
+func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) *Style {
 	finalStyle := NewStyle()
 
 	// Collect all matching rules for this pseudo-element
@@ -86,6 +89,11 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	for _, stylesheet := range stylesheets {
 		for _, rule := range stylesheet.Rules {
+			// Phase 22: Check media query
+			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+				continue
+			}
+
 			// Check if this rule's selector matches the node AND has the right pseudo-element
 			if rule.Selector.PseudoElement == pseudoElement {
 				// Check if the base selector matches
@@ -112,13 +120,13 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style) {
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		styles[node] = ComputeStyle(node, stylesheets)
+		styles[node] = ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
 	}
 
 	// Always traverse children
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight)
 	}
 }

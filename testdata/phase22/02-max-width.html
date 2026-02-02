@@ -1,0 +1,35 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: #ecf0f1;
+  }
+
+  .box {
+    width: 300px;
+    height: 150px;
+    background-color: #3498db;
+    color: white;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  /* This media query should match at 800px viewport width */
+  @media (max-width: 1000px) {
+    .box {
+      background-color: #9b59b6;
+    }
+  }
+
+  .label {
+    font-size: 16px;
+    margin-bottom: 15px;
+    color: #2c3e50;
+  }
+</style>
+
+<div class="label">Media Query: max-width 1000px</div>
+<div class="label">At 800px viewport, box should be PURPLE</div>
+<div class="box">
+  This box is purple because viewport width is less than or equal to 1000px
+</div>

@@ -1832,3 +1832,76 @@ func TestVisualRegression_Phase21_RealWorldPanel(t *testing.T) {
 
 	runVisualTest(t, testCase)
 }
+
+// Phase 22: Responsive Design with Media Queries
+func TestVisualRegression_Phase22_MinWidth(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "min_width",
+		htmlFile:      "../../testdata/phase22/01-min-width.html",
+		referenceFile: "../../testdata/phase22/reference/01-min-width.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase22_MaxWidth(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "max_width",
+		htmlFile:      "../../testdata/phase22/02-max-width.html",
+		referenceFile: "../../testdata/phase22/reference/02-max-width.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase22_RangeQuery(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "range_query",
+		htmlFile:      "../../testdata/phase22/03-range-query.html",
+		referenceFile: "../../testdata/phase22/reference/03-range-query.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase22_MultipleBreakpoints(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "multiple_breakpoints",
+		htmlFile:      "../../testdata/phase22/04-multiple-breakpoints.html",
+		referenceFile: "../../testdata/phase22/reference/04-multiple-breakpoints.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase22_WithComplexSelectors(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "with_complex_selectors",
+		htmlFile:      "../../testdata/phase22/05-with-complex-selectors.html",
+		referenceFile: "../../testdata/phase22/reference/05-with-complex-selectors.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase22_ResponsiveLayout(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "responsive_layout",
+		htmlFile:      "../../testdata/phase22/06-responsive-layout.html",
+		referenceFile: "../../testdata/phase22/reference/06-responsive-layout.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}

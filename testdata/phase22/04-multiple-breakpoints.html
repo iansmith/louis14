@@ -1,0 +1,66 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: #ecf0f1;
+  }
+
+  .container {
+    padding: 20px;
+    background-color: white;
+  }
+
+  .box {
+    width: 100%;
+    height: 80px;
+    background-color: #c0392b;
+    color: white;
+    padding: 15px;
+    margin-bottom: 15px;
+  }
+
+  /* Mobile: under 600px - RED (won't match at 800px) */
+  @media (max-width: 600px) {
+    .box {
+      background-color: #c0392b;
+    }
+  }
+
+  /* Tablet: 600px - 900px - BLUE (should match at 800px) */
+  @media (min-width: 600px) and (max-width: 900px) {
+    .box {
+      background-color: #2980b9;
+    }
+  }
+
+  /* Desktop: over 900px - GREEN (won't match at 800px) */
+  @media (min-width: 900px) {
+    .box {
+      background-color: #27ae60;
+    }
+  }
+
+  .label {
+    font-size: 14px;
+    margin-bottom: 10px;
+    color: #34495e;
+    font-weight: bold;
+  }
+</style>
+
+<div class="container">
+  <div class="label">Responsive Breakpoints Test</div>
+  <div class="label">At 800px viewport: Tablet mode (BLUE)</div>
+
+  <div class="box">
+    Mobile: Red (max-width: 600px)
+  </div>
+
+  <div class="box">
+    Tablet: Blue (600px - 900px) - ACTIVE
+  </div>
+
+  <div class="box">
+    Desktop: Green (min-width: 900px)
+  </div>
+</div>

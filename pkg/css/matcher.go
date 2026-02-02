@@ -205,10 +205,16 @@ func getPreviousSibling(node *html.Node) *html.Node {
 }
 
 // FindMatchingRules returns all rules that match the given node
-func FindMatchingRules(node *html.Node, stylesheet *Stylesheet) []Rule {
+// Phase 22: Added viewport dimensions for media query evaluation
+func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64) []Rule {
 	matches := make([]Rule, 0)
 
 	for _, rule := range stylesheet.Rules {
+		// Phase 22: Check media query first
+		if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+			continue
+		}
+
 		if MatchesSelector(node, rule.Selector) {
 			matches = append(matches, rule)
 		}

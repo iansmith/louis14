@@ -1,0 +1,51 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: #34495e;
+  }
+
+  .card {
+    background-color: white;
+    padding: 20px;
+    margin-bottom: 15px;
+  }
+
+  .card .title {
+    font-size: 18px;
+    font-weight: bold;
+    color: #2c3e50;
+    margin-bottom: 10px;
+  }
+
+  .card .content {
+    font-size: 14px;
+    color: #7f8c8d;
+  }
+
+  /* Media query with descendant selector */
+  @media (min-width: 700px) {
+    .card .title {
+      color: #e74c3c;
+      font-size: 20px;
+    }
+
+    .card .content {
+      color: #3498db;
+    }
+  }
+</style>
+
+<div class="card">
+  <div class="title">Media Query + Complex Selectors</div>
+  <div class="content">
+    At 800px viewport, title is RED and content is BLUE
+  </div>
+</div>
+
+<div class="card">
+  <div class="title">Second Card</div>
+  <div class="content">
+    Both cards styled by media query with descendant selectors
+  </div>
+</div>

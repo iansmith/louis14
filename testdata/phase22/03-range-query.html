@@ -1,0 +1,35 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: #ecf0f1;
+  }
+
+  .box {
+    width: 300px;
+    height: 150px;
+    background-color: #95a5a6;
+    color: white;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  /* Range query: 700px to 900px */
+  @media (min-width: 700px) and (max-width: 900px) {
+    .box {
+      background-color: #e67e22;
+    }
+  }
+
+  .label {
+    font-size: 16px;
+    margin-bottom: 15px;
+    color: #2c3e50;
+  }
+</style>
+
+<div class="label">Media Query: min-width 700px AND max-width 900px</div>
+<div class="label">At 800px viewport, box should be ORANGE</div>
+<div class="box">
+  This box is orange because viewport width is between 700px and 900px
+</div>

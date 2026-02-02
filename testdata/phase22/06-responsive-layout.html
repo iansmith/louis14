@@ -1,0 +1,76 @@
+<style>
+  body {
+    margin: 0;
+    padding: 20px;
+    background-color: #ecf0f1;
+  }
+
+  .header {
+    background-color: #2c3e50;
+    color: white;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  .header-title {
+    font-size: 24px;
+    font-weight: bold;
+  }
+
+  .sidebar {
+    background-color: #3498db;
+    color: white;
+    padding: 15px;
+    margin-bottom: 20px;
+    width: 200px;
+  }
+
+  .main-content {
+    background-color: white;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  .content-title {
+    font-size: 20px;
+    color: #2c3e50;
+    margin-bottom: 10px;
+  }
+
+  .content-text {
+    font-size: 14px;
+    color: #7f8c8d;
+  }
+
+  /* Responsive adjustments at tablet/desktop sizes */
+  @media (min-width: 768px) {
+    .header {
+      background-color: #8e44ad;
+    }
+
+    .sidebar {
+      width: 250px;
+      background-color: #16a085;
+    }
+
+    .main-content {
+      border-left: 5px solid #3498db;
+    }
+  }
+</style>
+
+<div class="header">
+  <div class="header-title">Responsive Website</div>
+</div>
+
+<div class="sidebar">
+  Navigation
+</div>
+
+<div class="main-content">
+  <div class="content-title">Main Content Area</div>
+  <div class="content-text">
+    At 800px viewport, header is PURPLE, sidebar is TEAL with 250px width,
+    and content has a blue left border.
+  </div>
+</div>

@@ -60,6 +60,19 @@ const (
 type Rule struct {
 	Selector     Selector
 	Declarations map[string]string // property -> value
+	MediaQuery   *MediaQuery       // Phase 22: Optional media query wrapper
+}
+
+// Phase 22: MediaQuery represents a @media rule condition
+type MediaQuery struct {
+	MediaType  string            // "screen", "print", "all", etc.
+	Conditions []MediaCondition  // min-width, max-width, etc.
+}
+
+// Phase 22: MediaCondition represents a single media query condition
+type MediaCondition struct {
+	Feature string  // "min-width", "max-width", "orientation", etc.
+	Value   string  // "768px", "landscape", etc.
 }
 
 // Stylesheet represents a parsed CSS stylesheet
@@ -83,12 +96,18 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 	rules := splitRules(css)
 
 	for _, ruleStr := range rules {
-		rule, err := parseRule(ruleStr)
-		if err != nil {
-			// Skip malformed rules
-			continue
+		// Phase 22: Check if this is a @media rule
+		if strings.HasPrefix(strings.TrimSpace(ruleStr), "@media") {
+			mediaRules := parseMediaRule(ruleStr)
+			stylesheet.Rules = append(stylesheet.Rules, mediaRules...)
+		} else {
+			rule, err := parseRule(ruleStr)
+			if err != nil {
+				// Skip malformed rules
+				continue
+			}
+			stylesheet.Rules = append(stylesheet.Rules, rule)
 		}
-		stylesheet.Rules = append(stylesheet.Rules, rule)
 	}
 
 	return stylesheet, nil
@@ -145,6 +164,100 @@ func parseRule(ruleStr string) (Rule, error) {
 		Selector:     selector,
 		Declarations: declarations,
 	}, nil
+}
+
+// Phase 22: parseMediaRule parses a @media rule and returns its inner rules
+func parseMediaRule(ruleStr string) []Rule {
+	rules := make([]Rule, 0)
+
+	// Find the opening brace
+	bracePos := strings.Index(ruleStr, "{")
+	if bracePos == -1 {
+		return rules
+	}
+
+	// Extract media query string: @media (conditions)
+	mediaStr := strings.TrimSpace(ruleStr[:bracePos])
+	mediaQuery := parseMediaQuery(mediaStr)
+
+	// Extract inner CSS (between outermost { and })
+	innerStart := bracePos + 1
+	innerEnd := strings.LastIndex(ruleStr, "}")
+	if innerEnd == -1 || innerEnd <= innerStart {
+		return rules
+	}
+
+	innerCSS := ruleStr[innerStart:innerEnd]
+
+	// Parse inner rules
+	innerRules := splitRules(innerCSS)
+
+	for _, innerRuleStr := range innerRules {
+		rule, err := parseRule(innerRuleStr)
+		if err != nil {
+			continue
+		}
+		// Attach media query to this rule
+		rule.MediaQuery = mediaQuery
+		rules = append(rules, rule)
+	}
+
+	return rules
+}
+
+// Phase 22: parseMediaQuery parses a media query string like "@media screen and (min-width: 768px)"
+func parseMediaQuery(mediaStr string) *MediaQuery {
+	// Remove @media prefix
+	mediaStr = strings.TrimPrefix(mediaStr, "@media")
+	mediaStr = strings.TrimSpace(mediaStr)
+
+	mq := &MediaQuery{
+		MediaType:  "all",
+		Conditions: make([]MediaCondition, 0),
+	}
+
+	// Check for media type (screen, print, all, etc.)
+	if strings.HasPrefix(mediaStr, "screen") {
+		mq.MediaType = "screen"
+		mediaStr = strings.TrimPrefix(mediaStr, "screen")
+		mediaStr = strings.TrimSpace(mediaStr)
+	} else if strings.HasPrefix(mediaStr, "print") {
+		mq.MediaType = "print"
+		mediaStr = strings.TrimPrefix(mediaStr, "print")
+		mediaStr = strings.TrimSpace(mediaStr)
+	}
+
+	// Remove "and" keyword
+	mediaStr = strings.TrimPrefix(mediaStr, "and")
+	mediaStr = strings.TrimSpace(mediaStr)
+
+	// Parse conditions: (min-width: 768px) and (max-width: 1024px)
+	// Simple approach: split by "and" and extract each condition
+	conditionStrs := strings.Split(mediaStr, "and")
+
+	for _, condStr := range conditionStrs {
+		condStr = strings.TrimSpace(condStr)
+		if condStr == "" {
+			continue
+		}
+
+		// Remove parentheses
+		condStr = strings.Trim(condStr, "()")
+		condStr = strings.TrimSpace(condStr)
+
+		// Split by : to get feature and value
+		parts := strings.SplitN(condStr, ":", 2)
+		if len(parts) == 2 {
+			feature := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			mq.Conditions = append(mq.Conditions, MediaCondition{
+				Feature: feature,
+				Value:   value,
+			})
+		}
+	}
+
+	return mq
 }
 
 // Phase 17: parseSelector parses a complex CSS selector
@@ -393,6 +506,75 @@ func parseAttributeSelector(s string) AttributeSelector {
 		Operator: "",
 		Value:    "",
 	}
+}
+
+// Phase 22: EvaluateMediaQuery checks if a media query matches the given viewport dimensions
+func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) bool {
+	if mq == nil {
+		// No media query = always matches
+		return true
+	}
+
+	// Check media type (we only support "all" and "screen" for now)
+	if mq.MediaType != "all" && mq.MediaType != "screen" {
+		return false
+	}
+
+	// Check all conditions
+	for _, cond := range mq.Conditions {
+		if !evaluateMediaCondition(cond, viewportWidth, viewportHeight) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Phase 22: evaluateMediaCondition checks if a single media condition matches
+func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight float64) bool {
+	// Parse the value to get numeric value and unit
+	value, unit := parseMediaLength(cond.Value)
+
+	// For simplicity, we only support px units
+	if unit != "px" {
+		return true // Unknown units = assume match
+	}
+
+	switch cond.Feature {
+	case "min-width":
+		return viewportWidth >= value
+	case "max-width":
+		return viewportWidth <= value
+	case "min-height":
+		return viewportHeight >= value
+	case "max-height":
+		return viewportHeight <= value
+	default:
+		return true // Unknown feature = assume match
+	}
+}
+
+// Phase 22: parseMediaLength parses a length value and returns value and unit
+func parseMediaLength(val string) (float64, string) {
+	val = strings.TrimSpace(val)
+
+	// Check for px suffix
+	if strings.HasSuffix(val, "px") {
+		numStr := strings.TrimSuffix(val, "px")
+		if num, err := fmt.Sscanf(numStr, "%f", new(float64)); err == nil && num == 1 {
+			var value float64
+			fmt.Sscanf(numStr, "%f", &value)
+			return value, "px"
+		}
+	}
+
+	// Try to parse as plain number (assume px)
+	var value float64
+	if _, err := fmt.Sscanf(val, "%f", &value); err == nil {
+		return value, "px"
+	}
+
+	return 0, ""
 }
 
 // parseDeclarations parses CSS declarations into a map

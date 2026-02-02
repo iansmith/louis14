@@ -138,7 +138,8 @@ func TestApplyStylesToDocument(t *testing.T) {
 		<div class="special"></div>
 	`)
 
-	styles := ApplyStylesToDocument(doc)
+	// Phase 22: Pass viewport dimensions for media query evaluation
+	styles := ApplyStylesToDocument(doc, 800, 600)
 
 	// Should have 2 styled nodes (the divs)
 	elementCount := 0
