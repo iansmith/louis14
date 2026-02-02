@@ -100,14 +100,16 @@ func (r *Renderer) drawBox(box *layout.Box) {
 			bgWidth := box.Width + box.Padding.Left + box.Padding.Right
 			bgHeight := box.Height + box.Padding.Top + box.Padding.Bottom
 
-			// Phase 12: Check for border-radius
-			borderRadius := box.Style.GetBorderRadius()
-			if borderRadius > 0 {
-				r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
-			} else {
-				r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+			if bgWidth > 0 && bgHeight > 0 {
+				// Phase 12: Check for border-radius
+				borderRadius := box.Style.GetBorderRadius()
+				if borderRadius > 0 {
+					r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+				} else {
+					r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+				}
+				r.context.Fill()
 			}
-			r.context.Fill()
 		}
 	}
 
@@ -527,6 +529,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		return // silently skip if image can't be loaded
 	}
 
+
 	// Background area: content + padding
 	bgX := box.X
 	bgY := box.Y
@@ -540,20 +543,12 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	repeat := box.Style.GetBackgroundRepeat()
 	pos := box.Style.GetBackgroundPosition()
 
-	// Crop image drawing to background area using a sub-image approach
-	// (gg's Clip() is permanent and not restored by Pop, so we avoid it)
+	// Clip background image to the background area
+	r.context.Push()
+	r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+	r.context.Clip()
+
 	drawClipped := func(drawX, drawY int) {
-		srcBounds := img.Bounds()
-		// Calculate the visible portion within the background area
-		dstX := float64(drawX)
-		dstY := float64(drawY)
-		// Skip if completely outside background area
-		if dstX+float64(srcBounds.Dx()) <= bgX || dstX >= bgX+bgWidth {
-			return
-		}
-		if dstY+float64(srcBounds.Dy()) <= bgY || dstY >= bgY+bgHeight {
-			return
-		}
 		r.context.DrawImage(img, drawX, drawY)
 	}
 
@@ -594,6 +589,8 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 			}
 		}
 	}
+
+	r.context.Pop()
 }
 
 func (r *Renderer) SavePNG(filename string) error {

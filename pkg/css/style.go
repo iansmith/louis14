@@ -426,6 +426,10 @@ func expandBorderProperty(style *Style, value string) {
 		} else {
 			// Color
 			style.Set("border-color", part)
+			style.Set("border-top-color", part)
+			style.Set("border-right-color", part)
+			style.Set("border-bottom-color", part)
+			style.Set("border-left-color", part)
 		}
 	}
 }
@@ -534,18 +538,32 @@ func expandBackgroundProperty(style *Style, value string) {
 	// Parse remaining tokens for color, repeat, position
 	parts := strings.Fields(value)
 	positionParts := []string{}
+	colorFound := false
+	colorValue := ""
 	for _, part := range parts {
 		if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
 			style.Set("background-repeat", part)
 		} else if _, ok := ParseColor(part); ok {
-			style.Set("background-color", part)
+			if colorFound {
+				// Two color values = invalid declaration, skip entirely
+				return
+			}
+			colorFound = true
+			colorValue = part
 		} else if part == "transparent" {
-			style.Set("background-color", "transparent")
+			if colorFound {
+				return
+			}
+			colorFound = true
+			colorValue = "transparent"
 		} else if _, ok := ParseLength(part); ok {
 			positionParts = append(positionParts, part)
 		} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
 			positionParts = append(positionParts, part)
 		}
+	}
+	if colorFound {
+		style.Set("background-color", colorValue)
 	}
 	if len(positionParts) > 0 {
 		style.Set("background-position", strings.Join(positionParts, " "))
