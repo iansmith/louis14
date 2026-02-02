@@ -230,8 +230,8 @@ func TestIntegration_DefaultDimensions(t *testing.T) {
 	if boxes[0].Width != 1024.0 {
 		t.Errorf("expected width=1024 (viewport), got %f", boxes[0].Width)
 	}
-	if boxes[0].Height != 50.0 {
-		t.Errorf("expected height=50 (default), got %f", boxes[0].Height)
+	if boxes[0].Height != 0.0 {
+		t.Errorf("expected height=0 (auto, no children), got %f", boxes[0].Height)
 	}
 }
 

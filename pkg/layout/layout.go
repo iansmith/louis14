@@ -318,13 +318,30 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if h, ok := style.GetLength("height"); ok {
 		contentHeight = h
 	} else {
-		contentHeight = 50 // Default height
+		contentHeight = 0 // Auto height - will be calculated from children
 	}
 
-	// Phase 13: Apply max-width constraint
-	if maxWidth, hasMaxWidth := style.GetMaxWidth(); hasMaxWidth {
+	// Apply min/max width constraints
+	if minWidth, ok := style.GetLength("min-width"); ok {
+		if contentWidth < minWidth {
+			contentWidth = minWidth
+		}
+	}
+	if maxWidth, ok := style.GetLength("max-width"); ok {
 		if contentWidth > maxWidth {
 			contentWidth = maxWidth
+		}
+	}
+
+	// Apply min/max height constraints (min-height overrides max-height per CSS 2.1 10.7)
+	if maxHeight, ok := style.GetLength("max-height"); ok {
+		if contentHeight > maxHeight {
+			contentHeight = maxHeight
+		}
+	}
+	if minHeight, ok := style.GetLength("min-height"); ok {
+		if contentHeight < minHeight {
+			contentHeight = minHeight
 		}
 	}
 
@@ -375,8 +392,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 4: Handle positioning
 	if position == css.PositionAbsolute || position == css.PositionFixed {
-		// Absolutely positioned elements
-		le.applyAbsolutePositioning(box)
+		// Absolutely positioned elements - positioning applied after children layout
 		le.absoluteBoxes = append(le.absoluteBoxes, box)
 	} else if position == css.PositionRelative {
 		// Relative positioning: offset from normal position
@@ -513,9 +529,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						childY = inlineCtx.LineY
 					}
 
-					// Update child position for block element
-					childBox.X = x + border.Left + padding.Left
-					childBox.Y = childY + childBox.Margin.Top
+					// Update child position for block element (skip absolute/fixed - positioned later)
+					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed {
+						childBox.X = x + border.Left + padding.Left
+						childBox.Y = childY + childBox.Margin.Top
+					}
 
 					box.Children = append(box.Children, childBox)
 
@@ -647,12 +665,30 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// If height is auto and we have children, adjust height to fit content
 	if _, ok := style.GetLength("height"); !ok && len(box.Children) > 0 {
-		// Calculate total height of children
+		// Calculate total height of children (exclude absolute/fixed - out of flow)
 		totalChildHeight := 0.0
 		for _, child := range box.Children {
+			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+				continue
+			}
 			totalChildHeight += le.getTotalHeight(child)
 		}
+		if totalChildHeight < 0 {
+			totalChildHeight = 0
+		}
 		box.Height = totalChildHeight
+	}
+
+	// Re-apply min/max height constraints after auto-height calculation
+	if maxHeight, ok := style.GetLength("max-height"); ok {
+		if box.Height > maxHeight {
+			box.Height = maxHeight
+		}
+	}
+	if minHeight, ok := style.GetLength("min-height"); ok {
+		if box.Height < minHeight {
+			box.Height = minHeight
+		}
 	}
 
 	// Phase 7 Enhancement: Inline elements always shrink-wrap to children
@@ -687,6 +723,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// Set width to fit children (but don't exceed available width)
 		if maxChildWidth > 0 && maxChildWidth < box.Width {
 			box.Width = maxChildWidth
+		}
+	}
+
+	// Phase 4: Apply absolute positioning AFTER children layout and height finalization
+	if position == css.PositionAbsolute || position == css.PositionFixed {
+		oldX, oldY := box.X, box.Y
+		le.applyAbsolutePositioning(box)
+		// Shift all children by the position delta
+		dx, dy := box.X-oldX, box.Y-oldY
+		if dx != 0 || dy != 0 {
+			le.shiftChildren(box, dx, dy)
 		}
 	}
 
@@ -805,6 +852,14 @@ func (le *LayoutEngine) adjustChildrenY(box *Box, delta float64) {
 	for _, child := range box.Children {
 		child.Y += delta
 		le.adjustChildrenY(child, delta)
+	}
+}
+
+func (le *LayoutEngine) shiftChildren(box *Box, dx, dy float64) {
+	for _, child := range box.Children {
+		child.X += dx
+		child.Y += dy
+		le.shiftChildren(child, dx, dy)
 	}
 }
 

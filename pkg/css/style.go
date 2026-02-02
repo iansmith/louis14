@@ -311,6 +311,12 @@ func expandShorthand(style *Style, property, value string) {
 		expandBorderProperty(style, value)
 	case "border-top", "border-right", "border-bottom", "border-left":
 		expandBorderSideProperty(style, property, value)
+	case "border-width":
+		expandBorderBoxProperty(style, value, "width")
+	case "border-style":
+		expandBorderBoxProperty(style, value, "style")
+	case "border-color":
+		expandBorderBoxProperty(style, value, "color")
 	case "background":
 		expandBackgroundProperty(style, value)
 	case "font":
@@ -355,13 +361,55 @@ func expandBoxProperty(style *Style, prefix, value string) {
 	}
 }
 
+// expandBorderBoxProperty expands border-width/style/color shorthand (1-4 values)
+func expandBorderBoxProperty(style *Style, value string, suffix string) {
+	parts := strings.Fields(value)
+	var top, right, bottom, left string
+	switch len(parts) {
+	case 1:
+		top, right, bottom, left = parts[0], parts[0], parts[0], parts[0]
+	case 2:
+		top, bottom = parts[0], parts[0]
+		right, left = parts[1], parts[1]
+	case 3:
+		top, right, left, bottom = parts[0], parts[1], parts[1], parts[2]
+	case 4:
+		top, right, bottom, left = parts[0], parts[1], parts[2], parts[3]
+	default:
+		return
+	}
+	style.Set("border-top-"+suffix, top)
+	style.Set("border-right-"+suffix, right)
+	style.Set("border-bottom-"+suffix, bottom)
+	style.Set("border-left-"+suffix, left)
+}
+
+// borderWidthKeyword resolves thin/medium/thick to pixel values.
+func borderWidthKeyword(val string) (string, bool) {
+	switch strings.ToLower(val) {
+	case "thin":
+		return "1px", true
+	case "medium":
+		return "3px", true
+	case "thick":
+		return "5px", true
+	}
+	return "", false
+}
+
 // expandBorderProperty expands border shorthand
 // Format: "1px solid black" or "2px dotted #FF0000"
 func expandBorderProperty(style *Style, value string) {
 	parts := strings.Fields(value)
 
 	for _, part := range parts {
-		if _, ok := ParseLength(part); ok {
+		if bw, ok := borderWidthKeyword(part); ok {
+			style.Set("border-width", bw)
+			style.Set("border-top-width", bw)
+			style.Set("border-right-width", bw)
+			style.Set("border-bottom-width", bw)
+			style.Set("border-left-width", bw)
+		} else if _, ok := ParseLength(part); ok {
 			// Width (px, em, mm, or bare number)
 			style.Set("border-width", part)
 			style.Set("border-top-width", part)
@@ -390,6 +438,8 @@ func expandBorderSideProperty(style *Style, property, value string) {
 	for _, part := range parts {
 		if part == "0" {
 			style.Set("border-"+side+"-width", "0")
+		} else if bw, ok := borderWidthKeyword(part); ok {
+			style.Set("border-"+side+"-width", bw)
 		} else if _, ok := ParseLength(part); ok {
 			style.Set("border-"+side+"-width", part)
 		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" {

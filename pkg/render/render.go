@@ -152,29 +152,19 @@ func (r *Renderer) getBorderSideColor(box *layout.Box, side string) (css.Color, 
 			return color, true
 		}
 	}
-	return css.Color{0, 0, 0, 1.0}, false
+	// Fall back to element's color property (CSS spec: border-color defaults to currentColor)
+	if colorStr, ok := box.Style.Get("color"); ok {
+		if color, ok := css.ParseColor(colorStr); ok {
+			return color, true
+		}
+	}
+	return css.Color{0, 0, 0, 1.0}, true
 }
 
 // drawBorder draws the border around a box
 func (r *Renderer) drawBorder(box *layout.Box) {
-	// Check if any border exists
-	hasBorder := false
-	if _, ok := box.Style.Get("border-color"); ok {
-		hasBorder = true
-	}
-	if _, ok := box.Style.Get("border-top-color"); ok {
-		hasBorder = true
-	}
-	if _, ok := box.Style.Get("border-right-color"); ok {
-		hasBorder = true
-	}
-	if _, ok := box.Style.Get("border-bottom-color"); ok {
-		hasBorder = true
-	}
-	if _, ok := box.Style.Get("border-left-color"); ok {
-		hasBorder = true
-	}
-	if !hasBorder {
+	// Check if any border exists (has width > 0 and a style)
+	if box.Border.Top <= 0 && box.Border.Right <= 0 && box.Border.Bottom <= 0 && box.Border.Left <= 0 {
 		return
 	}
 
