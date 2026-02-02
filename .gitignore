@@ -1,9 +1,6 @@
 # Font files
 fonts/
 
-# Test reference images
-testdata/*/reference/
-
 # Test image files
 testdata/phase8/images/
 
