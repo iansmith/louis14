@@ -564,6 +564,144 @@ func (s *Style) GetTextDecoration() TextDecoration {
 	return TextDecorationNone
 }
 
+// Phase 20: Additional text properties
+
+// GetLetterSpacing returns the letter-spacing value in pixels (default: 0)
+func (s *Style) GetLetterSpacing() float64 {
+	if spacing, ok := s.GetLength("letter-spacing"); ok {
+		return spacing
+	}
+	return 0.0
+}
+
+// GetWordSpacing returns the word-spacing value in pixels (default: 0)
+func (s *Style) GetWordSpacing() float64 {
+	if spacing, ok := s.GetLength("word-spacing"); ok {
+		return spacing
+	}
+	return 0.0
+}
+
+// TextTransform represents the text-transform property value
+type TextTransform string
+
+const (
+	TextTransformNone       TextTransform = "none"
+	TextTransformUppercase  TextTransform = "uppercase"
+	TextTransformLowercase  TextTransform = "lowercase"
+	TextTransformCapitalize TextTransform = "capitalize"
+)
+
+// GetTextTransform returns the text-transform value (default: none)
+func (s *Style) GetTextTransform() TextTransform {
+	if transform, ok := s.Get("text-transform"); ok {
+		switch transform {
+		case "uppercase":
+			return TextTransformUppercase
+		case "lowercase":
+			return TextTransformLowercase
+		case "capitalize":
+			return TextTransformCapitalize
+		case "none":
+			return TextTransformNone
+		}
+	}
+	return TextTransformNone
+}
+
+// WhiteSpace represents the white-space property value
+type WhiteSpace string
+
+const (
+	WhiteSpaceNormal  WhiteSpace = "normal"
+	WhiteSpaceNowrap  WhiteSpace = "nowrap"
+	WhiteSpacePre     WhiteSpace = "pre"
+	WhiteSpacePreWrap WhiteSpace = "pre-wrap"
+	WhiteSpacePreLine WhiteSpace = "pre-line"
+)
+
+// GetWhiteSpace returns the white-space value (default: normal)
+func (s *Style) GetWhiteSpace() WhiteSpace {
+	if ws, ok := s.Get("white-space"); ok {
+		switch ws {
+		case "nowrap":
+			return WhiteSpaceNowrap
+		case "pre":
+			return WhiteSpacePre
+		case "pre-wrap":
+			return WhiteSpacePreWrap
+		case "pre-line":
+			return WhiteSpacePreLine
+		case "normal":
+			return WhiteSpaceNormal
+		}
+	}
+	return WhiteSpaceNormal
+}
+
+// Phase 21: Overflow properties
+
+// OverflowType represents the overflow property value
+type OverflowType string
+
+const (
+	OverflowVisible OverflowType = "visible"
+	OverflowHidden  OverflowType = "hidden"
+	OverflowScroll  OverflowType = "scroll"
+	OverflowAuto    OverflowType = "auto"
+)
+
+// GetOverflow returns the overflow value (default: visible)
+func (s *Style) GetOverflow() OverflowType {
+	if overflow, ok := s.Get("overflow"); ok {
+		switch overflow {
+		case "hidden":
+			return OverflowHidden
+		case "scroll":
+			return OverflowScroll
+		case "auto":
+			return OverflowAuto
+		case "visible":
+			return OverflowVisible
+		}
+	}
+	return OverflowVisible
+}
+
+// GetOverflowX returns the overflow-x value (default: overflow value)
+func (s *Style) GetOverflowX() OverflowType {
+	if overflowX, ok := s.Get("overflow-x"); ok {
+		switch overflowX {
+		case "hidden":
+			return OverflowHidden
+		case "scroll":
+			return OverflowScroll
+		case "auto":
+			return OverflowAuto
+		case "visible":
+			return OverflowVisible
+		}
+	}
+	return s.GetOverflow()
+}
+
+// GetOverflowY returns the overflow-y value (default: overflow value)
+func (s *Style) GetOverflowY() OverflowType {
+	if overflowY, ok := s.Get("overflow-y"); ok {
+		switch overflowY {
+		case "hidden":
+			return OverflowHidden
+		case "scroll":
+			return OverflowScroll
+		case "auto":
+			return OverflowAuto
+		case "visible":
+			return OverflowVisible
+		}
+	}
+	return s.GetOverflow()
+}
+
 // Phase 19: Visual effects
 
 // GetOpacity returns the opacity value (0.0 to 1.0, default: 1.0)

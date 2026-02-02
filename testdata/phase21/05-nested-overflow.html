@@ -1,0 +1,41 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: #ecf0f1;
+  }
+
+  .outer {
+    width: 300px;
+    height: 200px;
+    background-color: #3498db;
+    border: 3px solid #2980b9;
+    overflow: hidden;
+    padding: 15px;
+  }
+
+  .middle {
+    width: 250px;
+    height: 180px;
+    background-color: #e74c3c;
+    border: 2px solid #c0392b;
+    overflow: scroll;
+    padding: 10px;
+  }
+
+  .inner {
+    width: 300px;
+    height: 200px;
+    background-color: #2ecc71;
+    color: white;
+    padding: 10px;
+  }
+</style>
+
+<div class="outer">
+  <div class="middle">
+    <div class="inner">
+      Nested overflow containers: outer has hidden, middle has scroll
+    </div>
+  </div>
+</div>

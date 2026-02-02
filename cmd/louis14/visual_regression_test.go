@@ -1685,3 +1685,150 @@ func TestVisualRegression_Phase19_CombinedEffects(t *testing.T) {
 
 	runVisualTest(t, testCase)
 }
+
+// Phase 20: Text and Typography Properties Tests
+
+func TestVisualRegression_Phase20_TextTransform(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "text_transform",
+		htmlFile:      "../../testdata/phase20/01-text-transform.html",
+		referenceFile: "../../testdata/phase20/reference/01-text-transform.png",
+		width:         700,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase20_TextTransformHeadings(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "text_transform_headings",
+		htmlFile:      "../../testdata/phase20/02-text-transform-headings.html",
+		referenceFile: "../../testdata/phase20/reference/02-text-transform-headings.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase20_MixedTransforms(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "mixed_transforms",
+		htmlFile:      "../../testdata/phase20/03-mixed-transforms.html",
+		referenceFile: "../../testdata/phase20/reference/03-mixed-transforms.png",
+		width:         700,
+		height:        650,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase20_TransformWithDecoration(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "transform_with_decoration",
+		htmlFile:      "../../testdata/phase20/04-transform-with-decoration.html",
+		referenceFile: "../../testdata/phase20/reference/04-transform-with-decoration.png",
+		width:         700,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase20_TypographyShowcase(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "typography_showcase",
+		htmlFile:      "../../testdata/phase20/05-typography-showcase.html",
+		referenceFile: "../../testdata/phase20/reference/05-typography-showcase.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase20_RealWorldExample(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "real_world_example",
+		htmlFile:      "../../testdata/phase20/06-real-world-example.html",
+		referenceFile: "../../testdata/phase20/reference/06-real-world-example.png",
+		width:         900,
+		height:        700,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 21: Overflow and Scrolling
+func TestVisualRegression_Phase21_OverflowHidden(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "overflow_hidden",
+		htmlFile:      "../../testdata/phase21/01-overflow-hidden.html",
+		referenceFile: "../../testdata/phase21/reference/01-overflow-hidden.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase21_OverflowVisible(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "overflow_visible",
+		htmlFile:      "../../testdata/phase21/02-overflow-visible.html",
+		referenceFile: "../../testdata/phase21/reference/02-overflow-visible.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase21_OverflowScroll(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "overflow_scroll",
+		htmlFile:      "../../testdata/phase21/03-overflow-scroll.html",
+		referenceFile: "../../testdata/phase21/reference/03-overflow-scroll.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase21_OverflowAuto(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "overflow_auto",
+		htmlFile:      "../../testdata/phase21/04-overflow-auto.html",
+		referenceFile: "../../testdata/phase21/reference/04-overflow-auto.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase21_NestedOverflow(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "nested_overflow",
+		htmlFile:      "../../testdata/phase21/05-nested-overflow.html",
+		referenceFile: "../../testdata/phase21/reference/05-nested-overflow.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase21_RealWorldPanel(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "real_world_panel",
+		htmlFile:      "../../testdata/phase21/06-real-world-panel.html",
+		referenceFile: "../../testdata/phase21/reference/06-real-world-panel.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}

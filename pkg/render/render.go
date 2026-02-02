@@ -2,6 +2,7 @@ package render
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/fogleman/gg"
 	"louis14/pkg/css"
@@ -100,11 +101,37 @@ func (r *Renderer) drawBox(box *layout.Box) {
 	// Phase 2: Draw border
 	r.drawBorder(box)
 
+	// Phase 21: Apply overflow clipping for content
+	overflow := box.Style.GetOverflow()
+	if overflow != css.OverflowVisible {
+		r.context.Push()
+		defer r.context.Pop()
+
+		// Clip to content area (inside padding and border)
+		clipX := box.X + box.Padding.Left
+		clipY := box.Y + box.Padding.Top
+		clipWidth := box.Width
+		clipHeight := box.Height
+
+		borderRadius := box.Style.GetBorderRadius()
+		if borderRadius > 0 {
+			r.context.DrawRoundedRectangle(clipX, clipY, clipWidth, clipHeight, borderRadius)
+		} else {
+			r.context.DrawRectangle(clipX, clipY, clipWidth, clipHeight)
+		}
+		r.context.Clip()
+	}
+
 	// Phase 8: Draw image
 	r.drawImage(box)
 
 	// Draw text
 	r.drawText(box)
+
+	// Phase 21: Draw scrollbar indicators for overflow: scroll or auto
+	if overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+		r.drawScrollbarIndicators(box)
+	}
 }
 
 // drawBorder draws the border around a box
@@ -359,6 +386,10 @@ func (r *Renderer) drawText(box *layout.Box) {
 		return
 	}
 
+	// Phase 20: Apply text-transform
+	textTransform := box.Style.GetTextTransform()
+	textContent = applyTextTransform(textContent, textTransform)
+
 	// Get text color from style
 	color := box.Style.GetColor()
 	r.context.SetRGB(
@@ -529,4 +560,55 @@ func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) 
 	
 	// Translate back from origin
 	r.context.Translate(-originX, -originY)
+}
+
+// Phase 20: applyTextTransform applies CSS text-transform to a string
+func applyTextTransform(text string, transform css.TextTransform) string {
+	switch transform {
+	case css.TextTransformUppercase:
+		return strings.ToUpper(text)
+	case css.TextTransformLowercase:
+		return strings.ToLower(text)
+	case css.TextTransformCapitalize:
+		// Capitalize first letter of each word
+		words := strings.Fields(text)
+		for i, word := range words {
+			if len(word) > 0 {
+				words[i] = strings.ToUpper(string(word[0])) + strings.ToLower(word[1:])
+			}
+		}
+		return strings.Join(words, " ")
+	case css.TextTransformNone:
+		return text
+	}
+	return text
+}
+
+// Phase 21: drawScrollbarIndicators draws visual scrollbar indicators
+func (r *Renderer) drawScrollbarIndicators(box *layout.Box) {
+	scrollbarWidth := 12.0
+	scrollbarColor := css.Color{R: 200, G: 200, B: 200, A: 1.0}
+
+	// Content area dimensions
+	contentX := box.X + box.Padding.Left
+	contentY := box.Y + box.Padding.Top
+	contentWidth := box.Width
+	contentHeight := box.Height
+
+	// Draw vertical scrollbar on the right
+	r.context.SetRGBA(
+		float64(scrollbarColor.R)/255.0,
+		float64(scrollbarColor.G)/255.0,
+		float64(scrollbarColor.B)/255.0,
+		scrollbarColor.A,
+	)
+
+	scrollbarX := contentX + contentWidth - scrollbarWidth
+	r.context.DrawRectangle(scrollbarX, contentY, scrollbarWidth, contentHeight)
+	r.context.Fill()
+
+	// Draw horizontal scrollbar at the bottom
+	scrollbarY := contentY + contentHeight - scrollbarWidth
+	r.context.DrawRectangle(contentX, scrollbarY, contentWidth-scrollbarWidth, scrollbarWidth)
+	r.context.Fill()
 }
