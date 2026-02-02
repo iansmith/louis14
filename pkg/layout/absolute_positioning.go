@@ -31,18 +31,20 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 	// Priority: top/left over bottom/right
 
 	if offset.HasLeft {
-		box.X = cbX + offset.Left
+		box.X = cbX + offset.Left + box.Margin.Left
 	} else if offset.HasRight {
-		box.X = cbX + cbWidth - offset.Right - box.Width
+		box.X = cbX + cbWidth - offset.Right - box.Margin.Right - box.Width -
+			box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
 	} else {
-		box.X = cbX
+		box.X = cbX + box.Margin.Left
 	}
 
 	if offset.HasTop {
-		box.Y = cbY + offset.Top
+		box.Y = cbY + offset.Top + box.Margin.Top
 	} else if offset.HasBottom {
-		box.Y = cbY + cbHeight - offset.Bottom - box.Height
+		box.Y = cbY + cbHeight - offset.Bottom - box.Margin.Bottom - box.Height -
+			box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
 	} else {
-		box.Y = cbY
+		box.Y = cbY + box.Margin.Top
 	}
 }

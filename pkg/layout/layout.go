@@ -283,6 +283,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if w, ok := style.GetLength("width"); ok {
 		contentWidth = w
 		hasExplicitWidth = true
+	} else if style.GetPosition() == css.PositionAbsolute || style.GetPosition() == css.PositionFixed {
+		// Absolutely positioned elements without explicit width shrink-wrap
+		contentWidth = 0
 	} else {
 		// Default to available width minus horizontal margin, padding, border
 		contentWidth = availableWidth - margin.Left - margin.Right -
@@ -722,6 +725,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 		// Set width to fit children (but don't exceed available width)
 		if maxChildWidth > 0 && maxChildWidth < box.Width {
+			box.Width = maxChildWidth
+		}
+	}
+
+	// Shrink-wrap absolutely positioned elements without explicit width
+	if (position == css.PositionAbsolute || position == css.PositionFixed) && !hasExplicitWidth && len(box.Children) > 0 {
+		maxChildWidth := 0.0
+		for _, child := range box.Children {
+			childWidth := le.getTotalWidth(child)
+			if childWidth > maxChildWidth {
+				maxChildWidth = childWidth
+			}
+		}
+		if maxChildWidth > 0 {
 			box.Width = maxChildWidth
 		}
 	}

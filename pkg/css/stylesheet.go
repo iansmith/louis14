@@ -623,6 +623,8 @@ func parseAttributeSelector(s string) AttributeSelector {
 			value := strings.TrimSpace(s[idx+len(op):])
 			// Remove quotes from value
 			value = strings.Trim(value, `"'`)
+			// Handle CSS escape sequences (e.g., second\ two → second two)
+			value = strings.ReplaceAll(value, `\ `, " ")
 			return AttributeSelector{
 				Name:     name,
 				Operator: op,
