@@ -46,8 +46,8 @@ func matchesCompoundSelector(node *html.Node, selector Selector, partIndex int) 
 		return matchesAncestor(node, selector, prevPartIndex)
 
 	case ChildCombinator:
-		// Match direct parent only
-		if node.Parent != nil {
+		// Match direct parent only (skip synthetic document node)
+		if node.Parent != nil && node.Parent.TagName != "document" {
 			return matchesCompoundSelector(node.Parent, selector, prevPartIndex)
 		}
 		return false
@@ -171,7 +171,7 @@ func matchesAttributeSelector(node *html.Node, attr AttributeSelector) bool {
 // matchesAncestor checks if any ancestor matches the selector part
 func matchesAncestor(node *html.Node, selector Selector, partIndex int) bool {
 	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
-		if ancestor.Type == html.ElementNode {
+		if ancestor.Type == html.ElementNode && ancestor.TagName != "document" {
 			if matchesCompoundSelector(ancestor, selector, partIndex) {
 				return true
 			}
