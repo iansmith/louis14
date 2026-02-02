@@ -186,11 +186,41 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 	}
 }
 
+// inheritableProperties lists CSS properties that inherit from parent to child by default
+var inheritableProperties = map[string]bool{
+	"color": true, "font-family": true, "font-size": true,
+	"font-style": true, "font-weight": true, "font-variant": true,
+	"line-height": true, "text-align": true, "text-decoration": true,
+	"text-transform": true, "text-indent": true, "white-space": true,
+	"visibility": true, "list-style-type": true, "list-style-position": true,
+	"direction": true, "letter-spacing": true, "word-spacing": true,
+	"cursor": true,
+}
+
+// applyInheritedProperties copies inheritable properties from parent if not set on child
+func applyInheritedProperties(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	if node.Parent == nil {
+		return
+	}
+	parentStyle, ok := styles[node.Parent]
+	if !ok {
+		return
+	}
+	for prop := range inheritableProperties {
+		if _, hasOwn := style.Get(prop); !hasOwn {
+			if parentVal, ok := parentStyle.Get(prop); ok {
+				style.Set(prop, parentVal)
+			}
+		}
+	}
+}
+
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
 		resolveInheritValues(node, style, styles)
+		applyInheritedProperties(node, style, styles)
 		styles[node] = style
 	}
 
