@@ -1363,9 +1363,19 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 	numRows := len(cellGrid)
 	rowHeights := make([]float64, numRows)
 
-	// Simple algorithm: use default height or cell content height
+	// Calculate row heights from cell content
 	for i := 0; i < numRows; i++ {
-		rowHeights[i] = 30.0 // Default row height
+		maxHeight := 0.0
+		for _, cell := range cellGrid[i] {
+			if cell == nil || cell.Box == nil {
+				continue
+			}
+			cellHeight := cell.Box.Height + cell.Box.Padding.Top + cell.Box.Padding.Bottom
+			if cellHeight > maxHeight {
+				maxHeight = cellHeight
+			}
+		}
+		rowHeights[i] = maxHeight
 	}
 
 	return rowHeights
