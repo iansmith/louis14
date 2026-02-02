@@ -714,6 +714,7 @@ func splitDeclarationParts(declStr string) []string {
 	var parts []string
 	start := 0
 	inString := byte(0)
+	parenDepth := 0
 
 	for i := 0; i < len(declStr); i++ {
 		ch := declStr[i]
@@ -729,7 +730,15 @@ func splitDeclarationParts(declStr string) []string {
 			inString = ch
 			continue
 		}
-		if ch == ';' {
+		if ch == '(' {
+			parenDepth++
+			continue
+		}
+		if ch == ')' && parenDepth > 0 {
+			parenDepth--
+			continue
+		}
+		if ch == ';' && parenDepth == 0 {
 			parts = append(parts, declStr[start:i])
 			start = i + 1
 		}

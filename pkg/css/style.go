@@ -28,12 +28,34 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return ParseLength(val)
+	return ParseLengthWithFontSize(val, s.GetFontSize())
 }
 
 // ParseLength parses a length value (e.g., "100px" or "100")
+// Does not handle em units — use ParseLengthWithFontSize for that.
 func ParseLength(val string) (float64, bool) {
+	return ParseLengthWithFontSize(val, 16.0)
+}
+
+// ParseLengthWithFontSize parses a length value with em support.
+func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 	val = strings.TrimSpace(val)
+	if strings.HasSuffix(val, "em") {
+		numStr := strings.TrimSuffix(val, "em")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * fontSize, true
+	}
+	if strings.HasSuffix(val, "mm") {
+		numStr := strings.TrimSuffix(val, "mm")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * 3.7795275591, true // 1mm ≈ 3.78px at 96dpi
+	}
 	val = strings.TrimSuffix(val, "px")
 	num, err := strconv.ParseFloat(val, 64)
 	if err != nil {
@@ -287,8 +309,12 @@ func expandShorthand(style *Style, property, value string) {
 	case "border":
 		// border: 1px solid black -> border-width/style/color
 		expandBorderProperty(style, value)
+	case "border-top", "border-right", "border-bottom", "border-left":
+		expandBorderSideProperty(style, property, value)
 	case "background":
 		expandBackgroundProperty(style, value)
+	case "font":
+		expandFontProperty(style, value)
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -335,8 +361,8 @@ func expandBorderProperty(style *Style, value string) {
 	parts := strings.Fields(value)
 
 	for _, part := range parts {
-		if strings.HasSuffix(part, "px") {
-			// Width
+		if _, ok := ParseLength(part); ok {
+			// Width (px, em, mm, or bare number)
 			style.Set("border-width", part)
 			style.Set("border-top-width", part)
 			style.Set("border-right-width", part)
@@ -353,6 +379,69 @@ func expandBorderProperty(style *Style, value string) {
 			// Color
 			style.Set("border-color", part)
 		}
+	}
+}
+
+// expandBorderSideProperty expands border-top/right/bottom/left shorthands.
+func expandBorderSideProperty(style *Style, property, value string) {
+	// property is "border-top", "border-right", etc.
+	side := strings.TrimPrefix(property, "border-")
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if part == "0" {
+			style.Set("border-"+side+"-width", "0")
+		} else if _, ok := ParseLength(part); ok {
+			style.Set("border-"+side+"-width", part)
+		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" {
+			style.Set("border-"+side+"-style", part)
+		} else {
+			style.Set("border-"+side+"-color", part)
+		}
+	}
+}
+
+// expandFontProperty expands the font shorthand.
+// Format: [style] [variant] [weight] size[/line-height] family[, family...]
+func expandFontProperty(style *Style, value string) {
+	parts := strings.Fields(value)
+	if len(parts) < 2 {
+		return
+	}
+
+	i := 0
+	// Skip optional font-style
+	if i < len(parts) && (parts[i] == "italic" || parts[i] == "oblique" || parts[i] == "normal") {
+		style.Set("font-style", parts[i])
+		i++
+	}
+	// Skip optional font-variant
+	if i < len(parts) && parts[i] == "small-caps" {
+		style.Set("font-variant", parts[i])
+		i++
+	}
+	// Skip optional font-weight
+	if i < len(parts) {
+		switch parts[i] {
+		case "bold", "bolder", "lighter", "100", "200", "300", "400", "500", "600", "700", "800", "900":
+			style.Set("font-weight", parts[i])
+			i++
+		}
+	}
+	// Next should be size[/line-height]
+	if i < len(parts) {
+		sizeStr := parts[i]
+		if idx := strings.Index(sizeStr, "/"); idx >= 0 {
+			style.Set("font-size", sizeStr[:idx])
+			style.Set("line-height", sizeStr[idx+1:])
+		} else {
+			style.Set("font-size", sizeStr)
+		}
+		i++
+	}
+	// Remaining is font-family
+	if i < len(parts) {
+		family := strings.Join(parts[i:], " ")
+		style.Set("font-family", family)
 	}
 }
 
@@ -422,6 +511,11 @@ type Color struct {
 func ParseColor(colorStr string) (Color, bool) {
 	colorStr = strings.ToLower(strings.TrimSpace(colorStr))
 
+	// Handle transparent
+	if colorStr == "transparent" {
+		return Color{0, 0, 0, 0.0}, true
+	}
+
 	// Phase 19: Handle rgba() format
 	if strings.HasPrefix(colorStr, "rgba(") && strings.HasSuffix(colorStr, ")") {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgba("), ")")
@@ -486,10 +580,15 @@ func ParseColor(colorStr string) (Color, bool) {
 
 // GetFontSize returns the font-size in pixels (default: 16px)
 func (s *Style) GetFontSize() float64 {
-	if size, ok := s.GetLength("font-size"); ok {
+	val, ok := s.Get("font-size")
+	if !ok {
+		return 16.0
+	}
+	// For font-size, em is relative to parent's font-size (use 16px as default parent)
+	if size, ok := ParseLengthWithFontSize(val, 16.0); ok {
 		return size
 	}
-	return 16.0 // Default font size
+	return 16.0
 }
 
 // GetColor returns the text color (default: black)

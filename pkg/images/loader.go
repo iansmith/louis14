@@ -8,6 +8,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -52,6 +53,10 @@ func LoadImageFromDataURI(uri string) (image.Image, error) {
 
 	var data []byte
 	if isBase64 {
+		// URL-decode the base64 data first (handles %2F, %2B, etc.)
+		if decoded, err := url.PathUnescape(encoded); err == nil {
+			encoded = decoded
+		}
 		var err error
 		data, err = base64.StdEncoding.DecodeString(encoded)
 		if err != nil {

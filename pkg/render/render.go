@@ -74,11 +74,12 @@ func (r *Renderer) drawBox(box *layout.Box) {
 
 	// Phase 2: Draw background (content + padding area, not including margin)
 	if bgColor, ok := box.Style.Get("background-color"); ok {
-		if color, ok := css.ParseColor(bgColor); ok {
-			r.context.SetRGB(
+		if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
+			r.context.SetRGBA(
 				float64(color.R)/255.0,
 				float64(color.G)/255.0,
 				float64(color.B)/255.0,
+				color.A,
 			)
 
 			// Background covers content + padding (but not margin or border)
@@ -151,10 +152,16 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		color = css.Color{0, 0, 0, 1.0} // Default to black
 	}
 
-	r.context.SetRGB(
+	// Skip fully transparent borders
+	if color.A == 0 {
+		return
+	}
+
+	r.context.SetRGBA(
 		float64(color.R)/255.0,
 		float64(color.G)/255.0,
 		float64(color.B)/255.0,
+		color.A,
 	)
 
 	// Phase 12: Get border styles for each side
