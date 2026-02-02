@@ -538,7 +538,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 					// Update child position for block element (skip absolute/fixed - positioned later)
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed {
-						childBox.X = x + border.Left + padding.Left
+						childBox.X = box.X + border.Left + padding.Left + childBox.Margin.Left
 						childBox.Y = childY + childBox.Margin.Top
 					}
 
