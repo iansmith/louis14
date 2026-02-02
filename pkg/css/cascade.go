@@ -1,8 +1,10 @@
 package css
 
 import (
+	"fmt"
 	"louis14/pkg/html"
 	"sort"
+	"strings"
 )
 
 // Phase 3: CSS Cascade - computing final styles for a node
@@ -197,7 +199,8 @@ var inheritableProperties = map[string]bool{
 	"cursor": true,
 }
 
-// applyInheritedProperties copies inheritable properties from parent if not set on child
+// applyInheritedProperties copies inheritable properties from parent if not set on child.
+// Also resolves font-size em values using parent's computed font-size.
 func applyInheritedProperties(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	if node.Parent == nil {
 		return
@@ -206,6 +209,20 @@ func applyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 	if !ok {
 		return
 	}
+
+	// Resolve font-size em values using parent's font-size
+	if fsVal, hasFontSize := style.Get("font-size"); hasFontSize {
+		if strings.HasSuffix(strings.TrimSpace(fsVal), "em") {
+			parentFS := 16.0
+			if parentStyle != nil {
+				parentFS = parentStyle.GetFontSize()
+			}
+			if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
+				style.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
+			}
+		}
+	}
+
 	for prop := range inheritableProperties {
 		if _, hasOwn := style.Get(prop); !hasOwn {
 			if parentVal, ok := parentStyle.Get(prop); ok {
