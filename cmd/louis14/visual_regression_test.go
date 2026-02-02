@@ -1167,3 +1167,299 @@ func copyFile(src, dst string) error {
 	// Write destination
 	return os.WriteFile(dst, data, 0644)
 }
+
+// Phase 13: Margin Auto Centering Tests
+
+func TestVisualRegression_Phase13_SimpleCenter(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "simple_center",
+		htmlFile:      "../../testdata/phase13/01-simple-center.html",
+		referenceFile: "../../testdata/phase13/reference/01-simple-center.png",
+		width:         800,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase13_NestedCenters(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "nested_centers",
+		htmlFile:      "../../testdata/phase13/02-nested-centers.html",
+		referenceFile: "../../testdata/phase13/reference/02-nested-centers.png",
+		width:         900,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase13_MaxWidth(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "max_width",
+		htmlFile:      "../../testdata/phase13/03-max-width.html",
+		referenceFile: "../../testdata/phase13/reference/03-max-width.png",
+		width:         800,
+		height:        300,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase13_HexColors(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "hex_colors",
+		htmlFile:      "../../testdata/phase13/04-hex-colors.html",
+		referenceFile: "../../testdata/phase13/reference/04-hex-colors.png",
+		width:         800,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase13_WithBorders(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "with_borders",
+		htmlFile:      "../../testdata/phase13/05-with-borders.html",
+		referenceFile: "../../testdata/phase13/reference/05-with-borders.png",
+		width:         800,
+		height:        300,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase13_WebpageLayout(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "webpage_layout",
+		htmlFile:      "../../testdata/phase13/06-webpage-layout.html",
+		referenceFile: "../../testdata/phase13/reference/06-webpage-layout.png",
+		width:         1200,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 14: Flexbox Tests
+
+func TestVisualRegression_Phase14_FlexBasic(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_basic",
+		htmlFile:      "../../testdata/phase14/01-flex-basic.html",
+		referenceFile: "../../testdata/phase14/reference/01-flex-basic.png",
+		width:         800,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase14_FlexJustifyCenter(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_justify_center",
+		htmlFile:      "../../testdata/phase14/02-flex-justify-center.html",
+		referenceFile: "../../testdata/phase14/reference/02-flex-justify-center.png",
+		width:         1000,
+		height:        300,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase14_FlexJustifyVariations(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_justify_variations",
+		htmlFile:      "../../testdata/phase14/03-flex-justify-variations.html",
+		referenceFile: "../../testdata/phase14/reference/03-flex-justify-variations.png",
+		width:         900,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase14_FlexDirection(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_direction",
+		htmlFile:      "../../testdata/phase14/04-flex-direction.html",
+		referenceFile: "../../testdata/phase14/reference/04-flex-direction.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase14_FlexAlignItems(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_align_items",
+		htmlFile:      "../../testdata/phase14/05-flex-align-items.html",
+		referenceFile: "../../testdata/phase14/reference/05-flex-align-items.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase14_FlexNavbar(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "flex_navbar",
+		htmlFile:      "../../testdata/phase14/06-flex-navbar.html",
+		referenceFile: "../../testdata/phase14/reference/06-flex-navbar.png",
+		width:         1000,
+		height:        200,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 15: CSS Grid Tests
+
+func TestVisualRegression_Phase15_GridBasic(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "grid_basic",
+		htmlFile:      "../../testdata/phase15/01-grid-basic.html",
+		referenceFile: "../../testdata/phase15/reference/01-grid-basic.png",
+		width:         800,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase15_GridAutoFill(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "grid_auto_fill",
+		htmlFile:      "../../testdata/phase15/02-grid-auto-fill.html",
+		referenceFile: "../../testdata/phase15/reference/02-grid-auto-fill.png",
+		width:         800,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase15_GridSizing(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "grid_sizing",
+		htmlFile:      "../../testdata/phase15/03-grid-sizing.html",
+		referenceFile: "../../testdata/phase15/reference/03-grid-sizing.png",
+		width:         800,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase15_GridSpan(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "grid_span",
+		htmlFile:      "../../testdata/phase15/04-grid-span.html",
+		referenceFile: "../../testdata/phase15/reference/04-grid-span.png",
+		width:         800,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase15_GridAlignment(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "grid_alignment",
+		htmlFile:      "../../testdata/phase15/05-grid-alignment.html",
+		referenceFile: "../../testdata/phase15/reference/05-grid-alignment.png",
+		width:         800,
+		height:        400,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase15_GridLayout(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "grid_layout",
+		htmlFile:      "../../testdata/phase15/06-grid-layout.html",
+		referenceFile: "../../testdata/phase15/reference/06-grid-layout.png",
+		width:         900,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 16: CSS Transform Tests
+
+func TestVisualRegression_Phase16_Translate(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "translate",
+		htmlFile:      "../../testdata/phase16/01-translate.html",
+		referenceFile: "../../testdata/phase16/reference/01-translate.png",
+		width:         600,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase16_Rotate(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "rotate",
+		htmlFile:      "../../testdata/phase16/02-rotate.html",
+		referenceFile: "../../testdata/phase16/reference/02-rotate.png",
+		width:         600,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase16_Scale(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "scale",
+		htmlFile:      "../../testdata/phase16/03-scale.html",
+		referenceFile: "../../testdata/phase16/reference/03-scale.png",
+		width:         700,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase16_CenterWithTransform(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "center_with_transform",
+		htmlFile:      "../../testdata/phase16/04-center-with-transform.html",
+		referenceFile: "../../testdata/phase16/reference/04-center-with-transform.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase16_MultipleTransforms(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "multiple_transforms",
+		htmlFile:      "../../testdata/phase16/05-multiple-transforms.html",
+		referenceFile: "../../testdata/phase16/reference/05-multiple-transforms.png",
+		width:         700,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase16_TransformOrigin(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "transform_origin",
+		htmlFile:      "../../testdata/phase16/06-transform-origin.html",
+		referenceFile: "../../testdata/phase16/reference/06-transform-origin.png",
+		width:         800,
+		height:        500,
+	}
+
+	runVisualTest(t, testCase)
+}

@@ -52,6 +52,14 @@ func (r *Renderer) sortByZIndex(boxes []*layout.Box) {
 }
 
 func (r *Renderer) drawBox(box *layout.Box) {
+	// Phase 16: Apply CSS transforms
+	transforms := box.Style.GetTransforms()
+	if len(transforms) > 0 {
+		r.context.Push() // Save graphics state
+		r.applyTransforms(box, transforms)
+		defer r.context.Pop() // Restore graphics state after drawing
+	}
+
 	// Phase 2: Draw background (content + padding area, not including margin)
 	if bgColor, ok := box.Style.Get("background-color"); ok {
 		if color, ok := css.ParseColor(bgColor); ok {
@@ -337,4 +345,53 @@ func (r *Renderer) drawImage(box *layout.Box) {
 
 func (r *Renderer) SavePNG(filename string) error {
 	return r.context.SavePNG(filename)
+}
+
+// Phase 16: applyTransforms applies CSS transforms to the graphics context
+func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) {
+	// Get transform origin
+	origin := box.Style.GetTransformOrigin()
+	
+	// Calculate origin point in absolute coordinates
+	originX := box.X + box.Padding.Left + origin.X*box.Width
+	originY := box.Y + box.Padding.Top + origin.Y*box.Height
+	
+	// Translate to origin point
+	r.context.Translate(originX, originY)
+	
+	// Apply each transform in order
+	for _, transform := range transforms {
+		switch transform.Type {
+		case "translate":
+			if len(transform.Values) >= 2 {
+				tx := transform.Values[0]
+				ty := transform.Values[1]
+				
+				// Handle percentage values (negative values indicate percentage)
+				if tx < 0 {
+					tx = (-tx / 100.0) * box.Width
+				}
+				if ty < 0 {
+					ty = (-ty / 100.0) * box.Height
+				}
+				
+				r.context.Translate(tx, ty)
+			}
+			
+		case "rotate":
+			if len(transform.Values) >= 1 {
+				// Convert degrees to radians
+				radians := transform.Values[0] * 3.14159265359 / 180.0
+				r.context.Rotate(radians)
+			}
+			
+		case "scale":
+			if len(transform.Values) >= 2 {
+				r.context.Scale(transform.Values[0], transform.Values[1])
+			}
+		}
+	}
+	
+	// Translate back from origin
+	r.context.Translate(-originX, -originY)
 }

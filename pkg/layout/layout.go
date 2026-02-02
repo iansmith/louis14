@@ -283,6 +283,26 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		contentHeight = 50 // Default height
 	}
 
+	// Phase 13: Apply max-width constraint
+	if maxWidth, hasMaxWidth := style.GetMaxWidth(); hasMaxWidth {
+		if contentWidth > maxWidth {
+			contentWidth = maxWidth
+		}
+	}
+
+	// Phase 13: Handle margin: auto for horizontal centering
+	// Only center if both left and right margins are auto
+	if margin.AutoLeft && margin.AutoRight {
+		// For block-level elements with auto margins, center them
+		// Calculate total width including padding and border
+		totalWidth := contentWidth + padding.Left + padding.Right + border.Left + border.Right
+		// Center within available width
+		if totalWidth < availableWidth {
+			centerOffset := (availableWidth - totalWidth) / 2
+			x = x + centerOffset
+		}
+	}
+
 	// Phase 4: Get positioning information
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
@@ -341,6 +361,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
 		le.layoutFlex(box, x, y, availableWidth, computedStyles)
 		return box
+	}
+
+	// Phase 15: Handle grid layout specially
+	if display == css.DisplayGrid || display == css.DisplayInlineGrid {
+		return le.layoutGridContainer(node, x, y, availableWidth, style, computedStyles, parent)
 	}
 
 	// Phase 2: Recursively layout children

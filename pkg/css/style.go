@@ -46,19 +46,32 @@ func ParseLength(val string) (float64, bool) {
 
 // BoxEdge represents the four sides of a box (top, right, bottom, left)
 type BoxEdge struct {
-	Top    float64
-	Right  float64
-	Bottom float64
-	Left   float64
+	Top       float64
+	Right     float64
+	Bottom    float64
+	Left      float64
+	AutoTop   bool // True if margin-top: auto
+	AutoRight bool // True if margin-right: auto
+	AutoBottom bool // True if margin-bottom: auto
+	AutoLeft  bool // True if margin-left: auto
 }
 
 // GetMargin returns the margin values for all four sides
 func (s *Style) GetMargin() BoxEdge {
+	top, autoTop := s.getLengthOrAuto("margin-top")
+	right, autoRight := s.getLengthOrAuto("margin-right")
+	bottom, autoBottom := s.getLengthOrAuto("margin-bottom")
+	left, autoLeft := s.getLengthOrAuto("margin-left")
+
 	return BoxEdge{
-		Top:    s.getLengthOrZero("margin-top"),
-		Right:  s.getLengthOrZero("margin-right"),
-		Bottom: s.getLengthOrZero("margin-bottom"),
-		Left:   s.getLengthOrZero("margin-left"),
+		Top:        top,
+		Right:      right,
+		Bottom:     bottom,
+		Left:       left,
+		AutoTop:    autoTop,
+		AutoRight:  autoRight,
+		AutoBottom: autoBottom,
+		AutoLeft:   autoLeft,
 	}
 }
 
@@ -89,6 +102,17 @@ func (s *Style) getLengthOrZero(property string) float64 {
 		return 0
 	}
 	return val
+}
+
+// getLengthOrAuto returns the length value and whether it's "auto"
+// Returns (value, isAuto) where value is 0 if auto
+func (s *Style) getLengthOrAuto(property string) (float64, bool) {
+	if val, ok := s.Get(property); ok {
+		if val == "auto" {
+			return 0, true
+		}
+	}
+	return s.getLengthOrZero(property), false
 }
 
 // Phase 12: Border styling
@@ -145,6 +169,11 @@ func (s *Style) GetBorderRadius() float64 {
 		return radius
 	}
 	return 0.0 // Default no radius
+}
+
+// GetMaxWidth returns the max-width value if set
+func (s *Style) GetMaxWidth() (float64, bool) {
+	return s.GetLength("max-width")
 }
 
 // Phase 4: Positioning helpers
@@ -331,6 +360,27 @@ type Color struct {
 
 func ParseColor(colorStr string) (Color, bool) {
 	colorStr = strings.ToLower(strings.TrimSpace(colorStr))
+
+	// Try hex color first (#RGB or #RRGGBB)
+	if strings.HasPrefix(colorStr, "#") {
+		hex := colorStr[1:]
+		var r, g, b uint8
+
+		if len(hex) == 3 {
+			// #RGB format - expand to #RRGGBB
+			fmt.Sscanf(hex, "%1x%1x%1x", &r, &g, &b)
+			r = r*16 + r
+			g = g*16 + g
+			b = b*16 + b
+			return Color{r, g, b}, true
+		} else if len(hex) == 6 {
+			// #RRGGBB format
+			fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+			return Color{r, g, b}, true
+		}
+	}
+
+	// Try named colors
 	namedColors := map[string]Color{
 		"red":     {255, 0, 0},
 		"green":   {0, 128, 0},
@@ -484,6 +534,8 @@ const (
 	DisplayTableFooterGroup DisplayType = "table-footer-group"
 	DisplayFlex            DisplayType = "flex"
 	DisplayInlineFlex      DisplayType = "inline-flex"
+	DisplayGrid            DisplayType = "grid"
+	DisplayInlineGrid      DisplayType = "inline-grid"
 )
 
 // GetDisplay returns the display value (default: block)
@@ -512,6 +564,10 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayFlex
 		case "inline-flex":
 			return DisplayInlineFlex
+		case "grid":
+			return DisplayGrid
+		case "inline-grid":
+			return DisplayInlineGrid
 		}
 	}
 	return DisplayBlock
@@ -814,4 +870,381 @@ func (s *Style) GetContent() (string, bool) {
 		return content, true
 	}
 	return "", false
+}
+
+// Phase 15: CSS Grid properties
+
+// GridTrack represents a single grid track (column or row)
+type GridTrack struct {
+	Size float64  // Size in pixels
+}
+
+// GetGridTemplateColumns parses grid-template-columns and returns track sizes
+func (s *Style) GetGridTemplateColumns() []GridTrack {
+	if val, ok := s.Get("grid-template-columns"); ok {
+		return parseGridTracks(val)
+	}
+	return nil
+}
+
+// GetGridTemplateRows parses grid-template-rows and returns track sizes
+func (s *Style) GetGridTemplateRows() []GridTrack {
+	if val, ok := s.Get("grid-template-rows"); ok {
+		return parseGridTracks(val)
+	}
+	return nil
+}
+
+// parseGridTracks parses a space-separated list of track sizes (e.g., "100px 200px 150px")
+func parseGridTracks(val string) []GridTrack {
+	tracks := make([]GridTrack, 0)
+	parts := strings.Fields(val)
+	
+	for _, part := range parts {
+		if size, ok := ParseLength(part); ok {
+			tracks = append(tracks, GridTrack{Size: size})
+		}
+	}
+	
+	return tracks
+}
+
+// GetGridGap returns the grid-gap value (shorthand for row-gap and column-gap)
+func (s *Style) GetGridGap() (rowGap, columnGap float64) {
+	// Try grid-gap first (older syntax)
+	if gap, ok := s.GetLength("grid-gap"); ok {
+		return gap, gap
+	}
+	
+	// Try gap (newer syntax)
+	if gap, ok := s.GetLength("gap"); ok {
+		return gap, gap
+	}
+	
+	// Try individual properties
+	rowGap, _ = s.GetLength("row-gap")
+	columnGap, _ = s.GetLength("column-gap")
+	
+	return rowGap, columnGap
+}
+
+// GridPlacement represents grid-column or grid-row placement
+type GridPlacement struct {
+	Start int  // Starting line (1-indexed)
+	End   int  // Ending line (1-indexed, exclusive)
+}
+
+// GetGridColumn parses grid-column property (e.g., "1 / 3" or "1 / span 2")
+func (s *Style) GetGridColumn() *GridPlacement {
+	if val, ok := s.Get("grid-column"); ok {
+		return parseGridPlacement(val)
+	}
+	return nil
+}
+
+// GetGridRow parses grid-row property (e.g., "2 / 4")
+func (s *Style) GetGridRow() *GridPlacement {
+	if val, ok := s.Get("grid-row"); ok {
+		return parseGridPlacement(val)
+	}
+	return nil
+}
+
+// parseGridPlacement parses grid line placement (e.g., "1 / 3")
+func parseGridPlacement(val string) *GridPlacement {
+	parts := strings.Split(val, "/")
+	if len(parts) != 2 {
+		return nil
+	}
+	
+	start := strings.TrimSpace(parts[0])
+	end := strings.TrimSpace(parts[1])
+	
+	var startNum, endNum int
+	fmt.Sscanf(start, "%d", &startNum)
+	fmt.Sscanf(end, "%d", &endNum)
+	
+	if startNum == 0 || endNum == 0 {
+		return nil
+	}
+	
+	return &GridPlacement{
+		Start: startNum,
+		End:   endNum,
+	}
+}
+
+// JustifyItems represents the justify-items property value for grid
+type JustifyItems string
+
+const (
+	JustifyItemsStart   JustifyItems = "start"
+	JustifyItemsEnd     JustifyItems = "end"
+	JustifyItemsCenter  JustifyItems = "center"
+	JustifyItemsStretch JustifyItems = "stretch"
+)
+
+// GetJustifyItems returns the justify-items value (default: stretch)
+func (s *Style) GetJustifyItems() JustifyItems {
+	if val, ok := s.Get("justify-items"); ok {
+		switch val {
+		case "start":
+			return JustifyItemsStart
+		case "end":
+			return JustifyItemsEnd
+		case "center":
+			return JustifyItemsCenter
+		}
+	}
+	return JustifyItemsStretch
+}
+
+// Note: We can reuse AlignItems from flexbox for align-items in grid
+
+// Phase 16: CSS Transforms
+
+// Transform represents a CSS transform
+type Transform struct {
+	Type   string    // "translate", "rotate", "scale", "skew"
+	Values []float64 // Parameter values
+}
+
+// GetTransforms parses the transform property and returns a list of transforms
+func (s *Style) GetTransforms() []Transform {
+	if val, ok := s.Get("transform"); ok {
+		if val == "none" {
+			return nil
+		}
+		return parseTransforms(val)
+	}
+	return nil
+}
+
+// parseTransforms parses transform functions (e.g., "translate(10px, 20px) rotate(45deg)")
+func parseTransforms(val string) []Transform {
+	transforms := make([]Transform, 0)
+	
+	// Simple parser for transform functions
+	i := 0
+	for i < len(val) {
+		// Skip whitespace
+		for i < len(val) && val[i] == ' ' {
+			i++
+		}
+		if i >= len(val) {
+			break
+		}
+		
+		// Find function name
+		start := i
+		for i < len(val) && val[i] != '(' {
+			i++
+		}
+		if i >= len(val) {
+			break
+		}
+		
+		funcName := val[start:i]
+		i++ // Skip '('
+		
+		// Find function arguments
+		argStart := i
+		depth := 1
+		for i < len(val) && depth > 0 {
+			if val[i] == '(' {
+				depth++
+			} else if val[i] == ')' {
+				depth--
+			}
+			i++
+		}
+		
+		args := val[argStart : i-1]
+		
+		// Parse the transform
+		transform := parseTransformFunction(funcName, args)
+		if transform != nil {
+			transforms = append(transforms, *transform)
+		}
+	}
+	
+	return transforms
+}
+
+// parseTransformFunction parses a single transform function
+func parseTransformFunction(name, args string) *Transform {
+	name = strings.TrimSpace(name)
+	args = strings.TrimSpace(args)
+	
+	switch name {
+	case "translate":
+		// translate(x, y) or translate(x)
+		parts := strings.Split(args, ",")
+		values := make([]float64, 0)
+		for _, part := range parts {
+			if val := parseTransformValue(strings.TrimSpace(part)); val != nil {
+				values = append(values, *val)
+			}
+		}
+		if len(values) == 1 {
+			values = append(values, 0) // y defaults to 0
+		}
+		if len(values) >= 2 {
+			return &Transform{Type: "translate", Values: values[:2]}
+		}
+		
+	case "translateX":
+		if val := parseTransformValue(args); val != nil {
+			return &Transform{Type: "translate", Values: []float64{*val, 0}}
+		}
+		
+	case "translateY":
+		if val := parseTransformValue(args); val != nil {
+			return &Transform{Type: "translate", Values: []float64{0, *val}}
+		}
+		
+	case "rotate":
+		// rotate(45deg)
+		if val := parseAngle(args); val != nil {
+			return &Transform{Type: "rotate", Values: []float64{*val}}
+		}
+		
+	case "scale":
+		// scale(x, y) or scale(x)
+		parts := strings.Split(args, ",")
+		values := make([]float64, 0)
+		for _, part := range parts {
+			if val, err := strconv.ParseFloat(strings.TrimSpace(part), 64); err == nil {
+				values = append(values, val)
+			}
+		}
+		if len(values) == 1 {
+			values = append(values, values[0]) // y defaults to x
+		}
+		if len(values) >= 2 {
+			return &Transform{Type: "scale", Values: values[:2]}
+		}
+		
+	case "scaleX":
+		if val, err := strconv.ParseFloat(args, 64); err == nil {
+			return &Transform{Type: "scale", Values: []float64{val, 1}}
+		}
+		
+	case "scaleY":
+		if val, err := strconv.ParseFloat(args, 64); err == nil {
+			return &Transform{Type: "scale", Values: []float64{1, val}}
+		}
+	}
+	
+	return nil
+}
+
+// parseTransformValue parses a length value that might be pixels or percentage
+func parseTransformValue(val string) *float64 {
+	val = strings.TrimSpace(val)
+	
+	// Check for percentage
+	if strings.HasSuffix(val, "%") {
+		percentStr := strings.TrimSuffix(val, "%")
+		if percent, err := strconv.ParseFloat(percentStr, 64); err == nil {
+			// Return negative value to indicate percentage (will be resolved later with element size)
+			result := -percent // Negative indicates percentage
+			return &result
+		}
+	}
+	
+	// Check for px or unitless
+	val = strings.TrimSuffix(val, "px")
+	if length, err := strconv.ParseFloat(val, 64); err == nil {
+		return &length
+	}
+	
+	return nil
+}
+
+// parseAngle parses an angle value (deg, rad, turn)
+func parseAngle(val string) *float64 {
+	val = strings.TrimSpace(val)
+	
+	// Degrees
+	if strings.HasSuffix(val, "deg") {
+		degStr := strings.TrimSuffix(val, "deg")
+		if deg, err := strconv.ParseFloat(degStr, 64); err == nil {
+			return &deg
+		}
+	}
+	
+	// Radians
+	if strings.HasSuffix(val, "rad") {
+		radStr := strings.TrimSuffix(val, "rad")
+		if rad, err := strconv.ParseFloat(radStr, 64); err == nil {
+			deg := rad * 180 / 3.14159265359
+			return &deg
+		}
+	}
+	
+	// Turns
+	if strings.HasSuffix(val, "turn") {
+		turnStr := strings.TrimSuffix(val, "turn")
+		if turn, err := strconv.ParseFloat(turnStr, 64); err == nil {
+			deg := turn * 360
+			return &deg
+		}
+	}
+	
+	return nil
+}
+
+// TransformOrigin represents the transform-origin property
+type TransformOrigin struct {
+	X float64 // 0.0 = left, 0.5 = center, 1.0 = right
+	Y float64 // 0.0 = top, 0.5 = center, 1.0 = bottom
+}
+
+// GetTransformOrigin parses transform-origin (default: center center = 50% 50%)
+func (s *Style) GetTransformOrigin() TransformOrigin {
+	if val, ok := s.Get("transform-origin"); ok {
+		parts := strings.Fields(val)
+		origin := TransformOrigin{X: 0.5, Y: 0.5} // Default center center
+		
+		if len(parts) >= 1 {
+			origin.X = parseOriginValue(parts[0])
+		}
+		if len(parts) >= 2 {
+			origin.Y = parseOriginValue(parts[1])
+		}
+		
+		return origin
+	}
+	return TransformOrigin{X: 0.5, Y: 0.5} // Default center center
+}
+
+// parseOriginValue parses a single origin value (left/center/right/top/bottom or percentage)
+func parseOriginValue(val string) float64 {
+	val = strings.TrimSpace(val)
+	
+	switch val {
+	case "left", "top":
+		return 0.0
+	case "center":
+		return 0.5
+	case "right", "bottom":
+		return 1.0
+	}
+	
+	// Try percentage
+	if strings.HasSuffix(val, "%") {
+		percentStr := strings.TrimSuffix(val, "%")
+		if percent, err := strconv.ParseFloat(percentStr, 64); err == nil {
+			return percent / 100.0
+		}
+	}
+	
+	// Try pixels (convert to 0-1 range... but we don't know element size here)
+	// For now, just use as-is
+	if length, ok := ParseLength(val); ok {
+		return length / 100.0 // Rough approximation
+	}
+	
+	return 0.5 // Default to center
 }
