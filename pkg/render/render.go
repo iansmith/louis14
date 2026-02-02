@@ -138,31 +138,45 @@ func (r *Renderer) drawBox(box *layout.Box) {
 	}
 }
 
+// getBorderSideColor returns the color for a specific border side
+func (r *Renderer) getBorderSideColor(box *layout.Box, side string) (css.Color, bool) {
+	// Check per-side color first
+	if colorStr, ok := box.Style.Get("border-" + side + "-color"); ok {
+		if color, ok := css.ParseColor(colorStr); ok {
+			return color, true
+		}
+	}
+	// Fall back to global border-color
+	if colorStr, ok := box.Style.Get("border-color"); ok {
+		if color, ok := css.ParseColor(colorStr); ok {
+			return color, true
+		}
+	}
+	return css.Color{0, 0, 0, 1.0}, false
+}
+
 // drawBorder draws the border around a box
 func (r *Renderer) drawBorder(box *layout.Box) {
-	// Check if border is specified
-	borderColor, hasBorderColor := box.Style.Get("border-color")
-	if !hasBorderColor {
+	// Check if any border exists
+	hasBorder := false
+	if _, ok := box.Style.Get("border-color"); ok {
+		hasBorder = true
+	}
+	if _, ok := box.Style.Get("border-top-color"); ok {
+		hasBorder = true
+	}
+	if _, ok := box.Style.Get("border-right-color"); ok {
+		hasBorder = true
+	}
+	if _, ok := box.Style.Get("border-bottom-color"); ok {
+		hasBorder = true
+	}
+	if _, ok := box.Style.Get("border-left-color"); ok {
+		hasBorder = true
+	}
+	if !hasBorder {
 		return
 	}
-
-	// Parse border color
-	color, ok := css.ParseColor(borderColor)
-	if !ok {
-		color = css.Color{0, 0, 0, 1.0} // Default to black
-	}
-
-	// Skip fully transparent borders
-	if color.A == 0 {
-		return
-	}
-
-	r.context.SetRGBA(
-		float64(color.R)/255.0,
-		float64(color.G)/255.0,
-		float64(color.B)/255.0,
-		color.A,
-	)
 
 	// Phase 12: Get border styles for each side
 	borderStyles := box.Style.GetBorderStyle()
@@ -171,72 +185,68 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	borderRadius := box.Style.GetBorderRadius()
 
 	// If border-radius is set and all borders are solid, use rounded rectangle
-	if borderRadius > 0 &&
-		borderStyles.Top == css.BorderStyleSolid &&
-		borderStyles.Right == css.BorderStyleSolid &&
-		borderStyles.Bottom == css.BorderStyleSolid &&
-		borderStyles.Left == css.BorderStyleSolid &&
-		box.Border.Top == box.Border.Right &&
-		box.Border.Right == box.Border.Bottom &&
-		box.Border.Bottom == box.Border.Left {
-		// Draw rounded border (simplified - same width all around)
-		r.context.SetLineWidth(box.Border.Top)
-		borderX := box.X - box.Border.Left/2
-		borderY := box.Y - box.Border.Top/2
-		borderWidth := box.Width + box.Padding.Left + box.Padding.Right + box.Border.Left
-		borderHeight := box.Height + box.Padding.Top + box.Padding.Bottom + box.Border.Top
-		r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
-		r.context.Stroke()
+	if borderRadius > 0 {
+		color, _ := r.getBorderSideColor(box, "top")
+		if color.A > 0 {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+			r.context.SetLineWidth(box.Border.Top)
+			borderX := box.X - box.Border.Left/2
+			borderY := box.Y - box.Border.Top/2
+			borderWidth := box.Width + box.Padding.Left + box.Padding.Right + box.Border.Left
+			borderHeight := box.Height + box.Padding.Top + box.Padding.Bottom + box.Border.Top
+			r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
+			r.context.Stroke()
+		}
 		return
 	}
 
-	// Draw each side with its specific style
+	// Draw each side with its specific color and style
 	// Top border
 	if box.Border.Top > 0 && borderStyles.Top != css.BorderStyleNone {
-		r.drawBorderSide(
-			box.X,
-			box.Y-box.Border.Top,
-			box.Width+box.Padding.Left+box.Padding.Right,
-			box.Border.Top,
-			borderStyles.Top,
-			true, // horizontal
-		)
+		if color, ok := r.getBorderSideColor(box, "top"); ok && color.A > 0 {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+			r.drawBorderSide(
+				box.X, box.Y-box.Border.Top,
+				box.Width+box.Padding.Left+box.Padding.Right, box.Border.Top,
+				borderStyles.Top, true,
+			)
+		}
 	}
 
 	// Right border
 	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone {
-		r.drawBorderSide(
-			box.X+box.Width+box.Padding.Left+box.Padding.Right,
-			box.Y-box.Border.Top,
-			box.Border.Right,
-			box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
-			borderStyles.Right,
-			false, // vertical
-		)
+		if color, ok := r.getBorderSideColor(box, "right"); ok && color.A > 0 {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+			r.drawBorderSide(
+				box.X+box.Width+box.Padding.Left+box.Padding.Right, box.Y-box.Border.Top,
+				box.Border.Right, box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
+				borderStyles.Right, false,
+			)
+		}
 	}
 
 	// Bottom border
 	if box.Border.Bottom > 0 && borderStyles.Bottom != css.BorderStyleNone {
-		r.drawBorderSide(
-			box.X,
-			box.Y+box.Height+box.Padding.Top+box.Padding.Bottom,
-			box.Width+box.Padding.Left+box.Padding.Right,
-			box.Border.Bottom,
-			borderStyles.Bottom,
-			true, // horizontal
-		)
+		if color, ok := r.getBorderSideColor(box, "bottom"); ok && color.A > 0 {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+			r.drawBorderSide(
+				box.X, box.Y+box.Height+box.Padding.Top+box.Padding.Bottom,
+				box.Width+box.Padding.Left+box.Padding.Right, box.Border.Bottom,
+				borderStyles.Bottom, true,
+			)
+		}
 	}
 
 	// Left border
 	if box.Border.Left > 0 && borderStyles.Left != css.BorderStyleNone {
-		r.drawBorderSide(
-			box.X-box.Border.Left,
-			box.Y-box.Border.Top,
-			box.Border.Left,
-			box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
-			borderStyles.Left,
-			false, // vertical
-		)
+		if color, ok := r.getBorderSideColor(box, "left"); ok && color.A > 0 {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+			r.drawBorderSide(
+				box.X-box.Border.Left, box.Y-box.Border.Top,
+				box.Border.Left, box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
+				borderStyles.Left, false,
+			)
+		}
 	}
 }
 
