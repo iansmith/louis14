@@ -18,6 +18,45 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("color", "#0645ad")           // Standard link blue
 		style.Set("text-decoration", "underline")
 	}
+
+	// Phase 23: Default styles for table elements
+	switch node.TagName {
+	case "table":
+		style.Set("display", "table")
+		style.Set("border-collapse", "separate")
+		style.Set("border-spacing", "2px")
+	case "thead":
+		style.Set("display", "table-header-group")
+	case "tbody":
+		style.Set("display", "table-row-group")
+	case "tfoot":
+		style.Set("display", "table-footer-group")
+	case "tr":
+		style.Set("display", "table-row")
+	case "td":
+		style.Set("display", "table-cell")
+		style.Set("padding", "1px")
+	case "th":
+		style.Set("display", "table-cell")
+		style.Set("padding", "1px")
+		style.Set("font-weight", "bold")
+		style.Set("text-align", "center")
+
+	// Phase 23: Default styles for list elements
+	case "ul", "ol":
+		style.Set("display", "block")
+		style.Set("margin-top", "16px")
+		style.Set("margin-bottom", "16px")
+		style.Set("padding-left", "40px")
+	case "li":
+		style.Set("display", "list-item")
+		// For <ol> parent, use decimal; for <ul> parent, use disc
+		if node.Parent != nil && node.Parent.TagName == "ol" {
+			style.Set("list-style-type", "decimal")
+		} else {
+			style.Set("list-style-type", "disc")
+		}
+	}
 }
 
 // ComputeStyle computes the final style for a node by applying the cascade

@@ -843,6 +843,7 @@ const (
 	DisplayTableHeaderGroup DisplayType = "table-header-group"
 	DisplayTableRowGroup   DisplayType = "table-row-group"
 	DisplayTableFooterGroup DisplayType = "table-footer-group"
+	DisplayListItem        DisplayType = "list-item" // Phase 23
 	DisplayFlex            DisplayType = "flex"
 	DisplayInlineFlex      DisplayType = "inline-flex"
 	DisplayGrid            DisplayType = "grid"
@@ -871,6 +872,8 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayTableRowGroup
 		case "table-footer-group":
 			return DisplayTableFooterGroup
+		case "list-item":
+			return DisplayListItem
 		case "flex":
 			return DisplayFlex
 		case "inline-flex":
@@ -1558,4 +1561,36 @@ func parseOriginValue(val string) float64 {
 	}
 	
 	return 0.5 // Default to center
+}
+
+// Phase 23: List styling
+
+// ListStyleType represents the list-style-type property value
+type ListStyleType string
+
+const (
+	ListStyleTypeDisc    ListStyleType = "disc"
+	ListStyleTypeCircle  ListStyleType = "circle"
+	ListStyleTypeSquare  ListStyleType = "square"
+	ListStyleTypeDecimal ListStyleType = "decimal"
+	ListStyleTypeNone    ListStyleType = "none"
+)
+
+// GetListStyleType returns the list-style-type value (default: disc)
+func (s *Style) GetListStyleType() ListStyleType {
+	if val, ok := s.Get("list-style-type"); ok {
+		switch val {
+		case "disc":
+			return ListStyleTypeDisc
+		case "circle":
+			return ListStyleTypeCircle
+		case "square":
+			return ListStyleTypeSquare
+		case "decimal":
+			return ListStyleTypeDecimal
+		case "none":
+			return ListStyleTypeNone
+		}
+	}
+	return ListStyleTypeDisc
 }

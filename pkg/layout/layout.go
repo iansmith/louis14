@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"fmt" // Phase 23: For list marker formatting
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -393,6 +395,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		} else {
 			inlineCtx.LineY += le.getTotalHeight(beforeBox)
+		}
+	}
+
+	// Phase 23: Generate list marker for list-item elements
+	if display == css.DisplayListItem {
+		markerBox := le.generateListMarker(node, style, x, inlineCtx.LineY, box)
+		if markerBox != nil {
+			box.Children = append(box.Children, markerBox)
 		}
 	}
 
@@ -1578,4 +1588,75 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 	}
 
 	return box
+}
+
+// Phase 23: generateListMarker creates a marker box for list items
+func (le *LayoutEngine) generateListMarker(node *html.Node, style *css.Style, x, y float64, parent *Box) *Box {
+	listStyleType := style.GetListStyleType()
+	if listStyleType == css.ListStyleTypeNone {
+		return nil
+	}
+
+	// Generate marker text based on list-style-type
+	var markerText string
+	switch listStyleType {
+	case css.ListStyleTypeDisc:
+		markerText = "•"
+	case css.ListStyleTypeCircle:
+		markerText = "○"
+	case css.ListStyleTypeSquare:
+		markerText = "■"
+	case css.ListStyleTypeDecimal:
+		// Count preceding <li> siblings to determine number
+		itemNumber := le.getListItemNumber(node)
+		markerText = fmt.Sprintf("%d.", itemNumber)
+	default:
+		markerText = "•"
+	}
+
+	// Measure marker text
+	fontSize := style.GetFontSize()
+	fontWeight := style.GetFontWeight()
+	bold := fontWeight == css.FontWeightBold
+	textWidth, textHeight := text.MeasureTextWithWeight(markerText, fontSize, bold)
+
+	// Position marker to the left of the content (outside the content box)
+	markerX := x - 20 // 20px to the left of content edge
+	markerY := y
+
+	markerBox := &Box{
+		Node:          node,
+		Style:         style,
+		X:             markerX,
+		Y:             markerY,
+		Width:         textWidth,
+		Height:        textHeight,
+		Margin:        css.BoxEdge{},
+		Padding:       css.BoxEdge{},
+		Border:        css.BoxEdge{},
+		Children:      make([]*Box, 0),
+		Parent:        parent,
+		PseudoContent: markerText, // Store marker text for rendering
+	}
+
+	return markerBox
+}
+
+// Phase 23: getListItemNumber returns the 1-based index of a list item among its siblings
+func (le *LayoutEngine) getListItemNumber(node *html.Node) int {
+	if node.Parent == nil {
+		return 1
+	}
+
+	itemNumber := 1
+	for _, sibling := range node.Parent.Children {
+		if sibling == node {
+			break
+		}
+		if sibling.Type == html.ElementNode && sibling.TagName == "li" {
+			itemNumber++
+		}
+	}
+
+	return itemNumber
 }

@@ -1,0 +1,87 @@
+<style>
+  body {
+    margin: 20px;
+    padding: 20px;
+    background-color: #34495e;
+  }
+
+  .container {
+    background-color: white;
+    padding: 25px;
+    border-radius: 8px;
+  }
+
+  .title {
+    font-size: 22px;
+    font-weight: bold;
+    margin-bottom: 20px;
+    color: #2c3e50;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    background-color: #16a085;
+    color: white;
+    padding: 12px;
+    text-align: left;
+    font-weight: bold;
+  }
+
+  td {
+    padding: 10px;
+    border-bottom: 1px solid #ecf0f1;
+  }
+
+  tr:hover {
+    background-color: #f8f9fa;
+  }
+
+  .status-active {
+    color: #27ae60;
+    font-weight: bold;
+  }
+
+  .status-pending {
+    color: #f39c12;
+    font-weight: bold;
+  }
+</style>
+
+<div class="container">
+  <div class="title">User Dashboard</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Username</th>
+        <th>Email</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>john_doe</td>
+        <td>john@example.com</td>
+        <td class="status-active">Active</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>jane_smith</td>
+        <td>jane@example.com</td>
+        <td class="status-active">Active</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>bob_jones</td>
+        <td>bob@example.com</td>
+        <td class="status-pending">Pending</td>
+      </tr>
+    </tbody>
+  </table>
+</div>

@@ -1905,3 +1905,76 @@ func TestVisualRegression_Phase22_ResponsiveLayout(t *testing.T) {
 
 	runVisualTest(t, testCase)
 }
+
+// Phase 23: Table and List Display Types
+func TestVisualRegression_Phase23_BasicTable(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "basic_table",
+		htmlFile:      "../../testdata/phase23/01-basic-table.html",
+		referenceFile: "../../testdata/phase23/reference/01-basic-table.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase23_UnorderedList(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "unordered_list",
+		htmlFile:      "../../testdata/phase23/02-unordered-list.html",
+		referenceFile: "../../testdata/phase23/reference/02-unordered-list.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase23_OrderedList(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "ordered_list",
+		htmlFile:      "../../testdata/phase23/03-ordered-list.html",
+		referenceFile: "../../testdata/phase23/reference/03-ordered-list.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase23_NestedLists(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "nested_lists",
+		htmlFile:      "../../testdata/phase23/04-nested-lists.html",
+		referenceFile: "../../testdata/phase23/reference/04-nested-lists.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase23_StyledTable(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "styled_table",
+		htmlFile:      "../../testdata/phase23/05-styled-table.html",
+		referenceFile: "../../testdata/phase23/reference/05-styled-table.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase23_CombinedLayout(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "combined_layout",
+		htmlFile:      "../../testdata/phase23/06-combined-layout.html",
+		referenceFile: "../../testdata/phase23/reference/06-combined-layout.png",
+		width:         800,
+		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
