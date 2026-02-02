@@ -112,6 +112,17 @@ func matchesSelectorPart(node *html.Node, part SelectorPart) bool {
 		}
 	}
 
+	// Pseudo-classes: dynamic pseudo-classes never match in a static renderer
+	for _, pc := range part.PseudoClasses {
+		switch pc {
+		case "hover", "focus", "active", "visited":
+			return false
+		default:
+			// Unknown pseudo-class: never match
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -141,10 +152,10 @@ func matchesAttributeSelector(node *html.Node, attr AttributeSelector) bool {
 		// Contains
 		return strings.Contains(value, attr.Value)
 	case "~=":
-		// Word match (space-separated)
-		words := strings.Split(value, " ")
+		// Word match (whitespace-separated)
+		words := strings.Fields(value)
 		for _, word := range words {
-			if strings.TrimSpace(word) == attr.Value {
+			if word == attr.Value {
 				return true
 			}
 		}

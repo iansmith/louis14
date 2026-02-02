@@ -98,6 +98,9 @@ func (r *Renderer) drawBox(box *layout.Box) {
 		}
 	}
 
+	// Phase 24: Draw background image
+	r.drawBackgroundImage(box)
+
 	// Phase 2: Draw border
 	r.drawBorder(box)
 
@@ -506,6 +509,77 @@ func (r *Renderer) drawImage(box *layout.Box) {
 	r.context.DrawImage(img, 0, 0)
 
 	// Restore context state
+	r.context.Pop()
+}
+
+// Phase 24: drawBackgroundImage renders a CSS background-image on a box
+func (r *Renderer) drawBackgroundImage(box *layout.Box) {
+	imgURL, ok := box.Style.GetBackgroundImage()
+	if !ok {
+		return
+	}
+
+	img, err := images.LoadImage(imgURL)
+	if err != nil {
+		return // silently skip if image can't be loaded
+	}
+
+	// Background area: content + padding
+	bgX := box.X
+	bgY := box.Y
+	bgWidth := box.Width + box.Padding.Left + box.Padding.Right
+	bgHeight := box.Height + box.Padding.Top + box.Padding.Bottom
+
+	bounds := img.Bounds()
+	imgW := float64(bounds.Dx())
+	imgH := float64(bounds.Dy())
+
+	repeat := box.Style.GetBackgroundRepeat()
+	pos := box.Style.GetBackgroundPosition()
+
+	// Clip to background area
+	r.context.Push()
+	r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+	r.context.Clip()
+
+	switch repeat {
+	case css.BackgroundRepeatNoRepeat:
+		r.context.DrawImage(img, int(bgX+pos.X), int(bgY+pos.Y))
+
+	case css.BackgroundRepeatRepeatX:
+		startX := pos.X
+		for startX > 0 {
+			startX -= imgW
+		}
+		for x := startX; x < bgWidth; x += imgW {
+			r.context.DrawImage(img, int(bgX+x), int(bgY+pos.Y))
+		}
+
+	case css.BackgroundRepeatRepeatY:
+		startY := pos.Y
+		for startY > 0 {
+			startY -= imgH
+		}
+		for y := startY; y < bgHeight; y += imgH {
+			r.context.DrawImage(img, int(bgX+pos.X), int(bgY+y))
+		}
+
+	default: // repeat
+		startX := pos.X
+		for startX > 0 {
+			startX -= imgW
+		}
+		startY := pos.Y
+		for startY > 0 {
+			startY -= imgH
+		}
+		for y := startY; y < bgHeight; y += imgH {
+			for x := startX; x < bgWidth; x += imgW {
+				r.context.DrawImage(img, int(bgX+x), int(bgY+y))
+			}
+		}
+	}
+
 	r.context.Pop()
 }
 

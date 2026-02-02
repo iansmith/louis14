@@ -29,9 +29,9 @@ func TestGetLength_PixelValue(t *testing.T) {
 
 func TestParseColor_BasicColors(t *testing.T) {
 	tests := map[string]Color{
-		"red":   {255, 0, 0},
-		"blue":  {0, 0, 255},
-		"green": {0, 128, 0},
+		"red":   {255, 0, 0, 1.0},
+		"blue":  {0, 0, 255, 1.0},
+		"green": {0, 128, 0, 1.0},
 	}
 	for name, expected := range tests {
 		color, ok := ParseColor(name)

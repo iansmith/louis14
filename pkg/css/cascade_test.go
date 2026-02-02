@@ -14,7 +14,7 @@ func TestComputeStyle_ElementSelector(t *testing.T) {
 		TagName: "div",
 	}
 
-	style := ComputeStyle(node, stylesheets)
+	style := ComputeStyle(node, stylesheets, 800, 600)
 
 	if color, ok := style.Get("color"); !ok || color != "red" {
 		t.Errorf("expected color='red', got '%s'", color)
@@ -36,7 +36,7 @@ func TestComputeStyle_SpecificityOverride(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets)
+	style := ComputeStyle(node, stylesheets, 800, 600)
 
 	// Class selector (.highlight) should override element selector (div)
 	if color, ok := style.Get("color"); !ok || color != "blue" {
@@ -61,7 +61,7 @@ func TestComputeStyle_IDHasHighestSpecificity(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets)
+	style := ComputeStyle(node, stylesheets, 800, 600)
 
 	// ID selector should override both class and element
 	if color, ok := style.Get("color"); !ok || color != "green" {
@@ -87,7 +87,7 @@ func TestComputeStyle_InlineStyleOverridesAll(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets)
+	style := ComputeStyle(node, stylesheets, 800, 600)
 
 	// Inline style should override everything
 	if color, ok := style.Get("color"); !ok || color != "purple" {
@@ -110,7 +110,7 @@ func TestComputeStyle_MultipleProperties(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets)
+	style := ComputeStyle(node, stylesheets, 800, 600)
 
 	// Should have color from .highlight (overrides div)
 	if color, ok := style.Get("color"); !ok || color != "blue" {
@@ -156,5 +156,110 @@ func TestApplyStylesToDocument(t *testing.T) {
 
 	if elementCount != 2 {
 		t.Errorf("expected 2 styled elements, got %d", elementCount)
+	}
+}
+
+func TestInheritKeyword_FloatInherit(t *testing.T) {
+	doc, _ := html.Parse(`
+		<style>
+			.parent { float: left; }
+			.child { float: inherit; }
+		</style>
+		<div class="parent"><div class="child"></div></div>
+	`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	// Find child node
+	for node, style := range styles {
+		if node.TagName == "div" {
+			if cls, _ := node.GetAttribute("class"); cls == "child" {
+				if val, ok := style.Get("float"); !ok || val != "left" {
+					t.Errorf("expected float='left' (inherited from parent), got '%s' ok=%v", val, ok)
+				}
+			}
+		}
+	}
+}
+
+func TestInheritKeyword_ColorInherit(t *testing.T) {
+	doc, _ := html.Parse(`
+		<style>
+			.parent { color: red; }
+			.child { color: inherit; }
+		</style>
+		<div class="parent"><span class="child"></span></div>
+	`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	for node, style := range styles {
+		if cls, _ := node.GetAttribute("class"); cls == "child" {
+			if val, ok := style.Get("color"); !ok || val != "red" {
+				t.Errorf("expected color='red' (inherited), got '%s'", val)
+			}
+		}
+	}
+}
+
+func TestInheritKeyword_NoParentValue(t *testing.T) {
+	doc, _ := html.Parse(`
+		<style>
+			.child { float: inherit; }
+		</style>
+		<div class="parent"><div class="child"></div></div>
+	`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	for node, style := range styles {
+		if cls, _ := node.GetAttribute("class"); cls == "child" {
+			// "inherit" should be resolved away (deleted), not left as literal "inherit"
+			if val, ok := style.Get("float"); ok {
+				t.Errorf("expected float to be unset (no parent value), got '%s'", val)
+			}
+		}
+	}
+}
+
+func TestInheritKeyword_DeepNesting(t *testing.T) {
+	doc, _ := html.Parse(`
+		<style>
+			.grandparent { display: inline; }
+			.parent { display: inherit; }
+			.child { display: inherit; }
+		</style>
+		<div class="grandparent"><div class="parent"><div class="child"></div></div></div>
+	`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	for node, style := range styles {
+		if cls, _ := node.GetAttribute("class"); cls == "child" {
+			if val, ok := style.Get("display"); !ok || val != "inline" {
+				t.Errorf("expected display='inline' (inherited through chain), got '%s'", val)
+			}
+		}
+	}
+}
+
+func TestInheritKeyword_InlineStyle(t *testing.T) {
+	doc, _ := html.Parse(`
+		<style>
+			.parent { color: blue; }
+		</style>
+		<div class="parent"><div style="color: inherit"></div></div>
+	`)
+
+	styles := ApplyStylesToDocument(doc, 800, 600)
+
+	for node, style := range styles {
+		if node.Parent != nil {
+			if cls, _ := node.Parent.GetAttribute("class"); cls == "parent" && node.TagName == "div" {
+				if val, ok := style.Get("color"); !ok || val != "blue" {
+					t.Errorf("expected color='blue' (inherited via inline style), got '%s'", val)
+				}
+			}
+		}
 	}
 }

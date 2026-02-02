@@ -24,10 +24,11 @@ type Selector struct {
 
 // SelectorPart represents a single part of a compound selector (e.g., "div.class1.class2")
 type SelectorPart struct {
-	Element    string   // Element name ("div", "p", "*" for universal, "" for none)
-	Classes    []string // Class names (without the .)
-	ID         string   // ID (without the #)
-	Attributes []AttributeSelector // Attribute selectors
+	Element       string              // Element name ("div", "p", "*" for universal, "" for none)
+	Classes       []string            // Class names (without the .)
+	ID            string              // ID (without the #)
+	Attributes    []AttributeSelector // Attribute selectors
+	PseudoClasses []string            // Pseudo-classes (e.g., "hover", "focus", "active", "visited")
 }
 
 // AttributeSelector represents an attribute selector like [type="text"]
@@ -80,11 +81,59 @@ type Stylesheet struct {
 	Rules []Rule
 }
 
+// stripCSSComments removes all /* ... */ comments from CSS source,
+// while preserving string literals (comments inside strings are not stripped).
+func stripCSSComments(css string) string {
+	var b strings.Builder
+	b.Grow(len(css))
+	i := 0
+	inString := byte(0)
+	for i < len(css) {
+		// Handle string literals
+		if inString != 0 {
+			b.WriteByte(css[i])
+			if css[i] == '\\' && i+1 < len(css) {
+				i++
+				b.WriteByte(css[i])
+			} else if css[i] == inString {
+				inString = 0
+			}
+			i++
+			continue
+		}
+		if css[i] == '"' || css[i] == '\'' {
+			inString = css[i]
+			b.WriteByte(css[i])
+			i++
+			continue
+		}
+		if i+1 < len(css) && css[i] == '/' && css[i+1] == '*' {
+			// Skip until */
+			i += 2
+			for i < len(css) {
+				if i+1 < len(css) && css[i] == '*' && css[i+1] == '/' {
+					i += 2
+					break
+				}
+				i++
+			}
+			// If we reached end of input, the comment was unterminated — just stop
+		} else {
+			b.WriteByte(css[i])
+			i++
+		}
+	}
+	return b.String()
+}
+
 // ParseStylesheet parses CSS stylesheet content into rules
 func ParseStylesheet(css string) (*Stylesheet, error) {
 	stylesheet := &Stylesheet{
 		Rules: make([]Rule, 0),
 	}
+
+	// Strip comments before parsing
+	css = stripCSSComments(css)
 
 	// Simple parser: split by } to get rules
 	css = strings.TrimSpace(css)
@@ -96,36 +145,61 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 	rules := splitRules(css)
 
 	for _, ruleStr := range rules {
-		// Phase 22: Check if this is a @media rule
-		if strings.HasPrefix(strings.TrimSpace(ruleStr), "@media") {
-			mediaRules := parseMediaRule(ruleStr)
-			stylesheet.Rules = append(stylesheet.Rules, mediaRules...)
-		} else {
-			rule, err := parseRule(ruleStr)
-			if err != nil {
-				// Skip malformed rules
-				continue
+		trimmed := strings.TrimSpace(ruleStr)
+		if strings.HasPrefix(trimmed, "@") {
+			// Phase 22: Handle @media; skip all other at-rules
+			if strings.HasPrefix(trimmed, "@media") {
+				mediaRules := parseMediaRule(ruleStr)
+				stylesheet.Rules = append(stylesheet.Rules, mediaRules...)
 			}
-			stylesheet.Rules = append(stylesheet.Rules, rule)
+			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
+			continue
 		}
+
+		rule, err := parseRule(ruleStr)
+		if err != nil {
+			// Skip malformed rules
+			continue
+		}
+		stylesheet.Rules = append(stylesheet.Rules, rule)
 	}
 
 	return stylesheet, nil
 }
 
-// splitRules splits CSS into individual rules
+// splitRules splits CSS into individual rules, with robust error recovery
+// for unclosed blocks, strings, and mismatched braces.
 func splitRules(css string) []string {
 	rules := make([]string, 0)
 	depth := 0
 	start := 0
+	inString := byte(0) // 0 = not in string, '"' or '\'' = in that string
 
-	for i, ch := range css {
+	for i := 0; i < len(css); i++ {
+		ch := css[i]
+
+		// Handle string literals — skip their contents
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(css) {
+				i++ // skip escaped character
+			} else if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+
+		if ch == '"' || ch == '\'' {
+			inString = ch
+			continue
+		}
+
 		if ch == '{' {
 			depth++
 		} else if ch == '}' {
 			depth--
-			if depth == 0 {
-				// Found complete rule
+			if depth <= 0 {
+				// Found complete rule (or recovered from negative depth)
+				depth = 0
 				ruleStr := css[start : i+1]
 				if strings.TrimSpace(ruleStr) != "" {
 					rules = append(rules, ruleStr)
@@ -135,7 +209,41 @@ func splitRules(css string) []string {
 		}
 	}
 
+	// Any trailing content without a closing brace is discarded (error recovery)
 	return rules
+}
+
+// isValidSelector checks if a selector string looks valid enough to parse.
+// Returns false for clearly malformed selectors that should cause the rule to be skipped.
+func isValidSelector(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	// Selector must not start with } or ; or {
+	if s[0] == '}' || s[0] == ';' || s[0] == '{' {
+		return false
+	}
+	// Check for unbalanced brackets
+	bracketDepth := 0
+	for _, ch := range s {
+		switch ch {
+		case '[':
+			bracketDepth++
+		case ']':
+			bracketDepth--
+			if bracketDepth < 0 {
+				return false
+			}
+		case '{', '}':
+			// Braces inside selector text are invalid
+			return false
+		}
+	}
+	if bracketDepth != 0 {
+		return false
+	}
+	return true
 }
 
 // parseRule parses a single CSS rule
@@ -148,6 +256,12 @@ func parseRule(ruleStr string) (Rule, error) {
 
 	// Extract selector
 	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
+
+	// Validate selector — skip entire rule if invalid
+	if !isValidSelector(selectorStr) {
+		return Rule{}, fmt.Errorf("invalid selector: %q", selectorStr)
+	}
+
 	selector := parseSelector(selectorStr)
 
 	// Extract declarations (between { and })
@@ -334,6 +448,7 @@ func parseSelector(selectorStr string) Selector {
 		}
 		specificity += len(part.Classes) * 10
 		specificity += len(part.Attributes) * 10
+		specificity += len(part.PseudoClasses) * 10
 		if part.Element != "" && part.Element != "*" {
 			specificity += 1
 		}
@@ -416,8 +531,9 @@ func tokenizeSelector(s string) []string {
 // parseSelectorPart parses a single selector part like "div.class1.class2#id[attr=value]"
 func parseSelectorPart(s string) SelectorPart {
 	part := SelectorPart{
-		Classes:    make([]string, 0),
-		Attributes: make([]AttributeSelector, 0),
+		Classes:       make([]string, 0),
+		Attributes:    make([]AttributeSelector, 0),
+		PseudoClasses: make([]string, 0),
 	}
 
 	s = strings.TrimSpace(s)
@@ -429,10 +545,10 @@ func parseSelectorPart(s string) SelectorPart {
 	i := 0
 
 	// Check for element (must come first)
-	if s[i] != '.' && s[i] != '#' && s[i] != '[' {
+	if s[i] != '.' && s[i] != '#' && s[i] != '[' && s[i] != ':' {
 		// Read element name until we hit a special character
 		j := i
-		for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' {
+		for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
 			j++
 		}
 		part.Element = s[i:j]
@@ -445,7 +561,7 @@ func parseSelectorPart(s string) SelectorPart {
 			// Class
 			i++
 			j := i
-			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' {
+			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
 				j++
 			}
 			part.Classes = append(part.Classes, s[i:j])
@@ -454,10 +570,25 @@ func parseSelectorPart(s string) SelectorPart {
 			// ID
 			i++
 			j := i
-			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' {
+			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
 				j++
 			}
 			part.ID = s[i:j]
+			i = j
+		} else if s[i] == ':' {
+			// Pseudo-class (skip :: pseudo-elements, handled separately)
+			if i+1 < len(s) && s[i+1] == ':' {
+				// This is a pseudo-element, stop parsing
+				break
+			}
+			i++ // skip the ':'
+			j := i
+			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+				j++
+			}
+			if j > i {
+				part.PseudoClasses = append(part.PseudoClasses, s[i:j])
+			}
 			i = j
 		} else if s[i] == '[' {
 			// Attribute
@@ -577,12 +708,45 @@ func parseMediaLength(val string) (float64, string) {
 	return 0, ""
 }
 
-// parseDeclarations parses CSS declarations into a map
+// splitDeclarationParts splits a declaration block by semicolons,
+// respecting string literals so semicolons inside strings are not split on.
+func splitDeclarationParts(declStr string) []string {
+	var parts []string
+	start := 0
+	inString := byte(0)
+
+	for i := 0; i < len(declStr); i++ {
+		ch := declStr[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(declStr) {
+				i++ // skip escaped char
+			} else if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = ch
+			continue
+		}
+		if ch == ';' {
+			parts = append(parts, declStr[start:i])
+			start = i + 1
+		}
+	}
+	// Last segment (after final semicolon or if no semicolon)
+	if start < len(declStr) {
+		parts = append(parts, declStr[start:])
+	}
+	return parts
+}
+
+// parseDeclarations parses CSS declarations into a map.
+// Invalid declarations are silently skipped (error recovery).
 func parseDeclarations(declStr string) map[string]string {
 	declarations := make(map[string]string)
 
-	// Split by semicolon
-	parts := strings.Split(declStr, ";")
+	parts := splitDeclarationParts(declStr)
 
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
@@ -590,24 +754,34 @@ func parseDeclarations(declStr string) map[string]string {
 			continue
 		}
 
-		// Split property: value
+		// Split property: value at first colon
 		colonPos := strings.Index(part, ":")
 		if colonPos == -1 {
+			// No colon — invalid declaration, skip
 			continue
 		}
 
 		property := strings.TrimSpace(part[:colonPos])
 		value := strings.TrimSpace(part[colonPos+1:])
 
-		if property != "" && value != "" {
-			// Expand shorthand properties (reuse from Phase 2)
-			style := NewStyle()
-			expandShorthand(style, property, value)
+		// Skip declarations with empty property or value
+		if property == "" || value == "" {
+			continue
+		}
 
-			// Copy all expanded properties to declarations
-			for k, v := range style.Properties {
-				declarations[k] = v
-			}
+		// Skip properties that start with invalid characters
+		// (valid CSS properties start with a letter or hyphen)
+		if property[0] != '-' && (property[0] < 'a' || property[0] > 'z') && (property[0] < 'A' || property[0] > 'Z') {
+			continue
+		}
+
+		// Expand shorthand properties (reuse from Phase 2)
+		style := NewStyle()
+		expandShorthand(style, property, value)
+
+		// Copy all expanded properties to declarations
+		for k, v := range style.Properties {
+			declarations[k] = v
 		}
 	}
 

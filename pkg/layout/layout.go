@@ -1,7 +1,8 @@
 package layout
 
 import (
-	"fmt" // Phase 23: For list marker formatting
+	"fmt"     // Phase 23: For list marker formatting
+	"strings" // For url() parsing in pseudo-element content
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
@@ -140,6 +141,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phase 5: Initialize floats tracking
 	le.floats = make([]FloatInfo, 0)
 
+	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
 			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
@@ -152,7 +154,18 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			// Phase 4 & 5: Only advance Y if element is in normal flow (not absolutely positioned or floated)
 			floatType := box.Style.GetFloat()
 			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed && floatType == css.FloatNone {
-				y += le.getTotalHeight(box)
+				// Margin collapsing between adjacent siblings
+				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(box) {
+					collapsed := collapseMargins(prevBox.Margin.Bottom, box.Margin.Top)
+					// We already advanced by prevBox's full total height (including prevBox.Margin.Bottom)
+					// and layoutNode already added box.Margin.Top to box.Y.
+					// We need to pull back by the non-collapsed portion.
+					adjustment := prevBox.Margin.Bottom + box.Margin.Top - collapsed
+					box.Y -= adjustment
+					le.adjustChildrenY(box, -adjustment)
+				}
+				y = box.Y + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom + box.Margin.Bottom
+				prevBox = box
 			}
 		}
 	}
@@ -179,6 +192,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 8: Check if this is an img element
 	isImage := node.TagName == "img"
+	// Phase 24: Check if this is an object element with a loadable image
+	isObjectImage := false
+	if node.TagName == "object" {
+		if data, ok := node.GetAttribute("data"); ok {
+			if _, _, err := images.GetImageDimensions(data); err == nil {
+				isObjectImage = true
+			}
+		}
+	}
 	var imageWidth, imageHeight int
 	var imagePath string
 	if isImage {
@@ -192,6 +214,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		}
 		// Images default to inline-block display
+		if display == css.DisplayBlock {
+			display = css.DisplayInlineBlock
+		}
+	} else if isObjectImage {
+		// Object element with loadable image - treat like img
+		if data, ok := node.GetAttribute("data"); ok {
+			imagePath = data
+			if w, h, err := images.GetImageDimensions(data); err == nil {
+				imageWidth = w
+				imageHeight = h
+			}
+		}
+		isImage = true
 		if display == css.DisplayBlock {
 			display = css.DisplayInlineBlock
 		}
@@ -375,6 +410,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	childY := y + border.Top + padding.Top
 	childAvailableWidth := contentWidth - padding.Left - padding.Right
 
+	// Track previous block child for margin collapsing between siblings
+	var prevBlockChild *Box
+
 	// Phase 7: Track inline layout context
 	inlineCtx := &InlineContext{
 		LineX:      x + border.Left + padding.Left,
@@ -406,7 +444,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
+	// Phase 24: Skip children for object elements that successfully loaded an image
+	skipChildren := isObjectImage
+
 	for _, child := range node.Children {
+		if skipChildren {
+			break
+		}
 		if child.Type == html.ElementNode {
 			// Get child's computed style to check display mode
 			childStyle := computedStyles[child]
@@ -471,14 +515,22 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 					// Update child position for block element
 					childBox.X = x + border.Left + padding.Left
-					childBox.Y = childY
+					childBox.Y = childY + childBox.Margin.Top
 
 					box.Children = append(box.Children, childBox)
 
 					// Advance Y for block elements
 					childFloatType := childBox.Style.GetFloat()
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatType == css.FloatNone {
-						childY += le.getTotalHeight(childBox)
+						// Margin collapsing between adjacent block siblings
+						if prevBlockChild != nil && shouldCollapseMargins(prevBlockChild) && shouldCollapseMargins(childBox) {
+							collapsed := collapseMargins(prevBlockChild.Margin.Bottom, childBox.Margin.Top)
+							adjustment := prevBlockChild.Margin.Bottom + childBox.Margin.Top - collapsed
+							childBox.Y -= adjustment
+							le.adjustChildrenY(childBox, -adjustment)
+						}
+						childY = childBox.Y + childBox.Border.Top + childBox.Padding.Top + childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
+						prevBlockChild = childBox
 					}
 
 					// Reset inline context for next line
@@ -549,6 +601,48 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	afterBox := le.generatePseudoElement(node, "after", inlineCtx.LineX, inlineCtx.LineY, childAvailableWidth, computedStyles, box)
 	if afterBox != nil {
 		box.Children = append(box.Children, afterBox)
+	}
+
+	// Parent-child top margin collapsing
+	// If parent has no border-top/padding-top, collapse with first block child's top margin
+	if parentCanCollapseTopMargin(box) && shouldCollapseMargins(box) {
+		// Find first in-flow block child
+		var firstBlockChild *Box
+		for _, ch := range box.Children {
+			if ch.Style != nil && ch.Style.GetFloat() != css.FloatNone {
+				continue
+			}
+			if ch.Position == css.PositionAbsolute || ch.Position == css.PositionFixed {
+				continue
+			}
+			if ch.Style != nil {
+				d := ch.Style.GetDisplay()
+				if d == css.DisplayInline || d == css.DisplayInlineBlock {
+					break // inline content separates margins
+				}
+			}
+			firstBlockChild = ch
+			break
+		}
+		if firstBlockChild != nil && shouldCollapseMargins(firstBlockChild) && firstBlockChild.Margin.Top > 0 {
+			childMarginTop := firstBlockChild.Margin.Top
+			// Pull all children up by the first child's top margin
+			for _, ch := range box.Children {
+				ch.Y -= childMarginTop
+				le.adjustChildrenY(ch, -childMarginTop)
+			}
+			// Compute collapsed margin
+			collapsed := collapseMargins(margin.Top, childMarginTop)
+			marginDiff := collapsed - margin.Top
+			box.Margin.Top = collapsed
+			if marginDiff != 0 {
+				box.Y += marginDiff
+				for _, ch := range box.Children {
+					ch.Y += marginDiff
+					le.adjustChildrenY(ch, marginDiff)
+				}
+			}
+		}
 	}
 
 	// If height is auto and we have children, adjust height to fit content
@@ -635,6 +729,104 @@ func (le *LayoutEngine) getTotalHeight(box *Box) float64 {
 	return box.Margin.Top + box.Border.Top + box.Padding.Top +
 		box.Height +
 		box.Padding.Bottom + box.Border.Bottom + box.Margin.Bottom
+}
+
+// collapseMargins returns the collapsed margin value for two adjoining vertical margins.
+// Per CSS 2.1: both positive => max, both negative => most negative, mixed => sum.
+func collapseMargins(margin1, margin2 float64) float64 {
+	if margin1 >= 0 && margin2 >= 0 {
+		if margin1 > margin2 {
+			return margin1
+		}
+		return margin2
+	}
+	if margin1 < 0 && margin2 < 0 {
+		if margin1 < margin2 {
+			return margin1
+		}
+		return margin2
+	}
+	// Mixed: one positive, one negative
+	return margin1 + margin2
+}
+
+// shouldCollapseMargins returns true if the box participates in normal margin collapsing.
+// Floated, absolutely/fixed positioned, inline-block, and overflow!=visible elements do not collapse.
+func shouldCollapseMargins(box *Box) bool {
+	if box.Style == nil {
+		return true
+	}
+	floatType := box.Style.GetFloat()
+	if floatType != css.FloatNone {
+		return false
+	}
+	if box.Position == css.PositionAbsolute || box.Position == css.PositionFixed {
+		return false
+	}
+	display := box.Style.GetDisplay()
+	if display == css.DisplayInlineBlock || display == css.DisplayInline {
+		return false
+	}
+	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+		return false
+	}
+	overflow := box.Style.GetOverflow()
+	if overflow != css.OverflowVisible {
+		return false
+	}
+	return true
+}
+
+// parentCanCollapseTopMargin returns true if the parent has no border-top or padding-top
+// separating it from its first child's top margin.
+func parentCanCollapseTopMargin(parent *Box) bool {
+	if parent.Border.Top > 0 || parent.Padding.Top > 0 {
+		return false
+	}
+	if parent.Style != nil {
+		overflow := parent.Style.GetOverflow()
+		if overflow != css.OverflowVisible {
+			return false
+		}
+		display := parent.Style.GetDisplay()
+		if display == css.DisplayInlineBlock || display == css.DisplayFlex || display == css.DisplayInlineFlex {
+			return false
+		}
+		floatType := parent.Style.GetFloat()
+		if floatType != css.FloatNone {
+			return false
+		}
+	}
+	return true
+}
+
+// adjustChildrenY recursively adjusts Y positions of all children by delta
+func (le *LayoutEngine) adjustChildrenY(box *Box, delta float64) {
+	for _, child := range box.Children {
+		child.Y += delta
+		le.adjustChildrenY(child, delta)
+	}
+}
+
+func parentCanCollapseBottomMargin(parent *Box) bool {
+	if parent.Border.Bottom > 0 || parent.Padding.Bottom > 0 {
+		return false
+	}
+	if parent.Style != nil {
+		overflow := parent.Style.GetOverflow()
+		if overflow != css.OverflowVisible {
+			return false
+		}
+		display := parent.Style.GetDisplay()
+		if display == css.DisplayInlineBlock || display == css.DisplayFlex || display == css.DisplayInlineFlex {
+			return false
+		}
+		floatType := parent.Style.GetFloat()
+		if floatType != css.FloatNone {
+			return false
+		}
+	}
+	return true
 }
 
 // getTotalWidth returns the total width including margin, border, padding
@@ -1546,6 +1738,22 @@ func (le *LayoutEngine) alignCrossAxis(container *FlexContainer, flexBox *Box) {
 	}
 }
 
+// parseURLValue extracts the URL from a CSS url(...) value.
+// Returns the URL and true if the value is a url() function, or empty string and false otherwise.
+func parseURLValue(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "url(") || !strings.HasSuffix(trimmed, ")") {
+		return "", false
+	}
+	inner := trimmed[4 : len(trimmed)-1]
+	inner = strings.TrimSpace(inner)
+	// Remove optional quotes
+	if len(inner) >= 2 && ((inner[0] == '\'' && inner[len(inner)-1] == '\'') || (inner[0] == '"' && inner[len(inner)-1] == '"')) {
+		inner = inner[1 : len(inner)-1]
+	}
+	return inner, true
+}
+
 // Phase 11: generatePseudoElement generates a pseudo-element box if it has content
 func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
 	// Compute pseudo-element style using stored stylesheets
@@ -1558,12 +1766,48 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		return nil
 	}
 
-	// Create a text-like box with the content
+	// Create box model values
 	margin := pseudoStyle.GetMargin()
 	padding := pseudoStyle.GetPadding()
 	border := pseudoStyle.GetBorderWidth()
 
-	// Measure text content
+	// Check if content is a url() value (image pseudo-element)
+	if urlPath, isURL := parseURLValue(content); isURL {
+		x += margin.Left
+
+		// Try to get image dimensions for natural sizing
+		var imgWidth, imgHeight float64
+		if w, h, err := images.GetImageDimensions(urlPath); err == nil {
+			imgWidth = float64(w)
+			imgHeight = float64(h)
+		}
+
+		// Allow CSS width/height to override natural dimensions
+		if cssW, ok := pseudoStyle.GetLength("width"); ok && cssW > 0 {
+			imgWidth = cssW
+		}
+		if cssH, ok := pseudoStyle.GetLength("height"); ok && cssH > 0 {
+			imgHeight = cssH
+		}
+
+		box := &Box{
+			Node:      node,
+			Style:     pseudoStyle,
+			X:         x,
+			Y:         y + margin.Top,
+			Width:     imgWidth,
+			Height:    imgHeight,
+			Margin:    margin,
+			Padding:   padding,
+			Border:    border,
+			Children:  make([]*Box, 0),
+			Parent:    parent,
+			ImagePath: urlPath,
+		}
+		return box
+	}
+
+	// Text content: measure and create text box
 	fontSize := pseudoStyle.GetFontSize()
 	fontWeight := pseudoStyle.GetFontWeight()
 	bold := fontWeight == css.FontWeightBold

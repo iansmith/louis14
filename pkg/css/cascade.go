@@ -19,6 +19,13 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("text-decoration", "underline")
 	}
 
+	// Non-rendered elements should be hidden by default
+	// Author CSS can override this (e.g., Acid2 sets display:block on head)
+	switch node.TagName {
+	case "head", "style", "script", "meta", "title", "link", "base":
+		style.Set("display", "none")
+	}
+
 	// Phase 23: Default styles for table elements
 	switch node.TagName {
 	case "table":
@@ -158,13 +165,36 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	return finalStyle
 }
 
+// resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
+func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	for property, value := range style.Properties {
+		if value != "inherit" {
+			continue
+		}
+		// Look up parent's computed style
+		if node.Parent != nil {
+			if parentStyle, ok := styles[node.Parent]; ok {
+				if parentVal, ok := parentStyle.Get(property); ok {
+					style.Set(property, parentVal)
+					continue
+				}
+			}
+		}
+		// No parent or parent doesn't have the property: remove the inherit value
+		// so the property falls back to its default
+		delete(style.Properties, property)
+	}
+}
+
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		styles[node] = ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
+		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
+		resolveInheritValues(node, style, styles)
+		styles[node] = style
 	}
 
-	// Always traverse children
+	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
 		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight)
 	}

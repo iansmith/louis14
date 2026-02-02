@@ -77,6 +77,10 @@ func (t *CSSTokenizer) readIdentifier() (CSSToken, error) {
 		if ch == '{' || ch == '}' || ch == ':' || ch == ';' {
 			break
 		}
+		// Check for comment start
+		if ch == '/' && t.pos+1 < len(t.input) && t.input[t.pos+1] == '*' {
+			break
+		}
 		if unicode.IsSpace(rune(ch)) {
 			// Check if there's more content (for multi-word values)
 			// Peek ahead to see if we're reading a value
@@ -114,9 +118,29 @@ func (t *CSSTokenizer) isReadingValue() bool {
 }
 
 func (t *CSSTokenizer) skipWhitespace() {
-	for t.pos < len(t.input) && unicode.IsSpace(rune(t.input[t.pos])) {
+	for t.pos < len(t.input) {
+		if unicode.IsSpace(rune(t.input[t.pos])) {
+			t.pos++
+		} else if t.pos+1 < len(t.input) && t.input[t.pos] == '/' && t.input[t.pos+1] == '*' {
+			t.skipComment()
+		} else {
+			break
+		}
+	}
+}
+
+// skipComment skips a /* ... */ comment. Assumes pos is at the '/'.
+func (t *CSSTokenizer) skipComment() {
+	t.pos += 2 // skip /*
+	for t.pos+1 < len(t.input) {
+		if t.input[t.pos] == '*' && t.input[t.pos+1] == '/' {
+			t.pos += 2
+			return
+		}
 		t.pos++
 	}
+	// Unterminated comment: skip to end
+	t.pos = len(t.input)
 }
 
 // Peek returns the next character without advancing

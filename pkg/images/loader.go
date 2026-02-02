@@ -1,11 +1,15 @@
 package images
 
 import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -20,8 +24,75 @@ var globalCache = &ImageCache{
 	cache: make(map[string]image.Image),
 }
 
-// LoadImage loads an image from the filesystem
+// IsDataURI returns true if the string is a data URI.
+func IsDataURI(uri string) bool {
+	return strings.HasPrefix(uri, "data:")
+}
+
+// LoadImageFromDataURI decodes a data URI and returns the embedded image.
+// Format: data:[<mediatype>][;base64],<data>
+func LoadImageFromDataURI(uri string) (image.Image, error) {
+	if !strings.HasPrefix(uri, "data:") {
+		return nil, fmt.Errorf("not a data URI")
+	}
+
+	// Split off "data:" prefix
+	rest := uri[5:]
+
+	// Find the comma separating metadata from data
+	commaIdx := strings.Index(rest, ",")
+	if commaIdx < 0 {
+		return nil, fmt.Errorf("invalid data URI: no comma found")
+	}
+
+	meta := rest[:commaIdx]
+	encoded := rest[commaIdx+1:]
+
+	isBase64 := strings.HasSuffix(meta, ";base64")
+
+	var data []byte
+	if isBase64 {
+		var err error
+		data, err = base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode error: %w", err)
+		}
+	} else {
+		data = []byte(encoded)
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("image decode error: %w", err)
+	}
+
+	return img, nil
+}
+
+// LoadImage loads an image from the filesystem or a data URI.
 func LoadImage(path string) (image.Image, error) {
+	// Handle data URIs
+	if IsDataURI(path) {
+		// Check cache first
+		globalCache.mu.RLock()
+		if img, ok := globalCache.cache[path]; ok {
+			globalCache.mu.RUnlock()
+			return img, nil
+		}
+		globalCache.mu.RUnlock()
+
+		img, err := LoadImageFromDataURI(path)
+		if err != nil {
+			return nil, err
+		}
+
+		globalCache.mu.Lock()
+		globalCache.cache[path] = img
+		globalCache.mu.Unlock()
+
+		return img, nil
+	}
+
 	// Check cache first
 	globalCache.mu.RLock()
 	if img, ok := globalCache.cache[path]; ok {

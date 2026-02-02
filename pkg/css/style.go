@@ -287,6 +287,8 @@ func expandShorthand(style *Style, property, value string) {
 	case "border":
 		// border: 1px solid black -> border-width/style/color
 		expandBorderProperty(style, value)
+	case "background":
+		expandBackgroundProperty(style, value)
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -351,6 +353,63 @@ func expandBorderProperty(style *Style, value string) {
 			// Color
 			style.Set("border-color", part)
 		}
+	}
+}
+
+// expandBackgroundProperty expands the background shorthand.
+// It extracts url(...), color, no-repeat, and position components.
+func expandBackgroundProperty(style *Style, value string) {
+	// Handle "none" - resets background
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "none" {
+		style.Set("background-color", "transparent")
+		style.Set("background-image", "none")
+		return
+	}
+
+	// Extract url(...) first since it may contain spaces (e.g. data URIs)
+	urlStart := strings.Index(value, "url(")
+	if urlStart >= 0 {
+		// Find matching closing paren, accounting for nested parens
+		depth := 0
+		urlEnd := -1
+		for i := urlStart + 4; i < len(value); i++ {
+			if value[i] == '(' {
+				depth++
+			} else if value[i] == ')' {
+				if depth == 0 {
+					urlEnd = i + 1
+					break
+				}
+				depth--
+			}
+		}
+		if urlEnd > urlStart {
+			urlPart := value[urlStart:urlEnd]
+			style.Set("background-image", urlPart)
+			// Remove url(...) from value to parse remaining parts
+			value = value[:urlStart] + value[urlEnd:]
+		}
+	}
+
+	// Parse remaining tokens for color, repeat, position
+	parts := strings.Fields(value)
+	positionParts := []string{}
+	for _, part := range parts {
+		if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
+			style.Set("background-repeat", part)
+		} else if _, ok := ParseColor(part); ok {
+			style.Set("background-color", part)
+		} else if part == "transparent" {
+			style.Set("background-color", "transparent")
+		} else if _, ok := ParseLength(part); ok {
+			positionParts = append(positionParts, part)
+		} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
+			positionParts = append(positionParts, part)
+		}
+	}
+	if len(positionParts) > 0 {
+		style.Set("background-position", strings.Join(positionParts, " "))
 	}
 }
 
@@ -1561,6 +1620,122 @@ func parseOriginValue(val string) float64 {
 	}
 	
 	return 0.5 // Default to center
+}
+
+// Phase 24: Background image support
+
+// ParseURLValue extracts the URL from a CSS url(...) value.
+// Handles url(path), url('path'), url("path").
+// Returns the URL string and true if valid, or "", false otherwise.
+func ParseURLValue(val string) (string, bool) {
+	val = strings.TrimSpace(val)
+	if !strings.HasPrefix(val, "url(") || !strings.HasSuffix(val, ")") {
+		return "", false
+	}
+	inner := val[4 : len(val)-1]
+	inner = strings.TrimSpace(inner)
+	// Remove quotes if present
+	if len(inner) >= 2 {
+		if (inner[0] == '"' && inner[len(inner)-1] == '"') ||
+			(inner[0] == '\'' && inner[len(inner)-1] == '\'') {
+			inner = inner[1 : len(inner)-1]
+		}
+	}
+	if inner == "" {
+		return "", false
+	}
+	return inner, true
+}
+
+// GetBackgroundImage returns the background-image URL if set.
+// Checks both background-image and the background shorthand.
+func (s *Style) GetBackgroundImage() (string, bool) {
+	if val, ok := s.Get("background-image"); ok {
+		if url, ok := ParseURLValue(val); ok {
+			return url, true
+		}
+	}
+	return "", false
+}
+
+// BackgroundRepeatType represents background-repeat values
+type BackgroundRepeatType string
+
+const (
+	BackgroundRepeatRepeat   BackgroundRepeatType = "repeat"
+	BackgroundRepeatNoRepeat BackgroundRepeatType = "no-repeat"
+	BackgroundRepeatRepeatX  BackgroundRepeatType = "repeat-x"
+	BackgroundRepeatRepeatY  BackgroundRepeatType = "repeat-y"
+)
+
+// GetBackgroundRepeat returns the background-repeat value (default: repeat)
+func (s *Style) GetBackgroundRepeat() BackgroundRepeatType {
+	if val, ok := s.Get("background-repeat"); ok {
+		switch val {
+		case "no-repeat":
+			return BackgroundRepeatNoRepeat
+		case "repeat-x":
+			return BackgroundRepeatRepeatX
+		case "repeat-y":
+			return BackgroundRepeatRepeatY
+		}
+	}
+	return BackgroundRepeatRepeat
+}
+
+// BackgroundPosition represents background-position x,y values in pixels
+type BackgroundPosition struct {
+	X float64
+	Y float64
+}
+
+// GetBackgroundPosition parses background-position (default: 0 0)
+func (s *Style) GetBackgroundPosition() BackgroundPosition {
+	val, ok := s.Get("background-position")
+	if !ok {
+		return BackgroundPosition{0, 0}
+	}
+	return ParseBackgroundPosition(val)
+}
+
+// ParseBackgroundPosition parses a background-position value string
+func ParseBackgroundPosition(val string) BackgroundPosition {
+	parts := strings.Fields(val)
+	pos := BackgroundPosition{}
+	if len(parts) >= 1 {
+		pos.X = parsePositionComponent(parts[0], true)
+	}
+	if len(parts) >= 2 {
+		pos.Y = parsePositionComponent(parts[1], false)
+	} else if len(parts) == 1 {
+		// Single value: y defaults to center (but for px values, 0 is fine for Acid2)
+		switch parts[0] {
+		case "center":
+			pos.Y = 0 // will need box dimensions for true center; 0 as fallback
+		default:
+			pos.Y = 0
+		}
+	}
+	return pos
+}
+
+func parsePositionComponent(val string, isX bool) float64 {
+	switch val {
+	case "left":
+		return 0
+	case "right":
+		return 0 // needs box width; handled at render time
+	case "top":
+		return 0
+	case "bottom":
+		return 0 // needs box height; handled at render time
+	case "center":
+		return 0 // handled at render time
+	}
+	if length, ok := ParseLength(val); ok {
+		return length
+	}
+	return 0
 }
 
 // Phase 23: List styling

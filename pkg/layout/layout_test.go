@@ -2,6 +2,7 @@ package layout
 
 import (
 	"testing"
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
 
@@ -201,5 +202,241 @@ func TestLayoutEngine_NestedWithPadding(t *testing.T) {
 	// Parent is at (0,0), child should be at (0 + padding.Left, 0 + padding.Top) = (20, 20)
 	if p.X != 20 || p.Y != 20 {
 		t.Errorf("expected child at (20,20) accounting for parent padding, got (%f,%f)", p.X, p.Y)
+	}
+}
+
+// Margin collapsing tests
+
+func TestMarginCollapsing_AdjacentSiblings_BothPositive(t *testing.T) {
+	// Two adjacent siblings with positive margins: use the larger margin
+	doc, err := html.Parse(`<div>
+		<div style="width: 100px; height: 50px; margin-bottom: 30px;"></div>
+		<div style="width: 100px; height: 50px; margin-top: 20px;"></div>
+	</div>`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	engine := NewLayoutEngine(800, 600)
+	boxes := engine.Layout(doc)
+
+	if len(boxes) != 1 {
+		t.Fatalf("expected 1 box, got %d", len(boxes))
+	}
+	div := boxes[0]
+	if len(div.Children) < 2 {
+		t.Fatalf("expected at least 2 children, got %d", len(div.Children))
+	}
+
+	first := div.Children[0]
+	second := div.Children[1]
+
+	// Without collapsing: gap = 30 + 20 = 50
+	// With collapsing: gap = max(30, 20) = 30
+	// second.Y should be first.Y + getTotalHeight(first) - (30 + 20 - 30) = first.Y + totalH - 20
+	gap := second.Y - (first.Y + first.Margin.Top + first.Border.Top + first.Padding.Top + first.Height + first.Padding.Bottom + first.Border.Bottom)
+	// The gap between the bottom border edge of first and the top of second's margin area
+	// should be the collapsed margin = 30 (not 30+20=50)
+	expectedGap := 30.0
+	if gap < expectedGap-1 || gap > expectedGap+1 {
+		t.Errorf("expected collapsed margin gap of %.0f between siblings, got %.1f (first.Y=%f second.Y=%f)", expectedGap, gap, first.Y, second.Y)
+	}
+}
+
+func TestMarginCollapsing_AdjacentSiblings_BothNegative(t *testing.T) {
+	// Two adjacent siblings with negative margins: use the more negative
+	doc, err := html.Parse(`<div>
+		<div style="width: 100px; height: 50px; margin-bottom: -10px;"></div>
+		<div style="width: 100px; height: 50px; margin-top: -20px;"></div>
+	</div>`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	engine := NewLayoutEngine(800, 600)
+	boxes := engine.Layout(doc)
+
+	div := boxes[0]
+	if len(div.Children) < 2 {
+		t.Fatalf("expected at least 2 children, got %d", len(div.Children))
+	}
+
+	first := div.Children[0]
+	second := div.Children[1]
+
+	// Without collapsing: gap = -10 + -20 = -30
+	// With collapsing: gap = min(-10, -20) = -20
+	gap := second.Y - (first.Y + first.Margin.Top + first.Border.Top + first.Padding.Top + first.Height + first.Padding.Bottom + first.Border.Bottom)
+	expectedGap := -20.0
+	if gap < expectedGap-1 || gap > expectedGap+1 {
+		t.Errorf("expected collapsed margin gap of %.0f between siblings, got %.1f", expectedGap, gap)
+	}
+}
+
+func TestMarginCollapsing_AdjacentSiblings_Mixed(t *testing.T) {
+	// One positive, one negative: sum them
+	doc, err := html.Parse(`<div>
+		<div style="width: 100px; height: 50px; margin-bottom: 30px;"></div>
+		<div style="width: 100px; height: 50px; margin-top: -10px;"></div>
+	</div>`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	engine := NewLayoutEngine(800, 600)
+	boxes := engine.Layout(doc)
+
+	div := boxes[0]
+	if len(div.Children) < 2 {
+		t.Fatalf("expected at least 2 children, got %d", len(div.Children))
+	}
+
+	first := div.Children[0]
+	second := div.Children[1]
+
+	// Without collapsing: gap = 30 + -10 = 20
+	// With collapsing (mixed): gap = 30 + (-10) = 20
+	gap := second.Y - (first.Y + first.Margin.Top + first.Border.Top + first.Padding.Top + first.Height + first.Padding.Bottom + first.Border.Bottom)
+	expectedGap := 20.0
+	if gap < expectedGap-1 || gap > expectedGap+1 {
+		t.Errorf("expected collapsed margin gap of %.0f between siblings, got %.1f", expectedGap, gap)
+	}
+}
+
+func TestMarginCollapsing_EqualMargins(t *testing.T) {
+	// Equal positive margins: collapsed to single margin
+	doc, err := html.Parse(`<div>
+		<div style="width: 100px; height: 50px; margin-bottom: 20px;"></div>
+		<div style="width: 100px; height: 50px; margin-top: 20px;"></div>
+	</div>`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	engine := NewLayoutEngine(800, 600)
+	boxes := engine.Layout(doc)
+
+	div := boxes[0]
+	if len(div.Children) < 2 {
+		t.Fatalf("expected at least 2 children, got %d", len(div.Children))
+	}
+
+	first := div.Children[0]
+	second := div.Children[1]
+
+	gap := second.Y - (first.Y + first.Margin.Top + first.Border.Top + first.Padding.Top + first.Height + first.Padding.Bottom + first.Border.Bottom)
+	expectedGap := 20.0
+	if gap < expectedGap-1 || gap > expectedGap+1 {
+		t.Errorf("expected collapsed margin gap of %.0f between siblings, got %.1f", expectedGap, gap)
+	}
+}
+
+func TestMarginCollapsing_NoCollapseWithPaddingSeparation(t *testing.T) {
+	// Parent with padding should prevent parent-child margin collapsing
+	doc, err := html.Parse(`<div style="padding: 10px;">
+		<div style="width: 100px; height: 50px; margin-top: 20px;"></div>
+	</div>`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	engine := NewLayoutEngine(800, 600)
+	boxes := engine.Layout(doc)
+
+	div := boxes[0]
+	if len(div.Children) < 1 {
+		t.Fatalf("expected at least 1 child, got %d", len(div.Children))
+	}
+
+	child := div.Children[0]
+	// Parent has padding 10, child has margin-top 20
+	// With padding separation, child margin should NOT collapse with parent
+	// Child Y should be: parent.Y + padding.Top + child.margin.Top = 10 + 20 = 30
+	// (parent at Y=0, padding=10, then child margin=20)
+	expectedY := 30.0
+	if child.Y < expectedY-1 || child.Y > expectedY+1 {
+		t.Errorf("expected child Y=%.0f (no parent-child collapsing due to padding), got %.1f", expectedY, child.Y)
+	}
+}
+
+func TestMarginCollapsing_NoCollapseForFloats(t *testing.T) {
+	// Floated elements should not have their margins collapsed
+	doc, err := html.Parse(`<div>
+		<div style="width: 100px; height: 50px; margin-bottom: 30px; float: left;"></div>
+		<div style="width: 100px; height: 50px; margin-top: 20px; clear: left;"></div>
+	</div>`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	engine := NewLayoutEngine(800, 600)
+	_ = engine.Layout(doc)
+	// Just verify it doesn't crash - float collapsing behavior is complex
+}
+
+func TestCollapseMargins_Unit(t *testing.T) {
+	tests := []struct {
+		name     string
+		m1, m2   float64
+		expected float64
+	}{
+		{"both positive, first larger", 30, 20, 30},
+		{"both positive, second larger", 10, 25, 25},
+		{"both positive, equal", 15, 15, 15},
+		{"both negative, first more negative", -20, -10, -20},
+		{"both negative, second more negative", -5, -15, -15},
+		{"both negative, equal", -10, -10, -10},
+		{"mixed, positive first", 30, -10, 20},
+		{"mixed, negative first", -10, 30, 20},
+		{"zero and positive", 0, 20, 20},
+		{"zero and negative", 0, -10, -10},
+		{"both zero", 0, 0, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := collapseMargins(tt.m1, tt.m2)
+			if result != tt.expected {
+				t.Errorf("collapseMargins(%v, %v) = %v, want %v", tt.m1, tt.m2, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestShouldCollapseMargins_Unit(t *testing.T) {
+	// Test that floated elements don't collapse
+	floatStyle := css.NewStyle()
+	floatStyle.Set("float", "left")
+	floatBox := &Box{Style: floatStyle, Position: css.PositionStatic}
+	if shouldCollapseMargins(floatBox) {
+		t.Error("floated elements should not collapse margins")
+	}
+
+	// Test that absolutely positioned elements don't collapse
+	absBox := &Box{Style: css.NewStyle(), Position: css.PositionAbsolute}
+	if shouldCollapseMargins(absBox) {
+		t.Error("absolutely positioned elements should not collapse margins")
+	}
+
+	// Test that inline-block elements don't collapse
+	inlineBlockStyle := css.NewStyle()
+	inlineBlockStyle.Set("display", "inline-block")
+	ibBox := &Box{Style: inlineBlockStyle, Position: css.PositionStatic}
+	if shouldCollapseMargins(ibBox) {
+		t.Error("inline-block elements should not collapse margins")
+	}
+
+	// Test that overflow:hidden elements don't collapse
+	overflowStyle := css.NewStyle()
+	overflowStyle.Set("overflow", "hidden")
+	ofBox := &Box{Style: overflowStyle, Position: css.PositionStatic}
+	if shouldCollapseMargins(ofBox) {
+		t.Error("overflow:hidden elements should not collapse margins")
+	}
+
+	// Test that normal block elements DO collapse
+	normalBox := &Box{Style: css.NewStyle(), Position: css.PositionStatic}
+	if !shouldCollapseMargins(normalBox) {
+		t.Error("normal block elements should collapse margins")
 	}
 }

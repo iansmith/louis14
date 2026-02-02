@@ -2,6 +2,7 @@ package html
 
 import (
 	"fmt"
+	gohtml "html"
 	"strings"
 	"unicode"
 )
@@ -44,6 +45,30 @@ func (t *Tokenizer) NextToken() (Token, error) {
 
 func (t *Tokenizer) readTag() (Token, error) {
 	t.pos++
+
+	// Handle <!-- comments -->
+	if t.pos+2 < len(t.input) && t.input[t.pos] == '!' && t.input[t.pos+1] == '-' && t.input[t.pos+2] == '-' {
+		t.pos += 3
+		for t.pos+2 < len(t.input) {
+			if t.input[t.pos] == '-' && t.input[t.pos+1] == '-' && t.input[t.pos+2] == '>' {
+				t.pos += 3
+				return t.NextToken()
+			}
+			t.pos++
+		}
+		t.pos = len(t.input)
+		return t.NextToken()
+	}
+
+	// Handle <!DOCTYPE ...>
+	if t.pos < len(t.input) && t.input[t.pos] == '!' {
+		if err := t.skipTo('>'); err != nil {
+			return Token{}, err
+		}
+		t.pos++
+		return t.NextToken()
+	}
+
 	isEndTag := false
 	if t.pos < len(t.input) && t.input[t.pos] == '/' {
 		isEndTag = true
@@ -151,6 +176,7 @@ func (t *Tokenizer) readText() (Token, error) {
 	if text == "" && t.pos < len(t.input) {
 		return t.NextToken()
 	}
+	text = gohtml.UnescapeString(text)
 	return Token{Type: TokenText, Text: text}, nil
 }
 

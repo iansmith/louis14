@@ -1,6 +1,10 @@
 package html
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 type Parser struct {
 	tokenizer       *Tokenizer
@@ -39,6 +43,11 @@ func (p *Parser) Parse() (*Document, error) {
 				continue // Don't add style tag to DOM tree
 			}
 
+			// Auto-close <p> when a block-level element is encountered inside it
+			if p.isBlockElement(token.TagName) {
+				p.autoCloseP()
+			}
+
 			// Create new element node
 			node := &Node{
 				Type:       ElementNode,
@@ -50,6 +59,19 @@ func (p *Parser) Parse() (*Document, error) {
 			// Add to current parent (top of stack)
 			parent := p.currentParent()
 			parent.AddChild(node)
+
+			// Handle <link rel="stylesheet"> with data URI href
+			if token.TagName == "link" {
+				if rel, ok := token.Attributes["rel"]; ok {
+					if strings.Contains(rel, "stylesheet") {
+						if href, ok := token.Attributes["href"]; ok {
+							if css := p.loadLinkStylesheet(href); css != "" {
+								p.doc.Stylesheets = append(p.doc.Stylesheets, css)
+							}
+						}
+					}
+				}
+			}
 
 			// Check if this is a self-closing/void element
 			if !p.isSelfClosing(token.TagName) {
@@ -79,10 +101,8 @@ func (p *Parser) Parse() (*Document, error) {
 				continue
 			}
 
-			// Pop from stack (close current element)
-			if len(p.stack) > 1 {
-				p.pop()
-			}
+			// Pop stack until we find the matching tag
+			p.closeTag(token.TagName)
 		}
 	}
 
@@ -121,6 +141,58 @@ func (p *Parser) isSelfClosing(tagName string) bool {
 		"track": true, "wbr": true,
 	}
 	return selfClosingTags[tagName]
+}
+
+// closeTag pops the stack until the matching tag is found and closed
+func (p *Parser) closeTag(tagName string) {
+	for i := len(p.stack) - 1; i >= 1; i-- {
+		if p.stack[i].TagName == tagName {
+			p.stack = p.stack[:i]
+			return
+		}
+	}
+	// Tag not found on stack; ignore the end tag
+}
+
+// autoCloseP closes an open <p> element if one is on the stack
+func (p *Parser) autoCloseP() {
+	for i := len(p.stack) - 1; i >= 1; i-- {
+		if p.stack[i].TagName == "p" {
+			p.stack = p.stack[:i]
+			return
+		}
+		// Don't close past block-level containers
+		if p.isBlockElement(p.stack[i].TagName) {
+			return
+		}
+	}
+}
+
+// isBlockElement returns true for elements that auto-close <p>
+func (p *Parser) isBlockElement(tagName string) bool {
+	switch tagName {
+	case "address", "article", "aside", "blockquote", "details", "dialog",
+		"dd", "div", "dl", "dt", "fieldset", "figcaption", "figure",
+		"footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+		"header", "hgroup", "hr", "li", "main", "nav", "ol",
+		"p", "pre", "section", "table", "ul":
+		return true
+	}
+	return false
+}
+
+// loadLinkStylesheet loads CSS from a data URI href
+func (p *Parser) loadLinkStylesheet(href string) string {
+	href = strings.TrimSpace(href)
+	if strings.HasPrefix(href, "data:text/css,") {
+		encoded := href[len("data:text/css,"):]
+		decoded, err := url.PathUnescape(encoded)
+		if err != nil {
+			return encoded
+		}
+		return decoded
+	}
+	return ""
 }
 
 func Parse(html string) (*Document, error) {
