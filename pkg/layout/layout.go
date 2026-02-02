@@ -33,9 +33,11 @@ type LayoutEngine struct {
 		width  float64
 		height float64
 	}
-	absoluteBoxes []*Box     // Phase 4: Track absolutely positioned boxes
-	floats        []FloatInfo // Phase 5: Track floated elements
-	stylesheets   []*css.Stylesheet // Phase 11: Store stylesheets for pseudo-elements
+	absoluteBoxes  []*Box     // Phase 4: Track absolutely positioned boxes
+	floats         []FloatInfo // Phase 5: Track floated elements
+	floatBaseStack []int       // Stack of float base indices for BFC boundaries
+	floatBase      int         // Current BFC float base index
+	stylesheets    []*css.Stylesheet // Phase 11: Store stylesheets for pseudo-elements
 }
 
 // Phase 5: FloatInfo tracks information about floated elements
@@ -429,12 +431,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		return le.layoutGridContainer(node, x, y, availableWidth, style, computedStyles, parent)
 	}
 
+	// Check if this element creates a new block formatting context (BFC)
+	createsBFC := false
+	if style.GetOverflow() != css.OverflowVisible || floatType != css.FloatNone ||
+		position == css.PositionAbsolute || position == css.PositionFixed ||
+		display == css.DisplayInlineBlock {
+		createsBFC = true
+	}
+	if createsBFC {
+		le.floatBaseStack = append(le.floatBaseStack, le.floatBase)
+		le.floatBase = len(le.floats)
+	}
+
 	// Phase 2: Recursively layout children
 	childY := y + border.Top + padding.Top
 	childAvailableWidth := contentWidth - padding.Left - padding.Right
 
 	// Track previous block child for margin collapsing between siblings
 	var prevBlockChild *Box
+	var pendingMargins []float64 // margins from collapse-through elements
 
 	// Phase 7: Track inline layout context
 	inlineCtx := &InlineContext{
@@ -547,15 +562,64 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					// Advance Y for block elements
 					childFloatType := childBox.Style.GetFloat()
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatType == css.FloatNone {
-						// Margin collapsing between adjacent block siblings
-						if prevBlockChild != nil && shouldCollapseMargins(prevBlockChild) && shouldCollapseMargins(childBox) {
-							collapsed := collapseMargins(prevBlockChild.Margin.Bottom, childBox.Margin.Top)
-							adjustment := prevBlockChild.Margin.Bottom + childBox.Margin.Top - collapsed
-							childBox.Y -= adjustment
-							le.adjustChildrenY(childBox, -adjustment)
+						// Margin-collapse-through: collect margins from collapse-through elements
+						// and combine them with the next non-collapse-through sibling's margins.
+						if isCollapseThrough(childBox) {
+							// Add this element's margins (and children's) to pending list
+							pendingMargins = append(pendingMargins, childBox.Margin.Top, childBox.Margin.Bottom)
+							collectCollapseThroughChildMargins(childBox, &pendingMargins)
+							// Position at childY (zero-height, no visual impact)
+							childBox.Y = childY
+							// Don't advance childY, don't set prevBlockChild
+						} else {
+							// Normal margin collapsing between adjacent block siblings
+							if prevBlockChild != nil && shouldCollapseMargins(prevBlockChild) && shouldCollapseMargins(childBox) {
+								// Collect all margins: prev bottom, any pending from collapse-through, current top
+								allMargins := []float64{prevBlockChild.Margin.Bottom}
+								allMargins = append(allMargins, pendingMargins...)
+								allMargins = append(allMargins, childBox.Margin.Top)
+								// Collapse all together
+								var maxPos, minNeg float64
+								for _, m := range allMargins {
+									if m > maxPos { maxPos = m }
+									if m < minNeg { minNeg = m }
+								}
+								collapsed := maxPos + minNeg
+								// Only real margins used space; pending margins were from zero-height elements
+								totalUsed := prevBlockChild.Margin.Bottom + childBox.Margin.Top
+								adjustment := totalUsed - collapsed
+								childBox.Y -= adjustment
+								le.adjustChildrenY(childBox, -adjustment)
+							} else if len(pendingMargins) > 0 && shouldCollapseMargins(childBox) {
+								// No prev sibling but pending margins from collapse-through
+								allMargins := append(pendingMargins, childBox.Margin.Top)
+								var maxPos, minNeg float64
+								for _, m := range allMargins {
+									if m > maxPos { maxPos = m }
+									if m < minNeg { minNeg = m }
+								}
+								collapsed := maxPos + minNeg
+								totalUsed := childBox.Margin.Top
+								adjustment := totalUsed - collapsed
+								childBox.Y -= adjustment
+								le.adjustChildrenY(childBox, -adjustment)
+							}
+							pendingMargins = nil
+							// Apply clear property after margin collapsing
+							if childBox.Style != nil {
+								childClear := childBox.Style.GetClear()
+								if childClear != css.ClearNone {
+									clearY := le.getClearY(childClear, childBox.Y)
+									if clearY > childBox.Y {
+										delta := clearY - childBox.Y
+										childBox.Y = clearY
+										le.adjustChildrenY(childBox, delta)
+									}
+								}
+							}
+							childY = childBox.Y + childBox.Border.Top + childBox.Padding.Top + childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
+							prevBlockChild = childBox
 						}
-						childY = childBox.Y + childBox.Border.Top + childBox.Padding.Top + childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
-						prevBlockChild = childBox
 					}
 
 					// Reset inline context for next line
@@ -759,11 +823,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	// Phase 5: Handle float positioning AFTER children layout and shrink-wrapping
+	var floatY float64
 	if floatType != css.FloatNone && position == css.PositionStatic {
 		floatTotalWidth := le.getTotalWidth(box)
 
 		// Phase 5 Enhancement: Check if float fits, apply drop if needed
-		floatY := le.getFloatDropY(floatType, floatTotalWidth, box.Y, availableWidth)
+		floatY = le.getFloatDropY(floatType, floatTotalWidth, box.Y, availableWidth)
 		box.Y = floatY
 
 		// Position float horizontally
@@ -777,7 +842,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			box.X = x + availableWidth - floatTotalWidth - rightOffset
 		}
 
-		// Add to float tracking
+	}
+
+	// Restore BFC float context - remove floats added inside this BFC
+	if createsBFC {
+		le.floats = le.floats[:le.floatBase]
+		le.floatBase = le.floatBaseStack[len(le.floatBaseStack)-1]
+		le.floatBaseStack = le.floatBaseStack[:len(le.floatBaseStack)-1]
+	}
+
+	// Add to float tracking (after BFC pop so float is in parent context)
+	if floatType != css.FloatNone && position == css.PositionStatic {
 		le.addFloat(box, floatType, floatY)
 	}
 
@@ -816,6 +891,82 @@ func collapseMargins(margin1, margin2 float64) float64 {
 	}
 	// Mixed: one positive, one negative
 	return margin1 + margin2
+}
+
+// isCollapseThrough returns true if a box's top and bottom margins collapse through it.
+// This happens when: height is 0, no border-top/bottom, no padding-top/bottom, no in-flow content,
+// and the box participates in normal margin collapsing.
+func isCollapseThrough(box *Box) bool {
+	if !shouldCollapseMargins(box) {
+		return false
+	}
+	if box.Border.Top > 0 || box.Border.Bottom > 0 {
+		return false
+	}
+	if box.Padding.Top > 0 || box.Padding.Bottom > 0 {
+		return false
+	}
+	if box.Height > 0 {
+		return false
+	}
+	// Check for in-flow content that would prevent collapse-through
+	for _, child := range box.Children {
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			continue
+		}
+		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
+		if !isCollapseThrough(child) {
+			return false
+		}
+	}
+	return true
+}
+
+// getCollapseThroughMargin collects all margins from a collapse-through element
+// (its own top/bottom plus recursively from collapse-through children)
+// and returns the single collapsed result.
+func getCollapseThroughMargin(box *Box) float64 {
+	margins := []float64{box.Margin.Top, box.Margin.Bottom}
+	for _, child := range box.Children {
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			continue
+		}
+		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
+		if isCollapseThrough(child) {
+			margins = append(margins, child.Margin.Top, child.Margin.Bottom)
+		}
+	}
+	// Collapse all: max of positives + min of negatives
+	var maxPos, minNeg float64
+	for _, m := range margins {
+		if m > maxPos {
+			maxPos = m
+		}
+		if m < minNeg {
+			minNeg = m
+		}
+	}
+	return maxPos + minNeg
+}
+
+// collectCollapseThroughChildMargins adds margins from collapse-through children to the list.
+func collectCollapseThroughChildMargins(box *Box, margins *[]float64) {
+	for _, child := range box.Children {
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			continue
+		}
+		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
+		if isCollapseThrough(child) {
+			*margins = append(*margins, child.Margin.Top, child.Margin.Bottom)
+			collectCollapseThroughChildMargins(child, margins)
+		}
+	}
 }
 
 // shouldCollapseMargins returns true if the box participates in normal margin collapsing.
@@ -1030,7 +1181,8 @@ func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset floa
 	leftOffset = 0
 	rightOffset = 0
 
-	for _, floatInfo := range le.floats {
+	for i := le.floatBase; i < len(le.floats); i++ {
+		floatInfo := le.floats[i]
 		// Check if this float affects the current Y position
 		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
 		if y >= floatInfo.Y && y < floatBottom {
@@ -1059,8 +1211,11 @@ func (le *LayoutEngine) getClearY(clearType css.ClearType, currentY float64) flo
 
 	maxY := currentY
 
-	for _, floatInfo := range le.floats {
-		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
+	for i := le.floatBase; i < len(le.floats); i++ {
+		floatInfo := le.floats[i]
+		// floatInfo.Y already includes margin-top, so don't double-count it
+		b := floatInfo.Box
+		floatBottom := floatInfo.Y + b.Border.Top + b.Padding.Top + b.Height + b.Padding.Bottom + b.Border.Bottom + b.Margin.Bottom
 
 		shouldClear := false
 		switch clearType {
