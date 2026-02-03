@@ -2090,14 +2090,17 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		boxHeight = h
 	}
 
-	// Apply horizontal margin
+	// Apply horizontal margin and border offset for block pseudo-elements
 	x += margin.Left
+	if display == css.DisplayBlock {
+		x += border.Left
+	}
 
 	box := &Box{
 		Node:          node, // Reference the parent node
 		Style:         pseudoStyle,
 		X:             x,
-		Y:             y + margin.Top,
+		Y:             y + margin.Top + border.Top,
 		Width:         boxWidth,
 		Height:        boxHeight,
 		Margin:        margin,

@@ -132,12 +132,27 @@ func (s *Style) GetPadding() BoxEdge {
 
 // GetBorderWidth returns the border width for all four sides
 func (s *Style) GetBorderWidth() BoxEdge {
-	return BoxEdge{
+	styles := s.GetBorderStyle()
+	edge := BoxEdge{
 		Top:    s.getLengthOrZero("border-top-width"),
 		Right:  s.getLengthOrZero("border-right-width"),
 		Bottom: s.getLengthOrZero("border-bottom-width"),
 		Left:   s.getLengthOrZero("border-left-width"),
 	}
+	// CSS 2.1 §8.5.1: border-style:none computes border-width to 0
+	if styles.Top == BorderStyleNone {
+		edge.Top = 0
+	}
+	if styles.Right == BorderStyleNone {
+		edge.Right = 0
+	}
+	if styles.Bottom == BorderStyleNone {
+		edge.Bottom = 0
+	}
+	if styles.Left == BorderStyleNone {
+		edge.Left = 0
+	}
+	return edge
 }
 
 // getLengthOrZero returns the length value or 0 if not found
