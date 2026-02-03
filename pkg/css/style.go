@@ -450,9 +450,20 @@ func borderWidthKeyword(val string) (string, bool) {
 
 // expandBorderProperty expands border shorthand
 // Format: "1px solid black" or "2px dotted #FF0000"
+// Per CSS spec, shorthand properties reset ALL sub-properties to their initial values,
+// then apply the specified values.
 func expandBorderProperty(style *Style, value string) {
-	parts := strings.Fields(value)
+	// Reset all sub-properties to their initial values first
+	// Initial values: width=medium (3px), style=none, color=currentcolor
+	sides := []string{"top", "right", "bottom", "left"}
+	for _, side := range sides {
+		style.Set("border-"+side+"-width", "3px") // medium = 3px
+		style.Set("border-"+side+"-style", "none")
+		style.Set("border-"+side+"-color", "currentcolor")
+	}
 
+	// Now apply the specified values
+	parts := strings.Fields(value)
 	for _, part := range parts {
 		if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("border-width", bw)
@@ -486,9 +497,19 @@ func expandBorderProperty(style *Style, value string) {
 }
 
 // expandBorderSideProperty expands border-top/right/bottom/left shorthands.
+// Per CSS spec, shorthand properties reset ALL sub-properties to their initial values,
+// then apply the specified values.
 func expandBorderSideProperty(style *Style, property, value string) {
 	// property is "border-top", "border-right", etc.
 	side := strings.TrimPrefix(property, "border-")
+
+	// Reset all sub-properties to their initial values first
+	// Initial values: width=medium (3px), style=none, color=currentcolor
+	style.Set("border-"+side+"-width", "3px") // medium = 3px
+	style.Set("border-"+side+"-style", "none")
+	style.Set("border-"+side+"-color", "currentcolor")
+
+	// Now apply the specified values
 	parts := strings.Fields(value)
 	for _, part := range parts {
 		if part == "0" {
