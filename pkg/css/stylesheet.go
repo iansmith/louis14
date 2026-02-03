@@ -393,23 +393,49 @@ func parseSelector(selectorStr string) Selector {
 	}
 
 	// Phase 11: Check for pseudo-element (::before/::after or CSS 2.1 :before/:after)
+	// If there's a space before the pseudo-element (e.g., ".foo :after"), it applies to
+	// descendants only, not the element matched by the selector itself.
 	pseudoElement := ""
+	pseudoElementForDescendants := false
 	if strings.Contains(selectorStr, "::before") {
 		pseudoElement = "before"
+		// Check if space before pseudo-element
+		idx := strings.Index(selectorStr, "::before")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
 		selectorStr = strings.Replace(selectorStr, "::before", "", 1)
 		selectorStr = strings.TrimSpace(selectorStr)
 	} else if strings.Contains(selectorStr, "::after") {
 		pseudoElement = "after"
+		idx := strings.Index(selectorStr, "::after")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
 		selectorStr = strings.Replace(selectorStr, "::after", "", 1)
 		selectorStr = strings.TrimSpace(selectorStr)
 	} else if strings.Contains(selectorStr, ":before") {
 		pseudoElement = "before"
+		idx := strings.Index(selectorStr, ":before")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
 		selectorStr = strings.Replace(selectorStr, ":before", "", 1)
 		selectorStr = strings.TrimSpace(selectorStr)
 	} else if strings.Contains(selectorStr, ":after") {
 		pseudoElement = "after"
+		idx := strings.Index(selectorStr, ":after")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
 		selectorStr = strings.Replace(selectorStr, ":after", "", 1)
 		selectorStr = strings.TrimSpace(selectorStr)
+	}
+	// If pseudo-element is for descendants only, clear it from direct matching
+	// but record it somehow (we'll use a convention: if PseudoElement starts with "descendant:",
+	// it means the element must be a descendant of the selector match)
+	if pseudoElementForDescendants && pseudoElement != "" {
+		pseudoElement = "descendant:" + pseudoElement
 	}
 
 	// Split by combinators while preserving them

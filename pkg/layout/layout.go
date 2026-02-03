@@ -33,6 +33,7 @@ type LayoutEngine struct {
 		width  float64
 		height float64
 	}
+	scrollY        float64    // Scroll offset for fixed positioning (viewport-relative)
 	absoluteBoxes  []*Box     // Phase 4: Track absolutely positioned boxes
 	floats         []FloatInfo // Phase 5: Track floated elements
 	floatBaseStack []int       // Stack of float base indices for BFC boundaries
@@ -118,6 +119,17 @@ func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 	le.viewport.width = viewportWidth
 	le.viewport.height = viewportHeight
 	return le
+}
+
+// SetScrollY sets the vertical scroll offset for fixed positioning.
+// Fixed elements are positioned relative to viewport + scrollY.
+func (le *LayoutEngine) SetScrollY(scrollY float64) {
+	le.scrollY = scrollY
+}
+
+// GetScrollY returns the current vertical scroll offset.
+func (le *LayoutEngine) GetScrollY() float64 {
+	return le.scrollY
 }
 
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
@@ -904,7 +916,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		floatTotalWidth := le.getTotalWidth(box)
 
 		// Phase 5 Enhancement: Check if float fits, apply drop if needed
-		floatY = le.getFloatDropY(floatType, floatTotalWidth, box.Y, availableWidth)
+		// Apply margin-top to the starting Y position (negative margins shift up)
+		floatY = le.getFloatDropY(floatType, floatTotalWidth, box.Y+margin.Top, availableWidth)
 		box.Y = floatY
 
 		// Position float horizontally
@@ -2334,8 +2347,9 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		boxWidth, boxHeight = text.MeasureTextWithWeight(content, fontSize, bold)
 	}
 
-	// Block-level pseudo-elements take available width
-	if display == css.DisplayBlock {
+	// Block-level pseudo-elements: only take available width if they have content
+	// CSS triangles use empty content with borders, so they need width: 0
+	if display == css.DisplayBlock && content != "" {
 		boxWidth = availableWidth - margin.Left - margin.Right -
 			padding.Left - padding.Right - border.Left - border.Right
 	}

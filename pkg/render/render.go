@@ -14,10 +14,18 @@ import (
 
 type Renderer struct {
 	context *gg.Context
+	scrollY float64 // Viewport scroll offset - non-fixed content is shifted by -scrollY
 }
 
 func NewRenderer(width, height int) *Renderer {
 	return &Renderer{context: gg.NewContext(width, height)}
+}
+
+// SetScrollY sets the viewport scroll offset for rendering.
+// Non-fixed content will be shifted up by this amount.
+// Fixed-positioned content remains at its absolute position.
+func (r *Renderer) SetScrollY(scrollY float64) {
+	r.scrollY = scrollY
 }
 
 func (r *Renderer) Render(boxes []*layout.Box) {
@@ -70,6 +78,15 @@ func (r *Renderer) sortByZIndex(boxes []*layout.Box) {
 	})
 }
 
+// getEffectiveY returns the Y coordinate adjusted for scroll offset.
+// Fixed-positioned elements are not affected by scroll.
+func (r *Renderer) getEffectiveY(box *layout.Box) float64 {
+	if box.Position == css.PositionFixed {
+		return box.Y // Fixed elements stay at their absolute position
+	}
+	return box.Y - r.scrollY // Non-fixed content is shifted up by scrollY
+}
+
 func (r *Renderer) drawBox(box *layout.Box) {
 	// Phase 16: Apply CSS transforms
 	transforms := box.Style.GetTransforms()
@@ -90,6 +107,9 @@ func (r *Renderer) drawBox(box *layout.Box) {
 	// Phase 19: Draw box-shadow (drawn first, underneath the box)
 	r.drawBoxShadow(box)
 
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
 	// Phase 2: Draw background (content + padding area, not including margin)
 	if bgColor, ok := box.Style.Get("background-color"); ok {
 		if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
@@ -103,7 +123,7 @@ func (r *Renderer) drawBox(box *layout.Box) {
 			// CSS 2.1 §14.2.1: Background covers content + padding + border area
 			// box.X/Y is the border-box edge (outside of border)
 			bgX := box.X
-			bgY := box.Y
+			bgY := effectiveY
 			bgWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
 			bgHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
 
@@ -173,6 +193,9 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		return
 	}
 
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
 	// Phase 12: Get border styles for each side
 	borderStyles := box.Style.GetBorderStyle()
 
@@ -186,7 +209,7 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.SetLineWidth(box.Border.Top)
 			borderX := box.X + box.Border.Left/2
-			borderY := box.Y + box.Border.Top/2
+			borderY := effectiveY + box.Border.Top/2
 			borderWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right - box.Border.Left
 			borderHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom - box.Border.Top
 			r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
@@ -195,16 +218,16 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		return
 	}
 
-	// Calculate border box coordinates
-	// box.X, box.Y is the border-box edge (outside of border)
+	// Calculate border box coordinates using effective Y
+	// box.X/effectiveY is the border-box edge (outside of border)
 	outerLeft := box.X
-	outerTop := box.Y
+	outerTop := effectiveY
 	outerRight := box.X + box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
-	outerBottom := box.Y + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
+	outerBottom := effectiveY + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
 	innerLeft := box.X + box.Border.Left
-	innerTop := box.Y + box.Border.Top
+	innerTop := effectiveY + box.Border.Top
 	innerRight := box.X + box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right
-	innerBottom := box.Y + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom
+	innerBottom := effectiveY + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom
 
 	// Draw each side as a trapezoid (CSS mitered border rendering)
 	// Top border
@@ -319,9 +342,12 @@ func (r *Renderer) drawBoxShadow(box *layout.Box) {
 		return
 	}
 
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
 	// Box dimensions (content + padding)
 	boxX := box.X
-	boxY := box.Y
+	boxY := effectiveY
 	boxWidth := box.Width + box.Padding.Left + box.Padding.Right
 	boxHeight := box.Height + box.Padding.Top + box.Padding.Bottom
 	borderRadius := box.Style.GetBorderRadius()
@@ -444,6 +470,9 @@ func (r *Renderer) drawText(box *layout.Box) {
 		return
 	}
 
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
 	// Phase 6 Enhancement: Calculate X position based on text-align
 	textX := box.X
 	textAlign := box.Style.GetTextAlign()
@@ -457,7 +486,7 @@ func (r *Renderer) drawText(box *layout.Box) {
 
 	// Draw text at calculated position
 	// Add fontSize to Y for baseline alignment
-	textY := box.Y + fontSize
+	textY := effectiveY + fontSize
 	r.context.DrawString(textContent, textX, textY)
 
 	// Phase 17: Draw text decorations
@@ -480,13 +509,13 @@ func (r *Renderer) drawText(box *layout.Box) {
 
 		case css.TextDecorationOverline:
 			// Draw line above text
-			overlineY := box.Y
+			overlineY := effectiveY
 			r.context.DrawLine(textX, overlineY, textX+textWidth, overlineY)
 			r.context.Stroke()
 
 		case css.TextDecorationLineThrough:
 			// Draw line through middle of text
-			lineThroughY := box.Y + fontSize*0.5
+			lineThroughY := effectiveY + fontSize*0.5
 			r.context.DrawLine(textX, lineThroughY, textX+textWidth, lineThroughY)
 			r.context.Stroke()
 		}
@@ -499,19 +528,22 @@ func (r *Renderer) drawImage(box *layout.Box) {
 		return
 	}
 
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
 	// Load the image
 	img, err := images.LoadImage(box.ImagePath)
 	if err != nil {
 		// Image failed to load, draw placeholder
 		r.context.SetRGB(0.9, 0.9, 0.9) // Light gray background
-		r.context.DrawRectangle(box.X, box.Y, box.Width, box.Height)
+		r.context.DrawRectangle(box.X, effectiveY, box.Width, box.Height)
 		r.context.Fill()
 
 		// Draw X to indicate broken image
 		r.context.SetRGB(0.5, 0.5, 0.5)
 		r.context.SetLineWidth(2)
-		r.context.DrawLine(box.X, box.Y, box.X+box.Width, box.Y+box.Height)
-		r.context.DrawLine(box.X+box.Width, box.Y, box.X, box.Y+box.Height)
+		r.context.DrawLine(box.X, effectiveY, box.X+box.Width, effectiveY+box.Height)
+		r.context.DrawLine(box.X+box.Width, effectiveY, box.X, effectiveY+box.Height)
 		r.context.Stroke()
 		return
 	}
@@ -520,7 +552,7 @@ func (r *Renderer) drawImage(box *layout.Box) {
 	r.context.Push()
 
 	// Translate to image content area position (box.X is border-box edge)
-	r.context.Translate(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top)
+	r.context.Translate(box.X+box.Border.Left+box.Padding.Left, effectiveY+box.Border.Top+box.Padding.Top)
 
 	// Calculate scale factors
 	bounds := img.Bounds()
@@ -551,11 +583,13 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		return // silently skip if image can't be loaded
 	}
 
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
 
 	// CSS 2.1 §14.2.1: Background covers border + padding + content area
-	// box.X/Y is the border-box edge
+	// box.X/effectiveY is the border-box edge
 	bgX := box.X
-	bgY := box.Y
+	bgY := effectiveY
 	bgWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
 	bgHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
 
@@ -639,11 +673,14 @@ func (r *Renderer) SavePNG(filename string) error {
 func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) {
 	// Get transform origin
 	origin := box.Style.GetTransformOrigin()
-	
+
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
 	// Calculate origin point in absolute coordinates
 	originX := box.X + box.Padding.Left + origin.X*box.Width
-	originY := box.Y + box.Padding.Top + origin.Y*box.Height
-	
+	originY := effectiveY + box.Padding.Top + origin.Y*box.Height
+
 	// Translate to origin point
 	r.context.Translate(originX, originY)
 	
@@ -711,9 +748,12 @@ func (r *Renderer) drawScrollbarIndicators(box *layout.Box) {
 	scrollbarWidth := 12.0
 	scrollbarColor := css.Color{R: 200, G: 200, B: 200, A: 1.0}
 
+	// Get effective Y position (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
 	// Content area dimensions
 	contentX := box.X + box.Padding.Left
-	contentY := box.Y + box.Padding.Top
+	contentY := effectiveY + box.Padding.Top
 	contentWidth := box.Width
 	contentHeight := box.Height
 

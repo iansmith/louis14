@@ -166,8 +166,25 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			}
 
 			// Check if this rule's selector matches the node AND has the right pseudo-element
-			if rule.Selector.PseudoElement == pseudoElement {
-				// Check if the base selector matches
+			rulePseudo := rule.Selector.PseudoElement
+
+			// Handle "descendant:" prefix - these pseudo-elements apply to descendants only
+			if strings.HasPrefix(rulePseudo, "descendant:") {
+				actualPseudo := strings.TrimPrefix(rulePseudo, "descendant:")
+				if actualPseudo == pseudoElement {
+					// For descendant pseudo-elements, check if the node is a descendant of a matching element
+					// (not the matching element itself)
+					ancestor := node.Parent
+					for ancestor != nil {
+						if MatchesSelector(ancestor, rule.Selector) {
+							allRules = append(allRules, rule)
+							break
+						}
+						ancestor = ancestor.Parent
+					}
+				}
+			} else if rulePseudo == pseudoElement {
+				// Direct pseudo-element match
 				if MatchesSelector(node, rule.Selector) {
 					allRules = append(allRules, rule)
 				}
