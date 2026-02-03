@@ -803,18 +803,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// If height is auto and we have children, adjust height to fit content
 	if _, ok := style.GetLength("height"); !ok && len(box.Children) > 0 {
-		// Calculate total height of children (exclude absolute/fixed - out of flow)
-		totalChildHeight := 0.0
+		// Calculate height based on maximum bottom edge of children (not sum)
+		// This correctly handles overlapping children (like floats with blocks)
+		parentContentTop := box.Y + box.Border.Top + box.Padding.Top
+		maxBottom := 0.0
 		for _, child := range box.Children {
 			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
 				continue
 			}
-			totalChildHeight += le.getTotalHeight(child)
+			// Calculate child's bottom edge relative to parent content area
+			childRelativeY := child.Y - parentContentTop
+			childBottom := childRelativeY + le.getTotalHeight(child)
+			if childBottom > maxBottom {
+				maxBottom = childBottom
+			}
 		}
-		if totalChildHeight < 0 {
-			totalChildHeight = 0
+		if maxBottom < 0 {
+			maxBottom = 0
 		}
-		box.Height = totalChildHeight
+		box.Height = maxBottom
 	}
 
 	// Re-apply min/max height constraints after auto-height calculation
