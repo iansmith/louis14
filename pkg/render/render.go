@@ -100,11 +100,12 @@ func (r *Renderer) drawBox(box *layout.Box) {
 				color.A,
 			)
 
-			// Background covers content + padding (but not margin or border)
+			// CSS 2.1 §14.2.1: Background covers content + padding + border area
+			// box.X/Y is the border-box edge (outside of border)
 			bgX := box.X
 			bgY := box.Y
-			bgWidth := box.Width + box.Padding.Left + box.Padding.Right
-			bgHeight := box.Height + box.Padding.Top + box.Padding.Bottom
+			bgWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
+			bgHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
 
 			if bgWidth > 0 && bgHeight > 0 {
 				// Phase 12: Check for border-radius
@@ -184,10 +185,10 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		if color.A > 0 {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.SetLineWidth(box.Border.Top)
-			borderX := box.X - box.Border.Left/2
-			borderY := box.Y - box.Border.Top/2
-			borderWidth := box.Width + box.Padding.Left + box.Padding.Right + box.Border.Left
-			borderHeight := box.Height + box.Padding.Top + box.Padding.Bottom + box.Border.Top
+			borderX := box.X + box.Border.Left/2
+			borderY := box.Y + box.Border.Top/2
+			borderWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right - box.Border.Left
+			borderHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom - box.Border.Top
 			r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
 			r.context.Stroke()
 		}
@@ -195,15 +196,15 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	}
 
 	// Calculate border box coordinates
-	// box.X, box.Y is the padding edge (content + padding area start)
-	outerLeft := box.X - box.Border.Left
-	outerTop := box.Y - box.Border.Top
-	outerRight := box.X + box.Width + box.Padding.Left + box.Padding.Right + box.Border.Right
-	outerBottom := box.Y + box.Height + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
-	innerLeft := box.X
-	innerTop := box.Y
-	innerRight := box.X + box.Width + box.Padding.Left + box.Padding.Right
-	innerBottom := box.Y + box.Height + box.Padding.Top + box.Padding.Bottom
+	// box.X, box.Y is the border-box edge (outside of border)
+	outerLeft := box.X
+	outerTop := box.Y
+	outerRight := box.X + box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
+	outerBottom := box.Y + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
+	innerLeft := box.X + box.Border.Left
+	innerTop := box.Y + box.Border.Top
+	innerRight := box.X + box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right
+	innerBottom := box.Y + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom
 
 	// Draw each side as a trapezoid (CSS mitered border rendering)
 	// Top border
@@ -518,8 +519,8 @@ func (r *Renderer) drawImage(box *layout.Box) {
 	// Save current context state
 	r.context.Push()
 
-	// Translate to image position
-	r.context.Translate(box.X, box.Y)
+	// Translate to image content area position (box.X is border-box edge)
+	r.context.Translate(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top)
 
 	// Calculate scale factors
 	bounds := img.Bounds()
@@ -551,11 +552,12 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	}
 
 
-	// Background area: content + padding
+	// CSS 2.1 §14.2.1: Background covers border + padding + content area
+	// box.X/Y is the border-box edge
 	bgX := box.X
 	bgY := box.Y
-	bgWidth := box.Width + box.Padding.Left + box.Padding.Right
-	bgHeight := box.Height + box.Padding.Top + box.Padding.Bottom
+	bgWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
+	bgHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
 
 	bounds := img.Bounds()
 	imgW := float64(bounds.Dx())

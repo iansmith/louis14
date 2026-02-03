@@ -79,7 +79,20 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 		}
 		return num * 3.7795275591, true // 1mm ≈ 3.78px at 96dpi
 	}
-	val = strings.TrimSuffix(val, "px")
+	if strings.HasSuffix(val, "px") {
+		val = strings.TrimSuffix(val, "px")
+	} else {
+		// CSS 2.1: lengths require units (except 0)
+		// Bare numbers without units are invalid
+		num, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, false
+		}
+		if num == 0 {
+			return 0, true
+		}
+		return 0, false // non-zero without unit is invalid
+	}
 	num, err := strconv.ParseFloat(val, 64)
 	if err != nil {
 		return 0, false
@@ -1208,12 +1221,12 @@ func (s *Style) GetBorderCollapse() BorderCollapse {
 	return BorderCollapseSeparate
 }
 
-// GetBorderSpacing returns the border-spacing value (default: 2px)
+// GetBorderSpacing returns the border-spacing value (default: 0 per CSS 2.1)
 func (s *Style) GetBorderSpacing() float64 {
 	if spacing, ok := s.GetLength("border-spacing"); ok {
 		return spacing
 	}
-	return 2.0 // Default border spacing
+	return 0 // CSS 2.1 initial value
 }
 
 // Phase 10: Flexbox layout

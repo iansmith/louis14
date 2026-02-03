@@ -28,6 +28,17 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("display", "none")
 	}
 
+	// Default inline display for inline HTML elements
+	switch node.TagName {
+	case "span", "em", "strong", "b", "i", "u", "s", "a", "abbr", "cite",
+		"code", "dfn", "kbd", "mark", "q", "samp", "small", "sub", "sup",
+		"var", "time", "label", "br", "wbr", "img", "input", "select",
+		"textarea", "button", "object":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "inline")
+		}
+	}
+
 	// Phase 23: Default styles for table elements
 	switch node.TagName {
 	case "table":

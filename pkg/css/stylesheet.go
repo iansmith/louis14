@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -188,6 +189,12 @@ func splitRules(css string) []string {
 			continue
 		}
 
+		// Handle backslash escapes outside strings (e.g., \} in property values)
+		if ch == '\\' && i+1 < len(css) {
+			i++ // skip escaped character
+			continue
+		}
+
 		if ch == '"' || ch == '\'' {
 			inString = ch
 			continue
@@ -206,6 +213,9 @@ func splitRules(css string) []string {
 				}
 				start = i + 1
 			}
+		} else if depth == 0 && ch == ';' {
+			// Skip stray semicolons between rules (e.g., "};")
+			start = i + 1
 		}
 	}
 
@@ -798,6 +808,23 @@ func parseDeclarations(declStr string) map[string]string {
 			continue
 		}
 
+		// Handle !important: strip it if valid, reject if malformed
+		if strings.Contains(value, "!") {
+			bangIdx := strings.Index(value, "!")
+			afterBang := strings.TrimSpace(value[bangIdx+1:])
+			if strings.EqualFold(afterBang, "important") {
+				value = strings.TrimSpace(value[:bangIdx])
+			} else {
+				// Invalid use of ! (e.g., "red ! error") — reject entire declaration
+				continue
+			}
+		}
+
+		// CSS 2.1: Reject bare non-zero numbers for length properties (must have units)
+		if isLengthProperty(property) && isInvalidBareNumber(value) {
+			continue
+		}
+
 		// Expand shorthand properties (reuse from Phase 2)
 		style := NewStyle()
 		expandShorthand(style, property, value)
@@ -810,3 +837,28 @@ func parseDeclarations(declStr string) map[string]string {
 
 	return declarations
 }
+
+// isLengthProperty returns true for CSS properties that expect length values
+func isLengthProperty(prop string) bool {
+	switch prop {
+	case "width", "height", "min-width", "min-height", "max-width", "max-height",
+		"margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+		"padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+		"border-width", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+		"top", "right", "bottom", "left",
+		"font-size", "line-height", "letter-spacing", "word-spacing",
+		"text-indent", "vertical-align":
+		return true
+	}
+	return false
+}
+
+// isInvalidBareNumber returns true if value is a non-zero number with no unit
+func isInvalidBareNumber(value string) bool {
+	num, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return false // not a bare number
+	}
+	return num != 0 // zero without units is valid
+}
+

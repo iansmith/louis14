@@ -234,6 +234,18 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
+	// Phase 5: Check for float early to determine width calculation
+	floatType := style.GetFloat()
+
+	// CSS 2.1 §9.7: Relationships between display, position, and float
+	// Floated or absolutely positioned inline elements compute to block display
+	if display == css.DisplayInline {
+		pos := style.GetPosition()
+		if floatType != css.FloatNone || pos == css.PositionAbsolute || pos == css.PositionFixed {
+			display = css.DisplayBlock
+		}
+	}
+
 	// Get box model values
 	margin := style.GetMargin()
 	padding := style.GetPadding()
@@ -250,9 +262,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Apply margin offset
 	x += margin.Left
 	y += margin.Top
-
-	// Phase 5: Check for float early to determine width calculation
-	floatType := style.GetFloat()
 
 	// Calculate content width
 	var contentWidth float64
@@ -295,6 +304,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		hasExplicitWidth = true
 	} else if style.GetPosition() == css.PositionAbsolute || style.GetPosition() == css.PositionFixed {
 		// Absolutely positioned elements without explicit width shrink-wrap
+		contentWidth = 0
+	} else if floatType != css.FloatNone {
+		// CSS 2.1 §10.3.5: Floated elements without explicit width use shrink-to-fit
+		contentWidth = 0
+	} else if display == css.DisplayTable {
+		// CSS 2.1 §17.5.2: Tables without explicit width use shrink-to-fit
 		contentWidth = 0
 	} else {
 		// Default to available width minus horizontal margin, padding, border
@@ -520,7 +535,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if childBox != nil {
 				// Phase 7: Handle inline and inline-block elements
-				if (childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock) && childBox.Position == css.PositionStatic {
+				// Skip inline positioning for floated elements (they are positioned by float logic)
+				childIsFloated := childStyle != nil && childStyle.GetFloat() != css.FloatNone
+				if (childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock) && childBox.Position == css.PositionStatic && !childIsFloated {
 					childTotalWidth := le.getTotalWidth(childBox)
 
 					// Check if child fits on current line
@@ -561,8 +578,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						childY = inlineCtx.LineY
 					}
 
-					// Update child position for block element (skip absolute/fixed - positioned later)
-					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed {
+					// Update child position for block element (skip absolute/fixed - positioned later, skip floats - positioned by float logic)
+					childFloatTypePos := css.FloatNone
+					if childStyle != nil { childFloatTypePos = childStyle.GetFloat() }
+					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatTypePos == css.FloatNone {
 						if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
 							childTotalW := childBox.Width + childBox.Padding.Left + childBox.Padding.Right + childBox.Border.Left + childBox.Border.Right
 							parentContentStart := box.X + border.Left + padding.Left
@@ -710,6 +729,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		box.Children = append(box.Children, afterBox)
 	}
 
+	// Apply text-align to inline children (only for block containers, not inline elements)
+	if display != css.DisplayInline && display != css.DisplayInlineBlock {
+		if textAlign, ok := style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
+			le.applyTextAlign(box, textAlign, contentWidth)
+		}
+	}
+
 	// Parent-child top margin collapsing
 	// If parent has no border-top/padding-top, collapse with first block child's top margin
 	if parentCanCollapseTopMargin(box) && shouldCollapseMargins(box) {
@@ -809,8 +835,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				maxChildWidth = childWidth
 			}
 		}
-		// Set width to fit children (but don't exceed available width)
-		if maxChildWidth > 0 && maxChildWidth < box.Width {
+		if maxChildWidth > 0 {
 			box.Width = maxChildWidth
 		}
 	}
@@ -826,6 +851,27 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 		if maxChildWidth > 0 {
 			box.Width = maxChildWidth
+		}
+		// After shrink-wrap, update block children with auto width to use the new parent width
+		for _, child := range box.Children {
+			if child.Style != nil {
+				childDisplay := child.Style.GetDisplay()
+				if _, hasW := child.Style.GetLength("width"); !hasW && childDisplay != css.DisplayInline &&
+					child.Style.GetFloat() == css.FloatNone &&
+					child.Style.GetPosition() != css.PositionAbsolute && child.Style.GetPosition() != css.PositionFixed {
+					child.Width = box.Width - child.Border.Left - child.Padding.Left - child.Padding.Right - child.Border.Right -
+						child.Margin.Left - child.Margin.Right
+					if child.Width < 0 {
+						child.Width = 0
+					}
+					// Re-apply text-align with the updated width
+					if child.Style != nil {
+						if ta, ok := child.Style.Get("text-align"); ok && ta != "left" && ta != "" {
+							le.applyTextAlign(child, ta, child.Width)
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -843,6 +889,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 5: Handle float positioning AFTER children layout and shrink-wrapping
 	var floatY float64
 	if floatType != css.FloatNone && position == css.PositionStatic {
+		oldX, oldY := box.X, box.Y
 		floatTotalWidth := le.getTotalWidth(box)
 
 		// Phase 5 Enhancement: Check if float fits, apply drop if needed
@@ -860,6 +907,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			box.X = x + availableWidth - floatTotalWidth - rightOffset
 		}
 
+		// Shift children by the position delta
+		dx, dy := box.X-oldX, box.Y-oldY
+		if dx != 0 || dy != 0 {
+			le.shiftChildren(box, dx, dy)
+		}
 	}
 
 	// Restore BFC float context - remove floats added inside this BFC
@@ -874,7 +926,34 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		le.addFloat(box, floatType, floatY)
 	}
 
+	// After all positioning is done, fix float:right children that were
+	// positioned before the parent width was finalized (shrink-to-fit containers)
+	if !hasExplicitWidth && box.Width > 0 {
+		le.repositionFloatRightChildren(box)
+	}
+
 	return box
+}
+
+// repositionFloatRightChildren fixes float:right children that were positioned
+// before the parent's shrink-to-fit width was finalized.
+func (le *LayoutEngine) repositionFloatRightChildren(box *Box) {
+	contentLeft := box.X + box.Border.Left + box.Padding.Left
+	contentRight := contentLeft + box.Width
+	for _, child := range box.Children {
+		if child.Style != nil && child.Style.GetFloat() == css.FloatRight {
+			childTotalWidth := le.getTotalWidth(child)
+			// Float:right: right edge of child aligns with right edge of parent content
+			newX := contentRight - childTotalWidth
+			dx := newX - child.X
+			if dx != 0 {
+				child.X = newX
+				le.shiftChildren(child, dx, 0)
+				// After shifting, recursively fix any float:right grandchildren
+				le.repositionFloatRightChildren(child)
+			}
+		}
+	}
 }
 
 // getStyle returns the computed style for a node
@@ -1255,6 +1334,10 @@ func (le *LayoutEngine) getClearY(clearType css.ClearType, currentY float64) flo
 
 // Phase 5 Enhancement: getFloatDropY finds Y position where float of given width will fit
 func (le *LayoutEngine) getFloatDropY(floatType css.FloatType, floatWidth float64, startY float64, availableWidth float64) float64 {
+	// If available width is 0 (shrink-to-fit parent), skip drop logic
+	if availableWidth <= 0 {
+		return startY
+	}
 	currentY := startY
 	maxAttempts := 100 // Prevent infinite loops
 
@@ -1310,6 +1393,43 @@ func (le *LayoutEngine) applyVerticalAlign(box *Box, lineY float64, lineHeight f
 	}
 }
 
+// applyTextAlign shifts inline children according to text-align property
+func (le *LayoutEngine) applyTextAlign(box *Box, textAlign string, contentWidth float64) {
+	contentLeft := box.X + box.Border.Left + box.Padding.Left
+
+	for _, child := range box.Children {
+		if child.Style == nil {
+			continue
+		}
+		childDisplay := child.Style.GetDisplay()
+		// Only apply to inline/inline-block children, or text nodes
+		isInline := childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock
+		if child.Node != nil && child.Node.Type == html.TextNode {
+			isInline = true
+		}
+		if !isInline {
+			continue
+		}
+
+		childTotalWidth := le.getTotalWidth(child)
+
+		switch textAlign {
+		case "right":
+			dx := contentLeft + contentWidth - childTotalWidth - child.X
+			if dx != 0 {
+				child.X += dx
+				le.shiftChildren(child, dx, 0)
+			}
+		case "center":
+			dx := contentLeft + (contentWidth-childTotalWidth)/2 - child.X
+			if dx != 0 {
+				child.X += dx
+				le.shiftChildren(child, dx, 0)
+			}
+		}
+	}
+}
+
 // Phase 9: buildTableInfo analyzes table structure and creates TableInfo
 func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.Node]*css.Style) *TableInfo {
 	tableInfo := &TableInfo{
@@ -1319,6 +1439,8 @@ func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.N
 	}
 
 	// Scan children for rows (tr elements or display: table-row)
+	// Also handle anonymous row generation for direct table-cell children
+	var anonRow *TableRow
 	for _, child := range tableBox.Node.Children {
 		if child.Type != html.ElementNode {
 			continue
@@ -1329,18 +1451,25 @@ func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.N
 			childStyle = css.NewStyle()
 		}
 
+		childDisplay := childStyle.GetDisplay()
+
 		// Check if this is a row (tr tag or display: table-row)
-		isRow := child.TagName == "tr" || childStyle.GetDisplay() == css.DisplayTableRow
+		isRow := child.TagName == "tr" || childDisplay == css.DisplayTableRow
 
 		// Also check for tbody, thead, tfoot which contain rows
 		isRowGroup := child.TagName == "tbody" || child.TagName == "thead" || child.TagName == "tfoot" ||
-			childStyle.GetDisplay() == css.DisplayTableRowGroup ||
-			childStyle.GetDisplay() == css.DisplayTableHeaderGroup ||
-			childStyle.GetDisplay() == css.DisplayTableFooterGroup
+			childDisplay == css.DisplayTableRowGroup ||
+			childDisplay == css.DisplayTableHeaderGroup ||
+			childDisplay == css.DisplayTableFooterGroup
+
+		// Check if this is a table-cell (or will be wrapped as one)
+		isCell := child.TagName == "td" || child.TagName == "th" || childDisplay == css.DisplayTableCell
 
 		if isRow {
+			anonRow = nil // explicit row breaks anonymous row
 			tableInfo.Rows = append(tableInfo.Rows, &TableRow{Cells: make([]*TableCell, 0)})
 		} else if isRowGroup {
+			anonRow = nil
 			// Process rows within the group
 			for _, groupChild := range child.Children {
 				if groupChild.Type != html.ElementNode {
@@ -1353,6 +1482,18 @@ func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.N
 				if groupChild.TagName == "tr" || groupChildStyle.GetDisplay() == css.DisplayTableRow {
 					tableInfo.Rows = append(tableInfo.Rows, &TableRow{Cells: make([]*TableCell, 0)})
 				}
+			}
+		} else if isCell {
+			// CSS 2.1 §17.2.1: Generate anonymous table-row for consecutive table-cells
+			if anonRow == nil {
+				anonRow = &TableRow{Cells: make([]*TableCell, 0)}
+				tableInfo.Rows = append(tableInfo.Rows, anonRow)
+			}
+		} else {
+			// Non-table child: wrap in anonymous cell within the anonymous row
+			if anonRow == nil {
+				anonRow = &TableRow{Cells: make([]*TableCell, 0)}
+				tableInfo.Rows = append(tableInfo.Rows, anonRow)
 			}
 		}
 	}
@@ -1420,8 +1561,36 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	// Calculate column widths
 	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo)
 
+	// Set table width from column widths if not explicitly set
+	if tableBox.Width == 0 {
+		totalW := 0.0
+		for _, cw := range tableInfo.ColumnWidths {
+			totalW += cw
+		}
+		borderSpacing := tableInfo.BorderSpacing
+		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
+			borderSpacing = 0
+		}
+		totalW += borderSpacing * float64(numCols+1)
+		tableBox.Width = totalW
+	}
+
 	// Calculate row heights
 	tableInfo.RowHeights = le.calculateRowHeights(cellGrid, tableInfo)
+
+	// Set table height from row heights if not explicitly set
+	if tableBox.Height == 0 {
+		totalH := 0.0
+		for _, rh := range tableInfo.RowHeights {
+			totalH += rh
+		}
+		borderSpacing := tableInfo.BorderSpacing
+		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
+			borderSpacing = 0
+		}
+		totalH += borderSpacing * float64(len(tableInfo.RowHeights)+1)
+		tableBox.Height = totalH
+	}
 
 	// Position cells
 	le.positionTableCells(tableBox, cellGrid, tableInfo, x, y)
@@ -1505,6 +1674,41 @@ func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, comp
 			}
 			le.processTableRows(child, childStyle, computedStyles, rowIdx, cellGrid, tableInfo)
 		}
+	} else if display == css.DisplayTableCell || display == css.DisplayTable {
+		// CSS 2.1 §17.2.1: Direct table-cell children generate an anonymous row
+		// Also handle nested display:table elements as anonymous cells
+		for len(*cellGrid) <= *rowIdx {
+			*cellGrid = append(*cellGrid, make([]*TableCell, 0))
+		}
+		colIdx := len((*cellGrid)[*rowIdx])
+		cell := &TableCell{
+			Box:     &Box{Node: node, Style: style},
+			RowSpan: 1,
+			ColSpan: 1,
+			RowIdx:  *rowIdx,
+			ColIdx:  colIdx,
+		}
+		for len((*cellGrid)[*rowIdx]) <= colIdx {
+			(*cellGrid)[*rowIdx] = append((*cellGrid)[*rowIdx], nil)
+		}
+		(*cellGrid)[*rowIdx][colIdx] = cell
+	} else {
+		// Non-table child: wrap in anonymous table-cell within the current anonymous row
+		for len(*cellGrid) <= *rowIdx {
+			*cellGrid = append(*cellGrid, make([]*TableCell, 0))
+		}
+		colIdx := len((*cellGrid)[*rowIdx])
+		cell := &TableCell{
+			Box:     &Box{Node: node, Style: style},
+			RowSpan: 1,
+			ColSpan: 1,
+			RowIdx:  *rowIdx,
+			ColIdx:  colIdx,
+		}
+		for len((*cellGrid)[*rowIdx]) <= colIdx {
+			(*cellGrid)[*rowIdx] = append((*cellGrid)[*rowIdx], nil)
+		}
+		(*cellGrid)[*rowIdx][colIdx] = cell
 	}
 }
 
@@ -1515,21 +1719,55 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 		return []float64{}
 	}
 
-	// Simple algorithm: distribute available width equally
 	// Account for border spacing
 	var totalSpacing float64
 	if tableInfo.BorderCollapse == css.BorderCollapseSeparate {
 		totalSpacing = tableInfo.BorderSpacing * float64(numCols+1)
 	}
 
-	widthPerCol := (availableWidth - totalSpacing) / float64(numCols)
-	if widthPerCol < 10 {
-		widthPerCol = 10 // Minimum column width
+	// First pass: determine column widths from cell explicit widths
+	columnWidths := make([]float64, numCols)
+	hasExplicit := make([]bool, numCols)
+	for _, row := range cellGrid {
+		for colIdx, cell := range row {
+			if cell == nil || cell.Box == nil || cell.Box.Style == nil || cell.ColIdx != colIdx {
+				continue
+			}
+			if w, ok := cell.Box.Style.GetLength("width"); ok && w > 0 {
+				if w > columnWidths[colIdx] {
+					columnWidths[colIdx] = w
+					hasExplicit[colIdx] = true
+				}
+			}
+		}
 	}
 
-	columnWidths := make([]float64, numCols)
+	// Distribute remaining width to columns without explicit widths
+	usedWidth := totalSpacing
+	unsetCols := 0
 	for i := 0; i < numCols; i++ {
-		columnWidths[i] = widthPerCol
+		usedWidth += columnWidths[i]
+		if !hasExplicit[i] {
+			unsetCols++
+		}
+	}
+	if unsetCols > 0 {
+		remaining := availableWidth - usedWidth
+		if remaining > 0 {
+			perCol := remaining / float64(unsetCols)
+			for i := 0; i < numCols; i++ {
+				if !hasExplicit[i] {
+					columnWidths[i] = perCol
+				}
+			}
+		} else {
+			// No remaining space; use minimum width
+			for i := 0; i < numCols; i++ {
+				if !hasExplicit[i] {
+					columnWidths[i] = 10
+				}
+			}
+		}
 	}
 
 	return columnWidths
@@ -1540,12 +1778,18 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 	numRows := len(cellGrid)
 	rowHeights := make([]float64, numRows)
 
-	// Calculate row heights from cell content
+	// Calculate row heights from cell content and explicit heights
 	for i := 0; i < numRows; i++ {
 		maxHeight := 0.0
 		for _, cell := range cellGrid[i] {
 			if cell == nil || cell.Box == nil {
 				continue
+			}
+			// Check for explicit height from style
+			if cell.Box.Style != nil {
+				if h, ok := cell.Box.Style.GetLength("height"); ok && h > maxHeight {
+					maxHeight = h
+				}
 			}
 			cellHeight := cell.Box.Height + cell.Box.Padding.Top + cell.Box.Padding.Bottom
 			if cellHeight > maxHeight {
