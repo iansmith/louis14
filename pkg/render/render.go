@@ -32,9 +32,128 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	r.context.SetRGB(1, 1, 1)
 	r.context.Clear()
 
-	// Render each root box tree with proper paint order
+	// Collect fixed-positioned elements - they belong to the root stacking context
+	// and are positioned relative to the viewport, not their DOM parent
+	var fixedElements []*layout.Box
 	for _, box := range boxes {
-		r.paintBoxTree(box)
+		fixedElements = append(fixedElements, r.collectFixedElements(box)...)
+	}
+
+	// Render each root box tree with proper paint order (excluding fixed elements)
+	for _, box := range boxes {
+		r.paintBoxTreeExcludeFixed(box)
+	}
+
+	// Paint fixed elements at root level, sorted by z-index
+	// Fixed elements with z-index: auto paint after normal content
+	sort.SliceStable(fixedElements, func(i, j int) bool {
+		return fixedElements[i].ZIndex < fixedElements[j].ZIndex
+	})
+	for _, fixed := range fixedElements {
+		r.paintBoxTree(fixed)
+	}
+}
+
+// collectFixedElements recursively collects all fixed-positioned elements
+func (r *Renderer) collectFixedElements(box *layout.Box) []*layout.Box {
+	var result []*layout.Box
+	if box == nil {
+		return result
+	}
+
+	if box.Position == css.PositionFixed {
+		result = append(result, box)
+	}
+
+	for _, child := range box.Children {
+		result = append(result, r.collectFixedElements(child)...)
+	}
+	return result
+}
+
+// paintBoxTreeExcludeFixed renders a box tree but skips fixed-positioned elements
+// (they're painted separately at the root level)
+func (r *Renderer) paintBoxTreeExcludeFixed(box *layout.Box) {
+	if box == nil {
+		return
+	}
+
+	// Skip fixed-positioned elements - they're painted at root level
+	if box.Position == css.PositionFixed {
+		return
+	}
+
+	// Step 1: Draw this box's background and borders
+	r.drawBoxBackgroundAndBorders(box)
+
+	// Categorize children by their paint order category
+	var negativeZ, zeroAutoZ, positiveZ []*layout.Box
+	var blocks, floats, inlines []*layout.Box
+
+	for _, child := range box.Children {
+		// Skip fixed elements - they're painted at root level
+		if child.Position == css.PositionFixed {
+			continue
+		}
+
+		if layout.BoxCreatesStackingContext(child) {
+			if child.ZIndex < 0 {
+				negativeZ = append(negativeZ, child)
+			} else if child.ZIndex > 0 {
+				positiveZ = append(positiveZ, child)
+			} else {
+				zeroAutoZ = append(zeroAutoZ, child)
+			}
+		} else if layout.IsPositioned(child) {
+			zeroAutoZ = append(zeroAutoZ, child)
+		} else if layout.IsFloat(child) {
+			floats = append(floats, child)
+		} else if layout.IsInline(child) {
+			inlines = append(inlines, child)
+		} else {
+			blocks = append(blocks, child)
+		}
+	}
+
+	// Sort z-index groups
+	sort.SliceStable(negativeZ, func(i, j int) bool {
+		return negativeZ[i].ZIndex < negativeZ[j].ZIndex
+	})
+	sort.SliceStable(positiveZ, func(i, j int) bool {
+		return positiveZ[i].ZIndex < positiveZ[j].ZIndex
+	})
+
+	// Step 2: Negative z-index descendants
+	for _, child := range negativeZ {
+		r.paintBoxTreeExcludeFixed(child)
+	}
+
+	// Step 3: In-flow, non-positioned, block-level descendants
+	for _, child := range blocks {
+		r.paintBoxTreeExcludeFixed(child)
+	}
+
+	// Step 4: Non-positioned floats
+	for _, child := range floats {
+		r.paintBoxTreeExcludeFixed(child)
+	}
+
+	// Step 5: In-flow, non-positioned, inline-level descendants
+	for _, child := range inlines {
+		r.paintBoxTreeExcludeFixed(child)
+	}
+
+	// Draw this box's content
+	r.drawBoxContent(box)
+
+	// Step 6: Positioned descendants with z-index: auto or 0
+	for _, child := range zeroAutoZ {
+		r.paintBoxTreeExcludeFixed(child)
+	}
+
+	// Step 7: Positive z-index descendants
+	for _, child := range positiveZ {
+		r.paintBoxTreeExcludeFixed(child)
 	}
 }
 
