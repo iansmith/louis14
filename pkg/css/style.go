@@ -583,6 +583,8 @@ func expandBackgroundProperty(style *Style, value string) {
 			positionParts = append(positionParts, part)
 		} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
 			positionParts = append(positionParts, part)
+		} else if part == "fixed" || part == "scroll" || part == "local" {
+			style.Set("background-attachment", part)
 		}
 	}
 	if colorFound {
@@ -1857,6 +1859,14 @@ const (
 	BackgroundRepeatRepeatX  BackgroundRepeatType = "repeat-x"
 	BackgroundRepeatRepeatY  BackgroundRepeatType = "repeat-y"
 )
+
+// GetBackgroundAttachment returns the background-attachment value (default: scroll)
+func (s *Style) GetBackgroundAttachment() string {
+	if val, ok := s.Get("background-attachment"); ok {
+		return val
+	}
+	return "scroll"
+}
 
 // GetBackgroundRepeat returns the background-repeat value (default: repeat)
 func (s *Style) GetBackgroundRepeat() BackgroundRepeatType {

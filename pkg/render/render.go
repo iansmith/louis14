@@ -45,10 +45,16 @@ func (r *Renderer) collectAllBoxes(boxes []*layout.Box) []*layout.Box {
 }
 
 // paintLevel returns the CSS painting level for stacking order within the same z-index:
-// 0 = blocks, 1 = floats (floats paint over blocks at same z-index per CSS spec)
+// 0 = blocks, 1 = floats, 2 = inline content (CSS 2.1 Appendix E)
 func paintLevel(box *layout.Box) int {
-	if box.Style != nil && box.Style.GetFloat() != css.FloatNone {
+	if box.Style == nil {
+		return 0
+	}
+	if box.Style.GetFloat() != css.FloatNone {
 		return 1
+	}
+	if disp, ok := box.Style.Get("display"); ok && disp == "inline" {
+		return 2
 	}
 	return 0
 }
@@ -188,16 +194,28 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		return
 	}
 
-	// Draw each side with its specific color and style
+	// Calculate border box coordinates
+	// box.X, box.Y is the padding edge (content + padding area start)
+	outerLeft := box.X - box.Border.Left
+	outerTop := box.Y - box.Border.Top
+	outerRight := box.X + box.Width + box.Padding.Left + box.Padding.Right + box.Border.Right
+	outerBottom := box.Y + box.Height + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
+	innerLeft := box.X
+	innerTop := box.Y
+	innerRight := box.X + box.Width + box.Padding.Left + box.Padding.Right
+	innerBottom := box.Y + box.Height + box.Padding.Top + box.Padding.Bottom
+
+	// Draw each side as a trapezoid (CSS mitered border rendering)
 	// Top border
 	if box.Border.Top > 0 && borderStyles.Top != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "top"); ok && color.A > 0 {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
-			r.drawBorderSide(
-				box.X, box.Y-box.Border.Top,
-				box.Width+box.Padding.Left+box.Padding.Right, box.Border.Top,
-				borderStyles.Top, true,
-			)
+			r.context.MoveTo(outerLeft, outerTop)
+			r.context.LineTo(outerRight, outerTop)
+			r.context.LineTo(innerRight, innerTop)
+			r.context.LineTo(innerLeft, innerTop)
+			r.context.ClosePath()
+			r.context.Fill()
 		}
 	}
 
@@ -205,11 +223,12 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "right"); ok && color.A > 0 {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
-			r.drawBorderSide(
-				box.X+box.Width+box.Padding.Left+box.Padding.Right, box.Y-box.Border.Top,
-				box.Border.Right, box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
-				borderStyles.Right, false,
-			)
+			r.context.MoveTo(outerRight, outerTop)
+			r.context.LineTo(outerRight, outerBottom)
+			r.context.LineTo(innerRight, innerBottom)
+			r.context.LineTo(innerRight, innerTop)
+			r.context.ClosePath()
+			r.context.Fill()
 		}
 	}
 
@@ -217,11 +236,12 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	if box.Border.Bottom > 0 && borderStyles.Bottom != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "bottom"); ok && color.A > 0 {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
-			r.drawBorderSide(
-				box.X, box.Y+box.Height+box.Padding.Top+box.Padding.Bottom,
-				box.Width+box.Padding.Left+box.Padding.Right, box.Border.Bottom,
-				borderStyles.Bottom, true,
-			)
+			r.context.MoveTo(outerLeft, outerBottom)
+			r.context.LineTo(outerRight, outerBottom)
+			r.context.LineTo(innerRight, innerBottom)
+			r.context.LineTo(innerLeft, innerBottom)
+			r.context.ClosePath()
+			r.context.Fill()
 		}
 	}
 
@@ -229,11 +249,12 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	if box.Border.Left > 0 && borderStyles.Left != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "left"); ok && color.A > 0 {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
-			r.drawBorderSide(
-				box.X-box.Border.Left, box.Y-box.Border.Top,
-				box.Border.Left, box.Height+box.Padding.Top+box.Padding.Bottom+box.Border.Top+box.Border.Bottom,
-				borderStyles.Left, false,
-			)
+			r.context.MoveTo(outerLeft, outerTop)
+			r.context.LineTo(outerLeft, outerBottom)
+			r.context.LineTo(innerLeft, innerBottom)
+			r.context.LineTo(innerLeft, innerTop)
+			r.context.ClosePath()
+			r.context.Fill()
 		}
 	}
 }
@@ -542,6 +563,16 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 
 	repeat := box.Style.GetBackgroundRepeat()
 	pos := box.Style.GetBackgroundPosition()
+	attachment := box.Style.GetBackgroundAttachment()
+
+	// For fixed attachment, position is relative to viewport origin
+	// The tiling origin is (0,0) + position offset, clipped to element bounds
+	originX := bgX
+	originY := bgY
+	if attachment == "fixed" {
+		originX = 0
+		originY = 0
+	}
 
 	// Clip background image to the background area
 	r.context.Push()
@@ -554,15 +585,17 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 
 	switch repeat {
 	case css.BackgroundRepeatNoRepeat:
-		drawClipped(int(bgX+pos.X), int(bgY+pos.Y))
+		drawClipped(int(originX+pos.X), int(originY+pos.Y))
 
 	case css.BackgroundRepeatRepeatX:
 		startX := pos.X
 		for startX > 0 {
 			startX -= imgW
 		}
-		for x := startX; x < bgWidth; x += imgW {
-			drawClipped(int(bgX+x), int(bgY+pos.Y))
+		// For fixed, need to cover from viewport origin to element bounds
+		tileEndX := bgX + bgWidth - originX
+		for x := startX; x < tileEndX; x += imgW {
+			drawClipped(int(originX+x), int(originY+pos.Y))
 		}
 
 	case css.BackgroundRepeatRepeatY:
@@ -570,8 +603,9 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		for startY > 0 {
 			startY -= imgH
 		}
-		for y := startY; y < bgHeight; y += imgH {
-			drawClipped(int(bgX+pos.X), int(bgY+y))
+		tileEndY := bgY + bgHeight - originY
+		for y := startY; y < tileEndY; y += imgH {
+			drawClipped(int(originX+pos.X), int(originY+y))
 		}
 
 	default: // repeat
@@ -583,9 +617,11 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		for startY > 0 {
 			startY -= imgH
 		}
-		for y := startY; y < bgHeight; y += imgH {
-			for x := startX; x < bgWidth; x += imgW {
-				drawClipped(int(bgX+x), int(bgY+y))
+		tileEndX := bgX + bgWidth - originX
+		tileEndY := bgY + bgHeight - originY
+		for y := startY; y < tileEndY; y += imgH {
+			for x := startX; x < tileEndX; x += imgW {
+				drawClipped(int(originX+x), int(originY+y))
 			}
 		}
 	}

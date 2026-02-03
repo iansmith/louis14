@@ -453,7 +453,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 2: Recursively layout children
 	childY := y + border.Top + padding.Top
-	childAvailableWidth := contentWidth - padding.Left - padding.Right
+	childAvailableWidth := contentWidth
 
 	// Track previous block child for margin collapsing between siblings
 	var prevBlockChild *Box
@@ -472,13 +472,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if beforeBox != nil {
 		box.Children = append(box.Children, beforeBox)
 		// Update inline context for subsequent children
-		if display == css.DisplayInline || display == css.DisplayBlock {
+		beforeDisplay := beforeBox.Style.GetDisplay()
+		if beforeDisplay == css.DisplayBlock {
+			inlineCtx.LineY += le.getTotalHeight(beforeBox)
+			inlineCtx.LineX = x + border.Left + padding.Left
+		} else {
 			inlineCtx.LineX += le.getTotalWidth(beforeBox)
 			if beforeBox.Height > inlineCtx.LineHeight {
 				inlineCtx.LineHeight = beforeBox.Height
 			}
-		} else {
-			inlineCtx.LineY += le.getTotalHeight(beforeBox)
 		}
 	}
 
@@ -561,7 +563,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 					// Update child position for block element (skip absolute/fixed - positioned later)
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed {
-						childBox.X = box.X + border.Left + padding.Left + childBox.Margin.Left
+						if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
+							childTotalW := childBox.Width + childBox.Padding.Left + childBox.Padding.Right + childBox.Border.Left + childBox.Border.Right
+							parentContentStart := box.X + border.Left + padding.Left
+							centerOff := (childAvailableWidth - childTotalW) / 2
+							if centerOff < 0 { centerOff = 0 }
+							childBox.X = parentContentStart + centerOff
+						} else {
+							childBox.X = box.X + border.Left + padding.Left + childBox.Margin.Left
+						}
 						childBox.Y = childY + childBox.Margin.Top
 					}
 
