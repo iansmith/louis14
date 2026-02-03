@@ -285,6 +285,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if w, ok := style.GetLength("width"); ok {
 		contentWidth = w
 		hasExplicitWidth = true
+	} else if pct, ok := style.GetPercentage("width"); ok {
+		// Percentage width resolved against containing block
+		cbWidth := availableWidth
+		if style.GetPosition() == css.PositionFixed {
+			cbWidth = le.viewport.width
+		}
+		contentWidth = cbWidth * pct / 100
+		hasExplicitWidth = true
 	} else if style.GetPosition() == css.PositionAbsolute || style.GetPosition() == css.PositionFixed {
 		// Absolutely positioned elements without explicit width shrink-wrap
 		contentWidth = 0
@@ -1999,11 +2007,12 @@ func parseURLValue(value string) (string, bool) {
 func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
 	// Compute pseudo-element style using stored stylesheets
 	// Phase 22: Pass viewport dimensions for media query evaluation
-	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets, le.viewport.width, le.viewport.height)
+	parentStyle := computedStyles[node]
+	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
 
 	// Get content from pseudo-element style
 	content, hasContent := pseudoStyle.GetContent()
-	if !hasContent || content == "" {
+	if !hasContent {
 		return nil
 	}
 
@@ -2048,11 +2057,28 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		return box
 	}
 
-	// Text content: measure and create text box
-	fontSize := pseudoStyle.GetFontSize()
-	fontWeight := pseudoStyle.GetFontWeight()
-	bold := fontWeight == css.FontWeightBold
-	textWidth, textHeight := text.MeasureTextWithWeight(content, fontSize, bold)
+	// Determine dimensions based on display type
+	var boxWidth, boxHeight float64
+	display := pseudoStyle.GetDisplay()
+
+	if content != "" {
+		// Text content: measure text
+		fontSize := pseudoStyle.GetFontSize()
+		fontWeight := pseudoStyle.GetFontWeight()
+		bold := fontWeight == css.FontWeightBold
+		boxWidth, boxHeight = text.MeasureTextWithWeight(content, fontSize, bold)
+	}
+
+	// Block-level pseudo-elements take available width
+	if display == css.DisplayBlock {
+		boxWidth = availableWidth - margin.Left - margin.Right -
+			padding.Left - padding.Right - border.Left - border.Right
+	}
+
+	// Apply explicit height
+	if h, ok := pseudoStyle.GetLength("height"); ok {
+		boxHeight = h
+	}
 
 	// Apply horizontal margin
 	x += margin.Left
@@ -2062,8 +2088,8 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		Style:         pseudoStyle,
 		X:             x,
 		Y:             y + margin.Top,
-		Width:         textWidth,
-		Height:        textHeight,
+		Width:         boxWidth,
+		Height:        boxHeight,
 		Margin:        margin,
 		Padding:       padding,
 		Border:        border,

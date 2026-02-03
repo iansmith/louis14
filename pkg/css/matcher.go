@@ -221,6 +221,11 @@ func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 	matches := make([]Rule, 0)
 
 	for _, rule := range stylesheet.Rules {
+		// Skip pseudo-element rules (they are applied via ComputePseudoElementStyle)
+		if rule.Selector.PseudoElement != "" {
+			continue
+		}
+
 		// Phase 22: Check media query first
 		if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
 			continue

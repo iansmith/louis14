@@ -31,6 +31,29 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	return ParseLengthWithFontSize(val, s.GetFontSize())
 }
 
+// ParsePercentage parses a percentage value (e.g., "140%") and returns the number (e.g., 140).
+func ParsePercentage(val string) (float64, bool) {
+	val = strings.TrimSpace(val)
+	if !strings.HasSuffix(val, "%") {
+		return 0, false
+	}
+	numStr := strings.TrimSuffix(val, "%")
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, false
+	}
+	return num, true
+}
+
+// GetPercentage returns the percentage value of a property (e.g., "140%" returns 140).
+func (s *Style) GetPercentage(property string) (float64, bool) {
+	val, ok := s.Get(property)
+	if !ok {
+		return 0, false
+	}
+	return ParsePercentage(val)
+}
+
 // ParseLength parses a length value (e.g., "100px" or "100")
 // Does not handle em units — use ParseLengthWithFontSize for that.
 func ParseLength(val string) (float64, bool) {

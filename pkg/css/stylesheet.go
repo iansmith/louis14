@@ -382,7 +382,7 @@ func parseSelector(selectorStr string) Selector {
 		return Selector{Raw: "", Parts: []SelectorPart{}, Specificity: 0}
 	}
 
-	// Phase 11: Check for pseudo-element (::before, ::after)
+	// Phase 11: Check for pseudo-element (::before/::after or CSS 2.1 :before/:after)
 	pseudoElement := ""
 	if strings.Contains(selectorStr, "::before") {
 		pseudoElement = "before"
@@ -391,6 +391,14 @@ func parseSelector(selectorStr string) Selector {
 	} else if strings.Contains(selectorStr, "::after") {
 		pseudoElement = "after"
 		selectorStr = strings.Replace(selectorStr, "::after", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
+	} else if strings.Contains(selectorStr, ":before") {
+		pseudoElement = "before"
+		selectorStr = strings.Replace(selectorStr, ":before", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
+	} else if strings.Contains(selectorStr, ":after") {
+		pseudoElement = "after"
+		selectorStr = strings.Replace(selectorStr, ":after", "", 1)
 		selectorStr = strings.TrimSpace(selectorStr)
 	}
 

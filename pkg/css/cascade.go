@@ -129,8 +129,20 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 
 // Phase 11: ComputePseudoElementStyle computes the style for a pseudo-element
 // Phase 22: Added viewport dimensions for media query evaluation
-func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) *Style {
+func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, parentStyles ...*Style) *Style {
 	finalStyle := NewStyle()
+
+	// Inherit inheritable properties from parent element
+	if len(parentStyles) > 0 && parentStyles[0] != nil {
+		inheritableProps := []string{"font-size", "font-family", "font-weight", "font-style",
+			"color", "line-height", "text-align", "white-space", "visibility",
+			"letter-spacing", "word-spacing", "text-indent", "text-transform"}
+		for _, prop := range inheritableProps {
+			if val, ok := parentStyles[0].Get(prop); ok {
+				finalStyle.Set(prop, val)
+			}
+		}
+	}
 
 	// Collect all matching rules for this pseudo-element
 	allRules := make([]Rule, 0)
