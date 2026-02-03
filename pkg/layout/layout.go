@@ -467,7 +467,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	// Phase 2: Recursively layout children
-	childY := y + border.Top + padding.Top
+	// Use box.X/Y which include relative positioning offset
+	childY := box.Y + border.Top + padding.Top
 	childAvailableWidth := contentWidth
 
 	// Track previous block child for margin collapsing between siblings
@@ -476,7 +477,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 7: Track inline layout context
 	inlineCtx := &InlineContext{
-		LineX:      x + border.Left + padding.Left,
+		LineX:      box.X + border.Left + padding.Left,
 		LineY:      childY,
 		LineHeight: 0,
 		LineBoxes:  make([]*Box, 0),
@@ -490,7 +491,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		beforeDisplay := beforeBox.Style.GetDisplay()
 		if beforeDisplay == css.DisplayBlock {
 			inlineCtx.LineY += le.getTotalHeight(beforeBox)
-			inlineCtx.LineX = x + border.Left + padding.Left
+			inlineCtx.LineX = box.X + border.Left + padding.Left
 		} else {
 			inlineCtx.LineX += le.getTotalWidth(beforeBox)
 			if beforeBox.Height > inlineCtx.LineHeight {
@@ -541,10 +542,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					childTotalWidth := le.getTotalWidth(childBox)
 
 					// Check if child fits on current line
-					if inlineCtx.LineX + childTotalWidth > x + border.Left + padding.Left + childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
+					if inlineCtx.LineX + childTotalWidth > box.X + border.Left + padding.Left + childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
 						// Wrap to next line
 						inlineCtx.LineY += inlineCtx.LineHeight
-						inlineCtx.LineX = x + border.Left + padding.Left
+						inlineCtx.LineX = box.X + border.Left + padding.Left
 						inlineCtx.LineHeight = 0
 						inlineCtx.LineBoxes = make([]*Box, 0)
 
@@ -582,6 +583,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					childFloatTypePos := css.FloatNone
 					if childStyle != nil { childFloatTypePos = childStyle.GetFloat() }
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatTypePos == css.FloatNone {
+						// For position:relative, preserve the offset that was already applied
+						relativeOffsetY := 0.0
+						if childBox.Position == css.PositionRelative && childStyle != nil {
+							offset := childStyle.GetPositionOffset()
+							if offset.HasTop {
+								relativeOffsetY = offset.Top
+							} else if offset.HasBottom {
+								relativeOffsetY = -offset.Bottom
+							}
+						}
 						if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
 							childTotalW := childBox.Width + childBox.Padding.Left + childBox.Padding.Right + childBox.Border.Left + childBox.Border.Right
 							parentContentStart := box.X + border.Left + padding.Left
@@ -591,7 +602,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						} else {
 							childBox.X = box.X + border.Left + padding.Left + childBox.Margin.Left
 						}
-						childBox.Y = childY + childBox.Margin.Top
+						childBox.Y = childY + childBox.Margin.Top + relativeOffsetY
 					}
 
 					box.Children = append(box.Children, childBox)
@@ -660,7 +671,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					}
 
 					// Reset inline context for next line
-					inlineCtx.LineX = x + border.Left + padding.Left
+					inlineCtx.LineX = box.X + border.Left + padding.Left
 					inlineCtx.LineY = childY
 				}
 			}
@@ -673,7 +684,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					child,
 					inlineCtx.LineX,
 					inlineCtx.LineY,
-					x + border.Left + padding.Left + childAvailableWidth - inlineCtx.LineX,
+					box.X + border.Left + padding.Left + childAvailableWidth - inlineCtx.LineX,
 					style,  // Text inherits parent's style
 					box,
 				)
@@ -685,10 +696,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					textHeight := le.getTotalHeight(textBox)
 
 					// Check if text fits on current line
-					if inlineCtx.LineX + textWidth > x + border.Left + padding.Left + childAvailableWidth {
+					if inlineCtx.LineX + textWidth > box.X + border.Left + padding.Left + childAvailableWidth {
 						// Wrap to new line
 						inlineCtx.LineY += inlineCtx.LineHeight
-						inlineCtx.LineX = x + border.Left + padding.Left
+						inlineCtx.LineX = box.X + border.Left + padding.Left
 						inlineCtx.LineHeight = textHeight
 						textBox.X = inlineCtx.LineX
 						textBox.Y = inlineCtx.LineY
@@ -707,7 +718,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				// No inline elements, text starts on new line
 				textBox := le.layoutTextNode(
 					child,
-					x + border.Left + padding.Left,
+					box.X + border.Left + padding.Left,
 					childY,
 					childAvailableWidth,
 					style,  // Text inherits parent's style
@@ -717,7 +728,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					box.Children = append(box.Children, textBox)
 					childY += le.getTotalHeight(textBox)
 					inlineCtx.LineY = childY
-					inlineCtx.LineX = x + border.Left + padding.Left
+					inlineCtx.LineX = box.X + border.Left + padding.Left
 				}
 			}
 		}
