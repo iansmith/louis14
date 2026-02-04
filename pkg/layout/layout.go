@@ -39,6 +39,7 @@ type LayoutEngine struct {
 	floatBaseStack []int       // Stack of float base indices for BFC boundaries
 	floatBase      int         // Current BFC float base index
 	stylesheets    []*css.Stylesheet // Phase 11: Store stylesheets for pseudo-elements
+	imageFetcher   images.ImageFetcher // Optional fetcher for network images
 }
 
 // Phase 5: FloatInfo tracks information about floated elements
@@ -127,6 +128,11 @@ func (le *LayoutEngine) SetScrollY(scrollY float64) {
 	le.scrollY = scrollY
 }
 
+// SetImageFetcher sets the image fetcher used to load network images during layout.
+func (le *LayoutEngine) SetImageFetcher(fetcher images.ImageFetcher) {
+	le.imageFetcher = fetcher
+}
+
 // GetScrollY returns the current vertical scroll offset.
 func (le *LayoutEngine) GetScrollY() float64 {
 	return le.scrollY
@@ -210,7 +216,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	isObjectImage := false
 	if node.TagName == "object" {
 		if data, ok := node.GetAttribute("data"); ok {
-			if _, _, err := images.GetImageDimensions(data); err == nil {
+			if _, _, err := images.GetImageDimensionsWithFetcher(data, le.imageFetcher); err == nil {
 				isObjectImage = true
 			}
 		}
@@ -222,7 +228,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if src, ok := node.GetAttribute("src"); ok {
 			imagePath = src
 			// Try to load image to get natural dimensions
-			if w, h, err := images.GetImageDimensions(src); err == nil {
+			if w, h, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil {
 				imageWidth = w
 				imageHeight = h
 			}
@@ -235,7 +241,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// Object element with loadable image - treat like img
 		if data, ok := node.GetAttribute("data"); ok {
 			imagePath = data
-			if w, h, err := images.GetImageDimensions(data); err == nil {
+			if w, h, err := images.GetImageDimensionsWithFetcher(data, le.imageFetcher); err == nil {
 				imageWidth = w
 				imageHeight = h
 			}
@@ -699,26 +705,35 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		} else if child.Type == html.TextNode {
 			// Phase 6: Layout text nodes
-			// Phase 7 Enhancement: Text flows inline if there are inline elements
-			if len(inlineCtx.LineBoxes) > 0 {
-				// Continue on current inline line
-				textBox := le.layoutTextNode(
-					child,
-					inlineCtx.LineX,
-					inlineCtx.LineY,
-					box.X + border.Left + padding.Left + childAvailableWidth - inlineCtx.LineX,
-					style,  // Text inherits parent's style
-					box,
-				)
-				if textBox != nil {
-					box.Children = append(box.Children, textBox)
+			// Always use inline flow so text nodes participate in the inline
+			// formatting context together with sibling inline elements (e.g. <em>).
+			textBox := le.layoutTextNode(
+				child,
+				inlineCtx.LineX,
+				inlineCtx.LineY,
+				box.X+border.Left+padding.Left+childAvailableWidth-inlineCtx.LineX,
+				style, // Text inherits parent's style
+				box,
+			)
+			if textBox != nil {
+				box.Children = append(box.Children, textBox)
 
-					// Add text to inline flow
+				// For multi-line text containers, the inline context should
+				// continue after the LAST line, not after the full container width.
+				if len(textBox.Children) > 0 {
+					// Multi-line text: advance to end of last line
+					lastLine := textBox.Children[len(textBox.Children)-1]
+					inlineCtx.LineY = lastLine.Y
+					inlineCtx.LineX = lastLine.X + le.getTotalWidth(lastLine)
+					inlineCtx.LineHeight = le.getTotalHeight(lastLine)
+					inlineCtx.LineBoxes = append(inlineCtx.LineBoxes, textBox)
+				} else {
+					// Single-line text
 					textWidth := le.getTotalWidth(textBox)
 					textHeight := le.getTotalHeight(textBox)
 
 					// Check if text fits on current line
-					if inlineCtx.LineX + textWidth > box.X + border.Left + padding.Left + childAvailableWidth {
+					if inlineCtx.LineX+textWidth > box.X+border.Left+padding.Left+childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
 						// Wrap to new line
 						inlineCtx.LineY += inlineCtx.LineHeight
 						inlineCtx.LineX = box.X + border.Left + padding.Left
@@ -727,7 +742,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						textBox.Y = inlineCtx.LineY
 						inlineCtx.LineX += textWidth
 					} else {
-						// Fits on current line
+						// Fits on current line (or is the first item on the line)
 						inlineCtx.LineX += textWidth
 						if textHeight > inlineCtx.LineHeight {
 							inlineCtx.LineHeight = textHeight
@@ -735,22 +750,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					}
 
 					inlineCtx.LineBoxes = append(inlineCtx.LineBoxes, textBox)
-				}
-			} else {
-				// No inline elements, text starts on new line
-				textBox := le.layoutTextNode(
-					child,
-					box.X + border.Left + padding.Left,
-					childY,
-					childAvailableWidth,
-					style,  // Text inherits parent's style
-					box,
-				)
-				if textBox != nil {
-					box.Children = append(box.Children, textBox)
-					childY += le.getTotalHeight(textBox)
-					inlineCtx.LineY = childY
-					inlineCtx.LineX = box.X + border.Left + padding.Left
 				}
 			}
 		}
@@ -1295,10 +1294,21 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 	width, _ := text.MeasureTextWithWeight(node.Text, fontSize, isBold)
 	height := lineHeight // Phase 7 Enhancement: Use line-height for box height
 
+	// Compute parent's content-area left edge and full width for wrapped lines.
+	// The first line uses the remaining space (adjustedWidth), but subsequent
+	// lines start at the parent's left edge and use the full content width.
+	parentContentLeft := adjustedX
+	parentContentWidth := adjustedWidth
+	if parent != nil {
+		parentContentLeft = parent.X + parent.Border.Left + parent.Padding.Left
+		parentContentWidth = parent.Width
+	}
+
 	// Phase 6 Enhancement: Check if text needs line breaking
 	if width > adjustedWidth && adjustedWidth > 0 {
-		// Break text into multiple lines
-		lines := text.BreakTextIntoLines(node.Text, fontSize, isBold, adjustedWidth)
+		// Break text into multiple lines, using remaining space for first line
+		// and full parent width for subsequent lines.
+		lines := text.BreakTextIntoLinesWithWrap(node.Text, fontSize, isBold, adjustedWidth, parentContentWidth)
 
 		if len(lines) > 1 {
 			// Create a container box for multi-line text
@@ -1307,7 +1317,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 				Style:    parentStyle,
 				X:        adjustedX,
 				Y:        y,
-				Width:    adjustedWidth,
+				Width:    parentContentWidth,
 				Height:   float64(len(lines)) * height,
 				Margin:   css.BoxEdge{},
 				Padding:  css.BoxEdge{},
@@ -1320,17 +1330,23 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 
 			// Create a box for each line
 			currentY := y
-			for _, line := range lines {
+			for i, line := range lines {
 				lineWidth, _ := text.MeasureTextWithWeight(line, fontSize, isBold)
 				lineNode := &html.Node{
 					Type: html.TextNode,
 					Text: line,
 				}
 
+				// First line starts at current X; subsequent lines at parent left edge
+				lineX := adjustedX
+				if i > 0 {
+					lineX = parentContentLeft
+				}
+
 				lineBox := &Box{
 					Node:     lineNode,
 					Style:    parentStyle,
-					X:        adjustedX,
+					X:        lineX,
 					Y:        currentY,
 					Width:    lineWidth,
 					Height:   lineHeight, // Phase 7: Use line-height consistently
@@ -2391,7 +2407,7 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 
 		// Try to get image dimensions for natural sizing
 		var imgWidth, imgHeight float64
-		if w, h, err := images.GetImageDimensions(urlPath); err == nil {
+		if w, h, err := images.GetImageDimensionsWithFetcher(urlPath, le.imageFetcher); err == nil {
 			imgWidth = float64(w)
 			imgHeight = float64(h)
 		}

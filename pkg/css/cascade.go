@@ -28,6 +28,24 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("display", "none")
 	}
 
+	// Default font-style for emphasis elements
+	switch node.TagName {
+	case "em", "i", "cite", "dfn", "var":
+		style.Set("font-style", "italic")
+	}
+
+	// Default font-weight for strong elements
+	switch node.TagName {
+	case "strong", "b":
+		style.Set("font-weight", "bold")
+	}
+
+	// Default monospace font-family for code elements
+	switch node.TagName {
+	case "code", "pre", "kbd", "samp", "tt":
+		style.Set("font-family", "monospace")
+	}
+
 	// Default inline display for inline HTML elements
 	switch node.TagName {
 	case "span", "em", "strong", "b", "i", "u", "s", "a", "abbr", "cite",

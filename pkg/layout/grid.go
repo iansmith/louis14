@@ -214,12 +214,12 @@ func (le *LayoutEngine) layoutGridContainer(
 	for _, cell := range gridItems {
 		// Calculate cell position
 		cellX := contentX
-		for i := 0; i < cell.Column; i++ {
+		for i := 0; i < cell.Column && i < len(columnTracks); i++ {
 			cellX += columnTracks[i].Size + columnGap
 		}
 
 		cellY := contentY
-		for i := 0; i < cell.Row; i++ {
+		for i := 0; i < cell.Row && i < len(rowTracks); i++ {
 			cellY += rowTracks[i].Size + rowGap
 		}
 

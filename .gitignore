@@ -6,7 +6,7 @@ testdata/phase8/images/
 
 # Build artifacts
 louis14
-cmd/louis14/louis14
+cmd/l14open/l14open
 
 # Go build cache
 *.test

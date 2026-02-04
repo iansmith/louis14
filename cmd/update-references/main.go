@@ -20,7 +20,7 @@ func main() {
 		fmt.Println("  go run cmd/update-references/main.go all")
 		fmt.Println()
 		fmt.Println("Or use the test-based approach:")
-		fmt.Println("  UPDATE_REFS=1 go test -v ./cmd/louis14 -run TestVisual")
+		fmt.Println("  UPDATE_REFS=1 go test -v ./cmd/l14open -run TestVisual")
 		os.Exit(1)
 	}
 

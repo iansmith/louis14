@@ -157,12 +157,12 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 			continue
 		}
 
-		rule, err := parseRule(ruleStr)
+		rules, err := parseRules(ruleStr)
 		if err != nil {
 			// Skip malformed rules
 			continue
 		}
-		stylesheet.Rules = append(stylesheet.Rules, rule)
+		stylesheet.Rules = append(stylesheet.Rules, rules...)
 	}
 
 	return stylesheet, nil
@@ -275,6 +275,92 @@ func isValidSelector(s string) bool {
 		return false
 	}
 	return true
+}
+
+// parseRules parses a CSS rule string, expanding comma-separated selector
+// groups into multiple rules with the same declarations.
+// e.g., "h1, h2, h3 { color: red }" → 3 separate rules.
+func parseRules(ruleStr string) ([]Rule, error) {
+	// Find the opening brace
+	bracePos := strings.Index(ruleStr, "{")
+	if bracePos == -1 {
+		return nil, fmt.Errorf("no opening brace found")
+	}
+
+	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
+
+	// Split selector by commas (but not commas inside brackets or parens)
+	selectors := splitSelectorGroup(selectorStr)
+	if len(selectors) <= 1 {
+		// No commas or only one selector — use the original parseRule
+		rule, err := parseRule(ruleStr)
+		if err != nil {
+			return nil, err
+		}
+		return []Rule{rule}, nil
+	}
+
+	// Extract declarations (shared by all selectors)
+	declStart := bracePos + 1
+	declEnd := strings.LastIndex(ruleStr, "}")
+	if declEnd == -1 {
+		declEnd = len(ruleStr)
+	}
+	declStr := ruleStr[declStart:declEnd]
+	declarations := parseDeclarations(declStr)
+
+	rules := make([]Rule, 0, len(selectors))
+	for _, sel := range selectors {
+		sel = strings.TrimSpace(sel)
+		if sel == "" || !isValidSelector(sel) {
+			continue
+		}
+		selector := parseSelector(sel)
+		rules = append(rules, Rule{
+			Selector:     selector,
+			Declarations: declarations,
+		})
+	}
+
+	if len(rules) == 0 {
+		return nil, fmt.Errorf("no valid selectors in group")
+	}
+	return rules, nil
+}
+
+// splitSelectorGroup splits a selector group by commas, respecting brackets
+// and parentheses (e.g., attribute selectors like [attr~="a,b"]).
+func splitSelectorGroup(s string) []string {
+	var parts []string
+	depth := 0
+	inString := byte(0)
+	start := 0
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(s) {
+				i++
+			} else if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = ch
+			continue
+		}
+		if ch == '(' || ch == '[' {
+			depth++
+		} else if ch == ')' || ch == ']' {
+			depth--
+		} else if ch == ',' && depth == 0 {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
 }
 
 // parseRule parses a single CSS rule

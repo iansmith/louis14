@@ -33,10 +33,12 @@ func NewTokenizer(html string) *Tokenizer {
 }
 
 func (t *Tokenizer) NextToken() (Token, error) {
-	t.skipWhitespace()
 	if t.pos >= len(t.input) {
 		return Token{Type: TokenEOF}, nil
 	}
+	// Only skip whitespace before tags, not before text content.
+	// Whitespace before text is significant for inline flow
+	// (e.g., the space in "</em> word" must be preserved).
 	if t.input[t.pos] == '<' {
 		return t.readTag()
 	}
@@ -172,12 +174,47 @@ func (t *Tokenizer) readText() (Token, error) {
 	for t.pos < len(t.input) && t.input[t.pos] != '<' {
 		t.pos++
 	}
-	text := strings.TrimSpace(t.input[start:t.pos])
-	if text == "" && t.pos < len(t.input) {
-		return t.NextToken()
+	raw := t.input[start:t.pos]
+	// If the raw text is entirely whitespace (e.g., indentation between tags),
+	// skip it. But if it contains any non-whitespace characters, normalize it
+	// while preserving leading/trailing spaces for inline flow.
+	if strings.TrimSpace(raw) == "" {
+		if t.pos < len(t.input) {
+			return t.NextToken()
+		}
+		return Token{Type: TokenEOF}, nil
 	}
+	text := normalizeWhitespace(raw)
 	text = gohtml.UnescapeString(text)
 	return Token{Type: TokenText, Text: text}, nil
+}
+
+// normalizeWhitespace collapses runs of whitespace to a single space,
+// preserving a single space at boundaries. This is important for inline
+// flow: "text <em>word</em> more" must keep the spaces between the text
+// nodes and the inline element.
+func normalizeWhitespace(s string) string {
+	hasLeading := len(s) > 0 && unicode.IsSpace(rune(s[0]))
+	hasTrailing := len(s) > 0 && unicode.IsSpace(rune(s[len(s)-1]))
+
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		// All-whitespace token: keep as single space so inline flow
+		// preserves word boundaries (e.g., between two inline elements).
+		if hasLeading || hasTrailing {
+			return " "
+		}
+		return ""
+	}
+
+	result := strings.Join(fields, " ")
+	if hasLeading {
+		result = " " + result
+	}
+	if hasTrailing {
+		result = result + " "
+	}
+	return result
 }
 
 func (t *Tokenizer) skipWhitespace() {

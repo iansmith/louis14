@@ -1,22 +1,63 @@
 package render
 
 import (
+	"fmt"
+	"image"
 	"sort"
 
 	"github.com/fogleman/gg"
 	"louis14/pkg/css"
+	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/layout"
 	"louis14/pkg/text"
 )
 
 type Renderer struct {
-	context *gg.Context
-	scrollY float64 // Viewport scroll offset - non-fixed content is shifted by -scrollY
+	context      *gg.Context
+	scrollY      float64              // Viewport scroll offset - non-fixed content is shifted by -scrollY
+	imageFetcher images.ImageFetcher  // Optional fetcher for network images
+	fonts        text.FontConfig      // Font configuration for text rendering
+	lastFontKey  string               // Tracks loaded font to avoid redundant loads
 }
 
 func NewRenderer(width, height int) *Renderer {
-	return &Renderer{context: gg.NewContext(width, height)}
+	return &Renderer{
+		context: gg.NewContext(width, height),
+		fonts:   text.DefaultFontConfig(),
+	}
+}
+
+// NewRendererForImage creates a renderer that draws onto the provided RGBA image.
+// The viewport dimensions are derived from the image bounds.
+func NewRendererForImage(target *image.RGBA) *Renderer {
+	return &Renderer{
+		context: gg.NewContextForRGBA(target),
+		fonts:   text.DefaultFontConfig(),
+	}
+}
+
+// SetFonts sets the font configuration used for text rendering.
+func (r *Renderer) SetFonts(fonts text.FontConfig) {
+	r.fonts = fonts
+}
+
+// SetImageFetcher sets the image fetcher used to load network images during rendering.
+func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
+	r.imageFetcher = fetcher
+}
+
+// loadFont loads a font face on the gg context for the given size and style.
+// Skips reloading if the same font+size is already active.
+func (r *Renderer) loadFont(fontSize float64, bold, italic, mono bool) {
+	fontPath := r.fonts.FontPath(bold, italic, mono)
+	key := fmt.Sprintf("%s@%.1f", fontPath, fontSize)
+	if key == r.lastFontKey {
+		return
+	}
+	if err := r.context.LoadFontFace(fontPath, fontSize); err == nil {
+		r.lastFontKey = key
+	}
 }
 
 // SetScrollY sets the viewport scroll offset for rendering.
@@ -566,18 +607,36 @@ func (r *Renderer) drawBoxShadow(box *layout.Box) {
 }
 
 func (r *Renderer) drawText(box *layout.Box) {
-	textContent, ok := box.Style.Get("text-content")
-	if !ok || textContent == "" {
+	// Multi-line text containers have children (one per line) that draw the
+	// actual text. Drawing the container's full text would duplicate it.
+	if len(box.Children) > 0 && box.Node != nil && box.Node.Type == html.TextNode {
+		return
+	}
+
+	// Determine text content: from DOM text node or pseudo-element content
+	textContent := ""
+	if box.PseudoContent != "" {
+		textContent = box.PseudoContent
+	} else if box.Node != nil && box.Node.Type == html.TextNode {
+		textContent = box.Node.Text
+	}
+	if textContent == "" {
 		return
 	}
 
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 
-	// Phase 6 Enhancement: Calculate X position based on text-align
+	// Calculate X position based on text-align
 	textX := box.X
 	textAlign := box.Style.GetTextAlign()
 	fontSize := box.Style.GetFontSize()
+	bold := box.Style.GetFontWeight() == css.FontWeightBold
+	italic := box.Style.GetFontStyle() == css.FontStyleItalic
+	mono := box.Style.IsMonospaceFamily()
+
+	// Load the appropriate font face
+	r.loadFont(fontSize, bold, italic, mono)
 
 	r.context.SetRGB(0, 0, 0)
 	if colorStr, ok := box.Style.Get("color"); ok {
@@ -593,7 +652,6 @@ func (r *Renderer) drawText(box *layout.Box) {
 	// Phase 17: Draw text decorations
 	decoration := box.Style.GetTextDecoration()
 	if decoration != css.TextDecorationNone {
-		bold := box.Style.GetFontWeight() == css.FontWeightBold
 		textWidth, _ := text.MeasureTextWithWeight(textContent, fontSize, bold)
 
 		r.context.SetLineWidth(1)
@@ -618,7 +676,6 @@ func (r *Renderer) drawText(box *layout.Box) {
 			r.context.Stroke()
 		}
 	}
-	_ = textAlign // Used in decoration drawing
 }
 
 func (r *Renderer) drawImage(box *layout.Box) {
@@ -629,8 +686,8 @@ func (r *Renderer) drawImage(box *layout.Box) {
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 
-	// Load the image
-	img, err := images.LoadImage(box.ImagePath)
+	// Load the image (use fetcher if available)
+	img, err := images.LoadImageWithFetcher(box.ImagePath, r.imageFetcher)
 	if err != nil {
 		// Image failed to load, draw placeholder
 		r.context.SetRGB(0.9, 0.9, 0.9)
@@ -667,7 +724,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		return
 	}
 
-	img, err := images.LoadImage(imgURL)
+	img, err := images.LoadImageWithFetcher(imgURL, r.imageFetcher)
 	if err != nil {
 		return
 	}

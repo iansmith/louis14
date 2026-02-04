@@ -835,6 +835,38 @@ func (s *Style) GetFontWeight() FontWeight {
 	return FontWeightNormal
 }
 
+// FontStyle represents the font-style property value
+type FontStyle string
+
+const (
+	FontStyleNormal FontStyle = "normal"
+	FontStyleItalic FontStyle = "italic"
+)
+
+// GetFontStyle returns the font-style value (default: normal)
+func (s *Style) GetFontStyle() FontStyle {
+	if style, ok := s.Get("font-style"); ok {
+		switch style {
+		case "italic", "oblique":
+			return FontStyleItalic
+		}
+	}
+	return FontStyleNormal
+}
+
+// IsMonospaceFamily returns true if the computed font-family is a monospace font.
+func (s *Style) IsMonospaceFamily() bool {
+	if family, ok := s.Get("font-family"); ok {
+		lower := strings.ToLower(family)
+		for _, mono := range []string{"monospace", "mono", "courier", "consolas", "menlo", "monaco"} {
+			if strings.Contains(lower, mono) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Phase 17: Text decoration
 
 // TextDecoration represents the text-decoration property value
@@ -1212,12 +1244,28 @@ func (s *Style) GetVerticalAlign() VerticalAlign {
 	return VerticalAlignBaseline
 }
 
-// GetLineHeight returns the line-height in pixels (default: 1.2 * font-size)
+// GetLineHeight returns the line-height in pixels (default: 1.2 * font-size).
+// CSS line-height accepts unitless numbers (e.g., "1.5") meaning a multiplier
+// of the current font-size, unlike other CSS length properties where bare
+// numbers are invalid.
 func (s *Style) GetLineHeight() float64 {
-	if lh, ok := s.GetLength("line-height"); ok {
+	val, ok := s.Get("line-height")
+	if !ok {
+		return s.GetFontSize() * 1.2
+	}
+	// Try as a standard CSS length first (px, em, etc.)
+	if lh, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
 		return lh
 	}
-	// Default to 1.2x font size
+	// Try as a unitless multiplier (e.g., "1.5" means 1.5 × font-size)
+	val = strings.TrimSpace(val)
+	if num, err := strconv.ParseFloat(val, 64); err == nil && num > 0 {
+		return num * s.GetFontSize()
+	}
+	// Try as a percentage (e.g., "150%" means 1.5 × font-size)
+	if pct, ok := ParsePercentage(val); ok {
+		return pct / 100.0 * s.GetFontSize()
+	}
 	return s.GetFontSize() * 1.2
 }
 

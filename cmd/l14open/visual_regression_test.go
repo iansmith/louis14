@@ -11,7 +11,7 @@ import (
 
 // updateReferenceImages is a flag to regenerate reference images
 // Set to true when you intentionally change rendering behavior
-// Run with: go test -v ./cmd/louis14 -run TestVisual
+// Run with: go test -v ./cmd/l14open -run TestVisual
 var updateReferenceImages = os.Getenv("UPDATE_REFS") == "1"
 
 func TestVisualRegression_Phase1_Simple(t *testing.T) {
@@ -1145,7 +1145,7 @@ func runVisualTest(t *testing.T, tc visualTestCase) {
 		t.Errorf("  Reference: %s", tc.referenceFile)
 		t.Errorf("  Diff image: %s", opts.DiffImagePath)
 		t.Errorf("\nTo update reference image if this change is intentional:")
-		t.Errorf("  UPDATE_REFS=1 go test -v ./cmd/louis14 -run %s", t.Name())
+		t.Errorf("  UPDATE_REFS=1 go test -v ./cmd/l14open -run %s", t.Name())
 	} else {
 		t.Logf("✓ Visual test passed: %s (max diff: %d)", tc.name, result.MaxDifference)
 	}
@@ -1974,6 +1974,83 @@ func TestVisualRegression_Phase23_CombinedLayout(t *testing.T) {
 		referenceFile: "../../testdata/phase23/reference/06-combined-layout.png",
 		width:         800,
 		height:        600,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+// Phase 24: Inline text regression tests
+// These tests verify that whitespace is preserved around inline elements,
+// multi-line text does not duplicate at line boundaries, and wrapped lines
+// use the full container width.
+
+func TestVisualRegression_Phase24_InlineSpacing(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_spacing",
+		htmlFile:      "../../testdata/phase24/01-inline-spacing.html",
+		referenceFile: "../../testdata/phase24/reference/01-inline-spacing.png",
+		width:         600,
+		height:        100,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase24_InlineBoldSpacing(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_bold_spacing",
+		htmlFile:      "../../testdata/phase24/02-inline-bold-spacing.html",
+		referenceFile: "../../testdata/phase24/reference/02-inline-bold-spacing.png",
+		width:         600,
+		height:        100,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase24_MultilineWrap(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "multiline_wrap",
+		htmlFile:      "../../testdata/phase24/03-multiline-wrap.html",
+		referenceFile: "../../testdata/phase24/reference/03-multiline-wrap.png",
+		width:         400,
+		height:        200,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase24_InlineThenWrap(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "inline_then_wrap",
+		htmlFile:      "../../testdata/phase24/04-inline-then-wrap.html",
+		referenceFile: "../../testdata/phase24/reference/04-inline-then-wrap.png",
+		width:         400,
+		height:        200,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase24_LinkSpacing(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "link_spacing",
+		htmlFile:      "../../testdata/phase24/05-link-spacing.html",
+		referenceFile: "../../testdata/phase24/reference/05-link-spacing.png",
+		width:         600,
+		height:        100,
+	}
+
+	runVisualTest(t, testCase)
+}
+
+func TestVisualRegression_Phase24_MultipleInlines(t *testing.T) {
+	testCase := visualTestCase{
+		name:          "multiple_inlines",
+		htmlFile:      "../../testdata/phase24/06-multiple-inlines.html",
+		referenceFile: "../../testdata/phase24/reference/06-multiple-inlines.png",
+		width:         600,
+		height:        100,
 	}
 
 	runVisualTest(t, testCase)

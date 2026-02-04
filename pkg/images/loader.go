@@ -136,3 +136,74 @@ func GetImageDimensions(path string) (width, height int, err error) {
 	bounds := img.Bounds()
 	return bounds.Dx(), bounds.Dy(), nil
 }
+
+// ImageFetcher is a function type that fetches raw bytes for an image URI.
+// It is used to support network-based image loading without creating a
+// dependency on the resource package.
+type ImageFetcher func(uri string) ([]byte, error)
+
+// DecodeImageBytes decodes an image from raw bytes.
+func DecodeImageBytes(data []byte) (image.Image, error) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("image decode error: %w", err)
+	}
+	return img, nil
+}
+
+// LoadImageWithFetcher loads an image using the provided fetcher for network URIs.
+// Falls back to LoadImage for local paths and data URIs.
+func LoadImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error) {
+	// Data URIs and local files are handled by LoadImage
+	if IsDataURI(path) {
+		return LoadImage(path)
+	}
+
+	// If no fetcher or not a network URL, use regular loading
+	if fetcher == nil || !isNetworkURI(path) {
+		return LoadImage(path)
+	}
+
+	// Check cache first
+	globalCache.mu.RLock()
+	if img, ok := globalCache.cache[path]; ok {
+		globalCache.mu.RUnlock()
+		return img, nil
+	}
+	globalCache.mu.RUnlock()
+
+	// Fetch via network
+	data, err := fetcher(path)
+	if err != nil {
+		return nil, fmt.Errorf("fetching image %s: %w", path, err)
+	}
+
+	img, err := DecodeImageBytes(data)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the image
+	globalCache.mu.Lock()
+	globalCache.cache[path] = img
+	globalCache.mu.Unlock()
+
+	return img, nil
+}
+
+// GetImageDimensionsWithFetcher returns the width and height of an image,
+// using the provided fetcher for network URIs.
+func GetImageDimensionsWithFetcher(path string, fetcher ImageFetcher) (width, height int, err error) {
+	img, err := LoadImageWithFetcher(path, fetcher)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	bounds := img.Bounds()
+	return bounds.Dx(), bounds.Dy(), nil
+}
+
+// isNetworkURI returns true if the string looks like an HTTP/HTTPS URL.
+func isNetworkURI(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}

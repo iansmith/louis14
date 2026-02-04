@@ -6,12 +6,17 @@ import (
 	"strings"
 )
 
+// CSSFetcher is a function that fetches CSS content from a URI.
+// Used to support network-based stylesheet loading.
+type CSSFetcher func(uri string) (string, error)
+
 type Parser struct {
 	tokenizer       *Tokenizer
 	doc             *Document
 	stack           []*Node // Phase 2: Stack for tracking nested elements
 	inStyleTag      bool    // Phase 3: Track if we're inside a <style> tag
 	styleContent    string  // Phase 3: Accumulate style content
+	cssFetcher      CSSFetcher // Optional fetcher for external stylesheets
 }
 
 func NewParser(html string) *Parser {
@@ -181,7 +186,7 @@ func (p *Parser) isBlockElement(tagName string) bool {
 	return false
 }
 
-// loadLinkStylesheet loads CSS from a data URI href
+// loadLinkStylesheet loads CSS from a data URI href or via the CSS fetcher.
 func (p *Parser) loadLinkStylesheet(href string) string {
 	href = strings.TrimSpace(href)
 	if strings.HasPrefix(href, "data:text/css,") {
@@ -192,10 +197,24 @@ func (p *Parser) loadLinkStylesheet(href string) string {
 		}
 		return decoded
 	}
+	// Try the CSS fetcher for network URLs
+	if p.cssFetcher != nil {
+		if css, err := p.cssFetcher(href); err == nil {
+			return css
+		}
+	}
 	return ""
 }
 
 func Parse(html string) (*Document, error) {
 	parser := NewParser(html)
+	return parser.Parse()
+}
+
+// ParseWithFetcher parses HTML and uses the provided fetcher to load external
+// stylesheets referenced by <link rel="stylesheet"> tags.
+func ParseWithFetcher(htmlContent string, cssFetcher CSSFetcher) (*Document, error) {
+	parser := NewParser(htmlContent)
+	parser.cssFetcher = cssFetcher
 	return parser.Parse()
 }
