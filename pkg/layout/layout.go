@@ -572,6 +572,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					if childHeight > inlineCtx.LineHeight {
 						inlineCtx.LineHeight = childHeight
 					}
+					// CSS 2.1 §10.8.1: The "strut" ensures line box height is at least
+					// the block container's line-height
+					strutHeight := style.GetLineHeight()
+					if strutHeight > inlineCtx.LineHeight {
+						inlineCtx.LineHeight = strutHeight
+					}
 
 					// Advance X for next inline-block element
 					inlineCtx.LineX += childTotalWidth
@@ -582,8 +588,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					le.applyVerticalAlign(childBox, inlineCtx.LineY, inlineCtx.LineHeight)
 				} else {
 					// Block element or other display mode
-					// Finish current inline line
+					// Finish current inline line (apply strut for line box height)
 					if len(inlineCtx.LineBoxes) > 0 {
+						strutHeight := style.GetLineHeight()
+						if strutHeight > inlineCtx.LineHeight {
+							inlineCtx.LineHeight = strutHeight
+						}
 						childY = inlineCtx.LineY + inlineCtx.LineHeight
 						inlineCtx.LineBoxes = make([]*Box, 0)
 						inlineCtx.LineHeight = 0
@@ -812,10 +822,38 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				continue
 			}
 			// Calculate child's bottom edge relative to parent content area
-			childRelativeY := child.Y - parentContentTop
-			childBottom := childRelativeY + le.getTotalHeight(child)
+			// For position:relative children, use their normal flow position
+			// (CSS 2.1 §10.6.3: relative offset doesn't affect parent height)
+			childY := child.Y
+			if child.Position == css.PositionRelative && child.Style != nil {
+				offset := child.Style.GetPositionOffset()
+				if offset.HasTop {
+					childY -= offset.Top
+				} else if offset.HasBottom {
+					childY += offset.Bottom
+				}
+			}
+			childRelativeY := childY - parentContentTop
+			// Use height from child's border-top edge (child.Y) downward:
+			// border + padding + content + padding + border + margin-bottom.
+			// Don't include margin-top since child.Y already accounts for it.
+			childHeight := child.Border.Top + child.Padding.Top + child.Height +
+				child.Padding.Bottom + child.Border.Bottom + child.Margin.Bottom
+			childBottom := childRelativeY + childHeight
 			if childBottom > maxBottom {
 				maxBottom = childBottom
+			}
+		}
+		// CSS 2.1 §10.8.1: Account for trailing inline line box height (including strut)
+		if len(inlineCtx.LineBoxes) > 0 {
+			strutHeight := style.GetLineHeight()
+			lineBoxHeight := inlineCtx.LineHeight
+			if strutHeight > lineBoxHeight {
+				lineBoxHeight = strutHeight
+			}
+			lineBottom := (inlineCtx.LineY - parentContentTop) + lineBoxHeight
+			if lineBottom > maxBottom {
+				maxBottom = lineBottom
 			}
 		}
 		if maxBottom < 0 {
@@ -923,8 +961,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		floatTotalWidth := le.getTotalWidth(box)
 
 		// Phase 5 Enhancement: Check if float fits, apply drop if needed
-		// Apply margin-top to the starting Y position (negative margins shift up)
-		floatY = le.getFloatDropY(floatType, floatTotalWidth, box.Y+margin.Top, availableWidth)
+		// margin.Top was already applied to y at line 276 (y += margin.Top) and is
+		// included in box.Y, so don't add it again here
+		floatY = le.getFloatDropY(floatType, floatTotalWidth, box.Y, availableWidth)
 		box.Y = floatY
 
 		// Position float horizontally
@@ -1341,8 +1380,9 @@ func (le *LayoutEngine) getClearY(clearType css.ClearType, currentY float64) flo
 
 	for i := le.floatBase; i < len(le.floats); i++ {
 		floatInfo := le.floats[i]
-		// floatInfo.Y already includes margin-top, so don't double-count it
 		b := floatInfo.Box
+		// CSS 2.1 §9.5.2: clearance uses the float's "bottom outer edge" (margin edge),
+		// which includes margin-bottom even when negative.
 		floatBottom := floatInfo.Y + b.Border.Top + b.Padding.Top + b.Height + b.Padding.Bottom + b.Border.Bottom + b.Margin.Bottom
 
 		shouldClear := false
