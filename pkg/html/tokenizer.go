@@ -233,10 +233,32 @@ func (t *Tokenizer) skipTo(target byte) error {
 	return nil
 }
 
+// ReadRawUntil reads raw content until the closing end tag is found (e.g., </script>).
+// This is used for raw text elements like <script> and <style> where '<' does not
+// start a new tag.
+func (t *Tokenizer) ReadRawUntil(endTag string) string {
+	needle := "</" + endTag + ">"
+	needleLower := strings.ToLower(needle)
+	start := t.pos
+	for t.pos+len(needle) <= len(t.input) {
+		// Case-insensitive match for the end tag
+		if strings.ToLower(t.input[t.pos:t.pos+len(needle)]) == needleLower {
+			content := t.input[start:t.pos]
+			t.pos += len(needle) // skip past </endTag>
+			return content
+		}
+		t.pos++
+	}
+	// No closing tag found — consume everything remaining
+	content := t.input[start:]
+	t.pos = len(t.input)
+	return content
+}
+
 func isTagNameChar(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
 }
 
 func isAttributeNameChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ':'
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ':' || c == '.'
 }

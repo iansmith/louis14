@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 
 	"louis14/pkg/html"
+	"louis14/pkg/js"
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
 )
@@ -44,6 +46,20 @@ func main() {
 	boxes := layoutEngine.Layout(doc)
 	renderer := render.NewRenderer(int(viewportWidth), int(viewportHeight))
 	renderer.Render(boxes)
+
+	// Execute JavaScript if there are scripts
+	if len(doc.Scripts) > 0 {
+		engine := js.New()
+		if err := engine.Execute(doc); err != nil {
+			log.Printf("js: %v", err)
+		}
+		// Re-layout and re-render with JS modifications
+		layoutEngine2 := layout.NewLayoutEngine(viewportWidth, viewportHeight)
+		boxes2 := layoutEngine2.Layout(doc)
+		renderer = render.NewRenderer(int(viewportWidth), int(viewportHeight))
+		renderer.Render(boxes2)
+	}
+
 	if err := renderer.SavePNG(outputFile); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving PNG: %v\n", err)
 		os.Exit(1)

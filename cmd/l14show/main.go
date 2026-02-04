@@ -9,6 +9,7 @@ import (
 
 	stdnet "louis14/std/net"
 
+	"louis14/pkg/js"
 	"louis14/pkg/resource"
 )
 
@@ -39,9 +40,10 @@ func main() {
 	// Create render target
 	target := image.NewRGBA(image.Rect(0, 0, *width, *height))
 
-	// Create fetcher and renderer
+	// Create fetcher and renderer with JS support
 	fetcher := resource.NewFetcher(url)
 	renderer := resource.NewLouis14Renderer(fetcher)
+	renderer.SetJSEngine(js.New())
 
 	// Render
 	fmt.Fprintf(os.Stderr, "Rendering %dx%d...\n", *width, *height)

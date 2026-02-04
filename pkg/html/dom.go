@@ -19,6 +19,7 @@ const (
 type Document struct {
 	Root        *Node
 	Stylesheets []string // Phase 3: CSS from <style> tags
+	Scripts     []string // JavaScript from <script> tags
 }
 
 func NewDocument() *Document {
@@ -29,6 +30,7 @@ func NewDocument() *Document {
 			Children: make([]*Node, 0),
 		},
 		Stylesheets: make([]string, 0),
+		Scripts:     make([]string, 0),
 	}
 }
 

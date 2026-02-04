@@ -14,8 +14,6 @@ type Parser struct {
 	tokenizer       *Tokenizer
 	doc             *Document
 	stack           []*Node // Phase 2: Stack for tracking nested elements
-	inStyleTag      bool    // Phase 3: Track if we're inside a <style> tag
-	styleContent    string  // Phase 3: Accumulate style content
 	cssFetcher      CSSFetcher // Optional fetcher for external stylesheets
 }
 
@@ -41,11 +39,22 @@ func (p *Parser) Parse() (*Document, error) {
 
 		switch token.Type {
 		case TokenStartTag:
-			// Phase 3: Special handling for <style> tags
+			// Phase 3: Special handling for <style> tags — read raw content
 			if token.TagName == "style" {
-				p.inStyleTag = true
-				p.styleContent = ""
+				content := p.tokenizer.ReadRawUntil("style")
+				if strings.TrimSpace(content) != "" {
+					p.doc.Stylesheets = append(p.doc.Stylesheets, content)
+				}
 				continue // Don't add style tag to DOM tree
+			}
+
+			// Special handling for <script> tags — read raw content
+			if token.TagName == "script" {
+				content := p.tokenizer.ReadRawUntil("script")
+				if strings.TrimSpace(content) != "" {
+					p.doc.Scripts = append(p.doc.Scripts, content)
+				}
+				continue // Don't add script tag to DOM tree
 			}
 
 			// Auto-close <p> when a block-level element is encountered inside it
@@ -85,12 +94,6 @@ func (p *Parser) Parse() (*Document, error) {
 			}
 
 		case TokenText:
-			// Phase 3: If inside style tag, accumulate CSS
-			if p.inStyleTag {
-				p.styleContent += token.Text
-				continue
-			}
-
 			// Add text to current parent
 			if token.Text != "" {
 				parent := p.currentParent()
@@ -98,14 +101,6 @@ func (p *Parser) Parse() (*Document, error) {
 			}
 
 		case TokenEndTag:
-			// Phase 3: Handle closing </style> tag
-			if token.TagName == "style" && p.inStyleTag {
-				p.doc.Stylesheets = append(p.doc.Stylesheets, p.styleContent)
-				p.inStyleTag = false
-				p.styleContent = ""
-				continue
-			}
-
 			// Pop stack until we find the matching tag
 			p.closeTag(token.TagName)
 		}

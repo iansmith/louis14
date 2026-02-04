@@ -3,9 +3,11 @@ package resource
 import (
 	"fmt"
 	"image"
+	"log"
 
 	"louis14/pkg/html"
 	"louis14/pkg/images"
+	"louis14/pkg/js"
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
 	"louis14/pkg/text"
@@ -18,8 +20,17 @@ type Renderer interface {
 
 // Louis14Renderer renders HTML using the louis14 layout and rendering engine.
 type Louis14Renderer struct {
-	fetcher Fetcher
-	fonts   text.FontConfig
+	fetcher  Fetcher
+	fonts    text.FontConfig
+	jsEngine *js.Engine // nil = skip JS execution
+}
+
+// SetJSEngine configures a JavaScript engine for DOM manipulation.
+// When set, the renderer performs a two-pass render: first pass renders
+// the initial state, then JS executes and mutates the DOM, then a
+// second layout+render pass produces the final output.
+func (r *Louis14Renderer) SetJSEngine(engine *js.Engine) {
+	r.jsEngine = engine
 }
 
 // NewLouis14Renderer creates a new Louis14Renderer with the given fetcher and font paths.
@@ -90,6 +101,27 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 		renderer.SetImageFetcher(imageFetcher)
 	}
 	renderer.Render(boxes)
+
+	// Execute JavaScript if engine is configured
+	if r.jsEngine != nil && len(doc.Scripts) > 0 {
+		if err := r.jsEngine.Execute(doc); err != nil {
+			log.Printf("js: %v", err)
+		}
+
+		// Second pass: re-layout and re-render with JS modifications
+		layoutEngine2 := layout.NewLayoutEngine(viewportWidth, viewportHeight)
+		if imageFetcher != nil {
+			layoutEngine2.SetImageFetcher(imageFetcher)
+		}
+		boxes2 := layoutEngine2.Layout(doc)
+
+		renderer2 := render.NewRendererForImage(target)
+		renderer2.SetFonts(r.fonts)
+		if imageFetcher != nil {
+			renderer2.SetImageFetcher(imageFetcher)
+		}
+		renderer2.Render(boxes2)
+	}
 
 	return nil
 }
