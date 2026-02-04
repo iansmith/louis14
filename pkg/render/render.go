@@ -421,32 +421,10 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	innerRight := box.X + box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right
 	innerBottom := effectiveY + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom
 
-	// Draw each side as a trapezoid (CSS mitered border rendering)
-	// Top border
-	if box.Border.Top > 0 && borderStyles.Top != css.BorderStyleNone {
-		if color, ok := r.getBorderSideColor(box, "top"); ok {
-			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
-			r.context.MoveTo(outerLeft, outerTop)
-			r.context.LineTo(outerRight, outerTop)
-			r.context.LineTo(innerRight, innerTop)
-			r.context.LineTo(innerLeft, innerTop)
-			r.context.ClosePath()
-			r.context.Fill()
-		}
-	}
-
-	// Right border
-	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone {
-		if color, ok := r.getBorderSideColor(box, "right"); ok {
-			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
-			r.context.MoveTo(outerRight, outerTop)
-			r.context.LineTo(outerRight, outerBottom)
-			r.context.LineTo(innerRight, innerBottom)
-			r.context.LineTo(innerRight, innerTop)
-			r.context.ClosePath()
-			r.context.Fill()
-		}
-	}
+	// Draw each side as a trapezoid (CSS mitered border rendering).
+	// Drawing order: bottom → left → right → top. Later-drawn sides
+	// overwrite boundary pixels at diagonal miters, so this order gives
+	// CSS priority: top > right > left > bottom at shared corners.
 
 	// Bottom border
 	if box.Border.Bottom > 0 && borderStyles.Bottom != css.BorderStyleNone {
@@ -469,6 +447,32 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 			r.context.LineTo(innerLeft, innerTop)
 			r.context.LineTo(innerLeft, innerBottom)
 			r.context.LineTo(outerLeft, outerBottom)
+			r.context.ClosePath()
+			r.context.Fill()
+		}
+	}
+
+	// Right border
+	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone {
+		if color, ok := r.getBorderSideColor(box, "right"); ok {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+			r.context.MoveTo(outerRight, outerTop)
+			r.context.LineTo(outerRight, outerBottom)
+			r.context.LineTo(innerRight, innerBottom)
+			r.context.LineTo(innerRight, innerTop)
+			r.context.ClosePath()
+			r.context.Fill()
+		}
+	}
+
+	// Top border
+	if box.Border.Top > 0 && borderStyles.Top != css.BorderStyleNone {
+		if color, ok := r.getBorderSideColor(box, "top"); ok {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+			r.context.MoveTo(outerLeft, outerTop)
+			r.context.LineTo(outerRight, outerTop)
+			r.context.LineTo(innerRight, innerTop)
+			r.context.LineTo(innerLeft, innerTop)
 			r.context.ClosePath()
 			r.context.Fill()
 		}

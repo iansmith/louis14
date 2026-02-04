@@ -454,19 +454,9 @@ func (dc *Context) Stroke() {
 // FillPreserve fills the current path with the current color. Open subpaths
 // are implicity closed. The path is preserved after this operation.
 func (dc *Context) FillPreserve() {
-	var painter raster.Painter
-	if dc.mask == nil {
-		if pattern, ok := dc.fillPattern.(*solidPattern); ok {
-			// with a nil mask and a solid color pattern, we can be more efficient
-			// TODO: refactor so we don't have to do this type assertion stuff?
-			p := raster.NewRGBAPainter(dc.im)
-			p.SetColor(pattern.color)
-			painter = p
-		}
-	}
-	if painter == nil {
-		painter = newPatternPainter(dc.im, dc.mask, dc.fillPattern)
-	}
+	// Always use patternPainter which applies coverage thresholding
+	// for pixel-perfect CSS border rendering (no anti-aliasing at edges).
+	painter := newPatternPainter(dc.im, dc.mask, dc.fillPattern)
 	dc.fill(painter)
 }
 

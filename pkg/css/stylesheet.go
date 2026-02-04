@@ -214,8 +214,29 @@ func splitRules(css string) []string {
 				start = i + 1
 			}
 		} else if depth == 0 && ch == ';' {
-			// Skip stray semicolons between rules (e.g., "};")
-			start = i + 1
+			// CSS 2.1 error recovery: a stray ';' after '}' at the top level
+			// becomes part of the next rule's text, making its selector invalid.
+			// This is tested by Acid2 line 102: ".parser { m\argin: 2em; };"
+			// where the ';' should cause the next rule to be skipped.
+			// However, ';' that terminates an at-rule (e.g., @import url(...);)
+			// should be skipped normally.
+			isAfterCloseBrace := false
+			for j := i - 1; j >= 0; j-- {
+				c := css[j]
+				if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+					continue
+				}
+				if c == '}' {
+					isAfterCloseBrace = true
+				}
+				break
+			}
+			if !isAfterCloseBrace {
+				// At-rule terminator — skip the semicolon
+				start = i + 1
+			}
+			// If after '}', leave the ';' in the next rule's text
+			// so isValidSelector will reject the selector starting with ';'
 		}
 	}
 

@@ -817,6 +817,21 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// This correctly handles overlapping children (like floats with blocks)
 		parentContentTop := box.Y + box.Border.Top + box.Padding.Top
 		maxBottom := 0.0
+
+		// CSS 2.1 §8.3.1 / §10.6.3: Parent-child bottom margin collapsing.
+		// When parent has no bottom border and no bottom padding (and auto height),
+		// the last in-flow child's bottom margin collapses with the parent's bottom
+		// margin, so it should NOT be included in the auto-height calculation.
+		parentChildBottomCollapse := box.Border.Bottom == 0 && box.Padding.Bottom == 0
+		var lastInFlowChild *Box
+		if parentChildBottomCollapse {
+			for _, child := range box.Children {
+				if child.Position != css.PositionAbsolute && child.Position != css.PositionFixed {
+					lastInFlowChild = child
+				}
+			}
+		}
+
 		for _, child := range box.Children {
 			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
 				continue
@@ -837,8 +852,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// Use height from child's border-top edge (child.Y) downward:
 			// border + padding + content + padding + border + margin-bottom.
 			// Don't include margin-top since child.Y already accounts for it.
+			childMarginBottom := child.Margin.Bottom
+			if parentChildBottomCollapse && child == lastInFlowChild {
+				// Last child's margin-bottom collapses through the parent
+				childMarginBottom = 0
+			}
 			childHeight := child.Border.Top + child.Padding.Top + child.Height +
-				child.Padding.Bottom + child.Border.Bottom + child.Margin.Bottom
+				child.Padding.Bottom + child.Border.Bottom + childMarginBottom
 			childBottom := childRelativeY + childHeight
 			if childBottom > maxBottom {
 				maxBottom = childBottom
@@ -860,6 +880,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			maxBottom = 0
 		}
 		box.Height = maxBottom
+
+		// CSS 2.1 §8.3.1: When parent-child bottom margin collapsing applies,
+		// propagate the last child's bottom margin to the parent's bottom margin.
+		// The collapsed margin is the combination of parent's and child's margins.
+		if parentChildBottomCollapse && lastInFlowChild != nil && lastInFlowChild.Margin.Bottom != 0 {
+			parentMB := box.Margin.Bottom
+			childMB := lastInFlowChild.Margin.Bottom
+			if parentMB >= 0 && childMB >= 0 {
+				if childMB > parentMB {
+					box.Margin.Bottom = childMB
+				}
+			} else if parentMB < 0 && childMB < 0 {
+				if childMB < parentMB {
+					box.Margin.Bottom = childMB
+				}
+			} else {
+				box.Margin.Bottom = parentMB + childMB
+			}
+		}
 	}
 
 	// Re-apply min/max height constraints after auto-height calculation
