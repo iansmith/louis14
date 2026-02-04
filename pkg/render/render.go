@@ -34,73 +34,28 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	r.context.SetRGB(1, 1, 1)
 	r.context.Clear()
 
-	// Render each root box tree with proper paint order
-	// Fixed elements are painted in tree order, just using viewport coordinates
+	// Render each root box as a stacking context (the root always forms one)
+	// This ensures proper CSS 2.1 Appendix E paint order for the entire document
 	for _, box := range boxes {
-		r.paintBoxTree(box)
+		r.paintStackingContext(box)
 	}
 }
 
-// collectFixedElements recursively collects all fixed-positioned elements
-func (r *Renderer) collectFixedElements(box *layout.Box) []*layout.Box {
-	var result []*layout.Box
-	if box == nil {
-		return result
-	}
-
-	if box.Position == css.PositionFixed {
-		result = append(result, box)
-	}
-
-	for _, child := range box.Children {
-		result = append(result, r.collectFixedElements(child)...)
-	}
-	return result
-}
-
-// paintBoxTreeExcludeFixed renders a box tree but skips fixed-positioned elements
-// (they're painted separately at the root level)
-func (r *Renderer) paintBoxTreeExcludeFixed(box *layout.Box) {
+// paintStackingContext paints a box that creates a stacking context,
+// following CSS 2.1 Appendix E paint order for ALL descendants.
+func (r *Renderer) paintStackingContext(box *layout.Box) {
 	if box == nil {
 		return
 	}
 
-	// Skip fixed-positioned elements - they're painted at root level
-	if box.Position == css.PositionFixed {
-		return
-	}
-
-	// Step 1: Draw this box's background and borders
+	// Step 1: Background and borders of this element
 	r.drawBoxBackgroundAndBorders(box)
 
-	// Categorize children by their paint order category
+	// Collect ALL descendants, categorized by paint order
 	var negativeZ, zeroAutoZ, positiveZ []*layout.Box
 	var blocks, floats, inlines []*layout.Box
 
-	for _, child := range box.Children {
-		// Skip fixed elements - they're painted at root level
-		if child.Position == css.PositionFixed {
-			continue
-		}
-
-		if layout.BoxCreatesStackingContext(child) {
-			if child.ZIndex < 0 {
-				negativeZ = append(negativeZ, child)
-			} else if child.ZIndex > 0 {
-				positiveZ = append(positiveZ, child)
-			} else {
-				zeroAutoZ = append(zeroAutoZ, child)
-			}
-		} else if layout.IsPositioned(child) {
-			zeroAutoZ = append(zeroAutoZ, child)
-		} else if layout.IsFloat(child) {
-			floats = append(floats, child)
-		} else if layout.IsInline(child) {
-			inlines = append(inlines, child)
-		} else {
-			blocks = append(blocks, child)
-		}
-	}
+	r.collectDescendantsForPaintOrder(box, &negativeZ, &blocks, &floats, &inlines, &zeroAutoZ, &positiveZ)
 
 	// Sort z-index groups
 	sort.SliceStable(negativeZ, func(i, j int) bool {
@@ -110,122 +65,86 @@ func (r *Renderer) paintBoxTreeExcludeFixed(box *layout.Box) {
 		return positiveZ[i].ZIndex < positiveZ[j].ZIndex
 	})
 
-	// Step 2: Negative z-index descendants
+	// Step 2: Child stacking contexts with negative z-index
 	for _, child := range negativeZ {
-		r.paintBoxTreeExcludeFixed(child)
+		r.paintStackingContext(child)
 	}
 
-	// Step 3: In-flow, non-positioned, block-level descendants
+	// Step 3: In-flow, non-positioned, block-level descendants (backgrounds/borders)
 	for _, child := range blocks {
-		r.paintBoxTreeExcludeFixed(child)
+		r.drawBoxBackgroundAndBorders(child)
 	}
 
 	// Step 4: Non-positioned floats
+	// Floats are painted with their own internal paint order (like a mini stacking context)
 	for _, child := range floats {
-		r.paintBoxTreeExcludeFixed(child)
+		r.paintStackingContext(child)
 	}
 
-	// Step 5: In-flow, non-positioned, inline-level descendants
+	// Step 5: In-flow, inline-level descendants (content paints here)
+	// This includes inline elements AND content of block elements
 	for _, child := range inlines {
-		r.paintBoxTreeExcludeFixed(child)
+		r.drawBoxBackgroundAndBorders(child)
+		r.drawBoxContent(child)
 	}
 
-	// Draw this box's content
+	// Also paint content of blocks at step 5 (text/images inside blocks)
+	for _, child := range blocks {
+		r.drawBoxContent(child)
+	}
+
+	// Paint this box's own content
 	r.drawBoxContent(box)
 
 	// Step 6: Positioned descendants with z-index: auto or 0
+	// These are painted "as if they generated a new stacking context" (CSS 2.1 Appendix E)
 	for _, child := range zeroAutoZ {
-		r.paintBoxTreeExcludeFixed(child)
+		r.paintStackingContext(child)
 	}
 
-	// Step 7: Positive z-index descendants
+	// Step 7: Child stacking contexts with positive z-index
 	for _, child := range positiveZ {
-		r.paintBoxTreeExcludeFixed(child)
+		r.paintStackingContext(child)
 	}
 }
 
-// paintBoxTree renders a box and all its descendants following CSS 2.1 Appendix E.
-// The paint order within a stacking context is:
-// 1. Background and borders of the element
-// 2. Descendants with negative z-index (in z-index order)
-// 3. In-flow, non-positioned, block-level descendants
-// 4. Non-positioned floats
-// 5. In-flow, non-positioned, inline-level descendants
-// 6. Positioned descendants with z-index: auto or 0
-// 7. Descendants with positive z-index (in z-index order)
-func (r *Renderer) paintBoxTree(box *layout.Box) {
-	if box == nil {
-		return
-	}
-
-	// Step 1: Draw this box's background and borders
-	r.drawBoxBackgroundAndBorders(box)
-
-	// Categorize children by their paint order category
-	var negativeZ, zeroAutoZ, positiveZ []*layout.Box // Stacking context children
-	var blocks, floats, inlines []*layout.Box          // Non-positioned children
+// collectDescendantsForPaintOrder recursively collects all descendants,
+// categorizing them by paint order. Stops at child stacking contexts.
+func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
+	negativeZ, blocks, floats, inlines, zeroAutoZ, positiveZ *[]*layout.Box) {
 
 	for _, child := range box.Children {
-		if layout.BoxCreatesStackingContext(child) {
-			// Child creates its own stacking context - sort by z-index
+		if child.Position == css.PositionFixed {
+			// Fixed elements create stacking contexts in modern browsers
+			*zeroAutoZ = append(*zeroAutoZ, child)
+		} else if layout.BoxCreatesStackingContext(child) {
+			// Child creates stacking context - categorize by z-index
 			if child.ZIndex < 0 {
-				negativeZ = append(negativeZ, child)
+				*negativeZ = append(*negativeZ, child)
 			} else if child.ZIndex > 0 {
-				positiveZ = append(positiveZ, child)
+				*positiveZ = append(*positiveZ, child)
 			} else {
-				zeroAutoZ = append(zeroAutoZ, child)
+				*zeroAutoZ = append(*zeroAutoZ, child)
 			}
+			// Don't recurse into stacking contexts - they paint atomically
 		} else if layout.IsPositioned(child) {
-			// Positioned but doesn't create stacking context (z-index: auto)
-			zeroAutoZ = append(zeroAutoZ, child)
+			// Positioned but no stacking context - paint at step 6
+			// "as if it generated a new stacking context" per CSS 2.1 Appendix E
+			// Don't recurse - its children are painted within its own paint order
+			*zeroAutoZ = append(*zeroAutoZ, child)
 		} else if layout.IsFloat(child) {
-			floats = append(floats, child)
+			*floats = append(*floats, child)
+			// Don't recurse into float children - floats paint atomically at step 4
 		} else if layout.IsInline(child) {
-			inlines = append(inlines, child)
+			*inlines = append(*inlines, child)
+			// Recurse into inline's descendants (inline content is part of step 5)
+			r.collectDescendantsForPaintOrder(child, negativeZ, blocks, floats, inlines, zeroAutoZ, positiveZ)
 		} else {
-			blocks = append(blocks, child)
+			// Block element
+			*blocks = append(*blocks, child)
+			// Recurse into block's descendants to find inline content for step 5
+			r.collectDescendantsForPaintOrder(child, negativeZ, blocks, floats, inlines, zeroAutoZ, positiveZ)
 		}
-	}
-
-	// Sort z-index groups
-	sort.SliceStable(negativeZ, func(i, j int) bool {
-		return negativeZ[i].ZIndex < negativeZ[j].ZIndex
-	})
-	sort.SliceStable(positiveZ, func(i, j int) bool {
-		return positiveZ[i].ZIndex < positiveZ[j].ZIndex
-	})
-
-	// Step 2: Negative z-index descendants
-	for _, child := range negativeZ {
-		r.paintBoxTree(child)
-	}
-
-	// Step 3: In-flow, non-positioned, block-level descendants
-	for _, child := range blocks {
-		r.paintBoxTree(child)
-	}
-
-	// Step 4: Non-positioned floats
-	for _, child := range floats {
-		r.paintBoxTree(child)
-	}
-
-	// Step 5: In-flow, non-positioned, inline-level descendants
-	for _, child := range inlines {
-		r.paintBoxTree(child)
-	}
-
-	// Draw this box's content (text, images) - after non-positioned children backgrounds
-	r.drawBoxContent(box)
-
-	// Step 6: Positioned descendants with z-index: auto or 0
-	for _, child := range zeroAutoZ {
-		r.paintBoxTree(child)
-	}
-
-	// Step 7: Positive z-index descendants
-	for _, child := range positiveZ {
-		r.paintBoxTree(child)
 	}
 }
 
