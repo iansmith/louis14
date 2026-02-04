@@ -28,29 +28,16 @@ func (r *Renderer) SetScrollY(scrollY float64) {
 
 // Render renders boxes using tree-based paint order (CSS 2.1 Appendix E).
 // This maintains proper parent-child relationships while respecting z-index stacking.
+// Fixed elements are painted in their natural tree order (not extracted and painted last).
+// This matches modern browser behavior where position:fixed creates a stacking context.
 func (r *Renderer) Render(boxes []*layout.Box) {
 	r.context.SetRGB(1, 1, 1)
 	r.context.Clear()
 
-	// Collect fixed-positioned elements - they belong to the root stacking context
-	// and are positioned relative to the viewport, not their DOM parent
-	var fixedElements []*layout.Box
+	// Render each root box tree with proper paint order
+	// Fixed elements are painted in tree order, just using viewport coordinates
 	for _, box := range boxes {
-		fixedElements = append(fixedElements, r.collectFixedElements(box)...)
-	}
-
-	// Render each root box tree with proper paint order (excluding fixed elements)
-	for _, box := range boxes {
-		r.paintBoxTreeExcludeFixed(box)
-	}
-
-	// Paint fixed elements at root level, sorted by z-index
-	// Fixed elements with z-index: auto paint after normal content
-	sort.SliceStable(fixedElements, func(i, j int) bool {
-		return fixedElements[i].ZIndex < fixedElements[j].ZIndex
-	})
-	for _, fixed := range fixedElements {
-		r.paintBoxTree(fixed)
+		r.paintBoxTree(box)
 	}
 }
 
