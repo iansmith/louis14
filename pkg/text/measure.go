@@ -218,3 +218,12 @@ func splitIntoWords(text string) []string {
 
 	return words
 }
+
+// GetFirstWord returns the first word of the text (skipping leading whitespace)
+func GetFirstWord(text string) string {
+	words := splitIntoWords(text)
+	if len(words) > 0 {
+		return words[0]
+	}
+	return ""
+}

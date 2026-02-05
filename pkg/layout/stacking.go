@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+)
 
 // StackingContext represents a CSS stacking context.
 // A stacking context is created by certain CSS properties (z-index, opacity, transform, etc.)
@@ -80,7 +83,20 @@ func IsFloat(box *Box) bool {
 
 // IsInline returns true if the box is inline-level.
 func IsInline(box *Box) bool {
-	if box == nil || box.Style == nil {
+	if box == nil {
+		return false
+	}
+	// Text nodes are always inline content
+	if box.Node != nil && box.Node.Type == html.TextNode {
+		return true
+	}
+	// Pseudo-element content without explicit display is inline
+	if box.PseudoContent != "" && box.Style != nil {
+		if _, ok := box.Style.Get("display"); !ok {
+			return true
+		}
+	}
+	if box.Style == nil {
 		return false
 	}
 	display, ok := box.Style.Get("display")

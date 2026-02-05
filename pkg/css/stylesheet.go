@@ -1017,7 +1017,11 @@ func parseDeclarations(declStr string) DeclarationResult {
 
 		// Unescape CSS escape sequences in both property and value
 		property = unescapeCSS(property)
-		value = unescapeCSS(value)
+		// IMPORTANT: Don't unescape the quotes property value here, as it needs special handling
+		// in parseQuotes (layout.go) to preserve the quote string structure
+		if property != "quotes" {
+			value = unescapeCSS(value)
+		}
 
 		// Skip declarations with empty property or value
 		if property == "" || value == "" {

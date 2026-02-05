@@ -1562,6 +1562,12 @@ func (s *Style) GetOrder() int {
 
 // Phase 11: Pseudo-elements
 
+// ContentValue represents a single value in the content property
+type ContentValue struct {
+	Type  string // "text", "url", "counter", "attr", "open-quote", "close-quote"
+	Value string // The actual value (text content, URL path, counter name, attr name)
+}
+
 // GetContent returns the content property value for pseudo-elements
 // Returns the content string and true if content is set, or "", false if not
 func (s *Style) GetContent() (string, bool) {
@@ -1584,6 +1590,135 @@ func (s *Style) GetContent() (string, bool) {
 		return content, true
 	}
 	return "", false
+}
+
+// GetContentValues returns the parsed content property as a list of values
+// This handles complex content like: counter(ctr) url(img.png) "text" attr(class)
+func (s *Style) GetContentValues() ([]ContentValue, bool) {
+	raw, ok := s.Get("content")
+	if !ok {
+		return nil, false
+	}
+
+	// Handle "none" and "normal" (no content)
+	raw = strings.TrimSpace(raw)
+	if raw == "none" || raw == "normal" {
+		return nil, false
+	}
+
+	return ParseContentValues(raw), true
+}
+
+// ParseContentValues parses a CSS content value into individual parts
+func ParseContentValues(raw string) []ContentValue {
+	var values []ContentValue
+	raw = strings.TrimSpace(raw)
+
+	for len(raw) > 0 {
+		raw = strings.TrimSpace(raw)
+		if len(raw) == 0 {
+			break
+		}
+
+		// Check for quoted string
+		if raw[0] == '"' || raw[0] == '\'' {
+			quote := raw[0]
+			end := 1
+			for end < len(raw) && raw[end] != quote {
+				if raw[end] == '\\' && end+1 < len(raw) {
+					end += 2 // Skip escaped character
+				} else {
+					end++
+				}
+			}
+			if end < len(raw) {
+				text := raw[1:end]
+				// Unescape common sequences
+				text = strings.ReplaceAll(text, "\\0022", "\"")
+				text = strings.ReplaceAll(text, "\\\"", "\"")
+				values = append(values, ContentValue{Type: "text", Value: text})
+				raw = raw[end+1:]
+			} else {
+				// Unclosed quote - take rest as text
+				values = append(values, ContentValue{Type: "text", Value: raw[1:]})
+				break
+			}
+			continue
+		}
+
+		// Check for function-style values: counter(), url(), attr()
+		// First check if the raw string starts with a known function name followed by (
+		funcIdx := -1
+		funcName := ""
+		for _, fn := range []string{"counter", "url", "attr", "counters"} {
+			if strings.HasPrefix(strings.ToLower(raw), fn+"(") {
+				funcIdx = len(fn)
+				funcName = fn
+				break
+			}
+		}
+		if funcIdx > 0 {
+			idx := funcIdx
+			// Find matching closing paren
+			depth := 1
+			start := idx + 1
+			end := start
+			for end < len(raw) && depth > 0 {
+				if raw[end] == '(' {
+					depth++
+				} else if raw[end] == ')' {
+					depth--
+				}
+				end++
+			}
+			if depth == 0 {
+				arg := strings.TrimSpace(raw[start : end-1])
+				switch funcName {
+				case "url":
+					// Strip quotes if present
+					arg = strings.Trim(arg, "\"'")
+					values = append(values, ContentValue{Type: "url", Value: arg})
+				case "counter":
+					// counter(name) or counter(name, style)
+					values = append(values, ContentValue{Type: "counter", Value: arg})
+				case "attr":
+					values = append(values, ContentValue{Type: "attr", Value: arg})
+				}
+				raw = raw[end:]
+				continue
+			}
+		}
+
+		// Check for keywords
+		lowerRaw := strings.ToLower(raw)
+		if strings.HasPrefix(lowerRaw, "open-quote") {
+			values = append(values, ContentValue{Type: "open-quote", Value: ""})
+			raw = raw[10:]
+			continue
+		}
+		if strings.HasPrefix(lowerRaw, "close-quote") {
+			values = append(values, ContentValue{Type: "close-quote", Value: ""})
+			raw = raw[11:]
+			continue
+		}
+		if strings.HasPrefix(lowerRaw, "no-open-quote") {
+			raw = raw[13:]
+			continue
+		}
+		if strings.HasPrefix(lowerRaw, "no-close-quote") {
+			raw = raw[14:]
+			continue
+		}
+
+		// Unknown content - skip to next space or take rest
+		if idx := strings.IndexAny(raw, " \t"); idx > 0 {
+			raw = raw[idx:]
+		} else {
+			break
+		}
+	}
+
+	return values
 }
 
 // Phase 15: CSS Grid properties

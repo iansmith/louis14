@@ -1274,35 +1274,59 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 7 Enhancement: Inline elements always shrink-wrap to children
 	if display == css.DisplayInline && len(box.Children) > 0 {
-		// Calculate width from children (horizontal sum for inline flow)
-		maxChildWidth := 0.0
-		totalChildHeight := 0.0
+		// Calculate width from children
+		// For inline formatting context, children flow horizontally so we SUM their widths
+		totalChildWidth := 0.0
+		maxChildHeight := 0.0
 		for _, child := range box.Children {
 			childWidth := le.getTotalWidth(child)
-			if childWidth > maxChildWidth {
-				maxChildWidth = childWidth
-			}
+			totalChildWidth += childWidth
 			childHeight := le.getTotalHeight(child)
-			if childHeight > totalChildHeight {
-				totalChildHeight = childHeight
+			if childHeight > maxChildHeight {
+				maxChildHeight = childHeight
 			}
 		}
-		box.Width = maxChildWidth
-		box.Height = totalChildHeight
+		box.Width = totalChildWidth
+		box.Height = maxChildHeight
 	}
 
 	// Phase 5 Enhancement: Float shrink-wrapping
 	// If this is a float without explicit width, shrink-wrap to content
 	if floatType != css.FloatNone && !hasExplicitWidth && len(box.Children) > 0 {
-		maxChildWidth := 0.0
+		// For inline formatting context (inline children), sum widths horizontally
+		// For block formatting context (block children), take max width (vertical stacking)
+		allInline := true
 		for _, child := range box.Children {
-			childWidth := le.getTotalWidth(child)
-			if childWidth > maxChildWidth {
-				maxChildWidth = childWidth
+			if child.Style != nil {
+				childDisplay := child.Style.GetDisplay()
+				if childDisplay != css.DisplayInline && childDisplay != css.DisplayInlineBlock && child.Node != nil && child.Node.Type != html.TextNode {
+					allInline = false
+					break
+				}
 			}
 		}
-		if maxChildWidth > 0 {
-			box.Width = maxChildWidth
+
+		if allInline {
+			// Inline formatting context: sum widths
+			totalWidth := 0.0
+			for _, child := range box.Children {
+				totalWidth += le.getTotalWidth(child)
+			}
+			if totalWidth > 0 {
+				box.Width = totalWidth
+			}
+		} else {
+			// Block formatting context: take max width
+			maxChildWidth := 0.0
+			for _, child := range box.Children {
+				childWidth := le.getTotalWidth(child)
+				if childWidth > maxChildWidth {
+					maxChildWidth = childWidth
+				}
+			}
+			if maxChildWidth > 0 {
+				box.Width = maxChildWidth
+			}
 		}
 	}
 
@@ -3276,10 +3300,13 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 	// Use CSS default line-height: normal (approximately 1.2x font size)
 	lineHeight := fontSize * 1.2
 
-	// Track pre-image text width for layout
-	var preImageWidth float64
+	// Track pre-image and post-image text widths for layout
+	var preImageWidth, postImageWidth float64
 	if preImageText != "" {
 		preImageWidth, _ = text.MeasureTextWithWeight(preImageText, fontSize, bold)
+	}
+	if postImageText != "" {
+		postImageWidth, _ = text.MeasureTextWithWeight(postImageText, fontSize, bold)
 	}
 
 	if floatVal != css.FloatNone && (textContent != "" || len(imageBoxes) > 0) {
@@ -3297,7 +3324,8 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		}
 
 		// Calculate preferred width (max-content): all content on one line
-		maxContentWidth := textWidth + imageWidth
+		// Use sum of individual text measurements to match actual child box widths
+		maxContentWidth := preImageWidth + imageWidth + postImageWidth
 
 		// Calculate available width
 		maxAvailable := availableWidth - margin.Left - margin.Right - padding.Left - padding.Right - border.Left - border.Right
@@ -3312,6 +3340,9 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 			shrinkToFitWidth = maxContentWidth
 		}
 
+		// For floated elements, always use shrink-to-fit width
+		boxWidth = shrinkToFitWidth
+
 		// Wrap postImageText only if content exceeds shrink-to-fit width
 		if postImageText != "" && maxContentWidth > shrinkToFitWidth {
 			// Calculate remaining space on first line after preImageText and images
@@ -3322,11 +3353,6 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 
 			// Wrap only the post-image text
 			wrappedPostLines = text.BreakTextIntoLinesWithWrap(postImageText, fontSize, bold, firstLineMax, shrinkToFitWidth)
-
-			// For floated generated content, use the shrink-to-fit width
-			// Even if individual words overflow, the box width stays constrained
-			// This matches browser behavior for narrow floated pseudo-elements
-			boxWidth = shrinkToFitWidth
 
 			// Calculate height needed for all content
 			numTextLines := len(wrappedPostLines)
@@ -3495,7 +3521,7 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 			}
 		} else if postImageText != "" {
 			// Text doesn't wrap - add unwrapped postImageText as single child box
-			postTextWidth, _ := text.MeasureTextWithWeight(postImageText, fontSize, bold)
+			// postImageWidth was already measured earlier for shrink-to-fit calculation
 
 			// Create a minimal style for the text box (inline content)
 			textStyle := css.NewStyle()
@@ -3516,7 +3542,7 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 				Style:         textStyle,
 				X:             currentLineX,
 				Y:             contentY,
-				Width:         postTextWidth,
+				Width:         postImageWidth,
 				Height:        lineHeight,
 				Margin:        css.BoxEdge{},
 				Padding:       css.BoxEdge{},

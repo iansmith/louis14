@@ -1,0 +1,11 @@
+
+  {
+    "additionalDirectories": ["/tmp"],
+    "permissions": {
+      "allow": [
+        "Read(/tmp/**)",
+        "Edit(/tmp/**)",
+        "Write(/tmp/**)"
+      ]
+    }
+  }
