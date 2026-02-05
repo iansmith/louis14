@@ -15,6 +15,7 @@ type Parser struct {
 	doc             *Document
 	stack           []*Node // Phase 2: Stack for tracking nested elements
 	cssFetcher      CSSFetcher // Optional fetcher for external stylesheets
+	fragmentMode    bool       // When true, <script>/<style> become DOM nodes
 }
 
 func NewParser(html string) *Parser {
@@ -39,22 +40,23 @@ func (p *Parser) Parse() (*Document, error) {
 
 		switch token.Type {
 		case TokenStartTag:
-			// Phase 3: Special handling for <style> tags — read raw content
-			if token.TagName == "style" {
-				content := p.tokenizer.ReadRawUntil("style")
-				if strings.TrimSpace(content) != "" {
-					p.doc.Stylesheets = append(p.doc.Stylesheets, content)
+			// Special handling for <style>/<script> tags in normal mode:
+			// extract raw content. In fragment mode, treat them as DOM nodes.
+			if !p.fragmentMode {
+				if token.TagName == "style" {
+					content := p.tokenizer.ReadRawUntil("style")
+					if strings.TrimSpace(content) != "" {
+						p.doc.Stylesheets = append(p.doc.Stylesheets, content)
+					}
+					continue
 				}
-				continue // Don't add style tag to DOM tree
-			}
-
-			// Special handling for <script> tags — read raw content
-			if token.TagName == "script" {
-				content := p.tokenizer.ReadRawUntil("script")
-				if strings.TrimSpace(content) != "" {
-					p.doc.Scripts = append(p.doc.Scripts, content)
+				if token.TagName == "script" {
+					content := p.tokenizer.ReadRawUntil("script")
+					if strings.TrimSpace(content) != "" {
+						p.doc.Scripts = append(p.doc.Scripts, content)
+					}
+					continue
 				}
-				continue // Don't add script tag to DOM tree
 			}
 
 			// Auto-close <p> when a block-level element is encountered inside it
@@ -212,4 +214,24 @@ func ParseWithFetcher(htmlContent string, cssFetcher CSSFetcher) (*Document, err
 	parser := NewParser(htmlContent)
 	parser.cssFetcher = cssFetcher
 	return parser.Parse()
+}
+
+// ParseFragment parses an HTML fragment string and returns detached child nodes.
+// Unlike Parse, <script> and <style> tags become DOM nodes instead of being
+// extracted into Document.Scripts/Stylesheets.
+func ParseFragment(htmlContent string) ([]*Node, error) {
+	parser := NewParser(htmlContent)
+	parser.fragmentMode = true
+	doc, err := parser.Parse()
+	if err != nil {
+		return nil, err
+	}
+	// Detach children from the synthetic root
+	children := make([]*Node, len(doc.Root.Children))
+	copy(children, doc.Root.Children)
+	for _, child := range children {
+		child.Parent = nil
+	}
+	doc.Root.Children = nil
+	return children, nil
 }

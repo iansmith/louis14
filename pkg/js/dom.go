@@ -10,8 +10,27 @@ import (
 	"github.com/dop251/goja"
 )
 
+// domContext holds shared state for DOM bindings within a single execution.
+// It maintains a node-to-proxy cache so the same JS object is returned for
+// the same underlying *html.Node (needed for === identity checks).
+type domContext struct {
+	vm    *goja.Runtime
+	doc   *html.Document
+	cache map[*html.Node]goja.Value
+}
+
+func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
+	return &domContext{
+		vm:    vm,
+		doc:   doc,
+		cache: make(map[*html.Node]goja.Value),
+	}
+}
+
 // registerDocument sets up the global `document` object on the goja runtime.
-func registerDocument(vm *goja.Runtime, doc *html.Document) {
+func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
+	ctx := newDOMContext(vm, doc)
+
 	docObj := vm.NewObject()
 	docObj.Set("getElementById", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -22,25 +41,59 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) {
 		if node == nil {
 			return goja.Null()
 		}
-		return newElementProxy(vm, node)
+		return ctx.elementProxy(node)
 	})
 	docObj.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			return newElementArray(vm, nil)
+			return ctx.elementArray(nil)
 		}
 		tag := strings.ToLower(call.Arguments[0].String())
 		nodes := getElementsByTagName(doc.Root, tag)
-		return newElementArray(vm, nodes)
+		return ctx.elementArray(nodes)
 	})
 	docObj.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
-			return newElementArray(vm, nil)
+			return ctx.elementArray(nil)
 		}
 		cls := call.Arguments[0].String()
 		nodes := getElementsByClassName(doc.Root, cls)
-		return newElementArray(vm, nodes)
+		return ctx.elementArray(nodes)
 	})
+
+	// Phase 1: createElement, createTextNode
+	docObj.Set("createElement", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(vm.NewTypeError("Failed to execute 'createElement' on 'Document': 1 argument required"))
+		}
+		tag := strings.ToLower(call.Arguments[0].String())
+		node := &html.Node{
+			Type:       html.ElementNode,
+			TagName:    tag,
+			Attributes: make(map[string]string),
+			Children:   make([]*html.Node, 0),
+		}
+		return ctx.elementProxy(node)
+	})
+	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
+		text := ""
+		if len(call.Arguments) > 0 {
+			text = call.Arguments[0].String()
+		}
+		node := &html.Node{
+			Type: html.TextNode,
+			Text: text,
+		}
+		return ctx.elementProxy(node)
+	})
+
+	// Phase 2: querySelector/querySelectorAll on document
+	registerQuerySelectors(ctx, docObj, doc.Root)
+
+	// Phase 4: document.body, document.head, document.documentElement
+	registerDocumentProperties(ctx, docObj, doc)
+
 	vm.Set("document", docObj)
+	return ctx
 }
 
 // getElementById walks the tree and returns the first node with matching id.
@@ -89,43 +142,85 @@ func getElementsByClassName(node *html.Node, cls string) []*html.Node {
 	return result
 }
 
-// newElementArray creates a JS array of Element proxies.
-func newElementArray(vm *goja.Runtime, nodes []*html.Node) goja.Value {
-	arr := vm.NewArray()
+// elementArray creates a JS array of Element proxies.
+func (ctx *domContext) elementArray(nodes []*html.Node) goja.Value {
+	arr := ctx.vm.NewArray()
 	for i, n := range nodes {
-		arr.Set(strconv.Itoa(i), newElementProxy(vm, n))
+		arr.Set(strconv.Itoa(i), ctx.elementProxy(n))
 	}
 	arr.Set("length", len(nodes))
 	return arr
 }
 
-// newElementProxy creates a JS DynamicObject that wraps an html.Node,
-// supporting get/set for textContent, className, and other DOM properties.
-func newElementProxy(vm *goja.Runtime, node *html.Node) goja.Value {
-	return vm.NewDynamicObject(&elementAccessor{vm: vm, node: node})
+// elementProxy creates (or retrieves from cache) a JS DynamicObject wrapping an html.Node.
+func (ctx *domContext) elementProxy(node *html.Node) goja.Value {
+	if v, ok := ctx.cache[node]; ok {
+		return v
+	}
+	v := ctx.vm.NewDynamicObject(&elementAccessor{ctx: ctx, node: node})
+	ctx.cache[node] = v
+	return v
+}
+
+// unwrapNode extracts the *html.Node from a goja value that wraps an elementAccessor.
+func (ctx *domContext) unwrapNode(val goja.Value) *html.Node {
+	if val == nil || goja.IsNull(val) || goja.IsUndefined(val) {
+		return nil
+	}
+	// Look through the cache for a match
+	obj := val.ToObject(ctx.vm)
+	for node, cached := range ctx.cache {
+		if cached.SameAs(obj) {
+			return node
+		}
+	}
+	return nil
 }
 
 // elementAccessor implements goja.DynamicObject to intercept property access
 // on DOM element proxies.
 type elementAccessor struct {
-	vm   *goja.Runtime
+	ctx  *domContext
 	node *html.Node
 }
 
 func (e *elementAccessor) Get(key string) goja.Value {
+	vm := e.ctx.vm
+
 	switch key {
+	case "__node__":
+		// Internal: used by unwrapNode as a fallback identifier
+		return vm.ToValue(true)
+	case "nodeType":
+		if e.node.Type == html.TextNode {
+			return vm.ToValue(3) // Node.TEXT_NODE
+		}
+		return vm.ToValue(1) // Node.ELEMENT_NODE
+	case "nodeName":
+		if e.node.Type == html.TextNode {
+			return vm.ToValue("#text")
+		}
+		return vm.ToValue(strings.ToUpper(e.node.TagName))
+	case "nodeValue":
+		if e.node.Type == html.TextNode {
+			return vm.ToValue(e.node.Text)
+		}
+		return goja.Null()
 	case "tagName":
-		return e.vm.ToValue(strings.ToUpper(e.node.TagName))
+		if e.node.Type == html.TextNode {
+			return goja.Undefined()
+		}
+		return vm.ToValue(strings.ToUpper(e.node.TagName))
 	case "id":
 		id, _ := e.node.GetAttribute("id")
-		return e.vm.ToValue(id)
+		return vm.ToValue(id)
 	case "className":
 		cls, _ := e.node.GetAttribute("class")
-		return e.vm.ToValue(cls)
+		return vm.ToValue(cls)
 	case "textContent":
-		return e.vm.ToValue(getTextContent(e.node))
+		return vm.ToValue(getTextContent(e.node))
 	case "getAttribute":
-		return e.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
 				return goja.Null()
 			}
@@ -134,10 +229,10 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			if !ok {
 				return goja.Null()
 			}
-			return e.vm.ToValue(val)
+			return vm.ToValue(val)
 		})
 	case "setAttribute":
-		return e.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) < 2 {
 				return goja.Undefined()
 			}
@@ -149,6 +244,26 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			e.node.Attributes[name] = val
 			return goja.Undefined()
 		})
+	case "hasAttribute":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return vm.ToValue(false)
+			}
+			name := call.Arguments[0].String()
+			_, ok := e.node.GetAttribute(name)
+			return vm.ToValue(ok)
+		})
+	case "removeAttribute":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return goja.Undefined()
+			}
+			name := call.Arguments[0].String()
+			if e.node.Attributes != nil {
+				delete(e.node.Attributes, name)
+			}
+			return goja.Undefined()
+		})
 	case "children":
 		var elChildren []*html.Node
 		for _, child := range e.node.Children {
@@ -156,14 +271,151 @@ func (e *elementAccessor) Get(key string) goja.Value {
 				elChildren = append(elChildren, child)
 			}
 		}
-		return newElementArray(e.vm, elChildren)
+		return e.ctx.elementArray(elChildren)
+	case "childNodes":
+		return e.ctx.elementArray(e.node.Children)
 	case "parentElement":
-		if e.node.Parent != nil && e.node.Parent.Type == html.ElementNode {
-			return newElementProxy(e.vm, e.node.Parent)
+		if e.node.Parent != nil && e.node.Parent.Type == html.ElementNode &&
+			e.node.Parent.TagName != "document" {
+			return e.ctx.elementProxy(e.node.Parent)
+		}
+		return goja.Null()
+	case "parentNode":
+		if e.node.Parent != nil {
+			if e.node.Parent.TagName == "document" {
+				// Return the document object itself? For simplicity, return null
+				return goja.Null()
+			}
+			return e.ctx.elementProxy(e.node.Parent)
 		}
 		return goja.Null()
 	case "style":
-		return newStyleProxy(e.vm, e.node)
+		return newStyleProxy(vm, e.node)
+
+	// Mutation methods (Phase 1)
+	case "appendChild":
+		return vm.ToValue(e.appendChildFn())
+	case "removeChild":
+		return vm.ToValue(e.removeChildFn())
+	case "insertBefore":
+		return vm.ToValue(e.insertBeforeFn())
+	case "innerHTML":
+		return vm.ToValue(e.node.Serialize())
+	case "outerHTML":
+		return vm.ToValue(e.node.SerializeOuter())
+
+	// Traversal (Phase 4)
+	case "firstChild":
+		return e.firstChild()
+	case "lastChild":
+		return e.lastChild()
+	case "firstElementChild":
+		return e.firstElementChild()
+	case "lastElementChild":
+		return e.lastElementChild()
+	case "nextSibling":
+		return e.nextSibling()
+	case "previousSibling":
+		return e.previousSibling()
+	case "nextElementSibling":
+		return e.nextElementSibling()
+	case "previousElementSibling":
+		return e.previousElementSibling()
+	case "childElementCount":
+		count := 0
+		for _, c := range e.node.Children {
+			if c.Type == html.ElementNode {
+				count++
+			}
+		}
+		return vm.ToValue(count)
+
+	// Selectors (Phase 2)
+	case "querySelector":
+		return vm.ToValue(querySelectorFn(e.ctx, e.node))
+	case "querySelectorAll":
+		return vm.ToValue(querySelectorAllFn(e.ctx, e.node))
+	case "matches":
+		return vm.ToValue(matchesFn(e.ctx, e.node))
+	case "closest":
+		return vm.ToValue(closestFn(e.ctx, e.node))
+
+	// classList (Phase 3)
+	case "classList":
+		return newClassListProxy(e.ctx, e.node)
+
+	// Convenience methods (Phase 3)
+	case "remove":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if e.node.Parent != nil {
+				e.node.Parent.RemoveChild(e.node)
+			}
+			return goja.Undefined()
+		})
+	case "append":
+		return vm.ToValue(e.appendFn())
+	case "prepend":
+		return vm.ToValue(e.prependFn())
+	case "before":
+		return vm.ToValue(e.beforeFn())
+	case "after":
+		return vm.ToValue(e.afterFn())
+	case "replaceWith":
+		return vm.ToValue(e.replaceWithFn())
+	case "replaceChildren":
+		return vm.ToValue(e.replaceChildrenFn())
+
+	// Phase 4
+	case "cloneNode":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			deep := false
+			if len(call.Arguments) > 0 {
+				deep = call.Arguments[0].ToBoolean()
+			}
+			clone := e.node.CloneNode(deep)
+			return e.ctx.elementProxy(clone)
+		})
+	case "contains":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return vm.ToValue(false)
+			}
+			other := e.ctx.unwrapNode(call.Arguments[0])
+			if other == nil {
+				return vm.ToValue(false)
+			}
+			return vm.ToValue(e.node.Contains(other))
+		})
+	case "hasChildNodes":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return vm.ToValue(len(e.node.Children) > 0)
+		})
+
+	case "getElementsByTagName":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return e.ctx.elementArray(nil)
+			}
+			tag := strings.ToLower(call.Arguments[0].String())
+			// Search within this element's children (not including self)
+			var result []*html.Node
+			for _, child := range e.node.Children {
+				result = append(result, getElementsByTagName(child, tag)...)
+			}
+			return e.ctx.elementArray(result)
+		})
+	case "getElementsByClassName":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return e.ctx.elementArray(nil)
+			}
+			cls := call.Arguments[0].String()
+			var result []*html.Node
+			for _, child := range e.node.Children {
+				result = append(result, getElementsByClassName(child, cls)...)
+			}
+			return e.ctx.elementArray(result)
+		})
 	}
 	return goja.Undefined()
 }
@@ -185,15 +437,33 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		e.node.Attributes["id"] = val.String()
 		return true
+	case "innerHTML":
+		e.setInnerHTML(val.String())
+		return true
+	case "nodeValue":
+		if e.node.Type == html.TextNode {
+			e.node.Text = val.String()
+		}
+		return true
 	}
 	return false
 }
 
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
-	case "tagName", "id", "className", "textContent",
-		"getAttribute", "setAttribute", "children",
-		"parentElement", "style":
+	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
+		"textContent", "innerHTML", "outerHTML",
+		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
+		"children", "childNodes", "parentElement", "parentNode", "style",
+		"appendChild", "removeChild", "insertBefore",
+		"firstChild", "lastChild", "firstElementChild", "lastElementChild",
+		"nextSibling", "previousSibling", "nextElementSibling", "previousElementSibling",
+		"childElementCount",
+		"querySelector", "querySelectorAll", "matches", "closest",
+		"classList",
+		"remove", "append", "prepend", "before", "after", "replaceWith", "replaceChildren",
+		"cloneNode", "contains", "hasChildNodes",
+		"getElementsByTagName", "getElementsByClassName":
 		return true
 	}
 	return false
@@ -204,8 +474,21 @@ func (e *elementAccessor) Delete(key string) bool {
 }
 
 func (e *elementAccessor) Keys() []string {
-	return []string{"tagName", "id", "className", "textContent",
-		"getAttribute", "setAttribute", "children", "parentElement", "style"}
+	return []string{
+		"tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
+		"textContent", "innerHTML", "outerHTML",
+		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
+		"children", "childNodes", "parentElement", "parentNode", "style",
+		"appendChild", "removeChild", "insertBefore",
+		"firstChild", "lastChild", "firstElementChild", "lastElementChild",
+		"nextSibling", "previousSibling", "nextElementSibling", "previousElementSibling",
+		"childElementCount",
+		"querySelector", "querySelectorAll", "matches", "closest",
+		"classList",
+		"remove", "append", "prepend", "before", "after", "replaceWith", "replaceChildren",
+		"cloneNode", "contains", "hasChildNodes",
+		"getElementsByTagName", "getElementsByClassName",
+	}
 }
 
 // getTextContent returns the concatenated text content of a node and its descendants.
@@ -343,4 +626,18 @@ func camelToKebab(s string) string {
 		}
 	}
 	return sb.String()
+}
+
+// newElementProxy is a convenience for callers that don't have a domContext.
+// Deprecated: use ctx.elementProxy instead within JS bindings.
+func newElementProxy(vm *goja.Runtime, node *html.Node) goja.Value {
+	ctx := newDOMContext(vm, nil)
+	return ctx.elementProxy(node)
+}
+
+// newElementArray is a convenience for callers that don't have a domContext.
+// Deprecated: use ctx.elementArray instead within JS bindings.
+func newElementArray(vm *goja.Runtime, nodes []*html.Node) goja.Value {
+	ctx := newDOMContext(vm, nil)
+	return ctx.elementArray(nodes)
 }

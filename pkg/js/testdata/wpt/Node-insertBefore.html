@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<title>Node.insertBefore</title>
+<div id="test"></div>
+<script>
+test(function() {
+    var parent = document.createElement("div");
+    var ref = document.createElement("span");
+    var newNode = document.createElement("em");
+    parent.appendChild(ref);
+    var result = parent.insertBefore(newNode, ref);
+    assert_equals(result, newNode, "insertBefore should return the inserted node");
+}, "insertBefore returns the inserted node");
+
+test(function() {
+    var parent = document.createElement("div");
+    var ref = document.createElement("span");
+    var newNode = document.createElement("em");
+    parent.appendChild(ref);
+    parent.insertBefore(newNode, ref);
+    assert_equals(parent.children.length, 2);
+    assert_equals(parent.children[0].tagName, "EM", "new node should be before ref");
+    assert_equals(parent.children[1].tagName, "SPAN", "ref should be after new node");
+}, "insertBefore inserts before the reference node");
+
+test(function() {
+    var parent = document.createElement("div");
+    var existing = document.createElement("span");
+    var newNode = document.createElement("em");
+    parent.appendChild(existing);
+    parent.insertBefore(newNode, null);
+    assert_equals(parent.children.length, 2);
+    assert_equals(parent.children[1].tagName, "EM", "should append when ref is null");
+}, "insertBefore with null reference appends");
+
+test(function() {
+    var parent1 = document.createElement("div");
+    var parent2 = document.createElement("div");
+    var ref = document.createElement("span");
+    var child = document.createElement("em");
+    parent1.appendChild(child);
+    parent2.appendChild(ref);
+    parent2.insertBefore(child, ref);
+    assert_equals(parent1.children.length, 0, "old parent should lose child");
+    assert_equals(parent2.children.length, 2);
+    assert_equals(parent2.children[0].tagName, "EM");
+}, "insertBefore re-parents a node");
+</script>

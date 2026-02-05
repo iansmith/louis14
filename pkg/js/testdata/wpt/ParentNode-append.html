@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<title>ParentNode.append, prepend, replaceChildren</title>
+<div id="test"></div>
+<script>
+test(function() {
+    var parent = document.createElement("div");
+    var child = document.createElement("span");
+    parent.append(child);
+    assert_equals(parent.children.length, 1);
+    assert_equals(parent.children[0].tagName, "SPAN");
+}, "append single element");
+
+test(function() {
+    var parent = document.createElement("div");
+    parent.append("hello");
+    assert_equals(parent.textContent, "hello");
+}, "append string creates text node");
+
+test(function() {
+    var parent = document.createElement("div");
+    var a = document.createElement("span");
+    var b = document.createElement("em");
+    parent.append(a, "text", b);
+    assert_equals(parent.children.length, 2, "should have 2 element children");
+    assert_equals(parent.childNodes.length, 3, "should have 3 total nodes");
+}, "append multiple nodes and strings");
+
+test(function() {
+    var parent = document.createElement("div");
+    var existing = document.createElement("span");
+    parent.appendChild(existing);
+    var newEl = document.createElement("em");
+    parent.prepend(newEl);
+    assert_equals(parent.children[0].tagName, "EM", "prepend should add at beginning");
+    assert_equals(parent.children[1].tagName, "SPAN");
+}, "prepend adds before first child");
+
+test(function() {
+    var parent = document.createElement("div");
+    parent.prepend("text");
+    assert_equals(parent.textContent, "text");
+}, "prepend with string");
+
+test(function() {
+    var parent = document.createElement("div");
+    parent.appendChild(document.createElement("span"));
+    parent.appendChild(document.createElement("em"));
+    var p = document.createElement("p");
+    parent.replaceChildren(p);
+    assert_equals(parent.children.length, 1);
+    assert_equals(parent.children[0].tagName, "P");
+}, "replaceChildren replaces all children");
+
+test(function() {
+    var parent = document.createElement("div");
+    parent.appendChild(document.createElement("span"));
+    parent.replaceChildren();
+    assert_equals(parent.children.length, 0, "replaceChildren with no args clears");
+}, "replaceChildren with no args clears children");
+</script>

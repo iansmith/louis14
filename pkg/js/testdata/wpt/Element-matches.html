@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<title>Element.matches and Element.closest</title>
+<div id="outer" class="container">
+    <div id="inner" class="wrapper">
+        <span id="target" class="item active">text</span>
+    </div>
+</div>
+<script>
+test(function() {
+    var el = document.getElementById("target");
+    assert_true(el.matches("span"), "should match element selector");
+}, "matches with element selector");
+
+test(function() {
+    var el = document.getElementById("target");
+    assert_true(el.matches(".item"), "should match class selector");
+}, "matches with class selector");
+
+test(function() {
+    var el = document.getElementById("target");
+    assert_true(el.matches("#target"), "should match ID selector");
+}, "matches with ID selector");
+
+test(function() {
+    var el = document.getElementById("target");
+    assert_true(el.matches("span.item"), "should match compound selector");
+}, "matches with compound selector");
+
+test(function() {
+    var el = document.getElementById("target");
+    assert_false(el.matches("div"), "should not match wrong element");
+}, "matches returns false for non-matching selector");
+
+test(function() {
+    var el = document.getElementById("target");
+    assert_true(el.matches(".item, .nonexistent"), "should match with comma group");
+}, "matches with comma-separated selectors");
+
+test(function() {
+    var el = document.getElementById("target");
+    var closest = el.closest(".container");
+    assert_not_equals(closest, null, "should find ancestor");
+    assert_equals(closest.id, "outer");
+}, "closest finds ancestor");
+
+test(function() {
+    var el = document.getElementById("target");
+    var closest = el.closest("span");
+    assert_equals(closest, el, "closest should match self");
+}, "closest matches self");
+
+test(function() {
+    var el = document.getElementById("target");
+    var closest = el.closest(".nonexistent");
+    assert_equals(closest, null, "closest returns null for no match");
+}, "closest returns null for no match");
+
+test(function() {
+    var el = document.getElementById("target");
+    var closest = el.closest("#inner");
+    assert_equals(closest.id, "inner");
+}, "closest finds immediate parent");
+</script>

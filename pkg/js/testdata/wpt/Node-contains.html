@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<title>Node.contains</title>
+<div id="grandparent">
+    <div id="parent">
+        <span id="child">text</span>
+    </div>
+</div>
+<div id="unrelated">other</div>
+<script>
+test(function() {
+    var parent = document.getElementById("parent");
+    assert_true(parent.contains(parent), "node should contain itself");
+}, "contains returns true for self");
+
+test(function() {
+    var parent = document.getElementById("parent");
+    var child = document.getElementById("child");
+    assert_true(parent.contains(child), "parent should contain child");
+}, "contains returns true for child");
+
+test(function() {
+    var gp = document.getElementById("grandparent");
+    var child = document.getElementById("child");
+    assert_true(gp.contains(child), "grandparent should contain grandchild");
+}, "contains returns true for grandchild");
+
+test(function() {
+    var child = document.getElementById("child");
+    var parent = document.getElementById("parent");
+    assert_false(child.contains(parent), "child should not contain parent");
+}, "contains returns false for ancestor");
+
+test(function() {
+    var parent = document.getElementById("parent");
+    var unrelated = document.getElementById("unrelated");
+    assert_false(parent.contains(unrelated), "should not contain unrelated node");
+}, "contains returns false for unrelated node");
+</script>

@@ -112,13 +112,9 @@ func matchesSelectorPart(node *html.Node, part SelectorPart) bool {
 		}
 	}
 
-	// Pseudo-classes: dynamic pseudo-classes never match in a static renderer
+	// Pseudo-classes
 	for _, pc := range part.PseudoClasses {
-		switch pc {
-		case "hover", "focus", "active", "visited":
-			return false
-		default:
-			// Unknown pseudo-class: never match
+		if !matchesPseudoClass(node, pc) {
 			return false
 		}
 	}
@@ -213,6 +209,168 @@ func getPreviousSibling(node *html.Node) *html.Node {
 		return prevElement
 	}
 	return nil
+}
+
+// matchesPseudoClass checks if a node matches a given pseudo-class.
+func matchesPseudoClass(node *html.Node, pc string) bool {
+	switch {
+	case pc == "first-child":
+		return isNthChild(node, 1)
+	case pc == "last-child":
+		return isLastChild(node)
+	case pc == "only-child":
+		return isNthChild(node, 1) && isLastChild(node)
+	case pc == "root":
+		return node.Parent != nil && node.Parent.TagName == "document"
+	case pc == "empty":
+		return len(node.Children) == 0
+	case strings.HasPrefix(pc, "nth-child("):
+		arg := pc[len("nth-child(") : len(pc)-1] // strip "nth-child(" and ")"
+		return matchesNthChild(node, arg)
+	case strings.HasPrefix(pc, "not("):
+		arg := pc[len("not(") : len(pc)-1] // strip "not(" and ")"
+		// Parse the inner selector and check if it does NOT match
+		innerSel := ParseSelector(strings.TrimSpace(arg))
+		return !matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1])
+	case pc == "hover", pc == "focus", pc == "active", pc == "visited":
+		// Dynamic pseudo-classes never match in a static renderer
+		return false
+	case pc == "link":
+		return node.TagName == "a"
+	default:
+		return false
+	}
+}
+
+// isNthChild returns true if the node is the nth element child (1-based).
+func isNthChild(node *html.Node, n int) bool {
+	if node.Parent == nil {
+		return n == 1
+	}
+	count := 0
+	for _, c := range node.Parent.Children {
+		if c.Type == html.ElementNode {
+			count++
+			if c == node {
+				return count == n
+			}
+		}
+	}
+	return false
+}
+
+// isLastChild returns true if the node is the last element child.
+func isLastChild(node *html.Node) bool {
+	if node.Parent == nil {
+		return true
+	}
+	for i := len(node.Parent.Children) - 1; i >= 0; i-- {
+		c := node.Parent.Children[i]
+		if c.Type == html.ElementNode {
+			return c == node
+		}
+	}
+	return false
+}
+
+// matchesNthChild checks the An+B formula.
+func matchesNthChild(node *html.Node, arg string) bool {
+	arg = strings.TrimSpace(arg)
+
+	if arg == "odd" {
+		return nthChildIndex(node)%2 == 1
+	}
+	if arg == "even" {
+		return nthChildIndex(node)%2 == 0
+	}
+
+	// Parse An+B
+	a, b := parseAnPlusB(arg)
+	idx := nthChildIndex(node)
+	if a == 0 {
+		return idx == b
+	}
+	// Check if (idx - b) is divisible by a and non-negative
+	diff := idx - b
+	if a > 0 {
+		return diff >= 0 && diff%a == 0
+	}
+	// a < 0: match when diff <= 0 and divisible
+	return diff <= 0 && diff%a == 0
+}
+
+// nthChildIndex returns the 1-based index of node among element siblings.
+func nthChildIndex(node *html.Node) int {
+	if node.Parent == nil {
+		return 1
+	}
+	count := 0
+	for _, c := range node.Parent.Children {
+		if c.Type == html.ElementNode {
+			count++
+			if c == node {
+				return count
+			}
+		}
+	}
+	return 0
+}
+
+// parseAnPlusB parses an An+B expression like "2n+1", "3n", "5", "-n+3".
+func parseAnPlusB(s string) (a, b int) {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, " ", "")
+
+	nIdx := strings.IndexByte(s, 'n')
+	if nIdx < 0 {
+		// Just B
+		b, _ = parseInt(s)
+		return 0, b
+	}
+
+	// Parse A
+	aStr := s[:nIdx]
+	switch aStr {
+	case "", "+":
+		a = 1
+	case "-":
+		a = -1
+	default:
+		a, _ = parseInt(aStr)
+	}
+
+	// Parse B
+	rest := s[nIdx+1:]
+	if rest == "" {
+		return a, 0
+	}
+	b, _ = parseInt(rest)
+	return a, b
+}
+
+func parseInt(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	neg := false
+	if s[0] == '+' {
+		s = s[1:]
+	} else if s[0] == '-' {
+		neg = true
+		s = s[1:]
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if neg {
+		n = -n
+	}
+	return n, true
 }
 
 // FindMatchingRules returns all rules that match the given node

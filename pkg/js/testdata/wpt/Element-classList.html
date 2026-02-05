@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<title>Element.classList</title>
+<div id="test" class="a b c"></div>
+<script>
+test(function() {
+    var el = document.getElementById("test");
+    assert_equals(el.classList.length, 3, "should have 3 classes");
+}, "classList.length reflects class count");
+
+test(function() {
+    var el = document.createElement("div");
+    el.className = "foo bar";
+    assert_true(el.classList.contains("foo"), "should contain foo");
+    assert_true(el.classList.contains("bar"), "should contain bar");
+    assert_false(el.classList.contains("baz"), "should not contain baz");
+}, "classList.contains");
+
+test(function() {
+    var el = document.createElement("div");
+    el.classList.add("x");
+    assert_true(el.classList.contains("x"), "should contain x after add");
+    assert_equals(el.classList.length, 1);
+}, "classList.add single class");
+
+test(function() {
+    var el = document.createElement("div");
+    el.classList.add("a", "b", "c");
+    assert_equals(el.classList.length, 3);
+    assert_true(el.classList.contains("a"));
+    assert_true(el.classList.contains("b"));
+    assert_true(el.classList.contains("c"));
+}, "classList.add multiple classes");
+
+test(function() {
+    var el = document.createElement("div");
+    el.className = "a";
+    el.classList.add("a");
+    assert_equals(el.classList.length, 1, "should not duplicate");
+}, "classList.add does not duplicate");
+
+test(function() {
+    var el = document.createElement("div");
+    el.className = "a b c";
+    el.classList.remove("b");
+    assert_false(el.classList.contains("b"), "b should be removed");
+    assert_equals(el.classList.length, 2);
+}, "classList.remove");
+
+test(function() {
+    var el = document.createElement("div");
+    var result = el.classList.toggle("foo");
+    assert_true(result, "toggle add returns true");
+    assert_true(el.classList.contains("foo"));
+
+    result = el.classList.toggle("foo");
+    assert_false(result, "toggle remove returns false");
+    assert_false(el.classList.contains("foo"));
+}, "classList.toggle");
+
+test(function() {
+    var el = document.createElement("div");
+    el.className = "a";
+    var result = el.classList.toggle("a", true);
+    assert_true(result, "force true returns true");
+    assert_equals(el.classList.length, 1, "should still have 1");
+
+    result = el.classList.toggle("b", false);
+    assert_false(result, "force false returns false");
+    assert_false(el.classList.contains("b"));
+}, "classList.toggle with force");
+
+test(function() {
+    var el = document.createElement("div");
+    el.className = "a b";
+    var result = el.classList.replace("a", "x");
+    assert_true(result, "replace returns true on success");
+    assert_false(el.classList.contains("a"));
+    assert_true(el.classList.contains("x"));
+}, "classList.replace");
+
+test(function() {
+    var el = document.createElement("div");
+    el.className = "a";
+    var result = el.classList.replace("nonexistent", "x");
+    assert_false(result, "replace returns false when old class not found");
+}, "classList.replace with nonexistent class");
+</script>

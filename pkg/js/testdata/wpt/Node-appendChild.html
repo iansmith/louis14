@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<title>Node.appendChild</title>
+<div id="test"></div>
+<script>
+test(function() {
+    var parent = document.createElement("div");
+    var child = document.createElement("span");
+    var result = parent.appendChild(child);
+    assert_equals(result, child, "appendChild should return the appended child");
+}, "appendChild returns the appended child");
+
+test(function() {
+    var parent = document.createElement("div");
+    var child = document.createElement("span");
+    parent.appendChild(child);
+    assert_equals(parent.children.length, 1, "parent should have 1 child");
+    assert_equals(parent.children[0], child, "child should be in parent.children");
+}, "appendChild adds child to parent");
+
+test(function() {
+    var parent = document.createElement("div");
+    var child = document.createElement("span");
+    parent.appendChild(child);
+    assert_equals(child.parentElement, parent, "child.parentElement should be parent");
+}, "appendChild sets parentElement");
+
+test(function() {
+    var parent1 = document.createElement("div");
+    var parent2 = document.createElement("div");
+    var child = document.createElement("span");
+    parent1.appendChild(child);
+    parent2.appendChild(child);
+    assert_equals(parent1.children.length, 0, "old parent should lose child");
+    assert_equals(parent2.children.length, 1, "new parent should have child");
+    assert_equals(child.parentElement, parent2, "child should point to new parent");
+}, "appendChild re-parents a node that already has a parent");
+
+test(function() {
+    var parent = document.createElement("div");
+    var text = document.createTextNode("hello");
+    parent.appendChild(text);
+    assert_equals(parent.textContent, "hello", "text content should be set");
+}, "appendChild with text node");
+
+test(function() {
+    var parent = document.createElement("div");
+    var a = document.createElement("span");
+    var b = document.createElement("em");
+    var c = document.createElement("p");
+    parent.appendChild(a);
+    parent.appendChild(b);
+    parent.appendChild(c);
+    assert_equals(parent.children.length, 3, "should have 3 children");
+    assert_equals(parent.children[0].tagName, "SPAN");
+    assert_equals(parent.children[1].tagName, "EM");
+    assert_equals(parent.children[2].tagName, "P");
+}, "appendChild multiple children in order");
+</script>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<title>querySelector and querySelectorAll</title>
+<div id="root">
+    <p class="a">first</p>
+    <p class="b">second</p>
+    <span class="a">third</span>
+    <div id="nested">
+        <p class="a">nested</p>
+    </div>
+</div>
+<script>
+test(function() {
+    var el = document.querySelector("#root");
+    assert_not_equals(el, null, "should find #root");
+    assert_equals(el.id, "root");
+}, "querySelector with ID selector");
+
+test(function() {
+    var el = document.querySelector(".b");
+    assert_not_equals(el, null, "should find .b");
+    assert_equals(el.textContent, "second");
+}, "querySelector with class selector");
+
+test(function() {
+    var els = document.querySelectorAll(".a");
+    assert_equals(els.length, 3, "should find 3 elements with class a");
+}, "querySelectorAll with class selector");
+
+test(function() {
+    var els = document.querySelectorAll("p");
+    assert_equals(els.length, 3, "should find 3 p elements");
+}, "querySelectorAll with element selector");
+
+test(function() {
+    var els = document.querySelectorAll("p.a");
+    assert_equals(els.length, 2, "should find 2 p.a elements");
+}, "querySelectorAll with compound selector");
+
+test(function() {
+    var el = document.querySelector(".nonexistent");
+    assert_equals(el, null, "should return null for no match");
+}, "querySelector returns null for no match");
+
+test(function() {
+    var els = document.querySelectorAll(".nonexistent");
+    assert_equals(els.length, 0, "should return empty for no match");
+}, "querySelectorAll returns empty for no match");
+
+test(function() {
+    var els = document.querySelectorAll("p, span");
+    assert_equals(els.length, 4, "should find all p and span elements");
+}, "querySelectorAll with comma-separated selectors");
+
+test(function() {
+    var scope = document.getElementById("nested");
+    var els = scope.querySelectorAll("p");
+    assert_equals(els.length, 1, "should only find p within scope");
+}, "Element.querySelectorAll scoped to subtree");
+
+test(function() {
+    var scope = document.getElementById("root");
+    var el = scope.querySelector("p");
+    assert_not_equals(el, null);
+    assert_equals(el.textContent, "first", "should find first p in subtree");
+}, "Element.querySelector scoped to subtree");
+</script>

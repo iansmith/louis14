@@ -738,7 +738,19 @@ func parseSelectorPart(s string) SelectorPart {
 			}
 			i++ // skip the ':'
 			j := i
-			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+			depth := 0
+			for j < len(s) {
+				if s[j] == '(' {
+					depth++
+				} else if s[j] == ')' {
+					depth--
+					if depth == 0 {
+						j++ // include the closing paren
+						break
+					}
+				} else if depth == 0 && (s[j] == '.' || s[j] == '#' || s[j] == '[' || s[j] == ':') {
+					break
+				}
 				j++
 			}
 			if j > i {
@@ -993,5 +1005,15 @@ func isInvalidBareNumber(value string) bool {
 		return false // not a bare number
 	}
 	return num != 0 // zero without units is valid
+}
+
+// ParseSelector parses a CSS selector string into a Selector struct.
+func ParseSelector(selectorStr string) Selector {
+	return parseSelector(selectorStr)
+}
+
+// SplitSelectorGroup splits a comma-separated selector group into individual selectors.
+func SplitSelectorGroup(s string) []string {
+	return splitSelectorGroup(s)
 }
 

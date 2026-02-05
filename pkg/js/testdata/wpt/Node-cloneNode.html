@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<title>Node.cloneNode</title>
+<div id="original" class="cls" data-value="42">
+    <span>child1</span>
+    <em>child2</em>
+</div>
+<script>
+test(function() {
+    var orig = document.getElementById("original");
+    var clone = orig.cloneNode(false);
+    assert_equals(clone.tagName, "DIV", "clone should have same tagName");
+    assert_equals(clone.className, "cls", "clone should copy className");
+    assert_equals(clone.getAttribute("data-value"), "42", "clone should copy attributes");
+}, "cloneNode(false) copies element and attributes");
+
+test(function() {
+    var orig = document.getElementById("original");
+    var clone = orig.cloneNode(false);
+    assert_equals(clone.children.length, 0, "shallow clone should have no children");
+}, "cloneNode(false) does not copy children");
+
+test(function() {
+    var orig = document.getElementById("original");
+    var clone = orig.cloneNode(true);
+    assert_equals(clone.children.length, 2, "deep clone should have 2 children");
+    assert_equals(clone.children[0].tagName, "SPAN");
+    assert_equals(clone.children[1].tagName, "EM");
+}, "cloneNode(true) copies children");
+
+test(function() {
+    var orig = document.getElementById("original");
+    var clone = orig.cloneNode(true);
+    assert_not_equals(clone, orig, "clone should be a different object");
+    assert_not_equals(clone.children[0], orig.children[0], "cloned children should be different");
+}, "cloneNode returns distinct objects");
+
+test(function() {
+    var orig = document.getElementById("original");
+    var clone = orig.cloneNode(true);
+    assert_equals(clone.textContent, orig.textContent, "deep clone should have same text");
+}, "deep clone preserves text content");
+</script>

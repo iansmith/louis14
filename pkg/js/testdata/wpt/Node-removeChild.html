@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<title>Node.removeChild</title>
+<div id="test"></div>
+<script>
+test(function() {
+    var parent = document.createElement("div");
+    var child = document.createElement("span");
+    parent.appendChild(child);
+    var removed = parent.removeChild(child);
+    assert_equals(removed, child, "removeChild should return the removed child");
+}, "removeChild returns the removed child");
+
+test(function() {
+    var parent = document.createElement("div");
+    var child = document.createElement("span");
+    parent.appendChild(child);
+    parent.removeChild(child);
+    assert_equals(parent.children.length, 0, "parent should have no children");
+}, "removeChild removes the child from parent");
+
+test(function() {
+    var parent = document.createElement("div");
+    var a = document.createElement("span");
+    var b = document.createElement("em");
+    var c = document.createElement("p");
+    parent.appendChild(a);
+    parent.appendChild(b);
+    parent.appendChild(c);
+    parent.removeChild(b);
+    assert_equals(parent.children.length, 2);
+    assert_equals(parent.children[0].tagName, "SPAN");
+    assert_equals(parent.children[1].tagName, "P");
+}, "removeChild removes middle child correctly");
+</script>

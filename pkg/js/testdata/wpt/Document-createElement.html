@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<title>Document.createElement</title>
+<div id="test"></div>
+<script>
+test(function() {
+    var el = document.createElement("div");
+    assert_equals(el.tagName, "DIV", "tagName should be uppercase");
+}, "createElement returns element with correct tagName");
+
+test(function() {
+    var el = document.createElement("span");
+    assert_equals(el.nodeType, 1, "nodeType should be ELEMENT_NODE");
+}, "createElement returns an Element node");
+
+test(function() {
+    var el = document.createElement("P");
+    assert_equals(el.tagName, "P", "tagName for uppercase input");
+}, "createElement with uppercase input");
+
+test(function() {
+    var el = document.createElement("div");
+    assert_equals(el.children.length, 0, "should have no children");
+}, "createElement returns element with no children");
+
+test(function() {
+    var el = document.createElement("div");
+    assert_equals(el.id, "", "id should be empty string");
+}, "createElement returns element with empty id");
+
+test(function() {
+    var el = document.createElement("div");
+    assert_equals(el.className, "", "className should be empty");
+}, "createElement returns element with empty className");
+</script>
