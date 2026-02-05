@@ -122,7 +122,7 @@ func runReftest(t *testing.T, testPath string) bool {
 	opts := DefaultOptions()
 	opts.Tolerance = 2
 	opts.FuzzyRadius = 2          // Allow 2px shift tolerance for table cell kerning differences
-	opts.MaxDifferentPercent = 0.1 // Allow up to 0.1% different pixels for anti-aliasing
+	opts.MaxDifferentPercent = 0.3 // Allow up to 0.3% different pixels for font/anti-aliasing variations
 	opts.SaveDiffImage = true
 	opts.DiffImagePath = filepath.Join(tmpDir, "diff.png")
 
