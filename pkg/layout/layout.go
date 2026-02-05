@@ -559,8 +559,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				if (childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock) && childBox.Position == css.PositionStatic && !childIsFloated {
 					childTotalWidth := le.getTotalWidth(childBox)
 
-					// Check if child fits on current line
-					if inlineCtx.LineX + childTotalWidth > box.X + border.Left + padding.Left + childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
+					// Check if child fits on current line (skip wrapping if white-space: nowrap)
+					allowWrap := style.GetWhiteSpace() != css.WhiteSpaceNowrap
+					if allowWrap && inlineCtx.LineX + childTotalWidth > box.X + border.Left + padding.Left + childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
 						// Wrap to next line
 						inlineCtx.LineY += inlineCtx.LineHeight
 						inlineCtx.LineX = box.X + border.Left + padding.Left
@@ -732,8 +733,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					textWidth := le.getTotalWidth(textBox)
 					textHeight := le.getTotalHeight(textBox)
 
-					// Check if text fits on current line
-					if inlineCtx.LineX+textWidth > box.X+border.Left+padding.Left+childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
+					// Check if text fits on current line (skip wrapping if white-space: nowrap)
+					allowWrap := style.GetWhiteSpace() != css.WhiteSpaceNowrap
+					if allowWrap && inlineCtx.LineX+textWidth > box.X+border.Left+padding.Left+childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
 						// Wrap to new line
 						inlineCtx.LineY += inlineCtx.LineHeight
 						inlineCtx.LineX = box.X + border.Left + padding.Left
