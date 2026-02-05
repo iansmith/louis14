@@ -21,12 +21,12 @@ type Box struct {
 	Margin        css.BoxEdge
 	Padding       css.BoxEdge
 	Border        css.BoxEdge
-	Children      []*Box           // Phase 2: Nested boxes
-	Parent        *Box             // Phase 4: Parent box for containing block
+	Children      []*Box          // Phase 2: Nested boxes
+	Parent        *Box            // Phase 4: Parent box for containing block
 	Position      css.PositionType // Phase 4: Position type
-	ZIndex        int              // Phase 4: Stacking order
-	ImagePath     string           // Phase 8: Image source path for img elements
-	PseudoContent string           // Phase 11: Content for pseudo-elements
+	ZIndex        int             // Phase 4: Stacking order
+	ImagePath     string          // Phase 8: Image source path for img elements
+	PseudoContent string          // Phase 11: Content for pseudo-elements
 
 	// Block-in-inline fragment tracking (CSS 2.1 §9.2.1.1)
 	// When a block element breaks an inline element, the inline's border is split
@@ -49,16 +49,16 @@ type LayoutEngine struct {
 		width  float64
 		height float64
 	}
-	scrollY        float64             // Scroll offset for fixed positioning (viewport-relative)
-	absoluteBoxes  []*Box              // Phase 4: Track absolutely positioned boxes
-	floats         []FloatInfo         // Phase 5: Track floated elements
-	floatBaseStack []int               // Stack of float base indices for BFC boundaries
-	floatBase      int                 // Current BFC float base index
-	stylesheets    []*css.Stylesheet   // Phase 11: Store stylesheets for pseudo-elements
+	scrollY        float64    // Scroll offset for fixed positioning (viewport-relative)
+	absoluteBoxes  []*Box     // Phase 4: Track absolutely positioned boxes
+	floats         []FloatInfo // Phase 5: Track floated elements
+	floatBaseStack []int       // Stack of float base indices for BFC boundaries
+	floatBase      int         // Current BFC float base index
+	stylesheets    []*css.Stylesheet // Phase 11: Store stylesheets for pseudo-elements
 	imageFetcher   images.ImageFetcher // Optional fetcher for network images
 
 	// CSS Counters support
-	counters map[string][]int // Counter name -> stack of values (for nested scopes)
+	counters      map[string][]int // Counter name -> stack of values (for nested scopes)
 }
 
 // Phase 5: FloatInfo tracks information about floated elements
@@ -82,12 +82,12 @@ type InlineContext struct {
 type InlineItemType int
 
 const (
-	InlineItemText     InlineItemType = iota // Text content
-	InlineItemOpenTag                        // Opening tag of inline element
-	InlineItemCloseTag                       // Closing tag of inline element
-	InlineItemAtomic                         // Atomic inline (inline-block, replaced element)
-	InlineItemFloat                          // Floated element
-	InlineItemControl                        // Control element (br, etc.)
+	InlineItemText InlineItemType = iota // Text content
+	InlineItemOpenTag                     // Opening tag of inline element
+	InlineItemCloseTag                    // Closing tag of inline element
+	InlineItemAtomic                      // Atomic inline (inline-block, replaced element)
+	InlineItemFloat                       // Floated element
+	InlineItemControl                     // Control element (br, etc.)
 )
 
 // InlineItem represents a piece of inline content in the flattened item list.
@@ -97,9 +97,9 @@ type InlineItem struct {
 	Node *html.Node // Source DOM node
 
 	// For text items
-	Text        string // Text content
-	StartOffset int    // Start offset in original text
-	EndOffset   int    // End offset in original text
+	Text       string // Text content
+	StartOffset int   // Start offset in original text
+	EndOffset   int   // End offset in original text
 
 	// For all items
 	Style *css.Style // Computed style
@@ -138,12 +138,12 @@ type InlineLayoutState struct {
 	Lines []*LineBreakResult
 
 	// Context from parent container
-	ContainerBox   *Box
-	ContainerStyle *css.Style
-	AvailableWidth float64
-	StartY         float64
-	Border         css.BoxEdge
-	Padding        css.BoxEdge
+	ContainerBox       *Box
+	ContainerStyle     *css.Style
+	AvailableWidth     float64
+	StartY             float64
+	Border             css.BoxEdge
+	Padding            css.BoxEdge
 
 	// Float tracking (for line breaking retry)
 	FloatList      []FloatInfo // Active floats that affect line breaking
@@ -167,32 +167,32 @@ type TableRow struct {
 
 // Phase 9: TableInfo tracks table layout information
 type TableInfo struct {
-	Rows           []*TableRow
-	NumCols        int
-	ColumnWidths   []float64
-	RowHeights     []float64
-	BorderSpacing  float64
+	Rows          []*TableRow
+	NumCols       int
+	ColumnWidths  []float64
+	RowHeights    []float64
+	BorderSpacing float64
 	BorderCollapse css.BorderCollapse
 }
 
 // Phase 10: FlexItem tracks a flex item
 type FlexItem struct {
-	Box        *Box
-	FlexGrow   float64
-	FlexShrink float64
-	FlexBasis  float64
-	MainSize   float64 // Size along main axis
-	CrossSize  float64 // Size along cross axis
-	MainPos    float64 // Position along main axis
-	CrossPos   float64 // Position along cross axis
-	Order      int
+	Box            *Box
+	FlexGrow       float64
+	FlexShrink     float64
+	FlexBasis      float64
+	MainSize       float64  // Size along main axis
+	CrossSize      float64  // Size along cross axis
+	MainPos        float64  // Position along main axis
+	CrossPos       float64  // Position along cross axis
+	Order          int
 }
 
 // Phase 10: FlexLine tracks a line of flex items (for wrapping)
 type FlexLine struct {
-	Items     []*FlexItem
-	MainSize  float64 // Total size of items along main axis
-	CrossSize float64 // Maximum cross size in this line
+	Items          []*FlexItem
+	MainSize       float64  // Total size of items along main axis
+	CrossSize      float64  // Maximum cross size in this line
 }
 
 // Phase 10: FlexContainer tracks flex container layout information
@@ -205,7 +205,7 @@ type FlexContainer struct {
 	AlignContent   css.AlignContent
 	MainAxisSize   float64
 	CrossAxisSize  float64
-	IsRow          bool // true if direction is row/row-reverse
+	IsRow          bool  // true if direction is row/row-reverse
 }
 
 // ============================================================================
@@ -267,12 +267,12 @@ type BoxFragment struct {
 // LineBox represents a line of inline content
 // This is an explicit representation of CSS line boxes for proper inline layout
 type LineBox struct {
-	Y         float64 // Y position of the line box
-	Height    float64 // Height of the line box
-	Boxes     []*Box  // Inline-level boxes on this line
-	BaselineY float64 // Y position of the alphabetic baseline (relative to line top)
-	LeftEdge  float64 // Left edge of available space (accounting for floats)
-	RightEdge float64 // Right edge of available space (accounting for floats)
+	Y         float64   // Y position of the line box
+	Height    float64   // Height of the line box
+	Boxes     []*Box    // Inline-level boxes on this line
+	BaselineY float64   // Y position of the alphabetic baseline (relative to line top)
+	LeftEdge  float64   // Left edge of available space (accounting for floats)
+	RightEdge float64   // Right edge of available space (accounting for floats)
 }
 
 // LayoutMode defines the interface for different layout algorithms
@@ -803,7 +803,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				inlineCtx.LineY,
 				childAvailableWidth,
 				computedStyles,
-				box, // Phase 4: Pass parent
+				box,  // Phase 4: Pass parent
 			)
 
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
@@ -851,7 +851,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 					// Check if child fits on current line (skip wrapping if white-space: nowrap)
 					allowWrap := style.GetWhiteSpace() != css.WhiteSpaceNowrap
-					if allowWrap && inlineCtx.LineX+childTotalWidth > box.X+border.Left+padding.Left+childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
+					if allowWrap && inlineCtx.LineX + childTotalWidth > box.X + border.Left + padding.Left + childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
 						// Wrap to next line
 						inlineCtx.LineY += inlineCtx.LineHeight
 						inlineCtx.LineX = le.initializeLineX(box, border, padding, inlineCtx.LineY)
@@ -917,9 +917,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 					// Update child position for block element (skip absolute/fixed - positioned later, skip floats - positioned by float logic)
 					childFloatTypePos := css.FloatNone
-					if childStyle != nil {
-						childFloatTypePos = childStyle.GetFloat()
-					}
+					if childStyle != nil { childFloatTypePos = childStyle.GetFloat() }
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatTypePos == css.FloatNone {
 						// For position:relative, preserve the offset that was already applied
 						relativeOffsetY := 0.0
@@ -932,14 +930,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 							}
 						}
 						// Calculate new position
-						var newX float64
-						if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
+					var newX float64
+					if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
 							childTotalW := childBox.Width + childBox.Padding.Left + childBox.Padding.Right + childBox.Border.Left + childBox.Border.Right
 							parentContentStart := box.X + border.Left + padding.Left
 							centerOff := (childAvailableWidth - childTotalW) / 2
-							if centerOff < 0 {
-								centerOff = 0
-							}
+							if centerOff < 0 { centerOff = 0 }
 							newX = parentContentStart + centerOff
 						} else {
 							newX = box.X + border.Left + padding.Left + childBox.Margin.Left
@@ -980,12 +976,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 								// Collapse all together
 								var maxPos, minNeg float64
 								for _, m := range allMargins {
-									if m > maxPos {
-										maxPos = m
-									}
-									if m < minNeg {
-										minNeg = m
-									}
+									if m > maxPos { maxPos = m }
+									if m < minNeg { minNeg = m }
 								}
 								collapsed := maxPos + minNeg
 								// Only real margins used space; pending margins were from zero-height elements
@@ -998,12 +990,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 								allMargins := append(pendingMargins, childBox.Margin.Top)
 								var maxPos, minNeg float64
 								for _, m := range allMargins {
-									if m > maxPos {
-										maxPos = m
-									}
-									if m < minNeg {
-										minNeg = m
-									}
+									if m > maxPos { maxPos = m }
+									if m < minNeg { minNeg = m }
 								}
 								collapsed := maxPos + minNeg
 								totalUsed := childBox.Margin.Top
@@ -2973,13 +2961,13 @@ func (le *LayoutEngine) createFlexItems(flexBox *Box, computedStyles map[*html.N
 		}
 
 		box := &Box{
-			Node:     child,
-			Style:    childStyle,
-			Width:    width,
-			Height:   height,
-			Margin:   margin,
-			Padding:  padding,
-			Border:   border,
+			Node:    child,
+			Style:   childStyle,
+			Width:   width,
+			Height:  height,
+			Margin:  margin,
+			Padding: padding,
+			Border:  border,
 			Children: make([]*Box, 0),
 		}
 
@@ -3556,7 +3544,7 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 			// Wrapped lines start below the image if image is taller than line height
 			firstLineBaseY := contentY
 			wrappedLinesStartY := contentY + maxImageHeight
-			if wrappedLinesStartY < contentY+lineHeight {
+			if wrappedLinesStartY < contentY + lineHeight {
 				wrappedLinesStartY = contentY + lineHeight
 			}
 
@@ -4170,81 +4158,6 @@ func parseCounterIncrement(value string) map[string]int {
 // ============================================================================
 
 // LayoutInlineContent is the main entry point for multi-pass inline layout.
-// LayoutInlineBatch processes a specific batch of inline children (not all children of node).
-// This is used during layoutNode to process consecutive inline/text children in one pass.
-func (le *LayoutEngine) LayoutInlineBatch(
-	children []*html.Node,
-	box *Box,
-	availableWidth float64,
-	startY float64,
-	border, padding css.BoxEdge,
-	computedStyles map[*html.Node]*css.Style,
-) []*Box {
-	const maxRetries = 3
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Create state for this batch
-		state := &InlineLayoutState{
-			Items:          []*InlineItem{},
-			Lines:          []*LineBreakResult{},
-			ContainerBox:   box,
-			ContainerStyle: box.Style,
-			AvailableWidth: availableWidth,
-			StartY:         startY,
-			Border:         border,
-			Padding:        padding,
-			FloatList:      le.floats,
-			FloatBaseIndex: len(le.floats),
-		}
-
-		// Phase 1: Collect items from the batch of children
-		for _, child := range children {
-			le.CollectInlineItems(child, state, computedStyles)
-		}
-
-		// If no items collected, return empty
-		if len(state.Items) == 0 {
-			return []*Box{}
-		}
-
-		// Phase 2: Break lines
-		success := le.BreakLines(state)
-		if !success {
-			return []*Box{}
-		}
-
-		// Phase 3: Construct boxes with retry detection
-		boxes, retryNeeded := le.constructLineBoxesWithRetry(state, box, computedStyles)
-
-		if !retryNeeded {
-			return boxes
-		}
-
-		// Retry: reset float list to pre-batch state and try again
-		le.floats = le.floats[:state.FloatBaseIndex]
-	}
-
-	// Max retries exceeded - return last attempt
-	state := &InlineLayoutState{
-		Items:          []*InlineItem{},
-		Lines:          []*LineBreakResult{},
-		ContainerBox:   box,
-		ContainerStyle: box.Style,
-		AvailableWidth: availableWidth,
-		StartY:         startY,
-		Border:         border,
-		Padding:        padding,
-		FloatList:      le.floats,
-		FloatBaseIndex: len(le.floats),
-	}
-	for _, child := range children {
-		le.CollectInlineItems(child, state, computedStyles)
-	}
-	le.BreakLines(state)
-	boxes := le.ConstructLineBoxes(state, box)
-	return boxes
-}
-
 // It orchestrates all three phases and returns the resulting boxes.
 //
 // This should be called instead of the old single-pass inline layout logic.
@@ -4258,16 +4171,16 @@ func (le *LayoutEngine) LayoutInlineContent(
 ) []*Box {
 	// Initialize state
 	state := &InlineLayoutState{
-		Items:          []*InlineItem{},
-		Lines:          []*LineBreakResult{},
-		ContainerBox:   box,
-		ContainerStyle: box.Style,
-		AvailableWidth: availableWidth,
-		StartY:         startY,
-		Border:         border,
-		Padding:        padding,
-		FloatList:      []FloatInfo{},
-		FloatBaseIndex: le.floatBase,
+		Items:              []*InlineItem{},
+		Lines:              []*LineBreakResult{},
+		ContainerBox:       box,
+		ContainerStyle:     box.Style,
+		AvailableWidth:     availableWidth,
+		StartY:             startY,
+		Border:             border,
+		Padding:            padding,
+		FloatList:          []FloatInfo{},
+		FloatBaseIndex:     le.floatBase,
 	}
 
 	// Phase 1: Collect inline items
@@ -4308,12 +4221,9 @@ func (le *LayoutEngine) LayoutInlineContent(
 // This converts the hierarchical structure into a flat array that's easier to process for line breaking.
 //
 // Example:
-//
-//	<p>Hello <em>world</em>!</p>
-//
+//   <p>Hello <em>world</em>!</p>
 // Becomes:
-//
-//	[Text("Hello "), OpenTag(<em>), Text("world"), CloseTag(</em>), Text("!")]
+//   [Text("Hello "), OpenTag(<em>), Text("world"), CloseTag(</em>), Text("!")]
 func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutState, computedStyles map[*html.Node]*css.Style) {
 	if node == nil {
 		return
