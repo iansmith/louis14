@@ -1313,41 +1313,52 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 	// CSS 2.1 §16.6.1: Strip spaces at the beginning/end of a line in block containers.
 	// When this text node is the first/last content child of a block-level parent,
 	// trim leading/trailing whitespace respectively.
-	if parent != nil && parent.Node != nil {
-		isFirstContent := true
-		isLastContent := true
-		for _, sibling := range parent.Node.Children {
-			if sibling == node {
-				break
-			}
-			if sibling.Type == html.TextNode && strings.TrimSpace(sibling.Text) != "" {
-				isFirstContent = false
-			} else if sibling.Type == html.ElementNode {
-				isFirstContent = false
-			}
-		}
-		foundSelf := false
-		for _, sibling := range parent.Node.Children {
-			if sibling == node {
-				foundSelf = true
-				continue
-			}
-			if foundSelf {
+	// IMPORTANT: This only applies to block-level containers, not inline elements.
+	// Inline elements preserve trailing whitespace because they flow horizontally.
+	if parent != nil && parent.Node != nil && parent.Style != nil {
+		parentDisplay := parent.Style.GetDisplay()
+		// Only apply trimming for block-level containers (block, table-cell, etc.)
+		// Do NOT trim for inline or inline-block parents - they flow horizontally
+		isBlockContainer := parentDisplay == css.DisplayBlock ||
+			parentDisplay == css.DisplayTableCell ||
+			parentDisplay == css.DisplayListItem
+
+		if isBlockContainer {
+			isFirstContent := true
+			isLastContent := true
+			for _, sibling := range parent.Node.Children {
+				if sibling == node {
+					break
+				}
 				if sibling.Type == html.TextNode && strings.TrimSpace(sibling.Text) != "" {
-					isLastContent = false
+					isFirstContent = false
 				} else if sibling.Type == html.ElementNode {
-					isLastContent = false
+					isFirstContent = false
 				}
 			}
-		}
-		if isFirstContent {
-			node.Text = strings.TrimLeft(node.Text, " \t\n\r")
-		}
-		if isLastContent {
-			node.Text = strings.TrimRight(node.Text, " \t\n\r")
-		}
-		if node.Text == "" {
-			return nil
+			foundSelf := false
+			for _, sibling := range parent.Node.Children {
+				if sibling == node {
+					foundSelf = true
+					continue
+				}
+				if foundSelf {
+					if sibling.Type == html.TextNode && strings.TrimSpace(sibling.Text) != "" {
+						isLastContent = false
+					} else if sibling.Type == html.ElementNode {
+						isLastContent = false
+					}
+				}
+			}
+			if isFirstContent {
+				node.Text = strings.TrimLeft(node.Text, " \t\n\r")
+			}
+			if isLastContent {
+				node.Text = strings.TrimRight(node.Text, " \t\n\r")
+			}
+			if node.Text == "" {
+				return nil
+			}
 		}
 	}
 
