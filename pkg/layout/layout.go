@@ -1690,6 +1690,22 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 		if isBlockContainer {
 			isFirstContent := true
 			isLastContent := true
+
+			// If parent box already has children (e.g., ::before pseudo-element),
+			// then this text is not the first content
+			if len(parent.Children) > 0 {
+				isFirstContent = false
+			}
+
+			// If parent element will have ::after pseudo-element, text is not last content
+			// Check by computing ::after style and seeing if it has content
+			if parent.Style != nil && parent.Node != nil {
+				afterStyle := css.ComputePseudoElementStyle(parent.Node, "after", le.stylesheets, le.viewport.width, le.viewport.height, parent.Style)
+				if _, hasAfterContent := afterStyle.GetContentValues(); hasAfterContent {
+					isLastContent = false
+				}
+			}
+
 			for _, sibling := range parent.Node.Children {
 				if sibling == node {
 					break
