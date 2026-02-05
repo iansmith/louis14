@@ -29,14 +29,19 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	engine := layout.NewLayoutEngine(float64(width), float64(height))
 
 	// Set up image fetcher if base path is provided
+	var fetcher images.ImageFetcher
 	if basePath != "" {
-		engine.SetImageFetcher(createFileImageFetcher(basePath))
+		fetcher = createFileImageFetcher(basePath)
+		engine.SetImageFetcher(fetcher)
 	}
 
 	boxes := engine.Layout(doc)
 
 	// Render
 	renderer := render.NewRenderer(width, height)
+	if fetcher != nil {
+		renderer.SetImageFetcher(fetcher)
+	}
 	renderer.Render(boxes)
 
 	// Ensure output directory exists
