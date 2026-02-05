@@ -4220,8 +4220,8 @@ func (le *LayoutEngine) LayoutInlineBatch(
 			return boxes
 		}
 
-		// Retry: reset float list to pre-batch state and try again
-		le.floats = le.floats[:state.FloatBaseIndex]
+		// Retry: floats added during construction are kept so line breaking can account for them
+		// Don't reset le.floats - we want the next iteration to see the floats we just added
 	}
 
 	// Max retries exceeded - return last attempt
@@ -4751,6 +4751,17 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					// Add float to engine's float list
 					floatType := item.Style.GetFloat()
 					le.addFloat(floatBox, floatType, line.Y)
+
+					// Update currentX to account for the float we just added
+					// (subsequent inline content must clear the float)
+					if floatType == css.FloatLeft {
+						leftOffset, _ := le.getFloatOffsets(line.Y)
+						baseX := state.ContainerBox.X + state.Border.Left + state.Padding.Left
+						newX := baseX + leftOffset
+						if newX > currentX {
+							currentX = newX
+						}
+					}
 
 					// Check if this float changes available width for this line
 					leftOffsetAfter, _ := le.getFloatOffsets(line.Y)
