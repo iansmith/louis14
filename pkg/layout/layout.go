@@ -1275,6 +1275,47 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 		return nil
 	}
 
+	// CSS 2.1 §16.6.1: Strip spaces at the beginning/end of a line in block containers.
+	// When this text node is the first/last content child of a block-level parent,
+	// trim leading/trailing whitespace respectively.
+	if parent != nil && parent.Node != nil {
+		isFirstContent := true
+		isLastContent := true
+		for _, sibling := range parent.Node.Children {
+			if sibling == node {
+				break
+			}
+			if sibling.Type == html.TextNode && strings.TrimSpace(sibling.Text) != "" {
+				isFirstContent = false
+			} else if sibling.Type == html.ElementNode {
+				isFirstContent = false
+			}
+		}
+		foundSelf := false
+		for _, sibling := range parent.Node.Children {
+			if sibling == node {
+				foundSelf = true
+				continue
+			}
+			if foundSelf {
+				if sibling.Type == html.TextNode && strings.TrimSpace(sibling.Text) != "" {
+					isLastContent = false
+				} else if sibling.Type == html.ElementNode {
+					isLastContent = false
+				}
+			}
+		}
+		if isFirstContent {
+			node.Text = strings.TrimLeft(node.Text, " \t\n\r")
+		}
+		if isLastContent {
+			node.Text = strings.TrimRight(node.Text, " \t\n\r")
+		}
+		if node.Text == "" {
+			return nil
+		}
+	}
+
 	// Get font properties from parent style
 	fontSize := parentStyle.GetFontSize()
 	fontWeight := parentStyle.GetFontWeight()
@@ -1685,7 +1726,7 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	tableInfo.NumCols = numCols
 
 	// Calculate column widths
-	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo)
+	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, tableBox.Width)
 
 	// Set table width from column widths if not explicitly set
 	if tableBox.Width == 0 {
@@ -1839,7 +1880,8 @@ func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, comp
 }
 
 // Phase 9: calculateColumnWidths determines column widths
-func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, availableWidth float64, tableInfo *TableInfo) []float64 {
+// tableWidth is the explicit table width (0 for shrink-to-fit tables)
+func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, availableWidth float64, tableInfo *TableInfo, tableWidth float64) []float64 {
 	numCols := tableInfo.NumCols
 	if numCols == 0 {
 		return []float64{}
@@ -1854,6 +1896,7 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 	// First pass: determine column widths from cell explicit widths
 	columnWidths := make([]float64, numCols)
 	hasExplicit := make([]bool, numCols)
+	contentWidths := make([]float64, numCols) // content-based widths
 	for _, row := range cellGrid {
 		for colIdx, cell := range row {
 			if cell == nil || cell.Box == nil || cell.Box.Style == nil || cell.ColIdx != colIdx {
@@ -1865,25 +1908,61 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 					hasExplicit[colIdx] = true
 				}
 			}
+			// Measure content width for auto-sizing
+			if !hasExplicit[colIdx] {
+				cw := le.measureCellContentWidth(cell)
+				if cw > contentWidths[colIdx] {
+					contentWidths[colIdx] = cw
+				}
+			}
 		}
 	}
 
 	// Distribute remaining width to columns without explicit widths
+	// Use content-based sizing: give each column its content width,
+	// then distribute any leftover space proportionally.
 	usedWidth := totalSpacing
 	unsetCols := 0
+	totalContentWidth := 0.0
 	for i := 0; i < numCols; i++ {
 		usedWidth += columnWidths[i]
 		if !hasExplicit[i] {
 			unsetCols++
+			totalContentWidth += contentWidths[i]
 		}
 	}
 	if unsetCols > 0 {
 		remaining := availableWidth - usedWidth
 		if remaining > 0 {
-			perCol := remaining / float64(unsetCols)
-			for i := 0; i < numCols; i++ {
-				if !hasExplicit[i] {
-					columnWidths[i] = perCol
+			if tableWidth == 0 && totalContentWidth > 0 {
+				// Shrink-to-fit table: use content widths directly, no extra space distribution
+				for i := 0; i < numCols; i++ {
+					if !hasExplicit[i] {
+						columnWidths[i] = contentWidths[i]
+					}
+				}
+			} else if totalContentWidth > 0 && totalContentWidth <= remaining {
+				// Content fits: use content widths, distribute extra space proportionally
+				extraSpace := remaining - totalContentWidth
+				for i := 0; i < numCols; i++ {
+					if !hasExplicit[i] {
+						columnWidths[i] = contentWidths[i] + extraSpace*contentWidths[i]/totalContentWidth
+					}
+				}
+			} else if totalContentWidth > remaining {
+				// Content doesn't fit: distribute proportionally based on content
+				for i := 0; i < numCols; i++ {
+					if !hasExplicit[i] {
+						columnWidths[i] = remaining * contentWidths[i] / totalContentWidth
+					}
+				}
+			} else {
+				// No content measured: distribute evenly
+				perCol := remaining / float64(unsetCols)
+				for i := 0; i < numCols; i++ {
+					if !hasExplicit[i] {
+						columnWidths[i] = perCol
+					}
 				}
 			}
 		} else {
@@ -1897,6 +1976,32 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 	}
 
 	return columnWidths
+}
+
+// measureCellContentWidth measures the preferred content width of a table cell
+func (le *LayoutEngine) measureCellContentWidth(cell *TableCell) float64 {
+	if cell == nil || cell.Box == nil || cell.Box.Node == nil {
+		return 0
+	}
+	totalWidth := 0.0
+	fontSize := 16.0
+	isBold := false
+	if cell.Box.Style != nil {
+		fontSize = cell.Box.Style.GetFontSize()
+		isBold = cell.Box.Style.GetFontWeight() == css.FontWeightBold
+	}
+	for _, child := range cell.Box.Node.Children {
+		if child.Type == html.TextNode {
+			w, _ := text.MeasureTextWithWeight(child.Text, fontSize, isBold)
+			totalWidth += w
+		}
+	}
+	// Add cell padding
+	if cell.Box.Style != nil {
+		padding := cell.Box.Style.GetPadding()
+		totalWidth += padding.Left + padding.Right
+	}
+	return totalWidth
 }
 
 // Phase 9: calculateRowHeights determines row heights
@@ -1920,6 +2025,20 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 			cellHeight := cell.Box.Height + cell.Box.Padding.Top + cell.Box.Padding.Bottom
 			if cellHeight > maxHeight {
 				maxHeight = cellHeight
+			}
+			// Estimate height from text content if cell hasn't been laid out yet
+			if cellHeight == 0 && cell.Box.Node != nil {
+				lineHeight := 19.2 // default line height for 16px font
+				if cell.Box.Style != nil {
+					lineHeight = cell.Box.Style.GetLineHeight()
+				}
+				for _, child := range cell.Box.Node.Children {
+					if child.Type == html.TextNode && child.Text != "" {
+						if lineHeight > maxHeight {
+							maxHeight = lineHeight
+						}
+					}
+				}
 			}
 		}
 		rowHeights[i] = maxHeight

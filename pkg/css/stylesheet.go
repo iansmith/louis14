@@ -970,12 +970,24 @@ func parseDeclarations(declStr string) map[string]string {
 			continue
 		}
 
+		// Validate color property values before they enter the cascade
+		if isColorProperty(property) {
+			if !isValidColorValue(value) {
+				continue
+			}
+		}
+
 		// Expand shorthand properties (reuse from Phase 2)
 		style := NewStyle()
 		expandShorthand(style, property, value)
 
-		// Copy all expanded properties to declarations
+		// Copy all expanded properties to declarations, validating color values
 		for k, v := range style.Properties {
+			if isColorProperty(k) {
+				if !isValidColorValue(v) {
+					continue
+				}
+			}
 			declarations[k] = v
 		}
 	}
@@ -996,6 +1008,26 @@ func isLengthProperty(prop string) bool {
 		return true
 	}
 	return false
+}
+
+// isColorProperty returns true for CSS properties that expect color values
+func isColorProperty(prop string) bool {
+	switch prop {
+	case "color", "background-color", "border-color",
+		"border-top-color", "border-right-color", "border-bottom-color", "border-left-color":
+		return true
+	}
+	return false
+}
+
+// isValidColorValue checks if a value is a valid CSS color (parsed color, currentcolor, or inherit)
+func isValidColorValue(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "currentcolor" || lower == "inherit" {
+		return true
+	}
+	_, ok := ParseColor(value)
+	return ok
 }
 
 // isInvalidBareNumber returns true if value is a non-zero number with no unit

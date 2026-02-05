@@ -44,7 +44,7 @@ func (p *Parser) Parse() (*Document, error) {
 			// extract raw content. In fragment mode, treat them as DOM nodes.
 			if !p.fragmentMode {
 				if token.TagName == "style" {
-					content := p.tokenizer.ReadRawUntil("style")
+					content := stripCDATA(p.tokenizer.ReadRawUntil("style"))
 					if strings.TrimSpace(content) != "" {
 						p.doc.Stylesheets = append(p.doc.Stylesheets, content)
 					}
@@ -234,4 +234,17 @@ func ParseFragment(htmlContent string) ([]*Node, error) {
 	}
 	doc.Root.Children = nil
 	return children, nil
+}
+
+// stripCDATA removes XHTML CDATA markers from style content.
+// XHTML documents wrap CSS in <![CDATA[ ... ]]> sections.
+func stripCDATA(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "<![CDATA[") {
+		s = s[len("<![CDATA["):]
+	}
+	if strings.HasSuffix(s, "]]>") {
+		s = s[:len(s)-len("]]>")]
+	}
+	return s
 }

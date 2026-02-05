@@ -79,6 +79,38 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 		}
 		return num * 3.7795275591, true // 1mm ≈ 3.78px at 96dpi
 	}
+	if strings.HasSuffix(val, "in") {
+		numStr := strings.TrimSuffix(val, "in")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * 96.0, true // 1in = 96px at 96dpi
+	}
+	if strings.HasSuffix(val, "cm") {
+		numStr := strings.TrimSuffix(val, "cm")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * 37.7952755906, true // 1cm = 96/2.54 px
+	}
+	if strings.HasSuffix(val, "pc") {
+		numStr := strings.TrimSuffix(val, "pc")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * 16.0, true // 1pc = 16px
+	}
+	if strings.HasSuffix(val, "pt") {
+		numStr := strings.TrimSuffix(val, "pt")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * (96.0 / 72.0), true // 1pt = 96/72 px
+	}
 	if strings.HasSuffix(val, "px") {
 		val = strings.TrimSuffix(val, "px")
 	} else {
@@ -651,7 +683,14 @@ type Color struct {
 }
 
 func ParseColor(colorStr string) (Color, bool) {
-	colorStr = strings.ToLower(strings.TrimSpace(colorStr))
+	colorStr = strings.TrimSpace(colorStr)
+
+	// Reject quoted values — CSS color values are never strings
+	if strings.HasPrefix(colorStr, "'") || strings.HasPrefix(colorStr, "\"") {
+		return Color{}, false
+	}
+
+	colorStr = strings.ToLower(colorStr)
 
 	// Handle transparent
 	if colorStr == "transparent" {
@@ -682,14 +721,20 @@ func ParseColor(colorStr string) (Color, bool) {
 
 		if len(hex) == 3 {
 			// #RGB format - expand to #RRGGBB
-			fmt.Sscanf(hex, "%1x%1x%1x", &r, &g, &b)
+			n, _ := fmt.Sscanf(hex, "%1x%1x%1x", &r, &g, &b)
+			if n != 3 {
+				return Color{}, false
+			}
 			r = r*16 + r
 			g = g*16 + g
 			b = b*16 + b
 			return Color{r, g, b, 1.0}, true
 		} else if len(hex) == 6 {
 			// #RRGGBB format
-			fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+			n, _ := fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+			if n != 3 {
+				return Color{}, false
+			}
 			return Color{r, g, b, 1.0}, true
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"sort"
+	"strings"
 
 	"github.com/fogleman/gg"
 	"louis14/pkg/css"
@@ -402,15 +403,29 @@ func (r *Renderer) drawBox(box *layout.Box) {
 
 // getBorderSideColor returns the color for a specific border side
 func (r *Renderer) getBorderSideColor(box *layout.Box, side string) (css.Color, bool) {
+	// resolveCurrentColor resolves "currentcolor" to the element's color property
+	resolveCurrentColor := func(colorStr string) (css.Color, bool) {
+		if strings.EqualFold(colorStr, "currentcolor") {
+			if c, ok := box.Style.Get("color"); ok {
+				if color, ok := css.ParseColor(c); ok {
+					return color, true
+				}
+			}
+			// Default currentcolor is black
+			return css.Color{R: 0, G: 0, B: 0, A: 1.0}, true
+		}
+		return css.ParseColor(colorStr)
+	}
+
 	// Check per-side color first
 	if colorStr, ok := box.Style.Get("border-" + side + "-color"); ok {
-		if color, ok := css.ParseColor(colorStr); ok {
+		if color, ok := resolveCurrentColor(colorStr); ok {
 			return color, true
 		}
 	}
 	// Fall back to global border-color
 	if colorStr, ok := box.Style.Get("border-color"); ok {
-		if color, ok := css.ParseColor(colorStr); ok {
+		if color, ok := resolveCurrentColor(colorStr); ok {
 			return color, true
 		}
 	}
