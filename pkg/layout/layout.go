@@ -2848,7 +2848,10 @@ func (le *LayoutEngine) generateListMarker(node *html.Node, style *css.Style, x,
 	textWidth, textHeight := text.MeasureTextWithWeight(markerText, fontSize, bold)
 
 	// Position marker to the left of the content (outside the content box)
-	markerX := x - 20 // 20px to the left of content edge
+	// CSS 2.1 §12.5.1: marker box is placed outside the principal box
+	// Use 0.5em spacing between marker and content (typical browser behavior)
+	markerSpacing := fontSize * 0.5
+	markerX := x - textWidth - markerSpacing
 	markerY := y
 
 	markerBox := &Box{

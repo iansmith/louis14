@@ -10,6 +10,7 @@ import (
 	_ "image/png"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -151,17 +152,25 @@ func DecodeImageBytes(data []byte) (image.Image, error) {
 	return img, nil
 }
 
-// LoadImageWithFetcher loads an image using the provided fetcher for network URIs.
-// Falls back to LoadImage for local paths and data URIs.
+// LoadImageWithFetcher loads an image using the provided fetcher.
+// The fetcher is used for both network URIs and relative paths.
+// Falls back to LoadImage for data URIs and when no fetcher is provided.
 func LoadImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error) {
-	// Data URIs and local files are handled by LoadImage
+	// Data URIs are handled by LoadImage
 	if IsDataURI(path) {
 		return LoadImage(path)
 	}
 
-	// If no fetcher or not a network URL, use regular loading
-	if fetcher == nil || !isNetworkURI(path) {
+	// If no fetcher, use regular loading (only works for absolute paths)
+	if fetcher == nil {
 		return LoadImage(path)
+	}
+
+	// For absolute paths that exist on disk, try loading directly first
+	if filepath.IsAbs(path) {
+		if img, err := LoadImage(path); err == nil {
+			return img, nil
+		}
 	}
 
 	// Check cache first

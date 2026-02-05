@@ -4,14 +4,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
 )
 
 // RenderHTMLToFile renders HTML content to a PNG file
 func RenderHTMLToFile(htmlContent string, outputPath string, width, height int) error {
+	return RenderHTMLToFileWithBase(htmlContent, outputPath, width, height, "")
+}
+
+// RenderHTMLToFileWithBase renders HTML content to a PNG file with a base path for resolving relative image URLs
+func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, height int, basePath string) error {
 	// Parse HTML
 	doc, err := html.Parse(htmlContent)
 	if err != nil {
@@ -20,6 +27,12 @@ func RenderHTMLToFile(htmlContent string, outputPath string, width, height int) 
 
 	// Layout
 	engine := layout.NewLayoutEngine(float64(width), float64(height))
+
+	// Set up image fetcher if base path is provided
+	if basePath != "" {
+		engine.SetImageFetcher(createFileImageFetcher(basePath))
+	}
+
 	boxes := engine.Layout(doc)
 
 	// Render
@@ -37,6 +50,21 @@ func RenderHTMLToFile(htmlContent string, outputPath string, width, height int) 
 	}
 
 	return nil
+}
+
+// createFileImageFetcher creates an ImageFetcher that loads images from the filesystem
+// relative to the given base path
+func createFileImageFetcher(basePath string) images.ImageFetcher {
+	return func(uri string) ([]byte, error) {
+		// Skip data URIs and absolute URLs
+		if strings.HasPrefix(uri, "data:") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+			return nil, fmt.Errorf("unsupported URI scheme: %s", uri)
+		}
+
+		// Resolve relative path against base path
+		imagePath := filepath.Join(basePath, uri)
+		return os.ReadFile(imagePath)
+	}
 }
 
 // RenderHTMLFile renders an HTML file to a PNG file

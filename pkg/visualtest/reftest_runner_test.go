@@ -108,12 +108,16 @@ func runReftest(t *testing.T, testPath string) bool {
 
 	width, height := 400, 400
 
-	if err := RenderHTMLToFile(string(content), testPNG, width, height); err != nil {
+	// Use the test file's directory as the base path for resolving relative image URLs
+	testBasePath := filepath.Dir(testPath)
+	refBasePath := filepath.Dir(refPath)
+
+	if err := RenderHTMLToFileWithBase(string(content), testPNG, width, height, testBasePath); err != nil {
 		t.Fatalf("failed to render test: %v", err)
 		return false
 	}
 
-	if err := RenderHTMLToFile(string(refContent), refPNG, width, height); err != nil {
+	if err := RenderHTMLToFileWithBase(string(refContent), refPNG, width, height, refBasePath); err != nil {
 		t.Fatalf("failed to render reference: %v", err)
 		return false
 	}
