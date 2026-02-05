@@ -4157,6 +4157,52 @@ func parseCounterIncrement(value string) map[string]int {
 // Multi-pass Inline Layout (Blink-style three-phase approach)
 // ============================================================================
 
+// LayoutInlineContent is the main entry point for multi-pass inline layout.
+// It orchestrates all three phases and returns the resulting boxes.
+//
+// This should be called instead of the old single-pass inline layout logic.
+func (le *LayoutEngine) LayoutInlineContent(
+	node *html.Node,
+	box *Box,
+	availableWidth float64,
+	startY float64,
+	border, padding css.BoxEdge,
+	computedStyles map[*html.Node]*css.Style,
+) []*Box {
+	// Initialize state
+	state := &InlineLayoutState{
+		Items:              []*InlineItem{},
+		Lines:              []*LineBreakResult{},
+		ContainerBox:       box,
+		ContainerStyle:     box.Style,
+		AvailableWidth:     availableWidth,
+		StartY:             startY,
+		Border:             border,
+		Padding:            padding,
+		FloatList:          []FloatInfo{},
+		FloatBaseIndex:     le.floatBase,
+	}
+
+	// Phase 1: Collect inline items
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		le.collectInlineItems(child, state, computedStyles)
+	}
+
+	// Phase 2: Break into lines
+	// TODO: Add retry logic when floats change available width
+	success := le.breakLines(state)
+	if !success {
+		// Line breaking failed - fallback to empty result
+		// TODO: Implement proper retry mechanism
+		return []*Box{}
+	}
+
+	// Phase 3: Construct line boxes
+	boxes := le.constructLineBoxes(state, box)
+
+	return boxes
+}
+
 // Phase 1: CollectInlineItems flattens the DOM tree into a sequential list of inline items.
 // This converts the hierarchical structure into a flat array that's easier to process for line breaking.
 //
@@ -4287,15 +4333,210 @@ func (le *LayoutEngine) collectInlineItems(node *html.Node, state *InlineLayoutS
 //
 // Returns true if line breaking succeeded, false if retry is needed.
 func (le *LayoutEngine) breakLines(state *InlineLayoutState) bool {
-	// TODO: Implement line breaking logic
-	// For now, return false to indicate not implemented
-	return false
+	if len(state.Items) == 0 {
+		return true // Nothing to break
+	}
+
+	state.Lines = nil // Clear any previous line breaking results
+	currentY := state.StartY
+	itemIndex := 0
+
+	for itemIndex < len(state.Items) {
+		// Start a new line
+		line := &LineBreakResult{
+			Y:          currentY,
+			Items:      []*InlineItem{},
+			StartIndex: itemIndex,
+			TextBreaks: make(map[*InlineItem]struct {
+				StartOffset int
+				EndOffset   int
+			}),
+		}
+
+		// Calculate available width for this line (accounting for floats)
+		leftOffset, rightOffset := le.getFloatOffsets(currentY)
+		line.AvailableWidth = state.AvailableWidth - leftOffset - rightOffset
+
+		// Accumulate items on this line
+		lineX := 0.0
+		lineHeight := 0.0
+
+		for itemIndex < len(state.Items) {
+			item := state.Items[itemIndex]
+
+			// Calculate item width
+			itemWidth := 0.0
+			itemHeight := 0.0
+
+			switch item.Type {
+			case InlineItemText:
+				// For text, we might need to break it
+				itemWidth = item.Width
+				itemHeight = item.Height
+
+				// Check if text fits on current line
+				if lineX+itemWidth > line.AvailableWidth && len(line.Items) > 0 {
+					// Text doesn't fit - need to break
+					// For now, simple algorithm: break entire text to next line
+					// TODO: Implement proper word breaking within text
+					goto finishLine
+				}
+
+			case InlineItemOpenTag, InlineItemCloseTag:
+				// Tags don't take space themselves
+				itemWidth = 0
+				itemHeight = 0
+
+			case InlineItemAtomic, InlineItemFloat:
+				// Atomic items have their own width/height
+				itemWidth = item.Width
+				itemHeight = item.Height
+
+				if lineX+itemWidth > line.AvailableWidth && len(line.Items) > 0 {
+					// Atomic item doesn't fit
+					goto finishLine
+				}
+
+			case InlineItemControl:
+				// Control items (like <br>) force a line break
+				itemIndex++
+				goto finishLine
+			}
+
+			// Add item to line
+			line.Items = append(line.Items, item)
+			lineX += itemWidth
+			if itemHeight > lineHeight {
+				lineHeight = itemHeight
+			}
+
+			itemIndex++
+		}
+
+	finishLine:
+		// Finalize this line
+		line.EndIndex = itemIndex
+		line.LineHeight = lineHeight
+		if line.LineHeight == 0 {
+			// Use container's line-height as minimum
+			line.LineHeight = state.ContainerStyle.GetLineHeight()
+		}
+
+		state.Lines = append(state.Lines, line)
+
+		// Move to next line
+		currentY += line.LineHeight
+
+		// If we didn't make progress, force at least one item
+		if itemIndex == line.StartIndex && itemIndex < len(state.Items) {
+			// Force include at least one item to avoid infinite loop
+			item := state.Items[itemIndex]
+			line.Items = append(line.Items, item)
+			line.EndIndex = itemIndex + 1
+			itemIndex++
+		}
+	}
+
+	return true // Line breaking succeeded
 }
 
 // Phase 3: ConstructLineBoxes creates actual positioned Box fragments from line breaking results.
 // This is the final phase that produces the output fragment tree.
 func (le *LayoutEngine) constructLineBoxes(state *InlineLayoutState, parent *Box) []*Box {
-	// TODO: Implement line box construction
-	// For now, return empty slice
-	return []*Box{}
+	boxes := []*Box{}
+
+	for _, line := range state.Lines {
+		// Calculate starting X for this line (accounting for floats)
+		leftOffset, _ := le.getFloatOffsets(line.Y)
+		currentX := state.ContainerBox.X + state.Border.Left + state.Padding.Left + leftOffset
+
+		// Track open inline elements (for nested inline styling)
+		type inlineContext struct {
+			node  *html.Node
+			style *css.Style
+			box   *Box
+		}
+		openInlines := []inlineContext{}
+
+		// Process each item on this line
+		for _, item := range line.Items {
+			switch item.Type {
+			case InlineItemText:
+				// Create a text box
+				textBox := &Box{
+					Node:     item.Node,
+					Style:    item.Style,
+					X:        currentX,
+					Y:        line.Y,
+					Width:    item.Width,
+					Height:   item.Height,
+					Margin:   css.BoxEdge{},
+					Padding:  css.BoxEdge{},
+					Border:   css.BoxEdge{},
+					Position: css.PositionStatic,
+					Parent:   parent,
+				}
+				boxes = append(boxes, textBox)
+				currentX += item.Width
+
+			case InlineItemOpenTag:
+				// Start tracking this inline element
+				// Create a box for it (will be sized after seeing all children)
+				inlineBox := &Box{
+					Node:     item.Node,
+					Style:    item.Style,
+					X:        currentX,
+					Y:        line.Y,
+					Width:    0, // Will be computed from children
+					Height:   line.LineHeight,
+					Margin:   css.BoxEdge{},
+					Padding:  item.Style.GetPadding(),
+					Border:   item.Style.GetBorderWidth(),
+					Position: css.PositionStatic,
+					Parent:   parent,
+				}
+				openInlines = append(openInlines, inlineContext{
+					node:  item.Node,
+					style: item.Style,
+					box:   inlineBox,
+				})
+
+			case InlineItemCloseTag:
+				// Close the most recent inline element
+				if len(openInlines) > 0 {
+					ctx := openInlines[len(openInlines)-1]
+					openInlines = openInlines[:len(openInlines)-1]
+
+					// Compute width from current X - start X
+					ctx.box.Width = currentX - ctx.box.X
+					boxes = append(boxes, ctx.box)
+				}
+
+			case InlineItemAtomic:
+				// Atomic inline element - it has its own dimensions
+				atomicBox := &Box{
+					Node:     item.Node,
+					Style:    item.Style,
+					X:        currentX,
+					Y:        line.Y,
+					Width:    item.Width,
+					Height:   item.Height,
+					Margin:   css.BoxEdge{},
+					Padding:  css.BoxEdge{},
+					Border:   css.BoxEdge{},
+					Position: css.PositionStatic,
+					Parent:   parent,
+				}
+				boxes = append(boxes, atomicBox)
+				currentX += item.Width
+
+			case InlineItemFloat:
+				// Floats are positioned separately by float logic
+				// We don't position them here
+				// TODO: Integrate with existing float positioning
+			}
+		}
+	}
+
+	return boxes
 }
