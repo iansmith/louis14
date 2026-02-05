@@ -4184,13 +4184,13 @@ func (le *LayoutEngine) LayoutInlineContent(
 	}
 
 	// Phase 1: Collect inline items
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		le.collectInlineItems(child, state, computedStyles)
+	for _, child := range node.Children {
+		le.CollectInlineItems(child, state, computedStyles)
 	}
 
 	// Phase 2: Break into lines
 	// TODO: Add retry logic when floats change available width
-	success := le.breakLines(state)
+	success := le.BreakLines(state)
 	if !success {
 		// Line breaking failed - fallback to empty result
 		// TODO: Implement proper retry mechanism
@@ -4198,7 +4198,7 @@ func (le *LayoutEngine) LayoutInlineContent(
 	}
 
 	// Phase 3: Construct line boxes
-	boxes := le.constructLineBoxes(state, box)
+	boxes := le.ConstructLineBoxes(state, box)
 
 	return boxes
 }
@@ -4210,7 +4210,7 @@ func (le *LayoutEngine) LayoutInlineContent(
 //   <p>Hello <em>world</em>!</p>
 // Becomes:
 //   [Text("Hello "), OpenTag(<em>), Text("world"), CloseTag(</em>), Text("!")]
-func (le *LayoutEngine) collectInlineItems(node *html.Node, state *InlineLayoutState, computedStyles map[*html.Node]*css.Style) {
+func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutState, computedStyles map[*html.Node]*css.Style) {
 	if node == nil {
 		return
 	}
@@ -4231,7 +4231,7 @@ func (le *LayoutEngine) collectInlineItems(node *html.Node, state *InlineLayoutS
 
 		// Measure the text
 		fontSize := parentStyle.GetFontSize()
-		bold := parentStyle.GetFontWeight() >= 700
+		bold := parentStyle.GetFontWeight() == css.FontWeightBold
 		width, height := text.MeasureTextWithWeight(node.Text, fontSize, bold)
 
 		item := &InlineItem{
@@ -4293,8 +4293,8 @@ func (le *LayoutEngine) collectInlineItems(node *html.Node, state *InlineLayoutS
 			state.Items = append(state.Items, openItem)
 
 			// Process children recursively
-			for child := node.FirstChild; child != nil; child = child.NextSibling {
-				le.collectInlineItems(child, state, computedStyles)
+			for _, child := range node.Children {
+				le.CollectInlineItems(child, state, computedStyles)
 			}
 
 			// Add close tag
@@ -4332,7 +4332,7 @@ func (le *LayoutEngine) collectInlineItems(node *html.Node, state *InlineLayoutS
 // This is where retry happens - if floats change available width, we re-break affected lines.
 //
 // Returns true if line breaking succeeded, false if retry is needed.
-func (le *LayoutEngine) breakLines(state *InlineLayoutState) bool {
+func (le *LayoutEngine) BreakLines(state *InlineLayoutState) bool {
 	if len(state.Items) == 0 {
 		return true // Nothing to break
 	}
@@ -4442,7 +4442,7 @@ func (le *LayoutEngine) breakLines(state *InlineLayoutState) bool {
 
 // Phase 3: ConstructLineBoxes creates actual positioned Box fragments from line breaking results.
 // This is the final phase that produces the output fragment tree.
-func (le *LayoutEngine) constructLineBoxes(state *InlineLayoutState, parent *Box) []*Box {
+func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box) []*Box {
 	boxes := []*Box{}
 
 	for _, line := range state.Lines {
