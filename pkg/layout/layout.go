@@ -629,7 +629,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if beforeFloat != css.FloatNone {
 			// Position floated ::before pseudo-element
 			floatWidth := le.getTotalWidth(beforeBox)
-			floatY := le.getFloatDropY(beforeFloat, floatWidth, inlineCtx.LineY, childAvailableWidth)
+			// Pseudo-element floats position inline at current LineY, allowing overflow
+			// rather than dropping to a new line like block-level floats
+			floatY := inlineCtx.LineY
 			leftOffset, rightOffset := le.getFloatOffsets(floatY)
 			// Calculate new position
 			var newX float64
@@ -1038,7 +1040,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if afterFloat != css.FloatNone {
 			// Position floated ::after pseudo-element
 			floatWidth := le.getTotalWidth(afterBox)
-			floatY := le.getFloatDropY(afterFloat, floatWidth, inlineCtx.LineY, childAvailableWidth)
+			// Pseudo-element floats position inline at current LineY, allowing overflow
+			// rather than dropping to a new line like block-level floats
+			floatY := inlineCtx.LineY
 			leftOffset, rightOffset := le.getFloatOffsets(floatY)
 
 			// Calculate new position
