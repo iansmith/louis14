@@ -1898,6 +1898,33 @@ func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, comp
 		}
 
 		colIdx := 0
+
+		// Check for ::before pseudo-element with display: table-cell
+		beforeStyle := css.ComputePseudoElementStyle(node, "before", le.stylesheets, le.viewport.width, le.viewport.height, style)
+		if beforeStyle != nil && beforeStyle.GetDisplay() == css.DisplayTableCell {
+			content, _ := beforeStyle.Get("content")
+			if content != "" && content != "none" {
+				// Strip quotes from content
+				if len(content) >= 2 && ((content[0] == '"' && content[len(content)-1] == '"') ||
+					(content[0] == '\'' && content[len(content)-1] == '\'')) {
+					content = content[1 : len(content)-1]
+				}
+				// Create pseudo-element cell
+				pseudoCell := &TableCell{
+					Box:     &Box{Style: beforeStyle, PseudoContent: content},
+					RowSpan: 1,
+					ColSpan: 1,
+					RowIdx:  *rowIdx,
+					ColIdx:  colIdx,
+				}
+				for len((*cellGrid)[*rowIdx]) <= colIdx {
+					(*cellGrid)[*rowIdx] = append((*cellGrid)[*rowIdx], nil)
+				}
+				(*cellGrid)[*rowIdx][colIdx] = pseudoCell
+				colIdx++
+			}
+		}
+
 		for _, cellNode := range node.Children {
 			if cellNode.Type != html.ElementNode {
 				continue
@@ -1945,6 +1972,32 @@ func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, comp
 			}
 
 			colIdx += colspan
+		}
+
+		// Check for ::after pseudo-element with display: table-cell
+		afterStyle := css.ComputePseudoElementStyle(node, "after", le.stylesheets, le.viewport.width, le.viewport.height, style)
+		if afterStyle != nil && afterStyle.GetDisplay() == css.DisplayTableCell {
+			content, _ := afterStyle.Get("content")
+			if content != "" && content != "none" {
+				// Strip quotes from content
+				if len(content) >= 2 && ((content[0] == '"' && content[len(content)-1] == '"') ||
+					(content[0] == '\'' && content[len(content)-1] == '\'')) {
+					content = content[1 : len(content)-1]
+				}
+				// Create pseudo-element cell
+				pseudoCell := &TableCell{
+					Box:     &Box{Style: afterStyle, PseudoContent: content},
+					RowSpan: 1,
+					ColSpan: 1,
+					RowIdx:  *rowIdx,
+					ColIdx:  colIdx,
+				}
+				for len((*cellGrid)[*rowIdx]) <= colIdx {
+					(*cellGrid)[*rowIdx] = append((*cellGrid)[*rowIdx], nil)
+				}
+				(*cellGrid)[*rowIdx][colIdx] = pseudoCell
+				colIdx++
+			}
 		}
 
 		*rowIdx++
@@ -2247,13 +2300,32 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 			childX := currentX + cell.Box.Border.Left + cell.Box.Padding.Left
 			childAvailableWidth := cellWidth - cell.Box.Padding.Left - cell.Box.Padding.Right
 
-			for _, childNode := range cell.Box.Node.Children {
-				if childNode.Type == html.TextNode {
-					// Handle text in cell
-					textBox := le.layoutTextNode(childNode, childX, childY, childAvailableWidth, cell.Box.Style, cell.Box)
-					if textBox != nil {
-						cell.Box.Children = append(cell.Box.Children, textBox)
-						childY += le.getTotalHeight(textBox)
+			// Handle pseudo-element cells (have content but no DOM node)
+			if cell.Box.Node == nil && cell.Box.PseudoContent != "" {
+				// Measure and create text box for pseudo-content
+				fontSize := cell.Box.Style.GetFontSize()
+				fontWeight := cell.Box.Style.GetFontWeight()
+				bold := fontWeight == css.FontWeightBold
+				textWidth, textHeight := text.MeasureTextWithWeight(cell.Box.PseudoContent, fontSize, bold)
+				textBox := &Box{
+					Style:         cell.Box.Style,
+					X:             childX,
+					Y:             childY,
+					Width:         textWidth,
+					Height:        textHeight,
+					Parent:        cell.Box,
+					PseudoContent: cell.Box.PseudoContent,
+				}
+				cell.Box.Children = append(cell.Box.Children, textBox)
+			} else if cell.Box.Node != nil {
+				for _, childNode := range cell.Box.Node.Children {
+					if childNode.Type == html.TextNode {
+						// Handle text in cell
+						textBox := le.layoutTextNode(childNode, childX, childY, childAvailableWidth, cell.Box.Style, cell.Box)
+						if textBox != nil {
+							cell.Box.Children = append(cell.Box.Children, textBox)
+							childY += le.getTotalHeight(textBox)
+						}
 					}
 				}
 			}
