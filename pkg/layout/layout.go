@@ -634,7 +634,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// Calculate new position
 			var newX float64
 			if beforeFloat == css.FloatLeft {
-				newX = box.X + border.Left + padding.Left + leftOffset + beforeBox.Margin.Left
+				// For left floats, position must clear both other floats (leftOffset) AND inline content (LineX)
+				baseX := box.X + border.Left + padding.Left
+				floatClearX := baseX + leftOffset + beforeBox.Margin.Left
+				inlineEndX := inlineCtx.LineX + beforeBox.Margin.Left
+				if inlineEndX > floatClearX {
+					newX = inlineEndX
+				} else {
+					newX = floatClearX
+				}
 			} else {
 				newX = box.X + border.Left + padding.Left + childAvailableWidth - rightOffset - floatWidth + beforeBox.Margin.Left
 			}
@@ -1032,7 +1040,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// Calculate new position
 			var newX float64
 			if afterFloat == css.FloatLeft {
-				newX = box.X + border.Left + padding.Left + leftOffset + afterBox.Margin.Left
+				// For left floats, position must clear both other floats (leftOffset) AND inline content (LineX)
+				baseX := box.X + border.Left + padding.Left
+				floatClearX := baseX + leftOffset + afterBox.Margin.Left
+				inlineEndX := inlineCtx.LineX + afterBox.Margin.Left
+				if inlineEndX > floatClearX {
+					newX = inlineEndX
+				} else {
+					newX = floatClearX
+				}
 			} else {
 				newX = box.X + border.Left + padding.Left + childAvailableWidth - rightOffset - floatWidth + afterBox.Margin.Left
 			}
