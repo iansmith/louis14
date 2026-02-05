@@ -118,18 +118,41 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		return allRules[i].Selector.Specificity < allRules[j].Selector.Specificity
 	})
 
+	// Track which properties have been set with !important
+	importantProps := make(map[string]bool)
+
 	// Apply rules in order (lower specificity first, higher specificity overwrites)
 	for _, rule := range allRules {
 		for property, value := range rule.Declarations {
+			// Skip if already set by an important rule
+			if importantProps[property] {
+				continue
+			}
 			finalStyle.Set(property, value)
 		}
 	}
 
+	// Apply !important declarations (second pass)
+	for _, rule := range allRules {
+		if rule.Important == nil {
+			continue
+		}
+		for property, value := range rule.Declarations {
+			if rule.Important[property] {
+				finalStyle.Set(property, value)
+				importantProps[property] = true
+			}
+		}
+	}
+
 	// Inline styles have highest specificity (specificity = 1000)
+	// Note: inline !important would override stylesheet !important, but we don't track that yet
 	if styleAttr, ok := node.GetAttribute("style"); ok {
 		inlineStyle := ParseInlineStyle(styleAttr)
 		for property, value := range inlineStyle.Properties {
-			finalStyle.Set(property, value)
+			if !importantProps[property] {
+				finalStyle.Set(property, value)
+			}
 		}
 	}
 
@@ -215,10 +238,30 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		return allRules[i].Selector.Specificity < allRules[j].Selector.Specificity
 	})
 
-	// Apply rules in order
+	// Track which properties have been set with !important
+	importantProps := make(map[string]bool)
+
+	// Apply rules in order (normal declarations first)
 	for _, rule := range allRules {
 		for property, value := range rule.Declarations {
+			// Skip if already set by an important rule
+			if importantProps[property] {
+				continue
+			}
 			finalStyle.Set(property, value)
+		}
+	}
+
+	// Apply !important declarations (second pass, in specificity order)
+	for _, rule := range allRules {
+		if rule.Important == nil {
+			continue
+		}
+		for property, value := range rule.Declarations {
+			if rule.Important[property] {
+				finalStyle.Set(property, value)
+				importantProps[property] = true
+			}
 		}
 	}
 

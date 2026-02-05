@@ -821,7 +821,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// When parent has no bottom border and no bottom padding (and auto height),
 		// the last in-flow child's bottom margin collapses with the parent's bottom
 		// margin, so it should NOT be included in the auto-height calculation.
-		parentChildBottomCollapse := box.Border.Bottom == 0 && box.Padding.Bottom == 0
+		// Note: Margin collapsing does NOT apply to absolutely positioned elements,
+		// which establish a new block formatting context (CSS 2.1 §9.4.1).
+		parentChildBottomCollapse := box.Border.Bottom == 0 && box.Padding.Bottom == 0 &&
+			position != css.PositionAbsolute && position != css.PositionFixed
 		var lastInFlowChild *Box
 		if parentChildBottomCollapse {
 			for _, child := range box.Children {
@@ -1268,6 +1271,38 @@ func (le *LayoutEngine) getTotalWidth(box *Box) float64 {
 		box.Padding.Right + box.Border.Right + box.Margin.Right
 }
 
+// isFirstTextInBlock checks if this text node is the first text content
+// in its block-level ancestor (for ::first-letter styling)
+func (le *LayoutEngine) isFirstTextInBlock(node *html.Node, parent *Box) bool {
+	if parent == nil || parent.Node == nil {
+		return false
+	}
+	// Check if any text or element children came before this node
+	for _, sibling := range parent.Node.Children {
+		if sibling == node {
+			return true // We reached ourselves first
+		}
+		if sibling.Type == html.TextNode && strings.TrimSpace(sibling.Text) != "" {
+			return false // Another text node with content came first
+		}
+		if sibling.Type == html.ElementNode {
+			return false // An element came first
+		}
+	}
+	return false
+}
+
+// extractFirstLetter extracts the first letter from text (handling punctuation per CSS spec)
+func extractFirstLetter(text string) (string, string) {
+	text = strings.TrimLeft(text, " \t\n\r")
+	if len(text) == 0 {
+		return "", ""
+	}
+	// Get first rune
+	runes := []rune(text)
+	return string(runes[0]), string(runes[1:])
+}
+
 // Phase 6: layoutTextNode creates a layout box for a text node
 func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth float64, parentStyle *css.Style, parent *Box) *Box {
 	// Skip empty text nodes
@@ -1313,6 +1348,66 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 		}
 		if node.Text == "" {
 			return nil
+		}
+	}
+
+	// Check for ::first-letter pseudo-element styling
+	// This applies to the first letter of the first text in a block container
+	var firstLetterBox *Box
+	if parent != nil && parent.Node != nil && le.isFirstTextInBlock(node, parent) {
+		// First check if there are any actual ::first-letter rules targeting this element
+		// (not just inherited properties from parent)
+		hasFirstLetterRules := false
+		for _, stylesheet := range le.stylesheets {
+			for _, rule := range stylesheet.Rules {
+				if rule.Selector.PseudoElement == "first-letter" {
+					if css.MatchesSelector(parent.Node, rule.Selector) {
+						hasFirstLetterRules = true
+						break
+					}
+				}
+			}
+			if hasFirstLetterRules {
+				break
+			}
+		}
+
+		if hasFirstLetterRules {
+			// Get the computed first-letter style
+			firstLetterStyle := css.ComputePseudoElementStyle(parent.Node, "first-letter", le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
+			firstLetter, remaining := extractFirstLetter(node.Text)
+			if firstLetter != "" {
+				// Create a box for the first letter with the special styling
+				flFontSize := firstLetterStyle.GetFontSize()
+				flFontWeight := firstLetterStyle.GetFontWeight()
+				flBold := flFontWeight == css.FontWeightBold
+				flWidth, flHeight := text.MeasureTextWithWeight(firstLetter, flFontSize, flBold)
+
+				firstLetterBox = &Box{
+					Node:          node,
+					Style:         firstLetterStyle,
+					X:             x,
+					Y:             y,
+					Width:         flWidth,
+					Height:        flHeight,
+					Margin:        css.BoxEdge{},
+					Padding:       css.BoxEdge{},
+					Border:        css.BoxEdge{},
+					Children:      make([]*Box, 0),
+					Parent:        parent,
+					PseudoContent: firstLetter,
+				}
+
+				// Advance x for the remaining text
+				x += flWidth
+				availableWidth -= flWidth
+				// Update the node text to exclude the first letter
+				node.Text = remaining
+				if node.Text == "" {
+					// Only the first letter, return just that box
+					return firstLetterBox
+				}
+			}
 		}
 	}
 
@@ -1996,10 +2091,11 @@ func (le *LayoutEngine) measureCellContentWidth(cell *TableCell) float64 {
 			totalWidth += w
 		}
 	}
-	// Add cell padding
+	// Add cell padding and border
 	if cell.Box.Style != nil {
 		padding := cell.Box.Style.GetPadding()
-		totalWidth += padding.Left + padding.Right
+		border := cell.Box.Style.GetBorderWidth()
+		totalWidth += padding.Left + padding.Right + border.Left + border.Right
 	}
 	return totalWidth
 }
@@ -2022,20 +2118,31 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 					maxHeight = h
 				}
 			}
-			cellHeight := cell.Box.Height + cell.Box.Padding.Top + cell.Box.Padding.Bottom
+			// Get padding and border from style since box values may not be set yet
+			var paddingTop, paddingBottom, borderTop, borderBottom float64
+			if cell.Box.Style != nil {
+				padding := cell.Box.Style.GetPadding()
+				paddingTop = padding.Top
+				paddingBottom = padding.Bottom
+				border := cell.Box.Style.GetBorderWidth()
+				borderTop = border.Top
+				borderBottom = border.Bottom
+			}
+			cellHeight := cell.Box.Height + paddingTop + paddingBottom + borderTop + borderBottom
 			if cellHeight > maxHeight {
 				maxHeight = cellHeight
 			}
 			// Estimate height from text content if cell hasn't been laid out yet
-			if cellHeight == 0 && cell.Box.Node != nil {
+			if cell.Box.Height == 0 && cell.Box.Node != nil {
 				lineHeight := 19.2 // default line height for 16px font
 				if cell.Box.Style != nil {
 					lineHeight = cell.Box.Style.GetLineHeight()
 				}
 				for _, child := range cell.Box.Node.Children {
 					if child.Type == html.TextNode && child.Text != "" {
-						if lineHeight > maxHeight {
-							maxHeight = lineHeight
+						textHeight := lineHeight + paddingTop + paddingBottom + borderTop + borderBottom
+						if textHeight > maxHeight {
+							maxHeight = textHeight
 						}
 					}
 				}
@@ -2095,13 +2202,21 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 			}
 
 			// Set cell box dimensions and position
-			cell.Box.X = currentX
-			cell.Box.Y = currentY
-			cell.Box.Width = cellWidth
-			cell.Box.Height = cellHeight
+			// Note: cellWidth/cellHeight from row/column calculations include padding+border,
+			// but box.Width/Height should be content dimensions only
 			cell.Box.Margin = cell.Box.Style.GetMargin()
 			cell.Box.Padding = cell.Box.Style.GetPadding()
 			cell.Box.Border = cell.Box.Style.GetBorderWidth()
+			cell.Box.X = currentX
+			cell.Box.Y = currentY
+			cell.Box.Width = cellWidth - cell.Box.Padding.Left - cell.Box.Padding.Right - cell.Box.Border.Left - cell.Box.Border.Right
+			cell.Box.Height = cellHeight - cell.Box.Padding.Top - cell.Box.Padding.Bottom - cell.Box.Border.Top - cell.Box.Border.Bottom
+			if cell.Box.Width < 0 {
+				cell.Box.Width = 0
+			}
+			if cell.Box.Height < 0 {
+				cell.Box.Height = 0
+			}
 
 			// Layout cell content (children)
 			childY := currentY + cell.Box.Border.Top + cell.Box.Padding.Top

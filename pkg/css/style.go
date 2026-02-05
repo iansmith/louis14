@@ -1336,9 +1336,16 @@ func (s *Style) GetBorderCollapse() BorderCollapse {
 }
 
 // GetBorderSpacing returns the border-spacing value (default: 0 per CSS 2.1)
+// If two values are given (horizontal vertical), returns the first value.
 func (s *Style) GetBorderSpacing() float64 {
-	if spacing, ok := s.GetLength("border-spacing"); ok {
-		return spacing
+	if val, ok := s.Get("border-spacing"); ok {
+		// Handle two-value syntax: "96px 96px"
+		parts := strings.Fields(val)
+		if len(parts) >= 1 {
+			if spacing, ok := ParseLength(parts[0]); ok {
+				return spacing
+			}
+		}
 	}
 	return 0 // CSS 2.1 initial value
 }

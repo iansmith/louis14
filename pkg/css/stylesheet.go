@@ -62,6 +62,7 @@ const (
 type Rule struct {
 	Selector     Selector
 	Declarations map[string]string // property -> value
+	Important    map[string]bool   // tracks which properties are !important
 	MediaQuery   *MediaQuery       // Phase 22: Optional media query wrapper
 }
 
@@ -307,7 +308,7 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		declEnd = len(ruleStr)
 	}
 	declStr := ruleStr[declStart:declEnd]
-	declarations := parseDeclarations(declStr)
+	declResult := parseDeclarations(declStr)
 
 	rules := make([]Rule, 0, len(selectors))
 	for _, sel := range selectors {
@@ -318,7 +319,8 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		selector := parseSelector(sel)
 		rules = append(rules, Rule{
 			Selector:     selector,
-			Declarations: declarations,
+			Declarations: declResult.Declarations,
+			Important:    declResult.Important,
 		})
 	}
 
@@ -389,11 +391,12 @@ func parseRule(ruleStr string) (Rule, error) {
 	}
 
 	declStr := ruleStr[declStart:declEnd]
-	declarations := parseDeclarations(declStr)
+	declResult := parseDeclarations(declStr)
 
 	return Rule{
 		Selector:     selector,
-		Declarations: declarations,
+		Declarations: declResult.Declarations,
+		Important:    declResult.Important,
 	}, nil
 }
 
@@ -536,6 +539,22 @@ func parseSelector(selectorStr string) Selector {
 			pseudoElementForDescendants = true
 		}
 		selectorStr = strings.Replace(selectorStr, ":after", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
+	} else if strings.Contains(selectorStr, "::first-letter") {
+		pseudoElement = "first-letter"
+		idx := strings.Index(selectorStr, "::first-letter")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
+		selectorStr = strings.Replace(selectorStr, "::first-letter", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
+	} else if strings.Contains(selectorStr, ":first-letter") {
+		pseudoElement = "first-letter"
+		idx := strings.Index(selectorStr, ":first-letter")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
+		selectorStr = strings.Replace(selectorStr, ":first-letter", "", 1)
 		selectorStr = strings.TrimSpace(selectorStr)
 	}
 	// If pseudo-element is for descendants only, clear it from direct matching
@@ -919,10 +938,64 @@ func splitDeclarationParts(declStr string) []string {
 	return parts
 }
 
+// unescapeCSS decodes CSS escape sequences per CSS 2.1 §4.1.3
+// - \X where X is not a hex digit → literal character X (e.g., \r → r)
+// - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
+// - Trailing whitespace after hex escape is consumed
+func unescapeCSS(s string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] != '\\' || i+1 >= len(s) {
+			result.WriteByte(s[i])
+			i++
+			continue
+		}
+		// Found backslash - check what follows
+		i++ // skip backslash
+		// Check for hex escape (1-6 hex digits)
+		hexStart := i
+		for i < len(s) && i-hexStart < 6 && isHexDigit(s[i]) {
+			i++
+		}
+		if i > hexStart {
+			// Parse hex value
+			hexStr := s[hexStart:i]
+			codePoint, _ := strconv.ParseInt(hexStr, 16, 32)
+			if codePoint > 0 && codePoint <= 0x10FFFF {
+				result.WriteRune(rune(codePoint))
+			}
+			// Consume one trailing whitespace if present
+			if i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' || s[i] == '\f') {
+				i++
+			}
+		} else {
+			// Single character escape - just output the character
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+// isHexDigit returns true if c is a hexadecimal digit
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+// DeclarationResult holds parsed declarations and their important flags
+type DeclarationResult struct {
+	Declarations map[string]string
+	Important    map[string]bool
+}
+
 // parseDeclarations parses CSS declarations into a map.
 // Invalid declarations are silently skipped (error recovery).
-func parseDeclarations(declStr string) map[string]string {
-	declarations := make(map[string]string)
+func parseDeclarations(declStr string) DeclarationResult {
+	result := DeclarationResult{
+		Declarations: make(map[string]string),
+		Important:    make(map[string]bool),
+	}
 
 	parts := splitDeclarationParts(declStr)
 
@@ -942,6 +1015,10 @@ func parseDeclarations(declStr string) map[string]string {
 		property := strings.TrimSpace(part[:colonPos])
 		value := strings.TrimSpace(part[colonPos+1:])
 
+		// Unescape CSS escape sequences in both property and value
+		property = unescapeCSS(property)
+		value = unescapeCSS(value)
+
 		// Skip declarations with empty property or value
 		if property == "" || value == "" {
 			continue
@@ -954,11 +1031,13 @@ func parseDeclarations(declStr string) map[string]string {
 		}
 
 		// Handle !important: strip it if valid, reject if malformed
+		isImportant := false
 		if strings.Contains(value, "!") {
 			bangIdx := strings.Index(value, "!")
 			afterBang := strings.TrimSpace(value[bangIdx+1:])
 			if strings.EqualFold(afterBang, "important") {
 				value = strings.TrimSpace(value[:bangIdx])
+				isImportant = true
 			} else {
 				// Invalid use of ! (e.g., "red ! error") — reject entire declaration
 				continue
@@ -988,11 +1067,14 @@ func parseDeclarations(declStr string) map[string]string {
 					continue
 				}
 			}
-			declarations[k] = v
+			result.Declarations[k] = v
+			if isImportant {
+				result.Important[k] = true
+			}
 		}
 	}
 
-	return declarations
+	return result
 }
 
 // isLengthProperty returns true for CSS properties that expect length values
