@@ -4188,18 +4188,32 @@ func (le *LayoutEngine) LayoutInlineContent(
 		le.CollectInlineItems(child, state, computedStyles)
 	}
 
-	// Phase 2: Break into lines
-	// TODO: Add retry logic when floats change available width
-	success := le.BreakLines(state)
-	if !success {
-		// Line breaking failed - fallback to empty result
-		// TODO: Implement proper retry mechanism
-		return []*Box{}
+	// Phase 2 & 3: Line breaking with retry when floats change available width
+	// This implements the Gecko-style retry mechanism (RedoMoreFloats)
+	const maxRetries = 3 // Prevent infinite loops
+	var boxes []*Box
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Phase 2: Break into lines with current float state
+		success := le.BreakLines(state)
+		if !success {
+			return []*Box{} // Line breaking failed
+		}
+
+		// Phase 3: Construct line boxes and layout floats
+		// Returns boxes and whether retry is needed
+		boxes, retryNeeded := le.constructLineBoxesWithRetry(state, box, computedStyles)
+
+		if !retryNeeded {
+			// Success - no floats changed available width
+			return boxes
+		}
+
+		// Retry needed - a float changed available width
+		// Phase 2 will be re-run with updated float list on next iteration
 	}
 
-	// Phase 3: Construct line boxes
-	boxes := le.ConstructLineBoxes(state, box)
-
+	// Max retries exceeded - return what we have
 	return boxes
 }
 
@@ -4539,4 +4553,125 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 	}
 
 	return boxes
+}
+
+// constructLineBoxesWithRetry is like ConstructLineBoxes but also detects when floats
+// change available width and signals that retry is needed.
+// Returns (boxes, retryNeeded)
+func (le *LayoutEngine) constructLineBoxesWithRetry(
+	state *InlineLayoutState,
+	parent *Box,
+	computedStyles map[*html.Node]*css.Style,
+) ([]*Box, bool) {
+	boxes := []*Box{}
+	retryNeeded := false
+
+	for _, line := range state.Lines {
+		// Calculate starting X for this line (accounting for floats)
+		leftOffsetBefore, _ := le.getFloatOffsets(line.Y)
+		currentX := state.ContainerBox.X + state.Border.Left + state.Padding.Left + leftOffsetBefore
+
+		// Track open inline elements
+		type inlineContext struct {
+			node  *html.Node
+			style *css.Style
+			box   *Box
+		}
+		openInlines := []inlineContext{}
+
+		// Process each item on this line
+		for _, item := range line.Items {
+			switch item.Type {
+			case InlineItemText:
+				textBox := &Box{
+					Node:     item.Node,
+					Style:    item.Style,
+					X:        currentX,
+					Y:        line.Y,
+					Width:    item.Width,
+					Height:   item.Height,
+					Margin:   css.BoxEdge{},
+					Padding:  css.BoxEdge{},
+					Border:   css.BoxEdge{},
+					Position: css.PositionStatic,
+					Parent:   parent,
+				}
+				boxes = append(boxes, textBox)
+				currentX += item.Width
+
+			case InlineItemOpenTag:
+				inlineBox := &Box{
+					Node:     item.Node,
+					Style:    item.Style,
+					X:        currentX,
+					Y:        line.Y,
+					Width:    0,
+					Height:   line.LineHeight,
+					Margin:   css.BoxEdge{},
+					Padding:  item.Style.GetPadding(),
+					Border:   item.Style.GetBorderWidth(),
+					Position: css.PositionStatic,
+					Parent:   parent,
+				}
+				openInlines = append(openInlines, inlineContext{
+					node:  item.Node,
+					style: item.Style,
+					box:   inlineBox,
+				})
+
+			case InlineItemCloseTag:
+				if len(openInlines) > 0 {
+					ctx := openInlines[len(openInlines)-1]
+					openInlines = openInlines[:len(openInlines)-1]
+					ctx.box.Width = currentX - ctx.box.X
+					boxes = append(boxes, ctx.box)
+				}
+
+			case InlineItemAtomic:
+				atomicBox := &Box{
+					Node:     item.Node,
+					Style:    item.Style,
+					X:        currentX,
+					Y:        line.Y,
+					Width:    item.Width,
+					Height:   item.Height,
+					Margin:   css.BoxEdge{},
+					Padding:  css.BoxEdge{},
+					Border:   css.BoxEdge{},
+					Position: css.PositionStatic,
+					Parent:   parent,
+				}
+				boxes = append(boxes, atomicBox)
+				currentX += item.Width
+
+			case InlineItemFloat:
+				// Layout the float to get its dimensions
+				floatBox := le.layoutNode(
+					item.Node,
+					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
+					line.Y,
+					state.AvailableWidth,
+					computedStyles,
+					parent,
+				)
+
+				if floatBox != nil {
+					boxes = append(boxes, floatBox)
+
+					// Add float to engine's float list
+					floatType := item.Style.GetFloat()
+					le.addFloat(floatBox, floatType, line.Y)
+
+					// Check if this float changes available width for this line
+					leftOffsetAfter, _ := le.getFloatOffsets(line.Y)
+					if leftOffsetAfter != leftOffsetBefore {
+						// Float changed available width - retry needed
+						retryNeeded = true
+					}
+				}
+			}
+		}
+	}
+
+	return boxes, retryNeeded
 }
