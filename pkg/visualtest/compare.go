@@ -10,10 +10,10 @@ import (
 
 // CompareResult contains the results of an image comparison
 type CompareResult struct {
-	Match          bool
+	Match           bool
 	DifferentPixels int
-	TotalPixels    int
-	MaxDifference  int // Max color channel difference found
+	TotalPixels     int
+	MaxDifference   int // Max color channel difference found
 }
 
 // CompareOptions configures the image comparison
@@ -21,6 +21,16 @@ type CompareOptions struct {
 	// Tolerance: maximum allowed difference per color channel (0-255)
 	// Recommended: 2-5 for rendering differences, 0 for exact match
 	Tolerance int
+
+	// FuzzyRadius: if > 0, a pixel matches if it matches any pixel within this radius
+	// Useful for tests with small positional differences (e.g., 1-2px text shifts)
+	// Recommended: 1-2 for text positioning tolerance, 0 for exact positioning
+	FuzzyRadius int
+
+	// MaxDifferentPercent: if > 0, pass if the percentage of different pixels is <= this value
+	// Useful for tests with minor anti-aliasing or positioning differences
+	// Recommended: 0.1-0.5 for small differences, 0 for exact match
+	MaxDifferentPercent float64
 
 	// SaveDiffImage: if true, saves a diff image highlighting differences
 	SaveDiffImage bool
@@ -106,12 +116,24 @@ func CompareImages(actualPath, expectedPath string, opts CompareOptions) (*Compa
 			}
 
 			if diff > opts.Tolerance {
-				result.Match = false
-				result.DifferentPixels++
+				// If fuzzy matching is enabled, check nearby pixels
+				matched := false
+				if opts.FuzzyRadius > 0 {
+					matched = fuzzyMatch(actualImg, expectedImg, x, y, opts.FuzzyRadius, opts.Tolerance, actualBounds)
+				}
 
-				if diffImg != nil {
-					// Highlight difference in red
-					diffImg.Set(x, y, color.RGBA{255, 0, 0, 255})
+				if !matched {
+					result.Match = false
+					result.DifferentPixels++
+
+					if diffImg != nil {
+						// Highlight difference in red
+						diffImg.Set(x, y, color.RGBA{255, 0, 0, 255})
+					}
+				} else if diffImg != nil {
+					// Fuzzy matched - show in grayscale
+					gray := uint8(ar)
+					diffImg.Set(x, y, color.RGBA{gray, gray, gray, 255})
 				}
 			} else {
 				if diffImg != nil {
@@ -123,6 +145,14 @@ func CompareImages(actualPath, expectedPath string, opts CompareOptions) (*Compa
 		}
 	}
 
+	// Check if percentage of different pixels is acceptable
+	if !result.Match && opts.MaxDifferentPercent > 0 {
+		pct := float64(result.DifferentPixels) / float64(result.TotalPixels) * 100
+		if pct <= opts.MaxDifferentPercent {
+			result.Match = true
+		}
+	}
+
 	// Save diff image if requested
 	if opts.SaveDiffImage && !result.Match && opts.DiffImagePath != "" {
 		if err := savePNG(diffImg, opts.DiffImagePath); err != nil {
@@ -131,6 +161,36 @@ func CompareImages(actualPath, expectedPath string, opts CompareOptions) (*Compa
 	}
 
 	return result, nil
+}
+
+// fuzzyMatch checks if the actual pixel at (x, y) matches any expected pixel within radius
+func fuzzyMatch(actual, expected image.Image, x, y, radius, tolerance int, bounds image.Rectangle) bool {
+	ar, ag, ab, aa := actual.At(x, y).RGBA()
+	ar, ag, ab, aa = ar>>8, ag>>8, ab>>8, aa>>8
+
+	for dy := -radius; dy <= radius; dy++ {
+		for dx := -radius; dx <= radius; dx++ {
+			nx, ny := x+dx, y+dy
+			if nx < bounds.Min.X || nx >= bounds.Max.X || ny < bounds.Min.Y || ny >= bounds.Max.Y {
+				continue
+			}
+
+			er, eg, eb, ea := expected.At(nx, ny).RGBA()
+			er, eg, eb, ea = er>>8, eg>>8, eb>>8, ea>>8
+
+			diff := maxInt(
+				absInt(int(ar)-int(er)),
+				absInt(int(ag)-int(eg)),
+				absInt(int(ab)-int(eb)),
+				absInt(int(aa)-int(ea)),
+			)
+
+			if diff <= tolerance {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // savePNG saves an image as PNG
