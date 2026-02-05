@@ -216,3 +216,29 @@ func GetImageDimensionsWithFetcher(path string, fetcher ImageFetcher) (width, he
 func isNetworkURI(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
+
+// NewFilesystemFetcher creates an ImageFetcher that resolves relative paths
+// against a base URL (typically the document's file path).
+func NewFilesystemFetcher(baseURL string) ImageFetcher {
+	return func(uri string) ([]byte, error) {
+		// Don't resolve data URIs or absolute network URLs
+		if IsDataURI(uri) || isNetworkURI(uri) {
+			return nil, fmt.Errorf("filesystem fetcher only handles file paths")
+		}
+
+		// Resolve relative paths against base URL
+		resolvedPath := uri
+		if baseURL != "" && !filepath.IsAbs(uri) {
+			baseDir := filepath.Dir(baseURL)
+			resolvedPath = filepath.Join(baseDir, uri)
+		}
+
+		// Read the file
+		data, err := os.ReadFile(resolvedPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading file %s: %w", resolvedPath, err)
+		}
+
+		return data, nil
+	}
+}

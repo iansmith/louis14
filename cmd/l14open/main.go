@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/js"
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
@@ -42,9 +43,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error parsing HTML: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Create a filesystem fetcher that resolves relative paths against the input file
+	fetcher := images.NewFilesystemFetcher(inputFile)
+
 	layoutEngine := layout.NewLayoutEngine(viewportWidth, viewportHeight)
+	layoutEngine.SetImageFetcher(fetcher)
 	boxes := layoutEngine.Layout(doc)
+
 	renderer := render.NewRenderer(int(viewportWidth), int(viewportHeight))
+	renderer.SetImageFetcher(fetcher)
 	renderer.Render(boxes)
 
 	// Execute JavaScript if there are scripts
@@ -55,8 +63,10 @@ func main() {
 		}
 		// Re-layout and re-render with JS modifications
 		layoutEngine2 := layout.NewLayoutEngine(viewportWidth, viewportHeight)
+		layoutEngine2.SetImageFetcher(fetcher)
 		boxes2 := layoutEngine2.Layout(doc)
 		renderer = render.NewRenderer(int(viewportWidth), int(viewportHeight))
+		renderer.SetImageFetcher(fetcher)
 		renderer.Render(boxes2)
 	}
 

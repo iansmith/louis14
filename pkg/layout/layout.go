@@ -2,6 +2,7 @@ package layout
 
 import (
 	"fmt"     // Phase 23: For list marker formatting
+	"strconv" // For counter value parsing
 	"strings" // For url() parsing in pseudo-element content
 
 	"louis14/pkg/css"
@@ -26,10 +27,21 @@ type Box struct {
 	ZIndex        int             // Phase 4: Stacking order
 	ImagePath     string          // Phase 8: Image source path for img elements
 	PseudoContent string          // Phase 11: Content for pseudo-elements
+
 	// Block-in-inline fragment tracking (CSS 2.1 §9.2.1.1)
 	// When a block element breaks an inline element, the inline's border is split
 	IsFirstFragment bool // First part of split inline - has left border, no right border
 	IsLastFragment  bool // Last part of split inline - has right border, no left border
+
+	// New architecture: Fragments for split inline boxes
+	// When non-empty, this box renders as multiple visual regions
+	Fragments []BoxFragment
+
+	// Cached intrinsic sizes (computed on demand)
+	intrinsicSizes *IntrinsicSizes
+
+	// Line boxes for block containers with inline content
+	LineBoxes []*LineBox
 }
 
 type LayoutEngine struct {
@@ -44,6 +56,9 @@ type LayoutEngine struct {
 	floatBase      int         // Current BFC float base index
 	stylesheets    []*css.Stylesheet // Phase 11: Store stylesheets for pseudo-elements
 	imageFetcher   images.ImageFetcher // Optional fetcher for network images
+
+	// CSS Counters support
+	counters      map[string][]int // Counter name -> stack of values (for nested scopes)
 }
 
 // Phase 5: FloatInfo tracks information about floated elements
@@ -119,10 +134,97 @@ type FlexContainer struct {
 	IsRow          bool  // true if direction is row/row-reverse
 }
 
+// ============================================================================
+// New Architecture: Intrinsic Sizing, Line Boxes, and Fragments
+// ============================================================================
+
+// Axis represents a layout axis (horizontal or vertical)
+// Used for flexbox main/cross axis and future grid support
+type Axis int
+
+const (
+	AxisHorizontal Axis = iota
+	AxisVertical
+)
+
+// IntrinsicSizes holds the computed intrinsic size information for a box
+// These are used for shrink-to-fit width, flexbox, and table layout
+type IntrinsicSizes struct {
+	MinContent float64 // Width when all soft wrap opportunities are taken
+	MaxContent float64 // Width when no soft wrapping occurs
+	Preferred  float64 // Preferred width (for flex-basis: auto)
+}
+
+// Alignment represents alignment values for flex/grid layout
+type Alignment int
+
+const (
+	AlignStart Alignment = iota
+	AlignEnd
+	AlignCenter
+	AlignStretch
+	AlignBaseline
+	AlignSpaceBetween
+	AlignSpaceAround
+	AlignSpaceEvenly
+)
+
+// BorderEdgeFlags indicates which border edges should be drawn
+// Used for fragmented inline boxes (block-in-inline splitting)
+type BorderEdgeFlags struct {
+	Left   bool
+	Right  bool
+	Top    bool
+	Bottom bool
+}
+
+// AllBorders returns BorderEdgeFlags with all edges enabled
+func AllBorders() BorderEdgeFlags {
+	return BorderEdgeFlags{Left: true, Right: true, Top: true, Bottom: true}
+}
+
+// BoxFragment represents a visual fragment of a box
+// When an inline box is split by a block element, it renders as multiple fragments
+type BoxFragment struct {
+	X, Y, Width, Height float64
+	Borders             BorderEdgeFlags
+}
+
+// LineBox represents a line of inline content
+// This is an explicit representation of CSS line boxes for proper inline layout
+type LineBox struct {
+	Y         float64   // Y position of the line box
+	Height    float64   // Height of the line box
+	Boxes     []*Box    // Inline-level boxes on this line
+	BaselineY float64   // Y position of the alphabetic baseline (relative to line top)
+	LeftEdge  float64   // Left edge of available space (accounting for floats)
+	RightEdge float64   // Right edge of available space (accounting for floats)
+}
+
+// LayoutMode defines the interface for different layout algorithms
+// This abstraction allows clean separation of block, inline, flex, grid layout
+type LayoutMode interface {
+	// ComputeIntrinsicSizes calculates min-content and max-content widths
+	ComputeIntrinsicSizes(le *LayoutEngine, node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style) IntrinsicSizes
+
+	// LayoutChildren positions child boxes within the container
+	LayoutChildren(le *LayoutEngine, container *Box, children []*html.Node, availableWidth float64, computedStyles map[*html.Node]*css.Style) []*Box
+}
+
+// BlockLayoutMode implements block formatting context layout
+type BlockLayoutMode struct{}
+
+// InlineLayoutMode implements inline formatting context layout
+type InlineLayoutMode struct{}
+
+// FlexLayoutMode implements flexbox layout (to be implemented)
+type FlexLayoutMode struct{}
+
 func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 	le := &LayoutEngine{}
 	le.viewport.width = viewportWidth
 	le.viewport.height = viewportHeight
+	le.counters = make(map[string][]int)
 	return le
 }
 
@@ -488,10 +590,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		le.floatBase = len(le.floats)
 	}
 
+	// CSS Counter support: Process counter-reset on this element
+	var counterResets map[string]int
+	if resetVal, ok := style.Get("counter-reset"); ok {
+		counterResets = parseCounterReset(resetVal)
+		for name, value := range counterResets {
+			le.counterReset(name, value)
+		}
+	}
+
 	// Phase 2: Recursively layout children
 	// Use box.X/Y which include relative positioning offset
 	childY := box.Y + border.Top + padding.Top
 	childAvailableWidth := contentWidth
+
+	// For shrink-to-fit elements (floats, abs pos without explicit width), pass the parent's
+	// available width to children so they can lay out naturally, then we'll shrink-wrap around them
+	if contentWidth == 0 && (floatType != css.FloatNone || position == css.PositionAbsolute || position == css.PositionFixed) {
+		childAvailableWidth = availableWidth - padding.Left - padding.Right - border.Left - border.Right
+	}
 
 	// Track previous block child for margin collapsing between siblings
 	var prevBlockChild *Box
@@ -508,16 +625,47 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 11: Generate ::before pseudo-element if it has content
 	beforeBox := le.generatePseudoElement(node, "before", inlineCtx.LineX, inlineCtx.LineY, childAvailableWidth, computedStyles, box)
 	if beforeBox != nil {
-		box.Children = append(box.Children, beforeBox)
-		// Update inline context for subsequent children
-		beforeDisplay := beforeBox.Style.GetDisplay()
-		if beforeDisplay == css.DisplayBlock {
-			inlineCtx.LineY += le.getTotalHeight(beforeBox)
-			inlineCtx.LineX = box.X + border.Left + padding.Left
+		beforeFloat := beforeBox.Style.GetFloat()
+		if beforeFloat != css.FloatNone {
+			// Position floated ::before pseudo-element
+			floatWidth := le.getTotalWidth(beforeBox)
+			floatY := le.getFloatDropY(beforeFloat, floatWidth, inlineCtx.LineY, childAvailableWidth)
+			leftOffset, rightOffset := le.getFloatOffsets(floatY)
+			// Calculate new position
+			var newX float64
+			if beforeFloat == css.FloatLeft {
+				newX = box.X + border.Left + padding.Left + leftOffset + beforeBox.Margin.Left
+			} else {
+				newX = box.X + border.Left + padding.Left + childAvailableWidth - rightOffset - floatWidth + beforeBox.Margin.Left
+			}
+			newY := floatY + beforeBox.Margin.Top
+
+			// Calculate position delta to reposition children
+			deltaX := newX - beforeBox.X
+			deltaY := newY - beforeBox.Y
+
+			// Reposition child boxes (e.g., images inside the pseudo-element)
+			for _, child := range beforeBox.Children {
+				child.X += deltaX
+				child.Y += deltaY
+			}
+
+			beforeBox.X = newX
+			beforeBox.Y = newY
+			le.addFloat(beforeBox, beforeFloat, floatY)
+			box.Children = append(box.Children, beforeBox)
 		} else {
-			inlineCtx.LineX += le.getTotalWidth(beforeBox)
-			if beforeBox.Height > inlineCtx.LineHeight {
-				inlineCtx.LineHeight = beforeBox.Height
+			box.Children = append(box.Children, beforeBox)
+			// Update inline context for subsequent children
+			beforeDisplay := beforeBox.Style.GetDisplay()
+			if beforeDisplay == css.DisplayBlock {
+				inlineCtx.LineY += le.getTotalHeight(beforeBox)
+				inlineCtx.LineX = box.X + border.Left + padding.Left
+			} else {
+				inlineCtx.LineX += le.getTotalWidth(beforeBox)
+				if beforeBox.Height > inlineCtx.LineHeight {
+					inlineCtx.LineHeight = beforeBox.Height
+				}
 			}
 		}
 	}
@@ -538,6 +686,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	isInlineParent := display == css.DisplayInline
 	hasSeenBlockChild := false
 	hasInlineContentBeforeBlock := false
+
+	// Fragment tracking for block-in-inline
+	// We track the bounding region of inline content to create fragments
+	type fragmentRegion struct {
+		startX, startY float64
+		maxX, maxY     float64
+		hasContent     bool
+	}
+	currentFragment := fragmentRegion{
+		startX: box.X + border.Left + padding.Left,
+		startY: box.Y + border.Top + padding.Top,
+	}
+	var completedFragments []fragmentRegion
 
 	for _, child := range node.Children {
 		if skipChildren {
@@ -563,6 +724,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if childBox != nil {
+				// Handle <br> elements - force a line break
+				if child.TagName == "br" {
+					// Move to next line
+					if inlineCtx.LineHeight == 0 {
+						inlineCtx.LineHeight = style.GetLineHeight()
+					}
+					inlineCtx.LineY += inlineCtx.LineHeight
+					inlineCtx.LineX = box.X + border.Left + padding.Left
+					inlineCtx.LineHeight = 0
+					inlineCtx.LineBoxes = make([]*Box, 0)
+					// Don't add <br> to children - it's just a control element
+					continue
+				}
+
 				// Phase 7: Handle inline and inline-block elements
 				// Skip inline positioning for floated elements (they are positioned by float logic)
 				childIsFloated := childStyle != nil && childStyle.GetFloat() != css.FloatNone
@@ -574,6 +749,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					if isInlineParent && !hasSeenBlockChild {
 						hasInlineContentBeforeBlock = true
 					}
+
+					// Update fragment region with this inline child's bounds
+					if isInlineParent {
+						childRight := childBox.X + le.getTotalWidth(childBox)
+						childBottom := childBox.Y + le.getTotalHeight(childBox)
+						if childRight > currentFragment.maxX {
+							currentFragment.maxX = childRight
+						}
+						if childBottom > currentFragment.maxY {
+							currentFragment.maxY = childBottom
+						}
+						currentFragment.hasContent = true
+					}
+
 					childTotalWidth := le.getTotalWidth(childBox)
 
 					// Check if child fits on current line (skip wrapping if white-space: nowrap)
@@ -586,6 +775,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						inlineCtx.LineBoxes = make([]*Box, 0)
 
 						// Reposition child at start of new line
+						childBox.X = inlineCtx.LineX
+						childBox.Y = inlineCtx.LineY
+					} else {
+						// Fits on current line - position it at the current LineX
 						childBox.X = inlineCtx.LineX
 						childBox.Y = inlineCtx.LineY
 					}
@@ -614,9 +807,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					// Block element or other display mode
 					// Block-in-inline: when a block is inside an inline parent, mark fragments
 					if isInlineParent && hasInlineContentBeforeBlock {
-						// Mark the parent as first fragment (no right border)
-						box.IsFirstFragment = true
+						// Complete the current fragment (content before the block)
+						if currentFragment.hasContent {
+							completedFragments = append(completedFragments, currentFragment)
+						}
+						// Start a new fragment for content after the block
+						// (will be positioned after block layout is done)
 						hasSeenBlockChild = true
+						// Mark legacy flags for backward compatibility
+						box.IsFirstFragment = true
 					}
 
 					// Finish current inline line (apply strut for line box height)
@@ -737,12 +936,22 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					// Reset inline context for next line
 					inlineCtx.LineX = box.X + border.Left + padding.Left
 					inlineCtx.LineY = childY
+
+					// Reset fragment tracking for next fragment (content after this block)
+					if isInlineParent {
+						currentFragment = fragmentRegion{
+							startX: inlineCtx.LineX,
+							startY: inlineCtx.LineY,
+						}
+					}
 				}
 			}
 		} else if child.Type == html.TextNode {
 			// Phase 6: Layout text nodes
 			// Always use inline flow so text nodes participate in the inline
 			// formatting context together with sibling inline elements (e.g. <em>).
+			// layoutTextNode already handles float offsets internally, so pass the
+			// original position and let it adjust for floats
 			textBox := le.layoutTextNode(
 				child,
 				inlineCtx.LineX,
@@ -759,6 +968,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					} else {
 						hasInlineContentBeforeBlock = true
 					}
+					// Update fragment region with this text's bounds
+					textRight := textBox.X + le.getTotalWidth(textBox)
+					textBottom := textBox.Y + le.getTotalHeight(textBox)
+					if textRight > currentFragment.maxX {
+						currentFragment.maxX = textRight
+					}
+					if textBottom > currentFragment.maxY {
+						currentFragment.maxY = textBottom
+					}
+					currentFragment.hasContent = true
 				}
 				box.Children = append(box.Children, textBox)
 
@@ -803,7 +1022,76 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 11: Generate ::after pseudo-element if it has content
 	afterBox := le.generatePseudoElement(node, "after", inlineCtx.LineX, inlineCtx.LineY, childAvailableWidth, computedStyles, box)
 	if afterBox != nil {
+		afterFloat := afterBox.Style.GetFloat()
+		if afterFloat != css.FloatNone {
+			// Position floated ::after pseudo-element
+			floatWidth := le.getTotalWidth(afterBox)
+			floatY := le.getFloatDropY(afterFloat, floatWidth, inlineCtx.LineY, childAvailableWidth)
+			leftOffset, rightOffset := le.getFloatOffsets(floatY)
+
+			// Calculate new position
+			var newX float64
+			if afterFloat == css.FloatLeft {
+				newX = box.X + border.Left + padding.Left + leftOffset + afterBox.Margin.Left
+			} else {
+				newX = box.X + border.Left + padding.Left + childAvailableWidth - rightOffset - floatWidth + afterBox.Margin.Left
+			}
+			newY := floatY + afterBox.Margin.Top
+
+			// Calculate position delta to reposition children
+			deltaX := newX - afterBox.X
+			deltaY := newY - afterBox.Y
+
+			// Reposition child boxes (e.g., images inside the pseudo-element)
+			for _, child := range afterBox.Children {
+				child.X += deltaX
+				child.Y += deltaY
+			}
+
+			afterBox.X = newX
+			afterBox.Y = newY
+			le.addFloat(afterBox, afterFloat, floatY)
+		}
 		box.Children = append(box.Children, afterBox)
+	}
+
+	// Finalize block-in-inline fragments
+	// If we're an inline parent that was split by block children, create the fragment boxes
+	if isInlineParent && hasSeenBlockChild {
+		// Complete the final fragment (content after the last block)
+		if currentFragment.hasContent {
+			completedFragments = append(completedFragments, currentFragment)
+		}
+
+		// Create BoxFragment objects for rendering
+		for i, frag := range completedFragments {
+			if !frag.hasContent {
+				continue
+			}
+
+			// Determine which borders this fragment should have
+			borders := AllBorders()
+			if i == 0 {
+				// First fragment: has left border, no right border
+				borders.Right = false
+			}
+			if i == len(completedFragments)-1 {
+				// Last fragment: has right border, no left border
+				borders.Left = false
+			}
+
+			// Calculate fragment dimensions including padding/border
+			fragWidth := frag.maxX - frag.startX + border.Left + border.Right + padding.Left + padding.Right
+			fragHeight := frag.maxY - frag.startY + border.Top + border.Bottom + padding.Top + padding.Bottom
+
+			box.AddFragment(
+				frag.startX-border.Left-padding.Left,
+				frag.startY-border.Top-padding.Top,
+				fragWidth,
+				fragHeight,
+				borders,
+			)
+		}
 	}
 
 	// Apply text-align to inline children (only for block containers, not inline elements)
@@ -1075,6 +1363,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		le.floats = le.floats[:le.floatBase]
 		le.floatBase = le.floatBaseStack[len(le.floatBaseStack)-1]
 		le.floatBaseStack = le.floatBaseStack[:len(le.floatBaseStack)-1]
+	}
+
+	// CSS Counter support: Pop counter scopes that were reset on this element
+	if counterResets != nil {
+		for name := range counterResets {
+			le.counterPop(name)
+		}
 	}
 
 	// Add to float tracking (after BFC pop so float is in parent context)
@@ -1474,10 +1769,11 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 
 	// Phase 5: Adjust position and width for floats
 	adjustedX := x
+	adjustedY := y
 	adjustedWidth := availableWidth
 
 	// Get available space accounting for floats
-	leftOffset, rightOffset := le.getFloatOffsets(y)
+	leftOffset, rightOffset := le.getFloatOffsets(adjustedY)
 	adjustedX += leftOffset
 	adjustedWidth -= (leftOffset + rightOffset)
 
@@ -1489,11 +1785,33 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 	// Compute parent's content-area left edge and full width for wrapped lines.
 	// The first line uses the remaining space (adjustedWidth), but subsequent
 	// lines start at the parent's left edge and use the full content width.
-	parentContentLeft := adjustedX
-	parentContentWidth := adjustedWidth
+	parentContentLeft := x
+	parentContentWidth := availableWidth
 	if parent != nil {
 		parentContentLeft = parent.X + parent.Border.Left + parent.Padding.Left
 		parentContentWidth = parent.Width
+	}
+
+	// CSS 2.1 §9.5: If a shortened line box is too small to contain any content,
+	// then the line box is shifted downward until either some content fits or
+	// there are no more floats present.
+	if adjustedWidth < parentContentWidth && adjustedWidth > 0 {
+		// Get the first word to check if it fits beside floats
+		firstWord := text.GetFirstWord(node.Text)
+		if firstWord != "" {
+			firstWordWidth, _ := text.MeasureTextWithWeight(firstWord, fontSize, isBold)
+			if firstWordWidth > adjustedWidth {
+				// First word doesn't fit beside floats - drop below them
+				newY := le.getClearY(css.ClearBoth, adjustedY)
+				if newY > adjustedY {
+					adjustedY = newY
+					// Recalculate float offsets at new Y position
+					leftOffset, rightOffset = le.getFloatOffsets(adjustedY)
+					adjustedX = x + leftOffset
+					adjustedWidth = availableWidth - (leftOffset + rightOffset)
+				}
+			}
+		}
 	}
 
 	// Phase 6 Enhancement: Check if text needs line breaking
@@ -1508,7 +1826,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 				Node:     node,
 				Style:    parentStyle,
 				X:        adjustedX,
-				Y:        y,
+				Y:        adjustedY,
 				Width:    parentContentWidth,
 				Height:   float64(len(lines)) * height,
 				Margin:   css.BoxEdge{},
@@ -1521,7 +1839,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 			}
 
 			// Create a box for each line
-			currentY := y
+			currentY := adjustedY
 			for i, line := range lines {
 				lineWidth, _ := text.MeasureTextWithWeight(line, fontSize, isBold)
 				lineNode := &html.Node{
@@ -1564,7 +1882,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 		Node:     node,
 		Style:    parentStyle, // Text inherits parent's style
 		X:        adjustedX,
-		Y:        y,
+		Y:        adjustedY,
 		Width:    width,
 		Height:   height,
 		Margin:   css.BoxEdge{},   // No margin for text
@@ -2752,70 +3070,250 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 	parentStyle := computedStyles[node]
 	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
 
-	// Get content from pseudo-element style
-	content, hasContent := pseudoStyle.GetContent()
-	if !hasContent {
+	// Get parsed content values from pseudo-element style
+	contentValues, hasContent := pseudoStyle.GetContentValues()
+	if !hasContent || len(contentValues) == 0 {
 		return nil
+	}
+
+	// CSS Counter support: Process counter-increment BEFORE evaluating content
+	// This ensures counter() returns the incremented value
+	if incVal, ok := pseudoStyle.Get("counter-increment"); ok {
+		increments := parseCounterIncrement(incVal)
+		for name, value := range increments {
+			le.counterIncrement(name, value)
+		}
 	}
 
 	// Create box model values
 	margin := pseudoStyle.GetMargin()
 	padding := pseudoStyle.GetPadding()
 	border := pseudoStyle.GetBorderWidth()
-
-	// Check if content is a url() value (image pseudo-element)
-	if urlPath, isURL := parseURLValue(content); isURL {
-		x += margin.Left
-
-		// Try to get image dimensions for natural sizing
-		var imgWidth, imgHeight float64
-		if w, h, err := images.GetImageDimensionsWithFetcher(urlPath, le.imageFetcher); err == nil {
-			imgWidth = float64(w)
-			imgHeight = float64(h)
-		}
-
-		// Allow CSS width/height to override natural dimensions
-		if cssW, ok := pseudoStyle.GetLength("width"); ok && cssW > 0 {
-			imgWidth = cssW
-		}
-		if cssH, ok := pseudoStyle.GetLength("height"); ok && cssH > 0 {
-			imgHeight = cssH
-		}
-
-		box := &Box{
-			Node:      node,
-			Style:     pseudoStyle,
-			X:         x,
-			Y:         y + margin.Top,
-			Width:     imgWidth,
-			Height:    imgHeight,
-			Margin:    margin,
-			Padding:   padding,
-			Border:    border,
-			Children:  make([]*Box, 0),
-			Parent:    parent,
-			ImagePath: urlPath,
-		}
-		return box
-	}
-
-	// Determine dimensions based on display type
-	var boxWidth, boxHeight float64
 	display := pseudoStyle.GetDisplay()
+	fontSize := pseudoStyle.GetFontSize()
+	fontWeight := pseudoStyle.GetFontWeight()
+	bold := fontWeight == css.FontWeightBold
 
-	if content != "" {
-		// Text content: measure text
-		fontSize := pseudoStyle.GetFontSize()
-		fontWeight := pseudoStyle.GetFontWeight()
-		bold := fontWeight == css.FontWeightBold
-		boxWidth, boxHeight = text.MeasureTextWithWeight(content, fontSize, bold)
+	// Get quotes from parent style (for open-quote/close-quote)
+	quotes := []string{"\"", "\"", "'", "'"}
+	if parentStyle != nil {
+		if q, ok := parentStyle.Get("quotes"); ok {
+			quotes = parseQuotes(q)
+		}
 	}
 
-	// Block-level pseudo-elements: only take available width if they have content
-	// CSS triangles use empty content with borders, so they need width: 0
-	if display == css.DisplayBlock && content != "" {
-		boxWidth = availableWidth - margin.Left - margin.Right -
-			padding.Left - padding.Right - border.Left - border.Right
+	// Build combined text content and collect images
+	// Track pre-image text (before first image) and post-image text (after all images)
+	var preImageText string
+	var postImageText string
+	var imageBoxes []*Box
+	currentX := x + margin.Left + border.Left + padding.Left
+	quoteDepth := 0
+	seenImage := false
+
+	for _, cv := range contentValues {
+		switch cv.Type {
+		case "text":
+			if seenImage {
+				postImageText += cv.Value
+			} else {
+				preImageText += cv.Value
+			}
+		case "url":
+			seenImage = true
+			// Create an image box for this URL
+			var imgWidth, imgHeight float64
+			if w, h, err := images.GetImageDimensionsWithFetcher(cv.Value, le.imageFetcher); err == nil {
+				imgWidth = float64(w)
+				imgHeight = float64(h)
+			}
+			// If dimensions fail to load, imgWidth and imgHeight remain 0 (placeholder)
+
+			// Create style for image box (inline-block, not block)
+			imgStyle := css.NewStyle()
+			imgStyle.Set("display", "inline-block")
+
+			imgBox := &Box{
+				Node:      node,
+				Style:     imgStyle,
+				X:         currentX,
+				Y:         y + margin.Top + border.Top + padding.Top,
+				Width:     imgWidth,
+				Height:    imgHeight,
+				ImagePath: cv.Value, // Fetcher will resolve relative paths during rendering
+			}
+			imageBoxes = append(imageBoxes, imgBox)
+			currentX += imgWidth
+		case "counter":
+			// Get the current value of the specified counter
+			counterValue := le.counterValue(cv.Value)
+			if seenImage {
+				postImageText += strconv.Itoa(counterValue)
+			} else {
+				preImageText += strconv.Itoa(counterValue)
+			}
+		case "attr":
+			// Get attribute value from the node
+			if val, ok := node.GetAttribute(cv.Value); ok && val != "" {
+				if seenImage {
+					postImageText += val
+				} else {
+					preImageText += val
+				}
+			}
+		case "open-quote":
+			if quoteDepth*2 < len(quotes) {
+				if seenImage {
+					postImageText += quotes[quoteDepth*2]
+				} else {
+					preImageText += quotes[quoteDepth*2]
+				}
+			}
+			quoteDepth++
+		case "close-quote":
+			if quoteDepth > 0 {
+				quoteDepth--
+			}
+			if quoteDepth*2+1 < len(quotes) {
+				if seenImage {
+					postImageText += quotes[quoteDepth*2+1]
+				} else {
+					preImageText += quotes[quoteDepth*2+1]
+				}
+			}
+		}
+	}
+
+	// Combine for total text content (used for non-wrapped layouts)
+	textContent := preImageText + postImageText
+
+	// Measure text dimensions
+	var boxWidth, boxHeight float64
+	var textWidth, textHeight float64
+	if textContent != "" {
+		textWidth, textHeight = text.MeasureTextWithWeight(textContent, fontSize, bold)
+		boxWidth = textWidth
+		boxHeight = textHeight
+	}
+
+	// Calculate total image width and max image height
+	var imageWidth, maxImageHeight float64
+	for _, imgBox := range imageBoxes {
+		imageWidth += imgBox.Width
+		if imgBox.Height > maxImageHeight {
+			maxImageHeight = imgBox.Height
+		}
+	}
+	boxWidth += imageWidth
+	if maxImageHeight > boxHeight {
+		boxHeight = maxImageHeight
+	}
+
+	// Check if this is a floated pseudo-element
+	floatVal := pseudoStyle.GetFloat()
+
+	// For floated elements, apply shrink-to-fit sizing with text wrapping (CSS 2.1 §10.3.5)
+	// shrink-to-fit width = min(max(preferred minimum width, available width), preferred width)
+	// For floats, browsers typically use min-content sizing when it produces a narrower result
+	var wrappedPostLines []string
+	var shrinkToFitWidth float64 // Declared at higher scope for use in child positioning
+	// Use CSS default line-height: normal (approximately 1.2x font size)
+	lineHeight := fontSize * 1.2
+
+	// Track pre-image text width for layout
+	var preImageWidth float64
+	if preImageText != "" {
+		preImageWidth, _ = text.MeasureTextWithWeight(preImageText, fontSize, bold)
+	}
+
+	if floatVal != css.FloatNone && (textContent != "" || len(imageBoxes) > 0) {
+		// Calculate preferred minimum width (min-content): the longest unbreakable unit
+		// This includes the image width and the longest word in post-image text
+		minContentWidth := preImageWidth + imageWidth
+		if postImageText != "" {
+			words := strings.Fields(postImageText)
+			for _, word := range words {
+				wordWidth, _ := text.MeasureTextWithWeight(word, fontSize, bold)
+				if wordWidth > minContentWidth {
+					minContentWidth = wordWidth
+				}
+			}
+		}
+
+		// Calculate preferred width (max-content): all content on one line
+		maxContentWidth := textWidth + imageWidth
+
+		// Calculate available width
+		maxAvailable := availableWidth - margin.Left - margin.Right - padding.Left - padding.Right - border.Left - border.Right
+
+		// For floated pseudo-elements with images, browsers wrap text below the image
+		// to keep floats narrow. This allows multiple floats to fit side by side.
+		// The shrink-to-fit width is the max of (preImage+image) width and longest text line.
+		if imageWidth > 0 && postImageText != "" {
+			// Wrap post-image text to its own lines (not inline with image)
+			// This produces narrower floats that match browser behavior
+			postTextWidth, _ := text.MeasureTextWithWeight(postImageText, fontSize, bold)
+			line1Width := preImageWidth + imageWidth
+			shrinkToFitWidth = line1Width
+			if postTextWidth > shrinkToFitWidth {
+				shrinkToFitWidth = postTextWidth
+			}
+		} else {
+			// No image or no post-image text - use standard shrink-to-fit
+			// CSS 2.1 §10.3.5: shrink-to-fit = min(max(min-content, available), max-content)
+			shrinkToFitWidth = minContentWidth
+			if maxAvailable > minContentWidth {
+				shrinkToFitWidth = maxAvailable
+			}
+			if shrinkToFitWidth > maxContentWidth {
+				shrinkToFitWidth = maxContentWidth
+			}
+		}
+
+		// Wrap postImageText if needed
+		if postImageText != "" && (imageWidth > 0 || maxContentWidth > shrinkToFitWidth) {
+			// Calculate remaining space on first line after preImageText and images
+			firstLineMax := shrinkToFitWidth - preImageWidth - imageWidth
+			if firstLineMax < 0 {
+				firstLineMax = 0
+			}
+
+			// Wrap only the post-image text
+			wrappedPostLines = text.BreakTextIntoLinesWithWrap(postImageText, fontSize, bold, firstLineMax, shrinkToFitWidth)
+
+			// For floated generated content, use the shrink-to-fit width
+			// Even if individual words overflow, the box width stays constrained
+			// This matches browser behavior for narrow floated pseudo-elements
+			boxWidth = shrinkToFitWidth
+
+			// Calculate height needed for all content
+			numTextLines := len(wrappedPostLines)
+			if numTextLines == 0 {
+				// No wrapped text - height is just the first line (max of line height and image height)
+				boxHeight = lineHeight
+				if maxImageHeight > lineHeight {
+					boxHeight = maxImageHeight
+				}
+			} else {
+				// First line contains images + possibly first text line
+				// Additional lines contain wrapped text
+				firstLineHeight := lineHeight
+				if maxImageHeight > firstLineHeight {
+					firstLineHeight = maxImageHeight
+				}
+				additionalLines := numTextLines - 1
+				if additionalLines < 0 {
+					additionalLines = 0
+				}
+				boxHeight = firstLineHeight + float64(additionalLines)*lineHeight
+			}
+		}
+	}
+
+	// Block-level pseudo-elements: take available width unless floated
+	if display == css.DisplayBlock && floatVal == css.FloatNone && (textContent != "" || len(imageBoxes) > 0) {
+		totalWidth := availableWidth - margin.Left - margin.Right
+		boxWidth = totalWidth - padding.Left - padding.Right - border.Left - border.Right
 	}
 
 	// Apply explicit height
@@ -2823,14 +3321,12 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		boxHeight = h
 	}
 
-	// Apply horizontal margin offset (border is inside the box, not added to position)
-	x += margin.Left
-
+	// Create the pseudo-element box
 	box := &Box{
-		Node:          node, // Reference the parent node
+		Node:          node,
 		Style:         pseudoStyle,
-		X:             x,
-		Y:             y + margin.Top, // Y is border-box top (margin outside, border inside)
+		X:             x + margin.Left,
+		Y:             y + margin.Top,
 		Width:         boxWidth,
 		Height:        boxHeight,
 		Margin:        margin,
@@ -2838,10 +3334,221 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		Border:        border,
 		Children:      make([]*Box, 0),
 		Parent:        parent,
-		PseudoContent: content, // Store the pseudo-element content
+		PseudoContent: textContent,
+	}
+
+	// Add image boxes as children
+	for _, imgBox := range imageBoxes {
+		imgBox.Parent = box
+		box.Children = append(box.Children, imgBox)
+	}
+
+	// For content with images, create child text boxes for proper inline layout and paint order
+	// This prevents the parent's full text from being drawn and then covered by image children
+	if len(imageBoxes) > 0 {
+		// Clear PseudoContent from container so renderer draws children instead
+		box.PseudoContent = ""
+
+		contentX := x + margin.Left + border.Left + padding.Left
+		contentY := y + margin.Top + border.Top + padding.Top
+
+		// Line 1: preImageText (before images), then images (already positioned), then first wrapped line
+		currentLineX := contentX
+
+		// Add preImageText as a child box on line 1
+		if preImageText != "" {
+			// Create a minimal style for the text box (inline content)
+			textStyle := css.NewStyle()
+			textStyle.Set("display", "inline")
+			// Inherit font properties from pseudo-element style
+			if val, ok := pseudoStyle.Get("font-size"); ok {
+				textStyle.Set("font-size", val)
+			}
+			if val, ok := pseudoStyle.Get("font-weight"); ok {
+				textStyle.Set("font-weight", val)
+			}
+			if val, ok := pseudoStyle.Get("color"); ok {
+				textStyle.Set("color", val)
+			}
+
+			preBox := &Box{
+				Node:          node,
+				Style:         textStyle,
+				X:             currentLineX,
+				Y:             contentY,
+				Width:         preImageWidth,
+				Height:        lineHeight,
+				Margin:        css.BoxEdge{},
+				Padding:       css.BoxEdge{},
+				Border:        css.BoxEdge{},
+				Children:      make([]*Box, 0),
+				Parent:        box,
+				PseudoContent: preImageText,
+			}
+			box.Children = append(box.Children, preBox)
+			currentLineX += preImageWidth
+		}
+
+		// Images are already added as children - update their X positions
+		for _, imgBox := range imageBoxes {
+			imgBox.X = currentLineX
+			currentLineX += imgBox.Width
+		}
+
+		// Add post-image text (either wrapped lines or single unwrapped line)
+		if len(wrappedPostLines) > 0 {
+			// Text wraps - add each wrapped line as a child box
+			// Text continues on the same line after images if there's space
+			// Wrapped lines start below the image if image is taller than line height
+			firstLineBaseY := contentY
+			wrappedLinesStartY := contentY + maxImageHeight
+			if wrappedLinesStartY < contentY + lineHeight {
+				wrappedLinesStartY = contentY + lineHeight
+			}
+
+			for i, line := range wrappedPostLines {
+				lineWidth, _ := text.MeasureTextWithWeight(line, fontSize, bold)
+
+				var lineX, lineY float64
+				if i == 0 {
+					// First line continues after preImageText and images
+					lineX = currentLineX
+					lineY = firstLineBaseY
+				} else {
+					// Subsequent lines wrap below the image
+					lineX = contentX
+					lineY = wrappedLinesStartY + float64(i-1)*lineHeight
+				}
+
+				// Create a minimal style for the text box (inline content)
+				textStyle := css.NewStyle()
+				textStyle.Set("display", "inline")
+				// Inherit font properties from pseudo-element style
+				if val, ok := pseudoStyle.Get("font-size"); ok {
+					textStyle.Set("font-size", val)
+				}
+				if val, ok := pseudoStyle.Get("font-weight"); ok {
+					textStyle.Set("font-weight", val)
+				}
+				if val, ok := pseudoStyle.Get("color"); ok {
+					textStyle.Set("color", val)
+				}
+
+				// Create a pseudo-text child box for this line
+				lineBox := &Box{
+					Node:          node,
+					Style:         textStyle,
+					X:             lineX,
+					Y:             lineY,
+					Width:         lineWidth,
+					Height:        lineHeight,
+					Margin:        css.BoxEdge{},
+					Padding:       css.BoxEdge{},
+					Border:        css.BoxEdge{},
+					Children:      make([]*Box, 0),
+					Parent:        box,
+					PseudoContent: line,
+				}
+				box.Children = append(box.Children, lineBox)
+			}
+		} else if postImageText != "" {
+			// Text doesn't wrap - add unwrapped postImageText as single child box
+			postTextWidth, _ := text.MeasureTextWithWeight(postImageText, fontSize, bold)
+
+			// Create a minimal style for the text box (inline content)
+			textStyle := css.NewStyle()
+			textStyle.Set("display", "inline")
+			// Inherit font properties from pseudo-element style
+			if val, ok := pseudoStyle.Get("font-size"); ok {
+				textStyle.Set("font-size", val)
+			}
+			if val, ok := pseudoStyle.Get("font-weight"); ok {
+				textStyle.Set("font-weight", val)
+			}
+			if val, ok := pseudoStyle.Get("color"); ok {
+				textStyle.Set("color", val)
+			}
+
+			postBox := &Box{
+				Node:          node,
+				Style:         textStyle,
+				X:             currentLineX,
+				Y:             contentY,
+				Width:         postTextWidth,
+				Height:        lineHeight,
+				Margin:        css.BoxEdge{},
+				Padding:       css.BoxEdge{},
+				Border:        css.BoxEdge{},
+				Children:      make([]*Box, 0),
+				Parent:        box,
+				PseudoContent: postImageText,
+			}
+			box.Children = append(box.Children, postBox)
+		}
+	}
+
+	// Update box dimensions to include all content
+	if len(imageBoxes) > 0 || textContent != "" {
+		box.Width = boxWidth
+		box.Height = boxHeight
 	}
 
 	return box
+}
+
+// parseQuotes parses the CSS quotes property value
+func parseQuotes(q string) []string {
+	var quotes []string
+	q = strings.TrimSpace(q)
+
+	for len(q) > 0 {
+		q = strings.TrimSpace(q)
+		if len(q) == 0 {
+			break
+		}
+
+		// Handle quoted strings
+		if q[0] == '"' || q[0] == '\'' {
+			quote := q[0]
+			end := 1
+			for end < len(q) && q[end] != quote {
+				if q[end] == '\\' && end+1 < len(q) {
+					end += 2
+				} else {
+					end++
+				}
+			}
+			if end < len(q) {
+				val := q[1:end]
+				// Unescape Unicode escapes like \0022
+				val = unescapeUnicode(val)
+				quotes = append(quotes, val)
+				q = q[end+1:]
+			} else {
+				break
+			}
+		} else {
+			// Skip non-quoted content
+			if idx := strings.IndexAny(q, " \t\"'"); idx > 0 {
+				q = q[idx:]
+			} else {
+				break
+			}
+		}
+	}
+
+	return quotes
+}
+
+// unescapeUnicode converts CSS Unicode escapes like \0022 to actual characters
+func unescapeUnicode(s string) string {
+	result := s
+	// Handle common escapes
+	result = strings.ReplaceAll(result, "\\0022", "\"")
+	result = strings.ReplaceAll(result, "\\0027", "'")
+	result = strings.ReplaceAll(result, "\\00AB", "«")
+	result = strings.ReplaceAll(result, "\\00BB", "»")
+	return result
 }
 
 // Phase 23: generateListMarker creates a marker box for list items
@@ -2921,4 +3628,385 @@ func (le *LayoutEngine) getListItemNumber(node *html.Node) int {
 	}
 
 	return itemNumber
+}
+
+// ============================================================================
+// Intrinsic Size Computation
+// ============================================================================
+
+// ComputeIntrinsicSizes calculates the min-content and max-content widths for a node.
+// These are fundamental for:
+// - Shrink-to-fit width calculation (floats, inline-blocks, abs pos)
+// - Flexbox flex-basis: auto
+// - Table cell width calculation
+// - CSS min-content/max-content width values
+func (le *LayoutEngine) ComputeIntrinsicSizes(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style) IntrinsicSizes {
+	if node == nil {
+		return IntrinsicSizes{}
+	}
+
+	// Text nodes: measure with and without wrapping
+	if node.Type == html.TextNode {
+		return le.computeTextIntrinsicSizes(node.Text, style)
+	}
+
+	// Element nodes
+	if node.Type != html.ElementNode {
+		return IntrinsicSizes{}
+	}
+
+	// Images have intrinsic dimensions
+	if node.TagName == "img" {
+		return le.computeImageIntrinsicSizes(node, style)
+	}
+
+	display := style.GetDisplay()
+
+	// Replaced elements (images, etc.) use their natural size
+	if display == css.DisplayNone {
+		return IntrinsicSizes{}
+	}
+
+	// Get box model values
+	padding := style.GetPadding()
+	border := style.GetBorderWidth()
+	horizontalExtra := padding.Left + padding.Right + border.Left + border.Right
+
+	// For inline elements, sum up children's intrinsic sizes
+	if display == css.DisplayInline {
+		return le.computeInlineIntrinsicSizes(node, style, computedStyles, horizontalExtra)
+	}
+
+	// For block/inline-block, compute based on children
+	return le.computeBlockIntrinsicSizes(node, style, computedStyles, horizontalExtra)
+}
+
+// computeTextIntrinsicSizes computes intrinsic sizes for text content
+func (le *LayoutEngine) computeTextIntrinsicSizes(textContent string, style *css.Style) IntrinsicSizes {
+	if textContent == "" {
+		return IntrinsicSizes{}
+	}
+
+	fontSize := style.GetFontSize()
+	fontWeight := style.GetFontWeight()
+	bold := fontWeight == css.FontWeightBold
+
+	// Max-content: width without any wrapping
+	maxContent, _ := text.MeasureTextWithWeight(textContent, fontSize, bold)
+
+	// Min-content: width of longest word (break at spaces)
+	minContent := 0.0
+	words := strings.Fields(textContent)
+	for _, word := range words {
+		wordWidth, _ := text.MeasureTextWithWeight(word, fontSize, bold)
+		if wordWidth > minContent {
+			minContent = wordWidth
+		}
+	}
+
+	return IntrinsicSizes{
+		MinContent: minContent,
+		MaxContent: maxContent,
+		Preferred:  maxContent,
+	}
+}
+
+// computeImageIntrinsicSizes computes intrinsic sizes for images
+func (le *LayoutEngine) computeImageIntrinsicSizes(node *html.Node, style *css.Style) IntrinsicSizes {
+	src, _ := node.GetAttribute("src")
+	if src == "" {
+		return IntrinsicSizes{}
+	}
+
+	// Try to get image dimensions
+	var imgWidth float64
+	if w, _, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil {
+		imgWidth = float64(w)
+	}
+
+	// CSS width overrides natural width
+	if cssW, ok := style.GetLength("width"); ok && cssW > 0 {
+		imgWidth = cssW
+	}
+
+	return IntrinsicSizes{
+		MinContent: imgWidth,
+		MaxContent: imgWidth,
+		Preferred:  imgWidth,
+	}
+}
+
+// computeInlineIntrinsicSizes computes intrinsic sizes for inline elements
+func (le *LayoutEngine) computeInlineIntrinsicSizes(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style, horizontalExtra float64) IntrinsicSizes {
+	var minContent, maxContent float64
+
+	for _, child := range node.Children {
+		childStyle := computedStyles[child]
+		if childStyle == nil {
+			childStyle = style // Inherit parent style for text
+		}
+
+		childSizes := le.ComputeIntrinsicSizes(child, childStyle, computedStyles)
+
+		// For inline, children are laid out horizontally
+		// Min-content: largest child min-content (can wrap between children)
+		if childSizes.MinContent > minContent {
+			minContent = childSizes.MinContent
+		}
+		// Max-content: sum of all children (no wrapping)
+		maxContent += childSizes.MaxContent
+	}
+
+	return IntrinsicSizes{
+		MinContent: minContent + horizontalExtra,
+		MaxContent: maxContent + horizontalExtra,
+		Preferred:  maxContent + horizontalExtra,
+	}
+}
+
+// computeBlockIntrinsicSizes computes intrinsic sizes for block/inline-block elements
+func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style, horizontalExtra float64) IntrinsicSizes {
+	var minContent, maxContent float64
+
+	// Check for explicit width
+	if width, ok := style.GetLength("width"); ok && width > 0 {
+		return IntrinsicSizes{
+			MinContent: width + horizontalExtra,
+			MaxContent: width + horizontalExtra,
+			Preferred:  width + horizontalExtra,
+		}
+	}
+
+	// Track current inline run for block containers
+	var inlineMinContent, inlineMaxContent float64
+
+	for _, child := range node.Children {
+		childStyle := computedStyles[child]
+		if childStyle == nil {
+			childStyle = css.NewStyle()
+		}
+
+		childSizes := le.ComputeIntrinsicSizes(child, childStyle, computedStyles)
+		childDisplay := childStyle.GetDisplay()
+
+		if childDisplay == css.DisplayBlock || childDisplay == css.DisplayListItem {
+			// Block child: flush inline run, then take max of block widths
+			if inlineMaxContent > maxContent {
+				maxContent = inlineMaxContent
+			}
+			if inlineMinContent > minContent {
+				minContent = inlineMinContent
+			}
+			inlineMinContent = 0
+			inlineMaxContent = 0
+
+			if childSizes.MinContent > minContent {
+				minContent = childSizes.MinContent
+			}
+			if childSizes.MaxContent > maxContent {
+				maxContent = childSizes.MaxContent
+			}
+		} else {
+			// Inline child: accumulate in current run
+			if childSizes.MinContent > inlineMinContent {
+				inlineMinContent = childSizes.MinContent
+			}
+			inlineMaxContent += childSizes.MaxContent
+		}
+	}
+
+	// Flush final inline run
+	if inlineMaxContent > maxContent {
+		maxContent = inlineMaxContent
+	}
+	if inlineMinContent > minContent {
+		minContent = inlineMinContent
+	}
+
+	return IntrinsicSizes{
+		MinContent: minContent + horizontalExtra,
+		MaxContent: maxContent + horizontalExtra,
+		Preferred:  maxContent + horizontalExtra,
+	}
+}
+
+// ============================================================================
+// Layout Mode Implementations
+// ============================================================================
+
+// ComputeIntrinsicSizes for BlockLayoutMode
+func (m *BlockLayoutMode) ComputeIntrinsicSizes(le *LayoutEngine, node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style) IntrinsicSizes {
+	return le.ComputeIntrinsicSizes(node, style, computedStyles)
+}
+
+// LayoutChildren for BlockLayoutMode - to be implemented as refactor progresses
+func (m *BlockLayoutMode) LayoutChildren(le *LayoutEngine, container *Box, children []*html.Node, availableWidth float64, computedStyles map[*html.Node]*css.Style) []*Box {
+	// This will be filled in as we refactor layoutNode
+	return nil
+}
+
+// ComputeIntrinsicSizes for InlineLayoutMode
+func (m *InlineLayoutMode) ComputeIntrinsicSizes(le *LayoutEngine, node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style) IntrinsicSizes {
+	return le.ComputeIntrinsicSizes(node, style, computedStyles)
+}
+
+// LayoutChildren for InlineLayoutMode - to be implemented as refactor progresses
+func (m *InlineLayoutMode) LayoutChildren(le *LayoutEngine, container *Box, children []*html.Node, availableWidth float64, computedStyles map[*html.Node]*css.Style) []*Box {
+	// This will be filled in as we refactor layoutNode
+	return nil
+}
+
+// ComputeIntrinsicSizes for FlexLayoutMode
+func (m *FlexLayoutMode) ComputeIntrinsicSizes(le *LayoutEngine, node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style) IntrinsicSizes {
+	// Flex intrinsic sizing follows CSS Flexible Box Layout Module Level 1 §9.9
+	// For now, delegate to block computation
+	return le.ComputeIntrinsicSizes(node, style, computedStyles)
+}
+
+// LayoutChildren for FlexLayoutMode - to be implemented
+func (m *FlexLayoutMode) LayoutChildren(le *LayoutEngine, container *Box, children []*html.Node, availableWidth float64, computedStyles map[*html.Node]*css.Style) []*Box {
+	// This will implement the full flex layout algorithm
+	return nil
+}
+
+// ============================================================================
+// Helper Functions for Fragment Rendering
+// ============================================================================
+
+// AddFragment adds a visual fragment to a box
+func (b *Box) AddFragment(x, y, width, height float64, borders BorderEdgeFlags) {
+	b.Fragments = append(b.Fragments, BoxFragment{
+		X:       x,
+		Y:       y,
+		Width:   width,
+		Height:  height,
+		Borders: borders,
+	})
+}
+
+// HasFragments returns true if this box should render as fragments
+func (b *Box) HasFragments() bool {
+	return len(b.Fragments) > 0
+}
+
+// GetBorderFlags returns which borders should be drawn based on fragment state
+func (b *Box) GetBorderFlags() BorderEdgeFlags {
+	// If we have explicit fragments, use the main box position only for the first
+	if b.HasFragments() {
+		return BorderEdgeFlags{} // Don't draw borders for main box, use fragments
+	}
+
+	// Legacy fragment flags for backward compatibility
+	flags := AllBorders()
+	if b.IsFirstFragment {
+		flags.Right = false
+	}
+	if b.IsLastFragment {
+		flags.Left = false
+	}
+	return flags
+}
+
+// CSS Counter support functions
+
+// counterReset resets a counter to the specified value (default 0)
+// This creates a new scope for the counter.
+func (le *LayoutEngine) counterReset(name string, value int) {
+	if le.counters == nil {
+		le.counters = make(map[string][]int)
+	}
+	// Push a new value onto the counter's stack
+	le.counters[name] = append(le.counters[name], value)
+}
+
+// counterIncrement increments a counter by the specified value (default 1)
+func (le *LayoutEngine) counterIncrement(name string, value int) {
+	if le.counters == nil {
+		return
+	}
+	stack := le.counters[name]
+	if len(stack) == 0 {
+		// Counter wasn't reset - implicitly create it at 0
+		le.counters[name] = []int{value}
+	} else {
+		// Increment the top of the stack
+		le.counters[name][len(stack)-1] += value
+	}
+}
+
+// counterValue returns the current value of a counter
+func (le *LayoutEngine) counterValue(name string) int {
+	if le.counters == nil {
+		return 0
+	}
+	stack := le.counters[name]
+	if len(stack) == 0 {
+		return 0
+	}
+	return stack[len(stack)-1]
+}
+
+// counterPop removes the topmost scope of a counter (called when leaving an element that reset it)
+func (le *LayoutEngine) counterPop(name string) {
+	if le.counters == nil {
+		return
+	}
+	stack := le.counters[name]
+	if len(stack) > 0 {
+		le.counters[name] = stack[:len(stack)-1]
+	}
+}
+
+// parseCounterReset parses the counter-reset property value
+// Format: "name [value] [name2 [value2] ...]" or "none"
+func parseCounterReset(value string) map[string]int {
+	result := make(map[string]int)
+	value = strings.TrimSpace(value)
+	if value == "" || value == "none" {
+		return result
+	}
+
+	parts := strings.Fields(value)
+	i := 0
+	for i < len(parts) {
+		name := parts[i]
+		resetValue := 0
+		if i+1 < len(parts) {
+			// Check if next part is a number
+			if v, err := strconv.Atoi(parts[i+1]); err == nil {
+				resetValue = v
+				i++
+			}
+		}
+		result[name] = resetValue
+		i++
+	}
+	return result
+}
+
+// parseCounterIncrement parses the counter-increment property value
+// Format: "name [value] [name2 [value2] ...]" or "none"
+func parseCounterIncrement(value string) map[string]int {
+	result := make(map[string]int)
+	value = strings.TrimSpace(value)
+	if value == "" || value == "none" {
+		return result
+	}
+
+	parts := strings.Fields(value)
+	i := 0
+	for i < len(parts) {
+		name := parts[i]
+		incValue := 1 // Default increment is 1
+		if i+1 < len(parts) {
+			// Check if next part is a number
+			if v, err := strconv.Atoi(parts[i+1]); err == nil {
+				incValue = v
+				i++
+			}
+		}
+		result[name] = incValue
+		i++
+	}
+	return result
 }

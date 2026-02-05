@@ -641,6 +641,12 @@ func (r *Renderer) drawText(box *layout.Box) {
 		return
 	}
 
+	// Skip drawing parent's PseudoContent if it has children (child boxes draw the actual content)
+	// This prevents the parent from drawing the full text which would be covered by child boxes
+	if box.PseudoContent != "" && len(box.Children) > 0 {
+		return
+	}
+
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 
