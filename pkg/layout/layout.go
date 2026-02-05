@@ -622,16 +622,27 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 								relativeOffsetY = -offset.Bottom
 							}
 						}
-						if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
+						// Calculate new position
+					var newX float64
+					if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
 							childTotalW := childBox.Width + childBox.Padding.Left + childBox.Padding.Right + childBox.Border.Left + childBox.Border.Right
 							parentContentStart := box.X + border.Left + padding.Left
 							centerOff := (childAvailableWidth - childTotalW) / 2
 							if centerOff < 0 { centerOff = 0 }
-							childBox.X = parentContentStart + centerOff
+							newX = parentContentStart + centerOff
 						} else {
-							childBox.X = box.X + border.Left + padding.Left + childBox.Margin.Left
+							newX = box.X + border.Left + padding.Left + childBox.Margin.Left
 						}
-						childBox.Y = childY + childBox.Margin.Top + relativeOffsetY
+						newY := childY + childBox.Margin.Top + relativeOffsetY
+
+						// Shift children by the position delta (important for block-in-inline)
+						dx := newX - childBox.X
+						dy := newY - childBox.Y
+						if dx != 0 || dy != 0 {
+							le.shiftChildren(childBox, dx, dy)
+						}
+						childBox.X = newX
+						childBox.Y = newY
 					}
 
 					box.Children = append(box.Children, childBox)
