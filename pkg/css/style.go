@@ -2114,6 +2114,15 @@ func (s *Style) GetListStyleType() ListStyleType {
 			return ListStyleTypeDecimal
 		case "none":
 			return ListStyleTypeNone
+		default:
+			// Handle custom string values (quoted strings like "\2022")
+			// Strip quotes if present
+			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') ||
+				(val[0] == '\'' && val[len(val)-1] == '\'')) {
+				return ListStyleType(val[1 : len(val)-1])
+			}
+			// Return as-is for other values
+			return ListStyleType(val)
 		}
 	}
 	return ListStyleTypeDisc

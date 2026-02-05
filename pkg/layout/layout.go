@@ -2761,7 +2761,12 @@ func (le *LayoutEngine) generateListMarker(node *html.Node, style *css.Style, x,
 		itemNumber := le.getListItemNumber(node)
 		markerText = fmt.Sprintf("%d.", itemNumber)
 	default:
-		markerText = "•"
+		// Use custom marker string (e.g., from list-style-type: "\2022")
+		if string(listStyleType) != "" {
+			markerText = string(listStyleType)
+		} else {
+			markerText = "•"
+		}
 	}
 
 	// Measure marker text
