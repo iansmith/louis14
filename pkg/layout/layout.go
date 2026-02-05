@@ -3246,32 +3246,18 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 		// Calculate available width
 		maxAvailable := availableWidth - margin.Left - margin.Right - padding.Left - padding.Right - border.Left - border.Right
 
-		// For floated pseudo-elements with images, browsers wrap text below the image
-		// to keep floats narrow. This allows multiple floats to fit side by side.
-		// The shrink-to-fit width is the max of (preImage+image) width and longest text line.
-		if imageWidth > 0 && postImageText != "" {
-			// Wrap post-image text to its own lines (not inline with image)
-			// This produces narrower floats that match browser behavior
-			postTextWidth, _ := text.MeasureTextWithWeight(postImageText, fontSize, bold)
-			line1Width := preImageWidth + imageWidth
-			shrinkToFitWidth = line1Width
-			if postTextWidth > shrinkToFitWidth {
-				shrinkToFitWidth = postTextWidth
-			}
-		} else {
-			// No image or no post-image text - use standard shrink-to-fit
-			// CSS 2.1 §10.3.5: shrink-to-fit = min(max(min-content, available), max-content)
-			shrinkToFitWidth = minContentWidth
-			if maxAvailable > minContentWidth {
-				shrinkToFitWidth = maxAvailable
-			}
-			if shrinkToFitWidth > maxContentWidth {
-				shrinkToFitWidth = maxContentWidth
-			}
+		// CSS 2.1 §10.3.5: shrink-to-fit = min(max(min-content, available), max-content)
+		// For floated pseudo-elements, prefer keeping all content on one line
+		shrinkToFitWidth = minContentWidth
+		if maxAvailable > minContentWidth {
+			shrinkToFitWidth = maxAvailable
+		}
+		if shrinkToFitWidth > maxContentWidth {
+			shrinkToFitWidth = maxContentWidth
 		}
 
-		// Wrap postImageText if needed
-		if postImageText != "" && (imageWidth > 0 || maxContentWidth > shrinkToFitWidth) {
+		// Wrap postImageText only if content exceeds shrink-to-fit width
+		if postImageText != "" && maxContentWidth > shrinkToFitWidth {
 			// Calculate remaining space on first line after preImageText and images
 			firstLineMax := shrinkToFitWidth - preImageWidth - imageWidth
 			if firstLineMax < 0 {
