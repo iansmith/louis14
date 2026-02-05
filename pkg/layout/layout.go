@@ -616,7 +616,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 7: Track inline layout context
 	inlineCtx := &InlineContext{
-		LineX:      box.X + border.Left + padding.Left,
+		LineX:      le.initializeLineX(box, border, padding, childY),
 		LineY:      childY,
 		LineHeight: 0,
 		LineBoxes:  make([]*Box, 0),
@@ -668,7 +668,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			beforeDisplay := beforeBox.Style.GetDisplay()
 			if beforeDisplay == css.DisplayBlock {
 				inlineCtx.LineY += le.getTotalHeight(beforeBox)
-				inlineCtx.LineX = box.X + border.Left + padding.Left
+				inlineCtx.LineX = le.initializeLineX(box, border, padding, inlineCtx.LineY)
 			} else {
 				inlineCtx.LineX += le.getTotalWidth(beforeBox)
 				if beforeBox.Height > inlineCtx.LineHeight {
@@ -739,7 +739,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						inlineCtx.LineHeight = style.GetLineHeight()
 					}
 					inlineCtx.LineY += inlineCtx.LineHeight
-					inlineCtx.LineX = box.X + border.Left + padding.Left
+					inlineCtx.LineX = le.initializeLineX(box, border, padding, inlineCtx.LineY)
 					inlineCtx.LineHeight = 0
 					inlineCtx.LineBoxes = make([]*Box, 0)
 					// Don't add <br> to children - it's just a control element
@@ -778,7 +778,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					if allowWrap && inlineCtx.LineX + childTotalWidth > box.X + border.Left + padding.Left + childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
 						// Wrap to next line
 						inlineCtx.LineY += inlineCtx.LineHeight
-						inlineCtx.LineX = box.X + border.Left + padding.Left
+						inlineCtx.LineX = le.initializeLineX(box, border, padding, inlineCtx.LineY)
 						inlineCtx.LineHeight = 0
 						inlineCtx.LineBoxes = make([]*Box, 0)
 
@@ -942,7 +942,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					}
 
 					// Reset inline context for next line
-					inlineCtx.LineX = box.X + border.Left + padding.Left
+					inlineCtx.LineX = le.initializeLineX(box, border, padding, inlineCtx.LineY)
 					inlineCtx.LineY = childY
 
 					// Reset fragment tracking for next fragment (content after this block)
@@ -960,6 +960,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// formatting context together with sibling inline elements (e.g. <em>).
 			// layoutTextNode already handles float offsets internally, so pass the
 			// original position and let it adjust for floats
+			// Ensure LineX accounts for any floats that were added (e.g., floated ::before)
+			le.ensureLineXClearsFloats(inlineCtx, box, border, padding)
 			textBox := le.layoutTextNode(
 				child,
 				inlineCtx.LineX,
@@ -1008,14 +1010,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					if allowWrap && inlineCtx.LineX+textWidth > box.X+border.Left+padding.Left+childAvailableWidth && len(inlineCtx.LineBoxes) > 0 {
 						// Wrap to new line
 						inlineCtx.LineY += inlineCtx.LineHeight
-						inlineCtx.LineX = box.X + border.Left + padding.Left
+						inlineCtx.LineX = le.initializeLineX(box, border, padding, inlineCtx.LineY)
 						inlineCtx.LineHeight = textHeight
 						textBox.X = inlineCtx.LineX
 						textBox.Y = inlineCtx.LineY
 						inlineCtx.LineX += textWidth
+						le.ensureLineXClearsFloats(inlineCtx, box, border, padding)
 					} else {
 						// Fits on current line (or is the first item on the line)
 						inlineCtx.LineX += textWidth
+						le.ensureLineXClearsFloats(inlineCtx, box, border, padding)
 						if textHeight > inlineCtx.LineHeight {
 							inlineCtx.LineHeight = textHeight
 						}
@@ -1789,8 +1793,8 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 	adjustedWidth := availableWidth
 
 	// Get available space accounting for floats
+	// NOTE: X position is now handled by the inline context, so we only adjust width
 	leftOffset, rightOffset := le.getFloatOffsets(adjustedY)
-	adjustedX += leftOffset
 	adjustedWidth -= (leftOffset + rightOffset)
 
 	// Phase 6 Enhancement: Measure the text with correct font weight
@@ -1949,6 +1953,22 @@ func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset floa
 	}
 
 	return leftOffset, rightOffset
+}
+
+// initializeLineX returns the starting X position for inline content in a box at the given Y position,
+// accounting for left floats. This should be called when starting a new line or after the Y position changes.
+func (le *LayoutEngine) initializeLineX(box *Box, border, padding css.BoxEdge, y float64) float64 {
+	leftOffset, _ := le.getFloatOffsets(y)
+	return box.X + border.Left + padding.Left + leftOffset
+}
+
+// ensureLineXClearsFloats updates the inline context's LineX to ensure it clears any left floats
+// at the current Y position. This should be called after advancing LineX to verify constraints.
+func (le *LayoutEngine) ensureLineXClearsFloats(inlineCtx *InlineContext, box *Box, border, padding css.BoxEdge) {
+	minX := le.initializeLineX(box, border, padding, inlineCtx.LineY)
+	if inlineCtx.LineX < minX {
+		inlineCtx.LineX = minX
+	}
 }
 
 // getClearY returns the Y position after clearing floats
