@@ -26,6 +26,10 @@ type Box struct {
 	ZIndex        int             // Phase 4: Stacking order
 	ImagePath     string          // Phase 8: Image source path for img elements
 	PseudoContent string          // Phase 11: Content for pseudo-elements
+	// Block-in-inline fragment tracking (CSS 2.1 §9.2.1.1)
+	// When a block element breaks an inline element, the inline's border is split
+	IsFirstFragment bool // First part of split inline - has left border, no right border
+	IsLastFragment  bool // Last part of split inline - has right border, no left border
 }
 
 type LayoutEngine struct {
@@ -529,6 +533,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 24: Skip children for object elements that successfully loaded an image
 	skipChildren := isObjectImage
 
+	// Track block-in-inline for fragment splitting (CSS 2.1 §9.2.1.1)
+	// When a block element is inside an inline element, the inline's borders are split
+	isInlineParent := display == css.DisplayInline
+	hasSeenBlockChild := false
+	hasInlineContentBeforeBlock := false
+
 	for _, child := range node.Children {
 		if skipChildren {
 			break
@@ -557,6 +567,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				// Skip inline positioning for floated elements (they are positioned by float logic)
 				childIsFloated := childStyle != nil && childStyle.GetFloat() != css.FloatNone
 				if (childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock) && childBox.Position == css.PositionStatic && !childIsFloated {
+					// Block-in-inline: mark inline content after a block as last fragment
+					if isInlineParent && hasSeenBlockChild {
+						childBox.IsLastFragment = true
+					}
+					if isInlineParent && !hasSeenBlockChild {
+						hasInlineContentBeforeBlock = true
+					}
 					childTotalWidth := le.getTotalWidth(childBox)
 
 					// Check if child fits on current line (skip wrapping if white-space: nowrap)
@@ -595,6 +612,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					le.applyVerticalAlign(childBox, inlineCtx.LineY, inlineCtx.LineHeight)
 				} else {
 					// Block element or other display mode
+					// Block-in-inline: when a block is inside an inline parent, mark fragments
+					if isInlineParent && hasInlineContentBeforeBlock {
+						// Mark the parent as first fragment (no right border)
+						box.IsFirstFragment = true
+						hasSeenBlockChild = true
+					}
+
 					// Finish current inline line (apply strut for line box height)
 					if len(inlineCtx.LineBoxes) > 0 {
 						strutHeight := style.GetLineHeight()
@@ -728,6 +752,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				box,
 			)
 			if textBox != nil {
+				// Block-in-inline: track and mark text fragments
+				if isInlineParent {
+					if hasSeenBlockChild {
+						textBox.IsLastFragment = true
+					} else {
+						hasInlineContentBeforeBlock = true
+					}
+				}
 				box.Children = append(box.Children, textBox)
 
 				// For multi-line text containers, the inline context should

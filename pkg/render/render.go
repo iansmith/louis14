@@ -496,7 +496,8 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	}
 
 	// Left border
-	if box.Border.Left > 0 && borderStyles.Left != css.BorderStyleNone {
+	// Skip left border for LastFragment of split inline (CSS 2.1 §9.2.1.1)
+	if box.Border.Left > 0 && borderStyles.Left != css.BorderStyleNone && !box.IsLastFragment {
 		if color, ok := r.getBorderSideColor(box, "left"); ok {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerLeft, outerTop)
@@ -509,7 +510,8 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	}
 
 	// Right border
-	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone {
+	// Skip right border for FirstFragment of split inline (CSS 2.1 §9.2.1.1)
+	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone && !box.IsFirstFragment {
 		if color, ok := r.getBorderSideColor(box, "right"); ok {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerRight, outerTop)
