@@ -723,14 +723,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			childDisplay := childStyle.GetDisplay()
 
 			// Layout the child
-			// For floated elements, use containing block's left edge, not current inline position
-			childX := inlineCtx.LineX
-			if childStyle.GetFloat() != css.FloatNone {
-				childX = box.X + border.Left + padding.Left
-			}
 			childBox := le.layoutNode(
 				child,
-				childX,
+				inlineCtx.LineX,
 				inlineCtx.LineY,
 				childAvailableWidth,
 				computedStyles,
@@ -885,14 +880,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 					box.Children = append(box.Children, childBox)
 
-					// For floats on the current inline line, update LineX so subsequent content wraps
-					childFloatType := childBox.Style.GetFloat()
-					if childFloatType != css.FloatNone && childBox.Y == inlineCtx.LineY {
-						// Float is on the current line - update LineX to account for it
-						le.ensureLineXClearsFloats(inlineCtx, box, border, padding)
-					}
-
 					// Advance Y for block elements
+					childFloatType := childBox.Style.GetFloat()
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatType == css.FloatNone {
 						// Margin-collapse-through: collect margins from collapse-through elements
 						// and combine them with the next non-collapse-through sibling's margins.
