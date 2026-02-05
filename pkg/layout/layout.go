@@ -76,6 +76,80 @@ type InlineContext struct {
 	LineBoxes  []*Box  // Boxes on current line
 }
 
+// Multi-pass inline layout data structures (Blink-style)
+
+// InlineItemType represents the type of an inline item
+type InlineItemType int
+
+const (
+	InlineItemText InlineItemType = iota // Text content
+	InlineItemOpenTag                     // Opening tag of inline element
+	InlineItemCloseTag                    // Closing tag of inline element
+	InlineItemAtomic                      // Atomic inline (inline-block, replaced element)
+	InlineItemFloat                       // Floated element
+	InlineItemControl                     // Control element (br, etc.)
+)
+
+// InlineItem represents a piece of inline content in the flattened item list.
+// This is Phase 1 (CollectInlineItems) output - a sequential representation of all inline content.
+type InlineItem struct {
+	Type InlineItemType
+	Node *html.Node // Source DOM node
+
+	// For text items
+	Text       string // Text content
+	StartOffset int   // Start offset in original text
+	EndOffset   int   // End offset in original text
+
+	// For all items
+	Style *css.Style // Computed style
+
+	// Cached measurements (computed during collection)
+	Width  float64 // Intrinsic width (for atomic items, measured text width)
+	Height float64 // Intrinsic height
+}
+
+// LineBreakResult represents the result of line breaking for a single line.
+// This is Phase 2 (BreakLines) output - what items go on each line.
+type LineBreakResult struct {
+	Items      []*InlineItem // Items on this line (references to InlineItem from main list)
+	StartIndex int           // Index of first item in main item list
+	EndIndex   int           // Index after last item in main item list
+
+	// Constraints for this line
+	Y              float64 // Y position of this line
+	AvailableWidth float64 // Width available for this line (accounting for floats)
+	LineHeight     float64 // Computed height of this line
+
+	// Text breaking info (for items that span multiple lines)
+	TextBreaks map[*InlineItem]struct { // For text items that break across lines
+		StartOffset int
+		EndOffset   int
+	}
+}
+
+// InlineLayoutState holds the state for multi-pass inline layout.
+// This coordinates all three phases of inline layout.
+type InlineLayoutState struct {
+	// Phase 1: Collected items (flattened inline content)
+	Items []*InlineItem
+
+	// Phase 2: Line breaking results
+	Lines []*LineBreakResult
+
+	// Context from parent container
+	ContainerBox       *Box
+	ContainerStyle     *css.Style
+	AvailableWidth     float64
+	StartY             float64
+	Border             css.BoxEdge
+	Padding            css.BoxEdge
+
+	// Float tracking (for line breaking retry)
+	FloatList      []FloatInfo // Active floats that affect line breaking
+	FloatBaseIndex int         // Index into LayoutEngine.floats where this context starts
+}
+
 // Phase 9: TableCell tracks a cell in a table
 type TableCell struct {
 	Box     *Box
@@ -4077,4 +4151,151 @@ func parseCounterIncrement(value string) map[string]int {
 		i++
 	}
 	return result
+}
+
+// ============================================================================
+// Multi-pass Inline Layout (Blink-style three-phase approach)
+// ============================================================================
+
+// Phase 1: CollectInlineItems flattens the DOM tree into a sequential list of inline items.
+// This converts the hierarchical structure into a flat array that's easier to process for line breaking.
+//
+// Example:
+//   <p>Hello <em>world</em>!</p>
+// Becomes:
+//   [Text("Hello "), OpenTag(<em>), Text("world"), CloseTag(</em>), Text("!")]
+func (le *LayoutEngine) collectInlineItems(node *html.Node, state *InlineLayoutState, computedStyles map[*html.Node]*css.Style) {
+	if node == nil {
+		return
+	}
+
+	// Handle text nodes
+	if node.Type == html.TextNode {
+		if node.Text == "" {
+			return
+		}
+
+		// Get parent style for text measurements
+		parentStyle := state.ContainerStyle
+		if node.Parent != nil {
+			if style := computedStyles[node.Parent]; style != nil {
+				parentStyle = style
+			}
+		}
+
+		// Measure the text
+		fontSize := parentStyle.GetFontSize()
+		bold := parentStyle.GetFontWeight() >= 700
+		width, height := text.MeasureTextWithWeight(node.Text, fontSize, bold)
+
+		item := &InlineItem{
+			Type:        InlineItemText,
+			Node:        node,
+			Text:        node.Text,
+			StartOffset: 0,
+			EndOffset:   len(node.Text),
+			Style:       parentStyle,
+			Width:       width,
+			Height:      height,
+		}
+		state.Items = append(state.Items, item)
+		return
+	}
+
+	// Handle element nodes
+	if node.Type == html.ElementNode {
+		style := computedStyles[node]
+		if style == nil {
+			style = css.NewStyle()
+		}
+
+		display := style.GetDisplay()
+
+		// Skip display:none elements
+		if display == css.DisplayNone {
+			return
+		}
+
+		// Handle different display types
+		switch display {
+		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem:
+			// Block elements don't become inline items - they're handled separately
+			// This shouldn't happen in a pure inline formatting context
+			return
+
+		case css.DisplayInline:
+			// Check for floats
+			if style.GetFloat() != css.FloatNone {
+				// Floated inline elements become atomic items
+				item := &InlineItem{
+					Type:  InlineItemFloat,
+					Node:  node,
+					Style: style,
+					// Width/height will be computed during layout
+				}
+				state.Items = append(state.Items, item)
+				// Don't process children - they're part of the float box
+				return
+			}
+
+			// Regular inline element - add open tag
+			openItem := &InlineItem{
+				Type:  InlineItemOpenTag,
+				Node:  node,
+				Style: style,
+			}
+			state.Items = append(state.Items, openItem)
+
+			// Process children recursively
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				le.collectInlineItems(child, state, computedStyles)
+			}
+
+			// Add close tag
+			closeItem := &InlineItem{
+				Type:  InlineItemCloseTag,
+				Node:  node,
+				Style: style,
+			}
+			state.Items = append(state.Items, closeItem)
+
+		case css.DisplayInlineBlock:
+			// Atomic inline element
+			item := &InlineItem{
+				Type:  InlineItemAtomic,
+				Node:  node,
+				Style: style,
+				// Width/height will be computed during layout
+			}
+			state.Items = append(state.Items, item)
+			// Don't process children - they're part of the atomic box
+
+		default:
+			// Other display types - treat as atomic for now
+			item := &InlineItem{
+				Type:  InlineItemAtomic,
+				Node:  node,
+				Style: style,
+			}
+			state.Items = append(state.Items, item)
+		}
+	}
+}
+
+// Phase 2: BreakLines determines what items go on each line, accounting for floats.
+// This is where retry happens - if floats change available width, we re-break affected lines.
+//
+// Returns true if line breaking succeeded, false if retry is needed.
+func (le *LayoutEngine) breakLines(state *InlineLayoutState) bool {
+	// TODO: Implement line breaking logic
+	// For now, return false to indicate not implemented
+	return false
+}
+
+// Phase 3: ConstructLineBoxes creates actual positioned Box fragments from line breaking results.
+// This is the final phase that produces the output fragment tree.
+func (le *LayoutEngine) constructLineBoxes(state *InlineLayoutState, parent *Box) []*Box {
+	// TODO: Implement line box construction
+	// For now, return empty slice
+	return []*Box{}
 }
