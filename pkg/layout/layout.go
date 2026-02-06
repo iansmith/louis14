@@ -7001,13 +7001,16 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 				border := item.Style.GetBorderWidth()
 				margin := item.Style.GetMargin()
 
+				// Inline box height includes padding and borders vertically
+				inlineBoxHeight := line.LineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
 					X:        currentX,
 					Y:        line.Y,
 					Width:    0, // Will be computed from children
-					Height:   line.LineHeight,
+					Height:   inlineBoxHeight,
 					Margin:   margin, // Inline elements have horizontal margins
 					Padding:  padding,
 					Border:   border,
@@ -7129,13 +7132,16 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				border := item.Style.GetBorderWidth()
 				margin := item.Style.GetMargin()
 
+				// Inline box height includes padding and borders vertically
+				inlineBoxHeight := line.LineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
 					X:        currentX,
 					Y:        line.Y,
 					Width:    0,
-					Height:   line.LineHeight,
+					Height:   inlineBoxHeight,
 					Margin:   margin, // Inline elements have horizontal margins
 					Padding:  padding,
 					Border:   border,
