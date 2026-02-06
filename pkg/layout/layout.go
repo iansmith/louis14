@@ -2150,6 +2150,9 @@ func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset floa
 			} else if floatInfo.Side == css.FloatRight {
 				floatWidth := le.getTotalWidth(floatInfo.Box)
 				if floatWidth > rightOffset {
+			if y > 100 && y < 150 {
+				fmt.Printf("DEBUG: Float #%d at Y=%.1f-%.1f, side=%v, width=%.1f affects y=%.1f\n", i, floatInfo.Y, floatBottom, floatInfo.Side, le.getTotalWidth(floatInfo.Box), y)
+			}
 					rightOffset = floatWidth
 				}
 			}
@@ -4946,7 +4949,14 @@ func (le *LayoutEngine) LayoutInlineBatch(
 ) []*Box {
 	const maxRetries = 3
 
+	// Calculate float base index ONCE before retry loop
+	// This ensures we reset to the same point on each retry
+	floatBaseIndex := len(le.floats)
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Reset floats to base (remove floats added in previous retry iteration)
+		le.floats = le.floats[:floatBaseIndex]
+		
 		// Create state for this batch
 		state := &InlineLayoutState{
 			Items:          []*InlineItem{},
@@ -4958,7 +4968,7 @@ func (le *LayoutEngine) LayoutInlineBatch(
 			Border:         border,
 			Padding:        padding,
 			FloatList:      le.floats,
-			FloatBaseIndex: len(le.floats),
+			FloatBaseIndex: floatBaseIndex,
 		}
 
 		fmt.Printf("DEBUG MP: LayoutInlineBatch attempt %d, %d children\n", attempt+1, len(children))
@@ -5166,12 +5176,35 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			// Check for floats
 			if style.GetFloat() != css.FloatNone {
 				// Floated inline elements become atomic items
-				item := &InlineItem{
-					Type:  InlineItemFloat,
-					Node:  node,
-					Style: style,
-					// Width/height will be computed during layout
-				}
+			// We need to compute dimensions NOW for line breaking
+			// Do a temporary layout to get dimensions (will be re-laid out during construction)
+			// Save float state - temporary layout shouldn't pollute global float list
+			savedFloatCount := len(le.floats)
+			
+			tempBox := le.layoutNode(
+				node,
+				0, 0, // Temporary position
+				state.AvailableWidth,
+				computedStyles,
+				state.ContainerBox,
+			)
+			
+			// Restore float state (remove any floats added during temporary layout)
+			le.floats = le.floats[:savedFloatCount]
+
+			var width, height float64
+			if tempBox != nil {
+				width = le.getTotalWidth(tempBox)
+				height = le.getTotalHeight(tempBox)
+			}
+
+			item := &InlineItem{
+				Type:   InlineItemFloat,
+				Node:   node,
+				Style:  style,
+				Width:  width,
+				Height: height,
+			}
 				state.Items = append(state.Items, item)
 				// Don't process children - they're part of the float box
 				return
@@ -5200,21 +5233,54 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 
 		case css.DisplayInlineBlock:
 			// Atomic inline element
+			// We need to compute dimensions NOW for line breaking
+			tempBox := le.layoutNode(
+				node,
+				0, 0, // Temporary position
+				state.AvailableWidth,
+				computedStyles,
+				state.ContainerBox,
+			)
+
+			var width, height float64
+			if tempBox != nil {
+				width = le.getTotalWidth(tempBox)
+				height = le.getTotalHeight(tempBox)
+			}
+
 			item := &InlineItem{
-				Type:  InlineItemAtomic,
-				Node:  node,
-				Style: style,
-				// Width/height will be computed during layout
+				Type:   InlineItemAtomic,
+				Node:   node,
+				Style:  style,
+				Width:  width,
+				Height: height,
 			}
 			state.Items = append(state.Items, item)
 			// Don't process children - they're part of the atomic box
 
 		default:
 			// Other display types - treat as atomic for now
+			// We need to compute dimensions NOW for line breaking
+			tempBox := le.layoutNode(
+				node,
+				0, 0, // Temporary position
+				state.AvailableWidth,
+				computedStyles,
+				state.ContainerBox,
+			)
+
+			var width, height float64
+			if tempBox != nil {
+				width = le.getTotalWidth(tempBox)
+				height = le.getTotalHeight(tempBox)
+			}
+
 			item := &InlineItem{
-				Type:  InlineItemAtomic,
-				Node:  node,
-				Style: style,
+				Type:   InlineItemAtomic,
+				Node:   node,
+				Style:  style,
+				Width:  width,
+				Height: height,
 			}
 			state.Items = append(state.Items, item)
 		}
