@@ -2065,7 +2065,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		X:         x,
 		Y:         y,
 		Width:     contentWidth + padding.Left + padding.Right + border.Left + border.Right,
-		Height:    contentHeight,
+		Height:    contentHeight + padding.Top + padding.Bottom + border.Top + border.Bottom,
 		Margin:    margin,
 		Padding:   padding,
 		Border:    border,
