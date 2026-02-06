@@ -295,17 +295,26 @@ const (
 
 // GetPosition returns the position type (default: static)
 func (s *Style) GetPosition() PositionType {
-	if pos, ok := s.Get("position"); ok {
-		switch pos {
-		case "relative":
-			return PositionRelative
-		case "absolute":
-			return PositionAbsolute
-		case "fixed":
-			return PositionFixed
+	pos, ok := s.Get("position")
+	if !ok {
+		// DEBUG: Check if we're looking at an element that should have position set
+		if tagName, hasTag := s.Get("_debug_tag"); hasTag && tagName == "div" {
+			if id, hasID := s.Get("_debug_id"); hasID && (id == "div3" || id == "div2") {
+				fmt.Printf("DEBUG CSS: #%s has no 'position' property set!\n", id)
+			}
 		}
+		return PositionStatic
 	}
-	return PositionStatic
+	switch pos {
+	case "relative":
+		return PositionRelative
+	case "absolute":
+		return PositionAbsolute
+	case "fixed":
+		return PositionFixed
+	default:
+		return PositionStatic
+	}
 }
 
 // GetPositionOffset returns the offset values for positioned elements

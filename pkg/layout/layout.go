@@ -1515,6 +1515,19 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	}
 
 	fmt.Printf("\nTotal boxes created: %d\n", len(boxes))
+
+	// Apply text-align to inline children
+	if containerBox.Style != nil {
+		display := containerBox.Style.GetDisplay()
+		if display != css.DisplayInline && display != css.DisplayInlineBlock {
+			if textAlign, ok := containerBox.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
+				contentWidth := containerBox.Width // containerBox.Width is already the content width
+				fmt.Printf("DEBUG: Applying text-align=%s to %d boxes\n", textAlign, len(boxes))
+				le.applyTextAlignToBoxes(boxes, containerBox, textAlign, contentWidth)
+			}
+		}
+	}
+
 	fmt.Printf("=== END MULTI-PASS ===\n\n")
 
 	return boxes
@@ -1782,6 +1795,8 @@ func (le *LayoutEngine) GetScrollY() float64 {
 }
 
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
+	fmt.Println("DEBUG: Layout() called - code is running!")
+
 	// Phase 3: Compute styles from stylesheets
 	// Phase 22: Pass viewport dimensions for media query evaluation
 	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
@@ -1807,6 +1822,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
+			fmt.Printf("DEBUG LAYOUT LOOP: Processing <%s>\n", node.TagName)
 			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if box == nil {
@@ -1818,12 +1834,21 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			floatType := box.Style.GetFloat()
 			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed && floatType == css.FloatNone {
 				// Margin collapsing between adjacent siblings
+				if node.TagName == "div" && node.Attributes != nil {
+					if id, ok := node.Attributes["id"]; ok && id == "div1" {
+						fmt.Printf("DEBUG COLLAPSE CHECK: prevBox=%v, shouldCollapse(prev)=%v, shouldCollapse(box)=%v\n",
+							prevBox != nil, prevBox != nil && shouldCollapseMargins(prevBox), shouldCollapseMargins(box))
+					}
+				}
 				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(box) {
 					collapsed := collapseMargins(prevBox.Margin.Bottom, box.Margin.Top)
 					// We already advanced by prevBox's full total height (including prevBox.Margin.Bottom)
 					// and layoutNode already added box.Margin.Top to box.Y.
 					// We need to pull back by the non-collapsed portion.
 					adjustment := prevBox.Margin.Bottom + box.Margin.Top - collapsed
+					fmt.Printf("DEBUG COLLAPSE: prevBox.MarginBottom=%.1f, box.MarginTop=%.1f, collapsed=%.1f, adjustment=%.1f\n",
+						prevBox.Margin.Bottom, box.Margin.Top, collapsed, adjustment)
+					fmt.Printf("DEBUG COLLAPSE: box.Y before=%.1f, after=%.1f\n", box.Y, box.Y-adjustment)
 					box.Y -= adjustment
 					le.adjustChildrenY(box, -adjustment)
 				}
@@ -1841,6 +1866,17 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 
 // layoutNode recursively layouts a node and its children
 func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
+	// DEBUG: Track all div elements
+	if node != nil && node.TagName == "div" {
+		nodeID := "(no id)"
+		if node.Attributes != nil {
+			if id, ok := node.Attributes["id"]; ok {
+				nodeID = id
+			}
+		}
+		fmt.Printf("DEBUG LAYOUT START: layoutNode called for <div id='%s'>\n", nodeID)
+	}
+
 	// Phase 3: Use computed styles from cascade
 	style := computedStyles[node]
 	if style == nil {
@@ -2051,6 +2087,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
 
+	// DEBUG: Print all div IDs
+	if node != nil && node.TagName == "div" {
+		id := "(no id)"
+		if node.Attributes != nil {
+			if nodeID, ok := node.Attributes["id"]; ok {
+				id = nodeID
+			}
+		}
+		fmt.Printf("DEBUG CSS: div id='%s' position=%d\n", id, position)
+	}
+
 	// Phase 5: Check for clear property
 	clearType := style.GetClear()
 
@@ -2080,12 +2127,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// (to support shrink-wrapping and float drop)
 
 	// Phase 4: Handle positioning
-	if position == css.PositionAbsolute || position == css.PositionFixed {
-		// Absolutely positioned elements - positioning applied after children layout
-		le.absoluteBoxes = append(le.absoluteBoxes, box)
-	} else if position == css.PositionRelative {
+	if node != nil && node.TagName == "div" {
+		posName := "static"
+		switch position {
+		case css.PositionRelative:
+			posName = "relative"
+		case css.PositionAbsolute:
+			posName = "absolute"
+		case css.PositionFixed:
+			posName = "fixed"
+		}
+		if position != css.PositionStatic {
+			fmt.Printf("DEBUG LAYOUT POS2: div position=%s (%d)\n", posName, position)
+		}
+	}
+	if position == css.PositionRelative {
 		// Relative positioning: offset from normal position
 		offset := style.GetPositionOffset()
+		oldY := box.Y
+		oldX := box.X
 		if offset.HasTop {
 			box.Y += offset.Top
 		} else if offset.HasBottom {
@@ -2096,6 +2156,26 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		} else if offset.HasRight {
 			box.X -= offset.Right
 		}
+		if oldY != box.Y || oldX != box.X {
+			tagInfo := "?"
+			if node != nil {
+				tagInfo = node.TagName
+				if node.Attributes != nil {
+					if id, ok := node.Attributes["id"]; ok && id != "" {
+						tagInfo += "#" + id
+					}
+				}
+			}
+			fmt.Printf("DEBUG LAYOUT POS: %s relative offset applied: (%.1f,%.1f) -> (%.1f,%.1f)\n",
+				tagInfo, oldX, oldY, box.X, box.Y)
+			// Also check background color
+			if bgColor, ok := style.Get("background-color"); ok && bgColor != "" && bgColor != "transparent" {
+				fmt.Printf("DEBUG LAYOUT POS:   %s has background-color=%s at final Y=%.1f\n", tagInfo, bgColor, box.Y)
+			}
+		}
+	} else if position == css.PositionAbsolute || position == css.PositionFixed {
+		// Absolutely positioned elements - positioning applied after children layout
+		le.absoluteBoxes = append(le.absoluteBoxes, box)
 	}
 
 	// Phase 9: Handle table layout specially
@@ -2218,6 +2298,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Block children are now supported via recursive layoutNode calls
 	canUseMultiPass := le.useMultiPass && didAnalyzeChildren && !hasPseudo
 
+	// DEBUG: Log why we're not using multi-pass
+	if node.TagName == "body" {
+		fmt.Printf("DEBUG MULTIPASS CHECK: useMultiPass=%v, didAnalyze=%v, hasPseudo=%v, canUse=%v\n",
+			le.useMultiPass, didAnalyzeChildren, hasPseudo, canUseMultiPass)
+	}
+
 	if canUseMultiPass {
 		// Use new three-phase multi-pass pipeline
 		childBoxes = le.LayoutInlineContentToBoxes(
@@ -2227,6 +2313,37 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			childY,
 			computedStyles,
 		)
+
+		// CRITICAL FIX: Apply margin collapsing between adjacent block siblings
+		// LayoutInlineContentToBoxes doesn't handle margin collapsing, so we must do it here
+		var prevBox *Box
+		for _, childBox := range childBoxes {
+			if childBox == nil {
+				continue
+			}
+
+			// Only collapse margins for block-level boxes in normal flow
+			floatType := css.FloatNone
+			if childBox.Style != nil {
+				floatType = childBox.Style.GetFloat()
+			}
+
+			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && floatType == css.FloatNone {
+				// Check if both boxes should collapse margins
+				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(childBox) {
+					collapsed := collapseMargins(prevBox.Margin.Bottom, childBox.Margin.Top)
+					adjustment := prevBox.Margin.Bottom + childBox.Margin.Top - collapsed
+
+					fmt.Printf("DEBUG MULTIPASS COLLAPSE: prev=%s, curr=%s, prevBottom=%.1f, currTop=%.1f, collapsed=%.1f, adjustment=%.1f\n",
+						prevBox.Node.TagName, childBox.Node.TagName, prevBox.Margin.Bottom, childBox.Margin.Top, collapsed, adjustment)
+
+					childBox.Y -= adjustment
+					le.adjustChildrenY(childBox, -adjustment)
+				}
+				prevBox = childBox
+			}
+		}
+
 		// Add all child boxes to the container
 		box.Children = append(box.Children, childBoxes...)
 	} else {
@@ -2248,10 +2365,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// extracted into layoutInlineChildrenSinglePass() and is now called above.
 	// The following line preserves inline context for any code that might use it later.
 	var inlineCtx *InlineContext
-	if !le.useMultiPass && inlineLayoutResult != nil {
+	if inlineLayoutResult != nil {
 		inlineCtx = inlineLayoutResult.FinalInlineCtx
 	}
-	// Note: When useMultiPass is true, inlineCtx is nil (not used in new architecture)
+	// Note: Both single-pass and multi-pass now provide inline context for height calculation
 
 	// TEMPORARY: Keep the old inline layout code below commented out for reference
 	// until we verify the refactor works correctly. Will be deleted once stable.
@@ -2349,6 +2466,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			break
 		}
 		if child.Type == html.ElementNode {
+			// DEBUG: Log which children are being processed
+			if node.TagName == "body" {
+				childID := "(no id)"
+				if child.Attributes != nil {
+					if id, ok := child.Attributes["id"]; ok {
+						childID = id
+					}
+				}
+				fmt.Printf("DEBUG BODY CHILD: Processing <%s id='%s'>\n", child.TagName, childID)
+			}
 			// Get child's computed style to check display mode
 			childStyle := computedStyles[child]
 			if childStyle == nil {
@@ -2532,6 +2659,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 							// Don't advance childY, don't set prevBlockChild
 						} else {
 							// Normal margin collapsing between adjacent block siblings
+							// DEBUG: Check for div1 specifically
+							isDiv1 := childBox.Node != nil && childBox.Node.TagName == "div" && childBox.Node.Attributes != nil
+							if isDiv1 {
+								if id, ok := childBox.Node.Attributes["id"]; ok && id == "div1" {
+									fmt.Printf("DEBUG DIV1: prevBlockChild=%v, shouldCollapse(prev)=%v, shouldCollapse(div1)=%v\n",
+										prevBlockChild != nil,
+										prevBlockChild != nil && shouldCollapseMargins(prevBlockChild),
+										shouldCollapseMargins(childBox))
+									if prevBlockChild != nil {
+										fmt.Printf("DEBUG DIV1: prevBlockChild.Margin.Bottom=%.1f, childBox.Margin.Top=%.1f\n",
+											prevBlockChild.Margin.Bottom, childBox.Margin.Top)
+									}
+								}
+							}
 							if prevBlockChild != nil && shouldCollapseMargins(prevBlockChild) && shouldCollapseMargins(childBox) {
 								// Collect all margins: prev bottom, any pending from collapse-through, current top
 								allMargins := []float64{prevBlockChild.Margin.Bottom}
@@ -2864,8 +3005,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				// Last child's margin-bottom collapses through the parent
 				childMarginBottom = 0
 			}
-			childHeight := child.Border.Top + child.Padding.Top + child.Height +
-				child.Padding.Bottom + child.Border.Bottom + childMarginBottom
+			// For inline elements, Height already includes borders/padding (from line height calculation)
+			// For block elements, Height is content only, and borders/padding are separate
+			var childHeight float64
+			if child.Style != nil && child.Style.GetDisplay() == css.DisplayInline {
+				// Inline: Height already includes everything
+				childHeight = child.Height + childMarginBottom
+			} else {
+				// Block: Add borders and padding to content height
+				childHeight = child.Border.Top + child.Padding.Top + child.Height +
+					child.Padding.Bottom + child.Border.Bottom + childMarginBottom
+			}
 			childBottom := childRelativeY + childHeight
 			if childBottom > maxBottom {
 				maxBottom = childBottom
@@ -2886,7 +3036,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if maxBottom < 0 {
 			maxBottom = 0
 		}
-		box.Height = maxBottom
+		// Box.Height must be border-box (content + padding + borders)
+		// maxBottom is content height, so add padding and borders
+		box.Height = maxBottom + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
 
 		// CSS 2.1 §8.3.1: When parent-child bottom margin collapsing applies,
 		// propagate the last child's bottom margin to the parent's bottom margin.
@@ -3079,6 +3231,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		le.repositionFloatRightChildren(box)
 	}
 
+	// DEBUG: Check final box.Y before returning
+	if node != nil && node.TagName == "div" && node.Attributes != nil {
+		if id, ok := node.Attributes["id"]; ok && id == "div3" {
+			fmt.Printf("DEBUG LAYOUT END: div#%s returning with Y=%.1f\n", id, box.Y)
+		}
+		if bgColor, ok := style.Get("background-color"); ok && bgColor == "red" {
+			fmt.Printf("DEBUG LAYOUT END: red div returning with Y=%.1f\n", box.Y)
+		}
+	}
+
 	return box
 }
 
@@ -3218,6 +3380,12 @@ func collectCollapseThroughChildMargins(box *Box, margins *[]float64) {
 func shouldCollapseMargins(box *Box) bool {
 	if box.Style == nil {
 		return true
+	}
+	// CRITICAL FIX: In standards mode, <body> elements never participate in margin collapsing
+	// They are considered "magical" per CSS spec and quirks mode documentation
+	// See: https://developer.mozilla.org/en-US/docs/Mozilla/Mozilla_quirks_mode_behavior
+	if box.Node != nil && box.Node.TagName == "body" {
+		return false
 	}
 	floatType := box.Style.GetFloat()
 	if floatType != css.FloatNone {
@@ -3771,6 +3939,46 @@ func (le *LayoutEngine) applyTextAlign(box *Box, textAlign string, contentWidth 
 	contentLeft := box.X + box.Border.Left + box.Padding.Left
 
 	for _, child := range box.Children {
+		if child.Style == nil {
+			continue
+		}
+		childDisplay := child.Style.GetDisplay()
+		// Only apply to inline/inline-block children, or text nodes
+		isInline := childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock
+		if child.Node != nil && child.Node.Type == html.TextNode {
+			isInline = true
+		}
+		if !isInline {
+			continue
+		}
+
+		childTotalWidth := le.getTotalWidth(child)
+
+		switch textAlign {
+		case "right":
+			dx := contentLeft + contentWidth - childTotalWidth - child.X
+			if dx != 0 {
+				child.X += dx
+				le.shiftChildren(child, dx, 0)
+			}
+		case "center":
+			dx := contentLeft + (contentWidth-childTotalWidth)/2 - child.X
+			if dx != 0 {
+				child.X += dx
+				le.shiftChildren(child, dx, 0)
+			}
+		}
+	}
+}
+
+// applyTextAlignToBoxes applies text-align to a slice of boxes instead of box.Children
+func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, textAlign string, contentWidth float64) {
+	contentLeft := parentBox.X + parentBox.Border.Left + parentBox.Padding.Left
+
+	for _, child := range boxes {
+		if child == nil {
+			continue
+		}
 		if child.Style == nil {
 			continue
 		}
@@ -5863,6 +6071,8 @@ func (le *LayoutEngine) layoutInlineChildren(
 			if lastBox.Height > inlineCtx.LineHeight {
 				inlineCtx.LineHeight = lastBox.Height
 			}
+			// Populate LineBoxes so parent height calculation works (line 2875 condition)
+			inlineCtx.LineBoxes = childBoxes
 		}
 		result.FinalInlineCtx = inlineCtx
 		result.UsedMultiPass = true
@@ -5903,6 +6113,10 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	prevBlockChild **Box,
 	pendingMargins *[]float64,
 ) []*Box {
+	// DEBUG: Log when this function is called for body
+	if node.TagName == "body" {
+		fmt.Printf("DEBUG SINGLEPASS: layoutInlineChildrenSinglePass called for <body>, %d children\n", len(node.Children))
+	}
 	childBoxes := make([]*Box, 0)
 
 	// Phase 11: Generate ::before pseudo-element if it has content
@@ -6184,6 +6398,19 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 							// Don't advance localChildY, don't set prevBlockChild
 						} else {
 							// Normal margin collapsing between adjacent block siblings
+							// DEBUG: Log div1 margin collapsing attempt
+							if childBox.Node != nil && childBox.Node.TagName == "div" && childBox.Node.Attributes != nil {
+								if id, ok := childBox.Node.Attributes["id"]; ok && id == "div1" {
+									fmt.Printf("DEBUG SP DIV1: prevBlockChild=%v, shouldCollapse(prev)=%v, shouldCollapse(div1)=%v\n",
+										*prevBlockChild != nil,
+										*prevBlockChild != nil && shouldCollapseMargins(*prevBlockChild),
+										shouldCollapseMargins(childBox))
+									if *prevBlockChild != nil {
+										fmt.Printf("DEBUG SP DIV1: prevBottom=%.1f, div1Top=%.1f, childBox.Y=%.1f\n",
+											(*prevBlockChild).Margin.Bottom, childBox.Margin.Top, childBox.Y)
+									}
+								}
+							}
 							if *prevBlockChild != nil && shouldCollapseMargins(*prevBlockChild) && shouldCollapseMargins(childBox) {
 								// Collect all margins: prev bottom, any pending from collapse-through, current top
 								allMargins := []float64{(*prevBlockChild).Margin.Bottom}
@@ -6203,6 +6430,8 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 								// Only real margins used space; pending margins were from zero-height elements
 								totalUsed := (*prevBlockChild).Margin.Bottom + childBox.Margin.Top
 								adjustment := totalUsed - collapsed
+								fmt.Printf("DEBUG SP DIV1 COLLAPSE: collapsed=%.1f, adjustment=%.1f, Y before=%.1f, Y after=%.1f\n",
+									collapsed, adjustment, childBox.Y, childBox.Y-adjustment)
 								childBox.Y -= adjustment
 								le.adjustChildrenY(childBox, -adjustment)
 							} else if len(*pendingMargins) > 0 && shouldCollapseMargins(childBox) {
@@ -6419,7 +6648,9 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	// Apply text-align to inline children (only for block containers, not inline elements)
 	if display != css.DisplayInline && display != css.DisplayInlineBlock {
 		if textAlign, ok := style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
-			le.applyTextAlign(box, textAlign, contentWidth)
+			// CRITICAL FIX: Apply text-align to childBoxes (which will be added to box.Children later)
+			// NOT to box.Children directly (which is still empty at this point)
+			le.applyTextAlignToBoxes(childBoxes, box, textAlign, contentWidth)
 		}
 	}
 
@@ -6539,6 +6770,20 @@ func (le *LayoutEngine) LayoutInlineBatch(
 	le.breakLinesWIP(state)
 	// Use full construction method that handles block children and floats
 	boxes, _ := le.constructLineBoxesWithRetry(state, box, computedStyles)
+	fmt.Printf("DEBUG MP BATCH: After constructLineBoxesWithRetry, got %d boxes for parent=%s\n",
+		len(boxes), box.Node.TagName)
+
+	// Apply text-align to inline children
+	if box.Style != nil {
+		display := box.Style.GetDisplay()
+		if display != css.DisplayInline && display != css.DisplayInlineBlock {
+			if textAlign, ok := box.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
+				contentWidth := box.Width // box.Width is already the content width
+				le.applyTextAlignToBoxes(boxes, box, textAlign, contentWidth)
+			}
+		}
+	}
+
 	return boxes
 }
 
@@ -6975,8 +7220,20 @@ func (le *LayoutEngine) breakLinesWIP(state *InlineLayoutState) bool {
 					goto finishLine
 				}
 
-			case InlineItemOpenTag, InlineItemCloseTag:
-				// Tags don't take space themselves
+			case InlineItemOpenTag:
+				// Opening tag contributes to line height even if element is empty
+				// This is per CSS 2.1: empty inline elements still influence line height
+				itemWidth = 0
+
+				// Calculate height: line-height + padding + borders
+				// Note: Vertical MARGINS are ignored for inline elements, but padding/borders are not!
+				lineHeightValue := item.Style.GetLineHeight()
+				padding := item.Style.GetPadding()
+				border := item.Style.GetBorderWidth()
+				itemHeight = lineHeightValue + padding.Top + padding.Bottom + border.Top + border.Bottom
+
+			case InlineItemCloseTag:
+				// Closing tag doesn't add height (already accounted for in opening tag)
 				itemWidth = 0
 				itemHeight = 0
 
@@ -7094,6 +7351,7 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					Parent:   parent,
 				}
 				boxes = append(boxes, textBox)
+				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
 
 			case InlineItemOpenTag:
@@ -7104,13 +7362,14 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 				margin := item.Style.GetMargin()
 
 
-				// Inline elements ignore vertical margins and padding (CSS 2.1)
+				// Inline elements ignore vertical margins (CSS 2.1)
+				// Padding and borders are handled in Phase 2 line height calculation
 				margin.Top = 0
 				margin.Bottom = 0
 				padding.Top = 0
 				padding.Bottom = 0
-				// Inline box height includes borders vertically (padding already zeroed)
-				inlineBoxHeight := line.LineHeight + border.Top + border.Bottom
+				// Inline box height is exactly the line height (already includes padding+borders from Phase 2)
+				inlineBoxHeight := line.LineHeight
 
 			// Apply left margin BEFORE positioning the box
 			currentX += margin.Left
@@ -7195,6 +7454,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 	boxes := []*Box{}
 	retryNeeded := false
 
+	fmt.Printf("DEBUG MP CONSTRUCT: %d lines to construct\n", len(state.Lines))
 	for _, line := range state.Lines {
 		// Calculate starting X for this line (accounting for floats)
 		leftOffsetBefore, _ := le.getFloatOffsets(line.Y)
@@ -7222,9 +7482,31 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 		reorderedItems = append(reorderedItems, nonFloats...)
 
 		// Process each item on this line
+		// Track if we've seen content (non-float) on this line yet
+		hasSeenContentOnLine := false
 		for _, item := range reorderedItems {
 			switch item.Type {
 			case InlineItemText:
+				// CSS whitespace collapsing: trim leading whitespace at start of line
+				// (after line breaks, leading spaces should be trimmed)
+				trimmedText := item.Text
+				if !hasSeenContentOnLine && item.Node != nil {
+					trimmedText = strings.TrimLeft(item.Text, " \t")
+					// Update the node's text for rendering
+					if trimmedText != item.Text {
+						item.Node.Text = trimmedText
+						// Recalculate width for trimmed text
+						if item.Style != nil {
+							fontSize := item.Style.GetFontSize()
+							fontWeight := item.Style.GetFontWeight()
+							bold := fontWeight == css.FontWeightBold
+							trimmedWidth, _ := text.MeasureTextWithWeight(trimmedText, fontSize, bold)
+							item.Width = trimmedWidth
+						}
+					}
+				}
+				hasSeenContentOnLine = true
+
 				textBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
@@ -7239,6 +7521,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					Parent:   parent,
 				}
 				boxes = append(boxes, textBox)
+				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
 
 			case InlineItemOpenTag:
@@ -7246,14 +7529,15 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				border := item.Style.GetBorderWidth()
 				margin := item.Style.GetMargin()
 
-				// Inline elements ignore vertical margins and padding (CSS 2.1)
+				// Inline elements ignore vertical margins (CSS 2.1)
+				// Padding and borders are handled in Phase 2 line height calculation
 				margin.Top = 0
 				margin.Bottom = 0
 				padding.Top = 0
 				padding.Bottom = 0
 
-				// Inline box height includes padding and borders vertically
-				inlineBoxHeight := line.LineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
+				// Inline box height is exactly the line height (already includes padding+borders from Phase 2)
+				inlineBoxHeight := line.LineHeight
 
 			// Apply left margin BEFORE positioning the box
 			currentX += margin.Left

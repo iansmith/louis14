@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -52,6 +53,16 @@ func TestWPTReftests(t *testing.T) {
 
 	if len(testFiles) == 0 {
 		t.Skip("no WPT reftest files found with <link rel=\"match\">")
+	}
+
+	// Sort test files and move empty-inline-002.xht to the bottom
+	sort.Strings(testFiles)
+	for i, path := range testFiles {
+		if strings.Contains(path, "empty-inline-002.xht") {
+			// Move to end
+			testFiles = append(append(testFiles[:i], testFiles[i+1:]...), path)
+			break
+		}
 	}
 
 	t.Logf("Found %d WPT reftest files", len(testFiles))
