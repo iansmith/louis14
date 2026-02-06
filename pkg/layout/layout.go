@@ -6658,7 +6658,73 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			}
 		}
 
-		// Measure the text
+		// Check for ::first-letter pseudo-element styling
+		// This applies to the first letter of the first text in a block container
+		shouldApplyFirstLetter := false
+		if node.Parent != nil && len(state.Items) == 0 {
+			// This is the first text in the inline batch
+			// Check if there are any :first-letter rules for the parent
+			for _, stylesheet := range le.stylesheets {
+				for _, rule := range stylesheet.Rules {
+					if rule.Selector.PseudoElement == "first-letter" {
+						if css.MatchesSelector(node.Parent, rule.Selector) {
+							shouldApplyFirstLetter = true
+							break
+						}
+					}
+				}
+				if shouldApplyFirstLetter {
+					break
+				}
+			}
+		}
+
+		if shouldApplyFirstLetter {
+			// Get the computed first-letter style
+			firstLetterStyle := css.ComputePseudoElementStyle(node.Parent, "first-letter", le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
+			firstLetter, remaining := extractFirstLetter(node.Text)
+
+			if firstLetter != "" {
+				// Create item for the first letter with special styling
+				flFontSize := firstLetterStyle.GetFontSize()
+				flBold := firstLetterStyle.GetFontWeight() == css.FontWeightBold
+				flWidth, flHeight := text.MeasureTextWithWeight(firstLetter, flFontSize, flBold)
+
+				firstLetterItem := &InlineItem{
+					Type:        InlineItemText,
+					Node:        node,
+					Text:        firstLetter,
+					StartOffset: 0,
+					EndOffset:   len(firstLetter),
+					Style:       firstLetterStyle,
+					Width:       flWidth,
+					Height:      flHeight,
+				}
+				state.Items = append(state.Items, firstLetterItem)
+
+				// If there's remaining text, create an item for it
+				if remaining != "" {
+					fontSize := parentStyle.GetFontSize()
+					bold := parentStyle.GetFontWeight() == css.FontWeightBold
+					width, height := text.MeasureTextWithWeight(remaining, fontSize, bold)
+
+					remainingItem := &InlineItem{
+						Type:        InlineItemText,
+						Node:        node,
+						Text:        remaining,
+						StartOffset: len(firstLetter),
+						EndOffset:   len(node.Text),
+						Style:       parentStyle,
+						Width:       width,
+						Height:      height,
+					}
+					state.Items = append(state.Items, remainingItem)
+				}
+				return
+			}
+		}
+
+		// Normal text without first-letter styling
 		fontSize := parentStyle.GetFontSize()
 		bold := parentStyle.GetFontWeight() == css.FontWeightBold
 		width, height := text.MeasureTextWithWeight(node.Text, fontSize, bold)
@@ -7231,21 +7297,27 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				}
 
 			case InlineItemAtomic:
-				atomicBox := &Box{
-					Node:     item.Node,
-					Style:    item.Style,
-					X:        currentX,
-					Y:        line.Y,
-					Width:    item.Width,
-					Height:   item.Height,
-					Margin:   css.BoxEdge{},
-					Padding:  css.BoxEdge{},
-					Border:   css.BoxEdge{},
-					Position: css.PositionStatic,
-					Parent:   parent,
+				// Atomic inline (inline-block) - recursively layout its content
+				// Use the pre-computed width as the available width for its children
+				atomicBox := le.layoutNode(
+					item.Node,
+					currentX,
+					line.Y,
+					item.Width, // Use computed width as constraint
+					computedStyles,
+					parent,
+				)
+				if atomicBox != nil {
+					// Apply vertical alignment to inline-block
+					// For baseline alignment, the inline-block's baseline (last line box's baseline)
+					// should align with the parent line's baseline
+					le.applyVerticalAlign(atomicBox, line.Y, line.LineHeight)
+
+					boxes = append(boxes, atomicBox)
+					// Use actual width (might include margins/padding/borders)
+					actualWidth := le.getTotalWidth(atomicBox)
+					currentX += actualWidth
 				}
-				boxes = append(boxes, atomicBox)
-				currentX += item.Width
 
 			case InlineItemBlockChild:
 				// Block children are laid out recursively
