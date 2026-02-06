@@ -2064,7 +2064,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		Style:     style,
 		X:         x,
 		Y:         y,
-		Width:     contentWidth,
+		Width:     contentWidth + padding.Left + padding.Right + border.Left + border.Right,
 		Height:    contentHeight,
 		Margin:    margin,
 		Padding:   padding,
@@ -7004,6 +7004,9 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 				// Inline box height includes padding and borders vertically
 				inlineBoxHeight := line.LineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
 
+			// Apply left margin BEFORE positioning the box
+			currentX += margin.Left
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
@@ -7023,9 +7026,9 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					box:   inlineBox,
 				})
 
-				// Advance currentX by left margin + border + padding
+				// Advance currentX by left border + padding (margin already applied above)
 				// This ensures empty inline elements have proper width
-				currentX += margin.Left + border.Left + padding.Left
+				currentX += border.Left + padding.Left
 
 			case InlineItemCloseTag:
 				// Close the most recent inline element
@@ -7033,12 +7036,15 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					ctx := openInlines[len(openInlines)-1]
 					openInlines = openInlines[:len(openInlines)-1]
 
-					// Add right padding + border + margin before computing width
-					currentX += ctx.box.Padding.Right + ctx.box.Border.Right + ctx.box.Margin.Right
+					// Add right padding + border (NOT margin) before computing width
+					currentX += ctx.box.Padding.Right + ctx.box.Border.Right
 
 					// Compute width from current X - start X
 					ctx.box.Width = currentX - ctx.box.X
 					boxes = append(boxes, ctx.box)
+
+				// Now add right margin for positioning next element
+				currentX += ctx.box.Margin.Right
 				}
 
 			case InlineItemAtomic:
@@ -7135,6 +7141,9 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				// Inline box height includes padding and borders vertically
 				inlineBoxHeight := line.LineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
 
+			// Apply left margin BEFORE positioning the box
+			currentX += margin.Left
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
@@ -7154,20 +7163,23 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					box:   inlineBox,
 				})
 
-				// Advance currentX by left margin + border + padding
+				// Advance currentX by left border + padding (margin already applied above)
 				// This ensures empty inline elements have proper width
-				currentX += margin.Left + border.Left + padding.Left
+				currentX += border.Left + padding.Left
 
 			case InlineItemCloseTag:
 				if len(openInlines) > 0 {
 					ctx := openInlines[len(openInlines)-1]
 					openInlines = openInlines[:len(openInlines)-1]
 
-					// Add right padding + border + margin before computing width
-					currentX += ctx.box.Padding.Right + ctx.box.Border.Right + ctx.box.Margin.Right
+					// Add right padding + border (NOT margin) before computing width
+					currentX += ctx.box.Padding.Right + ctx.box.Border.Right
 
 					ctx.box.Width = currentX - ctx.box.X
 					boxes = append(boxes, ctx.box)
+
+				// Now add right margin for positioning next element
+				currentX += ctx.box.Margin.Right
 				}
 
 			case InlineItemAtomic:
