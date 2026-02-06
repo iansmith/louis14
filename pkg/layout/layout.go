@@ -2354,13 +2354,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	algorithm := SinglePassAlgorithm
 
 	// Check if we should use multi-pass (only for containers without pseudo-elements)
-	hasPseudo := le.hasPseudoElements(node, computedStyles)
+	// hasPseudo := le.hasPseudoElements(node, computedStyles) // REMOVED: Allow multi-pass with pseudo-elements
 	hasFloats := false
 	hasBlockChild := false
 	hasInlineChild := false
 	didAnalyzeChildren := false // Track if we analyzed children
 
-	if (display == css.DisplayBlock || display == css.DisplayInline) && !hasPseudo {
+	if (display == css.DisplayBlock || display == css.DisplayInline) {
 		didAnalyzeChildren = true
 		// Check children to determine if this is a pure inline formatting context
 
@@ -2412,14 +2412,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	var childBoxes []*Box
 	var inlineLayoutResult *InlineLayoutResult
 
-	// Check if we can use multi-pass (no pseudo-elements and we analyzed children)
+	// Check if we can use multi-pass (we analyzed children)
 	// Block children are now supported via recursive layoutNode calls
-	canUseMultiPass := le.useMultiPass && didAnalyzeChildren && !hasPseudo
+	canUseMultiPass := le.useMultiPass && didAnalyzeChildren
 
 	// DEBUG: Log why we're not using multi-pass
 	if node.TagName == "body" {
-		fmt.Printf("DEBUG MULTIPASS CHECK: useMultiPass=%v, didAnalyze=%v, hasPseudo=%v, canUse=%v\n",
-			le.useMultiPass, didAnalyzeChildren, hasPseudo, canUseMultiPass)
+		fmt.Printf("DEBUG MULTIPASS CHECK: useMultiPass=%v, didAnalyze=%v, canUse=%v\n",
+			le.useMultiPass, didAnalyzeChildren, canUseMultiPass)
 	}
 
 	if canUseMultiPass {
