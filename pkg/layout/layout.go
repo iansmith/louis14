@@ -2193,19 +2193,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		}
 
-		// Only use multi-pass if:
-		// 1. Has floats among inline children
-		// 2. Has NO block children (pure inline formatting context)
-		// 3. Has some inline content
-		// 4. Not an object with image
-		// 5. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
-		// TODO: Multi-pass disabled due to float positioning bugs
-		// Issues to fix before re-enabling:
-		// 1. Right float positioning gives negative X coordinates when multiple right floats on same line
-		// 2. Line breaking puts floats on same line even when they don't fit horizontally
-		// 3. Float positioning formula doesn't account for previously positioned floats on same line
-		// See commit history for attempted fixes
-		if false && hasFloats && !hasBlockChild && hasInlineChild && !isObjectImage && display == css.DisplayBlock {
+		// Use multi-pass for ALL inline formatting contexts (per user request)
+		// Requirements:
+		// 1. Has NO block children (pure inline formatting context)
+		// 2. Has some inline content
+		// 3. Not an object with image
+		// 4. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
+		if !hasBlockChild && hasInlineChild && !isObjectImage && display == css.DisplayBlock {
 			algorithm = MultiPassAlgorithm
 			// DEBUG: Log when multi-pass is triggered
 			if node.TagName != "" {
@@ -6969,6 +6963,10 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 			case InlineItemOpenTag:
 				// Start tracking this inline element
 				// Create a box for it (will be sized after seeing all children)
+				padding := item.Style.GetPadding()
+				border := item.Style.GetBorderWidth()
+				margin := item.Style.GetMargin()
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
@@ -6976,9 +6974,9 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					Y:        line.Y,
 					Width:    0, // Will be computed from children
 					Height:   line.LineHeight,
-					Margin:   css.BoxEdge{},
-					Padding:  item.Style.GetPadding(),
-					Border:   item.Style.GetBorderWidth(),
+					Margin:   margin, // Inline elements have horizontal margins
+					Padding:  padding,
+					Border:   border,
 					Position: css.PositionStatic,
 					Parent:   parent,
 				}
@@ -6988,11 +6986,18 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					box:   inlineBox,
 				})
 
+				// Advance currentX by left margin + border + padding
+				// This ensures empty inline elements have proper width
+				currentX += margin.Left + border.Left + padding.Left
+
 			case InlineItemCloseTag:
 				// Close the most recent inline element
 				if len(openInlines) > 0 {
 					ctx := openInlines[len(openInlines)-1]
 					openInlines = openInlines[:len(openInlines)-1]
+
+					// Add right padding + border + margin before computing width
+					currentX += ctx.box.Padding.Right + ctx.box.Border.Right + ctx.box.Margin.Right
 
 					// Compute width from current X - start X
 					ctx.box.Width = currentX - ctx.box.X
@@ -7073,6 +7078,10 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				currentX += item.Width
 
 			case InlineItemOpenTag:
+				padding := item.Style.GetPadding()
+				border := item.Style.GetBorderWidth()
+				margin := item.Style.GetMargin()
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
@@ -7080,9 +7089,9 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					Y:        line.Y,
 					Width:    0,
 					Height:   line.LineHeight,
-					Margin:   css.BoxEdge{},
-					Padding:  item.Style.GetPadding(),
-					Border:   item.Style.GetBorderWidth(),
+					Margin:   margin, // Inline elements have horizontal margins
+					Padding:  padding,
+					Border:   border,
 					Position: css.PositionStatic,
 					Parent:   parent,
 				}
@@ -7092,10 +7101,18 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					box:   inlineBox,
 				})
 
+				// Advance currentX by left margin + border + padding
+				// This ensures empty inline elements have proper width
+				currentX += margin.Left + border.Left + padding.Left
+
 			case InlineItemCloseTag:
 				if len(openInlines) > 0 {
 					ctx := openInlines[len(openInlines)-1]
 					openInlines = openInlines[:len(openInlines)-1]
+
+					// Add right padding + border + margin before computing width
+					currentX += ctx.box.Padding.Right + ctx.box.Border.Right + ctx.box.Margin.Right
+
 					ctx.box.Width = currentX - ctx.box.X
 					boxes = append(boxes, ctx.box)
 				}
