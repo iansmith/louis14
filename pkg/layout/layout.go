@@ -6511,7 +6511,8 @@ func (le *LayoutEngine) LayoutInlineBatch(
 		// Don't reset le.floats - we want the next iteration to see the floats we just added
 	}
 
-	// Max retries exceeded - return last attempt
+	// Max retries exceeded - do final construction with full support
+	fmt.Printf("DEBUG MP: Max retries exceeded, doing final construction\n")
 	state := &InlineLayoutState{
 		Items:          []*InlineItem{},
 		Lines:          []*LineBreakResult{},
@@ -6528,7 +6529,8 @@ func (le *LayoutEngine) LayoutInlineBatch(
 		le.CollectInlineItems(child, state, computedStyles)
 	}
 	le.breakLinesWIP(state)
-	boxes := le.ConstructLineBoxes(state, box)
+	// Use full construction method that handles block children and floats
+	boxes, _ := le.constructLineBoxesWithRetry(state, box, computedStyles)
 	return boxes
 }
 
