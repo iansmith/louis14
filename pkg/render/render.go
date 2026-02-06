@@ -278,8 +278,8 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 
 			bgX := box.X
 			bgY := effectiveY
-			bgWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
-			bgHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
+			bgWidth := box.Width // Border-box dimensions
+			bgHeight := box.Height // Border-box dimensions
 
 			if bgWidth > 0 && bgHeight > 0 {
 				borderRadius := box.Style.GetBorderRadius()
@@ -364,8 +364,8 @@ func (r *Renderer) drawBox(box *layout.Box) {
 			// box.X/Y is the border-box edge (outside of border)
 			bgX := box.X
 			bgY := effectiveY
-			bgWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
-			bgHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
+			bgWidth := box.Width // Border-box dimensions
+			bgHeight := box.Height // Border-box dimensions
 
 			if bgWidth > 0 && bgHeight > 0 {
 				// Phase 12: Check for border-radius
@@ -459,8 +459,8 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 			r.context.SetLineWidth(box.Border.Top)
 			borderX := box.X + box.Border.Left/2
 			borderY := effectiveY + box.Border.Top/2
-			borderWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right - box.Border.Left
-			borderHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom - box.Border.Top
+			borderWidth := box.Width - box.Border.Left // Border-box dimensions
+			borderHeight := box.Height - box.Border.Top // Border-box dimensions
 			r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
 			r.context.Stroke()
 		}
@@ -470,12 +470,12 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Calculate border box coordinates using effective Y
 	outerLeft := box.X
 	outerTop := effectiveY
-	outerRight := box.X + box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
-	outerBottom := effectiveY + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
+	outerRight := box.X + box.Width // Border-box dimensions
+	outerBottom := effectiveY + box.Height // Border-box dimensions
 	innerLeft := box.X + box.Border.Left
 	innerTop := effectiveY + box.Border.Top
-	innerRight := box.X + box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right
-	innerBottom := effectiveY + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom
+	innerRight := box.X + box.Width - box.Border.Right // Border-box dimensions
+	innerBottom := effectiveY + box.Height - box.Border.Bottom // Border-box dimensions
 
 	// Draw each side as a trapezoid (CSS mitered border rendering).
 	// Drawing order: bottom → left → right → top. Later-drawn sides
@@ -549,8 +549,8 @@ func (r *Renderer) drawBoxShadow(box *layout.Box) {
 	// Box dimensions (content + padding)
 	boxX := box.X
 	boxY := effectiveY
-	boxWidth := box.Width + box.Padding.Left + box.Padding.Right
-	boxHeight := box.Height + box.Padding.Top + box.Padding.Bottom
+	boxWidth := box.Width - box.Border.Left - box.Border.Right // Padding box
+	boxHeight := box.Height - box.Border.Top - box.Border.Bottom // Padding box
 	borderRadius := box.Style.GetBorderRadius()
 
 	// Draw shadows in reverse order (first declared = topmost)
@@ -756,8 +756,8 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 
 	bgX := box.X
 	bgY := effectiveY
-	bgWidth := box.Border.Left + box.Padding.Left + box.Width + box.Padding.Right + box.Border.Right
-	bgHeight := box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom
+	bgWidth := box.Width // Border-box dimensions
+	bgHeight := box.Height // Border-box dimensions
 
 	bounds := img.Bounds()
 	imgW := float64(bounds.Dx())
