@@ -262,11 +262,12 @@ func (cs *ConstraintSpace) AvailableInlineSize(y, height float64) float64 {
 type FragmentType int
 
 const (
-	FragmentText   FragmentType = iota // Text node
-	FragmentInline                     // Inline box (span, em, etc.)
-	FragmentBlock                      // Block box (div, p, etc.)
-	FragmentFloat                      // Floated box
-	FragmentAtomic                     // Atomic inline (inline-block, img, etc.)
+	FragmentText       FragmentType = iota // Text node
+	FragmentInline                         // Inline box (span, em, etc.)
+	FragmentBlock                          // Block box (div, p, etc.)
+	FragmentFloat                          // Floated box
+	FragmentAtomic                         // Atomic inline (inline-block, img, etc.)
+	FragmentBlockChild                     // Block child (requires recursive layout)
 )
 
 // Fragment represents the immutable output of layout.
@@ -723,6 +724,34 @@ func (le *LayoutEngine) BreakLines(
 			}
 			currentX = 0
 
+		case InlineItemBlockChild:
+			// Block child - MUST be on its own line
+			// Finish current line if it has any content
+			if len(currentLine.Items) > 0 {
+				lines = append(lines, currentLine)
+				currentY += currentLine.Height
+			}
+
+			// Create a line containing ONLY the block child
+			// Height will be determined during recursive layout in Phase 3
+			currentLine = &LineInfo{
+				Y:          currentY,
+				Items:      []*InlineItem{item},
+				Constraint: constraint,
+				Height:     0, // Will be set after recursive layout
+			}
+			lines = append(lines, currentLine)
+
+			// Y advance will happen in Phase 3 after we know the block's height
+			// For now, just reset for next line
+			currentLine = &LineInfo{
+				Y:          currentY, // Will be updated in Phase 3
+				Items:      []*InlineItem{},
+				Constraint: constraint,
+				Height:     0,
+			}
+			currentX = 0
+
 		default:
 			// Unknown item type - treat as atomic
 			currentLine.Items = append(currentLine.Items, item)
@@ -929,6 +958,19 @@ func (le *LayoutEngine) constructLine(
 				Size:     Size{Width: 0, Height: 0},
 			}
 			fragments = append(fragments, frag)
+
+		case InlineItemBlockChild:
+			// Block child - create marker fragment
+			// Actual layout will happen in LayoutInlineContentToBoxes which has
+			// access to all the context needed for layoutNode()
+			frag := &Fragment{
+				Type:     FragmentBlockChild,
+				Node:     item.Node,
+				Style:    item.Style,
+				Position: Position{X: leftOffset, Y: line.Y}, // Start at left edge
+				Size:     Size{Width: 0, Height: 0},          // Will be set after layout
+			}
+			fragments = append(fragments, frag)
 		}
 	}
 
@@ -1100,6 +1142,34 @@ func fragmentsToBoxes(fragments []*Fragment) []*Box {
 	return boxes
 }
 
+// fragmentToBoxSingle converts a single fragment to a box.
+// Helper for LayoutInlineContentToBoxes when processing fragments individually.
+func fragmentToBoxSingle(frag *Fragment) *Box {
+	// Skip tag markers (they don't produce visual output)
+	if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
+		return nil
+	}
+
+	// Create box from fragment
+	box := &Box{
+		Node:   frag.Node,
+		Style:  frag.Style,
+		X:      frag.Position.X,
+		Y:      frag.Position.Y,
+		Width:  frag.Size.Width,
+		Height: frag.Size.Height,
+	}
+
+	// Convert fragment type to box positioning info
+	switch frag.Type {
+	case FragmentFloat:
+		// Mark as positioned (floats are out of flow)
+		box.Position = css.PositionAbsolute // Treated like absolute for rendering
+	}
+
+	return box
+}
+
 // LayoutInlineContentToBoxes is a convenience wrapper that runs the new multi-pass
 // pipeline and converts the result to boxes for the existing rendering pipeline.
 //
@@ -1110,6 +1180,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	containerBox *Box,
 	availableWidth float64,
 	startY float64,
+	computedStyles map[*html.Node]*css.Style,
 ) []*Box {
 	// Create constraint space
 	constraint := NewConstraintSpace(availableWidth, 0)
@@ -1117,12 +1188,47 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	// Run new multi-pass pipeline
 	fragments := le.LayoutInlineContent(children, constraint, startY)
 
-	// Convert to boxes for existing pipeline
-	boxes := fragmentsToBoxes(fragments)
+	// Process fragments, handling block children with recursive layout
+	boxes := []*Box{}
+	currentY := startY
 
-	// Set parent for all boxes
-	for _, box := range boxes {
-		box.Parent = containerBox
+	for _, frag := range fragments {
+		if frag.Type == FragmentBlockChild {
+			// Block child - call layoutNode recursively
+			childNode := frag.Node
+			childStyle := computedStyles[childNode]
+			if childStyle == nil {
+				childStyle = css.NewStyle()
+			}
+
+			// Calculate X position (block children start at left edge)
+			childX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+
+			// Recursively layout the block child
+			childBox := le.layoutNode(
+				childNode,
+				childX,
+				currentY,
+				availableWidth,
+				computedStyles,
+				containerBox,
+			)
+
+			boxes = append(boxes, childBox)
+
+			// Update Y for next content (advance past this block)
+			childBox.Parent = containerBox
+			totalHeight := childBox.Margin.Top + childBox.Border.Top + childBox.Padding.Top +
+				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
+			currentY += totalHeight
+		} else {
+			// Regular fragment - convert to box
+			box := fragmentToBoxSingle(frag)
+			if box != nil {
+				box.Parent = containerBox
+				boxes = append(boxes, box)
+			}
+		}
 	}
 
 	return boxes
@@ -1132,12 +1238,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 type InlineItemType int
 
 const (
-	InlineItemText     InlineItemType = iota // Text content
-	InlineItemOpenTag                        // Opening tag of inline element
-	InlineItemCloseTag                       // Closing tag of inline element
-	InlineItemAtomic                         // Atomic inline (inline-block, replaced element)
-	InlineItemFloat                          // Floated element
-	InlineItemControl                        // Control element (br, etc.)
+	InlineItemText       InlineItemType = iota // Text content
+	InlineItemOpenTag                          // Opening tag of inline element
+	InlineItemCloseTag                         // Closing tag of inline element
+	InlineItemAtomic                           // Atomic inline (inline-block, replaced element)
+	InlineItemFloat                            // Floated element
+	InlineItemControl                          // Control element (br, etc.)
+	InlineItemBlockChild                       // Block-level child (requires recursive layout)
 )
 
 // InlineItem represents a piece of inline content in the flattened item list.
@@ -1827,8 +1934,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	var childBoxes []*Box
 	var inlineLayoutResult *InlineLayoutResult
 
-	// Check if we can use multi-pass (no block children, no pseudo-elements, and we analyzed children)
-	canUseMultiPass := le.useMultiPass && didAnalyzeChildren && !hasBlockChild && !hasPseudo
+	// Check if we can use multi-pass (no pseudo-elements and we analyzed children)
+	// Block children are now supported via recursive layoutNode calls
+	canUseMultiPass := le.useMultiPass && didAnalyzeChildren && !hasPseudo
 
 	if canUseMultiPass {
 		// Use new three-phase multi-pass pipeline
@@ -1837,6 +1945,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			box,
 			childAvailableWidth,
 			childY,
+			computedStyles,
 		)
 		// Add all child boxes to the container
 		box.Children = append(box.Children, childBoxes...)
@@ -6267,8 +6376,16 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		// Handle different display types
 		switch display {
 		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem:
-			// Block elements don't become inline items - they're handled separately
-			// This shouldn't happen in a pure inline formatting context
+			// Block elements in inline contexts are handled as BlockChild items
+			// They force line breaks before and after, and require recursive layout
+			item := &InlineItem{
+				Type:   InlineItemBlockChild,
+				Node:   node,
+				Style:  style,
+				Width:  0, // Will be determined during recursive layout
+				Height: 0, // Will be determined during recursive layout
+			}
+			state.Items = append(state.Items, item)
 			return
 
 		case css.DisplayInline:

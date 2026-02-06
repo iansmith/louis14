@@ -43,8 +43,9 @@ func TestE2E_SimpleTextRendering(t *testing.T) {
 	boxes := le.LayoutInlineContentToBoxes(
 		div.Children,
 		containerBox,
-		400, // available width
-		0,   // startY
+		400,                           // available width
+		0,                             // startY
+		make(map[*html.Node]*css.Style), // computedStyles
 	)
 
 	// Verify we got boxes
@@ -125,6 +126,7 @@ func TestE2E_TextWithLeftFloat(t *testing.T) {
 		containerBox,
 		400,
 		0,
+		make(map[*html.Node]*css.Style),
 	)
 
 	if len(boxes) == 0 {
@@ -178,6 +180,7 @@ func TestE2E_MultilineText(t *testing.T) {
 		containerBox,
 		200, // narrow width
 		0,
+		make(map[*html.Node]*css.Style),
 	)
 
 	if len(boxes) == 0 {
@@ -276,6 +279,7 @@ func TestE2E_NoNegativePositions(t *testing.T) {
 				containerBox,
 				400,
 				0,
+				make(map[*html.Node]*css.Style),
 			)
 
 			// Check no negative positions
