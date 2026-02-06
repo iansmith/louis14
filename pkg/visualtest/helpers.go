@@ -28,17 +28,11 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Layout
 	engine := layout.NewLayoutEngine(float64(width), float64(height))
 
-	// EXPERIMENTAL: Enable multi-pass for specific tests
-	// This uses the new clean three-phase pipeline to test improvement
+	// Enable multi-pass layout for ALL tests
+	// This uses the new clean three-phase pipeline (LayoutInlineContentToBoxes)
 	// Phase A: Inline box wrapper creation implemented
 	// Phase B: Block-in-inline fragment splitting implemented
-	if (strings.Contains(htmlContent, "box-generation-001") ||
-	   strings.Contains(basePath, "box-generation-001") ||
-	   strings.Contains(htmlContent, "inline-box-001") ||
-	   strings.Contains(basePath, "inline-box-001")) &&
-	   !strings.Contains(basePath, "anonymous") {
-		engine.SetUseMultiPass(true)
-	}
+	engine.SetUseMultiPass(true)
 
 	// Set up image fetcher if base path is provided
 	var fetcher images.ImageFetcher

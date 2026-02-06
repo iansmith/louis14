@@ -1316,6 +1316,15 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 	for i, frag := range fragments {
 		if frag.Type == FragmentBlockChild {
+			// Block child - first finalize the current line before laying out the block
+			// Advance currentY past any content on the current line
+			if currentLineMaxHeight > 0 {
+				fmt.Printf("  Finalizing current line before block: currentY %.1f, height %.1f\n",
+					currentY, currentLineMaxHeight)
+				currentY = currentY + currentLineMaxHeight
+				currentLineMaxHeight = 0
+			}
+
 			// Block child - call layoutNode recursively
 			childNode := frag.Node
 			childStyle := computedStyles[childNode]
@@ -1324,7 +1333,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			}
 
 			fmt.Printf("\n[Call %d][Fragment %d] BlockChild: %s\n", callID, i, getNodeName(childNode))
-			fmt.Printf("  Fragment Y: %.1f, CurrentY: %.1f\n", frag.Position.Y, currentY)
+			fmt.Printf("  Fragment Y: %.1f, CurrentY (after line finalize): %.1f\n", frag.Position.Y, currentY)
 
 			// Calculate X position (block children start at left edge)
 			childX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
@@ -1437,20 +1446,30 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							fmt.Printf("    hasContentBefore=%v, span.startX=%.1f, contentBeforeMaxX=%.1f\n",
 								hasContentBefore, span.startX, contentBeforeMaxX)
 							if hasContentBefore {
+								// Compute border, padding, margin from style
+								border := span.style.GetBorderWidth()
+								padding := span.style.GetPadding()
+								margin := span.style.GetMargin()
+								lineHeight := span.style.GetLineHeight()
+
 								fragment1 := &Box{
 									Node:            span.node,
 									Style:           span.style,
 									X:               span.startX,
 									Y:               span.startY,
 									Width:           contentBeforeMaxX - span.startX,
-									Height:          currentLineMaxHeight,
+									Height:          lineHeight, // Use line-height, not text height
+									Border:          border,
+									Padding:         padding,
+									Margin:          margin,
 									Parent:          containerBox,
 									IsFirstFragment: true,  // First fragment has left border
 									IsLastFragment:  false, // Not last
 								}
 								boxes = append(boxes, fragment1)
-								fmt.Printf("    Fragment 1 (first): X=%.1f Y=%.1f W=%.1f H=%.1f\n",
-									fragment1.X, fragment1.Y, fragment1.Width, fragment1.Height)
+								fmt.Printf("    Fragment 1 (first): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
+									fragment1.X, fragment1.Y, fragment1.Width, fragment1.Height, lineHeight,
+									border.Top, border.Right, border.Bottom, border.Left)
 							}
 
 							// Fragment 2: Content after block (if any)
@@ -1461,36 +1480,60 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								// Use currentY which is correctly updated after block child layout
 								afterBlockY := currentY
 								fmt.Printf("    Creating Fragment 2 at Y=%.1f (using currentY)\n", afterBlockY)
+
+								// Compute border, padding, margin from style
+								border := span.style.GetBorderWidth()
+								padding := span.style.GetPadding()
+								margin := span.style.GetMargin()
+								lineHeight := span.style.GetLineHeight()
+
 								fragment2 := &Box{
 									Node:            span.node,
 									Style:           span.style,
 									X:               containerBox.X + containerBox.Border.Left + containerBox.Padding.Left,
 									Y:               afterBlockY,
 									Width:           endX - (containerBox.X + containerBox.Border.Left + containerBox.Padding.Left),
-									Height:          currentLineMaxHeight,
+									Height:          lineHeight, // Use line-height, not text height
+									Border:          border,
+									Padding:         padding,
+									Margin:          margin,
 									Parent:          containerBox,
 									IsFirstFragment: false, // Not first
 									IsLastFragment:  true,  // Last fragment has right border
 								}
 								boxes = append(boxes, fragment2)
-								fmt.Printf("    Fragment 2 (last): X=%.1f Y=%.1f W=%.1f H=%.1f\n",
-									fragment2.X, fragment2.Y, fragment2.Width, fragment2.Height)
+								fmt.Printf("    Fragment 2 (last): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
+									fragment2.X, fragment2.Y, fragment2.Width, fragment2.Height, lineHeight,
+									border.Top, border.Right, border.Bottom, border.Left)
 							}
 						} else {
 							// Normal inline box (not split)
 							endX := frag.Position.X
 							wrapperWidth := endX - span.startX
+
+							// Compute border, padding, margin from style
+							border := span.style.GetBorderWidth()
+							padding := span.style.GetPadding()
+							margin := span.style.GetMargin()
+
+							// Inline elements ignore vertical margins (CSS 2.1 §8.3)
+							margin.Top = 0
+							margin.Bottom = 0
+
 							fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f, height %.1f)\n",
 								span.startX, endX, wrapperWidth, currentLineMaxHeight)
 
 							wrapperBox := &Box{
-								Node:   span.node,
-								Style:  span.style,
-								X:      span.startX,
-								Y:      span.startY,
-								Width:  wrapperWidth,
-								Height: currentLineMaxHeight,
-								Parent: containerBox,
+								Node:    span.node,
+								Style:   span.style,
+								X:       span.startX,
+								Y:       span.startY,
+								Width:   wrapperWidth,
+								Height:  currentLineMaxHeight,
+								Border:  border,
+								Padding: padding,
+								Margin:  margin,
+								Parent:  containerBox,
 							}
 							boxes = append(boxes, wrapperBox)
 						}
@@ -7641,11 +7684,9 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				margin := item.Style.GetMargin()
 
 				// Inline elements ignore vertical margins (CSS 2.1)
-				// Padding and borders are handled in Phase 2 line height calculation
+				// But vertical padding and borders ARE rendered (they just don't affect line box height)
 				margin.Top = 0
 				margin.Bottom = 0
-				padding.Top = 0
-				padding.Bottom = 0
 
 				// Inline box height is exactly the line height (already includes padding+borders from Phase 2)
 				inlineBoxHeight := line.LineHeight
