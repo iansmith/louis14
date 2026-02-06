@@ -1228,14 +1228,21 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	currentY := startY
 	currentLineY := startY     // Track which line we're on
 	currentLineMaxHeight := 0.0 // Track maximum height on current line
+	currentX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left // Track rightmost X position
 
 	// Track inline element spans for creating wrapper boxes
-	inlineStack := []*struct {
-		node  *html.Node
-		style *css.Style
-		startX float64
-		startY float64
-	}{}
+	type inlineSpan struct {
+		node     *html.Node
+		style    *css.Style
+		startX   float64
+		startY   float64
+		startIdx int // Fragment index where span started
+	}
+	inlineStack := []*inlineSpan{}
+
+	// Track which nodes we've seen to distinguish OpenTag from CloseTag
+	// First FragmentInline for a node = OpenTag, second = CloseTag
+	seenNodes := make(map[*html.Node]bool)
 
 	for i, frag := range fragments {
 		if frag.Type == FragmentBlockChild {
@@ -1280,6 +1287,81 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			fmt.Printf("  TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
 				totalHeight, currentY, currentY+totalHeight)
 			currentY += totalHeight
+
+			// Reset currentX - block child takes full width, next content starts at left
+			currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+			fmt.Printf("  Reset currentX to left edge: %.1f\n", currentX)
+		} else if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
+			// Inline element marker (OpenTag or CloseTag)
+			// Distinguish by checking if we've seen this node before
+			isOpenTag := !seenNodes[frag.Node]
+
+			if isOpenTag {
+				// OpenTag - push to stack
+				// CRITICAL: Use frag.Position.X not currentX - fragments are pre-positioned
+				// accounting for floats by line breaking phase
+				fmt.Printf("\n[Fragment %d] OpenTag: %s\n", i, getNodeName(frag.Node))
+				fmt.Printf("  Position: (%.1f, %.1f), CurrentX: %.1f\n",
+					frag.Position.X, frag.Position.Y, currentX)
+
+				span := &inlineSpan{
+					node:     frag.Node,
+					style:    frag.Style,
+					startX:   frag.Position.X, // Use fragment position, not currentX
+					startY:   currentY,
+					startIdx: i,
+				}
+				inlineStack = append(inlineStack, span)
+				seenNodes[frag.Node] = true
+			} else {
+				// CloseTag - pop from stack and create wrapper box
+				fmt.Printf("\n[Fragment %d] CloseTag: %s\n", i, getNodeName(frag.Node))
+				fmt.Printf("  Position: (%.1f, %.1f), CurrentX: %.1f\n",
+					frag.Position.X, frag.Position.Y, currentX)
+
+				if len(inlineStack) > 0 {
+					// Find matching span on stack (should be top for well-formed HTML)
+					var span *inlineSpan
+					spanIdx := -1
+					for idx := len(inlineStack) - 1; idx >= 0; idx-- {
+						if inlineStack[idx].node == frag.Node {
+							span = inlineStack[idx]
+							spanIdx = idx
+							break
+						}
+					}
+
+					if span != nil {
+						// Create wrapper box spanning from startX to end of content
+						// Inline boxes extend to cover their content, not the full line
+						endX := frag.Position.X
+						wrapperWidth := endX - span.startX
+						fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f)\n",
+							span.startX, endX, wrapperWidth)
+
+						wrapperBox := &Box{
+							Node:   span.node,
+							Style:  span.style,
+							X:      span.startX,
+							Y:      span.startY,
+							Width:  wrapperWidth,
+							Height: currentLineMaxHeight,
+							Parent: containerBox,
+						}
+
+						// Add wrapper box to list
+						// For now, append (will paint after children)
+						// TODO Phase C: Prepend for correct z-order (outer behind inner)
+						boxes = append(boxes, wrapperBox)
+
+						// Remove span from stack
+						inlineStack = append(inlineStack[:spanIdx], inlineStack[spanIdx+1:]...)
+						fmt.Printf("  Wrapper box created, stack size: %d\n", len(inlineStack))
+					} else {
+						fmt.Printf("  ⚠️  WARNING: CloseTag without matching OpenTag!\n")
+					}
+				}
+			}
 		} else {
 			// Regular fragment - convert to box
 			box := fragmentToBoxSingle(frag)
@@ -1318,6 +1400,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 				fmt.Printf("  Final Box Position: (%.1f, %.1f), currentLineMaxH: %.1f\n",
 					box.X, box.Y, currentLineMaxHeight)
+
+				// Update currentX to track rightmost position
+				boxRight := box.X + box.Width
+				if boxRight > currentX {
+					currentX = boxRight
+					fmt.Printf("  Updated currentX: %.1f\n", currentX)
+				}
 
 				box.Parent = containerBox
 				boxes = append(boxes, box)
