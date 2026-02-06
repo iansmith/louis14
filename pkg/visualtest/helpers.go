@@ -30,7 +30,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 
 	// EXPERIMENTAL: Enable multi-pass for box-generation-001 test
 	// This uses the new clean three-phase pipeline to test improvement
-	// DISABLED: Block child support implemented but needs debugging (6.6% vs 5.4% baseline)
+	// DISABLED: Y correction implemented, still 7.0% vs 5.4% baseline (debug logs available)
 	if false && (strings.Contains(htmlContent, "box-generation-001") ||
 	   strings.Contains(basePath, "box-generation-001")) {
 		engine.SetUseMultiPass(true)

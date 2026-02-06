@@ -1142,6 +1142,31 @@ func fragmentsToBoxes(fragments []*Fragment) []*Box {
 	return boxes
 }
 
+// Helper functions for debug logging
+
+func getNodeName(node *html.Node) string {
+	if node == nil {
+		return "<nil>"
+	}
+	if node.Type == html.TextNode {
+		return fmt.Sprintf("TEXT(%q)", truncateString(node.Text, 20))
+	}
+	if node.Type == html.ElementNode {
+		if node.TagName != "" {
+			return "<" + node.TagName + ">"
+		}
+		return "<element>"
+	}
+	return fmt.Sprintf("<%v>", node.Type)
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // fragmentToBoxSingle converts a single fragment to a box.
 // Helper for LayoutInlineContentToBoxes when processing fragments individually.
 func fragmentToBoxSingle(frag *Fragment) *Box {
@@ -1182,17 +1207,27 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	startY float64,
 	computedStyles map[*html.Node]*css.Style,
 ) []*Box {
+	// DEBUG: Log multi-pass invocation
+	fmt.Printf("\n=== MULTI-PASS: LayoutInlineContentToBoxes ===\n")
+	fmt.Printf("Container: %s, StartY: %.1f, AvailableWidth: %.1f\n",
+		getNodeName(containerBox.Node), startY, availableWidth)
+	fmt.Printf("Children count: %d\n", len(children))
+
 	// Create constraint space
 	constraint := NewConstraintSpace(availableWidth, 0)
 
 	// Run new multi-pass pipeline
 	fragments := le.LayoutInlineContent(children, constraint, startY)
 
+	fmt.Printf("Fragments created: %d\n", len(fragments))
+
 	// Process fragments, handling block children with recursive layout
 	boxes := []*Box{}
 	currentY := startY
+	currentLineY := startY     // Track which line we're on
+	currentLineMaxHeight := 0.0 // Track maximum height on current line
 
-	for _, frag := range fragments {
+	for i, frag := range fragments {
 		if frag.Type == FragmentBlockChild {
 			// Block child - call layoutNode recursively
 			childNode := frag.Node
@@ -1201,10 +1236,17 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				childStyle = css.NewStyle()
 			}
 
+			fmt.Printf("\n[Fragment %d] BlockChild: %s\n", i, getNodeName(childNode))
+			fmt.Printf("  Fragment Y: %.1f, CurrentY: %.1f\n", frag.Position.Y, currentY)
+
 			// Calculate X position (block children start at left edge)
 			childX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+			fmt.Printf("  Calculated childX: %.1f (container.X=%.1f + border=%.1f + padding=%.1f)\n",
+				childX, containerBox.X, containerBox.Border.Left, containerBox.Padding.Left)
 
 			// Recursively layout the block child
+			fmt.Printf("  Calling layoutNode(x=%.1f, y=%.1f, availWidth=%.1f)...\n",
+				childX, currentY, availableWidth)
 			childBox := le.layoutNode(
 				childNode,
 				childX,
@@ -1214,22 +1256,67 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				containerBox,
 			)
 
+			fmt.Printf("  Result: Box at (%.1f, %.1f) size %.1fx%.1f\n",
+				childBox.X, childBox.Y, childBox.Width, childBox.Height)
+			fmt.Printf("  Margins: T=%.1f R=%.1f B=%.1f L=%.1f\n",
+				childBox.Margin.Top, childBox.Margin.Right, childBox.Margin.Bottom, childBox.Margin.Left)
+
 			boxes = append(boxes, childBox)
 
 			// Update Y for next content (advance past this block)
 			childBox.Parent = containerBox
 			totalHeight := childBox.Margin.Top + childBox.Border.Top + childBox.Padding.Top +
 				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
+			fmt.Printf("  TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
+				totalHeight, currentY, currentY+totalHeight)
 			currentY += totalHeight
 		} else {
 			// Regular fragment - convert to box
 			box := fragmentToBoxSingle(frag)
 			if box != nil {
+				fmt.Printf("\n[Fragment %d] %v: %s\n", i, frag.Type, getNodeName(frag.Node))
+				fmt.Printf("  Fragment Position: (%.1f, %.1f), Size: %.1fx%.1f\n",
+					frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
+
+				// Check if we've moved to a new line (Y changed)
+				if frag.Position.Y != currentLineY {
+					// Advance currentY past the previous line
+					if currentLineMaxHeight > 0 {
+						fmt.Printf("  Line break detected: Y %.1f → %.1f (height %.1f)\n",
+							currentLineY, frag.Position.Y, currentLineMaxHeight)
+						currentY = currentLineY + currentLineMaxHeight
+					}
+					currentLineY = frag.Position.Y
+					currentLineMaxHeight = 0
+				}
+
+				// CRITICAL FIX: Use currentY instead of frag.Position.Y
+				// After block children, frag.Position.Y is wrong because BreakLines
+				// doesn't know block heights. We track actual Y in currentY.
+				if box.Y != currentY {
+					fmt.Printf("  ⚠️  Correcting Y: %.1f → %.1f (currentY)\n", box.Y, currentY)
+					box.Y = currentY
+				}
+
+				// Track maximum height on this line
+				if box.Height > currentLineMaxHeight {
+					currentLineMaxHeight = box.Height
+				}
+
+				if frag.Type == FragmentText {
+					fmt.Printf("  Text: %q\n", truncateString(frag.Text, 30))
+				}
+				fmt.Printf("  Final Box Position: (%.1f, %.1f), currentLineMaxH: %.1f\n",
+					box.X, box.Y, currentLineMaxHeight)
+
 				box.Parent = containerBox
 				boxes = append(boxes, box)
 			}
 		}
 	}
+
+	fmt.Printf("\nTotal boxes created: %d\n", len(boxes))
+	fmt.Printf("=== END MULTI-PASS ===\n\n")
 
 	return boxes
 }
@@ -6378,6 +6465,8 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem:
 			// Block elements in inline contexts are handled as BlockChild items
 			// They force line breaks before and after, and require recursive layout
+			fmt.Printf("  [CollectItems] Found block child: %s (display=%v)\n",
+				getNodeName(node), display)
 			item := &InlineItem{
 				Type:   InlineItemBlockChild,
 				Node:   node,
