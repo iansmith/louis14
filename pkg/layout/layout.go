@@ -6740,6 +6740,42 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 				// Don't process children - they're part of the float box
 				return
 			}
+		// Check if this inline element contains ONLY block-level children
+		// Per CSS 2.1 §9.2.1.1: When an inline box contains a block box, the inline
+		// is broken around the block. If the resulting anonymous inline boxes are empty
+		// (no text, no inline content), they shouldn't create visible space.
+		hasOnlyBlockChildren := true
+		hasAnyChildren := false
+		for _, child := range node.Children {
+			hasAnyChildren = true
+			// Text nodes with non-whitespace content count as inline
+			if child.Type == html.TextNode && strings.TrimSpace(child.Text) != "" {
+				hasOnlyBlockChildren = false
+				break
+			}
+			// Element nodes need style check
+			if child.Type == html.ElementNode {
+				childStyle := computedStyles[child]
+				if childStyle != nil {
+					childDisplay := childStyle.GetDisplay()
+					// Block-level displays don't break the pattern
+					if childDisplay != css.DisplayBlock && childDisplay != css.DisplayTable && childDisplay != css.DisplayListItem {
+						hasOnlyBlockChildren = false
+						break
+					}
+				}
+			}
+		}
+
+		// If inline contains only block children, skip OpenTag/CloseTag to avoid empty inline boxes
+		if hasAnyChildren && hasOnlyBlockChildren {
+			// Just process children directly without creating inline box fragments
+			for _, child := range node.Children {
+				le.CollectInlineItems(child, state, computedStyles)
+			}
+			return
+		}
+
 
 			// Regular inline element - add open tag
 			openItem := &InlineItem{
