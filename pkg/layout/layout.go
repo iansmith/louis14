@@ -7001,8 +7001,14 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 				border := item.Style.GetBorderWidth()
 				margin := item.Style.GetMargin()
 
-				// Inline box height includes padding and borders vertically
-				inlineBoxHeight := line.LineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
+
+				// Inline elements ignore vertical margins and padding (CSS 2.1)
+				margin.Top = 0
+				margin.Bottom = 0
+				padding.Top = 0
+				padding.Bottom = 0
+				// Inline box height includes borders vertically (padding already zeroed)
+				inlineBoxHeight := line.LineHeight + border.Top + border.Bottom
 
 			// Apply left margin BEFORE positioning the box
 			currentX += margin.Left
@@ -7137,6 +7143,12 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				padding := item.Style.GetPadding()
 				border := item.Style.GetBorderWidth()
 				margin := item.Style.GetMargin()
+
+				// Inline elements ignore vertical margins and padding (CSS 2.1)
+				margin.Top = 0
+				margin.Bottom = 0
+				padding.Top = 0
+				padding.Bottom = 0
 
 				// Inline box height includes padding and borders vertically
 				inlineBoxHeight := line.LineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
