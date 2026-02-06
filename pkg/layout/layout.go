@@ -3625,10 +3625,16 @@ func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset floa
 	leftOffset = 0
 	rightOffset = 0
 
+	if y > 25 && y < 35 && len(le.floats) > le.floatBase {
+		fmt.Printf("DEBUG: getFloatOffsets(y=%.1f) checking %d floats (base=%d)\n", y, len(le.floats)-le.floatBase, le.floatBase)
+	}
 	for i := le.floatBase; i < len(le.floats); i++ {
 		floatInfo := le.floats[i]
 		// Check if this float affects the current Y position
 		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
+		if y > 25 && y < 35 {
+			fmt.Printf("DEBUG:   Float #%d at Y=%.1f-%.1f, side=%v, width=%.1f\n", i, floatInfo.Y, floatBottom, floatInfo.Side, le.getTotalWidth(floatInfo.Box))
+		}
 		if y >= floatInfo.Y && y < floatBottom {
 			if floatInfo.Side == css.FloatLeft {
 				floatWidth := le.getTotalWidth(floatInfo.Box)
@@ -6442,9 +6448,11 @@ func (le *LayoutEngine) LayoutInlineBatch(
 	floatBaseIndex := len(le.floats)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Reset floats to base (remove floats added in previous retry iteration)
-		le.floats = le.floats[:floatBaseIndex]
-		
+		// DO NOT reset floats - they must persist between retries so line breaking can account for them
+		// Each retry needs to see the floats added in previous attempts to converge
+		fmt.Printf("DEBUG MP: Attempt %d - keeping %d floats (base index %d)\n",
+			attempt+1, len(le.floats), floatBaseIndex)
+
 		// Create state for this batch
 		state := &InlineLayoutState{
 			Items:          []*InlineItem{},
@@ -7190,8 +7198,29 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				}
 
 			case InlineItemFloat:
+				// Check if this float has already been laid out (to avoid duplicate layouts on retry)
+				var existingFloatBox *Box
+				for i := state.FloatBaseIndex; i < len(le.floats); i++ {
+					if le.floats[i].Box != nil && le.floats[i].Box.Node == item.Node {
+						existingFloatBox = le.floats[i].Box
+						fmt.Printf("DEBUG MP: Float <%s> already laid out at X=%.1f Y=%.1f, reusing\n",
+							item.Node.TagName, existingFloatBox.X, existingFloatBox.Y)
+						break
+					}
+				}
+
+				// If float already exists, skip re-layout and continue
+				if existingFloatBox != nil {
+					boxes = append(boxes, existingFloatBox)
+					continue
+				}
+
 				// Layout the float to get its dimensions
 				fmt.Printf("DEBUG MP: Laying out float <%s> at Y=%.1f\n", item.Node.TagName, line.Y)
+
+				// Track float count before layoutNode (layoutNode may add float as side effect)
+				floatCountBefore := len(le.floats)
+
 				floatBox := le.layoutNode(
 					item.Node,
 					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
@@ -7204,6 +7233,12 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				if floatBox != nil {
 					fmt.Printf("DEBUG MP: Float box initially at X=%.1f Y=%.1f W=%.1f H=%.1f\n",
 						floatBox.X, floatBox.Y, floatBox.Width, floatBox.Height)
+
+					// Remove any floats added during layoutNode (float seeing itself bug)
+					if len(le.floats) > floatCountBefore {
+						fmt.Printf("DEBUG MP: Removing %d floats added during layoutNode\n", len(le.floats)-floatCountBefore)
+						le.floats = le.floats[:floatCountBefore]
+					}
 
 					// Get float type and reposition the box correctly
 					floatType := item.Style.GetFloat()
@@ -7220,10 +7255,14 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 						baseX := state.ContainerBox.X + state.Border.Left + state.Padding.Left
 						floatClearX := baseX + leftOffset + floatBox.Margin.Left
 						inlineEndX := currentX + floatBox.Margin.Left
+						fmt.Printf("DEBUG MP: Left float positioning - baseX=%.1f leftOffset=%.1f floatClearX=%.1f currentX=%.1f inlineEndX=%.1f\n",
+							baseX, leftOffset, floatClearX, currentX, inlineEndX)
 						if inlineEndX > floatClearX {
 							newX = inlineEndX
+							fmt.Printf("DEBUG MP: Using inlineEndX=%.1f\n", newX)
 						} else {
 							newX = floatClearX
+							fmt.Printf("DEBUG MP: Using floatClearX=%.1f\n", newX)
 						}
 					} else {
 						// Right float
