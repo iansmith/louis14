@@ -21,6 +21,17 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("text-decoration", "underline")
 	}
 
+	// Default margin for <body> element (Chrome: 8px)
+	if node.TagName == "body" {
+		style.Set("margin", "8px")
+	}
+
+	// Default margin for <p> (paragraph) elements
+	if node.TagName == "p" {
+		style.Set("margin-top", "1em")
+		style.Set("margin-bottom", "1em")
+	}
+
 	// Non-rendered elements should be hidden by default
 	// Author CSS can override this (e.g., Acid2 sets display:block on head)
 	switch node.TagName {
