@@ -1268,6 +1268,8 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 //
 // This allows gradual migration: call this instead of the old inline layout,
 // and the rest of the pipeline keeps working.
+var multipassCallID int
+
 func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	children []*html.Node,
 	containerBox *Box,
@@ -1275,8 +1277,10 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	startY float64,
 	computedStyles map[*html.Node]*css.Style,
 ) []*Box {
+	multipassCallID++
+	callID := multipassCallID
 	// DEBUG: Log multi-pass invocation
-	fmt.Printf("\n=== MULTI-PASS: LayoutInlineContentToBoxes ===\n")
+	fmt.Printf("\n=== MULTI-PASS [%d]: LayoutInlineContentToBoxes ===\n", callID)
 	fmt.Printf("Container: %s, StartY: %.1f, AvailableWidth: %.1f\n",
 		getNodeName(containerBox.Node), startY, availableWidth)
 	fmt.Printf("Children count: %d\n", len(children))
@@ -1319,7 +1323,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				childStyle = css.NewStyle()
 			}
 
-			fmt.Printf("\n[Fragment %d] BlockChild: %s\n", i, getNodeName(childNode))
+			fmt.Printf("\n[Call %d][Fragment %d] BlockChild: %s\n", callID, i, getNodeName(childNode))
 			fmt.Printf("  Fragment Y: %.1f, CurrentY: %.1f\n", frag.Position.Y, currentY)
 
 			// Calculate X position (block children start at left edge)
@@ -1350,13 +1354,15 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			childBox.Parent = containerBox
 			totalHeight := childBox.Margin.Top + childBox.Border.Top + childBox.Padding.Top +
 				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
-			fmt.Printf("  TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
-				totalHeight, currentY, currentY+totalHeight)
+			fmt.Printf("  [Fragment %d] TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
+				i, totalHeight, currentY, currentY+totalHeight)
 			currentY += totalHeight
+			currentLineY = currentY // Update line Y to match
+			currentLineMaxHeight = 0 // Reset for next line
 
 			// Reset currentX - block child takes full width, next content starts at left
 			currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
-			fmt.Printf("  Reset currentX to left edge: %.1f\n", currentX)
+			fmt.Printf("  Reset currentX to left edge: %.1f, currentLineY updated to %.1f\n", currentX, currentLineY)
 		} else if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
 			// Inline element marker (OpenTag or CloseTag)
 			// Distinguish by checking if we've seen this node before
@@ -1381,7 +1387,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				seenNodes[frag.Node] = true
 			} else {
 				// CloseTag - pop from stack and create wrapper box
-				fmt.Printf("\n[Fragment %d] CloseTag: %s\n", i, getNodeName(frag.Node))
+				fmt.Printf("\n[Call %d][Fragment %d] CloseTag: %s (currentY=%.1f)\n", callID, i, getNodeName(frag.Node), currentY)
 				fmt.Printf("  Position: (%.1f, %.1f), CurrentX: %.1f\n",
 					frag.Position.X, frag.Position.Y, currentX)
 
@@ -1411,7 +1417,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 						if hasBlockChild {
 							// Block-in-inline: Create fragment boxes (CSS 2.1 §9.2.1.1)
-							fmt.Printf("  Block-in-inline detected! Creating fragment boxes for <%s>\n", getNodeName(span.node))
+							fmt.Printf("  Block-in-inline detected! Creating fragment boxes for <%s> (container=<%s>)\n",
+								getNodeName(span.node), getNodeName(containerBox.Node))
 
 							// Check if there's content before the block
 							hasContentBefore := false
@@ -1448,9 +1455,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 							// Fragment 2: Content after block (if any)
 							endX := frag.Position.X
+							fmt.Printf("    Checking Fragment 2: endX=%.1f, span.startX=%.1f, currentY=%.1f, currentLineY=%.1f, frag.Position.Y=%.1f\n",
+								endX, span.startX, currentY, currentLineY, frag.Position.Y)
 							if endX > span.startX {
-								// Find Y position after block
+								// Use currentY which is correctly updated after block child layout
 								afterBlockY := currentY
+								fmt.Printf("    Creating Fragment 2 at Y=%.1f (using currentY)\n", afterBlockY)
 								fragment2 := &Box{
 									Node:            span.node,
 									Style:           span.style,
