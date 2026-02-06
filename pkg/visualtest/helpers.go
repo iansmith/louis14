@@ -28,6 +28,14 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Layout
 	engine := layout.NewLayoutEngine(float64(width), float64(height))
 
+	// EXPERIMENTAL: Enable multi-pass for box-generation-001 test
+	// This uses the new clean three-phase pipeline to test improvement
+	// DISABLED: Multi-pass worse than single-pass for this test
+	if false && (strings.Contains(htmlContent, "box-generation-001") ||
+	   strings.Contains(basePath, "box-generation-001")) {
+		engine.SetUseMultiPass(true)
+	}
+
 	// Set up image fetcher if base path is provided
 	var fetcher images.ImageFetcher
 	if basePath != "" {
