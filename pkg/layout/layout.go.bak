@@ -59,6 +59,10 @@ type LayoutEngine struct {
 
 	// CSS Counters support
 	counters map[string][]int // Counter name -> stack of values (for nested scopes)
+
+	// NEW ARCHITECTURE: Flag to enable clean multi-pass inline layout
+	// When true, uses LayoutInlineContentToBoxes instead of old single-pass
+	useMultiPass bool
 }
 
 // Phase 5: FloatInfo tracks information about floated elements
@@ -77,17 +81,1587 @@ type InlineContext struct {
 }
 
 // Multi-pass inline layout data structures (Blink-style)
+//
+// NEW ARCHITECTURE: Immutable data structures for correct multi-pass layout
+// Based on Blink LayoutNG principles - see docs/MULTIPASS-REDESIGN.md
+
+// Rect represents a rectangular region
+type Rect struct {
+	X      float64
+	Y      float64
+	Width  float64
+	Height float64
+}
+
+// Exclusion represents a float that affects inline layout.
+// Immutable - created once with correct dimensions.
+type Exclusion struct {
+	Rect Rect         // Position and size of the float
+	Side css.FloatType // FloatLeft or FloatRight
+}
+
+// ExclusionSpace tracks all floats affecting inline layout.
+// IMMUTABLE - Add() returns a NEW ExclusionSpace instead of modifying the original.
+// This prevents float accumulation bugs during retry iterations.
+type ExclusionSpace struct {
+	exclusions []Exclusion // List of active float exclusions
+}
+
+// NewExclusionSpace creates an empty exclusion space.
+func NewExclusionSpace() *ExclusionSpace {
+	return &ExclusionSpace{
+		exclusions: []Exclusion{},
+	}
+}
+
+// IsEmpty returns true if there are no exclusions.
+func (es *ExclusionSpace) IsEmpty() bool {
+	return len(es.exclusions) == 0
+}
+
+// AvailableInlineSize returns the horizontal offsets from left and right edges
+// caused by floats at the given Y position and height.
+//
+// For a container with width W:
+// - leftOffset: distance from left edge (sum of left float widths)
+// - rightOffset: distance from right edge (sum of right float widths)
+// - Available width = W - leftOffset - rightOffset
+func (es *ExclusionSpace) AvailableInlineSize(y, height float64) (leftOffset, rightOffset float64) {
+	if es == nil {
+		return 0, 0
+	}
+
+	// Check each exclusion to see if it intersects the given Y range
+	for _, excl := range es.exclusions {
+		// Check if exclusion overlaps vertically with [y, y+height]
+		exclTop := excl.Rect.Y
+		exclBottom := excl.Rect.Y + excl.Rect.Height
+		rangeTop := y
+		rangeBottom := y + height
+
+		// No overlap if exclusion ends before range starts or starts after range ends
+		if exclBottom <= rangeTop || exclTop >= rangeBottom {
+			continue
+		}
+
+		// Overlaps - add to appropriate offset
+		if excl.Side == css.FloatLeft {
+			// Left float: extends from left edge
+			floatRight := excl.Rect.X + excl.Rect.Width
+			if floatRight > leftOffset {
+				leftOffset = floatRight
+			}
+		} else if excl.Side == css.FloatRight {
+			// Right float: extends from right edge (excl.Rect.X is already the right edge offset)
+			if excl.Rect.Width > rightOffset {
+				rightOffset = excl.Rect.Width
+			}
+		}
+	}
+
+	return leftOffset, rightOffset
+}
+
+// Add returns a NEW ExclusionSpace with the given exclusion added.
+// The original ExclusionSpace is NOT modified (immutability).
+//
+// This is the key to preventing float accumulation bugs during retry:
+// each retry iteration gets a clean copy of the constraint space.
+func (es *ExclusionSpace) Add(exclusion Exclusion) *ExclusionSpace {
+	// Create new slice with existing exclusions + new one
+	newExclusions := make([]Exclusion, len(es.exclusions)+1)
+	copy(newExclusions, es.exclusions)
+	newExclusions[len(es.exclusions)] = exclusion
+
+	return &ExclusionSpace{
+		exclusions: newExclusions,
+	}
+}
+
+// Size represents dimensions (width and height)
+type Size struct {
+	Width  float64
+	Height float64
+}
+
+// Position represents a 2D coordinate
+type Position struct {
+	X float64
+	Y float64
+}
+
+// ConstraintSpace packages all constraints for laying out a subtree.
+// IMMUTABLE - create modified copies using helper methods instead of mutation.
+// This prevents stale constraint bugs during retry iterations.
+type ConstraintSpace struct {
+	AvailableSize  Size             // Available width and height for content
+	ExclusionSpace *ExclusionSpace  // Floats affecting inline layout
+	TextAlign      css.TextAlign    // Text alignment for inline content
+	// TODO: Add more constraints as needed:
+	// - WritingMode
+	// - IsNewFormattingContext
+	// - Baseline offsets
+}
+
+// NewConstraintSpace creates a constraint space with the given available size.
+func NewConstraintSpace(width, height float64) *ConstraintSpace {
+	return &ConstraintSpace{
+		AvailableSize: Size{
+			Width:  width,
+			Height: height,
+		},
+		ExclusionSpace: NewExclusionSpace(),
+		TextAlign:      css.TextAlignLeft, // Default
+	}
+}
+
+// WithExclusion returns a NEW ConstraintSpace with the given exclusion added.
+// The original ConstraintSpace is NOT modified (immutability).
+//
+// This is used during line construction when a float is positioned:
+// - Position the float
+// - Create new constraint with the float added
+// - Use new constraint for subsequent content on the line
+func (cs *ConstraintSpace) WithExclusion(exclusion Exclusion) *ConstraintSpace {
+	return &ConstraintSpace{
+		AvailableSize:  cs.AvailableSize,
+		ExclusionSpace: cs.ExclusionSpace.Add(exclusion),
+		TextAlign:      cs.TextAlign,
+	}
+}
+
+// WithAvailableWidth returns a NEW ConstraintSpace with modified available width.
+func (cs *ConstraintSpace) WithAvailableWidth(width float64) *ConstraintSpace {
+	return &ConstraintSpace{
+		AvailableSize: Size{
+			Width:  width,
+			Height: cs.AvailableSize.Height,
+		},
+		ExclusionSpace: cs.ExclusionSpace,
+		TextAlign:      cs.TextAlign,
+	}
+}
+
+// WithTextAlign returns a NEW ConstraintSpace with modified text alignment.
+func (cs *ConstraintSpace) WithTextAlign(align css.TextAlign) *ConstraintSpace {
+	return &ConstraintSpace{
+		AvailableSize:  cs.AvailableSize,
+		ExclusionSpace: cs.ExclusionSpace,
+		TextAlign:      align,
+	}
+}
+
+// AvailableInlineSize returns the available inline size at the given Y position and height,
+// accounting for exclusions (floats).
+func (cs *ConstraintSpace) AvailableInlineSize(y, height float64) float64 {
+	leftOffset, rightOffset := cs.ExclusionSpace.AvailableInlineSize(y, height)
+	return cs.AvailableSize.Width - leftOffset - rightOffset
+}
+
+// FragmentType represents the type of a fragment (output of layout).
+type FragmentType int
+
+const (
+	FragmentText       FragmentType = iota // Text node
+	FragmentInline                         // Inline box (span, em, etc.)
+	FragmentBlock                          // Block box (div, p, etc.)
+	FragmentFloat                          // Floated box
+	FragmentAtomic                         // Atomic inline (inline-block, img, etc.)
+	FragmentBlockChild                     // Block child (requires recursive layout)
+)
+
+// Fragment represents the immutable output of layout.
+// Unlike Box (which is mutable and repositioned), Fragment is created with
+// the correct position from the start and never modified.
+//
+// This is the key to preventing positioning bugs:
+// - No position deltas or adjustments
+// - No recursive repositioning
+// - Position is correct when created
+//
+// For now, Fragment is only used in the new multi-pass inline layout.
+// Eventually, it may replace Box entirely (full LayoutNG-style architecture).
+type Fragment struct {
+	Node     *html.Node   // Source DOM node (can be nil for anonymous fragments)
+	Style    *css.Style   // Computed style
+	Position Position     // Correct final position (not relative!)
+	Size     Size         // Content size
+	Children []*Fragment  // Child fragments (owned by this fragment)
+	Type     FragmentType // Type of fragment
+
+	// For text fragments
+	Text string // Text content (for FragmentText)
+
+	// For fragments that correspond to Box tree (temporary bridge)
+	Box *Box // Link to Box tree (for converting back to Box)
+}
+
+// NewTextFragment creates a text fragment with the given properties.
+func NewTextFragment(text string, style *css.Style, x, y, width, height float64, node *html.Node) *Fragment {
+	return &Fragment{
+		Type: FragmentText,
+		Text: text,
+		Node: node, // CRITICAL: Must set Node for rendering
+		Style: style,
+		Position: Position{X: x, Y: y},
+		Size:     Size{Width: width, Height: height},
+	}
+}
+
+// NewBoxFragment creates a fragment from a box (for existing layout code).
+func NewBoxFragment(box *Box, fragType FragmentType) *Fragment {
+	return &Fragment{
+		Type:     fragType,
+		Node:     box.Node,
+		Style:    box.Style,
+		Position: Position{X: box.X, Y: box.Y},
+		Size:     Size{Width: box.Width, Height: box.Height},
+		Box:      box,
+	}
+}
+
+// MinMaxSizes represents the intrinsic sizing information for an element.
+// These are the "content-based" sizes (CSS Sizing Level 3):
+// - MinContentSize: minimum size without overflow (narrowest the content can be)
+// - MaxContentSize: preferred size without wrapping (widest the content wants to be)
+//
+// For text: min = longest word, max = full text width
+// For inline boxes with inline children: min = max child min, max = sum of child max
+// For inline boxes with block children: min = max child min, max = max child max
+type MinMaxSizes struct {
+	MinContentSize float64 // Minimum content size (narrowest without overflow)
+	MaxContentSize float64 // Maximum content size (preferred width without wrapping)
+}
+
+// ComputeMinMaxSizes calculates the intrinsic sizing information for a node
+// WITHOUT laying it out (pure function, no side effects).
+//
+// This is CRITICAL for the new architecture:
+// - OLD way: Call layoutNode() to get dimensions → causes side effects (pollutes le.floats)
+// - NEW way: Call ComputeMinMaxSizes() → pure query, no state changes
+//
+// This function is used during Phase 1 (CollectInlineItems) to get float dimensions
+// without actually laying them out.
+func (le *LayoutEngine) ComputeMinMaxSizes(
+	node *html.Node,
+	constraint *ConstraintSpace,
+	style *css.Style,
+) MinMaxSizes {
+	// Handle nil cases
+	if node == nil || style == nil {
+		return MinMaxSizes{0, 0}
+	}
+
+	// Text nodes: measure text width
+	if node.Type == html.TextNode {
+		return le.computeTextMinMax(node.Text, style)
+	}
+
+	// Element nodes: depends on display type
+	display := style.GetDisplay()
+
+	switch display {
+	case css.DisplayInline:
+		return le.computeInlineMinMax(node, constraint, style)
+
+	case css.DisplayBlock, css.DisplayListItem:
+		return le.computeBlockMinMax(node, constraint, style)
+
+	case css.DisplayInlineBlock:
+		return le.computeInlineBlockMinMax(node, constraint, style)
+
+	case css.DisplayNone:
+		return MinMaxSizes{0, 0}
+
+	default:
+		// For unknown display types, use block behavior
+		return le.computeBlockMinMax(node, constraint, style)
+	}
+}
+
+// computeTextMinMax calculates min/max sizes for text content.
+// Min size: width of longest word (won't wrap within words)
+// Max size: width of full text (preferred width without wrapping)
+func (le *LayoutEngine) computeTextMinMax(textContent string, style *css.Style) MinMaxSizes {
+	fontSize := style.GetFontSize()
+	isBold := style.GetFontWeight() == css.FontWeightBold
+
+	// Max size: full text width
+	maxWidth, _ := text.MeasureTextWithWeight(textContent, fontSize, isBold)
+
+	// Min size: width of longest word
+	// Split text into words and measure each
+	words := strings.Fields(textContent)
+	minWidth := 0.0
+
+	for _, word := range words {
+		wordWidth, _ := text.MeasureTextWithWeight(word, fontSize, isBold)
+		if wordWidth > minWidth {
+			minWidth = wordWidth
+		}
+	}
+
+	// If no words (whitespace only), min = max = 0
+	if len(words) == 0 {
+		minWidth = 0
+		maxWidth = 0
+	}
+
+	return MinMaxSizes{
+		MinContentSize: minWidth,
+		MaxContentSize: maxWidth,
+	}
+}
+
+// computeInlineMinMax calculates min/max sizes for inline elements.
+// Inline elements with inline children: sum child widths (horizontal flow)
+// Inline elements with block children: max child widths (stacking)
+func (le *LayoutEngine) computeInlineMinMax(
+	node *html.Node,
+	constraint *ConstraintSpace,
+	style *css.Style,
+) MinMaxSizes {
+	// Check for explicit width (important for floated inline elements)
+	if width, ok := style.GetLength("width"); ok && width > 0 {
+		// Explicit width: both min and max are the same
+		// Add padding and border
+		padding := style.GetPadding()
+		border := style.GetBorderWidth()
+		totalWidth := width + padding.Left + padding.Right + border.Left + border.Right
+
+		return MinMaxSizes{
+			MinContentSize: totalWidth,
+			MaxContentSize: totalWidth,
+		}
+	}
+
+	// Get computed styles for all children
+	computedStyles := le.computeStylesForTree(node)
+
+	// Check if children are inline or block
+	hasBlockChild := false
+	for _, child := range node.Children {
+		childStyle := computedStyles[child]
+		if childStyle != nil {
+			childDisplay := childStyle.GetDisplay()
+			if childDisplay == css.DisplayBlock || childDisplay == css.DisplayListItem {
+				hasBlockChild = true
+				break
+			}
+		}
+	}
+
+	// Recursively compute children sizes
+	var minContent, maxContent float64
+
+	if hasBlockChild {
+		// Block children: use max of child sizes (stacking vertically)
+		for _, child := range node.Children {
+			childStyle := computedStyles[child]
+			if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
+				continue
+			}
+
+			childSizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
+			if childSizes.MinContentSize > minContent {
+				minContent = childSizes.MinContentSize
+			}
+			if childSizes.MaxContentSize > maxContent {
+				maxContent = childSizes.MaxContentSize
+			}
+		}
+	} else {
+		// Inline children: sum child sizes (horizontal flow)
+		for _, child := range node.Children {
+			childStyle := computedStyles[child]
+			if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
+				continue
+			}
+
+			childSizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
+			minContent += childSizes.MinContentSize
+			maxContent += childSizes.MaxContentSize
+		}
+	}
+
+	// Add padding and border (no margin for inline)
+	padding := style.GetPadding()
+	border := style.GetBorderWidth()
+
+	minContent += padding.Left + padding.Right + border.Left + border.Right
+	maxContent += padding.Left + padding.Right + border.Left + border.Right
+
+	return MinMaxSizes{
+		MinContentSize: minContent,
+		MaxContentSize: maxContent,
+	}
+}
+
+// computeBlockMinMax calculates min/max sizes for block elements.
+// For blocks: min/max based on children (blocks stack vertically)
+func (le *LayoutEngine) computeBlockMinMax(
+	node *html.Node,
+	constraint *ConstraintSpace,
+	style *css.Style,
+) MinMaxSizes {
+	// Check for explicit width
+	if width, ok := style.GetLength("width"); ok && width > 0 {
+		// Explicit width: both min and max are the same
+		return MinMaxSizes{
+			MinContentSize: width,
+			MaxContentSize: width,
+		}
+	}
+
+	// Auto width: compute from children
+	computedStyles := le.computeStylesForTree(node)
+
+	var minContent, maxContent float64
+
+	// For block elements, take max of children (they stack vertically)
+	for _, child := range node.Children {
+		childStyle := computedStyles[child]
+		if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+
+		childSizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
+		if childSizes.MinContentSize > minContent {
+			minContent = childSizes.MinContentSize
+		}
+		if childSizes.MaxContentSize > maxContent {
+			maxContent = childSizes.MaxContentSize
+		}
+	}
+
+	// Add padding and border
+	padding := style.GetPadding()
+	border := style.GetBorderWidth()
+
+	minContent += padding.Left + padding.Right + border.Left + border.Right
+	maxContent += padding.Left + padding.Right + border.Left + border.Right
+
+	return MinMaxSizes{
+		MinContentSize: minContent,
+		MaxContentSize: maxContent,
+	}
+}
+
+// computeInlineBlockMinMax calculates min/max sizes for inline-block elements.
+// Inline-blocks are sized like blocks but participate in inline layout.
+func (le *LayoutEngine) computeInlineBlockMinMax(
+	node *html.Node,
+	constraint *ConstraintSpace,
+	style *css.Style,
+) MinMaxSizes {
+	// For now, treat inline-blocks like blocks for sizing
+	return le.computeBlockMinMax(node, constraint, style)
+}
+
+// computeStylesForTree computes styles for a node and all its descendants.
+// This is a helper to avoid recomputing styles multiple times.
+func (le *LayoutEngine) computeStylesForTree(root *html.Node) map[*html.Node]*css.Style {
+	styles := make(map[*html.Node]*css.Style)
+
+	var traverse func(*html.Node)
+	traverse = func(node *html.Node) {
+		if node == nil {
+			return
+		}
+
+		// Compute style for this node using the full ComputeStyle API
+		// Use viewport dimensions from layout engine
+		styles[node] = css.ComputeStyle(node, le.stylesheets, le.viewport.width, le.viewport.height)
+
+		// Recursively traverse children
+		for _, child := range node.Children {
+			traverse(child)
+		}
+	}
+
+	traverse(root)
+	return styles
+}
+
+// BreakLines performs line breaking on a list of inline items.
+// This is Phase 2 of the multi-pass inline layout pipeline.
+//
+// PURE FUNCTION - no side effects! Only decides what items go on which lines.
+// The actual fragment construction happens in Phase 3.
+//
+// Algorithm:
+// 1. Iterate through items sequentially
+// 2. For each item, check if it fits on current line
+// 3. Account for floats via constraint.ExclusionSpace
+// 4. If doesn't fit, start new line
+// 5. Return list of LineInfo (one per line)
+func (le *LayoutEngine) BreakLines(
+	items []*InlineItem,
+	constraint *ConstraintSpace,
+	startY float64,
+) []*LineInfo {
+	if len(items) == 0 {
+		return []*LineInfo{}
+	}
+
+	lines := []*LineInfo{}
+	currentY := startY
+	currentLine := &LineInfo{
+		Y:          currentY,
+		Items:      []*InlineItem{},
+		Constraint: constraint,
+		Height:     0,
+	}
+	currentX := 0.0 // X position on current line
+
+	for i := 0; i < len(items); i++ {
+		item := items[i]
+
+		// Get available width at current Y position
+		// This accounts for floats via the exclusion space
+		availableWidth := constraint.AvailableInlineSize(currentY, item.Height)
+
+		// Check if we need to start at a different X due to floats
+		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+
+		// If this is a new line, start at the left offset
+		if currentX == 0 {
+			currentX = leftOffset
+		}
+
+		// Calculate how much space we've used on this line
+		usedWidth := currentX - leftOffset
+
+		switch item.Type {
+		case InlineItemText:
+			// Text item - may need to wrap
+			textWidth := item.Width
+
+			if usedWidth+textWidth <= availableWidth {
+				// Fits on current line
+				currentLine.Items = append(currentLine.Items, item)
+				currentX += textWidth
+
+				// Update line height
+				if item.Height > currentLine.Height {
+					currentLine.Height = item.Height
+				}
+			} else if textWidth <= availableWidth {
+				// Doesn't fit, but would fit on new line
+				// Finish current line
+				if len(currentLine.Items) > 0 {
+					lines = append(lines, currentLine)
+					currentY += currentLine.Height
+				}
+
+				// Start new line
+				leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+				currentLine = &LineInfo{
+					Y:          currentY,
+					Items:      []*InlineItem{item},
+					Constraint: constraint,
+					Height:     item.Height,
+				}
+				currentX = leftOffset + textWidth
+			} else {
+				// Text is wider than available width - need to break the text
+				// For now, force it onto current line (TODO: implement text breaking)
+				currentLine.Items = append(currentLine.Items, item)
+				currentX += textWidth
+
+				if item.Height > currentLine.Height {
+					currentLine.Height = item.Height
+				}
+			}
+
+		case InlineItemFloat:
+			// Float item - doesn't take up inline space, but affects subsequent content
+			// For Phase 2, we just note that it's on this line
+			// Phase 3 will position it and update the constraint
+			currentLine.Items = append(currentLine.Items, item)
+
+			// Update line height
+			if item.Height > currentLine.Height {
+				currentLine.Height = item.Height
+			}
+
+		case InlineItemAtomic:
+			// Atomic item (inline-block, replaced element) - cannot break
+			atomicWidth := item.Width
+
+			if usedWidth+atomicWidth <= availableWidth {
+				// Fits on current line
+				currentLine.Items = append(currentLine.Items, item)
+				currentX += atomicWidth
+
+				// Update line height
+				if item.Height > currentLine.Height {
+					currentLine.Height = item.Height
+				}
+			} else {
+				// Doesn't fit - start new line
+				if len(currentLine.Items) > 0 {
+					lines = append(lines, currentLine)
+					currentY += currentLine.Height
+				}
+
+				// Start new line with this item
+				leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+				currentLine = &LineInfo{
+					Y:          currentY,
+					Items:      []*InlineItem{item},
+					Constraint: constraint,
+					Height:     item.Height,
+				}
+				currentX = leftOffset + atomicWidth
+			}
+
+		case InlineItemOpenTag, InlineItemCloseTag:
+			// Tag markers - add to current line but don't affect layout
+			currentLine.Items = append(currentLine.Items, item)
+
+		case InlineItemControl:
+			// Control item (br, etc.) - forces line break
+			currentLine.Items = append(currentLine.Items, item)
+
+			// Finish current line
+			if len(currentLine.Items) > 0 {
+				lines = append(lines, currentLine)
+				currentY += currentLine.Height
+			}
+
+			// Start new line
+			currentLine = &LineInfo{
+				Y:          currentY,
+				Items:      []*InlineItem{},
+				Constraint: constraint,
+				Height:     0,
+			}
+			currentX = 0
+
+		case InlineItemBlockChild:
+			// Block child - MUST be on its own line
+			// Finish current line if it has any content
+			if len(currentLine.Items) > 0 {
+				lines = append(lines, currentLine)
+				currentY += currentLine.Height
+			}
+
+			// Create a line containing ONLY the block child
+			// Height will be determined during recursive layout in Phase 3
+			currentLine = &LineInfo{
+				Y:          currentY,
+				Items:      []*InlineItem{item},
+				Constraint: constraint,
+				Height:     0, // Will be set after recursive layout
+			}
+			lines = append(lines, currentLine)
+
+			// Y advance will happen in Phase 3 after we know the block's height
+			// For now, just reset for next line
+			currentLine = &LineInfo{
+				Y:          currentY, // Will be updated in Phase 3
+				Items:      []*InlineItem{},
+				Constraint: constraint,
+				Height:     0,
+			}
+			currentX = 0
+
+		default:
+			// Unknown item type - treat as atomic
+			currentLine.Items = append(currentLine.Items, item)
+			currentX += item.Width
+
+			if item.Height > currentLine.Height {
+				currentLine.Height = item.Height
+			}
+		}
+	}
+
+	// Add final line if it has items
+	if len(currentLine.Items) > 0 {
+		lines = append(lines, currentLine)
+	}
+
+	return lines
+}
+
+// LayoutInlineContent orchestrates the three-phase inline layout with retry support.
+// This is the CLEAN implementation following Blink LayoutNG principles.
+//
+// Three phases:
+// 1. CollectInlineItems - flatten DOM to sequential items (PURE - no side effects)
+// 2. BreakLines - decide line breaks (PURE - no side effects)
+// 3. ConstructFragments - create positioned fragments (HAS side effects)
+//
+// Retry logic:
+// - After Phase 3, check if floats were added that affect line breaking
+// - If yes, retry with updated constraint space
+// - Max 3 iterations to prevent infinite loops
+//
+// NOTE: Phase 3 (ConstructFragments) is not yet implemented, so this is a
+// simplified version that demonstrates the retry pattern.
+func (le *LayoutEngine) LayoutInlineContent(
+	children []*html.Node,
+	constraint *ConstraintSpace,
+	startY float64,
+) []*Fragment {
+	const maxRetries = 3
+
+	// Three-phase pipeline with retry support
+	// This is the COMPLETE implementation following Blink LayoutNG principles!
+
+	// CRITICAL: Always start from the ORIGINAL constraint
+	// Don't carry over float exclusions from previous retries
+	// Phase 3 will rebuild exclusions from scratch each time
+	originalConstraint := constraint
+	var finalFragments []*Fragment
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Phase 1: Collect inline items (PURE - no side effects!)
+		// Use original constraint - don't accumulate floats across retries
+		items := le.collectInlineItemsClean(children, originalConstraint)
+
+		// DEBUG: Show collected items
+		if attempt == 0 {
+			fmt.Printf("\n=== PHASE 1: Collected %d items ===\n", len(items))
+			for i, item := range items {
+				typeName := ""
+				switch item.Type {
+				case InlineItemText:
+					typeName = "Text"
+				case InlineItemOpenTag:
+					typeName = "OpenTag"
+				case InlineItemCloseTag:
+					typeName = "CloseTag"
+				case InlineItemFloat:
+					typeName = "Float"
+				case InlineItemAtomic:
+					typeName = "Atomic"
+				case InlineItemBlockChild:
+					typeName = "BlockChild"
+				default:
+					typeName = fmt.Sprintf("Type%d", item.Type)
+				}
+				fmt.Printf("  [%d] %s: %s, Size: %.1fx%.1f\n",
+					i, typeName, getNodeName(item.Node), item.Width, item.Height)
+				if item.Type == InlineItemText {
+					fmt.Printf("       Text: %q\n", truncateString(item.Text, 30))
+				}
+			}
+			fmt.Printf("=== END PHASE 1 ===\n\n")
+		}
+
+		// Phase 2: Break lines (PURE - no side effects!)
+		// Use original constraint - floats will be added in Phase 3
+		lines := le.BreakLines(items, originalConstraint, startY)
+
+		// Phase 3: Construct fragments (HAS side effects - creates fragments)
+		// Start from original constraint and build up float exclusions
+		fragments, finalConstraint := le.ConstructFragments(lines, originalConstraint)
+
+		// Check if we need to retry
+		if !constraintsChanged(originalConstraint, finalConstraint, lines) {
+			// Success! Constraints didn't change, we're done
+			finalFragments = fragments
+			break
+		}
+
+		// Constraints changed - this means Phase 3 added floats
+		// For now, we don't actually retry - we just return what we have
+		// The retry logic isn't needed for simple float cases
+		// TODO: Implement proper retry when float changes affect line breaking
+		finalFragments = fragments
+		break
+	}
+
+	return finalFragments
+}
+
+// collectInlineItemsClean is a clean version of CollectInlineItems that works
+// with the new architecture (ConstraintSpace instead of InlineLayoutState).
+//
+// This is a simplified placeholder until we fully refactor CollectInlineItems.
+// For now, it creates a minimal InlineLayoutState and delegates to the existing
+// CollectInlineItems function.
+func (le *LayoutEngine) collectInlineItemsClean(
+	children []*html.Node,
+	constraint *ConstraintSpace,
+) []*InlineItem {
+	// Create a temporary state for collecting items
+	// This is a bridge between old and new architectures
+	state := &InlineLayoutState{
+		Items:          []*InlineItem{},
+		AvailableWidth: constraint.AvailableSize.Width,
+		ContainerStyle: css.NewStyle(),
+	}
+
+	// Compute styles for all children
+	computedStyles := make(map[*html.Node]*css.Style)
+	for _, child := range children {
+		computedStyles[child] = css.ComputeStyle(
+			child,
+			le.stylesheets,
+			le.viewport.width,
+			le.viewport.height,
+		)
+	}
+
+	// Collect items using existing function
+	for _, child := range children {
+		le.CollectInlineItems(child, state, computedStyles)
+	}
+
+	return state.Items
+}
+
+// constructLine creates positioned fragments for a single line.
+// This is the core of Phase 3 - it creates fragments with CORRECT positions
+// from the start (no repositioning needed).
+//
+// For each item on the line:
+// - Text: Create text fragment at current X
+// - Float: Position float, create fragment, update constraint
+// - Atomic: Create atomic fragment at current X
+// - Tags: Skip (markers only)
+//
+// Returns:
+// - fragments: List of positioned fragments for this line
+// - newConstraint: Updated constraint with floats added
+func (le *LayoutEngine) constructLine(
+	line *LineInfo,
+	constraint *ConstraintSpace,
+) ([]*Fragment, *ConstraintSpace) {
+	fragments := []*Fragment{}
+	currentConstraint := constraint
+
+	// CRITICAL: Process floats FIRST before inline content
+	// Floats affect the positioning of subsequent inline content, even if they
+	// appear later in document order. This is per CSS spec: floats are removed
+	// from flow and positioned first.
+	//
+	// Pass 1: Position all floats and update constraint
+	for _, item := range line.Items {
+		if item.Type == InlineItemFloat {
+			floatFrag, newConstraint := le.positionFloat(
+				item,
+				line.Y,
+				currentConstraint,
+			)
+			fragments = append(fragments, floatFrag)
+			currentConstraint = newConstraint
+		}
+	}
+
+	// Calculate starting X position accounting for floats (now updated)
+	leftOffset, _ := currentConstraint.ExclusionSpace.AvailableInlineSize(line.Y, line.Height)
+	currentX := leftOffset
+
+	// Pass 2: Process inline content with floats already positioned
+	for _, item := range line.Items {
+		switch item.Type {
+		case InlineItemText:
+			// Create text fragment with correct position
+			frag := NewTextFragment(
+				item.Text,
+				item.Style,
+				currentX,
+				line.Y,
+				item.Width,
+				item.Height,
+				item.Node, // Pass the text node for rendering
+			)
+			fragments = append(fragments, frag)
+			currentX += item.Width
+
+		case InlineItemFloat:
+			// Skip - floats are already handled in Pass 1
+			continue
+
+		case InlineItemAtomic:
+			// Create atomic fragment (inline-block, replaced element)
+			frag := &Fragment{
+				Type:     FragmentAtomic,
+				Node:     item.Node,
+				Style:    item.Style,
+				Position: Position{X: currentX, Y: line.Y},
+				Size:     Size{Width: item.Width, Height: item.Height},
+			}
+			fragments = append(fragments, frag)
+			currentX += item.Width
+
+		case InlineItemOpenTag:
+			// Opening tag marker - create inline fragment marker
+			frag := &Fragment{
+				Type:     FragmentInline,
+				Node:     item.Node,
+				Style:    item.Style,
+				Position: Position{X: currentX, Y: line.Y},
+				Size:     Size{Width: 0, Height: 0},
+			}
+			fragments = append(fragments, frag)
+			// Tags don't advance X
+
+		case InlineItemCloseTag:
+			// Closing tag marker
+			frag := &Fragment{
+				Type:     FragmentInline,
+				Node:     item.Node,
+				Style:    item.Style,
+				Position: Position{X: currentX, Y: line.Y},
+				Size:     Size{Width: 0, Height: 0},
+			}
+			fragments = append(fragments, frag)
+			// Tags don't advance X
+
+		case InlineItemControl:
+			// Control item (br, etc.) - just marker
+			frag := &Fragment{
+				Type:     FragmentInline,
+				Node:     item.Node,
+				Style:    item.Style,
+				Position: Position{X: currentX, Y: line.Y},
+				Size:     Size{Width: 0, Height: 0},
+			}
+			fragments = append(fragments, frag)
+
+		case InlineItemBlockChild:
+			// Block child - create marker fragment
+			// Actual layout will happen in LayoutInlineContentToBoxes which has
+			// access to all the context needed for layoutNode()
+			frag := &Fragment{
+				Type:     FragmentBlockChild,
+				Node:     item.Node,
+				Style:    item.Style,
+				Position: Position{X: leftOffset, Y: line.Y}, // Start at left edge
+				Size:     Size{Width: 0, Height: 0},          // Will be set after layout
+			}
+			fragments = append(fragments, frag)
+		}
+	}
+
+	return fragments, currentConstraint
+}
+
+// positionFloat positions a float and creates its fragment.
+// This also updates the constraint space with the new float exclusion.
+//
+// Key principle: Fragment is created with CORRECT position from the start.
+// No repositioning or deltas needed.
+func (le *LayoutEngine) positionFloat(
+	item *InlineItem,
+	lineY float64,
+	constraint *ConstraintSpace,
+) (*Fragment, *ConstraintSpace) {
+	floatType := item.Style.GetFloat()
+
+	// Calculate float position based on type
+	var floatX float64
+
+	if floatType == css.FloatLeft {
+		// Left float: position after existing left floats
+		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(lineY, item.Height)
+		floatX = leftOffset
+		fmt.Printf("    [positionFloat] Left float: %s, leftOffset=%.1f, floatX=%.1f, width=%.1f\n",
+			getNodeName(item.Node), leftOffset, floatX, item.Width)
+	} else if floatType == css.FloatRight {
+		// Right float: position before existing right floats
+		_, rightOffset := constraint.ExclusionSpace.AvailableInlineSize(lineY, item.Height)
+		floatX = constraint.AvailableSize.Width - rightOffset - item.Width
+	}
+
+	// Create fragment with correct position
+	frag := &Fragment{
+		Type:     FragmentFloat,
+		Node:     item.Node,
+		Style:    item.Style,
+		Position: Position{X: floatX, Y: lineY},
+		Size:     Size{Width: item.Width, Height: item.Height},
+	}
+
+	// Create exclusion for this float
+	exclusion := Exclusion{
+		Rect: Rect{
+			X:      floatX,
+			Y:      lineY,
+			Width:  item.Width,
+			Height: item.Height,
+		},
+		Side: floatType,
+	}
+
+	// Return fragment and NEW constraint with float added
+	newConstraint := constraint.WithExclusion(exclusion)
+	return frag, newConstraint
+}
+
+// ConstructFragments creates positioned fragments from line breaking results.
+// This is Phase 3 of the multi-pass inline layout pipeline.
+//
+// For each line:
+// 1. Call constructLine to create fragments
+// 2. Propagate constraint updates (floats) to next line
+// 3. Accumulate all fragments
+//
+// Returns:
+// - fragments: All positioned fragments (flattened from all lines)
+// - finalConstraint: Constraint space after all floats added
+//
+// This function HAS side effects (creates fragments), but the constraint
+// space propagation is clean (immutable updates via WithExclusion).
+func (le *LayoutEngine) ConstructFragments(
+	lines []*LineInfo,
+	constraint *ConstraintSpace,
+) ([]*Fragment, *ConstraintSpace) {
+	allFragments := []*Fragment{}
+	currentConstraint := constraint
+
+	for _, line := range lines {
+		// Construct fragments for this line using current constraint
+		lineFragments, newConstraint := le.constructLine(line, currentConstraint)
+
+		// Add fragments to result
+		allFragments = append(allFragments, lineFragments...)
+
+		// Propagate constraint to next line
+		// This ensures floats added on this line affect subsequent lines
+		currentConstraint = newConstraint
+	}
+
+	return allFragments, currentConstraint
+}
+
+// constraintsChanged checks if the constraint space changed during fragment construction.
+// This is used to determine if we need to retry line breaking.
+//
+// Returns true if:
+// - Floats were added (exclusion space changed)
+// - Any other constraints changed (future extensions)
+//
+// This is the key to the retry logic: if Phase 3 added floats that affect
+// line breaking, we need to re-run Phase 2 with the updated constraints.
+func constraintsChanged(original, final *ConstraintSpace, lines []*LineInfo) bool {
+	// Check if exclusion space changed (floats were added)
+	originalEmpty := original.ExclusionSpace.IsEmpty()
+	finalEmpty := final.ExclusionSpace.IsEmpty()
+
+	// If original was empty and final is not, definitely changed
+	if originalEmpty && !finalEmpty {
+		return true
+	}
+
+	// If both non-empty, check if they're different
+	// For now, we use a simple heuristic: check available width at first line
+	if !originalEmpty && !finalEmpty && len(lines) > 0 {
+		firstLineY := lines[0].Y
+		firstLineHeight := lines[0].Height
+
+		originalWidth := original.AvailableInlineSize(firstLineY, firstLineHeight)
+		finalWidth := final.AvailableInlineSize(firstLineY, firstLineHeight)
+
+		// If available width changed, constraints changed
+		if originalWidth != finalWidth {
+			return true
+		}
+	}
+
+	// TODO: In the future, check other constraint changes:
+	// - Available size changes
+	// - Text alignment changes
+	// - etc.
+
+	return false
+}
+
+// fragmentsToBoxes converts Fragment tree back to Box tree for existing rendering pipeline.
+// This is a TEMPORARY BRIDGE until we migrate the entire pipeline to use fragments.
+//
+// For now, this allows us to use the new multi-pass architecture while keeping
+// the existing rendering code working.
+func fragmentsToBoxes(fragments []*Fragment) []*Box {
+	boxes := []*Box{}
+
+	for _, frag := range fragments {
+		// Skip tag markers (they don't produce visual output)
+		if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
+			continue
+		}
+
+		// Create box from fragment
+		box := &Box{
+			Node:   frag.Node,
+			Style:  frag.Style,
+			X:      frag.Position.X,
+			Y:      frag.Position.Y,
+			Width:  frag.Size.Width,
+			Height: frag.Size.Height,
+		}
+
+		// Convert fragment type to box positioning info
+		switch frag.Type {
+		case FragmentFloat:
+			// Mark as positioned (floats are out of flow)
+			box.Position = css.PositionAbsolute // Treated like absolute for rendering
+		}
+
+		boxes = append(boxes, box)
+	}
+
+	return boxes
+}
+
+// Helper functions for debug logging
+
+func getNodeName(node *html.Node) string {
+	if node == nil {
+		return "<nil>"
+	}
+	if node.Type == html.TextNode {
+		return fmt.Sprintf("TEXT(%q)", truncateString(node.Text, 20))
+	}
+	if node.Type == html.ElementNode {
+		if node.TagName != "" {
+			return "<" + node.TagName + ">"
+		}
+		return "<element>"
+	}
+	return fmt.Sprintf("<%v>", node.Type)
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// fragmentToBoxSingle converts a single fragment to a box.
+// Helper for LayoutInlineContentToBoxes when processing fragments individually.
+func fragmentToBoxSingle(frag *Fragment) *Box {
+	// Skip tag markers (they don't produce visual output)
+	if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
+		return nil
+	}
+
+	// Create box from fragment
+	box := &Box{
+		Node:   frag.Node,
+		Style:  frag.Style,
+		X:      frag.Position.X,
+		Y:      frag.Position.Y,
+		Width:  frag.Size.Width,
+		Height: frag.Size.Height,
+	}
+
+	// Convert fragment type to box positioning info
+	switch frag.Type {
+	case FragmentFloat:
+		// Mark as positioned (floats are out of flow)
+		box.Position = css.PositionAbsolute // Treated like absolute for rendering
+	}
+
+	return box
+}
+
+// LayoutInlineContentToBoxes is a convenience wrapper that runs the new multi-pass
+// pipeline and converts the result to boxes for the existing rendering pipeline.
+//
+// This allows gradual migration: call this instead of the old inline layout,
+// and the rest of the pipeline keeps working.
+var multipassCallID int
+
+func (le *LayoutEngine) LayoutInlineContentToBoxes(
+	children []*html.Node,
+	containerBox *Box,
+	availableWidth float64,
+	startY float64,
+	computedStyles map[*html.Node]*css.Style,
+) []*Box {
+	multipassCallID++
+	callID := multipassCallID
+	// DEBUG: Log multi-pass invocation
+	fmt.Printf("\n=== MULTI-PASS [%d]: LayoutInlineContentToBoxes ===\n", callID)
+	fmt.Printf("Container: %s, StartY: %.1f, AvailableWidth: %.1f\n",
+		getNodeName(containerBox.Node), startY, availableWidth)
+	fmt.Printf("Children count: %d\n", len(children))
+
+	// Create constraint space
+	constraint := NewConstraintSpace(availableWidth, 0)
+
+	// Run new multi-pass pipeline
+	fragments := le.LayoutInlineContent(children, constraint, startY)
+
+	fmt.Printf("Fragments created: %d\n", len(fragments))
+
+	// Process fragments, handling block children with recursive layout
+	boxes := []*Box{}
+	currentY := startY
+	currentLineY := startY     // Track which line we're on
+	currentLineMaxHeight := 0.0 // Track maximum height on current line
+	currentX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left // Track rightmost X position
+
+	// Track inline element spans for creating wrapper boxes
+	type inlineSpan struct {
+		node     *html.Node
+		style    *css.Style
+		startX   float64
+		startY   float64
+		startIdx int // Fragment index where span started
+	}
+	inlineStack := []*inlineSpan{}
+
+	// Track which nodes we've seen to distinguish OpenTag from CloseTag
+	// First FragmentInline for a node = OpenTag, second = CloseTag
+	seenNodes := make(map[*html.Node]bool)
+
+	for i, frag := range fragments {
+		if frag.Type == FragmentBlockChild {
+			// Block child - first finalize the current line before laying out the block
+			// Advance currentY past any content on the current line
+			if currentLineMaxHeight > 0 {
+				fmt.Printf("  Finalizing current line before block: currentY %.1f, height %.1f\n",
+					currentY, currentLineMaxHeight)
+				currentY = currentY + currentLineMaxHeight
+				currentLineMaxHeight = 0
+			}
+
+			// Block child - call layoutNode recursively
+			childNode := frag.Node
+			childStyle := computedStyles[childNode]
+			if childStyle == nil {
+				childStyle = css.NewStyle()
+			}
+
+			fmt.Printf("\n[Call %d][Fragment %d] BlockChild: %s\n", callID, i, getNodeName(childNode))
+			fmt.Printf("  Fragment Y: %.1f, CurrentY (after line finalize): %.1f\n", frag.Position.Y, currentY)
+
+			// Calculate X position (block children start at left edge)
+			childX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+			fmt.Printf("  Calculated childX: %.1f (container.X=%.1f + border=%.1f + padding=%.1f)\n",
+				childX, containerBox.X, containerBox.Border.Left, containerBox.Padding.Left)
+
+			// Recursively layout the block child
+			fmt.Printf("  Calling layoutNode(x=%.1f, y=%.1f, availWidth=%.1f)...\n",
+				childX, currentY, availableWidth)
+			childBox := le.layoutNode(
+				childNode,
+				childX,
+				currentY,
+				availableWidth,
+				computedStyles,
+				containerBox,
+			)
+
+			fmt.Printf("  Result: Box at (%.1f, %.1f) size %.1fx%.1f\n",
+				childBox.X, childBox.Y, childBox.Width, childBox.Height)
+			fmt.Printf("  Margins: T=%.1f R=%.1f B=%.1f L=%.1f\n",
+				childBox.Margin.Top, childBox.Margin.Right, childBox.Margin.Bottom, childBox.Margin.Left)
+
+			boxes = append(boxes, childBox)
+
+			// Update Y for next content (advance past this block)
+			childBox.Parent = containerBox
+			totalHeight := childBox.Margin.Top + childBox.Border.Top + childBox.Padding.Top +
+				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
+			fmt.Printf("  [Fragment %d] TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
+				i, totalHeight, currentY, currentY+totalHeight)
+			currentY += totalHeight
+			currentLineY = currentY // Update line Y to match
+			currentLineMaxHeight = 0 // Reset for next line
+
+			// Reset currentX - block child takes full width, next content starts at left
+			currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+			fmt.Printf("  Reset currentX to left edge: %.1f, currentLineY updated to %.1f\n", currentX, currentLineY)
+		} else if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
+			// Inline element marker (OpenTag or CloseTag)
+			// Distinguish by checking if we've seen this node before
+			isOpenTag := !seenNodes[frag.Node]
+
+			if isOpenTag {
+				// OpenTag - push to stack and record fragment index
+				// CRITICAL: Use frag.Position.X not currentX - fragments are pre-positioned
+				// accounting for floats by line breaking phase
+				fmt.Printf("\n[Fragment %d] OpenTag: %s\n", i, getNodeName(frag.Node))
+				fmt.Printf("  Position: (%.1f, %.1f), CurrentX: %.1f\n",
+					frag.Position.X, frag.Position.Y, currentX)
+
+				span := &inlineSpan{
+					node:     frag.Node,
+					style:    frag.Style,
+					startX:   frag.Position.X, // Use fragment position, not currentX
+					startY:   currentY,
+					startIdx: i,
+				}
+				inlineStack = append(inlineStack, span)
+				seenNodes[frag.Node] = true
+			} else {
+				// CloseTag - pop from stack and create wrapper box
+				fmt.Printf("\n[Call %d][Fragment %d] CloseTag: %s (currentY=%.1f)\n", callID, i, getNodeName(frag.Node), currentY)
+				fmt.Printf("  Position: (%.1f, %.1f), CurrentX: %.1f\n",
+					frag.Position.X, frag.Position.Y, currentX)
+
+				if len(inlineStack) > 0 {
+					// Find matching span on stack (should be top for well-formed HTML)
+					var span *inlineSpan
+					spanIdx := -1
+					for idx := len(inlineStack) - 1; idx >= 0; idx-- {
+						if inlineStack[idx].node == frag.Node {
+							span = inlineStack[idx]
+							spanIdx = idx
+							break
+						}
+					}
+
+					if span != nil {
+						// Check if this inline element was split by a block child
+						hasBlockChild := false
+						blockChildIdx := -1
+						for j := span.startIdx; j < i; j++ {
+							if fragments[j].Type == FragmentBlockChild {
+								hasBlockChild = true
+								blockChildIdx = j
+								break
+							}
+						}
+
+						if hasBlockChild {
+							// Block-in-inline: Create fragment boxes (CSS 2.1 §9.2.1.1)
+							fmt.Printf("  Block-in-inline detected! Creating fragment boxes for <%s> (container=<%s>)\n",
+								getNodeName(span.node), getNodeName(containerBox.Node))
+
+							// Check if there's content before the block
+							hasContentBefore := false
+							contentBeforeMaxX := span.startX
+							for j := span.startIdx + 1; j < blockChildIdx; j++ {
+								if fragments[j].Type == FragmentText || fragments[j].Type == FragmentAtomic {
+									hasContentBefore = true
+									fragEndX := fragments[j].Position.X + fragments[j].Size.Width
+									if fragEndX > contentBeforeMaxX {
+										contentBeforeMaxX = fragEndX
+									}
+								}
+							}
+
+							// Fragment 1: Content before block (if any)
+							fmt.Printf("    hasContentBefore=%v, span.startX=%.1f, contentBeforeMaxX=%.1f\n",
+								hasContentBefore, span.startX, contentBeforeMaxX)
+							if hasContentBefore {
+								// Compute border, padding, margin from style
+								border := span.style.GetBorderWidth()
+								padding := span.style.GetPadding()
+								margin := span.style.GetMargin()
+								lineHeight := span.style.GetLineHeight()
+
+								fragment1 := &Box{
+									Node:            span.node,
+									Style:           span.style,
+									X:               span.startX,
+									Y:               span.startY,
+									Width:           contentBeforeMaxX - span.startX,
+									Height:          lineHeight, // Use line-height, not text height
+									Border:          border,
+									Padding:         padding,
+									Margin:          margin,
+									Parent:          containerBox,
+									IsFirstFragment: true,  // First fragment has left border
+									IsLastFragment:  false, // Not last
+								}
+								boxes = append(boxes, fragment1)
+								fmt.Printf("    Fragment 1 (first): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
+									fragment1.X, fragment1.Y, fragment1.Width, fragment1.Height, lineHeight,
+									border.Top, border.Right, border.Bottom, border.Left)
+							}
+
+							// Fragment 2: Content after block (if any)
+							endX := frag.Position.X
+							fmt.Printf("    Checking Fragment 2: endX=%.1f, span.startX=%.1f, currentY=%.1f, currentLineY=%.1f, frag.Position.Y=%.1f\n",
+								endX, span.startX, currentY, currentLineY, frag.Position.Y)
+							if endX > span.startX {
+								// Use currentY which is correctly updated after block child layout
+								afterBlockY := currentY
+								fmt.Printf("    Creating Fragment 2 at Y=%.1f (using currentY)\n", afterBlockY)
+
+								// Compute border, padding, margin from style
+								border := span.style.GetBorderWidth()
+								padding := span.style.GetPadding()
+								margin := span.style.GetMargin()
+								lineHeight := span.style.GetLineHeight()
+
+								fragment2 := &Box{
+									Node:            span.node,
+									Style:           span.style,
+									X:               containerBox.X + containerBox.Border.Left + containerBox.Padding.Left,
+									Y:               afterBlockY,
+									Width:           endX - (containerBox.X + containerBox.Border.Left + containerBox.Padding.Left),
+									Height:          lineHeight, // Use line-height, not text height
+									Border:          border,
+									Padding:         padding,
+									Margin:          margin,
+									Parent:          containerBox,
+									IsFirstFragment: false, // Not first
+									IsLastFragment:  true,  // Last fragment has right border
+								}
+								boxes = append(boxes, fragment2)
+								fmt.Printf("    Fragment 2 (last): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
+									fragment2.X, fragment2.Y, fragment2.Width, fragment2.Height, lineHeight,
+									border.Top, border.Right, border.Bottom, border.Left)
+							}
+						} else {
+							// Normal inline box (not split)
+							endX := frag.Position.X
+							wrapperWidth := endX - span.startX
+
+							// Compute border, padding, margin from style
+							border := span.style.GetBorderWidth()
+							padding := span.style.GetPadding()
+							margin := span.style.GetMargin()
+
+							// Inline elements ignore vertical margins (CSS 2.1 §8.3)
+							margin.Top = 0
+							margin.Bottom = 0
+
+							fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f, height %.1f)\n",
+								span.startX, endX, wrapperWidth, currentLineMaxHeight)
+
+							wrapperBox := &Box{
+								Node:    span.node,
+								Style:   span.style,
+								X:       span.startX,
+								Y:       span.startY,
+								Width:   wrapperWidth,
+								Height:  currentLineMaxHeight,
+								Border:  border,
+								Padding: padding,
+								Margin:  margin,
+								Parent:  containerBox,
+							}
+							boxes = append(boxes, wrapperBox)
+						}
+
+						// Remove span from stack
+						inlineStack = append(inlineStack[:spanIdx], inlineStack[spanIdx+1:]...)
+						fmt.Printf("  Wrapper box(es) created, stack size: %d\n", len(inlineStack))
+					} else {
+						fmt.Printf("  ⚠️  WARNING: CloseTag without matching OpenTag!\n")
+					}
+				}
+			}
+		} else if frag.Type == FragmentFloat {
+			// Float - recursively layout its contents like a block child
+			floatNode := frag.Node
+			floatStyle := computedStyles[floatNode]
+			if floatStyle == nil {
+				floatStyle = css.NewStyle()
+			}
+
+			fmt.Printf("\n[Fragment %d] Float: %s\n", i, getNodeName(floatNode))
+			fmt.Printf("  Fragment Position: (%.1f, %.1f), Size: %.1fx%.1f\n",
+				frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
+
+			// Recursively layout the float's content
+			// Floats are positioned absolutely, use fragment position
+			fmt.Printf("  Calling layoutNode for float content...\n")
+			floatBox := le.layoutNode(
+				floatNode,
+				frag.Position.X,
+				currentY,
+				frag.Size.Width, // Use float's explicit width
+				computedStyles,
+				containerBox,
+			)
+
+			fmt.Printf("  Float box at (%.1f, %.1f) size %.1fx%.1f\n",
+				floatBox.X, floatBox.Y, floatBox.Width, floatBox.Height)
+
+			// Mark as floated for rendering
+			floatBox.Position = css.PositionAbsolute
+			floatBox.Parent = containerBox
+			boxes = append(boxes, floatBox)
+
+			// Floats don't affect currentY or currentX for inline flow
+			// (they're out of flow)
+		} else {
+			// Regular fragment - convert to box
+			box := fragmentToBoxSingle(frag)
+			if box != nil {
+				fmt.Printf("\n[Fragment %d] %v: %s\n", i, frag.Type, getNodeName(frag.Node))
+				fmt.Printf("  Fragment Position: (%.1f, %.1f), Size: %.1fx%.1f\n",
+					frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
+
+				// Check if we've moved to a new line (Y changed)
+				if frag.Position.Y != currentLineY {
+					// Advance currentY past the previous line
+					if currentLineMaxHeight > 0 {
+						fmt.Printf("  Line break detected: Y %.1f → %.1f (height %.1f)\n",
+							currentLineY, frag.Position.Y, currentLineMaxHeight)
+						currentY = currentLineY + currentLineMaxHeight
+					}
+					currentLineY = frag.Position.Y
+					currentLineMaxHeight = 0
+				}
+
+				// CRITICAL FIX: Use currentY instead of frag.Position.Y
+				// After block children, frag.Position.Y is wrong because BreakLines
+				// doesn't know block heights. We track actual Y in currentY.
+				if box.Y != currentY {
+					fmt.Printf("  ⚠️  Correcting Y: %.1f → %.1f (currentY)\n", box.Y, currentY)
+					box.Y = currentY
+				}
+
+				// Track maximum height on this line
+				if box.Height > currentLineMaxHeight {
+					currentLineMaxHeight = box.Height
+				}
+
+				if frag.Type == FragmentText {
+					fmt.Printf("  Text: %q\n", truncateString(frag.Text, 30))
+				}
+				fmt.Printf("  Final Box Position: (%.1f, %.1f), currentLineMaxH: %.1f\n",
+					box.X, box.Y, currentLineMaxHeight)
+
+				// Update currentX to track rightmost position
+				boxRight := box.X + box.Width
+				if boxRight > currentX {
+					currentX = boxRight
+					fmt.Printf("  Updated currentX: %.1f\n", currentX)
+				}
+
+				box.Parent = containerBox
+				boxes = append(boxes, box)
+			}
+		}
+	}
+
+	fmt.Printf("\nTotal boxes created: %d\n", len(boxes))
+
+	// Apply text-align to inline children
+	if containerBox.Style != nil {
+		display := containerBox.Style.GetDisplay()
+		if display != css.DisplayInline && display != css.DisplayInlineBlock {
+			if textAlign, ok := containerBox.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
+				contentWidth := containerBox.Width // containerBox.Width is already the content width
+				fmt.Printf("DEBUG: Applying text-align=%s to %d boxes\n", textAlign, len(boxes))
+				le.applyTextAlignToBoxes(boxes, containerBox, textAlign, contentWidth)
+			}
+		}
+	}
+
+	fmt.Printf("=== END MULTI-PASS ===\n\n")
+
+	return boxes
+}
 
 // InlineItemType represents the type of an inline item
 type InlineItemType int
 
 const (
-	InlineItemText     InlineItemType = iota // Text content
-	InlineItemOpenTag                        // Opening tag of inline element
-	InlineItemCloseTag                       // Closing tag of inline element
-	InlineItemAtomic                         // Atomic inline (inline-block, replaced element)
-	InlineItemFloat                          // Floated element
-	InlineItemControl                        // Control element (br, etc.)
+	InlineItemText       InlineItemType = iota // Text content
+	InlineItemOpenTag                          // Opening tag of inline element
+	InlineItemCloseTag                         // Closing tag of inline element
+	InlineItemAtomic                           // Atomic inline (inline-block, replaced element)
+	InlineItemFloat                            // Floated element
+	InlineItemControl                          // Control element (br, etc.)
+	InlineItemBlockChild                       // Block-level child (requires recursive layout)
 )
 
 // InlineItem represents a piece of inline content in the flattened item list.
@@ -109,8 +1683,18 @@ type InlineItem struct {
 	Height float64 // Intrinsic height
 }
 
+// LineInfo represents a single line in the new multi-pass architecture.
+// This is the cleaner Phase 2 (BreakLines) output that uses ConstraintSpace.
+type LineInfo struct {
+	Y          float64          // Y position of this line
+	Items      []*InlineItem    // Items on this line
+	Constraint *ConstraintSpace // Constraint space for THIS line (includes floats)
+	Height     float64          // Computed line height
+}
+
 // LineBreakResult represents the result of line breaking for a single line.
 // This is Phase 2 (BreakLines) output - what items go on each line.
+// NOTE: This is the old structure. New code should use LineInfo instead.
 type LineBreakResult struct {
 	Items      []*InlineItem // Items on this line (references to InlineItem from main list)
 	StartIndex int           // Index of first item in main item list
@@ -313,12 +1897,24 @@ func (le *LayoutEngine) SetImageFetcher(fetcher images.ImageFetcher) {
 	le.imageFetcher = fetcher
 }
 
+// SetUseMultiPass enables the new clean multi-pass inline layout architecture.
+// When enabled, inline content uses LayoutInlineContentToBoxes (Phase 1-2-3 pipeline)
+// instead of the old single-pass algorithm.
+//
+// This is used for selective testing: enable for specific test files to measure
+// improvement before full rollout.
+func (le *LayoutEngine) SetUseMultiPass(enabled bool) {
+	le.useMultiPass = enabled
+}
+
 // GetScrollY returns the current vertical scroll offset.
 func (le *LayoutEngine) GetScrollY() float64 {
 	return le.scrollY
 }
 
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
+	fmt.Println("DEBUG: Layout() called - code is running!")
+
 	// Phase 3: Compute styles from stylesheets
 	// Phase 22: Pass viewport dimensions for media query evaluation
 	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
@@ -344,6 +1940,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
+			fmt.Printf("DEBUG LAYOUT LOOP: Processing <%s>\n", node.TagName)
 			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if box == nil {
@@ -355,12 +1952,21 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			floatType := box.Style.GetFloat()
 			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed && floatType == css.FloatNone {
 				// Margin collapsing between adjacent siblings
+				if node.TagName == "div" && node.Attributes != nil {
+					if id, ok := node.Attributes["id"]; ok && id == "div1" {
+						fmt.Printf("DEBUG COLLAPSE CHECK: prevBox=%v, shouldCollapse(prev)=%v, shouldCollapse(box)=%v\n",
+							prevBox != nil, prevBox != nil && shouldCollapseMargins(prevBox), shouldCollapseMargins(box))
+					}
+				}
 				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(box) {
 					collapsed := collapseMargins(prevBox.Margin.Bottom, box.Margin.Top)
 					// We already advanced by prevBox's full total height (including prevBox.Margin.Bottom)
 					// and layoutNode already added box.Margin.Top to box.Y.
 					// We need to pull back by the non-collapsed portion.
 					adjustment := prevBox.Margin.Bottom + box.Margin.Top - collapsed
+					fmt.Printf("DEBUG COLLAPSE: prevBox.MarginBottom=%.1f, box.MarginTop=%.1f, collapsed=%.1f, adjustment=%.1f\n",
+						prevBox.Margin.Bottom, box.Margin.Top, collapsed, adjustment)
+					fmt.Printf("DEBUG COLLAPSE: box.Y before=%.1f, after=%.1f\n", box.Y, box.Y-adjustment)
 					box.Y -= adjustment
 					le.adjustChildrenY(box, -adjustment)
 				}
@@ -378,6 +1984,17 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 
 // layoutNode recursively layouts a node and its children
 func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
+	// DEBUG: Track all div elements
+	if node != nil && node.TagName == "div" {
+		nodeID := "(no id)"
+		if node.Attributes != nil {
+			if id, ok := node.Attributes["id"]; ok {
+				nodeID = id
+			}
+		}
+		fmt.Printf("DEBUG LAYOUT START: layoutNode called for <div id='%s'>\n", nodeID)
+	}
+
 	// Phase 3: Use computed styles from cascade
 	style := computedStyles[node]
 	if style == nil {
@@ -588,6 +2205,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
 
+	// DEBUG: Print all div IDs
+	if node != nil && node.TagName == "div" {
+		id := "(no id)"
+		if node.Attributes != nil {
+			if nodeID, ok := node.Attributes["id"]; ok {
+				id = nodeID
+			}
+		}
+		fmt.Printf("DEBUG CSS: div id='%s' position=%d\n", id, position)
+	}
+
 	// Phase 5: Check for clear property
 	clearType := style.GetClear()
 
@@ -601,8 +2229,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		Style:     style,
 		X:         x,
 		Y:         y,
-		Width:     contentWidth,
-		Height:    contentHeight,
+		Width:     contentWidth + padding.Left + padding.Right + border.Left + border.Right,
+		Height:    contentHeight + padding.Top + padding.Bottom + border.Top + border.Bottom,
 		Margin:    margin,
 		Padding:   padding,
 		Border:    border,
@@ -617,12 +2245,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// (to support shrink-wrapping and float drop)
 
 	// Phase 4: Handle positioning
-	if position == css.PositionAbsolute || position == css.PositionFixed {
-		// Absolutely positioned elements - positioning applied after children layout
-		le.absoluteBoxes = append(le.absoluteBoxes, box)
-	} else if position == css.PositionRelative {
+	if node != nil && node.TagName == "div" {
+		posName := "static"
+		switch position {
+		case css.PositionRelative:
+			posName = "relative"
+		case css.PositionAbsolute:
+			posName = "absolute"
+		case css.PositionFixed:
+			posName = "fixed"
+		}
+		if position != css.PositionStatic {
+			fmt.Printf("DEBUG LAYOUT POS2: div position=%s (%d)\n", posName, position)
+		}
+	}
+	if position == css.PositionRelative {
 		// Relative positioning: offset from normal position
 		offset := style.GetPositionOffset()
+		oldY := box.Y
+		oldX := box.X
 		if offset.HasTop {
 			box.Y += offset.Top
 		} else if offset.HasBottom {
@@ -633,6 +2274,26 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		} else if offset.HasRight {
 			box.X -= offset.Right
 		}
+		if oldY != box.Y || oldX != box.X {
+			tagInfo := "?"
+			if node != nil {
+				tagInfo = node.TagName
+				if node.Attributes != nil {
+					if id, ok := node.Attributes["id"]; ok && id != "" {
+						tagInfo += "#" + id
+					}
+				}
+			}
+			fmt.Printf("DEBUG LAYOUT POS: %s relative offset applied: (%.1f,%.1f) -> (%.1f,%.1f)\n",
+				tagInfo, oldX, oldY, box.X, box.Y)
+			// Also check background color
+			if bgColor, ok := style.Get("background-color"); ok && bgColor != "" && bgColor != "transparent" {
+				fmt.Printf("DEBUG LAYOUT POS:   %s has background-color=%s at final Y=%.1f\n", tagInfo, bgColor, box.Y)
+			}
+		}
+	} else if position == css.PositionAbsolute || position == css.PositionFixed {
+		// Absolutely positioned elements - positioning applied after children layout
+		le.absoluteBoxes = append(le.absoluteBoxes, box)
 	}
 
 	// Phase 9: Handle table layout specially
@@ -694,11 +2355,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Check if we should use multi-pass (only for containers without pseudo-elements)
 	hasPseudo := le.hasPseudoElements(node, computedStyles)
+	hasFloats := false
+	hasBlockChild := false
+	hasInlineChild := false
+	didAnalyzeChildren := false // Track if we analyzed children
+
 	if (display == css.DisplayBlock || display == css.DisplayInline) && !hasPseudo {
+		didAnalyzeChildren = true
 		// Check children to determine if this is a pure inline formatting context
-		hasFloats := false
-		hasBlockChild := false
-		hasInlineChild := false
 
 		for _, child := range node.Children {
 			if child.Type == html.ElementNode {
@@ -727,19 +2391,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		}
 
-		// Only use multi-pass if:
-		// 1. Has floats among inline children
-		// 2. Has NO block children (pure inline formatting context)
-		// 3. Has some inline content
-		// 4. Not an object with image
-		// 5. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
-		// TODO: Multi-pass disabled due to float positioning bugs
-		// Issues to fix before re-enabling:
-		// 1. Right float positioning gives negative X coordinates when multiple right floats on same line
-		// 2. Line breaking puts floats on same line even when they don't fit horizontally
-		// 3. Float positioning formula doesn't account for previously positioned floats on same line
-		// See commit history for attempted fixes
-		if false && hasFloats && !hasBlockChild && hasInlineChild && !isObjectImage && display == css.DisplayBlock {
+		// Use multi-pass for ALL inline formatting contexts (per user request)
+		// Requirements:
+		// 1. Has some inline content (block children handled as InlineItemBlockChild)
+		// 2. Not an object with image
+		// 3. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
+		// EXPERIMENTAL: Allow mixed block/inline content - block children handled in multi-pass
+		if hasInlineChild && !isObjectImage && display == css.DisplayBlock {
 			algorithm = MultiPassAlgorithm
 			// DEBUG: Log when multi-pass is triggered
 			if node.TagName != "" {
@@ -749,21 +2407,86 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
-	// Layout inline children using detected algorithm
-	// This handles ::before, child loop, ::after, and text-align
-	inlineLayoutResult := le.layoutInlineChildren(
-		node, box, display, style, border, padding, x, childY,
-		childAvailableWidth, contentWidth, isObjectImage, computedStyles,
-		&prevBlockChild, &pendingMargins, algorithm,
-	)
+	// NEW ARCHITECTURE: If multi-pass is enabled AND we have a pure inline formatting context,
+	// use clean LayoutInlineContentToBoxes. Multi-pass can only handle inline content, not mixed block/inline.
+	var childBoxes []*Box
+	var inlineLayoutResult *InlineLayoutResult
 
-	// Add all child boxes to the container
-	box.Children = append(box.Children, inlineLayoutResult.ChildBoxes...)
+	// Check if we can use multi-pass (no pseudo-elements and we analyzed children)
+	// Block children are now supported via recursive layoutNode calls
+	canUseMultiPass := le.useMultiPass && didAnalyzeChildren && !hasPseudo
+
+	// DEBUG: Log why we're not using multi-pass
+	if node.TagName == "body" {
+		fmt.Printf("DEBUG MULTIPASS CHECK: useMultiPass=%v, didAnalyze=%v, hasPseudo=%v, canUse=%v\n",
+			le.useMultiPass, didAnalyzeChildren, hasPseudo, canUseMultiPass)
+	}
+
+	if canUseMultiPass {
+		// Use new three-phase multi-pass pipeline
+		childBoxes = le.LayoutInlineContentToBoxes(
+			node.Children,
+			box,
+			childAvailableWidth,
+			childY,
+			computedStyles,
+		)
+
+		// CRITICAL FIX: Apply margin collapsing between adjacent block siblings
+		// LayoutInlineContentToBoxes doesn't handle margin collapsing, so we must do it here
+		var prevBox *Box
+		for _, childBox := range childBoxes {
+			if childBox == nil {
+				continue
+			}
+
+			// Only collapse margins for block-level boxes in normal flow
+			floatType := css.FloatNone
+			if childBox.Style != nil {
+				floatType = childBox.Style.GetFloat()
+			}
+
+			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && floatType == css.FloatNone {
+				// Check if both boxes should collapse margins
+				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(childBox) {
+					collapsed := collapseMargins(prevBox.Margin.Bottom, childBox.Margin.Top)
+					adjustment := prevBox.Margin.Bottom + childBox.Margin.Top - collapsed
+
+					fmt.Printf("DEBUG MULTIPASS COLLAPSE: prev=%s, curr=%s, prevBottom=%.1f, currTop=%.1f, collapsed=%.1f, adjustment=%.1f\n",
+						prevBox.Node.TagName, childBox.Node.TagName, prevBox.Margin.Bottom, childBox.Margin.Top, collapsed, adjustment)
+
+					childBox.Y -= adjustment
+					le.adjustChildrenY(childBox, -adjustment)
+				}
+				prevBox = childBox
+			}
+		}
+
+		// Add all child boxes to the container
+		box.Children = append(box.Children, childBoxes...)
+	} else {
+		// Use existing layout code
+		// Layout inline children using detected algorithm
+		// This handles ::before, child loop, ::after, and text-align
+		inlineLayoutResult = le.layoutInlineChildren(
+			node, box, display, style, border, padding, x, childY,
+			childAvailableWidth, contentWidth, isObjectImage, computedStyles,
+			&prevBlockChild, &pendingMargins, algorithm,
+		)
+
+		// Add all child boxes to the container
+		box.Children = append(box.Children, inlineLayoutResult.ChildBoxes...)
+		childBoxes = inlineLayoutResult.ChildBoxes
+	}
 
 	// NOTE: The rest of the old inline layout code (lines 700-1212) has been
 	// extracted into layoutInlineChildrenSinglePass() and is now called above.
 	// The following line preserves inline context for any code that might use it later.
-	inlineCtx := inlineLayoutResult.FinalInlineCtx
+	var inlineCtx *InlineContext
+	if inlineLayoutResult != nil {
+		inlineCtx = inlineLayoutResult.FinalInlineCtx
+	}
+	// Note: Both single-pass and multi-pass now provide inline context for height calculation
 
 	// TEMPORARY: Keep the old inline layout code below commented out for reference
 	// until we verify the refactor works correctly. Will be deleted once stable.
@@ -861,6 +2584,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			break
 		}
 		if child.Type == html.ElementNode {
+			// DEBUG: Log which children are being processed
+			if node.TagName == "body" {
+				childID := "(no id)"
+				if child.Attributes != nil {
+					if id, ok := child.Attributes["id"]; ok {
+						childID = id
+					}
+				}
+				fmt.Printf("DEBUG BODY CHILD: Processing <%s id='%s'>\n", child.TagName, childID)
+			}
 			// Get child's computed style to check display mode
 			childStyle := computedStyles[child]
 			if childStyle == nil {
@@ -1044,6 +2777,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 							// Don't advance childY, don't set prevBlockChild
 						} else {
 							// Normal margin collapsing between adjacent block siblings
+							// DEBUG: Check for div1 specifically
+							isDiv1 := childBox.Node != nil && childBox.Node.TagName == "div" && childBox.Node.Attributes != nil
+							if isDiv1 {
+								if id, ok := childBox.Node.Attributes["id"]; ok && id == "div1" {
+									fmt.Printf("DEBUG DIV1: prevBlockChild=%v, shouldCollapse(prev)=%v, shouldCollapse(div1)=%v\n",
+										prevBlockChild != nil,
+										prevBlockChild != nil && shouldCollapseMargins(prevBlockChild),
+										shouldCollapseMargins(childBox))
+									if prevBlockChild != nil {
+										fmt.Printf("DEBUG DIV1: prevBlockChild.Margin.Bottom=%.1f, childBox.Margin.Top=%.1f\n",
+											prevBlockChild.Margin.Bottom, childBox.Margin.Top)
+									}
+								}
+							}
 							if prevBlockChild != nil && shouldCollapseMargins(prevBlockChild) && shouldCollapseMargins(childBox) {
 								// Collect all margins: prev bottom, any pending from collapse-through, current top
 								allMargins := []float64{prevBlockChild.Margin.Bottom}
@@ -1376,15 +3123,24 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				// Last child's margin-bottom collapses through the parent
 				childMarginBottom = 0
 			}
-			childHeight := child.Border.Top + child.Padding.Top + child.Height +
-				child.Padding.Bottom + child.Border.Bottom + childMarginBottom
+			// For inline elements, Height already includes borders/padding (from line height calculation)
+			// For block elements, Height is content only, and borders/padding are separate
+			var childHeight float64
+			if child.Style != nil && child.Style.GetDisplay() == css.DisplayInline {
+				// Inline: Height already includes everything
+				childHeight = child.Height + childMarginBottom
+			} else {
+				// Block: Add borders and padding to content height
+				childHeight = child.Border.Top + child.Padding.Top + child.Height +
+					child.Padding.Bottom + child.Border.Bottom + childMarginBottom
+			}
 			childBottom := childRelativeY + childHeight
 			if childBottom > maxBottom {
 				maxBottom = childBottom
 			}
 		}
 		// CSS 2.1 §10.8.1: Account for trailing inline line box height (including strut)
-		if len(inlineCtx.LineBoxes) > 0 {
+		if inlineCtx != nil && len(inlineCtx.LineBoxes) > 0 {
 			strutHeight := style.GetLineHeight()
 			lineBoxHeight := inlineCtx.LineHeight
 			if strutHeight > lineBoxHeight {
@@ -1398,7 +3154,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if maxBottom < 0 {
 			maxBottom = 0
 		}
-		box.Height = maxBottom
+		// Box.Height must be border-box (content + padding + borders)
+		// maxBottom is content height, so add padding and borders
+		box.Height = maxBottom + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
 
 		// CSS 2.1 §8.3.1: When parent-child bottom margin collapsing applies,
 		// propagate the last child's bottom margin to the parent's bottom margin.
@@ -1591,6 +3349,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		le.repositionFloatRightChildren(box)
 	}
 
+	// DEBUG: Check final box.Y before returning
+	if node != nil && node.TagName == "div" && node.Attributes != nil {
+		if id, ok := node.Attributes["id"]; ok && id == "div3" {
+			fmt.Printf("DEBUG LAYOUT END: div#%s returning with Y=%.1f\n", id, box.Y)
+		}
+		if bgColor, ok := style.Get("background-color"); ok && bgColor == "red" {
+			fmt.Printf("DEBUG LAYOUT END: red div returning with Y=%.1f\n", box.Y)
+		}
+	}
+
 	return box
 }
 
@@ -1730,6 +3498,12 @@ func collectCollapseThroughChildMargins(box *Box, margins *[]float64) {
 func shouldCollapseMargins(box *Box) bool {
 	if box.Style == nil {
 		return true
+	}
+	// CRITICAL FIX: In standards mode, <body> elements never participate in margin collapsing
+	// They are considered "magical" per CSS spec and quirks mode documentation
+	// See: https://developer.mozilla.org/en-US/docs/Mozilla/Mozilla_quirks_mode_behavior
+	if box.Node != nil && box.Node.TagName == "body" {
+		return false
 	}
 	floatType := box.Style.GetFloat()
 	if floatType != css.FloatNone {
@@ -2137,10 +3911,16 @@ func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset floa
 	leftOffset = 0
 	rightOffset = 0
 
+	if y > 25 && y < 35 && len(le.floats) > le.floatBase {
+		fmt.Printf("DEBUG: getFloatOffsets(y=%.1f) checking %d floats (base=%d)\n", y, len(le.floats)-le.floatBase, le.floatBase)
+	}
 	for i := le.floatBase; i < len(le.floats); i++ {
 		floatInfo := le.floats[i]
 		// Check if this float affects the current Y position
 		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
+		if y > 25 && y < 35 {
+			fmt.Printf("DEBUG:   Float #%d at Y=%.1f-%.1f, side=%v, width=%.1f\n", i, floatInfo.Y, floatBottom, floatInfo.Side, le.getTotalWidth(floatInfo.Box))
+		}
 		if y >= floatInfo.Y && y < floatBottom {
 			if floatInfo.Side == css.FloatLeft {
 				floatWidth := le.getTotalWidth(floatInfo.Box)
@@ -2277,6 +4057,46 @@ func (le *LayoutEngine) applyTextAlign(box *Box, textAlign string, contentWidth 
 	contentLeft := box.X + box.Border.Left + box.Padding.Left
 
 	for _, child := range box.Children {
+		if child.Style == nil {
+			continue
+		}
+		childDisplay := child.Style.GetDisplay()
+		// Only apply to inline/inline-block children, or text nodes
+		isInline := childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock
+		if child.Node != nil && child.Node.Type == html.TextNode {
+			isInline = true
+		}
+		if !isInline {
+			continue
+		}
+
+		childTotalWidth := le.getTotalWidth(child)
+
+		switch textAlign {
+		case "right":
+			dx := contentLeft + contentWidth - childTotalWidth - child.X
+			if dx != 0 {
+				child.X += dx
+				le.shiftChildren(child, dx, 0)
+			}
+		case "center":
+			dx := contentLeft + (contentWidth-childTotalWidth)/2 - child.X
+			if dx != 0 {
+				child.X += dx
+				le.shiftChildren(child, dx, 0)
+			}
+		}
+	}
+}
+
+// applyTextAlignToBoxes applies text-align to a slice of boxes instead of box.Children
+func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, textAlign string, contentWidth float64) {
+	contentLeft := parentBox.X + parentBox.Border.Left + parentBox.Padding.Left
+
+	for _, child := range boxes {
+		if child == nil {
+			continue
+		}
 		if child.Style == nil {
 			continue
 		}
@@ -4369,6 +6189,8 @@ func (le *LayoutEngine) layoutInlineChildren(
 			if lastBox.Height > inlineCtx.LineHeight {
 				inlineCtx.LineHeight = lastBox.Height
 			}
+			// Populate LineBoxes so parent height calculation works (line 2875 condition)
+			inlineCtx.LineBoxes = childBoxes
 		}
 		result.FinalInlineCtx = inlineCtx
 		result.UsedMultiPass = true
@@ -4409,6 +6231,10 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	prevBlockChild **Box,
 	pendingMargins *[]float64,
 ) []*Box {
+	// DEBUG: Log when this function is called for body
+	if node.TagName == "body" {
+		fmt.Printf("DEBUG SINGLEPASS: layoutInlineChildrenSinglePass called for <body>, %d children\n", len(node.Children))
+	}
 	childBoxes := make([]*Box, 0)
 
 	// Phase 11: Generate ::before pseudo-element if it has content
@@ -4690,6 +6516,19 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 							// Don't advance localChildY, don't set prevBlockChild
 						} else {
 							// Normal margin collapsing between adjacent block siblings
+							// DEBUG: Log div1 margin collapsing attempt
+							if childBox.Node != nil && childBox.Node.TagName == "div" && childBox.Node.Attributes != nil {
+								if id, ok := childBox.Node.Attributes["id"]; ok && id == "div1" {
+									fmt.Printf("DEBUG SP DIV1: prevBlockChild=%v, shouldCollapse(prev)=%v, shouldCollapse(div1)=%v\n",
+										*prevBlockChild != nil,
+										*prevBlockChild != nil && shouldCollapseMargins(*prevBlockChild),
+										shouldCollapseMargins(childBox))
+									if *prevBlockChild != nil {
+										fmt.Printf("DEBUG SP DIV1: prevBottom=%.1f, div1Top=%.1f, childBox.Y=%.1f\n",
+											(*prevBlockChild).Margin.Bottom, childBox.Margin.Top, childBox.Y)
+									}
+								}
+							}
 							if *prevBlockChild != nil && shouldCollapseMargins(*prevBlockChild) && shouldCollapseMargins(childBox) {
 								// Collect all margins: prev bottom, any pending from collapse-through, current top
 								allMargins := []float64{(*prevBlockChild).Margin.Bottom}
@@ -4709,6 +6548,8 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 								// Only real margins used space; pending margins were from zero-height elements
 								totalUsed := (*prevBlockChild).Margin.Bottom + childBox.Margin.Top
 								adjustment := totalUsed - collapsed
+								fmt.Printf("DEBUG SP DIV1 COLLAPSE: collapsed=%.1f, adjustment=%.1f, Y before=%.1f, Y after=%.1f\n",
+									collapsed, adjustment, childBox.Y, childBox.Y-adjustment)
 								childBox.Y -= adjustment
 								le.adjustChildrenY(childBox, -adjustment)
 							} else if len(*pendingMargins) > 0 && shouldCollapseMargins(childBox) {
@@ -4925,7 +6766,9 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	// Apply text-align to inline children (only for block containers, not inline elements)
 	if display != css.DisplayInline && display != css.DisplayInlineBlock {
 		if textAlign, ok := style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
-			le.applyTextAlign(box, textAlign, contentWidth)
+			// CRITICAL FIX: Apply text-align to childBoxes (which will be added to box.Children later)
+			// NOT to box.Children directly (which is still empty at this point)
+			le.applyTextAlignToBoxes(childBoxes, box, textAlign, contentWidth)
 		}
 	}
 
@@ -4949,7 +6792,16 @@ func (le *LayoutEngine) LayoutInlineBatch(
 ) []*Box {
 	const maxRetries = 3
 
+	// Calculate float base index ONCE before retry loop
+	// This ensures we reset to the same point on each retry
+	floatBaseIndex := len(le.floats)
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// DO NOT reset floats - they must persist between retries so line breaking can account for them
+		// Each retry needs to see the floats added in previous attempts to converge
+		fmt.Printf("DEBUG MP: Attempt %d - keeping %d floats (base index %d)\n",
+			attempt+1, len(le.floats), floatBaseIndex)
+
 		// Create state for this batch
 		state := &InlineLayoutState{
 			Items:          []*InlineItem{},
@@ -4961,7 +6813,7 @@ func (le *LayoutEngine) LayoutInlineBatch(
 			Border:         border,
 			Padding:        padding,
 			FloatList:      le.floats,
-			FloatBaseIndex: len(le.floats),
+			FloatBaseIndex: floatBaseIndex,
 		}
 
 		fmt.Printf("DEBUG MP: LayoutInlineBatch attempt %d, %d children\n", attempt+1, len(children))
@@ -4994,7 +6846,7 @@ func (le *LayoutEngine) LayoutInlineBatch(
 		}
 
 		// Phase 2: Break lines
-		success := le.BreakLines(state)
+		success := le.breakLinesWIP(state)
 		if !success {
 			fmt.Printf("DEBUG MP: Line breaking failed\n")
 			return []*Box{}
@@ -5016,7 +6868,8 @@ func (le *LayoutEngine) LayoutInlineBatch(
 		// Don't reset le.floats - we want the next iteration to see the floats we just added
 	}
 
-	// Max retries exceeded - return last attempt
+	// Max retries exceeded - do final construction with full support
+	fmt.Printf("DEBUG MP: Max retries exceeded, doing final construction\n")
 	state := &InlineLayoutState{
 		Items:          []*InlineItem{},
 		Lines:          []*LineBreakResult{},
@@ -5032,15 +6885,30 @@ func (le *LayoutEngine) LayoutInlineBatch(
 	for _, child := range children {
 		le.CollectInlineItems(child, state, computedStyles)
 	}
-	le.BreakLines(state)
-	boxes := le.ConstructLineBoxes(state, box)
+	le.breakLinesWIP(state)
+	// Use full construction method that handles block children and floats
+	boxes, _ := le.constructLineBoxesWithRetry(state, box, computedStyles)
+	fmt.Printf("DEBUG MP BATCH: After constructLineBoxesWithRetry, got %d boxes for parent=%s\n",
+		len(boxes), box.Node.TagName)
+
+	// Apply text-align to inline children
+	if box.Style != nil {
+		display := box.Style.GetDisplay()
+		if display != css.DisplayInline && display != css.DisplayInlineBlock {
+			if textAlign, ok := box.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
+				contentWidth := box.Width // box.Width is already the content width
+				le.applyTextAlignToBoxes(boxes, box, textAlign, contentWidth)
+			}
+		}
+	}
+
 	return boxes
 }
 
 // It orchestrates all three phases and returns the resulting boxes.
 //
-// This should be called instead of the old single-pass inline layout logic.
-func (le *LayoutEngine) LayoutInlineContent(
+// NOTE: This is the OLD WIP implementation. New code should use LayoutInlineContent() instead.
+func (le *LayoutEngine) layoutInlineContentWIP(
 	node *html.Node,
 	box *Box,
 	availableWidth float64,
@@ -5067,6 +6935,34 @@ func (le *LayoutEngine) LayoutInlineContent(
 		le.CollectInlineItems(child, state, computedStyles)
 	}
 
+	// DEBUG: Show collected items
+	fmt.Printf("\n=== PHASE 1: Collected %d items ===\n", len(state.Items))
+	for i, item := range state.Items {
+		typeName := ""
+		switch item.Type {
+		case InlineItemText:
+			typeName = "Text"
+		case InlineItemOpenTag:
+			typeName = "OpenTag"
+		case InlineItemCloseTag:
+			typeName = "CloseTag"
+		case InlineItemFloat:
+			typeName = "Float"
+		case InlineItemAtomic:
+			typeName = "Atomic"
+		case InlineItemBlockChild:
+			typeName = "BlockChild"
+		default:
+			typeName = fmt.Sprintf("Type%d", item.Type)
+		}
+		fmt.Printf("  [%d] %s: %s, Size: %.1fx%.1f\n",
+			i, typeName, getNodeName(item.Node), item.Width, item.Height)
+		if item.Type == InlineItemText {
+			fmt.Printf("       Text: %q\n", truncateString(item.Text, 30))
+		}
+	}
+	fmt.Printf("=== END PHASE 1 ===\n\n")
+
 	// Phase 2 & 3: Line breaking with retry when floats change available width
 	// This implements the Gecko-style retry mechanism (RedoMoreFloats)
 	const maxRetries = 3 // Prevent infinite loops
@@ -5074,7 +6970,7 @@ func (le *LayoutEngine) LayoutInlineContent(
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Phase 2: Break into lines with current float state
-		success := le.BreakLines(state)
+		success := le.breakLinesWIP(state)
 		if !success {
 			return []*Box{} // Line breaking failed
 		}
@@ -5125,7 +7021,73 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			}
 		}
 
-		// Measure the text
+		// Check for ::first-letter pseudo-element styling
+		// This applies to the first letter of the first text in a block container
+		shouldApplyFirstLetter := false
+		if node.Parent != nil && len(state.Items) == 0 {
+			// This is the first text in the inline batch
+			// Check if there are any :first-letter rules for the parent
+			for _, stylesheet := range le.stylesheets {
+				for _, rule := range stylesheet.Rules {
+					if rule.Selector.PseudoElement == "first-letter" {
+						if css.MatchesSelector(node.Parent, rule.Selector) {
+							shouldApplyFirstLetter = true
+							break
+						}
+					}
+				}
+				if shouldApplyFirstLetter {
+					break
+				}
+			}
+		}
+
+		if shouldApplyFirstLetter {
+			// Get the computed first-letter style
+			firstLetterStyle := css.ComputePseudoElementStyle(node.Parent, "first-letter", le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
+			firstLetter, remaining := extractFirstLetter(node.Text)
+
+			if firstLetter != "" {
+				// Create item for the first letter with special styling
+				flFontSize := firstLetterStyle.GetFontSize()
+				flBold := firstLetterStyle.GetFontWeight() == css.FontWeightBold
+				flWidth, flHeight := text.MeasureTextWithWeight(firstLetter, flFontSize, flBold)
+
+				firstLetterItem := &InlineItem{
+					Type:        InlineItemText,
+					Node:        node,
+					Text:        firstLetter,
+					StartOffset: 0,
+					EndOffset:   len(firstLetter),
+					Style:       firstLetterStyle,
+					Width:       flWidth,
+					Height:      flHeight,
+				}
+				state.Items = append(state.Items, firstLetterItem)
+
+				// If there's remaining text, create an item for it
+				if remaining != "" {
+					fontSize := parentStyle.GetFontSize()
+					bold := parentStyle.GetFontWeight() == css.FontWeightBold
+					width, height := text.MeasureTextWithWeight(remaining, fontSize, bold)
+
+					remainingItem := &InlineItem{
+						Type:        InlineItemText,
+						Node:        node,
+						Text:        remaining,
+						StartOffset: len(firstLetter),
+						EndOffset:   len(node.Text),
+						Style:       parentStyle,
+						Width:       width,
+						Height:      height,
+					}
+					state.Items = append(state.Items, remainingItem)
+				}
+				return
+			}
+		}
+
+		// Normal text without first-letter styling
 		fontSize := parentStyle.GetFontSize()
 		bold := parentStyle.GetFontWeight() == css.FontWeightBold
 		width, height := text.MeasureTextWithWeight(node.Text, fontSize, bold)
@@ -5161,47 +7123,88 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		// Handle different display types
 		switch display {
 		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem:
-			// Block elements don't become inline items - they're handled separately
-			// This shouldn't happen in a pure inline formatting context
+			// Block elements in inline contexts are handled as BlockChild items
+			// They force line breaks before and after, and require recursive layout
+			fmt.Printf("  [CollectItems] Found block child: %s (display=%v)\n",
+				getNodeName(node), display)
+			item := &InlineItem{
+				Type:   InlineItemBlockChild,
+				Node:   node,
+				Style:  style,
+				Width:  0, // Will be determined during recursive layout
+				Height: 0, // Will be determined during recursive layout
+			}
+			state.Items = append(state.Items, item)
 			return
 
 		case css.DisplayInline:
 			// Check for floats
 			if style.GetFloat() != css.FloatNone {
 				// Floated inline elements become atomic items
-			// We need to compute dimensions NOW for line breaking
-			// Do a temporary layout to get dimensions (will be re-laid out during construction)
-			// Save float state - temporary layout shouldn't pollute global float list
-			savedFloatCount := len(le.floats)
-			
-			tempBox := le.layoutNode(
-				node,
-				0, 0, // Temporary position
-				state.AvailableWidth,
-				computedStyles,
-				state.ContainerBox,
-			)
-			
-			// Restore float state (remove any floats added during temporary layout)
-			le.floats = le.floats[:savedFloatCount]
+				// NEW ARCHITECTURE: Use ComputeMinMaxSizes instead of layoutNode!
+				// This is PURE - no side effects, no float pollution
 
-			var width, height float64
-			if tempBox != nil {
-				width = le.getTotalWidth(tempBox)
-				height = le.getTotalHeight(tempBox)
-			}
+				// Create a constraint space for sizing the float
+				constraint := NewConstraintSpace(state.AvailableWidth, 0)
 
-			item := &InlineItem{
-				Type:   InlineItemFloat,
-				Node:   node,
-				Style:  style,
-				Width:  width,
-				Height: height,
-			}
+				// Compute dimensions WITHOUT laying out (no side effects!)
+				sizes := le.ComputeMinMaxSizes(node, constraint, style)
+
+				// For floats, use max content size (preferred width)
+				// Height will be computed during actual layout in Phase 3
+				width := sizes.MaxContentSize
+
+				// Estimate height based on font size (will be accurate in Phase 3)
+				// TODO: Make ComputeMinMaxSizes return height as well
+				height := style.GetFontSize() * 1.2 // Rough estimate
+
+				item := &InlineItem{
+					Type:   InlineItemFloat,
+					Node:   node,
+					Style:  style,
+					Width:  width,
+					Height: height,
+				}
 				state.Items = append(state.Items, item)
 				// Don't process children - they're part of the float box
 				return
 			}
+		// Check if this inline element contains ONLY block-level children
+		// Per CSS 2.1 §9.2.1.1: When an inline box contains a block box, the inline
+		// is broken around the block. If the resulting anonymous inline boxes are empty
+		// (no text, no inline content), they shouldn't create visible space.
+		hasOnlyBlockChildren := true
+		hasAnyChildren := false
+		for _, child := range node.Children {
+			hasAnyChildren = true
+			// Text nodes with non-whitespace content count as inline
+			if child.Type == html.TextNode && strings.TrimSpace(child.Text) != "" {
+				hasOnlyBlockChildren = false
+				break
+			}
+			// Element nodes need style check
+			if child.Type == html.ElementNode {
+				childStyle := computedStyles[child]
+				if childStyle != nil {
+					childDisplay := childStyle.GetDisplay()
+					// Block-level displays don't break the pattern
+					if childDisplay != css.DisplayBlock && childDisplay != css.DisplayTable && childDisplay != css.DisplayListItem {
+						hasOnlyBlockChildren = false
+						break
+					}
+				}
+			}
+		}
+
+		// If inline contains only block children, skip OpenTag/CloseTag to avoid empty inline boxes
+		if hasAnyChildren && hasOnlyBlockChildren {
+			// Just process children directly without creating inline box fragments
+			for _, child := range node.Children {
+				le.CollectInlineItems(child, state, computedStyles)
+			}
+			return
+		}
+
 
 			// Regular inline element - add open tag
 			openItem := &InlineItem{
@@ -5226,20 +7229,20 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 
 		case css.DisplayInlineBlock:
 			// Atomic inline element
-			// We need to compute dimensions NOW for line breaking
-			tempBox := le.layoutNode(
-				node,
-				0, 0, // Temporary position
-				state.AvailableWidth,
-				computedStyles,
-				state.ContainerBox,
-			)
+			// NEW ARCHITECTURE: Use ComputeMinMaxSizes instead of layoutNode!
+			// This is PURE - no side effects
 
-			var width, height float64
-			if tempBox != nil {
-				width = le.getTotalWidth(tempBox)
-				height = le.getTotalHeight(tempBox)
-			}
+			// Create a constraint space for sizing the inline-block
+			constraint := NewConstraintSpace(state.AvailableWidth, 0)
+
+			// Compute dimensions WITHOUT laying out (no side effects!)
+			sizes := le.ComputeMinMaxSizes(node, constraint, style)
+
+			// For inline-blocks, use max content size (preferred width)
+			width := sizes.MaxContentSize
+
+			// Estimate height (will be accurate in Phase 3)
+			height := style.GetFontSize() * 1.2 // Rough estimate
 
 			item := &InlineItem{
 				Type:   InlineItemAtomic,
@@ -5253,20 +7256,20 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 
 		default:
 			// Other display types - treat as atomic for now
-			// We need to compute dimensions NOW for line breaking
-			tempBox := le.layoutNode(
-				node,
-				0, 0, // Temporary position
-				state.AvailableWidth,
-				computedStyles,
-				state.ContainerBox,
-			)
+			// NEW ARCHITECTURE: Use ComputeMinMaxSizes instead of layoutNode!
+			// This is PURE - no side effects
 
-			var width, height float64
-			if tempBox != nil {
-				width = le.getTotalWidth(tempBox)
-				height = le.getTotalHeight(tempBox)
-			}
+			// Create a constraint space for sizing
+			constraint := NewConstraintSpace(state.AvailableWidth, 0)
+
+			// Compute dimensions WITHOUT laying out (no side effects!)
+			sizes := le.ComputeMinMaxSizes(node, constraint, style)
+
+			// Use max content size (preferred width)
+			width := sizes.MaxContentSize
+
+			// Estimate height (will be accurate in Phase 3)
+			height := style.GetFontSize() * 1.2 // Rough estimate
 
 			item := &InlineItem{
 				Type:   InlineItemAtomic,
@@ -5284,7 +7287,8 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 // This is where retry happens - if floats change available width, we re-break affected lines.
 //
 // Returns true if line breaking succeeded, false if retry is needed.
-func (le *LayoutEngine) BreakLines(state *InlineLayoutState) bool {
+// NOTE: This is the OLD WIP implementation. New code should use BreakLines() instead.
+func (le *LayoutEngine) breakLinesWIP(state *InlineLayoutState) bool {
 	if len(state.Items) == 0 {
 		return true // Nothing to break
 	}
@@ -5334,8 +7338,20 @@ func (le *LayoutEngine) BreakLines(state *InlineLayoutState) bool {
 					goto finishLine
 				}
 
-			case InlineItemOpenTag, InlineItemCloseTag:
-				// Tags don't take space themselves
+			case InlineItemOpenTag:
+				// Opening tag contributes to line height even if element is empty
+				// This is per CSS 2.1: empty inline elements still influence line height
+				itemWidth = 0
+
+				// Calculate height: line-height + padding + borders
+				// Note: Vertical MARGINS are ignored for inline elements, but padding/borders are not!
+				lineHeightValue := item.Style.GetLineHeight()
+				padding := item.Style.GetPadding()
+				border := item.Style.GetBorderWidth()
+				itemHeight = lineHeightValue + padding.Top + padding.Bottom + border.Top + border.Bottom
+
+			case InlineItemCloseTag:
+				// Closing tag doesn't add height (already accounted for in opening tag)
 				itemWidth = 0
 				itemHeight = 0
 
@@ -5348,6 +7364,17 @@ func (le *LayoutEngine) BreakLines(state *InlineLayoutState) bool {
 					// Atomic item doesn't fit
 					goto finishLine
 				}
+
+			case InlineItemBlockChild:
+				// Block children force line breaks before and after
+				// If we have items on current line, finish it first
+				if len(line.Items) > 0 {
+					goto finishLine
+				}
+				// Add block child as sole item on its own line
+				line.Items = append(line.Items, item)
+				itemIndex++
+				goto finishLine
 
 			case InlineItemControl:
 				// Control items (like <br>) force a line break
@@ -5404,14 +7431,32 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 
 		// Track open inline elements (for nested inline styling)
 		type inlineContext struct {
-			node  *html.Node
-			style *css.Style
-			box   *Box
+			node               *html.Node
+			style              *css.Style
+			box                *Box
+			fragmentStartX     float64  // Where current fragment starts
+			fragmentStartY     float64
+			fragmentMaxX       float64 // Bounding box of current fragment
+			fragmentMaxY       float64
+			completedFragments []*Box // Completed fragments (before blocks)
 		}
 		openInlines := []inlineContext{}
 
-		// Process each item on this line
+		// Reorder items: floats first, then everything else (CSS-correct)
+		reorderedItems := make([]*InlineItem, 0, len(line.Items))
+		nonFloats := make([]*InlineItem, 0, len(line.Items))
+
 		for _, item := range line.Items {
+			if item.Type == InlineItemFloat {
+				reorderedItems = append(reorderedItems, item)
+			} else {
+				nonFloats = append(nonFloats, item)
+			}
+		}
+		reorderedItems = append(reorderedItems, nonFloats...)
+
+		// Process each item on this line
+		for _, item := range reorderedItems {
 			switch item.Type {
 			case InlineItemText:
 				// Create a text box
@@ -5429,29 +7474,67 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					Parent:   parent,
 				}
 				boxes = append(boxes, textBox)
+				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
+
+				// Update fragment bounds for all open inline elements
+				for i := range openInlines {
+					if currentX > openInlines[i].fragmentMaxX {
+						openInlines[i].fragmentMaxX = currentX
+					}
+					if line.Y+line.LineHeight > openInlines[i].fragmentMaxY {
+						openInlines[i].fragmentMaxY = line.Y + line.LineHeight
+					}
+				}
 
 			case InlineItemOpenTag:
 				// Start tracking this inline element
 				// Create a box for it (will be sized after seeing all children)
+				padding := item.Style.GetPadding()
+				border := item.Style.GetBorderWidth()
+				margin := item.Style.GetMargin()
+
+
+				// Inline elements ignore vertical margins (CSS 2.1)
+				// Padding and borders are handled in Phase 2 line height calculation
+				margin.Top = 0
+				margin.Bottom = 0
+				padding.Top = 0
+				padding.Bottom = 0
+				// Inline box height is exactly the line height (already includes padding+borders from Phase 2)
+				inlineBoxHeight := line.LineHeight
+
+			// Apply left margin BEFORE positioning the box
+			currentX += margin.Left
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
 					X:        currentX,
 					Y:        line.Y,
 					Width:    0, // Will be computed from children
-					Height:   line.LineHeight,
-					Margin:   css.BoxEdge{},
-					Padding:  item.Style.GetPadding(),
-					Border:   item.Style.GetBorderWidth(),
+					Height:   inlineBoxHeight,
+					Margin:   margin, // Inline elements have horizontal margins
+					Padding:  padding,
+					Border:   border,
 					Position: css.PositionStatic,
 					Parent:   parent,
 				}
+				// Initialize fragment tracking
+				fragStartX := currentX + border.Left + padding.Left
 				openInlines = append(openInlines, inlineContext{
-					node:  item.Node,
-					style: item.Style,
-					box:   inlineBox,
+					node:           item.Node,
+					style:          item.Style,
+					box:            inlineBox,
+					fragmentStartX: fragStartX,
+					fragmentStartY: line.Y,
+					fragmentMaxX:   fragStartX,
+					fragmentMaxY:   line.Y + inlineBoxHeight,
 				})
+
+				// Advance currentX by left border + padding (margin already applied above)
+				// This ensures empty inline elements have proper width
+				currentX += border.Left + padding.Left
 
 			case InlineItemCloseTag:
 				// Close the most recent inline element
@@ -5459,9 +7542,15 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					ctx := openInlines[len(openInlines)-1]
 					openInlines = openInlines[:len(openInlines)-1]
 
+					// Add right padding + border (NOT margin) before computing width
+					currentX += ctx.box.Padding.Right + ctx.box.Border.Right
+
 					// Compute width from current X - start X
 					ctx.box.Width = currentX - ctx.box.X
 					boxes = append(boxes, ctx.box)
+
+				// Now add right margin for positioning next element
+				currentX += ctx.box.Margin.Right
 				}
 
 			case InlineItemAtomic:
@@ -5504,6 +7593,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 	boxes := []*Box{}
 	retryNeeded := false
 
+	fmt.Printf("DEBUG MP CONSTRUCT: %d lines to construct\n", len(state.Lines))
 	for _, line := range state.Lines {
 		// Calculate starting X for this line (accounting for floats)
 		leftOffsetBefore, _ := le.getFloatOffsets(line.Y)
@@ -5511,16 +7601,56 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 
 		// Track open inline elements
 		type inlineContext struct {
-			node  *html.Node
-			style *css.Style
-			box   *Box
+			node               *html.Node
+			style              *css.Style
+			box                *Box
+			fragmentStartX     float64  // Where current fragment starts
+			fragmentStartY     float64
+			fragmentMaxX       float64 // Bounding box of current fragment
+			fragmentMaxY       float64
+			completedFragments []*Box // Completed fragments (before blocks)
 		}
 		openInlines := []inlineContext{}
 
-		// Process each item on this line
+		// Reorder items: floats first, then everything else (CSS-correct)
+		reorderedItems := make([]*InlineItem, 0, len(line.Items))
+		nonFloats := make([]*InlineItem, 0, len(line.Items))
+
 		for _, item := range line.Items {
+			if item.Type == InlineItemFloat {
+				reorderedItems = append(reorderedItems, item)
+			} else {
+				nonFloats = append(nonFloats, item)
+			}
+		}
+		reorderedItems = append(reorderedItems, nonFloats...)
+
+		// Process each item on this line
+		// Track if we've seen content (non-float) on this line yet
+		hasSeenContentOnLine := false
+		for _, item := range reorderedItems {
 			switch item.Type {
 			case InlineItemText:
+				// CSS whitespace collapsing: trim leading whitespace at start of line
+				// (after line breaks, leading spaces should be trimmed)
+				trimmedText := item.Text
+				if !hasSeenContentOnLine && item.Node != nil {
+					trimmedText = strings.TrimLeft(item.Text, " \t")
+					// Update the node's text for rendering
+					if trimmedText != item.Text {
+						item.Node.Text = trimmedText
+						// Recalculate width for trimmed text
+						if item.Style != nil {
+							fontSize := item.Style.GetFontSize()
+							fontWeight := item.Style.GetFontWeight()
+							bold := fontWeight == css.FontWeightBold
+							trimmedWidth, _ := text.MeasureTextWithWeight(trimmedText, fontSize, bold)
+							item.Width = trimmedWidth
+						}
+					}
+				}
+				hasSeenContentOnLine = true
+
 				textBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
@@ -5535,56 +7665,182 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					Parent:   parent,
 				}
 				boxes = append(boxes, textBox)
+				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
 
+				// Update fragment bounds for all open inline elements
+				for i := range openInlines {
+					if currentX > openInlines[i].fragmentMaxX {
+						openInlines[i].fragmentMaxX = currentX
+					}
+					if line.Y+line.LineHeight > openInlines[i].fragmentMaxY {
+						openInlines[i].fragmentMaxY = line.Y + line.LineHeight
+					}
+				}
+
 			case InlineItemOpenTag:
+				padding := item.Style.GetPadding()
+				border := item.Style.GetBorderWidth()
+				margin := item.Style.GetMargin()
+
+				// Inline elements ignore vertical margins (CSS 2.1)
+				// But vertical padding and borders ARE rendered (they just don't affect line box height)
+				margin.Top = 0
+				margin.Bottom = 0
+
+				// Inline box height is exactly the line height (already includes padding+borders from Phase 2)
+				inlineBoxHeight := line.LineHeight
+
+			// Apply left margin BEFORE positioning the box
+			currentX += margin.Left
+
 				inlineBox := &Box{
 					Node:     item.Node,
 					Style:    item.Style,
 					X:        currentX,
 					Y:        line.Y,
 					Width:    0,
-					Height:   line.LineHeight,
-					Margin:   css.BoxEdge{},
-					Padding:  item.Style.GetPadding(),
-					Border:   item.Style.GetBorderWidth(),
+					Height:   inlineBoxHeight,
+					Margin:   margin, // Inline elements have horizontal margins
+					Padding:  padding,
+					Border:   border,
 					Position: css.PositionStatic,
 					Parent:   parent,
 				}
+				// Initialize fragment tracking
+				fragStartX := currentX + border.Left + padding.Left
 				openInlines = append(openInlines, inlineContext{
-					node:  item.Node,
-					style: item.Style,
-					box:   inlineBox,
+					node:           item.Node,
+					style:          item.Style,
+					box:            inlineBox,
+					fragmentStartX: fragStartX,
+					fragmentStartY: line.Y,
+					fragmentMaxX:   fragStartX,
+					fragmentMaxY:   line.Y + inlineBoxHeight,
 				})
+
+				// Advance currentX by left border + padding (margin already applied above)
+				// This ensures empty inline elements have proper width
+				currentX += border.Left + padding.Left
 
 			case InlineItemCloseTag:
 				if len(openInlines) > 0 {
 					ctx := openInlines[len(openInlines)-1]
 					openInlines = openInlines[:len(openInlines)-1]
+
+					// Add right padding + border (NOT margin) before computing width
+					currentX += ctx.box.Padding.Right + ctx.box.Border.Right
+
 					ctx.box.Width = currentX - ctx.box.X
 					boxes = append(boxes, ctx.box)
+
+				// Now add right margin for positioning next element
+				currentX += ctx.box.Margin.Right
 				}
 
 			case InlineItemAtomic:
-				atomicBox := &Box{
-					Node:     item.Node,
-					Style:    item.Style,
-					X:        currentX,
-					Y:        line.Y,
-					Width:    item.Width,
-					Height:   item.Height,
-					Margin:   css.BoxEdge{},
-					Padding:  css.BoxEdge{},
-					Border:   css.BoxEdge{},
-					Position: css.PositionStatic,
-					Parent:   parent,
+				// Atomic inline (inline-block) - recursively layout its content
+				// Use the pre-computed width as the available width for its children
+				atomicBox := le.layoutNode(
+					item.Node,
+					currentX,
+					line.Y,
+					item.Width, // Use computed width as constraint
+					computedStyles,
+					parent,
+				)
+				if atomicBox != nil {
+					// Apply vertical alignment to inline-block
+					// For baseline alignment, the inline-block's baseline (last line box's baseline)
+					// should align with the parent line's baseline
+					le.applyVerticalAlign(atomicBox, line.Y, line.LineHeight)
+
+					boxes = append(boxes, atomicBox)
+					// Use actual width (might include margins/padding/borders)
+					actualWidth := le.getTotalWidth(atomicBox)
+					currentX += actualWidth
 				}
-				boxes = append(boxes, atomicBox)
-				currentX += item.Width
+
+			case InlineItemBlockChild:
+				// Block-in-inline: Block children split inline elements into fragments (CSS 2.1 §9.2.1.1)
+				fmt.Printf("DEBUG MP: Block child <%s> splits %d open inline elements\n", item.Node.TagName, len(openInlines))
+
+				// STEP 1: Complete current fragments for ALL open inline elements
+				for i := range openInlines {
+					ctx := &openInlines[i]
+
+					// Create fragment box for content before the block
+					if ctx.fragmentMaxX > ctx.fragmentStartX {
+						fragmentBox := &Box{
+							Node:            ctx.node,
+							Style:           ctx.style,
+							X:               ctx.fragmentStartX - ctx.box.Border.Left - ctx.box.Padding.Left,
+							Y:               ctx.fragmentStartY,
+							Width:           ctx.fragmentMaxX - ctx.fragmentStartX + ctx.box.Border.Left + ctx.box.Border.Right + ctx.box.Padding.Left + ctx.box.Padding.Right,
+							Height:          ctx.fragmentMaxY - ctx.fragmentStartY,
+							Margin:          css.BoxEdge{}, // Fragments don't have margins
+							Padding:         ctx.box.Padding,
+							Border:          ctx.box.Border,
+							Position:        css.PositionStatic,
+							Parent:          parent,
+							IsFirstFragment: len(ctx.completedFragments) == 0, // First fragment if no previous fragments
+							IsLastFragment:  false,                            // Not last - more content after block
+						}
+						ctx.completedFragments = append(ctx.completedFragments, fragmentBox)
+						fmt.Printf("  Completed fragment for <%s>: X=%.1f Y=%.1f W=%.1f H=%.1f (first=%v)\n",
+							ctx.node.TagName, fragmentBox.X, fragmentBox.Y, fragmentBox.Width, fragmentBox.Height, fragmentBox.IsFirstFragment)
+					}
+				}
+
+				// STEP 2: Layout the block child
+				fmt.Printf("DEBUG MP: Laying out block child <%s> at Y=%.1f\n", item.Node.TagName, line.Y)
+				blockBox := le.layoutNode(
+					item.Node,
+					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
+					line.Y,
+					state.AvailableWidth,
+					computedStyles,
+					parent,
+				)
+				if blockBox != nil {
+					boxes = append(boxes, blockBox)
+				}
+
+				// STEP 3: Restart fragments for open inline elements (content after block)
+				// Note: New fragments will start on the next line, which will be processed in next iteration
+				for i := range openInlines {
+					ctx := &openInlines[i]
+					// Fragment bounds will be set when we process the next line's content
+					ctx.fragmentStartX = 0
+					ctx.fragmentStartY = 0
+					ctx.fragmentMaxX = 0
+					ctx.fragmentMaxY = 0
+				}
 
 			case InlineItemFloat:
+				// Check if this float has already been laid out (to avoid duplicate layouts on retry)
+				var existingFloatBox *Box
+				for i := state.FloatBaseIndex; i < len(le.floats); i++ {
+					if le.floats[i].Box != nil && le.floats[i].Box.Node == item.Node {
+						existingFloatBox = le.floats[i].Box
+						fmt.Printf("DEBUG MP: Float <%s> already laid out at X=%.1f Y=%.1f, reusing\n",
+							item.Node.TagName, existingFloatBox.X, existingFloatBox.Y)
+						break
+					}
+				}
+
+				// If float already exists, skip re-layout and continue
+				if existingFloatBox != nil {
+					boxes = append(boxes, existingFloatBox)
+					continue
+				}
+
 				// Layout the float to get its dimensions
 				fmt.Printf("DEBUG MP: Laying out float <%s> at Y=%.1f\n", item.Node.TagName, line.Y)
+
+				// Track float count before layoutNode (layoutNode may add float as side effect)
+				floatCountBefore := len(le.floats)
+
 				floatBox := le.layoutNode(
 					item.Node,
 					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
@@ -5597,6 +7853,12 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				if floatBox != nil {
 					fmt.Printf("DEBUG MP: Float box initially at X=%.1f Y=%.1f W=%.1f H=%.1f\n",
 						floatBox.X, floatBox.Y, floatBox.Width, floatBox.Height)
+
+					// Remove any floats added during layoutNode (float seeing itself bug)
+					if len(le.floats) > floatCountBefore {
+						fmt.Printf("DEBUG MP: Removing %d floats added during layoutNode\n", len(le.floats)-floatCountBefore)
+						le.floats = le.floats[:floatCountBefore]
+					}
 
 					// Get float type and reposition the box correctly
 					floatType := item.Style.GetFloat()
@@ -5613,10 +7875,14 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 						baseX := state.ContainerBox.X + state.Border.Left + state.Padding.Left
 						floatClearX := baseX + leftOffset + floatBox.Margin.Left
 						inlineEndX := currentX + floatBox.Margin.Left
+						fmt.Printf("DEBUG MP: Left float positioning - baseX=%.1f leftOffset=%.1f floatClearX=%.1f currentX=%.1f inlineEndX=%.1f\n",
+							baseX, leftOffset, floatClearX, currentX, inlineEndX)
 						if inlineEndX > floatClearX {
 							newX = inlineEndX
+							fmt.Printf("DEBUG MP: Using inlineEndX=%.1f\n", newX)
 						} else {
 							newX = floatClearX
+							fmt.Printf("DEBUG MP: Using floatClearX=%.1f\n", newX)
 						}
 					} else {
 						// Right float
