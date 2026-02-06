@@ -6939,8 +6939,21 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 		}
 		openInlines := []inlineContext{}
 
-		// Process each item on this line
+		// Reorder items: floats first, then everything else (CSS-correct)
+		reorderedItems := make([]*InlineItem, 0, len(line.Items))
+		nonFloats := make([]*InlineItem, 0, len(line.Items))
+
 		for _, item := range line.Items {
+			if item.Type == InlineItemFloat {
+				reorderedItems = append(reorderedItems, item)
+			} else {
+				nonFloats = append(nonFloats, item)
+			}
+		}
+		reorderedItems = append(reorderedItems, nonFloats...)
+
+		// Process each item on this line
+		for _, item := range reorderedItems {
 			switch item.Type {
 			case InlineItemText:
 				// Create a text box
@@ -7057,8 +7070,21 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 		}
 		openInlines := []inlineContext{}
 
-		// Process each item on this line
+		// Reorder items: floats first, then everything else (CSS-correct)
+		reorderedItems := make([]*InlineItem, 0, len(line.Items))
+		nonFloats := make([]*InlineItem, 0, len(line.Items))
+
 		for _, item := range line.Items {
+			if item.Type == InlineItemFloat {
+				reorderedItems = append(reorderedItems, item)
+			} else {
+				nonFloats = append(nonFloats, item)
+			}
+		}
+		reorderedItems = append(reorderedItems, nonFloats...)
+
+		// Process each item on this line
+		for _, item := range reorderedItems {
 			switch item.Type {
 			case InlineItemText:
 				textBox := &Box{
