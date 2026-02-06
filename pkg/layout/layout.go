@@ -297,10 +297,11 @@ type Fragment struct {
 }
 
 // NewTextFragment creates a text fragment with the given properties.
-func NewTextFragment(text string, style *css.Style, x, y, width, height float64) *Fragment {
+func NewTextFragment(text string, style *css.Style, x, y, width, height float64, node *html.Node) *Fragment {
 	return &Fragment{
 		Type: FragmentText,
 		Text: text,
+		Node: node, // CRITICAL: Must set Node for rendering
 		Style: style,
 		Position: Position{X: x, Y: y},
 		Size:     Size{Width: width, Height: height},
@@ -897,6 +898,7 @@ func (le *LayoutEngine) constructLine(
 				line.Y,
 				item.Width,
 				item.Height,
+				item.Node, // Pass the text node for rendering
 			)
 			fragments = append(fragments, frag)
 			currentX += item.Width

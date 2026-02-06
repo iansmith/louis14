@@ -204,8 +204,8 @@ func TestE2E_MultilineText(t *testing.T) {
 func TestE2E_FragmentToBoxConversion(t *testing.T) {
 	// Create test fragments
 	fragments := []*Fragment{
-		NewTextFragment("Hello", css.NewStyle(), 0, 0, 50, 16),
-		NewTextFragment("World", css.NewStyle(), 60, 0, 55, 16),
+		NewTextFragment("Hello", css.NewStyle(), 0, 0, 50, 16, nil),
+		NewTextFragment("World", css.NewStyle(), 60, 0, 55, 16, nil),
 	}
 
 	boxes := fragmentsToBoxes(fragments)

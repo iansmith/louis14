@@ -9,7 +9,7 @@ import (
 
 func TestFragment_NewTextFragment(t *testing.T) {
 	style := &css.Style{}
-	frag := NewTextFragment("Hello, World!", style, 100, 200, 80, 16)
+	frag := NewTextFragment("Hello, World!", style, 100, 200, 80, 16, nil)
 
 	if frag.Type != FragmentText {
 		t.Errorf("Expected type FragmentText, got %v", frag.Type)
@@ -85,7 +85,7 @@ func TestFragment_Immutability(t *testing.T) {
 	// correct position and not modified afterward.
 
 	style := &css.Style{}
-	frag := NewTextFragment("Test", style, 100, 200, 50, 16)
+	frag := NewTextFragment("Test", style, 100, 200, 50, 16, nil)
 
 	// Store original values
 	origX := frag.Position.X
@@ -131,8 +131,8 @@ func TestFragment_ChildrenManagement(t *testing.T) {
 	}
 
 	// Create child fragments
-	child1 := NewTextFragment("Hello ", parentStyle, 0, 0, 40, 16)
-	child2 := NewTextFragment("World", parentStyle, 40, 0, 35, 16)
+	child1 := NewTextFragment("Hello ", parentStyle, 0, 0, 40, 16, nil)
+	child2 := NewTextFragment("World", parentStyle, 40, 0, 35, 16, nil)
 
 	// Add children (this would be done during construction in real code)
 	parent.Children = append(parent.Children, child1, child2)
@@ -186,7 +186,7 @@ func TestFragment_CorrectPositionFromStart(t *testing.T) {
 	correctX := floatWidth // Text starts after the float
 
 	// Create fragment with CORRECT position from the start
-	frag := NewTextFragment("Text after float", &css.Style{}, correctX, 0, 80, 16)
+	frag := NewTextFragment("Text after float", &css.Style{}, correctX, 0, 80, 16, nil)
 
 	// Fragment should have the correct position immediately
 	if frag.Position.X != 100 {
