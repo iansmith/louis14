@@ -1399,7 +1399,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 					if span != nil {
 						// Create wrapper box spanning from startX to end of content
-						// Inline boxes extend to cover their content, not the full line
+						// Inline boxes extend to cover their content per CSS spec
 						endX := frag.Position.X
 						wrapperWidth := endX - span.startX
 						fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f)\n",
