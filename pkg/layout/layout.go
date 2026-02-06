@@ -2195,11 +2195,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 		// Use multi-pass for ALL inline formatting contexts (per user request)
 		// Requirements:
-		// 1. Has NO block children (pure inline formatting context)
-		// 2. Has some inline content
-		// 3. Not an object with image
-		// 4. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
-		if !hasBlockChild && hasInlineChild && !isObjectImage && display == css.DisplayBlock {
+		// 1. Has some inline content (block children handled as InlineItemBlockChild)
+		// 2. Not an object with image
+		// 3. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
+		// EXPERIMENTAL: Allow mixed block/inline content - block children handled in multi-pass
+		if hasInlineChild && !isObjectImage && display == css.DisplayBlock {
 			algorithm = MultiPassAlgorithm
 			// DEBUG: Log when multi-pass is triggered
 			if node.TagName != "" {
@@ -6878,6 +6878,17 @@ func (le *LayoutEngine) breakLinesWIP(state *InlineLayoutState) bool {
 					goto finishLine
 				}
 
+			case InlineItemBlockChild:
+				// Block children force line breaks before and after
+				// If we have items on current line, finish it first
+				if len(line.Items) > 0 {
+					goto finishLine
+				}
+				// Add block child as sole item on its own line
+				line.Items = append(line.Items, item)
+				itemIndex++
+				goto finishLine
+
 			case InlineItemControl:
 				// Control items (like <br>) force a line break
 				itemIndex++
@@ -7159,6 +7170,22 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				}
 				boxes = append(boxes, atomicBox)
 				currentX += item.Width
+
+			case InlineItemBlockChild:
+				// Block children are laid out recursively
+				// They should be on their own line (ensured by BreakLines)
+				fmt.Printf("DEBUG MP: Laying out block child <%s> at Y=%.1f\n", item.Node.TagName, line.Y)
+				blockBox := le.layoutNode(
+					item.Node,
+					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
+					line.Y,
+					state.AvailableWidth,
+					computedStyles,
+					parent,
+				)
+				if blockBox != nil {
+					boxes = append(boxes, blockBox)
+				}
 
 			case InlineItemFloat:
 				// Layout the float to get its dimensions
