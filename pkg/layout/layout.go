@@ -421,6 +421,20 @@ func (le *LayoutEngine) computeInlineMinMax(
 	constraint *ConstraintSpace,
 	style *css.Style,
 ) MinMaxSizes {
+	// Check for explicit width (important for floated inline elements)
+	if width, ok := style.GetLength("width"); ok && width > 0 {
+		// Explicit width: both min and max are the same
+		// Add padding and border
+		padding := style.GetPadding()
+		border := style.GetBorderWidth()
+		totalWidth := width + padding.Left + padding.Right + border.Left + border.Right
+
+		return MinMaxSizes{
+			MinContentSize: totalWidth,
+			MaxContentSize: totalWidth,
+		}
+	}
+
 	// Get computed styles for all children
 	computedStyles := le.computeStylesForTree(node)
 
@@ -797,30 +811,68 @@ func (le *LayoutEngine) LayoutInlineContent(
 	// Three-phase pipeline with retry support
 	// This is the COMPLETE implementation following Blink LayoutNG principles!
 
-	currentConstraint := constraint
+	// CRITICAL: Always start from the ORIGINAL constraint
+	// Don't carry over float exclusions from previous retries
+	// Phase 3 will rebuild exclusions from scratch each time
+	originalConstraint := constraint
 	var finalFragments []*Fragment
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Phase 1: Collect inline items (PURE - no side effects!)
-		items := le.collectInlineItemsClean(children, currentConstraint)
+		// Use original constraint - don't accumulate floats across retries
+		items := le.collectInlineItemsClean(children, originalConstraint)
+
+		// DEBUG: Show collected items
+		if attempt == 0 {
+			fmt.Printf("\n=== PHASE 1: Collected %d items ===\n", len(items))
+			for i, item := range items {
+				typeName := ""
+				switch item.Type {
+				case InlineItemText:
+					typeName = "Text"
+				case InlineItemOpenTag:
+					typeName = "OpenTag"
+				case InlineItemCloseTag:
+					typeName = "CloseTag"
+				case InlineItemFloat:
+					typeName = "Float"
+				case InlineItemAtomic:
+					typeName = "Atomic"
+				case InlineItemBlockChild:
+					typeName = "BlockChild"
+				default:
+					typeName = fmt.Sprintf("Type%d", item.Type)
+				}
+				fmt.Printf("  [%d] %s: %s, Size: %.1fx%.1f\n",
+					i, typeName, getNodeName(item.Node), item.Width, item.Height)
+				if item.Type == InlineItemText {
+					fmt.Printf("       Text: %q\n", truncateString(item.Text, 30))
+				}
+			}
+			fmt.Printf("=== END PHASE 1 ===\n\n")
+		}
 
 		// Phase 2: Break lines (PURE - no side effects!)
-		lines := le.BreakLines(items, currentConstraint, startY)
+		// Use original constraint - floats will be added in Phase 3
+		lines := le.BreakLines(items, originalConstraint, startY)
 
 		// Phase 3: Construct fragments (HAS side effects - creates fragments)
-		fragments, finalConstraint := le.ConstructFragments(lines, currentConstraint)
+		// Start from original constraint and build up float exclusions
+		fragments, finalConstraint := le.ConstructFragments(lines, originalConstraint)
 
 		// Check if we need to retry
-		if !constraintsChanged(currentConstraint, finalConstraint, lines) {
+		if !constraintsChanged(originalConstraint, finalConstraint, lines) {
 			// Success! Constraints didn't change, we're done
 			finalFragments = fragments
 			break
 		}
 
-		// Constraints changed - retry with updated constraint
-		// This happens when Phase 3 added floats that affect line breaking
-		currentConstraint = finalConstraint
-		finalFragments = fragments // Keep last attempt in case we hit max retries
+		// Constraints changed - this means Phase 3 added floats
+		// For now, we don't actually retry - we just return what we have
+		// The retry logic isn't needed for simple float cases
+		// TODO: Implement proper retry when float changes affect line breaking
+		finalFragments = fragments
+		break
 	}
 
 	return finalFragments
@@ -883,10 +935,29 @@ func (le *LayoutEngine) constructLine(
 	fragments := []*Fragment{}
 	currentConstraint := constraint
 
-	// Calculate starting X position accounting for floats
+	// CRITICAL: Process floats FIRST before inline content
+	// Floats affect the positioning of subsequent inline content, even if they
+	// appear later in document order. This is per CSS spec: floats are removed
+	// from flow and positioned first.
+	//
+	// Pass 1: Position all floats and update constraint
+	for _, item := range line.Items {
+		if item.Type == InlineItemFloat {
+			floatFrag, newConstraint := le.positionFloat(
+				item,
+				line.Y,
+				currentConstraint,
+			)
+			fragments = append(fragments, floatFrag)
+			currentConstraint = newConstraint
+		}
+	}
+
+	// Calculate starting X position accounting for floats (now updated)
 	leftOffset, _ := currentConstraint.ExclusionSpace.AvailableInlineSize(line.Y, line.Height)
 	currentX := leftOffset
 
+	// Pass 2: Process inline content with floats already positioned
 	for _, item := range line.Items {
 		switch item.Type {
 		case InlineItemText:
@@ -904,15 +975,8 @@ func (le *LayoutEngine) constructLine(
 			currentX += item.Width
 
 		case InlineItemFloat:
-			// Position the float and update constraint
-			floatFrag, newConstraint := le.positionFloat(
-				item,
-				line.Y,
-				currentConstraint,
-			)
-			fragments = append(fragments, floatFrag)
-			currentConstraint = newConstraint
-			// Float doesn't advance currentX (doesn't consume inline space)
+			// Skip - floats are already handled in Pass 1
+			continue
 
 		case InlineItemAtomic:
 			// Create atomic fragment (inline-block, replaced element)
@@ -998,6 +1062,8 @@ func (le *LayoutEngine) positionFloat(
 		// Left float: position after existing left floats
 		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(lineY, item.Height)
 		floatX = leftOffset
+		fmt.Printf("    [positionFloat] Left float: %s, leftOffset=%.1f, floatX=%.1f, width=%.1f\n",
+			getNodeName(item.Node), leftOffset, floatX, item.Width)
 	} else if floatType == css.FloatRight {
 		// Right float: position before existing right floats
 		_, rightOffset := constraint.ExclusionSpace.AvailableInlineSize(lineY, item.Height)
@@ -1362,6 +1428,40 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					}
 				}
 			}
+		} else if frag.Type == FragmentFloat {
+			// Float - recursively layout its contents like a block child
+			floatNode := frag.Node
+			floatStyle := computedStyles[floatNode]
+			if floatStyle == nil {
+				floatStyle = css.NewStyle()
+			}
+
+			fmt.Printf("\n[Fragment %d] Float: %s\n", i, getNodeName(floatNode))
+			fmt.Printf("  Fragment Position: (%.1f, %.1f), Size: %.1fx%.1f\n",
+				frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
+
+			// Recursively layout the float's content
+			// Floats are positioned absolutely, use fragment position
+			fmt.Printf("  Calling layoutNode for float content...\n")
+			floatBox := le.layoutNode(
+				floatNode,
+				frag.Position.X,
+				currentY,
+				frag.Size.Width, // Use float's explicit width
+				computedStyles,
+				containerBox,
+			)
+
+			fmt.Printf("  Float box at (%.1f, %.1f) size %.1fx%.1f\n",
+				floatBox.X, floatBox.Y, floatBox.Width, floatBox.Height)
+
+			// Mark as floated for rendering
+			floatBox.Position = css.PositionAbsolute
+			floatBox.Parent = containerBox
+			boxes = append(boxes, floatBox)
+
+			// Floats don't affect currentY or currentX for inline flow
+			// (they're out of flow)
 		} else {
 			// Regular fragment - convert to box
 			box := fragmentToBoxSingle(frag)
@@ -6467,6 +6567,34 @@ func (le *LayoutEngine) layoutInlineContentWIP(
 	for _, child := range node.Children {
 		le.CollectInlineItems(child, state, computedStyles)
 	}
+
+	// DEBUG: Show collected items
+	fmt.Printf("\n=== PHASE 1: Collected %d items ===\n", len(state.Items))
+	for i, item := range state.Items {
+		typeName := ""
+		switch item.Type {
+		case InlineItemText:
+			typeName = "Text"
+		case InlineItemOpenTag:
+			typeName = "OpenTag"
+		case InlineItemCloseTag:
+			typeName = "CloseTag"
+		case InlineItemFloat:
+			typeName = "Float"
+		case InlineItemAtomic:
+			typeName = "Atomic"
+		case InlineItemBlockChild:
+			typeName = "BlockChild"
+		default:
+			typeName = fmt.Sprintf("Type%d", item.Type)
+		}
+		fmt.Printf("  [%d] %s: %s, Size: %.1fx%.1f\n",
+			i, typeName, getNodeName(item.Node), item.Width, item.Height)
+		if item.Type == InlineItemText {
+			fmt.Printf("       Text: %q\n", truncateString(item.Text, 30))
+		}
+	}
+	fmt.Printf("=== END PHASE 1 ===\n\n")
 
 	// Phase 2 & 3: Line breaking with retry when floats change available width
 	// This implements the Gecko-style retry mechanism (RedoMoreFloats)
