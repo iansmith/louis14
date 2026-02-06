@@ -1363,7 +1363,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			isOpenTag := !seenNodes[frag.Node]
 
 			if isOpenTag {
-				// OpenTag - push to stack
+				// OpenTag - push to stack and record fragment index
 				// CRITICAL: Use frag.Position.X not currentX - fragments are pre-positioned
 				// accounting for floats by line breaking phase
 				fmt.Printf("\n[Fragment %d] OpenTag: %s\n", i, getNodeName(frag.Node))
@@ -1398,31 +1398,96 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					}
 
 					if span != nil {
-						// Create wrapper box spanning from startX to end of content
-						// Inline boxes extend to cover their content per CSS spec
-						endX := frag.Position.X
-						wrapperWidth := endX - span.startX
-						fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f, height %.1f)\n",
-							span.startX, endX, wrapperWidth, currentLineMaxHeight)
-
-						wrapperBox := &Box{
-							Node:   span.node,
-							Style:  span.style,
-							X:      span.startX,
-							Y:      span.startY,
-							Width:  wrapperWidth,
-							Height: currentLineMaxHeight,
-							Parent: containerBox,
+						// Check if this inline element was split by a block child
+						hasBlockChild := false
+						blockChildIdx := -1
+						for j := span.startIdx; j < i; j++ {
+							if fragments[j].Type == FragmentBlockChild {
+								hasBlockChild = true
+								blockChildIdx = j
+								break
+							}
 						}
 
-						// Add wrapper box to list
-						// For now, append (will paint after children)
-						// TODO Phase C: Prepend for correct z-order (outer behind inner)
-						boxes = append(boxes, wrapperBox)
+						if hasBlockChild {
+							// Block-in-inline: Create fragment boxes (CSS 2.1 §9.2.1.1)
+							fmt.Printf("  Block-in-inline detected! Creating fragment boxes for <%s>\n", getNodeName(span.node))
+
+							// Check if there's content before the block
+							hasContentBefore := false
+							contentBeforeMaxX := span.startX
+							for j := span.startIdx + 1; j < blockChildIdx; j++ {
+								if fragments[j].Type == FragmentText || fragments[j].Type == FragmentAtomic {
+									hasContentBefore = true
+									fragEndX := fragments[j].Position.X + fragments[j].Size.Width
+									if fragEndX > contentBeforeMaxX {
+										contentBeforeMaxX = fragEndX
+									}
+								}
+							}
+
+							// Fragment 1: Content before block (if any)
+							fmt.Printf("    hasContentBefore=%v, span.startX=%.1f, contentBeforeMaxX=%.1f\n",
+								hasContentBefore, span.startX, contentBeforeMaxX)
+							if hasContentBefore {
+								fragment1 := &Box{
+									Node:            span.node,
+									Style:           span.style,
+									X:               span.startX,
+									Y:               span.startY,
+									Width:           contentBeforeMaxX - span.startX,
+									Height:          currentLineMaxHeight,
+									Parent:          containerBox,
+									IsFirstFragment: true,  // First fragment has left border
+									IsLastFragment:  false, // Not last
+								}
+								boxes = append(boxes, fragment1)
+								fmt.Printf("    Fragment 1 (first): X=%.1f Y=%.1f W=%.1f H=%.1f\n",
+									fragment1.X, fragment1.Y, fragment1.Width, fragment1.Height)
+							}
+
+							// Fragment 2: Content after block (if any)
+							endX := frag.Position.X
+							if endX > span.startX {
+								// Find Y position after block
+								afterBlockY := currentY
+								fragment2 := &Box{
+									Node:            span.node,
+									Style:           span.style,
+									X:               containerBox.X + containerBox.Border.Left + containerBox.Padding.Left,
+									Y:               afterBlockY,
+									Width:           endX - (containerBox.X + containerBox.Border.Left + containerBox.Padding.Left),
+									Height:          currentLineMaxHeight,
+									Parent:          containerBox,
+									IsFirstFragment: false, // Not first
+									IsLastFragment:  true,  // Last fragment has right border
+								}
+								boxes = append(boxes, fragment2)
+								fmt.Printf("    Fragment 2 (last): X=%.1f Y=%.1f W=%.1f H=%.1f\n",
+									fragment2.X, fragment2.Y, fragment2.Width, fragment2.Height)
+							}
+						} else {
+							// Normal inline box (not split)
+							endX := frag.Position.X
+							wrapperWidth := endX - span.startX
+							fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f, height %.1f)\n",
+								span.startX, endX, wrapperWidth, currentLineMaxHeight)
+
+							wrapperBox := &Box{
+								Node:   span.node,
+								Style:  span.style,
+								X:      span.startX,
+								Y:      span.startY,
+								Width:  wrapperWidth,
+								Height: currentLineMaxHeight,
+								Parent: containerBox,
+							}
+							boxes = append(boxes, wrapperBox)
+						}
 
 						// Remove span from stack
 						inlineStack = append(inlineStack[:spanIdx], inlineStack[spanIdx+1:]...)
-						fmt.Printf("  Wrapper box created, stack size: %d\n", len(inlineStack))
+						fmt.Printf("  Wrapper box(es) created, stack size: %d\n", len(inlineStack))
 					} else {
 						fmt.Printf("  ⚠️  WARNING: CloseTag without matching OpenTag!\n")
 					}
@@ -7313,9 +7378,14 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 
 		// Track open inline elements (for nested inline styling)
 		type inlineContext struct {
-			node  *html.Node
-			style *css.Style
-			box   *Box
+			node               *html.Node
+			style              *css.Style
+			box                *Box
+			fragmentStartX     float64  // Where current fragment starts
+			fragmentStartY     float64
+			fragmentMaxX       float64 // Bounding box of current fragment
+			fragmentMaxY       float64
+			completedFragments []*Box // Completed fragments (before blocks)
 		}
 		openInlines := []inlineContext{}
 
@@ -7354,6 +7424,16 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
 
+				// Update fragment bounds for all open inline elements
+				for i := range openInlines {
+					if currentX > openInlines[i].fragmentMaxX {
+						openInlines[i].fragmentMaxX = currentX
+					}
+					if line.Y+line.LineHeight > openInlines[i].fragmentMaxY {
+						openInlines[i].fragmentMaxY = line.Y + line.LineHeight
+					}
+				}
+
 			case InlineItemOpenTag:
 				// Start tracking this inline element
 				// Create a box for it (will be sized after seeing all children)
@@ -7387,10 +7467,16 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					Position: css.PositionStatic,
 					Parent:   parent,
 				}
+				// Initialize fragment tracking
+				fragStartX := currentX + border.Left + padding.Left
 				openInlines = append(openInlines, inlineContext{
-					node:  item.Node,
-					style: item.Style,
-					box:   inlineBox,
+					node:           item.Node,
+					style:          item.Style,
+					box:            inlineBox,
+					fragmentStartX: fragStartX,
+					fragmentStartY: line.Y,
+					fragmentMaxX:   fragStartX,
+					fragmentMaxY:   line.Y + inlineBoxHeight,
 				})
 
 				// Advance currentX by left border + padding (margin already applied above)
@@ -7462,9 +7548,14 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 
 		// Track open inline elements
 		type inlineContext struct {
-			node  *html.Node
-			style *css.Style
-			box   *Box
+			node               *html.Node
+			style              *css.Style
+			box                *Box
+			fragmentStartX     float64  // Where current fragment starts
+			fragmentStartY     float64
+			fragmentMaxX       float64 // Bounding box of current fragment
+			fragmentMaxY       float64
+			completedFragments []*Box // Completed fragments (before blocks)
 		}
 		openInlines := []inlineContext{}
 
@@ -7524,6 +7615,16 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
 
+				// Update fragment bounds for all open inline elements
+				for i := range openInlines {
+					if currentX > openInlines[i].fragmentMaxX {
+						openInlines[i].fragmentMaxX = currentX
+					}
+					if line.Y+line.LineHeight > openInlines[i].fragmentMaxY {
+						openInlines[i].fragmentMaxY = line.Y + line.LineHeight
+					}
+				}
+
 			case InlineItemOpenTag:
 				padding := item.Style.GetPadding()
 				border := item.Style.GetBorderWidth()
@@ -7555,10 +7656,16 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					Position: css.PositionStatic,
 					Parent:   parent,
 				}
+				// Initialize fragment tracking
+				fragStartX := currentX + border.Left + padding.Left
 				openInlines = append(openInlines, inlineContext{
-					node:  item.Node,
-					style: item.Style,
-					box:   inlineBox,
+					node:           item.Node,
+					style:          item.Style,
+					box:            inlineBox,
+					fragmentStartX: fragStartX,
+					fragmentStartY: line.Y,
+					fragmentMaxX:   fragStartX,
+					fragmentMaxY:   line.Y + inlineBoxHeight,
 				})
 
 				// Advance currentX by left border + padding (margin already applied above)
@@ -7604,8 +7711,37 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				}
 
 			case InlineItemBlockChild:
-				// Block children are laid out recursively
-				// They should be on their own line (ensured by BreakLines)
+				// Block-in-inline: Block children split inline elements into fragments (CSS 2.1 §9.2.1.1)
+				fmt.Printf("DEBUG MP: Block child <%s> splits %d open inline elements\n", item.Node.TagName, len(openInlines))
+
+				// STEP 1: Complete current fragments for ALL open inline elements
+				for i := range openInlines {
+					ctx := &openInlines[i]
+
+					// Create fragment box for content before the block
+					if ctx.fragmentMaxX > ctx.fragmentStartX {
+						fragmentBox := &Box{
+							Node:            ctx.node,
+							Style:           ctx.style,
+							X:               ctx.fragmentStartX - ctx.box.Border.Left - ctx.box.Padding.Left,
+							Y:               ctx.fragmentStartY,
+							Width:           ctx.fragmentMaxX - ctx.fragmentStartX + ctx.box.Border.Left + ctx.box.Border.Right + ctx.box.Padding.Left + ctx.box.Padding.Right,
+							Height:          ctx.fragmentMaxY - ctx.fragmentStartY,
+							Margin:          css.BoxEdge{}, // Fragments don't have margins
+							Padding:         ctx.box.Padding,
+							Border:          ctx.box.Border,
+							Position:        css.PositionStatic,
+							Parent:          parent,
+							IsFirstFragment: len(ctx.completedFragments) == 0, // First fragment if no previous fragments
+							IsLastFragment:  false,                            // Not last - more content after block
+						}
+						ctx.completedFragments = append(ctx.completedFragments, fragmentBox)
+						fmt.Printf("  Completed fragment for <%s>: X=%.1f Y=%.1f W=%.1f H=%.1f (first=%v)\n",
+							ctx.node.TagName, fragmentBox.X, fragmentBox.Y, fragmentBox.Width, fragmentBox.Height, fragmentBox.IsFirstFragment)
+					}
+				}
+
+				// STEP 2: Layout the block child
 				fmt.Printf("DEBUG MP: Laying out block child <%s> at Y=%.1f\n", item.Node.TagName, line.Y)
 				blockBox := le.layoutNode(
 					item.Node,
@@ -7617,6 +7753,17 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				)
 				if blockBox != nil {
 					boxes = append(boxes, blockBox)
+				}
+
+				// STEP 3: Restart fragments for open inline elements (content after block)
+				// Note: New fragments will start on the next line, which will be processed in next iteration
+				for i := range openInlines {
+					ctx := &openInlines[i]
+					// Fragment bounds will be set when we process the next line's content
+					ctx.fragmentStartX = 0
+					ctx.fragmentStartY = 0
+					ctx.fragmentMaxX = 0
+					ctx.fragmentMaxY = 0
 				}
 
 			case InlineItemFloat:
