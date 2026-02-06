@@ -1229,6 +1229,14 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	currentLineY := startY     // Track which line we're on
 	currentLineMaxHeight := 0.0 // Track maximum height on current line
 
+	// Track inline element spans for creating wrapper boxes
+	inlineStack := []*struct {
+		node  *html.Node
+		style *css.Style
+		startX float64
+		startY float64
+	}{}
+
 	for i, frag := range fragments {
 		if frag.Type == FragmentBlockChild {
 			// Block child - call layoutNode recursively

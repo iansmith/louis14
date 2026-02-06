@@ -28,11 +28,12 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Layout
 	engine := layout.NewLayoutEngine(float64(width), float64(height))
 
-	// EXPERIMENTAL: Enable multi-pass for box-generation-001 test
+	// EXPERIMENTAL: Enable multi-pass for box-generation-001 test ONLY
 	// This uses the new clean three-phase pipeline to test improvement
-	// DISABLED: Y correction implemented, still 7.0% vs 5.4% baseline (debug logs available)
+	// DISABLED: Multi-pass shows 7.1% vs baseline - need to analyze why
 	if false && (strings.Contains(htmlContent, "box-generation-001") ||
-	   strings.Contains(basePath, "box-generation-001")) {
+	   strings.Contains(basePath, "box-generation-001")) &&
+	   !strings.Contains(basePath, "anonymous") {
 		engine.SetUseMultiPass(true)
 	}
 
