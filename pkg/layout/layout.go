@@ -1520,8 +1520,56 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							margin.Top = 0
 							margin.Bottom = 0
 
+							// CRITICAL FIX: Empty inline elements (OpenTag and CloseTag at same X)
+							// must still have dimensions from border and padding (CSS 2.1 §10.3.1)
+							// Example: <span style="border:25px; padding:100px"></span>
+							// Should render as 250px wide (25+100+0+100+25) even with no content
+							if wrapperWidth == 0 {
+								// Add horizontal border and padding for empty inline elements
+								wrapperWidth = border.Left + padding.Left + padding.Right + border.Right
+								fmt.Printf("  Empty inline element - adding border+padding: width %.1f\n", wrapperWidth)
+							}
+
+							// Calculate height from line-height or font-size
+							// Empty inline elements establish line box height per CSS 2.1 §10.8.1
+							wrapperHeight := currentLineMaxHeight
+							if wrapperHeight == 0 {
+								// Use font-size as minimum height for empty inline elements
+								fontSize := span.style.GetFontSize()
+								if lineHeightValue, ok := span.style.Get("line-height"); ok && lineHeightValue != "normal" && lineHeightValue != "" {
+									// Handle relative units (em, %) relative to font-size
+									if strings.HasSuffix(lineHeightValue, "em") {
+										// Parse the number before "em"
+										numStr := strings.TrimSuffix(lineHeightValue, "em")
+										if multiplier, err := strconv.ParseFloat(numStr, 64); err == nil {
+											wrapperHeight = fontSize * multiplier
+										} else {
+											wrapperHeight = fontSize // Fallback
+										}
+									} else if strings.HasSuffix(lineHeightValue, "%") {
+										// Parse percentage
+										numStr := strings.TrimSuffix(lineHeightValue, "%")
+										if pct, err := strconv.ParseFloat(numStr, 64); err == nil {
+											wrapperHeight = fontSize * (pct / 100.0)
+										} else {
+											wrapperHeight = fontSize // Fallback
+										}
+									} else if parsedValue, parseOk := css.ParseLength(lineHeightValue); parseOk {
+										// Absolute units (px, pt, etc.)
+										wrapperHeight = parsedValue
+									} else {
+										wrapperHeight = fontSize // Fallback to font-size
+									}
+								} else {
+									wrapperHeight = fontSize // Default: font-size
+								}
+								// Add vertical border and padding
+								wrapperHeight += border.Top + padding.Top + padding.Bottom + border.Bottom
+								fmt.Printf("  Empty inline element - using line-height+border+padding: height %.1f\n", wrapperHeight)
+							}
+
 							fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f, height %.1f)\n",
-								span.startX, endX, wrapperWidth, currentLineMaxHeight)
+								span.startX, endX, wrapperWidth, wrapperHeight)
 
 							wrapperBox := &Box{
 								Node:    span.node,
@@ -1529,7 +1577,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								X:       span.startX,
 								Y:       span.startY,
 								Width:   wrapperWidth,
-								Height:  currentLineMaxHeight,
+								Height:  wrapperHeight,
 								Border:  border,
 								Padding: padding,
 								Margin:  margin,
