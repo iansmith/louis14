@@ -7540,14 +7540,15 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 				border := item.Style.GetBorderWidth()
 				margin := item.Style.GetMargin()
 
+				// CSS 2.1 §10.8.1: Inline element vertical margins/padding don't affect line box height
+				// but padding/borders DO render visually extending beyond the line box
 
-				// Inline elements ignore vertical margins (CSS 2.1)
-				// Padding and borders are handled in Phase 2 line height calculation
+				// Inline elements ignore vertical margins (CSS 2.1 §10.6.1)
 				margin.Top = 0
 				margin.Bottom = 0
-				padding.Top = 0
-				padding.Bottom = 0
-				// Inline box height is exactly the line height (already includes padding+borders from Phase 2)
+
+				// Box height is just the line height (no vertical padding included)
+				// But we keep padding values in the Box so they render correctly
 				inlineBoxHeight := line.LineHeight
 
 			// Apply left margin BEFORE positioning the box
@@ -7729,12 +7730,15 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				border := item.Style.GetBorderWidth()
 				margin := item.Style.GetMargin()
 
-				// Inline elements ignore vertical margins (CSS 2.1)
-				// But vertical padding and borders ARE rendered (they just don't affect line box height)
+				// CSS 2.1 §10.8.1: Inline element vertical margins/padding don't affect line box height
+				// but padding/borders DO render visually extending beyond the line box
+
+				// Inline elements ignore vertical margins (CSS 2.1 §10.6.1)
 				margin.Top = 0
 				margin.Bottom = 0
 
-				// Inline box height is exactly the line height (already includes padding+borders from Phase 2)
+				// Box height is just the line height (no vertical padding included)
+				// But we keep padding values in the Box so they render correctly
 				inlineBoxHeight := line.LineHeight
 
 			// Apply left margin BEFORE positioning the box
