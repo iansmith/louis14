@@ -1365,13 +1365,27 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
 			fmt.Printf("  [Fragment %d] TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
 				i, totalHeight, currentY, currentY+totalHeight)
-			currentY += totalHeight
-			currentLineY = currentY // Update line Y to match
-			currentLineMaxHeight = 0 // Reset for next line
+			// CRITICAL: Only advance Y for elements in normal flow
+			// Absolutely positioned and fixed positioned elements are removed from flow
+			floatType := css.FloatNone
+			if childBox.Style != nil {
+				floatType = childBox.Style.GetFloat()
+			}
 
-			// Reset currentX - block child takes full width, next content starts at left
-			currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
-			fmt.Printf("  Reset currentX to left edge: %.1f, currentLineY updated to %.1f\n", currentX, currentLineY)
+			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && floatType == css.FloatNone {
+				// Child is in normal flow - advance Y
+				currentY += totalHeight
+				currentLineY = currentY // Update line Y to match
+				currentLineMaxHeight = 0 // Reset for next line
+
+				// Reset currentX - block child takes full width, next content starts at left
+				currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+				fmt.Printf("  Reset currentX to left edge: %.1f, currentLineY updated to %.1f\n", currentX, currentLineY)
+			} else {
+				// Child is out of flow - don't advance Y
+				fmt.Printf("  [Fragment %d] Out-of-flow element (Position=%v, Float=%v), NOT advancing currentY (stays at %.1f)\n",
+					i, childBox.Position, floatType, currentY)
+			}
 		} else if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
 			// Inline element marker (OpenTag or CloseTag)
 			// Distinguish by checking if we've seen this node before
