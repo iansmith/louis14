@@ -180,22 +180,11 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 
 	// Step 6: Positioned descendants with z-index: auto or 0
 	// These are painted "as if they generated a new stacking context" (CSS 2.1 Appendix E)
-	fmt.Printf("=== STEP 6: Z-Index Auto/0 (%d elements) ===\n", len(zeroAutoZ))
 	for _, child := range zeroAutoZ {
-		if child.Node != nil {
-			id := ""
-			if child.Node.Attributes != nil {
-				if i, ok := child.Node.Attributes["id"]; ok {
-					id = " id=" + i
-				}
-			}
-			fmt.Printf("DEBUG STEP 6: Painting <%s%s> at (%.1f,%.1f)\n", child.Node.TagName, id, child.X, child.Y)
-		}
 		r.paintStackingContext(child)
 	}
 
 	// Step 7: Child stacking contexts with positive z-index
-	fmt.Printf("=== STEP 7: Positive Z (%d elements) ===\n", len(positiveZ))
 	for _, child := range positiveZ {
 		r.paintStackingContext(child)
 	}
@@ -207,28 +196,11 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 	negativeZ, blocks, floats, inlines, zeroAutoZ, positiveZ *[]*layout.Box) {
 
 	for _, child := range box.Children {
-		// DEBUG: Log position for divs with IDs
-		if child.Node != nil && child.Node.TagName == "div" && child.Node.Attributes != nil {
-			if id, ok := child.Node.Attributes["id"]; ok && (id == "reference" || id == "test") {
-				fmt.Printf("DEBUG PAINT: div#%s Position=%v, IsPositioned=%v\n", id, child.Position, layout.IsPositioned(child))
-			}
-		}
-
 		if child.Position == css.PositionFixed {
 			// Fixed elements create stacking contexts in modern browsers
-			if child.Node != nil && child.Node.Attributes != nil {
-				if id, ok := child.Node.Attributes["id"]; ok && (id == "reference" || id == "test") {
-					fmt.Printf("DEBUG PAINT: div#%s -> Fixed, adding to zeroAutoZ\n", id)
-				}
-			}
 			*zeroAutoZ = append(*zeroAutoZ, child)
 		} else if layout.BoxCreatesStackingContext(child) {
 			// Child creates stacking context - categorize by z-index
-			if child.Node != nil && child.Node.Attributes != nil {
-				if id, ok := child.Node.Attributes["id"]; ok && (id == "reference" || id == "test") {
-					fmt.Printf("DEBUG PAINT: div#%s -> BoxCreatesStackingContext=true, ZIndex=%d, adding to zeroAutoZ\n", id, child.ZIndex)
-				}
-			}
 			if child.ZIndex < 0 {
 				*negativeZ = append(*negativeZ, child)
 			} else if child.ZIndex > 0 {
@@ -241,11 +213,6 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 			// Positioned but no stacking context - paint at step 6
 			// "as if it generated a new stacking context" per CSS 2.1 Appendix E
 			// Don't recurse - its children are painted within its own paint order
-			if child.Node != nil && child.Node.Attributes != nil {
-				if id, ok := child.Node.Attributes["id"]; ok && (id == "reference" || id == "test") {
-					fmt.Printf("DEBUG PAINT: div#%s -> IsPositioned=true, adding to zeroAutoZ\n", id)
-				}
-			}
 			*zeroAutoZ = append(*zeroAutoZ, child)
 		} else if layout.IsFloat(child) {
 			*floats = append(*floats, child)
