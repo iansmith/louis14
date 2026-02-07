@@ -1585,10 +1585,16 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f, height %.1f)\n",
 								span.startX, endX, wrapperWidth, wrapperHeight)
 
+						// Convert from content-relative to absolute coordinates
+						// Fragment positions are relative to container's content area
+						// (after border+padding), so add container's offset
+						baseX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+						// baseY :=  // Y coordinates are already absolute, not needed containerBox.Y + containerBox.Border.Top + containerBox.Padding.Top
+
 							wrapperBox := &Box{
 								Node:    span.node,
 								Style:   span.style,
-								X:       span.startX + margin.Left,  // Apply left margin
+								X:       baseX + span.startX + margin.Left,  // Apply left margin
 								Y:       span.startY + margin.Top,   // Apply top margin
 								Width:   wrapperWidth,
 								Height:  wrapperHeight,
