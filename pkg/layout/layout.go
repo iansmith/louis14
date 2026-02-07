@@ -1588,8 +1588,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							wrapperBox := &Box{
 								Node:    span.node,
 								Style:   span.style,
-								X:       span.startX,
-								Y:       span.startY,
+								X:       span.startX + margin.Left,  // Apply left margin
+								Y:       span.startY + margin.Top,   // Apply top margin
 								Width:   wrapperWidth,
 								Height:  wrapperHeight,
 								Border:  border,
@@ -3253,7 +3253,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	// Phase 7 Enhancement: Inline elements always shrink-wrap to children
+	// DEBUG: Check all inline elements
+	if display == css.DisplayInline && box.Node != nil && box.Node.TagName == "span" {
+		fmt.Printf("DEBUG INLINE: <span> before shrinkwrap: Height=%.1f, Children=%d\n", box.Height, len(box.Children))
+	}
+
 	if display == css.DisplayInline && len(box.Children) > 0 {
+		// DEBUG: Track if this is overwriting multi-pass wrapper box height
+		originalHeight := box.Height
+
 		// Calculate width from children
 		// For inline formatting context, children flow horizontally so we SUM their widths
 		totalChildWidth := 0.0
@@ -3266,6 +3274,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				maxChildHeight = childHeight
 			}
 		}
+
+		if box.Node != nil && box.Node.TagName == "span" && originalHeight != maxChildHeight {
+			fmt.Printf("DEBUG SHRINKWRAP: <span> height being overwritten: %.1f → %.1f (diff: %.1f)\n",
+				originalHeight, maxChildHeight, originalHeight-maxChildHeight)
+		}
+
 		box.Width = totalChildWidth
 		box.Height = maxChildHeight
 	}
