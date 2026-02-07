@@ -1346,7 +1346,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			childBox := le.layoutNode(
 				childNode,
 				childX,
-				currentY,
+			childMargin := childStyle.GetMargin()
+			fmt.Printf("  DEBUG: Applying margin.Top=%.1f to currentY=%.1f -> Y=%.1f\n", childMargin.Top, currentY, currentY+childMargin.Top)
+				currentY + childStyle.GetMargin().Top, // Apply margin-top
 				availableWidth,
 				computedStyles,
 				containerBox,
@@ -1361,9 +1363,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 			// Update Y for next content (advance past this block)
 			childBox.Parent = containerBox
-			totalHeight := childBox.Margin.Top + childBox.Border.Top + childBox.Padding.Top +
+			totalHeight := childBox.Border.Top + childBox.Padding.Top +
 				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
-			fmt.Printf("  [Fragment %d] TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
+			fmt.Printf("  [Fragment %d] Height (excluding margin-top): %.1f, Advancing currentY: %.1f → %.1f\n",
 				i, totalHeight, currentY, currentY+totalHeight)
 			currentY += totalHeight
 			currentLineY = currentY // Update line Y to match

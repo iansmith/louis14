@@ -1346,7 +1346,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			childBox := le.layoutNode(
 				childNode,
 				childX,
-				currentY,
+				currentY + childStyle.GetMargin().Top, // CRITICAL FIX: apply margin-top before layout
 				availableWidth,
 				computedStyles,
 				containerBox,

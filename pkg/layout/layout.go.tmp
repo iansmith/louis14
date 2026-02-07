@@ -1340,13 +1340,18 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			fmt.Printf("  Calculated childX: %.1f (container.X=%.1f + border=%.1f + padding=%.1f)\n",
 				childX, containerBox.X, containerBox.Border.Left, containerBox.Padding.Left)
 
+			// CRITICAL FIX: Apply block child margin-top before layout
+			childMargin := childStyle.GetMargin()
+			childYWithMargin := currentY + childMargin.Top
+			fmt.Printf("  Child margin-top: %.1f, Y: %.1f -> %.1f\n", childMargin.Top, currentY, childYWithMargin)
+
 			// Recursively layout the block child
 			fmt.Printf("  Calling layoutNode(x=%.1f, y=%.1f, availWidth=%.1f)...\n",
 				childX, currentY, availableWidth)
 			childBox := le.layoutNode(
 				childNode,
 				childX,
-				currentY,
+				childYWithMargin,
 				availableWidth,
 				computedStyles,
 				containerBox,
@@ -1361,7 +1366,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 			// Update Y for next content (advance past this block)
 			childBox.Parent = containerBox
-			totalHeight := childBox.Margin.Top + childBox.Border.Top + childBox.Padding.Top +
+			totalHeight := childBox.Border.Top + childBox.Padding.Top +
 				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
 			fmt.Printf("  [Fragment %d] TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
 				i, totalHeight, currentY, currentY+totalHeight)

@@ -117,6 +117,7 @@ func runReftest(t *testing.T, testPath string) bool {
 	testPNG := filepath.Join(tmpDir, "test.png")
 	refPNG := filepath.Join(tmpDir, "ref.png")
 
+	// Try 400x400 to see if test was designed for this viewport
 	width, height := 400, 400
 
 	// Use the test file's directory as the base path for resolving relative image URLs

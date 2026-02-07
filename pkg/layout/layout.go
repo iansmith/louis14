@@ -7391,12 +7391,10 @@ func (le *LayoutEngine) breakLinesWIP(state *InlineLayoutState) bool {
 				// This is per CSS 2.1: empty inline elements still influence line height
 				itemWidth = 0
 
-				// Calculate height: line-height + padding + borders
-				// Note: Vertical MARGINS are ignored for inline elements, but padding/borders are not!
+				// CSS 2.1 §10.8.1: For inline boxes, line box height is determined by 'line-height'
+				// Padding and borders render visually but DON'T affect line box height calculation
 				lineHeightValue := item.Style.GetLineHeight()
-				padding := item.Style.GetPadding()
-				border := item.Style.GetBorderWidth()
-				itemHeight = lineHeightValue + padding.Top + padding.Bottom + border.Top + border.Bottom
+				itemHeight = lineHeightValue
 
 			case InlineItemCloseTag:
 				// Closing tag doesn't add height (already accounted for in opening tag)
