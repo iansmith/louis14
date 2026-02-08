@@ -448,13 +448,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	if canUseMultiPass {
 		// Use new three-phase multi-pass pipeline
-		childBoxes = le.LayoutInlineContentToBoxes(
+		inlineLayoutResult = le.LayoutInlineContentToBoxes(
 			node.Children,
 			box,
 			childAvailableWidth,
 			childY,
 			computedStyles,
 		)
+		childBoxes = inlineLayoutResult.ChildBoxes
 
 		// CRITICAL FIX: Apply margin collapsing between adjacent block siblings
 		// LayoutInlineContentToBoxes doesn't handle margin collapsing, so we must do it here
@@ -1175,8 +1176,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				lineBoxHeight = strutHeight
 			}
 			lineBottom := (inlineCtx.LineY - parentContentTop) + lineBoxHeight
-			fmt.Printf("DEBUG AUTO-HEIGHT: LineBoxes present, strutHeight=%.1f, lineBoxHeight=%.1f, lineBottom=%.1f, maxBottom before=%.1f\n",
-				strutHeight, lineBoxHeight, lineBottom, maxBottom)
+
+			// DEBUG: Check if this is div2
+			nodeID := ""
+			if node != nil && node.Attributes != nil {
+				if id, ok := node.Attributes["id"]; ok {
+					nodeID = id
+				}
+			}
+			if nodeID == "div2" {
+				fmt.Printf("DEBUG AUTO-HEIGHT div2: strutHeight=%.1f, lineBoxHeight=%.1f, inlineCtx.LineY=%.1f, parentContentTop=%.1f, lineBottom=%.1f, maxBottom before=%.1f\n",
+					strutHeight, lineBoxHeight, inlineCtx.LineY, parentContentTop, lineBottom, maxBottom)
+			}
+
 			if lineBottom > maxBottom {
 				maxBottom = lineBottom
 			}

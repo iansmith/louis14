@@ -662,7 +662,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	availableWidth float64,
 	startY float64,
 	computedStyles map[*html.Node]*css.Style,
-) []*Box {
+) *InlineLayoutResult {
 	multipassCallID++
 	callID := multipassCallID
 	// DEBUG: Log multi-pass invocation
@@ -1115,7 +1115,23 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 	fmt.Printf("=== END MULTI-PASS ===\n\n")
 
-	return boxes
+	// Create inline context for auto-height calculation
+	// Track the final line Y and line height so parent can calculate its height
+	finalInlineCtx := &InlineContext{
+		LineX:      0,                    // Not needed for height calculation
+		LineY:      currentY,             // Final Y position after all content
+		LineHeight: currentLineMaxHeight, // Height of the last line
+		LineBoxes:  boxes,                // All created boxes
+	}
+
+	fmt.Printf("DEBUG: Returning InlineLayoutResult: currentY=%.1f, currentLineMaxHeight=%.1f, boxes=%d\n",
+		currentY, currentLineMaxHeight, len(boxes))
+
+	return &InlineLayoutResult{
+		ChildBoxes:     boxes,
+		FinalInlineCtx: finalInlineCtx,
+		UsedMultiPass:  true,
+	}
 }
 func (le *LayoutEngine) layoutInlineContentWIP(
 	node *html.Node,
