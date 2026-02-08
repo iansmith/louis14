@@ -631,8 +631,8 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Debug: print div2 border rendering
 	if box.Node != nil && box.Node.TagName == "div" {
 		if id, ok := box.Node.GetAttribute("id"); ok && id == "div2" {
-			fmt.Printf("RENDER div2 border: box.Y=%.1f, effectiveY=%.1f, scrollY=%.1f\n",
-				box.Y, effectiveY, r.scrollY)
+			fmt.Printf("RENDER div2 border: box.Y=%.1f, box.Height=%.1f, renderHeight=%.1f\n",
+				box.Y, box.Height, renderHeight)
 		}
 	}
 
