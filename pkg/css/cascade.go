@@ -313,9 +313,10 @@ var inheritableProperties = map[string]bool{
 	"cursor": true,
 }
 
-// applyInheritedProperties copies inheritable properties from parent if not set on child.
+// ApplyInheritedProperties copies inheritable properties from parent if not set on child.
 // Also resolves font-size em values using parent's computed font-size.
-func applyInheritedProperties(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+// ApplyInheritedProperties applies inherited CSS properties from parent to child
+func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	if node.Parent == nil {
 		return
 	}
@@ -351,7 +352,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	if node.Type == html.ElementNode && node.TagName != "document" {
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
 		resolveInheritValues(node, style, styles)
-		applyInheritedProperties(node, style, styles)
+		ApplyInheritedProperties(node, style, styles)
 		styles[node] = style
 	}
 

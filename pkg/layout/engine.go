@@ -9,7 +9,7 @@ func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 	le.viewport.width = viewportWidth
 	le.viewport.height = viewportHeight
 	le.counters = make(map[string][]int)
-	le.useMultiPass = true // Multi-pass is now the default (block-in-inline-003 regression noted)
+	le.useMultiPass = true // Multi-pass is now the default (investigating block-in-inline-003 regression)
 	return le
 }
 
