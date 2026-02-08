@@ -28,6 +28,35 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 		cbHeight = containingBlock.Height + containingBlock.Padding.Top + containingBlock.Padding.Bottom
 	}
 
+	// Resolve percentage offsets against containing block dimensions
+	// GetPositionOffset only returns absolute lengths, so we need to check for percentages separately
+	if box.Style != nil {
+		if !offset.HasLeft {
+			if pct, ok := box.Style.GetPercentage("left"); ok {
+				offset.Left = cbWidth * (pct / 100.0)
+				offset.HasLeft = true
+			}
+		}
+		if !offset.HasRight {
+			if pct, ok := box.Style.GetPercentage("right"); ok {
+				offset.Right = cbWidth * (pct / 100.0)
+				offset.HasRight = true
+			}
+		}
+		if !offset.HasTop {
+			if pct, ok := box.Style.GetPercentage("top"); ok {
+				offset.Top = cbHeight * (pct / 100.0)
+				offset.HasTop = true
+			}
+		}
+		if !offset.HasBottom {
+			if pct, ok := box.Style.GetPercentage("bottom"); ok {
+				offset.Bottom = cbHeight * (pct / 100.0)
+				offset.HasBottom = true
+			}
+		}
+	}
+
 	// Check if margins are auto
 	marginTopAuto := false
 	marginBottomAuto := false

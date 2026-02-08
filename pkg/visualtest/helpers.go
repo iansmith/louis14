@@ -28,11 +28,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Layout
 	engine := layout.NewLayoutEngine(float64(width), float64(height))
 
-	// Enable multi-pass layout for ALL tests
-	// This uses the new clean three-phase pipeline (LayoutInlineContentToBoxes)
-	// Phase A: Inline box wrapper creation implemented
-	// Phase B: Block-in-inline fragment splitting implemented
-	engine.SetUseMultiPass(true)
+	// Multi-pass layout is now the default (no need to enable it explicitly)
 
 	// Set up image fetcher if base path is provided
 	var fetcher images.ImageFetcher

@@ -382,6 +382,16 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 			bgWidth := box.Width // Border-box dimensions
 			bgHeight := box.Height // Border-box dimensions
 
+			// CRITICAL FIX: For inline elements, box.Height is the line box height
+			// but borders/padding "bleed" outside the line box (CSS 2.1 §10.8.1)
+			// We must extend the background to cover the full bleeding area
+			if box.Style.GetDisplay() == css.DisplayInline {
+				// Add vertical borders and padding to line box height for rendering
+				bgHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
+				// Adjust Y position to account for top border/padding
+				bgY -= box.Border.Top + box.Padding.Top
+			}
+
 			if box.Node != nil && box.Node.TagName == "span" {
 				fmt.Printf("DEBUG COORDS: box.Y=%.1f, effectiveY=%.1f, scrollY=%.1f\n",
 					box.Y, effectiveY, r.scrollY)
@@ -390,6 +400,14 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 			}
 
 			if bgWidth > 0 && bgHeight > 0 {
+				if color.R == 0 && color.G == 128 && color.B == 0 {
+					tagName := ""
+					if box.Node != nil {
+						tagName = box.Node.TagName
+					}
+					fmt.Printf("GREEN BACKGROUND: box %p tagName='%s' pos=(%.1f,%.1f) size=%.1fx%.1f\n",
+						box, tagName, bgX, bgY, bgWidth, bgHeight)
+				}
 				if box.Node != nil && box.Node.TagName == "span" {
 					fmt.Printf("DEBUG PRE-DRAW: About to call DrawRectangle(%.1f, %.1f, %.1f, %.1f)\n",
 						bgX, bgY, bgWidth, bgHeight)
@@ -515,6 +533,14 @@ func (r *Renderer) drawBox(box *layout.Box) {
 			bgHeight := box.Height // Border-box dimensions
 
 			if bgWidth > 0 && bgHeight > 0 {
+				if color.R == 0 && color.G == 128 && color.B == 0 {
+					tagName := "nil"
+					if box.Node != nil {
+						tagName = box.Node.TagName
+					}
+					fmt.Printf("GREEN BACKGROUND: tagName=%s bgY=%.1f box.Y=%.1f effectiveY=%.1f\n",
+						tagName, bgY, box.Y, effectiveY)
+				}
 				// Phase 12: Check for border-radius
 				borderRadius := box.Style.GetBorderRadius()
 				if borderRadius > 0 {
@@ -593,6 +619,23 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 
+	// CRITICAL FIX: For inline elements, adjust dimensions to include bleeding borders/padding
+	renderHeight := box.Height
+	renderY := effectiveY
+	if box.Style != nil && box.Style.GetDisplay() == css.DisplayInline {
+		// Inline elements: box.Height is line box height, but borders "bleed" outside
+		renderHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
+		renderY = effectiveY - box.Border.Top - box.Padding.Top
+	}
+
+	// Debug: print div2 border rendering
+	if box.Node != nil && box.Node.TagName == "div" {
+		if id, ok := box.Node.GetAttribute("id"); ok && id == "div2" {
+			fmt.Printf("RENDER div2 border: box.Y=%.1f, effectiveY=%.1f, scrollY=%.1f\n",
+				box.Y, effectiveY, r.scrollY)
+		}
+	}
+
 	// Phase 12: Get border styles for each side
 	borderStyles := box.Style.GetBorderStyle()
 
@@ -605,9 +648,9 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.SetLineWidth(box.Border.Top)
 			borderX := box.X + box.Border.Left/2
-			borderY := effectiveY + box.Border.Top/2
+			borderY := renderY + box.Border.Top/2
 			borderWidth := box.Width - box.Border.Left // Border-box dimensions
-			borderHeight := box.Height - box.Border.Top // Border-box dimensions
+			borderHeight := renderHeight - box.Border.Top // Border-box dimensions
 			r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
 			r.context.Stroke()
 		}
@@ -616,13 +659,13 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 
 	// Calculate border box coordinates using effective Y
 	outerLeft := box.X
-	outerTop := effectiveY
+	outerTop := renderY
 	outerRight := box.X + box.Width // Border-box dimensions
-	outerBottom := effectiveY + box.Height // Border-box dimensions
+	outerBottom := renderY + renderHeight // Border-box dimensions
 	innerLeft := box.X + box.Border.Left
-	innerTop := effectiveY + box.Border.Top
+	innerTop := renderY + box.Border.Top
 	innerRight := box.X + box.Width - box.Border.Right // Border-box dimensions
-	innerBottom := effectiveY + box.Height - box.Border.Bottom // Border-box dimensions
+	innerBottom := renderY + renderHeight - box.Border.Bottom // Border-box dimensions
 
 	// Draw each side as a trapezoid (CSS mitered border rendering).
 	// Drawing order: bottom → left → right → top. Later-drawn sides
@@ -632,9 +675,9 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Bottom border
 	if box.Border.Bottom > 0 && borderStyles.Bottom != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "bottom"); ok {
-			if box.Node != nil && box.Node.TagName == "span" {
-				fmt.Printf("DEBUG BORDER: Drawing span bottom border with color R=%d G=%d B=%d\n",
-					color.R, color.G, color.B)
+			if color.R == 0 && color.G == 128 && color.B == 0 {
+				fmt.Printf("GREEN BORDER BOTTOM: %s at Y=%.1f-%.1f (outer=%.1f inner=%.1f)\n",
+					box.Node.TagName, innerBottom, outerBottom, outerBottom, innerBottom)
 			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerLeft, outerBottom)
@@ -650,6 +693,10 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Skip left border for LastFragment of split inline (CSS 2.1 §9.2.1.1)
 	if box.Border.Left > 0 && borderStyles.Left != css.BorderStyleNone && !box.IsLastFragment {
 		if color, ok := r.getBorderSideColor(box, "left"); ok {
+			if color.R == 0 && color.G == 128 && color.B == 0 {
+				fmt.Printf("GREEN BORDER LEFT: %s at X=%.1f-%.1f Y=%.1f-%.1f\n",
+					box.Node.TagName, outerLeft, innerLeft, outerTop, outerBottom)
+			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerLeft, outerTop)
 			r.context.LineTo(innerLeft, innerTop)
@@ -664,6 +711,10 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Skip right border for FirstFragment of split inline (CSS 2.1 §9.2.1.1)
 	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone && !box.IsFirstFragment {
 		if color, ok := r.getBorderSideColor(box, "right"); ok {
+			if color.R == 0 && color.G == 128 && color.B == 0 {
+				fmt.Printf("GREEN BORDER RIGHT: %s at X=%.1f-%.1f Y=%.1f-%.1f\n",
+					box.Node.TagName, innerRight, outerRight, outerTop, outerBottom)
+			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerRight, outerTop)
 			r.context.LineTo(outerRight, outerBottom)
@@ -677,6 +728,10 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Top border
 	if box.Border.Top > 0 && borderStyles.Top != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "top"); ok {
+			if color.R == 0 && color.G == 128 && color.B == 0 {
+				fmt.Printf("GREEN BORDER TOP: %s at Y=%.1f-%.1f (outer=%.1f inner=%.1f)\n",
+					box.Node.TagName, outerTop, innerTop, outerTop, innerTop)
+			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerLeft, outerTop)
 			r.context.LineTo(outerRight, outerTop)
@@ -887,8 +942,13 @@ func (r *Renderer) drawImage(box *layout.Box) {
 	imgW := float64(bounds.Dx())
 	imgH := float64(bounds.Dy())
 
+	fmt.Printf("DEBUG DRAW IMG: ImagePath=%s, box.Width=%.0f, box.Height=%.0f, imgW=%.0f, imgH=%.0f\n",
+		box.ImagePath, box.Width, box.Height, imgW, imgH)
+
 	scaleX := box.Width / imgW
 	scaleY := box.Height / imgH
+
+	fmt.Printf("DEBUG DRAW IMG: scaleX=%.2f, scaleY=%.2f\n", scaleX, scaleY)
 
 	r.context.Scale(scaleX, scaleY)
 	r.context.DrawImage(img, 0, 0)
