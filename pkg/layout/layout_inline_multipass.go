@@ -682,8 +682,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	// Process fragments, handling block children with recursive layout
 	boxes := []*Box{}
 	currentY := startY
-	currentLineY := startY     // Track which line we're on
-	currentLineMaxHeight := 0.0 // Track maximum height on current line
+	currentLineY := startY        // Track which line we're on
+	currentLineMaxHeight := 0.0   // Track maximum height on current line
+	lastFinalizedLineHeight := 0.0 // Track the last finalized line height for return
 	currentX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left // Track rightmost X position
 
 	// Track inline element spans for creating wrapper boxes
@@ -708,7 +709,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				fmt.Printf("  Finalizing current line before block: currentY %.1f, height %.1f\n",
 					currentY, currentLineMaxHeight)
 				currentY = currentY + currentLineMaxHeight
-				currentLineMaxHeight = 0
+				lastFinalizedLineHeight = currentLineMaxHeight // Save before resetting
+		currentLineMaxHeight = 0
 			}
 
 			// Block child - call layoutNode recursively
@@ -762,7 +764,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// Child is in normal flow - advance Y
 				currentY += totalHeight
 				currentLineY = currentY // Update line Y to match
-				currentLineMaxHeight = 0 // Reset for next line
+				lastFinalizedLineHeight = currentLineMaxHeight // Save before resetting
+		currentLineMaxHeight = 0 // Reset for next line
 
 				// Reset currentX - block child takes full width, next content starts at left
 				currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
@@ -867,6 +870,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 									IsLastFragment:  false, // Not last
 								}
 								boxes = append(boxes, fragment1)
+
+								// Track fragment height for line height calculation
+								if lineHeight > currentLineMaxHeight {
+									currentLineMaxHeight = lineHeight
+									fmt.Printf("    Updated currentLineMaxHeight to %.1f from fragment1\n", currentLineMaxHeight)
+								}
+
 								fmt.Printf("    Fragment 1 (first): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
 									fragment1.X, fragment1.Y, fragment1.Width, fragment1.Height, lineHeight,
 									border.Top, border.Right, border.Bottom, border.Left)
@@ -902,6 +912,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 									IsLastFragment:  true,  // Last fragment has right border
 								}
 								boxes = append(boxes, fragment2)
+
+								// Track fragment height for line height calculation
+								if lineHeight > currentLineMaxHeight {
+									currentLineMaxHeight = lineHeight
+									fmt.Printf("    Updated currentLineMaxHeight to %.1f from fragment2\n", currentLineMaxHeight)
+								}
+
 								fmt.Printf("    Fragment 2 (last): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
 									fragment2.X, fragment2.Y, fragment2.Width, fragment2.Height, lineHeight,
 									border.Top, border.Right, border.Bottom, border.Left)
@@ -1003,6 +1020,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								Parent:  containerBox,
 							}
 							boxes = append(boxes, wrapperBox)
+
+							// Track wrapper box height for line height calculation
+							if wrapperHeight > currentLineMaxHeight {
+								currentLineMaxHeight = wrapperHeight
+								fmt.Printf("  Updated currentLineMaxHeight to %.1f from wrapper box\n", currentLineMaxHeight)
+							}
 						}
 
 						// Remove span from stack
@@ -1064,7 +1087,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 						currentY = currentLineY + currentLineMaxHeight
 					}
 					currentLineY = frag.Position.Y
-					currentLineMaxHeight = 0
+					lastFinalizedLineHeight = currentLineMaxHeight // Save before resetting
+		currentLineMaxHeight = 0
 				}
 
 				// CRITICAL FIX: Use currentY instead of frag.Position.Y
@@ -1076,6 +1100,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 
 				// Track maximum height on this line
+				fmt.Printf("  Box.Height=%.1f, currentLineMaxHeight before=%.1f\n", box.Height, currentLineMaxHeight)
 				if box.Height > currentLineMaxHeight {
 					currentLineMaxHeight = box.Height
 				}
@@ -1115,17 +1140,23 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 	fmt.Printf("=== END MULTI-PASS ===\n\n")
 
+	// Determine final line height: use current line if active, otherwise last finalized
+	finalLineHeight := currentLineMaxHeight
+	if finalLineHeight == 0 {
+		finalLineHeight = lastFinalizedLineHeight
+	}
+
 	// Create inline context for auto-height calculation
 	// Track the final line Y and line height so parent can calculate its height
 	finalInlineCtx := &InlineContext{
-		LineX:      0,                    // Not needed for height calculation
-		LineY:      currentY,             // Final Y position after all content
-		LineHeight: currentLineMaxHeight, // Height of the last line
-		LineBoxes:  boxes,                // All created boxes
+		LineX:      0,               // Not needed for height calculation
+		LineY:      currentY,        // Final Y position after all content
+		LineHeight: finalLineHeight, // Height of the current or last finalized line
+		LineBoxes:  boxes,           // All created boxes
 	}
 
-	fmt.Printf("DEBUG: Returning InlineLayoutResult: currentY=%.1f, currentLineMaxHeight=%.1f, boxes=%d\n",
-		currentY, currentLineMaxHeight, len(boxes))
+	fmt.Printf("DEBUG: Returning InlineLayoutResult: currentY=%.1f, currentLineMaxH=%.1f, lastFinalizedH=%.1f, finalH=%.1f, boxes=%d\n",
+		currentY, currentLineMaxHeight, lastFinalizedLineHeight, finalLineHeight, len(boxes))
 
 	return &InlineLayoutResult{
 		ChildBoxes:     boxes,
