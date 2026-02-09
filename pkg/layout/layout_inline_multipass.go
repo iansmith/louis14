@@ -6,6 +6,7 @@ import (
 	"strings"
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/text"
 )
 
@@ -290,6 +291,7 @@ func (le *LayoutEngine) LayoutInlineContent(
 	children []*html.Node,
 	constraint *ConstraintSpace,
 	startY float64,
+	containerStyle *css.Style,
 ) []*Fragment {
 	const maxRetries = 3
 
@@ -305,7 +307,7 @@ func (le *LayoutEngine) LayoutInlineContent(
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Phase 1: Collect inline items (PURE - no side effects!)
 		// Use original constraint - don't accumulate floats across retries
-		items := le.collectInlineItemsClean(children, originalConstraint)
+		items := le.collectInlineItemsClean(children, originalConstraint, containerStyle)
 
 		// DEBUG: Show collected items
 		if attempt == 0 {
@@ -372,24 +374,53 @@ func (le *LayoutEngine) LayoutInlineContent(
 func (le *LayoutEngine) collectInlineItemsClean(
 	children []*html.Node,
 	constraint *ConstraintSpace,
+	containerStyle *css.Style,
 ) []*InlineItem {
 	// Create a temporary state for collecting items
 	// This is a bridge between old and new architectures
+	if containerStyle == nil {
+		containerStyle = css.NewStyle()
+	}
 	state := &InlineLayoutState{
 		Items:          []*InlineItem{},
 		AvailableWidth: constraint.AvailableSize.Width,
-		ContainerStyle: css.NewStyle(),
+		ContainerStyle: containerStyle,
 	}
 
-	// Compute styles for all children
+	// Compute styles for all children with inheritance from container
 	computedStyles := make(map[*html.Node]*css.Style)
 	for _, child := range children {
-		computedStyles[child] = css.ComputeStyle(
+		childStyle := css.ComputeStyle(
 			child,
 			le.stylesheets,
 			le.viewport.width,
 			le.viewport.height,
 		)
+		// Inherit properties from container style if not set
+		if containerStyle != nil {
+			// Font properties should inherit
+			if _, ok := childStyle.Get("font-size"); !ok {
+				if fontSize, ok := containerStyle.Get("font-size"); ok {
+					childStyle.Set("font-size", fontSize)
+				}
+			}
+			if _, ok := childStyle.Get("font-family"); !ok {
+				if fontFamily, ok := containerStyle.Get("font-family"); ok {
+					childStyle.Set("font-family", fontFamily)
+				}
+			}
+			if _, ok := childStyle.Get("line-height"); !ok {
+				if lineHeight, ok := containerStyle.Get("line-height"); ok {
+					childStyle.Set("line-height", lineHeight)
+				}
+			}
+			if _, ok := childStyle.Get("color"); !ok {
+				if color, ok := containerStyle.Get("color"); ok {
+					childStyle.Set("color", color)
+				}
+			}
+		}
+		computedStyles[child] = childStyle
 	}
 
 	// Collect items using existing function
@@ -471,6 +502,12 @@ func (le *LayoutEngine) constructLine(
 				Style:    item.Style,
 				Position: Position{X: currentX, Y: line.Y},
 				Size:     Size{Width: item.Width, Height: item.Height},
+			}
+			// For img elements, set the ImagePath for rendering
+			if item.Node != nil && item.Node.TagName == "img" {
+				if src, ok := item.Node.GetAttribute("src"); ok {
+					frag.ImagePath = src
+				}
 			}
 			fragments = append(fragments, frag)
 			currentX += item.Width
@@ -631,12 +668,13 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 
 	// Create box from fragment
 	box := &Box{
-		Node:   frag.Node,
-		Style:  frag.Style,
-		X:      frag.Position.X,
-		Y:      frag.Position.Y,
-		Width:  frag.Size.Width,
-		Height: frag.Size.Height,
+		Node:      frag.Node,
+		Style:     frag.Style,
+		X:         frag.Position.X,
+		Y:         frag.Position.Y,
+		Width:     frag.Size.Width,
+		Height:    frag.Size.Height,
+		ImagePath: frag.ImagePath, // Copy image path for img elements
 	}
 
 	// Convert fragment type to box positioning info
@@ -675,7 +713,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	constraint := NewConstraintSpace(availableWidth, 0)
 
 	// Run new multi-pass pipeline
-	fragments := le.LayoutInlineContent(children, constraint, startY)
+	fragments := le.LayoutInlineContent(children, constraint, startY, containerBox.Style)
 
 	fmt.Printf("Fragments created: %d\n", len(fragments))
 
@@ -749,10 +787,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 			// Update Y for next content (advance past this block)
 			childBox.Parent = containerBox
-			totalHeight := childBox.Margin.Top + childBox.Border.Top + childBox.Padding.Top +
-				childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
-			fmt.Printf("  [Fragment %d] TotalHeight: %.1f, Advancing currentY: %.1f → %.1f\n",
-				i, totalHeight, currentY, currentY+totalHeight)
+			// CRITICAL: childBox.Height already includes borders and padding (it's total box height)
+			// Only add margins to get the total height including spacing
+			totalHeight := childBox.Margin.Top + childBox.Height + childBox.Margin.Bottom
+			fmt.Printf("  [Fragment %d] TotalHeight: %.1f (margin.Top=%.1f + height=%.1f + margin.Bottom=%.1f), Advancing currentY: %.1f → %.1f\n",
+				i, totalHeight, childBox.Margin.Top, childBox.Height, childBox.Margin.Bottom, currentY, currentY+totalHeight)
 			// CRITICAL: Only advance Y for elements in normal flow
 			// Absolutely positioned and fixed positioned elements are removed from flow
 			floatType := css.FloatNone
@@ -1022,9 +1061,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							boxes = append(boxes, wrapperBox)
 
 							// Track wrapper box height for line height calculation
+							// CSS 2.1 §10.8.1: Use line box height, NOT visual extent
+							// The borders/padding "bleed" outside the line box and don't affect
+							// parent container height. The render phase handles drawing the bleeding
+							// extent by extending the background/borders (see render.go lines 388-393)
 							if wrapperHeight > currentLineMaxHeight {
 								currentLineMaxHeight = wrapperHeight
-								fmt.Printf("  Updated currentLineMaxHeight to %.1f from wrapper box\n", currentLineMaxHeight)
+								fmt.Printf("  Updated currentLineMaxHeight to %.1f from line box height\n", currentLineMaxHeight)
 							}
 						}
 
@@ -1307,7 +1350,10 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 				// Create item for the first letter with special styling
 				flFontSize := firstLetterStyle.GetFontSize()
 				flBold := firstLetterStyle.GetFontWeight() == css.FontWeightBold
-				flWidth, flHeight := text.MeasureTextWithWeight(firstLetter, flFontSize, flBold)
+				flItalic := firstLetterStyle.GetFontStyle() == css.FontStyleItalic
+				flMono := firstLetterStyle.IsMonospaceFamily()
+				flAhem := firstLetterStyle.IsAhemFamily()
+				flWidth, flHeight := text.MeasureTextWithStyle(firstLetter, flFontSize, flBold, flItalic, flMono, flAhem)
 
 				firstLetterItem := &InlineItem{
 					Type:        InlineItemText,
@@ -1325,7 +1371,10 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 				if remaining != "" {
 					fontSize := parentStyle.GetFontSize()
 					bold := parentStyle.GetFontWeight() == css.FontWeightBold
-					width, height := text.MeasureTextWithWeight(remaining, fontSize, bold)
+					italic := parentStyle.GetFontStyle() == css.FontStyleItalic
+					mono := parentStyle.IsMonospaceFamily()
+					ahem := parentStyle.IsAhemFamily()
+					width, height := text.MeasureTextWithStyle(remaining, fontSize, bold, italic, mono, ahem)
 
 					remainingItem := &InlineItem{
 						Type:        InlineItemText,
@@ -1346,7 +1395,10 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		// Normal text without first-letter styling
 		fontSize := parentStyle.GetFontSize()
 		bold := parentStyle.GetFontWeight() == css.FontWeightBold
-		width, height := text.MeasureTextWithWeight(node.Text, fontSize, bold)
+		italic := parentStyle.GetFontStyle() == css.FontStyleItalic
+		mono := parentStyle.IsMonospaceFamily()
+		ahem := parentStyle.IsAhemFamily()
+		width, height := text.MeasureTextWithStyle(node.Text, fontSize, bold, italic, mono, ahem)
 
 		item := &InlineItem{
 			Type:        InlineItemText,
@@ -1376,6 +1428,11 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			return
 		}
 
+		// Images default to inline-block display
+		if node.TagName == "img" && display != css.DisplayNone && display != css.DisplayBlock {
+			display = css.DisplayInlineBlock
+		}
+
 		// Handle different display types
 		switch display {
 		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem:
@@ -1394,6 +1451,19 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			return
 
 		case css.DisplayInline:
+			// Special case: <br/> creates a line break (Control item)
+			if node.TagName == "br" {
+				item := &InlineItem{
+					Type:   InlineItemControl,
+					Node:   node,
+					Style:  style,
+					Width:  0,
+					Height: 0,
+				}
+				state.Items = append(state.Items, item)
+				return
+			}
+
 			// Check for floats
 			if style.GetFloat() != css.FloatNone {
 				// Floated inline elements become atomic items
@@ -1488,17 +1558,68 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			// NEW ARCHITECTURE: Use ComputeMinMaxSizes instead of layoutNode!
 			// This is PURE - no side effects
 
-			// Create a constraint space for sizing the inline-block
-			constraint := NewConstraintSpace(state.AvailableWidth, 0)
+			var width, height float64
 
-			// Compute dimensions WITHOUT laying out (no side effects!)
-			sizes := le.ComputeMinMaxSizes(node, constraint, style)
+			// Special case for img elements: load actual image dimensions
+			if node.TagName == "img" {
+				if src, ok := node.GetAttribute("src"); ok {
+					// Try to load image to get natural dimensions
+					if w, h, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil {
+						width = float64(w)
+						height = float64(h)
 
-			// For inline-blocks, use max content size (preferred width)
-			width := sizes.MaxContentSize
+						// Check for explicit CSS width/height and scale accordingly
+						hasWidth := false
+						hasHeight := false
 
-			// Estimate height (will be accurate in Phase 3)
-			height := style.GetFontSize() * 1.2 // Rough estimate
+						if cssWidth, ok := style.GetLength("width"); ok {
+							width = cssWidth
+							hasWidth = true
+						} else if widthPct, ok := style.GetPercentage("width"); ok {
+							// Percentage width resolved against available width
+							width = state.AvailableWidth * widthPct / 100
+							hasWidth = true
+						}
+
+						if cssHeight, ok := style.GetLength("height"); ok {
+							height = cssHeight
+							hasHeight = true
+						} else if heightPct, ok := style.GetPercentage("height"); ok {
+							// Percentage height - for now, use natural dimensions
+							// (proper handling requires containing block height)
+							_ = heightPct // unused for now
+							height = float64(h)
+							hasHeight = true
+						}
+
+						// If only one dimension specified, scale the other to maintain aspect ratio
+						if hasWidth && !hasHeight && w > 0 {
+							height = width * float64(h) / float64(w)
+						} else if hasHeight && !hasWidth && h > 0 {
+							width = height * float64(w) / float64(h)
+						}
+					} else {
+						// Image loading failed - use fallback dimensions
+						width = 0
+						height = 0
+					}
+				}
+			}
+
+			// For non-img elements, use ComputeMinMaxSizes
+			if width == 0 && height == 0 {
+				// Create a constraint space for sizing the inline-block
+				constraint := NewConstraintSpace(state.AvailableWidth, 0)
+
+				// Compute dimensions WITHOUT laying out (no side effects!)
+				sizes := le.ComputeMinMaxSizes(node, constraint, style)
+
+				// For inline-blocks, use max content size (preferred width)
+				width = sizes.MaxContentSize
+
+				// Estimate height (will be accurate in Phase 3)
+				height = style.GetFontSize() * 1.2 // Rough estimate
+			}
 
 			item := &InlineItem{
 				Type:   InlineItemAtomic,
@@ -1897,9 +2018,11 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 						// Recalculate width for trimmed text
 						if item.Style != nil {
 							fontSize := item.Style.GetFontSize()
-							fontWeight := item.Style.GetFontWeight()
-							bold := fontWeight == css.FontWeightBold
-							trimmedWidth, _ := text.MeasureTextWithWeight(trimmedText, fontSize, bold)
+							bold := item.Style.GetFontWeight() == css.FontWeightBold
+							italic := item.Style.GetFontStyle() == css.FontStyleItalic
+							mono := item.Style.IsMonospaceFamily()
+							ahem := item.Style.IsAhemFamily()
+							trimmedWidth, _ := text.MeasureTextWithStyle(trimmedText, fontSize, bold, italic, mono, ahem)
 							item.Width = trimmedWidth
 						}
 					}

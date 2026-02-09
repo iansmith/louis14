@@ -921,6 +921,16 @@ func (s *Style) IsMonospaceFamily() bool {
 	return false
 }
 
+// IsAhemFamily returns true if the computed font-family is the Ahem test font.
+// Ahem is a special test font where all glyphs are 1em x 1em squares, designed for CSS testing.
+func (s *Style) IsAhemFamily() bool {
+	if family, ok := s.Get("font-family"); ok {
+		lower := strings.ToLower(family)
+		return strings.Contains(lower, "ahem")
+	}
+	return false
+}
+
 // Phase 17: Text decoration
 
 // TextDecoration represents the text-decoration property value

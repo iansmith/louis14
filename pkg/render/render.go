@@ -50,8 +50,8 @@ func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
 
 // loadFont loads a font face on the gg context for the given size and style.
 // Skips reloading if the same font+size is already active.
-func (r *Renderer) loadFont(fontSize float64, bold, italic, mono bool) {
-	fontPath := r.fonts.FontPath(bold, italic, mono)
+func (r *Renderer) loadFont(fontSize float64, bold, italic, mono, ahem bool) {
+	fontPath := r.fonts.FontPath(bold, italic, mono, ahem)
 	key := fmt.Sprintf("%s@%.1f", fontPath, fontSize)
 	if key == r.lastFontKey {
 		return
@@ -76,6 +76,10 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	r.context.SetRGB(1, 1, 1)
 	r.context.Clear()
 
+	// CSS 2.1 §14.2: Background propagation to canvas
+	// If html has no background, propagate body's background to fill viewport
+	r.drawCanvasBackground(boxes)
+
 	// Render each root box as a stacking context (the root always forms one)
 	// This ensures proper CSS 2.1 Appendix E paint order for the entire document
 	for _, box := range boxes {
@@ -93,6 +97,74 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 		a := img.Pix[pixelIndex+3]
 		fmt.Printf("DEBUG FINAL: Before SavePNG, pixel at (%d,%d) = RGBA(%d,%d,%d,%d)\n",
 			centerX, centerY, r, g, b, a)
+	}
+}
+
+// drawCanvasBackground implements CSS 2.1 §14.2 background propagation.
+// If html has no background, body's background propagates to fill the viewport canvas.
+func (r *Renderer) drawCanvasBackground(boxes []*layout.Box) {
+	if len(boxes) == 0 {
+		return
+	}
+
+	// Find the html box (root element)
+	var htmlBox *layout.Box
+	for _, box := range boxes {
+		if box.Node != nil && box.Node.TagName == "html" {
+			htmlBox = box
+			break
+		}
+	}
+	if htmlBox == nil {
+		return
+	}
+
+	// Check if html has a background color
+	htmlHasBg := false
+	if htmlBox.Style != nil {
+		if bgColor, ok := htmlBox.Style.Get("background-color"); ok {
+			if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
+				// Html has background - use it for canvas
+				htmlHasBg = true
+				width := float64(r.context.Width())
+				height := float64(r.context.Height())
+				r.context.SetRGBA(
+					float64(color.R)/255.0,
+					float64(color.G)/255.0,
+					float64(color.B)/255.0,
+					color.A)
+				r.context.DrawRectangle(0, 0, width, height)
+				r.context.Fill()
+			}
+		}
+	}
+
+	// If html has no background, propagate body's background to canvas
+	if !htmlHasBg {
+		// Find body element (first child of html with TagName == "body")
+		var bodyBox *layout.Box
+		for _, child := range htmlBox.Children {
+			if child.Node != nil && child.Node.TagName == "body" {
+				bodyBox = child
+				break
+			}
+		}
+		if bodyBox != nil && bodyBox.Style != nil {
+			if bgColor, ok := bodyBox.Style.Get("background-color"); ok {
+				if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
+					// Body has background - propagate to canvas (fill viewport)
+					width := float64(r.context.Width())
+					height := float64(r.context.Height())
+					r.context.SetRGBA(
+						float64(color.R)/255.0,
+						float64(color.G)/255.0,
+						float64(color.B)/255.0,
+						color.A)
+					r.context.DrawRectangle(0, 0, width, height)
+					r.context.Fill()
+				}
+			}
+		}
 	}
 }
 
@@ -626,6 +698,10 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		// Inline elements: box.Height is line box height, but borders "bleed" outside
 		renderHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
 		renderY = effectiveY - box.Border.Top - box.Padding.Top
+		if box.Node != nil && box.Node.TagName == "span" {
+			fmt.Printf("RENDER span: box.Y=%.1f effectiveY=%.1f renderY=%.1f renderHeight=%.1f (border.Top=%.1f padding.Top=%.1f)\n",
+				box.Y, effectiveY, renderY, renderHeight, box.Border.Top, box.Padding.Top)
+		}
 	}
 
 	// Debug: print div2 border rendering
@@ -867,9 +943,10 @@ func (r *Renderer) drawText(box *layout.Box) {
 	bold := box.Style.GetFontWeight() == css.FontWeightBold
 	italic := box.Style.GetFontStyle() == css.FontStyleItalic
 	mono := box.Style.IsMonospaceFamily()
+	ahem := box.Style.IsAhemFamily()
 
 	// Load the appropriate font face
-	r.loadFont(fontSize, bold, italic, mono)
+	r.loadFont(fontSize, bold, italic, mono, ahem)
 
 	r.context.SetRGB(0, 0, 0)
 	if colorStr, ok := box.Style.Get("color"); ok {

@@ -16,6 +16,7 @@ type FontConfig struct {
 	BoldItalic  string
 	Monospace   string
 	MonoBold    string
+	Ahem        string // Special test font where all glyphs are 1em x 1em squares
 }
 
 // defaultFontsDir returns the fonts directory relative to this source file.
@@ -42,11 +43,16 @@ func DefaultFontConfig() FontConfig {
 		BoldItalic: filepath.Join(dir, "AtkinsonHyperlegible-BoldItalic.ttf"),
 		Monospace:  filepath.Join(dir, "AtkinsonHyperlegibleMono-Regular.otf"),
 		MonoBold:   filepath.Join(dir, "AtkinsonHyperlegibleMono-Bold.otf"),
+		Ahem:       filepath.Join(dir, "Ahem.ttf"),
 	}
 }
 
 // FontPath returns the font path for the given style combination.
-func (fc FontConfig) FontPath(bold, italic, mono bool) string {
+func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
+	// Ahem font takes precedence over all other fonts
+	if ahem && fc.Ahem != "" {
+		return fc.Ahem
+	}
 	if mono {
 		if bold && fc.MonoBold != "" {
 			return fc.MonoBold
@@ -105,6 +111,14 @@ func MeasureTextWithWeight(text string, fontSize float64, bold bool) (width, hei
 	if bold {
 		fontPath = BoldFontPath
 	}
+	return MeasureText(text, fontSize, fontPath)
+}
+
+// MeasureTextWithStyle measures text using the specified font style (bold, italic, mono, ahem).
+// This is the comprehensive text measurement function that respects all font-family properties.
+func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool) (width, height float64) {
+	fontConfig := DefaultFontConfig()
+	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
 	return MeasureText(text, fontSize, fontPath)
 }
 
@@ -226,4 +240,82 @@ func GetFirstWord(text string) string {
 		return words[0]
 	}
 	return ""
+}
+
+// BreakTextIntoLinesWithStyle breaks text into lines using the specified font style.
+// This is the comprehensive line-breaking function that respects all font-family properties.
+func BreakTextIntoLinesWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool, firstLineMax, remainingMax float64) []string {
+	fontConfig := DefaultFontConfig()
+	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
+
+	// Use a temporary context for measurement
+	dc := gg.NewContext(1000, 1000)
+	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
+		// If font loading fails, return text as single line
+		return []string{text}
+	}
+
+	// Check if text fits on first line
+	textWidth, _ := dc.MeasureString(text)
+	if textWidth <= firstLineMax {
+		return []string{text}
+	}
+
+	// Preserve leading whitespace
+	leadingSpace := ""
+	if len(text) > 0 && (text[0] == ' ' || text[0] == '\t' || text[0] == '\n') {
+		leadingSpace = " "
+	}
+
+	// Split into words
+	words := splitIntoWords(text)
+	if len(words) == 0 {
+		return []string{text}
+	}
+
+	// Build lines
+	lines := make([]string, 0)
+	currentLine := ""
+	lineNum := 0
+
+	for i, word := range words {
+		// Prepend leading space to first word if original text had leading whitespace
+		if i == 0 && leadingSpace != "" {
+			word = leadingSpace + word
+		}
+
+		testLine := currentLine
+		if testLine != "" {
+			testLine += " "
+		}
+		testLine += word
+
+		maxWidth := remainingMax
+		if lineNum == 0 {
+			maxWidth = firstLineMax
+		}
+
+		lineWidth, _ := dc.MeasureString(testLine)
+		if lineWidth <= maxWidth {
+			currentLine = testLine
+		} else {
+			// Word doesn't fit, start new line
+			if currentLine != "" {
+				lines = append(lines, currentLine)
+				lineNum++
+			}
+			currentLine = word
+		}
+	}
+
+	// Add last line
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+
+	if len(lines) == 0 {
+		return []string{text}
+	}
+
+	return lines
 }
