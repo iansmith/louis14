@@ -112,10 +112,17 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	tableInfo.NumCols = numCols
 
 	// Calculate column widths
-	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, tableBox.Width)
+	// Pass 0 for tableWidth when the table has no explicit width (shrink-to-fit)
+	explicitTableWidth := 0.0
+	if w, ok := tableBox.Style.GetLength("width"); ok {
+		explicitTableWidth = w
+	}
+	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth)
 
 	// Set table width from column widths if not explicitly set
-	if tableBox.Width == 0 {
+	// Check the style for an explicit width, not tableBox.Width which includes borders
+	_, hasExplicitWidth := tableBox.Style.GetLength("width")
+	if !hasExplicitWidth {
 		totalW := 0.0
 		for _, cw := range tableInfo.ColumnWidths {
 			totalW += cw
@@ -126,14 +133,16 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 		}
 		spacingWidth := borderSpacing * float64(numCols+1)
 		totalW += spacingWidth
-		tableBox.Width = totalW
+		tableBox.Width = totalW + tableBox.Border.Left + tableBox.Border.Right +
+			tableBox.Padding.Left + tableBox.Padding.Right
 	}
 
 	// Calculate row heights
 	tableInfo.RowHeights = le.calculateRowHeights(cellGrid, tableInfo)
 
 	// Set table height from row heights if not explicitly set
-	if tableBox.Height == 0 {
+	_, hasExplicitHeight := tableBox.Style.GetLength("height")
+	if !hasExplicitHeight {
 		totalH := 0.0
 		for _, rh := range tableInfo.RowHeights {
 			totalH += rh
@@ -143,7 +152,8 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 			borderSpacing = 0
 		}
 		totalH += borderSpacing * float64(len(tableInfo.RowHeights)+1)
-		tableBox.Height = totalH
+		tableBox.Height = totalH + tableBox.Border.Top + tableBox.Border.Bottom +
+			tableBox.Padding.Top + tableBox.Padding.Bottom
 	}
 
 	// Position cells
@@ -609,9 +619,9 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 		currentY += rowHeight + borderSpacing
 	}
 
-	// Update table box height based on content
+	// Update table box height based on content (border-box = content area + borders + padding)
 	if len(cellGrid) > 0 {
-		tableBox.Height = currentY - y - tableBox.Border.Top - tableBox.Padding.Top
+		tableBox.Height = currentY - y + tableBox.Border.Bottom + tableBox.Padding.Bottom
 	}
 }
 

@@ -755,10 +755,13 @@ func ParseColor(colorStr string) (Color, bool) {
 		"blue":    {0, 0, 255, 1.0},
 		"yellow":  {255, 255, 0, 1.0},
 		"cyan":    {0, 255, 255, 1.0},
+		"aqua":    {0, 255, 255, 1.0},
 		"magenta": {255, 0, 255, 1.0},
+		"fuchsia": {255, 0, 255, 1.0},
 		"white":   {255, 255, 255, 1.0},
 		"black":   {0, 0, 0, 1.0},
 		"gray":    {128, 128, 128, 1.0},
+		"grey":    {128, 128, 128, 1.0},
 		"orange":  {255, 165, 0, 1.0},
 		"purple":  {128, 0, 128, 1.0},
 		"pink":    {255, 192, 203, 1.0},
@@ -767,6 +770,8 @@ func ParseColor(colorStr string) (Color, bool) {
 		"navy":    {0, 0, 128, 1.0},
 		"teal":    {0, 128, 128, 1.0},
 		"silver":  {192, 192, 192, 1.0},
+		"maroon":  {128, 0, 0, 1.0},
+		"olive":   {128, 128, 0, 1.0},
 	}
 	color, ok := namedColors[colorStr]
 	return color, ok

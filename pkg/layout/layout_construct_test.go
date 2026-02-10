@@ -406,7 +406,7 @@ func TestLayoutInlineContent_NoRetryNeeded(t *testing.T) {
 	}
 
 	constraint := NewConstraintSpace(400, 300)
-	fragments := le.LayoutInlineContent([]*html.Node{textNode}, constraint, 0, nil)
+	fragments := le.LayoutInlineContent([]*html.Node{textNode}, constraint, 0, nil, nil)
 
 	if len(fragments) < 1 {
 		t.Fatalf("Expected at least 1 fragment, got %d", len(fragments))

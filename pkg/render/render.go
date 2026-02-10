@@ -557,9 +557,10 @@ func (r *Renderer) drawBoxContent(box *layout.Box) {
 		fmt.Printf("DEBUG CONTENT: Finished drawText for span\n")
 	}
 
-	// Draw scrollbar indicators
+	// Draw scrollbar indicators (only for overflow:scroll which always shows scrollbars;
+	// overflow:auto only shows when content overflows, which we don't detect yet)
 	overflow := box.Style.GetOverflow()
-	if overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+	if overflow == css.OverflowScroll {
 		r.drawScrollbarIndicators(box)
 	}
 }
@@ -640,8 +641,9 @@ func (r *Renderer) drawBox(box *layout.Box) {
 	// Draw text
 	r.drawText(box)
 
-	// Phase 21: Draw scrollbar indicators for overflow: scroll or auto
-	if overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+	// Phase 21: Draw scrollbar indicators (only for overflow:scroll;
+	// overflow:auto only shows when content overflows)
+	if overflow == css.OverflowScroll {
 		r.drawScrollbarIndicators(box)
 	}
 }
@@ -956,8 +958,26 @@ func (r *Renderer) drawText(box *layout.Box) {
 	}
 
 	// Draw text at calculated position
-	textY := effectiveY + fontSize
-	r.context.DrawString(textContent, textX, textY)
+	// Use actual font ascent for baseline placement (not fontSize).
+	// For Ahem at 40px: ascent=32, descent=8. Using fontSize (40) would
+	// place the baseline 8px too low, causing glyphs to overflow the line box.
+	ascent := r.context.FontAscent()
+	textY := effectiveY + ascent
+
+	// CSS 2.1 §16.4: Apply letter-spacing between characters
+	letterSpacing := box.Style.GetLetterSpacing()
+	if letterSpacing != 0 {
+		// Draw characters individually with letter-spacing
+		drawX := textX
+		for _, ch := range textContent {
+			charStr := string(ch)
+			r.context.DrawString(charStr, drawX, textY)
+			charWidth, _ := text.MeasureTextWithStyle(charStr, fontSize, bold, italic, mono, ahem)
+			drawX += charWidth + letterSpacing
+		}
+	} else {
+		r.context.DrawString(textContent, textX, textY)
+	}
 
 	// Phase 17: Draw text decorations
 	decoration := box.Style.GetTextDecoration()

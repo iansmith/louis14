@@ -430,6 +430,107 @@ func (le *LayoutEngine) generatePseudoElement(node *html.Node, pseudoType string
 	return box
 }
 
+// createPseudoElementNode creates a synthetic html.Node for a pseudo-element.
+// Instead of generating Box objects (like generatePseudoElement), this creates
+// DOM nodes that can be processed by the multi-pass inline layout pipeline,
+// ensuring pseudo-elements get identical sizing and positioning to real elements.
+//
+// Returns the synthetic node and its computed style, or (nil, nil) if no content.
+func (le *LayoutEngine) createPseudoElementNode(node *html.Node, pseudoType string, computedStyles map[*html.Node]*css.Style) (*html.Node, *css.Style) {
+	parentStyle := computedStyles[node]
+	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
+
+	contentValues, hasContent := pseudoStyle.GetContentValues()
+	if !hasContent || len(contentValues) == 0 {
+		return nil, nil
+	}
+
+	// CSS Counter support: Process counter-increment BEFORE evaluating content
+	if incVal, ok := pseudoStyle.Get("counter-increment"); ok {
+		increments := parseCounterIncrement(incVal)
+		for name, value := range increments {
+			le.counterIncrement(name, value)
+		}
+	}
+
+	// Get quotes from parent style (for open-quote/close-quote)
+	quotes := []string{"\"", "\"", "'", "'"}
+	if parentStyle != nil {
+		if q, ok := parentStyle.Get("quotes"); ok {
+			quotes = parseQuotes(q)
+		}
+	}
+
+	// Create the synthetic span node
+	syntheticNode := &html.Node{
+		Type:       html.ElementNode,
+		TagName:    "span",
+		Attributes: map[string]string{},
+		Children:   make([]*html.Node, 0),
+		Parent:     node,
+	}
+
+	// Resolve content values into child nodes
+	var currentText string
+	quoteDepth := 0
+
+	flushText := func() {
+		if currentText != "" {
+			textNode := &html.Node{
+				Type:   html.TextNode,
+				Text:   currentText,
+				Parent: syntheticNode,
+			}
+			syntheticNode.Children = append(syntheticNode.Children, textNode)
+			currentText = ""
+		}
+	}
+
+	for _, cv := range contentValues {
+		switch cv.Type {
+		case "text":
+			currentText += cv.Value
+		case "url":
+			flushText()
+			imgNode := &html.Node{
+				Type:       html.ElementNode,
+				TagName:    "img",
+				Attributes: map[string]string{"src": cv.Value},
+				Children:   make([]*html.Node, 0),
+				Parent:     syntheticNode,
+			}
+			syntheticNode.Children = append(syntheticNode.Children, imgNode)
+		case "counter":
+			counterValue := le.counterValue(cv.Value)
+			currentText += strconv.Itoa(counterValue)
+		case "attr":
+			if val, ok := node.GetAttribute(cv.Value); ok && val != "" {
+				currentText += val
+			}
+		case "open-quote":
+			if quoteDepth*2 < len(quotes) {
+				currentText += quotes[quoteDepth*2]
+			}
+			quoteDepth++
+		case "close-quote":
+			if quoteDepth > 0 {
+				quoteDepth--
+			}
+			if quoteDepth*2+1 < len(quotes) {
+				currentText += quotes[quoteDepth*2+1]
+			}
+		}
+	}
+	flushText()
+
+	// If no children were created, return nil
+	if len(syntheticNode.Children) == 0 {
+		return nil, nil
+	}
+
+	return syntheticNode, pseudoStyle
+}
+
 // parseQuotes parses the CSS quotes property value
 
 // unescapeUnicode converts CSS Unicode escapes like \0022 to actual characters

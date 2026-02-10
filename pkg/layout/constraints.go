@@ -59,6 +59,30 @@ func (es *ExclusionSpace) AvailableInlineSize(y, height float64) (leftOffset, ri
 	return leftOffset, rightOffset
 }
 
+// NextBandBelowY returns the nearest Y position below the given Y where
+// the available width changes (i.e., below the bottom of a float that
+// overlaps the given Y). Returns -1 if no floats overlap at this Y.
+// This implements CSS 2.1 §9.5: "the line box is shifted downward"
+func (es *ExclusionSpace) NextBandBelowY(y, height float64) float64 {
+	if es == nil {
+		return -1
+	}
+
+	nextY := -1.0
+	for _, excl := range es.exclusions {
+		exclBottom := excl.Rect.Y + excl.Rect.Height
+		// Only consider floats that overlap with [y, y+height]
+		if exclBottom <= y || excl.Rect.Y >= y+height {
+			continue
+		}
+		// Find the nearest float bottom above
+		if nextY < 0 || exclBottom < nextY {
+			nextY = exclBottom
+		}
+	}
+	return nextY
+}
+
 // Add returns a NEW ExclusionSpace with the given exclusion added.
 // The original ExclusionSpace is NOT modified (immutability).
 //

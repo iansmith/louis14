@@ -684,6 +684,14 @@ func (dc *Context) FontHeight() float64 {
 	return dc.fontHeight
 }
 
+// FontAscent returns the font ascent in pixels (distance from baseline to top of glyph).
+func (dc *Context) FontAscent() float64 {
+	if dc.fontFace == nil {
+		return 0
+	}
+	return float64(dc.fontFace.Metrics().Ascent) / 64.0
+}
+
 func (dc *Context) drawString(im *image.RGBA, s string, x, y float64) {
 	d := &font.Drawer{
 		Dst:  im,
