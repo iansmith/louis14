@@ -23,7 +23,7 @@ func TestLayoutInlineContent_SimpleText(t *testing.T) {
 	}
 
 	constraint := NewConstraintSpace(400, 300)
-	fragments := le.LayoutInlineContent([]*html.Node{textNode}, constraint, 0)
+	fragments := le.LayoutInlineContent([]*html.Node{textNode}, constraint, 0, nil)
 
 	if len(fragments) < 1 {
 		t.Fatalf("Expected at least 1 fragment, got %d", len(fragments))
@@ -60,7 +60,7 @@ func TestLayoutInlineContent_MultipleChildren(t *testing.T) {
 	}
 
 	constraint := NewConstraintSpace(400, 300)
-	fragments := le.LayoutInlineContent(children, constraint, 0)
+	fragments := le.LayoutInlineContent(children, constraint, 0, nil)
 
 	if len(fragments) < 1 {
 		t.Fatalf("Expected at least 1 fragment, got %d", len(fragments))
@@ -101,7 +101,7 @@ func TestLayoutInlineContent_NoSideEffects(t *testing.T) {
 	originalFloatCount := len(le.floats)
 
 	// Run the pipeline
-	le.LayoutInlineContent([]*html.Node{textNode}, constraint, 0)
+	le.LayoutInlineContent([]*html.Node{textNode}, constraint, 0, nil)
 
 	// Verify no side effects
 	if len(le.floats) != originalFloatCount {
@@ -137,7 +137,7 @@ func TestLayoutInlineContent_WithConstraintSpace(t *testing.T) {
 		ExclusionSpace: es,
 	}
 
-	fragments := le.LayoutInlineContent([]*html.Node{textNode}, constraint, 10)
+	fragments := le.LayoutInlineContent([]*html.Node{textNode}, constraint, 10, nil)
 
 	if len(fragments) < 1 {
 		t.Fatalf("Expected at least 1 fragment, got %d", len(fragments))

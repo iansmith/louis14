@@ -124,7 +124,8 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
 			borderSpacing = 0
 		}
-		totalW += borderSpacing * float64(numCols+1)
+		spacingWidth := borderSpacing * float64(numCols+1)
+		totalW += spacingWidth
 		tableBox.Width = totalW
 	}
 
@@ -553,8 +554,9 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 			cell.Box.Border = cell.Box.Style.GetBorderWidth()
 			cell.Box.X = currentX
 			cell.Box.Y = currentY
-			cell.Box.Width = cellWidth - cell.Box.Padding.Left - cell.Box.Padding.Right - cell.Box.Border.Left - cell.Box.Border.Right
-			cell.Box.Height = cellHeight - cell.Box.Padding.Top - cell.Box.Padding.Bottom - cell.Box.Border.Top - cell.Box.Border.Bottom
+			// box.Width/Height should be border-box dimensions (for rendering)
+			cell.Box.Width = cellWidth
+			cell.Box.Height = cellHeight
 			if cell.Box.Width < 0 {
 				cell.Box.Width = 0
 			}

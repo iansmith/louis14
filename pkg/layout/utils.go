@@ -120,8 +120,16 @@ func (le *LayoutEngine) getTotalWidth(box *Box) float64 {
 
 // adjustChildrenY recursively adjusts Y positions of all children by delta
 func (le *LayoutEngine) adjustChildrenY(box *Box, delta float64) {
+	if box.Node != nil && box.Node.TagName != "" {
+		fmt.Printf("DEBUG adjustChildrenY: %s delta=%.1f, %d children\n",
+			box.Node.TagName, delta, len(box.Children))
+	}
 	for _, child := range box.Children {
+		oldY := child.Y
 		child.Y += delta
+		if child.Node != nil && child.Node.TagName == "span" {
+			fmt.Printf("  Adjusted span child from Y=%.1f to Y=%.1f\n", oldY, child.Y)
+		}
 		le.adjustChildrenY(child, delta)
 	}
 }

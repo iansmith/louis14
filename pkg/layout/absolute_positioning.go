@@ -24,8 +24,10 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 		// Positioned relative to containing block's padding edge
 		cbX = containingBlock.X + containingBlock.Border.Left
 		cbY = containingBlock.Y + containingBlock.Border.Top
-		cbWidth = containingBlock.Width + containingBlock.Padding.Left + containingBlock.Padding.Right
-		cbHeight = containingBlock.Height + containingBlock.Padding.Top + containingBlock.Padding.Bottom
+		// FIXME: Box.Width currently includes padding+border, but CSS spec says it should be content-only
+		// For now, subtract borders since containingBlock.Width includes them
+		cbWidth = containingBlock.Width - containingBlock.Border.Left - containingBlock.Border.Right
+		cbHeight = containingBlock.Height - containingBlock.Border.Top - containingBlock.Border.Bottom
 	}
 
 	// Resolve percentage offsets against containing block dimensions
@@ -125,6 +127,21 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 			box.Margin.Bottom = 0
 		}
 		box.Y = cbY + offset.Top + box.Margin.Top
+	} else if offset.HasTop && offset.HasBottom && !marginTopAuto && !marginBottomAuto {
+		// CSS 2.1 §10.6.4: Over-constrained case with non-auto margins
+		// "If the values are over-constrained, ignore the value for 'bottom' and solve for that value."
+		// Check if over-constrained:
+		usedHeight := box.Border.Top + box.Padding.Top + box.Height +
+			box.Padding.Bottom + box.Border.Bottom
+		totalHeight := offset.Top + box.Margin.Top + usedHeight + box.Margin.Bottom + offset.Bottom
+
+		if totalHeight > cbHeight {
+			// Over-constrained: ignore bottom, position from top
+			box.Y = cbY + offset.Top + box.Margin.Top
+		} else {
+			// Not over-constrained: use top (top takes precedence over bottom when both specified)
+			box.Y = cbY + offset.Top + box.Margin.Top
+		}
 	} else if offset.HasTop {
 		box.Y = cbY + offset.Top + box.Margin.Top
 	} else if offset.HasBottom {

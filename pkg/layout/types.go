@@ -161,6 +161,9 @@ type Fragment struct {
 	// For text fragments
 	Text string // Text content (for FragmentText)
 
+	// For image fragments
+	ImagePath string // Image source path for img elements
+
 	// For fragments that correspond to Box tree (temporary bridge)
 	Box *Box // Link to Box tree (for converting back to Box)
 }

@@ -40,7 +40,7 @@ func TestE2E_SimpleTextRendering(t *testing.T) {
 	}
 
 	// Run new multi-pass pipeline and convert to boxes
-	boxes := le.LayoutInlineContentToBoxes(
+	result := le.LayoutInlineContentToBoxes(
 		div.Children,
 		containerBox,
 		400,                           // available width
@@ -49,12 +49,12 @@ func TestE2E_SimpleTextRendering(t *testing.T) {
 	)
 
 	// Verify we got boxes
-	if len(boxes) == 0 {
+	if len(result.ChildBoxes) == 0 {
 		t.Fatal("Expected at least one box for text content")
 	}
 
 	// Check that boxes have positions
-	for i, box := range boxes {
+	for i, box := range result.ChildBoxes {
 		if box == nil {
 			t.Errorf("Box %d is nil", i)
 			continue
@@ -71,7 +71,7 @@ func TestE2E_SimpleTextRendering(t *testing.T) {
 		}
 	}
 
-	t.Logf("Successfully created %d boxes with positions", len(boxes))
+	t.Logf("Successfully created %d boxes with positions", len(result.ChildBoxes))
 }
 
 // TestE2E_TextWithLeftFloat tests float positioning
@@ -121,7 +121,7 @@ func TestE2E_TextWithLeftFloat(t *testing.T) {
 	// since our pipeline uses computedStyles
 	// For now, just verify the bridge function works
 
-	boxes := le.LayoutInlineContentToBoxes(
+	result := le.LayoutInlineContentToBoxes(
 		div.Children,
 		containerBox,
 		400,
@@ -129,14 +129,14 @@ func TestE2E_TextWithLeftFloat(t *testing.T) {
 		make(map[*html.Node]*css.Style),
 	)
 
-	if len(boxes) == 0 {
+	if len(result.ChildBoxes) == 0 {
 		t.Fatal("Expected boxes from float + text")
 	}
 
-	t.Logf("Created %d boxes for float + text scenario", len(boxes))
+	t.Logf("Created %d boxes for float + text scenario", len(result.ChildBoxes))
 
 	// Verify no negative positions (was a bug in WIP code)
-	for i, box := range boxes {
+	for i, box := range result.ChildBoxes {
 		if box.X < 0 || box.Y < 0 {
 			t.Errorf("Box %d has negative position: (%f, %f) - OLD BUG!",
 				i, box.X, box.Y)
@@ -175,7 +175,7 @@ func TestE2E_MultilineText(t *testing.T) {
 		Width: 200, // Narrow width to force wrapping
 	}
 
-	boxes := le.LayoutInlineContentToBoxes(
+	result := le.LayoutInlineContentToBoxes(
 		div.Children,
 		containerBox,
 		200, // narrow width
@@ -183,15 +183,15 @@ func TestE2E_MultilineText(t *testing.T) {
 		make(map[*html.Node]*css.Style),
 	)
 
-	if len(boxes) == 0 {
+	if len(result.ChildBoxes) == 0 {
 		t.Fatal("Expected boxes from wrapped text")
 	}
 
-	t.Logf("Created %d boxes for wrapping text", len(boxes))
+	t.Logf("Created %d boxes for wrapping text", len(result.ChildBoxes))
 
 	// Check that we have multiple Y positions (multiline)
 	yPositions := make(map[float64]bool)
-	for _, box := range boxes {
+	for _, box := range result.ChildBoxes {
 		yPositions[box.Y] = true
 	}
 
@@ -274,7 +274,7 @@ func TestE2E_NoNegativePositions(t *testing.T) {
 				Width: 400,
 			}
 
-			boxes := le.LayoutInlineContentToBoxes(
+			result := le.LayoutInlineContentToBoxes(
 				scenario.children,
 				containerBox,
 				400,
@@ -283,7 +283,7 @@ func TestE2E_NoNegativePositions(t *testing.T) {
 			)
 
 			// Check no negative positions
-			for i, box := range boxes {
+			for i, box := range result.ChildBoxes {
 				if box.X < 0 {
 					t.Errorf("Box %d has negative X: %f (BUG!)", i, box.X)
 				}
