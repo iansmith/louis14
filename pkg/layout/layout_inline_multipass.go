@@ -717,14 +717,40 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 	fmt.Printf("Fragments created: %d\n", len(fragments))
 
-	// Process fragments, handling block children with recursive layout
-	boxes := []*Box{}
-	currentY := startY
-	currentLineY := startY        // Track which line we're on
-	currentLineMaxHeight := 0.0   // Track maximum height on current line
-	lastFinalizedLineHeight := 0.0 // Track the last finalized line height for return
-	currentX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left // Track rightmost X position
-	hasContentOnLine := false     // Track whether current line has actual content (not just OpenTag markers)
+	// LineMetrics tracks line box height separately from content height
+	// This matches CSS 2.1 §10.8.1: line box height is independent of content height
+	type LineMetrics struct {
+		// Maximum height of content on this line (text, images, atomic inlines)
+		// This is the "natural" height of the tallest box
+		contentHeight float64
+
+		// Minimum height from inline element line-heights
+		// This ensures line boxes have sufficient height even for small text
+		lineBoxHeight float64
+
+		// Track if line has any actual content (not just OpenTag markers)
+		// Used to determine if we should advance Y for this line
+		hasContent bool
+	}
+
+	// EffectiveHeight returns the height to use for Y advancement
+	// Per CSS spec: line box height is the max of content height and line-height
+	lineMetricsEffectiveHeight := func(lm *LineMetrics) float64 {
+		if lm.contentHeight > lm.lineBoxHeight {
+			return lm.contentHeight
+		}
+		return lm.lineBoxHeight
+	}
+
+	// Reset clears metrics for a new line
+	// preserveLineBoxHeight: if true, keeps line-box height from open inline elements
+	lineMetricsReset := func(lm *LineMetrics, preserveLineBoxHeight bool) {
+		lm.contentHeight = 0
+		lm.hasContent = false
+		if !preserveLineBoxHeight {
+			lm.lineBoxHeight = 0
+		}
+	}
 
 	// Track inline element spans for creating wrapper boxes
 	type inlineSpan struct {
@@ -734,6 +760,14 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		startY   float64
 		startIdx int // Fragment index where span started
 	}
+
+	// Process fragments, handling block children with recursive layout
+	boxes := []*Box{}
+	currentY := startY
+	currentLineY := startY        // Track which line we're on
+	lastFinalizedLineHeight := 0.0 // Track the last finalized line height for return
+	currentX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left // Track rightmost X position
+	lineMetrics := &LineMetrics{}  // Track line box metrics (content height + line-box height)
 	inlineStack := []*inlineSpan{}
 
 	// Track which nodes we've seen to distinguish OpenTag from CloseTag
@@ -745,17 +779,18 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			// Block child - first finalize the current line before laying out the block
 			// Advance currentY past any content on the current line
 			// FIX: Only advance if the line had actual content (not just OpenTag markers)
-			if hasContentOnLine && currentLineMaxHeight > 0 {
-				fmt.Printf("  Finalizing current line before block: currentY %.1f, height %.1f (had content)\n",
-					currentY, currentLineMaxHeight)
-				currentY = currentY + currentLineMaxHeight
-				lastFinalizedLineHeight = currentLineMaxHeight // Save before resetting
-		currentLineMaxHeight = 0
-			} else if currentLineMaxHeight > 0 {
-				fmt.Printf("  Skipping line finalization before block: currentY %.1f, height %.1f (NO content on line)\n",
-					currentY, currentLineMaxHeight)
+			effectiveHeight := lineMetricsEffectiveHeight(lineMetrics)
+
+			if lineMetrics.hasContent && lineMetricsEffectiveHeight(lineMetrics) > 0 {
+				fmt.Printf("  Finalizing line before block: advancing by %.1f (content=%.1f, lineBox=%.1f)\n",
+					effectiveHeight, lineMetrics.contentHeight, lineMetrics.lineBoxHeight)
+				currentY = currentY + effectiveHeight
+				lastFinalizedLineHeight = effectiveHeight // Save before resetting
+			} else if effectiveHeight > 0 {
+				fmt.Printf("  Skipping line finalization: no content (lineBox=%.1f)\n",
+					lineMetrics.lineBoxHeight)
 			}
-			hasContentOnLine = false // Reset after block child
+			lineMetricsReset(lineMetrics, false) // Clear for content after block child
 
 			// Block child - call layoutNode recursively
 			childNode := frag.Node
@@ -809,8 +844,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// Child is in normal flow - advance Y
 				currentY += totalHeight
 				currentLineY = currentY // Update line Y to match
-				lastFinalizedLineHeight = currentLineMaxHeight // Save before resetting
-		currentLineMaxHeight = 0 // Reset for next line
+				lastFinalizedLineHeight = effectiveHeight // Save before resetting
+		lineMetricsReset(lineMetrics, false) // Reset for next line
 
 				// Reset currentX - block child takes full width, next content starts at left
 				currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
@@ -843,14 +878,14 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				inlineStack = append(inlineStack, span)
 				seenNodes[frag.Node] = true
 
-				// FIX: Track inline element's line-height contribution
+				// Track inline element's line-height contribution to line box
 				// When an inline element opens, its line-height should contribute to the line box height
 				// This ensures correct Y advancement when block children or line breaks are encountered
 				if frag.Style != nil {
 					lineHeight := frag.Style.GetLineHeight()
-					if lineHeight > currentLineMaxHeight {
-						currentLineMaxHeight = lineHeight
-						fmt.Printf("  OpenTag <%s>: Set currentLineMaxHeight to %.1f (line-height)\n",
+					if lineHeight > lineMetrics.lineBoxHeight {
+						lineMetrics.lineBoxHeight = lineHeight
+						fmt.Printf("  OpenTag <%s>: Set line-box height to %.1f (line-height)\n",
 							frag.Node.TagName, lineHeight)
 					}
 				}
@@ -929,9 +964,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								boxes = append(boxes, fragment1)
 
 								// Track fragment height for line height calculation
-								if lineHeight > currentLineMaxHeight {
-									currentLineMaxHeight = lineHeight
-									fmt.Printf("    Updated currentLineMaxHeight to %.1f from fragment1\n", currentLineMaxHeight)
+								if lineHeight > lineMetrics.lineBoxHeight {
+									lineMetrics.lineBoxHeight = lineHeight
+									fmt.Printf("    Updated lineBoxHeight to %.1f from fragment1\n", lineMetrics.lineBoxHeight)
 								}
 
 								fmt.Printf("    Fragment 1 (first): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
@@ -971,9 +1006,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								boxes = append(boxes, fragment2)
 
 								// Track fragment height for line height calculation
-								if lineHeight > currentLineMaxHeight {
-									currentLineMaxHeight = lineHeight
-									fmt.Printf("    Updated currentLineMaxHeight to %.1f from fragment2\n", currentLineMaxHeight)
+								if lineHeight > lineMetrics.lineBoxHeight {
+									lineMetrics.lineBoxHeight = lineHeight
+									fmt.Printf("    Updated lineBoxHeight to %.1f from fragment2\n", lineMetrics.lineBoxHeight)
 								}
 
 								fmt.Printf("    Fragment 2 (last): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
@@ -1016,7 +1051,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 							// Calculate height from line-height or font-size
 							// Empty inline elements establish line box height per CSS 2.1 §10.8.1
-							wrapperHeight := currentLineMaxHeight
+							wrapperHeight := lineMetricsEffectiveHeight(lineMetrics)
 							if wrapperHeight == 0 {
 								// Use font-size as minimum height for empty inline elements
 								fontSize := span.style.GetFontSize()
@@ -1051,7 +1086,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 							// Box height is the line box height (CSS 2.1 §10.8.1)
 							// Borders/padding "bleed" outside this and are drawn separately by the render phase
-							// wrapperHeight already equals currentLineMaxHeight (line box height)
+							// wrapperHeight already equals effective height (line box height)
 							fmt.Printf("  Wrapper box height: line-height %.1f (borders/padding rendered separately)\n",
 								wrapperHeight)
 
@@ -1083,9 +1118,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							// The borders/padding "bleed" outside the line box and don't affect
 							// parent container height. The render phase handles drawing the bleeding
 							// extent by extending the background/borders (see render.go lines 388-393)
-							if wrapperHeight > currentLineMaxHeight {
-								currentLineMaxHeight = wrapperHeight
-								fmt.Printf("  Updated currentLineMaxHeight to %.1f from line box height\n", currentLineMaxHeight)
+							if wrapperHeight > lineMetricsEffectiveHeight(lineMetrics) {
+								lineMetrics.lineBoxHeight = wrapperHeight
+								fmt.Printf("  Updated lineBoxHeight to %.1f from line box height\n", lineMetrics.lineBoxHeight)
 							}
 						}
 
@@ -1142,20 +1177,20 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// Check if we've moved to a new line (Y changed)
 				if frag.Position.Y != currentLineY {
 					// Advance currentY past the previous line
+				effectiveHeight := lineMetricsEffectiveHeight(lineMetrics)
+
 					// FIX: Only advance if the previous line had actual content (not just OpenTag markers)
 					// This prevents double-advancement when OpenTag sets line-height before content appears
-					if hasContentOnLine && currentLineMaxHeight > 0 {
-						fmt.Printf("  Line break detected: Y %.1f → %.1f (height %.1f, had content)\n",
-							currentLineY, frag.Position.Y, currentLineMaxHeight)
-						currentY = currentLineY + currentLineMaxHeight
-						lastFinalizedLineHeight = currentLineMaxHeight // Save before resetting
-		currentLineMaxHeight = 0  // Reset for new line
-						hasContentOnLine = false // Reset for new line
-					} else if currentLineMaxHeight > 0 {
-						fmt.Printf("  Line break detected: Y %.1f → %.1f (height %.1f, NO content - preserving height)\n",
-							currentLineY, frag.Position.Y, currentLineMaxHeight)
-						// Don't reset currentLineMaxHeight - preserve it from OpenTag for the new line
-						// Don't reset hasContentOnLine - stays false
+					if lineMetrics.hasContent && lineMetricsEffectiveHeight(lineMetrics) > 0 {
+						fmt.Printf("  Line break: Y %.1f → %.1f, advancing by %.1f (content=%.1f, lineBox=%.1f)\n",
+						currentLineY, frag.Position.Y, effectiveHeight, lineMetrics.contentHeight, lineMetrics.lineBoxHeight)
+					currentY = currentLineY + effectiveHeight
+						lastFinalizedLineHeight = effectiveHeight // Save before resetting
+						lineMetricsReset(lineMetrics, false) // Clear both content and line-box height
+					} else if effectiveHeight > 0 {
+						fmt.Printf("  Line break: Y %.1f → %.1f, NO content - preserving lineBox=%.1f\n",
+							currentLineY, frag.Position.Y, lineMetrics.lineBoxHeight)
+						lineMetricsReset(lineMetrics, true) // Preserve line-box height from open inlines
 					}
 					currentLineY = frag.Position.Y
 				}
@@ -1168,23 +1203,26 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					box.Y = currentY
 				}
 
-				// Track maximum height on this line
-				fmt.Printf("  Box.Height=%.1f, currentLineMaxHeight before=%.1f\n", box.Height, currentLineMaxHeight)
-				if box.Height > currentLineMaxHeight {
-					currentLineMaxHeight = box.Height
+				// Track content height and mark that line has content
+				fmt.Printf("  Box.Height=%.1f, content=%.1f, lineBox=%.1f\n",
+					box.Height, lineMetrics.contentHeight, lineMetrics.lineBoxHeight)
+
+				if frag.Type == FragmentText || frag.Type == FragmentAtomic || frag.Type == FragmentBlockChild {
+					lineMetrics.hasContent = true
+					if box.Height > lineMetrics.contentHeight {
+						lineMetrics.contentHeight = box.Height
+					}
 				}
 
-				// Mark that this line has actual content (not just OpenTag/CloseTag markers)
-				// TEXT, Atomic inlines, Block children all count as content
-				if frag.Type == FragmentText || frag.Type == FragmentAtomic || frag.Type == FragmentBlockChild {
-					hasContentOnLine = true
-				}
+				fmt.Printf("  Line metrics: content=%.1f, lineBox=%.1f, effective=%.1f, hasContent=%v\n",
+					lineMetrics.contentHeight, lineMetrics.lineBoxHeight,
+					lineMetricsEffectiveHeight(lineMetrics), lineMetrics.hasContent)
 
 				if frag.Type == FragmentText {
 					fmt.Printf("  Text: %q\n", truncateString(frag.Text, 30))
 				}
 				fmt.Printf("  Final Box Position: (%.1f, %.1f), currentLineMaxH: %.1f\n",
-					box.X, box.Y, currentLineMaxHeight)
+					box.X, box.Y, lineMetricsEffectiveHeight(lineMetrics))
 
 				// Update currentX to track rightmost position
 				boxRight := box.X + box.Width
@@ -1216,7 +1254,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	fmt.Printf("=== END MULTI-PASS ===\n\n")
 
 	// Determine final line height: use current line if active, otherwise last finalized
-	finalLineHeight := currentLineMaxHeight
+	finalLineHeight := lineMetricsEffectiveHeight(lineMetrics)
 	if finalLineHeight == 0 {
 		finalLineHeight = lastFinalizedLineHeight
 	}
@@ -1231,7 +1269,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	}
 
 	fmt.Printf("DEBUG: Returning InlineLayoutResult: currentY=%.1f, currentLineMaxH=%.1f, lastFinalizedH=%.1f, finalH=%.1f, boxes=%d\n",
-		currentY, currentLineMaxHeight, lastFinalizedLineHeight, finalLineHeight, len(boxes))
+		currentY, lineMetricsEffectiveHeight(lineMetrics), lastFinalizedLineHeight, finalLineHeight, len(boxes))
 
 	return &InlineLayoutResult{
 		ChildBoxes:     boxes,
