@@ -447,6 +447,22 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	if canUseMultiPass {
+		// Phase 11a: Generate ::before pseudo-element if it has content
+		// Create inline context for pseudo-element positioning
+		lineX := box.X + border.Left + padding.Left
+		lineY := childY
+		beforeBox := le.generatePseudoElement(node, "before", lineX, lineY, childAvailableWidth, computedStyles, box)
+		var beforeBoxes []*Box
+		if beforeBox != nil {
+			beforeBoxes = append(beforeBoxes, beforeBox)
+			// If ::before is floated, it affects subsequent content positioning
+			// The multi-pass pipeline will handle float positioning via the float registry
+			beforeFloat := beforeBox.Style.GetFloat()
+			if beforeFloat != css.FloatNone {
+				le.addFloat(beforeBox, beforeFloat, beforeBox.Y)
+			}
+		}
+
 		// Use new three-phase multi-pass pipeline
 		inlineLayoutResult = le.LayoutInlineContentToBoxes(
 			node.Children,
@@ -456,6 +472,23 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			computedStyles,
 		)
 		childBoxes = inlineLayoutResult.ChildBoxes
+
+		// Phase 11b: Generate ::after pseudo-element if it has content
+		// Use final inline context from multi-pass layout for positioning
+		finalInlineCtx := inlineLayoutResult.FinalInlineCtx
+		afterBox := le.generatePseudoElement(node, "after", finalInlineCtx.LineX, finalInlineCtx.LineY, childAvailableWidth, computedStyles, box)
+		var afterBoxes []*Box
+		if afterBox != nil {
+			afterBoxes = append(afterBoxes, afterBox)
+			afterFloat := afterBox.Style.GetFloat()
+			if afterFloat != css.FloatNone {
+				le.addFloat(afterBox, afterFloat, afterBox.Y)
+			}
+		}
+
+		// Combine ::before + children + ::after
+		childBoxes = append(beforeBoxes, childBoxes...)
+		childBoxes = append(childBoxes, afterBoxes...)
 
 		// CRITICAL FIX: Apply margin collapsing between adjacent block siblings
 		// LayoutInlineContentToBoxes doesn't handle margin collapsing, so we must do it here
