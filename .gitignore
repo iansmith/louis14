@@ -8,6 +8,10 @@ testdata/phase8/images/
 louis14
 cmd/l14open/l14open
 
+# Test output
+output/
+test-output.txt
+
 # Go build cache
 *.test
 *.out
