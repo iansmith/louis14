@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"sort"
 	"strings"
 
@@ -451,8 +452,18 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 
-	// Draw background color
-	if bgColor, ok := box.Style.Get("background-color"); ok {
+	// Check for gradient background first
+	hasGradient := false
+	if bgValue, ok := box.Style.Get("background"); ok {
+		if grad, ok := css.GetGradient(bgValue); ok {
+			r.drawGradientBackground(box, grad, effectiveY)
+			hasGradient = true
+		}
+	}
+
+	// Draw background color (only if no gradient was drawn)
+	if !hasGradient {
+		if bgColor, ok := box.Style.Get("background-color"); ok {
 		if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
 			// Check for white background
 			if color.R > 250 && color.G > 250 && color.B > 250 && box.Node != nil {
@@ -544,12 +555,83 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 			}
 		}
 	}
+	} // End of !hasGradient block
 
 	// Draw background image
 	r.drawBackgroundImage(box)
 
 	// Draw border
 	r.drawBorder(box)
+}
+
+// drawGradientBackground renders a CSS gradient as the box background
+func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, effectiveY float64) {
+	if grad == nil || grad.Type != css.GradientLinear {
+		return
+	}
+
+	bgX := box.X
+	bgY := effectiveY
+	bgWidth := box.Width
+	bgHeight := box.Height
+
+	// Handle inline element bleeding (same as solid color backgrounds)
+	if box.Style.GetDisplay() == css.DisplayInline {
+		bgHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
+		bgY -= box.Border.Top + box.Padding.Top
+	}
+
+	if bgWidth <= 0 || bgHeight <= 0 {
+		return
+	}
+
+	// Convert pixel offsets to percentages based on gradient direction
+	gradCopy := *grad // Make a copy to avoid modifying the original
+	gradCopy.ConvertPixelOffsetsToPercentages(bgWidth, bgHeight)
+
+	// Determine gradient start and end points based on direction
+	var x0, y0, x1, y1 float64
+	switch gradCopy.Direction {
+	case "to right":
+		x0, y0 = bgX, bgY
+		x1, y1 = bgX+bgWidth, bgY
+	case "to left":
+		x0, y0 = bgX+bgWidth, bgY
+		x1, y1 = bgX, bgY
+	case "to bottom", "": // Default is to bottom
+		x0, y0 = bgX, bgY
+		x1, y1 = bgX, bgY+bgHeight
+	case "to top":
+		x0, y0 = bgX, bgY+bgHeight
+		x1, y1 = bgX, bgY
+	default:
+		// Default to "to bottom" for unsupported directions
+		x0, y0 = bgX, bgY
+		x1, y1 = bgX, bgY+bgHeight
+	}
+
+	// Create the gg gradient
+	ggGrad := gg.NewLinearGradient(x0, y0, x1, y1)
+
+	// Add color stops
+	for _, stop := range gradCopy.ColorStops {
+		// Convert to color.RGBA (Go standard library type)
+		alpha := uint8(stop.Color.A * 255)
+		c := color.RGBA{R: stop.Color.R, G: stop.Color.G, B: stop.Color.B, A: alpha}
+		ggGrad.AddColorStop(stop.Offset, c)
+	}
+
+	// Set the gradient as the fill pattern
+	r.context.SetFillStyle(ggGrad)
+
+	// Draw the rectangle
+	borderRadius := box.Style.GetBorderRadius()
+	if borderRadius > 0 {
+		r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+	} else {
+		r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+	}
+	r.context.Fill()
 }
 
 // drawBoxContent draws the content of a box (text, images, scrollbars).

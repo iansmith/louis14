@@ -726,6 +726,13 @@ func expandBackgroundProperty(style *Style, value string) {
 		return
 	}
 
+	// Check for linear-gradient() - store the entire value as background property
+	if strings.Contains(value, "linear-gradient(") {
+		// Keep the full gradient value, don't expand it
+		style.Set("background", value)
+		return
+	}
+
 	// Extract url(...) first since it may contain spaces (e.g. data URIs)
 	urlStart := strings.Index(value, "url(")
 	if urlStart >= 0 {
