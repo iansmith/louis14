@@ -60,9 +60,18 @@ func ParseLength(val string) (float64, bool) {
 	return ParseLengthWithFontSize(val, 16.0)
 }
 
-// ParseLengthWithFontSize parses a length value with em support.
+// ParseLengthWithFontSize parses a length value with em and rem support.
 func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 	val = strings.TrimSpace(val)
+	if strings.HasSuffix(val, "rem") {
+		// rem is relative to root font size (typically 16px)
+		numStr := strings.TrimSuffix(val, "rem")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * 16.0, true // Root font size = 16px
+	}
 	if strings.HasSuffix(val, "em") {
 		numStr := strings.TrimSuffix(val, "em")
 		num, err := strconv.ParseFloat(numStr, 64)

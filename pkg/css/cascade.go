@@ -41,6 +41,13 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("display", "none")
 	}
 
+	// Dialog elements are hidden by default unless they have the "open" attribute
+	if node.TagName == "dialog" {
+		if _, hasOpen := node.GetAttribute("open"); !hasOpen {
+			style.Set("display", "none")
+		}
+	}
+
 	// Default font-style for emphasis elements
 	switch node.TagName {
 	case "em", "i", "cite", "dfn", "var":
