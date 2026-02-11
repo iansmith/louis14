@@ -1475,33 +1475,16 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 			containerContentLeft := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
 
-			// frag.Position.X is the margin-box position from Phase 1.
-			// layoutNode adds margin.Left internally, so desiredX must include it
-			// to preserve the margin (instead of overriding it away).
-			floatMargin := floatStyle.GetMargin()
-
-			desiredX := containerContentLeft + frag.Position.X + floatMargin.Left
-			desiredY := currentY + floatMargin.Top
-
+			// Pass container's left content edge to layoutNode
+			// layoutNode's float positioning will calculate the correct offset
 			floatBox := le.layoutNode(
 				floatNode,
-				frag.Position.X,
+				containerContentLeft,
 				currentY,
 				frag.Size.Width, // Use float's explicit width
 				computedStyles,
 				containerBox,
 			)
-
-			// Correct float position to Phase 1 estimate
-			if floatBox.X != desiredX || floatBox.Y != desiredY {
-				dx := desiredX - floatBox.X
-				dy := desiredY - floatBox.Y
-				fmt.Printf("  Correcting float position: (%.1f,%.1f) → (%.1f,%.1f) delta=(%.1f,%.1f)\n",
-					floatBox.X, floatBox.Y, desiredX, desiredY, dx, dy)
-				floatBox.X = desiredX
-				floatBox.Y = desiredY
-				le.shiftChildren(floatBox, dx, dy)
-			}
 
 			fmt.Printf("  Float box at (%.1f, %.1f) size %.1fx%.1f\n",
 				floatBox.X, floatBox.Y, floatBox.Width, floatBox.Height)

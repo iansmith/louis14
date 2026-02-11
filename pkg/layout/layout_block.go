@@ -8,6 +8,7 @@ import (
 )
 
 func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
+	// Debug: Track footer-related elements (removed - see end of function for box width)
 	// DEBUG: Track all div elements
 	if node != nil && node.TagName == "div" {
 		nodeID := "(no id)"
@@ -750,10 +751,22 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 			childDisplay := childStyle.GetDisplay()
 
+			// Determine initial X coordinate for child
+			// For inline/inline-block elements, use LineX (accumulates horizontally)
+			// For block elements and floats, use parent content area left edge
+			childX := inlineCtx.LineX
+			childFloat := childStyle.GetFloat()
+			if childDisplay == css.DisplayBlock || childDisplay == css.DisplayTable ||
+			   childDisplay == css.DisplayListItem || childDisplay == css.DisplayFlex ||
+			   childDisplay == css.DisplayGrid || childFloat != css.FloatNone {
+				// Block-level or floated: start from parent's left content edge
+				childX = box.X + border.Left + padding.Left
+			}
+
 			// Layout the child
 			childBox := le.layoutNode(
 				child,
-				inlineCtx.LineX,
+				childX,
 				inlineCtx.LineY,
 				childAvailableWidth,
 				computedStyles,
@@ -1491,15 +1504,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		oldX, oldY := box.X, box.Y
 		floatTotalWidth := le.getTotalWidth(box)
 
-		fmt.Printf("DEBUG FLOAT-POS [%s]: box.Y=%.1f, box.Width=%.1f, totalWidth=%.1f, availableWidth=%.1f, floatBase=%d, nFloats=%d\n",
-			node.TagName, box.Y, box.Width, floatTotalWidth, availableWidth, le.floatBase, len(le.floats))
-
 		// Phase 5 Enhancement: Check if float fits, apply drop if needed
 		// margin.Top was already applied to y at line 276 (y += margin.Top) and is
 		// included in box.Y, so don't add it again here
 		floatY = le.getFloatDropY(floatType, floatTotalWidth, box.Y, availableWidth)
-		fmt.Printf("DEBUG FLOAT-POS [%s]: getFloatDropY returned %.1f (was box.Y=%.1f)\n",
-			node.TagName, floatY, box.Y)
 		box.Y = floatY
 
 		// Position float horizontally
@@ -1554,6 +1562,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			fmt.Printf("DEBUG LAYOUT END: red div returning with Y=%.1f\n", box.Y)
 		}
 	}
+
 
 	return box
 }
