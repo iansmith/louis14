@@ -245,7 +245,9 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 	// Step 8b: Resolve auto margins on the main axis (CSS Flexbox §8.1)
 	// Auto margins absorb remaining free space BEFORE justify-content.
-	for _, line := range lines {
+	// Track which lines have overflow (for adjusting reverse positioning to show content)
+	lineHasOverflow := make([]bool, len(lines))
+	for lineIdx, line := range lines {
 		totalItemsMain := 0.0
 		for i, item := range line.Items {
 			totalItemsMain += item.outerMainSize(isRow)
@@ -257,6 +259,9 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 		// Preserve original free space for justify-content fallback detection
 		originalFreeSpace := freeSpace
+		if originalFreeSpace < 0 {
+			lineHasOverflow[lineIdx] = true
+		}
 		if freeSpace < 0 {
 			freeSpace = 0
 		}
@@ -467,7 +472,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				}
 			}
 		}
-		for _, line := range lines {
+		for lineIdx, line := range lines {
 			for _, item := range line.Items {
 				// Mirror main-axis position
 				outerMain := item.outerMainSize(isRow)
@@ -475,6 +480,29 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					item.MainPos = effectiveMainSize - item.MainPos - (outerMain - item.Box.Margin.Left - item.Box.Margin.Right)
 				} else {
 					item.MainPos = effectiveMainSize - item.MainPos - (outerMain - item.Box.Margin.Top - item.Box.Margin.Bottom)
+				}
+
+				// Adjust for overflow with justify-content: space-between in reverse directions.
+				// CSS WG issue #11937 (tentative): When justify-content falls back to flex-start
+				// due to overflow in a reverse direction, position items to show their content
+				// instead of empty space at the end of the flex item box.
+				if lineHasOverflow[lineIdx] && justifyContent == css.JustifyContentSpaceBetween && len(item.Box.Children) > 0 {
+					var itemSize, childrenSize float64
+					if isRow {
+						itemSize = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+						for _, child := range item.Box.Children {
+							childrenSize += child.Width + child.Margin.Left + child.Margin.Right
+						}
+					} else {
+						itemSize = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+						for _, child := range item.Box.Children {
+							childrenSize += child.Height + child.Margin.Top + child.Margin.Bottom
+						}
+					}
+					emptySpace := itemSize - childrenSize
+					if emptySpace > 0 {
+						item.MainPos += emptySpace
+					}
 				}
 			}
 		}
