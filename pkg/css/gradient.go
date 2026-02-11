@@ -176,13 +176,20 @@ func (g *Gradient) ConvertPixelOffsetsToPercentages(width, height float64) {
 	}
 
 	// Convert pixel offsets to percentages
+	// Percentages are stored as 0-1 values, pixels are stored as actual pixel values (> 1)
+	// -1 means the offset wasn't specified
 	for i := range g.ColorStops {
-		if g.ColorStops[i].Offset >= 0 {
+		offset := g.ColorStops[i].Offset
+		if offset < 0 {
+			// Not specified, will be filled in later
+			continue
+		}
+		if offset <= 1.0 {
 			// Already a percentage (0-1 range)
 			continue
 		}
-		// It's a pixel value - convert to percentage
-		g.ColorStops[i].Offset = g.ColorStops[i].Offset / size
+		// It's a pixel value (> 1) - convert to percentage
+		g.ColorStops[i].Offset = offset / size
 	}
 
 	// Fill in missing offsets by distributing evenly
