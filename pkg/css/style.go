@@ -413,6 +413,31 @@ func expandShorthand(style *Style, property, value string) {
 		expandBackgroundProperty(style, value)
 	case "font":
 		expandFontProperty(style, value)
+	case "flex":
+		expandFlexProperty(style, value)
+	case "flex-flow":
+		expandFlexFlowProperty(style, value)
+	case "list-style":
+		// list-style shorthand: sets list-style-type, list-style-position, list-style-image
+		// Common values: "none", "disc", "decimal", "circle", "square"
+		// "none" sets list-style-type: none and list-style-image: none
+		if value == "none" {
+			style.Set("list-style-type", "none")
+			style.Set("list-style-image", "none")
+		} else {
+			// For other values, treat as list-style-type
+			style.Set("list-style-type", value)
+		}
+	case "gap":
+		// gap shorthand: sets both row-gap and column-gap
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("row-gap", parts[0])
+			style.Set("column-gap", parts[0])
+		} else if len(parts) == 2 {
+			style.Set("row-gap", parts[0])
+			style.Set("column-gap", parts[1])
+		}
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -533,6 +558,84 @@ func expandBorderProperty(style *Style, value string) {
 			style.Set("border-right-color", part)
 			style.Set("border-bottom-color", part)
 			style.Set("border-left-color", part)
+		}
+	}
+}
+
+// expandFlexProperty expands the flex shorthand.
+// CSS spec: flex: none | [ <flex-grow> <flex-shrink>? || <flex-basis> ]
+// Keywords: "none" = "0 0 auto", "auto" = "1 1 auto", "initial" = "0 1 auto"
+// IMPORTANT: When omitted from shorthand, flex-grow defaults to 1, flex-basis defaults to 0
+// (different from individual property defaults of 0 and auto)
+func expandFlexProperty(style *Style, value string) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "none":
+		style.Set("flex-grow", "0")
+		style.Set("flex-shrink", "0")
+		style.Set("flex-basis", "auto")
+		return
+	case "auto":
+		style.Set("flex-grow", "1")
+		style.Set("flex-shrink", "1")
+		style.Set("flex-basis", "auto")
+		return
+	case "initial":
+		style.Set("flex-grow", "0")
+		style.Set("flex-shrink", "1")
+		style.Set("flex-basis", "auto")
+		return
+	}
+
+	parts := strings.Fields(value)
+	// Default shorthand values (different from individual property defaults!)
+	grow, shrink, basis := "1", "1", "0"
+
+	switch len(parts) {
+	case 1:
+		// Could be a number (flex-grow) or a length/keyword (flex-basis)
+		if isFlexNumber(parts[0]) {
+			grow = parts[0]
+			basis = "0"
+		} else {
+			basis = parts[0]
+		}
+	case 2:
+		// flex-grow flex-shrink OR flex-grow flex-basis
+		grow = parts[0]
+		if isFlexNumber(parts[1]) {
+			shrink = parts[1]
+			basis = "0"
+		} else {
+			basis = parts[1]
+		}
+	case 3:
+		// flex-grow flex-shrink flex-basis
+		grow = parts[0]
+		shrink = parts[1]
+		basis = parts[2]
+	}
+
+	style.Set("flex-grow", grow)
+	style.Set("flex-shrink", shrink)
+	style.Set("flex-basis", basis)
+}
+
+// isFlexNumber returns true if the value is a unitless number (for flex-grow/flex-shrink)
+func isFlexNumber(val string) bool {
+	_, err := strconv.ParseFloat(val, 64)
+	return err == nil && !strings.ContainsAny(val, "%")
+}
+
+// expandFlexFlowProperty expands flex-flow shorthand into flex-direction and flex-wrap.
+func expandFlexFlowProperty(style *Style, value string) {
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		switch part {
+		case "row", "row-reverse", "column", "column-reverse":
+			style.Set("flex-direction", part)
+		case "nowrap", "wrap", "wrap-reverse":
+			style.Set("flex-wrap", part)
 		}
 	}
 }
@@ -771,7 +874,19 @@ func ParseColor(colorStr string) (Color, bool) {
 		"teal":    {0, 128, 128, 1.0},
 		"silver":  {192, 192, 192, 1.0},
 		"maroon":  {128, 0, 0, 1.0},
-		"olive":   {128, 128, 0, 1.0},
+		"olive":      {128, 128, 0, 1.0},
+		"lightblue":  {173, 216, 230, 1.0},
+		"lightgreen": {144, 238, 144, 1.0},
+		"lightgray":  {211, 211, 211, 1.0},
+		"lightgrey":  {211, 211, 211, 1.0},
+		"lightyellow": {255, 255, 224, 1.0},
+		"lightcoral":  {240, 128, 128, 1.0},
+		"lightcyan":   {224, 255, 255, 1.0},
+		"lightpink":   {255, 182, 193, 1.0},
+		"turquoise":   {64, 224, 208, 1.0},
+		"coral":       {255, 127, 80, 1.0},
+		"violet":      {238, 130, 238, 1.0},
+		"bisque":      {255, 228, 196, 1.0},
 	}
 	color, ok := namedColors[colorStr]
 	return color, ok
@@ -1515,31 +1630,59 @@ func (s *Style) GetAlignContent() AlignContent {
 
 // GetFlexGrow returns the flex-grow value (default: 0)
 func (s *Style) GetFlexGrow() float64 {
-	if grow, ok := s.GetLength("flex-grow"); ok {
-		return grow
+	if val, ok := s.Get("flex-grow"); ok {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
+		}
 	}
 	return 0.0
 }
 
 // GetFlexShrink returns the flex-shrink value (default: 1)
 func (s *Style) GetFlexShrink() float64 {
-	if shrink, ok := s.GetLength("flex-shrink"); ok {
-		return shrink
+	if val, ok := s.Get("flex-shrink"); ok {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
+		}
 	}
 	return 1.0
 }
 
+// FlexBasisValue represents a flex-basis value which can be auto, a length, or a percentage.
+type FlexBasisValue struct {
+	IsAuto     bool
+	Length     float64 // absolute length in pixels (if not auto and not percentage)
+	Percentage float64 // percentage value (if IsPercentage)
+	IsPercent  bool
+}
+
+// GetFlexBasisValue returns the structured flex-basis value (default: auto)
+func (s *Style) GetFlexBasisValue() FlexBasisValue {
+	basis, ok := s.Get("flex-basis")
+	if !ok || basis == "auto" || basis == "content" {
+		return FlexBasisValue{IsAuto: true}
+	}
+	if pct, ok := ParsePercentage(basis); ok {
+		return FlexBasisValue{Percentage: pct, IsPercent: true}
+	}
+	if length, ok := ParseLengthWithFontSize(basis, s.GetFontSize()); ok {
+		return FlexBasisValue{Length: length}
+	}
+	return FlexBasisValue{IsAuto: true}
+}
+
 // GetFlexBasis returns the flex-basis value (default: auto, returns -1 for auto)
+// Deprecated: Use GetFlexBasisValue for proper percentage support.
 func (s *Style) GetFlexBasis() float64 {
 	if basis, ok := s.Get("flex-basis"); ok {
-		if basis == "auto" {
-			return -1 // Special value for auto
+		if basis == "auto" || basis == "content" {
+			return -1
 		}
-		if length, ok := ParseLength(basis); ok {
+		if length, ok := ParseLengthWithFontSize(basis, s.GetFontSize()); ok {
 			return length
 		}
 	}
-	return -1 // Default to auto
+	return -1
 }
 
 // AlignSelf represents the align-self property value

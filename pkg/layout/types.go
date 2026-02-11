@@ -121,6 +121,7 @@ type ConstraintSpace struct {
 	AvailableSize  Size             // Available width and height for content
 	ExclusionSpace *ExclusionSpace  // Floats affecting inline layout
 	TextAlign      css.TextAlign    // Text alignment for inline content
+	NoWrap         bool             // white-space: nowrap - prevent line breaking
 	// TODO: Add more constraints as needed:
 	// - WritingMode
 	// - IsNewFormattingContext
@@ -289,37 +290,26 @@ type TableInfo struct {
 	BorderCollapse css.BorderCollapse
 }
 
-// Phase 10: FlexItem tracks a flex item
+// FlexItem tracks a flex item during flex layout
 type FlexItem struct {
-	Box        *Box
-	FlexGrow   float64
-	FlexShrink float64
-	FlexBasis  float64
-	MainSize   float64 // Size along main axis
-	CrossSize  float64 // Size along cross axis
-	MainPos    float64 // Position along main axis
-	CrossPos   float64 // Position along cross axis
-	Order      int
+	Box                  *Box
+	FlexGrow             float64
+	FlexShrink           float64
+	FlexBasis            float64
+	HypotheticalMainSize float64 // flex base size clamped by min/max
+	MainSize             float64 // Size along main axis (after flex resolution)
+	CrossSize            float64 // Size along cross axis
+	MainPos              float64 // Position along main axis
+	CrossPos             float64 // Position along cross axis
+	Order                int
+	AutoMinMain          float64 // min-width/min-height: auto value (content-based minimum)
 }
 
-// Phase 10: FlexLine tracks a line of flex items (for wrapping)
+// FlexLine tracks a line of flex items (for wrapping)
 type FlexLine struct {
 	Items     []*FlexItem
 	MainSize  float64 // Total size of items along main axis
 	CrossSize float64 // Maximum cross size in this line
-}
-
-// Phase 10: FlexContainer tracks flex container layout information
-type FlexContainer struct {
-	Lines          []*FlexLine
-	Direction      css.FlexDirection
-	Wrap           css.FlexWrap
-	JustifyContent css.JustifyContent
-	AlignItems     css.AlignItems
-	AlignContent   css.AlignContent
-	MainAxisSize   float64
-	CrossAxisSize  float64
-	IsRow          bool // true if direction is row/row-reverse
 }
 
 // ============================================================================

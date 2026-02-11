@@ -124,8 +124,9 @@ func (le *LayoutEngine) BreakLines(
 		switch item.Type {
 		case InlineItemText:
 			// CSS 2.1 §16.6.1: Strip leading whitespace at start of line
+			// Include \n and \r since white-space:normal collapses them to spaces
 			if !hasSeenContentOnLine && item.Node != nil {
-				trimmedText := strings.TrimLeft(item.Text, " \t")
+				trimmedText := strings.TrimLeft(item.Text, " \t\n\r")
 				if trimmedText != item.Text {
 					item.Node.Text = trimmedText
 					item.Text = trimmedText
@@ -159,8 +160,8 @@ func (le *LayoutEngine) BreakLines(
 				}
 			}
 
-			if usedWidth+textWidth <= availableWidth {
-				// Fits on current line
+			if usedWidth+textWidth <= availableWidth || constraint.NoWrap {
+				// Fits on current line, or white-space: nowrap forces it on same line
 				currentLine.Items = append(currentLine.Items, item)
 				currentX += textWidth
 
@@ -256,10 +257,18 @@ func (le *LayoutEngine) BreakLines(
 
 		case InlineItemAtomic:
 			// Atomic item (inline-block, replaced element) - cannot break
-			atomicWidth := item.Width
+			// Include horizontal margins in width calculation (CSS 2.1 §10.3.9)
+			atomicMarginLeft := 0.0
+			atomicMarginRight := 0.0
+			if item.Style != nil {
+				margin := item.Style.GetMargin()
+				atomicMarginLeft = margin.Left
+				atomicMarginRight = margin.Right
+			}
+			atomicWidth := atomicMarginLeft + item.Width + atomicMarginRight
 
-			if usedWidth+atomicWidth <= availableWidth {
-				// Fits on current line
+			if usedWidth+atomicWidth <= availableWidth || constraint.NoWrap {
+				// Fits on current line, or white-space: nowrap forces it on same line
 				currentLine.Items = append(currentLine.Items, item)
 				currentX += atomicWidth
 
@@ -366,7 +375,7 @@ func (le *LayoutEngine) BreakLines(
 		for j := len(line.Items) - 1; j >= 0; j-- {
 			item := line.Items[j]
 			if item.Type == InlineItemText {
-				trimmedText := strings.TrimRight(item.Text, " \t")
+				trimmedText := strings.TrimRight(item.Text, " \t\n\r")
 				if trimmedText != item.Text {
 					if item.Node != nil {
 						item.Node.Text = trimmedText
@@ -706,6 +715,14 @@ func (le *LayoutEngine) constructLine(
 
 		case InlineItemAtomic:
 			// Create atomic fragment (inline-block, replaced element)
+			// Account for horizontal margins (layoutNode will apply margin.Left to position)
+			atomicMarginLeft := 0.0
+			atomicMarginRight := 0.0
+			if item.Style != nil {
+				margin := item.Style.GetMargin()
+				atomicMarginLeft = margin.Left
+				atomicMarginRight = margin.Right
+			}
 			frag := &Fragment{
 				Type:     FragmentAtomic,
 				Node:     item.Node,
@@ -720,7 +737,7 @@ func (le *LayoutEngine) constructLine(
 				}
 			}
 			fragments = append(fragments, frag)
-			currentX += item.Width
+			currentX += atomicMarginLeft + item.Width + atomicMarginRight
 
 		case InlineItemOpenTag:
 			// Opening tag marker - create inline fragment marker
@@ -931,6 +948,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 	// Create constraint space
 	constraint := NewConstraintSpace(availableWidth, 0)
+
+	// Check if container has white-space: nowrap
+	if containerBox.Style != nil {
+		if ws, ok := containerBox.Style.Get("white-space"); ok && (ws == "nowrap" || ws == "pre") {
+			constraint.NoWrap = true
+		}
+	}
 
 	// Run new multi-pass pipeline
 	fragments := le.LayoutInlineContent(children, constraint, startY, containerBox.Style, overrideStyles)
@@ -1447,16 +1471,17 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
 
 			// Recursively layout the float's content
-			// Floats are positioned absolutely, use fragment position
 			fmt.Printf("  Calling layoutNode for float content...\n")
 
-			// Multi-pass manages float positioning externally (via positionFloat in
-			// BreakLines). layoutNode will also try to position the float via
-			// getFloatDropY, but that uses the wrong available width (the float's
-			// own estimated width, not the parent container's). We need to correct
-			// the position after layoutNode returns.
-			desiredX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X
-			desiredY := currentY
+			containerContentLeft := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+
+			// frag.Position.X is the margin-box position from Phase 1.
+			// layoutNode adds margin.Left internally, so desiredX must include it
+			// to preserve the margin (instead of overriding it away).
+			floatMargin := floatStyle.GetMargin()
+
+			desiredX := containerContentLeft + frag.Position.X + floatMargin.Left
+			desiredY := currentY + floatMargin.Top
 
 			floatBox := le.layoutNode(
 				floatNode,
@@ -1467,9 +1492,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				containerBox,
 			)
 
-			// Correct float position: layoutNode's internal float positioning
-			// (getFloatDropY) may have moved the box because it operates with the
-			// float's own width as availableWidth. Override with multi-pass position.
+			// Correct float position to Phase 1 estimate
 			if floatBox.X != desiredX || floatBox.Y != desiredY {
 				dx := desiredX - floatBox.X
 				dy := desiredY - floatBox.Y
@@ -1532,6 +1555,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// Fragment X is relative to line start (content area);
 				// add container's content area offset for absolute position
 				box.X += containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+				fmt.Printf("\nDEBUG BOXPOS: frag.Pos.X=%.1f + container(X=%.1f + border.L=%.1f + pad.L=%.1f) = box.X=%.1f for %s\n",
+					frag.Position.X, containerBox.X, containerBox.Border.Left, containerBox.Padding.Left, box.X, getNodeName(frag.Node))
 				fmt.Printf("\n[Fragment %d] %v: %s\n", i, frag.Type, getNodeName(frag.Node))
 				fmt.Printf("  Fragment Position: (%.1f, %.1f), Size: %.1fx%.1f\n",
 					frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
@@ -1628,7 +1653,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		display := containerBox.Style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock {
 			if textAlign, ok := containerBox.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
-				contentWidth := containerBox.Width // containerBox.Width is already the content width
+				contentWidth := containerBox.Width - containerBox.Padding.Left - containerBox.Padding.Right - containerBox.Border.Left - containerBox.Border.Right
 				fmt.Printf("DEBUG: Applying text-align=%s to %d boxes\n", textAlign, len(boxes))
 				le.applyTextAlignToBoxes(boxes, containerBox, textAlign, contentWidth)
 			}
@@ -1860,12 +1885,30 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		}
 
 		// Normal text without first-letter styling
+		// CSS 2.1 §16.6.1: For white-space: normal, collapse newlines and tabs to spaces,
+		// then collapse consecutive spaces to a single space
+		textContent := node.Text
+		whiteSpace := parentStyle.GetWhiteSpace()
+		if whiteSpace == "" || whiteSpace == "normal" || whiteSpace == "nowrap" {
+			// Replace newlines and tabs with spaces
+			textContent = strings.Map(func(r rune) rune {
+				if r == '\n' || r == '\r' || r == '\t' {
+					return ' '
+				}
+				return r
+			}, textContent)
+			// Collapse consecutive spaces to a single space
+			for strings.Contains(textContent, "  ") {
+				textContent = strings.ReplaceAll(textContent, "  ", " ")
+			}
+			node.Text = textContent
+		}
 		fontSize := parentStyle.GetFontSize()
 		bold := parentStyle.GetFontWeight() == css.FontWeightBold
 		italic := parentStyle.GetFontStyle() == css.FontStyleItalic
 		mono := parentStyle.IsMonospaceFamily()
 		ahem := parentStyle.IsAhemFamily()
-		width, height := text.MeasureTextWithStyle(node.Text, fontSize, bold, italic, mono, ahem)
+		width, height := text.MeasureTextWithStyle(textContent, fontSize, bold, italic, mono, ahem)
 
 		// CSS 2.1 §16.4: Add letter-spacing between adjacent characters
 		letterSpacing := parentStyle.GetLetterSpacing()
@@ -1950,7 +1993,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 
 		// Handle different display types
 		switch display {
-		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem:
+		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem, css.DisplayFlex:
 			// Block elements in inline contexts are handled as BlockChild items
 			// They force line breaks before and after, and require recursive layout
 			fmt.Printf("  [CollectItems] Found block child: %s (display=%v)\n",
@@ -2114,10 +2157,27 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 				}
 			}
 
-			// For non-img elements, compute width from children's text content
+			// For non-img elements, check CSS width/height first
+			if node.TagName != "img" {
+				if cssWidth, ok := style.GetLength("width"); ok {
+					width = cssWidth
+					// Add padding/border for border-box calculation
+					padding := style.GetPadding()
+					border := style.GetBorderWidth()
+					width += padding.Left + padding.Right + border.Left + border.Right
+				}
+				if cssHeight, ok := style.GetLength("height"); ok {
+					height = cssHeight
+					padding := style.GetPadding()
+					border := style.GetBorderWidth()
+					height += padding.Top + padding.Bottom + border.Top + border.Bottom
+				}
+			}
+
+			// If no explicit width, compute from children's text content
 			// using the inline-block element's inherited style for correct font properties.
 			// ComputeMinMaxSizes has font inheritance issues for text nodes.
-			if width == 0 && height == 0 {
+			if width == 0 {
 				fontSize := style.GetFontSize()
 				bold := style.GetFontWeight() == css.FontWeightBold
 				italic := style.GetFontStyle() == css.FontStyleItalic
@@ -2568,7 +2628,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				// (after line breaks, leading spaces should be trimmed)
 				trimmedText := item.Text
 				if !hasSeenContentOnLine && item.Node != nil {
-					trimmedText = strings.TrimLeft(item.Text, " \t")
+					trimmedText = strings.TrimLeft(item.Text, " \t\n\r")
 					// Update the node's text for rendering
 					if trimmedText != item.Text {
 						item.Node.Text = trimmedText

@@ -82,6 +82,67 @@ func TestWPTReftests(t *testing.T) {
 	t.Logf("Summary: %d/%d passed, %d failed", passed, len(testFiles), failed)
 }
 
+// TestWPTCSS3Reftests runs WPT CSS3 reftests (flexbox, etc.) using the same
+// comparison infrastructure as CSS2 tests.
+func TestWPTCSS3Reftests(t *testing.T) {
+	testDir := filepath.Join("testdata", "wpt-css3")
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		t.Skip("no wpt-css3 testdata directory found")
+	}
+
+	var testFiles []string
+	err := filepath.Walk(testDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".html") && !strings.HasSuffix(path, ".xht") && !strings.HasSuffix(path, ".htm") && !strings.HasSuffix(path, ".xhtml") {
+			return nil
+		}
+		base := filepath.Base(path)
+		if strings.HasSuffix(base, "-ref.html") || strings.HasSuffix(base, "-ref.xht") || strings.HasSuffix(base, "-ref.htm") || strings.HasSuffix(base, "-ref.xhtml") {
+			return nil
+		}
+		if strings.Contains(path, string(filepath.Separator)+"reference"+string(filepath.Separator)) {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		if findRefLink(string(content)) != "" {
+			testFiles = append(testFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to walk test directory: %v", err)
+	}
+
+	if len(testFiles) == 0 {
+		t.Skip("no WPT CSS3 reftest files found with <link rel=\"match\">")
+	}
+
+	sort.Strings(testFiles)
+	t.Logf("Found %d WPT CSS3 reftest files", len(testFiles))
+
+	passed, failed := 0, 0
+	for _, testFile := range testFiles {
+		relPath, _ := filepath.Rel(testDir, testFile)
+		t.Run(relPath, func(t *testing.T) {
+			if runReftest(t, testFile) {
+				passed++
+			} else {
+				failed++
+			}
+		})
+	}
+
+	t.Logf("Summary: %d/%d passed, %d failed", passed, len(testFiles), failed)
+}
+
 // runReftest renders a single test file and its reference, then compares.
 // Returns true if the test passed.
 func runReftest(t *testing.T, testPath string) bool {

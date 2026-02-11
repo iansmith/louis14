@@ -178,6 +178,26 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	// Step 1: Background and borders of this element
 	r.drawBoxBackgroundAndBorders(box)
 
+	// Check if we need to clip overflow
+	needsClip := false
+	if box.Style != nil {
+		if overflow, ok := box.Style.Get("overflow"); ok {
+			needsClip = (overflow == "hidden" || overflow == "scroll" || overflow == "auto")
+		}
+	}
+
+	// Apply clipping if overflow: hidden/scroll/auto
+	if needsClip {
+		r.context.Push()
+		// Clip to the content box (inside padding+border)
+		contentX := box.X + box.Border.Left + box.Padding.Left
+		contentY := box.Y + box.Border.Top + box.Padding.Top
+		contentW := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+		contentH := box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+		r.context.DrawRectangle(contentX, contentY, contentW, contentH)
+		r.context.Clip()
+	}
+
 	// Collect ALL descendants, categorized by paint order
 	var negativeZ, zeroAutoZ, positiveZ []*layout.Box
 	var blocks, floats, inlines []*layout.Box
@@ -259,6 +279,11 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	// Step 7: Child stacking contexts with positive z-index
 	for _, child := range positiveZ {
 		r.paintStackingContext(child)
+	}
+
+	// Restore clipping state if we applied clipping
+	if needsClip {
+		r.context.Pop()
 	}
 }
 

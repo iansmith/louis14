@@ -123,6 +123,7 @@ func (cs *ConstraintSpace) WithExclusion(exclusion Exclusion) *ConstraintSpace {
 		AvailableSize:  cs.AvailableSize,
 		ExclusionSpace: cs.ExclusionSpace.Add(exclusion),
 		TextAlign:      cs.TextAlign,
+		NoWrap:         cs.NoWrap,
 	}
 }
 
@@ -135,6 +136,7 @@ func (cs *ConstraintSpace) WithAvailableWidth(width float64) *ConstraintSpace {
 		},
 		ExclusionSpace: cs.ExclusionSpace,
 		TextAlign:      cs.TextAlign,
+		NoWrap:         cs.NoWrap,
 	}
 }
 
@@ -144,6 +146,7 @@ func (cs *ConstraintSpace) WithTextAlign(align css.TextAlign) *ConstraintSpace {
 		AvailableSize:  cs.AvailableSize,
 		ExclusionSpace: cs.ExclusionSpace,
 		TextAlign:      align,
+		NoWrap:         cs.NoWrap,
 	}
 }
 

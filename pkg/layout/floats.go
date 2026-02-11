@@ -11,23 +11,28 @@ func (le *LayoutEngine) positionFloat(
 	constraint *ConstraintSpace,
 ) (*Fragment, *ConstraintSpace) {
 	floatType := item.Style.GetFloat()
+	floatMargin := item.Style.GetMargin()
+
+	// CSS 2.1 §9.5: Float exclusions use margin-box dimensions
+	marginBoxWidth := floatMargin.Left + item.Width + floatMargin.Right
+	marginBoxHeight := floatMargin.Top + item.Height + floatMargin.Bottom
 
 	// Calculate float position based on type
 	var floatX float64
 
 	if floatType == css.FloatLeft {
 		// Left float: position after existing left floats
-		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(lineY, item.Height)
+		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(lineY, marginBoxHeight)
 		floatX = leftOffset
-		fmt.Printf("    [positionFloat] Left float: %s, leftOffset=%.1f, floatX=%.1f, width=%.1f\n",
-			getNodeName(item.Node), leftOffset, floatX, item.Width)
+		fmt.Printf("    [positionFloat] Left float: %s, leftOffset=%.1f, floatX=%.1f, width=%.1f (marginBox=%.1f)\n",
+			getNodeName(item.Node), leftOffset, floatX, item.Width, marginBoxWidth)
 	} else if floatType == css.FloatRight {
 		// Right float: position before existing right floats
-		_, rightOffset := constraint.ExclusionSpace.AvailableInlineSize(lineY, item.Height)
-		floatX = constraint.AvailableSize.Width - rightOffset - item.Width
+		_, rightOffset := constraint.ExclusionSpace.AvailableInlineSize(lineY, marginBoxHeight)
+		floatX = constraint.AvailableSize.Width - rightOffset - marginBoxWidth
 	}
 
-	// Create fragment with correct position
+	// Create fragment — position is margin-box position, size is border-box (for layoutNode)
 	frag := &Fragment{
 		Type:     FragmentFloat,
 		Node:     item.Node,
@@ -36,13 +41,13 @@ func (le *LayoutEngine) positionFloat(
 		Size:     Size{Width: item.Width, Height: item.Height},
 	}
 
-	// Create exclusion for this float
+	// Create exclusion using margin-box dimensions
 	exclusion := Exclusion{
 		Rect: Rect{
 			X:      floatX,
 			Y:      lineY,
-			Width:  item.Width,
-			Height: item.Height,
+			Width:  marginBoxWidth,
+			Height: marginBoxHeight,
 		},
 		Side: floatType,
 	}

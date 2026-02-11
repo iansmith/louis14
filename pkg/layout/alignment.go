@@ -64,19 +64,26 @@ func (le *LayoutEngine) applyTextAlign(box *Box, textAlign string, contentWidth 
 	}
 }
 
-// applyTextAlignToBoxes applies text-align to a slice of boxes instead of box.Children
+// applyTextAlignToBoxes applies text-align to a slice of boxes instead of box.Children.
+// Groups boxes by line (Y position) and shifts each line as a whole.
 func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, textAlign string, contentWidth float64) {
 	contentLeft := parentBox.X + parentBox.Border.Left + parentBox.Padding.Left
+	contentRight := contentLeft + contentWidth
 
+	// Group inline boxes by line (same Y position)
+	type lineGroup struct {
+		y      float64
+		boxes  []*Box
+		minX   float64
+		maxEnd float64 // rightmost edge
+	}
+
+	var lines []lineGroup
 	for _, child := range boxes {
-		if child == nil {
-			continue
-		}
-		if child.Style == nil {
+		if child == nil || child.Style == nil {
 			continue
 		}
 		childDisplay := child.Style.GetDisplay()
-		// Only apply to inline/inline-block children, or text nodes
 		isInline := childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock
 		if child.Node != nil && child.Node.Type == html.TextNode {
 			isInline = true
@@ -85,21 +92,50 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 			continue
 		}
 
-		childTotalWidth := le.getTotalWidth(child)
+		// Find or create line group for this Y
+		found := false
+		childRight := child.X + le.getTotalWidth(child)
+		for i := range lines {
+			if lines[i].y == child.Y {
+				lines[i].boxes = append(lines[i].boxes, child)
+				if child.X < lines[i].minX {
+					lines[i].minX = child.X
+				}
+				if childRight > lines[i].maxEnd {
+					lines[i].maxEnd = childRight
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			lines = append(lines, lineGroup{
+				y:      child.Y,
+				boxes:  []*Box{child},
+				minX:   child.X,
+				maxEnd: childRight,
+			})
+		}
+	}
 
+	// Shift each line as a whole
+	for _, line := range lines {
+		lineWidth := line.maxEnd - line.minX
+		var dx float64
 		switch textAlign {
 		case "right":
-			dx := contentLeft + contentWidth - childTotalWidth - child.X
-			if dx != 0 {
-				child.X += dx
-				le.shiftChildren(child, dx, 0)
-			}
+			dx = contentRight - line.maxEnd
 		case "center":
-			dx := contentLeft + (contentWidth-childTotalWidth)/2 - child.X
-			if dx != 0 {
-				child.X += dx
-				le.shiftChildren(child, dx, 0)
-			}
+			dx = contentLeft + (contentWidth-lineWidth)/2 - line.minX
+		default:
+			continue
+		}
+		if dx == 0 {
+			continue
+		}
+		for _, child := range line.boxes {
+			child.X += dx
+			le.shiftChildren(child, dx, 0)
 		}
 	}
 }

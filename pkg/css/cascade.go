@@ -94,19 +94,22 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("text-align", "center")
 
 	// Phase 23: Default styles for list elements
-	case "ul", "ol":
+	// Per HTML spec default stylesheet, list-style-type is set on ul/ol (not li),
+	// so author "list-style: none" on ul/ol overrides it and li inherits "none".
+	case "ul":
 		style.Set("display", "block")
 		style.Set("margin-top", "16px")
 		style.Set("margin-bottom", "16px")
 		style.Set("padding-left", "40px")
+		style.Set("list-style-type", "disc")
+	case "ol":
+		style.Set("display", "block")
+		style.Set("margin-top", "16px")
+		style.Set("margin-bottom", "16px")
+		style.Set("padding-left", "40px")
+		style.Set("list-style-type", "decimal")
 	case "li":
 		style.Set("display", "list-item")
-		// For <ol> parent, use decimal; for <ul> parent, use disc
-		if node.Parent != nil && node.Parent.TagName == "ol" {
-			style.Set("list-style-type", "decimal")
-		} else {
-			style.Set("list-style-type", "disc")
-		}
 	}
 }
 
