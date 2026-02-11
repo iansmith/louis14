@@ -48,6 +48,15 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
+	// HTML5 semantic elements default to display: block
+	switch node.TagName {
+	case "main", "nav", "header", "footer", "section", "article", "aside",
+		"figure", "figcaption", "details", "summary", "hgroup":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "block")
+		}
+	}
+
 	// Default font-style for emphasis elements
 	switch node.TagName {
 	case "em", "i", "cite", "dfn", "var":
