@@ -1,7 +1,6 @@
 package layout
 
 import (
-	"fmt"
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
@@ -105,10 +104,6 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	prevBlockChild **Box,
 	pendingMargins *[]float64,
 ) []*Box {
-	// DEBUG: Log when this function is called for body
-	if node.TagName == "body" {
-		fmt.Printf("DEBUG SINGLEPASS: layoutInlineChildrenSinglePass called for <body>, %d children\n", len(node.Children))
-	}
 	childBoxes := make([]*Box, 0)
 
 	// Phase 11: Generate ::before pseudo-element if it has content
@@ -390,19 +385,6 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 							// Don't advance localChildY, don't set prevBlockChild
 						} else {
 							// Normal margin collapsing between adjacent block siblings
-							// DEBUG: Log div1 margin collapsing attempt
-							if childBox.Node != nil && childBox.Node.TagName == "div" && childBox.Node.Attributes != nil {
-								if id, ok := childBox.Node.Attributes["id"]; ok && id == "div1" {
-									fmt.Printf("DEBUG SP DIV1: prevBlockChild=%v, shouldCollapse(prev)=%v, shouldCollapse(div1)=%v\n",
-										*prevBlockChild != nil,
-										*prevBlockChild != nil && shouldCollapseMargins(*prevBlockChild),
-										shouldCollapseMargins(childBox))
-									if *prevBlockChild != nil {
-										fmt.Printf("DEBUG SP DIV1: prevBottom=%.1f, div1Top=%.1f, childBox.Y=%.1f\n",
-											(*prevBlockChild).Margin.Bottom, childBox.Margin.Top, childBox.Y)
-									}
-								}
-							}
 							if *prevBlockChild != nil && shouldCollapseMargins(*prevBlockChild) && shouldCollapseMargins(childBox) {
 								// Collect all margins: prev bottom, any pending from collapse-through, current top
 								allMargins := []float64{(*prevBlockChild).Margin.Bottom}
@@ -422,8 +404,6 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 								// Only real margins used space; pending margins were from zero-height elements
 								totalUsed := (*prevBlockChild).Margin.Bottom + childBox.Margin.Top
 								adjustment := totalUsed - collapsed
-								fmt.Printf("DEBUG SP DIV1 COLLAPSE: collapsed=%.1f, adjustment=%.1f, Y before=%.1f, Y after=%.1f\n",
-									collapsed, adjustment, childBox.Y, childBox.Y-adjustment)
 								childBox.Y -= adjustment
 								le.adjustChildrenY(childBox, -adjustment)
 							} else if len(*pendingMargins) > 0 && shouldCollapseMargins(childBox) {
@@ -673,8 +653,6 @@ func (le *LayoutEngine) LayoutInlineBatch(
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// DO NOT reset floats - they must persist between retries so line breaking can account for them
 		// Each retry needs to see the floats added in previous attempts to converge
-		fmt.Printf("DEBUG MP: Attempt %d - keeping %d floats (base index %d)\n",
-			attempt+1, len(le.floats), floatBaseIndex)
 
 		// Create state for this batch
 		state := &InlineLayoutState{
@@ -690,8 +668,6 @@ func (le *LayoutEngine) LayoutInlineBatch(
 			FloatBaseIndex: floatBaseIndex,
 		}
 
-		fmt.Printf("DEBUG MP: LayoutInlineBatch attempt %d, %d children\n", attempt+1, len(children))
-
 		// Phase 1: Collect items from the batch of children
 		for _, child := range children {
 			le.CollectInlineItems(child, state, computedStyles)
@@ -699,51 +675,27 @@ func (le *LayoutEngine) LayoutInlineBatch(
 
 		// If no items collected, return empty
 		if len(state.Items) == 0 {
-			fmt.Printf("DEBUG MP: No items collected, returning empty\n")
 			return []*Box{}
-		}
-
-		fmt.Printf("DEBUG MP: Collected %d items\n", len(state.Items))
-		for i, item := range state.Items {
-			switch item.Type {
-			case InlineItemFloat:
-				fmt.Printf("DEBUG MP:   [%d] Float <%s>\n", i, item.Node.TagName)
-			case InlineItemText:
-				fmt.Printf("DEBUG MP:   [%d] Text: %q\n", i, item.Text)
-			case InlineItemOpenTag:
-				fmt.Printf("DEBUG MP:   [%d] OpenTag <%s>\n", i, item.Node.TagName)
-			case InlineItemCloseTag:
-				fmt.Printf("DEBUG MP:   [%d] CloseTag </%s>\n", i, item.Node.TagName)
-			case InlineItemAtomic:
-				fmt.Printf("DEBUG MP:   [%d] Atomic <%s>\n", i, item.Node.TagName)
-			}
 		}
 
 		// Phase 2: Break lines
 		success := le.breakLinesWIP(state)
 		if !success {
-			fmt.Printf("DEBUG MP: Line breaking failed\n")
 			return []*Box{}
 		}
 
-		fmt.Printf("DEBUG MP: Broke into %d lines\n", len(state.Lines))
-
 		// Phase 3: Construct boxes with retry detection
 		boxes, retryNeeded := le.constructLineBoxesWithRetry(state, box, computedStyles)
-
-		fmt.Printf("DEBUG MP: Constructed %d boxes, retryNeeded=%v\n", len(boxes), retryNeeded)
 
 		if !retryNeeded {
 			return boxes
 		}
 
-		fmt.Printf("DEBUG MP: Retrying due to float width change...\n")
 		// Retry: floats added during construction are kept so line breaking can account for them
 		// Don't reset le.floats - we want the next iteration to see the floats we just added
 	}
 
 	// Max retries exceeded - do final construction with full support
-	fmt.Printf("DEBUG MP: Max retries exceeded, doing final construction\n")
 	state := &InlineLayoutState{
 		Items:          []*InlineItem{},
 		Lines:          []*LineBreakResult{},
@@ -762,8 +714,6 @@ func (le *LayoutEngine) LayoutInlineBatch(
 	le.breakLinesWIP(state)
 	// Use full construction method that handles block children and floats
 	boxes, _ := le.constructLineBoxesWithRetry(state, box, computedStyles)
-	fmt.Printf("DEBUG MP BATCH: After constructLineBoxesWithRetry, got %d boxes for parent=%s\n",
-		len(boxes), box.Node.TagName)
 
 	// Apply text-align to inline children
 	if box.Style != nil {

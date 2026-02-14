@@ -1,14 +1,11 @@
 package layout
 
 import (
-	"fmt"
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
 
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
-	fmt.Println("DEBUG: Layout() called - code is running!")
-
 	// Phase 3: Compute styles from stylesheets
 	// Phase 22: Pass viewport dimensions for media query evaluation
 	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
@@ -34,7 +31,6 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
-			fmt.Printf("DEBUG LAYOUT LOOP: Processing <%s>\n", node.TagName)
 			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if box == nil {
@@ -46,21 +42,12 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			floatType := box.Style.GetFloat()
 			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed && floatType == css.FloatNone {
 				// Margin collapsing between adjacent siblings
-				if node.TagName == "div" && node.Attributes != nil {
-					if id, ok := node.Attributes["id"]; ok && id == "div1" {
-						fmt.Printf("DEBUG COLLAPSE CHECK: prevBox=%v, shouldCollapse(prev)=%v, shouldCollapse(box)=%v\n",
-							prevBox != nil, prevBox != nil && shouldCollapseMargins(prevBox), shouldCollapseMargins(box))
-					}
-				}
 				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(box) {
 					collapsed := collapseMargins(prevBox.Margin.Bottom, box.Margin.Top)
 					// We already advanced by prevBox's full total height (including prevBox.Margin.Bottom)
 					// and layoutNode already added box.Margin.Top to box.Y.
 					// We need to pull back by the non-collapsed portion.
 					adjustment := prevBox.Margin.Bottom + box.Margin.Top - collapsed
-					fmt.Printf("DEBUG COLLAPSE: prevBox.MarginBottom=%.1f, box.MarginTop=%.1f, collapsed=%.1f, adjustment=%.1f\n",
-						prevBox.Margin.Bottom, box.Margin.Top, collapsed, adjustment)
-					fmt.Printf("DEBUG COLLAPSE: box.Y before=%.1f, after=%.1f\n", box.Y, box.Y-adjustment)
 					box.Y -= adjustment
 					le.adjustChildrenY(box, -adjustment)
 				}

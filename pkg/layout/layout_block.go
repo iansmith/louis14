@@ -1,25 +1,12 @@
 package layout
 
 import (
-	"fmt"
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 )
 
 func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
-	// Debug: Track footer-related elements (removed - see end of function for box width)
-	// DEBUG: Track all div elements
-	if node != nil && node.TagName == "div" {
-		nodeID := "(no id)"
-		if node.Attributes != nil {
-			if id, ok := node.Attributes["id"]; ok {
-				nodeID = id
-			}
-		}
-		fmt.Printf("DEBUG LAYOUT START: layoutNode called for <div id='%s'>\n", nodeID)
-	}
-
 	// Phase 3: Use computed styles from cascade
 	style := computedStyles[node]
 	if style == nil {
@@ -102,12 +89,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Apply margin offset
 	x += margin.Left
 	y += margin.Top
-
-	// TEMP DEBUG: Track Y for float divs
-	if floatType != css.FloatNone && node != nil {
-		fmt.Printf("DEBUG FLOAT-Y [%s]: initial y=%.1f (after margin.Top=%.1f), padding={T:%.1f R:%.1f B:%.1f L:%.1f}\n",
-			node.TagName, y, margin.Top, padding.Top, padding.Right, padding.Bottom, padding.Left)
-	}
 
 	// Calculate content width
 	var contentWidth float64
@@ -304,17 +285,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
 
-	// DEBUG: Print all div IDs
-	if node != nil && node.TagName == "div" {
-		id := "(no id)"
-		if node.Attributes != nil {
-			if nodeID, ok := node.Attributes["id"]; ok {
-				id = nodeID
-			}
-		}
-		fmt.Printf("DEBUG CSS: div id='%s' position=%v\n", id, position)
-	}
-
 	// Phase 5: Check for clear property
 	clearType := style.GetClear()
 
@@ -344,25 +314,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// (to support shrink-wrapping and float drop)
 
 	// Phase 4: Handle positioning
-	if node != nil && node.TagName == "div" {
-		posName := "static"
-		switch position {
-		case css.PositionRelative:
-			posName = "relative"
-		case css.PositionAbsolute:
-			posName = "absolute"
-		case css.PositionFixed:
-			posName = "fixed"
-		}
-		if position != css.PositionStatic {
-			fmt.Printf("DEBUG LAYOUT POS2: div position=%s (%v)\n", posName, position)
-		}
-	}
 	if position == css.PositionRelative {
 		// Relative positioning: offset from normal position
 		offset := style.GetPositionOffset()
-		oldY := box.Y
-		oldX := box.X
 		if offset.HasTop {
 			box.Y += offset.Top
 		} else if offset.HasBottom {
@@ -372,23 +326,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			box.X += offset.Left
 		} else if offset.HasRight {
 			box.X -= offset.Right
-		}
-		if oldY != box.Y || oldX != box.X {
-			tagInfo := "?"
-			if node != nil {
-				tagInfo = node.TagName
-				if node.Attributes != nil {
-					if id, ok := node.Attributes["id"]; ok && id != "" {
-						tagInfo += "#" + id
-					}
-				}
-			}
-			fmt.Printf("DEBUG LAYOUT POS: %s relative offset applied: (%.1f,%.1f) -> (%.1f,%.1f)\n",
-				tagInfo, oldX, oldY, box.X, box.Y)
-			// Also check background color
-			if bgColor, ok := style.Get("background-color"); ok && bgColor != "" && bgColor != "transparent" {
-				fmt.Printf("DEBUG LAYOUT POS:   %s has background-color=%s at final Y=%.1f\n", tagInfo, bgColor, box.Y)
-			}
 		}
 	} else if position == css.PositionAbsolute || position == css.PositionFixed {
 		// Absolutely positioned elements - positioning applied after children layout
@@ -404,6 +341,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 10: Handle flexbox layout specially
 	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
 		le.layoutFlex(box, x, y, availableWidth, computedStyles)
+		// Float positioning for floated flex containers is handled by the caller
+		// (multi-pass pipeline or block layout code), not here, to avoid double-positioning.
 		return box
 	}
 
@@ -454,8 +393,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Check if we should use multi-pass (only for containers without pseudo-elements)
 	// hasPseudo := le.hasPseudoElements(node, computedStyles) // REMOVED: Allow multi-pass with pseudo-elements
-	hasFloats := false
-	hasBlockChild := false
 	hasInlineChild := false
 	didAnalyzeChildren := false // Track if we analyzed children
 
@@ -468,21 +405,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				if childStyle := computedStyles[child]; childStyle != nil {
 					childDisplay := childStyle.GetDisplay()
 
-					// Check for block-level children
-					if childDisplay == css.DisplayBlock || childDisplay == css.DisplayTable ||
-					   childDisplay == css.DisplayListItem || childDisplay == css.DisplayFlex ||
-					   childDisplay == css.DisplayGrid {
-						hasBlockChild = true
-					}
-
 					// Check for inline children
 					if childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock {
 						hasInlineChild = true
-
-						// Check if this inline child is floated
-						if childStyle.GetFloat() != css.FloatNone {
-							hasFloats = true
-						}
 					}
 				}
 			} else if child.Type == html.TextNode {
@@ -498,11 +423,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// EXPERIMENTAL: Allow mixed block/inline content - block children handled in multi-pass
 		if hasInlineChild && !isObjectImage && display == css.DisplayBlock {
 			algorithm = InlineLayoutMultiPass
-			// DEBUG: Log when multi-pass is triggered
-			if node.TagName != "" {
-				fmt.Printf("DEBUG: Multi-pass triggered for <%s> (floats=%v, blockChild=%v, inlineChild=%v)\n",
-					node.TagName, hasFloats, hasBlockChild, hasInlineChild)
-			}
 		}
 	}
 
@@ -514,12 +434,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Check if we can use multi-pass (we analyzed children)
 	// Block children are now supported via recursive layoutNode calls
 	canUseMultiPass := le.useMultiPass && didAnalyzeChildren
-
-	// DEBUG: Log why we're not using multi-pass
-	if node.TagName == "body" {
-		fmt.Printf("DEBUG MULTIPASS CHECK: useMultiPass=%v, didAnalyze=%v, canUse=%v\n",
-			le.useMultiPass, didAnalyzeChildren, canUseMultiPass)
-	}
 
 	if canUseMultiPass {
 		// Create synthetic nodes for pseudo-elements so they go through the same
@@ -600,9 +514,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(childBox) {
 					collapsed := collapseMargins(prevBox.Margin.Bottom, childBox.Margin.Top)
 					adjustment := prevBox.Margin.Bottom + childBox.Margin.Top - collapsed
-
-					fmt.Printf("DEBUG MULTIPASS COLLAPSE: prev=%s, curr=%s, prevBottom=%.1f, currTop=%.1f, collapsed=%.1f, adjustment=%.1f, cumulative=%.1f\n",
-						prevBox.Node.TagName, childBox.Node.TagName, prevBox.Margin.Bottom, childBox.Margin.Top, collapsed, adjustment, cumulativeAdjustment)
 
 					childBox.Y -= adjustment
 					le.adjustChildrenY(childBox, -adjustment)
@@ -734,16 +645,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			break
 		}
 		if child.Type == html.ElementNode {
-			// DEBUG: Log which children are being processed
-			if node.TagName == "body" {
-				childID := "(no id)"
-				if child.Attributes != nil {
-					if id, ok := child.Attributes["id"]; ok {
-						childID = id
-					}
-				}
-				fmt.Printf("DEBUG BODY CHILD: Processing <%s id='%s'>\n", child.TagName, childID)
-			}
 			// Get child's computed style to check display mode
 			childStyle := computedStyles[child]
 			if childStyle == nil {
@@ -939,20 +840,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 							// Don't advance childY, don't set prevBlockChild
 						} else {
 							// Normal margin collapsing between adjacent block siblings
-							// DEBUG: Check for div1 specifically
-							isDiv1 := childBox.Node != nil && childBox.Node.TagName == "div" && childBox.Node.Attributes != nil
-							if isDiv1 {
-								if id, ok := childBox.Node.Attributes["id"]; ok && id == "div1" {
-									fmt.Printf("DEBUG DIV1: prevBlockChild=%v, shouldCollapse(prev)=%v, shouldCollapse(div1)=%v\n",
-										prevBlockChild != nil,
-										prevBlockChild != nil && shouldCollapseMargins(prevBlockChild),
-										shouldCollapseMargins(childBox))
-									if prevBlockChild != nil {
-										fmt.Printf("DEBUG DIV1: prevBlockChild.Margin.Bottom=%.1f, childBox.Margin.Top=%.1f\n",
-											prevBlockChild.Margin.Bottom, childBox.Margin.Top)
-									}
-								}
-							}
 							if prevBlockChild != nil && shouldCollapseMargins(prevBlockChild) && shouldCollapseMargins(childBox) {
 								// Collect all margins: prev bottom, any pending from collapse-through, current top
 								allMargins := []float64{prevBlockChild.Margin.Bottom}
@@ -1255,6 +1142,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if parentChildBottomCollapse {
 			for _, child := range box.Children {
 				if child.Position != css.PositionAbsolute && child.Position != css.PositionFixed {
+					// CSS 2.1 §8.3.1: Parent-child bottom margin collapse only applies to
+					// the last in-flow BLOCK-LEVEL child. Inline-block margins don't collapse.
+					childDisplay := css.DisplayBlock
+					if child.Style != nil {
+						childDisplay = child.Style.GetDisplay()
+					}
+					if childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock {
+						continue
+					}
 					lastInFlowChild = child
 				}
 			}
@@ -1322,30 +1218,28 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 			lineBottom := (inlineCtx.LineY - parentContentTop) + lineBoxHeight
 
-			// DEBUG: Check if this is div2
-			nodeID := ""
-			if node != nil && node.Attributes != nil {
-				if id, ok := node.Attributes["id"]; ok {
-					nodeID = id
-				}
-			}
-			if nodeID == "div2" {
-				fmt.Printf("DEBUG AUTO-HEIGHT div2: strutHeight=%.1f, lineBoxHeight=%.1f, inlineCtx.LineY=%.1f, parentContentTop=%.1f, lineBottom=%.1f, maxBottom before=%.1f\n",
-					strutHeight, lineBoxHeight, inlineCtx.LineY, parentContentTop, lineBottom, maxBottom)
-			}
-
 			if lineBottom > maxBottom {
 				maxBottom = lineBottom
 			}
 		}
+		// CSS 2.1 §10.6.7: For elements that establish a new BFC, the auto height
+		// extends to include the bottom margin edge of any floating descendants.
+		if createsBFC {
+			for _, child := range box.Children {
+				if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+					floatBottom := (child.Y - parentContentTop) + child.Height + child.Margin.Bottom
+					if floatBottom > maxBottom {
+						maxBottom = floatBottom
+					}
+				}
+			}
+		}
+
 		if maxBottom < 0 {
 			maxBottom = 0
 		}
 		// Box.Height must be border-box (content + padding + borders)
 		// maxBottom is content height, so add padding and borders
-		fmt.Printf("DEBUG AUTO-HEIGHT: Final maxBottom=%.1f, setting box.Height=%.1f (maxBottom + padding %.1f + borders %.1f)\n",
-			maxBottom, maxBottom + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom,
-			box.Padding.Top + box.Padding.Bottom, box.Border.Top + box.Border.Bottom)
 		box.Height = maxBottom + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
 
 		// CSS 2.1 §8.3.1: When parent-child bottom margin collapsing applies,
@@ -1381,15 +1275,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	// Phase 7 Enhancement: Inline elements always shrink-wrap to children
-	// DEBUG: Check all inline elements
-	if display == css.DisplayInline && box.Node != nil && box.Node.TagName == "span" {
-		fmt.Printf("DEBUG INLINE: <span> before shrinkwrap: Height=%.1f, Children=%d\n", box.Height, len(box.Children))
-	}
-
 	if display == css.DisplayInline && len(box.Children) > 0 {
-		// DEBUG: Track if this is overwriting multi-pass wrapper box height
-		originalHeight := box.Height
-
 		// Calculate width from children
 		// For inline formatting context, children flow horizontally so we SUM their widths
 		totalChildWidth := 0.0
@@ -1401,11 +1287,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			if childHeight > maxChildHeight {
 				maxChildHeight = childHeight
 			}
-		}
-
-		if box.Node != nil && box.Node.TagName == "span" && originalHeight != maxChildHeight {
-			fmt.Printf("DEBUG SHRINKWRAP: <span> height being overwritten: %.1f → %.1f (diff: %.1f)\n",
-				originalHeight, maxChildHeight, originalHeight-maxChildHeight)
 		}
 
 		box.Width = totalChildWidth
@@ -1429,25 +1310,79 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 
 		if allInline {
-			// Inline formatting context: sum widths
-			totalWidth := 0.0
+			// Inline formatting context: compute content width from max right edge
+			// Children (text boxes, span wrappers) may overlap so summing would double-count.
+			// Instead, find the rightmost border-box edge relative to the content area.
+			contentAreaLeft := box.X + box.Border.Left + box.Padding.Left
+			maxContentRight := 0.0
 			for _, child := range box.Children {
-				totalWidth += le.getTotalWidth(child)
-			}
-			if totalWidth > 0 {
-				box.Width = totalWidth
-			}
-		} else {
-			// Block formatting context: take max width
-			maxChildWidth := 0.0
-			for _, child := range box.Children {
-				childWidth := le.getTotalWidth(child)
-				if childWidth > maxChildWidth {
-					maxChildWidth = childWidth
+				childRight := child.X + child.Width
+				if childRight > maxContentRight {
+					maxContentRight = childRight
 				}
 			}
+			shrinkContentWidth := maxContentRight - contentAreaLeft
+			if shrinkContentWidth > 0 {
+				// box.Width is border-box: content + padding + borders
+				box.Width = shrinkContentWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+			}
+		} else {
+			// Block formatting context: compute max-content width.
+			// CSS 2.1 §10.3.5: preferred width = width with infinite available space.
+			// Float children would all be on one line → sum their widths.
+			// Non-float block children stack vertically → take max width.
+			floatWidthSum := 0.0
+			maxNonFloatWidth := 0.0
+			for _, child := range box.Children {
+				childWidth := le.computeShrinkToFitChildWidth(child)
+				if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+					floatWidthSum += childWidth
+				} else {
+					if childWidth > maxNonFloatWidth {
+						maxNonFloatWidth = childWidth
+					}
+				}
+			}
+			maxChildWidth := floatWidthSum
+			if maxNonFloatWidth > maxChildWidth {
+				maxChildWidth = maxNonFloatWidth
+			}
 			if maxChildWidth > 0 {
-				box.Width = maxChildWidth
+				// box.Width is border-box: content + own padding + own borders
+				box.Width = maxChildWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+			}
+			// Re-layout auto-width block children to use the new container width
+			containerContentWidth := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+			for _, child := range box.Children {
+				if child.Style != nil {
+					if _, hasW := child.Style.GetLength("width"); !hasW {
+						if _, hasPct := child.Style.GetPercentage("width"); !hasPct {
+							childDisplay := child.Style.GetDisplay()
+							if childDisplay != css.DisplayInline &&
+								child.Style.GetFloat() == css.FloatNone &&
+								child.Style.GetPosition() != css.PositionAbsolute && child.Style.GetPosition() != css.PositionFixed {
+								child.Width = containerContentWidth - child.Border.Left - child.Padding.Left -
+									child.Padding.Right - child.Border.Right - child.Margin.Left - child.Margin.Right
+								if child.Width < 0 {
+									child.Width = 0
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Re-apply min-width/max-width after shrink-wrapping
+		// (shrink-to-fit overrides the initial width, must re-clamp)
+		shrinkContent := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+		if minW, ok := style.GetLength("min-width"); ok && shrinkContent < minW {
+			box.Width = minW + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+		}
+		if maxW, ok := style.GetLength("max-width"); ok {
+			maxBorderBox := maxW + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+			if box.Width > maxBorderBox {
+				box.Width = maxBorderBox
 			}
 		}
 	}
@@ -1456,22 +1391,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if (position == css.PositionAbsolute || position == css.PositionFixed) && !hasExplicitWidth && len(box.Children) > 0 {
 		maxChildWidth := 0.0
 		for _, child := range box.Children {
-			childWidth := le.getTotalWidth(child)
+			// child.Width is border-box for block-level children, so margin-box = margins + child.Width
+			childWidth := child.Margin.Left + child.Width + child.Margin.Right
 			if childWidth > maxChildWidth {
 				maxChildWidth = childWidth
 			}
 		}
 		if maxChildWidth > 0 {
-			box.Width = maxChildWidth
+			// box.Width is border-box: content + own padding + own borders
+			box.Width = maxChildWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
 		}
 		// After shrink-wrap, update block children with auto width to use the new parent width
+		containerContentWidth := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
 		for _, child := range box.Children {
 			if child.Style != nil {
 				childDisplay := child.Style.GetDisplay()
 				if _, hasW := child.Style.GetLength("width"); !hasW && childDisplay != css.DisplayInline &&
 					child.Style.GetFloat() == css.FloatNone &&
 					child.Style.GetPosition() != css.PositionAbsolute && child.Style.GetPosition() != css.PositionFixed {
-					child.Width = box.Width - child.Border.Left - child.Padding.Left - child.Padding.Right - child.Border.Right -
+					child.Width = containerContentWidth - child.Border.Left - child.Padding.Left - child.Padding.Right - child.Border.Right -
 						child.Margin.Left - child.Margin.Right
 					if child.Width < 0 {
 						child.Width = 0
@@ -1502,7 +1440,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	var floatY float64
 	if floatType != css.FloatNone && position == css.PositionStatic {
 		oldX, oldY := box.X, box.Y
-		floatTotalWidth := le.getTotalWidth(box)
+		// box.Width is border-box (content + padding + borders), so margin-box is just margins + box.Width
+		floatTotalWidth := box.Margin.Left + box.Width + box.Margin.Right
 
 		// Phase 5 Enhancement: Check if float fits, apply drop if needed
 		// margin.Top was already applied to y at line 276 (y += margin.Top) and is
@@ -1552,17 +1491,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if !hasExplicitWidth && box.Width > 0 {
 		le.repositionFloatRightChildren(box)
 	}
-
-	// DEBUG: Check final box.Y before returning
-	if node != nil && node.TagName == "div" && node.Attributes != nil {
-		if id, ok := node.Attributes["id"]; ok && id == "div3" {
-			fmt.Printf("DEBUG LAYOUT END: div#%s returning with Y=%.1f\n", id, box.Y)
-		}
-		if bgColor, ok := style.Get("background-color"); ok && bgColor == "red" {
-			fmt.Printf("DEBUG LAYOUT END: red div returning with Y=%.1f\n", box.Y)
-		}
-	}
-
 
 	return box
 }

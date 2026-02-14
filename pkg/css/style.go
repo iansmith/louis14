@@ -63,6 +63,15 @@ func ParseLength(val string) (float64, bool) {
 // ParseLengthWithFontSize parses a length value with em and rem support.
 func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 	val = strings.TrimSpace(val)
+	// Handle calc() expressions
+	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
+		expr := val[5 : len(val)-1] // strip "calc(" and ")"
+		result, ok := evalCalcExpr(expr, fontSize)
+		if ok {
+			return result, true
+		}
+		return 0, false
+	}
 	if strings.HasSuffix(val, "rem") {
 		// rem is relative to root font size (typically 16px)
 		numStr := strings.TrimSuffix(val, "rem")
@@ -139,6 +148,167 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 		return 0, false
 	}
 	return num, true
+}
+
+// evalCalcExpr evaluates a CSS calc() expression with proper operator precedence.
+// Supports +, -, *, / operators and px/em/rem/%  values.
+func evalCalcExpr(expr string, fontSize float64) (float64, bool) {
+	expr = strings.TrimSpace(expr)
+	// Tokenize: split into numbers (with optional units) and operators
+	tokens := tokenizeCalc(expr)
+	if len(tokens) == 0 {
+		return 0, false
+	}
+	// Parse with operator precedence: * and / before + and -
+	result, ok := parseCalcAddSub(tokens, 0, fontSize)
+	if !ok {
+		return 0, false
+	}
+	return result.value, true
+}
+
+type calcResult struct {
+	value float64
+	pos   int // position in token slice after consuming
+}
+
+func parseCalcAddSub(tokens []string, pos int, fontSize float64) (calcResult, bool) {
+	left, ok := parseCalcMulDiv(tokens, pos, fontSize)
+	if !ok {
+		return calcResult{}, false
+	}
+	for left.pos < len(tokens) {
+		op := tokens[left.pos]
+		if op != "+" && op != "-" {
+			break
+		}
+		right, ok := parseCalcMulDiv(tokens, left.pos+1, fontSize)
+		if !ok {
+			return calcResult{}, false
+		}
+		if op == "+" {
+			left.value += right.value
+		} else {
+			left.value -= right.value
+		}
+		left.pos = right.pos
+	}
+	return left, true
+}
+
+func parseCalcMulDiv(tokens []string, pos int, fontSize float64) (calcResult, bool) {
+	left, ok := parseCalcAtom(tokens, pos, fontSize)
+	if !ok {
+		return calcResult{}, false
+	}
+	for left.pos < len(tokens) {
+		op := tokens[left.pos]
+		if op != "*" && op != "/" {
+			break
+		}
+		right, ok := parseCalcAtom(tokens, left.pos+1, fontSize)
+		if !ok {
+			return calcResult{}, false
+		}
+		if op == "*" {
+			left.value *= right.value
+		} else {
+			if right.value == 0 {
+				return calcResult{}, false
+			}
+			left.value /= right.value
+		}
+		left.pos = right.pos
+	}
+	return left, true
+}
+
+func parseCalcAtom(tokens []string, pos int, fontSize float64) (calcResult, bool) {
+	if pos >= len(tokens) {
+		return calcResult{}, false
+	}
+	token := tokens[pos]
+	// Handle parenthesized sub-expressions
+	if token == "(" {
+		result, ok := parseCalcAddSub(tokens, pos+1, fontSize)
+		if !ok || result.pos >= len(tokens) || tokens[result.pos] != ")" {
+			return calcResult{}, false
+		}
+		result.pos++ // consume ")"
+		return result, true
+	}
+	// Parse as a length value or plain number
+	val, ok := ParseLengthWithFontSize(token, fontSize)
+	if ok {
+		return calcResult{value: val, pos: pos + 1}, true
+	}
+	// Try as plain number (unitless, e.g., divisor)
+	num, err := strconv.ParseFloat(token, 64)
+	if err != nil {
+		return calcResult{}, false
+	}
+	return calcResult{value: num, pos: pos + 1}, true
+}
+
+// tokenizeCalc splits a calc expression into tokens: numbers with units, operators, parens.
+func tokenizeCalc(expr string) []string {
+	var tokens []string
+	i := 0
+	for i < len(expr) {
+		ch := expr[i]
+		if ch == ' ' || ch == '\t' {
+			i++
+			continue
+		}
+		if ch == '(' || ch == ')' {
+			tokens = append(tokens, string(ch))
+			i++
+			continue
+		}
+		if ch == '+' || ch == '*' || ch == '/' {
+			tokens = append(tokens, string(ch))
+			i++
+			continue
+		}
+		// Minus: could be operator or negative sign
+		if ch == '-' {
+			// It's an operator if the previous token is a number/closing paren
+			if len(tokens) > 0 {
+				prev := tokens[len(tokens)-1]
+				if prev != "+" && prev != "-" && prev != "*" && prev != "/" && prev != "(" {
+					tokens = append(tokens, "-")
+					i++
+					continue
+				}
+			}
+			// Otherwise it's part of a number (negative sign) — fall through to number parsing
+		}
+		// Number (possibly with unit suffix)
+		start := i
+		if expr[i] == '-' {
+			i++
+		}
+		for i < len(expr) && ((expr[i] >= '0' && expr[i] <= '9') || expr[i] == '.') {
+			i++
+		}
+		// Consume unit suffix (px, em, rem, %, etc.)
+		unitStart := i
+		for i < len(expr) && ((expr[i] >= 'a' && expr[i] <= 'z') || expr[i] == '%') {
+			i++
+		}
+		if i > start {
+			token := expr[start:i]
+			// Handle bare % at unitStart
+			if i > unitStart && expr[unitStart:i] == "%" {
+				// Keep the full token with %
+			}
+			tokens = append(tokens, token)
+		} else {
+			// Unknown character, skip
+			i++
+		}
+	}
+	return tokens
 }
 
 // Phase 2: Box model helpers
@@ -306,12 +476,6 @@ const (
 func (s *Style) GetPosition() PositionType {
 	pos, ok := s.Get("position")
 	if !ok {
-		// DEBUG: Check if we're looking at an element that should have position set
-		if tagName, hasTag := s.Get("_debug_tag"); hasTag && tagName == "div" {
-			if id, hasID := s.Get("_debug_id"); hasID && (id == "div3" || id == "div2") {
-				fmt.Printf("DEBUG CSS: #%s has no 'position' property set!\n", id)
-			}
-		}
 		return PositionStatic
 	}
 	switch pos {
@@ -1234,6 +1398,14 @@ func (s *Style) GetOverflowY() OverflowType {
 	return s.GetOverflow()
 }
 
+// GetVisibility returns the visibility value (default: "visible")
+func (s *Style) GetVisibility() string {
+	if v, ok := s.Get("visibility"); ok {
+		return v
+	}
+	return "visible"
+}
+
 // Phase 19: Visual effects
 
 // GetOpacity returns the opacity value (0.0 to 1.0, default: 1.0)
@@ -1564,6 +1736,8 @@ const (
 	JustifyContentSpaceBetween JustifyContent = "space-between"
 	JustifyContentSpaceAround  JustifyContent = "space-around"
 	JustifyContentSpaceEvenly  JustifyContent = "space-evenly"
+	JustifyContentLeft         JustifyContent = "left"
+	JustifyContentRight        JustifyContent = "right"
 )
 
 // GetJustifyContent returns the justify-content value (default: flex-start)
@@ -1580,6 +1754,14 @@ func (s *Style) GetJustifyContent() JustifyContent {
 			return JustifyContentSpaceAround
 		case "space-evenly":
 			return JustifyContentSpaceEvenly
+		case "start":
+			return JustifyContentFlexStart
+		case "end":
+			return JustifyContentFlexEnd
+		case "left":
+			return JustifyContentLeft
+		case "right":
+			return JustifyContentRight
 		}
 	}
 	return JustifyContentFlexStart

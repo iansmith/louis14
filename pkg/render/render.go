@@ -86,19 +86,6 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	for _, box := range boxes {
 		r.paintStackingContext(box)
 	}
-
-	// DEBUG: Check pixel value at span center before saving
-	img := r.context.Image().(*image.RGBA)
-	centerX, centerY := 250, 335
-	pixelIndex := centerY*img.Stride + centerX*4
-	if pixelIndex >= 0 && pixelIndex+2 < len(img.Pix) {
-		r := img.Pix[pixelIndex+0]
-		g := img.Pix[pixelIndex+1]
-		b := img.Pix[pixelIndex+2]
-		a := img.Pix[pixelIndex+3]
-		fmt.Printf("DEBUG FINAL: Before SavePNG, pixel at (%d,%d) = RGBA(%d,%d,%d,%d)\n",
-			centerX, centerY, r, g, b, a)
-	}
 }
 
 // drawCanvasBackground implements CSS 2.1 §14.2 background propagation.
@@ -190,12 +177,12 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	// Apply clipping if overflow: hidden/scroll/auto
 	if needsClip {
 		r.context.Push()
-		// Clip to the content box (inside padding+border)
-		contentX := box.X + box.Border.Left + box.Padding.Left
-		contentY := box.Y + box.Border.Top + box.Padding.Top
-		contentW := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
-		contentH := box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
-		r.context.DrawRectangle(contentX, contentY, contentW, contentH)
+		// CSS 2.1 §11.1.1: Clip to the padding box (inside border, outside padding)
+		clipX := box.X + box.Border.Left
+		clipY := box.Y + box.Border.Top
+		clipW := box.Width - box.Border.Left - box.Border.Right
+		clipH := box.Height - box.Border.Top - box.Border.Bottom
+		r.context.DrawRectangle(clipX, clipY, clipW, clipH)
 		r.context.Clip()
 	}
 
@@ -214,61 +201,41 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	})
 
 	// Step 2: Child stacking contexts with negative z-index
-	fmt.Printf("=== STEP 2: Negative Z (%d elements) ===\n", len(negativeZ))
 	for _, child := range negativeZ {
 		r.paintStackingContext(child)
 	}
 
 	// Step 3: In-flow, non-positioned, block-level descendants (backgrounds/borders)
-	fmt.Printf("=== STEP 3: Blocks (%d elements) ===\n", len(blocks))
 	for _, child := range blocks {
-		r.drawBoxBackgroundAndBorders(child)
+		if child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible {
+			r.paintStackingContext(child) // Paint atomically with clipping
+		} else {
+			r.drawBoxBackgroundAndBorders(child)
+		}
 	}
 
 	// Step 4: Non-positioned floats
 	// Floats are painted with their own internal paint order (like a mini stacking context)
-	fmt.Printf("=== STEP 4: Floats (%d elements) ===\n", len(floats))
 	for _, child := range floats {
 		r.paintStackingContext(child)
 	}
 
 	// Step 5: In-flow, inline-level descendants (content paints here)
 	// This includes inline elements AND content of block elements
-	fmt.Printf("=== STEP 5: Inlines (%d elements) ===\n", len(inlines))
 	for _, child := range inlines {
-		if child.Node != nil && child.Node.Type != html.TextNode {
-			bgColor := ""
-			borderColor := ""
-			if child.Style != nil {
-				if bg, ok := child.Style.Get("background-color"); ok {
-					bgColor = bg
-				}
-				if bc, ok := child.Style.Get("border-color"); ok {
-					borderColor = bc
-				}
-			}
-			fmt.Printf("DEBUG RENDER: Rendering inline <%s> at (%.1f,%.1f) size %.1fx%.1f bg=%s border=%s\n",
-				child.Node.TagName, child.X, child.Y, child.Width, child.Height, bgColor, borderColor)
-			fmt.Printf("DEBUG RENDER:   Box.Padding=%.1f/%.1f/%.1f/%.1f  Box.Border=%.1f/%.1f/%.1f/%.1f\n",
-				child.Padding.Top, child.Padding.Right, child.Padding.Bottom, child.Padding.Left,
-				child.Border.Top, child.Border.Right, child.Border.Bottom, child.Border.Left)
-		}
 		r.drawBoxBackgroundAndBorders(child)
 		r.drawBoxContent(child)
 	}
 
 	// Also paint content of blocks at step 5 (text/images inside blocks)
-	fmt.Printf("=== STEP 5 continued: Block content (%d elements) ===\n", len(blocks))
 	for _, child := range blocks {
-		if child.Node != nil {
-			fmt.Printf("DEBUG BLOCK CONTENT: Drawing content for <%s> at (%.1f,%.1f) size %.1fx%.1f\n",
-				child.Node.TagName, child.X, child.Y, child.Width, child.Height)
+		if child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible {
+			continue // Already painted atomically in step 3
 		}
 		r.drawBoxContent(child)
 	}
 
 	// Paint this box's own content
-	fmt.Printf("=== STEP 5 continued: Box own content ===\n")
 	r.drawBoxContent(box)
 
 	// Step 6: Positioned descendants with z-index: auto or 0
@@ -316,12 +283,12 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 			*floats = append(*floats, child)
 			// Don't recurse into float children - floats paint atomically at step 4
 		} else if layout.IsInline(child) {
-			if child.Node != nil && child.Node.TagName == "span" {
-				fmt.Printf("DEBUG COLLECT: Adding span to inlines collection\n")
-			}
 			*inlines = append(*inlines, child)
 			// Recurse into inline's descendants (inline content is part of step 5)
 			r.collectDescendantsForPaintOrder(child, negativeZ, blocks, floats, inlines, zeroAutoZ, positiveZ)
+		} else if child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible {
+			// Block with overflow clipping — paint atomically (don't flatten children)
+			*blocks = append(*blocks, child)
 		} else {
 			// Block element
 			*blocks = append(*blocks, child)
@@ -393,49 +360,9 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 		return
 	}
 
-	// DEBUG: Check Y values for red background
-	if bgColor, ok := box.Style.Get("background-color"); ok && bgColor == "red" {
-		effectiveY := r.getEffectiveY(box)
-		fmt.Printf("DEBUG RENDER Y: red div box.Y=%.1f effectiveY=%.1f scrollY=%.1f\n",
-			box.Y, effectiveY, r.scrollY)
-	}
-
-	if box.Node != nil {
-		tagName := box.Node.TagName
-		if tagName == "div" || tagName == "span" {
-			bgColor := ""
-			if bg, ok := box.Style.Get("background-color"); ok {
-				bgColor = bg
-			}
-			zindex := "auto"
-			if box.ZIndex != 0 {
-				zindex = fmt.Sprintf("%d", box.ZIndex)
-			}
-			posType := "static"
-			if box.Position == css.PositionRelative {
-				posType = "relative"
-			} else if box.Position == css.PositionAbsolute {
-				posType = "absolute"
-			}
-			fmt.Printf("DEBUG DRAW: Drawing <%s> at (%.1f,%.1f) size %.1fx%.1f bg=%s pos=%s z=%s\n",
-				tagName, box.X, box.Y, box.Width, box.Height, bgColor, posType, zindex)
-			if tagName == "span" && len(box.Children) > 0 {
-				for i, child := range box.Children {
-					childBg := "none"
-					if child.Style != nil {
-						if bg, ok := child.Style.Get("background-color"); ok {
-							childBg = bg
-						}
-					}
-					childTag := "?"
-					if child.Node != nil {
-						childTag = child.Node.TagName
-					}
-					fmt.Printf("DEBUG DRAW:   Child[%d]: <%s> at (%.1f,%.1f) size %.1fx%.1f bg=%s\n",
-						i, childTag, child.X, child.Y, child.Width, child.Height, childBg)
-				}
-			}
-		}
+	// CSS 2.1 §11.2: visibility:hidden elements are invisible but still occupy space
+	if v := box.Style.GetVisibility(); v == "hidden" || v == "collapse" {
+		return
 	}
 
 	// Apply CSS transforms
@@ -464,98 +391,40 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 	// Draw background color (only if no gradient was drawn)
 	if !hasGradient {
 		if bgColor, ok := box.Style.Get("background-color"); ok {
-		if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
-			// Check for white background
-			if color.R > 250 && color.G > 250 && color.B > 250 && box.Node != nil {
-				fmt.Printf("DEBUG WHITE: Drawing WHITE background for <%s> at (%.1f,%.1f) size %.1fx%.1f\n",
-					box.Node.TagName, box.X, box.Y, box.Width, box.Height)
-			}
-			if box.Node != nil && box.Node.TagName == "span" {
-				fmt.Printf("DEBUG COLOR: Parsed color for span: R=%d G=%d B=%d A=%.2f\n",
-					color.R, color.G, color.B, color.A)
-			}
-			rVal := float64(color.R) / 255.0
-			gVal := float64(color.G) / 255.0
-			bVal := float64(color.B) / 255.0
+			if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
+				r.context.SetRGBA(
+					float64(color.R)/255.0,
+					float64(color.G)/255.0,
+					float64(color.B)/255.0,
+					color.A)
 
-			if box.Node != nil && box.Node.TagName == "span" {
-				fmt.Printf("DEBUG RENDER: Setting color R=%.3f G=%.3f B=%.3f A=%.2f\n",
-					rVal, gVal, bVal, color.A)
-			}
+				bgX := box.X
+				bgY := effectiveY
+				bgWidth := box.Width   // Border-box dimensions
+				bgHeight := box.Height // Border-box dimensions
 
-			r.context.SetRGBA(rVal, gVal, bVal, color.A)
+				// CRITICAL FIX: For inline elements, box.Height is the line box height
+				// but borders/padding "bleed" outside the line box (CSS 2.1 §10.8.1)
+				// We must extend the background to cover the full bleeding area
+				if box.Style.GetDisplay() == css.DisplayInline {
+					// Add vertical borders and padding to line box height for rendering
+					bgHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
+					// Adjust Y position to account for top border/padding
+					bgY -= box.Border.Top + box.Padding.Top
+				}
 
-			bgX := box.X
-			bgY := effectiveY
-			bgWidth := box.Width // Border-box dimensions
-			bgHeight := box.Height // Border-box dimensions
-
-			// CRITICAL FIX: For inline elements, box.Height is the line box height
-			// but borders/padding "bleed" outside the line box (CSS 2.1 §10.8.1)
-			// We must extend the background to cover the full bleeding area
-			if box.Style.GetDisplay() == css.DisplayInline {
-				// Add vertical borders and padding to line box height for rendering
-				bgHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
-				// Adjust Y position to account for top border/padding
-				bgY -= box.Border.Top + box.Padding.Top
-			}
-
-			if box.Node != nil && box.Node.TagName == "span" {
-				fmt.Printf("DEBUG COORDS: box.Y=%.1f, effectiveY=%.1f, scrollY=%.1f\n",
-					box.Y, effectiveY, r.scrollY)
-				fmt.Printf("DEBUG SIZE: bgWidth=%.1f, bgHeight=%.1f (check: %v)\n",
-					bgWidth, bgHeight, bgWidth > 0 && bgHeight > 0)
-			}
-
-			if bgWidth > 0 && bgHeight > 0 {
-				if color.R == 0 && color.G == 128 && color.B == 0 {
-					tagName := ""
-					if box.Node != nil {
-						tagName = box.Node.TagName
+				if bgWidth > 0 && bgHeight > 0 {
+					borderRadius := box.Style.GetBorderRadius()
+					if borderRadius > 0 {
+						r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+					} else {
+						r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
 					}
-					fmt.Printf("GREEN BACKGROUND: box %p tagName='%s' pos=(%.1f,%.1f) size=%.1fx%.1f\n",
-						box, tagName, bgX, bgY, bgWidth, bgHeight)
-				}
-				if box.Node != nil && box.Node.TagName == "span" {
-					fmt.Printf("DEBUG PRE-DRAW: About to call DrawRectangle(%.1f, %.1f, %.1f, %.1f)\n",
-						bgX, bgY, bgWidth, bgHeight)
-					// Check what color is currently set
-					fmt.Printf("DEBUG PRE-DRAW: Current gg context color should be G=0.502\n")
-				}
-				borderRadius := box.Style.GetBorderRadius()
-				if borderRadius > 0 {
-					r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
-				} else {
-					r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
-				}
-				if box.Node != nil && box.Node.TagName == "span" {
-					fmt.Printf("DEBUG PRE-FILL: About to call Fill()\n")
-				}
-				r.context.Fill()
-				if box.Node != nil && box.Node.TagName == "span" {
-					fmt.Printf("DEBUG DRAW BG: Finished Fill\n")
-					// Read back the pixel at the center of the rectangle to verify it was drawn
-					centerX := int(bgX + bgWidth/2)
-					centerY := int(bgY + bgHeight/2)
-					img := r.context.Image().(*image.RGBA)
-					pixelIndex := centerY*img.Stride + centerX*4
-					if pixelIndex >= 0 && pixelIndex+2 < len(img.Pix) {
-						r := img.Pix[pixelIndex+0]
-						g := img.Pix[pixelIndex+1]
-						b := img.Pix[pixelIndex+2]
-						a := img.Pix[pixelIndex+3]
-						fmt.Printf("DEBUG PIXEL: After Fill, pixel at (%d,%d) = RGBA(%d,%d,%d,%d)\n",
-							centerX, centerY, r, g, b, a)
-					}
-				}
-			} else {
-				if box.Node != nil && box.Node.TagName == "span" {
-					fmt.Printf("DEBUG DRAW BG: SKIPPED because bgWidth=%f or bgHeight=%f is <=0\n", bgWidth, bgHeight)
+					r.context.Fill()
 				}
 			}
 		}
 	}
-	} // End of !hasGradient block
 
 	// Draw background image
 	r.drawBackgroundImage(box)
@@ -640,8 +509,9 @@ func (r *Renderer) drawBoxContent(box *layout.Box) {
 		return
 	}
 
-	if box.Node != nil && box.Node.TagName == "span" {
-		fmt.Printf("DEBUG CONTENT: drawBoxContent for span\n")
+	// CSS 2.1 §11.2: visibility:hidden elements are invisible but still occupy space
+	if v := box.Style.GetVisibility(); v == "hidden" || v == "collapse" {
+		return
 	}
 
 	// Apply CSS transforms
@@ -656,13 +526,7 @@ func (r *Renderer) drawBoxContent(box *layout.Box) {
 	r.drawImage(box)
 
 	// Draw text
-	if box.Node != nil && box.Node.TagName == "span" {
-		fmt.Printf("DEBUG CONTENT: About to call drawText for span\n")
-	}
 	r.drawText(box)
-	if box.Node != nil && box.Node.TagName == "span" {
-		fmt.Printf("DEBUG CONTENT: Finished drawText for span\n")
-	}
 
 	// Draw scrollbar indicators (only for overflow:scroll which always shows scrollbars;
 	// overflow:auto only shows when content overflows, which we don't detect yet)
@@ -713,14 +577,6 @@ func (r *Renderer) drawBox(box *layout.Box) {
 			bgHeight := box.Height // Border-box dimensions
 
 			if bgWidth > 0 && bgHeight > 0 {
-				if color.R == 0 && color.G == 128 && color.B == 0 {
-					tagName := "nil"
-					if box.Node != nil {
-						tagName = box.Node.TagName
-					}
-					fmt.Printf("GREEN BACKGROUND: tagName=%s bgY=%.1f box.Y=%.1f effectiveY=%.1f\n",
-						tagName, bgY, box.Y, effectiveY)
-				}
 				// Phase 12: Check for border-radius
 				borderRadius := box.Style.GetBorderRadius()
 				if borderRadius > 0 {
@@ -807,18 +663,6 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		// Inline elements: box.Height is line box height, but borders "bleed" outside
 		renderHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
 		renderY = effectiveY - box.Border.Top - box.Padding.Top
-		if box.Node != nil && box.Node.TagName == "span" {
-			fmt.Printf("RENDER span: box.Y=%.1f effectiveY=%.1f renderY=%.1f renderHeight=%.1f (border.Top=%.1f padding.Top=%.1f)\n",
-				box.Y, effectiveY, renderY, renderHeight, box.Border.Top, box.Padding.Top)
-		}
-	}
-
-	// Debug: print div2 border rendering
-	if box.Node != nil && box.Node.TagName == "div" {
-		if id, ok := box.Node.GetAttribute("id"); ok && id == "div2" {
-			fmt.Printf("RENDER div2 border: box.Y=%.1f, box.Height=%.1f, renderHeight=%.1f\n",
-				box.Y, box.Height, renderHeight)
-		}
 	}
 
 	// Phase 12: Get border styles for each side
@@ -860,10 +704,6 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Bottom border
 	if box.Border.Bottom > 0 && borderStyles.Bottom != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "bottom"); ok {
-			if color.R == 0 && color.G == 128 && color.B == 0 {
-				fmt.Printf("GREEN BORDER BOTTOM: %s at Y=%.1f-%.1f (outer=%.1f inner=%.1f)\n",
-					box.Node.TagName, innerBottom, outerBottom, outerBottom, innerBottom)
-			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerLeft, outerBottom)
 			r.context.LineTo(innerLeft, innerBottom)
@@ -878,10 +718,6 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Skip left border for LastFragment of split inline (CSS 2.1 §9.2.1.1)
 	if box.Border.Left > 0 && borderStyles.Left != css.BorderStyleNone && !box.IsLastFragment {
 		if color, ok := r.getBorderSideColor(box, "left"); ok {
-			if color.R == 0 && color.G == 128 && color.B == 0 {
-				fmt.Printf("GREEN BORDER LEFT: %s at X=%.1f-%.1f Y=%.1f-%.1f\n",
-					box.Node.TagName, outerLeft, innerLeft, outerTop, outerBottom)
-			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerLeft, outerTop)
 			r.context.LineTo(innerLeft, innerTop)
@@ -896,10 +732,6 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Skip right border for FirstFragment of split inline (CSS 2.1 §9.2.1.1)
 	if box.Border.Right > 0 && borderStyles.Right != css.BorderStyleNone && !box.IsFirstFragment {
 		if color, ok := r.getBorderSideColor(box, "right"); ok {
-			if color.R == 0 && color.G == 128 && color.B == 0 {
-				fmt.Printf("GREEN BORDER RIGHT: %s at X=%.1f-%.1f Y=%.1f-%.1f\n",
-					box.Node.TagName, innerRight, outerRight, outerTop, outerBottom)
-			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerRight, outerTop)
 			r.context.LineTo(outerRight, outerBottom)
@@ -913,10 +745,6 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Top border
 	if box.Border.Top > 0 && borderStyles.Top != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "top"); ok {
-			if color.R == 0 && color.G == 128 && color.B == 0 {
-				fmt.Printf("GREEN BORDER TOP: %s at Y=%.1f-%.1f (outer=%.1f inner=%.1f)\n",
-					box.Node.TagName, outerTop, innerTop, outerTop, innerTop)
-			}
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.MoveTo(outerLeft, outerTop)
 			r.context.LineTo(outerRight, outerTop)
@@ -1027,10 +855,6 @@ func (r *Renderer) drawText(box *layout.Box) {
 		textContent = box.PseudoContent
 	} else if box.Node != nil && box.Node.Type == html.TextNode {
 		textContent = box.Node.Text
-	}
-	if box.Node != nil && textContent != "" {
-		fmt.Printf("DEBUG TEXT: <%s> drawing textContent=%q at (%.1f,%.1f)\n",
-			box.Node.TagName, textContent, box.X, box.Y)
 	}
 	if textContent == "" {
 		return
@@ -1146,13 +970,8 @@ func (r *Renderer) drawImage(box *layout.Box) {
 	imgW := float64(bounds.Dx())
 	imgH := float64(bounds.Dy())
 
-	fmt.Printf("DEBUG DRAW IMG: ImagePath=%s, box.Width=%.0f, box.Height=%.0f, imgW=%.0f, imgH=%.0f\n",
-		box.ImagePath, box.Width, box.Height, imgW, imgH)
-
 	scaleX := box.Width / imgW
 	scaleY := box.Height / imgH
-
-	fmt.Printf("DEBUG DRAW IMG: scaleX=%.2f, scaleY=%.2f\n", scaleX, scaleY)
 
 	r.context.Scale(scaleX, scaleY)
 	r.context.DrawImage(img, 0, 0)
@@ -1161,18 +980,9 @@ func (r *Renderer) drawImage(box *layout.Box) {
 
 // drawBackgroundImage renders a CSS background-image on a box
 func (r *Renderer) drawBackgroundImage(box *layout.Box) {
-	if box.Node != nil && box.Node.TagName == "span" {
-		fmt.Printf("DEBUG BG-IMG: drawBackgroundImage called for span\n")
-	}
 	imgURL, ok := box.Style.GetBackgroundImage()
 	if !ok {
-		if box.Node != nil && box.Node.TagName == "span" {
-			fmt.Printf("DEBUG BG-IMG: No background-image, returning early\n")
-		}
 		return
-	}
-	if box.Node != nil && box.Node.TagName == "span" {
-		fmt.Printf("DEBUG BG-IMG: Has background-image: %s\n", imgURL)
 	}
 
 	img, err := images.LoadImageWithFetcher(imgURL, r.imageFetcher)

@@ -1,7 +1,6 @@
 package layout
 
 import (
-	"fmt"
 	"louis14/pkg/css"
 )
 
@@ -24,8 +23,6 @@ func (le *LayoutEngine) positionFloat(
 		// Left float: position after existing left floats
 		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(lineY, marginBoxHeight)
 		floatX = leftOffset
-		fmt.Printf("    [positionFloat] Left float: %s, leftOffset=%.1f, floatX=%.1f, width=%.1f (marginBox=%.1f)\n",
-			getNodeName(item.Node), leftOffset, floatX, item.Width, marginBoxWidth)
 	} else if floatType == css.FloatRight {
 		// Right float: position before existing right floats
 		_, rightOffset := constraint.ExclusionSpace.AvailableInlineSize(lineY, marginBoxHeight)
@@ -80,30 +77,21 @@ func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset floa
 	leftOffset = 0
 	rightOffset = 0
 
-	if y > 25 && y < 35 && len(le.floats) > le.floatBase {
-		fmt.Printf("DEBUG: getFloatOffsets(y=%.1f) checking %d floats (base=%d)\n", y, len(le.floats)-le.floatBase, le.floatBase)
-	}
 	for i := le.floatBase; i < len(le.floats); i++ {
 		floatInfo := le.floats[i]
 		// Check if this float affects the current Y position
 		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
-		if y > 25 && y < 35 {
-			fmt.Printf("DEBUG:   Float #%d at Y=%.1f-%.1f, side=%v, width=%.1f\n", i, floatInfo.Y, floatBottom, floatInfo.Side, le.getTotalWidth(floatInfo.Box))
-		}
 		if y >= floatInfo.Y && y < floatBottom {
+			// box.Width is border-box (content + padding + borders), so margin-box = margins + box.Width
+			b := floatInfo.Box
 			if floatInfo.Side == css.FloatLeft {
-				floatWidth := le.getTotalWidth(floatInfo.Box)
-				if floatWidth > leftOffset {
-					leftOffset = floatWidth
-				}
+				floatWidth := b.Margin.Left + b.Width + b.Margin.Right
+				// Sum left float widths: left floats stack left-to-right
+				leftOffset += floatWidth
 			} else if floatInfo.Side == css.FloatRight {
-				floatWidth := le.getTotalWidth(floatInfo.Box)
-				if floatWidth > rightOffset {
-			if y > 100 && y < 150 {
-				fmt.Printf("DEBUG: Float #%d at Y=%.1f-%.1f, side=%v, width=%.1f affects y=%.1f\n", i, floatInfo.Y, floatBottom, floatInfo.Side, le.getTotalWidth(floatInfo.Box), y)
-			}
-					rightOffset = floatWidth
-				}
+				floatWidth := b.Margin.Left + b.Width + b.Margin.Right
+				// Sum right float widths: right floats stack right-to-left
+				rightOffset += floatWidth
 			}
 		}
 	}
@@ -161,6 +149,9 @@ func (le *LayoutEngine) getClearY(clearType css.ClearType, currentY float64) flo
 }
 
 // Phase 5 Enhancement: getFloatDropY finds Y position where float of given width will fit
+// CSS 2.1 §9.5.1: Floats must be placed as high as possible (Rule 6). A float only needs
+// to drop when it conflicts with opposite-side floats. Same-side floats stack horizontally
+// and can extend past the container edge.
 func (le *LayoutEngine) getFloatDropY(floatType css.FloatType, floatWidth float64, startY float64, availableWidth float64) float64 {
 	// If available width is 0 (shrink-to-fit parent), skip drop logic
 	if availableWidth <= 0 {
@@ -171,11 +162,17 @@ func (le *LayoutEngine) getFloatDropY(floatType css.FloatType, floatWidth float6
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		leftOffset, rightOffset := le.getFloatOffsets(currentY)
-		remainingWidth := availableWidth - leftOffset - rightOffset
 
-		// Check if float fits at current Y
-		if floatWidth <= remainingWidth {
-			return currentY
+		// Only drop when there's a conflict with opposite-side floats.
+		// Left floats can extend past the container's right edge (CSS 2.1 §9.5.1).
+		if floatType == css.FloatLeft {
+			if rightOffset == 0 || floatWidth <= availableWidth-leftOffset-rightOffset {
+				return currentY
+			}
+		} else {
+			if leftOffset == 0 || floatWidth <= availableWidth-leftOffset-rightOffset {
+				return currentY
+			}
 		}
 
 		// Find the next Y position where a float ends

@@ -17,10 +17,11 @@ const (
 )
 
 type Token struct {
-	Type       TokenType
-	TagName    string
-	Attributes map[string]string
-	Text       string
+	Type        TokenType
+	TagName     string
+	Attributes  map[string]string
+	Text        string
+	SelfClosing bool // True for tags ending with /> (XHTML self-closing syntax)
 }
 
 type Tokenizer struct {
@@ -54,6 +55,20 @@ func (t *Tokenizer) readTag() (Token, error) {
 		for t.pos+2 < len(t.input) {
 			if t.input[t.pos] == '-' && t.input[t.pos+1] == '-' && t.input[t.pos+2] == '>' {
 				t.pos += 3
+				return t.NextToken()
+			}
+			t.pos++
+		}
+		t.pos = len(t.input)
+		return t.NextToken()
+	}
+
+	// Handle <?xml ...?> and other processing instructions
+	if t.pos < len(t.input) && t.input[t.pos] == '?' {
+		// Skip to closing ?>
+		for t.pos+1 < len(t.input) {
+			if t.input[t.pos] == '?' && t.input[t.pos+1] == '>' {
+				t.pos += 2
 				return t.NextToken()
 			}
 			t.pos++
@@ -102,7 +117,7 @@ func (t *Tokenizer) readTag() (Token, error) {
 			t.skipWhitespace()
 			if t.pos < len(t.input) && t.input[t.pos] == '>' {
 				t.pos++
-				break
+				return Token{Type: TokenStartTag, TagName: tagName, Attributes: attributes, SelfClosing: true}, nil
 			}
 		}
 		name, value, err := t.readAttribute()

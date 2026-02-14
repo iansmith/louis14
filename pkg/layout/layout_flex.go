@@ -18,6 +18,19 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	isReverse := direction == css.FlexDirectionRowReverse || direction == css.FlexDirectionColumnReverse
 	isWrapReverse := wrap == css.FlexWrapWrapReverse
 
+	// CSS Box Alignment §6.1: left/right only apply to the inline axis.
+	// For row direction (inline axis = main), left→flex-start, right→flex-end.
+	// For column direction (inline axis ≠ main), left/right fall back to start.
+	if justifyContent == css.JustifyContentLeft {
+		justifyContent = css.JustifyContentFlexStart
+	} else if justifyContent == css.JustifyContentRight {
+		if isRow {
+			justifyContent = css.JustifyContentFlexEnd
+		} else {
+			justifyContent = css.JustifyContentFlexStart
+		}
+	}
+
 	// Container content box dimensions (inside padding+border)
 	contentBoxWidth := flexBox.Width - flexBox.Padding.Left - flexBox.Padding.Right - flexBox.Border.Left - flexBox.Border.Right
 	contentBoxHeight := flexBox.Height - flexBox.Padding.Top - flexBox.Padding.Bottom - flexBox.Border.Top - flexBox.Border.Bottom
@@ -126,7 +139,18 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	// explicit width/height), compute the ideal main size from items.
 	// CSS Flexbox §9.2: The flex container's main size is its max-content size if
 	// the main size property would be auto.
-	if isRow {
+	// Only applies to intrinsic-sizing contexts: inline-flex, floated, or abs/fixed positioned.
+	// Block-level display:flex containers use the available width from their parent.
+	isShrinkToFit := false
+	containerDisplay := flexBox.Style.GetDisplay()
+	if containerDisplay == css.DisplayInlineFlex {
+		isShrinkToFit = true
+	} else if flexBox.Style.GetFloat() != css.FloatNone {
+		isShrinkToFit = true
+	} else if flexBox.Style.GetPosition() == css.PositionAbsolute || flexBox.Style.GetPosition() == css.PositionFixed {
+		isShrinkToFit = true
+	}
+	if isRow && isShrinkToFit {
 		if _, hasExplicitWidth := flexBox.Style.GetLength("width"); !hasExplicitWidth {
 			if _, hasExplicitPctWidth := flexBox.Style.GetPercentage("width"); !hasExplicitPctWidth {
 				// Compute max-content width: sum of all item outer hypothetical main sizes + gaps
@@ -256,6 +280,11 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			}
 		}
 		freeSpace := mainSize - totalItemsMain
+		// For indefinite main size (auto-height column containers), the container
+		// shrink-wraps to content, so there's no free space to distribute.
+		if mainSize == math.MaxFloat64 {
+			freeSpace = 0
+		}
 
 		// Preserve original free space for justify-content fallback detection
 		originalFreeSpace := freeSpace
@@ -313,16 +342,17 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 
 		// Step 9: Main-axis alignment (justify-content)
-		// CSS Flexbox spec: space-between/space-around/space-evenly fall back to flex-start
-		// when free space is negative (overflow) or there's only one item.
+		// CSS Flexbox §8.2: flex-end and center use the actual free space (even if negative).
+		// space-between/space-around/space-evenly fall back to flex-start when
+		// free space is negative (overflow) or there's only one item.
 		var initialOffset, spacing float64
 		switch justifyContent {
 		case css.JustifyContentFlexStart:
 			initialOffset = 0
 		case css.JustifyContentFlexEnd:
-			initialOffset = freeSpace
+			initialOffset = originalFreeSpace
 		case css.JustifyContentCenter:
-			initialOffset = freeSpace / 2
+			initialOffset = originalFreeSpace / 2
 		case css.JustifyContentSpaceBetween:
 			// Fall back to flex-start if overflow or single item
 			if originalFreeSpace < 0 || len(line.Items) == 1 {
@@ -971,6 +1001,14 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 	if isRow {
 		// Row direction: min-width: auto → content-based minimum WIDTH
 		contentMinSize := 0.0
+
+		// CSS Flexbox §9.9.1: For a flex container in row direction with nowrap,
+		// the min-content main size is the SUM of flex items' min-content contributions.
+		// For block containers, it's the MAX of children's min-content widths.
+		itemDisplay := style.GetDisplay()
+		isFlexRow := (itemDisplay == css.DisplayFlex || itemDisplay == css.DisplayInlineFlex) &&
+			(style.GetFlexDirection() == css.FlexDirectionRow || style.GetFlexDirection() == css.FlexDirectionRowReverse)
+
 		for _, child := range node.Children {
 			childStyle := css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
 			if childStyle == nil {
@@ -978,8 +1016,14 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 			}
 			constraint := &ConstraintSpace{AvailableSize: Size{Width: le.viewport.width}}
 			childMinMax := le.ComputeMinMaxSizes(child, constraint, childStyle)
-			if childMinMax.MinContentSize > contentMinSize {
-				contentMinSize = childMinMax.MinContentSize
+			if isFlexRow {
+				// Sum for row-direction flex containers
+				contentMinSize += childMinMax.MinContentSize
+			} else {
+				// Max for block containers
+				if childMinMax.MinContentSize > contentMinSize {
+					contentMinSize = childMinMax.MinContentSize
+				}
 			}
 		}
 

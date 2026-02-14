@@ -1,0 +1,41 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+ <head>
+  <title>CSS Test: overflow hidden clips vertically overflowing content</title>
+  <link rel="author" title="Louis14 Project" href="https://github.com/nicbarker/nicbarker.github.io" />
+  <link rel="help" href="http://www.w3.org/TR/CSS21/visufx.html#overflow" />
+  <link rel="match" href="overflow-hidden-002-ref.xht" />
+  <meta name="assert" content="When overflow is hidden and height is set, content that extends below the element height is clipped. The red child below the container boundary should not be visible." />
+
+  <style type="text/css">
+  .container {
+    width: 100px;
+    height: 100px;
+    overflow: hidden;
+    background-color: green;
+  }
+
+  .spacer {
+    width: 100px;
+    height: 100px;
+    background-color: green;
+  }
+
+  .offscreen {
+    width: 100px;
+    height: 100px;
+    background-color: red;
+  }
+  </style>
+ </head>
+ <body>
+
+  <p>Test passes if there is a filled green square and <strong>no red</strong>.</p>
+
+  <div class="container">
+    <div class="spacer"></div>
+    <div class="offscreen"></div>
+  </div>
+
+ </body>
+</html>

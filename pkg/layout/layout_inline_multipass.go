@@ -1,7 +1,6 @@
 package layout
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"louis14/pkg/css"
@@ -477,36 +476,6 @@ func (le *LayoutEngine) LayoutInlineContent(
 		// Use original constraint - don't accumulate floats across retries
 		items := le.collectInlineItemsClean(children, originalConstraint, containerStyle, overrideStyles)
 
-		// DEBUG: Show collected items
-		if attempt == 0 {
-			fmt.Printf("\n=== PHASE 1: Collected %d items ===\n", len(items))
-			for i, item := range items {
-				typeName := ""
-				switch item.Type {
-				case InlineItemText:
-					typeName = "Text"
-				case InlineItemOpenTag:
-					typeName = "OpenTag"
-				case InlineItemCloseTag:
-					typeName = "CloseTag"
-				case InlineItemFloat:
-					typeName = "Float"
-				case InlineItemAtomic:
-					typeName = "Atomic"
-				case InlineItemBlockChild:
-					typeName = "BlockChild"
-				default:
-					typeName = fmt.Sprintf("Type%d", item.Type)
-				}
-				fmt.Printf("  [%d] %s: %s, Size: %.1fx%.1f\n",
-					i, typeName, getNodeName(item.Node), item.Width, item.Height)
-				if item.Type == InlineItemText {
-					fmt.Printf("       Text: %q\n", truncateString(item.Text, 30))
-				}
-			}
-			fmt.Printf("=== END PHASE 1 ===\n\n")
-		}
-
 		// Phase 2: Break lines (PURE - no side effects!)
 		// Use original constraint - floats will be added in Phase 3
 		lines := le.BreakLines(items, originalConstraint, startY)
@@ -883,10 +852,6 @@ func fragmentsToBoxes(fragments []*Fragment) []*Box {
 	return boxes
 }
 
-// Helper functions for debug logging
-
-
-
 // fragmentToBoxSingle converts a single fragment to a box.
 // Helper for LayoutInlineContentToBoxes when processing fragments individually.
 func fragmentToBoxSingle(frag *Fragment) *Box {
@@ -921,8 +886,6 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 //
 // This allows gradual migration: call this instead of the old inline layout,
 // and the rest of the pipeline keeps working.
-var multipassCallID int
-
 func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	children []*html.Node,
 	containerBox *Box,
@@ -931,13 +894,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	computedStyles map[*html.Node]*css.Style,
 	overrideStyles map[*html.Node]*css.Style,
 ) *InlineLayoutResult {
-	multipassCallID++
-	callID := multipassCallID
-	// DEBUG: Log multi-pass invocation
-	fmt.Printf("\n=== MULTI-PASS [%d]: LayoutInlineContentToBoxes ===\n", callID)
-	fmt.Printf("Container: %s, StartY: %.1f, AvailableWidth: %.1f\n",
-		getNodeName(containerBox.Node), startY, availableWidth)
-	fmt.Printf("Children count: %d\n", len(children))
 
 	// Merge override styles into computedStyles so all lookups find them
 	if overrideStyles != nil {
@@ -958,8 +914,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 	// Run new multi-pass pipeline
 	fragments := le.LayoutInlineContent(children, constraint, startY, containerBox.Style, overrideStyles)
-
-	fmt.Printf("Fragments created: %d\n", len(fragments))
 
 	// LineMetrics tracks line box height separately from content height
 	// This matches CSS 2.1 §10.8.1: line box height is independent of content height
@@ -1052,13 +1006,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			effectiveHeight := lineMetricsEffectiveHeight(lineMetrics)
 
 			if lineMetrics.hasContent && lineMetricsEffectiveHeight(lineMetrics) > 0 {
-				fmt.Printf("  Finalizing line before block: advancing by %.1f (content=%.1f, lineBox=%.1f)\n",
-					effectiveHeight, lineMetrics.contentHeight, lineMetrics.lineBoxHeight)
 				currentY = currentY + effectiveHeight
 				lastFinalizedLineHeight = effectiveHeight // Save before resetting
-			} else if effectiveHeight > 0 {
-				fmt.Printf("  Skipping line finalization: no content (lineBox=%.1f)\n",
-					lineMetrics.lineBoxHeight)
 			}
 			lineMetricsReset(lineMetrics, false) // Clear for content after block child
 
@@ -1069,21 +1018,14 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				childStyle = css.NewStyle()
 			}
 
-			fmt.Printf("\n[Call %d][Fragment %d] BlockChild: %s\n", callID, i, getNodeName(childNode))
-			fmt.Printf("  Fragment Y: %.1f, CurrentY (after line finalize): %.1f\n", frag.Position.Y, currentY)
-
 			// Calculate X position (block children start at left edge)
 			// CSS 2.1 §9.4.3: Block children inside relative-positioned inlines
 			// inherit the relative positioning offset
 			relOffX, relOffY := getRelativeOffset()
 			childX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + relOffX
 			childY := currentY + relOffY
-			fmt.Printf("  Calculated childX: %.1f (container.X=%.1f + border=%.1f + padding=%.1f + relOff=%.1f)\n",
-				childX, containerBox.X, containerBox.Border.Left, containerBox.Padding.Left, relOffX)
 
 			// Recursively layout the block child
-			fmt.Printf("  Calling layoutNode(x=%.1f, y=%.1f, availWidth=%.1f)...\n",
-				childX, childY, availableWidth)
 			childBox := le.layoutNode(
 				childNode,
 				childX,
@@ -1093,11 +1035,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				containerBox,
 			)
 
-			fmt.Printf("  Result: Box at (%.1f, %.1f) size %.1fx%.1f\n",
-				childBox.X, childBox.Y, childBox.Width, childBox.Height)
-			fmt.Printf("  Margins: T=%.1f R=%.1f B=%.1f L=%.1f\n",
-				childBox.Margin.Top, childBox.Margin.Right, childBox.Margin.Bottom, childBox.Margin.Left)
-
 			boxes = append(boxes, childBox)
 
 			// Update Y for next content (advance past this block)
@@ -1105,8 +1042,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			// CRITICAL: childBox.Height already includes borders and padding (it's total box height)
 			// Only add margins to get the total height including spacing
 			totalHeight := childBox.Margin.Top + childBox.Height + childBox.Margin.Bottom
-			fmt.Printf("  [Fragment %d] TotalHeight: %.1f (margin.Top=%.1f + height=%.1f + margin.Bottom=%.1f), Advancing currentY: %.1f → %.1f\n",
-				i, totalHeight, childBox.Margin.Top, childBox.Height, childBox.Margin.Bottom, currentY, currentY+totalHeight)
 			// CRITICAL: Only advance Y for elements in normal flow
 			// Absolutely positioned and fixed positioned elements are removed from flow
 			floatType := css.FloatNone
@@ -1123,11 +1058,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 				// Reset currentX - block child takes full width, next content starts at left
 				currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
-				fmt.Printf("  Reset currentX to left edge: %.1f, currentLineY updated to %.1f\n", currentX, currentLineY)
-			} else {
-				// Child is out of flow - don't advance Y
-				fmt.Printf("  [Fragment %d] Out-of-flow element (Position=%v, Float=%v), NOT advancing currentY (stays at %.1f)\n",
-					i, childBox.Position, floatType, currentY)
 			}
 		} else if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
 			// Inline element marker (OpenTag or CloseTag)
@@ -1138,18 +1068,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// OpenTag - push to stack and record fragment index
 				// CRITICAL: Use frag.Position.X not currentX - fragments are pre-positioned
 				// accounting for floats by line breaking phase
-				fmt.Printf("\n[Fragment %d] OpenTag: %s\n", i, getNodeName(frag.Node))
-				fmt.Printf("  Position: (%.1f, %.1f), CurrentX: %.1f\n",
-					frag.Position.X, frag.Position.Y, currentX)
-
 				// CRITICAL: If the OpenTag is on a new line (e.g., after <br>),
 				// finalize the previous line before recording startY.
 				// Without this, span.startY captures the previous line's Y.
 				if frag.Position.Y != currentLineY {
 					effectiveHeight := lineMetricsEffectiveHeight(lineMetrics)
 					if lineMetrics.hasContent && effectiveHeight > 0 {
-						fmt.Printf("  OpenTag line break: Y %.1f → %.1f, advancing by %.1f\n",
-							currentLineY, frag.Position.Y, effectiveHeight)
 						currentY = currentLineY + effectiveHeight
 						lastFinalizedLineHeight = effectiveHeight
 						lineMetricsReset(lineMetrics, false)
@@ -1180,16 +1104,10 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					lineHeight := frag.Style.GetLineHeight()
 					if lineHeight > lineMetrics.lineBoxHeight {
 						lineMetrics.lineBoxHeight = lineHeight
-						fmt.Printf("  OpenTag <%s>: Set line-box height to %.1f (line-height)\n",
-							frag.Node.TagName, lineHeight)
 					}
 				}
 			} else {
 				// CloseTag - pop from stack and create wrapper box
-				fmt.Printf("\n[Call %d][Fragment %d] CloseTag: %s (currentY=%.1f)\n", callID, i, getNodeName(frag.Node), currentY)
-				fmt.Printf("  Position: (%.1f, %.1f), CurrentX: %.1f\n",
-					frag.Position.X, frag.Position.Y, currentX)
-
 				if len(inlineStack) > 0 {
 					// Find matching span on stack (should be top for well-formed HTML)
 					var span *inlineSpan
@@ -1220,9 +1138,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 						if hasBlockChild {
 							// Block-in-inline: Create fragment boxes (CSS 2.1 §9.2.1.1)
-							fmt.Printf("  Block-in-inline detected! Creating fragment boxes for <%s> (container=<%s>)\n",
-								getNodeName(span.node), getNodeName(containerBox.Node))
-
 							// Check if there's content before the block
 							hasContentBefore := false
 							contentBeforeMaxX := span.startX
@@ -1237,8 +1152,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							}
 
 							// Fragment 1: Content before block (if any)
-							fmt.Printf("    hasContentBefore=%v, span.startX=%.1f, contentBeforeMaxX=%.1f\n",
-								hasContentBefore, span.startX, contentBeforeMaxX)
 							if hasContentBefore {
 								// Compute border, padding, margin from style
 								border := span.style.GetBorderWidth()
@@ -1275,22 +1188,14 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								// Track fragment height for line height calculation
 								if lineHeight > lineMetrics.lineBoxHeight {
 									lineMetrics.lineBoxHeight = lineHeight
-									fmt.Printf("    Updated lineBoxHeight to %.1f from fragment1\n", lineMetrics.lineBoxHeight)
 								}
-
-								fmt.Printf("    Fragment 1 (first): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
-									fragment1.X, fragment1.Y, fragment1.Width, fragment1.Height, lineHeight,
-									border.Top, border.Right, border.Bottom, border.Left)
 							}
 
 							// Fragment 2: Content after block (if any)
 							endX := frag.Position.X
-							fmt.Printf("    Checking Fragment 2: endX=%.1f, span.startX=%.1f, currentY=%.1f, currentLineY=%.1f, frag.Position.Y=%.1f\n",
-								endX, span.startX, currentY, currentLineY, frag.Position.Y)
 							if endX > span.startX {
 								// Use currentY which is correctly updated after block child layout
 								afterBlockY := currentY
-								fmt.Printf("    Creating Fragment 2 at Y=%.1f (using currentY)\n", afterBlockY)
 
 								// Compute border, padding, margin from style
 								border := span.style.GetBorderWidth()
@@ -1317,12 +1222,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								// Track fragment height for line height calculation
 								if lineHeight > lineMetrics.lineBoxHeight {
 									lineMetrics.lineBoxHeight = lineHeight
-									fmt.Printf("    Updated lineBoxHeight to %.1f from fragment2\n", lineMetrics.lineBoxHeight)
 								}
-
-								fmt.Printf("    Fragment 2 (last): X=%.1f Y=%.1f W=%.1f H=%.1f (line-height=%.1f) Border=%.1f/%.1f/%.1f/%.1f\n",
-									fragment2.X, fragment2.Y, fragment2.Width, fragment2.Height, lineHeight,
-									border.Top, border.Right, border.Bottom, border.Left)
 							}
 						} else {
 							// Normal inline box (not split)
@@ -1355,7 +1255,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							if isEmpty {
 								// Empty inline: width = full horizontal border + padding (no content)
 								wrapperWidth = border.Left + padding.Left + padding.Right + border.Right
-								fmt.Printf("  Empty inline element - using border+padding: width %.1f\n", wrapperWidth)
 							}
 
 							// Calculate height from line-height or font-size
@@ -1396,12 +1295,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							// Box height is the line box height (CSS 2.1 §10.8.1)
 							// Borders/padding "bleed" outside this and are drawn separately by the render phase
 							// wrapperHeight already equals effective height (line box height)
-							fmt.Printf("  Wrapper box height: line-height %.1f (borders/padding rendered separately)\n",
-								wrapperHeight)
-
-							fmt.Printf("  Creating wrapper box: X %.1f → %.1f (width %.1f, height %.1f)\n",
-								span.startX, endX, wrapperWidth, wrapperHeight)
-
 						// Convert from content-relative to absolute coordinates
 						// Fragment positions are relative to container's content area
 						// (after border+padding), so add container's offset
@@ -1439,7 +1332,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 							// extent by extending the background/borders (see render.go lines 388-393)
 							if wrapperHeight > lineMetricsEffectiveHeight(lineMetrics) {
 								lineMetrics.lineBoxHeight = wrapperHeight
-								fmt.Printf("  Updated lineBoxHeight to %.1f from line box height\n", lineMetrics.lineBoxHeight)
 							}
 						}
 
@@ -1452,57 +1344,83 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 						// Remove span from stack
 						inlineStack = append(inlineStack[:spanIdx], inlineStack[spanIdx+1:]...)
-						fmt.Printf("  Wrapper box(es) created, stack size: %d\n", len(inlineStack))
-					} else {
-						fmt.Printf("  ⚠️  WARNING: CloseTag without matching OpenTag!\n")
 					}
 				}
 			}
 		} else if frag.Type == FragmentFloat {
-			// Float - recursively layout its contents like a block child
+			// Float - recursively layout its contents, then position as a float
 			floatNode := frag.Node
 			floatStyle := computedStyles[floatNode]
 			if floatStyle == nil {
 				floatStyle = css.NewStyle()
 			}
 
-			fmt.Printf("\n[Fragment %d] Float: %s\n", i, getNodeName(floatNode))
-			fmt.Printf("  Fragment Position: (%.1f, %.1f), Size: %.1fx%.1f\n",
-				frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
-
-			// Recursively layout the float's content
-			fmt.Printf("  Calling layoutNode for float content...\n")
-
 			containerContentLeft := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+			containerAvailWidth := containerBox.Width - containerBox.Border.Left - containerBox.Padding.Left -
+				containerBox.Padding.Right - containerBox.Border.Right
 
-			// Pass container's left content edge to layoutNode
-			// layoutNode's float positioning will calculate the correct offset
+			// Track floats before layoutNode (it may add floats as side effect)
+			floatCountBefore := len(le.floats)
+
+			// Layout the float to get actual dimensions (estimated sizes from Phase 1 may be wrong)
 			floatBox := le.layoutNode(
 				floatNode,
 				containerContentLeft,
 				currentY,
-				frag.Size.Width, // Use float's explicit width
+				containerAvailWidth,
 				computedStyles,
 				containerBox,
 			)
 
-			fmt.Printf("  Float box at (%.1f, %.1f) size %.1fx%.1f\n",
-				floatBox.X, floatBox.Y, floatBox.Width, floatBox.Height)
+			// Remove any floats added during layoutNode (to avoid double-counting)
+			if len(le.floats) > floatCountBefore {
+				le.floats = le.floats[:floatCountBefore]
+			}
+
+			// Now position the float properly using actual dimensions
+			floatType := floatStyle.GetFloat()
+			floatY := currentY
+
+			// Apply clear property
+			clearType := floatStyle.GetClear()
+			if clearType != css.ClearNone {
+				floatY = le.getClearY(clearType, floatY)
+			}
+
+			// Get float offsets at the target Y
+			leftOffset, rightOffset := le.getFloatOffsets(floatY)
+
+			// Calculate correct X position
+			var newX float64
+			if floatType == css.FloatLeft {
+				newX = containerContentLeft + leftOffset + floatBox.Margin.Left
+			} else {
+				floatWidth := floatBox.Margin.Left + floatBox.Width + floatBox.Margin.Right
+				newX = containerContentLeft + containerAvailWidth - rightOffset - floatWidth + floatBox.Margin.Left
+			}
+			newY := floatY + floatBox.Margin.Top
+
+			// Reposition box and children
+			deltaX := newX - floatBox.X
+			deltaY := newY - floatBox.Y
+			if deltaX != 0 || deltaY != 0 {
+				floatBox.X = newX
+				floatBox.Y = newY
+				le.shiftChildren(floatBox, deltaX, deltaY)
+			}
+
+			// Add float to engine's float list
+			le.addFloat(floatBox, floatType, floatY)
 
 			// Mark as floated for rendering
 			floatBox.Position = css.PositionAbsolute
 			floatBox.Parent = containerBox
 			boxes = append(boxes, floatBox)
-
-			// Floats don't affect currentY or currentX for inline flow
-			// (they're out of flow)
 		} else if frag.Type == FragmentAtomic && frag.Node != nil && frag.Node.TagName != "img" {
 			// Non-replaced atomic inline (inline-block) - recursively layout its content
 			// Images and other replaced elements use fragmentToBoxSingle instead
 			atomicNode := frag.Node
 			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X
-			fmt.Printf("\n[Fragment %d] Atomic inline-block: %s at X=%.1f Y=%.1f size %.1fx%.1f\n",
-				i, getNodeName(atomicNode), absX, currentY, frag.Size.Width, frag.Size.Height)
 
 			atomicBox := le.layoutNode(
 				atomicNode,
@@ -1528,8 +1446,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					currentX = boxRight
 				}
 
-				fmt.Printf("  Atomic box: X=%.1f Y=%.1f W=%.1f H=%.1f children=%d\n",
-					atomicBox.X, atomicBox.Y, atomicBox.Width, atomicBox.Height, len(atomicBox.Children))
 			}
 		} else {
 			// Regular fragment - convert to box
@@ -1538,11 +1454,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// Fragment X is relative to line start (content area);
 				// add container's content area offset for absolute position
 				box.X += containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
-				fmt.Printf("\nDEBUG BOXPOS: frag.Pos.X=%.1f + container(X=%.1f + border.L=%.1f + pad.L=%.1f) = box.X=%.1f for %s\n",
-					frag.Position.X, containerBox.X, containerBox.Border.Left, containerBox.Padding.Left, box.X, getNodeName(frag.Node))
-				fmt.Printf("\n[Fragment %d] %v: %s\n", i, frag.Type, getNodeName(frag.Node))
-				fmt.Printf("  Fragment Position: (%.1f, %.1f), Size: %.1fx%.1f\n",
-					frag.Position.X, frag.Position.Y, frag.Size.Width, frag.Size.Height)
 
 				// Check if we've moved to a new line (Y changed)
 				if frag.Position.Y != currentLineY {
@@ -1552,14 +1463,10 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					// FIX: Only advance if the previous line had actual content (not just OpenTag markers)
 					// This prevents double-advancement when OpenTag sets line-height before content appears
 					if lineMetrics.hasContent && lineMetricsEffectiveHeight(lineMetrics) > 0 {
-						fmt.Printf("  Line break: Y %.1f → %.1f, advancing by %.1f (content=%.1f, lineBox=%.1f)\n",
-						currentLineY, frag.Position.Y, effectiveHeight, lineMetrics.contentHeight, lineMetrics.lineBoxHeight)
 					currentY = currentLineY + effectiveHeight
 						lastFinalizedLineHeight = effectiveHeight // Save before resetting
 						lineMetricsReset(lineMetrics, false) // Clear both content and line-box height
 					} else if effectiveHeight > 0 {
-						fmt.Printf("  Line break: Y %.1f → %.1f, NO content - preserving lineBox=%.1f\n",
-							currentLineY, frag.Position.Y, lineMetrics.lineBoxHeight)
 						lineMetricsReset(lineMetrics, true) // Preserve line-box height from open inlines
 					}
 					currentLineY = frag.Position.Y
@@ -1572,7 +1479,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				relOffX, relOffY := getRelativeOffset()
 				targetY := currentY + relOffY
 				if box.Y != targetY {
-					fmt.Printf("  ⚠️  Correcting Y: %.1f → %.1f (currentY=%.1f + relOff=%.1f)\n", box.Y, targetY, currentY, relOffY)
 					box.Y = targetY
 				}
 				if relOffX != 0 {
@@ -1580,9 +1486,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 
 				// Track content height and mark that line has content
-				fmt.Printf("  Box.Height=%.1f, content=%.1f, lineBox=%.1f\n",
-					box.Height, lineMetrics.contentHeight, lineMetrics.lineBoxHeight)
-
 				// CSS 2.1 §9.4.2: Whitespace-only text doesn't count as content
 				isContent := false
 				if frag.Type == FragmentText {
@@ -1606,21 +1509,10 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					}
 				}
 
-				fmt.Printf("  Line metrics: content=%.1f, lineBox=%.1f, effective=%.1f, hasContent=%v\n",
-					lineMetrics.contentHeight, lineMetrics.lineBoxHeight,
-					lineMetricsEffectiveHeight(lineMetrics), lineMetrics.hasContent)
-
-				if frag.Type == FragmentText {
-					fmt.Printf("  Text: %q\n", truncateString(frag.Text, 30))
-				}
-				fmt.Printf("  Final Box Position: (%.1f, %.1f), currentLineMaxH: %.1f\n",
-					box.X, box.Y, lineMetricsEffectiveHeight(lineMetrics))
-
 				// Update currentX to track rightmost position
 				boxRight := box.X + box.Width
 				if boxRight > currentX {
 					currentX = boxRight
-					fmt.Printf("  Updated currentX: %.1f\n", currentX)
 				}
 
 				box.Parent = containerBox
@@ -1629,21 +1521,16 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		}
 	}
 
-	fmt.Printf("\nTotal boxes created: %d\n", len(boxes))
-
 	// Apply text-align to inline children
 	if containerBox.Style != nil {
 		display := containerBox.Style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock {
 			if textAlign, ok := containerBox.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
 				contentWidth := containerBox.Width - containerBox.Padding.Left - containerBox.Padding.Right - containerBox.Border.Left - containerBox.Border.Right
-				fmt.Printf("DEBUG: Applying text-align=%s to %d boxes\n", textAlign, len(boxes))
 				le.applyTextAlignToBoxes(boxes, containerBox, textAlign, contentWidth)
 			}
 		}
 	}
-
-	fmt.Printf("=== END MULTI-PASS ===\n\n")
 
 	// Determine final line height: use current line if active, otherwise last finalized
 	finalLineHeight := lineMetricsEffectiveHeight(lineMetrics)
@@ -1672,9 +1559,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		LineHeight: finalLineHeight, // Height of the current or last finalized line
 		LineBoxes:  inlineBoxes,     // Only inline boxes (not block children)
 	}
-
-	fmt.Printf("DEBUG: Returning InlineLayoutResult: currentY=%.1f, currentLineMaxH=%.1f, lastFinalizedH=%.1f, finalH=%.1f, boxes=%d\n",
-		currentY, lineMetricsEffectiveHeight(lineMetrics), lastFinalizedLineHeight, finalLineHeight, len(boxes))
 
 	return &InlineLayoutResult{
 		ChildBoxes:     boxes,
@@ -1708,34 +1592,6 @@ func (le *LayoutEngine) layoutInlineContentWIP(
 	for _, child := range node.Children {
 		le.CollectInlineItems(child, state, computedStyles)
 	}
-
-	// DEBUG: Show collected items
-	fmt.Printf("\n=== PHASE 1: Collected %d items ===\n", len(state.Items))
-	for i, item := range state.Items {
-		typeName := ""
-		switch item.Type {
-		case InlineItemText:
-			typeName = "Text"
-		case InlineItemOpenTag:
-			typeName = "OpenTag"
-		case InlineItemCloseTag:
-			typeName = "CloseTag"
-		case InlineItemFloat:
-			typeName = "Float"
-		case InlineItemAtomic:
-			typeName = "Atomic"
-		case InlineItemBlockChild:
-			typeName = "BlockChild"
-		default:
-			typeName = fmt.Sprintf("Type%d", item.Type)
-		}
-		fmt.Printf("  [%d] %s: %s, Size: %.1fx%.1f\n",
-			i, typeName, getNodeName(item.Node), item.Width, item.Height)
-		if item.Type == InlineItemText {
-			fmt.Printf("       Text: %q\n", truncateString(item.Text, 30))
-		}
-	}
-	fmt.Printf("=== END PHASE 1 ===\n\n")
 
 	// Phase 2 & 3: Line breaking with retry when floats change available width
 	// This implements the Gecko-style retry mechanism (RedoMoreFloats)
@@ -1943,7 +1799,8 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 
 		// Check for floats BEFORE display switch - floated elements compute to
 		// display:block per CSS spec, but should be treated as float items regardless
-		if style.GetFloat() != css.FloatNone {
+		floatVal := style.GetFloat()
+		if floatVal != css.FloatNone {
 			// Floated elements become atomic items
 			// NEW ARCHITECTURE: Use ComputeMinMaxSizes instead of layoutNode!
 			// This is PURE - no side effects, no float pollution
@@ -1958,9 +1815,14 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			// Height will be computed during actual layout in Phase 3
 			width := sizes.MaxContentSize
 
-			// Estimate height based on font size (will be accurate in Phase 3)
-			// TODO: Make ComputeMinMaxSizes return height as well
-			height := style.GetFontSize() * 1.2 // Rough estimate
+			// Use explicit CSS height if available, otherwise estimate from font size
+			height := style.GetFontSize() * 1.2 // Default estimate
+			if h, ok := style.GetLength("height"); ok {
+				// Explicit height: compute border-box height
+				padding := style.GetPadding()
+				border := style.GetBorderWidth()
+				height = h + padding.Top + padding.Bottom + border.Top + border.Bottom
+			}
 
 			item := &InlineItem{
 				Type:   InlineItemFloat,
@@ -1979,8 +1841,6 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem, css.DisplayFlex:
 			// Block elements in inline contexts are handled as BlockChild items
 			// They force line breaks before and after, and require recursive layout
-			fmt.Printf("  [CollectItems] Found block child: %s (display=%v)\n",
-				getNodeName(node), display)
 			item := &InlineItem{
 				Type:   InlineItemBlockChild,
 				Node:   node,
@@ -2449,7 +2309,6 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 					Parent:   parent,
 				}
 				boxes = append(boxes, textBox)
-				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
 
 				// Update fragment bounds for all open inline elements
@@ -2569,7 +2428,6 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 	boxes := []*Box{}
 	retryNeeded := false
 
-	fmt.Printf("DEBUG MP CONSTRUCT: %d lines to construct\n", len(state.Lines))
 	for _, line := range state.Lines {
 		// Calculate starting X for this line (accounting for floats)
 		leftOffsetBefore, _ := le.getFloatOffsets(line.Y)
@@ -2647,7 +2505,6 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					Parent:   parent,
 				}
 				boxes = append(boxes, textBox)
-				fmt.Printf("DEBUG MP CONSTRUCT: Added text box with content=%q\n", item.Text)
 				currentX += item.Width
 
 				// Update fragment bounds for all open inline elements
@@ -2726,8 +2583,6 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 			case InlineItemAtomic:
 				// Atomic inline (inline-block) - recursively layout its content
 				// Use the pre-computed width as the available width for its children
-				fmt.Printf("DEBUG ATOMIC: layoutNode for <%s> at X=%.1f Y=%.1f availW=%.1f\n",
-					item.Node.TagName, currentX, line.Y, item.Width)
 				atomicBox := le.layoutNode(
 					item.Node,
 					currentX,
@@ -2737,17 +2592,6 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					parent,
 				)
 				if atomicBox != nil {
-					fmt.Printf("DEBUG ATOMIC: result box X=%.1f Y=%.1f W=%.1f H=%.1f children=%d\n",
-						atomicBox.X, atomicBox.Y, atomicBox.Width, atomicBox.Height, len(atomicBox.Children))
-					for ci, ch := range atomicBox.Children {
-						text := ""
-						if ch.Node != nil && ch.Node.Type == html.TextNode {
-							text = ch.Node.Text
-						}
-						fmt.Printf("  DEBUG ATOMIC child[%d]: X=%.1f Y=%.1f W=%.1f H=%.1f text=%q\n",
-							ci, ch.X, ch.Y, ch.Width, ch.Height, text)
-					}
-
 					// Apply vertical alignment to inline-block
 					// For baseline alignment, the inline-block's baseline (last line box's baseline)
 					// should align with the parent line's baseline
@@ -2757,13 +2601,10 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					// Use actual width (might include margins/padding/borders)
 					actualWidth := le.getTotalWidth(atomicBox)
 					currentX += actualWidth
-					fmt.Printf("DEBUG ATOMIC: after align Y=%.1f, currentX=%.1f\n", atomicBox.Y, currentX)
 				}
 
 			case InlineItemBlockChild:
 				// Block-in-inline: Block children split inline elements into fragments (CSS 2.1 §9.2.1.1)
-				fmt.Printf("DEBUG MP: Block child <%s> splits %d open inline elements\n", item.Node.TagName, len(openInlines))
-
 				// STEP 1: Complete current fragments for ALL open inline elements
 				for i := range openInlines {
 					ctx := &openInlines[i]
@@ -2786,13 +2627,10 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 							IsLastFragment:  false,                            // Not last - more content after block
 						}
 						ctx.completedFragments = append(ctx.completedFragments, fragmentBox)
-						fmt.Printf("  Completed fragment for <%s>: X=%.1f Y=%.1f W=%.1f H=%.1f (first=%v)\n",
-							ctx.node.TagName, fragmentBox.X, fragmentBox.Y, fragmentBox.Width, fragmentBox.Height, fragmentBox.IsFirstFragment)
 					}
 				}
 
 				// STEP 2: Layout the block child
-				fmt.Printf("DEBUG MP: Laying out block child <%s> at Y=%.1f\n", item.Node.TagName, line.Y)
 				blockBox := le.layoutNode(
 					item.Node,
 					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
@@ -2822,8 +2660,6 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				for i := state.FloatBaseIndex; i < len(le.floats); i++ {
 					if le.floats[i].Box != nil && le.floats[i].Box.Node == item.Node {
 						existingFloatBox = le.floats[i].Box
-						fmt.Printf("DEBUG MP: Float <%s> already laid out at X=%.1f Y=%.1f, reusing\n",
-							item.Node.TagName, existingFloatBox.X, existingFloatBox.Y)
 						break
 					}
 				}
@@ -2835,8 +2671,6 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				}
 
 				// Layout the float to get its dimensions
-				fmt.Printf("DEBUG MP: Laying out float <%s> at Y=%.1f\n", item.Node.TagName, line.Y)
-
 				// Track float count before layoutNode (layoutNode may add float as side effect)
 				floatCountBefore := len(le.floats)
 
@@ -2850,12 +2684,8 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				)
 
 				if floatBox != nil {
-					fmt.Printf("DEBUG MP: Float box initially at X=%.1f Y=%.1f W=%.1f H=%.1f\n",
-						floatBox.X, floatBox.Y, floatBox.Width, floatBox.Height)
-
 					// Remove any floats added during layoutNode (float seeing itself bug)
 					if len(le.floats) > floatCountBefore {
-						fmt.Printf("DEBUG MP: Removing %d floats added during layoutNode\n", len(le.floats)-floatCountBefore)
 						le.floats = le.floats[:floatCountBefore]
 					}
 
@@ -2863,6 +2693,15 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					floatType := item.Style.GetFloat()
 					floatWidth := le.getTotalWidth(floatBox)
 					floatY := line.Y
+
+					// CSS 2.1 §9.5.2: Apply clear property — move float below previous floats
+					if item.Style != nil {
+						clearType := item.Style.GetClear()
+						if clearType != css.ClearNone {
+							floatY = le.getClearY(clearType, floatY)
+						}
+					}
+
 					// IMPORTANT: Get fresh float offsets BEFORE positioning this float
 					// Don't use leftOffsetBefore which was captured at start of line
 					leftOffset, rightOffset := le.getFloatOffsets(floatY)
@@ -2874,21 +2713,15 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 						baseX := state.ContainerBox.X + state.Border.Left + state.Padding.Left
 						floatClearX := baseX + leftOffset + floatBox.Margin.Left
 						inlineEndX := currentX + floatBox.Margin.Left
-						fmt.Printf("DEBUG MP: Left float positioning - baseX=%.1f leftOffset=%.1f floatClearX=%.1f currentX=%.1f inlineEndX=%.1f\n",
-							baseX, leftOffset, floatClearX, currentX, inlineEndX)
 						if inlineEndX > floatClearX {
 							newX = inlineEndX
-							fmt.Printf("DEBUG MP: Using inlineEndX=%.1f\n", newX)
 						} else {
 							newX = floatClearX
-							fmt.Printf("DEBUG MP: Using floatClearX=%.1f\n", newX)
 						}
 					} else {
 						// Right float
 						baseX := state.ContainerBox.X + state.Border.Left + state.Padding.Left
 						newX = baseX + state.AvailableWidth - rightOffset - floatWidth + floatBox.Margin.Left
-						fmt.Printf("DEBUG MP: Right float calc - baseX=%.1f avail=%.1f rightOff=%.1f floatW=%.1f -> X=%.1f\n",
-							baseX, state.AvailableWidth, rightOffset, floatWidth, newX)
 					}
 					newY := floatY + floatBox.Margin.Top
 
@@ -2905,14 +2738,10 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					floatBox.X = newX
 					floatBox.Y = newY
 
-					fmt.Printf("DEBUG MP: Float repositioned to X=%.1f Y=%.1f (delta X=%.1f Y=%.1f)\n",
-						floatBox.X, floatBox.Y, deltaX, deltaY)
-
 					boxes = append(boxes, floatBox)
 
 					// Add float to engine's float list
 					le.addFloat(floatBox, floatType, floatY)
-					fmt.Printf("DEBUG MP: Added %v float to list, currentX before=%.1f\n", floatType, currentX)
 
 					// Update currentX to account for the float we just added
 					// (subsequent inline content must clear the float)
@@ -2920,24 +2749,16 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 						leftOffsetNew, _ := le.getFloatOffsets(line.Y)
 						baseX := state.ContainerBox.X + state.Border.Left + state.Padding.Left
 						newCurX := baseX + leftOffsetNew
-						fmt.Printf("DEBUG MP: Left float - leftOffset=%.1f, baseX=%.1f, newCurX=%.1f\n",
-							leftOffsetNew, baseX, newCurX)
 						if newCurX > currentX {
 							currentX = newCurX
 						}
 					}
-					fmt.Printf("DEBUG MP: currentX after=%.1f\n", currentX)
-
 					// Check if this float changes available width for this line
 					leftOffsetAfter, _ := le.getFloatOffsets(line.Y)
 					if leftOffsetAfter != leftOffsetBefore {
 						// Float changed available width - retry needed
-						fmt.Printf("DEBUG MP: Float changed available width %.1f -> %.1f, retry needed\n",
-							leftOffsetBefore, leftOffsetAfter)
 						retryNeeded = true
 					}
-				} else {
-					fmt.Printf("DEBUG MP: Float box was nil!\n")
 				}
 			}
 		}

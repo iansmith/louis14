@@ -1,0 +1,20 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>CSS Test Reference</title>
+    <style type="text/css">
+        /* Ahem at 16px: each char (including space) is 16px wide.
+           word-spacing:16px adds 16px to each space, making space=32px.
+           "X X" = 16+32+16 = 64px.
+           Reference: "X  X" (two spaces) = 16+16+16+16 = 64px. */
+        p.ref {
+            font-family: Ahem;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <p>Test passes if the two lines below are identical.</p>
+    <p class="ref">X  X</p>
+</body>
+</html>

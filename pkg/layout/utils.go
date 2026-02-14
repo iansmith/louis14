@@ -118,18 +118,43 @@ func (le *LayoutEngine) getTotalWidth(box *Box) float64 {
 		box.Padding.Right + box.Border.Right + box.Margin.Right
 }
 
+// computeShrinkToFitChildWidth computes the intrinsic margin-box width of a child box
+// for use in shrink-to-fit calculations. For children with explicit width, uses their
+// border-box width + margins. For auto-width block children, recursively computes
+// the intrinsic width based on their content rather than their expanded width.
+func (le *LayoutEngine) computeShrinkToFitChildWidth(box *Box) float64 {
+	// Children with explicit width: use actual margin-box (box.Width is border-box)
+	if box.Style != nil {
+		if _, hasW := box.Style.GetLength("width"); hasW {
+			return box.Margin.Left + box.Width + box.Margin.Right
+		}
+		if _, hasPct := box.Style.GetPercentage("width"); hasPct {
+			return box.Margin.Left + box.Width + box.Margin.Right
+		}
+	}
+	// Floats and inline-blocks have their own shrink-to-fit: use actual width
+	if box.Style != nil && box.Style.GetFloat() != css.FloatNone {
+		return box.Margin.Left + box.Width + box.Margin.Right
+	}
+	// Auto-width block child: compute intrinsic width from children
+	if len(box.Children) == 0 {
+		return box.Margin.Left + box.Width + box.Margin.Right
+	}
+	maxChild := 0.0
+	for _, child := range box.Children {
+		childWidth := le.computeShrinkToFitChildWidth(child)
+		if childWidth > maxChild {
+			maxChild = childWidth
+		}
+	}
+	intrinsicWidth := maxChild + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+	return box.Margin.Left + intrinsicWidth + box.Margin.Right
+}
+
 // adjustChildrenY recursively adjusts Y positions of all children by delta
 func (le *LayoutEngine) adjustChildrenY(box *Box, delta float64) {
-	if box.Node != nil && box.Node.TagName != "" {
-		fmt.Printf("DEBUG adjustChildrenY: %s delta=%.1f, %d children\n",
-			box.Node.TagName, delta, len(box.Children))
-	}
 	for _, child := range box.Children {
-		oldY := child.Y
 		child.Y += delta
-		if child.Node != nil && child.Node.TagName == "span" {
-			fmt.Printf("  Adjusted span child from Y=%.1f to Y=%.1f\n", oldY, child.Y)
-		}
 		le.adjustChildrenY(child, delta)
 	}
 }

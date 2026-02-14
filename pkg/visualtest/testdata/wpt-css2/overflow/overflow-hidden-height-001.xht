@@ -1,0 +1,27 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+ <head>
+  <title>CSS Test: overflow hidden with explicit height clips text content</title>
+  <link rel="author" title="Louis14 Project" href="https://github.com/nicbarker/nicbarker.github.io" />
+  <link rel="help" href="http://www.w3.org/TR/CSS21/visufx.html#overflow" />
+  <link rel="match" href="overflow-hidden-height-001-ref.xht" />
+  <meta name="assert" content="When overflow is hidden and height is explicitly set, text content that would extend beyond the element height is clipped. Only the first line of text should be visible." />
+
+  <style type="text/css">
+  div {
+    width: 200px;
+    height: 1.2em;
+    overflow: hidden;
+    line-height: 1.2;
+    color: green;
+  }
+  </style>
+ </head>
+ <body>
+
+  <p>Test passes if there is a single line of green text below that says "First line".</p>
+
+  <div>First line<br/>Second line should be hidden<br/>Third line should be hidden</div>
+
+ </body>
+</html>

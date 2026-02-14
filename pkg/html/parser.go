@@ -90,7 +90,8 @@ func (p *Parser) Parse() (*Document, error) {
 			}
 
 			// Check if this is a self-closing/void element
-			if !p.isSelfClosing(token.TagName) {
+			// In XHTML, any element can be self-closing with /> syntax
+			if !p.isSelfClosing(token.TagName) && !token.SelfClosing {
 				// Push onto stack to become new parent
 				p.push(node)
 			}
