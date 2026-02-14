@@ -105,7 +105,8 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 		box.X = cbX + cbWidth - offset.Right - box.Margin.Right - box.Width -
 			box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
 	} else {
-		box.X = cbX + box.Margin.Left
+		// CSS 2.1 §10.3.7: When left and right are auto, use the static position.
+		// box.X already contains the static position from normal-flow layout.
 	}
 
 	// CSS 2.1 §10.6.4: Vertical positioning for absolutely positioned elements
@@ -148,6 +149,7 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 		box.Y = cbY + cbHeight - offset.Bottom - box.Margin.Bottom - box.Height -
 			box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
 	} else {
-		box.Y = cbY + box.Margin.Top
+		// CSS 2.1 §10.6.4: When top and bottom are auto, use the static position.
+		// box.Y already contains the static position from normal-flow layout.
 	}
 }

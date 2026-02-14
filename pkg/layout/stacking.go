@@ -60,6 +60,29 @@ func BoxCreatesStackingContext(box *Box) bool {
 		return true
 	}
 
+	// Elements with clip-path != none create a stacking context
+	if clipPath, ok := box.Style.Get("clip-path"); ok && clipPath != "none" && clipPath != "" {
+		return true
+	}
+
+	// Elements with filter != none create a stacking context
+	if filter, ok := box.Style.Get("filter"); ok && filter != "none" && filter != "" {
+		return true
+	}
+
+	// Elements with mix-blend-mode != normal create a stacking context
+	if blend, ok := box.Style.Get("mix-blend-mode"); ok && blend != "normal" && blend != "" {
+		return true
+	}
+
+	// Elements with mask-image != none create a stacking context
+	if mask, ok := box.Style.Get("mask-image"); ok && mask != "none" && mask != "" {
+		return true
+	}
+	if mask, ok := box.Style.Get("-webkit-mask-image"); ok && mask != "none" && mask != "" {
+		return true
+	}
+
 	return false
 }
 

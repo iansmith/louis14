@@ -566,6 +566,14 @@ func (s *Style) getBorderStyleSide(property string) BorderStyle {
 	return BorderStyleSolid // Default to solid
 }
 
+// EllipticalRadius holds horizontal and vertical radii for a border corner.
+type EllipticalRadius struct {
+	Rx, Ry float64
+}
+
+// IsCircular returns true if both radii are equal.
+func (e EllipticalRadius) IsCircular() bool { return e.Rx == e.Ry }
+
 // BorderRadiusCorners holds the radius for each corner of a box.
 type BorderRadiusCorners struct {
 	TopLeft     float64
@@ -605,16 +613,17 @@ func (s *Style) GetBorderRadiusCorners() BorderRadiusCorners {
 	var corners BorderRadiusCorners
 
 	// Check individual corners first (higher specificity)
-	if r, ok := s.GetLength("border-top-left-radius"); ok {
+	// parseBorderRadiusValue handles "75px 50px" two-value syntax (returns first value)
+	if r := s.parseBorderRadiusFirst("border-top-left-radius"); r > 0 {
 		corners.TopLeft = r
 	}
-	if r, ok := s.GetLength("border-top-right-radius"); ok {
+	if r := s.parseBorderRadiusFirst("border-top-right-radius"); r > 0 {
 		corners.TopRight = r
 	}
-	if r, ok := s.GetLength("border-bottom-right-radius"); ok {
+	if r := s.parseBorderRadiusFirst("border-bottom-right-radius"); r > 0 {
 		corners.BottomRight = r
 	}
-	if r, ok := s.GetLength("border-bottom-left-radius"); ok {
+	if r := s.parseBorderRadiusFirst("border-bottom-left-radius"); r > 0 {
 		corners.BottomLeft = r
 	}
 
@@ -629,6 +638,93 @@ func (s *Style) GetBorderRadiusCorners() BorderRadiusCorners {
 	}
 
 	return corners // all zeros
+}
+
+// parseBorderRadiusFirst parses a border-radius value, returning the first (horizontal) radius.
+// Handles both single value "10px" and two-value "75px 50px" syntax.
+func (s *Style) parseBorderRadiusFirst(property string) float64 {
+	val, ok := s.Get(property)
+	if !ok {
+		return 0
+	}
+	// Try as single value first
+	if r, ok := ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+		return r
+	}
+	// Try two-value syntax: "75px 50px"
+	parts := strings.Fields(val)
+	if len(parts) >= 1 {
+		if r, ok := ParseLengthFull(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+			return r
+		}
+	}
+	return 0
+}
+
+// GetBorderRadiusCornersElliptical returns per-corner elliptical border-radius values.
+// Each corner may have different horizontal and vertical radii.
+func (s *Style) GetBorderRadiusCornersElliptical() [4]EllipticalRadius {
+	var corners [4]EllipticalRadius
+	props := [4]string{
+		"border-top-left-radius", "border-top-right-radius",
+		"border-bottom-right-radius", "border-bottom-left-radius",
+	}
+	for i, prop := range props {
+		corners[i] = s.parseBorderRadiusElliptical(prop)
+	}
+	// Check if any was set
+	anySet := false
+	for _, c := range corners {
+		if c.Rx > 0 || c.Ry > 0 {
+			anySet = true
+			break
+		}
+	}
+	if !anySet {
+		if r, ok := s.GetLength("border-radius"); ok {
+			for i := range corners {
+				corners[i] = EllipticalRadius{r, r}
+			}
+		}
+	}
+	return corners
+}
+
+// HasEllipticalBorderRadius returns true if any corner has different Rx and Ry.
+func (s *Style) HasEllipticalBorderRadius() bool {
+	corners := s.GetBorderRadiusCornersElliptical()
+	for _, c := range corners {
+		if c.Rx != c.Ry && (c.Rx > 0 || c.Ry > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Style) parseBorderRadiusElliptical(property string) EllipticalRadius {
+	val, ok := s.Get(property)
+	if !ok {
+		return EllipticalRadius{}
+	}
+	// Try as single value first
+	if r, ok := ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+		return EllipticalRadius{r, r}
+	}
+	// Two-value syntax: "75px 50px"
+	parts := strings.Fields(val)
+	var result EllipticalRadius
+	if len(parts) >= 1 {
+		if r, ok := ParseLengthFull(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+			result.Rx = r
+			result.Ry = r // default same
+		}
+	}
+	if len(parts) >= 2 {
+		if r, ok := ParseLengthFull(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+			result.Ry = r
+		}
+	}
+	return result
 }
 
 // GetMaxWidth returns the max-width value if set
@@ -1171,11 +1267,30 @@ func expandBackgroundProperty(style *Style, value string) {
 		}
 	}
 
+	// Extract rgb()/rgba()/hsl()/hsla() color functions before field-splitting,
+	// since they may contain spaces (e.g., "rgb(153, 153, 255)").
+	colorFound := false
+	colorValue := ""
+	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl("} {
+		if idx := strings.Index(value, prefix); idx >= 0 {
+			// Find matching closing paren
+			end := strings.Index(value[idx:], ")")
+			if end >= 0 {
+				colorFunc := value[idx : idx+end+1]
+				if _, ok := ParseColor(colorFunc); ok {
+					colorFound = true
+					colorValue = colorFunc
+					// Remove from value for remaining parsing
+					value = value[:idx] + value[idx+end+1:]
+				}
+			}
+			break
+		}
+	}
+
 	// Parse remaining tokens for color, repeat, position
 	parts := strings.Fields(value)
 	positionParts := []string{}
-	colorFound := false
-	colorValue := ""
 	for _, part := range parts {
 		if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
 			style.Set("background-repeat", part)
@@ -1229,7 +1344,22 @@ func ParseColor(colorStr string) (Color, bool) {
 		return Color{0, 0, 0, 0.0}, true
 	}
 
-	// Phase 19: Handle rgba() format
+	// Handle rgb() format
+	if strings.HasPrefix(colorStr, "rgb(") && strings.HasSuffix(colorStr, ")") {
+		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgb("), ")")
+		parts := strings.Split(values, ",")
+		if len(parts) == 3 {
+			var r, g, b int
+			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
+			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
+			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
+			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
+				return Color{uint8(r), uint8(g), uint8(b), 1.0}, true
+			}
+		}
+	}
+
+	// Handle rgba() format
 	if strings.HasPrefix(colorStr, "rgba(") && strings.HasSuffix(colorStr, ")") {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgba("), ")")
 		parts := strings.Split(values, ",")
@@ -2911,4 +3041,262 @@ func (s *Style) GetListStyleType() ListStyleType {
 		}
 	}
 	return ListStyleTypeDisc
+}
+
+// Phase 25: clip-path, filter, mix-blend-mode, mask-image
+
+// ClipPathType represents the type of clip-path shape
+type ClipPathType string
+
+const (
+	ClipPathNone    ClipPathType = "none"
+	ClipPathCircle  ClipPathType = "circle"
+	ClipPathEllipse ClipPathType = "ellipse"
+	ClipPathPolygon ClipPathType = "polygon"
+)
+
+// ClipPath represents a parsed clip-path value
+type ClipPath struct {
+	Type   ClipPathType
+	Radius float64   // circle radius (-1 = default closest-side)
+	Rx, Ry float64   // ellipse radii
+	Cx, Cy float64   // center position (-1 = default center)
+	Points []float64 // polygon points [x1, y1, x2, y2, ...]
+}
+
+// GetClipPath parses the clip-path property
+func (s *Style) GetClipPath() *ClipPath {
+	val, ok := s.Get("clip-path")
+	if !ok || val == "none" {
+		return nil
+	}
+	val = strings.TrimSpace(val)
+
+	if strings.HasPrefix(val, "circle(") {
+		return parseClipPathCircle(val)
+	}
+	if strings.HasPrefix(val, "ellipse(") {
+		return parseClipPathEllipse(val)
+	}
+	if strings.HasPrefix(val, "polygon(") {
+		return parseClipPathPolygon(val)
+	}
+	return nil
+}
+
+func parseClipPathCircle(val string) *ClipPath {
+	// circle() or circle(radius) or circle(radius at cx cy)
+	inner := extractParens(val, "circle")
+	cp := &ClipPath{Type: ClipPathCircle, Radius: -1, Cx: -1, Cy: -1}
+	if inner == "" {
+		return cp // defaults
+	}
+	parts := strings.SplitN(inner, " at ", 2)
+	radiusPart := strings.TrimSpace(parts[0])
+	if radiusPart != "" && radiusPart != "closest-side" && radiusPart != "farthest-side" {
+		if r, ok := ParseLength(radiusPart); ok {
+			cp.Radius = r
+		}
+	}
+	if len(parts) == 2 {
+		parsePosition(strings.TrimSpace(parts[1]), &cp.Cx, &cp.Cy)
+	}
+	return cp
+}
+
+func parseClipPathEllipse(val string) *ClipPath {
+	// ellipse(rx ry at cx cy)
+	inner := extractParens(val, "ellipse")
+	cp := &ClipPath{Type: ClipPathEllipse, Rx: -1, Ry: -1, Cx: -1, Cy: -1}
+	if inner == "" {
+		return cp
+	}
+	parts := strings.SplitN(inner, " at ", 2)
+	radii := strings.Fields(strings.TrimSpace(parts[0]))
+	if len(radii) >= 2 {
+		if rx, ok := ParseLength(radii[0]); ok {
+			cp.Rx = rx
+		}
+		if ry, ok := ParseLength(radii[1]); ok {
+			cp.Ry = ry
+		}
+	}
+	if len(parts) == 2 {
+		parsePosition(strings.TrimSpace(parts[1]), &cp.Cx, &cp.Cy)
+	}
+	return cp
+}
+
+func parseClipPathPolygon(val string) *ClipPath {
+	// polygon(x1 y1, x2 y2, ...)
+	inner := extractParens(val, "polygon")
+	cp := &ClipPath{Type: ClipPathPolygon}
+	if inner == "" {
+		return cp
+	}
+	// Skip optional fill-rule (nonzero, evenodd)
+	if strings.HasPrefix(inner, "nonzero,") || strings.HasPrefix(inner, "evenodd,") {
+		inner = inner[strings.Index(inner, ",")+1:]
+	}
+	pairs := strings.Split(inner, ",")
+	for _, pair := range pairs {
+		coords := strings.Fields(strings.TrimSpace(pair))
+		if len(coords) >= 2 {
+			if x, ok := ParseLength(coords[0]); ok {
+				if y, ok := ParseLength(coords[1]); ok {
+					cp.Points = append(cp.Points, x, y)
+				}
+			}
+		}
+	}
+	return cp
+}
+
+// extractParens extracts the content between parentheses for a function like "circle(...)"
+func extractParens(val, funcName string) string {
+	start := len(funcName) + 1 // skip "funcName("
+	end := strings.LastIndex(val, ")")
+	if end <= start {
+		return ""
+	}
+	return strings.TrimSpace(val[start:end])
+}
+
+// parsePosition parses "cx cy" values, setting -1 for "center" keyword
+func parsePosition(pos string, cx, cy *float64) {
+	fields := strings.Fields(pos)
+	if len(fields) >= 1 {
+		if fields[0] == "center" {
+			*cx = -1
+		} else if v, ok := ParseLength(fields[0]); ok {
+			*cx = v
+		}
+	}
+	if len(fields) >= 2 {
+		if fields[1] == "center" {
+			*cy = -1
+		} else if v, ok := ParseLength(fields[1]); ok {
+			*cy = v
+		}
+	}
+}
+
+// ResolveClipPath resolves a ClipPath's default values against a box's border-box dimensions.
+// Returns the absolute coordinates for the clip shape.
+func (cp *ClipPath) ResolveClipPath(boxWidth, boxHeight float64) *ClipPath {
+	resolved := *cp
+	switch cp.Type {
+	case ClipPathCircle:
+		if resolved.Cx < 0 {
+			resolved.Cx = boxWidth / 2
+		}
+		if resolved.Cy < 0 {
+			resolved.Cy = boxHeight / 2
+		}
+		if resolved.Radius < 0 {
+			// closest-side: distance from center to closest edge
+			resolved.Radius = math.Min(
+				math.Min(resolved.Cx, boxWidth-resolved.Cx),
+				math.Min(resolved.Cy, boxHeight-resolved.Cy),
+			)
+		}
+	case ClipPathEllipse:
+		if resolved.Cx < 0 {
+			resolved.Cx = boxWidth / 2
+		}
+		if resolved.Cy < 0 {
+			resolved.Cy = boxHeight / 2
+		}
+		if resolved.Rx < 0 {
+			resolved.Rx = boxWidth / 2
+		}
+		if resolved.Ry < 0 {
+			resolved.Ry = boxHeight / 2
+		}
+	}
+	return &resolved
+}
+
+// FilterFunction represents a single CSS filter function
+type FilterFunction struct {
+	Name  string  // "opacity", "contrast", "grayscale", "blur", etc.
+	Value float64 // The function argument (0-1 for opacity, 0-N for contrast, etc.)
+}
+
+// GetFilter parses the filter property and returns filter functions
+func (s *Style) GetFilter() []FilterFunction {
+	val, ok := s.Get("filter")
+	if !ok || val == "none" {
+		return nil
+	}
+	var filters []FilterFunction
+	val = strings.TrimSpace(val)
+	for len(val) > 0 {
+		val = strings.TrimSpace(val)
+		parenIdx := strings.Index(val, "(")
+		if parenIdx < 0 {
+			break
+		}
+		name := strings.TrimSpace(val[:parenIdx])
+		closeIdx := strings.Index(val[parenIdx:], ")")
+		if closeIdx < 0 {
+			break
+		}
+		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
+		var value float64
+		if pct, ok := ParsePercentage(arg); ok {
+			value = pct / 100.0
+		} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
+			value = f
+		}
+		filters = append(filters, FilterFunction{Name: name, Value: value})
+		val = val[parenIdx+closeIdx+1:]
+	}
+	return filters
+}
+
+// MixBlendMode represents the mix-blend-mode property value
+type MixBlendMode string
+
+const (
+	MixBlendModeNormal     MixBlendMode = "normal"
+	MixBlendModeDifference MixBlendMode = "difference"
+	MixBlendModeMultiply   MixBlendMode = "multiply"
+	MixBlendModeScreen     MixBlendMode = "screen"
+	MixBlendModeOverlay    MixBlendMode = "overlay"
+	MixBlendModeDarken     MixBlendMode = "darken"
+	MixBlendModeLighten    MixBlendMode = "lighten"
+)
+
+// GetMixBlendMode returns the mix-blend-mode value (default: normal)
+func (s *Style) GetMixBlendMode() MixBlendMode {
+	if val, ok := s.Get("mix-blend-mode"); ok {
+		switch val {
+		case "difference":
+			return MixBlendModeDifference
+		case "multiply":
+			return MixBlendModeMultiply
+		case "screen":
+			return MixBlendModeScreen
+		case "overlay":
+			return MixBlendModeOverlay
+		case "darken":
+			return MixBlendModeDarken
+		case "lighten":
+			return MixBlendModeLighten
+		}
+	}
+	return MixBlendModeNormal
+}
+
+// GetMaskImage returns the mask-image property value
+func (s *Style) GetMaskImage() string {
+	if val, ok := s.Get("mask-image"); ok {
+		return val
+	}
+	// Also check -webkit-mask-image
+	if val, ok := s.Get("-webkit-mask-image"); ok {
+		return val
+	}
+	return "none"
 }

@@ -76,6 +76,14 @@ type Context struct {
 	fontHeight    float64
 	matrix        Matrix
 	stack         []*Context
+	groupStack    []*groupEntry // for PushGroup/PopGroupWithAlpha
+}
+
+// groupEntry holds the saved state for an offscreen compositing group.
+type groupEntry struct {
+	im         *image.RGBA
+	mask       *image.Alpha
+	rasterizer *raster.Rasterizer
 }
 
 // NewContext creates a new image.RGBA with the specified width and height
@@ -602,6 +610,39 @@ func (dc *Context) DrawRoundedRectangleCorners(x, y, w, h, tl, tr, br, bl float6
 	dc.ClosePath()
 }
 
+// DrawRoundedRectangleCornersElliptical draws a rounded rectangle with per-corner elliptical radii.
+// Each corner takes (rx, ry) for horizontal and vertical radius.
+func (dc *Context) DrawRoundedRectangleCornersElliptical(x, y, w, h float64,
+	tlRx, tlRy, trRx, trRy, brRx, brRy, blRx, blRy float64) {
+	dc.NewSubPath()
+	// Top edge
+	dc.MoveTo(x+tlRx, y)
+	dc.LineTo(x+w-trRx, y)
+	// Top-right corner
+	if trRx > 0 && trRy > 0 {
+		dc.DrawEllipticalArc(x+w-trRx, y+trRy, trRx, trRy, Radians(270), Radians(360))
+	}
+	// Right edge
+	dc.LineTo(x+w, y+h-brRy)
+	// Bottom-right corner
+	if brRx > 0 && brRy > 0 {
+		dc.DrawEllipticalArc(x+w-brRx, y+h-brRy, brRx, brRy, Radians(0), Radians(90))
+	}
+	// Bottom edge
+	dc.LineTo(x+blRx, y+h)
+	// Bottom-left corner
+	if blRx > 0 && blRy > 0 {
+		dc.DrawEllipticalArc(x+blRx, y+h-blRy, blRx, blRy, Radians(90), Radians(180))
+	}
+	// Left edge
+	dc.LineTo(x, y+tlRy)
+	// Top-left corner
+	if tlRx > 0 && tlRy > 0 {
+		dc.DrawEllipticalArc(x+tlRx, y+tlRy, tlRx, tlRy, Radians(180), Radians(270))
+	}
+	dc.ClosePath()
+}
+
 func (dc *Context) DrawEllipticalArc(x, y, rx, ry, angle1, angle2 float64) {
 	const n = 16
 	for i := 0; i < n; i++ {
@@ -923,4 +964,183 @@ func (dc *Context) Pop() {
 	dc.start = before.start
 	dc.current = before.current
 	dc.hasCurrent = before.hasCurrent
+}
+
+// Group Compositing
+
+// PushGroup saves the current drawing surface and redirects all subsequent
+// drawing to a new transparent offscreen buffer of the same size. This is
+// used for group compositing operations like CSS opacity, where an entire
+// subtree must be rendered to a buffer before being composited.
+// Call PopGroupWithAlpha to composite the group back onto the parent surface.
+func (dc *Context) PushGroup() {
+	entry := &groupEntry{
+		im:         dc.im,
+		mask:       dc.mask,
+		rasterizer: dc.rasterizer,
+	}
+	dc.groupStack = append(dc.groupStack, entry)
+
+	// Create fresh offscreen buffer and rasterizer
+	dc.im = image.NewRGBA(image.Rect(0, 0, dc.width, dc.height))
+	dc.mask = nil
+	dc.rasterizer = raster.NewRasterizer(dc.width, dc.height)
+}
+
+// PopGroupWithAlpha composites the offscreen group buffer onto the parent
+// surface with the given opacity (0.0 = fully transparent, 1.0 = fully opaque).
+// The drawing surface is restored to the parent that was active before PushGroup.
+func (dc *Context) PopGroupWithAlpha(opacity float64) {
+	n := len(dc.groupStack)
+	if n == 0 {
+		return
+	}
+
+	// Pop the saved entry
+	entry := dc.groupStack[n-1]
+	dc.groupStack = dc.groupStack[:n-1]
+
+	group := dc.im
+
+	// Multiply each pixel's RGBA by opacity.
+	// image.RGBA uses premultiplied alpha, so ALL channels (R, G, B, A) must
+	// be scaled together. Scaling only A creates invalid premultiplied pixels
+	// (e.g., B > A) which produce wrong compositing results.
+	if opacity < 1.0 {
+		bounds := group.Bounds()
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			rowStart := group.PixOffset(bounds.Min.X, y)
+			rowEnd := rowStart + (bounds.Max.X-bounds.Min.X)*4
+			for i := rowStart; i < rowEnd; i += 4 {
+				if group.Pix[i+3] > 0 {
+					group.Pix[i] = uint8(float64(group.Pix[i]) * opacity)
+					group.Pix[i+1] = uint8(float64(group.Pix[i+1]) * opacity)
+					group.Pix[i+2] = uint8(float64(group.Pix[i+2]) * opacity)
+					group.Pix[i+3] = uint8(float64(group.Pix[i+3]) * opacity)
+				}
+			}
+		}
+	}
+
+	// Restore parent surface
+	dc.im = entry.im
+	dc.mask = entry.mask
+	dc.rasterizer = entry.rasterizer
+
+	// Composite group onto parent
+	draw.Over.Draw(dc.im, dc.im.Bounds(), group, image.Point{})
+}
+
+// PopGroup composites the offscreen group buffer onto the parent surface
+// at full opacity. This is equivalent to PopGroupWithAlpha(1.0) but skips
+// the alpha multiplication pass.
+func (dc *Context) PopGroup() {
+	dc.PopGroupWithAlpha(1.0)
+}
+
+// PopGroupWithPixelFilter applies a per-pixel filter to the group buffer
+// before compositing onto the parent. The filter function receives RGBA
+// values and returns modified RGBA values.
+func (dc *Context) PopGroupWithPixelFilter(filter func(r, g, b, a uint8) (uint8, uint8, uint8, uint8)) {
+	n := len(dc.groupStack)
+	if n == 0 {
+		return
+	}
+
+	entry := dc.groupStack[n-1]
+	dc.groupStack = dc.groupStack[:n-1]
+
+	group := dc.im
+
+	// Apply filter to each pixel
+	bounds := group.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		rowStart := group.PixOffset(bounds.Min.X, y)
+		rowEnd := rowStart + (bounds.Max.X-bounds.Min.X)*4
+		for i := rowStart; i < rowEnd; i += 4 {
+			group.Pix[i], group.Pix[i+1], group.Pix[i+2], group.Pix[i+3] =
+				filter(group.Pix[i], group.Pix[i+1], group.Pix[i+2], group.Pix[i+3])
+		}
+	}
+
+	// Restore parent surface
+	dc.im = entry.im
+	dc.mask = entry.mask
+	dc.rasterizer = entry.rasterizer
+
+	// Composite group onto parent
+	draw.Over.Draw(dc.im, dc.im.Bounds(), group, image.Point{})
+}
+
+// PopGroupWithPositionFilter applies a position-aware per-pixel filter to the group buffer
+// before compositing onto the parent. The filter receives pixel coordinates and RGBA values.
+func (dc *Context) PopGroupWithPositionFilter(filter func(x, y int, r, g, b, a uint8) (uint8, uint8, uint8, uint8)) {
+	n := len(dc.groupStack)
+	if n == 0 {
+		return
+	}
+
+	entry := dc.groupStack[n-1]
+	dc.groupStack = dc.groupStack[:n-1]
+
+	group := dc.im
+
+	bounds := group.Bounds()
+	w := bounds.Max.X - bounds.Min.X
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		rowStart := group.PixOffset(bounds.Min.X, y)
+		for xi := 0; xi < w; xi++ {
+			i := rowStart + xi*4
+			group.Pix[i], group.Pix[i+1], group.Pix[i+2], group.Pix[i+3] =
+				filter(bounds.Min.X+xi, y, group.Pix[i], group.Pix[i+1], group.Pix[i+2], group.Pix[i+3])
+		}
+	}
+
+	// Restore parent surface
+	dc.im = entry.im
+	dc.mask = entry.mask
+	dc.rasterizer = entry.rasterizer
+
+	// Composite group onto parent
+	draw.Over.Draw(dc.im, dc.im.Bounds(), group, image.Point{})
+}
+
+// PopGroupWithBlend composites the offscreen group buffer onto the parent
+// using a custom blend function. The blend receives (src RGBA, dst RGBA)
+// and returns the blended result.
+func (dc *Context) PopGroupWithBlend(blend func(sr, sg, sb, sa, dr, dg, db, da uint8) (uint8, uint8, uint8, uint8)) {
+	n := len(dc.groupStack)
+	if n == 0 {
+		return
+	}
+
+	entry := dc.groupStack[n-1]
+	dc.groupStack = dc.groupStack[:n-1]
+
+	src := dc.im
+
+	// Restore parent surface
+	dc.im = entry.im
+	dc.mask = entry.mask
+	dc.rasterizer = entry.rasterizer
+
+	dst := dc.im
+	bounds := src.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		rowStart := src.PixOffset(bounds.Min.X, y)
+		rowEnd := rowStart + (bounds.Max.X-bounds.Min.X)*4
+		for i := rowStart; i < rowEnd; i += 4 {
+			sa := src.Pix[i+3]
+			if sa == 0 {
+				continue // Transparent source pixel — no blending needed
+			}
+			r, g, b, a := blend(
+				src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3],
+				dst.Pix[i], dst.Pix[i+1], dst.Pix[i+2], dst.Pix[i+3])
+			dst.Pix[i] = r
+			dst.Pix[i+1] = g
+			dst.Pix[i+2] = b
+			dst.Pix[i+3] = a
+		}
+	}
 }

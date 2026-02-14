@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
 	"sort"
 	"strings"
 
@@ -181,6 +180,51 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		return
 	}
 
+	// CSS Filter Effects: render to offscreen buffer, apply filter, composite
+	if box.Style != nil {
+		if filters := box.Style.GetFilter(); len(filters) > 0 {
+			r.paintWithFilter(box, filters)
+			return
+		}
+	}
+
+	// CSS Compositing: mix-blend-mode renders to offscreen buffer, blends with backdrop
+	if box.Style != nil {
+		blendMode := box.Style.GetMixBlendMode()
+		if blendMode != css.MixBlendModeNormal {
+			r.paintWithBlendMode(box, blendMode)
+			return
+		}
+	}
+
+	// CSS Masking: mask-image renders to offscreen buffer, applies mask alpha
+	if box.Style != nil {
+		maskValue := box.Style.GetMaskImage()
+		if maskValue != "" && maskValue != "none" {
+			r.paintWithMask(box, maskValue)
+			return
+		}
+	}
+
+	// CSS Compositing §4.2: Stacking contexts create isolated groups.
+	// This ensures mix-blend-mode children blend against parent content,
+	// not the full canvas below. Only isolate when blend-mode descendants exist.
+	needsIsolation := layout.BoxCreatesStackingContext(box) && hasBlendModeDescendant(box)
+	if needsIsolation {
+		r.context.PushGroup()
+	}
+
+	// Apply clip-path if set (clips everything including backgrounds/borders)
+	hasClipPath := false
+	if box.Style != nil {
+		if cp := box.Style.GetClipPath(); cp != nil {
+			resolved := cp.ResolveClipPath(box.Width, box.Height)
+			r.context.Push()
+			hasClipPath = true
+			r.applyClipPath(box, resolved)
+		}
+	}
+
 	// Step 1: Background and borders of this element
 	r.drawBoxBackgroundAndBorders(box)
 
@@ -287,51 +331,304 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	if needsClip {
 		r.context.Pop()
 	}
+
+	// Composite isolated stacking context group back onto parent surface
+	if needsIsolation {
+		r.context.PopGroupWithAlpha(1.0)
+	}
+
+	// Restore clip-path state
+	if hasClipPath {
+		r.context.Pop()
+	}
+}
+
+// applyClipPath applies a CSS clip-path shape as a gg clipping region.
+// Coordinates in the resolved ClipPath are relative to the element's border box.
+func (r *Renderer) applyClipPath(box *layout.Box, cp *css.ClipPath) {
+	ox, oy := box.X, box.Y
+	switch cp.Type {
+	case css.ClipPathCircle:
+		r.context.DrawCircle(ox+cp.Cx, oy+cp.Cy, cp.Radius)
+	case css.ClipPathEllipse:
+		r.context.DrawEllipse(ox+cp.Cx, oy+cp.Cy, cp.Rx, cp.Ry)
+	case css.ClipPathPolygon:
+		if len(cp.Points) >= 4 {
+			r.context.NewSubPath()
+			r.context.MoveTo(ox+cp.Points[0], oy+cp.Points[1])
+			for i := 2; i < len(cp.Points)-1; i += 2 {
+				r.context.LineTo(ox+cp.Points[i], oy+cp.Points[i+1])
+			}
+			r.context.ClosePath()
+		}
+	}
+	r.context.Clip()
 }
 
 // paintWithOpacity renders a stacking context to an offscreen buffer, then
 // composites it onto the main canvas with the specified opacity.
 func (r *Renderer) paintWithOpacity(box *layout.Box, opacity float64) {
-	width := r.context.Width()
-	height := r.context.Height()
+	// Use gg's group compositing: redirect drawing to offscreen buffer,
+	// render the stacking context, then composite back with opacity.
+	r.context.PushGroup()
 
-	// Create offscreen buffer
-	offscreen := image.NewRGBA(image.Rect(0, 0, width, height))
-	offCtx := gg.NewContextForRGBA(offscreen)
-
-	// Swap to offscreen context
-	oldCtx := r.context
-	oldFontKey := r.lastFontKey
-	r.context = offCtx
-	r.lastFontKey = "" // Force font reload on new context
-
-	// Paint the full stacking context contents to the offscreen buffer.
 	// Temporarily set opacity to 1 so the recursive call doesn't re-enter this path.
 	origOpacity := box.Style.GetOpacity()
 	box.Style.Set("opacity", "1")
 	r.paintStackingContext(box)
 	box.Style.Set("opacity", fmt.Sprintf("%g", origOpacity))
 
-	// Restore original context
-	r.context = oldCtx
-	r.lastFontKey = oldFontKey
+	r.context.PopGroupWithAlpha(opacity)
+}
 
-	// Multiply each pixel's alpha by the opacity, then composite onto main canvas
-	bounds := offscreen.Bounds()
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		rowStart := offscreen.PixOffset(bounds.Min.X, y)
-		rowEnd := rowStart + (bounds.Max.X-bounds.Min.X)*4
-		for i := rowStart + 3; i < rowEnd; i += 4 {
-			a := offscreen.Pix[i]
-			if a > 0 {
-				offscreen.Pix[i] = uint8(float64(a) * opacity)
+// paintWithFilter renders to offscreen buffer, applies CSS filter functions, composites back.
+func (r *Renderer) paintWithFilter(box *layout.Box, filters []css.FilterFunction) {
+	// Temporarily remove the filter to prevent re-entry
+	origFilter, _ := box.Style.Get("filter")
+	box.Style.Set("filter", "none")
+
+	r.context.PushGroup()
+	r.paintStackingContext(box)
+
+	// Build composite filter function
+	// Note: gg uses image.RGBA (premultiplied alpha). We must un-premultiply
+	// before applying filters, then re-premultiply.
+	r.context.PopGroupWithPixelFilter(func(red, green, blue, alpha uint8) (uint8, uint8, uint8, uint8) {
+		if alpha == 0 {
+			return 0, 0, 0, 0
+		}
+		// Un-premultiply
+		a := float64(alpha) / 255
+		fr, fg, fb := float64(red)/a/255, float64(green)/a/255, float64(blue)/a/255
+		fa := a
+
+		for _, f := range filters {
+			switch f.Name {
+			case "opacity":
+				fa *= f.Value
+			case "contrast":
+				fr = (fr-0.5)*f.Value + 0.5
+				fg = (fg-0.5)*f.Value + 0.5
+				fb = (fb-0.5)*f.Value + 0.5
+			case "grayscale":
+				amt := f.Value
+				if amt > 1 {
+					amt = 1
+				}
+				gray := 0.2126*fr + 0.7152*fg + 0.0722*fb
+				fr = fr*(1-amt) + gray*amt
+				fg = fg*(1-amt) + gray*amt
+				fb = fb*(1-amt) + gray*amt
 			}
+		}
+
+		clamp := func(v float64) uint8 {
+			if v < 0 { return 0 }
+			if v > 255 { return 255 }
+			return uint8(v)
+		}
+		// Re-premultiply
+		outA := fa
+		return clamp(fr * outA * 255), clamp(fg * outA * 255), clamp(fb * outA * 255), clamp(outA * 255)
+	})
+
+	box.Style.Set("filter", origFilter)
+}
+
+// paintWithBlendMode renders to offscreen buffer, composites with custom blend mode.
+func (r *Renderer) paintWithBlendMode(box *layout.Box, blendMode css.MixBlendMode) {
+	// Temporarily remove blend mode to prevent re-entry
+	origBlend, _ := box.Style.Get("mix-blend-mode")
+	box.Style.Set("mix-blend-mode", "normal")
+
+	r.context.PushGroup()
+	r.paintStackingContext(box)
+
+	r.context.PopGroupWithBlend(func(sr, sg, sb, sa, dr, dg, db, da uint8) (uint8, uint8, uint8, uint8) {
+		// Convert to float 0-1 range
+		sfr, sfg, sfb := float64(sr)/255, float64(sg)/255, float64(sb)/255
+		dfr, dfg, dfb := float64(dr)/255, float64(dg)/255, float64(db)/255
+		sfa, dfa := float64(sa)/255, float64(da)/255
+
+		var br, bg, bb float64
+
+		switch blendMode {
+		case css.MixBlendModeDifference:
+			br = abs(dfr - sfr)
+			bg = abs(dfg - sfg)
+			bb = abs(dfb - sfb)
+		case css.MixBlendModeMultiply:
+			br = sfr * dfr
+			bg = sfg * dfg
+			bb = sfb * dfb
+		case css.MixBlendModeScreen:
+			br = sfr + dfr - sfr*dfr
+			bg = sfg + dfg - sfg*dfg
+			bb = sfb + dfb - sfb*dfb
+		case css.MixBlendModeDarken:
+			br = min(sfr, dfr)
+			bg = min(sfg, dfg)
+			bb = min(sfb, dfb)
+		case css.MixBlendModeLighten:
+			br = max(sfr, dfr)
+			bg = max(sfg, dfg)
+			bb = max(sfb, dfb)
+		default:
+			// Normal blend
+			br, bg, bb = sfr, sfg, sfb
+		}
+
+		// Composite: Cs x αs x αb + Cb x αb x (1 – αs) (simplified Porter-Duff)
+		oa := sfa + dfa*(1-sfa)
+		if oa == 0 {
+			return 0, 0, 0, 0
+		}
+		or := (br*sfa*dfa + dfr*dfa*(1-sfa)) / oa
+		og := (bg*sfa*dfa + dfg*dfa*(1-sfa)) / oa
+		ob := (bb*sfa*dfa + dfb*dfa*(1-sfa)) / oa
+
+		// Also add source contribution outside backdrop
+		or += sfr * sfa * (1 - dfa) / oa
+		og += sfg * sfa * (1 - dfa) / oa
+		ob += sfb * sfa * (1 - dfa) / oa
+
+		clamp := func(v float64) uint8 {
+			if v < 0 { return 0 }
+			if v > 255 { return 255 }
+			return uint8(v)
+		}
+		return clamp(or * 255), clamp(og * 255), clamp(ob * 255), clamp(oa * 255)
+	})
+
+	box.Style.Set("mix-blend-mode", origBlend)
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// paintWithMask renders the element to an offscreen buffer and applies a CSS mask-image.
+// For gradient masks, the alpha channel of the gradient controls element visibility.
+func (r *Renderer) paintWithMask(box *layout.Box, maskValue string) {
+	// Parse gradient from mask-image value
+	grad, ok := css.ParseLinearGradient(maskValue)
+	if !ok {
+		// Unresolvable mask (e.g., url(#nonexistent)) → treat as no mask per CSS Masking spec
+		origMask, _ := box.Style.Get("mask-image")
+		box.Style.Set("mask-image", "none")
+		r.paintStackingContext(box)
+		box.Style.Set("mask-image", origMask)
+		return
+	}
+
+	// Temporarily remove mask-image to prevent re-entry
+	origMask, _ := box.Style.Get("mask-image")
+	box.Style.Set("mask-image", "none")
+
+	// Prepare gradient for interpolation
+	gradCopy := *grad
+	gradCopy.ConvertPixelOffsetsToPercentages(box.Width, box.Height)
+
+	// Compute gradient line endpoints relative to box
+	var x0, y0, x1, y1 float64
+	switch gradCopy.Direction {
+	case "to right":
+		x0, y0 = box.X, box.Y
+		x1, y1 = box.X+box.Width, box.Y
+	case "to left":
+		x0, y0 = box.X+box.Width, box.Y
+		x1, y1 = box.X, box.Y
+	case "to bottom", "":
+		x0, y0 = box.X, box.Y
+		x1, y1 = box.X, box.Y+box.Height
+	case "to top":
+		x0, y0 = box.X, box.Y+box.Height
+		x1, y1 = box.X, box.Y
+	default:
+		x0, y0 = box.X, box.Y
+		x1, y1 = box.X, box.Y+box.Height
+	}
+
+	// Gradient length
+	dx, dy := x1-x0, y1-y0
+	gradLen := dx*dx + dy*dy
+
+	r.context.PushGroup()
+	r.paintStackingContext(box)
+
+	// Apply mask: modulate alpha by gradient alpha at each pixel position
+	r.context.PopGroupWithPositionFilter(func(px, py int, cr, cg, cb, ca uint8) (uint8, uint8, uint8, uint8) {
+		if ca == 0 {
+			return 0, 0, 0, 0
+		}
+
+		// Project pixel position onto gradient line to get t parameter
+		var t float64
+		if gradLen > 0 {
+			t = (float64(px)-x0)*dx/gradLen + (float64(py)-y0)*dy/gradLen
+		}
+		if t < 0 {
+			t = 0
+		} else if t > 1 {
+			t = 1
+		}
+
+		// Interpolate gradient alpha at position t
+		maskAlpha := interpolateGradientAlpha(gradCopy.ColorStops, t)
+
+		// Multiply pixel alpha by mask alpha (premultiplied alpha)
+		scale := maskAlpha
+		return uint8(float64(cr) * scale), uint8(float64(cg) * scale),
+			uint8(float64(cb) * scale), uint8(float64(ca) * scale)
+	})
+
+	box.Style.Set("mask-image", origMask)
+}
+
+// interpolateGradientAlpha computes the alpha value at position t (0-1) along a gradient.
+func interpolateGradientAlpha(stops []css.ColorStop, t float64) float64 {
+	if len(stops) == 0 {
+		return 1.0
+	}
+	if t <= stops[0].Offset {
+		return stops[0].Color.A
+	}
+	if t >= stops[len(stops)-1].Offset {
+		return stops[len(stops)-1].Color.A
+	}
+
+	// Find the two stops that bracket t
+	for i := 0; i < len(stops)-1; i++ {
+		if t >= stops[i].Offset && t <= stops[i+1].Offset {
+			// Linear interpolation between stops
+			range_ := stops[i+1].Offset - stops[i].Offset
+			if range_ <= 0 {
+				return stops[i].Color.A
+			}
+			frac := (t - stops[i].Offset) / range_
+			return stops[i].Color.A*(1-frac) + stops[i+1].Color.A*frac
 		}
 	}
 
-	// Composite offscreen buffer onto main canvas
-	mainImage := oldCtx.Image().(*image.RGBA)
-	draw.Over.Draw(mainImage, bounds, offscreen, bounds.Min)
+	return stops[len(stops)-1].Color.A
+}
+
+// hasBlendModeDescendant checks if any descendant of box has mix-blend-mode set.
+func hasBlendModeDescendant(box *layout.Box) bool {
+	for _, child := range box.Children {
+		if child.Style != nil {
+			if child.Style.GetMixBlendMode() != css.MixBlendModeNormal {
+				return true
+			}
+		}
+		if hasBlendModeDescendant(child) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectDescendantsForPaintOrder recursively collects all descendants,
@@ -458,12 +755,20 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 
-	// Check for gradient background first
+	// Check for gradient background first (shorthand "background" or longhand "background-image")
 	hasGradient := false
 	if bgValue, ok := box.Style.Get("background"); ok {
 		if grad, ok := css.GetGradient(bgValue); ok {
 			r.drawGradientBackground(box, grad, effectiveY)
 			hasGradient = true
+		}
+	}
+	if !hasGradient {
+		if bgValue, ok := box.Style.Get("background-image"); ok {
+			if grad, ok := css.GetGradient(bgValue); ok {
+				r.drawGradientBackground(box, grad, effectiveY)
+				hasGradient = true
+			}
 		}
 	}
 
@@ -493,12 +798,27 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 				}
 
 				if bgWidth > 0 && bgHeight > 0 {
-					corners := box.Style.GetBorderRadiusCorners()
-					if corners.MaxRadius() > 0 {
-						r.context.DrawRoundedRectangleCorners(bgX, bgY, bgWidth, bgHeight,
-							corners.TopLeft, corners.TopRight, corners.BottomRight, corners.BottomLeft)
+					if box.Style.HasEllipticalBorderRadius() {
+						ec := box.Style.GetBorderRadiusCornersElliptical()
+						halfW, halfH := bgWidth/2, bgHeight/2
+						if ec[0].Rx == halfW && ec[0].Ry == halfH &&
+							ec[1].Rx == halfW && ec[1].Ry == halfH &&
+							ec[2].Rx == halfW && ec[2].Ry == halfH &&
+							ec[3].Rx == halfW && ec[3].Ry == halfH {
+							r.context.DrawEllipse(bgX+halfW, bgY+halfH, halfW, halfH)
+						} else {
+							r.context.DrawRoundedRectangleCornersElliptical(bgX, bgY, bgWidth, bgHeight,
+								ec[0].Rx, ec[0].Ry, ec[1].Rx, ec[1].Ry,
+								ec[2].Rx, ec[2].Ry, ec[3].Rx, ec[3].Ry)
+						}
 					} else {
-						r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+						corners := box.Style.GetBorderRadiusCorners()
+						if corners.MaxRadius() > 0 {
+							r.context.DrawRoundedRectangleCorners(bgX, bgY, bgWidth, bgHeight,
+								corners.TopLeft, corners.TopRight, corners.BottomRight, corners.BottomLeft)
+						} else {
+							r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+						}
 					}
 					r.context.Fill()
 				}
@@ -564,9 +884,14 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 
 	// Add color stops
 	for _, stop := range gradCopy.ColorStops {
-		// Convert to color.RGBA (Go standard library type)
-		alpha := uint8(stop.Color.A * 255)
-		c := color.RGBA{R: stop.Color.R, G: stop.Color.G, B: stop.Color.B, A: alpha}
+		// Go's color.RGBA uses premultiplied alpha: R,G,B values must be pre-multiplied by A
+		a := stop.Color.A // 0.0 to 1.0
+		c := color.RGBA{
+			R: uint8(float64(stop.Color.R) * a),
+			G: uint8(float64(stop.Color.G) * a),
+			B: uint8(float64(stop.Color.B) * a),
+			A: uint8(a * 255),
+		}
 		ggGrad.AddColorStop(stop.Offset, c)
 	}
 
@@ -658,12 +983,28 @@ func (r *Renderer) drawBox(box *layout.Box) {
 			bgHeight := box.Height // Border-box dimensions
 
 			if bgWidth > 0 && bgHeight > 0 {
-				// Phase 12: Check for border-radius
-				borderRadius := box.Style.GetBorderRadius()
-				if borderRadius > 0 {
-					r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+				// Phase 12: Check for border-radius (including elliptical)
+				if box.Style.HasEllipticalBorderRadius() {
+					ec := box.Style.GetBorderRadiusCornersElliptical()
+					// Optimize: if all corners form a complete ellipse, use DrawEllipse
+					halfW, halfH := bgWidth/2, bgHeight/2
+					if ec[0].Rx == halfW && ec[0].Ry == halfH &&
+						ec[1].Rx == halfW && ec[1].Ry == halfH &&
+						ec[2].Rx == halfW && ec[2].Ry == halfH &&
+						ec[3].Rx == halfW && ec[3].Ry == halfH {
+						r.context.DrawEllipse(bgX+halfW, bgY+halfH, halfW, halfH)
+					} else {
+						r.context.DrawRoundedRectangleCornersElliptical(bgX, bgY, bgWidth, bgHeight,
+							ec[0].Rx, ec[0].Ry, ec[1].Rx, ec[1].Ry,
+							ec[2].Rx, ec[2].Ry, ec[3].Rx, ec[3].Ry)
+					}
 				} else {
-					r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+					borderRadius := box.Style.GetBorderRadius()
+					if borderRadius > 0 {
+						r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+					} else {
+						r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+					}
 				}
 				r.context.Fill()
 			}
