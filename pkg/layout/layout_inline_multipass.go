@@ -1051,7 +1051,27 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 			if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && floatType == css.FloatNone {
 				// Child is in normal flow - advance Y
-				currentY += totalHeight
+				// CSS 2.1 §9.5.2: The 'clear' property may push a child below floats,
+				// so childBox.Y can be greater than currentY + margin.Top.
+				// Compute flow bottom: childBox.Y minus non-flow offsets (parent inline
+				// relative offset + child's own relative offset), plus height + margin.
+				// This gives the correct Y advancement for both normal and cleared elements.
+				flowY := childBox.Y - relOffY
+				// Also subtract child's own relative positioning (visual only, not flow)
+				if childBox.Style != nil && childBox.Style.GetPosition() == css.PositionRelative {
+					offset := childBox.Style.GetPositionOffset()
+					if offset.HasTop {
+						flowY -= offset.Top
+					} else if offset.HasBottom {
+						flowY += offset.Bottom
+					}
+				}
+				flowBottom := flowY + childBox.Height + childBox.Margin.Bottom
+				if flowBottom > currentY+totalHeight {
+					currentY = flowBottom
+				} else {
+					currentY += totalHeight
+				}
 				currentLineY = currentY // Update line Y to match
 				lastFinalizedLineHeight = effectiveHeight // Save before resetting
 		lineMetricsReset(lineMetrics, false) // Reset for next line

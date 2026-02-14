@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"sort"
 	"strings"
 
@@ -163,6 +164,23 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		return
 	}
 
+	// CSS Color Module Level 3: opacity creates a stacking context and composites
+	// the element and all its descendants as a single offscreen buffer.
+	opacity := 1.0
+	if box.Style != nil {
+		opacity = box.Style.GetOpacity()
+	}
+
+	if opacity <= 0 {
+		return // Fully transparent — skip all rendering
+	}
+
+	if opacity < 1.0 {
+		// Render to an offscreen buffer, then composite with reduced alpha
+		r.paintWithOpacity(box, opacity)
+		return
+	}
+
 	// Step 1: Background and borders of this element
 	r.drawBoxBackgroundAndBorders(box)
 
@@ -182,7 +200,23 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		clipY := box.Y + box.Border.Top
 		clipW := box.Width - box.Border.Left - box.Border.Right
 		clipH := box.Height - box.Border.Top - box.Border.Bottom
-		r.context.DrawRectangle(clipX, clipY, clipW, clipH)
+
+		// Use rounded clip path when border-radius is set
+		var corners css.BorderRadiusCorners
+		if box.Style != nil {
+			corners = box.Style.GetBorderRadiusCorners()
+		}
+		if corners.MaxRadius() > 0 {
+			// Reduce each corner radius by border width for inner (padding box) clipping
+			clampZero := func(v float64) float64 { if v < 0 { return 0 }; return v }
+			r.context.DrawRoundedRectangleCorners(clipX, clipY, clipW, clipH,
+				clampZero(corners.TopLeft-box.Border.Left),
+				clampZero(corners.TopRight-box.Border.Right),
+				clampZero(corners.BottomRight-box.Border.Right),
+				clampZero(corners.BottomLeft-box.Border.Left))
+		} else {
+			r.context.DrawRectangle(clipX, clipY, clipW, clipH)
+		}
 		r.context.Clip()
 	}
 
@@ -253,6 +287,51 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	if needsClip {
 		r.context.Pop()
 	}
+}
+
+// paintWithOpacity renders a stacking context to an offscreen buffer, then
+// composites it onto the main canvas with the specified opacity.
+func (r *Renderer) paintWithOpacity(box *layout.Box, opacity float64) {
+	width := r.context.Width()
+	height := r.context.Height()
+
+	// Create offscreen buffer
+	offscreen := image.NewRGBA(image.Rect(0, 0, width, height))
+	offCtx := gg.NewContextForRGBA(offscreen)
+
+	// Swap to offscreen context
+	oldCtx := r.context
+	oldFontKey := r.lastFontKey
+	r.context = offCtx
+	r.lastFontKey = "" // Force font reload on new context
+
+	// Paint the full stacking context contents to the offscreen buffer.
+	// Temporarily set opacity to 1 so the recursive call doesn't re-enter this path.
+	origOpacity := box.Style.GetOpacity()
+	box.Style.Set("opacity", "1")
+	r.paintStackingContext(box)
+	box.Style.Set("opacity", fmt.Sprintf("%g", origOpacity))
+
+	// Restore original context
+	r.context = oldCtx
+	r.lastFontKey = oldFontKey
+
+	// Multiply each pixel's alpha by the opacity, then composite onto main canvas
+	bounds := offscreen.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		rowStart := offscreen.PixOffset(bounds.Min.X, y)
+		rowEnd := rowStart + (bounds.Max.X-bounds.Min.X)*4
+		for i := rowStart + 3; i < rowEnd; i += 4 {
+			a := offscreen.Pix[i]
+			if a > 0 {
+				offscreen.Pix[i] = uint8(float64(a) * opacity)
+			}
+		}
+	}
+
+	// Composite offscreen buffer onto main canvas
+	mainImage := oldCtx.Image().(*image.RGBA)
+	draw.Over.Draw(mainImage, bounds, offscreen, bounds.Min)
 }
 
 // collectDescendantsForPaintOrder recursively collects all descendants,
@@ -414,9 +493,10 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 				}
 
 				if bgWidth > 0 && bgHeight > 0 {
-					borderRadius := box.Style.GetBorderRadius()
-					if borderRadius > 0 {
-						r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+					corners := box.Style.GetBorderRadiusCorners()
+					if corners.MaxRadius() > 0 {
+						r.context.DrawRoundedRectangleCorners(bgX, bgY, bgWidth, bgHeight,
+							corners.TopLeft, corners.TopRight, corners.BottomRight, corners.BottomLeft)
 					} else {
 						r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
 					}
@@ -494,9 +574,10 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 	r.context.SetFillStyle(ggGrad)
 
 	// Draw the rectangle
-	borderRadius := box.Style.GetBorderRadius()
-	if borderRadius > 0 {
-		r.context.DrawRoundedRectangle(bgX, bgY, bgWidth, bgHeight, borderRadius)
+	corners := box.Style.GetBorderRadiusCorners()
+	if corners.MaxRadius() > 0 {
+		r.context.DrawRoundedRectangleCorners(bgX, bgY, bgWidth, bgHeight,
+			corners.TopLeft, corners.TopRight, corners.BottomRight, corners.BottomLeft)
 	} else {
 		r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
 	}
@@ -668,11 +749,11 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// Phase 12: Get border styles for each side
 	borderStyles := box.Style.GetBorderStyle()
 
-	// Phase 12: Check for uniform rounded borders
-	borderRadius := box.Style.GetBorderRadius()
-	if borderRadius > 0 && box.Border.Top == box.Border.Right &&
+	// Phase 12: Check for uniform rounded borders (with per-corner support)
+	corners := box.Style.GetBorderRadiusCorners()
+	if corners.MaxRadius() > 0 && box.Border.Top == box.Border.Right &&
 		box.Border.Right == box.Border.Bottom && box.Border.Bottom == box.Border.Left {
-		// Draw uniform rounded border
+		// Draw uniform-width rounded border with per-corner radii
 		if color, ok := r.getBorderSideColor(box, "top"); ok {
 			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
 			r.context.SetLineWidth(box.Border.Top)
@@ -680,7 +761,8 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 			borderY := renderY + box.Border.Top/2
 			borderWidth := box.Width - box.Border.Left // Border-box dimensions
 			borderHeight := renderHeight - box.Border.Top // Border-box dimensions
-			r.context.DrawRoundedRectangle(borderX, borderY, borderWidth, borderHeight, borderRadius)
+			r.context.DrawRoundedRectangleCorners(borderX, borderY, borderWidth, borderHeight,
+				corners.TopLeft, corners.TopRight, corners.BottomRight, corners.BottomLeft)
 			r.context.Stroke()
 		}
 		return
@@ -1001,6 +1083,59 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	imgW := float64(bounds.Dx())
 	imgH := float64(bounds.Dy())
 
+	// Apply background-size
+	bgSize := box.Style.GetBackgroundSize()
+	scaleX, scaleY := 1.0, 1.0
+	if bgSize.Cover {
+		// Scale to cover the entire background area (may crop)
+		sx := bgWidth / imgW
+		sy := bgHeight / imgH
+		scale := sx
+		if sy > sx {
+			scale = sy
+		}
+		scaleX, scaleY = scale, scale
+		imgW *= scale
+		imgH *= scale
+	} else if bgSize.Contain {
+		// Scale to fit within the background area (may leave gaps)
+		sx := bgWidth / imgW
+		sy := bgHeight / imgH
+		scale := sx
+		if sy < sx {
+			scale = sy
+		}
+		scaleX, scaleY = scale, scale
+		imgW *= scale
+		imgH *= scale
+	} else {
+		// Explicit dimensions
+		targetW, targetH := bgSize.Width, bgSize.Height
+		// Resolve percentage values (stored as negative)
+		if targetW < 0 {
+			targetW = bgWidth * (-targetW) / 100
+		}
+		if targetH < 0 {
+			targetH = bgHeight * (-targetH) / 100
+		}
+		if targetW > 0 && targetH > 0 {
+			scaleX = targetW / float64(bounds.Dx())
+			scaleY = targetH / float64(bounds.Dy())
+			imgW = targetW
+			imgH = targetH
+		} else if targetW > 0 {
+			scaleX = targetW / float64(bounds.Dx())
+			scaleY = scaleX // Maintain aspect ratio
+			imgW = targetW
+			imgH = float64(bounds.Dy()) * scaleY
+		} else if targetH > 0 {
+			scaleY = targetH / float64(bounds.Dy())
+			scaleX = scaleY // Maintain aspect ratio
+			imgW = float64(bounds.Dx()) * scaleX
+			imgH = targetH
+		}
+	}
+
 	repeat := box.Style.GetBackgroundRepeat()
 	pos := box.Style.GetBackgroundPosition()
 	attachment := box.Style.GetBackgroundAttachment()
@@ -1016,8 +1151,17 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
 	r.context.Clip()
 
+	needsScale := scaleX != 1.0 || scaleY != 1.0
 	drawClipped := func(drawX, drawY int) {
-		r.context.DrawImage(img, drawX, drawY)
+		if needsScale {
+			r.context.Push()
+			r.context.Translate(float64(drawX), float64(drawY))
+			r.context.Scale(scaleX, scaleY)
+			r.context.DrawImage(img, 0, 0)
+			r.context.Pop()
+		} else {
+			r.context.DrawImage(img, drawX, drawY)
+		}
 	}
 
 	switch repeat {

@@ -567,18 +567,38 @@ func (dc *Context) DrawRectangle(x, y, w, h float64) {
 }
 
 func (dc *Context) DrawRoundedRectangle(x, y, w, h, r float64) {
-	x0, x1, x2, x3 := x, x+r, x+w-r, x+w
-	y0, y1, y2, y3 := y, y+r, y+h-r, y+h
+	dc.DrawRoundedRectangleCorners(x, y, w, h, r, r, r, r)
+}
+
+// DrawRoundedRectangleCorners draws a rounded rectangle path with per-corner radii.
+// Parameters: tl=top-left, tr=top-right, br=bottom-right, bl=bottom-left.
+func (dc *Context) DrawRoundedRectangleCorners(x, y, w, h, tl, tr, br, bl float64) {
 	dc.NewSubPath()
-	dc.MoveTo(x1, y0)
-	dc.LineTo(x2, y0)
-	dc.DrawArc(x2, y1, r, Radians(270), Radians(360))
-	dc.LineTo(x3, y2)
-	dc.DrawArc(x2, y2, r, Radians(0), Radians(90))
-	dc.LineTo(x1, y3)
-	dc.DrawArc(x1, y2, r, Radians(90), Radians(180))
-	dc.LineTo(x0, y1)
-	dc.DrawArc(x1, y1, r, Radians(180), Radians(270))
+	// Top edge (from top-left corner to top-right corner)
+	dc.MoveTo(x+tl, y)
+	dc.LineTo(x+w-tr, y)
+	// Top-right corner
+	if tr > 0 {
+		dc.DrawArc(x+w-tr, y+tr, tr, Radians(270), Radians(360))
+	}
+	// Right edge
+	dc.LineTo(x+w, y+h-br)
+	// Bottom-right corner
+	if br > 0 {
+		dc.DrawArc(x+w-br, y+h-br, br, Radians(0), Radians(90))
+	}
+	// Bottom edge
+	dc.LineTo(x+bl, y+h)
+	// Bottom-left corner
+	if bl > 0 {
+		dc.DrawArc(x+bl, y+h-bl, bl, Radians(90), Radians(180))
+	}
+	// Left edge
+	dc.LineTo(x, y+tl)
+	// Top-left corner
+	if tl > 0 {
+		dc.DrawArc(x+tl, y+tl, tl, Radians(180), Radians(270))
+	}
 	dc.ClosePath()
 }
 

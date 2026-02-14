@@ -2,12 +2,15 @@ package css
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
 type Style struct {
-	Properties map[string]string
+	Properties      map[string]string
+	ViewportWidth   float64 // Viewport width in pixels (for vw/vmin/vmax units)
+	ViewportHeight  float64 // Viewport height in pixels (for vh/vmin/vmax units)
 }
 
 func NewStyle() *Style {
@@ -16,7 +19,85 @@ func NewStyle() *Style {
 
 func (s *Style) Get(property string) (string, bool) {
 	val, ok := s.Properties[property]
+	if !ok {
+		return val, ok
+	}
+	// Resolve var() references in the value
+	if strings.Contains(val, "var(") {
+		val = s.resolveVarReferences(val)
+	}
 	return val, ok
+}
+
+// resolveVarReferences resolves CSS var() function references in a value string.
+// Supports var(--name) and var(--name, fallback) syntax with nested var() in fallbacks.
+func (s *Style) resolveVarReferences(value string) string {
+	// Limit recursion depth to prevent infinite loops
+	for depth := 0; depth < 10; depth++ {
+		idx := strings.Index(value, "var(")
+		if idx == -1 {
+			break
+		}
+
+		// Find the matching closing paren
+		parenDepth := 0
+		end := -1
+		for i := idx + 3; i < len(value); i++ {
+			if value[i] == '(' {
+				parenDepth++
+			} else if value[i] == ')' {
+				parenDepth--
+				if parenDepth == 0 {
+					end = i
+					break
+				}
+			}
+		}
+		if end == -1 {
+			break // Malformed var() — no closing paren
+		}
+
+		// Extract the content between var( and )
+		content := strings.TrimSpace(value[idx+4 : end])
+
+		// Split on first comma (separating property name from fallback)
+		varName := content
+		fallback := ""
+		if commaIdx := findCommaOutsideParens(content); commaIdx >= 0 {
+			varName = strings.TrimSpace(content[:commaIdx])
+			fallback = strings.TrimSpace(content[commaIdx+1:])
+		}
+
+		// Look up the custom property (bypass Get to avoid recursion)
+		resolved := ""
+		if propVal, ok := s.Properties[varName]; ok {
+			resolved = propVal
+		} else if fallback != "" {
+			resolved = fallback
+		}
+
+		// Replace var(...) with the resolved value
+		value = value[:idx] + resolved + value[end+1:]
+	}
+	return value
+}
+
+// findCommaOutsideParens finds the index of the first comma not inside parentheses.
+func findCommaOutsideParens(s string) int {
+	depth := 0
+	for i, ch := range s {
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func (s *Style) Set(property, value string) {
@@ -28,7 +109,7 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return ParseLengthWithFontSize(val, s.GetFontSize())
+	return ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight)
 }
 
 // ParsePercentage parses a percentage value (e.g., "140%") and returns the number (e.g., 140).
@@ -57,11 +138,16 @@ func (s *Style) GetPercentage(property string) (float64, bool) {
 // ParseLength parses a length value (e.g., "100px" or "100")
 // Does not handle em units — use ParseLengthWithFontSize for that.
 func ParseLength(val string) (float64, bool) {
-	return ParseLengthWithFontSize(val, 16.0)
+	return ParseLengthFull(val, 16.0, 0, 0)
 }
 
 // ParseLengthWithFontSize parses a length value with em and rem support.
 func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
+	return ParseLengthFull(val, fontSize, 0, 0)
+}
+
+// ParseLengthFull parses a length value with em, rem, and viewport unit support.
+func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64) (float64, bool) {
 	val = strings.TrimSpace(val)
 	// Handle calc() expressions
 	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
@@ -71,6 +157,39 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 			return result, true
 		}
 		return 0, false
+	}
+	// Viewport units (check vmin/vmax before vw/vh to avoid suffix conflicts)
+	if strings.HasSuffix(val, "vmin") {
+		numStr := strings.TrimSuffix(val, "vmin")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * math.Min(viewportWidth, viewportHeight) / 100, true
+	}
+	if strings.HasSuffix(val, "vmax") {
+		numStr := strings.TrimSuffix(val, "vmax")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * math.Max(viewportWidth, viewportHeight) / 100, true
+	}
+	if strings.HasSuffix(val, "vw") {
+		numStr := strings.TrimSuffix(val, "vw")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * viewportWidth / 100, true
+	}
+	if strings.HasSuffix(val, "vh") {
+		numStr := strings.TrimSuffix(val, "vh")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * viewportHeight / 100, true
 	}
 	if strings.HasSuffix(val, "rem") {
 		// rem is relative to root font size (typically 16px)
@@ -447,12 +566,69 @@ func (s *Style) getBorderStyleSide(property string) BorderStyle {
 	return BorderStyleSolid // Default to solid
 }
 
+// BorderRadiusCorners holds the radius for each corner of a box.
+type BorderRadiusCorners struct {
+	TopLeft     float64
+	TopRight    float64
+	BottomRight float64
+	BottomLeft  float64
+}
+
+// IsUniform returns true if all corners have the same radius.
+func (r BorderRadiusCorners) IsUniform() bool {
+	return r.TopLeft == r.TopRight && r.TopRight == r.BottomRight && r.BottomRight == r.BottomLeft
+}
+
+// MaxRadius returns the largest corner radius.
+func (r BorderRadiusCorners) MaxRadius() float64 {
+	m := r.TopLeft
+	if r.TopRight > m {
+		m = r.TopRight
+	}
+	if r.BottomRight > m {
+		m = r.BottomRight
+	}
+	if r.BottomLeft > m {
+		m = r.BottomLeft
+	}
+	return m
+}
+
 // GetBorderRadius returns the border-radius value (simplified - single value for all corners)
 func (s *Style) GetBorderRadius() float64 {
-	if radius, ok := s.GetLength("border-radius"); ok {
-		return radius
+	corners := s.GetBorderRadiusCorners()
+	return corners.MaxRadius()
+}
+
+// GetBorderRadiusCorners returns per-corner border-radius values.
+func (s *Style) GetBorderRadiusCorners() BorderRadiusCorners {
+	var corners BorderRadiusCorners
+
+	// Check individual corners first (higher specificity)
+	if r, ok := s.GetLength("border-top-left-radius"); ok {
+		corners.TopLeft = r
 	}
-	return 0.0 // Default no radius
+	if r, ok := s.GetLength("border-top-right-radius"); ok {
+		corners.TopRight = r
+	}
+	if r, ok := s.GetLength("border-bottom-right-radius"); ok {
+		corners.BottomRight = r
+	}
+	if r, ok := s.GetLength("border-bottom-left-radius"); ok {
+		corners.BottomLeft = r
+	}
+
+	// If any individual corner was set, return those values
+	if corners.TopLeft > 0 || corners.TopRight > 0 || corners.BottomRight > 0 || corners.BottomLeft > 0 {
+		return corners
+	}
+
+	// Fall back to shorthand border-radius (already expanded by expandShorthand)
+	if r, ok := s.GetLength("border-radius"); ok {
+		return BorderRadiusCorners{r, r, r, r}
+	}
+
+	return corners // all zeros
 }
 
 // GetMaxWidth returns the max-width value if set
@@ -564,6 +740,24 @@ func ParseInlineStyle(styleAttr string) *Style {
 
 // expandShorthand expands shorthand CSS properties into individual properties
 func expandShorthand(style *Style, property, value string) {
+	// Custom properties (--*) are never shorthands — store as-is
+	if strings.HasPrefix(property, "--") {
+		style.Set(property, value)
+		return
+	}
+	// If value contains var(), skip shorthand expansion for most properties
+	// (var() will be resolved later when the property is read)
+	if strings.Contains(value, "var(") {
+		switch property {
+		case "margin", "padding", "border", "border-top", "border-right",
+			"border-bottom", "border-left", "border-width", "border-style",
+			"border-color", "font", "flex", "flex-flow", "list-style", "gap":
+			// Store as the shorthand property — var() resolved at read time
+			style.Set(property, value)
+			return
+		}
+		// For "background", let expandBackgroundProperty handle it (has its own var() check)
+	}
 	switch property {
 	case "margin":
 		// margin: 10px -> margin-top/right/bottom/left: 10px
@@ -582,6 +776,8 @@ func expandShorthand(style *Style, property, value string) {
 		expandBorderBoxProperty(style, value, "style")
 	case "border-color":
 		expandBorderBoxProperty(style, value, "color")
+	case "border-radius":
+		expandBorderRadiusProperty(style, value)
 	case "background":
 		expandBackgroundProperty(style, value)
 	case "font":
@@ -614,6 +810,43 @@ func expandShorthand(style *Style, property, value string) {
 	default:
 		// Regular property
 		style.Set(property, value)
+	}
+}
+
+// expandBorderRadiusProperty expands border-radius shorthand into per-corner properties.
+// CSS spec: border-radius: TL TR BR BL (1-4 values, same pattern as margin/padding)
+// Single value: all corners. Two values: TL+BR, TR+BL. Three: TL, TR+BL, BR. Four: TL TR BR BL.
+// Note: the "/" syntax for elliptical radii is not supported.
+func expandBorderRadiusProperty(style *Style, value string) {
+	// Ignore elliptical radii (slash syntax) for now
+	if strings.Contains(value, "/") {
+		// Just use the first (horizontal) set
+		value = strings.TrimSpace(strings.SplitN(value, "/", 2)[0])
+	}
+
+	parts := strings.Fields(value)
+	switch len(parts) {
+	case 1:
+		// All corners the same — store as shorthand for backward compat
+		style.Set("border-radius", parts[0])
+	case 2:
+		// TL+BR, TR+BL
+		style.Set("border-top-left-radius", parts[0])
+		style.Set("border-bottom-right-radius", parts[0])
+		style.Set("border-top-right-radius", parts[1])
+		style.Set("border-bottom-left-radius", parts[1])
+	case 3:
+		// TL, TR+BL, BR
+		style.Set("border-top-left-radius", parts[0])
+		style.Set("border-top-right-radius", parts[1])
+		style.Set("border-bottom-left-radius", parts[1])
+		style.Set("border-bottom-right-radius", parts[2])
+	case 4:
+		// TL, TR, BR, BL
+		style.Set("border-top-left-radius", parts[0])
+		style.Set("border-top-right-radius", parts[1])
+		style.Set("border-bottom-right-radius", parts[2])
+		style.Set("border-bottom-left-radius", parts[3])
 	}
 }
 
@@ -717,7 +950,7 @@ func expandBorderProperty(style *Style, value string) {
 			style.Set("border-right-width", part)
 			style.Set("border-bottom-width", part)
 			style.Set("border-left-width", part)
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" {
+		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" || part == "inset" || part == "outset" || part == "groove" || part == "ridge" {
 			// Style
 			style.Set("border-style", part)
 			style.Set("border-top-style", part)
@@ -835,7 +1068,7 @@ func expandBorderSideProperty(style *Style, property, value string) {
 			style.Set("border-"+side+"-width", bw)
 		} else if _, ok := ParseLength(part); ok {
 			style.Set("border-"+side+"-width", part)
-		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" {
+		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" || part == "inset" || part == "outset" || part == "groove" || part == "ridge" {
 			style.Set("border-"+side+"-style", part)
 		} else {
 			style.Set("border-"+side+"-color", part)
@@ -891,6 +1124,13 @@ func expandFontProperty(style *Style, value string) {
 // expandBackgroundProperty expands the background shorthand.
 // It extracts url(...), color, no-repeat, and position components.
 func expandBackgroundProperty(style *Style, value string) {
+	// If value contains var(), defer expansion — store as background-color
+	// (var() will be resolved later when the property is read)
+	if strings.Contains(value, "var(") {
+		style.Set("background-color", value)
+		return
+	}
+
 	// Handle "none" - resets background
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "none" {
@@ -2585,6 +2825,51 @@ func parsePositionComponent(val string, isX bool) float64 {
 		return length
 	}
 	return 0
+}
+
+// BackgroundSize represents a parsed background-size value
+type BackgroundSize struct {
+	Width   float64 // Computed width in pixels (0 = auto)
+	Height  float64 // Computed height in pixels (0 = auto)
+	Cover   bool
+	Contain bool
+}
+
+// GetBackgroundSize parses the background-size property.
+// Returns the parsed size with cover/contain flags or explicit dimensions.
+func (s *Style) GetBackgroundSize() BackgroundSize {
+	val, ok := s.Get("background-size")
+	if !ok {
+		return BackgroundSize{} // auto auto
+	}
+	val = strings.TrimSpace(val)
+	switch val {
+	case "cover":
+		return BackgroundSize{Cover: true}
+	case "contain":
+		return BackgroundSize{Contain: true}
+	case "auto":
+		return BackgroundSize{}
+	}
+
+	parts := strings.Fields(val)
+	var size BackgroundSize
+	if len(parts) >= 1 && parts[0] != "auto" {
+		if w, ok := ParseLength(parts[0]); ok {
+			size.Width = w
+		} else if pct, ok := ParsePercentage(parts[0]); ok {
+			// Store as negative to signal percentage (resolved at render time)
+			size.Width = -pct
+		}
+	}
+	if len(parts) >= 2 && parts[1] != "auto" {
+		if h, ok := ParseLength(parts[1]); ok {
+			size.Height = h
+		} else if pct, ok := ParsePercentage(parts[1]); ok {
+			size.Height = -pct
+		}
+	}
+	return size
 }
 
 // Phase 23: List styling

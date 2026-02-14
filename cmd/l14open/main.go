@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -38,7 +39,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
 		os.Exit(1)
 	}
-	doc, err := html.Parse(string(htmlContent))
+	// Create a filesystem CSS fetcher that resolves relative paths against the input file
+	baseDir := filepath.Dir(inputFile)
+	cssFetcher := func(uri string) (string, error) {
+		resolvedPath := uri
+		if !filepath.IsAbs(uri) {
+			resolvedPath = filepath.Join(baseDir, uri)
+		}
+		data, err := os.ReadFile(resolvedPath)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	doc, err := html.ParseWithFetcher(string(htmlContent), cssFetcher)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing HTML: %v\n", err)
 		os.Exit(1)

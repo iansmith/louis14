@@ -79,10 +79,107 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	switch node.TagName {
 	case "span", "em", "strong", "b", "i", "u", "s", "a", "abbr", "cite",
 		"code", "dfn", "kbd", "mark", "q", "samp", "small", "sub", "sup",
-		"var", "time", "label", "br", "wbr", "img", "input", "select",
-		"textarea", "button", "object":
+		"var", "time", "label", "br", "wbr", "img", "object":
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline")
+		}
+	}
+
+	// Default styles for form elements — rendered as simple boxes.
+	// Note: must use individual properties (not shorthands like "border" or "padding")
+	// because style.Set() does not expand shorthands.
+	switch node.TagName {
+	case "input":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "inline-block")
+		}
+		inputType, _ := node.GetAttribute("type")
+		if inputType == "" {
+			inputType = "text"
+		}
+		switch inputType {
+		case "checkbox", "radio":
+			if _, ok := style.Get("width"); !ok {
+				style.Set("width", "13px")
+			}
+			if _, ok := style.Get("height"); !ok {
+				style.Set("height", "13px")
+			}
+			setFormBorder(style, "1px", "solid", "#767676")
+			if _, ok := style.Get("background-color"); !ok {
+				style.Set("background-color", "white")
+			}
+		default:
+			// text, password, email, number, search, etc.
+			if _, ok := style.Get("width"); !ok {
+				style.Set("width", "173px")
+			}
+			if _, ok := style.Get("height"); !ok {
+				style.Set("height", "19px")
+			}
+			setFormPadding(style, "1px", "2px", "1px", "2px")
+			setFormBorder(style, "2px", "solid", "#767676")
+			if _, ok := style.Get("background-color"); !ok {
+				style.Set("background-color", "white")
+			}
+			if _, ok := style.Get("font-size"); !ok {
+				style.Set("font-size", "13.3333px")
+			}
+			style.Set("overflow", "hidden")
+		}
+	case "textarea":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "inline-block")
+		}
+		if _, ok := style.Get("width"); !ok {
+			style.Set("width", "173px")
+		}
+		if _, ok := style.Get("height"); !ok {
+			style.Set("height", "54px")
+		}
+		setFormPadding(style, "2px", "2px", "2px", "2px")
+		setFormBorder(style, "1px", "solid", "#767676")
+		if _, ok := style.Get("background-color"); !ok {
+			style.Set("background-color", "white")
+		}
+		if _, ok := style.Get("font-size"); !ok {
+			style.Set("font-size", "13.3333px")
+		}
+		style.Set("font-family", "monospace")
+		style.Set("overflow", "hidden")
+	case "select":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "inline-block")
+		}
+		if _, ok := style.Get("width"); !ok {
+			style.Set("width", "173px")
+		}
+		if _, ok := style.Get("height"); !ok {
+			style.Set("height", "19px")
+		}
+		setFormPadding(style, "1px", "2px", "1px", "2px")
+		setFormBorder(style, "1px", "solid", "#767676")
+		if _, ok := style.Get("background-color"); !ok {
+			style.Set("background-color", "white")
+		}
+		if _, ok := style.Get("font-size"); !ok {
+			style.Set("font-size", "13.3333px")
+		}
+		style.Set("overflow", "hidden")
+	case "button":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "inline-block")
+		}
+		setFormPadding(style, "1px", "6px", "1px", "6px")
+		setFormBorder(style, "2px", "solid", "#767676")
+		if _, ok := style.Get("background-color"); !ok {
+			style.Set("background-color", "#efefef")
+		}
+		if _, ok := style.Get("font-size"); !ok {
+			style.Set("font-size", "13.3333px")
+		}
+		if _, ok := style.Get("text-align"); !ok {
+			style.Set("text-align", "center")
 		}
 	}
 
@@ -187,6 +284,10 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			}
 		}
 	}
+
+	// Store viewport dimensions for viewport unit resolution (vw, vh, vmin, vmax)
+	finalStyle.ViewportWidth = viewportWidth
+	finalStyle.ViewportHeight = viewportHeight
 
 	return finalStyle
 }
@@ -297,6 +398,10 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 	}
 
+	// Store viewport dimensions for viewport unit resolution
+	finalStyle.ViewportWidth = viewportWidth
+	finalStyle.ViewportHeight = viewportHeight
+
 	return finalStyle
 }
 
@@ -364,6 +469,15 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 			}
 		}
 	}
+
+	// CSS Custom Properties (--*) inherit by default (CSS Custom Properties §2.2)
+	for prop, val := range parentStyle.Properties {
+		if strings.HasPrefix(prop, "--") {
+			if _, hasOwn := style.Properties[prop]; !hasOwn {
+				style.Properties[prop] = val
+			}
+		}
+	}
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
@@ -378,5 +492,37 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
 		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight)
+	}
+}
+
+// setFormBorder sets individual border properties for form element UA styles.
+// style.Set() doesn't expand shorthands, so we must set each property individually.
+func setFormBorder(style *Style, width, borderStyle, color string) {
+	for _, side := range []string{"top", "right", "bottom", "left"} {
+		if _, ok := style.Get("border-" + side + "-width"); !ok {
+			style.Set("border-"+side+"-width", width)
+		}
+		if _, ok := style.Get("border-" + side + "-style"); !ok {
+			style.Set("border-"+side+"-style", borderStyle)
+		}
+		if _, ok := style.Get("border-" + side + "-color"); !ok {
+			style.Set("border-"+side+"-color", color)
+		}
+	}
+}
+
+// setFormPadding sets individual padding properties for form element UA styles.
+func setFormPadding(style *Style, top, right, bottom, left string) {
+	if _, ok := style.Get("padding-top"); !ok {
+		style.Set("padding-top", top)
+	}
+	if _, ok := style.Get("padding-right"); !ok {
+		style.Set("padding-right", right)
+	}
+	if _, ok := style.Get("padding-bottom"); !ok {
+		style.Set("padding-bottom", bottom)
+	}
+	if _, ok := style.Get("padding-left"); !ok {
+		style.Set("padding-left", left)
 	}
 }
