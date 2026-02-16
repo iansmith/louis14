@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: radial-gradient ellipse basic</title>
+  <link rel="match" href="radial-gradient-ellipse-001-ref.html" />
+  <meta name="assert" content="radial-gradient() in a non-square box renders an elliptical gradient" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 200px;
+      height: 100px;
+      background: radial-gradient(white, black);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

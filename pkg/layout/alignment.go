@@ -83,6 +83,10 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 		if child == nil || child.Style == nil {
 			continue
 		}
+		// Skip floats — they have physical positioning per CSS 2.1 §9.5
+		if child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
 		childDisplay := child.Style.GetDisplay()
 		isInline := childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock
 		if child.Node != nil && child.Node.Type == html.TextNode {

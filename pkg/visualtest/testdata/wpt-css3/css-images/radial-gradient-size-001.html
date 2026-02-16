@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: radial-gradient size keywords</title>
+  <link rel="match" href="radial-gradient-size-001-ref.html" />
+  <meta name="assert" content="radial-gradient with closest-side produces a gradient that reaches the nearest side" />
+  <style>
+    body { margin: 0; }
+    .container {
+      display: inline-block;
+    }
+    .test-closest {
+      width: 100px;
+      height: 100px;
+      background: radial-gradient(circle closest-side, white, black);
+    }
+    .test-farthest {
+      width: 100px;
+      height: 100px;
+      background: radial-gradient(circle farthest-corner, white, black);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="test-closest"></div>
+  </div>
+  <div class="container">
+    <div class="test-farthest"></div>
+  </div>
+</body>
+</html>

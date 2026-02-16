@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: margins collapse through empty blocks</title>
+  <link rel="match" href="collapse-through-empty-001-ref.html" />
+  <meta name="assert" content="Margins of an element with no height, padding, or border collapse through it" />
+  <style>
+    body { margin: 0; }
+    .top {
+      width: 100px;
+      height: 50px;
+      background: green;
+      margin-bottom: 20px;
+    }
+    .empty {
+      margin-top: 10px;
+      margin-bottom: 10px;
+    }
+    .bottom {
+      width: 100px;
+      height: 50px;
+      background: green;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if the two green rectangles are separated by exactly 20px.</p>
+  <div class="top"></div>
+  <div class="empty"></div>
+  <div class="bottom"></div>
+</body>
+</html>

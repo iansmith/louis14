@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: ::before and ::after combined</title>
+  <link rel="match" href="before-after-combined-001-ref.html" />
+  <meta name="assert" content="::before and ::after generate content on both sides of the element's content" />
+  <style>
+    body { margin: 0; }
+    .test { width: 300px; background: lime; }
+    .test::before { content: "["; }
+    .test::after { content: "]"; }
+  </style>
+</head>
+<body>
+  <div class="test">content</div>
+</body>
+</html>

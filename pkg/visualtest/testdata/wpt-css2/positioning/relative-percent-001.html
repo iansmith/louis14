@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: position:relative with percentage offset</title>
+  <link rel="match" href="relative-percent-001-ref.html" />
+  <meta name="assert" content="Percentage top on position:relative resolves against containing block height" />
+  <style>
+    body { margin: 0; }
+    .container {
+      width: 100px;
+      height: 200px;
+      background: red;
+    }
+    .shifted {
+      position: relative;
+      top: 50%;
+      width: 100px;
+      height: 100px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a red square on top and a green square on the bottom.</p>
+  <div class="container">
+    <div class="shifted"></div>
+  </div>
+</body>
+</html>

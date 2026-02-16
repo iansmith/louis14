@@ -164,6 +164,45 @@ func NewRadialGradient(x0, y0, r0, x1, y1, r1 float64) Gradient {
 	return g
 }
 
+// Elliptical Radial Gradient
+// Wraps a circular radial gradient and scales Y coordinates to produce an ellipse.
+type ellipticalGradient struct {
+	inner  *radialGradient
+	cx, cy float64  // center in pixel coordinates
+	scaleY float64  // rx/ry ratio for Y coordinate scaling
+}
+
+func (g *ellipticalGradient) ColorAt(x, y int) color.Color {
+	// Scale Y relative to center to make ellipse appear circular
+	scaledY := g.cy + (float64(y)-g.cy)*g.scaleY
+	return g.inner.ColorAt(x, int(scaledY))
+}
+
+func (g *ellipticalGradient) AddColorStop(offset float64, color color.Color) {
+	g.inner.AddColorStop(offset, color)
+}
+
+// NewEllipticalRadialGradient creates an elliptical radial gradient.
+// cx, cy is the center; rx, ry are the X and Y radii.
+func NewEllipticalRadialGradient(cx, cy, rx, ry float64) Gradient {
+	if ry == 0 || rx == 0 {
+		// Degenerate: fall back to circular
+		return NewRadialGradient(cx, cy, 0, cx, cy, math.Max(rx, ry))
+	}
+	if rx == ry {
+		// Circular: no scaling needed
+		return NewRadialGradient(cx, cy, 0, cx, cy, rx)
+	}
+	// Create a circular gradient with radius rx, then scale Y by rx/ry
+	inner := NewRadialGradient(cx, cy, 0, cx, cy, rx).(*radialGradient)
+	return &ellipticalGradient{
+		inner:  inner,
+		cx:     cx,
+		cy:     cy,
+		scaleY: rx / ry,
+	}
+}
+
 func getColor(pos float64, stops stops) color.Color {
 	if pos <= 0.0 || len(stops) == 1 {
 		return stops[0].color

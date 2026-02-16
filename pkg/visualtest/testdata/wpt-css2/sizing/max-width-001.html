@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: max-width caps box width</title>
+  <link rel="match" href="max-width-001-ref.html" />
+  <meta name="assert" content="max-width should prevent the box from being wider than the specified value" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 300px;
+      max-width: 100px;
+      height: 100px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a filled green 100x100 square.</p>
+  <div class="test"></div>
+</body>
+</html>

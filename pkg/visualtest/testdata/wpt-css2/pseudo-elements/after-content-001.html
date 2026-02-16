@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: ::after with text content</title>
+  <link rel="match" href="after-content-001-ref.html" />
+  <meta name="assert" content="::after generates content after the element's content" />
+  <style>
+    body { margin: 0; }
+    .test { width: 200px; background: lime; }
+    .test::after {
+      content: " World";
+    }
+  </style>
+</head>
+<body>
+  <div class="test">Hello</div>
+</body>
+</html>

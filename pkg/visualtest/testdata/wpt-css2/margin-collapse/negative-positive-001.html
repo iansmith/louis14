@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: negative and positive margins collapse</title>
+  <link rel="match" href="negative-positive-001-ref.html" />
+  <meta name="assert" content="When positive and negative adjoining margins are combined, the result is the largest positive minus the absolute of the largest negative" />
+  <style>
+    body { margin: 0; }
+    .a {
+      width: 100px;
+      height: 50px;
+      background: blue;
+      margin-bottom: 50px;
+    }
+    .b {
+      width: 100px;
+      height: 50px;
+      background: orange;
+      margin-top: -50px;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is no vertical gap between the blue and orange stripes.</p>
+  <div class="a"></div>
+  <div class="b"></div>
+</body>
+</html>

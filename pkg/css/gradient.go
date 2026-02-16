@@ -1,6 +1,7 @@
 package css
 
 import (
+	"math"
 	"strconv"
 	"strings"
 )
@@ -24,6 +25,15 @@ type Gradient struct {
 	Type       GradientType
 	Direction  string // "to right", "to bottom", "45deg", etc.
 	ColorStops []ColorStop
+	// Radial-specific fields:
+	Shape   string  // "circle" or "ellipse"
+	Size    string  // "farthest-corner", "closest-side", etc. or ""
+	RadiusX float64 // explicit radius in px, 0 if using size keyword
+	RadiusY float64 // explicit Y radius for ellipse, 0 if circle
+	CenterX float64 // center X as fraction (0-1), default 0.5
+	CenterY float64 // center Y as fraction (0-1), default 0.5
+	CenterXPx float64 // center X in px (if specified as px), -1 if not
+	CenterYPx float64 // center Y in px (if specified as px), -1 if not
 }
 
 // ParseLinearGradient parses a linear-gradient() CSS value
@@ -155,7 +165,12 @@ func splitGradientParts(content string) []string {
 // ConvertPixelOffsetsToPercentages converts pixel-based offsets to percentages
 // based on the gradient size in the specified direction
 func (g *Gradient) ConvertPixelOffsetsToPercentages(width, height float64) {
-	if g == nil || g.Type != GradientLinear {
+	if g == nil || (g.Type != GradientLinear && g.Type != GradientRadial) {
+		return
+	}
+
+	// Radial gradients use radius-based conversion handled separately
+	if g.Type == GradientRadial {
 		return
 	}
 
@@ -240,11 +255,343 @@ func (g *Gradient) fillMissingOffsets() {
 	}
 }
 
+// ParseRadialGradient parses a radial-gradient() CSS value
+func ParseRadialGradient(value string) (*Gradient, bool) {
+	value = strings.TrimSpace(value)
+
+	if !strings.HasPrefix(value, "radial-gradient(") || !strings.HasSuffix(value, ")") {
+		return nil, false
+	}
+
+	content := value[len("radial-gradient(") : len(value)-1]
+	parts := splitGradientParts(content)
+	if len(parts) < 2 {
+		return nil, false
+	}
+
+	grad := &Gradient{
+		Type:      GradientRadial,
+		Shape:     "ellipse",
+		Size:      "farthest-corner",
+		CenterX:   0.5,
+		CenterY:   0.5,
+		CenterXPx: -1,
+		CenterYPx: -1,
+	}
+
+	// The first part may contain shape/size/position info, or it may be a color stop.
+	// Try to parse it as shape/size configuration.
+	firstPart := strings.TrimSpace(parts[0])
+	startIdx := 0
+
+	// Split on " at " to separate shape/size from position
+	configPart := firstPart
+	positionPart := ""
+	if idx := strings.Index(firstPart, " at "); idx >= 0 {
+		configPart = strings.TrimSpace(firstPart[:idx])
+		positionPart = strings.TrimSpace(firstPart[idx+4:])
+	} else if strings.HasPrefix(firstPart, "at ") {
+		positionPart = strings.TrimSpace(firstPart[3:])
+		configPart = ""
+	}
+
+	// Try parsing the config part (shape/size keywords or explicit radii)
+	parsedConfig := false
+	if configPart != "" {
+		parsedConfig = parseRadialConfig(configPart, grad)
+	}
+	if positionPart != "" {
+		parseRadialPosition(positionPart, grad)
+		parsedConfig = true
+	}
+
+	if parsedConfig {
+		startIdx = 1
+	}
+
+	// Parse color stops
+	for i := startIdx; i < len(parts); i++ {
+		stop, ok := parseColorStop(strings.TrimSpace(parts[i]))
+		if !ok {
+			// If startIdx==1 and first color stop fails, the first part wasn't config
+			if i == startIdx && startIdx == 1 && !parsedConfig {
+				// Reset and try treating first part as a color stop
+				startIdx = 0
+				grad.Shape = "ellipse"
+				grad.Size = "farthest-corner"
+				grad.RadiusX = 0
+				grad.RadiusY = 0
+				stop2, ok2 := parseColorStop(strings.TrimSpace(parts[0]))
+				if !ok2 {
+					return nil, false
+				}
+				grad.ColorStops = append(grad.ColorStops, stop2)
+				continue
+			}
+			return nil, false
+		}
+		grad.ColorStops = append(grad.ColorStops, stop)
+	}
+
+	if len(grad.ColorStops) < 2 {
+		return nil, false
+	}
+
+	return grad, true
+}
+
+// parseRadialConfig parses the shape/size part of a radial gradient (before "at")
+func parseRadialConfig(config string, grad *Gradient) bool {
+	tokens := strings.Fields(config)
+	if len(tokens) == 0 {
+		return false
+	}
+
+	sizeKeywords := map[string]bool{
+		"closest-side": true, "farthest-side": true,
+		"closest-corner": true, "farthest-corner": true,
+	}
+
+	hasShapeOrSize := false
+	var lengthTokens []string
+
+	for _, tok := range tokens {
+		switch {
+		case tok == "circle":
+			grad.Shape = "circle"
+			hasShapeOrSize = true
+		case tok == "ellipse":
+			grad.Shape = "ellipse"
+			hasShapeOrSize = true
+		case sizeKeywords[tok]:
+			grad.Size = tok
+			hasShapeOrSize = true
+		case strings.HasSuffix(tok, "px") || strings.HasSuffix(tok, "%"):
+			lengthTokens = append(lengthTokens, tok)
+			hasShapeOrSize = true
+		default:
+			// Try parsing as a bare number (px assumed)
+			if _, err := strconv.ParseFloat(tok, 64); err == nil {
+				lengthTokens = append(lengthTokens, tok+"px")
+				hasShapeOrSize = true
+			} else {
+				// Unknown token — might be a color, so this isn't a config part
+				if !hasShapeOrSize {
+					return false
+				}
+			}
+		}
+	}
+
+	// Process explicit length values
+	if len(lengthTokens) == 1 {
+		grad.Shape = "circle"
+		grad.Size = ""
+		grad.RadiusX = parseLengthValue(lengthTokens[0])
+		grad.RadiusY = grad.RadiusX
+	} else if len(lengthTokens) == 2 {
+		grad.Shape = "ellipse"
+		grad.Size = ""
+		grad.RadiusX = parseLengthValue(lengthTokens[0])
+		grad.RadiusY = parseLengthValue(lengthTokens[1])
+	}
+
+	return hasShapeOrSize
+}
+
+// parseLengthValue parses "50px" or "50%" returning the numeric value.
+// Percentage values are returned as negative (e.g., "50%" -> -50).
+func parseLengthValue(s string) float64 {
+	if strings.HasSuffix(s, "px") {
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "px"), 64)
+		return v
+	}
+	if strings.HasSuffix(s, "%") {
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+		return -v // negative signals percentage
+	}
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}
+
+// parseRadialPosition parses the position after "at" in a radial gradient
+func parseRadialPosition(pos string, grad *Gradient) {
+	tokens := strings.Fields(pos)
+	if len(tokens) == 0 {
+		return
+	}
+
+	parseOnePos := func(tok string, isX bool) {
+		switch tok {
+		case "center":
+			if isX {
+				grad.CenterX = 0.5
+			} else {
+				grad.CenterY = 0.5
+			}
+		case "left":
+			grad.CenterX = 0
+		case "right":
+			grad.CenterX = 1
+		case "top":
+			grad.CenterY = 0
+		case "bottom":
+			grad.CenterY = 1
+		default:
+			if strings.HasSuffix(tok, "%") {
+				v, err := strconv.ParseFloat(strings.TrimSuffix(tok, "%"), 64)
+				if err == nil {
+					if isX {
+						grad.CenterX = v / 100.0
+					} else {
+						grad.CenterY = v / 100.0
+					}
+				}
+			} else if strings.HasSuffix(tok, "px") {
+				v, err := strconv.ParseFloat(strings.TrimSuffix(tok, "px"), 64)
+				if err == nil {
+					if isX {
+						grad.CenterXPx = v
+					} else {
+						grad.CenterYPx = v
+					}
+				}
+			}
+		}
+	}
+
+	if len(tokens) == 1 {
+		// Single value: applies to both axes if keyword, or X with Y=center
+		tok := tokens[0]
+		if tok == "center" {
+			grad.CenterX = 0.5
+			grad.CenterY = 0.5
+		} else if tok == "top" || tok == "bottom" {
+			parseOnePos(tok, false)
+			grad.CenterX = 0.5
+		} else {
+			parseOnePos(tok, true)
+			grad.CenterY = 0.5
+		}
+	} else {
+		parseOnePos(tokens[0], true)
+		parseOnePos(tokens[1], false)
+	}
+}
+
+// ConvertRadialPixelOffsets converts pixel-based color stop offsets to percentages
+// for radial gradients, using the gradient radius as the reference size.
+func (g *Gradient) ConvertRadialPixelOffsets(radius float64) {
+	if radius == 0 {
+		return
+	}
+	for i := range g.ColorStops {
+		offset := g.ColorStops[i].Offset
+		if offset < 0 || offset <= 1.0 {
+			continue
+		}
+		g.ColorStops[i].Offset = offset / radius
+	}
+	g.fillMissingOffsets()
+}
+
+// ComputeRadialRadii computes the actual rx, ry radii in pixels for a radial gradient
+func (g *Gradient) ComputeRadialRadii(bgWidth, bgHeight float64) (float64, float64) {
+	// Resolve center position
+	cx := g.CenterX * bgWidth
+	if g.CenterXPx >= 0 {
+		cx = g.CenterXPx
+	}
+	cy := g.CenterY * bgHeight
+	if g.CenterYPx >= 0 {
+		cy = g.CenterYPx
+	}
+
+	// Explicit radii
+	if g.Size == "" && g.RadiusX > 0 {
+		rx := g.RadiusX
+		ry := g.RadiusY
+		if ry == 0 {
+			ry = rx
+		}
+		// Handle percentage radii (stored as negative)
+		if rx < 0 {
+			rx = -rx / 100.0 * bgWidth
+		}
+		if ry < 0 {
+			ry = -ry / 100.0 * bgHeight
+		}
+		return rx, ry
+	}
+
+	// Distance from center to each side
+	dLeft := cx
+	dRight := bgWidth - cx
+	dTop := cy
+	dBottom := bgHeight - cy
+
+	switch g.Size {
+	case "closest-side":
+		if g.Shape == "circle" {
+			r := math.Min(math.Min(dLeft, dRight), math.Min(dTop, dBottom))
+			return r, r
+		}
+		// Ellipse: closest side in each axis
+		rx := math.Min(dLeft, dRight)
+		ry := math.Min(dTop, dBottom)
+		return rx, ry
+
+	case "farthest-side":
+		if g.Shape == "circle" {
+			r := math.Max(math.Max(dLeft, dRight), math.Max(dTop, dBottom))
+			return r, r
+		}
+		rx := math.Max(dLeft, dRight)
+		ry := math.Max(dTop, dBottom)
+		return rx, ry
+
+	case "closest-corner":
+		// Distance to closest corner
+		nearX := math.Min(dLeft, dRight)
+		nearY := math.Min(dTop, dBottom)
+		if g.Shape == "circle" {
+			r := math.Hypot(nearX, nearY)
+			return r, r
+		}
+		// Ellipse: scale so that the ellipse passes through the closest corner
+		// with the same aspect ratio as the box
+		dist := math.Hypot(nearX, nearY)
+		ratio := nearY / nearX
+		rx := dist / math.Sqrt(1+ratio*ratio)
+		ry := rx * ratio
+		return rx, ry
+
+	default: // "farthest-corner"
+		farX := math.Max(dLeft, dRight)
+		farY := math.Max(dTop, dBottom)
+		if g.Shape == "circle" {
+			r := math.Hypot(farX, farY)
+			return r, r
+		}
+		// Ellipse: scale so that the ellipse passes through the farthest corner
+		dist := math.Hypot(farX, farY)
+		if farX == 0 {
+			return 0, dist
+		}
+		ratio := farY / farX
+		rx := dist / math.Sqrt(1+ratio*ratio)
+		ry := rx * ratio
+		return rx, ry
+	}
+}
+
 // GetGradient attempts to parse a gradient from a background value
 func GetGradient(backgroundValue string) (*Gradient, bool) {
 	if strings.Contains(backgroundValue, "linear-gradient(") {
 		return ParseLinearGradient(backgroundValue)
 	}
-	// Could add radial-gradient support here in the future
+	if strings.Contains(backgroundValue, "radial-gradient(") {
+		return ParseRadialGradient(backgroundValue)
+	}
 	return nil, false
 }

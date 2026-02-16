@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: display:inline puts elements on same line</title>
+  <link rel="match" href="display-inline-001-ref.html" />
+  <meta name="assert" content="Elements with display:inline are laid out on the same line" />
+  <style>
+    body { margin: 0; }
+    .parent { width: 300px; border: 1px solid black; }
+    .inline { display: inline; background: lime; }
+  </style>
+</head>
+<body>
+  <div class="parent">
+    <div class="inline">Hello</div>
+    <div class="inline">World</div>
+  </div>
+</body>
+</html>

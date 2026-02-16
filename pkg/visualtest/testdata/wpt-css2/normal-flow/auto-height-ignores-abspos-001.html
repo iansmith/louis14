@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: auto height ignores absolutely positioned children</title>
+  <link rel="match" href="auto-height-ignores-abspos-001-ref.html" />
+  <meta name="assert" content="Absolutely positioned children do not contribute to the auto height of their parent" />
+  <style>
+    body { margin: 0; }
+    .container {
+      position: relative;
+      width: 100px;
+      background: green;
+    }
+    .abspos {
+      position: absolute;
+      top: 0; left: 0;
+      width: 50px;
+      height: 50px;
+      background: blue;
+    }
+    .flow-child {
+      width: 100px;
+      height: 100px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a green square with a blue square in the top-left corner.</p>
+  <div class="container">
+    <div class="abspos"></div>
+    <div class="flow-child"></div>
+  </div>
+</body>
+</html>

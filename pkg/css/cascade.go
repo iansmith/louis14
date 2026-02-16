@@ -257,7 +257,7 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			if importantProps[property] {
 				continue
 			}
-			finalStyle.Set(property, value)
+			expandShorthand(finalStyle, property, value)
 		}
 	}
 
@@ -268,7 +268,7 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		}
 		for property, value := range rule.Declarations {
 			if rule.Important[property] {
-				finalStyle.Set(property, value)
+				expandShorthand(finalStyle, property, value)
 				importantProps[property] = true
 			}
 		}
@@ -396,6 +396,13 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				importantProps[property] = true
 			}
 		}
+	}
+
+	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless
+	// explicitly set by a rule. GetDisplay() defaults to DisplayBlock for
+	// regular elements, but pseudo-elements are inline by default.
+	if _, ok := finalStyle.Get("display"); !ok {
+		finalStyle.Set("display", "inline")
 	}
 
 	// Store viewport dimensions for viewport unit resolution

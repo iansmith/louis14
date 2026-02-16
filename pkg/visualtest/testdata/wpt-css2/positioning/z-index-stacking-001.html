@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: z-index stacking order</title>
+  <link rel="match" href="z-index-stacking-001-ref.html" />
+  <meta name="assert" content="An element with z-index:-100 paints on top of an element with z-index:-2147483648" />
+  <style>
+    body { margin: 0; }
+    #wrapper { position: relative; }
+    #green {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100px; height: 100px;
+      background: green;
+      z-index: -100;
+    }
+    #red {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100px; height: 100px;
+      background: red;
+      z-index: -2147483648;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a filled green square and <strong>no red</strong>.</p>
+  <div id="wrapper">
+    <div id="green"></div>
+    <div id="red"></div>
+  </div>
+</body>
+</html>

@@ -432,6 +432,13 @@ func (le *LayoutEngine) BreakLines(
 		for j := len(line.Items) - 1; j >= 0; j-- {
 			item := line.Items[j]
 			if item.Type == InlineItemText {
+				// Skip empty text items (width=0, no visible content) when scanning
+				// backward — they shouldn't prevent trailing strip on the real text.
+				// These can appear after block-in-inline splits where whitespace
+				// normalization produced empty text nodes.
+				if item.Text == "" {
+					continue
+				}
 				trimmedText := strings.TrimRight(item.Text, " \t\n\r")
 				if trimmedText != item.Text {
 					if item.Node != nil {
@@ -1480,6 +1487,19 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				floatY = le.getClearY(clearType, floatY)
 			}
 
+			// CSS 2.1 §9.5.1: Float drop - if the float doesn't fit beside
+			// existing floats at the current Y, drop it below them.
+			// Use availableWidth (the constraint passed to this function) rather than
+			// containerBox.Width because:
+			// - For shrink-to-fit containers (no max-width), availableWidth is the parent's
+			//   full width, so floats won't drop unnecessarily (container will grow to fit).
+			// - For max-width constrained containers, availableWidth is clamped to max-width,
+			//   so floats correctly drop when they exceed the maximum container width.
+			floatTotalWidth := floatBox.Margin.Left + floatBox.Width + floatBox.Margin.Right
+			if availableWidth > 0 {
+				floatY = le.getFloatDropY(floatType, floatTotalWidth, floatY, availableWidth)
+			}
+
 			// Get float offsets at the target Y
 			leftOffset, rightOffset := le.getFloatOffsets(floatY)
 
@@ -1932,6 +1952,13 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			display = css.DisplayInlineBlock
 		}
 
+		// Skip absolutely positioned elements — they're out of flow and will be
+		// laid out separately by the parent container's absolute positioning pass.
+		pos := style.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			return
+		}
+
 		// Check for floats BEFORE display switch - floated elements compute to
 		// display:block per CSS spec, but should be treated as float items regardless
 		floatVal := style.GetFloat()
@@ -2190,7 +2217,12 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 						if childStyle != nil {
 							constraint := NewConstraintSpace(state.AvailableWidth, 0)
 							sizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
-							width += sizes.MaxContentSize
+							childWidth := sizes.MaxContentSize
+							// Block children's margins consume space within the
+							// inline-block container's content area
+							childMargin := childStyle.GetMargin()
+							childWidth += childMargin.Left + childMargin.Right
+							width += childWidth
 						}
 					}
 				}

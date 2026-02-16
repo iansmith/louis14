@@ -523,9 +523,17 @@ func (le *LayoutEngine) createPseudoElementNode(node *html.Node, pseudoType stri
 	}
 	flushText()
 
-	// If no children were created, return nil
+	// CSS 2.1 §12.2: content:"" generates an empty pseudo-element box that
+	// still participates in layout (e.g., display:block with width/height).
+	// If no children were created but content was validly specified, add an
+	// empty text node so the synthetic node is not nil.
 	if len(syntheticNode.Children) == 0 {
-		return nil, nil
+		emptyText := &html.Node{
+			Type:   html.TextNode,
+			Text:   "",
+			Parent: syntheticNode,
+		}
+		syntheticNode.Children = append(syntheticNode.Children, emptyText)
 	}
 
 	return syntheticNode, pseudoStyle

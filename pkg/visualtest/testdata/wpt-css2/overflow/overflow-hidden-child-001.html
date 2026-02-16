@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: overflow:hidden clips oversized child</title>
+  <link rel="match" href="overflow-hidden-child-001-ref.html" />
+  <meta name="assert" content="overflow:hidden clips children that extend beyond the padding edge" />
+  <style>
+    body { margin: 0; }
+    .container {
+      width: 100px;
+      height: 100px;
+      overflow: hidden;
+      background: green;
+    }
+    .tall {
+      width: 100px;
+      height: 200px;
+      background: green;
+    }
+    .marker {
+      width: 100px;
+      height: 50px;
+      background: red;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a green square and <strong>no red</strong>.</p>
+  <div class="container">
+    <div class="tall"></div>
+    <div class="marker"></div>
+  </div>
+</body>
+</html>

@@ -1235,8 +1235,8 @@ func expandBackgroundProperty(style *Style, value string) {
 		return
 	}
 
-	// Check for linear-gradient() - store the entire value as background property
-	if strings.Contains(value, "linear-gradient(") {
+	// Check for gradient functions - store the entire value as background property
+	if strings.Contains(value, "linear-gradient(") || strings.Contains(value, "radial-gradient(") {
 		// Keep the full gradient value, don't expand it
 		style.Set("background", value)
 		return
@@ -1344,7 +1344,7 @@ func ParseColor(colorStr string) (Color, bool) {
 		return Color{0, 0, 0, 0.0}, true
 	}
 
-	// Handle rgb() format
+	// Handle rgb() format (3-arg and 4-arg)
 	if strings.HasPrefix(colorStr, "rgb(") && strings.HasSuffix(colorStr, ")") {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgb("), ")")
 		parts := strings.Split(values, ",")
@@ -1355,6 +1355,17 @@ func ParseColor(colorStr string) (Color, bool) {
 			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
 			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
 				return Color{uint8(r), uint8(g), uint8(b), 1.0}, true
+			}
+		} else if len(parts) == 4 {
+			// CSS Color Level 4: rgb() with 4 arguments (alpha)
+			var r, g, b int
+			var a float64
+			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
+			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
+			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
+			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
+			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
+				return Color{uint8(r), uint8(g), uint8(b), a}, true
 			}
 		}
 	}
@@ -1373,6 +1384,61 @@ func ParseColor(colorStr string) (Color, bool) {
 			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
 				return Color{uint8(r), uint8(g), uint8(b), a}, true
 			}
+		}
+	}
+
+	// Handle hsl()/hsla() format
+	if (strings.HasPrefix(colorStr, "hsl(") || strings.HasPrefix(colorStr, "hsla(")) && strings.HasSuffix(colorStr, ")") {
+		inner := colorStr
+		if strings.HasPrefix(inner, "hsla(") {
+			inner = strings.TrimSuffix(strings.TrimPrefix(inner, "hsla("), ")")
+		} else {
+			inner = strings.TrimSuffix(strings.TrimPrefix(inner, "hsl("), ")")
+		}
+		parts := strings.Split(inner, ",")
+		if len(parts) >= 3 {
+			var h float64
+			fmt.Sscanf(strings.TrimSpace(parts[0]), "%f", &h)
+			sStr := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(parts[1]), "%"))
+			lStr := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(parts[2]), "%"))
+			var s, l float64
+			fmt.Sscanf(sStr, "%f", &s)
+			fmt.Sscanf(lStr, "%f", &l)
+			s /= 100.0
+			l /= 100.0
+			a := 1.0
+			if len(parts) == 4 {
+				fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
+			}
+			// HSL to RGB conversion
+			c := (1 - math.Abs(2*l-1)) * s
+			h = math.Mod(h, 360)
+			if h < 0 {
+				h += 360
+			}
+			x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+			m := l - c/2
+			var r1, g1, b1 float64
+			switch {
+			case h < 60:
+				r1, g1, b1 = c, x, 0
+			case h < 120:
+				r1, g1, b1 = x, c, 0
+			case h < 180:
+				r1, g1, b1 = 0, c, x
+			case h < 240:
+				r1, g1, b1 = 0, x, c
+			case h < 300:
+				r1, g1, b1 = x, 0, c
+			default:
+				r1, g1, b1 = c, 0, x
+			}
+			return Color{
+				R: uint8(math.Round((r1 + m) * 255)),
+				G: uint8(math.Round((g1 + m) * 255)),
+				B: uint8(math.Round((b1 + m) * 255)),
+				A: a,
+			}, true
 		}
 	}
 
@@ -1857,7 +1923,7 @@ func parseBoxShadowValue(s string) *BoxShadow {
 	}
 
 	shadow := &BoxShadow{
-		Color: Color{0, 0, 0, 0.3}, // Default shadow color
+		Color: Color{0, 0, 0, 1.0}, // Default: currentcolor (approximated as black)
 	}
 
 	tokenIndex := 0
@@ -1913,10 +1979,19 @@ func parseBoxShadowValue(s string) *BoxShadow {
 
 // isColor checks if a token might be a color value
 func isColor(s string) bool {
-	return strings.HasPrefix(s, "#") ||
-		   strings.HasPrefix(s, "rgb") ||
-		   strings.HasPrefix(s, "hsl") ||
-		   (s != "inset" && !strings.HasSuffix(s, "px") && !strings.HasSuffix(s, "em"))
+	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") {
+		return true
+	}
+	// Bare numbers and lengths are not colors
+	if _, ok := ParseLength(s); ok {
+		return false
+	}
+	// Named colors and other non-length, non-keyword tokens
+	if s == "inset" {
+		return false
+	}
+	_, ok := ParseColor(s)
+	return ok
 }
 
 // Phase 7: Display modes

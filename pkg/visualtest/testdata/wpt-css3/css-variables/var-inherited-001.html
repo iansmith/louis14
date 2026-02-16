@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: custom properties inherit</title>
+  <link rel="match" href="var-inherited-001-ref.html" />
+  <meta name="assert" content="Custom properties are inherited by descendants" />
+  <style>
+    body { margin: 0; }
+    .parent {
+      --box-color: green;
+    }
+    .child {
+      width: 100px;
+      height: 100px;
+      background: var(--box-color);
+    }
+  </style>
+</head>
+<body>
+  <div class="parent">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

@@ -178,8 +178,11 @@ func runReftest(t *testing.T, testPath string) bool {
 	testPNG := filepath.Join(tmpDir, "test.png")
 	refPNG := filepath.Join(tmpDir, "ref.png")
 
-	// Try 400x400 to see if test was designed for this viewport
-	width, height := 400, 400
+	// WPT tests are designed for 800x600 minimum viewport (standard browser default).
+	// Using 400x400 would cause float wrapping in tests with many floated containers
+	// (e.g. 27 floated flex containers totaling ~702px), producing different visual
+	// output between test and reference due to height differences affecting wrap Y positions.
+	width, height := 800, 600
 
 	// Use the test file's directory as the base path for resolving relative image URLs
 	testBasePath := filepath.Dir(testPath)
@@ -354,8 +357,8 @@ func TestListReftestResults(t *testing.T) {
 		testPNG := filepath.Join(tmpDir, "test.png")
 		refPNG := filepath.Join(tmpDir, "ref.png")
 
-		RenderHTMLToFile(string(content), testPNG, 400, 400)
-		RenderHTMLToFile(string(refContent), refPNG, 400, 400)
+		RenderHTMLToFile(string(content), testPNG, 800, 600)
+		RenderHTMLToFile(string(refContent), refPNG, 800, 600)
 
 		result, err := CompareImages(testPNG, refPNG, DefaultOptions())
 		if err != nil {

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: overflow:hidden clips absolutely positioned children</title>
+  <link rel="match" href="overflow-hidden-abspos-001-ref.html" />
+  <meta name="assert" content="overflow:hidden clips the rendering of absolutely positioned descendant elements" />
+  <style>
+    body { margin: 0; }
+    .container {
+      position: relative;
+      width: 100px;
+      height: 100px;
+      overflow: hidden;
+      background: green;
+    }
+    .child {
+      position: absolute;
+      top: 50px;
+      left: 50px;
+      width: 100px;
+      height: 100px;
+      background: blue;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if the blue square is clipped to the bottom-right quarter of the green square.</p>
+  <div class="container">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

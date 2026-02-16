@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: negative z-index child paints behind parent</title>
+  <link rel="match" href="z-index-negative-001-ref.html" />
+  <meta name="assert" content="A child with negative z-index paints behind its parent with z-index:auto" />
+  <style>
+    body { margin: 0; }
+    .parent {
+      position: relative;
+      width: 100px;
+      height: 100px;
+      background: green;
+      z-index: auto;
+    }
+    .child {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100px;
+      height: 100px;
+      background: red;
+      z-index: -1;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a filled green square and <strong>no red</strong>.</p>
+  <div class="parent">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

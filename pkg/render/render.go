@@ -64,6 +64,17 @@ func (r *Renderer) loadFont(fontSize float64, bold, italic, mono, ahem bool) {
 	}
 }
 
+// popContext restores the gg context state and invalidates the font cache.
+// gg's Push/Pop saves and restores the entire context struct, including the
+// font face. But the Renderer's lastFontKey is not part of the gg state,
+// so after Pop the cached key may reference a font that was loaded inside
+// the Push/Pop pair and is no longer the active face. Clearing the key
+// forces the next loadFont call to actually reload the font.
+func (r *Renderer) popContext() {
+	r.context.Pop()
+	r.lastFontKey = ""
+}
+
 // SetScrollY sets the viewport scroll offset for rendering.
 // Non-fixed content will be shifted up by this amount.
 // Fixed-positioned content remains at its absolute position.
@@ -284,6 +295,23 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 
 	r.collectDescendantsForPaintOrder(box, &negativeZ, &blocks, &floats, &inlines, &zeroAutoZ, &positiveZ)
 
+	// CSS 2.1 Appendix E: If this box is a positioned element with z-index:auto
+	// (does NOT create a real stacking context), all positioned and stacking
+	// context descendants have been promoted to the parent stacking context.
+	// Clear all z-index lists to prevent double-painting.
+	// Exception: if overflow != visible, descendants were NOT promoted (they
+	// must stay within the overflow clip), so keep the lists.
+	isZAutoPositioned := layout.IsPositioned(box) && !layout.BoxCreatesStackingContext(box)
+	hasOverflowClip := box.Style != nil && box.Style.GetOverflow() != css.OverflowVisible
+	// Only clear descendants if they were actually promoted to a parent stacking
+	// context. When box.Parent is nil, this is a root box and there's no parent
+	// to have promoted to — descendants must be painted here.
+	if isZAutoPositioned && !hasOverflowClip && box.Parent != nil {
+		negativeZ = nil
+		positiveZ = nil
+		zeroAutoZ = nil
+	}
+
 	// Sort z-index groups
 	sort.SliceStable(negativeZ, func(i, j int) bool {
 		return negativeZ[i].ZIndex < negativeZ[j].ZIndex
@@ -343,12 +371,12 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 
 	// Restore clipping state if we applied clipping
 	if needsClip {
-		r.context.Pop()
+		r.popContext()
 	}
 
 	// Restore transform state
 	if hasTransform {
-		r.context.Pop()
+		r.popContext()
 	}
 
 	// Composite isolated stacking context group back onto parent surface
@@ -358,7 +386,7 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 
 	// Restore clip-path state
 	if hasClipPath {
-		r.context.Pop()
+		r.popContext()
 	}
 }
 
@@ -823,10 +851,19 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 			}
 			// Don't recurse into stacking contexts - they paint atomically
 		} else if layout.IsPositioned(child) {
-			// Positioned but no stacking context - paint at step 6
+			// Positioned but no stacking context (z-index: auto) - paint at step 6
 			// "as if it generated a new stacking context" per CSS 2.1 Appendix E
-			// Don't recurse - its children are painted within its own paint order
 			*zeroAutoZ = append(*zeroAutoZ, child)
+			// CSS 2.1 Appendix E: positioned elements with z-index:auto don't
+			// create stacking contexts. Their positioned descendants and
+			// stacking context descendants participate in the PARENT stacking
+			// context, not this element's.
+			// Exception: don't promote if overflow != visible — the overflow clip
+			// must contain all descendants.
+			hasOverflowClip := child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible
+			if !hasOverflowClip {
+				r.promoteDescendantsToParentSC(child, negativeZ, zeroAutoZ, positiveZ)
+			}
 		} else if layout.IsFloat(child) {
 			*floats = append(*floats, child)
 			// Don't recurse into float children - floats paint atomically at step 4
@@ -842,6 +879,37 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 			*blocks = append(*blocks, child)
 			// Recurse into block's descendants to find inline content for step 5
 			r.collectDescendantsForPaintOrder(child, negativeZ, blocks, floats, inlines, zeroAutoZ, positiveZ)
+		}
+	}
+}
+
+// promoteDescendantsToParentSC finds positioned and stacking context descendants
+// within a positioned element that has z-index:auto (no stacking context).
+// Per CSS 2.1 Appendix E: "any positioned descendants and descendants which
+// actually create a new stacking context should be considered part of the parent
+// stacking context, not this new one."
+func (r *Renderer) promoteDescendantsToParentSC(box *layout.Box,
+	negativeZ, zeroAutoZ, positiveZ *[]*layout.Box) {
+	for _, child := range box.Children {
+		if child.Position == css.PositionFixed {
+			*zeroAutoZ = append(*zeroAutoZ, child)
+		} else if layout.BoxCreatesStackingContext(child) {
+			if child.ZIndex < 0 {
+				*negativeZ = append(*negativeZ, child)
+			} else if child.ZIndex > 0 {
+				*positiveZ = append(*positiveZ, child)
+			} else {
+				*zeroAutoZ = append(*zeroAutoZ, child)
+			}
+		} else if layout.IsPositioned(child) {
+			// Positioned but no stacking context — also promoted
+			*zeroAutoZ = append(*zeroAutoZ, child)
+			// Recurse: this child also doesn't create a stacking context,
+			// so its own positioned/SC descendants are also promoted
+			r.promoteDescendantsToParentSC(child, negativeZ, zeroAutoZ, positiveZ)
+		} else {
+			// Non-positioned, non-stacking-context — recurse to find deeper descendants
+			r.promoteDescendantsToParentSC(child, negativeZ, zeroAutoZ, positiveZ)
 		}
 	}
 }
@@ -996,13 +1064,16 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 	// Draw background image
 	r.drawBackgroundImage(box)
 
+	// CSS spec: inset box-shadows are drawn above background, below border/content
+	r.drawInsetBoxShadow(box)
+
 	// Draw border
 	r.drawBorder(box)
 }
 
 // drawGradientBackground renders a CSS gradient as the box background
 func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, effectiveY float64) {
-	if grad == nil || grad.Type != css.GradientLinear {
+	if grad == nil {
 		return
 	}
 
@@ -1021,45 +1092,83 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		return
 	}
 
-	// Convert pixel offsets to percentages based on gradient direction
-	gradCopy := *grad // Make a copy to avoid modifying the original
-	gradCopy.ConvertPixelOffsetsToPercentages(bgWidth, bgHeight)
+	var ggGrad gg.Gradient
 
-	// Determine gradient start and end points based on direction
-	var x0, y0, x1, y1 float64
-	switch gradCopy.Direction {
-	case "to right":
-		x0, y0 = bgX, bgY
-		x1, y1 = bgX+bgWidth, bgY
-	case "to left":
-		x0, y0 = bgX+bgWidth, bgY
-		x1, y1 = bgX, bgY
-	case "to bottom", "": // Default is to bottom
-		x0, y0 = bgX, bgY
-		x1, y1 = bgX, bgY+bgHeight
-	case "to top":
-		x0, y0 = bgX, bgY+bgHeight
-		x1, y1 = bgX, bgY
-	default:
-		// Default to "to bottom" for unsupported directions
-		x0, y0 = bgX, bgY
-		x1, y1 = bgX, bgY+bgHeight
-	}
+	if grad.Type == css.GradientLinear {
+		// Convert pixel offsets to percentages based on gradient direction
+		gradCopy := *grad
+		gradCopy.ConvertPixelOffsetsToPercentages(bgWidth, bgHeight)
 
-	// Create the gg gradient
-	ggGrad := gg.NewLinearGradient(x0, y0, x1, y1)
-
-	// Add color stops
-	for _, stop := range gradCopy.ColorStops {
-		// Go's color.RGBA uses premultiplied alpha: R,G,B values must be pre-multiplied by A
-		a := stop.Color.A // 0.0 to 1.0
-		c := color.RGBA{
-			R: uint8(float64(stop.Color.R) * a),
-			G: uint8(float64(stop.Color.G) * a),
-			B: uint8(float64(stop.Color.B) * a),
-			A: uint8(a * 255),
+		// Determine gradient start and end points based on direction
+		var x0, y0, x1, y1 float64
+		switch gradCopy.Direction {
+		case "to right":
+			x0, y0 = bgX, bgY
+			x1, y1 = bgX+bgWidth, bgY
+		case "to left":
+			x0, y0 = bgX+bgWidth, bgY
+			x1, y1 = bgX, bgY
+		case "to bottom", "":
+			x0, y0 = bgX, bgY
+			x1, y1 = bgX, bgY+bgHeight
+		case "to top":
+			x0, y0 = bgX, bgY+bgHeight
+			x1, y1 = bgX, bgY
+		default:
+			x0, y0 = bgX, bgY
+			x1, y1 = bgX, bgY+bgHeight
 		}
-		ggGrad.AddColorStop(stop.Offset, c)
+
+		ggGrad = gg.NewLinearGradient(x0, y0, x1, y1)
+
+		for _, stop := range gradCopy.ColorStops {
+			ggGrad.AddColorStop(stop.Offset, r.premultiplyColor(stop.Color))
+		}
+	} else if grad.Type == css.GradientRadial {
+		gradCopy := *grad
+		gradCopy.ColorStops = make([]css.ColorStop, len(grad.ColorStops))
+		copy(gradCopy.ColorStops, grad.ColorStops)
+
+		// Compute radii
+		rx, ry := gradCopy.ComputeRadialRadii(bgWidth, bgHeight)
+		if rx <= 0 && ry <= 0 {
+			return
+		}
+
+		// Compute center in pixel coordinates
+		cx := gradCopy.CenterX * bgWidth
+		if gradCopy.CenterXPx >= 0 {
+			cx = gradCopy.CenterXPx
+		}
+		cy := gradCopy.CenterY * bgHeight
+		if gradCopy.CenterYPx >= 0 {
+			cy = gradCopy.CenterYPx
+		}
+
+		// Convert pixel color stop offsets using the primary radius
+		radius := rx
+		if radius == 0 {
+			radius = ry
+		}
+		gradCopy.ConvertRadialPixelOffsets(radius)
+
+		// Translate center to absolute coordinates
+		absCx := bgX + cx
+		absCy := bgY + cy
+
+		if rx == ry || ry == 0 {
+			// Circular gradient
+			ggGrad = gg.NewRadialGradient(absCx, absCy, 0, absCx, absCy, rx)
+		} else {
+			// Elliptical gradient
+			ggGrad = gg.NewEllipticalRadialGradient(absCx, absCy, rx, ry)
+		}
+
+		for _, stop := range gradCopy.ColorStops {
+			ggGrad.AddColorStop(stop.Offset, r.premultiplyColor(stop.Color))
+		}
+	} else {
+		return
 	}
 
 	// Set the gradient as the fill pattern
@@ -1074,6 +1183,17 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
 	}
 	r.context.Fill()
+}
+
+// premultiplyColor converts a CSS color to a premultiplied alpha color.RGBA
+func (r *Renderer) premultiplyColor(c css.Color) color.RGBA {
+	a := c.A
+	return color.RGBA{
+		R: uint8(float64(c.R) * a),
+		G: uint8(float64(c.G) * a),
+		B: uint8(float64(c.B) * a),
+		A: uint8(a * 255),
+	}
 }
 
 // drawBoxContent draws the content of a box (text, images, scrollbars).
@@ -1116,7 +1236,7 @@ func (r *Renderer) drawBox(box *layout.Box) {
 	opacity := box.Style.GetOpacity()
 	if opacity < 1.0 {
 		r.context.Push()
-		defer r.context.Pop()
+		defer r.popContext()
 	}
 
 	// Phase 19: Draw box-shadow (drawn first, underneath the box)
@@ -1173,6 +1293,9 @@ func (r *Renderer) drawBox(box *layout.Box) {
 
 	// Phase 24: Draw background image
 	r.drawBackgroundImage(box)
+
+	// CSS spec: inset box-shadows are drawn above background, below border/content
+	r.drawInsetBoxShadow(box)
 
 	// Phase 2: Draw border
 	r.drawBorder(box)
@@ -1241,8 +1364,10 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// CRITICAL FIX: For inline elements, adjust dimensions to include bleeding borders/padding
 	renderHeight := box.Height
 	renderY := effectiveY
-	if box.Style != nil && box.Style.GetDisplay() == css.DisplayInline {
+	if box.Style != nil && box.Style.GetDisplay() == css.DisplayInline && !box.IsFirstFragment && !box.IsLastFragment {
 		// Inline elements: box.Height is line box height, but borders "bleed" outside
+		// Skip bleed for split-inline fragments (block-in-inline) — their borders should
+		// be contained within box.Height like block-level elements
 		renderHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
 		renderY = effectiveY - box.Border.Top - box.Padding.Top
 	}
@@ -1269,15 +1394,22 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		return
 	}
 
-	// Calculate border box coordinates using effective Y
+	// Calculate border box coordinates using effective Y.
+	// Snap inner coordinates to pixel boundaries so the gg rasterizer treats
+	// them as hard edges. At fractional positions the rasterizer fills any pixel
+	// the path crosses, causing border color to bleed into the content area
+	// (visible when clip-path clips at the same boundary). Floor for top/left
+	// inner edges (bottom/right side of top/left trapezoid) ensures the pixel
+	// just past the edge is outside; ceil for bottom/right inner edges (top/left
+	// side of bottom/right trapezoid) ensures the same.
 	outerLeft := box.X
 	outerTop := renderY
-	outerRight := box.X + box.Width // Border-box dimensions
-	outerBottom := renderY + renderHeight // Border-box dimensions
-	innerLeft := box.X + box.Border.Left
-	innerTop := renderY + box.Border.Top
-	innerRight := box.X + box.Width - box.Border.Right // Border-box dimensions
-	innerBottom := renderY + renderHeight - box.Border.Bottom // Border-box dimensions
+	outerRight := box.X + box.Width       // Border-box dimensions
+	outerBottom := renderY + renderHeight  // Border-box dimensions
+	innerLeft := math.Floor(box.X + box.Border.Left)
+	innerTop := math.Floor(renderY + box.Border.Top)
+	innerRight := math.Ceil(box.X + box.Width - box.Border.Right)      // Border-box dimensions
+	innerBottom := math.Ceil(renderY + renderHeight - box.Border.Bottom) // Border-box dimensions
 
 	// Draw each side as a trapezoid (CSS mitered border rendering).
 	// Drawing order: bottom → left → right → top. Later-drawn sides
@@ -1348,31 +1480,29 @@ func (r *Renderer) drawBoxShadow(box *layout.Box) {
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 
-	// Box dimensions (content + padding)
+	// Box dimensions (border-box edge — CSS spec: shadow is cast from border edge)
 	boxX := box.X
 	boxY := effectiveY
-	boxWidth := box.Width - box.Border.Left - box.Border.Right // Padding box
-	boxHeight := box.Height - box.Border.Top - box.Border.Bottom // Padding box
+	boxWidth := box.Width
+	boxHeight := box.Height
 	borderRadius := box.Style.GetBorderRadius()
 
-	// Draw shadows in reverse order (first declared = topmost)
+	// Draw outer shadows in reverse order (first declared = topmost)
 	for i := len(shadows) - 1; i >= 0; i-- {
 		shadow := shadows[i]
 
-		// Skip inset shadows for now (they render inside the box)
 		if shadow.Inset {
-			continue
+			continue // Inset shadows drawn separately after background
 		}
 
-		// Calculate shadow rectangle
+		// Outer shadow: drawn outside the border edge
 		shadowX := boxX + shadow.OffsetX - shadow.Spread
 		shadowY := boxY + shadow.OffsetY - shadow.Spread
 		shadowWidth := boxWidth + 2*shadow.Spread
 		shadowHeight := boxHeight + 2*shadow.Spread
 
-		// For blur, we'll draw multiple layers with decreasing opacity
-		// This is a simple approximation of Gaussian blur
 		if shadow.Blur > 0 {
+			// Approximate Gaussian blur with multiple layers
 			layers := int(shadow.Blur / 2)
 			if layers < 3 {
 				layers = 3
@@ -1382,14 +1512,12 @@ func (r *Renderer) drawBoxShadow(box *layout.Box) {
 			}
 
 			for layer := layers; layer >= 0; layer-- {
-				// Expand each layer slightly
 				expand := float64(layer) * (shadow.Blur / float64(layers))
 				layerX := shadowX - expand
 				layerY := shadowY - expand
 				layerWidth := shadowWidth + 2*expand
 				layerHeight := shadowHeight + 2*expand
 
-				// Decrease opacity for outer layers
 				layerAlpha := shadow.Color.A * (1.0 - float64(layer)/float64(layers+1)) * 0.3
 
 				r.context.SetRGBA(
@@ -1407,7 +1535,7 @@ func (r *Renderer) drawBoxShadow(box *layout.Box) {
 				r.context.Fill()
 			}
 		} else {
-			// No blur - just draw a solid shadow
+			// No blur — solid shadow
 			r.context.SetRGBA(
 				float64(shadow.Color.R)/255.0,
 				float64(shadow.Color.G)/255.0,
@@ -1422,6 +1550,61 @@ func (r *Renderer) drawBoxShadow(box *layout.Box) {
 			}
 			r.context.Fill()
 		}
+	}
+}
+
+// drawInsetBoxShadow draws inset box-shadows (above background, below border/content)
+func (r *Renderer) drawInsetBoxShadow(box *layout.Box) {
+	shadows := box.Style.GetBoxShadow()
+	if len(shadows) == 0 {
+		return
+	}
+
+	effectiveY := r.getEffectiveY(box)
+	boxX := box.X
+	boxY := effectiveY
+	boxWidth := box.Width
+	boxHeight := box.Height
+
+	for i := len(shadows) - 1; i >= 0; i-- {
+		shadow := shadows[i]
+		if !shadow.Inset {
+			continue
+		}
+
+		// Inset shadow is drawn inside the padding edge
+		padX := boxX + box.Border.Left
+		padY := boxY + box.Border.Top
+		padW := boxWidth - box.Border.Left - box.Border.Right
+		padH := boxHeight - box.Border.Top - box.Border.Bottom
+
+		innerX := padX + shadow.OffsetX + shadow.Spread
+		innerY := padY + shadow.OffsetY + shadow.Spread
+		innerW := padW - 2*shadow.Spread
+		innerH := padH - 2*shadow.Spread
+
+		r.context.SetRGBA(
+			float64(shadow.Color.R)/255.0,
+			float64(shadow.Color.G)/255.0,
+			float64(shadow.Color.B)/255.0,
+			shadow.Color.A,
+		)
+
+		if innerW <= 0 || innerH <= 0 {
+			r.context.DrawRectangle(padX, padY, padW, padH)
+			r.context.Fill()
+			continue
+		}
+
+		// Draw 4 rectangles forming the inset frame
+		r.context.DrawRectangle(padX, padY, padW, innerY-padY)
+		r.context.Fill()
+		r.context.DrawRectangle(padX, innerY+innerH, padW, (padY+padH)-(innerY+innerH))
+		r.context.Fill()
+		r.context.DrawRectangle(padX, innerY, innerX-padX, innerH)
+		r.context.Fill()
+		r.context.DrawRectangle(innerX+innerW, innerY, (padX+padW)-(innerX+innerW), innerH)
+		r.context.Fill()
 	}
 }
 
@@ -1558,7 +1741,7 @@ func (r *Renderer) drawImage(box *layout.Box) {
 
 	r.context.Scale(scaleX, scaleY)
 	r.context.DrawImage(img, 0, 0)
-	r.context.Pop()
+	r.popContext()
 }
 
 // drawBackgroundImage renders a CSS background-image on a box
@@ -1659,7 +1842,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 			r.context.Translate(float64(drawX), float64(drawY))
 			r.context.Scale(scaleX, scaleY)
 			r.context.DrawImage(img, 0, 0)
-			r.context.Pop()
+			r.popContext()
 		} else {
 			r.context.DrawImage(img, drawX, drawY)
 		}
@@ -1711,7 +1894,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		}
 	}
 
-	r.context.Pop()
+	r.popContext()
 }
 
 func (r *Renderer) SavePNG(filename string) error {

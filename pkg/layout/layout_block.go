@@ -4,6 +4,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -361,6 +362,43 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if position == css.PositionRelative {
 		// Relative positioning: offset from normal position
 		offset := style.GetPositionOffset()
+
+		// CSS 2.1 §9.4.3: Percentage offsets resolve against containing block dimensions
+		if !offset.HasTop {
+			if pct, ok := style.GetPercentage("top"); ok {
+				cbHeight := 0.0
+				if parent != nil {
+					cbHeight = parent.Height - parent.Border.Top - parent.Border.Bottom - parent.Padding.Top - parent.Padding.Bottom
+				}
+				offset.Top = cbHeight * (pct / 100.0)
+				offset.HasTop = true
+			}
+		}
+		if !offset.HasBottom {
+			if pct, ok := style.GetPercentage("bottom"); ok {
+				cbHeight := 0.0
+				if parent != nil {
+					cbHeight = parent.Height - parent.Border.Top - parent.Border.Bottom - parent.Padding.Top - parent.Padding.Bottom
+				}
+				offset.Bottom = cbHeight * (pct / 100.0)
+				offset.HasBottom = true
+			}
+		}
+		if !offset.HasLeft {
+			if pct, ok := style.GetPercentage("left"); ok {
+				cbWidth := availableWidth
+				offset.Left = cbWidth * (pct / 100.0)
+				offset.HasLeft = true
+			}
+		}
+		if !offset.HasRight {
+			if pct, ok := style.GetPercentage("right"); ok {
+				cbWidth := availableWidth
+				offset.Right = cbWidth * (pct / 100.0)
+				offset.HasRight = true
+			}
+		}
+
 		if offset.HasTop {
 			box.Y += offset.Top
 		} else if offset.HasBottom {
@@ -428,9 +466,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	childAvailableWidth := contentWidth
 
 	// For shrink-to-fit elements (floats, abs pos without explicit width), pass the parent's
-	// available width to children so they can lay out naturally, then we'll shrink-wrap around them
-	if contentWidth == 0 && (floatType != css.FloatNone || position == css.PositionAbsolute || position == css.PositionFixed) {
+	// available width to children so they can lay out naturally, then we'll shrink-wrap around them.
+	// Use !hasExplicitWidth (not contentWidth==0) because min-width may have set a non-zero
+	// contentWidth, but the element still needs shrink-to-fit behavior (floats inside can
+	// exceed min-width and the container grows to accommodate them).
+	if !hasExplicitWidth && (floatType != css.FloatNone || position == css.PositionAbsolute || position == css.PositionFixed) {
 		childAvailableWidth = availableWidth - padding.Left - padding.Right - border.Left - border.Right
+		// CSS 2.1 §10.3.5: max-width constrains the available width for child layout.
+		// Without this, floats inside a shrink-to-fit container with max-width would be
+		// positioned as if the container had unlimited width, then the container would
+		// shrink to max-width but the float positions would already be set incorrectly.
+		if maxW, ok := style.GetLength("max-width"); ok && childAvailableWidth > maxW {
+			childAvailableWidth = maxW
+		}
 	}
 
 	// Track previous block child for margin collapsing between siblings
@@ -563,6 +611,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// pre-collapsing position).
 		var prevBox *Box
 		cumulativeAdjustment := 0.0
+		var mpPendingMargins []float64
 		for _, childBox := range childBoxes {
 			if childBox == nil {
 				continue
@@ -581,21 +630,135 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					le.adjustChildrenY(childBox, -cumulativeAdjustment)
 				}
 
+				// CSS 2.1 §8.3.1: Collapse-through — empty elements with no height,
+				// border, or padding have their top and bottom margins collapse through.
+				// These margins then participate in collapsing with adjacent siblings.
+				if isCollapseThrough(childBox) {
+					mpPendingMargins = append(mpPendingMargins, childBox.Margin.Top, childBox.Margin.Bottom)
+					collectCollapseThroughChildMargins(childBox, &mpPendingMargins)
+					// Remove the space this element consumed in layout
+					cumulativeAdjustment += childBox.Margin.Top + childBox.Margin.Bottom
+					continue
+				}
+
 				// Check if both boxes should collapse margins
 				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(childBox) {
-					collapsed := collapseMargins(prevBox.Margin.Bottom, childBox.Margin.Top)
-					adjustment := prevBox.Margin.Bottom + childBox.Margin.Top - collapsed
+					// Collect all margins: prev bottom, pending from collapse-through, current top
+					allMargins := []float64{prevBox.Margin.Bottom}
+					allMargins = append(allMargins, mpPendingMargins...)
+					allMargins = append(allMargins, childBox.Margin.Top)
+					var maxPos, minNeg float64
+					for _, m := range allMargins {
+						if m > maxPos {
+							maxPos = m
+						}
+						if m < minNeg {
+							minNeg = m
+						}
+					}
+					collapsed := maxPos + minNeg
+					totalUsed := prevBox.Margin.Bottom + childBox.Margin.Top
+					adjustment := totalUsed - collapsed
 
 					childBox.Y -= adjustment
 					le.adjustChildrenY(childBox, -adjustment)
 					cumulativeAdjustment += adjustment
+				} else if len(mpPendingMargins) > 0 && shouldCollapseMargins(childBox) {
+					// No prev sibling but pending margins from collapse-through
+					allMargins := append(mpPendingMargins, childBox.Margin.Top)
+					var maxPos, minNeg float64
+					for _, m := range allMargins {
+						if m > maxPos {
+							maxPos = m
+						}
+						if m < minNeg {
+							minNeg = m
+						}
+					}
+					collapsed := maxPos + minNeg
+					totalUsed := childBox.Margin.Top
+					adjustment := totalUsed - collapsed
+					childBox.Y -= adjustment
+					le.adjustChildrenY(childBox, -adjustment)
+					cumulativeAdjustment += adjustment
 				}
+				mpPendingMargins = nil
 				prevBox = childBox
 			}
 		}
 
 		// Add all child boxes to the container
 		box.Children = append(box.Children, childBoxes...)
+
+		// Lay out absolutely positioned children that were skipped by inline layout.
+		// Build a node→box map so we can compute static Y positions based on
+		// the bottom edge of the last in-flow sibling (instead of the stale childY
+		// from the top of the content area).
+		nodeToBox := make(map[*html.Node]*Box)
+		for _, cb := range childBoxes {
+			if cb != nil && cb.Node != nil {
+				nodeToBox[cb.Node] = cb
+			}
+		}
+
+		hasAbspos := false
+		for i, child := range node.Children {
+			if child.Type != html.ElementNode {
+				continue
+			}
+			childStyle := computedStyles[child]
+			if childStyle == nil {
+				continue
+			}
+			childPos := childStyle.GetPosition()
+			if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+				// Compute static Y: find last in-flow sibling before this child
+				staticY := childY // default: top of content area
+				for j := i - 1; j >= 0; j-- {
+					prevChild := node.Children[j]
+					if prevBox, ok := nodeToBox[prevChild]; ok {
+						// Get the flow position (subtract relative offset if present)
+						flowY := prevBox.Y
+						if prevBox.Position == css.PositionRelative && prevBox.Style != nil {
+							offset := prevBox.Style.GetPositionOffset()
+							if offset.HasTop {
+								flowY -= offset.Top
+							} else if offset.HasBottom {
+								flowY += offset.Bottom
+							}
+						}
+						// Static position = bottom of last in-flow sibling
+						staticY = flowY + prevBox.Height + prevBox.Margin.Bottom
+						break
+					}
+				}
+				childBox := le.layoutNode(child, box.X+box.Padding.Left+box.Border.Left, staticY, childAvailableWidth, computedStyles, box)
+				if childBox != nil {
+					box.Children = append(box.Children, childBox)
+					hasAbspos = true
+				}
+			}
+		}
+
+		// If we added abspos children, re-sort all children by document order.
+		// Abspos children were appended at the end but CSS paint order requires
+		// document order within the same z-index level.
+		if hasAbspos {
+			nodeOrder := make(map[*html.Node]int)
+			for i, child := range node.Children {
+				nodeOrder[child] = i
+			}
+			sort.SliceStable(box.Children, func(i, j int) bool {
+				ni := box.Children[i].Node
+				nj := box.Children[j].Node
+				oi, oki := nodeOrder[ni]
+				oj, okj := nodeOrder[nj]
+				if oki && okj {
+					return oi < oj
+				}
+				return false // preserve existing order for non-mapped children
+			})
+		}
 	} else {
 		// Use existing layout code
 		// Layout inline children using detected algorithm
@@ -1405,8 +1568,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			floatWidthSum := 0.0
 			maxNonFloatWidth := 0.0
 			for _, child := range box.Children {
+				// Skip whitespace-only text nodes — they don't contribute to
+				// shrink-to-fit width (CSS 2.1 §9.2.2.1: whitespace between
+				// block/float children doesn't generate boxes).
+				if child.Node != nil && child.Node.Type == html.TextNode {
+					if strings.TrimSpace(child.Node.Text) == "" {
+						continue
+					}
+				}
 				childWidth := le.computeShrinkToFitChildWidth(child)
-				if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+				// Text nodes are always inline content, never float children,
+				// even if they inherit float from a parent container.
+				isFloat := child.Style != nil && child.Style.GetFloat() != css.FloatNone &&
+					(child.Node == nil || child.Node.Type != html.TextNode)
+				if isFloat {
 					floatWidthSum += childWidth
 				} else {
 					if childWidth > maxNonFloatWidth {

@@ -163,16 +163,11 @@ func (le *LayoutEngine) getFloatDropY(floatType css.FloatType, floatWidth float6
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		leftOffset, rightOffset := le.getFloatOffsets(currentY)
 
-		// Only drop when there's a conflict with opposite-side floats.
-		// Left floats can extend past the container's right edge (CSS 2.1 §9.5.1).
-		if floatType == css.FloatLeft {
-			if rightOffset == 0 || floatWidth <= availableWidth-leftOffset-rightOffset {
-				return currentY
-			}
-		} else {
-			if leftOffset == 0 || floatWidth <= availableWidth-leftOffset-rightOffset {
-				return currentY
-			}
+		// CSS 2.1 §9.5.1: A float is placed as high as possible. If there isn't
+		// enough horizontal room, it's shifted downward until it fits or clears
+		// all existing floats (same-side or opposite-side).
+		if floatWidth <= availableWidth-leftOffset-rightOffset {
+			return currentY
 		}
 
 		// Find the next Y position where a float ends

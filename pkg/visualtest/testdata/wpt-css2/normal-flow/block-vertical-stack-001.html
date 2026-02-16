@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: blocks stack vertically in normal flow</title>
+  <link rel="match" href="block-vertical-stack-001-ref.html" />
+  <meta name="assert" content="Block-level boxes are laid out vertically one after another" />
+  <style>
+    body { margin: 0; }
+    div { width: 100px; height: 50px; }
+    .a { background: red; }
+    .b { background: green; }
+    .c { background: blue; }
+  </style>
+</head>
+<body>
+  <div class="a"></div>
+  <div class="b"></div>
+  <div class="c"></div>
+</body>
+</html>

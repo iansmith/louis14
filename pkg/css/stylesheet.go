@@ -1112,6 +1112,10 @@ func isValidColorValue(value string) bool {
 	if lower == "currentcolor" || lower == "inherit" {
 		return true
 	}
+	// var() references are resolved later — always valid at parse time
+	if strings.Contains(value, "var(") {
+		return true
+	}
 	_, ok := ParseColor(value)
 	return ok
 }

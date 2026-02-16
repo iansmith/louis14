@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test Reference</title>
+  <style>
+    body { margin: 0; }
+    .container {
+      position: relative;
+      width: 100px;
+      height: 100px;
+      background: green;
+    }
+    .quarter {
+      position: absolute;
+      top: 50px;
+      left: 50px;
+      width: 50px;
+      height: 50px;
+      background: blue;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if the blue square is clipped to the bottom-right quarter of the green square.</p>
+  <div class="container">
+    <div class="quarter"></div>
+  </div>
+</body>
+</html>

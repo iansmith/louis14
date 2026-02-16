@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: anonymous block box generation</title>
+  <link rel="match" href="anonymous-block-001-ref.html" />
+  <meta name="assert" content="When a block container contains both inline and block-level children, anonymous block boxes are created around inline content" />
+  <style>
+    body { margin: 0; }
+    .outer {
+      width: 200px;
+      background: lime;
+    }
+    .block {
+      background: green;
+      height: 30px;
+    }
+  </style>
+</head>
+<body>
+  <div class="outer">
+    Some text
+    <div class="block"></div>
+    More text
+  </div>
+</body>
+</html>

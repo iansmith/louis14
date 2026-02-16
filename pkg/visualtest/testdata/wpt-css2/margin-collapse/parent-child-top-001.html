@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: parent-child top margin collapse</title>
+  <link rel="match" href="parent-child-top-001-ref.html" />
+  <meta name="assert" content="The top margin of a first child collapses with the top margin of its parent when there is no border, padding, or clearance separating them" />
+  <style>
+    body { margin: 0; }
+    .parent {
+      width: 100px;
+      background: green;
+      margin-top: 20px;
+    }
+    .child {
+      width: 100px;
+      height: 100px;
+      margin-top: 50px;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if the green square has a 50px gap above it (not 70px).</p>
+  <div class="parent">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

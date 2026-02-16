@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: ::before with display:block</title>
+  <link rel="match" href="before-block-001-ref.html" />
+  <meta name="assert" content="::before with display:block generates a block-level box before the element's content" />
+  <style>
+    body { margin: 0; }
+    .test::before {
+      content: "";
+      display: block;
+      width: 100px;
+      height: 50px;
+      background: green;
+    }
+    .test .content {
+      width: 100px;
+      height: 50px;
+      background: blue;
+    }
+  </style>
+</head>
+<body>
+  <div class="test"><div class="content"></div></div>
+</body>
+</html>

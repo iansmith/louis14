@@ -15,9 +15,22 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	alignItems := flexBox.Style.GetAlignItems()
 	alignContent := flexBox.Style.GetAlignContent()
 
+
 	isRow := direction == css.FlexDirectionRow || direction == css.FlexDirectionRowReverse
 	isReverse := direction == css.FlexDirectionRowReverse || direction == css.FlexDirectionColumnReverse
 	isWrapReverse := wrap == css.FlexWrapWrapReverse
+
+	// CSS Flexbox §9.1 + CSS Writing Modes §6.4: flex-direction: row follows the
+	// inline direction of the writing mode. In vertical writing modes (vertical-rl,
+	// vertical-lr), the inline direction is vertical, so "row" maps to the block
+	// axis (column-like) and "column" maps to the inline axis (row-like).
+	isVerticalWM := false
+	if wm, ok := flexBox.Style.Get("writing-mode"); ok {
+		if wm == "vertical-rl" || wm == "vertical-lr" {
+			isVerticalWM = true
+			isRow = !isRow
+		}
+	}
 
 	// CSS Flexbox §4.5: direction:rtl flips the main axis for row direction.
 	// row + rtl = items flow right-to-left (same as row-reverse + ltr)
@@ -29,11 +42,16 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 	// CSS Box Alignment §6.1: left/right only apply to the inline axis.
 	// For row direction (inline axis = main), left→flex-start, right→flex-end.
-	// For column direction (inline axis ≠ main), left/right fall back to start.
+	// For column direction (inline axis ≠ main), left/right fall back to "start"
+	// (physical start of the main axis). "start" = flex-start for non-reverse,
+	// but flex-end for reverse (since reverse flips where flex-start is).
 	// When the effective direction is reversed (row-reverse LTR or row RTL),
 	// physical left/right swap relative to flex-start/flex-end.
 	if justifyContent == css.JustifyContentLeft {
 		if isRow && isReverse {
+			justifyContent = css.JustifyContentFlexEnd
+		} else if !isRow && isReverse {
+			// column-reverse: "start" = physical top = flex-end
 			justifyContent = css.JustifyContentFlexEnd
 		} else {
 			justifyContent = css.JustifyContentFlexStart
@@ -42,6 +60,9 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		if isRow && isReverse {
 			justifyContent = css.JustifyContentFlexStart
 		} else if isRow {
+			justifyContent = css.JustifyContentFlexEnd
+		} else if isReverse {
+			// column-reverse: "start" = physical top = flex-end
 			justifyContent = css.JustifyContentFlexEnd
 		} else {
 			justifyContent = css.JustifyContentFlexStart
@@ -100,14 +121,17 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		} else {
 			mainSize = math.MaxFloat64 // indefinite
 		}
-		// Only treat cross size as definite if there's an explicit width
+		// Only treat cross size as definite if there's an explicit width.
+		// In vertical writing mode (where isRow was swapped), the physical width
+		// is the block dimension and should be auto-sized from content when not
+		// explicitly set — don't treat parent-inherited width as definite.
 		if _, hasExplicitWidth := flexBox.Style.GetLength("width"); hasExplicitWidth {
 			crossSize = contentBoxWidth
 			hasDefiniteCross = true
 		} else if _, hasExplicitPctWidth := flexBox.Style.GetPercentage("width"); hasExplicitPctWidth {
 			crossSize = contentBoxWidth
 			hasDefiniteCross = true
-		} else if contentBoxWidth > 0 {
+		} else if contentBoxWidth > 0 && !isVerticalWM {
 			crossSize = contentBoxWidth
 			hasDefiniteCross = true
 		}
@@ -605,6 +629,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					item.Box.X = contentStartX + item.MainPos
 				}
 				item.Box.Y = contentStartY + item.CrossPos
+	
 			} else {
 				item.Box.X = contentStartX + item.CrossPos
 				if isReverse {
@@ -740,15 +765,34 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		// CSS Flexbox §4: Blockification of flex items
 		// Children of a flex container have their display value blockified:
 		// inline → block, inline-block → block, inline-flex → flex
+		// float and clear have no effect on flex items.
 		display := childStyle.GetDisplay()
 		if display == css.DisplayInline || display == css.DisplayInlineBlock {
 			childStyle.Set("display", "block")
 		} else if display == css.DisplayInlineFlex {
 			childStyle.Set("display", "flex")
 		}
+		childStyle.Set("float", "none")
+		childStyle.Set("clear", "none")
 
 		// Layout the child to get its intrinsic dimensions
 		childBox := le.layoutNode(child, startX, startY, availableWidth, computedStyles, flexBox)
+
+		// CSS Writing Modes §6.4: In vertical writing mode, transform inline layout
+		// from horizontal lines to vertical-rl columns. Each horizontal line becomes
+		// a column stacking right-to-left, with content flowing top-to-bottom.
+		// CSS Writing Modes §6.4: In vertical writing mode, transform inline layout
+		// from horizontal lines to vertical-rl columns for auto-sized items.
+		// Items with explicit width/height keep their specified dimensions.
+		if wm, ok := flexBox.Style.Get("writing-mode"); ok {
+			if wm == "vertical-rl" || wm == "vertical-lr" {
+				_, hasExplicitW := childStyle.GetLength("width")
+				_, hasExplicitH := childStyle.GetLength("height")
+				if !hasExplicitW && !hasExplicitH {
+					transformToVerticalRL(childBox)
+				}
+			}
+		}
 
 		item := &FlexItem{
 			Box:        childBox,
@@ -1039,6 +1083,7 @@ func positionItemsCrossAxis(line *FlexLine, crossStart float64, alignItems css.A
 			item.CrossPos = crossStart + line.CrossSize - outerCross + crossMarginStart
 		case css.AlignItemsCenter:
 			item.CrossPos = crossStart + (line.CrossSize-outerCross)/2 + crossMarginStart
+
 		case css.AlignItemsStretch:
 			item.CrossPos = crossStart + crossMarginStart
 		case css.AlignItemsBaseline:
@@ -1177,4 +1222,87 @@ func (item *FlexItem) outerCrossSize(isRow bool) float64 {
 		return item.Box.Height + item.Box.Margin.Top + item.Box.Margin.Bottom
 	}
 	return item.Box.Width + item.Box.Margin.Left + item.Box.Margin.Right
+}
+
+// transformToVerticalRL transforms a horizontally laid-out box to vertical-rl layout.
+// Each horizontal line becomes a vertical column, stacking right-to-left.
+// Content within each column flows top-to-bottom (original X offset → Y offset).
+// Lines are detected by grouping children with similar Y positions.
+func transformToVerticalRL(box *Box) {
+	if len(box.Children) == 0 {
+		return
+	}
+
+	contentStartX := box.X + box.Border.Left + box.Padding.Left
+	contentStartY := box.Y + box.Border.Top + box.Padding.Top
+
+	// Group children into lines by their Y position (within 1px tolerance)
+	type lineGroup struct {
+		y        float64
+		children []*Box
+	}
+	var lines []lineGroup
+	for _, child := range box.Children {
+		found := false
+		for i := range lines {
+			if math.Abs(child.Y-lines[i].y) < 1.0 {
+				lines[i].children = append(lines[i].children, child)
+				found = true
+				break
+			}
+		}
+		if !found {
+			lines = append(lines, lineGroup{y: child.Y, children: []*Box{child}})
+		}
+	}
+
+	// Sort lines by Y (top to bottom)
+	sort.Slice(lines, func(i, j int) bool {
+		return lines[i].y < lines[j].y
+	})
+
+	// Each line becomes a column. Compute column dimensions.
+	type colInfo struct {
+		width  float64 // max child width → column width
+		height float64 // max child height → column height
+	}
+	cols := make([]colInfo, len(lines))
+	for i, line := range lines {
+		for _, child := range line.children {
+			if child.Width > cols[i].width {
+				cols[i].width = child.Width
+			}
+			if child.Height > cols[i].height {
+				cols[i].height = child.Height
+			}
+		}
+	}
+
+	// Total new dimensions
+	totalWidth := 0.0
+	for _, c := range cols {
+		totalWidth += c.width
+	}
+	totalHeight := 0.0
+	for _, c := range cols {
+		if c.height > totalHeight {
+			totalHeight = c.height
+		}
+	}
+
+	// Reposition children: columns stack right-to-left (vertical-rl)
+	colX := totalWidth
+	for i, line := range lines {
+		colX -= cols[i].width
+		for _, child := range line.children {
+			// Original X offset within line → Y offset within column
+			origRelX := child.X - contentStartX
+			child.X = contentStartX + colX
+			child.Y = contentStartY + origRelX
+		}
+	}
+
+	// Update box dimensions (border-box)
+	box.Width = totalWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+	box.Height = totalHeight + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
 }

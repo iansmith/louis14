@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: percentage height resolves against parent</title>
+  <link rel="match" href="percentage-height-001-ref.html" />
+  <meta name="assert" content="A child with height:50% inside a parent with explicit height should be half the parent height" />
+  <style>
+    body { margin: 0; }
+    .parent { width: 100px; height: 200px; background: red; }
+    .child { width: 100px; height: 50%; background: green; }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a green square above a red square, each 100x100.</p>
+  <div class="parent">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

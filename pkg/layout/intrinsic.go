@@ -172,10 +172,14 @@ func (le *LayoutEngine) computeBlockMinMax(
 ) MinMaxSizes {
 	// Check for explicit width
 	if width, ok := style.GetLength("width"); ok && width > 0 {
-		// Explicit width: both min and max are the same
+		// Explicit width: both min and max are the border-box width
+		// (content + padding + border), per CSS Sizing §4
+		padding := style.GetPadding()
+		border := style.GetBorderWidth()
+		totalWidth := width + padding.Left + padding.Right + border.Left + border.Right
 		return MinMaxSizes{
-			MinContentSize: width,
-			MaxContentSize: width,
+			MinContentSize: totalWidth,
+			MaxContentSize: totalWidth,
 		}
 	}
 

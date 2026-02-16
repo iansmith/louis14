@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: BFC auto height contains floats</title>
+  <link rel="match" href="bfc-float-containment-001-ref.html" />
+  <meta name="assert" content="A block formatting context root includes floats when computing auto height" />
+  <style>
+    body { margin: 0; }
+    .bfc {
+      width: 100px;
+      overflow: hidden;
+      background: green;
+    }
+    .float {
+      float: left;
+      width: 100px;
+      height: 100px;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a filled green square.</p>
+  <div class="bfc">
+    <div class="float"></div>
+  </div>
+</body>
+</html>

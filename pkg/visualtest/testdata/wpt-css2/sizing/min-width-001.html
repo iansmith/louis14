@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: min-width prevents box from shrinking</title>
+  <link rel="match" href="min-width-001-ref.html" />
+  <meta name="assert" content="min-width should prevent the box from being narrower than the specified value" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 50px;
+      min-width: 100px;
+      height: 100px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a filled green 100x100 square.</p>
+  <div class="test"></div>
+</body>
+</html>

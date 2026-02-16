@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: box-shadow spread with no blur/offset</title>
+  <link rel="match" href="box-shadow-spread-001-ref.html" />
+  <meta name="assert" content="box-shadow with only spread creates a solid border-like shadow" />
+  <style>
+    body { margin: 0; padding: 20px; }
+    .test {
+      width: 80px;
+      height: 80px;
+      background: white;
+      box-shadow: 0 0 0 10px green;
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

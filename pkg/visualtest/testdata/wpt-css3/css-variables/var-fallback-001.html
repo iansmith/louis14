@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: var() with fallback value</title>
+  <link rel="match" href="var-fallback-001-ref.html" />
+  <meta name="assert" content="var() uses the fallback value when the custom property is not defined" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: var(--undefined-prop, green);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>
