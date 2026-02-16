@@ -1,0 +1,33 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+ <head>
+  <title>CSS Test: overflow hidden clips absolutely positioned children</title>
+  <link rel="author" title="Louis14 Project" href="https://louis14.org" />
+  <link rel="help" href="http://www.w3.org/TR/CSS21/visufx.html#overflow" />
+  <link rel="match" href="overflow-hidden-abspos-001-ref.xht" />
+  <meta name="assert" content="An element with overflow:hidden and position:relative clips absolutely positioned children that extend outside its bounds." />
+  <style type="text/css">
+  .container {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    overflow: hidden;
+    background-color: green;
+  }
+  .abspos {
+    position: absolute;
+    top: 50px;
+    left: 50px;
+    width: 100px;
+    height: 100px;
+    background-color: green;
+  }
+  </style>
+ </head>
+ <body>
+  <p>Test passes if there is a filled green square and <strong>no red</strong>.</p>
+  <div class="container">
+    <div class="abspos"></div>
+  </div>
+ </body>
+</html>

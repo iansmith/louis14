@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: filter invert(1)</title>
+  <link rel="match" href="filter-invert-001-ref.html" />
+  <meta name="assert" content="filter: invert(1) fully inverts colors" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: rgb(255, 0, 0);
+      filter: invert(1);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

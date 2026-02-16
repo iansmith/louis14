@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"strings"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/text"
@@ -442,6 +444,9 @@ func (le *LayoutEngine) measureCellContentWidth(cell *TableCell) float64 {
 	}
 	for _, child := range cell.Box.Node.Children {
 		if child.Type == html.TextNode {
+			if strings.TrimSpace(child.Text) == "" {
+				continue
+			}
 			w, _ := text.MeasureTextWithWeight(child.Text, fontSize, isBold)
 			totalWidth += w
 		}
@@ -494,7 +499,7 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 					lineHeight = cell.Box.Style.GetLineHeight()
 				}
 				for _, child := range cell.Box.Node.Children {
-					if child.Type == html.TextNode && child.Text != "" {
+					if child.Type == html.TextNode && strings.TrimSpace(child.Text) != "" {
 						textHeight := lineHeight + paddingTop + paddingBottom + borderTop + borderBottom
 						if textHeight > maxHeight {
 							maxHeight = textHeight

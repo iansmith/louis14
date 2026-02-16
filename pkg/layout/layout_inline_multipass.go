@@ -97,8 +97,10 @@ func (le *LayoutEngine) BreakLines(
 		Constraint: constraint,
 		Height:     0,
 	}
-	currentX := 0.0 // X position on current line
-	hasSeenContentOnLine := false // Track if we've seen content on this line (for whitespace stripping)
+	textIndent := constraint.TextIndent // CSS 2.1 §16.1: text-indent on first line only
+	currentX := 0.0                    // X position on current line
+	hasSeenContentOnLine := false      // Track if we've seen content on this line (for whitespace stripping)
+	lastTextEndedWithSpace := false // Track trailing whitespace for cross-item collapsing
 	lineFloatWidth := 0.0 // Width consumed by floats on current line
 	var lineFloats []*InlineItem // Floats on current line (for shifting down)
 
@@ -107,14 +109,16 @@ func (le *LayoutEngine) BreakLines(
 
 		// Get available width at current Y position
 		// This accounts for floats via the exclusion space AND local float items
+		// Note: text-indent is NOT subtracted here — it's already reflected in currentX
+		// (and thus usedWidth), so subtracting it from availableWidth would double-count.
 		availableWidth := constraint.AvailableInlineSize(currentY, item.Height) - lineFloatWidth
 
 		// Check if we need to start at a different X due to floats
 		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
 
-		// If this is a new line, start at the left offset
+		// If this is a new line, start at the left offset (plus text-indent for first line)
 		if currentX == 0 {
-			currentX = leftOffset
+			currentX = leftOffset + textIndent
 		}
 
 		// Calculate how much space we've used on this line
@@ -143,24 +147,67 @@ func (le *LayoutEngine) BreakLines(
 						}
 						item.Width = newWidth
 					}
+					// If text was trimmed to empty, zero height too so it doesn't
+					// inflate line box height (e.g., in containers with line-height:0)
+					if trimmedText == "" {
+						item.Height = 0
+					}
 				}
 			}
-			hasSeenContentOnLine = true
+
+			// CSS whitespace collapsing across element boundaries:
+			// When previous text ended with space and this text starts with space,
+			// collapse to a single space by trimming leading space from this item.
+			if lastTextEndedWithSpace && item.Node != nil && len(item.Text) > 0 && item.Text[0] == ' ' {
+				trimmedText := strings.TrimLeft(item.Text, " ")
+				if trimmedText != item.Text {
+					item.Node.Text = trimmedText
+					item.Text = trimmedText
+					if item.Style != nil {
+						fontSize := item.Style.GetFontSize()
+						bold := item.Style.GetFontWeight() == css.FontWeightBold
+						italic := item.Style.GetFontStyle() == css.FontStyleItalic
+						mono := item.Style.IsMonospaceFamily()
+						ahem := item.Style.IsAhemFamily()
+						newWidth, _ := text.MeasureTextWithStyle(trimmedText, fontSize, bold, italic, mono, ahem)
+						ls := item.Style.GetLetterSpacing()
+						if ls != 0 && len([]rune(trimmedText)) > 1 {
+							newWidth += ls * float64(len([]rune(trimmedText))-1)
+						}
+						item.Width = newWidth
+					}
+					// If text was trimmed to empty, zero height too
+					if trimmedText == "" {
+						item.Height = 0
+					}
+				}
+			}
+
+			// Only mark content seen if text is non-empty after trimming
+			if item.Text != "" {
+				hasSeenContentOnLine = true
+			}
+			// Track trailing whitespace for cross-item collapsing
+			lastTextEndedWithSpace = len(item.Text) > 0 && item.Text[len(item.Text)-1] == ' '
 
 			// Text item - may need to wrap
 			textWidth := item.Width
 
-			// CSS 2.1 §10.8.1: For text, line box height uses line-height, not just text measurement
+			// CSS 2.1 §10.8.1: line-height determines the inline box height
+			// that contributes to line box height calculation. Font metrics height
+			// (item.Height) is used for rendering/alignment, not line box sizing.
 			textLineHeight := item.Height
 			if item.Style != nil {
-				lh := item.Style.GetLineHeight()
-				if lh > textLineHeight {
-					textLineHeight = lh
-				}
+				textLineHeight = item.Style.GetLineHeight()
 			}
 
-			if usedWidth+textWidth <= availableWidth || constraint.NoWrap {
-				// Fits on current line, or white-space: nowrap forces it on same line
+			// CSS 2.1 §16.6.1: Whitespace at the end of a line "hangs" — it does not
+			// contribute to the line width for wrapping purposes. Whitespace-only text
+			// should always be added to the current line, never cause a line break.
+			isHangingWhitespace := strings.TrimSpace(item.Text) == ""
+
+			if usedWidth+textWidth <= availableWidth || constraint.NoWrap || isHangingWhitespace {
+				// Fits on current line, white-space: nowrap, or hanging whitespace
 				currentLine.Items = append(currentLine.Items, item)
 				currentX += textWidth
 
@@ -178,6 +225,7 @@ func (le *LayoutEngine) BreakLines(
 
 				// Start new line - reset whitespace and float tracking
 				hasSeenContentOnLine = true // This item is the first content
+				textIndent = 0             // text-indent only applies to first line
 				lineFloatWidth = 0
 				lineFloats = nil
 				leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
@@ -228,6 +276,7 @@ func (le *LayoutEngine) BreakLines(
 						lineFloatWidth = 0
 						lineFloats = nil
 						hasSeenContentOnLine = false
+						lastTextEndedWithSpace = false
 						i-- // Retry this item at the new Y position
 						shifted = true
 					}
@@ -248,6 +297,8 @@ func (le *LayoutEngine) BreakLines(
 			currentLine.Items = append(currentLine.Items, item)
 			lineFloatWidth += item.Width
 			lineFloats = append(lineFloats, item)
+			lastTextEndedWithSpace = false // Real content interrupts whitespace sequence
+			hasSeenContentOnLine = true
 
 			// Update line height
 			if item.Height > currentLine.Height {
@@ -283,6 +334,7 @@ func (le *LayoutEngine) BreakLines(
 				}
 
 				// Start new line with this item
+				textIndent = 0 // text-indent only applies to first line
 				lineFloatWidth = 0
 				lineFloats = nil
 				leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
@@ -294,6 +346,8 @@ func (le *LayoutEngine) BreakLines(
 				}
 				currentX = leftOffset + atomicWidth
 			}
+			lastTextEndedWithSpace = false // Real content interrupts whitespace sequence
+			hasSeenContentOnLine = true
 
 		case InlineItemOpenTag, InlineItemCloseTag:
 			// Tag markers - add to current line but don't affect layout
@@ -310,6 +364,7 @@ func (le *LayoutEngine) BreakLines(
 			}
 
 			// Start new line - reset whitespace and float tracking
+			textIndent = 0 // text-indent only applies to first line
 			currentLine = &LineInfo{
 				Y:          currentY,
 				Items:      []*InlineItem{},
@@ -318,6 +373,7 @@ func (le *LayoutEngine) BreakLines(
 			}
 			currentX = 0
 			hasSeenContentOnLine = false
+			lastTextEndedWithSpace = false
 			lineFloatWidth = 0
 			lineFloats = nil
 
@@ -341,6 +397,7 @@ func (le *LayoutEngine) BreakLines(
 
 			// Y advance will happen in Phase 3 after we know the block's height
 			// For now, just reset for next line
+			textIndent = 0 // text-indent only applies to first line
 			currentLine = &LineInfo{
 				Y:          currentY, // Will be updated in Phase 3
 				Items:      []*InlineItem{},
@@ -349,6 +406,7 @@ func (le *LayoutEngine) BreakLines(
 			}
 			currentX = 0
 			hasSeenContentOnLine = false
+			lastTextEndedWithSpace = false
 			lineFloatWidth = 0
 			lineFloats = nil
 
@@ -393,6 +451,11 @@ func (le *LayoutEngine) BreakLines(
 							newWidth += ls * float64(len([]rune(trimmedText))-1)
 						}
 						item.Width = newWidth
+					}
+					// If text was trimmed to empty, zero height too so it doesn't
+					// inflate container auto-height (e.g., in containers with line-height:0)
+					if trimmedText == "" {
+						item.Height = 0
 					}
 				}
 				break // Only strip last text item
@@ -657,9 +720,9 @@ func (le *LayoutEngine) constructLine(
 		}
 	}
 
-	// Calculate starting X position accounting for floats (now updated)
+	// Calculate starting X position accounting for floats (now updated) and text-indent
 	leftOffset, _ := currentConstraint.ExclusionSpace.AvailableInlineSize(line.Y, line.Height)
-	currentX := leftOffset
+	currentX := leftOffset + constraint.TextIndent
 
 	// Pass 2: Process inline content with floats already positioned
 	for _, item := range line.Items {
@@ -790,7 +853,7 @@ func (le *LayoutEngine) ConstructFragments(
 	allFragments := []*Fragment{}
 	currentConstraint := constraint
 
-	for _, line := range lines {
+	for i, line := range lines {
 		// Construct fragments for this line using current constraint
 		lineFragments, newConstraint := le.constructLine(line, currentConstraint)
 
@@ -800,6 +863,14 @@ func (le *LayoutEngine) ConstructFragments(
 		// Propagate constraint to next line
 		// This ensures floats added on this line affect subsequent lines
 		currentConstraint = newConstraint
+
+		// CSS 2.1 §16.1: text-indent only applies to the first line
+		// Create a new constraint to avoid mutating the original pointer
+		if i == 0 && currentConstraint.TextIndent != 0 {
+			cs := *currentConstraint
+			cs.TextIndent = 0
+			currentConstraint = &cs
+		}
 	}
 
 	return allFragments, currentConstraint
@@ -910,6 +981,8 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		if ws, ok := containerBox.Style.Get("white-space"); ok && (ws == "nowrap" || ws == "pre") {
 			constraint.NoWrap = true
 		}
+		// CSS 2.1 §16.1: text-indent applies to the first line of a block container
+		constraint.TextIndent = containerBox.Style.GetTextIndent()
 	}
 
 	// Run new multi-pass pipeline
@@ -1439,6 +1512,20 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		} else if frag.Type == FragmentAtomic && frag.Node != nil && frag.Node.TagName != "img" {
 			// Non-replaced atomic inline (inline-block) - recursively layout its content
 			// Images and other replaced elements use fragmentToBoxSingle instead
+
+			// Check if we've moved to a new line (Y changed)
+			if frag.Position.Y != currentLineY {
+				effectiveHeight := lineMetricsEffectiveHeight(lineMetrics)
+				if lineMetrics.hasContent && effectiveHeight > 0 {
+					currentY = currentLineY + effectiveHeight
+					lastFinalizedLineHeight = effectiveHeight
+					lineMetricsReset(lineMetrics, false)
+				} else if effectiveHeight > 0 {
+					lineMetricsReset(lineMetrics, true)
+				}
+				currentLineY = frag.Position.Y
+			}
+
 			atomicNode := frag.Node
 			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X
 
@@ -1541,13 +1628,36 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		}
 	}
 
-	// Apply text-align to inline children
+	// Apply direction:rtl mirroring and text-align to inline children
 	if containerBox.Style != nil {
 		display := containerBox.Style.GetDisplay()
-		if display != css.DisplayInline && display != css.DisplayInlineBlock {
-			if textAlign, ok := containerBox.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
-				contentWidth := containerBox.Width - containerBox.Padding.Left - containerBox.Padding.Right - containerBox.Border.Left - containerBox.Border.Right
+		if display != css.DisplayInline {
+			contentWidth := containerBox.Width - containerBox.Padding.Left - containerBox.Padding.Right - containerBox.Border.Left - containerBox.Border.Right
+			contentLeft := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+			contentRight := contentLeft + contentWidth
+
+			isRTL := containerBox.Style.GetDirection() == css.DirectionRTL
+
+			// For RTL, mirror all inline box positions within the container
+			if isRTL {
+				le.mirrorInlineBoxesRTL(boxes, contentLeft, contentRight)
+			}
+
+			// Determine effective text-align
+			textAlign := ""
+			if ta, ok := containerBox.Style.Get("text-align"); ok {
+				textAlign = ta
+			}
+			if isRTL && textAlign == "" {
+				// RTL default alignment is "right" — boxes are already right-aligned after mirror
+				textAlign = "right"
+			}
+
+			if textAlign != "" && textAlign != "left" {
 				le.applyTextAlignToBoxes(boxes, containerBox, textAlign, contentWidth)
+			} else if isRTL && textAlign == "left" {
+				// RTL + text-align:left: shift mirrored boxes to left edge
+				le.applyTextAlignToBoxes(boxes, containerBox, "left", contentWidth)
 			}
 		}
 	}
@@ -1570,6 +1680,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		if b.Node != nil && b.Node.Type == html.ElementNode &&
 			b.Style != nil && (b.Style.GetDisplay() == css.DisplayBlock || b.Style.GetDisplay() == css.DisplayTable || b.Style.GetDisplay() == css.DisplayListItem) {
 			continue // Skip actual block element children
+		}
+		// Skip whitespace-only text boxes that were stripped during line breaking
+		// (they have Width=0 and shouldn't trigger strut height)
+		if b.Node != nil && b.Node.Type == html.TextNode && b.Width == 0 {
+			continue
 		}
 		inlineBoxes = append(inlineBoxes, b)
 	}
@@ -1812,8 +1927,8 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			return
 		}
 
-		// Images default to inline-block display
-		if node.TagName == "img" && display != css.DisplayNone && display != css.DisplayBlock {
+		// Images and SVG default to inline-block display (replaced elements)
+		if (node.TagName == "img" || node.TagName == "svg") && display != css.DisplayNone && display != css.DisplayBlock {
 			display = css.DisplayInlineBlock
 		}
 
@@ -1961,6 +2076,20 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			// This is PURE - no side effects
 
 			var width, height float64
+
+			// Special case for SVG elements: use width/height attributes (unitless = pixels)
+			if node.TagName == "svg" {
+				if widthAttr, ok := node.GetAttribute("width"); ok {
+					if w, err := strconv.ParseFloat(widthAttr, 64); err == nil {
+						width = w
+					}
+				}
+				if heightAttr, ok := node.GetAttribute("height"); ok {
+					if h, err := strconv.ParseFloat(heightAttr, 64); err == nil {
+						height = h
+					}
+				}
+			}
 
 			// Special case for img elements: load actual image dimensions
 			if node.TagName == "img" {

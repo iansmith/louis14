@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/text"
 	"math"
 	"sort"
 )
@@ -18,17 +19,66 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	isReverse := direction == css.FlexDirectionRowReverse || direction == css.FlexDirectionColumnReverse
 	isWrapReverse := wrap == css.FlexWrapWrapReverse
 
+	// CSS Flexbox §4.5: direction:rtl flips the main axis for row direction.
+	// row + rtl = items flow right-to-left (same as row-reverse + ltr)
+	// row-reverse + rtl = items flow left-to-right (same as row + ltr)
+	isRTL := flexBox.Style.GetDirection() == css.DirectionRTL
+	if isRow && isRTL {
+		isReverse = !isReverse
+	}
+
 	// CSS Box Alignment §6.1: left/right only apply to the inline axis.
 	// For row direction (inline axis = main), left→flex-start, right→flex-end.
 	// For column direction (inline axis ≠ main), left/right fall back to start.
+	// When the effective direction is reversed (row-reverse LTR or row RTL),
+	// physical left/right swap relative to flex-start/flex-end.
 	if justifyContent == css.JustifyContentLeft {
-		justifyContent = css.JustifyContentFlexStart
-	} else if justifyContent == css.JustifyContentRight {
-		if isRow {
+		if isRow && isReverse {
 			justifyContent = css.JustifyContentFlexEnd
 		} else {
 			justifyContent = css.JustifyContentFlexStart
 		}
+	} else if justifyContent == css.JustifyContentRight {
+		if isRow && isReverse {
+			justifyContent = css.JustifyContentFlexStart
+		} else if isRow {
+			justifyContent = css.JustifyContentFlexEnd
+		} else {
+			justifyContent = css.JustifyContentFlexStart
+		}
+	}
+
+	// Main-axis margin helpers for direction-agnostic positioning.
+	// In reverse directions, main-start is the physical end (right for row, bottom for column).
+	mainStartMargin := func(box *Box) float64 {
+		if isRow {
+			if isReverse {
+				return box.Margin.Right
+			}
+			return box.Margin.Left
+		}
+		if isReverse {
+			return box.Margin.Bottom
+		}
+		return box.Margin.Top
+	}
+	mainEndMargin := func(box *Box) float64 {
+		if isRow {
+			if isReverse {
+				return box.Margin.Left
+			}
+			return box.Margin.Right
+		}
+		if isReverse {
+			return box.Margin.Top
+		}
+		return box.Margin.Bottom
+	}
+	mainBoxSize := func(box *Box) float64 {
+		if isRow {
+			return box.Width
+		}
+		return box.Height
 	}
 
 	// Container content box dimensions (inside padding+border)
@@ -269,9 +319,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 	// Step 8b: Resolve auto margins on the main axis (CSS Flexbox §8.1)
 	// Auto margins absorb remaining free space BEFORE justify-content.
-	// Track which lines have overflow (for adjusting reverse positioning to show content)
-	lineHasOverflow := make([]bool, len(lines))
-	for lineIdx, line := range lines {
+	for _, line := range lines {
 		totalItemsMain := 0.0
 		for i, item := range line.Items {
 			totalItemsMain += item.outerMainSize(isRow)
@@ -288,9 +336,6 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 		// Preserve original free space for justify-content fallback detection
 		originalFreeSpace := freeSpace
-		if originalFreeSpace < 0 {
-			lineHasOverflow[lineIdx] = true
-		}
 		if freeSpace < 0 {
 			freeSpace = 0
 		}
@@ -384,11 +429,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 		currentPos := initialOffset
 		for i, item := range line.Items {
-			if isRow {
-				item.MainPos = currentPos + item.Box.Margin.Left
-			} else {
-				item.MainPos = currentPos + item.Box.Margin.Top
-			}
+			item.MainPos = currentPos + mainStartMargin(item.Box)
 			currentPos += item.outerMainSize(isRow) + spacing
 			if i < len(line.Items)-1 {
 				currentPos += mainGap
@@ -481,62 +522,6 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
-	// Step 11: Reverse if needed
-	if isReverse {
-		// For indefinite main size (e.g., column-reverse with auto height),
-		// compute the actual used main size from item positions
-		effectiveMainSize := mainSize
-		if effectiveMainSize == math.MaxFloat64 {
-			effectiveMainSize = 0
-			for _, line := range lines {
-				for _, item := range line.Items {
-					var itemEnd float64
-					if isRow {
-						itemEnd = item.MainPos + item.Box.Width + item.Box.Margin.Right
-					} else {
-						itemEnd = item.MainPos + item.Box.Height + item.Box.Margin.Bottom
-					}
-					if itemEnd > effectiveMainSize {
-						effectiveMainSize = itemEnd
-					}
-				}
-			}
-		}
-		for lineIdx, line := range lines {
-			for _, item := range line.Items {
-				// Mirror main-axis position
-				outerMain := item.outerMainSize(isRow)
-				if isRow {
-					item.MainPos = effectiveMainSize - item.MainPos - (outerMain - item.Box.Margin.Left - item.Box.Margin.Right)
-				} else {
-					item.MainPos = effectiveMainSize - item.MainPos - (outerMain - item.Box.Margin.Top - item.Box.Margin.Bottom)
-				}
-
-				// Adjust for overflow with justify-content: space-between in reverse directions.
-				// CSS WG issue #11937 (tentative): When justify-content falls back to flex-start
-				// due to overflow in a reverse direction, position items to show their content
-				// instead of empty space at the end of the flex item box.
-				if lineHasOverflow[lineIdx] && justifyContent == css.JustifyContentSpaceBetween && len(item.Box.Children) > 0 {
-					var itemSize, childrenSize float64
-					if isRow {
-						itemSize = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
-						for _, child := range item.Box.Children {
-							childrenSize += child.Width + child.Margin.Left + child.Margin.Right
-						}
-					} else {
-						itemSize = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
-						for _, child := range item.Box.Children {
-							childrenSize += child.Height + child.Margin.Top + child.Margin.Bottom
-						}
-					}
-					emptySpace := itemSize - childrenSize
-					if emptySpace > 0 {
-						item.MainPos += emptySpace
-					}
-				}
-			}
-		}
-	}
 	if isWrapReverse && len(lines) > 1 {
 		// Reverse line order along cross axis
 		totalCross := 0.0
@@ -553,18 +538,80 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
-	// Step 12: Set final box positions
+	// Step 11b: Adjust for overflow with justify-content: space-between in reverse directions.
+	// CSS WG issue #11937 (tentative): When justify-content falls back to flex-start
+	// due to overflow in a reverse direction, shift items to show their content
+	// at main-start rather than empty space at the item's trailing edge.
+	if isReverse && justifyContent == css.JustifyContentSpaceBetween {
+		for _, line := range lines {
+			totalItemsMain := 0.0
+			for i, item := range line.Items {
+				totalItemsMain += item.outerMainSize(isRow)
+				if i > 0 {
+					totalItemsMain += mainGap
+				}
+			}
+			if totalItemsMain <= mainSize {
+				continue
+			}
+			for _, item := range line.Items {
+				if len(item.Box.Children) == 0 {
+					continue
+				}
+				var itemContentSize, childrenSize float64
+				if isRow {
+					itemContentSize = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+					for _, child := range item.Box.Children {
+						childrenSize += child.Width + child.Margin.Left + child.Margin.Right
+					}
+				} else {
+					itemContentSize = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+					for _, child := range item.Box.Children {
+						childrenSize += child.Height + child.Margin.Top + child.Margin.Bottom
+					}
+				}
+				emptySpace := itemContentSize - childrenSize
+				if emptySpace > 0 {
+					item.MainPos -= emptySpace
+				}
+			}
+		}
+	}
+
+	// Step 12: Set final box positions (direction-aware coordinate mapping).
+	// For reverse directions, convert abstract main-start positions to physical coordinates.
+	effectiveMainSize := mainSize
+	if isReverse && mainSize == math.MaxFloat64 {
+		effectiveMainSize = 0
+		for _, line := range lines {
+			for _, item := range line.Items {
+				itemEnd := item.MainPos + mainBoxSize(item.Box) + mainEndMargin(item.Box)
+				if itemEnd > effectiveMainSize {
+					effectiveMainSize = itemEnd
+				}
+			}
+		}
+	}
+
 	flexBox.Children = flexBox.Children[:0]
 	for _, line := range lines {
 		for _, item := range line.Items {
 			oldX := item.Box.X
 			oldY := item.Box.Y
 			if isRow {
-				item.Box.X = contentStartX + item.MainPos
+				if isReverse {
+					item.Box.X = contentStartX + effectiveMainSize - item.MainPos - item.Box.Width
+				} else {
+					item.Box.X = contentStartX + item.MainPos
+				}
 				item.Box.Y = contentStartY + item.CrossPos
 			} else {
 				item.Box.X = contentStartX + item.CrossPos
-				item.Box.Y = contentStartY + item.MainPos
+				if isReverse {
+					item.Box.Y = contentStartY + effectiveMainSize - item.MainPos - item.Box.Height
+				} else {
+					item.Box.Y = contentStartY + item.MainPos
+				}
 			}
 			// Re-position children relative to new box position
 			deltaX := item.Box.X - oldX
@@ -617,10 +664,10 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 
 	for _, child := range flexBox.Node.Children {
 		if child.Type == html.TextNode {
-			// Anonymous flex items for text (skip whitespace-only)
-			text := child.Text
+			// CSS Flexbox §4: Skip whitespace-only text runs (ASCII whitespace)
+			textContent := child.Text
 			trimmed := ""
-			for _, c := range text {
+			for _, c := range textContent {
 				if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
 					trimmed += string(c)
 				}
@@ -628,7 +675,52 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 			if trimmed == "" {
 				continue
 			}
-			// TODO: handle anonymous text flex items
+
+			// Create anonymous flex item for non-whitespace text (e.g., &nbsp;)
+			containerStyle := flexBox.Style
+			fontSize := containerStyle.GetFontSize()
+			bold := containerStyle.GetFontWeight() == css.FontWeightBold
+			italic := containerStyle.GetFontStyle() == css.FontStyleItalic
+			mono := containerStyle.IsMonospaceFamily()
+			ahem := containerStyle.IsAhemFamily()
+
+			textWidth, textHeight := text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+
+			anonStyle := css.NewStyle()
+			anonStyle.Set("display", "block")
+			// Inherit font/color from container
+			if v, ok := containerStyle.Get("font-size"); ok {
+				anonStyle.Set("font-size", v)
+			}
+			if v, ok := containerStyle.Get("font-weight"); ok {
+				anonStyle.Set("font-weight", v)
+			}
+			if v, ok := containerStyle.Get("font-family"); ok {
+				anonStyle.Set("font-family", v)
+			}
+			if v, ok := containerStyle.Get("color"); ok {
+				anonStyle.Set("color", v)
+			}
+
+			childBox := &Box{
+				Node:          child,
+				Style:         anonStyle,
+				X:             startX,
+				Y:             startY,
+				Width:         textWidth,
+				Height:        textHeight,
+				Children:      make([]*Box, 0),
+				Parent:        flexBox,
+				PseudoContent: trimmed,
+			}
+
+			item := &FlexItem{
+				Box:        childBox,
+				FlexGrow:   0,
+				FlexShrink: 1,
+				Order:      0,
+			}
+			items = append(items, item)
 			continue
 		}
 		if child.Type != html.ElementNode {

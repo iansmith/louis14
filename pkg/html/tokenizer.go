@@ -190,16 +190,17 @@ func (t *Tokenizer) readText() (Token, error) {
 		t.pos++
 	}
 	raw := t.input[start:t.pos]
-	// If the raw text is entirely whitespace (e.g., indentation between tags),
-	// skip it. But if it contains any non-whitespace characters, normalize it
-	// while preserving leading/trailing spaces for inline flow.
-	if strings.TrimSpace(raw) == "" {
+	// Normalize whitespace (collapse runs to single space), then let the layout
+	// engine decide whether whitespace-only text nodes generate boxes.
+	// CSS 2.1 §9.2.2.1: whitespace between block children doesn't generate boxes,
+	// but whitespace in inline contexts creates word-spacing.
+	text := normalizeWhitespace(raw)
+	if text == "" {
 		if t.pos < len(t.input) {
 			return t.NextToken()
 		}
 		return Token{Type: TokenEOF}, nil
 	}
-	text := normalizeWhitespace(raw)
 	text = gohtml.UnescapeString(text)
 	return Token{Type: TokenText, Text: text}, nil
 }

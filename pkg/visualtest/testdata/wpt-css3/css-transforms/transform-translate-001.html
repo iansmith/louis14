@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: transform translate moves element visually</title>
+  <link rel="author" title="WPT" href="http://www.w3.org/TR/css-transforms-1/" />
+  <link rel="help" href="http://www.w3.org/TR/css-transforms-1/#funcdef-translate" />
+  <link rel="match" href="transform-translate-001-ref.html" />
+  <meta name="assert" content="translate(50px, 50px) visually shifts an element by 50px in each direction" />
+  <style>
+  .container {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    background: white;
+  }
+  .box {
+    width: 50px;
+    height: 50px;
+    background: green;
+    transform: translate(50px, 50px);
+  }
+  </style>
+</head>
+<body>
+  <p>Test passes if the green square is positioned 50px from the top-left corner.</p>
+  <div class="container">
+    <div class="box"></div>
+  </div>
+</body>
+</html>

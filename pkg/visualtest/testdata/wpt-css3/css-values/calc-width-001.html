@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: calc() for width</title>
+  <link rel="match" href="calc-width-001-ref.html" />
+  <meta name="assert" content="calc() can compute width from addition and subtraction of pixel values" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: calc(100px + 50px);
+      height: 50px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

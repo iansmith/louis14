@@ -1540,6 +1540,24 @@ func (s *Style) GetTextAlign() TextAlign {
 	return TextAlignLeft
 }
 
+// Direction represents the CSS direction property
+type Direction string
+
+const (
+	DirectionLTR Direction = "ltr"
+	DirectionRTL Direction = "rtl"
+)
+
+// GetDirection returns the direction value (default: ltr)
+func (s *Style) GetDirection() Direction {
+	if dir, ok := s.Get("direction"); ok {
+		if dir == "rtl" {
+			return DirectionRTL
+		}
+	}
+	return DirectionLTR
+}
+
 // FontWeight represents the font-weight property value
 type FontWeight string
 
@@ -1923,6 +1941,24 @@ const (
 	DisplayGrid            DisplayType = "grid"
 	DisplayInlineGrid      DisplayType = "inline-grid"
 )
+
+// GetTextIndent returns the text-indent value in pixels (default: 0)
+func (s *Style) GetTextIndent() float64 {
+	if val, ok := s.Get("text-indent"); ok {
+		if length, ok := ParseLength(val); ok {
+			return length
+		}
+	}
+	return 0
+}
+
+// GetBoxSizing returns the box-sizing value (default: content-box)
+func (s *Style) GetBoxSizing() string {
+	if val, ok := s.Get("box-sizing"); ok {
+		return val
+	}
+	return "content-box"
+}
 
 // GetDisplay returns the display value (default: block)
 func (s *Style) GetDisplay() DisplayType {
@@ -2902,10 +2938,29 @@ func (s *Style) GetBackgroundRepeat() BackgroundRepeatType {
 	return BackgroundRepeatRepeat
 }
 
-// BackgroundPosition represents background-position x,y values in pixels
+// BackgroundPosition represents background-position x,y values.
+// Pixel values are stored as positive numbers.
+// Percentage values are stored as negative numbers (e.g., -100 = 100%).
+// Use ResolveX/ResolveY to convert to pixels given container and image dimensions.
 type BackgroundPosition struct {
 	X float64
 	Y float64
+}
+
+// ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage
+func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
+	if p.X < 0 {
+		return (containerW - imageW) * (-p.X) / 100
+	}
+	return p.X
+}
+
+// ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage
+func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
+	if p.Y < 0 {
+		return (containerH - imageH) * (-p.Y) / 100
+	}
+	return p.Y
 }
 
 // GetBackgroundPosition parses background-position (default: 0 0)
@@ -2921,19 +2976,31 @@ func (s *Style) GetBackgroundPosition() BackgroundPosition {
 func ParseBackgroundPosition(val string) BackgroundPosition {
 	parts := strings.Fields(val)
 	pos := BackgroundPosition{}
-	if len(parts) >= 1 {
-		pos.X = parsePositionComponent(parts[0], true)
-	}
-	if len(parts) >= 2 {
-		pos.Y = parsePositionComponent(parts[1], false)
-	} else if len(parts) == 1 {
-		// Single value: y defaults to center (but for px values, 0 is fine for Acid2)
+	if len(parts) == 1 {
+		// Single keyword: CSS 2.1 §14.2.1 — vertical keywords set Y, horizontal set X
 		switch parts[0] {
+		case "top":
+			pos.X = -50 // center
+			pos.Y = 0   // top
+		case "bottom":
+			pos.X = -50  // center
+			pos.Y = -100 // bottom
+		case "left":
+			pos.X = 0   // left
+			pos.Y = -50 // center
+		case "right":
+			pos.X = -100 // right
+			pos.Y = -50  // center
 		case "center":
-			pos.Y = 0 // will need box dimensions for true center; 0 as fallback
+			pos.X = -50 // center
+			pos.Y = -50 // center
 		default:
-			pos.Y = 0
+			pos.X = parsePositionComponent(parts[0], true)
+			pos.Y = -50 // center
 		}
+	} else if len(parts) >= 2 {
+		pos.X = parsePositionComponent(parts[0], true)
+		pos.Y = parsePositionComponent(parts[1], false)
 	}
 	return pos
 }
@@ -2943,13 +3010,18 @@ func parsePositionComponent(val string, isX bool) float64 {
 	case "left":
 		return 0
 	case "right":
-		return 0 // needs box width; handled at render time
+		return -100 // 100% stored as negative
 	case "top":
 		return 0
 	case "bottom":
-		return 0 // needs box height; handled at render time
+		return -100 // 100% stored as negative
 	case "center":
-		return 0 // handled at render time
+		return -50 // 50% stored as negative
+	}
+	if strings.HasSuffix(val, "%") {
+		if pct, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64); err == nil {
+			return -pct // Store percentage as negative
+		}
 	}
 	if length, ok := ParseLength(val); ok {
 		return length

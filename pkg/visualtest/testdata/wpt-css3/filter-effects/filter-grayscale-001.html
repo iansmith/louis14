@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: filter grayscale(1)</title>
+  <link rel="match" href="filter-grayscale-001-ref.html" />
+  <meta name="assert" content="filter: grayscale(1) converts to fully desaturated" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: rgb(255, 0, 0);
+      filter: grayscale(1);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/fogleman/gg"
@@ -225,6 +227,18 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		}
 	}
 
+	// Apply CSS transforms at the stacking context level so they wrap
+	// all painting (backgrounds, borders, AND children)
+	hasTransform := false
+	if box.Style != nil {
+		transforms := box.Style.GetTransforms()
+		if len(transforms) > 0 {
+			r.context.Push()
+			hasTransform = true
+			r.applyTransforms(box, transforms)
+		}
+	}
+
 	// Step 1: Background and borders of this element
 	r.drawBoxBackgroundAndBorders(box)
 
@@ -332,6 +346,11 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		r.context.Pop()
 	}
 
+	// Restore transform state
+	if hasTransform {
+		r.context.Pop()
+	}
+
 	// Composite isolated stacking context group back onto parent surface
 	if needsIsolation {
 		r.context.PopGroupWithAlpha(1.0)
@@ -419,6 +438,34 @@ func (r *Renderer) paintWithFilter(box *layout.Box, filters []css.FilterFunction
 				fr = fr*(1-amt) + gray*amt
 				fg = fg*(1-amt) + gray*amt
 				fb = fb*(1-amt) + gray*amt
+			case "brightness":
+				fr *= f.Value
+				fg *= f.Value
+				fb *= f.Value
+			case "saturate":
+				gray := 0.2126*fr + 0.7152*fg + 0.0722*fb
+				fr = gray + (fr-gray)*f.Value
+				fg = gray + (fg-gray)*f.Value
+				fb = gray + (fb-gray)*f.Value
+			case "sepia":
+				amt := f.Value
+				if amt > 1 {
+					amt = 1
+				}
+				sr := 0.393*fr + 0.769*fg + 0.189*fb
+				sg := 0.349*fr + 0.686*fg + 0.168*fb
+				sb := 0.272*fr + 0.534*fg + 0.131*fb
+				fr = fr*(1-amt) + sr*amt
+				fg = fg*(1-amt) + sg*amt
+				fb = fb*(1-amt) + sb*amt
+			case "invert":
+				amt := f.Value
+				if amt > 1 {
+					amt = 1
+				}
+				fr = fr*(1-amt) + (1-fr)*amt
+				fg = fg*(1-amt) + (1-fg)*amt
+				fb = fb*(1-amt) + (1-fb)*amt
 			}
 		}
 
@@ -512,7 +559,22 @@ func abs(x float64) float64 {
 
 // paintWithMask renders the element to an offscreen buffer and applies a CSS mask-image.
 // For gradient masks, the alpha channel of the gradient controls element visibility.
+// For url(#id) masks, references an inline SVG <mask> element.
 func (r *Renderer) paintWithMask(box *layout.Box, maskValue string) {
+	// Handle multiple mask layers (comma-separated) — use first layer
+	firstMask := maskValue
+	if idx := strings.Index(maskValue, ","); idx >= 0 {
+		firstMask = strings.TrimSpace(maskValue[:idx])
+	}
+
+	// Check for url(#id) reference to SVG mask element
+	if strings.HasPrefix(firstMask, "url(#") {
+		maskID := strings.TrimPrefix(firstMask, "url(#")
+		maskID = strings.TrimSuffix(maskID, ")")
+		r.paintWithSVGMask(box, maskID)
+		return
+	}
+
 	// Parse gradient from mask-image value
 	grad, ok := css.ParseLinearGradient(maskValue)
 	if !ok {
@@ -583,6 +645,116 @@ func (r *Renderer) paintWithMask(box *layout.Box, maskValue string) {
 		scale := maskAlpha
 		return uint8(float64(cr) * scale), uint8(float64(cg) * scale),
 			uint8(float64(cb) * scale), uint8(float64(ca) * scale)
+	})
+
+	box.Style.Set("mask-image", origMask)
+}
+
+// paintWithSVGMask renders the element with an SVG <mask> element applied.
+// The mask's children are rendered to a luminance buffer, and the luminance
+// at each pixel controls the element's visibility.
+func (r *Renderer) paintWithSVGMask(box *layout.Box, maskID string) {
+	// Find the mask element by traversing the DOM from the document root
+	docRoot := findDocumentRoot(box.Node)
+	maskNode := findElementByID(docRoot, maskID)
+	if maskNode == nil {
+		// Unresolvable mask → render normally (no mask)
+		origMask, _ := box.Style.Get("mask-image")
+		box.Style.Set("mask-image", "none")
+		r.paintStackingContext(box)
+		box.Style.Set("mask-image", origMask)
+		return
+	}
+
+	// Temporarily remove mask to prevent re-entry
+	origMask, _ := box.Style.Get("mask-image")
+	box.Style.Set("mask-image", "none")
+
+	// Determine mask dimensions (from mask element or element dimensions)
+	maskW := box.Width
+	maskH := box.Height
+	if wAttr, ok := maskNode.GetAttribute("width"); ok {
+		if w, ok := parseSVGLength(wAttr); ok {
+			maskW = w
+		}
+	}
+	if hAttr, ok := maskNode.GetAttribute("height"); ok {
+		if h, ok := parseSVGLength(hAttr); ok {
+			maskH = h
+		}
+	}
+
+	// Render mask children to a luminance buffer
+	maskImg := image.NewRGBA(image.Rect(0, 0, int(maskW), int(maskH)))
+	maskCtx := gg.NewContextForRGBA(maskImg)
+
+	for _, child := range maskNode.Children {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		if child.TagName == "rect" {
+			// Parse rect attributes
+			rx, ry, rw, rh := 0.0, 0.0, 0.0, 0.0
+			if val, ok := child.GetAttribute("x"); ok {
+				if v, ok := parseSVGLength(val); ok {
+					rx = v
+				}
+			}
+			if val, ok := child.GetAttribute("y"); ok {
+				if v, ok := parseSVGLength(val); ok {
+					ry = v
+				}
+			}
+			if val, ok := child.GetAttribute("width"); ok {
+				if v, ok := parseSVGLength(val); ok {
+					rw = v
+				}
+			}
+			if val, ok := child.GetAttribute("height"); ok {
+				if v, ok := parseSVGLength(val); ok {
+					rh = v
+				}
+			}
+			fc := getSVGFillColor(child)
+			// Premultiplied alpha: scale RGB by A
+			a := fc.A
+			maskCtx.SetRGBA(float64(fc.R)/255.0*a, float64(fc.G)/255.0*a, float64(fc.B)/255.0*a, a)
+			maskCtx.DrawRectangle(rx, ry, rw, rh)
+			maskCtx.Fill()
+		}
+	}
+
+	// Render the element to an offscreen buffer
+	r.context.PushGroup()
+	r.paintStackingContext(box)
+
+	// Apply mask: use luminance of mask pixels as alpha multiplier
+	r.context.PopGroupWithPositionFilter(func(px, py int, cr, cg, cb, ca uint8) (uint8, uint8, uint8, uint8) {
+		if ca == 0 {
+			return 0, 0, 0, 0
+		}
+
+		// Map pixel position to mask coordinates (relative to element's border box)
+		mx := px - int(box.X)
+		my := py - int(box.Y)
+
+		maskAlpha := 0.0
+		if mx >= 0 && mx < int(maskW) && my >= 0 && my < int(maskH) {
+			mc := maskImg.RGBAAt(mx, my)
+			if mc.A > 0 {
+				// CSS Masking: luminance mask — luminance = 0.2126*R + 0.7152*G + 0.0722*B
+				// Un-premultiply first
+				a := float64(mc.A) / 255
+				fr := float64(mc.R) / a / 255
+				fg := float64(mc.G) / a / 255
+				fb := float64(mc.B) / a / 255
+				maskAlpha = (0.2126*fr + 0.7152*fg + 0.0722*fb) * a
+			}
+		}
+
+		// Multiply all channels by mask alpha (premultiplied alpha)
+		return uint8(float64(cr) * maskAlpha), uint8(float64(cg) * maskAlpha),
+			uint8(float64(cb) * maskAlpha), uint8(float64(ca) * maskAlpha)
 	})
 
 	box.Style.Set("mask-image", origMask)
@@ -741,13 +913,8 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 		return
 	}
 
-	// Apply CSS transforms
-	transforms := box.Style.GetTransforms()
-	if len(transforms) > 0 {
-		r.context.Push()
-		r.applyTransforms(box, transforms)
-		defer r.context.Pop()
-	}
+	// Note: transforms are applied at the stacking context level in paintStackingContext,
+	// wrapping all painting (backgrounds, borders, AND children).
 
 	// Draw box-shadow (underneath the box)
 	r.drawBoxShadow(box)
@@ -920,12 +1087,11 @@ func (r *Renderer) drawBoxContent(box *layout.Box) {
 		return
 	}
 
-	// Apply CSS transforms
-	transforms := box.Style.GetTransforms()
-	if len(transforms) > 0 {
-		r.context.Push()
-		r.applyTransforms(box, transforms)
-		defer r.context.Pop()
+	// Note: transforms are applied at the stacking context level in paintStackingContext.
+
+	// Draw SVG content
+	if box.Node != nil && box.Node.TagName == "svg" {
+		r.drawSVGContent(box)
 	}
 
 	// Draw image
@@ -944,13 +1110,7 @@ func (r *Renderer) drawBoxContent(box *layout.Box) {
 
 // drawBox draws a complete box (used by legacy renderer)
 func (r *Renderer) drawBox(box *layout.Box) {
-	// Phase 16: Apply CSS transforms
-	transforms := box.Style.GetTransforms()
-	if len(transforms) > 0 {
-		r.context.Push() // Save graphics state
-		r.applyTransforms(box, transforms)
-		defer r.context.Pop() // Restore graphics state after drawing
-	}
+	// Note: transforms are applied at the stacking context level in paintStackingContext.
 
 	// Phase 19: Apply opacity (wraps all drawing for this box)
 	opacity := box.Style.GetOpacity()
@@ -1505,36 +1665,40 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		}
 	}
 
+	// Resolve percentage-based positions to pixels
+	posX := pos.ResolveX(bgWidth, imgW)
+	posY := pos.ResolveY(bgHeight, imgH)
+
 	switch repeat {
 	case css.BackgroundRepeatNoRepeat:
-		drawClipped(int(originX+pos.X), int(originY+pos.Y))
+		drawClipped(int(originX+posX), int(originY+posY))
 
 	case css.BackgroundRepeatRepeatX:
-		startX := pos.X
+		startX := posX
 		for startX > 0 {
 			startX -= imgW
 		}
 		tileEndX := bgX + bgWidth - originX
 		for x := startX; x < tileEndX; x += imgW {
-			drawClipped(int(originX+x), int(originY+pos.Y))
+			drawClipped(int(originX+x), int(originY+posY))
 		}
 
 	case css.BackgroundRepeatRepeatY:
-		startY := pos.Y
+		startY := posY
 		for startY > 0 {
 			startY -= imgH
 		}
 		tileEndY := bgY + bgHeight - originY
 		for y := startY; y < tileEndY; y += imgH {
-			drawClipped(int(originX+pos.X), int(originY+y))
+			drawClipped(int(originX+posX), int(originY+y))
 		}
 
 	default: // repeat
-		startX := pos.X
+		startX := posX
 		for startX > 0 {
 			startX -= imgW
 		}
-		startY := pos.Y
+		startY := posY
 		for startY > 0 {
 			startY -= imgH
 		}
@@ -1573,7 +1737,8 @@ func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) 
 			}
 		case "rotate":
 			if len(t.Values) >= 1 {
-				r.context.Rotate(t.Values[0])
+				// Transform values are stored in degrees; gg.Rotate expects radians
+				r.context.Rotate(t.Values[0] * math.Pi / 180)
 			}
 		case "scale":
 			if len(t.Values) >= 2 {
@@ -1624,4 +1789,127 @@ func (r *Renderer) drawScrollbarIndicators(box *layout.Box) {
 		scrollbarWidth,
 	)
 	r.context.Fill()
+}
+
+// drawSVGContent renders inline SVG element children (rect, circle, etc.)
+func (r *Renderer) drawSVGContent(box *layout.Box) {
+	if box.Node == nil {
+		return
+	}
+
+	effectiveY := r.getEffectiveY(box)
+	svgX := box.X + box.Border.Left + box.Padding.Left
+	svgY := effectiveY + box.Border.Top + box.Padding.Top
+
+	for _, child := range box.Node.Children {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		r.drawSVGElement(child, svgX, svgY)
+	}
+}
+
+// drawSVGElement draws a single SVG element at the given SVG viewport origin.
+func (r *Renderer) drawSVGElement(node *html.Node, svgX, svgY float64) {
+	switch node.TagName {
+	case "rect":
+		r.drawSVGRect(node, svgX, svgY)
+	}
+}
+
+// parseSVGLength parses an SVG length attribute value (unitless number = pixels).
+func parseSVGLength(val string) (float64, bool) {
+	// Try CSS length first (handles "100px", "10em", etc.)
+	if v, ok := css.ParseLength(val); ok {
+		return v, true
+	}
+	// SVG attributes allow unitless numbers (interpreted as pixels)
+	v, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// drawSVGRect draws an SVG <rect> element.
+func (r *Renderer) drawSVGRect(node *html.Node, svgX, svgY float64) {
+	x, y, w, h := 0.0, 0.0, 0.0, 0.0
+	if val, ok := node.GetAttribute("x"); ok {
+		if v, ok := parseSVGLength(val); ok {
+			x = v
+		}
+	}
+	if val, ok := node.GetAttribute("y"); ok {
+		if v, ok := parseSVGLength(val); ok {
+			y = v
+		}
+	}
+	if val, ok := node.GetAttribute("width"); ok {
+		if v, ok := parseSVGLength(val); ok {
+			w = v
+		}
+	}
+	if val, ok := node.GetAttribute("height"); ok {
+		if v, ok := parseSVGLength(val); ok {
+			h = v
+		}
+	}
+
+	// Get fill color from attribute or inline style (default: black per SVG spec)
+	fillColor := getSVGFillColor(node)
+
+	r.context.SetRGBA(float64(fillColor.R)/255.0, float64(fillColor.G)/255.0, float64(fillColor.B)/255.0, fillColor.A)
+	r.context.DrawRectangle(svgX+x, svgY+y, w, h)
+	r.context.Fill()
+}
+
+// getSVGFillColor extracts the fill color from an SVG element's fill attribute or inline style.
+func getSVGFillColor(node *html.Node) css.Color {
+	// Default SVG fill is black
+	defaultColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}
+
+	// Check fill attribute
+	if fill, ok := node.GetAttribute("fill"); ok {
+		if c, ok := css.ParseColor(fill); ok {
+			return c
+		}
+	}
+
+	// Check inline style for fill property
+	if styleAttr, ok := node.GetAttribute("style"); ok {
+		for _, decl := range strings.Split(styleAttr, ";") {
+			parts := strings.SplitN(strings.TrimSpace(decl), ":", 2)
+			if len(parts) == 2 && strings.TrimSpace(parts[0]) == "fill" {
+				if c, ok := css.ParseColor(strings.TrimSpace(parts[1])); ok {
+					return c
+				}
+			}
+		}
+	}
+
+	return defaultColor
+}
+
+// findDocumentRoot walks up the node tree to find the document root.
+func findDocumentRoot(node *html.Node) *html.Node {
+	root := node
+	for root.Parent != nil {
+		root = root.Parent
+	}
+	return root
+}
+
+// findElementByID searches the DOM tree for an element with the given id attribute.
+func findElementByID(root *html.Node, id string) *html.Node {
+	if root.Type == html.ElementNode {
+		if attrID, ok := root.GetAttribute("id"); ok && attrID == id {
+			return root
+		}
+	}
+	for _, child := range root.Children {
+		if found := findElementByID(child, id); found != nil {
+			return found
+		}
+	}
+	return nil
 }

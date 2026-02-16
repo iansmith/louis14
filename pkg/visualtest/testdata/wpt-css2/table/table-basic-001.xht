@@ -1,0 +1,18 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>CSS Test: Basic 2x2 table layout</title>
+  <link rel="match" href="table-basic-001-ref.xht" />
+  <meta name="assert" content="A basic 2x2 table with collapsed borders renders cells in a grid" />
+  <style type="text/css">
+    body { margin: 0; }
+    table { border-collapse: collapse; }
+    td { width: 50px; height: 50px; padding: 0; }
+    .g { background: green; }
+    .b { background: blue; }
+  </style>
+</head>
+<body>
+  <table><tr><td class="g"></td><td class="b"></td></tr><tr><td class="b"></td><td class="g"></td></tr></table>
+</body>
+</html>

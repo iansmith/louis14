@@ -1,0 +1,22 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+ <head>
+  <title>CSS Test: Background shorthand with color, image, and repeat-x</title>
+  <link rel="author" title="Microsoft" href="http://www.microsoft.com/" />
+  <link rel="help" href="http://www.w3.org/TR/CSS21/colors.html#propdef-background" />
+  <link rel="match" href="background-image-repeat-x-001-ref.xht" />
+  <meta name="flags" content="image" />
+  <meta name="assert" content="Background with (color image repeat) sets the background color with the image overlaid, repeated across the x-axis." />
+  <style type="text/css">
+  div {
+    background: green url("support/blue15x15.png") repeat-x;
+    height: 200px;
+    width: 200px;
+  }
+  </style>
+ </head>
+ <body>
+  <p>Test passes if there is a blue stripe above a green rectangle.</p>
+  <div></div>
+ </body>
+</html>

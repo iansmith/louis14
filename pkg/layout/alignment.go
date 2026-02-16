@@ -127,6 +127,8 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 			dx = contentRight - line.maxEnd
 		case "center":
 			dx = contentLeft + (contentWidth-lineWidth)/2 - line.minX
+		case "left":
+			dx = contentLeft - line.minX
 		default:
 			continue
 		}
@@ -136,6 +138,49 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 		for _, child := range line.boxes {
 			child.X += dx
 			le.shiftChildren(child, dx, 0)
+		}
+	}
+}
+
+// mirrorInlineBoxesRTL mirrors inline box positions for RTL layout.
+// For each line (group of boxes at the same Y), each box's X position
+// is reflected within the container's content area:
+//
+//	newX = contentLeft + contentRight - oldX - boxWidth
+//
+// This makes the first DOM element appear at the right edge and
+// subsequent elements flow leftward, as required by CSS direction: rtl.
+func (le *LayoutEngine) mirrorInlineBoxesRTL(boxes []*Box, contentLeft, contentRight float64) {
+	for _, box := range boxes {
+		if box == nil || box.Style == nil {
+			continue
+		}
+		// Skip floats — they have physical positioning per CSS 2.1 §9.5
+		if box.Style.GetFloat() != css.FloatNone {
+			continue
+		}
+		childDisplay := box.Style.GetDisplay()
+		isInline := childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock
+		if box.Node != nil && box.Node.Type == html.TextNode {
+			isInline = true
+		}
+		if !isInline {
+			continue
+		}
+
+		// Mirror within the float-adjusted available area, not the full content area.
+		// Inline content was laid out in [contentLeft+leftOffset, contentRight-rightOffset],
+		// so the mirror axis must use those same bounds.
+		leftOffset, rightOffset := le.getFloatOffsets(box.Y)
+		availLeft := contentLeft + leftOffset
+		availRight := contentRight - rightOffset
+		oldX := box.X
+		boxWidth := box.Width
+		newX := availRight - (oldX - availLeft) - boxWidth
+		dx := newX - oldX
+		if dx != 0 {
+			box.X = newX
+			le.shiftChildren(box, dx, 0)
 		}
 	}
 }

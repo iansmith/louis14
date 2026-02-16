@@ -4,6 +4,8 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
+	"strconv"
+	"strings"
 )
 
 func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
@@ -61,6 +63,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
+	// Check if this is an SVG element (replaced element with explicit dimensions)
+	isSVG := node.TagName == "svg"
+
 	// Phase 5: Check for float early to determine width calculation
 	floatType := style.GetFloat()
 
@@ -113,6 +118,18 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// Fallback for missing/broken images
 			contentWidth = 100
 			hasExplicitWidth = true
+		}
+	} else if isSVG {
+		// SVG elements are replaced elements — use width/height attributes
+		// SVG attributes use unitless numbers (pixels), not CSS lengths
+		if w, ok := style.GetLength("width"); ok {
+			contentWidth = w
+			hasExplicitWidth = true
+		} else if widthAttr, ok := node.GetAttribute("width"); ok {
+			if w, err := strconv.ParseFloat(widthAttr, 64); err == nil {
+				contentWidth = w
+				hasExplicitWidth = true
+			}
 		}
 	} else if display == css.DisplayInline {
 		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore width property)
@@ -168,6 +185,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// Fallback for missing/broken images
 			contentHeight = 100
 		}
+	} else if isSVG {
+		// SVG elements — use height attribute (unitless numbers = pixels)
+		if h, ok := style.GetLength("height"); ok {
+			contentHeight = h
+			hasExplicitHeight = true
+		} else if heightAttr, ok := node.GetAttribute("height"); ok {
+			if h, err := strconv.ParseFloat(heightAttr, 64); err == nil {
+				contentHeight = h
+				hasExplicitHeight = true
+			}
+		}
 	} else if display == css.DisplayInline {
 		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore height property)
 		contentHeight = 0
@@ -204,6 +232,22 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// else: containing block height depends on content → treat as auto
 	} else {
 		contentHeight = 0 // Auto height - will be calculated from children
+	}
+
+	// CSS3 box-sizing: border-box means specified width/height include padding+border
+	if style.GetBoxSizing() == "border-box" {
+		if hasExplicitWidth {
+			contentWidth -= padding.Left + padding.Right + border.Left + border.Right
+			if contentWidth < 0 {
+				contentWidth = 0
+			}
+		}
+		if hasExplicitHeight {
+			contentHeight -= padding.Top + padding.Bottom + border.Top + border.Bottom
+			if contentHeight < 0 {
+				contentHeight = 0
+			}
+		}
 	}
 
 	// Apply min/max width constraints
@@ -351,6 +395,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		return le.layoutGridContainer(node, x, y, availableWidth, style, computedStyles, parent)
 	}
 
+	// SVG elements are replaced elements — skip normal child layout.
+	// Children (<rect>, <mask>, etc.) are drawn by the renderer, not the HTML layout engine.
+	if isSVG {
+		return box
+	}
+
 	// Check if this element creates a new block formatting context (BFC)
 	createsBFC := false
 	if style.GetOverflow() != css.OverflowVisible || floatType != css.FloatNone ||
@@ -396,24 +446,45 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	hasInlineChild := false
 	didAnalyzeChildren := false // Track if we analyzed children
 
-	if (display == css.DisplayBlock || display == css.DisplayInline) {
+	if (display == css.DisplayBlock || display == css.DisplayInline || display == css.DisplayInlineBlock) {
 		didAnalyzeChildren = true
-		// Check children to determine if this is a pure inline formatting context
+		// Two-pass scan: determine if whitespace text counts as inline content.
+		// CSS 2.1 §9.2.2.1: In block containers with only block children,
+		// whitespace-only text between block elements doesn't generate boxes.
+		// But in inline formatting contexts, whitespace creates word-spacing.
+		hasBlockChild := false
+		hasNonWhitespaceInline := false
+		hasWhitespaceText := false
 
 		for _, child := range node.Children {
 			if child.Type == html.ElementNode {
 				if childStyle := computedStyles[child]; childStyle != nil {
 					childDisplay := childStyle.GetDisplay()
-
-					// Check for inline children
+					childPos := childStyle.GetPosition()
+					// Skip out-of-flow elements for this determination
+					if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+						continue
+					}
+					if childStyle.GetFloat() != css.FloatNone {
+						continue
+					}
 					if childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock {
-						hasInlineChild = true
+						hasNonWhitespaceInline = true
+					} else {
+						hasBlockChild = true
 					}
 				}
 			} else if child.Type == html.TextNode {
-				hasInlineChild = true
+				if strings.TrimSpace(child.Text) != "" {
+					hasNonWhitespaceInline = true
+				} else if child.Text != "" {
+					hasWhitespaceText = true
+				}
 			}
 		}
+
+		// Whitespace counts as inline ONLY when no block children present
+		hasInlineChild = hasNonWhitespaceInline || (hasWhitespaceText && !hasBlockChild)
 
 		// Use multi-pass for ALL inline formatting contexts (per user request)
 		// Requirements:
@@ -421,7 +492,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// 2. Not an object with image
 		// 3. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
 		// EXPERIMENTAL: Allow mixed block/inline content - block children handled in multi-pass
-		if hasInlineChild && !isObjectImage && display == css.DisplayBlock {
+		if hasInlineChild && !isObjectImage && (display == css.DisplayBlock || display == css.DisplayInlineBlock) {
 			algorithm = InlineLayoutMultiPass
 		}
 	}

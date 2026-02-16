@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: box-sizing: border-box includes padding and border in width</title>
+  <link rel="help" href="https://www.w3.org/TR/css-ui-3/#box-sizing" />
+  <link rel="match" href="box-sizing-border-box-001-ref.html" />
+  <meta name="assert" content="When box-sizing is border-box, the specified width includes padding and border. A 100px border-box with 10px padding and 5px border has 70px content." />
+  <style>
+  .test {
+    box-sizing: border-box;
+    width: 100px;
+    height: 100px;
+    padding: 10px;
+    border: 5px solid black;
+    background: green;
+  }
+  </style>
+</head>
+<body>
+  <p>Test passes if the green bordered box is exactly 100px wide.</p>
+  <div class="test"></div>
+</body>
+</html>

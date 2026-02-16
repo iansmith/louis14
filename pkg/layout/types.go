@@ -122,6 +122,7 @@ type ConstraintSpace struct {
 	ExclusionSpace *ExclusionSpace  // Floats affecting inline layout
 	TextAlign      css.TextAlign    // Text alignment for inline content
 	NoWrap         bool             // white-space: nowrap - prevent line breaking
+	TextIndent     float64          // CSS text-indent for the first line
 	// TODO: Add more constraints as needed:
 	// - WritingMode
 	// - IsNewFormattingContext
