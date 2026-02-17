@@ -103,6 +103,16 @@ func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*imag
 func measureContentHeight(boxes []*layout.Box) float64 {
 	maxY := 0.0
 	for _, box := range boxes {
+		// For html/body with percentage heights, use children extent
+		// instead of the inflated explicit height (which resolves against
+		// the large initial viewport in auto-height mode)
+		if isPercentageHeightRoot(box) {
+			if childMax := measureContentHeight(box.Children); childMax > maxY {
+				maxY = childMax
+			}
+			continue
+		}
+
 		bottom := box.Y + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom + box.Margin.Bottom
 		if bottom > maxY {
 			maxY = bottom
@@ -112,6 +122,21 @@ func measureContentHeight(boxes []*layout.Box) float64 {
 		}
 	}
 	return maxY
+}
+
+// isPercentageHeightRoot returns true for html/body elements with percentage heights.
+// These elements inflate to the viewport height during layout, but for auto-height
+// rendering we want the actual content extent instead.
+func isPercentageHeightRoot(box *layout.Box) bool {
+	if box.Node == nil || box.Style == nil {
+		return false
+	}
+	tag := box.Node.TagName
+	if tag != "html" && tag != "body" {
+		return false
+	}
+	_, hasPct := box.Style.GetPercentage("height")
+	return hasPct
 }
 
 // buildFetchers creates CSS and image fetcher functions from the Fetcher interface.

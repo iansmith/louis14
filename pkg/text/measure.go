@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/fogleman/gg"
 )
@@ -76,16 +77,99 @@ func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
 }
 
 // FontPathForFamily returns the font path for a CSS font-family string.
-// It first checks the web font registry, then falls back to bundled fonts.
+// It parses comma-separated font-family lists and tries each family in order,
+// checking the web font registry and built-in aliases before falling back.
 func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem bool) string {
-	// Check web font registry first
-	if fc.Registry != nil && family != "" {
-		if path := fc.Registry.Lookup(family, bold, italic); path != "" {
+	families := parseFontFamilyList(family)
+
+	for _, fam := range families {
+		// Check web font registry
+		if fc.Registry != nil {
+			if path := fc.Registry.Lookup(fam, bold, italic); path != "" {
+				return path
+			}
+		}
+		// Check bundled font aliases
+		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
 			return path
 		}
 	}
-	// Fall back to bundled fonts
+	// Final fallback to default bundled font
 	return fc.FontPath(bold, italic, mono, ahem)
+}
+
+// parseFontFamilyList splits a CSS font-family value into individual family names.
+// e.g. `"Helvetica Neue", Arial, sans-serif` → ["helvetica neue", "arial", "sans-serif"]
+func parseFontFamilyList(raw string) []string {
+	var families []string
+	for _, part := range strings.Split(raw, ",") {
+		fam := strings.TrimSpace(part)
+		// Strip surrounding quotes
+		if len(fam) >= 2 && ((fam[0] == '"' && fam[len(fam)-1] == '"') || (fam[0] == '\'' && fam[len(fam)-1] == '\'')) {
+			fam = fam[1 : len(fam)-1]
+		}
+		fam = strings.TrimSpace(fam)
+		if fam != "" {
+			families = append(families, fam)
+		}
+	}
+	return families
+}
+
+// resolveBuiltinFamily maps well-known CSS font family names to bundled Liberation fonts.
+func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) string {
+	dir := defaultFontsDir()
+	lower := strings.ToLower(family)
+
+	switch lower {
+	case "helvetica", "helvetica neue", "arial",
+		"liberation sans", "nimbus sans", "sans-serif":
+		return liberationSansPath(dir, bold, italic)
+	case "times", "times new roman", "liberation serif", "serif":
+		return liberationSerifPath(dir, bold, italic)
+	case "courier", "courier new", "liberation mono", "monospace":
+		return liberationMonoPath(dir, bold, italic)
+	}
+	return ""
+}
+
+func liberationSansPath(dir string, bold, italic bool) string {
+	switch {
+	case bold && italic:
+		return filepath.Join(dir, "LiberationSans-BoldItalic.ttf")
+	case bold:
+		return filepath.Join(dir, "LiberationSans-Bold.ttf")
+	case italic:
+		return filepath.Join(dir, "LiberationSans-Italic.ttf")
+	default:
+		return filepath.Join(dir, "LiberationSans-Regular.ttf")
+	}
+}
+
+func liberationSerifPath(dir string, bold, italic bool) string {
+	switch {
+	case bold && italic:
+		return filepath.Join(dir, "LiberationSerif-BoldItalic.ttf")
+	case bold:
+		return filepath.Join(dir, "LiberationSerif-Bold.ttf")
+	case italic:
+		return filepath.Join(dir, "LiberationSerif-Italic.ttf")
+	default:
+		return filepath.Join(dir, "LiberationSerif-Regular.ttf")
+	}
+}
+
+func liberationMonoPath(dir string, bold, italic bool) string {
+	switch {
+	case bold && italic:
+		return filepath.Join(dir, "LiberationMono-BoldItalic.ttf")
+	case bold:
+		return filepath.Join(dir, "LiberationMono-Bold.ttf")
+	case italic:
+		return filepath.Join(dir, "LiberationMono-Italic.ttf")
+	default:
+		return filepath.Join(dir, "LiberationMono-Regular.ttf")
+	}
 }
 
 // DefaultFontPath is the path to the default font.
