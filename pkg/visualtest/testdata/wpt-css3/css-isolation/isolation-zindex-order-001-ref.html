@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<title>CSS isolation: z-index order reference</title>
+<style>
+  body { margin: 0; }
+  /* Result: green square covers everything because z:1 > z:auto(0) at container level */
+  div {
+    width: 200px;
+    height: 200px;
+    background: green;
+  }
+</style>
+<div></div>

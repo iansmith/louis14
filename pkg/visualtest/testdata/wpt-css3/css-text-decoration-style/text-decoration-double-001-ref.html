@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<title>CSS text-decoration-style: double underline reference</title>
+<style>
+  body { margin: 0; }
+  .container {
+    position: relative;
+    width: 100px;
+    height: 80px;
+  }
+  /* Double underline: two 3px lines with 2px gap between.
+     Ahem baseline at bottom of em square. With 50px font, 80px line-height:
+     top offset = (80-50)/2 = 15px. Baseline at 15+50 = 65px.
+     Underline offset below baseline: ~2px. First line at y=67, second at y=72. */
+  .line1 {
+    position: absolute;
+    top: 67px;
+    left: 0;
+    width: 100px;
+    height: 3px;
+    background: green;
+  }
+  .line2 {
+    position: absolute;
+    top: 72px;
+    left: 0;
+    width: 100px;
+    height: 3px;
+    background: green;
+  }
+</style>
+<div class="container">
+  <div class="line1"></div>
+  <div class="line2"></div>
+</div>

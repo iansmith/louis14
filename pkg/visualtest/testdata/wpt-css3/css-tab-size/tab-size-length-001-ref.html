@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<title>CSS tab-size: length reference</title>
+<style>
+  body { margin: 0; }
+  /* With Ahem at 16px and tab-size:80px, "X" is 16px.
+     Tab advances to next 80px stop. Gap = 64px. Next "X" at 80px. */
+  div {
+    font-family: Ahem;
+    font-size: 16px;
+    line-height: 20px;
+    background: lime;
+    margin: 0;
+    padding: 0;
+  }
+  span.gap { display: inline-block; width: 64px; }
+</style>
+<div>X<span class="gap"></span>X</div>

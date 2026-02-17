@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<title>CSS text-align: justify distributes space between words</title>
+<link rel="match" href="text-align-justify-001-ref.html">
+<style>
+  body { margin: 0; }
+  div {
+    width: 160px;
+    font-size: 16px;
+    line-height: 20px;
+    font-family: Ahem;
+    text-align: justify;
+    background: lime;
+  }
+</style>
+<!-- With Ahem at 16px: each "XX" is 32px, space is 16px.
+     "XX XX XX" = 128px fits in 160px. "XX XX XX XX" = 176px doesn't.
+     Line 1: "XX XX XX" = 3 words, 96px word-content + 2 gaps.
+     Justified to 160px: (160-96)/2 = 32px each gap.
+     Line 2 (last line): "XX XX XX" left-aligned. -->
+<div>XX XX XX XX XX XX</div>

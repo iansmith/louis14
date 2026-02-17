@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<title>CSS outline-offset: positive offset reference</title>
+<style>
+  body { margin: 0; }
+  .outer {
+    position: relative;
+    margin: 50px;
+    width: 100px;
+    height: 100px;
+  }
+  .box {
+    width: 100px;
+    height: 100px;
+    background: green;
+  }
+  /* Outline at 10px offset with 3px width: starts at -13px from each edge */
+  .outline-top    { position: absolute; top: -13px;    left: -13px;  width: 126px; height: 3px;  background: blue; }
+  .outline-bottom { position: absolute; bottom: -13px; left: -13px;  width: 126px; height: 3px;  background: blue; }
+  .outline-left   { position: absolute; top: -13px;    left: -13px;  width: 3px;   height: 126px; background: blue; }
+  .outline-right  { position: absolute; top: -13px;    right: -13px; width: 3px;   height: 126px; background: blue; }
+</style>
+<div class="outer">
+  <div class="box"></div>
+  <div class="outline-top"></div>
+  <div class="outline-bottom"></div>
+  <div class="outline-left"></div>
+  <div class="outline-right"></div>
+</div>

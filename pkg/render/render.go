@@ -250,11 +250,31 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	// all painting (backgrounds, borders, AND children)
 	hasTransform := false
 	if box.Style != nil {
-		transforms := box.Style.GetTransforms()
-		if len(transforms) > 0 {
+		// Build combined transform list: individual properties (translate → rotate → scale)
+		// applied before the transform shorthand, per CSS Transforms Level 2.
+		var allTransforms []css.Transform
+		if tx, ty, ok := box.Style.GetIndividualTranslate(); ok {
+			allTransforms = append(allTransforms, css.Transform{Type: "translate", Values: []float64{tx, ty}})
+		}
+		if deg, ok := box.Style.GetIndividualRotate(); ok {
+			allTransforms = append(allTransforms, css.Transform{Type: "rotate", Values: []float64{deg}})
+		}
+		if sx, sy, ok := box.Style.GetIndividualScale(); ok {
+			allTransforms = append(allTransforms, css.Transform{Type: "scale", Values: []float64{sx, sy}})
+		}
+		allTransforms = append(allTransforms, box.Style.GetTransforms()...)
+		if len(allTransforms) > 0 {
 			r.context.Push()
 			hasTransform = true
-			r.applyTransforms(box, transforms)
+			r.applyTransforms(box, allTransforms)
+		}
+	}
+
+	// CSS Backdrop Filter: apply filter to pixels already on canvas (behind the element)
+	// This must happen BEFORE drawing the element's own background/content
+	if box.Style != nil {
+		if bdFilters := box.Style.GetBackdropFilter(); len(bdFilters) > 0 {
+			r.applyBackdropFilter(box, bdFilters)
 		}
 	}
 
@@ -847,6 +867,123 @@ func interpolateGradientAlpha(stops []css.ColorStop, t float64) float64 {
 	return stops[len(stops)-1].Color.A
 }
 
+// applyBackdropFilter applies CSS backdrop-filter effects to the pixels already on the canvas
+// within the element's border-box region. This must be called BEFORE drawing the element's
+// own background and content.
+func (r *Renderer) applyBackdropFilter(box *layout.Box, filters []css.FilterFunction) {
+	effectiveY := r.getEffectiveY(box)
+
+	// Get the element's border-box bounds
+	bx := int(math.Floor(box.X))
+	by := int(math.Floor(effectiveY))
+	bw := int(math.Ceil(box.Width + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right))
+	bh := int(math.Ceil(box.Height + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom))
+
+	// Get the current canvas image
+	img, ok := r.context.Image().(*image.RGBA)
+	if !ok {
+		return
+	}
+
+	bounds := img.Bounds()
+	maxX := bounds.Max.X
+	maxY := bounds.Max.Y
+
+	// Apply filters to each pixel in the backdrop region
+	for py := by; py < by+bh && py < maxY; py++ {
+		if py < 0 {
+			continue
+		}
+		for px := bx; px < bx+bw && px < maxX; px++ {
+			if px < 0 {
+				continue
+			}
+			offset := img.PixOffset(px, py)
+			// image.RGBA uses premultiplied alpha
+			pr, pg, pb, pa := img.Pix[offset], img.Pix[offset+1], img.Pix[offset+2], img.Pix[offset+3]
+			if pa == 0 {
+				continue
+			}
+
+			// Un-premultiply
+			a := float64(pa) / 255.0
+			fr := float64(pr) / a / 255.0
+			fg := float64(pg) / a / 255.0
+			fb := float64(pb) / a / 255.0
+			fa := a
+
+			for _, f := range filters {
+				switch f.Name {
+				case "grayscale":
+					amt := f.Value
+					if amt > 1 {
+						amt = 1
+					}
+					gray := 0.2126*fr + 0.7152*fg + 0.0722*fb
+					fr = fr*(1-amt) + gray*amt
+					fg = fg*(1-amt) + gray*amt
+					fb = fb*(1-amt) + gray*amt
+				case "brightness":
+					fr *= f.Value
+					fg *= f.Value
+					fb *= f.Value
+				case "contrast":
+					fr = (fr-0.5)*f.Value + 0.5
+					fg = (fg-0.5)*f.Value + 0.5
+					fb = (fb-0.5)*f.Value + 0.5
+				case "saturate":
+					gray := 0.2126*fr + 0.7152*fg + 0.0722*fb
+					fr = gray + (fr-gray)*f.Value
+					fg = gray + (fg-gray)*f.Value
+					fb = gray + (fb-gray)*f.Value
+				case "opacity":
+					fa *= f.Value
+				case "invert":
+					amt := f.Value
+					if amt > 1 {
+						amt = 1
+					}
+					fr = fr*(1-amt) + (1-fr)*amt
+					fg = fg*(1-amt) + (1-fg)*amt
+					fb = fb*(1-amt) + (1-fb)*amt
+				case "sepia":
+					amt := f.Value
+					if amt > 1 {
+						amt = 1
+					}
+					sr := 0.393*fr + 0.769*fg + 0.189*fb
+					sg := 0.349*fr + 0.686*fg + 0.168*fb
+					sb := 0.272*fr + 0.534*fg + 0.131*fb
+					fr = fr*(1-amt) + sr*amt
+					fg = fg*(1-amt) + sg*amt
+					fb = fb*(1-amt) + sb*amt
+				}
+			}
+
+			// Clamp values
+			clamp01 := func(v float64) float64 {
+				if v < 0 {
+					return 0
+				}
+				if v > 1 {
+					return 1
+				}
+				return v
+			}
+			fr = clamp01(fr)
+			fg = clamp01(fg)
+			fb = clamp01(fb)
+			fa = clamp01(fa)
+
+			// Re-premultiply
+			img.Pix[offset] = uint8(fr * fa * 255.0)
+			img.Pix[offset+1] = uint8(fg * fa * 255.0)
+			img.Pix[offset+2] = uint8(fb * fa * 255.0)
+			img.Pix[offset+3] = uint8(fa * 255.0)
+		}
+	}
+}
+
 // hasBlendModeDescendant checks if any descendant of box has mix-blend-mode set.
 func hasBlendModeDescendant(box *layout.Box) bool {
 	for _, child := range box.Children {
@@ -1142,6 +1279,9 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 
 	// Draw border
 	r.drawBorder(box)
+
+	// Draw outline (outside the border box, does not affect layout)
+	r.drawOutline(box)
 }
 
 // drawGradientBackground renders a CSS gradient as the box background
@@ -1458,6 +1598,9 @@ func (r *Renderer) drawBox(box *layout.Box) {
 	// Phase 2: Draw border
 	r.drawBorder(box)
 
+	// Draw outline (outside the border box, does not affect layout)
+	r.drawOutline(box)
+
 	// Phase 21: overflow clipping
 	overflow := box.Style.GetOverflow()
 
@@ -1627,6 +1770,69 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 			r.context.Fill()
 		}
 	}
+}
+
+// drawOutline renders the CSS outline outside the border box.
+// The outline is drawn OUTSIDE the border box and does not affect layout.
+// outline-offset shifts the outline inward (negative) or outward (positive).
+func (r *Renderer) drawOutline(box *layout.Box) {
+	if box == nil || box.Style == nil {
+		return
+	}
+
+	outlineWidth := box.Style.GetOutlineWidth()
+	if outlineWidth <= 0 {
+		return
+	}
+
+	outlineOffset := box.Style.GetOutlineOffset()
+	oR, oG, oB, oA := box.Style.GetOutlineColor()
+
+	if oA <= 0 {
+		return
+	}
+
+	// Get effective Y (adjusted for scroll offset)
+	effectiveY := r.getEffectiveY(box)
+
+	// Border-box dimensions: box.X/Y is the border-box top-left corner,
+	// box.Width/Height are border-box dimensions.
+	bbX := box.X
+	bbY := effectiveY
+	bbW := box.Width
+	bbH := box.Height
+
+	// Outer edge of the outline: outlineOffset + outlineWidth outside the border box
+	outX := bbX - outlineOffset - outlineWidth
+	outY := bbY - outlineOffset - outlineWidth
+	outW := bbW + 2*(outlineOffset+outlineWidth)
+
+	// Inner edge of the outline: outlineOffset outside the border box
+	inX := bbX - outlineOffset
+	inY := bbY - outlineOffset
+	inW := bbW + 2*outlineOffset
+	inH := bbH + 2*outlineOffset
+
+	// If the inner box collapses (negative offset bigger than half dimensions), skip
+	if inW <= 0 || inH <= 0 {
+		return
+	}
+
+	r.context.SetColor(color.NRGBA{R: oR, G: oG, B: oB, A: uint8(oA * 255)})
+
+	// Draw 4 outline rectangles (top, bottom, left, right strips)
+	// Top strip
+	r.context.DrawRectangle(outX, outY, outW, outlineWidth)
+	r.context.Fill()
+	// Bottom strip
+	r.context.DrawRectangle(outX, inY+inH, outW, outlineWidth)
+	r.context.Fill()
+	// Left strip (between top and bottom strips)
+	r.context.DrawRectangle(outX, inY, outlineWidth, inH)
+	r.context.Fill()
+	// Right strip (between top and bottom strips)
+	r.context.DrawRectangle(inX+inW, inY, outlineWidth, inH)
+	r.context.Fill()
 }
 
 func (r *Renderer) drawBoxShadow(box *layout.Box) {
@@ -1855,27 +2061,60 @@ func (r *Renderer) drawText(box *layout.Box) {
 		{
 			textWidth, _ := text.MeasureTextWithWeight(textContent, fontSize, bold)
 			underlineOffset := box.Style.GetTextUnderlineOffset()
+			thickness := box.Style.GetTextDecorationThickness()
+			decoStyle := box.Style.GetTextDecorationStyle()
 
-			r.context.SetLineWidth(1)
+			// Compute x start position for decoration line
+			lineX := textX
+			if textAlign == css.TextAlignCenter {
+				lineX = textX - textWidth/2
+			}
+
 			switch decoration {
 			case css.TextDecorationUnderline:
 				underlineY := effectiveY + fontSize + 2 + underlineOffset
-				if textAlign == css.TextAlignCenter {
-					r.context.DrawLine(textX-textWidth/2, underlineY, textX+textWidth/2, underlineY)
-				} else {
-					r.context.DrawLine(textX, underlineY, textX+textWidth, underlineY)
+				switch decoStyle {
+				case "double":
+					// Two lines with a 2px gap between them
+					r.context.DrawRectangle(lineX, underlineY, textWidth, thickness)
+					r.context.Fill()
+					r.context.DrawRectangle(lineX, underlineY+thickness+2, textWidth, thickness)
+					r.context.Fill()
+				case "wavy":
+					// Sine wave underline
+					amplitude := thickness * 1.5
+					if amplitude < 2 {
+						amplitude = 2
+					}
+					period := fontSize * 0.4
+					if period < 6 {
+						period = 6
+					}
+					waveY := underlineY + amplitude
+					r.context.SetLineWidth(thickness)
+					r.context.NewSubPath()
+					r.context.MoveTo(lineX, waveY)
+					endX := lineX + textWidth
+					for wx := lineX; wx <= endX; wx += 1.0 {
+						wy := waveY + amplitude*math.Sin((wx-lineX)*2*math.Pi/period)
+						r.context.LineTo(wx, wy)
+					}
+					r.context.Stroke()
+				default:
+					// solid (and other styles fall back to solid)
+					r.context.DrawRectangle(lineX, underlineY, textWidth, thickness)
+					r.context.Fill()
 				}
-				r.context.Stroke()
 
 			case css.TextDecorationOverline:
 				overlineY := effectiveY
-				r.context.DrawLine(textX, overlineY, textX+textWidth, overlineY)
-				r.context.Stroke()
+				r.context.DrawRectangle(lineX, overlineY, textWidth, thickness)
+				r.context.Fill()
 
 			case css.TextDecorationLineThrough:
 				lineThroughY := effectiveY + fontSize*0.5
-				r.context.DrawLine(textX, lineThroughY, textX+textWidth, lineThroughY)
-				r.context.Stroke()
+				r.context.DrawRectangle(lineX, lineThroughY, textWidth, thickness)
+				r.context.Fill()
 			}
 		}
 	}

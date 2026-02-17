@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<title>CSS isolation: isolate limits z-index scope</title>
+<link rel="match" href="isolation-zindex-order-001-ref.html">
+<style>
+  body { margin: 0; }
+  .container { position: relative; width: 200px; height: 200px; }
+  .isolated {
+    isolation: isolate;
+    position: relative;
+    width: 200px;
+    height: 200px;
+  }
+  /* This child has z-index:999 but is contained within the isolated context (z:auto=0) */
+  .inside {
+    position: absolute;
+    top: 0; left: 0;
+    width: 200px;
+    height: 100px;
+    background: blue;
+    z-index: 999;
+  }
+  /* This sibling has z-index:1 at the container level, paints OVER the isolated group */
+  .outside {
+    position: absolute;
+    top: 0; left: 0;
+    width: 200px;
+    height: 200px;
+    background: green;
+    z-index: 1;
+  }
+</style>
+<!-- The isolated div acts as z:auto(0) at container level.
+     .outside(z:1) > .isolated(z:0) so green covers blue entirely. -->
+<div class="container">
+  <div class="isolated">
+    <div class="inside"></div>
+  </div>
+  <div class="outside"></div>
+</div>

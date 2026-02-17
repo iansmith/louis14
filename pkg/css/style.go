@@ -1146,10 +1146,101 @@ func expandShorthand(style *Style, property, value string) {
 		style.Set("max-width", value)
 	case "max-block-size":
 		style.Set("max-height", value)
+	case "outline":
+		expandOutlineShorthand(style, value)
 	default:
 		// Regular property
 		style.Set(property, value)
 	}
+}
+
+// expandOutlineShorthand parses the outline shorthand into outline-width, outline-style, outline-color.
+// Format: "3px solid blue" — order of components is not significant.
+func expandOutlineShorthand(style *Style, value string) {
+	// Reset all outline sub-properties to initial values
+	style.Set("outline-width", "3px") // medium = 3px
+	style.Set("outline-style", "none")
+	style.Set("outline-color", "currentcolor")
+
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if part == "none" {
+			style.Set("outline-style", "none")
+		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
+			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
+			style.Set("outline-style", part)
+		} else if bw, ok := borderWidthKeyword(part); ok {
+			style.Set("outline-width", bw)
+		} else if _, ok := ParseLength(part); ok {
+			style.Set("outline-width", part)
+		} else if part != "" {
+			// Assume it's a color
+			style.Set("outline-color", part)
+		}
+	}
+}
+
+// GetOutlineStyle returns the outline-style value (default: "none")
+func (s *Style) GetOutlineStyle() string {
+	if val, ok := s.Get("outline-style"); ok {
+		return val
+	}
+	return "none"
+}
+
+// GetOutlineWidth returns the outline width in pixels.
+// Returns 0 when outline-style is "none" or outline-width is not set.
+func (s *Style) GetOutlineWidth() float64 {
+	outlineStyle := s.GetOutlineStyle()
+	if outlineStyle == "none" || outlineStyle == "" {
+		return 0
+	}
+	if val, ok := s.Get("outline-width"); ok {
+		switch strings.ToLower(val) {
+		case "thin":
+			return 1
+		case "medium":
+			return 3
+		case "thick":
+			return 5
+		}
+		if px, ok2 := ParseLength(val); ok2 {
+			return px
+		}
+	}
+	return 3 // default medium = 3px
+}
+
+// GetOutlineColor returns the outline color as RGBA components.
+// Defaults to currentColor (element's text color), falling back to black.
+func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
+	colorStr := "currentcolor"
+	if val, ok := s.Get("outline-color"); ok {
+		colorStr = val
+	}
+	if strings.EqualFold(colorStr, "currentcolor") || colorStr == "" {
+		// Use element's text color
+		if textColor, ok := s.Get("color"); ok {
+			if c, ok2 := ParseColor(textColor); ok2 {
+				return c.R, c.G, c.B, c.A
+			}
+		}
+		return 0, 0, 0, 1.0 // default black
+	}
+	if c, ok := ParseColor(colorStr); ok {
+		return c.R, c.G, c.B, c.A
+	}
+	return 0, 0, 0, 1.0 // fallback black
+}
+
+// GetOutlineOffset returns the outline-offset in pixels (default: 0).
+func (s *Style) GetOutlineOffset() float64 {
+	if val, ok := s.Get("outline-offset"); ok {
+		if px, ok2 := ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok2 {
+			return px
+		}
+	}
+	return 0
 }
 
 // expandBorderRadiusProperty expands border-radius shorthand into per-corner properties.
@@ -2353,6 +2444,7 @@ const (
 	DisplayInlineFlex      DisplayType = "inline-flex"
 	DisplayGrid            DisplayType = "grid"
 	DisplayInlineGrid      DisplayType = "inline-grid"
+	DisplayContents        DisplayType = "contents"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0)
@@ -2405,9 +2497,31 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayGrid
 		case "inline-grid":
 			return DisplayInlineGrid
+		case "contents":
+			return DisplayContents
+		case "-webkit-box", "-webkit-inline-box":
+			return DisplayBlock
 		}
 	}
 	return DisplayBlock
+}
+
+// GetLineClamp returns the -webkit-line-clamp value (0 = no clamping)
+func (s *Style) GetLineClamp() int {
+	if val, ok := s.Get("-webkit-line-clamp"); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// GetBoxOrient returns the -webkit-box-orient value (empty string if not set)
+func (s *Style) GetBoxOrient() string {
+	if val, ok := s.Get("-webkit-box-orient"); ok {
+		return strings.TrimSpace(val)
+	}
+	return ""
 }
 
 // VerticalAlign represents the vertical-align property value
@@ -3359,6 +3473,81 @@ func parseOriginValue(val string) float64 {
 	return 0.5 // Default to center
 }
 
+// GetIndividualScale returns the CSS `scale` individual transform property as (sx, sy, hasValue).
+// A single value sets both axes uniformly.
+func (s *Style) GetIndividualScale() (float64, float64, bool) {
+	if val, ok := s.Get("scale"); ok {
+		if val == "none" || val == "" {
+			return 1, 1, false
+		}
+		parts := strings.Fields(val)
+		if len(parts) == 1 {
+			if v, err := strconv.ParseFloat(parts[0], 64); err == nil {
+				return v, v, true
+			}
+		} else if len(parts) >= 2 {
+			vx, err1 := strconv.ParseFloat(parts[0], 64)
+			vy, err2 := strconv.ParseFloat(parts[1], 64)
+			if err1 == nil && err2 == nil {
+				return vx, vy, true
+			}
+		}
+	}
+	return 1, 1, false
+}
+
+// GetIndividualRotate returns the CSS `rotate` individual transform property as (degrees, hasValue).
+// Supports deg, turn, and rad angle units.
+func (s *Style) GetIndividualRotate() (float64, bool) {
+	if val, ok := s.Get("rotate"); ok {
+		if val == "none" || val == "" {
+			return 0, false
+		}
+		val = strings.TrimSpace(val)
+		if strings.HasSuffix(val, "deg") {
+			if v, err := strconv.ParseFloat(strings.TrimSuffix(val, "deg"), 64); err == nil {
+				return v, true
+			}
+		} else if strings.HasSuffix(val, "turn") {
+			if v, err := strconv.ParseFloat(strings.TrimSuffix(val, "turn"), 64); err == nil {
+				return v * 360, true
+			}
+		} else if strings.HasSuffix(val, "rad") {
+			if v, err := strconv.ParseFloat(strings.TrimSuffix(val, "rad"), 64); err == nil {
+				return v * 180 / math.Pi, true
+			}
+		}
+		// Try bare number as degrees
+		if v, err := strconv.ParseFloat(val, 64); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// GetIndividualTranslate returns the CSS `translate` individual transform property as (tx, ty, hasValue).
+// A single value sets the X translation only.
+func (s *Style) GetIndividualTranslate() (float64, float64, bool) {
+	if val, ok := s.Get("translate"); ok {
+		if val == "none" || val == "" {
+			return 0, 0, false
+		}
+		parts := strings.Fields(val)
+		if len(parts) == 1 {
+			if v, ok2 := ParseLength(parts[0]); ok2 {
+				return v, 0, true
+			}
+		} else if len(parts) >= 2 {
+			vx, ok1 := ParseLength(parts[0])
+			vy, ok2 := ParseLength(parts[1])
+			if ok1 && ok2 {
+				return vx, vy, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
 // Phase 24: Background image support
 
 // ParseURLValue extracts the URL from a CSS url(...) value.
@@ -4055,4 +4244,87 @@ func (s *Style) GetMaskImage() string {
 		return val
 	}
 	return "none"
+}
+
+// GetTabSize returns the tab-size property value.
+// Returns (value, isLength) where:
+//   - isLength=true: value is a pixel length (e.g., tab-size: 80px → 80.0)
+//   - isLength=false: value is a character count (e.g., tab-size: 4 → 4.0)
+//
+// Default is 8 characters (isLength=false).
+func (s *Style) GetTabSize() (float64, bool) {
+	if val, ok := s.Get("tab-size"); ok {
+		val = strings.TrimSpace(val)
+		// Try length first (px, em, etc.)
+		if length, ok2 := ParseLength(val); ok2 {
+			return length, true // isLength=true
+		}
+		// Try numeric (character count)
+		if num, err := strconv.ParseFloat(val, 64); err == nil {
+			return num, false // isLength=false
+		}
+	}
+	return 8, false // Default: 8 characters
+}
+
+// GetBackdropFilter parses the backdrop-filter property and returns filter functions.
+func (s *Style) GetBackdropFilter() []FilterFunction {
+	val, ok := s.Get("backdrop-filter")
+	if !ok || val == "none" || val == "" {
+		return nil
+	}
+	// Reuse the same filter parsing logic as GetFilter
+	var filters []FilterFunction
+	val = strings.TrimSpace(val)
+	for len(val) > 0 {
+		val = strings.TrimSpace(val)
+		parenIdx := strings.Index(val, "(")
+		if parenIdx < 0 {
+			break
+		}
+		name := strings.TrimSpace(val[:parenIdx])
+		closeIdx := strings.Index(val[parenIdx:], ")")
+		if closeIdx < 0 {
+			break
+		}
+		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
+		var value float64
+		if pct, ok := ParsePercentage(arg); ok {
+			value = pct / 100.0
+		} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
+			value = f
+		}
+		filters = append(filters, FilterFunction{Name: name, Value: value})
+		val = val[parenIdx+closeIdx+1:]
+	}
+	return filters
+}
+
+// GetIsolation returns the isolation property value (default: "auto")
+func (s *Style) GetIsolation() string {
+	if val, ok := s.Get("isolation"); ok {
+		return val
+	}
+	return "auto"
+}
+
+// GetTextDecorationStyle returns the text-decoration-style value (default: "solid")
+func (s *Style) GetTextDecorationStyle() string {
+	if val, ok := s.Get("text-decoration-style"); ok {
+		return val
+	}
+	return "solid"
+}
+
+// GetTextDecorationThickness returns the text-decoration-thickness value in pixels (default: 1)
+func (s *Style) GetTextDecorationThickness() float64 {
+	if val, ok := s.Get("text-decoration-thickness"); ok {
+		if val == "auto" || val == "from-font" {
+			return 1
+		}
+		if length, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+			return length
+		}
+	}
+	return 1
 }

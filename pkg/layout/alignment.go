@@ -1,6 +1,9 @@
 package layout
 
 import (
+	"sort"
+	"strings"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
@@ -122,6 +125,16 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 		}
 	}
 
+	// For justify: find the last line (highest Y value) — it is NOT justified.
+	maxY := 0.0
+	if textAlign == "justify" {
+		for _, line := range lines {
+			if line.y > maxY {
+				maxY = line.y
+			}
+		}
+	}
+
 	// Shift each line as a whole
 	for _, line := range lines {
 		lineWidth := line.maxEnd - line.minX
@@ -133,6 +146,116 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 			dx = contentLeft + (contentWidth-lineWidth)/2 - line.minX
 		case "left":
 			dx = contentLeft - line.minX
+		case "justify":
+			// Last line is left-aligned (text-align-last: auto defaults to start).
+			if line.y == maxY {
+				// Left-align: shift to content left edge if needed.
+				dx = contentLeft - line.minX
+				if dx == 0 {
+					continue
+				}
+				for _, child := range line.boxes {
+					child.X += dx
+					le.shiftChildren(child, dx, 0)
+				}
+				continue
+			}
+			// Non-last lines: distribute extra space between word boxes.
+			// Sort boxes by X position to find gaps between them.
+			sortedBoxes := make([]*Box, len(line.boxes))
+			copy(sortedBoxes, line.boxes)
+			sort.Slice(sortedBoxes, func(i, j int) bool {
+				return sortedBoxes[i].X < sortedBoxes[j].X
+			})
+			// Filter out zero-width and whitespace-only text boxes at start/end.
+			// These come from leading/trailing spaces and shouldn't be word anchors.
+			start := 0
+			end := len(sortedBoxes)
+			for start < end {
+				b := sortedBoxes[start]
+				if b.Width <= 0 {
+					start++
+					continue
+				}
+				if b.Node != nil && b.Node.Type == html.TextNode && strings.TrimSpace(b.Node.Text) == "" {
+					start++
+					continue
+				}
+				break
+			}
+			for end > start {
+				b := sortedBoxes[end-1]
+				if b.Width <= 0 {
+					end--
+					continue
+				}
+				if b.Node != nil && b.Node.Type == html.TextNode && strings.TrimSpace(b.Node.Text) == "" {
+					end--
+					continue
+				}
+				break
+			}
+			wordBoxes := sortedBoxes[start:end]
+			if len(wordBoxes) < 2 {
+				// Only 0 or 1 word — can't distribute space; left-align.
+				dx = contentLeft - line.minX
+				if dx != 0 {
+					for _, child := range line.boxes {
+						child.X += dx
+						le.shiftChildren(child, dx, 0)
+					}
+				}
+				continue
+			}
+			// Total content width from first word start to last word end.
+			firstX := wordBoxes[0].X
+			lastEnd := wordBoxes[len(wordBoxes)-1].X + wordBoxes[len(wordBoxes)-1].Width
+			contentEndX := contentLeft + contentWidth
+			extraSpace := contentEndX - lastEnd
+			numGaps := float64(len(wordBoxes) - 1)
+			spacePerGap := extraSpace / numGaps
+
+			// Shift each word box by its accumulated gap offset.
+			for i, box := range wordBoxes {
+				_ = firstX
+				gapDx := spacePerGap * float64(i)
+				if gapDx != 0 {
+					box.X += gapDx
+					le.shiftChildren(box, gapDx, 0)
+				}
+			}
+			// Also shift non-word boxes (whitespace items) to follow nearest word box.
+			// Whitespace boxes between words need to move with the word to their left.
+			// Find the closest preceding word box for each whitespace box.
+			for _, box := range line.boxes {
+				// Skip boxes we already processed (word boxes).
+				isWordBox := false
+				for _, wb := range wordBoxes {
+					if wb == box {
+						isWordBox = true
+						break
+					}
+				}
+				if isWordBox {
+					continue
+				}
+				// Find the word box index this non-word box falls after.
+				boxOrigX := box.X // box hasn't been moved yet
+				wordIdx := 0
+				for i, wb := range wordBoxes {
+					// Compare to original position of word box (before our shifts above).
+					origWbX := wb.X - spacePerGap*float64(i)
+					if origWbX <= boxOrigX {
+						wordIdx = i
+					}
+				}
+				gapDx := spacePerGap * float64(wordIdx)
+				if gapDx != 0 {
+					box.X += gapDx
+					le.shiftChildren(box, gapDx, 0)
+				}
+			}
+			continue
 		default:
 			continue
 		}

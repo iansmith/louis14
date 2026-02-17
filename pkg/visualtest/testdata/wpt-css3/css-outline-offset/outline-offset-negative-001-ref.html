@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<title>CSS outline-offset: negative offset reference</title>
+<style>
+  body { margin: 0; }
+  .outer {
+    position: relative;
+    margin: 50px;
+    width: 100px;
+    height: 100px;
+  }
+  .box {
+    width: 100px;
+    height: 100px;
+    background: green;
+  }
+  /* Outline inset by 5px from edge, 3px wide: starts at (edge - 5px + 0) = 5px inside,
+     but outline draws from offset toward outside, so inner edge at -5+0=edge-5px,
+     outer edge at -5+3=edge-2px. Position: top = -(-5) - 3 = 2px from inside */
+  .outline-top    { position: absolute; top: 2px;    left: 2px;  width: 96px; height: 3px; background: blue; }
+  .outline-bottom { position: absolute; bottom: 2px; left: 2px;  width: 96px; height: 3px; background: blue; }
+  .outline-left   { position: absolute; top: 2px;    left: 2px;  width: 3px;  height: 96px; background: blue; }
+  .outline-right  { position: absolute; top: 2px;    right: 2px; width: 3px;  height: 96px; background: blue; }
+</style>
+<div class="outer">
+  <div class="box"></div>
+  <div class="outline-top"></div>
+  <div class="outline-bottom"></div>
+  <div class="outline-left"></div>
+  <div class="outline-right"></div>
+</div>

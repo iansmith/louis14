@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<title>CSS isolation: isolate contains z-index:-1 child within stacking context</title>
+<link rel="match" href="isolation-stacking-001-ref.html">
+<style>
+  body { margin: 0; }
+  .isolated {
+    isolation: isolate;
+    width: 200px;
+    height: 200px;
+    position: relative;
+  }
+  .child {
+    position: absolute;
+    top: 0; left: 0;
+    width: 200px;
+    height: 200px;
+    background: green;
+    z-index: -1;
+  }
+</style>
+<!-- With isolation:isolate, the .isolated div creates a stacking context.
+     The z-index:-1 child is contained within it, painting behind the parent's
+     content but still visible (parent has no background to obscure it). -->
+<div class="isolated">
+  <div class="child"></div>
+</div>

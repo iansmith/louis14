@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -368,11 +369,69 @@ func (le *LayoutEngine) BreakLines(
 						}
 					}
 					if !charBroke {
-						// No floats to clear - force onto current line (true overflow)
-						currentLine.Items = append(currentLine.Items, item)
-						currentX += textWidth
-						if textLineHeight > currentLine.Height {
-							currentLine.Height = textLineHeight
+						// CSS 2.1 §16.6: For word-break: normal, text can break at soft wrap
+						// opportunities (spaces). If the text item contains spaces and is wider
+						// than available width, try to split at a word boundary.
+						wordBroke := false
+						if !constraint.NoWrap && item.Style != nil && strings.Contains(item.Text, " ") {
+							cFontSize := item.Style.GetFontSize()
+							cBold := item.Style.GetFontWeight() == css.FontWeightBold
+							cItalic := item.Style.GetFontStyle() == css.FontStyleItalic
+							cMono := item.Style.IsMonospaceFamily()
+							cAhem := item.Style.IsAhemFamily()
+							remainingWidth := availableWidth - usedWidth
+							if remainingWidth <= 0 {
+								remainingWidth = availableWidth
+							}
+							pfxText, remText := breakTextAtWordBoundary(item.Text, cFontSize, cBold, cItalic, cMono, cAhem, remainingWidth)
+							if pfxText != "" && remText != "" {
+								pfxW, _ := text.MeasureTextWithStyle(pfxText, cFontSize, cBold, cItalic, cMono, cAhem)
+								currentLine.Items = append(currentLine.Items, &InlineItem{Type: InlineItemText, Text: pfxText, Style: item.Style, Node: item.Node, Width: pfxW, Height: item.Height})
+								if textLineHeight > currentLine.Height {
+									currentLine.Height = textLineHeight
+								}
+								remW, remH := text.MeasureTextWithStyle(remText, cFontSize, cBold, cItalic, cMono, cAhem)
+								remItem := &InlineItem{Type: InlineItemText, Text: remText, Style: item.Style, Node: item.Node, Width: remW, Height: remH}
+								newItems := make([]*InlineItem, 0, len(items)+1)
+								newItems = append(newItems, items[:i+1]...)
+								newItems = append(newItems, remItem)
+								if i+1 < len(items) {
+									newItems = append(newItems, items[i+1:]...)
+								}
+								items = newItems
+								lines = append(lines, currentLine)
+								currentY += currentLine.Height
+								textIndent = 0
+								lineFloatWidth = 0
+								lineFloats = nil
+								currentLine = &LineInfo{Y: currentY, Items: []*InlineItem{}, Constraint: constraint, Height: 0}
+								currentX = 0
+								hasSeenContentOnLine = false
+								lastTextEndedWithSpace = false
+								wordBroke = true
+							} else if pfxText == "" {
+								// Nothing fits on current line - start a new line and retry
+								if len(currentLine.Items) > 0 {
+									lines = append(lines, currentLine)
+									currentY += currentLine.Height
+								}
+								lineFloatWidth = 0
+								lineFloats = nil
+								currentLine = &LineInfo{Y: currentY, Items: []*InlineItem{}, Constraint: constraint, Height: 0}
+								currentX = 0
+								hasSeenContentOnLine = false
+								lastTextEndedWithSpace = false
+								i-- // Retry this item on the new line
+								wordBroke = true
+							}
+						}
+						if !wordBroke {
+							// No floats to clear - force onto current line (true overflow)
+							currentLine.Items = append(currentLine.Items, item)
+							currentX += textWidth
+							if textLineHeight > currentLine.Height {
+								currentLine.Height = textLineHeight
+							}
 						}
 					}
 				}
@@ -569,6 +628,11 @@ func (le *LayoutEngine) BreakLines(
 		}
 	}
 
+	// -webkit-line-clamp: truncate to N lines
+	if constraint.LineClampN > 0 && len(lines) > constraint.LineClampN {
+		lines = lines[:constraint.LineClampN]
+	}
+
 	// CSS text-overflow: ellipsis — truncate overflowing nowrap lines
 	if constraint.NoWrap && constraint.TextOverflow == css.TextOverflowEllipsis {
 		for _, line := range lines {
@@ -587,6 +651,73 @@ func (le *LayoutEngine) BreakLines(
 	}
 
 	return lines
+}
+
+// breakTextAtWordBoundary splits text at the last space such that the prefix fits
+// within availableWidth. Returns (prefix, remainder) where prefix is the text that
+// fits and remainder is the rest (starting after the space).
+// If nothing fits (even a single word is too wide), returns ("", fullText).
+// If everything fits, returns (fullText, "").
+func breakTextAtWordBoundary(txt string, fontSize float64, bold, italic, mono, ahem bool, availableWidth float64) (string, string) {
+	// Find all space positions
+	runes := []rune(txt)
+	bestEnd := -1 // Last rune index (exclusive) of best fitting prefix
+	for i, r := range runes {
+		if r == ' ' {
+			// Try prefix up to (but not including) this space
+			prefix := string(runes[:i])
+			if prefix == "" {
+				continue
+			}
+			w, _ := text.MeasureTextWithStyle(prefix, fontSize, bold, italic, mono, ahem)
+			if w <= availableWidth {
+				bestEnd = i
+			} else {
+				break // Words only get longer
+			}
+		}
+	}
+	if bestEnd < 0 {
+		// No word boundary found where prefix fits - check if single word fits
+		// (for the case where there's no space at all)
+		w, _ := text.MeasureTextWithStyle(txt, fontSize, bold, italic, mono, ahem)
+		if w <= availableWidth {
+			return txt, ""
+		}
+		return "", txt
+	}
+	prefix := strings.TrimRight(string(runes[:bestEnd]), " ")
+	remainder := strings.TrimLeft(string(runes[bestEnd:]), " ")
+	return prefix, remainder
+}
+
+// splitTextIntoWordAndSpaceParts splits text into alternating word and space parts.
+// For example: "XX XX XX" → ["XX", " ", "XX", " ", "XX"]
+// This enables word-level wrapping in BreakLines and inter-word spacing for text-align:justify.
+func splitTextIntoWordAndSpaceParts(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var parts []string
+	i := 0
+	for i < len(s) {
+		if s[i] == ' ' {
+			j := i
+			for j < len(s) && s[j] == ' ' {
+				j++
+			}
+			parts = append(parts, s[i:j])
+			i = j
+		} else {
+			j := i
+			for j < len(s) && s[j] != ' ' {
+				j++
+			}
+			parts = append(parts, s[i:j])
+			i = j
+		}
+	}
+	return parts
 }
 
 // applyTextOverflowEllipsis truncates a line's text items so they fit within
@@ -1224,6 +1355,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		// word-break and overflow-wrap
 		constraint.WordBreak = containerBox.Style.GetWordBreak()
 		constraint.OverflowWrap = containerBox.Style.GetOverflowWrap()
+
+		// -webkit-line-clamp: clamp inline content to N lines
+		if containerBox.Style.GetBoxOrient() == "vertical" {
+			if n := containerBox.Style.GetLineClamp(); n > 0 {
+				constraint.LineClampN = n
+			}
+		}
 	}
 
 	// Run new multi-pass pipeline
@@ -2158,32 +2296,104 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 						Width: 0, Height: 0,
 					})
 				}
-				// For pre, tabs should be preserved as-is (8-space tab stops)
-				// For now, convert tabs to spaces (browsers use 8-space tab stops)
-				if whiteSpace == "pre" || whiteSpace == "pre-wrap" {
-					line = strings.ReplaceAll(line, "\t", "        ")
+				// For pre, handle tab characters with proper tab-stop logic per CSS Text Level 3.
+				if (whiteSpace == "pre" || whiteSpace == "pre-wrap") && strings.Contains(line, "\t") {
+					// Tab-stop expansion: compute tab stop size in pixels.
+					tabSizeVal, tabSizeIsLength := parentStyle.GetTabSize()
+					var tabStopPx float64
+					if tabSizeIsLength {
+						tabStopPx = tabSizeVal
+					} else {
+						// tab-size is a character count: stop = N * advance-of-space
+						spaceW, _ := text.MeasureTextWithStyle(" ", fontSize, bold, italic, mono, ahem)
+						if spaceW <= 0 {
+							spaceW = fontSize // fallback: 1em per character
+						}
+						tabStopPx = tabSizeVal * spaceW
+					}
+					if tabStopPx <= 0 {
+						tabStopPx = fontSize * 8
+					}
+
+					// Split at tabs and create items, tracking accumulated X.
+					_, segH := text.MeasureTextWithStyle("X", fontSize, bold, italic, mono, ahem)
+					segments := strings.Split(line, "\t")
+					currentLinePx := 0.0
+					for si, seg := range segments {
+						if len(seg) > 0 {
+							segW, _ := text.MeasureTextWithStyle(seg, fontSize, bold, italic, mono, ahem)
+							if letterSpacing != 0 && len([]rune(seg)) > 1 {
+								segW += letterSpacing * float64(len([]rune(seg))-1)
+							}
+							segNode := &html.Node{
+								Type:   html.TextNode,
+								Text:   seg,
+								Parent: node.Parent,
+							}
+							state.Items = append(state.Items, &InlineItem{
+								Type:        InlineItemText,
+								Node:        segNode,
+								Text:        seg,
+								StartOffset: 0,
+								EndOffset:   len(seg),
+								Style:       parentStyle,
+								Width:       segW,
+								Height:      segH,
+							})
+							currentLinePx += segW
+						}
+						// After each segment except the last, insert a tab-width item.
+						if si < len(segments)-1 {
+							rem := math.Mod(currentLinePx, tabStopPx)
+							var tabW float64
+							if rem < 1e-9 {
+								tabW = tabStopPx
+							} else {
+								tabW = tabStopPx - rem
+							}
+							tabNode := &html.Node{
+								Type:   html.TextNode,
+								Text:   "",
+								Parent: node.Parent,
+							}
+							state.Items = append(state.Items, &InlineItem{
+								Type:        InlineItemText,
+								Node:        tabNode,
+								Text:        "",
+								StartOffset: 0,
+								EndOffset:   0,
+								Style:       parentStyle,
+								Width:       tabW,
+								Height:      segH,
+							})
+							currentLinePx += tabW
+						}
+					}
+				} else {
+					// No tabs (or pre-line): simple path
+					if whiteSpace != "pre" && whiteSpace != "pre-wrap" {
+						// pre-line: no tab preservation needed
+					}
+					w, h := text.MeasureTextWithStyle(line, fontSize, bold, italic, mono, ahem)
+					if letterSpacing != 0 && len([]rune(line)) > 1 {
+						w += letterSpacing * float64(len([]rune(line))-1)
+					}
+					lineNode := &html.Node{
+						Type:   html.TextNode,
+						Text:   line,
+						Parent: node.Parent,
+					}
+					state.Items = append(state.Items, &InlineItem{
+						Type:        InlineItemText,
+						Node:        lineNode,
+						Text:        line,
+						StartOffset: 0,
+						EndOffset:   len(line),
+						Style:       parentStyle,
+						Width:       w,
+						Height:      h,
+					})
 				}
-				w, h := text.MeasureTextWithStyle(line, fontSize, bold, italic, mono, ahem)
-				if letterSpacing != 0 && len([]rune(line)) > 1 {
-					w += letterSpacing * float64(len([]rune(line))-1)
-				}
-				// Create a separate text node for each line segment so the renderer
-				// draws only this line's text (not the full original text node)
-				lineNode := &html.Node{
-					Type:   html.TextNode,
-					Text:   line,
-					Parent: node.Parent,
-				}
-				state.Items = append(state.Items, &InlineItem{
-					Type:        InlineItemText,
-					Node:        lineNode,
-					Text:        line,
-					StartOffset: 0,
-					EndOffset:   len(line),
-					Style:       parentStyle,
-					Width:       w,
-					Height:      h,
-				})
 			}
 			return
 		}
@@ -2193,25 +2403,33 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		italic := parentStyle.GetFontStyle() == css.FontStyleItalic
 		mono := parentStyle.IsMonospaceFamily()
 		ahem := parentStyle.IsAhemFamily()
-		width, height := text.MeasureTextWithStyle(textContent, fontSize, bold, italic, mono, ahem)
-
-		// CSS 2.1 §16.4: Add letter-spacing between adjacent characters
 		letterSpacing := parentStyle.GetLetterSpacing()
-		if letterSpacing != 0 && len([]rune(node.Text)) > 1 {
-			width += letterSpacing * float64(len([]rune(node.Text))-1)
-		}
 
-		item := &InlineItem{
-			Type:        InlineItemText,
-			Node:        node,
-			Text:        node.Text,
-			StartOffset: 0,
-			EndOffset:   len(node.Text),
-			Style:       parentStyle,
-			Width:       width,
-			Height:      height,
+		// Split text into word-level items for proper word wrapping and text-align:justify.
+		// Each word and each space run becomes its own InlineItem so BreakLines can wrap
+		// at word boundaries and applyTextAlignToBoxes can distribute space between word boxes.
+		wordParts := splitTextIntoWordAndSpaceParts(textContent)
+		for _, part := range wordParts {
+			partW, partH := text.MeasureTextWithStyle(part, fontSize, bold, italic, mono, ahem)
+			if letterSpacing != 0 && len([]rune(part)) > 1 {
+				partW += letterSpacing * float64(len([]rune(part))-1)
+			}
+			partNode := &html.Node{
+				Type:   html.TextNode,
+				Text:   part,
+				Parent: node.Parent,
+			}
+			state.Items = append(state.Items, &InlineItem{
+				Type:        InlineItemText,
+				Node:        partNode,
+				Text:        part,
+				StartOffset: 0,
+				EndOffset:   len(part),
+				Style:       parentStyle,
+				Width:       partW,
+				Height:      partH,
+			})
 		}
-		state.Items = append(state.Items, item)
 		return
 	}
 

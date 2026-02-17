@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<title>CSS display: contents in flex container</title>
+<link rel="match" href="display-contents-flex-001-ref.html">
+<style>
+  body { margin: 0; }
+  .flex { display: flex; width: 300px; }
+  .contents { display: contents; }
+  .item { width: 100px; height: 100px; }
+  .a { background: green; }
+  .b { background: blue; }
+  .c { background: lime; }
+</style>
+<!-- display:contents makes the wrapper disappear; its children
+     become direct flex items alongside .c -->
+<div class="flex">
+  <div class="contents">
+    <div class="item a"></div>
+    <div class="item b"></div>
+  </div>
+  <div class="item c"></div>
+</div>

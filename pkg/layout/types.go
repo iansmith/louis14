@@ -126,6 +126,7 @@ type ConstraintSpace struct {
 	TextOverflow   css.TextOverflowType // CSS text-overflow (clip or ellipsis)
 	WordBreak      string           // CSS word-break (normal, break-all, keep-all)
 	OverflowWrap   string           // CSS overflow-wrap / word-wrap (normal, break-word, anywhere)
+	LineClampN     int              // -webkit-line-clamp: N (0 = no clamping)
 	// TODO: Add more constraints as needed:
 	// - WritingMode
 	// - IsNewFormattingContext

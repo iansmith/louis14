@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<title>CSS text-align: justify - last line is left-aligned by default</title>
+<link rel="match" href="text-align-justify-last-line-001-ref.html">
+<style>
+  body { margin: 0; }
+  div {
+    width: 160px;
+    font-size: 16px;
+    line-height: 20px;
+    font-family: Ahem;
+    text-align: justify;
+    background: lime;
+  }
+</style>
+<!-- Single line is both the first and last line.
+     Last line of justified text defaults to left alignment (text-align-last: auto).
+     So this should appear left-aligned, identical to text-align: left. -->
+<div>XX XX XX XX XX</div>

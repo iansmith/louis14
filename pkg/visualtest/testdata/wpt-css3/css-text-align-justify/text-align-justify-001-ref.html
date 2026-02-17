@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<title>CSS text-align: justify reference</title>
+<style>
+  body { margin: 0; }
+  /* Line 1: 3 words justified across 160px using flexbox space-between */
+  .line {
+    width: 160px;
+    height: 20px;
+    font-size: 16px;
+    line-height: 20px;
+    font-family: Ahem;
+    background: lime;
+    display: flex;
+    justify-content: space-between;
+  }
+  /* Line 2 (last line): left-aligned */
+  .last {
+    width: 160px;
+    height: 20px;
+    font-size: 16px;
+    line-height: 20px;
+    font-family: Ahem;
+    background: lime;
+  }
+</style>
+<div class="line"><span>XX</span><span>XX</span><span>XX</span></div>
+<div class="last">XX XX XX</div>

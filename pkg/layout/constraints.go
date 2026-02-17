@@ -128,6 +128,7 @@ func (cs *ConstraintSpace) WithExclusion(exclusion Exclusion) *ConstraintSpace {
 		TextOverflow:   cs.TextOverflow,
 		WordBreak:      cs.WordBreak,
 		OverflowWrap:   cs.OverflowWrap,
+		LineClampN:     cs.LineClampN,
 	}
 }
 
@@ -145,6 +146,7 @@ func (cs *ConstraintSpace) WithAvailableWidth(width float64) *ConstraintSpace {
 		TextOverflow:   cs.TextOverflow,
 		WordBreak:      cs.WordBreak,
 		OverflowWrap:   cs.OverflowWrap,
+		LineClampN:     cs.LineClampN,
 	}
 }
 
@@ -159,6 +161,7 @@ func (cs *ConstraintSpace) WithTextAlign(align css.TextAlign) *ConstraintSpace {
 		TextOverflow:   cs.TextOverflow,
 		WordBreak:      cs.WordBreak,
 		OverflowWrap:   cs.OverflowWrap,
+		LineClampN:     cs.LineClampN,
 	}
 }
 

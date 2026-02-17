@@ -683,11 +683,35 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	}
 }
 
+// flattenContentsChildren returns the children of node, recursively expanding any
+// child with display:contents (those children participate directly in the parent layout).
+func (le *LayoutEngine) flattenContentsChildren(node *html.Node, computedStyles map[*html.Node]*css.Style) []*html.Node {
+	var result []*html.Node
+	for _, child := range node.Children {
+		if child.Type == html.ElementNode {
+			childStyle := computedStyles[child]
+			if childStyle == nil {
+				childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+				computedStyles[child] = childStyle
+			}
+			if childStyle.GetDisplay() == css.DisplayContents {
+				result = append(result, le.flattenContentsChildren(child, computedStyles)...)
+				continue
+			}
+		}
+		result = append(result, child)
+	}
+	return result
+}
+
 // createFlexItemsProper creates flex items by laying out each child to get proper dimensions.
 func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, availableWidth float64, computedStyles map[*html.Node]*css.Style, isRow bool) []*FlexItem {
 	items := make([]*FlexItem, 0)
 
-	for _, child := range flexBox.Node.Children {
+	// Expand display:contents children so their children participate as direct flex items
+	children := le.flattenContentsChildren(flexBox.Node, computedStyles)
+
+	for _, child := range children {
 		if child.Type == html.TextNode {
 			// CSS Flexbox §4: Skip whitespace-only text runs (ASCII whitespace)
 			textContent := child.Text

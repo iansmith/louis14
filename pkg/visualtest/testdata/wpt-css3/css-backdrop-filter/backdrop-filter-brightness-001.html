@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<title>CSS backdrop-filter: brightness</title>
+<link rel="match" href="backdrop-filter-brightness-001-ref.html">
+<style>
+  body { margin: 0; }
+  .container { position: relative; width: 200px; height: 200px; }
+  .bg { position: absolute; top: 0; left: 0; width: 200px; height: 200px; background: rgb(100, 150, 200); }
+  .overlay { position: absolute; top: 0; left: 0; width: 200px; height: 200px; backdrop-filter: brightness(0.5); }
+</style>
+<div class="container">
+  <div class="bg"></div>
+  <div class="overlay"></div>
+</div>

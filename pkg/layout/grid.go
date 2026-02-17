@@ -94,7 +94,10 @@ func (le *LayoutEngine) layoutGridContainer(
 	currentCol := 0
 	numColTracks := len(columnTracks)
 
-	for _, child := range node.Children {
+	// Expand display:contents children so their children participate as direct grid items
+	gridChildren := le.flattenContentsChildren(node, computedStyles)
+
+	for _, child := range gridChildren {
 		if child.Type != html.ElementNode {
 			continue
 		}

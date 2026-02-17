@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<title>CSS tab-size: number reference</title>
+<style>
+  body { margin: 0; }
+  /* With Ahem at 16px, tab-size:4 means tab stop every 4 chars (64px).
+     "X" occupies 16px, tab advances to 64px. Gap = 48px. Next "X" at 64px. */
+  div {
+    font-family: Ahem;
+    font-size: 16px;
+    line-height: 20px;
+    background: lime;
+    margin: 0;
+    padding: 0;
+  }
+  span.gap { display: inline-block; width: 48px; }
+</style>
+<div>X<span class="gap"></span>X</div>

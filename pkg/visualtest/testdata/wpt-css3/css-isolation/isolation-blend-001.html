@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<title>CSS isolation: isolate contains mix-blend-mode</title>
+<link rel="match" href="isolation-blend-001-ref.html">
+<style>
+  body { margin: 0; background: red; }
+  .isolated {
+    isolation: isolate;
+    width: 200px;
+    height: 200px;
+    position: relative;
+  }
+  .bg {
+    position: absolute;
+    top: 0; left: 0;
+    width: 200px;
+    height: 200px;
+    background: blue;
+  }
+  .blend {
+    position: absolute;
+    top: 0; left: 0;
+    width: 200px;
+    height: 200px;
+    background: lime;
+    mix-blend-mode: screen;
+  }
+</style>
+<div class="isolated">
+  <div class="bg"></div>
+  <div class="blend"></div>
+</div>

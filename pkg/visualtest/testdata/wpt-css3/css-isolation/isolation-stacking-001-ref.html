@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<title>CSS isolation: stacking context reference</title>
+<style>
+  body { margin: 0; }
+  /* The z-index:-1 child is visible inside the isolation stacking context,
+     producing a simple green 200x200 square. */
+  div {
+    width: 200px;
+    height: 200px;
+    background: green;
+  }
+</style>
+<div></div>

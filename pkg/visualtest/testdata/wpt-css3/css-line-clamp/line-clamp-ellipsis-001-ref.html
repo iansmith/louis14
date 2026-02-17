@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<title>CSS -webkit-line-clamp: ellipsis reference</title>
+<style>
+  body { margin: 0; }
+  div {
+    width: 300px;
+    height: 24px;
+    font-size: 20px;
+    line-height: 24px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background: lime;
+  }
+</style>
+<div>This text is too long to fit on a single line so it should be clamped</div>

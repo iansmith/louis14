@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<title>CSS display: contents in grid container</title>
+<link rel="match" href="display-contents-grid-001-ref.html">
+<style>
+  body { margin: 0; }
+  .grid { display: grid; grid-template-columns: 100px 100px; width: 200px; }
+  .contents { display: contents; }
+  .item { height: 50px; }
+  .a { background: green; }
+  .b { background: blue; }
+  .c { background: lime; }
+  .d { background: red; }
+</style>
+<!-- display:contents on wrapper disappears; all 4 items flow into the 2x2 grid -->
+<div class="grid">
+  <div class="contents">
+    <div class="item a"></div>
+    <div class="item b"></div>
+  </div>
+  <div class="item c"></div>
+  <div class="item d"></div>
+</div>

@@ -60,6 +60,17 @@ func BoxCreatesStackingContext(box *Box) bool {
 		return true
 	}
 
+	// Individual transform properties also create a stacking context (CSS Transforms Level 2)
+	if _, _, ok := box.Style.GetIndividualScale(); ok {
+		return true
+	}
+	if _, ok := box.Style.GetIndividualRotate(); ok {
+		return true
+	}
+	if _, _, ok := box.Style.GetIndividualTranslate(); ok {
+		return true
+	}
+
 	// Elements with clip-path != none create a stacking context
 	if clipPath, ok := box.Style.Get("clip-path"); ok && clipPath != "none" && clipPath != "" {
 		return true
@@ -80,6 +91,16 @@ func BoxCreatesStackingContext(box *Box) bool {
 		return true
 	}
 	if mask, ok := box.Style.Get("-webkit-mask-image"); ok && mask != "none" && mask != "" {
+		return true
+	}
+
+	// Elements with backdrop-filter != none create a stacking context
+	if val, ok := box.Style.Get("backdrop-filter"); ok && val != "none" && val != "" {
+		return true
+	}
+
+	// Elements with isolation: isolate create a stacking context
+	if box.Style.GetIsolation() == "isolate" {
 		return true
 	}
 
