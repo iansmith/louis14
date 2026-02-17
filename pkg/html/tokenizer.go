@@ -21,7 +21,8 @@ type Token struct {
 	TagName     string
 	Attributes  map[string]string
 	Text        string
-	SelfClosing bool // True for tags ending with /> (XHTML self-closing syntax)
+	RawText     string // Original text with whitespace preserved (for <pre> contexts)
+	SelfClosing bool   // True for tags ending with /> (XHTML self-closing syntax)
 }
 
 type Tokenizer struct {
@@ -190,19 +191,24 @@ func (t *Tokenizer) readText() (Token, error) {
 		t.pos++
 	}
 	raw := t.input[start:t.pos]
-	// Normalize whitespace (collapse runs to single space), then let the layout
-	// engine decide whether whitespace-only text nodes generate boxes.
-	// CSS 2.1 §9.2.2.1: whitespace between block children doesn't generate boxes,
-	// but whitespace in inline contexts creates word-spacing.
+	// Return both normalized and raw text. The parser decides which to use
+	// based on context (e.g., <pre> elements need raw whitespace preserved).
 	text := normalizeWhitespace(raw)
 	if text == "" {
+		// All-whitespace that normalized to empty — check if raw is also empty
+		rawUnescaped := gohtml.UnescapeString(raw)
+		if strings.TrimSpace(rawUnescaped) == "" && rawUnescaped != "" {
+			// Whitespace-only: return with RawText for <pre> contexts
+			return Token{Type: TokenText, Text: " ", RawText: rawUnescaped}, nil
+		}
 		if t.pos < len(t.input) {
 			return t.NextToken()
 		}
 		return Token{Type: TokenEOF}, nil
 	}
 	text = gohtml.UnescapeString(text)
-	return Token{Type: TokenText, Text: text}, nil
+	rawText := gohtml.UnescapeString(raw)
+	return Token{Type: TokenText, Text: text, RawText: rawText}, nil
 }
 
 // normalizeWhitespace collapses runs of whitespace to a single space,

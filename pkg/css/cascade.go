@@ -75,6 +75,12 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("font-family", "monospace")
 	}
 
+	// Default white-space: pre for preformatted elements
+	switch node.TagName {
+	case "pre", "xmp", "listing":
+		style.Set("white-space", "pre")
+	}
+
 	// Default inline display for inline HTML elements
 	switch node.TagName {
 	case "span", "em", "strong", "b", "i", "u", "s", "a", "abbr", "cite",

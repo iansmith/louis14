@@ -3,11 +3,36 @@ package layout
 import (
 	"strconv"
 	"strings"
+	"unicode"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/text"
 )
+
+// ApplyTextTransform applies CSS text-transform to a string.
+func ApplyTextTransform(s string, transform css.TextTransform) string {
+	switch transform {
+	case css.TextTransformUppercase:
+		return strings.ToUpper(s)
+	case css.TextTransformLowercase:
+		return strings.ToLower(s)
+	case css.TextTransformCapitalize:
+		prevIsSpace := true
+		runes := []rune(s)
+		for i, r := range runes {
+			if unicode.IsSpace(r) {
+				prevIsSpace = true
+			} else if prevIsSpace {
+				runes[i] = unicode.ToTitle(r)
+				prevIsSpace = false
+			}
+		}
+		return string(runes)
+	}
+	return s
+}
 
 func NewTextFragment(text string, style *css.Style, x, y, width, height float64, node *html.Node) *Fragment {
 	return &Fragment{
@@ -126,9 +151,17 @@ func (le *LayoutEngine) BreakLines(
 
 		switch item.Type {
 		case InlineItemText:
+			// Check if this item preserves whitespace (white-space: pre/pre-wrap/pre-line)
+			isPreserveWS := false
+			if item.Style != nil {
+				ws := item.Style.GetWhiteSpace()
+				isPreserveWS = ws == "pre" || ws == "pre-wrap" || ws == "pre-line"
+			}
+
 			// CSS 2.1 §16.6.1: Strip leading whitespace at start of line
 			// Include \n and \r since white-space:normal collapses them to spaces
-			if !hasSeenContentOnLine && item.Node != nil {
+			// But NOT for white-space: pre/pre-wrap/pre-line which preserve whitespace
+			if !isPreserveWS && !hasSeenContentOnLine && item.Node != nil {
 				trimmedText := strings.TrimLeft(item.Text, " \t\n\r")
 				if trimmedText != item.Text {
 					item.Node.Text = trimmedText
@@ -158,7 +191,8 @@ func (le *LayoutEngine) BreakLines(
 			// CSS whitespace collapsing across element boundaries:
 			// When previous text ended with space and this text starts with space,
 			// collapse to a single space by trimming leading space from this item.
-			if lastTextEndedWithSpace && item.Node != nil && len(item.Text) > 0 && item.Text[0] == ' ' {
+			// Skip for white-space: pre/pre-wrap which preserves spaces.
+			if !isPreserveWS && lastTextEndedWithSpace && item.Node != nil && len(item.Text) > 0 && item.Text[0] == ' ' {
 				trimmedText := strings.TrimLeft(item.Text, " ")
 				if trimmedText != item.Text {
 					item.Node.Text = trimmedText
@@ -480,6 +514,7 @@ func (le *LayoutEngine) BreakLines(
 	}
 
 	// CSS 2.1 §16.6.1: Strip trailing whitespace at end of each line
+	// But NOT for white-space: pre/pre-wrap which preserves whitespace
 	for _, line := range lines {
 		// Find last text item on the line and strip trailing whitespace
 		for j := len(line.Items) - 1; j >= 0; j-- {
@@ -491,6 +526,13 @@ func (le *LayoutEngine) BreakLines(
 				// normalization produced empty text nodes.
 				if item.Text == "" {
 					continue
+				}
+				// Don't strip trailing whitespace for preformatted content
+				if item.Style != nil {
+					ws := item.Style.GetWhiteSpace()
+					if ws == "pre" || ws == "pre-wrap" {
+						break
+					}
 				}
 				trimmedText := strings.TrimRight(item.Text, " \t\n\r")
 				if trimmedText != item.Text {
@@ -655,6 +697,13 @@ func isWhitespaceOnlyLine(line *LineInfo) bool {
 		case InlineItemText:
 			if strings.TrimSpace(item.Text) != "" {
 				return false // Has non-whitespace text
+			}
+			// For white-space: pre, even empty/whitespace lines are preserved
+			if item.Style != nil {
+				ws := item.Style.GetWhiteSpace()
+				if ws == "pre" || ws == "pre-wrap" || ws == "pre-line" {
+					return false
+				}
 			}
 		case InlineItemFloat, InlineItemAtomic, InlineItemBlockChild:
 			return false // Has non-text content
@@ -1114,6 +1163,22 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 	case FragmentFloat:
 		// Mark as positioned (floats are out of flow)
 		box.Position = css.PositionAbsolute // Treated like absolute for rendering
+	}
+
+	// Apply position:relative offset for inline elements (images, inline-blocks)
+	if frag.Style != nil && frag.Style.GetPosition() == css.PositionRelative {
+		box.Position = css.PositionRelative
+		offset := frag.Style.GetPositionOffset()
+		if offset.HasTop {
+			box.Y += offset.Top
+		} else if offset.HasBottom {
+			box.Y -= offset.Bottom
+		}
+		if offset.HasLeft {
+			box.X += offset.Left
+		} else if offset.HasRight {
+			box.X -= offset.Right
+		}
 	}
 
 	return box
@@ -2066,6 +2131,63 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			}
 			node.Text = textContent
 		}
+		// Apply text-transform before measurement
+		textTransform := parentStyle.GetTextTransform()
+		if textTransform != css.TextTransformNone {
+			textContent = ApplyTextTransform(textContent, textTransform)
+			node.Text = textContent
+		}
+
+		// CSS 2.1 §16.6.1: For white-space: pre, newlines force line breaks.
+		// Split text at newline characters and insert forced break items between segments.
+		if whiteSpace == "pre" || whiteSpace == "pre-wrap" || whiteSpace == "pre-line" {
+			lines := strings.Split(textContent, "\n")
+			fontSize := parentStyle.GetFontSize()
+			bold := parentStyle.GetFontWeight() == css.FontWeightBold
+			italic := parentStyle.GetFontStyle() == css.FontStyleItalic
+			mono := parentStyle.IsMonospaceFamily()
+			ahem := parentStyle.IsAhemFamily()
+			letterSpacing := parentStyle.GetLetterSpacing()
+			for j, line := range lines {
+				if j > 0 {
+					// Insert forced line break for \n
+					state.Items = append(state.Items, &InlineItem{
+						Type:  InlineItemControl,
+						Node:  node,
+						Style: parentStyle,
+						Width: 0, Height: 0,
+					})
+				}
+				// For pre, tabs should be preserved as-is (8-space tab stops)
+				// For now, convert tabs to spaces (browsers use 8-space tab stops)
+				if whiteSpace == "pre" || whiteSpace == "pre-wrap" {
+					line = strings.ReplaceAll(line, "\t", "        ")
+				}
+				w, h := text.MeasureTextWithStyle(line, fontSize, bold, italic, mono, ahem)
+				if letterSpacing != 0 && len([]rune(line)) > 1 {
+					w += letterSpacing * float64(len([]rune(line))-1)
+				}
+				// Create a separate text node for each line segment so the renderer
+				// draws only this line's text (not the full original text node)
+				lineNode := &html.Node{
+					Type:   html.TextNode,
+					Text:   line,
+					Parent: node.Parent,
+				}
+				state.Items = append(state.Items, &InlineItem{
+					Type:        InlineItemText,
+					Node:        lineNode,
+					Text:        line,
+					StartOffset: 0,
+					EndOffset:   len(line),
+					Style:       parentStyle,
+					Width:       w,
+					Height:      h,
+				})
+			}
+			return
+		}
+
 		fontSize := parentStyle.GetFontSize()
 		bold := parentStyle.GetFontWeight() == css.FontWeightBold
 		italic := parentStyle.GetFontStyle() == css.FontStyleItalic

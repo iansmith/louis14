@@ -1640,6 +1640,11 @@ func (r *Renderer) drawText(box *layout.Box) {
 		return
 	}
 
+	// Apply text-transform (safety net — layout phase usually handles this via CollectInlineItems)
+	if box.Style != nil {
+		textContent = layout.ApplyTextTransform(textContent, box.Style.GetTextTransform())
+	}
+
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 

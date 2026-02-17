@@ -98,9 +98,19 @@ func (p *Parser) Parse() (*Document, error) {
 
 		case TokenText:
 			// Add text to current parent
-			if token.Text != "" {
-				parent := p.currentParent()
-				parent.AppendText(token.Text)
+			// Use raw text (preserving whitespace) inside preformatted elements
+			parent := p.currentParent()
+			text := token.Text
+			if token.RawText != "" && p.isInsidePreformatted() {
+				text = token.RawText
+				// HTML spec: strip a single leading newline in <pre> elements.
+				// This applies to the first text node immediately after the <pre> tag.
+				if parent.TagName == "pre" && len(parent.Children) == 0 && len(text) > 0 && text[0] == '\n' {
+					text = text[1:]
+				}
+			}
+			if text != "" {
+				parent.AppendText(text)
 			}
 
 		case TokenEndTag:
@@ -169,6 +179,18 @@ func (p *Parser) autoCloseP() {
 			return
 		}
 	}
+}
+
+// isInsidePreformatted returns true if the current parse position is inside
+// a preformatted element (<pre>, <xmp>, <listing>) where whitespace should be preserved.
+func (p *Parser) isInsidePreformatted() bool {
+	for i := len(p.stack) - 1; i >= 0; i-- {
+		switch p.stack[i].TagName {
+		case "pre", "xmp", "listing", "textarea":
+			return true
+		}
+	}
+	return false
 }
 
 // isBlockElement returns true for elements that auto-close <p>
