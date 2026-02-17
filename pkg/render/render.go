@@ -858,6 +858,23 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 				*zeroAutoZ = append(*zeroAutoZ, child)
 			}
 			// Don't recurse into stacking contexts - they paint atomically
+		} else if layout.IsFloat(child) {
+			// CSS 2.1 Appendix E Step 4: Non-positioned floats paint before inline content.
+			// Note: the layout engine may set box.Position = PositionAbsolute on floats
+			// as an internal marker (out-of-flow), but for paint order we must check
+			// the CSS style position to determine if the float is truly positioned.
+			cssPos := css.PositionStatic
+			if child.Style != nil {
+				cssPos = child.Style.GetPosition()
+			}
+			if cssPos == css.PositionRelative || cssPos == css.PositionAbsolute || cssPos == css.PositionFixed {
+				// Truly positioned float → paint at Step 6 (positioned descendants)
+				*zeroAutoZ = append(*zeroAutoZ, child)
+			} else {
+				// Non-positioned float → paint at Step 4
+				*floats = append(*floats, child)
+			}
+			// Don't recurse into float children - floats paint atomically
 		} else if layout.IsPositioned(child) {
 			// Positioned but no stacking context (z-index: auto) - paint at step 6
 			// "as if it generated a new stacking context" per CSS 2.1 Appendix E
@@ -872,9 +889,6 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 			if !hasOverflowClip {
 				r.promoteDescendantsToParentSC(child, negativeZ, zeroAutoZ, positiveZ)
 			}
-		} else if layout.IsFloat(child) {
-			*floats = append(*floats, child)
-			// Don't recurse into float children - floats paint atomically at step 4
 		} else if layout.IsInline(child) {
 			*inlines = append(*inlines, child)
 			// Recurse into inline's descendants (inline content is part of step 5)
