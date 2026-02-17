@@ -44,7 +44,7 @@ func BoxCreatesStackingContext(box *Box) bool {
 	}
 
 	// Positioned elements with z-index != auto create a stacking context
-	if box.Position == css.PositionAbsolute || box.Position == css.PositionFixed || box.Position == css.PositionRelative {
+	if box.Position == css.PositionAbsolute || box.Position == css.PositionFixed || box.Position == css.PositionRelative || box.Position == css.PositionSticky {
 		if zStr, ok := box.Style.Get("z-index"); ok && zStr != "auto" && zStr != "" {
 			return true
 		}
@@ -93,7 +93,8 @@ func IsPositioned(box *Box) bool {
 	}
 	return box.Position == css.PositionAbsolute ||
 		box.Position == css.PositionFixed ||
-		box.Position == css.PositionRelative
+		box.Position == css.PositionRelative ||
+		box.Position == css.PositionSticky
 }
 
 // IsFloat returns true if the box is floated.

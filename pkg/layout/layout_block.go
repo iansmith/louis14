@@ -380,7 +380,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 5: Float positioning will be done AFTER children are laid out
 	// (to support shrink-wrapping and float drop)
 
-	// Phase 4: Handle positioning
+	// Phase 4: Handle positioning (sticky at scroll=0 doesn't apply offsets)
 	if position == css.PositionRelative {
 		// Relative positioning: offset from normal position
 		offset := style.GetPositionOffset()

@@ -20,7 +20,7 @@ func (b *Box) FindContainingBlock() *Box {
 		// Fixed elements are positioned relative to viewport (return nil)
 		return nil
 
-	case css.PositionRelative, css.PositionStatic:
+	case css.PositionRelative, css.PositionStatic, css.PositionSticky:
 		// Relative and static use parent as containing block
 		return b.Parent
 

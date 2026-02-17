@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: conic-gradient with from angle - single color fill</title>
+  <link rel="author" title="Louis14 Project" href="https://github.com/nicholasgasior/louis14"/>
+  <link rel="help" href="https://www.w3.org/TR/css-images-4/#conic-gradients"/>
+  <link rel="match" href="conic-gradient-from-001-ref.html"/>
+  <meta name="assert" content="A conic-gradient with a 'from' angle and a single color spanning the full rotation should produce a solid fill of that color."/>
+  <style type="text/css">
+    body { margin: 0; background: white; }
+    .box {
+      width: 200px;
+      height: 100px;
+      background: conic-gradient(from 45deg, blue 0deg, blue 360deg);
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a blue rectangle below.</p>
+  <div class="box"></div>
+</body>
+</html>

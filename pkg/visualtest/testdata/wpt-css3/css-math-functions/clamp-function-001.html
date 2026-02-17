@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: clamp() function clamps to max value</title>
+    <link rel="match" href="clamp-function-001-ref.html"/>
+    <meta name="assert" content="width: clamp(100px, 50%, 300px) should resolve to 300px when 50% of 800px is 400px, clamped to the 300px maximum."/>
+    <style>
+        body { margin: 0; background: white; }
+        .box {
+            width: clamp(100px, 50%, 300px);
+            height: 100px;
+            background: orange;
+        }
+    </style>
+</head>
+<body>
+    <div class="box"></div>
+</body>
+</html>

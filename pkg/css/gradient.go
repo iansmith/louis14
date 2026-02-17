@@ -12,6 +12,9 @@ type GradientType int
 const (
 	GradientLinear GradientType = iota
 	GradientRadial
+	GradientRepeatingLinear
+	GradientRepeatingRadial
+	GradientConic
 )
 
 // ColorStop represents a color and its position in a gradient
@@ -25,6 +28,8 @@ type Gradient struct {
 	Type       GradientType
 	Direction  string // "to right", "to bottom", "45deg", etc.
 	ColorStops []ColorStop
+	Repeating  bool    // true for repeating-linear/radial-gradient
+	FromAngle  float64 // conic-gradient: starting angle in degrees
 	// Radial-specific fields:
 	Shape   string  // "circle" or "ellipse"
 	Size    string  // "farthest-corner", "closest-side", etc. or ""
@@ -165,12 +170,7 @@ func splitGradientParts(content string) []string {
 // ConvertPixelOffsetsToPercentages converts pixel-based offsets to percentages
 // based on the gradient size in the specified direction
 func (g *Gradient) ConvertPixelOffsetsToPercentages(width, height float64) {
-	if g == nil || (g.Type != GradientLinear && g.Type != GradientRadial) {
-		return
-	}
-
-	// Radial gradients use radius-based conversion handled separately
-	if g.Type == GradientRadial {
+	if g == nil || (g.Type != GradientLinear && g.Type != GradientRepeatingLinear) {
 		return
 	}
 
@@ -585,13 +585,202 @@ func (g *Gradient) ComputeRadialRadii(bgWidth, bgHeight float64) (float64, float
 	}
 }
 
+// ParseConicGradient parses a conic-gradient() CSS value
+func ParseConicGradient(value string) (*Gradient, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "conic-gradient(") || !strings.HasSuffix(value, ")") {
+		return nil, false
+	}
+	content := value[len("conic-gradient(") : len(value)-1]
+	parts := splitGradientParts(content)
+	if len(parts) < 2 {
+		return nil, false
+	}
+
+	grad := &Gradient{
+		Type:      GradientConic,
+		CenterX:   0.5,
+		CenterY:   0.5,
+		CenterXPx: -1,
+		CenterYPx: -1,
+		FromAngle: 0,
+	}
+
+	startIdx := 0
+	firstPart := strings.TrimSpace(parts[0])
+
+	// Parse optional "from <angle>" and "at <position>"
+	if strings.HasPrefix(firstPart, "from ") || strings.Contains(firstPart, " at ") || strings.HasPrefix(firstPart, "at ") {
+		remaining := firstPart
+		if strings.HasPrefix(remaining, "from ") {
+			remaining = remaining[5:]
+			// Extract angle
+			if atIdx := strings.Index(remaining, " at "); atIdx >= 0 {
+				angleStr := strings.TrimSpace(remaining[:atIdx])
+				grad.FromAngle = parseAngleDeg(angleStr)
+				remaining = remaining[atIdx+4:]
+			} else {
+				angleStr := strings.TrimSpace(remaining)
+				grad.FromAngle = parseAngleDeg(angleStr)
+				remaining = ""
+			}
+		}
+		if strings.HasPrefix(remaining, "at ") {
+			remaining = remaining[3:]
+			parseRadialPosition(strings.TrimSpace(remaining), grad)
+		} else if remaining != "" {
+			parseRadialPosition(strings.TrimSpace(remaining), grad)
+		}
+		startIdx = 1
+	}
+
+	// Parse color stops with angle positions
+	for i := startIdx; i < len(parts); i++ {
+		stop, ok := parseConicColorStop(strings.TrimSpace(parts[i]))
+		if !ok {
+			return nil, false
+		}
+		grad.ColorStops = append(grad.ColorStops, stop)
+	}
+
+	if len(grad.ColorStops) < 2 {
+		return nil, false
+	}
+
+	// Fill missing offsets
+	grad.fillMissingOffsets()
+
+	return grad, true
+}
+
+func parseAngleDeg(s string) float64 {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "deg") {
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "deg"), 64)
+		if err == nil {
+			return v
+		}
+	}
+	if strings.HasSuffix(s, "turn") {
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "turn"), 64)
+		if err == nil {
+			return v * 360
+		}
+	}
+	if strings.HasSuffix(s, "rad") {
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "rad"), 64)
+		if err == nil {
+			return v * 180 / math.Pi
+		}
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err == nil {
+		return v
+	}
+	return 0
+}
+
+func parseConicColorStop(stop string) (ColorStop, bool) {
+	fields := strings.Fields(stop)
+	if len(fields) == 0 {
+		return ColorStop{}, false
+	}
+	color, ok := ParseColor(fields[0])
+	if !ok {
+		return ColorStop{}, false
+	}
+	cs := ColorStop{Color: color, Offset: -1}
+	if len(fields) >= 2 {
+		pos := fields[1]
+		if strings.HasSuffix(pos, "deg") {
+			v, err := strconv.ParseFloat(strings.TrimSuffix(pos, "deg"), 64)
+			if err == nil {
+				cs.Offset = v / 360.0
+			}
+		} else if strings.HasSuffix(pos, "%") {
+			v, err := strconv.ParseFloat(strings.TrimSuffix(pos, "%"), 64)
+			if err == nil {
+				cs.Offset = v / 100.0
+			}
+		} else if strings.HasSuffix(pos, "turn") {
+			v, err := strconv.ParseFloat(strings.TrimSuffix(pos, "turn"), 64)
+			if err == nil {
+				cs.Offset = v
+			}
+		}
+	}
+	return cs, true
+}
+
+// ExtendRepeatingStops extends color stops for repeating gradients to fill 0-1 range
+func (g *Gradient) ExtendRepeatingStops(gradientLength float64) {
+	if len(g.ColorStops) < 2 || gradientLength <= 0 {
+		return
+	}
+
+	// Get the first and last stop positions in pixels
+	firstOffset := g.ColorStops[0].Offset
+	lastOffset := g.ColorStops[len(g.ColorStops)-1].Offset
+
+	// If offsets are already in 0-1 range (percentage-based), compute pattern length
+	patternLength := lastOffset - firstOffset
+	if patternLength <= 0 {
+		return
+	}
+
+	// Build repeated stops
+	var newStops []ColorStop
+	for shift := -patternLength * 10; shift <= 1.0+patternLength; shift += patternLength {
+		for _, stop := range g.ColorStops {
+			newOffset := stop.Offset - firstOffset + shift
+			if newOffset >= -0.01 && newOffset <= 1.01 {
+				ns := ColorStop{Color: stop.Color, Offset: newOffset}
+				if ns.Offset < 0 {
+					ns.Offset = 0
+				}
+				if ns.Offset > 1 {
+					ns.Offset = 1
+				}
+				newStops = append(newStops, ns)
+			}
+		}
+	}
+
+	if len(newStops) >= 2 {
+		g.ColorStops = newStops
+	}
+}
+
 // GetGradient attempts to parse a gradient from a background value
 func GetGradient(backgroundValue string) (*Gradient, bool) {
-	if strings.Contains(backgroundValue, "linear-gradient(") {
-		return ParseLinearGradient(backgroundValue)
+	val := strings.TrimSpace(backgroundValue)
+	if strings.HasPrefix(val, "repeating-linear-gradient(") {
+		// Strip "repeating-" and parse as linear
+		inner := "linear-gradient(" + val[len("repeating-linear-gradient("):]
+		g, ok := ParseLinearGradient(inner)
+		if ok {
+			g.Repeating = true
+			g.Type = GradientRepeatingLinear
+		}
+		return g, ok
 	}
-	if strings.Contains(backgroundValue, "radial-gradient(") {
-		return ParseRadialGradient(backgroundValue)
+	if strings.HasPrefix(val, "repeating-radial-gradient(") {
+		inner := "radial-gradient(" + val[len("repeating-radial-gradient("):]
+		g, ok := ParseRadialGradient(inner)
+		if ok {
+			g.Repeating = true
+			g.Type = GradientRepeatingRadial
+		}
+		return g, ok
+	}
+	if strings.Contains(val, "conic-gradient(") {
+		return ParseConicGradient(val)
+	}
+	if strings.Contains(val, "linear-gradient(") {
+		return ParseLinearGradient(val)
+	}
+	if strings.Contains(val, "radial-gradient(") {
+		return ParseRadialGradient(val)
 	}
 	return nil, false
 }

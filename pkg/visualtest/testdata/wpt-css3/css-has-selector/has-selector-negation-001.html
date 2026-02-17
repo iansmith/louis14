@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: :has(.special) does not match when no .special child exists</title>
+    <link rel="match" href="has-selector-negation-001-ref.html"/>
+    <meta name="assert" content=":has(.special) should not match when no descendant has class 'special'. The box stays green."/>
+    <style>
+        body { margin: 0; background: white; }
+        .box {
+            background: green;
+            width: 200px;
+            height: 100px;
+            color: white;
+        }
+        .box:has(.special) {
+            background: red;
+        }
+    </style>
+</head>
+<body>
+    <div class="box"><span>No special child</span></div>
+</body>
+</html>

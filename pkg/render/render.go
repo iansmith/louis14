@@ -901,7 +901,7 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 			if child.Style != nil {
 				cssPos = child.Style.GetPosition()
 			}
-			if cssPos == css.PositionRelative || cssPos == css.PositionAbsolute || cssPos == css.PositionFixed {
+			if cssPos == css.PositionRelative || cssPos == css.PositionAbsolute || cssPos == css.PositionFixed || cssPos == css.PositionSticky {
 				// Truly positioned float → paint at Step 6 (positioned descendants)
 				*zeroAutoZ = append(*zeroAutoZ, child)
 			} else {
@@ -1167,10 +1167,22 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 
 	var ggGrad gg.Gradient
 
-	if grad.Type == css.GradientLinear {
+	if grad.Type == css.GradientConic {
+		// Conic gradient: pixel-level rendering
+		r.drawConicGradient(grad, bgX, bgY, bgWidth, bgHeight, box)
+		return
+	}
+
+	if grad.Type == css.GradientLinear || grad.Type == css.GradientRepeatingLinear {
 		// Convert pixel offsets to percentages based on gradient direction
 		gradCopy := *grad
+		gradCopy.ColorStops = make([]css.ColorStop, len(grad.ColorStops))
+		copy(gradCopy.ColorStops, grad.ColorStops)
 		gradCopy.ConvertPixelOffsetsToPercentages(bgWidth, bgHeight)
+
+		if gradCopy.Repeating {
+			gradCopy.ExtendRepeatingStops(bgWidth)
+		}
 
 		// Determine gradient start and end points based on direction
 		var x0, y0, x1, y1 float64
@@ -1197,7 +1209,7 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		for _, stop := range gradCopy.ColorStops {
 			ggGrad.AddColorStop(stop.Offset, r.premultiplyColor(stop.Color))
 		}
-	} else if grad.Type == css.GradientRadial {
+	} else if grad.Type == css.GradientRadial || grad.Type == css.GradientRepeatingRadial {
 		gradCopy := *grad
 		gradCopy.ColorStops = make([]css.ColorStop, len(grad.ColorStops))
 		copy(gradCopy.ColorStops, grad.ColorStops)
@@ -1224,6 +1236,10 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 			radius = ry
 		}
 		gradCopy.ConvertRadialPixelOffsets(radius)
+
+		if gradCopy.Repeating {
+			gradCopy.ExtendRepeatingStops(radius)
+		}
 
 		// Translate center to absolute coordinates
 		absCx := bgX + cx
@@ -1256,6 +1272,75 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
 	}
 	r.context.Fill()
+}
+
+// drawConicGradient renders a conic-gradient using pixel-level rendering
+func (r *Renderer) drawConicGradient(grad *css.Gradient, bgX, bgY, bgWidth, bgHeight float64, box *layout.Box) {
+	centerX := bgX + grad.CenterX*bgWidth
+	centerY := bgY + grad.CenterY*bgHeight
+	if grad.CenterXPx >= 0 {
+		centerX = bgX + grad.CenterXPx
+	}
+	if grad.CenterYPx >= 0 {
+		centerY = bgY + grad.CenterYPx
+	}
+
+	fromAngleRad := grad.FromAngle * math.Pi / 180.0
+
+	for py := int(bgY); py < int(bgY+bgHeight); py++ {
+		for px := int(bgX); px < int(bgX+bgWidth); px++ {
+			dx := float64(px) + 0.5 - centerX
+			dy := float64(py) + 0.5 - centerY
+			// Angle from top, clockwise
+			angle := math.Atan2(dx, -dy)
+			if angle < 0 {
+				angle += 2 * math.Pi
+			}
+			// Apply from angle offset
+			angle -= fromAngleRad
+			if angle < 0 {
+				angle += 2 * math.Pi
+			}
+			normalized := angle / (2 * math.Pi)
+			normalized = math.Mod(normalized, 1.0)
+			if normalized < 0 {
+				normalized += 1.0
+			}
+			c := interpolateConicColor(grad.ColorStops, normalized)
+			r.context.SetColor(color.RGBA{R: c.R, G: c.G, B: c.B, A: uint8(c.A * 255)})
+			r.context.SetPixel(px, py)
+		}
+	}
+}
+
+func interpolateConicColor(stops []css.ColorStop, t float64) css.Color {
+	if len(stops) == 0 {
+		return css.Color{}
+	}
+	if t <= stops[0].Offset {
+		return stops[0].Color
+	}
+	if t >= stops[len(stops)-1].Offset {
+		return stops[len(stops)-1].Color
+	}
+	for i := 1; i < len(stops); i++ {
+		if t <= stops[i].Offset {
+			prev := stops[i-1]
+			curr := stops[i]
+			span := curr.Offset - prev.Offset
+			if span <= 0 {
+				return curr.Color
+			}
+			frac := (t - prev.Offset) / span
+			return css.Color{
+				R: uint8(float64(prev.Color.R)*(1-frac) + float64(curr.Color.R)*frac),
+				G: uint8(float64(prev.Color.G)*(1-frac) + float64(curr.Color.G)*frac),
+				B: uint8(float64(prev.Color.B)*(1-frac) + float64(curr.Color.B)*frac),
+				A: prev.Color.A*(1-frac) + curr.Color.A*frac,
+			}
+		}
+	}
+	return stops[len(stops)-1].Color
 }
 
 // premultiplyColor converts a CSS color to a premultiplied alpha color.RGBA
@@ -1758,30 +1843,43 @@ func (r *Renderer) drawText(box *layout.Box) {
 	// Phase 17: Draw text decorations
 	decoration := box.Style.GetTextDecoration()
 	if decoration != css.TextDecorationNone {
-		textWidth, _ := text.MeasureTextWithWeight(textContent, fontSize, bold)
-
-		r.context.SetLineWidth(1)
-		switch decoration {
-		case css.TextDecorationUnderline:
-			underlineY := effectiveY + fontSize + 2
-			if textAlign == css.TextAlignCenter {
-				r.context.DrawLine(textX-textWidth/2, underlineY, textX+textWidth/2, underlineY)
-			} else {
-				r.context.DrawLine(textX, underlineY, textX+textWidth, underlineY)
+		// Check text-decoration-color
+		if decoColor, hasDecoColor := box.Style.GetTextDecorationColor(); hasDecoColor {
+			if decoColor.A == 0 || (decoColor.R == 0 && decoColor.G == 0 && decoColor.B == 0 && decoColor.A == 0) {
+				// transparent decoration — skip drawing
+				goto afterDecoration
 			}
-			r.context.Stroke()
+			r.context.SetRGBA(float64(decoColor.R)/255, float64(decoColor.G)/255, float64(decoColor.B)/255, decoColor.A)
+		}
 
-		case css.TextDecorationOverline:
-			overlineY := effectiveY
-			r.context.DrawLine(textX, overlineY, textX+textWidth, overlineY)
-			r.context.Stroke()
+		{
+			textWidth, _ := text.MeasureTextWithWeight(textContent, fontSize, bold)
+			underlineOffset := box.Style.GetTextUnderlineOffset()
 
-		case css.TextDecorationLineThrough:
-			lineThroughY := effectiveY + fontSize*0.5
-			r.context.DrawLine(textX, lineThroughY, textX+textWidth, lineThroughY)
-			r.context.Stroke()
+			r.context.SetLineWidth(1)
+			switch decoration {
+			case css.TextDecorationUnderline:
+				underlineY := effectiveY + fontSize + 2 + underlineOffset
+				if textAlign == css.TextAlignCenter {
+					r.context.DrawLine(textX-textWidth/2, underlineY, textX+textWidth/2, underlineY)
+				} else {
+					r.context.DrawLine(textX, underlineY, textX+textWidth, underlineY)
+				}
+				r.context.Stroke()
+
+			case css.TextDecorationOverline:
+				overlineY := effectiveY
+				r.context.DrawLine(textX, overlineY, textX+textWidth, overlineY)
+				r.context.Stroke()
+
+			case css.TextDecorationLineThrough:
+				lineThroughY := effectiveY + fontSize*0.5
+				r.context.DrawLine(textX, lineThroughY, textX+textWidth, lineThroughY)
+				r.context.Stroke()
+			}
 		}
 	}
+afterDecoration:
 }
 
 func (r *Renderer) drawImage(box *layout.Box) {

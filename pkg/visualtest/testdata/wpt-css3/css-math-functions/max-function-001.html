@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: max() function picks the larger value</title>
+    <link rel="match" href="max-function-001-ref.html"/>
+    <meta name="assert" content="width: max(200px, 50%) should resolve to 400px when 50% of 800px viewport is 400px."/>
+    <style>
+        body { margin: 0; background: white; }
+        .box {
+            width: max(200px, 50%);
+            height: 100px;
+            background: blue;
+        }
+    </style>
+</head>
+<body>
+    <div class="box"></div>
+</body>
+</html>

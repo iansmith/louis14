@@ -263,6 +263,32 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 			}
 		}
 		return false
+	case strings.HasPrefix(pc, "has("):
+		arg := pc[len("has(") : len(pc)-1]
+		return matchesHas(node, strings.TrimSpace(arg))
+	case pc == "first-of-type":
+		return nthOfTypeIndex(node) == 1
+	case pc == "last-of-type":
+		return nthOfTypeIndex(node) == countOfType(node)
+	case pc == "only-of-type":
+		return countOfType(node) == 1
+	case strings.HasPrefix(pc, "nth-of-type("):
+		arg := pc[len("nth-of-type(") : len(pc)-1]
+		return matchesAnPlusB(nthOfTypeIndex(node), arg)
+	case strings.HasPrefix(pc, "nth-last-of-type("):
+		arg := pc[len("nth-last-of-type(") : len(pc)-1]
+		posFromEnd := countOfType(node) - nthOfTypeIndex(node) + 1
+		return matchesAnPlusB(posFromEnd, arg)
+	case strings.HasPrefix(pc, "nth-last-child("):
+		arg := pc[len("nth-last-child(") : len(pc)-1]
+		posFromEnd := totalElementChildren(node) - nthChildIndex(node) + 1
+		return matchesAnPlusB(posFromEnd, arg)
+	case pc == "enabled":
+		return isFormElement(node) && !hasAttribute(node, "disabled")
+	case pc == "disabled":
+		return isFormElement(node) && hasAttribute(node, "disabled")
+	case pc == "checked":
+		return isCheckableElement(node) && hasAttribute(node, "checked")
 	default:
 		return false
 	}
@@ -397,6 +423,194 @@ func parseInt(s string) (int, bool) {
 		n = -n
 	}
 	return n, true
+}
+
+// matchesHas implements the :has() pseudo-class
+func matchesHas(node *html.Node, selectorStr string) bool {
+	selectors := splitSelectorGroup(strings.TrimSpace(selectorStr))
+	for _, sel := range selectors {
+		sel = strings.TrimSpace(sel)
+		if sel == "" {
+			continue
+		}
+		if strings.HasPrefix(sel, ">") {
+			// Direct child combinator
+			innerSel := strings.TrimSpace(sel[1:])
+			parsed := ParseSelector(innerSel)
+			if len(parsed.Parts) > 0 {
+				for _, child := range node.Children {
+					if child.Type == html.ElementNode {
+						if matchesSelectorPart(child, parsed.Parts[len(parsed.Parts)-1]) {
+							return true
+						}
+					}
+				}
+			}
+		} else if strings.HasPrefix(sel, "+") {
+			// Adjacent sibling combinator
+			innerSel := strings.TrimSpace(sel[1:])
+			parsed := ParseSelector(innerSel)
+			if len(parsed.Parts) > 0 {
+				next := getNextElementSibling(node)
+				if next != nil && matchesSelectorPart(next, parsed.Parts[len(parsed.Parts)-1]) {
+					return true
+				}
+			}
+		} else if strings.HasPrefix(sel, "~") {
+			// General sibling combinator
+			innerSel := strings.TrimSpace(sel[1:])
+			parsed := ParseSelector(innerSel)
+			if len(parsed.Parts) > 0 {
+				for _, sib := range getSubsequentSiblings(node) {
+					if matchesSelectorPart(sib, parsed.Parts[len(parsed.Parts)-1]) {
+						return true
+					}
+				}
+			}
+		} else {
+			// Default: descendant combinator
+			parsed := ParseSelector(sel)
+			if len(parsed.Parts) > 0 {
+				if hasMatchingDescendant(node, parsed.Parts[len(parsed.Parts)-1]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func getNextElementSibling(node *html.Node) *html.Node {
+	if node.Parent == nil {
+		return nil
+	}
+	found := false
+	for _, child := range node.Parent.Children {
+		if found && child.Type == html.ElementNode {
+			return child
+		}
+		if child == node {
+			found = true
+		}
+	}
+	return nil
+}
+
+func getSubsequentSiblings(node *html.Node) []*html.Node {
+	if node.Parent == nil {
+		return nil
+	}
+	var result []*html.Node
+	found := false
+	for _, child := range node.Parent.Children {
+		if found && child.Type == html.ElementNode {
+			result = append(result, child)
+		}
+		if child == node {
+			found = true
+		}
+	}
+	return result
+}
+
+func hasMatchingDescendant(node *html.Node, part SelectorPart) bool {
+	for _, child := range node.Children {
+		if child.Type == html.ElementNode {
+			if matchesSelectorPart(child, part) {
+				return true
+			}
+			if hasMatchingDescendant(child, part) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nthOfTypeIndex returns the 1-based index among siblings with the same tag name
+func nthOfTypeIndex(node *html.Node) int {
+	if node.Parent == nil {
+		return 1
+	}
+	count := 0
+	for _, c := range node.Parent.Children {
+		if c.Type == html.ElementNode && c.TagName == node.TagName {
+			count++
+			if c == node {
+				return count
+			}
+		}
+	}
+	return 0
+}
+
+// countOfType returns total siblings with same tag name
+func countOfType(node *html.Node) int {
+	if node.Parent == nil {
+		return 1
+	}
+	count := 0
+	for _, c := range node.Parent.Children {
+		if c.Type == html.ElementNode && c.TagName == node.TagName {
+			count++
+		}
+	}
+	return count
+}
+
+// totalElementChildren returns total element children of parent
+func totalElementChildren(node *html.Node) int {
+	if node.Parent == nil {
+		return 1
+	}
+	count := 0
+	for _, c := range node.Parent.Children {
+		if c.Type == html.ElementNode {
+			count++
+		}
+	}
+	return count
+}
+
+// matchesAnPlusB checks if position matches An+B formula
+func matchesAnPlusB(position int, arg string) bool {
+	arg = strings.TrimSpace(arg)
+	if arg == "odd" {
+		return position%2 == 1
+	}
+	if arg == "even" {
+		return position%2 == 0
+	}
+	a, b := parseAnPlusB(arg)
+	if a == 0 {
+		return position == b
+	}
+	diff := position - b
+	if a > 0 {
+		return diff >= 0 && diff%a == 0
+	}
+	return diff <= 0 && diff%a == 0
+}
+
+func isFormElement(node *html.Node) bool {
+	switch node.TagName {
+	case "input", "select", "textarea", "button":
+		return true
+	}
+	return false
+}
+
+func isCheckableElement(node *html.Node) bool {
+	if node.TagName != "input" {
+		return false
+	}
+	inputType, _ := node.GetAttribute("type")
+	return inputType == "checkbox" || inputType == "radio" || inputType == ""
+}
+
+func hasAttribute(node *html.Node, name string) bool {
+	_, exists := node.GetAttribute(name)
+	return exists
 }
 
 // FindMatchingRules returns all rules that match the given node

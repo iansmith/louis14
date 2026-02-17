@@ -146,9 +146,99 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 	return ParseLengthFull(val, fontSize, 0, 0)
 }
 
+// splitCSSFunctionArgs splits comma-separated args respecting nested parens
+func splitCSSFunctionArgs(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i, ch := range s {
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+// parseMathArg resolves a CSS value that may be a length or percentage
+// Percentages are resolved against the viewport width (best approximation)
+func parseMathArg(s string, fontSize, vw, vh float64) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "%") {
+		numStr := strings.TrimSuffix(s, "%")
+		num, err := strconv.ParseFloat(numStr, 64)
+		if err == nil && vw > 0 {
+			return num * vw / 100, true
+		}
+		return 0, false
+	}
+	return ParseLengthFull(s, fontSize, vw, vh)
+}
+
+func evalMinMax(argsStr, mode string, fontSize, vw, vh float64) (float64, bool) {
+	args := splitCSSFunctionArgs(argsStr)
+	if len(args) < 2 {
+		return 0, false
+	}
+	result, ok := parseMathArg(args[0], fontSize, vw, vh)
+	if !ok {
+		return 0, false
+	}
+	for _, arg := range args[1:] {
+		val, ok := parseMathArg(arg, fontSize, vw, vh)
+		if !ok {
+			return 0, false
+		}
+		if mode == "min" && val < result {
+			result = val
+		} else if mode == "max" && val > result {
+			result = val
+		}
+	}
+	return result, true
+}
+
+func evalClamp(argsStr string, fontSize, vw, vh float64) (float64, bool) {
+	args := splitCSSFunctionArgs(argsStr)
+	if len(args) != 3 {
+		return 0, false
+	}
+	minVal, ok1 := parseMathArg(args[0], fontSize, vw, vh)
+	prefVal, ok2 := parseMathArg(args[1], fontSize, vw, vh)
+	maxVal, ok3 := parseMathArg(args[2], fontSize, vw, vh)
+	if !ok1 || !ok2 || !ok3 {
+		return 0, false
+	}
+	if prefVal < minVal {
+		return minVal, true
+	}
+	if prefVal > maxVal {
+		return maxVal, true
+	}
+	return prefVal, true
+}
+
 // ParseLengthFull parses a length value with em, rem, and viewport unit support.
 func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64) (float64, bool) {
 	val = strings.TrimSpace(val)
+	// Handle min(), max(), clamp() functions
+	if strings.HasPrefix(val, "min(") && strings.HasSuffix(val, ")") {
+		return evalMinMax(val[4:len(val)-1], "min", fontSize, viewportWidth, viewportHeight)
+	}
+	if strings.HasPrefix(val, "max(") && strings.HasSuffix(val, ")") {
+		return evalMinMax(val[4:len(val)-1], "max", fontSize, viewportWidth, viewportHeight)
+	}
+	if strings.HasPrefix(val, "clamp(") && strings.HasSuffix(val, ")") {
+		return evalClamp(val[6:len(val)-1], fontSize, viewportWidth, viewportHeight)
+	}
 	// Handle calc() expressions
 	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
 		expr := val[5 : len(val)-1] // strip "calc(" and ")"
@@ -742,6 +832,7 @@ const (
 	PositionRelative PositionType = "relative"
 	PositionAbsolute PositionType = "absolute"
 	PositionFixed    PositionType = "fixed"
+	PositionSticky   PositionType = "sticky"
 )
 
 // GetPosition returns the position type (default: static)
@@ -757,6 +848,8 @@ func (s *Style) GetPosition() PositionType {
 		return PositionAbsolute
 	case "fixed":
 		return PositionFixed
+	case "sticky":
+		return PositionSticky
 	default:
 		return PositionStatic
 	}
@@ -1413,7 +1506,9 @@ func expandBackgroundProperty(style *Style, value string) {
 	}
 
 	// Check for gradient functions in the remaining value (after URL extraction)
-	if strings.Contains(value, "linear-gradient(") || strings.Contains(value, "radial-gradient(") {
+	if strings.Contains(value, "linear-gradient(") || strings.Contains(value, "radial-gradient(") ||
+		strings.Contains(value, "conic-gradient(") || strings.Contains(value, "repeating-linear-gradient(") ||
+		strings.Contains(value, "repeating-radial-gradient(") {
 		// Store the gradient portion in the background property
 		style.Set("background", value)
 		return
@@ -1930,6 +2025,24 @@ func (s *Style) GetTextDecoration() TextDecoration {
 		}
 	}
 	return TextDecorationNone
+}
+
+// GetTextDecorationColor returns the text-decoration-color if set
+func (s *Style) GetTextDecorationColor() (Color, bool) {
+	if val, ok := s.Get("text-decoration-color"); ok {
+		return ParseColor(val)
+	}
+	return Color{}, false
+}
+
+// GetTextUnderlineOffset returns the text-underline-offset value in pixels (default: 0)
+func (s *Style) GetTextUnderlineOffset() float64 {
+	if val, ok := s.Get("text-underline-offset"); ok {
+		if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+			return l
+		}
+	}
+	return 0
 }
 
 // Phase 20: Additional text properties

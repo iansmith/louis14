@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: :has(+ .sibling) adjacent sibling combinator inside :has()</title>
+    <link rel="match" href="has-selector-sibling-001-ref.html"/>
+    <meta name="assert" content=":has(+ .sibling) matches an element that is immediately followed by an element with class 'sibling'."/>
+    <style>
+        body { margin: 0; background: white; }
+        .item {
+            width: 200px;
+            height: 50px;
+        }
+        .item:has(+ .sibling) {
+            background: blue;
+            color: white;
+        }
+        .sibling {
+            background: green;
+            width: 200px;
+            height: 50px;
+        }
+    </style>
+</head>
+<body>
+    <div class="item">Before sibling</div>
+    <div class="sibling">Sibling</div>
+</body>
+</html>

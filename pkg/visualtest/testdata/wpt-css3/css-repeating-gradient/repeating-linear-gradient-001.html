@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: repeating-linear-gradient creates repeating stripes</title>
+    <link rel="match" href="repeating-linear-gradient-001-ref.html"/>
+    <meta name="assert" content="repeating-linear-gradient(0deg, green 0px, green 20px, white 20px, white 40px) should produce horizontal green and white stripes repeating every 40px."/>
+    <style>
+        body { margin: 0; background: white; }
+        .box {
+            width: 200px;
+            height: 200px;
+            background: repeating-linear-gradient(0deg, green 0px, green 20px, white 20px, white 40px);
+        }
+    </style>
+</head>
+<body>
+    <div class="box"></div>
+</body>
+</html>

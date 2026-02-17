@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: position:sticky with top offset at scroll=0 stays in normal flow</title>
+    <link rel="match" href="sticky-top-001-ref.html"/>
+    <meta name="assert" content="A sticky element in the middle of content at scroll position 0 should remain in its normal flow position."/>
+    <style>
+        body { margin: 0; background: white; }
+        .before {
+            height: 50px;
+            background: lightblue;
+        }
+        .sticky {
+            position: sticky;
+            top: 10px;
+            height: 50px;
+            background: green;
+            color: white;
+        }
+        .after {
+            height: 50px;
+            background: lightcoral;
+        }
+    </style>
+</head>
+<body>
+    <div class="before">Before</div>
+    <div class="sticky">Sticky</div>
+    <div class="after">After</div>
+</body>
+</html>

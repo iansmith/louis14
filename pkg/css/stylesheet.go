@@ -167,6 +167,9 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 				if ff := parseFontFaceRule(trimmed); ff != nil {
 					stylesheet.FontFaces = append(stylesheet.FontFaces, *ff)
 				}
+			} else if strings.HasPrefix(trimmed, "@supports") {
+				supportsRules := parseSupportsRule(ruleStr)
+				stylesheet.Rules = append(stylesheet.Rules, supportsRules...)
 			}
 			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
 			continue
@@ -506,6 +509,165 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 	}
 
 	return mq
+}
+
+// parseSupportsRule parses an @supports rule and returns the inner rules if condition is met
+func parseSupportsRule(ruleStr string) []Rule {
+	ruleStr = strings.TrimSpace(ruleStr)
+	braceIdx := strings.Index(ruleStr, "{")
+	if braceIdx < 0 {
+		return nil
+	}
+
+	conditionStr := strings.TrimSpace(ruleStr[len("@supports"):braceIdx])
+
+	// Find matching closing brace
+	innerEnd := strings.LastIndex(ruleStr, "}")
+	if innerEnd <= braceIdx {
+		return nil
+	}
+	innerCSS := ruleStr[braceIdx+1 : innerEnd]
+
+	if !evaluateSupportsCondition(conditionStr) {
+		return nil
+	}
+
+	innerRules := splitRules(innerCSS)
+	var rules []Rule
+	for _, inner := range innerRules {
+		parsed, err := parseRule(inner)
+		if err != nil {
+			continue
+		}
+		rules = append(rules, parsed)
+	}
+	return rules
+}
+
+func evaluateSupportsCondition(condition string) bool {
+	condition = strings.TrimSpace(condition)
+
+	// Handle "not" prefix
+	if strings.HasPrefix(condition, "not ") {
+		inner := strings.TrimSpace(condition[4:])
+		return !evaluateSupportsCondition(inner)
+	}
+	if strings.HasPrefix(condition, "not(") {
+		inner := strings.TrimSpace(condition[3:])
+		return !evaluateSupportsCondition(inner)
+	}
+
+	// Handle parenthesized condition
+	if strings.HasPrefix(condition, "(") && strings.HasSuffix(condition, ")") {
+		inner := condition[1 : len(condition)-1]
+
+		// Check for "and" / "or" compositions
+		// Look for ") and (" or ") or (" patterns
+		if andParts := splitSupportsOperator(condition, " and "); len(andParts) > 1 {
+			for _, part := range andParts {
+				if !evaluateSupportsCondition(strings.TrimSpace(part)) {
+					return false
+				}
+			}
+			return true
+		}
+		if orParts := splitSupportsOperator(condition, " or "); len(orParts) > 1 {
+			for _, part := range orParts {
+				if evaluateSupportsCondition(strings.TrimSpace(part)) {
+					return true
+				}
+			}
+			return false
+		}
+
+		// Simple property: value check
+		colonIdx := strings.Index(inner, ":")
+		if colonIdx > 0 {
+			property := strings.TrimSpace(inner[:colonIdx])
+			value := strings.TrimSpace(inner[colonIdx+1:])
+			return isSupportedPropertyValue(property, value)
+		}
+
+		// Could be a nested condition
+		return evaluateSupportsCondition(inner)
+	}
+
+	return false
+}
+
+func splitSupportsOperator(s string, op string) []string {
+	// Split on operator while respecting parentheses depth
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 && i+len(op) <= len(s) && s[i:i+len(op)] == op {
+			parts = append(parts, s[start:i])
+			start = i + len(op)
+			i += len(op) - 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+func isSupportedPropertyValue(property, value string) bool {
+	// For certain properties, validate the value too
+	switch property {
+	case "display":
+		validDisplay := map[string]bool{
+			"block": true, "inline": true, "inline-block": true,
+			"flex": true, "inline-flex": true,
+			"grid": true, "inline-grid": true,
+			"none": true, "contents": true,
+			"table": true, "table-row": true, "table-cell": true,
+			"table-caption": true, "table-row-group": true,
+			"table-header-group": true, "table-footer-group": true,
+			"table-column": true, "table-column-group": true,
+			"list-item": true,
+		}
+		return validDisplay[value]
+	case "position":
+		validPosition := map[string]bool{
+			"static": true, "relative": true, "absolute": true,
+			"fixed": true, "sticky": true,
+		}
+		return validPosition[value]
+	default:
+		// For other properties, just check if the property is known
+		return isSupportedCSSProperty(property)
+	}
+}
+
+func isSupportedCSSProperty(property string) bool {
+	supported := map[string]bool{
+		"display": true, "position": true, "float": true, "clear": true,
+		"width": true, "height": true, "min-width": true, "max-width": true,
+		"min-height": true, "max-height": true,
+		"margin": true, "margin-top": true, "margin-right": true,
+		"margin-bottom": true, "margin-left": true,
+		"padding": true, "padding-top": true, "padding-right": true,
+		"padding-bottom": true, "padding-left": true,
+		"border": true, "border-radius": true,
+		"background": true, "background-color": true, "background-image": true,
+		"color": true, "font-size": true, "font-family": true, "font-weight": true,
+		"flex": true, "flex-direction": true, "flex-wrap": true,
+		"grid": true, "grid-template-columns": true, "grid-template-rows": true,
+		"transform": true, "opacity": true, "overflow": true,
+		"z-index": true, "box-shadow": true, "box-sizing": true,
+		"text-align": true, "text-decoration": true, "text-transform": true,
+		"vertical-align": true, "line-height": true, "white-space": true,
+		"visibility": true, "clip-path": true, "filter": true,
+		"aspect-ratio": true, "column-count": true,
+		"justify-content": true, "align-items": true,
+	}
+	return supported[property]
 }
 
 // Phase 17: parseSelector parses a complex CSS selector

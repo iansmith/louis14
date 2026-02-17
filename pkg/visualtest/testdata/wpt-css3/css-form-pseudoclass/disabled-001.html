@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: :disabled pseudo-class on disabled input</title>
+  <link rel="author" title="Louis14 Project" href="https://github.com/nicholasgasior/louis14"/>
+  <link rel="help" href="https://www.w3.org/TR/selectors-4/#enableddisabled"/>
+  <link rel="match" href="disabled-001-ref.html"/>
+  <meta name="assert" content="The :disabled pseudo-class should match an input element with the disabled attribute."/>
+  <style type="text/css">
+    body { margin: 0; background: white; }
+    input:disabled {
+      background: green;
+      width: 200px;
+      height: 40px;
+      border: 2px solid black;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if there is a green input box with a black border.</p>
+  <input type="text" disabled value="Disabled"/>
+</body>
+</html>

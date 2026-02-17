@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: text-decoration-color transparent makes underline invisible</title>
+  <link rel="author" title="Louis14 Project" href="https://github.com/nicholasgasior/louis14"/>
+  <link rel="help" href="https://www.w3.org/TR/css-text-decor-3/#text-decoration-color-property"/>
+  <link rel="match" href="text-decoration-color-001-ref.html"/>
+  <meta name="assert" content="Setting text-decoration-color to transparent should make the underline invisible, producing the same result as no underline."/>
+  <style type="text/css">
+    body { margin: 0; background: white; }
+    p {
+      margin: 0;
+      font-size: 20px;
+      text-decoration: underline;
+      text-decoration-color: transparent;
+    }
+  </style>
+</head>
+<body>
+  <p>Test text here</p>
+</body>
+</html>

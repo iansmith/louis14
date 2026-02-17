@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: :checked pseudo-class with adjacent sibling selector</title>
+  <link rel="author" title="Louis14 Project" href="https://github.com/nicholasgasior/louis14"/>
+  <link rel="help" href="https://www.w3.org/TR/selectors-4/#checked"/>
+  <link rel="match" href="checked-001-ref.html"/>
+  <meta name="assert" content="The :checked pseudo-class combined with the adjacent sibling combinator should style the label following a checked checkbox."/>
+  <style type="text/css">
+    body { margin: 0; background: white; }
+    input:checked + label {
+      background: green;
+      color: white;
+      padding: 10px;
+      display: block;
+      width: 200px;
+    }
+  </style>
+</head>
+<body>
+  <p>Test passes if the label text has a green background.</p>
+  <input type="checkbox" id="cb" checked/><label for="cb">Checked Label</label>
+</body>
+</html>

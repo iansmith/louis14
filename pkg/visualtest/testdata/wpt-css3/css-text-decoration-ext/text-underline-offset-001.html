@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: text-underline-offset with transparent underline</title>
+  <link rel="author" title="Louis14 Project" href="https://github.com/nicholasgasior/louis14"/>
+  <link rel="help" href="https://www.w3.org/TR/css-text-decor-4/#underline-offset"/>
+  <link rel="match" href="text-underline-offset-001-ref.html"/>
+  <meta name="assert" content="text-underline-offset should be parsed without error. Combined with transparent underline color, the result is visually identical to no underline."/>
+  <style type="text/css">
+    body { margin: 0; background: white; }
+    p {
+      margin: 0;
+      font-size: 20px;
+      text-decoration: underline;
+      text-decoration-color: transparent;
+      text-underline-offset: 5px;
+    }
+  </style>
+</head>
+<body>
+  <p>Test text here</p>
+</body>
+</html>
