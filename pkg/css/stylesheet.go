@@ -78,9 +78,19 @@ type MediaCondition struct {
 	Value   string  // "768px", "landscape", etc.
 }
 
+// FontFaceRule represents a parsed @font-face rule.
+type FontFaceRule struct {
+	Family string // font-family (unquoted)
+	Src    string // URL from src: url(...)
+	Format string // "truetype", "opentype", "woff", "woff2", or ""
+	Weight string // font-weight value (e.g. "bold", "400", "700")
+	Style  string // font-style value (e.g. "italic", "normal")
+}
+
 // Stylesheet represents a parsed CSS stylesheet
 type Stylesheet struct {
-	Rules []Rule
+	Rules     []Rule
+	FontFaces []FontFaceRule
 }
 
 // stripCSSComments removes all /* ... */ comments from CSS source,
@@ -153,6 +163,10 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 			if strings.HasPrefix(trimmed, "@media") {
 				mediaRules := parseMediaRule(ruleStr)
 				stylesheet.Rules = append(stylesheet.Rules, mediaRules...)
+			} else if strings.HasPrefix(trimmed, "@font-face") {
+				if ff := parseFontFaceRule(trimmed); ff != nil {
+					stylesheet.FontFaces = append(stylesheet.FontFaces, *ff)
+				}
 			}
 			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
 			continue
@@ -851,6 +865,16 @@ func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) b
 
 // Phase 22: evaluateMediaCondition checks if a single media condition matches
 func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight float64) bool {
+	// Handle non-numeric media features first
+	switch cond.Feature {
+	case "prefers-color-scheme":
+		// We render static PNGs in light mode
+		return strings.TrimSpace(cond.Value) == "light"
+	case "prefers-reduced-motion":
+		// Static renderer — no motion
+		return strings.TrimSpace(cond.Value) == "reduce"
+	}
+
 	// Parse the value to get numeric value and unit
 	value, unit := parseMediaLength(cond.Value)
 
@@ -869,7 +893,7 @@ func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight f
 	case "max-height":
 		return viewportHeight <= value
 	default:
-		return true // Unknown feature = assume match
+		return false // Unknown feature = don't match
 	}
 }
 
@@ -1137,5 +1161,91 @@ func ParseSelector(selectorStr string) Selector {
 // SplitSelectorGroup splits a comma-separated selector group into individual selectors.
 func SplitSelectorGroup(s string) []string {
 	return splitSelectorGroup(s)
+}
+
+// parseFontFaceRule parses a @font-face { ... } rule string.
+func parseFontFaceRule(ruleStr string) *FontFaceRule {
+	// Extract the block between { and }
+	start := strings.Index(ruleStr, "{")
+	end := strings.LastIndex(ruleStr, "}")
+	if start < 0 || end <= start {
+		return nil
+	}
+	block := ruleStr[start+1 : end]
+
+	ff := &FontFaceRule{Weight: "normal", Style: "normal"}
+
+	for _, decl := range strings.Split(block, ";") {
+		decl = strings.TrimSpace(decl)
+		if decl == "" {
+			continue
+		}
+		parts := strings.SplitN(decl, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		prop := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+
+		switch prop {
+		case "font-family":
+			// Strip quotes
+			ff.Family = strings.Trim(val, `"'`)
+		case "src":
+			// Parse url(...) format(...)
+			ff.Src, ff.Format = parseFontFaceSrc(val)
+		case "font-weight":
+			ff.Weight = val
+		case "font-style":
+			ff.Style = val
+		}
+	}
+
+	if ff.Family == "" || ff.Src == "" {
+		return nil
+	}
+	return ff
+}
+
+// parseFontFaceSrc extracts the URL and format from a src value like:
+// url("font.woff") format("woff"), url("font.ttf") format("truetype")
+// Returns the first usable URL and its format.
+func parseFontFaceSrc(src string) (string, string) {
+	// Split by comma for multiple sources
+	sources := strings.Split(src, ",")
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		// Extract url(...)
+		urlStart := strings.Index(source, "url(")
+		if urlStart < 0 {
+			continue
+		}
+		urlContent := source[urlStart+4:]
+		urlEnd := strings.Index(urlContent, ")")
+		if urlEnd < 0 {
+			continue
+		}
+		url := strings.TrimSpace(urlContent[:urlEnd])
+		url = strings.Trim(url, `"'`)
+
+		// Extract format(...) if present
+		format := ""
+		fmtStart := strings.Index(source, "format(")
+		if fmtStart >= 0 {
+			fmtContent := source[fmtStart+7:]
+			fmtEnd := strings.Index(fmtContent, ")")
+			if fmtEnd >= 0 {
+				format = strings.Trim(strings.TrimSpace(fmtContent[:fmtEnd]), `"'`)
+			}
+		}
+
+		// Skip WOFF2 (requires Brotli decoder)
+		if format == "woff2" {
+			continue
+		}
+
+		return url, format
+	}
+	return "", ""
 }
 

@@ -2,6 +2,7 @@ package layout
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
@@ -273,11 +274,8 @@ func unescapeUnicode(s string) string {
 // getColspan returns the colspan attribute value (default 1)
 func getColspan(node *html.Node) int {
 	if colspan, ok := node.GetAttribute("colspan"); ok {
-		if c, ok := css.ParseLength(colspan); ok {
-			col := int(c)
-			if col > 0 {
-				return col
-			}
+		if c, err := strconv.Atoi(strings.TrimSpace(colspan)); err == nil && c > 0 {
+			return c
 		}
 	}
 	return 1
@@ -286,11 +284,8 @@ func getColspan(node *html.Node) int {
 // getRowspan returns the rowspan attribute value (default 1)
 func getRowspan(node *html.Node) int {
 	if rowspan, ok := node.GetAttribute("rowspan"); ok {
-		if r, ok := css.ParseLength(rowspan); ok {
-			row := int(r)
-			if row > 0 {
-				return row
-			}
+		if r, err := strconv.Atoi(strings.TrimSpace(rowspan)); err == nil && r > 0 {
+			return r
 		}
 	}
 	return 1

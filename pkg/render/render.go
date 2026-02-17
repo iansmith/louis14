@@ -1,6 +1,7 @@
 package render
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/fogleman/gg"
+	"github.com/srwiley/oksvg"
+	"github.com/srwiley/rasterx"
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -54,7 +57,12 @@ func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
 // loadFont loads a font face on the gg context for the given size and style.
 // Skips reloading if the same font+size is already active.
 func (r *Renderer) loadFont(fontSize float64, bold, italic, mono, ahem bool) {
-	fontPath := r.fonts.FontPath(bold, italic, mono, ahem)
+	r.loadFontForFamily("", fontSize, bold, italic, mono, ahem)
+}
+
+// loadFontForFamily loads a font face, checking the web font registry for the given family first.
+func (r *Renderer) loadFontForFamily(family string, fontSize float64, bold, italic, mono, ahem bool) {
+	fontPath := r.fonts.FontPathForFamily(family, bold, italic, mono, ahem)
 	key := fmt.Sprintf("%s@%.1f", fontPath, fontSize)
 	if key == r.lastFontKey {
 		return
@@ -541,13 +549,13 @@ func (r *Renderer) paintWithBlendMode(box *layout.Box, blendMode css.MixBlendMod
 			bg = sfg + dfg - sfg*dfg
 			bb = sfb + dfb - sfb*dfb
 		case css.MixBlendModeDarken:
-			br = min(sfr, dfr)
-			bg = min(sfg, dfg)
-			bb = min(sfb, dfb)
+			br = math.Min(sfr, dfr)
+			bg = math.Min(sfg, dfg)
+			bb = math.Min(sfb, dfb)
 		case css.MixBlendModeLighten:
-			br = max(sfr, dfr)
-			bg = max(sfg, dfg)
-			bb = max(sfb, dfb)
+			br = math.Max(sfr, dfr)
+			bg = math.Max(sfg, dfg)
+			bb = math.Max(sfb, dfb)
 		default:
 			// Normal blend
 			br, bg, bb = sfr, sfg, sfb
@@ -1643,9 +1651,10 @@ func (r *Renderer) drawText(box *layout.Box) {
 	italic := box.Style.GetFontStyle() == css.FontStyleItalic
 	mono := box.Style.IsMonospaceFamily()
 	ahem := box.Style.IsAhemFamily()
+	fontFamily, _ := box.Style.Get("font-family")
 
-	// Load the appropriate font face
-	r.loadFont(fontSize, bold, italic, mono, ahem)
+	// Load the appropriate font face (checks web font registry first)
+	r.loadFontForFamily(fontFamily, fontSize, bold, italic, mono, ahem)
 
 	r.context.SetRGB(0, 0, 0)
 	if colorStr, ok := box.Style.Get("color"); ok {
@@ -1729,16 +1738,70 @@ func (r *Renderer) drawImage(box *layout.Box) {
 		return
 	}
 
-	r.context.Push()
-	r.context.Translate(box.X+box.Border.Left+box.Padding.Left, effectiveY+box.Border.Top+box.Padding.Top)
+	contentX := box.X + box.Border.Left + box.Padding.Left
+	contentY := effectiveY + box.Border.Top + box.Padding.Top
+	contentW := box.Width
+	contentH := box.Height
 
 	bounds := img.Bounds()
 	imgW := float64(bounds.Dx())
 	imgH := float64(bounds.Dy())
 
-	scaleX := box.Width / imgW
-	scaleY := box.Height / imgH
+	// Guard against zero dimensions
+	if imgW <= 0 || imgH <= 0 || contentW <= 0 || contentH <= 0 {
+		return
+	}
 
+	// Determine object-fit scaling
+	fit := css.ObjectFitFill
+	if box.Style != nil {
+		fit = box.Style.GetObjectFit()
+	}
+
+	scaleX := contentW / imgW
+	scaleY := contentH / imgH
+
+	switch fit {
+	case css.ObjectFitContain:
+		s := math.Min(scaleX, scaleY)
+		scaleX, scaleY = s, s
+	case css.ObjectFitCover:
+		s := math.Max(scaleX, scaleY)
+		scaleX, scaleY = s, s
+	case css.ObjectFitNone:
+		scaleX, scaleY = 1, 1
+	case css.ObjectFitScaleDown:
+		s := math.Min(scaleX, scaleY)
+		if s > 1 {
+			s = 1
+		}
+		scaleX, scaleY = s, s
+	// ObjectFitFill: keep independent scaleX, scaleY (stretch)
+	}
+
+	// Compute rendered image size after scaling
+	renderW := imgW * scaleX
+	renderH := imgH * scaleY
+
+	// Apply object-position (default 50% 50%)
+	posX, posY := 0.5, 0.5
+	if box.Style != nil {
+		posX, posY = box.Style.GetObjectPosition()
+	}
+	offsetX := (contentW - renderW) * posX
+	offsetY := (contentH - renderH) * posY
+
+	// Guard against extreme scale values
+	if math.IsNaN(scaleX) || math.IsNaN(scaleY) || math.IsInf(scaleX, 0) || math.IsInf(scaleY, 0) ||
+		scaleX <= 0 || scaleY <= 0 || scaleX > 1e6 || scaleY > 1e6 {
+		return
+	}
+
+	r.context.Push()
+	// Clip to content box so cover/none don't overflow
+	r.context.DrawRectangle(contentX, contentY, contentW, contentH)
+	r.context.Clip()
+	r.context.Translate(contentX+offsetX, contentY+offsetY)
 	r.context.Scale(scaleX, scaleY)
 	r.context.DrawImage(img, 0, 0)
 	r.popContext()
@@ -1974,7 +2037,7 @@ func (r *Renderer) drawScrollbarIndicators(box *layout.Box) {
 	r.context.Fill()
 }
 
-// drawSVGContent renders inline SVG element children (rect, circle, etc.)
+// drawSVGContent renders inline SVG using oksvg for full path/shape support.
 func (r *Renderer) drawSVGContent(box *layout.Box) {
 	if box.Node == nil {
 		return
@@ -1983,30 +2046,109 @@ func (r *Renderer) drawSVGContent(box *layout.Box) {
 	effectiveY := r.getEffectiveY(box)
 	svgX := box.X + box.Border.Left + box.Padding.Left
 	svgY := effectiveY + box.Border.Top + box.Padding.Top
+	w := int(math.Ceil(box.Width))
+	h := int(math.Ceil(box.Height))
+	if w <= 0 || h <= 0 {
+		return
+	}
 
+	// Serialize our DOM subtree to SVG XML for oksvg
+	var buf bytes.Buffer
+	serializeSVGNode(box.Node, &buf)
+
+	icon, err := oksvg.ReadIconStream(&buf, oksvg.IgnoreErrorMode)
+	if err != nil {
+		// Fallback: try old per-element rendering
+		r.drawSVGContentFallback(box, svgX, svgY)
+		return
+	}
+
+	// If viewBox is zero, use the box dimensions
+	if icon.ViewBox.W == 0 {
+		icon.ViewBox.W = float64(w)
+	}
+	if icon.ViewBox.H == 0 {
+		icon.ViewBox.H = float64(h)
+	}
+
+	icon.SetTarget(0, 0, float64(w), float64(h))
+
+	// Render to an offscreen RGBA image
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	scanner := rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())
+	dasher := rasterx.NewDasher(w, h, scanner)
+	icon.Draw(dasher, 1.0)
+
+	// Composite onto our main context
+	r.context.DrawImage(rgba, int(svgX), int(svgY))
+}
+
+// serializeSVGNode writes an html.Node tree as XML suitable for oksvg parsing.
+func serializeSVGNode(node *html.Node, buf *bytes.Buffer) {
+	if node.Type == html.TextNode {
+		buf.WriteString(node.Text)
+		return
+	}
+	if node.Type != html.ElementNode {
+		return
+	}
+
+	// Write opening tag
+	buf.WriteByte('<')
+	buf.WriteString(node.TagName)
+	for k, v := range node.Attributes {
+		buf.WriteByte(' ')
+		buf.WriteString(k)
+		buf.WriteString(`="`)
+		// Escape XML attribute value
+		for _, c := range v {
+			switch c {
+			case '"':
+				buf.WriteString("&quot;")
+			case '&':
+				buf.WriteString("&amp;")
+			case '<':
+				buf.WriteString("&lt;")
+			case '>':
+				buf.WriteString("&gt;")
+			default:
+				buf.WriteRune(c)
+			}
+		}
+		buf.WriteByte('"')
+	}
+
+	if len(node.Children) == 0 {
+		buf.WriteString("/>")
+		return
+	}
+
+	buf.WriteByte('>')
+	for _, child := range node.Children {
+		serializeSVGNode(child, buf)
+	}
+	buf.WriteString("</")
+	buf.WriteString(node.TagName)
+	buf.WriteByte('>')
+}
+
+// drawSVGContentFallback is the old per-element SVG renderer, used when oksvg fails.
+func (r *Renderer) drawSVGContentFallback(box *layout.Box, svgX, svgY float64) {
 	for _, child := range box.Node.Children {
 		if child.Type != html.ElementNode {
 			continue
 		}
-		r.drawSVGElement(child, svgX, svgY)
-	}
-}
-
-// drawSVGElement draws a single SVG element at the given SVG viewport origin.
-func (r *Renderer) drawSVGElement(node *html.Node, svgX, svgY float64) {
-	switch node.TagName {
-	case "rect":
-		r.drawSVGRect(node, svgX, svgY)
+		if child.TagName == "rect" {
+			r.drawSVGRect(child, svgX, svgY)
+		}
 	}
 }
 
 // parseSVGLength parses an SVG length attribute value (unitless number = pixels).
 func parseSVGLength(val string) (float64, bool) {
-	// Try CSS length first (handles "100px", "10em", etc.)
 	if v, ok := css.ParseLength(val); ok {
 		return v, true
 	}
-	// SVG attributes allow unitless numbers (interpreted as pixels)
 	v, err := strconv.ParseFloat(val, 64)
 	if err != nil {
 		return 0, false
@@ -2014,7 +2156,7 @@ func parseSVGLength(val string) (float64, bool) {
 	return v, true
 }
 
-// drawSVGRect draws an SVG <rect> element.
+// drawSVGRect draws an SVG <rect> element (fallback renderer).
 func (r *Renderer) drawSVGRect(node *html.Node, svgX, svgY float64) {
 	x, y, w, h := 0.0, 0.0, 0.0, 0.0
 	if val, ok := node.GetAttribute("x"); ok {
@@ -2037,10 +2179,7 @@ func (r *Renderer) drawSVGRect(node *html.Node, svgX, svgY float64) {
 			h = v
 		}
 	}
-
-	// Get fill color from attribute or inline style (default: black per SVG spec)
 	fillColor := getSVGFillColor(node)
-
 	r.context.SetRGBA(float64(fillColor.R)/255.0, float64(fillColor.G)/255.0, float64(fillColor.B)/255.0, fillColor.A)
 	r.context.DrawRectangle(svgX+x, svgY+y, w, h)
 	r.context.Fill()
@@ -2048,17 +2187,12 @@ func (r *Renderer) drawSVGRect(node *html.Node, svgX, svgY float64) {
 
 // getSVGFillColor extracts the fill color from an SVG element's fill attribute or inline style.
 func getSVGFillColor(node *html.Node) css.Color {
-	// Default SVG fill is black
 	defaultColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}
-
-	// Check fill attribute
 	if fill, ok := node.GetAttribute("fill"); ok {
 		if c, ok := css.ParseColor(fill); ok {
 			return c
 		}
 	}
-
-	// Check inline style for fill property
 	if styleAttr, ok := node.GetAttribute("style"); ok {
 		for _, decl := range strings.Split(styleAttr, ";") {
 			parts := strings.SplitN(strings.TrimSpace(decl), ":", 2)
@@ -2069,7 +2203,6 @@ func getSVGFillColor(node *html.Node) css.Color {
 			}
 		}
 	}
-
 	return defaultColor
 }
 

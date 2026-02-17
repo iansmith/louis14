@@ -16,7 +16,8 @@ type FontConfig struct {
 	BoldItalic  string
 	Monospace   string
 	MonoBold    string
-	Ahem        string // Special test font where all glyphs are 1em x 1em squares
+	Ahem        string         // Special test font where all glyphs are 1em x 1em squares
+	Registry    *FontRegistry  // Optional web font registry for @font-face fonts
 }
 
 // defaultFontsDir returns the fonts directory relative to this source file.
@@ -74,6 +75,19 @@ func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
 	return fc.Regular
 }
 
+// FontPathForFamily returns the font path for a CSS font-family string.
+// It first checks the web font registry, then falls back to bundled fonts.
+func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem bool) string {
+	// Check web font registry first
+	if fc.Registry != nil && family != "" {
+		if path := fc.Registry.Lookup(family, bold, italic); path != "" {
+			return path
+		}
+	}
+	// Fall back to bundled fonts
+	return fc.FontPath(bold, italic, mono, ahem)
+}
+
 // DefaultFontPath is the path to the default font.
 // Deprecated: use DefaultFontConfig() instead.
 var DefaultFontPath = DefaultFontConfig().Regular
@@ -120,6 +134,34 @@ func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahe
 	fontConfig := DefaultFontConfig()
 	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
 	return MeasureText(text, fontSize, fontPath)
+}
+
+// BreakTextAtCharacterBoundary splits text at a character boundary so the prefix fits within maxWidth.
+// Returns (prefix, remainder). If no character fits, prefix is empty and remainder is the full text.
+func BreakTextAtCharacterBoundary(textStr string, fontSize float64, bold, italic, mono, ahem bool, maxWidth float64) (string, string) {
+	fontConfig := DefaultFontConfig()
+	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
+
+	dc := gg.NewContext(1000, 1000)
+	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
+		return "", textStr
+	}
+
+	runes := []rune(textStr)
+	bestLen := 0
+	for i := 1; i <= len(runes); i++ {
+		prefix := string(runes[:i])
+		w, _ := dc.MeasureString(prefix)
+		if w > maxWidth {
+			break
+		}
+		bestLen = i
+	}
+
+	if bestLen == 0 {
+		return "", textStr
+	}
+	return string(runes[:bestLen]), string(runes[bestLen:])
 }
 
 // Phase 6 Enhancement: BreakTextIntoLines breaks text into lines that fit within maxWidth

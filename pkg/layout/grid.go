@@ -3,13 +3,16 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"math"
 )
 
 // GridCell represents a single cell in the grid
 type GridCell struct {
-	Row    int
-	Column int
-	Box    *Box
+	Row        int
+	Column     int
+	RowSpan    int
+	ColumnSpan int
+	Box        *Box
 }
 
 // layoutGridContainer handles CSS Grid layout
@@ -26,26 +29,24 @@ func (le *LayoutEngine) layoutGridContainer(
 	rowGap, columnGap := style.GetGridGap()
 	justifyItems := style.GetJustifyItems()
 	alignItems := style.GetAlignItems()
+	justifyContent := style.GetJustifyContent()
+	alignContent := style.GetAlignContent()
 
 	// Get box model properties
 	margin := style.GetMargin()
 	padding := style.GetPadding()
 	border := style.GetBorderWidth()
 
-	// Calculate container dimensions
+	// Calculate container content width
 	var containerWidth float64
+	hasExplicitWidth := false
 	if w, ok := style.GetLength("width"); ok {
 		containerWidth = w
-	} else if len(columnTracks) > 0 {
-		// Calculate width from grid tracks
-		containerWidth = 0
-		for _, track := range columnTracks {
-			containerWidth += track.Size
-		}
-		containerWidth += float64(len(columnTracks)-1) * columnGap
+		hasExplicitWidth = true
 	} else {
 		containerWidth = availableWidth - margin.Left - margin.Right -
 			padding.Left - padding.Right - border.Left - border.Right
+		hasExplicitWidth = true // available width acts as definite for grid
 	}
 
 	// Apply max-width constraint
@@ -55,7 +56,7 @@ func (le *LayoutEngine) layoutGridContainer(
 		}
 	}
 
-	// Phase 13: Handle margin: auto for horizontal centering
+	// Handle margin: auto for horizontal centering
 	actualX := x
 	if margin.AutoLeft && margin.AutoRight {
 		totalWidth := containerWidth + padding.Left + padding.Right + border.Left + border.Right
@@ -65,22 +66,160 @@ func (le *LayoutEngine) layoutGridContainer(
 		}
 	}
 
-	// Calculate container height
+	// Calculate container content height
 	var containerHeight float64
+	hasExplicitHeight := false
 	if h, ok := style.GetLength("height"); ok {
 		containerHeight = h
-	} else if len(rowTracks) > 0 {
-		// Calculate height from grid tracks
-		containerHeight = 0
-		for _, track := range rowTracks {
-			containerHeight += track.Size
-		}
-		containerHeight += float64(len(rowTracks)-1) * rowGap
+		hasExplicitHeight = true
 	}
 
 	// Get positioning information
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
+
+	// Collect grid items and determine placement
+	type gridItemInfo struct {
+		child      *html.Node
+		childStyle *css.Style
+		row, col   int
+		rowSpan    int
+		colSpan    int
+	}
+	items := make([]gridItemInfo, 0)
+	maxRow := 0
+	maxCol := 0
+
+	currentRow := 0
+	currentCol := 0
+	numColTracks := len(columnTracks)
+
+	for _, child := range node.Children {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childStyle := computedStyles[child]
+		if childStyle == nil {
+			childStyle = css.NewStyle()
+			computedStyles[child] = childStyle
+		}
+		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+
+		gridColumn := childStyle.GetGridColumn()
+		gridRow := childStyle.GetGridRow()
+
+		var cellRow, cellCol, rowSpan, colSpan int
+
+		if gridColumn != nil {
+			cellCol = gridColumn.Start - 1
+			colSpan = gridColumn.End - gridColumn.Start
+		} else {
+			cellCol = currentCol
+			colSpan = 1
+		}
+		if gridRow != nil {
+			cellRow = gridRow.Start - 1
+			rowSpan = gridRow.End - gridRow.Start
+		} else {
+			cellRow = currentRow
+			rowSpan = 1
+		}
+
+		items = append(items, gridItemInfo{
+			child: child, childStyle: childStyle,
+			row: cellRow, col: cellCol,
+			rowSpan: rowSpan, colSpan: colSpan,
+		})
+
+		if cellCol+colSpan > maxCol {
+			maxCol = cellCol + colSpan
+		}
+		if cellRow+rowSpan > maxRow {
+			maxRow = cellRow + rowSpan
+		}
+
+		// Advance auto-placement cursor
+		if gridColumn == nil {
+			currentCol += colSpan
+			if numColTracks > 0 && currentCol >= numColTracks {
+				currentCol = 0
+				currentRow++
+			}
+		}
+	}
+
+	// Ensure we have enough tracks (create implicit tracks if needed)
+	for len(columnTracks) < maxCol {
+		columnTracks = append(columnTracks, css.GridTrack{Auto: true})
+	}
+	for len(rowTracks) < maxRow {
+		rowTracks = append(rowTracks, css.GridTrack{Auto: true})
+	}
+
+	// Phase 1: Layout items to determine auto track sizes
+	// First pass with 0 width for auto columns to get intrinsic sizes
+	itemBoxes := make([]*Box, len(items))
+	autoColSizes := make([]float64, len(columnTracks))
+	autoRowSizes := make([]float64, len(rowTracks))
+
+	for i, item := range items {
+		// Use a preliminary width for the child layout
+		prelimWidth := 0.0
+		hasFixedTrack := false
+		for c := 0; c < item.colSpan && item.col+c < len(columnTracks); c++ {
+			t := columnTracks[item.col+c]
+			if !t.Auto && t.Fr == 0 {
+				prelimWidth += t.Size
+				hasFixedTrack = true
+			}
+		}
+		// Only fall back to containerWidth for fixed tracks;
+		// for auto/fr tracks, keep 0 to get min-content size
+		if hasFixedTrack && prelimWidth == 0 {
+			prelimWidth = containerWidth
+		}
+
+		childBox := le.layoutNode(item.child, 0, 0, prelimWidth, computedStyles, nil)
+		itemBoxes[i] = childBox
+		if childBox == nil {
+			continue
+		}
+
+		// Update auto column sizes from content
+		if item.colSpan == 1 && item.col < len(columnTracks) && columnTracks[item.col].Auto {
+			totalW := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
+			if totalW > autoColSizes[item.col] {
+				autoColSizes[item.col] = totalW
+			}
+		}
+		// Update auto row sizes from content
+		if item.rowSpan == 1 && item.row < len(rowTracks) && rowTracks[item.row].Auto {
+			totalH := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom +
+				childBox.Padding.Top + childBox.Padding.Bottom +
+				childBox.Border.Top + childBox.Border.Bottom
+			if totalH > autoRowSizes[item.row] {
+				autoRowSizes[item.row] = totalH
+			}
+		}
+	}
+
+	// Phase 2: Resolve track sizes
+	resolvedColSizes := resolveTrackSizes(columnTracks, autoColSizes, containerWidth, columnGap, hasExplicitWidth, justifyContent == css.JustifyContentStretch)
+	resolvedRowSizes := resolveTrackSizes(rowTracks, autoRowSizes, containerHeight, rowGap, hasExplicitHeight, alignContent == css.AlignContentStretch)
+
+	// Calculate actual content dimensions from resolved tracks
+	_ = sumTracks(resolvedColSizes, columnGap) // actualContentWidth (used for inline-grid sizing later)
+	actualContentHeight := sumTracks(resolvedRowSizes, rowGap)
+
+	if !hasExplicitHeight {
+		containerHeight = actualContentHeight
+	}
+
+	// Phase 3: Compute content distribution offsets
+	colOffsets := computeContentDistribution(resolvedColSizes, containerWidth, columnGap, justifyContent)
+	rowOffsets := computeContentDistribution(resolvedRowSizes, containerHeight, rowGap, alignContent)
 
 	// Create container box
 	box := &Box{
@@ -99,136 +238,244 @@ func (le *LayoutEngine) layoutGridContainer(
 		Parent:   parent,
 	}
 
-	// Content area for grid items (inside padding and border)
+	// Content area origin
 	contentX := actualX + padding.Left + border.Left
 	contentY := y + padding.Top + border.Top
 
-	// Layout grid items
-	gridItems := make([]*GridCell, 0)
-	currentRow := 0
-	currentColumn := 0
-
-	// First pass: layout each child and determine its grid position
-	for _, child := range node.Children {
-		if child.Type != html.ElementNode {
-			continue
-		}
-
-		childStyle := computedStyles[child]
-		if childStyle == nil {
-			childStyle = css.NewStyle()
-			computedStyles[child] = childStyle
-		}
-
-		// Skip if display: none
-		if childStyle.GetDisplay() == css.DisplayNone {
-			continue
-		}
-
-		// Check for explicit grid placement
-		gridColumn := childStyle.GetGridColumn()
-		gridRow := childStyle.GetGridRow()
-
-		var cellRow, cellColumn int
-		var rowSpan, columnSpan int
-
-		if gridColumn != nil {
-			cellColumn = gridColumn.Start - 1 // Convert to 0-indexed
-			columnSpan = gridColumn.End - gridColumn.Start
-		} else {
-			cellColumn = currentColumn
-			columnSpan = 1
-		}
-
-		if gridRow != nil {
-			cellRow = gridRow.Start - 1 // Convert to 0-indexed
-			rowSpan = gridRow.End - gridRow.Start
-		} else {
-			cellRow = currentRow
-			rowSpan = 1
-		}
-
-		// Calculate cell dimensions
+	// Phase 4: Re-layout and position items with final track sizes
+	for i, item := range items {
+		// Calculate cell dimensions from resolved tracks
 		cellWidth := 0.0
-		for i := 0; i < columnSpan && cellColumn+i < len(columnTracks); i++ {
-			cellWidth += columnTracks[cellColumn+i].Size
-			if i > 0 {
+		for c := 0; c < item.colSpan && item.col+c < len(resolvedColSizes); c++ {
+			cellWidth += resolvedColSizes[item.col+c]
+			if c > 0 {
 				cellWidth += columnGap
 			}
 		}
-
 		cellHeight := 0.0
-		for i := 0; i < rowSpan && cellRow+i < len(rowTracks); i++ {
-			cellHeight += rowTracks[cellRow+i].Size
-			if i > 0 {
+		for r := 0; r < item.rowSpan && item.row+r < len(resolvedRowSizes); r++ {
+			cellHeight += resolvedRowSizes[item.row+r]
+			if r > 0 {
 				cellHeight += rowGap
 			}
 		}
 
-		// Layout the child item with the cell dimensions as available width/height
-		childBox := le.layoutNode(child, 0, 0, cellWidth, computedStyles, box)
-		if childBox != nil {
-			// Override dimensions if smaller than cell
-			if childBox.Width < cellWidth {
-				// Apply justify-items
-				switch justifyItems {
-				case css.JustifyItemsCenter:
-					childBox.X = (cellWidth - childBox.Width) / 2
-				case css.JustifyItemsEnd:
-					childBox.X = cellWidth - childBox.Width
-				default: // start or stretch
-					childBox.X = 0
-				}
-			}
+		// Re-layout child with correct cell width
+		childBox := le.layoutNode(item.child, 0, 0, cellWidth, computedStyles, box)
+		if childBox == nil {
+			continue
+		}
+		itemBoxes[i] = childBox
 
-			if childBox.Height < cellHeight {
-				// Apply align-items
-				switch alignItems {
-				case css.AlignItemsCenter:
-					childBox.Y = (cellHeight - childBox.Height) / 2
-				case css.AlignItemsFlexEnd:
-					childBox.Y = cellHeight - childBox.Height
-				default: // flex-start or stretch
-					childBox.Y = 0
-				}
-			}
+		// Grid items default to stretch (CSS Grid §6.2)
+		itemJustify := justifyItems
+		itemAlign := alignItems
 
-			gridItems = append(gridItems, &GridCell{
-				Row:    cellRow,
-				Column: cellColumn,
-				Box:    childBox,
-			})
+		// Apply item alignment
+		childTotalWidth := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
+		if childTotalWidth < cellWidth {
+			switch itemJustify {
+			case css.JustifyItemsCenter:
+				childBox.X = (cellWidth - childTotalWidth) / 2
+			case css.JustifyItemsEnd:
+				childBox.X = cellWidth - childTotalWidth
+			default: // start or stretch
+				// For stretch, the item should fill the cell
+				childBox.Width = cellWidth - childBox.Margin.Left - childBox.Margin.Right
+				childBox.X = 0
+			}
 		}
 
-		// Move to next cell position (for auto-placed items)
-		if gridColumn == nil {
-			currentColumn += columnSpan
-			if currentColumn >= len(columnTracks) {
-				currentColumn = 0
-				currentRow++
+		childTotalHeight := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom +
+			childBox.Padding.Top + childBox.Padding.Bottom +
+			childBox.Border.Top + childBox.Border.Bottom
+		if childTotalHeight < cellHeight {
+			switch itemAlign {
+			case css.AlignItemsCenter:
+				childBox.Y = (cellHeight - childTotalHeight) / 2
+			case css.AlignItemsFlexEnd:
+				childBox.Y = cellHeight - childTotalHeight
+			default: // stretch
+				childBox.Height = cellHeight - childBox.Margin.Top - childBox.Margin.Bottom -
+					childBox.Padding.Top - childBox.Padding.Bottom -
+					childBox.Border.Top - childBox.Border.Bottom
+				childBox.Y = 0
 			}
 		}
+
+		// Position in cell
+		cellX := contentX + colOffsets[item.col]
+		cellY := contentY + rowOffsets[item.row]
+
+		deltaX := cellX - childBox.X
+		deltaY := cellY - childBox.Y
+		childBox.X = cellX
+		childBox.Y = cellY
+		le.repositionFlexItemChildren(childBox, deltaX, deltaY)
+		childBox.Parent = box
+
+		box.Children = append(box.Children, childBox)
 	}
 
-	// Second pass: position grid items in their cells
-	for _, cell := range gridItems {
-		// Calculate cell position
-		cellX := contentX
-		for i := 0; i < cell.Column && i < len(columnTracks); i++ {
-			cellX += columnTracks[i].Size + columnGap
-		}
-
-		cellY := contentY
-		for i := 0; i < cell.Row && i < len(rowTracks); i++ {
-			cellY += rowTracks[i].Size + rowGap
-		}
-
-		// Position the item within its cell
-		cell.Box.X += cellX
-		cell.Box.Y += cellY
-
-		box.Children = append(box.Children, cell.Box)
+	// Update container height if not explicit
+	if !hasExplicitHeight {
+		box.Height = actualContentHeight
 	}
 
 	return box
 }
+
+// resolveTrackSizes resolves auto and fr tracks to pixel sizes.
+func resolveTrackSizes(tracks []css.GridTrack, autoSizes []float64, containerSize, gap float64, hasDefiniteSize, stretch bool) []float64 {
+	sizes := make([]float64, len(tracks))
+	totalGap := float64(len(tracks)-1) * gap
+	if len(tracks) <= 1 {
+		totalGap = 0
+	}
+
+	// First pass: assign fixed sizes and count flexible space
+	usedSpace := totalGap
+	totalFr := 0.0
+	autoCount := 0
+
+	for i, t := range tracks {
+		if t.Fr > 0 {
+			totalFr += t.Fr
+		} else if t.Auto {
+			sizes[i] = autoSizes[i]
+			usedSpace += sizes[i]
+			autoCount++
+		} else {
+			sizes[i] = t.Size
+			usedSpace += sizes[i]
+		}
+	}
+
+	// Distribute remaining space to fr tracks
+	remaining := containerSize - usedSpace
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	if totalFr > 0 && hasDefiniteSize {
+		frSize := remaining / totalFr
+		for i, t := range tracks {
+			if t.Fr > 0 {
+				sizes[i] = t.Fr * frSize
+			}
+		}
+	}
+
+	// Stretch: distribute remaining space to auto tracks
+	if stretch && autoCount > 0 && hasDefiniteSize {
+		// Recalculate remaining after fr distribution
+		used := totalGap
+		for _, s := range sizes {
+			used += s
+		}
+		extra := containerSize - used
+		if extra > 0 {
+			perTrack := extra / float64(autoCount)
+			for i, t := range tracks {
+				if t.Auto {
+					sizes[i] += perTrack
+				}
+			}
+		}
+	}
+
+	return sizes
+}
+
+// sumTracks returns the total size of tracks plus gaps.
+func sumTracks(sizes []float64, gap float64) float64 {
+	total := 0.0
+	for i, s := range sizes {
+		total += s
+		if i > 0 {
+			total += gap
+		}
+	}
+	return total
+}
+
+// computeContentDistribution computes the X/Y offset for each track
+// based on justify-content / align-content.
+func computeContentDistribution(trackSizes []float64, containerSize, gap float64, alignment interface{}) []float64 {
+	n := len(trackSizes)
+	offsets := make([]float64, n)
+	if n == 0 {
+		return offsets
+	}
+
+	totalTrackSize := sumTracks(trackSizes, gap)
+	freeSpace := containerSize - totalTrackSize
+	if freeSpace < 0 {
+		freeSpace = 0
+	}
+
+	// Determine alignment type from either JustifyContent or AlignContent
+	alignStr := ""
+	switch v := alignment.(type) {
+	case css.JustifyContent:
+		alignStr = string(v)
+	case css.AlignContent:
+		alignStr = string(v)
+	}
+
+	switch alignStr {
+	case "space-between":
+		if n <= 1 {
+			offsets[0] = 0
+		} else {
+			spacing := freeSpace / float64(n-1)
+			offset := 0.0
+			for i := range trackSizes {
+				offsets[i] = offset
+				offset += trackSizes[i] + gap + spacing
+			}
+			return offsets
+		}
+	case "space-around":
+		spacing := freeSpace / float64(n)
+		offset := spacing / 2
+		for i := range trackSizes {
+			offsets[i] = offset
+			offset += trackSizes[i] + gap + spacing
+		}
+		return offsets
+	case "space-evenly":
+		spacing := freeSpace / float64(n+1)
+		offset := spacing
+		for i := range trackSizes {
+			offsets[i] = offset
+			offset += trackSizes[i] + gap + spacing
+		}
+		return offsets
+	case "center":
+		offset := freeSpace / 2
+		for i := range trackSizes {
+			offsets[i] = offset
+			offset += trackSizes[i] + gap
+		}
+		return offsets
+	case "flex-end", "end":
+		offset := freeSpace
+		for i := range trackSizes {
+			offsets[i] = offset
+			offset += trackSizes[i] + gap
+		}
+		return offsets
+	}
+
+	// Default: start / stretch (stretch already applied to track sizes)
+	offset := 0.0
+	for i := range trackSizes {
+		offsets[i] = offset
+		offset += trackSizes[i] + gap
+	}
+	return offsets
+}
+
+// Ensure math import is used
+var _ = math.Max

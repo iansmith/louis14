@@ -200,6 +200,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	case "td":
 		style.Set("display", "table-cell")
 		style.Set("padding", "1px")
+		style.Set("text-align", "left")
 	case "th":
 		style.Set("display", "table-cell")
 		style.Set("padding", "1px")
@@ -233,6 +234,9 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 
 	// Phase 17: Apply user agent (default browser) styles first
 	applyUserAgentStyles(node, finalStyle)
+
+	// Map HTML presentational attributes to CSS (lower priority than stylesheets)
+	applyPresentationalAttributes(node, finalStyle)
 
 	// Collect all matching rules from all stylesheets
 	allRules := make([]Rule, 0)
@@ -532,4 +536,156 @@ func setFormPadding(style *Style, top, right, bottom, left string) {
 	if _, ok := style.Get("padding-left"); !ok {
 		style.Set("padding-left", left)
 	}
+}
+
+// applyPresentationalAttributes maps HTML presentational attributes to CSS properties.
+// These have lower priority than author CSS — they're applied before stylesheet rules
+// and inline styles, so CSS can override them.
+func applyPresentationalAttributes(node *html.Node, style *Style) {
+	if node.Type != html.ElementNode {
+		return
+	}
+
+	// bgcolor → background-color (on table, tr, td, th, body)
+	if val, ok := node.GetAttribute("bgcolor"); ok {
+		style.Set("background-color", val)
+	}
+
+	// width attribute → CSS width (on table, td, th, img, etc.)
+	if val, ok := node.GetAttribute("width"); ok {
+		switch node.TagName {
+		case "table", "td", "th", "col", "colgroup", "img", "input", "object", "embed", "video", "canvas", "hr":
+			if strings.HasSuffix(val, "%") {
+				style.Set("width", val)
+			} else {
+				// Numeric value = pixels
+				style.Set("width", val+"px")
+			}
+		}
+	}
+
+	// height attribute → CSS height
+	if val, ok := node.GetAttribute("height"); ok {
+		switch node.TagName {
+		case "table", "td", "th", "tr", "img", "input", "object", "embed", "video", "canvas":
+			if strings.HasSuffix(val, "%") {
+				style.Set("height", val)
+			} else {
+				style.Set("height", val+"px")
+			}
+		}
+	}
+
+	// align → text-align (on td, th, tr, div, p, etc.)
+	if val, ok := node.GetAttribute("align"); ok {
+		switch val {
+		case "left", "center", "right", "justify":
+			switch node.TagName {
+			case "td", "th", "tr", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "table":
+				style.Set("text-align", val)
+			}
+		}
+		// table/img align="center" → auto margins
+		if val == "center" && (node.TagName == "table" || node.TagName == "img") {
+			style.Set("margin-left", "auto")
+			style.Set("margin-right", "auto")
+		}
+	}
+
+	// valign → vertical-align (on td, th, tr)
+	if val, ok := node.GetAttribute("valign"); ok {
+		switch node.TagName {
+		case "td", "th", "tr":
+			style.Set("vertical-align", val)
+		}
+	}
+
+	// border attribute on table → border-width on cells
+	if val, ok := node.GetAttribute("border"); ok {
+		if node.TagName == "table" {
+			style.Set("border-width", val+"px")
+			style.Set("border-style", "outset")
+		}
+	}
+
+	// cellpadding on table → stored for table layout to apply to cells
+	// cellspacing on table → border-spacing
+	if val, ok := node.GetAttribute("cellspacing"); ok {
+		if node.TagName == "table" {
+			style.Set("border-spacing", val+"px")
+		}
+	}
+
+	// <center> element → text-align: center + auto margins for block children
+	if node.TagName == "center" {
+		style.Set("text-align", "center")
+	}
+
+	// cellpadding on ancestor <table> → padding on td/th
+	if node.TagName == "td" || node.TagName == "th" {
+		// Walk up to find containing table
+		for p := node.Parent; p != nil; p = p.Parent {
+			if p.TagName == "table" {
+				if cp, ok := p.GetAttribute("cellpadding"); ok {
+					padding := cp + "px"
+					style.Set("padding", padding)
+				}
+				break
+			}
+		}
+	}
+
+	// colspan attribute — stored for table layout (not a CSS property,
+	// but we note it here so table layout can read it from the style)
+	if val, ok := node.GetAttribute("colspan"); ok {
+		if node.TagName == "td" || node.TagName == "th" {
+			style.Set("-x-colspan", val)
+		}
+	}
+
+	// color attribute → color (on font, hr, etc.)
+	if val, ok := node.GetAttribute("color"); ok {
+		style.Set("color", val)
+	}
+
+	// <font size="N"> → font-size
+	if node.TagName == "font" {
+		if val, ok := node.GetAttribute("size"); ok {
+			if fontSize := fontSizeFromHTMLSize(val); fontSize != "" {
+				style.Set("font-size", fontSize)
+			}
+		}
+		if val, ok := node.GetAttribute("face"); ok {
+			style.Set("font-family", val)
+		}
+	}
+
+	// <img> border attribute
+	if node.TagName == "img" {
+		if val, ok := node.GetAttribute("border"); ok {
+			style.Set("border-width", val+"px")
+			style.Set("border-style", "solid")
+		}
+	}
+}
+
+// fontSizeFromHTMLSize converts HTML <font size="N"> to CSS font-size.
+func fontSizeFromHTMLSize(size string) string {
+	switch size {
+	case "1":
+		return "x-small"
+	case "2":
+		return "small"
+	case "3":
+		return "medium"
+	case "4":
+		return "large"
+	case "5":
+		return "x-large"
+	case "6":
+		return "xx-large"
+	case "7":
+		return "xxx-large"
+	}
+	return ""
 }

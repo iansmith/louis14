@@ -326,6 +326,18 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
+	// HTML <center> element: center block-level children (per HTML spec UA styles)
+	// Browsers use text-align: -webkit-center which centers block children too
+	if !margin.AutoLeft && !margin.AutoRight && parent != nil && parent.Node != nil &&
+		parent.Node.TagName == "center" &&
+		(display == css.DisplayTable || display == css.DisplayBlock || display == css.DisplayFlex) {
+		totalWidth := contentWidth + padding.Left + padding.Right + border.Left + border.Right
+		if totalWidth < availableWidth {
+			centerOffset := (availableWidth - totalWidth) / 2
+			x = x + centerOffset
+		}
+	}
+
 	// Phase 4: Get positioning information
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
@@ -494,7 +506,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	hasInlineChild := false
 	didAnalyzeChildren := false // Track if we analyzed children
 
-	if (display == css.DisplayBlock || display == css.DisplayInline || display == css.DisplayInlineBlock) {
+	if (display == css.DisplayBlock || display == css.DisplayInline || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
 		didAnalyzeChildren = true
 		// Two-pass scan: determine if whitespace text counts as inline content.
 		// CSS 2.1 §9.2.2.1: In block containers with only block children,
@@ -540,7 +552,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// 2. Not an object with image
 		// 3. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
 		// EXPERIMENTAL: Allow mixed block/inline content - block children handled in multi-pass
-		if hasInlineChild && !isObjectImage && (display == css.DisplayBlock || display == css.DisplayInlineBlock) {
+		if hasInlineChild && !isObjectImage && (display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
 			algorithm = InlineLayoutMultiPass
 		}
 	}

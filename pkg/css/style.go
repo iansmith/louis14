@@ -1235,14 +1235,9 @@ func expandBackgroundProperty(style *Style, value string) {
 		return
 	}
 
-	// Check for gradient functions - store the entire value as background property
-	if strings.Contains(value, "linear-gradient(") || strings.Contains(value, "radial-gradient(") {
-		// Keep the full gradient value, don't expand it
-		style.Set("background", value)
-		return
-	}
-
-	// Extract url(...) first since it may contain spaces (e.g. data URIs)
+	// Extract url(...) first since it may contain spaces (e.g. data URIs).
+	// Must happen before gradient check, as background can have both url() and gradient
+	// in comma-separated layers (e.g., "url(img.svg), linear-gradient(...)").
 	urlStart := strings.Index(value, "url(")
 	if urlStart >= 0 {
 		// Find matching closing paren, accounting for nested parens
@@ -1265,6 +1260,13 @@ func expandBackgroundProperty(style *Style, value string) {
 			// Remove url(...) from value to parse remaining parts
 			value = value[:urlStart] + value[urlEnd:]
 		}
+	}
+
+	// Check for gradient functions in the remaining value (after URL extraction)
+	if strings.Contains(value, "linear-gradient(") || strings.Contains(value, "radial-gradient(") {
+		// Store the gradient portion in the background property
+		style.Set("background", value)
+		return
 	}
 
 	// Extract rgb()/rgba()/hsl()/hsla() color functions before field-splitting,
@@ -1499,10 +1501,76 @@ func ParseColor(colorStr string) (Color, bool) {
 		"lightcoral":  {240, 128, 128, 1.0},
 		"lightcyan":   {224, 255, 255, 1.0},
 		"lightpink":   {255, 182, 193, 1.0},
-		"turquoise":   {64, 224, 208, 1.0},
-		"coral":       {255, 127, 80, 1.0},
-		"violet":      {238, 130, 238, 1.0},
-		"bisque":      {255, 228, 196, 1.0},
+		"turquoise":      {64, 224, 208, 1.0},
+		"coral":          {255, 127, 80, 1.0},
+		"violet":         {238, 130, 238, 1.0},
+		"bisque":         {255, 228, 196, 1.0},
+		"limegreen":      {50, 205, 50, 1.0},
+		"darkgreen":      {0, 100, 0, 1.0},
+		"darkblue":       {0, 0, 139, 1.0},
+		"darkred":        {139, 0, 0, 1.0},
+		"darkgray":       {169, 169, 169, 1.0},
+		"darkgrey":       {169, 169, 169, 1.0},
+		"dimgray":        {105, 105, 105, 1.0},
+		"dimgrey":        {105, 105, 105, 1.0},
+		"gold":           {255, 215, 0, 1.0},
+		"indigo":         {75, 0, 130, 1.0},
+		"khaki":          {240, 230, 140, 1.0},
+		"lavender":       {230, 230, 250, 1.0},
+		"salmon":         {250, 128, 114, 1.0},
+		"crimson":        {220, 20, 60, 1.0},
+		"tomato":         {255, 99, 71, 1.0},
+		"skyblue":        {135, 206, 235, 1.0},
+		"steelblue":      {70, 130, 180, 1.0},
+		"slategray":      {112, 128, 144, 1.0},
+		"slategrey":      {112, 128, 144, 1.0},
+		"whitesmoke":     {245, 245, 245, 1.0},
+		"ivory":          {255, 255, 240, 1.0},
+		"beige":          {245, 245, 220, 1.0},
+		"wheat":          {245, 222, 179, 1.0},
+		"tan":            {210, 180, 140, 1.0},
+		"chocolate":      {210, 105, 30, 1.0},
+		"firebrick":      {178, 34, 34, 1.0},
+		"orangered":      {255, 69, 0, 1.0},
+		"deeppink":       {255, 20, 147, 1.0},
+		"hotpink":        {255, 105, 180, 1.0},
+		"mediumblue":     {0, 0, 205, 1.0},
+		"royalblue":      {65, 105, 225, 1.0},
+		"dodgerblue":     {30, 144, 255, 1.0},
+		"cornflowerblue": {100, 149, 237, 1.0},
+		"darkviolet":     {148, 0, 211, 1.0},
+		"plum":           {221, 160, 221, 1.0},
+		"orchid":         {218, 112, 214, 1.0},
+		"sienna":         {160, 82, 45, 1.0},
+		"peru":           {205, 133, 63, 1.0},
+		"linen":          {250, 240, 230, 1.0},
+		"seagreen":       {46, 139, 87, 1.0},
+		"forestgreen":    {34, 139, 34, 1.0},
+		"olivedrab":      {107, 142, 35, 1.0},
+		"yellowgreen":    {154, 205, 50, 1.0},
+		"darkslategray":  {47, 79, 79, 1.0},
+		"darkslategrey":  {47, 79, 79, 1.0},
+		"darkorange":     {255, 140, 0, 1.0},
+		"darkcyan":       {0, 139, 139, 1.0},
+		"aquamarine":     {127, 255, 212, 1.0},
+		"rosybrown":      {188, 143, 143, 1.0},
+		"thistle":        {216, 191, 216, 1.0},
+		"gainsboro":      {220, 220, 220, 1.0},
+		"aliceblue":      {240, 248, 255, 1.0},
+		"ghostwhite":     {248, 248, 255, 1.0},
+		"honeydew":       {240, 255, 240, 1.0},
+		"seashell":       {255, 245, 238, 1.0},
+		"mintcream":      {245, 255, 250, 1.0},
+		"snow":           {255, 250, 250, 1.0},
+		"floralwhite":    {255, 250, 240, 1.0},
+		"oldlace":        {253, 245, 230, 1.0},
+		"papayawhip":     {255, 239, 213, 1.0},
+		"blanchedalmond": {255, 235, 205, 1.0},
+		"moccasin":       {255, 228, 181, 1.0},
+		"navajowhite":    {255, 222, 173, 1.0},
+		"peachpuff":      {255, 218, 185, 1.0},
+		"mistyrose":      {255, 228, 225, 1.0},
+		"antiquewhite":   {250, 235, 215, 1.0},
 	}
 	color, ok := namedColors[colorStr]
 	return color, ok
@@ -2217,6 +2285,7 @@ const (
 	JustifyContentSpaceBetween JustifyContent = "space-between"
 	JustifyContentSpaceAround  JustifyContent = "space-around"
 	JustifyContentSpaceEvenly  JustifyContent = "space-evenly"
+	JustifyContentStretch      JustifyContent = "stretch"
 	JustifyContentLeft         JustifyContent = "left"
 	JustifyContentRight        JustifyContent = "right"
 )
@@ -2235,6 +2304,8 @@ func (s *Style) GetJustifyContent() JustifyContent {
 			return JustifyContentSpaceAround
 		case "space-evenly":
 			return JustifyContentSpaceEvenly
+		case "stretch":
+			return JustifyContentStretch
 		case "start":
 			return JustifyContentFlexStart
 		case "end":
@@ -2286,6 +2357,7 @@ const (
 	AlignContentStretch      AlignContent = "stretch"
 	AlignContentSpaceBetween AlignContent = "space-between"
 	AlignContentSpaceAround  AlignContent = "space-around"
+	AlignContentSpaceEvenly  AlignContent = "space-evenly"
 )
 
 // GetAlignContent returns the align-content value (default: stretch)
@@ -2302,6 +2374,8 @@ func (s *Style) GetAlignContent() AlignContent {
 			return AlignContentSpaceBetween
 		case "space-around":
 			return AlignContentSpaceAround
+		case "space-evenly":
+			return AlignContentSpaceEvenly
 		}
 	}
 	return AlignContentStretch
@@ -2571,7 +2645,9 @@ func ParseContentValues(raw string) []ContentValue {
 
 // GridTrack represents a single grid track (column or row)
 type GridTrack struct {
-	Size float64  // Size in pixels
+	Size float64 // Size in pixels (0 for auto)
+	Auto bool    // true if track is auto-sized
+	Fr   float64 // fractional unit value (0 if not fr)
 }
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
@@ -2590,17 +2666,24 @@ func (s *Style) GetGridTemplateRows() []GridTrack {
 	return nil
 }
 
-// parseGridTracks parses a space-separated list of track sizes (e.g., "100px 200px 150px")
+// parseGridTracks parses a space-separated list of track sizes (e.g., "100px 200px auto 1fr")
 func parseGridTracks(val string) []GridTrack {
 	tracks := make([]GridTrack, 0)
 	parts := strings.Fields(val)
-	
+
 	for _, part := range parts {
-		if size, ok := ParseLength(part); ok {
+		if part == "auto" {
+			tracks = append(tracks, GridTrack{Auto: true})
+		} else if strings.HasSuffix(part, "fr") {
+			frStr := strings.TrimSuffix(part, "fr")
+			if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
+				tracks = append(tracks, GridTrack{Fr: fr})
+			}
+		} else if size, ok := ParseLength(part); ok {
 			tracks = append(tracks, GridTrack{Size: size})
 		}
 	}
-	
+
 	return tracks
 }
 
@@ -2645,28 +2728,30 @@ func (s *Style) GetGridRow() *GridPlacement {
 	return nil
 }
 
-// parseGridPlacement parses grid line placement (e.g., "1 / 3")
+// parseGridPlacement parses grid line placement (e.g., "1 / 3" or "1")
 func parseGridPlacement(val string) *GridPlacement {
 	parts := strings.Split(val, "/")
-	if len(parts) != 2 {
-		return nil
-	}
-	
+
 	start := strings.TrimSpace(parts[0])
-	end := strings.TrimSpace(parts[1])
-	
-	var startNum, endNum int
+	var startNum int
 	fmt.Sscanf(start, "%d", &startNum)
-	fmt.Sscanf(end, "%d", &endNum)
-	
-	if startNum == 0 || endNum == 0 {
+	if startNum == 0 {
 		return nil
 	}
-	
-	return &GridPlacement{
-		Start: startNum,
-		End:   endNum,
+
+	if len(parts) == 1 {
+		// Single value: "1" means start at line 1, span 1
+		return &GridPlacement{Start: startNum, End: startNum + 1}
 	}
+
+	end := strings.TrimSpace(parts[1])
+	var endNum int
+	fmt.Sscanf(end, "%d", &endNum)
+	if endNum == 0 {
+		return nil
+	}
+
+	return &GridPlacement{Start: startNum, End: endNum}
 }
 
 // JustifyItems represents the justify-items property value for grid
@@ -2971,10 +3056,42 @@ func ParseURLValue(val string) (string, bool) {
 
 // GetBackgroundImage returns the background-image URL if set.
 // Checks both background-image and the background shorthand.
+// Handles CSS multiple background layers (comma-separated) by extracting the first url().
 func (s *Style) GetBackgroundImage() (string, bool) {
 	if val, ok := s.Get("background-image"); ok {
+		// For multi-layer values like "url(img.svg), linear-gradient(...)",
+		// use extractFirstURL which correctly handles nested parens.
+		// ParseURLValue would greedily match from url( to the last ).
+		if strings.Contains(val, ",") {
+			if url, ok := extractFirstURL(val); ok {
+				return url, true
+			}
+		}
 		if url, ok := ParseURLValue(val); ok {
 			return url, true
+		}
+	}
+	return "", false
+}
+
+// extractFirstURL extracts the URL from the first url() function in a value
+// that may contain multiple comma-separated background layers.
+func extractFirstURL(val string) (string, bool) {
+	idx := strings.Index(val, "url(")
+	if idx < 0 {
+		return "", false
+	}
+	// Find matching closing paren
+	depth := 0
+	for i := idx + 4; i < len(val); i++ {
+		if val[i] == '(' {
+			depth++
+		} else if val[i] == ')' {
+			if depth == 0 {
+				urlPart := val[idx : i+1]
+				return ParseURLValue(urlPart)
+			}
+			depth--
 		}
 	}
 	return "", false
@@ -3434,6 +3551,108 @@ func (s *Style) GetMixBlendMode() MixBlendMode {
 		}
 	}
 	return MixBlendModeNormal
+}
+
+// TextOverflowType represents the text-overflow CSS property
+type TextOverflowType int
+
+const (
+	TextOverflowClip     TextOverflowType = iota
+	TextOverflowEllipsis
+)
+
+// GetTextOverflow returns the text-overflow value (default: clip)
+func (s *Style) GetTextOverflow() TextOverflowType {
+	if val, ok := s.Get("text-overflow"); ok {
+		if val == "ellipsis" {
+			return TextOverflowEllipsis
+		}
+	}
+	return TextOverflowClip
+}
+
+// GetWordBreak returns the word-break value (default: "normal")
+func (s *Style) GetWordBreak() string {
+	if val, ok := s.Get("word-break"); ok {
+		return val
+	}
+	return "normal"
+}
+
+// GetOverflowWrap returns the overflow-wrap value (default: "normal").
+// Also checks the legacy word-wrap alias.
+func (s *Style) GetOverflowWrap() string {
+	if val, ok := s.Get("overflow-wrap"); ok {
+		return val
+	}
+	if val, ok := s.Get("word-wrap"); ok {
+		return val
+	}
+	return "normal"
+}
+
+// ObjectFit represents the object-fit CSS property
+type ObjectFit int
+
+const (
+	ObjectFitFill ObjectFit = iota
+	ObjectFitContain
+	ObjectFitCover
+	ObjectFitNone
+	ObjectFitScaleDown
+)
+
+// GetObjectFit returns the object-fit value (default: fill)
+func (s *Style) GetObjectFit() ObjectFit {
+	if val, ok := s.Get("object-fit"); ok {
+		switch val {
+		case "contain":
+			return ObjectFitContain
+		case "cover":
+			return ObjectFitCover
+		case "none":
+			return ObjectFitNone
+		case "scale-down":
+			return ObjectFitScaleDown
+		}
+	}
+	return ObjectFitFill
+}
+
+// GetObjectPosition returns the object-position as (x%, y%) in range [0,1].
+// Default is (0.5, 0.5) which centers the image.
+func (s *Style) GetObjectPosition() (float64, float64) {
+	val, ok := s.Get("object-position")
+	if !ok {
+		return 0.5, 0.5
+	}
+	parts := strings.Fields(val)
+	x, y := 0.5, 0.5
+	if len(parts) >= 1 {
+		x = parsePositionKeyword(parts[0])
+	}
+	if len(parts) >= 2 {
+		y = parsePositionKeyword(parts[1])
+	}
+	return x, y
+}
+
+// parsePositionKeyword converts a position keyword or percentage to a 0-1 fraction.
+func parsePositionKeyword(s string) float64 {
+	switch s {
+	case "left", "top":
+		return 0.0
+	case "center":
+		return 0.5
+	case "right", "bottom":
+		return 1.0
+	}
+	if strings.HasSuffix(s, "%") {
+		if v, err := strconv.ParseFloat(s[:len(s)-1], 64); err == nil {
+			return v / 100
+		}
+	}
+	return 0.5
 }
 
 // GetMaskImage returns the mask-image property value

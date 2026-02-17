@@ -15,7 +15,7 @@ import (
 
 func main() {
 	width := flag.Int("w", 800, "viewport width in pixels")
-	height := flag.Int("h", 600, "viewport height in pixels")
+	height := flag.Int("h", 0, "viewport height in pixels (0 = auto, renders full page)")
 	output := flag.String("o", "output.png", "output PNG file path")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: l14show [flags] <url>\n\nFlags:\n")
@@ -37,19 +37,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create render target
-	target := image.NewRGBA(image.Rect(0, 0, *width, *height))
-
 	// Create fetcher and renderer with JS support
 	fetcher := resource.NewFetcher(url)
 	renderer := resource.NewLouis14Renderer(fetcher)
 	renderer.SetJSEngine(js.New())
 
-	// Render
-	fmt.Fprintf(os.Stderr, "Rendering %dx%d...\n", *width, *height)
-	if err := renderer.Render(string(body), target); err != nil {
-		fmt.Fprintf(os.Stderr, "Error rendering: %v\n", err)
-		os.Exit(1)
+	var target *image.RGBA
+
+	if *height > 0 {
+		// Fixed height: render directly
+		target = image.NewRGBA(image.Rect(0, 0, *width, *height))
+		fmt.Fprintf(os.Stderr, "Rendering %dx%d...\n", *width, *height)
+		if err := renderer.Render(string(body), target); err != nil {
+			fmt.Fprintf(os.Stderr, "Error rendering: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Auto height: layout first to measure, then render at full height
+		fmt.Fprintf(os.Stderr, "Rendering %d x auto...\n", *width)
+		var err error
+		target, err = renderer.RenderAutoHeight(string(body), *width)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error rendering: %v\n", err)
+			os.Exit(1)
+		}
+		bounds := target.Bounds()
+		fmt.Fprintf(os.Stderr, "Content height: %d\n", bounds.Dy())
 	}
 
 	// Save PNG

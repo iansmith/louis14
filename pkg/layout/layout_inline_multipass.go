@@ -282,11 +282,64 @@ func (le *LayoutEngine) BreakLines(
 					}
 				}
 				if !shifted {
-					// No floats to clear - force onto current line (true overflow)
-					currentLine.Items = append(currentLine.Items, item)
-					currentX += textWidth
-					if textLineHeight > currentLine.Height {
-						currentLine.Height = textLineHeight
+					// Check for character-level breaking
+					breakAll := constraint.WordBreak == "break-all"
+					breakWord := constraint.OverflowWrap == "break-word" || constraint.OverflowWrap == "anywhere"
+					charBroke := false
+					if (breakAll || breakWord) && item.Style != nil {
+						remainingWidth := availableWidth - usedWidth
+						if remainingWidth <= 0 {
+							remainingWidth = availableWidth
+						}
+						cFontSize := item.Style.GetFontSize()
+						cBold := item.Style.GetFontWeight() == css.FontWeightBold
+						cItalic := item.Style.GetFontStyle() == css.FontStyleItalic
+						cMono := item.Style.IsMonospaceFamily()
+						cAhem := item.Style.IsAhemFamily()
+						shouldBreak := breakAll
+						if !shouldBreak && breakWord {
+							ww, _ := text.MeasureTextWithStyle(item.Text, cFontSize, cBold, cItalic, cMono, cAhem)
+							shouldBreak = ww > availableWidth
+						}
+						if shouldBreak {
+							pfx, rem := text.BreakTextAtCharacterBoundary(item.Text, cFontSize, cBold, cItalic, cMono, cAhem, remainingWidth)
+							if pfx != "" {
+								pfxW, _ := text.MeasureTextWithStyle(pfx, cFontSize, cBold, cItalic, cMono, cAhem)
+								currentLine.Items = append(currentLine.Items, &InlineItem{Type: InlineItemText, Text: pfx, Style: item.Style, Node: item.Node, Width: pfxW, Height: item.Height})
+								if textLineHeight > currentLine.Height {
+									currentLine.Height = textLineHeight
+								}
+								if rem != "" {
+									remW, remH := text.MeasureTextWithStyle(rem, cFontSize, cBold, cItalic, cMono, cAhem)
+									remItem := &InlineItem{Type: InlineItemText, Text: rem, Style: item.Style, Node: item.Node, Width: remW, Height: remH}
+									newItems := make([]*InlineItem, 0, len(items)+1)
+									newItems = append(newItems, items[:i+1]...)
+									newItems = append(newItems, remItem)
+									if i+1 < len(items) {
+										newItems = append(newItems, items[i+1:]...)
+									}
+									items = newItems
+								}
+								lines = append(lines, currentLine)
+								currentY += currentLine.Height
+								textIndent = 0
+								lineFloatWidth = 0
+								lineFloats = nil
+								currentLine = &LineInfo{Y: currentY, Items: []*InlineItem{}, Constraint: constraint, Height: 0}
+								currentX = 0
+								hasSeenContentOnLine = false
+								lastTextEndedWithSpace = false
+								charBroke = true
+							}
+						}
+					}
+					if !charBroke {
+						// No floats to clear - force onto current line (true overflow)
+						currentLine.Items = append(currentLine.Items, item)
+						currentX += textWidth
+						if textLineHeight > currentLine.Height {
+							currentLine.Height = textLineHeight
+						}
 					}
 				}
 			}
@@ -474,6 +527,13 @@ func (le *LayoutEngine) BreakLines(
 		}
 	}
 
+	// CSS text-overflow: ellipsis — truncate overflowing nowrap lines
+	if constraint.NoWrap && constraint.TextOverflow == css.TextOverflowEllipsis {
+		for _, line := range lines {
+			le.applyTextOverflowEllipsis(line, constraint.AvailableSize.Width)
+		}
+	}
+
 	// CSS 2.1 §9.4.2: Line boxes that contain no text, no preserved white space,
 	// no inline elements with non-zero margins/padding/borders, and no other in-flow
 	// content must be treated as zero-height (not existing).
@@ -485,6 +545,106 @@ func (le *LayoutEngine) BreakLines(
 	}
 
 	return lines
+}
+
+// applyTextOverflowEllipsis truncates a line's text items so they fit within
+// availableWidth, replacing the truncation point with "...".
+func (le *LayoutEngine) applyTextOverflowEllipsis(line *LineInfo, availableWidth float64) {
+	// Calculate total content width
+	totalWidth := 0.0
+	for _, item := range line.Items {
+		if item.Type == InlineItemText || item.Type == InlineItemAtomic {
+			totalWidth += item.Width
+		}
+	}
+	if totalWidth <= availableWidth {
+		return // Fits, no truncation needed
+	}
+
+	// Measure ellipsis "..." in the style of the last text item
+	ellipsis := "\u2026" // Unicode ellipsis character
+	ellipsisWidth := 0.0
+	var ellipsisStyle *css.Style
+	for _, item := range line.Items {
+		if item.Type == InlineItemText && item.Style != nil {
+			ellipsisStyle = item.Style
+		}
+	}
+	if ellipsisStyle != nil {
+		fontSize := ellipsisStyle.GetFontSize()
+		bold := ellipsisStyle.GetFontWeight() == css.FontWeightBold
+		italic := ellipsisStyle.GetFontStyle() == css.FontStyleItalic
+		mono := ellipsisStyle.IsMonospaceFamily()
+		ahem := ellipsisStyle.IsAhemFamily()
+		ellipsisWidth, _ = text.MeasureTextWithStyle(ellipsis, fontSize, bold, italic, mono, ahem)
+	}
+
+	// Walk items, find where to truncate
+	usedWidth := 0.0
+	truncateAt := availableWidth - ellipsisWidth
+	for idx, item := range line.Items {
+		if item.Type == InlineItemText {
+			if usedWidth+item.Width > truncateAt {
+				// This text item overflows — truncate it character by character
+				runes := []rune(item.Text)
+				fontSize := item.Style.GetFontSize()
+				bold := item.Style.GetFontWeight() == css.FontWeightBold
+				italic := item.Style.GetFontStyle() == css.FontStyleItalic
+				mono := item.Style.IsMonospaceFamily()
+				ahem := item.Style.IsAhemFamily()
+
+				bestLen := 0
+				for i := 1; i <= len(runes); i++ {
+					prefix := string(runes[:i])
+					w, _ := text.MeasureTextWithStyle(prefix, fontSize, bold, italic, mono, ahem)
+					if usedWidth+w > truncateAt {
+						break
+					}
+					bestLen = i
+				}
+
+				truncated := string(runes[:bestLen]) + ellipsis
+				w, _ := text.MeasureTextWithStyle(truncated, fontSize, bold, italic, mono, ahem)
+				item.Text = truncated
+				if item.Node != nil {
+					item.Node.Text = truncated
+				}
+				item.Width = w
+
+				// Remove all subsequent items (keep only tags after truncation point)
+				newItems := make([]*InlineItem, 0, idx+1)
+				newItems = append(newItems, line.Items[:idx+1]...)
+				// Preserve close tags that come after
+				for _, remaining := range line.Items[idx+1:] {
+					if remaining.Type == InlineItemCloseTag || remaining.Type == InlineItemOpenTag {
+						newItems = append(newItems, remaining)
+					}
+				}
+				line.Items = newItems
+				return
+			}
+			usedWidth += item.Width
+		} else if item.Type == InlineItemAtomic {
+			if usedWidth+item.Width > truncateAt {
+				// Atomic item overflows — remove it and everything after, add ellipsis
+				// Insert an ellipsis text item before this position
+				if ellipsisStyle != nil {
+					ellipsisItem := &InlineItem{
+						Type:  InlineItemText,
+						Text:  ellipsis,
+						Style: ellipsisStyle,
+						Width: ellipsisWidth,
+					}
+					newItems := make([]*InlineItem, 0, idx+1)
+					newItems = append(newItems, line.Items[:idx]...)
+					newItems = append(newItems, ellipsisItem)
+					line.Items = newItems
+				}
+				return
+			}
+			usedWidth += item.Width
+		}
+	}
 }
 
 // isWhitespaceOnlyLine checks if a line contains only whitespace text items
@@ -990,6 +1150,15 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		}
 		// CSS 2.1 §16.1: text-indent applies to the first line of a block container
 		constraint.TextIndent = containerBox.Style.GetTextIndent()
+
+		// text-overflow applies when container has overflow:hidden + nowrap
+		if containerBox.Style.GetOverflow() != css.OverflowVisible {
+			constraint.TextOverflow = containerBox.Style.GetTextOverflow()
+		}
+
+		// word-break and overflow-wrap
+		constraint.WordBreak = containerBox.Style.GetWordBreak()
+		constraint.OverflowWrap = containerBox.Style.GetOverflowWrap()
 	}
 
 	// Run new multi-pass pipeline

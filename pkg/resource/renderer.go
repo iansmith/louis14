@@ -5,6 +5,7 @@ import (
 	"image"
 	"log"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/js"
@@ -44,14 +45,77 @@ func NewLouis14Renderer(fetcher Fetcher, fonts ...text.FontConfig) *Louis14Rende
 	return &Louis14Renderer{fetcher: fetcher, fonts: fc}
 }
 
-// Render parses the HTML content, performs layout, and renders onto the target image.
-// The viewport width and height are derived from the target image dimensions.
-func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
-	bounds := target.Bounds()
-	viewportWidth := float64(bounds.Dx())
-	viewportHeight := float64(bounds.Dy())
+// RenderAutoHeight performs layout to measure content height, then renders at full height.
+// Returns the rendered image sized to the full content.
+func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*image.RGBA, error) {
+	viewportWidth := float64(width)
+	// Use a large initial height for layout (doesn't clip, just sets viewport for vh units)
+	viewportHeight := 10000.0
 
-	// Build a CSS fetcher function from our Fetcher interface
+	cssFetcher, imageFetcher := r.buildFetchers()
+
+	doc, err := html.ParseWithFetcher(htmlContent, cssFetcher)
+	if err != nil {
+		return nil, fmt.Errorf("parsing HTML: %w", err)
+	}
+
+	// Layout pass to measure content height
+	layoutEngine := layout.NewLayoutEngine(viewportWidth, viewportHeight)
+	if imageFetcher != nil {
+		layoutEngine.SetImageFetcher(imageFetcher)
+	}
+	boxes := layoutEngine.Layout(doc)
+
+	// Execute JavaScript if engine is configured
+	if r.jsEngine != nil && len(doc.Scripts) > 0 {
+		if err := r.jsEngine.Execute(doc); err != nil {
+			log.Printf("js: %v", err)
+		}
+		layoutEngine2 := layout.NewLayoutEngine(viewportWidth, viewportHeight)
+		if imageFetcher != nil {
+			layoutEngine2.SetImageFetcher(imageFetcher)
+		}
+		boxes = layoutEngine2.Layout(doc)
+	}
+
+	// Measure content height from box tree
+	contentHeight := measureContentHeight(boxes)
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	// Register @font-face web fonts
+	fonts := r.registerWebFonts(doc)
+
+	// Create image at the measured height and render
+	target := image.NewRGBA(image.Rect(0, 0, width, int(contentHeight+0.5)))
+	renderer := render.NewRendererForImage(target)
+	renderer.SetFonts(fonts)
+	if imageFetcher != nil {
+		renderer.SetImageFetcher(imageFetcher)
+	}
+	renderer.Render(boxes)
+
+	return target, nil
+}
+
+// measureContentHeight walks the box tree and returns the maximum Y extent.
+func measureContentHeight(boxes []*layout.Box) float64 {
+	maxY := 0.0
+	for _, box := range boxes {
+		bottom := box.Y + box.Border.Top + box.Padding.Top + box.Height + box.Padding.Bottom + box.Border.Bottom + box.Margin.Bottom
+		if bottom > maxY {
+			maxY = bottom
+		}
+		if childMax := measureContentHeight(box.Children); childMax > maxY {
+			maxY = childMax
+		}
+	}
+	return maxY
+}
+
+// buildFetchers creates CSS and image fetcher functions from the Fetcher interface.
+func (r *Louis14Renderer) buildFetchers() (html.CSSFetcher, images.ImageFetcher) {
 	var cssFetcher html.CSSFetcher
 	if r.fetcher != nil {
 		cssFetcher = func(uri string) (string, error) {
@@ -66,13 +130,6 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 		}
 	}
 
-	// Parse HTML with CSS fetcher
-	doc, err := html.ParseWithFetcher(htmlContent, cssFetcher)
-	if err != nil {
-		return fmt.Errorf("parsing HTML: %w", err)
-	}
-
-	// Build an image fetcher function from our Fetcher interface
 	var imageFetcher images.ImageFetcher
 	if r.fetcher != nil {
 		imageFetcher = func(uri string) ([]byte, error) {
@@ -87,6 +144,63 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 		}
 	}
 
+	return cssFetcher, imageFetcher
+}
+
+// registerWebFonts parses @font-face rules from document stylesheets and
+// fetches/caches the font files. Returns an updated FontConfig with the registry.
+func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
+	fc := r.fonts
+	if r.fetcher == nil {
+		return fc
+	}
+
+	// Collect all @font-face rules
+	var allFaces []css.FontFaceRule
+	for _, cssText := range doc.Stylesheets {
+		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
+			allFaces = append(allFaces, stylesheet.FontFaces...)
+		}
+	}
+
+	if len(allFaces) == 0 {
+		return fc
+	}
+
+	// Create registry and fetch fonts
+	registry := text.NewFontRegistry()
+	fontFetcher := func(uri string) ([]byte, error) {
+		body, _, err := r.fetcher.Fetch(uri)
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+
+	for _, face := range allFaces {
+		if _, err := registry.RegisterFontFace(face.Family, face.Src, face.Format, face.Weight, face.Style, fontFetcher); err != nil {
+			log.Printf("font-face: %v", err)
+		}
+	}
+
+	fc.Registry = registry
+	return fc
+}
+
+// Render parses the HTML content, performs layout, and renders onto the target image.
+// The viewport width and height are derived from the target image dimensions.
+func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
+	bounds := target.Bounds()
+	viewportWidth := float64(bounds.Dx())
+	viewportHeight := float64(bounds.Dy())
+
+	cssFetcher, imageFetcher := r.buildFetchers()
+
+	doc, err := html.ParseWithFetcher(htmlContent, cssFetcher)
+	if err != nil {
+		return fmt.Errorf("parsing HTML: %w", err)
+	}
+
 	// Layout
 	layoutEngine := layout.NewLayoutEngine(viewportWidth, viewportHeight)
 	if imageFetcher != nil {
@@ -94,9 +208,12 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 	}
 	boxes := layoutEngine.Layout(doc)
 
+	// Register @font-face web fonts
+	fonts := r.registerWebFonts(doc)
+
 	// Render onto target image
 	renderer := render.NewRendererForImage(target)
-	renderer.SetFonts(r.fonts)
+	renderer.SetFonts(fonts)
 	if imageFetcher != nil {
 		renderer.SetImageFetcher(imageFetcher)
 	}
@@ -116,7 +233,7 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 		boxes2 := layoutEngine2.Layout(doc)
 
 		renderer2 := render.NewRendererForImage(target)
-		renderer2.SetFonts(r.fonts)
+		renderer2.SetFonts(fonts)
 		if imageFetcher != nil {
 			renderer2.SetImageFetcher(imageFetcher)
 		}

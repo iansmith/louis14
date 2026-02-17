@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/srwiley/oksvg"
+	"github.com/srwiley/rasterx"
 )
 
 // ImageCache caches loaded images
@@ -145,11 +148,57 @@ type ImageFetcher func(uri string) ([]byte, error)
 
 // DecodeImageBytes decodes an image from raw bytes.
 func DecodeImageBytes(data []byte) (image.Image, error) {
+	// Check for SVG content
+	if isSVGData(data) {
+		return rasterizeSVG(data, 0, 0)
+	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("image decode error: %w", err)
 	}
 	return img, nil
+}
+
+// isSVGData checks if the data looks like SVG content.
+func isSVGData(data []byte) bool {
+	n := len(data)
+	if n > 256 {
+		n = 256
+	}
+	s := strings.TrimSpace(string(data[:n]))
+	return strings.HasPrefix(s, "<svg") || strings.HasPrefix(s, "<?xml") ||
+		strings.Contains(s, "<svg")
+}
+
+// rasterizeSVG renders SVG data to an image.RGBA using oksvg.
+// If w/h are 0, the SVG's viewBox dimensions are used.
+func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
+	icon, err := oksvg.ReadIconStream(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("SVG parse error: %w", err)
+	}
+
+	svgW := int(icon.ViewBox.W)
+	svgH := int(icon.ViewBox.H)
+	if svgW <= 0 {
+		svgW = 32
+	}
+	if svgH <= 0 {
+		svgH = 32
+	}
+	if w <= 0 {
+		w = svgW
+	}
+	if h <= 0 {
+		h = svgH
+	}
+
+	icon.SetTarget(0, 0, float64(w), float64(h))
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	scanner := rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())
+	raster := rasterx.NewDasher(w, h, scanner)
+	icon.Draw(raster, 1.0)
+	return rgba, nil
 }
 
 // LoadImageWithFetcher loads an image using the provided fetcher.

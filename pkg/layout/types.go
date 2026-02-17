@@ -123,6 +123,9 @@ type ConstraintSpace struct {
 	TextAlign      css.TextAlign    // Text alignment for inline content
 	NoWrap         bool             // white-space: nowrap - prevent line breaking
 	TextIndent     float64          // CSS text-indent for the first line
+	TextOverflow   css.TextOverflowType // CSS text-overflow (clip or ellipsis)
+	WordBreak      string           // CSS word-break (normal, break-all, keep-all)
+	OverflowWrap   string           // CSS overflow-wrap / word-wrap (normal, break-word, anywhere)
 	// TODO: Add more constraints as needed:
 	// - WritingMode
 	// - IsNewFormattingContext
@@ -283,12 +286,13 @@ type TableRow struct {
 
 // Phase 9: TableInfo tracks table layout information
 type TableInfo struct {
-	Rows           []*TableRow
-	NumCols        int
-	ColumnWidths   []float64
-	RowHeights     []float64
-	BorderSpacing  float64
-	BorderCollapse css.BorderCollapse
+	Rows                 []*TableRow
+	NumCols              int
+	ColumnWidths         []float64
+	RowHeights           []float64
+	RowHasExplicitHeight []bool
+	BorderSpacing        float64
+	BorderCollapse       css.BorderCollapse
 }
 
 // FlexItem tracks a flex item during flex layout

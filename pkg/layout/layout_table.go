@@ -1,10 +1,12 @@
 package layout
 
 import (
+	"fmt"
 	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/text"
 )
 
@@ -118,13 +120,16 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	explicitTableWidth := 0.0
 	if w, ok := tableBox.Style.GetLength("width"); ok {
 		explicitTableWidth = w
+	} else if _, ok := tableBox.Style.GetPercentage("width"); ok {
+		// Percentage width was already resolved in layoutNode → use the content width
+		explicitTableWidth = tableBox.Width - tableBox.Border.Left - tableBox.Border.Right - tableBox.Padding.Left - tableBox.Padding.Right
 	}
-	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth)
+	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth, computedStyles)
 
 	// Set table width from column widths if not explicitly set
-	// Check the style for an explicit width, not tableBox.Width which includes borders
 	_, hasExplicitWidth := tableBox.Style.GetLength("width")
-	if !hasExplicitWidth {
+	_, hasPercentWidth := tableBox.Style.GetPercentage("width")
+	if !hasExplicitWidth && !hasPercentWidth {
 		totalW := 0.0
 		for _, cw := range tableInfo.ColumnWidths {
 			totalW += cw
@@ -143,7 +148,7 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	tableInfo.RowHeights = le.calculateRowHeights(cellGrid, tableInfo)
 
 	// Set table height from row heights if not explicitly set
-	_, hasExplicitHeight := tableBox.Style.GetLength("height")
+	explicitTableHeight, hasExplicitHeight := tableBox.Style.GetLength("height")
 	if !hasExplicitHeight {
 		totalH := 0.0
 		for _, rh := range tableInfo.RowHeights {
@@ -156,10 +161,47 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 		totalH += borderSpacing * float64(len(tableInfo.RowHeights)+1)
 		tableBox.Height = totalH + tableBox.Border.Top + tableBox.Border.Bottom +
 			tableBox.Padding.Top + tableBox.Padding.Bottom
+	} else {
+		// Distribute explicit height to rows if it exceeds content-based row heights
+		borderSpacing := tableInfo.BorderSpacing
+		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
+			borderSpacing = 0
+		}
+		totalRowH := 0.0
+		for _, rh := range tableInfo.RowHeights {
+			totalRowH += rh
+		}
+		spacingH := borderSpacing * float64(len(tableInfo.RowHeights)+1)
+		contentH := explicitTableHeight - tableBox.Border.Top - tableBox.Border.Bottom -
+			tableBox.Padding.Top - tableBox.Padding.Bottom - spacingH
+		if contentH > totalRowH && len(tableInfo.RowHeights) > 0 {
+			extra := contentH - totalRowH
+			// First, distribute extra space to rows WITHOUT explicit heights
+			nonExplicitCount := 0
+			for i := range tableInfo.RowHeights {
+				if !tableInfo.RowHasExplicitHeight[i] {
+					nonExplicitCount++
+				}
+			}
+			if nonExplicitCount > 0 {
+				perRow := extra / float64(nonExplicitCount)
+				for i := range tableInfo.RowHeights {
+					if !tableInfo.RowHasExplicitHeight[i] {
+						tableInfo.RowHeights[i] += perRow
+					}
+				}
+			} else {
+				// All rows have explicit heights — distribute proportionally
+				perRow := extra / float64(len(tableInfo.RowHeights))
+				for i := range tableInfo.RowHeights {
+					tableInfo.RowHeights[i] += perRow
+				}
+			}
+		}
 	}
 
 	// Position cells
-	le.positionTableCells(tableBox, cellGrid, tableInfo, x, y)
+	le.positionTableCells(tableBox, cellGrid, tableInfo, x, y, computedStyles)
 }
 
 // Phase 9: processTableRows recursively processes rows and row groups
@@ -333,7 +375,7 @@ func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, comp
 
 // Phase 9: calculateColumnWidths determines column widths
 // tableWidth is the explicit table width (0 for shrink-to-fit tables)
-func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, availableWidth float64, tableInfo *TableInfo, tableWidth float64) []float64 {
+func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, availableWidth float64, tableInfo *TableInfo, tableWidth float64, computedStyles map[*html.Node]*css.Style) []float64 {
 	numCols := tableInfo.NumCols
 	if numCols == 0 {
 		return []float64{}
@@ -362,7 +404,7 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 			}
 			// Measure content width for auto-sizing
 			if !hasExplicit[colIdx] {
-				cw := le.measureCellContentWidth(cell)
+				cw := le.measureCellContentWidth(cell, computedStyles)
 				if cw > contentWidths[colIdx] {
 					contentWidths[colIdx] = cw
 				}
@@ -385,6 +427,9 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 	}
 	if unsetCols > 0 {
 		remaining := availableWidth - usedWidth
+		if tableWidth > 0 {
+			remaining = tableWidth - usedWidth
+		}
 		if remaining > 0 {
 			if tableWidth == 0 && totalContentWidth > 0 {
 				// Shrink-to-fit table: use content widths directly, no extra space distribution
@@ -431,26 +476,21 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 }
 
 // measureCellContentWidth measures the preferred content width of a table cell
-func (le *LayoutEngine) measureCellContentWidth(cell *TableCell) float64 {
+func (le *LayoutEngine) measureCellContentWidth(cell *TableCell, computedStyles map[*html.Node]*css.Style) float64 {
 	if cell == nil || cell.Box == nil || cell.Box.Node == nil {
 		return 0
 	}
-	totalWidth := 0.0
 	fontSize := 16.0
 	isBold := false
 	if cell.Box.Style != nil {
 		fontSize = cell.Box.Style.GetFontSize()
 		isBold = cell.Box.Style.GetFontWeight() == css.FontWeightBold
 	}
-	for _, child := range cell.Box.Node.Children {
-		if child.Type == html.TextNode {
-			if strings.TrimSpace(child.Text) == "" {
-				continue
-			}
-			w, _ := text.MeasureTextWithWeight(child.Text, fontSize, isBold)
-			totalWidth += w
-		}
-	}
+	// Save counter state — measurement may process counter-reset/increment
+	// for pseudo-elements, but these shouldn't affect the actual layout pass
+	savedCounters := le.saveCounterState()
+	totalWidth := le.measureTextContentRecursive(cell.Box.Node, fontSize, isBold, computedStyles)
+	le.restoreCounterState(savedCounters)
 	// Add cell padding and border
 	if cell.Box.Style != nil {
 		padding := cell.Box.Style.GetPadding()
@@ -460,10 +500,277 @@ func (le *LayoutEngine) measureCellContentWidth(cell *TableCell) float64 {
 	return totalWidth
 }
 
+// measureTextContentRecursive recursively measures all text content in a node's subtree,
+// also accounting for elements with explicit CSS width (e.g., <div style="width:10px">).
+// Block-level children start new lines, so their widths are compared with MAX rather than
+// summed (CSS preferred width = width of the widest single line).
+// Also accounts for ::before/::after pseudo-element content.
+func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize float64, isBold bool, computedStyles map[*html.Node]*css.Style) float64 {
+	currentLineWidth := 0.0
+	maxWidth := 0.0
+
+	// Process counter-reset on this node (needed for accurate pseudo-element counter values)
+	if node.Type == html.ElementNode && computedStyles != nil {
+		if nodeStyle := computedStyles[node]; nodeStyle != nil {
+			if resetVal, ok := nodeStyle.Get("counter-reset"); ok {
+				resets := parseCounterReset(resetVal)
+				for name, value := range resets {
+					le.counterReset(name, value)
+				}
+			}
+		}
+	}
+
+	// Measure ::before pseudo-element content
+	beforeWidth := le.measurePseudoContentWidth(node, "before", fontSize, isBold, computedStyles)
+
+	// Measure ::after pseudo-element content
+	afterWidth := le.measurePseudoContentWidth(node, "after", fontSize, isBold, computedStyles)
+
+	// Determine if pseudo-elements are block-level
+	beforeIsBlock := false
+	afterIsBlock := false
+	if le != nil {
+		parentStyle := computedStyles[node]
+		if beforeWidth > 0 {
+			beforeStyle := css.ComputePseudoElementStyle(node, "before", le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
+			if beforeStyle != nil {
+				switch beforeStyle.GetDisplay() {
+				case css.DisplayBlock, css.DisplayFlex, css.DisplayGrid,
+					css.DisplayTable, css.DisplayListItem:
+					beforeIsBlock = true
+				}
+			}
+		}
+		if afterWidth > 0 {
+			afterStyle := css.ComputePseudoElementStyle(node, "after", le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
+			if afterStyle != nil {
+				switch afterStyle.GetDisplay() {
+				case css.DisplayBlock, css.DisplayFlex, css.DisplayGrid,
+					css.DisplayTable, css.DisplayListItem:
+					afterIsBlock = true
+				}
+			}
+		}
+	}
+
+	// Add ::before content
+	if beforeWidth > 0 {
+		if beforeIsBlock {
+			if beforeWidth > maxWidth {
+				maxWidth = beforeWidth
+			}
+		} else {
+			currentLineWidth += beforeWidth
+		}
+	}
+
+	for _, child := range node.Children {
+		if child.Type == html.TextNode {
+			if strings.TrimSpace(child.Text) == "" {
+				continue
+			}
+			w, _ := text.MeasureTextWithWeight(child.Text, fontSize, isBold)
+			currentLineWidth += w
+		} else if child.Type == html.ElementNode {
+			// Determine if this element is block-level
+			isBlock := false
+			if computedStyles != nil {
+				if childStyle := computedStyles[child]; childStyle != nil {
+					switch childStyle.GetDisplay() {
+					case css.DisplayBlock, css.DisplayFlex, css.DisplayGrid,
+						css.DisplayTable, css.DisplayListItem:
+						isBlock = true
+					}
+				}
+			}
+
+			// Check computed style for explicit width (e.g., .votearrow { width: 10px })
+			if computedStyles != nil {
+				if childStyle := computedStyles[child]; childStyle != nil {
+					if w, ok := childStyle.GetLength("width"); ok && w > 0 {
+						// Include element margins
+						margin := childStyle.GetMargin()
+						childWidth := w + margin.Left + margin.Right
+						if isBlock {
+							// Block with explicit width: finalize current line, compare
+							if currentLineWidth > maxWidth {
+								maxWidth = currentLineWidth
+							}
+							currentLineWidth = 0
+							if childWidth > maxWidth {
+								maxWidth = childWidth
+							}
+						} else {
+							currentLineWidth += childWidth
+						}
+						continue
+					}
+				}
+			}
+			// Check HTML width attribute (e.g., <img width="18">)
+			if w, ok := child.GetAttribute("width"); ok {
+				if pw, ok := css.ParseLength(w + "px"); ok && pw > 0 {
+					if isBlock {
+						if currentLineWidth > maxWidth {
+							maxWidth = currentLineWidth
+						}
+						currentLineWidth = 0
+						if pw > maxWidth {
+							maxWidth = pw
+						}
+					} else {
+						currentLineWidth += pw
+					}
+					continue
+				}
+			}
+			// Check img natural dimensions (replaced elements with no explicit width)
+			if child.TagName == "img" {
+				if src, ok := child.GetAttribute("src"); ok {
+					if w, _, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil && w > 0 {
+						imgW := float64(w)
+						if isBlock {
+							if currentLineWidth > maxWidth {
+								maxWidth = currentLineWidth
+							}
+							currentLineWidth = 0
+							if imgW > maxWidth {
+								maxWidth = imgW
+							}
+						} else {
+							currentLineWidth += imgW
+						}
+						continue
+					}
+				}
+			}
+			childWidth := le.measureTextContentRecursive(child, fontSize, isBold, computedStyles)
+			if isBlock {
+				// Block children start new lines
+				if currentLineWidth > maxWidth {
+					maxWidth = currentLineWidth
+				}
+				currentLineWidth = 0
+				if childWidth > maxWidth {
+					maxWidth = childWidth
+				}
+			} else {
+				currentLineWidth += childWidth
+			}
+		}
+	}
+
+	// Add ::after content
+	if afterWidth > 0 {
+		if afterIsBlock {
+			// Finalize current line before block after
+			if currentLineWidth > maxWidth {
+				maxWidth = currentLineWidth
+			}
+			currentLineWidth = 0
+			if afterWidth > maxWidth {
+				maxWidth = afterWidth
+			}
+		} else {
+			currentLineWidth += afterWidth
+		}
+	}
+
+	// Finalize last line
+	if currentLineWidth > maxWidth {
+		maxWidth = currentLineWidth
+	}
+	return maxWidth
+}
+
+// measurePseudoContentWidth measures the text content width of a ::before or ::after
+// pseudo-element. Returns 0 if no pseudo-element content exists.
+func (le *LayoutEngine) measurePseudoContentWidth(node *html.Node, pseudoType string, fontSize float64, isBold bool, computedStyles map[*html.Node]*css.Style) float64 {
+	if le == nil || node.Type != html.ElementNode {
+		return 0
+	}
+	parentStyle := computedStyles[node]
+	pseudoStyle := css.ComputePseudoElementStyle(node, pseudoType, le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
+	if pseudoStyle == nil {
+		return 0
+	}
+	contentValues, hasContent := pseudoStyle.GetContentValues()
+	if !hasContent || len(contentValues) == 0 {
+		return 0
+	}
+
+	// Process counter-increment (same as createPseudoElementNode does)
+	if incVal, ok := pseudoStyle.Get("counter-increment"); ok {
+		increments := parseCounterIncrement(incVal)
+		for name, value := range increments {
+			le.counterIncrement(name, value)
+		}
+	}
+
+	// Get quotes from parent style
+	quotes := []string{"\"", "\"", "'", "'"}
+	if parentStyle != nil {
+		if q, ok := parentStyle.Get("quotes"); ok {
+			quotes = parseQuotes(q)
+		}
+	}
+
+	// Measure text content and image widths
+	totalWidth := 0.0
+	quoteDepth := 0
+	var textBuf string
+
+	for _, cv := range contentValues {
+		switch cv.Type {
+		case "text":
+			textBuf += cv.Value
+		case "url":
+			// Flush accumulated text
+			if textBuf != "" {
+				w, _ := text.MeasureTextWithWeight(textBuf, fontSize, isBold)
+				totalWidth += w
+				textBuf = ""
+			}
+			// Add image intrinsic width
+			if w, _, err := images.GetImageDimensionsWithFetcher(cv.Value, le.imageFetcher); err == nil {
+				totalWidth += float64(w)
+			}
+		case "counter":
+			counterValue := le.counterValue(cv.Value)
+			textBuf += fmt.Sprintf("%d", counterValue)
+		case "attr":
+			if val, ok := node.GetAttribute(cv.Value); ok && val != "" {
+				textBuf += val
+			}
+		case "open-quote":
+			if quoteDepth*2 < len(quotes) {
+				textBuf += quotes[quoteDepth*2]
+			}
+			quoteDepth++
+		case "close-quote":
+			if quoteDepth > 0 {
+				quoteDepth--
+			}
+			if quoteDepth*2+1 < len(quotes) {
+				textBuf += quotes[quoteDepth*2+1]
+			}
+		}
+	}
+	// Flush remaining text
+	if textBuf != "" {
+		w, _ := text.MeasureTextWithWeight(textBuf, fontSize, isBold)
+		totalWidth += w
+	}
+	return totalWidth
+}
+
 // Phase 9: calculateRowHeights determines row heights
+// Returns row heights and a boolean slice indicating which rows have explicit heights
 func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *TableInfo) []float64 {
 	numRows := len(cellGrid)
 	rowHeights := make([]float64, numRows)
+	tableInfo.RowHasExplicitHeight = make([]bool, numRows)
 
 	// Calculate row heights from cell content and explicit heights
 	for i := 0; i < numRows; i++ {
@@ -476,6 +783,7 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 			if cell.Box.Style != nil {
 				if h, ok := cell.Box.Style.GetLength("height"); ok && h > maxHeight {
 					maxHeight = h
+					tableInfo.RowHasExplicitHeight[i] = true
 				}
 			}
 			// Get padding and border from style since box values may not be set yet
@@ -515,13 +823,13 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 }
 
 // Phase 9: positionTableCells positions cells in the table
-func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCell, tableInfo *TableInfo, x, y float64) {
+func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCell, tableInfo *TableInfo, x, y float64, computedStyles map[*html.Node]*css.Style) {
 	borderSpacing := tableInfo.BorderSpacing
 	if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
 		borderSpacing = 0
 	}
 
-	// Position cells
+	// Single-pass: lay out cells row by row, updating row heights from actual content
 	currentY := y + tableBox.Border.Top + tableBox.Padding.Top + borderSpacing
 	processedCells := make(map[*TableCell]bool)
 
@@ -529,11 +837,15 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 		currentX := x + tableBox.Border.Left + tableBox.Padding.Left + borderSpacing
 		rowHeight := tableInfo.RowHeights[rowIdx]
 
+		type cellEntry struct {
+			cell      *TableCell
+			cellWidth float64
+		}
+		var rowCells []cellEntry
+
 		for colIdx, cell := range row {
 			if cell == nil || processedCells[cell] {
-				// Skip empty cells or already processed cells
 				if cell == nil {
-					// Still advance X for empty cell
 					currentX += tableInfo.ColumnWidths[colIdx] + borderSpacing
 				}
 				continue
@@ -550,9 +862,53 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				}
 			}
 
-			// Calculate cell height (sum of spanned rows)
+			// Lay out cell content using the full layout engine
+			if cell.Box.PseudoContent != "" && cell.Box.Node == nil {
+				// Pseudo-element cell: manual text box
+				cell.Box.Margin = cell.Box.Style.GetMargin()
+				cell.Box.Padding = cell.Box.Style.GetPadding()
+				cell.Box.Border = cell.Box.Style.GetBorderWidth()
+				cell.Box.X = currentX
+				cell.Box.Y = currentY
+
+				fontSize := cell.Box.Style.GetFontSize()
+				fontWeight := cell.Box.Style.GetFontWeight()
+				bold := fontWeight == css.FontWeightBold
+				textWidth, textHeight := text.MeasureTextWithWeight(cell.Box.PseudoContent, fontSize, bold)
+				textBox := &Box{
+					Style:         cell.Box.Style,
+					X:             currentX + cell.Box.Border.Left + cell.Box.Padding.Left,
+					Y:             currentY + cell.Box.Border.Top + cell.Box.Padding.Top,
+					Width:         textWidth,
+					Height:        textHeight,
+					Parent:        cell.Box,
+					PseudoContent: cell.Box.PseudoContent,
+				}
+				cell.Box.Children = append(cell.Box.Children, textBox)
+			} else if cell.Box.Node != nil {
+				// Use layoutNode to handle all content (text, inline elements, nested tables)
+				cellBox := le.layoutNode(cell.Box.Node, currentX, currentY, cellWidth, computedStyles, tableBox)
+				if cellBox != nil {
+					cell.Box = cellBox
+				}
+			}
+
+			// Update row height if actual content is taller (single-row cells only)
+			if cell.RowSpan == 1 && cell.Box.Height > rowHeight {
+				rowHeight = cell.Box.Height
+			}
+
+			rowCells = append(rowCells, cellEntry{cell: cell, cellWidth: cellWidth})
+			processedCells[cell] = true
+			currentX += cellWidth + borderSpacing
+		}
+
+		// Finalize row height and set cell dimensions
+		tableInfo.RowHeights[rowIdx] = rowHeight
+		for _, ce := range rowCells {
+			// Calculate cell height from spanned rows
 			cellHeight := 0.0
-			for r := 0; r < cell.RowSpan; r++ {
+			for r := 0; r < ce.cell.RowSpan; r++ {
 				if rowIdx+r < len(tableInfo.RowHeights) {
 					cellHeight += tableInfo.RowHeights[rowIdx+r]
 					if r > 0 {
@@ -561,70 +917,21 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				}
 			}
 
-			// Set cell box dimensions and position
-			// Note: cellWidth/cellHeight from row/column calculations include padding+border,
-			// but box.Width/Height should be content dimensions only
-			cell.Box.Margin = cell.Box.Style.GetMargin()
-			cell.Box.Padding = cell.Box.Style.GetPadding()
-			cell.Box.Border = cell.Box.Style.GetBorderWidth()
-			cell.Box.X = currentX
-			cell.Box.Y = currentY
-			// box.Width/Height should be border-box dimensions (for rendering)
-			cell.Box.Width = cellWidth
-			cell.Box.Height = cellHeight
-			if cell.Box.Width < 0 {
-				cell.Box.Width = 0
+			ce.cell.Box.Width = ce.cellWidth
+			ce.cell.Box.Height = cellHeight
+			if ce.cell.Box.Width < 0 {
+				ce.cell.Box.Width = 0
 			}
-			if cell.Box.Height < 0 {
-				cell.Box.Height = 0
+			if ce.cell.Box.Height < 0 {
+				ce.cell.Box.Height = 0
 			}
-
-			// Layout cell content (children)
-			childY := currentY + cell.Box.Border.Top + cell.Box.Padding.Top
-			childX := currentX + cell.Box.Border.Left + cell.Box.Padding.Left
-			childAvailableWidth := cellWidth - cell.Box.Padding.Left - cell.Box.Padding.Right
-
-			// Handle pseudo-element cells (have content but no DOM node)
-			if cell.Box.Node == nil && cell.Box.PseudoContent != "" {
-				// Measure and create text box for pseudo-content
-				fontSize := cell.Box.Style.GetFontSize()
-				fontWeight := cell.Box.Style.GetFontWeight()
-				bold := fontWeight == css.FontWeightBold
-				textWidth, textHeight := text.MeasureTextWithWeight(cell.Box.PseudoContent, fontSize, bold)
-				textBox := &Box{
-					Style:         cell.Box.Style,
-					X:             childX,
-					Y:             childY,
-					Width:         textWidth,
-					Height:        textHeight,
-					Parent:        cell.Box,
-					PseudoContent: cell.Box.PseudoContent,
-				}
-				cell.Box.Children = append(cell.Box.Children, textBox)
-			} else if cell.Box.Node != nil {
-				for _, childNode := range cell.Box.Node.Children {
-					if childNode.Type == html.TextNode {
-						// Handle text in cell
-						textBox := le.layoutTextNode(childNode, childX, childY, childAvailableWidth, cell.Box.Style, cell.Box)
-						if textBox != nil {
-							cell.Box.Children = append(cell.Box.Children, textBox)
-							childY += le.getTotalHeight(textBox)
-						}
-					}
-				}
-			}
-
-			// Add cell box to table's children
-			tableBox.Children = append(tableBox.Children, cell.Box)
-			processedCells[cell] = true
-
-			currentX += cellWidth + borderSpacing
+			tableBox.Children = append(tableBox.Children, ce.cell.Box)
 		}
 
 		currentY += rowHeight + borderSpacing
 	}
 
-	// Update table box height based on content (border-box = content area + borders + padding)
+	// Update table box height based on content
 	if len(cellGrid) > 0 {
 		tableBox.Height = currentY - y + tableBox.Border.Bottom + tableBox.Padding.Bottom
 	}

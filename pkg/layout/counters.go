@@ -57,6 +57,25 @@ func (le *LayoutEngine) counterPop(name string) {
 	}
 }
 
+// saveCounterState returns a deep copy of the current counter state
+func (le *LayoutEngine) saveCounterState() map[string][]int {
+	if le.counters == nil {
+		return nil
+	}
+	saved := make(map[string][]int, len(le.counters))
+	for k, v := range le.counters {
+		cp := make([]int, len(v))
+		copy(cp, v)
+		saved[k] = cp
+	}
+	return saved
+}
+
+// restoreCounterState restores a previously saved counter state
+func (le *LayoutEngine) restoreCounterState(saved map[string][]int) {
+	le.counters = saved
+}
+
 // parseCounterReset parses the counter-reset property value
 // Format: "name [value] [name2 [value2] ...]" or "none"
 func parseCounterReset(value string) map[string]int {
