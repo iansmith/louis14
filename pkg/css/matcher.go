@@ -237,6 +237,32 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		return false
 	case pc == "link":
 		return node.TagName == "a"
+	case strings.HasPrefix(pc, "is("):
+		// :is() matches if ANY selector in the comma-separated list matches
+		arg := pc[len("is(") : len(pc)-1]
+		selectors := splitSelectorGroup(strings.TrimSpace(arg))
+		for _, sel := range selectors {
+			innerSel := ParseSelector(strings.TrimSpace(sel))
+			if len(innerSel.Parts) > 0 {
+				if matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
+					return true
+				}
+			}
+		}
+		return false
+	case strings.HasPrefix(pc, "where("):
+		// :where() is identical to :is() but with zero specificity
+		arg := pc[len("where(") : len(pc)-1]
+		selectors := splitSelectorGroup(strings.TrimSpace(arg))
+		for _, sel := range selectors {
+			innerSel := ParseSelector(strings.TrimSpace(sel))
+			if len(innerSel.Parts) > 0 {
+				if matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
+					return true
+				}
+			}
+		}
+		return false
 	default:
 		return false
 	}

@@ -124,7 +124,11 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 		// Percentage width was already resolved in layoutNode → use the content width
 		explicitTableWidth = tableBox.Width - tableBox.Border.Left - tableBox.Border.Right - tableBox.Padding.Left - tableBox.Padding.Right
 	}
-	tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth, computedStyles)
+	if tableBox.Style.GetTableLayout() == css.TableLayoutFixed && explicitTableWidth > 0 {
+		tableInfo.ColumnWidths = le.calculateColumnWidthsFixed(cellGrid, tableInfo, explicitTableWidth)
+	} else {
+		tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth, computedStyles)
+	}
 
 	// Set table width from column widths if not explicitly set
 	_, hasExplicitWidth := tableBox.Style.GetLength("width")
@@ -464,6 +468,78 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 			}
 		} else {
 			// No remaining space; use minimum width
+			for i := 0; i < numCols; i++ {
+				if !hasExplicit[i] {
+					columnWidths[i] = 10
+				}
+			}
+		}
+	}
+
+	return columnWidths
+}
+
+// calculateColumnWidthsFixed implements CSS 2.1 §17.5.2.1 fixed table layout.
+// Only the first row is examined to determine column widths.
+func (le *LayoutEngine) calculateColumnWidthsFixed(cellGrid [][]*TableCell, tableInfo *TableInfo, tableWidth float64) []float64 {
+	numCols := tableInfo.NumCols
+	if numCols == 0 {
+		return []float64{}
+	}
+
+	columnWidths := make([]float64, numCols)
+	hasExplicit := make([]bool, numCols)
+
+	// Step 1: Examine ONLY the first row for width hints
+	if len(cellGrid) > 0 {
+		firstRow := cellGrid[0]
+		for colIdx, cell := range firstRow {
+			if cell == nil || cell.Box == nil || cell.Box.Style == nil || cell.ColIdx != colIdx {
+				continue
+			}
+			if w, ok := cell.Box.Style.GetLength("width"); ok && w > 0 {
+				if cell.ColSpan > 1 {
+					perCol := w / float64(cell.ColSpan)
+					for c := 0; c < cell.ColSpan && colIdx+c < numCols; c++ {
+						if !hasExplicit[colIdx+c] {
+							columnWidths[colIdx+c] = perCol
+							hasExplicit[colIdx+c] = true
+						}
+					}
+				} else {
+					columnWidths[colIdx] = w
+					hasExplicit[colIdx] = true
+				}
+			}
+		}
+	}
+
+	// Step 2: Calculate total spacing
+	var totalSpacing float64
+	if tableInfo.BorderCollapse == css.BorderCollapseSeparate {
+		totalSpacing = tableInfo.BorderSpacing * float64(numCols+1)
+	}
+
+	// Step 3: Distribute remaining width evenly among unset columns
+	usedWidth := totalSpacing
+	unsetCols := 0
+	for i := 0; i < numCols; i++ {
+		usedWidth += columnWidths[i]
+		if !hasExplicit[i] {
+			unsetCols++
+		}
+	}
+
+	if unsetCols > 0 {
+		remaining := tableWidth - usedWidth
+		if remaining > 0 {
+			perCol := remaining / float64(unsetCols)
+			for i := 0; i < numCols; i++ {
+				if !hasExplicit[i] {
+					columnWidths[i] = perCol
+				}
+			}
+		} else {
 			for i := 0; i < numCols; i++ {
 				if !hasExplicit[i] {
 					columnWidths[i] = 10
@@ -886,6 +962,12 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				}
 				cell.Box.Children = append(cell.Box.Children, textBox)
 			} else if cell.Box.Node != nil {
+				// table-layout:fixed cells clip overflow to enforce column widths
+				if tableBox.Style != nil && tableBox.Style.GetTableLayout() == css.TableLayoutFixed {
+					if cellStyle, ok := computedStyles[cell.Box.Node]; ok && cellStyle != nil {
+						cellStyle.Set("overflow", "hidden")
+					}
+				}
 				// Use layoutNode to handle all content (text, inline elements, nested tables)
 				cellBox := le.layoutNode(cell.Box.Node, currentX, currentY, cellWidth, computedStyles, tableBox)
 				if cellBox != nil {

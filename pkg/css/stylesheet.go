@@ -636,7 +636,25 @@ func parseSelector(selectorStr string) Selector {
 		}
 		specificity += len(part.Classes) * 10
 		specificity += len(part.Attributes) * 10
-		specificity += len(part.PseudoClasses) * 10
+		for _, pc := range part.PseudoClasses {
+			if strings.HasPrefix(pc, "is(") {
+				// :is() takes specificity of its most specific argument
+				arg := pc[len("is(") : len(pc)-1]
+				sels := splitSelectorGroup(strings.TrimSpace(arg))
+				maxSpec := 0
+				for _, sel := range sels {
+					innerSel := parseSelector(strings.TrimSpace(sel))
+					if innerSel.Specificity > maxSpec {
+						maxSpec = innerSel.Specificity
+					}
+				}
+				specificity += maxSpec
+			} else if strings.HasPrefix(pc, "where(") {
+				// :where() has zero specificity
+			} else {
+				specificity += 10
+			}
+		}
 		if part.Element != "" && part.Element != "*" {
 			specificity += 1
 		}
@@ -675,17 +693,24 @@ func tokenizeSelector(s string) []string {
 	tokens := make([]string, 0)
 	current := ""
 	inBracket := false
+	parenDepth := 0
 
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
 
-		if ch == '[' {
+		if ch == '(' {
+			parenDepth++
+			current += string(ch)
+		} else if ch == ')' {
+			parenDepth--
+			current += string(ch)
+		} else if ch == '[' {
 			inBracket = true
 			current += string(ch)
 		} else if ch == ']' {
 			inBracket = false
 			current += string(ch)
-		} else if !inBracket && (ch == '>' || ch == '+' || ch == '~' || ch == ' ') {
+		} else if !inBracket && parenDepth == 0 && (ch == '>' || ch == '+' || ch == '~' || ch == ' ') {
 			if current != "" {
 				tokens = append(tokens, current)
 				current = ""

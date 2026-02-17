@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<title>CSS table-layout: fixed</title>
+<link rel="match" href="table-layout-fixed-001-ref.html">
+<style>
+  table {
+    table-layout: fixed;
+    width: 200px;
+    border-collapse: collapse;
+  }
+  td {
+    border: 1px solid black;
+    padding: 5px;
+  }
+  .narrow { width: 50px; }
+</style>
+<p>Test passes if the first column is 50px wide and the second fills the rest.</p>
+<table>
+  <tr>
+    <td class="narrow" style="background: lime;">A</td>
+    <td style="background: aqua;">BBBBBBBBBBBBBBBBBBBBB</td>
+  </tr>
+  <tr>
+    <td style="background: lime;">CCCCCCCCCCCCCCCCCCCCC</td>
+    <td style="background: aqua;">D</td>
+  </tr>
+</table>

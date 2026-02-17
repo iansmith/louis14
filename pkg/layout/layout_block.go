@@ -235,6 +235,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		contentHeight = 0 // Auto height - will be calculated from children
 	}
 
+	// CSS aspect-ratio: compute missing dimension from the other + ratio
+	ar := style.GetAspectRatio()
+	if ar.IsSet && !hasExplicitHeight && contentWidth > 0 {
+		contentHeight = contentWidth * ar.Height / ar.Width
+		hasExplicitHeight = true
+	} else if ar.IsSet && hasExplicitHeight && !hasExplicitWidth {
+		contentWidth = contentHeight * ar.Width / ar.Height
+		hasExplicitWidth = true
+	}
+
 	// CSS3 box-sizing: border-box means specified width/height include padding+border
 	if style.GetBoxSizing() == "border-box" {
 		if hasExplicitWidth {
@@ -424,6 +434,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if position == css.PositionAbsolute || position == css.PositionFixed {
 		// Absolutely positioned elements - positioning applied after children layout
 		le.absoluteBoxes = append(le.absoluteBoxes, box)
+	}
+
+	// Multi-column layout: triggered by column-count or column-width on block elements
+	if (display == css.DisplayBlock || display == css.DisplayInlineBlock) &&
+		(style.GetColumnCount() > 0 || style.GetColumnWidth() > 0) {
+		le.layoutMulticolumn(box, x, y, availableWidth, style, computedStyles)
+		return box
 	}
 
 	// Phase 9: Handle table layout specially

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<title>CSS multi-column gap reference</title>
+<style>
+  .container {
+    width: 220px;
+    display: flex;
+    gap: 20px;
+  }
+  .col {
+    width: 100px;
+    height: 50px;
+  }
+  .a { background: green; }
+  .b { background: blue; }
+</style>
+<p>Test passes if there are two colored rectangles (green, blue) with a 20px gap between them.</p>
+<div class="container">
+  <div class="col a"></div>
+  <div class="col b"></div>
+</div>

@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<title>CSS inset: shorthand property</title>
+<link rel="match" href="inset-shorthand-001-ref.html">
+<style>
+  .container {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    background: red;
+  }
+  .box {
+    position: absolute;
+    inset: 20px;
+    background: green;
+  }
+</style>
+<p>Test passes if there is a green square inside a red border (20px on all sides).</p>
+<div class="container"><div class="box"></div></div>

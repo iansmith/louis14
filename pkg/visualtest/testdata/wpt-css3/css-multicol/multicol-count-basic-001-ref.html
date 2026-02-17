@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<title>CSS multi-column reference</title>
+<style>
+  .container {
+    width: 300px;
+    display: flex;
+  }
+  .col {
+    width: 100px;
+    height: 60px;
+  }
+  .a { background: red; }
+  .b { background: green; }
+  .c { background: blue; }
+</style>
+<p>Test passes if there are three vertical colored stripes: red, green, blue (each 100px wide).</p>
+<div class="container">
+  <div class="col a"></div>
+  <div class="col b"></div>
+  <div class="col c"></div>
+</div>

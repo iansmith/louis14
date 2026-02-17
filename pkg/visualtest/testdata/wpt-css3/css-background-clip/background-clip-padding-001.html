@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<title>CSS background-clip: padding-box</title>
+<link rel="match" href="background-clip-padding-001-ref.html">
+<style>
+  div {
+    width: 80px;
+    height: 80px;
+    padding: 10px;
+    border: 10px solid transparent;
+    background-color: green;
+    background-clip: padding-box;
+    margin: 20px;
+  }
+</style>
+<p>Test passes if there is a green square (100x100) with no green under the transparent border.</p>
+<div></div>

@@ -903,6 +903,156 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("row-gap", parts[0])
 			style.Set("column-gap", parts[1])
 		}
+	case "columns":
+		// columns shorthand: <column-width> <column-count> | auto
+		parts := strings.Fields(value)
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "auto" {
+				continue
+			}
+			if _, err := strconv.Atoi(part); err == nil {
+				style.Set("column-count", part)
+			} else {
+				style.Set("column-width", part)
+			}
+		}
+	case "overflow":
+		// overflow shorthand: 1 or 2 values for overflow-x and overflow-y
+		parts := strings.Fields(value)
+		if len(parts) == 2 {
+			style.Set("overflow-x", parts[0])
+			style.Set("overflow-y", parts[1])
+			style.Set("overflow", parts[0]) // fallback for GetOverflow()
+		} else {
+			style.Set("overflow", value)
+			style.Set("overflow-x", value)
+			style.Set("overflow-y", value)
+		}
+	// CSS Logical Properties — resolve to physical properties
+	// Assumes horizontal-tb writing mode (default) with LTR direction
+	case "margin-inline-start":
+		style.Set("margin-left", value)
+	case "margin-inline-end":
+		style.Set("margin-right", value)
+	case "margin-block-start":
+		style.Set("margin-top", value)
+	case "margin-block-end":
+		style.Set("margin-bottom", value)
+	case "margin-inline":
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("margin-left", parts[0])
+			style.Set("margin-right", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("margin-left", parts[0])
+			style.Set("margin-right", parts[1])
+		}
+	case "margin-block":
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("margin-top", parts[0])
+			style.Set("margin-bottom", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("margin-top", parts[0])
+			style.Set("margin-bottom", parts[1])
+		}
+	case "padding-inline-start":
+		style.Set("padding-left", value)
+	case "padding-inline-end":
+		style.Set("padding-right", value)
+	case "padding-block-start":
+		style.Set("padding-top", value)
+	case "padding-block-end":
+		style.Set("padding-bottom", value)
+	case "padding-inline":
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("padding-left", parts[0])
+			style.Set("padding-right", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("padding-left", parts[0])
+			style.Set("padding-right", parts[1])
+		}
+	case "padding-block":
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("padding-top", parts[0])
+			style.Set("padding-bottom", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("padding-top", parts[0])
+			style.Set("padding-bottom", parts[1])
+		}
+	case "border-inline-start":
+		expandBorderSideProperty(style, "border-left", value)
+	case "border-inline-end":
+		expandBorderSideProperty(style, "border-right", value)
+	case "border-block-start":
+		expandBorderSideProperty(style, "border-top", value)
+	case "border-block-end":
+		expandBorderSideProperty(style, "border-bottom", value)
+	case "border-inline-start-width":
+		style.Set("border-left-width", value)
+	case "border-inline-end-width":
+		style.Set("border-right-width", value)
+	case "border-block-start-width":
+		style.Set("border-top-width", value)
+	case "border-block-end-width":
+		style.Set("border-bottom-width", value)
+	case "border-inline-start-style":
+		style.Set("border-left-style", value)
+	case "border-inline-end-style":
+		style.Set("border-right-style", value)
+	case "border-block-start-style":
+		style.Set("border-top-style", value)
+	case "border-block-end-style":
+		style.Set("border-bottom-style", value)
+	case "border-inline-start-color":
+		style.Set("border-left-color", value)
+	case "border-inline-end-color":
+		style.Set("border-right-color", value)
+	case "border-block-start-color":
+		style.Set("border-top-color", value)
+	case "border-block-end-color":
+		style.Set("border-bottom-color", value)
+	case "inset-inline-start":
+		style.Set("left", value)
+	case "inset-inline-end":
+		style.Set("right", value)
+	case "inset-block-start":
+		style.Set("top", value)
+	case "inset-block-end":
+		style.Set("bottom", value)
+	case "inset-inline":
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("left", parts[0])
+			style.Set("right", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("left", parts[0])
+			style.Set("right", parts[1])
+		}
+	case "inset-block":
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("top", parts[0])
+			style.Set("bottom", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("top", parts[0])
+			style.Set("bottom", parts[1])
+		}
+	case "inline-size":
+		style.Set("width", value)
+	case "block-size":
+		style.Set("height", value)
+	case "min-inline-size":
+		style.Set("min-width", value)
+	case "min-block-size":
+		style.Set("min-height", value)
+	case "max-inline-size":
+		style.Set("max-width", value)
+	case "max-block-size":
+		style.Set("max-height", value)
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -1867,6 +2017,7 @@ const (
 	OverflowHidden  OverflowType = "hidden"
 	OverflowScroll  OverflowType = "scroll"
 	OverflowAuto    OverflowType = "auto"
+	OverflowClip    OverflowType = "clip"
 )
 
 // GetOverflow returns the overflow value (default: visible)
@@ -1877,10 +2028,12 @@ func (s *Style) GetOverflow() OverflowType {
 			return OverflowHidden
 		case "scroll":
 			return OverflowScroll
-		case "auto":
+		case "auto", "overlay":
 			return OverflowAuto
 		case "visible":
 			return OverflowVisible
+		case "clip":
+			return OverflowClip
 		}
 	}
 	return OverflowVisible
@@ -1894,10 +2047,12 @@ func (s *Style) GetOverflowX() OverflowType {
 			return OverflowHidden
 		case "scroll":
 			return OverflowScroll
-		case "auto":
+		case "auto", "overlay":
 			return OverflowAuto
 		case "visible":
 			return OverflowVisible
+		case "clip":
+			return OverflowClip
 		}
 	}
 	return s.GetOverflow()
@@ -1911,10 +2066,12 @@ func (s *Style) GetOverflowY() OverflowType {
 			return OverflowHidden
 		case "scroll":
 			return OverflowScroll
-		case "auto":
+		case "auto", "overlay":
 			return OverflowAuto
 		case "visible":
 			return OverflowVisible
+		case "clip":
+			return OverflowClip
 		}
 	}
 	return s.GetOverflow()
@@ -2224,6 +2381,66 @@ func (s *Style) GetBorderSpacing() float64 {
 		}
 	}
 	return 0 // CSS 2.1 initial value
+}
+
+// TableLayout represents the table-layout property value
+type TableLayout string
+
+const (
+	TableLayoutAuto  TableLayout = "auto"
+	TableLayoutFixed TableLayout = "fixed"
+)
+
+// GetTableLayout returns the table-layout value (default: auto)
+func (s *Style) GetTableLayout() TableLayout {
+	if val, ok := s.Get("table-layout"); ok {
+		if val == "fixed" {
+			return TableLayoutFixed
+		}
+	}
+	return TableLayoutAuto
+}
+
+// GetColumnCount returns the column-count value (0 means "auto"/not set)
+func (s *Style) GetColumnCount() int {
+	if val, ok := s.Get("column-count"); ok {
+		val = strings.TrimSpace(val)
+		if val == "auto" {
+			return 0
+		}
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// GetColumnWidth returns the column-width value (0 means "auto"/not set)
+func (s *Style) GetColumnWidth() float64 {
+	if val, ok := s.Get("column-width"); ok {
+		val = strings.TrimSpace(val)
+		if val == "auto" {
+			return 0
+		}
+		if w, ok := ParseLength(val); ok {
+			return w
+		}
+	}
+	return 0
+}
+
+// GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em)
+func (s *Style) GetColumnGapMulticol() float64 {
+	if val, ok := s.Get("column-gap"); ok {
+		val = strings.TrimSpace(val)
+		if val == "normal" {
+			return s.GetFontSize()
+		}
+		if w, ok := ParseLength(val); ok {
+			return w
+		}
+	}
+	return s.GetFontSize() // multicol default is "normal" = 1em
 }
 
 // Phase 10: Flexbox layout
@@ -3266,6 +3483,30 @@ func (s *Style) GetBackgroundSize() BackgroundSize {
 	return size
 }
 
+// BackgroundClipType represents the background-clip property value
+type BackgroundClipType string
+
+const (
+	BackgroundClipBorderBox  BackgroundClipType = "border-box"
+	BackgroundClipPaddingBox BackgroundClipType = "padding-box"
+	BackgroundClipContentBox BackgroundClipType = "content-box"
+)
+
+// GetBackgroundClip returns the background-clip value (default: border-box)
+func (s *Style) GetBackgroundClip() BackgroundClipType {
+	if val, ok := s.Get("background-clip"); ok {
+		switch strings.TrimSpace(val) {
+		case "padding-box":
+			return BackgroundClipPaddingBox
+		case "content-box":
+			return BackgroundClipContentBox
+		case "border-box":
+			return BackgroundClipBorderBox
+		}
+	}
+	return BackgroundClipBorderBox
+}
+
 // Phase 23: List styling
 
 // ListStyleType represents the list-style-type property value
@@ -3653,6 +3894,42 @@ func parsePositionKeyword(s string) float64 {
 		}
 	}
 	return 0.5
+}
+
+// AspectRatio represents a parsed aspect-ratio CSS value
+type AspectRatio struct {
+	Width  float64 // Numerator (e.g., 16 in 16/9)
+	Height float64 // Denominator (e.g., 9 in 16/9)
+	IsSet  bool    // True if aspect-ratio was explicitly set
+}
+
+// GetAspectRatio parses the aspect-ratio property.
+// Formats: "auto", "16/9", "16 / 9", "1.5", "auto 16/9"
+func (s *Style) GetAspectRatio() AspectRatio {
+	val, ok := s.Get("aspect-ratio")
+	if !ok || val == "auto" {
+		return AspectRatio{}
+	}
+	// Strip "auto" prefix (e.g., "auto 16/9")
+	val = strings.TrimSpace(strings.TrimPrefix(val, "auto"))
+	if val == "" {
+		return AspectRatio{}
+	}
+	// Try "W / H" or "W/H" format
+	if idx := strings.Index(val, "/"); idx >= 0 {
+		wStr := strings.TrimSpace(val[:idx])
+		hStr := strings.TrimSpace(val[idx+1:])
+		w, errW := strconv.ParseFloat(wStr, 64)
+		h, errH := strconv.ParseFloat(hStr, 64)
+		if errW == nil && errH == nil && w > 0 && h > 0 {
+			return AspectRatio{Width: w, Height: h, IsSet: true}
+		}
+	}
+	// Try single number (e.g., "1.5" means 1.5/1)
+	if f, err := strconv.ParseFloat(strings.TrimSpace(val), 64); err == nil && f > 0 {
+		return AspectRatio{Width: f, Height: 1, IsSet: true}
+	}
+	return AspectRatio{}
 }
 
 // GetMaskImage returns the mask-image property value

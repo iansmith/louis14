@@ -981,9 +981,10 @@ func (dc *Context) PushGroup() {
 	}
 	dc.groupStack = append(dc.groupStack, entry)
 
-	// Create fresh offscreen buffer and rasterizer
+	// Create fresh offscreen buffer and rasterizer.
+	// Keep the parent's clip mask so group rendering respects ancestor overflow clips.
 	dc.im = image.NewRGBA(image.Rect(0, 0, dc.width, dc.height))
-	dc.mask = nil
+	// dc.mask is kept from parent (not set to nil) so clipping is inherited
 	dc.rasterizer = raster.NewRasterizer(dc.width, dc.height)
 }
 

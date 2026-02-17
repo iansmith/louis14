@@ -261,22 +261,40 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	// Step 1: Background and borders of this element
 	r.drawBoxBackgroundAndBorders(box)
 
-	// Check if we need to clip overflow
-	needsClip := false
+	// Check if we need to clip overflow (per-axis)
+	needsClipX := false
+	needsClipY := false
 	if box.Style != nil {
-		if overflow, ok := box.Style.Get("overflow"); ok {
-			needsClip = (overflow == "hidden" || overflow == "scroll" || overflow == "auto")
-		}
+		oxType := box.Style.GetOverflowX()
+		oyType := box.Style.GetOverflowY()
+		needsClipX = (oxType != css.OverflowVisible)
+		needsClipY = (oyType != css.OverflowVisible)
 	}
+	needsClip := needsClipX || needsClipY
 
-	// Apply clipping if overflow: hidden/scroll/auto
+	// Apply clipping if any axis has non-visible overflow
 	if needsClip {
 		r.context.Push()
-		// CSS 2.1 §11.1.1: Clip to the padding box (inside border, outside padding)
-		clipX := box.X + box.Border.Left
-		clipY := box.Y + box.Border.Top
-		clipW := box.Width - box.Border.Left - box.Border.Right
-		clipH := box.Height - box.Border.Top - box.Border.Bottom
+
+		// Per-axis clipping: clip only on axes with non-visible overflow.
+		// Unclipped axes extend to the full canvas so overflow remains visible.
+		canvasW := float64(r.context.Width())
+		canvasH := float64(r.context.Height())
+
+		clipX := 0.0
+		clipY := 0.0
+		clipW := canvasW
+		clipH := canvasH
+
+		// Clip to padding box on each axis that needs clipping
+		if needsClipX {
+			clipX = box.X + box.Border.Left
+			clipW = box.Width - box.Border.Left - box.Border.Right
+		}
+		if needsClipY {
+			clipY = box.Y + box.Border.Top
+			clipH = box.Height - box.Border.Top - box.Border.Bottom
+		}
 
 		// Use rounded clip path when border-radius is set
 		var corners css.BorderRadiusCorners
@@ -285,7 +303,12 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		}
 		if corners.MaxRadius() > 0 {
 			// Reduce each corner radius by border width for inner (padding box) clipping
-			clampZero := func(v float64) float64 { if v < 0 { return 0 }; return v }
+			clampZero := func(v float64) float64 {
+				if v < 0 {
+					return 0
+				}
+				return v
+			}
 			r.context.DrawRoundedRectangleCorners(clipX, clipY, clipW, clipH,
 				clampZero(corners.TopLeft-box.Border.Left),
 				clampZero(corners.TopRight-box.Border.Right),
@@ -310,7 +333,7 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	// Exception: if overflow != visible, descendants were NOT promoted (they
 	// must stay within the overflow clip), so keep the lists.
 	isZAutoPositioned := layout.IsPositioned(box) && !layout.BoxCreatesStackingContext(box)
-	hasOverflowClip := box.Style != nil && box.Style.GetOverflow() != css.OverflowVisible
+	hasOverflowClip := hasNonVisibleOverflow(box)
 	// Only clear descendants if they were actually promoted to a parent stacking
 	// context. When box.Parent is nil, this is a root box and there's no parent
 	// to have promoted to — descendants must be painted here.
@@ -335,7 +358,7 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 
 	// Step 3: In-flow, non-positioned, block-level descendants (backgrounds/borders)
 	for _, child := range blocks {
-		if child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible {
+		if hasNonVisibleOverflow(child) {
 			r.paintStackingContext(child) // Paint atomically with clipping
 		} else {
 			r.drawBoxBackgroundAndBorders(child)
@@ -357,7 +380,7 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 
 	// Also paint content of blocks at step 5 (text/images inside blocks)
 	for _, child := range blocks {
-		if child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible {
+		if hasNonVisibleOverflow(child) {
 			continue // Already painted atomically in step 3
 		}
 		r.drawBoxContent(child)
@@ -839,6 +862,17 @@ func hasBlendModeDescendant(box *layout.Box) bool {
 	return false
 }
 
+// hasNonVisibleOverflow returns true if a box has any non-visible overflow
+// on either axis. This handles per-axis overflow (e.g. overflow-x:clip with
+// overflow-y:visible), not just the shorthand overflow property.
+func hasNonVisibleOverflow(box *layout.Box) bool {
+	if box.Style == nil {
+		return false
+	}
+	return box.Style.GetOverflowX() != css.OverflowVisible ||
+		box.Style.GetOverflowY() != css.OverflowVisible
+}
+
 // collectDescendantsForPaintOrder recursively collects all descendants,
 // categorizing them by paint order. Stops at child stacking contexts.
 func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
@@ -885,15 +919,15 @@ func (r *Renderer) collectDescendantsForPaintOrder(box *layout.Box,
 			// context, not this element's.
 			// Exception: don't promote if overflow != visible — the overflow clip
 			// must contain all descendants.
-			hasOverflowClip := child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible
-			if !hasOverflowClip {
+			hasOverflowClipChild := hasNonVisibleOverflow(child)
+			if !hasOverflowClipChild {
 				r.promoteDescendantsToParentSC(child, negativeZ, zeroAutoZ, positiveZ)
 			}
 		} else if layout.IsInline(child) {
 			*inlines = append(*inlines, child)
 			// Recurse into inline's descendants (inline content is part of step 5)
 			r.collectDescendantsForPaintOrder(child, negativeZ, blocks, floats, inlines, zeroAutoZ, positiveZ)
-		} else if child.Style != nil && child.Style.GetOverflow() != css.OverflowVisible {
+		} else if hasNonVisibleOverflow(child) {
 			// Block with overflow clipping — paint atomically (don't flatten children)
 			*blocks = append(*blocks, child)
 		} else {
@@ -992,6 +1026,26 @@ func (r *Renderer) getEffectiveY(box *layout.Box) float64 {
 	return box.Y - r.scrollY // Non-fixed content is shifted up by scrollY
 }
 
+// backgroundClipCoords returns x, y, width, height for drawing a background
+// based on the background-clip property value.
+func backgroundClipCoords(box *layout.Box, effectiveY float64) (float64, float64, float64, float64) {
+	clip := box.Style.GetBackgroundClip()
+	switch clip {
+	case css.BackgroundClipPaddingBox:
+		return box.X + box.Border.Left,
+			effectiveY + box.Border.Top,
+			box.Width - box.Border.Left - box.Border.Right,
+			box.Height - box.Border.Top - box.Border.Bottom
+	case css.BackgroundClipContentBox:
+		return box.X + box.Border.Left + box.Padding.Left,
+			effectiveY + box.Border.Top + box.Padding.Top,
+			box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right,
+			box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+	default: // border-box
+		return box.X, effectiveY, box.Width, box.Height
+	}
+}
+
 // drawBoxBackgroundAndBorders draws only the background and borders of a box.
 func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 	if box == nil || box.Style == nil {
@@ -1039,15 +1093,12 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 					float64(color.B)/255.0,
 					color.A)
 
-				bgX := box.X
-				bgY := effectiveY
-				bgWidth := box.Width   // Border-box dimensions
-				bgHeight := box.Height // Border-box dimensions
+				bgX, bgY, bgWidth, bgHeight := backgroundClipCoords(box, effectiveY)
 
 				// CRITICAL FIX: For inline elements, box.Height is the line box height
 				// but borders/padding "bleed" outside the line box (CSS 2.1 §10.8.1)
 				// We must extend the background to cover the full bleeding area
-				if box.Style.GetDisplay() == css.DisplayInline {
+				if box.Style.GetDisplay() == css.DisplayInline && box.Style.GetBackgroundClip() == css.BackgroundClipBorderBox {
 					// Add vertical borders and padding to line box height for rendering
 					bgHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
 					// Adjust Y position to account for top border/padding

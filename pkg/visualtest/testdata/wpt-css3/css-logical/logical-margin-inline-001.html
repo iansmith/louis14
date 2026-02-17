@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<title>CSS logical properties: margin-inline-start/end</title>
+<link rel="match" href="logical-margin-inline-001-ref.html">
+<style>
+  .container {
+    width: 300px;
+    background: red;
+  }
+  .box {
+    width: 100px;
+    height: 50px;
+    background: green;
+    margin-inline-start: 50px;
+    margin-inline-end: 50px;
+  }
+</style>
+<p>Test passes if there is a green rectangle with red on both sides (50px each).</p>
+<div class="container"><div class="box"></div></div>

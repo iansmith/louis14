@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<title>CSS inset: two-value shorthand (vertical horizontal)</title>
+<link rel="match" href="inset-values-001-ref.html">
+<style>
+  .container {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    background: red;
+  }
+  .box {
+    position: absolute;
+    inset: 10px 30px;
+    background: green;
+  }
+</style>
+<p>Test passes if the green box has 10px red on top/bottom and 30px red on left/right.</p>
+<div class="container"><div class="box"></div></div>

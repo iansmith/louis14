@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<title>CSS multi-column: column-count basic</title>
+<link rel="match" href="multicol-count-basic-001-ref.html">
+<style>
+  .multicol {
+    column-count: 3;
+    column-gap: 0;
+    width: 300px;
+    font-size: 14px;
+    line-height: 20px;
+  }
+  .multicol div {
+    height: 60px;
+  }
+  .a { background: red; }
+  .b { background: green; }
+  .c { background: blue; }
+</style>
+<p>Test passes if there are three vertical colored stripes: red, green, blue (each 100px wide).</p>
+<div class="multicol">
+  <div class="a"></div>
+  <div class="b"></div>
+  <div class="c"></div>
+</div>

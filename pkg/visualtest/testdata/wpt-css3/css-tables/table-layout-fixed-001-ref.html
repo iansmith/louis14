@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<title>CSS table-layout: fixed reference</title>
+<style>
+  table {
+    table-layout: fixed;
+    width: 200px;
+    border-collapse: collapse;
+  }
+  td {
+    border: 1px solid black;
+    padding: 5px;
+    overflow: hidden;
+  }
+  .col1 { width: 50px; }
+  .col2 { width: 150px; }
+</style>
+<p>Test passes if the first column is 50px wide and the second fills the rest.</p>
+<table>
+  <tr>
+    <td class="col1" style="background: lime;">A</td>
+    <td class="col2" style="background: aqua;">BBBBBBBBBBBBBBBBBBBBB</td>
+  </tr>
+  <tr>
+    <td class="col1" style="background: lime;">CCCCCCCCCCCCCCCCCCCCC</td>
+    <td class="col2" style="background: aqua;">D</td>
+  </tr>
+</table>
