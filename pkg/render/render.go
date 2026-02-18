@@ -1165,36 +1165,21 @@ func (r *Renderer) getEffectiveY(box *layout.Box) float64 {
 
 // backgroundClipCoords returns x, y, width, height for drawing a background
 // based on the background-clip property value.
-// Y positions are snapped to integer pixel boundaries (floor) to prevent 1px
-// rendering artifacts from sub-pixel layout positions. This matches how browsers
-// handle pixel snapping for background rendering. Without snapping, fractional Y
-// positions (e.g. Y=51.2 from a 19.2px line-height) cause the gg rasterizer to
-// fill an extra edge pixel, making boxes appear 1px taller than intended.
 func backgroundClipCoords(box *layout.Box, effectiveY float64) (float64, float64, float64, float64) {
 	clip := box.Style.GetBackgroundClip()
 	switch clip {
 	case css.BackgroundClipPaddingBox:
-		rawY := effectiveY + box.Border.Top
-		rawEndY := effectiveY + box.Height - box.Border.Bottom
-		snappedY := math.Floor(rawY)
-		snappedH := math.Floor(rawEndY) - snappedY
 		return box.X + box.Border.Left,
-			snappedY,
+			effectiveY + box.Border.Top,
 			box.Width - box.Border.Left - box.Border.Right,
-			snappedH
+			box.Height - box.Border.Top - box.Border.Bottom
 	case css.BackgroundClipContentBox:
-		rawY := effectiveY + box.Border.Top + box.Padding.Top
-		rawEndY := effectiveY + box.Height - box.Border.Bottom - box.Padding.Bottom
-		snappedY := math.Floor(rawY)
-		snappedH := math.Floor(rawEndY) - snappedY
 		return box.X + box.Border.Left + box.Padding.Left,
-			snappedY,
+			effectiveY + box.Border.Top + box.Padding.Top,
 			box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right,
-			snappedH
+			box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
 	default: // border-box
-		snappedY := math.Floor(effectiveY)
-		snappedH := math.Floor(effectiveY+box.Height) - snappedY
-		return box.X, snappedY, box.Width, snappedH
+		return box.X, effectiveY, box.Width, box.Height
 	}
 }
 
