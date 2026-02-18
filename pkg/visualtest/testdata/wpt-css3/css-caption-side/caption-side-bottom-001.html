@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: caption-side bottom places caption below table</title>
+  <link rel="help" href="https://drafts.csswg.org/css-tables-3/#caption-side" />
+  <link rel="match" href="caption-side-bottom-001-ref.html" />
+  <meta name="assert" content="caption-side:bottom renders the table caption below the table body." />
+  <style>
+  table {
+    border-collapse: collapse;
+    width: 100px;
+  }
+  td {
+    height: 40px;
+    background: green;
+    padding: 0;
+  }
+  caption {
+    caption-side: bottom;
+    height: 20px;
+    background: lime;
+  }
+  </style>
+</head>
+<body style="margin:0;padding:0">
+  <table>
+    <caption>Cap</caption>
+    <tbody>
+      <tr><td></td></tr>
+    </tbody>
+  </table>
+</body>
+</html>

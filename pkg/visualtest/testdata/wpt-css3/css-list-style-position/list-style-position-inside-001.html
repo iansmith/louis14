@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<title>CSS list-style-position: inside places marker inside content box</title>
+<link rel="match" href="list-style-position-inside-001-ref.html">
+<style>
+  body { margin: 0; }
+  ul {
+    list-style-type: none;
+    list-style-position: inside;
+    margin: 0;
+    padding: 0;
+  }
+  li {
+    width: 200px;
+    height: 20px;
+    background: lime;
+    font: 16px/20px Ahem;
+  }
+</style>
+<!-- With list-style-type:none and list-style-position:inside,
+     the text starts at the left edge (no marker to push it right).
+     This should match a plain div with the same text. -->
+<ul>
+  <li>XXXXX</li>
+</ul>

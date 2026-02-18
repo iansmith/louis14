@@ -1165,21 +1165,36 @@ func (r *Renderer) getEffectiveY(box *layout.Box) float64 {
 
 // backgroundClipCoords returns x, y, width, height for drawing a background
 // based on the background-clip property value.
+// Y positions are snapped to integer pixel boundaries (floor) to prevent 1px
+// rendering artifacts from sub-pixel layout positions. This matches how browsers
+// handle pixel snapping for background rendering. Without snapping, fractional Y
+// positions (e.g. Y=51.2 from a 19.2px line-height) cause the gg rasterizer to
+// fill an extra edge pixel, making boxes appear 1px taller than intended.
 func backgroundClipCoords(box *layout.Box, effectiveY float64) (float64, float64, float64, float64) {
 	clip := box.Style.GetBackgroundClip()
 	switch clip {
 	case css.BackgroundClipPaddingBox:
+		rawY := effectiveY + box.Border.Top
+		rawEndY := effectiveY + box.Height - box.Border.Bottom
+		snappedY := math.Floor(rawY)
+		snappedH := math.Floor(rawEndY) - snappedY
 		return box.X + box.Border.Left,
-			effectiveY + box.Border.Top,
+			snappedY,
 			box.Width - box.Border.Left - box.Border.Right,
-			box.Height - box.Border.Top - box.Border.Bottom
+			snappedH
 	case css.BackgroundClipContentBox:
+		rawY := effectiveY + box.Border.Top + box.Padding.Top
+		rawEndY := effectiveY + box.Height - box.Border.Bottom - box.Padding.Bottom
+		snappedY := math.Floor(rawY)
+		snappedH := math.Floor(rawEndY) - snappedY
 		return box.X + box.Border.Left + box.Padding.Left,
-			effectiveY + box.Border.Top + box.Padding.Top,
+			snappedY,
 			box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right,
-			box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+			snappedH
 	default: // border-box
-		return box.X, effectiveY, box.Width, box.Height
+		snappedY := math.Floor(effectiveY)
+		snappedH := math.Floor(effectiveY+box.Height) - snappedY
+		return box.X, snappedY, box.Width, snappedH
 	}
 }
 
@@ -1717,6 +1732,18 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// overwrite boundary pixels at diagonal miters, so this order gives
 	// CSS priority: top > right > left > bottom at shared corners.
 
+	// Special case: if all 4 sides are dotted with uniform width and same color,
+	// use drawDottedRect for consistent rendering with dotted outlines.
+	if borderStyles.Top == css.BorderStyleDotted && borderStyles.Right == css.BorderStyleDotted &&
+		borderStyles.Bottom == css.BorderStyleDotted && borderStyles.Left == css.BorderStyleDotted &&
+		box.Border.Top == box.Border.Right && box.Border.Right == box.Border.Bottom &&
+		box.Border.Bottom == box.Border.Left && box.Border.Top > 0 {
+		if c, ok := r.getBorderSideColor(box, "top"); ok {
+			r.drawDottedRect(outerLeft, outerTop, box.Width, renderHeight, box.Border.Top, c.R, c.G, c.B, c.A)
+			return
+		}
+	}
+
 	// Bottom border
 	if box.Border.Bottom > 0 && borderStyles.Bottom != css.BorderStyleNone {
 		if color, ok := r.getBorderSideColor(box, "bottom"); ok {
@@ -1820,6 +1847,15 @@ func (r *Renderer) drawOutline(box *layout.Box) {
 
 	r.context.SetColor(color.NRGBA{R: oR, G: oG, B: oB, A: uint8(oA * 255)})
 
+	outlineStyle := box.Style.GetOutlineStyle()
+	outH := bbH + 2*(outlineOffset+outlineWidth)
+
+	if outlineStyle == "dotted" {
+		// Dotted outline: draw square dots along each edge.
+		r.drawDottedRect(outX, outY, outW, outH, outlineWidth, oR, oG, oB, oA)
+		return
+	}
+
 	// Draw 4 outline rectangles (top, bottom, left, right strips)
 	// Top strip
 	r.context.DrawRectangle(outX, outY, outW, outlineWidth)
@@ -1833,6 +1869,76 @@ func (r *Renderer) drawOutline(box *layout.Box) {
 	// Right strip (between top and bottom strips)
 	r.context.DrawRectangle(inX+inW, inY, outlineWidth, inH)
 	r.context.Fill()
+}
+
+
+// drawDottedRect draws a dotted rectangular outline along the perimeter of the
+// rectangle (x, y, x+w, y+h). dotSize is the border/outline width; dots are
+// square (dotSize×dotSize) with equal-size gaps between them. Corners get a dot,
+// intermediate dots are evenly spaced along each edge.
+func (r *Renderer) drawDottedRect(x, y, w, h, dotSize float64, cr, cg, cb uint8, ca float64) {
+	r.context.SetRGBA(float64(cr)/255.0, float64(cg)/255.0, float64(cb)/255.0, ca)
+	step := dotSize * 2.0 // dot size + gap size
+
+	// Corner dot centers (in from outer edge by dotSize/2)
+	x1 := x + dotSize/2 // left corner center x
+	x2 := x + w - dotSize/2 // right corner center x
+	y1 := y + dotSize*1.5 // first intermediate dot center y on left/right edges
+	y2 := y + h - dotSize*1.5 // last intermediate dot center y on left/right edges
+
+	// Top edge: draw dots from left corner to right corner
+	for cx := x1; ; cx += step {
+		if cx > x2 {
+			cx = x2
+		}
+		r.context.DrawRectangle(cx-dotSize/2, y, dotSize, dotSize)
+		r.context.Fill()
+		if cx >= x2 {
+			break
+		}
+	}
+
+	// Bottom edge: draw dots from left corner to right corner
+	by := y + h - dotSize
+	for cx := x1; ; cx += step {
+		if cx > x2 {
+			cx = x2
+		}
+		r.context.DrawRectangle(cx-dotSize/2, by, dotSize, dotSize)
+		r.context.Fill()
+		if cx >= x2 {
+			break
+		}
+	}
+
+	// Left edge: intermediate dots (between corner dots)
+	if y1 <= y2 {
+		for cy := y1; ; cy += step {
+			if cy > y2 {
+				cy = y2
+			}
+			r.context.DrawRectangle(x, cy-dotSize/2, dotSize, dotSize)
+			r.context.Fill()
+			if cy >= y2 {
+				break
+			}
+		}
+	}
+
+	// Right edge: intermediate dots (between corner dots)
+	rx := x + w - dotSize
+	if y1 <= y2 {
+		for cy := y1; ; cy += step {
+			if cy > y2 {
+				cy = y2
+			}
+			r.context.DrawRectangle(rx, cy-dotSize/2, dotSize, dotSize)
+			r.context.Fill()
+			if cy >= y2 {
+				break
+			}
+		}
+	}
 }
 
 func (r *Renderer) drawBoxShadow(box *layout.Box) {

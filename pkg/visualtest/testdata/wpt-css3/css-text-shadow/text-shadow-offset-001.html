@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<title>CSS text-shadow: offset renders shadow copy of text</title>
+<link rel="match" href="text-shadow-offset-001-ref.html">
+<style>
+  body { margin: 0; }
+  div {
+    font: 40px/50px Ahem;
+    color: black;
+    text-shadow: 0 50px lime;
+    width: 200px;
+    height: 100px;
+  }
+</style>
+<!-- The text-shadow renders a lime copy of "XXXXX" shifted 50px down.
+     Line 1: black XXXXX at y=0
+     Line 2: lime XXXXX at y=50 (from shadow) -->
+<div>XXXXX</div>

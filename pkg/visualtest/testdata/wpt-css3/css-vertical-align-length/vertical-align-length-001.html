@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: vertical-align with pixel length raises inline element</title>
+  <link rel="match" href="vertical-align-length-001-ref.html" />
+  <style>
+  .line {
+    font-family: Ahem;
+    font-size: 16px;
+    line-height: 40px;
+    background: lime;
+    width: 64px;
+  }
+  .base { background: green; }
+  .raised { background: green; vertical-align: 10px; }
+  </style>
+</head>
+<body style="margin:0;padding:0">
+  <div class="line"><span class="base">XX</span><span class="raised">XX</span></div>
+</body>
+</html>

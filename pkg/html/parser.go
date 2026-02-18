@@ -101,16 +101,20 @@ func (p *Parser) Parse() (*Document, error) {
 			// Use raw text (preserving whitespace) inside preformatted elements
 			parent := p.currentParent()
 			text := token.Text
-			if token.RawText != "" && p.isInsidePreformatted() {
-				text = token.RawText
+			rawText := token.RawText
+			if rawText != "" && p.isInsidePreformatted() {
+				text = rawText
 				// HTML spec: strip a single leading newline in <pre> elements.
 				// This applies to the first text node immediately after the <pre> tag.
 				if parent.TagName == "pre" && len(parent.Children) == 0 && len(text) > 0 && text[0] == '\n' {
 					text = text[1:]
+					rawText = text
 				}
 			}
 			if text != "" {
-				parent.AppendText(text)
+				// Always store rawText so that CSS white-space:pre-wrap can restore
+				// original spacing at layout time, even when set via stylesheet rules.
+				parent.AppendTextWithRaw(text, rawText)
 			}
 
 		case TokenEndTag:

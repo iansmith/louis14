@@ -10,6 +10,7 @@ type Node struct {
 	TagName    string
 	Attributes map[string]string
 	Text       string
+	RawText    string // Original text with whitespace preserved (for pre-wrap contexts)
 	Children   []*Node
 	Parent     *Node // Phase 2: Support proper tree structure
 }
@@ -62,6 +63,21 @@ func (n *Node) AppendText(text string) {
 		Type:   TextNode,
 		Text:   text,
 		Parent: n,
+	}
+	n.Children = append(n.Children, textNode)
+}
+
+// AppendTextWithRaw creates a text node with both normalized and raw text preserved.
+// rawText is the original text before whitespace normalization.
+func (n *Node) AppendTextWithRaw(text, rawText string) {
+	if text == "" {
+		return
+	}
+	textNode := &Node{
+		Type:    TextNode,
+		Text:    text,
+		RawText: rawText,
+		Parent:  n,
 	}
 	n.Children = append(n.Children, textNode)
 }

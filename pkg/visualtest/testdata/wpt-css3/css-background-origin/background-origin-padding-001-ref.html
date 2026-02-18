@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Reftest Reference: background-origin padding-box</title>
+</head>
+<body style="margin:0;padding:0">
+  <!-- The padding box of the test is: 100px content + 2*20px padding = 140px, no border visible (transparent) -->
+  <!-- background-clip:padding-box ensures the lime fills only the 140px content area (no padding here),
+       and the 5px transparent border area shows white (body background), matching the test element. -->
+  <div style="width:140px;height:140px;background:lime;border:5px solid transparent;background-clip:padding-box"></div>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Reftest Reference: white-space pre-wrap preserved spaces</title>
+  <link rel="stylesheet" type="text/css" href="/fonts/ahem.css" />
+  <style>
+  div {
+    width: 200px;
+    font: 16px/20px Ahem;
+    background: lime;
+  }
+  </style>
+</head>
+<body style="margin:0;padding:0">
+  <!-- Use non-breaking spaces to preserve two spaces like pre-wrap does.
+       X + NBSP + NBSP + X = 4 Ahem chars at 16px = 64px wide. -->
+  <div>X&nbsp;&nbsp;X</div>
+</body>
+</html>

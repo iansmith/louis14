@@ -2255,6 +2255,12 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		// then collapse consecutive spaces to a single space
 		textContent := node.Text
 		whiteSpace := parentStyle.GetWhiteSpace()
+		// For pre-wrap/pre/pre-line: restore original whitespace from RawText if available.
+		// This is needed when white-space is set via a stylesheet rule (not inline style),
+		// because the HTML parser normalizes whitespace before CSS is applied.
+		if (whiteSpace == "pre" || whiteSpace == "pre-wrap" || whiteSpace == "pre-line") && node.RawText != "" {
+			textContent = node.RawText
+		}
 		if whiteSpace == "" || whiteSpace == "normal" || whiteSpace == "nowrap" {
 			// Replace newlines and tabs with spaces
 			textContent = strings.Map(func(r rune) rune {

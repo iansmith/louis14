@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<title>CSS width: min-content sizes to narrowest content</title>
+<link rel="match" href="min-content-width-001-ref.html">
+<style>
+  body { margin: 0; }
+  div {
+    width: min-content;
+    font: 16px/20px Ahem;
+    background: lime;
+  }
+</style>
+<!-- "XXXX XXXXXX" has two words: "XXXX" (64px) and "XXXXXX" (96px).
+     min-content width = max word width = 96px.
+     Content wraps to 2 lines, each at most 96px wide. -->
+<div>XXXX XXXXXX</div>

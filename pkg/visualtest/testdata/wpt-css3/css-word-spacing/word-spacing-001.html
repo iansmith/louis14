@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: word-spacing causes line wrap</title>
+  <link rel="help" href="https://drafts.csswg.org/css-text-3/#word-spacing-property" />
+  <link rel="match" href="word-spacing-001-ref.html" />
+  <link rel="stylesheet" type="text/css" href="/fonts/ahem.css" />
+  <meta name="assert" content="word-spacing:32px widens spaces so that 'XX XX' (32+48+32=112px) wraps in an 80px container, matching the reference with a line break." />
+  <style>
+  div {
+    width: 80px;
+    font: 16px/20px Ahem;
+    background: lime;
+    word-spacing: 32px;
+  }
+  </style>
+</head>
+<body style="margin:0;padding:0">
+  <div>XX XX</div>
+</body>
+</html>

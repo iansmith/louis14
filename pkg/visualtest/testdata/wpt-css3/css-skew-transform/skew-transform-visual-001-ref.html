@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<title>CSS transform: skewX(45deg) reference using clip-path polygon</title>
+<style>
+  body { margin: 0; }
+  /* Skewed parallelogram: bottom-left (0,100), bottom-right (100,100),
+     top-right (200,0), top-left (100,0).
+     transform-origin: 0 100% means bottom-left corner is fixed.
+     skewX(45deg) shifts each y-row by y*tan(45deg) = y pixels to the right
+     relative to the origin row (y=100). So:
+     - bottom (y=100): shift 0 → stays at x=0..100
+     - top (y=0): shift 100 → moves to x=100..200
+     Polygon: (100,0) (200,0) (100,100) (0,100) */
+  div {
+    width: 200px;
+    height: 100px;
+    background: green;
+    clip-path: polygon(100px 0, 200px 0, 100px 100px, 0px 100px);
+  }
+</style>
+<div></div>

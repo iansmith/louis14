@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: background-origin padding-box</title>
+  <link rel="help" href="https://drafts.csswg.org/css-backgrounds-3/#background-origin" />
+  <link rel="match" href="background-origin-padding-001-ref.html" />
+  <meta name="assert" content="background-origin:padding-box with background-clip:padding-box causes the background to fill the padding box." />
+</head>
+<body style="margin:0;padding:0">
+  <div style="width:100px;height:100px;padding:20px;border:5px solid transparent;
+              background:lime;background-origin:padding-box;background-clip:padding-box;
+              box-sizing:content-box"></div>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<title>CSS empty-cells: hide hides borders and backgrounds of empty cells</title>
+<link rel="match" href="empty-cells-hide-001-ref.html">
+<style>
+  body { margin: 0; }
+  table {
+    border-collapse: separate;
+    border-spacing: 0;
+    empty-cells: hide;
+  }
+  td {
+    width: 100px;
+    height: 50px;
+    background: red;
+    padding: 0;
+  }
+</style>
+<!-- With empty-cells:hide, the empty td should have no background.
+     Row 1: green cell (has content) + no background (empty cell).
+     Without empty-cells:hide, both cells would have red background. -->
+<table>
+  <tr>
+    <td style="background:green">X</td>
+    <td></td>
+  </tr>
+</table>
