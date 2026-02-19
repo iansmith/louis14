@@ -28,6 +28,9 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phase 5: Initialize floats tracking
 	le.floats = make([]FloatInfo, 0)
 
+	// Initialize synthetic styles map for tree normalization
+	le.syntheticStyles = make(map[*html.Node]*css.Style)
+
 	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {

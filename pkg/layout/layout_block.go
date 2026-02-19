@@ -14,6 +14,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 3: Use computed styles from cascade
 	style := computedStyles[node]
 	if style == nil {
+		// Fallback: check synthetic styles (anonymous blocks / clones from normalization)
+		style = le.syntheticStyles[node]
+	}
+	if style == nil {
 		style = css.NewStyle()
 	}
 
@@ -391,6 +395,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		ImagePath: imagePath, // Phase 8: Store image path for rendering
 	}
 
+	// Block-in-inline normalization: if this node is a clone produced by
+	// splitInlineAroundBlocks, set fragment flags for correct border rendering.
+	if fragType, ok := node.GetAttribute("data-block-fragment"); ok {
+		switch fragType {
+		case "first":
+			box.IsFirstFragment = true
+		case "last":
+			box.IsLastFragment = true
+		case "middle":
+			box.IsFirstFragment = true
+			box.IsLastFragment = true
+		}
+	}
+
 	// Phase 5: Float positioning will be done AFTER children are laid out
 	// (to support shrink-wrapping and float drop)
 
@@ -549,7 +567,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 		for _, child := range node.Children {
 			if child.Type == html.ElementNode {
-				if childStyle := computedStyles[child]; childStyle != nil {
+				childStyle := computedStyles[child]
+				if childStyle == nil {
+					// Check synthetic styles for normalization-created nodes (_anon blocks, clones)
+					childStyle = le.syntheticStyles[child]
+				}
+				if childStyle != nil {
 					childDisplay := childStyle.GetDisplay()
 					childPos := childStyle.GetPosition()
 					// Skip out-of-flow elements for this determination

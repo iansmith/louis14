@@ -61,6 +61,11 @@ type LayoutEngine struct {
 	// NEW ARCHITECTURE: Flag to enable clean multi-pass inline layout
 	// When true, uses LayoutInlineContentToBoxes instead of old single-pass
 	useMultiPass bool
+
+	// Styles for synthetic nodes created during block-in-inline tree normalization.
+	// Anonymous block wrappers and inline clones are added here so collectInlineItemsClean
+	// and layoutNode can find their styles without re-running the CSS cascade.
+	syntheticStyles map[*html.Node]*css.Style
 }
 
 // Phase 5: FloatInfo tracks information about floated elements

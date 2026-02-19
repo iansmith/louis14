@@ -950,6 +950,12 @@ func (le *LayoutEngine) collectInlineItemsClean(
 		if _, hasOverride := computedStyles[child]; hasOverride {
 			continue
 		}
+		// Skip style computation for nodes whose styles live in le.syntheticStyles
+		// (anonymous blocks and clones created by block-in-inline normalization)
+		if synthStyle, ok := le.syntheticStyles[child]; ok {
+			computedStyles[child] = synthStyle
+			continue
+		}
 		childStyle := css.ComputeStyle(
 			child,
 			le.stylesheets,
@@ -1336,6 +1342,22 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		}
 	}
 
+	// CSS 2.1 §9.2.1.1: Normalize block-in-inline before the inline layout pipeline.
+	// Ensure children have computed styles so normalization can check display types.
+	for _, child := range children {
+		if child.Type == html.TextNode {
+			continue
+		}
+		if _, ok := computedStyles[child]; ok {
+			continue
+		}
+		if _, ok := le.syntheticStyles[child]; ok {
+			continue
+		}
+		computedStyles[child] = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+	}
+	children = le.normalizeBlocksInInline(children, computedStyles)
+
 	// Create constraint space
 	constraint := NewConstraintSpace(availableWidth, 0)
 
@@ -1597,214 +1619,128 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 						// This includes the element's own offset + ancestor offsets
 						wrapRelX, wrapRelY := getRelativeOffset()
 
-						// Check if this inline element was split by a block child
-						hasBlockChild := false
-						blockChildIdx := -1
-						for j := span.startIdx; j < i; j++ {
-							if fragments[j].Type == FragmentBlockChild {
-								hasBlockChild = true
-								blockChildIdx = j
+						// Normal inline box (not split)
+						endX := frag.Position.X
+						wrapperWidth := endX - span.startX
+
+						// Compute border, padding, margin from style
+						border := span.style.GetBorderWidth()
+						padding := span.style.GetPadding()
+						margin := span.style.GetMargin()
+
+						// Inline elements ignore vertical margins (CSS 2.1 §8.3)
+						margin.Top = 0
+						margin.Bottom = 0
+
+						// CRITICAL FIX: Empty inline elements (no content between OpenTag and CloseTag)
+						// must still have dimensions from border and padding (CSS 2.1 §10.3.1)
+						// Example: <span style="border:25px; padding:100px"></span>
+						// Should render as 250px wide (25+100+0+100+25) even with no content
+
+						// Check if inline is truly empty (no text/atomic content between OpenTag and CloseTag)
+						isEmpty := true
+						for j := span.startIdx + 1; j < i; j++ {
+							if fragments[j].Type == FragmentText || fragments[j].Type == FragmentAtomic {
+								isEmpty = false
 								break
 							}
 						}
 
-						if hasBlockChild {
-							// Block-in-inline: Create fragment boxes (CSS 2.1 §9.2.1.1)
-							// Check if there's content before the block
-							hasContentBefore := false
-							contentBeforeMaxX := span.startX
-							for j := span.startIdx + 1; j < blockChildIdx; j++ {
-								if fragments[j].Type == FragmentText || fragments[j].Type == FragmentAtomic {
-									hasContentBefore = true
-									fragEndX := fragments[j].Position.X + fragments[j].Size.Width
-									if fragEndX > contentBeforeMaxX {
-										contentBeforeMaxX = fragEndX
-									}
-								}
-							}
+						if isEmpty {
+							// Empty inline: width = full horizontal border + padding (no content)
+							wrapperWidth = border.Left + padding.Left + padding.Right + border.Right
+						}
 
-							// Fragment 1: Content before block (if any)
-							if hasContentBefore {
-								// Compute border, padding, margin from style
-								border := span.style.GetBorderWidth()
-								padding := span.style.GetPadding()
-								margin := span.style.GetMargin()
-								lineHeight := span.style.GetLineHeight()
-
-								fragment1 := &Box{
-									Node:            span.node,
-									Style:           span.style,
-									X:               span.startX + wrapRelX,
-									Y:               math.Round(span.startY + wrapRelY),
-									Width:           contentBeforeMaxX - span.startX,
-									Height:          math.Round(lineHeight), // Snap to integer to prevent gg rasterizer pixel-bleeding at fractional boundaries
-									Border:          border,
-									Padding:         padding,
-									Margin:          margin,
-									Parent:          containerBox,
-									IsFirstFragment: true,  // First fragment has left border
-									IsLastFragment:  false, // Not last
-								}
-								// Insert fragment1 at correct position for CSS painting order
-								if span.hasChildWrappers && span.startBoxCount <= len(boxes) {
-									// Insert before child wrappers for correct nesting order
-									newBoxes := make([]*Box, 0, len(boxes)+1)
-									newBoxes = append(newBoxes, boxes[:span.startBoxCount]...)
-									newBoxes = append(newBoxes, fragment1)
-									newBoxes = append(newBoxes, boxes[span.startBoxCount:]...)
-									boxes = newBoxes
-								} else {
-									boxes = append(boxes, fragment1)
-								}
-
-								// Track fragment height for line height calculation
-								if lineHeight > lineMetrics.lineBoxHeight {
-									lineMetrics.lineBoxHeight = lineHeight
-								}
-							}
-
-							// Fragment 2: Content after block (if any)
-							endX := frag.Position.X
-							if endX > span.startX {
-								// Use currentY which is correctly updated after block child layout
-								afterBlockY := currentY
-
-								// Compute border, padding, margin from style
-								border := span.style.GetBorderWidth()
-								padding := span.style.GetPadding()
-								margin := span.style.GetMargin()
-								lineHeight := span.style.GetLineHeight()
-
-								fragment2 := &Box{
-									Node:            span.node,
-									Style:           span.style,
-									X:               containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + wrapRelX,
-									Y:               math.Round(afterBlockY + wrapRelY),
-									Width:           endX - (containerBox.X + containerBox.Border.Left + containerBox.Padding.Left),
-									Height:          math.Round(lineHeight), // Snap to integer to prevent gg rasterizer pixel-bleeding at fractional boundaries
-									Border:          border,
-									Padding:         padding,
-									Margin:          margin,
-									Parent:          containerBox,
-									IsFirstFragment: false, // Not first
-									IsLastFragment:  true,  // Last fragment has right border
-								}
-								boxes = append(boxes, fragment2)
-
-								// Track fragment height for line height calculation
-								if lineHeight > lineMetrics.lineBoxHeight {
-									lineMetrics.lineBoxHeight = lineHeight
-								}
-							}
-						} else {
-							// Normal inline box (not split)
-							endX := frag.Position.X
-							wrapperWidth := endX - span.startX
-
-							// Compute border, padding, margin from style
-							border := span.style.GetBorderWidth()
-							padding := span.style.GetPadding()
-							margin := span.style.GetMargin()
-
-							// Inline elements ignore vertical margins (CSS 2.1 §8.3)
-							margin.Top = 0
-							margin.Bottom = 0
-
-							// CRITICAL FIX: Empty inline elements (no content between OpenTag and CloseTag)
-							// must still have dimensions from border and padding (CSS 2.1 §10.3.1)
-							// Example: <span style="border:25px; padding:100px"></span>
-							// Should render as 250px wide (25+100+0+100+25) even with no content
-
-							// Check if inline is truly empty (no text/atomic content between OpenTag and CloseTag)
-							isEmpty := true
-							for j := span.startIdx + 1; j < i; j++ {
-								if fragments[j].Type == FragmentText || fragments[j].Type == FragmentAtomic {
-									isEmpty = false
-									break
-								}
-							}
-
-							if isEmpty {
-								// Empty inline: width = full horizontal border + padding (no content)
-								wrapperWidth = border.Left + padding.Left + padding.Right + border.Right
-							}
-
-							// Calculate height from line-height or font-size
-							// Empty inline elements establish line box height per CSS 2.1 §10.8.1
-							wrapperHeight := lineMetricsEffectiveHeight(lineMetrics)
-							if wrapperHeight == 0 {
-								// Use font-size as minimum height for empty inline elements
-								fontSize := span.style.GetFontSize()
-								if lineHeightValue, ok := span.style.Get("line-height"); ok && lineHeightValue != "normal" && lineHeightValue != "" {
-									// Handle relative units (em, %) relative to font-size
-									if strings.HasSuffix(lineHeightValue, "em") {
-										// Parse the number before "em"
-										numStr := strings.TrimSuffix(lineHeightValue, "em")
-										if multiplier, err := strconv.ParseFloat(numStr, 64); err == nil {
-											wrapperHeight = fontSize * multiplier
-										} else {
-											wrapperHeight = fontSize // Fallback
-										}
-									} else if strings.HasSuffix(lineHeightValue, "%") {
-										// Parse percentage
-										numStr := strings.TrimSuffix(lineHeightValue, "%")
-										if pct, err := strconv.ParseFloat(numStr, 64); err == nil {
-											wrapperHeight = fontSize * (pct / 100.0)
-										} else {
-											wrapperHeight = fontSize // Fallback
-										}
-									} else if parsedValue, parseOk := css.ParseLength(lineHeightValue); parseOk {
-										// Absolute units (px, pt, etc.)
-										wrapperHeight = parsedValue
+						// Calculate height from line-height or font-size
+						// Empty inline elements establish line box height per CSS 2.1 §10.8.1
+						wrapperHeight := lineMetricsEffectiveHeight(lineMetrics)
+						if wrapperHeight == 0 {
+							// Use font-size as minimum height for empty inline elements
+							fontSize := span.style.GetFontSize()
+							if lineHeightValue, ok := span.style.Get("line-height"); ok && lineHeightValue != "normal" && lineHeightValue != "" {
+								// Handle relative units (em, %) relative to font-size
+								if strings.HasSuffix(lineHeightValue, "em") {
+									// Parse the number before "em"
+									numStr := strings.TrimSuffix(lineHeightValue, "em")
+									if multiplier, err := strconv.ParseFloat(numStr, 64); err == nil {
+										wrapperHeight = fontSize * multiplier
 									} else {
-										wrapperHeight = fontSize // Fallback to font-size
+										wrapperHeight = fontSize // Fallback
 									}
+								} else if strings.HasSuffix(lineHeightValue, "%") {
+									// Parse percentage
+									numStr := strings.TrimSuffix(lineHeightValue, "%")
+									if pct, err := strconv.ParseFloat(numStr, 64); err == nil {
+										wrapperHeight = fontSize * (pct / 100.0)
+									} else {
+										wrapperHeight = fontSize // Fallback
+									}
+								} else if parsedValue, parseOk := css.ParseLength(lineHeightValue); parseOk {
+									// Absolute units (px, pt, etc.)
+									wrapperHeight = parsedValue
 								} else {
-									wrapperHeight = fontSize // Default: font-size
+									wrapperHeight = fontSize // Fallback to font-size
 								}
+							} else {
+								wrapperHeight = fontSize // Default: font-size
 							}
+						}
 
-							// Box height is the line box height (CSS 2.1 §10.8.1)
-							// Borders/padding "bleed" outside this and are drawn separately by the render phase
-							// wrapperHeight already equals effective height (line box height)
+						// Box height is the line box height (CSS 2.1 §10.8.1)
+						// Borders/padding "bleed" outside this and are drawn separately by the render phase
+						// wrapperHeight already equals effective height (line box height)
 						// Convert from content-relative to absolute coordinates
 						// Fragment positions are relative to container's content area
 						// (after border+padding), so add container's offset
 						baseX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
 						// baseY :=  // Y coordinates are already absolute, not needed containerBox.Y + containerBox.Border.Top + containerBox.Padding.Top
 
-							wrapperBox := &Box{
-								Node:    span.node,
-								Style:   span.style,
-								X:       baseX + span.startX + margin.Left + wrapRelX,  // Apply left margin + relative offset
-								Y:       span.startY + margin.Top + wrapRelY,   // Apply top margin + relative offset
-								Width:   wrapperWidth,
-								Height:  wrapperHeight,
-								Border:  border,
-								Padding: padding,
-								Margin:  margin,
-								Parent:  containerBox,
+						wrapperBox := &Box{
+							Node:    span.node,
+							Style:   span.style,
+							X:       baseX + span.startX + margin.Left + wrapRelX,  // Apply left margin + relative offset
+							Y:       span.startY + margin.Top + wrapRelY,   // Apply top margin + relative offset
+							Width:   wrapperWidth,
+							Height:  wrapperHeight,
+							Border:  border,
+							Padding: padding,
+							Margin:  margin,
+							Parent:  containerBox,
+						}
+						// Insert wrapper at correct position for CSS painting order
+						// Block-in-inline normalization: set fragment flags from data-block-fragment attribute
+						if span.node != nil {
+							if fragType, ok := span.node.GetAttribute("data-block-fragment"); ok {
+								switch fragType {
+								case "first":
+									wrapperBox.IsFirstFragment = true
+								case "last":
+									wrapperBox.IsLastFragment = true
+								case "middle":
+									wrapperBox.IsFirstFragment = true
+									wrapperBox.IsLastFragment = true
+								}
 							}
-							// Insert wrapper at correct position for CSS painting order
-							if span.hasChildWrappers && span.startBoxCount <= len(boxes) {
-								// Insert before child wrappers for correct nesting order
-								newBoxes := make([]*Box, 0, len(boxes)+1)
-								newBoxes = append(newBoxes, boxes[:span.startBoxCount]...)
-								newBoxes = append(newBoxes, wrapperBox)
-								newBoxes = append(newBoxes, boxes[span.startBoxCount:]...)
-								boxes = newBoxes
-							} else {
-								boxes = append(boxes, wrapperBox)
-							}
+						}
+						// Insert wrapper at correct position for CSS painting order
+						if span.hasChildWrappers && span.startBoxCount <= len(boxes) {
+							// Insert before child wrappers for correct nesting order
+							newBoxes := make([]*Box, 0, len(boxes)+1)
+							newBoxes = append(newBoxes, boxes[:span.startBoxCount]...)
+							newBoxes = append(newBoxes, wrapperBox)
+							newBoxes = append(newBoxes, boxes[span.startBoxCount:]...)
+							boxes = newBoxes
+						} else {
+							boxes = append(boxes, wrapperBox)
+						}
 
-							// Track wrapper box height for line height calculation
-							// CSS 2.1 §10.8.1: Use line box height, NOT visual extent
-							// The borders/padding "bleed" outside the line box and don't affect
-							// parent container height. The render phase handles drawing the bleeding
-							// extent by extending the background/borders (see render.go lines 388-393)
-							if wrapperHeight > lineMetricsEffectiveHeight(lineMetrics) {
-								lineMetrics.lineBoxHeight = wrapperHeight
-							}
+						// Track wrapper box height for line height calculation
+						// CSS 2.1 §10.8.1: Use line box height, NOT visual extent
+						// The borders/padding "bleed" outside the line box and don't affect
+						// parent container height. The render phase handles drawing the bleeding
+						// extent by extending the background/borders (see render.go lines 388-393)
+						if wrapperHeight > lineMetricsEffectiveHeight(lineMetrics) {
+							lineMetrics.lineBoxHeight = wrapperHeight
 						}
 
 						// Mark parent spans as having child wrappers (for CSS painting order)
