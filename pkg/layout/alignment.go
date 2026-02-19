@@ -51,7 +51,7 @@ func (le *LayoutEngine) applyTextAlign(box *Box, textAlign string, contentWidth 
 		childTotalWidth := le.getTotalWidth(child)
 
 		switch textAlign {
-		case "right":
+		case "right", "end":
 			dx := contentLeft + contentWidth - childTotalWidth - child.X
 			if dx != 0 {
 				child.X += dx
@@ -140,11 +140,11 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 		lineWidth := line.maxEnd - line.minX
 		var dx float64
 		switch textAlign {
-		case "right":
+		case "right", "end":
 			dx = contentRight - line.maxEnd
 		case "center":
 			dx = contentLeft + (contentWidth-lineWidth)/2 - line.minX
-		case "left":
+		case "left", "start":
 			dx = contentLeft - line.minX
 		case "justify":
 			// Last line is left-aligned (text-align-last: auto defaults to start).

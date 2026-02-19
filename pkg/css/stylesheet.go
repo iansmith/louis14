@@ -732,6 +732,22 @@ func parseSelector(selectorStr string) Selector {
 		}
 		selectorStr = strings.Replace(selectorStr, ":first-letter", "", 1)
 		selectorStr = strings.TrimSpace(selectorStr)
+	} else if strings.Contains(selectorStr, "::first-line") {
+		pseudoElement = "first-line"
+		idx := strings.Index(selectorStr, "::first-line")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
+		selectorStr = strings.Replace(selectorStr, "::first-line", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
+	} else if strings.Contains(selectorStr, ":first-line") {
+		pseudoElement = "first-line"
+		idx := strings.Index(selectorStr, ":first-line")
+		if idx > 0 && selectorStr[idx-1] == ' ' {
+			pseudoElementForDescendants = true
+		}
+		selectorStr = strings.Replace(selectorStr, ":first-line", "", 1)
+		selectorStr = strings.TrimSpace(selectorStr)
 	}
 	// If pseudo-element is for descendants only, clear it from direct matching
 	// but record it somehow (we'll use a convention: if PseudoElement starts with "descendant:",

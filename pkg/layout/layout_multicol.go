@@ -54,6 +54,8 @@ func (le *LayoutEngine) layoutMulticolumn(
 	// Collect flow children
 	children := multicolCollectFlowChildren(box.Node, computedStyles)
 	if len(children) == 0 {
+		// No element children — may have inline/text content directly
+		le.layoutMulticolumnInline(box, numCols, colWidth, columnGap, computedStyles)
 		return
 	}
 
@@ -165,4 +167,108 @@ func multicolRepositionBox(box *Box, dx, dy float64) {
 	for _, child := range box.Children {
 		multicolRepositionBox(child, dx, dy)
 	}
+}
+
+// layoutMulticolumnInline handles multicol containers whose content is
+// inline/text nodes (no element children). It lays out the content at
+// colWidth, then distributes the resulting line boxes across columns.
+func (le *LayoutEngine) layoutMulticolumnInline(
+	box *Box,
+	numCols int,
+	colWidth, columnGap float64,
+	computedStyles map[*html.Node]*css.Style,
+) {
+	if box.Node == nil || len(box.Node.Children) == 0 {
+		return
+	}
+
+	startX := box.X + box.Border.Left + box.Padding.Left
+	startY := box.Y + box.Border.Top + box.Padding.Top
+
+	// Use inline layout at colWidth to get line-box fragments
+	result := le.LayoutInlineContentToBoxes(
+		box.Node.Children,
+		box,
+		colWidth,
+		startY,
+		computedStyles,
+		nil,
+	)
+	if result == nil || len(result.ChildBoxes) == 0 {
+		return
+	}
+
+	// Group boxes by their Y coordinate (each distinct Y = one line)
+	type lineGroup struct {
+		y    float64
+		h    float64
+		boxes []*Box
+	}
+	var lines []lineGroup
+
+	for _, b := range result.ChildBoxes {
+		placed := false
+		for i := range lines {
+			if lines[i].y == b.Y {
+				lines[i].boxes = append(lines[i].boxes, b)
+				h := b.Height
+				if h > lines[i].h {
+					lines[i].h = h
+				}
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			lines = append(lines, lineGroup{
+				y:     b.Y,
+				h:     b.Height,
+				boxes: []*Box{b},
+			})
+		}
+	}
+
+	if len(lines) == 0 {
+		return
+	}
+
+	// Distribute lines across columns
+	linesPerCol := (len(lines) + numCols - 1) / numCols
+
+	box.Children = nil
+	maxColHeight := 0.0
+
+	for colIdx := 0; colIdx < numCols; colIdx++ {
+		colX := startX + float64(colIdx)*(colWidth+columnGap)
+		firstLine := colIdx * linesPerCol
+		lastLine := firstLine + linesPerCol
+		if lastLine > len(lines) {
+			lastLine = len(lines)
+		}
+		if firstLine >= len(lines) {
+			break
+		}
+
+		colHeight := 0.0
+		for lineIdx := firstLine; lineIdx < lastLine; lineIdx++ {
+			line := lines[lineIdx]
+			// Compute where this line should go within the column
+			targetY := startY + float64(lineIdx-firstLine)*line.h
+			for _, b := range line.boxes {
+				dx := colX - startX
+				dy := targetY - line.y
+				multicolRepositionBox(b, dx, dy)
+				box.Children = append(box.Children, b)
+				b.Parent = box
+			}
+			colHeight += line.h
+		}
+		if colHeight > maxColHeight {
+			maxColHeight = colHeight
+		}
+	}
+
+	// Update box height
+	box.Height = maxColHeight + box.Padding.Top + box.Padding.Bottom +
+		box.Border.Top + box.Border.Bottom
 }

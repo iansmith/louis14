@@ -32,6 +32,11 @@ func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.N
 
 		childDisplay := childStyle.GetDisplay()
 
+		// Skip caption elements (handled separately in layoutTable)
+		if child.TagName == "caption" || childDisplay == css.DisplayTableCaption {
+			continue
+		}
+
 		// Check if this is a row (tr tag or display: table-row)
 		isRow := child.TagName == "tr" || childDisplay == css.DisplayTableRow
 
@@ -204,13 +209,70 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 		}
 	}
 
-	// Position cells
-	le.positionTableCells(tableBox, cellGrid, tableInfo, x, y, computedStyles)
+	// Handle captions: find top and bottom captions, position them around the table body
+	type captionEntry struct {
+		node  *html.Node
+		style *css.Style
+		side  string // "top" or "bottom"
+	}
+	var topCaptions, bottomCaptions []captionEntry
+	for _, child := range tableBox.Node.Children {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childStyle := computedStyles[child]
+		if childStyle == nil {
+			childStyle = css.NewStyle()
+		}
+		if child.TagName != "caption" && childStyle.GetDisplay() != css.DisplayTableCaption {
+			continue
+		}
+		side := childStyle.GetCaptionSide()
+		if side == "bottom" {
+			bottomCaptions = append(bottomCaptions, captionEntry{child, childStyle, "bottom"})
+		} else {
+			topCaptions = append(topCaptions, captionEntry{child, childStyle, "top"})
+		}
+	}
+
+	// Layout top captions first; accumulate their height to push table body down
+	topCaptionHeight := 0.0
+	for _, cap := range topCaptions {
+		capBox := le.layoutNode(cap.node, x, y+topCaptionHeight, tableBox.Width, computedStyles, tableBox)
+		if capBox != nil {
+			tableBox.Children = append(tableBox.Children, capBox)
+			topCaptionHeight += capBox.Height
+		}
+	}
+
+	// Position cells below top captions
+	tableBodyY := y + topCaptionHeight
+	le.positionTableCells(tableBox, cellGrid, tableInfo, x, tableBodyY, computedStyles)
+
+	// After positioning cells, tableBox.Height reflects body content (from positionTableCells)
+	// Adjust it to include top captions
+	tableBox.Height += topCaptionHeight
+
+	// Layout bottom captions below table body
+	for _, cap := range bottomCaptions {
+		capY := y + tableBox.Height
+		capBox := le.layoutNode(cap.node, x, capY, tableBox.Width, computedStyles, tableBox)
+		if capBox != nil {
+			tableBox.Children = append(tableBox.Children, capBox)
+			tableBox.Height += capBox.Height
+		}
+	}
 }
 
 // Phase 9: processTableRows recursively processes rows and row groups
 func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style, rowIdx *int, cellGrid *[][]*TableCell, tableInfo *TableInfo) {
 	display := style.GetDisplay()
+
+	// Skip caption elements (handled separately by layoutTable)
+	if node.TagName == "caption" || display == css.DisplayTableCaption {
+		return
+	}
+
 	isRow := node.TagName == "tr" || display == css.DisplayTableRow
 	isRowGroup := node.TagName == "tbody" || node.TagName == "thead" || node.TagName == "tfoot" ||
 		display == css.DisplayTableRowGroup ||
@@ -980,6 +1042,13 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				rowHeight = cell.Box.Height
 			}
 
+			// empty-cells: hide — mark empty cells so renderer skips their background/border
+			if tableBox.Style != nil && tableBox.Style.GetEmptyCells() == "hide" && cell.Box.Node != nil {
+				if isCellNodeEmpty(cell.Box.Node) {
+					cell.Box.HideBackground = true
+				}
+			}
+
 			rowCells = append(rowCells, cellEntry{cell: cell, cellWidth: cellWidth})
 			processedCells[cell] = true
 			currentX += cellWidth + borderSpacing
@@ -1017,5 +1086,20 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 	if len(cellGrid) > 0 {
 		tableBox.Height = currentY - y + tableBox.Border.Bottom + tableBox.Padding.Bottom
 	}
+}
+
+// isCellNodeEmpty returns true if the cell node has no visible content.
+// Per CSS 2.1 §17.6.1.1: whitespace-only text nodes are not "visible content".
+func isCellNodeEmpty(node *html.Node) bool {
+	for _, child := range node.Children {
+		if child.Type == html.TextNode {
+			if strings.TrimSpace(child.Text) != "" {
+				return false
+			}
+		} else if child.Type == html.ElementNode {
+			return false
+		}
+	}
+	return true
 }
 

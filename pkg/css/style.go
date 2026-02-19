@@ -1148,6 +1148,8 @@ func expandShorthand(style *Style, property, value string) {
 		style.Set("max-height", value)
 	case "outline":
 		expandOutlineShorthand(style, value)
+	case "column-rule":
+		expandColumnRuleShorthand(style, value)
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -1178,6 +1180,80 @@ func expandOutlineShorthand(style *Style, value string) {
 			style.Set("outline-color", part)
 		}
 	}
+}
+
+// expandColumnRuleShorthand parses the column-rule shorthand into column-rule-width, column-rule-style, column-rule-color.
+// Format: "4px solid green" — order: width style color (order not significant per spec).
+func expandColumnRuleShorthand(style *Style, value string) {
+	// Reset column-rule sub-properties to initial values
+	style.Set("column-rule-width", "medium")
+	style.Set("column-rule-style", "none")
+	style.Set("column-rule-color", "currentcolor")
+
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if part == "none" {
+			style.Set("column-rule-style", "none")
+		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
+			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
+			style.Set("column-rule-style", part)
+		} else if bw, ok := borderWidthKeyword(part); ok {
+			style.Set("column-rule-width", bw)
+		} else if _, ok := ParseLength(part); ok {
+			style.Set("column-rule-width", part)
+		} else if part != "" {
+			// Try as color
+			if _, ok2 := ParseColor(part); ok2 {
+				style.Set("column-rule-color", part)
+			}
+		}
+	}
+}
+
+// GetColumnRuleWidth returns the column-rule-width in pixels
+func (s *Style) GetColumnRuleWidth() float64 {
+	if v, ok := s.Get("column-rule-width"); ok {
+		v = strings.TrimSpace(v)
+		if px, ok2 := ParseLength(v); ok2 {
+			return px
+		}
+		switch v {
+		case "thin":
+			return 1
+		case "medium":
+			return 3
+		case "thick":
+			return 5
+		}
+	}
+	return 0
+}
+
+// GetColumnRuleStyle returns the column-rule-style (none, solid, dashed, dotted, etc.)
+func (s *Style) GetColumnRuleStyle() string {
+	if v, ok := s.Get("column-rule-style"); ok {
+		return strings.TrimSpace(v)
+	}
+	return "none"
+}
+
+// GetColumnRuleColor returns the column-rule-color as a Color
+func (s *Style) GetColumnRuleColor() Color {
+	if v, ok := s.Get("column-rule-color"); ok {
+		v = strings.TrimSpace(v)
+		if v != "currentcolor" {
+			if c, ok2 := ParseColor(v); ok2 {
+				return c
+			}
+		}
+	}
+	// Default: currentColor (use text color)
+	if v, ok := s.Get("color"); ok {
+		if c, ok2 := ParseColor(v); ok2 {
+			return c
+		}
+	}
+	return Color{R: 0, G: 0, B: 0, A: 1}
 }
 
 // GetOutlineStyle returns the outline-style value (default: "none")
@@ -2126,6 +2202,84 @@ func (s *Style) GetTextDecorationColor() (Color, bool) {
 	return Color{}, false
 }
 
+// TextShadow represents a single text-shadow layer
+type TextShadow struct {
+	OffsetX float64
+	OffsetY float64
+	Blur    float64
+	Color   Color
+}
+
+// GetTextShadow parses the text-shadow property and returns a slice of shadows.
+// Syntax: [<color>? <offset-x> <offset-y> <blur>? <color>?], ...
+func (s *Style) GetTextShadow() []TextShadow {
+	val, ok := s.Get("text-shadow")
+	if !ok || val == "none" || val == "" {
+		return nil
+	}
+	var shadows []TextShadow
+	for _, layer := range strings.Split(val, ",") {
+		layer = strings.TrimSpace(layer)
+		if layer == "" {
+			continue
+		}
+		shadow := parseTextShadowLayer(layer, s.GetFontSize())
+		if shadow != nil {
+			shadows = append(shadows, *shadow)
+		}
+	}
+	return shadows
+}
+
+// parseTextShadowLayer parses one text-shadow layer: [color?] <x> <y> [blur?] [color?]
+func parseTextShadowLayer(s string, fontSize float64) *TextShadow {
+	fields := strings.Fields(s)
+	var lengths []float64
+	var shadowColor *Color
+	for i := 0; i < len(fields); {
+		// Try to parse as a length
+		if l, ok := ParseLengthWithFontSize(fields[i], fontSize); ok {
+			lengths = append(lengths, l)
+			i++
+			continue
+		}
+		// Try to parse as a color (may span multiple tokens for rgba/hsl)
+		// Try combining increasing numbers of tokens
+		parsed := false
+		for n := 4; n >= 1; n-- {
+			if i+n > len(fields) {
+				continue
+			}
+			candidate := strings.Join(fields[i:i+n], " ")
+			if c, ok := ParseColor(candidate); ok {
+				shadowColor = &c
+				i += n
+				parsed = true
+				break
+			}
+		}
+		if !parsed {
+			i++
+		}
+	}
+	if len(lengths) < 2 {
+		return nil
+	}
+	sh := &TextShadow{
+		OffsetX: lengths[0],
+		OffsetY: lengths[1],
+	}
+	if len(lengths) >= 3 {
+		sh.Blur = lengths[2]
+	}
+	if shadowColor != nil {
+		sh.Color = *shadowColor
+	} else {
+		sh.Color = Color{R: 0, G: 0, B: 0, A: 1.0}
+	}
+	return sh
+}
+
 // GetTextUnderlineOffset returns the text-underline-offset value in pixels (default: 0)
 func (s *Style) GetTextUnderlineOffset() float64 {
 	if val, ok := s.Get("text-underline-offset"); ok {
@@ -2445,6 +2599,7 @@ const (
 	DisplayGrid            DisplayType = "grid"
 	DisplayInlineGrid      DisplayType = "inline-grid"
 	DisplayContents        DisplayType = "contents"
+	DisplayTableCaption    DisplayType = "table-caption"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0)
@@ -2499,6 +2654,8 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayInlineGrid
 		case "contents":
 			return DisplayContents
+		case "table-caption":
+			return DisplayTableCaption
 		case "-webkit-box", "-webkit-inline-box":
 			return DisplayBlock
 		}
@@ -2617,6 +2774,22 @@ const (
 	TableLayoutAuto  TableLayout = "auto"
 	TableLayoutFixed TableLayout = "fixed"
 )
+
+// GetCaptionSide returns the caption-side value (default: top)
+func (s *Style) GetCaptionSide() string {
+	if val, ok := s.Get("caption-side"); ok {
+		return val
+	}
+	return "top"
+}
+
+// GetEmptyCells returns the empty-cells value (default: show)
+func (s *Style) GetEmptyCells() string {
+	if val, ok := s.Get("empty-cells"); ok {
+		return val
+	}
+	return "show"
+}
 
 // GetTableLayout returns the table-layout value (default: auto)
 func (s *Style) GetTableLayout() TableLayout {
@@ -3172,6 +3345,84 @@ func (s *Style) GetGridRow() *GridPlacement {
 	return nil
 }
 
+// GridAreaInfo holds grid area placement (1-indexed, end exclusive)
+type GridAreaInfo struct {
+	RowStart, RowEnd, ColStart, ColEnd int
+}
+
+// GetGridTemplateAreas parses the grid-template-areas property.
+// Returns a map from area name to its grid position.
+func (s *Style) GetGridTemplateAreas() map[string]GridAreaInfo {
+	v, ok := s.Get("grid-template-areas")
+	if !ok || v == "" || v == "none" {
+		return nil
+	}
+	areas := make(map[string]GridAreaInfo)
+
+	// Extract quoted row strings
+	rowNum := 0
+	i := 0
+	for i < len(v) {
+		// Skip whitespace between rows
+		for i < len(v) && (v[i] == ' ' || v[i] == '\t' || v[i] == '\n' || v[i] == '\r') {
+			i++
+		}
+		if i >= len(v) {
+			break
+		}
+		if v[i] == '"' || v[i] == '\'' {
+			quote := v[i]
+			i++ // skip opening quote
+			rowNum++
+			rowStr := ""
+			for i < len(v) && v[i] != quote {
+				rowStr += string(v[i])
+				i++
+			}
+			if i < len(v) {
+				i++ // skip closing quote
+			}
+			// Parse cells in this row
+			cells := strings.Fields(rowStr)
+			for colIdx, cell := range cells {
+				if cell == "." || cell == "" {
+					continue
+				}
+				colNum := colIdx + 1
+				if info, exists := areas[cell]; exists {
+					// Extend the area (for multi-row areas)
+					newInfo := info
+					if rowNum+1 > newInfo.RowEnd {
+						newInfo.RowEnd = rowNum + 1
+					}
+					if colNum+1 > newInfo.ColEnd {
+						newInfo.ColEnd = colNum + 1
+					}
+					areas[cell] = newInfo
+				} else {
+					areas[cell] = GridAreaInfo{
+						RowStart: rowNum,
+						RowEnd:   rowNum + 1,
+						ColStart: colNum,
+						ColEnd:   colNum + 1,
+					}
+				}
+			}
+		} else {
+			i++
+		}
+	}
+	return areas
+}
+
+// GetGridArea returns the grid-area value (a named area or "row-start/col-start/row-end/col-end")
+func (s *Style) GetGridArea() string {
+	if v, ok := s.Get("grid-area"); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
 // parseGridPlacement parses grid line placement (e.g., "1 / 3" or "1")
 func parseGridPlacement(val string) *GridPlacement {
 	parts := strings.Split(val, "/")
@@ -3358,8 +3609,33 @@ func parseTransformFunction(name, args string) *Transform {
 		if val, err := strconv.ParseFloat(args, 64); err == nil {
 			return &Transform{Type: "scale", Values: []float64{1, val}}
 		}
+
+	case "skewX":
+		if val := parseAngle(args); val != nil {
+			return &Transform{Type: "skew", Values: []float64{*val, 0}}
+		}
+
+	case "skewY":
+		if val := parseAngle(args); val != nil {
+			return &Transform{Type: "skew", Values: []float64{0, *val}}
+		}
+
+	case "skew":
+		parts := strings.Split(args, ",")
+		values := make([]float64, 0)
+		for _, part := range parts {
+			if val := parseAngle(strings.TrimSpace(part)); val != nil {
+				values = append(values, *val)
+			}
+		}
+		if len(values) == 1 {
+			values = append(values, 0)
+		}
+		if len(values) >= 2 {
+			return &Transform{Type: "skew", Values: values[:2]}
+		}
 	}
-	
+
 	return nil
 }
 

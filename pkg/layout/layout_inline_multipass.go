@@ -1635,9 +1635,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 									Node:            span.node,
 									Style:           span.style,
 									X:               span.startX + wrapRelX,
-									Y:               span.startY + wrapRelY,
+									Y:               math.Round(span.startY + wrapRelY),
 									Width:           contentBeforeMaxX - span.startX,
-									Height:          lineHeight, // Use line-height, not text height
+									Height:          math.Round(lineHeight), // Snap to integer to prevent gg rasterizer pixel-bleeding at fractional boundaries
 									Border:          border,
 									Padding:         padding,
 									Margin:          margin,
@@ -1679,9 +1679,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 									Node:            span.node,
 									Style:           span.style,
 									X:               containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + wrapRelX,
-									Y:               afterBlockY + wrapRelY,
+									Y:               math.Round(afterBlockY + wrapRelY),
 									Width:           endX - (containerBox.X + containerBox.Border.Left + containerBox.Padding.Left),
-									Height:          lineHeight, // Use line-height, not text height
+									Height:          math.Round(lineHeight), // Snap to integer to prevent gg rasterizer pixel-bleeding at fractional boundaries
 									Border:          border,
 									Padding:         padding,
 									Margin:          margin,
@@ -2016,6 +2016,65 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 				box.Parent = containerBox
 				boxes = append(boxes, box)
+			}
+		}
+	}
+
+	// Apply ::first-line styles to boxes on the first line.
+	// CSS §12.1: ::first-line applies color, font, background, etc. to the first formatted line.
+	// We identify first-line boxes by their Y position matching startY.
+	if containerBox.Node != nil && len(le.stylesheets) > 0 &&
+		css.HasFirstLineRules(containerBox.Node, le.stylesheets, le.viewport.width, le.viewport.height) {
+		firstLineStyle := css.ComputePseudoElementStyle(
+			containerBox.Node, "first-line", le.stylesheets,
+			le.viewport.width, le.viewport.height, containerBox.Style,
+		)
+		// Allowed ::first-line properties per CSS spec §12.1:
+		// background-color is handled separately (applied to container for full-width coverage)
+		firstLineProps := []string{"color", "font-size", "font-family", "font-weight", "font-style",
+			"text-decoration", "text-transform", "letter-spacing",
+			"word-spacing", "line-height", "vertical-align", "clear"}
+		for _, b := range boxes {
+			if b == nil || b.Style == nil {
+				continue
+			}
+			// First-line boxes have Y == startY (the initial line Y position)
+			if b.Y >= startY && b.Y < startY+1.0 {
+				// Create a copy of the style with first-line overrides applied
+				newStyle := css.NewStyle()
+				newStyle.ViewportWidth = b.Style.ViewportWidth
+				newStyle.ViewportHeight = b.Style.ViewportHeight
+				// Copy all existing properties
+				for k, v := range b.Style.Properties {
+					newStyle.Properties[k] = v
+				}
+				// Apply first-line property overrides
+				for _, prop := range firstLineProps {
+					if v, ok := firstLineStyle.Properties[prop]; ok {
+						containerVal, _ := containerBox.Style.Properties[prop]
+						if v != containerVal {
+							newStyle.Properties[prop] = v
+						}
+					}
+				}
+				b.Style = newStyle
+			}
+		}
+
+		// Apply ::first-line background-color to the container box for full line-width coverage.
+		// CSS §12.1: background applies to the line box (full container width), not just text.
+		// We apply to the container and rely on the container's background rendering to fill the line.
+		if bgColor, ok := firstLineStyle.Properties["background-color"]; ok {
+			containerVal, _ := containerBox.Style.Properties["background-color"]
+			if bgColor != containerVal {
+				newContainerStyle := css.NewStyle()
+				newContainerStyle.ViewportWidth = containerBox.Style.ViewportWidth
+				newContainerStyle.ViewportHeight = containerBox.Style.ViewportHeight
+				for k, v := range containerBox.Style.Properties {
+					newContainerStyle.Properties[k] = v
+				}
+				newContainerStyle.Properties["background-color"] = bgColor
+				containerBox.Style = newContainerStyle
 			}
 		}
 	}
@@ -2410,6 +2469,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		mono := parentStyle.IsMonospaceFamily()
 		ahem := parentStyle.IsAhemFamily()
 		letterSpacing := parentStyle.GetLetterSpacing()
+		wordSpacing := parentStyle.GetWordSpacing()
 
 		// Split text into word-level items for proper word wrapping and text-align:justify.
 		// Each word and each space run becomes its own InlineItem so BreakLines can wrap
@@ -2419,6 +2479,10 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			partW, partH := text.MeasureTextWithStyle(part, fontSize, bold, italic, mono, ahem)
 			if letterSpacing != 0 && len([]rune(part)) > 1 {
 				partW += letterSpacing * float64(len([]rune(part))-1)
+			}
+			// Apply word-spacing to space items (CSS 2.1 §16.4)
+			if wordSpacing != 0 && strings.TrimSpace(part) == "" && len(part) > 0 {
+				partW += wordSpacing
 			}
 			partNode := &html.Node{
 				Type:   html.TextNode,
@@ -3078,6 +3142,10 @@ func (le *LayoutEngine) ConstructLineBoxes(state *InlineLayoutState, parent *Box
 
 					// Compute width from current X - start X
 					ctx.box.Width = currentX - ctx.box.X
+					// If this inline was split by block children, ctx.box is the final fragment
+					if len(ctx.completedFragments) > 0 {
+						ctx.box.IsLastFragment = true
+					}
 					boxes = append(boxes, ctx.box)
 
 				// Now add right margin for positioning next element
@@ -3270,6 +3338,10 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 					currentX += ctx.box.Padding.Right + ctx.box.Border.Right
 
 					ctx.box.Width = currentX - ctx.box.X
+					// If this inline was split by block children, ctx.box is the final fragment
+					if len(ctx.completedFragments) > 0 {
+						ctx.box.IsLastFragment = true
+					}
 					boxes = append(boxes, ctx.box)
 
 				// Now add right margin for positioning next element

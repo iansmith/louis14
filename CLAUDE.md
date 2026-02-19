@@ -1,5 +1,11 @@
 Go binary: /opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 
+## Testing Policy
+
+**NEVER use fuzzy matching in reftests.** Fuzzy matching (FuzzyRadius > 0) conceals real
+rendering bugs by allowing pixel shifts. All reftest comparisons must use FuzzyRadius=0
+(the default). Only Tolerance (per-channel color) and MaxDifferentPercent are acceptable.
+
 ## CLI tools
 
 - `cmd/l14open` — Renders a local HTML file to PNG and opens it: `l14open <input.html> <output.png> [width] [height]`

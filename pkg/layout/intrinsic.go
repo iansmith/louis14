@@ -51,9 +51,12 @@ func (le *LayoutEngine) ComputeMinMaxSizes(
 func (le *LayoutEngine) computeTextMinMax(textContent string, style *css.Style) MinMaxSizes {
 	fontSize := style.GetFontSize()
 	isBold := style.GetFontWeight() == css.FontWeightBold
+	isItalic := style.GetFontStyle() == css.FontStyleItalic
+	isMono := style.IsMonospaceFamily()
+	isAhem := style.IsAhemFamily()
 
 	// Max size: full text width
-	maxWidth, _ := text.MeasureTextWithWeight(textContent, fontSize, isBold)
+	maxWidth, _ := text.MeasureTextWithStyle(textContent, fontSize, isBold, isItalic, isMono, isAhem)
 
 	// Min size: width of longest word
 	// Split text into words and measure each
@@ -61,7 +64,7 @@ func (le *LayoutEngine) computeTextMinMax(textContent string, style *css.Style) 
 	minWidth := 0.0
 
 	for _, word := range words {
-		wordWidth, _ := text.MeasureTextWithWeight(word, fontSize, isBold)
+		wordWidth, _ := text.MeasureTextWithStyle(word, fontSize, isBold, isItalic, isMono, isAhem)
 		if wordWidth > minWidth {
 			minWidth = wordWidth
 		}
@@ -123,7 +126,12 @@ func (le *LayoutEngine) computeInlineMinMax(
 	if hasBlockChild {
 		// Block children: use max of child sizes (stacking vertically)
 		for _, child := range node.Children {
-			childStyle := computedStyles[child]
+			var childStyle *css.Style
+			if child.Type == html.TextNode {
+				childStyle = style // text nodes inherit parent font
+			} else {
+				childStyle = computedStyles[child]
+			}
 			if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
 				continue
 			}
@@ -139,7 +147,12 @@ func (le *LayoutEngine) computeInlineMinMax(
 	} else {
 		// Inline children: sum child sizes (horizontal flow)
 		for _, child := range node.Children {
-			childStyle := computedStyles[child]
+			var childStyle *css.Style
+			if child.Type == html.TextNode {
+				childStyle = style // text nodes inherit parent font
+			} else {
+				childStyle = computedStyles[child]
+			}
 			if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
 				continue
 			}
@@ -190,7 +203,12 @@ func (le *LayoutEngine) computeBlockMinMax(
 
 	// For block elements, take max of children (they stack vertically)
 	for _, child := range node.Children {
-		childStyle := computedStyles[child]
+		var childStyle *css.Style
+		if child.Type == html.TextNode {
+			childStyle = style // text nodes inherit parent font
+		} else {
+			childStyle = computedStyles[child]
+		}
 		if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
 			continue
 		}

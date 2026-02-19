@@ -31,6 +31,7 @@ func (le *LayoutEngine) layoutGridContainer(
 	alignItems := style.GetAlignItems()
 	justifyContent := style.GetJustifyContent()
 	alignContent := style.GetAlignContent()
+	templateAreas := style.GetGridTemplateAreas()
 
 	// Get box model properties
 	margin := style.GetMargin()
@@ -112,22 +113,39 @@ func (le *LayoutEngine) layoutGridContainer(
 
 		gridColumn := childStyle.GetGridColumn()
 		gridRow := childStyle.GetGridRow()
+		gridAreaName := childStyle.GetGridArea()
 
 		var cellRow, cellCol, rowSpan, colSpan int
 
-		if gridColumn != nil {
-			cellCol = gridColumn.Start - 1
-			colSpan = gridColumn.End - gridColumn.Start
+		// Check if grid-area references a named template area
+		if gridAreaName != "" && templateAreas != nil {
+			if areaInfo, ok := templateAreas[gridAreaName]; ok {
+				cellCol = areaInfo.ColStart - 1
+				colSpan = areaInfo.ColEnd - areaInfo.ColStart
+				cellRow = areaInfo.RowStart - 1
+				rowSpan = areaInfo.RowEnd - areaInfo.RowStart
+			} else {
+				// Fallback: auto-placement
+				cellCol = currentCol
+				colSpan = 1
+				cellRow = currentRow
+				rowSpan = 1
+			}
 		} else {
-			cellCol = currentCol
-			colSpan = 1
-		}
-		if gridRow != nil {
-			cellRow = gridRow.Start - 1
-			rowSpan = gridRow.End - gridRow.Start
-		} else {
-			cellRow = currentRow
-			rowSpan = 1
+			if gridColumn != nil {
+				cellCol = gridColumn.Start - 1
+				colSpan = gridColumn.End - gridColumn.Start
+			} else {
+				cellCol = currentCol
+				colSpan = 1
+			}
+			if gridRow != nil {
+				cellRow = gridRow.Start - 1
+				rowSpan = gridRow.End - gridRow.Start
+			} else {
+				cellRow = currentRow
+				rowSpan = 1
+			}
 		}
 
 		items = append(items, gridItemInfo{
@@ -143,8 +161,14 @@ func (le *LayoutEngine) layoutGridContainer(
 			maxRow = cellRow + rowSpan
 		}
 
-		// Advance auto-placement cursor
-		if gridColumn == nil {
+		// Advance auto-placement cursor (only when no explicit placement via grid-column or grid-area name)
+		namedAreaPlaced := false
+		if gridAreaName != "" && templateAreas != nil {
+			if _, ok := templateAreas[gridAreaName]; ok {
+				namedAreaPlaced = true
+			}
+		}
+		if gridColumn == nil && !namedAreaPlaced {
 			currentCol += colSpan
 			if numColTracks > 0 && currentCol >= numColTracks {
 				currentCol = 0

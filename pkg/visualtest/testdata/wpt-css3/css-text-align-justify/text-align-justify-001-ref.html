@@ -2,26 +2,32 @@
 <title>CSS text-align: justify reference</title>
 <style>
   body { margin: 0; }
-  /* Line 1: 3 words justified across 160px using flexbox space-between */
-  .line {
+  /* Container matches the test div exactly */
+  .container {
+    position: relative;
     width: 160px;
-    height: 20px;
+    height: 40px;
     font-size: 16px;
     line-height: 20px;
     font-family: Ahem;
     background: lime;
-    display: flex;
-    justify-content: space-between;
+    overflow: hidden;
   }
-  /* Line 2 (last line): left-aligned */
-  .last {
-    width: 160px;
-    height: 20px;
-    font-size: 16px;
-    line-height: 20px;
-    font-family: Ahem;
-    background: lime;
+  /* Each word positioned absolutely to match justify/left-align layout */
+  .w {
+    position: absolute;
+    white-space: nowrap;
   }
 </style>
-<div class="line"><span>XX</span><span>XX</span><span>XX</span></div>
-<div class="last">XX XX XX</div>
+<div class="container">
+  <!-- Line 1 (justified): 3 words at x=0,64,128 -->
+  <!-- Each "XX"=32px; 160px-96px=64px free space / 2 gaps = 32px per gap -->
+  <span class="w" style="left:0px;top:0px">XX</span>
+  <span class="w" style="left:64px;top:0px">XX</span>
+  <span class="w" style="left:128px;top:0px">XX</span>
+  <!-- Line 2 (last line, left-aligned): words at natural spacing x=0,48,96 -->
+  <!-- "XX "=32+16=48px between word starts -->
+  <span class="w" style="left:0px;top:20px">XX</span>
+  <span class="w" style="left:48px;top:20px">XX</span>
+  <span class="w" style="left:96px;top:20px">XX</span>
+</div>

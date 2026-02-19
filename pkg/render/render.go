@@ -1194,6 +1194,11 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 		return
 	}
 
+	// empty-cells: hide — skip background and border for empty table cells
+	if box.HideBackground {
+		return
+	}
+
 	// Note: transforms are applied at the stacking context level in paintStackingContext,
 	// wrapping all painting (backgrounds, borders, AND children).
 
@@ -1282,6 +1287,57 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 
 	// Draw outline (outside the border box, does not affect layout)
 	r.drawOutline(box)
+
+	// Draw column rules (for multi-column containers)
+	r.drawColumnRules(box)
+}
+
+// drawColumnRules draws vertical rules between columns for multi-column containers.
+func (r *Renderer) drawColumnRules(box *layout.Box) {
+	if box == nil || box.Style == nil {
+		return
+	}
+	ruleStyle := box.Style.GetColumnRuleStyle()
+	if ruleStyle == "none" {
+		return
+	}
+	ruleWidth := box.Style.GetColumnRuleWidth()
+	if ruleWidth <= 0 {
+		return
+	}
+	columnCount := box.Style.GetColumnCount()
+	if columnCount <= 1 {
+		return
+	}
+	ruleColor := box.Style.GetColumnRuleColor()
+	if ruleColor.A <= 0 {
+		return
+	}
+
+	effectiveY := r.getEffectiveY(box)
+	contentX := box.X + box.Border.Left + box.Padding.Left
+	contentW := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
+	contentY := effectiveY + box.Border.Top + box.Padding.Top
+	contentH := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+
+	gapVal := box.Style.GetColumnGapMulticol()
+	numCols := float64(columnCount)
+	colWidth := (contentW - gapVal*float64(columnCount-1)) / numCols
+
+	r.context.SetRGBA(
+		float64(ruleColor.R)/255.0,
+		float64(ruleColor.G)/255.0,
+		float64(ruleColor.B)/255.0,
+		ruleColor.A,
+	)
+	for i := 1; i < columnCount; i++ {
+		// The gap starts at: contentX + i*colWidth + (i-1)*gap
+		gapStart := contentX + float64(i)*colWidth + float64(i-1)*gapVal
+		gapCenter := gapStart + gapVal/2
+		ruleX := math.Floor(gapCenter - ruleWidth/2)
+		r.context.DrawRectangle(ruleX, contentY, ruleWidth, contentH)
+		r.context.Fill()
+	}
 }
 
 // drawGradientBackground renders a CSS gradient as the box background
@@ -1665,12 +1721,19 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	// CRITICAL FIX: For inline elements, adjust dimensions to include bleeding borders/padding
 	renderHeight := box.Height
 	renderY := effectiveY
-	if box.Style != nil && box.Style.GetDisplay() == css.DisplayInline && !box.IsFirstFragment && !box.IsLastFragment {
-		// Inline elements: box.Height is line box height, but borders "bleed" outside
-		// Skip bleed for split-inline fragments (block-in-inline) — their borders should
-		// be contained within box.Height like block-level elements
-		renderHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
-		renderY = effectiveY - box.Border.Top - box.Padding.Top
+	if box.Style != nil && box.Style.GetDisplay() == css.DisplayInline {
+		// Inline elements: box.Height is line box height, but borders "bleed" outside.
+		// Fragment1 (IsFirstFragment) only gets top bleed: its bottom bleed is painted on top
+		// of the intervening block's background in our global paint order, making it visible when
+		// it should be covered (unlike the reference where inline content is painted before the
+		// adjacent block's background). All other inline elements get full bleed.
+		topBleed := box.Border.Top + box.Padding.Top
+		bottomBleed := box.Padding.Bottom + box.Border.Bottom
+		if box.IsFirstFragment {
+			bottomBleed = 0
+		}
+		renderHeight = box.Height + topBleed + bottomBleed
+		renderY = effectiveY - topBleed
 	}
 
 	// Phase 12: Get border styles for each side
@@ -1814,16 +1877,19 @@ func (r *Renderer) drawOutline(box *layout.Box) {
 	bbW := box.Width
 	bbH := box.Height
 
-	// Outer edge of the outline: outlineOffset + outlineWidth outside the border box
-	outX := bbX - outlineOffset - outlineWidth
-	outY := bbY - outlineOffset - outlineWidth
-	outW := bbW + 2*(outlineOffset+outlineWidth)
-
-	// Inner edge of the outline: outlineOffset outside the border box
-	inX := bbX - outlineOffset
-	inY := bbY - outlineOffset
-	inW := bbW + 2*outlineOffset
-	inH := bbH + 2*outlineOffset
+	// Snap all outline coordinates to pixel boundaries to avoid sub-pixel
+	// rendering artifacts (same technique as drawBorder). Fractional box
+	// positions (from font metrics) would otherwise cause strip heights
+	// to be 1px too large due to the gg rasterizer's "fill any crossed pixel"
+	// behavior at fractional boundaries.
+	outX := math.Round(bbX - outlineOffset - outlineWidth)
+	outY := math.Round(bbY - outlineOffset - outlineWidth)
+	inX := math.Round(bbX - outlineOffset)
+	inY := math.Round(bbY - outlineOffset)
+	inW := math.Round(bbW + 2*outlineOffset)
+	inH := math.Round(bbH + 2*outlineOffset)
+	outW := math.Round(bbW + 2*(outlineOffset + outlineWidth))
+	outH := math.Round(bbH + 2*(outlineOffset + outlineWidth))
 
 	// If the inner box collapses (negative offset bigger than half dimensions), skip
 	if inW <= 0 || inH <= 0 {
@@ -1833,7 +1899,6 @@ func (r *Renderer) drawOutline(box *layout.Box) {
 	r.context.SetColor(color.NRGBA{R: oR, G: oG, B: oB, A: uint8(oA * 255)})
 
 	outlineStyle := box.Style.GetOutlineStyle()
-	outH := bbH + 2*(outlineOffset+outlineWidth)
 
 	if outlineStyle == "dotted" {
 		// Dotted outline: draw square dots along each edge.
@@ -1841,18 +1906,23 @@ func (r *Renderer) drawOutline(box *layout.Box) {
 		return
 	}
 
-	// Draw 4 outline rectangles (top, bottom, left, right strips)
+	// Draw 4 outline strips using snapped coordinates so strip sizes are
+	// derived from integer positions (avoids 1px rounding errors).
+	topH := inY - outY
+	bottomH := outH - inH - topH
+	leftW := inX - outX
+	rightW := outW - inW - leftW
 	// Top strip
-	r.context.DrawRectangle(outX, outY, outW, outlineWidth)
+	r.context.DrawRectangle(outX, outY, outW, topH)
 	r.context.Fill()
 	// Bottom strip
-	r.context.DrawRectangle(outX, inY+inH, outW, outlineWidth)
+	r.context.DrawRectangle(outX, inY+inH, outW, bottomH)
 	r.context.Fill()
 	// Left strip (between top and bottom strips)
-	r.context.DrawRectangle(outX, inY, outlineWidth, inH)
+	r.context.DrawRectangle(outX, inY, leftW, inH)
 	r.context.Fill()
 	// Right strip (between top and bottom strips)
-	r.context.DrawRectangle(inX+inW, inY, outlineWidth, inH)
+	r.context.DrawRectangle(inX+inW, inY, rightW, inH)
 	r.context.Fill()
 }
 
@@ -2122,6 +2192,38 @@ func (r *Renderer) drawText(box *layout.Box) {
 	ascent := r.context.FontAscent()
 	textY := effectiveY + ascent
 
+	// Draw text-shadow layers first (behind main text)
+	shadows := box.Style.GetTextShadow()
+	for _, shadow := range shadows {
+		r.context.SetRGBA(
+			float64(shadow.Color.R)/255.0,
+			float64(shadow.Color.G)/255.0,
+			float64(shadow.Color.B)/255.0,
+			shadow.Color.A,
+		)
+		shadowX := textX + shadow.OffsetX
+		shadowY := textY + shadow.OffsetY
+		letterSpacing := box.Style.GetLetterSpacing()
+		if letterSpacing != 0 {
+			drawX := shadowX
+			for _, ch := range textContent {
+				charStr := string(ch)
+				r.context.DrawString(charStr, drawX, shadowY)
+				charWidth, _ := text.MeasureTextWithStyle(charStr, fontSize, bold, italic, mono, ahem)
+				drawX += charWidth + letterSpacing
+			}
+		} else {
+			r.context.DrawString(textContent, shadowX, shadowY)
+		}
+	}
+	// Restore main text color
+	r.context.SetRGB(0, 0, 0)
+	if colorStr, ok := box.Style.Get("color"); ok {
+		if color, ok := css.ParseColor(colorStr); ok {
+			r.context.SetRGBA(float64(color.R)/255.0, float64(color.G)/255.0, float64(color.B)/255.0, color.A)
+		}
+	}
+
 	// CSS 2.1 §16.4: Apply letter-spacing between characters
 	letterSpacing := box.Style.GetLetterSpacing()
 	if letterSpacing != 0 {
@@ -2150,7 +2252,7 @@ func (r *Renderer) drawText(box *layout.Box) {
 		}
 
 		{
-			textWidth, _ := text.MeasureTextWithWeight(textContent, fontSize, bold)
+			textWidth, _ := text.MeasureTextWithStyle(textContent, fontSize, bold, italic, mono, ahem)
 			underlineOffset := box.Style.GetTextUnderlineOffset()
 			thickness := box.Style.GetTextDecorationThickness()
 			decoStyle := box.Style.GetTextDecorationStyle()
@@ -2161,9 +2263,21 @@ func (r *Renderer) drawText(box *layout.Box) {
 				lineX = textX - textWidth/2
 			}
 
+			// Compute half-leading: (lineHeight - fontSize) / 2
+			// When line-height > font-size, text is vertically centered in the line box.
+			// Underline should be offset from the bottom of the em-square (fontSize), not
+			// from the top of the line box. Half-leading shifts the underline down correctly.
+			halfLeading := 0.0
+			if box.Style != nil {
+				lineHeight := box.Style.GetLineHeight()
+				if lineHeight > fontSize {
+					halfLeading = (lineHeight - fontSize) / 2
+				}
+			}
+
 			switch decoration {
 			case css.TextDecorationUnderline:
-				underlineY := effectiveY + fontSize + 2 + underlineOffset
+				underlineY := effectiveY + halfLeading + fontSize + 2 + underlineOffset
 				switch decoStyle {
 				case "double":
 					// Two lines with a 2px gap between them
@@ -2491,7 +2605,17 @@ func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) 
 				r.context.Scale(t.Values[0], t.Values[0])
 			}
 		case "skew":
-			// Approximate skew using shear matrix
+			// CSS skewX(a) with Y-down screen coords: positive angle tilts top rightward.
+			// gg.Shear(sx, sy) maps: x' = x + sx*y, y' = sy*x + y.
+			// To get top-shifts-right behavior for positive a, negate the shear values.
+			if len(t.Values) >= 2 {
+				tanX := math.Tan(t.Values[0] * math.Pi / 180)
+				tanY := math.Tan(t.Values[1] * math.Pi / 180)
+				r.context.Shear(-tanX, -tanY)
+			} else if len(t.Values) >= 1 {
+				tanX := math.Tan(t.Values[0] * math.Pi / 180)
+				r.context.Shear(-tanX, 0)
+			}
 		}
 	}
 

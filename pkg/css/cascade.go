@@ -212,6 +212,9 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("padding", "1px")
 		style.Set("font-weight", "bold")
 		style.Set("text-align", "center")
+	case "caption":
+		style.Set("display", "table-caption")
+		style.Set("text-align", "center")
 
 	// Phase 23: Default styles for list elements
 	// Per HTML spec default stylesheet, list-style-type is set on ul/ol (not li),
@@ -420,6 +423,25 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	finalStyle.ViewportHeight = viewportHeight
 
 	return finalStyle
+}
+
+// HasFirstLineRules returns true if any stylesheet rules with ::first-line
+// pseudo-element match the given node, indicating first-line styling is needed.
+func HasFirstLineRules(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) bool {
+	for _, stylesheet := range stylesheets {
+		for _, rule := range stylesheet.Rules {
+			if rule.Selector.PseudoElement != "first-line" {
+				continue
+			}
+			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+				continue
+			}
+			if MatchesSelector(node, rule.Selector) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.

@@ -4,6 +4,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,6 +137,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore width property)
 		contentWidth = 0
 		hasExplicitWidth = false
+	} else if widthVal, ok := style.Get("width"); ok && (widthVal == "min-content" || widthVal == "max-content" || widthVal == "fit-content") {
+		// CSS Intrinsic & Extrinsic Sizing: keyword values
+		constraint := NewConstraintSpace(availableWidth, -1)
+		sizes := le.ComputeMinMaxSizes(node, constraint, style)
+		switch widthVal {
+		case "min-content":
+			contentWidth = sizes.MinContentSize
+		case "max-content":
+			contentWidth = sizes.MaxContentSize
+		case "fit-content":
+			contentWidth = math.Min(sizes.MaxContentSize, math.Max(sizes.MinContentSize, availableWidth-margin.Left-margin.Right-padding.Left-padding.Right-border.Left-border.Right))
+		}
+		hasExplicitWidth = true
 	} else if w, ok := style.GetLength("width"); ok {
 		contentWidth = w
 		hasExplicitWidth = true

@@ -35,6 +35,9 @@ type Box struct {
 	// Cached intrinsic sizes (computed on demand)
 	intrinsicSizes *IntrinsicSizes
 
+	// HideBackground is true for empty table cells when empty-cells:hide is set
+	HideBackground bool
+
 	// Line boxes for block containers with inline content
 	LineBoxes []*LineBox
 }

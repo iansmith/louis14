@@ -201,7 +201,6 @@ func runReftest(t *testing.T, testPath string) bool {
 	// Compare
 	opts := DefaultOptions()
 	opts.Tolerance = 2
-	opts.FuzzyRadius = 2          // Allow 2px shift tolerance for table cell kerning differences
 	opts.MaxDifferentPercent = 0.3 // Allow up to 0.3% different pixels for font/anti-aliasing variations
 	opts.SaveDiffImage = true
 	opts.DiffImagePath = filepath.Join(tmpDir, "diff.png")
@@ -229,7 +228,12 @@ func runReftest(t *testing.T, testPath string) bool {
 		return false
 	}
 
-	t.Logf("REFTEST PASS (%d pixels, max diff: %d)", result.TotalPixels, result.MaxDifference)
+	if result.DifferentPixels > 0 {
+		pct := float64(result.DifferentPixels) / float64(result.TotalPixels) * 100
+		t.Logf("REFTEST PASS (%d pixels, max diff: %d, different: %d / %.1f%%)", result.TotalPixels, result.MaxDifference, result.DifferentPixels, pct)
+	} else {
+		t.Logf("REFTEST PASS (%d pixels, max diff: %d)", result.TotalPixels, result.MaxDifference)
+	}
 	return true
 }
 
