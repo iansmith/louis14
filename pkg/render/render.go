@@ -1743,15 +1743,11 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	renderY := effectiveY
 	if box.Style != nil && box.Style.GetDisplay() == css.DisplayInline {
 		// Inline elements: box.Height is line box height, but borders "bleed" outside.
-		// Fragment1 (IsFirstFragment) only gets top bleed: its bottom bleed is painted on top
-		// of the intervening block's background in our global paint order, making it visible when
-		// it should be covered (unlike the reference where inline content is painted before the
-		// adjacent block's background). All other inline elements get full bleed.
+		// All inline fragments (including IsFirstFragment) get full top+bottom bleed.
+		// The intervening block's background is painted after Fragment1 in document order,
+		// so it covers any bleeding bottom border of Fragment1 (as in browser behavior).
 		topBleed := box.Border.Top + box.Padding.Top
 		bottomBleed := box.Padding.Bottom + box.Border.Bottom
-		if box.IsFirstFragment {
-			bottomBleed = 0
-		}
 		renderHeight = box.Height + topBleed + bottomBleed
 		renderY = effectiveY - topBleed
 	}

@@ -76,6 +76,15 @@ func (p *Parser) Parse() (*Document, error) {
 			parent := p.currentParent()
 			parent.AddChild(node)
 
+			// Handle <meta name="viewport" content="width=...">
+			if token.TagName == "meta" {
+				if name, ok := token.Attributes["name"]; ok && strings.EqualFold(name, "viewport") {
+					if content, ok := token.Attributes["content"]; ok {
+						p.doc.ViewportWidth = parseViewportWidth(content)
+					}
+				}
+			}
+
 			// Handle <link rel="stylesheet"> with data URI href
 			if token.TagName == "link" {
 				if rel, ok := token.Attributes["rel"]; ok {
@@ -369,6 +378,25 @@ func ParseFragment(htmlContent string) ([]*Node, error) {
 	}
 	doc.Root.Children = nil
 	return children, nil
+}
+
+// parseViewportWidth extracts the width value from a viewport meta content string.
+// e.g. "width=1120, initial-scale=1" → 1120. Returns 0 if not found or not numeric.
+func parseViewportWidth(content string) int {
+	for _, part := range strings.Split(content, ",") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "width=") {
+			val := strings.TrimSpace(part[6:])
+			if val == "device-width" {
+				return 0 // ignore device-width
+			}
+			var w int
+			if _, err := fmt.Sscanf(val, "%d", &w); err == nil && w > 0 {
+				return w
+			}
+		}
+	}
+	return 0
 }
 
 // stripCDATA removes XHTML CDATA markers from style content.

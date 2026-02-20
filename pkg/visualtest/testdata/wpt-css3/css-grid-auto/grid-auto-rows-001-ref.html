@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Reference: grid-auto-rows: 80px</title>
+<style>
+.grid {
+  display: grid;
+  grid-template-columns: 100px 100px;
+  grid-template-rows: 80px 80px;
+  width: 200px;
+  border: 1px solid black;
+}
+.grid > div {
+  background: #008000;
+  border: 1px solid white;
+}
+</style>
+<p>Test passes if four green cells are arranged in a 2x2 grid with 80px tall rows.</p>
+<div class="grid">
+  <div>A</div>
+  <div>B</div>
+  <div>C</div>
+  <div>D</div>
+</div>

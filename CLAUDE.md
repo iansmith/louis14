@@ -6,6 +6,9 @@ Go binary: /opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 rendering bugs by allowing pixel shifts. All reftest comparisons must use FuzzyRadius=0
 (the default). Only Tolerance (per-channel color) and MaxDifferentPercent are acceptable.
 
+**Threshold: under 0.1%.** MaxDifferentPercent must be 0.1 or lower. All tests must pass
+with fewer than 0.1% different pixels (480 pixels at 800×600 viewport).
+
 ## CLI tools
 
 - `cmd/l14open` — Renders a local HTML file to PNG and opens it: `l14open <input.html> <output.png> [width] [height]`

@@ -10,6 +10,13 @@ import (
 
 // applyVerticalAlign applies vertical alignment to a box within a line
 func (le *LayoutEngine) applyVerticalAlign(box *Box, lineY float64, lineHeight float64) {
+	// Check for length-based vertical-align (e.g., "10px") first.
+	// Positive offset raises the element upward (toward smaller Y in screen coords).
+	if offset := box.Style.GetVerticalAlignOffset(); offset != 0 {
+		box.Y = lineY - offset
+		return
+	}
+
 	valign := box.Style.GetVerticalAlign()
 	boxHeight := le.getTotalHeight(box)
 

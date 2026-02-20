@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Logical Properties: inset-block with positioned element</title>
+<link rel="help" href="https://drafts.csswg.org/css-logical-1/#position-properties">
+<link rel="match" href="reference/inset-block-001-ref.html">
+<style>
+.container {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  background: #ccc;
+}
+.box {
+  position: absolute;
+  inset-block: 10px 0;
+  left: 20px;
+  width: 60px;
+  height: 60px;
+  background: green;
+}
+</style>
+<div class="container">
+  <div class="box"></div>
+</div>

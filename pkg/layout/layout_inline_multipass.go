@@ -443,7 +443,9 @@ func (le *LayoutEngine) BreakLines(
 			currentLine.Items = append(currentLine.Items, item)
 			lineFloatWidth += item.Width
 			lineFloats = append(lineFloats, item)
-			lastTextEndedWithSpace = false // Real content interrupts whitespace sequence
+			// CSS 2.1: floats are out-of-flow. Do NOT reset lastTextEndedWithSpace —
+			// a space before the float and a space after the float form an adjacent
+			// whitespace sequence that should collapse to one space. (float-nowrap-3)
 			hasSeenContentOnLine = true
 
 			// Update line height
@@ -1081,18 +1083,20 @@ func (le *LayoutEngine) constructLine(
 	for _, item := range line.Items {
 		switch item.Type {
 		case InlineItemText:
+			txt := item.Text
+			width := item.Width
 			// Create text fragment with correct position
 			frag := NewTextFragment(
-				item.Text,
+				txt,
 				item.Style,
 				currentX,
 				line.Y,
-				item.Width,
+				width,
 				item.Height,
 				item.Node, // Pass the text node for rendering
 			)
 			fragments = append(fragments, frag)
-			currentX += item.Width
+			currentX += width
 
 		case InlineItemFloat:
 			// Skip - floats are already handled in Pass 1
@@ -1367,7 +1371,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			constraint.NoWrap = true
 		}
 		// CSS 2.1 §16.1: text-indent applies to the first line of a block container
-		constraint.TextIndent = containerBox.Style.GetTextIndent()
+		// GetTextIndent returns (fraction, true) for percentages or (pixels, false) for lengths.
+		tiVal, tiPct := containerBox.Style.GetTextIndent()
+		if tiPct {
+			constraint.TextIndent = tiVal * availableWidth
+		} else {
+			constraint.TextIndent = tiVal
+		}
 
 		// text-overflow applies when container has overflow:hidden + nowrap
 		if containerBox.Style.GetOverflow() != css.OverflowVisible {
@@ -1455,17 +1465,25 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	getRelativeOffset := func() (float64, float64) {
 		var offsetX, offsetY float64
 		for _, span := range inlineStack {
-			if span.style != nil && span.style.GetPosition() == css.PositionRelative {
-				posOffset := span.style.GetPositionOffset()
-				if posOffset.HasTop {
-					offsetY += posOffset.Top
-				} else if posOffset.HasBottom {
-					offsetY -= posOffset.Bottom
+			if span.style != nil {
+				if span.style.GetPosition() == css.PositionRelative {
+					posOffset := span.style.GetPositionOffset()
+					if posOffset.HasTop {
+						offsetY += posOffset.Top
+					} else if posOffset.HasBottom {
+						offsetY -= posOffset.Bottom
+					}
+					if posOffset.HasLeft {
+						offsetX += posOffset.Left
+					} else if posOffset.HasRight {
+						offsetX -= posOffset.Right
+					}
 				}
-				if posOffset.HasLeft {
-					offsetX += posOffset.Left
-				} else if posOffset.HasRight {
-					offsetX -= posOffset.Right
+				// CSS vertical-align: <length> on inline spans raises (+) or lowers (-) the
+				// element relative to the line's baseline. Positive value = raise up = negative Y.
+				// This is equivalent to position:relative; top:-N for the same visual result.
+				if va := span.style.GetVerticalAlignOffset(); va != 0 {
+					offsetY -= va
 				}
 			}
 		}
@@ -1627,7 +1645,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 						border := span.style.GetBorderWidth()
 						padding := span.style.GetPadding()
 						margin := span.style.GetMargin()
-
 						// Inline elements ignore vertical margins (CSS 2.1 §8.3)
 						margin.Top = 0
 						margin.Bottom = 0

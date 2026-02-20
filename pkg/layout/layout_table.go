@@ -159,6 +159,15 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	// Set table height from row heights if not explicitly set
 	explicitTableHeight, hasExplicitHeight := tableBox.Style.GetLength("height")
 	if !hasExplicitHeight {
+		// Check if percentage height was already resolved by layoutNode
+		preComputedContent := tableBox.Height - tableBox.Border.Top - tableBox.Border.Bottom -
+			tableBox.Padding.Top - tableBox.Padding.Bottom
+		if preComputedContent > 0 {
+			explicitTableHeight = preComputedContent
+			hasExplicitHeight = true
+		}
+	}
+	if !hasExplicitHeight {
 		totalH := 0.0
 		for _, rh := range tableInfo.RowHeights {
 			totalH += rh

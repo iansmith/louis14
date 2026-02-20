@@ -525,6 +525,8 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
+		// Apply container query rules after base style (needs ancestor styles resolved)
+		applyContainerQueryRules(node, stylesheets, styles, style)
 		styles[node] = style
 	}
 
@@ -532,6 +534,86 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	for _, child := range node.Children {
 		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight)
 	}
+}
+
+// applyContainerQueryRules evaluates @container rules for a node by checking
+// ancestor containers' computed sizes. Called after base style computation.
+func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style) {
+	for _, stylesheet := range stylesheets {
+		for _, rule := range stylesheet.Rules {
+			if rule.ContainerQuery == nil {
+				continue
+			}
+			// Skip pseudo-element rules
+			if rule.Selector.PseudoElement != "" {
+				continue
+			}
+			// Check if selector matches this node
+			if !MatchesSelector(node, rule.Selector) {
+				continue
+			}
+			// Evaluate the container query against ancestors
+			if !evaluateContainerQuery(node, rule.ContainerQuery, styles) {
+				continue
+			}
+			// Apply declarations
+			for property, value := range rule.Declarations {
+				expandShorthand(style, property, value)
+			}
+		}
+	}
+}
+
+// evaluateContainerQuery walks up the DOM to find a matching container and evaluates size conditions.
+func evaluateContainerQuery(node *html.Node, cq *ContainerQuery, styles map[*html.Node]*Style) bool {
+	// Walk up ancestors to find a container
+	ancestor := node.Parent
+	for ancestor != nil {
+		ancestorStyle, ok := styles[ancestor]
+		if !ok {
+			ancestor = ancestor.Parent
+			continue
+		}
+
+		containerType, _ := ancestorStyle.Get("container-type")
+		if containerType != "inline-size" && containerType != "size" {
+			ancestor = ancestor.Parent
+			continue
+		}
+
+		// Check container name if specified
+		if cq.Name != "" {
+			containerName, _ := ancestorStyle.Get("container-name")
+			if containerName != cq.Name {
+				ancestor = ancestor.Parent
+				continue
+			}
+		}
+
+		// Found a matching container — evaluate conditions against its width
+		widthStr, _ := ancestorStyle.Get("width")
+		containerWidth, _ := ParseLength(widthStr)
+
+		for _, cond := range cq.Conditions {
+			condValue, _ := ParseLength(cond.Value)
+			switch cond.Feature {
+			case "min-width":
+				if containerWidth < condValue {
+					return false
+				}
+			case "max-width":
+				if containerWidth > condValue {
+					return false
+				}
+			case "width":
+				if containerWidth != condValue {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // setFormBorder sets individual border properties for form element UA styles.

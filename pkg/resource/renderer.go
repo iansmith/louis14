@@ -59,6 +59,11 @@ func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*imag
 		return nil, fmt.Errorf("parsing HTML: %w", err)
 	}
 
+	// Override viewport width from <meta name="viewport" content="width=...">
+	if doc.ViewportWidth > 0 {
+		viewportWidth = float64(doc.ViewportWidth)
+	}
+
 	// Layout pass to measure content height
 	layoutEngine := layout.NewLayoutEngine(viewportWidth, viewportHeight)
 	if imageFetcher != nil {

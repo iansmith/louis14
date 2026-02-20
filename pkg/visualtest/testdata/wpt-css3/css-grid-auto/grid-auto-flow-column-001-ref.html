@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Reference: grid-auto-flow: column</title>
+<style>
+.grid {
+  display: grid;
+  grid-template-rows: 50px 50px;
+  grid-template-columns: auto auto;
+  width: 200px;
+  border: 1px solid black;
+}
+.grid > div {
+  background: #008000;
+  border: 1px solid white;
+}
+</style>
+<p>Test passes if four green cells are arranged in a 2-row grid, filling columns first (A/B down, then C/D down).</p>
+<div class="grid">
+  <div style="grid-row: 1; grid-column: 1;">A</div>
+  <div style="grid-row: 2; grid-column: 1;">B</div>
+  <div style="grid-row: 1; grid-column: 2;">C</div>
+  <div style="grid-row: 2; grid-column: 2;">D</div>
+</div>

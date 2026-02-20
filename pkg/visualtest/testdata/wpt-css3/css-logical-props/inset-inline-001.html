@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Logical Properties: inset-inline with positioned element</title>
+<link rel="help" href="https://drafts.csswg.org/css-logical-1/#position-properties">
+<link rel="match" href="reference/inset-inline-001-ref.html">
+<style>
+.container {
+  position: relative;
+  width: 300px;
+  height: 100px;
+  background: #ccc;
+}
+.box {
+  position: absolute;
+  inset-inline: 20px 0;
+  top: 20px;
+  width: 60px;
+  height: 60px;
+  background: green;
+}
+</style>
+<div class="container">
+  <div class="box"></div>
+</div>

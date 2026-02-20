@@ -60,10 +60,11 @@ const (
 
 // Rule represents a CSS rule (selector + declarations)
 type Rule struct {
-	Selector     Selector
-	Declarations map[string]string // property -> value
-	Important    map[string]bool   // tracks which properties are !important
-	MediaQuery   *MediaQuery       // Phase 22: Optional media query wrapper
+	Selector       Selector
+	Declarations   map[string]string // property -> value
+	Important      map[string]bool   // tracks which properties are !important
+	MediaQuery     *MediaQuery       // Phase 22: Optional media query wrapper
+	ContainerQuery *ContainerQuery   // Optional @container query wrapper
 }
 
 // Phase 22: MediaQuery represents a @media rule condition
@@ -76,6 +77,18 @@ type MediaQuery struct {
 type MediaCondition struct {
 	Feature string  // "min-width", "max-width", "orientation", etc.
 	Value   string  // "768px", "landscape", etc.
+}
+
+// ContainerQuery represents a @container rule condition
+type ContainerQuery struct {
+	Name       string               // optional container name (empty = any container)
+	Conditions []ContainerCondition // size conditions
+}
+
+// ContainerCondition represents a single container query condition
+type ContainerCondition struct {
+	Feature string // "min-width", "max-width", "width"
+	Value   string // "200px", etc.
 }
 
 // FontFaceRule represents a parsed @font-face rule.
@@ -170,6 +183,9 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 			} else if strings.HasPrefix(trimmed, "@supports") {
 				supportsRules := parseSupportsRule(ruleStr)
 				stylesheet.Rules = append(stylesheet.Rules, supportsRules...)
+			} else if strings.HasPrefix(trimmed, "@container") {
+				containerRules := parseContainerRule(ruleStr)
+				stylesheet.Rules = append(stylesheet.Rules, containerRules...)
 			}
 			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
 			continue
@@ -454,6 +470,91 @@ func parseMediaRule(ruleStr string) []Rule {
 	}
 
 	return rules
+}
+
+// parseContainerRule parses a @container rule and returns its inner rules
+func parseContainerRule(ruleStr string) []Rule {
+	rules := make([]Rule, 0)
+
+	// Find the opening brace
+	bracePos := strings.Index(ruleStr, "{")
+	if bracePos == -1 {
+		return rules
+	}
+
+	// Extract container query string: @container [name] (conditions)
+	queryStr := strings.TrimSpace(ruleStr[:bracePos])
+	containerQuery := parseContainerQuery(queryStr)
+
+	// Extract inner CSS (between outermost { and })
+	innerStart := bracePos + 1
+	innerEnd := strings.LastIndex(ruleStr, "}")
+	if innerEnd == -1 || innerEnd <= innerStart {
+		return rules
+	}
+
+	innerCSS := ruleStr[innerStart:innerEnd]
+
+	// Parse inner rules
+	innerRules := splitRules(innerCSS)
+
+	for _, innerRuleStr := range innerRules {
+		rule, err := parseRule(innerRuleStr)
+		if err != nil {
+			continue
+		}
+		rule.ContainerQuery = containerQuery
+		rules = append(rules, rule)
+	}
+
+	return rules
+}
+
+// parseContainerQuery parses a container query string like "@container sidebar (min-width: 200px)"
+func parseContainerQuery(queryStr string) *ContainerQuery {
+	// Remove @container prefix
+	queryStr = strings.TrimPrefix(queryStr, "@container")
+	queryStr = strings.TrimSpace(queryStr)
+
+	cq := &ContainerQuery{
+		Conditions: make([]ContainerCondition, 0),
+	}
+
+	// Check if there's a container name before the first (
+	parenPos := strings.Index(queryStr, "(")
+	if parenPos > 0 {
+		namePart := strings.TrimSpace(queryStr[:parenPos])
+		if namePart != "" && namePart != "not" {
+			cq.Name = namePart
+		}
+	}
+
+	// Parse conditions: (min-width: 200px) and (max-width: 500px)
+	conditionStrs := strings.Split(queryStr, "and")
+	for _, condStr := range conditionStrs {
+		condStr = strings.TrimSpace(condStr)
+		// Skip the name part (non-parenthesized)
+		if !strings.Contains(condStr, "(") {
+			continue
+		}
+		// Remove parentheses
+		condStr = strings.Trim(condStr, "()")
+		condStr = strings.TrimSpace(condStr)
+
+		// Split by : to get feature and value
+		colonPos := strings.Index(condStr, ":")
+		if colonPos == -1 {
+			continue
+		}
+		feature := strings.TrimSpace(condStr[:colonPos])
+		value := strings.TrimSpace(condStr[colonPos+1:])
+		cq.Conditions = append(cq.Conditions, ContainerCondition{
+			Feature: feature,
+			Value:   value,
+		})
+	}
+
+	return cq
 }
 
 // Phase 22: parseMediaQuery parses a media query string like "@media screen and (min-width: 768px)"
@@ -1103,6 +1204,33 @@ func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight f
 // Phase 22: parseMediaLength parses a length value and returns value and unit
 func parseMediaLength(val string) (float64, string) {
 	val = strings.TrimSpace(val)
+
+	// Handle calc() expressions
+	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
+		inner := val[5 : len(val)-1]
+		// 16px for font-size (media queries use initial font size, not element font-size)
+		if result, ok := EvalCalcWithPercent(inner, 16.0, 0); ok {
+			return result, "px"
+		}
+	}
+
+	// Handle rem units (1rem = 16px for media queries per CSS spec)
+	if strings.HasSuffix(val, "rem") {
+		numStr := strings.TrimSuffix(val, "rem")
+		var num float64
+		if _, err := fmt.Sscanf(numStr, "%f", &num); err == nil {
+			return num * 16.0, "px"
+		}
+	}
+
+	// Handle em units (1em = 16px for media queries — initial font size)
+	if strings.HasSuffix(val, "em") {
+		numStr := strings.TrimSuffix(val, "em")
+		var num float64
+		if _, err := fmt.Sscanf(numStr, "%f", &num); err == nil {
+			return num * 16.0, "px"
+		}
+	}
 
 	// Check for px suffix
 	if strings.HasSuffix(val, "px") {

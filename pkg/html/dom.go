@@ -23,9 +23,10 @@ const (
 )
 
 type Document struct {
-	Root        *Node
-	Stylesheets []string // Phase 3: CSS from <style> tags
-	Scripts     []string // JavaScript from <script> tags
+	Root          *Node
+	Stylesheets   []string // Phase 3: CSS from <style> tags
+	Scripts       []string // JavaScript from <script> tags
+	ViewportWidth int      // From <meta name="viewport" content="width=...">
 }
 
 func NewDocument() *Document {

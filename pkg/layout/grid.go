@@ -41,13 +41,27 @@ func (le *LayoutEngine) layoutGridContainer(
 	// Calculate container content width
 	var containerWidth float64
 	hasExplicitWidth := false
+	isInlineGrid := style.GetDisplay() == css.DisplayInlineGrid
+
 	if w, ok := style.GetLength("width"); ok {
 		containerWidth = w
 		hasExplicitWidth = true
+	} else if pct, ok := style.GetPercentage("width"); ok && pct > 0 {
+		if parent != nil && parent.Width > 0 {
+			parentContentWidth := parent.Width - parent.Padding.Left - parent.Padding.Right -
+				parent.Border.Left - parent.Border.Right
+			containerWidth = pct * parentContentWidth / 100
+			hasExplicitWidth = true
+		}
+	} else if isInlineGrid {
+		// Inline-grid: intrinsically sized, don't use available width as definite
+		containerWidth = availableWidth - margin.Left - margin.Right -
+			padding.Left - padding.Right - border.Left - border.Right
+		hasExplicitWidth = false
 	} else {
 		containerWidth = availableWidth - margin.Left - margin.Right -
 			padding.Left - padding.Right - border.Left - border.Right
-		hasExplicitWidth = true // available width acts as definite for grid
+		hasExplicitWidth = true // block-level grid fills available width
 	}
 
 	// Apply max-width constraint
@@ -73,6 +87,14 @@ func (le *LayoutEngine) layoutGridContainer(
 	if h, ok := style.GetLength("height"); ok {
 		containerHeight = h
 		hasExplicitHeight = true
+	} else if pct, ok := style.GetPercentage("height"); ok && pct > 0 {
+		// Resolve percentage height against parent's content height
+		if parent != nil && parent.Height > 0 {
+			parentContentHeight := parent.Height - parent.Padding.Top - parent.Padding.Bottom -
+				parent.Border.Top - parent.Border.Bottom
+			containerHeight = pct * parentContentHeight / 100
+			hasExplicitHeight = true
+		}
 	}
 
 	// Get positioning information
@@ -94,6 +116,8 @@ func (le *LayoutEngine) layoutGridContainer(
 	currentRow := 0
 	currentCol := 0
 	numColTracks := len(columnTracks)
+	numRowTracks := len(rowTracks)
+	autoFlow := style.GetGridAutoFlow() // "row" or "column"
 
 	// Expand display:contents children so their children participate as direct grid items
 	gridChildren := le.flattenContentsChildren(node, computedStyles)
@@ -109,6 +133,18 @@ func (le *LayoutEngine) layoutGridContainer(
 		}
 		if childStyle.GetDisplay() == css.DisplayNone {
 			continue
+		}
+
+		// CSS Grid §6.2: Blockify inline grid items
+		switch childStyle.GetDisplay() {
+		case css.DisplayInline:
+			childStyle.Set("display", "block")
+		case css.DisplayInlineBlock:
+			childStyle.Set("display", "block")
+		case css.DisplayInlineFlex:
+			childStyle.Set("display", "flex")
+		case css.DisplayInlineGrid:
+			childStyle.Set("display", "grid")
 		}
 
 		gridColumn := childStyle.GetGridColumn()
@@ -169,20 +205,41 @@ func (le *LayoutEngine) layoutGridContainer(
 			}
 		}
 		if gridColumn == nil && !namedAreaPlaced {
-			currentCol += colSpan
-			if numColTracks > 0 && currentCol >= numColTracks {
-				currentCol = 0
-				currentRow++
+			if autoFlow == "column" {
+				// Column-first: advance rows, wrap to next column
+				currentRow += rowSpan
+				if numRowTracks > 0 && currentRow >= numRowTracks {
+					currentRow = 0
+					currentCol++
+				}
+			} else {
+				// Row-first (default): advance columns, wrap to next row
+				currentCol += colSpan
+				if numColTracks > 0 && currentCol >= numColTracks {
+					currentCol = 0
+					currentRow++
+				}
 			}
 		}
 	}
 
 	// Ensure we have enough tracks (create implicit tracks if needed)
+	// Use grid-auto-columns / grid-auto-rows for sizing implicit tracks
+	autoColTrack := style.GetGridAutoColumns()
+	autoRowTrack := style.GetGridAutoRows()
 	for len(columnTracks) < maxCol {
-		columnTracks = append(columnTracks, css.GridTrack{Auto: true})
+		if autoColTrack != nil {
+			columnTracks = append(columnTracks, *autoColTrack)
+		} else {
+			columnTracks = append(columnTracks, css.GridTrack{Auto: true})
+		}
 	}
 	for len(rowTracks) < maxRow {
-		rowTracks = append(rowTracks, css.GridTrack{Auto: true})
+		if autoRowTrack != nil {
+			rowTracks = append(rowTracks, *autoRowTrack)
+		} else {
+			rowTracks = append(rowTracks, css.GridTrack{Auto: true})
+		}
 	}
 
 	// Phase 1: Layout items to determine auto track sizes
@@ -192,12 +249,17 @@ func (le *LayoutEngine) layoutGridContainer(
 	autoRowSizes := make([]float64, len(rowTracks))
 
 	for i, item := range items {
+		// Absolutely positioned grid items are out-of-flow; skip for intrinsic sizing
+		if pos := item.childStyle.GetPosition(); pos == css.PositionAbsolute || pos == css.PositionFixed {
+			continue
+		}
+
 		// Use a preliminary width for the child layout
 		prelimWidth := 0.0
 		hasFixedTrack := false
 		for c := 0; c < item.colSpan && item.col+c < len(columnTracks); c++ {
 			t := columnTracks[item.col+c]
-			if !t.Auto && t.Fr == 0 {
+			if !t.Auto && t.Fr == 0 && !(t.IsMinMax && t.MaxFr > 0) {
 				prelimWidth += t.Size
 				hasFixedTrack = true
 			}
@@ -215,19 +277,26 @@ func (le *LayoutEngine) layoutGridContainer(
 		}
 
 		// Update auto column sizes from content
-		if item.colSpan == 1 && item.col < len(columnTracks) && columnTracks[item.col].Auto {
-			totalW := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
-			if totalW > autoColSizes[item.col] {
-				autoColSizes[item.col] = totalW
+		// Include auto, fr, and minmax tracks — all need content-based sizing for intrinsic/indefinite paths
+		if item.colSpan == 1 && item.col < len(columnTracks) {
+			t := columnTracks[item.col]
+			if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent {
+				totalW := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
+				if totalW > autoColSizes[item.col] {
+					autoColSizes[item.col] = totalW
+				}
 			}
 		}
 		// Update auto row sizes from content
-		if item.rowSpan == 1 && item.row < len(rowTracks) && rowTracks[item.row].Auto {
-			totalH := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom +
-				childBox.Padding.Top + childBox.Padding.Bottom +
-				childBox.Border.Top + childBox.Border.Bottom
-			if totalH > autoRowSizes[item.row] {
-				autoRowSizes[item.row] = totalH
+		if item.rowSpan == 1 && item.row < len(rowTracks) {
+			t := rowTracks[item.row]
+			if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent {
+				totalH := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom +
+					childBox.Padding.Top + childBox.Padding.Bottom +
+					childBox.Border.Top + childBox.Border.Bottom
+				if totalH > autoRowSizes[item.row] {
+					autoRowSizes[item.row] = totalH
+				}
 			}
 		}
 	}
@@ -237,8 +306,13 @@ func (le *LayoutEngine) layoutGridContainer(
 	resolvedRowSizes := resolveTrackSizes(rowTracks, autoRowSizes, containerHeight, rowGap, hasExplicitHeight, alignContent == css.AlignContentStretch)
 
 	// Calculate actual content dimensions from resolved tracks
-	_ = sumTracks(resolvedColSizes, columnGap) // actualContentWidth (used for inline-grid sizing later)
+	actualContentWidth := sumTracks(resolvedColSizes, columnGap)
 	actualContentHeight := sumTracks(resolvedRowSizes, rowGap)
+
+	// For inline-grid without explicit width, shrink-wrap to content
+	if isInlineGrid && !hasExplicitWidth {
+		containerWidth = actualContentWidth
+	}
 
 	if !hasExplicitHeight {
 		containerHeight = actualContentHeight
@@ -287,8 +361,15 @@ func (le *LayoutEngine) layoutGridContainer(
 			}
 		}
 
+		// Create a temporary cell parent so percentage heights resolve against cell size
+		cellParent := &Box{
+			Width:  cellWidth,
+			Height: cellHeight,
+			Style:  style,
+			Parent: box,
+		}
 		// Re-layout child with correct cell width
-		childBox := le.layoutNode(item.child, 0, 0, cellWidth, computedStyles, box)
+		childBox := le.layoutNode(item.child, 0, 0, cellWidth, computedStyles, cellParent)
 		if childBox == nil {
 			continue
 		}
@@ -366,9 +447,53 @@ func resolveTrackSizes(tracks []css.GridTrack, autoSizes []float64, containerSiz
 	autoCount := 0
 
 	for i, t := range tracks {
-		if t.Fr > 0 {
-			totalFr += t.Fr
-		} else if t.Auto {
+		if t.IsMinMax {
+			if t.MaxFr > 0 {
+				if hasDefiniteSize {
+					// minmax(X, Nfr) — acts like fr track with a minimum
+					sizes[i] = t.MinSize // start at minimum
+					usedSpace += sizes[i]
+					totalFr += t.MaxFr
+				} else {
+					// Indefinite container: use auto content size, clamped to min
+					sizes[i] = autoSizes[i]
+					if sizes[i] < t.MinSize {
+						sizes[i] = t.MinSize
+					}
+					usedSpace += sizes[i]
+				}
+			} else if t.MaxAuto {
+				// minmax(X, auto) — use auto sizing
+				sizes[i] = autoSizes[i]
+				if sizes[i] < t.MinSize {
+					sizes[i] = t.MinSize
+				}
+				usedSpace += sizes[i]
+				autoCount++
+			} else {
+				// minmax(X, Ypx) — use max as fixed size, clamp to min
+				size := t.MaxSize
+				if size < t.MinSize {
+					size = t.MinSize
+				}
+				sizes[i] = size
+				usedSpace += sizes[i]
+			}
+		} else if t.Percent > 0 {
+			// Percentage track: resolve against container size
+			if hasDefiniteSize {
+				sizes[i] = t.Percent * containerSize / 100
+			}
+			usedSpace += sizes[i]
+		} else if t.Fr > 0 {
+			if hasDefiniteSize {
+				totalFr += t.Fr
+			} else {
+				// Indefinite: fr track uses auto content size
+				sizes[i] = autoSizes[i]
+				usedSpace += sizes[i]
+			}
+		} else if t.Auto || t.MinContent || t.MaxContent {
 			sizes[i] = autoSizes[i]
 			usedSpace += sizes[i]
 			autoCount++
@@ -389,6 +514,9 @@ func resolveTrackSizes(tracks []css.GridTrack, autoSizes []float64, containerSiz
 		for i, t := range tracks {
 			if t.Fr > 0 {
 				sizes[i] = t.Fr * frSize
+			} else if t.IsMinMax && t.MaxFr > 0 {
+				// minmax with fr max: start from minimum, grow with fr share
+				sizes[i] = t.MinSize + t.MaxFr*frSize
 			}
 		}
 	}

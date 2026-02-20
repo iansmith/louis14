@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<title>CSS Test: inset shorthand - zero (full cover)</title>
+<link rel="match" href="inset-003-ref.html">
+<style>
+  .container {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    background: red;
+  }
+  .box {
+    position: absolute;
+    inset: 0;
+    width: 100px;
+    height: 100px;
+    background: green;
+  }
+</style>
+<div class="container">
+  <div class="box"></div>
+</div>

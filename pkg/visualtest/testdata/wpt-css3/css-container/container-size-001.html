@@ -1,0 +1,22 @@
+<!DOCTYPE HTML>
+<link rel="help" href="https://drafts.csswg.org/css-contain-3/#container-queries">
+<link rel="match" href="container-size-001-ref.html">
+<style>
+  .container {
+    container-type: inline-size;
+    width: 300px;
+  }
+  .child {
+    background: red;
+    width: 50px;
+    height: 50px;
+  }
+  @container (min-width: 200px) {
+    .child {
+      background: green;
+    }
+  }
+</style>
+<div class="container">
+  <div class="child"></div>
+</div>

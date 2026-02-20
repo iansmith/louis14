@@ -566,6 +566,33 @@ func (s *Style) GetMargin() BoxEdge {
 	}
 }
 
+// resolveMarginEdge resolves a single margin property, handling percentage values.
+func (s *Style) resolveMarginEdge(prop string, containingWidth float64) float64 {
+	if val, ok := s.Get(prop); ok {
+		if val == "auto" {
+			return 0
+		}
+		trimmed := strings.TrimSpace(val)
+		if strings.HasSuffix(trimmed, "%") {
+			if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
+				return pct / 100.0 * containingWidth
+			}
+		}
+	}
+	return s.getLengthOrZero(prop)
+}
+
+// GetMarginForWidth resolves margin values including percentage values against the given containing block width.
+// Use this for inline elements where margin percentages must be resolved.
+func (s *Style) GetMarginForWidth(containingWidth float64) BoxEdge {
+	return BoxEdge{
+		Top:    0, // Inline top/bottom margins ignored per CSS 2.1 §8.3
+		Right:  s.resolveMarginEdge("margin-right", containingWidth),
+		Bottom: 0, // Inline top/bottom margins ignored per CSS 2.1 §8.3
+		Left:   s.resolveMarginEdge("margin-left", containingWidth),
+	}
+}
+
 // GetPadding returns the padding values for all four sides
 func (s *Style) GetPadding() BoxEdge {
 	return BoxEdge{
@@ -1009,6 +1036,36 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("row-gap", parts[0])
 			style.Set("column-gap", parts[1])
 		}
+	case "place-items":
+		// place-items shorthand: <align-items> <justify-items>
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("align-items", parts[0])
+			style.Set("justify-items", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("align-items", parts[0])
+			style.Set("justify-items", parts[1])
+		}
+	case "place-content":
+		// place-content shorthand: <align-content> <justify-content>
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("align-content", parts[0])
+			style.Set("justify-content", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("align-content", parts[0])
+			style.Set("justify-content", parts[1])
+		}
+	case "place-self":
+		// place-self shorthand: <align-self> <justify-self>
+		parts := strings.Fields(value)
+		if len(parts) == 1 {
+			style.Set("align-self", parts[0])
+			style.Set("justify-self", parts[0])
+		} else if len(parts) >= 2 {
+			style.Set("align-self", parts[0])
+			style.Set("justify-self", parts[1])
+		}
 	case "columns":
 		// columns shorthand: <column-width> <column-count> | auto
 		parts := strings.Fields(value)
@@ -1147,6 +1204,30 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("top", parts[0])
 			style.Set("bottom", parts[1])
 		}
+	case "inset":
+		parts := strings.Fields(value)
+		switch len(parts) {
+		case 1:
+			style.Set("top", parts[0])
+			style.Set("right", parts[0])
+			style.Set("bottom", parts[0])
+			style.Set("left", parts[0])
+		case 2:
+			style.Set("top", parts[0])
+			style.Set("right", parts[1])
+			style.Set("bottom", parts[0])
+			style.Set("left", parts[1])
+		case 3:
+			style.Set("top", parts[0])
+			style.Set("right", parts[1])
+			style.Set("bottom", parts[2])
+			style.Set("left", parts[1])
+		default:
+			style.Set("top", parts[0])
+			style.Set("right", parts[1])
+			style.Set("bottom", parts[2])
+			style.Set("left", parts[3])
+		}
 	case "inline-size":
 		style.Set("width", value)
 	case "block-size":
@@ -1163,6 +1244,21 @@ func expandShorthand(style *Style, property, value string) {
 		expandOutlineShorthand(style, value)
 	case "column-rule":
 		expandColumnRuleShorthand(style, value)
+	case "grid-template":
+		// grid-template shorthand: <row-tracks> / <col-tracks>
+		// Also handles: grid-template: none
+		if value == "none" {
+			style.Set("grid-template-rows", "none")
+			style.Set("grid-template-columns", "none")
+			style.Set("grid-template-areas", "none")
+		} else if slashIdx := strings.Index(value, " / "); slashIdx >= 0 {
+			rowPart := strings.TrimSpace(value[:slashIdx])
+			colPart := strings.TrimSpace(value[slashIdx+3:])
+			style.Set("grid-template-rows", rowPart)
+			style.Set("grid-template-columns", colPart)
+		} else {
+			style.Set("grid-template-rows", value)
+		}
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -1686,12 +1782,44 @@ func expandBackgroundProperty(style *Style, value string) {
 	}
 
 	// Check for gradient functions in the remaining value (after URL extraction)
-	if strings.Contains(value, "linear-gradient(") || strings.Contains(value, "radial-gradient(") ||
-		strings.Contains(value, "conic-gradient(") || strings.Contains(value, "repeating-linear-gradient(") ||
-		strings.Contains(value, "repeating-radial-gradient(") {
-		// Store the gradient portion in the background property
-		style.Set("background", value)
-		return
+	for _, gradPrefix := range []string{"repeating-linear-gradient(", "repeating-radial-gradient(", "conic-gradient(", "linear-gradient(", "radial-gradient("} {
+		if idx := strings.Index(value, gradPrefix); idx >= 0 {
+			// Extract the gradient function with balanced parens
+			depth := 0
+			gradEnd := -1
+			for i := idx + len(gradPrefix) - 1; i < len(value); i++ {
+				if value[i] == '(' {
+					depth++
+				} else if value[i] == ')' {
+					depth--
+					if depth == 0 {
+						gradEnd = i + 1
+						break
+					}
+				}
+			}
+			if gradEnd > idx {
+				gradientPart := value[idx:gradEnd]
+				style.Set("background-image", gradientPart)
+				// Parse remaining tokens (before and after gradient) for repeat/position
+				remaining := strings.TrimSpace(value[:idx] + value[gradEnd:])
+				for _, token := range strings.Fields(remaining) {
+					if token == "no-repeat" || token == "repeat" || token == "repeat-x" || token == "repeat-y" {
+						style.Set("background-repeat", token)
+					} else if token == "center" || token == "left" || token == "right" || token == "top" || token == "bottom" {
+						if prev, ok := style.Get("background-position"); ok {
+							style.Set("background-position", prev+" "+token)
+						} else {
+							style.Set("background-position", token)
+						}
+					}
+				}
+			} else {
+				// Fallback: store whole value
+				style.Set("background", value)
+			}
+			return
+		}
 	}
 
 	// Extract rgb()/rgba()/hsl()/hsla() color functions before field-splitting,
@@ -2011,6 +2139,12 @@ func (s *Style) GetFontSize() float64 {
 	}
 	// For font-size, em is relative to parent's font-size (use 16px as default parent)
 	if size, ok := ParseLengthWithFontSize(val, 16.0); ok {
+		// Cap at 500px to prevent OOM when rasterizing glyphs at absurd sizes.
+		// Browsers cap similarly (Chrome: ~1000px). This affects rendering only;
+		// the computed value is still correct for CSS calc()/inheritance purposes.
+		if size > 500 {
+			size = 500
+		}
 		return size
 	}
 	return 16.0
@@ -2615,14 +2749,22 @@ const (
 	DisplayTableCaption    DisplayType = "table-caption"
 )
 
-// GetTextIndent returns the text-indent value in pixels (default: 0)
-func (s *Style) GetTextIndent() float64 {
+// GetTextIndent returns the text-indent value in pixels (default: 0).
+// For percentage values (e.g. "50%"), returns (fraction, true) where fraction=0.5;
+// caller must multiply by container width. For length values, returns (pixels, false).
+func (s *Style) GetTextIndent() (float64, bool) {
 	if val, ok := s.Get("text-indent"); ok {
+		trimmed := strings.TrimSpace(val)
+		if strings.HasSuffix(trimmed, "%") {
+			if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
+				return pct / 100.0, true
+			}
+		}
 		if length, ok := ParseLength(val); ok {
-			return length
+			return length, false
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // GetBoxSizing returns the box-sizing value (default: content-box)
@@ -2704,7 +2846,8 @@ const (
 	VerticalAlignBottom   VerticalAlign = "bottom"
 )
 
-// GetVerticalAlign returns the vertical-align value (default: baseline)
+// GetVerticalAlign returns the vertical-align keyword value (default: baseline).
+// For length values, returns VerticalAlignBaseline; use GetVerticalAlignOffset for the offset.
 func (s *Style) GetVerticalAlign() VerticalAlign {
 	if align, ok := s.Get("vertical-align"); ok {
 		switch align {
@@ -2714,9 +2857,28 @@ func (s *Style) GetVerticalAlign() VerticalAlign {
 			return VerticalAlignMiddle
 		case "bottom":
 			return VerticalAlignBottom
+		default:
+			// Length value — keyword is baseline, offset comes from GetVerticalAlignOffset
+			return VerticalAlignBaseline
 		}
 	}
 	return VerticalAlignBaseline
+}
+
+// GetVerticalAlignOffset returns the pixel offset for length-based vertical-align values
+// (e.g., "10px" → 10.0). Positive means raise up (toward smaller Y). Returns 0 if not a length.
+func (s *Style) GetVerticalAlignOffset() float64 {
+	if align, ok := s.Get("vertical-align"); ok {
+		switch align {
+		case "top", "middle", "bottom", "baseline", "sub", "super", "text-top", "text-bottom":
+			return 0
+		default:
+			if px, ok := ParseLength(align); ok {
+				return px
+			}
+		}
+	}
+	return 0
 }
 
 // GetLineHeight returns the line-height in pixels (default: 1.2 * font-size).
@@ -3275,9 +3437,17 @@ func ParseContentValues(raw string) []ContentValue {
 
 // GridTrack represents a single grid track (column or row)
 type GridTrack struct {
-	Size float64 // Size in pixels (0 for auto)
-	Auto bool    // true if track is auto-sized
-	Fr   float64 // fractional unit value (0 if not fr)
+	Size       float64 // Size in pixels (0 for auto)
+	Auto       bool    // true if track is auto-sized
+	Fr         float64 // fractional unit value (0 if not fr)
+	Percent    float64 // percentage value (e.g., 75 for "75%")
+	IsMinMax   bool    // true if this is a minmax() track
+	MinSize    float64 // minimum size (px) for minmax()
+	MaxFr      float64 // maximum as fr value for minmax()
+	MaxSize    float64 // maximum as fixed size (px) for minmax()
+	MaxAuto    bool    // true if max is "auto" for minmax()
+	MinContent bool    // true if value is "min-content"
+	MaxContent bool    // true if value is "max-content"
 }
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
@@ -3296,18 +3466,123 @@ func (s *Style) GetGridTemplateRows() []GridTrack {
 	return nil
 }
 
+// GetGridAutoFlow returns the grid-auto-flow value ("row" or "column").
+func (s *Style) GetGridAutoFlow() string {
+	if val, ok := s.Get("grid-auto-flow"); ok {
+		val = strings.TrimSpace(val)
+		// grid-auto-flow can be "row", "column", "row dense", "column dense", etc.
+		if strings.HasPrefix(val, "column") {
+			return "column"
+		}
+	}
+	return "row"
+}
+
+// GetGridAutoRows returns the grid-auto-rows track size for implicit rows
+func (s *Style) GetGridAutoRows() *GridTrack {
+	if val, ok := s.Get("grid-auto-rows"); ok {
+		tracks := parseGridTracks(val)
+		if len(tracks) > 0 {
+			return &tracks[0]
+		}
+	}
+	return nil
+}
+
+// GetGridAutoColumns returns the grid-auto-columns track size for implicit columns
+func (s *Style) GetGridAutoColumns() *GridTrack {
+	if val, ok := s.Get("grid-auto-columns"); ok {
+		tracks := parseGridTracks(val)
+		if len(tracks) > 0 {
+			return &tracks[0]
+		}
+	}
+	return nil
+}
+
+// splitGridTrackValues splits a grid track value string into individual track tokens,
+// respecting parentheses (so "minmax(0, 1fr)" stays as one token).
+func splitGridTrackValues(val string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(val); i++ {
+		switch val[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ' ', '\t':
+			if depth == 0 {
+				part := strings.TrimSpace(val[start:i])
+				if part != "" {
+					parts = append(parts, part)
+				}
+				start = i + 1
+			}
+		}
+	}
+	if part := strings.TrimSpace(val[start:]); part != "" {
+		parts = append(parts, part)
+	}
+	return parts
+}
+
 // parseGridTracks parses a space-separated list of track sizes (e.g., "100px 200px auto 1fr")
+// Supports minmax(), min-content, max-content, fr, px, rem, and auto values.
 func parseGridTracks(val string) []GridTrack {
+	if val == "none" {
+		return nil
+	}
 	tracks := make([]GridTrack, 0)
-	parts := strings.Fields(val)
+	parts := splitGridTrackValues(val)
 
 	for _, part := range parts {
 		if part == "auto" {
 			tracks = append(tracks, GridTrack{Auto: true})
+		} else if part == "min-content" {
+			tracks = append(tracks, GridTrack{MinContent: true})
+		} else if part == "max-content" {
+			tracks = append(tracks, GridTrack{MaxContent: true})
+		} else if strings.HasPrefix(part, "minmax(") && strings.HasSuffix(part, ")") {
+			inner := part[7 : len(part)-1] // strip "minmax(" and ")"
+			// Split on comma at depth 0
+			commaIdx := strings.Index(inner, ",")
+			if commaIdx < 0 {
+				continue
+			}
+			minStr := strings.TrimSpace(inner[:commaIdx])
+			maxStr := strings.TrimSpace(inner[commaIdx+1:])
+			track := GridTrack{IsMinMax: true}
+			// Parse min
+			if minStr == "0" || minStr == "0px" {
+				track.MinSize = 0
+			} else if minStr == "auto" {
+				// MinSize stays 0, treated as auto
+			} else if size, ok := ParseLength(minStr); ok {
+				track.MinSize = size
+			}
+			// Parse max
+			if strings.HasSuffix(maxStr, "fr") {
+				frStr := strings.TrimSuffix(maxStr, "fr")
+				if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
+					track.MaxFr = fr
+				}
+			} else if maxStr == "auto" {
+				track.MaxAuto = true
+			} else if size, ok := ParseLength(maxStr); ok {
+				track.MaxSize = size
+			}
+			tracks = append(tracks, track)
 		} else if strings.HasSuffix(part, "fr") {
 			frStr := strings.TrimSuffix(part, "fr")
 			if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
 				tracks = append(tracks, GridTrack{Fr: fr})
+			}
+		} else if strings.HasSuffix(part, "%") {
+			numStr := strings.TrimSuffix(part, "%")
+			if pct, err := strconv.ParseFloat(numStr, 64); err == nil {
+				tracks = append(tracks, GridTrack{Percent: pct})
 			}
 		} else if size, ok := ParseLength(part); ok {
 			tracks = append(tracks, GridTrack{Size: size})

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Test: place-items: start end (two values)</title>
+<link rel="match" href="place-items-002-ref.html">
+<meta name="assert" content="place-items with two values should set align-items to the first and justify-items to the second.">
+<style>
+.grid {
+  display: grid;
+  width: 200px;
+  height: 200px;
+  border: 1px solid black;
+  place-items: start end;
+}
+.item {
+  width: 50px;
+  height: 50px;
+  background: #008000;
+}
+</style>
+<p>Test passes if a green square is in the top-right corner of a bordered box.</p>
+<div class="grid">
+  <div class="item"></div>
+</div>

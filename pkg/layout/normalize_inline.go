@@ -245,11 +245,49 @@ func (le *LayoutEngine) splitInlineAroundBlocks(inlineNode *html.Node, computedS
 		}
 
 		// Register clone's style (without position if outer wrapper handles it).
+		// For block-in-inline fragments, suppress the borders that should not appear:
+		//   "first" fragment → no right border (continuation opens on left, closes on right is suppressed)
+		//   "last"  fragment → no left border  (continuation opens without left border)
+		//   "middle"         → no left or right border
+		// This ensures layout does not advance currentX for suppressed borders,
+		// matching the reference rendering where those borders simply don't exist.
 		if cloneBaseStyle != nil {
-			le.syntheticStyles[clone] = cloneBaseStyle
+			suppressLeft := fragType == "last" || fragType == "middle"
+			suppressRight := fragType == "first" || fragType == "middle"
+			if suppressLeft || suppressRight {
+				cloneStyle := css.NewStyle()
+				for k, v := range cloneBaseStyle.Properties {
+					cloneStyle.Set(k, v)
+				}
+				if suppressLeft {
+					cloneStyle.Set("border-left-width", "0")
+					cloneStyle.Set("border-left-style", "none")
+				}
+				if suppressRight {
+					cloneStyle.Set("border-right-width", "0")
+					cloneStyle.Set("border-right-style", "none")
+				}
+				le.syntheticStyles[clone] = cloneStyle
+			} else {
+				le.syntheticStyles[clone] = cloneBaseStyle
+			}
 		}
 
-		innerParts = append(innerParts, le.makeAnonBlock([]*html.Node{clone}))
+		// Create the anonymous block wrapper.
+		// When the inline has NO position:relative (hasRelPos=false), propagate the
+		// inline element's background-color so it covers the full anonymous block width,
+		// matching real browser behavior for block-in-inline splits (CSS 2.1 §9.2.1.1).
+		// When hasRelPos=true, the outer anonymous block handles positioning and the
+		// inner anon blocks are transparent structural wrappers (matching browser behavior
+		// where the inline background only paints at the inline content width).
+		anonStyle := css.NewStyle()
+		anonStyle.Set("display", "block")
+		if !hasRelPos && origStyle != nil {
+			if bg, ok := origStyle.Get("background-color"); ok && bg != "" && bg != "transparent" {
+				anonStyle.Set("background-color", bg)
+			}
+		}
+		innerParts = append(innerParts, le.makeAnonBlockWithStyle([]*html.Node{clone}, anonStyle))
 	}
 
 	// If position:relative, wrap all inner parts in one outer block that carries the offset.

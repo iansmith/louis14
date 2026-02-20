@@ -1,36 +1,27 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
-
 <html xmlns="http://www.w3.org/1999/xhtml">
-
  <head>
-
   <title>CSS Reftest Reference</title>
-
-  <link rel="author" title="Gérard Talbot" href="http://www.gtalbot.org/BrowserBugsSection/css21testsuite/" />
-
-  <style type="text/css"><![CDATA[
-  div
+  <style type="text/css">
+  #div1
   {
-  border: black solid medium;
-  height: 288px;
-  width: 288px;
+    border: solid black;
+    height: 3in;
+    position: relative;
+    width: 3in;
   }
-
-  img
+  .blue
   {
-  height: 96px;
-  vertical-align: top;
-  width: 100%;
+    background: blue;
+    height: 1in;
+    position: absolute;
+    top: 1in;
+    width: 100%;
   }
-  ]]></style>
-
+  </style>
  </head>
-
  <body>
-
   <p>Test passes if a blue rectangle is <strong>vertically centered</strong> in an hollow black square.</p>
-
-  <div><img src="support/1x1-white.png" alt="Image download support must be enabled" /><img src="support/blue15x15.png" alt="Image download support must be enabled" /></div>
-
+  <div id="div1"><div class="blue"></div></div>
  </body>
 </html>

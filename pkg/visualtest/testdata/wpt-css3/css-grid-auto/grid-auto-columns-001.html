@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Test: grid-auto-columns: 120px</title>
+<link rel="match" href="grid-auto-columns-001-ref.html">
+<meta name="assert" content="grid-auto-columns should set the width of implicitly-created columns.">
+<style>
+.grid {
+  display: grid;
+  grid-template-rows: 50px 50px;
+  grid-auto-flow: column;
+  grid-auto-columns: 120px;
+  border: 1px solid black;
+}
+.grid > div {
+  background: #008000;
+  border: 1px solid white;
+}
+</style>
+<p>Test passes if four green cells are arranged in a 2-row grid with 120px wide columns.</p>
+<div class="grid">
+  <div>A</div>
+  <div>B</div>
+  <div>C</div>
+  <div>D</div>
+</div>

@@ -221,7 +221,15 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 	case pc == "only-child":
 		return isNthChild(node, 1) && isLastChild(node)
 	case pc == "root":
-		return node.Parent != nil && node.Parent.TagName == "document"
+		if node.Parent == nil || node.Parent.TagName != "document" {
+			return false
+		}
+		for _, child := range node.Parent.Children {
+			if child.Type == html.ElementNode {
+				return child == node
+			}
+		}
+		return false
 	case pc == "empty":
 		return len(node.Children) == 0
 	case strings.HasPrefix(pc, "nth-child("):
@@ -621,6 +629,11 @@ func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 	for _, rule := range stylesheet.Rules {
 		// Skip pseudo-element rules (they are applied via ComputePseudoElementStyle)
 		if rule.Selector.PseudoElement != "" {
+			continue
+		}
+
+		// Skip container query rules (evaluated separately in applyContainerQueryRules)
+		if rule.ContainerQuery != nil {
 			continue
 		}
 
