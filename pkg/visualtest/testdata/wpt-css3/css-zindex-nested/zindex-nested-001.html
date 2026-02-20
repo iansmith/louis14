@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: z-index with nested stacking contexts</title>
+  <link rel="match" href="zindex-nested-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    .container { position: relative; width: 200px; height: 200px; }
+    /* Red box at z-index:1 should appear behind green at z-index:2 */
+    .back {
+      position: absolute;
+      left: 0; top: 0;
+      width: 150px; height: 150px;
+      background: red;
+      z-index: 1;
+    }
+    .front {
+      position: absolute;
+      left: 50px; top: 50px;
+      width: 150px; height: 150px;
+      background: green;
+      z-index: 2;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="back"></div>
+    <div class="front"></div>
+  </div>
+</body>
+</html>

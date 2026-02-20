@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: flex order property</title>
+  <link rel="match" href="flex-order-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    .flex { display: flex; width: 300px; }
+    .item { width: 100px; height: 100px; }
+    /* DOM order: red, green, blue. Visual order should be: green, blue, red */
+    .a { background: red; order: 3; }
+    .b { background: green; order: 1; }
+    .c { background: blue; order: 2; }
+  </style>
+</head>
+<body>
+  <div class="flex">
+    <div class="item a"></div>
+    <div class="item b"></div>
+    <div class="item c"></div>
+  </div>
+</body>
+</html>

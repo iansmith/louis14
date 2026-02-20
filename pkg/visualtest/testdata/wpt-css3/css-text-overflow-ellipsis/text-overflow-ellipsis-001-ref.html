@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: text-overflow:ellipsis truncation</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    .container {
+      width: 100px;
+      overflow: hidden;
+    }
+    /* First line: truncated text. Some Ahem chars + ellipsis character.
+       The exact rendering depends on how many chars fit before the ellipsis.
+       At 20px Ahem, each X is 20px wide. 100px fits 5 chars.
+       With ellipsis, roughly 3-4 chars + "..." depending on ellipsis width. */
+    .line {
+      font: 20px/1 Ahem;
+      color: green;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .normal {
+      font: 20px/1 Ahem;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="line">XXXXXXXXXX</div>
+  </div>
+  <div class="normal">XXXXX</div>
+</body>
+</html>

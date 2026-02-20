@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: border-collapse</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* Collapsed table: 2 cols × 100px + borders. With green borders on green
+       background, the visual result is a solid green rectangle.
+       Separate borders: each cell has own 2px border → spacing between cells.
+       Collapsed: shared borders → solid block.
+       Use a simple green block as reference since borders match background. */
+    table {
+      border-collapse: collapse;
+    }
+    td {
+      width: 100px;
+      height: 50px;
+      background: green;
+      border: 2px solid green;
+      padding: 0;
+    }
+  </style>
+</head>
+<body>
+  <table>
+    <tr><td></td><td></td></tr>
+    <tr><td></td><td></td></tr>
+  </table>
+</body>
+</html>

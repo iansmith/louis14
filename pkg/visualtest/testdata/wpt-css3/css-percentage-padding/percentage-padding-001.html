@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: Percentage padding resolves against containing block width</title>
+  <link rel="match" href="percentage-padding-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* CSS 2.1 §8.4: Percentage padding (including top/bottom) resolves
+       against the WIDTH of the containing block, not the height. */
+    .container {
+      width: 200px;
+      background: red; /* Red = fail indicator */
+    }
+    /* padding-top: 50% of 200px = 100px */
+    .box {
+      padding-top: 50%;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="box"></div>
+  </div>
+</body>
+</html>

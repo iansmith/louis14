@@ -336,6 +336,18 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						item.Box.Width = newWidth
 					}
 					item.CrossSize = line.CrossSize
+
+					// CSS Flexbox §9.4: After stretching, re-layout the item's
+					// contents with the new definite cross size so that children
+					// that depend on it (e.g. nested flex with flex:1) resolve correctly.
+					// CSS Flexbox §9.4: After stretching, re-layout the item's
+					// contents with the new definite cross size so that children
+					// that depend on it (e.g. nested flex with flex:1) resolve correctly.
+					childDisplay := item.Box.Style.GetDisplay()
+					if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
+						item.Box.Children = item.Box.Children[:0]
+						le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+					}
 				}
 			}
 		}
@@ -886,6 +898,20 @@ func collectFlexLines(items []*FlexItem, mainSize, mainGap float64, wrap css.Fle
 // resolveFlexibleLengths implements CSS Flexbox spec Section 9.7.
 func resolveFlexibleLengths(line *FlexLine, availableMain, mainGap float64, isRow bool) {
 	if len(line.Items) == 0 {
+		return
+	}
+
+	// CSS Flexbox §9.7: If the main size is indefinite, flex items use their
+	// intrinsic sizes — there is no definite free space to distribute.
+	if availableMain == math.MaxFloat64 {
+		for _, item := range line.Items {
+			// Items stay at their hypothetical main size (intrinsic)
+			if isRow {
+				item.Box.Width = item.HypotheticalMainSize + item.Box.Padding.Left + item.Box.Padding.Right + item.Box.Border.Left + item.Box.Border.Right
+			} else {
+				item.Box.Height = item.HypotheticalMainSize + item.Box.Padding.Top + item.Box.Padding.Bottom + item.Box.Border.Top + item.Box.Border.Bottom
+			}
+		}
 		return
 	}
 

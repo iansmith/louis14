@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: z-index nested stacking</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    .container { position: relative; width: 200px; height: 200px; }
+    /* Red behind, green in front overlapping at (50,50)-(150,150) */
+    .back {
+      position: absolute;
+      left: 0; top: 0;
+      width: 150px; height: 150px;
+      background: red;
+    }
+    .front {
+      position: absolute;
+      left: 50px; top: 50px;
+      width: 150px; height: 150px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="back"></div>
+    <div class="front"></div>
+  </div>
+</body>
+</html>

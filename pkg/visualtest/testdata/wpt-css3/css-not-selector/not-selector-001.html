@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: :not() selector</title>
+  <link rel="match" href="not-selector-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* All divs get green background EXCEPT .excluded */
+    .container div {
+      width: 200px;
+      height: 50px;
+    }
+    .container div:not(.excluded) {
+      background: green;
+    }
+    .container .excluded {
+      background: blue;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="item"></div>
+    <div class="excluded"></div>
+    <div class="item"></div>
+  </div>
+</body>
+</html>

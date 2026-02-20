@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: border-radius clips child content with overflow:hidden</title>
+  <link rel="match" href="border-radius-clip-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; padding: 20px; }
+    /* Card with rounded corners clipping its child */
+    .card {
+      width: 200px;
+      height: 200px;
+      border-radius: 50px;
+      overflow: hidden;
+      background: red; /* Would show through if clipping fails */
+    }
+    /* Child fills entire card — corners should be clipped to the radius */
+    .child {
+      width: 200px;
+      height: 200px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

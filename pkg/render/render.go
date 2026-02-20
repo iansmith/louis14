@@ -1361,6 +1361,22 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		return
 	}
 
+	// Apply background-size to constrain gradient dimensions
+	bgSize := box.Style.GetBackgroundSize()
+	gradWidth := bgWidth
+	gradHeight := bgHeight
+	if bgSize.Width > 0 {
+		gradWidth = bgSize.Width
+	}
+	if bgSize.Height > 0 {
+		gradHeight = bgSize.Height
+	}
+
+	// Apply background-position to offset gradient within the box
+	pos := box.Style.GetBackgroundPosition()
+	gradX := bgX + pos.ResolveX(bgWidth, gradWidth)
+	gradY := bgY + pos.ResolveY(bgHeight, gradHeight)
+
 	var ggGrad gg.Gradient
 
 	if grad.Type == css.GradientConic {
@@ -1374,30 +1390,30 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		gradCopy := *grad
 		gradCopy.ColorStops = make([]css.ColorStop, len(grad.ColorStops))
 		copy(gradCopy.ColorStops, grad.ColorStops)
-		gradCopy.ConvertPixelOffsetsToPercentages(bgWidth, bgHeight)
+		gradCopy.ConvertPixelOffsetsToPercentages(gradWidth, gradHeight)
 
 		if gradCopy.Repeating {
-			gradCopy.ExtendRepeatingStops(bgWidth)
+			gradCopy.ExtendRepeatingStops(gradWidth)
 		}
 
 		// Determine gradient start and end points based on direction
 		var x0, y0, x1, y1 float64
 		switch gradCopy.Direction {
 		case "to right":
-			x0, y0 = bgX, bgY
-			x1, y1 = bgX+bgWidth, bgY
+			x0, y0 = gradX, gradY
+			x1, y1 = gradX+gradWidth, gradY
 		case "to left":
-			x0, y0 = bgX+bgWidth, bgY
-			x1, y1 = bgX, bgY
+			x0, y0 = gradX+gradWidth, gradY
+			x1, y1 = gradX, gradY
 		case "to bottom", "":
-			x0, y0 = bgX, bgY
-			x1, y1 = bgX, bgY+bgHeight
+			x0, y0 = gradX, gradY
+			x1, y1 = gradX, gradY+gradHeight
 		case "to top":
-			x0, y0 = bgX, bgY+bgHeight
-			x1, y1 = bgX, bgY
+			x0, y0 = gradX, gradY+gradHeight
+			x1, y1 = gradX, gradY
 		default:
-			x0, y0 = bgX, bgY
-			x1, y1 = bgX, bgY+bgHeight
+			x0, y0 = gradX, gradY
+			x1, y1 = gradX, gradY+gradHeight
 		}
 
 		ggGrad = gg.NewLinearGradient(x0, y0, x1, y1)
@@ -1411,17 +1427,17 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		copy(gradCopy.ColorStops, grad.ColorStops)
 
 		// Compute radii
-		rx, ry := gradCopy.ComputeRadialRadii(bgWidth, bgHeight)
+		rx, ry := gradCopy.ComputeRadialRadii(gradWidth, gradHeight)
 		if rx <= 0 && ry <= 0 {
 			return
 		}
 
 		// Compute center in pixel coordinates
-		cx := gradCopy.CenterX * bgWidth
+		cx := gradCopy.CenterX * gradWidth
 		if gradCopy.CenterXPx >= 0 {
 			cx = gradCopy.CenterXPx
 		}
-		cy := gradCopy.CenterY * bgHeight
+		cy := gradCopy.CenterY * gradHeight
 		if gradCopy.CenterYPx >= 0 {
 			cy = gradCopy.CenterYPx
 		}
@@ -1438,8 +1454,8 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		}
 
 		// Translate center to absolute coordinates
-		absCx := bgX + cx
-		absCy := bgY + cy
+		absCx := gradX + cx
+		absCy := gradY + cy
 
 		if rx == ry || ry == 0 {
 			// Circular gradient
@@ -1459,7 +1475,8 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 	// Set the gradient as the fill pattern
 	r.context.SetFillStyle(ggGrad)
 
-	// Draw the rectangle
+	// Clip to box bounds, then draw gradient at positioned offset
+	r.context.Push()
 	corners := box.Style.GetBorderRadiusCorners()
 	if corners.MaxRadius() > 0 {
 		r.context.DrawRoundedRectangleCorners(bgX, bgY, bgWidth, bgHeight,
@@ -1467,7 +1484,10 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 	} else {
 		r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
 	}
+	r.context.Clip()
+	r.context.DrawRectangle(gradX, gradY, gradWidth, gradHeight)
 	r.context.Fill()
+	r.popContext()
 }
 
 // drawConicGradient renders a conic-gradient using pixel-level rendering

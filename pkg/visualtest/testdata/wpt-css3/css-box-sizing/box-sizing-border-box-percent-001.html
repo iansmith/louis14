@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: box-sizing:border-box with percentage width and padding</title>
+  <link rel="match" href="box-sizing-border-box-percent-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    .container {
+      width: 400px;
+    }
+    /* 50% of 400px = 200px border-box width. With 20px padding each side,
+       content width = 200 - 40 = 160px. Two side-by-side = 400px total. */
+    .half {
+      box-sizing: border-box;
+      width: 50%;
+      padding: 0 20px;
+      height: 100px;
+      float: left;
+    }
+    .green { background: green; }
+    .blue { background: blue; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="half green"></div>
+    <div class="half blue"></div>
+  </div>
+</body>
+</html>

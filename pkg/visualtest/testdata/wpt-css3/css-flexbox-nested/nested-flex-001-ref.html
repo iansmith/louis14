@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: Nested flexbox layout</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* 2x2 grid: each cell is 200x50 */
+    .row {
+      display: flex;
+      width: 400px;
+      height: 50px;
+    }
+    .cell {
+      width: 200px;
+      height: 50px;
+    }
+    .green { background: green; }
+    .lime { background: lime; }
+    .blue { background: blue; }
+    .aqua { background: aqua; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <div class="cell green"></div>
+    <div class="cell blue"></div>
+  </div>
+  <div class="row">
+    <div class="cell lime"></div>
+    <div class="cell aqua"></div>
+  </div>
+</body>
+</html>

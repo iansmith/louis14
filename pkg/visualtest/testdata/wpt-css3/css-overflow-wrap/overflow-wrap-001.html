@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: overflow-wrap break-word</title>
+  <link rel="match" href="overflow-wrap-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* A narrow container forces the long word to break.
+       With overflow-wrap:break-word the text stays within the box.
+       Green background covers the box; if text overflows, the test
+       visual would differ from the reference. */
+    .box {
+      width: 100px;
+      overflow-wrap: break-word;
+      background: green;
+      color: green;
+      font-size: 16px;
+      line-height: 19px;
+    }
+  </style>
+</head>
+<body>
+  <div class="box">ABCDEFGHIJKLMNOPQRSTUVWXYZ</div>
+</body>
+</html>

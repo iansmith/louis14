@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: CSS variable inheritance</title>
+  <link rel="match" href="var-inherit-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* Custom property defined on ancestor, used by deep descendant */
+    .ancestor {
+      --bg: green;
+    }
+    .deep {
+      width: 200px;
+      height: 100px;
+      background: var(--bg);
+    }
+  </style>
+</head>
+<body>
+  <div class="ancestor">
+    <div>
+      <div>
+        <div class="deep"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

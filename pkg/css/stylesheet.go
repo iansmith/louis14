@@ -1316,8 +1316,10 @@ func isLengthProperty(prop string) bool {
 		"padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
 		"border-width", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
 		"top", "right", "bottom", "left",
-		"font-size", "line-height", "letter-spacing", "word-spacing",
+		"font-size", "letter-spacing", "word-spacing",
 		"text-indent", "vertical-align":
+		// NOTE: line-height is NOT included here because CSS allows bare unitless
+		// numbers (e.g., "line-height: 2") as multipliers of font-size.
 		return true
 	}
 	return false

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: line-height unitless inheritance</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* Child: font-size 25px, line-height: 2 (unitless) → 50px line-height.
+       Green box should be 50px tall. */
+    .child {
+      font-size: 25px;
+      line-height: 50px;
+      background: green;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="child">X</div>
+</body>
+</html>

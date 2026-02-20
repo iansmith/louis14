@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: max-height clips content with overflow:hidden</title>
+  <link rel="match" href="max-height-overflow-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* Container has max-height: 100px and overflow: hidden.
+       Child is 200px tall — only top 100px should be visible. */
+    .container {
+      width: 200px;
+      max-height: 100px;
+      overflow: hidden;
+    }
+    .tall {
+      width: 200px;
+      height: 200px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="tall"></div>
+  </div>
+</body>
+</html>

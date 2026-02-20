@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: opacity on stacking context with children</title>
+  <link rel="match" href="opacity-children-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; background: white; }
+    /* Parent with opacity:0.5 should make children semi-transparent too.
+       Green child at opacity:0.5 on white background → blended to ~#80C080.
+       Use a solid reference color that matches the expected blend. */
+    .parent {
+      opacity: 0.5;
+    }
+    .child {
+      width: 200px;
+      height: 100px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="parent">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: text-overflow:ellipsis truncation</title>
+  <link rel="match" href="text-overflow-ellipsis-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* Classic truncation pattern: nowrap + overflow:hidden + text-overflow:ellipsis.
+       Container is 100px. "XXXXX" at 20px Ahem = 100px exactly.
+       "XXXXXXXXXX" (10 chars) = 200px, so it gets truncated with ellipsis. */
+    .truncated {
+      font: 20px/1 Ahem;
+      width: 100px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: green;
+    }
+    /* Non-truncated control */
+    .normal {
+      font: 20px/1 Ahem;
+      width: 100px;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <!-- This should be truncated with ellipsis -->
+  <div class="truncated">XXXXXXXXXX</div>
+  <!-- This fits exactly, no truncation -->
+  <div class="normal">XXXXX</div>
+</body>
+</html>

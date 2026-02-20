@@ -362,6 +362,12 @@ func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64
 // evalCalcExpr evaluates a CSS calc() expression with proper operator precedence.
 // Supports +, -, *, / operators and px/em/rem/%  values.
 func evalCalcExpr(expr string, fontSize float64) (float64, bool) {
+	return EvalCalcWithPercent(expr, fontSize, 0)
+}
+
+// EvalCalcWithPercent evaluates a CSS calc() expression with percent base support.
+// percentBase is the reference size for resolving % values (e.g. containing block width).
+func EvalCalcWithPercent(expr string, fontSize, percentBase float64) (float64, bool) {
 	expr = strings.TrimSpace(expr)
 	// Tokenize: split into numbers (with optional units) and operators
 	tokens := tokenizeCalc(expr)
@@ -369,7 +375,7 @@ func evalCalcExpr(expr string, fontSize float64) (float64, bool) {
 		return 0, false
 	}
 	// Parse with operator precedence: * and / before + and -
-	result, ok := parseCalcAddSub(tokens, 0, fontSize)
+	result, ok := parseCalcAddSub(tokens, 0, fontSize, percentBase)
 	if !ok {
 		return 0, false
 	}
@@ -381,8 +387,8 @@ type calcResult struct {
 	pos   int // position in token slice after consuming
 }
 
-func parseCalcAddSub(tokens []string, pos int, fontSize float64) (calcResult, bool) {
-	left, ok := parseCalcMulDiv(tokens, pos, fontSize)
+func parseCalcAddSub(tokens []string, pos int, fontSize, percentBase float64) (calcResult, bool) {
+	left, ok := parseCalcMulDiv(tokens, pos, fontSize, percentBase)
 	if !ok {
 		return calcResult{}, false
 	}
@@ -391,7 +397,7 @@ func parseCalcAddSub(tokens []string, pos int, fontSize float64) (calcResult, bo
 		if op != "+" && op != "-" {
 			break
 		}
-		right, ok := parseCalcMulDiv(tokens, left.pos+1, fontSize)
+		right, ok := parseCalcMulDiv(tokens, left.pos+1, fontSize, percentBase)
 		if !ok {
 			return calcResult{}, false
 		}
@@ -405,8 +411,8 @@ func parseCalcAddSub(tokens []string, pos int, fontSize float64) (calcResult, bo
 	return left, true
 }
 
-func parseCalcMulDiv(tokens []string, pos int, fontSize float64) (calcResult, bool) {
-	left, ok := parseCalcAtom(tokens, pos, fontSize)
+func parseCalcMulDiv(tokens []string, pos int, fontSize, percentBase float64) (calcResult, bool) {
+	left, ok := parseCalcAtom(tokens, pos, fontSize, percentBase)
 	if !ok {
 		return calcResult{}, false
 	}
@@ -415,7 +421,7 @@ func parseCalcMulDiv(tokens []string, pos int, fontSize float64) (calcResult, bo
 		if op != "*" && op != "/" {
 			break
 		}
-		right, ok := parseCalcAtom(tokens, left.pos+1, fontSize)
+		right, ok := parseCalcAtom(tokens, left.pos+1, fontSize, percentBase)
 		if !ok {
 			return calcResult{}, false
 		}
@@ -432,19 +438,26 @@ func parseCalcMulDiv(tokens []string, pos int, fontSize float64) (calcResult, bo
 	return left, true
 }
 
-func parseCalcAtom(tokens []string, pos int, fontSize float64) (calcResult, bool) {
+func parseCalcAtom(tokens []string, pos int, fontSize, percentBase float64) (calcResult, bool) {
 	if pos >= len(tokens) {
 		return calcResult{}, false
 	}
 	token := tokens[pos]
 	// Handle parenthesized sub-expressions
 	if token == "(" {
-		result, ok := parseCalcAddSub(tokens, pos+1, fontSize)
+		result, ok := parseCalcAddSub(tokens, pos+1, fontSize, percentBase)
 		if !ok || result.pos >= len(tokens) || tokens[result.pos] != ")" {
 			return calcResult{}, false
 		}
 		result.pos++ // consume ")"
 		return result, true
+	}
+	// Handle percentage values: resolve against percentBase
+	if strings.HasSuffix(token, "%") && percentBase > 0 {
+		numStr := strings.TrimSuffix(token, "%")
+		if num, err := strconv.ParseFloat(numStr, 64); err == nil {
+			return calcResult{value: num * percentBase / 100, pos: pos + 1}, true
+		}
 	}
 	// Parse as a length value or plain number
 	val, ok := ParseLengthWithFontSize(token, fontSize)

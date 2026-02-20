@@ -89,6 +89,23 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	padding := style.GetPadding()
 	border := style.GetBorderWidth()
 
+	// CSS 2.1 §8.4: Percentage padding resolves against the WIDTH of the
+	// containing block (even for padding-top and padding-bottom).
+	resolvePaddingPercent := func(prop string, current float64) float64 {
+		if current == 0 {
+			if val, ok := style.Get(prop); ok {
+				if pct, ok := css.ParsePercentage(val); ok {
+					return availableWidth * pct / 100
+				}
+			}
+		}
+		return current
+	}
+	padding.Top = resolvePaddingPercent("padding-top", padding.Top)
+	padding.Right = resolvePaddingPercent("padding-right", padding.Right)
+	padding.Bottom = resolvePaddingPercent("padding-bottom", padding.Bottom)
+	padding.Left = resolvePaddingPercent("padding-left", padding.Left)
+
 	// Phase 7 Enhancement: Inline elements ignore vertical margins and padding
 	if display == css.DisplayInline {
 		margin.Top = 0
@@ -157,6 +174,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if w, ok := style.GetLength("width"); ok {
 		contentWidth = w
 		hasExplicitWidth = true
+	} else if val, hasWidth := style.Get("width"); hasWidth && strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") && strings.Contains(val, "%") {
+		// calc() with percentage: resolve % against containing block width
+		expr := val[5 : len(val)-1]
+		cbWidth := availableWidth
+		if style.GetPosition() == css.PositionFixed {
+			cbWidth = le.viewport.width
+		}
+		if result, ok := css.EvalCalcWithPercent(expr, style.GetFontSize(), cbWidth); ok {
+			contentWidth = result
+			hasExplicitWidth = true
+		}
 	} else if pct, ok := style.GetPercentage("width"); ok {
 		// Percentage width resolved against containing block
 		cbWidth := availableWidth

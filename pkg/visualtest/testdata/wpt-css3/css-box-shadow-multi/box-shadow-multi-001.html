@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: multiple box shadows</title>
+  <link rel="match" href="box-shadow-multi-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; padding: 10px; }
+    /* Two non-overlapping shadows with no blur:
+       - red shadow offset 60px right
+       - blue shadow offset 60px down
+       Shadows don't overlap each other or the element */
+    .box {
+      width: 50px;
+      height: 50px;
+      background: green;
+      box-shadow: 60px 0 0 0 red, 0 60px 0 0 blue;
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>

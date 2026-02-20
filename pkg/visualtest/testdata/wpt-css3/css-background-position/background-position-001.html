@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: background-position with keywords</title>
+  <link rel="match" href="background-position-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* 100x100 green gradient positioned at bottom right of 200x200 container */
+    .box {
+      width: 200px;
+      height: 200px;
+      background-image: linear-gradient(green, green);
+      background-size: 100px 100px;
+      background-repeat: no-repeat;
+      background-position: right bottom;
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>

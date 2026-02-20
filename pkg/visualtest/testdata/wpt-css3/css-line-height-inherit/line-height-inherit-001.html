@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: line-height unitless vs percentage inheritance</title>
+  <link rel="match" href="line-height-inherit-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* CSS 2.1 §10.8.1: Unitless line-height is inherited as a number and
+       recomputed at each element. Percentage line-height is computed to a
+       px value and inherited as that fixed value.
+
+       Parent: font-size: 20px, line-height: 2 (unitless) → 40px
+       Child:  font-size: 10px, inherits line-height: 2 → 2 * 10px = 20px
+
+       This test uses unitless line-height which should recompute at child. */
+    .parent {
+      font-size: 20px;
+      line-height: 2; /* unitless: inherited as number 2 */
+    }
+    .child {
+      font-size: 25px;
+      /* inherits line-height: 2, computed as 2 * 25px = 50px */
+      background: green;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="parent">
+    <div class="child">X</div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: Nested flexbox layout</title>
+  <link rel="match" href="nested-flex-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* Outer flex: horizontal row of two columns */
+    .outer {
+      display: flex;
+      width: 400px;
+      height: 100px;
+    }
+    /* Each column is a vertical flex container */
+    .col {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+    /* Items fill their column equally */
+    .item {
+      flex: 1;
+    }
+    .green { background: green; }
+    .lime { background: lime; }
+    .blue { background: blue; }
+    .aqua { background: aqua; }
+  </style>
+</head>
+<body>
+  <div class="outer">
+    <div class="col">
+      <div class="item green"></div>
+      <div class="item lime"></div>
+    </div>
+    <div class="col">
+      <div class="item blue"></div>
+      <div class="item aqua"></div>
+    </div>
+  </div>
+</body>
+</html>

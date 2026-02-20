@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: multi-column layout</title>
+  <link rel="match" href="multicol-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* 2-column layout in 400px container.
+       Each column is 200px - half of column-gap.
+       Content is two colored blocks that flow into columns. */
+    .multicol {
+      column-count: 2;
+      column-gap: 0;
+      width: 400px;
+    }
+    .block {
+      height: 50px;
+      background: green;
+      break-inside: avoid;
+    }
+    .block2 {
+      height: 50px;
+      background: blue;
+      break-inside: avoid;
+    }
+  </style>
+</head>
+<body>
+  <div class="multicol">
+    <div class="block"></div>
+    <div class="block2"></div>
+  </div>
+</body>
+</html>

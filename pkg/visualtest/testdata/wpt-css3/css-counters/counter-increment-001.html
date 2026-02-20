@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: counter-increment with ::before</title>
+  <link rel="match" href="counter-increment-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; counter-reset: items; }
+    /* Each .item increments the counter. The ::before pseudo-element
+       uses counter() to generate content, proving it's non-empty.
+       Text is hidden; only the green block is visible. */
+    .item {
+      counter-increment: items;
+    }
+    .item::before {
+      content: counter(items);
+      display: block;
+      width: 200px;
+      height: 50px;
+      background: green;
+      color: green;
+      font-size: 0;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="item"></div>
+  <div class="item"></div>
+  <div class="item"></div>
+</body>
+</html>

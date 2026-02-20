@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: flex-wrap with wrapping items</title>
+  <link rel="match" href="flex-wrap-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* 4 items × 100px in 200px container → 2 rows of 2 */
+    .flex {
+      display: flex;
+      flex-wrap: wrap;
+      width: 200px;
+    }
+    .item { width: 100px; height: 50px; }
+    .green { background: green; }
+    .blue { background: blue; }
+  </style>
+</head>
+<body>
+  <div class="flex">
+    <div class="item green"></div>
+    <div class="item green"></div>
+    <div class="item blue"></div>
+    <div class="item blue"></div>
+  </div>
+</body>
+</html>

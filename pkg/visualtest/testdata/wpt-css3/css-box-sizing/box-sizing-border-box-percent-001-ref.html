@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: box-sizing:border-box with percentage width</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    .container {
+      width: 400px;
+    }
+    /* Two 200px boxes side by side, each with 20px padding = 160px content */
+    .half {
+      width: 200px;
+      height: 100px;
+      float: left;
+    }
+    .green { background: green; }
+    .blue { background: blue; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="half green"></div>
+    <div class="half blue"></div>
+  </div>
+</body>
+</html>
