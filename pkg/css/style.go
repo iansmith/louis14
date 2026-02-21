@@ -1520,6 +1520,29 @@ func expandShorthand(style *Style, property, value string) {
 		"animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state",
 		"animation-range", "animation-timeline":
 		style.Set(property, value)
+	case "text-emphasis":
+		// text-emphasis shorthand: <style> || <color>
+		// Either component may appear first; color is detected by ParseColor.
+		parts := strings.Fields(value)
+		if len(parts) == 0 {
+			break
+		}
+		// Collect non-color parts as style, color part as color
+		var styleParts []string
+		colorSet := false
+		for _, p := range parts {
+			if !colorSet {
+				if _, ok := ParseColor(p); ok {
+					style.Set("text-emphasis-color", p)
+					colorSet = true
+					continue
+				}
+			}
+			styleParts = append(styleParts, p)
+		}
+		if len(styleParts) > 0 {
+			style.Set("text-emphasis-style", strings.Join(styleParts, " "))
+		}
 	case "width", "height", "min-width", "max-width", "min-height", "max-height", "flex-basis":
 		// Normalize vendor-prefixed size keywords before storing
 		style.Set(property, normalizeVendorPrefixedValue(value))
@@ -5896,4 +5919,111 @@ func (s *Style) GetHyphens() string {
 		}
 	}
 	return "manual"
+}
+
+// GetTextEmphasisStyle returns the text-emphasis-style value.
+func (s *Style) GetTextEmphasisStyle() string {
+	v, _ := s.Get("text-emphasis-style")
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "none"
+	}
+	return v
+}
+
+// GetTextEmphasisColor returns the text-emphasis color (defaults to currentColor).
+func (s *Style) GetTextEmphasisColor() Color {
+	v, _ := s.Get("text-emphasis-color")
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return s.GetColor() // currentColor
+	}
+	if c, ok := ParseColor(v); ok {
+		return c
+	}
+	return s.GetColor()
+}
+
+// GetTextEmphasisPosition returns where emphasis marks appear ("over right" by default).
+func (s *Style) GetTextEmphasisPosition() string {
+	v, _ := s.Get("text-emphasis-position")
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "over right"
+	}
+	return v
+}
+
+// GetTextEmphasisMark returns the actual character to use as emphasis mark.
+// Returns "" if no emphasis should be drawn.
+func (s *Style) GetTextEmphasisMark() string {
+	style := s.GetTextEmphasisStyle()
+	if style == "none" || style == "" {
+		return ""
+	}
+
+	// Custom string: "x" or 'x' (quoted string)
+	if len(style) >= 2 && (style[0] == '"' || style[0] == '\'') {
+		return style[1 : len(style)-1]
+	}
+
+	// Standard shapes
+	filled := true
+	if strings.Contains(style, "open") {
+		filled = false
+	}
+
+	shape := "circle" // default
+	if strings.Contains(style, "double-circle") {
+		shape = "double-circle"
+	} else if strings.Contains(style, "sesame") {
+		shape = "sesame"
+	} else if strings.Contains(style, "triangle") {
+		shape = "triangle"
+	} else if strings.Contains(style, "dot") {
+		shape = "dot"
+	} else if strings.Contains(style, "circle") {
+		shape = "circle"
+	}
+	// If only "filled" or "open" (no shape specified), default to circle
+	if style == "filled" {
+		filled = true
+		shape = "circle"
+	} else if style == "open" {
+		filled = false
+		shape = "circle"
+	}
+
+	switch shape {
+	case "dot":
+		if filled {
+			return "\u2022" // •
+		}
+		return "\u25e6" // ◦
+	case "circle":
+		if filled {
+			return "\u25cf" // ●
+		}
+		return "\u25cb" // ○
+	case "double-circle":
+		if filled {
+			return "\u25c9" // ◉
+		}
+		return "\u25ce" // ◎
+	case "triangle":
+		if filled {
+			return "\u25b2" // ▲
+		}
+		return "\u25b3" // △
+	case "sesame":
+		if filled {
+			return "\ufe45" // ﹅
+		}
+		return "\ufe46" // ﹆
+	default:
+		if filled {
+			return "\u25cf" // ●
+		}
+		return "\u25cb" // ○
+	}
 }
