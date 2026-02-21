@@ -1,18 +1,23 @@
 <!DOCTYPE html>
 <title>CSS outline-offset reference</title>
 <style>
+  body { margin: 0; padding: 0; }
+  p { margin: 16px 0 0 0; }
   .outer {
+    position: absolute;
+    left: 20px;
+    top: 55px;
     width: 90px;
     height: 90px;
     border: 5px solid blue;
-    margin: 20px;
   }
-  .inner {
+  .lime {
     width: 80px;
     height: 80px;
     background: lime;
-    margin: 5px;
+    margin: 30px;
   }
 </style>
 <p>Test passes if there is a green square with a blue outline separated by a gap.</p>
-<div class="outer"><div class="inner"></div></div>
+<div class="outer"></div>
+<div class="lime"></div>

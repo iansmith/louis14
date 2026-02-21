@@ -1,20 +1,24 @@
 <!DOCTYPE html>
 <title>CSS outline reference</title>
 <style>
+  body { margin: 0; padding: 0; }
+  p { margin: 16px 0 0 0; }
   .outer {
+    position: absolute;
+    left: 15px;
+    top: 50px;
     width: 110px;
     height: 110px;
     background: blue;
-    margin: 15px;
   }
   .inner {
-    position: relative;
-    top: 5px;
-    left: 5px;
+    position: absolute;
+    left: 20px;
+    top: 55px;
     width: 100px;
     height: 100px;
     background: lime;
   }
 </style>
-<p style="margin-bottom: 0">Test passes if there is a green square with a blue outline.</p>
-<div class="outer"><div class="inner"></div></div>
+<p>Test passes if there is a green square with a blue outline.</p>
+<div class="outer"></div><div class="inner"></div>

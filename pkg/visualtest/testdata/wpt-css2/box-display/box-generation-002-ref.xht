@@ -1,39 +1,30 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
-
 <html xmlns="http://www.w3.org/1999/xhtml">
-
- <head>
-
-  <title>CSS Reftest Reference</title>
-
-  <link rel="author" title="Gérard Talbot" href="http://www.gtalbot.org/BrowserBugsSection/css21testsuite/" />
-
-  <style type="text/css"><![CDATA[
-  div#orange-cell
-  {
-  background-color: orange;
-  display: table-cell;
-  width: 0.5in;
-  }
-
-  div#yellow-cell
-  {
-  background-color: blue;
-  display: table-cell;
-  }
-
-  div#block {background-color: yellow;}
-  ]]></style>
-
- </head>
-
- <body>
-
-  <p>Test passes if the orange stripe is on the left-hand side of the blue stripe and both stripes are above the yellow bar.</p>
-
-  <div id="orange-cell">Float</div><div id="yellow-cell">Inline box</div>
-
-  <div id="block">Block box</div>
-
- </body>
+<head>
+<title>CSS Reftest Reference</title>
+<style type="text/css">
+span
+{
+background: blue;
+}
+#div1
+{
+background: orange;
+float: left;
+width: 0.5in;
+}
+#div2
+{
+background: yellow;
+}
+</style>
+</head>
+<body>
+<p>Test passes if the orange stripe is on the left-hand side of the blue stripe and both stripes are above the yellow bar.</p>
+<div>
+<span>Inline box</span>
+<div id="div1">Float</div>
+<div id="div2">Block box</div>
+</div>
+</body>
 </html>

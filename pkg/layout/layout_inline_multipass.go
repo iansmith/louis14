@@ -1361,6 +1361,18 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		computedStyles[child] = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
 	}
 	children = le.normalizeBlocksInInline(children, computedStyles)
+	// Populate computedStyles with any synthetic nodes created by normalization
+	// (_anon block wrappers). Without this, CollectInlineItems falls back to
+	// css.ComputeStyle which returns display:inline for unknown "_anon" tags,
+	// causing the _anon block wrappers to be treated as inline (narrow) instead
+	// of display:block (full-width).
+	for _, child := range children {
+		if _, ok := computedStyles[child]; !ok {
+			if synthStyle, ok := le.syntheticStyles[child]; ok {
+				computedStyles[child] = synthStyle
+			}
+		}
+	}
 
 	// Create constraint space
 	constraint := NewConstraintSpace(availableWidth, 0)
@@ -1739,9 +1751,10 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 								}
 							}
 						}
-						// Insert wrapper at correct position for CSS painting order
-						if span.hasChildWrappers && span.startBoxCount <= len(boxes) {
-							// Insert before child wrappers for correct nesting order
+						// Insert wrapper at correct position for CSS painting order.
+						// Always insert BEFORE span text/child boxes so the wrapper
+						// background renders behind text (CSS §10.1: backgrounds first).
+						if span.startBoxCount <= len(boxes) {
 							newBoxes := make([]*Box, 0, len(boxes)+1)
 							newBoxes = append(newBoxes, boxes[:span.startBoxCount]...)
 							newBoxes = append(newBoxes, wrapperBox)

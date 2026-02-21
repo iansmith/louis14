@@ -1,26 +1,18 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
-
 <html xmlns="http://www.w3.org/1999/xhtml">
-
- <head>
-
-  <title>CSS Reftest Reference</title>
-
-  <link rel="author" title="Gérard Talbot" href="http://www.gtalbot.org/BrowserBugsSection/css21testsuite/" />
-
-  <style type="text/css"><![CDATA[
-  img {vertical-align: bottom;}
-  ]]></style>
-
- </head>
-
- <body>
-
-  <p>Test passes if there is an orange square below a blue square.</p>
-
-  <div><img src="support/swatch-blue.png" width="96" height="96" alt="Image download support must be enabled" /></div>
-
-  <div><img src="support/swatch-orange.png" width="96" height="96" alt="Image download support must be enabled" /></div>
-
- </body>
+<head>
+<title>CSS Reftest Reference</title>
+<style type="text/css">
+#div1 { width: 500px; }
+.blue { background: blue; height: 97px; width: 96px; }
+.orange { background: orange; height: 95px; width: 96px; }
+</style>
+</head>
+<body>
+<p>Test passes if there is an orange square below a blue square.</p>
+<div id="div1">
+<div class="blue"></div>
+<div class="orange"></div>
+</div>
+</body>
 </html>

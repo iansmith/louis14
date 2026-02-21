@@ -1,18 +1,36 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
- <head>
-  <title>CSS Reftest Reference</title>
-  <link rel="author" title="Gérard Talbot" href="http://www.gtalbot.org/BrowserBugsSection/css21testsuite/"/>
-  <style type="text/css">
-  table, td {border: green solid 10px;}
-  table {border-spacing: 96px 96px;}
-  td {padding: 0.5in 1.5in ;}
-  </style>
- </head>
- <body>
-  <p>Test passes if there is <strong>no red</strong>.</p>
-  <table>
-   <tr><td></td></tr>
-  </table>
- </body>
+    <head>
+        <title>CSS Reftest Reference</title>
+        <style type="text/css">
+            #wrapper
+            {
+                position: relative;
+            }
+            #div1, #div2
+            {
+                border: 10px solid green;
+            }
+            #div1
+            {
+                left: 0;
+                position: absolute;
+                top: 0;
+            }
+            #div2
+            {
+                margin: 2.54cm;
+                height: 1in;
+                width: 3in;
+            }
+        </style>
+    </head>
+    <body>
+        <p>Test passes if there is <strong>no red</strong>.</p>
+        <div id="wrapper">
+            <div id="div1">
+                <div id="div2"></div>
+            </div>
+        </div>
+    </body>
 </html>
