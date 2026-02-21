@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: background-origin border-box</title>
+  <link rel="help" href="https://drafts.csswg.org/css-backgrounds-3/#background-origin" />
+  <link rel="match" href="background-origin-border-001-ref.html" />
+  <meta name="assert" content="background-origin:border-box with background-clip:border-box causes the background image to be positioned relative to the border edge." />
+</head>
+<body style="margin:0;padding:0;background:white">
+  <!-- Box: 80px total (border-box), 10px transparent border, 10px padding, 40px content -->
+  <!-- background-origin:border-box means background positioning is relative to the outer border edge -->
+  <!-- background-size:100% 100% fills the entire 80x80 border box -->
+  <!-- Gradient: blue from 0-50%, lime from 50-100% across the 80px width = blue left 40px, lime right 40px -->
+  <!-- With background-clip:border-box, all 80x80 pixels (including transparent border area) are painted -->
+  <div style="width:80px;height:80px;
+              border:10px solid transparent;
+              padding:10px;
+              box-sizing:border-box;
+              background-image:linear-gradient(to right, blue 0%, blue 50%, lime 50%, lime 100%);
+              background-origin:border-box;
+              background-clip:border-box;
+              background-size:100% 100%;
+              background-repeat:no-repeat"></div>
+</body>
+</html>

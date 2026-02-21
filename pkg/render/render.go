@@ -1343,31 +1343,57 @@ func (r *Renderer) drawColumnRules(box *layout.Box) {
 	}
 }
 
+// backgroundOriginCoords returns x, y, width, height for the background positioning area
+// based on the background-origin property value. This determines where background-position 0%
+// maps to (the origin rectangle for positioning).
+func backgroundOriginCoords(box *layout.Box, effectiveY float64) (float64, float64, float64, float64) {
+	origin := box.Style.GetBackgroundOrigin()
+	switch origin {
+	case css.BackgroundOriginBorderBox:
+		// Positioning relative to the entire border box (outermost edge)
+		return box.X, effectiveY, box.Width, box.Height
+	case css.BackgroundOriginContentBox:
+		// Positioning relative to the content box (inside border + padding)
+		return box.X + box.Border.Left + box.Padding.Left,
+			effectiveY + box.Border.Top + box.Padding.Top,
+			box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right,
+			box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+	default: // padding-box (default per CSS spec)
+		// Positioning relative to the padding box (inside border, includes padding)
+		return box.X + box.Border.Left,
+			effectiveY + box.Border.Top,
+			box.Width - box.Border.Left - box.Border.Right,
+			box.Height - box.Border.Top - box.Border.Bottom
+	}
+}
+
 // drawGradientBackground renders a CSS gradient as the box background
 func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, effectiveY float64) {
 	if grad == nil {
 		return
 	}
 
-	bgX := box.X
-	bgY := effectiveY
-	bgWidth := box.Width
-	bgHeight := box.Height
+	// The clip area (where the gradient is visible) uses background-clip.
+	// The origin area (where background-position is resolved) uses background-origin.
+	clipX, clipY, clipWidth, clipHeight := backgroundClipCoords(box, effectiveY)
 
 	// Handle inline element bleeding (same as solid color backgrounds)
 	if box.Style.GetDisplay() == css.DisplayInline {
-		bgHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
-		bgY -= box.Border.Top + box.Padding.Top
+		clipHeight = box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
+		clipY = effectiveY - box.Border.Top - box.Padding.Top
 	}
 
-	if bgWidth <= 0 || bgHeight <= 0 {
+	if clipWidth <= 0 || clipHeight <= 0 {
 		return
 	}
 
-	// Apply background-size to constrain gradient dimensions
+	// The origin area determines how background-position and background-size are resolved.
+	originX, originY, originWidth, originHeight := backgroundOriginCoords(box, effectiveY)
+
+	// Apply background-size to constrain gradient dimensions relative to the origin area
 	bgSize := box.Style.GetBackgroundSize()
-	gradWidth := bgWidth
-	gradHeight := bgHeight
+	gradWidth := originWidth
+	gradHeight := originHeight
 	if bgSize.Width > 0 {
 		gradWidth = bgSize.Width
 	}
@@ -1375,16 +1401,16 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 		gradHeight = bgSize.Height
 	}
 
-	// Apply background-position to offset gradient within the box
+	// Apply background-position to offset gradient within the origin area
 	pos := box.Style.GetBackgroundPosition()
-	gradX := bgX + pos.ResolveX(bgWidth, gradWidth)
-	gradY := bgY + pos.ResolveY(bgHeight, gradHeight)
+	gradX := originX + pos.ResolveX(originWidth, gradWidth)
+	gradY := originY + pos.ResolveY(originHeight, gradHeight)
 
 	var ggGrad gg.Gradient
 
 	if grad.Type == css.GradientConic {
-		// Conic gradient: pixel-level rendering
-		r.drawConicGradient(grad, bgX, bgY, bgWidth, bgHeight, box)
+		// Conic gradient: pixel-level rendering (clips to clip area, positions via origin area)
+		r.drawConicGradient(grad, clipX, clipY, clipWidth, clipHeight, box)
 		return
 	}
 
@@ -1478,14 +1504,14 @@ func (r *Renderer) drawGradientBackground(box *layout.Box, grad *css.Gradient, e
 	// Set the gradient as the fill pattern
 	r.context.SetFillStyle(ggGrad)
 
-	// Clip to box bounds, then draw gradient at positioned offset
+	// Clip to the background-clip area, then draw gradient at origin-positioned offset
 	r.context.Push()
 	corners := box.Style.GetBorderRadiusCorners()
 	if corners.MaxRadius() > 0 {
-		r.context.DrawRoundedRectangleCorners(bgX, bgY, bgWidth, bgHeight,
+		r.context.DrawRoundedRectangleCorners(clipX, clipY, clipWidth, clipHeight,
 			corners.TopLeft, corners.TopRight, corners.BottomRight, corners.BottomLeft)
 	} else {
-		r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+		r.context.DrawRectangle(clipX, clipY, clipWidth, clipHeight)
 	}
 	r.context.Clip()
 	r.context.DrawRectangle(gradX, gradY, gradWidth, gradHeight)
@@ -2525,22 +2551,23 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 
 	effectiveY := r.getEffectiveY(box)
 
-	bgX := box.X
-	bgY := effectiveY
-	bgWidth := box.Width // Border-box dimensions
-	bgHeight := box.Height // Border-box dimensions
+	// Clip area: where the background image is visible (background-clip)
+	clipX, clipY, clipWidth, clipHeight := backgroundClipCoords(box, effectiveY)
+
+	// Origin area: where background-position is resolved (background-origin)
+	originX, originY, originWidth, originHeight := backgroundOriginCoords(box, effectiveY)
 
 	bounds := img.Bounds()
 	imgW := float64(bounds.Dx())
 	imgH := float64(bounds.Dy())
 
-	// Apply background-size
+	// Apply background-size relative to the origin area
 	bgSize := box.Style.GetBackgroundSize()
 	scaleX, scaleY := 1.0, 1.0
 	if bgSize.Cover {
-		// Scale to cover the entire background area (may crop)
-		sx := bgWidth / imgW
-		sy := bgHeight / imgH
+		// Scale to cover the entire origin area (may crop)
+		sx := originWidth / imgW
+		sy := originHeight / imgH
 		scale := sx
 		if sy > sx {
 			scale = sy
@@ -2549,9 +2576,9 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		imgW *= scale
 		imgH *= scale
 	} else if bgSize.Contain {
-		// Scale to fit within the background area (may leave gaps)
-		sx := bgWidth / imgW
-		sy := bgHeight / imgH
+		// Scale to fit within the origin area (may leave gaps)
+		sx := originWidth / imgW
+		sy := originHeight / imgH
 		scale := sx
 		if sy < sx {
 			scale = sy
@@ -2562,12 +2589,12 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	} else {
 		// Explicit dimensions
 		targetW, targetH := bgSize.Width, bgSize.Height
-		// Resolve percentage values (stored as negative)
+		// Resolve percentage values (stored as negative) relative to origin area
 		if targetW < 0 {
-			targetW = bgWidth * (-targetW) / 100
+			targetW = originWidth * (-targetW) / 100
 		}
 		if targetH < 0 {
-			targetH = bgHeight * (-targetH) / 100
+			targetH = originHeight * (-targetH) / 100
 		}
 		if targetW > 0 && targetH > 0 {
 			scaleX = targetW / float64(bounds.Dx())
@@ -2591,15 +2618,21 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	pos := box.Style.GetBackgroundPosition()
 	attachment := box.Style.GetBackgroundAttachment()
 
-	originX := bgX
-	originY := bgY
+	// For fixed attachment, position relative to the viewport
+	posOriginX := originX
+	posOriginY := originY
+	posOriginW := originWidth
+	posOriginH := originHeight
 	if attachment == "fixed" {
-		originX = 0
-		originY = 0
+		posOriginX = 0
+		posOriginY = 0
+		posOriginW = clipWidth
+		posOriginH = clipHeight
 	}
 
+	// Clip the drawing area to the background-clip region
 	r.context.Push()
-	r.context.DrawRectangle(bgX, bgY, bgWidth, bgHeight)
+	r.context.DrawRectangle(clipX, clipY, clipWidth, clipHeight)
 	r.context.Clip()
 
 	needsScale := scaleX != 1.0 || scaleY != 1.0
@@ -2615,22 +2648,22 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		}
 	}
 
-	// Resolve percentage-based positions to pixels
-	posX := pos.ResolveX(bgWidth, imgW)
-	posY := pos.ResolveY(bgHeight, imgH)
+	// Resolve percentage-based positions to pixels relative to origin area
+	posX := pos.ResolveX(posOriginW, imgW)
+	posY := pos.ResolveY(posOriginH, imgH)
 
 	switch repeat {
 	case css.BackgroundRepeatNoRepeat:
-		drawClipped(int(originX+posX), int(originY+posY))
+		drawClipped(int(posOriginX+posX), int(posOriginY+posY))
 
 	case css.BackgroundRepeatRepeatX:
 		startX := posX
 		for startX > 0 {
 			startX -= imgW
 		}
-		tileEndX := bgX + bgWidth - originX
+		tileEndX := clipX + clipWidth - posOriginX
 		for x := startX; x < tileEndX; x += imgW {
-			drawClipped(int(originX+x), int(originY+posY))
+			drawClipped(int(posOriginX+x), int(posOriginY+posY))
 		}
 
 	case css.BackgroundRepeatRepeatY:
@@ -2638,9 +2671,9 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		for startY > 0 {
 			startY -= imgH
 		}
-		tileEndY := bgY + bgHeight - originY
+		tileEndY := clipY + clipHeight - posOriginY
 		for y := startY; y < tileEndY; y += imgH {
-			drawClipped(int(originX+posX), int(originY+y))
+			drawClipped(int(posOriginX+posX), int(posOriginY+y))
 		}
 
 	default: // repeat
@@ -2652,11 +2685,11 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		for startY > 0 {
 			startY -= imgH
 		}
-		tileEndX := bgX + bgWidth - originX
-		tileEndY := bgY + bgHeight - originY
+		tileEndX := clipX + clipWidth - posOriginX
+		tileEndY := clipY + clipHeight - posOriginY
 		for y := startY; y < tileEndY; y += imgH {
 			for x := startX; x < tileEndX; x += imgW {
-				drawClipped(int(originX+x), int(originY+y))
+				drawClipped(int(posOriginX+x), int(posOriginY+y))
 			}
 		}
 	}

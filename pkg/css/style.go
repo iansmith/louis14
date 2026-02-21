@@ -2277,9 +2277,15 @@ func expandBackgroundProperty(style *Style, value string) {
 	// Parse remaining tokens for color, repeat, position
 	parts := strings.Fields(value)
 	positionParts := []string{}
+	// CSS spec: in the background shorthand, box values (border-box/padding-box/content-box)
+	// appear as: [<box> || <box>] where first applies to background-origin and second to
+	// background-clip. If only one is given, it applies to both.
+	boxValues := []string{}
 	for _, part := range parts {
 		if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
 			style.Set("background-repeat", part)
+		} else if part == "border-box" || part == "padding-box" || part == "content-box" {
+			boxValues = append(boxValues, part)
 		} else if _, ok := ParseColor(part); ok {
 			if colorFound {
 				// Two color values = invalid declaration, skip entirely
@@ -2299,6 +2305,16 @@ func expandBackgroundProperty(style *Style, value string) {
 			positionParts = append(positionParts, part)
 		} else if part == "fixed" || part == "scroll" || part == "local" {
 			style.Set("background-attachment", part)
+		}
+	}
+	// Apply box values: first is background-origin, second (if present) is background-clip.
+	// If only one value given, it applies to both origin and clip.
+	if len(boxValues) >= 1 {
+		style.Set("background-origin", boxValues[0])
+		if len(boxValues) >= 2 {
+			style.Set("background-clip", boxValues[1])
+		} else {
+			style.Set("background-clip", boxValues[0])
 		}
 	}
 	if colorFound {
@@ -5338,6 +5354,30 @@ func (s *Style) GetBackgroundClip() BackgroundClipType {
 		}
 	}
 	return BackgroundClipBorderBox
+}
+
+// BackgroundOriginType represents the background-origin property value.
+type BackgroundOriginType string
+
+const (
+	BackgroundOriginBorderBox  BackgroundOriginType = "border-box"
+	BackgroundOriginPaddingBox BackgroundOriginType = "padding-box" // default
+	BackgroundOriginContentBox BackgroundOriginType = "content-box"
+)
+
+// GetBackgroundOrigin returns the background-origin value (default: padding-box).
+func (s *Style) GetBackgroundOrigin() BackgroundOriginType {
+	if val, ok := s.Get("background-origin"); ok {
+		switch strings.TrimSpace(strings.ToLower(val)) {
+		case "border-box":
+			return BackgroundOriginBorderBox
+		case "content-box":
+			return BackgroundOriginContentBox
+		default:
+			return BackgroundOriginPaddingBox
+		}
+	}
+	return BackgroundOriginPaddingBox
 }
 
 // Phase 23: List styling
