@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="match" href="not-selector-list-three-001-ref.html">
+<style>
+body { margin: 0; padding: 10px; background: white; }
+.item { display: block; width: 100px; height: 20px; background: red; margin: 2px 0; }
+/* Items that are NOT .a AND NOT .b AND NOT .c get lime */
+.item:not(.a, .b, .c) { background: lime; }
+</style>
+</head>
+<body>
+<div class="item a">a</div>
+<div class="item b">b</div>
+<div class="item c">c</div>
+<div class="item">other - lime</div>
+</body>
+</html>
