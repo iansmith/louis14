@@ -243,6 +243,50 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 	case pc == "hover", pc == "focus", pc == "active", pc == "visited":
 		// Dynamic pseudo-classes never match in a static renderer
 		return false
+	case pc == "focus-visible", pc == "focus-within":
+		// Focus pseudo-classes: no focus state in static renderer
+		return false
+	case pc == "target":
+		// :target matches element with matching URL fragment — not available in static renderer
+		return false
+	case pc == "placeholder-shown":
+		// :placeholder-shown: inputs don't show placeholders in static render
+		return false
+	case pc == "autofill", pc == "-webkit-autofill":
+		// Autofill state: never applies in static renderer
+		return false
+	case pc == "paused", pc == "playing":
+		// Animation state pseudo-classes: not applicable in static renderer
+		return false
+	case pc == "muted", pc == "volume-locked":
+		// Media element state: not applicable in static renderer
+		return false
+	case pc == "local-link":
+		// :local-link matches anchors linking to current page — can't determine in static render
+		return false
+	case pc == "any-link", pc == "-webkit-any-link":
+		// :any-link matches <a>, <area>, <link> elements that have an href attribute
+		if node.Type != html.ElementNode {
+			return false
+		}
+		tag := node.TagName
+		if tag != "a" && tag != "area" && tag != "link" {
+			return false
+		}
+		_, hasHref := node.GetAttribute("href")
+		return hasHref
+	case pc == "scope":
+		// :scope matches the element serving as the scope reference.
+		// In a static document context, approximate as :root (first element child of document).
+		if node.Parent == nil || node.Parent.TagName != "document" {
+			return false
+		}
+		for _, child := range node.Parent.Children {
+			if child.Type == html.ElementNode {
+				return child == node
+			}
+		}
+		return false
 	case pc == "link":
 		return node.TagName == "a"
 	case strings.HasPrefix(pc, "is("):
