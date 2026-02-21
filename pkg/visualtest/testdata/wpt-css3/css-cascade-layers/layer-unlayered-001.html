@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @layer — unlayered rules win over layered rules</title>
+  <link rel="match" href="layer-unlayered-001-ref.html" />
+  <meta name="assert" content="Unlayered rules have higher cascade priority than layered rules, even if the layered rule has higher specificity" />
+  <style>
+    body { margin: 0; }
+    /* Layered rule with high specificity */
+    @layer utilities {
+      div.box { background-color: red; }
+    }
+    /* Unlayered rule with low specificity — should still win */
+    div { background-color: green; }
+  </style>
+</head>
+<body>
+  <div class="box" style="width: 100px; height: 100px;"></div>
+</body>
+</html>

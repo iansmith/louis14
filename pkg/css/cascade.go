@@ -236,6 +236,41 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	}
 }
 
+// buildLayerOrder builds a combined layer order from all stylesheets.
+// Earlier layers in the order have lower cascade priority (they lose to later layers).
+// The order comes from @layer declaration statements and @layer block rules.
+func buildLayerOrder(stylesheets []*Stylesheet) []string {
+	seen := make(map[string]bool)
+	var order []string
+	for _, ss := range stylesheets {
+		for _, name := range ss.LayerOrder {
+			if !seen[name] {
+				seen[name] = true
+				order = append(order, name)
+			}
+		}
+	}
+	return order
+}
+
+// layerPriority returns the cascade priority of a rule based on its layer name.
+// Rules in earlier layers get lower priority values (they lose to later layers).
+// Unlayered rules (layerName == "") get priority = len(layerOrder) (highest priority).
+// Anonymous layer rules ("") treated as unlayered for simplicity.
+func layerPriority(layerName string, layerOrder []string) int {
+	if layerName == "" {
+		// Unlayered rules win over any layered rule
+		return len(layerOrder)
+	}
+	for i, name := range layerOrder {
+		if name == layerName {
+			return i
+		}
+	}
+	// Unknown layer name: treat as last declared layer (just before unlayered)
+	return len(layerOrder) - 1
+}
+
 // ComputeStyle computes the final style for a node by applying the cascade
 // Phase 22: Added viewport dimensions for media query evaluation
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) *Style {
@@ -255,8 +290,14 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		allRules = append(allRules, matches...)
 	}
 
-	// Sort rules by specificity (lowest first)
-	sort.Slice(allRules, func(i, j int) bool {
+	// Sort rules by cascade order: layer priority (lowest first), then specificity
+	layerOrder := buildLayerOrder(stylesheets)
+	sort.SliceStable(allRules, func(i, j int) bool {
+		pi := layerPriority(allRules[i].LayerName, layerOrder)
+		pj := layerPriority(allRules[j].LayerName, layerOrder)
+		if pi != pj {
+			return pi < pj
+		}
 		return allRules[i].Selector.Specificity < allRules[j].Selector.Specificity
 	})
 
@@ -379,8 +420,14 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 	}
 
-	// Sort rules by specificity
-	sort.Slice(allRules, func(i, j int) bool {
+	// Sort rules by cascade order: layer priority (lowest first), then specificity
+	layerOrder2 := buildLayerOrder(stylesheets)
+	sort.SliceStable(allRules, func(i, j int) bool {
+		pi := layerPriority(allRules[i].LayerName, layerOrder2)
+		pj := layerPriority(allRules[j].LayerName, layerOrder2)
+		if pi != pj {
+			return pi < pj
+		}
 		return allRules[i].Selector.Specificity < allRules[j].Selector.Specificity
 	})
 

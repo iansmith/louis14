@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @layer — later layer wins over earlier layer</title>
+  <link rel="match" href="layer-basic-001-ref.html" />
+  <meta name="assert" content="Rules in a later @layer override rules in an earlier @layer, regardless of specificity" />
+  <style>
+    body { margin: 0; }
+    /* Layer "base" declared first — lower priority */
+    @layer base {
+      div { background-color: red; }
+    }
+    /* Layer "override" declared second — higher priority */
+    @layer override {
+      div { background-color: blue; }
+    }
+  </style>
+</head>
+<body>
+  <div style="width: 100px; height: 100px;"></div>
+</body>
+</html>
