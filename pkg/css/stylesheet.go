@@ -692,24 +692,48 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 		Conditions: make([]MediaCondition, 0),
 	}
 
-	// Check for media type (screen, print, all, etc.)
-	if strings.HasPrefix(mediaStr, "screen") {
-		mq.MediaType = "screen"
-		mediaStr = strings.TrimPrefix(mediaStr, "screen")
-		mediaStr = strings.TrimSpace(mediaStr)
-	} else if strings.HasPrefix(mediaStr, "print") {
-		mq.MediaType = "print"
-		mediaStr = strings.TrimPrefix(mediaStr, "print")
-		mediaStr = strings.TrimSpace(mediaStr)
+	// Handle "not" and "only" modifiers
+	// "not screen" means negate the entire type match
+	// "only screen" is equivalent to "screen" (older syntax to hide from legacy parsers)
+	negate := false
+	if strings.HasPrefix(mediaStr, "not ") {
+		negate = true
+		mediaStr = strings.TrimSpace(mediaStr[4:])
+	} else if strings.HasPrefix(mediaStr, "only ") {
+		mediaStr = strings.TrimSpace(mediaStr[5:])
 	}
 
-	// Remove "and" keyword
+	// Check for media type (screen, print, all, etc.)
+	if strings.HasPrefix(mediaStr, "screen") && (len(mediaStr) == 6 || mediaStr[6] == ' ' || mediaStr[6] == ',') {
+		mq.MediaType = "screen"
+		mediaStr = strings.TrimSpace(mediaStr[6:])
+	} else if strings.HasPrefix(mediaStr, "print") && (len(mediaStr) == 5 || mediaStr[5] == ' ' || mediaStr[5] == ',') {
+		mq.MediaType = "print"
+		mediaStr = strings.TrimSpace(mediaStr[5:])
+	} else if strings.HasPrefix(mediaStr, "all") && (len(mediaStr) == 3 || mediaStr[3] == ' ' || mediaStr[3] == ',') {
+		mq.MediaType = "all"
+		mediaStr = strings.TrimSpace(mediaStr[3:])
+	}
+
+	// Apply negation: negate the media type by setting it to an impossible value
+	if negate {
+		switch mq.MediaType {
+		case "screen":
+			mq.MediaType = "print" // not screen = print (won't match screen renderer)
+		case "print":
+			mq.MediaType = "screen" // not print = screen (matches)
+		case "all":
+			mq.MediaType = "none" // not all = never match
+		}
+	}
+
+	// Remove leading "and" keyword
 	mediaStr = strings.TrimPrefix(mediaStr, "and")
 	mediaStr = strings.TrimSpace(mediaStr)
 
 	// Parse conditions: (min-width: 768px) and (max-width: 1024px)
-	// Simple approach: split by "and" and extract each condition
-	conditionStrs := strings.Split(mediaStr, "and")
+	// Split by " and " at paren depth 0 to handle nested parens in values
+	conditionStrs := splitMediaConditions(mediaStr)
 
 	for _, condStr := range conditionStrs {
 		condStr = strings.TrimSpace(condStr)
@@ -717,8 +741,10 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 			continue
 		}
 
-		// Remove parentheses
-		condStr = strings.Trim(condStr, "()")
+		// Remove outer parentheses
+		if strings.HasPrefix(condStr, "(") && strings.HasSuffix(condStr, ")") {
+			condStr = condStr[1 : len(condStr)-1]
+		}
 		condStr = strings.TrimSpace(condStr)
 
 		// Split by : to get feature and value
@@ -730,10 +756,44 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 				Feature: feature,
 				Value:   value,
 			})
+		} else if len(parts) == 1 && condStr != "" {
+			// Boolean media feature like (color) or (hover) — no value
+			feature := strings.TrimSpace(parts[0])
+			if feature != "" {
+				mq.Conditions = append(mq.Conditions, MediaCondition{
+					Feature: feature,
+					Value:   "", // empty value = boolean true test
+				})
+			}
 		}
 	}
 
 	return mq
+}
+
+// splitMediaConditions splits a media query condition string by " and " at paren depth 0.
+// This handles cases like "(min-width: 100px) and (max-width: 500px)".
+func splitMediaConditions(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	const sep = " and "
+
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 && i+len(sep) <= len(s) && strings.EqualFold(s[i:i+len(sep)], sep) {
+			parts = append(parts, s[start:i])
+			start = i + len(sep)
+			i += len(sep) - 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
 }
 
 // parseSupportsRule parses an @supports rule and returns the inner rules if condition is met
@@ -1276,9 +1336,14 @@ func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) b
 		return true
 	}
 
-	// Check media type (we only support "all" and "screen" for now)
-	if mq.MediaType != "all" && mq.MediaType != "screen" {
-		return false
+	// Check media type
+	switch mq.MediaType {
+	case "all", "screen", "":
+		// matches — we render for screen
+	case "print":
+		return false // Print media: never match in screen renderer
+	default:
+		return false // Unknown media types: don't match
 	}
 
 	// Check all conditions
@@ -1293,33 +1358,127 @@ func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) b
 
 // Phase 22: evaluateMediaCondition checks if a single media condition matches
 func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight float64) bool {
-	// Handle non-numeric media features first
-	switch cond.Feature {
+	feature := strings.TrimSpace(strings.ToLower(cond.Feature))
+	value := strings.TrimSpace(strings.ToLower(cond.Value))
+
+	// Handle non-numeric media features
+	switch feature {
 	case "prefers-color-scheme":
 		// We render static PNGs in light mode
-		return strings.TrimSpace(cond.Value) == "light"
+		return value == "light"
 	case "prefers-reduced-motion":
-		// Static renderer — no motion
-		return strings.TrimSpace(cond.Value) == "reduce"
+		// Static renderer — no motion, default is no-preference
+		return value == "no-preference"
+	case "prefers-reduced-transparency":
+		return value == "no-preference" || value == ""
+	case "prefers-contrast":
+		return value == "no-preference" || value == ""
+
+	// Forced colors — no forced colors in desktop static renderer
+	case "forced-colors":
+		return value == "none"
+	case "inverted-colors":
+		return value == "none"
+
+	// Interaction media features — desktop defaults (fine pointer/mouse, hover capable)
+	case "pointer":
+		// Desktop has a fine pointer (mouse); coarse = touch = false; none = false
+		return value == "fine" || value == ""
+	case "any-pointer":
+		// Desktop has fine pointer; also accept "none" as secondary device
+		return value == "fine" || value == ""
+	case "hover":
+		// Desktop supports hover
+		return value == "hover" || value == ""
+	case "any-hover":
+		// Desktop supports hover
+		return value == "hover" || value == ""
+
+	// Orientation — based on viewport aspect ratio (800×600 = landscape)
+	case "orientation":
+		if viewportWidth >= viewportHeight {
+			return value == "landscape"
+		}
+		return value == "portrait"
+
+	// Display mode — we render as a standard browser
+	case "display-mode":
+		return value == "browser" || value == ""
+
+	// Scripting — we don't execute JS but claim "none" so sites don't show JS-only fallback
+	case "scripting":
+		return value == "none" || value == ""
+
+	// Color media features
+	case "color":
+		// boolean feature: true if it has color (our renderer supports color)
+		// value is empty for boolean test, or a number for min-color etc.
+		return true
+	case "color-index":
+		// We don't use an indexed color palette
+		return value == "0" || value == ""
+	case "monochrome":
+		// We are not monochrome
+		return value == "0" || value == ""
+
+	// Resolution — always match for static renderer
+	case "resolution", "min-resolution", "max-resolution":
+		return true
+
+	// Legacy device dimension features — approximate as viewport
+	case "device-width", "device-height",
+		"min-device-width", "min-device-height",
+		"max-device-width", "max-device-height":
+		return true
+
+	// color-gamut — report srgb support
+	case "color-gamut":
+		return value == "srgb" || value == ""
+
+	// dynamic-range — report standard
+	case "dynamic-range":
+		return value == "standard" || value == ""
+
+	// video-dynamic-range
+	case "video-dynamic-range":
+		return value == "standard" || value == ""
+
+	// overflow-block, overflow-inline
+	case "overflow-block":
+		return value == "scroll" || value == "optional-paged" || value == ""
+	case "overflow-inline":
+		return value == "scroll" || value == ""
+
+	// update — we render to a static image (none update)
+	case "update":
+		return value == "none" || value == ""
+
+	// grid — not a grid device (bitmap display)
+	case "grid":
+		return value == "0" || value == ""
 	}
 
-	// Parse the value to get numeric value and unit
-	value, unit := parseMediaLength(cond.Value)
+	// Parse the value to get numeric value and unit for dimension features
+	numVal, unit := parseMediaLength(cond.Value)
 
 	// For simplicity, we only support px units
 	if unit != "px" {
 		return true // Unknown units = assume match
 	}
 
-	switch cond.Feature {
+	switch feature {
 	case "min-width":
-		return viewportWidth >= value
+		return viewportWidth >= numVal
 	case "max-width":
-		return viewportWidth <= value
+		return viewportWidth <= numVal
 	case "min-height":
-		return viewportHeight >= value
+		return viewportHeight >= numVal
 	case "max-height":
-		return viewportHeight <= value
+		return viewportHeight <= numVal
+	case "width":
+		return viewportWidth == numVal
+	case "height":
+		return viewportHeight == numVal
 	default:
 		return false // Unknown feature = don't match
 	}

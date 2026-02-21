@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @media print does not match in screen renderer</title>
+  <link rel="match" href="media-print-001-ref.html" />
+  <style>
+    body { margin: 0; }
+    .box { width: 100px; height: 100px; background: green; }
+    @media print {
+      .box { background: red; }
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>

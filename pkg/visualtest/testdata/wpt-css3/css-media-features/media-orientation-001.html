@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @media (orientation: landscape)</title>
+  <link rel="match" href="media-orientation-001-ref.html" />
+  <style>
+    body { margin: 0; }
+    .box { width: 100px; height: 100px; background: blue; }
+    @media (orientation: landscape) {
+      .box { background: green; }
+    }
+    @media (orientation: portrait) {
+      .box { background: red; }
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>

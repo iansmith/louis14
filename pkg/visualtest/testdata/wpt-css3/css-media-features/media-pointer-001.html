@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @media (pointer: fine)</title>
+  <link rel="match" href="media-pointer-001-ref.html" />
+  <style>
+    body { margin: 0; }
+    .box { width: 100px; height: 100px; background: blue; }
+    @media (pointer: fine) {
+      .box { background: green; }
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>
