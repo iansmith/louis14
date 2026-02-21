@@ -1714,6 +1714,7 @@ func expandFontProperty(style *Style, value string) {
 	// Skip optional font-variant
 	if i < len(parts) && parts[i] == "small-caps" {
 		style.Set("font-variant", parts[i])
+		style.Set("font-variant-caps", parts[i])
 		i++
 	}
 	// Skip optional font-weight
@@ -2293,6 +2294,27 @@ func (s *Style) GetFontStyle() FontStyle {
 		}
 	}
 	return FontStyleNormal
+}
+
+// GetFontVariantCaps returns the font-variant-caps value.
+// Checks font-variant-caps first, then font-variant for legacy small-caps.
+func (s *Style) GetFontVariantCaps() string {
+	if v, ok := s.Get("font-variant-caps"); ok && v != "" && v != "normal" {
+		return v
+	}
+	// Legacy: font-variant shorthand with small-caps
+	if v, ok := s.Get("font-variant"); ok && v == "small-caps" {
+		return "small-caps"
+	}
+	return "normal"
+}
+
+// GetFontVariantNumeric returns the font-variant-numeric value (default: normal).
+func (s *Style) GetFontVariantNumeric() string {
+	if v, ok := s.Get("font-variant-numeric"); ok && v != "" {
+		return v
+	}
+	return "normal"
 }
 
 // IsMonospaceFamily returns true if the computed font-family is a monospace font.
