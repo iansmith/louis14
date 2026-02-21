@@ -2142,11 +2142,17 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				textAlign = "right"
 			}
 
+			// Determine text-align-last (controls last line alignment)
+			textAlignLast := containerBox.Style.GetTextAlignLast()
+
 			if textAlign != "" && textAlign != "left" {
-				le.applyTextAlignToBoxes(boxes, containerBox, textAlign, contentWidth)
+				le.applyTextAlignToBoxes(boxes, containerBox, textAlign, contentWidth, textAlignLast)
 			} else if isRTL && textAlign == "left" {
 				// RTL + text-align:left: shift mirrored boxes to left edge
-				le.applyTextAlignToBoxes(boxes, containerBox, "left", contentWidth)
+				le.applyTextAlignToBoxes(boxes, containerBox, "left", contentWidth, textAlignLast)
+			} else if textAlignLast != "auto" && textAlignLast != "left" {
+				// text-align is left (default) but text-align-last overrides the last line
+				le.applyTextAlignToBoxes(boxes, containerBox, "left", contentWidth, textAlignLast)
 			}
 		}
 	}

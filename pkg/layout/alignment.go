@@ -76,7 +76,13 @@ func (le *LayoutEngine) applyTextAlign(box *Box, textAlign string, contentWidth 
 
 // applyTextAlignToBoxes applies text-align to a slice of boxes instead of box.Children.
 // Groups boxes by line (Y position) and shifts each line as a whole.
-func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, textAlign string, contentWidth float64) {
+// textAlignLast controls alignment of the last line (CSS text-align-last); "auto" means
+// inherit from textAlign (but if textAlign is "justify", last line defaults to "left").
+func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, textAlign string, contentWidth float64, textAlignLast ...string) {
+	lastAlign := "auto"
+	if len(textAlignLast) > 0 {
+		lastAlign = textAlignLast[0]
+	}
 	contentLeft := parentBox.X + parentBox.Border.Left + parentBox.Padding.Left
 	contentRight := contentLeft + contentWidth
 
@@ -132,42 +138,71 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 		}
 	}
 
-	// For justify: find the last line (highest Y value) — it is NOT justified.
+	// Find the last line (highest Y value) — needed for text-align-last handling.
 	maxY := 0.0
-	if textAlign == "justify" {
-		for _, line := range lines {
-			if line.y > maxY {
-				maxY = line.y
-			}
+	for _, line := range lines {
+		if line.y > maxY {
+			maxY = line.y
+		}
+	}
+
+	// effectiveLastAlign resolves what alignment to use for the last line.
+	// Per CSS spec: text-align-last:auto + text-align:justify → left; else inherit text-align.
+	effectiveLastAlign := lastAlign
+	if effectiveLastAlign == "auto" {
+		if textAlign == "justify" {
+			effectiveLastAlign = "left"
+		} else {
+			effectiveLastAlign = textAlign
+		}
+	}
+
+	// applyLineDx is a helper that shifts all boxes in a line by dx.
+	applyLineDx := func(line lineGroup, dx float64) {
+		for _, child := range line.boxes {
+			child.X += dx
+			le.shiftChildren(child, dx, 0)
+		}
+	}
+
+	// computeSimpleDx returns the dx to apply for a simple (non-justify) alignment.
+	computeSimpleDx := func(line lineGroup, align string) float64 {
+		lineWidth := line.maxEnd - line.minX
+		switch align {
+		case "right", "end":
+			return contentRight - line.maxEnd
+		case "center":
+			return contentLeft + (contentWidth-lineWidth)/2 - line.minX
+		default: // "left", "start"
+			return contentLeft - line.minX
 		}
 	}
 
 	// Shift each line as a whole
 	for _, line := range lines {
-		lineWidth := line.maxEnd - line.minX
-		var dx float64
-		switch textAlign {
-		case "right", "end":
-			dx = contentRight - line.maxEnd
-		case "center":
-			dx = contentLeft + (contentWidth-lineWidth)/2 - line.minX
-		case "left", "start":
-			dx = contentLeft - line.minX
-		case "justify":
-			// Last line is left-aligned (text-align-last: auto defaults to start).
-			if line.y == maxY {
-				// Left-align: shift to content left edge if needed.
-				dx = contentLeft - line.minX
-				if dx == 0 {
+		// Determine alignment for this line: last line may use text-align-last.
+		isLastLine := line.y == maxY
+		lineAlign := textAlign
+		if isLastLine {
+			lineAlign = effectiveLastAlign
+		}
+
+		// Handle justify: distribute space between words for non-last lines,
+		// and apply last-line alignment for the last line.
+		if textAlign == "justify" {
+			if isLastLine {
+				// Apply the resolved last-line alignment (which may itself be "justify").
+				if lineAlign == "justify" {
+					// Fall through to justify logic below.
+				} else {
+					dx := computeSimpleDx(line, lineAlign)
+					if dx != 0 {
+						applyLineDx(line, dx)
+					}
 					continue
 				}
-				for _, child := range line.boxes {
-					child.X += dx
-					le.shiftChildren(child, dx, 0)
-				}
-				continue
 			}
-			// Non-last lines: distribute extra space between word boxes.
+			// Distribute extra space between word boxes (justify logic).
 			// Sort boxes by X position to find gaps between them.
 			sortedBoxes := make([]*Box, len(line.boxes))
 			copy(sortedBoxes, line.boxes)
@@ -205,12 +240,9 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 			wordBoxes := sortedBoxes[start:end]
 			if len(wordBoxes) < 2 {
 				// Only 0 or 1 word — can't distribute space; left-align.
-				dx = contentLeft - line.minX
+				dx := contentLeft - line.minX
 				if dx != 0 {
-					for _, child := range line.boxes {
-						child.X += dx
-						le.shiftChildren(child, dx, 0)
-					}
+					applyLineDx(line, dx)
 				}
 				continue
 			}
@@ -263,16 +295,17 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 				}
 			}
 			continue
-		default:
+		}
+
+		// For non-justify textAlign: use lineAlign (may differ for last line).
+		if lineAlign == "" {
 			continue
 		}
+		dx := computeSimpleDx(line, lineAlign)
 		if dx == 0 {
 			continue
 		}
-		for _, child := range line.boxes {
-			child.X += dx
-			le.shiftChildren(child, dx, 0)
-		}
+		applyLineDx(line, dx)
 	}
 }
 
