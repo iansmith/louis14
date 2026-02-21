@@ -2389,10 +2389,6 @@ afterDecoration:
 		if markFontSize < 6 {
 			markFontSize = 6
 		}
-		// Load the mark font (same family but smaller)
-		r.loadFontForFamily(fontFamily, markFontSize, bold, italic, mono, ahem)
-		markAscent := r.context.FontAscent()
-
 		r.context.SetRGBA(
 			float64(emphasisColor.R)/255.0,
 			float64(emphasisColor.G)/255.0,
@@ -2400,7 +2396,10 @@ afterDecoration:
 			emphasisColor.A,
 		)
 
-		// Draw a mark centered above/below each non-space character
+		// Draw a mark centered above/below each non-space character.
+		// We draw solid filled rectangles rather than text glyphs to avoid font
+		// fallback anti-aliasing (some mark Unicode characters like U+25CF are not
+		// in all fonts). Positions are snapped to integer pixels for accuracy.
 		drawX := textX
 		for _, ch := range textContent {
 			charStr := string(ch)
@@ -2409,22 +2408,21 @@ afterDecoration:
 			charWidth, _ := text.MeasureTextWithStyle(charStr, fontSize, bold, italic, mono, ahem)
 
 			if ch != ' ' && ch != '\t' && ch != '\n' {
-				// Measure mark width to center it over the character
-				markWidth, _ := text.MeasureTextWithStyle(emphasisMark, markFontSize, bold, italic, mono, ahem)
-				markX := drawX + charWidth/2 - markWidth/2
+				// Center mark over the character (mark is 1em × 1em square)
+				markLeft := math.Round(drawX + charWidth/2 - markFontSize/2)
 
-				var markY float64
+				var markTop float64
 				if isOver {
-					// Place mark above the text: effectiveY minus mark height with a small gap
-					markY = effectiveY - markFontSize*0.15 + markAscent
+					// Place mark above the text: snap to integer pixels
+					markTop = math.Round(effectiveY - markFontSize*0.15)
 				} else {
-					// Place mark below the text: bottom of text line plus small gap
-					markY = effectiveY + fontSize + markFontSize*0.15 + markAscent
+					// Place mark below the text: snap to integer pixels
+					markTop = math.Round(effectiveY + fontSize + markFontSize*0.15)
 				}
 
-				// Reload mark font for drawing
-				r.loadFontForFamily(fontFamily, markFontSize, bold, italic, mono, ahem)
-				r.context.DrawString(emphasisMark, markX, markY)
+				// Draw as a solid filled rectangle (pixel-accurate, no font fallback)
+				r.context.DrawRectangle(markLeft, markTop, markFontSize, markFontSize)
+				r.context.Fill()
 			}
 
 			drawX += charWidth

@@ -2519,7 +2519,9 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 					}
 					state.Items = append(state.Items, floatItem)
 
-					// Create a text item for the remaining text
+					// Create a text item for the remaining text.
+					// Use a NEW text node (not the original) so that drawText renders
+					// the remaining text ("ello") rather than the full original ("Hello").
 					if remaining != "" {
 						remFontSize := parentStyle.GetFontSize()
 						remBold := parentStyle.GetFontWeight() == css.FontWeightBold
@@ -2527,12 +2529,17 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 						remMono := parentStyle.IsMonospaceFamily()
 						remAhem := parentStyle.IsAhemFamily()
 						remWidth, remHeight := text.MeasureTextWithStyle(remaining, remFontSize, remBold, remItalic, remMono, remAhem)
+						remNode := &html.Node{
+							Type:   html.TextNode,
+							Text:   remaining,
+							Parent: node.Parent,
+						}
 						remItem := &InlineItem{
 							Type:        InlineItemText,
-							Node:        node,
+							Node:        remNode,
 							Text:        remaining,
-							StartOffset: len(firstLetter),
-							EndOffset:   len(node.Text),
+							StartOffset: 0,
+							EndOffset:   len(remaining),
 							Style:       parentStyle,
 							Width:       remWidth,
 							Height:      remHeight,
