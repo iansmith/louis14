@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: env() with fallback</title>
+  <link rel="match" href="env-fallback-001-ref.html" />
+  <style>
+    body { margin: 0; }
+    .box {
+      width: calc(200px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+      height: 100px;
+      background: lime;
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>

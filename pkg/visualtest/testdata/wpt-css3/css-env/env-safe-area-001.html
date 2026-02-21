@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: env() safe-area-inset</title>
+  <link rel="match" href="env-safe-area-001-ref.html" />
+  <style>
+    body { margin: 0; }
+    .box {
+      width: 100px;
+      height: 100px;
+      background: green;
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-right: env(safe-area-inset-right, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      padding-left: env(safe-area-inset-left, 0px);
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>
