@@ -101,11 +101,18 @@ type FontFaceRule struct {
 	Style  string // font-style value (e.g. "italic", "normal")
 }
 
+// KeyframeRule represents a single keyframe stop in a @keyframes rule.
+type KeyframeRule struct {
+	Stop         string            // "from", "to", "0%", "50%", "100%", etc.
+	Declarations map[string]string // CSS declarations at this stop
+}
+
 // Stylesheet represents a parsed CSS stylesheet
 type Stylesheet struct {
 	Rules      []Rule
 	FontFaces  []FontFaceRule
-	LayerOrder []string      // @layer declaration order (first declared = lowest priority)
+	LayerOrder []string                 // @layer declaration order (first declared = lowest priority)
+	Keyframes  map[string][]KeyframeRule // animation name → keyframe stops
 }
 
 // stripCSSComments removes all /* ... */ comments from CSS source,
@@ -203,6 +210,15 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 					}
 				}
 				stylesheet.Rules = append(stylesheet.Rules, layerRules...)
+			} else if strings.HasPrefix(trimmed, "@keyframes") || strings.HasPrefix(trimmed, "@-webkit-keyframes") {
+				// Parse and store keyframes; static renderer uses initial state only
+				name, frames := parseKeyframesRule(ruleStr)
+				if name != "" {
+					if stylesheet.Keyframes == nil {
+						stylesheet.Keyframes = make(map[string][]KeyframeRule)
+					}
+					stylesheet.Keyframes[name] = frames
+				}
 			}
 			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
 			continue
@@ -1646,6 +1662,61 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 		return nil
 	}
 	return ff
+}
+
+// parseKeyframesRule parses a @keyframes or @-webkit-keyframes rule.
+// Returns the animation name and a slice of KeyframeRule stops.
+func parseKeyframesRule(ruleStr string) (string, []KeyframeRule) {
+	rest := strings.TrimSpace(ruleStr)
+	// Strip the at-rule prefix (@keyframes or @-webkit-keyframes)
+	for _, prefix := range []string{"@-webkit-keyframes", "@keyframes"} {
+		if strings.HasPrefix(rest, prefix) {
+			rest = strings.TrimSpace(rest[len(prefix):])
+			break
+		}
+	}
+
+	// Find the opening brace — name is everything before it
+	bracePos := strings.Index(rest, "{")
+	if bracePos < 0 {
+		return "", nil
+	}
+	name := strings.TrimSpace(rest[:bracePos])
+	if name == "" {
+		return "", nil
+	}
+
+	// Extract the inner block (between outermost { and last })
+	innerEnd := strings.LastIndex(rest, "}")
+	if innerEnd <= bracePos {
+		return "", nil
+	}
+	inner := rest[bracePos+1 : innerEnd]
+
+	// Parse each keyframe stop: "from { ... }", "to { ... }", "50% { ... }"
+	var frames []KeyframeRule
+	for _, part := range splitRules(inner) {
+		part = strings.TrimSpace(part)
+		if !strings.Contains(part, "{") {
+			continue
+		}
+		bp := strings.Index(part, "{")
+		stop := strings.TrimSpace(part[:bp])
+		if stop == "" {
+			continue
+		}
+		declEnd := strings.LastIndex(part, "}")
+		if declEnd <= bp {
+			continue
+		}
+		declStr := part[bp+1 : declEnd]
+		decls := parseDeclarations(declStr)
+		frames = append(frames, KeyframeRule{
+			Stop:         stop,
+			Declarations: decls.Declarations,
+		})
+	}
+	return name, frames
 }
 
 // parseFontFaceSrc extracts the URL and format from a src value like:

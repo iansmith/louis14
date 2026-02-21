@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<title>CSS transition: parsing does not break layout</title>
+<link rel="match" href="transition-parse-001-ref.html">
+<style>
+.box {
+  width: 100px; height: 100px;
+  background: lime;
+  transition: background 0.3s ease, width 0.5s;
+}
+</style>
+<div class="box"></div>
