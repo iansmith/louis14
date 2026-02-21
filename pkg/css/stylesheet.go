@@ -107,12 +107,30 @@ type KeyframeRule struct {
 	Declarations map[string]string // CSS declarations at this stop
 }
 
+// CounterStyleRule represents a parsed @counter-style rule.
+type CounterStyleRule struct {
+	Name            string           // Counter style name
+	System          string           // cyclic, numeric, alphabetic, symbolic, additive, fixed
+	Symbols         []string         // Symbols list (for cyclic, symbolic, alphabetic, fixed)
+	AdditiveSymbols []AdditiveSymbol // Additive symbols (for additive system)
+	Suffix          string           // Suffix appended after counter (default ". ")
+	Prefix          string           // Prefix prepended before counter
+	Fallback        string           // Fallback counter style name
+}
+
+// AdditiveSymbol represents a single additive-symbols entry (value + symbol).
+type AdditiveSymbol struct {
+	Value  int
+	Symbol string
+}
+
 // Stylesheet represents a parsed CSS stylesheet
 type Stylesheet struct {
-	Rules      []Rule
-	FontFaces  []FontFaceRule
-	LayerOrder []string                 // @layer declaration order (first declared = lowest priority)
-	Keyframes  map[string][]KeyframeRule // animation name → keyframe stops
+	Rules         []Rule
+	FontFaces     []FontFaceRule
+	LayerOrder    []string                  // @layer declaration order (first declared = lowest priority)
+	Keyframes     map[string][]KeyframeRule // animation name → keyframe stops
+	CounterStyles []CounterStyleRule        // @counter-style rules
 }
 
 // stripCSSComments removes all /* ... */ comments from CSS source,
@@ -387,6 +405,11 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 						stylesheet.Keyframes = make(map[string][]KeyframeRule)
 					}
 					stylesheet.Keyframes[name] = frames
+				}
+			} else if strings.HasPrefix(trimmed, "@counter-style") {
+				cs := parseCounterStyleRule(ruleStr)
+				if cs.Name != "" {
+					stylesheet.CounterStyles = append(stylesheet.CounterStyles, cs)
 				}
 			}
 			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
@@ -2053,6 +2076,187 @@ func parseKeyframesRule(ruleStr string) (string, []KeyframeRule) {
 		})
 	}
 	return name, frames
+}
+
+// parseCounterStyleRule parses a @counter-style rule and returns a CounterStyleRule.
+func parseCounterStyleRule(ruleStr string) CounterStyleRule {
+	ruleStr = strings.TrimSpace(ruleStr)
+
+	// Extract the name: everything between "@counter-style" and "{"
+	bracePos := strings.Index(ruleStr, "{")
+	if bracePos < 0 {
+		return CounterStyleRule{}
+	}
+	nameStr := strings.TrimSpace(ruleStr[len("@counter-style"):bracePos])
+
+	// Extract the block body (between { and last })
+	innerEnd := strings.LastIndex(ruleStr, "}")
+	if innerEnd <= bracePos {
+		return CounterStyleRule{}
+	}
+	body := ruleStr[bracePos+1 : innerEnd]
+
+	rule := CounterStyleRule{
+		Name:    nameStr,
+		System:  "symbolic",
+		Suffix:  ". ",
+		Prefix:  "",
+		Symbols: nil,
+	}
+
+	// Parse declarations inside the block
+	for _, line := range strings.Split(body, ";") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		colonPos := strings.Index(line, ":")
+		if colonPos < 0 {
+			continue
+		}
+		prop := strings.ToLower(strings.TrimSpace(line[:colonPos]))
+		val := strings.TrimSpace(line[colonPos+1:])
+		switch prop {
+		case "system":
+			rule.System = strings.TrimSpace(val)
+		case "symbols":
+			rule.Symbols = parseCounterSymbolList(val)
+		case "additive-symbols":
+			rule.AdditiveSymbols = parseAdditiveSymbols(val)
+		case "suffix":
+			rule.Suffix = unquoteCounterString(val)
+		case "prefix":
+			rule.Prefix = unquoteCounterString(val)
+		case "fallback":
+			rule.Fallback = strings.TrimSpace(val)
+		}
+	}
+
+	return rule
+}
+
+// parseCounterSymbolList parses a CSS symbols list (space-separated quoted strings or identifiers).
+func parseCounterSymbolList(val string) []string {
+	var symbols []string
+	val = strings.TrimSpace(val)
+	for len(val) > 0 {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			break
+		}
+		if val[0] == '"' || val[0] == '\'' {
+			// Quoted string
+			q := val[0]
+			i := 1
+			var sb strings.Builder
+			for i < len(val) {
+				if val[i] == '\\' && i+1 < len(val) {
+					i++
+					// Could be a hex escape like \1F44D
+					hexStart := i
+					for i < len(val) && i-hexStart < 6 && isHexDigit(val[i]) {
+						i++
+					}
+					if i > hexStart {
+						hexStr := val[hexStart:i]
+						if codePoint, err := strconv.ParseInt(hexStr, 16, 32); err == nil && codePoint > 0 {
+							sb.WriteRune(rune(codePoint))
+						}
+						// Consume optional trailing whitespace after hex escape
+						if i < len(val) && (val[i] == ' ' || val[i] == '\t') {
+							i++
+						}
+					} else {
+						// Single char escape
+						sb.WriteByte(val[i])
+						i++
+					}
+					continue
+				}
+				if val[i] == byte(q) {
+					i++ // skip closing quote
+					break
+				}
+				sb.WriteByte(val[i])
+				i++
+			}
+			symbols = append(symbols, sb.String())
+			val = val[i:]
+		} else {
+			// Identifier (e.g., "a", "b", or "A", "B")
+			end := strings.IndexAny(val, " \t\n\r")
+			if end < 0 {
+				end = len(val)
+			}
+			sym := val[:end]
+			if sym != "" {
+				symbols = append(symbols, sym)
+			}
+			val = val[end:]
+		}
+	}
+	return symbols
+}
+
+// parseAdditiveSymbols parses additive-symbols like "100 C, 50 L, 10 X, 5 V, 1 I"
+func parseAdditiveSymbols(val string) []AdditiveSymbol {
+	var result []AdditiveSymbol
+	entries := strings.Split(val, ",")
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		// Format: "<integer> <symbol>"
+		parts := strings.SplitN(entry, " ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			continue
+		}
+		sym := unquoteCounterString(strings.TrimSpace(parts[1]))
+		result = append(result, AdditiveSymbol{Value: n, Symbol: sym})
+	}
+	return result
+}
+
+// unquoteCounterString strips surrounding quotes from a CSS string value.
+func unquoteCounterString(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
+		inner := s[1 : len(s)-1]
+		// Process escape sequences
+		var sb strings.Builder
+		i := 0
+		for i < len(inner) {
+			if inner[i] == '\\' && i+1 < len(inner) {
+				i++
+				hexStart := i
+				for i < len(inner) && i-hexStart < 6 && isHexDigit(inner[i]) {
+					i++
+				}
+				if i > hexStart {
+					hexStr := inner[hexStart:i]
+					if codePoint, err := strconv.ParseInt(hexStr, 16, 32); err == nil && codePoint > 0 {
+						sb.WriteRune(rune(codePoint))
+					}
+					if i < len(inner) && (inner[i] == ' ' || inner[i] == '\t') {
+						i++
+					}
+				} else {
+					sb.WriteByte(inner[i])
+					i++
+				}
+				continue
+			}
+			sb.WriteByte(inner[i])
+			i++
+		}
+		return sb.String()
+	}
+	return s
 }
 
 // parseFontFaceSrc extracts the URL and format from a src value like:

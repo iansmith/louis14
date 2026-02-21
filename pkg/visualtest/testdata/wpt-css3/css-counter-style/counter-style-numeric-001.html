@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @counter-style numeric system (decimal equivalent)</title>
+  <link rel="match" href="counter-style-numeric-001-ref.html">
+  <style>
+    body { margin: 0; padding: 10px; font-size: 16px; font-family: Ahem; }
+    @counter-style decimal-custom {
+      system: numeric;
+      symbols: "0" "1" "2" "3" "4" "5" "6" "7" "8" "9";
+      suffix: ".";
+    }
+    ol { list-style-type: decimal-custom; padding-left: 2em; margin: 0; }
+    li { margin: 0; }
+  </style>
+</head>
+<body>
+  <ol>
+    <li>First item</li>
+    <li>Second item</li>
+    <li>Third item</li>
+  </ol>
+</body>
+</html>
