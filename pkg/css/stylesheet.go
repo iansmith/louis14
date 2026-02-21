@@ -65,6 +65,7 @@ type Rule struct {
 	Important      map[string]bool   // tracks which properties are !important
 	MediaQuery     *MediaQuery       // Phase 22: Optional media query wrapper
 	ContainerQuery *ContainerQuery   // Optional @container query wrapper
+	LayerName      string            // @layer name (empty = unlayered)
 }
 
 // Phase 22: MediaQuery represents a @media rule condition
@@ -102,8 +103,9 @@ type FontFaceRule struct {
 
 // Stylesheet represents a parsed CSS stylesheet
 type Stylesheet struct {
-	Rules     []Rule
-	FontFaces []FontFaceRule
+	Rules      []Rule
+	FontFaces  []FontFaceRule
+	LayerOrder []string      // @layer declaration order (first declared = lowest priority)
 }
 
 // stripCSSComments removes all /* ... */ comments from CSS source,
@@ -186,6 +188,21 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 			} else if strings.HasPrefix(trimmed, "@container") {
 				containerRules := parseContainerRule(ruleStr)
 				stylesheet.Rules = append(stylesheet.Rules, containerRules...)
+			} else if strings.HasPrefix(trimmed, "@layer") {
+				layerRules, layerNames := parseLayerRule(ruleStr, stylesheet.LayerOrder)
+				for _, name := range layerNames {
+					found := false
+					for _, existing := range stylesheet.LayerOrder {
+						if existing == name {
+							found = true
+							break
+						}
+					}
+					if !found {
+						stylesheet.LayerOrder = append(stylesheet.LayerOrder, name)
+					}
+				}
+				stylesheet.Rules = append(stylesheet.Rules, layerRules...)
 			}
 			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
 			continue
@@ -266,7 +283,11 @@ func splitRules(css string) []string {
 				break
 			}
 			if !isAfterCloseBrace {
-				// At-rule terminator — skip the semicolon
+				// At-rule terminator — emit rule text if it's an @layer statement
+				ruleText := strings.TrimSpace(css[start : i+1])
+				if strings.HasPrefix(ruleText, "@layer") {
+					rules = append(rules, ruleText)
+				}
 				start = i + 1
 			}
 			// If after '}', leave the ';' in the next rule's text
@@ -508,6 +529,93 @@ func parseContainerRule(ruleStr string) []Rule {
 	}
 
 	return rules
+}
+
+// parseLayerRule parses an @layer rule. Two forms:
+//   - Statement form: "@layer reset, base;" — declares layer order, no rules
+//   - Block form: "@layer base { selector { ... } }" — rules belonging to a layer
+//
+// Returns (rules, layerNames) where layerNames are declared/used layer names.
+// existingLayerOrder is used to assign LayerName to rules when a block form is used.
+func parseLayerRule(ruleStr string, existingLayerOrder []string) ([]Rule, []string) {
+	trimmed := strings.TrimSpace(ruleStr)
+	rules := make([]Rule, 0)
+	layerNames := make([]string, 0)
+
+	// Remove "@layer" prefix
+	rest := strings.TrimPrefix(trimmed, "@layer")
+	rest = strings.TrimSpace(rest)
+
+	// Statement form: ends with ";" (no block)
+	// e.g. "@layer reset, base;" or "@layer utilities;"
+	if strings.HasSuffix(rest, ";") {
+		// Remove trailing semicolon
+		nameList := strings.TrimSuffix(rest, ";")
+		nameList = strings.TrimSpace(nameList)
+		// Parse comma-separated names
+		for _, name := range strings.Split(nameList, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				layerNames = append(layerNames, name)
+			}
+		}
+		// Statement form has no CSS rules; just returns layer names for ordering
+		return rules, layerNames
+	}
+
+	// Block form: "@layer name { ... }" or "@layer { ... }" (anonymous)
+	bracePos := strings.Index(rest, "{")
+	if bracePos == -1 {
+		return rules, layerNames
+	}
+
+	// Extract layer name (may be empty for anonymous layer)
+	layerName := strings.TrimSpace(rest[:bracePos])
+
+	// Extract inner CSS (between outermost { and last })
+	innerStart := strings.Index(ruleStr, "{") + 1
+	innerEnd := strings.LastIndex(ruleStr, "}")
+	if innerEnd == -1 || innerEnd <= innerStart {
+		return rules, layerNames
+	}
+
+	innerCSS := ruleStr[innerStart:innerEnd]
+
+	// Parse inner rules
+	innerRules := splitRules(innerCSS)
+	for _, innerRuleStr := range innerRules {
+		innerTrimmed := strings.TrimSpace(innerRuleStr)
+		// Handle nested @media inside @layer
+		if strings.HasPrefix(innerTrimmed, "@media") {
+			mediaRules := parseMediaRule(innerRuleStr)
+			for i := range mediaRules {
+				mediaRules[i].LayerName = layerName
+			}
+			rules = append(rules, mediaRules...)
+		} else if strings.HasPrefix(innerTrimmed, "@supports") {
+			supportsRules := parseSupportsRule(innerRuleStr)
+			for i := range supportsRules {
+				supportsRules[i].LayerName = layerName
+			}
+			rules = append(rules, supportsRules...)
+		} else {
+			parsed, err := parseRules(innerRuleStr)
+			if err != nil {
+				continue
+			}
+			for i := range parsed {
+				parsed[i].LayerName = layerName
+			}
+			rules = append(rules, parsed...)
+		}
+	}
+
+	// Record this layer name
+	if layerName != "" {
+		layerNames = append(layerNames, layerName)
+	}
+
+	return rules, layerNames
 }
 
 // parseContainerQuery parses a container query string like "@container sidebar (min-width: 200px)"
