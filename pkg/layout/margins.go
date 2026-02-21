@@ -148,6 +148,10 @@ func parentCanCollapseTopMargin(parent *Box) bool {
 		if display == css.DisplayInlineBlock || display == css.DisplayFlex || display == css.DisplayInlineFlex {
 			return false
 		}
+		// display: flow-root creates a BFC — parent-child margin collapsing is blocked
+		if display == css.DisplayFlowRoot {
+			return false
+		}
 		floatType := parent.Style.GetFloat()
 		if floatType != css.FloatNone {
 			return false
@@ -169,6 +173,10 @@ func parentCanCollapseBottomMargin(parent *Box) bool {
 		}
 		display := parent.Style.GetDisplay()
 		if display == css.DisplayInlineBlock || display == css.DisplayFlex || display == css.DisplayInlineFlex {
+			return false
+		}
+		// display: flow-root creates a BFC — parent-child margin collapsing is blocked
+		if display == css.DisplayFlowRoot {
 			return false
 		}
 		floatType := parent.Style.GetFloat()

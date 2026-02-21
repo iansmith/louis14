@@ -30,7 +30,7 @@ func (le *LayoutEngine) ComputeMinMaxSizes(
 	case css.DisplayInline:
 		return le.computeInlineMinMax(node, constraint, style)
 
-	case css.DisplayBlock, css.DisplayListItem:
+	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem:
 		return le.computeBlockMinMax(node, constraint, style)
 
 	case css.DisplayInlineBlock:
@@ -113,7 +113,7 @@ func (le *LayoutEngine) computeInlineMinMax(
 		childStyle := computedStyles[child]
 		if childStyle != nil {
 			childDisplay := childStyle.GetDisplay()
-			if childDisplay == css.DisplayBlock || childDisplay == css.DisplayListItem {
+			if childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot || childDisplay == css.DisplayListItem {
 				hasBlockChild = true
 				break
 			}
@@ -420,7 +420,7 @@ func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.S
 		childSizes := le.ComputeIntrinsicSizes(child, childStyle, computedStyles)
 		childDisplay := childStyle.GetDisplay()
 
-		if childDisplay == css.DisplayBlock || childDisplay == css.DisplayListItem {
+		if childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot || childDisplay == css.DisplayListItem {
 			// Block child: flush inline run, then take max of block widths
 			if inlineMaxContent > maxContent {
 				maxContent = inlineMaxContent

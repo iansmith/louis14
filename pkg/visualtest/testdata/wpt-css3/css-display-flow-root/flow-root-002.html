@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<title>display: flow-root prevents margin collapsing</title>
+<link rel="match" href="flow-root-002-ref.html">
+<style>
+body { margin: 0; padding: 0; }
+.outer { background: lime; width: 200px; display: flow-root; }
+.inner { margin-top: 20px; height: 50px; background: blue; }
+</style>
+<div class="outer"><div class="inner"></div></div>

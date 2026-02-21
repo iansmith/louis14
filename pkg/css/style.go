@@ -2747,6 +2747,7 @@ const (
 	DisplayInlineGrid      DisplayType = "inline-grid"
 	DisplayContents        DisplayType = "contents"
 	DisplayTableCaption    DisplayType = "table-caption"
+	DisplayFlowRoot        DisplayType = "flow-root"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0).
@@ -2811,6 +2812,8 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayContents
 		case "table-caption":
 			return DisplayTableCaption
+		case "flow-root":
+			return DisplayFlowRoot
 		case "-webkit-box", "-webkit-inline-box":
 			return DisplayBlock
 		}
@@ -2834,6 +2837,15 @@ func (s *Style) GetBoxOrient() string {
 		return strings.TrimSpace(val)
 	}
 	return ""
+}
+
+// GetContain returns the contain property value (default: "none").
+// Values include: none, layout, paint, size, style, content, strict.
+func (s *Style) GetContain() string {
+	if v, ok := s.Get("contain"); ok {
+		return strings.TrimSpace(v)
+	}
+	return "none"
 }
 
 // VerticalAlign represents the vertical-align property value

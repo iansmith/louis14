@@ -23,6 +23,7 @@ func (le *LayoutEngine) layoutTextNode(node *html.Node, x, y, availableWidth flo
 		// Only apply trimming for block-level containers (block, table-cell, etc.)
 		// Do NOT trim for inline or inline-block parents - they flow horizontally
 		isBlockContainer := parentDisplay == css.DisplayBlock ||
+			parentDisplay == css.DisplayFlowRoot ||
 			parentDisplay == css.DisplayTableCell ||
 			parentDisplay == css.DisplayListItem
 

@@ -683,7 +683,7 @@ func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize fl
 			beforeStyle := css.ComputePseudoElementStyle(node, "before", le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
 			if beforeStyle != nil {
 				switch beforeStyle.GetDisplay() {
-				case css.DisplayBlock, css.DisplayFlex, css.DisplayGrid,
+				case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayFlex, css.DisplayGrid,
 					css.DisplayTable, css.DisplayListItem:
 					beforeIsBlock = true
 				}
@@ -693,7 +693,7 @@ func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize fl
 			afterStyle := css.ComputePseudoElementStyle(node, "after", le.stylesheets, le.viewport.width, le.viewport.height, parentStyle)
 			if afterStyle != nil {
 				switch afterStyle.GetDisplay() {
-				case css.DisplayBlock, css.DisplayFlex, css.DisplayGrid,
+				case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayFlex, css.DisplayGrid,
 					css.DisplayTable, css.DisplayListItem:
 					afterIsBlock = true
 				}
@@ -725,7 +725,7 @@ func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize fl
 			if computedStyles != nil {
 				if childStyle := computedStyles[child]; childStyle != nil {
 					switch childStyle.GetDisplay() {
-					case css.DisplayBlock, css.DisplayFlex, css.DisplayGrid,
+					case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayFlex, css.DisplayGrid,
 						css.DisplayTable, css.DisplayListItem:
 						isBlock = true
 					}
