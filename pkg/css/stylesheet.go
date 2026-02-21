@@ -160,6 +160,172 @@ func stripCSSComments(css string) string {
 	return b.String()
 }
 
+// expandNesting recursively expands CSS native nesting into flat rules.
+// parentSelector is the selector of the enclosing rule ("" for top-level).
+func expandNesting(css string, parentSelector string) string {
+	var result strings.Builder
+	parts := splitRules(css)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		bracePos := strings.Index(part, "{")
+		if bracePos < 0 {
+			// No block — pass through (e.g., @layer statement)
+			result.WriteString(part)
+			result.WriteByte('\n')
+			continue
+		}
+
+		sel := strings.TrimSpace(part[:bracePos])
+		closePos := strings.LastIndex(part, "}")
+		if closePos < 0 {
+			continue
+		}
+		body := part[bracePos+1 : closePos]
+
+		// Handle at-rules nested inside a selector block (e.g., @media, @supports, @container)
+		selLower := strings.ToLower(sel)
+		if strings.HasPrefix(selLower, "@media") || strings.HasPrefix(selLower, "@supports") ||
+			strings.HasPrefix(selLower, "@container") {
+			if parentSelector != "" {
+				// Nested @media inside a selector: lift and wrap parent selector inside
+				// @media (cond) { parentSel { decls } }
+				flatDecls, nestedParts := separateDeclsAndNested(body)
+				var innerBlock strings.Builder
+				if strings.TrimSpace(flatDecls) != "" {
+					innerBlock.WriteString(parentSelector)
+					innerBlock.WriteString(" { ")
+					innerBlock.WriteString(flatDecls)
+					innerBlock.WriteString(" }\n")
+				}
+				// Recurse for any nested rules inside the @media body
+				innerBlock.WriteString(expandNesting(nestedParts, parentSelector))
+				result.WriteString(sel)
+				result.WriteString(" { ")
+				result.WriteString(innerBlock.String())
+				result.WriteString("}\n")
+			} else {
+				// Top-level at-rule — pass through unchanged
+				result.WriteString(part)
+				result.WriteByte('\n')
+			}
+			continue
+		}
+
+		// Skip other at-rules (@keyframes, @font-face, @layer, etc.) — pass through
+		if strings.HasPrefix(selLower, "@") {
+			result.WriteString(part)
+			result.WriteByte('\n')
+			continue
+		}
+
+		// Regular selector block
+		flatDecls, nestedParts := separateDeclsAndNested(body)
+
+		if parentSelector != "" {
+			// This is a NESTED rule inside a parent rule
+			resolvedSel := resolveNestedSelector(parentSelector, sel)
+			// Emit flat rule with this selector's declarations
+			if strings.TrimSpace(flatDecls) != "" {
+				result.WriteString(resolvedSel)
+				result.WriteString(" { ")
+				result.WriteString(flatDecls)
+				result.WriteString(" }\n")
+			}
+			// Recursively expand nested rules inside this nested rule
+			if strings.TrimSpace(nestedParts) != "" {
+				result.WriteString(expandNesting(nestedParts, resolvedSel))
+			}
+		} else {
+			// Top-level rule — separate flat declarations from nested rules
+			if strings.TrimSpace(flatDecls) != "" {
+				result.WriteString(sel)
+				result.WriteString(" { ")
+				result.WriteString(flatDecls)
+				result.WriteString(" }\n")
+			}
+			// Expand any nested rules inside, passing sel as parent
+			if strings.TrimSpace(nestedParts) != "" {
+				result.WriteString(expandNesting(nestedParts, sel))
+			}
+		}
+	}
+	return result.String()
+}
+
+// resolveNestedSelector resolves a nested selector relative to the parent.
+// If the nested selector contains '&', substitute it with the parent.
+// Otherwise, implicitly prepend the parent with a descendant combinator.
+func resolveNestedSelector(parent, nested string) string {
+	if strings.Contains(nested, "&") {
+		return strings.ReplaceAll(nested, "&", parent)
+	}
+	// Implicit: ".child" inside ".parent" becomes ".parent .child"
+	return parent + " " + nested
+}
+
+// separateDeclsAndNested splits a CSS rule body into:
+// - flatDecls: property declarations (no nested blocks)
+// - nestedParts: string containing all nested rule blocks (selector { ... } or @media { ... })
+func separateDeclsAndNested(body string) (flatDecls, nestedParts string) {
+	var decls strings.Builder
+	var nested strings.Builder
+
+	depth := 0
+	start := 0
+	nestedBlockStart := -1 // tracks start of a nested block (selector position)
+	inString := false
+	var stringChar byte
+
+	for i := 0; i < len(body); i++ {
+		ch := body[i]
+		if inString {
+			if ch == stringChar && (i == 0 || body[i-1] != '\\') {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = true
+			stringChar = ch
+			continue
+		}
+		switch ch {
+		case '{':
+			if depth == 0 {
+				// Record where this nested block starts (from the last start)
+				nestedBlockStart = start
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && nestedBlockStart >= 0 {
+				// Write the entire nested block (selector + body + closing brace) to nested
+				nested.WriteString(strings.TrimSpace(body[nestedBlockStart : i+1]))
+				nested.WriteByte('\n')
+				start = i + 1
+				nestedBlockStart = -1
+			}
+		case ';':
+			if depth == 0 {
+				// This is a flat declaration
+				decls.WriteString(body[start : i+1])
+				start = i + 1
+			}
+		}
+	}
+	// Remaining content (unterminated declaration without semicolon)
+	if remaining := strings.TrimSpace(body[start:]); remaining != "" && depth == 0 {
+		decls.WriteString(remaining)
+	}
+
+	return decls.String(), nested.String()
+}
+
 // ParseStylesheet parses CSS stylesheet content into rules
 func ParseStylesheet(css string) (*Stylesheet, error) {
 	stylesheet := &Stylesheet{
@@ -168,6 +334,9 @@ func ParseStylesheet(css string) (*Stylesheet, error) {
 
 	// Strip comments before parsing
 	css = stripCSSComments(css)
+
+	// Expand CSS native nesting into flat rules before parsing
+	css = expandNesting(css, "")
 
 	// Simple parser: split by } to get rules
 	css = strings.TrimSpace(css)

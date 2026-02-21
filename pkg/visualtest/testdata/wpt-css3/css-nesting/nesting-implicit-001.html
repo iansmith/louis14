@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: implicit nesting</title>
+  <link rel="match" href="nesting-implicit-001-ref.html" />
+  <style>
+    body { margin: 0; }
+    .parent {
+      width: 200px;
+      height: 100px;
+      background: blue;
+      .child {
+        width: 100px;
+        height: 100px;
+        background: green;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="parent">
+    <div class="child"></div>
+  </div>
+</body>
+</html>
