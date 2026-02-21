@@ -13,6 +13,130 @@ Features are independent and do not depend on each other.
 
 ---
 
+## Quick Agent Dispatch
+
+Run each feature in its own terminal. Each agent gets a single self-contained prompt.
+The prompts are numbered 1–10 to match the feature sections below.
+
+### How to run — two options:
+
+#### Option A: Separate terminal windows (interactive, recommended for monitoring)
+
+Open 10 terminals (or tmux panes) and run one command per window.
+Each command: `claude --dangerously-skip-permissions -c <worktree-dir>`
+then type/paste the prompt inside the interactive session.
+
+First, create the worktrees:
+```bash
+cd /Users/iansmith/louis14
+for i in $(seq 1 10); do
+  git worktree add .worktrees/feature-$i -b feature-$i-impl 2>/dev/null || true
+done
+```
+
+Then in each terminal window N (replace N with 1–10):
+```bash
+claude --dangerously-skip-permissions -c /Users/iansmith/louis14/.worktrees/feature-N
+```
+When Claude starts, paste the per-feature prompt from the table below.
+
+#### Option B: Fully automated background script (all 10 at once)
+
+```bash
+#!/bin/bash
+# save as: /Users/iansmith/louis14/run-swarm.sh
+set -e
+cd /Users/iansmith/louis14
+
+FEATURES=(
+  ""  # placeholder so index starts at 1
+  "Feature 1: @layer (CSS Cascade Layers)"
+  "Feature 2: CSS Native Nesting"
+  "Feature 3: color-mix() + oklch/lch/hwb"
+  "Feature 4: repeat() in CSS Grid Tracks including auto-fill and auto-fit"
+  "Feature 5: @keyframes + animation + transition parsing"
+  "Feature 6: font-variant-numeric and font-variant-caps"
+  "Feature 7: Complete CSS Logical Properties"
+  "Feature 8: display: flow-root and contain property basics"
+  "Feature 9: text-wrap: balance and text-wrap: pretty"
+  "Feature 10: gap in Flexbox verification and fix"
+)
+
+# Create worktrees
+for i in $(seq 1 10); do
+  git worktree add .worktrees/feature-$i -b feature-$i-impl 2>/dev/null || true
+done
+
+mkdir -p /tmp/swarm-logs
+
+# Launch each agent in background, redirecting output to log files
+for i in $(seq 1 10); do
+  PROMPT="You are implementing ${FEATURES[$i]} in /Users/iansmith/louis14.
+Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement ONLY that feature.
+Follow the implementation steps in the plan exactly. Create the WPT test files described.
+Run tests: /opt/homebrew/Cellar/go/1.25.5/libexec/bin/go test ./pkg/visualtest/ -run TestWPTCSS3Reftests -count=1 2>&1 | tail -5
+MaxDifferentPercent must be 0.1, no FuzzyRadius. Do not implement other features."
+
+  claude --dangerously-skip-permissions \
+         -c "/Users/iansmith/louis14/.worktrees/feature-$i" \
+         -p "$PROMPT" \
+         > /tmp/swarm-logs/feature-$i.log 2>&1 &
+  echo "Launched agent $i (pid $!)"
+done
+
+echo "All 10 agents launched. Monitor with:"
+echo "  tail -f /tmp/swarm-logs/feature-*.log"
+echo "  # or watch one:  tail -f /tmp/swarm-logs/feature-7.log"
+wait
+echo "All agents finished."
+```
+
+Run it:
+```bash
+chmod +x /Users/iansmith/louis14/run-swarm.sh
+/Users/iansmith/louis14/run-swarm.sh
+```
+
+**Important**: `-p` (print/non-interactive) + output redirect (`> file 2>&1`) prevents the
+`suspended (tty output)` error that occurs when background processes try to write to the terminal.
+
+#### After all agents finish — merge worktrees:
+```bash
+cd /Users/iansmith/louis14
+for i in $(seq 1 10); do
+  git merge feature-$i-impl --no-edit || echo "Merge conflict on feature $i — resolve manually"
+done
+# Clean up worktrees
+for i in $(seq 1 10); do
+  git worktree remove .worktrees/feature-$i --force
+done
+```
+
+### Per-feature prompts (for Option A interactive use):
+
+| Terminal | Feature | Paste this prompt |
+|----------|---------|------------------|
+| 1 | @layer cascade layers | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 1 (@layer). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 2 | CSS native nesting | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 2 (CSS Native Nesting). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 3 | color-mix/oklch/lch/hwb | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 3 (color-mix, oklch, lch, hwb). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 4 | Grid repeat/auto-fill | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 4 (repeat() in CSS Grid). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 5 | @keyframes/animation | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 5 (@keyframes, animation, transition). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 6 | font-variant | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 6 (font-variant-numeric, font-variant-caps). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 7 | Logical properties | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 7 (Complete CSS Logical Properties). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 8 | display: flow-root | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 8 (display: flow-root and contain). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 9 | text-wrap: balance | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 9 (text-wrap: balance, pretty). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+| 10 | gap in flexbox | `Read /Users/iansmith/louis14/PLAN-real-web-features.md and implement only Feature 10 (gap in Flexbox). Follow the plan steps, create the WPT tests, run the full CSS3 test suite and confirm no regressions. MaxDifferentPercent=0.1, no FuzzyRadius.` |
+
+### Key rules for ALL agents:
+- **MaxDifferentPercent = 0.1** (never 0.3, never higher). No FuzzyRadius.
+- **Do not implement other features** — only your assigned feature number.
+- **Go binary**: `/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go`
+- **Each agent works in its own worktree** — no git conflicts between agents.
+
+---
+
+---
+
 ## Feature 1: `@layer` — CSS Cascade Layers
 
 ### Why critical
