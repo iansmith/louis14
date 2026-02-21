@@ -92,6 +92,20 @@ func (le *LayoutEngine) layoutGridContainer(
 	// Get grid properties
 	columnTracks := style.GetGridTemplateColumns()
 	rowTracks := style.GetGridTemplateRows()
+
+	// Handle subgrid: when grid-template-columns/rows is "subgrid", the child grid
+	// inherits its tracks from the parent. As a simplified fallback, we treat it as
+	// a single auto-sized track (fills available width), which prevents crashes and
+	// produces reasonable layout when the parent tracks aren't directly accessible.
+	if style.GetGridTemplateColumnsIsSubgrid() {
+		// Replace the subgrid sentinel with a single auto track
+		// This is the simplified approach: treat as auto-sized
+		columnTracks = []css.GridTrack{{Auto: true}}
+	}
+	if style.GetGridTemplateRowsIsSubgrid() {
+		rowTracks = []css.GridTrack{{Auto: true}}
+	}
+
 	rowGap, columnGap := style.GetGridGap()
 	justifyItems := style.GetJustifyItems()
 	alignItems := style.GetAlignItems()

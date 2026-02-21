@@ -3644,6 +3644,7 @@ type GridTrack struct {
 	AutoFill     bool        // true if this is a repeat(auto-fill, ...) sentinel
 	AutoFit      bool        // true if this is a repeat(auto-fit, ...) sentinel
 	AutoTemplate []GridTrack // template tracks for auto-fill/auto-fit
+	IsSubgrid    bool        // true if this represents a "subgrid" keyword
 }
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
@@ -3660,6 +3661,22 @@ func (s *Style) GetGridTemplateRows() []GridTrack {
 		return parseGridTracks(val)
 	}
 	return nil
+}
+
+// GetGridTemplateColumnsIsSubgrid returns true if grid-template-columns is "subgrid".
+func (s *Style) GetGridTemplateColumnsIsSubgrid() bool {
+	if val, ok := s.Get("grid-template-columns"); ok {
+		return strings.TrimSpace(strings.ToLower(val)) == "subgrid"
+	}
+	return false
+}
+
+// GetGridTemplateRowsIsSubgrid returns true if grid-template-rows is "subgrid".
+func (s *Style) GetGridTemplateRowsIsSubgrid() bool {
+	if val, ok := s.Get("grid-template-rows"); ok {
+		return strings.TrimSpace(strings.ToLower(val)) == "subgrid"
+	}
+	return false
 }
 
 // GetGridAutoFlow returns the grid-auto-flow value ("row" or "column").
@@ -3781,10 +3798,14 @@ func splitGridTrackValues(val string) []string {
 }
 
 // parseGridTracks parses a space-separated list of track sizes (e.g., "100px 200px auto 1fr")
-// Supports minmax(), min-content, max-content, fr, px, rem, and auto values.
+// Supports minmax(), min-content, max-content, fr, px, rem, auto, and subgrid values.
 func parseGridTracks(val string) []GridTrack {
 	if val == "none" {
 		return nil
+	}
+	// Handle "subgrid" keyword — return a single sentinel track
+	if strings.TrimSpace(strings.ToLower(val)) == "subgrid" {
+		return []GridTrack{{IsSubgrid: true}}
 	}
 	tracks := make([]GridTrack, 0)
 	rawParts := splitGridTrackValues(val)
