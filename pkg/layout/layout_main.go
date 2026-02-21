@@ -18,6 +18,9 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		}
 	}
 
+	// Register @counter-style rules from all stylesheets for use during layout
+	RegisterCounterStyles(le.stylesheets)
+
 	// Phase 2: Recursively layout the tree starting from root's children
 	boxes := make([]*Box, 0)
 	y := 0.0

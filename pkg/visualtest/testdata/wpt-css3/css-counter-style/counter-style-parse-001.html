@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @counter-style parse does not break default rendering</title>
+  <link rel="match" href="counter-style-parse-001-ref.html">
+  <style>
+    body { margin: 0; padding: 10px; font-size: 16px; font-family: Ahem; }
+    /* Define a @counter-style that is never used — should parse without error */
+    @counter-style unused-style {
+      system: alphabetic;
+      symbols: a b c d e f g h i j k l m n o p q r s t u v w x y z;
+      suffix: ") ";
+    }
+    ul { list-style-type: disc; padding-left: 40px; margin: 0; }
+    li { margin: 0; }
+  </style>
+</head>
+<body>
+  <ul>
+    <li>Item one</li>
+    <li>Item two</li>
+  </ul>
+</body>
+</html>

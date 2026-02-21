@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @counter-style cyclic system (disc equivalent)</title>
+  <link rel="match" href="counter-style-cyclic-001-ref.html">
+  <style>
+    body { margin: 0; padding: 10px; font-size: 16px; font-family: Ahem; }
+    @counter-style my-disc {
+      system: cyclic;
+      symbols: "•";
+      suffix: "";
+    }
+    ul { list-style-type: my-disc; padding-left: 40px; margin: 0; }
+    li { margin: 0; }
+  </style>
+</head>
+<body>
+  <ul>
+    <li>First item</li>
+    <li>Second item</li>
+    <li>Third item</li>
+  </ul>
+</body>
+</html>

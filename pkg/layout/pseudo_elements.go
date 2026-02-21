@@ -567,9 +567,17 @@ func (le *LayoutEngine) generateListMarker(node *html.Node, style *css.Style, x,
 		itemNumber := le.getListItemNumber(node)
 		markerText = fmt.Sprintf("%d.", itemNumber)
 	default:
-		// Use custom marker string (e.g., from list-style-type: "\2022")
-		if string(listStyleType) != "" {
-			markerText = string(listStyleType)
+		// Check if this is a custom @counter-style name
+		styleName := string(listStyleType)
+		if styleName != "" {
+			if _, isCustom := customCounterStyles[styleName]; isCustom {
+				// Use the custom counter style
+				itemNumber := le.getListItemNumber(node)
+				markerText = GetCounterString(itemNumber, styleName)
+			} else {
+				// Use as a literal marker string (e.g., from list-style-type: "\2022")
+				markerText = styleName
+			}
 		} else {
 			markerText = "•"
 		}
