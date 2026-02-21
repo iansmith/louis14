@@ -298,6 +298,63 @@ func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64
 		}
 		return num * fontSize, true
 	}
+	// ch unit: width of '0' character at current font size.
+	// Approximate as 0.5em (typical for proportional fonts).
+	if strings.HasSuffix(val, "ch") {
+		numStr := strings.TrimSuffix(val, "ch")
+		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * fontSize * 0.5, true
+	}
+	// ex unit: x-height of the current font, approximately 0.5em.
+	if strings.HasSuffix(val, "ex") {
+		numStr := strings.TrimSuffix(val, "ex")
+		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * fontSize * 0.5, true
+	}
+	// rlh unit: root line-height (must be checked before lh to avoid suffix conflict).
+	// Approximate as 16px * 1.2 = 19.2px.
+	if strings.HasSuffix(val, "rlh") {
+		numStr := strings.TrimSuffix(val, "rlh")
+		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * 19.2, true // 16px default font size * 1.2 line-height
+	}
+	// lh unit: line-height of the element, approximate as 1.2em.
+	if strings.HasSuffix(val, "lh") {
+		numStr := strings.TrimSuffix(val, "lh")
+		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * fontSize * 1.2, true
+	}
+	// ic unit: advance measure of the full-width CJK character.
+	// Approximate as 1em (full character width).
+	if strings.HasSuffix(val, "ic") {
+		numStr := strings.TrimSuffix(val, "ic")
+		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * fontSize, true
+	}
+	// cap unit: cap-height (uppercase letter height), approximately 0.7em.
+	if strings.HasSuffix(val, "cap") {
+		numStr := strings.TrimSuffix(val, "cap")
+		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
+		if err != nil {
+			return 0, false
+		}
+		return num * fontSize * 0.7, true
+	}
 	if strings.HasSuffix(val, "mm") {
 		numStr := strings.TrimSuffix(val, "mm")
 		num, err := strconv.ParseFloat(numStr, 64)
