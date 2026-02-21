@@ -1788,8 +1788,8 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 	outerBottom := renderY + renderHeight  // Border-box dimensions
 	innerLeft := math.Floor(box.X + box.Border.Left)
 	innerTop := math.Floor(renderY + box.Border.Top)
-	innerRight := math.Ceil(box.X + box.Width - box.Border.Right)      // Border-box dimensions
-	innerBottom := math.Ceil(renderY + renderHeight - box.Border.Bottom) // Border-box dimensions
+	innerRight := math.Ceil(box.X + box.Width - box.Border.Right - 1e-9)      // Border-box dimensions; epsilon absorbs float imprecision from unit conversions (e.g. cm→px)
+	innerBottom := math.Ceil(renderY + renderHeight - box.Border.Bottom - 1e-9) // Border-box dimensions
 
 	// Draw each side as a trapezoid (CSS mitered border rendering).
 	// Drawing order: bottom → left → right → top. Later-drawn sides
