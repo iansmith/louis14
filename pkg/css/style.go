@@ -3437,17 +3437,20 @@ func ParseContentValues(raw string) []ContentValue {
 
 // GridTrack represents a single grid track (column or row)
 type GridTrack struct {
-	Size       float64 // Size in pixels (0 for auto)
-	Auto       bool    // true if track is auto-sized
-	Fr         float64 // fractional unit value (0 if not fr)
-	Percent    float64 // percentage value (e.g., 75 for "75%")
-	IsMinMax   bool    // true if this is a minmax() track
-	MinSize    float64 // minimum size (px) for minmax()
-	MaxFr      float64 // maximum as fr value for minmax()
-	MaxSize    float64 // maximum as fixed size (px) for minmax()
-	MaxAuto    bool    // true if max is "auto" for minmax()
-	MinContent bool    // true if value is "min-content"
-	MaxContent bool    // true if value is "max-content"
+	Size         float64     // Size in pixels (0 for auto)
+	Auto         bool        // true if track is auto-sized
+	Fr           float64     // fractional unit value (0 if not fr)
+	Percent      float64     // percentage value (e.g., 75 for "75%")
+	IsMinMax     bool        // true if this is a minmax() track
+	MinSize      float64     // minimum size (px) for minmax()
+	MaxFr        float64     // maximum as fr value for minmax()
+	MaxSize      float64     // maximum as fixed size (px) for minmax()
+	MaxAuto      bool        // true if max is "auto" for minmax()
+	MinContent   bool        // true if value is "min-content"
+	MaxContent   bool        // true if value is "max-content"
+	AutoFill     bool        // true if this is a repeat(auto-fill, ...) sentinel
+	AutoFit      bool        // true if this is a repeat(auto-fit, ...) sentinel
+	AutoTemplate []GridTrack // template tracks for auto-fill/auto-fit
 }
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
@@ -3500,6 +3503,62 @@ func (s *Style) GetGridAutoColumns() *GridTrack {
 	return nil
 }
 
+// expandRepeatTracks expands repeat() notation in grid track lists.
+// For repeat(N, trackList): returns N copies of the track list tokens.
+// For repeat(auto-fill, trackList): returns a single sentinel token "auto-fill:trackList".
+// For repeat(auto-fit, trackList): returns a single sentinel token "auto-fit:trackList".
+func expandRepeatTracks(parts []string) []string {
+	var result []string
+	for _, part := range parts {
+		if strings.HasPrefix(part, "repeat(") && strings.HasSuffix(part, ")") {
+			inner := strings.TrimSpace(part[7 : len(part)-1]) // strip "repeat(" and ")"
+			// Find the first comma at depth 0
+			commaIdx := -1
+			depth := 0
+			for i := 0; i < len(inner); i++ {
+				switch inner[i] {
+				case '(':
+					depth++
+				case ')':
+					depth--
+				case ',':
+					if depth == 0 {
+						commaIdx = i
+					}
+				}
+				if commaIdx >= 0 {
+					break
+				}
+			}
+			if commaIdx < 0 {
+				// Malformed repeat(), pass through as-is
+				result = append(result, part)
+				continue
+			}
+			countStr := strings.TrimSpace(inner[:commaIdx])
+			trackListStr := strings.TrimSpace(inner[commaIdx+1:])
+
+			if countStr == "auto-fill" || countStr == "auto-fit" {
+				// Sentinel token: "auto-fill:trackList" or "auto-fit:trackList"
+				result = append(result, countStr+":"+trackListStr)
+			} else {
+				// Numeric repeat: expand N times
+				count := 0
+				if n, err := strconv.Atoi(countStr); err == nil && n > 0 {
+					count = n
+				}
+				templateParts := splitGridTrackValues(trackListStr)
+				for i := 0; i < count; i++ {
+					result = append(result, templateParts...)
+				}
+			}
+		} else {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
 // splitGridTrackValues splits a grid track value string into individual track tokens,
 // respecting parentheses (so "minmax(0, 1fr)" stays as one token).
 func splitGridTrackValues(val string) []string {
@@ -3535,10 +3594,23 @@ func parseGridTracks(val string) []GridTrack {
 		return nil
 	}
 	tracks := make([]GridTrack, 0)
-	parts := splitGridTrackValues(val)
+	rawParts := splitGridTrackValues(val)
+	parts := expandRepeatTracks(rawParts)
 
 	for _, part := range parts {
-		if part == "auto" {
+		if strings.HasPrefix(part, "auto-fill:") || strings.HasPrefix(part, "auto-fit:") {
+			colonIdx := strings.Index(part, ":")
+			mode := part[:colonIdx]
+			trackListStr := part[colonIdx+1:]
+			templateTracks := parseGridTracks(trackListStr)
+			sentinel := GridTrack{AutoTemplate: templateTracks}
+			if mode == "auto-fill" {
+				sentinel.AutoFill = true
+			} else {
+				sentinel.AutoFit = true
+			}
+			tracks = append(tracks, sentinel)
+		} else if part == "auto" {
 			tracks = append(tracks, GridTrack{Auto: true})
 		} else if part == "min-content" {
 			tracks = append(tracks, GridTrack{MinContent: true})

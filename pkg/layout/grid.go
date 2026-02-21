@@ -15,6 +15,72 @@ type GridCell struct {
 	Box        *Box
 }
 
+// expandAutoFillTracks replaces auto-fill/auto-fit sentinel tracks with
+// the correct number of repeated template tracks for the given container size.
+// For auto-fill: fills the container as many times as fits (at least once).
+// For auto-fit: same as auto-fill but collapses empty tracks to 0.
+func expandAutoFillTracks(tracks []css.GridTrack, containerSize, gap float64) []css.GridTrack {
+	// Check if any track is an auto-fill or auto-fit sentinel
+	hasSentinel := false
+	for _, t := range tracks {
+		if t.AutoFill || t.AutoFit {
+			hasSentinel = true
+			break
+		}
+	}
+	if !hasSentinel {
+		return tracks
+	}
+
+	var result []css.GridTrack
+	for _, t := range tracks {
+		if !t.AutoFill && !t.AutoFit {
+			result = append(result, t)
+			continue
+		}
+		// Compute the minimum width of one template repetition
+		template := t.AutoTemplate
+		if len(template) == 0 {
+			// Empty template — treat as a single auto track
+			result = append(result, css.GridTrack{Auto: true})
+			continue
+		}
+		templateMinWidth := 0.0
+		for _, tt := range template {
+			if tt.Size > 0 {
+				templateMinWidth += tt.Size
+			} else if tt.IsMinMax && tt.MinSize > 0 {
+				templateMinWidth += tt.MinSize
+			} else if tt.Fr == 0 {
+				// auto/min-content/max-content: use a nominal 0 (will be sized by content)
+				// but for counting purposes, treat as minimal non-zero contribution
+				templateMinWidth += 0
+			}
+			// fr tracks: counted as 0 minimum for auto-fill/fit calculation
+		}
+
+		// Compute count = max(1, floor((containerSize + gap) / (templateMinWidth + gap)))
+		// but only if templateMinWidth > 0
+		count := 1
+		if templateMinWidth > 0 && containerSize > 0 {
+			// Number of repetitions that fit: each repetition takes templateMinWidth + one gap
+			// except the last one which doesn't need a trailing gap
+			// count = floor((containerSize + gap) / (templateMinWidth + gap))
+			unitSize := templateMinWidth + gap
+			computed := int((containerSize + gap) / unitSize)
+			if computed < 1 {
+				computed = 1
+			}
+			count = computed
+		}
+
+		for i := 0; i < count; i++ {
+			result = append(result, template...)
+		}
+	}
+	return result
+}
+
 // layoutGridContainer handles CSS Grid layout
 func (le *LayoutEngine) layoutGridContainer(
 	node *html.Node,
@@ -96,6 +162,10 @@ func (le *LayoutEngine) layoutGridContainer(
 			hasExplicitHeight = true
 		}
 	}
+
+	// Expand auto-fill and auto-fit repeat() tracks now that container size is known
+	columnTracks = expandAutoFillTracks(columnTracks, containerWidth, columnGap)
+	rowTracks = expandAutoFillTracks(rowTracks, containerHeight, rowGap)
 
 	// Get positioning information
 	position := style.GetPosition()
