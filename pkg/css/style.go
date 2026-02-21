@@ -1259,6 +1259,19 @@ func expandShorthand(style *Style, property, value string) {
 		} else {
 			style.Set("grid-template-rows", value)
 		}
+	case "transition":
+		// Store transition value as-is; static renderer ignores it
+		style.Set("transition", value)
+	case "animation":
+		// Store animation value as-is; static renderer shows initial (t=0) state
+		style.Set("animation", value)
+	case "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
+		"transition-behavior":
+		style.Set(property, value)
+	case "animation-name", "animation-duration", "animation-timing-function", "animation-delay",
+		"animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state",
+		"animation-range", "animation-timeline":
+		style.Set(property, value)
 	default:
 		// Regular property
 		style.Set(property, value)

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<title>CSS @keyframes: parsing does not crash</title>
+<link rel="match" href="keyframes-parse-001-ref.html">
+<style>
+@keyframes slide {
+  from { transform: translateX(0); background: red; }
+  to   { transform: translateX(100px); background: lime; }
+}
+@-webkit-keyframes slide {
+  from { transform: translateX(0); background: red; }
+  to   { transform: translateX(100px); background: lime; }
+}
+.box {
+  width: 100px; height: 100px;
+  background: red;
+  animation: slide 1s linear;
+}
+</style>
+<div class="box"></div>
