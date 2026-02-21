@@ -72,6 +72,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Check if this is an SVG element (replaced element with explicit dimensions)
 	isSVG := node.TagName == "svg"
 
+	// Ruby display types: normalize for layout purposes.
+	// display:ruby → treat as inline (the ruby element participates in inline flow)
+	// display:ruby-text → treat as inline-block (the <rt> annotation box)
+	// display:ruby-base → treat as inline
+	if display == css.DisplayRuby || display == css.DisplayRubyBase {
+		display = css.DisplayInline
+	} else if display == css.DisplayRubyText {
+		display = css.DisplayInlineBlock
+	}
+
 	// Phase 5: Check for float early to determine width calculation
 	floatType := style.GetFloat()
 
