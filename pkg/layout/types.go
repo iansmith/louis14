@@ -207,6 +207,7 @@ const (
 	InlineItemFloat                            // Floated element
 	InlineItemControl                          // Control element (br, etc.)
 	InlineItemBlockChild                       // Block-level child (requires recursive layout)
+	InlineItemSoftHyphen                       // Soft hyphen break opportunity (U+00AD)
 )
 
 // InlineItem represents a piece of inline content in the flattened item list.

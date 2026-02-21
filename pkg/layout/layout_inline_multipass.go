@@ -255,6 +255,11 @@ func (le *LayoutEngine) BreakLines(
 				if textLineHeight > currentLine.Height {
 					currentLine.Height = textLineHeight
 				}
+			} else if !constraint.NoWrap && tryBreakAtSoftHyphen(
+				currentLine, item, &lines, &currentY, &currentX, &hasSeenContentOnLine,
+				&lastTextEndedWithSpace, &lineFloatWidth, &lineFloats, &textIndent, constraint,
+			) {
+				// Broke at a soft hyphen — line was committed, continue with next item
 			} else if textWidth <= availableWidth {
 				// Doesn't fit, but would fit on new line
 				// Finish current line
@@ -501,6 +506,13 @@ func (le *LayoutEngine) BreakLines(
 			}
 			lastTextEndedWithSpace = false // Real content interrupts whitespace sequence
 			hasSeenContentOnLine = true
+
+		case InlineItemSoftHyphen:
+			// Soft hyphen (U+00AD) — zero-width break opportunity marker.
+			// Invisible on the current line; only becomes visible (as '-') when a line break
+			// occurs at this position. Add as a zero-width marker to track break opportunities.
+			currentLine.Items = append(currentLine.Items, item)
+			// Does not affect currentX, line height, or whitespace tracking.
 
 		case InlineItemOpenTag, InlineItemCloseTag:
 			// Tag markers - add to current line but don't affect layout
@@ -787,6 +799,142 @@ func splitTextIntoWordAndSpaceParts(s string) []string {
 	return parts
 }
 
+// tryBreakAtSoftHyphen looks backwards in currentLine.Items for the last InlineItemSoftHyphen.
+// If found, it breaks the line at that position: items before the soft hyphen are committed
+// to a new line with a visible '-' appended to the last text item, then the items after the
+// soft hyphen (plus the overflow item) become the start of the next line.
+// Returns true if a soft hyphen break was performed (line was committed and next line started).
+func tryBreakAtSoftHyphen(
+	currentLine *LineInfo,
+	overflowItem *InlineItem,
+	lines *[]*LineInfo,
+	currentY *float64,
+	currentX *float64,
+	hasSeenContentOnLine *bool,
+	lastTextEndedWithSpace *bool,
+	lineFloatWidth *float64,
+	lineFloats *[]*InlineItem,
+	textIndent *float64,
+	constraint *ConstraintSpace,
+) bool {
+	// Find last soft hyphen in current line items
+	shIdx := -1
+	for j := len(currentLine.Items) - 1; j >= 0; j-- {
+		if currentLine.Items[j].Type == InlineItemSoftHyphen {
+			shIdx = j
+			break
+		}
+	}
+	if shIdx < 0 {
+		return false // No soft hyphen opportunity found
+	}
+
+	// Measure the hyphen character '-' in the style of the item before the soft hyphen.
+	hyphenChar := "-"
+	hyphenW := 0.0
+	hyphenLetterSpacing := 0.0
+	for j := shIdx - 1; j >= 0; j-- {
+		if currentLine.Items[j].Type == InlineItemText && currentLine.Items[j].Style != nil {
+			hyphenStyle := currentLine.Items[j].Style
+			hFontSize := hyphenStyle.GetFontSize()
+			hBold := hyphenStyle.GetFontWeight() == css.FontWeightBold
+			hItalic := hyphenStyle.GetFontStyle() == css.FontStyleItalic
+			hMono := hyphenStyle.IsMonospaceFamily()
+			hAhem := hyphenStyle.IsAhemFamily()
+			hyphenW, _ = text.MeasureTextWithStyle(hyphenChar, hFontSize, hBold, hItalic, hMono, hAhem)
+			hyphenLetterSpacing = hyphenStyle.GetLetterSpacing()
+			break
+		}
+	}
+
+	// Build the committed line: items before the soft hyphen, with '-' appended to last text item.
+	committedItems := make([]*InlineItem, 0, shIdx)
+	for j := 0; j < shIdx; j++ {
+		committedItems = append(committedItems, currentLine.Items[j])
+	}
+	// Append hyphen to the last text item before the soft hyphen position.
+	// We create a new item that shows the text + '-' visually.
+	for j := len(committedItems) - 1; j >= 0; j-- {
+		if committedItems[j].Type == InlineItemText {
+			orig := committedItems[j]
+			hyphenatedText := orig.Text + hyphenChar
+			hW := orig.Width + hyphenW
+			if hyphenLetterSpacing != 0 {
+				hW += hyphenLetterSpacing // one additional glyph spacing
+			}
+			hyphenatedNode := &html.Node{
+				Type:   html.TextNode,
+				Text:   hyphenatedText,
+				Parent: orig.Node.Parent,
+			}
+			committedItems[j] = &InlineItem{
+				Type:        InlineItemText,
+				Node:        hyphenatedNode,
+				Text:        hyphenatedText,
+				StartOffset: orig.StartOffset,
+				EndOffset:   orig.EndOffset,
+				Style:       orig.Style,
+				Width:       hW,
+				Height:      orig.Height,
+			}
+			break
+		}
+	}
+
+	// Compute height of committed line
+	committedHeight := currentLine.Height
+	if committedHeight == 0 {
+		for _, it := range committedItems {
+			if it.Height > committedHeight {
+				committedHeight = it.Height
+			}
+		}
+	}
+
+	// Commit the line ending at the soft hyphen.
+	committedLine := &LineInfo{
+		Y:          currentLine.Y,
+		Items:      committedItems,
+		Constraint: currentLine.Constraint,
+		Height:     committedHeight,
+	}
+	*lines = append(*lines, committedLine)
+	*currentY += committedHeight
+
+	// Items after the soft hyphen (but before the overflow item) go to the next line.
+	// These are items that were already placed past the soft hyphen on the current line.
+	carryItems := currentLine.Items[shIdx+1:]
+
+	// Start the new line with any carry items plus the overflow item.
+	newItems := make([]*InlineItem, 0, len(carryItems)+1)
+	newItems = append(newItems, carryItems...)
+	newItems = append(newItems, overflowItem)
+
+	newHeight := overflowItem.Height
+	newWidth := overflowItem.Width
+	for _, it := range carryItems {
+		if it.Height > newHeight {
+			newHeight = it.Height
+		}
+		newWidth += it.Width
+	}
+
+	leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(*currentY, newHeight)
+	*currentLine = LineInfo{
+		Y:          *currentY,
+		Items:      newItems,
+		Constraint: constraint,
+		Height:     newHeight,
+	}
+	*currentX = leftOffset + newWidth
+	*textIndent = 0
+	*lineFloatWidth = 0
+	*lineFloats = nil
+	*hasSeenContentOnLine = true
+	*lastTextEndedWithSpace = false
+	return true
+}
+
 // applyTextOverflowEllipsis truncates a line's text items so they fit within
 // availableWidth, replacing the truncation point with "...".
 func (le *LayoutEngine) applyTextOverflowEllipsis(line *LineInfo, availableWidth float64) {
@@ -905,8 +1053,8 @@ func isWhitespaceOnlyLine(line *LineInfo) bool {
 			}
 		case InlineItemFloat, InlineItemAtomic, InlineItemBlockChild:
 			return false // Has non-text content
-		case InlineItemOpenTag, InlineItemCloseTag, InlineItemControl:
-			// Tags and control items don't count as content
+		case InlineItemOpenTag, InlineItemCloseTag, InlineItemControl, InlineItemSoftHyphen:
+			// Tags, control items, and soft hyphens don't count as content
 			continue
 		default:
 			return false
@@ -1218,6 +1366,12 @@ func (le *LayoutEngine) constructLine(
 			}
 			fragments = append(fragments, frag)
 			currentX += item.Width // Advance past right padding+border+margin
+
+		case InlineItemSoftHyphen:
+			// Soft hyphen marker — invisible when not at a line break (zero width).
+			// When BreakLines breaks at a soft hyphen, it emits the preceding text item
+			// with '-' appended, so there is nothing to render here.
+			continue
 
 		case InlineItemControl:
 			// Control item (br, etc.) - just marker
@@ -2379,6 +2533,17 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			node.Text = textContent
 		}
 
+		// Strip soft hyphens (U+00AD) when hyphens: none — they must be invisible.
+		// When hyphens != "none", soft hyphens are handled below (split into sub-items
+		// with InlineItemSoftHyphen markers between them).
+		if strings.ContainsRune(textContent, '\u00AD') {
+			hyphensVal := parentStyle.GetHyphens()
+			if hyphensVal == "none" {
+				textContent = strings.ReplaceAll(textContent, "\u00AD", "")
+				node.Text = textContent
+			}
+		}
+
 		// CSS 2.1 §16.6.1: For white-space: pre, newlines force line breaks.
 		// Split text at newline characters and insert forced break items between segments.
 		if whiteSpace == "pre" || whiteSpace == "pre-wrap" || whiteSpace == "pre-line" {
@@ -2512,8 +2677,51 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		// Split text into word-level items for proper word wrapping and text-align:justify.
 		// Each word and each space run becomes its own InlineItem so BreakLines can wrap
 		// at word boundaries and applyTextAlignToBoxes can distribute space between word boxes.
+		hyphens := parentStyle.GetHyphens()
 		wordParts := splitTextIntoWordAndSpaceParts(textContent)
 		for _, part := range wordParts {
+			// Handle soft hyphens (U+00AD) in word parts when hyphens != "none".
+			// Split each word at soft hyphen positions, inserting InlineItemSoftHyphen
+			// break opportunity markers between the sub-pieces.
+			if hyphens != "none" && strings.ContainsRune(part, '\u00AD') {
+				subParts := strings.Split(part, "\u00AD")
+				for si, subPart := range subParts {
+					if si > 0 {
+						// Insert soft hyphen break opportunity item (zero width)
+						_, shH := text.MeasureTextWithStyle("X", fontSize, bold, italic, mono, ahem)
+						state.Items = append(state.Items, &InlineItem{
+							Type:   InlineItemSoftHyphen,
+							Node:   node,
+							Style:  parentStyle,
+							Width:  0,
+							Height: shH,
+						})
+					}
+					if subPart == "" {
+						continue
+					}
+					subW, subH := text.MeasureTextWithStyle(subPart, fontSize, bold, italic, mono, ahem)
+					if letterSpacing != 0 && len([]rune(subPart)) > 1 {
+						subW += letterSpacing * float64(len([]rune(subPart))-1)
+					}
+					subNode := &html.Node{
+						Type:   html.TextNode,
+						Text:   subPart,
+						Parent: node.Parent,
+					}
+					state.Items = append(state.Items, &InlineItem{
+						Type:        InlineItemText,
+						Node:        subNode,
+						Text:        subPart,
+						StartOffset: 0,
+						EndOffset:   len(subPart),
+						Style:       parentStyle,
+						Width:       subW,
+						Height:      subH,
+					})
+				}
+				continue
+			}
 			partW, partH := text.MeasureTextWithStyle(part, fontSize, bold, italic, mono, ahem)
 			if letterSpacing != 0 && len([]rune(part)) > 1 {
 				partW += letterSpacing * float64(len([]rune(part))-1)
