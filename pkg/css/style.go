@@ -26,6 +26,10 @@ func (s *Style) Get(property string) (string, bool) {
 	if strings.Contains(val, "var(") {
 		val = s.resolveVarReferences(val)
 	}
+	// Resolve env() references in the value
+	if strings.Contains(val, "env(") {
+		val = resolveEnvValue(val)
+	}
 	return val, ok
 }
 
@@ -80,6 +84,82 @@ func (s *Style) resolveVarReferences(value string) string {
 		value = value[:idx] + resolved + value[end+1:]
 	}
 	return value
+}
+
+// resolveEnvValue replaces env(variable-name) and env(variable-name, fallback)
+// with either the known static value or the fallback.
+// In our static renderer (no notch/safe areas), all env() values resolve to 0px.
+// env(name) → "0px"; env(name, fallback) → fallback value.
+func resolveEnvValue(val string) string {
+	// Known env() variables and their static values
+	knownEnvVars := map[string]string{
+		"safe-area-inset-top":    "0px",
+		"safe-area-inset-right":  "0px",
+		"safe-area-inset-bottom": "0px",
+		"safe-area-inset-left":   "0px",
+		"titlebar-area-x":        "0px",
+		"titlebar-area-y":        "0px",
+		"titlebar-area-width":    "100%",
+		"titlebar-area-height":   "0px",
+		"keyboard-inset-top":     "0px",
+		"keyboard-inset-right":   "0px",
+		"keyboard-inset-bottom":  "0px",
+		"keyboard-inset-left":    "0px",
+		"keyboard-inset-height":  "0px",
+		"keyboard-inset-width":   "0px",
+	}
+
+	// Replace all env(...) occurrences
+	for i := 0; i < 20; i++ { // limit iterations to prevent infinite loops
+		lower := strings.ToLower(val)
+		start := strings.Index(lower, "env(")
+		if start < 0 {
+			break
+		}
+
+		// Find the matching closing paren (handle nested parens)
+		depth := 0
+		end := start + 4 // position after "env("
+		found := false
+		for end < len(val) {
+			switch val[end] {
+			case '(':
+				depth++
+			case ')':
+				if depth == 0 {
+					found = true
+				} else {
+					depth--
+				}
+			}
+			if found {
+				break
+			}
+			end++
+		}
+		if !found {
+			break // malformed env()
+		}
+
+		inner := strings.TrimSpace(val[start+4 : end])
+
+		// Split on the first comma (outside parens) to get variable name and optional fallback
+		commaIdx := findCommaOutsideParens(inner)
+		varName := strings.ToLower(strings.TrimSpace(inner))
+		fallback := "0px"
+		if commaIdx >= 0 {
+			varName = strings.ToLower(strings.TrimSpace(inner[:commaIdx]))
+			fallback = strings.TrimSpace(inner[commaIdx+1:])
+		}
+
+		resolved := fallback // default: use fallback if present, else "0px"
+		if known, ok := knownEnvVars[varName]; ok {
+			resolved = known
+		}
+
+		val = val[:start] + resolved + val[end+1:]
+	}
+	return val
 }
 
 // findCommaOutsideParens finds the index of the first comma not inside parentheses.
@@ -229,6 +309,11 @@ func evalClamp(argsStr string, fontSize, vw, vh float64) (float64, bool) {
 // ParseLengthFull parses a length value with em, rem, and viewport unit support.
 func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64) (float64, bool) {
 	val = strings.TrimSpace(val)
+	// Resolve env() variables before any other parsing
+	if strings.Contains(val, "env(") {
+		val = resolveEnvValue(val)
+		val = strings.TrimSpace(val)
+	}
 	// Handle min(), max(), clamp() functions
 	if strings.HasPrefix(val, "min(") && strings.HasSuffix(val, ")") {
 		return evalMinMax(val[4:len(val)-1], "min", fontSize, viewportWidth, viewportHeight)
@@ -369,6 +454,11 @@ func evalCalcExpr(expr string, fontSize float64) (float64, bool) {
 // percentBase is the reference size for resolving % values (e.g. containing block width).
 func EvalCalcWithPercent(expr string, fontSize, percentBase float64) (float64, bool) {
 	expr = strings.TrimSpace(expr)
+	// Resolve env() variables before tokenizing (env() may appear inside calc())
+	if strings.Contains(expr, "env(") {
+		expr = resolveEnvValue(expr)
+		expr = strings.TrimSpace(expr)
+	}
 	// Tokenize: split into numbers (with optional units) and operators
 	tokens := tokenizeCalc(expr)
 	if len(tokens) == 0 {
