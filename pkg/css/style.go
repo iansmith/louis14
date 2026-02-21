@@ -1846,7 +1846,7 @@ func expandBackgroundProperty(style *Style, value string) {
 	// since they may contain spaces (e.g., "rgb(153, 153, 255)").
 	colorFound := false
 	colorValue := ""
-	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "hwb(", "color-mix("} {
+	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "hwb(", "color-mix(", "color("} {
 		if idx := strings.Index(value, prefix); idx >= 0 {
 			// Find matching closing paren (depth-aware for nested parens in color-mix)
 			depth := 0
@@ -1978,6 +1978,62 @@ func parseHueDegrees(s string) float64 {
 	var v float64
 	fmt.Sscanf(s, "%f", &v)
 	return v
+}
+
+// parseColorFunction parses a CSS color() function and returns RGBA uint8 components.
+// Supports color spaces: srgb, display-p3, a98-rgb, rec2020, xyz-d65.
+// Format: color(colorspace r g b) or color(colorspace r g b / alpha)
+func parseColorFunction(s string) (uint8, uint8, uint8, uint8, bool) {
+	start := strings.Index(s, "(")
+	end := strings.LastIndex(s, ")")
+	if start < 0 || end < 0 || end <= start {
+		return 0, 0, 0, 255, false
+	}
+	inner := strings.TrimSpace(s[start+1 : end])
+
+	parts, alpha := parseSpaceSeparatedColorArgs(inner)
+	if len(parts) < 4 {
+		return 0, 0, 0, 255, false
+	}
+
+	colorSpace := strings.ToLower(parts[0])
+	var r, g, b float64
+	fmt.Sscanf(parts[1], "%f", &r)
+	fmt.Sscanf(parts[2], "%f", &g)
+	fmt.Sscanf(parts[3], "%f", &b)
+
+	// Convert to sRGB based on the color space
+	switch colorSpace {
+	case "srgb":
+		// Already sRGB — just clamp
+		r = colorClamp01(r)
+		g = colorClamp01(g)
+		b = colorClamp01(b)
+	case "display-p3":
+		r, g, b = p3ToSRGB(r, g, b)
+	case "a98-rgb":
+		r, g, b = a98RGBToSRGB(r, g, b)
+	case "rec2020":
+		r, g, b = rec2020ToSRGB(r, g, b)
+	case "xyz-d65":
+		r, g, b = xyzD65ToSRGB(r, g, b)
+	case "xyz", "xyz-d50":
+		// Approximate: treat as xyz-d65 (close enough for rendering)
+		r, g, b = xyzD65ToSRGB(r, g, b)
+	default:
+		return 0, 0, 0, 255, false
+	}
+
+	clampU8 := func(v float64) uint8 {
+		if v < 0 {
+			return 0
+		}
+		if v > 1 {
+			return 255
+		}
+		return uint8(v*255 + 0.5)
+	}
+	return clampU8(r), clampU8(g), clampU8(b), clampU8(alpha), true
 }
 
 func ParseColor(colorStr string) (Color, bool) {
@@ -2147,6 +2203,13 @@ func ParseColor(colorStr string) (Color, bool) {
 				B: uint8(math.Round(b * 255)),
 				A: alpha,
 			}, true
+		}
+	}
+
+	// Handle color() function: color(colorspace r g b [/ alpha])
+	if strings.HasPrefix(colorStr, "color(") && strings.HasSuffix(colorStr, ")") {
+		if r, g, b, a, ok := parseColorFunction(colorStr); ok {
+			return Color{r, g, b, float64(a) / 255.0}, true
 		}
 	}
 
@@ -2890,7 +2953,8 @@ func parseBoxShadowValue(s string) *BoxShadow {
 func isColor(s string) bool {
 	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") ||
 		strings.HasPrefix(s, "oklch(") || strings.HasPrefix(s, "lch(") ||
-		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") {
+		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
+		strings.HasPrefix(s, "color(") {
 		return true
 	}
 	// Bare numbers and lengths are not colors

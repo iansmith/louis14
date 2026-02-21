@@ -231,3 +231,92 @@ func parseColorWithPercent(s string) (Color, float64) {
 	}
 	return c, pct
 }
+
+// sRGBToLinear converts an sRGB gamma-encoded value to linear light.
+func sRGBToLinear(c float64) float64 {
+	if c <= 0.04045 {
+		return c / 12.92
+	}
+	return math.Pow((c+0.055)/1.055, 2.4)
+}
+
+// p3ToSRGB converts Display P3 color (0-1 values) to sRGB (0-1 values).
+// Display P3 uses the same gamma as sRGB but different primaries.
+func p3ToSRGB(r, g, b float64) (float64, float64, float64) {
+	// Linearize from P3 gamma (same encoding as sRGB)
+	lr := sRGBToLinear(colorClamp01(r))
+	lg := sRGBToLinear(colorClamp01(g))
+	lb := sRGBToLinear(colorClamp01(b))
+
+	// Display P3 to XYZ D65 matrix
+	x := 0.4865709*lr + 0.2656677*lg + 0.1982173*lb
+	y := 0.2289746*lr + 0.6917385*lg + 0.0792869*lb
+	z := 0.0000000*lr + 0.0451134*lg + 1.0439444*lb
+
+	// XYZ D65 to linear sRGB
+	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
+	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
+	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
+
+	// Apply sRGB gamma
+	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+}
+
+// a98RGBToSRGB converts Adobe RGB (1998) color (0-1 values) to sRGB (0-1 values).
+func a98RGBToSRGB(r, g, b float64) (float64, float64, float64) {
+	// Linearize from A98-RGB gamma (2.2)
+	lr := math.Pow(colorClamp01(r), 2.2)
+	lg := math.Pow(colorClamp01(g), 2.2)
+	lb := math.Pow(colorClamp01(b), 2.2)
+
+	// A98-RGB to XYZ D65 matrix
+	x := 0.5766690*lr + 0.1855582*lg + 0.1882286*lb
+	y := 0.2973450*lr + 0.6273635*lg + 0.0752915*lb
+	z := 0.0270314*lr + 0.0706872*lg + 0.9911085*lb
+
+	// XYZ D65 to linear sRGB
+	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
+	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
+	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
+
+	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+}
+
+// rec2020ToSRGB converts Rec.2020 color (0-1 values) to sRGB (0-1 values).
+func rec2020ToSRGB(r, g, b float64) (float64, float64, float64) {
+	// Linearize from Rec.2020 gamma (approximately 2.2 for simplified version)
+	rec2020Linear := func(c float64) float64 {
+		c = colorClamp01(c)
+		alpha := 1.09929682680944
+		beta := 0.018053968510807
+		if c < beta*4.5 {
+			return c / 4.5
+		}
+		return math.Pow((c+alpha-1)/alpha, 1/0.45)
+	}
+	lr := rec2020Linear(r)
+	lg := rec2020Linear(g)
+	lb := rec2020Linear(b)
+
+	// Rec.2020 to XYZ D65 matrix
+	x := 0.6369580*lr + 0.1446169*lg + 0.1688810*lb
+	y := 0.2627002*lr + 0.6779981*lg + 0.0593017*lb
+	z := 0.0000000*lr + 0.0280727*lg + 1.0609851*lb
+
+	// XYZ D65 to linear sRGB
+	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
+	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
+	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
+
+	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+}
+
+// xyzD65ToSRGB converts CIE XYZ D65 color to sRGB (0-1 values).
+func xyzD65ToSRGB(x, y, z float64) (float64, float64, float64) {
+	// XYZ D65 to linear sRGB
+	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
+	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
+	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
+
+	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+}
