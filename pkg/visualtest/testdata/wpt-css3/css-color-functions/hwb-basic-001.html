@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: hwb() color function - pure red</title>
+  <link rel="match" href="hwb-basic-001-ref.html" />
+  <meta name="assert" content="hwb(0 0% 0%) produces pure red (#ff0000)" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: hwb(0 0% 0%);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: oklch() color function - achromatic gray</title>
+  <link rel="match" href="oklch-basic-001-ref.html" />
+  <meta name="assert" content="oklch(0.5 0 0) produces a neutral gray #636363" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: oklch(0.5 0 0);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>
