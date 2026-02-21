@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: font-variant-numeric parses without error</title>
+  <link rel="match" href="reference/font-variant-numeric-001-ref.html"/>
+  <meta name="assert" content="font-variant-numeric: lining-nums does not crash or alter normal rendering."/>
+  <style>
+    body { margin: 8px; font-family: serif; font-size: 16px; }
+    .test { font-variant-numeric: lining-nums; }
+  </style>
+</head>
+<body>
+  <p class="test">1234 5678</p>
+</body>
+</html>

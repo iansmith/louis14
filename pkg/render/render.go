@@ -2176,6 +2176,10 @@ func (r *Renderer) drawText(box *layout.Box) {
 	// Apply text-transform (safety net — layout phase usually handles this via CollectInlineItems)
 	if box.Style != nil {
 		textContent = layout.ApplyTextTransform(textContent, box.Style.GetTextTransform())
+		// Apply font-variant-caps: small-caps renders as uppercase (simple approximation)
+		if box.Style.GetFontVariantCaps() == "small-caps" {
+			textContent = strings.ToUpper(textContent)
+		}
 	}
 
 	// Get effective Y position (adjusted for scroll offset)
