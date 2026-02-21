@@ -2813,6 +2813,65 @@ func (s *Style) GetFontVariantNumeric() string {
 	return "normal"
 }
 
+// GetFontVariantLigatures returns the font-variant-ligatures value.
+// Default is "normal" (standard ligatures enabled).
+func (s *Style) GetFontVariantLigatures() string {
+	v, _ := s.Get("font-variant-ligatures")
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "normal"
+	}
+	return v
+}
+
+// GetFontSynthesis returns the font-synthesis value as a struct indicating
+// which synthesis types are allowed.
+// Default allows weight and style synthesis (but not small-caps).
+func (s *Style) GetFontSynthesis() struct{ Weight, Style, SmallCaps bool } {
+	v, _ := s.Get("font-synthesis")
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" || v == "weight style small-caps" || v == "weight style" {
+		return struct{ Weight, Style, SmallCaps bool }{true, true, false}
+	}
+	if v == "none" {
+		return struct{ Weight, Style, SmallCaps bool }{false, false, false}
+	}
+	result := struct{ Weight, Style, SmallCaps bool }{}
+	if strings.Contains(v, "weight") {
+		result.Weight = true
+	}
+	if strings.Contains(v, "style") {
+		result.Style = true
+	}
+	if strings.Contains(v, "small-caps") {
+		result.SmallCaps = true
+	}
+	return result
+}
+
+// GetFontSizeAdjust returns the font-size-adjust value, or -1 if "none" or unset.
+// font-size-adjust preserves the aspect ratio (x-height/font-size) relative to a
+// reference font. Parsed for compatibility; full effect requires per-font x-height data.
+func (s *Style) GetFontSizeAdjust() float64 {
+	v, _ := s.Get("font-size-adjust")
+	v = strings.TrimSpace(v)
+	if v == "" || v == "none" {
+		return -1
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return -1
+	}
+	return f
+}
+
+// GetFontOpticalSizing returns whether optical sizing is enabled.
+// Returns true unless font-optical-sizing is explicitly set to "none".
+func (s *Style) GetFontOpticalSizing() bool {
+	v, _ := s.Get("font-optical-sizing")
+	return strings.TrimSpace(v) != "none"
+}
+
 // IsMonospaceFamily returns true if the computed font-family is a monospace font.
 func (s *Style) IsMonospaceFamily() bool {
 	if family, ok := s.Get("font-family"); ok {
