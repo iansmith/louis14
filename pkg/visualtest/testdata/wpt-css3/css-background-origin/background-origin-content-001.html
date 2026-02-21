@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: background-origin content-box</title>
+  <link rel="help" href="https://drafts.csswg.org/css-backgrounds-3/#background-origin" />
+  <link rel="match" href="background-origin-content-001-ref.html" />
+  <meta name="assert" content="background-origin:content-box causes the background to be positioned relative to the content area." />
+</head>
+<body style="margin:0;padding:0;background:white">
+  <!-- Box: 80px total (border-box), 10px black border, 10px padding, 40px content -->
+  <!-- background-origin:content-box: gradient is positioned relative to the 40x40 content box -->
+  <!-- background-size:100% 100%: gradient fills 100% of the 40x40 content origin area -->
+  <!-- background-clip:content-box: gradient is visible only in the 40x40 content area -->
+  <!-- Gradient: blue left half (20px) + lime right half (20px) within content box -->
+  <div style="width:80px;height:80px;
+              border:10px solid black;
+              padding:10px;
+              box-sizing:border-box;
+              background-image:linear-gradient(to right, blue 0%, blue 50%, lime 50%, lime 100%);
+              background-origin:content-box;
+              background-clip:content-box;
+              background-size:100% 100%;
+              background-repeat:no-repeat;
+              background-color:white"></div>
+</body>
+</html>

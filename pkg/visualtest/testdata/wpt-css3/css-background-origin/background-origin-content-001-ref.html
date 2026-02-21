@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Reftest Reference: background-origin content-box</title>
+</head>
+<body style="margin:0;padding:0;background:white">
+  <!-- Reference: 80x80 box with 10px black border, white padding (10px each side),
+       and blue+lime split in the 40x40 content area.
+       Content area starts at offset (border + padding) = 20px from box edge.
+       Content is 80 - 20 - 20 = 40px wide and tall.
+       Left 20px of content = blue, right 20px = lime. -->
+  <div style="position:relative;width:80px;height:80px;border:10px solid black;box-sizing:border-box;background:white">
+    <!-- Content area: 40x40, starts at x=10 (padding), y=10 (padding) from inside border -->
+    <div style="position:absolute;left:10px;top:10px;width:20px;height:40px;background:blue"></div>
+    <div style="position:absolute;left:30px;top:10px;width:20px;height:40px;background:lime"></div>
+  </div>
+</body>
+</html>
