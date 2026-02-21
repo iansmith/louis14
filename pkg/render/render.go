@@ -2344,6 +2344,72 @@ func (r *Renderer) drawText(box *layout.Box) {
 		}
 	}
 afterDecoration:
+
+	// Phase 18: Draw text-emphasis marks above/below each character
+	emphasisMark := box.Style.GetTextEmphasisMark()
+	if emphasisMark != "" {
+		emphasisColor := box.Style.GetTextEmphasisColor()
+		emphasisPosition := box.Style.GetTextEmphasisPosition()
+		isOver := !strings.Contains(emphasisPosition, "under")
+
+		// Use a smaller font size for the marks (~50% of text size)
+		markFontSize := fontSize * 0.5
+		if markFontSize < 6 {
+			markFontSize = 6
+		}
+		// Load the mark font (same family but smaller)
+		r.loadFontForFamily(fontFamily, markFontSize, bold, italic, mono, ahem)
+		markAscent := r.context.FontAscent()
+
+		r.context.SetRGBA(
+			float64(emphasisColor.R)/255.0,
+			float64(emphasisColor.G)/255.0,
+			float64(emphasisColor.B)/255.0,
+			emphasisColor.A,
+		)
+
+		// Draw a mark centered above/below each non-space character
+		drawX := textX
+		for _, ch := range textContent {
+			charStr := string(ch)
+			// Reload main font to measure character width
+			r.loadFontForFamily(fontFamily, fontSize, bold, italic, mono, ahem)
+			charWidth, _ := text.MeasureTextWithStyle(charStr, fontSize, bold, italic, mono, ahem)
+
+			if ch != ' ' && ch != '\t' && ch != '\n' {
+				// Measure mark width to center it over the character
+				markWidth, _ := text.MeasureTextWithStyle(emphasisMark, markFontSize, bold, italic, mono, ahem)
+				markX := drawX + charWidth/2 - markWidth/2
+
+				var markY float64
+				if isOver {
+					// Place mark above the text: effectiveY minus mark height with a small gap
+					markY = effectiveY - markFontSize*0.15 + markAscent
+				} else {
+					// Place mark below the text: bottom of text line plus small gap
+					markY = effectiveY + fontSize + markFontSize*0.15 + markAscent
+				}
+
+				// Reload mark font for drawing
+				r.loadFontForFamily(fontFamily, markFontSize, bold, italic, mono, ahem)
+				r.context.DrawString(emphasisMark, markX, markY)
+			}
+
+			drawX += charWidth
+			if letterSpacing != 0 {
+				drawX += letterSpacing
+			}
+		}
+
+		// Restore main font and color
+		r.loadFontForFamily(fontFamily, fontSize, bold, italic, mono, ahem)
+		r.context.SetRGB(0, 0, 0)
+		if colorStr, ok := box.Style.Get("color"); ok {
+			if c, ok2 := css.ParseColor(colorStr); ok2 {
+				r.context.SetRGBA(float64(c.R)/255.0, float64(c.G)/255.0, float64(c.B)/255.0, c.A)
+			}
+		}
+	}
 }
 
 func (r *Renderer) drawImage(box *layout.Box) {
