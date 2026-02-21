@@ -1826,17 +1826,32 @@ func expandBackgroundProperty(style *Style, value string) {
 	// since they may contain spaces (e.g., "rgb(153, 153, 255)").
 	colorFound := false
 	colorValue := ""
-	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl("} {
+	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "hwb(", "color-mix("} {
 		if idx := strings.Index(value, prefix); idx >= 0 {
-			// Find matching closing paren
-			end := strings.Index(value[idx:], ")")
+			// Find matching closing paren (depth-aware for nested parens in color-mix)
+			depth := 0
+			end := -1
+			for j := idx; j < len(value); j++ {
+				switch value[j] {
+				case 40:
+					depth++
+				case 41:
+					depth--
+					if depth == 0 {
+						end = j
+					}
+				}
+				if end >= 0 {
+					break
+				}
+			}
 			if end >= 0 {
-				colorFunc := value[idx : idx+end+1]
+				colorFunc := value[idx : end+1]
 				if _, ok := ParseColor(colorFunc); ok {
 					colorFound = true
 					colorValue = colorFunc
 					// Remove from value for remaining parsing
-					value = value[:idx] + value[idx+end+1:]
+					value = value[:idx] + value[end+1:]
 				}
 			}
 			break
@@ -1882,6 +1897,67 @@ func expandBackgroundProperty(style *Style, value string) {
 type Color struct {
 	R, G, B uint8
 	A       float64 // Alpha: 0.0 (transparent) to 1.0 (opaque), default 1.0
+}
+
+// parseSpaceSeparatedColorArgs parses space-separated color function arguments
+// with optional slash for alpha: "L C H" or "L C H / alpha"
+// Returns the parts before the slash and the alpha value (default 1.0).
+func parseSpaceSeparatedColorArgs(inner string) (parts []string, alpha float64) {
+	alpha = 1.0
+	// Handle the slash separator for alpha
+	if idx := strings.Index(inner, "/"); idx >= 0 {
+		alphaPart := strings.TrimSpace(inner[idx+1:])
+		var a float64
+		n, _ := fmt.Sscanf(alphaPart, "%f", &a)
+		if n == 1 {
+			if strings.HasSuffix(strings.TrimSpace(alphaPart), "%") {
+				a /= 100.0
+			}
+			alpha = a
+		}
+		inner = inner[:idx]
+	}
+	parts = strings.Fields(inner)
+	return
+}
+
+// parseColorFloat01 parses a color component value as a fraction in [0,1].
+// If the value ends with '%', it is divided by maxPercent to get [0,1].
+// Otherwise it is divided by maxValue to get [0,1].
+func parseColorFloat01(s string, maxValue float64) float64 {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "%") {
+		var v float64
+		fmt.Sscanf(strings.TrimSuffix(s, "%"), "%f", &v)
+		return v / 100.0
+	}
+	var v float64
+	fmt.Sscanf(s, "%f", &v)
+	return v / maxValue
+}
+
+// parseHueDegrees parses a hue value in degrees.
+// Accepts plain numbers (degrees), "Ndeg", "Nrad", "Nturn".
+func parseHueDegrees(s string) float64 {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "deg") {
+		var v float64
+		fmt.Sscanf(strings.TrimSuffix(s, "deg"), "%f", &v)
+		return v
+	}
+	if strings.HasSuffix(s, "rad") {
+		var v float64
+		fmt.Sscanf(strings.TrimSuffix(s, "rad"), "%f", &v)
+		return v * 180.0 / math.Pi
+	}
+	if strings.HasSuffix(s, "turn") {
+		var v float64
+		fmt.Sscanf(strings.TrimSuffix(s, "turn"), "%f", &v)
+		return v * 360.0
+	}
+	var v float64
+	fmt.Sscanf(s, "%f", &v)
+	return v
 }
 
 func ParseColor(colorStr string) (Color, bool) {
@@ -1995,6 +2071,68 @@ func ParseColor(colorStr string) (Color, bool) {
 				A: a,
 			}, true
 		}
+	}
+
+	// Handle oklch() format: oklch(L C H) or oklch(L C H / alpha)
+	// L is 0-1 or 0%-100%, C is 0-0.4, H is 0-360
+	if strings.HasPrefix(colorStr, "oklch(") && strings.HasSuffix(colorStr, ")") {
+		inner := colorStr[6 : len(colorStr)-1]
+		parts, alpha := parseSpaceSeparatedColorArgs(inner)
+		if len(parts) >= 3 {
+			L := parseColorFloat01(parts[0], 1.0)
+			C := parseColorFloat01(parts[1], 0.4)
+			H := parseHueDegrees(parts[2])
+			r, g, b := oklchToRGB(L, C, H)
+			return Color{
+				R: uint8(math.Round(r * 255)),
+				G: uint8(math.Round(g * 255)),
+				B: uint8(math.Round(b * 255)),
+				A: alpha,
+			}, true
+		}
+	}
+
+	// Handle lch() format: lch(L C H) or lch(L C H / alpha)
+	// L is 0-100, C is 0-230, H is 0-360
+	if strings.HasPrefix(colorStr, "lch(") && strings.HasSuffix(colorStr, ")") {
+		inner := colorStr[4 : len(colorStr)-1]
+		parts, alpha := parseSpaceSeparatedColorArgs(inner)
+		if len(parts) >= 3 {
+			L := parseColorFloat01(parts[0], 100.0)
+			C := parseColorFloat01(parts[1], 230.0)
+			H := parseHueDegrees(parts[2])
+			r, g, b := lchToRGB(L, C, H)
+			return Color{
+				R: uint8(math.Round(r * 255)),
+				G: uint8(math.Round(g * 255)),
+				B: uint8(math.Round(b * 255)),
+				A: alpha,
+			}, true
+		}
+	}
+
+	// Handle hwb() format: hwb(H W% B%) or hwb(H W% B% / alpha)
+	// H is 0-360, W and B are percentages 0-100
+	if strings.HasPrefix(colorStr, "hwb(") && strings.HasSuffix(colorStr, ")") {
+		inner := colorStr[4 : len(colorStr)-1]
+		parts, alpha := parseSpaceSeparatedColorArgs(inner)
+		if len(parts) >= 3 {
+			H := parseHueDegrees(parts[0])
+			W := parseColorFloat01(parts[1], 100.0) * 100.0 // convert fraction to percentage
+			B := parseColorFloat01(parts[2], 100.0) * 100.0
+			r, g, b := hwbToRGB(H, W, B)
+			return Color{
+				R: uint8(math.Round(r * 255)),
+				G: uint8(math.Round(g * 255)),
+				B: uint8(math.Round(b * 255)),
+				A: alpha,
+			}, true
+		}
+	}
+
+	// Handle color-mix() format: color-mix(in colorspace, color1 [pct%], color2 [pct%])
+	if strings.HasPrefix(colorStr, "color-mix(") && strings.HasSuffix(colorStr, ")") {
+		return parseColorMix(colorStr)
 	}
 
 	// Try hex color first (#RGB or #RRGGBB)
@@ -2709,7 +2847,9 @@ func parseBoxShadowValue(s string) *BoxShadow {
 
 // isColor checks if a token might be a color value
 func isColor(s string) bool {
-	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") {
+	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") ||
+		strings.HasPrefix(s, "oklch(") || strings.HasPrefix(s, "lch(") ||
+		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") {
 		return true
 	}
 	// Bare numbers and lengths are not colors
