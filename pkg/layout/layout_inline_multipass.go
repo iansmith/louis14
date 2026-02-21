@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -1862,6 +1863,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			floatNode := frag.Node
 			floatStyle := computedStyles[floatNode]
 			if floatStyle == nil {
+				// Fall back to the style stored on the fragment (e.g. synthetic drop-cap
+				// nodes created by initial-letter processing whose style is not in the
+				// main computedStyles map).
+				floatStyle = frag.Style
+			}
+			if floatStyle == nil {
 				floatStyle = css.NewStyle()
 			}
 
@@ -2272,6 +2279,108 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		if node.Parent != nil {
 			if style := computedStyles[node.Parent]; style != nil {
 				parentStyle = style
+			}
+		}
+
+		// Check for initial-letter (drop cap) styling on the container.
+		// initial-letter creates a floated box for the first letter, sized to span
+		// multiple lines. It applies only to the very first text in the container.
+		if len(state.Items) == 0 && state.ContainerStyle != nil {
+			il := state.ContainerStyle.GetInitialLetter()
+			if il.Set {
+				firstLetter, remaining := extractFirstLetter(node.Text)
+				if firstLetter != "" {
+					// Compute the drop-cap font size.
+					// The drop cap should have a cap-height equal to (size * line-height).
+					// Using cap-height ≈ 0.7 × font-size: fontSize = size * lineHeight / 0.7
+					baseLineHeight := state.ContainerStyle.GetLineHeight()
+					dropCapFontSize := il.Size * baseLineHeight / 0.7
+
+					// Build a synthetic style for the drop-cap span
+					dropCapStyle := css.NewStyle()
+					dropCapStyle.ViewportWidth = le.viewport.width
+					dropCapStyle.ViewportHeight = le.viewport.height
+					dropCapStyle.Set("float", "left")
+					dropCapStyle.Set("font-size", fmt.Sprintf("%.4fpx", dropCapFontSize))
+					// Inherit font-family and font-weight from container
+					if ff, ok := state.ContainerStyle.Get("font-family"); ok {
+						dropCapStyle.Set("font-family", ff)
+					}
+					if fw, ok := state.ContainerStyle.Get("font-weight"); ok {
+						dropCapStyle.Set("font-weight", fw)
+					}
+					if color, ok := state.ContainerStyle.Get("color"); ok {
+						dropCapStyle.Set("color", color)
+					}
+					// Small right margin so text doesn't hug the drop cap
+					dropCapStyle.Set("margin-right", "4px")
+
+					// Compute dimensions of the drop cap
+					dcBold := dropCapStyle.GetFontWeight() == css.FontWeightBold
+					dcItalic := dropCapStyle.GetFontStyle() == css.FontStyleItalic
+					dcMono := dropCapStyle.IsMonospaceFamily()
+					dcAhem := dropCapStyle.IsAhemFamily()
+					dcWidth, _ := text.MeasureTextWithStyle(firstLetter, dropCapFontSize, dcBold, dcItalic, dcMono, dcAhem)
+					// Use fontSize * 1.2 for float exclusion height, matching the engine's
+					// default float height estimate (style.GetFontSize() * 1.2) so that
+					// references using plain floats with the same font-size produce the same
+					// text wrapping behavior.
+					dcHeight := dropCapFontSize * 1.2
+
+					// Create a synthetic DOM node for the drop-cap letter
+					textChild := &html.Node{
+						Type: html.TextNode,
+						Text: firstLetter,
+					}
+					dropCapNode := &html.Node{
+						Type:       html.ElementNode,
+						TagName:    "span",
+						Attributes: map[string]string{},
+						Children:   []*html.Node{textChild},
+						Parent:     node.Parent,
+					}
+					textChild.Parent = dropCapNode
+
+					// Register the style so layoutNode and LayoutInlineContentToBoxes can find it.
+					// Both le.syntheticStyles (used by layoutNode) and computedStyles (used by
+					// FragmentFloat handling for floatType lookup) must be populated.
+					le.syntheticStyles[dropCapNode] = dropCapStyle
+					le.syntheticStyles[textChild] = dropCapStyle
+					computedStyles[dropCapNode] = dropCapStyle
+					computedStyles[textChild] = dropCapStyle
+
+					// Create the float item for the drop cap
+					floatItem := &InlineItem{
+						Type:   InlineItemFloat,
+						Node:   dropCapNode,
+						Style:  dropCapStyle,
+						Width:  dcWidth,
+						Height: dcHeight,
+					}
+					state.Items = append(state.Items, floatItem)
+
+					// Create a text item for the remaining text
+					if remaining != "" {
+						remFontSize := parentStyle.GetFontSize()
+						remBold := parentStyle.GetFontWeight() == css.FontWeightBold
+						remItalic := parentStyle.GetFontStyle() == css.FontStyleItalic
+						remMono := parentStyle.IsMonospaceFamily()
+						remAhem := parentStyle.IsAhemFamily()
+						remWidth, remHeight := text.MeasureTextWithStyle(remaining, remFontSize, remBold, remItalic, remMono, remAhem)
+						remItem := &InlineItem{
+							Type:        InlineItemText,
+							Node:        node,
+							Text:        remaining,
+							StartOffset: len(firstLetter),
+							EndOffset:   len(node.Text),
+							Style:       parentStyle,
+							Width:       remWidth,
+							Height:      remHeight,
+						}
+						state.Items = append(state.Items, remItem)
+					}
+					return
+				}
 			}
 		}
 

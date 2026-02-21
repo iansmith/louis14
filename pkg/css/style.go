@@ -2813,6 +2813,40 @@ func (s *Style) GetFontVariantNumeric() string {
 	return "normal"
 }
 
+// InitialLetterValue holds the parsed initial-letter property.
+type InitialLetterValue struct {
+	Size float64 // how many lines tall
+	Sink int     // how many lines to sink (default = floor(Size))
+	Set  bool    // true if initial-letter is specified
+}
+
+// GetInitialLetter parses the initial-letter property.
+// Syntax: initial-letter: <size> [<sink>]
+// Where <size> is the number of lines the initial letter spans,
+// and <sink> is the number of lines it sinks (defaults to floor(size)).
+func (s *Style) GetInitialLetter() InitialLetterValue {
+	v, ok := s.Get("initial-letter")
+	if !ok {
+		return InitialLetterValue{}
+	}
+	v = strings.TrimSpace(v)
+	if v == "" || v == "normal" {
+		return InitialLetterValue{}
+	}
+	parts := strings.Fields(v)
+	size, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil || size <= 0 {
+		return InitialLetterValue{}
+	}
+	sink := int(math.Floor(size))
+	if len(parts) >= 2 {
+		if s2, err2 := strconv.Atoi(parts[1]); err2 == nil {
+			sink = s2
+		}
+	}
+	return InitialLetterValue{Size: size, Sink: sink, Set: true}
+}
+
 // IsMonospaceFamily returns true if the computed font-family is a monospace font.
 func (s *Style) IsMonospaceFamily() bool {
 	if family, ok := s.Get("font-family"); ok {
