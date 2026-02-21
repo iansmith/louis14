@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Test: explicit grid-column and grid-row placement</title>
+<link rel="help" href="https://drafts.csswg.org/css-grid-1/#placement-shorthands" />
+<link rel="match" href="grid-explicit-placement-001-ref.html">
+<meta name="assert" content="Items with explicit grid-column and grid-row values are placed at the specified grid lines">
+<style>
+body { margin: 0; padding: 0; }
+.grid {
+  display: grid;
+  grid-template-columns: 100px 100px 100px;
+  grid-template-rows: 100px 100px;
+  width: 300px;
+  height: 200px;
+  background: red;
+}
+.a { grid-column: 1; grid-row: 1; background: green; }
+.b { grid-column: 3; grid-row: 1; background: lime; }
+.c { grid-column: 2; grid-row: 2; background: blue; }
+</style>
+<p>Test passes if there is a green square at top-left, a lime square at top-right, a blue square at bottom-center, and red is visible at top-center and bottom left/right.</p>
+<div class="grid">
+  <div class="a"></div>
+  <div class="b"></div>
+  <div class="c"></div>
+</div>

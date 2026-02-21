@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Reference: gap property</title>
+<style>
+body { margin: 0; padding: 0; }
+/* Use the same grid to create the reference — just remove gap to verify structure,
+   but actually use flex row-wrap to simulate the 2x2 grid with gaps */
+.row {
+  display: flex;
+  gap: 10px;
+  width: 200px;
+  margin-bottom: 10px;
+}
+.row:last-child {
+  margin-bottom: 0;
+}
+.cell {
+  width: 90px;
+  height: 90px;
+  background: green;
+  flex-shrink: 0;
+}
+</style>
+<p>Test passes if there are four green squares arranged in a 2x2 grid with white gaps between them, and <strong>no red</strong>.</p>
+<div class="row">
+  <div class="cell"></div>
+  <div class="cell"></div>
+</div>
+<div class="row">
+  <div class="cell"></div>
+  <div class="cell"></div>
+</div>

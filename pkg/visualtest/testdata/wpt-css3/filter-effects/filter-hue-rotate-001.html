@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: filter hue-rotate(90deg) shifts red hue</title>
+  <link rel="help" href="https://www.w3.org/TR/filter-effects-1/#funcdef-filter-hue-rotate" />
+  <link rel="match" href="filter-hue-rotate-001-ref.html" />
+  <meta name="assert" content="filter: hue-rotate(90deg) on rgb(255,0,0) produces dark green per W3C matrix" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: rgb(255, 0, 0);
+      filter: hue-rotate(90deg);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

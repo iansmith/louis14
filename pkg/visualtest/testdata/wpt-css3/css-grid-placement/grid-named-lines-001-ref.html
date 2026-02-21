@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Reference: named grid lines placement</title>
+<style>
+body { margin: 0; padding: 0; }
+.wrapper {
+  position: relative;
+  width: 200px;
+  height: 200px;
+}
+/* Top-left: green 100x100 */
+.a { position: absolute; left: 0;   top: 0;   width: 100px; height: 100px; background: green; }
+/* Top-right: blue 100x100 */
+.b { position: absolute; left: 100px; top: 0; width: 100px; height: 100px; background: blue; }
+/* Bottom row: full-width lime 200x100 */
+.c { position: absolute; left: 0;   top: 100px; width: 200px; height: 100px; background: lime; }
+</style>
+<p>Test passes if there is a green square (top-left), a blue square (top-right), and a full-width lime rectangle (bottom row), with no red visible.</p>
+<div class="wrapper">
+  <div class="a"></div>
+  <div class="b"></div>
+  <div class="c"></div>
+</div>

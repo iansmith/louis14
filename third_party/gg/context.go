@@ -937,6 +937,16 @@ func (dc *Context) TransformPoint(x, y float64) (tx, ty float64) {
 	return dc.matrix.TransformPoint(x, y)
 }
 
+// MultiplyMatrix pre-multiplies the current matrix by the given 2D affine matrix.
+// The parameters correspond to the CSS matrix(a,b,c,d,e,f) function:
+//   - xx = a (scale X), yx = b (skew Y)
+//   - xy = c (skew X), yy = d (scale Y)
+//   - x0 = e (translate X), y0 = f (translate Y)
+func (dc *Context) MultiplyMatrix(xx, yx, xy, yy, x0, y0 float64) {
+	m := Matrix{XX: xx, YX: yx, XY: xy, YY: yy, X0: x0, Y0: y0}
+	dc.matrix = m.Multiply(dc.matrix)
+}
+
 // InvertY flips the Y axis so that Y grows from bottom to top and Y=0 is at
 // the bottom of the image.
 func (dc *Context) InvertY() {

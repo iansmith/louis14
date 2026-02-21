@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: filter sepia(1) converts red to sepia tone</title>
+  <link rel="help" href="https://www.w3.org/TR/filter-effects-1/#funcdef-filter-sepia" />
+  <link rel="match" href="filter-sepia-001-ref.html" />
+  <meta name="assert" content="filter: sepia(1) fully converts rgb(255,0,0) to sepia tone rgb(100,89,69)" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: rgb(255, 0, 0);
+      filter: sepia(1);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

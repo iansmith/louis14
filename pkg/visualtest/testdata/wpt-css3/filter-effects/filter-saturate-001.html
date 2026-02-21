@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: filter saturate(0) fully desaturates color</title>
+  <link rel="help" href="https://www.w3.org/TR/filter-effects-1/#funcdef-filter-saturate" />
+  <link rel="match" href="filter-saturate-001-ref.html" />
+  <meta name="assert" content="filter: saturate(0) fully desaturates a colored element to gray" />
+  <style>
+    body { margin: 0; }
+    .test {
+      width: 100px;
+      height: 100px;
+      background: rgb(255, 128, 0);
+      filter: saturate(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="test"></div>
+</body>
+</html>

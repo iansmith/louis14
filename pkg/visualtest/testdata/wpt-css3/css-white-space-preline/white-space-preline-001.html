@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: white-space pre-line preserves newlines</title>
+  <link rel="help" href="https://drafts.csswg.org/css-text-3/#white-space-property" />
+  <link rel="match" href="white-space-preline-001-ref.html" />
+  <meta charset="utf-8">
+  <meta name="assert" content="white-space:pre-line preserves newlines in source text but collapses spaces. Two lines of text make the container 40px tall." />
+  <style>
+    body { margin: 0; padding: 0; }
+    /* pre-line: preserves newlines, collapses spaces.
+       Text has a literal newline between AA and BB, producing 2 lines.
+       Container height = 2 * 20px line-height = 40px. */
+    .test {
+      width: 200px;
+      white-space: pre-line;
+      background: green;
+      color: green;
+      font-size: 20px;
+      line-height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="test">AA
+BB</div>
+</body>
+</html>

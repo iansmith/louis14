@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Reference: grid-column span</title>
+<style>
+body { margin: 0; padding: 0; }
+.wrapper {
+  position: relative;
+  width: 300px;
+  height: 200px;
+}
+/* Row 1: wide green (200px) + narrow lime (100px) */
+.wide { position: absolute; left: 0;   top: 0;   width: 200px; height: 100px; background: green; }
+.r1c3 { position: absolute; left: 200px; top: 0; width: 100px; height: 100px; background: lime; }
+/* Row 2: full-width lime (300px) */
+.r2   { position: absolute; left: 0;   top: 100px; width: 300px; height: 100px; background: lime; }
+</style>
+<p>Test passes if there is a green rectangle (200px wide) on the left and a lime rectangle (100px wide) on the right in the first row, and a full-width lime row below, with <strong>no red</strong>.</p>
+<div class="wrapper">
+  <div class="wide"></div>
+  <div class="r1c3"></div>
+  <div class="r2"></div>
+</div>

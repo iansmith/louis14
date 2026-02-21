@@ -194,6 +194,18 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			}
 		} else if basisVal.IsPercent {
 			item.FlexBasis = mainSize * basisVal.Percentage / 100
+		} else if basisVal.IsCalc {
+			// Resolve calc() expression with mainSize as the percentage base
+			if resolved, ok := css.EvalCalcWithPercent(basisVal.CalcExpr, basisVal.FontSize, mainSize); ok {
+				item.FlexBasis = resolved
+			} else {
+				// Fallback: treat as auto
+				if isRow {
+					item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+				} else {
+					item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+				}
+			}
 		} else {
 			item.FlexBasis = basisVal.Length
 		}

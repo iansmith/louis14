@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: transform matrix() translate equivalent</title>
+  <link rel="help" href="https://www.w3.org/TR/css-transforms-1/#funcdef-transform-matrix" />
+  <link rel="match" href="transform-matrix-001-ref.html" />
+  <meta name="assert" content="matrix(1,0,0,1,50,50) is equivalent to translate(50px,50px)" />
+  <style>
+  body { margin: 0; }
+  .container {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    background: white;
+    overflow: hidden;
+  }
+  .box {
+    width: 60px;
+    height: 60px;
+    background: green;
+    transform: matrix(1, 0, 0, 1, 50, 50);
+  }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="box"></div>
+  </div>
+</body>
+</html>

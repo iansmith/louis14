@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Test: named grid lines placement</title>
+<link rel="help" href="https://drafts.csswg.org/css-grid-1/#line-placement" />
+<link rel="match" href="grid-named-lines-001-ref.html">
+<meta name="assert" content="Items placed using named grid lines (grid-column-start/end with line names) land in the correct grid cells">
+<style>
+body { margin: 0; padding: 0; }
+.grid {
+  display: grid;
+  grid-template-columns: [left] 100px [center] 100px [right];
+  grid-template-rows: [top] 100px [middle] 100px [bottom];
+  width: 200px;
+  height: 200px;
+  background: red;
+}
+.a {
+  grid-column-start: left;
+  grid-column-end: center;
+  grid-row-start: top;
+  grid-row-end: middle;
+  background: green;
+}
+.b {
+  grid-column-start: center;
+  grid-column-end: right;
+  grid-row-start: top;
+  grid-row-end: middle;
+  background: blue;
+}
+.c {
+  grid-column-start: left;
+  grid-column-end: right;
+  grid-row-start: middle;
+  grid-row-end: bottom;
+  background: lime;
+}
+</style>
+<p>Test passes if there is a green square (top-left), a blue square (top-right), and a full-width lime rectangle (bottom row), with no red visible.</p>
+<div class="grid">
+  <div class="a"></div>
+  <div class="b"></div>
+  <div class="c"></div>
+</div>

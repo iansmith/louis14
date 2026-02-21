@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: vertical-align middle on inline-block</title>
+  <link rel="help" href="https://drafts.csswg.org/css-inline/#propdef-vertical-align" />
+  <link rel="match" href="vertical-align-middle-001-ref.html" />
+  <meta charset="utf-8">
+  <meta name="assert" content="vertical-align:middle centers a 20px inline-block vertically within a 60px line set by a taller sibling. The green box should appear at y=20 (center of 60px line)." />
+  <style>
+    body { margin: 0; padding: 0; }
+    /* Line container: height is determined by the tallest inline child (60px).
+       font-size: 0 eliminates text baseline from contributing to line height. */
+    .line {
+      font-size: 0;
+      line-height: 0;
+      width: 200px;
+    }
+    /* Tall box sets line height to 60px */
+    .tall {
+      display: inline-block;
+      width: 20px;
+      height: 60px;
+      background: blue;
+      vertical-align: top;
+    }
+    /* 20px box with vertical-align: middle should be centered at y=20 */
+    .mid {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      background: green;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="line"><span class="tall"></span><span class="mid"></span></div>
+</body>
+</html>

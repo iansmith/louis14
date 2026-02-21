@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: line-height specified as percentage</title>
+  <link rel="help" href="https://drafts.csswg.org/css-inline/#propdef-line-height" />
+  <link rel="match" href="line-height-pct-001-ref.html" />
+  <meta charset="utf-8">
+  <meta name="assert" content="line-height:150% with font-size:20px produces a 30px line-height. The blue box height should match a 30px reference box." />
+  <style>
+    body { margin: 0; padding: 0; }
+    /* line-height: 150% = 1.5 * font-size = 1.5 * 20px = 30px
+       Container height = 1 line = 30px */
+    .test {
+      width: 100px;
+      font-size: 20px;
+      line-height: 150%;
+      background: green;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="test">X</div>
+</body>
+</html>

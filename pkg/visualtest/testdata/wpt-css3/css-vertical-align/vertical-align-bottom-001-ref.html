@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: vertical-align bottom</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; padding: 0; }
+    /* Reference: explicit absolute positioning matching expected output.
+       Blue box: 20x60px at x=0, y=0
+       Orange box (bottom of 60px): 20x20px at x=20, y=40 */
+    .container {
+      position: relative;
+      width: 200px;
+      height: 60px;
+    }
+    .blue {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 20px;
+      height: 60px;
+      background: blue;
+    }
+    .orange {
+      position: absolute;
+      left: 20px;
+      top: 40px;
+      width: 20px;
+      height: 20px;
+      background: orange;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="blue"></div>
+    <div class="orange"></div>
+  </div>
+</body>
+</html>

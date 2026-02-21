@@ -1684,6 +1684,16 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		hasChildWrappers bool // true if any child inline wrapper boxes were created during this span
 	}
 
+	// Precompute line heights: for each fragment Y position, find the maximum
+	// fragment height on that line. Used for vertical-align: middle/top/bottom
+	// on atomic inline items (inline-block elements).
+	fragLineMaxHeight := make(map[float64]float64)
+	for _, frag := range fragments {
+		if frag.Size.Height > fragLineMaxHeight[frag.Position.Y] {
+			fragLineMaxHeight[frag.Position.Y] = frag.Size.Height
+		}
+	}
+
 	// Process fragments, handling block children with recursive layout
 	boxes := []*Box{}
 	currentY := startY
@@ -2130,6 +2140,25 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			)
 			if atomicBox != nil {
 				atomicBox.Parent = containerBox
+
+				// Apply vertical-align: middle/top/bottom to inline-block elements.
+				// The line height is the max height of all fragments on this line,
+				// precomputed in fragLineMaxHeight.
+				if atomicBox.Style != nil {
+					lineH := fragLineMaxHeight[frag.Position.Y]
+					boxH := le.getTotalHeight(atomicBox)
+					valign := atomicBox.Style.GetVerticalAlign()
+					switch valign {
+					case css.VerticalAlignMiddle:
+						atomicBox.Y = currentY + (lineH-boxH)/2
+						le.shiftChildren(atomicBox, 0, atomicBox.Y-currentY)
+					case css.VerticalAlignBottom:
+						atomicBox.Y = currentY + lineH - boxH
+						le.shiftChildren(atomicBox, 0, atomicBox.Y-currentY)
+					// VerticalAlignTop and VerticalAlignBaseline: leave at currentY (no change)
+					}
+				}
+
 				boxes = append(boxes, atomicBox)
 
 				// Track as content for line metrics

@@ -648,6 +648,24 @@ func (r *Renderer) paintWithFilter(box *layout.Box, filters []css.FilterFunction
 				fr = fr*(1-amt) + (1-fr)*amt
 				fg = fg*(1-amt) + (1-fg)*amt
 				fb = fb*(1-amt) + (1-fb)*amt
+			case "hue-rotate":
+				// W3C spec hue-rotate matrix for angle in degrees
+				angle := f.Value * math.Pi / 180
+				cosA := math.Cos(angle)
+				sinA := math.Sin(angle)
+				r00 := 0.213 + cosA*0.787 - sinA*0.213
+				r01 := 0.715 - cosA*0.715 - sinA*0.715
+				r02 := 0.072 - cosA*0.072 + sinA*0.928
+				r10 := 0.213 - cosA*0.213 + sinA*0.143
+				r11 := 0.715 + cosA*0.285 + sinA*0.140
+				r12 := 0.072 - cosA*0.072 - sinA*0.283
+				r20 := 0.213 - cosA*0.213 - sinA*0.787
+				r21 := 0.715 - cosA*0.715 + sinA*0.715
+				r22 := 0.072 + cosA*0.928 + sinA*0.072
+				nr := r00*fr + r01*fg + r02*fb
+				ng := r10*fr + r11*fg + r12*fb
+				nb := r20*fr + r21*fg + r22*fb
+				fr, fg, fb = nr, ng, nb
 			}
 		}
 
@@ -2861,6 +2879,12 @@ func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) 
 			} else if len(t.Values) >= 1 {
 				tanX := math.Tan(t.Values[0] * math.Pi / 180)
 				r.context.Shear(-tanX, 0)
+			}
+		case "matrix":
+			// CSS matrix(a, b, c, d, e, f) — 2D affine transform
+			// a=XX(scaleX), b=YX(skewY), c=XY(skewX), d=YY(scaleY), e=X0(tx), f=Y0(ty)
+			if len(t.Values) == 6 {
+				r.context.MultiplyMatrix(t.Values[0], t.Values[1], t.Values[2], t.Values[3], t.Values[4], t.Values[5])
 			}
 		}
 	}

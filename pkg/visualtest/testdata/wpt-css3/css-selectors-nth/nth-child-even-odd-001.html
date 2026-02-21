@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test: :nth-child(even) and :nth-child(odd) for alternating rows</title>
+<link rel="match" href="nth-child-even-odd-001-ref.html">
+<style>
+  body { margin: 0; background: white; }
+  .row {
+    width: 200px;
+    height: 40px;
+    display: block;
+  }
+  .row:nth-child(odd) {
+    background: green;
+  }
+  .row:nth-child(even) {
+    background: blue;
+  }
+</style>
+</head>
+<body>
+  <div>
+    <div class="row"></div><!-- 1: odd → green -->
+    <div class="row"></div><!-- 2: even → blue -->
+    <div class="row"></div><!-- 3: odd → green -->
+    <div class="row"></div><!-- 4: even → blue -->
+    <div class="row"></div><!-- 5: odd → green -->
+  </div>
+</body>
+</html>

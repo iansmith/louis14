@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Test: gap property</title>
+<link rel="help" href="https://drafts.csswg.org/css-grid-1/#gutters" />
+<link rel="match" href="grid-gap-001-ref.html">
+<meta name="assert" content="gap property (row-gap and column-gap) creates gutters between grid tracks">
+<style>
+body { margin: 0; padding: 0; }
+.grid {
+  display: grid;
+  grid-template-columns: 90px 90px;
+  grid-template-rows: 90px 90px;
+  gap: 10px;
+  width: 200px;
+  height: 200px;
+  background: white;
+}
+.item {
+  background: green;
+}
+</style>
+<p>Test passes if there are four green squares arranged in a 2x2 grid with white gaps between them, and <strong>no red</strong>.</p>
+<div class="grid">
+  <div class="item"></div>
+  <div class="item"></div>
+  <div class="item"></div>
+  <div class="item"></div>
+</div>

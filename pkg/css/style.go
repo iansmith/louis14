@@ -3988,12 +3988,15 @@ func (s *Style) GetFlexShrink() float64 {
 	return 1.0
 }
 
-// FlexBasisValue represents a flex-basis value which can be auto, a length, or a percentage.
+// FlexBasisValue represents a flex-basis value which can be auto, a length, a percentage, or a calc() expression.
 type FlexBasisValue struct {
 	IsAuto     bool
 	Length     float64 // absolute length in pixels (if not auto and not percentage)
-	Percentage float64 // percentage value (if IsPercentage)
+	Percentage float64 // percentage value (if IsPercent)
 	IsPercent  bool
+	CalcExpr   string  // raw calc() expression string (if IsCalc); resolve with EvalCalcWithPercent
+	FontSize   float64 // font size at parse time, needed for em units in CalcExpr
+	IsCalc     bool
 }
 
 // GetFlexBasisValue returns the structured flex-basis value (default: auto)
@@ -4004,6 +4007,11 @@ func (s *Style) GetFlexBasisValue() FlexBasisValue {
 	}
 	if pct, ok := ParsePercentage(basis); ok {
 		return FlexBasisValue{Percentage: pct, IsPercent: true}
+	}
+	// Handle calc() expressions — defer percentage resolution until container size is known
+	if strings.HasPrefix(basis, "calc(") && strings.HasSuffix(basis, ")") {
+		expr := basis[5 : len(basis)-1]
+		return FlexBasisValue{IsCalc: true, CalcExpr: expr, FontSize: s.GetFontSize()}
 	}
 	if length, ok := ParseLengthWithFontSize(basis, s.GetFontSize()); ok {
 		return FlexBasisValue{Length: length}
@@ -4265,6 +4273,24 @@ func (s *Style) GetGridTemplateRows() []GridTrack {
 	return nil
 }
 
+// GetGridTemplateColumnsWithNames parses grid-template-columns and returns track sizes
+// along with a map of named grid lines (name → 1-indexed line number).
+func (s *Style) GetGridTemplateColumnsWithNames() ([]GridTrack, map[string]int) {
+	if val, ok := s.Get("grid-template-columns"); ok {
+		return parseGridTracksWithNames(val)
+	}
+	return nil, nil
+}
+
+// GetGridTemplateRowsWithNames parses grid-template-rows and returns track sizes
+// along with a map of named grid lines (name → 1-indexed line number).
+func (s *Style) GetGridTemplateRowsWithNames() ([]GridTrack, map[string]int) {
+	if val, ok := s.Get("grid-template-rows"); ok {
+		return parseGridTracksWithNames(val)
+	}
+	return nil, nil
+}
+
 // GetGridTemplateColumnsIsSubgrid returns true if grid-template-columns is "subgrid".
 func (s *Style) GetGridTemplateColumnsIsSubgrid() bool {
 	if val, ok := s.Get("grid-template-columns"); ok {
@@ -4399,6 +4425,130 @@ func splitGridTrackValues(val string) []string {
 	return parts
 }
 
+// parseGridTracksWithNames parses grid track definitions and also extracts named line names.
+// Named lines like [left] in "100px [left] 200px [right]" map the name to the line index (1-indexed).
+// Line 1 is before track 1, line 2 is between track 1 and 2, etc.
+// Returns (tracks, lineNames map[name]lineNumber).
+func parseGridTracksWithNames(val string) ([]GridTrack, map[string]int) {
+	if val == "none" {
+		return nil, nil
+	}
+	if strings.TrimSpace(strings.ToLower(val)) == "subgrid" {
+		return []GridTrack{{IsSubgrid: true}}, nil
+	}
+
+	tracks := make([]GridTrack, 0)
+	lineNames := make(map[string]int)
+	rawParts := splitGridTrackValues(val)
+	parts := expandRepeatTracks(rawParts)
+
+	// currentLine is 1-indexed: line 1 is before the first track
+	currentLine := 1
+	pendingNames := []string{} // names to assign to the next line
+
+	for _, part := range parts {
+		// Named line: [name] or [name1 name2]
+		if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
+			inner := part[1 : len(part)-1]
+			for _, name := range strings.Fields(inner) {
+				pendingNames = append(pendingNames, name)
+			}
+			continue
+		}
+
+		// Assign pending names to current line before this track
+		for _, name := range pendingNames {
+			if _, exists := lineNames[name]; !exists {
+				lineNames[name] = currentLine
+			}
+		}
+		pendingNames = pendingNames[:0]
+
+		// Parse the track itself
+		var newTrack *GridTrack
+		if strings.HasPrefix(part, "auto-fill:") || strings.HasPrefix(part, "auto-fit:") {
+			colonIdx := strings.Index(part, ":")
+			mode := part[:colonIdx]
+			trackListStr := part[colonIdx+1:]
+			templateTracks, _ := parseGridTracksWithNames(trackListStr)
+			sentinel := GridTrack{AutoTemplate: templateTracks}
+			if mode == "auto-fill" {
+				sentinel.AutoFill = true
+			} else {
+				sentinel.AutoFit = true
+			}
+			newTrack = &sentinel
+		} else if part == "auto" {
+			t := GridTrack{Auto: true}
+			newTrack = &t
+		} else if part == "min-content" {
+			t := GridTrack{MinContent: true}
+			newTrack = &t
+		} else if part == "max-content" {
+			t := GridTrack{MaxContent: true}
+			newTrack = &t
+		} else if strings.HasPrefix(part, "minmax(") && strings.HasSuffix(part, ")") {
+			inner := part[7 : len(part)-1]
+			commaIdx := strings.Index(inner, ",")
+			if commaIdx >= 0 {
+				minStr := strings.TrimSpace(inner[:commaIdx])
+				maxStr := strings.TrimSpace(inner[commaIdx+1:])
+				track := GridTrack{IsMinMax: true}
+				if minStr == "0" || minStr == "0px" {
+					track.MinSize = 0
+				} else if minStr == "auto" {
+					// MinSize stays 0
+				} else if size, ok := ParseLength(minStr); ok {
+					track.MinSize = size
+				}
+				if strings.HasSuffix(maxStr, "fr") {
+					frStr := strings.TrimSuffix(maxStr, "fr")
+					if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
+						track.MaxFr = fr
+					}
+				} else if maxStr == "auto" {
+					track.MaxAuto = true
+				} else if size, ok := ParseLength(maxStr); ok {
+					track.MaxSize = size
+				}
+				newTrack = &track
+			}
+		} else if strings.HasSuffix(part, "fr") {
+			frStr := strings.TrimSuffix(part, "fr")
+			if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
+				t := GridTrack{Fr: fr}
+				newTrack = &t
+			}
+		} else if strings.HasSuffix(part, "%") {
+			numStr := strings.TrimSuffix(part, "%")
+			if pct, err := strconv.ParseFloat(numStr, 64); err == nil {
+				t := GridTrack{Percent: pct}
+				newTrack = &t
+			}
+		} else if size, ok := ParseLength(part); ok {
+			t := GridTrack{Size: size}
+			newTrack = &t
+		}
+
+		if newTrack != nil {
+			tracks = append(tracks, *newTrack)
+			currentLine++ // advance to the line after this track
+		}
+	}
+
+	// Handle trailing named lines (after last track)
+	for _, name := range pendingNames {
+		if _, exists := lineNames[name]; !exists {
+			lineNames[name] = currentLine
+		}
+	}
+
+	if len(lineNames) == 0 {
+		return tracks, nil
+	}
+	return tracks, lineNames
+}
+
 // parseGridTracks parses a space-separated list of track sizes (e.g., "100px 200px auto 1fr")
 // Supports minmax(), min-content, max-content, fr, px, rem, auto, and subgrid values.
 func parseGridTracks(val string) []GridTrack {
@@ -4501,8 +4651,10 @@ func (s *Style) GetGridGap() (rowGap, columnGap float64) {
 
 // GridPlacement represents grid-column or grid-row placement
 type GridPlacement struct {
-	Start int  // Starting line (1-indexed)
-	End   int  // Ending line (1-indexed, exclusive)
+	Start   int  // Starting line (1-indexed), 0 if auto
+	End     int  // Ending line (1-indexed, exclusive), 0 if auto
+	IsSpan  bool // true if this is a span-only placement (no explicit start)
+	SpanCount int // number of tracks to span (used when IsSpan=true or end is "span N")
 }
 
 // GetGridColumn parses grid-column property (e.g., "1 / 3" or "1 / span 2")
@@ -4513,10 +4665,112 @@ func (s *Style) GetGridColumn() *GridPlacement {
 	return nil
 }
 
+// GetGridColumnWithNames parses grid-column (or individual grid-column-start/end) with named line resolution.
+func (s *Style) GetGridColumnWithNames(colLineNames map[string]int) *GridPlacement {
+	// Check for individual properties first (grid-column-start / grid-column-end)
+	startVal, hasStart := s.Get("grid-column-start")
+	endVal, hasEnd := s.Get("grid-column-end")
+	if hasStart || hasEnd {
+		p := &GridPlacement{}
+		if hasStart && startVal != "auto" {
+			if strings.HasPrefix(startVal, "span ") {
+				var n int
+				fmt.Sscanf(strings.TrimSpace(startVal[5:]), "%d", &n)
+				if n <= 0 {
+					n = 1
+				}
+				p.IsSpan = true
+				p.SpanCount = n
+			} else {
+				p.Start = resolveLineName(startVal, colLineNames)
+			}
+		}
+		if hasEnd && endVal != "auto" {
+			if strings.HasPrefix(endVal, "span ") {
+				var n int
+				fmt.Sscanf(strings.TrimSpace(endVal[5:]), "%d", &n)
+				if n <= 0 {
+					n = 1
+				}
+				p.SpanCount = n
+				if p.Start > 0 {
+					p.End = p.Start + n
+				} else {
+					p.IsSpan = true
+				}
+			} else {
+				p.End = resolveLineName(endVal, colLineNames)
+			}
+		}
+		if p.Start == 0 && p.End == 0 && !p.IsSpan {
+			return nil
+		}
+		if p.Start > 0 && p.End == 0 && !p.IsSpan {
+			p.End = p.Start + 1
+		}
+		return p
+	}
+	if val, ok := s.Get("grid-column"); ok {
+		return parseGridPlacementWithNames(val, colLineNames, nil)
+	}
+	return nil
+}
+
 // GetGridRow parses grid-row property (e.g., "2 / 4")
 func (s *Style) GetGridRow() *GridPlacement {
 	if val, ok := s.Get("grid-row"); ok {
 		return parseGridPlacement(val)
+	}
+	return nil
+}
+
+// GetGridRowWithNames parses grid-row (or individual grid-row-start/end) with named line resolution.
+func (s *Style) GetGridRowWithNames(rowLineNames map[string]int) *GridPlacement {
+	// Check for individual properties first (grid-row-start / grid-row-end)
+	startVal, hasStart := s.Get("grid-row-start")
+	endVal, hasEnd := s.Get("grid-row-end")
+	if hasStart || hasEnd {
+		p := &GridPlacement{}
+		if hasStart && startVal != "auto" {
+			if strings.HasPrefix(startVal, "span ") {
+				var n int
+				fmt.Sscanf(strings.TrimSpace(startVal[5:]), "%d", &n)
+				if n <= 0 {
+					n = 1
+				}
+				p.IsSpan = true
+				p.SpanCount = n
+			} else {
+				p.Start = resolveLineName(startVal, rowLineNames)
+			}
+		}
+		if hasEnd && endVal != "auto" {
+			if strings.HasPrefix(endVal, "span ") {
+				var n int
+				fmt.Sscanf(strings.TrimSpace(endVal[5:]), "%d", &n)
+				if n <= 0 {
+					n = 1
+				}
+				p.SpanCount = n
+				if p.Start > 0 {
+					p.End = p.Start + n
+				} else {
+					p.IsSpan = true
+				}
+			} else {
+				p.End = resolveLineName(endVal, rowLineNames)
+			}
+		}
+		if p.Start == 0 && p.End == 0 && !p.IsSpan {
+			return nil
+		}
+		if p.Start > 0 && p.End == 0 && !p.IsSpan {
+			p.End = p.Start + 1
+		}
+		return p
+	}
+	if val, ok := s.Get("grid-row"); ok {
+		return parseGridPlacementWithNames(val, rowLineNames, nil)
 	}
 	return nil
 }
@@ -4599,29 +4853,104 @@ func (s *Style) GetGridArea() string {
 	return ""
 }
 
-// parseGridPlacement parses grid line placement (e.g., "1 / 3" or "1")
+// resolveLineName resolves a grid line token to a line number.
+// If the token is a number, it returns that number directly.
+// If it's a named line (and lineNames is non-nil), it looks it up in the map.
+// Returns 0 if unresolvable.
+func resolveLineName(token string, lineNames map[string]int) int {
+	token = strings.TrimSpace(token)
+	if token == "" || token == "auto" {
+		return 0
+	}
+	var n int
+	if _, err := fmt.Sscanf(token, "%d", &n); err == nil && n != 0 {
+		return n
+	}
+	if lineNames != nil {
+		if lineNum, ok := lineNames[token]; ok {
+			return lineNum
+		}
+	}
+	return 0
+}
+
+// parseGridPlacement parses grid line placement (e.g., "1 / 3", "1 / span 2", "span 4", "1")
+// lineNames optionally maps named grid lines to 1-indexed line numbers.
 func parseGridPlacement(val string) *GridPlacement {
+	return parseGridPlacementWithNames(val, nil, nil)
+}
+
+// parseGridPlacementWithNames parses grid line placement with optional named line resolution.
+// colLineNames is for column (grid-column) placements; rowLineNames for row (grid-row) placements.
+// Only one of the two is used depending on which axis is being parsed — pass the relevant one.
+func parseGridPlacementWithNames(val string, lineNames map[string]int, _ map[string]int) *GridPlacement {
+	val = strings.TrimSpace(val)
+	if val == "" || val == "auto" {
+		return nil
+	}
+
 	parts := strings.Split(val, "/")
 
 	start := strings.TrimSpace(parts[0])
-	var startNum int
-	fmt.Sscanf(start, "%d", &startNum)
-	if startNum == 0 {
-		return nil
-	}
 
+	// Single value cases
 	if len(parts) == 1 {
-		// Single value: "1" means start at line 1, span 1
+		// "span N" — auto start, span N tracks
+		if strings.HasPrefix(start, "span ") {
+			spanStr := strings.TrimSpace(start[5:])
+			var n int
+			fmt.Sscanf(spanStr, "%d", &n)
+			if n <= 0 {
+				n = 1
+			}
+			return &GridPlacement{IsSpan: true, SpanCount: n}
+		}
+		// Try as number or named line
+		startNum := resolveLineName(start, lineNames)
+		if startNum == 0 {
+			return nil
+		}
 		return &GridPlacement{Start: startNum, End: startNum + 1}
 	}
 
+	// Two-part: "start / end"
 	end := strings.TrimSpace(parts[1])
-	var endNum int
-	fmt.Sscanf(end, "%d", &endNum)
-	if endNum == 0 {
-		return nil
+
+	// Parse start
+	startNum := 0
+	if start != "auto" {
+		startNum = resolveLineName(start, lineNames)
 	}
 
+	// Parse end: may be "span N" or a line number / named line
+	if strings.HasPrefix(end, "span ") {
+		spanStr := strings.TrimSpace(end[5:])
+		var n int
+		fmt.Sscanf(spanStr, "%d", &n)
+		if n <= 0 {
+			n = 1
+		}
+		if startNum > 0 {
+			return &GridPlacement{Start: startNum, End: startNum + n, SpanCount: n}
+		}
+		// auto start + span N
+		return &GridPlacement{IsSpan: true, SpanCount: n}
+	}
+
+	endNum := 0
+	if end != "auto" {
+		endNum = resolveLineName(end, lineNames)
+	}
+	if startNum == 0 && endNum == 0 {
+		return nil
+	}
+	if startNum == 0 {
+		// auto / N — treat as line N, span 1 back
+		return &GridPlacement{Start: endNum - 1, End: endNum}
+	}
+	if endNum == 0 {
+		return &GridPlacement{Start: startNum, End: startNum + 1}
+	}
 	return &GridPlacement{Start: startNum, End: endNum}
 }
 
@@ -4809,6 +5138,21 @@ func parseTransformFunction(name, args string) *Transform {
 		}
 		if len(values) >= 2 {
 			return &Transform{Type: "skew", Values: values[:2]}
+		}
+
+	case "matrix":
+		// matrix(a, b, c, d, e, f) — 2D affine transform matrix
+		// a=XX, b=YX, c=XY, d=YY, e=X0, f=Y0
+		parts := strings.Split(args, ",")
+		values := make([]float64, 0)
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if val, err := strconv.ParseFloat(part, 64); err == nil {
+				values = append(values, val)
+			}
+		}
+		if len(values) == 6 {
+			return &Transform{Type: "matrix", Values: values}
 		}
 	}
 
@@ -5624,6 +5968,11 @@ func (s *Style) GetFilter() []FilterFunction {
 		var value float64
 		if pct, ok := ParsePercentage(arg); ok {
 			value = pct / 100.0
+		} else if name == "hue-rotate" {
+			// hue-rotate takes an angle value (deg, rad, turn)
+			if a := parseAngle(arg); a != nil {
+				value = *a
+			}
 		} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
 			value = f
 		}

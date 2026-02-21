@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Test: grid-column span</title>
+<link rel="help" href="https://drafts.csswg.org/css-grid-1/#propdef-grid-column" />
+<link rel="match" href="grid-span-column-001-ref.html">
+<meta name="assert" content="grid-column: span 2 causes an item to span 2 columns in a 3-column grid">
+<style>
+body { margin: 0; padding: 0; }
+.grid {
+  display: grid;
+  grid-template-columns: 100px 100px 100px;
+  grid-auto-rows: 100px;
+  width: 300px;
+  background: red;
+}
+.wide { grid-column: span 2; background: green; }
+.narrow { background: lime; }
+</style>
+<p>Test passes if there is a green rectangle (200px wide) on the left and a lime rectangle (100px wide) on the right in the first row, and a full-width lime row below, with <strong>no red</strong>.</p>
+<div class="grid">
+  <div class="wide"></div>
+  <div class="narrow"></div>
+  <div class="narrow" style="grid-column: span 3"></div>
+</div>

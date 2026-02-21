@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>CSS Grid Layout Test: Placement of grid items spanning multiple rows</title>
+<link rel="help" href="https://drafts.csswg.org/css-grid-2/#auto-placement-algo" />
+<link rel="match" href="grid-placement-span-rows-001-ref.html">
+<meta name="assert" content="A grid item with grid-row: span 4 fills the left column, and 4 items fill the right column, with no red showing.">
+<style>
+.grid {
+  width: 100px;
+  display: grid;
+  background: red;
+  grid-auto-rows: 25px;
+  grid-template-columns: 50px 50px;
+}
+.grid > div {
+  background: green;
+}
+</style>
+<p>Test passes if there is a filled green square and <strong>no red</strong>.</p>
+<div class="grid">
+  <div style="grid-row: span 4"></div>
+  <div></div>
+  <div></div>
+  <div></div>
+  <div></div>
+</div>

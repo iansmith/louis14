@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: vertical-align bottom on inline-block</title>
+  <link rel="help" href="https://drafts.csswg.org/css-inline/#propdef-vertical-align" />
+  <link rel="match" href="vertical-align-bottom-001-ref.html" />
+  <meta charset="utf-8">
+  <meta name="assert" content="vertical-align:bottom aligns the bottom of a 20px inline-block with the bottom of a 60px line. The orange box should appear at y=40 (bottom of 60px line)." />
+  <style>
+    body { margin: 0; padding: 0; }
+    /* Line container: height is determined by the tallest inline child (60px).
+       font-size: 0 eliminates text baseline from contributing to line height. */
+    .line {
+      font-size: 0;
+      line-height: 0;
+      width: 200px;
+    }
+    /* Tall box sets line height to 60px */
+    .tall {
+      display: inline-block;
+      width: 20px;
+      height: 60px;
+      background: blue;
+      vertical-align: top;
+    }
+    /* 20px box with vertical-align: bottom should be at y=40 */
+    .bot {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      background: orange;
+      vertical-align: bottom;
+    }
+  </style>
+</head>
+<body>
+  <div class="line"><span class="tall"></span><span class="bot"></span></div>
+</body>
+</html>

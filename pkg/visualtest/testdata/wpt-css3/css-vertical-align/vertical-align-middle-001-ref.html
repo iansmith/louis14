@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: vertical-align middle</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; padding: 0; }
+    /* Reference: explicit absolute positioning matching the expected output.
+       Blue box: 20x60px at x=0, y=0
+       Green box (middle of 60px): 20x20px at x=20, y=20 */
+    .container {
+      position: relative;
+      width: 200px;
+      height: 60px;
+    }
+    .blue {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 20px;
+      height: 60px;
+      background: blue;
+    }
+    .green {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      width: 20px;
+      height: 20px;
+      background: green;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="blue"></div>
+    <div class="green"></div>
+  </div>
+</body>
+</html>

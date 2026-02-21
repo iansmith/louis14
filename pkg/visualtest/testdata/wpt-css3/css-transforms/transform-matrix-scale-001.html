@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: transform matrix() rotation equivalent to rotate(90deg)</title>
+  <link rel="help" href="https://www.w3.org/TR/css-transforms-1/#funcdef-transform-matrix" />
+  <link rel="match" href="transform-matrix-scale-001-ref.html" />
+  <meta name="assert" content="matrix(0,1,-1,0,0,0) produces the same visual result as rotate(90deg)" />
+  <style>
+  body { margin: 0; }
+  .container {
+    width: 100px;
+    height: 100px;
+    overflow: hidden;
+  }
+  .box {
+    width: 100px;
+    height: 100px;
+    transform: matrix(0, 1, -1, 0, 0, 0);
+  }
+  .top { height: 50px; background: green; }
+  .bottom { height: 50px; background: blue; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="box">
+      <div class="top"></div>
+      <div class="bottom"></div>
+    </div>
+  </div>
+</body>
+</html>

@@ -89,9 +89,9 @@ func (le *LayoutEngine) layoutGridContainer(
 	computedStyles map[*html.Node]*css.Style,
 	parent *Box,
 ) *Box {
-	// Get grid properties
-	columnTracks := style.GetGridTemplateColumns()
-	rowTracks := style.GetGridTemplateRows()
+	// Get grid properties (with named line maps for named line placement resolution)
+	columnTracks, colLineNames := style.GetGridTemplateColumnsWithNames()
+	rowTracks, rowLineNames := style.GetGridTemplateRowsWithNames()
 
 	// Handle subgrid: when grid-template-columns/rows is "subgrid", the child grid
 	// inherits its tracks from the parent. As a simplified fallback, we treat it as
@@ -197,14 +197,23 @@ func (le *LayoutEngine) layoutGridContainer(
 	maxRow := 0
 	maxCol := 0
 
-	currentRow := 0
-	currentCol := 0
 	numColTracks := len(columnTracks)
 	numRowTracks := len(rowTracks)
 	autoFlow := style.GetGridAutoFlow() // "row" or "column"
 
 	// Expand display:contents children so their children participate as direct grid items
 	gridChildren := le.flattenContentsChildren(node, computedStyles)
+
+	// Categorize children for proper CSS Grid auto-placement ordering
+	type pendingItem struct {
+		child      *html.Node
+		childStyle *css.Style
+		// Explicit placements (0 = auto)
+		explicitRow, explicitCol     int
+		rowSpan, colSpan             int
+		hasExplicitRow, hasExplicitCol bool
+	}
+	var pendingItems []pendingItem
 
 	for _, child := range gridChildren {
 		if child.Type != html.ElementNode {
@@ -231,79 +240,265 @@ func (le *LayoutEngine) layoutGridContainer(
 			childStyle.Set("display", "grid")
 		}
 
-		gridColumn := childStyle.GetGridColumn()
-		gridRow := childStyle.GetGridRow()
+		gridColumn := childStyle.GetGridColumnWithNames(colLineNames)
+		gridRow := childStyle.GetGridRowWithNames(rowLineNames)
 		gridAreaName := childStyle.GetGridArea()
 
-		var cellRow, cellCol, rowSpan, colSpan int
+		pi := pendingItem{child: child, childStyle: childStyle, rowSpan: 1, colSpan: 1}
 
 		// Check if grid-area references a named template area
 		if gridAreaName != "" && templateAreas != nil {
 			if areaInfo, ok := templateAreas[gridAreaName]; ok {
-				cellCol = areaInfo.ColStart - 1
-				colSpan = areaInfo.ColEnd - areaInfo.ColStart
-				cellRow = areaInfo.RowStart - 1
-				rowSpan = areaInfo.RowEnd - areaInfo.RowStart
-			} else {
-				// Fallback: auto-placement
-				cellCol = currentCol
-				colSpan = 1
-				cellRow = currentRow
-				rowSpan = 1
+				pi.explicitCol = areaInfo.ColStart
+				pi.colSpan = areaInfo.ColEnd - areaInfo.ColStart
+				pi.explicitRow = areaInfo.RowStart
+				pi.rowSpan = areaInfo.RowEnd - areaInfo.RowStart
+				pi.hasExplicitCol = true
+				pi.hasExplicitRow = true
 			}
-		} else {
+		}
+
+		if !pi.hasExplicitCol && !pi.hasExplicitRow {
 			if gridColumn != nil {
-				cellCol = gridColumn.Start - 1
-				colSpan = gridColumn.End - gridColumn.Start
-			} else {
-				cellCol = currentCol
-				colSpan = 1
+				if gridColumn.IsSpan {
+					pi.colSpan = gridColumn.SpanCount
+					if pi.colSpan < 1 {
+						pi.colSpan = 1
+					}
+					// no explicit col start
+				} else {
+					pi.explicitCol = gridColumn.Start
+					pi.colSpan = gridColumn.End - gridColumn.Start
+					if pi.colSpan < 1 {
+						pi.colSpan = 1
+					}
+					pi.hasExplicitCol = true
+				}
 			}
 			if gridRow != nil {
-				cellRow = gridRow.Start - 1
-				rowSpan = gridRow.End - gridRow.Start
+				if gridRow.IsSpan {
+					pi.rowSpan = gridRow.SpanCount
+					if pi.rowSpan < 1 {
+						pi.rowSpan = 1
+					}
+					// no explicit row start
+				} else {
+					pi.explicitRow = gridRow.Start
+					pi.rowSpan = gridRow.End - gridRow.Start
+					if pi.rowSpan < 1 {
+						pi.rowSpan = 1
+					}
+					pi.hasExplicitRow = true
+				}
+			}
+		}
+
+		pendingItems = append(pendingItems, pi)
+	}
+
+	// occupancy tracks which cells are taken; grows dynamically
+	type occKey struct{ row, col int }
+	occupied := make(map[occKey]bool)
+
+	markOccupied := func(row, col, rowSpan, colSpan int) {
+		for r := row; r < row+rowSpan; r++ {
+			for c := col; c < col+colSpan; c++ {
+				occupied[occKey{r, c}] = true
+			}
+		}
+	}
+
+	isFree := func(row, col, rowSpan, colSpan int) bool {
+		for r := row; r < row+rowSpan; r++ {
+			for c := col; c < col+colSpan; c++ {
+				if occupied[occKey{r, c}] {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
+	// Auto-placement cursor
+	cursorRow := 0
+	cursorCol := 0
+
+	// findNextFreeCell finds the next free cell for an item starting at/after (cursorRow, cursorCol)
+	// in row-flow mode, searching across columns then rows
+	findNextFreeRowFlow := func(rowSpan, colSpan int) (row, col int) {
+		r := cursorRow
+		c := cursorCol
+		nCols := numColTracks
+		if nCols == 0 {
+			nCols = 1
+		}
+		for {
+			if c+colSpan > nCols {
+				c = 0
+				r++
+			}
+			if isFree(r, c, rowSpan, colSpan) {
+				return r, c
+			}
+			c++
+			if c+colSpan > nCols {
+				c = 0
+				r++
+			}
+		}
+	}
+
+	findNextFreeColFlow := func(rowSpan, colSpan int) (row, col int) {
+		r := cursorRow
+		c := cursorCol
+		nRows := numRowTracks
+		if nRows == 0 {
+			nRows = 1
+		}
+		for {
+			if r+rowSpan > nRows {
+				r = 0
+				c++
+			}
+			if isFree(r, c, rowSpan, colSpan) {
+				return r, c
+			}
+			r++
+			if r+rowSpan > nRows {
+				r = 0
+				c++
+			}
+		}
+	}
+
+	// Process items in CSS Grid order:
+	// 1. Items with explicit row AND column
+	// 2. Items with explicit row only (need auto-column)
+	// 3. Items with explicit column only (need auto-row) - simple cursor per column
+	// 4. Fully auto items
+
+	// Pass 1: Place items with explicit row AND column
+	for idx := range pendingItems {
+		pi := &pendingItems[idx]
+		if !pi.hasExplicitRow || !pi.hasExplicitCol {
+			continue
+		}
+		cellRow := pi.explicitRow - 1
+		cellCol := pi.explicitCol - 1
+		items = append(items, gridItemInfo{
+			child: pi.child, childStyle: pi.childStyle,
+			row: cellRow, col: cellCol,
+			rowSpan: pi.rowSpan, colSpan: pi.colSpan,
+		})
+		markOccupied(cellRow, cellCol, pi.rowSpan, pi.colSpan)
+		if cellCol+pi.colSpan > maxCol {
+			maxCol = cellCol + pi.colSpan
+		}
+		if cellRow+pi.rowSpan > maxRow {
+			maxRow = cellRow + pi.rowSpan
+		}
+		pi.explicitRow = -1 // mark as placed
+	}
+
+	// Pass 2: Place items with explicit row only (auto-column, row-flow)
+	// For each such item, find the first free column in the given row(s)
+	for idx := range pendingItems {
+		pi := &pendingItems[idx]
+		if pi.explicitRow == -1 {
+			continue // already placed
+		}
+		if !pi.hasExplicitRow || pi.hasExplicitCol {
+			continue
+		}
+		cellRow := pi.explicitRow - 1
+		// Find free column in this row
+		c := 0
+		nCols := numColTracks
+		if nCols == 0 {
+			nCols = 1
+		}
+		for !isFree(cellRow, c, pi.rowSpan, pi.colSpan) {
+			c++
+		}
+		cellCol := c
+		items = append(items, gridItemInfo{
+			child: pi.child, childStyle: pi.childStyle,
+			row: cellRow, col: cellCol,
+			rowSpan: pi.rowSpan, colSpan: pi.colSpan,
+		})
+		markOccupied(cellRow, cellCol, pi.rowSpan, pi.colSpan)
+		if cellCol+pi.colSpan > maxCol {
+			maxCol = cellCol + pi.colSpan
+		}
+		if cellRow+pi.rowSpan > maxRow {
+			maxRow = cellRow + pi.rowSpan
+		}
+		pi.explicitRow = -1 // mark as placed
+	}
+
+	// Pass 3 & 4: Place remaining items (explicit col only or fully auto)
+	// Use cursor-based placement with occupancy tracking
+	for idx := range pendingItems {
+		pi := &pendingItems[idx]
+		if pi.explicitRow == -1 {
+			continue // already placed
+		}
+
+		var cellRow, cellCol int
+
+		if pi.hasExplicitCol {
+			// Explicit col only: auto-row per column
+			cellCol = pi.explicitCol - 1
+			// Find first free row in this column
+			r := 0
+			for !isFree(r, cellCol, pi.rowSpan, pi.colSpan) {
+				r++
+			}
+			cellRow = r
+		} else {
+			// Fully auto: use cursor
+			if autoFlow == "column" {
+				cellRow, cellCol = findNextFreeColFlow(pi.rowSpan, pi.colSpan)
 			} else {
-				cellRow = currentRow
-				rowSpan = 1
+				cellRow, cellCol = findNextFreeRowFlow(pi.rowSpan, pi.colSpan)
+			}
+			// Advance cursor past this item
+			if autoFlow == "column" {
+				cursorRow = cellRow + pi.rowSpan
+				cursorCol = cellCol
+				nRows := numRowTracks
+				if nRows == 0 {
+					nRows = 1
+				}
+				if cursorRow >= nRows {
+					cursorRow = 0
+					cursorCol = cellCol + pi.colSpan
+				}
+			} else {
+				cursorCol = cellCol + pi.colSpan
+				cursorRow = cellRow
+				nCols := numColTracks
+				if nCols == 0 {
+					nCols = 1
+				}
+				if cursorCol >= nCols {
+					cursorCol = 0
+					cursorRow = cellRow + 1
+				}
 			}
 		}
 
 		items = append(items, gridItemInfo{
-			child: child, childStyle: childStyle,
+			child: pi.child, childStyle: pi.childStyle,
 			row: cellRow, col: cellCol,
-			rowSpan: rowSpan, colSpan: colSpan,
+			rowSpan: pi.rowSpan, colSpan: pi.colSpan,
 		})
-
-		if cellCol+colSpan > maxCol {
-			maxCol = cellCol + colSpan
+		markOccupied(cellRow, cellCol, pi.rowSpan, pi.colSpan)
+		if cellCol+pi.colSpan > maxCol {
+			maxCol = cellCol + pi.colSpan
 		}
-		if cellRow+rowSpan > maxRow {
-			maxRow = cellRow + rowSpan
-		}
-
-		// Advance auto-placement cursor (only when no explicit placement via grid-column or grid-area name)
-		namedAreaPlaced := false
-		if gridAreaName != "" && templateAreas != nil {
-			if _, ok := templateAreas[gridAreaName]; ok {
-				namedAreaPlaced = true
-			}
-		}
-		if gridColumn == nil && !namedAreaPlaced {
-			if autoFlow == "column" {
-				// Column-first: advance rows, wrap to next column
-				currentRow += rowSpan
-				if numRowTracks > 0 && currentRow >= numRowTracks {
-					currentRow = 0
-					currentCol++
-				}
-			} else {
-				// Row-first (default): advance columns, wrap to next row
-				currentCol += colSpan
-				if numColTracks > 0 && currentCol >= numColTracks {
-					currentCol = 0
-					currentRow++
-				}
-			}
+		if cellRow+pi.rowSpan > maxRow {
+			maxRow = cellRow + pi.rowSpan
 		}
 	}
 
@@ -325,6 +520,8 @@ func (le *LayoutEngine) layoutGridContainer(
 			rowTracks = append(rowTracks, css.GridTrack{Auto: true})
 		}
 	}
+
+	// items have been placed with proper CSS Grid auto-placement algorithm
 
 	// Phase 1: Layout items to determine auto track sizes
 	// First pass with 0 width for auto columns to get intrinsic sizes

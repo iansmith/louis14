@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: white-space nowrap prevents text wrapping</title>
+  <link rel="help" href="https://drafts.csswg.org/css-text-3/#white-space-property" />
+  <link rel="match" href="white-space-nowrap-001-ref.html" />
+  <meta charset="utf-8">
+  <meta name="assert" content="white-space:nowrap keeps text on one line. Container height equals one line-height even though text would normally wrap at 60px width." />
+  <style>
+    body { margin: 0; padding: 0; }
+    /* Container is too narrow (60px) for the text, but nowrap prevents wrapping.
+       The green background shows only 1 line of height. */
+    .test {
+      width: 60px;
+      white-space: nowrap;
+      overflow: hidden;
+      background: green;
+      color: green;
+      font-size: 20px;
+      line-height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="test">AAAA AAAA</div>
+</body>
+</html>
