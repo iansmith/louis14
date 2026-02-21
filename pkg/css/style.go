@@ -5873,3 +5873,18 @@ func (s *Style) GetTextDecorationThickness() float64 {
 	}
 	return 1
 }
+
+// GetHyphens returns the hyphens property value.
+// Values: "none", "manual", "auto".
+// Default is "manual" (CSS default for HTML content).
+// "auto" is treated as "manual" (no dictionary-based hyphenation).
+func (s *Style) GetHyphens() string {
+	if val, ok := s.Get("hyphens"); ok {
+		val = strings.TrimSpace(strings.ToLower(val))
+		switch val {
+		case "none", "manual", "auto":
+			return val
+		}
+	}
+	return "manual"
+}
