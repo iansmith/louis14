@@ -1,6 +1,7 @@
 package text
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -191,10 +192,20 @@ func MeasureText(text string, fontSize float64, fontPath string) (width, height 
 		return float64(len(text)) * fontSize * 0.6, fontSize * 1.2
 	}
 
-	// Measure the text
+	// Measure the text and snap to integer pixels.
+	// Real browsers quantize character advance widths to integer pixels via
+	// font hinting, ensuring text positions stay on the integer grid.
+	// Without this, separate DrawString calls for adjacent text (e.g. table
+	// cells vs continuous strings) produce different sub-pixel anti-aliasing.
 	w, h := dc.MeasureString(text)
-
-	// Add some padding to height for proper baseline alignment
+	w = math.Round(w)
+	if w < 1 && len(text) > 0 {
+		w = 1
+	}
+	h = math.Round(h)
+	if h < 1 {
+		h = 1
+	}
 	return w, h
 }
 

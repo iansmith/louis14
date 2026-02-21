@@ -43,6 +43,14 @@ func BoxCreatesStackingContext(box *Box) bool {
 		return false
 	}
 
+	// Text node boxes are not CSS elements and cannot create stacking contexts.
+	// Per CSS spec, only elements can create stacking contexts. Text boxes may
+	// inherit opacity/other values from their parent element's style, but the
+	// stacking context belongs to the element, not the text node.
+	if box.Node != nil && box.Node.Type == html.TextNode {
+		return false
+	}
+
 	// Positioned elements with z-index != auto create a stacking context
 	if box.Position == css.PositionAbsolute || box.Position == css.PositionFixed || box.Position == css.PositionRelative || box.Position == css.PositionSticky {
 		if zStr, ok := box.Style.Get("z-index"); ok && zStr != "auto" && zStr != "" {

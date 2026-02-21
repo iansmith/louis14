@@ -20,12 +20,21 @@ import (
 	"louis14/pkg/text"
 )
 
+// textRunEntry stores run-level information for kerning-consistent glyph positioning
+// across adjacent text boxes on the same line.
+type textRunEntry struct {
+	fullText   string  // complete concatenated text of all boxes in the run
+	charOffset int     // rune index of this box's first character within fullText
+	startX     float64 // absolute X of the run's first glyph
+}
+
 type Renderer struct {
 	context      *gg.Context
 	scrollY      float64              // Viewport scroll offset - non-fixed content is shifted by -scrollY
 	imageFetcher images.ImageFetcher  // Optional fetcher for network images
 	fonts        text.FontConfig      // Font configuration for text rendering
 	lastFontKey  string               // Tracks loaded font to avoid redundant loads
+	textRunMap   map[*layout.Box]*textRunEntry // precomputed run membership for text boxes
 }
 
 func NewRenderer(width, height int) *Renderer {
@@ -52,6 +61,98 @@ func (r *Renderer) SetFonts(fonts text.FontConfig) {
 // SetImageFetcher sets the image fetcher used to load network images during rendering.
 func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
 	r.imageFetcher = fetcher
+}
+
+// fontKeyForBox builds a string key identifying the font used by a box.
+// Used to determine if adjacent boxes share the same font for run grouping.
+func fontKeyForBox(box *layout.Box) string {
+	if box.Style == nil {
+		return ""
+	}
+	family, _ := box.Style.Get("font-family")
+	return fmt.Sprintf("%g|%v|%v|%v|%v|%s",
+		box.Style.GetFontSize(),
+		box.Style.GetFontWeight() == css.FontWeightBold,
+		box.Style.GetFontStyle() == css.FontStyleItalic,
+		box.Style.IsMonospaceFamily(),
+		box.Style.IsAhemFamily(),
+		family)
+}
+
+// boxTextContent returns the visible text of a box, matching the logic in drawText.
+func boxTextContent(box *layout.Box) string {
+	if box.PseudoContent != "" && len(box.Children) == 0 {
+		return box.PseudoContent
+	}
+	if box.Node != nil && box.Node.Type == html.TextNode && len(box.Children) == 0 {
+		return box.Node.Text
+	}
+	return ""
+}
+
+// computeTextRuns groups adjacent same-font text boxes on the same line into runs.
+// Within a run, glyph positions are derived from the concatenated full-run string,
+// ensuring that freetype kerning is applied consistently across box boundaries.
+// This makes "Filler" box + " Text" box render identically to "Filler Text" as
+// a single box — the same fix real browsers apply via HarfBuzz text shaping.
+func (r *Renderer) computeTextRuns(boxes []*layout.Box) {
+	r.textRunMap = make(map[*layout.Box]*textRunEntry)
+
+	type item struct {
+		box  *layout.Box
+		text string
+		fk   string
+	}
+	var items []item
+	for _, box := range boxes {
+		t := boxTextContent(box)
+		if t == "" {
+			continue
+		}
+		items = append(items, item{box, t, fontKeyForBox(box)})
+	}
+
+	i := 0
+	for i < len(items) {
+		run := []item{items[i]}
+		j := i + 1
+		for j < len(items) {
+			prev := items[j-1]
+			curr := items[j]
+			sameFont := curr.fk == prev.fk
+			sameLine := math.Abs(curr.box.Y-prev.box.Y) < 2
+			adjacent := math.Abs(curr.box.X-(prev.box.X+prev.box.Width)) < 1.5
+			// Exclude boxes with word-spacing: layout positions won't match DrawString positions
+			noWordSpacing := (curr.box.Style == nil || curr.box.Style.GetWordSpacing() == 0) &&
+				(prev.box.Style == nil || prev.box.Style.GetWordSpacing() == 0)
+			if sameFont && sameLine && adjacent && noWordSpacing {
+				run = append(run, curr)
+				j++
+			} else {
+				break
+			}
+		}
+
+		// Only create entries for multi-box runs; single boxes need no change.
+		if len(run) > 1 {
+			fullText := ""
+			var offsets []int
+			for _, it := range run {
+				offsets = append(offsets, len([]rune(fullText)))
+				fullText += it.text
+			}
+			startX := run[0].box.X
+			for k, it := range run {
+				r.textRunMap[it.box] = &textRunEntry{
+					fullText:   fullText,
+					charOffset: offsets[k],
+					startX:     startX,
+				}
+			}
+		}
+
+		i = j
+	}
 }
 
 // loadFont loads a font face on the gg context for the given size and style.
@@ -392,7 +493,9 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	}
 
 	// Step 5: In-flow, inline-level descendants (content paints here)
-	// This includes inline elements AND content of block elements
+	// This includes inline elements AND content of block elements.
+	// Pre-compute text run groups so adjacent text boxes use kerning-consistent positions.
+	r.computeTextRuns(inlines)
 	for _, child := range inlines {
 		r.drawBoxBackgroundAndBorders(child)
 		r.drawBoxContent(child)
@@ -2287,6 +2390,26 @@ func (r *Renderer) drawText(box *layout.Box) {
 			charWidth, _ := text.MeasureTextWithStyle(charStr, fontSize, bold, italic, mono, ahem)
 			drawX += charWidth + letterSpacing
 		}
+	} else if entry, ok := r.textRunMap[box]; ok {
+		// Use the full run string for kerning consistency across box boundaries.
+		// Compute clip boundaries via MeasureString to exactly match DrawString glyph positions.
+		runes := []rune(entry.fullText)
+		prefix := string(runes[:entry.charOffset])
+		thisLen := len([]rune(textContent))
+		suffix := string(runes[:entry.charOffset+thisLen])
+		prefixW, _ := r.context.MeasureString(prefix)
+		suffixW, _ := r.context.MeasureString(suffix)
+		clipLeft := entry.startX + prefixW
+		clipWidth := (entry.startX + suffixW) - clipLeft
+		if clipWidth < 0 {
+			clipWidth = 0
+		}
+		r.context.Push()
+		// X-only clip: use full canvas height to avoid cutting off ascenders/descenders.
+		r.context.DrawRectangle(clipLeft, 0, clipWidth, float64(r.context.Height()))
+		r.context.Clip()
+		r.context.DrawString(entry.fullText, entry.startX, textY)
+		r.context.Pop()
 	} else {
 		r.context.DrawString(textContent, textX, textY)
 	}
