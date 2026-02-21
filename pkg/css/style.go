@@ -248,6 +248,71 @@ func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64
 		}
 		return 0, false
 	}
+	// Dynamic/static/large viewport units — treat all as equivalent to vh/vw
+	// in static renderer (no browser chrome changes). Must be checked before
+	// vmin/vmax/vw/vh to avoid suffix conflicts (e.g. "dvmin" ends with "min").
+	for _, suffix := range []string{"dvmin", "svmin", "lvmin"} {
+		if strings.HasSuffix(val, suffix) {
+			numStr := strings.TrimSuffix(val, suffix)
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, false
+			}
+			return num * math.Min(viewportWidth, viewportHeight) / 100, true
+		}
+	}
+	for _, suffix := range []string{"dvmax", "svmax", "lvmax"} {
+		if strings.HasSuffix(val, suffix) {
+			numStr := strings.TrimSuffix(val, suffix)
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, false
+			}
+			return num * math.Max(viewportWidth, viewportHeight) / 100, true
+		}
+	}
+	for _, suffix := range []string{"dvw", "svw", "lvw"} {
+		if strings.HasSuffix(val, suffix) {
+			numStr := strings.TrimSuffix(val, suffix)
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, false
+			}
+			return num * viewportWidth / 100, true
+		}
+	}
+	for _, suffix := range []string{"dvh", "svh", "lvh"} {
+		if strings.HasSuffix(val, suffix) {
+			numStr := strings.TrimSuffix(val, suffix)
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, false
+			}
+			return num * viewportHeight / 100, true
+		}
+	}
+	// Container query units — approximate as viewport units when no container context.
+	// cqw/cqi (inline axis) ≈ vw; cqh/cqb (block axis) ≈ vh.
+	for _, suffix := range []string{"cqw", "cqi"} {
+		if strings.HasSuffix(val, suffix) {
+			numStr := strings.TrimSuffix(val, suffix)
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, false
+			}
+			return num * viewportWidth / 100, true
+		}
+	}
+	for _, suffix := range []string{"cqh", "cqb"} {
+		if strings.HasSuffix(val, suffix) {
+			numStr := strings.TrimSuffix(val, suffix)
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, false
+			}
+			return num * viewportHeight / 100, true
+		}
+	}
 	// Viewport units (check vmin/vmax before vw/vh to avoid suffix conflicts)
 	if strings.HasSuffix(val, "vmin") {
 		numStr := strings.TrimSuffix(val, "vmin")
