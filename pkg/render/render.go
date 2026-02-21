@@ -1285,6 +1285,9 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 	// Draw border
 	r.drawBorder(box)
 
+	// Draw border-image (overlays the normal border when set)
+	r.drawBorderImage(box)
+
 	// Draw outline (outside the border box, does not affect layout)
 	r.drawOutline(box)
 
@@ -1673,6 +1676,9 @@ func (r *Renderer) drawBox(box *layout.Box) {
 
 	// Phase 2: Draw border
 	r.drawBorder(box)
+
+	// Draw border-image (overlays the normal border when set)
+	r.drawBorderImage(box)
 
 	// Draw outline (outside the border box, does not affect layout)
 	r.drawOutline(box)
@@ -2846,6 +2852,212 @@ func getSVGFillColor(node *html.Node) css.Color {
 		}
 	}
 	return defaultColor
+}
+
+// drawBorderImage draws a CSS border-image on the box.
+// It replaces (overlays) the normal border when border-image-source is set.
+func (r *Renderer) drawBorderImage(box *layout.Box) {
+	if box == nil || box.Style == nil {
+		return
+	}
+	sourceStr := box.Style.GetBorderImageSource()
+	if sourceStr == "" || sourceStr == "none" {
+		return
+	}
+
+	effectiveY := r.getEffectiveY(box)
+	x := box.X
+	y := effectiveY
+	w := box.Width
+	h := box.Height
+
+	// Get the CSS border widths [top, right, bottom, left]
+	bw := box.Style.GetBorderWidth()
+	borderWidths := [4]float64{bw.Top, bw.Right, bw.Bottom, bw.Left}
+
+	// border-image-width determines how wide the image regions are
+	imgWidths := box.Style.GetBorderImageWidth(borderWidths)
+	topW := imgWidths[0]
+	rightW := imgWidths[1]
+	bottomW := imgWidths[2]
+	leftW := imgWidths[3]
+
+	// Parse the slice values
+	slice := box.Style.GetBorderImageSlice()
+
+	// Determine what kind of source we have and render accordingly
+	isGradient := strings.Contains(sourceStr, "gradient(")
+
+	if isGradient {
+		// Render gradient as border-image using a simplified approach:
+		// Generate the gradient in a temporary gg.Context sized to the box,
+		// then use drawBorderImageFromGG to slice it into 9 regions.
+		grad, ok := css.GetGradient(sourceStr)
+		if !ok {
+			return
+		}
+		// Render gradient into a temporary context sized to the box
+		iw := int(math.Ceil(w))
+		ih := int(math.Ceil(h))
+		if iw <= 0 || ih <= 0 {
+			return
+		}
+		tmpCtx := gg.NewContext(iw, ih)
+
+		// Render the gradient into tmpCtx
+		var ggGrad gg.Gradient
+		switch grad.Type {
+		case css.GradientLinear, css.GradientRepeatingLinear:
+			gradCopy := *grad
+			gradCopy.ColorStops = make([]css.ColorStop, len(grad.ColorStops))
+			copy(gradCopy.ColorStops, grad.ColorStops)
+			gradCopy.ConvertPixelOffsetsToPercentages(w, h)
+			if gradCopy.Repeating {
+				gradCopy.ExtendRepeatingStops(w)
+			}
+			var x0, y0, x1, y1 float64
+			switch gradCopy.Direction {
+			case "to right":
+				x0, y0, x1, y1 = 0, 0, w, 0
+			case "to left":
+				x0, y0, x1, y1 = w, 0, 0, 0
+			case "to bottom", "":
+				x0, y0, x1, y1 = 0, 0, 0, h
+			case "to top":
+				x0, y0, x1, y1 = 0, h, 0, 0
+			default:
+				x0, y0, x1, y1 = 0, 0, 0, h
+			}
+			ggGrad = gg.NewLinearGradient(x0, y0, x1, y1)
+			for _, stop := range gradCopy.ColorStops {
+				ggGrad.AddColorStop(stop.Offset, r.premultiplyColor(stop.Color))
+			}
+		case css.GradientRadial, css.GradientRepeatingRadial:
+			gradCopy := *grad
+			gradCopy.ColorStops = make([]css.ColorStop, len(grad.ColorStops))
+			copy(gradCopy.ColorStops, grad.ColorStops)
+			rx, ry := gradCopy.ComputeRadialRadii(w, h)
+			if rx <= 0 && ry <= 0 {
+				return
+			}
+			cx := gradCopy.CenterX * w
+			if gradCopy.CenterXPx >= 0 {
+				cx = gradCopy.CenterXPx
+			}
+			cy := gradCopy.CenterY * h
+			if gradCopy.CenterYPx >= 0 {
+				cy = gradCopy.CenterYPx
+			}
+			radius := rx
+			if radius == 0 {
+				radius = ry
+			}
+			gradCopy.ConvertRadialPixelOffsets(radius)
+			if gradCopy.Repeating {
+				gradCopy.ExtendRepeatingStops(radius)
+			}
+			if rx == ry || ry == 0 {
+				ggGrad = gg.NewRadialGradient(cx, cy, 0, cx, cy, rx)
+			} else {
+				ggGrad = gg.NewEllipticalRadialGradient(cx, cy, rx, ry)
+			}
+			for _, stop := range gradCopy.ColorStops {
+				ggGrad.AddColorStop(stop.Offset, r.premultiplyColor(stop.Color))
+			}
+		default:
+			return
+		}
+
+		tmpCtx.SetFillStyle(ggGrad)
+		tmpCtx.DrawRectangle(0, 0, w, h)
+		tmpCtx.Fill()
+		srcImg := tmpCtx.Image()
+
+		// Slice values in pixels (the gradient image is w×h)
+		var sliceTop, sliceRight, sliceBottom, sliceLeft float64
+		if slice.IsPercent {
+			sliceTop = slice.Top / 100.0 * h
+			sliceRight = slice.Right / 100.0 * w
+			sliceBottom = slice.Bottom / 100.0 * h
+			sliceLeft = slice.Left / 100.0 * w
+		} else {
+			sliceTop = slice.Top
+			sliceRight = slice.Right
+			sliceBottom = slice.Bottom
+			sliceLeft = slice.Left
+		}
+
+		r.drawBorderImageFromSource(srcImg, w, h,
+			sliceTop, sliceRight, sliceBottom, sliceLeft,
+			x, y, w, h,
+			topW, rightW, bottomW, leftW,
+			slice.Fill)
+	}
+}
+
+// drawBorderImageFromSource slices the source image into 9 zones and draws them
+// into the border-image regions of the destination box.
+func (r *Renderer) drawBorderImageFromSource(
+	srcImg image.Image, srcW, srcH float64,
+	sliceTop, sliceRight, sliceBottom, sliceLeft float64,
+	dstX, dstY, dstW, dstH float64,
+	topW, rightW, bottomW, leftW float64,
+	fill bool,
+) {
+	// drawSlice copies a rectangle from srcImg and scales it to the destination area.
+	drawSlice := func(srcX, srcY, srcRW, srcRH, ddX, ddY, ddW, ddH float64) {
+		if srcRW <= 0 || srcRH <= 0 || ddW <= 0 || ddH <= 0 {
+			return
+		}
+		// Crop from source
+		srcIW := int(math.Ceil(srcRW))
+		srcIH := int(math.Ceil(srcRH))
+		cropCtx := gg.NewContext(srcIW, srcIH)
+		cropCtx.DrawImage(srcImg, -int(math.Round(srcX)), -int(math.Round(srcY)))
+		cropImg := cropCtx.Image()
+
+		// Scale to destination
+		dstIW := int(math.Ceil(ddW))
+		dstIH := int(math.Ceil(ddH))
+		scaleCtx := gg.NewContext(dstIW, dstIH)
+		sx := ddW / srcRW
+		sy := ddH / srcRH
+		scaleCtx.Scale(sx, sy)
+		scaleCtx.DrawImage(cropImg, 0, 0)
+		scaledImg := scaleCtx.Image()
+
+		r.context.DrawImage(scaledImg, int(math.Round(ddX)), int(math.Round(ddY)))
+	}
+
+	// 4 corners (not scaled, simply drawn at corner positions)
+	// Top-left corner
+	drawSlice(0, 0, sliceLeft, sliceTop, dstX, dstY, leftW, topW)
+	// Top-right corner
+	drawSlice(srcW-sliceRight, 0, sliceRight, sliceTop, dstX+dstW-rightW, dstY, rightW, topW)
+	// Bottom-left corner
+	drawSlice(0, srcH-sliceBottom, sliceLeft, sliceBottom, dstX, dstY+dstH-bottomW, leftW, bottomW)
+	// Bottom-right corner
+	drawSlice(srcW-sliceRight, srcH-sliceBottom, sliceRight, sliceBottom, dstX+dstW-rightW, dstY+dstH-bottomW, rightW, bottomW)
+
+	// 4 edges (stretched)
+	// Top edge
+	drawSlice(sliceLeft, 0, srcW-sliceLeft-sliceRight, sliceTop,
+		dstX+leftW, dstY, dstW-leftW-rightW, topW)
+	// Bottom edge
+	drawSlice(sliceLeft, srcH-sliceBottom, srcW-sliceLeft-sliceRight, sliceBottom,
+		dstX+leftW, dstY+dstH-bottomW, dstW-leftW-rightW, bottomW)
+	// Left edge
+	drawSlice(0, sliceTop, sliceLeft, srcH-sliceTop-sliceBottom,
+		dstX, dstY+topW, leftW, dstH-topW-bottomW)
+	// Right edge
+	drawSlice(srcW-sliceRight, sliceTop, sliceRight, srcH-sliceTop-sliceBottom,
+		dstX+dstW-rightW, dstY+topW, rightW, dstH-topW-bottomW)
+
+	// Center fill (only if fill keyword is present)
+	if fill {
+		drawSlice(sliceLeft, sliceTop, srcW-sliceLeft-sliceRight, srcH-sliceTop-sliceBottom,
+			dstX+leftW, dstY+topW, dstW-leftW-rightW, dstH-topW-bottomW)
+	}
 }
 
 // findDocumentRoot walks up the node tree to find the document root.

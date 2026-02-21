@@ -1523,6 +1523,43 @@ func expandShorthand(style *Style, property, value string) {
 	case "width", "height", "min-width", "max-width", "min-height", "max-height", "flex-basis":
 		// Normalize vendor-prefixed size keywords before storing
 		style.Set(property, normalizeVendorPrefixedValue(value))
+	case "border-image":
+		// border-image shorthand: <source> [<slice> [ / <width> [ / <outset> ]] ] <repeat>
+		// We split on "/" to separate source+slice from width from outset+repeat.
+		// Find the source (url() or gradient function) first.
+		v := strings.TrimSpace(value)
+		// Split into slash-separated parts (but be careful of slashes inside parens)
+		slashParts := splitBorderImageSlashes(v)
+		// First part contains source, possibly followed by slice
+		if len(slashParts) >= 1 {
+			firstPart := strings.TrimSpace(slashParts[0])
+			// Identify where the source image ends and slice begins.
+			// Source is a url() or *-gradient(...) function.
+			srcEnd := findBorderImageSourceEnd(firstPart)
+			src := strings.TrimSpace(firstPart[:srcEnd])
+			rest := strings.TrimSpace(firstPart[srcEnd:])
+			if src == "" {
+				src = "none"
+			}
+			style.Set("border-image-source", src)
+			if rest != "" {
+				style.Set("border-image-slice", rest)
+			}
+		}
+		if len(slashParts) >= 2 {
+			style.Set("border-image-width", strings.TrimSpace(slashParts[1]))
+		}
+		if len(slashParts) >= 3 {
+			// Could be "outset repeat" or just "outset"
+			last := strings.TrimSpace(slashParts[2])
+			parts := strings.Fields(last)
+			if len(parts) >= 1 {
+				style.Set("border-image-outset", parts[0])
+			}
+			if len(parts) >= 2 {
+				style.Set("border-image-repeat", strings.Join(parts[1:], " "))
+			}
+		}
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -1581,6 +1618,60 @@ func expandColumnRuleShorthand(style *Style, value string) {
 			}
 		}
 	}
+}
+
+// splitBorderImageSlashes splits a border-image value string on "/" characters
+// that are not inside parentheses, returning up to 3 parts.
+func splitBorderImageSlashes(v string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(v); i++ {
+		ch := v[i]
+		if ch == '(' {
+			depth++
+		} else if ch == ')' {
+			if depth > 0 {
+				depth--
+			}
+		} else if ch == '/' && depth == 0 {
+			parts = append(parts, v[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, v[start:])
+	return parts
+}
+
+// findBorderImageSourceEnd returns the index in s at which the source image
+// value ends. The source is either a url(...) or a *gradient(...) function.
+// Returns len(s) if the whole string is the source.
+func findBorderImageSourceEnd(s string) int {
+	s = strings.TrimSpace(s)
+	offset := len(s) - len(strings.TrimLeft(s, " \t")) // leading spaces already trimmed by caller
+	_ = offset
+	// Walk paren-depth to find end of leading function token
+	i := 0
+	depth := 0
+	for i < len(s) {
+		if s[i] == '(' {
+			depth++
+			i++
+		} else if s[i] == ')' {
+			depth--
+			i++
+			if depth == 0 {
+				// End of the function; skip trailing spaces
+				return i
+			}
+		} else if s[i] == ' ' && depth == 0 {
+			// Space outside any parens — source ends here
+			return i
+		} else {
+			i++
+		}
+	}
+	return i
 }
 
 // GetColumnRuleWidth returns the column-rule-width in pixels
@@ -5598,6 +5689,113 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 		val = val[parenIdx+closeIdx+1:]
 	}
 	return filters
+}
+
+// GetBorderImageSource returns the border-image-source value.
+func (s *Style) GetBorderImageSource() string {
+	if v, ok := s.Get("border-image-source"); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// BorderImageSlice holds the 4 slice values and fill flag.
+type BorderImageSlice struct {
+	Top, Right, Bottom, Left float64 // percentage (0-100) or pixel values
+	IsPercent                bool
+	Fill                     bool
+}
+
+// GetBorderImageSlice parses border-image-slice.
+func (s *Style) GetBorderImageSlice() BorderImageSlice {
+	v, ok := s.Get("border-image-slice")
+	if !ok || strings.TrimSpace(v) == "" {
+		return BorderImageSlice{Top: 100, Right: 100, Bottom: 100, Left: 100, IsPercent: true}
+	}
+	v = strings.TrimSpace(v)
+	fill := false
+	if strings.HasSuffix(v, " fill") {
+		fill = true
+		v = strings.TrimSuffix(v, " fill")
+	}
+	isPercent := strings.Contains(v, "%")
+	parts := strings.Fields(v)
+	var vals [4]float64
+	for i, p := range parts {
+		if i >= 4 {
+			break
+		}
+		p = strings.TrimSuffix(p, "%")
+		p = strings.TrimSuffix(p, "px")
+		f, _ := strconv.ParseFloat(p, 64)
+		vals[i] = f
+	}
+	// Fill missing values per CSS shorthand rules
+	switch len(parts) {
+	case 1:
+		vals[1] = vals[0]
+		vals[2] = vals[0]
+		vals[3] = vals[0]
+	case 2:
+		vals[2] = vals[0]
+		vals[3] = vals[1]
+	case 3:
+		vals[3] = vals[1]
+	}
+	return BorderImageSlice{Top: vals[0], Right: vals[1], Bottom: vals[2], Left: vals[3], IsPercent: isPercent, Fill: fill}
+}
+
+// GetBorderImageWidth returns the 4 border-image-width values in pixels.
+// Values can be <number> (multiplier of border-width), <length>, or auto.
+// borderWidths is [top, right, bottom, left] in pixels.
+func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
+	v, ok := s.Get("border-image-width")
+	if !ok || strings.TrimSpace(v) == "" {
+		return borderWidths // default = border-width values
+	}
+	v = strings.TrimSpace(v)
+	parts := strings.Fields(v)
+	var vals [4]float64
+	for i, p := range parts {
+		if i >= 4 {
+			break
+		}
+		if p == "auto" {
+			vals[i] = borderWidths[i]
+		} else if strings.HasSuffix(p, "px") {
+			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
+			vals[i] = f
+		} else {
+			// number = multiplier of corresponding border-width
+			f, _ := strconv.ParseFloat(p, 64)
+			vals[i] = f * borderWidths[i]
+		}
+	}
+	switch len(parts) {
+	case 1:
+		vals[1] = vals[0]
+		vals[2] = vals[0]
+		vals[3] = vals[0]
+	case 2:
+		vals[2] = vals[0]
+		vals[3] = vals[1]
+	case 3:
+		vals[3] = vals[1]
+	}
+	return vals
+}
+
+// GetBorderImageRepeat returns the repeat keywords [horizontal, vertical].
+func (s *Style) GetBorderImageRepeat() [2]string {
+	v, ok := s.Get("border-image-repeat")
+	if !ok || strings.TrimSpace(v) == "" {
+		return [2]string{"stretch", "stretch"}
+	}
+	parts := strings.Fields(strings.TrimSpace(v))
+	if len(parts) == 1 {
+		return [2]string{parts[0], parts[0]}
+	}
+	return [2]string{parts[0], parts[1]}
 }
 
 // GetIsolation returns the isolation property value (default: "auto")
