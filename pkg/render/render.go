@@ -2643,8 +2643,29 @@ func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) 
 }
 
 func (r *Renderer) drawScrollbarIndicators(box *layout.Box) {
-	scrollbarWidth := 12.0
-	scrollbarColor := css.Color{R: 200, G: 200, B: 200, A: 1.0}
+	// Check scrollbar-width: none — no scrollbars drawn at all
+	scrollbarWidthKeyword := box.Style.GetScrollbarWidth()
+	if scrollbarWidthKeyword == "none" {
+		return
+	}
+
+	// Determine scrollbar track width based on scrollbar-width keyword
+	barSize := 12.0
+	if scrollbarWidthKeyword == "thin" {
+		barSize = 8.0
+	}
+
+	// Determine scrollbar colors (track and thumb)
+	scrollbarColorVal := box.Style.GetScrollbarColor()
+	var trackColor, thumbColor css.Color
+	if scrollbarColorVal.IsAuto {
+		// Default platform-style colors
+		trackColor = css.Color{R: 200, G: 200, B: 200, A: 1.0}
+		thumbColor = css.Color{R: 160, G: 160, B: 160, A: 1.0}
+	} else {
+		thumbColor = scrollbarColorVal.Thumb
+		trackColor = scrollbarColorVal.Track
+	}
 
 	effectiveY := r.getEffectiveY(box)
 
@@ -2653,28 +2674,65 @@ func (r *Renderer) drawScrollbarIndicators(box *layout.Box) {
 	contentWidth := box.Width
 	contentHeight := box.Height
 
+	// Draw vertical scrollbar track
 	r.context.SetRGBA(
-		float64(scrollbarColor.R)/255.0,
-		float64(scrollbarColor.G)/255.0,
-		float64(scrollbarColor.B)/255.0,
-		scrollbarColor.A,
+		float64(trackColor.R)/255.0,
+		float64(trackColor.G)/255.0,
+		float64(trackColor.B)/255.0,
+		trackColor.A,
 	)
-
-	// Vertical scrollbar
 	r.context.DrawRectangle(
-		contentX+contentWidth-scrollbarWidth,
+		contentX+contentWidth-barSize,
 		contentY,
-		scrollbarWidth,
+		barSize,
 		contentHeight,
 	)
 	r.context.Fill()
 
-	// Horizontal scrollbar
+	// Draw vertical scrollbar thumb (top 50% of track height, centered)
+	thumbHeight := contentHeight * 0.5
+	r.context.SetRGBA(
+		float64(thumbColor.R)/255.0,
+		float64(thumbColor.G)/255.0,
+		float64(thumbColor.B)/255.0,
+		thumbColor.A,
+	)
+	r.context.DrawRectangle(
+		contentX+contentWidth-barSize,
+		contentY,
+		barSize,
+		thumbHeight,
+	)
+	r.context.Fill()
+
+	// Draw horizontal scrollbar track
+	r.context.SetRGBA(
+		float64(trackColor.R)/255.0,
+		float64(trackColor.G)/255.0,
+		float64(trackColor.B)/255.0,
+		trackColor.A,
+	)
 	r.context.DrawRectangle(
 		contentX,
-		contentY+contentHeight-scrollbarWidth,
-		contentWidth-scrollbarWidth,
-		scrollbarWidth,
+		contentY+contentHeight-barSize,
+		contentWidth-barSize,
+		barSize,
+	)
+	r.context.Fill()
+
+	// Draw horizontal scrollbar thumb (left 50% of track width)
+	thumbWidth := (contentWidth - barSize) * 0.5
+	r.context.SetRGBA(
+		float64(thumbColor.R)/255.0,
+		float64(thumbColor.G)/255.0,
+		float64(thumbColor.B)/255.0,
+		thumbColor.A,
+	)
+	r.context.DrawRectangle(
+		contentX,
+		contentY+contentHeight-barSize,
+		thumbWidth,
+		barSize,
 	)
 	r.context.Fill()
 }
