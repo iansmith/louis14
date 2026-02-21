@@ -2736,6 +2736,19 @@ func (s *Style) GetTextAlign() TextAlign {
 	return TextAlignLeft
 }
 
+// GetTextAlignLast returns the text-align-last value (default: "auto").
+// Controls alignment of the last line (or a line before a forced break).
+func (s *Style) GetTextAlignLast() string {
+	v, _ := s.Get("text-align-last")
+	v = strings.TrimSpace(strings.ToLower(v))
+	switch v {
+	case "left", "right", "center", "justify", "start", "end":
+		return v
+	default:
+		return "auto"
+	}
+}
+
 // Direction represents the CSS direction property
 type Direction string
 

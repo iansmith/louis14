@@ -622,7 +622,8 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 		if textAlign, ok := style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
 			// CRITICAL FIX: Apply text-align to childBoxes (which will be added to box.Children later)
 			// NOT to box.Children directly (which is still empty at this point)
-			le.applyTextAlignToBoxes(childBoxes, box, textAlign, contentWidth)
+			textAlignLast := style.GetTextAlignLast()
+			le.applyTextAlignToBoxes(childBoxes, box, textAlign, contentWidth, textAlignLast)
 		}
 	}
 
@@ -721,7 +722,8 @@ func (le *LayoutEngine) LayoutInlineBatch(
 		if display != css.DisplayInline && display != css.DisplayInlineBlock {
 			if textAlign, ok := box.Style.Get("text-align"); ok && textAlign != "left" && textAlign != "" {
 				contentWidth := box.Width // box.Width is already the content width
-				le.applyTextAlignToBoxes(boxes, box, textAlign, contentWidth)
+				textAlignLast := box.Style.GetTextAlignLast()
+				le.applyTextAlignToBoxes(boxes, box, textAlign, contentWidth, textAlignLast)
 			}
 		}
 	}
