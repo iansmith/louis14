@@ -3772,6 +3772,17 @@ func (s *Style) GetColumnWidth() float64 {
 	return 0
 }
 
+// GetColumnSpan returns the column-span value ("none" or "all").
+func (s *Style) GetColumnSpan() string {
+	if v, ok := s.Get("column-span"); ok {
+		v = strings.TrimSpace(strings.ToLower(v))
+		if v == "all" {
+			return "all"
+		}
+	}
+	return "none"
+}
+
 // GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em)
 func (s *Style) GetColumnGapMulticol() float64 {
 	if val, ok := s.Get("column-gap"); ok {
