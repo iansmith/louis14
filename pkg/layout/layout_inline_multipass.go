@@ -2167,7 +2167,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	inlineBoxes := []*Box{}
 	for _, b := range boxes {
 		if b.Node != nil && b.Node.Type == html.ElementNode &&
-			b.Style != nil && (b.Style.GetDisplay() == css.DisplayBlock || b.Style.GetDisplay() == css.DisplayTable || b.Style.GetDisplay() == css.DisplayListItem) {
+			b.Style != nil && (b.Style.GetDisplay() == css.DisplayBlock || b.Style.GetDisplay() == css.DisplayFlowRoot || b.Style.GetDisplay() == css.DisplayTable || b.Style.GetDisplay() == css.DisplayListItem) {
 			continue // Skip actual block element children
 		}
 		// Skip whitespace-only text boxes that were stripped during line breaking
@@ -2617,7 +2617,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 
 		// Handle different display types
 		switch display {
-		case css.DisplayBlock, css.DisplayTable, css.DisplayListItem, css.DisplayFlex:
+		case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayTable, css.DisplayListItem, css.DisplayFlex:
 			// Block elements in inline contexts are handled as BlockChild items
 			// They force line breaks before and after, and require recursive layout
 			item := &InlineItem{
@@ -2667,7 +2667,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 					}
 					childDisplay := childStyle.GetDisplay()
 					// Block-level displays don't break the pattern
-					if childDisplay != css.DisplayBlock && childDisplay != css.DisplayTable && childDisplay != css.DisplayListItem {
+					if childDisplay != css.DisplayBlock && childDisplay != css.DisplayFlowRoot && childDisplay != css.DisplayTable && childDisplay != css.DisplayListItem {
 						hasOnlyBlockChildren = false
 						break
 					}

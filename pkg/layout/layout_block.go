@@ -386,7 +386,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Browsers use text-align: -webkit-center which centers block children too
 	if !margin.AutoLeft && !margin.AutoRight && parent != nil && parent.Node != nil &&
 		parent.Node.TagName == "center" &&
-		(display == css.DisplayTable || display == css.DisplayBlock || display == css.DisplayFlex) {
+		(display == css.DisplayTable || display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayFlex) {
 		totalWidth := contentWidth + padding.Left + padding.Right + border.Left + border.Right
 		if totalWidth < availableWidth {
 			centerOffset := (availableWidth - totalWidth) / 2
@@ -497,7 +497,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	// Multi-column layout: triggered by column-count or column-width on block elements
-	if (display == css.DisplayBlock || display == css.DisplayInlineBlock) &&
+	if (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInlineBlock) &&
 		(style.GetColumnCount() > 0 || style.GetColumnWidth() > 0) {
 		le.layoutMulticolumn(box, x, y, availableWidth, style, computedStyles)
 		return box
@@ -532,8 +532,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	createsBFC := false
 	if style.GetOverflow() != css.OverflowVisible || floatType != css.FloatNone ||
 		position == css.PositionAbsolute || position == css.PositionFixed ||
-		display == css.DisplayInlineBlock {
+		display == css.DisplayInlineBlock || display == css.DisplayFlowRoot {
 		createsBFC = true
+	}
+	// contain: layout, content, or strict also creates a BFC
+	if !createsBFC {
+		contain := style.GetContain()
+		if strings.Contains(contain, "layout") || contain == "strict" || contain == "content" {
+			createsBFC = true
+		}
 	}
 	if createsBFC {
 		le.floatBaseStack = append(le.floatBaseStack, le.floatBase)
@@ -583,7 +590,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	hasInlineChild := false
 	didAnalyzeChildren := false // Track if we analyzed children
 
-	if (display == css.DisplayBlock || display == css.DisplayInline || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
+	if (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInline || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
 		didAnalyzeChildren = true
 		// Two-pass scan: determine if whitespace text counts as inline content.
 		// CSS 2.1 §9.2.2.1: In block containers with only block children,
@@ -634,7 +641,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// 2. Not an object with image
 		// 3. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
 		// EXPERIMENTAL: Allow mixed block/inline content - block children handled in multi-pass
-		if hasInlineChild && !isObjectImage && (display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
+		if hasInlineChild && !isObjectImage && (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
 			algorithm = InlineLayoutMultiPass
 		}
 	}
@@ -926,7 +933,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			box.Children = append(box.Children, beforeBox)
 			// Update inline context for subsequent children
 			beforeDisplay := beforeBox.Style.GetDisplay()
-			if beforeDisplay == css.DisplayBlock {
+			if beforeDisplay == css.DisplayBlock || beforeDisplay == css.DisplayFlowRoot {
 				inlineCtx.LineY += le.getTotalHeight(beforeBox)
 				inlineCtx.LineX = le.initializeLineX(box, border, padding, inlineCtx.LineY)
 			} else {
@@ -985,9 +992,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// For block elements and floats, use parent content area left edge
 			childX := inlineCtx.LineX
 			childFloat := childStyle.GetFloat()
-			if childDisplay == css.DisplayBlock || childDisplay == css.DisplayTable ||
-			   childDisplay == css.DisplayListItem || childDisplay == css.DisplayFlex ||
-			   childDisplay == css.DisplayGrid || childFloat != css.FloatNone {
+			if childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot ||
+			   childDisplay == css.DisplayTable || childDisplay == css.DisplayListItem ||
+			   childDisplay == css.DisplayFlex || childDisplay == css.DisplayGrid ||
+			   childFloat != css.FloatNone {
 				// Block-level or floated: start from parent's left content edge
 				childX = box.X + border.Left + padding.Left
 			}

@@ -43,7 +43,7 @@ import (
 // isBlockLevelDisplay returns true for CSS display values that produce block-level boxes.
 func isBlockLevelDisplay(d css.DisplayType) bool {
 	switch d {
-	case css.DisplayBlock, css.DisplayListItem, css.DisplayTable,
+	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem, css.DisplayTable,
 		css.DisplayFlex, css.DisplayGrid, css.DisplayTableRow,
 		css.DisplayTableCell, css.DisplayTableRowGroup,
 		css.DisplayTableHeaderGroup, css.DisplayTableFooterGroup,
