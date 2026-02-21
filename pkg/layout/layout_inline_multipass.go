@@ -2953,6 +2953,75 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			state.Items = append(state.Items, item)
 			return
 
+		case css.DisplayRuby, css.DisplayRubyBase:
+			// Ruby container: behave like inline — process all children.
+			// Base text and <rt> children are both collected; <rp> children
+			// have display:none so they are already skipped above.
+			margin := style.GetMargin()
+			padding := style.GetPadding()
+			border := style.GetBorderWidth()
+			openWidth := margin.Left + border.Left + padding.Left
+			closeWidth := padding.Right + border.Right + margin.Right
+
+			openItem := &InlineItem{
+				Type:  InlineItemOpenTag,
+				Node:  node,
+				Style: style,
+				Width: openWidth,
+			}
+			state.Items = append(state.Items, openItem)
+
+			// Process all children — base text nodes inline, <rt> as ruby-text items,
+			// <rp> already hidden (display:none). This places the rt annotation inline
+			// after the base text as a small superscript-like atomic inline.
+			for _, child := range node.Children {
+				le.CollectInlineItems(child, state, computedStyles)
+			}
+
+			closeItem := &InlineItem{
+				Type:  InlineItemCloseTag,
+				Node:  node,
+				Style: style,
+				Width: closeWidth,
+			}
+			state.Items = append(state.Items, closeItem)
+
+		case css.DisplayRubyText:
+			// Ruby text annotation (<rt>): render inline at small font-size.
+			// In a full ruby implementation the annotation appears above the base.
+			// For this renderer we treat it as a small superscript-like inline element.
+			fontSize := style.GetFontSize()
+			bold := style.GetFontWeight() == css.FontWeightBold
+			italic := style.GetFontStyle() == css.FontStyleItalic
+			mono := style.IsMonospaceFamily()
+			ahem := style.IsAhemFamily()
+
+			// Collect text content of all text-node children
+			var rtText string
+			for _, child := range node.Children {
+				if child.Type == html.TextNode {
+					rtText += child.Text
+				}
+			}
+			rtText = strings.TrimSpace(rtText)
+			if rtText == "" {
+				return
+			}
+
+			tw, th := text.MeasureTextWithStyle(rtText, fontSize, bold, italic, mono, ahem)
+			_ = th
+
+			// Emit the rt text as a small atomic inline-block rendered above the base.
+			// We use a special item: InlineItemAtomic with a synthetic single-text node.
+			item := &InlineItem{
+				Type:   InlineItemAtomic,
+				Node:   node,
+				Style:  style,
+				Width:  tw,
+				Height: fontSize * 1.2,
+			}
+			state.Items = append(state.Items, item)
+
 		case css.DisplayInline:
 			// Special case: <br/> creates a line break (Control item)
 			if node.TagName == "br" {

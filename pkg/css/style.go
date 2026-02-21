@@ -3413,6 +3413,9 @@ const (
 	DisplayContents        DisplayType = "contents"
 	DisplayTableCaption    DisplayType = "table-caption"
 	DisplayFlowRoot        DisplayType = "flow-root"
+	DisplayRuby            DisplayType = "ruby"
+	DisplayRubyText        DisplayType = "ruby-text"
+	DisplayRubyBase        DisplayType = "ruby-base"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0).
@@ -3481,6 +3484,12 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayFlowRoot
 		case "-webkit-box", "-webkit-inline-box":
 			return DisplayBlock
+		case "ruby":
+			return DisplayRuby
+		case "ruby-text":
+			return DisplayRubyText
+		case "ruby-base":
+			return DisplayRubyBase
 		}
 	}
 	return DisplayBlock

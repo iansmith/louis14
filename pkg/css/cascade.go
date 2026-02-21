@@ -91,6 +91,29 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
+	// Ruby elements: display types per CSS Ruby spec
+	switch node.TagName {
+	case "ruby":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "ruby")
+		}
+	case "rt":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "ruby-text")
+		}
+		// rt text is typically rendered at half the font size
+		if _, ok := style.Get("font-size"); !ok {
+			style.Set("font-size", "0.5em")
+		}
+	case "rp":
+		// rp (ruby parenthesis) is hidden when ruby is supported
+		style.Set("display", "none")
+	case "rb":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "ruby-base")
+		}
+	}
+
 	// Default styles for form elements — rendered as simple boxes.
 	// Note: must use individual properties (not shorthands like "border" or "padding")
 	// because style.Set() does not expand shorthands.
