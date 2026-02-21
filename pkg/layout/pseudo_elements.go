@@ -550,7 +550,10 @@ func (le *LayoutEngine) generateListMarker(node *html.Node, style *css.Style, x,
 		return nil
 	}
 
-	// Generate marker text based on list-style-type
+	// Compute ::marker pseudo-element style (color, font-size, content overrides)
+	markerStyle := css.ComputePseudoElementStyle(node, "marker", le.stylesheets, le.viewport.width, le.viewport.height, style)
+
+	// Generate marker text based on list-style-type (default)
 	var markerText string
 	switch listStyleType {
 	case css.ListStyleTypeDisc:
@@ -572,9 +575,48 @@ func (le *LayoutEngine) generateListMarker(node *html.Node, style *css.Style, x,
 		}
 	}
 
+	// ::marker { content: "..." } overrides the default marker text
+	if markerStyle != nil {
+		if contentValues, hasContent := markerStyle.GetContentValues(); hasContent && len(contentValues) > 0 {
+			var customText strings.Builder
+			for _, cv := range contentValues {
+				if cv.Type == "text" {
+					customText.WriteString(cv.Value)
+				}
+			}
+			if customText.Len() > 0 {
+				markerText = customText.String()
+			}
+		}
+	}
+
+	// Build the effective style for the marker box:
+	// Start with the element's style (for font, etc.), then apply ::marker overrides.
+	effectiveMarkerStyle := style
+	if markerStyle != nil {
+		// Check if ::marker overrides color or font-size
+		_, hasMarkerColor := markerStyle.Get("color")
+		_, hasMarkerFontSize := markerStyle.Get("font-size")
+		if hasMarkerColor || hasMarkerFontSize {
+			// Clone the element style and apply ::marker overrides
+			cloned := style.Clone()
+			if hasMarkerColor {
+				if colorVal, ok := markerStyle.Get("color"); ok {
+					cloned.Set("color", colorVal)
+				}
+			}
+			if hasMarkerFontSize {
+				if fsVal, ok := markerStyle.Get("font-size"); ok {
+					cloned.Set("font-size", fsVal)
+				}
+			}
+			effectiveMarkerStyle = cloned
+		}
+	}
+
 	// Measure marker text
-	fontSize := style.GetFontSize()
-	fontWeight := style.GetFontWeight()
+	fontSize := effectiveMarkerStyle.GetFontSize()
+	fontWeight := effectiveMarkerStyle.GetFontWeight()
 	bold := fontWeight == css.FontWeightBold
 	textWidth, textHeight := text.MeasureTextWithWeight(markerText, fontSize, bold)
 
@@ -587,7 +629,7 @@ func (le *LayoutEngine) generateListMarker(node *html.Node, style *css.Style, x,
 
 	markerBox := &Box{
 		Node:          node,
-		Style:         style,
+		Style:         effectiveMarkerStyle,
 		X:             markerX,
 		Y:             markerY,
 		Width:         textWidth,
