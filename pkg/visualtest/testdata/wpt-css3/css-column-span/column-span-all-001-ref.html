@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Reference: column-span: all</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* Reference layout matching column-span:all result:
+       - green block in col 1 (200px wide), 50px tall
+       - blue spanning bar (400px wide), 20px tall below green
+       - red block in col 1 (200px wide), 50px tall below blue */
+    .container { position: relative; width: 400px; height: 120px; }
+    .green { position: absolute; left: 0; top: 0; width: 200px; height: 50px; background: green; }
+    .blue  { position: absolute; left: 0; top: 50px; width: 400px; height: 20px; background: blue; }
+    .red   { position: absolute; left: 0; top: 70px; width: 200px; height: 50px; background: red; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="green"></div>
+    <div class="blue"></div>
+    <div class="red"></div>
+  </div>
+</body>
+</html>

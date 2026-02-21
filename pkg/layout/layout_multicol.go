@@ -6,7 +6,8 @@ import (
 )
 
 // layoutMulticolumn implements CSS Multi-column Layout (CSS Multicol Level 1).
-// It distributes child content across evenly-sized columns.
+// It distributes child content across evenly-sized columns and supports
+// column-span: all elements that span across all columns.
 func (le *LayoutEngine) layoutMulticolumn(
 	box *Box, x, y, availableWidth float64,
 	style *css.Style,
@@ -59,7 +60,109 @@ func (le *LayoutEngine) layoutMulticolumn(
 		return
 	}
 
-	// Lay out each child in a temporary position with column width
+	// --- column-span: all support ---
+	// Split children into segments: each segment is either a list of normal
+	// children (laid out in columns) or a single column-span:all child laid
+	// out at full content width.
+	type segment struct {
+		spanAll  bool        // true → single spanning child
+		node     *html.Node  // set when spanAll=true
+		children []*html.Node // set when spanAll=false
+	}
+
+	var segments []segment
+	var cur segment
+	for _, child := range children {
+		childStyle := computedStyles[child]
+		if childStyle != nil && childStyle.GetColumnSpan() == "all" {
+			// Close current normal group (even if empty) and add span segment
+			segments = append(segments, cur)
+			cur = segment{}
+			segments = append(segments, segment{spanAll: true, node: child})
+		} else {
+			cur.children = append(cur.children, child)
+		}
+	}
+	segments = append(segments, cur)
+
+	// Check whether any spanning children exist
+	hasSpans := false
+	for _, seg := range segments {
+		if seg.spanAll {
+			hasSpans = true
+			break
+		}
+	}
+
+	if !hasSpans {
+		// Fast path: no column-span:all — use original algorithm
+		le.layoutMulticolumnSegment(box, numCols, colWidth, columnGap, children, computedStyles)
+		return
+	}
+
+	// Slow path: handle spans
+	box.Children = nil
+	startX := box.X + box.Border.Left + box.Padding.Left
+	startY := box.Y + box.Border.Top + box.Padding.Top
+	curY := startY
+
+	for _, seg := range segments {
+		if seg.spanAll {
+			// Lay out spanning child at full content width
+			spanBox := le.layoutNode(seg.node, startX, curY, contentWidth, computedStyles, box)
+			if spanBox != nil {
+				spanH := spanBox.Height +
+					spanBox.Margin.Top + spanBox.Margin.Bottom +
+					spanBox.Padding.Top + spanBox.Padding.Bottom +
+					spanBox.Border.Top + spanBox.Border.Bottom
+				// Reposition: spanning child uses margin area origin
+				dx := startX + spanBox.Margin.Left - spanBox.X
+				dy := curY + spanBox.Margin.Top - spanBox.Y
+				multicolRepositionBox(spanBox, dx, dy)
+				box.Children = append(box.Children, spanBox)
+				spanBox.Parent = box
+				curY += spanH
+			}
+		} else if len(seg.children) > 0 {
+			// Lay out this group in columns; collect the column height
+			groupH := le.layoutMulticolumnSegmentAt(box, numCols, colWidth, columnGap,
+				startX, curY, seg.children, computedStyles)
+			curY += groupH
+		}
+	}
+
+	// Set total box height
+	innerH := curY - startY
+	box.Height = innerH + box.Padding.Top + box.Padding.Bottom +
+		box.Border.Top + box.Border.Bottom
+}
+
+// layoutMulticolumnSegment distributes a list of children across columns and
+// appends results to box.Children. Used by the no-span fast path.
+func (le *LayoutEngine) layoutMulticolumnSegment(
+	box *Box,
+	numCols int, colWidth, columnGap float64,
+	children []*html.Node,
+	computedStyles map[*html.Node]*css.Style,
+) {
+	startX := box.X + box.Border.Left + box.Padding.Left
+	startY := box.Y + box.Border.Top + box.Padding.Top
+	maxH := le.layoutMulticolumnSegmentAt(box, numCols, colWidth, columnGap,
+		startX, startY, children, computedStyles)
+	box.Height = maxH + box.Padding.Top + box.Padding.Bottom +
+		box.Border.Top + box.Border.Bottom
+}
+
+// layoutMulticolumnSegmentAt lays out children in columns starting at (startX,
+// startY), appends result boxes to box.Children, and returns the height of the
+// tallest column.
+func (le *LayoutEngine) layoutMulticolumnSegmentAt(
+	box *Box,
+	numCols int, colWidth, columnGap float64,
+	startX, startY float64,
+	children []*html.Node,
+	computedStyles map[*html.Node]*css.Style,
+) float64 {
 	type childLayout struct {
 		node   *html.Node
 		box    *Box
@@ -84,7 +187,7 @@ func (le *LayoutEngine) layoutMulticolumn(
 	}
 
 	if len(laid) == 0 {
-		return
+		return 0
 	}
 
 	// Distribute children across columns
@@ -110,11 +213,7 @@ func (le *LayoutEngine) layoutMulticolumn(
 	}
 
 	// Position children in their columns
-	box.Children = nil
-	startX := box.X + box.Border.Left + box.Padding.Left
-	startY := box.Y + box.Border.Top + box.Padding.Top
 	maxColumnHeight := 0.0
-
 	for i, col := range columns {
 		colX := startX + float64(i)*(colWidth+columnGap)
 		colY := startY
@@ -134,9 +233,7 @@ func (le *LayoutEngine) layoutMulticolumn(
 		}
 	}
 
-	// Set box height to tallest column
-	box.Height = maxColumnHeight + box.Padding.Top + box.Padding.Bottom +
-		box.Border.Top + box.Border.Bottom
+	return maxColumnHeight
 }
 
 // multicolCollectFlowChildren returns the in-flow element children of a node.

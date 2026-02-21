@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: column-span: none (default)</title>
+  <link rel="match" href="column-span-none-001-ref.html">
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; }
+    /* column-span:none is the default; this element stays in its column */
+    .container {
+      column-count: 2;
+      column-gap: 0;
+      width: 400px;
+    }
+    .block {
+      column-span: none;
+      height: 50px;
+      background: lime;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="block"></div>
+    <div class="block"></div>
+  </div>
+</body>
+</html>
