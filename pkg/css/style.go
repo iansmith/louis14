@@ -6027,3 +6027,86 @@ func (s *Style) GetTextEmphasisMark() string {
 		return "\u25cb" // ○
 	}
 }
+
+// ScrollbarColorValue holds the thumb and track colors for scrollbar-color.
+type ScrollbarColorValue struct {
+	Thumb  Color
+	Track  Color
+	IsAuto bool
+}
+
+// splitScrollbarColorValues splits a CSS value string containing two color values.
+// Colors can be functions like rgb(r,g,b) which contain commas, so we track paren depth.
+func splitScrollbarColorValues(v string) []string {
+	var results []string
+	depth := 0
+	start := 0
+	for i, c := range v {
+		if c == '(' {
+			depth++
+		}
+		if c == ')' {
+			depth--
+		}
+		if depth == 0 && c == ' ' && i > start {
+			token := strings.TrimSpace(v[start:i])
+			if token != "" {
+				results = append(results, token)
+				start = i + 1
+			}
+		}
+	}
+	if last := strings.TrimSpace(v[start:]); last != "" {
+		results = append(results, last)
+	}
+	return results
+}
+
+// GetScrollbarColor returns the scrollbar-color value.
+// Returns IsAuto=true for "auto" or when unset.
+func (s *Style) GetScrollbarColor() ScrollbarColorValue {
+	v, ok := s.Get("scrollbar-color")
+	if !ok {
+		return ScrollbarColorValue{IsAuto: true}
+	}
+	v = strings.TrimSpace(v)
+	if v == "" || v == "auto" {
+		return ScrollbarColorValue{IsAuto: true}
+	}
+	parts := splitScrollbarColorValues(v)
+	if len(parts) >= 2 {
+		thumbColor, thumbOk := ParseColor(parts[0])
+		trackColor, trackOk := ParseColor(parts[1])
+		if thumbOk && trackOk {
+			return ScrollbarColorValue{Thumb: thumbColor, Track: trackColor}
+		}
+	}
+	return ScrollbarColorValue{IsAuto: true}
+}
+
+// GetScrollbarGutter returns the scrollbar-gutter value (default: "auto").
+func (s *Style) GetScrollbarGutter() string {
+	v, ok := s.Get("scrollbar-gutter")
+	if !ok {
+		return "auto"
+	}
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "auto"
+	}
+	return v
+}
+
+// GetScrollbarWidth returns the scrollbar-width keyword (default: "auto").
+// Possible values: "auto", "thin", "none".
+func (s *Style) GetScrollbarWidth() string {
+	v, ok := s.Get("scrollbar-width")
+	if !ok {
+		return "auto"
+	}
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "auto"
+	}
+	return v
+}
