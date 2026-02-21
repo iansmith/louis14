@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: @media prefers-color-scheme</title>
+  <link rel="match" href="media-prefers-color-scheme-001-ref.html" />
+  <style>
+    body { margin: 0; }
+    .box { width: 100px; height: 100px; background: blue; }
+    @media (prefers-color-scheme: light) {
+      .box { background: green; }
+    }
+    @media (prefers-color-scheme: dark) {
+      .box { background: red; }
+    }
+  </style>
+</head>
+<body>
+  <div class="box"></div>
+</body>
+</html>
