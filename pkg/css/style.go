@@ -1179,6 +1179,23 @@ func ParseInlineStyle(styleAttr string) *Style {
 	return style
 }
 
+// normalizeVendorPrefixedValue resolves common vendor-prefixed length/width keywords
+// to their standard CSS equivalents.
+func normalizeVendorPrefixedValue(val string) string {
+	lower := strings.ToLower(strings.TrimSpace(val))
+	switch lower {
+	case "-webkit-fill-available", "-moz-available", "-webkit-stretch", "stretch":
+		return "100%"
+	case "-webkit-fit-content", "-moz-fit-content":
+		return "fit-content"
+	case "-webkit-max-content", "-moz-max-content":
+		return "max-content"
+	case "-webkit-min-content", "-moz-min-content":
+		return "min-content"
+	}
+	return val
+}
+
 // expandShorthand expands shorthand CSS properties into individual properties
 func expandShorthand(style *Style, property, value string) {
 	// Custom properties (--*) are never shorthands — store as-is
@@ -1447,17 +1464,17 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("left", parts[3])
 		}
 	case "inline-size":
-		style.Set("width", value)
+		style.Set("width", normalizeVendorPrefixedValue(value))
 	case "block-size":
-		style.Set("height", value)
+		style.Set("height", normalizeVendorPrefixedValue(value))
 	case "min-inline-size":
-		style.Set("min-width", value)
+		style.Set("min-width", normalizeVendorPrefixedValue(value))
 	case "min-block-size":
-		style.Set("min-height", value)
+		style.Set("min-height", normalizeVendorPrefixedValue(value))
 	case "max-inline-size":
-		style.Set("max-width", value)
+		style.Set("max-width", normalizeVendorPrefixedValue(value))
 	case "max-block-size":
-		style.Set("max-height", value)
+		style.Set("max-height", normalizeVendorPrefixedValue(value))
 	case "outline":
 		expandOutlineShorthand(style, value)
 	case "column-rule":
@@ -1490,6 +1507,9 @@ func expandShorthand(style *Style, property, value string) {
 		"animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state",
 		"animation-range", "animation-timeline":
 		style.Set(property, value)
+	case "width", "height", "min-width", "max-width", "min-height", "max-height", "flex-basis":
+		// Normalize vendor-prefixed size keywords before storing
+		style.Set(property, normalizeVendorPrefixedValue(value))
 	default:
 		// Regular property
 		style.Set(property, value)
