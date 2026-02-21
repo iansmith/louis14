@@ -237,9 +237,20 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		return matchesNthChild(node, arg)
 	case strings.HasPrefix(pc, "not("):
 		arg := pc[len("not(") : len(pc)-1] // strip "not(" and ")"
-		// Parse the inner selector and check if it does NOT match
-		innerSel := ParseSelector(strings.TrimSpace(arg))
-		return !matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1])
+		// Split by comma (paren-aware) to support selector lists: :not(A, B, C)
+		// Element must NOT match ANY of the selectors in the list
+		selectors := splitSelectorGroup(strings.TrimSpace(arg))
+		for _, sel := range selectors {
+			sel = strings.TrimSpace(sel)
+			if sel == "" {
+				continue
+			}
+			innerSel := ParseSelector(sel)
+			if len(innerSel.Parts) > 0 && matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
+				return false // Element matches one of the :not() selectors → fail
+			}
+		}
+		return true // Element doesn't match any → passes :not()
 	case pc == "hover", pc == "focus", pc == "active", pc == "visited":
 		// Dynamic pseudo-classes never match in a static renderer
 		return false

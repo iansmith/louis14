@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { margin: 0; padding: 10px; background: white; }
+.item { display: block; width: 100px; height: 20px; margin: 2px 0; }
+.item.a, .item.b, .item.c { background: red; }
+.item:not(.a):not(.b):not(.c) { background: lime; }
+</style>
+</head>
+<body>
+<div class="item a">a</div>
+<div class="item b">b</div>
+<div class="item c">c</div>
+<div class="item">other - lime</div>
+</body>
+</html>
