@@ -4709,6 +4709,15 @@ const (
 	ObjectFitScaleDown
 )
 
+// GetTextWrap returns the text-wrap value (default: "normal").
+// Supported values: "normal", "balance", "pretty", "nowrap", "stable".
+func (s *Style) GetTextWrap() string {
+	if v, ok := s.Get("text-wrap"); ok {
+		return v
+	}
+	return "normal"
+}
+
 // GetObjectFit returns the object-fit value (default: fill)
 func (s *Style) GetObjectFit() ObjectFit {
 	if val, ok := s.Get("object-fit"); ok {

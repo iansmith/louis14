@@ -135,6 +135,7 @@ type ConstraintSpace struct {
 	WordBreak      string           // CSS word-break (normal, break-all, keep-all)
 	OverflowWrap   string           // CSS overflow-wrap / word-wrap (normal, break-word, anywhere)
 	LineClampN     int              // -webkit-line-clamp: N (0 = no clamping)
+	TextWrap       string           // text-wrap: normal, balance, pretty, nowrap
 	// TODO: Add more constraints as needed:
 	// - WritingMode
 	// - IsNewFormattingContext

@@ -115,6 +115,11 @@ func (le *LayoutEngine) BreakLines(
 		return []*LineInfo{}
 	}
 
+	// text-wrap: balance — re-run with reduced width to equalize line lengths
+	if constraint.TextWrap == "balance" {
+		return le.breakLinesBalanced(items, constraint, startY)
+	}
+
 	lines := []*LineInfo{}
 	currentY := startY
 	currentLine := &LineInfo{
@@ -653,6 +658,66 @@ func (le *LayoutEngine) BreakLines(
 	}
 
 	return lines
+}
+
+// breakLinesBalanced implements text-wrap: balance by computing the balanced target
+// line width and re-running normal line breaking with that reduced width.
+// Algorithm:
+//  1. Run normal breaking to count lines (N)
+//  2. Sum total text width
+//  3. Target width = totalTextWidth / N
+//  4. Re-run with min(availableWidth, targetWidth) to balance lines
+func (le *LayoutEngine) breakLinesBalanced(
+	items []*InlineItem,
+	constraint *ConstraintSpace,
+	startY float64,
+) []*LineInfo {
+	// Step 1: Run normal breaking (without balance) to get line count
+	normalConstraint := *constraint
+	normalConstraint.TextWrap = "normal" // prevent infinite recursion
+	normalLines := le.BreakLines(items, &normalConstraint, startY)
+	nLines := len(normalLines)
+	if nLines <= 1 {
+		// Single line or empty: nothing to balance
+		return normalLines
+	}
+
+	// Step 2: Sum total text + atomic inline widths
+	totalWidth := 0.0
+	for _, item := range items {
+		switch item.Type {
+		case InlineItemText:
+			totalWidth += item.Width
+		case InlineItemAtomic:
+			totalWidth += item.Width
+		}
+	}
+
+	// Step 3: Compute target width
+	targetWidth := totalWidth / float64(nLines)
+
+	// Ensure target width is at least enough for the widest single word/item
+	// (otherwise we might create more lines than needed)
+	maxItemWidth := 0.0
+	for _, item := range items {
+		if item.Width > maxItemWidth {
+			maxItemWidth = item.Width
+		}
+	}
+	if targetWidth < maxItemWidth {
+		targetWidth = maxItemWidth
+	}
+
+	// Step 4: Re-run with reduced available width
+	if targetWidth >= constraint.AvailableSize.Width {
+		// No reduction needed; normal breaking already balanced
+		return normalLines
+	}
+
+	balancedConstraint := *constraint
+	balancedConstraint.TextWrap = "normal" // prevent infinite recursion
+	balancedConstraint.AvailableSize.Width = targetWidth
+	return le.BreakLines(items, &balancedConstraint, startY)
 }
 
 // breakTextAtWordBoundary splits text at the last space such that the prefix fits
@@ -1393,6 +1458,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			if n := containerBox.Style.GetLineClamp(); n > 0 {
 				constraint.LineClampN = n
 			}
+		}
+
+		// text-wrap: balance/pretty/nowrap
+		tw := containerBox.Style.GetTextWrap()
+		constraint.TextWrap = tw
+		if tw == "nowrap" {
+			constraint.NoWrap = true
 		}
 	}
 
