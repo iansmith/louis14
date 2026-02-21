@@ -17,6 +17,19 @@ func NewStyle() *Style {
 	return &Style{Properties: make(map[string]string)}
 }
 
+// Clone returns a deep copy of this Style with all properties copied.
+func (s *Style) Clone() *Style {
+	dst := &Style{
+		Properties:     make(map[string]string, len(s.Properties)),
+		ViewportWidth:  s.ViewportWidth,
+		ViewportHeight: s.ViewportHeight,
+	}
+	for k, v := range s.Properties {
+		dst.Properties[k] = v
+	}
+	return dst
+}
+
 func (s *Style) Get(property string) (string, bool) {
 	val, ok := s.Properties[property]
 	if !ok {

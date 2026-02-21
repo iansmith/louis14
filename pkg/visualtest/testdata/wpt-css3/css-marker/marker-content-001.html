@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test: ::marker content (same as default disc)</title>
+  <link rel="match" href="marker-content-001-ref.html" />
+  <style>
+    body { margin: 0; padding: 20px; font-size: 16px; font-family: Ahem; }
+    ul { margin: 0; padding-left: 40px; }
+    li::marker { content: "•"; }
+  </style>
+</head>
+<body>
+  <ul>
+    <li>Item</li>
+  </ul>
+</body>
+</html>
