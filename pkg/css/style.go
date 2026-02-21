@@ -1929,6 +1929,43 @@ func expandBackgroundProperty(style *Style, value string) {
 		return
 	}
 
+	// Handle image-set() / -webkit-image-set() — extract the first URL candidate
+	// and treat it as a plain url() reference. Must happen before the url() check
+	// since image-set() contains url() inside it.
+	lowerValue := strings.ToLower(value)
+	if strings.Contains(lowerValue, "image-set(") {
+		// Find the image-set( span (possibly prefixed with -webkit-)
+		setIdx := strings.Index(lowerValue, "image-set(")
+		// Walk backwards to include an optional "-webkit-" prefix
+		prefixStart := setIdx
+		if setIdx >= 8 && lowerValue[setIdx-8:setIdx] == "-webkit-" {
+			prefixStart = setIdx - 8
+		}
+		// Find matching close paren for image-set(
+		depth := 1
+		setEnd := setIdx + len("image-set(")
+		for setEnd < len(value) && depth > 0 {
+			switch value[setEnd] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			if depth > 0 {
+				setEnd++
+			}
+		}
+		setEnd++ // include the closing ')'
+		// Extract the first URL from the image-set
+		imageSetExpr := value[prefixStart:setEnd]
+		if url, ok := extractImageSetFirstURL(imageSetExpr); ok {
+			style.Set("background-image", "url(\""+url+"\")")
+			// Remove image-set(...) from value so remaining tokens can be parsed
+			value = value[:prefixStart] + value[setEnd:]
+		}
+		// Fall through to parse remaining tokens (repeat, position, color)
+	}
+
 	// Extract url(...) first since it may contain spaces (e.g. data URIs).
 	// Must happen before gradient check, as background can have both url() and gradient
 	// in comma-separated layers (e.g., "url(img.svg), linear-gradient(...)").
@@ -4581,8 +4618,18 @@ func ParseURLValue(val string) (string, bool) {
 // GetBackgroundImage returns the background-image URL if set.
 // Checks both background-image and the background shorthand.
 // Handles CSS multiple background layers (comma-separated) by extracting the first url().
+// Also handles image-set() / -webkit-image-set() by extracting the first candidate URL.
 func (s *Style) GetBackgroundImage() (string, bool) {
 	if val, ok := s.Get("background-image"); ok {
+		lowerVal := strings.ToLower(val)
+
+		// Handle image-set() / -webkit-image-set() — select first URL candidate
+		if strings.Contains(lowerVal, "image-set(") {
+			if url, ok := extractImageSetFirstURL(val); ok {
+				return url, true
+			}
+		}
+
 		// For multi-layer values like "url(img.svg), linear-gradient(...)",
 		// use extractFirstURL which correctly handles nested parens.
 		// ParseURLValue would greedily match from url( to the last ).
@@ -4618,6 +4665,91 @@ func extractFirstURL(val string) (string, bool) {
 			depth--
 		}
 	}
+	return "", false
+}
+
+// extractImageSetFirstURL extracts the first URL from an image-set() or -webkit-image-set() expression.
+// image-set(url("a.png") 1x, url("b.png") 2x)  → "a.png"
+// image-set("a.png" 1x, "b.png" 2x)             → "a.png"  (bare string, no url() wrapper)
+// image-set(url("a.avif") type("image/avif"), url("b.jpg") type("image/jpeg")) → "a.avif"
+// Returns the extracted URL string (without url() wrapper) and true on success.
+func extractImageSetFirstURL(val string) (string, bool) {
+	lower := strings.ToLower(val)
+
+	// Find "image-set(" or "-webkit-image-set("
+	setIdx := strings.Index(lower, "image-set(")
+	if setIdx < 0 {
+		return "", false
+	}
+	// Advance past "image-set("
+	innerStart := setIdx + len("image-set(")
+
+	// Find the matching close paren for the image-set() call
+	depth := 1
+	innerEnd := innerStart
+	for innerEnd < len(val) && depth > 0 {
+		switch val[innerEnd] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth > 0 {
+			innerEnd++
+		}
+	}
+	if depth != 0 {
+		return "", false
+	}
+
+	// inner is the content inside image-set(...)
+	inner := val[innerStart:innerEnd]
+
+	// Split into comma-separated candidates respecting nested parens
+	entries := splitCSSFunctionArgs(inner)
+	if len(entries) == 0 {
+		return "", false
+	}
+
+	// Use the first entry
+	first := strings.TrimSpace(entries[0])
+
+	// Each entry has the form: url("path") <descriptor>  OR  "path" <descriptor>
+	// where <descriptor> is 1x / 2x / type("...") etc.
+	// We need to strip the trailing descriptor token(s) that come after the URL/string.
+
+	// Case 1: entry starts with url(...)
+	if strings.HasPrefix(strings.ToLower(first), "url(") {
+		// Extract just the url(...) portion
+		urlEnd := 4 // past "url("
+		d := 1
+		for urlEnd < len(first) && d > 0 {
+			switch first[urlEnd] {
+			case '(':
+				d++
+			case ')':
+				d--
+			}
+			if d > 0 {
+				urlEnd++
+			}
+		}
+		urlPart := first[:urlEnd+1]
+		return ParseURLValue(urlPart)
+	}
+
+	// Case 2: bare quoted string — e.g. "img-1x.png" 1x
+	first = strings.TrimSpace(first)
+	// Strip trailing descriptor tokens (anything after the closing quote)
+	if len(first) > 0 && (first[0] == '"' || first[0] == '\'') {
+		q := first[0]
+		closeQ := strings.IndexByte(first[1:], q)
+		if closeQ >= 0 {
+			urlStr := first[1 : closeQ+1] // content between quotes
+			return urlStr, true
+		}
+	}
+
 	return "", false
 }
 
