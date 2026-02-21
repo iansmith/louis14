@@ -1146,6 +1146,12 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("padding-top", parts[0])
 			style.Set("padding-bottom", parts[1])
 		}
+	case "border-inline":
+		expandBorderSideProperty(style, "border-left", value)
+		expandBorderSideProperty(style, "border-right", value)
+	case "border-block":
+		expandBorderSideProperty(style, "border-top", value)
+		expandBorderSideProperty(style, "border-bottom", value)
 	case "border-inline-start":
 		expandBorderSideProperty(style, "border-left", value)
 	case "border-inline-end":
