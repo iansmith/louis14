@@ -827,10 +827,12 @@ func (r *Renderer) paintWithMask(box *layout.Box, maskValue string) {
 			return 0, 0, 0, 0
 		}
 
-		// Project pixel position onto gradient line to get t parameter
+		// Project pixel position onto gradient line to get t parameter.
+		// Use pixel centers (+0.5) to match linearGradient.ColorAt which also uses pixel centers,
+		// ensuring mask and background-image gradients sample at the same t values.
 		var t float64
 		if gradLen > 0 {
-			t = (float64(px)-x0)*dx/gradLen + (float64(py)-y0)*dy/gradLen
+			t = (float64(px)+0.5-x0)*dx/gradLen + (float64(py)+0.5-y0)*dy/gradLen
 		}
 		if t < 0 {
 			t = 0
@@ -1310,6 +1312,13 @@ func (r *Renderer) drawBoxBackgroundAndBorders(box *layout.Box) {
 		return
 	}
 
+	// CSS background-color is NOT an inherited property. Text node boxes carry
+	// the parent element's style (for color, font, etc.), but must never paint
+	// a background — the parent element's background is already painted separately.
+	if box.Node != nil && box.Node.Type == html.TextNode {
+		return
+	}
+
 	// CSS 2.1 §11.2: visibility:hidden elements are invisible but still occupy space
 	if v := box.Style.GetVisibility(); v == "hidden" || v == "collapse" {
 		return
@@ -1653,8 +1662,11 @@ func (r *Renderer) drawConicGradient(grad *css.Gradient, bgX, bgY, bgWidth, bgHe
 
 	fromAngleRad := grad.FromAngle * math.Pi / 180.0
 
-	for py := int(bgY); py < int(bgY+bgHeight); py++ {
-		for px := int(bgX); px < int(bgX+bgWidth); px++ {
+	// Use ceil for the loop end to match patternPainter's "any coverage = full" behavior.
+	// When bgY is fractional (e.g., 51.2), the element's background fills row y=int(bgY)..int(ceil(bgY+bgHeight)-1)
+	// via patternPainter. The conic gradient loop must cover the same rows.
+	for py := int(bgY); py < int(math.Ceil(bgY+bgHeight)); py++ {
+		for px := int(bgX); px < int(math.Ceil(bgX+bgWidth)); px++ {
 			dx := float64(px) + 0.5 - centerX
 			dy := float64(py) + 0.5 - centerY
 			// Angle from top, clockwise
@@ -2409,25 +2421,15 @@ func (r *Renderer) drawText(box *layout.Box) {
 			drawX += charWidth + letterSpacing
 		}
 	} else if entry, ok := r.textRunMap[box]; ok {
-		// Use the full run string for kerning consistency across box boundaries.
-		// Compute clip boundaries via MeasureString to exactly match DrawString glyph positions.
+		// Draw this word at its exact sub-pixel position within the run.
+		// With HintingNone (no GPOS kerning), advance("prefix"+"word") == advance("prefix")+advance("word"),
+		// so drawing textContent at (startX + prefixAdvance) gives identical glyph positions
+		// to drawing the full run string. This avoids clipping artifacts entirely.
 		runes := []rune(entry.fullText)
 		prefix := string(runes[:entry.charOffset])
-		thisLen := len([]rune(textContent))
-		suffix := string(runes[:entry.charOffset+thisLen])
-		prefixW, _ := r.context.MeasureString(prefix)
-		suffixW, _ := r.context.MeasureString(suffix)
-		clipLeft := entry.startX + prefixW
-		clipWidth := (entry.startX + suffixW) - clipLeft
-		if clipWidth < 0 {
-			clipWidth = 0
-		}
-		r.context.Push()
-		// X-only clip: use full canvas height to avoid cutting off ascenders/descenders.
-		r.context.DrawRectangle(clipLeft, 0, clipWidth, float64(r.context.Height()))
-		r.context.Clip()
-		r.context.DrawString(entry.fullText, entry.startX, textY)
-		r.context.Pop()
+		prefixW := r.context.MeasureStringFrac(prefix)
+		drawX := entry.startX + prefixW
+		r.context.DrawString(textContent, drawX, textY)
 	} else {
 		r.context.DrawString(textContent, textX, textY)
 	}
@@ -2666,11 +2668,22 @@ func (r *Renderer) drawImage(box *layout.Box) {
 		return
 	}
 
+	// Round image position to integer pixels: draw.BiLinear.Transform uses the
+	// clip mask's raw alpha values, so fractional clip boundaries cause partial
+	// transparency at the first/last row (same issue as in drawBackgroundImage).
+	// Real browsers render replaced elements at integer pixel positions.
+	drawX := math.Round(contentX + offsetX)
+	drawY := math.Round(contentY + offsetY)
+	intClipX := math.Floor(contentX)
+	intClipY := math.Floor(contentY)
+	intClipRight := math.Ceil(contentX + contentW)
+	intClipBottom := math.Ceil(contentY + contentH)
+
 	r.context.Push()
 	// Clip to content box so cover/none don't overflow
-	r.context.DrawRectangle(contentX, contentY, contentW, contentH)
+	r.context.DrawRectangle(intClipX, intClipY, intClipRight-intClipX, intClipBottom-intClipY)
 	r.context.Clip()
-	r.context.Translate(contentX+offsetX, contentY+offsetY)
+	r.context.Translate(drawX, drawY)
 	r.context.Scale(scaleX, scaleY)
 	r.context.DrawImage(img, 0, 0)
 	r.popContext()
@@ -2769,9 +2782,17 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 		posOriginH = clipHeight
 	}
 
-	// Clip the drawing area to the background-clip region
+	// Clip the drawing area to the background-clip region.
+	// Round to integer pixels: draw.BiLinear.Transform uses the clip mask's raw
+	// alpha values for compositing (unlike Fill which applies coverage thresholding),
+	// so fractional clip boundaries cause partial transparency at the first/last row.
+	// Expanding to integer boundaries ensures binary (0 or 255) mask values.
+	intClipX := math.Floor(clipX)
+	intClipY := math.Floor(clipY)
+	intClipRight := math.Ceil(clipX + clipWidth)
+	intClipBottom := math.Ceil(clipY + clipHeight)
 	r.context.Push()
-	r.context.DrawRectangle(clipX, clipY, clipWidth, clipHeight)
+	r.context.DrawRectangle(intClipX, intClipY, intClipRight-intClipX, intClipBottom-intClipY)
 	r.context.Clip()
 
 	needsScale := scaleX != 1.0 || scaleY != 1.0

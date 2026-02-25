@@ -728,9 +728,17 @@ func (g *Gradient) ExtendRepeatingStops(gradientLength float64) {
 		return
 	}
 
-	// Build repeated stops
+	// Build repeated stops.
+	// Backward extension (shift < 0) is only needed when the gradient starts after 0
+	// (i.e., firstOffset > 0). When firstOffset == 0, backward extension would add
+	// the previous period's END color at position 0, conflicting with the current
+	// period's START color. Only extend backward if it genuinely fills a gap before 0.
+	startShift := 0.0
+	if firstOffset > 1e-9 {
+		startShift = -patternLength * 10
+	}
 	var newStops []ColorStop
-	for shift := -patternLength * 10; shift <= 1.0+patternLength; shift += patternLength {
+	for shift := startShift; shift <= 1.0+patternLength; shift += patternLength {
 		for _, stop := range g.ColorStops {
 			newOffset := stop.Offset - firstOffset + shift
 			if newOffset >= -0.01 && newOffset <= 1.01 {

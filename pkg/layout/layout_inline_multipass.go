@@ -2976,7 +2976,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 
 		// Handle different display types
 		switch display {
-		case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayTable, css.DisplayListItem, css.DisplayFlex:
+		case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayTable, css.DisplayListItem, css.DisplayFlex, css.DisplayGrid:
 			// Block elements in inline contexts are handled as BlockChild items
 			// They force line breaks before and after, and require recursive layout
 			item := &InlineItem{

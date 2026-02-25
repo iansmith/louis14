@@ -10,7 +10,24 @@ import (
 	"strings"
 )
 
+// blockChildEstablishesBFC returns true if the element establishes a new block formatting
+// context per CSS 2.1 §9.4.1. Such blocks must not overlap float margin boxes.
+func blockChildEstablishesBFC(style *css.Style) bool {
+	overflow := style.GetOverflow()
+	return overflow == css.OverflowHidden ||
+		overflow == css.OverflowAuto ||
+		overflow == css.OverflowScroll ||
+		style.GetDisplay() == css.DisplayFlowRoot
+}
+
 func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
+	// Guard against stack overflow on deeply nested pages.
+	le.layoutDepth++
+	defer func() { le.layoutDepth-- }()
+	if le.layoutDepth > 500 {
+		return &Box{Node: node, X: x, Y: y}
+	}
+
 	// Phase 3: Use computed styles from cascade
 	style := computedStyles[node]
 	if style == nil {
@@ -1010,12 +1027,30 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				childX = box.X + border.Left + padding.Left
 			}
 
+			// CSS 2.1 §9.4.1: A block that establishes a new BFC must not overlap float margin boxes.
+			// Adjust X and available width for BFC-establishing block children.
+			adjustedChildX := childX
+			adjustedChildWidth := childAvailableWidth
+			if childFloat == css.FloatNone &&
+				childStyle.GetPosition() != css.PositionAbsolute &&
+				childStyle.GetPosition() != css.PositionFixed &&
+				blockChildEstablishesBFC(childStyle) {
+				leftOff, rightOff := le.getFloatOffsets(inlineCtx.LineY)
+				if leftOff > 0 || rightOff > 0 {
+					adjustedChildX = childX + leftOff
+					adjustedChildWidth = childAvailableWidth - leftOff - rightOff
+					if adjustedChildWidth < 0 {
+						adjustedChildWidth = 0
+					}
+				}
+			}
+
 			// Layout the child
 			childBox := le.layoutNode(
 				child,
-				childX,
+				adjustedChildX,
 				inlineCtx.LineY,
-				childAvailableWidth,
+				adjustedChildWidth,
 				computedStyles,
 				box, // Phase 4: Pass parent
 			)

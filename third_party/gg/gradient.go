@@ -44,7 +44,11 @@ func (g *linearGradient) ColorAt(x, y int) color.Color {
 		return color.Transparent
 	}
 
-	fx, fy := float64(x), float64(y)
+	// Use pixel centers (+0.5) consistent with the radial gradient implementation.
+	// Integer pixel coordinates sit exactly on hard-stop boundaries due to floating-point
+	// precision (e.g., t = 60/200 = 0.2999... instead of 0.3), causing interpolation
+	// to return the wrong color. Pixel centers avoid this boundary issue.
+	fx, fy := float64(x)+0.5, float64(y)+0.5
 	x0, y0, x1, y1 := g.x0, g.y0, g.x1, g.y1
 	dx, dy := x1-x0, y1-y0
 
@@ -73,7 +77,10 @@ func (g *linearGradient) ColorAt(x, y int) color.Color {
 
 func (g *linearGradient) AddColorStop(offset float64, color color.Color) {
 	g.stops = append(g.stops, stop{pos: offset, color: color})
-	sort.Sort(g.stops)
+	// Use stable sort so that equal-position stops preserve insertion order.
+	// For CSS hard stops (two stops at the same position), the "after" color
+	// must follow the "before" color; stable sort preserves this convention.
+	sort.Stable(g.stops)
 }
 
 func NewLinearGradient(x0, y0, x1, y1 float64) Gradient {
@@ -140,7 +147,7 @@ func (g *radialGradient) ColorAt(x, y int) color.Color {
 
 func (g *radialGradient) AddColorStop(offset float64, color color.Color) {
 	g.stops = append(g.stops, stop{pos: offset, color: color})
-	sort.Sort(g.stops)
+	sort.Stable(g.stops)
 }
 
 func NewRadialGradient(x0, y0, r0, x1, y1, r1 float64) Gradient {
@@ -179,6 +186,7 @@ func (g *ellipticalGradient) ColorAt(x, y int) color.Color {
 }
 
 func (g *ellipticalGradient) AddColorStop(offset float64, color color.Color) {
+	// Delegates to inner radialGradient which uses stable sort.
 	g.inner.AddColorStop(offset, color)
 }
 

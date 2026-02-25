@@ -870,6 +870,19 @@ func (dc *Context) MeasureString(s string) (w, h float64) {
 	return float64(a >> 6), dc.fontHeight
 }
 
+// MeasureStringFrac returns the advance width of the specified text at full
+// fixed.Int26_6 sub-pixel precision (1/64 px). Use this instead of
+// MeasureString when the result feeds a clip boundary that must align with
+// DrawString's actual glyph placement, which also operates at 1/64 px.
+// MeasureString truncates the fractional bits (floor), which can cause the
+// clip right edge to fall up to ~1 px too early.
+func (dc *Context) MeasureStringFrac(s string) float64 {
+	d := &font.Drawer{
+		Face: dc.fontFace,
+	}
+	return float64(d.MeasureString(s)) / 64.0
+}
+
 // WordWrap wraps the specified string to the given max width and current
 // font face.
 func (dc *Context) WordWrap(s string, w float64) []string {

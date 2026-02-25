@@ -66,6 +66,9 @@ type LayoutEngine struct {
 	// Anonymous block wrappers and inline clones are added here so collectInlineItemsClean
 	// and layoutNode can find their styles without re-running the CSS cascade.
 	syntheticStyles map[*html.Node]*css.Style
+
+	// Recursion depth guard: prevents stack overflow on deeply nested pages.
+	layoutDepth int
 }
 
 // Phase 5: FloatInfo tracks information about floated elements

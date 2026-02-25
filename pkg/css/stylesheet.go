@@ -689,13 +689,24 @@ func parseMediaRule(ruleStr string) []Rule {
 	innerRules := splitRules(innerCSS)
 
 	for _, innerRuleStr := range innerRules {
-		rule, err := parseRule(innerRuleStr)
+		innerTrimmed := strings.TrimSpace(innerRuleStr)
+		// Handle nested @media inside @media (e.g. @media screen { @media (min-width:1120px) { ... } })
+		if strings.HasPrefix(innerTrimmed, "@media") {
+			nestedRules := parseMediaRule(innerRuleStr)
+			// Nested media queries override the outer media query (inner wins)
+			rules = append(rules, nestedRules...)
+			continue
+		}
+		// Use parseRules (plural) to handle comma-separated selector groups
+		parsedRules, err := parseRules(innerRuleStr)
 		if err != nil {
 			continue
 		}
-		// Attach media query to this rule
-		rule.MediaQuery = mediaQuery
-		rules = append(rules, rule)
+		// Attach media query to all resulting rules
+		for _, rule := range parsedRules {
+			rule.MediaQuery = mediaQuery
+			rules = append(rules, rule)
+		}
 	}
 
 	return rules
@@ -728,12 +739,14 @@ func parseContainerRule(ruleStr string) []Rule {
 	innerRules := splitRules(innerCSS)
 
 	for _, innerRuleStr := range innerRules {
-		rule, err := parseRule(innerRuleStr)
+		parsedRules, err := parseRules(innerRuleStr)
 		if err != nil {
 			continue
 		}
-		rule.ContainerQuery = containerQuery
-		rules = append(rules, rule)
+		for _, rule := range parsedRules {
+			rule.ContainerQuery = containerQuery
+			rules = append(rules, rule)
+		}
 	}
 
 	return rules
@@ -1012,11 +1025,11 @@ func parseSupportsRule(ruleStr string) []Rule {
 	innerRules := splitRules(innerCSS)
 	var rules []Rule
 	for _, inner := range innerRules {
-		parsed, err := parseRule(inner)
+		parsedRules, err := parseRules(inner)
 		if err != nil {
 			continue
 		}
-		rules = append(rules, parsed)
+		rules = append(rules, parsedRules...)
 	}
 	return rules
 }
