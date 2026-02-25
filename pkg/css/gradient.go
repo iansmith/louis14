@@ -133,6 +133,9 @@ func parseColorStop(stop string) (ColorStop, bool) {
 			if err == nil {
 				cs.Offset = pct / 100.0 // Convert to 0-1 range
 			}
+		} else if num, err := strconv.ParseFloat(pos, 64); err == nil && num == 0 {
+			// CSS: bare 0 is a valid length (= 0px = 0%) in all contexts
+			cs.Offset = 0.0
 		}
 	}
 
@@ -251,6 +254,14 @@ func (g *Gradient) fillMissingOffsets() {
 				step := (nextOffset - prevOffset) / float64(count)
 				g.ColorStops[i].Offset = prevOffset + step*float64(i-prevIdx)
 			}
+		}
+	}
+
+	// CSS Images §3.4: if a color stop has a position less than any previous
+	// stop's position, clamp it up to the previous stop's position.
+	for i := 1; i < len(g.ColorStops); i++ {
+		if g.ColorStops[i].Offset < g.ColorStops[i-1].Offset {
+			g.ColorStops[i].Offset = g.ColorStops[i-1].Offset
 		}
 	}
 }

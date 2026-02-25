@@ -116,6 +116,31 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	padding := style.GetPadding()
 	border := style.GetBorderWidth()
 
+	// Resolve calc() expressions in margin against the containing block width.
+	// GetMargin() uses GetLength() which handles fixed calc() but not calc()+%.
+	resolveCalcMargin := func(prop string) (float64, bool) {
+		if val, ok := style.Get(prop); ok {
+			trimmed := strings.TrimSpace(val)
+			if strings.HasPrefix(trimmed, "calc(") && strings.HasSuffix(trimmed, ")") {
+				inner := trimmed[5 : len(trimmed)-1]
+				return css.EvalCalcWithPercent(inner, style.GetFontSize(), availableWidth)
+			}
+		}
+		return 0, false
+	}
+	if v, ok := resolveCalcMargin("margin-top"); ok {
+		margin.Top = v
+	}
+	if v, ok := resolveCalcMargin("margin-right"); ok {
+		margin.Right = v
+	}
+	if v, ok := resolveCalcMargin("margin-bottom"); ok {
+		margin.Bottom = v
+	}
+	if v, ok := resolveCalcMargin("margin-left"); ok {
+		margin.Left = v
+	}
+
 	// CSS 2.1 §8.4: Percentage padding resolves against the WIDTH of the
 	// containing block (even for padding-top and padding-bottom).
 	resolvePaddingPercent := func(prop string, current float64) float64 {
@@ -334,13 +359,40 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
-	// Apply min/max width constraints
-	if minWidth, ok := style.GetLength("min-width"); ok {
+	// Apply min/max width constraints (handles both fixed lengths and calc()+% values).
+	resolveCalcWidth := func(prop string) (float64, bool) {
+		if v, ok := style.GetLength(prop); ok {
+			return v, true
+		}
+		if val, ok := style.Get(prop); ok {
+			trimmed := strings.TrimSpace(val)
+			if strings.HasPrefix(trimmed, "calc(") && strings.HasSuffix(trimmed, ")") {
+				inner := trimmed[5 : len(trimmed)-1]
+				// CSS 2.1 §10.2: In a shrink-to-fit context (float parent without explicit
+				// width), percentage in calc() is undefined — use percentBase=0 so that
+				// non-zero % terms fail gracefully (treated as none). Fixed-only calc()
+				// expressions still resolve correctly with percentBase=0.
+				pctBase := availableWidth
+				if strings.Contains(inner, "%") && parent != nil && parent.Style != nil {
+					if parent.Style.GetFloat() != css.FloatNone {
+						_, parentHasLen := parent.Style.GetLength("width")
+						_, parentHasPct := parent.Style.GetPercentage("width")
+						if !parentHasLen && !parentHasPct {
+							pctBase = 0
+						}
+					}
+				}
+				return css.EvalCalcWithPercent(inner, style.GetFontSize(), pctBase)
+			}
+		}
+		return 0, false
+	}
+	if minWidth, ok := resolveCalcWidth("min-width"); ok {
 		if contentWidth < minWidth {
 			contentWidth = minWidth
 		}
 	}
-	if maxWidth, ok := style.GetLength("max-width"); ok {
+	if maxWidth, ok := resolveCalcWidth("max-width"); ok {
 		if contentWidth > maxWidth {
 			contentWidth = maxWidth
 		}

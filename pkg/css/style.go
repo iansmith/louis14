@@ -1843,11 +1843,46 @@ func expandBorderRadiusProperty(style *Style, value string) {
 	}
 }
 
+// splitShorthandParts splits a CSS shorthand value by whitespace, respecting parentheses.
+// Unlike strings.Fields, correctly handles values like "calc(10px + 1%) 0 0 0".
+func splitShorthandParts(value string) []string {
+	var parts []string
+	depth := 0
+	start := -1
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if ch == '(' {
+			depth++
+			if start == -1 {
+				start = i
+			}
+		} else if ch == ')' {
+			depth--
+			if start == -1 {
+				start = i
+			}
+		} else if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			if depth == 0 && start != -1 {
+				parts = append(parts, value[start:i])
+				start = -1
+			}
+		} else {
+			if start == -1 {
+				start = i
+			}
+		}
+	}
+	if start != -1 {
+		parts = append(parts, value[start:])
+	}
+	return parts
+}
+
 // expandBoxProperty expands margin/padding shorthand
 // Supports: "10px" (all), "10px 20px" (vertical horizontal),
 //           "10px 20px 30px" (top h bottom), "10px 20px 30px 40px" (t r b l)
 func expandBoxProperty(style *Style, prefix, value string) {
-	parts := strings.Fields(value)
+	parts := splitShorthandParts(value)
 
 	switch len(parts) {
 	case 1:
