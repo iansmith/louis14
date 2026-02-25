@@ -421,19 +421,23 @@ func (le *LayoutEngine) BreakLines(
 								lastTextEndedWithSpace = false
 								wordBroke = true
 							} else if pfxText == "" {
-								// Nothing fits on current line - start a new line and retry
+								// Nothing fits on current line - start a new line and retry,
+								// but only if the current line has items to flush.
+								// If the line is already empty, fall through to force-append
+								// to avoid an infinite retry loop.
 								if len(currentLine.Items) > 0 {
 									lines = append(lines, currentLine)
 									currentY += currentLine.Height
+									lineFloatWidth = 0
+									lineFloats = nil
+									currentLine = &LineInfo{Y: currentY, Items: []*InlineItem{}, Constraint: constraint, Height: 0}
+									currentX = 0
+									hasSeenContentOnLine = false
+									lastTextEndedWithSpace = false
+									i-- // Retry this item on the new line
+									wordBroke = true
 								}
-								lineFloatWidth = 0
-								lineFloats = nil
-								currentLine = &LineInfo{Y: currentY, Items: []*InlineItem{}, Constraint: constraint, Height: 0}
-								currentX = 0
-								hasSeenContentOnLine = false
-								lastTextEndedWithSpace = false
-								i-- // Retry this item on the new line
-								wordBroke = true
+								// else: line is empty, word still doesn't fit -> fall through to force-append
 							}
 						}
 						if !wordBroke {

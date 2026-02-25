@@ -365,6 +365,10 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		}
 		allTransforms = append(allTransforms, box.Style.GetTransforms()...)
 		if len(allTransforms) > 0 {
+			// CSS spec: if transform is non-invertible (singular), element is not displayed.
+			if transformIsSingular(allTransforms) {
+				return
+			}
 			r.context.Push()
 			hasTransform = true
 			r.applyTransforms(box, allTransforms)
@@ -2859,6 +2863,65 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 
 func (r *Renderer) SavePNG(filename string) error {
 	return r.context.SavePNG(filename)
+}
+
+// transformIsSingular returns true if the combined CSS transform has a near-zero
+// determinant (non-invertible matrix). Per CSS spec, such elements are not displayed.
+func transformIsSingular(transforms []css.Transform) bool {
+	// Represent the combined 2D affine matrix as [a, b, c, d, e, f]:
+	// point transform: x' = a*x + c*y + e, y' = b*x + d*y + f
+	a, b, c, d := 1.0, 0.0, 0.0, 1.0
+	for _, t := range transforms {
+		var ta, tb, tc, td float64
+		switch t.Type {
+		case "translate":
+			ta, tb, tc, td = 1, 0, 0, 1
+		case "rotate":
+			if len(t.Values) >= 1 {
+				rad := t.Values[0] * math.Pi / 180
+				ta = math.Cos(rad)
+				tb = math.Sin(rad)
+				tc = -math.Sin(rad)
+				td = math.Cos(rad)
+			} else {
+				ta, tb, tc, td = 1, 0, 0, 1
+			}
+		case "scale":
+			if len(t.Values) >= 2 {
+				ta, td = t.Values[0], t.Values[1]
+			} else if len(t.Values) == 1 {
+				ta, td = t.Values[0], t.Values[0]
+			} else {
+				ta, tb, tc, td = 1, 0, 0, 1
+			}
+			tb, tc = 0, 0
+		case "skew":
+			ta, td = 1, 1
+			if len(t.Values) >= 2 {
+				tc = math.Tan(t.Values[0] * math.Pi / 180)
+				tb = math.Tan(t.Values[1] * math.Pi / 180)
+			} else if len(t.Values) == 1 {
+				tc = math.Tan(t.Values[0] * math.Pi / 180)
+				tb = 0
+			}
+		case "matrix":
+			if len(t.Values) == 6 {
+				ta, tb, tc, td = t.Values[0], t.Values[1], t.Values[2], t.Values[3]
+			} else {
+				ta, tb, tc, td = 1, 0, 0, 1
+			}
+		default:
+			ta, tb, tc, td = 1, 0, 0, 1
+		}
+		// Multiply: combined = combined * t
+		na := a*ta + c*tb
+		nb := b*ta + d*tb
+		nc := a*tc + c*td
+		nd := b*tc + d*td
+		a, b, c, d = na, nb, nc, nd
+	}
+	det := a*d - b*c
+	return math.Abs(det) < 1e-10
 }
 
 func (r *Renderer) applyTransforms(box *layout.Box, transforms []css.Transform) {

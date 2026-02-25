@@ -1,14 +1,24 @@
 package text
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/fogleman/gg"
 )
+
+// measureCache caches text measurement results to avoid repeated font loading.
+// Key: "text\x00fontSize\x00fontPath", Value: [2]float64{width, height}
+var measureCache sync.Map
+
+func measureCacheKey(text string, fontSize float64, fontPath string) string {
+	return fmt.Sprintf("%s\x00%.4f\x00%s", text, fontSize, fontPath)
+}
 
 // FontConfig holds paths to font files used for text measurement and rendering.
 type FontConfig struct {
@@ -181,15 +191,25 @@ var DefaultFontPath = DefaultFontConfig().Regular
 // Deprecated: use DefaultFontConfig() instead.
 var BoldFontPath = DefaultFontConfig().Bold
 
-// MeasureText measures the width and height of text with the given font size
+// MeasureText measures the width and height of text with the given font size.
+// Results are cached by (text, fontSize, fontPath) to avoid repeated font loading.
 func MeasureText(text string, fontSize float64, fontPath string) (width, height float64) {
+	key := measureCacheKey(text, fontSize, fontPath)
+	if v, ok := measureCache.Load(key); ok {
+		dims := v.([2]float64)
+		return dims[0], dims[1]
+	}
+
 	// Use a temporary context for measurement
 	dc := gg.NewContext(1000, 1000)
 
 	// Load the font
 	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
 		// If font loading fails, return rough estimate
-		return float64(len(text)) * fontSize * 0.6, fontSize * 1.2
+		w := float64(len(text)) * fontSize * 0.6
+		h := fontSize * 1.2
+		measureCache.Store(key, [2]float64{w, h})
+		return w, h
 	}
 
 	// Measure the text and snap to integer pixels.
@@ -206,6 +226,7 @@ func MeasureText(text string, fontSize float64, fontPath string) (width, height 
 	if h < 1 {
 		h = 1
 	}
+	measureCache.Store(key, [2]float64{w, h})
 	return w, h
 }
 
