@@ -368,9 +368,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		} else if parent != nil && parent.Style != nil {
 			// Non-root: resolve against parent's content height if parent has explicit height
+			// OR if parent is a flex item that was stretched to a definite height (HeightIsDefinite).
 			_, hasLen := parent.Style.GetLength("height")
 			_, hasPct := parent.Style.GetPercentage("height")
-			if hasLen || hasPct {
+			if hasLen || hasPct || parent.HeightIsDefinite {
 				cbHeight = parent.Height - parent.Padding.Top - parent.Padding.Bottom - parent.Border.Top - parent.Border.Bottom
 			}
 		}
@@ -517,7 +518,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		} else if parent != nil && parent.Style != nil {
 			_, hasLen := parent.Style.GetLength("height")
 			_, hasPct := parent.Style.GetPercentage("height")
-			if hasLen || hasPct {
+			if hasLen || hasPct || parent.HeightIsDefinite {
 				cbHeight = parent.Height - parent.Padding.Top - parent.Padding.Bottom - parent.Border.Top - parent.Border.Bottom
 			}
 		}
@@ -677,6 +678,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 10: Handle flexbox layout specially
 	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+		// When min-height establishes the flex container's initial height (no explicit CSS height),
+		// mark it as having a definite height so that percentage-height children can resolve
+		// against box.Height. Per CSS Flexbox §9.8 / definite-sizes spec.
+		if hasMinHeight && !hasExplicitHeight {
+			box.HeightIsDefinite = true
+		}
 		le.layoutFlex(box, x, y, availableWidth, computedStyles)
 		// Float positioning for floated flex containers is handled by the caller
 		// (multi-pass pipeline or block layout code), not here, to avoid double-positioning.
@@ -1811,6 +1818,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if maxHeight, ok := style.GetLength("max-height"); ok {
 		if box.Height > maxHeight {
 			box.Height = maxHeight
+			// When max-height constrains an auto-height element with non-visible overflow,
+			// the box now has a definite height. Direct children with height:% were laid out
+			// when box.Height was 0, so they resolved height:% as auto. Re-layout them so
+			// they resolve against the now-definite parent height.
+			// Example: overflow:hidden + max-height:100px → children height:100% = 100px.
+			if !hasExplicitHeight && style.GetOverflow() != css.OverflowVisible {
+				childAvailW := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+				for i, child := range box.Children {
+					if child == nil || child.Node == nil || child.Style == nil {
+						continue
+					}
+					if _, hasPct := child.Style.GetPercentage("height"); hasPct {
+						newChild := le.layoutNode(child.Node, child.X, child.Y, childAvailW, computedStyles, box)
+						if newChild != nil {
+							box.Children[i] = newChild
+						}
+					}
+				}
+			}
 		}
 	}
 	if minHeight, ok := style.GetLength("min-height"); ok {

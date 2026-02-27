@@ -38,6 +38,13 @@ type Box struct {
 	// HideBackground is true for empty table cells when empty-cells:hide is set
 	HideBackground bool
 
+	// HeightIsDefinite indicates that box.Height is a definite (resolved) height even
+	// though the element may not have an explicit CSS height property. Set when a flex
+	// item is stretched (Step 8) or min-height enforcement establishes a definite height.
+	// Used by layout_block.go to allow percentage-height children to resolve against
+	// parent.Height when the parent is a stretched flex item.
+	HeightIsDefinite bool
+
 	// Line boxes for block containers with inline content
 	LineBoxes []*LineBox
 }
@@ -322,6 +329,11 @@ type FlexItem struct {
 	CrossPos             float64 // Position along cross axis
 	Order                int
 	AutoMinMain          float64 // min-width/min-height: auto value (content-based minimum)
+	// BlockFillBasis is true when flex-basis:auto with no explicit CSS width was resolved
+	// via ComputeIntrinsicSizes. In that case, the initial block layout used the container
+	// width (wrong for the item's actual size), and children may need re-layout after
+	// flex resolution establishes the correct main size.
+	BlockFillBasis bool
 }
 
 // FlexLine tracks a line of flex items (for wrapping)

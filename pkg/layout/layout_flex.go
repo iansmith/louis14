@@ -181,6 +181,14 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			if isRow {
 				if w, ok := item.Box.Style.GetLength("width"); ok {
 					item.FlexBasis = w
+				} else if pct, ok := item.Box.Style.GetPercentage("width"); ok {
+					// Resolve percentage width against flex container main size.
+					// GetLength does not resolve percentages; handle them here.
+					item.FlexBasis = pct / 100.0 * mainSize
+				} else if item.Box.Node != nil && item.Box.Node.Type == html.TextNode {
+					// Anonymous text flex item: Box.Width is already the measured
+					// width of the trimmed (non-whitespace) text content.
+					item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
 				} else {
 					// CSS Flexbox §9.2: for flex-basis:auto with no definite main size,
 					// use the item's max-content main size. For block-level grid containers
@@ -200,9 +208,42 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 							}
 						}
 						item.FlexBasis = maxRight
-					} else {
-						// Use content size (already laid out)
+					} else if item.Box.Node != nil && isReplacedElement(item.Box.Node.TagName) {
+						// Replaced elements (img, canvas, video, iframe, svg): block layout
+						// already applied aspect-ratio transfer and CSS height/max-width constraints
+						// to item.Box.Width. ComputeIntrinsicSizes returns raw file dimensions,
+						// which is wrong when height + aspect-ratio determine the displayed width.
 						item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+						if item.FlexBasis < 0 {
+							item.FlexBasis = 0
+						}
+					} else {
+						// CSS Flexbox §9.2: flex-basis:auto with no explicit width = max-content
+						// intrinsic size. For block-level items, item.Box.Width == container width
+						// (block layout fills available space), which is wrong.
+						//
+						// Exception: items with vertical writing-mode (vertical-rl, vertical-lr).
+						// createFlexItemsProper already applied transformToVerticalRL to item.Box,
+						// so item.Box.Width reflects the transform-aware width (not block-fill).
+						// ComputeIntrinsicSizes ignores writing-mode transforms and returns the
+						// wrong (pre-transform) width. Use item.Box.Width directly instead.
+						itemWM, _ := item.Box.Style.Get("writing-mode")
+						if itemWM == "vertical-rl" || itemWM == "vertical-lr" {
+							// Use the transform-aware laid-out width; children are already correct.
+							item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+							if item.FlexBasis < 0 {
+								item.FlexBasis = 0
+							}
+						} else {
+							intrinsicSizes := le.ComputeIntrinsicSizes(item.Box.Node, item.Box.Style, computedStyles)
+							item.FlexBasis = intrinsicSizes.MaxContent - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+							if item.FlexBasis < 0 {
+								item.FlexBasis = 0
+							}
+							// Mark: initial layout used block-fill (container width), not intrinsic size.
+							// Step 5c will re-layout children after flex resolution.
+							item.BlockFillBasis = true
+						}
 					}
 				}
 			} else {
@@ -285,6 +326,14 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	// Step 4: Collect items into flex lines
 	lines := collectFlexLines(items, mainSize, mainGap, wrap, isRow)
 
+	// Record each item's main-axis border-box size BEFORE flex resolution.
+	// After resolution, block items whose size changed need children re-layout.
+	type itemInitialSize struct{ w, h float64 }
+	initialSizes := make(map[*FlexItem]itemInitialSize, len(items))
+	for _, item := range items {
+		initialSizes[item] = itemInitialSize{item.Box.Width, item.Box.Height}
+	}
+
 	// Step 5: Resolve flexible lengths for each line
 	for _, line := range lines {
 		resolveFlexibleLengths(line, mainSize, mainGap, isRow)
@@ -328,6 +377,37 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
+	// Step 5c: Re-layout block items that used block-fill (container width) for initial
+	// layout, but got a different (smaller) main size after flex resolution.
+	// Only fires for items where flex-basis:auto with no explicit CSS width triggered
+	// ComputeIntrinsicSizes (BlockFillBasis=true). These items's children were laid out
+	// at the container width and need re-layout at the correct intrinsic-based flex size.
+	// Items with explicit CSS widths or explicit flex-basis are correct as-is.
+	if isRow {
+		for _, line := range lines {
+			for _, item := range line.Items {
+				// Only items where block-fill initial layout was wrong.
+				if !item.BlockFillBasis {
+					continue
+				}
+				if item.Box.Node == nil || len(item.Box.Children) == 0 {
+					continue
+				}
+				// Width changed: re-layout children with the established width.
+				// Save and restore float/abspos state to prevent double-registration.
+				savedFloatsLen := len(le.floats)
+				savedAbsLen := len(le.absoluteBoxes)
+				newBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
+				le.floats = le.floats[:savedFloatsLen]
+				le.absoluteBoxes = le.absoluteBoxes[:savedAbsLen]
+				if newBox != nil {
+					item.Box.Children = newBox.Children
+					// Do not update item.Box.Height; cross-axis is determined by Step 6/8.
+				}
+			}
+		}
+	}
+
 	// Step 6: Determine cross sizes
 	for _, line := range lines {
 		for _, item := range line.Items {
@@ -339,6 +419,9 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					contentH := item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
 					if contentH < minH {
 						item.Box.Height = minH + item.Box.Padding.Top + item.Box.Padding.Bottom + item.Box.Border.Top + item.Box.Border.Bottom
+						// Mark as definite so percentage-height children can resolve against
+						// item.Box.Height in layout_block.go (CSS Flexbox §9.8).
+						item.Box.HeightIsDefinite = true
 						// Re-layout children that depend on the newly-established height.
 						childDisplay := item.Box.Style.GetDisplay()
 						if (childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid) && item.Box.Node != nil {
@@ -425,18 +508,76 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					continue
 				}
 				outerCross := item.outerCrossSize(isRow)
-				if outerCross < line.CrossSize {
+				// CSS Flexbox: for items with aspect-ratio and no explicit CSS cross size,
+				// also stretch when the item is TALLER than the line (initial layout
+				// applied aspect-ratio to auto-width before cross size was established).
+				arItem := item.Box.Style.GetAspectRatio()
+				shouldStretch := outerCross < line.CrossSize ||
+					(arItem.IsSet && outerCross != line.CrossSize)
+				if shouldStretch {
 					// Stretch item to fill line's cross size
 					crossMargin := 0.0
 					if isRow {
 						crossMargin = item.Box.Margin.Top + item.Box.Margin.Bottom
+						oldHeight := outerCross - crossMargin
 						newHeight := line.CrossSize - crossMargin
 						item.Box.Height = newHeight
+						// Mark as definite so percentage-height children can resolve against
+						// item.Box.Height in layout_block.go (CSS Flexbox §9.8 / §6.2).
+						item.Box.HeightIsDefinite = true
+						// Aspect ratio transfer: for replaced elements (img, canvas, video) without
+						// explicit CSS width, update width to maintain the natural aspect ratio when
+						// height is established by stretch alignment (CSS Flexbox / CSS Sizing §4.2).
+						if item.Box.Node != nil {
+							tag := item.Box.Node.TagName
+							isReplaced := tag == "img" || tag == "canvas" || tag == "video"
+							if isReplaced {
+								_, hasExplicitW := item.Box.Style.GetLength("width")
+								if !hasExplicitW {
+									oldContentH := oldHeight - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+									oldContentW := item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+									if oldContentH > 0 && oldContentW > 0 {
+										newContentH := newHeight - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+										ratio := oldContentW / oldContentH
+										newContentW := newContentH * ratio
+										item.Box.Width = newContentW + item.Box.Padding.Left + item.Box.Padding.Right + item.Box.Border.Left + item.Box.Border.Right
+									}
+								}
+							}
+						}
 					} else {
 						crossMargin = item.Box.Margin.Left + item.Box.Margin.Right
 						newWidth := line.CrossSize - crossMargin
 						item.Box.Width = newWidth
 					}
+					// CSS aspect-ratio: for elements with CSS aspect-ratio property and no explicit
+					// width, transfer the stretched height to width via the ratio.
+					// CSS Sizing Level 4: aspect-ratio maps preferred width from resolved height.
+					if isRow {
+						arProp := item.Box.Style.GetAspectRatio()
+						if arProp.IsSet && arProp.Width > 0 && arProp.Height > 0 {
+							_, hasExplicitW := item.Box.Style.GetLength("width")
+							if !hasExplicitW {
+								paddingH := item.Box.Padding.Top + item.Box.Padding.Bottom
+								borderH := item.Box.Border.Top + item.Box.Border.Bottom
+								paddingW := item.Box.Padding.Left + item.Box.Padding.Right
+								borderW := item.Box.Border.Left + item.Box.Border.Right
+								var newBorderBoxW float64
+								if item.Box.Style.GetBoxSizing() == "border-box" {
+									newBorderBoxW = item.Box.Height * arProp.Width / arProp.Height
+								} else {
+									contentH := item.Box.Height - paddingH - borderH
+									if contentH < 0 {
+										contentH = 0
+									}
+									contentW := contentH * arProp.Width / arProp.Height
+									newBorderBoxW = contentW + paddingW + borderW
+								}
+								item.Box.Width = newBorderBoxW
+							}
+						}
+					}
+
 					item.CrossSize = line.CrossSize
 
 					// CSS Flexbox §9.4: After stretching, re-layout the item's
@@ -461,6 +602,33 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					}
 				}
 			}
+		}
+	}
+
+	// Step 8c: For shrink-to-fit containers (inline-flex, floated, abs-pos), recompute the
+	// container's main-axis size after Step 8 aspect ratio transfers may have changed item widths.
+	// Items may grow (replaced element stretched height → larger width) or shrink (non-replaced
+	// element with aspect-ratio had initial width = available width, now corrected by ratio).
+	if isRow && isShrinkToFit {
+		if _, hasExplicitWidth := flexBox.Style.GetLength("width"); !hasExplicitWidth {
+			newTotalMain := 0.0
+			for i, item := range items {
+				newTotalMain += item.outerMainSize(isRow)
+				if i > 0 {
+					newTotalMain += mainGap
+				}
+			}
+			// Apply min/max-width to the recomputed total
+			if minW, ok := flexBox.Style.GetLength("min-width"); ok && newTotalMain < minW {
+				newTotalMain = minW
+			}
+			if maxW, ok := flexBox.Style.GetLength("max-width"); ok && newTotalMain > maxW {
+				newTotalMain = maxW
+			}
+			// Always update the container size to reflect the post-stretch item widths.
+			contentBoxWidth = newTotalMain
+			mainSize = contentBoxWidth
+			flexBox.Width = newTotalMain + flexBox.Padding.Left + flexBox.Padding.Right + flexBox.Border.Left + flexBox.Border.Right
 		}
 	}
 
@@ -819,6 +987,18 @@ func displayContentsIsSuppressed(tagName string) bool {
 	return false
 }
 
+// isReplacedElement returns true for elements whose dimensions come from their content
+// (image file, video stream, etc.) rather than from CSS layout of their children.
+// Used in flex-basis computation: replaced elements use block-layout width (which applies
+// CSS height + aspect-ratio transfer), not ComputeIntrinsicSizes (which returns raw file dims).
+func isReplacedElement(tagName string) bool {
+	switch tagName {
+	case "img", "canvas", "video", "iframe", "embed", "object", "picture", "svg":
+		return true
+	}
+	return false
+}
+
 // flattenContentsChildren returns the children of node, recursively expanding any
 // child with display:contents (those children participate directly in the parent layout).
 // Per CSS Display Level 3 §B, display:contents is suppressed (treated as display:none)
@@ -930,6 +1110,16 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		}
 
 		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+
+		// CSS Flexbox §4: Absolutely-positioned flex items do not participate in
+		// flex layout — they are laid out as absolute/fixed-positioned elements
+		// and do not contribute to intrinsic sizes or gap spacing.
+		childPos := childStyle.GetPosition()
+		if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+			// Still layout the child (adds it to absoluteBoxes for later positioning)
+			le.layoutNode(child, flexBox.X, flexBox.Y, flexBox.Width, computedStyles, flexBox)
 			continue
 		}
 
@@ -1141,13 +1331,25 @@ func resolveFlexibleLengths(line *FlexLine, availableMain, mainGap float64, isRo
 			}
 		}
 
-		// Clamp by min/max and detect violations
+		// Clamp by min/max (explicit and auto) and detect violations.
+		// CSS Flexbox §9.7: after distributing space, clamp each item's size by
+		// its min/max constraints, then freeze violating items.
 		totalViolation := 0.0
 		for i, item := range line.Items {
 			if states[i].frozen {
 				continue
 			}
 			clamped := states[i].targetMain
+			// Clamp by explicit min-width/min-height
+			if isRow {
+				if minW, ok := item.Box.Style.GetLength("min-width"); ok && clamped < minW {
+					clamped = minW
+				}
+			} else {
+				if minH, ok := item.Box.Style.GetLength("min-height"); ok && clamped < minH {
+					clamped = minH
+				}
+			}
 			// Clamp by min-width: auto (content-based minimum)
 			if clamped < item.AutoMinMain {
 				clamped = item.AutoMinMain
@@ -1155,28 +1357,62 @@ func resolveFlexibleLengths(line *FlexLine, availableMain, mainGap float64, isRo
 			if clamped < 0 {
 				clamped = 0
 			}
+			// Clamp by explicit max-width/max-height
+			if isRow {
+				if maxW, ok := item.Box.Style.GetLength("max-width"); ok && clamped > maxW {
+					clamped = maxW
+				}
+			} else {
+				if maxH, ok := item.Box.Style.GetLength("max-height"); ok && clamped > maxH {
+					clamped = maxH
+				}
+			}
 			totalViolation += clamped - states[i].targetMain
 			states[i].targetMain = clamped
 		}
 
-		// Freeze violating items
+		// Freeze violating items (CSS Flexbox §9.7 step 4).
 		if totalViolation == 0 {
-			// Freeze all
+			// No violations: freeze all remaining unfrozen items.
 			for i := range states {
 				states[i].frozen = true
 			}
 		} else if totalViolation > 0 {
-			// Freeze items that hit minimum
-			for i := range states {
-				if !states[i].frozen && states[i].targetMain <= 0 {
-					states[i].frozen = true
+			// Positive violation: items hit their minimum → freeze those items.
+			for i, item := range line.Items {
+				if !states[i].frozen {
+					hitMin := states[i].targetMain <= item.AutoMinMain
+					if !hitMin && isRow {
+						if minW, ok := item.Box.Style.GetLength("min-width"); ok && states[i].targetMain <= minW {
+							hitMin = true
+						}
+					} else if !hitMin {
+						if minH, ok := item.Box.Style.GetLength("min-height"); ok && states[i].targetMain <= minH {
+							hitMin = true
+						}
+					}
+					if hitMin {
+						states[i].frozen = true
+					}
 				}
 			}
 		} else {
-			// Freeze items that hit maximum
-			for i := range states {
+			// Negative violation: items hit their maximum → freeze only those items.
+			for i, item := range line.Items {
 				if !states[i].frozen {
-					states[i].frozen = true // simplified: freeze all on negative violation
+					hitMax := false
+					if isRow {
+						if maxW, ok := item.Box.Style.GetLength("max-width"); ok && states[i].targetMain <= maxW {
+							hitMax = true
+						}
+					} else {
+						if maxH, ok := item.Box.Style.GetLength("max-height"); ok && states[i].targetMain <= maxH {
+							hitMax = true
+						}
+					}
+					if hitMax {
+						states[i].frozen = true
+					}
 				}
 			}
 		}
@@ -1388,8 +1624,26 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 	}
 
 	// Column direction: min-height: auto → content-based minimum HEIGHT
-	// The content height is the item's already-computed height from layoutNode
-	contentMinHeight := box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+	// Per CSS Flexbox §4.5, the content-size suggestion is the item's min-content height.
+	// For replaced elements, use the intrinsic laid-out height.
+	// For block containers, use the sum of children outer heights (this approximates the
+	// item's natural height without any explicit CSS height constraint).
+	isReplacedElement := node != nil && (node.TagName == "img" || node.TagName == "canvas" ||
+		node.TagName == "video" || node.TagName == "iframe")
+	var contentMinHeight float64
+	if isReplacedElement {
+		// Replaced elements: use intrinsic height (border-box minus padding+border)
+		contentMinHeight = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+	} else {
+		// Block containers: sum children outer heights as the content-size suggestion.
+		// An empty container has content size = 0 (no children to sum).
+		for _, child := range box.Children {
+			if child == nil {
+				continue
+			}
+			contentMinHeight += child.Height + child.Margin.Top + child.Margin.Bottom
+		}
+	}
 	if contentMinHeight < 0 {
 		contentMinHeight = 0
 	}

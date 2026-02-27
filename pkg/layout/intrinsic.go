@@ -322,12 +322,16 @@ func (le *LayoutEngine) computeTextIntrinsicSizes(textContent string, style *css
 	fontWeight := style.GetFontWeight()
 	bold := fontWeight == css.FontWeightBold
 
-	// Max-content: width without any wrapping
-	maxContent, _ := text.MeasureTextWithWeight(textContent, fontSize, bold)
+	// Max-content: width without any wrapping.
+	// Apply CSS whitespace collapsing (white-space: normal): collapse internal
+	// whitespace sequences to one space, strip leading/trailing whitespace.
+	// This matches how the text renders on a single no-wrap line.
+	words := strings.Fields(textContent)
+	collapsed := strings.Join(words, " ")
+	maxContent, _ := text.MeasureTextWithWeight(collapsed, fontSize, bold)
 
 	// Min-content: width of longest word (break at spaces)
 	minContent := 0.0
-	words := strings.Fields(textContent)
 	for _, word := range words {
 		wordWidth, _ := text.MeasureTextWithWeight(word, fontSize, bold)
 		if wordWidth > minContent {
