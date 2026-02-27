@@ -197,7 +197,10 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	// Local copy of childY for tracking vertical position within this function
 	localChildY := childY
 
-	for _, child := range node.Children {
+	// Expand display:contents children so their children participate directly
+	effectiveChildren := le.flattenContentsChildren(node, computedStyles)
+
+	for _, child := range effectiveChildren {
 		if skipChildren {
 			break
 		}
@@ -208,13 +211,45 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 				childStyle = css.NewStyle()
 			}
 			childDisplay := childStyle.GetDisplay()
+			childFloat := childStyle.GetFloat()
+
+			// For block-level and float children, start from parent content left edge
+			// (not from inlineCtx.LineX which may be adjusted for floats).
+			childLayoutX := inlineCtx.LineX
+			isBlockLevel := childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot ||
+				childDisplay == css.DisplayTable || childDisplay == css.DisplayListItem ||
+				childDisplay == css.DisplayFlex || childDisplay == css.DisplayGrid
+			if isBlockLevel || childFloat != css.FloatNone {
+				childLayoutX = box.X + border.Left + padding.Left
+			}
+
+			// CSS 2.1 §9.4.1: A block that establishes a new BFC must not overlap float margin boxes.
+			// Adjust X and available width for BFC-establishing block children.
+			adjustedChildX := childLayoutX
+			adjustedChildWidth := childAvailableWidth
+			if childFloat == css.FloatNone &&
+				childStyle.GetPosition() != css.PositionAbsolute &&
+				childStyle.GetPosition() != css.PositionFixed &&
+				blockChildEstablishesBFC(childStyle) {
+				leftOff, rightOff := le.getFloatOffsets(inlineCtx.LineY)
+				if leftOff > 0 || rightOff > 0 {
+					absLeftEdge := le.getLeftFloatAbsoluteEdge(inlineCtx.LineY)
+					if absLeftEdge > childLayoutX {
+						adjustedChildX = absLeftEdge
+					}
+					adjustedChildWidth = childAvailableWidth - leftOff - rightOff
+					if adjustedChildWidth < 0 {
+						adjustedChildWidth = 0
+					}
+				}
+			}
 
 			// Layout the child
 			childBox := le.layoutNode(
 				child,
-				inlineCtx.LineX,
+				adjustedChildX,
 				inlineCtx.LineY,
-				childAvailableWidth,
+				adjustedChildWidth,
 				computedStyles,
 				box, // Phase 4: Pass parent
 			)
@@ -344,18 +379,18 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 								relativeOffsetY = -offset.Bottom
 							}
 						}
-						// Calculate new position
+						// Calculate new position.
+						// Use adjustedChildX so BFC float avoidance offsets are preserved.
 						var newX float64
 						if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
 							childTotalW := childBox.Width + childBox.Padding.Left + childBox.Padding.Right + childBox.Border.Left + childBox.Border.Right
-							parentContentStart := box.X + border.Left + padding.Left
-							centerOff := (childAvailableWidth - childTotalW) / 2
+							centerOff := (adjustedChildWidth - childTotalW) / 2
 							if centerOff < 0 {
 								centerOff = 0
 							}
-							newX = parentContentStart + centerOff
+							newX = adjustedChildX + centerOff
 						} else {
-							newX = box.X + border.Left + padding.Left + childBox.Margin.Left
+							newX = adjustedChildX + childBox.Margin.Left
 						}
 						newY := localChildY + childBox.Margin.Top + relativeOffsetY
 
@@ -437,7 +472,8 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 									}
 								}
 							}
-							localChildY = childBox.Y + childBox.Border.Top + childBox.Padding.Top + childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
+							// childBox.Height is border-box (content+padding+border), so just add margin.
+							localChildY = childBox.Y + childBox.Height + childBox.Margin.Bottom
 							*prevBlockChild = childBox
 						}
 					}

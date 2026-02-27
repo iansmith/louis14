@@ -31,6 +31,8 @@ type Tokenizer struct {
 }
 
 func NewTokenizer(html string) *Tokenizer {
+	// Strip UTF-8 BOM (U+FEFF) if present at start of document (HTML5 §8.2.2.4)
+	html = strings.TrimPrefix(html, "\xef\xbb\xbf")
 	return &Tokenizer{input: html, pos: 0}
 }
 

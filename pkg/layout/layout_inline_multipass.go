@@ -441,11 +441,28 @@ func (le *LayoutEngine) BreakLines(
 							}
 						}
 						if !wordBroke {
-							// No floats to clear - force onto current line (true overflow)
-							currentLine.Items = append(currentLine.Items, item)
-							currentX += textWidth
-							if textLineHeight > currentLine.Height {
-								currentLine.Height = textLineHeight
+							if len(currentLine.Items) > 0 {
+								// Oversized item with no break points on a non-empty line.
+								// Break to a new line first, then retry the item.
+								// This handles e.g. a no-space span following other content
+								// when availableWidth is 0 (Phase 1 intrinsic sizing).
+								lines = append(lines, currentLine)
+								currentY += currentLine.Height
+								textIndent = 0
+								lineFloatWidth = 0
+								lineFloats = nil
+								currentLine = &LineInfo{Y: currentY, Items: []*InlineItem{}, Constraint: constraint, Height: 0}
+								currentX = 0
+								hasSeenContentOnLine = false
+								lastTextEndedWithSpace = false
+								i-- // Retry on new empty line
+							} else {
+								// Line is already empty — force onto current line (true overflow)
+								currentLine.Items = append(currentLine.Items, item)
+								currentX += textWidth
+								if textLineHeight > currentLine.Height {
+									currentLine.Height = textLineHeight
+								}
 							}
 						}
 					}
@@ -1770,12 +1787,32 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			childX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + relOffX
 			childY := currentY + relOffY
 
+			// CSS 2.1 §9.4.1: A block that establishes a new BFC must not overlap float margin boxes.
+			adjustedChildX := childX
+			adjustedChildWidth := availableWidth
+			if blockChildEstablishesBFC(childStyle) &&
+				childStyle.GetFloat() == css.FloatNone &&
+				childStyle.GetPosition() != css.PositionAbsolute &&
+				childStyle.GetPosition() != css.PositionFixed {
+				leftOff, rightOff := le.getFloatOffsets(childY)
+				if leftOff > 0 || rightOff > 0 {
+					absLeftEdge := le.getLeftFloatAbsoluteEdge(childY)
+					if absLeftEdge > childX {
+						adjustedChildX = absLeftEdge
+					}
+					adjustedChildWidth = availableWidth - leftOff - rightOff
+					if adjustedChildWidth < 0 {
+						adjustedChildWidth = 0
+					}
+				}
+			}
+
 			// Recursively layout the block child
 			childBox := le.layoutNode(
 				childNode,
-				childX,
+				adjustedChildX,
 				childY,
-				availableWidth,
+				adjustedChildWidth,
 				computedStyles,
 				containerBox,
 			)
@@ -2228,14 +2265,21 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 				if isContent {
 					lineMetrics.hasContent = true
-					if box.Height > lineMetrics.contentHeight {
-						lineMetrics.contentHeight = box.Height
-					}
-					// CSS 2.1 §10.8.1: Text line-height contributes to line box height
-					if frag.Type == FragmentText && frag.Style != nil {
-						lh := frag.Style.GetLineHeight()
-						if lh > lineMetrics.lineBoxHeight {
-							lineMetrics.lineBoxHeight = lh
+					if frag.Type == FragmentText {
+						// CSS 2.1 §10.8.1: For text, line box height is determined by
+						// line-height, NOT by font metrics. Font metrics (box.Height)
+						// may exceed line-height (e.g. font:16px/1 gives font metrics
+						// ~20px but line-height=16px). Use GetLineHeight() only.
+						if frag.Style != nil {
+							lh := frag.Style.GetLineHeight()
+							if lh > lineMetrics.lineBoxHeight {
+								lineMetrics.lineBoxHeight = lh
+							}
+						}
+					} else {
+						// Non-text (images, inline-blocks): contribute via actual height
+						if box.Height > lineMetrics.contentHeight {
+							lineMetrics.contentHeight = box.Height
 						}
 					}
 				}
@@ -2939,6 +2983,21 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			return
 		}
 
+		// display:contents elements generate no box — process their children inline.
+		// This check MUST come before the float check: per CSS Display Level 3, when
+		// display:contents is combined with float, the float is ignored (the element
+		// generates no box and therefore cannot be floated).
+		// Exception: per CSS Display Level 3 §B, display:contents is suppressed to
+		// display:none for replaced elements and certain other unusual elements.
+		if display == css.DisplayContents {
+			if !displayContentsIsSuppressed(node.TagName) {
+				for _, child := range node.Children {
+					le.CollectInlineItems(child, state, computedStyles)
+				}
+			}
+			return
+		}
+
 		// Check for floats BEFORE display switch - floated elements compute to
 		// display:block per CSS spec, but should be treated as float items regardless
 		floatVal := style.GetFloat()
@@ -3229,16 +3288,20 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			if node.TagName != "img" {
 				if cssWidth, ok := style.GetLength("width"); ok {
 					width = cssWidth
-					// Add padding/border for border-box calculation
-					padding := style.GetPadding()
-					border := style.GetBorderWidth()
-					width += padding.Left + padding.Right + border.Left + border.Right
+					// box-sizing: border-box means width already includes padding+border
+					if style.GetBoxSizing() != "border-box" {
+						padding := style.GetPadding()
+						border := style.GetBorderWidth()
+						width += padding.Left + padding.Right + border.Left + border.Right
+					}
 				}
 				if cssHeight, ok := style.GetLength("height"); ok {
 					height = cssHeight
-					padding := style.GetPadding()
-					border := style.GetBorderWidth()
-					height += padding.Top + padding.Bottom + border.Top + border.Bottom
+					if style.GetBoxSizing() != "border-box" {
+						padding := style.GetPadding()
+						border := style.GetBorderWidth()
+						height += padding.Top + padding.Bottom + border.Top + border.Bottom
+					}
 				}
 			}
 
@@ -3296,6 +3359,56 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			}
 			state.Items = append(state.Items, item)
 			// Don't process children - they're part of the atomic box
+
+		case css.DisplayInlineGrid:
+			// Inline-grid participates in inline layout as an atomic inline box.
+			// Estimate dimensions from explicit CSS width/height or grid track templates.
+			var width, height float64
+			rowGap, colGap := style.GetGridGap()
+
+			if w, ok := style.GetLength("width"); ok {
+				width = w
+			} else {
+				// Sum grid-template-columns track sizes for width estimate
+				cols := style.GetGridTemplateColumns()
+				for _, col := range cols {
+					if col.Size > 0 {
+						width += col.Size
+					}
+				}
+				if len(cols) > 1 {
+					width += colGap * float64(len(cols)-1)
+				}
+			}
+			if h, ok := style.GetLength("height"); ok {
+				height = h
+			} else {
+				// Sum grid-template-rows track sizes for height estimate
+				rows := style.GetGridTemplateRows()
+				for _, row := range rows {
+					if row.Size > 0 {
+						height += row.Size
+					}
+				}
+				if len(rows) > 1 {
+					height += rowGap * float64(len(rows)-1)
+				}
+			}
+
+			// Add padding and border
+			padding := style.GetPadding()
+			border := style.GetBorderWidth()
+			width += padding.Left + padding.Right + border.Left + border.Right
+			height += padding.Top + padding.Bottom + border.Top + border.Bottom
+
+			item := &InlineItem{
+				Type:   InlineItemAtomic,
+				Node:   node,
+				Style:  style,
+				Width:  width,
+				Height: height,
+			}
+			state.Items = append(state.Items, item)
 
 		default:
 			// Other display types - treat as atomic for now

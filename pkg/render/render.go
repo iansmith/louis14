@@ -203,10 +203,101 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	// If html has no background, propagate body's background to fill viewport
 	r.drawCanvasBackground(boxes)
 
-	// Render each root box as a stacking context (the root always forms one)
-	// This ensures proper CSS 2.1 Appendix E paint order for the entire document
+	if len(boxes) == 1 {
+		// Single root (normal case: html element wraps everything)
+		r.paintStackingContext(boxes[0])
+	} else {
+		// Multiple root boxes occur when tests omit explicit <html>/<body> tags.
+		// Treat them as a virtual root stacking context and paint in z-index order
+		// per CSS 2.1 Appendix E, so z-index values are respected.
+		r.paintRootBoxes(boxes)
+	}
+}
+
+// paintRootBoxes paints multiple root-level boxes as a virtual stacking context.
+// This is used when the document lacks explicit <html>/<body> wrapper elements,
+// causing the layout engine to return multiple sibling boxes at the root level.
+// We follow the same CSS 2.1 Appendix E paint order as paintStackingContext,
+// collecting all z-index-categorized descendants first, then painting in order.
+func (r *Renderer) paintRootBoxes(boxes []*layout.Box) {
+	var negativeZ, zeroAutoZ, positiveZ []*layout.Box
+	var blocks, floats, inlines []*layout.Box
+
+	// Classify each root box (and recurse into non-SC blocks) as if they are
+	// children of a virtual root stacking context.
 	for _, box := range boxes {
-		r.paintStackingContext(box)
+		if box.Position == css.PositionFixed {
+			zeroAutoZ = append(zeroAutoZ, box)
+		} else if layout.BoxCreatesStackingContext(box) {
+			if box.ZIndex < 0 {
+				negativeZ = append(negativeZ, box)
+			} else if box.ZIndex > 0 {
+				positiveZ = append(positiveZ, box)
+			} else {
+				zeroAutoZ = append(zeroAutoZ, box)
+			}
+		} else if layout.IsFloat(box) {
+			floats = append(floats, box)
+		} else if layout.IsPositioned(box) {
+			zeroAutoZ = append(zeroAutoZ, box)
+			if !hasNonVisibleOverflow(box) {
+				r.promoteDescendantsToParentSC(box, &negativeZ, &zeroAutoZ, &positiveZ)
+			}
+		} else if layout.IsInline(box) {
+			inlines = append(inlines, box)
+			r.collectDescendantsForPaintOrder(box, &negativeZ, &blocks, &floats, &inlines, &zeroAutoZ, &positiveZ)
+		} else if hasNonVisibleOverflow(box) {
+			// Overflow-clip block: paint atomically via paintStackingContext.
+			// Do NOT flatten descendants — they'll be rendered inside the clip.
+			blocks = append(blocks, box)
+		} else {
+			blocks = append(blocks, box)
+			r.collectDescendantsForPaintOrder(box, &negativeZ, &blocks, &floats, &inlines, &zeroAutoZ, &positiveZ)
+		}
+	}
+
+	sort.SliceStable(negativeZ, func(i, j int) bool {
+		return negativeZ[i].ZIndex < negativeZ[j].ZIndex
+	})
+	sort.SliceStable(positiveZ, func(i, j int) bool {
+		return positiveZ[i].ZIndex < positiveZ[j].ZIndex
+	})
+
+	// Step 2: Negative z-index stacking contexts
+	for _, child := range negativeZ {
+		r.paintStackingContext(child)
+	}
+	// Step 3: Block-level non-positioned descendants (backgrounds/borders)
+	for _, child := range blocks {
+		if hasNonVisibleOverflow(child) {
+			r.paintStackingContext(child)
+		} else {
+			r.drawBoxBackgroundAndBorders(child)
+		}
+	}
+	// Step 4: Non-positioned floats
+	for _, child := range floats {
+		r.paintStackingContext(child)
+	}
+	// Step 5: Inline-level and block content
+	r.computeTextRuns(inlines)
+	for _, child := range inlines {
+		r.drawBoxBackgroundAndBorders(child)
+		r.drawBoxContent(child)
+	}
+	for _, child := range blocks {
+		if hasNonVisibleOverflow(child) {
+			continue
+		}
+		r.drawBoxContent(child)
+	}
+	// Step 6: Positioned z-index:0/auto and non-positioned SCs
+	for _, child := range zeroAutoZ {
+		r.paintStackingContext(child)
+	}
+	// Step 7: Positive z-index stacking contexts
+	for _, child := range positiveZ {
+		r.paintStackingContext(child)
 	}
 }
 
@@ -229,22 +320,48 @@ func (r *Renderer) drawCanvasBackground(boxes []*layout.Box) {
 		return
 	}
 
-	// Check if html has a background color
+	canvasW := float64(r.context.Width())
+	canvasH := float64(r.context.Height())
+
+	// Check if html has a background (color or image).
 	htmlHasBg := false
 	if htmlBox.Style != nil {
+		// Check background-color
 		if bgColor, ok := htmlBox.Style.Get("background-color"); ok {
 			if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
-				// Html has background - use it for canvas
 				htmlHasBg = true
-				width := float64(r.context.Width())
-				height := float64(r.context.Height())
 				r.context.SetRGBA(
 					float64(color.R)/255.0,
 					float64(color.G)/255.0,
 					float64(color.B)/255.0,
 					color.A)
-				r.context.DrawRectangle(0, 0, width, height)
+				r.context.DrawRectangle(0, 0, canvasW, canvasH)
 				r.context.Fill()
+			}
+		}
+		// Check background-image (url(...), not gradient) — propagate to canvas.
+		// Per CSS 2.1 §14.2, the root element's background paints the entire canvas.
+		// We create a canvas-sized proxy box so drawBackgroundImage fills the viewport.
+		bgImg := ""
+		if v, ok := htmlBox.Style.Get("background"); ok {
+			bgImg = v
+		} else if v, ok := htmlBox.Style.Get("background-image"); ok {
+			bgImg = v
+		}
+		if bgImg != "" && bgImg != "none" {
+			// Only handle url() here; gradients are handled via drawBoxBackgroundAndBorders.
+			if _, isGrad := css.GetGradient(bgImg); !isGrad {
+				// Create a canvas-sized proxy box so image tiles cover the viewport.
+				proxy := *htmlBox
+				proxy.X = 0
+				proxy.Y = 0
+				proxy.Width = canvasW
+				proxy.Height = canvasH
+				proxy.Padding = css.BoxEdge{}
+				proxy.Border = css.BoxEdge{}
+				proxy.Margin = css.BoxEdge{}
+				r.drawBackgroundImage(&proxy)
+				htmlHasBg = true
 			}
 		}
 	}
@@ -263,14 +380,12 @@ func (r *Renderer) drawCanvasBackground(boxes []*layout.Box) {
 			if bgColor, ok := bodyBox.Style.Get("background-color"); ok {
 				if color, ok := css.ParseColor(bgColor); ok && color.A > 0 {
 					// Body has background - propagate to canvas (fill viewport)
-					width := float64(r.context.Width())
-					height := float64(r.context.Height())
 					r.context.SetRGBA(
 						float64(color.R)/255.0,
 						float64(color.G)/255.0,
 						float64(color.B)/255.0,
 						color.A)
-					r.context.DrawRectangle(0, 0, width, height)
+					r.context.DrawRectangle(0, 0, canvasW, canvasH)
 					r.context.Fill()
 				}
 			}
@@ -1762,8 +1877,11 @@ func (r *Renderer) drawBoxContent(box *layout.Box) {
 
 	// Draw scrollbar indicators (only for overflow:scroll which always shows scrollbars;
 	// overflow:auto only shows when content overflows, which we don't detect yet)
+	// Form controls (input, textarea, select) are not real scroll containers — skip.
 	overflow := box.Style.GetOverflow()
-	if overflow == css.OverflowScroll {
+	isFormControl := box.Node != nil && (box.Node.TagName == "input" ||
+		box.Node.TagName == "textarea" || box.Node.TagName == "select")
+	if overflow == css.OverflowScroll && !isFormControl {
 		r.drawScrollbarIndicators(box)
 	}
 }
@@ -1857,7 +1975,10 @@ func (r *Renderer) drawBox(box *layout.Box) {
 
 	// Phase 21: Draw scrollbar indicators (only for overflow:scroll;
 	// overflow:auto only shows when content overflows)
-	if overflow == css.OverflowScroll {
+	// Form controls (input, textarea, select) are not real scroll containers — skip.
+	isFormControl2 := box.Node != nil && (box.Node.TagName == "input" ||
+		box.Node.TagName == "textarea" || box.Node.TagName == "select")
+	if overflow == css.OverflowScroll && !isFormControl2 {
 		r.drawScrollbarIndicators(box)
 	}
 }
@@ -2615,8 +2736,10 @@ func (r *Renderer) drawImage(box *layout.Box) {
 
 	contentX := box.X + box.Border.Left + box.Padding.Left
 	contentY := effectiveY + box.Border.Top + box.Padding.Top
-	contentW := box.Width
-	contentH := box.Height
+	// box.Width/Height is the total border-box size (content + padding + border).
+	// The image should fill only the content area, so subtract padding and border.
+	contentW := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
+	contentH := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
 
 	bounds := img.Bounds()
 	imgW := float64(bounds.Dx())

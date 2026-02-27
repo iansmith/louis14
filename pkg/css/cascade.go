@@ -140,6 +140,8 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 			}
 		default:
 			// text, password, email, number, search, etc.
+			// UA uses border-box sizing (matches real browser UA stylesheets)
+			style.Set("box-sizing", "border-box")
 			if _, ok := style.Get("width"); !ok {
 				style.Set("width", "173px")
 			}
@@ -160,6 +162,8 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline-block")
 		}
+		// UA uses border-box sizing (matches real browser UA stylesheets)
+		style.Set("box-sizing", "border-box")
 		if _, ok := style.Get("width"); !ok {
 			style.Set("width", "173px")
 		}
@@ -180,6 +184,8 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline-block")
 		}
+		// UA uses border-box sizing (matches real browser UA stylesheets)
+		style.Set("box-sizing", "border-box")
 		if _, ok := style.Get("width"); !ok {
 			style.Set("width", "173px")
 		}
@@ -199,6 +205,8 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline-block")
 		}
+		// UA uses border-box sizing (matches real browser UA stylesheets)
+		style.Set("box-sizing", "border-box")
 		setFormPadding(style, "1px", "6px", "1px", "6px")
 		setFormBorder(style, "2px", "solid", "#767676")
 		if _, ok := style.Get("background-color"); !ok {
@@ -598,6 +606,41 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		styles[node] = style
+	}
+
+	// When the HTML parser doesn't create implicit <html>/<body> elements (common for
+	// fragment-style HTML and WPT test files), elements appear as direct children of
+	// doc.Root. In this case, CSS inheritance from :root rules cannot propagate because
+	// doc.Root has no style entry. Fix: synthesize a root style from the :root-matching
+	// element (the first element child of doc.Root) and store it as styles[doc.Root].
+	// This allows ApplyInheritedProperties to correctly propagate font-size, font-family,
+	// etc. to all children of doc.Root, so em units resolve against the correct font-size.
+	if node.TagName == "document" && styles[node] == nil {
+		syntheticRootStyle := NewStyle()
+		syntheticRootStyle.ViewportWidth = viewportWidth
+		syntheticRootStyle.ViewportHeight = viewportHeight
+		for _, child := range node.Children {
+			if child.Type == html.ElementNode {
+				// First element child matches :root — compute its style to capture
+				// :root rules, then extract inheritable properties for doc.Root.
+				rootChildStyle := ComputeStyle(child, stylesheets, viewportWidth, viewportHeight)
+				for prop := range inheritableProperties {
+					if val, ok := rootChildStyle.Get(prop); ok {
+						syntheticRootStyle.Set(prop, val)
+					}
+				}
+				// Also propagate CSS custom properties (--*) which inherit by default
+				for prop, val := range rootChildStyle.Properties {
+					if strings.HasPrefix(prop, "--") {
+						syntheticRootStyle.Set(prop, val)
+					}
+				}
+				break
+			}
+		}
+		if len(syntheticRootStyle.Properties) > 0 {
+			styles[node] = syntheticRootStyle
+		}
 	}
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)

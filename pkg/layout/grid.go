@@ -4,6 +4,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"math"
+	"strings"
 )
 
 // GridCell represents a single cell in the grid
@@ -81,10 +82,14 @@ func expandAutoFillTracks(tracks []css.GridTrack, containerSize, gap float64) []
 	return result
 }
 
-// layoutGridContainer handles CSS Grid layout
+// layoutGridContainer handles CSS Grid layout.
+// establishedHeight > 0 means the parent (e.g. flex) has already determined a
+// definite height for this grid; use it as the container height even when no
+// explicit "height" CSS property is present.
 func (le *LayoutEngine) layoutGridContainer(
 	node *html.Node,
 	x, y, availableWidth float64,
+	establishedHeight float64,
 	style *css.Style,
 	computedStyles map[*html.Node]*css.Style,
 	parent *Box,
@@ -122,8 +127,21 @@ func (le *LayoutEngine) layoutGridContainer(
 	var containerWidth float64
 	hasExplicitWidth := false
 	isInlineGrid := style.GetDisplay() == css.DisplayInlineGrid
+	// CSS Intrinsic Sizing: detect min-content/max-content/fit-content keywords
+	intrinsicWidthKeyword := ""
+	if widthVal, ok := style.Get("width"); ok {
+		if widthVal == "min-content" || widthVal == "max-content" || widthVal == "fit-content" {
+			intrinsicWidthKeyword = widthVal
+		}
+	}
 
-	if w, ok := style.GetLength("width"); ok {
+	if intrinsicWidthKeyword != "" {
+		// Intrinsic keyword: lay out tracks without a definite container width;
+		// afterwards, set containerWidth from actualContentWidth.
+		containerWidth = availableWidth - margin.Left - margin.Right -
+			padding.Left - padding.Right - border.Left - border.Right
+		hasExplicitWidth = false
+	} else if w, ok := style.GetLength("width"); ok {
 		containerWidth = w
 		hasExplicitWidth = true
 	} else if pct, ok := style.GetPercentage("width"); ok && pct > 0 {
@@ -175,6 +193,10 @@ func (le *LayoutEngine) layoutGridContainer(
 			containerHeight = pct * parentContentHeight / 100
 			hasExplicitHeight = true
 		}
+	} else if establishedHeight > 0 {
+		// Height established by parent context (e.g. flex layout assigned a definite height)
+		containerHeight = establishedHeight
+		hasExplicitHeight = true
 	}
 
 	// Expand auto-fill and auto-fit repeat() tracks now that container size is known
@@ -216,6 +238,34 @@ func (le *LayoutEngine) layoutGridContainer(
 	var pendingItems []pendingItem
 
 	for _, child := range gridChildren {
+		// CSS Grid §6: Non-whitespace text nodes become anonymous block grid items.
+		if child.Type == html.TextNode {
+			if strings.TrimSpace(child.Text) == "" {
+				continue
+			}
+			// Wrap in a synthetic block element so it participates in grid placement.
+			anonStyle := css.NewStyle()
+			anonStyle.Set("display", "block")
+			// Inherit font/color from grid container
+			for _, prop := range []string{"font-size", "font-weight", "font-family", "font-style", "color"} {
+				if v, ok := style.Get(prop); ok {
+					anonStyle.Set(prop, v)
+				}
+			}
+			anonNode := &html.Node{
+				Type:     html.ElementNode,
+				TagName:  "div",
+				Children: []*html.Node{child},
+				Parent:   node,
+			}
+			computedStyles[anonNode] = anonStyle
+			le.syntheticStyles[anonNode] = anonStyle
+			pendingItems = append(pendingItems, pendingItem{
+				child: anonNode, childStyle: anonStyle,
+				rowSpan: 1, colSpan: 1,
+			})
+			continue
+		}
 		if child.Type != html.ElementNode {
 			continue
 		}
@@ -561,8 +611,20 @@ func (le *LayoutEngine) layoutGridContainer(
 		// Include auto, fr, and minmax tracks — all need content-based sizing for intrinsic/indefinite paths
 		if item.colSpan == 1 && item.col < len(columnTracks) {
 			t := columnTracks[item.col]
-			if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent {
+			if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent || t.IsFitContent {
 				totalW := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
+				// CSS Sizing: when an item has an intrinsic max-width/width keyword
+				// (max-content, min-content, fit-content), layoutNode with 0 available
+				// width gives an incorrect contribution (block fills 0 → only padding).
+				// Use ComputeMinMaxSizes to get the true max-content contribution.
+				if mwVal, hasMW := item.childStyle.Get("max-width"); hasMW &&
+					(mwVal == "max-content" || mwVal == "min-content" || mwVal == "fit-content") {
+					sizes := le.ComputeMinMaxSizes(item.child, NewConstraintSpace(containerWidth, -1), item.childStyle)
+					intrinsicW := sizes.MaxContentSize + childBox.Margin.Left + childBox.Margin.Right
+					if intrinsicW > totalW {
+						totalW = intrinsicW
+					}
+				}
 				if totalW > autoColSizes[item.col] {
 					autoColSizes[item.col] = totalW
 				}
@@ -572,19 +634,57 @@ func (le *LayoutEngine) layoutGridContainer(
 		if item.rowSpan == 1 && item.row < len(rowTracks) {
 			t := rowTracks[item.row]
 			if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent {
-				totalH := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom +
-					childBox.Padding.Top + childBox.Padding.Bottom +
-					childBox.Border.Top + childBox.Border.Bottom
+				// childBox.Height is border-box (includes padding+border per new convention).
+				// Only add margins to get the total outer height for track sizing.
+				totalH := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom
 				if totalH > autoRowSizes[item.row] {
 					autoRowSizes[item.row] = totalH
+				}
+			}
+		}
+		// Handle column-spanning items: distribute content to auto/fr tracks.
+		// CSS Grid §12.5: spanning items contribute their size to spanned tracks
+		// after subtracting the fixed-size tracks.
+		if item.colSpan > 1 {
+			totalW := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
+			// Sum of fixed (non-auto, non-fr) track sizes in the span
+			fixedW := 0.0
+			autoFrCount := 0
+			for c := 0; c < item.colSpan && item.col+c < len(columnTracks); c++ {
+				t := columnTracks[item.col+c]
+				if !t.Auto && t.Fr == 0 && !(t.IsMinMax && t.MaxFr > 0) && !t.MinContent && !t.MaxContent && t.Percent == 0 {
+					fixedW += t.Size
+				} else {
+					autoFrCount++
+				}
+			}
+			// Account for column gaps within the span
+			fixedW += columnGap * float64(item.colSpan-1)
+			remainder := totalW - fixedW
+			if remainder > 0 && autoFrCount > 0 {
+				perTrack := remainder / float64(autoFrCount)
+				for c := 0; c < item.colSpan && item.col+c < len(columnTracks); c++ {
+					t := columnTracks[item.col+c]
+					if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent {
+						if perTrack > autoColSizes[item.col+c] {
+							autoColSizes[item.col+c] = perTrack
+						}
+					}
 				}
 			}
 		}
 	}
 
 	// Phase 2: Resolve track sizes
-	resolvedColSizes := resolveTrackSizes(columnTracks, autoColSizes, containerWidth, columnGap, hasExplicitWidth, justifyContent == css.JustifyContentStretch)
-	resolvedRowSizes := resolveTrackSizes(rowTracks, autoRowSizes, containerHeight, rowGap, hasExplicitHeight, alignContent == css.AlignContentStretch)
+	// CSS Grid §12: justify-content:normal behaves as stretch for auto tracks (maximize tracks step).
+	// Only skip auto-track stretch when justify-content is explicitly set to a spacing/positioning value.
+	_, hasExplicitJustify := style.Get("justify-content")
+	colStretch := !hasExplicitJustify || justifyContent == css.JustifyContentStretch
+	resolvedColSizes := resolveTrackSizes(columnTracks, autoColSizes, containerWidth, columnGap, hasExplicitWidth, colStretch)
+	// align-content default is already AlignContentStretch, so rows stretch by default.
+	_, hasExplicitAlign := style.Get("align-content")
+	rowStretch := !hasExplicitAlign || alignContent == css.AlignContentStretch
+	resolvedRowSizes := resolveTrackSizes(rowTracks, autoRowSizes, containerHeight, rowGap, hasExplicitHeight, rowStretch)
 
 	// Calculate actual content dimensions from resolved tracks
 	actualContentWidth := sumTracks(resolvedColSizes, columnGap)
@@ -593,6 +693,11 @@ func (le *LayoutEngine) layoutGridContainer(
 	// For inline-grid without explicit width, shrink-wrap to content
 	if isInlineGrid && !hasExplicitWidth {
 		containerWidth = actualContentWidth
+	}
+	// For intrinsic keyword widths (min-content/max-content/fit-content), use actual content width
+	if intrinsicWidthKeyword != "" {
+		containerWidth = actualContentWidth
+		hasExplicitWidth = true
 	}
 
 	if !hasExplicitHeight {
@@ -603,14 +708,16 @@ func (le *LayoutEngine) layoutGridContainer(
 	colOffsets := computeContentDistribution(resolvedColSizes, containerWidth, columnGap, justifyContent)
 	rowOffsets := computeContentDistribution(resolvedRowSizes, containerHeight, rowGap, alignContent)
 
-	// Create container box
+	// Create container box. Width and Height are border-box (content + padding + border),
+	// consistent with block layout (layout_block.go line 513) and render.go expectations
+	// (render.go line 1913: bgWidth := box.Width // Border-box dimensions).
 	box := &Box{
 		Node:     node,
 		Style:    style,
 		X:        actualX,
 		Y:        y,
-		Width:    containerWidth,
-		Height:   containerHeight,
+		Width:    containerWidth + padding.Left + padding.Right + border.Left + border.Right,
+		Height:   containerHeight + padding.Top + padding.Bottom + border.Top + border.Bottom,
 		Margin:   margin,
 		Padding:  padding,
 		Border:   border,
@@ -642,15 +749,25 @@ func (le *LayoutEngine) layoutGridContainer(
 			}
 		}
 
+		// For non-stretch alignment (start/end/center), use fit-content width:
+		// fit-content = min(max-content, cellWidth). This ensures items with
+		// negative inline margins (e.g. margin-inline-end:-1px) wrap correctly.
+		layoutWidth := cellWidth
+		if justifyItems == css.JustifyItemsStart || justifyItems == css.JustifyItemsEnd || justifyItems == css.JustifyItemsCenter {
+			maxContent := le.computeGridItemMaxContentWidth(item.child, item.childStyle, computedStyles)
+			if maxContent > 0 && maxContent < cellWidth {
+				layoutWidth = maxContent
+			}
+		}
 		// Create a temporary cell parent so percentage heights resolve against cell size
 		cellParent := &Box{
-			Width:  cellWidth,
+			Width:  layoutWidth,
 			Height: cellHeight,
 			Style:  style,
 			Parent: box,
 		}
-		// Re-layout child with correct cell width
-		childBox := le.layoutNode(item.child, 0, 0, cellWidth, computedStyles, cellParent)
+		// Re-layout child with correct cell width (or fit-content for non-stretch)
+		childBox := le.layoutNode(item.child, 0, 0, layoutWidth, computedStyles, cellParent)
 		if childBox == nil {
 			continue
 		}
@@ -668,26 +785,36 @@ func (le *LayoutEngine) layoutGridContainer(
 				childBox.X = (cellWidth - childTotalWidth) / 2
 			case css.JustifyItemsEnd:
 				childBox.X = cellWidth - childTotalWidth
-			default: // start or stretch
-				// For stretch, the item should fill the cell
-				childBox.Width = cellWidth - childBox.Margin.Left - childBox.Margin.Right
+			case css.JustifyItemsStart:
+				// start: position at inline-start edge, do not stretch
+				childBox.X = 0
+			default: // stretch
+				// CSS Grid §6.2: stretch only applies when inline-size (width) is auto.
+				// An explicit width (including max-content, min-content) prevents stretching.
+				widthVal, hasWidthVal := item.childStyle.Get("width")
+				inlineSizeIsAuto := !hasWidthVal || widthVal == "auto"
+				if inlineSizeIsAuto {
+					childBox.Width = cellWidth - childBox.Margin.Left - childBox.Margin.Right
+				}
 				childBox.X = 0
 			}
 		}
 
-		childTotalHeight := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom +
-			childBox.Padding.Top + childBox.Padding.Bottom +
-			childBox.Border.Top + childBox.Border.Bottom
+		// box.Height is border-box (content + padding + border), consistent with
+		// box.Width above. Only add margin to get the total outer height.
+		childTotalHeight := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom
 		if childTotalHeight < cellHeight {
 			switch itemAlign {
 			case css.AlignItemsCenter:
 				childBox.Y = (cellHeight - childTotalHeight) / 2
 			case css.AlignItemsFlexEnd:
 				childBox.Y = cellHeight - childTotalHeight
-			default: // stretch
-				childBox.Height = cellHeight - childBox.Margin.Top - childBox.Margin.Bottom -
-					childBox.Padding.Top - childBox.Padding.Bottom -
-					childBox.Border.Top - childBox.Border.Bottom
+			default: // stretch — CSS Grid §6.2: only stretch when block size is auto
+				heightVal, hasHeightVal := item.childStyle.Get("height")
+				blockSizeIsAuto := !hasHeightVal || heightVal == "auto"
+				if blockSizeIsAuto {
+					childBox.Height = cellHeight - childBox.Margin.Top - childBox.Margin.Bottom
+				}
 				childBox.Y = 0
 			}
 		}
@@ -706,9 +833,9 @@ func (le *LayoutEngine) layoutGridContainer(
 		box.Children = append(box.Children, childBox)
 	}
 
-	// Update container height if not explicit
+	// Update container height if not explicit (border-box: content + padding + border)
 	if !hasExplicitHeight {
-		box.Height = actualContentHeight
+		box.Height = actualContentHeight + padding.Top + padding.Bottom + border.Top + border.Bottom
 	}
 
 	return box
@@ -774,6 +901,17 @@ func resolveTrackSizes(tracks []css.GridTrack, autoSizes []float64, containerSiz
 				sizes[i] = autoSizes[i]
 				usedSpace += sizes[i]
 			}
+		} else if t.IsFitContent {
+			// fit-content(X) = min(max-content, max(min-content, X))
+			// autoSizes[i] holds min-content contribution from Phase 1.
+			// Approximation: use max(autoSizes[i], FitContentMax) bounded by FitContentMax
+			// when autoSizes[i] > FitContentMax, the min-content exceeds the limit → use autoSizes[i]
+			if autoSizes[i] > t.FitContentMax {
+				sizes[i] = autoSizes[i]
+			} else {
+				sizes[i] = t.FitContentMax
+			}
+			usedSpace += sizes[i]
 		} else if t.Auto || t.MinContent || t.MaxContent {
 			sizes[i] = autoSizes[i]
 			usedSpace += sizes[i]

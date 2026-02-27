@@ -221,6 +221,26 @@ func (e *elementAccessor) replaceWithFn() func(call goja.FunctionCall) goja.Valu
 	}
 }
 
+// replaceChildFn returns a JS function for parent.replaceChild(newChild, oldChild).
+func (e *elementAccessor) replaceChildFn() func(call goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 2 {
+			return goja.Undefined()
+		}
+		newChild := e.ctx.unwrapNode(call.Arguments[0])
+		oldChild := e.ctx.unwrapNode(call.Arguments[1])
+		if newChild == nil || oldChild == nil {
+			return goja.Undefined()
+		}
+		if newChild.Parent != nil {
+			newChild.Parent.RemoveChild(newChild)
+		}
+		e.node.InsertBefore(newChild, oldChild)
+		e.node.RemoveChild(oldChild)
+		return e.ctx.elementProxy(oldChild)
+	}
+}
+
 // replaceChildrenFn returns a JS function for element.replaceChildren(...nodes).
 func (e *elementAccessor) replaceChildrenFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {

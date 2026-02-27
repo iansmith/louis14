@@ -461,6 +461,102 @@ func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.S
 	}
 }
 
+// computeGridItemMaxContentWidth computes the max-content inline advance for a
+// block-level grid item's content. Used to determine fit-content width for
+// non-stretch grid item alignment (justify-items: start/end/center).
+//
+// For a block with inline children, this sums the inline advances of all
+// children including margin/border/padding on inline elements (so negative
+// margins reduce the total, matching the CSS fit-content size computation).
+//
+// Returns 0 if max-content width cannot be determined (caller should fall back
+// to cellWidth).
+func (le *LayoutEngine) computeGridItemMaxContentWidth(node *html.Node, nodeStyle *css.Style, computedStyles map[*html.Node]*css.Style) float64 {
+	if node == nil || nodeStyle == nil {
+		return 0
+	}
+	return le.sumInlineMaxContentAdvance(node.Children, nodeStyle, computedStyles)
+}
+
+// sumInlineMaxContentAdvance sums the max-content inline advance of a sequence
+// of children as if they were all on a single no-wrap line, including the full
+// box model (margin + border + padding + content + padding + border + margin)
+// for inline element children.
+//
+// Mirrors BreakLines whitespace collapsing: leading whitespace at the start
+// is stripped (as BreakLines does at the start of a line), and trailing
+// whitespace-only contributions are excluded (hanging whitespace at end).
+func (le *LayoutEngine) sumInlineMaxContentAdvance(children []*html.Node, parentStyle *css.Style, computedStyles map[*html.Node]*css.Style) float64 {
+	type contribInfo struct {
+		width      float64
+		whitespace bool // true if purely whitespace (trailing contributions are excluded)
+	}
+	var contribs []contribInfo
+	seenContent := false // have we seen non-whitespace content yet?
+
+	for _, child := range children {
+		if child.Type == html.TextNode {
+			textContent := child.Text
+			if textContent == "" {
+				continue
+			}
+			isAllWS := strings.TrimSpace(textContent) == ""
+			if isAllWS && !seenContent {
+				// Leading whitespace-only node — skip (BreakLines strips at start of line)
+				continue
+			}
+			// Strip leading whitespace from the first non-whitespace text node
+			if !seenContent {
+				textContent = strings.TrimLeft(textContent, " \t\n\r")
+			}
+			if textContent == "" {
+				continue
+			}
+			fontSize := parentStyle.GetFontSize()
+			isBold := parentStyle.GetFontWeight() == css.FontWeightBold
+			isItalic := parentStyle.GetFontStyle() == css.FontStyleItalic
+			isMono := parentStyle.IsMonospaceFamily()
+			isAhem := parentStyle.IsAhemFamily()
+			w, _ := text.MeasureTextWithStyle(textContent, fontSize, isBold, isItalic, isMono, isAhem)
+			isWSContrib := strings.TrimSpace(textContent) == ""
+			contribs = append(contribs, contribInfo{w, isWSContrib})
+			if !isWSContrib {
+				seenContent = true
+			}
+		} else if child.Type == html.ElementNode {
+			childStyle := computedStyles[child]
+			if childStyle == nil {
+				continue
+			}
+			if childStyle.GetDisplay() == css.DisplayNone {
+				continue
+			}
+			// For inline elements, include the full box model + children
+			margin := childStyle.GetMargin()
+			padding := childStyle.GetPadding()
+			border := childStyle.GetBorderWidth()
+			childContent := le.sumInlineMaxContentAdvance(child.Children, childStyle, computedStyles)
+			w := margin.Left + padding.Left + border.Left +
+				childContent +
+				border.Right + padding.Right + margin.Right
+			contribs = append(contribs, contribInfo{w, false})
+			seenContent = true
+		}
+	}
+
+	// Strip trailing whitespace-only contributions: hanging whitespace at the
+	// end of a line does not contribute to the line box width (CSS 2.1 §16.6.1).
+	for len(contribs) > 0 && contribs[len(contribs)-1].whitespace {
+		contribs = contribs[:len(contribs)-1]
+	}
+
+	var total float64
+	for _, c := range contribs {
+		total += c.width
+	}
+	return total
+}
+
 // ============================================================================
 // Layout Mode Implementations
 // ============================================================================

@@ -121,6 +121,12 @@ func (p *Parser) Parse() (*Document, error) {
 				}
 			}
 			if text != "" {
+				// HTML5 §8.2.6.4: bare text at document root (e.g. after <!DOCTYPE html>
+				// with no <html>/<body> tags) must be placed in an implicit <body>.
+				if parent.TagName == "document" && strings.TrimSpace(text) != "" {
+					p.ensureBody()
+					parent = p.currentParent()
+				}
 				// Always store rawText so that CSS white-space:pre-wrap can restore
 				// original spacing at layout time, even when set via stylesheet rules.
 				parent.AppendTextWithRaw(text, rawText)
@@ -167,6 +173,36 @@ func (p *Parser) isSelfClosing(tagName string) bool {
 		"track": true, "wbr": true,
 	}
 	return selfClosingTags[tagName]
+}
+
+// ensureBody creates implicit <html> and <body> elements if they are not
+// already on the parser stack. Called when bare text or non-structural
+// elements appear as direct children of the document root (e.g., text after
+// <!DOCTYPE html> without explicit <html>/<body> tags — HTML5 §8.2.6.4).
+func (p *Parser) ensureBody() {
+	for _, node := range p.stack {
+		if node.TagName == "html" {
+			return // <html> already on stack; <body> will be created normally
+		}
+	}
+	// Create implicit <html>
+	htmlNode := &Node{
+		Type:       ElementNode,
+		TagName:    "html",
+		Attributes: map[string]string{},
+		Children:   make([]*Node, 0),
+	}
+	p.currentParent().AddChild(htmlNode)
+	p.push(htmlNode)
+	// Create implicit <body>
+	bodyNode := &Node{
+		Type:       ElementNode,
+		TagName:    "body",
+		Attributes: map[string]string{},
+		Children:   make([]*Node, 0),
+	}
+	htmlNode.AddChild(bodyNode)
+	p.push(bodyNode)
 }
 
 // closeTag pops the stack until the matching tag is found and closed

@@ -160,8 +160,16 @@ func runReftest(t *testing.T, testPath string) bool {
 		return false
 	}
 
-	// Resolve reference path relative to test file
-	refPath := filepath.Join(filepath.Dir(testPath), refHref)
+	// Resolve reference path relative to test file.
+	// WPT absolute paths (starting with "/") are resolved against the WPT root
+	// directory (the wpt-css2 or wpt-css3 ancestor of the test file).
+	var refPath string
+	if strings.HasPrefix(refHref, "/") {
+		wptRoot := findWPTRoot(testPath)
+		refPath = filepath.Join(wptRoot, refHref[1:])
+	} else {
+		refPath = filepath.Join(filepath.Dir(testPath), refHref)
+	}
 	if _, err := os.Stat(refPath); os.IsNotExist(err) {
 		t.Skipf("reference file not found: %s", refPath)
 		return false
@@ -244,6 +252,20 @@ func copyFile(src, dst string) {
 		return
 	}
 	os.WriteFile(dst, data, 0644)
+}
+
+// findWPTRoot returns the wpt-css2 or wpt-css3 ancestor directory of testPath.
+// WPT absolute hrefs (starting with "/") are resolved against this root.
+func findWPTRoot(testPath string) string {
+	dir := filepath.Dir(testPath)
+	for dir != "." && dir != "/" {
+		base := filepath.Base(dir)
+		if base == "wpt-css2" || base == "wpt-css3" {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	return filepath.Dir(testPath)
 }
 
 // findRefLink extracts the href from <link rel="match" href="..."> in HTML content.

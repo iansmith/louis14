@@ -2,12 +2,14 @@ package visualtest
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"louis14/pkg/html"
 	"louis14/pkg/images"
+	"louis14/pkg/js"
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
 )
@@ -38,6 +40,20 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	}
 
 	boxes := engine.Layout(doc)
+
+	// Execute JavaScript if the document has scripts, then re-layout.
+	if len(doc.Scripts) > 0 {
+		jsEng := js.New()
+		if err := jsEng.Execute(doc); err != nil {
+			log.Printf("js: %v", err)
+		}
+		// Second layout pass to pick up DOM mutations made by JS.
+		engine2 := layout.NewLayoutEngine(float64(width), float64(height))
+		if fetcher != nil {
+			engine2.SetImageFetcher(fetcher)
+		}
+		boxes = engine2.Layout(doc)
+	}
 
 	// Render
 	renderer := render.NewRenderer(width, height)

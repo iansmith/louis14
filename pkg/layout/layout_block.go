@@ -44,6 +44,23 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		return nil
 	}
 
+	// CSS Display Level 3: display:contents elements generate no box of their own.
+	// Their children participate in the parent's formatting context directly.
+	// The element is transparent: no background, border, or float box is created.
+	// This must be checked before float handling (CSS 2.1 §9.7 blockification does
+	// NOT apply to display:contents per CSS Display Level 3 §2.7).
+	//
+	// Exception: per CSS Display Level 3 §2.7, if the root element has display:contents,
+	// it blockifies to display:block (root element cannot be contents).
+	if display == css.DisplayContents {
+		if parent == nil && node.TagName == "html" {
+			// Root element: blockify contents → block
+			display = css.DisplayBlock
+		} else {
+			return nil
+		}
+	}
+
 	// Phase 8: Check if this is an img element
 	isImage := node.TagName == "img"
 	// Phase 24: Check if this is an object element with a loadable image
@@ -67,8 +84,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				imageHeight = h
 			}
 		}
-		// Images default to inline-block display
-		if display == css.DisplayBlock {
+		// Replaced elements (img) are inline-block regardless of whether the UA
+		// stylesheet sets display:inline or display:block. CSS 2.1 §9.2.2: for
+		// replaced elements, vertical padding/margin always apply (unlike
+		// non-replaced inlines where they have no layout effect).
+		if display == css.DisplayBlock || display == css.DisplayInline {
 			display = css.DisplayInlineBlock
 		}
 	} else if isObjectImage {
@@ -81,7 +101,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		}
 		isImage = true
-		if display == css.DisplayBlock {
+		if display == css.DisplayBlock || display == css.DisplayInline {
 			display = css.DisplayInlineBlock
 		}
 	}
@@ -173,24 +193,27 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Calculate content width
 	var contentWidth float64
 	hasExplicitWidth := false
+	imageHasCSSWidth := false // true only when width comes from CSS/attribute (not natural/fallback)
 
 	// Phase 8: Images use image dimensions or explicit dimensions
 	if isImage {
 		if w, ok := style.GetLength("width"); ok {
 			contentWidth = w
 			hasExplicitWidth = true
+			imageHasCSSWidth = true
 		} else if widthAttr, ok := node.GetAttribute("width"); ok {
 			// Parse width attribute
 			if w, ok := css.ParseLength(widthAttr); ok {
 				contentWidth = w
 				hasExplicitWidth = true
+				imageHasCSSWidth = true
 			}
 		} else if imageWidth > 0 {
-			// Use natural image width
+			// Use natural image width (not CSS-explicit)
 			contentWidth = float64(imageWidth)
 			hasExplicitWidth = true
 		} else {
-			// Fallback for missing/broken images
+			// Fallback for missing/broken images (not CSS-explicit)
 			contentWidth = 100
 			hasExplicitWidth = true
 		}
@@ -267,10 +290,37 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if isImage {
 		if h, ok := style.GetLength("height"); ok {
 			contentHeight = h
+			hasExplicitHeight = true
+		} else if hPct, ok := style.GetPercentage("height"); ok {
+			// Percentage height on img: resolve against parent's established height
+			// (e.g., grid cell height, explicit parent height). Use parent.Height
+			// directly since grid/flex cells provide definite height without CSS height.
+			if parent != nil {
+				parentContentH := parent.Height - parent.Padding.Top - parent.Padding.Bottom -
+					parent.Border.Top - parent.Border.Bottom
+				if parentContentH > 0 {
+					contentHeight = parentContentH * hPct / 100
+					hasExplicitHeight = true
+				}
+			}
+			// When parent height is indeterminate (e.g. auto-height grid row during
+			// intrinsic sizing), fall back to natural image dimensions like no height was set.
+			if !hasExplicitHeight {
+				if imageHeight > 0 {
+					if hasExplicitWidth && imageWidth > 0 {
+						contentHeight = contentWidth * float64(imageHeight) / float64(imageWidth)
+					} else {
+						contentHeight = float64(imageHeight)
+					}
+				} else {
+					contentHeight = 100
+				}
+			}
 		} else if heightAttr, ok := node.GetAttribute("height"); ok {
 			// Parse height attribute
 			if h, ok := css.ParseLength(heightAttr); ok {
 				contentHeight = h
+				hasExplicitHeight = true
 			}
 		} else if imageHeight > 0 {
 			// Use natural image height, maintaining aspect ratio if width was specified
@@ -342,6 +392,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		contentWidth = contentHeight * ar.Width / ar.Height
 		hasExplicitWidth = true
 	}
+	// For images: CSS height drives width via aspect-ratio (CSS or natural) even when
+	// width came from natural/fallback dimensions (not CSS).
+	// Handles: block-size/height on img + aspect-ratio, and height:% in grid cells.
+	if isImage && hasExplicitHeight && !imageHasCSSWidth {
+		if ar.IsSet {
+			contentWidth = contentHeight * ar.Width / ar.Height
+			hasExplicitWidth = true
+		} else if imageWidth > 0 && imageHeight > 0 {
+			// Use natural image aspect ratio to compute width from explicit height
+			contentWidth = contentHeight * float64(imageWidth) / float64(imageHeight)
+			hasExplicitWidth = true
+		}
+	}
 
 	// CSS3 box-sizing: border-box means specified width/height include padding+border
 	if style.GetBoxSizing() == "border-box" {
@@ -366,6 +429,25 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 		if val, ok := style.Get(prop); ok {
 			trimmed := strings.TrimSpace(val)
+			// CSS Intrinsic Sizing: handle max-content/min-content/fit-content keywords
+			// for max-width/min-width. Returns content-box value (sizes from
+			// ComputeMinMaxSizes include padding+border, so we subtract them).
+			if trimmed == "max-content" || trimmed == "min-content" || trimmed == "fit-content" {
+				constraint := NewConstraintSpace(availableWidth, -1)
+				sizes := le.ComputeMinMaxSizes(node, constraint, style)
+				paddingBorder := padding.Left + padding.Right + border.Left + border.Right
+				switch trimmed {
+				case "min-content":
+					return math.Max(0, sizes.MinContentSize-paddingBorder), true
+				case "max-content":
+					return math.Max(0, sizes.MaxContentSize-paddingBorder), true
+				case "fit-content":
+					contentArea := availableWidth - margin.Left - margin.Right - paddingBorder
+					maxC := math.Max(0, sizes.MaxContentSize-paddingBorder)
+					minC := math.Max(0, sizes.MinContentSize-paddingBorder)
+					return math.Min(maxC, math.Max(minC, contentArea)), true
+				}
+			}
 			if strings.HasPrefix(trimmed, "calc(") && strings.HasSuffix(trimmed, ")") {
 				inner := trimmed[5 : len(trimmed)-1]
 				// CSS 2.1 §10.2: In a shrink-to-fit context (float parent without explicit
@@ -485,6 +567,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		y = le.getClearY(clearType, y)
 	}
 
+	// Track whether this box has zero initial content height (auto, no min-height).
+	// If true, position:relative children with percentage top/bottom were computed
+	// against cbHeight=0 and need a post-layout correction pass.
+	parentContentHeightIsZero := !hasExplicitHeight && contentHeight == 0
+
 	box := &Box{
 		Node:      node,
 		Style:     style,
@@ -598,7 +685,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 15: Handle grid layout specially
 	if display == css.DisplayGrid || display == css.DisplayInlineGrid {
-		return le.layoutGridContainer(node, x, y, availableWidth, style, computedStyles, parent)
+		// Pass the established height (from explicit CSS height, aspect-ratio, etc.)
+		// so that the grid can use it for row track sizing even without grid-template-rows.
+		gridEstablishedHeight := 0.0
+		if hasExplicitHeight {
+			gridEstablishedHeight = contentHeight
+		}
+		return le.layoutGridContainer(node, x, y, availableWidth, gridEstablishedHeight, style, computedStyles, parent)
 	}
 
 	// SVG elements are replaced elements — skip normal child layout.
@@ -679,7 +772,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		hasNonWhitespaceInline := false
 		hasWhitespaceText := false
 
-		for _, child := range node.Children {
+		// Expand display:contents children for accurate inline/block detection
+		for _, child := range le.flattenContentsChildren(node, computedStyles) {
 			if child.Type == html.ElementNode {
 				childStyle := computedStyles[child]
 				if childStyle == nil {
@@ -738,7 +832,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// Create synthetic nodes for pseudo-elements so they go through the same
 		// multi-pass pipeline as real elements (identical sizing and positioning)
 		overrideStyles := make(map[*html.Node]*css.Style)
-		extendedChildren := make([]*html.Node, 0, len(node.Children)+2)
+		// Expand display:contents children before building the extended children list
+		flatChildren := le.flattenContentsChildren(node, computedStyles)
+		extendedChildren := make([]*html.Node, 0, len(flatChildren)+2)
 
 		// ::before pseudo-element -> synthetic node
 		beforeNode, beforeStyle := le.createPseudoElementNode(node, "before", computedStyles)
@@ -755,8 +851,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			extendedChildren = append(extendedChildren, beforeNode)
 		}
 
-		// Real children
-		extendedChildren = append(extendedChildren, node.Children...)
+		// Real children (display:contents already expanded)
+		extendedChildren = append(extendedChildren, flatChildren...)
 
 		// ::after pseudo-element -> synthetic node
 		afterNode, afterStyle := le.createPseudoElementNode(node, "after", computedStyles)
@@ -818,6 +914,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					collectCollapseThroughChildMargins(childBox, &mpPendingMargins)
 					// Remove the space this element consumed in layout
 					cumulativeAdjustment += childBox.Margin.Top + childBox.Margin.Bottom
+					// LayoutInlineContentToBoxes places collapse-through elements at
+					// Y = prevBlock.bottom + margin-top. Remove the margin-top from Y so
+					// the element sits at prevBlock.bottom. This matches the singlepass
+					// behavior and ensures the auto-height calculation sees the correct
+					// position: margin-bottom (not margin-top+margin-bottom) as contribution.
+					if childBox.Margin.Top != 0 {
+						childBox.Y -= childBox.Margin.Top
+						le.adjustChildrenY(childBox, -childBox.Margin.Top)
+					}
 					continue
 				}
 
@@ -1089,7 +1194,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				blockChildEstablishesBFC(childStyle) {
 				leftOff, rightOff := le.getFloatOffsets(inlineCtx.LineY)
 				if leftOff > 0 || rightOff > 0 {
-					adjustedChildX = childX + leftOff
+					// Use the absolute right edge of left floats to avoid double-counting when
+					// the querying block's content-left differs from the float's container left.
+					absLeftEdge := le.getLeftFloatAbsoluteEdge(inlineCtx.LineY)
+					if absLeftEdge > childX {
+						adjustedChildX = absLeftEdge
+					}
 					adjustedChildWidth = childAvailableWidth - leftOff - rightOff
 					if adjustedChildWidth < 0 {
 						adjustedChildWidth = 0
@@ -1232,18 +1342,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 								relativeOffsetY = -offset.Bottom
 							}
 						}
-						// Calculate new position
+						// Calculate new position.
+						// Use adjustedChildX (not box.X+border+padding) so that BFC float
+						// avoidance offsets (computed above) are preserved after repositioning.
 						var newX float64
 						if childBox.Margin.AutoLeft && childBox.Margin.AutoRight {
 							childTotalW := childBox.Width + childBox.Padding.Left + childBox.Padding.Right + childBox.Border.Left + childBox.Border.Right
-							parentContentStart := box.X + border.Left + padding.Left
-							centerOff := (childAvailableWidth - childTotalW) / 2
+							centerOff := (adjustedChildWidth - childTotalW) / 2
 							if centerOff < 0 {
 								centerOff = 0
 							}
-							newX = parentContentStart + centerOff
+							newX = adjustedChildX + centerOff
 						} else {
-							newX = box.X + border.Left + padding.Left + childBox.Margin.Left
+							newX = adjustedChildX + childBox.Margin.Left
 						}
 						newY := childY + childBox.Margin.Top + relativeOffsetY
 
@@ -1325,7 +1436,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 									}
 								}
 							}
-							childY = childBox.Y + childBox.Border.Top + childBox.Padding.Top + childBox.Height + childBox.Padding.Bottom + childBox.Border.Bottom + childBox.Margin.Bottom
+							// childBox.Height is border-box (content+padding+border), so just add margin.
+							childY = childBox.Y + childBox.Height + childBox.Margin.Bottom
 							prevBlockChild = childBox
 						}
 					}
@@ -1569,7 +1681,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// margin, so it should NOT be included in the auto-height calculation.
 		// Note: Margin collapsing does NOT apply to absolutely positioned elements,
 		// which establish a new block formatting context (CSS 2.1 §9.4.1).
-		parentChildBottomCollapse := box.Border.Bottom == 0 && box.Padding.Bottom == 0 &&
+		parentChildBottomCollapse := parentCanCollapseBottomMargin(box) &&
 			position != css.PositionAbsolute && position != css.PositionFixed
 		var lastInFlowChild *Box
 		if parentChildBottomCollapse {
@@ -1704,6 +1816,32 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if minHeight, ok := style.GetLength("min-height"); ok {
 		if box.Height < minHeight {
 			box.Height = minHeight
+		}
+	}
+
+	// Deferred relative-positioning fix: position:relative children with percentage
+	// top/bottom were resolved against cbHeight=0 when parent had auto height.
+	// Now that box.Height is final, apply the correct offsets.
+	if parentContentHeightIsZero {
+		cbH := box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+		if cbH > 0 {
+			for _, childBox := range box.Children {
+				if childBox.Position != css.PositionRelative || childBox.Style == nil {
+					continue
+				}
+				var dy float64
+				if pct, ok := childBox.Style.GetPercentage("top"); ok {
+					dy = cbH * pct / 100.0
+				} else if pct, ok := childBox.Style.GetPercentage("bottom"); ok {
+					dy = -cbH * pct / 100.0
+				} else {
+					continue
+				}
+				if dy != 0 {
+					childBox.Y += dy
+					le.shiftChildren(childBox, 0, dy)
+				}
+			}
 		}
 	}
 
@@ -1937,16 +2075,31 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		le.repositionFloatRightChildren(box)
 	}
 
+	// CSS Writing Modes §6.4: For block-level elements with writing-mode: vertical-rl/lr,
+	// transform the horizontally-laid-out children to vertical columns.
+	// Each horizontal "line" of children (grouped by Y position) becomes a vertical column.
+	// This only applies to block/inline-block elements — flex and grid have their own layout.
+	if style != nil && !isImage && !isSVG && len(box.Children) > 0 {
+		if display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayFlowRoot || display == css.DisplayListItem {
+			if wm, ok := style.Get("writing-mode"); ok {
+				if wm == "vertical-rl" || wm == "vertical-lr" {
+					transformToVerticalRL(box)
+				}
+			}
+		}
+	}
+
 	return box
 }
 
 
 // findPositionedAncestorBox walks up the Box parent chain to find the nearest
-// ancestor with position != static. Returns nil if none found (viewport).
+// ancestor that creates a containing block for absolutely positioned elements.
+// Returns nil if none found (viewport = initial containing block).
 func findPositionedAncestorBox(box *Box) *Box {
 	current := box
 	for current != nil {
-		if current.Position != css.PositionStatic {
+		if boxIsContainingBlockForAbsPos(current) {
 			return current
 		}
 		current = current.Parent

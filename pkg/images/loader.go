@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -70,12 +72,7 @@ func LoadImageFromDataURI(uri string) (image.Image, error) {
 		data = []byte(encoded)
 	}
 
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("image decode error: %w", err)
-	}
-
-	return img, nil
+	return DecodeImageBytes(data)
 }
 
 // LoadImage loads an image from the filesystem or a data URI.
@@ -170,9 +167,66 @@ func isSVGData(data []byte) bool {
 		strings.Contains(s, "<svg")
 }
 
+// svgOpenTagRE matches the opening <svg ...> tag to extract root dimensions.
+var svgOpenTagRE = regexp.MustCompile(`(?s)<svg\b([^>]*)>`)
+
+// svgAttrDimRE matches a width or height attribute with an absolute value.
+var svgAttrDimRE = regexp.MustCompile(`\b(width|height)="(\d+(?:\.\d+)?)(?:px)?"`)
+
+// svgPctAttrRE matches width/height percentage attributes on any element.
+var svgPctAttrRE = regexp.MustCompile(`\b(width|height)="(\d+(?:\.\d+)?)%"`)
+
+// preprocessSVGPercentages resolves percentage width/height attributes in SVG data.
+// oksvg doesn't handle width="100%" on shapes like <rect>. This replaces them
+// with absolute pixel values computed from the root <svg> element's dimensions.
+func preprocessSVGPercentages(data []byte) []byte {
+	s := string(data)
+
+	// Find the root <svg> opening tag and extract its width/height
+	rootMatch := svgOpenTagRE.FindStringSubmatch(s)
+	if rootMatch == nil {
+		return data
+	}
+	rootAttrs := rootMatch[1]
+	var svgW, svgH float64
+	for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
+		if m[1] == "width" {
+			svgW, _ = strconv.ParseFloat(m[2], 64)
+		} else {
+			svgH, _ = strconv.ParseFloat(m[2], 64)
+		}
+	}
+	if svgW <= 0 || svgH <= 0 {
+		return data
+	}
+
+	// Replace percentage width/height with resolved pixel values.
+	// Only replace occurrences outside the root <svg> tag (skip index 0 to end of root tag).
+	rootTagEnd := strings.Index(s, ">") + 1
+	prefix := s[:rootTagEnd]
+	body := s[rootTagEnd:]
+
+	body = svgPctAttrRE.ReplaceAllStringFunc(body, func(match string) string {
+		m := svgPctAttrRE.FindStringSubmatch(match)
+		if m == nil {
+			return match
+		}
+		pct, _ := strconv.ParseFloat(m[2], 64)
+		if m[1] == "width" {
+			return fmt.Sprintf(`width="%.4g"`, pct/100.0*svgW)
+		}
+		return fmt.Sprintf(`height="%.4g"`, pct/100.0*svgH)
+	})
+	return []byte(prefix + body)
+}
+
 // rasterizeSVG renders SVG data to an image.RGBA using oksvg.
 // If w/h are 0, the SVG's viewBox dimensions are used.
 func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
+	// oksvg doesn't handle percentage width/height on shapes (e.g. width="100%").
+	// Resolve them to absolute values before parsing.
+	data = preprocessSVGPercentages(data)
+
 	icon, err := oksvg.ReadIconStream(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("SVG parse error: %w", err)

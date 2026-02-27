@@ -182,8 +182,28 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				if w, ok := item.Box.Style.GetLength("width"); ok {
 					item.FlexBasis = w
 				} else {
-					// Use content size (already laid out)
-					item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+					// CSS Flexbox §9.2: for flex-basis:auto with no definite main size,
+					// use the item's max-content main size. For block-level grid containers
+					// the layout width fills available, but the actual content width (track
+					// sum) is the correct flex-basis. Derive it from the rightmost child edge.
+					childDisplay := item.Box.Style.GetDisplay()
+					if childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid {
+						maxRight := 0.0
+						contentLeft := item.Box.X + item.Box.Border.Left + item.Box.Padding.Left
+						for _, child := range item.Box.Children {
+							right := child.X - contentLeft + child.Width +
+								child.Margin.Left + child.Margin.Right +
+								child.Border.Left + child.Border.Right +
+								child.Padding.Left + child.Padding.Right
+							if right > maxRight {
+								maxRight = right
+							}
+						}
+						item.FlexBasis = maxRight
+					} else {
+						// Use content size (already laid out)
+						item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+					}
 				}
 			} else {
 				if h, ok := item.Box.Style.GetLength("height"); ok {
@@ -270,15 +290,85 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		resolveFlexibleLengths(line, mainSize, mainGap, isRow)
 	}
 
+	// Step 5b: Re-layout grid items whose main-axis size was established by flex resolution.
+	// CSS Flexbox §9.4: after flex lengths resolve, grid containers need a second layout pass
+	// with their now-definite main size so that auto tracks fill the container correctly.
+	for _, line := range lines {
+		for _, item := range line.Items {
+			childDisplay := item.Box.Style.GetDisplay()
+			if childDisplay != css.DisplayGrid && childDisplay != css.DisplayInlineGrid {
+				continue
+			}
+			if item.Box.Node == nil {
+				continue
+			}
+			// Compute the content-area main size (height for column, width for row)
+			var contentMain float64
+			if isRow {
+				contentMain = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+			} else {
+				contentMain = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+			}
+			if contentMain <= 0 {
+				continue
+			}
+			// Re-layout the grid with the established main size.
+			// Pass item.Box.Width (border-box) as availableWidth so layoutGridContainer
+			// correctly subtracts the grid's own padding+border to get content width.
+			item.Box.Children = item.Box.Children[:0]
+			if !isRow {
+				// Column direction: main axis is height
+				newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, contentMain, item.Box.Style, computedStyles, flexBox)
+				item.Box.Children = newBox.Children
+			} else {
+				// Row direction: main axis is width — re-layout with established width
+				newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, 0, item.Box.Style, computedStyles, flexBox)
+				item.Box.Children = newBox.Children
+			}
+		}
+	}
+
 	// Step 6: Determine cross sizes
 	for _, line := range lines {
 		for _, item := range line.Items {
+			// Apply explicit min cross-size constraints (CSS Flexbox §9.4).
+			// min-height (row) or min-width (column) on flex items must be enforced
+			// regardless of align-items — stretch handles its own clamping in Step 8.
 			if isRow {
-				// Cross size = height of item
-				item.CrossSize = item.outerCrossSize(isRow)
+				if minH, ok := item.Box.Style.GetLength("min-height"); ok {
+					contentH := item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+					if contentH < minH {
+						item.Box.Height = minH + item.Box.Padding.Top + item.Box.Padding.Bottom + item.Box.Border.Top + item.Box.Border.Bottom
+						// Re-layout children that depend on the newly-established height.
+						childDisplay := item.Box.Style.GetDisplay()
+						if (childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid) && item.Box.Node != nil {
+							item.Box.Children = item.Box.Children[:0]
+							newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, minH, item.Box.Style, computedStyles, flexBox)
+							item.Box.Children = newBox.Children
+						} else if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
+							item.Box.Children = item.Box.Children[:0]
+							le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+						}
+					}
+				}
 			} else {
-				item.CrossSize = item.outerCrossSize(isRow)
+				if minW, ok := item.Box.Style.GetLength("min-width"); ok {
+					contentW := item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+					if contentW < minW {
+						item.Box.Width = minW + item.Box.Padding.Left + item.Box.Padding.Right + item.Box.Border.Left + item.Box.Border.Right
+						childDisplay := item.Box.Style.GetDisplay()
+						if (childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid) && item.Box.Node != nil {
+							item.Box.Children = item.Box.Children[:0]
+							newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, 0, item.Box.Style, computedStyles, flexBox)
+							item.Box.Children = newBox.Children
+						} else if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
+							item.Box.Children = item.Box.Children[:0]
+							le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+						}
+					}
+				}
 			}
+			item.CrossSize = item.outerCrossSize(isRow)
 		}
 		// Line cross size = max item cross size
 		maxCross := 0.0
@@ -352,13 +442,22 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					// CSS Flexbox §9.4: After stretching, re-layout the item's
 					// contents with the new definite cross size so that children
 					// that depend on it (e.g. nested flex with flex:1) resolve correctly.
-					// CSS Flexbox §9.4: After stretching, re-layout the item's
-					// contents with the new definite cross size so that children
-					// that depend on it (e.g. nested flex with flex:1) resolve correctly.
 					childDisplay := item.Box.Style.GetDisplay()
 					if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
 						item.Box.Children = item.Box.Children[:0]
 						le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+					} else if (childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid) && item.Box.Node != nil {
+						item.Box.Children = item.Box.Children[:0]
+						// Pass item.Box.Width (border-box) as availableWidth; layoutGridContainer
+						// subtracts the grid's padding+border to get content width.
+						var establishedH float64
+						if isRow {
+							// Row direction: cross axis is height — newly stretched
+							// establishedH is content height (border-box - padding - border)
+							establishedH = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+						}
+						newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, establishedH, item.Box.Style, computedStyles, flexBox)
+						item.Box.Children = newBox.Children
 					}
 				}
 			}
@@ -707,18 +806,42 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	}
 }
 
+// displayContentsIsSupressed returns true for elements where CSS Display Level 3 §B
+// specifies that display:contents should be treated as display:none (suppressed).
+// These are replaced elements, form controls, and other "unusual" HTML elements.
+func displayContentsIsSuppressed(tagName string) bool {
+	switch tagName {
+	case "br", "wbr", "meter", "progress", "canvas", "embed", "object",
+		"audio", "iframe", "img", "video", "input", "textarea", "select",
+		"frame", "frameset", "col", "colgroup", "summary":
+		return true
+	}
+	return false
+}
+
 // flattenContentsChildren returns the children of node, recursively expanding any
 // child with display:contents (those children participate directly in the parent layout).
+// Per CSS Display Level 3 §B, display:contents is suppressed (treated as display:none)
+// for replaced elements, form controls, and other unusual HTML elements.
 func (le *LayoutEngine) flattenContentsChildren(node *html.Node, computedStyles map[*html.Node]*css.Style) []*html.Node {
 	var result []*html.Node
 	for _, child := range node.Children {
 		if child.Type == html.ElementNode {
 			childStyle := computedStyles[child]
 			if childStyle == nil {
+				childStyle = le.syntheticStyles[child]
+			}
+			if childStyle == nil {
 				childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
 				computedStyles[child] = childStyle
 			}
 			if childStyle.GetDisplay() == css.DisplayContents {
+				// Per CSS Display Level 3 §B: display:contents is suppressed to
+				// display:none for replaced elements and certain other elements.
+				// Skip these entirely (do not expand or include).
+				if displayContentsIsSuppressed(child.TagName) {
+					continue
+				}
 				result = append(result, le.flattenContentsChildren(child, computedStyles)...)
 				continue
 			}
@@ -866,7 +989,9 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 				hasExplicitMin = true
 			}
 		}
-		if !hasExplicitMin && overflow == "visible" {
+		// CSS Flexbox §4.5: automatic minimum size applies when overflow is visible or clip.
+		// Both treat the automatic minimum as the content-based minimum size.
+		if !hasExplicitMin && (overflow == "visible" || overflow == "clip") {
 			item.AutoMinMain = le.computeFlexItemAutoMinMain(child, childStyle, childBox, isRow)
 		}
 
@@ -1205,6 +1330,33 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 		// the min-content main size is the SUM of flex items' min-content contributions.
 		// For block containers, it's the MAX of children's min-content widths.
 		itemDisplay := style.GetDisplay()
+
+		// Special case: grid containers with orthogonal (writing-mode: vertical-rl/lr)
+		// direct children. Standard min-content underestimates because it measures each
+		// child's horizontal width independently, ignoring that vertical-rl flow stacks
+		// children into columns. The correct minimum = sum of all columns = initial layout
+		// width (computed when the grid was laid out at the flex container's full width).
+		if itemDisplay == css.DisplayGrid || itemDisplay == css.DisplayInlineGrid {
+			for _, child := range node.Children {
+				if child.Type != html.ElementNode {
+					continue
+				}
+				childStyle := css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+				if childStyle == nil {
+					continue
+				}
+				if wm, ok := childStyle.Get("writing-mode"); ok {
+					if wm == "vertical-rl" || wm == "vertical-lr" {
+						contentW := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+						if contentW > 0 {
+							return contentW
+						}
+						break
+					}
+				}
+			}
+		}
+
 		isFlexRow := (itemDisplay == css.DisplayFlex || itemDisplay == css.DisplayInlineFlex) &&
 			(style.GetFlexDirection() == css.FlexDirectionRow || style.GetFlexDirection() == css.FlexDirectionRowReverse)
 

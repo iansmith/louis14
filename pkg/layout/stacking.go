@@ -63,20 +63,22 @@ func BoxCreatesStackingContext(box *Box) bool {
 		return true
 	}
 
-	// Elements with transform != none create a stacking context
-	if transform, ok := box.Style.Get("transform"); ok && transform != "none" && transform != "" {
-		return true
-	}
-
-	// Individual transform properties also create a stacking context (CSS Transforms Level 2)
-	if _, _, ok := box.Style.GetIndividualScale(); ok {
-		return true
-	}
-	if _, ok := box.Style.GetIndividualRotate(); ok {
-		return true
-	}
-	if _, _, ok := box.Style.GetIndividualTranslate(); ok {
-		return true
+	// Elements with transform != none create a stacking context.
+	// CSS Transforms Level 1 §1: transform does not apply to non-replaced inline boxes.
+	if !isNonReplacedInline(box) {
+		if transform, ok := box.Style.Get("transform"); ok && transform != "none" && transform != "" {
+			return true
+		}
+		// Individual transform properties also create a stacking context (CSS Transforms Level 2)
+		if _, _, ok := box.Style.GetIndividualScale(); ok {
+			return true
+		}
+		if _, ok := box.Style.GetIndividualRotate(); ok {
+			return true
+		}
+		if _, _, ok := box.Style.GetIndividualTranslate(); ok {
+			return true
+		}
 	}
 
 	// Elements with clip-path != none create a stacking context
@@ -110,6 +112,44 @@ func BoxCreatesStackingContext(box *Box) bool {
 	// Elements with isolation: isolate create a stacking context
 	if box.Style.GetIsolation() == "isolate" {
 		return true
+	}
+
+	// will-change creates a stacking context for any property that would create
+	// one when its value is non-initial (CSS Will-Change spec §2).
+	nonReplacedInline := isNonReplacedInline(box)
+	for _, prop := range box.Style.GetWillChange() {
+		switch prop {
+		case "transform", "perspective", "offset", "offset-path", "transform-style",
+			"translate", "rotate", "scale":
+			// Transform-related: only create SC for elements that support transforms
+			if !nonReplacedInline {
+				return true
+			}
+		case "opacity", "filter", "clip-path", "mix-blend-mode",
+			"isolation", "backdrop-filter", "mask", "mask-image",
+			"view-transition-name": // view-transition-name always creates a stacking context
+			return true
+		case "z-index":
+			// z-index in will-change creates SC only when z-index would actually apply:
+			// positioned elements, flex items, and grid items.
+			// Non-positioned non-flex/grid blocks are unaffected (z-index ignored).
+			if box.Position != css.PositionStatic {
+				return true
+			}
+			// Check if parent is a flex or grid container (z-index applies to flex/grid items)
+			if box.Parent != nil && box.Parent.Style != nil {
+				if display, ok := box.Parent.Style.Get("display"); ok {
+					if display == "flex" || display == "inline-flex" ||
+						display == "grid" || display == "inline-grid" {
+						return true
+					}
+				}
+			}
+		case "position":
+			// will-change: position anticipates a non-static position value.
+			// Since sticky and fixed both create stacking contexts, this creates a SC.
+			return true
+		}
 	}
 
 	return false

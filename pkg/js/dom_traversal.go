@@ -158,6 +158,13 @@ func registerDocumentProperties(ctx *domContext, docObj *goja.Object, doc *html.
 	if bodyNode != nil {
 		docObj.Set("body", ctx.elementProxy(bodyNode))
 	} else {
-		docObj.Set("body", goja.Null())
+		// No <body> element (e.g. flat HTML without implicit <html><body>).
+		// Use a stub object so scripts that access document.body.offsetTop
+		// (a common layout-flush idiom) don't throw a TypeError.
+		stub := ctx.vm.NewObject()
+		for _, prop := range []string{"offsetTop", "offsetLeft", "offsetWidth", "offsetHeight"} {
+			_ = stub.Set(prop, 0)
+		}
+		docObj.Set("body", stub)
 	}
 }

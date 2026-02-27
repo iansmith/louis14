@@ -99,11 +99,36 @@ func (le *LayoutEngine) getFloatOffsets(y float64) (leftOffset, rightOffset floa
 	return leftOffset, rightOffset
 }
 
+// getLeftFloatAbsoluteEdge returns the absolute X coordinate of the right edge of all active
+// left floats at the given Y position. Returns 0 if there are no active left floats.
+// Unlike getFloatOffsets (which returns float widths relative to content-left), this returns
+// the absolute position, correctly handling floats inside nested bordered containers.
+func (le *LayoutEngine) getLeftFloatAbsoluteEdge(y float64) float64 {
+	rightEdge := 0.0
+	for i := le.floatBase; i < len(le.floats); i++ {
+		floatInfo := le.floats[i]
+		floatBottom := floatInfo.Y + le.getTotalHeight(floatInfo.Box)
+		if y >= floatInfo.Y && y < floatBottom && floatInfo.Side == css.FloatLeft {
+			b := floatInfo.Box
+			// Right margin edge of left float = border-box right + margin-right
+			edge := b.X + b.Width + b.Margin.Right
+			if edge > rightEdge {
+				rightEdge = edge
+			}
+		}
+	}
+	return rightEdge
+}
+
 // initializeLineX returns the starting X position for inline content in a box at the given Y position,
 // accounting for left floats. This should be called when starting a new line or after the Y position changes.
 func (le *LayoutEngine) initializeLineX(box *Box, border, padding css.BoxEdge, y float64) float64 {
-	leftOffset, _ := le.getFloatOffsets(y)
-	return box.X + border.Left + padding.Left + leftOffset
+	contentLeft := box.X + border.Left + padding.Left
+	leftEdge := le.getLeftFloatAbsoluteEdge(y)
+	if leftEdge > contentLeft {
+		return leftEdge
+	}
+	return contentLeft
 }
 
 // ensureLineXClearsFloats updates the inline context's LineX to ensure it clears any left floats

@@ -2839,13 +2839,24 @@ const (
 	FloatRight FloatType = "right"
 )
 
-// GetFloat returns the float value (default: none)
+// GetFloat returns the float value (default: none).
+// Resolves CSS logical values inline-start/inline-end using the computed direction.
 func (s *Style) GetFloat() FloatType {
 	if floatVal, ok := s.Get("float"); ok {
 		switch floatVal {
 		case "left":
 			return FloatLeft
 		case "right":
+			return FloatRight
+		case "inline-start":
+			if s.GetDirection() == DirectionRTL {
+				return FloatRight
+			}
+			return FloatLeft
+		case "inline-end":
+			if s.GetDirection() == DirectionRTL {
+				return FloatLeft
+			}
 			return FloatRight
 		}
 	}
@@ -2862,7 +2873,8 @@ const (
 	ClearBoth  ClearType = "both"
 )
 
-// GetClear returns the clear value (default: none)
+// GetClear returns the clear value (default: none).
+// Resolves CSS logical values inline-start/inline-end/inline/block using the computed direction.
 func (s *Style) GetClear() ClearType {
 	if clearVal, ok := s.Get("clear"); ok {
 		switch clearVal {
@@ -2871,6 +2883,18 @@ func (s *Style) GetClear() ClearType {
 		case "right":
 			return ClearRight
 		case "both":
+			return ClearBoth
+		case "inline-start":
+			if s.GetDirection() == DirectionRTL {
+				return ClearRight
+			}
+			return ClearLeft
+		case "inline-end":
+			if s.GetDirection() == DirectionRTL {
+				return ClearLeft
+			}
+			return ClearRight
+		case "inline":
 			return ClearBoth
 		}
 	}
@@ -3956,14 +3980,16 @@ const (
 func (s *Style) GetAlignItems() AlignItems {
 	if ai, ok := s.Get("align-items"); ok {
 		switch ai {
-		case "flex-start":
+		case "flex-start", "start":
 			return AlignItemsFlexStart
-		case "flex-end":
+		case "flex-end", "end":
 			return AlignItemsFlexEnd
 		case "center":
 			return AlignItemsCenter
 		case "baseline":
 			return AlignItemsBaseline
+		case "stretch":
+			return AlignItemsStretch
 		}
 	}
 	return AlignItemsStretch
@@ -4275,21 +4301,23 @@ func ParseContentValues(raw string) []ContentValue {
 
 // GridTrack represents a single grid track (column or row)
 type GridTrack struct {
-	Size         float64     // Size in pixels (0 for auto)
-	Auto         bool        // true if track is auto-sized
-	Fr           float64     // fractional unit value (0 if not fr)
-	Percent      float64     // percentage value (e.g., 75 for "75%")
-	IsMinMax     bool        // true if this is a minmax() track
-	MinSize      float64     // minimum size (px) for minmax()
-	MaxFr        float64     // maximum as fr value for minmax()
-	MaxSize      float64     // maximum as fixed size (px) for minmax()
-	MaxAuto      bool        // true if max is "auto" for minmax()
-	MinContent   bool        // true if value is "min-content"
-	MaxContent   bool        // true if value is "max-content"
-	AutoFill     bool        // true if this is a repeat(auto-fill, ...) sentinel
-	AutoFit      bool        // true if this is a repeat(auto-fit, ...) sentinel
-	AutoTemplate []GridTrack // template tracks for auto-fill/auto-fit
-	IsSubgrid    bool        // true if this represents a "subgrid" keyword
+	Size           float64     // Size in pixels (0 for auto)
+	Auto           bool        // true if track is auto-sized
+	Fr             float64     // fractional unit value (0 if not fr)
+	Percent        float64     // percentage value (e.g., 75 for "75%")
+	IsMinMax       bool        // true if this is a minmax() track
+	MinSize        float64     // minimum size (px) for minmax()
+	MaxFr          float64     // maximum as fr value for minmax()
+	MaxSize        float64     // maximum as fixed size (px) for minmax()
+	MaxAuto        bool        // true if max is "auto" for minmax()
+	MinContent     bool        // true if value is "min-content"
+	MaxContent     bool        // true if value is "max-content"
+	IsFitContent   bool        // true if this is a fit-content() track
+	FitContentMax  float64     // argument to fit-content() in pixels
+	AutoFill       bool        // true if this is a repeat(auto-fill, ...) sentinel
+	AutoFit        bool        // true if this is a repeat(auto-fit, ...) sentinel
+	AutoTemplate   []GridTrack // template tracks for auto-fill/auto-fit
+	IsSubgrid      bool        // true if this represents a "subgrid" keyword
 }
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
@@ -4548,6 +4576,12 @@ func parseGridTracksWithNames(val string) ([]GridTrack, map[string]int) {
 				}
 				newTrack = &track
 			}
+		} else if strings.HasPrefix(part, "fit-content(") && strings.HasSuffix(part, ")") {
+			argStr := strings.TrimSpace(part[12 : len(part)-1])
+			if size, ok := ParseLength(argStr); ok {
+				t := GridTrack{IsFitContent: true, FitContentMax: size}
+				newTrack = &t
+			}
 		} else if strings.HasSuffix(part, "fr") {
 			frStr := strings.TrimSuffix(part, "fr")
 			if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
@@ -4647,6 +4681,12 @@ func parseGridTracks(val string) []GridTrack {
 				track.MaxSize = size
 			}
 			tracks = append(tracks, track)
+		} else if strings.HasPrefix(part, "fit-content(") && strings.HasSuffix(part, ")") {
+			// fit-content(X) = min(max-content, max(min-content, X))
+			argStr := strings.TrimSpace(part[12 : len(part)-1])
+			if size, ok := ParseLength(argStr); ok {
+				tracks = append(tracks, GridTrack{IsFitContent: true, FitContentMax: size})
+			}
 		} else if strings.HasSuffix(part, "fr") {
 			frStr := strings.TrimSuffix(part, "fr")
 			if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
@@ -6377,6 +6417,24 @@ func (s *Style) GetIsolation() string {
 		return val
 	}
 	return "auto"
+}
+
+// GetWillChange returns the list of property names specified in will-change.
+// Returns nil for "will-change: auto" or if not specified.
+func (s *Style) GetWillChange() []string {
+	val, ok := s.Get("will-change")
+	if !ok || val == "" || val == "auto" {
+		return nil
+	}
+	parts := strings.Split(val, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" && p != "auto" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // GetTextDecorationStyle returns the text-decoration-style value (default: "solid")
