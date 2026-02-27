@@ -600,6 +600,9 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	for _, child := range blocks {
 		if hasNonVisibleOverflow(child) {
 			r.paintStackingContext(child) // Paint atomically with clipping
+		} else if isBlockChildOfInlineBlock(child) {
+			// Skip: this block child of an inline-block will be painted in Step 5
+			// by its inline-block parent (after the parent's own background is drawn).
 		} else {
 			r.drawBoxBackgroundAndBorders(child)
 		}
@@ -618,12 +621,22 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	for _, child := range inlines {
 		r.drawBoxBackgroundAndBorders(child)
 		r.drawBoxContent(child)
+		// For inline-blocks: after painting the inline-block's own background, paint
+		// its direct block children (which were skipped at Step 3). This ensures the
+		// inline-block's background is drawn BEFORE its children's backgrounds.
+		if child.Style != nil && child.Style.GetDisplay() == css.DisplayInlineBlock {
+			for _, blockChild := range child.Children {
+				if !layout.IsInline(blockChild) && !layout.IsPositioned(blockChild) && !layout.IsFloat(blockChild) && !layout.BoxCreatesStackingContext(blockChild) {
+					r.paintStackingContext(blockChild)
+				}
+			}
+		}
 	}
 
 	// Also paint content of blocks at step 5 (text/images inside blocks)
 	for _, child := range blocks {
-		if hasNonVisibleOverflow(child) {
-			continue // Already painted atomically in step 3
+		if hasNonVisibleOverflow(child) || isBlockChildOfInlineBlock(child) {
+			continue // Already painted atomically (in step 3 or step 5 by inline-block parent)
 		}
 		r.drawBoxContent(child)
 	}
@@ -1362,6 +1375,16 @@ func (r *Renderer) RenderLegacy(boxes []*layout.Box) {
 	}
 }
 
+// isBlockChildOfInlineBlock returns true if this block-level box is a direct
+// block child of a display:inline-block parent. Such children are skipped at
+// Step 3 (blocks) and painted later by their inline-block parent in Step 5.
+func isBlockChildOfInlineBlock(box *layout.Box) bool {
+	if box.Parent == nil || box.Parent.Style == nil {
+		return false
+	}
+	return box.Parent.Style.GetDisplay() == css.DisplayInlineBlock
+}
+
 // collectAllBoxes flattens the box tree into a single list
 func (r *Renderer) collectAllBoxes(boxes []*layout.Box) []*layout.Box {
 	result := make([]*layout.Box, 0)
@@ -2036,10 +2059,19 @@ func (r *Renderer) drawBorder(box *layout.Box) {
 		// All inline fragments (including IsFirstFragment) get full top+bottom bleed.
 		// The intervening block's background is painted after Fragment1 in document order,
 		// so it covers any bleeding bottom border of Fragment1 (as in browser behavior).
-		topBleed := box.Border.Top + box.Padding.Top
-		bottomBleed := box.Padding.Bottom + box.Border.Bottom
-		renderHeight = box.Height + topBleed + bottomBleed
-		renderY = effectiveY - topBleed
+		//
+		// Exception: replaced inline elements (img, canvas, video, iframe) have box.Height
+		// equal to their border-box height (not the line height), so no bleed is needed.
+		// Applying bleed to replaced elements causes their borders to render outside their box.
+		isReplacedInline := box.Node != nil && (box.Node.TagName == "img" ||
+			box.Node.TagName == "canvas" || box.Node.TagName == "video" ||
+			box.Node.TagName == "iframe")
+		if !isReplacedInline {
+			topBleed := box.Border.Top + box.Padding.Top
+			bottomBleed := box.Padding.Bottom + box.Border.Bottom
+			renderHeight = box.Height + topBleed + bottomBleed
+			renderY = effectiveY - topBleed
+		}
 	}
 
 	// Phase 12: Get border styles for each side

@@ -334,6 +334,11 @@ type FlexItem struct {
 	// width (wrong for the item's actual size), and children may need re-layout after
 	// flex resolution establishes the correct main size.
 	BlockFillBasis bool
+	// Collapsed is true when the item has visibility:collapse. Per CSS Flexbox §9.7,
+	// collapsed items have 0 main-axis size (they don't participate in main-axis packing)
+	// but still contribute their cross-size for line cross-size determination.
+	// The item itself is invisible (like visibility:hidden).
+	Collapsed bool
 }
 
 // FlexLine tracks a line of flex items (for wrapping)

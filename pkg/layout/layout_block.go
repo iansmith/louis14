@@ -161,6 +161,24 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		margin.Left = v
 	}
 
+	// CSS 2.1 §8.3: Percentage margin resolves against the WIDTH of the
+	// containing block (even for margin-top and margin-bottom).
+	resolveMarginPercent := func(prop string, current float64, isAuto bool) float64 {
+		if isAuto || current != 0 {
+			return current
+		}
+		if val, ok := style.Get(prop); ok {
+			if pct, ok := css.ParsePercentage(val); ok {
+				return availableWidth * pct / 100
+			}
+		}
+		return current
+	}
+	margin.Top = resolveMarginPercent("margin-top", margin.Top, margin.AutoTop)
+	margin.Right = resolveMarginPercent("margin-right", margin.Right, margin.AutoRight)
+	margin.Bottom = resolveMarginPercent("margin-bottom", margin.Bottom, margin.AutoBottom)
+	margin.Left = resolveMarginPercent("margin-left", margin.Left, margin.AutoLeft)
+
 	// CSS 2.1 §8.4: Percentage padding resolves against the WIDTH of the
 	// containing block (even for padding-top and padding-bottom).
 	resolvePaddingPercent := func(prop string, current float64) float64 {
@@ -490,7 +508,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// For images: after width clamping, recalculate height from aspect ratio
 	// if the height was derived from the (now-clamped) width. CSS replaced element
 	// constraint solving: min/max-width affects height when height is auto.
-	if isImage && !hasExplicitHeight && imageWidth > 0 && imageHeight > 0 && imageHasCSSWidth {
+	// Also recalculate when min/max-width changed the width from the natural image width
+	// (e.g. min-width:40px on a 20px-wide image → width becomes 40px, height must scale).
+	if isImage && !hasExplicitHeight && imageWidth > 0 && imageHeight > 0 &&
+		(imageHasCSSWidth || contentWidth != float64(imageWidth)) {
 		contentHeight = contentWidth * float64(imageHeight) / float64(imageWidth)
 	}
 

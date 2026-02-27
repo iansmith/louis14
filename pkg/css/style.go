@@ -3936,9 +3936,23 @@ const (
 	JustifyContentRight        JustifyContent = "right"
 )
 
-// GetJustifyContent returns the justify-content value (default: flex-start)
+// stripSafeUnsafe removes an optional "safe " or "unsafe " prefix from an alignment value.
+// Returns the stripped value and whether "safe" was specified.
+func stripSafeUnsafe(val string) (string, bool) {
+	if strings.HasPrefix(val, "safe ") {
+		return val[5:], true
+	}
+	if strings.HasPrefix(val, "unsafe ") {
+		return val[7:], false
+	}
+	return val, false
+}
+
+// GetJustifyContent returns the justify-content value (default: flex-start).
+// Strips any "safe"/"unsafe" prefix; use IsSafeJustifyContent to check the safe flag.
 func (s *Style) GetJustifyContent() JustifyContent {
 	if jc, ok := s.Get("justify-content"); ok {
+		jc, _ = stripSafeUnsafe(jc)
 		switch jc {
 		case "flex-end":
 			return JustifyContentFlexEnd
@@ -3965,6 +3979,15 @@ func (s *Style) GetJustifyContent() JustifyContent {
 	return JustifyContentFlexStart
 }
 
+// IsSafeJustifyContent returns true if justify-content has the "safe" overflow keyword.
+func (s *Style) IsSafeJustifyContent() bool {
+	if jc, ok := s.Get("justify-content"); ok {
+		_, safe := stripSafeUnsafe(jc)
+		return safe
+	}
+	return false
+}
+
 // AlignItems represents the align-items property value
 type AlignItems string
 
@@ -3976,9 +3999,11 @@ const (
 	AlignItemsBaseline  AlignItems = "baseline"
 )
 
-// GetAlignItems returns the align-items value (default: stretch)
+// GetAlignItems returns the align-items value (default: stretch).
+// Strips any "safe"/"unsafe" prefix; use IsSafeAlignItems to check the safe flag.
 func (s *Style) GetAlignItems() AlignItems {
 	if ai, ok := s.Get("align-items"); ok {
+		ai, _ = stripSafeUnsafe(ai)
 		switch ai {
 		case "flex-start", "start":
 			return AlignItemsFlexStart
@@ -3995,6 +4020,15 @@ func (s *Style) GetAlignItems() AlignItems {
 	return AlignItemsStretch
 }
 
+// IsSafeAlignItems returns true if align-items has the "safe" overflow keyword.
+func (s *Style) IsSafeAlignItems() bool {
+	if ai, ok := s.Get("align-items"); ok {
+		_, safe := stripSafeUnsafe(ai)
+		return safe
+	}
+	return false
+}
+
 // AlignContent represents the align-content property value
 type AlignContent string
 
@@ -4008,9 +4042,11 @@ const (
 	AlignContentSpaceEvenly  AlignContent = "space-evenly"
 )
 
-// GetAlignContent returns the align-content value (default: stretch)
+// GetAlignContent returns the align-content value (default: stretch).
+// Strips any "safe"/"unsafe" prefix; use IsSafeAlignContent to check the safe flag.
 func (s *Style) GetAlignContent() AlignContent {
 	if ac, ok := s.Get("align-content"); ok {
+		ac, _ = stripSafeUnsafe(ac)
 		switch ac {
 		case "flex-start":
 			return AlignContentFlexStart
@@ -4027,6 +4063,15 @@ func (s *Style) GetAlignContent() AlignContent {
 		}
 	}
 	return AlignContentStretch
+}
+
+// IsSafeAlignContent returns true if align-content has the "safe" overflow keyword.
+func (s *Style) IsSafeAlignContent() bool {
+	if ac, ok := s.Get("align-content"); ok {
+		_, safe := stripSafeUnsafe(ac)
+		return safe
+	}
+	return false
 }
 
 // GetFlexGrow returns the flex-grow value (default: 0)
@@ -4109,6 +4154,7 @@ const (
 // GetAlignSelf returns the align-self value (default: auto)
 func (s *Style) GetAlignSelf() AlignSelf {
 	if as, ok := s.Get("align-self"); ok {
+		as, _ = stripSafeUnsafe(as)
 		switch as {
 		case "flex-start", "start", "self-start":
 			return AlignSelfFlexStart
@@ -4123,6 +4169,15 @@ func (s *Style) GetAlignSelf() AlignSelf {
 		}
 	}
 	return AlignSelfAuto
+}
+
+// IsSafeAlignSelf returns true if align-self has the "safe" overflow keyword.
+func (s *Style) IsSafeAlignSelf() bool {
+	if as, ok := s.Get("align-self"); ok {
+		_, safe := stripSafeUnsafe(as)
+		return safe
+	}
+	return false
 }
 
 // GetOrder returns the order value (default: 0)

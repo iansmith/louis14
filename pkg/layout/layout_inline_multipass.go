@@ -2184,10 +2184,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 				// Apply vertical-align: middle/top/bottom to inline-block elements.
 				// The line height is the max height of all fragments on this line,
-				// precomputed in fragLineMaxHeight.
+				// precomputed in fragLineMaxHeight (using frag.Size.Height = border-box).
+				// Use atomicBox.Height (also border-box) for consistency — getTotalHeight
+				// would double-count border+padding since box.Height is already border-box.
 				if atomicBox.Style != nil {
 					lineH := fragLineMaxHeight[frag.Position.Y]
-					boxH := le.getTotalHeight(atomicBox)
+					boxH := atomicBox.Height // border-box, consistent with fragLineMaxHeight
 					valign := atomicBox.Style.GetVerticalAlign()
 					switch valign {
 					case css.VerticalAlignMiddle:
@@ -2222,6 +2224,17 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// Fragment X is relative to line start (content area);
 				// add container's content area offset for absolute position
 				box.X += containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+
+				// For FragmentAtomic elements (images, SVGs, replaced elements), the
+				// fragment position was recorded BEFORE the left margin was applied in
+				// constructLine (to match the pattern where layoutNode normally applies
+				// margin.Left). But images/replaced elements bypass layoutNode here and
+				// use fragmentToBoxSingle, so we must apply margin.Left manually.
+				if frag.Type == FragmentAtomic && frag.Style != nil {
+					atomicMargin := frag.Style.GetMargin()
+					box.X += atomicMargin.Left
+					box.Margin = atomicMargin
+				}
 
 				// Check if we've moved to a new line (Y changed)
 				if frag.Position.Y != currentLineY {
@@ -3305,9 +3318,12 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 				}
 			}
 
-			// If no explicit width, compute from children's text content
-			// using the inline-block element's inherited style for correct font properties.
-			// ComputeMinMaxSizes has font inheritance issues for text nodes.
+			// If no explicit width, compute from children's content.
+			// Uses parent's font properties for text nodes (ComputeMinMaxSizes has
+			// font inheritance issues for text nodes).
+			// Block-level children stack vertically (take max width);
+			// inline children accumulate horizontally (sum widths).
+			// Whitespace-only text nodes are skipped — they collapse to nothing in CSS.
 			if width == 0 {
 				fontSize := style.GetFontSize()
 				bold := style.GetFontWeight() == css.FontWeightBold
@@ -3315,28 +3331,50 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 				mono := style.IsMonospaceFamily()
 				ahem := style.IsAhemFamily()
 
-				// Measure children text content with parent's font properties
+				var inlineWidth float64
+				// Measure children with correct handling for block vs inline
 				for _, child := range node.Children {
-					if child.Type == html.TextNode && child.Text != "" {
+					if child.Type == html.TextNode {
+						// Skip whitespace-only text nodes (collapse to nothing in CSS)
+						if strings.TrimSpace(child.Text) == "" {
+							continue
+						}
 						tw, th := text.MeasureTextWithStyle(child.Text, fontSize, bold, italic, mono, ahem)
-						width += tw
+						inlineWidth += tw
 						if th > height {
 							height = th
 						}
 					} else if child.Type == html.ElementNode {
-						// For element children, fall back to ComputeMinMaxSizes
 						childStyle := css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
 						if childStyle != nil {
 							constraint := NewConstraintSpace(state.AvailableWidth, 0)
 							sizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
 							childWidth := sizes.MaxContentSize
-							// Block children's margins consume space within the
-							// inline-block container's content area
 							childMargin := childStyle.GetMargin()
 							childWidth += childMargin.Left + childMargin.Right
-							width += childWidth
+							childDisplay := childStyle.GetDisplay()
+							childFloat := childStyle.GetFloat()
+							isBlockLevel := childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot || childDisplay == css.DisplayListItem
+							isFloated := childFloat != css.FloatNone
+							if isBlockLevel && !isFloated {
+								// Non-floated block children stack vertically: flush inline run, take max
+								if inlineWidth > width {
+									width = inlineWidth
+								}
+								inlineWidth = 0
+								if childWidth > width {
+									width = childWidth
+								}
+							} else {
+								// Inline, inline-block, or floated children: accumulate horizontally
+								inlineWidth += childWidth
+							}
 						}
 					}
+				}
+				// Flush final inline run
+				if inlineWidth > width {
+					width = inlineWidth
 				}
 
 				// Add padding/border from the inline-block element itself

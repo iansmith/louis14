@@ -74,6 +74,17 @@ func (p *Parser) Parse() (*Document, error) {
 
 			// Add to current parent (top of stack)
 			parent := p.currentParent()
+
+			// HTML5 §8.2.6: block-level elements appearing at the document root
+			// trigger implicit <html> and <body> creation, matching browser behavior
+			// for flat HTML documents (without explicit <html>/<body> tags).
+			// Head-level elements and inline elements at the document root do not
+			// trigger implicit body creation (they are handled in-place).
+			if parent.TagName == "document" && p.isBlockElement(token.TagName) {
+				p.ensureBody()
+				parent = p.currentParent()
+			}
+
 			parent.AddChild(node)
 
 			// Handle <meta name="viewport" content="width=...">
