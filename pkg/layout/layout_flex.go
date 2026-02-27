@@ -180,6 +180,15 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			// flex-basis: auto → use the item's main size property
 			if isRow {
 				if w, ok := item.Box.Style.GetLength("width"); ok {
+					// box-sizing: border-box means the CSS width includes padding+border.
+					// FlexBasis represents content width (Step 8 re-adds padding+border),
+					// so subtract them here to avoid double-counting.
+					if item.Box.Style.GetBoxSizing() == "border-box" {
+						w -= item.Box.Padding.Left + item.Box.Padding.Right + item.Box.Border.Left + item.Box.Border.Right
+						if w < 0 {
+							w = 0
+						}
+					}
 					item.FlexBasis = w
 				} else if pct, ok := item.Box.Style.GetPercentage("width"); ok {
 					// Resolve percentage width against flex container main size.
@@ -248,6 +257,13 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				}
 			} else {
 				if h, ok := item.Box.Style.GetLength("height"); ok {
+					// box-sizing: border-box means the CSS height includes padding+border.
+					if item.Box.Style.GetBoxSizing() == "border-box" {
+						h -= item.Box.Padding.Top + item.Box.Padding.Bottom + item.Box.Border.Top + item.Box.Border.Bottom
+						if h < 0 {
+							h = 0
+						}
+					}
 					item.FlexBasis = h
 				} else {
 					item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
@@ -468,6 +484,27 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		lines[0].CrossSize = crossSize
 	}
 
+	// CSS Flexbox §9.4.4: Single-line containers clamp their line's cross-size to the
+	// container's computed min and max cross-size, even when the cross size is indefinite.
+	// This ensures max-height (row) or max-width (column) constrains the line height.
+	if wrap == css.FlexWrapNowrap && len(lines) == 1 {
+		if isRow {
+			if maxH, ok := flexBox.Style.GetLength("max-height"); ok && lines[0].CrossSize > maxH {
+				lines[0].CrossSize = maxH
+			}
+			if minH, ok := flexBox.Style.GetLength("min-height"); ok && lines[0].CrossSize < minH {
+				lines[0].CrossSize = minH
+			}
+		} else {
+			if maxW, ok := flexBox.Style.GetLength("max-width"); ok && lines[0].CrossSize > maxW {
+				lines[0].CrossSize = maxW
+			}
+			if minW, ok := flexBox.Style.GetLength("min-width"); ok && lines[0].CrossSize < minW {
+				lines[0].CrossSize = minW
+			}
+		}
+	}
+
 	// Step 7: Handle align-content: stretch for multi-line
 	totalLinesCross := 0.0
 	for i, line := range lines {
@@ -512,8 +549,9 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				// also stretch when the item is TALLER than the line (initial layout
 				// applied aspect-ratio to auto-width before cross size was established).
 				arItem := item.Box.Style.GetAspectRatio()
-				shouldStretch := outerCross < line.CrossSize ||
-					(arItem.IsSet && outerCross != line.CrossSize)
+				// Also clamp items that exceed the line cross-size (e.g. when line is clamped
+				// by container max-height/max-width per CSS Flexbox §9.4.4).
+				shouldStretch := outerCross != line.CrossSize || (arItem.IsSet && outerCross != line.CrossSize)
 				if shouldStretch {
 					// Stretch item to fill line's cross size
 					crossMargin := 0.0
@@ -1138,6 +1176,33 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 
 		// Layout the child to get its intrinsic dimensions
 		childBox := le.layoutNode(child, startX, startY, availableWidth, computedStyles, flexBox)
+
+		// CSS Flexbox §9.2: For column flex items with non-stretch cross alignment,
+		// the initial block layout fills the container width (wrong). The item's
+		// cross size (width) should be fit-content (shrink-to-fit). Re-layout
+		// with the correct width so that percentage-based paddings/margins
+		// (e.g. padding-bottom: 50%) resolve against the actual containing-block width.
+		if !isRow {
+			flexAlignItems := flexBox.Style.GetAlignItems()
+			effectiveAlign := resolveAlignment(flexAlignItems, childStyle.GetAlignSelf())
+			if effectiveAlign != css.AlignItemsStretch {
+				// Check if child has no explicit CSS width (block-fill case)
+				_, hasExplicitW := childStyle.GetLength("width")
+				_, hasExplicitPctW := childStyle.GetPercentage("width")
+				if !hasExplicitW && !hasExplicitPctW {
+					// Compute fit-content width: min(max-content, available-cross)
+					constraint := NewConstraintSpace(availableWidth, -1)
+					intrinsicW := le.ComputeMinMaxSizes(child, constraint, childStyle).MaxContentSize
+					if intrinsicW > availableWidth {
+						intrinsicW = availableWidth
+					}
+					// Re-layout with fit-content width if it's smaller than block-fill width
+					if intrinsicW > 0 && intrinsicW < childBox.Width-0.5 {
+						childBox = le.layoutNode(child, startX, startY, intrinsicW, computedStyles, flexBox)
+					}
+				}
+			}
+		}
 
 		// CSS Writing Modes §6.4: In vertical writing mode, transform inline layout
 		// from horizontal lines to vertical-rl columns. Each horizontal line becomes

@@ -4110,15 +4110,15 @@ const (
 func (s *Style) GetAlignSelf() AlignSelf {
 	if as, ok := s.Get("align-self"); ok {
 		switch as {
-		case "flex-start":
+		case "flex-start", "start", "self-start":
 			return AlignSelfFlexStart
-		case "flex-end":
+		case "flex-end", "end", "self-end":
 			return AlignSelfFlexEnd
 		case "center":
 			return AlignSelfCenter
 		case "stretch":
 			return AlignSelfStretch
-		case "baseline":
+		case "baseline", "first baseline", "last baseline":
 			return AlignSelfBaseline
 		}
 	}

@@ -428,6 +428,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if v, ok := style.GetLength(prop); ok {
 			return v, true
 		}
+		// Handle plain percentage values (e.g. max-width: 100%).
+		// CSS 2.1 §10.2: percentages on min/max-width resolve against the
+		// containing block's (parent's) width = availableWidth.
+		if pct, ok := style.GetPercentage(prop); ok {
+			return pct / 100.0 * availableWidth, true
+		}
 		if val, ok := style.Get(prop); ok {
 			trimmed := strings.TrimSpace(val)
 			// CSS Intrinsic Sizing: handle max-content/min-content/fit-content keywords
@@ -479,6 +485,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if contentWidth > maxWidth {
 			contentWidth = maxWidth
 		}
+	}
+
+	// For images: after width clamping, recalculate height from aspect ratio
+	// if the height was derived from the (now-clamped) width. CSS replaced element
+	// constraint solving: min/max-width affects height when height is auto.
+	if isImage && !hasExplicitHeight && imageWidth > 0 && imageHeight > 0 && imageHasCSSWidth {
+		contentHeight = contentWidth * float64(imageHeight) / float64(imageWidth)
 	}
 
 	// Apply min/max height constraints (min-height overrides max-height per CSS 2.1 10.7)
