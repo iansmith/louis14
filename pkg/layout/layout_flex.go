@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/images"
 	"louis14/pkg/text"
 	"math"
 	"sort"
@@ -175,6 +176,14 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 	// Step 3: Determine flex base size and hypothetical main size for each item
 	for _, item := range items {
+		// CSS Flexbox §9.7: visibility:collapse items have 0 main-axis size.
+		// They still contribute their cross-size (set in Step 6) for line sizing.
+		if item.Collapsed {
+			item.FlexBasis = 0
+			item.HypotheticalMainSize = 0
+			item.AutoMinMain = 0
+			continue
+		}
 		basisVal := item.Box.Style.GetFlexBasisValue()
 		if basisVal.IsAuto {
 			// flex-basis: auto → use the item's main size property
@@ -295,6 +304,52 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 		if item.HypotheticalMainSize < 0 {
 			item.HypotheticalMainSize = 0
+		}
+	}
+
+	// Step 3.5: Fix AutoMinMain for column-direction replaced elements when the
+	// container's effective cross size is established by max-width (not contentBoxWidth,
+	// which may be 0 for floated containers with no explicit width).
+	// CSS Flexbox §4.5: the transferred size suggestion uses the "definite cross size"
+	// of the item — which for column direction is the container's cross size after
+	// min/max-width clamping. For floated column containers, contentBoxWidth=0 so
+	// createFlexItemsProper used availableWidth=0 → AutoMinMain used natural image width.
+	// Fix: recompute AutoMinMain with the effective cross size from container max-width.
+	if !isRow && crossSize == 0 {
+		effectiveCross := 0.0
+		if maxW, ok := flexBox.Style.GetLength("max-width"); ok {
+			effectiveCross = maxW
+		}
+		if effectiveCross > 0 {
+			for _, item := range items {
+				if item.Box.Node == nil || item.Box.Width <= effectiveCross {
+					continue
+				}
+				// Item's initial layout width exceeds the effective container cross size.
+				// Recompute AutoMinMain using the effective cross.
+				overflow := "visible"
+				if v, ok := item.Box.Style.Get("overflow"); ok {
+					overflow = v
+				}
+				hasExplicitMin := false
+				if _, ok := item.Box.Style.GetLength("min-height"); ok {
+					hasExplicitMin = true
+				}
+				if !hasExplicitMin && (overflow == "visible" || overflow == "clip") {
+					newAutoMin := le.computeFlexItemAutoMinMain(item.Box.Node, item.Box.Style, item.Box, isRow, effectiveCross)
+					if newAutoMin != item.AutoMinMain {
+						item.AutoMinMain = newAutoMin
+						// Recompute HypotheticalMainSize with updated AutoMinMain.
+						item.HypotheticalMainSize = item.FlexBasis
+						if item.HypotheticalMainSize < item.AutoMinMain {
+							item.HypotheticalMainSize = item.AutoMinMain
+						}
+						if item.HypotheticalMainSize < 0 {
+							item.HypotheticalMainSize = 0
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -424,6 +479,49 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
+	// Step 5d: For row direction replaced elements (img) whose flex width changed from
+	// the initial layout value, recompute height from the aspect ratio using the new width.
+	// CSS Flexbox §9.8: a replaced element's cross size follows from the intrinsic aspect
+	// ratio when the cross size is not explicitly specified.
+	if isRow {
+		for _, line := range lines {
+			for _, item := range line.Items {
+				if item.Box.Node == nil {
+					continue
+				}
+				if item.Box.Node.TagName != "img" {
+					continue
+				}
+				// Only for items with no explicit CSS height (cross size auto).
+				if _, hasH := item.Box.Style.GetLength("height"); hasH {
+					continue
+				}
+				// Only if width actually changed from initial layout.
+				prev := initialSizes[item]
+				if math.Abs(item.Box.Width-prev.w) < 0.5 {
+					continue
+				}
+				// Recompute height from aspect ratio using the new width.
+				if src, ok := item.Box.Node.GetAttribute("src"); ok {
+					if iw, ih, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil && iw > 0 && ih > 0 {
+						contentW := item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+						if contentW > 0 {
+							contentH := contentW * float64(ih) / float64(iw)
+							newH := contentH + item.Box.Padding.Top + item.Box.Padding.Bottom + item.Box.Border.Top + item.Box.Border.Bottom
+							if minH, ok := item.Box.Style.GetLength("min-height"); ok {
+								minBB := minH + item.Box.Padding.Top + item.Box.Padding.Bottom + item.Box.Border.Top + item.Box.Border.Bottom
+								if newH < minBB {
+									newH = minBB
+								}
+							}
+							item.Box.Height = newH
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Step 6: Determine cross sizes
 	for _, line := range lines {
 		for _, item := range line.Items {
@@ -528,6 +626,10 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	// CSS Flexbox §8.2: Only stretch if the item's cross-size property is auto
 	for _, line := range lines {
 		for _, item := range line.Items {
+			// CSS Flexbox §9.7: collapsed items are not stretched.
+			if item.Collapsed {
+				continue
+			}
 			alignment := resolveAlignment(alignItems, item.Box.Style.GetAlignSelf())
 			if alignment == css.AlignItemsStretch {
 				// Check if item has explicit cross-size (stretch only applies to auto)
@@ -779,6 +881,16 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				initialOffset = spacing
 			}
 		}
+		// CSS Box Alignment §5.1: "safe" keyword — when overflow occurs, fall back to
+		// physical start alignment to prevent content from overflowing the start edge.
+		// Physical start = 0 offset (non-reverse) or originalFreeSpace (reverse).
+		if flexBox.Style.IsSafeJustifyContent() && originalFreeSpace < 0 {
+			if isReverse {
+				initialOffset = originalFreeSpace // → item at physical start (left/top)
+			} else {
+				initialOffset = 0 // already physical start, keep as-is
+			}
+		}
 
 		currentPos := initialOffset
 		for i, item := range line.Items {
@@ -857,17 +969,19 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 
 		// Position items within lines using computed offsets
+		safeAI := flexBox.Style.IsSafeAlignItems()
 		for lineIdx, line := range lines {
 			crossPos := 0.0
 			if lineIdx < len(lineOffsets) {
 				crossPos = lineOffsets[lineIdx]
 			}
-			positionItemsCrossAxis(line, crossPos, alignItems, isRow)
+			positionItemsCrossAxis(line, crossPos, alignItems, isRow, safeAI)
 		}
 	} else {
 		// Single-line or no definite cross size
+		safeAI := flexBox.Style.IsSafeAlignItems()
 		for i, line := range lines {
-			positionItemsCrossAxis(line, currentCrossPos, alignItems, isRow)
+			positionItemsCrossAxis(line, currentCrossPos, alignItems, isRow, safeAI)
 			currentCrossPos += line.CrossSize
 			if i < len(lines)-1 {
 				currentCrossPos += crossGap
@@ -1076,6 +1190,21 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 	// Expand display:contents children so their children participate as direct flex items
 	children := le.flattenContentsChildren(flexBox.Node, computedStyles)
 
+	// CSS Flexbox §4: ::before and ::after pseudo-elements on the flex container
+	// are treated as flex items (first and last, respectively).
+	// We prepend/append their synthetic nodes and store their styles so the
+	// main loop below processes them uniformly (blockification, layout, etc.).
+	beforeNode, beforeStyle := le.createPseudoElementNode(flexBox.Node, "before", computedStyles)
+	if beforeNode != nil {
+		computedStyles[beforeNode] = beforeStyle
+		children = append([]*html.Node{beforeNode}, children...)
+	}
+	afterNode, afterStyle := le.createPseudoElementNode(flexBox.Node, "after", computedStyles)
+	if afterNode != nil {
+		computedStyles[afterNode] = afterStyle
+		children = append(children, afterNode)
+	}
+
 	for _, child := range children {
 		if child.Type == html.TextNode {
 			// CSS Flexbox §4: Skip whitespace-only text runs (ASCII whitespace)
@@ -1227,6 +1356,12 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 			Order:      childStyle.GetOrder(),
 		}
 
+		// CSS Flexbox §9.7: visibility:collapse items act as visibility:hidden for rendering
+		// but have 0 main-axis size for flex layout. Mark them so Step 3 zeros their main size.
+		if childStyle.GetVisibility() == "collapse" {
+			item.Collapsed = true
+		}
+
 		// Compute min-width: auto (CSS Flexbox §4.5)
 		// For flex items with overflow: visible, min-width/min-height: auto
 		// computes to the content-based minimum size
@@ -1247,7 +1382,7 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		// CSS Flexbox §4.5: automatic minimum size applies when overflow is visible or clip.
 		// Both treat the automatic minimum as the content-based minimum size.
 		if !hasExplicitMin && (overflow == "visible" || overflow == "clip") {
-			item.AutoMinMain = le.computeFlexItemAutoMinMain(child, childStyle, childBox, isRow)
+			item.AutoMinMain = le.computeFlexItemAutoMinMain(child, childStyle, childBox, isRow, availableWidth)
 		}
 
 		items = append(items, item)
@@ -1496,7 +1631,8 @@ func resolveFlexibleLengths(line *FlexLine, availableMain, mainGap float64, isRo
 }
 
 // positionItemsCrossAxis positions items within a line along the cross axis.
-func positionItemsCrossAxis(line *FlexLine, crossStart float64, alignItems css.AlignItems, isRow bool) {
+// safeAI indicates whether the container's align-items uses the "safe" overflow keyword.
+func positionItemsCrossAxis(line *FlexLine, crossStart float64, alignItems css.AlignItems, isRow bool, safeAI bool) {
 	for _, item := range line.Items {
 		// CSS Flexbox §8.1: Cross-axis auto margins override align-self
 		margin := item.Box.Style.GetMargin()
@@ -1564,6 +1700,14 @@ func positionItemsCrossAxis(line *FlexLine, crossStart float64, alignItems css.A
 			crossMarginStart = item.Box.Margin.Left
 		}
 
+		// CSS Box Alignment §5.1: "safe" — when item overflows the line's cross size,
+		// fall back to flex-start (physical cross-start) to avoid unreachable overflow.
+		itemSafe := safeAI || item.Box.Style.IsSafeAlignSelf()
+		if itemSafe && outerCross > line.CrossSize {
+			item.CrossPos = crossStart + crossMarginStart
+			continue
+		}
+
 		switch alignment {
 		case css.AlignItemsFlexStart:
 			item.CrossPos = crossStart + crossMarginStart
@@ -1622,9 +1766,52 @@ func (le *LayoutEngine) repositionFlexItemChildren(box *Box, deltaX, deltaY floa
 
 // computeFlexItemAutoMinMain computes the content-based minimum main size for a flex item.
 // Per CSS Flexbox §4.5, this is the smaller of the content size suggestion and specified size suggestion.
-func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.Style, box *Box, isRow bool) float64 {
+// availableCross is the container's content cross-axis size (used to clamp replaced-element cross widths
+// for the transferred size suggestion in column direction).
+func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.Style, box *Box, isRow bool, availableCross float64) float64 {
 	if isRow {
 		// Row direction: min-width: auto → content-based minimum WIDTH
+
+		// CSS Flexbox §4.5: For replaced elements (img, canvas, etc.) with an intrinsic
+		// aspect ratio in row direction, the auto minimum WIDTH is the "transferred size
+		// suggestion": cross-axis content height × (intrinsicWidth / intrinsicHeight).
+		// The cross-axis size is determined by explicit height, min-height, or the initial
+		// layout height (in priority order).
+		if node != nil && node.TagName == "img" {
+			if src, ok := node.GetAttribute("src"); ok {
+				if iw, ih, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil && iw > 0 && ih > 0 {
+					// Determine effective cross-axis (height) size from CSS constraints.
+					// Prefer: explicit height > min-height > natural layout height.
+					// Also apply max-height clamping (CSS §4.5: "constraints in the other dimension").
+					var crossH float64
+					if h, ok := style.GetLength("height"); ok {
+						// Explicit CSS height: definite cross size
+						crossH = h
+					} else if minH, ok := style.GetLength("min-height"); ok {
+						// min-height establishes a minimum cross constraint
+						crossH = minH
+					} else {
+						// Fall back to the item's initial layout height (content box)
+						crossH = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+					}
+					// Apply max-height as an upper bound on the effective cross size.
+					if maxH, ok := style.GetLength("max-height"); ok && maxH < crossH {
+						crossH = maxH
+					}
+					if crossH > 0 {
+						contentMinSize := crossH * float64(iw) / float64(ih)
+						// Specified size suggestion: the item's computed width, if definite.
+						if w, ok := style.GetLength("width"); ok {
+							if contentMinSize > w {
+								return w
+							}
+						}
+						return contentMinSize
+					}
+				}
+			}
+		}
+
 		contentMinSize := 0.0
 
 		// CSS Flexbox §9.9.1: For a flex container in row direction with nowrap,
@@ -1697,16 +1884,69 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 		node.TagName == "video" || node.TagName == "iframe")
 	var contentMinHeight float64
 	if isReplacedElement {
-		// Replaced elements: use intrinsic height (border-box minus padding+border)
-		contentMinHeight = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
-	} else {
-		// Block containers: sum children outer heights as the content-size suggestion.
-		// An empty container has content size = 0 (no children to sum).
-		for _, child := range box.Children {
-			if child == nil {
-				continue
+		// CSS Flexbox §4.5: for replaced elements with intrinsic aspect ratio,
+		// the automatic minimum height is the "transferred size suggestion":
+		// cross-axis content width × (intrinsicHeight / intrinsicWidth).
+		// This ensures e.g. a 100×100 image with width:30px gets min-height=30px,
+		// not 100px (the explicit height).
+		transferred := false
+		if node.TagName == "img" {
+			if src, ok := node.GetAttribute("src"); ok {
+				if iw, ih, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil && iw > 0 && ih > 0 {
+					// Cross-axis content width: use the item's initial layout width, but clamp
+					// to the container's available cross size when the img's natural width
+					// exceeds it. Without clamping, an img with natural width 100px in a
+					// 34px-wide container would use crossW=96 → min-height=96, preventing
+					// the flex algorithm from shrinking it to the correct transferred size
+					// (e.g. 30px, derived from min-width:30px or container max-width:34px).
+					// CSS Flexbox §4.5: use the definite cross size from constraints.
+					effectiveCrossBox := box.Width
+					if availableCross > 0 && availableCross < effectiveCrossBox {
+						effectiveCrossBox = availableCross
+					}
+					// Also apply item's own min-width constraint from below.
+					if minW, ok := style.GetLength("min-width"); ok {
+						minBB := minW + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+						if effectiveCrossBox < minBB {
+							effectiveCrossBox = minBB
+						}
+					}
+					crossW := effectiveCrossBox - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+					if crossW > 0 {
+						contentMinHeight = crossW * float64(ih) / float64(iw)
+						transferred = true
+					}
+				}
 			}
-			contentMinHeight += child.Height + child.Margin.Top + child.Margin.Bottom
+		}
+		if !transferred {
+			// Fallback: use the actual content height
+			contentMinHeight = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+		}
+	} else {
+		// Block containers: compute content height based on whether the item has
+		// an explicit CSS height property or not.
+		//
+		// Case 1: No explicit CSS height — box.Height reflects the natural content
+		// height from the initial layoutNode call (text wraps at the item's specified
+		// width, block children stack normally). Use box.Height directly.
+		// This correctly handles inline content: e.g. "a b c d e f" at 20px in a
+		// 50px-wide item layouts to 2 lines (H=48), not 10 fragment boxes (H=150).
+		//
+		// Case 2: Explicit CSS height — box.Height equals the CSS height, not the
+		// natural content height. Use the sum of children heights to approximate
+		// the content-based size. This lets the item shrink below its explicit CSS
+		// height when the flex container forces shrinking (AutoMinMain should be
+		// the content height, which may be much less than the CSS height).
+		if _, hasExplicitH := style.GetLength("height"); !hasExplicitH {
+			contentMinHeight = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+		} else {
+			for _, child := range box.Children {
+				if child == nil {
+					continue
+				}
+				contentMinHeight += child.Height + child.Margin.Top + child.Margin.Bottom
+			}
 		}
 	}
 	if contentMinHeight < 0 {
@@ -1725,7 +1965,11 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 // Helper methods on FlexItem
 
 // HypotheticalOuterMain returns the outer hypothetical main size (main size + margins + padding + border).
+// For visibility:collapse items, returns 0 — collapsed items have no main-axis contribution.
 func (item *FlexItem) HypotheticalOuterMain(isRow bool) float64 {
+	if item.Collapsed {
+		return 0
+	}
 	return item.HypotheticalMainSize + item.mainMargins(isRow) + item.mainPaddingBorder(isRow)
 }
 
