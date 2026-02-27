@@ -26,11 +26,22 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	// vertical-lr), the inline direction is vertical, so "row" maps to the block
 	// axis (column-like) and "column" maps to the inline axis (row-like).
 	isVerticalWM := false
+	isVerticalRL := false // vertical-rl specifically (block axis goes right-to-left)
 	if wm, ok := flexBox.Style.Get("writing-mode"); ok {
 		if wm == "vertical-rl" || wm == "vertical-lr" {
 			isVerticalWM = true
+			isVerticalRL = wm == "vertical-rl"
 			isRow = !isRow
 		}
+	}
+
+	// CSS Writing Modes §7.1: In vertical-rl, the block axis (which "column" direction
+	// follows) runs right-to-left. After the isRow flip, original "column" becomes
+	// isRow=true. The default (isReverse=false) flows left-to-right, but it should
+	// flow right-to-left. So we flip isReverse for column+vertical-rl.
+	// vertical-lr block axis goes left-to-right (same as default), so no flip needed.
+	if isVerticalRL && isRow {
+		isReverse = !isReverse
 	}
 
 	// CSS Flexbox §4.5: direction:rtl flips the main axis for row direction.
@@ -989,7 +1000,18 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
-	if isWrapReverse && len(lines) > 1 {
+	// CSS Writing Modes §7.1 + Flexbox §9.2: In vertical-rl writing mode, the block
+	// axis (cross axis for row direction) runs right-to-left. This means the first
+	// flex line goes on the RIGHT, and subsequent wrapped lines go to the LEFT.
+	// This is the opposite of the default left-to-right cross axis, so we need to
+	// reverse the cross-axis positions, effectively XOR-ing with isWrapReverse.
+	// vertical-lr keeps the default left-to-right cross axis (no reversal needed).
+	shouldReverseCross := isWrapReverse
+	if isVerticalRL && !isRow {
+		// !isRow here means original direction was row (isRow was flipped by vertical-rl)
+		shouldReverseCross = !isWrapReverse
+	}
+	if shouldReverseCross && len(lines) > 1 {
 		// Reverse line order along cross axis
 		totalCross := 0.0
 		for i, line := range lines {
