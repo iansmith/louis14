@@ -252,6 +252,31 @@ func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahe
 	return MeasureText(text, fontSize, fontPath)
 }
 
+// ascentCache caches font ascent results to avoid repeated font loading.
+// Key: "fontSize\x00fontPath", Value: float64 ascent
+var ascentCache sync.Map
+
+// FontAscent returns the font ascent in pixels (distance from baseline to top of glyph)
+// for the given font size and style parameters. This is used for baseline alignment.
+func FontAscent(fontSize float64, bold, italic, mono, ahem bool) float64 {
+	fontConfig := DefaultFontConfig()
+	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
+	key := fmt.Sprintf("%.4f\x00%s", fontSize, fontPath)
+	if v, ok := ascentCache.Load(key); ok {
+		return v.(float64)
+	}
+	dc := gg.NewContext(1, 1)
+	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
+		// Fall back to 0.8 * fontSize (reasonable approximation)
+		ascent := fontSize * 0.8
+		ascentCache.Store(key, ascent)
+		return ascent
+	}
+	ascent := dc.FontAscent()
+	ascentCache.Store(key, ascent)
+	return ascent
+}
+
 // BreakTextAtCharacterBoundary splits text at a character boundary so the prefix fits within maxWidth.
 // Returns (prefix, remainder). If no character fits, prefix is empty and remainder is the full text.
 func BreakTextAtCharacterBoundary(textStr string, fontSize float64, bold, italic, mono, ahem bool, maxWidth float64) (string, string) {

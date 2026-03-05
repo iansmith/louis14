@@ -126,6 +126,13 @@ func shouldCollapseMargins(box *Box) bool {
 	// They only prevent margin collapsing between the container and its children,
 	// which is handled by the fact that layoutFlex returns before parent-child
 	// collapsing code is reached in layoutBlock.
+	// CSS Flexbox §9: margins of flex items do not collapse
+	if box.Parent != nil && box.Parent.Style != nil {
+		parentDisplay := box.Parent.Style.GetDisplay()
+		if parentDisplay == css.DisplayFlex || parentDisplay == css.DisplayInlineFlex {
+			return false
+		}
+	}
 	overflow := box.Style.GetOverflow()
 	if overflow != css.OverflowVisible {
 		return false

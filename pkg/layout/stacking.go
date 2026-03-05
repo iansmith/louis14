@@ -58,6 +58,19 @@ func BoxCreatesStackingContext(box *Box) bool {
 		}
 	}
 
+	// CSS Flexbox §5.4: flex items with z-index != auto create a stacking context,
+	// even if position is static.
+	if box.Parent != nil && box.Parent.Style != nil {
+		if parentDisplay, ok := box.Parent.Style.Get("display"); ok {
+			if parentDisplay == "flex" || parentDisplay == "inline-flex" ||
+				parentDisplay == "grid" || parentDisplay == "inline-grid" {
+				if zStr, ok := box.Style.Get("z-index"); ok && zStr != "auto" && zStr != "" {
+					return true
+				}
+			}
+		}
+	}
+
 	// Elements with opacity < 1 create a stacking context
 	if opacity, ok := box.Style.Get("opacity"); ok && opacity != "1" && opacity != "" {
 		return true
@@ -196,7 +209,7 @@ func IsInline(box *Box) bool {
 	if !ok {
 		return false
 	}
-	return display == "inline" || display == "inline-block"
+	return display == "inline" || display == "inline-block" || display == "inline-flex"
 }
 
 // BuildStackingContextTree builds the stacking context tree from root boxes.

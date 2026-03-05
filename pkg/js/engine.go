@@ -22,6 +22,10 @@ func New() *Engine {
 	c := &consoleAPI{}
 	c.register(vm)
 
+	// In browsers, `window` is the global object. Set it so scripts using
+	// `window.onload`, `window.document`, etc. work as expected.
+	vm.Set("window", vm.GlobalObject())
+
 	return e
 }
 

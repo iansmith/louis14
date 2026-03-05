@@ -94,6 +94,10 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 
 	vm.Set("document", docObj)
 
+	// HTML5 named access: elements with an id attribute are exposed as
+	// globals on the window object (e.g., <div id="flex"> → window.flex).
+	registerNamedElements(ctx, doc.Root)
+
 	// getComputedStyle: returns a stub CSSStyleDeclaration.
 	// Tests call this to flush style recalculation; the returned value is rarely used.
 	vm.Set("getComputedStyle", func(call goja.FunctionCall) goja.Value {
@@ -113,6 +117,26 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	})
 
 	return ctx
+}
+
+// registerNamedElements walks the DOM tree and registers elements with id
+// attributes as global variables, implementing HTML5 named access on Window.
+func registerNamedElements(ctx *domContext, root *html.Node) {
+	var walk func(n *html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			if id, ok := n.Attributes["id"]; ok && id != "" {
+				// Only set if not already defined (don't shadow builtins like "document")
+				if existing := ctx.vm.Get(id); existing == nil || goja.IsUndefined(existing) {
+					ctx.vm.Set(id, ctx.elementProxy(n))
+				}
+			}
+		}
+		for _, child := range n.Children {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 // getElementById walks the tree and returns the first node with matching id.

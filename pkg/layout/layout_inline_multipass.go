@@ -1547,8 +1547,13 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 		box.Position = css.PositionAbsolute // Treated like absolute for rendering
 	}
 
-	// Apply position:relative offset for inline elements (images, inline-blocks)
-	if frag.Style != nil && frag.Style.GetPosition() == css.PositionRelative {
+	// Apply position:relative offset for inline ELEMENT nodes (images, inline-blocks).
+	// IMPORTANT: Do NOT apply for text nodes — text inherits the parent element's style
+	// (which may include position:relative), but text nodes are never CSS positioned
+	// elements. For text inside a positioned span, the offset is handled via
+	// getRelativeOffset() (inlineStack) in LayoutInlineContentToBoxes.
+	isElement := frag.Node != nil && frag.Node.Type == html.ElementNode
+	if isElement && frag.Style != nil && frag.Style.GetPosition() == css.PositionRelative {
 		box.Position = css.PositionRelative
 		offset := frag.Style.GetPositionOffset()
 		if offset.HasTop {
@@ -1796,13 +1801,24 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				childStyle.GetPosition() != css.PositionFixed {
 				leftOff, rightOff := le.getFloatOffsets(childY)
 				if leftOff > 0 || rightOff > 0 {
-					absLeftEdge := le.getLeftFloatAbsoluteEdge(childY)
-					if absLeftEdge > childX {
-						adjustedChildX = absLeftEdge
+					// CSS 2.1 §9.5: If the BFC element's border-box doesn't fit
+					// beside floats, push it below all floats.
+					remainingWidth := availableWidth - leftOff - rightOff
+					if bfcChildTooWideForFloats(childStyle, remainingWidth, availableWidth) {
+						childY = le.getClearY(css.ClearBoth, childY)
+						leftOff, rightOff = le.getFloatOffsets(childY)
 					}
-					adjustedChildWidth = availableWidth - leftOff - rightOff
-					if adjustedChildWidth < 0 {
-						adjustedChildWidth = 0
+					if leftOff > 0 || rightOff > 0 {
+						absLeftEdge := le.getLeftFloatAbsoluteEdge(childY)
+						childMarginLeft := childStyle.GetMargin().Left
+						borderBoxLeft := childX + childMarginLeft
+						if borderBoxLeft >= childX && absLeftEdge > childX {
+							adjustedChildX = absLeftEdge
+						}
+						adjustedChildWidth = availableWidth - leftOff - rightOff
+						if adjustedChildWidth < 0 {
+							adjustedChildWidth = 0
+						}
 					}
 				}
 			}
@@ -2256,9 +2272,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// CRITICAL FIX: Use currentY instead of frag.Position.Y
 				// After block children, frag.Position.Y is wrong because BreakLines
 				// doesn't know block heights. We track actual Y in currentY.
-				// Also apply relative positioning offset from open inline ancestors
+				// Also apply relative positioning offset from open inline ancestors.
+				// Preserve the element's own position:relative Y offset (applied by
+				// fragmentToBoxSingle before we override Y with currentY).
+				ownRelY := box.Y - frag.Position.Y // = position:relative top offset, or 0
 				relOffX, relOffY := getRelativeOffset()
-				targetY := currentY + relOffY
+				targetY := currentY + relOffY + ownRelY
 				if box.Y != targetY {
 					box.Y = targetY
 				}
@@ -2423,14 +2442,20 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	// Only exclude actual element nodes with block display.
 	inlineBoxes := []*Box{}
 	for _, b := range boxes {
-		if b.Node != nil && b.Node.Type == html.ElementNode &&
-			b.Style != nil && (b.Style.GetDisplay() == css.DisplayBlock || b.Style.GetDisplay() == css.DisplayFlowRoot || b.Style.GetDisplay() == css.DisplayTable || b.Style.GetDisplay() == css.DisplayListItem) {
-			continue // Skip actual block element children
+		if b.Node != nil && b.Node.Type == html.ElementNode && b.Style != nil {
+			d := b.Style.GetDisplay()
+			if d == css.DisplayBlock || d == css.DisplayFlowRoot || d == css.DisplayTable || d == css.DisplayListItem ||
+				d == css.DisplayFlex || d == css.DisplayInlineFlex || d == css.DisplayGrid || d == css.DisplayInlineGrid {
+				continue // Skip block-level and flex/grid element children
+			}
 		}
-		// Skip whitespace-only text boxes that were stripped during line breaking
-		// (they have Width=0 and shouldn't trigger strut height)
-		if b.Node != nil && b.Node.Type == html.TextNode && b.Width == 0 {
-			continue
+		// Skip whitespace-only text boxes (Width=0 stripped boxes, or boxes from
+		// whitespace-only text nodes like spaces between abs-pos elements).
+		// These should not trigger strut height in auto-height calculation.
+		if b.Node != nil && b.Node.Type == html.TextNode {
+			if b.Width == 0 || strings.TrimSpace(b.Node.Text) == "" {
+				continue
+			}
 		}
 		inlineBoxes = append(inlineBoxes, b)
 	}

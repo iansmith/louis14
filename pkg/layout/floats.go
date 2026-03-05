@@ -4,6 +4,28 @@ import (
 	"louis14/pkg/css"
 )
 
+// bfcChildTooWideForFloats returns true if a new block formatting context element
+// cannot fit beside the current floats and should be pushed below them.
+// Per CSS 2.1 §9.5: a BFC element whose border-box would overlap a float's margin-box
+// must be repositioned — either by narrowing (width:auto) or by pushing below floats.
+// This function returns true (push below) only when the element has an explicit width
+// that exceeds the remaining space, or when remaining space is zero or negative.
+// Elements with width:auto are left to be narrowed instead (return false).
+func bfcChildTooWideForFloats(style *css.Style, remainingWidth, totalWidth float64) bool {
+	if remainingWidth <= 0 {
+		return true
+	}
+	// Explicit length width: push below if it doesn't fit
+	if w, ok := style.GetLength("width"); ok {
+		padding := style.GetPadding()
+		border := style.GetBorderWidth()
+		requiredWidth := w + padding.Left + padding.Right + border.Left + border.Right
+		return requiredWidth > remainingWidth
+	}
+	// width:auto — narrow beside floats (don't push below)
+	return false
+}
+
 func (le *LayoutEngine) positionFloat(
 	item *InlineItem,
 	lineY float64,
@@ -153,7 +175,8 @@ func (le *LayoutEngine) getClearY(clearType css.ClearType, currentY float64) flo
 		b := floatInfo.Box
 		// CSS 2.1 §9.5.2: clearance uses the float's "bottom outer edge" (margin edge),
 		// which includes margin-bottom even when negative.
-		floatBottom := floatInfo.Y + b.Border.Top + b.Padding.Top + b.Height + b.Padding.Bottom + b.Border.Bottom + b.Margin.Bottom
+		// b.Height is border-box (includes padding+border), so only add margin.
+		floatBottom := floatInfo.Y + b.Height + b.Margin.Bottom
 
 		shouldClear := false
 		switch clearType {

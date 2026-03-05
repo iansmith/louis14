@@ -133,8 +133,10 @@ type Stylesheet struct {
 	CounterStyles []CounterStyleRule        // @counter-style rules
 }
 
-// stripCSSComments removes all /* ... */ comments from CSS source,
+// stripCSSComments removes all /* ... */ and <!-- ... --> comments from CSS source,
 // while preserving string literals (comments inside strings are not stripped).
+// <!-- ... --> is the "HTML comment" syntax historically used in <style> tags to hide
+// CSS from ancient browsers; CSS parsers treat them as CDO/CDC tokens (whitespace-like).
 func stripCSSComments(css string) string {
 	var b strings.Builder
 	b.Grow(len(css))
@@ -170,6 +172,16 @@ func stripCSSComments(css string) string {
 				i++
 			}
 			// If we reached end of input, the comment was unterminated — just stop
+		} else if i+3 < len(css) && css[i] == '<' && css[i+1] == '!' && css[i+2] == '-' && css[i+3] == '-' {
+			// CSS CDO token: skip <!-- ... --> (HTML comment in CSS)
+			i += 4
+			for i < len(css) {
+				if i+2 < len(css) && css[i] == '-' && css[i+1] == '-' && css[i+2] == '>' {
+					i += 3
+					break
+				}
+				i++
+			}
 		} else {
 			b.WriteByte(css[i])
 			i++
@@ -1121,6 +1133,8 @@ func isSupportedPropertyValue(property, value string) bool {
 			"table-header-group": true, "table-footer-group": true,
 			"table-column": true, "table-column-group": true,
 			"list-item": true,
+			"-webkit-box": true, "-webkit-inline-box": true,
+			"-webkit-flex": true, "-webkit-inline-flex": true,
 		}
 		return validDisplay[value]
 	case "position":
@@ -1440,7 +1454,7 @@ func parseSelectorPart(s string) SelectorPart {
 		for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
 			j++
 		}
-		part.Element = s[i:j]
+		part.Element = strings.ToLower(s[i:j])
 		i = j
 	}
 

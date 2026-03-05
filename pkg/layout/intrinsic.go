@@ -1,7 +1,9 @@
 package layout
 
 import (
+	"strconv"
 	"strings"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -36,6 +38,9 @@ func (le *LayoutEngine) ComputeMinMaxSizes(
 	case css.DisplayInlineBlock:
 		return le.computeInlineBlockMinMax(node, constraint, style)
 
+	case css.DisplayFlex, css.DisplayInlineFlex:
+		return le.computeFlexMinMax(node, constraint, style)
+
 	case css.DisplayNone:
 		return MinMaxSizes{0, 0}
 
@@ -46,8 +51,6 @@ func (le *LayoutEngine) ComputeMinMaxSizes(
 }
 
 // computeTextMinMax calculates min/max sizes for text content.
-// Min size: width of longest word (won't wrap within words)
-// Max size: width of full text (preferred width without wrapping)
 func (le *LayoutEngine) computeTextMinMax(textContent string, style *css.Style) MinMaxSizes {
 	fontSize := style.GetFontSize()
 	isBold := style.GetFontWeight() == css.FontWeightBold
@@ -55,11 +58,8 @@ func (le *LayoutEngine) computeTextMinMax(textContent string, style *css.Style) 
 	isMono := style.IsMonospaceFamily()
 	isAhem := style.IsAhemFamily()
 
-	// Max size: full text width
 	maxWidth, _ := text.MeasureTextWithStyle(textContent, fontSize, isBold, isItalic, isMono, isAhem)
 
-	// Min size: width of longest word
-	// Split text into words and measure each
 	words := strings.Fields(textContent)
 	minWidth := 0.0
 
@@ -70,7 +70,6 @@ func (le *LayoutEngine) computeTextMinMax(textContent string, style *css.Style) 
 		}
 	}
 
-	// If no words (whitespace only), min = max = 0
 	if len(words) == 0 {
 		minWidth = 0
 		maxWidth = 0
@@ -82,32 +81,23 @@ func (le *LayoutEngine) computeTextMinMax(textContent string, style *css.Style) 
 	}
 }
 
-// computeInlineMinMax calculates min/max sizes for inline elements.
-// Inline elements with inline children: sum child widths (horizontal flow)
-// Inline elements with block children: max child widths (stacking)
 func (le *LayoutEngine) computeInlineMinMax(
 	node *html.Node,
 	constraint *ConstraintSpace,
 	style *css.Style,
 ) MinMaxSizes {
-	// Check for explicit width (important for floated inline elements)
 	if width, ok := style.GetLength("width"); ok && width > 0 {
-		// Explicit width: both min and max are the same
-		// Add padding and border
 		padding := style.GetPadding()
 		border := style.GetBorderWidth()
 		totalWidth := width + padding.Left + padding.Right + border.Left + border.Right
-
 		return MinMaxSizes{
 			MinContentSize: totalWidth,
 			MaxContentSize: totalWidth,
 		}
 	}
 
-	// Get computed styles for all children
-	computedStyles := le.computeStylesForTree(node)
+	computedStyles := le.computeStylesForTreeWithParent(node, style)
 
-	// Check if children are inline or block
 	hasBlockChild := false
 	for _, child := range node.Children {
 		childStyle := computedStyles[child]
@@ -120,22 +110,19 @@ func (le *LayoutEngine) computeInlineMinMax(
 		}
 	}
 
-	// Recursively compute children sizes
 	var minContent, maxContent float64
 
 	if hasBlockChild {
-		// Block children: use max of child sizes (stacking vertically)
 		for _, child := range node.Children {
 			var childStyle *css.Style
 			if child.Type == html.TextNode {
-				childStyle = style // text nodes inherit parent font
+				childStyle = style
 			} else {
 				childStyle = computedStyles[child]
 			}
 			if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
 				continue
 			}
-
 			childSizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
 			if childSizes.MinContentSize > minContent {
 				minContent = childSizes.MinContentSize
@@ -145,30 +132,51 @@ func (le *LayoutEngine) computeInlineMinMax(
 			}
 		}
 	} else {
-		// Inline children: sum child sizes (horizontal flow)
 		for _, child := range node.Children {
 			var childStyle *css.Style
 			if child.Type == html.TextNode {
-				childStyle = style // text nodes inherit parent font
+				childStyle = style
 			} else {
 				childStyle = computedStyles[child]
 			}
 			if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
 				continue
 			}
-
 			childSizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
 			minContent += childSizes.MinContentSize
 			maxContent += childSizes.MaxContentSize
 		}
 	}
 
-	// Add padding and border (no margin for inline)
 	padding := style.GetPadding()
 	border := style.GetBorderWidth()
-
 	minContent += padding.Left + padding.Right + border.Left + border.Right
 	maxContent += padding.Left + padding.Right + border.Left + border.Right
+
+	// Apply CSS min-width/max-width constraints with intrinsic sizing keywords.
+	// When min-width: max-content, the element's minimum size is its max-content size.
+	if minWStr, ok := style.Get("min-width"); ok {
+		minWStr = strings.TrimSpace(minWStr)
+		switch minWStr {
+		case "max-content":
+			if maxContent > minContent {
+				minContent = maxContent
+			}
+		case "min-content":
+			// Already the min-content — no change needed
+		}
+	}
+	if maxWStr, ok := style.Get("max-width"); ok {
+		maxWStr = strings.TrimSpace(maxWStr)
+		switch maxWStr {
+		case "min-content":
+			if minContent < maxContent {
+				maxContent = minContent
+			}
+		case "max-content":
+			// Already the max-content — no change needed
+		}
+	}
 
 	return MinMaxSizes{
 		MinContentSize: minContent,
@@ -177,16 +185,12 @@ func (le *LayoutEngine) computeInlineMinMax(
 }
 
 // computeBlockMinMax calculates min/max sizes for block elements.
-// For blocks: min/max based on children (blocks stack vertically)
 func (le *LayoutEngine) computeBlockMinMax(
 	node *html.Node,
 	constraint *ConstraintSpace,
 	style *css.Style,
 ) MinMaxSizes {
-	// Check for explicit width
 	if width, ok := style.GetLength("width"); ok && width > 0 {
-		// Explicit width: both min and max are the border-box width
-		// (content + padding + border), per CSS Sizing §4
 		padding := style.GetPadding()
 		border := style.GetBorderWidth()
 		totalWidth := width + padding.Left + padding.Right + border.Left + border.Right
@@ -196,16 +200,22 @@ func (le *LayoutEngine) computeBlockMinMax(
 		}
 	}
 
-	// Auto width: compute from children
-	computedStyles := le.computeStylesForTree(node)
+	computedStyles := le.computeStylesForTreeWithParent(node, style)
 
 	var minContent, maxContent float64
 
-	// For block elements, take max of children (they stack vertically)
+	// CSS Sizing Level 3 section 4.1: Block containers compute intrinsic widths
+	// IMPORTANT: For text nodes, computeStylesForTree won't produce entries.
+	// Override: use the node's own style (which has inherited properties).
+	// from their children. Block-level children stack vertically (take max),
+	// while inline-level children flow horizontally (sum for max-content).
+	var inlineMaxContent float64
+	hasInlineChildren := false
+
 	for _, child := range node.Children {
 		var childStyle *css.Style
 		if child.Type == html.TextNode {
-			childStyle = style // text nodes inherit parent font
+			childStyle = style
 		} else {
 			childStyle = computedStyles[child]
 		}
@@ -214,18 +224,173 @@ func (le *LayoutEngine) computeBlockMinMax(
 		}
 
 		childSizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
+
 		if childSizes.MinContentSize > minContent {
 			minContent = childSizes.MinContentSize
 		}
-		if childSizes.MaxContentSize > maxContent {
-			maxContent = childSizes.MaxContentSize
+
+		childDisplay := css.DisplayBlock
+		if child.Type == html.TextNode {
+			childDisplay = css.DisplayInline
+		} else if childStyle != nil {
+			childDisplay = childStyle.GetDisplay()
+		}
+		isFloat := childStyle != nil && childStyle.GetFloat() != css.FloatNone
+		isInlineLevel := childDisplay == css.DisplayInline ||
+			childDisplay == css.DisplayInlineBlock ||
+			childDisplay == css.DisplayInlineFlex ||
+			childDisplay == css.DisplayInlineGrid ||
+			child.Type == html.TextNode ||
+			isFloat
+
+		if isInlineLevel {
+			inlineMaxContent += childSizes.MaxContentSize
+			hasInlineChildren = true
+		} else {
+			if childSizes.MaxContentSize > maxContent {
+				maxContent = childSizes.MaxContentSize
+			}
+		}
+	}
+	if hasInlineChildren && inlineMaxContent > maxContent {
+		maxContent = inlineMaxContent
+	}
+
+	if minWidthVal, ok := style.Get("min-width"); ok {
+		switch minWidthVal {
+		case "max-content":
+			if minContent < maxContent {
+				minContent = maxContent
+			}
+		case "min-content":
+			// no-op
+		default:
+			if minW, ok2 := style.GetLength("min-width"); ok2 && minW > 0 {
+				if minContent < minW {
+					minContent = minW
+				}
+				if maxContent < minW {
+					maxContent = minW
+				}
+			}
+		}
+	}
+	if maxWidthVal, ok := style.Get("max-width"); ok {
+		switch maxWidthVal {
+		case "min-content":
+			if maxContent > minContent {
+				maxContent = minContent
+			}
+		case "max-content":
+			// no-op
+		default:
+			if maxW, ok2 := style.GetLength("max-width"); ok2 && maxW > 0 {
+				if minContent > maxW {
+					minContent = maxW
+				}
+				if maxContent > maxW {
+					maxContent = maxW
+				}
+			}
 		}
 	}
 
-	// Add padding and border
 	padding := style.GetPadding()
 	border := style.GetBorderWidth()
+	minContent += padding.Left + padding.Right + border.Left + border.Right
+	maxContent += padding.Left + padding.Right + border.Left + border.Right
 
+	// Apply intrinsic size keyword constraints for min-width and max-width.
+	if minWVal, ok := style.Get("min-width"); ok {
+		switch strings.TrimSpace(minWVal) {
+		case "max-content":
+			if minContent < maxContent {
+				minContent = maxContent
+			}
+		}
+	}
+	if maxWVal, ok := style.Get("max-width"); ok {
+		switch strings.TrimSpace(maxWVal) {
+		case "min-content":
+			if maxContent > minContent {
+				maxContent = minContent
+			}
+		}
+	}
+
+	return MinMaxSizes{
+		MinContentSize: minContent,
+		MaxContentSize: maxContent,
+	}
+}
+
+func (le *LayoutEngine) computeInlineBlockMinMax(
+	node *html.Node,
+	constraint *ConstraintSpace,
+	style *css.Style,
+) MinMaxSizes {
+	return le.computeBlockMinMax(node, constraint, style)
+}
+
+// computeFlexMinMax calculates min/max content sizes for flex containers.
+// Per CSS Flexbox §9.9.1 (min-content) and §9.9.2 (max-content):
+// Row direction:
+//   - Min-content width: max of each item's min-content contribution
+//   - Max-content width: sum of each item's max-content contribution
+// Column direction:
+//   - Min/max-content width: max of items' min/max-content widths (cross-axis)
+func (le *LayoutEngine) computeFlexMinMax(
+	node *html.Node,
+	constraint *ConstraintSpace,
+	style *css.Style,
+) MinMaxSizes {
+	if width, ok := style.GetLength("width"); ok && width >= 0 {
+		padding := style.GetPadding()
+		border := style.GetBorderWidth()
+		totalWidth := width + padding.Left + padding.Right + border.Left + border.Right
+		return MinMaxSizes{
+			MinContentSize: totalWidth,
+			MaxContentSize: totalWidth,
+		}
+	}
+
+	flexDir := style.GetFlexDirection()
+	isRow := flexDir == css.FlexDirectionRow || flexDir == css.FlexDirectionRowReverse
+
+	computedStyles := le.computeStylesForTree(node)
+
+	var minContent, maxContent float64
+
+	for _, child := range node.Children {
+		var childStyle *css.Style
+		if child.Type == html.TextNode {
+			childStyle = style
+		} else {
+			childStyle = computedStyles[child]
+		}
+		if childStyle == nil || childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+
+		childSizes := le.ComputeMinMaxSizes(child, constraint, childStyle)
+
+		if isRow {
+			if childSizes.MinContentSize > minContent {
+				minContent = childSizes.MinContentSize
+			}
+			maxContent += childSizes.MaxContentSize
+		} else {
+			if childSizes.MinContentSize > minContent {
+				minContent = childSizes.MinContentSize
+			}
+			if childSizes.MaxContentSize > maxContent {
+				maxContent = childSizes.MaxContentSize
+			}
+		}
+	}
+
+	padding := style.GetPadding()
+	border := style.GetBorderWidth()
 	minContent += padding.Left + padding.Right + border.Left + border.Right
 	maxContent += padding.Left + padding.Right + border.Left + border.Right
 
@@ -235,105 +400,156 @@ func (le *LayoutEngine) computeBlockMinMax(
 	}
 }
 
-// computeInlineBlockMinMax calculates min/max sizes for inline-block elements.
-// Inline-blocks are sized like blocks but participate in inline layout.
-func (le *LayoutEngine) computeInlineBlockMinMax(
-	node *html.Node,
-	constraint *ConstraintSpace,
-	style *css.Style,
-) MinMaxSizes {
-	// For now, treat inline-blocks like blocks for sizing
-	return le.computeBlockMinMax(node, constraint, style)
+func (le *LayoutEngine) computeStylesForTree(root *html.Node) map[*html.Node]*css.Style {
+	return le.computeStylesForTreeWithParent(root, nil)
 }
 
-// computeStylesForTree computes styles for a node and all its descendants.
-// This is a helper to avoid recomputing styles multiple times.
-func (le *LayoutEngine) computeStylesForTree(root *html.Node) map[*html.Node]*css.Style {
+// computeStylesForTreeWithParent computes styles for a subtree, propagating
+// inherited CSS properties (font-family, font-size, etc.) from parentStyle
+// down through the tree. Without this, standalone ComputeStyle calls miss
+// inherited properties because they don't walk the DOM parent chain.
+func (le *LayoutEngine) computeStylesForTreeWithParent(root *html.Node, parentStyle *css.Style) map[*html.Node]*css.Style {
 	styles := make(map[*html.Node]*css.Style)
 
-	var traverse func(*html.Node)
-	traverse = func(node *html.Node) {
+	var traverse func(*html.Node, *css.Style)
+	traverse = func(node *html.Node, inherited *css.Style) {
 		if node == nil {
 			return
 		}
-
-		// Compute style for this node using the full ComputeStyle API
-		// Use viewport dimensions from layout engine
-		styles[node] = css.ComputeStyle(node, le.stylesheets, le.viewport.width, le.viewport.height)
-
-		// Recursively traverse children
+		style := css.ComputeStyle(node, le.stylesheets, le.viewport.width, le.viewport.height)
+		if inherited != nil {
+			css.ApplyInheritedFrom(style, inherited)
+		}
+		styles[node] = style
 		for _, child := range node.Children {
-			traverse(child)
+			traverse(child, style)
 		}
 	}
 
-	traverse(root)
+	traverse(root, parentStyle)
 	return styles
 }
 
+// ComputeIntrinsicSizes computes intrinsic sizes for a node.
 func (le *LayoutEngine) ComputeIntrinsicSizes(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style) IntrinsicSizes {
 	if node == nil {
 		return IntrinsicSizes{}
 	}
 
-	// Text nodes: measure with and without wrapping
 	if node.Type == html.TextNode {
-		return le.computeTextIntrinsicSizes(node.Text, style)
+		// For white-space: pre/pre-wrap, use RawText to preserve whitespace
+		textContent := node.Text
+		ws := style.GetWhiteSpace()
+		if (ws == css.WhiteSpacePre || ws == css.WhiteSpacePreWrap) && node.RawText != "" {
+			textContent = node.RawText
+		}
+		return le.computeTextIntrinsicSizes(textContent, style)
 	}
 
-	// Element nodes
 	if node.Type != html.ElementNode {
 		return IntrinsicSizes{}
 	}
 
-	// Images have intrinsic dimensions
 	if node.TagName == "img" {
 		return le.computeImageIntrinsicSizes(node, style)
 	}
 
+	// Replaced elements (canvas, video, etc.) use HTML width/height attributes
+	if isReplacedElementTag(node.TagName) {
+		return le.computeReplacedIntrinsicSizes(node, style)
+	}
+
 	display := style.GetDisplay()
 
-	// Replaced elements (images, etc.) use their natural size
 	if display == css.DisplayNone {
 		return IntrinsicSizes{}
 	}
 
-	// Get box model values
 	padding := style.GetPadding()
 	border := style.GetBorderWidth()
 	horizontalExtra := padding.Left + padding.Right + border.Left + border.Right
 
-	// For inline elements, sum up children's intrinsic sizes
+	// Flex containers: compute intrinsic sizes from flex items
+	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+		return le.computeFlexIntrinsicSizes(node, style, computedStyles, horizontalExtra)
+	}
+
 	if display == css.DisplayInline {
 		return le.computeInlineIntrinsicSizes(node, style, computedStyles, horizontalExtra)
 	}
 
-	// For block/inline-block, compute based on children
 	return le.computeBlockIntrinsicSizes(node, style, computedStyles, horizontalExtra)
 }
 
-// computeTextIntrinsicSizes computes intrinsic sizes for text content
+// isReplacedElementTag returns true for replaced elements (not img).
+func isReplacedElementTag(tagName string) bool {
+	switch tagName {
+	case "canvas", "video", "iframe", "embed", "object":
+		return true
+	}
+	return false
+}
+
+// computeReplacedIntrinsicSizes computes intrinsic sizes for replaced elements.
+func (le *LayoutEngine) computeReplacedIntrinsicSizes(node *html.Node, style *css.Style) IntrinsicSizes {
+	if cssW, ok := style.GetLength("width"); ok && cssW > 0 {
+		padding := style.GetPadding()
+		border := style.GetBorderWidth()
+		total := cssW + padding.Left + padding.Right + border.Left + border.Right
+		return IntrinsicSizes{
+			MinContent: total,
+			MaxContent: total,
+			Preferred:  total,
+		}
+	}
+
+	var width float64
+	if widthAttr, ok := node.GetAttribute("width"); ok {
+		if w, err := strconv.ParseFloat(widthAttr, 64); err == nil {
+			width = w
+		}
+	}
+
+	padding := style.GetPadding()
+	border := style.GetBorderWidth()
+	total := width + padding.Left + padding.Right + border.Left + border.Right
+
+	return IntrinsicSizes{
+		MinContent: total,
+		MaxContent: total,
+		Preferred:  total,
+	}
+}
+
 func (le *LayoutEngine) computeTextIntrinsicSizes(textContent string, style *css.Style) IntrinsicSizes {
 	if textContent == "" {
 		return IntrinsicSizes{}
 	}
 
 	fontSize := style.GetFontSize()
-	fontWeight := style.GetFontWeight()
-	bold := fontWeight == css.FontWeightBold
+	isBold := style.GetFontWeight() == css.FontWeightBold
+	isItalic := style.GetFontStyle() == css.FontStyleItalic
+	isMono := style.IsMonospaceFamily()
+	isAhem := style.IsAhemFamily()
 
-	// Max-content: width without any wrapping.
-	// Apply CSS whitespace collapsing (white-space: normal): collapse internal
-	// whitespace sequences to one space, strip leading/trailing whitespace.
-	// This matches how the text renders on a single no-wrap line.
+	// For white-space: pre/pre-wrap, whitespace is preserved and affects sizing.
+	ws := style.GetWhiteSpace()
+	if ws == css.WhiteSpacePre || ws == css.WhiteSpacePreWrap {
+		maxContent, _ := text.MeasureTextWithStyle(textContent, fontSize, isBold, isItalic, isMono, isAhem)
+		return IntrinsicSizes{
+			MinContent: maxContent,
+			MaxContent: maxContent,
+			Preferred:  maxContent,
+		}
+	}
+
 	words := strings.Fields(textContent)
 	collapsed := strings.Join(words, " ")
-	maxContent, _ := text.MeasureTextWithWeight(collapsed, fontSize, bold)
+	maxContent, _ := text.MeasureTextWithStyle(collapsed, fontSize, isBold, isItalic, isMono, isAhem)
 
-	// Min-content: width of longest word (break at spaces)
 	minContent := 0.0
 	for _, word := range words {
-		wordWidth, _ := text.MeasureTextWithWeight(word, fontSize, bold)
+		wordWidth, _ := text.MeasureTextWithStyle(word, fontSize, isBold, isItalic, isMono, isAhem)
 		if wordWidth > minContent {
 			minContent = wordWidth
 		}
@@ -346,20 +562,17 @@ func (le *LayoutEngine) computeTextIntrinsicSizes(textContent string, style *css
 	}
 }
 
-// computeImageIntrinsicSizes computes intrinsic sizes for images
 func (le *LayoutEngine) computeImageIntrinsicSizes(node *html.Node, style *css.Style) IntrinsicSizes {
 	src, _ := node.GetAttribute("src")
 	if src == "" {
 		return IntrinsicSizes{}
 	}
 
-	// Try to get image dimensions
 	var imgWidth float64
 	if w, _, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil {
 		imgWidth = float64(w)
 	}
 
-	// CSS width overrides natural width
 	if cssW, ok := style.GetLength("width"); ok && cssW > 0 {
 		imgWidth = cssW
 	}
@@ -371,25 +584,105 @@ func (le *LayoutEngine) computeImageIntrinsicSizes(node *html.Node, style *css.S
 	}
 }
 
-// computeInlineIntrinsicSizes computes intrinsic sizes for inline elements
 func (le *LayoutEngine) computeInlineIntrinsicSizes(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style, horizontalExtra float64) IntrinsicSizes {
 	var minContent, maxContent float64
 
 	for _, child := range node.Children {
 		childStyle := computedStyles[child]
 		if childStyle == nil {
-			childStyle = style // Inherit parent style for text
+			childStyle = style
 		}
 
 		childSizes := le.ComputeIntrinsicSizes(child, childStyle, computedStyles)
 
-		// For inline, children are laid out horizontally
-		// Min-content: largest child min-content (can wrap between children)
 		if childSizes.MinContent > minContent {
 			minContent = childSizes.MinContent
 		}
-		// Max-content: sum of all children (no wrapping)
 		maxContent += childSizes.MaxContent
+	}
+
+	return IntrinsicSizes{
+		MinContent: minContent + horizontalExtra,
+		MaxContent: maxContent + horizontalExtra,
+		Preferred:  maxContent + horizontalExtra,
+	}
+}
+
+// computeFlexIntrinsicSizes computes intrinsic sizes for flex containers.
+func (le *LayoutEngine) computeFlexIntrinsicSizes(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style, horizontalExtra float64) IntrinsicSizes {
+	if width, ok := style.GetLength("width"); ok && width > 0 {
+		return IntrinsicSizes{
+			MinContent: width + horizontalExtra,
+			MaxContent: width + horizontalExtra,
+			Preferred:  width + horizontalExtra,
+		}
+	}
+
+	direction := style.GetFlexDirection()
+	isRow := direction == css.FlexDirectionRow || direction == css.FlexDirectionRowReverse
+
+	var minContent, maxContent float64
+
+	gap := 0.0
+	if gapVal, ok := style.Get("gap"); ok {
+		if g, ok2 := css.ParseLength(gapVal); ok2 {
+			gap = g
+		}
+	}
+	if gapVal, ok := style.Get("column-gap"); ok && isRow {
+		if g, ok2 := css.ParseLength(gapVal); ok2 {
+			gap = g
+		}
+	}
+	if gapVal, ok := style.Get("row-gap"); ok && !isRow {
+		if g, ok2 := css.ParseLength(gapVal); ok2 {
+			gap = g
+		}
+	}
+
+	childCount := 0
+	for _, child := range node.Children {
+		childStyle := computedStyles[child]
+		if childStyle == nil {
+			if child.Type == html.TextNode {
+				childStyle = style
+			} else {
+				childStyle = css.NewStyle()
+			}
+		}
+		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+		if child.Type == html.TextNode && strings.TrimSpace(child.Text) == "" {
+			continue
+		}
+
+		childSizes := le.ComputeIntrinsicSizes(child, childStyle, computedStyles)
+
+		childMargin := childStyle.GetMargin()
+		childOuter := childSizes.MaxContent + childMargin.Left + childMargin.Right
+		childMinOuter := childSizes.MinContent + childMargin.Left + childMargin.Right
+
+		if isRow {
+			maxContent += childOuter
+			if childMinOuter > minContent {
+				minContent = childMinOuter
+			}
+		} else {
+			if childOuter > maxContent {
+				maxContent = childOuter
+			}
+			if childMinOuter > minContent {
+				minContent = childMinOuter
+			}
+		}
+		childCount++
+	}
+
+	if childCount > 1 && gap > 0 {
+		if isRow {
+			maxContent += gap * float64(childCount-1)
+		}
 	}
 
 	return IntrinsicSizes{
@@ -403,7 +696,6 @@ func (le *LayoutEngine) computeInlineIntrinsicSizes(node *html.Node, style *css.
 func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.Style, computedStyles map[*html.Node]*css.Style, horizontalExtra float64) IntrinsicSizes {
 	var minContent, maxContent float64
 
-	// Check for explicit width
 	if width, ok := style.GetLength("width"); ok && width > 0 {
 		return IntrinsicSizes{
 			MinContent: width + horizontalExtra,
@@ -412,20 +704,33 @@ func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.S
 		}
 	}
 
-	// Track current inline run for block containers
 	var inlineMinContent, inlineMaxContent float64
 
 	for _, child := range node.Children {
 		childStyle := computedStyles[child]
 		if childStyle == nil {
-			childStyle = css.NewStyle()
+			if child.Type == html.TextNode {
+				// Text nodes inherit style from their parent element
+				childStyle = style
+			} else {
+				childStyle = css.NewStyle()
+			}
 		}
 
 		childSizes := le.ComputeIntrinsicSizes(child, childStyle, computedStyles)
 		childDisplay := childStyle.GetDisplay()
 
-		if childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot || childDisplay == css.DisplayListItem {
-			// Block child: flush inline run, then take max of block widths
+		// Text nodes are always inline-level (never block-level)
+		if child.Type == html.TextNode {
+			childDisplay = css.DisplayInline
+		}
+
+		// Floated children participate in inline flow for max-content sizing
+		// (CSS Sizing Level 3 section 4.1: floats are laid out side by side).
+		isFloat := childStyle.GetFloat() != css.FloatNone
+		isBlockLevel := (childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot || childDisplay == css.DisplayListItem) && !isFloat
+
+		if isBlockLevel {
 			if inlineMaxContent > maxContent {
 				maxContent = inlineMaxContent
 			}
@@ -442,7 +747,7 @@ func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.S
 				maxContent = childSizes.MaxContent
 			}
 		} else {
-			// Inline child: accumulate in current run
+			// Inline child (including floats): accumulate in current run
 			if childSizes.MinContent > inlineMinContent {
 				inlineMinContent = childSizes.MinContent
 			}
@@ -450,7 +755,6 @@ func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.S
 		}
 	}
 
-	// Flush final inline run
 	if inlineMaxContent > maxContent {
 		maxContent = inlineMaxContent
 	}
@@ -465,16 +769,6 @@ func (le *LayoutEngine) computeBlockIntrinsicSizes(node *html.Node, style *css.S
 	}
 }
 
-// computeGridItemMaxContentWidth computes the max-content inline advance for a
-// block-level grid item's content. Used to determine fit-content width for
-// non-stretch grid item alignment (justify-items: start/end/center).
-//
-// For a block with inline children, this sums the inline advances of all
-// children including margin/border/padding on inline elements (so negative
-// margins reduce the total, matching the CSS fit-content size computation).
-//
-// Returns 0 if max-content width cannot be determined (caller should fall back
-// to cellWidth).
 func (le *LayoutEngine) computeGridItemMaxContentWidth(node *html.Node, nodeStyle *css.Style, computedStyles map[*html.Node]*css.Style) float64 {
 	if node == nil || nodeStyle == nil {
 		return 0
@@ -482,21 +776,13 @@ func (le *LayoutEngine) computeGridItemMaxContentWidth(node *html.Node, nodeStyl
 	return le.sumInlineMaxContentAdvance(node.Children, nodeStyle, computedStyles)
 }
 
-// sumInlineMaxContentAdvance sums the max-content inline advance of a sequence
-// of children as if they were all on a single no-wrap line, including the full
-// box model (margin + border + padding + content + padding + border + margin)
-// for inline element children.
-//
-// Mirrors BreakLines whitespace collapsing: leading whitespace at the start
-// is stripped (as BreakLines does at the start of a line), and trailing
-// whitespace-only contributions are excluded (hanging whitespace at end).
 func (le *LayoutEngine) sumInlineMaxContentAdvance(children []*html.Node, parentStyle *css.Style, computedStyles map[*html.Node]*css.Style) float64 {
 	type contribInfo struct {
 		width      float64
-		whitespace bool // true if purely whitespace (trailing contributions are excluded)
+		whitespace bool
 	}
 	var contribs []contribInfo
-	seenContent := false // have we seen non-whitespace content yet?
+	seenContent := false
 
 	for _, child := range children {
 		if child.Type == html.TextNode {
@@ -506,10 +792,8 @@ func (le *LayoutEngine) sumInlineMaxContentAdvance(children []*html.Node, parent
 			}
 			isAllWS := strings.TrimSpace(textContent) == ""
 			if isAllWS && !seenContent {
-				// Leading whitespace-only node — skip (BreakLines strips at start of line)
 				continue
 			}
-			// Strip leading whitespace from the first non-whitespace text node
 			if !seenContent {
 				textContent = strings.TrimLeft(textContent, " \t\n\r")
 			}
@@ -535,7 +819,6 @@ func (le *LayoutEngine) sumInlineMaxContentAdvance(children []*html.Node, parent
 			if childStyle.GetDisplay() == css.DisplayNone {
 				continue
 			}
-			// For inline elements, include the full box model + children
 			margin := childStyle.GetMargin()
 			padding := childStyle.GetPadding()
 			border := childStyle.GetBorderWidth()
@@ -548,8 +831,6 @@ func (le *LayoutEngine) sumInlineMaxContentAdvance(children []*html.Node, parent
 		}
 	}
 
-	// Strip trailing whitespace-only contributions: hanging whitespace at the
-	// end of a line does not contribute to the line box width (CSS 2.1 §16.6.1).
 	for len(contribs) > 0 && contribs[len(contribs)-1].whitespace {
 		contribs = contribs[:len(contribs)-1]
 	}
@@ -570,9 +851,8 @@ func (m *BlockLayoutMode) ComputeIntrinsicSizes(le *LayoutEngine, node *html.Nod
 	return le.ComputeIntrinsicSizes(node, style, computedStyles)
 }
 
-// LayoutChildren for BlockLayoutMode - to be implemented as refactor progresses
+// LayoutChildren for BlockLayoutMode
 func (m *BlockLayoutMode) LayoutChildren(le *LayoutEngine, container *Box, children []*html.Node, availableWidth float64, computedStyles map[*html.Node]*css.Style) []*Box {
-	// This will be filled in as we refactor layoutNode
 	return nil
 }
 

@@ -2062,7 +2062,12 @@ func isFlexNumber(val string) bool {
 }
 
 // expandFlexFlowProperty expands flex-flow shorthand into flex-direction and flex-wrap.
+// Per CSS Flexbox spec, shorthand resets all sub-properties to initial values first.
 func expandFlexFlowProperty(style *Style, value string) {
+	// Reset both sub-properties to their initial values first
+	style.Set("flex-direction", "row")
+	style.Set("flex-wrap", "nowrap")
+
 	parts := strings.Fields(value)
 	for _, part := range parts {
 		switch part {
@@ -3364,7 +3369,63 @@ func (s *Style) GetOverflow() OverflowType {
 }
 
 // GetOverflowX returns the overflow-x value (default: overflow value)
+// CSS Overflow Level 3: if overflow-y is non-visible and overflow-x is visible,
+// overflow-x computes to auto.
 func (s *Style) GetOverflowX() OverflowType {
+	result := s.GetOverflow()
+	if overflowX, ok := s.Get("overflow-x"); ok {
+		switch overflowX {
+		case "hidden":
+			result = OverflowHidden
+		case "scroll":
+			result = OverflowScroll
+		case "auto", "overlay":
+			result = OverflowAuto
+		case "visible":
+			result = OverflowVisible
+		case "clip":
+			result = OverflowClip
+		}
+	}
+	if result == OverflowVisible {
+		otherAxis := s.getRawOverflowY()
+		if otherAxis != OverflowVisible {
+			return OverflowAuto
+		}
+	}
+	return result
+}
+
+// GetOverflowY returns the overflow-y value (default: overflow value)
+// CSS Overflow Level 3: if overflow-x is non-visible and overflow-y is visible,
+// overflow-y computes to auto.
+func (s *Style) GetOverflowY() OverflowType {
+	result := s.GetOverflow()
+	if overflowY, ok := s.Get("overflow-y"); ok {
+		switch overflowY {
+		case "hidden":
+			result = OverflowHidden
+		case "scroll":
+			result = OverflowScroll
+		case "auto", "overlay":
+			result = OverflowAuto
+		case "visible":
+			result = OverflowVisible
+		case "clip":
+			result = OverflowClip
+		}
+	}
+	if result == OverflowVisible {
+		otherAxis := s.getRawOverflowX()
+		if otherAxis != OverflowVisible {
+			return OverflowAuto
+		}
+	}
+	return result
+}
+
+// getRawOverflowX returns the raw overflow-x value without interdependency logic.
+func (s *Style) getRawOverflowX() OverflowType {
 	if overflowX, ok := s.Get("overflow-x"); ok {
 		switch overflowX {
 		case "hidden":
@@ -3382,8 +3443,8 @@ func (s *Style) GetOverflowX() OverflowType {
 	return s.GetOverflow()
 }
 
-// GetOverflowY returns the overflow-y value (default: overflow value)
-func (s *Style) GetOverflowY() OverflowType {
+// getRawOverflowY returns the raw overflow-y value without interdependency logic.
+func (s *Style) getRawOverflowY() OverflowType {
 	if overflowY, ok := s.Get("overflow-y"); ok {
 		switch overflowY {
 		case "hidden":
@@ -3639,8 +3700,10 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayTableCaption
 		case "flow-root":
 			return DisplayFlowRoot
-		case "-webkit-box", "-webkit-inline-box":
-			return DisplayBlock
+		case "-webkit-box", "-webkit-flex":
+			return DisplayFlex
+		case "-webkit-inline-box", "-webkit-inline-flex":
+			return DisplayInlineFlex
 		case "ruby":
 			return DisplayRuby
 		case "ruby-text":
@@ -3992,11 +4055,12 @@ func (s *Style) IsSafeJustifyContent() bool {
 type AlignItems string
 
 const (
-	AlignItemsFlexStart AlignItems = "flex-start"
-	AlignItemsFlexEnd   AlignItems = "flex-end"
-	AlignItemsCenter    AlignItems = "center"
-	AlignItemsStretch   AlignItems = "stretch"
-	AlignItemsBaseline  AlignItems = "baseline"
+	AlignItemsFlexStart    AlignItems = "flex-start"
+	AlignItemsFlexEnd      AlignItems = "flex-end"
+	AlignItemsCenter       AlignItems = "center"
+	AlignItemsStretch      AlignItems = "stretch"
+	AlignItemsBaseline     AlignItems = "baseline"
+	AlignItemsLastBaseline AlignItems = "last-baseline"
 )
 
 // GetAlignItems returns the align-items value (default: stretch).
@@ -4011,8 +4075,10 @@ func (s *Style) GetAlignItems() AlignItems {
 			return AlignItemsFlexEnd
 		case "center":
 			return AlignItemsCenter
-		case "baseline":
+		case "baseline", "first baseline":
 			return AlignItemsBaseline
+		case "last baseline":
+			return AlignItemsLastBaseline
 		case "stretch":
 			return AlignItemsStretch
 		}
@@ -4077,7 +4143,7 @@ func (s *Style) IsSafeAlignContent() bool {
 // GetFlexGrow returns the flex-grow value (default: 0)
 func (s *Style) GetFlexGrow() float64 {
 	if val, ok := s.Get("flex-grow"); ok {
-		if f, err := strconv.ParseFloat(val, 64); err == nil {
+		if f, err := strconv.ParseFloat(val, 64); err == nil && f >= 0 {
 			return f
 		}
 	}
@@ -4087,7 +4153,7 @@ func (s *Style) GetFlexGrow() float64 {
 // GetFlexShrink returns the flex-shrink value (default: 1)
 func (s *Style) GetFlexShrink() float64 {
 	if val, ok := s.Get("flex-shrink"); ok {
-		if f, err := strconv.ParseFloat(val, 64); err == nil {
+		if f, err := strconv.ParseFloat(val, 64); err == nil && f >= 0 {
 			return f
 		}
 	}
@@ -4097,6 +4163,7 @@ func (s *Style) GetFlexShrink() float64 {
 // FlexBasisValue represents a flex-basis value which can be auto, a length, a percentage, or a calc() expression.
 type FlexBasisValue struct {
 	IsAuto     bool
+	IsContent  bool    // flex-basis: content — always use content size, ignore width/height
 	Length     float64 // absolute length in pixels (if not auto and not percentage)
 	Percentage float64 // percentage value (if IsPercent)
 	IsPercent  bool
@@ -4108,8 +4175,11 @@ type FlexBasisValue struct {
 // GetFlexBasisValue returns the structured flex-basis value (default: auto)
 func (s *Style) GetFlexBasisValue() FlexBasisValue {
 	basis, ok := s.Get("flex-basis")
-	if !ok || basis == "auto" || basis == "content" {
+	if !ok || basis == "auto" {
 		return FlexBasisValue{IsAuto: true}
+	}
+	if basis == "content" {
+		return FlexBasisValue{IsContent: true}
 	}
 	if pct, ok := ParsePercentage(basis); ok {
 		return FlexBasisValue{Percentage: pct, IsPercent: true}
@@ -4120,6 +4190,10 @@ func (s *Style) GetFlexBasisValue() FlexBasisValue {
 		return FlexBasisValue{IsCalc: true, CalcExpr: expr, FontSize: s.GetFontSize()}
 	}
 	if length, ok := ParseLengthWithFontSize(basis, s.GetFontSize()); ok {
+		// CSS Flexbox §7.3.3: flex-basis does not accept negative lengths
+		if length < 0 {
+			return FlexBasisValue{IsAuto: true}
+		}
 		return FlexBasisValue{Length: length}
 	}
 	return FlexBasisValue{IsAuto: true}
@@ -4143,12 +4217,15 @@ func (s *Style) GetFlexBasis() float64 {
 type AlignSelf string
 
 const (
-	AlignSelfAuto      AlignSelf = "auto"
-	AlignSelfFlexStart AlignSelf = "flex-start"
-	AlignSelfFlexEnd   AlignSelf = "flex-end"
-	AlignSelfCenter    AlignSelf = "center"
-	AlignSelfStretch   AlignSelf = "stretch"
-	AlignSelfBaseline  AlignSelf = "baseline"
+	AlignSelfAuto         AlignSelf = "auto"
+	AlignSelfFlexStart    AlignSelf = "flex-start"
+	AlignSelfFlexEnd      AlignSelf = "flex-end"
+	AlignSelfCenter       AlignSelf = "center"
+	AlignSelfStretch      AlignSelf = "stretch"
+	AlignSelfBaseline     AlignSelf = "baseline"
+	AlignSelfLastBaseline AlignSelf = "last-baseline"
+	AlignSelfSelfStart    AlignSelf = "self-start"
+	AlignSelfSelfEnd      AlignSelf = "self-end"
 )
 
 // GetAlignSelf returns the align-self value (default: auto)
@@ -4156,16 +4233,22 @@ func (s *Style) GetAlignSelf() AlignSelf {
 	if as, ok := s.Get("align-self"); ok {
 		as, _ = stripSafeUnsafe(as)
 		switch as {
-		case "flex-start", "start", "self-start":
+		case "flex-start", "start":
 			return AlignSelfFlexStart
-		case "flex-end", "end", "self-end":
+		case "flex-end", "end":
 			return AlignSelfFlexEnd
+		case "self-start":
+			return AlignSelfSelfStart
+		case "self-end":
+			return AlignSelfSelfEnd
 		case "center":
 			return AlignSelfCenter
 		case "stretch":
 			return AlignSelfStretch
-		case "baseline", "first baseline", "last baseline":
+		case "baseline", "first baseline":
 			return AlignSelfBaseline
+		case "last baseline":
+			return AlignSelfLastBaseline
 		}
 	}
 	return AlignSelfAuto

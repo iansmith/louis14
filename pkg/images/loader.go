@@ -69,7 +69,11 @@ func LoadImageFromDataURI(uri string) (image.Image, error) {
 			return nil, fmt.Errorf("base64 decode error: %w", err)
 		}
 	} else {
-		data = []byte(encoded)
+		// Lenient URL-decode: handles valid percent-encoding (%3C → <, %25 → %)
+		// while passing through invalid sequences (e.g. 100%' in SVG attributes).
+		// url.PathUnescape rejects the entire string if any % is followed by
+		// non-hex characters, which breaks SVGs like width='100%'.
+		data = []byte(lenientPercentDecode(encoded))
 	}
 
 	return DecodeImageBytes(data)
@@ -170,38 +174,52 @@ func isSVGData(data []byte) bool {
 // svgOpenTagRE matches the opening <svg ...> tag to extract root dimensions.
 var svgOpenTagRE = regexp.MustCompile(`(?s)<svg\b([^>]*)>`)
 
-// svgAttrDimRE matches a width or height attribute with an absolute value.
-var svgAttrDimRE = regexp.MustCompile(`\b(width|height)="(\d+(?:\.\d+)?)(?:px)?"`)
+// svgAttrDimRE matches a width or height attribute with an absolute value (single or double quotes).
+var svgAttrDimRE = regexp.MustCompile(`\b(width|height)=["'](\d+(?:\.\d+)?)(?:px)?["']`)
 
-// svgPctAttrRE matches width/height percentage attributes on any element.
-var svgPctAttrRE = regexp.MustCompile(`\b(width|height)="(\d+(?:\.\d+)?)%"`)
+// svgPctAttrRE matches width/height percentage attributes on any element (single or double quotes).
+var svgPctAttrRE = regexp.MustCompile(`\b(width|height)=["'](\d+(?:\.\d+)?)%["']`)
 
 // preprocessSVGPercentages resolves percentage width/height attributes in SVG data.
 // oksvg doesn't handle width="100%" on shapes like <rect>. This replaces them
-// with absolute pixel values computed from the root <svg> element's dimensions.
+// with absolute values in SVG coordinate space.
 func preprocessSVGPercentages(data []byte) []byte {
 	s := string(data)
 
-	// Find the root <svg> opening tag and extract its width/height
+	// Find the root <svg> opening tag.
 	rootMatch := svgOpenTagRE.FindStringSubmatch(s)
 	if rootMatch == nil {
 		return data
 	}
 	rootAttrs := rootMatch[1]
-	var svgW, svgH float64
-	for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
-		if m[1] == "width" {
-			svgW, _ = strconv.ParseFloat(m[2], 64)
-		} else {
-			svgH, _ = strconv.ParseFloat(m[2], 64)
+
+	// SVG child element percentages are relative to the viewBox coordinate system,
+	// not to the CSS pixel dimensions. Extract viewBox dimensions first.
+	var baseW, baseH float64
+	vbRE := regexp.MustCompile(`viewBox=["'][\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)["']`)
+	if m := vbRE.FindStringSubmatch(rootAttrs); m != nil {
+		baseW, _ = strconv.ParseFloat(m[1], 64)
+		baseH, _ = strconv.ParseFloat(m[2], 64)
+	}
+
+	// Fall back to explicit CSS width/height when no viewBox is present.
+	if baseW <= 0 || baseH <= 0 {
+		for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
+			val, _ := strconv.ParseFloat(m[2], 64)
+			if m[1] == "width" && baseW <= 0 {
+				baseW = val
+			} else if m[1] == "height" && baseH <= 0 {
+				baseH = val
+			}
 		}
 	}
-	if svgW <= 0 || svgH <= 0 {
+
+	if baseW <= 0 || baseH <= 0 {
 		return data
 	}
 
-	// Replace percentage width/height with resolved pixel values.
-	// Only replace occurrences outside the root <svg> tag (skip index 0 to end of root tag).
+	// Replace percentage width/height with resolved coordinate-space values.
+	// Only replace occurrences outside the root <svg> tag.
 	rootTagEnd := strings.Index(s, ">") + 1
 	prefix := s[:rootTagEnd]
 	body := s[rootTagEnd:]
@@ -213,15 +231,16 @@ func preprocessSVGPercentages(data []byte) []byte {
 		}
 		pct, _ := strconv.ParseFloat(m[2], 64)
 		if m[1] == "width" {
-			return fmt.Sprintf(`width="%.4g"`, pct/100.0*svgW)
+			return fmt.Sprintf(`width="%.4g"`, pct/100.0*baseW)
 		}
-		return fmt.Sprintf(`height="%.4g"`, pct/100.0*svgH)
+		return fmt.Sprintf(`height="%.4g"`, pct/100.0*baseH)
 	})
 	return []byte(prefix + body)
 }
 
 // rasterizeSVG renders SVG data to an image.RGBA using oksvg.
-// If w/h are 0, the SVG's viewBox dimensions are used.
+// If w/h are 0, the SVG's explicit width/height attributes are used when present;
+// otherwise the viewBox dimensions are used.
 func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
 	// oksvg doesn't handle percentage width/height on shapes (e.g. width="100%").
 	// Resolve them to absolute values before parsing.
@@ -240,6 +259,35 @@ func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
 	if svgH <= 0 {
 		svgH = 32
 	}
+
+	// When no target size is specified, prefer explicit pixel width/height from
+	// the root <svg> element over the viewBox coordinate dimensions.
+	// E.g. <svg viewBox="0 0 200 400" width="50px"> has intrinsic size 50×100,
+	// not 200×400. The viewBox only defines the coordinate space.
+	if w <= 0 && h <= 0 {
+		s := string(data)
+		if rootMatch := svgOpenTagRE.FindStringSubmatch(s); rootMatch != nil {
+			var explW, explH float64
+			for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootMatch[1], -1) {
+				val, _ := strconv.ParseFloat(m[2], 64)
+				if m[1] == "width" {
+					explW = val
+				} else {
+					explH = val
+				}
+			}
+			if explW > 0 && explH > 0 {
+				w, h = int(explW), int(explH)
+			} else if explW > 0 && icon.ViewBox.W > 0 && icon.ViewBox.H > 0 {
+				w = int(explW)
+				h = int(explW*icon.ViewBox.H/icon.ViewBox.W + 0.5)
+			} else if explH > 0 && icon.ViewBox.W > 0 && icon.ViewBox.H > 0 {
+				h = int(explH)
+				w = int(explH*icon.ViewBox.W/icon.ViewBox.H + 0.5)
+			}
+		}
+	}
+
 	if w <= 0 {
 		w = svgW
 	}
@@ -344,4 +392,37 @@ func NewFilesystemFetcher(baseURL string) ImageFetcher {
 
 		return data, nil
 	}
+}
+
+// lenientPercentDecode decodes percent-encoded sequences (%XX) while passing
+// through invalid sequences (where XX are not valid hex digits). This is needed
+// for SVG data URIs that contain literal % characters (e.g. width='100%').
+func lenientPercentDecode(s string) string {
+	var buf strings.Builder
+	buf.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			hi := unhex(s[i+1])
+			lo := unhex(s[i+2])
+			if hi >= 0 && lo >= 0 {
+				buf.WriteByte(byte(hi<<4 | lo))
+				i += 2
+				continue
+			}
+		}
+		buf.WriteByte(s[i])
+	}
+	return buf.String()
+}
+
+func unhex(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c - 'a' + 10)
+	case 'A' <= c && c <= 'F':
+		return int(c - 'A' + 10)
+	}
+	return -1
 }

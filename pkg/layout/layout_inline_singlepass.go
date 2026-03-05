@@ -233,13 +233,24 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 				blockChildEstablishesBFC(childStyle) {
 				leftOff, rightOff := le.getFloatOffsets(inlineCtx.LineY)
 				if leftOff > 0 || rightOff > 0 {
-					absLeftEdge := le.getLeftFloatAbsoluteEdge(inlineCtx.LineY)
-					if absLeftEdge > childLayoutX {
-						adjustedChildX = absLeftEdge
+					// CSS 2.1 §9.5: If the BFC element's border-box doesn't fit
+					// beside floats, push it below all floats.
+					remainingWidth := childAvailableWidth - leftOff - rightOff
+					if bfcChildTooWideForFloats(childStyle, remainingWidth, childAvailableWidth) {
+						inlineCtx.LineY = le.getClearY(css.ClearBoth, inlineCtx.LineY)
+						leftOff, rightOff = le.getFloatOffsets(inlineCtx.LineY)
 					}
-					adjustedChildWidth = childAvailableWidth - leftOff - rightOff
-					if adjustedChildWidth < 0 {
-						adjustedChildWidth = 0
+					if leftOff > 0 || rightOff > 0 {
+						absLeftEdge := le.getLeftFloatAbsoluteEdge(inlineCtx.LineY)
+						childMarginLeft := childStyle.GetMargin().Left
+						borderBoxLeft := childLayoutX + childMarginLeft
+						if borderBoxLeft >= childLayoutX && absLeftEdge > childLayoutX {
+							adjustedChildX = absLeftEdge
+						}
+						adjustedChildWidth = childAvailableWidth - leftOff - rightOff
+						if adjustedChildWidth < 0 {
+							adjustedChildWidth = 0
+						}
 					}
 				}
 			}

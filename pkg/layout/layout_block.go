@@ -369,6 +369,38 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if h, ok := style.GetLength("height"); ok {
 		contentHeight = h
 		hasExplicitHeight = true
+	} else if hval, hok := style.Get("height"); hok && strings.HasPrefix(hval, "calc(") && strings.Contains(hval, "%") {
+		// calc() with percentage height: resolve % against containing block height.
+		// Uses same containing-block rules as percentage height.
+		calcCBHeight := 0.0
+		if node.TagName == "html" {
+			calcCBHeight = le.viewport.height
+		} else if style.GetPosition() == css.PositionAbsolute || style.GetPosition() == css.PositionFixed {
+			cb := findPositionedAncestorBox(parent)
+			if cb == nil || style.GetPosition() == css.PositionFixed {
+				calcCBHeight = le.viewport.height
+			} else {
+				calcCBHeight = cb.Height - cb.Border.Top - cb.Border.Bottom
+			}
+		} else if parent != nil && parent.Style != nil {
+			_, hasLen := parent.Style.GetLength("height")
+			_, hasPct := parent.Style.GetPercentage("height")
+			calcHasParentCalcH := false
+			if phval, phok := parent.Style.Get("height"); phok && strings.HasPrefix(phval, "calc(") && strings.Contains(phval, "%") {
+				calcHasParentCalcH = true
+			}
+			if hasLen || hasPct || calcHasParentCalcH || parent.HeightIsDefinite {
+				calcCBHeight = parent.Height - parent.Padding.Top - parent.Padding.Bottom - parent.Border.Top - parent.Border.Bottom
+			}
+		}
+		if calcCBHeight > 0 {
+			expr := hval[5 : len(hval)-1]
+			if result, calcOk := css.EvalCalcWithPercent(expr, style.GetFontSize(), calcCBHeight); calcOk {
+				contentHeight = result
+				hasExplicitHeight = true
+			}
+		}
+		// else: containing block height depends on content → treat as auto
 	} else if hPct, ok := style.GetPercentage("height"); ok {
 		// CSS 2.1 §10.5: Percentage heights resolve against containing block height
 		cbHeight := 0.0
@@ -494,7 +526,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 		return 0, false
 	}
+	resolvedMinWidth := 0.0
+	hasMinWidth := false
 	if minWidth, ok := resolveCalcWidth("min-width"); ok {
+		hasMinWidth = true
+		resolvedMinWidth = minWidth
 		if contentWidth < minWidth {
 			contentWidth = minWidth
 		}
@@ -502,6 +538,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if maxWidth, ok := resolveCalcWidth("max-width"); ok {
 		if contentWidth > maxWidth {
 			contentWidth = maxWidth
+		}
+		// CSS 2.1 §10.4: If max-width < min-width, min-width wins.
+		// After applying max-width, re-apply min-width if we went below it.
+		if hasMinWidth && contentWidth < resolvedMinWidth {
+			contentWidth = resolvedMinWidth
 		}
 	}
 

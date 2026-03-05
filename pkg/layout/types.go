@@ -339,6 +339,25 @@ type FlexItem struct {
 	// but still contribute their cross-size for line cross-size determination.
 	// The item itself is invisible (like visibility:hidden).
 	Collapsed bool
+	// FirstBaseline is the distance from the item's cross-start border edge to its
+	// first baseline. Used for align-items: baseline / align-self: baseline.
+	// -1 means no baseline found (synthesize at cross-end edge).
+	FirstBaseline float64
+	// LastBaseline is the distance from the item's cross-start border edge to its
+	// last baseline. Used for align-items: last baseline / align-self: last baseline.
+	// -1 means no baseline found (synthesize at cross-end edge).
+	LastBaseline float64
+	// MaxMainSize is the pre-computed max-width/max-height constraint for flex resolution
+	// clamping. A value of 0 means no constraint. This handles intrinsic keywords
+	// (min-content, max-content, fit-content) that require layout engine access to resolve.
+	MaxMainSize float64
+	HasMaxMain  bool // true if MaxMainSize was set
+	// MinMainSize is the pre-computed min-width/min-height constraint for flex resolution
+	// clamping when using intrinsic keywords (min-content, max-content, fit-content).
+	MinMainSize  float64
+	HasMinMain   bool // true if MinMainSize was set
+	MaxCrossSize float64
+	HasMaxCross  bool // true if MaxCrossSize was set
 }
 
 // FlexLine tracks a line of flex items (for wrapping)

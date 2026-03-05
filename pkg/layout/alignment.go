@@ -113,13 +113,15 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 		}
 
 		// Find or create line group for this Y
+		// Use margin-box edges: left = X - Margin.Left, right = X + Width + Margin.Right
 		found := false
-		childRight := child.X + le.getTotalWidth(child)
+		childLeft := child.X - child.Margin.Left
+		childRight := child.X + child.Width + child.Margin.Right
 		for i := range lines {
 			if lines[i].y == child.Y {
 				lines[i].boxes = append(lines[i].boxes, child)
-				if child.X < lines[i].minX {
-					lines[i].minX = child.X
+				if childLeft < lines[i].minX {
+					lines[i].minX = childLeft
 				}
 				if childRight > lines[i].maxEnd {
 					lines[i].maxEnd = childRight
@@ -132,7 +134,7 @@ func (le *LayoutEngine) applyTextAlignToBoxes(boxes []*Box, parentBox *Box, text
 			lines = append(lines, lineGroup{
 				y:      child.Y,
 				boxes:  []*Box{child},
-				minX:   child.X,
+				minX:   childLeft,
 				maxEnd: childRight,
 			})
 		}

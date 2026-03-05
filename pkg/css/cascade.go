@@ -91,6 +91,15 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
+	// Replaced inline elements: behave as inline-block for layout purposes
+	// (they are replaced elements that honor width/height attributes)
+	switch node.TagName {
+	case "canvas", "video", "embed", "iframe":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "inline-block")
+		}
+	}
+
 	// Ruby elements: display types per CSS Ruby spec
 	switch node.TagName {
 	case "ruby":
@@ -238,10 +247,12 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("display", "table-cell")
 		style.Set("padding", "1px")
 		style.Set("text-align", "left")
+		style.Set("vertical-align", "middle")
 	case "th":
 		style.Set("display", "table-cell")
 		style.Set("padding", "1px")
 		style.Set("font-weight", "bold")
+		style.Set("vertical-align", "middle")
 		style.Set("text-align", "center")
 	case "caption":
 		style.Set("display", "table-caption")
@@ -552,6 +563,11 @@ var inheritableProperties = map[string]bool{
 	"visibility": true, "list-style-type": true, "list-style-position": true,
 	"direction": true, "letter-spacing": true, "word-spacing": true,
 	"cursor": true,
+	// NOTE: writing-mode is inheritable per CSS spec, but the layout engine's
+	// transformToVerticalRL is too aggressive and doesn't distinguish between
+	// explicitly-set vs inherited writing-mode. Adding it to inheritableProperties
+	// causes regressions (css-flexbox-row, baseline-synthesis-003, etc.).
+	// TODO: Enable writing-mode inheritance once the layout engine handles it properly.
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
@@ -597,12 +613,119 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 	}
 }
 
+// ApplyInheritedFrom copies inheritable CSS properties from a parent style to
+// a child style when the child hasn't explicitly set them. This is used during
+// intrinsic sizing when css.ComputeStyle is called standalone (without the full
+// document style tree) and inherited properties like font-family are missing.
+func ApplyInheritedFrom(child, parent *Style) {
+	if child == nil || parent == nil {
+		return
+	}
+	for prop := range inheritableProperties {
+		if _, hasOwn := child.Get(prop); !hasOwn {
+			if parentVal, ok := parent.Get(prop); ok {
+				child.Set(prop, parentVal)
+			}
+		}
+	}
+}
+
+// resolveLogicalSizeProperties remaps logical size properties (inline-size,
+// block-size, and their min/max variants) to the correct physical properties
+// based on the element's computed writing-mode.
+//
+// During shorthand expansion, inline-size is mapped to width (the default for
+// horizontal-tb). For vertical writing modes (vertical-rl, vertical-lr,
+// sideways-rl, sideways-lr), the inline axis is vertical, so inline-size must
+// map to height instead. This function fixes the mapping after the writing-mode
+// has been fully resolved (including inheritance).
+func resolveLogicalSizeProperties(style *Style) {
+	wm, _ := style.Get("writing-mode")
+	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||
+		wm == "sideways-rl" || wm == "sideways-lr"
+	if !isVertical {
+		return // horizontal-tb: default mapping is correct
+	}
+
+	// For vertical writing modes:
+	//   inline-size -> height (not width)
+	//   block-size  -> width  (not height)
+	// The expandShorthand stored the logical values under _inline-size / _block-size
+	// markers and mapped them to width/height assuming horizontal-tb. We now need
+	// to swap them.
+
+	inlineVal, hasInline := style.Get("_inline-size")
+	blockVal, hasBlock := style.Get("_block-size")
+
+	if hasInline && hasBlock {
+		// Both set: swap width <-> height
+		style.Set("height", inlineVal)
+		style.Set("width", blockVal)
+	} else if hasInline {
+		// Only inline-size was set: move from width to height.
+		// Clear width if it was set only by inline-size (check if there's
+		// an independent width declaration by comparing values).
+		style.Set("height", inlineVal)
+		if curW, ok := style.Get("width"); ok && curW == inlineVal {
+			delete(style.Properties, "width")
+		}
+	} else if hasBlock {
+		// Only block-size was set: move from height to width.
+		style.Set("width", blockVal)
+		if curH, ok := style.Get("height"); ok && curH == blockVal {
+			delete(style.Properties, "height")
+		}
+	}
+
+	// Same for min-inline-size / min-block-size
+	minInlineVal, hasMinInline := style.Get("_min-inline-size")
+	minBlockVal, hasMinBlock := style.Get("_min-block-size")
+
+	if hasMinInline && hasMinBlock {
+		style.Set("min-height", minInlineVal)
+		style.Set("min-width", minBlockVal)
+	} else if hasMinInline {
+		style.Set("min-height", minInlineVal)
+		if curMW, ok := style.Get("min-width"); ok && curMW == minInlineVal {
+			delete(style.Properties, "min-width")
+		}
+	} else if hasMinBlock {
+		style.Set("min-width", minBlockVal)
+		if curMH, ok := style.Get("min-height"); ok && curMH == minBlockVal {
+			delete(style.Properties, "min-height")
+		}
+	}
+
+	// Same for max-inline-size / max-block-size
+	maxInlineVal, hasMaxInline := style.Get("_max-inline-size")
+	maxBlockVal, hasMaxBlock := style.Get("_max-block-size")
+
+	if hasMaxInline && hasMaxBlock {
+		style.Set("max-height", maxInlineVal)
+		style.Set("max-width", maxBlockVal)
+	} else if hasMaxInline {
+		style.Set("max-height", maxInlineVal)
+		if curMW, ok := style.Get("max-width"); ok && curMW == maxInlineVal {
+			delete(style.Properties, "max-width")
+		}
+	} else if hasMaxBlock {
+		style.Set("max-width", maxBlockVal)
+		if curMH, ok := style.Get("max-height"); ok && curMH == maxBlockVal {
+			delete(style.Properties, "max-height")
+		}
+	}
+}
+
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
+		// Resolve logical size properties (inline-size, block-size) based on the
+		// element's computed writing-mode. Must happen after inheritance so that
+		// inherited writing-mode is available.
+		resolveLogicalSizeProperties(style)
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		styles[node] = style

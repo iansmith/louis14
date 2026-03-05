@@ -105,18 +105,16 @@ func (le *LayoutEngine) getStyle(node *html.Node) *css.Style {
 	return css.NewStyle()
 }
 
-// getTotalHeight returns the total height including margin, border, padding
+// getTotalHeight returns the total height including margin, border, padding.
+// box.Height is border-box (includes padding+border), so only add margins.
 func (le *LayoutEngine) getTotalHeight(box *Box) float64 {
-	return box.Margin.Top + box.Border.Top + box.Padding.Top +
-		box.Height +
-		box.Padding.Bottom + box.Border.Bottom + box.Margin.Bottom
+	return box.Margin.Top + box.Height + box.Margin.Bottom
 }
 
-// getTotalWidth returns the total width including margin, border, padding
+// getTotalWidth returns the total width including margin, border, padding.
+// box.Width is border-box (includes padding+border), so only add margins.
 func (le *LayoutEngine) getTotalWidth(box *Box) float64 {
-	return box.Margin.Left + box.Border.Left + box.Padding.Left +
-		box.Width +
-		box.Padding.Right + box.Border.Right + box.Margin.Right
+	return box.Margin.Left + box.Width + box.Margin.Right
 }
 
 // computeShrinkToFitChildWidth computes the intrinsic margin-box width of a child box

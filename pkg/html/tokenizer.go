@@ -115,6 +115,13 @@ func (t *Tokenizer) readTag() (Token, error) {
 			t.pos++
 			break
 		}
+		// HTML5 error recovery: if we hit '<' while reading attributes,
+		// the current tag's closing '>' was omitted. Implicitly close
+		// the tag without consuming the '<', so the next NextToken()
+		// call will parse the new tag that starts here.
+		if t.input[t.pos] == '<' {
+			break
+		}
 		if t.input[t.pos] == '/' {
 			t.pos++
 			t.skipWhitespace()

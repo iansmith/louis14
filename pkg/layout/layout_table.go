@@ -1077,6 +1077,9 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				}
 			}
 
+			// Save natural content height before overriding with row height
+			naturalContentH := ce.cell.Box.Height - ce.cell.Box.Padding.Top - ce.cell.Box.Padding.Bottom - ce.cell.Box.Border.Top - ce.cell.Box.Border.Bottom
+
 			ce.cell.Box.Width = ce.cellWidth
 			ce.cell.Box.Height = cellHeight
 			if ce.cell.Box.Width < 0 {
@@ -1085,6 +1088,30 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 			if ce.cell.Box.Height < 0 {
 				ce.cell.Box.Height = 0
 			}
+
+			// CSS 2.1 §17.5.3: Apply vertical-align to table cells.
+			// When the cell is taller than its content, shift children vertically.
+			if ce.cell.Box.Node != nil && ce.cell.Box.Style != nil {
+				vertAlign := ce.cell.Box.Style.GetVerticalAlign()
+				cellContentH := cellHeight - ce.cell.Box.Padding.Top - ce.cell.Box.Padding.Bottom - ce.cell.Box.Border.Top - ce.cell.Box.Border.Bottom
+				if naturalContentH < cellContentH {
+					var yOffset float64
+					switch vertAlign {
+					case css.VerticalAlignMiddle:
+						yOffset = (cellContentH - naturalContentH) / 2
+					case css.VerticalAlignBottom:
+						yOffset = cellContentH - naturalContentH
+					default: // top/baseline: no offset (already at top)
+						yOffset = 0
+					}
+					if yOffset != 0 {
+						for _, child := range ce.cell.Box.Children {
+							child.Y += yOffset
+						}
+					}
+				}
+			}
+
 			tableBox.Children = append(tableBox.Children, ce.cell.Box)
 		}
 
