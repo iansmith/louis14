@@ -1522,17 +1522,25 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("left", parts[3])
 		}
 	case "inline-size":
+		// Default mapping: inline-size → width for horizontal-tb.
+		// For vertical writing modes, resolveLogicalSizeProperties re-maps to height.
 		style.Set("width", normalizeVendorPrefixedValue(value))
+		style.Set("_inline-size", normalizeVendorPrefixedValue(value))
 	case "block-size":
 		style.Set("height", normalizeVendorPrefixedValue(value))
+		style.Set("_block-size", normalizeVendorPrefixedValue(value))
 	case "min-inline-size":
 		style.Set("min-width", normalizeVendorPrefixedValue(value))
+		style.Set("_min-inline-size", normalizeVendorPrefixedValue(value))
 	case "min-block-size":
 		style.Set("min-height", normalizeVendorPrefixedValue(value))
+		style.Set("_min-block-size", normalizeVendorPrefixedValue(value))
 	case "max-inline-size":
 		style.Set("max-width", normalizeVendorPrefixedValue(value))
+		style.Set("_max-inline-size", normalizeVendorPrefixedValue(value))
 	case "max-block-size":
 		style.Set("max-height", normalizeVendorPrefixedValue(value))
+		style.Set("_max-block-size", normalizeVendorPrefixedValue(value))
 	case "outline":
 		expandOutlineShorthand(style, value)
 	case "column-rule":
@@ -4149,7 +4157,7 @@ func (s *Style) GetAlignItems() AlignItems {
 			return AlignItemsBaseline
 		case "last baseline":
 			return AlignItemsLastBaseline
-		case "stretch":
+		case "stretch", "normal":
 			return AlignItemsStretch
 		}
 	}

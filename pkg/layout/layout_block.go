@@ -836,12 +836,26 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInlineBlock) &&
 		(style.GetColumnCount() > 0 || style.GetColumnWidth() > 0) {
 		le.layoutMulticolumn(box, x, y, availableWidth, style, computedStyles)
+		if position == css.PositionAbsolute || position == css.PositionFixed {
+			oldX, oldY := box.X, box.Y
+			le.applyAbsolutePositioning(box)
+			if dx, dy := box.X-oldX, box.Y-oldY; dx != 0 || dy != 0 {
+				le.shiftChildren(box, dx, dy)
+			}
+		}
 		return box
 	}
 
 	// Phase 9: Handle table layout specially
 	if display == css.DisplayTable {
 		le.layoutTable(box, x, y, availableWidth, computedStyles)
+		if position == css.PositionAbsolute || position == css.PositionFixed {
+			oldX, oldY := box.X, box.Y
+			le.applyAbsolutePositioning(box)
+			if dx, dy := box.X-oldX, box.Y-oldY; dx != 0 || dy != 0 {
+				le.shiftChildren(box, dx, dy)
+			}
+		}
 		return box
 	}
 
@@ -854,8 +868,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			box.HeightIsDefinite = true
 		}
 		le.layoutFlex(box, x, y, availableWidth, computedStyles)
-		// Float positioning for floated flex containers is handled by the caller
-		// (multi-pass pipeline or block layout code), not here, to avoid double-positioning.
+		if position == css.PositionAbsolute || position == css.PositionFixed {
+			oldX, oldY := box.X, box.Y
+			le.applyAbsolutePositioning(box)
+			if dx, dy := box.X-oldX, box.Y-oldY; dx != 0 || dy != 0 {
+				le.shiftChildren(box, dx, dy)
+			}
+		}
 		return box
 	}
 
@@ -867,7 +886,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if hasExplicitHeight {
 			gridEstablishedHeight = contentHeight
 		}
-		return le.layoutGridContainer(node, x, y, availableWidth, gridEstablishedHeight, style, computedStyles, parent)
+		box = le.layoutGridContainer(node, x, y, availableWidth, gridEstablishedHeight, style, computedStyles, parent)
+		if position == css.PositionAbsolute || position == css.PositionFixed {
+			oldX, oldY := box.X, box.Y
+			le.applyAbsolutePositioning(box)
+			if dx, dy := box.X-oldX, box.Y-oldY; dx != 0 || dy != 0 {
+				le.shiftChildren(box, dx, dy)
+			}
+		}
+		return box
 	}
 
 	// SVG elements are replaced elements — skip normal child layout.
@@ -2277,7 +2304,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if style != nil && !isImage && !isSVG && len(box.Children) > 0 {
 		if display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayFlowRoot || display == css.DisplayListItem {
 			if wm, ok := style.Get("writing-mode"); ok {
-				if wm == "vertical-rl" || wm == "vertical-lr" {
+				if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
 					transformToVerticalRL(box)
 				}
 			}
