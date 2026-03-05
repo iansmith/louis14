@@ -716,6 +716,157 @@ func resolveLogicalSizeProperties(style *Style) {
 	}
 }
 
+// resolveLogicalBoxProperties resolves logical margin/padding/border properties
+// (e.g. border-inline-start, margin-block-end) to physical properties based on
+// the element's computed writing-mode. Must be called after inheritance.
+//
+// Mapping for horizontal-tb (default):
+//   inline-start=left, inline-end=right, block-start=top, block-end=bottom
+// For vertical-rl / vertical-lr:
+//   inline-start=top, inline-end=bottom, block-start=right(rl)/left(lr), block-end=left(rl)/right(lr)
+func resolveLogicalBoxProperties(style *Style) {
+	wm, _ := style.Get("writing-mode")
+	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||
+		wm == "sideways-rl" || wm == "sideways-lr"
+
+	dir, _ := style.Get("direction")
+	isRTL := dir == "rtl"
+
+	// Check if any logical markers exist; if not, nothing to resolve
+	hasMarkers := false
+	for key := range style.Properties {
+		if len(key) > 0 && key[0] == '_' {
+			hasMarkers = true
+			break
+		}
+	}
+	if !hasMarkers {
+		return
+	}
+
+	// Determine the correct physical mapping for each logical direction.
+	// CSS Logical Properties: https://www.w3.org/TR/css-logical-1/#box
+	//
+	// horizontal-tb + LTR: inline-start=left, inline-end=right, block-start=top, block-end=bottom
+	// horizontal-tb + RTL: inline-start=right, inline-end=left, block-start=top, block-end=bottom
+	// vertical-rl + LTR: inline-start=top, inline-end=bottom, block-start=right, block-end=left
+	// vertical-rl + RTL: inline-start=bottom, inline-end=top, block-start=right, block-end=left
+	// vertical-lr + LTR: inline-start=top, inline-end=bottom, block-start=left, block-end=right
+	// vertical-lr + RTL: inline-start=bottom, inline-end=top, block-start=left, block-end=right
+	// sideways-lr + LTR: inline-start=bottom, inline-end=top, block-start=left, block-end=right
+	// sideways-lr + RTL: inline-start=top, inline-end=bottom, block-start=left, block-end=right
+
+	var inlineStartSide, inlineEndSide, blockStartSide, blockEndSide string
+
+	switch {
+	case wm == "sideways-lr" && !isRTL:
+		inlineStartSide = "bottom"
+		inlineEndSide = "top"
+		blockStartSide = "left"
+		blockEndSide = "right"
+	case wm == "sideways-lr" && isRTL:
+		inlineStartSide = "top"
+		inlineEndSide = "bottom"
+		blockStartSide = "left"
+		blockEndSide = "right"
+	case isVertical && !isRTL:
+		inlineStartSide = "top"
+		inlineEndSide = "bottom"
+		if wm == "vertical-rl" || wm == "sideways-rl" {
+			blockStartSide = "right"
+			blockEndSide = "left"
+		} else {
+			blockStartSide = "left"
+			blockEndSide = "right"
+		}
+	case isVertical && isRTL:
+		inlineStartSide = "bottom"
+		inlineEndSide = "top"
+		if wm == "vertical-rl" || wm == "sideways-rl" {
+			blockStartSide = "right"
+			blockEndSide = "left"
+		} else {
+			blockStartSide = "left"
+			blockEndSide = "right"
+		}
+	case !isVertical && isRTL:
+		// horizontal-tb + RTL
+		inlineStartSide = "right"
+		inlineEndSide = "left"
+		blockStartSide = "top"
+		blockEndSide = "bottom"
+	default:
+		// horizontal-tb + LTR (default)
+		inlineStartSide = "left"
+		inlineEndSide = "right"
+		blockStartSide = "top"
+		blockEndSide = "bottom"
+	}
+
+	// The expandShorthand always maps to horizontal-tb LTR physical properties:
+	//   inline-start -> left, inline-end -> right
+	//   block-start -> top, block-end -> bottom
+	type logicalMapping struct {
+		markerPrefix string // e.g., "_margin-inline-start"
+		wrongSide    string // what expandShorthand used (e.g., "left")
+		correctSide  string // what it should be (e.g., "top")
+	}
+
+	mappings := []logicalMapping{
+		{"_margin-inline-start", "left", inlineStartSide},
+		{"_margin-inline-end", "right", inlineEndSide},
+		{"_margin-block-start", "top", blockStartSide},
+		{"_margin-block-end", "bottom", blockEndSide},
+		{"_padding-inline-start", "left", inlineStartSide},
+		{"_padding-inline-end", "right", inlineEndSide},
+		{"_padding-block-start", "top", blockStartSide},
+		{"_padding-block-end", "bottom", blockEndSide},
+	}
+
+	for _, m := range mappings {
+		if val, ok := style.Get(m.markerPrefix); ok {
+			propType := strings.TrimPrefix(m.markerPrefix, "_")
+			propType = propType[:strings.Index(propType, "-")]
+			wrongProp := propType + "-" + m.wrongSide
+			correctProp := propType + "-" + m.correctSide
+
+			style.Set(correctProp, val)
+			if m.wrongSide != m.correctSide {
+				if curVal, curOk := style.Get(wrongProp); curOk && curVal == val {
+					delete(style.Properties, wrongProp)
+				}
+			}
+			delete(style.Properties, m.markerPrefix)
+		}
+	}
+
+	// Border properties: same pattern but with -width/-style/-color suffixes
+	borderMappings := []logicalMapping{
+		{"_border-inline-start", "left", inlineStartSide},
+		{"_border-inline-end", "right", inlineEndSide},
+		{"_border-block-start", "top", blockStartSide},
+		{"_border-block-end", "bottom", blockEndSide},
+	}
+
+	for _, m := range borderMappings {
+		for _, suffix := range []string{"-width", "-style", "-color"} {
+			marker := m.markerPrefix + suffix
+			if val, ok := style.Get(marker); ok {
+				wrongProp := "border-" + m.wrongSide + suffix
+				correctProp := "border-" + m.correctSide + suffix
+
+				style.Set(correctProp, val)
+				if m.wrongSide != m.correctSide {
+					if curVal, curOk := style.Get(wrongProp); curOk && curVal == val {
+						delete(style.Properties, wrongProp)
+					}
+				}
+				delete(style.Properties, marker)
+			}
+		}
+	}
+}
+
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
@@ -726,6 +877,8 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		// element's computed writing-mode. Must happen after inheritance so that
 		// inherited writing-mode is available.
 		resolveLogicalSizeProperties(style)
+		// Resolve logical box properties (margin/padding/border-inline/block)
+		resolveLogicalBoxProperties(style)
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
 		styles[node] = style

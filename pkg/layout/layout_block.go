@@ -14,10 +14,15 @@ import (
 // context per CSS 2.1 §9.4.1. Such blocks must not overlap float margin boxes.
 func blockChildEstablishesBFC(style *css.Style) bool {
 	overflow := style.GetOverflow()
+	display := style.GetDisplay()
 	return overflow == css.OverflowHidden ||
 		overflow == css.OverflowAuto ||
 		overflow == css.OverflowScroll ||
-		style.GetDisplay() == css.DisplayFlowRoot
+		display == css.DisplayFlowRoot ||
+		display == css.DisplayFlex ||
+		display == css.DisplayInlineFlex ||
+		display == css.DisplayGrid ||
+		display == css.DisplayInlineGrid
 }
 
 func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
@@ -108,6 +113,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Check if this is an SVG element (replaced element with explicit dimensions)
 	isSVG := node.TagName == "svg"
+	svgWidthFromViewBox := false // true when SVG width was auto-derived from container (viewBox path)
 
 	// Ruby display types: normalize for layout purposes.
 	// display:ruby → treat as inline (the ruby element participates in inline flow)
@@ -246,6 +252,18 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				contentWidth = w
 				hasExplicitWidth = true
 			}
+		} else if viewBox, ok := node.GetAttribute("viewbox"); ok {
+			// SVG 2 §7.7 / CSS Images Level 3: SVG with viewBox but no explicit
+			// width uses the containing block width as its width, then derives
+			// height from the viewBox aspect ratio. This handles inline <svg>
+			// elements used as flex items with only viewBox dimensions.
+			_ = viewBox // viewBox parsing is done below in height section
+			contentWidth = availableWidth - margin.Left - margin.Right - padding.Left - padding.Right - border.Left - border.Right
+			if contentWidth < 0 {
+				contentWidth = 0
+			}
+			hasExplicitWidth = true
+			svgWidthFromViewBox = true
 		}
 	} else if display == css.DisplayInline {
 		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore width property)
@@ -361,6 +379,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			if h, err := strconv.ParseFloat(heightAttr, 64); err == nil {
 				contentHeight = h
 				hasExplicitHeight = true
+			}
+		} else if viewBox, ok := node.GetAttribute("viewbox"); ok {
+			// SVG 2 §7.7: Derive height from viewBox aspect ratio and computed width.
+			parts := strings.Fields(viewBox)
+			if len(parts) == 4 {
+				vbW, errW := strconv.ParseFloat(parts[2], 64)
+				vbH, errH := strconv.ParseFloat(parts[3], 64)
+				if errW == nil && errH == nil && vbW > 0 && vbH > 0 {
+					contentHeight = contentWidth * vbH / vbW
+					hasExplicitHeight = true
+				}
 			}
 		}
 	} else if display == css.DisplayInline {
@@ -556,6 +585,24 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		contentHeight = contentWidth * float64(imageHeight) / float64(imageWidth)
 	}
 
+	// For SVG elements with viewBox: after width clamping (max-width/min-width),
+	// recalculate height from viewBox aspect ratio if no explicit CSS height.
+	if isSVG && !isImage {
+		if viewBox, ok := node.GetAttribute("viewbox"); ok {
+			parts := strings.Fields(viewBox)
+			if len(parts) == 4 {
+				vbW, errW := strconv.ParseFloat(parts[2], 64)
+				vbH, errH := strconv.ParseFloat(parts[3], 64)
+				if errW == nil && errH == nil && vbW > 0 && vbH > 0 {
+					expectedH := contentWidth * vbH / vbW
+					if _, ok := style.GetLength("height"); !ok {
+						contentHeight = expectedH
+					}
+				}
+			}
+		}
+	}
+
 	// Apply min/max height constraints (min-height overrides max-height per CSS 2.1 10.7)
 	maxHeightVal := 0.0
 	hasMaxHeight := false
@@ -604,6 +651,53 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 	if hasMinHeight && contentHeight < minHeightVal {
 		contentHeight = minHeightVal
+	}
+
+	// CSS 2.1 §10.4: For replaced elements with intrinsic aspect ratio, after
+	// min/max-height clamping changes the height, recalculate width via AR.
+	// This is the height→width analogue of the width→height recalc at line 554.
+	// Only applies when width is not explicitly set via CSS (imageHasCSSWidth=false)
+	// and height was changed from the natural value by min/max-height constraints.
+	if isImage && !imageHasCSSWidth && imageWidth > 0 && imageHeight > 0 {
+		expectedH := contentWidth * float64(imageHeight) / float64(imageWidth)
+		if (hasMinHeight || hasMaxHeight) && math.Abs(contentHeight-expectedH) > 0.5 {
+			newW := contentHeight * float64(imageWidth) / float64(imageHeight)
+			// Also respect min/max-width constraints on the transferred width
+			if hasMinWidth && newW < resolvedMinWidth {
+				newW = resolvedMinWidth
+			}
+			if maxW, ok := resolveCalcWidth("max-width"); ok && newW > maxW {
+				newW = maxW
+			}
+			contentWidth = newW
+		}
+	}
+
+	// CSS 2.1 §10.4: For SVG elements with viewBox aspect ratio, after
+	// min/max-height clamping changes the height, recalculate width via AR.
+	// Only applies when SVG width was auto-derived from container (not explicitly set).
+	if isSVG && svgWidthFromViewBox && (hasMinHeight || hasMaxHeight) {
+		if viewBox, ok := node.GetAttribute("viewbox"); ok {
+			parts := strings.Fields(viewBox)
+			if len(parts) == 4 {
+				vbW, errW := strconv.ParseFloat(parts[2], 64)
+				vbH, errH := strconv.ParseFloat(parts[3], 64)
+				if errW == nil && errH == nil && vbW > 0 && vbH > 0 {
+					expectedH := contentWidth * vbH / vbW
+					if math.Abs(contentHeight-expectedH) > 0.5 {
+						newW := contentHeight * vbW / vbH
+						// Also respect min/max-width constraints on the transferred width
+						if hasMinWidth && newW < resolvedMinWidth {
+							newW = resolvedMinWidth
+						}
+						if maxW, ok := resolveCalcWidth("max-width"); ok && newW > maxW {
+							newW = maxW
+						}
+						contentWidth = newW
+					}
+				}
+			}
+		}
 	}
 
 	// Phase 13: Handle margin: auto for horizontal centering

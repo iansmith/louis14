@@ -123,8 +123,10 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	// Determine main axis available size
 	var mainSize, crossSize float64
 	hasDefiniteCross := false
+	mainSizeIsDefinite := false // true when main size comes from explicit height/width (not just min-height)
 	if isRow {
 		mainSize = contentBoxWidth
+		mainSizeIsDefinite = true // row direction: width is always definite from containing block
 		if contentBoxHeight > 0 {
 			crossSize = contentBoxHeight
 			hasDefiniteCross = true
@@ -134,6 +136,14 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			mainSize = contentBoxHeight
 		} else {
 			mainSize = math.MaxFloat64 // indefinite
+		}
+		// CSS Flexbox §9.2: the main size is definite for percentage resolution only
+		// when there's an explicit height (or percentage height). min-height alone
+		// provides a floor but does NOT make the main size definite.
+		if _, hasH := flexBox.Style.GetLength("height"); hasH {
+			mainSizeIsDefinite = true
+		} else if _, hasPctH := flexBox.Style.GetPercentage("height"); hasPctH {
+			mainSizeIsDefinite = true
 		}
 		// Only treat cross size as definite if there's an explicit width.
 		// In vertical writing mode (where isRow was swapped), the physical width
@@ -329,7 +339,46 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						// already applied aspect-ratio transfer and CSS height/max-width constraints
 						// to item.Box.Width. ComputeIntrinsicSizes returns raw file dimensions,
 						// which is wrong when height + aspect-ratio determine the displayed width.
-						item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+						//
+						// CSS Flexbox §9.2 Part E: For items with aspect ratio, the flex base
+						// size is NOT influenced by main-axis min/max constraints. Use intrinsic
+						// width when the main-axis (width) has min/max constraints that would
+						// change the dimension from intrinsic. Cross-axis constraints (min-height)
+						// that transfer through AR are correctly reflected in box.Width.
+						useIntrinsic := false
+						if item.Box.Node.TagName == "img" {
+							_, hasExplW := item.Box.Style.GetLength("width")
+							_, hasExplWPct := item.Box.Style.GetPercentage("width")
+							_, hasExplH := item.Box.Style.GetLength("height")
+							_, hasExplHPct := item.Box.Style.GetPercentage("height")
+							if !hasExplW && !hasExplWPct && !hasExplH && !hasExplHPct {
+								// Check if main-axis (width) has non-trivial min/max constraints
+								// that would inflate the flex-basis beyond intrinsic size.
+								// min-width:0 is trivial (doesn't constrain anything).
+								if minW, ok := item.Box.Style.GetLength("min-width"); ok && minW > 0 {
+									useIntrinsic = true
+								}
+								if maxW, ok := item.Box.Style.GetLength("max-width"); ok && maxW > 0 {
+									useIntrinsic = true
+								}
+								if _, ok := item.Box.Style.GetPercentage("max-width"); ok {
+									useIntrinsic = true
+								}
+							}
+						}
+						if useIntrinsic {
+							if src, ok := item.Box.Node.GetAttribute("src"); ok {
+								if iw, _, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil && iw > 0 {
+									item.FlexBasis = float64(iw)
+								} else {
+									item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+								}
+							} else {
+								item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+							}
+						} else {
+							item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+						}
 						if item.FlexBasis < 0 {
 							item.FlexBasis = 0
 						}
@@ -372,6 +421,41 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						}
 					}
 					item.FlexBasis = h
+				} else if hPct, hPctOK := item.Box.Style.GetPercentage("height"); hPctOK {
+					// CSS Flexbox 9.2: percentage height resolves against the flex
+					// container's definite main size. If the container main size is
+					// indefinite (no explicit height, only min-height), the percentage
+					// is treated as auto and we fall through to use auto sizing.
+					if mainSizeIsDefinite {
+						h := mainSize * hPct / 100
+						if item.Box.Style.GetBoxSizing() == "border-box" {
+							h -= item.Box.Padding.Top + item.Box.Padding.Bottom + item.Box.Border.Top + item.Box.Border.Bottom
+							if h < 0 {
+								h = 0
+							}
+						}
+						item.FlexBasis = h
+					} else {
+						// Indefinite main size: percentage resolves to auto.
+						// For replaced elements, re-layout with auto height to get AR-derived height.
+						if item.Box.Node != nil && isReplacedElement(item.Box.Node.TagName) {
+							styleForLayout := item.Box.Style.Clone()
+							delete(styleForLayout.Properties, "height")
+							savedStyle := computedStyles[item.Box.Node]
+							computedStyles[item.Box.Node] = styleForLayout
+							naturalBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
+							computedStyles[item.Box.Node] = savedStyle
+							item.FlexBasis = naturalBox.Height - naturalBox.Padding.Top - naturalBox.Padding.Bottom - naturalBox.Border.Top - naturalBox.Border.Bottom
+							// Update item box to use the natural (auto) layout
+							item.Box.Height = naturalBox.Height
+							item.Box.Width = naturalBox.Width
+						} else {
+							item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+						}
+						if item.FlexBasis < 0 {
+							item.FlexBasis = 0
+						}
+					}
 				} else if hval, hok := item.Box.Style.Get("height"); hok && strings.HasPrefix(hval, "calc(") && strings.Contains(hval, "%") {
 					// calc() with percentage: resolve % against flex container main size.
 					expr := hval[5 : len(hval)-1]
@@ -386,11 +470,110 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						item.FlexBasis = h
 					}
 				} else {
-					item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+					// CSS Flexbox §9.2 Part E: For replaced elements with AR and
+					// no explicit CSS width or height in column direction, AND the
+					// main-axis (height) was clamped by min/max-height, use intrinsic
+					// height instead. Cross-axis constraints (min-width) that transfer
+					// through AR should still be reflected in the flex-basis.
+					useIntrinsic := false
+					if item.Box.Node != nil && item.Box.Node.TagName == "img" {
+						_, hasExplW := item.Box.Style.GetLength("width")
+						_, hasExplWPct := item.Box.Style.GetPercentage("width")
+						_, hasExplH := item.Box.Style.GetLength("height")
+						_, hasExplHPct := item.Box.Style.GetPercentage("height")
+						if !hasExplW && !hasExplWPct && !hasExplH && !hasExplHPct {
+							// Check if main-axis (height) has non-trivial min/max constraints.
+							// min-height:0 is trivial (doesn't constrain anything).
+							if minH, ok := item.Box.Style.GetLength("min-height"); ok && minH > 0 {
+								useIntrinsic = true
+							}
+							if maxH, ok := item.Box.Style.GetLength("max-height"); ok && maxH > 0 {
+								useIntrinsic = true
+							}
+						}
+					}
+					if useIntrinsic {
+						if src, ok := item.Box.Node.GetAttribute("src"); ok {
+							if _, ih, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil && ih > 0 {
+								item.FlexBasis = float64(ih)
+							} else {
+								item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+							}
+						} else {
+							item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+						}
+					} else if item.Box.Node != nil && isReplacedElement(item.Box.Node.TagName) && hasDefiniteCross && crossSize > 0 {
+						// CSS Flexbox §9.2 Part E: For replaced elements with intrinsic
+						// aspect ratio and a definite cross size (from stretch or explicit),
+						// compute the flex base size by transferring the cross size through
+						// the aspect ratio.
+						partEDone := false
+						if src, ok := item.Box.Node.GetAttribute("src"); ok {
+							if iw, ih, err := images.GetImageDimensionsWithFetcher(src, le.imageFetcher); err == nil && iw > 0 && ih > 0 {
+								effectiveAlign := resolveAlignment(alignItems, item.Box.Style.GetAlignSelf())
+								_, hasExplW := item.Box.Style.GetLength("width")
+								_, hasExplWPct := item.Box.Style.GetPercentage("width")
+								if effectiveAlign == css.AlignItemsStretch && !hasExplW && !hasExplWPct {
+									// Transferred size: crossSize * (intrinsicHeight / intrinsicWidth)
+									item.FlexBasis = crossSize * float64(ih) / float64(iw)
+									partEDone = true
+								} else if hasExplW || hasExplWPct {
+									// Explicit cross size: use AR with the laid-out width
+									usedW := item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+									item.FlexBasis = usedW * float64(ih) / float64(iw)
+									partEDone = true
+								}
+							}
+						}
+						if !partEDone {
+							item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+						}
+					} else {
+						item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+					}
 				}
 			}
 		} else if basisVal.IsPercent {
-			item.FlexBasis = mainSize * basisVal.Percentage / 100
+			// CSS Flexbox §9.2: percentage flex-basis resolves against the flex container's
+			// main size. If the container's main size is indefinite (column direction with
+			// only min-height, no explicit height), percentage resolves to "content"
+			// (the item's max-content size, ignoring the main size property).
+			if mainSizeIsDefinite {
+				item.FlexBasis = mainSize * basisVal.Percentage / 100
+			} else {
+				// Indefinite main size: percentage flex-basis -> content.
+				// CSS Flexbox §9.2: use the item's max-content size, ignoring the
+				// main-size property (width/height). Re-layout without the
+				// main-size property to get the natural content size.
+				if !isRow && item.Box.Node != nil {
+					// Column direction: re-layout without CSS height
+					styleForLayout := item.Box.Style.Clone()
+					delete(styleForLayout.Properties, "height")
+					savedStyle := computedStyles[item.Box.Node]
+					computedStyles[item.Box.Node] = styleForLayout
+					naturalBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
+					computedStyles[item.Box.Node] = savedStyle
+					item.FlexBasis = naturalBox.Height - naturalBox.Padding.Top - naturalBox.Padding.Bottom - naturalBox.Border.Top - naturalBox.Border.Bottom
+				} else if isRow && item.Box.Node != nil {
+					// Row direction: re-layout without CSS width
+					styleForLayout := item.Box.Style.Clone()
+					delete(styleForLayout.Properties, "width")
+					savedStyle := computedStyles[item.Box.Node]
+					computedStyles[item.Box.Node] = styleForLayout
+					naturalBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
+					computedStyles[item.Box.Node] = savedStyle
+					item.FlexBasis = naturalBox.Width - naturalBox.Padding.Left - naturalBox.Padding.Right - naturalBox.Border.Left - naturalBox.Border.Right
+				} else {
+					if isRow {
+						item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
+					} else {
+						item.FlexBasis = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+					}
+				}
+				if item.FlexBasis < 0 {
+					item.FlexBasis = 0
+				}
+			}
 		} else if basisVal.IsCalc {
 			// Resolve calc() expression with mainSize as the percentage base
 			if resolved, ok := css.EvalCalcWithPercent(basisVal.CalcExpr, basisVal.FontSize, mainSize); ok {

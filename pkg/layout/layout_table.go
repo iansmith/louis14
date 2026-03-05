@@ -1009,6 +1009,12 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				}
 			}
 
+			// In border-collapse: collapse, merge borders from row/row-group/col/table
+			// into the cell's computed style (wider border wins per CSS 2.1 §17.6.2)
+			if tableInfo.BorderCollapse == css.BorderCollapseCollapse && cell.Box.Node != nil {
+				mergeCollapsedBorders(cell.Box.Node, tableBox, colIdx, computedStyles)
+			}
+
 			// Lay out cell content using the full layout engine
 			if cell.Box.PseudoContent != "" && cell.Box.Node == nil {
 				// Pseudo-element cell: manual text box
@@ -1137,5 +1143,153 @@ func isCellNodeEmpty(node *html.Node) bool {
 		}
 	}
 	return true
+}
+
+// mergeCollapsedBorders implements CSS 2.1 §17.6.2 collapsed border model.
+// For each side of a cell, the winning border is the widest border among
+// the cell, row, row-group, column, column-group, and table (with hidden/none handling).
+// This modifies the cell's computed style so that subsequent layout uses
+// the merged borders.
+func mergeCollapsedBorders(cellNode *html.Node, tableBox *Box, colIdx int, computedStyles map[*html.Node]*css.Style) {
+	cellStyle := computedStyles[cellNode]
+	if cellStyle == nil {
+		return
+	}
+
+	// Collect ancestor styles: row (tr), row-group (tbody/thead/tfoot), table
+	var rowStyle, rowGroupStyle *css.Style
+	if cellNode.Parent != nil {
+		rowNode := cellNode.Parent
+		rowStyle = computedStyles[rowNode]
+		if rowNode.Parent != nil {
+			rgNode := rowNode.Parent
+			// Check if it's a row group (tbody/thead/tfoot) or the table itself
+			if rgNode.TagName == "tbody" || rgNode.TagName == "thead" || rgNode.TagName == "tfoot" {
+				rowGroupStyle = computedStyles[rgNode]
+			}
+		}
+	}
+
+	// Find col/colgroup elements for this column index
+	var colStyle, colGroupStyle *css.Style
+	if tableBox.Node != nil {
+		colCount := 0
+		for _, child := range tableBox.Node.Children {
+			if child.Type != html.ElementNode {
+				continue
+			}
+			if child.TagName == "colgroup" {
+				cgStyle := computedStyles[child]
+				startCol := colCount
+				cgSpan := 0
+				for _, gc := range child.Children {
+					if gc.Type == html.ElementNode && gc.TagName == "col" {
+						span := 1
+						if s, ok := gc.GetAttribute("span"); ok {
+							if n, err := fmt.Sscanf(s, "%d", &span); n == 0 || err != nil {
+								span = 1
+							}
+						}
+						if colIdx >= colCount && colIdx < colCount+span {
+							colStyle = computedStyles[gc]
+							colGroupStyle = cgStyle
+						}
+						colCount += span
+						cgSpan += span
+					}
+				}
+				// If colgroup had no col children, it represents cgSpan columns itself
+				if cgSpan == 0 {
+					span := 1
+					if s, ok := child.GetAttribute("span"); ok {
+						if n, err := fmt.Sscanf(s, "%d", &span); n == 0 || err != nil {
+							span = 1
+						}
+					}
+					if colIdx >= startCol && colIdx < startCol+span {
+						colGroupStyle = cgStyle
+					}
+					colCount += span
+				}
+			} else if child.TagName == "col" {
+				span := 1
+				if s, ok := child.GetAttribute("span"); ok {
+					if n, err := fmt.Sscanf(s, "%d", &span); n == 0 || err != nil {
+						span = 1
+					}
+				}
+				if colIdx >= colCount && colIdx < colCount+span {
+					colStyle = computedStyles[child]
+				}
+				colCount += span
+			}
+		}
+	}
+
+	// For each side (top, right, bottom, left), pick the widest border
+	// among cell, row, row-group, column, column-group, and table.
+	// Priority at equal width: cell > row > row-group > column > column-group > table.
+	sides := []string{"top", "right", "bottom", "left"}
+	ancestorStyles := []*css.Style{rowStyle, rowGroupStyle, colStyle, colGroupStyle, tableBox.Style}
+
+	for _, side := range sides {
+		widthProp := "border-" + side + "-width"
+		styleProp := "border-" + side + "-style"
+		colorProp := "border-" + side + "-color"
+
+		// Get cell's own border
+		cellWidthStr, _ := cellStyle.Get(widthProp)
+		cellBorderStyle, _ := cellStyle.Get(styleProp)
+		cellWidth, _ := css.ParseLength(cellWidthStr)
+		if cellBorderStyle == "none" || cellBorderStyle == "" {
+			cellWidth = 0
+		}
+
+		// Check ancestors for wider borders
+		bestWidth := cellWidth
+		bestStyleProp := cellBorderStyle
+		bestColorProp, _ := cellStyle.Get(colorProp)
+		bestWidthStr := cellWidthStr
+
+		for _, ancestorStyle := range ancestorStyles {
+			if ancestorStyle == nil {
+				continue
+			}
+			aWidthStr, _ := ancestorStyle.Get(widthProp)
+			aBorderStyle, _ := ancestorStyle.Get(styleProp)
+			aWidth, _ := css.ParseLength(aWidthStr)
+			if aBorderStyle == "none" || aBorderStyle == "" {
+				continue
+			}
+			if aBorderStyle == "hidden" {
+				// hidden wins: force no border
+				bestWidth = 0
+				bestStyleProp = "hidden"
+				bestColorProp = ""
+				bestWidthStr = "0"
+				break
+			}
+			if aWidth > bestWidth {
+				bestWidth = aWidth
+				bestStyleProp = aBorderStyle
+				aColor, _ := ancestorStyle.Get(colorProp)
+				bestColorProp = aColor
+				bestWidthStr = aWidthStr
+			}
+		}
+
+		// Apply the winning border to the cell's computed style
+		if bestWidth != cellWidth || bestStyleProp != cellBorderStyle {
+			if bestWidthStr != "" {
+				cellStyle.Set(widthProp, bestWidthStr)
+			}
+			if bestStyleProp != "" {
+				cellStyle.Set(styleProp, bestStyleProp)
+			}
+			if bestColorProp != "" {
+				cellStyle.Set(colorProp, bestColorProp)
+			}
+		}
+	}
 }
 

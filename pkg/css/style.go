@@ -1337,95 +1337,140 @@ func expandShorthand(style *Style, property, value string) {
 	// CSS Logical Properties — resolve to physical properties
 	// Assumes horizontal-tb writing mode (default) with LTR direction
 	case "margin-inline-start":
+		// Store under marker; resolved by resolveLogicalBoxProperties based on writing-mode
 		style.Set("margin-left", value)
+		style.Set("_margin-inline-start", value)
 	case "margin-inline-end":
 		style.Set("margin-right", value)
+		style.Set("_margin-inline-end", value)
 	case "margin-block-start":
 		style.Set("margin-top", value)
+		style.Set("_margin-block-start", value)
 	case "margin-block-end":
 		style.Set("margin-bottom", value)
+		style.Set("_margin-block-end", value)
 	case "margin-inline":
 		parts := strings.Fields(value)
 		if len(parts) == 1 {
 			style.Set("margin-left", parts[0])
 			style.Set("margin-right", parts[0])
+			style.Set("_margin-inline-start", parts[0])
+			style.Set("_margin-inline-end", parts[0])
 		} else if len(parts) >= 2 {
 			style.Set("margin-left", parts[0])
 			style.Set("margin-right", parts[1])
+			style.Set("_margin-inline-start", parts[0])
+			style.Set("_margin-inline-end", parts[1])
 		}
 	case "margin-block":
 		parts := strings.Fields(value)
 		if len(parts) == 1 {
 			style.Set("margin-top", parts[0])
 			style.Set("margin-bottom", parts[0])
+			style.Set("_margin-block-start", parts[0])
+			style.Set("_margin-block-end", parts[0])
 		} else if len(parts) >= 2 {
 			style.Set("margin-top", parts[0])
 			style.Set("margin-bottom", parts[1])
+			style.Set("_margin-block-start", parts[0])
+			style.Set("_margin-block-end", parts[1])
 		}
 	case "padding-inline-start":
 		style.Set("padding-left", value)
+		style.Set("_padding-inline-start", value)
 	case "padding-inline-end":
 		style.Set("padding-right", value)
+		style.Set("_padding-inline-end", value)
 	case "padding-block-start":
 		style.Set("padding-top", value)
+		style.Set("_padding-block-start", value)
 	case "padding-block-end":
 		style.Set("padding-bottom", value)
+		style.Set("_padding-block-end", value)
 	case "padding-inline":
 		parts := strings.Fields(value)
 		if len(parts) == 1 {
 			style.Set("padding-left", parts[0])
 			style.Set("padding-right", parts[0])
+			style.Set("_padding-inline-start", parts[0])
+			style.Set("_padding-inline-end", parts[0])
 		} else if len(parts) >= 2 {
 			style.Set("padding-left", parts[0])
 			style.Set("padding-right", parts[1])
+			style.Set("_padding-inline-start", parts[0])
+			style.Set("_padding-inline-end", parts[1])
 		}
 	case "padding-block":
 		parts := strings.Fields(value)
 		if len(parts) == 1 {
 			style.Set("padding-top", parts[0])
 			style.Set("padding-bottom", parts[0])
+			style.Set("_padding-block-start", parts[0])
+			style.Set("_padding-block-end", parts[0])
 		} else if len(parts) >= 2 {
 			style.Set("padding-top", parts[0])
 			style.Set("padding-bottom", parts[1])
+			style.Set("_padding-block-start", parts[0])
+			style.Set("_padding-block-end", parts[1])
 		}
 	case "border-inline":
 		expandBorderSideProperty(style, "border-left", value)
 		expandBorderSideProperty(style, "border-right", value)
+		storeBorderLogicalMarker(style, "_border-inline-start", value)
+		storeBorderLogicalMarker(style, "_border-inline-end", value)
 	case "border-block":
 		expandBorderSideProperty(style, "border-top", value)
 		expandBorderSideProperty(style, "border-bottom", value)
+		storeBorderLogicalMarker(style, "_border-block-start", value)
+		storeBorderLogicalMarker(style, "_border-block-end", value)
 	case "border-inline-start":
 		expandBorderSideProperty(style, "border-left", value)
+		storeBorderLogicalMarker(style, "_border-inline-start", value)
 	case "border-inline-end":
 		expandBorderSideProperty(style, "border-right", value)
+		storeBorderLogicalMarker(style, "_border-inline-end", value)
 	case "border-block-start":
 		expandBorderSideProperty(style, "border-top", value)
+		storeBorderLogicalMarker(style, "_border-block-start", value)
 	case "border-block-end":
 		expandBorderSideProperty(style, "border-bottom", value)
+		storeBorderLogicalMarker(style, "_border-block-end", value)
 	case "border-inline-start-width":
 		style.Set("border-left-width", value)
+		style.Set("_border-inline-start-width", value)
 	case "border-inline-end-width":
 		style.Set("border-right-width", value)
+		style.Set("_border-inline-end-width", value)
 	case "border-block-start-width":
 		style.Set("border-top-width", value)
+		style.Set("_border-block-start-width", value)
 	case "border-block-end-width":
 		style.Set("border-bottom-width", value)
+		style.Set("_border-block-end-width", value)
 	case "border-inline-start-style":
 		style.Set("border-left-style", value)
+		style.Set("_border-inline-start-style", value)
 	case "border-inline-end-style":
 		style.Set("border-right-style", value)
+		style.Set("_border-inline-end-style", value)
 	case "border-block-start-style":
 		style.Set("border-top-style", value)
+		style.Set("_border-block-start-style", value)
 	case "border-block-end-style":
 		style.Set("border-bottom-style", value)
+		style.Set("_border-block-end-style", value)
 	case "border-inline-start-color":
 		style.Set("border-left-color", value)
+		style.Set("_border-inline-start-color", value)
 	case "border-inline-end-color":
 		style.Set("border-right-color", value)
+		style.Set("_border-inline-end-color", value)
 	case "border-block-start-color":
 		style.Set("border-top-color", value)
+		style.Set("_border-block-start-color", value)
 	case "border-block-end-color":
 		style.Set("border-bottom-color", value)
+		style.Set("_border-block-end-color", value)
 	case "inset-inline-start":
 		style.Set("left", value)
 	case "inset-inline-end":
@@ -2082,6 +2127,31 @@ func expandFlexFlowProperty(style *Style, value string) {
 // expandBorderSideProperty expands border-top/right/bottom/left shorthands.
 // Per CSS spec, shorthand properties reset ALL sub-properties to their initial values,
 // then apply the specified values.
+// storeBorderLogicalMarker parses a border shorthand value and stores the
+// sub-properties under the given marker prefix (e.g. "_border-inline-start").
+// Unlike expandBorderSideProperty, this does NOT prefix "border-" to the marker.
+func storeBorderLogicalMarker(style *Style, marker, value string) {
+	// Parse the value the same way as expandBorderSideProperty
+	width, borderStyle, color := "3px", "none", "currentcolor"
+	parts := strings.Fields(value)
+	for _, part := range parts {
+		if part == "0" {
+			width = "0"
+		} else if bw, ok := borderWidthKeyword(part); ok {
+			width = bw
+		} else if _, ok := ParseLength(part); ok {
+			width = part
+		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" || part == "inset" || part == "outset" || part == "groove" || part == "ridge" {
+			borderStyle = part
+		} else {
+			color = part
+		}
+	}
+	style.Set(marker+"-width", width)
+	style.Set(marker+"-style", borderStyle)
+	style.Set(marker+"-color", color)
+}
+
 func expandBorderSideProperty(style *Style, property, value string) {
 	// property is "border-top", "border-right", etc.
 	side := strings.TrimPrefix(property, "border-")
