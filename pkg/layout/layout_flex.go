@@ -25,17 +25,22 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 	// CSS Flexbox §9.1 + CSS Writing Modes §6.4: flex-direction: row follows the
 	// inline direction of the writing mode. In vertical writing modes (vertical-rl,
-	// vertical-lr), the inline direction is vertical, so "row" maps to the block
-	// axis (column-like) and "column" maps to the inline axis (row-like).
+	// vertical-lr, sideways-rl, sideways-lr), the inline direction is vertical,
+	// so "row" maps to the block axis (column-like) and "column" maps to the
+	// inline axis (row-like).
 	isVerticalWM := false
-	isVerticalRL := false // vertical-rl specifically (block axis goes right-to-left)
-	if wm, ok := flexBox.Style.Get("writing-mode"); ok {
-		if wm == "vertical-rl" || wm == "vertical-lr" {
-			isVerticalWM = true
-			isVerticalRL = wm == "vertical-rl"
-			isRow = !isRow
-		}
+	isVerticalRL := false // vertical-rl/sideways-rl: block axis goes right-to-left
+	isSidewaysLR := false // sideways-lr: inline axis goes bottom-to-top (reversed)
+	wm, _ := flexBox.Style.Get("writing-mode")
+	if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
+		isVerticalWM = true
+		isVerticalRL = (wm == "vertical-rl" || wm == "sideways-rl")
+		isSidewaysLR = (wm == "sideways-lr")
+		isRow = !isRow
 	}
+
+	// Track the original flex-direction before any axis swaps for RTL cross handling.
+	originalIsRow := (direction == css.FlexDirectionRow || direction == css.FlexDirectionRowReverse)
 
 	// CSS Writing Modes §7.1: In vertical-rl, the block axis (which "column" direction
 	// follows) runs right-to-left. After the isRow flip, original "column" becomes
@@ -46,40 +51,75 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		isReverse = !isReverse
 	}
 
-	// CSS Flexbox §4.5: direction:rtl flips the main axis for row direction.
-	// row + rtl = items flow right-to-left (same as row-reverse + ltr)
-	// row-reverse + rtl = items flow left-to-right (same as row + ltr)
-	isRTL := flexBox.Style.GetDirection() == css.DirectionRTL
-	if isRow && isRTL {
+	// CSS Writing Modes §6.4: sideways-lr reverses the inline direction compared
+	// to vertical-lr. In vertical-lr, inline axis = top-to-bottom; in sideways-lr,
+	// inline axis = bottom-to-top. For flex-direction:row (maps to physical column
+	// after isRow flip), the main axis direction must be reversed.
+	if isSidewaysLR && !isRow {
+		// !isRow means original flex-direction was "row" (after the isRow flip).
+		// The physical main axis is vertical. sideways-lr runs bottom-to-top.
 		isReverse = !isReverse
 	}
 
-	// CSS Box Alignment §6.1: left/right only apply to the inline axis.
-	// For row direction (inline axis = main), left→flex-start, right→flex-end.
-	// For column direction (inline axis ≠ main), left/right fall back to "start"
-	// (physical start of the main axis). "start" = flex-start for non-reverse,
-	// but flex-end for reverse (since reverse flips where flex-start is).
-	// When the effective direction is reversed (row-reverse LTR or row RTL),
-	// physical left/right swap relative to flex-start/flex-end.
-	if justifyContent == css.JustifyContentLeft {
-		if isRow && isReverse {
-			justifyContent = css.JustifyContentFlexEnd
-		} else if !isRow && isReverse {
-			// column-reverse: "start" = physical top = flex-end
-			justifyContent = css.JustifyContentFlexEnd
+	// CSS Flexbox §4.5 + CSS Writing Modes: direction:rtl affects the inline axis.
+	// - flex-direction:row follows the inline axis → RTL flips main direction
+	// - flex-direction:column follows the block axis → RTL flips cross direction
+	// The originalIsRow flag tracks whether the original flex-direction was row/row-reverse
+	// (before the vertical WM axis swap), so RTL correctly targets the inline axis.
+	isRTL := flexBox.Style.GetDirection() == css.DirectionRTL
+	// RTL reverses the cross axis when the original direction is column
+	// (the cross axis = inline axis, which is affected by direction:rtl).
+	rtlReverseCross := false
+	if isRTL && originalIsRow {
+		// Original flex-direction:row → inline = main axis → flip main direction.
+		isReverse = !isReverse
+	} else if isRTL && !originalIsRow {
+		// Original flex-direction:column → inline = cross axis → flip cross later.
+		rtlReverseCross = true
+	}
+
+	// CSS Box Alignment §6.1: left/right in justify-content.
+	// When the main axis is NOT parallel to the inline axis (column direction in any WM),
+	// both left and right fall back to "start" (= flex-start for non-reverse, flex-end for reverse).
+	// When the main axis IS the inline axis (row direction), left/right have physical meaning.
+	if justifyContent == css.JustifyContentLeft || justifyContent == css.JustifyContentRight {
+		if !originalIsRow {
+			// Column direction: main axis ≠ inline axis → both left and right → "start"
+			if isReverse {
+				justifyContent = css.JustifyContentFlexEnd
+			} else {
+				justifyContent = css.JustifyContentFlexStart
+			}
+		} else if isVerticalWM {
+			// Row direction in vertical WM: main axis = vertical inline axis.
+			if justifyContent == css.JustifyContentLeft {
+				if isReverse {
+					justifyContent = css.JustifyContentFlexEnd
+				} else {
+					justifyContent = css.JustifyContentFlexStart
+				}
+			} else {
+				if isReverse {
+					justifyContent = css.JustifyContentFlexStart
+				} else {
+					justifyContent = css.JustifyContentFlexEnd
+				}
+			}
 		} else {
-			justifyContent = css.JustifyContentFlexStart
-		}
-	} else if justifyContent == css.JustifyContentRight {
-		if isRow && isReverse {
-			justifyContent = css.JustifyContentFlexStart
-		} else if isRow {
-			justifyContent = css.JustifyContentFlexEnd
-		} else if isReverse {
-			// column-reverse: "start" = physical top = flex-end
-			justifyContent = css.JustifyContentFlexEnd
-		} else {
-			justifyContent = css.JustifyContentFlexStart
+			// Row direction in horizontal-tb: left/right are physical.
+			if justifyContent == css.JustifyContentLeft {
+				if isReverse {
+					justifyContent = css.JustifyContentFlexEnd
+				} else {
+					justifyContent = css.JustifyContentFlexStart
+				}
+			} else {
+				if isReverse {
+					justifyContent = css.JustifyContentFlexStart
+				} else {
+					justifyContent = css.JustifyContentFlexEnd
+				}
+			}
 		}
 	}
 
@@ -393,7 +433,8 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						// ComputeIntrinsicSizes ignores writing-mode transforms and returns the
 						// wrong (pre-transform) width. Use item.Box.Width directly instead.
 						itemWM, _ := item.Box.Style.Get("writing-mode")
-						if itemWM == "vertical-rl" || itemWM == "vertical-lr" {
+						if itemWM == "vertical-rl" || itemWM == "vertical-lr" ||
+							itemWM == "sideways-rl" || itemWM == "sideways-lr" {
 							// Use the transform-aware laid-out width; children are already correct.
 							item.FlexBasis = item.Box.Width - item.Box.Padding.Left - item.Box.Padding.Right - item.Box.Border.Left - item.Box.Border.Right
 							if item.FlexBasis < 0 {
@@ -1425,17 +1466,24 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
-	// CSS Writing Modes §7.1 + Flexbox §9.2: In vertical-rl writing mode, the block
-	// axis (cross axis for row direction) runs right-to-left. This means the first
-	// flex line goes on the RIGHT, and subsequent wrapped lines go to the LEFT.
-	// This is the opposite of the default left-to-right cross axis, so we need to
-	// reverse the cross-axis positions, effectively XOR-ing with isWrapReverse.
-	// vertical-lr keeps the default left-to-right cross axis (no reversal needed).
-	shouldReverseCross := isWrapReverse
+	// CSS Writing Modes §7.1 + Flexbox §9.2: The cross axis direction depends on:
+	// 1. flex-wrap: wrap-reverse flips the cross direction
+	// 2. Writing mode: vertical-rl has right-to-left block axis (cross for original row)
+	// 3. direction: rtl on original column flex → cross axis (inline) goes right-to-left
+	crossNaturallyReversed := false
 	if isVerticalRL && !isRow {
-		// !isRow here means original direction was row (isRow was flipped by vertical-rl)
-		shouldReverseCross = !isWrapReverse
+		// Physical column (original row in v-rl/sideways-rl): cross = horizontal block axis = right-to-left.
+		crossNaturallyReversed = true
 	}
+	if isSidewaysLR && isRow {
+		// Physical row (original column in sideways-lr): cross = vertical inline axis = bottom-to-top.
+		crossNaturallyReversed = true
+	}
+	if rtlReverseCross {
+		// Original column direction + RTL: cross axis = inline direction reversed.
+		crossNaturallyReversed = !crossNaturallyReversed
+	}
+	shouldReverseCross := isWrapReverse != crossNaturallyReversed
 	if shouldReverseCross && len(lines) > 1 {
 		// Reverse line order along cross axis
 		totalCross := 0.0
@@ -1507,6 +1555,14 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
+	// Save absolutely-positioned children before resetting (they were added in createFlexItemsProper)
+	var absposChildren []*Box
+	for _, child := range flexBox.Children {
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			absposChildren = append(absposChildren, child)
+		}
+	}
+
 	flexBox.Children = flexBox.Children[:0]
 	for _, line := range lines {
 		for _, item := range line.Items {
@@ -1535,6 +1591,9 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			flexBox.Children = append(flexBox.Children, item.Box)
 		}
 	}
+	// Re-add absolutely-positioned children (they don't participate in flex layout
+	// but must be in the tree for rendering)
+	flexBox.Children = append(flexBox.Children, absposChildren...)
 
 	// Step 13: Update container auto width for column direction
 	if !isRow && !hasDefiniteCross {
@@ -1773,8 +1832,13 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		// and do not contribute to intrinsic sizes or gap spacing.
 		childPos := childStyle.GetPosition()
 		if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
-			// Still layout the child (adds it to absoluteBoxes for later positioning)
-			le.layoutNode(child, flexBox.X, flexBox.Y, flexBox.Width, computedStyles, flexBox)
+			// Layout the child and add it to the flex container's children list.
+			// Note: flexBox.Children is reset in layoutFlex Step 12, so these boxes
+			// are collected there and re-added after Step 12.
+			absBox := le.layoutNode(child, flexBox.X, flexBox.Y, flexBox.Width, computedStyles, flexBox)
+			if absBox != nil {
+				flexBox.Children = append(flexBox.Children, absBox)
+			}
 			continue
 		}
 
@@ -1860,7 +1924,7 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		// from horizontal lines to vertical-rl columns for auto-sized items.
 		// Items with explicit width/height keep their specified dimensions.
 		if wm, ok := flexBox.Style.Get("writing-mode"); ok {
-			if wm == "vertical-rl" || wm == "vertical-lr" {
+			if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
 				_, hasExplicitW := childStyle.GetLength("width")
 				_, hasExplicitH := childStyle.GetLength("height")
 				if !hasExplicitW && !hasExplicitH {
@@ -2064,6 +2128,18 @@ func resolveFlexibleLengths(line *FlexLine, availableMain, mainGap float64, isRo
 		}
 	}
 
+	// Calculate initial free space (before any items are frozen by min/max clamping).
+	// Per CSS Flexbox §9.7 step 3: used for fractional flex factor capping.
+	initialUsedSpace := 0.0
+	for i, item := range line.Items {
+		if states[i].frozen {
+			initialUsedSpace += states[i].targetMain + item.mainMargins(isRow) + item.mainPaddingBorder(isRow)
+		} else {
+			initialUsedSpace += item.FlexBasis + item.mainMargins(isRow) + item.mainPaddingBorder(isRow)
+		}
+	}
+	initialFreeSpace := effectiveAvailable - initialUsedSpace
+
 	// Iterative resolution loop
 	for iteration := 0; iteration < 10; iteration++ {
 		// Check if all frozen
@@ -2098,25 +2174,50 @@ func resolveFlexibleLengths(line *FlexLine, availableMain, mainGap float64, isRo
 				}
 			}
 			if totalGrowFactor > 0 {
+				// Per CSS Flexbox §9.7.1: If the sum of the unfrozen flex items' flex
+				// factors is less than one, multiply the *initial* free space by this sum.
+				// If the magnitude of this value is less than the magnitude of the
+				// remaining free space, use this as the remaining free space.
+				effectiveFree := freeSpace
+				if totalGrowFactor < 1 {
+					capped := initialFreeSpace * totalGrowFactor
+					if capped >= 0 && capped < freeSpace {
+						effectiveFree = capped
+					}
+				}
 				for i, item := range line.Items {
 					if !states[i].frozen {
-						states[i].targetMain = item.FlexBasis + freeSpace*(item.FlexGrow/totalGrowFactor)
+						states[i].targetMain = item.FlexBasis + effectiveFree*(item.FlexGrow/totalGrowFactor)
 					}
 				}
 			}
 		} else {
 			// Shrink: weighted by flex-shrink * flex-basis
+			totalShrinkFactor := 0.0
 			totalScaledShrink := 0.0
 			for i, item := range line.Items {
 				if !states[i].frozen {
+					totalShrinkFactor += item.FlexShrink
 					totalScaledShrink += item.FlexShrink * item.FlexBasis
 				}
 			}
 			if totalScaledShrink > 0 {
+				// Per CSS Flexbox §9.7.1: If the sum of the unfrozen flex items' flex
+				// shrink factors is less than one, multiply the initial free space by
+				// this sum. If the magnitude is less than the remaining free space,
+				// use this as the remaining free space.
+				effectiveFree := freeSpace
+				if totalShrinkFactor < 1 {
+					capped := initialFreeSpace * totalShrinkFactor
+					// freeSpace is negative when shrinking; capped magnitude should be less
+					if capped <= 0 && capped > freeSpace {
+						effectiveFree = capped
+					}
+				}
 				for i, item := range line.Items {
 					if !states[i].frozen {
 						scaledFactor := item.FlexShrink * item.FlexBasis / totalScaledShrink
-						states[i].targetMain = item.FlexBasis + freeSpace*scaledFactor
+						states[i].targetMain = item.FlexBasis + effectiveFree*scaledFactor
 					}
 				}
 			}
@@ -2640,7 +2741,7 @@ func computeItemFirstBaseline(item *FlexItem, isRow bool) float64 {
 	// Vertical writing mode containers: no horizontal baseline, synthesize.
 	if box.Parent != nil && box.Parent.Style != nil {
 		if wm, ok := box.Parent.Style.Get("writing-mode"); ok {
-			if wm == "vertical-rl" || wm == "vertical-lr" {
+			if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
 				return -1
 			}
 		}
@@ -2793,7 +2894,7 @@ func computeItemLastBaseline(item *FlexItem, isRow bool) float64 {
 
 	if box.Parent != nil && box.Parent.Style != nil {
 		if wm, ok := box.Parent.Style.Get("writing-mode"); ok {
-			if wm == "vertical-rl" || wm == "vertical-lr" {
+			if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
 				return -1
 			}
 		}
@@ -2880,7 +2981,7 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 					continue
 				}
 				if wm, ok := childStyle.Get("writing-mode"); ok {
-					if wm == "vertical-rl" || wm == "vertical-lr" {
+					if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
 						contentW := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
 						if contentW > 0 {
 							return contentW
@@ -3102,7 +3203,7 @@ func (le *LayoutEngine) resolveItemIntrinsicWidthConstraint(item *FlexItem, keyw
 	// (sum of column widths). ComputeMinMaxSizes ignores writing-mode transforms,
 	// so use the laid-out width directly.
 	if wm, ok := item.Box.Style.Get("writing-mode"); ok {
-		if wm == "vertical-rl" || wm == "vertical-lr" {
+		if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
 			natural := item.Box.Width
 			switch keyword {
 			case "min-content":
