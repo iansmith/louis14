@@ -15,12 +15,17 @@ func bfcChildTooWideForFloats(style *css.Style, remainingWidth, totalWidth float
 	if remainingWidth <= 0 {
 		return true
 	}
+	padding := style.GetPadding()
+	border := style.GetBorderWidth()
+	pbWidth := padding.Left + padding.Right + border.Left + border.Right
 	// Explicit length width: push below if it doesn't fit
 	if w, ok := style.GetLength("width"); ok {
-		padding := style.GetPadding()
-		border := style.GetBorderWidth()
-		requiredWidth := w + padding.Left + padding.Right + border.Left + border.Right
-		return requiredWidth > remainingWidth
+		return w+pbWidth > remainingWidth
+	}
+	// Percentage width: resolve against containing block and check fit
+	if pct, ok := style.GetPercentage("width"); ok && totalWidth > 0 {
+		w := totalWidth * pct / 100
+		return w+pbWidth > remainingWidth
 	}
 	// width:auto — narrow beside floats (don't push below)
 	return false

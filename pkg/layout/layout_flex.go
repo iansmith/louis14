@@ -172,8 +172,18 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			hasDefiniteCross = true
 		}
 	} else {
-		if contentBoxHeight > 0 {
+		// CSS Flexbox §9.2: column direction main size. Use contentBoxHeight when positive,
+		// or when the CSS property explicitly says height: 0 (or resolves to 0 from percentage).
+		// When contentBoxHeight==0 but CSS says e.g. height:500px, the box was flex-resolved
+		// to 0 by an outer flex container — treat as indefinite so items size naturally.
+		cssH, hasExplicitH := flexBox.Style.GetLength("height")
+		cssPctH, hasExplicitPctH := flexBox.Style.GetPercentage("height")
+		explicitZero := (hasExplicitH && cssH == 0) || (hasExplicitPctH && cssPctH == 0)
+		if contentBoxHeight > 0 || explicitZero {
 			mainSize = contentBoxHeight
+			if mainSize < 0 {
+				mainSize = 0
+			}
 		} else {
 			mainSize = math.MaxFloat64 // indefinite
 			// CSS Flexbox §9.2: For wrapping, use max-height as the available main size
@@ -1709,6 +1719,30 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			deltaX := item.Box.X - oldX
 			deltaY := item.Box.Y - oldY
 			le.repositionFlexItemChildren(item.Box, deltaX, deltaY)
+
+			// CSS Flexbox §4.1 / CSS Positioned Layout §3:
+			// Apply position:relative offsets (top/left/bottom/right) to flex items.
+			// These offsets shift the item visually but don't affect flex layout.
+			if item.Box.Position == css.PositionRelative && item.Box.Style != nil {
+				offset := item.Box.Style.GetPositionOffset()
+				relDx, relDy := 0.0, 0.0
+				if offset.HasLeft {
+					relDx = offset.Left
+				} else if offset.HasRight {
+					relDx = -offset.Right
+				}
+				if offset.HasTop {
+					relDy = offset.Top
+				} else if offset.HasBottom {
+					relDy = -offset.Bottom
+				}
+				if relDx != 0 || relDy != 0 {
+					item.Box.X += relDx
+					item.Box.Y += relDy
+					le.repositionFlexItemChildren(item.Box, relDx, relDy)
+				}
+			}
+
 			flexBox.Children = append(flexBox.Children, item.Box)
 		}
 	}
@@ -2154,17 +2188,18 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 			}
 			if val, ok := childStyle.Get(propName); ok {
 				if kw, kwOK := resolveIntrinsicKeyword(val); kwOK {
-					var resolved float64
-					var resolvedOK bool
+					// CSS Sizing 3 §5.1: In the block axis, min-content and max-content
+					// are equivalent to "auto". For column flex (min-height: min-content),
+					// don't resolve to a specific value — let AutoMinMain handle it.
 					if isRow {
-						resolved, resolvedOK = le.resolveItemIntrinsicWidthConstraint(item, kw)
-					} else {
-						resolved, resolvedOK = resolveItemIntrinsicHeightConstraint(item, kw)
+						resolved, resolvedOK := le.resolveItemIntrinsicWidthConstraint(item, kw)
+						if resolvedOK {
+							item.MinMainSize = resolved
+							item.HasMinMain = true
+						}
 					}
-					if resolvedOK {
-						item.MinMainSize = resolved
-						item.HasMinMain = true
-					}
+					// else: column direction — min-height: min-content/max-content
+					// behaves as auto (uses AutoMinMain from computeFlexItemAutoMinMain)
 				}
 			}
 		}
@@ -3268,7 +3303,17 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 						childContribution = child.Height + child.Margin.Top + child.Margin.Bottom
 					} else {
 						// Explicit length basis (e.g. flex-basis:0px)
-						childContribution = childBasis.Length + child.Margin.Top + child.Margin.Bottom
+						// CSS Flexbox §4.5: The content-based minimum uses the
+						// hypothetical main size = max(flex-basis, auto-min-main).
+						// Compute the child's content-based min height from its children.
+						childContentMin := 0.0
+						for _, gc := range child.Children {
+							if gc == nil {
+								continue
+							}
+							childContentMin += gc.Height + gc.Margin.Top + gc.Margin.Bottom
+						}
+						childContribution = math.Max(childBasis.Length, childContentMin) + child.Margin.Top + child.Margin.Bottom
 					}
 					contentMinHeight += childContribution
 				}
