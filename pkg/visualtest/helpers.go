@@ -21,8 +21,25 @@ func RenderHTMLToFile(htmlContent string, outputPath string, width, height int) 
 
 // RenderHTMLToFileWithBase renders HTML content to a PNG file with a base path for resolving relative image URLs
 func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, height int, basePath string) error {
-	// Parse HTML
-	doc, err := html.Parse(htmlContent)
+	// Parse HTML — use fetcher for external CSS if basePath is set
+	var doc *html.Document
+	var err error
+	if basePath != "" {
+		cssFetcher := func(uri string) (string, error) {
+			if strings.HasPrefix(uri, "data:") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+				return "", fmt.Errorf("unsupported URI scheme: %s", uri)
+			}
+			cssPath := filepath.Join(basePath, uri)
+			data, err := os.ReadFile(cssPath)
+			if err != nil {
+				return "", err
+			}
+			return string(data), nil
+		}
+		doc, err = html.ParseWithFetcher(htmlContent, cssFetcher)
+	} else {
+		doc, err = html.Parse(htmlContent)
+	}
 	if err != nil {
 		return fmt.Errorf("parse error: %w", err)
 	}

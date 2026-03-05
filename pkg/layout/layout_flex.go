@@ -176,6 +176,26 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			mainSize = contentBoxHeight
 		} else {
 			mainSize = math.MaxFloat64 // indefinite
+			// CSS Flexbox §9.2: For wrapping, use max-height as the available main size
+			// when no explicit height is set.
+			if mh, ok := flexBox.Style.GetLength("max-height"); ok {
+				pb := flexBox.Padding.Top + flexBox.Padding.Bottom + flexBox.Border.Top + flexBox.Border.Bottom
+				mainSize = mh - pb
+				if mainSize < 0 {
+					mainSize = 0
+				}
+			} else if mhPct, ok := flexBox.Style.GetPercentage("max-height"); ok {
+				if flexBox.Parent != nil {
+					cbH := flexBox.Parent.Height - flexBox.Parent.Padding.Top - flexBox.Parent.Padding.Bottom - flexBox.Parent.Border.Top - flexBox.Parent.Border.Bottom
+					if cbH > 0 {
+						pb := flexBox.Padding.Top + flexBox.Padding.Bottom + flexBox.Border.Top + flexBox.Border.Bottom
+						mainSize = cbH*mhPct/100 - pb
+						if mainSize < 0 {
+							mainSize = 0
+						}
+					}
+				}
+			}
 		}
 		// CSS Flexbox §9.2: the main size is definite for percentage resolution only
 		// when there's an explicit height (or percentage height). min-height alone
@@ -227,10 +247,56 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		crossGap = colGap
 	}
 
+	// Detect shrink-to-fit context early for Step 1b and Step 3b.
+	isShrinkToFit := false
+	containerDisplay := flexBox.Style.GetDisplay()
+	if containerDisplay == css.DisplayInlineFlex {
+		isShrinkToFit = true
+	} else if flexBox.Style.GetFloat() != css.FloatNone {
+		isShrinkToFit = true
+	} else if flexBox.Style.GetPosition() == css.PositionAbsolute || flexBox.Style.GetPosition() == css.PositionFixed {
+		isShrinkToFit = true
+	}
+
 	// Step 1: Create flex items by laying out children to get intrinsic sizes
 	contentStartX := flexBox.X + flexBox.Border.Left + flexBox.Padding.Left
 	contentStartY := flexBox.Y + flexBox.Border.Top + flexBox.Padding.Top
 	items := le.createFlexItemsProper(flexBox, contentStartX, contentStartY, contentBoxWidth, computedStyles, isRow)
+
+	// Step 1b: For column-direction shrink-to-fit flex containers (float, abs pos
+	// without explicit width), compute the cross-axis (width) from items' intrinsic
+	// widths. When contentBoxWidth=0, items were laid out with 0 available width,
+	// so their box.Width only reflects padding+border. Compute the actual content
+	// width and re-create items so the full Step 3 runs with correct cross sizes.
+	// Only applies when contentBoxWidth<=0 (float/abs-pos case); inline-flex
+	// containers already have a valid contentBoxWidth from their parent.
+	if !isRow && isShrinkToFit && contentBoxWidth <= 0 {
+		if _, hasExplicitWidth := flexBox.Style.GetLength("width"); !hasExplicitWidth {
+			if _, hasExplicitPctWidth := flexBox.Style.GetPercentage("width"); !hasExplicitPctWidth {
+				maxCrossWidth := 0.0
+				for _, item := range items {
+					itemCross := le.computeShrinkToFitChildWidth(item.Box)
+					if itemCross > maxCrossWidth {
+						maxCrossWidth = itemCross
+					}
+				}
+				if maxW, ok := flexBox.Style.GetLength("max-width"); ok && maxCrossWidth > maxW {
+					maxCrossWidth = maxW
+				}
+				if minW, ok := flexBox.Style.GetLength("min-width"); ok && maxCrossWidth < minW {
+					maxCrossWidth = minW
+				}
+				if maxCrossWidth > 0 {
+					contentBoxWidth = maxCrossWidth
+					flexBox.Width = maxCrossWidth + flexBox.Padding.Left + flexBox.Padding.Right + flexBox.Border.Left + flexBox.Border.Right
+					crossSize = contentBoxWidth
+					// Re-create items with correct available width; Step 3 below
+					// will compute their flex base sizes correctly.
+					items = le.createFlexItemsProper(flexBox, contentStartX, contentStartY, contentBoxWidth, computedStyles, isRow)
+				}
+			}
+		}
+	}
 
 	// Step 2: Sort by order property
 	sort.SliceStable(items, func(i, j int) bool {
@@ -632,19 +698,44 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 
 		// Hypothetical main size = flex base size clamped by min/max
+		// CSS Flexbox §9.2 step 3: "clamped according to its used min and max main sizes"
 		item.HypotheticalMainSize = item.FlexBasis
-		// Clamp by min-width: auto
+
+		// Clamp by max-width/max-height (explicit length values)
+		if isRow {
+			if maxW, ok := item.Box.Style.GetLength("max-width"); ok && item.HypotheticalMainSize > maxW {
+				item.HypotheticalMainSize = maxW
+			}
+		} else {
+			if maxH, ok := item.Box.Style.GetLength("max-height"); ok && item.HypotheticalMainSize > maxH {
+				item.HypotheticalMainSize = maxH
+			}
+		}
+		// Clamp by resolved max constraint (intrinsic size keyword).
+		if item.HasMaxMain && item.HypotheticalMainSize > item.MaxMainSize {
+			item.HypotheticalMainSize = item.MaxMainSize
+		}
+
+		// Clamp by min-width/min-height (explicit length values)
+		if isRow {
+			if minW, ok := item.Box.Style.GetLength("min-width"); ok && item.HypotheticalMainSize < minW {
+				item.HypotheticalMainSize = minW
+			}
+		} else {
+			if minH, ok := item.Box.Style.GetLength("min-height"); ok && item.HypotheticalMainSize < minH {
+				item.HypotheticalMainSize = minH
+			}
+		}
+		// Clamp by min-width: auto (content-based minimum)
 		if item.HypotheticalMainSize < item.AutoMinMain {
 			item.HypotheticalMainSize = item.AutoMinMain
 		}
+		// Clamp by resolved min constraint (intrinsic size keyword)
+		if item.HasMinMain && item.HypotheticalMainSize < item.MinMainSize {
+			item.HypotheticalMainSize = item.MinMainSize
+		}
 		if item.HypotheticalMainSize < 0 {
 			item.HypotheticalMainSize = 0
-		}
-		// Clamp by resolved max constraint (intrinsic size keyword).
-		// MaxMainSize is set by createFlexItemsProper when the CSS max property
-		// uses a min-content/max-content keyword.
-		if item.HasMaxMain && item.HypotheticalMainSize > item.MaxMainSize {
-			item.HypotheticalMainSize = item.MaxMainSize
 		}
 	}
 
@@ -692,21 +783,9 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
-	// Step 3b: For shrink-to-fit flex containers (float, inline-flex, abs pos without
-	// explicit width/height), compute the ideal main size from items.
-	// CSS Flexbox §9.2: The flex container's main size is its max-content size if
-	// the main size property would be auto.
-	// Only applies to intrinsic-sizing contexts: inline-flex, floated, or abs/fixed positioned.
-	// Block-level display:flex containers use the available width from their parent.
-	isShrinkToFit := false
-	containerDisplay := flexBox.Style.GetDisplay()
-	if containerDisplay == css.DisplayInlineFlex {
-		isShrinkToFit = true
-	} else if flexBox.Style.GetFloat() != css.FloatNone {
-		isShrinkToFit = true
-	} else if flexBox.Style.GetPosition() == css.PositionAbsolute || flexBox.Style.GetPosition() == css.PositionFixed {
-		isShrinkToFit = true
-	}
+	// Step 3b: For shrink-to-fit row-direction flex containers, compute the ideal
+	// main size from items. CSS Flexbox §9.2: The flex container's main size is its
+	// max-content size if the main size property would be auto.
 	if isRow && isShrinkToFit {
 		if _, hasExplicitWidth := flexBox.Style.GetLength("width"); !hasExplicitWidth {
 			if _, hasExplicitPctWidth := flexBox.Style.GetPercentage("width"); !hasExplicitPctWidth {
@@ -888,6 +967,46 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 							item.Box.Height = newH
 						}
 					}
+				}
+			}
+		}
+	}
+
+	// Step 5e: For column-direction flex containers, re-layout items whose height
+	// changed after flex resolution. When an item has an explicit CSS height (e.g. 200px)
+	// but flex resolution changes it (e.g. to 100px via flex-grow from flex-basis:0),
+	// the item's children were laid out at the old height and need re-layout.
+	if !isRow {
+		for _, line := range lines {
+			for _, item := range line.Items {
+				prev := initialSizes[item]
+				if math.Abs(item.Box.Height-prev.h) < 0.5 {
+					continue
+				}
+				if item.Box.Node == nil {
+					continue
+				}
+				childDisplay := item.Box.Style.GetDisplay()
+				if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
+					// Re-layout this flex container with its new height.
+					item.Box.Children = item.Box.Children[:0]
+					le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+				} else if childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid {
+					item.Box.Children = item.Box.Children[:0]
+					contentH := item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
+					newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, contentH, item.Box.Style, computedStyles, flexBox)
+					item.Box.Children = newBox.Children
+				} else {
+					// Block containers: re-layout with established height
+					savedFloats := le.floats
+					savedAbsPos := le.absoluteBoxes
+					le.floats = le.floats[:le.floatBase]
+					le.absoluteBoxes = nil
+					newBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
+					le.floats = savedFloats
+					le.absoluteBoxes = savedAbsPos
+					item.Box.Children = newBox.Children
+					// Preserve the flex-resolved height (don't take newBox.Height)
 				}
 			}
 		}
@@ -1384,7 +1503,8 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 
 	// Align content (distribute lines along cross axis)
 	if hasDefiniteCross && (len(lines) > 1 || wrap != css.FlexWrapNowrap) {
-		freeSpace := crossSize - totalLinesCross
+		rawFreeSpace := crossSize - totalLinesCross
+		freeSpace := rawFreeSpace
 		if freeSpace < 0 {
 			freeSpace = 0
 		}
@@ -1409,7 +1529,8 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				}
 			}
 		case css.AlignContentCenter:
-			pos := freeSpace / 2
+			// CSS Flexbox §9.4: negative free space → overflow symmetrically
+			pos := rawFreeSpace / 2
 			for i, line := range lines {
 				lineOffsets = append(lineOffsets, pos)
 				pos += line.CrossSize
@@ -1756,11 +1877,31 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 				continue
 			}
 
-			// For non-whitespace-only text, when white-space preserves whitespace,
-			// use the raw text with original whitespace preserved.
-			displayText := trimmed
+			// For non-whitespace-only text, use properly whitespace-collapsed text.
+			// CSS Text §4.1.1: collapse runs of CSS whitespace (space, tab, newline)
+			// to a single space, strip leading/trailing. Preserve non-breaking spaces
+			// (U+00A0) which are NOT collapsible whitespace in CSS.
+			var displayText string
 			if preservesWS && child.RawText != "" {
 				displayText = child.RawText
+			} else {
+				// CSS-aware whitespace collapsing: only collapse ASCII whitespace
+				var buf strings.Builder
+				inWS := true // Start true to trim leading whitespace
+				for _, c := range textContent {
+					if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' {
+						if !inWS {
+							buf.WriteByte(' ')
+							inWS = true
+						}
+					} else {
+						buf.WriteRune(c)
+						inWS = false
+					}
+				}
+				displayText = buf.String()
+				// Trim trailing space from collapsed whitespace
+				displayText = strings.TrimRight(displayText, " ")
 			}
 
 			// Create anonymous flex item for text
@@ -3100,14 +3241,44 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 		// the content-based size. This lets the item shrink below its explicit CSS
 		// height when the flex container forces shrinking (AutoMinMain should be
 		// the content height, which may be much less than the CSS height).
-		if _, hasExplicitH := style.GetLength("height"); !hasExplicitH {
+		_, hasExplicitH := style.GetLength("height")
+		_, hasPctH := style.GetPercentage("height")
+		if !hasExplicitH && !hasPctH {
 			contentMinHeight = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
 		} else {
-			for _, child := range box.Children {
-				if child == nil {
-					continue
+			// CSS Flexbox §4.5: For flex container items, the content-size suggestion
+			// is the min-content height, which uses flex-basis values (not laid-out heights
+			// that were inflated by flex-grow within the explicit height).
+			itemDisplay := style.GetDisplay()
+			isFlexColumn := (itemDisplay == css.DisplayFlex || itemDisplay == css.DisplayInlineFlex) &&
+				(style.GetFlexDirection() == css.FlexDirectionColumn || style.GetFlexDirection() == css.FlexDirectionColumnReverse)
+			if isFlexColumn {
+				// Sum children's flex-basis contributions as min-content height.
+				for _, child := range box.Children {
+					if child == nil || child.Style == nil {
+						continue
+					}
+					childBasis := child.Style.GetFlexBasisValue()
+					var childContribution float64
+					if childBasis.IsAuto || childBasis.IsContent {
+						// Auto/content basis: use the child's intrinsic content height
+						childContribution = child.Height + child.Margin.Top + child.Margin.Bottom
+					} else if childBasis.IsPercent {
+						// Percentage basis in indefinite context: treat as content
+						childContribution = child.Height + child.Margin.Top + child.Margin.Bottom
+					} else {
+						// Explicit length basis (e.g. flex-basis:0px)
+						childContribution = childBasis.Length + child.Margin.Top + child.Margin.Bottom
+					}
+					contentMinHeight += childContribution
 				}
-				contentMinHeight += child.Height + child.Margin.Top + child.Margin.Bottom
+			} else {
+				for _, child := range box.Children {
+					if child == nil {
+						continue
+					}
+					contentMinHeight += child.Height + child.Margin.Top + child.Margin.Bottom
+				}
 			}
 		}
 		// A block container with only float children has a strut height (from the
@@ -3115,14 +3286,20 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 		// requires overflow: hidden / clearfix). To get the content-based minimum
 		// height, check if any child extends below the container's content area.
 		// This handles cases like two 50px floats stacking vertically in 100px width.
-		contentStartY := box.Y + box.Padding.Top + box.Border.Top
-		for _, child := range box.Children {
-			if child == nil {
-				continue
-			}
-			childBottom := child.Y + child.Height + child.Margin.Top + child.Margin.Bottom - contentStartY
-			if childBottom > contentMinHeight {
-				contentMinHeight = childBottom
+		// Skip for flex containers: their content-size was already computed from
+		// flex-basis values above, and laid-out positions reflect flex-grow inflation.
+		itemDisplay := style.GetDisplay()
+		isFlex := (itemDisplay == css.DisplayFlex || itemDisplay == css.DisplayInlineFlex)
+		if !isFlex {
+			contentStartY := box.Y + box.Padding.Top + box.Border.Top
+			for _, child := range box.Children {
+				if child == nil {
+					continue
+				}
+				childBottom := child.Y + child.Height + child.Margin.Top + child.Margin.Bottom - contentStartY
+				if childBottom > contentMinHeight {
+					contentMinHeight = childBottom
+				}
 			}
 		}
 	}
@@ -3131,9 +3308,17 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 	}
 
 	// Specified size suggestion: the item's computed height, if definite
+	// CSS Flexbox §4.5: min(content-size suggestion, specified-size suggestion)
 	if h, ok := style.GetLength("height"); ok {
 		if contentMinHeight > h {
 			return h
+		}
+	} else if pctH, ok := style.GetPercentage("height"); ok {
+		// Percentage height resolves against the parent's content height (box.Height
+		// was already resolved during layout). Use the resolved value as specified size.
+		resolvedH := box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+		if pctH > 0 && resolvedH > 0 && contentMinHeight > resolvedH {
+			return resolvedH
 		}
 	}
 	return contentMinHeight
