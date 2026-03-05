@@ -65,7 +65,7 @@ func (le *LayoutEngine) getSyntheticOrComputeStyle(node *html.Node, computedStyl
 	if style, ok := computedStyles[node]; ok {
 		return style
 	}
-	style := css.ComputeStyle(node, le.stylesheets, le.viewport.width, le.viewport.height)
+	style := css.ComputeStyleWithLogical(node, le.stylesheets, le.viewport.width, le.viewport.height)
 	return style
 }
 

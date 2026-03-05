@@ -1193,7 +1193,7 @@ func (le *LayoutEngine) collectInlineItemsClean(
 			computedStyles[child] = synthStyle
 			continue
 		}
-		childStyle := css.ComputeStyle(
+		childStyle := css.ComputeStyleWithLogical(
 			child,
 			le.stylesheets,
 			le.viewport.width,
@@ -1604,7 +1604,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		if _, ok := le.syntheticStyles[child]; ok {
 			continue
 		}
-		computedStyles[child] = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+		computedStyles[child] = css.ComputeStyleWithLogical(child, le.stylesheets, le.viewport.width, le.viewport.height)
 	}
 	children = le.normalizeBlocksInInline(children, computedStyles)
 	// Populate computedStyles with any synthetic nodes created by normalization
@@ -2992,7 +2992,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		if style == nil {
 			// Compute style on-the-fly for nested elements not in the map
 			// (collectInlineItemsClean only pre-computes direct children)
-			style = css.ComputeStyle(node, le.stylesheets, le.viewport.width, le.viewport.height)
+			style = css.ComputeStyleWithLogical(node, le.stylesheets, le.viewport.width, le.viewport.height)
 			// Inherit from parent if available
 			if node.Parent != nil {
 				if parentStyle := computedStyles[node.Parent]; parentStyle != nil {
@@ -3191,7 +3191,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 					childStyle := computedStyles[child]
 					if childStyle == nil {
 						// Compute on the fly for nested elements not in the map
-						childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+						childStyle = css.ComputeStyleWithLogical(child, le.stylesheets, le.viewport.width, le.viewport.height)
 						computedStyles[child] = childStyle
 					}
 					childDisplay := childStyle.GetDisplay()
@@ -3370,7 +3370,7 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 							height = th
 						}
 					} else if child.Type == html.ElementNode {
-						childStyle := css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+						childStyle := css.ComputeStyleWithLogical(child, le.stylesheets, le.viewport.width, le.viewport.height)
 						if childStyle != nil {
 							constraint := NewConstraintSpace(state.AvailableWidth, 0)
 							sizes := le.ComputeMinMaxSizes(child, constraint, childStyle)

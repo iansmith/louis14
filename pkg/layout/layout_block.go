@@ -2301,11 +2301,29 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// transform the horizontally-laid-out children to vertical columns.
 	// Each horizontal "line" of children (grouped by Y position) becomes a vertical column.
 	// This only applies to block/inline-block elements — flex and grid have their own layout.
+	// IMPORTANT: Only fire when this element ESTABLISHES a new writing-mode context
+	// (i.e., writing-mode differs from parent). If the parent is already vertical,
+	// it already transformed its children — we must not double-transform.
 	if style != nil && !isImage && !isSVG && len(box.Children) > 0 {
 		if display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayFlowRoot || display == css.DisplayListItem {
 			if wm, ok := style.Get("writing-mode"); ok {
-				if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
-					transformToVerticalRL(box)
+				isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
+				if isVertical {
+					// Check if the parent HTML node already has a vertical writing-mode.
+					// If so, the parent already transformed its children — skip to avoid
+					// double-transform. Use the HTML node parent + computedStyles because
+					// box.Parent is not reliably set in the block layout path.
+					parentIsVertical := false
+					if node.Parent != nil {
+						if parentStyle := computedStyles[node.Parent]; parentStyle != nil {
+							if parentWM, pok := parentStyle.Get("writing-mode"); pok {
+								parentIsVertical = parentWM == "vertical-rl" || parentWM == "vertical-lr" || parentWM == "sideways-rl" || parentWM == "sideways-lr"
+							}
+						}
+					}
+					if !parentIsVertical {
+						transformToVerticalRL(box)
+					}
 				}
 			}
 		}

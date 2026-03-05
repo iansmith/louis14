@@ -175,6 +175,90 @@ func (cs *ConstraintSpace) AvailableInlineSize(y, height float64) float64 {
 	return cs.AvailableSize.Width - leftOffset - rightOffset
 }
 
+// AvailableInlineSizeDir returns the available inline size at the given block-axis position,
+// accounting for exclusions (floats).
+//
+// For horizontal (dir=DirHorizontal): same as AvailableInlineSize — returns available width.
+// For vertical (dir=DirVerticalRL/LR): returns available height at the given X position.
+func (cs *ConstraintSpace) AvailableInlineSizeDir(blockPos, inlineExtent float64, dir Dir) float64 {
+	if !dir.IsVertical() {
+		return cs.AvailableInlineSize(blockPos, inlineExtent)
+	}
+	// In vertical mode, the available inline size is the available height
+	// minus any start/end offsets from floats at this block position (X).
+	startOffset, endOffset := cs.ExclusionSpace.AvailableInlineSizeDir(blockPos, inlineExtent, dir)
+	return cs.AvailableSize.Height - startOffset - endOffset
+}
+
+// AvailableInlineSizeDir returns start and end offsets along the inline axis
+// caused by float exclusions at the given block-axis position.
+//
+// For horizontal: same as AvailableInlineSize (block=Y, inline=X).
+// For vertical: block=X, inline=Y. Returns (topOffset, bottomOffset).
+func (es *ExclusionSpace) AvailableInlineSizeDir(blockPos, inlineExtent float64, dir Dir) (startOffset, endOffset float64) {
+	if !dir.IsVertical() {
+		return es.AvailableInlineSize(blockPos, inlineExtent)
+	}
+	if es == nil {
+		return 0, 0
+	}
+
+	// In vertical mode, exclusions' Rect.X is the block-start position and
+	// Rect.Width is the block extent. We check for overlap along the block axis (X).
+	// Rect.Y is the inline position and Rect.Height is the inline extent.
+	for _, excl := range es.exclusions {
+		exclBlockStart := excl.Rect.X
+		exclBlockEnd := excl.Rect.X + excl.Rect.Width
+		rangeBlockStart := blockPos
+		rangeBlockEnd := blockPos + inlineExtent // this is the block-extent for the query
+
+		if exclBlockEnd <= rangeBlockStart || exclBlockStart >= rangeBlockEnd {
+			continue
+		}
+
+		if excl.Side == css.FloatLeft {
+			// float:left = inline-start (top)
+			floatInlineEnd := excl.Rect.Y + excl.Rect.Height
+			if floatInlineEnd > startOffset {
+				startOffset = floatInlineEnd
+			}
+		} else if excl.Side == css.FloatRight {
+			// float:right = inline-end (bottom)
+			if excl.Rect.Height > endOffset {
+				endOffset = excl.Rect.Height
+			}
+		}
+	}
+
+	return startOffset, endOffset
+}
+
+// NextBandBelowDir returns the nearest block-axis position beyond the given position where
+// the available inline size changes.
+//
+// For horizontal: same as NextBandBelowY.
+// For vertical: returns the next X position where a float exclusion ends.
+func (es *ExclusionSpace) NextBandBelowDir(blockPos, inlineExtent float64, dir Dir) float64 {
+	if !dir.IsVertical() {
+		return es.NextBandBelowY(blockPos, inlineExtent)
+	}
+	if es == nil {
+		return -1
+	}
+
+	nextBlockPos := -1.0
+	for _, excl := range es.exclusions {
+		exclBlockEnd := excl.Rect.X + excl.Rect.Width
+		if exclBlockEnd <= blockPos || excl.Rect.X >= blockPos+inlineExtent {
+			continue
+		}
+		if nextBlockPos < 0 || exclBlockEnd < nextBlockPos {
+			nextBlockPos = exclBlockEnd
+		}
+	}
+	return nextBlockPos
+}
+
 // constraintsChanged checks if the constraint space changed during fragment construction.
 // This is used to determine if we need to retry line breaking.
 //

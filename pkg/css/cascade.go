@@ -562,12 +562,7 @@ var inheritableProperties = map[string]bool{
 	"text-transform": true, "text-indent": true, "white-space": true,
 	"visibility": true, "list-style-type": true, "list-style-position": true,
 	"direction": true, "letter-spacing": true, "word-spacing": true,
-	"cursor": true,
-	// NOTE: writing-mode is inheritable per CSS spec, but the layout engine's
-	// transformToVerticalRL is too aggressive and doesn't distinguish between
-	// explicitly-set vs inherited writing-mode. Adding it to inheritableProperties
-	// causes regressions (css-flexbox-row, baseline-synthesis-003, etc.).
-	// TODO: Enable writing-mode inheritance once the layout engine handles it properly.
+	"cursor": true, "writing-mode": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
@@ -599,6 +594,14 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 		if _, hasOwn := style.Get(prop); !hasOwn {
 			if parentVal, ok := parentStyle.Get(prop); ok {
 				style.Set(prop, parentVal)
+				// Track that writing-mode was inherited, not explicitly set.
+				// This allows resolveLogicalSizeProperties to skip the
+				// vertical-mode resolution for inherited values, since the
+				// layout engine's transformToVerticalRL handles positioning
+				// as a post-pass and expects children to use horizontal dimensions.
+				if prop == "writing-mode" {
+					style.Set("_writing-mode-inherited", "true")
+				}
 			}
 		}
 	}
@@ -630,6 +633,40 @@ func ApplyInheritedFrom(child, parent *Style) {
 	}
 }
 
+// resolveOrthogonalDisplay implements CSS Writing Modes §2.1:
+// If an inline-level box has a different writing-mode axis than its containing
+// block, its display value computes to inline-block. This causes inline spans
+// with orthogonal writing-mode to honor width/height properties.
+func resolveOrthogonalDisplay(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	if node == nil || node.Parent == nil {
+		return
+	}
+	// Only apply to inline-level elements
+	display, hasDisplay := style.Get("display")
+	if !hasDisplay || display != "inline" {
+		return
+	}
+	// Get this element's writing-mode axis
+	wm, _ := style.Get("writing-mode")
+	isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
+	// Get parent's writing-mode axis
+	parentStyle, ok := styles[node.Parent]
+	if !ok || parentStyle == nil {
+		// No parent style: assume horizontal-tb (the default)
+		// If this element is vertical, it's orthogonal → promote to inline-block
+		if isVertical {
+			style.Set("display", "inline-block")
+		}
+		return
+	}
+	parentWM, _ := parentStyle.Get("writing-mode")
+	parentIsVertical := parentWM == "vertical-rl" || parentWM == "vertical-lr" || parentWM == "sideways-rl" || parentWM == "sideways-lr"
+	// If the axes differ, promote inline to inline-block
+	if isVertical != parentIsVertical {
+		style.Set("display", "inline-block")
+	}
+}
+
 // resolveLogicalSizeProperties remaps logical size properties (inline-size,
 // block-size, and their min/max variants) to the correct physical properties
 // based on the element's computed writing-mode.
@@ -645,6 +682,14 @@ func resolveLogicalSizeProperties(style *Style) {
 		wm == "sideways-rl" || wm == "sideways-lr"
 	if !isVertical {
 		return // horizontal-tb: default mapping is correct
+	}
+	// If writing-mode was inherited (not explicitly set), don't remap logical
+	// size properties. The layout engine's transformToVerticalRL handles vertical
+	// positioning as a post-pass and expects children to use horizontal dimensions.
+	// Only elements that explicitly set writing-mode should have their logical
+	// properties remapped to the vertical axis.
+	if inherited, _ := style.Get("_writing-mode-inherited"); inherited == "true" {
+		return
 	}
 
 	// For vertical writing modes:
@@ -728,6 +773,11 @@ func resolveLogicalBoxProperties(style *Style) {
 	wm, _ := style.Get("writing-mode")
 	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||
 		wm == "sideways-rl" || wm == "sideways-lr"
+	// If writing-mode was inherited, use horizontal-tb mapping for logical
+	// box properties (same rationale as resolveLogicalSizeProperties).
+	if inherited, _ := style.Get("_writing-mode-inherited"); inherited == "true" {
+		isVertical = false
+	}
 
 	dir, _ := style.Get("direction")
 	isRTL := dir == "rtl"
@@ -873,6 +923,9 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
+		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
+		// than its containing block, its display computes to inline-block.
+		resolveOrthogonalDisplay(node, style, styles)
 		// Resolve logical size properties (inline-size, block-size) based on the
 		// element's computed writing-mode. Must happen after inheritance so that
 		// inherited writing-mode is available.

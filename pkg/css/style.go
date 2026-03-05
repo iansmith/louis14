@@ -5,6 +5,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"louis14/pkg/html"
 )
 
 type Style struct {
@@ -1473,12 +1475,16 @@ func expandShorthand(style *Style, property, value string) {
 		style.Set("_border-block-end-color", value)
 	case "inset-inline-start":
 		style.Set("left", value)
+		style.Set("_inset-inline-start", value)
 	case "inset-inline-end":
 		style.Set("right", value)
+		style.Set("_inset-inline-end", value)
 	case "inset-block-start":
 		style.Set("top", value)
+		style.Set("_inset-block-start", value)
 	case "inset-block-end":
 		style.Set("bottom", value)
+		style.Set("_inset-block-end", value)
 	case "inset-inline":
 		parts := strings.Fields(value)
 		if len(parts) == 1 {
@@ -6877,4 +6883,306 @@ func (s *Style) GetScrollbarWidth() string {
 		return "auto"
 	}
 	return v
+}
+
+
+// ApplyHTMLDirAttribute maps the HTML dir attribute to CSS direction and
+// unicode-bidi properties. Per the HTML specification, dir="rtl" implies
+// direction:rtl and unicode-bidi:isolate (or isolate-override for <bdo>).
+// This is called as a post-processing step after CSS cascade to handle
+// the HTML presentational hint that the dir attribute represents.
+func ApplyHTMLDirAttribute(node *html.Node, style *Style) {
+	if node.Type != html.ElementNode {
+		return
+	}
+	dirAttr, ok := node.GetAttribute("dir")
+	if !ok {
+		return
+	}
+	dirAttr = strings.ToLower(strings.TrimSpace(dirAttr))
+
+	// Only set direction if not already explicitly set by author CSS.
+	// The dir attribute acts as a presentational hint (lower priority than CSS).
+	// However, for proper bidi behavior, we always apply it since the UA stylesheet
+	// normally handles this and our cascade doesn't have a UA rule for [dir].
+	switch dirAttr {
+	case "rtl":
+		style.Set("direction", "rtl")
+	case "ltr":
+		style.Set("direction", "ltr")
+	case "auto":
+		// dir="auto" determines direction from first strong character.
+		// For now, default to ltr (full implementation would inspect text content).
+		style.Set("direction", "ltr")
+	}
+
+	// Per HTML spec, dir attribute also implies unicode-bidi.
+	// <bdo> gets isolate-override; all other elements get isolate.
+	if dirAttr == "rtl" || dirAttr == "ltr" || dirAttr == "auto" {
+		if _, hasBidi := style.Get("unicode-bidi"); !hasBidi {
+			if node.TagName == "bdo" {
+				style.Set("unicode-bidi", "isolate-override")
+			} else {
+				style.Set("unicode-bidi", "isolate")
+			}
+		}
+	}
+}
+
+// ApplyHTMLDirToTree walks the entire DOM tree and applies the HTML dir
+// attribute mapping for any node that has it. This should be called after
+// CSS cascade (ApplyStylesToDocument) but before layout.
+func ApplyHTMLDirToTree(node *html.Node, styles map[*html.Node]*Style) {
+	if node.Type == html.ElementNode {
+		if style, ok := styles[node]; ok {
+			ApplyHTMLDirAttribute(node, style)
+		}
+	}
+	for _, child := range node.Children {
+		ApplyHTMLDirToTree(child, styles)
+	}
+}
+
+// ComputeStyleWithLogical wraps ComputeStyle and also applies HTML dir attribute
+// mapping and resolves logical properties. This should be used by layout code
+// that calls ComputeStyle for individual nodes after the initial cascade.
+func ComputeStyleWithLogical(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) *Style {
+	style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
+	ApplyHTMLDirAttribute(node, style)
+	ResolveLogicalProperties(node, style)
+	return style
+}
+
+// ResolveLogicalProperties remaps CSS logical properties (border-inline-start,
+// margin-block-end, etc.) to their physical counterparts based on the element's
+// computed writing-mode and direction. This must be called after the full CSS
+// cascade and dir attribute application.
+//
+// The expandShorthand function in the cascade already maps logical properties
+// to physical, but it assumes horizontal-tb + ltr. This function fixes up
+// the mapping for non-default writing modes by using the -x-logical-* marker
+// properties that expandShorthand stores.
+func ResolveLogicalProperties(node *html.Node, style *Style) {
+	if node.Type != html.ElementNode {
+		return
+	}
+	wm, _ := style.Get("writing-mode")
+	dir := style.GetDirection()
+
+	// Only need to fix up if writing-mode is vertical/sideways or direction is rtl
+	isVertical := wm == "vertical-rl" || wm == "vertical-lr"
+	isSideways := wm == "sideways-lr" || wm == "sideways-rl"
+	isRTL := dir == DirectionRTL
+
+	if !isVertical && !isSideways && !isRTL {
+		return // horizontal-tb + ltr: default mapping is correct
+	}
+
+	// Determine the physical side mapping for each logical direction.
+	// Default (horizontal-tb + ltr) already applied by expandShorthand:
+	//   inline-start → left,  inline-end → right
+	//   block-start  → top,   block-end  → bottom
+	//
+	// We need to determine the CORRECT mapping and re-apply.
+	var inlineStart, inlineEnd, blockStart, blockEnd string
+	if isVertical {
+		// vertical-rl or vertical-lr: inline axis is vertical (top-to-bottom)
+		if isRTL {
+			inlineStart = "bottom"
+			inlineEnd = "top"
+		} else {
+			inlineStart = "top"
+			inlineEnd = "bottom"
+		}
+		if wm == "vertical-rl" {
+			blockStart = "right"
+			blockEnd = "left"
+		} else { // vertical-lr
+			blockStart = "left"
+			blockEnd = "right"
+		}
+	} else if isSideways {
+		if wm == "sideways-lr" {
+			// sideways-lr: inline direction is bottom-to-top, block is left-to-right
+			if isRTL {
+				inlineStart = "top"
+				inlineEnd = "bottom"
+			} else {
+				inlineStart = "bottom"
+				inlineEnd = "top"
+			}
+			blockStart = "left"
+			blockEnd = "right"
+		} else { // sideways-rl
+			// sideways-rl: inline direction is top-to-bottom, block is right-to-left
+			if isRTL {
+				inlineStart = "bottom"
+				inlineEnd = "top"
+			} else {
+				inlineStart = "top"
+				inlineEnd = "bottom"
+			}
+			blockStart = "right"
+			blockEnd = "left"
+		}
+	} else {
+		// horizontal-tb + rtl
+		inlineStart = "right"
+		inlineEnd = "left"
+		blockStart = "top"
+		blockEnd = "bottom"
+	}
+
+	// Mapping from logical direction to physical side
+	logicalToPhysical := map[string]string{
+		"inline-start": inlineStart,
+		"inline-end":   inlineEnd,
+		"block-start":  blockStart,
+		"block-end":    blockEnd,
+	}
+
+	// Default mapping (htb+ltr) used by expandShorthand
+	defaultMapping := map[string]string{
+		"inline-start": "left",
+		"inline-end":   "right",
+		"block-start":  "top",
+		"block-end":    "bottom",
+	}
+
+	// Remap border logical properties
+	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
+		physSide := logicalToPhysical[logicalDir]
+		defaultSide := defaultMapping[logicalDir]
+
+		// Skip if the correct mapping is the same as the default
+		if physSide == defaultSide {
+			continue
+		}
+
+		// border-* shorthand (e.g. border-inline-start: 5px green solid)
+		if val, ok := style.Get("_border-" + logicalDir); ok {
+			// Clear the wrongly-set default physical properties
+			delete(style.Properties, "border-"+defaultSide+"-width")
+			delete(style.Properties, "border-"+defaultSide+"-style")
+			delete(style.Properties, "border-"+defaultSide+"-color")
+			// Set the correct physical properties
+			expandBorderSideProperty(style, "border-"+physSide, val)
+		}
+
+		// border-*-width
+		if val, ok := style.Get("_border-" + logicalDir + "-width"); ok {
+			delete(style.Properties, "border-"+defaultSide+"-width")
+			style.Set("border-"+physSide+"-width", val)
+		}
+		// border-*-style
+		if val, ok := style.Get("_border-" + logicalDir + "-style"); ok {
+			delete(style.Properties, "border-"+defaultSide+"-style")
+			style.Set("border-"+physSide+"-style", val)
+		}
+		// border-*-color
+		if val, ok := style.Get("_border-" + logicalDir + "-color"); ok {
+			delete(style.Properties, "border-"+defaultSide+"-color")
+			style.Set("border-"+physSide+"-color", val)
+		}
+	}
+
+	// Remap margin logical properties
+	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
+		physSide := logicalToPhysical[logicalDir]
+		defaultSide := defaultMapping[logicalDir]
+		if physSide == defaultSide {
+			continue
+		}
+		if val, ok := style.Get("_margin-" + logicalDir); ok {
+			delete(style.Properties, "margin-"+defaultSide)
+			style.Set("margin-"+physSide, val)
+		}
+	}
+
+	// Remap padding logical properties
+	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
+		physSide := logicalToPhysical[logicalDir]
+		defaultSide := defaultMapping[logicalDir]
+		if physSide == defaultSide {
+			continue
+		}
+		if val, ok := style.Get("_padding-" + logicalDir); ok {
+			delete(style.Properties, "padding-"+defaultSide)
+			style.Set("padding-"+physSide, val)
+		}
+	}
+
+	// Remap inset logical properties
+	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
+		physSide := logicalToPhysical[logicalDir]
+		defaultSide := defaultMapping[logicalDir]
+		if physSide == defaultSide {
+			continue
+		}
+		if val, ok := style.Get("_inset-" + logicalDir); ok {
+			delete(style.Properties, defaultSide)
+			style.Set(physSide, val)
+		}
+	}
+
+	// Remap inline-size / block-size — but skip for inherited writing-mode,
+	// because transformToVerticalRL handles positioning as a post-pass and
+	// expects children to use horizontal dimensions.
+	if inherited, _ := style.Get("_writing-mode-inherited"); inherited == "true" {
+		return
+	}
+	if val, ok := style.Get("_inline-size"); ok {
+		if isVertical {
+			style.Set("height", val)
+		} else {
+			style.Set("width", val) // htb+rtl: width is still inline size
+		}
+	}
+	if val, ok := style.Get("_block-size"); ok {
+		if isVertical {
+			style.Set("width", val)
+		} else {
+			style.Set("height", val)
+		}
+	}
+	if val, ok := style.Get("_min-inline-size"); ok {
+		if isVertical {
+			style.Set("min-height", val)
+		} else {
+			style.Set("min-width", val)
+		}
+	}
+	if val, ok := style.Get("_min-block-size"); ok {
+		if isVertical {
+			style.Set("min-width", val)
+		} else {
+			style.Set("min-height", val)
+		}
+	}
+	if val, ok := style.Get("_max-inline-size"); ok {
+		if isVertical {
+			style.Set("max-height", val)
+		} else {
+			style.Set("max-width", val)
+		}
+	}
+	if val, ok := style.Get("_max-block-size"); ok {
+		if isVertical {
+			style.Set("max-width", val)
+		} else {
+			style.Set("max-height", val)
+		}
+	}
+}
+
+// ResolveLogicalPropertiesInTree walks the DOM tree and resolves logical properties.
+func ResolveLogicalPropertiesInTree(node *html.Node, styles map[*html.Node]*Style) {
+	if node.Type == html.ElementNode {
+		if style, ok := styles[node]; ok {
+			ResolveLogicalProperties(node, style)
+		}
+	}
+	for _, child := range node.Children {
+		ResolveLogicalPropertiesInTree(child, styles)
+	}
 }

@@ -10,6 +10,16 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Phase 22: Pass viewport dimensions for media query evaluation
 	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
 
+	// Apply HTML dir attribute → CSS direction/unicode-bidi mapping.
+	// This handles the UA stylesheet rule [dir="rtl"] { direction: rtl; unicode-bidi: isolate; }
+	// which is not in the CSS cascade but required by the HTML spec.
+	// css.ApplyHTMLDirToTree(doc.Root, computedStyles)
+
+	// Resolve CSS logical properties (border-inline-start, margin-block-end, etc.)
+	// based on computed writing-mode and direction. The expandShorthand function in
+	// the cascade assumes horizontal-tb + ltr; this fixes up for other modes.
+	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+
 	// Phase 11: Parse and store stylesheets for pseudo-element styling
 	le.stylesheets = make([]*css.Stylesheet, 0)
 	for _, cssText := range doc.Stylesheets {
