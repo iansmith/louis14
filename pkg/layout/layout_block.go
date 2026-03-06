@@ -791,7 +791,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 5: Handle clear property - move Y down past floats
 	if clearType != css.ClearNone {
-		y = le.getClearY(clearType, y)
+		if elementIsVertical {
+			d := NewDir(elementWM)
+			y = le.getClearDir(clearType, y, d)
+		} else {
+			y = le.getClearY(clearType, y)
+		}
 	}
 
 	// Track whether this box has zero initial content height (auto, no min-height).
