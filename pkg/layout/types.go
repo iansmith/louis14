@@ -146,8 +146,8 @@ type ConstraintSpace struct {
 	OverflowWrap   string           // CSS overflow-wrap / word-wrap (normal, break-word, anywhere)
 	LineClampN     int              // -webkit-line-clamp: N (0 = no clamping)
 	TextWrap       string           // text-wrap: normal, balance, pretty, nowrap
+	Dir          Dir              // Writing-mode direction (maps inline/block to physical axes)
 	// TODO: Add more constraints as needed:
-	// - WritingMode
 	// - IsNewFormattingContext
 	// - Baseline offsets
 }

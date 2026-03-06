@@ -1623,6 +1623,14 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	// Create constraint space
 	constraint := NewConstraintSpace(availableWidth, 0)
 
+	// Set writing-mode direction on constraint space.
+	// This makes Dir available throughout the inline pipeline for future use.
+	// Currently, the inline pipeline operates in h-tb logical space;
+	// vertical transformation is applied post-layout by transformToVerticalRL.
+	if containerBox.Style != nil {
+		constraint.Dir = NewDir(WritingModeFromStyle(containerBox.Style))
+	}
+
 	// Check if container has white-space: nowrap
 	if containerBox.Style != nil {
 		if ws, ok := containerBox.Style.Get("white-space"); ok && (ws == "nowrap" || ws == "pre") {

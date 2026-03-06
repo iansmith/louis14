@@ -111,6 +111,29 @@ func NewConstraintSpace(width, height float64) *ConstraintSpace {
 	}
 }
 
+// NewConstraintSpaceDir creates a constraint space with Dir-awareness.
+// For horizontal-tb, inlineSize maps to Width and blockSize to Height.
+// For vertical modes, inlineSize maps to Height and blockSize to Width.
+func NewConstraintSpaceDir(inlineSize, blockSize float64, dir Dir) *ConstraintSpace {
+	var w, h float64
+	if dir.IsVertical() {
+		w = blockSize
+		h = inlineSize
+	} else {
+		w = inlineSize
+		h = blockSize
+	}
+	return &ConstraintSpace{
+		AvailableSize: Size{
+			Width:  w,
+			Height: h,
+		},
+		ExclusionSpace: NewExclusionSpace(),
+		TextAlign:      css.TextAlignLeft,
+		Dir:            dir,
+	}
+}
+
 // WithExclusion returns a NEW ConstraintSpace with the given exclusion added.
 // The original ConstraintSpace is NOT modified (immutability).
 //
@@ -130,6 +153,7 @@ func (cs *ConstraintSpace) WithExclusion(exclusion Exclusion) *ConstraintSpace {
 		OverflowWrap:   cs.OverflowWrap,
 		LineClampN:     cs.LineClampN,
 		TextWrap:       cs.TextWrap,
+		Dir:            cs.Dir,
 	}
 }
 
@@ -149,6 +173,7 @@ func (cs *ConstraintSpace) WithAvailableWidth(width float64) *ConstraintSpace {
 		OverflowWrap:   cs.OverflowWrap,
 		LineClampN:     cs.LineClampN,
 		TextWrap:       cs.TextWrap,
+		Dir:            cs.Dir,
 	}
 }
 
@@ -165,14 +190,39 @@ func (cs *ConstraintSpace) WithTextAlign(align css.TextAlign) *ConstraintSpace {
 		OverflowWrap:   cs.OverflowWrap,
 		LineClampN:     cs.LineClampN,
 		TextWrap:       cs.TextWrap,
+		Dir:            cs.Dir,
 	}
 }
 
 // AvailableInlineSize returns the available inline size at the given Y position and height,
 // accounting for exclusions (floats).
+//
+// NOTE: This method always operates in horizontal-TB space (block=Y, inline=X)
+// regardless of the Dir setting. This is because the inline layout pipeline currently
+// operates in h-tb logical space, with vertical transformation applied post-layout.
+// Use AvailableInlineSizeDir() for direction-aware queries.
 func (cs *ConstraintSpace) AvailableInlineSize(y, height float64) float64 {
 	leftOffset, rightOffset := cs.ExclusionSpace.AvailableInlineSize(y, height)
 	return cs.AvailableSize.Width - leftOffset - rightOffset
+}
+
+// InlineAvailableSize returns the available inline size based on the embedded Dir,
+// at the given block-axis position and inline extent.
+//
+// This is the Dir-aware version of AvailableInlineSize:
+// - For horizontal-tb: uses Width, block=Y, inline=X
+// - For vertical modes: uses Height, block=X, inline=Y
+func (cs *ConstraintSpace) InlineAvailableSize(blockPos, inlineExtent float64) float64 {
+	return cs.AvailableInlineSizeDir(blockPos, inlineExtent, cs.Dir)
+}
+
+// BaseInlineSize returns the base available inline size from the embedded Dir
+// without accounting for exclusions.
+func (cs *ConstraintSpace) BaseInlineSize() float64 {
+	if cs.Dir.IsVertical() {
+		return cs.AvailableSize.Height
+	}
+	return cs.AvailableSize.Width
 }
 
 // AvailableInlineSizeDir returns the available inline size at the given block-axis position,
