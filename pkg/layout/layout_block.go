@@ -1179,9 +1179,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		box.Children = append(box.Children, childBoxes...)
 
 		// Lay out absolutely positioned children that were skipped by inline layout.
-		// Build a node→box map so we can compute static Y positions based on
-		// the bottom edge of the last in-flow sibling (instead of the stale childY
-		// from the top of the content area).
+		// The multi-pass pipeline creates new text nodes for word fragments, so
+		// we can't match fragment boxes to original DOM children by pointer.
+		// Instead, use the fragment boxes' positions directly: the last inline
+		// fragment tells us where the inline cursor is.
+
+		// Build a set of element nodes that appear before each abs-pos child.
+		// For element children, we can match by node pointer in childBoxes.
+		// Multi-pass creates new nodes for text fragments, but block-level
+		// element children retain their original html.Node pointers.
 		nodeToBox := make(map[*html.Node]*Box)
 		for _, cb := range childBoxes {
 			if cb != nil && cb.Node != nil {
@@ -1200,12 +1206,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 			childPos := childStyle.GetPosition()
 			if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
-				// Compute static Y: find last in-flow sibling before this child
+				// Compute static position.
+				// CSS 2.1 §10.3.7: static position is at the current inline cursor
+				// after all preceding inline content, or below the last block sibling.
+				staticX := box.X + box.Padding.Left + box.Border.Left
 				staticY := childY // default: top of content area
+
+				// Strategy 1: Check preceding element siblings via nodeToBox.
+				// This works for block-level element children (multi-pass preserves
+				// their node pointers).
+				foundPrev := false
 				for j := i - 1; j >= 0; j-- {
 					prevChild := node.Children[j]
 					if prevBox, ok := nodeToBox[prevChild]; ok {
-						// Get the flow position (subtract relative offset if present)
 						flowY := prevBox.Y
 						if prevBox.Position == css.PositionRelative && prevBox.Style != nil {
 							offset := prevBox.Style.GetPositionOffset()
@@ -1215,12 +1228,76 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 								flowY += offset.Bottom
 							}
 						}
-						// Static position = bottom of last in-flow sibling
-						staticY = flowY + prevBox.Height + prevBox.Margin.Bottom
+						// Check if it's a block-level element
+						isBlock := false
+						if prevBox.Style != nil {
+							d := prevBox.Style.GetDisplay()
+							isBlock = d == css.DisplayBlock || d == css.DisplayFlex || d == css.DisplayGrid ||
+								d == css.DisplayTable || d == css.DisplayFlowRoot || d == css.DisplayListItem
+						}
+						if isBlock {
+							staticY = flowY + prevBox.Height + prevBox.Margin.Bottom
+						} else {
+							staticX = prevBox.X + prevBox.Width
+							staticY = prevBox.Y
+						}
+						foundPrev = true
 						break
 					}
 				}
-				childBox := le.layoutNode(child, box.X+box.Padding.Left+box.Border.Left, staticY, childAvailableWidth, computedStyles, box)
+
+				// Strategy 2: If no preceding element sibling found via nodeToBox
+				// (e.g. only text precedes the abs-pos element), scan childBoxes
+				// for the last inline fragment. Multi-pass creates new text nodes
+				// so pointer matching fails, but the fragments are in document
+				// order and all precede the abs-pos element (which was skipped).
+				if !foundPrev && len(childBoxes) > 0 {
+					for j := len(childBoxes) - 1; j >= 0; j-- {
+						cb := childBoxes[j]
+						if cb == nil || (cb.Width == 0 && cb.Height == 0) {
+							continue
+						}
+						// Check if this box belongs to a child AFTER the abs-pos
+						// element. If so, skip it.
+						if cb.Node != nil && cb.Node.Type == html.ElementNode {
+							afterAbspos := false
+							for k := i + 1; k < len(node.Children); k++ {
+								if node.Children[k] == cb.Node {
+									afterAbspos = true
+									break
+								}
+							}
+							if afterAbspos {
+								continue
+							}
+						}
+						// Text fragment or element before abs-pos: use its position
+						isBlock := false
+						if cb.Node != nil && cb.Node.Type == html.ElementNode && cb.Style != nil {
+							d := cb.Style.GetDisplay()
+							isBlock = d == css.DisplayBlock || d == css.DisplayFlex || d == css.DisplayGrid ||
+								d == css.DisplayTable || d == css.DisplayFlowRoot || d == css.DisplayListItem
+						}
+						if isBlock {
+							flowY := cb.Y
+							if cb.Position == css.PositionRelative && cb.Style != nil {
+								offset := cb.Style.GetPositionOffset()
+								if offset.HasTop {
+									flowY -= offset.Top
+								} else if offset.HasBottom {
+									flowY += offset.Bottom
+								}
+							}
+							staticY = flowY + cb.Height + cb.Margin.Bottom
+						} else {
+							staticX = cb.X + cb.Width
+							staticY = cb.Y
+						}
+						break
+					}
+				}
+
+				childBox := le.layoutNode(child, staticX, staticY, childAvailableWidth, computedStyles, box)
 				if childBox != nil {
 					box.Children = append(box.Children, childBox)
 					hasAbspos = true

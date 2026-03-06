@@ -215,11 +215,16 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 
 			// For block-level and float children, start from parent content left edge
 			// (not from inlineCtx.LineX which may be adjusted for floats).
+			// Exception: absolutely positioned elements keep the inline X position
+			// as their static position (CSS 2.1 §10.3.7), even though blockification
+			// makes them display:block.
 			childLayoutX := inlineCtx.LineX
+			childPos := childStyle.GetPosition()
+			isAbsPos := childPos == css.PositionAbsolute || childPos == css.PositionFixed
 			isBlockLevel := childDisplay == css.DisplayBlock || childDisplay == css.DisplayFlowRoot ||
 				childDisplay == css.DisplayTable || childDisplay == css.DisplayListItem ||
 				childDisplay == css.DisplayFlex || childDisplay == css.DisplayGrid
-			if isBlockLevel || childFloat != css.FloatNone {
+			if (isBlockLevel || childFloat != css.FloatNone) && !isAbsPos {
 				childLayoutX = box.X + border.Left + padding.Left
 			}
 
