@@ -3817,3 +3817,100 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 		transformToVerticalRL(box, wm)
 	}
 }
+
+// splitTextForVerticalRL recursively walks a box subtree and splits leaf text
+// boxes into per-character child boxes for vertical writing mode rendering.
+// Unlike transformBoxToVerticalRecursive, this function:
+//   - Does NOT call transformToVerticalRL at any level (no column rearrangement)
+//   - Does NOT clear box.Node (keeps Node intact to avoid abs-pos regressions)
+//
+// This is used by the block-layout vertical transform path to prepare text for
+// character-by-character rendering without double-transforming the tree.
+// The caller is responsible for calling transformToVerticalRL on the outer box.
+func splitTextForVerticalRL(box *Box, wm string) {
+	if box == nil {
+		return
+	}
+
+	// Leaf text box: split text into individual character boxes positioned
+	// horizontally so the parent's transformToVerticalRL can stack them vertically.
+	if len(box.Children) == 0 && box.Node != nil && box.Node.Type == html.TextNode && strings.TrimSpace(box.Node.Text) != "" {
+		textContent := box.Node.Text
+		if box.Style != nil {
+			textContent = ApplyTextTransform(textContent, box.Style.GetTextTransform())
+		}
+		if box.Style != nil {
+			ws, _ := box.Style.Get("white-space")
+			if ws != "pre" && ws != "pre-wrap" && ws != "pre-line" {
+				textContent = strings.Join(strings.Fields(textContent), " ")
+			}
+		}
+		if textContent == "" {
+			return
+		}
+
+		fontSize := 16.0
+		isBold := false
+		isItalic := false
+		isMono := false
+		isAhem := false
+		if box.Style != nil {
+			fontSize = box.Style.GetFontSize()
+			isBold = box.Style.GetFontWeight() == css.FontWeightBold
+			isItalic = box.Style.GetFontStyle() == css.FontStyleItalic
+			isMono = box.Style.IsMonospaceFamily()
+			isAhem = box.Style.IsAhemFamily()
+		}
+
+		lineHeight := fontSize
+		if box.Style != nil {
+			lineHeight = box.Style.GetLineHeight()
+		}
+		charHeight := lineHeight
+		if charHeight <= 0 {
+			charHeight = fontSize
+		}
+
+		runes := []rune(textContent)
+		charBoxes := make([]*Box, 0, len(runes))
+		curX := box.X
+		for _, ch := range runes {
+			charStr := string(ch)
+			charW, _ := text.MeasureTextWithStyle(charStr, fontSize, isBold, isItalic, isMono, isAhem)
+			if charW == 0 {
+				continue
+			}
+			charNode := &html.Node{
+				Type: html.TextNode,
+				Text: charStr,
+			}
+			charBox := &Box{
+				Node:   charNode,
+				Style:  box.Style,
+				X:      curX,
+				Y:      box.Y,
+				Width:  charW,
+				Height: charHeight,
+				Parent: box,
+			}
+			charBoxes = append(charBoxes, charBox)
+			curX += charW
+		}
+
+		if len(charBoxes) > 0 {
+			box.Children = charBoxes
+			// Do NOT clear box.Node here (unlike transformBoxToVerticalRecursive).
+			// The renderer's drawText guard (len(Children)>0 && Node.Type==TextNode)
+			// prevents double-drawing. Keeping Node intact avoids changing the
+			// repositionAbsPosInCB static-position calculation for abs-pos siblings.
+			box.PseudoContent = ""
+		}
+		return
+	}
+
+	// Non-leaf box: recursively split text in all descendants.
+	// Do NOT call transformToVerticalRL here — the caller handles column layout.
+	for _, child := range box.Children {
+		splitTextForVerticalRL(child, wm)
+	}
+}

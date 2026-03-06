@@ -2487,6 +2487,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			if wm, ok := style.Get("writing-mode"); ok {
 				isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
 				if isVertical {
+					// Determine if the parent has a vertical writing mode.
+					// When the parent is also vertical, this element was already
+					// repositioned as a column by the parent's transformToVerticalRL.
+					// However, this element still needs to arrange ITS OWN block-level
+					// children as columns (those children were stacked vertically by
+					// block layout and need column rearrangement).
+					// We skip the transform only if children are inline/text content
+					// (inline layout already positioned them correctly within the column).
 					parentIsVertical := false
 					if node.Parent != nil {
 						if parentStyle := computedStyles[node.Parent]; parentStyle != nil {
@@ -2495,7 +2503,57 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 							}
 						}
 					}
-					if !parentIsVertical {
+
+					// Check if any direct child box is a block-level element.
+					// Block-level children need column rearrangement (transformToVerticalRL).
+					// Inline/text children are already positioned by inline layout — do not
+					// apply column transform to them (it would stack text chars as separate
+					// columns, breaking horizontal text within each vertical column).
+					hasBlockChildren := false
+					for _, child := range box.Children {
+						if child.Node != nil && child.Node.Type == html.ElementNode {
+							if childStyle := computedStyles[child.Node]; childStyle != nil {
+								d := childStyle.GetDisplay()
+								if d != css.DisplayInline && d != css.DisplayInlineBlock {
+									hasBlockChildren = true
+									break
+								}
+							} else {
+								// No computed style means likely a block element (anonymous block)
+								hasBlockChildren = true
+								break
+							}
+						}
+					}
+
+					// When parent is vertical, only run the extra inherited-VRL transform
+					// if this element has NO explicit inline-size (i.e., its width is
+					// block-fill from the parent). Elements with explicit widths were sized
+					// by CSS and their children are meant to flow within the column that
+					// the parent's transform established. Block-fill elements need the
+					// transform to arrange their block children as columns.
+					hasExplicitInlineSize := false
+					if parentIsVertical {
+						if _, ok := style.GetLength("width"); ok {
+							hasExplicitInlineSize = true
+						} else if _, ok := style.GetPercentage("width"); ok {
+							hasExplicitInlineSize = true
+						}
+					}
+
+					// Run the column transform when:
+					// 1. Parent is not vertical (this establishes a new VRL context), OR
+					// 2. Parent is vertical, element has block-level children that need
+					//    column rearrangement, AND element has no explicit width
+					//    (block-fill elements need column arrangement; sized elements don't).
+					if !parentIsVertical || (hasBlockChildren && !hasExplicitInlineSize) {
+						// Split leaf text nodes into per-character boxes so that
+						// transformToVerticalRL can stack them as vertical columns.
+						// Uses splitTextForVerticalRL (not transformBoxToVerticalRecursive)
+						// to avoid double-column-transforms and abs-pos regressions.
+						for _, child := range box.Children {
+							splitTextForVerticalRL(child, wm)
+						}
 						preTransformWidth := box.Width
 						preTransformHeight := box.Height
 
