@@ -286,121 +286,239 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 	}
 }
 
-// repositionAbsPosAfterVerticalTransform corrects the position of an absolutely
-// positioned child after transformToVerticalRL has run on the containing block.
-// The transform repositions all children (including abspos) as if they were in-flow,
-// but abspos children should be positioned using the CSS constraint equations in
-// physical coordinates. This function re-applies the correct physical positioning.
+// repositionAbsPosAfterVerticalTransform re-positions absolutely positioned children
+// of a vertical writing-mode container AFTER transformToVerticalRL has converted the
+// container's children from horizontal to vertical physical coordinates.
 //
-// cbPadWidth/cbPadHeight are the CB's pre-transform padding-box dimensions,
-// which is what CSS uses for the constraint equations.
-func repositionAbsPosAfterVerticalTransform(child *Box, cb *Box, cbPadWidth, cbPadHeight float64) {
-	if child.Style == nil {
-		return
+// CSS Writing Modes §7.1: In vertical writing modes, the constraint equations
+// from CSS 2.1 §10.3.7 and §10.6.4 are swapped:
+//   - §10.3.7 ("horizontal" equation) applies to top/bottom/height (inline axis)
+//   - §10.6.4 ("vertical" equation) applies to left/right/width (block axis)
+//
+// Parameters:
+//   - box: the containing block with vertical writing mode (post-transform)
+//   - cbWM: "vertical-rl" or "vertical-lr"
+//   - preTransformWidth, preTransformHeight: the CB's border-box dimensions BEFORE
+//     the transform (CSS-specified dimensions)
+func repositionAbsPosAfterVerticalTransform(box *Box, cbWM string, preTransformWidth, preTransformHeight float64) {
+	// CB padding-box origin and dimensions for constraint equations.
+	// Use pre-transform dimensions since those are the CSS-specified containing block size.
+	cbX := box.X + box.Border.Left
+	cbY := box.Y + box.Border.Top
+	cbPadWidth := preTransformWidth - box.Border.Left - box.Border.Right
+	cbPadHeight := preTransformHeight - box.Border.Top - box.Border.Bottom
+
+	// Get direction from the containing block's style
+	cbDir := css.DirectionLTR
+	if box.Style != nil {
+		cbDir = box.Style.GetDirection()
 	}
 
-	cbX := cb.X + cb.Border.Left
-	cbY := cb.Y + cb.Border.Top
-
-	offset := child.Style.GetPositionOffset()
-
-	// Resolve percentage offsets against CB padding-box dimensions
-	if !offset.HasLeft {
-		if pct, ok := child.Style.GetPercentage("left"); ok {
-			offset.Left = cbPadWidth * (pct / 100.0)
-			offset.HasLeft = true
+	for idx, child := range box.Children {
+		if child.Style == nil {
+			continue
 		}
-	}
-	if !offset.HasRight {
-		if pct, ok := child.Style.GetPercentage("right"); ok {
-			offset.Right = cbPadWidth * (pct / 100.0)
-			offset.HasRight = true
+		childPos := child.Style.GetPosition()
+		if childPos != css.PositionAbsolute && childPos != css.PositionFixed {
+			continue
 		}
-	}
-	if !offset.HasTop {
-		if pct, ok := child.Style.GetPercentage("top"); ok {
-			offset.Top = cbPadHeight * (pct / 100.0)
-			offset.HasTop = true
+
+		// Save old position to compute delta for shifting descendants
+		oldX, oldY := child.X, child.Y
+
+		// Get the child's CSS position offsets
+		offset := child.Style.GetPositionOffset()
+
+		// Resolve percentage offsets against CB dimensions
+		if !offset.HasTop {
+			if pct, ok := child.Style.GetPercentage("top"); ok {
+				offset.Top = cbPadHeight * (pct / 100.0)
+				offset.HasTop = true
+			}
 		}
-	}
-	if !offset.HasBottom {
-		if pct, ok := child.Style.GetPercentage("bottom"); ok {
-			offset.Bottom = cbPadHeight * (pct / 100.0)
-			offset.HasBottom = true
+		if !offset.HasBottom {
+			if pct, ok := child.Style.GetPercentage("bottom"); ok {
+				offset.Bottom = cbPadHeight * (pct / 100.0)
+				offset.HasBottom = true
+			}
 		}
-	}
-
-	// Detect auto dimensions
-	widthIsAuto := true
-	heightIsAuto := true
-	if _, ok := child.Style.GetLength("width"); ok {
-		widthIsAuto = false
-	} else if _, ok := child.Style.GetPercentage("width"); ok {
-		widthIsAuto = false
-	} else if v, ok := child.Style.Get("width"); ok && v != "auto" && v != "" {
-		widthIsAuto = false
-	}
-	if _, ok := child.Style.GetLength("height"); ok {
-		heightIsAuto = false
-	} else if _, ok := child.Style.GetPercentage("height"); ok {
-		heightIsAuto = false
-	} else if v, ok := child.Style.Get("height"); ok && v != "auto" && v != "" {
-		heightIsAuto = false
-	}
-
-	// Solve for width (§10.3.7/§10.6.4 Case 5 in physical coords)
-	if offset.HasLeft && offset.HasRight && widthIsAuto {
-		solved := cbPadWidth - offset.Left - offset.Right -
-			child.Margin.Left - child.Margin.Right -
-			child.Border.Left - child.Padding.Left -
-			child.Padding.Right - child.Border.Right
-		if solved >= 0 {
-			child.Width = solved
+		if !offset.HasLeft {
+			if pct, ok := child.Style.GetPercentage("left"); ok {
+				offset.Left = cbPadWidth * (pct / 100.0)
+				offset.HasLeft = true
+			}
 		}
-	}
-
-	// Solve for height (§10.3.7/§10.6.4 Case 5 in physical coords)
-	if offset.HasTop && offset.HasBottom && heightIsAuto {
-		solved := cbPadHeight - offset.Top - offset.Bottom -
-			child.Margin.Top - child.Margin.Bottom -
-			child.Border.Top - child.Padding.Top -
-			child.Padding.Bottom - child.Border.Bottom
-		if solved >= 0 {
-			child.Height = solved
+		if !offset.HasRight {
+			if pct, ok := child.Style.GetPercentage("right"); ok {
+				offset.Right = cbPadWidth * (pct / 100.0)
+				offset.HasRight = true
+			}
 		}
-	}
 
-	oldX, oldY := child.X, child.Y
+		// Check auto margins
+		marginTopAuto := false
+		marginBottomAuto := false
+		marginLeftAuto := false
+		marginRightAuto := false
+		if mt, ok := child.Style.Get("margin-top"); ok && mt == "auto" {
+			marginTopAuto = true
+		}
+		if mb, ok := child.Style.Get("margin-bottom"); ok && mb == "auto" {
+			marginBottomAuto = true
+		}
+		if ml, ok := child.Style.Get("margin-left"); ok && ml == "auto" {
+			marginLeftAuto = true
+		}
+		if mr, ok := child.Style.Get("margin-right"); ok && mr == "auto" {
+			marginRightAuto = true
+		}
 
-	// Horizontal positioning
-	if offset.HasLeft && offset.HasRight {
-		// Both specified: position from left
-		child.X = cbX + offset.Left + child.Margin.Left
-	} else if offset.HasLeft {
-		child.X = cbX + offset.Left + child.Margin.Left
-	} else if offset.HasRight {
-		usedWidth := child.Border.Left + child.Padding.Left + child.Width +
-			child.Padding.Right + child.Border.Right
-		child.X = cbX + cbPadWidth - offset.Right - child.Margin.Right - usedWidth
-	}
-	// else: auto left/right → keep transform result (approximate static position)
+		// Compute the static position in the vertical writing mode's coordinate system.
+		// The transform placed abs-pos children incorrectly (using horizontal static position).
+		// We need to find the correct static position based on the last in-flow sibling.
+		staticInline := 0.0 // distance from inline-start (top for ltr, bottom for rtl)
+		staticBlock := 0.0  // distance from block-start (left for vlr, right for vrl)
 
-	// Vertical positioning
-	if offset.HasTop && offset.HasBottom {
-		child.Y = cbY + offset.Top + child.Margin.Top
-	} else if offset.HasTop {
-		child.Y = cbY + offset.Top + child.Margin.Top
-	} else if offset.HasBottom {
-		usedHeight := child.Border.Top + child.Padding.Top + child.Height +
-			child.Padding.Bottom + child.Border.Bottom
-		child.Y = cbY + cbPadHeight - offset.Bottom - child.Margin.Bottom - usedHeight
-	}
-	// else: auto top/bottom → keep transform result (approximate static position)
+		// Find the last in-flow sibling box before this abs-pos child.
+		var prevInFlow *Box
+		for j := idx - 1; j >= 0; j-- {
+			sib := box.Children[j]
+			if sib.Style != nil {
+				sibPos := sib.Style.GetPosition()
+				if sibPos == css.PositionAbsolute || sibPos == css.PositionFixed {
+					continue
+				}
+			}
+			prevInFlow = sib
+			break
+		}
 
-	// Shift children by position delta
-	dx, dy := child.X-oldX, child.Y-oldY
-	if dx != 0 || dy != 0 {
-		shiftAllDescendants(child, dx, dy)
+		if prevInFlow != nil {
+			prevRelY := prevInFlow.Y - cbY
+
+			if cbDir == css.DirectionLTR {
+				// LTR: inline flows top-to-bottom. Static position is after the
+				// previous sibling's inline extent.
+				staticInline = prevRelY + prevInFlow.Width
+			} else {
+				// RTL: inline flows bottom-to-top.
+				staticInline = cbPadHeight - prevRelY
+			}
+
+			prevRelX := prevInFlow.X - cbX
+			staticBlock = prevRelX
+
+			// For text fragment siblings, use line-height as column width
+			if box.Style != nil && (prevInFlow.Node == nil || prevInFlow.Node.TagName == "") {
+				lineHeight := box.Style.GetLineHeight()
+				if lineHeight > 0 {
+					columnXPositions := []float64{}
+					for _, sib := range box.Children {
+						if sib.Style != nil {
+							sp := sib.Style.GetPosition()
+							if sp == css.PositionAbsolute || sp == css.PositionFixed {
+								continue
+							}
+						}
+						sibRelX := sib.X - cbX
+						found := false
+						for _, cx := range columnXPositions {
+							if cx == sibRelX || (cx-sibRelX < 1 && sibRelX-cx < 1) {
+								found = true
+								break
+							}
+						}
+						if !found {
+							columnXPositions = append(columnXPositions, sibRelX)
+						}
+					}
+
+					colIdx := 0
+					for ci, cx := range columnXPositions {
+						if cx == prevRelX || (cx-prevRelX < 1 && prevRelX-cx < 1) {
+							colIdx = ci
+							break
+						}
+					}
+
+					if cbWM == "vertical-rl" {
+						staticBlock = cbPadWidth - float64(colIdx+1)*lineHeight
+					} else {
+						staticBlock = float64(colIdx) * lineHeight
+					}
+				}
+			}
+		}
+
+		// ========================================================================
+		// INLINE AXIS: top/bottom/height (physical Y in vertical modes)
+		// Uses §10.3.7 rules with axis swap.
+		// ========================================================================
+		if offset.HasTop && offset.HasBottom && marginTopAuto && marginBottomAuto {
+			usedHeight := child.Border.Top + child.Padding.Top + child.Height +
+				child.Padding.Bottom + child.Border.Bottom
+			avail := cbPadHeight - offset.Top - offset.Bottom - usedHeight
+			if avail >= 0 {
+				child.Margin.Top = avail / 2
+				child.Margin.Bottom = avail / 2
+			} else {
+				child.Margin.Top = 0
+				child.Margin.Bottom = 0
+			}
+			child.Y = cbY + offset.Top + child.Margin.Top
+		} else if offset.HasTop && offset.HasBottom {
+			child.Y = cbY + offset.Top + child.Margin.Top
+		} else if offset.HasTop {
+			child.Y = cbY + offset.Top + child.Margin.Top
+		} else if offset.HasBottom {
+			child.Y = cbY + cbPadHeight - offset.Bottom - child.Margin.Bottom -
+				child.Border.Bottom - child.Padding.Bottom - child.Height -
+				child.Padding.Top - child.Border.Top
+		} else {
+			// Neither top nor bottom specified → use static position
+			if cbDir == css.DirectionLTR {
+				child.Y = cbY + staticInline
+			} else {
+				outerH := child.Margin.Top + child.Border.Top + child.Padding.Top +
+					child.Height + child.Padding.Bottom + child.Border.Bottom + child.Margin.Bottom
+				child.Y = cbY + cbPadHeight - staticInline - outerH
+			}
+		}
+
+		// ========================================================================
+		// BLOCK AXIS: left/right/width (physical X in vertical modes)
+		// Uses §10.6.4 rules with axis swap.
+		// ========================================================================
+		if offset.HasLeft && offset.HasRight && marginLeftAuto && marginRightAuto {
+			usedWidth := child.Border.Left + child.Padding.Left + child.Width +
+				child.Padding.Right + child.Border.Right
+			avail := cbPadWidth - offset.Left - offset.Right - usedWidth
+			if avail >= 0 {
+				child.Margin.Left = avail / 2
+				child.Margin.Right = avail / 2
+			} else {
+				child.Margin.Left = 0
+				child.Margin.Right = 0
+			}
+			child.X = cbX + offset.Left + child.Margin.Left
+		} else if offset.HasLeft && offset.HasRight {
+			child.X = cbX + offset.Left + child.Margin.Left
+		} else if offset.HasLeft {
+			child.X = cbX + offset.Left + child.Margin.Left
+		} else if offset.HasRight {
+			child.X = cbX + cbPadWidth - offset.Right - child.Margin.Right -
+				child.Border.Right - child.Padding.Right - child.Width -
+				child.Padding.Left - child.Border.Left
+		} else {
+			// Neither left nor right specified → use static block position
+			child.X = cbX + staticBlock
+		}
+
+		// Shift descendants to match the position change
+		dx, dy := child.X-oldX, child.Y-oldY
+		if dx != 0 || dy != 0 {
+			shiftAllDescendants(child, dx, dy)
+		}
 	}
 }
 

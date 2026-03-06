@@ -2399,22 +2399,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						}
 					}
 					if !parentIsVertical {
-						// Save CB's pre-transform padding-box dimensions for abspos repositioning.
-						// The transform may change box.Width/Height, but abspos constraint
-						// equations use the CB's original (CSS-specified) dimensions.
-						preCBWidth := box.Width - box.Border.Left - box.Border.Right
-						preCBHeight := box.Height - box.Border.Top - box.Border.Bottom
+						// Save pre-transform border-box dimensions for abspos repositioning.
+						preTransformWidth := box.Width
+						preTransformHeight := box.Height
 
 						transformToVerticalRL(box, wm)
 
-						// After the transform, abspos children are at wrong positions
-						// (the transform treated them as in-flow). Reposition them using
-						// the CB's original dimensions and their CSS offset properties.
-						for _, child := range box.Children {
-							if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
-								repositionAbsPosAfterVerticalTransform(child, box, preCBWidth, preCBHeight)
-							}
-						}
+						// Re-position absolutely positioned children using vertical-mode
+						// constraint equations (CSS Writing Modes §7.1)
+						repositionAbsPosAfterVerticalTransform(box, wm, preTransformWidth, preTransformHeight)
 					}
 				}
 			}
