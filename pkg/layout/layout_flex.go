@@ -3589,10 +3589,13 @@ func transformToVerticalRL(box *Box, wm string) {
 				cols[i].height = extent
 			}
 			// Collect block-direction margins for column spacing when child has
-			// explicit width. Block-fill children (no explicit width) have their
-			// block-direction margins already consumed by h-tb block-fill calculation,
-			// so adding them again as column spacing would double-count.
-			if cols[i].hasExplicitW {
+			// explicit width and is not floated. Block-fill children (no explicit width)
+			// have their block-direction margins already consumed by h-tb block-fill
+			// calculation, so adding them again would double-count.
+			// Floated elements do not participate in block-direction margin collapsing
+			// (CSS 2.1 §8.3.1: floats do not collapse margins with adjacent blocks).
+			isFloated := child.Style != nil && child.Style.GetFloat() != css.FloatNone
+			if cols[i].hasExplicitW && !isFloated {
 				bs := blockStartM
 				be := dir.BlockEndEdge(child.Margin)
 				if bs > cols[i].blockStartMarg {
