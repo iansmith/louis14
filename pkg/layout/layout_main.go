@@ -44,10 +44,21 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// Initialize synthetic styles map for tree normalization
 	le.syntheticStyles = make(map[*html.Node]*css.Style)
 
+	// Detect root element's writing-mode and use the correct Dir for layout.
+	rootDir := NewDir(HorizontalTB)
+	for _, node := range doc.Root.Children {
+		if node.Type == html.ElementNode {
+			if style := computedStyles[node]; style != nil {
+				rootDir = NewDir(WritingModeFromStyle(style))
+			}
+			break
+		}
+	}
+
 	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
-			box := le.layoutNodeHTB(node, 0, y, le.viewport.width, computedStyles, nil)
+			box := le.layoutNode(node, 0, y, le.viewport.width, rootDir, computedStyles, nil)
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if box == nil {
 				continue

@@ -51,6 +51,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		style = css.NewStyle()
 	}
 
+	// Compute the Dir for children of this element. If this element has a
+	// different writing-mode than the parent's dir, switch to the new Dir.
+	childDir := dir
+	if style != nil {
+		elementWM := WritingModeFromStyle(style)
+		if elementWM != dir.WM {
+			childDir = NewDir(elementWM)
+		}
+	}
+	_ = childDir // used by recursive layoutNode calls in subsequent phases
+
 	// Phase 7: Check display mode early
 	display := style.GetDisplay()
 	if display == css.DisplayNone {
@@ -277,7 +288,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore width property)
 		contentWidth = 0
 		hasExplicitWidth = false
-	} else if widthVal, ok := style.Get("width"); ok && (widthVal == "min-content" || widthVal == "max-content" || widthVal == "fit-content") {
+	} else if widthVal, ok := style.Get(dir.InlineSizeProp()); ok && (widthVal == "min-content" || widthVal == "max-content" || widthVal == "fit-content") {
 		// CSS Intrinsic & Extrinsic Sizing: keyword values
 		constraint := NewConstraintSpace(availableWidth, -1)
 		sizes := le.ComputeMinMaxSizes(node, constraint, style)
@@ -287,28 +298,28 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		case "max-content":
 			contentWidth = sizes.MaxContentSize
 		case "fit-content":
-			contentWidth = math.Min(sizes.MaxContentSize, math.Max(sizes.MinContentSize, availableWidth-margin.Left-margin.Right-padding.Left-padding.Right-border.Left-border.Right))
+			contentWidth = math.Min(sizes.MaxContentSize, math.Max(sizes.MinContentSize, availableWidth-dir.InlineStartEdge(margin)-dir.InlineEndEdge(margin)-dir.InlineBorderBox(padding, border)))
 		}
 		hasExplicitWidth = true
-	} else if w, ok := style.GetLength("width"); ok {
+	} else if w, ok := style.GetLength(dir.InlineSizeProp()); ok {
 		contentWidth = w
 		hasExplicitWidth = true
-	} else if val, hasWidth := style.Get("width"); hasWidth && strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") && strings.Contains(val, "%") {
-		// calc() with percentage: resolve % against containing block width
+	} else if val, hasWidth := style.Get(dir.InlineSizeProp()); hasWidth && strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") && strings.Contains(val, "%") {
+		// calc() with percentage: resolve % against containing block inline size
 		expr := val[5 : len(val)-1]
 		cbWidth := availableWidth
 		if style.GetPosition() == css.PositionFixed {
-			cbWidth = le.viewport.width
+			cbWidth = dir.ViewportInlineSize(le)
 		}
 		if result, ok := css.EvalCalcWithPercent(expr, style.GetFontSize(), cbWidth); ok {
 			contentWidth = result
 			hasExplicitWidth = true
 		}
-	} else if pct, ok := style.GetPercentage("width"); ok {
-		// Percentage width resolved against containing block
+	} else if pct, ok := style.GetPercentage(dir.InlineSizeProp()); ok {
+		// Percentage inline size resolved against containing block
 		cbWidth := availableWidth
 		if style.GetPosition() == css.PositionFixed {
-			cbWidth = le.viewport.width
+			cbWidth = dir.ViewportInlineSize(le)
 		}
 		contentWidth = cbWidth * pct / 100
 		hasExplicitWidth = true
@@ -322,9 +333,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// CSS 2.1 §17.5.2: Tables without explicit width use shrink-to-fit
 		contentWidth = 0
 	} else {
-		// Default to available width minus horizontal margin, padding, border
-		contentWidth = availableWidth - margin.Left - margin.Right -
-			padding.Left - padding.Right - border.Left - border.Right
+		// Default to available inline size minus inline margin, padding, border
+		contentWidth = availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
+			dir.InlineBorderBox(padding, border)
 	}
 
 	// Calculate content height
@@ -403,31 +414,31 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if display == css.DisplayInline {
 		// Phase 7 Enhancement: Inline elements always shrink-wrap (ignore height property)
 		contentHeight = 0
-	} else if h, ok := style.GetLength("height"); ok {
+	} else if h, ok := style.GetLength(dir.BlockSizeProp()); ok {
 		contentHeight = h
 		hasExplicitHeight = true
-	} else if hval, hok := style.Get("height"); hok && strings.HasPrefix(hval, "calc(") && strings.Contains(hval, "%") {
-		// calc() with percentage height: resolve % against containing block height.
-		// Uses same containing-block rules as percentage height.
+	} else if hval, hok := style.Get(dir.BlockSizeProp()); hok && strings.HasPrefix(hval, "calc(") && strings.Contains(hval, "%") {
+		// calc() with percentage block size: resolve % against containing block block size.
+		// Uses same containing-block rules as percentage block size.
 		calcCBHeight := 0.0
 		if node.TagName == "html" {
-			calcCBHeight = le.viewport.height
+			calcCBHeight = dir.ViewportBlockSize(le)
 		} else if style.GetPosition() == css.PositionAbsolute || style.GetPosition() == css.PositionFixed {
 			cb := findPositionedAncestorBox(parent)
 			if cb == nil || style.GetPosition() == css.PositionFixed {
-				calcCBHeight = le.viewport.height
+				calcCBHeight = dir.ViewportBlockSize(le)
 			} else {
-				calcCBHeight = cb.Height - cb.Border.Top - cb.Border.Bottom
+				calcCBHeight = dir.BlockSize(cb) - dir.BlockStartEdge(cb.Border) - dir.BlockEndEdge(cb.Border)
 			}
 		} else if parent != nil && parent.Style != nil {
-			_, hasLen := parent.Style.GetLength("height")
-			_, hasPct := parent.Style.GetPercentage("height")
+			_, hasLen := parent.Style.GetLength(dir.BlockSizeProp())
+			_, hasPct := parent.Style.GetPercentage(dir.BlockSizeProp())
 			calcHasParentCalcH := false
-			if phval, phok := parent.Style.Get("height"); phok && strings.HasPrefix(phval, "calc(") && strings.Contains(phval, "%") {
+			if phval, phok := parent.Style.Get(dir.BlockSizeProp()); phok && strings.HasPrefix(phval, "calc(") && strings.Contains(phval, "%") {
 				calcHasParentCalcH = true
 			}
 			if hasLen || hasPct || calcHasParentCalcH || parent.HeightIsDefinite {
-				calcCBHeight = parent.Height - parent.Padding.Top - parent.Padding.Bottom - parent.Border.Top - parent.Border.Bottom
+				calcCBHeight = dir.BlockSize(parent) - dir.BlockBorderBox(parent.Padding, parent.Border)
 			}
 		}
 		if calcCBHeight > 0 {
@@ -437,38 +448,38 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				hasExplicitHeight = true
 			}
 		}
-		// else: containing block height depends on content → treat as auto
-	} else if hPct, ok := style.GetPercentage("height"); ok {
-		// CSS 2.1 §10.5: Percentage heights resolve against containing block height
+		// else: containing block block size depends on content → treat as auto
+	} else if hPct, ok := style.GetPercentage(dir.BlockSizeProp()); ok {
+		// CSS 2.1 §10.5: Percentage block sizes resolve against containing block block size
 		cbHeight := 0.0
 		if node.TagName == "html" {
 			// Root element: containing block is initial containing block (viewport)
-			cbHeight = le.viewport.height
+			cbHeight = dir.ViewportBlockSize(le)
 		} else if style.GetPosition() == css.PositionAbsolute || style.GetPosition() == css.PositionFixed {
 			// CSS 2.1 §10.1: For absolutely/fixed positioned elements, the containing
 			// block is the nearest positioned ancestor's padding box (or viewport)
 			cb := findPositionedAncestorBox(parent)
 			if cb == nil || style.GetPosition() == css.PositionFixed {
-				cbHeight = le.viewport.height
+				cbHeight = dir.ViewportBlockSize(le)
 			} else {
-				cbHeight = cb.Height - cb.Border.Top - cb.Border.Bottom
+				cbHeight = dir.BlockSize(cb) - dir.BlockStartEdge(cb.Border) - dir.BlockEndEdge(cb.Border)
 			}
 		} else if parent != nil && parent.Style != nil {
-			// Non-root: resolve against parent's content height if parent has explicit height
-			// OR if parent is a flex item that was stretched to a definite height (HeightIsDefinite).
-			_, hasLen := parent.Style.GetLength("height")
-			_, hasPct := parent.Style.GetPercentage("height")
+			// Non-root: resolve against parent's content block size if parent has explicit block size
+			// OR if parent is a flex item that was stretched to a definite block size (HeightIsDefinite).
+			_, hasLen := parent.Style.GetLength(dir.BlockSizeProp())
+			_, hasPct := parent.Style.GetPercentage(dir.BlockSizeProp())
 			if hasLen || hasPct || parent.HeightIsDefinite {
-				cbHeight = parent.Height - parent.Padding.Top - parent.Padding.Bottom - parent.Border.Top - parent.Border.Bottom
+				cbHeight = dir.BlockSize(parent) - dir.BlockBorderBox(parent.Padding, parent.Border)
 			}
 		}
 		if cbHeight > 0 {
 			contentHeight = cbHeight * hPct / 100
 			hasExplicitHeight = true
 		}
-		// else: containing block height depends on content → treat as auto
+		// else: containing block block size depends on content → treat as auto
 	} else {
-		contentHeight = 0 // Auto height - will be calculated from children
+		contentHeight = 0 // Auto block size - will be calculated from children
 	}
 
 	// CSS aspect-ratio: compute missing dimension from the other + ratio
@@ -494,30 +505,30 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
-	// CSS3 box-sizing: border-box means specified width/height include padding+border
+	// CSS3 box-sizing: border-box means specified inline/block size include padding+border
 	if style.GetBoxSizing() == "border-box" {
 		if hasExplicitWidth {
-			contentWidth -= padding.Left + padding.Right + border.Left + border.Right
+			contentWidth -= dir.InlineBorderBox(padding, border)
 			if contentWidth < 0 {
 				contentWidth = 0
 			}
 		}
 		if hasExplicitHeight {
-			contentHeight -= padding.Top + padding.Bottom + border.Top + border.Bottom
+			contentHeight -= dir.BlockBorderBox(padding, border)
 			if contentHeight < 0 {
 				contentHeight = 0
 			}
 		}
 	}
 
-	// Apply min/max width constraints (handles both fixed lengths and calc()+% values).
+	// Apply min/max inline size constraints (handles both fixed lengths and calc()+% values).
 	resolveCalcWidth := func(prop string) (float64, bool) {
 		if v, ok := style.GetLength(prop); ok {
 			return v, true
 		}
 		// Handle plain percentage values (e.g. max-width: 100%).
-		// CSS 2.1 §10.2: percentages on min/max-width resolve against the
-		// containing block's (parent's) width = availableWidth.
+		// CSS 2.1 §10.2: percentages on min/max inline size resolve against the
+		// containing block's (parent's) inline size = availableWidth.
 		if pct, ok := style.GetPercentage(prop); ok {
 			return pct / 100.0 * availableWidth, true
 		}
@@ -529,14 +540,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			if trimmed == "max-content" || trimmed == "min-content" || trimmed == "fit-content" {
 				constraint := NewConstraintSpace(availableWidth, -1)
 				sizes := le.ComputeMinMaxSizes(node, constraint, style)
-				paddingBorder := padding.Left + padding.Right + border.Left + border.Right
+				paddingBorder := dir.InlineBorderBox(padding, border)
 				switch trimmed {
 				case "min-content":
 					return math.Max(0, sizes.MinContentSize-paddingBorder), true
 				case "max-content":
 					return math.Max(0, sizes.MaxContentSize-paddingBorder), true
 				case "fit-content":
-					contentArea := availableWidth - margin.Left - margin.Right - paddingBorder
+					contentArea := availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) - paddingBorder
 					maxC := math.Max(0, sizes.MaxContentSize-paddingBorder)
 					minC := math.Max(0, sizes.MinContentSize-paddingBorder)
 					return math.Min(maxC, math.Max(minC, contentArea)), true
@@ -545,14 +556,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			if strings.HasPrefix(trimmed, "calc(") && strings.HasSuffix(trimmed, ")") {
 				inner := trimmed[5 : len(trimmed)-1]
 				// CSS 2.1 §10.2: In a shrink-to-fit context (float parent without explicit
-				// width), percentage in calc() is undefined — use percentBase=0 so that
+				// inline size), percentage in calc() is undefined — use percentBase=0 so that
 				// non-zero % terms fail gracefully (treated as none). Fixed-only calc()
 				// expressions still resolve correctly with percentBase=0.
 				pctBase := availableWidth
 				if strings.Contains(inner, "%") && parent != nil && parent.Style != nil {
 					if parent.Style.GetFloat() != css.FloatNone {
-						_, parentHasLen := parent.Style.GetLength("width")
-						_, parentHasPct := parent.Style.GetPercentage("width")
+						_, parentHasLen := parent.Style.GetLength(dir.InlineSizeProp())
+						_, parentHasPct := parent.Style.GetPercentage(dir.InlineSizeProp())
 						if !parentHasLen && !parentHasPct {
 							pctBase = 0
 						}
@@ -565,19 +576,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 	resolvedMinWidth := 0.0
 	hasMinWidth := false
-	if minWidth, ok := resolveCalcWidth("min-width"); ok {
+	if minWidth, ok := resolveCalcWidth(dir.MinInlineSizeProp()); ok {
 		hasMinWidth = true
 		resolvedMinWidth = minWidth
 		if contentWidth < minWidth {
 			contentWidth = minWidth
 		}
 	}
-	if maxWidth, ok := resolveCalcWidth("max-width"); ok {
+	if maxWidth, ok := resolveCalcWidth(dir.MaxInlineSizeProp()); ok {
 		if contentWidth > maxWidth {
 			contentWidth = maxWidth
 		}
-		// CSS 2.1 §10.4: If max-width < min-width, min-width wins.
-		// After applying max-width, re-apply min-width if we went below it.
+		// CSS 2.1 §10.4: If max inline size < min inline size, min wins.
+		// After applying max, re-apply min if we went below it.
 		if hasMinWidth && contentWidth < resolvedMinWidth {
 			contentWidth = resolvedMinWidth
 		}
@@ -611,21 +622,21 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
-	// Apply min/max height constraints (min-height overrides max-height per CSS 2.1 10.7)
+	// Apply min/max block size constraints (min-block-size overrides max-block-size per CSS 2.1 10.7)
 	maxHeightVal := 0.0
 	hasMaxHeight := false
-	if mh, ok := style.GetLength("max-height"); ok {
+	if mh, ok := style.GetLength(dir.MaxBlockSizeProp()); ok {
 		maxHeightVal = mh
 		hasMaxHeight = true
-	} else if mhPct, ok := style.GetPercentage("max-height"); ok {
+	} else if mhPct, ok := style.GetPercentage(dir.MaxBlockSizeProp()); ok {
 		cbHeight := 0.0
 		if node.TagName == "html" {
-			cbHeight = le.viewport.height
+			cbHeight = dir.ViewportBlockSize(le)
 		} else if parent != nil && parent.Style != nil {
-			_, hasLen := parent.Style.GetLength("height")
-			_, hasPct := parent.Style.GetPercentage("height")
+			_, hasLen := parent.Style.GetLength(dir.BlockSizeProp())
+			_, hasPct := parent.Style.GetPercentage(dir.BlockSizeProp())
 			if hasLen || hasPct {
-				cbHeight = parent.Height - parent.Padding.Top - parent.Padding.Bottom - parent.Border.Top - parent.Border.Bottom
+				cbHeight = dir.BlockSize(parent) - dir.BlockBorderBox(parent.Padding, parent.Border)
 			}
 		}
 		if cbHeight > 0 {
@@ -638,18 +649,18 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 	minHeightVal := 0.0
 	hasMinHeight := false
-	if mh, ok := style.GetLength("min-height"); ok {
+	if mh, ok := style.GetLength(dir.MinBlockSizeProp()); ok {
 		minHeightVal = mh
 		hasMinHeight = true
-	} else if mhPct, ok := style.GetPercentage("min-height"); ok {
+	} else if mhPct, ok := style.GetPercentage(dir.MinBlockSizeProp()); ok {
 		cbHeight := 0.0
 		if node.TagName == "html" {
-			cbHeight = le.viewport.height
+			cbHeight = dir.ViewportBlockSize(le)
 		} else if parent != nil && parent.Style != nil {
-			_, hasLen := parent.Style.GetLength("height")
-			_, hasPct := parent.Style.GetPercentage("height")
+			_, hasLen := parent.Style.GetLength(dir.BlockSizeProp())
+			_, hasPct := parent.Style.GetPercentage(dir.BlockSizeProp())
 			if hasLen || hasPct || parent.HeightIsDefinite {
-				cbHeight = parent.Height - parent.Padding.Top - parent.Padding.Bottom - parent.Border.Top - parent.Border.Bottom
+				cbHeight = dir.BlockSize(parent) - dir.BlockBorderBox(parent.Padding, parent.Border)
 			}
 		}
 		if cbHeight > 0 {
@@ -708,13 +719,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
-	// Phase 13: Handle margin: auto for horizontal centering
-	// Only center if both left and right margins are auto
-	if margin.AutoLeft && margin.AutoRight {
-		// For block-level elements with auto margins, center them
-		// Calculate total width including padding and border
-		totalWidth := contentWidth + padding.Left + padding.Right + border.Left + border.Right
-		// Center within available width
+	// Phase 13: Handle margin: auto for inline-direction centering
+	// Only center if both inline-start and inline-end margins are auto
+	if dir.AutoInlineStart(margin) && dir.AutoInlineEnd(margin) {
+		// For block-level elements with auto inline margins, center them
+		// Calculate total inline size including padding and border
+		totalWidth := contentWidth + dir.InlineBorderBox(padding, border)
+		// Center within available inline size
 		if totalWidth < availableWidth {
 			centerOffset := (availableWidth - totalWidth) / 2
 			x = x + centerOffset
@@ -723,10 +734,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// HTML <center> element: center block-level children (per HTML spec UA styles)
 	// Browsers use text-align: -webkit-center which centers block children too
-	if !margin.AutoLeft && !margin.AutoRight && parent != nil && parent.Node != nil &&
+	if !dir.AutoInlineStart(margin) && !dir.AutoInlineEnd(margin) && parent != nil && parent.Node != nil &&
 		parent.Node.TagName == "center" &&
 		(display == css.DisplayTable || display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayFlex) {
-		totalWidth := contentWidth + padding.Left + padding.Right + border.Left + border.Right
+		totalWidth := contentWidth + dir.InlineBorderBox(padding, border)
 		if totalWidth < availableWidth {
 			centerOffset := (availableWidth - totalWidth) / 2
 			x = x + centerOffset
@@ -755,8 +766,6 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		Style:     style,
 		X:         x,
 		Y:         y,
-		Width:     contentWidth + padding.Left + padding.Right + border.Left + border.Right,
-		Height:    contentHeight + padding.Top + padding.Bottom + border.Top + border.Bottom,
 		Margin:    margin,
 		Padding:   padding,
 		Border:    border,
@@ -766,6 +775,11 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		Parent:    parent,
 		ImagePath: imagePath, // Phase 8: Store image path for rendering
 	}
+	// Set inline and block sizes using Dir-aware accessors so that
+	// contentWidth (inline) and contentHeight (block) map to the correct
+	// physical box dimensions for the current writing-mode.
+	dir.SetInlineSize(box, contentWidth+dir.InlineBorderBox(padding, border))
+	dir.SetBlockSize(box, contentHeight+dir.BlockBorderBox(padding, border))
 
 	// Block-in-inline normalization: if this node is a clone produced by
 	// splitInlineAroundBlocks, set fragment flags for correct border rendering.
@@ -950,12 +964,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// contentWidth, but the element still needs shrink-to-fit behavior (floats inside can
 	// exceed min-width and the container grows to accommodate them).
 	if !hasExplicitWidth && (floatType != css.FloatNone || position == css.PositionAbsolute || position == css.PositionFixed) {
-		childAvailableWidth = availableWidth - padding.Left - padding.Right - border.Left - border.Right
-		// CSS 2.1 §10.3.5: max-width constrains the available width for child layout.
+		childAvailableWidth = availableWidth - dir.InlineBorderBox(padding, border)
+		// CSS 2.1 §10.3.5: max inline size constrains the available width for child layout.
 		// Without this, floats inside a shrink-to-fit container with max-width would be
 		// positioned as if the container had unlimited width, then the container would
 		// shrink to max-width but the float positions would already be set incorrectly.
-		if maxW, ok := style.GetLength("max-width"); ok && childAvailableWidth > maxW {
+		if maxW, ok := style.GetLength(dir.MaxInlineSizeProp()); ok && childAvailableWidth > maxW {
 			childAvailableWidth = maxW
 		}
 	}
@@ -1956,17 +1970,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
-	// If height is auto and we have children, adjust height to fit content
+	// If block-size is auto and we have children, adjust block-size to fit content
 	if !hasExplicitHeight && len(box.Children) > 0 {
-		// Calculate height based on maximum bottom edge of children (not sum)
+		// Calculate block-size based on maximum block-end edge of children (not sum)
 		// This correctly handles overlapping children (like floats with blocks)
-		parentContentTop := box.Y + box.Border.Top + box.Padding.Top
+		parentContentTop := dir.ContentStartBlockPos(box)
 		maxBottom := 0.0
 
-		// CSS 2.1 §8.3.1 / §10.6.3: Parent-child bottom margin collapsing.
-		// When parent has no bottom border and no bottom padding (and auto height),
-		// the last in-flow child's bottom margin collapses with the parent's bottom
-		// margin, so it should NOT be included in the auto-height calculation.
+		// CSS 2.1 §8.3.1 / §10.6.3: Parent-child block-end margin collapsing.
+		// When parent has no block-end border and no block-end padding (and auto block-size),
+		// the last in-flow child's block-end margin collapses with the parent's block-end
+		// margin, so it should NOT be included in the auto block-size calculation.
 		// Note: Margin collapsing does NOT apply to absolutely positioned elements,
 		// which establish a new block formatting context (CSS 2.1 §9.4.1).
 		parentChildBottomCollapse := parentCanCollapseBottomMargin(box) &&
@@ -1975,7 +1989,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if parentChildBottomCollapse {
 			for _, child := range box.Children {
 				if child.Position != css.PositionAbsolute && child.Position != css.PositionFixed {
-					// CSS 2.1 §8.3.1: Parent-child bottom margin collapse only applies to
+					// CSS 2.1 §8.3.1: Parent-child block-end margin collapse only applies to
 					// the last in-flow BLOCK-LEVEL child. Inline-block margins don't collapse.
 					childDisplay := css.DisplayBlock
 					if child.Style != nil {
@@ -1993,41 +2007,48 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
 				continue
 			}
-			// Calculate child's bottom edge relative to parent content area
+			// Calculate child's block-end edge relative to parent content area
 			// For position:relative children, use their normal flow position
-			// (CSS 2.1 §10.6.3: relative offset doesn't affect parent height)
-			childY := child.Y
+			// (CSS 2.1 §10.6.3: relative offset doesn't affect parent block-size)
+			childBlockPos := dir.BlockPos(child)
 			if child.Position == css.PositionRelative && child.Style != nil {
 				offset := child.Style.GetPositionOffset()
-				if offset.HasTop {
-					childY -= offset.Top
-				} else if offset.HasBottom {
-					childY += offset.Bottom
+				// Undo physical block-direction offset to get normal flow position.
+				// For h-tb block=Y (top/bottom), for v-rl/v-lr block=X (left/right).
+				if !dir.IsVertical() {
+					if offset.HasTop {
+						childBlockPos -= offset.Top
+					} else if offset.HasBottom {
+						childBlockPos += offset.Bottom
+					}
+				} else {
+					if offset.HasLeft {
+						childBlockPos -= offset.Left
+					} else if offset.HasRight {
+						childBlockPos += offset.Right
+					}
 				}
 			}
-			childRelativeY := childY - parentContentTop
-			// Use height from child's border-top edge (child.Y) downward:
-			// border + padding + content + padding + border + margin-bottom.
-			// Don't include margin-top since child.Y already accounts for it.
-			childMarginBottom := child.Margin.Bottom
+			childRelativePos := childBlockPos - parentContentTop
+			// Use block-size from child's block-start edge downward:
+			// border + padding + content + padding + border + block-end margin.
+			// Don't include block-start margin since child's block position already accounts for it.
+			childMarginBlockEnd := dir.BlockEndEdge(child.Margin)
 			if parentChildBottomCollapse && child == lastInFlowChild {
-				// Last child's margin-bottom collapses through the parent
-				childMarginBottom = 0
+				// Last child's block-end margin collapses through the parent
+				childMarginBlockEnd = 0
 			}
-			// Box.Height is ALWAYS border-box (content + padding + borders) - set at line 325.
-			var childHeight float64
+			// Box block-size is ALWAYS border-box (content + padding + borders).
+			var childBlockSize float64
 			if child.Style != nil && child.Style.GetDisplay() == css.DisplayInline {
-				// IMPORTANT: For inline elements, use LINE BOX height (not wrapper box height)
-				// CSS 2.1 §10.8.1: Borders/padding "bleed" outside line box, don't affect container height
-				// The wrapper box Height includes borders/padding for rendering, but container should
-				// only grow by the line box height. Skip inline wrapper boxes here - they're handled
-				// by the inlineCtx.LineBoxes check below
-				childHeight = 0  // Don't count inline wrapper box height twice
+				// IMPORTANT: For inline elements, use LINE BOX height (not wrapper box block-size)
+				// CSS 2.1 §10.8.1: Borders/padding "bleed" outside line box, don't affect container block-size
+				childBlockSize = 0  // Don't count inline wrapper box block-size twice
 			} else {
-				// Block: Height is already border-box, just add margin-bottom
-				childHeight = child.Height + childMarginBottom
+				// Block: block-size is already border-box, just add block-end margin
+				childBlockSize = dir.BlockSize(child) + childMarginBlockEnd
 			}
-			childBottom := childRelativeY + childHeight
+			childBottom := childRelativePos + childBlockSize
 			if childBottom > maxBottom {
 				maxBottom = childBottom
 			}
@@ -2055,12 +2076,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				maxBottom = lineBottom
 			}
 		}
-		// CSS 2.1 §10.6.7: For elements that establish a new BFC, the auto height
-		// extends to include the bottom margin edge of any floating descendants.
+		// CSS 2.1 §10.6.7: For elements that establish a new BFC, the auto block-size
+		// extends to include the block-end margin edge of any floating descendants.
 		if createsBFC {
 			for _, child := range box.Children {
 				if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
-					floatBottom := (child.Y - parentContentTop) + child.Height + child.Margin.Bottom
+					floatBottom := (dir.BlockPos(child) - parentContentTop) + dir.BlockSize(child) + dir.BlockEndEdge(child.Margin)
 					if floatBottom > maxBottom {
 						maxBottom = floatBottom
 					}
@@ -2071,46 +2092,45 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if maxBottom < 0 {
 			maxBottom = 0
 		}
-		// Box.Height must be border-box (content + padding + borders)
-		// maxBottom is content height, so add padding and borders
-		box.Height = maxBottom + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
+		// Block-size must be border-box (content + padding + borders)
+		// maxBottom is content block-size, so add padding and borders
+		dir.SetBlockSize(box, maxBottom+dir.BlockBorderBox(box.Padding, box.Border))
 
-		// CSS 2.1 §8.3.1: When parent-child bottom margin collapsing applies,
-		// propagate the last child's bottom margin to the parent's bottom margin.
+		// CSS 2.1 §8.3.1: When parent-child block-end margin collapsing applies,
+		// propagate the last child's block-end margin to the parent's block-end margin.
 		// The collapsed margin is the combination of parent's and child's margins.
-		if parentChildBottomCollapse && lastInFlowChild != nil && lastInFlowChild.Margin.Bottom != 0 {
-			parentMB := box.Margin.Bottom
-			childMB := lastInFlowChild.Margin.Bottom
+		if parentChildBottomCollapse && lastInFlowChild != nil && dir.BlockEndEdge(lastInFlowChild.Margin) != 0 {
+			parentMB := dir.BlockEndEdge(box.Margin)
+			childMB := dir.BlockEndEdge(lastInFlowChild.Margin)
 			if parentMB >= 0 && childMB >= 0 {
 				if childMB > parentMB {
-					box.Margin.Bottom = childMB
+					dir.SetBlockEndEdge(&box.Margin, childMB)
 				}
 			} else if parentMB < 0 && childMB < 0 {
 				if childMB < parentMB {
-					box.Margin.Bottom = childMB
+					dir.SetBlockEndEdge(&box.Margin, childMB)
 				}
 			} else {
-				box.Margin.Bottom = parentMB + childMB
+				dir.SetBlockEndEdge(&box.Margin, parentMB+childMB)
 			}
 		}
 	}
 
-	// Re-apply min/max height constraints after auto-height calculation
-	if maxHeight, ok := style.GetLength("max-height"); ok {
-		if box.Height > maxHeight {
-			box.Height = maxHeight
-			// When max-height constrains an auto-height element with non-visible overflow,
-			// the box now has a definite height. Direct children with height:% were laid out
-			// when box.Height was 0, so they resolved height:% as auto. Re-layout them so
-			// they resolve against the now-definite parent height.
-			// Example: overflow:hidden + max-height:100px → children height:100% = 100px.
+	// Re-apply min/max block size constraints after auto block-size calculation
+	if maxHeight, ok := style.GetLength(dir.MaxBlockSizeProp()); ok {
+		if dir.BlockSize(box) > maxHeight {
+			dir.SetBlockSize(box, maxHeight)
+			// When max block-size constrains an auto-block-size element with non-visible overflow,
+			// the box now has a definite block size. Direct children with block-size:% were laid out
+			// when block size was 0, so they resolved as auto. Re-layout them so
+			// they resolve against the now-definite parent block size.
 			if !hasExplicitHeight && style.GetOverflow() != css.OverflowVisible {
-				childAvailW := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+				childAvailW := dir.InlineSize(box) - dir.InlineBorderBox(box.Padding, box.Border)
 				for i, child := range box.Children {
 					if child == nil || child.Node == nil || child.Style == nil {
 						continue
 					}
-					if _, hasPct := child.Style.GetPercentage("height"); hasPct {
+					if _, hasPct := child.Style.GetPercentage(dir.BlockSizeProp()); hasPct {
 						newChild := le.layoutNodeHTB(child.Node, child.X, child.Y, childAvailW, computedStyles, box)
 						if newChild != nil {
 							box.Children[i] = newChild
@@ -2120,17 +2140,17 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		}
 	}
-	if minHeight, ok := style.GetLength("min-height"); ok {
-		if box.Height < minHeight {
-			box.Height = minHeight
+	if minHeight, ok := style.GetLength(dir.MinBlockSizeProp()); ok {
+		if dir.BlockSize(box) < minHeight {
+			dir.SetBlockSize(box, minHeight)
 		}
 	}
 
 	// Deferred relative-positioning fix: position:relative children with percentage
-	// top/bottom were resolved against cbHeight=0 when parent had auto height.
-	// Now that box.Height is final, apply the correct offsets.
+	// top/bottom were resolved against cbHeight=0 when parent had auto block-size.
+	// Now that block-size is final, apply the correct offsets.
 	if parentContentHeightIsZero {
-		cbH := box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+		cbH := dir.BlockSize(box) - dir.BlockBorderBox(box.Padding, box.Border)
 		if cbH > 0 {
 			for _, childBox := range box.Children {
 				if childBox.Position != css.PositionRelative || childBox.Style == nil {
@@ -2263,16 +2283,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 		}
 
-		// Re-apply min-width/max-width after shrink-wrapping
-		// (shrink-to-fit overrides the initial width, must re-clamp)
-		shrinkContent := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
-		if minW, ok := style.GetLength("min-width"); ok && shrinkContent < minW {
-			box.Width = minW + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+		// Re-apply min/max inline size after shrink-wrapping
+		// (shrink-to-fit overrides the initial inline size, must re-clamp)
+		shrinkContent := dir.InlineSize(box) - dir.InlineBorderBox(box.Padding, box.Border)
+		if minW, ok := style.GetLength(dir.MinInlineSizeProp()); ok && shrinkContent < minW {
+			dir.SetInlineSize(box, minW+dir.InlineBorderBox(box.Padding, box.Border))
 		}
-		if maxW, ok := style.GetLength("max-width"); ok {
-			maxBorderBox := maxW + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
-			if box.Width > maxBorderBox {
-				box.Width = maxBorderBox
+		if maxW, ok := style.GetLength(dir.MaxInlineSizeProp()); ok {
+			maxBorderBox := maxW + dir.InlineBorderBox(box.Padding, box.Border)
+			if dir.InlineSize(box) > maxBorderBox {
+				dir.SetInlineSize(box, maxBorderBox)
 			}
 		}
 	}
