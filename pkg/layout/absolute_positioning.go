@@ -301,25 +301,38 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 //   - preTransformWidth, preTransformHeight: the CB's border-box dimensions BEFORE
 //     the transform (CSS-specified dimensions)
 func repositionAbsPosAfterVerticalTransform(box *Box, cbWM string, preTransformWidth, preTransformHeight float64) {
-	// CB padding-box origin and dimensions for constraint equations.
-	// Use pre-transform dimensions since those are the CSS-specified containing block size.
-	cbX := box.X + box.Border.Left
-	cbY := box.Y + box.Border.Top
-	cbPadWidth := preTransformWidth - box.Border.Left - box.Border.Right
-	cbPadHeight := preTransformHeight - box.Border.Top - box.Border.Bottom
+	// Recursively walk all descendants and reposition abs-pos elements.
+	// Each abs-pos element uses its actual containing block for positioning.
+	repositionAbsPosRecursive(box, box, cbWM, preTransformWidth, preTransformHeight)
+}
+
+// repositionAbsPosInCB repositions absolutely positioned direct children of `cb`
+// using the vertical writing mode constraint equations.
+// Parameters:
+//   - cb: the containing block (position:relative/absolute/fixed ancestor)
+//   - cbWM: writing mode of the containing block
+//   - cbPadWidth, cbPadHeight: padding-box dimensions of the CB (pre-transform for the
+//     outermost transformed box, post-transform for nested CBs with explicit dims)
+func repositionAbsPosInCB(cb *Box, cbWM string, cbPadWidth, cbPadHeight float64) {
+	cbX := cb.X + cb.Border.Left
+	cbY := cb.Y + cb.Border.Top
 
 	// Get direction from the containing block's style
 	cbDir := css.DirectionLTR
-	if box.Style != nil {
-		cbDir = box.Style.GetDirection()
+	if cb.Style != nil {
+		cbDir = cb.Style.GetDirection()
 	}
 
-	for idx, child := range box.Children {
+	for idx, child := range cb.Children {
 		if child.Style == nil {
 			continue
 		}
-		childPos := child.Style.GetPosition()
-		if childPos != css.PositionAbsolute && childPos != css.PositionFixed {
+		// Use the box's Position field rather than child.Style.GetPosition().
+		// Text fragment boxes inherit their parent element's style (which may have
+		// position:absolute), but they are not CSS positioned elements — their
+		// box.Position is set to PositionStatic during inline layout creation.
+		// Using child.Position avoids incorrectly repositioning text fragments.
+		if child.Position != css.PositionAbsolute && child.Position != css.PositionFixed {
 			continue
 		}
 
@@ -382,7 +395,7 @@ func repositionAbsPosAfterVerticalTransform(box *Box, cbWM string, preTransformW
 		// Find the last in-flow sibling box before this abs-pos child.
 		var prevInFlow *Box
 		for j := idx - 1; j >= 0; j-- {
-			sib := box.Children[j]
+			sib := cb.Children[j]
 			if sib.Style != nil {
 				sibPos := sib.Style.GetPosition()
 				if sibPos == css.PositionAbsolute || sibPos == css.PositionFixed {
@@ -409,11 +422,11 @@ func repositionAbsPosAfterVerticalTransform(box *Box, cbWM string, preTransformW
 			staticBlock = prevRelX
 
 			// For text fragment siblings, use line-height as column width
-			if box.Style != nil && (prevInFlow.Node == nil || prevInFlow.Node.TagName == "") {
-				lineHeight := box.Style.GetLineHeight()
+			if cb.Style != nil && (prevInFlow.Node == nil || prevInFlow.Node.TagName == "") {
+				lineHeight := cb.Style.GetLineHeight()
 				if lineHeight > 0 {
 					columnXPositions := []float64{}
-					for _, sib := range box.Children {
+					for _, sib := range cb.Children {
 						if sib.Style != nil {
 							sp := sib.Style.GetPosition()
 							if sp == css.PositionAbsolute || sp == css.PositionFixed {
@@ -519,6 +532,73 @@ func repositionAbsPosAfterVerticalTransform(box *Box, cbWM string, preTransformW
 		if dx != 0 || dy != 0 {
 			shiftAllDescendants(child, dx, dy)
 		}
+	}
+}
+
+// repositionAbsPosRecursive walks the tree rooted at `current`, finding abs-pos
+// descendants and repositioning them according to their containing block's
+// vertical writing-mode constraint equations.
+//
+// Parameters:
+//   - transformRoot: the outermost box that was transformed (for pre-transform dims)
+//   - current: the current box being walked
+//   - cbWM: writing mode of the containing block context
+//   - preTransformWidth, preTransformHeight: border-box dimensions of transformRoot
+//     BEFORE the transform was applied
+func repositionAbsPosRecursive(current *Box, transformRoot *Box, cbWM string, preTransformWidth, preTransformHeight float64) {
+	// Determine if `current` is a containing block for abs-pos elements
+	isCB := false
+	if current.Style != nil {
+		pos := current.Style.GetPosition()
+		if pos == css.PositionRelative || pos == css.PositionAbsolute || pos == css.PositionFixed || pos == css.PositionSticky {
+			isCB = true
+		}
+		// Also check for transform, will-change, contain, etc. (simplified)
+		display := current.Style.GetDisplay()
+		if display == css.DisplayFlex || display == css.DisplayInlineFlex ||
+			display == css.DisplayGrid || display == css.DisplayInlineGrid {
+			isCB = true
+		}
+	}
+
+	// If current is the transform root OR a containing block, handle its direct abs-pos children
+	if current == transformRoot || isCB {
+		// Determine CB padding-box dimensions
+		var cbPadWidth, cbPadHeight float64
+		if current == transformRoot {
+			// Use pre-transform dimensions for the outermost transformed box
+			cbPadWidth = preTransformWidth - current.Border.Left - current.Border.Right
+			cbPadHeight = preTransformHeight - current.Border.Top - current.Border.Bottom
+		} else {
+			// For nested containing blocks, use current (post-transform) dimensions.
+			// If the CB has explicit CSS width/height, those dimensions are preserved
+			// through the transform. Otherwise, use the current box dimensions.
+			cbPadWidth = current.Width - current.Border.Left - current.Border.Right
+			cbPadHeight = current.Height - current.Border.Top - current.Border.Bottom
+		}
+
+		// Determine the writing mode for this CB (may differ from outer)
+		localWM := cbWM
+		if current != transformRoot && current.Style != nil {
+			if wm, ok := current.Style.Get("writing-mode"); ok && isVerticalWM(wm) {
+				localWM = wm
+			}
+		}
+
+		repositionAbsPosInCB(current, localWM, cbPadWidth, cbPadHeight)
+	}
+
+	// Recurse into non-abs-pos children to find deeper containing blocks
+	for _, child := range current.Children {
+		if child.Style != nil {
+			childPos := child.Style.GetPosition()
+			if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+				// Don't recurse into abs-pos children — they've already been repositioned
+				// by their containing block's repositionAbsPosInCB call
+				continue
+			}
+		}
+		repositionAbsPosRecursive(child, transformRoot, cbWM, preTransformWidth, preTransformHeight)
 	}
 }
 

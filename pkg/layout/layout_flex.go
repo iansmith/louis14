@@ -3633,4 +3633,5 @@ func transformToVerticalRL(box *Box, wm string) {
 	if !hasExplicitHeight {
 		box.Height = maxContentHeight + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
 	}
+
 }
