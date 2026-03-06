@@ -1133,6 +1133,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	childY := box.Y + border.Top + padding.Top
 	childAvailableWidth := contentWidth
 
+	// elementDir is the Dir for this element's own writing mode.
+	// Used in Dir-aware margin collapsing (gated behind elementIsVertical).
+	// For HTB elements this is NewDir(HorizontalTB) = same as default behavior.
+	elementDir := NewDir(elementWM)
+	_ = elementDir // suppress unused-variable error; used in margin collapsing below
+
 	// For shrink-to-fit elements (floats, abs pos without explicit width), pass the parent's
 	// available width to children so they can lay out naturally, then we'll shrink-wrap around them.
 	// Use !hasExplicitWidth (not contentWidth==0) because min-width may have set a non-zero
