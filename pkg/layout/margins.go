@@ -43,7 +43,9 @@ func isCollapseThroughDir(box *Box, dir Dir) bool {
 	if dir.BlockStartEdge(box.Padding) > 0 || dir.BlockEndEdge(box.Padding) > 0 {
 		return false
 	}
-	if box.Height > 0 {
+	// Use block-direction size (not physical height) so vertical writing-modes
+	// check block-direction size (width for VRL/VLR) rather than physical height.
+	if dir.BlockSize(box) > 0 {
 		return false
 	}
 	// Check for in-flow content that would prevent collapse-through

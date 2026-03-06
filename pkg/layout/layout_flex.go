@@ -3680,11 +3680,16 @@ func transformToVerticalRL(box *Box, wm string) {
 			colX += cols[i].width
 		}
 	} else {
-		// vertical-rl: columns stack right-to-left
-		colX := contentWidth
+		// vertical-rl: columns stack right-to-left.
+		// colMargins[0] is the block-start margin of the first (rightmost) column.
+		// In VRL, block-start is the right side, so block-start margin = gap between
+		// the container's right edge and the first column's right edge. We subtract
+		// colMargins[0] from the starting colX so the first column is positioned
+		// correctly with the block-start margin gap on its right side.
+		colX := contentWidth - colMargins[0]
 		for i, line := range lines {
 			colX -= cols[i].width
-			// Subtract margin before this column
+			// Subtract margin before columns after the first
 			if i > 0 {
 				colX -= colMargins[i]
 			}
@@ -3712,6 +3717,39 @@ func transformToVerticalRL(box *Box, wm string) {
 	}
 	if !hasExplicitHeight {
 		box.Height = maxContentHeight + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
+	}
+
+	// Recursively apply transformToVerticalRL to nested VRL/VLR BFC children.
+	// When a VRL block that establishes a BFC (e.g., overflow:hidden) is inside another VRL
+	// element, layoutNode skips transformToVerticalRL for it (parent is also VRL).
+	// Its children were laid out in HTB pre-transform mode and need the block-direction
+	// transform applied here, after the parent transform has positioned the container.
+	// IMPORTANT: Only applies to BFC-establishing children (overflow != visible, etc.).
+	// Regular non-BFC VRL children do NOT need the recursive transform because their
+	// children's positions within the child box are already correct after the parent transform.
+	for _, child := range box.Children {
+		if child == nil || len(child.Children) == 0 {
+			continue
+		}
+		if child.Style == nil {
+			continue
+		}
+		childWM, ok := child.Style.Get("writing-mode")
+		if !ok {
+			continue
+		}
+		childIsVertical := childWM == "vertical-rl" || childWM == "vertical-lr" || childWM == "sideways-rl" || childWM == "sideways-lr"
+		if !childIsVertical {
+			continue
+		}
+		// Only transform BFC-establishing VRL children. BFC children have their own
+		// independent formatting context, so their children's positions need the
+		// block-direction transform applied separately.
+		// Non-BFC children are already handled by the parent transform.
+		if !blockChildEstablishesBFC(child.Style) {
+			continue
+		}
+		transformToVerticalRL(child, childWM)
 	}
 
 }
