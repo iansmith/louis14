@@ -891,14 +891,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 5: Check for clear property
 	clearType := style.GetClear()
 
-	// Phase 5: Handle clear property - move Y down past floats
+	// Phase 5: Handle clear property - move Y down past floats.
+	// Layout always runs in HTB coordinates (pre-transform), so getClearY is
+	// correct for all elements. getClearDir would only be meaningful with native
+	// vertical layout (not yet implemented).
 	if clearType != css.ClearNone {
-		if elementIsVertical {
-			d := NewDir(elementWM)
-			y = le.getClearDir(clearType, y, d)
-		} else {
-			y = le.getClearY(clearType, y)
-		}
+		y = le.getClearY(clearType, y)
 	}
 
 	// Track whether this box has zero initial content height (auto, no min-height).
