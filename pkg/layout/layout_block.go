@@ -2328,7 +2328,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						preCBWidth := box.Width - box.Border.Left - box.Border.Right
 						preCBHeight := box.Height - box.Border.Top - box.Border.Bottom
 
-						transformToVerticalRL(box)
+						transformToVerticalRL(box, wm)
 
 						// After the transform, abspos children are at wrong positions
 						// (the transform treated them as in-flow). Reposition them using

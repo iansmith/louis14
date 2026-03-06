@@ -2103,7 +2103,7 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 				_, hasExplicitW := childStyle.GetLength("width")
 				_, hasExplicitH := childStyle.GetLength("height")
 				if !hasExplicitW && !hasExplicitH {
-					transformToVerticalRL(childBox)
+					transformToVerticalRL(childBox, wm)
 				}
 			}
 		}
@@ -3494,14 +3494,18 @@ func resolveItemIntrinsicHeightConstraint(item *FlexItem, keyword string) (float
 	return 0, false
 }
 
-// transformToVerticalRL transforms a horizontally laid-out box to vertical-rl layout.
-// Each horizontal line becomes a vertical column, stacking right-to-left.
+// transformToVerticalRL transforms a horizontally laid-out box to vertical layout.
+// Each horizontal line becomes a vertical column. For vertical-rl/sideways-rl,
+// columns stack right-to-left; for vertical-lr/sideways-lr, left-to-right.
 // Content within each column flows top-to-bottom (original X offset → Y offset).
 // Lines are detected by grouping children with similar Y positions.
-func transformToVerticalRL(box *Box) {
+// If the box has explicit CSS width/height, those dimensions are preserved.
+func transformToVerticalRL(box *Box, wm string) {
 	if len(box.Children) == 0 {
 		return
 	}
+
+	isLR := wm == "vertical-lr" || wm == "sideways-lr"
 
 	contentStartX := box.X + box.Border.Left + box.Padding.Left
 	contentStartY := box.Y + box.Border.Top + box.Padding.Top
@@ -3532,9 +3536,12 @@ func transformToVerticalRL(box *Box) {
 	})
 
 	// Each line becomes a column. Compute column dimensions.
+	// Column height = max extent after repositioning (origRelX + child.Height),
+	// not just max(child.Height), because children at different X offsets
+	// end up at different Y positions within the column.
 	type colInfo struct {
 		width  float64 // max child width → column width
-		height float64 // max child height → column height
+		height float64 // max (origRelX + child.Height) → column content extent
 	}
 	cols := make([]colInfo, len(lines))
 	for i, line := range lines {
@@ -3542,8 +3549,10 @@ func transformToVerticalRL(box *Box) {
 			if child.Width > cols[i].width {
 				cols[i].width = child.Width
 			}
-			if child.Height > cols[i].height {
-				cols[i].height = child.Height
+			origRelX := child.X - contentStartX
+			extent := origRelX + child.Height
+			if extent > cols[i].height {
+				cols[i].height = extent
 			}
 		}
 	}
@@ -3553,26 +3562,75 @@ func transformToVerticalRL(box *Box) {
 	for _, c := range cols {
 		totalWidth += c.width
 	}
-	totalHeight := 0.0
+	maxContentHeight := 0.0
 	for _, c := range cols {
-		if c.height > totalHeight {
-			totalHeight = c.height
+		if c.height > maxContentHeight {
+			maxContentHeight = c.height
 		}
 	}
 
-	// Reposition children: columns stack right-to-left (vertical-rl)
-	colX := totalWidth
-	for i, line := range lines {
-		colX -= cols[i].width
-		for _, child := range line.children {
-			// Original X offset within line → Y offset within column
-			origRelX := child.X - contentStartX
-			child.X = contentStartX + colX
-			child.Y = contentStartY + origRelX
+	// Determine if box has explicit CSS dimensions
+	hasExplicitWidth := false
+	hasExplicitHeight := false
+	if box.Style != nil {
+		if _, ok := box.Style.GetLength("width"); ok {
+			hasExplicitWidth = true
+		} else if _, ok := box.Style.GetPercentage("width"); ok {
+			hasExplicitWidth = true
+		}
+		if _, ok := box.Style.GetLength("height"); ok {
+			hasExplicitHeight = true
+		} else if _, ok := box.Style.GetPercentage("height"); ok {
+			hasExplicitHeight = true
 		}
 	}
 
-	// Update box dimensions (border-box)
-	box.Width = totalWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
-	box.Height = totalHeight + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
+	// Content area width for column positioning
+	contentWidth := totalWidth
+	if hasExplicitWidth {
+		contentWidth = box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+	}
+
+	// Reposition children into columns, shifting descendants by the same delta
+	if isLR {
+		// vertical-lr: columns stack left-to-right
+		colX := 0.0
+		for i, line := range lines {
+			for _, child := range line.children {
+				origRelX := child.X - contentStartX
+				newX := contentStartX + colX
+				newY := contentStartY + origRelX
+				dx := newX - child.X
+				dy := newY - child.Y
+				child.X = newX
+				child.Y = newY
+				shiftAllDescendants(child, dx, dy)
+			}
+			colX += cols[i].width
+		}
+	} else {
+		// vertical-rl: columns stack right-to-left
+		colX := contentWidth
+		for i, line := range lines {
+			colX -= cols[i].width
+			for _, child := range line.children {
+				origRelX := child.X - contentStartX
+				newX := contentStartX + colX
+				newY := contentStartY + origRelX
+				dx := newX - child.X
+				dy := newY - child.Y
+				child.X = newX
+				child.Y = newY
+				shiftAllDescendants(child, dx, dy)
+			}
+		}
+	}
+
+	// Update box dimensions (border-box), preserving explicit CSS values
+	if !hasExplicitWidth {
+		box.Width = totalWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+	}
+	if !hasExplicitHeight {
+		box.Height = maxContentHeight + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
+	}
 }
