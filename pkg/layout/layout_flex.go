@@ -3715,3 +3715,105 @@ func transformToVerticalRL(box *Box, wm string) {
 	}
 
 }
+
+// transformBoxToVerticalRecursive recursively transforms a box and its descendants
+// so that inline text content is oriented vertically. For leaf text boxes (no children,
+// has text content), this splits text into per-character boxes and stacks them vertically.
+// For non-leaf boxes, recursively transforms children first, then applies transformToVerticalRL.
+func transformBoxToVerticalRecursive(box *Box, wm string) {
+	if box == nil {
+		return
+	}
+
+	// Leaf text box: split text into individual character boxes, stacked vertically.
+	// Each character occupies one horizontal "line" so transformToVerticalRL at
+	// the parent level can convert them to a vertical column.
+	if len(box.Children) == 0 && box.Node != nil && box.Node.Type == html.TextNode && strings.TrimSpace(box.Node.Text) != "" {
+		textContent := box.Node.Text
+		// Apply text-transform if needed
+		if box.Style != nil {
+			textContent = ApplyTextTransform(textContent, box.Style.GetTextTransform())
+		}
+		// Collapse whitespace per CSS rules
+		if box.Style != nil {
+			ws, _ := box.Style.Get("white-space")
+			if ws != "pre" && ws != "pre-wrap" && ws != "pre-line" {
+				textContent = strings.Join(strings.Fields(textContent), " ")
+			}
+		}
+		if textContent == "" {
+			return
+		}
+
+		fontSize := 16.0
+		isBold := false
+		isItalic := false
+		isMono := false
+		isAhem := false
+		if box.Style != nil {
+			fontSize = box.Style.GetFontSize()
+			isBold = box.Style.GetFontWeight() == css.FontWeightBold
+			isItalic = box.Style.GetFontStyle() == css.FontStyleItalic
+			isMono = box.Style.IsMonospaceFamily()
+			isAhem = box.Style.IsAhemFamily()
+		}
+
+		// Use the line-height for character box heights in vertical text.
+		// Each character in vertical writing occupies one line, so the character
+		// slot height = line-height (not font metrics height).
+		lineHeight := fontSize // default: normal ≈ 1.2 * fontSize
+		if box.Style != nil {
+			lineHeight = box.Style.GetLineHeight()
+		}
+		charHeight := lineHeight
+		if charHeight <= 0 {
+			charHeight = fontSize
+		}
+
+		// Split into characters and create child boxes
+		runes := []rune(textContent)
+		charBoxes := make([]*Box, 0, len(runes))
+		curX := box.X
+		for _, ch := range runes {
+			charStr := string(ch)
+			charW, _ := text.MeasureTextWithStyle(charStr, fontSize, isBold, isItalic, isMono, isAhem)
+			if charW == 0 {
+				continue
+			}
+			// Create a synthetic text node for this character
+			charNode := &html.Node{
+				Type: html.TextNode,
+				Text: charStr,
+			}
+			charBox := &Box{
+				Node:   charNode,
+				Style:  box.Style,
+				X:      curX,
+				Y:      box.Y,
+				Width:  charW,
+				Height: charHeight,
+				Parent: box,
+			}
+			charBoxes = append(charBoxes, charBox)
+			curX += charW
+		}
+
+		if len(charBoxes) > 0 {
+			box.Children = charBoxes
+			// Clear the text on the original box so it doesn't draw text AND children
+			box.Node = nil
+			box.PseudoContent = ""
+		}
+		return
+	}
+
+	// Non-leaf box: recursively transform children
+	for _, child := range box.Children {
+		transformBoxToVerticalRecursive(child, wm)
+	}
+
+	// After children are transformed, apply the column transform to this box
+	if len(box.Children) > 0 {
+		transformToVerticalRL(box, wm)
+	}
+}

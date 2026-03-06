@@ -878,6 +878,41 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				le.shiftChildren(box, dx, dy)
 			}
 		}
+
+		// CSS Writing Modes: Apply vertical transform to tables with vertical writing mode.
+		// In vertical-rl/lr, caption-side:top/bottom maps to block-start/end (right/left in
+		// vertical-rl, left/right in vertical-lr). The horizontal table layout places captions
+		// above/below; transformToVerticalRL converts this Y-stacking to column-based X-stacking.
+		// Each child (caption/cell) first gets its own vertical transform (converting horizontal
+		// inline text to vertical columns), then the table gets its own transform (rearranging
+		// caption and cell groups into columns based on their Y positions).
+		if style != nil && len(box.Children) > 0 {
+			if wm, ok := style.Get("writing-mode"); ok {
+				isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
+				if isVertical {
+					parentIsVertical := false
+					if node.Parent != nil {
+						if parentStyle := computedStyles[node.Parent]; parentStyle != nil {
+							if parentWM, pok := parentStyle.Get("writing-mode"); pok {
+								parentIsVertical = parentWM == "vertical-rl" || parentWM == "vertical-lr" || parentWM == "sideways-rl" || parentWM == "sideways-lr"
+							}
+						}
+					}
+					if !parentIsVertical {
+						// Transform each child's inline content to vertical, then
+						// transform the table box to rearrange children as columns.
+						for _, child := range box.Children {
+							transformBoxToVerticalRecursive(child, wm)
+						}
+						preTransformWidth := box.Width
+						preTransformHeight := box.Height
+						transformToVerticalRL(box, wm)
+						repositionAbsPosAfterVerticalTransform(box, wm, preTransformWidth, preTransformHeight)
+					}
+				}
+			}
+		}
+
 		return box
 	}
 
@@ -987,7 +1022,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	hasInlineChild := false
 	didAnalyzeChildren := false // Track if we analyzed children
 
-	if (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInline || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
+	if (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInline || display == css.DisplayInlineBlock || display == css.DisplayTableCell || display == css.DisplayTableCaption) {
 		didAnalyzeChildren = true
 		// Two-pass scan: determine if whitespace text counts as inline content.
 		// CSS 2.1 §9.2.2.1: In block containers with only block children,
@@ -1039,7 +1074,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// 2. Not an object with image
 		// 3. Container is a BLOCK (not inline - inline containers have complex fragment splitting)
 		// EXPERIMENTAL: Allow mixed block/inline content - block children handled in multi-pass
-		if hasInlineChild && !isObjectImage && (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInlineBlock || display == css.DisplayTableCell) {
+		if hasInlineChild && !isObjectImage && (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInlineBlock || display == css.DisplayTableCell || display == css.DisplayTableCaption) {
 			algorithm = InlineLayoutMultiPass
 		}
 	}

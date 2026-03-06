@@ -2804,6 +2804,37 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 					textContent = string(runes)
 					node.Text = textContent
 				}
+			} else if parentStyle.GetDirection() == css.DirectionRTL {
+				// In normal RTL context (without override), apply bidi mirroring
+				// to paired bracket/punctuation characters per Unicode Bidi Algorithm.
+				// Characters like > < ( ) [ ] { } get mirrored when resolved to RTL.
+				// Unlike override mode, we do NOT reverse character order — the
+				// visual reordering is handled by mirrorInlineBoxesRTL.
+				// Skip if text contains explicit bidi control characters (LRO/RLO/LRE/RLE/
+				// LRI/RLI/FSI) — those indicate intentional bidi formatting where
+				// characters are already in the correct form.
+				hasBidiControls := false
+				for _, r := range textContent {
+					if r == 0x202A || r == 0x202B || r == 0x202D || r == 0x202E ||
+						(r >= 0x2066 && r <= 0x2068) {
+						hasBidiControls = true
+						break
+					}
+				}
+				if !hasBidiControls {
+					runes := []rune(textContent)
+					changed := false
+					for i, r := range runes {
+						if m := bidiMirror(r); m != r {
+							runes[i] = m
+							changed = true
+						}
+					}
+					if changed {
+						textContent = string(runes)
+						node.Text = textContent
+					}
+				}
 			}
 		}
 

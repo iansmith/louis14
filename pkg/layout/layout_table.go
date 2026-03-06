@@ -629,14 +629,20 @@ func (le *LayoutEngine) measureCellContentWidth(cell *TableCell, computedStyles 
 	}
 	fontSize := 16.0
 	isBold := false
+	isItalic := false
+	isMono := false
+	isAhem := false
 	if cell.Box.Style != nil {
 		fontSize = cell.Box.Style.GetFontSize()
 		isBold = cell.Box.Style.GetFontWeight() == css.FontWeightBold
+		isItalic = cell.Box.Style.GetFontStyle() == css.FontStyleItalic
+		isMono = cell.Box.Style.IsMonospaceFamily()
+		isAhem = cell.Box.Style.IsAhemFamily()
 	}
 	// Save counter state — measurement may process counter-reset/increment
 	// for pseudo-elements, but these shouldn't affect the actual layout pass
 	savedCounters := le.saveCounterState()
-	totalWidth := le.measureTextContentRecursive(cell.Box.Node, fontSize, isBold, computedStyles)
+	totalWidth := le.measureTextContentRecursive(cell.Box.Node, fontSize, isBold, isItalic, isMono, isAhem, computedStyles)
 	le.restoreCounterState(savedCounters)
 	// Add cell padding and border
 	if cell.Box.Style != nil {
@@ -652,7 +658,7 @@ func (le *LayoutEngine) measureCellContentWidth(cell *TableCell, computedStyles 
 // Block-level children start new lines, so their widths are compared with MAX rather than
 // summed (CSS preferred width = width of the widest single line).
 // Also accounts for ::before/::after pseudo-element content.
-func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize float64, isBold bool, computedStyles map[*html.Node]*css.Style) float64 {
+func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize float64, isBold, isItalic, isMono, isAhem bool, computedStyles map[*html.Node]*css.Style) float64 {
 	currentLineWidth := 0.0
 	maxWidth := 0.0
 
@@ -669,10 +675,10 @@ func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize fl
 	}
 
 	// Measure ::before pseudo-element content
-	beforeWidth := le.measurePseudoContentWidth(node, "before", fontSize, isBold, computedStyles)
+	beforeWidth := le.measurePseudoContentWidth(node, "before", fontSize, isBold, isItalic, isMono, isAhem, computedStyles)
 
 	// Measure ::after pseudo-element content
-	afterWidth := le.measurePseudoContentWidth(node, "after", fontSize, isBold, computedStyles)
+	afterWidth := le.measurePseudoContentWidth(node, "after", fontSize, isBold, isItalic, isMono, isAhem, computedStyles)
 
 	// Determine if pseudo-elements are block-level
 	beforeIsBlock := false
@@ -717,7 +723,7 @@ func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize fl
 			if strings.TrimSpace(child.Text) == "" {
 				continue
 			}
-			w, _ := text.MeasureTextWithWeight(child.Text, fontSize, isBold)
+			w, _ := text.MeasureTextWithStyle(child.Text, fontSize, isBold, isItalic, isMono, isAhem)
 			currentLineWidth += w
 		} else if child.Type == html.ElementNode {
 			// Determine if this element is block-level
@@ -792,7 +798,19 @@ func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize fl
 					}
 				}
 			}
-			childWidth := le.measureTextContentRecursive(child, fontSize, isBold, computedStyles)
+			// Check if child element overrides font properties
+			childBold, childItalic, childMono, childAhem := isBold, isItalic, isMono, isAhem
+			childFontSize := fontSize
+			if computedStyles != nil {
+				if childStyle := computedStyles[child]; childStyle != nil {
+					childFontSize = childStyle.GetFontSize()
+					childBold = childStyle.GetFontWeight() == css.FontWeightBold
+					childItalic = childStyle.GetFontStyle() == css.FontStyleItalic
+					childMono = childStyle.IsMonospaceFamily()
+					childAhem = childStyle.IsAhemFamily()
+				}
+			}
+			childWidth := le.measureTextContentRecursive(child, childFontSize, childBold, childItalic, childMono, childAhem, computedStyles)
 			if isBlock {
 				// Block children start new lines
 				if currentLineWidth > maxWidth {
@@ -833,7 +851,7 @@ func (le *LayoutEngine) measureTextContentRecursive(node *html.Node, fontSize fl
 
 // measurePseudoContentWidth measures the text content width of a ::before or ::after
 // pseudo-element. Returns 0 if no pseudo-element content exists.
-func (le *LayoutEngine) measurePseudoContentWidth(node *html.Node, pseudoType string, fontSize float64, isBold bool, computedStyles map[*html.Node]*css.Style) float64 {
+func (le *LayoutEngine) measurePseudoContentWidth(node *html.Node, pseudoType string, fontSize float64, isBold, isItalic, isMono, isAhem bool, computedStyles map[*html.Node]*css.Style) float64 {
 	if le == nil || node.Type != html.ElementNode {
 		return 0
 	}
@@ -875,7 +893,7 @@ func (le *LayoutEngine) measurePseudoContentWidth(node *html.Node, pseudoType st
 		case "url":
 			// Flush accumulated text
 			if textBuf != "" {
-				w, _ := text.MeasureTextWithWeight(textBuf, fontSize, isBold)
+				w, _ := text.MeasureTextWithStyle(textBuf, fontSize, isBold, isItalic, isMono, isAhem)
 				totalWidth += w
 				textBuf = ""
 			}
@@ -906,7 +924,7 @@ func (le *LayoutEngine) measurePseudoContentWidth(node *html.Node, pseudoType st
 	}
 	// Flush remaining text
 	if textBuf != "" {
-		w, _ := text.MeasureTextWithWeight(textBuf, fontSize, isBold)
+		w, _ := text.MeasureTextWithStyle(textBuf, fontSize, isBold, isItalic, isMono, isAhem)
 		totalWidth += w
 	}
 	return totalWidth
