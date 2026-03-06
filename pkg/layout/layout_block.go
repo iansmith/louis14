@@ -53,14 +53,29 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Compute the Dir for children of this element. If this element has a
 	// different writing-mode than the parent's dir, switch to the new Dir.
+	elementWM := WritingModeFromStyle(style)
 	childDir := dir
-	if style != nil {
-		elementWM := WritingModeFromStyle(style)
-		if elementWM != dir.WM {
-			childDir = NewDir(elementWM)
-		}
+	if elementWM != dir.WM {
+		childDir = NewDir(elementWM)
 	}
 	_ = childDir // used by recursive layoutNode calls in subsequent phases
+
+	// Detect orthogonal flow: this element has a different axis than its parent.
+	// CSS Writing Modes §7.3.1: orthogonal flow blocks with auto inline-size
+	// use shrink-to-fit instead of block-fill.
+	elementIsVertical := elementWM == VerticalRL || elementWM == VerticalLR || elementWM == SidewaysLR
+	parentIsVertical := false
+	if node.Parent != nil {
+		parentStyle := computedStyles[node.Parent]
+		if parentStyle == nil {
+			parentStyle = le.syntheticStyles[node.Parent]
+		}
+		if parentStyle != nil {
+			pWM := WritingModeFromStyle(parentStyle)
+			parentIsVertical = pWM == VerticalRL || pWM == VerticalLR || pWM == SidewaysLR
+		}
+	}
+	isOrthogonalFlow := elementIsVertical != parentIsVertical
 
 	// Phase 7: Check display mode early
 	display := style.GetDisplay()
@@ -332,6 +347,29 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	} else if display == css.DisplayTable {
 		// CSS 2.1 §17.5.2: Tables without explicit width use shrink-to-fit
 		contentWidth = 0
+	} else if isOrthogonalFlow && !elementIsVertical {
+		// CSS Writing Modes §7.3.1: Orthogonal flow blocks (horizontal-tb inside
+		// a vertical containing block) with auto inline-size use shrink-to-fit:
+		//   used-width = min(max-content, max(min-content, constraint))
+		// The constraint is the parent's block-size (availableWidth for the child).
+		stfConstraint := availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
+			dir.InlineBorderBox(padding, border)
+		if stfConstraint < 0 {
+			stfConstraint = 0
+		}
+		constraintSpace := NewConstraintSpace(availableWidth, -1)
+		sizes := le.ComputeMinMaxSizes(node, constraintSpace, style)
+		// ComputeMinMaxSizes returns border-box sizes; convert to content-box
+		paddingBorderInline := dir.InlineBorderBox(padding, border)
+		maxContent := sizes.MaxContentSize - paddingBorderInline
+		minContent := sizes.MinContentSize - paddingBorderInline
+		if maxContent < 0 {
+			maxContent = 0
+		}
+		if minContent < 0 {
+			minContent = 0
+		}
+		contentWidth = math.Min(maxContent, math.Max(minContent, stfConstraint))
 	} else {
 		// Default to available inline size minus inline margin, padding, border
 		contentWidth = availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
