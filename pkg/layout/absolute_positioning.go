@@ -127,10 +127,67 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 		}
 	}
 
+	// Detect if width/height are auto (not explicitly specified in CSS).
+	// Needed for §10.3.7 Case 5 and §10.6.4 Case 5 dimension solving.
+	widthIsAuto := true
+	heightIsAuto := true
+	if box.Style != nil {
+		if _, ok := box.Style.GetLength("width"); ok {
+			widthIsAuto = false
+		} else if _, ok := box.Style.GetPercentage("width"); ok {
+			widthIsAuto = false
+		} else if v, ok := box.Style.Get("width"); ok && v != "auto" && v != "" {
+			widthIsAuto = false
+		}
+		if _, ok := box.Style.GetLength("height"); ok {
+			heightIsAuto = false
+		} else if _, ok := box.Style.GetPercentage("height"); ok {
+			heightIsAuto = false
+		} else if v, ok := box.Style.Get("height"); ok && v != "auto" && v != "" {
+			heightIsAuto = false
+		}
+	}
+
+	// §10.3.7 Case 5: Solve for width when left+right specified and width is auto.
+	// Per spec, auto margins are set to 0 before solving.
+	if offset.HasLeft && offset.HasRight && widthIsAuto {
+		if marginLeftAuto {
+			box.Margin.Left = 0
+		}
+		if marginRightAuto {
+			box.Margin.Right = 0
+		}
+		solvedWidth := cbWidth - offset.Left - offset.Right -
+			box.Margin.Left - box.Margin.Right -
+			box.Border.Left - box.Padding.Left -
+			box.Padding.Right - box.Border.Right
+		if solvedWidth >= 0 {
+			box.Width = solvedWidth
+		}
+	}
+
+	// §10.6.4 Case 5: Solve for height when top+bottom specified and height is auto.
+	// Only in horizontal-tb mode; vertical WM height solving is in the vertical section below.
+	if !isVertical && offset.HasTop && offset.HasBottom && heightIsAuto {
+		if marginTopAuto {
+			box.Margin.Top = 0
+		}
+		if marginBottomAuto {
+			box.Margin.Bottom = 0
+		}
+		solvedHeight := cbHeight - offset.Top - offset.Bottom -
+			box.Margin.Top - box.Margin.Bottom -
+			box.Border.Top - box.Padding.Top -
+			box.Padding.Bottom - box.Border.Bottom
+		if solvedHeight >= 0 {
+			box.Height = solvedHeight
+		}
+	}
+
 	// CSS 2.1 §10.3.7: Horizontal positioning for absolutely positioned elements
 	// Always run this — in horizontal-tb it's the primary horizontal equation;
 	// in vertical modes it provides a baseline box.X that may be overridden below.
-	if offset.HasLeft && offset.HasRight && marginLeftAuto && marginRightAuto {
+	if offset.HasLeft && offset.HasRight && marginLeftAuto && marginRightAuto && !widthIsAuto {
 		usedWidth := box.Border.Left + box.Padding.Left + box.Width +
 			box.Padding.Right + box.Border.Right
 		availableForMargins := cbWidth - offset.Left - offset.Right - usedWidth
@@ -157,7 +214,7 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 	// so we skip the standard §10.6.4 for top/bottom when vertical — setting box.Y from
 	// top/bottom would put the element in the wrong column after transformToVerticalRL.
 	if !(isVertical && (offset.HasTop || offset.HasBottom)) {
-		if offset.HasTop && offset.HasBottom && marginTopAuto && marginBottomAuto {
+		if offset.HasTop && offset.HasBottom && marginTopAuto && marginBottomAuto && !heightIsAuto {
 			usedHeight := box.Border.Top + box.Padding.Top + box.Height +
 				box.Padding.Bottom + box.Border.Bottom
 			availableForMargins := cbHeight - offset.Top - offset.Bottom - usedHeight
@@ -171,15 +228,7 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 			}
 			box.Y = cbY + offset.Top + box.Margin.Top
 		} else if offset.HasTop && offset.HasBottom && !marginTopAuto && !marginBottomAuto {
-			usedHeight := box.Border.Top + box.Padding.Top + box.Height +
-				box.Padding.Bottom + box.Border.Bottom
-			totalHeight := offset.Top + box.Margin.Top + usedHeight + box.Margin.Bottom + offset.Bottom
-
-			if totalHeight > cbHeight {
-				box.Y = cbY + offset.Top + box.Margin.Top
-			} else {
-				box.Y = cbY + offset.Top + box.Margin.Top
-			}
+			box.Y = cbY + offset.Top + box.Margin.Top
 		} else if offset.HasTop {
 			box.Y = cbY + offset.Top + box.Margin.Top
 		} else if offset.HasBottom {
@@ -200,9 +249,26 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 	// whatever we set. The standard §10.3.7 result for left/right is left in box.X as
 	// a fallback (it will be overwritten by the transform if needed).
 	if isVertical && (offset.HasTop || offset.HasBottom) {
+		// §10.3.7 Case 5 mapped to vertical inline axis: solve for height when auto.
+		if offset.HasTop && offset.HasBottom && heightIsAuto {
+			if marginTopAuto {
+				box.Margin.Top = 0
+			}
+			if marginBottomAuto {
+				box.Margin.Bottom = 0
+			}
+			solvedHeight := cbHeight - offset.Top - offset.Bottom -
+				box.Margin.Top - box.Margin.Bottom -
+				box.Border.Top - box.Padding.Top -
+				box.Padding.Bottom - box.Border.Bottom
+			if solvedHeight >= 0 {
+				box.Height = solvedHeight
+			}
+		}
+
 		usedInlineSize := box.Height + box.Border.Top + box.Padding.Top + box.Padding.Bottom + box.Border.Bottom
 
-		if offset.HasTop && offset.HasBottom && marginTopAuto && marginBottomAuto {
+		if offset.HasTop && offset.HasBottom && marginTopAuto && marginBottomAuto && !heightIsAuto {
 			avail := cbHeight - offset.Top - offset.Bottom - usedInlineSize
 			if avail >= 0 {
 				box.Margin.Top = avail / 2
@@ -217,5 +283,132 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 		} else if offset.HasBottom {
 			box.X = cbX + cbHeight - offset.Bottom - box.Margin.Bottom - usedInlineSize
 		}
+	}
+}
+
+// repositionAbsPosAfterVerticalTransform corrects the position of an absolutely
+// positioned child after transformToVerticalRL has run on the containing block.
+// The transform repositions all children (including abspos) as if they were in-flow,
+// but abspos children should be positioned using the CSS constraint equations in
+// physical coordinates. This function re-applies the correct physical positioning.
+//
+// cbPadWidth/cbPadHeight are the CB's pre-transform padding-box dimensions,
+// which is what CSS uses for the constraint equations.
+func repositionAbsPosAfterVerticalTransform(child *Box, cb *Box, cbPadWidth, cbPadHeight float64) {
+	if child.Style == nil {
+		return
+	}
+
+	cbX := cb.X + cb.Border.Left
+	cbY := cb.Y + cb.Border.Top
+
+	offset := child.Style.GetPositionOffset()
+
+	// Resolve percentage offsets against CB padding-box dimensions
+	if !offset.HasLeft {
+		if pct, ok := child.Style.GetPercentage("left"); ok {
+			offset.Left = cbPadWidth * (pct / 100.0)
+			offset.HasLeft = true
+		}
+	}
+	if !offset.HasRight {
+		if pct, ok := child.Style.GetPercentage("right"); ok {
+			offset.Right = cbPadWidth * (pct / 100.0)
+			offset.HasRight = true
+		}
+	}
+	if !offset.HasTop {
+		if pct, ok := child.Style.GetPercentage("top"); ok {
+			offset.Top = cbPadHeight * (pct / 100.0)
+			offset.HasTop = true
+		}
+	}
+	if !offset.HasBottom {
+		if pct, ok := child.Style.GetPercentage("bottom"); ok {
+			offset.Bottom = cbPadHeight * (pct / 100.0)
+			offset.HasBottom = true
+		}
+	}
+
+	// Detect auto dimensions
+	widthIsAuto := true
+	heightIsAuto := true
+	if _, ok := child.Style.GetLength("width"); ok {
+		widthIsAuto = false
+	} else if _, ok := child.Style.GetPercentage("width"); ok {
+		widthIsAuto = false
+	} else if v, ok := child.Style.Get("width"); ok && v != "auto" && v != "" {
+		widthIsAuto = false
+	}
+	if _, ok := child.Style.GetLength("height"); ok {
+		heightIsAuto = false
+	} else if _, ok := child.Style.GetPercentage("height"); ok {
+		heightIsAuto = false
+	} else if v, ok := child.Style.Get("height"); ok && v != "auto" && v != "" {
+		heightIsAuto = false
+	}
+
+	// Solve for width (§10.3.7/§10.6.4 Case 5 in physical coords)
+	if offset.HasLeft && offset.HasRight && widthIsAuto {
+		solved := cbPadWidth - offset.Left - offset.Right -
+			child.Margin.Left - child.Margin.Right -
+			child.Border.Left - child.Padding.Left -
+			child.Padding.Right - child.Border.Right
+		if solved >= 0 {
+			child.Width = solved
+		}
+	}
+
+	// Solve for height (§10.3.7/§10.6.4 Case 5 in physical coords)
+	if offset.HasTop && offset.HasBottom && heightIsAuto {
+		solved := cbPadHeight - offset.Top - offset.Bottom -
+			child.Margin.Top - child.Margin.Bottom -
+			child.Border.Top - child.Padding.Top -
+			child.Padding.Bottom - child.Border.Bottom
+		if solved >= 0 {
+			child.Height = solved
+		}
+	}
+
+	oldX, oldY := child.X, child.Y
+
+	// Horizontal positioning
+	if offset.HasLeft && offset.HasRight {
+		// Both specified: position from left
+		child.X = cbX + offset.Left + child.Margin.Left
+	} else if offset.HasLeft {
+		child.X = cbX + offset.Left + child.Margin.Left
+	} else if offset.HasRight {
+		usedWidth := child.Border.Left + child.Padding.Left + child.Width +
+			child.Padding.Right + child.Border.Right
+		child.X = cbX + cbPadWidth - offset.Right - child.Margin.Right - usedWidth
+	}
+	// else: auto left/right → keep transform result (approximate static position)
+
+	// Vertical positioning
+	if offset.HasTop && offset.HasBottom {
+		child.Y = cbY + offset.Top + child.Margin.Top
+	} else if offset.HasTop {
+		child.Y = cbY + offset.Top + child.Margin.Top
+	} else if offset.HasBottom {
+		usedHeight := child.Border.Top + child.Padding.Top + child.Height +
+			child.Padding.Bottom + child.Border.Bottom
+		child.Y = cbY + cbPadHeight - offset.Bottom - child.Margin.Bottom - usedHeight
+	}
+	// else: auto top/bottom → keep transform result (approximate static position)
+
+	// Shift children by position delta
+	dx, dy := child.X-oldX, child.Y-oldY
+	if dx != 0 || dy != 0 {
+		shiftAllDescendants(child, dx, dy)
+	}
+}
+
+// shiftAllDescendants recursively shifts all children of a box by dx, dy.
+func shiftAllDescendants(box *Box, dx, dy float64) {
+	for _, c := range box.Children {
+		c.X += dx
+		c.Y += dy
+		shiftAllDescendants(c, dx, dy)
 	}
 }
