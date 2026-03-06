@@ -23,17 +23,24 @@ func collapseMargins(margin1, margin2 float64) float64 {
 	return margin1 + margin2
 }
 
-// isCollapseThrough returns true if a box's top and bottom margins collapse through it.
-// This happens when: height is 0, no border-top/bottom, no padding-top/bottom, no in-flow content,
+// isCollapseThrough returns true if a box's block-start and block-end margins collapse through it.
+// This happens when: block size is 0, no block-start/end border or padding, no in-flow content,
 // and the box participates in normal margin collapsing.
+// Uses HorizontalTB direction (block-start=top, block-end=bottom).
 func isCollapseThrough(box *Box) bool {
+	return isCollapseThroughDir(box, NewDir(HorizontalTB))
+}
+
+// isCollapseThroughDir is the Dir-aware version of isCollapseThrough.
+// It checks block-start/end border and padding using the given Dir.
+func isCollapseThroughDir(box *Box, dir Dir) bool {
 	if !shouldCollapseMargins(box) {
 		return false
 	}
-	if box.Border.Top > 0 || box.Border.Bottom > 0 {
+	if dir.BlockStartEdge(box.Border) > 0 || dir.BlockEndEdge(box.Border) > 0 {
 		return false
 	}
-	if box.Padding.Top > 0 || box.Padding.Bottom > 0 {
+	if dir.BlockStartEdge(box.Padding) > 0 || dir.BlockEndEdge(box.Padding) > 0 {
 		return false
 	}
 	if box.Height > 0 {
@@ -47,7 +54,7 @@ func isCollapseThrough(box *Box) bool {
 		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
 			continue
 		}
-		if !isCollapseThrough(child) {
+		if !isCollapseThroughDir(child, dir) {
 			return false
 		}
 	}
@@ -55,10 +62,15 @@ func isCollapseThrough(box *Box) bool {
 }
 
 // getCollapseThroughMargin collects all margins from a collapse-through element
-// (its own top/bottom plus recursively from collapse-through children)
+// (its own block-start/end plus recursively from collapse-through children)
 // and returns the single collapsed result.
 func getCollapseThroughMargin(box *Box) float64 {
-	margins := []float64{box.Margin.Top, box.Margin.Bottom}
+	return getCollapseThroughMarginDir(box, NewDir(HorizontalTB))
+}
+
+// getCollapseThroughMarginDir is the Dir-aware version of getCollapseThroughMargin.
+func getCollapseThroughMarginDir(box *Box, dir Dir) float64 {
+	margins := []float64{dir.BlockStartEdge(box.Margin), dir.BlockEndEdge(box.Margin)}
 	for _, child := range box.Children {
 		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
 			continue
@@ -66,8 +78,8 @@ func getCollapseThroughMargin(box *Box) float64 {
 		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
 			continue
 		}
-		if isCollapseThrough(child) {
-			margins = append(margins, child.Margin.Top, child.Margin.Bottom)
+		if isCollapseThroughDir(child, dir) {
+			margins = append(margins, dir.BlockStartEdge(child.Margin), dir.BlockEndEdge(child.Margin))
 		}
 	}
 	// Collapse all: max of positives + min of negatives
@@ -83,8 +95,13 @@ func getCollapseThroughMargin(box *Box) float64 {
 	return maxPos + minNeg
 }
 
-// collectCollapseThroughChildMargins adds margins from collapse-through children to the list.
+// collectCollapseThroughChildMargins adds block-direction margins from collapse-through children to the list.
 func collectCollapseThroughChildMargins(box *Box, margins *[]float64) {
+	collectCollapseThroughChildMarginsDir(box, margins, NewDir(HorizontalTB))
+}
+
+// collectCollapseThroughChildMarginsDir is the Dir-aware version.
+func collectCollapseThroughChildMarginsDir(box *Box, margins *[]float64, dir Dir) {
 	for _, child := range box.Children {
 		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
 			continue
@@ -92,9 +109,9 @@ func collectCollapseThroughChildMargins(box *Box, margins *[]float64) {
 		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
 			continue
 		}
-		if isCollapseThrough(child) {
-			*margins = append(*margins, child.Margin.Top, child.Margin.Bottom)
-			collectCollapseThroughChildMargins(child, margins)
+		if isCollapseThroughDir(child, dir) {
+			*margins = append(*margins, dir.BlockStartEdge(child.Margin), dir.BlockEndEdge(child.Margin))
+			collectCollapseThroughChildMarginsDir(child, margins, dir)
 		}
 	}
 }
@@ -140,10 +157,15 @@ func shouldCollapseMargins(box *Box) bool {
 	return true
 }
 
-// parentCanCollapseTopMargin returns true if the parent has no border-top or padding-top
-// separating it from its first child's top margin.
+// parentCanCollapseTopMargin returns true if the parent has no block-start border or padding
+// separating it from its first child's block-start margin.
 func parentCanCollapseTopMargin(parent *Box) bool {
-	if parent.Border.Top > 0 || parent.Padding.Top > 0 {
+	return parentCanCollapseBlockStartMargin(parent, NewDir(HorizontalTB))
+}
+
+// parentCanCollapseBlockStartMargin is the Dir-aware version.
+func parentCanCollapseBlockStartMargin(parent *Box, dir Dir) bool {
+	if dir.BlockStartEdge(parent.Border) > 0 || dir.BlockStartEdge(parent.Padding) > 0 {
 		return false
 	}
 	if parent.Style != nil {
@@ -167,10 +189,15 @@ func parentCanCollapseTopMargin(parent *Box) bool {
 	return true
 }
 
-// parentCanCollapseBottomMargin returns true if the parent has no border-bottom or padding-bottom
-// separating it from its last child's bottom margin.
+// parentCanCollapseBottomMargin returns true if the parent has no block-end border or padding
+// separating it from its last child's block-end margin.
 func parentCanCollapseBottomMargin(parent *Box) bool {
-	if parent.Border.Bottom > 0 || parent.Padding.Bottom > 0 {
+	return parentCanCollapseBlockEndMargin(parent, NewDir(HorizontalTB))
+}
+
+// parentCanCollapseBlockEndMargin is the Dir-aware version.
+func parentCanCollapseBlockEndMargin(parent *Box, dir Dir) bool {
+	if dir.BlockEndEdge(parent.Border) > 0 || dir.BlockEndEdge(parent.Padding) > 0 {
 		return false
 	}
 	if parent.Style != nil {

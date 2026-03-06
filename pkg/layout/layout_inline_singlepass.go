@@ -19,6 +19,7 @@ func (le *LayoutEngine) layoutInlineChildren(
 	prevBlockChild **Box,
 	pendingMargins *[]float64,
 	algorithm InlineLayoutAlgorithm,
+	dir Dir,
 ) *InlineLayoutResult {
 	// Initialize inline context
 	inlineCtx := &InlineContext{
@@ -42,7 +43,7 @@ func (le *LayoutEngine) layoutInlineChildren(
 		// Use the current single-pass algorithm
 		result.ChildBoxes = le.layoutInlineChildrenSinglePass(
 			node, box, display, style, border, padding, x, childY, childAvailableWidth,
-			contentWidth, isObjectImage, computedStyles, inlineCtx, prevBlockChild, pendingMargins,
+			contentWidth, isObjectImage, computedStyles, inlineCtx, prevBlockChild, pendingMargins, dir,
 		)
 		result.FinalInlineCtx = inlineCtx
 		result.UsedMultiPass = false
@@ -103,6 +104,7 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	inlineCtx *InlineContext,
 	prevBlockChild **Box,
 	pendingMargins *[]float64,
+	dir Dir,
 ) []*Box {
 	childBoxes := make([]*Box, 0)
 
@@ -260,12 +262,13 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 				}
 			}
 
-			// Layout the child
-			childBox := le.layoutNodeHTB(
+			// Layout the child, passing dir so children inherit writing-mode context
+			childBox := le.layoutNode(
 				child,
 				adjustedChildX,
 				inlineCtx.LineY,
 				adjustedChildWidth,
+				dir,
 				computedStyles,
 				box, // Phase 4: Pass parent
 			)
@@ -427,20 +430,22 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 					if childBox.Position != css.PositionAbsolute && childBox.Position != css.PositionFixed && childFloatType == css.FloatNone {
 						// Margin-collapse-through: collect margins from collapse-through elements
 						// and combine them with the next non-collapse-through sibling's margins.
-						if isCollapseThrough(childBox) {
-							// Add this element's margins (and children's) to pending list
-							*pendingMargins = append(*pendingMargins, childBox.Margin.Top, childBox.Margin.Bottom)
-							collectCollapseThroughChildMargins(childBox, pendingMargins)
+						// Use dir for Dir-aware margin access: in vertical writing modes,
+						// block-direction margins are Left/Right instead of Top/Bottom.
+						if isCollapseThroughDir(childBox, dir) {
+							// Add this element's block-direction margins (and children's) to pending list
+							*pendingMargins = append(*pendingMargins, dir.BlockStartEdge(childBox.Margin), dir.BlockEndEdge(childBox.Margin))
+							collectCollapseThroughChildMarginsDir(childBox, pendingMargins, dir)
 							// Position at localChildY (zero-height, no visual impact)
 							childBox.Y = localChildY
 							// Don't advance localChildY, don't set prevBlockChild
 						} else {
 							// Normal margin collapsing between adjacent block siblings
 							if *prevBlockChild != nil && shouldCollapseMargins(*prevBlockChild) && shouldCollapseMargins(childBox) {
-								// Collect all margins: prev bottom, any pending from collapse-through, current top
-								allMargins := []float64{(*prevBlockChild).Margin.Bottom}
+								// Collect all margins: prev block-end, any pending from collapse-through, current block-start
+								allMargins := []float64{dir.BlockEndEdge((*prevBlockChild).Margin)}
 								allMargins = append(allMargins, *pendingMargins...)
-								allMargins = append(allMargins, childBox.Margin.Top)
+								allMargins = append(allMargins, dir.BlockStartEdge(childBox.Margin))
 								// Collapse all together
 								var maxPos, minNeg float64
 								for _, m := range allMargins {
@@ -459,7 +464,7 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 								le.adjustChildrenY(childBox, -adjustment)
 							} else if len(*pendingMargins) > 0 && shouldCollapseMargins(childBox) {
 								// No prev sibling but pending margins from collapse-through
-								allMargins := append(*pendingMargins, childBox.Margin.Top)
+								allMargins := append(*pendingMargins, dir.BlockStartEdge(childBox.Margin))
 								var maxPos, minNeg float64
 								for _, m := range allMargins {
 									if m > maxPos {

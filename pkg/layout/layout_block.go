@@ -958,6 +958,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	childY := box.Y + border.Top + padding.Top
 	childAvailableWidth := contentWidth
 
+	// Determine this element's writing mode for child layout.
+	// Children inherit the parent's writing-mode context unless they override it.
+	elementDir := dir
+	if style != nil {
+		elementWM := WritingModeFromStyle(style)
+		if elementWM != dir.WM {
+			elementDir = NewDir(elementWM)
+		}
+	}
+
 	// For shrink-to-fit elements (floats, abs pos without explicit width), pass the parent's
 	// available width to children so they can lay out naturally, then we'll shrink-wrap around them.
 	// Use !hasExplicitWidth (not contentWidth==0) because min-width may have set a non-zero
@@ -1102,6 +1112,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			childY,
 			computedStyles,
 			overrideStyles,
+			elementDir,
 		)
 		childBoxes = inlineLayoutResult.ChildBoxes
 
@@ -1110,6 +1121,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// Adjustments are cumulative: when box N is moved up, all subsequent boxes must also
 		// be moved up by the same amount (since their positions were computed relative to N's
 		// pre-collapsing position).
+		// Use elementDir for Dir-aware margin access: in vertical writing modes,
+		// block-direction margins are Left/Right instead of Top/Bottom.
 		var prevBox *Box
 		cumulativeAdjustment := 0.0
 		var mpPendingMargins []float64
@@ -1132,11 +1145,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				}
 
 				// CSS 2.1 §8.3.1: Collapse-through — empty elements with no height,
-				// border, or padding have their top and bottom margins collapse through.
+				// border, or padding have their block-start and block-end margins collapse through.
 				// These margins then participate in collapsing with adjacent siblings.
-				if isCollapseThrough(childBox) {
-					mpPendingMargins = append(mpPendingMargins, childBox.Margin.Top, childBox.Margin.Bottom)
-					collectCollapseThroughChildMargins(childBox, &mpPendingMargins)
+				if isCollapseThroughDir(childBox, elementDir) {
+					childBlockStart := elementDir.BlockStartEdge(childBox.Margin)
+					childBlockEnd := elementDir.BlockEndEdge(childBox.Margin)
+					mpPendingMargins = append(mpPendingMargins, childBlockStart, childBlockEnd)
+					collectCollapseThroughChildMarginsDir(childBox, &mpPendingMargins, elementDir)
 					// Remove the space this element consumed in layout
 					cumulativeAdjustment += childBox.Margin.Top + childBox.Margin.Bottom
 					// LayoutInlineContentToBoxes places collapse-through elements at
@@ -1153,10 +1168,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 				// Check if both boxes should collapse margins
 				if prevBox != nil && shouldCollapseMargins(prevBox) && shouldCollapseMargins(childBox) {
-					// Collect all margins: prev bottom, pending from collapse-through, current top
-					allMargins := []float64{prevBox.Margin.Bottom}
+					// Collect all margins: prev block-end, pending from collapse-through, current block-start
+					allMargins := []float64{elementDir.BlockEndEdge(prevBox.Margin)}
 					allMargins = append(allMargins, mpPendingMargins...)
-					allMargins = append(allMargins, childBox.Margin.Top)
+					allMargins = append(allMargins, elementDir.BlockStartEdge(childBox.Margin))
 					var maxPos, minNeg float64
 					for _, m := range allMargins {
 						if m > maxPos {
@@ -1175,7 +1190,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					cumulativeAdjustment += adjustment
 				} else if len(mpPendingMargins) > 0 && shouldCollapseMargins(childBox) {
 					// No prev sibling but pending margins from collapse-through
-					allMargins := append(mpPendingMargins, childBox.Margin.Top)
+					allMargins := append(mpPendingMargins, elementDir.BlockStartEdge(childBox.Margin))
 					var maxPos, minNeg float64
 					for _, m := range allMargins {
 						if m > maxPos {
@@ -1319,7 +1334,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					}
 				}
 
-				childBox := le.layoutNodeHTB(child, staticX, staticY, childAvailableWidth, computedStyles, box)
+				childBox := le.layoutNode(child, staticX, staticY, childAvailableWidth, elementDir, computedStyles, box)
 				if childBox != nil {
 					box.Children = append(box.Children, childBox)
 					hasAbspos = true
@@ -1353,7 +1368,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		inlineLayoutResult = le.layoutInlineChildren(
 			node, box, display, style, border, padding, x, childY,
 			childAvailableWidth, contentWidth, isObjectImage, computedStyles,
-			&prevBlockChild, &pendingMargins, algorithm,
+			&prevBlockChild, &pendingMargins, algorithm, elementDir,
 		)
 
 		// Add all child boxes to the container
@@ -1509,12 +1524,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				}
 			}
 
-			// Layout the child
-			childBox := le.layoutNodeHTB(
+			// Layout the child, passing elementDir so children inherit writing-mode context
+			childBox := le.layoutNode(
 				child,
 				adjustedChildX,
 				inlineCtx.LineY,
 				adjustedChildWidth,
+				elementDir,
 				computedStyles,
 				box, // Phase 4: Pass parent
 			)
@@ -1928,9 +1944,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	*/
 	// END OF COMMENTED OLD INLINE LAYOUT CODE - will be removed once refactor is verified
 
-	// Parent-child top margin collapsing
-	// If parent has no border-top/padding-top, collapse with first block child's top margin
-	if parentCanCollapseTopMargin(box) && shouldCollapseMargins(box) {
+	// Parent-child block-start margin collapsing
+	// If parent has no block-start border/padding, collapse with first block child's block-start margin
+	// Uses elementDir for Dir-aware margin access in vertical writing modes.
+	if parentCanCollapseBlockStartMargin(box, elementDir) && shouldCollapseMargins(box) {
 		// Find first in-flow block child
 		var firstBlockChild *Box
 		for _, ch := range box.Children {
@@ -1949,23 +1966,55 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			firstBlockChild = ch
 			break
 		}
-		if firstBlockChild != nil && shouldCollapseMargins(firstBlockChild) && firstBlockChild.Margin.Top > 0 {
-			childMarginTop := firstBlockChild.Margin.Top
-			// Pull all children up by the first child's top margin
-			for _, ch := range box.Children {
-				ch.Y -= childMarginTop
-				le.adjustChildrenY(ch, -childMarginTop)
-			}
+		childBlockStart := 0.0
+		if firstBlockChild != nil {
+			childBlockStart = elementDir.BlockStartEdge(firstBlockChild.Margin)
+		}
+		if firstBlockChild != nil && shouldCollapseMargins(firstBlockChild) && childBlockStart > 0 {
 			// Compute collapsed margin
-			collapsed := collapseMargins(margin.Top, childMarginTop)
-			marginDiff := collapsed - margin.Top
-			box.Margin.Top = collapsed
-			if marginDiff != 0 {
-				box.Y += marginDiff
+			parentBlockStart := elementDir.BlockStartEdge(margin)
+			collapsed := collapseMargins(parentBlockStart, childBlockStart)
+			marginDiff := collapsed - parentBlockStart
+
+			if elementDir.WM == HorizontalTB {
+				// h-tb: block-start is Top, which affects Y positioning
+				// Pull all children up by the first child's block-start margin
 				for _, ch := range box.Children {
-					ch.Y += marginDiff
-					le.adjustChildrenY(ch, marginDiff)
+					ch.Y -= childBlockStart
+					le.adjustChildrenY(ch, -childBlockStart)
 				}
+				box.Margin.Top = collapsed
+				if marginDiff != 0 {
+					box.Y += marginDiff
+					for _, ch := range box.Children {
+						ch.Y += marginDiff
+						le.adjustChildrenY(ch, marginDiff)
+					}
+				}
+			} else {
+				// Vertical writing modes: block-start margin is on Left or Right edge.
+				// Zero the child's block-start margin so transformToVerticalRL
+				// doesn't include it in column spacing (it's collapsed into parent).
+				// Set parent's block-start margin to the collapsed value.
+				elementDir.SetBlockStartEdge(&firstBlockChild.Margin, 0)
+				elementDir.SetBlockStartEdge(&box.Margin, collapsed)
+				// For vertical-lr, block-start is Left which affects X in h-tb.
+				// Adjust child X positions to compensate for the zeroed margin.
+				if elementDir.WM == VerticalLR || elementDir.WM == SidewaysLR {
+					for _, ch := range box.Children {
+						ch.X -= childBlockStart
+						shiftAllDescendants(ch, -childBlockStart, 0)
+					}
+					if marginDiff != 0 {
+						box.X += marginDiff
+						for _, ch := range box.Children {
+							ch.X += marginDiff
+							shiftAllDescendants(ch, marginDiff, 0)
+						}
+					}
+				}
+				// For vertical-rl, block-start is Right which doesn't affect X
+				// position in h-tb, so no coordinate adjustment needed.
 			}
 		}
 	}
@@ -1983,7 +2032,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// margin, so it should NOT be included in the auto block-size calculation.
 		// Note: Margin collapsing does NOT apply to absolutely positioned elements,
 		// which establish a new block formatting context (CSS 2.1 §9.4.1).
-		parentChildBottomCollapse := parentCanCollapseBottomMargin(box) &&
+		// Uses elementDir for Dir-aware margin access.
+		parentChildBottomCollapse := parentCanCollapseBlockEndMargin(box, elementDir) &&
 			position != css.PositionAbsolute && position != css.PositionFixed
 		var lastInFlowChild *Box
 		if parentChildBottomCollapse {
@@ -2099,19 +2149,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// CSS 2.1 §8.3.1: When parent-child block-end margin collapsing applies,
 		// propagate the last child's block-end margin to the parent's block-end margin.
 		// The collapsed margin is the combination of parent's and child's margins.
-		if parentChildBottomCollapse && lastInFlowChild != nil && dir.BlockEndEdge(lastInFlowChild.Margin) != 0 {
-			parentMB := dir.BlockEndEdge(box.Margin)
-			childMB := dir.BlockEndEdge(lastInFlowChild.Margin)
-			if parentMB >= 0 && childMB >= 0 {
-				if childMB > parentMB {
-					dir.SetBlockEndEdge(&box.Margin, childMB)
-				}
-			} else if parentMB < 0 && childMB < 0 {
-				if childMB < parentMB {
-					dir.SetBlockEndEdge(&box.Margin, childMB)
-				}
-			} else {
-				dir.SetBlockEndEdge(&box.Margin, parentMB+childMB)
+		// Uses Dir-aware access so vertical writing modes collapse the correct edge.
+		lastChildBlockEnd := 0.0
+		if lastInFlowChild != nil {
+			lastChildBlockEnd = elementDir.BlockEndEdge(lastInFlowChild.Margin)
+		}
+		if parentChildBottomCollapse && lastInFlowChild != nil && lastChildBlockEnd != 0 {
+			parentMB := elementDir.BlockEndEdge(box.Margin)
+			childMB := lastChildBlockEnd
+			collapsed := collapseMargins(parentMB, childMB)
+			elementDir.SetBlockEndEdge(&box.Margin, collapsed)
+			// Zero the child's block-end margin so transformToVerticalRL
+			// doesn't double-count it in column spacing.
+			if elementDir.WM != HorizontalTB {
+				elementDir.SetBlockEndEdge(&lastInFlowChild.Margin, 0)
 			}
 		}
 	}
@@ -2131,7 +2182,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						continue
 					}
 					if _, hasPct := child.Style.GetPercentage(dir.BlockSizeProp()); hasPct {
-						newChild := le.layoutNodeHTB(child.Node, child.X, child.Y, childAvailW, computedStyles, box)
+						newChild := le.layoutNode(child.Node, child.X, child.Y, childAvailW, elementDir, computedStyles, box)
 						if newChild != nil {
 							box.Children[i] = newChild
 						}

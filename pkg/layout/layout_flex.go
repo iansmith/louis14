@@ -3507,6 +3507,14 @@ func transformToVerticalRL(box *Box, wm string) {
 
 	isLR := wm == "vertical-lr" || wm == "sideways-lr"
 
+	// Create Dir for block-direction margin access
+	var dir Dir
+	if isLR {
+		dir = NewDir(VerticalLR)
+	} else {
+		dir = NewDir(VerticalRL)
+	}
+
 	contentStartX := box.X + box.Border.Left + box.Padding.Left
 	contentStartY := box.Y + box.Border.Top + box.Padding.Top
 
@@ -3539,28 +3547,84 @@ func transformToVerticalRL(box *Box, wm string) {
 	// Column height = max extent after repositioning (origRelX + child.Height),
 	// not just max(child.Height), because children at different X offsets
 	// end up at different Y positions within the column.
+	// Block-direction margins are subtracted from origRelX since they're handled
+	// separately by column spacing (they shouldn't become inline offsets).
 	type colInfo struct {
-		width  float64 // max child width → column width
-		height float64 // max (origRelX + child.Height) → column content extent
+		width          float64 // max child width → column width
+		height         float64 // max (origRelX + child.Height) → column content extent
+		blockStartMarg float64 // max block-start margin among children in this column
+		blockEndMarg   float64 // max block-end margin among children in this column
+		hasExplicitW   bool    // true if any child has explicit CSS width
 	}
+
+	// Compute the parent's content width for detecting block-fill children
+	parentContentW := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
+
 	cols := make([]colInfo, len(lines))
 	for i, line := range lines {
 		for _, child := range line.children {
 			if child.Width > cols[i].width {
 				cols[i].width = child.Width
 			}
-			origRelX := child.X - contentStartX
+			// Check if child has explicit CSS width (not block-fill)
+			if child.Style != nil {
+				if _, ok := child.Style.GetLength("width"); ok {
+					cols[i].hasExplicitW = true
+				} else if _, ok := child.Style.GetPercentage("width"); ok {
+					cols[i].hasExplicitW = true
+				}
+			}
+			// Subtract both block-start and block-end margins from origRelX:
+			// block-direction margins were applied to X by the h-tb layout
+			// but should not become Y offsets in the vertical column.
+			// Column spacing handles block-direction margins instead.
+			blockStartM := dir.BlockStartEdge(child.Margin)
+			blockEndM := dir.BlockEndEdge(child.Margin)
+			origRelX := child.X - contentStartX - blockStartM - blockEndM
+			if origRelX < 0 {
+				origRelX = 0
+			}
 			extent := origRelX + child.Height
 			if extent > cols[i].height {
 				cols[i].height = extent
 			}
+			// Collect block-direction margins for column spacing when child has
+			// explicit width. Block-fill children (no explicit width) have their
+			// block-direction margins already consumed by h-tb block-fill calculation,
+			// so adding them again as column spacing would double-count.
+			if cols[i].hasExplicitW {
+				bs := blockStartM
+				be := dir.BlockEndEdge(child.Margin)
+				if bs > cols[i].blockStartMarg {
+					cols[i].blockStartMarg = bs
+				}
+				if be > cols[i].blockEndMarg {
+					cols[i].blockEndMarg = be
+				}
+			}
+		}
+	}
+	_ = parentContentW // used for future block-fill detection
+
+	// Compute collapsed margins between adjacent columns.
+	// colMargins[i] is the margin gap before column i (between column i-1 and column i).
+	// First column gets its block-start margin. Between adjacent columns, margins are
+	// collapsed. Last column's block-end margin is NOT added to totalWidth since it
+	// participates in parent-child margin collapsing or extends beyond the container.
+	colMargins := make([]float64, len(cols))
+	for i := range cols {
+		if i == 0 {
+			colMargins[i] = cols[i].blockStartMarg
+		} else {
+			// Collapse adjacent block-end and block-start margins
+			colMargins[i] = collapseMargins(cols[i-1].blockEndMarg, cols[i].blockStartMarg)
 		}
 	}
 
-	// Total new dimensions
+	// Total new dimensions including column margins (except last block-end)
 	totalWidth := 0.0
-	for _, c := range cols {
-		totalWidth += c.width
+	for i, c := range cols {
+		totalWidth += colMargins[i] + c.width
 	}
 	maxContentHeight := 0.0
 	for _, c := range cols {
@@ -3591,13 +3655,20 @@ func transformToVerticalRL(box *Box, wm string) {
 		contentWidth = box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
 	}
 
-	// Reposition children into columns, shifting descendants by the same delta
+	// Reposition children into columns, shifting descendants by the same delta.
+	// Block-direction margins are subtracted from origRelX since column spacing handles them.
 	if isLR {
 		// vertical-lr: columns stack left-to-right
 		colX := 0.0
 		for i, line := range lines {
+			colX += colMargins[i] // Add margin before this column
 			for _, child := range line.children {
-				origRelX := child.X - contentStartX
+				blockStartM := dir.BlockStartEdge(child.Margin)
+				blockEndM := dir.BlockEndEdge(child.Margin)
+				origRelX := child.X - contentStartX - blockStartM - blockEndM
+				if origRelX < 0 {
+					origRelX = 0
+				}
 				newX := contentStartX + colX
 				newY := contentStartY + origRelX
 				dx := newX - child.X
@@ -3613,8 +3684,17 @@ func transformToVerticalRL(box *Box, wm string) {
 		colX := contentWidth
 		for i, line := range lines {
 			colX -= cols[i].width
+			// Subtract margin before this column
+			if i > 0 {
+				colX -= colMargins[i]
+			}
 			for _, child := range line.children {
-				origRelX := child.X - contentStartX
+				blockStartM := dir.BlockStartEdge(child.Margin)
+				blockEndM := dir.BlockEndEdge(child.Margin)
+				origRelX := child.X - contentStartX - blockStartM - blockEndM
+				if origRelX < 0 {
+					origRelX = 0
+				}
 				newX := contentStartX + colX
 				newY := contentStartY + origRelX
 				dx := newX - child.X
