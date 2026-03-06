@@ -76,6 +76,9 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 	isOrthogonalFlow := elementIsVertical != parentIsVertical
+	// Same-axis vertical: both element and parent are vertical (same writing-mode axis).
+	// Child's inline-size should be bounded by the parent's inline-size (= physical height).
+	isSameAxisVertical := elementIsVertical && parentIsVertical
 
 	// Phase 7: Check display mode early
 	display := style.GetDisplay()
@@ -351,8 +354,48 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// CSS Writing Modes §7.3.1: Orthogonal flow blocks (horizontal-tb inside
 		// a vertical containing block) with auto inline-size use shrink-to-fit:
 		//   used-width = min(max-content, max(min-content, constraint))
-		// The constraint is the parent's block-size (availableWidth for the child).
-		stfConstraint := availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
+		// constraint = min(available-space, initial-containing-block-inline-size)
+		// When the vertical containing block has a definite block-size (explicit width),
+		// available-space = that block-size value = availableWidth.
+		// When indefinite (width:auto), available-space is infinite, so
+		// constraint = initial-containing-block inline-size = viewport width.
+		//
+		// Detect whether the vertical parent has a definite block-size by checking
+		// whether its CSS "width" property is an explicit length or percentage.
+		parentHasDefiniteBlockSize := false
+		if node.Parent != nil {
+			pStyle := computedStyles[node.Parent]
+			if pStyle == nil {
+				pStyle = le.syntheticStyles[node.Parent]
+			}
+			if pStyle != nil {
+				_, ok1 := pStyle.GetLength("width")
+				_, ok2 := pStyle.GetPercentage("width")
+				if ok1 || ok2 {
+					parentHasDefiniteBlockSize = true
+				} else {
+					// calc() with percentage also counts as definite
+					if wv, wok := pStyle.Get("width"); wok {
+						wv = strings.TrimSpace(wv)
+						if strings.HasPrefix(wv, "calc(") && strings.Contains(wv, "%") {
+							parentHasDefiniteBlockSize = true
+						}
+					}
+				}
+			}
+		}
+
+		// Determine the constraint for the shrink-to-fit formula.
+		var constraintBase float64
+		if parentHasDefiniteBlockSize {
+			// Definite block-size: use availableWidth (the parent's content block-size).
+			constraintBase = availableWidth
+		} else {
+			// Indefinite block-size: constraint = initial containing block inline-size
+			// = viewport width (horizontal inline direction for HTB blocks).
+			constraintBase = le.viewport.width
+		}
+		stfConstraint := constraintBase - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
 			dir.InlineBorderBox(padding, border)
 		if stfConstraint < 0 {
 			stfConstraint = 0
@@ -370,6 +413,65 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			minContent = 0
 		}
 		contentWidth = math.Min(maxContent, math.Max(minContent, stfConstraint))
+	} else if isSameAxisVertical && !hasExplicitWidth {
+		// CSS Writing Modes: same-axis vertical child inside a vertical parent.
+		// The child's available inline-size is the parent's inline-size = parent's physical height.
+		// In physical coordinates (pre-transformToVerticalRL), "width" represents inline extent,
+		// but for vertical elements the inline extent maps to the physical height direction.
+		// If the parent has a definite physical height (= definite inline-size), use it.
+		//
+		// Guards: only apply when the parent is a block container (not flex/grid/table, which
+		// have their own inline-size determination algorithms). Flex items, grid items, and
+		// table cells are sized by their respective algorithms and must not be overridden here.
+		parentIsSpecialContainer := false
+		if parent != nil && parent.Style != nil {
+			parentDisplay := parent.Style.GetDisplay()
+			parentIsSpecialContainer = parentDisplay == css.DisplayFlex ||
+				parentDisplay == css.DisplayInlineFlex ||
+				parentDisplay == css.DisplayGrid ||
+				parentDisplay == css.DisplayInlineGrid ||
+				parentDisplay == css.DisplayTable ||
+				parentDisplay == css.DisplayTableRow ||
+				parentDisplay == css.DisplayTableCell ||
+				parentDisplay == css.DisplayTableRowGroup ||
+				parentDisplay == css.DisplayTableHeaderGroup ||
+				parentDisplay == css.DisplayTableFooterGroup
+		}
+
+		// Also gate on the element not having an explicit CSS "height" (its actual inline-size).
+		_, hasExplicitCSSHeight := style.GetLength("height")
+		if !hasExplicitCSSHeight {
+			_, hasExplicitCSSHeight = style.GetPercentage("height")
+		}
+		// Require that the parent has an explicit CSS "height" (= its inline-size for vertical
+		// elements). A parent with only auto height might have box.Height > 0 just from border/
+		// padding, which would give a misleadingly small parentInlineSize.
+		parentHasExplicitHeight := false
+		if parent != nil && parent.Style != nil {
+			_, phok1 := parent.Style.GetLength("height")
+			_, phok2 := parent.Style.GetPercentage("height")
+			parentHasExplicitHeight = phok1 || phok2
+		}
+		if !parentIsSpecialContainer && !hasExplicitCSSHeight && parentHasExplicitHeight && parent != nil && parent.Height > 0 {
+			parentInlineSize := parent.Height - parent.Padding.Top - parent.Padding.Bottom -
+				parent.Border.Top - parent.Border.Bottom
+			if parentInlineSize > 0 {
+				contentWidth = parentInlineSize - margin.Left - margin.Right -
+					padding.Left - padding.Right - border.Left - border.Right
+				if contentWidth < 0 {
+					contentWidth = 0
+				}
+			} else {
+				// Parent inline-size is zero or negative (degenerate case): fall back.
+				contentWidth = availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
+					dir.InlineBorderBox(padding, border)
+			}
+		} else {
+			// Parent is flex/grid/table, has no explicit height, or element has explicit inline-size:
+			// fall back to block-fill.
+			contentWidth = availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
+				dir.InlineBorderBox(padding, border)
+		}
 	} else {
 		// Default to available inline size minus inline margin, padding, border
 		contentWidth = availableWidth - dir.InlineStartEdge(margin) - dir.InlineEndEdge(margin) -
