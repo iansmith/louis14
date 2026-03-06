@@ -1583,7 +1583,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	startY float64,
 	computedStyles map[*html.Node]*css.Style,
 	overrideStyles map[*html.Node]*css.Style,
-	dir Dir,
 ) *InlineLayoutResult {
 
 	// Merge override styles into computedStyles so all lookups find them
@@ -1832,13 +1831,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 			}
 
-			// Recursively layout the block child, passing dir for writing-mode context
-			childBox := le.layoutNode(
+			// Recursively layout the block child
+			childBox := le.layoutNodeHTB(
 				childNode,
 				adjustedChildX,
 				childY,
 				adjustedChildWidth,
-				dir,
 				computedStyles,
 				containerBox,
 			)
@@ -2111,12 +2109,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			floatCountBefore := len(le.floats)
 
 			// Layout the float to get actual dimensions (estimated sizes from Phase 1 may be wrong)
-			floatBox := le.layoutNode(
+			floatBox := le.layoutNodeHTB(
 				floatNode,
 				containerContentLeft,
 				currentY,
 				containerAvailWidth,
-				dir,
 				computedStyles,
 				containerBox,
 			)
@@ -2198,12 +2195,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			atomicNode := frag.Node
 			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X
 
-			atomicBox := le.layoutNode(
+			atomicBox := le.layoutNodeHTB(
 				atomicNode,
 				absX,
 				currentY,
 				frag.Size.Width,
-				dir,
 				computedStyles,
 				containerBox,
 			)
