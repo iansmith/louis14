@@ -2397,8 +2397,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 			isRTL := containerBox.Style.GetDirection() == css.DirectionRTL
 
-			// For RTL, mirror all inline box positions within the container
-			if isRTL {
+			// For RTL, mirror all inline box positions within the container.
+			// Skip mirroring when unicode-bidi:bidi-override or isolate-override
+			// is active at the block level — the text has already been character-
+			// reversed by CollectInlineItems and is in visual order.
+			containerBidi, _ := containerBox.Style.Get("unicode-bidi")
+			isBidiOverride := containerBidi == "bidi-override" || containerBidi == "isolate-override"
+			if isRTL && !isBidiOverride {
 				le.mirrorInlineBoxesRTL(boxes, contentLeft, contentRight)
 			}
 
@@ -2767,6 +2772,46 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 		textTransform := parentStyle.GetTextTransform()
 		if textTransform != css.TextTransformNone {
 			textContent = ApplyTextTransform(textContent, textTransform)
+			node.Text = textContent
+		}
+
+		// CSS Writing Modes §2.2: unicode-bidi: bidi-override and isolate-override
+		// force all characters in the element to the element's direction.
+		// With direction:rtl, this means reversing the character sequence
+		// and applying bidi mirroring to paired bracket characters.
+		if parentStyle != nil {
+			bidiVal, _ := parentStyle.Get("unicode-bidi")
+			if bidiVal == "bidi-override" || bidiVal == "isolate-override" {
+				if parentStyle.GetDirection() == css.DirectionRTL {
+					runes := []rune(textContent)
+					for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+						runes[i], runes[j] = runes[j], runes[i]
+					}
+					// Apply bidi mirroring to paired characters
+					for i, r := range runes {
+						if m := bidiMirror(r); m != r {
+							runes[i] = m
+						}
+					}
+					textContent = string(runes)
+					node.Text = textContent
+				}
+			}
+		}
+
+		// Strip Unicode bidi formatting characters — they are zero-width control
+		// characters that should not be visible or affect text measurement.
+		// U+200E LRM, U+200F RLM, U+202A-U+202E (LRE/RLE/PDF/LRO/RLO),
+		// U+2066-U+2069 (LRI/RLI/FSI/PDI)
+		textContent = strings.Map(func(r rune) rune {
+			if r == 0x200E || r == 0x200F ||
+				(r >= 0x202A && r <= 0x202E) ||
+				(r >= 0x2066 && r <= 0x2069) {
+				return -1 // drop character
+			}
+			return r
+		}, textContent)
+		if textContent != node.Text {
 			node.Text = textContent
 		}
 
@@ -4179,4 +4224,49 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 	}
 
 	return boxes, retryNeeded
+}
+
+// bidiMirror returns the bidi-mirrored glyph for paired bracket and
+// punctuation characters (Unicode Bidi_Mirrored property). Returns the
+// same rune if no mirror exists.
+func bidiMirror(r rune) rune {
+	switch r {
+	case '(':
+		return ')'
+	case ')':
+		return '('
+	case '<':
+		return '>'
+	case '>':
+		return '<'
+	case '[':
+		return ']'
+	case ']':
+		return '['
+	case '{':
+		return '}'
+	case '}':
+		return '{'
+	case '\u00AB': // «
+		return '\u00BB' // »
+	case '\u00BB': // »
+		return '\u00AB' // «
+	case '\u2039': // ‹
+		return '\u203A' // ›
+	case '\u203A': // ›
+		return '\u2039' // ‹
+	case '\u2045': // ⁅
+		return '\u2046' // ⁆
+	case '\u2046': // ⁆
+		return '\u2045' // ⁅
+	case '\u207D': // ⁽
+		return '\u207E' // ⁾
+	case '\u207E': // ⁾
+		return '\u207D' // ⁽
+	case '\u208D': // ₍
+		return '\u208E' // ₎
+	case '\u208E': // ₎
+		return '\u208D' // ₍
+	}
+	return r
 }
