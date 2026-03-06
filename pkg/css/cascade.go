@@ -954,6 +954,12 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 				// :root rules, then extract inheritable properties for doc.Root.
 				rootChildStyle := ComputeStyle(child, stylesheets, viewportWidth, viewportHeight)
 				for prop := range inheritableProperties {
+					// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
+					// Don't propagate from :root to synthetic doc root — otherwise every
+					// descendant inherits it and the parentIsVertical guard blocks transforms.
+					if prop == "writing-mode" {
+						continue
+					}
 					if val, ok := rootChildStyle.Get(prop); ok {
 						syntheticRootStyle.Set(prop, val)
 					}
