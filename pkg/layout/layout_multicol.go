@@ -109,7 +109,7 @@ func (le *LayoutEngine) layoutMulticolumn(
 	for _, seg := range segments {
 		if seg.spanAll {
 			// Lay out spanning child at full content width
-			spanBox := le.layoutNode(seg.node, startX, curY, contentWidth, computedStyles, box)
+			spanBox := le.layoutNodeHTB(seg.node, startX, curY, contentWidth, computedStyles, box)
 			if spanBox != nil {
 				spanH := spanBox.Height +
 					spanBox.Margin.Top + spanBox.Margin.Bottom +
@@ -174,7 +174,7 @@ func (le *LayoutEngine) layoutMulticolumnSegmentAt(
 	tempY := 0.0
 
 	for _, child := range children {
-		childBox := le.layoutNode(child, 0, tempY, colWidth, computedStyles, box)
+		childBox := le.layoutNodeHTB(child, 0, tempY, colWidth, computedStyles, box)
 		if childBox == nil {
 			continue
 		}

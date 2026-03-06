@@ -1824,7 +1824,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			}
 
 			// Recursively layout the block child
-			childBox := le.layoutNode(
+			childBox := le.layoutNodeHTB(
 				childNode,
 				adjustedChildX,
 				childY,
@@ -2101,7 +2101,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			floatCountBefore := len(le.floats)
 
 			// Layout the float to get actual dimensions (estimated sizes from Phase 1 may be wrong)
-			floatBox := le.layoutNode(
+			floatBox := le.layoutNodeHTB(
 				floatNode,
 				containerContentLeft,
 				currentY,
@@ -2187,7 +2187,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			atomicNode := frag.Node
 			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X
 
-			atomicBox := le.layoutNode(
+			atomicBox := le.layoutNodeHTB(
 				atomicNode,
 				absX,
 				currentY,
@@ -4042,7 +4042,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 			case InlineItemAtomic:
 				// Atomic inline (inline-block) - recursively layout its content
 				// Use the pre-computed width as the available width for its children
-				atomicBox := le.layoutNode(
+				atomicBox := le.layoutNodeHTB(
 					item.Node,
 					currentX,
 					line.Y,
@@ -4090,7 +4090,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				}
 
 				// STEP 2: Layout the block child
-				blockBox := le.layoutNode(
+				blockBox := le.layoutNodeHTB(
 					item.Node,
 					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
 					line.Y,
@@ -4133,7 +4133,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				// Track float count before layoutNode (layoutNode may add float as side effect)
 				floatCountBefore := len(le.floats)
 
-				floatBox := le.layoutNode(
+				floatBox := le.layoutNodeHTB(
 					item.Node,
 					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
 					line.Y,

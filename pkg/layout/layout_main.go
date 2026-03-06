@@ -47,7 +47,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
-			box := le.layoutNode(node, 0, y, le.viewport.width, computedStyles, nil)
+			box := le.layoutNodeHTB(node, 0, y, le.viewport.width, computedStyles, nil)
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if box == nil {
 				continue

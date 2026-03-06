@@ -601,7 +601,7 @@ func (le *LayoutEngine) layoutGridContainer(
 			prelimWidth = containerWidth
 		}
 
-		childBox := le.layoutNode(item.child, 0, 0, prelimWidth, computedStyles, nil)
+		childBox := le.layoutNodeHTB(item.child, 0, 0, prelimWidth, computedStyles, nil)
 		itemBoxes[i] = childBox
 		if childBox == nil {
 			continue
@@ -767,7 +767,7 @@ func (le *LayoutEngine) layoutGridContainer(
 			Parent: box,
 		}
 		// Re-layout child with correct cell width (or fit-content for non-stretch)
-		childBox := le.layoutNode(item.child, 0, 0, layoutWidth, computedStyles, cellParent)
+		childBox := le.layoutNodeHTB(item.child, 0, 0, layoutWidth, computedStyles, cellParent)
 		if childBox == nil {
 			continue
 		}

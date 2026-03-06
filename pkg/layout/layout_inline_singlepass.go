@@ -261,7 +261,7 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 			}
 
 			// Layout the child
-			childBox := le.layoutNode(
+			childBox := le.layoutNodeHTB(
 				child,
 				adjustedChildX,
 				inlineCtx.LineY,

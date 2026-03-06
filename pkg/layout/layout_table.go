@@ -247,7 +247,7 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	// Layout top captions first; accumulate their height to push table body down
 	topCaptionHeight := 0.0
 	for _, cap := range topCaptions {
-		capBox := le.layoutNode(cap.node, x, y+topCaptionHeight, tableBox.Width, computedStyles, tableBox)
+		capBox := le.layoutNodeHTB(cap.node, x, y+topCaptionHeight, tableBox.Width, computedStyles, tableBox)
 		if capBox != nil {
 			tableBox.Children = append(tableBox.Children, capBox)
 			topCaptionHeight += capBox.Height
@@ -265,7 +265,7 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	// Layout bottom captions below table body
 	for _, cap := range bottomCaptions {
 		capY := y + tableBox.Height
-		capBox := le.layoutNode(cap.node, x, capY, tableBox.Width, computedStyles, tableBox)
+		capBox := le.layoutNodeHTB(cap.node, x, capY, tableBox.Width, computedStyles, tableBox)
 		if capBox != nil {
 			tableBox.Children = append(tableBox.Children, capBox)
 			tableBox.Height += capBox.Height
@@ -1046,7 +1046,7 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 					}
 				}
 				// Use layoutNode to handle all content (text, inline elements, nested tables)
-				cellBox := le.layoutNode(cell.Box.Node, currentX, currentY, cellWidth, computedStyles, tableBox)
+				cellBox := le.layoutNodeHTB(cell.Box.Node, currentX, currentY, cellWidth, computedStyles, tableBox)
 				if cellBox != nil {
 					cell.Box = cellBox
 				}

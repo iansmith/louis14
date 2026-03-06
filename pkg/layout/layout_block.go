@@ -25,7 +25,15 @@ func blockChildEstablishesBFC(style *css.Style) bool {
 		display == css.DisplayInlineGrid
 }
 
-func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
+// layoutNodeHTB is a convenience wrapper that calls layoutNode with HorizontalTB direction.
+// During the Dir-parameterization migration, existing call sites use this wrapper.
+// Agents converting subsystems to be Dir-aware replace layoutNodeHTB calls with direct
+// layoutNode calls passing the correct Dir.
+func (le *LayoutEngine) layoutNodeHTB(node *html.Node, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
+	return le.layoutNode(node, x, y, availableWidth, NewDir(HorizontalTB), computedStyles, parent)
+}
+
+func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64, dir Dir, computedStyles map[*html.Node]*css.Style, parent *Box) *Box {
 	// Guard against stack overflow on deeply nested pages.
 	le.layoutDepth++
 	defer func() { le.layoutDepth-- }()
@@ -1297,7 +1305,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					}
 				}
 
-				childBox := le.layoutNode(child, staticX, staticY, childAvailableWidth, computedStyles, box)
+				childBox := le.layoutNodeHTB(child, staticX, staticY, childAvailableWidth, computedStyles, box)
 				if childBox != nil {
 					box.Children = append(box.Children, childBox)
 					hasAbspos = true
@@ -1488,7 +1496,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			}
 
 			// Layout the child
-			childBox := le.layoutNode(
+			childBox := le.layoutNodeHTB(
 				child,
 				adjustedChildX,
 				inlineCtx.LineY,
@@ -2103,7 +2111,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						continue
 					}
 					if _, hasPct := child.Style.GetPercentage("height"); hasPct {
-						newChild := le.layoutNode(child.Node, child.X, child.Y, childAvailW, computedStyles, box)
+						newChild := le.layoutNodeHTB(child.Node, child.X, child.Y, childAvailW, computedStyles, box)
 						if newChild != nil {
 							box.Children[i] = newChild
 						}

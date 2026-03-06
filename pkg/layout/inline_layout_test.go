@@ -53,7 +53,7 @@ func TestInlineLayoutNoChildren(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -79,7 +79,7 @@ func TestInlineLayoutTextOnly(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -110,7 +110,7 @@ func TestInlineLayoutSingleInlineChild(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -144,7 +144,7 @@ func TestInlineLayoutWithFloat(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -184,7 +184,7 @@ func TestInlineLayoutBlockInInline(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -216,7 +216,7 @@ func TestInlineLayoutComplexNesting(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -253,7 +253,7 @@ func TestInlineLayoutMixedContent(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -288,7 +288,7 @@ func TestInlineLayoutMultipleFloats(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -320,7 +320,7 @@ func TestInlineLayoutEmptyElements(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")
@@ -351,7 +351,7 @@ func TestInlineLayoutWithMarginsPadding(t *testing.T) {
 	computedStyles[node].Set("display", "block")
 
 	// Layout the node
-	box := le.layoutNode(node, 0, 0, 800, computedStyles, nil)
+	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
 
 	if box == nil {
 		t.Fatal("Expected box to be created")

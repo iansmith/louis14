@@ -381,7 +381,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					delete(styleForLayout.Properties, "height")
 					savedStyle := computedStyles[item.Box.Node]
 					computedStyles[item.Box.Node] = styleForLayout
-					naturalBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
+					naturalBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
 					computedStyles[item.Box.Node] = savedStyle
 					item.FlexBasis = naturalBox.Height - naturalBox.Padding.Top - naturalBox.Padding.Bottom - naturalBox.Border.Top - naturalBox.Border.Bottom
 					if item.FlexBasis < 0 {
@@ -560,7 +560,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 							delete(styleForLayout.Properties, "height")
 							savedStyle := computedStyles[item.Box.Node]
 							computedStyles[item.Box.Node] = styleForLayout
-							naturalBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
+							naturalBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
 							computedStyles[item.Box.Node] = savedStyle
 							item.FlexBasis = naturalBox.Height - naturalBox.Padding.Top - naturalBox.Padding.Bottom - naturalBox.Border.Top - naturalBox.Border.Bottom
 							// Update item box to use the natural (auto) layout
@@ -668,7 +668,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					delete(styleForLayout.Properties, "height")
 					savedStyle := computedStyles[item.Box.Node]
 					computedStyles[item.Box.Node] = styleForLayout
-					naturalBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
+					naturalBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
 					computedStyles[item.Box.Node] = savedStyle
 					item.FlexBasis = naturalBox.Height - naturalBox.Padding.Top - naturalBox.Padding.Bottom - naturalBox.Border.Top - naturalBox.Border.Bottom
 				} else if isRow && item.Box.Node != nil {
@@ -677,7 +677,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					delete(styleForLayout.Properties, "width")
 					savedStyle := computedStyles[item.Box.Node]
 					computedStyles[item.Box.Node] = styleForLayout
-					naturalBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
+					naturalBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, item.Box.Parent)
 					computedStyles[item.Box.Node] = savedStyle
 					item.FlexBasis = naturalBox.Width - naturalBox.Padding.Left - naturalBox.Padding.Right - naturalBox.Border.Left - naturalBox.Border.Right
 				} else {
@@ -915,7 +915,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				// Save and restore float/abspos state to prevent double-registration.
 				savedFloatsLen := len(le.floats)
 				savedAbsLen := len(le.absoluteBoxes)
-				newBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
+				newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
 				le.floats = le.floats[:savedFloatsLen]
 				le.absoluteBoxes = le.absoluteBoxes[:savedAbsLen]
 				if newBox != nil {
@@ -1012,7 +1012,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					savedAbsPos := le.absoluteBoxes
 					le.floats = le.floats[:le.floatBase]
 					le.absoluteBoxes = nil
-					newBox := le.layoutNode(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
+					newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
 					le.floats = savedFloats
 					le.absoluteBoxes = savedAbsPos
 					item.Box.Children = newBox.Children
@@ -2010,7 +2010,7 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 			// Layout the child and add it to the flex container's children list.
 			// Note: flexBox.Children is reset in layoutFlex Step 12, so these boxes
 			// are collected there and re-added after Step 12.
-			absBox := le.layoutNode(child, flexBox.X, flexBox.Y, flexBox.Width, computedStyles, flexBox)
+			absBox := le.layoutNodeHTB(child, flexBox.X, flexBox.Y, flexBox.Width, computedStyles, flexBox)
 			if absBox != nil {
 				flexBox.Children = append(flexBox.Children, absBox)
 			}
@@ -2057,7 +2057,7 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		}
 
 		// Layout the child to get its intrinsic dimensions
-		childBox := le.layoutNode(child, startX, startY, initialLayoutWidth, computedStyles, flexBox)
+		childBox := le.layoutNodeHTB(child, startX, startY, initialLayoutWidth, computedStyles, flexBox)
 
 		// CSS Flexbox §9.2: For column flex items with non-stretch cross alignment,
 		// the initial block layout fills the container width (wrong). The item's
@@ -2086,7 +2086,7 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 					// computes: (intrinsicW+margins) - margins - padding - border = content.
 					if intrinsicW > 0 && intrinsicW < childBox.Width-0.5 {
 						layoutAvail := intrinsicW + childBox.Margin.Left + childBox.Margin.Right
-						childBox = le.layoutNode(child, startX, startY, layoutAvail, computedStyles, flexBox)
+						childBox = le.layoutNodeHTB(child, startX, startY, layoutAvail, computedStyles, flexBox)
 					}
 				}
 			}
