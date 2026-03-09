@@ -3717,16 +3717,40 @@ func transformToVerticalRL(box *Box, wm string) {
 			if extent > cols[i].height {
 				cols[i].height = extent
 			}
-			// Collect block-direction margins for column spacing when child has
-			// explicit width and is not floated. Block-fill children (no explicit width)
-			// have their block-direction margins already consumed by h-tb block-fill
-			// calculation, so adding them again would double-count.
+			// Collect block-direction margins for column spacing.
 			// Floated elements do not participate in block-direction margin collapsing
 			// (CSS 2.1 §8.3.1: floats do not collapse margins with adjacent blocks).
 			isFloated := child.Style != nil && child.Style.GetFloat() != css.FloatNone
-			if cols[i].hasExplicitW && !isFloated {
-				bs := blockStartM
-				be := dir.BlockEndEdge(child.Margin)
+			if !isFloated {
+				var bs, be float64
+				if cols[i].hasExplicitW {
+					// Child has explicit width: use direct margins (not consumed by HTB width)
+					bs = blockStartM
+					be = dir.BlockEndEdge(child.Margin)
+				} else {
+					// Block-fill child in HTB pre-transform layout:
+					//   child.X = contentStartX + margin.Left
+					//   child.Width = available - margin.Left - margin.Right
+					//
+					// Both margins affect the child's HTB layout. In the transform,
+					// origRelX subtracts both blockStart and blockEnd margins from X.
+					// The parent's own block-direction margins are already accounted
+					// for in the HTB layout. Only margins that propagate from nested
+					// children (CSS 2.1 §8.3.1 parent-child collapsing) represent
+					// ADDITIONAL spacing beyond what was consumed by HTB layout.
+					ownBS := blockStartM
+					ownBE := dir.BlockEndEdge(child.Margin)
+					effBS := effectiveBlockStartMargin(child, dir)
+					effBE := effectiveBlockEndMargin(child, dir)
+					bs = effBS - ownBS
+					if bs < 0 {
+						bs = 0
+					}
+					be = effBE - ownBE
+					if be < 0 {
+						be = 0
+					}
+				}
 				if bs > cols[i].blockStartMarg {
 					cols[i].blockStartMarg = bs
 				}

@@ -159,6 +159,69 @@ func shouldCollapseMargins(box *Box) bool {
 	return true
 }
 
+// effectiveBlockStartMargin computes the effective block-start margin of a box,
+// including margins that propagate from its first child through parent-child collapsing.
+// CSS 2.1 §8.3.1: "If the element has no top border and no top padding, then the
+// element's top margin collapses with the first in-flow child's top margin."
+// This is Dir-aware: "top" is replaced by block-start for the given writing mode.
+func effectiveBlockStartMargin(box *Box, dir Dir) float64 {
+	ownMargin := dir.BlockStartEdge(box.Margin)
+	if !parentCanCollapseBlockStartMargin(box, dir) {
+		return ownMargin
+	}
+	// Find the first in-flow child
+	for _, child := range box.Children {
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			continue
+		}
+		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
+		// Collapse-through children propagate both margins, then continue to next
+		if isCollapseThroughDir(child, dir) {
+			ownMargin = collapseMargins(ownMargin, dir.BlockStartEdge(child.Margin))
+			ownMargin = collapseMargins(ownMargin, dir.BlockEndEdge(child.Margin))
+			continue
+		}
+		// First non-collapse-through child: collapse with its effective block-start
+		childEffective := effectiveBlockStartMargin(child, dir)
+		return collapseMargins(ownMargin, childEffective)
+	}
+	return ownMargin
+}
+
+// effectiveBlockEndMargin computes the effective block-end margin of a box,
+// including margins that propagate from its last child through parent-child collapsing.
+// CSS 2.1 §8.3.1: "If the element has no bottom border/padding and no auto height,
+// then the element's bottom margin collapses with the last in-flow child's bottom margin."
+// This is Dir-aware: "bottom" is replaced by block-end for the given writing mode.
+func effectiveBlockEndMargin(box *Box, dir Dir) float64 {
+	ownMargin := dir.BlockEndEdge(box.Margin)
+	if !parentCanCollapseBlockEndMargin(box, dir) {
+		return ownMargin
+	}
+	// Find the last in-flow child
+	for i := len(box.Children) - 1; i >= 0; i-- {
+		child := box.Children[i]
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			continue
+		}
+		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
+		// Collapse-through children propagate both margins, then continue to prev
+		if isCollapseThroughDir(child, dir) {
+			ownMargin = collapseMargins(ownMargin, dir.BlockStartEdge(child.Margin))
+			ownMargin = collapseMargins(ownMargin, dir.BlockEndEdge(child.Margin))
+			continue
+		}
+		// Last non-collapse-through child: collapse with its effective block-end
+		childEffective := effectiveBlockEndMargin(child, dir)
+		return collapseMargins(ownMargin, childEffective)
+	}
+	return ownMargin
+}
+
 // parentCanCollapseTopMargin returns true if the parent has no block-start border or padding
 // separating it from its first child's block-start margin.
 func parentCanCollapseTopMargin(parent *Box) bool {
