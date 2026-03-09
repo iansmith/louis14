@@ -6103,6 +6103,66 @@ func (s *Style) GetClipPath() *ClipPath {
 	return nil
 }
 
+// ClipRect represents a parsed CSS clip: rect(top, right, bottom, left) value.
+// All values are in pixels, relative to the element's border box top-left corner.
+// The clip property is purely physical (CSS Writing Modes §7.6).
+type ClipRect struct {
+	Top    float64
+	Right  float64
+	Bottom float64
+	Left   float64
+}
+
+// GetClipRect parses the legacy CSS clip: rect(top, right, bottom, left) property.
+// Returns nil if clip is not set or is "auto".
+func (s *Style) GetClipRect() *ClipRect {
+	val, ok := s.Get("clip")
+	if !ok || val == "auto" || val == "none" {
+		return nil
+	}
+	val = strings.TrimSpace(val)
+	if !strings.HasPrefix(val, "rect(") || !strings.HasSuffix(val, ")") {
+		return nil
+	}
+	inner := val[5 : len(val)-1]
+	// rect() values can be separated by commas or spaces
+	inner = strings.ReplaceAll(inner, ",", " ")
+	parts := strings.Fields(inner)
+	if len(parts) != 4 {
+		return nil
+	}
+	cr := &ClipRect{}
+	if parts[0] == "auto" {
+		cr.Top = 0
+	} else if v, ok := ParseLength(parts[0]); ok {
+		cr.Top = v
+	} else {
+		return nil
+	}
+	if parts[1] == "auto" {
+		cr.Right = -1 // sentinel: use element width
+	} else if v, ok := ParseLength(parts[1]); ok {
+		cr.Right = v
+	} else {
+		return nil
+	}
+	if parts[2] == "auto" {
+		cr.Bottom = -1 // sentinel: use element height
+	} else if v, ok := ParseLength(parts[2]); ok {
+		cr.Bottom = v
+	} else {
+		return nil
+	}
+	if parts[3] == "auto" {
+		cr.Left = 0
+	} else if v, ok := ParseLength(parts[3]); ok {
+		cr.Left = v
+	} else {
+		return nil
+	}
+	return cr
+}
+
 func parseClipPathCircle(val string) *ClipPath {
 	// circle() or circle(radius) or circle(radius at cx cy)
 	inner := extractParens(val, "circle")

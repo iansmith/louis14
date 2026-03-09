@@ -462,6 +462,27 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		}
 	}
 
+	// Apply legacy CSS clip: rect() property (purely physical coordinates per §7.6)
+	hasClipRect := false
+	if box.Style != nil {
+		if cr := box.Style.GetClipRect(); cr != nil {
+			r.context.Push()
+			hasClipRect = true
+			// Resolve "auto" sentinels to element dimensions
+			clipRight := cr.Right
+			if clipRight < 0 {
+				clipRight = box.Width
+			}
+			clipBottom := cr.Bottom
+			if clipBottom < 0 {
+				clipBottom = box.Height
+			}
+			// rect() values are offsets from the element's border box top-left
+			r.context.DrawRectangle(box.X+cr.Left, box.Y+cr.Top, clipRight-cr.Left, clipBottom-cr.Top)
+			r.context.Clip()
+		}
+	}
+
 	// Apply CSS transforms at the stacking context level so they wrap
 	// all painting (backgrounds, borders, AND children)
 	hasTransform := false
@@ -668,6 +689,11 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 	// Composite isolated stacking context group back onto parent surface
 	if needsIsolation {
 		r.context.PopGroupWithAlpha(1.0)
+	}
+
+	// Restore clip rect state (pushed after clip-path, so popped before)
+	if hasClipRect {
+		r.popContext()
 	}
 
 	// Restore clip-path state
