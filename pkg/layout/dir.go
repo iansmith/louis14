@@ -24,7 +24,7 @@ func WritingModeFromStyle(style *css.Style) WritingMode {
 	case "vertical-lr":
 		return VerticalLR
 	case "sideways-lr":
-		return SidewaysLR
+		return VerticalLR
 	default:
 		return HorizontalTB
 	}
