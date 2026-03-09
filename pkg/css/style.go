@@ -204,7 +204,18 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight)
+	return parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())
+}
+
+// chScale returns the ch unit multiplier relative to fontSize for this style's writing mode.
+// In vertical writing modes, ch equals the vertical advance height of "0" ≈ 1em.
+// In horizontal writing modes, ch equals the horizontal advance width of "0" ≈ 0.5em.
+func (s *Style) chScale() float64 {
+	wm, _ := s.Get("writing-mode")
+	if wm == "vertical-rl" || wm == "vertical-lr" {
+		return 1.0
+	}
+	return 0.5
 }
 
 // ParsePercentage parses a percentage value (e.g., "140%") and returns the number (e.g., 140).
@@ -322,7 +333,14 @@ func evalClamp(argsStr string, fontSize, vw, vh float64) (float64, bool) {
 }
 
 // ParseLengthFull parses a length value with em, rem, and viewport unit support.
+// Uses a default ch multiplier of 0.5em (horizontal writing mode approximation).
 func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64) (float64, bool) {
+	return parseLengthFullWithCh(val, fontSize, viewportWidth, viewportHeight, 0.5)
+}
+
+// parseLengthFullWithCh is the internal implementation that accepts a custom ch multiplier.
+// chScale is the multiplier for the ch unit relative to fontSize (0.5 for horizontal, 1.0 for vertical).
+func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, chScale float64) (float64, bool) {
 	val = strings.TrimSpace(val)
 	// Resolve env() variables before any other parsing
 	if strings.Contains(val, "env(") {
@@ -463,15 +481,17 @@ func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64
 		}
 		return num * fontSize, true
 	}
-	// ch unit: width of '0' character at current font size.
-	// Approximate as 0.5em (typical for proportional fonts).
+	// ch unit: advance measure of '0' character in the inline axis.
+	// In horizontal writing modes, this is the horizontal advance width ≈ 0.5em.
+	// In vertical writing modes, this is the vertical advance height ≈ 1.0em.
+	// The chScale parameter controls this multiplier.
 	if strings.HasSuffix(val, "ch") {
 		numStr := strings.TrimSuffix(val, "ch")
 		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
 		if err != nil {
 			return 0, false
 		}
-		return num * fontSize * 0.5, true
+		return num * fontSize * chScale, true
 	}
 	// ex unit: x-height of the current font, approximately 0.5em.
 	if strings.HasSuffix(val, "ex") {
@@ -1005,13 +1025,13 @@ func (s *Style) parseBorderRadiusFirst(property string) float64 {
 		return 0
 	}
 	// Try as single value first
-	if r, ok := ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 		return r
 	}
 	// Try two-value syntax: "75px 50px"
 	parts := strings.Fields(val)
 	if len(parts) >= 1 {
-		if r, ok := ParseLengthFull(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+		if r, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 			return r
 		}
 	}
@@ -1064,20 +1084,20 @@ func (s *Style) parseBorderRadiusElliptical(property string) EllipticalRadius {
 		return EllipticalRadius{}
 	}
 	// Try as single value first
-	if r, ok := ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 		return EllipticalRadius{r, r}
 	}
 	// Two-value syntax: "75px 50px"
 	parts := strings.Fields(val)
 	var result EllipticalRadius
 	if len(parts) >= 1 {
-		if r, ok := ParseLengthFull(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+		if r, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 			result.Rx = r
 			result.Ry = r // default same
 		}
 	}
 	if len(parts) >= 2 {
-		if r, ok := ParseLengthFull(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok {
+		if r, ok := parseLengthFullWithCh(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 			result.Ry = r
 		}
 	}
@@ -1858,7 +1878,7 @@ func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 // GetOutlineOffset returns the outline-offset in pixels (default: 0).
 func (s *Style) GetOutlineOffset() float64 {
 	if val, ok := s.Get("outline-offset"); ok {
-		if px, ok2 := ParseLengthFull(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight); ok2 {
+		if px, ok2 := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok2 {
 			return px
 		}
 	}
@@ -3881,7 +3901,8 @@ func (s *Style) GetLineHeight() float64 {
 		return s.GetFontSize() * 1.2
 	}
 	// Try as a standard CSS length first (px, em, etc.)
-	if lh, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+	// Use writing-mode-aware ch scale for vertical writing modes.
+	if lh, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 		return lh
 	}
 	// Try as a unitless multiplier (e.g., "1.5" means 1.5 × font-size)
