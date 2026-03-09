@@ -14,6 +14,7 @@ func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.N
 	tableInfo := &TableInfo{
 		Rows:           make([]*TableRow, 0),
 		BorderSpacing:  tableBox.Style.GetBorderSpacing(),
+		BorderSpacingV: tableBox.Style.GetBorderSpacingV(),
 		BorderCollapse: tableBox.Style.GetBorderCollapse(),
 	}
 
@@ -172,24 +173,24 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 		for _, rh := range tableInfo.RowHeights {
 			totalH += rh
 		}
-		borderSpacing := tableInfo.BorderSpacing
+		borderSpacingV := tableInfo.BorderSpacingV
 		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
-			borderSpacing = 0
+			borderSpacingV = 0
 		}
-		totalH += borderSpacing * float64(len(tableInfo.RowHeights)+1)
+		totalH += borderSpacingV * float64(len(tableInfo.RowHeights)+1)
 		tableBox.Height = totalH + tableBox.Border.Top + tableBox.Border.Bottom +
 			tableBox.Padding.Top + tableBox.Padding.Bottom
 	} else {
 		// Distribute explicit height to rows if it exceeds content-based row heights
-		borderSpacing := tableInfo.BorderSpacing
+		borderSpacingV := tableInfo.BorderSpacingV
 		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
-			borderSpacing = 0
+			borderSpacingV = 0
 		}
 		totalRowH := 0.0
 		for _, rh := range tableInfo.RowHeights {
 			totalRowH += rh
 		}
-		spacingH := borderSpacing * float64(len(tableInfo.RowHeights)+1)
+		spacingH := borderSpacingV * float64(len(tableInfo.RowHeights)+1)
 		contentH := explicitTableHeight - tableBox.Border.Top - tableBox.Border.Bottom -
 			tableBox.Padding.Top - tableBox.Padding.Bottom - spacingH
 		if contentH > totalRowH && len(tableInfo.RowHeights) > 0 {
@@ -990,12 +991,14 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 // Phase 9: positionTableCells positions cells in the table
 func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCell, tableInfo *TableInfo, x, y float64, computedStyles map[*html.Node]*css.Style) {
 	borderSpacing := tableInfo.BorderSpacing
+	borderSpacingV := tableInfo.BorderSpacingV
 	if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
 		borderSpacing = 0
+		borderSpacingV = 0
 	}
 
 	// Single-pass: lay out cells row by row, updating row heights from actual content
-	currentY := y + tableBox.Border.Top + tableBox.Padding.Top + borderSpacing
+	currentY := y + tableBox.Border.Top + tableBox.Padding.Top + borderSpacingV
 	processedCells := make(map[*TableCell]bool)
 
 	for rowIdx, row := range cellGrid {
@@ -1096,7 +1099,7 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				if rowIdx+r < len(tableInfo.RowHeights) {
 					cellHeight += tableInfo.RowHeights[rowIdx+r]
 					if r > 0 {
-						cellHeight += borderSpacing
+						cellHeight += borderSpacingV
 					}
 				}
 			}
@@ -1139,7 +1142,7 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 			tableBox.Children = append(tableBox.Children, ce.cell.Box)
 		}
 
-		currentY += rowHeight + borderSpacing
+		currentY += rowHeight + borderSpacingV
 	}
 
 	// Update table box height based on content

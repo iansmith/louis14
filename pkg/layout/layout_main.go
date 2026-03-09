@@ -58,7 +58,11 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	var prevBox *Box // Track previous sibling for margin collapsing
 	for _, node := range doc.Root.Children {
 		if node.Type == html.ElementNode {
-			box := le.layoutNode(node, 0, y, le.viewport.width, rootDir, computedStyles, nil)
+			// For vertical writing modes, the available inline-size comes from the
+			// viewport height, not width. Use Dir.ViewportInlineSize to get the
+			// correct value. For HTB this returns viewport.width (unchanged).
+			rootAvailInline := rootDir.ViewportInlineSize(le)
+			box := le.layoutNode(node, 0, y, rootAvailInline, rootDir, computedStyles, nil)
 			// Phase 7: Skip elements with display: none (layoutNode returns nil)
 			if box == nil {
 				continue

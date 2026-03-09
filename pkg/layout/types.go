@@ -321,7 +321,8 @@ type TableInfo struct {
 	ColumnWidths         []float64
 	RowHeights           []float64
 	RowHasExplicitHeight []bool
-	BorderSpacing        float64
+	BorderSpacing        float64 // Horizontal border-spacing (between columns)
+	BorderSpacingV       float64 // Vertical border-spacing (between rows)
 	BorderCollapse       css.BorderCollapse
 }
 
