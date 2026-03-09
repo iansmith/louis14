@@ -45,6 +45,14 @@ type Box struct {
 	// parent.Height when the parent is a stretched flex item.
 	HeightIsDefinite bool
 
+	// VerticalTransformed is set to true after this box has been processed by the
+	// vertical writing-mode column transform (transformToVerticalRL or the block-layout
+	// trigger code in layoutNode). Guards against double-transformation when both a
+	// parent and child element have the same vertical writing-mode: the child runs the
+	// transform in its own layoutNode call, then the parent's transform code skips the
+	// child via this flag instead of applying the column transform a second time.
+	VerticalTransformed bool
+
 	// Line boxes for block containers with inline content
 	LineBoxes []*LineBox
 }
@@ -278,12 +286,13 @@ type InlineLayoutState struct {
 	Lines []*LineBreakResult
 
 	// Context from parent container
-	ContainerBox   *Box
-	ContainerStyle *css.Style
-	AvailableWidth float64
-	StartY         float64
-	Border         css.BoxEdge
-	Padding        css.BoxEdge
+	ContainerBox    *Box
+	ContainerStyle  *css.Style
+	ContainerHeight float64 // content height of container (for % height resolution)
+	AvailableWidth  float64
+	StartY          float64
+	Border          css.BoxEdge
+	Padding         css.BoxEdge
 
 	// Float tracking (for line breaking retry)
 	FloatList      []FloatInfo // Active floats that affect line breaking

@@ -1167,9 +1167,10 @@ func (le *LayoutEngine) collectInlineItemsClean(
 		containerStyle = css.NewStyle()
 	}
 	state := &InlineLayoutState{
-		Items:          []*InlineItem{},
-		AvailableWidth: constraint.AvailableSize.Width,
-		ContainerStyle: containerStyle,
+		Items:           []*InlineItem{},
+		AvailableWidth:  constraint.AvailableSize.Width,
+		ContainerStyle:  containerStyle,
+		ContainerHeight: constraint.AvailableSize.Height,
 	}
 
 	// Compute styles for all children with inheritance from container
@@ -1621,7 +1622,15 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	}
 
 	// Create constraint space
-	constraint := NewConstraintSpace(availableWidth, 0)
+	// Pass the container's content height so that percentage-height children
+	// (e.g. img height:100% inside a div with height:100px) can resolve correctly.
+	containerContentH := containerBox.Height -
+		containerBox.Padding.Top - containerBox.Padding.Bottom -
+		containerBox.Border.Top - containerBox.Border.Bottom
+	if containerContentH < 0 {
+		containerContentH = 0
+	}
+	constraint := NewConstraintSpace(availableWidth, containerContentH)
 
 	// Set writing-mode direction on constraint space.
 	// This makes Dir available throughout the inline pipeline for future use.
@@ -1807,17 +1816,24 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				childStyle.GetFloat() == css.FloatNone &&
 				childStyle.GetPosition() != css.PositionAbsolute &&
 				childStyle.GetPosition() != css.PositionFixed {
-				leftOff, rightOff := le.getFloatOffsets(childY)
+				// If the child has `clear`, it will be pushed below the current floats.
+				// Use the post-clear Y for float offset check: a cleared BFC child that
+				// ends up below all floats should not be indented by those floats.
+				floatCheckY := childY
+				if childClear := childStyle.GetClear(); childClear != css.ClearNone {
+					floatCheckY = le.getClearY(childClear, childY)
+				}
+				leftOff, rightOff := le.getFloatOffsets(floatCheckY)
 				if leftOff > 0 || rightOff > 0 {
 					// CSS 2.1 §9.5: If the BFC element's border-box doesn't fit
 					// beside floats, push it below all floats.
 					remainingWidth := availableWidth - leftOff - rightOff
 					if bfcChildTooWideForFloats(childStyle, remainingWidth, availableWidth) {
-						childY = le.getClearY(css.ClearBoth, childY)
+						childY = le.getClearY(css.ClearBoth, floatCheckY)
 						leftOff, rightOff = le.getFloatOffsets(childY)
 					}
 					if leftOff > 0 || rightOff > 0 {
-						absLeftEdge := le.getLeftFloatAbsoluteEdge(childY)
+						absLeftEdge := le.getLeftFloatAbsoluteEdge(floatCheckY)
 						childMarginLeft := childStyle.GetMargin().Left
 						borderBoxLeft := childX + childMarginLeft
 						if borderBoxLeft >= childX && absLeftEdge > childX {
@@ -3379,10 +3395,23 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 							height = cssHeight
 							hasHeight = true
 						} else if heightPct, ok := style.GetPercentage("height"); ok {
-							// Percentage height - for now, use natural dimensions
-							// (proper handling requires containing block height)
-							_ = heightPct // unused for now
-							height = float64(h)
+							// Resolve percentage height against the container content height.
+							// CSS 2.1 §10.5: percentage height resolves against the containing
+							// block height when definite.
+							cbH := 0.0
+							if state.ContainerBox != nil {
+								cbH = state.ContainerBox.Height -
+									state.ContainerBox.Padding.Top - state.ContainerBox.Padding.Bottom -
+									state.ContainerBox.Border.Top - state.ContainerBox.Border.Bottom
+							} else if state.ContainerHeight > 0 {
+								// collectInlineItemsClean path: ContainerHeight set from constraint
+								cbH = state.ContainerHeight
+							}
+							if cbH > 0 {
+								height = cbH * heightPct / 100
+							} else {
+								height = float64(h) // fall back to natural height
+							}
 							hasHeight = true
 						} else if heightAttr, ok := node.GetAttribute("height"); ok {
 							// HTML attributes use unitless numbers (pixels)

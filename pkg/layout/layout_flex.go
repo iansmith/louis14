@@ -912,11 +912,17 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					continue
 				}
 				// Width changed: re-layout children with the established width.
-				// Save and restore float/abspos state to prevent double-registration.
-				savedFloatsLen := len(le.floats)
+				// Reset floats to floatBase so initial-layout floats (registered during
+				// createFlexItemsProper at the narrow container width) do not interfere with
+				// the re-layout float placement. Accumulated leftOffset from initial floats
+				// would push new floats to wrong Y positions.
+				savedFloats := le.floats
 				savedAbsLen := len(le.absoluteBoxes)
-				newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
-				le.floats = le.floats[:savedFloatsLen]
+				le.floats = le.floats[:le.floatBase]
+				// item.Box.X/Y are border-box positions (margin already applied by initial layout).
+				// layoutNode expects margin-box start and adds margin internally, so subtract margin here.
+				newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X-item.Box.Margin.Left, item.Box.Y-item.Box.Margin.Top, item.Box.Width, computedStyles, flexBox)
+				le.floats = savedFloats
 				le.absoluteBoxes = le.absoluteBoxes[:savedAbsLen]
 				if newBox != nil {
 					item.Box.Children = newBox.Children
@@ -1012,7 +1018,8 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					savedAbsPos := le.absoluteBoxes
 					le.floats = le.floats[:le.floatBase]
 					le.absoluteBoxes = nil
-					newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, computedStyles, flexBox)
+					// item.Box.X/Y are border-box positions; layoutNode adds margin internally.
+					newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X-item.Box.Margin.Left, item.Box.Y-item.Box.Margin.Top, item.Box.Width, computedStyles, flexBox)
 					le.floats = savedFloats
 					le.absoluteBoxes = savedAbsPos
 					item.Box.Children = newBox.Children
@@ -1249,7 +1256,10 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				arItem := item.Box.Style.GetAspectRatio()
 				// Also clamp items that exceed the line cross-size (e.g. when line is clamped
 				// by container max-height/max-width per CSS Flexbox §9.4.4).
-				shouldStretch := outerCross != line.CrossSize || (arItem.IsSet && outerCross != line.CrossSize)
+				// Also trigger for column items with aspect-ratio when the container has no
+				// definite cross-size (line.CrossSize==0) but item has definite height from
+				// flex main-axis resolution (min-height, etc.).
+				shouldStretch := outerCross != line.CrossSize || (arItem.IsSet && outerCross != line.CrossSize) || (!isRow && arItem.IsSet && item.Box.Height > 0 && line.CrossSize == 0)
 				if shouldStretch {
 					// Stretch item to fill line's cross size
 					crossMargin := 0.0
@@ -1320,6 +1330,38 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 									newBorderBoxW = contentW + paddingW + borderW
 								}
 								item.Box.Width = newBorderBoxW
+							}
+						}
+					} else {
+						// Column direction: transfer main-axis height -> cross-axis width via aspect-ratio.
+						// CSS Sizing Level 4 §8: aspect-ratio applies when one dimension is definite.
+						// For column flex, the main axis (height) is resolved by flex algorithm;
+						// if no explicit width, the cross-axis width comes from the aspect-ratio.
+						arProp := item.Box.Style.GetAspectRatio()
+						if arProp.IsSet && arProp.Width > 0 && arProp.Height > 0 {
+							_, hasExplicitW := item.Box.Style.GetLength("width")
+							if !hasExplicitW {
+								paddingV := item.Box.Padding.Top + item.Box.Padding.Bottom
+								borderV := item.Box.Border.Top + item.Box.Border.Bottom
+								paddingH := item.Box.Padding.Left + item.Box.Padding.Right
+								borderH := item.Box.Border.Left + item.Box.Border.Right
+								var newBorderBoxW float64
+								if item.Box.Style.GetBoxSizing() == "border-box" {
+									newBorderBoxW = item.Box.Height * arProp.Width / arProp.Height
+								} else {
+									contentH := item.Box.Height - paddingV - borderV
+									if contentH < 0 {
+										contentH = 0
+									}
+									contentW := contentH * arProp.Width / arProp.Height
+									newBorderBoxW = contentW + paddingH + borderH
+								}
+								item.Box.Width = newBorderBoxW
+								// Update line cross-size so Step 13 sets the container width correctly.
+								newOuterCross := item.Box.Width + item.Box.Margin.Left + item.Box.Margin.Right
+								if newOuterCross > line.CrossSize {
+									line.CrossSize = newOuterCross
+								}
 							}
 						}
 					}
@@ -1615,8 +1657,13 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		crossNaturallyReversed = !crossNaturallyReversed
 	}
 	shouldReverseCross := isWrapReverse != crossNaturallyReversed
-	if shouldReverseCross && len(lines) > 1 {
-		// Reverse line order along cross axis
+	if shouldReverseCross && (len(lines) > 1 || isRow) {
+		// Reverse line order along cross axis.
+		// When the container has a definite cross size, use it as the flip bound so that
+		// items which overflow the container (e.g. a 400px item in a 200px container with
+		// wrap-reverse) are correctly positioned relative to the container edge.
+		// When cross size is indefinite, the container is sized to its content so
+		// crossSize == totalLinesCross and we fall back to that sum.
 		totalCross := 0.0
 		for i, line := range lines {
 			totalCross += line.CrossSize
@@ -1624,9 +1671,25 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				totalCross += crossGap
 			}
 		}
+		flipBound := totalCross
+		if hasDefiniteCross {
+			flipBound = crossSize
+		}
 		for _, line := range lines {
 			for _, item := range line.Items {
-				item.CrossPos = totalCross - item.CrossPos - item.CrossSize
+				// CSS Box Alignment: "safe" alignment means overflow goes toward the
+				// logical end (not the start). When safe align-content or align-items/self
+				// positions the item at the physical cross-start (top/left) due to overflow,
+				// flipping would push it past the start edge. Skip items where the flip
+				// would cause start-edge overflow and safe semantics apply.
+				if hasDefiniteCross {
+					containerSafe := flexBox.Style.IsSafeAlignItems() || flexBox.Style.IsSafeAlignContent()
+					itemSafe := containerSafe || item.Box.Style.IsSafeAlignSelf()
+					if itemSafe && item.outerCrossSize(isRow) > crossSize {
+						continue
+					}
+				}
+				item.CrossPos = flipBound - item.CrossPos - item.CrossSize
 			}
 		}
 	}
@@ -1706,7 +1769,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					item.Box.X = contentStartX + item.MainPos
 				}
 				item.Box.Y = contentStartY + item.CrossPos
-	
+
 			} else {
 				item.Box.X = contentStartX + item.CrossPos
 				if isReverse {
@@ -1718,6 +1781,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			// Re-position children relative to new box position
 			deltaX := item.Box.X - oldX
 			deltaY := item.Box.Y - oldY
+
 			le.repositionFlexItemChildren(item.Box, deltaX, deltaY)
 
 			// CSS Flexbox §4.1 / CSS Positioned Layout §3:
@@ -1782,6 +1846,23 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			if childBottom > maxBottom {
 				maxBottom = childBottom
 			}
+		}
+		flexBox.Height = maxBottom + flexBox.Padding.Top + flexBox.Padding.Bottom + flexBox.Border.Top + flexBox.Border.Bottom
+	} else if !isRow && !mainSizeIsDefinite && mainSize != math.MaxFloat64 {
+		// Column flex with max-height only (no explicit height): mainSize was set from
+		// max-height but flexBox.Height was never updated (it's 0 from initialization).
+		// Set flexBox.Height = min(actual content height, mainSize) + padding + border.
+		// Items may not shrink below their AutoMinMain (content-based minimum), so the
+		// actual bottom edge may exceed mainSize — cap it so overflow:hidden clips correctly.
+		maxBottom := 0.0
+		for _, child := range flexBox.Children {
+			childBottom := child.Y + child.Height + child.Margin.Bottom - contentStartY
+			if childBottom > maxBottom {
+				maxBottom = childBottom
+			}
+		}
+		if maxBottom > mainSize {
+			maxBottom = mainSize
 		}
 		flexBox.Height = maxBottom + flexBox.Padding.Top + flexBox.Padding.Bottom + flexBox.Border.Top + flexBox.Border.Bottom
 	}
@@ -2058,7 +2139,10 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 
 		// Layout the child to get its intrinsic dimensions
 		childBox := le.layoutNodeHTB(child, startX, startY, initialLayoutWidth, computedStyles, flexBox)
-
+		if childBox == nil {
+			// display:contents or other special case that generates no box — skip.
+			continue
+		}
 		// CSS Flexbox §9.2: For column flex items with non-stretch cross alignment,
 		// the initial block layout fills the container width (wrong). The item's
 		// cross size (width) should be fit-content (shrink-to-fit). Re-layout
@@ -2068,7 +2152,9 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		if !isRow && initialLayoutWidth == availableWidth {
 			flexAlignItems := flexBox.Style.GetAlignItems()
 			effectiveAlign := resolveAlignment(flexAlignItems, childStyle.GetAlignSelf())
-			if effectiveAlign != css.AlignItemsStretch {
+			childMargin := childStyle.GetMargin()
+			hasAutoCrossMargin := childMargin.AutoLeft || childMargin.AutoRight
+			if effectiveAlign != css.AlignItemsStretch || hasAutoCrossMargin {
 				// Check if child has no explicit CSS width (block-fill case)
 				_, hasExplicitW := childStyle.GetLength("width")
 				_, hasExplicitPctW := childStyle.GetPercentage("width")
@@ -2086,7 +2172,13 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 					// computes: (intrinsicW+margins) - margins - padding - border = content.
 					if intrinsicW > 0 && intrinsicW < childBox.Width-0.5 {
 						layoutAvail := intrinsicW + childBox.Margin.Left + childBox.Margin.Right
+						// Reset floats to floatBase so the first-layout floats (from laying out
+						// at full container width above) don't interfere with the re-layout's
+						// float placement in getFloatDropY.
+						savedFloatsForReLayout := le.floats
+						le.floats = le.floats[:le.floatBase]
 						childBox = le.layoutNodeHTB(child, startX, startY, layoutAvail, computedStyles, flexBox)
+						le.floats = savedFloatsForReLayout
 					}
 				}
 			}
@@ -2144,8 +2236,17 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 		}
 		// CSS Flexbox §4.5: automatic minimum size applies when overflow is visible or clip.
 		// Both treat the automatic minimum as the content-based minimum size.
+		// Pass the container's cross-axis size so that the transferred size suggestion for
+		// replaced elements uses the stretched cross size (e.g. a row-flex img stretched to
+		// the container height h gets content-based min-width = h * (iw/ih), not natural_h * (iw/ih)).
 		if !hasExplicitMin && (mainOverflow == css.OverflowVisible || mainOverflow == css.OverflowClip) {
-			item.AutoMinMain = le.computeFlexItemAutoMinMain(child, childStyle, childBox, isRow, availableWidth, computedStyles)
+			var containerCross float64
+			if isRow {
+				containerCross = flexBox.Height - flexBox.Padding.Top - flexBox.Padding.Bottom - flexBox.Border.Top - flexBox.Border.Bottom
+			} else {
+				containerCross = availableWidth
+			}
+			item.AutoMinMain = le.computeFlexItemAutoMinMain(child, childStyle, childBox, isRow, containerCross, computedStyles)
 		}
 
 		// Pre-resolve intrinsic size keyword constraints (min-content, max-content).
@@ -3089,6 +3190,9 @@ func computeItemLastBaseline(item *FlexItem, isRow bool) float64 {
 // computedStyles provides already-cascaded styles for the item's children (with inheritance applied);
 // if nil, a fresh cascade (without inheritance) is computed for each child.
 func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.Style, box *Box, isRow bool, availableCross float64, computedStyles map[*html.Node]*css.Style) float64 {
+	if box == nil {
+		return 0
+	}
 	if isRow {
 		// Row direction: min-width: auto → content-based minimum WIDTH
 
@@ -3111,8 +3215,19 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 						// min-height establishes a minimum cross constraint
 						crossH = minH
 					} else {
-						// Fall back to the item's initial layout height (content box)
-						crossH = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+						// CSS Flexbox §4.5: If the item has no explicit height and will be
+						// stretched to the container's cross size (align-self: auto/stretch),
+						// use the container's cross size as the definite cross size for the
+						// transferred size suggestion. E.g. a 300×150 img in a row-flex
+						// container with height:50px gets crossH=50, content-min=100px.
+						alignSelf := style.GetAlignSelf()
+						willStretch := alignSelf == css.AlignSelfAuto || alignSelf == css.AlignSelfStretch
+						if willStretch && availableCross > 0 {
+							crossH = availableCross
+						} else {
+							// Fall back to the item's initial layout height (content box)
+							crossH = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+						}
 					}
 					// Apply max-height as an upper bound on the effective cross size.
 					if maxH, ok := style.GetLength("max-height"); ok && maxH < crossH {
@@ -3120,6 +3235,17 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 					}
 					if crossH > 0 {
 						contentMinSize := crossH * float64(iw) / float64(ih)
+						// Cap by the item's actual initial content width when there is no explicit
+						// CSS width. The initial layout width already incorporates max-width
+						// constraints (e.g. max-width:100% in a 100px container → width=100px).
+						// This prevents the transferred size suggestion from exceeding max-width.
+						// CSS §4.5: transferred size suggestion is clamped by max-main-size.
+						if _, hasW := style.GetLength("width"); !hasW {
+							initialContentW := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+							if initialContentW > 0 && contentMinSize > initialContentW {
+								contentMinSize = initialContentW
+							}
+						}
 						// Specified size suggestion: the item's computed width, if definite.
 						if w, ok := style.GetLength("width"); ok {
 							if contentMinSize > w {
@@ -3506,6 +3632,9 @@ func transformToVerticalRL(box *Box, wm string) {
 	}
 
 	isLR := wm == "vertical-lr" || wm == "sideways-lr"
+	// sideways-lr and sideways-rl have inline direction bottom-to-top (reversed vs VLR/VRL).
+	// We invert the Y positions within each column to reflect this.
+	isSideways := wm == "sideways-lr" || wm == "sideways-rl"
 
 	// Create Dir for block-direction margin access
 	var dir Dir
@@ -3662,6 +3791,7 @@ func transformToVerticalRL(box *Box, wm string) {
 	// Block-direction margins are subtracted from origRelX since column spacing handles them.
 	if isLR {
 		// vertical-lr: columns stack left-to-right
+		// sideways-lr: same column stacking, but inline direction is bottom-to-top
 		colX := 0.0
 		for i, line := range lines {
 			colX += colMargins[i] // Add margin before this column
@@ -3673,7 +3803,13 @@ func transformToVerticalRL(box *Box, wm string) {
 					origRelX = 0
 				}
 				newX := contentStartX + colX
-				newY := contentStartY + origRelX
+				var newY float64
+				if isSideways {
+					// sideways-lr: inline-start = bottom, so invert Y within column
+					newY = contentStartY + cols[i].height - origRelX - child.Height
+				} else {
+					newY = contentStartY + origRelX
+				}
 				dx := newX - child.X
 				dy := newY - child.Y
 				child.X = newX
@@ -3684,6 +3820,7 @@ func transformToVerticalRL(box *Box, wm string) {
 		}
 	} else {
 		// vertical-rl: columns stack right-to-left.
+		// sideways-rl: same column stacking, but inline direction is bottom-to-top
 		// colMargins[0] is the block-start margin of the first (rightmost) column.
 		// In VRL, block-start is the right side, so block-start margin = gap between
 		// the container's right edge and the first column's right edge. We subtract
@@ -3704,7 +3841,13 @@ func transformToVerticalRL(box *Box, wm string) {
 					origRelX = 0
 				}
 				newX := contentStartX + colX
-				newY := contentStartY + origRelX
+				var newY float64
+				if isSideways {
+					// sideways-rl: inline-start = bottom, so invert Y within column
+					newY = contentStartY + cols[i].height - origRelX - child.Height
+				} else {
+					newY = contentStartY + origRelX
+				}
 				dx := newX - child.X
 				dy := newY - child.Y
 				child.X = newX
@@ -3763,6 +3906,14 @@ func transformToVerticalRL(box *Box, wm string) {
 // For non-leaf boxes, recursively transforms children first, then applies transformToVerticalRL.
 func transformBoxToVerticalRecursive(box *Box, wm string) {
 	if box == nil {
+		return
+	}
+	// Skip boxes that were already processed by the block-layout vertical transform
+	// trigger code (layout_block.go). This prevents double-transformation when both
+	// a parent and child have the same vertical writing-mode: the child marks itself
+	// VerticalTransformed after its own layoutNode runs, so the parent's call here
+	// is a no-op instead of re-applying the column transform and undoing the work.
+	if box.VerticalTransformed {
 		return
 	}
 
@@ -3844,6 +3995,13 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 			// Clear the text on the original box so it doesn't draw text AND children
 			box.Node = nil
 			box.PseudoContent = ""
+			// Stack the character boxes as a vertical column. This updates box.Width
+			// to the width of a single character and box.Height to the total column
+			// height (N * charHeight). Without this, the parent box's transformToVerticalRL
+			// would see the textbox with its original HTB width (e.g. 140px for 7 chars)
+			// instead of the correct single-column width (20px), producing columns that
+			// are far too wide.
+			transformToVerticalRL(box, wm)
 		}
 		return
 	}

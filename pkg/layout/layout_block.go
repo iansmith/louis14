@@ -1067,7 +1067,50 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if hasMinHeight && !hasExplicitHeight {
 			box.HeightIsDefinite = true
 		}
-		le.layoutFlex(box, x, y, availableWidth, computedStyles)
+
+		// For auto-height row-flex containers with min/max-height, use a two-pass layout:
+		// Pass 1: compute natural shrinkwrap height (no pre-applied constraints).
+		// Then apply min/max-height and re-layout if the height changed.
+		// This prevents min-height < natural from incorrectly shrinking the container,
+		// and ensures max-height < natural is applied after content height is known.
+		needsTwoPass := false
+		if !hasExplicitHeight && (hasMinHeight || hasMaxHeight) {
+			flexDir := style.GetFlexDirection()
+			wmVal, _ := style.Get("writing-mode")
+			isFlexRow := flexDir == css.FlexDirectionRow || flexDir == css.FlexDirectionRowReverse
+			if wmVal == "vertical-rl" || wmVal == "vertical-lr" || wmVal == "sideways-rl" || wmVal == "sideways-lr" {
+				isFlexRow = !isFlexRow
+			}
+			needsTwoPass = isFlexRow
+		}
+
+		if needsTwoPass {
+			// Pass 1: reset to no-content height so layoutFlex Step 14 computes natural height.
+			blockBorderBox := dir.BlockBorderBox(padding, border)
+			dir.SetBlockSize(box, blockBorderBox)
+			le.layoutFlex(box, x, y, availableWidth, computedStyles)
+			naturalH := dir.BlockSize(box)
+
+			// Apply min/max constraints to get the final height (min wins over max per CSS2.1).
+			adjustedH := naturalH
+			if hasMaxHeight && adjustedH > maxHeightVal+blockBorderBox {
+				adjustedH = maxHeightVal + blockBorderBox
+			}
+			if hasMinHeight && adjustedH < minHeightVal+blockBorderBox {
+				adjustedH = minHeightVal + blockBorderBox
+			}
+
+			if adjustedH != naturalH {
+				// Height changed: re-layout with the constrained definite height.
+				dir.SetBlockSize(box, adjustedH)
+				box.HeightIsDefinite = true
+				box.Children = box.Children[:0]
+				le.layoutFlex(box, x, y, availableWidth, computedStyles)
+			}
+		} else {
+			le.layoutFlex(box, x, y, availableWidth, computedStyles)
+		}
+
 		if position == css.PositionAbsolute || position == css.PositionFixed {
 			oldX, oldY := box.X, box.Y
 			le.applyAbsolutePositioning(box)
@@ -1678,11 +1721,19 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				childStyle.GetPosition() != css.PositionAbsolute &&
 				childStyle.GetPosition() != css.PositionFixed &&
 				blockChildEstablishesBFC(childStyle) {
-				leftOff, rightOff := le.getFloatOffsets(inlineCtx.LineY)
+				// If the child has `clear`, it will be pushed below the current floats.
+				// Compute float offsets at the clear-adjusted Y so that a cleared BFC
+				// child that ends up below all floats is not indented unnecessarily.
+				floatCheckY := inlineCtx.LineY
+				childClear := childStyle.GetClear()
+				if childClear != css.ClearNone {
+					floatCheckY = le.getClearY(childClear, inlineCtx.LineY)
+				}
+				leftOff, rightOff := le.getFloatOffsets(floatCheckY)
 				if leftOff > 0 || rightOff > 0 {
 					// Use the absolute right edge of left floats to avoid double-counting when
 					// the querying block's content-left differs from the float's container left.
-					absLeftEdge := le.getLeftFloatAbsoluteEdge(inlineCtx.LineY)
+					absLeftEdge := le.getLeftFloatAbsoluteEdge(floatCheckY)
 					if absLeftEdge > childX {
 						adjustedChildX = absLeftEdge
 					}
@@ -2658,17 +2709,57 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					//    column rearrangement, AND element has no explicit width
 					//    (block-fill elements need column arrangement; sized elements don't).
 					if !parentIsVertical || (hasBlockChildren && !hasExplicitInlineSize) {
-						// Split leaf text nodes into per-character boxes so that
-						// transformToVerticalRL can stack them as vertical columns.
-						// Uses splitTextForVerticalRL (not transformBoxToVerticalRecursive)
-						// to avoid double-column-transforms and abs-pos regressions.
+						// Prepare children for column layout:
+						// - Normal-flow children: recursively apply transformBoxToVerticalRecursive
+						//   so that each child's dimensions reflect the correct column width
+						//   (e.g., 20px for a single char column) before the top-level transform.
+						// - Abs-pos children: only split text (no column rearrangement), their
+						//   positions are fixed by repositionAbsPosAfterVerticalTransform.
+						//
+						// CSS §7.3 inline-size constraint: in vertical writing mode, block
+						// children fill the container's inline extent (= physical height).
+						// Precompute this for clamping after each child's transform.
+						containerContentH := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+						applyInlineSizeConstraint := containerContentH > 0 && box.HeightIsDefinite
+						if !applyInlineSizeConstraint {
+							if _, ok := style.GetLength("height"); ok {
+								applyInlineSizeConstraint = containerContentH > 0
+							} else if _, ok := style.GetPercentage("height"); ok {
+								applyInlineSizeConstraint = containerContentH > 0
+							}
+						}
 						for _, child := range box.Children {
-							splitTextForVerticalRL(child, wm)
+							if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+								splitTextForVerticalRL(child, wm)
+							} else {
+								transformBoxToVerticalRecursive(child, wm)
+								// CSS §7.3: clamp child's inline size to container's inline extent.
+								// Child must not have its own explicit height to be constrained.
+								if applyInlineSizeConstraint && child.Height < containerContentH {
+									childHasExplH := false
+									if child.Style != nil {
+										if _, ok := child.Style.GetLength("height"); ok {
+											childHasExplH = true
+										} else if _, ok := child.Style.GetPercentage("height"); ok {
+											childHasExplH = true
+										}
+									}
+									if !childHasExplH {
+										child.Height = containerContentH
+									}
+								}
+							}
 						}
 						preTransformWidth := box.Width
 						preTransformHeight := box.Height
 
 						transformToVerticalRL(box, wm)
+
+						// Mark this box as having been through the vertical transform so that
+						// ancestor elements with the same writing-mode do not re-apply the
+						// column transform via transformBoxToVerticalRecursive, which would
+						// undo the correct column layout established here.
+						box.VerticalTransformed = true
 
 						// Re-position absolutely positioned children using vertical-mode
 						// constraint equations (CSS Writing Modes §7.1)
