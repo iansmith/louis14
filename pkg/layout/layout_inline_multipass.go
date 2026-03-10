@@ -1591,6 +1591,13 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 		ImagePath: frag.ImagePath, // Copy image path for img elements
 	}
 
+	// Set padding and border for element nodes so the rendering code
+	// (e.g. drawImage) can correctly position content within the box.
+	if frag.Node != nil && frag.Node.Type == html.ElementNode && frag.Style != nil {
+		box.Padding = frag.Style.GetPadding()
+		box.Border = frag.Style.GetBorderWidth()
+	}
+
 	// Convert fragment type to box positioning info
 	switch frag.Type {
 	case FragmentFloat:
@@ -3485,6 +3492,16 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 						height = 0
 					}
 				}
+			}
+
+			// For img elements, add padding and border to the content dimensions.
+			// Replaced elements include padding+border in their outer box size
+			// for inline layout participation.
+			if node.TagName == "img" && width > 0 {
+				pad := style.GetPadding()
+				bdr := style.GetBorderWidth()
+				width += pad.Left + pad.Right + bdr.Left + bdr.Right
+				height += pad.Top + pad.Bottom + bdr.Top + bdr.Bottom
 			}
 
 			// For non-img elements, check CSS width/height first
