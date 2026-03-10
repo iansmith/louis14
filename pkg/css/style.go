@@ -5883,16 +5883,22 @@ func (s *Style) GetBackgroundRepeat() BackgroundRepeatType {
 }
 
 // BackgroundPosition represents background-position x,y values.
-// Pixel values are stored as positive numbers.
-// Percentage values are stored as negative numbers (e.g., -100 = 100%).
+// Percentage values and keywords are stored as negative numbers (e.g., -100 = 100%).
+// Pixel values are stored directly. Negative pixel offsets use XIsPixel/YIsPixel flags
+// to distinguish from percentages.
 // Use ResolveX/ResolveY to convert to pixels given container and image dimensions.
 type BackgroundPosition struct {
-	X float64
-	Y float64
+	X        float64
+	Y        float64
+	XIsPixel bool // true when X is a pixel value (may be negative)
+	YIsPixel bool // true when Y is a pixel value (may be negative)
 }
 
 // ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage
 func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
+	if p.XIsPixel {
+		return p.X
+	}
 	if p.X < 0 {
 		return (containerW - imageW) * (-p.X) / 100
 	}
@@ -5901,6 +5907,9 @@ func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
 
 // ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage
 func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
+	if p.YIsPixel {
+		return p.Y
+	}
 	if p.Y < 0 {
 		return (containerH - imageH) * (-p.Y) / 100
 	}
@@ -5911,13 +5920,17 @@ func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
 func (s *Style) GetBackgroundPosition() BackgroundPosition {
 	val, ok := s.Get("background-position")
 	if !ok {
-		return BackgroundPosition{0, 0}
+		return BackgroundPosition{0, 0, false, false}
 	}
-	return ParseBackgroundPosition(val)
+	return parseBackgroundPosition(val, s.GetFontSize())
 }
 
-// ParseBackgroundPosition parses a background-position value string
+// ParseBackgroundPosition parses a background-position value string (uses default 16px font-size)
 func ParseBackgroundPosition(val string) BackgroundPosition {
+	return parseBackgroundPosition(val, 16.0)
+}
+
+func parseBackgroundPosition(val string, fontSize float64) BackgroundPosition {
 	parts := strings.Fields(val)
 	pos := BackgroundPosition{}
 	if len(parts) == 1 {
@@ -5939,38 +5952,34 @@ func ParseBackgroundPosition(val string) BackgroundPosition {
 			pos.X = -50 // center
 			pos.Y = -50 // center
 		default:
-			pos.X = parsePositionComponent(parts[0], true)
+			pos.X, pos.XIsPixel = parsePositionComponent(parts[0], fontSize)
 			pos.Y = -50 // center
 		}
 	} else if len(parts) >= 2 {
-		pos.X = parsePositionComponent(parts[0], true)
-		pos.Y = parsePositionComponent(parts[1], false)
+		pos.X, pos.XIsPixel = parsePositionComponent(parts[0], fontSize)
+		pos.Y, pos.YIsPixel = parsePositionComponent(parts[1], fontSize)
 	}
 	return pos
 }
 
-func parsePositionComponent(val string, isX bool) float64 {
+func parsePositionComponent(val string, fontSize float64) (float64, bool) {
 	switch val {
-	case "left":
-		return 0
-	case "right":
-		return -100 // 100% stored as negative
-	case "top":
-		return 0
-	case "bottom":
-		return -100 // 100% stored as negative
+	case "left", "top":
+		return 0, false
+	case "right", "bottom":
+		return -100, false // 100% stored as negative
 	case "center":
-		return -50 // 50% stored as negative
+		return -50, false // 50% stored as negative
 	}
 	if strings.HasSuffix(val, "%") {
 		if pct, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64); err == nil {
-			return -pct // Store percentage as negative
+			return -pct, false // Store percentage as negative
 		}
 	}
-	if length, ok := ParseLength(val); ok {
-		return length
+	if length, ok := ParseLengthWithFontSize(val, fontSize); ok {
+		return length, true // Pixel value (may be negative)
 	}
-	return 0
+	return 0, false
 }
 
 // BackgroundSize represents a parsed background-size value

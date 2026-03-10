@@ -335,6 +335,13 @@ func repositionAbsPosInCB(cb *Box, cbWM string, cbPadWidth, cbPadHeight float64)
 		if child.Position != css.PositionAbsolute && child.Position != css.PositionFixed {
 			continue
 		}
+		// Skip CSS floats: float boxes have box.Position = PositionAbsolute as an
+		// internal rendering marker (set in layout_inline_multipass.go), but they are
+		// NOT CSS absolutely positioned elements. transformToVerticalRL already placed
+		// them correctly; repositioning them here would override the correct position.
+		if child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
 
 		// Save old position to compute delta for shifting descendants
 		oldX, oldY := child.X, child.Y

@@ -2645,7 +2645,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// runs the transform. If the parent already has vertical WM, the parent's transform
 	// already handled this element (repositioned it as part of the parent's column layout).
 	if style != nil && !isImage && !isSVG && len(box.Children) > 0 {
-		if display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayFlowRoot || display == css.DisplayListItem {
+		if display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayFlowRoot || display == css.DisplayListItem || display == css.DisplayTableCell || display == css.DisplayTableCaption {
 			if wm, ok := style.Get("writing-mode"); ok {
 				isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
 				if isVertical {
