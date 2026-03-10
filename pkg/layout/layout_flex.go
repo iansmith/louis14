@@ -3963,6 +3963,125 @@ func transformToVerticalRL(box *Box, wm string) {
 
 }
 
+// removeInlineBorderGapsForVLR fixes inline element border/padding effects
+// before the VLR column transform. In HTB layout, physical left/right
+// borders and padding on inline spans advance currentX and occupy Width.
+// In VLR these become block-direction borders/padding. CSS 2.1 §10.8.1:
+// "The vertical padding, border and margin of an inline, non-replaced box
+// do not increase the height of a line box." In VLR, "vertical" = block
+// direction = physical horizontal, and "height" = column width.
+//
+// This function:
+//  1. Zeroes out inline element decoration boxes (spans with borders/padding)
+//     so they don't affect column sizing.
+//  2. Repositions text fragment boxes contiguously using their post-transform
+//     Heights as spacing.
+func removeInlineBorderGapsForVLR(box *Box) {
+	if len(box.Children) < 2 {
+		return
+	}
+
+	// Group children by Y position (same line in HTB = same column in VLR)
+	type lineGroup struct {
+		y        float64
+		children []*Box
+	}
+	var lines []lineGroup
+	for _, child := range box.Children {
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			continue
+		}
+		if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+			continue
+		}
+		found := false
+		for i := range lines {
+			if math.Abs(child.Y-lines[i].y) < 1.0 {
+				lines[i].children = append(lines[i].children, child)
+				found = true
+				break
+			}
+		}
+		if !found {
+			lines = append(lines, lineGroup{y: child.Y, children: []*Box{child}})
+		}
+	}
+
+	for _, line := range lines {
+		if len(line.children) < 2 {
+			continue
+		}
+
+		// Detect inline element decoration boxes: span/element boxes with
+		// physical left/right borders OR padding that advance currentX in HTB.
+		// Text fragment boxes: Node==nil after char splitting, have children.
+		var textChildren []*Box
+		hasDecoBox := false
+		for _, child := range line.children {
+			if child.Node == nil && len(child.Children) > 0 {
+				textChildren = append(textChildren, child)
+			}
+			if child.Node != nil && child.Node.Type == html.ElementNode {
+				if child.Border.Left > 0 || child.Border.Right > 0 ||
+					child.Padding.Left > 0 || child.Padding.Right > 0 {
+					hasDecoBox = true
+				}
+			}
+		}
+
+		if !hasDecoBox {
+			continue
+		}
+
+		// Fix 1: Zero out inline element decoration boxes. These are span/element
+		// boxes with borders/padding but no children — pure decoration overlays
+		// from the inline layout. In VLR their physical left/right borders and
+		// padding are block-direction properties that CSS says must not affect
+		// line box height (column width). Setting Width=Height=0 removes them
+		// from column sizing while keeping their values for potential rendering.
+		contentStartX := box.X + box.Border.Left + box.Padding.Left
+		for _, child := range line.children {
+			if child.Node != nil && child.Node.Type == html.ElementNode {
+				hasDeco := child.Border.Left > 0 || child.Border.Right > 0 ||
+					child.Padding.Left > 0 || child.Padding.Right > 0
+				if hasDeco {
+					child.Width = 0
+					child.Height = 0
+					dx := contentStartX - child.X
+					child.X = contentStartX
+					shiftAllDescendants(child, dx, 0)
+				}
+			}
+		}
+
+		// Fix 2: Reposition text children contiguously.
+		if len(textChildren) < 2 {
+			continue
+		}
+
+		// Sort text children by X
+		sort.Slice(textChildren, func(a, b int) bool {
+			return textChildren[a].X < textChildren[b].X
+		})
+
+		// Reposition using post-transform Heights as spacing. After char splitting,
+		// each text box's Height = N * charHeight, which is the correct vertical
+		// extent in the VLR column. Using HTB widths (preTransformWidths) would
+		// create wrong spacing because char width != char height.
+		targetX := textChildren[0].X
+		for j, child := range textChildren {
+			if j > 0 {
+				targetX += textChildren[j-1].Height
+			}
+			if math.Abs(child.X-targetX) > 0.5 {
+				dx := targetX - child.X
+				child.X = targetX
+				shiftAllDescendants(child, dx, 0)
+			}
+		}
+	}
+}
+
 // transformBoxToVerticalRecursive recursively transforms a box and its descendants
 // so that inline text content is oriented vertically. For leaf text boxes (no children,
 // has text content), this splits text into per-character boxes and stacks them vertically.
@@ -4053,7 +4172,11 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 				Parent: box,
 			}
 			charBoxes = append(charBoxes, charBox)
-			curX += charW
+			// Advance by charHeight (not charW) because in vertical text each
+			// character occupies one line. transformToVerticalRL maps these X
+			// offsets to Y positions, so spacing by charHeight gives correct
+			// vertical line-height spacing (N * charHeight total).
+			curX += charHeight
 		}
 
 		if len(charBoxes) > 0 {
@@ -4072,10 +4195,14 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 		return
 	}
 
-	// Non-leaf box: recursively transform children
+	// Non-leaf box: recursively transform children, fix inline border gaps,
+	// then apply the column transform.
 	for _, child := range box.Children {
 		transformBoxToVerticalRecursive(child, wm)
 	}
+
+	// Fix inline border/padding gaps before column transform
+	removeInlineBorderGapsForVLR(box)
 
 	// After children are transformed, apply the column transform to this box
 	if len(box.Children) > 0 {
@@ -4159,7 +4286,9 @@ func splitTextForVerticalRL(box *Box, wm string) {
 				Parent: box,
 			}
 			charBoxes = append(charBoxes, charBox)
-			curX += charW
+			// Advance by charHeight (not charW) so that transformToVerticalRL
+			// maps these X offsets to correct vertical line-height spacing.
+			curX += charHeight
 		}
 
 		if len(charBoxes) > 0 {

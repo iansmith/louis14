@@ -2750,6 +2750,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 								}
 							}
 						}
+
+						// Fix inline border/padding gaps before the VLR column transform.
+						removeInlineBorderGapsForVLR(box)
+
 						preTransformWidth := box.Width
 						preTransformHeight := box.Height
 
