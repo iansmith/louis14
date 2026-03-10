@@ -3622,6 +3622,45 @@ func resolveItemIntrinsicHeightConstraint(item *FlexItem, keyword string) (float
 
 // transformToVerticalRL transforms a horizontally laid-out box to vertical layout.
 // Each horizontal line becomes a vertical column. For vertical-rl/sideways-rl,
+// hasVisibleTextContent returns true if s contains any character that is not
+// pure ASCII whitespace (space, tab, newline). Unlike strings.TrimSpace, this
+// treats U+00A0 (non-breaking space) as visible content, matching CSS semantics
+// where nbsp occupies space and must be rendered.
+func hasVisibleTextContent(s string) bool {
+	for _, r := range s {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+			return true
+		}
+	}
+	return false
+}
+
+// collapseAsciiWhitespace collapses runs of ASCII whitespace (space, tab,
+// newline) to single spaces, then trims leading/trailing ASCII whitespace.
+// Unlike strings.Fields+Join, this preserves U+00A0 (non-breaking space)
+// which CSS treats as visible content.
+func collapseAsciiWhitespace(s string) string {
+	var b strings.Builder
+	inSpace := true // start true to trim leading whitespace
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if !inSpace {
+				b.WriteRune(' ')
+				inSpace = true
+			}
+		} else {
+			b.WriteRune(r)
+			inSpace = false
+		}
+	}
+	result := b.String()
+	// Trim trailing space (from the last space run)
+	if len(result) > 0 && result[len(result)-1] == ' ' {
+		result = result[:len(result)-1]
+	}
+	return result
+}
+
 // columns stack right-to-left; for vertical-lr/sideways-lr, left-to-right.
 // Content within each column flows top-to-bottom (original X offset → Y offset).
 // Lines are detected by grouping children with similar Y positions.
@@ -3944,17 +3983,20 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 	// Leaf text box: split text into individual character boxes, stacked vertically.
 	// Each character occupies one horizontal "line" so transformToVerticalRL at
 	// the parent level can convert them to a vertical column.
-	if len(box.Children) == 0 && box.Node != nil && box.Node.Type == html.TextNode && strings.TrimSpace(box.Node.Text) != "" {
+	// NOTE: Use hasVisibleTextContent instead of strings.TrimSpace because TrimSpace
+	// treats U+00A0 (non-breaking space) as whitespace. In CSS, nbsp is a visible
+	// character that must be split into char boxes for correct vertical column sizing.
+	if len(box.Children) == 0 && box.Node != nil && box.Node.Type == html.TextNode && hasVisibleTextContent(box.Node.Text) {
 		textContent := box.Node.Text
 		// Apply text-transform if needed
 		if box.Style != nil {
 			textContent = ApplyTextTransform(textContent, box.Style.GetTextTransform())
 		}
-		// Collapse whitespace per CSS rules
+		// Collapse ASCII whitespace per CSS rules (preserve non-breaking spaces)
 		if box.Style != nil {
 			ws, _ := box.Style.Get("white-space")
 			if ws != "pre" && ws != "pre-wrap" && ws != "pre-line" {
-				textContent = strings.Join(strings.Fields(textContent), " ")
+				textContent = collapseAsciiWhitespace(textContent)
 			}
 		}
 		if textContent == "" {
@@ -4057,7 +4099,7 @@ func splitTextForVerticalRL(box *Box, wm string) {
 
 	// Leaf text box: split text into individual character boxes positioned
 	// horizontally so the parent's transformToVerticalRL can stack them vertically.
-	if len(box.Children) == 0 && box.Node != nil && box.Node.Type == html.TextNode && strings.TrimSpace(box.Node.Text) != "" {
+	if len(box.Children) == 0 && box.Node != nil && box.Node.Type == html.TextNode && hasVisibleTextContent(box.Node.Text) {
 		textContent := box.Node.Text
 		if box.Style != nil {
 			textContent = ApplyTextTransform(textContent, box.Style.GetTextTransform())
@@ -4065,7 +4107,7 @@ func splitTextForVerticalRL(box *Box, wm string) {
 		if box.Style != nil {
 			ws, _ := box.Style.Get("white-space")
 			if ws != "pre" && ws != "pre-wrap" && ws != "pre-line" {
-				textContent = strings.Join(strings.Fields(textContent), " ")
+				textContent = collapseAsciiWhitespace(textContent)
 			}
 		}
 		if textContent == "" {

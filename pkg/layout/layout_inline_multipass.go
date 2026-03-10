@@ -136,6 +136,19 @@ func (le *LayoutEngine) BreakLines(
 	lineFloatWidth := 0.0 // Width consumed by floats on current line
 	var lineFloats []*InlineItem // Floats on current line (for shifting down)
 
+	// Vertical writing-mode: wrap text at the container's physical height (= inline-size)
+	// instead of physical width. In pre-transform HTB layout, text items are measured
+	// horizontally but must wrap at the vertical inline extent so that each "line" has
+	// the correct number of characters. The post-hoc transformToVerticalRL converts
+	// these horizontal lines to vertical columns. For Ahem font (square glyphs),
+	// horizontal text width equals vertical inline advance, so no measurement change needed.
+	//
+	// Guard: only use vertical wrapping when the container has a definite inline-size
+	// (BaseInlineSize > 0). When height is auto, containerContentH = 0 at layout time,
+	// and wrapping at 0 width would break every character onto its own line. In that case,
+	// fall back to HTB wrapping (physical width) — the transform handles it.
+	isVerticalDir := constraint.Dir.IsVertical() && constraint.BaseInlineSize() > 0
+
 	for i := 0; i < len(items); i++ {
 		item := items[i]
 
@@ -143,10 +156,21 @@ func (le *LayoutEngine) BreakLines(
 		// This accounts for floats via the exclusion space AND local float items
 		// Note: text-indent is NOT subtracted here — it's already reflected in currentX
 		// (and thus usedWidth), so subtracting it from availableWidth would double-count.
-		availableWidth := constraint.AvailableInlineSize(currentY, item.Height) - lineFloatWidth
+		var availableWidth float64
+		if isVerticalDir {
+			// Vertical writing-mode: inline-size is the physical height.
+			// Float exclusions are in HTB coordinates and don't apply to the
+			// vertical inline-size calculation.
+			availableWidth = constraint.BaseInlineSize() - lineFloatWidth
+		} else {
+			availableWidth = constraint.AvailableInlineSize(currentY, item.Height) - lineFloatWidth
+		}
 
 		// Check if we need to start at a different X due to floats
-		leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+		leftOffset := 0.0
+		if !isVerticalDir {
+			leftOffset, _ = constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+		}
 
 		// If this is a new line, start at the left offset (plus text-indent for first line)
 		if currentX == 0 {
@@ -245,7 +269,9 @@ func (le *LayoutEngine) BreakLines(
 			// CSS 2.1 §16.6.1: Whitespace at the end of a line "hangs" — it does not
 			// contribute to the line width for wrapping purposes. Whitespace-only text
 			// should always be added to the current line, never cause a line break.
-			isHangingWhitespace := strings.TrimSpace(item.Text) == ""
+			// IMPORTANT: Only ASCII spaces (U+0020) hang. Non-breaking spaces (U+00A0)
+			// are not collapsible and contribute to line width per CSS Text Level 3 §4.1.
+			isHangingWhitespace := isOnlyAsciiSpaces(item.Text)
 
 			if usedWidth+textWidth <= availableWidth || constraint.NoWrap || isHangingWhitespace {
 				// Fits on current line, white-space: nowrap, or hanging whitespace
@@ -274,14 +300,17 @@ func (le *LayoutEngine) BreakLines(
 				textIndent = 0             // text-indent only applies to first line
 				lineFloatWidth = 0
 				lineFloats = nil
-				leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+				newLeftOffset := 0.0
+				if !isVerticalDir {
+					newLeftOffset, _ = constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+				}
 				currentLine = &LineInfo{
 					Y:          currentY,
 					Items:      []*InlineItem{item},
 					Constraint: constraint,
 					Height:     textLineHeight,
 				}
-				currentX = leftOffset + textWidth
+				currentX = newLeftOffset + textWidth
 			} else {
 				// Text is wider than available width
 				// CSS 2.1 §9.5: "If a shortened line box is too small to contain any
@@ -517,14 +546,17 @@ func (le *LayoutEngine) BreakLines(
 				textIndent = 0 // text-indent only applies to first line
 				lineFloatWidth = 0
 				lineFloats = nil
-				leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+				newLeftOffset := 0.0
+				if !isVerticalDir {
+					newLeftOffset, _ = constraint.ExclusionSpace.AvailableInlineSize(currentY, item.Height)
+				}
 				currentLine = &LineInfo{
 					Y:          currentY,
 					Items:      []*InlineItem{item},
 					Constraint: constraint,
 					Height:     item.Height,
 				}
-				currentX = leftOffset + atomicWidth
+				currentX = newLeftOffset + atomicWidth
 			}
 			lastTextEndedWithSpace = false // Real content interrupts whitespace sequence
 			hasSeenContentOnLine = true
@@ -792,6 +824,21 @@ func breakTextAtWordBoundary(txt string, fontSize float64, bold, italic, mono, a
 	return prefix, remainder
 }
 
+// isOnlyAsciiSpaces returns true if s is non-empty and contains only ASCII space
+// characters (U+0020). Non-breaking spaces (U+00A0) and other Unicode whitespace
+// are NOT considered hanging whitespace per CSS Text Level 3 §4.1.
+func isOnlyAsciiSpaces(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
 // splitTextIntoWordAndSpaceParts splits text into alternating word and space parts.
 // For example: "XX XX XX" → ["XX", " ", "XX", " ", "XX"]
 // This enables word-level wrapping in BreakLines and inter-word spacing for text-align:justify.
@@ -941,14 +988,17 @@ func tryBreakAtSoftHyphen(
 		newWidth += it.Width
 	}
 
-	leftOffset, _ := constraint.ExclusionSpace.AvailableInlineSize(*currentY, newHeight)
+	shLeftOffset := 0.0
+	if !constraint.Dir.IsVertical() {
+		shLeftOffset, _ = constraint.ExclusionSpace.AvailableInlineSize(*currentY, newHeight)
+	}
 	*currentLine = LineInfo{
 		Y:          *currentY,
 		Items:      newItems,
 		Constraint: constraint,
 		Height:     newHeight,
 	}
-	*currentX = leftOffset + newWidth
+	*currentX = shLeftOffset + newWidth
 	*textIndent = 0
 	*lineFloatWidth = 0
 	*lineFloats = nil
@@ -2310,10 +2360,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 
 				// Track content height and mark that line has content
-				// CSS 2.1 §9.4.2: Whitespace-only text doesn't count as content
+				// CSS 2.1 §9.4.2: Whitespace-only text doesn't count as content.
+				// NOTE: Only ASCII spaces/tabs/newlines are "whitespace-only" for this check.
+				// Non-breaking spaces (U+00A0) ARE content — they occupy visual space.
 				isContent := false
 				if frag.Type == FragmentText {
-					if strings.TrimSpace(frag.Text) != "" {
+					if hasVisibleTextContent(frag.Text) {
 						isContent = true
 					}
 				} else if frag.Type == FragmentAtomic || frag.Type == FragmentBlockChild {
