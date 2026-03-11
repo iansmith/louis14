@@ -265,13 +265,13 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("display", "block")
 		style.Set("margin-top", "16px")
 		style.Set("margin-bottom", "16px")
-		style.Set("padding-left", "40px")
+		expandShorthand(style, "padding-inline-start", "40px")
 		style.Set("list-style-type", "disc")
 	case "ol":
 		style.Set("display", "block")
 		style.Set("margin-top", "16px")
 		style.Set("margin-bottom", "16px")
-		style.Set("padding-left", "40px")
+		expandShorthand(style, "padding-inline-start", "40px")
 		style.Set("list-style-type", "decimal")
 	case "li":
 		style.Set("display", "list-item")
@@ -880,7 +880,13 @@ func resolveLogicalBoxProperties(style *Style) {
 			wrongProp := propType + "-" + m.wrongSide
 			correctProp := propType + "-" + m.correctSide
 
-			style.Set(correctProp, val)
+			// Only set the resolved physical property if it wasn't explicitly
+			// set by a higher-cascade-priority source (e.g., author stylesheet
+			// setting padding-top should not be overridden by UA's logical
+			// padding-inline-start resolving to the same physical side).
+			if _, alreadySet := style.Get(correctProp); !alreadySet {
+				style.Set(correctProp, val)
+			}
 			if m.wrongSide != m.correctSide {
 				if curVal, curOk := style.Get(wrongProp); curOk && curVal == val {
 					delete(style.Properties, wrongProp)
@@ -905,7 +911,9 @@ func resolveLogicalBoxProperties(style *Style) {
 				wrongProp := "border-" + m.wrongSide + suffix
 				correctProp := "border-" + m.correctSide + suffix
 
-				style.Set(correctProp, val)
+				if _, alreadySet := style.Get(correctProp); !alreadySet {
+					style.Set(correctProp, val)
+				}
 				if m.wrongSide != m.correctSide {
 					if curVal, curOk := style.Get(wrongProp); curOk && curVal == val {
 						delete(style.Properties, wrongProp)

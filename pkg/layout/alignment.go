@@ -333,6 +333,14 @@ func (le *LayoutEngine) mirrorInlineBoxesRTL(boxes []*Box, contentLeft, contentR
 		if box.Node != nil && box.Node.Type == html.TextNode {
 			isInline = true
 		}
+		// Replaced elements (img, svg, canvas, video) are inline-replaced by default
+		// even though our style engine may report DisplayBlock for them.
+		if box.Node != nil && box.Node.Type == html.ElementNode {
+			tag := box.Node.TagName
+			if tag == "img" || tag == "svg" || tag == "canvas" || tag == "video" || tag == "iframe" {
+				isInline = true
+			}
+		}
 		if !isInline {
 			continue
 		}

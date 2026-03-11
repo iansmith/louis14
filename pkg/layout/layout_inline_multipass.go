@@ -3168,8 +3168,10 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			return
 		}
 
-		// Images and SVG default to inline-block display (replaced elements)
-		if (node.TagName == "img" || node.TagName == "svg") && display != css.DisplayNone && display != css.DisplayBlock {
+		// Per CSS 2.1 §9.2.2, replaced elements (img, svg) are always rendered
+		// as atomic inlines in inline context, regardless of their computed display.
+		// Even display:inline on an img creates an atomic inline box, not a text-level inline.
+		if (node.TagName == "img" || node.TagName == "svg") && display != css.DisplayNone {
 			display = css.DisplayInlineBlock
 		}
 

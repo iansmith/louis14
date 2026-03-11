@@ -884,6 +884,32 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
+	// CSS 2.1 §10.3.3: Over-constrained block-level elements in RTL.
+	// When a block has non-auto width < available width, no auto margins,
+	// and the containing block's direction is rtl, the extra space goes to
+	// margin-left (pushing the block to the right).
+	if hasExplicitWidth && !dir.AutoInlineStart(margin) && !dir.AutoInlineEnd(margin) {
+		cbDirection := "ltr"
+		if parent != nil && parent.Style != nil {
+			if d, ok := parent.Style.Get("direction"); ok {
+				cbDirection = d
+			}
+		} else if style != nil {
+			// Root element: use its own direction
+			if d, ok := style.Get("direction"); ok {
+				cbDirection = d
+			}
+		}
+		if cbDirection == "rtl" {
+			totalWidth := contentWidth + dir.InlineBorderBox(padding, border) +
+				dir.InlineStartEdge(margin) + dir.InlineEndEdge(margin)
+			extraSpace := availableWidth - totalWidth
+			if extraSpace > 0 {
+				x += extraSpace
+			}
+		}
+	}
+
 	// Phase 4: Get positioning information
 	position := style.GetPosition()
 	zindex := style.GetZIndex()
@@ -1242,7 +1268,18 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					if childStyle.GetFloat() != css.FloatNone {
 						continue
 					}
-					if childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock {
+					// Per CSS 2.1 §9.2.2, replaced elements (img, svg, etc.) are
+					// inline-level by default. Our style engine returns DisplayBlock
+					// when no explicit display is set; detect and treat as inline.
+					isReplacedInline := false
+					if childDisplay != css.DisplayInline && childDisplay != css.DisplayInlineBlock {
+						if child.TagName == "img" || child.TagName == "svg" || child.TagName == "canvas" || child.TagName == "video" || child.TagName == "iframe" {
+							if _, hasExplicit := childStyle.Get("display"); !hasExplicit {
+								isReplacedInline = true
+							}
+						}
+					}
+					if childDisplay == css.DisplayInline || childDisplay == css.DisplayInlineBlock || isReplacedInline {
 						hasNonWhitespaceInline = true
 					} else {
 						hasBlockChild = true
@@ -2666,49 +2703,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						}
 					}
 
-					// Check if any direct child box is a block-level element.
-					// Block-level children need column rearrangement (transformToVerticalRL).
-					// Inline/text children are already positioned by inline layout — do not
-					// apply column transform to them (it would stack text chars as separate
-					// columns, breaking horizontal text within each vertical column).
-					hasBlockChildren := false
-					for _, child := range box.Children {
-						if child.Node != nil && child.Node.Type == html.ElementNode {
-							if childStyle := computedStyles[child.Node]; childStyle != nil {
-								d := childStyle.GetDisplay()
-								if d != css.DisplayInline && d != css.DisplayInlineBlock {
-									hasBlockChildren = true
-									break
-								}
-							} else {
-								// No computed style means likely a block element (anonymous block)
-								hasBlockChildren = true
-								break
-							}
-						}
-					}
-
-					// When parent is vertical, only run the extra inherited-VRL transform
-					// if this element has NO explicit inline-size (i.e., its width is
-					// block-fill from the parent). Elements with explicit widths were sized
-					// by CSS and their children are meant to flow within the column that
-					// the parent's transform established. Block-fill elements need the
-					// transform to arrange their block children as columns.
-					hasExplicitInlineSize := false
-					if parentIsVertical {
-						if _, ok := style.GetLength("width"); ok {
-							hasExplicitInlineSize = true
-						} else if _, ok := style.GetPercentage("width"); ok {
-							hasExplicitInlineSize = true
-						}
-					}
-
-					// Run the column transform when:
-					// 1. Parent is not vertical (this establishes a new VRL context), OR
-					// 2. Parent is vertical, element has block-level children that need
-					//    column rearrangement, AND element has no explicit width
-					//    (block-fill elements need column arrangement; sized elements don't).
-					if !parentIsVertical || (hasBlockChildren && !hasExplicitInlineSize) {
+					// Run the column transform only when the parent is NOT vertical.
+					if !parentIsVertical {
 						// Prepare children for column layout:
 						// - Normal-flow children: recursively apply transformBoxToVerticalRecursive
 						//   so that each child's dimensions reflect the correct column width

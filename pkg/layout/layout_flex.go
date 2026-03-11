@@ -3670,6 +3670,7 @@ func transformToVerticalRL(box *Box, wm string) {
 		return
 	}
 
+
 	isLR := wm == "vertical-lr" || wm == "sideways-lr"
 	// sideways-lr and sideways-rl have inline direction bottom-to-top (reversed vs VLR/VRL).
 	// We invert the Y positions within each column to reflect this.
@@ -3731,6 +3732,15 @@ func transformToVerticalRL(box *Box, wm string) {
 	cols := make([]colInfo, len(lines))
 	for i, line := range lines {
 		for _, child := range line.children {
+			// Skip children positioned entirely outside the content area
+			// (e.g., outside-positioned list markers with negative X).
+			// These don't participate in column sizing.
+			blockStartM := dir.BlockStartEdge(child.Margin)
+			blockEndM := dir.BlockEndEdge(child.Margin)
+			rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
+			if rawOrigRelX < -1.0 {
+				continue
+			}
 			if child.Width > cols[i].width {
 				cols[i].width = child.Width
 			}
@@ -3746,9 +3756,7 @@ func transformToVerticalRL(box *Box, wm string) {
 			// block-direction margins were applied to X by the h-tb layout
 			// but should not become Y offsets in the vertical column.
 			// Column spacing handles block-direction margins instead.
-			blockStartM := dir.BlockStartEdge(child.Margin)
-			blockEndM := dir.BlockEndEdge(child.Margin)
-			origRelX := child.X - contentStartX - blockStartM - blockEndM
+			origRelX := rawOrigRelX
 			if origRelX < 0 {
 				origRelX = 0
 			}
@@ -3861,7 +3869,11 @@ func transformToVerticalRL(box *Box, wm string) {
 			for _, child := range line.children {
 				blockStartM := dir.BlockStartEdge(child.Margin)
 				blockEndM := dir.BlockEndEdge(child.Margin)
-				origRelX := child.X - contentStartX - blockStartM - blockEndM
+				rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
+				if rawOrigRelX < -1.0 {
+					continue // skip outside-positioned children
+				}
+				origRelX := rawOrigRelX
 				if origRelX < 0 {
 					origRelX = 0
 				}
@@ -3883,23 +3895,20 @@ func transformToVerticalRL(box *Box, wm string) {
 		}
 	} else {
 		// vertical-rl: columns stack right-to-left.
-		// sideways-rl: same column stacking, but inline direction is bottom-to-top
-		// colMargins[0] is the block-start margin of the first (rightmost) column.
-		// In VRL, block-start is the right side, so block-start margin = gap between
-		// the container's right edge and the first column's right edge. We subtract
-		// colMargins[0] from the starting colX so the first column is positioned
-		// correctly with the block-start margin gap on its right side.
 		colX := contentWidth - colMargins[0]
 		for i, line := range lines {
 			colX -= cols[i].width
-			// Subtract margin before columns after the first
 			if i > 0 {
 				colX -= colMargins[i]
 			}
 			for _, child := range line.children {
 				blockStartM := dir.BlockStartEdge(child.Margin)
 				blockEndM := dir.BlockEndEdge(child.Margin)
-				origRelX := child.X - contentStartX - blockStartM - blockEndM
+				rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
+				if rawOrigRelX < -1.0 {
+					continue // skip outside-positioned children
+				}
+				origRelX := rawOrigRelX
 				if origRelX < 0 {
 					origRelX = 0
 				}
@@ -4198,7 +4207,48 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 	// Non-leaf box: recursively transform children, fix inline border gaps,
 	// then apply the column transform.
 	for _, child := range box.Children {
-		transformBoxToVerticalRecursive(child, wm)
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			splitTextForVerticalRL(child, wm)
+		} else {
+			transformBoxToVerticalRecursive(child, wm)
+		}
+	}
+
+	// CSS §7.3 inline-size constraint: in vertical writing mode, block children
+	// fill the container's inline extent (= physical height). If this box has
+	// a definite height, clamp children without explicit height.
+	if box.Style != nil {
+		containerContentH := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+		applyConstraint := false
+		if containerContentH > 0 {
+			if box.HeightIsDefinite {
+				applyConstraint = true
+			} else if _, ok := box.Style.GetLength("height"); ok {
+				applyConstraint = containerContentH > 0
+			} else if _, ok := box.Style.GetPercentage("height"); ok {
+				applyConstraint = containerContentH > 0
+			}
+		}
+		if applyConstraint {
+			for _, child := range box.Children {
+				if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+					continue
+				}
+				if child.Height < containerContentH {
+					childHasExplH := false
+					if child.Style != nil {
+						if _, ok := child.Style.GetLength("height"); ok {
+							childHasExplH = true
+						} else if _, ok := child.Style.GetPercentage("height"); ok {
+							childHasExplH = true
+						}
+					}
+					if !childHasExplH {
+						child.Height = containerContentH
+					}
+				}
+			}
+		}
 	}
 
 	// Fix inline border/padding gaps before column transform

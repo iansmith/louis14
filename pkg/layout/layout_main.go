@@ -69,6 +69,25 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			}
 			boxes = append(boxes, box)
 
+			// CSS Writing Modes §7.1: The root element's box fills the
+			// initial containing block (viewport). For vertical writing modes,
+			// the block-size is the physical width. For VRL, block-start is
+			// the right edge, so all content must be shifted rightward so that
+			// the first column starts at the viewport's right edge.
+			if rootDir.IsVertical() {
+				viewportBlock := rootDir.ViewportBlockSize(le)
+				if box.Width < viewportBlock {
+					if rootDir.WM == VerticalRL {
+						shift := viewportBlock - box.Width
+						for _, child := range box.Children {
+							child.X += shift
+							shiftAllDescendants(child, shift, 0)
+						}
+					}
+					box.Width = viewportBlock
+				}
+			}
+
 			// Phase 4 & 5: Only advance Y if element is in normal flow (not absolutely positioned or floated)
 			floatType := box.Style.GetFloat()
 			if box.Position != css.PositionAbsolute && box.Position != css.PositionFixed && floatType == css.FloatNone {
