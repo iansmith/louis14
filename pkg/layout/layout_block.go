@@ -456,8 +456,14 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			parentInlineSize := parent.Height - parent.Padding.Top - parent.Padding.Bottom -
 				parent.Border.Top - parent.Border.Bottom
 			if parentInlineSize > 0 {
-				contentWidth = parentInlineSize - margin.Left - margin.Right -
-					padding.Left - padding.Right - border.Left - border.Right
+				// Use logical (inline-direction) edges for the child's writing mode.
+				// In vertical modes, the inline direction maps to physical top/bottom,
+				// so physical left/right borders (= block-direction) must NOT be
+				// subtracted from the available inline-size for text wrapping.
+				contentWidth = parentInlineSize -
+					childDir.InlineStartEdge(margin) - childDir.InlineEndEdge(margin) -
+					childDir.InlineStartEdge(padding) - childDir.InlineEndEdge(padding) -
+					childDir.InlineStartEdge(border) - childDir.InlineEndEdge(border)
 				if contentWidth < 0 {
 					contentWidth = 0
 				}
@@ -1204,6 +1210,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Use box.X/Y which include relative positioning offset
 	childY := box.Y + border.Top + padding.Top
 	childAvailableWidth := contentWidth
+
+	// CSS Writing Modes: for orthogonal-flow vertical containers (vertical element
+	// inside an HTB parent) with explicit height, children's inline content should
+	// wrap at the container's physical height (= inline-size in vertical mode), not
+	// the physical width. This ensures correct line breaks before transformToVerticalRL
+	// converts horizontal lines to vertical columns.
+	if elementIsVertical && !parentIsVertical && hasExplicitHeight && contentHeight > 0 {
+		childAvailableWidth = contentHeight
+	}
 
 	// elementDir is the Dir for this element's own writing mode.
 	// Used in Dir-aware margin collapsing (gated behind elementIsVertical).
