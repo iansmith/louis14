@@ -1802,6 +1802,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 	// Process fragments, handling block children with recursive layout
 	boxes := []*Box{}
+	blockChildBoxes := map[*Box]bool{} // Boxes from layoutNodeHTB (position:relative already applied)
 	currentY := startY
 	currentLineY := startY        // Track which line we're on
 	lastFinalizedLineHeight := 0.0 // Track the last finalized line height for return
@@ -1921,6 +1922,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			)
 
 			boxes = append(boxes, childBox)
+			blockChildBoxes[childBox] = true // Mark: position:relative already applied by layoutNodeHTB
 
 			// Update Y for next content (advance past this block)
 			childBox.Parent = containerBox
@@ -2545,7 +2547,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	// CSS 2.1 §9.4.3: Apply position:relative offsets AFTER all line-level operations
 	// (RTL mirroring, text-align). Relative positioning shifts the box visually without
 	// affecting its normal flow position or the layout of subsequent elements.
+	// Skip block children — their position:relative was already applied by layoutNodeHTB.
 	for _, box := range boxes {
+		if blockChildBoxes[box] {
+			continue
+		}
 		if box.Position == css.PositionRelative && box.Style != nil {
 			offset := box.Style.GetPositionOffset()
 			if offset.HasTop {
