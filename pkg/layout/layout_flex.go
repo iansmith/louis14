@@ -3731,12 +3731,21 @@ func transformToVerticalRL(box *Box, wm string) {
 	cols := make([]colInfo, len(lines))
 	for i, line := range lines {
 		for _, child := range line.children {
+			// Absolutely/fixed positioned elements don't participate in
+			// normal-flow column sizing or margin collapsing. They are
+			// still repositioned by the column transform below.
+			isAbsPos := child.Position == css.PositionAbsolute || child.Position == css.PositionFixed
+			if isAbsPos {
+				continue
+			}
 			// Skip children positioned entirely outside the content area
 			// (e.g., outside-positioned list markers with negative X).
 			// These don't participate in column sizing.
 			blockStartM := dir.BlockStartEdge(child.Margin)
-			blockEndM := dir.BlockEndEdge(child.Margin)
-			rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
+			// HTB layout sets child.X = contentStartX + margin.Left.
+			// Only margin.Left is in X; the block-end margin is NOT part
+			// of the X position, so we only subtract margin.Left here.
+			rawOrigRelX := child.X - contentStartX - child.Margin.Left
 			if rawOrigRelX < -1.0 {
 				continue
 			}
@@ -3751,10 +3760,9 @@ func transformToVerticalRL(box *Box, wm string) {
 					cols[i].hasExplicitW = true
 				}
 			}
-			// Subtract both block-start and block-end margins from origRelX:
-			// block-direction margins were applied to X by the h-tb layout
-			// but should not become Y offsets in the vertical column.
-			// Column spacing handles block-direction margins instead.
+			// Clamp origRelX so it doesn't go negative (only possible for
+			// children with float-avoidance offsets). Column spacing handles
+			// block-direction margins separately.
 			origRelX := rawOrigRelX
 			if origRelX < 0 {
 				origRelX = 0
@@ -3764,8 +3772,8 @@ func transformToVerticalRL(box *Box, wm string) {
 				cols[i].height = extent
 			}
 			// Collect block-direction margins for column spacing.
-			// Floated elements do not participate in block-direction margin collapsing
-			// (CSS 2.1 §8.3.1: floats do not collapse margins with adjacent blocks).
+			// Floated and abs-pos elements do not participate in margin collapsing
+			// (CSS 2.1 §8.3.1, §9.4.3).
 			isFloated := child.Style != nil && child.Style.GetFloat() != css.FloatNone
 			if !isFloated {
 				var bs, be float64
@@ -3880,9 +3888,7 @@ func transformToVerticalRL(box *Box, wm string) {
 		for i, line := range lines {
 			colX += colMargins[i] // Add margin before this column
 			for _, child := range line.children {
-				blockStartM := dir.BlockStartEdge(child.Margin)
-				blockEndM := dir.BlockEndEdge(child.Margin)
-				rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
+				rawOrigRelX := child.X - contentStartX - child.Margin.Left
 				if rawOrigRelX < -1.0 {
 					continue // skip outside-positioned children
 				}
@@ -3916,9 +3922,7 @@ func transformToVerticalRL(box *Box, wm string) {
 				colX -= colMargins[i]
 			}
 			for _, child := range line.children {
-				blockStartM := dir.BlockStartEdge(child.Margin)
-				blockEndM := dir.BlockEndEdge(child.Margin)
-				rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
+				rawOrigRelX := child.X - contentStartX - child.Margin.Left
 				if rawOrigRelX < -1.0 {
 					continue // skip outside-positioned children
 				}
@@ -3950,7 +3954,6 @@ func transformToVerticalRL(box *Box, wm string) {
 	if !hasExplicitHeight {
 		box.Height = maxContentHeight + box.Padding.Top + box.Padding.Bottom + box.Border.Top + box.Border.Bottom
 	}
-
 	// Recursively apply transformToVerticalRL to nested VRL/VLR BFC children.
 	// When a VRL block that establishes a BFC (e.g., overflow:hidden) is inside another VRL
 	// element, layoutNode skips transformToVerticalRL for it (parent is also VRL).
