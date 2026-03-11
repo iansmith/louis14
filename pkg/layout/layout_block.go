@@ -61,12 +61,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// childDir is propagated to child layoutNode calls so children know
 	// their writing-mode context for available-size computation and positioning.
 	//
-	// Phase 1a: The element's OWN layout still uses HTB physical coordinates.
-	// All sizing computations (contentWidth, contentHeight, box dimensions)
-	// use physical HTB-mapped Dir so that box.Width/Height remain physical.
-	// The transformToVerticalRL post-pass handles the coordinate conversion.
-	// Future phases (1b-1c) will switch this to use the element's actual Dir.
-	dir = NewDir(HorizontalTB)
+	// Dir-aware layout: the element's own `dir` comes from the PARENT's writing-mode.
+	// This means the element is positioned and sized in the parent's coordinate
+	// system. `dir.InlineSizeProp()` returns "width" for HTB parents, "height"
+	// for vertical parents. `dir.SetInlineSize(box, v)` sets the correct physical
+	// dimension. Box.X/Y/Width/Height always remain in PHYSICAL coordinates.
+	// The Dir abstraction maps logical operations to the correct physical axes.
 
 	// Detect orthogonal flow: this element has a different axis than its parent.
 	// CSS Writing Modes §7.3.1: orthogonal flow blocks with auto inline-size
@@ -247,12 +247,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	padding.Bottom = resolvePaddingPercent("padding-bottom", padding.Bottom)
 	padding.Left = resolvePaddingPercent("padding-left", padding.Left)
 
-	// Phase 7 Enhancement: Inline elements ignore vertical margins and padding
+	// CSS 2.1 §8.3: Inline elements ignore block-direction margins and padding.
+	// In HTB: block = Top/Bottom. In vertical modes: block = Left/Right.
 	if display == css.DisplayInline {
-		margin.Top = 0
-		margin.Bottom = 0
-		padding.Top = 0
-		padding.Bottom = 0
+		dir.ZeroBlockMarginsAndPadding(&margin, &padding)
 	}
 
 	// Apply margin offset
@@ -1220,12 +1218,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	childAvailableWidth := contentWidth
 
 	// Phase 1b: Dir-aware available-width propagation for vertical containers.
-	// In vertical writing modes, the inline direction maps to physical Y (top-to-bottom).
-	// Children's inline content should wrap at the container's physical height
-	// (= inline-size in vertical mode), not the physical width.
-	// Only apply when the element has an explicit physical height (= definite inline-size).
-	// Auto-height cases keep the existing behavior to avoid regressions.
-	if elementIsVertical && hasExplicitHeight && contentHeight > 0 {
+	// When the parent passes dir=HTB but this element is vertical, contentWidth was
+	// computed from CSS "width" (the block-size in vertical mode). Children need the
+	// inline-size (CSS height) instead. Substitute contentHeight when it's definite.
+	// Guard: only when dir is HTB (outermost vertical). When dir is already vertical
+	// (same-axis), contentWidth is already the inline-size — no substitution needed.
+	if elementIsVertical && !dir.IsVertical() && hasExplicitHeight && contentHeight > 0 {
 		childAvailableWidth = contentHeight
 	}
 
@@ -2748,6 +2746,29 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 								applyInlineSizeConstraint = containerContentH > 0
 							} else if _, ok := style.GetPercentage("height"); ok {
 								applyInlineSizeConstraint = containerContentH > 0
+							}
+						}
+						// Pre-transform correction: same-axis VLR/VRL children that are
+						// empty (no children) had their inline-size block-filled from the
+						// parent's available width. transformBoxToVerticalRecursive won't
+						// fix empty children (nothing to rearrange), so correct their
+						// inline-size to border-box only (no content fill).
+						// Skip children with explicit CSS inline-size (height for vertical)
+						// — those dimensions came from CSS, not block-fill.
+						for _, child := range box.Children {
+							if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+								continue
+							}
+							if len(child.Children) == 0 && child.Style != nil {
+								childWM := WritingModeFromStyle(child.Style)
+								if childWM == VerticalRL || childWM == VerticalLR || childWM == SidewaysLR {
+									childD := NewDir(childWM)
+									// Only reset if no explicit inline-size in CSS.
+									inlineProp := childD.InlineSizeProp() // "height" for vertical
+									if v, _ := child.Style.Get(inlineProp); v == "" || v == "auto" {
+										childD.SetInlineSize(child, childD.InlineBorderBox(child.Padding, child.Border))
+									}
+								}
 							}
 						}
 						for _, child := range box.Children {
