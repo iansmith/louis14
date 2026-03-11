@@ -1811,6 +1811,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	lineMetrics := &LineMetrics{}  // Track line box metrics (content height + line-box height)
 	inlineStack := []*inlineSpan{}
 
+	// Track cumulative X correction for atomic inline-blocks whose actual width
+	// differs from the estimated width used during line-breaking. For example,
+	// VLR inline-blocks get their width from the post-layout vertical transform,
+	// which can differ from the HTB max-content estimate. Without this correction,
+	// subsequent fragments on the same line accumulate positioning errors.
+	lineXCorrection := 0.0
+
 	// Track which nodes we've seen to distinguish OpenTag from CloseTag
 	// First FragmentInline for a node = OpenTag, second = CloseTag
 	seenNodes := make(map[*html.Node]bool)
@@ -1967,6 +1974,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 				// Reset currentX - block child takes full width, next content starts at left
 				currentX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+				lineXCorrection = 0 // New line after block child
 			}
 		} else if frag.Type == FragmentInline && frag.Size.Width == 0 && frag.Size.Height == 0 {
 			// Inline element marker (OpenTag or CloseTag)
@@ -1990,6 +1998,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 						lineMetricsReset(lineMetrics, true)
 					}
 					currentLineY = frag.Position.Y
+					lineXCorrection = 0 // New line resets correction
 				}
 
 				// Record box count at OpenTag time for correct CSS painting order.
@@ -2274,10 +2283,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					lineMetricsReset(lineMetrics, true)
 				}
 				currentLineY = frag.Position.Y
+				lineXCorrection = 0 // New line resets correction
 			}
 
 			atomicNode := frag.Node
-			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X
+			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X + lineXCorrection
 
 			atomicBox := le.layoutNode(
 				atomicNode,
@@ -2289,6 +2299,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				containerBox,
 			)
 			if atomicBox != nil {
+				// Update lineXCorrection: actual width may differ from the estimate
+				// used during line-breaking (e.g. VLR inline-blocks after transform)
+				lineXCorrection += atomicBox.Width - frag.Size.Width
 				atomicBox.Parent = containerBox
 
 				// Undo position:relative offsets applied by layoutNodeHTB so they can be
@@ -2354,7 +2367,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			if box != nil {
 				// Fragment X is relative to line start (content area);
 				// add container's content area offset for absolute position
-				box.X += containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+				box.X += containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + lineXCorrection
 
 				// For FragmentAtomic elements (images, SVGs, replaced elements), the
 				// fragment position was recorded BEFORE the left margin was applied in
@@ -2382,6 +2395,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 						lineMetricsReset(lineMetrics, true) // Preserve line-box height from open inlines
 					}
 					currentLineY = frag.Position.Y
+					lineXCorrection = 0 // New line resets correction
 				}
 
 				// CRITICAL FIX: Use currentY instead of frag.Position.Y
