@@ -58,7 +58,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	if elementWM != dir.WM {
 		childDir = NewDir(elementWM)
 	}
-	_ = childDir // used by recursive layoutNode calls in subsequent phases
+	// childDir is propagated to child layoutNode calls so children know
+	// their writing-mode context for available-size computation and positioning.
+	//
+	// Phase 1a: The element's OWN layout still uses HTB physical coordinates.
+	// All sizing computations (contentWidth, contentHeight, box dimensions)
+	// use physical HTB-mapped Dir so that box.Width/Height remain physical.
+	// The transformToVerticalRL post-pass handles the coordinate conversion.
+	// Future phases (1b-1c) will switch this to use the element's actual Dir.
+	dir = NewDir(HorizontalTB)
 
 	// Detect orthogonal flow: this element has a different axis than its parent.
 	// CSS Writing Modes §7.3.1: orthogonal flow blocks with auto inline-size
@@ -1381,6 +1389,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			childY,
 			computedStyles,
 			overrideStyles,
+			childDir,
 		)
 		childBoxes = inlineLayoutResult.ChildBoxes
 
@@ -1632,7 +1641,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		inlineLayoutResult = le.layoutInlineChildren(
 			node, box, display, style, border, padding, x, childY,
 			childAvailableWidth, contentWidth, isObjectImage, computedStyles,
-			&prevBlockChild, &pendingMargins, algorithm,
+			&prevBlockChild, &pendingMargins, algorithm, childDir,
 		)
 
 		// Add all child boxes to the container
@@ -1796,12 +1805,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				}
 			}
 
-			// Layout the child
-			childBox := le.layoutNodeHTB(
+			// Layout the child — propagate childDir so it knows its writing-mode context
+			childBox := le.layoutNode(
 				child,
 				adjustedChildX,
 				inlineCtx.LineY,
 				adjustedChildWidth,
+				childDir,
 				computedStyles,
 				box, // Phase 4: Pass parent
 			)
@@ -2418,7 +2428,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						continue
 					}
 					if _, hasPct := child.Style.GetPercentage(dir.BlockSizeProp()); hasPct {
-						newChild := le.layoutNodeHTB(child.Node, child.X, child.Y, childAvailW, computedStyles, box)
+						newChild := le.layoutNode(child.Node, child.X, child.Y, childAvailW, childDir, computedStyles, box)
 						if newChild != nil {
 							box.Children[i] = newChild
 						}

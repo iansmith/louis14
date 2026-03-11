@@ -290,6 +290,7 @@ func (le *LayoutEngine) layoutMulticolumnInline(
 		startY,
 		computedStyles,
 		nil,
+		NewDir(HorizontalTB),
 	)
 	if result == nil || len(result.ChildBoxes) == 0 {
 		return

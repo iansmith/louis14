@@ -19,6 +19,7 @@ func (le *LayoutEngine) layoutInlineChildren(
 	prevBlockChild **Box,
 	pendingMargins *[]float64,
 	algorithm InlineLayoutAlgorithm,
+	dir Dir,
 ) *InlineLayoutResult {
 	// Initialize inline context
 	inlineCtx := &InlineContext{
@@ -42,7 +43,7 @@ func (le *LayoutEngine) layoutInlineChildren(
 		// Use the current single-pass algorithm
 		result.ChildBoxes = le.layoutInlineChildrenSinglePass(
 			node, box, display, style, border, padding, x, childY, childAvailableWidth,
-			contentWidth, isObjectImage, computedStyles, inlineCtx, prevBlockChild, pendingMargins,
+			contentWidth, isObjectImage, computedStyles, inlineCtx, prevBlockChild, pendingMargins, dir,
 		)
 		result.FinalInlineCtx = inlineCtx
 		result.UsedMultiPass = false
@@ -50,7 +51,7 @@ func (le *LayoutEngine) layoutInlineChildren(
 		// Use multi-pass algorithm (Blink LayoutNG-style)
 		// This uses the existing LayoutInlineBatch infrastructure
 		childBoxes := le.LayoutInlineBatch(
-			node.Children, box, childAvailableWidth, childY, border, padding, computedStyles,
+			node.Children, box, childAvailableWidth, childY, border, padding, computedStyles, dir,
 		)
 		result.ChildBoxes = childBoxes
 
@@ -103,6 +104,7 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 	inlineCtx *InlineContext,
 	prevBlockChild **Box,
 	pendingMargins *[]float64,
+	dir Dir,
 ) []*Box {
 	childBoxes := make([]*Box, 0)
 
@@ -261,11 +263,12 @@ func (le *LayoutEngine) layoutInlineChildrenSinglePass(
 			}
 
 			// Layout the child
-			childBox := le.layoutNodeHTB(
+			childBox := le.layoutNode(
 				child,
 				adjustedChildX,
 				inlineCtx.LineY,
 				adjustedChildWidth,
+				dir,
 				computedStyles,
 				box, // Phase 4: Pass parent
 			)
@@ -696,6 +699,7 @@ func (le *LayoutEngine) LayoutInlineBatch(
 	startY float64,
 	border, padding css.BoxEdge,
 	computedStyles map[*html.Node]*css.Style,
+	dir Dir,
 ) []*Box {
 	const maxRetries = 3
 
@@ -738,7 +742,7 @@ func (le *LayoutEngine) LayoutInlineBatch(
 		}
 
 		// Phase 3: Construct boxes with retry detection
-		boxes, retryNeeded := le.constructLineBoxesWithRetry(state, box, computedStyles)
+		boxes, retryNeeded := le.constructLineBoxesWithRetry(state, box, computedStyles, dir)
 
 		if !retryNeeded {
 			return boxes
@@ -766,7 +770,7 @@ func (le *LayoutEngine) LayoutInlineBatch(
 	}
 	le.breakLinesWIP(state)
 	// Use full construction method that handles block children and floats
-	boxes, _ := le.constructLineBoxesWithRetry(state, box, computedStyles)
+	boxes, _ := le.constructLineBoxesWithRetry(state, box, computedStyles, dir)
 
 	// Apply text-align to inline children
 	if box.Style != nil {

@@ -1647,6 +1647,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	startY float64,
 	computedStyles map[*html.Node]*css.Style,
 	overrideStyles map[*html.Node]*css.Style,
+	dir Dir,
 ) *InlineLayoutResult {
 
 	// Merge override styles into computedStyles so all lookups find them
@@ -1912,11 +1913,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			}
 
 			// Recursively layout the block child
-			childBox := le.layoutNodeHTB(
+			childBox := le.layoutNode(
 				childNode,
 				adjustedChildX,
 				childY,
 				adjustedChildWidth,
+				dir,
 				computedStyles,
 				containerBox,
 			)
@@ -2190,11 +2192,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			floatCountBefore := len(le.floats)
 
 			// Layout the float to get actual dimensions (estimated sizes from Phase 1 may be wrong)
-			floatBox := le.layoutNodeHTB(
+			floatBox := le.layoutNode(
 				floatNode,
 				containerContentLeft,
 				currentY,
 				containerAvailWidth,
+				dir,
 				computedStyles,
 				containerBox,
 			)
@@ -2276,11 +2279,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			atomicNode := frag.Node
 			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X
 
-			atomicBox := le.layoutNodeHTB(
+			atomicBox := le.layoutNode(
 				atomicNode,
 				absX,
 				currentY,
 				frag.Size.Width,
+				dir,
 				computedStyles,
 				containerBox,
 			)
@@ -2623,6 +2627,7 @@ func (le *LayoutEngine) layoutInlineContentWIP(
 	startY float64,
 	border, padding css.BoxEdge,
 	computedStyles map[*html.Node]*css.Style,
+	dir Dir,
 ) []*Box {
 	// Initialize state
 	state := &InlineLayoutState{
@@ -2657,7 +2662,7 @@ func (le *LayoutEngine) layoutInlineContentWIP(
 
 		// Phase 3: Construct line boxes and layout floats
 		// Returns boxes and whether retry is needed
-		boxes, retryNeeded := le.constructLineBoxesWithRetry(state, box, computedStyles)
+		boxes, retryNeeded := le.constructLineBoxesWithRetry(state, box, computedStyles, dir)
 
 		if !retryNeeded {
 			// Success - no floats changed available width
@@ -4074,6 +4079,7 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 	state *InlineLayoutState,
 	parent *Box,
 	computedStyles map[*html.Node]*css.Style,
+	dir Dir,
 ) ([]*Box, bool) {
 	boxes := []*Box{}
 	retryNeeded := false
@@ -4237,11 +4243,12 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 			case InlineItemAtomic:
 				// Atomic inline (inline-block) - recursively layout its content
 				// Use the pre-computed width as the available width for its children
-				atomicBox := le.layoutNodeHTB(
+				atomicBox := le.layoutNode(
 					item.Node,
 					currentX,
 					line.Y,
 					item.Width, // Use computed width as constraint
+					dir,
 					computedStyles,
 					parent,
 				)
@@ -4285,11 +4292,12 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				}
 
 				// STEP 2: Layout the block child
-				blockBox := le.layoutNodeHTB(
+				blockBox := le.layoutNode(
 					item.Node,
 					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
 					line.Y,
 					state.AvailableWidth,
+					dir,
 					computedStyles,
 					parent,
 				)
@@ -4328,11 +4336,12 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 				// Track float count before layoutNode (layoutNode may add float as side effect)
 				floatCountBefore := len(le.floats)
 
-				floatBox := le.layoutNodeHTB(
+				floatBox := le.layoutNode(
 					item.Node,
 					state.ContainerBox.X+state.Border.Left+state.Padding.Left,
 					line.Y,
 					state.AvailableWidth,
+					dir,
 					computedStyles,
 					parent,
 				)
