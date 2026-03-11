@@ -37,13 +37,71 @@ func defaultFontsDir() string {
 	// Try relative to executable first
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Join(filepath.Dir(exe), "..", "fonts")
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		if fontsComplete(dir) {
 			return dir
 		}
 	}
 	// Fall back to compile-time source location
 	_, thisFile, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "fonts")
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "fonts")
+	if fontsComplete(dir) {
+		return dir
+	}
+	// The compile-time path may be a git worktree that lacks font files.
+	// Follow the worktree's .git file back to the main tree's fonts.
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	if mainRoot := resolveMainWorktree(repoRoot); mainRoot != "" {
+		mainFonts := filepath.Join(mainRoot, "fonts")
+		if fontsComplete(mainFonts) {
+			return mainFonts
+		}
+	}
+	return dir
+}
+
+// fontsComplete checks that the fonts directory has the Regular font (not just Ahem).
+func fontsComplete(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(dir, "AtkinsonHyperlegible-Regular.ttf"))
+	return err == nil
+}
+
+// resolveMainWorktree follows a git worktree's .git file to find the main
+// worktree's root directory. Returns "" if not a worktree or on any error.
+func resolveMainWorktree(repoRoot string) string {
+	gitPath := filepath.Join(repoRoot, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil || info.IsDir() {
+		// .git is a directory (main tree) or doesn't exist — not a worktree
+		return ""
+	}
+	// .git is a file containing "gitdir: /path/to/main/.git/worktrees/<name>"
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, "gitdir: ") {
+		return ""
+	}
+	gitdir := strings.TrimPrefix(line, "gitdir: ")
+	// gitdir is like "/path/to/main/.git/worktrees/<name>"
+	// Walk up to find the main .git directory
+	parts := strings.Split(filepath.ToSlash(gitdir), "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] == ".git" {
+			// The main repo root is the parent of .git
+			mainRoot := filepath.FromSlash(strings.Join(parts[:i], "/"))
+			if mainRoot == "" {
+				mainRoot = "/"
+			}
+			return mainRoot
+		}
+	}
+	return ""
 }
 
 // DefaultFontConfig returns a FontConfig using the bundled Atkinson Hyperlegible fonts.
