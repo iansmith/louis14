@@ -3672,9 +3672,10 @@ func transformToVerticalRL(box *Box, wm string) {
 
 
 	isLR := wm == "vertical-lr" || wm == "sideways-lr"
-	// sideways-lr and sideways-rl have inline direction bottom-to-top (reversed vs VLR/VRL).
-	// We invert the Y positions within each column to reflect this.
-	isSideways := wm == "sideways-lr" || wm == "sideways-rl"
+	// sideways-lr has inline direction bottom-to-top (reversed vs vertical-lr).
+	// sideways-rl has inline direction top-to-bottom (SAME as vertical-rl).
+	// Only sideways-lr needs Y inversion within columns.
+	isSideways := wm == "sideways-lr"
 
 	// Create Dir for block-direction margin access
 	var dir Dir
@@ -3880,7 +3881,7 @@ func transformToVerticalRL(box *Box, wm string) {
 				newX := contentStartX + colX
 				var newY float64
 				if isSideways {
-					// sideways-lr: inline-start = bottom, so invert Y within column
+					// sideways-lr: inline direction bottom-to-top, invert Y within column
 					newY = contentStartY + cols[i].height - origRelX - child.Height
 				} else {
 					newY = contentStartY + origRelX
@@ -3894,7 +3895,7 @@ func transformToVerticalRL(box *Box, wm string) {
 			colX += cols[i].width
 		}
 	} else {
-		// vertical-rl: columns stack right-to-left.
+		// vertical-rl / sideways-rl: columns stack right-to-left.
 		colX := contentWidth - colMargins[0]
 		for i, line := range lines {
 			colX -= cols[i].width
@@ -3915,7 +3916,7 @@ func transformToVerticalRL(box *Box, wm string) {
 				newX := contentStartX + colX
 				var newY float64
 				if isSideways {
-					// sideways-rl: inline-start = bottom, so invert Y within column
+					// sideways-lr in VRL path (shouldn't happen, but guard)
 					newY = contentStartY + cols[i].height - origRelX - child.Height
 				} else {
 					newY = contentStartY + origRelX

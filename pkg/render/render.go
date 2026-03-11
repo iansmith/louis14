@@ -2560,6 +2560,40 @@ func (r *Renderer) drawText(box *layout.Box) {
 	ascent := r.context.FontAscent()
 	textY := effectiveY + ascent
 
+	// CSS Writing Modes: rotate characters for sideways writing modes.
+	// In sideways-rl/lr, ALL characters are rotated (unlike vertical-rl/lr where
+	// only Latin characters rotate). For vertical-rl/lr with text-orientation:mixed,
+	// non-CJK characters are also rotated.
+	rotated := false
+	if box.Style != nil {
+		wm, _ := box.Style.Get("writing-mode")
+		textOrientation, _ := box.Style.Get("text-orientation")
+		if wm == "sideways-rl" || wm == "sideways-lr" || textOrientation == "sideways" ||
+			(textOrientation == "mixed" && (wm == "vertical-rl" || wm == "vertical-lr")) {
+			// Check if this single character should be rotated.
+			// For sideways modes: always rotate all characters.
+			// For mixed orientation: rotate non-CJK characters only.
+			shouldRotate := wm == "sideways-rl" || wm == "sideways-lr" || textOrientation == "sideways"
+			if !shouldRotate && textOrientation == "mixed" && len([]rune(textContent)) == 1 {
+				ch := []rune(textContent)[0]
+				shouldRotate = !layout.IsCJKOrFullWidth(ch)
+			}
+			if shouldRotate {
+				rotated = true
+				r.context.Push()
+				centerX := box.X + box.Width/2
+				centerY := effectiveY + box.Height/2
+				if wm == "sideways-lr" {
+					// sideways-lr: characters rotated 90° CCW
+					r.context.RotateAbout(-math.Pi/2, centerX, centerY)
+				} else {
+					// sideways-rl / vertical-rl mixed: characters rotated 90° CW
+					r.context.RotateAbout(math.Pi/2, centerX, centerY)
+				}
+			}
+		}
+	}
+
 	// Draw text-shadow layers first (behind main text)
 	shadows := box.Style.GetTextShadow()
 	for _, shadow := range shadows {
@@ -2615,6 +2649,11 @@ func (r *Renderer) drawText(box *layout.Box) {
 		r.context.DrawString(textContent, drawX, textY)
 	} else {
 		r.context.DrawString(textContent, textX, textY)
+	}
+
+	// Restore rotation transform if applied
+	if rotated {
+		r.context.Pop()
 	}
 
 	// Phase 17: Draw text decorations

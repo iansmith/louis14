@@ -204,16 +204,16 @@ func measureVerticalCharSlot(ch rune, style *css.Style) float64 {
 
 	// "mixed" (default): CJK/full-width chars are upright (slot = fontSize),
 	// Latin/ASCII chars are rotated sideways (slot = charWidth).
-	if isCJKOrFullWidth(ch) {
+	if IsCJKOrFullWidth(ch) {
 		return fontSize
 	}
 	charW, _ := text.MeasureTextWithStyle(string(ch), fontSize, bold, italic, mono, false)
 	return charW
 }
 
-// isCJKOrFullWidth returns true for characters that render upright in vertical text
-// (CJK ideographs, Hangul, Katakana, etc.) per text-orientation:mixed rules.
-func isCJKOrFullWidth(r rune) bool {
+// IsCJKOrFullWidth returns true if the rune is a CJK ideograph or full-width
+// character that stays upright in vertical writing modes with text-orientation:mixed.
+func IsCJKOrFullWidth(r rune) bool {
 	// Unicode ranges for characters that stay upright in vertical-rl:
 	// CJK Unified Ideographs (basic block)
 	if r >= 0x4E00 && r <= 0x9FFF {
