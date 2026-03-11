@@ -348,6 +348,8 @@ func (le *LayoutEngine) mirrorInlineBoxesRTL(boxes []*Box, contentLeft, contentR
 		// Mirror within the float-adjusted available area, not the full content area.
 		// Inline content was laid out in [contentLeft+leftOffset, contentRight-rightOffset],
 		// so the mirror axis must use those same bounds.
+		// NOTE: position:relative offsets are applied AFTER this mirror step
+		// (in LayoutInlineContentToBoxes) per CSS 2.1 §9.4.3.
 		leftOffset, rightOffset := le.getFloatOffsets(box.Y)
 		availLeft := contentLeft + leftOffset
 		availRight := contentRight - rightOffset

@@ -1605,25 +1605,17 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 		box.Position = css.PositionAbsolute // Treated like absolute for rendering
 	}
 
-	// Apply position:relative offset for inline ELEMENT nodes (images, inline-blocks).
-	// IMPORTANT: Do NOT apply for text nodes — text inherits the parent element's style
+	// Mark position:relative for inline ELEMENT nodes (images, inline-blocks).
+	// IMPORTANT: Do NOT apply offsets here — they must be applied AFTER line-level
+	// operations (RTL mirroring, text-align) per CSS 2.1 §9.4.3. The offsets are
+	// applied in LayoutInlineContentToBoxes after all line-level processing.
+	// Do NOT apply for text nodes — text inherits the parent element's style
 	// (which may include position:relative), but text nodes are never CSS positioned
 	// elements. For text inside a positioned span, the offset is handled via
 	// getRelativeOffset() (inlineStack) in LayoutInlineContentToBoxes.
 	isElement := frag.Node != nil && frag.Node.Type == html.ElementNode
 	if isElement && frag.Style != nil && frag.Style.GetPosition() == css.PositionRelative {
 		box.Position = css.PositionRelative
-		offset := frag.Style.GetPositionOffset()
-		if offset.HasTop {
-			box.Y += offset.Top
-		} else if offset.HasBottom {
-			box.Y -= offset.Bottom
-		}
-		if offset.HasLeft {
-			box.X += offset.Left
-		} else if offset.HasRight {
-			box.X -= offset.Right
-		}
 	}
 
 	return box
@@ -2279,6 +2271,28 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			if atomicBox != nil {
 				atomicBox.Parent = containerBox
 
+				// Undo position:relative offsets applied by layoutNodeHTB so they can be
+				// applied uniformly AFTER line-level operations (RTL mirror, text-align)
+				// per CSS 2.1 §9.4.3. The post-processing loop at the end of this function
+				// re-applies them.
+				if atomicBox.Position == css.PositionRelative && atomicBox.Style != nil {
+					offset := atomicBox.Style.GetPositionOffset()
+					if offset.HasTop {
+						le.shiftChildren(atomicBox, 0, -offset.Top)
+						atomicBox.Y -= offset.Top
+					} else if offset.HasBottom {
+						le.shiftChildren(atomicBox, 0, offset.Bottom)
+						atomicBox.Y += offset.Bottom
+					}
+					if offset.HasLeft {
+						le.shiftChildren(atomicBox, -offset.Left, 0)
+						atomicBox.X -= offset.Left
+					} else if offset.HasRight {
+						le.shiftChildren(atomicBox, offset.Right, 0)
+						atomicBox.X += offset.Right
+					}
+				}
+
 				// Apply vertical-align: middle/top/bottom to inline-block elements.
 				// The line height is the max height of all fragments on this line,
 				// precomputed in fragLineMaxHeight (using frag.Size.Height = border-box).
@@ -2354,11 +2368,10 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// After block children, frag.Position.Y is wrong because BreakLines
 				// doesn't know block heights. We track actual Y in currentY.
 				// Also apply relative positioning offset from open inline ancestors.
-				// Preserve the element's own position:relative Y offset (applied by
-				// fragmentToBoxSingle before we override Y with currentY).
-				ownRelY := box.Y - frag.Position.Y // = position:relative top offset, or 0
+				// NOTE: position:relative offsets are no longer baked into box.X/Y by
+				// fragmentToBoxSingle — they are applied after line-level operations.
 				relOffX, relOffY := getRelativeOffset()
-				targetY := currentY + relOffY + ownRelY
+				targetY := currentY + relOffY
 				if box.Y != targetY {
 					box.Y = targetY
 				}
@@ -2511,6 +2524,29 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			} else if textAlignLast != "auto" && textAlignLast != "left" {
 				// text-align is left (default) but text-align-last overrides the last line
 				le.applyTextAlignToBoxes(boxes, containerBox, "left", contentWidth, textAlignLast)
+			}
+		}
+	}
+
+	// CSS 2.1 §9.4.3: Apply position:relative offsets AFTER all line-level operations
+	// (RTL mirroring, text-align). Relative positioning shifts the box visually without
+	// affecting its normal flow position or the layout of subsequent elements.
+	for _, box := range boxes {
+		if box.Position == css.PositionRelative && box.Style != nil {
+			offset := box.Style.GetPositionOffset()
+			if offset.HasTop {
+				box.Y += offset.Top
+				le.shiftChildren(box, 0, offset.Top)
+			} else if offset.HasBottom {
+				box.Y -= offset.Bottom
+				le.shiftChildren(box, 0, -offset.Bottom)
+			}
+			if offset.HasLeft {
+				box.X += offset.Left
+				le.shiftChildren(box, offset.Left, 0)
+			} else if offset.HasRight {
+				box.X -= offset.Right
+				le.shiftChildren(box, -offset.Right, 0)
 			}
 		}
 	}
