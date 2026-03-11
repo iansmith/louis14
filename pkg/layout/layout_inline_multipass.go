@@ -1273,6 +1273,20 @@ func (le *LayoutEngine) collectInlineItemsClean(
 					childStyle.Set("color", color)
 				}
 			}
+			// Writing-mode and text-orientation are inherited CSS properties.
+			// Without this, inline elements (e.g. <span>) inside a vertical
+			// container lose the writing-mode, causing the renderer to skip
+			// character rotation (text-orientation: mixed).
+			if _, ok := childStyle.Get("writing-mode"); !ok {
+				if wm, ok := containerStyle.Get("writing-mode"); ok {
+					childStyle.Set("writing-mode", wm)
+				}
+			}
+			if _, ok := childStyle.Get("text-orientation"); !ok {
+				if to, ok := containerStyle.Get("text-orientation"); ok {
+					childStyle.Set("text-orientation", to)
+				}
+			}
 		}
 		computedStyles[child] = childStyle
 	}
