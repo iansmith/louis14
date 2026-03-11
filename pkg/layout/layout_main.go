@@ -86,6 +86,32 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 					}
 					box.Width = viewportBlock
 				}
+
+				// sideways-lr: inline-start is at the physical bottom.
+				// Shift content to the bottom of the viewport so the first
+				// inline content starts at the bottom edge.
+				if box.Style != nil {
+					wm, _ := box.Style.Get("writing-mode")
+					if wm == "sideways-lr" {
+						viewportInline := rootDir.ViewportInlineSize(le)
+						// Position children so content bottom aligns with
+						// viewport bottom minus margin (inline-start = bottom).
+						desiredContentBottom := viewportInline - box.Margin.Bottom
+						currentContentBottom := box.Y + box.Height
+						shift := desiredContentBottom - currentContentBottom
+						if shift > 0 {
+							for _, child := range box.Children {
+								child.Y += shift
+								shiftAllDescendants(child, 0, shift)
+							}
+						}
+						// Expand box to fill viewport (minus margins) for background painting.
+						availH := viewportInline - box.Margin.Top - box.Margin.Bottom
+						if box.Height < availH {
+							box.Height = availH
+						}
+					}
+				}
 			}
 
 			// Phase 4 & 5: Only advance Y if element is in normal flow (not absolutely positioned or floated)

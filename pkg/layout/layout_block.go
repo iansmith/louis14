@@ -2741,6 +2741,20 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 										}
 									}
 									if !childHasExplH {
+										// For sideways-lr, content was already Y-inverted within
+										// the child's original height. Expanding the height
+										// without adjusting content position would leave it at
+										// the top instead of the bottom (inline-start = bottom).
+										// Shift children down by the expansion amount.
+										if wm == "sideways-lr" {
+											shift := containerContentH - child.Height
+											if shift > 0 {
+												for _, gc := range child.Children {
+													gc.Y += shift
+													shiftAllDescendants(gc, 0, shift)
+												}
+											}
+										}
 										child.Height = containerContentH
 									}
 								}

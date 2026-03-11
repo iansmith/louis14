@@ -3859,6 +3859,20 @@ func transformToVerticalRL(box *Box, wm string) {
 		contentWidth = box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
 	}
 
+	// For sideways-lr, compute the inline extent for Y-inversion.
+	// Content is anchored to the bottom of the container's inline extent
+	// (inline-start = bottom for sideways-lr).
+	sidewaysInlineExtent := 0.0
+	if isSideways {
+		// Use the container's content height if it has an explicit height,
+		// otherwise use the maximum column content extent.
+		if hasExplicitHeight {
+			sidewaysInlineExtent = box.Height - box.Padding.Top - box.Padding.Bottom - box.Border.Top - box.Border.Bottom
+		} else {
+			sidewaysInlineExtent = maxContentHeight
+		}
+	}
+
 	// Reposition children into columns, shifting descendants by the same delta.
 	// Block-direction margins are subtracted from origRelX since column spacing handles them.
 	if isLR {
@@ -3881,8 +3895,9 @@ func transformToVerticalRL(box *Box, wm string) {
 				newX := contentStartX + colX
 				var newY float64
 				if isSideways {
-					// sideways-lr: inline direction bottom-to-top, invert Y within column
-					newY = contentStartY + cols[i].height - origRelX - child.Height
+					// sideways-lr: inline direction bottom-to-top.
+					// Anchor content to the bottom of the inline extent.
+					newY = contentStartY + sidewaysInlineExtent - origRelX - child.Height
 				} else {
 					newY = contentStartY + origRelX
 				}
