@@ -3686,6 +3686,57 @@ func transformToVerticalRL(box *Box, wm string) {
 	contentStartX := box.X + box.Border.Left + box.Padding.Left
 	contentStartY := box.Y + box.Border.Top + box.Padding.Top
 
+	// Undo position:relative offsets on direct children before Y-grouping.
+	// In the HTB pre-transform layout, position:relative shifts child.X/Y by
+	// physical offsets (top/left/etc). These offsets can put a child at a
+	// different Y, causing it to be grouped into the wrong "line" (wrong column).
+	// We save the offsets, undo them so grouping uses normal-flow positions,
+	// then re-apply after the column repositioning to preserve the physical offsets.
+	type relOffset struct{ dx, dy float64 }
+	relOffsets := make(map[*Box]relOffset)
+	cbContentH := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+	cbContentW := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
+	for _, child := range box.Children {
+		if child.Position != css.PositionRelative || child.Style == nil {
+			continue
+		}
+		offset := child.Style.GetPositionOffset()
+		var dx, dy float64
+		// Must match layout_block.go's position:relative application:
+		// top wins over bottom, left wins over right.
+		if offset.HasTop {
+			dy = offset.Top
+		} else if offset.HasBottom {
+			dy = -offset.Bottom
+		}
+		// Percentage top/bottom resolved against containing block content height
+		if dy == 0 {
+			if pct, ok := child.Style.GetPercentage("top"); ok {
+				dy = cbContentH * pct / 100.0
+			} else if pct, ok := child.Style.GetPercentage("bottom"); ok {
+				dy = -cbContentH * pct / 100.0
+			}
+		}
+		if offset.HasLeft {
+			dx = offset.Left
+		} else if offset.HasRight {
+			dx = -offset.Right
+		}
+		if dx == 0 {
+			if pct, ok := child.Style.GetPercentage("left"); ok {
+				dx = cbContentW * pct / 100.0
+			} else if pct, ok := child.Style.GetPercentage("right"); ok {
+				dx = -cbContentW * pct / 100.0
+			}
+		}
+		if dx != 0 || dy != 0 {
+			relOffsets[child] = relOffset{dx, dy}
+			child.X -= dx
+			child.Y -= dy
+			shiftAllDescendants(child, -dx, -dy)
+		}
+	}
+
 	// Group children into lines by their Y position (within 1px tolerance)
 	type lineGroup struct {
 		y        float64
@@ -3945,6 +3996,14 @@ func transformToVerticalRL(box *Box, wm string) {
 				shiftAllDescendants(child, dx, dy)
 			}
 		}
+	}
+
+	// Re-apply position:relative offsets in physical coordinates after
+	// column repositioning. The offsets are preserved as physical displacements.
+	for child, off := range relOffsets {
+		child.X += off.dx
+		child.Y += off.dy
+		shiftAllDescendants(child, off.dx, off.dy)
 	}
 
 	// Update box dimensions (border-box), preserving explicit CSS values

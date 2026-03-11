@@ -2395,7 +2395,15 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// CSS 2.1 §8.3.1: When parent-child block-end margin collapsing applies,
 		// propagate the last child's block-end margin to the parent's block-end margin.
 		// The collapsed margin is the combination of parent's and child's margins.
-		if parentChildBottomCollapse && lastInFlowChild != nil && dir.BlockEndEdge(lastInFlowChild.Margin) != 0 {
+		//
+		// For vertical writing modes, skip this physical Margin mutation. The
+		// transformToVerticalRL pipeline computes column margins via
+		// effectiveBlockEndMargin(child, dir) which recursively propagates the
+		// same collapsed value without modifying the box's physical Margin
+		// struct. Modifying Margin.Left/Right here (via dir.SetBlockEndEdge)
+		// breaks the rawOrigRelX formula in transformToVerticalRL that expects
+		// Margin.Left to reflect HTB inline-start margin, not block-end margin.
+		if !dir.IsVertical() && parentChildBottomCollapse && lastInFlowChild != nil && dir.BlockEndEdge(lastInFlowChild.Margin) != 0 {
 			parentMB := dir.BlockEndEdge(box.Margin)
 			childMB := dir.BlockEndEdge(lastInFlowChild.Margin)
 			if parentMB >= 0 && childMB >= 0 {
