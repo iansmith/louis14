@@ -129,3 +129,30 @@ ALL code that touches box dimensions to use Dir accessors consistently.
 so the element's own sizing stays physical. Only `childDir` (for recursive
 calls) carries the actual writing-mode. Future Phase 1b will remove this
 override for specific code paths as they're converted to be Dir-aware.
+
+### 12. Phase 1b: childAvailableWidth for same-axis vertical with explicit height
+**Change**: Removed `!parentIsVertical` guard from the `childAvailableWidth` override
+(line ~1227). Now both orthogonal AND same-axis vertical elements with explicit height use
+`contentHeight` as `childAvailableWidth`. Previously, only orthogonal flow got this.
+**First attempt**: Also added auto-height fallback to viewport.height for ALL vertical
+containers (including auto-height). This caused -17 WM regressions because many tests
+depend on the existing `childAvailableWidth = contentWidth` behavior for auto-height
+orthogonal elements. Reverted the auto-height fallback.
+**Final change**: Only removes `!parentIsVertical` from the explicit-height case.
+Same-axis vertical with explicit height now gets correct `childAvailableWidth = contentHeight`
+(= inline-size in vertical mode). Impact: zero regressions (371/790 WM, 99/99 CSS2).
+
+### 13. REVERTED: Phase 1c: Enable transform for same-axis vertical elements
+**Change**: Removed the `!parentIsVertical` guard on the `transformToVerticalRL` trigger.
+**Result**: -6 WM regressions and -7 block-flow regressions (29→22). The two-level
+transform (child transform + parent transform) creates conflicts: the child's transform
+rearranges children into columns and updates Width/Height, but then the parent's
+`transformToVerticalRL` sees the child with post-transform dimensions and mispositions it.
+**Key finding**: With only Phase 1b (no Phase 1c), the parent's recursive transform
+(`transformBoxToVerticalRecursive`) already handles same-axis children correctly — it
+processes the child's children as part of the parent's column layout. Running a separate
+transform on the child before the parent processes it disrupts this.
+**Decision**: Reverted. The correct approach for same-axis vertical layout is NOT to run
+a separate transform on each level, but to eventually do true Dir-aware layout (removing
+the HTB override) so that children are positioned correctly during layout without any
+post-hoc transform. This is a future phase (Phase 1g+).

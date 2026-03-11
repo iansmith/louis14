@@ -1219,12 +1219,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	childY := box.Y + border.Top + padding.Top
 	childAvailableWidth := contentWidth
 
-	// CSS Writing Modes: for orthogonal-flow vertical containers (vertical element
-	// inside an HTB parent) with explicit height, children's inline content should
-	// wrap at the container's physical height (= inline-size in vertical mode), not
-	// the physical width. This ensures correct line breaks before transformToVerticalRL
-	// converts horizontal lines to vertical columns.
-	if elementIsVertical && !parentIsVertical && hasExplicitHeight && contentHeight > 0 {
+	// Phase 1b: Dir-aware available-width propagation for vertical containers.
+	// In vertical writing modes, the inline direction maps to physical Y (top-to-bottom).
+	// Children's inline content should wrap at the container's physical height
+	// (= inline-size in vertical mode), not the physical width.
+	// Only apply when the element has an explicit physical height (= definite inline-size).
+	// Auto-height cases keep the existing behavior to avoid regressions.
+	if elementIsVertical && hasExplicitHeight && contentHeight > 0 {
 		childAvailableWidth = contentHeight
 	}
 
@@ -2704,21 +2705,21 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Each horizontal "line" of children (grouped by Y position) becomes a vertical column.
 	// This only applies to block/inline-block elements — flex and grid have their own layout.
 	// Only the OUTERMOST element that establishes a new vertical writing-mode context
-	// runs the transform. If the parent already has vertical WM, the parent's transform
-	// already handled this element (repositioned it as part of the parent's column layout).
+	// runs the transform. For same-axis vertical (parent is also vertical), the parent's
+	// transform handles children recursively via transformBoxToVerticalRecursive.
 	if style != nil && !isImage && !isSVG && len(box.Children) > 0 {
 		if display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayFlowRoot || display == css.DisplayListItem || display == css.DisplayTableCell || display == css.DisplayTableCaption {
 			if wm, ok := style.Get("writing-mode"); ok {
 				isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
 				if isVertical {
 					// Determine if the parent has a vertical writing mode.
-					// When the parent is also vertical, this element was already
-					// repositioned as a column by the parent's transformToVerticalRL.
-					// However, this element still needs to arrange ITS OWN block-level
-					// children as columns (those children were stacked vertically by
-					// block layout and need column rearrangement).
-					// We skip the transform only if children are inline/text content
-					// (inline layout already positioned them correctly within the column).
+					// When the parent is also vertical, the parent's transform handles
+					// column rearrangement for this element's children recursively.
+					// Running the transform on both parent and child creates two-level
+					// transform conflicts that produce incorrect results.
+					// Phase 1c investigation: enabling transform for same-axis vertical
+					// was tested but reduced block-flow pass rate (29→22) due to
+					// dimension conflicts between child and parent transforms.
 					parentIsVertical := false
 					if node.Parent != nil {
 						if parentStyle := computedStyles[node.Parent]; parentStyle != nil {
