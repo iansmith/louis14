@@ -773,11 +773,12 @@ func resolveLogicalBoxProperties(style *Style) {
 	wm, _ := style.Get("writing-mode")
 	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||
 		wm == "sideways-rl" || wm == "sideways-lr"
-	// If writing-mode was inherited, use horizontal-tb mapping for logical
-	// box properties (same rationale as resolveLogicalSizeProperties).
-	if inherited, _ := style.Get("_writing-mode-inherited"); inherited == "true" {
-		isVertical = false
-	}
+	// CSS Logical Properties Level 1: logical properties resolve based on
+	// the element's computed writing-mode, regardless of whether writing-mode
+	// was inherited or explicitly set. Previously we forced HTB mapping for
+	// inherited writing-mode, but that incorrectly maps UA logical properties
+	// (e.g. padding-inline-start on <ul>) to the wrong physical side in
+	// vertical writing modes.
 
 	dir, _ := style.Get("direction")
 	isRTL := dir == "rtl"

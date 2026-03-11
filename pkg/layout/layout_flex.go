@@ -3669,8 +3669,6 @@ func transformToVerticalRL(box *Box, wm string) {
 	if len(box.Children) == 0 {
 		return
 	}
-
-
 	isLR := wm == "vertical-lr" || wm == "sideways-lr"
 	// sideways-lr has inline direction bottom-to-top (reversed vs vertical-lr).
 	// sideways-rl has inline direction top-to-bottom (SAME as vertical-rl).

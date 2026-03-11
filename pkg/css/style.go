@@ -1281,15 +1281,82 @@ func expandShorthand(style *Style, property, value string) {
 		expandFlexFlowProperty(style, value)
 	case "list-style":
 		// list-style shorthand: sets list-style-type, list-style-position, list-style-image
-		// Common values: "none", "disc", "decimal", "circle", "square"
-		// "none" sets list-style-type: none and list-style-image: none
-		if value == "none" {
-			style.Set("list-style-type", "none")
-			style.Set("list-style-image", "none")
-		} else {
-			// For other values, treat as list-style-type
-			style.Set("list-style-type", value)
+		// Parse the shorthand by tokenizing and categorizing each component.
+		// Positions: inside, outside. Types: none, disc, circle, square, decimal, etc.
+		// Image: url(...) or none.
+		// Tokenize preserving url(...) as a single token.
+		var listTokens []string
+		rest := value
+		for rest != "" {
+			rest = strings.TrimSpace(rest)
+			if rest == "" {
+				break
+			}
+			if strings.HasPrefix(rest, "url(") {
+				// Find matching close paren, respecting quotes.
+				depth := 0
+				inQ := byte(0)
+				i := 0
+				for i < len(rest) {
+					ch := rest[i]
+					if inQ != 0 {
+						if ch == inQ {
+							inQ = 0
+						}
+					} else if ch == '\'' || ch == '"' {
+						inQ = ch
+					} else if ch == '(' {
+						depth++
+					} else if ch == ')' {
+						depth--
+						if depth == 0 {
+							i++
+							break
+						}
+					}
+					i++
+				}
+				listTokens = append(listTokens, rest[:i])
+				rest = rest[i:]
+			} else {
+				idx := strings.IndexByte(rest, ' ')
+				if idx < 0 {
+					listTokens = append(listTokens, rest)
+					rest = ""
+				} else {
+					listTokens = append(listTokens, rest[:idx])
+					rest = rest[idx+1:]
+				}
+			}
 		}
+		foundType := false
+		foundPos := false
+		foundImage := false
+		for _, tok := range listTokens {
+			tok = strings.TrimSpace(tok)
+			if tok == "" {
+				continue
+			}
+			if strings.HasPrefix(tok, "url(") {
+				style.Set("list-style-image", tok)
+				foundImage = true
+			} else if tok == "inside" || tok == "outside" {
+				style.Set("list-style-position", tok)
+				foundPos = true
+			} else if tok == "none" {
+				if !foundType {
+					style.Set("list-style-type", "none")
+					foundType = true
+				} else if !foundImage {
+					style.Set("list-style-image", "none")
+					foundImage = true
+				}
+			} else {
+				style.Set("list-style-type", tok)
+				foundType = true
+			}
+		}
+		_ = foundPos
 	case "gap":
 		// gap shorthand: sets both row-gap and column-gap
 		parts := strings.Fields(value)
@@ -7209,7 +7276,9 @@ func ResolveLogicalProperties(node *html.Node, style *Style) {
 		}
 		if val, ok := style.Get("_margin-" + logicalDir); ok {
 			delete(style.Properties, "margin-"+defaultSide)
-			style.Set("margin-"+physSide, val)
+			if _, exists := style.Properties["margin-"+physSide]; !exists {
+				style.Set("margin-"+physSide, val)
+			}
 		}
 	}
 
@@ -7222,7 +7291,13 @@ func ResolveLogicalProperties(node *html.Node, style *Style) {
 		}
 		if val, ok := style.Get("_padding-" + logicalDir); ok {
 			delete(style.Properties, "padding-"+defaultSide)
-			style.Set("padding-"+physSide, val)
+			// Don't overwrite an existing physical property from the author CSS.
+			// The logical property may come from a lower-priority source (e.g. UA
+			// stylesheet's padding-inline-start on <ul>) while the physical property
+			// was explicitly set by the author (e.g. padding-top: 1em).
+			if _, exists := style.Properties["padding-"+physSide]; !exists {
+				style.Set("padding-"+physSide, val)
+			}
 		}
 	}
 
