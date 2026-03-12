@@ -18,18 +18,16 @@ func (le *LayoutEngine) layoutMulticolumn(
 	columnWidth := style.GetColumnWidth()
 	columnGap := style.GetColumnGapMulticol()
 
-	// Content width available for columns (inside padding+border)
-	contentWidth := box.Width - box.Padding.Left - box.Padding.Right -
-		box.Border.Left - box.Border.Right
-	if contentWidth <= 0 {
-		contentWidth = availableWidth - box.Padding.Left - box.Padding.Right -
-			box.Border.Left - box.Border.Right
+	// Content inline-size available for columns (inside padding+border)
+	contentInline := dir.ContentInlineSize(box)
+	if contentInline <= 0 {
+		contentInline = availableWidth - dir.InlineBorderBox(box.Padding, box.Border)
 	}
 
 	// Resolve column count and width per CSS Multicol spec §3.4
 	var numCols int
 	if columnCount > 0 && columnWidth > 0 {
-		maxCols := int((contentWidth + columnGap) / (columnWidth + columnGap))
+		maxCols := int((contentInline + columnGap) / (columnWidth + columnGap))
 		if maxCols < 1 {
 			maxCols = 1
 		}
@@ -40,7 +38,7 @@ func (le *LayoutEngine) layoutMulticolumn(
 	} else if columnCount > 0 {
 		numCols = columnCount
 	} else if columnWidth > 0 {
-		numCols = int((contentWidth + columnGap) / (columnWidth + columnGap))
+		numCols = int((contentInline + columnGap) / (columnWidth + columnGap))
 		if numCols < 1 {
 			numCols = 1
 		}
@@ -48,23 +46,23 @@ func (le *LayoutEngine) layoutMulticolumn(
 		numCols = 1
 	}
 
-	colWidth := (contentWidth - float64(numCols-1)*columnGap) / float64(numCols)
-	if colWidth < 0 {
-		colWidth = 0
+	colInline := (contentInline - float64(numCols-1)*columnGap) / float64(numCols)
+	if colInline < 0 {
+		colInline = 0
 	}
 
 	// Collect flow children
 	children := multicolCollectFlowChildren(box.Node, computedStyles)
 	if len(children) == 0 {
 		// No element children — may have inline/text content directly
-		le.layoutMulticolumnInline(box, numCols, colWidth, columnGap, computedStyles)
+		le.layoutMulticolumnInline(box, numCols, colInline, columnGap, dir, computedStyles)
 		return
 	}
 
 	// --- column-span: all support ---
 	// Split children into segments: each segment is either a list of normal
 	// children (laid out in columns) or a single column-span:all child laid
-	// out at full content width.
+	// out at full content inline-size.
 	type segment struct {
 		spanAll  bool        // true → single spanning child
 		node     *html.Node  // set when spanAll=true
@@ -97,96 +95,124 @@ func (le *LayoutEngine) layoutMulticolumn(
 
 	if !hasSpans {
 		// Fast path: no column-span:all — use original algorithm
-		le.layoutMulticolumnSegment(box, numCols, colWidth, columnGap, dir, children, computedStyles)
+		le.layoutMulticolumnSegment(box, numCols, colInline, columnGap, dir, children, computedStyles)
 		return
 	}
 
 	// Slow path: handle spans
 	box.Children = nil
-	startX := box.X + box.Border.Left + box.Padding.Left
-	startY := box.Y + box.Border.Top + box.Padding.Top
-	curY := startY
+	startInline := dir.ContentStartInlinePos(box)
+	startBlock := dir.ContentStartBlockPos(box)
+
+	curBlockOffset := 0.0 // logical offset from block-start
 
 	for _, seg := range segments {
 		if seg.spanAll {
-			// Lay out spanning child at full content width
-			spanBox := le.layoutNodeHTB(seg.node, startX, curY, contentWidth, computedStyles, box)
+			// Lay out spanning child at full content inline-size
+			spanBlock := startBlock + curBlockOffset
+			if dir.WM == VerticalRL {
+				spanBlock = startBlock - curBlockOffset
+			}
+			spanX, spanY := dir.MakePhysical(startInline, spanBlock)
+			spanBox := le.layoutNode(seg.node, spanX, spanY, contentInline, dir, computedStyles, box)
 			if spanBox != nil {
-				spanH := spanBox.Height +
-					spanBox.Margin.Top + spanBox.Margin.Bottom +
-					spanBox.Padding.Top + spanBox.Padding.Bottom +
-					spanBox.Border.Top + spanBox.Border.Bottom
+				spanBlockExt := dir.BlockSize(spanBox) +
+					dir.BlockStartEdge(spanBox.Margin) + dir.BlockEndEdge(spanBox.Margin) +
+					dir.BlockStartEdge(spanBox.Padding) + dir.BlockEndEdge(spanBox.Padding) +
+					dir.BlockStartEdge(spanBox.Border) + dir.BlockEndEdge(spanBox.Border)
 				// Reposition: spanning child uses margin area origin
-				dx := startX + spanBox.Margin.Left - spanBox.X
-				dy := curY + spanBox.Margin.Top - spanBox.Y
+				targetInline := startInline + dir.InlineStartEdge(spanBox.Margin)
+				spanMarginBlock := curBlockOffset + dir.BlockStartEdge(spanBox.Margin)
+				targetBlock := startBlock + spanMarginBlock
+				if dir.WM == VerticalRL {
+					targetBlock = startBlock - spanMarginBlock - dir.BlockSize(spanBox)
+				}
+				targetX, targetY := dir.MakePhysical(targetInline, targetBlock)
+				dx := targetX - spanBox.X
+				dy := targetY - spanBox.Y
 				multicolRepositionBox(spanBox, dx, dy)
 				box.Children = append(box.Children, spanBox)
 				spanBox.Parent = box
-				curY += spanH
+				curBlockOffset += spanBlockExt
 			}
 		} else if len(seg.children) > 0 {
-			// Lay out this group in columns; collect the column height
-			groupH := le.layoutMulticolumnSegmentAt(box, numCols, colWidth, columnGap,
-				startX, curY, dir, seg.children, computedStyles)
-			curY += groupH
+			// Lay out this group in columns; collect the column block extent
+			segBlock := startBlock + curBlockOffset
+			if dir.WM == VerticalRL {
+				segBlock = startBlock - curBlockOffset
+			}
+			segX, segY := dir.MakePhysical(startInline, segBlock)
+			groupBlockExt := le.layoutMulticolumnSegmentAt(box, numCols, colInline, columnGap,
+				segX, segY, dir, seg.children, computedStyles)
+			curBlockOffset += groupBlockExt
 		}
 	}
 
-	// Set total box height
-	innerH := curY - startY
-	box.Height = innerH + box.Padding.Top + box.Padding.Bottom +
-		box.Border.Top + box.Border.Bottom
+	// Set total box block-size
+	dir.SetBlockSize(box, curBlockOffset+dir.BlockBorderBox(box.Padding, box.Border))
 }
 
 // layoutMulticolumnSegment distributes a list of children across columns and
 // appends results to box.Children. Used by the no-span fast path.
 func (le *LayoutEngine) layoutMulticolumnSegment(
 	box *Box,
-	numCols int, colWidth, columnGap float64,
+	numCols int, colInline, columnGap float64,
 	dir Dir,
 	children []*html.Node,
 	computedStyles map[*html.Node]*css.Style,
 ) {
-	startX := box.X + box.Border.Left + box.Padding.Left
-	startY := box.Y + box.Border.Top + box.Padding.Top
-	maxH := le.layoutMulticolumnSegmentAt(box, numCols, colWidth, columnGap,
+	startInline := dir.ContentStartInlinePos(box)
+	startBlock := dir.ContentStartBlockPos(box)
+	startX, startY := dir.MakePhysical(startInline, startBlock)
+	maxBlockExt := le.layoutMulticolumnSegmentAt(box, numCols, colInline, columnGap,
 		startX, startY, dir, children, computedStyles)
-	box.Height = maxH + box.Padding.Top + box.Padding.Bottom +
-		box.Border.Top + box.Border.Bottom
+	dir.SetBlockSize(box, maxBlockExt+dir.BlockBorderBox(box.Padding, box.Border))
 }
 
-// layoutMulticolumnSegmentAt lays out children in columns starting at (startX,
-// startY), appends result boxes to box.Children, and returns the height of the
-// tallest column.
+// layoutMulticolumnSegmentAt lays out children in columns starting at physical
+// (startX, startY), appends result boxes to box.Children, and returns the
+// block extent of the tallest column.
 func (le *LayoutEngine) layoutMulticolumnSegmentAt(
 	box *Box,
-	numCols int, colWidth, columnGap float64,
+	numCols int, colInline, columnGap float64,
 	startX, startY float64,
 	dir Dir,
 	children []*html.Node,
 	computedStyles map[*html.Node]*css.Style,
 ) float64 {
 	type childLayout struct {
-		node   *html.Node
-		box    *Box
-		height float64
+		node     *html.Node
+		box      *Box
+		blockExt float64 // block extent including margins+padding+border
 	}
 
+	// Derive segment block base from the physical start position.
+	// This is the physical coordinate of block-start for this segment.
+	segBlockBase := dir.ExtractBlock(startX, startY)
+
 	var laid []childLayout
-	totalChildHeight := 0.0
-	tempY := 0.0
+	totalBlockExt := 0.0
+	tempBlockOffset := 0.0
 
 	for _, child := range children {
-		childBox := le.layoutNodeHTB(child, 0, tempY, colWidth, computedStyles, box)
+		// Lay out at temporary position for measurement.
+		// Use segment-relative block positions.
+		tempBlock := segBlockBase + tempBlockOffset
+		if dir.WM == VerticalRL {
+			tempBlock = segBlockBase - tempBlockOffset
+		}
+		tempX, tempY := dir.MakePhysical(0, tempBlock)
+		childBox := le.layoutNode(child, tempX, tempY, colInline, dir, computedStyles, box)
 		if childBox == nil {
 			continue
 		}
-		h := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom +
-			childBox.Padding.Top + childBox.Padding.Bottom +
-			childBox.Border.Top + childBox.Border.Bottom
-		laid = append(laid, childLayout{node: child, box: childBox, height: h})
-		totalChildHeight += h
-		tempY += h
+		blockExt := dir.BlockSize(childBox) +
+			dir.BlockStartEdge(childBox.Margin) + dir.BlockEndEdge(childBox.Margin) +
+			dir.BlockStartEdge(childBox.Padding) + dir.BlockEndEdge(childBox.Padding) +
+			dir.BlockStartEdge(childBox.Border) + dir.BlockEndEdge(childBox.Border)
+		laid = append(laid, childLayout{node: child, box: childBox, blockExt: blockExt})
+		totalBlockExt += blockExt
+		tempBlockOffset += blockExt
 	}
 
 	if len(laid) == 0 {
@@ -194,49 +220,58 @@ func (le *LayoutEngine) layoutMulticolumnSegmentAt(
 	}
 
 	// Distribute children across columns
-	targetHeight := totalChildHeight / float64(numCols)
-	if targetHeight < 1 {
-		targetHeight = 1
+	targetBlockExt := totalBlockExt / float64(numCols)
+	if targetBlockExt < 1 {
+		targetBlockExt = 1
 	}
 
 	type column struct {
-		items  []childLayout
-		height float64
+		items    []childLayout
+		blockExt float64
 	}
 	columns := make([]column, numCols)
 	colIdx := 0
 
 	for _, item := range laid {
 		if colIdx < numCols-1 && len(columns[colIdx].items) > 0 &&
-			columns[colIdx].height+item.height > targetHeight*1.1 {
+			columns[colIdx].blockExt+item.blockExt > targetBlockExt*1.1 {
 			colIdx++
 		}
 		columns[colIdx].items = append(columns[colIdx].items, item)
-		columns[colIdx].height += item.height
+		columns[colIdx].blockExt += item.blockExt
 	}
 
 	// Position children in their columns
-	maxColumnHeight := 0.0
+	startInline := dir.ExtractInline(startX, startY)
+	maxColumnBlockExt := 0.0
 	for i, col := range columns {
-		colX := startX + float64(i)*(colWidth+columnGap)
-		colY := startY
+		colInlinePos := startInline + float64(i)*(colInline+columnGap)
+		colBlockOffset := 0.0 // logical offset from block-start within this column
 
 		for _, item := range col.items {
 			childBox := item.box
-			dx := colX + childBox.Margin.Left - childBox.X
-			dy := colY + childBox.Margin.Top - childBox.Y
+			// Target physical positions — relative to segment start (segBlockBase)
+			targetInline := colInlinePos + dir.InlineStartEdge(childBox.Margin)
+			marginBlock := colBlockOffset + dir.BlockStartEdge(childBox.Margin)
+			targetBlock := segBlockBase + marginBlock
+			if dir.WM == VerticalRL {
+				targetBlock = segBlockBase - marginBlock - dir.BlockSize(childBox)
+			}
+			targetX, targetY := dir.MakePhysical(targetInline, targetBlock)
+			dx := targetX - childBox.X
+			dy := targetY - childBox.Y
 			multicolRepositionBox(childBox, dx, dy)
 
 			box.Children = append(box.Children, childBox)
 			childBox.Parent = box
-			colY += item.height
+			colBlockOffset += item.blockExt
 		}
-		if col.height > maxColumnHeight {
-			maxColumnHeight = col.height
+		if col.blockExt > maxColumnBlockExt {
+			maxColumnBlockExt = col.blockExt
 		}
 	}
 
-	return maxColumnHeight
+	return maxColumnBlockExt
 }
 
 // multicolCollectFlowChildren returns the in-flow element children of a node.
@@ -271,11 +306,12 @@ func multicolRepositionBox(box *Box, dx, dy float64) {
 
 // layoutMulticolumnInline handles multicol containers whose content is
 // inline/text nodes (no element children). It lays out the content at
-// colWidth, then distributes the resulting line boxes across columns.
+// colInline width, then distributes the resulting line boxes across columns.
 func (le *LayoutEngine) layoutMulticolumnInline(
 	box *Box,
 	numCols int,
-	colWidth, columnGap float64,
+	colInline, columnGap float64,
+	dir Dir,
 	computedStyles map[*html.Node]*css.Style,
 ) {
 	if box.Node == nil || len(box.Node.Children) == 0 {
@@ -285,11 +321,13 @@ func (le *LayoutEngine) layoutMulticolumnInline(
 	startX := box.X + box.Border.Left + box.Padding.Left
 	startY := box.Y + box.Border.Top + box.Padding.Top
 
-	// Use inline layout at colWidth to get line-box fragments
+	// Use inline layout at colInline to get line-box fragments.
+	// Inline text layout remains HTB for now — Dir-aware inline text in
+	// multicol requires further work in the inline layout pipeline.
 	result := le.LayoutInlineContentToBoxes(
 		box.Node.Children,
 		box,
-		colWidth,
+		colInline,
 		startY,
 		computedStyles,
 		nil,
@@ -301,8 +339,8 @@ func (le *LayoutEngine) layoutMulticolumnInline(
 
 	// Group boxes by their Y coordinate (each distinct Y = one line)
 	type lineGroup struct {
-		y    float64
-		h    float64
+		y     float64
+		h     float64
 		boxes []*Box
 	}
 	var lines []lineGroup
@@ -340,7 +378,7 @@ func (le *LayoutEngine) layoutMulticolumnInline(
 	maxColHeight := 0.0
 
 	for colIdx := 0; colIdx < numCols; colIdx++ {
-		colX := startX + float64(colIdx)*(colWidth+columnGap)
+		colX := startX + float64(colIdx)*(colInline+columnGap)
 		firstLine := colIdx * linesPerCol
 		lastLine := firstLine + linesPerCol
 		if lastLine > len(lines) {
