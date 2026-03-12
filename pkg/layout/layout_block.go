@@ -1778,8 +1778,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			   childDisplay == css.DisplayTable || childDisplay == css.DisplayListItem ||
 			   childDisplay == css.DisplayFlex || childDisplay == css.DisplayGrid ||
 			   childFloat != css.FloatNone {
-				// Block-level or floated: start from parent's left content edge
-				childX = box.X + border.Left + padding.Left
+				// Block-level or floated: start from parent's inline-start content edge
+				childX = dir.ContentStartInlinePos(box)
 			}
 
 			// CSS 2.1 §9.4.1: A block that establishes a new BFC must not overlap float margin boxes.
@@ -2487,21 +2487,21 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 7 Enhancement: Inline elements always shrink-wrap to children
 	if display == css.DisplayInline && len(box.Children) > 0 {
-		// Calculate width from children
-		// For inline formatting context, children flow horizontally so we SUM their widths
-		totalChildWidth := 0.0
-		maxChildHeight := 0.0
+		// Calculate inline-size from children
+		// For inline formatting context, children flow in the inline direction so we SUM their inline sizes
+		totalChildInline := 0.0
+		maxChildBlock := 0.0
 		for _, child := range box.Children {
-			childWidth := le.getTotalWidth(child)
-			totalChildWidth += childWidth
-			childHeight := le.getTotalHeight(child)
-			if childHeight > maxChildHeight {
-				maxChildHeight = childHeight
+			childInline := le.getTotalInlineSize(child, dir)
+			totalChildInline += childInline
+			childBlock := le.getTotalBlockSize(child, dir)
+			if childBlock > maxChildBlock {
+				maxChildBlock = childBlock
 			}
 		}
 
-		box.Width = totalChildWidth
-		box.Height = maxChildHeight
+		dir.SetInlineSize(box, totalChildInline)
+		dir.SetBlockSize(box, maxChildBlock)
 	}
 
 	// Phase 5 Enhancement: Float shrink-wrapping
@@ -2521,73 +2521,74 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 
 		if allInline {
-			// Inline formatting context: compute content width from max right edge
+			// Inline formatting context: compute content inline-size from max inline-end edge.
 			// Children (text boxes, span wrappers) may overlap so summing would double-count.
-			// Instead, find the rightmost border-box edge relative to the content area.
-			contentAreaLeft := box.X + box.Border.Left + box.Padding.Left
-			maxContentRight := 0.0
+			// Instead, find the farthest inline-end border-box edge relative to the content area.
+			contentAreaInlineStart := dir.ContentStartInlinePos(box)
+			maxContentInlineEnd := 0.0
 			for _, child := range box.Children {
-				childRight := child.X + child.Width
-				if childRight > maxContentRight {
-					maxContentRight = childRight
+				childInlineEnd := dir.InlinePos(child) + dir.InlineSize(child)
+				if childInlineEnd > maxContentInlineEnd {
+					maxContentInlineEnd = childInlineEnd
 				}
 			}
-			shrinkContentWidth := maxContentRight - contentAreaLeft
-			if shrinkContentWidth > 0 {
-				// box.Width is border-box: content + padding + borders
-				box.Width = shrinkContentWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+			shrinkContentInline := maxContentInlineEnd - contentAreaInlineStart
+			if shrinkContentInline > 0 {
+				// border-box inline-size: content + padding + borders
+				dir.SetInlineSize(box, shrinkContentInline+dir.InlineBorderBox(box.Padding, box.Border))
 			}
 		} else {
-			// Block formatting context: compute max-content width.
+			// Block formatting context: compute max-content inline-size.
 			// CSS 2.1 §10.3.5: preferred width = width with infinite available space.
-			// Float children would all be on one line → sum their widths.
-			// Non-float block children stack vertically → take max width.
-			floatWidthSum := 0.0
-			maxNonFloatWidth := 0.0
+			// Float children would all be on one line → sum their inline sizes.
+			// Non-float block children stack in block direction → take max inline size.
+			floatInlineSum := 0.0
+			maxNonFloatInline := 0.0
 			for _, child := range box.Children {
 				// Skip whitespace-only text nodes — they don't contribute to
-				// shrink-to-fit width (CSS 2.1 §9.2.2.1: whitespace between
+				// shrink-to-fit (CSS 2.1 §9.2.2.1: whitespace between
 				// block/float children doesn't generate boxes).
 				if child.Node != nil && child.Node.Type == html.TextNode {
 					if strings.TrimSpace(child.Node.Text) == "" {
 						continue
 					}
 				}
-				childWidth := le.computeShrinkToFitChildWidth(child)
+				childInline := le.computeShrinkToFitChildInlineSize(child, dir)
 				// Text nodes are always inline content, never float children,
 				// even if they inherit float from a parent container.
 				isFloat := child.Style != nil && child.Style.GetFloat() != css.FloatNone &&
 					(child.Node == nil || child.Node.Type != html.TextNode)
 				if isFloat {
-					floatWidthSum += childWidth
+					floatInlineSum += childInline
 				} else {
-					if childWidth > maxNonFloatWidth {
-						maxNonFloatWidth = childWidth
+					if childInline > maxNonFloatInline {
+						maxNonFloatInline = childInline
 					}
 				}
 			}
-			maxChildWidth := floatWidthSum
-			if maxNonFloatWidth > maxChildWidth {
-				maxChildWidth = maxNonFloatWidth
+			maxChildInline := floatInlineSum
+			if maxNonFloatInline > maxChildInline {
+				maxChildInline = maxNonFloatInline
 			}
-			if maxChildWidth > 0 {
-				// box.Width is border-box: content + own padding + own borders
-				box.Width = maxChildWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+			if maxChildInline > 0 {
+				// border-box inline-size: content + own padding + own borders
+				dir.SetInlineSize(box, maxChildInline+dir.InlineBorderBox(box.Padding, box.Border))
 			}
-			// Re-layout auto-width block children to use the new container width
-			containerContentWidth := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+			// Re-layout auto-inline-size block children to use the new container inline-size
+			containerContentInline := dir.ContentInlineSize(box)
 			for _, child := range box.Children {
 				if child.Style != nil {
-					if _, hasW := child.Style.GetLength("width"); !hasW {
-						if _, hasPct := child.Style.GetPercentage("width"); !hasPct {
+					if _, hasW := child.Style.GetLength(dir.InlineSizeProp()); !hasW {
+						if _, hasPct := child.Style.GetPercentage(dir.InlineSizeProp()); !hasPct {
 							childDisplay := child.Style.GetDisplay()
 							if childDisplay != css.DisplayInline &&
 								child.Style.GetFloat() == css.FloatNone &&
 								child.Style.GetPosition() != css.PositionAbsolute && child.Style.GetPosition() != css.PositionFixed {
-								child.Width = containerContentWidth - child.Border.Left - child.Padding.Left -
-									child.Padding.Right - child.Border.Right - child.Margin.Left - child.Margin.Right
-								if child.Width < 0 {
-									child.Width = 0
+								childInlineBorderBox := dir.InlineBorderBox(child.Padding, child.Border)
+								childInlineMargins := dir.InlineStartEdge(child.Margin) + dir.InlineEndEdge(child.Margin)
+								dir.SetInlineSize(child, containerContentInline-childInlineBorderBox-childInlineMargins)
+								if dir.InlineSize(child) < 0 {
+									dir.SetInlineSize(child, 0)
 								}
 							}
 						}
@@ -2610,37 +2611,38 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
-	// Shrink-wrap absolutely positioned elements without explicit width
+	// Shrink-wrap absolutely positioned elements without explicit inline-size
 	if (position == css.PositionAbsolute || position == css.PositionFixed) && !hasExplicitWidth && len(box.Children) > 0 {
-		maxChildWidth := 0.0
+		maxChildInline := 0.0
 		for _, child := range box.Children {
-			// child.Width is border-box for block-level children, so margin-box = margins + child.Width
-			childWidth := child.Margin.Left + child.Width + child.Margin.Right
-			if childWidth > maxChildWidth {
-				maxChildWidth = childWidth
+			// child border-box inline-size + margins = margin-box inline-size
+			childInline := le.getTotalInlineSize(child, dir)
+			if childInline > maxChildInline {
+				maxChildInline = childInline
 			}
 		}
-		if maxChildWidth > 0 {
-			// box.Width is border-box: content + own padding + own borders
-			box.Width = maxChildWidth + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
+		if maxChildInline > 0 {
+			// border-box inline-size: content + own padding + own borders
+			dir.SetInlineSize(box, maxChildInline+dir.InlineBorderBox(box.Padding, box.Border))
 		}
-		// After shrink-wrap, update block children with auto width to use the new parent width
-		containerContentWidth := box.Width - box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
+		// After shrink-wrap, update block children with auto inline-size to use the new parent inline-size
+		containerContentInline := dir.ContentInlineSize(box)
 		for _, child := range box.Children {
 			if child.Style != nil {
 				childDisplay := child.Style.GetDisplay()
-				if _, hasW := child.Style.GetLength("width"); !hasW && childDisplay != css.DisplayInline &&
+				if _, hasW := child.Style.GetLength(dir.InlineSizeProp()); !hasW && childDisplay != css.DisplayInline &&
 					child.Style.GetFloat() == css.FloatNone &&
 					child.Style.GetPosition() != css.PositionAbsolute && child.Style.GetPosition() != css.PositionFixed {
-					child.Width = containerContentWidth - child.Border.Left - child.Padding.Left - child.Padding.Right - child.Border.Right -
-						child.Margin.Left - child.Margin.Right
-					if child.Width < 0 {
-						child.Width = 0
+					childInlineBorderBox := dir.InlineBorderBox(child.Padding, child.Border)
+					childInlineMargins := dir.InlineStartEdge(child.Margin) + dir.InlineEndEdge(child.Margin)
+					dir.SetInlineSize(child, containerContentInline-childInlineBorderBox-childInlineMargins)
+					if dir.InlineSize(child) < 0 {
+						dir.SetInlineSize(child, 0)
 					}
-					// Re-apply text-align with the updated width
+					// Re-apply text-align with the updated inline-size
 					if child.Style != nil {
 						if ta, ok := child.Style.Get("text-align"); ok && ta != "left" && ta != "" {
-							le.applyTextAlign(child, ta, child.Width)
+							le.applyTextAlign(child, ta, dir.InlineSize(child))
 						}
 					}
 				}
@@ -2660,27 +2662,30 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	}
 
 	// Phase 5: Handle float positioning AFTER children layout and shrink-wrapping
-	var floatY float64
+	var floatBlockPos float64
 	if floatType != css.FloatNone && position == css.PositionStatic {
 		oldX, oldY := box.X, box.Y
-		// box.Width is border-box (content + padding + borders), so margin-box is just margins + box.Width
-		floatTotalWidth := box.Margin.Left + box.Width + box.Margin.Right
+		// margin-box inline-size = margins + border-box inline-size
+		floatTotalInline := le.getTotalInlineSize(box, dir)
 
 		// Phase 5 Enhancement: Check if float fits, apply drop if needed
-		// margin.Top was already applied to y at line 276 (y += margin.Top) and is
-		// included in box.Y, so don't add it again here
-		floatY = le.getFloatDropY(floatType, floatTotalWidth, box.Y, availableWidth)
-		box.Y = floatY
+		// Block-start margin was already applied to y (line 276: y += margin.Top for HTB)
+		// and is included in box.Y/box.X, so don't add it again here.
+		floatBlockPos = le.getFloatDropDir(floatType, floatTotalInline, dir.BlockPos(box), availableWidth, dir)
+		dir.SetBlockPos(box, floatBlockPos)
 
-		// Position float horizontally
+		// Position float in the inline direction
+		// For HTB: x = physical X (inline-start + margin.Left already applied)
+		// For vertical: y = physical Y (inline-start + margin.Top already applied)
+		inlineBase := dir.ExtractInline(x, y)
 		if floatType == css.FloatLeft {
-			// Position at left edge (accounting for existing left floats)
-			leftOffset, _ := le.getFloatOffsets(floatY)
-			box.X = x + leftOffset
+			// Position at inline-start edge (accounting for existing start floats)
+			startOffset, _ := le.getFloatOffsetsDir(floatBlockPos, dir)
+			dir.SetInlinePos(box, inlineBase+startOffset)
 		} else if floatType == css.FloatRight {
-			// Position at right edge (accounting for existing right floats)
-			_, rightOffset := le.getFloatOffsets(floatY)
-			box.X = x + availableWidth - floatTotalWidth - rightOffset
+			// Position at inline-end edge (accounting for existing end floats)
+			_, endOffset := le.getFloatOffsetsDir(floatBlockPos, dir)
+			dir.SetInlinePos(box, inlineBase+availableWidth-floatTotalInline-endOffset)
 		}
 
 		// Shift children by the position delta
@@ -2706,13 +2711,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Add to float tracking (after BFC pop so float is in parent context)
 	if floatType != css.FloatNone && position == css.PositionStatic {
-		le.addFloat(box, floatType, floatY)
+		le.addFloatDir(box, floatType, floatBlockPos, dir)
 	}
 
-	// After all positioning is done, fix float:right children that were
-	// positioned before the parent width was finalized (shrink-to-fit containers)
-	if !hasExplicitWidth && box.Width > 0 {
-		le.repositionFloatRightChildren(box)
+	// After all positioning is done, fix float:right (inline-end) children that were
+	// positioned before the parent inline-size was finalized (shrink-to-fit containers)
+	if !hasExplicitWidth && dir.InlineSize(box) > 0 {
+		le.repositionFloatEndChildrenDir(box, dir)
 	}
 
 	// CSS Writing Modes §6.4: For block-level elements with writing-mode: vertical-rl/lr,

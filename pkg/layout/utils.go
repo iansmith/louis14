@@ -79,19 +79,25 @@ func (b *Box) GetBorderFlags() BorderEdgeFlags {
 
 // repositionFloatRightChildren repositions float:right children to align with the right edge
 func (le *LayoutEngine) repositionFloatRightChildren(box *Box) {
-	contentLeft := box.X + box.Border.Left + box.Padding.Left
-	contentRight := contentLeft + box.Width
+	le.repositionFloatEndChildrenDir(box, NewDir(HorizontalTB))
+}
+
+// repositionFloatEndChildrenDir repositions float:right (inline-end) children for the given Dir.
+func (le *LayoutEngine) repositionFloatEndChildrenDir(box *Box, dir Dir) {
+	contentStart := dir.ContentStartInlinePos(box)
+	contentEnd := contentStart + dir.ContentInlineSize(box)
 	for _, child := range box.Children {
 		if child.Style != nil && child.Style.GetFloat() == css.FloatRight {
-			childTotalWidth := le.getTotalWidth(child)
-			// Float:right: right edge of child aligns with right edge of parent content
-			newX := contentRight - childTotalWidth
-			dx := newX - child.X
-			if dx != 0 {
-				child.X = newX
-				le.shiftChildren(child, dx, 0)
-				// After shifting, recursively fix any float:right grandchildren
-				le.repositionFloatRightChildren(child)
+			childTotalInline := le.getTotalInlineSize(child, dir)
+			// Float:right (inline-end): end edge of child aligns with end edge of parent content
+			newInlinePos := contentEnd - childTotalInline
+			oldInlinePos := dir.InlinePos(child)
+			delta := newInlinePos - oldInlinePos
+			if delta != 0 {
+				dir.SetInlinePos(child, newInlinePos)
+				dx, dy := dir.MakePhysical(delta, 0)
+				le.shiftChildren(child, dx, dy)
+				le.repositionFloatEndChildrenDir(child, dir)
 			}
 		}
 	}
@@ -115,6 +121,18 @@ func (le *LayoutEngine) getTotalHeight(box *Box) float64 {
 // box.Width is border-box (includes padding+border), so only add margins.
 func (le *LayoutEngine) getTotalWidth(box *Box) float64 {
 	return box.Margin.Left + box.Width + box.Margin.Right
+}
+
+// getTotalInlineSize returns the margin-box inline-size for the given Dir.
+// For HTB: margin.Left + box.Width + margin.Right (= getTotalWidth).
+func (le *LayoutEngine) getTotalInlineSize(box *Box, dir Dir) float64 {
+	return dir.InlineStartEdge(box.Margin) + dir.InlineSize(box) + dir.InlineEndEdge(box.Margin)
+}
+
+// getTotalBlockSize returns the margin-box block-size for the given Dir.
+// For HTB: margin.Top + box.Height + margin.Bottom (= getTotalHeight).
+func (le *LayoutEngine) getTotalBlockSize(box *Box, dir Dir) float64 {
+	return dir.BlockStartEdge(box.Margin) + dir.BlockSize(box) + dir.BlockEndEdge(box.Margin)
 }
 
 // computeShrinkToFitChildWidth computes the intrinsic margin-box width of a child box
@@ -148,6 +166,37 @@ func (le *LayoutEngine) computeShrinkToFitChildWidth(box *Box) float64 {
 	}
 	intrinsicWidth := maxChild + box.Padding.Left + box.Padding.Right + box.Border.Left + box.Border.Right
 	return box.Margin.Left + intrinsicWidth + box.Margin.Right
+}
+
+// computeShrinkToFitChildInlineSize is the Dir-aware variant of computeShrinkToFitChildWidth.
+// It computes the intrinsic margin-box inline-size of a child box for shrink-to-fit.
+func (le *LayoutEngine) computeShrinkToFitChildInlineSize(box *Box, dir Dir) float64 {
+	marginBoxInline := func(b *Box) float64 {
+		return dir.InlineStartEdge(b.Margin) + dir.InlineSize(b) + dir.InlineEndEdge(b.Margin)
+	}
+	if box.Style != nil {
+		if _, hasW := box.Style.GetLength(dir.InlineSizeProp()); hasW {
+			return marginBoxInline(box)
+		}
+		if _, hasPct := box.Style.GetPercentage(dir.InlineSizeProp()); hasPct {
+			return marginBoxInline(box)
+		}
+	}
+	if box.Style != nil && box.Style.GetFloat() != css.FloatNone {
+		return marginBoxInline(box)
+	}
+	if len(box.Children) == 0 {
+		return marginBoxInline(box)
+	}
+	maxChild := 0.0
+	for _, child := range box.Children {
+		childInline := le.computeShrinkToFitChildInlineSize(child, dir)
+		if childInline > maxChild {
+			maxChild = childInline
+		}
+	}
+	intrinsicInline := maxChild + dir.InlineBorderBox(box.Padding, box.Border)
+	return dir.InlineStartEdge(box.Margin) + intrinsicInline + dir.InlineEndEdge(box.Margin)
 }
 
 // adjustChildrenY recursively adjusts Y positions of all children by delta
