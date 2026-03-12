@@ -1606,7 +1606,16 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 					}
 				}
 
-				childBox := le.layoutNodeHTB(child, staticX, staticY, childAvailableWidth, computedStyles, box)
+				// Abs-pos children: use layoutNode with Dir but guard vertical modes
+				// to HTB. The transform pipeline (transformToVerticalRL at line ~1090)
+				// expects ALL children in HTB coordinates — it converts them to vertical
+				// as a post-processing step. Removing this guard requires refactoring
+				// the transform pipeline to skip Dir-aware children (Phase 5a).
+				absDir := childDir
+				if childDir.IsVertical() {
+					absDir = NewDir(HorizontalTB)
+				}
+				childBox := le.layoutNode(child, staticX, staticY, childAvailableWidth, absDir, computedStyles, box)
 				if childBox != nil {
 					box.Children = append(box.Children, childBox)
 					hasAbspos = true
