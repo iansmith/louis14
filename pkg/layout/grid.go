@@ -91,6 +91,7 @@ func (le *LayoutEngine) layoutGridContainer(
 	x, y, availableWidth float64,
 	establishedHeight float64,
 	style *css.Style,
+	dir Dir,
 	computedStyles map[*html.Node]*css.Style,
 	parent *Box,
 ) *Box {

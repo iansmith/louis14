@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style) {
+func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, dir Dir, computedStyles map[*html.Node]*css.Style) {
 	direction := flexBox.Style.GetFlexDirection()
 	wrap := flexBox.Style.GetFlexWrap()
 	justifyContent := flexBox.Style.GetJustifyContent()
@@ -271,7 +271,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 	// Step 1: Create flex items by laying out children to get intrinsic sizes
 	contentStartX := flexBox.X + flexBox.Border.Left + flexBox.Padding.Left
 	contentStartY := flexBox.Y + flexBox.Border.Top + flexBox.Padding.Top
-	items := le.createFlexItemsProper(flexBox, contentStartX, contentStartY, contentBoxWidth, computedStyles, isRow)
+	items := le.createFlexItemsProper(flexBox, contentStartX, contentStartY, contentBoxWidth, dir, computedStyles, isRow)
 
 	// Step 1b: For column-direction shrink-to-fit flex containers (float, abs pos
 	// without explicit width), compute the cross-axis (width) from items' intrinsic
@@ -302,7 +302,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					crossSize = contentBoxWidth
 					// Re-create items with correct available width; Step 3 below
 					// will compute their flex base sizes correctly.
-					items = le.createFlexItemsProper(flexBox, contentStartX, contentStartY, contentBoxWidth, computedStyles, isRow)
+					items = le.createFlexItemsProper(flexBox, contentStartX, contentStartY, contentBoxWidth, dir, computedStyles, isRow)
 				}
 			}
 		}
@@ -885,11 +885,11 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			item.Box.Children = item.Box.Children[:0]
 			if !isRow {
 				// Column direction: main axis is height
-				newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, contentMain, item.Box.Style, computedStyles, flexBox)
+				newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, contentMain, item.Box.Style, dir, computedStyles, flexBox)
 				item.Box.Children = newBox.Children
 			} else {
 				// Row direction: main axis is width — re-layout with established width
-				newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, 0, item.Box.Style, computedStyles, flexBox)
+				newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, 0, item.Box.Style, dir, computedStyles, flexBox)
 				item.Box.Children = newBox.Children
 			}
 		}
@@ -1006,11 +1006,11 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
 					// Re-layout this flex container with its new height.
 					item.Box.Children = item.Box.Children[:0]
-					le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+					le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, dir, computedStyles)
 				} else if childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid {
 					item.Box.Children = item.Box.Children[:0]
 					contentH := item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
-					newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, contentH, item.Box.Style, computedStyles, flexBox)
+					newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, contentH, item.Box.Style, dir, computedStyles, flexBox)
 					item.Box.Children = newBox.Children
 				} else {
 					// Block containers: re-layout with established height
@@ -1047,11 +1047,11 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						childDisplay := item.Box.Style.GetDisplay()
 						if (childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid) && item.Box.Node != nil {
 							item.Box.Children = item.Box.Children[:0]
-							newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, minH, item.Box.Style, computedStyles, flexBox)
+							newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, minH, item.Box.Style, dir, computedStyles, flexBox)
 							item.Box.Children = newBox.Children
 						} else if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
 							item.Box.Children = item.Box.Children[:0]
-							le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+							le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, dir, computedStyles)
 						}
 					}
 				}
@@ -1063,11 +1063,11 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						childDisplay := item.Box.Style.GetDisplay()
 						if (childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid) && item.Box.Node != nil {
 							item.Box.Children = item.Box.Children[:0]
-							newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, 0, item.Box.Style, computedStyles, flexBox)
+							newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, 0, item.Box.Style, dir, computedStyles, flexBox)
 							item.Box.Children = newBox.Children
 						} else if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
 							item.Box.Children = item.Box.Children[:0]
-							le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+							le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, dir, computedStyles)
 						}
 					}
 				}
@@ -1374,7 +1374,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					childDisplay := item.Box.Style.GetDisplay()
 					if childDisplay == css.DisplayFlex || childDisplay == css.DisplayInlineFlex {
 						item.Box.Children = item.Box.Children[:0]
-						le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, computedStyles)
+						le.layoutFlex(item.Box, item.Box.X, item.Box.Y, item.Box.Width, dir, computedStyles)
 					} else if (childDisplay == css.DisplayGrid || childDisplay == css.DisplayInlineGrid) && item.Box.Node != nil {
 						item.Box.Children = item.Box.Children[:0]
 						// Pass item.Box.Width (border-box) as availableWidth; layoutGridContainer
@@ -1385,7 +1385,7 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 							// establishedH is content height (border-box - padding - border)
 							establishedH = item.Box.Height - item.Box.Padding.Top - item.Box.Padding.Bottom - item.Box.Border.Top - item.Box.Border.Bottom
 						}
-						newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, establishedH, item.Box.Style, computedStyles, flexBox)
+						newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, establishedH, item.Box.Style, dir, computedStyles, flexBox)
 						item.Box.Children = newBox.Children
 					}
 				}
@@ -1950,7 +1950,7 @@ func (le *LayoutEngine) flattenContentsChildren(node *html.Node, computedStyles 
 }
 
 // createFlexItemsProper creates flex items by laying out each child to get proper dimensions.
-func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, availableWidth float64, computedStyles map[*html.Node]*css.Style, isRow bool) []*FlexItem {
+func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, availableWidth float64, dir Dir, computedStyles map[*html.Node]*css.Style, isRow bool) []*FlexItem {
 	items := make([]*FlexItem, 0)
 
 	// Expand display:contents children so their children participate as direct flex items

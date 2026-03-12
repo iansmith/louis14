@@ -1038,7 +1038,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Multi-column layout: triggered by column-count or column-width on block elements
 	if (display == css.DisplayBlock || display == css.DisplayFlowRoot || display == css.DisplayInlineBlock) &&
 		(style.GetColumnCount() > 0 || style.GetColumnWidth() > 0) {
-		le.layoutMulticolumn(box, x, y, availableWidth, style, computedStyles)
+		le.layoutMulticolumn(box, x, y, availableWidth, style, childDir, computedStyles)
 		if position == css.PositionAbsolute || position == css.PositionFixed {
 			oldX, oldY := box.X, box.Y
 			le.applyAbsolutePositioning(box)
@@ -1051,7 +1051,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 
 	// Phase 9: Handle table layout specially
 	if display == css.DisplayTable {
-		le.layoutTable(box, x, y, availableWidth, computedStyles)
+		le.layoutTable(box, x, y, availableWidth, childDir, computedStyles)
 		if position == css.PositionAbsolute || position == css.PositionFixed {
 			oldX, oldY := box.X, box.Y
 			le.applyAbsolutePositioning(box)
@@ -1126,7 +1126,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 			// Pass 1: reset to no-content height so layoutFlex Step 14 computes natural height.
 			blockBorderBox := dir.BlockBorderBox(padding, border)
 			dir.SetBlockSize(box, blockBorderBox)
-			le.layoutFlex(box, x, y, availableWidth, computedStyles)
+			le.layoutFlex(box, x, y, availableWidth, childDir, computedStyles)
 			naturalH := dir.BlockSize(box)
 
 			// Apply min/max constraints to get the final height (min wins over max per CSS2.1).
@@ -1143,10 +1143,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				dir.SetBlockSize(box, adjustedH)
 				box.HeightIsDefinite = true
 				box.Children = box.Children[:0]
-				le.layoutFlex(box, x, y, availableWidth, computedStyles)
+				le.layoutFlex(box, x, y, availableWidth, childDir, computedStyles)
 			}
 		} else {
-			le.layoutFlex(box, x, y, availableWidth, computedStyles)
+			le.layoutFlex(box, x, y, availableWidth, childDir, computedStyles)
 		}
 
 		if position == css.PositionAbsolute || position == css.PositionFixed {
@@ -1167,7 +1167,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		if hasExplicitHeight {
 			gridEstablishedHeight = contentHeight
 		}
-		box = le.layoutGridContainer(node, x, y, availableWidth, gridEstablishedHeight, style, computedStyles, parent)
+		box = le.layoutGridContainer(node, x, y, availableWidth, gridEstablishedHeight, style, childDir, computedStyles, parent)
 		if position == css.PositionAbsolute || position == css.PositionFixed {
 			oldX, oldY := box.X, box.Y
 			le.applyAbsolutePositioning(box)

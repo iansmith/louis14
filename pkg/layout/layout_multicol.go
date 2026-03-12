@@ -11,6 +11,7 @@ import (
 func (le *LayoutEngine) layoutMulticolumn(
 	box *Box, x, y, availableWidth float64,
 	style *css.Style,
+	dir Dir,
 	computedStyles map[*html.Node]*css.Style,
 ) {
 	columnCount := style.GetColumnCount()
@@ -96,7 +97,7 @@ func (le *LayoutEngine) layoutMulticolumn(
 
 	if !hasSpans {
 		// Fast path: no column-span:all — use original algorithm
-		le.layoutMulticolumnSegment(box, numCols, colWidth, columnGap, children, computedStyles)
+		le.layoutMulticolumnSegment(box, numCols, colWidth, columnGap, dir, children, computedStyles)
 		return
 	}
 
@@ -126,7 +127,7 @@ func (le *LayoutEngine) layoutMulticolumn(
 		} else if len(seg.children) > 0 {
 			// Lay out this group in columns; collect the column height
 			groupH := le.layoutMulticolumnSegmentAt(box, numCols, colWidth, columnGap,
-				startX, curY, seg.children, computedStyles)
+				startX, curY, dir, seg.children, computedStyles)
 			curY += groupH
 		}
 	}
@@ -142,13 +143,14 @@ func (le *LayoutEngine) layoutMulticolumn(
 func (le *LayoutEngine) layoutMulticolumnSegment(
 	box *Box,
 	numCols int, colWidth, columnGap float64,
+	dir Dir,
 	children []*html.Node,
 	computedStyles map[*html.Node]*css.Style,
 ) {
 	startX := box.X + box.Border.Left + box.Padding.Left
 	startY := box.Y + box.Border.Top + box.Padding.Top
 	maxH := le.layoutMulticolumnSegmentAt(box, numCols, colWidth, columnGap,
-		startX, startY, children, computedStyles)
+		startX, startY, dir, children, computedStyles)
 	box.Height = maxH + box.Padding.Top + box.Padding.Bottom +
 		box.Border.Top + box.Border.Bottom
 }
@@ -160,6 +162,7 @@ func (le *LayoutEngine) layoutMulticolumnSegmentAt(
 	box *Box,
 	numCols int, colWidth, columnGap float64,
 	startX, startY float64,
+	dir Dir,
 	children []*html.Node,
 	computedStyles map[*html.Node]*css.Style,
 ) float64 {

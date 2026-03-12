@@ -91,7 +91,7 @@ func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.N
 // Phase 9: getRowspan returns the rowspan attribute value (default 1)
 
 // Phase 9: layoutTable performs table layout
-func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style) {
+func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64, dir Dir, computedStyles map[*html.Node]*css.Style) {
 	tableInfo := le.buildTableInfo(tableBox, computedStyles)
 
 	// Build cell grid accounting for rowspan/colspan
@@ -257,7 +257,7 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 
 	// Position cells below top captions
 	tableBodyY := y + topCaptionHeight
-	le.positionTableCells(tableBox, cellGrid, tableInfo, x, tableBodyY, computedStyles)
+	le.positionTableCells(tableBox, cellGrid, tableInfo, x, tableBodyY, dir, computedStyles)
 
 	// After positioning cells, tableBox.Height reflects body content (from positionTableCells)
 	// Adjust it to include top captions
@@ -989,7 +989,7 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 }
 
 // Phase 9: positionTableCells positions cells in the table
-func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCell, tableInfo *TableInfo, x, y float64, computedStyles map[*html.Node]*css.Style) {
+func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCell, tableInfo *TableInfo, x, y float64, dir Dir, computedStyles map[*html.Node]*css.Style) {
 	borderSpacing := tableInfo.BorderSpacing
 	borderSpacingV := tableInfo.BorderSpacingV
 	if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
