@@ -602,18 +602,18 @@ func (le *LayoutEngine) layoutGridContainer(
 			prelimWidth = containerWidth
 		}
 
-		childBox := le.layoutNodeHTB(item.child, 0, 0, prelimWidth, computedStyles, nil)
+		childBox := le.layoutNode(item.child, 0, 0, prelimWidth, dir, computedStyles, nil)
 		itemBoxes[i] = childBox
 		if childBox == nil {
 			continue
 		}
 
-		// Update auto column sizes from content
+		// Update auto column sizes from content (columns = inline-axis tracks)
 		// Include auto, fr, and minmax tracks — all need content-based sizing for intrinsic/indefinite paths
 		if item.colSpan == 1 && item.col < len(columnTracks) {
 			t := columnTracks[item.col]
 			if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent || t.IsFitContent {
-				totalW := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
+				totalW := dir.InlineSize(childBox) + dir.InlineStartEdge(childBox.Margin) + dir.InlineEndEdge(childBox.Margin)
 				// CSS Sizing: when an item has an intrinsic max-width/width keyword
 				// (max-content, min-content, fit-content), layoutNode with 0 available
 				// width gives an incorrect contribution (block fills 0 → only padding).
@@ -621,7 +621,7 @@ func (le *LayoutEngine) layoutGridContainer(
 				if mwVal, hasMW := item.childStyle.Get("max-width"); hasMW &&
 					(mwVal == "max-content" || mwVal == "min-content" || mwVal == "fit-content") {
 					sizes := le.ComputeMinMaxSizes(item.child, NewConstraintSpace(containerWidth, -1), item.childStyle)
-					intrinsicW := sizes.MaxContentSize + childBox.Margin.Left + childBox.Margin.Right
+					intrinsicW := sizes.MaxContentSize + dir.InlineStartEdge(childBox.Margin) + dir.InlineEndEdge(childBox.Margin)
 					if intrinsicW > totalW {
 						totalW = intrinsicW
 					}
@@ -631,13 +631,12 @@ func (le *LayoutEngine) layoutGridContainer(
 				}
 			}
 		}
-		// Update auto row sizes from content
+		// Update auto row sizes from content (rows = block-axis tracks)
 		if item.rowSpan == 1 && item.row < len(rowTracks) {
 			t := rowTracks[item.row]
 			if t.Auto || t.Fr > 0 || (t.IsMinMax && t.MaxFr > 0) || t.MinContent || t.MaxContent {
-				// childBox.Height is border-box (includes padding+border per new convention).
-				// Only add margins to get the total outer height for track sizing.
-				totalH := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom
+				// Use Dir-aware block-size (border-box) + block-axis margins for track sizing
+				totalH := dir.BlockSize(childBox) + dir.BlockStartEdge(childBox.Margin) + dir.BlockEndEdge(childBox.Margin)
 				if totalH > autoRowSizes[item.row] {
 					autoRowSizes[item.row] = totalH
 				}
@@ -647,7 +646,7 @@ func (le *LayoutEngine) layoutGridContainer(
 		// CSS Grid §12.5: spanning items contribute their size to spanned tracks
 		// after subtracting the fixed-size tracks.
 		if item.colSpan > 1 {
-			totalW := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
+			totalW := dir.InlineSize(childBox) + dir.InlineStartEdge(childBox.Margin) + dir.InlineEndEdge(childBox.Margin)
 			// Sum of fixed (non-auto, non-fr) track sizes in the span
 			fixedW := 0.0
 			autoFrCount := 0
@@ -768,7 +767,7 @@ func (le *LayoutEngine) layoutGridContainer(
 			Parent: box,
 		}
 		// Re-layout child with correct cell width (or fit-content for non-stretch)
-		childBox := le.layoutNodeHTB(item.child, 0, 0, layoutWidth, computedStyles, cellParent)
+		childBox := le.layoutNode(item.child, 0, 0, layoutWidth, dir, computedStyles, cellParent)
 		if childBox == nil {
 			continue
 		}
@@ -778,43 +777,45 @@ func (le *LayoutEngine) layoutGridContainer(
 		itemJustify := justifyItems
 		itemAlign := alignItems
 
-		// Apply item alignment
-		childTotalWidth := childBox.Width + childBox.Margin.Left + childBox.Margin.Right
-		if childTotalWidth < cellWidth {
+		// Apply item alignment using Dir-aware dimensions
+		// Columns = inline-axis, Rows = block-axis
+		childTotalInline := dir.InlineSize(childBox) + dir.InlineStartEdge(childBox.Margin) + dir.InlineEndEdge(childBox.Margin)
+		if childTotalInline < cellWidth {
 			switch itemJustify {
 			case css.JustifyItemsCenter:
-				childBox.X = (cellWidth - childTotalWidth) / 2
+				childBox.X = (cellWidth - childTotalInline) / 2
 			case css.JustifyItemsEnd:
-				childBox.X = cellWidth - childTotalWidth
+				childBox.X = cellWidth - childTotalInline
 			case css.JustifyItemsStart:
 				// start: position at inline-start edge, do not stretch
 				childBox.X = 0
 			default: // stretch
-				// CSS Grid §6.2: stretch only applies when inline-size (width) is auto.
-				// An explicit width (including max-content, min-content) prevents stretching.
-				widthVal, hasWidthVal := item.childStyle.Get("width")
-				inlineSizeIsAuto := !hasWidthVal || widthVal == "auto"
+				// CSS Grid §6.2: stretch only applies when inline-size is auto.
+				// An explicit width/height (including max-content, min-content) prevents stretching.
+				inlineSizeProp := dir.InlineSizeProp()
+				sizeVal, hasSizeVal := item.childStyle.Get(inlineSizeProp)
+				inlineSizeIsAuto := !hasSizeVal || sizeVal == "auto"
 				if inlineSizeIsAuto {
-					childBox.Width = cellWidth - childBox.Margin.Left - childBox.Margin.Right
+					dir.SetInlineSize(childBox, cellWidth-dir.InlineStartEdge(childBox.Margin)-dir.InlineEndEdge(childBox.Margin))
 				}
 				childBox.X = 0
 			}
 		}
 
-		// box.Height is border-box (content + padding + border), consistent with
-		// box.Width above. Only add margin to get the total outer height.
-		childTotalHeight := childBox.Height + childBox.Margin.Top + childBox.Margin.Bottom
-		if childTotalHeight < cellHeight {
+		// Block-axis alignment (rows = block-axis)
+		childTotalBlock := dir.BlockSize(childBox) + dir.BlockStartEdge(childBox.Margin) + dir.BlockEndEdge(childBox.Margin)
+		if childTotalBlock < cellHeight {
 			switch itemAlign {
 			case css.AlignItemsCenter:
-				childBox.Y = (cellHeight - childTotalHeight) / 2
+				childBox.Y = (cellHeight - childTotalBlock) / 2
 			case css.AlignItemsFlexEnd:
-				childBox.Y = cellHeight - childTotalHeight
+				childBox.Y = cellHeight - childTotalBlock
 			default: // stretch — CSS Grid §6.2: only stretch when block size is auto
-				heightVal, hasHeightVal := item.childStyle.Get("height")
-				blockSizeIsAuto := !hasHeightVal || heightVal == "auto"
+				blockSizeProp := dir.BlockSizeProp()
+				sizeVal, hasSizeVal := item.childStyle.Get(blockSizeProp)
+				blockSizeIsAuto := !hasSizeVal || sizeVal == "auto"
 				if blockSizeIsAuto {
-					childBox.Height = cellHeight - childBox.Margin.Top - childBox.Margin.Bottom
+					dir.SetBlockSize(childBox, cellHeight-dir.BlockStartEdge(childBox.Margin)-dir.BlockEndEdge(childBox.Margin))
 				}
 				childBox.Y = 0
 			}

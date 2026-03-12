@@ -121,80 +121,76 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 	}
 	tableInfo.NumCols = numCols
 
-	// Calculate column widths
-	// Pass 0 for tableWidth when the table has no explicit width (shrink-to-fit)
-	explicitTableWidth := 0.0
-	if w, ok := tableBox.Style.GetLength("width"); ok {
-		explicitTableWidth = w
-	} else if _, ok := tableBox.Style.GetPercentage("width"); ok {
-		// Percentage width was already resolved in layoutNode → use the content width
-		explicitTableWidth = tableBox.Width - tableBox.Border.Left - tableBox.Border.Right - tableBox.Padding.Left - tableBox.Padding.Right
+	// Map border-spacing to logical axes: inline spacing for columns, block spacing for rows
+	inlineSpacing := tableInfo.BorderSpacing
+	blockSpacing := tableInfo.BorderSpacingV
+	if dir.IsVertical() {
+		inlineSpacing = tableInfo.BorderSpacingV
+		blockSpacing = tableInfo.BorderSpacing
 	}
-	if tableBox.Style.GetTableLayout() == css.TableLayoutFixed && explicitTableWidth > 0 {
-		tableInfo.ColumnWidths = le.calculateColumnWidthsFixed(cellGrid, tableInfo, explicitTableWidth)
+	if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
+		inlineSpacing = 0
+		blockSpacing = 0
+	}
+
+	// Calculate column widths (= inline-axis track sizes)
+	// Pass 0 for tableInline when the table has no explicit inline-size (shrink-to-fit)
+	explicitTableInline := 0.0
+	if w, ok := tableBox.Style.GetLength(dir.InlineSizeProp()); ok {
+		explicitTableInline = w
+	} else if _, ok := tableBox.Style.GetPercentage(dir.InlineSizeProp()); ok {
+		// Percentage inline-size was already resolved in layoutNode → use the content inline-size
+		explicitTableInline = dir.ContentInlineSize(tableBox)
+	}
+	if tableBox.Style.GetTableLayout() == css.TableLayoutFixed && explicitTableInline > 0 {
+		tableInfo.ColumnWidths = le.calculateColumnWidthsFixed(cellGrid, tableInfo, explicitTableInline)
 	} else {
-		tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth, computedStyles)
+		tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableInline, computedStyles)
 	}
 
-	// Set table width from column widths if not explicitly set
-	_, hasExplicitWidth := tableBox.Style.GetLength("width")
-	_, hasPercentWidth := tableBox.Style.GetPercentage("width")
-	if !hasExplicitWidth && !hasPercentWidth {
-		totalW := 0.0
+	// Set table inline-size from column widths if not explicitly set
+	_, hasExplicitInline := tableBox.Style.GetLength(dir.InlineSizeProp())
+	_, hasPercentInline := tableBox.Style.GetPercentage(dir.InlineSizeProp())
+	if !hasExplicitInline && !hasPercentInline {
+		totalInline := 0.0
 		for _, cw := range tableInfo.ColumnWidths {
-			totalW += cw
+			totalInline += cw
 		}
-		borderSpacing := tableInfo.BorderSpacing
-		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
-			borderSpacing = 0
-		}
-		spacingWidth := borderSpacing * float64(numCols+1)
-		totalW += spacingWidth
-		tableBox.Width = totalW + tableBox.Border.Left + tableBox.Border.Right +
-			tableBox.Padding.Left + tableBox.Padding.Right
+		spacingInline := inlineSpacing * float64(numCols+1)
+		totalInline += spacingInline
+		dir.SetInlineSize(tableBox, totalInline+dir.InlineBorderBox(tableBox.Padding, tableBox.Border))
 	}
 
-	// Calculate row heights
+	// Calculate row heights (= block-axis track sizes)
 	tableInfo.RowHeights = le.calculateRowHeights(cellGrid, tableInfo)
 
-	// Set table height from row heights if not explicitly set
-	explicitTableHeight, hasExplicitHeight := tableBox.Style.GetLength("height")
-	if !hasExplicitHeight {
-		// Check if percentage height was already resolved by layoutNode
-		preComputedContent := tableBox.Height - tableBox.Border.Top - tableBox.Border.Bottom -
-			tableBox.Padding.Top - tableBox.Padding.Bottom
+	// Set table block-size from row heights if not explicitly set
+	explicitTableBlock, hasExplicitBlock := tableBox.Style.GetLength(dir.BlockSizeProp())
+	if !hasExplicitBlock {
+		// Check if percentage block-size was already resolved by layoutNode
+		preComputedContent := dir.BlockSize(tableBox) - dir.BlockBorderBox(tableBox.Padding, tableBox.Border)
 		if preComputedContent > 0 {
-			explicitTableHeight = preComputedContent
-			hasExplicitHeight = true
+			explicitTableBlock = preComputedContent
+			hasExplicitBlock = true
 		}
 	}
-	if !hasExplicitHeight {
-		totalH := 0.0
+	if !hasExplicitBlock {
+		totalBlock := 0.0
 		for _, rh := range tableInfo.RowHeights {
-			totalH += rh
+			totalBlock += rh
 		}
-		borderSpacingV := tableInfo.BorderSpacingV
-		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
-			borderSpacingV = 0
-		}
-		totalH += borderSpacingV * float64(len(tableInfo.RowHeights)+1)
-		tableBox.Height = totalH + tableBox.Border.Top + tableBox.Border.Bottom +
-			tableBox.Padding.Top + tableBox.Padding.Bottom
+		totalBlock += blockSpacing * float64(len(tableInfo.RowHeights)+1)
+		dir.SetBlockSize(tableBox, totalBlock+dir.BlockBorderBox(tableBox.Padding, tableBox.Border))
 	} else {
-		// Distribute explicit height to rows if it exceeds content-based row heights
-		borderSpacingV := tableInfo.BorderSpacingV
-		if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
-			borderSpacingV = 0
-		}
-		totalRowH := 0.0
+		// Distribute explicit block-size to rows if it exceeds content-based row heights
+		totalRowBlock := 0.0
 		for _, rh := range tableInfo.RowHeights {
-			totalRowH += rh
+			totalRowBlock += rh
 		}
-		spacingH := borderSpacingV * float64(len(tableInfo.RowHeights)+1)
-		contentH := explicitTableHeight - tableBox.Border.Top - tableBox.Border.Bottom -
-			tableBox.Padding.Top - tableBox.Padding.Bottom - spacingH
-		if contentH > totalRowH && len(tableInfo.RowHeights) > 0 {
-			extra := contentH - totalRowH
+		spacingBlock := blockSpacing * float64(len(tableInfo.RowHeights)+1)
+		contentBlock := explicitTableBlock - dir.BlockBorderBox(tableBox.Padding, tableBox.Border) - spacingBlock
+		if contentBlock > totalRowBlock && len(tableInfo.RowHeights) > 0 {
+			extra := contentBlock - totalRowBlock
 			// First, distribute extra space to rows WITHOUT explicit heights
 			nonExplicitCount := 0
 			for i := range tableInfo.RowHeights {
@@ -245,31 +241,46 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 		}
 	}
 
-	// Layout top captions first; accumulate their height to push table body down
-	topCaptionHeight := 0.0
+	// Layout top captions first; accumulate their block extent to push table body down
+	topCaptionBlockExt := 0.0
 	for _, cap := range topCaptions {
-		capBox := le.layoutNodeHTB(cap.node, x, y+topCaptionHeight, tableBox.Width, computedStyles, tableBox)
+		capBlock := dir.BlockPos(tableBox) + dir.BlockStartEdge(tableBox.Border) + dir.BlockStartEdge(tableBox.Padding) + topCaptionBlockExt
+		if dir.WM == VerticalRL {
+			capBlock = dir.BlockPos(tableBox) + dir.BlockSize(tableBox) - dir.BlockEndEdge(tableBox.Border) - dir.BlockEndEdge(tableBox.Padding) - topCaptionBlockExt
+		}
+		capInline := dir.InlinePos(tableBox)
+		capX, capY := dir.MakePhysical(capInline, capBlock)
+		capBox := le.layoutNode(cap.node, capX, capY, dir.InlineSize(tableBox), dir, computedStyles, tableBox)
 		if capBox != nil {
 			tableBox.Children = append(tableBox.Children, capBox)
-			topCaptionHeight += capBox.Height
+			topCaptionBlockExt += dir.BlockSize(capBox)
 		}
 	}
 
 	// Position cells below top captions
-	tableBodyY := y + topCaptionHeight
-	le.positionTableCells(tableBox, cellGrid, tableInfo, x, tableBodyY, dir, computedStyles)
+	tableBodyBlock := dir.BlockPos(tableBox) + dir.BlockStartEdge(tableBox.Border) + dir.BlockStartEdge(tableBox.Padding) + topCaptionBlockExt
+	if dir.WM == VerticalRL {
+		tableBodyBlock = dir.BlockPos(tableBox) + dir.BlockSize(tableBox) - dir.BlockEndEdge(tableBox.Border) - dir.BlockEndEdge(tableBox.Padding) - topCaptionBlockExt
+	}
+	tableBodyX, tableBodyY := dir.MakePhysical(dir.InlinePos(tableBox), tableBodyBlock)
+	le.positionTableCells(tableBox, cellGrid, tableInfo, tableBodyX, tableBodyY, dir, computedStyles)
 
-	// After positioning cells, tableBox.Height reflects body content (from positionTableCells)
+	// After positioning cells, tableBox block-size reflects body content (from positionTableCells)
 	// Adjust it to include top captions
-	tableBox.Height += topCaptionHeight
+	dir.SetBlockSize(tableBox, dir.BlockSize(tableBox)+topCaptionBlockExt)
 
 	// Layout bottom captions below table body
 	for _, cap := range bottomCaptions {
-		capY := y + tableBox.Height
-		capBox := le.layoutNodeHTB(cap.node, x, capY, tableBox.Width, computedStyles, tableBox)
+		capBlock := dir.BlockPos(tableBox) + dir.BlockSize(tableBox)
+		if dir.WM == VerticalRL {
+			capBlock = dir.BlockPos(tableBox) - (dir.BlockSize(tableBox) - dir.BlockStartEdge(tableBox.Border))
+		}
+		capInline := dir.InlinePos(tableBox)
+		capX, capY := dir.MakePhysical(capInline, capBlock)
+		capBox := le.layoutNode(cap.node, capX, capY, dir.InlineSize(tableBox), dir, computedStyles, tableBox)
 		if capBox != nil {
 			tableBox.Children = append(tableBox.Children, capBox)
-			tableBox.Height += capBox.Height
+			dir.SetBlockSize(tableBox, dir.BlockSize(tableBox)+dir.BlockSize(capBox))
 		}
 	}
 }
@@ -990,42 +1001,55 @@ func (le *LayoutEngine) calculateRowHeights(cellGrid [][]*TableCell, tableInfo *
 
 // Phase 9: positionTableCells positions cells in the table
 func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCell, tableInfo *TableInfo, x, y float64, dir Dir, computedStyles map[*html.Node]*css.Style) {
-	borderSpacing := tableInfo.BorderSpacing
-	borderSpacingV := tableInfo.BorderSpacingV
+	// Map border-spacing to logical axes
+	inlineSpacing := tableInfo.BorderSpacing
+	blockSpacing := tableInfo.BorderSpacingV
+	if dir.IsVertical() {
+		inlineSpacing = tableInfo.BorderSpacingV
+		blockSpacing = tableInfo.BorderSpacing
+	}
 	if tableInfo.BorderCollapse == css.BorderCollapseCollapse {
-		borderSpacing = 0
-		borderSpacingV = 0
+		inlineSpacing = 0
+		blockSpacing = 0
 	}
 
-	// Single-pass: lay out cells row by row, updating row heights from actual content
-	currentY := y + tableBox.Border.Top + tableBox.Padding.Top + borderSpacingV
+	// Extract logical starting positions from physical (x, y)
+	startInline := dir.ExtractInline(x, y)
+	startBlock := dir.ExtractBlock(x, y)
+
+	// Single-pass: lay out cells row by row, updating row block-sizes from actual content
+	currentBlock := startBlock + dir.BlockStartEdge(tableBox.Border) + dir.BlockStartEdge(tableBox.Padding) + blockSpacing
+	if dir.WM == VerticalRL {
+		// VRL: block flows right-to-left, start from the right edge
+		currentBlock = startBlock - dir.BlockStartEdge(tableBox.Border) - dir.BlockStartEdge(tableBox.Padding) - blockSpacing
+	}
 	processedCells := make(map[*TableCell]bool)
 
 	for rowIdx, row := range cellGrid {
-		currentX := x + tableBox.Border.Left + tableBox.Padding.Left + borderSpacing
-		rowHeight := tableInfo.RowHeights[rowIdx]
+		currentInline := startInline + dir.InlineStartEdge(tableBox.Border) + dir.InlineStartEdge(tableBox.Padding) + inlineSpacing
+		rowBlockSize := tableInfo.RowHeights[rowIdx]
 
 		type cellEntry struct {
-			cell      *TableCell
-			cellWidth float64
+			cell          *TableCell
+			cellInlineSize float64
 		}
 		var rowCells []cellEntry
 
 		for colIdx, cell := range row {
 			if cell == nil || processedCells[cell] {
 				if cell == nil {
-					currentX += tableInfo.ColumnWidths[colIdx] + borderSpacing
+					currentInline += tableInfo.ColumnWidths[colIdx] + inlineSpacing
 				}
 				continue
 			}
 
-			// Calculate cell width (sum of spanned columns)
-			cellWidth := 0.0
+			// Calculate cell inline-size (sum of spanned columns)
+			cellInlineSize := 0.0
 			for c := 0; c < cell.ColSpan; c++ {
 				if colIdx+c < tableInfo.NumCols {
-					cellWidth += tableInfo.ColumnWidths[colIdx+c]
+					cellInlineSize += tableInfo.ColumnWidths[colIdx+c]
 					if c > 0 {
-						cellWidth += borderSpacing
+						cellInlineSize += inlineSpacing
 					}
 				}
 			}
@@ -1036,23 +1060,38 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				mergeCollapsedBorders(cell.Box.Node, tableBox, colIdx, computedStyles)
 			}
 
+			// Convert logical positions to physical for layout
+			cellBlock := currentBlock
+			if dir.WM == VerticalRL {
+				cellBlock = currentBlock - rowBlockSize
+			}
+			cellX, cellY := dir.MakePhysical(currentInline, cellBlock)
+
 			// Lay out cell content using the full layout engine
 			if cell.Box.PseudoContent != "" && cell.Box.Node == nil {
 				// Pseudo-element cell: manual text box
 				cell.Box.Margin = cell.Box.Style.GetMargin()
 				cell.Box.Padding = cell.Box.Style.GetPadding()
 				cell.Box.Border = cell.Box.Style.GetBorderWidth()
-				cell.Box.X = currentX
-				cell.Box.Y = currentY
+				cell.Box.X = cellX
+				cell.Box.Y = cellY
 
 				fontSize := cell.Box.Style.GetFontSize()
 				fontWeight := cell.Box.Style.GetFontWeight()
 				bold := fontWeight == css.FontWeightBold
 				textWidth, textHeight := text.MeasureTextWithWeight(cell.Box.PseudoContent, fontSize, bold)
+				textInline := currentInline + dir.InlineStartEdge(cell.Box.Border) + dir.InlineStartEdge(cell.Box.Padding)
+				textBlockBase := cellBlock
+				if dir.WM != VerticalRL {
+					textBlockBase += dir.BlockStartEdge(cell.Box.Border) + dir.BlockStartEdge(cell.Box.Padding)
+				} else {
+					textBlockBase = currentBlock - dir.BlockStartEdge(cell.Box.Border) - dir.BlockStartEdge(cell.Box.Padding)
+				}
+				textX, textY := dir.MakePhysical(textInline, textBlockBase)
 				textBox := &Box{
 					Style:         cell.Box.Style,
-					X:             currentX + cell.Box.Border.Left + cell.Box.Padding.Left,
-					Y:             currentY + cell.Box.Border.Top + cell.Box.Padding.Top,
+					X:             textX,
+					Y:             textY,
 					Width:         textWidth,
 					Height:        textHeight,
 					Parent:        cell.Box,
@@ -1067,15 +1106,15 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 					}
 				}
 				// Use layoutNode to handle all content (text, inline elements, nested tables)
-				cellBox := le.layoutNodeHTB(cell.Box.Node, currentX, currentY, cellWidth, computedStyles, tableBox)
+				cellBox := le.layoutNode(cell.Box.Node, cellX, cellY, cellInlineSize, dir, computedStyles, tableBox)
 				if cellBox != nil {
 					cell.Box = cellBox
 				}
 			}
 
-			// Update row height if actual content is taller (single-row cells only)
-			if cell.RowSpan == 1 && cell.Box.Height > rowHeight {
-				rowHeight = cell.Box.Height
+			// Update row block-size if actual content is larger (single-row cells only)
+			if cell.RowSpan == 1 && dir.BlockSize(cell.Box) > rowBlockSize {
+				rowBlockSize = dir.BlockSize(cell.Box)
 			}
 
 			// empty-cells: hide — mark empty cells so renderer skips their background/border
@@ -1085,55 +1124,67 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 				}
 			}
 
-			rowCells = append(rowCells, cellEntry{cell: cell, cellWidth: cellWidth})
+			rowCells = append(rowCells, cellEntry{cell: cell, cellInlineSize: cellInlineSize})
 			processedCells[cell] = true
-			currentX += cellWidth + borderSpacing
+			currentInline += cellInlineSize + inlineSpacing
 		}
 
-		// Finalize row height and set cell dimensions
-		tableInfo.RowHeights[rowIdx] = rowHeight
+		// Finalize row block-size and set cell dimensions
+		tableInfo.RowHeights[rowIdx] = rowBlockSize
 		for _, ce := range rowCells {
-			// Calculate cell height from spanned rows
-			cellHeight := 0.0
+			// Calculate cell block-size from spanned rows
+			cellBlockSize := 0.0
 			for r := 0; r < ce.cell.RowSpan; r++ {
 				if rowIdx+r < len(tableInfo.RowHeights) {
-					cellHeight += tableInfo.RowHeights[rowIdx+r]
+					cellBlockSize += tableInfo.RowHeights[rowIdx+r]
 					if r > 0 {
-						cellHeight += borderSpacingV
+						cellBlockSize += blockSpacing
 					}
 				}
 			}
 
-			// Save natural content height before overriding with row height
-			naturalContentH := ce.cell.Box.Height - ce.cell.Box.Padding.Top - ce.cell.Box.Padding.Bottom - ce.cell.Box.Border.Top - ce.cell.Box.Border.Bottom
+			// Save natural content block-size before overriding with row block-size
+			naturalContentBlock := dir.BlockSize(ce.cell.Box) -
+				dir.BlockStartEdge(ce.cell.Box.Padding) - dir.BlockEndEdge(ce.cell.Box.Padding) -
+				dir.BlockStartEdge(ce.cell.Box.Border) - dir.BlockEndEdge(ce.cell.Box.Border)
 
-			ce.cell.Box.Width = ce.cellWidth
-			ce.cell.Box.Height = cellHeight
-			if ce.cell.Box.Width < 0 {
-				ce.cell.Box.Width = 0
+			dir.SetInlineSize(ce.cell.Box, ce.cellInlineSize)
+			dir.SetBlockSize(ce.cell.Box, cellBlockSize)
+			if dir.InlineSize(ce.cell.Box) < 0 {
+				dir.SetInlineSize(ce.cell.Box, 0)
 			}
-			if ce.cell.Box.Height < 0 {
-				ce.cell.Box.Height = 0
+			if dir.BlockSize(ce.cell.Box) < 0 {
+				dir.SetBlockSize(ce.cell.Box, 0)
 			}
 
 			// CSS 2.1 §17.5.3: Apply vertical-align to table cells.
-			// When the cell is taller than its content, shift children vertically.
+			// When the cell block-size exceeds its content, shift children in block direction.
 			if ce.cell.Box.Node != nil && ce.cell.Box.Style != nil {
 				vertAlign := ce.cell.Box.Style.GetVerticalAlign()
-				cellContentH := cellHeight - ce.cell.Box.Padding.Top - ce.cell.Box.Padding.Bottom - ce.cell.Box.Border.Top - ce.cell.Box.Border.Bottom
-				if naturalContentH < cellContentH {
-					var yOffset float64
+				cellContentBlock := cellBlockSize -
+					dir.BlockStartEdge(ce.cell.Box.Padding) - dir.BlockEndEdge(ce.cell.Box.Padding) -
+					dir.BlockStartEdge(ce.cell.Box.Border) - dir.BlockEndEdge(ce.cell.Box.Border)
+				if naturalContentBlock < cellContentBlock {
+					var blockOffset float64
 					switch vertAlign {
 					case css.VerticalAlignMiddle:
-						yOffset = (cellContentH - naturalContentH) / 2
+						blockOffset = (cellContentBlock - naturalContentBlock) / 2
 					case css.VerticalAlignBottom:
-						yOffset = cellContentH - naturalContentH
-					default: // top/baseline: no offset (already at top)
-						yOffset = 0
+						blockOffset = cellContentBlock - naturalContentBlock
+					default: // top/baseline: no offset (already at block-start)
+						blockOffset = 0
 					}
-					if yOffset != 0 {
+					if blockOffset != 0 {
+						// Apply block-direction offset to children
 						for _, child := range ce.cell.Box.Children {
-							child.Y += yOffset
+							if dir.IsVertical() {
+								child.X += blockOffset
+								if dir.WM == VerticalRL {
+									child.X -= blockOffset * 2 // reverse direction for VRL
+								}
+							} else {
+								child.Y += blockOffset
+							}
 						}
 					}
 				}
@@ -1142,12 +1193,22 @@ func (le *LayoutEngine) positionTableCells(tableBox *Box, cellGrid [][]*TableCel
 			tableBox.Children = append(tableBox.Children, ce.cell.Box)
 		}
 
-		currentY += rowHeight + borderSpacingV
+		if dir.WM == VerticalRL {
+			currentBlock -= rowBlockSize + blockSpacing
+		} else {
+			currentBlock += rowBlockSize + blockSpacing
+		}
 	}
 
-	// Update table box height based on content
+	// Update table box block-size based on content
 	if len(cellGrid) > 0 {
-		tableBox.Height = currentY - y + tableBox.Border.Bottom + tableBox.Padding.Bottom
+		var contentBlock float64
+		if dir.WM == VerticalRL {
+			contentBlock = startBlock - currentBlock + dir.BlockEndEdge(tableBox.Border) + dir.BlockEndEdge(tableBox.Padding)
+		} else {
+			contentBlock = currentBlock - startBlock + dir.BlockEndEdge(tableBox.Border) + dir.BlockEndEdge(tableBox.Padding)
+		}
+		dir.SetBlockSize(tableBox, contentBlock)
 	}
 }
 
