@@ -1895,23 +1895,28 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	hasExplicitWidth := false
 
 	if dir.IsVertical() {
-		// Only activate Dir-aware layout for the OUTERMOST vertical container.
-		// When the parent is also vertical, the parent's transform pipeline handles
-		// column rearrangement via transformBoxToVerticalRecursive. Using Dir-aware
-		// layout in a same-axis child would conflict with the parent's transform.
+		// Activate Dir-aware layout for vertical containers.
+		// For same-axis vertical children (parent is also vertical), only use Dir-aware
+		// layout if the parent already uses it (VerticalTransformed=true). Otherwise,
+		// the parent's transform pipeline handles column rearrangement via
+		// transformBoxToVerticalRecursive, and Dir-aware content would conflict.
 		parentIsVertical := false
+		parentUsesDirectLayout := false
 		if containerBox.Node != nil && containerBox.Node.Parent != nil {
 			if parentStyle := computedStyles[containerBox.Node.Parent]; parentStyle != nil {
 				parentWM := WritingModeFromStyle(parentStyle)
 				parentIsVertical = NewDir(parentWM).IsVertical()
 			}
 		}
+		if parentIsVertical && containerBox.Parent != nil && containerBox.Parent.VerticalTransformed {
+			parentUsesDirectLayout = true
+		}
 
 		// Check if all conditions are met for Dir-aware layout:
 		// - Only vertical-rl and vertical-lr (NOT sideways-lr/sideways-rl which have
 		//   different inline direction: SLR flows bottom-to-top, SRL is like VRL but
 		//   with different text orientation)
-		// - Parent is not vertical (outermost vertical context)
+		// - Parent is not vertical OR parent already uses Dir-aware layout
 		// - No floats or block children in fragments
 		// - No abs-pos children in the container (they need repositionAbsPosAfterVerticalTransform)
 		// - Container has definite inline-size (height > 0 for vertical wrapping)
@@ -1923,7 +1928,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				isSideways = wmVal == "sideways-lr" || wmVal == "sideways-rl"
 			}
 		}
-		canUse := !parentIsVertical && !isSideways
+		canUse := !isSideways && (!parentIsVertical || parentUsesDirectLayout)
 
 		// Gate out containers that are themselves absolutely positioned or fixed —
 		// their sizing/positioning is handled by abs-pos layout code which interacts
@@ -1940,12 +1945,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 
 		if canUse {
 			for _, frag := range fragments {
-				if frag.Type == FragmentFloat || frag.Type == FragmentBlockChild {
+				if frag.Type == FragmentFloat {
 					canUse = false
 					break
 				}
-				// Gate out image atomics — replaced elements need the transform pipeline
-				// for correct dimension handling (images keep intrinsic dimensions in VRL)
+				// Gate out image atomics — replaced elements need baseline alignment
+				// in vertical mode which the Dir-aware path doesn't implement yet.
 				if frag.Type == FragmentAtomic && frag.Node != nil && frag.Node.TagName == "img" {
 					canUse = false
 					break
