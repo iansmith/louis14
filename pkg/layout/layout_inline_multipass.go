@@ -1949,12 +1949,6 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					canUse = false
 					break
 				}
-				// Gate out image atomics — replaced elements need baseline alignment
-				// in vertical mode which the Dir-aware path doesn't implement yet.
-				if frag.Type == FragmentAtomic && frag.Node != nil && frag.Node.TagName == "img" {
-					canUse = false
-					break
-				}
 			}
 		}
 		if canUse && containerBox.Node != nil {
@@ -2095,7 +2089,7 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 					}
 				}
 			}
-			if totalBlockSize > 0 && !hasExplicitWidth {
+			if !hasExplicitWidth {
 				containerBox.Width = totalBlockSize +
 					containerBox.Border.Left + containerBox.Padding.Left +
 					containerBox.Padding.Right + containerBox.Border.Right
@@ -2809,8 +2803,16 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 						splitTextBoxDirectVertical(box)
 					}
 				} else if frag.Type == FragmentAtomic {
-					// Images/replaced: swap dimensions too
-					box.Width, box.Height = box.Height, box.Width
+					isImage := frag.Node != nil && frag.Node.TagName == "img"
+					if isImage {
+						// Images keep their physical dimensions (no swap).
+						// Track lineXCorrection: HTB estimate used frag.Size.Width (physical width)
+						// but in vertical mode the inline extent is box.Height (physical height).
+						lineXCorrection += box.Height - frag.Size.Width
+					} else {
+						// Non-image atomics: swap inline/block dimensions for vertical mode.
+						box.Width, box.Height = box.Height, box.Width
+					}
 				}
 
 				// Apply relative positioning offset from open inline ancestors
