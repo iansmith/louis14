@@ -1635,6 +1635,82 @@ func fragmentToBoxSingle(frag *Fragment) *Box {
 	return box
 }
 
+// splitTextBoxDirectVertical creates vertical character boxes for a text box.
+// Unlike splitTextForVerticalRL (which positions characters at increasing X for
+// later transform), this positions characters at increasing Y (direct vertical layout).
+// Each character box is placed at (box.X, box.Y + i*charHeight).
+func splitTextBoxDirectVertical(box *Box) {
+	if box == nil || box.Node == nil || box.Node.Type != html.TextNode {
+		return
+	}
+	textContent := box.Node.Text
+	if box.Style != nil {
+		textContent = ApplyTextTransform(textContent, box.Style.GetTextTransform())
+	}
+	if box.Style != nil {
+		ws, _ := box.Style.Get("white-space")
+		if ws != "pre" && ws != "pre-wrap" && ws != "pre-line" {
+			textContent = collapseAsciiWhitespace(textContent)
+		}
+	}
+	if textContent == "" {
+		return
+	}
+
+	fontSize := 16.0
+	isBold := false
+	isItalic := false
+	isMono := false
+	isAhem := false
+	if box.Style != nil {
+		fontSize = box.Style.GetFontSize()
+		isBold = box.Style.GetFontWeight() == css.FontWeightBold
+		isItalic = box.Style.GetFontStyle() == css.FontStyleItalic
+		isMono = box.Style.IsMonospaceFamily()
+		isAhem = box.Style.IsAhemFamily()
+	}
+
+	lineHeight := fontSize
+	if box.Style != nil {
+		lineHeight = box.Style.GetLineHeight()
+	}
+	charHeight := lineHeight
+	if charHeight <= 0 {
+		charHeight = fontSize
+	}
+
+	runes := []rune(textContent)
+	charBoxes := make([]*Box, 0, len(runes))
+	curY := box.Y
+	for _, ch := range runes {
+		charStr := string(ch)
+		charW, _ := text.MeasureTextWithStyle(charStr, fontSize, isBold, isItalic, isMono, isAhem)
+		if charW == 0 {
+			continue
+		}
+		charNode := &html.Node{
+			Type: html.TextNode,
+			Text: charStr,
+		}
+		charBox := &Box{
+			Node:   charNode,
+			Style:  box.Style,
+			X:      box.X,
+			Y:      curY,
+			Width:  charW,
+			Height: charHeight,
+			Parent: box,
+		}
+		charBoxes = append(charBoxes, charBox)
+		curY += charHeight
+	}
+
+	if len(charBoxes) > 0 {
+		box.Children = charBoxes
+		box.PseudoContent = ""
+	}
+}
+
 // LayoutInlineContentToBoxes is a convenience wrapper that runs the new multi-pass
 // pipeline and converts the result to boxes for the existing rendering pipeline.
 //
@@ -1786,9 +1862,10 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		style            *css.Style
 		startX           float64
 		startY           float64
-		startIdx         int // Fragment index where span started
-		startBoxCount    int // len(boxes) at OpenTag time (for wrapper insertion ordering)
-		hasChildWrappers bool // true if any child inline wrapper boxes were created during this span
+		startIdx         int     // Fragment index where span started
+		startBoxCount    int     // len(boxes) at OpenTag time (for wrapper insertion ordering)
+		hasChildWrappers bool    // true if any child inline wrapper boxes were created during this span
+		startBlockOffset float64 // block offset at open tag time (for vertical layout)
 	}
 
 	// Precompute line heights: for each fragment Y position, find the maximum
@@ -1799,6 +1876,242 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		if frag.Size.Height > fragLineMaxHeight[frag.Position.Y] {
 			fragLineMaxHeight[frag.Position.Y] = frag.Size.Height
 		}
+	}
+
+	// Dir-aware vertical inline layout: when the writing mode is vertical and
+	// the content is simple (no floats, no block children), we produce physical
+	// coordinates directly instead of relying on the post-layout transform.
+	useVerticalLayout := false
+	blockOffset := 0.0           // accumulated block-direction size (line widths for vertical)
+	containerInlineStart := 0.0  // physical Y start of content area (for vertical)
+	containerBlockStart := 0.0   // physical X start of content area
+	containerBlockEnd := 0.0     // physical X end of content area
+
+	// Pre-compute line block extents for vertical layout (column width per line)
+	lineBlockExtents := make(map[float64]float64)
+	textBlockExtents := make(map[float64]float64)  // text-only extents per line (for post-correction)
+	atomicActualExtents := make(map[float64]float64) // actual atomic block extents after layout
+	var lineYOrder []float64
+	hasExplicitWidth := false
+
+	if dir.IsVertical() {
+		// Only activate Dir-aware layout for the OUTERMOST vertical container.
+		// When the parent is also vertical, the parent's transform pipeline handles
+		// column rearrangement via transformBoxToVerticalRecursive. Using Dir-aware
+		// layout in a same-axis child would conflict with the parent's transform.
+		parentIsVertical := false
+		if containerBox.Node != nil && containerBox.Node.Parent != nil {
+			if parentStyle := computedStyles[containerBox.Node.Parent]; parentStyle != nil {
+				parentWM := WritingModeFromStyle(parentStyle)
+				parentIsVertical = NewDir(parentWM).IsVertical()
+			}
+		}
+
+		// Check if all conditions are met for Dir-aware layout:
+		// - Only vertical-rl and vertical-lr (NOT sideways-lr/sideways-rl which have
+		//   different inline direction: SLR flows bottom-to-top, SRL is like VRL but
+		//   with different text orientation)
+		// - Parent is not vertical (outermost vertical context)
+		// - No floats or block children in fragments
+		// - No abs-pos children in the container (they need repositionAbsPosAfterVerticalTransform)
+		// - Container has definite inline-size (height > 0 for vertical wrapping)
+		isSideways := false
+		if containerBox.Node != nil {
+			containerStyle := computedStyles[containerBox.Node]
+			if containerStyle != nil {
+				wmVal, _ := containerStyle.Get("writing-mode")
+				isSideways = wmVal == "sideways-lr" || wmVal == "sideways-rl"
+			}
+		}
+		canUse := !parentIsVertical && !isSideways
+
+		// Gate out containers that are themselves absolutely positioned or fixed —
+		// their sizing/positioning is handled by abs-pos layout code which interacts
+		// with the transform pipeline in ways Dir-aware layout doesn't replicate yet.
+		if canUse && containerBox.Node != nil {
+			containerStyle := computedStyles[containerBox.Node]
+			if containerStyle != nil {
+				pos := containerStyle.GetPosition()
+				if pos == css.PositionAbsolute || pos == css.PositionFixed {
+					canUse = false
+				}
+			}
+		}
+
+		if canUse {
+			for _, frag := range fragments {
+				if frag.Type == FragmentFloat || frag.Type == FragmentBlockChild {
+					canUse = false
+					break
+				}
+				// Gate out image atomics — replaced elements need the transform pipeline
+				// for correct dimension handling (images keep intrinsic dimensions in VRL)
+				if frag.Type == FragmentAtomic && frag.Node != nil && frag.Node.TagName == "img" {
+					canUse = false
+					break
+				}
+			}
+		}
+		if canUse && containerBox.Node != nil {
+			// Check for abs-pos children in the DOM tree
+			for _, child := range containerBox.Node.Children {
+				if child.Type != html.ElementNode {
+					continue
+				}
+				childStyle := computedStyles[child]
+				if childStyle == nil {
+					childStyle = css.ComputeStyleWithLogical(child, le.stylesheets, le.viewport.width, le.viewport.height)
+				}
+				if childStyle != nil {
+					pos := childStyle.GetPosition()
+					if pos == css.PositionAbsolute || pos == css.PositionFixed {
+						canUse = false
+						break
+					}
+				}
+			}
+		}
+		// Also require definite inline-size (container height > 0)
+		containerContentH := containerBox.Height -
+			containerBox.Border.Top - containerBox.Border.Bottom -
+			containerBox.Padding.Top - containerBox.Padding.Bottom
+		if canUse && containerContentH <= 0 {
+			canUse = false
+		}
+		// Gate out containers with only whitespace text (no visible content).
+		// Empty vertical containers (e.g., <div style="writing-mode:vertical-rl"></div>)
+		// may have whitespace text nodes from HTML formatting. Dir-aware layout would
+		// incorrectly override their Width based on whitespace charW.
+		if canUse {
+			hasVisibleContent := false
+			for _, frag := range fragments {
+				if frag.Type == FragmentText && hasVisibleTextContent(frag.Text) {
+					hasVisibleContent = true
+					break
+				}
+				if frag.Type == FragmentAtomic {
+					hasVisibleContent = true
+					break
+				}
+			}
+			if !hasVisibleContent {
+				canUse = false
+			}
+		}
+		if canUse && len(fragments) > 0 {
+			useVerticalLayout = true
+			containerInlineStart = containerBox.Y + containerBox.Border.Top + containerBox.Padding.Top
+
+			// Pre-compute the block extent (column width) of each line.
+			// For text, this is max(font-height, line-height). For Ahem, both = fontSize.
+			// Also collect distinct line Y values (in order) to compute total block size.
+			lineYSeen := map[float64]bool{}
+			for _, frag := range fragments {
+				ext := frag.Size.Height
+				if frag.Type == FragmentText && frag.Style != nil && frag.Text != "" {
+					// Use the widest single-character advance width as the column
+					// extent. This matches the transform pipeline which splits text
+					// into individual char boxes and uses max(child.Width) per column.
+					// Font metrics height differs from charW for most fonts:
+					//   Ahem 20px: charW=20, metrics height=15
+					//   Mono 16px: charW=9.6, metrics height=19.2
+					fontSize := frag.Style.GetFontSize()
+					isBold := frag.Style.GetFontWeight() == css.FontWeightBold
+					isItalic := frag.Style.GetFontStyle() == css.FontStyleItalic
+					isMono := frag.Style.IsMonospaceFamily()
+					isAhem := frag.Style.IsAhemFamily()
+					maxCharW := 0.0
+					for _, ch := range frag.Text {
+						charW, _ := text.MeasureTextWithStyle(string(ch), fontSize, isBold, isItalic, isMono, isAhem)
+						if charW > maxCharW {
+							maxCharW = charW
+						}
+					}
+					if maxCharW > 0 {
+						ext = maxCharW
+					}
+					if ext > textBlockExtents[frag.Position.Y] {
+						textBlockExtents[frag.Position.Y] = ext
+					}
+				} else if frag.Type == FragmentAtomic && frag.Node != nil {
+					// Estimate VRL/VLR block-size for inline-blocks.
+					// CollectInlineItems measures in HTB, so frag.Size.Width = HTB width
+					// which may differ from VRL block-size (e.g. "FZ" at 50px Ahem:
+					// HTB width=100, VRL width=50 after column transform).
+					// For text-only inline-blocks, compute max charW as the block-size.
+					maxCharW := 0.0
+					if frag.Style != nil {
+						fontSize := frag.Style.GetFontSize()
+						isBold := frag.Style.GetFontWeight() == css.FontWeightBold
+						isItalic := frag.Style.GetFontStyle() == css.FontStyleItalic
+						isMono := frag.Style.IsMonospaceFamily()
+						isAhem := frag.Style.IsAhemFamily()
+						for _, child := range frag.Node.Children {
+							if child.Type == html.TextNode && strings.TrimSpace(child.Text) != "" {
+								for _, ch := range child.Text {
+									charW, _ := text.MeasureTextWithStyle(string(ch), fontSize, isBold, isItalic, isMono, isAhem)
+									if charW > maxCharW {
+										maxCharW = charW
+									}
+								}
+							}
+						}
+					}
+					if maxCharW > 0 {
+						ext = maxCharW
+					} else {
+						ext = frag.Size.Width // fallback for non-text atomics
+					}
+				}
+				if ext > lineBlockExtents[frag.Position.Y] {
+					lineBlockExtents[frag.Position.Y] = ext
+				}
+				if !lineYSeen[frag.Position.Y] {
+					lineYSeen[frag.Position.Y] = true
+					lineYOrder = append(lineYOrder, frag.Position.Y)
+				}
+			}
+
+			// Compute total block size = sum of all column widths.
+			// This is needed BEFORE positioning to set the correct container Width
+			// so that VRL columns are positioned from the correct right edge.
+			totalBlockSize := 0.0
+			for _, ly := range lineYOrder {
+				totalBlockSize += lineBlockExtents[ly]
+			}
+
+			// Update container Width to the total block size (sum of column widths),
+			// but ONLY when the container has auto width (no explicit CSS width).
+			// Containers with explicit width keep their CSS-specified value.
+			if containerBox.Node != nil {
+				if cs := computedStyles[containerBox.Node]; cs != nil {
+					if wv, wok := cs.Get("width"); wok && wv != "" && wv != "auto" {
+						hasExplicitWidth = true
+					}
+				}
+			}
+			if totalBlockSize > 0 && !hasExplicitWidth {
+				containerBox.Width = totalBlockSize +
+					containerBox.Border.Left + containerBox.Padding.Left +
+					containerBox.Padding.Right + containerBox.Border.Right
+			}
+
+			containerBlockStart = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+			containerBlockEnd = containerBox.X + containerBox.Width - containerBox.Border.Right - containerBox.Padding.Right
+
+			// Mark container as vertically transformed so the post-layout
+			// transform pipeline in layoutNodeHTB skips this box.
+			containerBox.VerticalTransformed = true
+		}
+	}
+
+	// Helper: compute the physical X position for a line in vertical mode.
+	verticalBlockPos := func(lineY float64) float64 {
+		lineBlockExt := lineBlockExtents[lineY]
+		if lineBlockExt == 0 {
+			lineBlockExt = 20 // fallback for Ahem 20px
+		}
+		return dir.BlockOffsetToPhysical(containerBlockStart, containerBlockEnd, blockOffset, lineBlockExt)
 	}
 
 	// Process fragments, handling block children with recursive layout
@@ -1991,7 +2304,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				if frag.Position.Y != currentLineY {
 					effectiveHeight := lineMetricsEffectiveHeight(lineMetrics)
 					if lineMetrics.hasContent && effectiveHeight > 0 {
-						currentY = currentLineY + effectiveHeight
+						if useVerticalLayout {
+							blockOffset += effectiveHeight
+						} else {
+							currentY = currentLineY + effectiveHeight
+						}
 						lastFinalizedLineHeight = effectiveHeight
 						lineMetricsReset(lineMetrics, false)
 					} else if effectiveHeight > 0 {
@@ -2005,12 +2322,13 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// If child inline wrappers are created during this span, we'll
 				// insert this span's wrapper BEFORE them at CloseTag time.
 				span := &inlineSpan{
-					node:          frag.Node,
-					style:         frag.Style,
-					startX:        frag.Position.X, // Use fragment position, not currentX
-					startY:        currentY,
-					startIdx:      i,
-					startBoxCount: len(boxes),
+					node:             frag.Node,
+					style:            frag.Style,
+					startX:           frag.Position.X, // Use fragment position, not currentX
+					startY:           currentY,
+					startIdx:         i,
+					startBoxCount:    len(boxes),
+					startBlockOffset: blockOffset, // for vertical layout
 				}
 				inlineStack = append(inlineStack, span)
 				seenNodes[frag.Node] = true
@@ -2115,20 +2433,43 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 						// Convert from content-relative to absolute coordinates
 						// Fragment positions are relative to container's content area
 						// (after border+padding), so add container's offset
-						baseX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
-						// baseY :=  // Y coordinates are already absolute, not needed containerBox.Y + containerBox.Border.Top + containerBox.Padding.Top
 
-						wrapperBox := &Box{
-							Node:    span.node,
-							Style:   span.style,
-							X:       baseX + span.startX + margin.Left + wrapRelX,  // Apply left margin + relative offset
-							Y:       span.startY + margin.Top + wrapRelY,   // Apply top margin + relative offset
-							Width:   wrapperWidth,
-							Height:  wrapperHeight,
-							Border:  border,
-							Padding: padding,
-							Margin:  margin,
-							Parent:  containerBox,
+						var wrapperBox *Box
+						if useVerticalLayout {
+							// Vertical mode: inline direction = Y, block direction = X
+							// wrapperWidth is really the inline extent (maps to Height)
+							// wrapperHeight is the block extent (maps to Width)
+							lineBlockExt := lineBlockExtents[frag.Position.Y]
+							if lineBlockExt == 0 {
+								lineBlockExt = wrapperHeight
+							}
+							wBlockPos := dir.BlockOffsetToPhysical(containerBlockStart, containerBlockEnd, span.startBlockOffset, lineBlockExt)
+							wrapperBox = &Box{
+								Node:    span.node,
+								Style:   span.style,
+								X:       wBlockPos + margin.Left + wrapRelX,
+								Y:       containerInlineStart + span.startX + margin.Top + wrapRelY,
+								Width:   lineBlockExt,    // block extent = column width
+								Height:  wrapperWidth,    // inline extent (endX - startX)
+								Border:  border,
+								Padding: padding,
+								Margin:  margin,
+								Parent:  containerBox,
+							}
+						} else {
+							baseX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left
+							wrapperBox = &Box{
+								Node:    span.node,
+								Style:   span.style,
+								X:       baseX + span.startX + margin.Left + wrapRelX,  // Apply left margin + relative offset
+								Y:       span.startY + margin.Top + wrapRelY,   // Apply top margin + relative offset
+								Width:   wrapperWidth,
+								Height:  wrapperHeight,
+								Border:  border,
+								Padding: padding,
+								Margin:  margin,
+								Parent:  containerBox,
+							}
 						}
 						// Insert wrapper at correct position for CSS painting order
 						// Block-in-inline normalization: set fragment flags from data-block-fragment attribute
@@ -2276,7 +2617,16 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			if frag.Position.Y != currentLineY {
 				effectiveHeight := lineMetricsEffectiveHeight(lineMetrics)
 				if lineMetrics.hasContent && effectiveHeight > 0 {
-					currentY = currentLineY + effectiveHeight
+					if useVerticalLayout {
+						colWidth := lineBlockExtents[currentLineY]
+						if colWidth > 0 {
+							blockOffset += colWidth
+						} else {
+							blockOffset += effectiveHeight
+						}
+					} else {
+						currentY = currentLineY + effectiveHeight
+					}
 					lastFinalizedLineHeight = effectiveHeight
 					lineMetricsReset(lineMetrics, false)
 				} else if effectiveHeight > 0 {
@@ -2287,21 +2637,61 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			}
 
 			atomicNode := frag.Node
-			absX := containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X + lineXCorrection
+			var absX, absY, absAvailW float64
+			if useVerticalLayout {
+				absX = verticalBlockPos(frag.Position.Y)
+				absY = containerInlineStart + frag.Position.X + lineXCorrection
+				absAvailW = lineBlockExtents[frag.Position.Y]
+				if absAvailW == 0 {
+					absAvailW = frag.Size.Width
+				}
+			} else {
+				absX = containerBox.X + containerBox.Border.Left + containerBox.Padding.Left + frag.Position.X + lineXCorrection
+				absY = currentY
+				absAvailW = frag.Size.Width
+			}
 
 			atomicBox := le.layoutNode(
 				atomicNode,
 				absX,
-				currentY,
-				frag.Size.Width,
+				absY,
+				absAvailW,
 				dir,
 				computedStyles,
 				containerBox,
 			)
 			if atomicBox != nil {
-				// Update lineXCorrection: actual width may differ from the estimate
-				// used during line-breaking (e.g. VLR inline-blocks after transform)
-				lineXCorrection += atomicBox.Width - frag.Size.Width
+				// Shrink-to-fit for VRL inline-blocks: layoutNode fills available width
+				// (block-fill) but inline-blocks should shrink-wrap their block-size.
+				// Compute actual content span from children and shrink the box.
+				// Apply VRL/VLR transform for same-axis vertical inline-blocks.
+				// layoutNode skips the transform when parentIsVertical=true (the parent
+				// div's transform would normally handle it), but the parent is using
+				// Dir-aware inline layout which doesn't transform atomic children's
+				// internal content. Apply the transform manually.
+				if useVerticalLayout && !atomicBox.VerticalTransformed && len(atomicBox.Children) > 0 {
+					wm := "vertical-rl"
+					if dir.WM == VerticalLR {
+						wm = "vertical-lr"
+					}
+					for _, child := range atomicBox.Children {
+						transformBoxToVerticalRecursive(child, wm)
+					}
+					transformToVerticalRL(atomicBox, wm)
+					atomicBox.VerticalTransformed = true
+				}
+
+				// Update lineXCorrection: actual inline extent may differ from the estimate
+				// used during line-breaking. In vertical mode, inline extent = Height (physical).
+				if useVerticalLayout {
+					lineXCorrection += atomicBox.Height - frag.Size.Width
+					// Track actual block extent for post-loop container width correction
+					if atomicBox.Width > atomicActualExtents[frag.Position.Y] {
+						atomicActualExtents[frag.Position.Y] = atomicBox.Width
+					}
+				} else {
+					lineXCorrection += atomicBox.Width - frag.Size.Width
+				}
 				atomicBox.Parent = containerBox
 
 				// Undo position:relative offsets applied by layoutNodeHTB so they can be
@@ -2331,7 +2721,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				// precomputed in fragLineMaxHeight (using frag.Size.Height = border-box).
 				// Use atomicBox.Height (also border-box) for consistency — getTotalHeight
 				// would double-count border+padding since box.Height is already border-box.
-				if atomicBox.Style != nil {
+				// Skip in vertical mode: CSS WM3 §4.3 maps vertical-align to inline-direction
+				// alignment which requires different logic.
+				if atomicBox.Style != nil && !useVerticalLayout {
 					lineH := fragLineMaxHeight[frag.Position.Y]
 					boxH := atomicBox.Height // border-box, consistent with fragLineMaxHeight
 					valign := atomicBox.Style.GetVerticalAlign()
@@ -2361,8 +2753,94 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 
 			}
+		} else if useVerticalLayout {
+			// === VERTICAL MODE: Dir-aware fragment positioning ===
+			box := fragmentToBoxSingle(frag)
+			if box != nil {
+				// Check if we've moved to a new line (Y changed)
+				if frag.Position.Y != currentLineY {
+					// Use the pre-computed column width (lineBlockExtents) for block
+					// offset advancement. This must match lineBlockExtents so that
+					// columns are spaced consistently. lineMetrics uses line-height
+					// which can differ from charW (the transform's column width).
+					colWidth := lineBlockExtents[currentLineY]
+					if lineMetrics.hasContent && colWidth > 0 {
+						blockOffset += colWidth
+						lastFinalizedLineHeight = colWidth
+						lineMetricsReset(lineMetrics, false)
+					} else if colWidth > 0 {
+						lineMetricsReset(lineMetrics, true)
+					}
+					currentLineY = frag.Position.Y
+					lineXCorrection = 0
+				}
+
+				// Map inline position (frag.Position.X) to physical Y
+				box.Y = containerInlineStart + frag.Position.X + lineXCorrection
+
+				// Map block position to physical X
+				box.X = verticalBlockPos(frag.Position.Y)
+
+				// For FragmentAtomic (images), apply margins in the inline direction
+				if frag.Type == FragmentAtomic && frag.Style != nil {
+					atomicMargin := frag.Style.GetMargin()
+					box.Y += atomicMargin.Top // inline-start margin in vertical = physical top
+					box.Margin = atomicMargin
+				}
+
+				// Swap dimensions: measured Width → inline extent → physical Height
+				//                   measured Height → block extent → physical Width
+				if frag.Type == FragmentText {
+					box.Width, box.Height = box.Height, box.Width
+					// Override Width with the column extent (charW) from lineBlockExtents.
+					// frag.Size.Height = font metrics height which differs from charW
+					// (e.g., Ahem 20px: metrics=15, charW=20). The transform pipeline
+					// sets box Width = charW after splitting, so we must match.
+					if colW := lineBlockExtents[frag.Position.Y]; colW > 0 {
+						box.Width = colW
+					}
+					// Create vertical character boxes
+					if box.Node != nil && box.Node.Type == html.TextNode {
+						splitTextBoxDirectVertical(box)
+					}
+				} else if frag.Type == FragmentAtomic {
+					// Images/replaced: swap dimensions too
+					box.Width, box.Height = box.Height, box.Width
+				}
+
+				// Apply relative positioning offset from open inline ancestors
+				relOffX, relOffY := getRelativeOffset()
+				box.X += relOffX
+				box.Y += relOffY
+
+				// Track line metrics (block extent for vertical = physical width contribution)
+				isContent := false
+				if frag.Type == FragmentText {
+					if hasVisibleTextContent(frag.Text) {
+						isContent = true
+					}
+				} else if frag.Type == FragmentAtomic {
+					isContent = true
+				}
+				if isContent {
+					lineMetrics.hasContent = true
+					if frag.Type == FragmentText && frag.Style != nil {
+						lh := frag.Style.GetLineHeight()
+						if lh > lineMetrics.lineBoxHeight {
+							lineMetrics.lineBoxHeight = lh
+						}
+					} else {
+						if frag.Size.Height > lineMetrics.contentHeight {
+							lineMetrics.contentHeight = frag.Size.Height
+						}
+					}
+				}
+
+				box.Parent = containerBox
+				boxes = append(boxes, box)
+			}
 		} else {
-			// Regular fragment - convert to box
+			// === HTB MODE: Regular fragment positioning ===
 			box := fragmentToBoxSingle(frag)
 			if box != nil {
 				// Fragment X is relative to line start (content area);
@@ -2455,6 +2933,30 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				box.Parent = containerBox
 				boxes = append(boxes, box)
 			}
+		}
+	}
+
+	// Post-correction: update container Width using actual atomic block extents.
+	// The pre-computed lineBlockExtents for atomics uses HTB width estimates which
+	// may differ from actual VRL width after layout (e.g., inline-block "FZ" at 50px
+	// Ahem: HTB width=100px, VRL width=50px). Re-compute using actual dimensions.
+	if useVerticalLayout && !hasExplicitWidth && len(atomicActualExtents) > 0 {
+		newTotalBlockSize := 0.0
+		for _, ly := range lineYOrder {
+			ext := textBlockExtents[ly]
+			if actual, ok := atomicActualExtents[ly]; ok && actual > ext {
+				ext = actual
+			}
+			// If no text or atomic on this line, use original pre-computed extent
+			if ext == 0 {
+				ext = lineBlockExtents[ly]
+			}
+			newTotalBlockSize += ext
+		}
+		if newTotalBlockSize > 0 {
+			containerBox.Width = newTotalBlockSize +
+				containerBox.Border.Left + containerBox.Padding.Left +
+				containerBox.Padding.Right + containerBox.Border.Right
 		}
 	}
 
@@ -2593,6 +3095,22 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 	finalLineHeight := lineMetricsEffectiveHeight(lineMetrics)
 	if finalLineHeight == 0 {
 		finalLineHeight = lastFinalizedLineHeight
+	}
+
+	// For vertical layout, compute auto-size metrics:
+	// - LineY should represent the end of inline content (max Y extent)
+	//   so auto-height calculation produces correct inline-size
+	if useVerticalLayout {
+		// Find the maximum inline extent (bottom-most Y position + height)
+		maxInlineEnd := 0.0
+		for _, b := range boxes {
+			end := b.Y + b.Height - containerInlineStart
+			if end > maxInlineEnd {
+				maxInlineEnd = end
+			}
+		}
+		// Override currentY to represent the inline extent for auto-height
+		currentY = containerInlineStart + maxInlineEnd
 	}
 
 	// Create inline context for auto-height calculation

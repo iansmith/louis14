@@ -2713,7 +2713,7 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Only the OUTERMOST element that establishes a new vertical writing-mode context
 	// runs the transform. For same-axis vertical (parent is also vertical), the parent's
 	// transform handles children recursively via transformBoxToVerticalRecursive.
-	if style != nil && !isImage && !isSVG && len(box.Children) > 0 {
+	if style != nil && !isImage && !isSVG && len(box.Children) > 0 && !box.VerticalTransformed {
 		if display == css.DisplayBlock || display == css.DisplayInlineBlock || display == css.DisplayFlowRoot || display == css.DisplayListItem || display == css.DisplayTableCell || display == css.DisplayTableCaption {
 			if wm, ok := style.Get("writing-mode"); ok {
 				isVertical := wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr"
