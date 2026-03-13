@@ -4293,7 +4293,20 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
 			splitTextForVerticalRL(child, wm)
 		} else {
-			transformBoxToVerticalRecursive(child, wm)
+			// Skip recursive transform for children with orthogonal writing-mode.
+			// A horizontal-tb child inside a vertical container should keep its
+			// HTB internal layout — only its position is adjusted by the parent's
+			// column transform (transformToVerticalRL). Without this skip, the
+			// child's text would be split into char boxes and stacked vertically.
+			childIsOrthogonal := false
+			if child.Style != nil {
+				if childWM, ok := child.Style.Get("writing-mode"); ok {
+					childIsOrthogonal = childWM == "horizontal-tb"
+				}
+			}
+			if !childIsOrthogonal {
+				transformBoxToVerticalRecursive(child, wm)
+			}
 		}
 	}
 

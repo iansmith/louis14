@@ -470,6 +470,62 @@ func repositionAbsPosInCB(cb *Box, cbWM string, cbPadWidth, cbPadHeight float64)
 			}
 		}
 
+		// Detect auto width/height for dimension solving.
+		widthIsAuto := true
+		heightIsAuto := true
+		if child.Style != nil {
+			if _, ok := child.Style.GetLength("width"); ok {
+				widthIsAuto = false
+			} else if _, ok := child.Style.GetPercentage("width"); ok {
+				widthIsAuto = false
+			} else if v, ok := child.Style.Get("width"); ok && v != "auto" && v != "" {
+				widthIsAuto = false
+			}
+			if _, ok := child.Style.GetLength("height"); ok {
+				heightIsAuto = false
+			} else if _, ok := child.Style.GetPercentage("height"); ok {
+				heightIsAuto = false
+			} else if v, ok := child.Style.Get("height"); ok && v != "auto" && v != "" {
+				heightIsAuto = false
+			}
+		}
+
+		// §10.3.7 mapped to inline axis: solve height when top+bottom specified
+		// and height is auto. Auto margins are set to 0 before solving.
+		if offset.HasTop && offset.HasBottom && heightIsAuto {
+			if marginTopAuto {
+				child.Margin.Top = 0
+			}
+			if marginBottomAuto {
+				child.Margin.Bottom = 0
+			}
+			solvedHeight := cbPadHeight - offset.Top - offset.Bottom -
+				child.Margin.Top - child.Margin.Bottom -
+				child.Border.Top - child.Padding.Top -
+				child.Padding.Bottom - child.Border.Bottom
+			if solvedHeight >= 0 {
+				child.Height = solvedHeight
+			}
+		}
+
+		// §10.6.4 mapped to block axis: solve width when left+right specified
+		// and width is auto. Auto margins are set to 0 before solving.
+		if offset.HasLeft && offset.HasRight && widthIsAuto {
+			if marginLeftAuto {
+				child.Margin.Left = 0
+			}
+			if marginRightAuto {
+				child.Margin.Right = 0
+			}
+			solvedWidth := cbPadWidth - offset.Left - offset.Right -
+				child.Margin.Left - child.Margin.Right -
+				child.Border.Left - child.Padding.Left -
+				child.Padding.Right - child.Border.Right
+			if solvedWidth >= 0 {
+				child.Width = solvedWidth
+			}
+		}
+
 		// ========================================================================
 		// INLINE AXIS: top/bottom/height (physical Y in vertical modes)
 		// Uses §10.3.7 rules with axis swap.
@@ -487,7 +543,16 @@ func repositionAbsPosInCB(cb *Box, cbWM string, cbPadWidth, cbPadHeight float64)
 			}
 			child.Y = cbY + offset.Top + child.Margin.Top
 		} else if offset.HasTop && offset.HasBottom {
-			child.Y = cbY + offset.Top + child.Margin.Top
+			// Overconstrained: §10.3.7 mapped to inline axis.
+			// In LTR, inline-end (bottom) is ignored → position from top.
+			// In RTL, inline-end (top) is ignored → position from bottom.
+			if cbDir == css.DirectionRTL && !heightIsAuto {
+				child.Y = cbY + cbPadHeight - offset.Bottom - child.Margin.Bottom -
+					child.Border.Bottom - child.Padding.Bottom - child.Height -
+					child.Padding.Top - child.Border.Top
+			} else {
+				child.Y = cbY + offset.Top + child.Margin.Top
+			}
 		} else if offset.HasTop {
 			child.Y = cbY + offset.Top + child.Margin.Top
 		} else if offset.HasBottom {

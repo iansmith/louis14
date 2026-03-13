@@ -2233,9 +2233,230 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	*/
 	// END OF COMMENTED OLD INLINE LAYOUT CODE - will be removed once refactor is verified
 
+	// Dir-aware block flow: for vertical containers with only block children,
+	// transform children's internals (text splitting) and then position them
+	// along the block axis (X for vertical) using a Dir-aware cursor.
+	// This replaces the full transform pipeline (transformBoxToVerticalRecursive
+	// + transformToVerticalRL) for these containers.
+	var dirBlockCursor float64
+	dirBlockFlowUsed := false
+	var dirPreTransformW, dirPreTransformH float64
+	var dirWMStr string
+	// Dir-aware block flow only applies when the transform pipeline would
+	// SKIP this container (parent has same vertical writing-mode). For
+	// outermost vertical containers, the transform pipeline handles
+	// positioning correctly via transformToVerticalRL.
+	dirParentIsVertical := false
+	if childDir.IsVertical() && node.Parent != nil {
+		if parentStyle := computedStyles[node.Parent]; parentStyle != nil {
+			if parentWM, ok := parentStyle.Get("writing-mode"); ok {
+				dirParentIsVertical = parentWM == "vertical-rl" || parentWM == "vertical-lr" || parentWM == "sideways-rl" || parentWM == "sideways-lr"
+			}
+		}
+	}
+	hasNormalFlowBlockChild := false
+	if childDir.IsVertical() && dirParentIsVertical && !hasInlineChild && len(box.Children) > 0 {
+		for _, child := range box.Children {
+			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+				continue
+			}
+			if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+				continue
+			}
+			hasNormalFlowBlockChild = true
+			break
+		}
+	}
+	if childDir.IsVertical() && dirParentIsVertical && !hasInlineChild && hasNormalFlowBlockChild && len(box.Children) > 0 {
+		// Get writing-mode string for transform functions
+		dirWMStr = "vertical-rl"
+		if wm, ok := style.Get("writing-mode"); ok {
+			dirWMStr = wm
+		}
+
+		// Save pre-transform dimensions for abs-pos repositioning
+		dirPreTransformW = box.Width
+		dirPreTransformH = box.Height
+
+		// Pre-transform correction: same-axis vertical empty children had their
+		// inline-size block-filled from the parent. Reset to border-box only.
+		for _, child := range box.Children {
+			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+				continue
+			}
+			if len(child.Children) == 0 && child.Style != nil {
+				childWM := WritingModeFromStyle(child.Style)
+				if childWM == VerticalRL || childWM == VerticalLR || childWM == SidewaysLR {
+					childD := NewDir(childWM)
+					inlineProp := childD.InlineSizeProp()
+					if v, _ := child.Style.Get(inlineProp); v == "" || v == "auto" {
+						childD.SetInlineSize(child, childD.InlineBorderBox(child.Padding, child.Border))
+					}
+				}
+			}
+		}
+
+		// §7.3 inline-size constraint: block children fill the container's inline
+		// extent (= physical height for vertical). Precompute parameters.
+		containerContentH := box.Height - border.Top - border.Bottom - padding.Top - padding.Bottom
+		applyInlineSizeConstraint := containerContentH > 0 && box.HeightIsDefinite
+		if !applyInlineSizeConstraint {
+			if _, ok := style.GetLength("height"); ok {
+				applyInlineSizeConstraint = containerContentH > 0
+			} else if _, ok := style.GetPercentage("height"); ok {
+				applyInlineSizeConstraint = containerContentH > 0
+			}
+		}
+
+		// Transform each child's internals (text splitting + dimension adjustment).
+		// After this, each child has correct physical dimensions for vertical layout.
+		for _, child := range box.Children {
+			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+				splitTextForVerticalRL(child, dirWMStr)
+			} else {
+				transformBoxToVerticalRecursive(child, dirWMStr)
+				// §7.3: clamp child's inline size to container's inline extent
+				if applyInlineSizeConstraint && child.Height < containerContentH {
+					childHasExplH := false
+					if child.Style != nil {
+						if _, ok := child.Style.GetLength("height"); ok {
+							childHasExplH = true
+						} else if _, ok := child.Style.GetPercentage("height"); ok {
+							childHasExplH = true
+						}
+					}
+					if !childHasExplH {
+						if dirWMStr == "sideways-lr" {
+							shift := containerContentH - child.Height
+							if shift > 0 {
+								for _, gc := range child.Children {
+									gc.Y += shift
+									shiftAllDescendants(gc, 0, shift)
+								}
+							}
+						}
+						child.Height = containerContentH
+					}
+				}
+			}
+		}
+
+		// Fix inline border/padding gaps before positioning (matches transform pipeline).
+		removeInlineBorderGapsForVLR(box)
+
+		// Dir-aware block flow positioning using post-transform dimensions.
+		// Position children VLR-style (left-to-right). VRL is mirrored after
+		// auto block-size is finalized.
+		contentStartX := box.X + border.Left + padding.Left
+		contentInlineStart := box.Y + border.Top + padding.Top
+		var blockCursor float64
+		prevBlockEndMargin := 0.0
+		isFirstChild := true
+
+		for _, child := range box.Children {
+			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+				continue
+			}
+			if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+				continue
+			}
+
+			childBlockSize := childDir.BlockSize(child)
+			inlineStartMargin := childDir.InlineStartEdge(child.Margin)
+
+			// Block-fill children (no explicit CSS block-size) had their
+			// block-direction margins consumed by the HTB width calculation.
+			// Only explicit-block-size children contribute block margins to spacing.
+			// This matches transformToVerticalRL's handling.
+			hasExplicitBlockSize := false
+			if child.Style != nil {
+				if _, ok := child.Style.GetLength(childDir.BlockSizeProp()); ok {
+					hasExplicitBlockSize = true
+				} else if _, ok := child.Style.GetPercentage(childDir.BlockSizeProp()); ok {
+					hasExplicitBlockSize = true
+				}
+			}
+			var blockStartM, blockEndM float64
+			if hasExplicitBlockSize {
+				blockStartM = childDir.BlockStartEdge(child.Margin)
+				blockEndM = childDir.BlockEndEdge(child.Margin)
+			}
+
+			// Collapse margins between adjacent children
+			var gapBefore float64
+			if isFirstChild {
+				gapBefore = blockStartM
+			} else {
+				gapBefore = collapseMargins(prevBlockEndMargin, blockStartM)
+			}
+
+			newX := contentStartX + blockCursor + gapBefore
+			newY := contentInlineStart + inlineStartMargin
+
+			// Preserve relative positioning offsets (already applied by layoutNode)
+			if child.Position == css.PositionRelative && child.Style != nil {
+				offset := child.Style.GetPositionOffset()
+				if offset.HasLeft {
+					newX += offset.Left
+				} else if offset.HasRight {
+					newX -= offset.Right
+				}
+				if offset.HasTop {
+					newY += offset.Top
+				} else if offset.HasBottom {
+					newY -= offset.Bottom
+				}
+			}
+
+			dx := newX - child.X
+			dy := newY - child.Y
+			if dx != 0 || dy != 0 {
+				le.shiftChildren(child, dx, dy)
+				child.X = newX
+				child.Y = newY
+			}
+
+			blockCursor += gapBefore + childBlockSize
+			prevBlockEndMargin = blockEndM
+			isFirstChild = false
+		}
+
+		// Update inline-size (Height for vertical) to fit content, matching
+		// what transformToVerticalRL does. Only when no explicit CSS inline-size.
+		inlineExplicit := false
+		if _, ok := style.GetLength(childDir.InlineSizeProp()); ok {
+			inlineExplicit = true
+		} else if _, ok := style.GetPercentage(childDir.InlineSizeProp()); ok {
+			inlineExplicit = true
+		}
+		if !inlineExplicit {
+			maxInlineExtent := 0.0
+			for _, child := range box.Children {
+				if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+					continue
+				}
+				if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+					continue
+				}
+				childInlineEnd := childDir.InlineSize(child) + childDir.InlineStartEdge(child.Margin)
+				if childInlineEnd > maxInlineExtent {
+					maxInlineExtent = childInlineEnd
+				}
+			}
+			if maxInlineExtent > 0 {
+				childDir.SetInlineSize(box, maxInlineExtent+childDir.InlineBorderBox(box.Padding, box.Border))
+			}
+		}
+
+		dirBlockCursor = blockCursor
+		dirBlockFlowUsed = true
+		box.VerticalTransformed = true
+	}
+
 	// Parent-child top margin collapsing
 	// If parent has no border-top/padding-top, collapse with first block child's top margin
-	if parentCanCollapseTopMargin(box) && shouldCollapseMargins(box) {
+	// Skip for Dir-aware containers: Y is the inline direction, not block.
+	if !dirBlockFlowUsed && parentCanCollapseTopMargin(box) && shouldCollapseMargins(box) {
 		// Find first in-flow block child
 		var firstBlockChild *Box
 		for _, ch := range box.Children {
@@ -2275,8 +2496,22 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
+	// Dir-aware block flow: auto block-size uses blockCursor.
+	// This is separate from the HTB auto block-size because the block direction
+	// (width for vertical) may be auto even when CSS height is explicit.
+	if len(box.Children) > 0 && dirBlockFlowUsed {
+		childBlockExplicit := false
+		if _, ok := style.GetLength(childDir.BlockSizeProp()); ok {
+			childBlockExplicit = true
+		} else if _, ok := style.GetPercentage(childDir.BlockSizeProp()); ok {
+			childBlockExplicit = true
+		}
+		if !childBlockExplicit {
+			childDir.SetBlockSize(box, dirBlockCursor+childDir.BlockBorderBox(box.Padding, box.Border))
+		}
+	}
 	// If block-size is auto and we have children, adjust block-size to fit content
-	if !hasExplicitHeight && len(box.Children) > 0 {
+	if !hasExplicitHeight && len(box.Children) > 0 && !dirBlockFlowUsed {
 		// Calculate block-size based on maximum block-end edge of children (not sum)
 		// This correctly handles overlapping children (like floats with blocks)
 		parentContentTop := dir.ContentStartBlockPos(box)
@@ -2427,6 +2662,34 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 				dir.SetBlockEndEdge(&box.Margin, parentMB+childMB)
 			}
 		}
+	}
+
+	// Dir-aware VRL mirroring: children were positioned VLR-style (left-to-right)
+	// during Dir-aware block flow. For VRL, mirror them to right-to-left now that
+	// box.Width (block-size) is finalized.
+	if dirBlockFlowUsed && childDir.WM == VerticalRL {
+		contentStartX := box.X + border.Left + padding.Left
+		contentEndX := box.X + box.Width - border.Right - padding.Right
+		cw := contentEndX - contentStartX
+		for _, child := range box.Children {
+			if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+				continue
+			}
+			if child.Style != nil && child.Style.GetFloat() != css.FloatNone {
+				continue
+			}
+			newX := contentStartX + cw - (child.X - contentStartX) - child.Width
+			dx := newX - child.X
+			if dx != 0 {
+				le.shiftChildren(child, dx, 0)
+				child.X = newX
+			}
+		}
+	}
+
+	// Dir-aware block flow: reposition abs-pos children for vertical writing mode.
+	if dirBlockFlowUsed {
+		repositionAbsPosAfterVerticalTransform(box, dirWMStr, dirPreTransformW, dirPreTransformH)
 	}
 
 	// Re-apply min/max block size constraints after auto block-size calculation
