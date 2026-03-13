@@ -1878,9 +1878,9 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 		}
 	}
 
-	// Dir-aware vertical inline layout: when the writing mode is vertical and
-	// the content is simple (no floats, no block children), we produce physical
-	// coordinates directly instead of relying on the post-layout transform.
+	// Dir-aware vertical inline layout: when the writing mode is vertical,
+	// we produce physical coordinates directly instead of relying on the
+	// post-layout transform pipeline.
 	useVerticalLayout := false
 	blockOffset := 0.0           // accumulated block-direction size (line widths for vertical)
 	containerInlineStart := 0.0  // physical Y start of content area (for vertical)
@@ -1912,27 +1912,21 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			parentUsesDirectLayout = true
 		}
 
-		// Check if all conditions are met for Dir-aware layout:
-		// - Only vertical-rl and vertical-lr (NOT sideways-lr/sideways-rl which have
-		//   different inline direction: SLR flows bottom-to-top, SRL is like VRL but
-		//   with different text orientation)
-		// - Parent is not vertical OR parent already uses Dir-aware layout
-		// - No floats or block children in fragments
-		// - No abs-pos children in the container (they need repositionAbsPosAfterVerticalTransform)
-		// - Container has definite inline-size (height > 0 for vertical wrapping)
-		isSideways := false
+		// Gate 2.6 partially removed: sideways-rl uses Dir-aware layout (maps to
+		// VerticalRL, same inline direction TB). Sideways-lr is still gated because
+		// its inline direction is bottom-to-top, which splitTextBoxDirectVertical
+		// doesn't handle yet (it always stacks top-to-bottom).
+		isSidewaysLR := false
 		if containerBox.Node != nil {
-			containerStyle := computedStyles[containerBox.Node]
-			if containerStyle != nil {
+			if containerStyle := computedStyles[containerBox.Node]; containerStyle != nil {
 				wmVal, _ := containerStyle.Get("writing-mode")
-				isSideways = wmVal == "sideways-lr" || wmVal == "sideways-rl"
+				isSidewaysLR = wmVal == "sideways-lr"
 			}
 		}
-		canUse := !isSideways && (!parentIsVertical || parentUsesDirectLayout)
+		canUse := !isSidewaysLR && (!parentIsVertical || parentUsesDirectLayout)
 
-		// Gate out containers that are themselves absolutely positioned or fixed —
-		// their sizing/positioning is handled by abs-pos layout code which interacts
-		// with the transform pipeline in ways Dir-aware layout doesn't replicate yet.
+		// Gate 2.4a: containers that are themselves absolutely positioned or fixed.
+		// Their sizing/positioning interacts with the transform pipeline.
 		if canUse && containerBox.Node != nil {
 			containerStyle := computedStyles[containerBox.Node]
 			if containerStyle != nil {
@@ -1943,16 +1937,11 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			}
 		}
 
-		if canUse {
-			for _, frag := range fragments {
-				if frag.Type == FragmentFloat {
-					canUse = false
-					break
-				}
-			}
-		}
+		// Gate 2.4b: containers with abs-pos children in the DOM tree.
+		// Abs-pos children use static-position logic that assumes HTB coordinates.
+		// Dir-aware layout changes the container's coordinate system, breaking
+		// static position computation. Needs proper Dir-aware abs-pos solver (Step 3).
 		if canUse && containerBox.Node != nil {
-			// Check for abs-pos children in the DOM tree
 			for _, child := range containerBox.Node.Children {
 				if child.Type != html.ElementNode {
 					continue
@@ -1970,14 +1959,17 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 				}
 			}
 		}
-		// Also require definite inline-size (container height > 0)
+
+		// Gate 2.7: require definite inline-size (container height > 0).
+		// Auto-height containers trigger expensive per-char measurement in the
+		// Dir-aware path. Keep this gate until the measurement cost is addressed.
 		containerContentH := containerBox.Height -
 			containerBox.Border.Top - containerBox.Border.Bottom -
 			containerBox.Padding.Top - containerBox.Padding.Bottom
 		if canUse && containerContentH <= 0 {
 			canUse = false
 		}
-		// Gate out containers with only whitespace text (no visible content).
+		// Remaining gate: containers with only whitespace text (no visible content).
 		// Empty vertical containers (e.g., <div style="writing-mode:vertical-rl"></div>)
 		// may have whitespace text nodes from HTML formatting. Dir-aware layout would
 		// incorrectly override their Width based on whitespace charW.
@@ -2006,6 +1998,12 @@ func (le *LayoutEngine) LayoutInlineContentToBoxes(
 			// Also collect distinct line Y values (in order) to compute total block size.
 			lineYSeen := map[float64]bool{}
 			for _, frag := range fragments {
+				// Skip floats and block children — they are out-of-flow or
+				// handled separately, and their sizes should not affect
+				// column width calculations.
+				if frag.Type == FragmentFloat || frag.Type == FragmentBlockChild {
+					continue
+				}
 				ext := frag.Size.Height
 				if frag.Type == FragmentText && frag.Style != nil && frag.Text != "" {
 					// Use the widest single-character advance width as the column
