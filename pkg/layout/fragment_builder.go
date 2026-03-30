@@ -1,0 +1,125 @@
+package layout
+
+// BoxFragmentBuilder is a mutable accumulator used during layout to build
+// a PhysicalFragment. Layout algorithms add children at logical offsets,
+// then call Build() to produce an immutable PhysicalFragment with all
+// coordinates converted to physical.
+//
+// Ported from Blink's BoxFragmentBuilder / FragmentBuilder.
+type BoxFragmentBuilder struct {
+	wdm WritingDirectionMode
+
+	// size is the fragment's border-box size in logical coordinates.
+	size LogicalSize
+
+	// children are accumulated during layout at logical offsets.
+	children []logicalChildLink
+
+	// boxData stores the physical box model edges.
+	boxData *PhysicalBoxData
+
+	// intrinsicBlockSize is the content's natural block-size.
+	intrinsicBlockSize float64
+
+	// endMarginStrut for margin collapsing propagation.
+	endMarginStrut MarginStrut
+
+	// baseline position.
+	baseline float64
+
+	// exclusionSpace after layout.
+	exclusionSpace *ExclusionSpace
+}
+
+type logicalChildLink struct {
+	offset   LogicalOffset
+	fragment *PhysicalFragment
+}
+
+// NewBoxFragmentBuilder creates a builder for the given writing direction.
+func NewBoxFragmentBuilder(wdm WritingDirectionMode) *BoxFragmentBuilder {
+	return &BoxFragmentBuilder{wdm: wdm}
+}
+
+// SetInlineSize sets the fragment's inline-size.
+func (b *BoxFragmentBuilder) SetInlineSize(v float64) {
+	b.size.InlineSize = v
+}
+
+// SetBlockSize sets the fragment's block-size.
+func (b *BoxFragmentBuilder) SetBlockSize(v float64) {
+	b.size.BlockSize = v
+}
+
+// SetSize sets both inline and block size.
+func (b *BoxFragmentBuilder) SetSize(size LogicalSize) {
+	b.size = size
+}
+
+// SetBoxData sets the box model edges (margins, borders, padding).
+func (b *BoxFragmentBuilder) SetBoxData(data *PhysicalBoxData) {
+	b.boxData = data
+}
+
+// SetIntrinsicBlockSize sets the intrinsic (pre-constraint) block-size.
+func (b *BoxFragmentBuilder) SetIntrinsicBlockSize(v float64) {
+	b.intrinsicBlockSize = v
+}
+
+// SetEndMarginStrut sets the margin strut at the block-end.
+func (b *BoxFragmentBuilder) SetEndMarginStrut(ms MarginStrut) {
+	b.endMarginStrut = ms
+}
+
+// SetBaseline sets the baseline position.
+func (b *BoxFragmentBuilder) SetBaseline(v float64) {
+	b.baseline = v
+}
+
+// SetExclusionSpace sets the updated float exclusion state.
+func (b *BoxFragmentBuilder) SetExclusionSpace(es *ExclusionSpace) {
+	b.exclusionSpace = es
+}
+
+// AddChild adds a child fragment at the given logical offset.
+// The offset is relative to this fragment's content box origin.
+func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset LogicalOffset) {
+	b.children = append(b.children, logicalChildLink{
+		offset:   offset,
+		fragment: fragment,
+	})
+}
+
+// Build converts all logical coordinates to physical and returns the
+// immutable PhysicalFragment and LayoutResult.
+//
+// This is the single point where logical→physical conversion happens.
+func (b *BoxFragmentBuilder) Build() *LayoutResult {
+	physSize := ToPhysicalSize(b.size, b.wdm.WM)
+
+	// Convert child offsets from logical to physical.
+	conv := NewConverter(b.wdm, physSize)
+	physChildren := make([]ChildLink, len(b.children))
+	for i, child := range b.children {
+		childPhysSize := child.fragment.Size
+		physChildren[i] = ChildLink{
+			Offset:   conv.ToPhysicalOffset(child.offset, childPhysSize),
+			Fragment: child.fragment,
+		}
+	}
+
+	fragment := &PhysicalFragment{
+		Size:             physSize,
+		Children:         physChildren,
+		WritingDirection: b.wdm,
+		BoxData:          b.boxData,
+	}
+
+	return &LayoutResult{
+		Fragment:           fragment,
+		IntrinsicBlockSize: b.intrinsicBlockSize,
+		Baseline:           b.baseline,
+		EndMarginStrut:     b.endMarginStrut,
+		ExclusionSpace:     b.exclusionSpace,
+	}
+}
