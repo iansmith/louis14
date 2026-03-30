@@ -840,6 +840,19 @@ func (s *Style) GetMarginForWidth(containingWidth float64) BoxEdge {
 	}
 }
 
+// GetAllMarginsForWidth resolves all four margin values including percentage values
+// against the given containing block inline-size. Per CSS 2.1 §8.3, ALL margin
+// percentages (including top/bottom) resolve against the containing block's width
+// (inline-size in the containing block's writing mode).
+func (s *Style) GetAllMarginsForWidth(containingWidth float64) BoxEdge {
+	return BoxEdge{
+		Top:    s.resolveMarginEdge("margin-top", containingWidth),
+		Right:  s.resolveMarginEdge("margin-right", containingWidth),
+		Bottom: s.resolveMarginEdge("margin-bottom", containingWidth),
+		Left:   s.resolveMarginEdge("margin-left", containingWidth),
+	}
+}
+
 // GetPadding returns the padding values for all four sides
 func (s *Style) GetPadding() BoxEdge {
 	return BoxEdge{

@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/html"
+
 // LayoutResult is the immutable output of a layout algorithm.
 // It contains the fragment (positioned box with physical coordinates)
 // and metadata needed by the parent for margin collapsing, float
@@ -29,6 +31,19 @@ type LayoutResult struct {
 	ExclusionSpace *ExclusionSpace
 }
 
+// FragmentType distinguishes box, line-box, and text fragments.
+// Ported from Blink's PhysicalFragment::Type enum.
+type FragmentType int
+
+const (
+	// FragmentBox is a CSS box (block, inline-block, etc.).
+	FragmentBox FragmentType = iota
+	// FragmentLineBox is a line box in an inline formatting context.
+	FragmentLineBox
+	// FragmentText is a text run within a line box.
+	FragmentText
+)
+
 // PhysicalFragment is an immutable positioned box in physical coordinates.
 // This is the output of layout — the fragment tree that the renderer walks.
 //
@@ -47,6 +62,17 @@ type PhysicalFragment struct {
 	// BoxData contains CSS box model data (margins, borders, padding).
 	// Nil for line-box and text fragments.
 	BoxData *PhysicalBoxData
+
+	// Node is the DOM node that produced this fragment.
+	// Set by the layout algorithm for the fragment→box bridge.
+	// For text fragments, this is the parent element (for style lookup).
+	Node *html.Node
+
+	// Type distinguishes box, line-box, and text fragments.
+	Type FragmentType
+
+	// TextContent holds the rendered text for text fragments.
+	TextContent string
 }
 
 // ChildLink is a positioned child within a parent fragment.

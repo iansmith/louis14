@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/html"
+
 // BoxFragmentBuilder is a mutable accumulator used during layout to build
 // a PhysicalFragment. Layout algorithms add children at logical offsets,
 // then call Build() to produce an immutable PhysicalFragment with all
@@ -17,6 +19,9 @@ type BoxFragmentBuilder struct {
 
 	// boxData stores the physical box model edges.
 	boxData *PhysicalBoxData
+
+	// node is the DOM node that produced this fragment.
+	node *html.Node
 
 	// intrinsicBlockSize is the content's natural block-size.
 	intrinsicBlockSize float64
@@ -81,6 +86,11 @@ func (b *BoxFragmentBuilder) SetExclusionSpace(es *ExclusionSpace) {
 	b.exclusionSpace = es
 }
 
+// SetNode sets the DOM node that produced this fragment.
+func (b *BoxFragmentBuilder) SetNode(node *html.Node) {
+	b.node = node
+}
+
 // AddChild adds a child fragment at the given logical offset.
 // The offset is relative to this fragment's content box origin.
 func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset LogicalOffset) {
@@ -113,6 +123,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		Children:         physChildren,
 		WritingDirection: b.wdm,
 		BoxData:          b.boxData,
+		Node:             b.node,
 	}
 
 	return &LayoutResult{

@@ -49,12 +49,6 @@ func (cs ConstraintSpace) IsBlockSizeIndefinite() bool {
 	return cs.AvailableSize.BlockSize < 0
 }
 
-// ExclusionSpace is a placeholder for float exclusion tracking.
-// Will be implemented in Phase 4.
-type ExclusionSpace struct {
-	// TODO: shelf-based float tracking
-}
-
 // ConstraintSpaceBuilder constructs a ConstraintSpace for a child element.
 // It handles the writing-mode conversion automatically: when the child has
 // an orthogonal writing mode, inline/block axes are swapped.

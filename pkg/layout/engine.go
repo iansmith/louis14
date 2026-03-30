@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
 )
@@ -40,15 +41,127 @@ func (le *LayoutEngine) GetScrollY() float64 {
 }
 
 // Layout performs CSS layout on the document and returns a tree of positioned boxes.
-//
-// STUB: Returns a single root box covering the viewport.
-// This will be replaced with the real layout algorithm.
 func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
-	root := &Box{
-		X:      0,
-		Y:      0,
-		Width:  le.viewport.width,
-		Height: le.viewport.height,
+	if doc == nil || doc.Root == nil {
+		return []*Box{{Width: le.viewport.width, Height: le.viewport.height}}
 	}
-	return []*Box{root}
+
+	// Phase 1: Compute styles.
+	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
+	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+
+	// Phase 2: Build layout context.
+	ctx := &LayoutContext{
+		ComputedStyles: computedStyles,
+		ViewportWidth:  le.viewport.width,
+		ViewportHeight: le.viewport.height,
+		ImageFetcher:   le.imageFetcher,
+	}
+
+	// Phase 3: Find the root element (skip document-level wrapper nodes).
+	rootElement := findRootElement(doc.Root)
+	if rootElement == nil {
+		return []*Box{{Width: le.viewport.width, Height: le.viewport.height}}
+	}
+
+	// Phase 4: Build initial constraint space for the root.
+	rootStyle := computedStyles[rootElement]
+	rootWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	if rootStyle != nil {
+		rootWDM = NewWritingDirectionMode(rootStyle)
+	}
+
+	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
+		SetAvailableSize(LogicalSize{
+			InlineSize: le.viewport.width,
+			BlockSize:  le.viewport.height,
+		}).
+		SetPercentageResolutionSize(LogicalSize{
+			InlineSize: le.viewport.width,
+			BlockSize:  le.viewport.height,
+		}).
+		Build()
+
+	// Phase 5: Run layout.
+	result := layoutElement(ctx, rootElement, rootSpace)
+
+	// Phase 6: Convert fragment tree to box tree.
+	rootBox := fragmentToBox(result.Fragment, computedStyles, nil, 0, 0)
+
+	return []*Box{rootBox}
+}
+
+// findRootElement finds the <html> element in the document tree.
+// Skips the <document> wrapper, text nodes, and other non-element nodes.
+func findRootElement(node *html.Node) *html.Node {
+	// The document wrapper itself is an element node with tag "document".
+	// We need to look inside it for the actual root element (<html>).
+	if node.Type == html.ElementNode && node.TagName != "document" {
+		return node
+	}
+	for _, child := range node.Children {
+		if found := findRootElement(child); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// fragmentToBox converts a PhysicalFragment tree into the Box tree
+// expected by the renderer. absX/absY are the absolute position of
+// this fragment's border-box top-left corner.
+func fragmentToBox(frag *PhysicalFragment, styles map[*html.Node]*css.Style, parent *Box, absX, absY float64) *Box {
+	node := frag.Node
+
+	box := &Box{
+		Node:   node,
+		X:      absX,
+		Y:      absY,
+		Width:  frag.Size.Width,
+		Height: frag.Size.Height,
+		Parent: parent,
+	}
+
+	if node != nil {
+		box.Style = styles[node]
+	}
+
+	// Text fragments carry their rendered text content.
+	if frag.Type == FragmentText {
+		box.Text = frag.TextContent
+	}
+
+	// Apply box model edges if present.
+	if frag.BoxData != nil {
+		box.Margin = css.BoxEdge{
+			Top: frag.BoxData.Margin.Top, Right: frag.BoxData.Margin.Right,
+			Bottom: frag.BoxData.Margin.Bottom, Left: frag.BoxData.Margin.Left,
+		}
+		box.Border = css.BoxEdge{
+			Top: frag.BoxData.Border.Top, Right: frag.BoxData.Border.Right,
+			Bottom: frag.BoxData.Border.Bottom, Left: frag.BoxData.Border.Left,
+		}
+		box.Padding = css.BoxEdge{
+			Top: frag.BoxData.Padding.Top, Right: frag.BoxData.Padding.Right,
+			Bottom: frag.BoxData.Padding.Bottom, Left: frag.BoxData.Padding.Left,
+		}
+	}
+
+	if box.Style != nil {
+		box.Position = box.Style.GetPosition()
+	}
+
+	// Content area origin = border-box + border + padding.
+	contentX := absX + box.Border.Left + box.Padding.Left
+	contentY := absY + box.Border.Top + box.Padding.Top
+
+	// Convert children. Child offsets are relative to the content area.
+	for _, childLink := range frag.Children {
+		childAbsX := contentX + childLink.Offset.X
+		childAbsY := contentY + childLink.Offset.Y
+		childBox := fragmentToBox(childLink.Fragment, styles, box, childAbsX, childAbsY)
+		box.Children = append(box.Children, childBox)
+	}
+
+	return box
 }

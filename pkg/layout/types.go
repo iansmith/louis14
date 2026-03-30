@@ -29,6 +29,9 @@ type Box struct {
 	ImagePath     string
 	PseudoContent string
 
+	// Text holds the rendered text content for inline text boxes.
+	Text string
+
 	// Inline fragment tracking.
 	IsFirstFragment bool
 	IsLastFragment  bool
