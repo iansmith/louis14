@@ -307,8 +307,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				itemCross = lf.InlineSize()
 			}
 			item.crossSize = itemCross
-			if itemCross > lineCrossMax {
-				lineCrossMax = itemCross
+			// §9.4: line cross-size is the max outer cross-size (border-box + margins).
+			outerCross := itemCross + item.crossMarginSum()
+			if outerCross > lineCrossMax {
+				lineCrossMax = outerCross
 			}
 		}
 		line.crossSize = lineCrossMax
@@ -905,37 +907,35 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 	// "content" is equivalent to auto for our purposes.
 	if basisVal == "auto" || basisVal == "content" {
 		// Use main-size property if explicitly set, else use max-content.
-		if isRow {
-			// main axis = inline
-			if explicit, ok := ResolveInlineSize(style, childWDM, ConstraintSpace{
-				AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
-				PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
-				WritingDirection:         childWDM,
-			}, childGeom); ok {
+		// For orthogonal items the flex main axis corresponds to the item's BLOCK axis,
+		// so we must resolve the block-size property rather than the inline-size.
+		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
+		itemSpace := ConstraintSpace{
+			AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
+			PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
+			WritingDirection:         childWDM,
+		}
+		if mainIsItemInline {
+			// Normal (non-orthogonal): main axis = item's inline axis.
+			if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
 				return explicit
 			}
-			// §9.2: If no explicit main size but aspect-ratio is set and cross-size is definite,
-			// transfer cross-size through the ratio to get the flex-basis.
-			if ar := style.GetAspectRatio(); ar.IsSet && hasDefiniteCross && ar.Height > 0 {
-				crossContent := containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, true)
+		} else {
+			// Orthogonal: main axis = item's block axis.
+			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+				return explicit
+			}
+		}
+		// §9.2 aspect-ratio fallback when cross-size is definite.
+		if ar := style.GetAspectRatio(); ar.IsSet && hasDefiniteCross {
+			if mainIsItemInline && ar.Height > 0 {
+				crossContent := containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
 				if crossContent < 0 {
 					crossContent = 0
 				}
 				return crossContent * ar.Width / ar.Height
-			}
-		} else {
-			// main axis = block
-			if explicit, ok := ResolveBlockSize(style, childWDM, ConstraintSpace{
-				AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
-				PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
-				WritingDirection:         childWDM,
-			}, childGeom); ok {
-				return explicit
-			}
-			// Column: if no explicit block-size but aspect-ratio is set and cross-size (inline) is definite,
-			// derive main-size (block) from cross-size / ratio.
-			if ar := style.GetAspectRatio(); ar.IsSet && hasDefiniteCross && ar.Width > 0 {
-				crossContent := containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, false)
+			} else if !mainIsItemInline && ar.Width > 0 {
+				crossContent := containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
 				if crossContent < 0 {
 					crossContent = 0
 				}

@@ -435,6 +435,8 @@ func createLineBox(
 					r.Item.Style.GetOverflow() == css.OverflowVisible {
 					fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
 					ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+					// CSS 2.1 §10.8.1: maxAscent now includes margin-block-start,
+					// so blockPos correctly places the border-box after the top margin.
 					blockPos = maxAscent - ibAscent
 				} else {
 					// Default: bottom-align to baseline.
@@ -526,12 +528,16 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 					r.Item.Style.GetOverflow() == css.OverflowVisible {
 					fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
 					ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
-					ibDescent := blockSize - ibAscent
+					// CSS 2.1 §10.8.1: block-direction margins contribute to
+					// the line box height. margin-block-start adds to the ascent
+					// (above the baseline) and margin-block-end adds to the descent.
+					totalAscent := r.Margins.BlockStart + ibAscent
+					ibDescent := blockSize - ibAscent + r.Margins.BlockEnd
 					if ibDescent < 0 {
 						ibDescent = 0
 					}
-					if ibAscent > maxAscent {
-						maxAscent = ibAscent
+					if totalAscent > maxAscent {
+						maxAscent = totalAscent
 					}
 					if ibDescent > maxDescent {
 						maxDescent = ibDescent
