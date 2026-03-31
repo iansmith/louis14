@@ -278,6 +278,11 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 		r.dc.Fill()
 	}
 
+	// Background gradient (linear-gradient, etc.).
+	if layer.BackgroundGradient != "" {
+		r.drawLinearGradient(layer.BackgroundGradient, box.X, box.Y, box.Width, box.Height)
+	}
+
 	// Background image.
 	if layer.BackgroundImage != "" && r.imageFetcher != nil {
 		r.drawBackgroundImage(layer)

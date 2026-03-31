@@ -47,6 +47,7 @@ type PaintLayer struct {
 	// Background:
 	BackgroundColor    css.Color               // A==0 means no background
 	BackgroundImage    string                  // URL from background-image; empty if none
+	BackgroundGradient string                  // raw gradient value (linear-gradient(...) etc); empty if none
 	BackgroundRepeat   css.BackgroundRepeatType // repeat mode
 	BackgroundPosition css.BackgroundPosition   // position offsets
 
@@ -141,6 +142,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.BackgroundImage = url
 		layer.BackgroundRepeat = s.GetBackgroundRepeat()
 		layer.BackgroundPosition = s.GetBackgroundPosition()
+	} else if val, ok := s.Get("background-image"); ok && isGradientValue(val) {
+		layer.BackgroundGradient = val
 	}
 
 	// Border colors: currentColor fallback.
