@@ -1239,11 +1239,22 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 			var delta float64
 			if growing {
 				if totalFactor > 0 {
-					delta = freeSpace * item.flexGrow / totalFactor
+					// §9.7: if sum of flex-grow < 1, use 1 as divisor so only
+					// (sum × freeSpace) is distributed, not all free space.
+					divisor := totalFactor
+					if divisor < 1 {
+						divisor = 1
+					}
+					delta = freeSpace * item.flexGrow / divisor
 				}
 			} else {
 				if totalFactor > 0 {
-					delta = freeSpace * (item.flexShrink * item.flexBasis) / totalFactor
+					// §9.7: same rule for shrink: if sum < 1, use 1 as divisor.
+					divisor := totalFactor
+					if divisor < 1 {
+						divisor = 1
+					}
+					delta = freeSpace * (item.flexShrink * item.flexBasis) / divisor
 				}
 			}
 			item.resolvedMain += delta
