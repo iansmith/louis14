@@ -490,7 +490,12 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 
 	// Check if it fits.
 	remaining := lb.availableWidth - lb.position
-	if totalInlineSize > remaining && len(line.Results) > 0 && lb.mode == LineBreakerContent {
+	// Break before the atom if it doesn't fit AND the line already has content.
+	// In LineBreakerContent mode: normal wrap.
+	// In LineBreakerMinContent mode: break at every opportunity so each atom
+	// contributes independently to the min-content width.
+	// In LineBreakerMaxContent mode: never break (place everything on one line).
+	if totalInlineSize > remaining && len(line.Results) > 0 && lb.mode != LineBreakerMaxContent {
 		// Doesn't fit and line has content — end the line.
 		return true
 	}

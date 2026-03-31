@@ -49,6 +49,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			available = 0
 		}
 		contentInlineSize = minMax.ShrinkToFit(available)
+	} else if bla.space.IsInsideFlexibleBox && !bla.space.IsFixedInlineSize {
+		// CSS Flexbox §9.4: column flex item with auto inline-size (cross axis) and
+		// non-stretch align-self. Item sizes to its min-content inline-size, bounded
+		// by the flex container's content inline-size.
+		minMax := ComputeMinMaxSizes(bla.ctx, bla.node, bla.space)
+		available := bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		contentInlineSize = minMax.ShrinkToFit(available)
 	} else {
 		// Auto inline-size: fill available space minus border/padding.
 		contentInlineSize = bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
@@ -70,6 +80,32 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Resolve block-size (may be auto).
 	explicitBlockSize, hasExplicitBlock := ResolveBlockSize(bla.style, wdm, bla.space, geom)
+
+	// If the parent (e.g. flex) has fixed the block-size via constraint space, use it.
+	// This handles align-self:stretch for column flex and definite-cross-size for row flex.
+	// Guard: skip if a CSS max-block-size keyword (like min-content) is present and
+	// ResolveMaxBlockSize returned no value — the keyword wins over the flex constraint.
+	if !hasExplicitBlock && bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite {
+		fixedBS := bla.space.AvailableSize.BlockSize - geom.BlockBorderPadding()
+		// Check if CSS max-block-size is set to any keyword (non-length, non-percentage).
+		// If so, don't apply the fixed block-size — intrinsic sizing handles it.
+		maxProp := "max-height"
+		if wdm.IsVertical() {
+			maxProp = "max-width"
+		}
+		hasMaxKeyword := false
+		if v, ok := bla.style.Get(maxProp); ok && v != "" && v != "none" {
+			// If it's a keyword (min-content, max-content, fit-content, etc.) and
+			// ResolveMaxBlockSize returns false, it's an intrinsic sizing keyword.
+			if _, resolved := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); !resolved {
+				hasMaxKeyword = true
+			}
+		}
+		if fixedBS > 0 && !hasMaxKeyword {
+			explicitBlockSize = fixedBS
+			hasExplicitBlock = true
+		}
+	}
 
 	// Build child constraint space.
 	childAvailableInline := contentInlineSize
@@ -99,9 +135,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	firstNonEmptyChild := true
 	var propagatedTopMargin MarginStrut
 
+	var firstLineAscent float64
 	if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
-		blockCursor, exclusionSpace = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
+		var inlineAscent float64
+		blockCursor, exclusionSpace, inlineAscent = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
+		firstLineAscent = inlineAscent
 		firstNonEmptyChild = false // inline content is "content"
 	} else {
 		// Block formatting context: block-level children.
@@ -274,6 +313,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
+	// Set baseline: distance from border-box block-start to first line baseline.
+	// Used by flex layout for align-items: baseline.
+	if firstLineAscent > 0 {
+		builder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
+	}
+
 	// Set box data for the renderer.
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
@@ -360,7 +405,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		}).
 		SetPercentageResolutionSize(LogicalSize{
 			InlineSize: contentInlineSize,
-			BlockSize:  0,
+			BlockSize:  availableBlock, // resolves height:100% against container's explicit height
 		}).
 		Build()
 

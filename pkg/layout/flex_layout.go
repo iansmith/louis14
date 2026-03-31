@@ -47,7 +47,21 @@ type flexItem struct {
 	flexShrink    float64
 	frozen        bool
 	order         int
-	isRow         bool   // true if main axis = inline axis
+	isRow         bool // true if main axis = inline axis
+
+	// §9.7 freeze bounds (CSS min/max, content-box).
+	minMain float64 // effective min main size (§4.5 for auto, or CSS min-width/height)
+	maxMain float64 // CSS max main size, or Indefinite if none
+
+	// Auto margins (§8.1): whether each logical edge is margin:auto.
+	mainAutoStart  bool
+	mainAutoEnd    bool
+	crossAutoStart bool
+	crossAutoEnd   bool
+
+	// baseline is the first-line baseline position relative to the item's border-box top.
+	// 0 means no baseline available (fall back to flex-start).
+	baseline float64
 }
 
 // mainMarginSum returns the total margin in the main axis.
@@ -82,6 +96,42 @@ func (fi *flexItem) crossMarginSum() float64 {
 	return fi.margins.InlineSum()
 }
 
+// crossMarginEnd returns the margin-end in the cross axis.
+func (fi *flexItem) crossMarginEnd() float64 {
+	if fi.isRow {
+		return fi.margins.BlockEnd
+	}
+	return fi.margins.InlineEnd
+}
+
+// mainMarginEnd returns the margin-end in the main axis.
+func (fi *flexItem) mainMarginEnd() float64 {
+	if fi.isRow {
+		return fi.margins.InlineEnd
+	}
+	return fi.margins.BlockEnd
+}
+
+// mainBorderPadding returns the border+padding sum in the main axis.
+// resolvedMain is content-box only; adding this gives the border-box size.
+func (fi *flexItem) mainBorderPadding() float64 {
+	if fi.isRow {
+		return fi.geom.InlineBorderPadding()
+	}
+	return fi.geom.BlockBorderPadding()
+}
+
+// outerMainSize returns the margin-box size in the main axis (content + border + padding + margins).
+// This is used for free-space calculations and item positioning.
+func (fi *flexItem) outerMainSize() float64 {
+	return fi.resolvedMain + fi.mainBorderPadding() + fi.mainMarginSum()
+}
+
+// outerHypotheticalMainSize returns the margin-box hypothetical size.
+func (fi *flexItem) outerHypotheticalMainSize() float64 {
+	return fi.hypothetical + fi.mainBorderPadding() + fi.mainMarginSum()
+}
+
 // flexLine holds the items on one flex line.
 type flexLine struct {
 	items     []*flexItem
@@ -99,6 +149,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	flexDir := fla.getFlexDirection()
 	isRow := flexDir == "row" || flexDir == "row-reverse"
 	reverseMain := flexDir == "row-reverse" || flexDir == "column-reverse"
+	// Note: RTL direction is handled automatically by the fragment builder's
+	// logical→physical coordinate conversion (ToPhysicalOffset). We do NOT
+	// need to flip reverseMain for RTL here; InlineOffset=0 already maps to
+	// the physical right side (main-start) in RTL containers.
 	wrapMode := fla.getFlexWrap()
 	reverseCross := wrapMode == "wrap-reverse"
 
@@ -133,6 +187,17 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// Resolve container block-size.
 	explicitBlockSize, hasExplicitBlock := ResolveBlockSize(fla.style, wdm, fla.space, geom)
 
+	// If the parent has fixed the block-size via constraint space (e.g. nested flex stretch),
+	// use it as the definite height.
+	if !hasExplicitBlock && fla.space.IsFixedBlockSize && !fla.space.IsFixedBlockSizeIndefinite {
+		fixedBS := fla.space.AvailableSize.BlockSize - geom.BlockBorderPadding()
+		if fixedBS < 0 {
+			fixedBS = 0
+		}
+		explicitBlockSize = fixedBS
+		hasExplicitBlock = true
+	}
+
 	// Determine container main/cross sizes (content-box).
 	var containerMainSize float64
 	var containerCrossSize float64
@@ -159,7 +224,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	mainGap, crossGap := fla.resolveGaps(wdm, isRow, contentInlineSize)
 
 	// §9.3 — Collect flex items.
-	allItems := fla.collectItems(wdm, contentInlineSize, containerMainSize, hasDefiniteMain, isRow)
+	allItems := fla.collectItems(wdm, contentInlineSize, containerMainSize, hasDefiniteMain, containerCrossSize, hasDefiniteCross, isRow)
 
 	// §9.3 — Sort by order property.
 	sortFlexItems(allItems)
@@ -174,13 +239,22 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 	// §9.4 — Determine cross-size of items and lines.
 	// Do a layout pass for each item at its resolved main size to get intrinsic cross size.
+	// alignItems is needed here to determine crossIsFixed per item for column flex.
+	alignItems := fla.getAlignItems()
 	for _, line := range lines {
 		lineCrossMax := 0.0
 		for _, item := range line.items {
+			// For column flex: stretch items (without auto cross margins) lay out at the container
+			// inline-size (crossIsFixed=true). Non-stretch items and stretch items with auto
+			// cross margins shrink-to-fit their content (crossIsFixed=false).
+			selfAlign := fla.getAlignSelf(item.style, alignItems)
+			isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd
+			crossIsFixed := !isRow && isStretch
 			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
-				item.resolvedMain, Indefinite)
+				item.resolvedMain, Indefinite, crossIsFixed)
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
+			item.baseline = result.Baseline
 			lf := NewLogicalFragment(wdm, item.fragment)
 			var itemCross float64
 			if isRow {
@@ -202,48 +276,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		lines[0].crossSize = containerCrossSize
 	}
 
-	// §9.4 — Stretch items to line cross-size (align-self: stretch).
-	alignItems := fla.getAlignItems()
-	for _, line := range lines {
-		for _, item := range line.items {
-			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			if selfAlign == "stretch" {
-				// Clamp to item's own min/max cross size.
-				stretchCross := line.crossSize
-				if isRow {
-					// cross = block
-					minBlock := ResolveMinBlockSize(item.style, item.wdm, fla.space, item.geom)
-					if stretchCross < minBlock {
-						stretchCross = minBlock
-					}
-					if maxBlock, hasMax := ResolveMaxBlockSize(item.style, item.wdm, fla.space, item.geom); hasMax {
-						if stretchCross > maxBlock {
-							stretchCross = maxBlock
-						}
-					}
-				} else {
-					// cross = inline
-					minInlineItem := ResolveMinInlineSize(item.style, item.wdm, fla.space, item.geom)
-					if stretchCross < minInlineItem {
-						stretchCross = minInlineItem
-					}
-					if maxInlineItem, hasMax := ResolveMaxInlineSize(item.style, item.wdm, fla.space, item.geom); hasMax {
-						if stretchCross > maxInlineItem {
-							stretchCross = maxInlineItem
-						}
-					}
-				}
-				if stretchCross != item.crossSize {
-					cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
-						item.resolvedMain, stretchCross)
-					result := layoutElement(fla.ctx, item.node, cs)
-					item.fragment = result.Fragment
-					item.crossSize = stretchCross
-				}
-			}
-		}
-	}
-
 	// §9.5 — Compute total cross-size of all lines.
 	totalLinesCross := 0.0
 	for i, line := range lines {
@@ -257,6 +289,68 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	if !hasDefiniteCross {
 		containerCrossSize = totalLinesCross
 		hasDefiniteCross = true
+	}
+
+	// §9.8 — Two-pass layout: now that line cross-sizes are known, re-layout
+	// non-stretch items that have percentage cross-sizes or aspect-ratio.
+	// This gives them access to the definite cross-size for % resolution.
+	for _, line := range lines {
+		lineCrossMax := 0.0
+		for _, item := range line.items {
+			selfAlign := fla.getAlignSelf(item.style, alignItems)
+			if selfAlign == "stretch" {
+				// Stretch items are handled in the stretch pass below.
+				if item.crossSize > lineCrossMax {
+					lineCrossMax = item.crossSize
+				}
+				continue
+			}
+			// Check if item has percentage cross-size or aspect-ratio that can now be resolved.
+			needsRelayout := false
+			if isRow {
+				if _, ok := item.style.GetPercentage("height"); ok {
+					needsRelayout = true
+				}
+			} else {
+				if _, ok := item.style.GetPercentage("width"); ok {
+					needsRelayout = true
+				}
+			}
+			// Aspect-ratio: if main-size was determined by aspect-ratio in first pass,
+			// re-layout with definite cross-size so aspect-ratio items get correct cross-size.
+			if ar := item.style.GetAspectRatio(); ar.IsSet {
+				needsRelayout = true
+			}
+			if needsRelayout {
+				var crossBP2 float64
+				if isRow {
+					crossBP2 = item.geom.BlockBorderPadding()
+				} else {
+					crossBP2 = item.geom.InlineBorderPadding()
+				}
+				crossContent2 := line.crossSize - item.crossMarginSum() - crossBP2
+				if crossContent2 < 0 {
+					crossContent2 = 0
+				}
+				cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+					item.resolvedMain, crossContent2, false)
+				result := layoutElement(fla.ctx, item.node, cs)
+				item.fragment = result.Fragment
+				lf := NewLogicalFragment(wdm, item.fragment)
+				if isRow {
+					item.crossSize = lf.BlockSize()
+				} else {
+					item.crossSize = lf.InlineSize()
+				}
+			}
+			if item.crossSize > lineCrossMax {
+				lineCrossMax = item.crossSize
+			}
+		}
+		// Don't shrink the line below its first-pass size.
+		if lineCrossMax > line.crossSize {
+			line.crossSize = lineCrossMax
+		}
 	}
 
 	// Apply min/max cross constraints.
@@ -290,32 +384,132 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		lineOffsets = computeAlignContent(lines, containerCrossSize, totalLinesCross, alignContent, reverseCross, crossGap)
 	}
 
+	// §9.4 — Stretch items to line cross-size (align-self: stretch).
+	// Must happen AFTER align-content so multi-line containers use the final
+	// (possibly grown by align-content:stretch) line cross-sizes.
+	// For single-line containers, lines[0].crossSize was set to containerCrossSize
+	// in §9.4 step 8, which is unchanged by align-content for single-line.
+	fla.stretchFlexItems(lines, alignItems, wdm, contentInlineSize, isRow)
+
 	// §9.8 — Main axis alignment (justify-content) and item positioning.
 	justifyContent := fla.getJustifyContent()
 
 	// §9.9 — Cross axis alignment per item (align-self).
 	for lineIdx, line := range lines {
+		// §8.1: Auto margins in the main axis absorb free space before justify-content.
+		// Count auto margin slots and available free space.
+		mainAutoCount := 0
+		for _, item := range line.items {
+			if item.mainAutoStart {
+				mainAutoCount++
+			}
+			if item.mainAutoEnd {
+				mainAutoCount++
+			}
+		}
+		if mainAutoCount > 0 {
+			// Compute free space for this line (outer sizes include border-padding + margins).
+			usedMain := mainGap * float64(len(line.items)-1)
+			for _, item := range line.items {
+				usedMain += item.resolvedMain + item.mainBorderPadding() + item.mainMarginSum()
+			}
+			lineFreeSpace := containerMainSize - usedMain
+			if lineFreeSpace > 0 {
+				autoMarginVal := lineFreeSpace / float64(mainAutoCount)
+				// Add auto margin values to the appropriate logical margin edges.
+				for _, item := range line.items {
+					if item.mainAutoStart {
+						if item.isRow {
+							item.margins.InlineStart += autoMarginVal
+						} else {
+							item.margins.BlockStart += autoMarginVal
+						}
+					}
+					if item.mainAutoEnd {
+						if item.isRow {
+							item.margins.InlineEnd += autoMarginVal
+						} else {
+							item.margins.BlockEnd += autoMarginVal
+						}
+					}
+				}
+				// With auto margins consuming all free space, justify-content has no effect.
+				justifyContent = "flex-start"
+			}
+		}
+
 		// Compute main offsets using justify-content.
 		computeItemMainOffsets(line.items, containerMainSize, justifyContent, reverseMain, mainGap)
 
 		crossStart := lineOffsets[lineIdx]
+
+		// §9.9 baseline alignment: find the shared baseline for this line.
+		// The shared baseline = max(item.crossMarginStart + item.baseline) over all baseline items.
+		sharedBaseline := 0.0
+		hasBaselineItem := false
+		for _, item := range line.items {
+			selfAlign := fla.getAlignSelf(item.style, alignItems)
+			if selfAlign == "baseline" && item.baseline > 0 {
+				b := item.crossMarginStart() + item.baseline
+				if b > sharedBaseline {
+					sharedBaseline = b
+				}
+				hasBaselineItem = true
+			}
+		}
+
 		// Align items in this line.
 		for _, item := range line.items {
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
+
+			// §8.1: Auto margins in the cross axis override align-self.
+			// crossFreeSpace = line cross-size minus item's outer cross-size (border-box + margins).
+			crossFreeSpace := line.crossSize - item.crossSize - item.crossMarginSum()
+			if crossFreeSpace > 0 && (item.crossAutoStart || item.crossAutoEnd) {
+				if item.crossAutoStart && item.crossAutoEnd {
+					// Both auto: center the item.
+					// crossOffset is relative to container, builder adds crossMarginStart.
+					item.crossOffset = crossStart + crossFreeSpace/2
+				} else if item.crossAutoStart {
+					// Auto start only: push to end.
+					item.crossOffset = crossStart + crossFreeSpace
+				} else {
+					// Auto end only: stays at start.
+					item.crossOffset = crossStart
+				}
+				continue
+			}
+
+			// crossFreeSpace = remaining space after item's outer cross-size.
+			// This may be negative when the item is larger than the line (e.g. due to
+			// overflow). Do NOT clamp to 0: flex-end and center use the raw value to
+			// position items partially outside the line (overflow:hidden clips them).
+			crossFreeForAlign := line.crossSize - item.crossSize - item.crossMarginSum()
+			// crossOffset stores the position BEFORE crossMarginStart is added by the builder.
 			var itemCrossOffset float64
 			switch selfAlign {
 			case "flex-end", "end":
-				itemCrossOffset = crossStart + line.crossSize - item.crossSize
+				itemCrossOffset = crossStart + crossFreeForAlign
 			case "center":
-				itemCrossOffset = crossStart + (line.crossSize-item.crossSize)/2
+				itemCrossOffset = crossStart + crossFreeForAlign/2
 			case "baseline":
-				// Approximate with flex-start for now.
-				itemCrossOffset = crossStart
+				if hasBaselineItem && item.baseline > 0 {
+					// Align so that item.baseline aligns with sharedBaseline.
+					// crossOffset is position of item's margin-box start.
+					// item.crossMarginStart() + item.baseline should equal crossStart + sharedBaseline.
+					itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - item.baseline
+				} else {
+					itemCrossOffset = crossStart
+				}
 			default: // flex-start, stretch
 				itemCrossOffset = crossStart
 			}
 			item.crossOffset = itemCrossOffset
 		}
+		_ = hasBaselineItem
+
+		// Reset justify-content for next line (may have been overridden by auto margins).
+		justifyContent = fla.getJustifyContent()
 	}
 
 	// §9.9 — Add children to builder.
@@ -354,7 +548,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			for _, line := range lines {
 				lineTot := mainGap * float64(len(line.items)-1)
 				for _, item := range line.items {
-					lineTot += item.resolvedMain + item.mainMarginSum()
+					lineTot += item.outerMainSize()
 				}
 				if lineTot > total {
 					total = lineTot
@@ -439,6 +633,8 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 	contentInlineSize float64,
 	containerMainSize float64,
 	hasDefiniteMain bool,
+	containerCrossSize float64,
+	hasDefiniteCross bool,
 	isRow bool,
 ) []*flexItem {
 	var items []*flexItem
@@ -473,26 +669,60 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		flexShrink := fla.parseFloat(childStyle, "flex-shrink", 1)
 		order := fla.parseInt(childStyle, "order", 0)
 
+		// Constraint space for computing intrinsic sizes (§4.5, min/max).
+		itemSizingSpace := ConstraintSpace{
+			AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
+			PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
+			WritingDirection:         childWDM,
+			IsNewFormattingContext:   true,
+			IsInsideFlexibleBox:      true,
+		}
+
 		// Compute flex-basis and hypothetical main size.
 		flexBasis := fla.resolveFlexBasis(child, childStyle, childWDM, childGeom, wdm,
-			contentInlineSize, containerMainSize, hasDefiniteMain, isRow)
+			contentInlineSize, containerMainSize, hasDefiniteMain, containerCrossSize, hasDefiniteCross, isRow)
 
-		// Clamp flex-basis by min/max main size.
-		hyp := fla.clampMainSize(flexBasis, child, childStyle, childWDM, childGeom, wdm,
-			contentInlineSize, containerMainSize, isRow)
+		// Compute §4.5 effective minimum main size.
+		minMainSize := fla.flexItemMinMain(child, childStyle, childWDM, childGeom,
+			itemSizingSpace, flexBasis, isRow)
+
+		// Clamp flex-basis by min/max main size (using §4.5 min).
+		hyp := fla.clampMainSizeWithMin(flexBasis, minMainSize, childStyle, childWDM, childGeom,
+			itemSizingSpace, isRow)
+
+		// Compute CSS max main size for §9.7 freeze loop.
+		maxMainSize := Indefinite
+		if isRow {
+			if max, ok := ResolveMaxInlineSize(childStyle, childWDM, itemSizingSpace, childGeom); ok {
+				maxMainSize = max
+			}
+		} else {
+			if max, ok := ResolveMaxBlockSize(childStyle, childWDM, itemSizingSpace, childGeom); ok {
+				maxMainSize = max
+			}
+		}
+
+		// Detect auto margins for §8.1 alignment.
+		mainAS, mainAE, crossAS, crossAE := getItemAutoMargins(childStyle, childWDM, isRow)
 
 		item := &flexItem{
-			node:         child,
-			style:        childStyle,
-			wdm:          childWDM,
-			geom:         childGeom,
-			margins:      childMargins,
-			flexBasis:    flexBasis,
-			hypothetical: hyp,
-			flexGrow:     flexGrow,
-			flexShrink:   flexShrink,
-			order:        order,
-			isRow:        isRow,
+			node:           child,
+			style:          childStyle,
+			wdm:            childWDM,
+			geom:           childGeom,
+			margins:        childMargins,
+			flexBasis:      flexBasis,
+			hypothetical:   hyp,
+			flexGrow:       flexGrow,
+			flexShrink:     flexShrink,
+			order:          order,
+			isRow:          isRow,
+			minMain:        minMainSize,
+			maxMain:        maxMainSize,
+			mainAutoStart:  mainAS,
+			mainAutoEnd:    mainAE,
+			crossAutoStart: crossAS,
+			crossAutoEnd:   crossAE,
 		}
 		items = append(items, item)
 	}
@@ -521,6 +751,8 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 	contentInlineSize float64,
 	containerMainSize float64,
 	hasDefiniteMain bool,
+	containerCrossSize float64,
+	hasDefiniteCross bool,
 	isRow bool,
 ) float64 {
 	basisVal := ""
@@ -543,6 +775,15 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}, childGeom); ok {
 				return explicit
 			}
+			// §9.2: If no explicit main size but aspect-ratio is set and cross-size is definite,
+			// transfer cross-size through the ratio to get the flex-basis.
+			if ar := style.GetAspectRatio(); ar.IsSet && hasDefiniteCross && ar.Height > 0 {
+				crossContent := containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, true)
+				if crossContent < 0 {
+					crossContent = 0
+				}
+				return crossContent * ar.Width / ar.Height
+			}
 		} else {
 			// main axis = block
 			if explicit, ok := ResolveBlockSize(style, childWDM, ConstraintSpace{
@@ -551,6 +792,15 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				WritingDirection:         childWDM,
 			}, childGeom); ok {
 				return explicit
+			}
+			// Column: if no explicit block-size but aspect-ratio is set and cross-size (inline) is definite,
+			// derive main-size (block) from cross-size / ratio.
+			if ar := style.GetAspectRatio(); ar.IsSet && hasDefiniteCross && ar.Width > 0 {
+				crossContent := containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, false)
+				if crossContent < 0 {
+					crossContent = 0
+				}
+				return crossContent * ar.Height / ar.Width
 			}
 		}
 		// No explicit size → use max-content.
@@ -653,7 +903,49 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	return lf.BlockSize() - childGeom.BlockBorderPadding()
 }
 
+// clampMainSizeWithMin clamps the flex-basis using a precomputed minimum (§4.5)
+// and the CSS max constraint.
+func (fla *FlexLayoutAlgorithm) clampMainSizeWithMin(
+	basis float64,
+	minMain float64,
+	style *css.Style,
+	childWDM WritingDirectionMode,
+	childGeom FragmentGeometry,
+	space ConstraintSpace,
+	isRow bool,
+) float64 {
+	result := basis
+	if result < minMain {
+		result = minMain
+	}
+	if isRow {
+		if max, ok := ResolveMaxInlineSize(style, childWDM, space, childGeom); ok {
+			if result > max {
+				result = max
+			}
+		}
+	} else {
+		if max, ok := ResolveMaxBlockSize(style, childWDM, space, childGeom); ok {
+			if result > max {
+				result = max
+			}
+		}
+	}
+	return result
+}
+
+// resolveItemCrossMargins returns the total cross-axis margin sum for a flex item.
+// isRow=true: cross axis is block, sum = top+bottom margins.
+func resolveItemCrossMargins(style *css.Style, wdm WritingDirectionMode, containingInlineSize float64, isRow bool) float64 {
+	margins := ResolveMargins(style, wdm, containingInlineSize)
+	if isRow {
+		return margins.BlockSum()
+	}
+	return margins.InlineSum()
+}
+
 // clampMainSize clamps the flex-basis by min/max main size constraints.
+// Kept for backward compatibility; new code uses clampMainSizeWithMin.
 func (fla *FlexLayoutAlgorithm) clampMainSize(
 	basis float64,
 	child *LayoutInputNode,
@@ -665,34 +957,13 @@ func (fla *FlexLayoutAlgorithm) clampMainSize(
 	containerMainSize float64,
 	isRow bool,
 ) float64 {
-	result := basis
 	parentSpace := ConstraintSpace{
 		AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
 		PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
 		WritingDirection:         childWDM,
 	}
-	if isRow {
-		min := ResolveMinInlineSize(style, childWDM, parentSpace, childGeom)
-		if result < min {
-			result = min
-		}
-		if max, ok := ResolveMaxInlineSize(style, childWDM, parentSpace, childGeom); ok {
-			if result > max {
-				result = max
-			}
-		}
-	} else {
-		min := ResolveMinBlockSize(style, childWDM, parentSpace, childGeom)
-		if result < min {
-			result = min
-		}
-		if max, ok := ResolveMaxBlockSize(style, childWDM, parentSpace, childGeom); ok {
-			if result > max {
-				result = max
-			}
-		}
-	}
-	return result
+	minMain := fla.flexItemMinMain(child, style, childWDM, childGeom, parentSpace, basis, isRow)
+	return fla.clampMainSizeWithMin(basis, minMain, style, childWDM, childGeom, parentSpace, isRow)
 }
 
 // buildFlexLines distributes items into lines based on flex-wrap.
@@ -712,7 +983,7 @@ func (fla *FlexLayoutAlgorithm) buildFlexLines(
 	currentSize := 0.0
 
 	for i, item := range items {
-		itemSize := item.hypothetical + item.mainMarginSum()
+		itemSize := item.outerHypotheticalMainSize()
 		if i == 0 {
 			currentLine = append(currentLine, item)
 			currentSize = itemSize
@@ -758,12 +1029,14 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 	}
 
 	// Compute initial free space.
+	// Free space = container content-box minus the outer hypothetical sizes of all items.
+	// Outer size = content-box + border-padding + margins.
 	usedSpace := mainGap * float64(len(items)-1)
 	if len(items) == 0 {
 		usedSpace = 0
 	}
 	for _, item := range items {
-		usedSpace += item.hypothetical + item.mainMarginSum()
+		usedSpace += item.outerHypotheticalMainSize()
 	}
 	freeSpace := containerMainSize - usedSpace
 
@@ -810,7 +1083,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 		// Recompute free space from frozen items.
 		freeSpace = containerMainSize - mainGap*float64(len(items)-1)
 		for _, item := range items {
-			freeSpace -= item.resolvedMain + item.mainMarginSum()
+			freeSpace -= item.resolvedMain + item.mainBorderPadding() + item.mainMarginSum()
 		}
 
 		if math.Abs(freeSpace) < 0.001 {
@@ -841,21 +1114,26 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 			break
 		}
 
-		// Freeze items that hit min/max constraints.
+		// §9.7: Freeze items that hit their CSS min or max main size.
 		frozenAny := false
 		for _, item := range items {
 			if item.frozen {
 				continue
 			}
-			// Min constraint.
-			minMain := item.hypothetical // hypothetical already incorporates CSS min
-			// Actually use 0 as min if no CSS min.
-			_ = minMain
-			// Just clamp to 0 for simplicity.
-			if item.resolvedMain < 0 {
-				item.resolvedMain = 0
-				item.frozen = true
-				frozenAny = true
+			if growing {
+				// Freeze at max if we've grown past it.
+				if item.maxMain != Indefinite && item.resolvedMain > item.maxMain {
+					item.resolvedMain = item.maxMain
+					item.frozen = true
+					frozenAny = true
+				}
+			} else {
+				// Freeze at min if we've shrunk past it.
+				if item.resolvedMain < item.minMain {
+					item.resolvedMain = item.minMain
+					item.frozen = true
+					frozenAny = true
+				}
 			}
 		}
 		if !frozenAny {
@@ -863,8 +1141,11 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 		}
 	}
 
-	// Final clamp: no item can be negative.
+	// Final clamp: no item can go below its effective minimum.
 	for _, item := range items {
+		if item.resolvedMain < item.minMain {
+			item.resolvedMain = item.minMain
+		}
 		if item.resolvedMain < 0 {
 			item.resolvedMain = 0
 		}
@@ -873,6 +1154,8 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 
 // buildItemConstraintSpace builds the constraint space for laying out a flex item
 // at a given main size and cross size.
+// crossIsFixed: for column flex (isRow=false), whether the inline-size is fixed to crossSize.
+// Pass false for the initial/non-stretch passes, true for the stretch relayout pass.
 func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 	item *flexItem,
 	parentWDM WritingDirectionMode,
@@ -880,11 +1163,15 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 	isRow bool,
 	mainSize float64,
 	crossSize float64, // Indefinite if not known
+	crossIsFixed bool, // only used when isRow=false
 ) ConstraintSpace {
 	childWDM := item.wdm
 
 	// Flex items always establish a new formatting context.
 	b := NewConstraintSpaceBuilder(parentWDM, childWDM, true)
+
+	// Mark this child as a flex item so inner layout can use flex-specific sizing rules.
+	b.SetIsInsideFlexibleBox(true)
 
 	if isRow {
 		// main = inline, cross = block
@@ -896,31 +1183,46 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			avail.BlockSize = crossSize + item.geom.BlockBorderPadding()
 		}
 		b.SetAvailableSize(avail)
+		// §9.8: Use the actual cross-size for percentage block-size resolution when definite.
+		// When crossSize is Indefinite (first pass), use 0 so children treat % block-sizes as auto.
+		pctBlockSize := 0.0
+		if crossSize != Indefinite {
+			pctBlockSize = crossSize
+		}
 		b.SetPercentageResolutionSize(LogicalSize{
 			InlineSize: mainSize,
-			BlockSize:  0,
+			BlockSize:  pctBlockSize,
 		})
 		b.SetIsFixedInlineSize(true)
 		if crossSize != Indefinite {
 			b.SetIsFixedBlockSize(true)
 		}
 	} else {
-		// main = block, cross = inline
-		// The cross size (inline) is always the container's content inline size.
+		// main = block, cross = inline.
+		// When crossIsFixed (stretch relayout), the item must fill exactly crossSize.
+		// Otherwise (initial pass, non-stretch), the item sizes to its content.
+		crossInlineContent := contentInlineSize
+		if crossSize != Indefinite {
+			crossInlineContent = crossSize
+		}
 		avail := LogicalSize{
-			InlineSize: contentInlineSize + item.geom.InlineBorderPadding(),
+			InlineSize: crossInlineContent + item.geom.InlineBorderPadding(),
 			BlockSize:  Indefinite,
 		}
-		if mainSize != Indefinite {
+		// Only constrain the block-size when mainSize is a meaningful positive value.
+		// When mainSize=0, use intrinsic sizing so content (e.g. fixed-height children)
+		// can paint their full height via overflow:visible. This matches Blink's behavior
+		// for column flex items with flex-basis:0 and fixed-height children.
+		if mainSize > 0 {
 			avail.BlockSize = mainSize + item.geom.BlockBorderPadding()
 		}
 		b.SetAvailableSize(avail)
 		b.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: contentInlineSize,
+			InlineSize: crossInlineContent,
 			BlockSize:  mainSize,
 		})
-		b.SetIsFixedInlineSize(true)
-		if mainSize != Indefinite {
+		b.SetIsFixedInlineSize(crossIsFixed)
+		if mainSize > 0 {
 			b.SetIsFixedBlockSize(true)
 		}
 	}
@@ -940,10 +1242,10 @@ func computeItemMainOffsets(
 		return
 	}
 
-	// Compute total item sizes (including margins).
+	// Compute total outer item sizes (content + border-padding + margins).
 	totalItemSize := mainGap * float64(len(items)-1)
 	for _, item := range items {
-		totalItemSize += item.resolvedMain + item.mainMarginSum()
+		totalItemSize += item.outerMainSize()
 	}
 	freeSpace := containerMainSize - totalItemSize
 	if freeSpace < 0 {
@@ -989,7 +1291,7 @@ func computeItemMainOffsets(
 		cursor := containerMainSize - initialOffset
 		for i, item := range items {
 			_ = i
-			cursor -= item.resolvedMain + item.mainMarginSum()
+			cursor -= item.outerMainSize()
 			item.mainOffset = cursor + item.mainMarginStart()
 			if i < len(items)-1 {
 				cursor -= gap
@@ -1002,7 +1304,7 @@ func computeItemMainOffsets(
 				cursor += gap
 			}
 			item.mainOffset = cursor + item.mainMarginStart()
-			cursor += item.resolvedMain + item.mainMarginSum()
+			cursor += item.outerMainSize()
 		}
 	}
 }
@@ -1120,10 +1422,22 @@ func (fla *FlexLayoutAlgorithm) getFlexWrap() string {
 	return "nowrap"
 }
 
+// stripOverflowKeyword removes the safe/unsafe overflow alignment keywords.
+// CSS Flexbox Level 1 §8: "safe" and "unsafe" precede the alignment keyword.
+func stripOverflowKeyword(v string) string {
+	v = strings.TrimSpace(v)
+	if strings.HasPrefix(v, "safe ") {
+		v = strings.TrimPrefix(v, "safe ")
+	} else if strings.HasPrefix(v, "unsafe ") {
+		v = strings.TrimPrefix(v, "unsafe ")
+	}
+	return strings.TrimSpace(v)
+}
+
 // getJustifyContent returns the justify-content value (default: "flex-start").
 func (fla *FlexLayoutAlgorithm) getJustifyContent() string {
 	if v, ok := fla.style.Get("justify-content"); ok {
-		v = strings.TrimSpace(v)
+		v = stripOverflowKeyword(v)
 		switch v {
 		case "flex-start", "flex-end", "center",
 			"space-between", "space-around", "space-evenly",
@@ -1137,7 +1451,7 @@ func (fla *FlexLayoutAlgorithm) getJustifyContent() string {
 // getAlignItems returns the align-items value (default: "stretch").
 func (fla *FlexLayoutAlgorithm) getAlignItems() string {
 	if v, ok := fla.style.Get("align-items"); ok {
-		v = strings.TrimSpace(v)
+		v = stripOverflowKeyword(v)
 		switch v {
 		case "stretch", "flex-start", "flex-end", "center", "baseline",
 			"start", "end", "self-start", "self-end":
@@ -1169,7 +1483,7 @@ func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string
 		return alignItems
 	}
 	if v, ok := style.Get("align-self"); ok {
-		v = strings.TrimSpace(v)
+		v = stripOverflowKeyword(v)
 		if v != "auto" && v != "" {
 			switch v {
 			case "stretch", "flex-start", "flex-end", "center", "baseline",
@@ -1253,6 +1567,192 @@ func sortFlexItems(items []*flexItem) {
 	for i := 1; i < len(items); i++ {
 		for j := i; j > 0 && items[j].order < items[j-1].order; j-- {
 			items[j], items[j-1] = items[j-1], items[j]
+		}
+	}
+}
+
+// getItemAutoMargins returns which logical margin edges of a flex item are "auto",
+// mapped to main-axis (start/end) and cross-axis (start/end).
+//
+// Uses the same physical→logical mapping as ToLogicalEdges in writing_mode_converter.go,
+// applied to the boolean Auto flags of each physical margin property.
+func getItemAutoMargins(style *css.Style, wdm WritingDirectionMode, isRow bool) (mainAutoStart, mainAutoEnd, crossAutoStart, crossAutoEnd bool) {
+	m := style.GetMargin()
+
+	// Step 1: Map physical auto flags to logical (inline-start, inline-end, block-start, block-end).
+	// This mirrors ToLogicalEdges exactly.
+	var iAS, iAE, bAS, bAE bool
+	switch wdm.WM {
+	case WritingModeHorizontalTB:
+		iAS, iAE = m.AutoLeft, m.AutoRight
+		bAS, bAE = m.AutoTop, m.AutoBottom
+	case WritingModeVerticalRL, WritingModeSidewaysRL:
+		// inline axis: top→bottom; block axis: right→left
+		iAS, iAE = m.AutoTop, m.AutoBottom
+		bAS, bAE = m.AutoRight, m.AutoLeft
+	case WritingModeVerticalLR:
+		// inline axis: top→bottom; block axis: left→right
+		iAS, iAE = m.AutoTop, m.AutoBottom
+		bAS, bAE = m.AutoLeft, m.AutoRight
+	case WritingModeSidewaysLR:
+		// inline axis: bottom→top (reversed); block axis: left→right
+		iAS, iAE = m.AutoBottom, m.AutoTop
+		bAS, bAE = m.AutoLeft, m.AutoRight
+	}
+
+	// Step 2: Apply RTL direction — swaps inline-start and inline-end.
+	if wdm.Dir == DirectionRTL {
+		iAS, iAE = iAE, iAS
+	}
+
+	// Step 3: Map logical edges to main/cross axis based on flex direction.
+	if isRow {
+		// main axis = inline, cross axis = block
+		return iAS, iAE, bAS, bAE
+	}
+	// main axis = block, cross axis = inline
+	return bAS, bAE, iAS, iAE
+}
+
+// flexItemMinMain returns the effective minimum main size for a flex item.
+// §4.5: For min-width/min-height:auto (the initial value for flex items), returns
+// min(min-content-size, flex-basis) — the "automatic minimum size".
+// Returns the explicit CSS min value if explicitly set to a non-auto value.
+func (fla *FlexLayoutAlgorithm) flexItemMinMain(
+	child *LayoutInputNode,
+	style *css.Style,
+	childWDM WritingDirectionMode,
+	childGeom FragmentGeometry,
+	space ConstraintSpace,
+	flexBasis float64,
+	isRow bool,
+) float64 {
+	// Check if min-size is explicitly set (non-auto).
+	if isRow {
+		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" {
+			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+		}
+		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+		}
+	} else {
+		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" {
+			return ResolveMinBlockSize(style, childWDM, space, childGeom)
+		}
+		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+			return ResolveMinBlockSize(style, childWDM, space, childGeom)
+		}
+	}
+
+	// §4.5: min-size is auto (default). The automatic minimum size is
+	// min(min-content-size, flex-basis). Only applies when overflow is visible.
+	overflow := "visible"
+	if v, ok := style.Get("overflow"); ok {
+		overflow = strings.TrimSpace(v)
+	}
+	if overflow != "visible" {
+		return 0
+	}
+
+	// Compute min-content size in the main axis.
+	minContentSpace := ConstraintSpace{
+		AvailableSize:    LogicalSize{InlineSize: 0, BlockSize: Indefinite},
+		WritingDirection: childWDM,
+		IsNewFormattingContext: true,
+	}
+	var minContentMain float64
+	if isRow {
+		mm := ComputeMinMaxSizes(fla.ctx, child, minContentSpace)
+		minContentMain = mm.MinContent
+	} else {
+		// Column: min-content block-size = lay out at zero inline size, take block result.
+		result := layoutElement(fla.ctx, child, minContentSpace)
+		lf := NewLogicalFragment(childWDM, result.Fragment)
+		minContentMain = lf.BlockSize() - childGeom.BlockBorderPadding()
+	}
+
+	// Automatic minimum = min(min-content, flex-basis).
+	autoMin := minContentMain
+	if flexBasis >= 0 && flexBasis < autoMin {
+		autoMin = flexBasis
+	}
+	if autoMin < 0 {
+		autoMin = 0
+	}
+	return autoMin
+}
+
+// stretchFlexItems performs align-self: stretch for all items across all lines.
+// Must be called AFTER align-content has finalized line cross-sizes, so that
+// multi-line containers stretched by align-content:stretch get the correct target.
+func (fla *FlexLayoutAlgorithm) stretchFlexItems(
+	lines []*flexLine,
+	alignItems string,
+	wdm WritingDirectionMode,
+	contentInlineSize float64,
+	isRow bool,
+) {
+	for _, line := range lines {
+		for _, item := range line.items {
+			selfAlign := fla.getAlignSelf(item.style, alignItems)
+			if selfAlign != "stretch" {
+				continue
+			}
+			// CSS Flexbox §9.5.1: If the item has any auto margins in the cross axis,
+			// the auto margins absorb the free space and the item is NOT stretched.
+			if item.crossAutoStart || item.crossAutoEnd {
+				continue
+			}
+			// Stretch item's border-box to the line cross-size minus cross margins.
+			stretchBorderBox := line.crossSize - item.crossMarginSum()
+			if stretchBorderBox < 0 {
+				stretchBorderBox = 0
+			}
+			var crossBP float64
+			if isRow {
+				crossBP = item.geom.BlockBorderPadding()
+			} else {
+				crossBP = item.geom.InlineBorderPadding()
+			}
+			stretchContent := stretchBorderBox - crossBP
+			if stretchContent < 0 {
+				stretchContent = 0
+			}
+			// Clamp to item's own min/max cross size (content-box).
+			if isRow {
+				minBlock := ResolveMinBlockSize(item.style, item.wdm, fla.space, item.geom)
+				if stretchContent < minBlock {
+					stretchContent = minBlock
+				}
+				if maxBlock, hasMax := ResolveMaxBlockSize(item.style, item.wdm, fla.space, item.geom); hasMax {
+					if stretchContent > maxBlock {
+						stretchContent = maxBlock
+					}
+				}
+			} else {
+				minInlineItem := ResolveMinInlineSize(item.style, item.wdm, fla.space, item.geom)
+				if stretchContent < minInlineItem {
+					stretchContent = minInlineItem
+				}
+				if maxInlineItem, hasMax := ResolveMaxInlineSize(item.style, item.wdm, fla.space, item.geom); hasMax {
+					if stretchContent > maxInlineItem {
+						stretchContent = maxInlineItem
+					}
+				}
+			}
+			newBorderBox := stretchContent + crossBP
+			if newBorderBox != item.crossSize {
+				cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+					item.resolvedMain, stretchContent, true)
+				result := layoutElement(fla.ctx, item.node, cs)
+				item.fragment = result.Fragment
+				lf := NewLogicalFragment(wdm, item.fragment)
+				if isRow {
+					item.crossSize = lf.BlockSize()
+				} else {
+					item.crossSize = lf.InlineSize()
+				}
+			}
 		}
 	}
 }

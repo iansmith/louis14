@@ -38,6 +38,17 @@ type ConstraintSpace struct {
 	// ExclusionSpace tracks floats that the child must flow around.
 	// Nil means no floats to avoid (or new BFC).
 	ExclusionSpace *ExclusionSpace
+
+	// IsInsideFlexibleBox is true when this child is a direct flex item.
+	// Used by §4.5 to compute the automatic minimum size (min-content instead of 0
+	// for min-width:auto), and by ResolveBlockSize to suppress percentage resolution
+	// on the first layout pass before the cross-size is determined.
+	IsInsideFlexibleBox bool
+
+	// IsFixedBlockSizeIndefinite is true when IsFixedBlockSize is true but the
+	// block-size comes from the first-pass flex layout rather than a real definite size.
+	// Children should treat percentage block-sizes as auto (resolve to 0) on this pass.
+	IsFixedBlockSizeIndefinite bool
 }
 
 // Indefinite is the sentinel value for an unconstrained block-size.
@@ -108,14 +119,28 @@ func (b *ConstraintSpaceBuilder) SetPercentageResolutionSize(size LogicalSize) *
 }
 
 // SetIsFixedInlineSize marks the inline-size as predetermined.
+// For orthogonal children, "inline" from the parent's perspective becomes
+// the child's block axis, so this sets IsFixedBlockSize in the child's space.
 func (b *ConstraintSpaceBuilder) SetIsFixedInlineSize(fixed bool) *ConstraintSpaceBuilder {
-	b.space.IsFixedInlineSize = fixed
+	if b.parallel {
+		b.space.IsFixedInlineSize = fixed
+	} else {
+		// Orthogonal: parent's inline axis = child's block axis.
+		b.space.IsFixedBlockSize = fixed
+	}
 	return b
 }
 
 // SetIsFixedBlockSize marks the block-size as predetermined.
+// For orthogonal children, "block" from the parent's perspective becomes
+// the child's inline axis, so this sets IsFixedInlineSize in the child's space.
 func (b *ConstraintSpaceBuilder) SetIsFixedBlockSize(fixed bool) *ConstraintSpaceBuilder {
-	b.space.IsFixedBlockSize = fixed
+	if b.parallel {
+		b.space.IsFixedBlockSize = fixed
+	} else {
+		// Orthogonal: parent's block axis = child's inline axis.
+		b.space.IsFixedInlineSize = fixed
+	}
 	return b
 }
 
@@ -125,6 +150,19 @@ func (b *ConstraintSpaceBuilder) SetExclusionSpace(es *ExclusionSpace) *Constrai
 	if !b.space.IsNewFormattingContext {
 		b.space.ExclusionSpace = es
 	}
+	return b
+}
+
+// SetIsInsideFlexibleBox marks the child as a direct flex item.
+func (b *ConstraintSpaceBuilder) SetIsInsideFlexibleBox(v bool) *ConstraintSpaceBuilder {
+	b.space.IsInsideFlexibleBox = v
+	return b
+}
+
+// SetIsFixedBlockSizeIndefinite marks this as a first-pass flex layout where
+// the block-size is nominally fixed but children should treat % block-sizes as auto.
+func (b *ConstraintSpaceBuilder) SetIsFixedBlockSizeIndefinite(v bool) *ConstraintSpaceBuilder {
+	b.space.IsFixedBlockSizeIndefinite = v
 	return b
 }
 

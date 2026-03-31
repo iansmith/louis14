@@ -54,11 +54,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	contentInlineSize float64,
 	exclusionSpace *ExclusionSpace,
 	builder *BoxFragmentBuilder,
-) (blockSizeUsed float64, updatedES *ExclusionSpace) {
+) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64) {
 	// Phase 1: Collect inline items from the layout subtree.
 	itemsData := CollectInlines(bla.node)
 	if len(itemsData.Items) == 0 {
-		return 0, exclusionSpace
+		return 0, exclusionSpace, 0
 	}
 
 	// Phase 1b: Lay out inline floats and register them in the exclusion space.
@@ -164,6 +164,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	blockOffset := 0.0
 	var line LineInfo
 	isFirstLine := true
+	firstLineAscent = -1.0 // -1 means not yet set
 
 	for {
 		// CSS 2.1 §9.5: account for floats when computing available inline size.
@@ -209,9 +210,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			lineAvailableInline = contentInlineSize
 		}
 
-		lineFragment, lineHeight := createLineBox(
+		lineFragment, lineHeight, lineAscent := createLineBox(
 			itemsData, &line, wdm, lineAvailableInline,
 		)
+		if firstLineAscent < 0 {
+			firstLineAscent = lineAscent
+		}
 
 		builder.AddChild(lineFragment, LogicalOffset{
 			InlineOffset: lineInlineOffset,
@@ -221,7 +225,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		blockOffset += lineHeight
 	}
 
-	return blockOffset, exclusionSpace
+	if firstLineAscent < 0 {
+		firstLineAscent = 0
+	}
+	return blockOffset, exclusionSpace, firstLineAscent
 }
 
 // hasVisibleInlinePaint returns true if an inline element's style has
@@ -250,7 +257,7 @@ func createLineBox(
 	line *LineInfo,
 	wdm WritingDirectionMode,
 	availableInline float64,
-) (*PhysicalFragment, float64) {
+) (*PhysicalFragment, float64, float64) { // returns (fragment, lineHeight, maxAscent)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetrics(line, wdm)
 	lineHeight := maxAscent + maxDescent
@@ -463,7 +470,7 @@ func createLineBox(
 
 	result := lineBuilder.Build()
 	result.Fragment.Type = FragmentLineBox
-	return result.Fragment, lineHeight
+	return result.Fragment, lineHeight, maxAscent
 }
 
 // computeLineMetrics computes the maximum ascent and descent across all
