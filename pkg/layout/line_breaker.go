@@ -5,7 +5,15 @@ import (
 	"louis14/pkg/text"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
+
+// isCSSCollapsibleSpace returns true for whitespace characters that CSS
+// considers collapsible (CSS 2.1 §16.6.1). U+00A0 (non-breaking space) is
+// explicitly excluded — it is never collapsed or stripped.
+func isCSSCollapsibleSpace(r rune) bool {
+	return r != '\u00A0' && unicode.IsSpace(r)
+}
 
 // LineBreakerMode controls line breaking behavior.
 // Ported from Blink's LineBreakerMode.
@@ -177,11 +185,36 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		return false
 	}
 
+	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of a line.
+	if lb.position == 0 && len(line.Results) == 0 {
+		trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
+		if len(trimmed) < len(content) {
+			textStart += len(content) - len(trimmed)
+			content = trimmed
+			if len(content) == 0 {
+				lb.currentTextOffset = textEnd
+				return false
+			}
+		}
+	}
+
 	// Get font properties from style.
 	fontSize, bold, italic, mono, ahem := fontPropsFromStyle(item.Style)
 
+	// CSS 2.1 §16.4: letter-spacing adds inter-character space.
+	letterSpacing := 0.0
+	if item.Style != nil {
+		letterSpacing = item.Style.GetLetterSpacing()
+	}
+
 	// Measure the full text segment.
 	fullWidth, _ := text.MeasureTextWithStyle(content, fontSize, bold, italic, mono, ahem)
+	if letterSpacing != 0 {
+		runeCount := runeLen(content)
+		if runeCount > 1 {
+			fullWidth += letterSpacing * float64(runeCount-1)
+		}
+	}
 
 	// Check if it fits.
 	remaining := lb.availableWidth - lb.position
@@ -198,6 +231,35 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		line.Width = lb.position
 		lb.currentTextOffset = textEnd
 		return false
+	}
+
+	// CSS 2.1 §16.6.1: trailing whitespace is always stripped at end-of-line.
+	// If the text with trailing whitespace doesn't fit but the text without does,
+	// treat it as fitting. finishLine will strip the trailing whitespace anyway.
+	if lb.mode == LineBreakerContent {
+		stripped := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
+		if len(stripped) < len(content) {
+			strippedWidth, _ := text.MeasureTextWithStyle(stripped, fontSize, bold, italic, mono, ahem)
+			if letterSpacing != 0 {
+				rc := runeLen(stripped)
+				if rc > 1 {
+					strippedWidth += letterSpacing * float64(rc-1)
+				}
+			}
+			if strippedWidth <= remaining {
+				line.Results = append(line.Results, InlineItemResult{
+					Item:       item,
+					ItemIndex:  lb.currentItemIndex,
+					TextStart:  textStart,
+					TextEnd:    textEnd,
+					InlineSize: fullWidth,
+				})
+				lb.position += fullWidth
+				line.Width = lb.position
+				lb.currentTextOffset = textEnd
+				return false
+			}
+		}
 	}
 
 	// Doesn't fit — find a break point.
@@ -227,12 +289,28 @@ func (lb *LineBreaker) breakTextAtWord(
 		return false
 	}
 
+	// CSS 2.1 §16.4: letter-spacing.
+	letterSpacing := 0.0
+	if item.Style != nil {
+		letterSpacing = item.Style.GetLetterSpacing()
+	}
+
 	// Try to fit as many words as possible.
 	fitted := 0
 	usedWidth := 0.0
 
 	for i, word := range words {
 		wordWidth, _ := text.MeasureTextWithStyle(word, fontSize, bold, italic, mono, ahem)
+		if letterSpacing != 0 {
+			rc := runeLen(word)
+			if rc > 1 {
+				wordWidth += letterSpacing * float64(rc-1)
+			}
+			// Also add letter-spacing before this word if not the first.
+			if i > 0 {
+				wordWidth += letterSpacing
+			}
+		}
 
 		if lb.mode == LineBreakerMinContent && i > 0 {
 			// Min-content: break after every word.
@@ -256,6 +334,12 @@ func (lb *LineBreaker) breakTextAtWord(
 		if len(line.Results) == 0 {
 			fitted = 1
 			usedWidth, _ = text.MeasureTextWithStyle(words[0], fontSize, bold, italic, mono, ahem)
+			if letterSpacing != 0 {
+				rc := runeLen(words[0])
+				if rc > 1 {
+					usedWidth += letterSpacing * float64(rc-1)
+				}
+			}
 		} else {
 			// End the line, retry this item on the next line.
 			return true
@@ -304,8 +388,17 @@ func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
 	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
 	geom := ComputeFragmentGeometry(item.Style, wdm)
 
+	// CSS 2.1 §9.2.1.1: inline-start border/padding appears only on the first
+	// fragment of a split inline. For non-first continuations, omit it.
+	borderInlineStart := geom.Border.InlineStart
+	paddingInlineStart := geom.Padding.InlineStart
+	if !item.IsFirstFragment {
+		borderInlineStart = 0
+		paddingInlineStart = 0
+	}
+
 	// Add inline-start margin + border + padding.
-	startEdge := margins.InlineStart + geom.Border.InlineStart + geom.Padding.InlineStart
+	startEdge := margins.InlineStart + borderInlineStart + paddingInlineStart
 	lb.position += startEdge
 
 	line.Results = append(line.Results, InlineItemResult{
@@ -326,8 +419,17 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
 	geom := ComputeFragmentGeometry(item.Style, wdm)
 
+	// CSS 2.1 §9.2.1.1: inline-end border/padding appears only on the last
+	// fragment of a split inline. For non-last continuations, omit it.
+	borderInlineEnd := geom.Border.InlineEnd
+	paddingInlineEnd := geom.Padding.InlineEnd
+	if !item.IsLastFragment {
+		borderInlineEnd = 0
+		paddingInlineEnd = 0
+	}
+
 	// Add inline-end border + padding + margin.
-	endEdge := geom.Border.InlineEnd + geom.Padding.InlineEnd + margins.InlineEnd
+	endEdge := borderInlineEnd + paddingInlineEnd + margins.InlineEnd
 	lb.position += endEdge
 
 	line.Results = append(line.Results, InlineItemResult{
@@ -341,25 +443,60 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 // handleAtomicInline lays out an atomic inline element (inline-block, replaced).
 // Returns true if the line should end.
 func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool {
-	// Layout the atomic inline.
-	childWDM := NewWritingDirectionMode(item.Style)
-	childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
-		SetAvailableSize(LogicalSize{
-			InlineSize: lb.availableWidth,
-			BlockSize:  Indefinite,
-		}).
-		Build()
+	// Resolve margins for the atomic inline.
+	margins := LogicalEdges{}
+	if item.Style != nil {
+		margins = ResolveMargins(item.Style, lb.space.WritingDirection, lb.availableWidth)
+	}
 
-	result := layoutElement(lb.ctx, item.Node, childSpace)
-	childLogical := NewLogicalFragment(lb.space.WritingDirection, result.Fragment)
-	inlineSize := childLogical.InlineSize()
+	var inlineSize float64
+	var result *LayoutResult
+
+	childWDM := NewWritingDirectionMode(item.Style)
+
+	if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
+		// In sizing mode: compute the child's intrinsic size instead of
+		// doing full layout. Mirrors Blink's recursive min/max sizing.
+		childSpace := ConstraintSpace{
+			AvailableSize:    lb.space.AvailableSize,
+			WritingDirection: childWDM,
+		}
+		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
+		// ComputeMinMaxSizes returns content-box; convert to border-box
+		// for the atomic inline's contribution to the line.
+		childGeom := ComputeFragmentGeometry(item.Style, childWDM)
+		childBP := childGeom.InlineBorderPadding()
+		if lb.mode == LineBreakerMinContent {
+			inlineSize = childMM.MinContent + childBP
+		} else {
+			inlineSize = childMM.MaxContent + childBP
+		}
+	} else {
+		// Normal layout: lay out the atomic inline with shrink-to-fit.
+		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+			SetAvailableSize(LogicalSize{
+				InlineSize: lb.availableWidth,
+				BlockSize:  Indefinite,
+			}).
+			Build()
+
+		result = layoutElement(lb.ctx, item.LayoutNode, childSpace)
+		childLogical := NewLogicalFragment(lb.space.WritingDirection, result.Fragment)
+		inlineSize = childLogical.InlineSize()
+	}
+
+	// Total inline size including margins.
+	totalInlineSize := margins.InlineStart + inlineSize + margins.InlineEnd
 
 	// Check if it fits.
 	remaining := lb.availableWidth - lb.position
-	if inlineSize > remaining && len(line.Results) > 0 && lb.mode == LineBreakerContent {
+	if totalInlineSize > remaining && len(line.Results) > 0 && lb.mode == LineBreakerContent {
 		// Doesn't fit and line has content — end the line.
 		return true
 	}
+
+	// Add inline-start margin.
+	lb.position += margins.InlineStart
 
 	line.Results = append(line.Results, InlineItemResult{
 		Item:         item,
@@ -368,8 +505,12 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		TextEnd:      item.EndOffset,
 		InlineSize:   inlineSize,
 		LayoutResult: result,
+		Margins:      margins,
 	})
 	lb.position += inlineSize
+
+	// Add inline-end margin.
+	lb.position += margins.InlineEnd
 	line.Width = lb.position
 	lb.currentTextOffset = item.EndOffset
 	return false
@@ -386,12 +527,32 @@ func (lb *LineBreaker) handleFloat(item *InlineItem, line *LineInfo) {
 
 // finishLine applies trailing whitespace trimming and sets final line properties.
 func (lb *LineBreaker) finishLine(line *LineInfo) {
+	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of the line.
+	for i := 0; i < len(line.Results); i++ {
+		r := &line.Results[i]
+		if r.Item.Type == InlineItemText {
+			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+			trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
+			if len(trimmed) < len(content) && r.Item.Style != nil {
+				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+				newWidth, _ := text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				line.Width -= (r.InlineSize - newWidth)
+				r.InlineSize = newWidth
+				r.TextStart = r.TextStart + (len(content) - len(trimmed))
+			}
+			break
+		}
+		if r.Item.Type != InlineItemOpenTag {
+			break
+		}
+	}
+
 	// Trim trailing whitespace from the last text result.
 	for i := len(line.Results) - 1; i >= 0; i-- {
 		r := &line.Results[i]
 		if r.Item.Type == InlineItemText {
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
-			trimmed := strings.TrimRightFunc(content, unicode.IsSpace)
+			trimmed := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
 				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
 				newWidth, _ := text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
@@ -420,7 +581,7 @@ func splitIntoWords(s string) []string {
 	inSpace := false
 
 	for i, r := range s {
-		if unicode.IsSpace(r) {
+		if isCSSCollapsibleSpace(r) {
 			if !inSpace && i > start {
 				words = append(words, s[start:i])
 			}
@@ -460,6 +621,11 @@ func splitIntoWords(s string) []string {
 	}
 
 	return words
+}
+
+// runeLen returns the number of Unicode code points in a string.
+func runeLen(s string) int {
+	return utf8.RuneCountInString(s)
 }
 
 // fontPropsFromStyle extracts font rendering properties from a CSS style.

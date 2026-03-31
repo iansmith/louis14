@@ -394,6 +394,17 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	styles := make(map[*html.Node]*Style)
 
 	// Parse all stylesheets
+	stylesheets := ParseDocumentStylesheets(doc)
+
+	// Recursively apply styles to all nodes
+	applyStylesToNode(doc.Root, stylesheets, styles, viewportWidth, viewportHeight)
+
+	return styles
+}
+
+// ParseDocumentStylesheets parses all stylesheets from a document.
+// Exported so the layout tree builder can use them for pseudo-element generation.
+func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 	stylesheets := make([]*Stylesheet, 0)
 	for _, cssText := range doc.Stylesheets {
 		stylesheet, err := ParseStylesheet(cssText)
@@ -401,11 +412,7 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 			stylesheets = append(stylesheets, stylesheet)
 		}
 	}
-
-	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, viewportWidth, viewportHeight)
-
-	return styles
+	return stylesheets
 }
 
 // Phase 11: ComputePseudoElementStyle computes the style for a pseudo-element
@@ -512,6 +519,25 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	finalStyle.ViewportHeight = viewportHeight
 
 	return finalStyle
+}
+
+// HasFirstLetterRules returns true if any stylesheet rules with ::first-letter
+// pseudo-element match the given node.
+func HasFirstLetterRules(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) bool {
+	for _, stylesheet := range stylesheets {
+		for _, rule := range stylesheet.Rules {
+			if rule.Selector.PseudoElement != "first-letter" {
+				continue
+			}
+			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+				continue
+			}
+			if MatchesSelector(node, rule.Selector) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // HasFirstLineRules returns true if any stylesheet rules with ::first-line
@@ -631,6 +657,40 @@ func ApplyInheritedFrom(child, parent *Style) {
 			}
 		}
 	}
+}
+
+// NewBlockifiedStyle creates a minimal anonymous block wrapper style for
+// block-in-inline splitting. When all inline continuations are suppressed
+// (whitespace-only), the extracted block children are wrapped in this style
+// so that non-inheritable stacking context properties (opacity, transform,
+// filter) from the inline are preserved. Backgrounds, borders, padding, and
+// margins are NOT copied — they belong only to the inline's own box edges.
+func NewBlockifiedStyle(inline *Style) *Style {
+	s := NewAnonymousBlockStyle(inline)
+	// Preserve stacking-context-creating non-inheritable properties.
+	for _, prop := range []string{"opacity", "transform", "filter", "isolation", "will-change"} {
+		if val, ok := inline.Get(prop); ok {
+			s.Set(prop, val)
+		}
+	}
+	return s
+}
+
+// NewAnonymousBlockStyle creates a style for an anonymous block box
+// (CSS 2.1 §9.2.1.1). Anonymous boxes inherit all inheritable properties
+// from the parent and have display:block with zero margin/border/padding.
+func NewAnonymousBlockStyle(parent *Style) *Style {
+	s := NewStyle()
+	s.ViewportWidth = parent.ViewportWidth
+	s.ViewportHeight = parent.ViewportHeight
+	s.Set("display", "block")
+	// Copy all inheritable properties from the parent.
+	for prop := range inheritableProperties {
+		if val, ok := parent.Get(prop); ok {
+			s.Set(prop, val)
+		}
+	}
+	return s
 }
 
 // resolveOrthogonalDisplay implements CSS Writing Modes §2.1:

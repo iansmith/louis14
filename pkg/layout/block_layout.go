@@ -2,7 +2,6 @@ package layout
 
 import (
 	"louis14/pkg/css"
-	"louis14/pkg/html"
 )
 
 // BlockLayoutAlgorithm implements the block formatting context layout.
@@ -12,19 +11,18 @@ import (
 // Ported from Blink's BlockLayoutAlgorithm.
 type BlockLayoutAlgorithm struct {
 	ctx   *LayoutContext
-	node  *html.Node
+	node  *LayoutInputNode
 	style *css.Style
 	space ConstraintSpace
 }
 
 // NewBlockLayoutAlgorithm creates a block layout algorithm for the given
-// element with the given constraint space.
-func NewBlockLayoutAlgorithm(ctx *LayoutContext, node *html.Node, space ConstraintSpace) *BlockLayoutAlgorithm {
-	style := ctx.ComputedStyles[node]
+// layout node with the given constraint space.
+func NewBlockLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *BlockLayoutAlgorithm {
 	return &BlockLayoutAlgorithm{
 		ctx:   ctx,
 		node:  node,
-		style: style,
+		style: node.Style(),
 		space: space,
 	}
 }
@@ -34,17 +32,39 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
 	geom := ComputeFragmentGeometry(bla.style, wdm)
 	builder := NewBoxFragmentBuilder(wdm)
-	builder.SetNode(bla.node)
+	builder.SetLayoutNode(bla.node)
 
 	// Resolve inline-size.
 	var contentInlineSize float64
 	if explicitInline, ok := ResolveInlineSize(bla.style, wdm, bla.space, geom); ok {
 		contentInlineSize = explicitInline
+	} else if needsShrinkToFit(bla.style) {
+		// CSS 2.1 §10.3.5: Shrink-to-fit width for inline-block, float,
+		// and abs-pos elements with auto inline-size.
+		// All values are content-box: ComputeMinMaxSizes returns content-box,
+		// available is content-box (border+padding subtracted).
+		minMax := ComputeMinMaxSizes(bla.ctx, bla.node, bla.space)
+		available := bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		contentInlineSize = minMax.ShrinkToFit(available)
 	} else {
 		// Auto inline-size: fill available space minus border/padding.
 		contentInlineSize = bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
 		if contentInlineSize < 0 {
 			contentInlineSize = 0
+		}
+	}
+
+	// Apply min/max inline-size constraints (CSS 2.1 §10.4).
+	minInline := ResolveMinInlineSize(bla.style, wdm, bla.space, geom)
+	if contentInlineSize < minInline {
+		contentInlineSize = minInline
+	}
+	if maxInline, hasMax := ResolveMaxInlineSize(bla.style, wdm, bla.space, geom); hasMax {
+		if contentInlineSize > maxInline {
+			contentInlineSize = maxInline
 		}
 	}
 
@@ -71,32 +91,35 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	blockCursor := 0.0 // current block position within content box
 	var prevMarginStrut MarginStrut
 
-	// TODO: Enable inline formatting context dispatch once the inline layout
-	// pipeline has bidi support, vertical line boxes, and correct Ahem metrics.
-	// The infrastructure is ready (see inline_layout.go, line_breaker.go,
-	// inline_item.go) but enabling it in the production path causes regressions
-	// because text rendering exposes unimplemented features.
-	//
-	// When ready, replace this block with:
-	//   if hasOnlyInlineChildren(bla.node, bla.ctx.ComputedStyles) {
-	//       blockSize, exclusionSpace = bla.layoutInlineChildren(...)
-	//   } else { ... }
+	// CSS 2.1 §8.3.1: Parent-child top margin collapsing.
+	// When a block has no block-start border/padding and isn't a new BFC,
+	// the first child's margin propagates upward.
+	canPropagateTop := !bla.space.IsNewFormattingContext &&
+		geom.Border.BlockStart == 0 && geom.Padding.BlockStart == 0
+	firstNonEmptyChild := true
+	var propagatedTopMargin MarginStrut
 
-	{
+	if hasOnlyInlineChildren(bla.node) {
+		// Inline formatting context: text nodes and inline-level children.
+		blockCursor, exclusionSpace = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
+		firstNonEmptyChild = false // inline content is "content"
+	} else {
 		// Block formatting context: block-level children.
-		for _, child := range bla.node.Children {
-			// Skip non-element nodes (text nodes handled by inline layout later).
-			if child.Type != html.ElementNode {
+		for _, child := range bla.node.Children() {
+			// Skip text nodes (handled by inline layout in anonymous blocks).
+			if child.IsText() {
 				continue
 			}
 
-			childStyle := bla.ctx.ComputedStyles[child]
-			if childStyle == nil {
-				continue
-			}
+			childStyle := child.Style()
 
-			// Skip display:none elements.
-			if childStyle.GetDisplay() == css.DisplayNone {
+			// Collect absolutely positioned elements for deferred layout.
+			childPos := childStyle.GetPosition()
+			if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+					Node:         child,
+					StaticOffset: LogicalOffset{InlineOffset: 0, BlockOffset: blockCursor},
+				})
 				continue
 			}
 
@@ -147,31 +170,74 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
 
-			// Margin collapsing: collapse current margin strut with child's
-			// block-start margin.
+			// Step 1: Append child's block-start margin to the strut.
 			prevMarginStrut.Append(childMargins.BlockStart)
-			collapsedMargin := prevMarginStrut.Resolve()
 
-			// Position child in the block direction.
-			childBlockOffset := blockCursor + collapsedMargin
+			// Step 2: Include any propagated top margin from the child
+			// (recursive parent-child collapsing).
+			if !childResult.PropagatedTopMargin.IsEmpty() {
+				prevMarginStrut.AppendStrut(childResult.PropagatedTopMargin)
+			}
 
-			// Position child in the inline direction (accounting for floats).
+			// Step 3: Check if margins collapse through this element.
+			// CSS 2.1 §8.3.1: An element's margins collapse through it if
+			// it has no height, no border, no padding, does not contain a
+			// line box, and all of its in-flow children's margins (if any)
+			// are collapsed. We approximate this by checking that the
+			// element has no fragment children (no content).
+			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
+			childBlockSize := childLogical.BlockSize()
+			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+			collapseThrough := childBlockSize == 0 &&
+				len(childResult.Fragment.Children) == 0 &&
+				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
+				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0
+
+			if collapseThrough {
+				// Margins collapse through: append block-end margin and continue
+				// without resolving or advancing the cursor.
+				prevMarginStrut.Append(childMargins.BlockEnd)
+				continue
+			}
+
+			// Step 4: Position child in the inline direction.
 			childInlineOffset := childMargins.InlineStart + floatStartOff
 
-			// Add child to the builder.
-			builder.AddChild(childResult.Fragment, LogicalOffset{
-				InlineOffset: childInlineOffset,
-				BlockOffset:  childBlockOffset,
-			})
+			// Step 5: Handle parent-child top margin collapsing.
+			if firstNonEmptyChild && canPropagateTop {
+				// Propagate the accumulated margin strut upward.
+				propagatedTopMargin = prevMarginStrut
+				// Position child at offset 0 (margin moves outside parent).
+				builder.AddChild(childResult.Fragment, LogicalOffset{
+					InlineOffset: childInlineOffset,
+					BlockOffset:  0,
+				})
+				blockCursor = childBlockSize
+			} else {
+				// Step 6: Normal margin resolution.
+				collapsedMargin := prevMarginStrut.Resolve()
+				childBlockOffset := blockCursor + collapsedMargin
+				builder.AddChild(childResult.Fragment, LogicalOffset{
+					InlineOffset: childInlineOffset,
+					BlockOffset:  childBlockOffset,
+				})
+				blockCursor = childBlockOffset + childBlockSize
+			}
 
-			// Advance block cursor past this child.
-			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
-			blockCursor = childBlockOffset + childLogical.BlockSize()
+			firstNonEmptyChild = false
 
 			// Reset margin strut to the child's block-end margin.
 			prevMarginStrut = childResult.EndMarginStrut
 			prevMarginStrut.Append(childMargins.BlockEnd)
 		}
+	}
+
+	// CSS 2.1 §10.6.7: For BFC roots with auto block-size, the auto height
+	// extends to the last child's margin-bottom edge. For non-BFC containers,
+	// the trailing margin propagates outward via EndMarginStrut.
+	if bla.space.IsNewFormattingContext && !prevMarginStrut.IsEmpty() {
+		blockCursor += prevMarginStrut.Resolve()
+		prevMarginStrut = MarginStrut{} // consumed
 	}
 
 	// Ensure content clears all floats for auto block-size.
@@ -187,6 +253,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
+	}
+
+	// Apply min/max block-size constraints (CSS 2.1 §10.7).
+	minBlock := ResolveMinBlockSize(bla.style, wdm, bla.space, geom)
+	if finalBlockSize < minBlock {
+		finalBlockSize = minBlock
+	}
+	if maxBlock, hasMax := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); hasMax {
+		if finalBlockSize > maxBlock {
+			finalBlockSize = maxBlock
+		}
 	}
 
 	// Set the fragment size.
@@ -210,13 +287,58 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetEndMarginStrut(prevMarginStrut)
 	builder.SetExclusionSpace(exclusionSpace)
 
-	return builder.Build()
+	// CSS 2.1 §10.6.4: Lay out absolutely positioned children.
+	// They are positioned relative to this containing block's padding box.
+	if len(builder.outOfFlowCandidates) > 0 {
+		oofPart := &OutOfFlowLayoutPart{
+			ctx:                 bla.ctx,
+			containingBlockWDM:  wdm,
+			containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+			geom:                geom,
+		}
+		oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+	}
+
+	result := builder.Build()
+
+	// CSS 2.1 §8.3.1: Propagate first child's margin for parent-child collapsing.
+	if !propagatedTopMargin.IsEmpty() {
+		result.PropagatedTopMargin = propagatedTopMargin
+	}
+
+	// CSS 2.1 §9.4.3: Compute position:relative offset during layout.
+	// Stored on the fragment for paint-time application (not baked into positions).
+	// Percentages resolve against the containing block's dimensions.
+	if bla.style != nil && bla.style.GetPosition() == css.PositionRelative {
+		cbWidth := bla.space.AvailableSize.InlineSize
+		cbHeight := bla.space.AvailableSize.BlockSize
+		if cbHeight == Indefinite {
+			cbHeight = 0 // auto height → percentages compute to 0
+		}
+		offset := bla.style.GetPositionOffsetResolved(cbWidth, cbHeight)
+		var dx, dy float64
+		// Left wins over right.
+		if offset.HasLeft {
+			dx = offset.Left
+		} else if offset.HasRight {
+			dx = -offset.Right
+		}
+		// Top wins over bottom.
+		if offset.HasTop {
+			dy = offset.Top
+		} else if offset.HasBottom {
+			dy = -offset.Bottom
+		}
+		result.Fragment.RelativeOffset = PhysicalOffset{X: dx, Y: dy}
+	}
+
+	return result
 }
 
 // layoutFloat handles layout and positioning of a float child within the
 // block formatting context. CSS 2.1 §9.5.
 func (bla *BlockLayoutAlgorithm) layoutFloat(
-	child *html.Node,
+	child *LayoutInputNode,
 	childStyle *css.Style,
 	parentWDM WritingDirectionMode,
 	contentInlineSize float64,
@@ -288,8 +410,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 
 // layoutElement dispatches to the appropriate layout algorithm based on
 // the element's display type.
-func layoutElement(ctx *LayoutContext, node *html.Node, space ConstraintSpace) *LayoutResult {
-	style := ctx.ComputedStyles[node]
+func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
+	style := node.Style()
 	if style == nil {
 		return emptyResult(space.WritingDirection)
 	}
@@ -299,9 +421,18 @@ func layoutElement(ctx *LayoutContext, node *html.Node, space ConstraintSpace) *
 	switch display {
 	case css.DisplayNone:
 		return emptyResult(space.WritingDirection)
-	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem:
+	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem, css.DisplayInlineBlock:
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
-	// TODO: DisplayFlex, DisplayGrid, DisplayTable, DisplayInlineBlock
+	case css.DisplayTable:
+		return NewTableLayoutAlgorithm(ctx, node, space).Layout()
+	case css.DisplayTableRow, css.DisplayTableRowGroup, css.DisplayTableHeaderGroup,
+		css.DisplayTableFooterGroup, css.DisplayTableCell, css.DisplayTableCaption:
+		// Table internals laid out by their parent TableLayoutAlgorithm.
+		// If encountered at top level, treat as block.
+		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
+	case css.DisplayFlex, css.DisplayInlineFlex:
+		return NewFlexLayoutAlgorithm(ctx, node, space).Layout()
+	// TODO: DisplayGrid
 	default:
 		// For now, treat unknown display types as block.
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
@@ -343,12 +474,39 @@ func createsFormattingContext(style *css.Style) bool {
 		return true
 	}
 
-	// Flex/grid items create a BFC.
+	// Inline-block creates a BFC.
 	d := style.GetDisplay()
+	if d == css.DisplayInlineBlock {
+		return true
+	}
+
+	// Flex/grid items create a BFC.
 	if d == css.DisplayFlex || d == css.DisplayInlineFlex ||
 		d == css.DisplayGrid || d == css.DisplayInlineGrid {
 		return true
 	}
 
+	return false
+}
+
+// needsShrinkToFit returns true if an element with auto inline-size should
+// use shrink-to-fit sizing (CSS 2.1 §10.3.5). This applies to inline-block,
+// floating, and absolutely positioned elements — NOT to regular block-level
+// elements even if they establish a new formatting context.
+func needsShrinkToFit(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	d := style.GetDisplay()
+	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex {
+		return true
+	}
+	if style.GetFloat() != css.FloatNone {
+		return true
+	}
+	pos := style.GetPosition()
+	if pos == css.PositionAbsolute || pos == css.PositionFixed {
+		return true
+	}
 	return false
 }

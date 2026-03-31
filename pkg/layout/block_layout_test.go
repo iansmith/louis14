@@ -28,20 +28,32 @@ func makeStyle(props ...string) *css.Style {
 	return s
 }
 
+// buildTestTree constructs a LayoutInputNode tree from a DOM tree and style map.
+func buildTestTree(root *html.Node, styles map[*html.Node]*css.Style) *LayoutInputNode {
+	builder := &LayoutTreeBuilder{styles: styles}
+	return builder.BuildLayoutTree(root)
+}
+
+// testContext creates a LayoutContext for tests.
+func testContext() *LayoutContext {
+	return &LayoutContext{ViewportWidth: 800, ViewportHeight: 600}
+}
+
 func TestBlockLayout_SingleDivExplicitSize(t *testing.T) {
 	root := makeNode("div")
 	styles := map[*html.Node]*css.Style{
 		root: makeStyle("width", "200px", "height", "100px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, root, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
 	if result.Fragment.Size.Width != 200 || result.Fragment.Size.Height != 100 {
 		t.Errorf("got %vx%v, want 200x100", result.Fragment.Size.Width, result.Fragment.Size.Height)
@@ -54,16 +66,16 @@ func TestBlockLayout_AutoInlineSize(t *testing.T) {
 		root: makeStyle("height", "50px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, root, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Auto width should fill available (800), height explicit (50).
 	if result.Fragment.Size.Width != 800 {
 		t.Errorf("width: got %v, want 800", result.Fragment.Size.Width)
 	}
@@ -83,16 +95,16 @@ func TestBlockLayout_NestedBlocks(t *testing.T) {
 		child2: makeStyle("height", "150px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Parent: 400px wide, auto height = 100 + 150 = 250.
 	if result.Fragment.Size.Width != 400 {
 		t.Errorf("parent width: got %v, want 400", result.Fragment.Size.Width)
 	}
@@ -100,12 +112,10 @@ func TestBlockLayout_NestedBlocks(t *testing.T) {
 		t.Errorf("parent height: got %v, want 250", result.Fragment.Size.Height)
 	}
 
-	// Two children.
 	if len(result.Fragment.Children) != 2 {
 		t.Fatalf("children: got %d, want 2", len(result.Fragment.Children))
 	}
 
-	// Child 1 at Y=0.
 	c1 := result.Fragment.Children[0]
 	if c1.Offset.Y != 0 {
 		t.Errorf("child1 Y: got %v, want 0", c1.Offset.Y)
@@ -114,7 +124,6 @@ func TestBlockLayout_NestedBlocks(t *testing.T) {
 		t.Errorf("child1 height: got %v, want 100", c1.Fragment.Size.Height)
 	}
 
-	// Child 2 at Y=100.
 	c2 := result.Fragment.Children[1]
 	if c2.Offset.Y != 100 {
 		t.Errorf("child2 Y: got %v, want 100", c2.Offset.Y)
@@ -123,7 +132,6 @@ func TestBlockLayout_NestedBlocks(t *testing.T) {
 		t.Errorf("child2 height: got %v, want 150", c2.Fragment.Size.Height)
 	}
 
-	// Both children should fill parent width (400).
 	if c1.Fragment.Size.Width != 400 {
 		t.Errorf("child1 width: got %v, want 400", c1.Fragment.Size.Width)
 	}
@@ -143,23 +151,21 @@ func TestBlockLayout_MarginCollapsing(t *testing.T) {
 		child2: makeStyle("height", "100px", "display", "block", "margin-top", "20px"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Margins collapse: max(30, 20) = 30.
-	// Total height = 100 + 30 + 100 = 230.
 	if result.Fragment.Size.Height != 230 {
 		t.Errorf("height: got %v, want 230", result.Fragment.Size.Height)
 	}
 
 	c2 := result.Fragment.Children[1]
-	// Child 2 at Y = 100 + 30 = 130.
 	if c2.Offset.Y != 130 {
 		t.Errorf("child2 Y: got %v, want 130", c2.Offset.Y)
 	}
@@ -178,17 +184,16 @@ func TestBlockLayout_WithPadding(t *testing.T) {
 		child: makeStyle("height", "100px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Width: 400 (content) + 15 + 15 (padding) = 430.
-	// Height: 100 (content) + 10 + 20 (padding) = 130.
 	if result.Fragment.Size.Width != 430 {
 		t.Errorf("width: got %v, want 430", result.Fragment.Size.Width)
 	}
@@ -212,16 +217,16 @@ func TestBlockLayout_WithBorder(t *testing.T) {
 		child: makeStyle("height", "80px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Width: 300 + 3 + 3 = 306. Height: 80 + 5 + 5 = 90.
 	if result.Fragment.Size.Width != 306 {
 		t.Errorf("width: got %v, want 306", result.Fragment.Size.Width)
 	}
@@ -243,21 +248,20 @@ func TestBlockLayout_DisplayNoneSkipped(t *testing.T) {
 		child2: makeStyle("height", "50px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Only 2 children laid out, display:none skipped.
 	if len(result.Fragment.Children) != 2 {
 		t.Fatalf("children: got %d, want 2", len(result.Fragment.Children))
 	}
 
-	// Height = 50 + 50 = 100 (no 999px).
 	if result.Fragment.Size.Height != 100 {
 		t.Errorf("height: got %v, want 100", result.Fragment.Size.Height)
 	}
@@ -278,16 +282,16 @@ func TestBlockLayout_BoxSizingBorderBox(t *testing.T) {
 		),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, root, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// border-box: 400px total width, 300px total height.
 	if result.Fragment.Size.Width != 400 {
 		t.Errorf("width: got %v, want 400", result.Fragment.Size.Width)
 	}
@@ -305,16 +309,16 @@ func TestBlockLayout_ExplicitBlockSize(t *testing.T) {
 		child:  makeStyle("height", "100px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Explicit height takes precedence over intrinsic (100px child).
 	if result.Fragment.Size.Height != 500 {
 		t.Errorf("height: got %v, want 500", result.Fragment.Size.Height)
 	}
@@ -333,18 +337,18 @@ func TestBlockLayout_ChildWithMargins(t *testing.T) {
 		),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
 	c := result.Fragment.Children[0]
 
-	// Child positioned with margin-left inline offset and margin-top block offset.
 	if c.Offset.X != 20 {
 		t.Errorf("child X: got %v, want 20", c.Offset.X)
 	}
@@ -370,7 +374,6 @@ func TestEngine_LayoutProducesBoxes(t *testing.T) {
 	}
 
 	root := boxes[0]
-	// Root fills viewport width; height is 0 for empty content (correct).
 	if root.Width != 800 {
 		t.Errorf("root width: got %v, want 800", root.Width)
 	}
@@ -388,18 +391,16 @@ func TestBlockLayout_VRL_SwapsAxes(t *testing.T) {
 		),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
 	wdm := WritingDirectionMode{WritingModeVerticalRL, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 300, BlockSize: 200}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 300, BlockSize: 200}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, root, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// VRL: inline-size=height(300), block-size=width(200).
-	// Physical: width=block(200)+border/padding, height=inline(300)+border/padding.
-	// With no border/padding: width=200, height=300.
 	if result.Fragment.Size.Width != 200 || result.Fragment.Size.Height != 300 {
 		t.Errorf("got %vx%v, want 200x300", result.Fragment.Size.Width, result.Fragment.Size.Height)
 	}
@@ -411,13 +412,14 @@ func TestLayoutElement_DispatchesBlock(t *testing.T) {
 		root: makeStyle("width", "100px", "height", "50px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := layoutElement(ctx, root, space)
+	result := layoutElement(ctx, layoutRoot, space)
 
 	if result.Fragment.Size.Width != 100 || result.Fragment.Size.Height != 50 {
 		t.Errorf("got %vx%v, want 100x50", result.Fragment.Size.Width, result.Fragment.Size.Height)
@@ -430,13 +432,14 @@ func TestLayoutElement_DisplayNone(t *testing.T) {
 		root: makeStyle("display", "none"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(root, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := layoutElement(ctx, root, space)
+	result := layoutElement(ctx, layoutRoot, space)
 
 	if result.Fragment.Size.Width != 0 || result.Fragment.Size.Height != 0 {
 		t.Errorf("display:none should produce zero-size, got %vx%v",
@@ -454,17 +457,19 @@ func TestBlockLayout_TextNodesSkipped(t *testing.T) {
 		child:  makeStyle("height", "50px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Only the element child produces a fragment; text node is skipped.
-	if len(result.Fragment.Children) != 1 {
-		t.Errorf("children: got %d, want 1", len(result.Fragment.Children))
+	// Text node + block child = mixed content. Anonymous block wrapping
+	// generates: [anonymous-block("hello"), block-div].
+	if len(result.Fragment.Children) != 2 {
+		t.Errorf("children: got %d, want 2", len(result.Fragment.Children))
 	}
 }
 
@@ -479,33 +484,28 @@ func TestBlockLayout_DeeplyNested(t *testing.T) {
 		inner: makeStyle("height", "40px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(outer, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, outer, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	// Outer: 600 wide, auto height = intrinsic from children.
 	if result.Fragment.Size.Width != 600 {
 		t.Errorf("outer width: got %v, want 600", result.Fragment.Size.Width)
 	}
-	// Mid: auto size, fills outer's 600px.
-	// Inner: 40px tall.
-	// Heights bubble up: inner=40, mid=40, outer=40.
 	if result.Fragment.Size.Height != 40 {
 		t.Errorf("outer height: got %v, want 40", result.Fragment.Size.Height)
 	}
 
-	// Check mid fills width.
 	midFrag := result.Fragment.Children[0].Fragment
 	if midFrag.Size.Width != 600 {
 		t.Errorf("mid width: got %v, want 600", midFrag.Size.Width)
 	}
 
-	// Check inner fills width.
 	innerFrag := midFrag.Children[0].Fragment
 	if innerFrag.Size.Width != 600 {
 		t.Errorf("inner width: got %v, want 600", innerFrag.Size.Width)

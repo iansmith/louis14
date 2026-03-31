@@ -13,7 +13,7 @@ func makeTextNode(t string) *html.Node {
 }
 
 // inlineLayoutForTest exercises the inline layout pipeline directly:
-// CollectInlines → LineBreaker → createLineBox. This bypasses the
+// CollectInlines -> LineBreaker -> createLineBox. This bypasses the
 // BlockLayoutAlgorithm dispatch so the tests work regardless of whether
 // inline layout is wired into the production path.
 func inlineLayoutForTest(
@@ -22,10 +22,13 @@ func inlineLayoutForTest(
 	contentInlineSize float64,
 ) (lineBoxes []*PhysicalFragment, totalBlockSize float64) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+
+	// Build layout tree.
+	layoutParent := buildTestTree(parent, styles)
 
 	// Phase 1: Collect inline items.
-	itemsData := CollectInlines(parent, styles)
+	itemsData := CollectInlines(layoutParent)
 	if len(itemsData.Items) == 0 {
 		return nil, 0
 	}
@@ -41,7 +44,7 @@ func inlineLayoutForTest(
 
 	// Get text-align from container style.
 	textAlign := "start"
-	if parentStyle := styles[parent]; parentStyle != nil {
+	if parentStyle := layoutParent.Style(); parentStyle != nil {
 		if ta, ok := parentStyle.Get("text-align"); ok {
 			textAlign = ta
 		}
@@ -210,7 +213,12 @@ func TestInlineLayout_HasOnlyInlineChildren(t *testing.T) {
 					}
 				}
 			}
-			got := hasOnlyInlineChildren(parent, tt.styles)
+			// Need parent style for tree builder.
+			if _, ok := tt.styles[parent]; !ok {
+				tt.styles[parent] = makeStyle("display", "block")
+			}
+			layoutParent := buildTestTree(parent, tt.styles)
+			got := hasOnlyInlineChildren(layoutParent)
 			if got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
@@ -257,13 +265,13 @@ func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	parentNode := makeNode("div")
 	parentStyle := makeStyle("display", "block", "font-size", "16px")
-	styles := map[*html.Node]*css.Style{parentNode: parentStyle}
 
 	textFrag := &PhysicalFragment{
 		Size:             PhysicalSize{Width: 50, Height: 16},
 		Type:             FragmentText,
 		TextContent:      "Test text",
 		Node:             parentNode,
+		Style:            parentStyle,
 		WritingDirection: wdm,
 	}
 
@@ -282,10 +290,11 @@ func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
 			{Offset: PhysicalOffset{X: 0, Y: 0}, Fragment: lineFrag},
 		},
 		Node:             parentNode,
+		Style:            parentStyle,
 		WritingDirection: wdm,
 	}
 
-	box := fragmentToBox(containerFrag, styles, nil, 0, 0)
+	box := fragmentToBox(containerFrag, nil, 0, 0)
 
 	found := false
 	var walk func(b *Box)
@@ -316,7 +325,6 @@ func TestInlineLayout_LineBoxHeight(t *testing.T) {
 		t.Fatal("no line boxes")
 	}
 
-	// Line box height should be approximately the font size (20px).
 	h := lineBoxes[0].Size.Height
 	if h < 15 || h > 30 {
 		t.Errorf("line box height: got %f, expected ~20", h)
@@ -348,12 +356,10 @@ func TestInlineLayout_TextPositioning(t *testing.T) {
 
 	textFrag := lineBoxes[0].Children[0]
 
-	// Left-aligned: text should start at X=0.
 	if math.Abs(textFrag.Offset.X) > 0.1 {
 		t.Errorf("left-aligned text X offset: got %f, want ~0", textFrag.Offset.X)
 	}
 
-	// Text width should be > 0.
 	if textFrag.Fragment.Size.Width <= 0 {
 		t.Errorf("text width should be > 0, got %f", textFrag.Fragment.Size.Width)
 	}
@@ -366,9 +372,11 @@ func TestInlineLayout_CollectInlines(t *testing.T) {
 	parent := makeNode("div", text1, span)
 
 	spanStyle := makeStyle("display", "inline")
-	styles := map[*html.Node]*css.Style{span: spanStyle}
+	parentStyle := makeStyle("display", "block")
+	styles := map[*html.Node]*css.Style{span: spanStyle, parent: parentStyle}
 
-	data := CollectInlines(parent, styles)
+	layoutParent := buildTestTree(parent, styles)
+	data := CollectInlines(layoutParent)
 
 	if data.TextContent != "Hello world" {
 		t.Errorf("TextContent: got %q, want %q", data.TextContent, "Hello world")
@@ -399,10 +407,11 @@ func TestInlineLayout_LineBreaker(t *testing.T) {
 	parentStyle := makeStyle("display", "block", "font-size", "16px")
 	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-	data := CollectInlines(parent, styles)
+	layoutParent := buildTestTree(parent, styles)
+	data := CollectInlines(layoutParent)
 	fonts := text.DefaultFontConfig()
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
 
 	space := ConstraintSpace{
 		AvailableSize:    LogicalSize{InlineSize: 800, BlockSize: Indefinite},

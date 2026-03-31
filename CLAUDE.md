@@ -1,4 +1,5 @@
-Go binary: /opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
+Go binary: GOTOOLCHAIN=auto /opt/homebrew/Cellar/go/1.26.0/libexec/bin/go
+(go.mod specifies toolchain go1.25.5; GOTOOLCHAIN=auto causes automatic switch)
 
 ## Testing Policy
 
@@ -6,8 +7,8 @@ Go binary: /opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 rendering bugs by allowing pixel shifts. All reftest comparisons must use FuzzyRadius=0
 (the default). Only Tolerance (per-channel color) and MaxDifferentPercent are acceptable.
 
-**Threshold: under 0.1%.** MaxDifferentPercent must be 0.1 or lower. All tests must pass
-with fewer than 0.1% different pixels (480 pixels at 800×600 viewport).
+**Threshold: 0%.** MaxDifferentPercent must be 0. Any pixel difference is a test failure.
+Tolerance=2 (per-channel) remains to handle anti-aliasing, but the overall diff must be 0%.
 
 ## CLI tools
 
@@ -19,7 +20,7 @@ with fewer than 0.1% different pixels (480 pixels at 800×600 viewport).
 To run a CSS3 category and show each test's pass/fail status with pixel-diff percentage:
 
 ```bash
-/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go test ./pkg/visualtest/... \
+/opt/homebrew/Cellar/go/1.26.0/libexec/bin/go test ./pkg/visualtest/... \
   -run TestWPTCSS3Reftests/css-CATEGORY -v -json -timeout 120s 2>&1 \
   > /tmp/results.txt
 

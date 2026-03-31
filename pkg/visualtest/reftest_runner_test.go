@@ -209,7 +209,7 @@ func runReftest(t *testing.T, testPath string) bool {
 	// Compare
 	opts := DefaultOptions()
 	opts.Tolerance = 2
-	opts.MaxDifferentPercent = 0.1 // Allow up to 0.1% different pixels for font/anti-aliasing variations
+	opts.MaxDifferentPercent = 0 // Exact match: any pixel difference is a failure
 	opts.SaveDiffImage = true
 	opts.DiffImagePath = filepath.Join(tmpDir, "diff.png")
 

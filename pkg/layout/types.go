@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"strconv"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 )
@@ -38,6 +40,35 @@ type Box struct {
 
 	// Line boxes for inline formatting contexts.
 	LineBoxes []*LineBox
+
+	// LayoutNode is the LayoutInputNode that produced this box.
+	// Nil for anonymous boxes, text fragments, and line boxes.
+	// Provides the Box→LayoutInputNode direction of the bidirectional link
+	// used by BuildPaintTree to walk children in DOM tree order.
+	LayoutNode *LayoutInputNode
+}
+
+// CreatesStackingContext returns true if this box establishes a new
+// stacking context per CSS 2.1 Appendix E / CSS Compositing §2.
+//
+// Stacking contexts are created by:
+// - Positioned elements with an explicit integer z-index (not auto)
+// - Elements with opacity < 1
+func (b *Box) CreatesStackingContext() bool {
+	if b.Style == nil {
+		return false
+	}
+	// Positioned + explicit z-index.
+	if b.Position != css.PositionStatic && b.Style.HasExplicitZIndex() {
+		return true
+	}
+	// opacity < 1.
+	if opacity, ok := b.Style.Get("opacity"); ok {
+		if o, err := strconv.ParseFloat(opacity, 64); err == nil && o < 1.0 {
+			return true
+		}
+	}
+	return false
 }
 
 // LineBox represents a line in an inline formatting context.

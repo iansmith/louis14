@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/html"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+)
 
 // LayoutResult is the immutable output of a layout algorithm.
 // It contains the fragment (positioned box with physical coordinates)
@@ -29,6 +32,12 @@ type LayoutResult struct {
 	// ExclusionSpace is the updated float exclusion state after this
 	// fragment's layout (including any floats it added).
 	ExclusionSpace *ExclusionSpace
+
+	// PropagatedTopMargin carries the first child's unresolved margin
+	// for CSS 2.1 §8.3.1 parent-child top margin collapsing. When a
+	// block has no block-start border or padding (and isn't a new BFC),
+	// the first child's margin propagates upward.
+	PropagatedTopMargin MarginStrut
 }
 
 // FragmentType distinguishes box, line-box, and text fragments.
@@ -68,11 +77,26 @@ type PhysicalFragment struct {
 	// For text fragments, this is the parent element (for style lookup).
 	Node *html.Node
 
+	// Style is the computed style for this fragment's node.
+	// Carried on the fragment so fragmentToBox doesn't need a style map.
+	Style *css.Style
+
+	// LayoutNode is the LayoutInputNode that produced this fragment.
+	// Set for element-level boxes (not text, not anonymous).
+	// Used by fragmentToBox to connect LayoutInputNode ↔ Box for DOM-ordered paint.
+	LayoutNode *LayoutInputNode
+
 	// Type distinguishes box, line-box, and text fragments.
 	Type FragmentType
 
 	// TextContent holds the rendered text for text fragments.
 	TextContent string
+
+	// RelativeOffset is the CSS position:relative offset for this fragment.
+	// Computed during layout, applied at paint time (not baked into
+	// fragment tree positions). Zero for non-relative elements.
+	// Mirrors Blink's approach where relative offsets are paint properties.
+	RelativeOffset PhysicalOffset
 }
 
 // ChildLink is a positioned child within a parent fragment.
@@ -149,4 +173,15 @@ func (ms MarginStrut) Resolve() float64 {
 // IsEmpty returns true if no margins have been appended.
 func (ms MarginStrut) IsEmpty() bool {
 	return ms.PositiveMargin == 0 && ms.NegativeMargin == 0
+}
+
+// AppendStrut merges another strut into this one, keeping the max positive
+// and most negative margins from both.
+func (ms *MarginStrut) AppendStrut(other MarginStrut) {
+	if other.PositiveMargin > ms.PositiveMargin {
+		ms.PositiveMargin = other.PositiveMargin
+	}
+	if other.NegativeMargin < ms.NegativeMargin {
+		ms.NegativeMargin = other.NegativeMargin
+	}
 }

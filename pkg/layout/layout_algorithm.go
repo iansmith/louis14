@@ -1,9 +1,8 @@
 package layout
 
 import (
-	"louis14/pkg/css"
-	"louis14/pkg/html"
 	"louis14/pkg/images"
+	"louis14/pkg/text"
 )
 
 // LayoutAlgorithm is the interface for all formatting context algorithms.
@@ -17,14 +16,16 @@ type LayoutAlgorithm interface {
 
 // LayoutContext carries shared state needed by all layout algorithms.
 // Algorithms receive this context rather than being methods on a god object.
+// Style access is through LayoutInputNode.Style(), not a map lookup.
 type LayoutContext struct {
-	// ComputedStyles maps DOM nodes to their computed CSS styles.
-	ComputedStyles map[*html.Node]*css.Style
-
 	// Viewport dimensions for resolving viewport-relative units.
 	ViewportWidth  float64
 	ViewportHeight float64
 
 	// ImageFetcher for loading images during layout (intrinsic sizing).
 	ImageFetcher images.ImageFetcher
+
+	// FontConfig provides font paths for text measurement, including @font-face fonts.
+	// If zero-value, DefaultFontConfig() is used.
+	FontConfig text.FontConfig
 }

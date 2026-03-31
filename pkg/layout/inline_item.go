@@ -38,12 +38,23 @@ type InlineItem struct {
 	EndOffset   int
 
 	// Node is the DOM node that produced this item.
+	// Used by the renderer (via PhysicalFragment.Node) for style/tag lookup.
 	Node *html.Node
+	// LayoutNode is the layout tree node for atomic inlines that need
+	// recursive layout. Nil for text items.
+	LayoutNode *LayoutInputNode
 	// Style is the computed style for this item's content.
 	Style *css.Style
 
 	// BidiLevel is the resolved bidirectional embedding level (0 = LTR).
 	BidiLevel int
+
+	// IsFirstFragment / IsLastFragment track which visual fragment of an inline
+	// element this item represents. Used to suppress inline-start/inline-end
+	// borders for split inline elements (CSS 2.1 §9.2.1.1 block-in-inline).
+	// Both are true for regular (non-split) inlines.
+	IsFirstFragment bool
+	IsLastFragment  bool
 }
 
 // InlineItemsData is the pre-layout representation of all inline content
@@ -61,47 +72,41 @@ type InlineItemsData struct {
 	Items []*InlineItem
 }
 
-// CollectInlines performs a depth-first scan of the DOM subtree rooted at
+// CollectInlines performs a depth-first scan of the layout subtree rooted at
 // the given block container, flattening inline content into an InlineItemsData.
 //
 // This is Phase 1a of Blink's inline pre-layout pipeline.
-func CollectInlines(node *html.Node, styles map[*html.Node]*css.Style) *InlineItemsData {
+func CollectInlines(node *LayoutInputNode) *InlineItemsData {
 	data := &InlineItemsData{}
 	var b strings.Builder
-	collectInlinesRecursive(node, styles, data, &b, true)
+	collectInlinesRecursive(node, data, &b, true)
 	data.TextContent = b.String()
 	return data
 }
 
-// collectInlinesRecursive walks the DOM tree depth-first, appending items.
+// collectInlinesRecursive walks the layout tree depth-first, appending items.
 func collectInlinesRecursive(
-	node *html.Node,
-	styles map[*html.Node]*css.Style,
+	node *LayoutInputNode,
 	data *InlineItemsData,
 	text *strings.Builder,
 	isRoot bool,
 ) {
-	for _, child := range node.Children {
-		if child.Type == html.TextNode {
-			collectTextNode(child, styles[node], data, text)
+	for _, child := range node.Children() {
+		if child.IsText() {
+			collectTextNode(child.DOMNode, node.Style(), data, text)
 			continue
 		}
 
-		if child.Type != html.ElementNode {
+		if !child.IsElement() {
 			continue
 		}
 
-		childStyle := styles[child]
+		childStyle := child.Style()
 		if childStyle == nil {
 			continue
 		}
 
 		display := childStyle.GetDisplay()
-
-		// Skip display:none.
-		if display == css.DisplayNone {
-			continue
-		}
 
 		// Floats within inline content.
 		if childStyle.GetFloat() != css.FloatNone {
@@ -110,7 +115,8 @@ func collectInlinesRecursive(
 				Type:        InlineItemFloat,
 				StartOffset: offset,
 				EndOffset:   offset,
-				Node:        child,
+				Node:        child.DOMNode,
+				LayoutNode:  child,
 				Style:       childStyle,
 			})
 			continue
@@ -127,21 +133,37 @@ func collectInlinesRecursive(
 				Type:        InlineItemAtomicInline,
 				StartOffset: offset,
 				EndOffset:   text.Len(),
-				Node:        child,
+				Node:        child.DOMNode,
+				LayoutNode:  child,
+				Style:       childStyle,
+			})
+			continue
+		}
+
+		// <br> elements produce a forced line break.
+		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+			brOffset := text.Len()
+			text.WriteRune('\n')
+			data.Items = append(data.Items, &InlineItem{
+				Type:        InlineItemControl,
+				StartOffset: brOffset,
+				EndOffset:   text.Len(),
+				Node:        child.DOMNode,
 				Style:       childStyle,
 			})
 			continue
 		}
 
 		// Replaced elements (img, canvas, etc.) are atomic.
-		if isReplacedElement(child) {
+		if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 			offset := text.Len()
 			text.WriteRune('\uFFFC')
 			data.Items = append(data.Items, &InlineItem{
 				Type:        InlineItemAtomicInline,
 				StartOffset: offset,
 				EndOffset:   text.Len(),
-				Node:        child,
+				Node:        child.DOMNode,
+				LayoutNode:  child,
 				Style:       childStyle,
 			})
 			continue
@@ -150,23 +172,27 @@ func collectInlinesRecursive(
 		// Inline element (span, em, a, etc.) — emit open/close tags.
 		openOffset := text.Len()
 		data.Items = append(data.Items, &InlineItem{
-			Type:        InlineItemOpenTag,
-			StartOffset: openOffset,
-			EndOffset:   openOffset,
-			Node:        child,
-			Style:       childStyle,
+			Type:            InlineItemOpenTag,
+			StartOffset:     openOffset,
+			EndOffset:       openOffset,
+			Node:            child.DOMNode,
+			Style:           childStyle,
+			IsFirstFragment: child.IsFirstFragment(),
+			IsLastFragment:  child.IsLastFragment(),
 		})
 
 		// Recurse into children.
-		collectInlinesRecursive(child, styles, data, text, false)
+		collectInlinesRecursive(child, data, text, false)
 
 		closeOffset := text.Len()
 		data.Items = append(data.Items, &InlineItem{
-			Type:        InlineItemCloseTag,
-			StartOffset: closeOffset,
-			EndOffset:   closeOffset,
-			Node:        child,
-			Style:       childStyle,
+			Type:            InlineItemCloseTag,
+			StartOffset:     closeOffset,
+			EndOffset:       closeOffset,
+			Node:            child.DOMNode,
+			Style:           childStyle,
+			IsFirstFragment: child.IsFirstFragment(),
+			IsLastFragment:  child.IsLastFragment(),
 		})
 
 		continue
@@ -241,7 +267,7 @@ func collectTextNode(
 				continue
 			}
 
-			if unicode.IsSpace(r) {
+			if r != '\u00A0' && unicode.IsSpace(r) {
 				if !prevSpace {
 					text.WriteRune(' ')
 					prevSpace = true

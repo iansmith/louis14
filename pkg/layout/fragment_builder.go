@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/html"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+)
 
 // BoxFragmentBuilder is a mutable accumulator used during layout to build
 // a PhysicalFragment. Layout algorithms add children at logical offsets,
@@ -23,6 +26,12 @@ type BoxFragmentBuilder struct {
 	// node is the DOM node that produced this fragment.
 	node *html.Node
 
+	// style is the computed style for the fragment's node.
+	style *css.Style
+
+	// layoutNode is the LayoutInputNode that produced this fragment.
+	layoutNode *LayoutInputNode
+
 	// intrinsicBlockSize is the content's natural block-size.
 	intrinsicBlockSize float64
 
@@ -34,6 +43,9 @@ type BoxFragmentBuilder struct {
 
 	// exclusionSpace after layout.
 	exclusionSpace *ExclusionSpace
+
+	// outOfFlowCandidates collects abs-pos/fixed children for deferred layout.
+	outOfFlowCandidates []OutOfFlowCandidate
 }
 
 type logicalChildLink struct {
@@ -91,6 +103,25 @@ func (b *BoxFragmentBuilder) SetNode(node *html.Node) {
 	b.node = node
 }
 
+// SetStyle sets the computed style for this fragment.
+func (b *BoxFragmentBuilder) SetStyle(style *css.Style) {
+	b.style = style
+}
+
+// SetLayoutNode sets both the DOM node and style from a LayoutInputNode,
+// and stores the LayoutInputNode itself for fragment→LayoutInputNode bridging.
+func (b *BoxFragmentBuilder) SetLayoutNode(lin *LayoutInputNode) {
+	b.node = lin.DOMNode
+	b.style = lin.Style()
+	b.layoutNode = lin
+}
+
+// AddOutOfFlowCandidate records an absolutely/fixed positioned child
+// for deferred layout by OutOfFlowLayoutPart.
+func (b *BoxFragmentBuilder) AddOutOfFlowCandidate(c OutOfFlowCandidate) {
+	b.outOfFlowCandidates = append(b.outOfFlowCandidates, c)
+}
+
 // AddChild adds a child fragment at the given logical offset.
 // The offset is relative to this fragment's content box origin.
 func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset LogicalOffset) {
@@ -124,6 +155,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		WritingDirection: b.wdm,
 		BoxData:          b.boxData,
 		Node:             b.node,
+		Style:            b.style,
+		LayoutNode:       b.layoutNode,
 	}
 
 	return &LayoutResult{

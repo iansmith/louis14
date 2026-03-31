@@ -191,14 +191,15 @@ func TestBlockLayout_FloatLeft(t *testing.T) {
 		blockChild: makeStyle("height", "50px", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
 	if len(result.Fragment.Children) != 2 {
 		t.Fatalf("children: got %d, want 2", len(result.Fragment.Children))
@@ -235,14 +236,15 @@ func TestBlockLayout_FloatRight(t *testing.T) {
 		floatChild: makeStyle("width", "200px", "height", "100px", "float", "right", "display", "block"),
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
 	// Right float should be at inline = 600 - 200 = 400.
 	floatFrag := result.Fragment.Children[0]
@@ -269,14 +271,15 @@ func TestBlockLayout_ClearBoth(t *testing.T) {
 		clearChild: clearStyle,
 	}
 
-	ctx := &LayoutContext{ComputedStyles: styles, ViewportWidth: 800, ViewportHeight: 600}
+	ctx := testContext()
+	layoutRoot := buildTestTree(parent, styles)
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	space := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: 800, BlockSize: 600}).
 		Build()
 
-	result := NewBlockLayoutAlgorithm(ctx, parent, space).Layout()
+	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
 	// Clear child should be pushed below the float (Y=100).
 	clearFrag := result.Fragment.Children[1]
