@@ -30,16 +30,46 @@ func NewFlexLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Con
 	}
 }
 
+// computeMainIsItemInline determines whether the flex main axis corresponds to the
+// item's logical inline axis.
+//
+// The flex main axis direction (physical) depends on the container's writing mode
+// and the flex direction:
+//   - HTB container, row flex  → main = physical horizontal
+//   - HTB container, col flex  → main = physical vertical
+//   - VRL container, row flex  → main = physical vertical
+//   - VRL container, col flex  → main = physical horizontal
+//
+// The item's inline axis is horizontal for HTB items and vertical for VRL/VLR items.
+// mainIsItemInline=true means the flex main axis == the item's inline direction
+// (normal/non-orthogonal case). mainIsItemInline=false means the main axis == the
+// item's block direction (orthogonal case — axes are swapped in the item's frame).
+//
+// All flexItem dimension helpers use this flag directly to choose inline vs block.
+//
+// Examples:
+//   HTB container, row, HTB item → mainIsHoriz=true, itemInlineIsHoriz=true  → mainIsItemInline=true
+//   HTB container, row, VRL item → mainIsHoriz=true, itemInlineIsHoriz=false → mainIsItemInline=false
+//   HTB container, col, HTB item → mainIsHoriz=false, itemInlineIsHoriz=true → mainIsItemInline=false
+//   VRL container, row, HTB item → mainIsHoriz=false, itemInlineIsHoriz=true → mainIsItemInline=false
+//   VRL container, row, VRL item → mainIsHoriz=false, itemInlineIsHoriz=false→ mainIsItemInline=true
+func computeMainIsItemInline(containerWDM WritingDirectionMode, itemWDM WritingDirectionMode, isRow bool) bool {
+	mainIsHorizontal := !containerWDM.IsVertical() == isRow
+	itemInlineIsHorizontal := !itemWDM.IsVertical()
+	return mainIsHorizontal == itemInlineIsHorizontal
+}
+
 // flexItem holds layout information for a single flex item.
 type flexItem struct {
-	node          *LayoutInputNode
-	style         *css.Style
-	wdm           WritingDirectionMode
-	geom          FragmentGeometry
-	margins       LogicalEdges
-	flexBasis     float64 // resolved flex-basis (content-box in main axis)
-	hypothetical  float64 // hypothetical main size (clamped flex-basis)
-	resolvedMain  float64 // final main size after flex grow/shrink
+	node             *LayoutInputNode
+	style            *css.Style
+	wdm              WritingDirectionMode
+	geom             FragmentGeometry
+	margins          LogicalEdges
+	mainIsItemInline bool    // true when flex main axis == item's inline axis (false for orthogonal items)
+	flexBasis        float64 // resolved flex-basis (content-box in main axis)
+	hypothetical     float64 // hypothetical main size (clamped flex-basis)
+	resolvedMain     float64 // final main size after flex grow/shrink
 	crossSize     float64 // final cross size (border-box)
 	mainOffset    float64 // position along main axis (content-box offset within container)
 	crossOffset   float64 // position along cross axis (margin-box start within container)
@@ -65,61 +95,73 @@ type flexItem struct {
 	baseline float64
 }
 
-// mainMarginSum returns the total margin in the main axis.
+// mainMarginSum returns the total margin in the flex main axis.
 func (fi *flexItem) mainMarginSum() float64 {
-	if fi.isRow {
+	if fi.mainIsItemInline {
 		return fi.margins.InlineSum()
 	}
 	return fi.margins.BlockSum()
 }
 
-// mainMarginStart returns the margin-start in the main axis.
+// mainMarginStart returns the margin-start in the flex main axis.
 func (fi *flexItem) mainMarginStart() float64 {
-	if fi.isRow {
+	if fi.mainIsItemInline {
 		return fi.margins.InlineStart
 	}
 	return fi.margins.BlockStart
 }
 
-// crossMarginStart returns the margin-start in the cross axis.
+// crossMarginStart returns the margin-start in the flex cross axis.
 func (fi *flexItem) crossMarginStart() float64 {
-	if fi.isRow {
+	if fi.mainIsItemInline {
 		return fi.margins.BlockStart
 	}
 	return fi.margins.InlineStart
 }
 
-// crossMarginSum returns the total margin in the cross axis.
+// crossMarginSum returns the total margin in the flex cross axis.
 func (fi *flexItem) crossMarginSum() float64 {
-	if fi.isRow {
+	if fi.mainIsItemInline {
 		return fi.margins.BlockSum()
 	}
 	return fi.margins.InlineSum()
 }
 
-// crossMarginEnd returns the margin-end in the cross axis.
+// crossMarginEnd returns the margin-end in the flex cross axis.
 func (fi *flexItem) crossMarginEnd() float64 {
-	if fi.isRow {
+	if fi.mainIsItemInline {
 		return fi.margins.BlockEnd
 	}
 	return fi.margins.InlineEnd
 }
 
-// mainMarginEnd returns the margin-end in the main axis.
+// mainMarginEnd returns the margin-end in the flex main axis.
 func (fi *flexItem) mainMarginEnd() float64 {
-	if fi.isRow {
+	if fi.mainIsItemInline {
 		return fi.margins.InlineEnd
 	}
 	return fi.margins.BlockEnd
 }
 
-// mainBorderPadding returns the border+padding sum in the main axis.
-// resolvedMain is content-box only; adding this gives the border-box size.
+// mainBorderPadding returns the border+padding sum in the flex main axis.
+// mainBorderPadding returns the border+padding sum in the flex main axis.
+// Expressed in parent logical coordinates (inline for row flex, block for column flex).
+// The ConstraintSpaceBuilder swaps axes automatically for orthogonal children,
+// so these values should always be in the PARENT's coordinate frame.
 func (fi *flexItem) mainBorderPadding() float64 {
-	if fi.isRow {
+	if fi.mainIsItemInline {
 		return fi.geom.InlineBorderPadding()
 	}
 	return fi.geom.BlockBorderPadding()
+}
+
+// crossBorderPadding returns the border+padding sum in the flex cross axis.
+// Expressed in parent logical coordinates (block for row flex, inline for column flex).
+func (fi *flexItem) crossBorderPadding() float64 {
+	if fi.mainIsItemInline {
+		return fi.geom.BlockBorderPadding()
+	}
+	return fi.geom.InlineBorderPadding()
 }
 
 // outerMainSize returns the margin-box size in the main axis (content + border + padding + margins).
@@ -325,9 +367,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			if needsRelayout {
 				var crossBP2 float64
-				if isRow {
+				if item.mainIsItemInline {
+					// main=inline → cross=block
 					crossBP2 = item.geom.BlockBorderPadding()
 				} else {
+					// main=block → cross=inline
 					crossBP2 = item.geom.InlineBorderPadding()
 				}
 				crossContent2 := line.crossSize - item.crossMarginSum() - crossBP2
@@ -656,6 +700,67 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	return result
 }
 
+// buildFlexChildList pre-processes the flex container's children to implement
+// CSS Flexbox §4 anonymous flex item wrapping. Each contiguous run of text
+// nodes (with display:none elements being transparent) is grouped into a
+// single anonymous block flex item so that inter-word spaces are preserved.
+// OOF children (position:absolute/fixed) interrupt text runs.
+func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
+	var result []*LayoutInputNode
+	var textRun []*LayoutInputNode // accumulates text nodes for current run
+
+	flushTextRun := func() {
+		if len(textRun) == 0 {
+			return
+		}
+		// Drop whitespace-only runs.
+		hasContent := false
+		for _, n := range textRun {
+			if strings.TrimSpace(n.TextContent()) != "" {
+				hasContent = true
+				break
+			}
+		}
+		if hasContent {
+			anonStyle := css.NewAnonymousBlockStyle(fla.style)
+			result = append(result, &LayoutInputNode{
+				style:       anonStyle,
+				children:    textRun,
+				isAnonymous: true,
+			})
+		}
+		textRun = nil
+	}
+
+	for _, child := range fla.node.Children() {
+		if child.IsText() {
+			textRun = append(textRun, child)
+			continue
+		}
+		childStyle := child.Style()
+		if childStyle == nil {
+			flushTextRun()
+			continue
+		}
+		// display:none is transparent — don't interrupt the text run.
+		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+		// OOF children interrupt text runs (matches Blink behaviour).
+		pos := childStyle.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			flushTextRun()
+			result = append(result, child)
+			continue
+		}
+		// Visible in-flow element: flush any pending text run, then add element.
+		flushTextRun()
+		result = append(result, child)
+	}
+	flushTextRun()
+	return result
+}
+
 // collectItems walks node.Children() and returns flex items (skipping OOF and display:none).
 func (fla *FlexLayoutAlgorithm) collectItems(
 	wdm WritingDirectionMode,
@@ -668,10 +773,14 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 ) []*flexItem {
 	var items []*flexItem
 
-	for _, child := range fla.node.Children() {
-		if child.IsText() {
-			continue
-		}
+	// Pre-process children: group contiguous text runs into anonymous flex items.
+	// CSS Flexbox §4: "each contiguous run of text that is directly contained
+	// inside a flex container is wrapped in an anonymous block container flex item."
+	// display:none elements are transparent (don't interrupt a run).
+	// OOF (position:absolute/fixed) elements interrupt runs (Blink behaviour).
+	flexChildren := fla.buildFlexChildList()
+
+	for _, child := range flexChildren {
 		childStyle := child.Style()
 		if childStyle == nil {
 			continue
@@ -740,6 +849,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 			wdm:            childWDM,
 			geom:           childGeom,
 			margins:        childMargins,
+			mainIsItemInline: computeMainIsItemInline(wdm, childWDM, isRow),
 			flexBasis:      flexBasis,
 			hypothetical:   hyp,
 			flexGrow:       flexGrow,
@@ -1202,14 +1312,21 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 	// Mark this child as a flex item so inner layout can use flex-specific sizing rules.
 	b.SetIsInsideFlexibleBox(true)
 
+	// NOTE: ConstraintSpaceBuilder.SetAvailableSize and SetIsFixedInlineSize/BlockSize
+	// automatically swap inline↔block axes for orthogonal children (!b.parallel).
+	// We always pass sizes in the PARENT's logical coordinates; the builder handles
+	// the conversion to the child's coordinate frame.
 	if isRow {
-		// main = inline, cross = block
+		// Main axis = parent inline. Cross axis = parent block.
+		// For orthogonal items (e.g. VRL item in HTB row flex), the builder swaps:
+		//   parent's inline (mainSize + mainBP) → child's block (fixed width for VRL)
+		//   parent's block (crossSize + crossBP) → child's inline (fixed height for VRL)
 		avail := LogicalSize{
-			InlineSize: mainSize + item.geom.InlineBorderPadding(),
+			InlineSize: mainSize + item.mainBorderPadding(),
 			BlockSize:  Indefinite,
 		}
 		if crossSize != Indefinite {
-			avail.BlockSize = crossSize + item.geom.BlockBorderPadding()
+			avail.BlockSize = crossSize + item.crossBorderPadding()
 		}
 		b.SetAvailableSize(avail)
 		// §9.8: Use the actual cross-size for percentage block-size resolution when definite.
@@ -1227,23 +1344,20 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			b.SetIsFixedBlockSize(true)
 		}
 	} else {
-		// main = block, cross = inline.
-		// When crossIsFixed (stretch relayout), the item must fill exactly crossSize.
-		// Otherwise (initial pass, non-stretch), the item sizes to its content.
+		// Main axis = parent block. Cross axis = parent inline.
 		crossInlineContent := contentInlineSize
 		if crossSize != Indefinite {
 			crossInlineContent = crossSize
 		}
 		avail := LogicalSize{
-			InlineSize: crossInlineContent + item.geom.InlineBorderPadding(),
+			InlineSize: crossInlineContent + item.crossBorderPadding(),
 			BlockSize:  Indefinite,
 		}
 		// Only constrain the block-size when mainSize is a meaningful positive value.
 		// When mainSize=0, use intrinsic sizing so content (e.g. fixed-height children)
-		// can paint their full height via overflow:visible. This matches Blink's behavior
-		// for column flex items with flex-basis:0 and fixed-height children.
+		// can paint their full height via overflow:visible.
 		if mainSize > 0 {
-			avail.BlockSize = mainSize + item.geom.BlockBorderPadding()
+			avail.BlockSize = mainSize + item.mainBorderPadding()
 		}
 		b.SetAvailableSize(avail)
 		b.SetPercentageResolutionSize(LogicalSize{
@@ -1775,8 +1889,10 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			if stretchBorderBox < 0 {
 				stretchBorderBox = 0
 			}
+			// Cross border+padding: swapped for orthogonal items.
+			crossIsItemInline := item.mainIsItemInline
 			var crossBP float64
-			if isRow {
+			if crossIsItemInline {
 				crossBP = item.geom.BlockBorderPadding()
 			} else {
 				crossBP = item.geom.InlineBorderPadding()
@@ -1786,7 +1902,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 				stretchContent = 0
 			}
 			// Clamp to item's own min/max cross size (content-box).
-			if isRow {
+			if crossIsItemInline {
 				minBlock := ResolveMinBlockSize(item.style, item.wdm, fla.space, item.geom)
 				if stretchContent < minBlock {
 					stretchContent = minBlock
