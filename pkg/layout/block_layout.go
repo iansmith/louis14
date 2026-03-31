@@ -36,7 +36,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Resolve inline-size.
 	var contentInlineSize float64
-	if explicitInline, ok := ResolveInlineSize(bla.style, wdm, bla.space, geom); ok {
+	if bla.space.IsFixedInlineSize {
+		// Parent (e.g. flex algorithm) has predetermined the inline-size via AvailableSize.
+		// CSS Flexbox §9.7: the resolved main size from the flex algorithm overrides the
+		// item's own CSS width/height. Use AvailableSize directly.
+		contentInlineSize = bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if contentInlineSize < 0 {
+			contentInlineSize = 0
+		}
+	} else if explicitInline, ok := ResolveInlineSize(bla.style, wdm, bla.space, geom); ok {
 		contentInlineSize = explicitInline
 	} else if needsShrinkToFit(bla.style) {
 		// CSS 2.1 §10.3.5: Shrink-to-fit width for inline-block, float,

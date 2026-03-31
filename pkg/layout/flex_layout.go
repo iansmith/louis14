@@ -248,7 +248,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// inline-size (crossIsFixed=true). Non-stretch items and stretch items with auto
 			// cross margins shrink-to-fit their content (crossIsFixed=false).
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd
+			isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd &&
+				!fla.hasExplicitCrossSize(item.style, wdm, isRow)
 			crossIsFixed := !isRow && isStretch
 			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
 				item.resolvedMain, Indefinite, crossIsFixed)
@@ -1682,6 +1683,39 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	return autoMin
 }
 
+// hasExplicitCrossSize returns true if the item has an explicit CSS cross-size property set.
+// Per CSS Flexbox §9.4: align-self:stretch only stretches items whose cross-size is auto.
+// If the item has an explicit cross-size (width for column flex, height for row flex),
+// stretch does not override it.
+func (fla *FlexLayoutAlgorithm) hasExplicitCrossSize(style *css.Style, wdm WritingDirectionMode, isRow bool) bool {
+	if style == nil {
+		return false
+	}
+	var prop string
+	if isRow {
+		// cross axis = block = height
+		if wdm.IsVertical() {
+			prop = "width"
+		} else {
+			prop = "height"
+		}
+	} else {
+		// cross axis = inline = width
+		if wdm.IsVertical() {
+			prop = "height"
+		} else {
+			prop = "width"
+		}
+	}
+	if _, ok := style.GetLength(prop); ok {
+		return true
+	}
+	if _, ok := style.GetPercentage(prop); ok {
+		return true
+	}
+	return false
+}
+
 // stretchFlexItems performs align-self: stretch for all items across all lines.
 // Must be called AFTER align-content has finalized line cross-sizes, so that
 // multi-line containers stretched by align-content:stretch get the correct target.
@@ -1696,6 +1730,11 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 		for _, item := range line.items {
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			if selfAlign != "stretch" {
+				continue
+			}
+			// CSS Flexbox §9.4: stretch only applies when the item's cross-size is auto.
+			// Items with an explicit CSS cross-size keep it even with align-self:stretch.
+			if fla.hasExplicitCrossSize(item.style, wdm, isRow) {
 				continue
 			}
 			// CSS Flexbox §9.5.1: If the item has any auto margins in the cross axis,
