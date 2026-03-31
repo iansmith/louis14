@@ -2,6 +2,7 @@ package layout
 
 import (
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -516,8 +517,35 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// §9.9 — Add children to builder.
 	// mainOffset and crossOffset are already the content-box positions
 	// (margins accounted for by mainMarginStart/crossMarginStart).
+	//
+	// Items are added in physical left-to-right (top-to-bottom for column) order
+	// so the painter renders correctly at sub-pixel boundaries. When two adjacent
+	// items meet at a fractional-pixel edge, the right item's border (painted last)
+	// correctly wins over the left item's background. This matches the reference
+	// behaviour where items are in DOM≡visual order.
+	//
+	// Physical inline position depends on writing direction:
+	//   LTR HTB: physX = inlineOffset
+	//   RTL HTB: physX = containerInlineSize - inlineOffset - itemInlineSize
+	isRTL := wdm.Dir == DirectionRTL
 	for _, line := range lines {
-		for _, item := range line.items {
+		sorted := make([]*flexItem, len(line.items))
+		copy(sorted, line.items)
+		sort.SliceStable(sorted, func(i, j int) bool {
+			if isRow {
+				// Compute physical left edge for each item.
+				physI := sorted[i].mainOffset
+				physJ := sorted[j].mainOffset
+				if isRTL {
+					physI = contentInlineSize - sorted[i].mainOffset - sorted[i].fragment.Size.Width
+					physJ = contentInlineSize - sorted[j].mainOffset - sorted[j].fragment.Size.Width
+				}
+				return physI < physJ
+			}
+			// Column: sort by physical top (blockOffset, unaffected by RTL).
+			return sorted[i].mainOffset < sorted[j].mainOffset
+		})
+		for _, item := range sorted {
 			var inlineOff, blockOff float64
 			if isRow {
 				inlineOff = item.mainOffset
