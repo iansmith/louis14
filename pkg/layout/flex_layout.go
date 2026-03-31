@@ -1846,19 +1846,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	}
 
 	// §4.5: min-size is auto (default). The automatic minimum size is the
-	// content-based minimum size. This only applies when overflow is visible.
-	//
-	// Per CSS Flexbox §4.5: the content-based minimum size is defined as
-	// the item's min-content SIZE IN THE MAIN AXIS. For row flex (inline main
-	// axis), this is the inline min-content size. For column flex (block main
-	// axis), block-direction does not have a meaningful "min-content" size —
-	// the spec's content-based minimum only applies to the inline axis.
-	// Therefore, for column flex items with auto min-height, the automatic
-	// minimum is 0.
-	if !isRow {
-		return 0
-	}
-
+	// content-based minimum size. Only applies when overflow is visible.
 	overflow := "visible"
 	if v, ok := style.Get("overflow"); ok {
 		overflow = strings.TrimSpace(v)
@@ -1867,15 +1855,47 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		return 0
 	}
 
-	// Row flex: compute inline min-content size.
-	minContentSpace := ConstraintSpace{
-		AvailableSize:          LogicalSize{InlineSize: 0, BlockSize: Indefinite},
-		WritingDirection:       childWDM,
-		IsNewFormattingContext: true,
+	if isRow {
+		// Row flex: inline min-content size at zero available width.
+		// §4.5: content-based minimum — must NOT short-circuit on explicit width.
+		// No flex-basis cap: the minimum is the full min-content size so that
+		// items with flex-basis:0 still have their content protected.
+		minContentSpace := ConstraintSpace{
+			AvailableSize:          LogicalSize{InlineSize: 0, BlockSize: Indefinite},
+			WritingDirection:       childWDM,
+			IsNewFormattingContext: true,
+		}
+		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
+		autoMin := mm.MinContent
+		if autoMin < 0 {
+			autoMin = 0
+		}
+		return autoMin
 	}
-	// §4.5: content-based minimum — must NOT short-circuit on explicit width.
-	mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
-	autoMin := mm.MinContent
+
+	// Column flex: block-direction minimum.
+	// Use the container's actual inline size (not zero!) to avoid inflating the
+	// minimum via text wrapping. The "content-based minimum" in the block axis
+	// means how tall the item must be when given its full available width.
+	containerInlineSize := space.AvailableSize.InlineSize
+	colMinSpace := ConstraintSpace{
+		AvailableSize:            LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite},
+		PercentageResolutionSize: LogicalSize{InlineSize: containerInlineSize},
+		WritingDirection:         childWDM,
+		IsNewFormattingContext:   true,
+	}
+	result := layoutElement(fla.ctx, child, colMinSpace)
+	lf := NewLogicalFragment(childWDM, result.Fragment)
+	minContentMain := lf.BlockSize() - childGeom.BlockBorderPadding()
+
+	// §4.5: for column flex, cap by the item's preferred main size (flex-basis)
+	// if definite. This ensures items with flex-basis:0 don't get a non-zero minimum
+	// (they should grow from 0), while items with flex-basis:auto retain their
+	// natural minimum block size.
+	autoMin := minContentMain
+	if flexBasis >= 0 && flexBasis < autoMin {
+		autoMin = flexBasis
+	}
 	if autoMin < 0 {
 		autoMin = 0
 	}
