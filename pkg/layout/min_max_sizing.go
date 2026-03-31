@@ -1,0 +1,134 @@
+package layout
+
+import ()
+
+// ComputeMinMaxSizes computes the intrinsic min-content and max-content
+// inline sizes for a layout node. Returns content-box values (excludes the
+// node's own border+padding). Callers convert to border-box when needed.
+//
+// Mirrors Blink's ComputeMinMaxSizes (layout_box.h).
+func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) MinMaxSizes {
+	style := node.Style()
+	if style == nil {
+		return MinMaxSizes{}
+	}
+
+	wdm := space.WritingDirection
+	geom := ComputeFragmentGeometry(style, wdm)
+
+	// If the node has an explicit inline-size, min = max = that size (content-box).
+	if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+		return MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
+	}
+
+	// Compute intrinsic sizes based on children (content-box).
+	var result MinMaxSizes
+
+	if hasOnlyInlineChildren(node) {
+		// Inline formatting context: measure via line breaker.
+		result = measureInlineMinMax(node, ctx, space)
+	} else {
+		// Block formatting context: take max of children's sizes.
+		result = measureBlockMinMax(node, ctx, space)
+	}
+
+	// Apply min/max inline-size constraints (all content-box).
+	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	if result.MinContent < minInline {
+		result.MinContent = minInline
+	}
+	if result.MaxContent < minInline {
+		result.MaxContent = minInline
+	}
+	if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+		if result.MinContent > maxInline {
+			result.MinContent = maxInline
+		}
+		if result.MaxContent > maxInline {
+			result.MaxContent = maxInline
+		}
+	}
+
+	return result
+}
+
+// measureInlineMinMax computes min/max content sizes for a node with
+// only inline-level children by running the line breaker in both modes.
+func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+	itemsData := CollectInlines(node)
+	if len(itemsData.Items) == 0 {
+		return MinMaxSizes{}
+	}
+
+	fonts := ctx.FontConfig
+	wdm := space.WritingDirection
+
+	// Min-content: break at every opportunity.
+	minSpace := ConstraintSpace{
+		AvailableSize:    LogicalSize{InlineSize: 0, BlockSize: Indefinite},
+		WritingDirection: wdm,
+	}
+	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
+	var minContent float64
+	var line LineInfo
+	for minLB.NextLine(&line) {
+		if line.Width > minContent {
+			minContent = line.Width
+		}
+	}
+
+	// Max-content: never wrap.
+	maxSpace := ConstraintSpace{
+		AvailableSize:    LogicalSize{InlineSize: 1e9, BlockSize: Indefinite},
+		WritingDirection: wdm,
+	}
+	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
+	var maxContent float64
+	for maxLB.NextLine(&line) {
+		if line.Width > maxContent {
+			maxContent = line.Width
+		}
+	}
+
+	return MinMaxSizes{MinContent: minContent, MaxContent: maxContent}
+}
+
+// measureBlockMinMax computes min/max content sizes for a node with
+// block-level children by taking the maximum of each child's sizes.
+func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+	var result MinMaxSizes
+
+	for _, child := range node.Children() {
+		if child.IsText() {
+			continue
+		}
+		childStyle := child.Style()
+		if childStyle == nil {
+			continue
+		}
+
+		childWDM := NewWritingDirectionMode(childStyle)
+		childSpace := ConstraintSpace{
+			AvailableSize:    space.AvailableSize,
+			WritingDirection: childWDM,
+		}
+
+		childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+
+		// Convert child's content-box to border-box, then add margins.
+		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+		childBP := childGeom.InlineBorderPadding()
+		childMargins := ResolveMargins(childStyle, childWDM, 0)
+		childMin := childMM.MinContent + childBP + childMargins.InlineSum()
+		childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
+
+		if childMin > result.MinContent {
+			result.MinContent = childMin
+		}
+		if childMax > result.MaxContent {
+			result.MaxContent = childMax
+		}
+	}
+
+	return result
+}

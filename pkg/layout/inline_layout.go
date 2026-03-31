@@ -12,22 +12,22 @@ import (
 // When true, the container should use an inline formatting context.
 //
 // CSS 2.1 §9.2.1.1: block containers have either all block-level or all
-// inline-level children. Mixed content generates anonymous block boxes,
-// which is not yet implemented.
-func hasOnlyInlineChildren(node *html.Node, styles map[*html.Node]*css.Style) bool {
+// inline-level children. After anonymous block box generation by the layout
+// tree builder, this is always a clean split.
+func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	hasContent := false
-	for _, child := range node.Children {
-		if child.Type == html.TextNode {
-			if strings.TrimSpace(child.Text) != "" {
+	for _, child := range node.Children() {
+		if child.IsText() {
+			if strings.TrimSpace(child.TextContent()) != "" {
 				hasContent = true
 			}
 			continue
 		}
-		if child.Type != html.ElementNode {
+		if !child.IsElement() && !child.IsAnonymous() {
 			continue
 		}
-		style := styles[child]
-		if style == nil || style.GetDisplay() == css.DisplayNone {
+		style := child.Style()
+		if style == nil {
 			continue
 		}
 		// Floats are allowed in both inline and block formatting contexts.
@@ -55,14 +55,74 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	exclusionSpace *ExclusionSpace,
 	builder *BoxFragmentBuilder,
 ) (blockSizeUsed float64, updatedES *ExclusionSpace) {
-	// Phase 1: Collect inline items from the DOM subtree.
-	itemsData := CollectInlines(bla.node, bla.ctx.ComputedStyles)
+	// Phase 1: Collect inline items from the layout subtree.
+	itemsData := CollectInlines(bla.node)
 	if len(itemsData.Items) == 0 {
 		return 0, exclusionSpace
 	}
 
+	// Phase 1b: Lay out inline floats and register them in the exclusion space.
+	// CSS 2.1 §9.5.1: floats are placed as high as possible.
+	// Floats in an IFC must be positioned before line breaking so that
+	// FindAvailableInlineSize returns the correct narrowed width.
+	if exclusionSpace == nil {
+		exclusionSpace = &ExclusionSpace{}
+	}
+	for _, item := range itemsData.Items {
+		if item.Type != InlineItemFloat || item.LayoutNode == nil {
+			continue
+		}
+		// Only pre-layout empty (sized-box) floats — floats with content
+		// children are laid out by the block algorithm or skipped when
+		// we lack the necessary CSS features (counters, url(), attr()).
+		if len(item.LayoutNode.Children()) > 0 {
+			continue
+		}
+		childStyle := item.Style
+		if childStyle == nil {
+			continue
+		}
+		childWDM := NewWritingDirectionMode(childStyle)
+		childMargins := ResolveMargins(childStyle, childWDM, contentInlineSize)
+		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
+			SetAvailableSize(LogicalSize{
+				InlineSize: contentInlineSize,
+				BlockSize:  Indefinite,
+			}).
+			SetPercentageResolutionSize(LogicalSize{
+				InlineSize: contentInlineSize,
+				BlockSize:  0,
+			}).
+			Build()
+		childResult := layoutElement(bla.ctx, item.LayoutNode, childSpace)
+		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
+		floatInlineSize := childMargins.InlineSum() + childLogical.InlineSize()
+		floatBlockSize := childMargins.BlockSum() + childLogical.BlockSize()
+		floatSide := childStyle.GetFloat()
+		floatBlockOffset := exclusionSpace.FindFloatPosition(floatSide, floatInlineSize, floatBlockSize, contentInlineSize, 0)
+		var floatInlineOffset float64
+		if floatSide == css.FloatLeft {
+			startOff, _ := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+			floatInlineOffset = startOff + childMargins.InlineStart
+		} else {
+			_, endOff := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+			floatInlineOffset = contentInlineSize - endOff - childMargins.InlineEnd - childLogical.InlineSize()
+		}
+		builder.AddChild(childResult.Fragment, LogicalOffset{
+			InlineOffset: floatInlineOffset,
+			BlockOffset:  floatBlockOffset + childMargins.BlockStart,
+		})
+		exclusionSpace = exclusionSpace.Add(Exclusion{
+			InlineOffset: floatInlineOffset - childMargins.InlineStart,
+			BlockOffset:  floatBlockOffset,
+			InlineSize:   floatInlineSize,
+			BlockSize:    floatBlockSize,
+			Side:         floatSide,
+		})
+	}
+
 	// Phase 2: Create line breaker.
-	fonts := text.DefaultFontConfig()
+	fonts := bla.ctx.FontConfig
 	lineSpace := ConstraintSpace{
 		AvailableSize:    LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
 		WritingDirection: wdm,
@@ -77,21 +137,84 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if ta, ok := bla.style.Get("text-align"); ok {
 			textAlign = ta
 		}
+		// Flex containers: emulate justify-content as text-align for inline content.
+		display := bla.style.GetDisplay()
+		if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+			jc := bla.style.GetJustifyContent()
+			switch jc {
+			case css.JustifyContentCenter:
+				textAlign = "center"
+			case css.JustifyContentFlexEnd, css.JustifyContentRight:
+				textAlign = "right"
+			}
+		}
+	}
+
+	// CSS 2.1 §16.1: text-indent offsets the first line of a block container.
+	textIndent := 0.0
+	if bla.style != nil {
+		if v, ok := bla.style.GetLength("text-indent"); ok {
+			textIndent = v
+		} else if pct, ok := bla.style.GetPercentage("text-indent"); ok {
+			textIndent = contentInlineSize * pct / 100
+		}
 	}
 
 	// Phase 3: Break into lines and create line box fragments.
 	blockOffset := 0.0
 	var line LineInfo
+	isFirstLine := true
 
-	for lb.NextLine(&line) {
+	for {
+		// CSS 2.1 §9.5: account for floats when computing available inline size.
+		// FindAvailableInlineSize returns the space consumed by left/right floats
+		// at the current block position.
+		floatStart, floatEnd := 0.0, 0.0
+		if exclusionSpace != nil {
+			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0)
+		}
+		lineAvailableInline := contentInlineSize - floatStart - floatEnd
+		if lineAvailableInline < 1 {
+			lineAvailableInline = 1
+		}
+
+		// Set available width for the line breaker, including text-indent on first line.
+		if isFirstLine && textIndent != 0 {
+			lb.availableWidth = lineAvailableInline - textIndent
+		} else {
+			lb.availableWidth = lineAvailableInline
+		}
+
+		if !lb.NextLine(&line) {
+			break
+		}
 		line.TextAlign = textAlign
 
+		// Apply text-indent to the first line only.
+		lineInlineOffset := floatStart
+		if isFirstLine && textIndent != 0 {
+			lineInlineOffset += textIndent
+			lineAvailableInline -= textIndent
+			isFirstLine = false
+		} else {
+			isFirstLine = false
+		}
+
+		// CSS 2.1 §9.5: if the line content doesn't fit beside the float,
+		// shift the block offset below the float and use the full width.
+		floatReducedWidth := contentInlineSize - floatStart - floatEnd
+		if (floatStart > 0 || floatEnd > 0) && line.Width > floatReducedWidth && exclusionSpace != nil {
+			blockOffset = exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset)
+			lineInlineOffset = 0
+			lineAvailableInline = contentInlineSize
+		}
+
 		lineFragment, lineHeight := createLineBox(
-			itemsData, &line, wdm, contentInlineSize,
+			itemsData, &line, wdm, lineAvailableInline,
 		)
 
 		builder.AddChild(lineFragment, LogicalOffset{
-			InlineOffset: 0,
+			InlineOffset: lineInlineOffset,
 			BlockOffset:  blockOffset,
 		})
 
@@ -99,6 +222,24 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 
 	return blockOffset, exclusionSpace
+}
+
+// hasVisibleInlinePaint returns true if an inline element's style has
+// visible paint properties: non-transparent background or visible border.
+func hasVisibleInlinePaint(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	if bg, ok := style.Get("background-color"); ok && bg != "" && bg != "transparent" {
+		if c, ok := css.ParseColor(bg); ok && c.A > 0 {
+			return true
+		}
+	}
+	if _, ok := style.GetBackgroundImage(); ok {
+		return true
+	}
+	bw := style.GetBorderWidth()
+	return bw.Top > 0 || bw.Right > 0 || bw.Bottom > 0 || bw.Left > 0
 }
 
 // createLineBox positions items within a line and produces a line box fragment.
@@ -130,6 +271,108 @@ func createLineBox(
 		BlockSize:  lineHeight,
 	})
 
+	// Step 3a: Pre-pass — generate background/border fragments for inline spans.
+	// These are added FIRST so they paint behind content (CSS 2.1 Appendix E).
+	// Inline backgrounds may extend outside the line box (border/padding bleed).
+	//
+	// CSS 2.1 §9.2.1.1: for a split inline element (block-in-inline), the
+	// inline-start border/padding appears only on the first fragment and the
+	// inline-end border/padding appears only on the last fragment.
+	{
+		type spanEntry struct {
+			style           *css.Style
+			node            *html.Node
+			borderStart     float64
+			isFirstFragment bool
+			isLastFragment  bool
+		}
+		var spanStack []spanEntry
+		trackPos := alignOffset
+		for _, r := range line.Results {
+			switch r.Item.Type {
+			case InlineItemOpenTag:
+				if r.Item.Style != nil {
+					spanStack = append(spanStack, spanEntry{
+						style:           r.Item.Style,
+						node:            r.Item.Node,
+						borderStart:     trackPos + r.Margins.InlineStart,
+						isFirstFragment: r.Item.IsFirstFragment,
+						isLastFragment:  r.Item.IsLastFragment,
+					})
+				}
+			case InlineItemCloseTag:
+				if len(spanStack) > 0 && r.Item.Style != nil {
+					span := spanStack[len(spanStack)-1]
+					spanStack = spanStack[:len(spanStack)-1]
+					if hasVisibleInlinePaint(span.style) {
+						geom := ComputeFragmentGeometry(span.style, wdm)
+
+						// Save original inline-end edges before suppression.
+						// CSS 2.1 §9.2.1.1: inline-start border/padding appears only
+						// on the first fragment; inline-end only on the last fragment.
+						origIEBorder := geom.Border.InlineEnd
+						origIEPadding := geom.Padding.InlineEnd
+						if !span.isFirstFragment {
+							geom.Border.InlineStart = 0
+							geom.Padding.InlineStart = 0
+						}
+						if !span.isLastFragment {
+							geom.Border.InlineEnd = 0
+							geom.Padding.InlineEnd = 0
+						}
+
+						// Fragment inline extent.
+						// span.borderStart = trackPos_at_openTag + margins.InlineStart.
+						// At CloseTag time, trackPos = content_end (before CloseTag advance).
+						//
+						// The border-box left edge is span.borderStart for ALL cases:
+						// - First fragment: border-box starts at margin end (border IS included in size)
+						// - Non-first: no IS border/padding, so border-box start = content start = span.borderStart
+						//
+						// The border-box right edge:
+						// - Last fragment: content_end + IE border + IE padding
+						// - Non-last: content_end (no IE border/padding)
+						fragStart := span.borderStart
+						fragEnd := trackPos
+						if span.isLastFragment {
+							fragEnd += origIEBorder + origIEPadding
+						}
+
+						spanInlineSize := fragEnd - fragStart
+						if spanInlineSize < 0 {
+							spanInlineSize = 0
+						}
+						blockOverhang := geom.Border.BlockStart + geom.Padding.BlockStart
+						spanBlockSize := blockOverhang + lineHeight + geom.Padding.BlockEnd + geom.Border.BlockEnd
+						bgFrag := &PhysicalFragment{
+							Size: ToPhysicalSize(LogicalSize{
+								InlineSize: spanInlineSize,
+								BlockSize:  spanBlockSize,
+							}, wdm.WM),
+							Type:             FragmentBox,
+							Style:            span.style,
+							Node:             span.node,
+							WritingDirection: wdm,
+							BoxData: &PhysicalBoxData{
+								Border:  ToPhysicalEdges(geom.Border, wdm),
+								Padding: ToPhysicalEdges(geom.Padding, wdm),
+							},
+						}
+						lineBuilder.AddChild(bgFrag, LogicalOffset{
+							InlineOffset: fragStart,
+							BlockOffset:  -blockOverhang,
+						})
+					}
+				}
+			case InlineItemAtomicInline:
+				// Atomic inlines advance by margin+size+margin (no default advance).
+				trackPos += r.Margins.InlineStart + r.InlineSize + r.Margins.InlineEnd
+				continue
+			}
+			trackPos += r.InlineSize
+		}
+	}
+
 	// Position each item within the line.
 	inlinePos := alignOffset
 	for _, r := range line.Results {
@@ -147,7 +390,7 @@ func createLineBox(
 			// Baseline-align: position top of text at (maxAscent - textAscent).
 			blockPos := maxAscent - ascent
 
-			// Use parent element as Node so styles[node] works in fragmentToBox.
+			// Use parent element as Node so the renderer can access styles.
 			parentNode := r.Item.Node
 			if parentNode != nil && parentNode.Parent != nil {
 				parentNode = parentNode.Parent
@@ -161,6 +404,7 @@ func createLineBox(
 				Type:             FragmentText,
 				TextContent:      content,
 				Node:             parentNode,
+				Style:            r.Item.Style,
 				WritingDirection: wdm,
 			}
 
@@ -170,10 +414,25 @@ func createLineBox(
 			})
 
 		case InlineItemAtomicInline:
+			// Apply inline-start margin before the child.
+			inlinePos += r.Margins.InlineStart
 			if r.LayoutResult != nil {
 				childLogical := NewLogicalFragment(wdm, r.LayoutResult.Fragment)
-				// Bottom-align atomic inline to baseline (simplified).
-				blockPos := maxAscent - childLogical.BlockSize()
+				blockSize := childLogical.BlockSize()
+				var blockPos float64
+				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
+				// align inline-block so its baseline (= font ascent from top) sits
+				// at the line's maxAscent.
+				if r.Item.Style != nil &&
+					r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
+					r.Item.Style.GetOverflow() == css.OverflowVisible {
+					fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+					ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+					blockPos = maxAscent - ibAscent
+				} else {
+					// Default: bottom-align to baseline.
+					blockPos = maxAscent - blockSize
+				}
 				if blockPos < 0 {
 					blockPos = 0
 				}
@@ -182,6 +441,9 @@ func createLineBox(
 					BlockOffset:  blockPos,
 				})
 			}
+			// Advance past content + inline-end margin, skip default advance.
+			inlinePos += r.InlineSize + r.Margins.InlineEnd
+			continue
 
 		case InlineItemOpenTag, InlineItemCloseTag:
 			// Margins/borders/padding contribution to InlineSize is already
@@ -209,9 +471,28 @@ func createLineBox(
 // text is baseline-aligned at maxAscent from the line box top.
 //
 // CSS 2.1 §10.8: line box height is determined by the tallest inline box.
+// Even empty inline elements (open/close tag with no text) still contribute
+// their font's line metrics (CSS 2.1 §9.4.2).
 func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, maxDescent float64) {
 	for _, r := range line.Results {
 		switch r.Item.Type {
+		case InlineItemOpenTag:
+			// Empty inline boxes (e.g. <span></span>) have no InlineItemText but
+			// still establish a strut: their font's ascent/descent determine the
+			// minimum line box height per CSS 2.1 §10.8.
+			if r.Item.Style == nil {
+				continue
+			}
+			fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+			ascent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+			descent := fontSize - ascent
+			if ascent > maxAscent {
+				maxAscent = ascent
+			}
+			if descent > maxDescent {
+				maxDescent = descent
+			}
+
 		case InlineItemText:
 			if r.TextEnd <= r.TextStart {
 				continue
@@ -230,9 +511,29 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 			if r.LayoutResult != nil {
 				childLogical := NewLogicalFragment(wdm, r.LayoutResult.Fragment)
 				blockSize := childLogical.BlockSize()
-				// Simplified: treat atomic inline's full height as above baseline.
-				if blockSize > maxAscent {
-					maxAscent = blockSize
+				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
+				// the baseline is the baseline of the last line box. Use the
+				// inline-block's font ascent as an approximation.
+				if r.Item.Style != nil &&
+					r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
+					r.Item.Style.GetOverflow() == css.OverflowVisible {
+					fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+					ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+					ibDescent := blockSize - ibAscent
+					if ibDescent < 0 {
+						ibDescent = 0
+					}
+					if ibAscent > maxAscent {
+						maxAscent = ibAscent
+					}
+					if ibDescent > maxDescent {
+						maxDescent = ibDescent
+					}
+				} else {
+					// Default: treat full height as above baseline (bottom-aligned).
+					if blockSize > maxAscent {
+						maxAscent = blockSize
+					}
 				}
 			}
 		}

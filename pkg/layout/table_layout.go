@@ -1,0 +1,418 @@
+package layout
+
+import (
+	"louis14/pkg/css"
+)
+
+// TableLayoutAlgorithm implements CSS 2.1 §17 table layout.
+// This is a basic implementation handling display:table, table-row-group,
+// table-header-group, table-footer-group, table-row, and table-cell.
+//
+// Mirrors Blink's TableLayoutAlgorithm.
+type TableLayoutAlgorithm struct {
+	ctx   *LayoutContext
+	node  *LayoutInputNode
+	style *css.Style
+	space ConstraintSpace
+}
+
+// NewTableLayoutAlgorithm creates a table layout algorithm.
+func NewTableLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *TableLayoutAlgorithm {
+	return &TableLayoutAlgorithm{
+		ctx:   ctx,
+		node:  node,
+		style: node.Style(),
+		space: space,
+	}
+}
+
+// tableCell tracks a cell during table layout.
+type tableCell struct {
+	node     *LayoutInputNode
+	style    *css.Style
+	colIndex int
+	colSpan  int
+	rowSpan  int
+}
+
+// tableRow tracks a row during table layout.
+type tableRow struct {
+	node  *LayoutInputNode
+	style *css.Style
+	cells []tableCell
+}
+
+// Layout performs table layout and returns the result.
+func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
+	wdm := tla.space.WritingDirection
+	geom := ComputeFragmentGeometry(tla.style, wdm)
+	builder := NewBoxFragmentBuilder(wdm)
+	builder.SetLayoutNode(tla.node)
+
+	// Collect rows from the table's children (handling row-groups).
+	rows := tla.collectRows()
+
+	// Determine the number of columns.
+	numCols := 0
+	for _, row := range rows {
+		colCount := 0
+		for _, cell := range row.cells {
+			colCount += cell.colSpan
+		}
+		if colCount > numCols {
+			numCols = colCount
+		}
+	}
+	if numCols == 0 {
+		numCols = 1
+	}
+
+	// Resolve available inline size.
+	availableInline := tla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+	if availableInline < 0 {
+		availableInline = 0
+	}
+
+	borderCollapse := tla.style.GetBorderCollapse() == css.BorderCollapseCollapse
+
+	// Check if the table has an explicit inline-size (width/height).
+	_, hasExplicitTableWidth := ResolveInlineSize(tla.style, wdm, tla.space, geom)
+
+	// Compute column widths via auto table layout (CSS 2.1 §17.5.2).
+	colWidths := tla.computeColumnWidths(rows, numCols, availableInline, borderCollapse, hasExplicitTableWidth)
+
+	// Layout each row.
+	blockOffset := 0.0
+	for _, row := range rows {
+		rowHeight := 0.0
+		colIdx := 0
+
+		// Create row fragment.
+		rowBuilder := NewBoxFragmentBuilder(wdm)
+		if row.node != nil {
+			rowBuilder.SetLayoutNode(row.node)
+		}
+
+		for _, cell := range row.cells {
+			// Compute cell width from column widths.
+			cellWidth := 0.0
+			for c := colIdx; c < colIdx+cell.colSpan && c < numCols; c++ {
+				cellWidth += colWidths[c]
+			}
+
+			// Compute inline offset for this cell.
+			inlineOffset := 0.0
+			for c := 0; c < colIdx && c < numCols; c++ {
+				inlineOffset += colWidths[c]
+			}
+
+			// Layout the cell's content.
+			cellWDM := wdm
+			if cell.style != nil {
+				cellWDM = NewWritingDirectionMode(cell.style)
+			}
+			cellSpace := NewConstraintSpaceBuilder(wdm, cellWDM, true).
+				SetAvailableSize(LogicalSize{
+					InlineSize: cellWidth,
+					BlockSize:  Indefinite,
+				}).
+				SetPercentageResolutionSize(LogicalSize{
+					InlineSize: cellWidth,
+					BlockSize:  0,
+				}).
+				Build()
+
+			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
+			cellLogical := NewLogicalFragment(wdm, cellResult.Fragment)
+
+			if cellLogical.BlockSize() > rowHeight {
+				rowHeight = cellLogical.BlockSize()
+			}
+
+			rowBuilder.AddChild(cellResult.Fragment, LogicalOffset{
+				InlineOffset: inlineOffset,
+				BlockOffset:  0,
+			})
+
+			colIdx += cell.colSpan
+		}
+
+		// Set row size and add to table.
+		totalInline := 0.0
+		for _, w := range colWidths {
+			totalInline += w
+		}
+		rowBuilder.SetSize(LogicalSize{
+			InlineSize: totalInline,
+			BlockSize:  rowHeight,
+		})
+
+		// Copy row style for background/border rendering.
+		if row.node != nil && row.style != nil {
+			physBorder := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Border, wdm)
+			physPadding := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Padding, wdm)
+			rowBuilder.SetBoxData(&PhysicalBoxData{
+				Border:  physBorder,
+				Padding: physPadding,
+			})
+		}
+
+		rowResult := rowBuilder.Build()
+
+		builder.AddChild(rowResult.Fragment, LogicalOffset{
+			InlineOffset: 0,
+			BlockOffset:  blockOffset,
+		})
+
+		blockOffset += rowHeight
+	}
+
+	// Compute table size.
+	totalInline := 0.0
+	for _, w := range colWidths {
+		totalInline += w
+	}
+
+	builder.SetSize(LogicalSize{
+		InlineSize: totalInline + geom.InlineBorderPadding(),
+		BlockSize:  blockOffset + geom.BlockBorderPadding(),
+	})
+
+	physBorder := ToPhysicalEdges(geom.Border, wdm)
+	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	physMargin := ToPhysicalEdges(ResolveMargins(tla.style, wdm, tla.space.AvailableSize.InlineSize), wdm)
+	builder.SetBoxData(&PhysicalBoxData{
+		Margin:  physMargin,
+		Border:  physBorder,
+		Padding: physPadding,
+	})
+
+	return builder.Build()
+}
+
+// collectRows extracts table rows from the table's children,
+// handling row-groups (thead, tbody, tfoot).
+func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
+	var rows []tableRow
+
+	for _, child := range tla.node.Children() {
+		if child.IsText() {
+			continue
+		}
+		childStyle := child.Style()
+		if childStyle == nil {
+			continue
+		}
+		display := childStyle.GetDisplay()
+
+		switch display {
+		case css.DisplayTableRow:
+			rows = append(rows, tla.buildRow(child, childStyle))
+
+		case css.DisplayTableHeaderGroup, css.DisplayTableRowGroup, css.DisplayTableFooterGroup:
+			// Row group: collect rows from its children.
+			for _, grandchild := range child.Children() {
+				if grandchild.IsText() {
+					continue
+				}
+				gcStyle := grandchild.Style()
+				if gcStyle == nil {
+					continue
+				}
+				if gcStyle.GetDisplay() == css.DisplayTableRow {
+					rows = append(rows, tla.buildRow(grandchild, gcStyle))
+				}
+			}
+
+		case css.DisplayTableCell:
+			// Bare cell without a row — wrap in an anonymous row.
+			rows = append(rows, tableRow{
+				cells: []tableCell{{
+					node:    child,
+					style:   childStyle,
+					colSpan: 1,
+					rowSpan: 1,
+				}},
+			})
+		}
+	}
+
+	return rows
+}
+
+// buildRow extracts cells from a table-row element.
+func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Style) tableRow {
+	row := tableRow{node: node, style: style}
+	colIdx := 0
+
+	for _, child := range node.Children() {
+		if child.IsText() {
+			continue
+		}
+		childStyle := child.Style()
+		if childStyle == nil {
+			continue
+		}
+		if childStyle.GetDisplay() == css.DisplayTableCell {
+			colSpan := 1
+			if child.DOMNode != nil {
+				if cs, ok := child.DOMNode.GetAttribute("colspan"); ok {
+					if v := parseIntAttr(cs); v > 0 {
+						colSpan = v
+					}
+				}
+			}
+			row.cells = append(row.cells, tableCell{
+				node:     child,
+				style:    childStyle,
+				colIndex: colIdx,
+				colSpan:  colSpan,
+				rowSpan:  1,
+			})
+			colIdx += colSpan
+		}
+	}
+
+	return row
+}
+
+// computeColumnWidths computes column widths using the auto table layout
+// algorithm (CSS 2.1 §17.5.2).
+func (tla *TableLayoutAlgorithm) computeColumnWidths(
+	rows []tableRow, numCols int, availableInline float64, borderCollapse bool, hasExplicitWidth bool,
+) []float64 {
+	colWidths := make([]float64, numCols)
+
+	// First pass: compute each column's min/max content width.
+	colMin := make([]float64, numCols)
+	colMax := make([]float64, numCols)
+
+	for _, row := range rows {
+		colIdx := 0
+		for _, cell := range row.cells {
+			if colIdx >= numCols {
+				break
+			}
+
+			// Check for explicit width on the cell.
+			explicitW := 0.0
+			hasExplicit := false
+			if cell.style != nil {
+				if w, ok := cell.style.GetLength("width"); ok && w > 0 {
+					explicitW = w
+					hasExplicit = true
+				}
+			}
+
+			if cell.colSpan == 1 {
+				if hasExplicit {
+					if explicitW > colMin[colIdx] {
+						colMin[colIdx] = explicitW
+					}
+					if explicitW > colMax[colIdx] {
+						colMax[colIdx] = explicitW
+					}
+				} else {
+					// Compute intrinsic size.
+					childWDM := tla.space.WritingDirection
+					if cell.style != nil {
+						childWDM = NewWritingDirectionMode(cell.style)
+					}
+					childSpace := ConstraintSpace{
+						AvailableSize:    LogicalSize{InlineSize: availableInline, BlockSize: Indefinite},
+						WritingDirection: childWDM,
+					}
+					mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
+					// Convert content-box to border-box for column sizing.
+					cellGeom := ComputeFragmentGeometry(cell.style, childWDM)
+					cellBP := cellGeom.InlineBorderPadding()
+					cellMin := mm.MinContent + cellBP
+					cellMax := mm.MaxContent + cellBP
+					if cellMin > colMin[colIdx] {
+						colMin[colIdx] = cellMin
+					}
+					if cellMax > colMax[colIdx] {
+						colMax[colIdx] = cellMax
+					}
+				}
+			}
+
+			colIdx += cell.colSpan
+		}
+	}
+
+	// Distribute available width.
+	totalMin := 0.0
+	for _, w := range colMin {
+		totalMin += w
+	}
+
+	if totalMin >= availableInline {
+		// Not enough room — use min widths.
+		copy(colWidths, colMin)
+	} else if !hasExplicitWidth {
+		// CSS 2.1 §17.5.2: Auto-width tables shrink to fit.
+		// Use max-content widths, capped at available inline size.
+		totalMax := 0.0
+		for _, w := range colMax {
+			totalMax += w
+		}
+		if totalMax <= availableInline {
+			copy(colWidths, colMax)
+		} else {
+			// Scale down proportionally.
+			extra := availableInline - totalMin
+			maxExtra := totalMax - totalMin
+			for i := 0; i < numCols; i++ {
+				share := 0.0
+				if maxExtra > 0 {
+					share = (colMax[i] - colMin[i]) / maxExtra * extra
+				}
+				colWidths[i] = colMin[i] + share
+			}
+		}
+	} else {
+		// Explicit width: distribute available space.
+		totalMax := 0.0
+		for _, w := range colMax {
+			totalMax += w
+		}
+		if totalMax <= availableInline {
+			// Everything fits at max — distribute extra evenly.
+			copy(colWidths, colMax)
+			remaining := availableInline - totalMax
+			if remaining > 0 && numCols > 0 {
+				each := remaining / float64(numCols)
+				for i := range colWidths {
+					colWidths[i] += each
+				}
+			}
+		} else {
+			// Between min and max — distribute proportionally.
+			extra := availableInline - totalMin
+			maxExtra := totalMax - totalMin
+			for i := 0; i < numCols; i++ {
+				share := 0.0
+				if maxExtra > 0 {
+					share = (colMax[i] - colMin[i]) / maxExtra * extra
+				}
+				colWidths[i] = colMin[i] + share
+			}
+		}
+	}
+
+	return colWidths
+}
+
+// parseIntAttr parses an integer from an HTML attribute value.
+func parseIntAttr(s string) int {
+	v := 0
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			v = v*10 + int(c-'0')
+		} else {
+			break
+		}
+	}
+	return v
+}

@@ -1,0 +1,335 @@
+package render
+
+import (
+	"sort"
+
+	"louis14/pkg/css"
+	"louis14/pkg/layout"
+)
+
+// PaintLayer represents a node in the pre-paint tree.
+// Built from the layout Box tree before painting, PaintLayers pre-sort
+// children by CSS 2.1 Appendix E stacking order and pre-compute
+// all paint-relevant properties so draw methods never access Style.
+//
+// Boxes without Style (line boxes, text runs) do NOT get PaintLayers.
+// They remain reachable via their parent PaintLayer's Box.Children
+// and are painted inline during the parent's paint.
+//
+// Mirrors Blink's PaintLayer / PrePaintTreeWalk.
+type PaintLayer struct {
+	Box      *layout.Box
+	Position css.PositionType // Always set (PositionStatic for unstyled)
+	ZIndex   int
+
+	// Stacking children (only populated for stacking context roots):
+	NegativeZ []*PaintLayer // z < 0, sorted ascending
+	AutoZero  []*PaintLayer // z-index:auto positioned + z-index:0 SCs, tree order
+	PositiveZ []*PaintLayer // z > 0, sorted ascending
+
+	// Non-positioned children in DOM order (Appendix E steps 3-5):
+	FlowChildren []*PaintLayer
+
+	// Overflow clip (pre-computed from Style):
+	HasClip  bool
+	ClipRect [4]float64 // x, y, w, h of padding box
+
+	// Pre-computed paint properties — no Style access needed during paint.
+
+	// Compositing:
+	Visible bool    // false = visibility:hidden, skip subtree
+	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
+
+	// Image (for <img> replaced elements):
+	ImageSrc string // src attribute value; empty if not an img element
+
+	// Background:
+	BackgroundColor    css.Color               // A==0 means no background
+	BackgroundImage    string                  // URL from background-image; empty if none
+	BackgroundRepeat   css.BackgroundRepeatType // repeat mode
+	BackgroundPosition css.BackgroundPosition   // position offsets
+
+	// Borders: indices 0=Top, 1=Right, 2=Bottom, 3=Left
+	BorderColors [4]css.Color
+	BorderStyles [4]css.BorderStyle
+
+	// Text:
+	TextColor     css.Color
+	FontSize      float64
+	FontBold      bool
+	FontItalic    bool
+	FontMono      bool
+	FontAhem      bool
+	LetterSpacing float64
+}
+
+// BuildPaintTree constructs a PaintLayer tree from a layout Box tree.
+// The root box is always treated as a stacking context root
+// (CSS 2.1 Appendix E: root element establishes the initial stacking context).
+func BuildPaintTree(root *layout.Box) *PaintLayer {
+	if root == nil {
+		return nil
+	}
+	rootLayer := newPaintLayer(root)
+	buildPaintSubtree(root, rootLayer, rootLayer)
+	rootLayer.sortZLists()
+	return rootLayer
+}
+
+func newPaintLayer(box *layout.Box) *PaintLayer {
+	layer := &PaintLayer{
+		Box:      box,
+		Position: css.PositionStatic,
+		Visible:  true,
+		Opacity:  1.0,
+	}
+	s := box.Style
+	if s == nil {
+		// Unstyled root (rare): no paint properties to compute.
+		return layer
+	}
+
+	layer.Position = box.Position
+	if layer.Position == "" {
+		layer.Position = css.PositionStatic
+	}
+	layer.ZIndex = box.ZIndex
+
+	// Overflow clip.
+	overflow := s.GetOverflow()
+	if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+		layer.HasClip = true
+		clipW := box.Width - box.Border.Left - box.Border.Right
+		clipH := box.Height - box.Border.Top - box.Border.Bottom
+		if clipW < 0 {
+			clipW = 0
+		}
+		if clipH < 0 {
+			clipH = 0
+		}
+		layer.ClipRect = [4]float64{
+			box.X + box.Border.Left,
+			box.Y + box.Border.Top,
+			clipW,
+			clipH,
+		}
+	}
+
+	// Compositing.
+	if vis, ok := s.Get("visibility"); ok && vis == "hidden" {
+		layer.Visible = false
+	}
+	layer.Opacity = s.GetOpacity()
+
+	// Replaced element (img): capture src for paint-time image loading.
+	if box.Node != nil && box.Node.TagName == "img" {
+		if src, ok := box.Node.GetAttribute("src"); ok {
+			layer.ImageSrc = src
+		}
+	}
+
+	// Background color.
+	if bg, ok := s.Get("background-color"); ok {
+		if c, ok := css.ParseColor(bg); ok {
+			layer.BackgroundColor = c
+		}
+	}
+
+	// Background image, repeat, position.
+	if url, ok := s.GetBackgroundImage(); ok {
+		layer.BackgroundImage = url
+		layer.BackgroundRepeat = s.GetBackgroundRepeat()
+		layer.BackgroundPosition = s.GetBackgroundPosition()
+	}
+
+	// Border colors: currentColor fallback.
+	currentColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}
+	if cv, ok := s.Get("color"); ok {
+		if c, ok := css.ParseColor(cv); ok {
+			currentColor = c
+		}
+	}
+	sides := [4]string{"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"}
+	for i, prop := range sides {
+		if val, ok := s.Get(prop); ok {
+			if c, ok := css.ParseColor(val); ok {
+				layer.BorderColors[i] = c
+				continue
+			}
+		}
+		layer.BorderColors[i] = currentColor
+	}
+
+	// Border styles.
+	bs := s.GetBorderStyle()
+	layer.BorderStyles = [4]css.BorderStyle{bs.Top, bs.Right, bs.Bottom, bs.Left}
+
+	// Text.
+	layer.TextColor = currentColor // default: currentColor
+	layer.FontSize = s.GetFontSize()
+	if layer.FontSize <= 0 {
+		layer.FontSize = 16
+	}
+	layer.FontBold = s.GetFontWeight() == css.FontWeightBold
+	layer.FontItalic = s.GetFontStyle() == css.FontStyleItalic
+	layer.FontMono = s.IsMonospaceFamily()
+	layer.FontAhem = s.IsAhemFamily()
+	layer.LetterSpacing = s.GetLetterSpacing()
+
+	return layer
+}
+
+// domOrderedChildren returns the children of box in DOM tree order.
+//
+// In-flow children (block, inline, anonymous) are already laid out in DOM
+// order and appear in box.Children in that order. Out-of-flow (abs-pos/fixed)
+// children are appended at the end of box.Children by OutOfFlowLayoutPart,
+// regardless of their DOM position. This function re-inserts out-of-flow
+// children at their correct DOM position while keeping in-flow children
+// (including anonymous boxes) in their original order.
+func domOrderedChildren(box *layout.Box) []*layout.Box {
+	lin := box.LayoutNode
+	if lin == nil {
+		return box.Children
+	}
+
+	// Identify out-of-flow (abs-pos/fixed) children. These are appended at
+	// the end of box.Children by OutOfFlowLayoutPart out of DOM order.
+	oofSet := make(map[*layout.Box]bool)
+	for _, child := range box.Children {
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			oofSet[child] = true
+		}
+	}
+
+	if len(oofSet) == 0 {
+		// No out-of-flow children — in-flow order is already correct.
+		return box.Children
+	}
+
+	// Build LIN → Box map for out-of-flow children only.
+	byLIN := make(map[*layout.LayoutInputNode]*layout.Box, len(oofSet))
+	for _, child := range box.Children {
+		if oofSet[child] && child.LayoutNode != nil {
+			byLIN[child.LayoutNode] = child
+		}
+	}
+
+	// Collect in-flow children in their original (already DOM-correct) order.
+	inFlow := make([]*layout.Box, 0, len(box.Children)-len(oofSet))
+	for _, child := range box.Children {
+		if !oofSet[child] {
+			inFlow = append(inFlow, child)
+		}
+	}
+
+	// Walk lin.Children() (DOM order) to interleave out-of-flow boxes at their
+	// correct positions. Each non-OOF LIN child corresponds to one in-flow box
+	// (block, anonymous block, or continuation). OOF LIN children are inserted
+	// at their DOM position without consuming an in-flow slot.
+	result := make([]*layout.Box, 0, len(box.Children))
+	inFlowIdx := 0
+	for _, linChild := range lin.Children() {
+		if cb, ok := byLIN[linChild]; ok {
+			// Out-of-flow child: insert at this DOM position.
+			result = append(result, cb)
+		} else if linChild.IsText() {
+			// Text node: block layout never emits a box child for text nodes
+			// (they are handled by inline layout inside anonymous blocks).
+			// Skip without consuming an inFlow slot.
+			continue
+		} else {
+			// In-flow (or anonymous) child: emit next in-flow box in order.
+			if inFlowIdx < len(inFlow) {
+				result = append(result, inFlow[inFlowIdx])
+				inFlowIdx++
+			}
+		}
+	}
+	// Emit any remaining in-flow boxes (e.g. line boxes with no LIN).
+	for ; inFlowIdx < len(inFlow); inFlowIdx++ {
+		result = append(result, inFlow[inFlowIdx])
+	}
+	return result
+}
+
+// buildPaintSubtree walks the Box tree, creating PaintLayers and assigning
+// them to the correct parent/stacking-context lists.
+//
+// parentLayer: the PaintLayer that owns FlowChildren at this level.
+// currentSC:   the nearest ancestor stacking context's PaintLayer.
+func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
+	for _, child := range domOrderedChildren(box) {
+		if child.Style == nil {
+			// Unstyled box (line box, text run) — no PaintLayer.
+			// Recurse to find any styled descendants.
+			buildPaintSubtree(child, parentLayer, currentSC)
+			continue
+		}
+
+		childLayer := newPaintLayer(child)
+		isPositioned := child.Position != css.PositionStatic && child.Position != ""
+
+		if !isPositioned {
+			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
+			buildPaintSubtree(child, childLayer, currentSC)
+			continue
+		}
+
+		// Positioned child. Check if contained by parent's overflow clip.
+		// Contained children stay in DOM-order painting (FlowChildren).
+		if isContainedByOverflow(child, box) {
+			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
+			buildPaintSubtree(child, childLayer, currentSC)
+			continue
+		}
+
+		// Positioned and not contained — assign to stacking context z-lists.
+		if child.CreatesStackingContext() {
+			z := child.ZIndex
+			switch {
+			case z < 0:
+				currentSC.NegativeZ = append(currentSC.NegativeZ, childLayer)
+			case z > 0:
+				currentSC.PositiveZ = append(currentSC.PositiveZ, childLayer)
+			default:
+				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+			}
+			// New stacking context — descendants collected by childLayer.
+			buildPaintSubtree(child, childLayer, childLayer)
+		} else {
+			// Positioned, z-index:auto — participates at Appendix E step 6.
+			currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+			if hasOverflowClipping(child) {
+				// Overflow containment boundary — positioned descendants
+				// stay within this subtree.
+				buildPaintSubtree(child, childLayer, childLayer)
+			} else {
+				buildPaintSubtree(child, childLayer, currentSC)
+			}
+		}
+	}
+}
+
+// sortZLists sorts NegativeZ and PositiveZ by z-index (ascending),
+// then recurses into all child layers.
+func (layer *PaintLayer) sortZLists() {
+	sort.SliceStable(layer.NegativeZ, func(i, j int) bool {
+		return layer.NegativeZ[i].ZIndex < layer.NegativeZ[j].ZIndex
+	})
+	sort.SliceStable(layer.PositiveZ, func(i, j int) bool {
+		return layer.PositiveZ[i].ZIndex < layer.PositiveZ[j].ZIndex
+	})
+	for _, child := range layer.NegativeZ {
+		child.sortZLists()
+	}
+	for _, child := range layer.AutoZero {
+		child.sortZLists()
+	}
+	for _, child := range layer.PositiveZ {
+		child.sortZLists()
+	}
+	for _, child := range layer.FlowChildren {
+		child.sortZLists()
+	}
+}
