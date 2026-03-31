@@ -1,6 +1,7 @@
 package render
 
 import (
+	"math"
 	"sort"
 
 	"louis14/pkg/css"
@@ -99,8 +100,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	overflow := s.GetOverflow()
 	if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto {
 		layer.HasClip = true
-		clipW := box.Width - box.Border.Left - box.Border.Right
-		clipH := box.Height - box.Border.Top - box.Border.Bottom
+		clipW := math.Floor(box.Width - box.Border.Left - box.Border.Right)
+		clipH := math.Floor(box.Height - box.Border.Top - box.Border.Bottom)
 		if clipW < 0 {
 			clipW = 0
 		}
