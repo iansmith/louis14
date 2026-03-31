@@ -1805,7 +1805,8 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	}
 	var minContentMain float64
 	if isRow {
-		mm := ComputeMinMaxSizes(fla.ctx, child, minContentSpace)
+		// §4.5: content-based minimum — must NOT short-circuit on explicit width.
+		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
 		minContentMain = mm.MinContent
 	} else {
 		// Column: min-content block-size = lay out at zero inline size, take block result.

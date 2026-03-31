@@ -93,6 +93,43 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	return MinMaxSizes{MinContent: minContent, MaxContent: maxContent}
 }
 
+// computeContentMinMaxSizes is like ComputeMinMaxSizes but does NOT
+// short-circuit on an explicit inline-size. Used by flex §4.5 to compute
+// the content-based minimum size independent of the CSS width property.
+func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) MinMaxSizes {
+	style := node.Style()
+	if style == nil {
+		return MinMaxSizes{}
+	}
+	wdm := space.WritingDirection
+	geom := ComputeFragmentGeometry(style, wdm)
+
+	var result MinMaxSizes
+	if hasOnlyInlineChildren(node) {
+		result = measureInlineMinMax(node, ctx, space)
+	} else {
+		result = measureBlockMinMax(node, ctx, space)
+	}
+
+	// Apply min/max inline-size constraints (but NOT explicit inline-size).
+	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	if result.MinContent < minInline {
+		result.MinContent = minInline
+	}
+	if result.MaxContent < minInline {
+		result.MaxContent = minInline
+	}
+	if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+		if result.MinContent > maxInline {
+			result.MinContent = maxInline
+		}
+		if result.MaxContent > maxInline {
+			result.MaxContent = maxInline
+		}
+	}
+	return result
+}
+
 // measureBlockMinMax computes min/max content sizes for a node with
 // block-level children by taking the maximum of each child's sizes.
 func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
