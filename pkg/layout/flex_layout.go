@@ -822,12 +822,18 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		flexBasis := fla.resolveFlexBasis(child, childStyle, childWDM, childGeom, wdm,
 			contentInlineSize, containerMainSize, hasDefiniteMain, containerCrossSize, hasDefiniteCross, isRow)
 
-		// Compute §4.5 effective minimum main size.
+		// Compute §4.5 effective minimum main size (content-based; used for final clamp).
 		minMainSize := fla.flexItemMinMain(child, childStyle, childWDM, childGeom,
 			itemSizingSpace, flexBasis, isRow)
 
-		// Clamp flex-basis by min/max main size (using §4.5 min).
-		hyp := fla.clampMainSizeWithMin(flexBasis, minMainSize, childStyle, childWDM, childGeom,
+		// For the hypothetical main size (used for wrap decisions and free-space computation),
+		// only clamp by the explicit CSS min-width/min-height. The content-based automatic
+		// minimum must NOT clamp the hypothetical (§4.5: "not clamped by the item's flex-basis",
+		// and items with flex-basis:0 must start at 0, not min-content).
+		explicitMin := fla.flexItemExplicitMin(childStyle, childWDM, childGeom, itemSizingSpace, isRow)
+
+		// Clamp flex-basis by explicit min/max main size only.
+		hyp := fla.clampMainSizeWithMin(flexBasis, explicitMin, childStyle, childWDM, childGeom,
 			itemSizingSpace, isRow)
 
 		// Compute CSS max main size for §9.7 freeze loop.
@@ -1042,8 +1048,11 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	return lf.BlockSize() - childGeom.BlockBorderPadding()
 }
 
-// clampMainSizeWithMin clamps the flex-basis using a precomputed minimum (§4.5)
-// and the CSS max constraint.
+// clampMainSizeWithMin clamps the flex-basis to the CSS max constraint only.
+// The minimum (§4.5 content-based) is stored in item.minMain and enforced
+// by the final clamp in resolveFlexibleLengths — NOT here. This ensures
+// growing items (flex-grow>0) start at their flex-basis (e.g. 0), not at
+// their content-based minimum, so free space distributes correctly.
 func (fla *FlexLayoutAlgorithm) clampMainSizeWithMin(
 	basis float64,
 	minMain float64,
@@ -1054,6 +1063,8 @@ func (fla *FlexLayoutAlgorithm) clampMainSizeWithMin(
 	isRow bool,
 ) float64 {
 	result := basis
+	// Apply explicit minimum (e.g. min-width/min-height). Content-based automatic
+	// minimums are NOT applied here — they're enforced in resolveFlexibleLengths.
 	if result < minMain {
 		result = minMain
 	}
@@ -1159,10 +1170,16 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 ) {
 	items := line.items
 
-	// If no definite container main size, just use hypothetical sizes.
+	// If no definite container main size, use hypothetical sizes clamped to minimum.
 	if !hasDefiniteMain {
 		for _, item := range items {
 			item.resolvedMain = item.hypothetical
+			if item.resolvedMain < item.minMain {
+				item.resolvedMain = item.minMain
+			}
+			if item.resolvedMain < 0 {
+				item.resolvedMain = 0
+			}
 		}
 		return
 	}
@@ -1772,6 +1789,36 @@ func getItemAutoMargins(style *css.Style, wdm WritingDirectionMode, isRow bool) 
 // §4.5: For min-width/min-height:auto (the initial value for flex items), returns
 // min(min-content-size, flex-basis) — the "automatic minimum size".
 // Returns the explicit CSS min value if explicitly set to a non-auto value.
+// flexItemExplicitMin returns the explicit CSS minimum main size (min-width / min-height).
+// Returns 0 when the minimum is "auto" (i.e. not explicitly set).
+// This is used to clamp the hypothetical main size so that wrapping decisions respect
+// explicit minimum sizes, while NOT applying the content-based automatic minimum
+// (which is only enforced at the final clamp in resolveFlexibleLengths).
+func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
+	style *css.Style,
+	childWDM WritingDirectionMode,
+	childGeom FragmentGeometry,
+	space ConstraintSpace,
+	isRow bool,
+) float64 {
+	if isRow {
+		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" {
+			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+		}
+		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+		}
+	} else {
+		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" {
+			return ResolveMinBlockSize(style, childWDM, space, childGeom)
+		}
+		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+			return ResolveMinBlockSize(style, childWDM, space, childGeom)
+		}
+	}
+	return 0
+}
+
 func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	child *LayoutInputNode,
 	style *css.Style,
@@ -1798,8 +1845,20 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		}
 	}
 
-	// §4.5: min-size is auto (default). The automatic minimum size is
-	// min(min-content-size, flex-basis). Only applies when overflow is visible.
+	// §4.5: min-size is auto (default). The automatic minimum size is the
+	// content-based minimum size. This only applies when overflow is visible.
+	//
+	// Per CSS Flexbox §4.5: the content-based minimum size is defined as
+	// the item's min-content SIZE IN THE MAIN AXIS. For row flex (inline main
+	// axis), this is the inline min-content size. For column flex (block main
+	// axis), block-direction does not have a meaningful "min-content" size —
+	// the spec's content-based minimum only applies to the inline axis.
+	// Therefore, for column flex items with auto min-height, the automatic
+	// minimum is 0.
+	if !isRow {
+		return 0
+	}
+
 	overflow := "visible"
 	if v, ok := style.Get("overflow"); ok {
 		overflow = strings.TrimSpace(v)
@@ -1808,29 +1867,15 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		return 0
 	}
 
-	// Compute min-content size in the main axis.
+	// Row flex: compute inline min-content size.
 	minContentSpace := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: 0, BlockSize: Indefinite},
-		WritingDirection: childWDM,
+		AvailableSize:          LogicalSize{InlineSize: 0, BlockSize: Indefinite},
+		WritingDirection:       childWDM,
 		IsNewFormattingContext: true,
 	}
-	var minContentMain float64
-	if isRow {
-		// §4.5: content-based minimum — must NOT short-circuit on explicit width.
-		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
-		minContentMain = mm.MinContent
-	} else {
-		// Column: min-content block-size = lay out at zero inline size, take block result.
-		result := layoutElement(fla.ctx, child, minContentSpace)
-		lf := NewLogicalFragment(childWDM, result.Fragment)
-		minContentMain = lf.BlockSize() - childGeom.BlockBorderPadding()
-	}
-
-	// Automatic minimum = min(min-content, flex-basis).
-	autoMin := minContentMain
-	if flexBasis >= 0 && flexBasis < autoMin {
-		autoMin = flexBasis
-	}
+	// §4.5: content-based minimum — must NOT short-circuit on explicit width.
+	mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
+	autoMin := mm.MinContent
 	if autoMin < 0 {
 		autoMin = 0
 	}
