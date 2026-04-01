@@ -30,6 +30,12 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		if style == nil {
 			continue
 		}
+		// Out-of-flow elements (abs-pos, fixed) don't participate in normal flow.
+		// They must not affect the formatting context determination.
+		pos := style.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			continue
+		}
 		// Floats are allowed in both inline and block formatting contexts.
 		if style.GetFloat() != css.FloatNone {
 			continue

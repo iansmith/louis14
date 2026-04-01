@@ -441,6 +441,31 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 	// §9.8 — Main axis alignment (justify-content) and item positioning.
 	justifyContent := fla.getJustifyContent()
+	// Resolve physical keywords (left/right) to logical equivalents.
+	// left/right are only meaningful when the main axis is horizontal.
+	// For vertical main axis, they fall back to flex-start.
+	mainIsHorizontal := !wdm.IsVertical() == isRow
+	if mainIsHorizontal {
+		isLTR := wdm.Dir != DirectionRTL
+		if justifyContent == "right" {
+			if isLTR {
+				justifyContent = "flex-end"
+			} else {
+				justifyContent = "flex-start"
+			}
+		} else if justifyContent == "left" {
+			if isLTR {
+				justifyContent = "flex-start"
+			} else {
+				justifyContent = "flex-end"
+			}
+		}
+	} else {
+		// Vertical main axis: left/right are not applicable.
+		if justifyContent == "left" || justifyContent == "right" {
+			justifyContent = "flex-start"
+		}
+	}
 
 	// §9.9 — Cross axis alignment per item (align-self).
 	for lineIdx, line := range lines {
@@ -536,7 +561,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// crossOffset stores the position BEFORE crossMarginStart is added by the builder.
 			var itemCrossOffset float64
 			switch selfAlign {
-			case "flex-end", "end":
+			case "flex-end", "end", "self-end":
 				itemCrossOffset = crossStart + crossFreeForAlign
 			case "center":
 				itemCrossOffset = crossStart + crossFreeForAlign/2
@@ -549,7 +574,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				} else {
 					itemCrossOffset = crossStart
 				}
-			default: // flex-start, stretch
+			default: // flex-start, start, self-start, stretch
 				itemCrossOffset = crossStart
 			}
 			item.crossOffset = itemCrossOffset
@@ -1459,7 +1484,14 @@ func computeItemMainOffsets(
 
 	if reverseMain {
 		// Place items right-to-left from the main-end.
-		cursor := containerMainSize - initialOffset
+		// When containerMainSize is less than totalItemSize (e.g. column-reverse with
+		// auto block-size), use totalItemSize as the effective container so items don't
+		// overflow to negative offsets.
+		effectiveSize := containerMainSize
+		if effectiveSize < totalItemSize {
+			effectiveSize = totalItemSize
+		}
+		cursor := effectiveSize - initialOffset
 		for i, item := range items {
 			_ = i
 			cursor -= item.outerMainSize()
@@ -1517,6 +1549,13 @@ func computeAlignContent(
 		}
 		initialOffset = perLine / 2
 		gap = perLine + crossGap
+	case "space-evenly":
+		spacing := 0.0
+		if len(lines)+1 > 0 {
+			spacing = freeSpace / float64(len(lines)+1)
+		}
+		initialOffset = spacing
+		gap = spacing + crossGap
 	case "stretch":
 		// Distribute free space to lines.
 		extra := 0.0

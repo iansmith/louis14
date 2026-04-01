@@ -39,6 +39,8 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 
 	for _, candidate := range candidates {
 		child := candidate.Node
+		staticBlock := candidate.StaticOffset.BlockOffset
+		staticInline := candidate.StaticOffset.InlineOffset
 		childStyle := child.Style()
 		if childStyle == nil {
 			continue
@@ -74,7 +76,8 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		} else if offset.HasRight {
 			inlineOffset = contentInlineSize - offset.Right - childMargins.InlineEnd - childLogical.InlineSize()
 		} else {
-			inlineOffset = childMargins.InlineStart
+			// Both left and right are auto: use static position (CSS §10.3.7).
+			inlineOffset = staticInline + childMargins.InlineStart
 		}
 
 		// CSS 2.1 §10.6.4: Block position for abs-pos non-replaced.
@@ -114,7 +117,8 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		} else if offset.HasBottom {
 			blockOffset = contentBlockSize - offset.Bottom - childMargins.BlockEnd - childLogical.BlockSize()
 		} else {
-			blockOffset = childMargins.BlockStart
+			// Both top and bottom are auto: use static position (CSS §10.6.4).
+			blockOffset = staticBlock + childMargins.BlockStart
 		}
 
 		builder.AddChild(childResult.Fragment, LogicalOffset{

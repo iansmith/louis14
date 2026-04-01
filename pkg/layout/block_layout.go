@@ -163,9 +163,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Collect absolutely positioned elements for deferred layout.
 			childPos := childStyle.GetPosition()
 			if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+				// Static block offset includes any pending collapsed margin from preceding siblings.
+				// The abs-pos element's in-flow position would be after the resolved margin, just
+				// like the next in-flow sibling. CSS §10.6.4: static position uses the hypothetical
+				// in-flow position.
+				staticBlockOffset := blockCursor + prevMarginStrut.Resolve()
 				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 					Node:         child,
-					StaticOffset: LogicalOffset{InlineOffset: 0, BlockOffset: blockCursor},
+					StaticOffset: LogicalOffset{InlineOffset: 0, BlockOffset: staticBlockOffset},
 				})
 				continue
 			}
