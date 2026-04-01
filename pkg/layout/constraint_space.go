@@ -49,6 +49,16 @@ type ConstraintSpace struct {
 	// block-size comes from the first-pass flex layout rather than a real definite size.
 	// Children should treat percentage block-sizes as auto (resolve to 0) on this pass.
 	IsFixedBlockSizeIndefinite bool
+
+	// OrthogonalFallbackInlineSize is the ICB size used when an orthogonal
+	// child would otherwise get Indefinite as its available inline-size.
+	// Per CSS Writing Modes §10.3.2, when the parent's block-size is indefinite,
+	// an orthogonal child falls back to the ICB size.
+	OrthogonalFallbackInlineSize float64
+
+	// ForcedMinBlockSize is a minimum block-size forced by the parent.
+	// Used for the root element to ensure it fills at least the ICB block-size.
+	ForcedMinBlockSize float64
 }
 
 // Indefinite is the sentinel value for an unconstrained block-size.
@@ -99,6 +109,12 @@ func (b *ConstraintSpaceBuilder) SetAvailableSize(size LogicalSize) *ConstraintS
 		b.space.AvailableSize = LogicalSize{
 			InlineSize: size.BlockSize,
 			BlockSize:  size.InlineSize,
+		}
+		// If parent's block-size was indefinite, the child's inline-size
+		// becomes indefinite. Fall back to the ICB size per §10.3.2.
+		if b.space.AvailableSize.InlineSize == Indefinite &&
+			b.space.OrthogonalFallbackInlineSize > 0 {
+			b.space.AvailableSize.InlineSize = b.space.OrthogonalFallbackInlineSize
 		}
 	}
 	return b
@@ -163,6 +179,21 @@ func (b *ConstraintSpaceBuilder) SetIsInsideFlexibleBox(v bool) *ConstraintSpace
 // the block-size is nominally fixed but children should treat % block-sizes as auto.
 func (b *ConstraintSpaceBuilder) SetIsFixedBlockSizeIndefinite(v bool) *ConstraintSpaceBuilder {
 	b.space.IsFixedBlockSizeIndefinite = v
+	return b
+}
+
+// SetOrthogonalFallbackInlineSize sets the ICB fallback for orthogonal children.
+// This must be called BEFORE SetAvailableSize, as the fallback is applied during
+// the available-size swap.
+func (b *ConstraintSpaceBuilder) SetOrthogonalFallbackInlineSize(v float64) *ConstraintSpaceBuilder {
+	b.space.OrthogonalFallbackInlineSize = v
+	return b
+}
+
+// SetForcedMinBlockSize sets a minimum block-size for the child.
+// Used for the root element to ensure it fills at least the ICB.
+func (b *ConstraintSpaceBuilder) SetForcedMinBlockSize(v float64) *ConstraintSpaceBuilder {
+	b.space.ForcedMinBlockSize = v
 	return b
 }
 

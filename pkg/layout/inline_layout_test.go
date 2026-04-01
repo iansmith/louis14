@@ -56,7 +56,7 @@ func inlineLayoutForTest(
 
 	for lb.NextLine(&line) {
 		line.TextAlign = textAlign
-		lineFragment, lineHeight := createLineBox(itemsData, &line, wdm, contentInlineSize)
+		lineFragment, lineHeight, _ := createLineBox(itemsData, &line, wdm, contentInlineSize)
 		lineBoxes = append(lineBoxes, lineFragment)
 		blockOffset += lineHeight
 	}

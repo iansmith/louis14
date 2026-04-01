@@ -1,6 +1,5 @@
 package layout
 
-import ()
 
 // ComputeMinMaxSizes computes the intrinsic min-content and max-content
 // inline sizes for a layout node. Returns content-box values (excludes the
@@ -19,6 +18,13 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// If the node has an explicit inline-size, min = max = that size (content-box).
 	if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 		return MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
+	}
+
+	// Replaced elements (img, canvas, etc.) use ComputeReplacedSize for intrinsic sizing.
+	// CSS 2.1 §10.3.2: replaced elements have a single intrinsic inline-size.
+	if node.DOMNode != nil && isReplacedElement(node.DOMNode) {
+		inlineSize, _ := ComputeReplacedSize(ctx, node, style, space)
+		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
 	}
 
 	// Compute intrinsic sizes based on children (content-box).
@@ -64,10 +70,9 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	wdm := space.WritingDirection
 
 	// Min-content: break at every opportunity.
-	minSpace := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: 0, BlockSize: Indefinite},
-		WritingDirection: wdm,
-	}
+	minSpace := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
+		Build()
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	var minContent float64
 	var line LineInfo
@@ -78,10 +83,9 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	}
 
 	// Max-content: never wrap.
-	maxSpace := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: 1e9, BlockSize: Indefinite},
-		WritingDirection: wdm,
-	}
+	maxSpace := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetAvailableSize(LogicalSize{InlineSize: 1e9, BlockSize: Indefinite}).
+		Build()
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
 	for maxLB.NextLine(&line) {
@@ -103,6 +107,12 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	}
 	wdm := space.WritingDirection
 	geom := ComputeFragmentGeometry(style, wdm)
+
+	// Replaced elements use ComputeReplacedSize for content-based sizing.
+	if node.DOMNode != nil && isReplacedElement(node.DOMNode) {
+		inlineSize, _ := ComputeReplacedSize(ctx, node, style, space)
+		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
+	}
 
 	var result MinMaxSizes
 	if hasOnlyInlineChildren(node) {
@@ -145,10 +155,11 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		}
 
 		childWDM := NewWritingDirectionMode(childStyle)
-		childSpace := ConstraintSpace{
-			AvailableSize:    space.AvailableSize,
-			WritingDirection: childWDM,
-		}
+		childSpace := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, false).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(childWDM, ctx)).
+			SetAvailableSize(space.AvailableSize).
+			Build()
 
 		childMM := ComputeMinMaxSizes(ctx, child, childSpace)
 

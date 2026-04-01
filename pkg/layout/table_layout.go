@@ -45,7 +45,7 @@ type tableRow struct {
 // Layout performs table layout and returns the result.
 func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := tla.space.WritingDirection
-	geom := ComputeFragmentGeometry(tla.style, wdm)
+	geom := CalculateInitialFragmentGeometry(tla.ctx, tla.node, tla.style, wdm, tla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(tla.node)
 
@@ -67,8 +67,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		numCols = 1
 	}
 
-	// Resolve available inline size.
-	availableInline := tla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+	// Resolve available inline size from the centralized border-box size.
+	availableInline := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if availableInline < 0 {
 		availableInline = 0
 	}
@@ -112,6 +112,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				cellWDM = NewWritingDirectionMode(cell.style)
 			}
 			cellSpace := NewConstraintSpaceBuilder(wdm, cellWDM, true).
+				SetOrthogonalFallbackInlineSize(
+					orthogonalFallbackSize(cellWDM, tla.ctx)).
 				SetAvailableSize(LogicalSize{
 					InlineSize: cellWidth,
 					BlockSize:  Indefinite,
@@ -318,10 +320,11 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					if cell.style != nil {
 						childWDM = NewWritingDirectionMode(cell.style)
 					}
-					childSpace := ConstraintSpace{
-						AvailableSize:    LogicalSize{InlineSize: availableInline, BlockSize: Indefinite},
-						WritingDirection: childWDM,
-					}
+					childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
+						SetOrthogonalFallbackInlineSize(
+							orthogonalFallbackSize(childWDM, tla.ctx)).
+						SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
+						Build()
 					mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
 					// Convert content-box to border-box for column sizing.
 					cellGeom := ComputeFragmentGeometry(cell.style, childWDM)

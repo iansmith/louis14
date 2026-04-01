@@ -30,87 +30,31 @@ func NewBlockLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Co
 // Layout performs block layout and returns the result.
 func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
-	geom := ComputeFragmentGeometry(bla.style, wdm)
+	geom := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
 
-	// Resolve inline-size.
-	var contentInlineSize float64
-	if bla.space.IsFixedInlineSize {
-		// Parent (e.g. flex algorithm) has predetermined the inline-size via AvailableSize.
-		// CSS Flexbox §9.7: the resolved main size from the flex algorithm overrides the
-		// item's own CSS width/height. Use AvailableSize directly.
-		contentInlineSize = bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
-		if contentInlineSize < 0 {
-			contentInlineSize = 0
-		}
-	} else if explicitInline, ok := ResolveInlineSize(bla.style, wdm, bla.space, geom); ok {
-		contentInlineSize = explicitInline
-	} else if needsShrinkToFit(bla.style) {
-		// CSS 2.1 §10.3.5: Shrink-to-fit width for inline-block, float,
-		// and abs-pos elements with auto inline-size.
-		// All values are content-box: ComputeMinMaxSizes returns content-box,
-		// available is content-box (border+padding subtracted).
-		minMax := ComputeMinMaxSizes(bla.ctx, bla.node, bla.space)
-		available := bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
-		if available < 0 {
-			available = 0
-		}
-		contentInlineSize = minMax.ShrinkToFit(available)
-	} else if bla.space.IsInsideFlexibleBox && !bla.space.IsFixedInlineSize {
-		// CSS Flexbox §9.4: column flex item with auto inline-size (cross axis) and
-		// non-stretch align-self. Item sizes to its min-content inline-size, bounded
-		// by the flex container's content inline-size.
-		minMax := ComputeMinMaxSizes(bla.ctx, bla.node, bla.space)
-		available := bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
-		if available < 0 {
-			available = 0
-		}
-		contentInlineSize = minMax.ShrinkToFit(available)
-	} else {
-		// Auto inline-size: fill available space minus border/padding.
-		contentInlineSize = bla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
-		if contentInlineSize < 0 {
-			contentInlineSize = 0
+	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
+	if contentInlineSize < 0 {
+		contentInlineSize = 0
+	}
+
+	// Block-size: use geom if definite, else auto.
+	hasExplicitBlock := geom.BorderBoxSize.BlockSize != Indefinite
+	var explicitBlockSize float64
+	if hasExplicitBlock {
+		explicitBlockSize = geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
+		if explicitBlockSize < 0 {
+			explicitBlockSize = 0
 		}
 	}
 
-	// Apply min/max inline-size constraints (CSS 2.1 §10.4).
-	minInline := ResolveMinInlineSize(bla.style, wdm, bla.space, geom)
-	if contentInlineSize < minInline {
-		contentInlineSize = minInline
-	}
-	if maxInline, hasMax := ResolveMaxInlineSize(bla.style, wdm, bla.space, geom); hasMax {
-		if contentInlineSize > maxInline {
-			contentInlineSize = maxInline
-		}
-	}
-
-	// Resolve block-size (may be auto).
-	explicitBlockSize, hasExplicitBlock := ResolveBlockSize(bla.style, wdm, bla.space, geom)
-
-	// If the parent (e.g. flex) has fixed the block-size via constraint space, use it.
-	// This handles align-self:stretch for column flex and definite-cross-size for row flex.
-	// Guard: skip if a CSS max-block-size keyword (like min-content) is present and
-	// ResolveMaxBlockSize returned no value — the keyword wins over the flex constraint.
-	if !hasExplicitBlock && bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite {
-		fixedBS := bla.space.AvailableSize.BlockSize - geom.BlockBorderPadding()
-		// Check if CSS max-block-size is set to any keyword (non-length, non-percentage).
-		// If so, don't apply the fixed block-size — intrinsic sizing handles it.
-		maxProp := "max-height"
-		if wdm.IsVertical() {
-			maxProp = "max-width"
-		}
-		hasMaxKeyword := false
-		if v, ok := bla.style.Get(maxProp); ok && v != "" && v != "none" {
-			// If it's a keyword (min-content, max-content, fit-content, etc.) and
-			// ResolveMaxBlockSize returns false, it's an intrinsic sizing keyword.
-			if _, resolved := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); !resolved {
-				hasMaxKeyword = true
-			}
-		}
-		if fixedBS > 0 && !hasMaxKeyword {
-			explicitBlockSize = fixedBS
+	// Replaced elements (img, etc.) with auto block-size: derive from aspect ratio.
+	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
+	if !hasExplicitBlock && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
+		_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+		if blockSize > 0 {
+			explicitBlockSize = blockSize
 			hasExplicitBlock = true
 		}
 	}
@@ -120,6 +64,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	childAvailableBlock := Indefinite
 	if hasExplicitBlock {
 		childAvailableBlock = explicitBlockSize
+	}
+
+	// §10.3.2: For orthogonal children, when the parent's block-size is
+	// indefinite but has a max-block-size, use that as the available block.
+	// This prevents the ICB fallback from overriding the max constraint.
+	orthogonalAvailableBlock := childAvailableBlock
+	if childAvailableBlock == Indefinite {
+		if maxBlock, hasMax := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); hasMax {
+			orthogonalAvailableBlock = maxBlock
+		}
 	}
 
 	// Float exclusion tracking.
@@ -207,10 +161,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Build constraint space for this child.
 			isChildNewFC := createsFormattingContext(childStyle)
+			blockForChild := childAvailableBlock
+			if wdm.IsOrthogonalTo(childWDM) {
+				blockForChild = orthogonalAvailableBlock
+			}
 			childSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+				SetOrthogonalFallbackInlineSize(
+					orthogonalFallbackSize(childWDM, bla.ctx)).
 				SetAvailableSize(LogicalSize{
 					InlineSize: childInlineForSpace,
-					BlockSize:  childAvailableBlock,
+					BlockSize:  blockForChild,
 				}).
 				SetPercentageResolutionSize(LogicalSize{
 					InlineSize: contentInlineSize,
@@ -309,6 +269,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Apply min/max block-size constraints (CSS 2.1 §10.7).
 	minBlock := ResolveMinBlockSize(bla.style, wdm, bla.space, geom)
+	// The root element must fill at least the ICB block-size (ForcedMinBlockSize).
+	if bla.space.ForcedMinBlockSize > minBlock {
+		minBlock = bla.space.ForcedMinBlockSize
+	}
 	if finalBlockSize < minBlock {
 		finalBlockSize = minBlock
 	}
@@ -412,6 +376,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 
 	// Floats establish a new BFC.
 	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+		SetOrthogonalFallbackInlineSize(
+			orthogonalFallbackSize(childWDM, bla.ctx)).
 		SetAvailableSize(LogicalSize{
 			InlineSize: contentInlineSize,
 			BlockSize:  availableBlock,
@@ -567,4 +533,13 @@ func needsShrinkToFit(style *css.Style) bool {
 		return true
 	}
 	return false
+}
+
+// orthogonalFallbackSize returns the ICB size to use as the fallback
+// inline-size for an orthogonal child, per CSS Writing Modes §10.3.2.
+func orthogonalFallbackSize(childWDM WritingDirectionMode, ctx *LayoutContext) float64 {
+	if childWDM.IsHorizontal() {
+		return ctx.ViewportWidth
+	}
+	return ctx.ViewportHeight
 }

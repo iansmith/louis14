@@ -94,7 +94,33 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		rootWDM = NewWritingDirectionMode(rootStyle)
 	}
 
-	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
+	// The ICB is always horizontal-tb. Use it as the parent WDM so the
+	// ConstraintSpaceBuilder swaps axes when the root has a vertical writing mode.
+	icbWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	// Compute the orthogonal fallback: when an orthogonal child of the root
+	// has an indefinite inline-size, it falls back to the ICB dimension that
+	// corresponds to that child's inline axis.
+	var rootOrthogonalFallback float64
+	if rootWDM.IsVertical() {
+		// Root is vertical → orthogonal child is horizontal → inline = width
+		rootOrthogonalFallback = le.viewport.width
+	} else {
+		// Root is horizontal → orthogonal child is vertical → inline = height
+		rootOrthogonalFallback = le.viewport.height
+	}
+
+	// The root element must fill at least the ICB block-size.
+	// In HTB, this is the viewport height; in vertical modes, the viewport width.
+	var rootMinBlock float64
+	if rootWDM.IsVertical() {
+		rootMinBlock = le.viewport.width
+	} else {
+		rootMinBlock = le.viewport.height
+	}
+
+	rootSpace := NewConstraintSpaceBuilder(icbWDM, rootWDM, true).
+		SetOrthogonalFallbackInlineSize(rootOrthogonalFallback).
+		SetForcedMinBlockSize(rootMinBlock).
 		SetAvailableSize(LogicalSize{
 			InlineSize: le.viewport.width,
 			BlockSize:  le.viewport.height,
@@ -173,6 +199,9 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	// Text fragments carry their rendered text content.
 	if frag.Type == FragmentText {
 		box.Text = frag.TextContent
+		box.IsVerticalText = frag.WritingDirection.IsVertical()
+		box.IsSidewaysLR = frag.WritingDirection.WM == WritingModeSidewaysLR
+		box.IsSidewaysRL = frag.WritingDirection.WM == WritingModeSidewaysRL
 	}
 
 	// Apply box model edges if present.

@@ -78,12 +78,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if item.Type != InlineItemFloat || item.LayoutNode == nil {
 			continue
 		}
-		// Only pre-layout empty (sized-box) floats — floats with content
-		// children are laid out by the block algorithm or skipped when
-		// we lack the necessary CSS features (counters, url(), attr()).
-		if len(item.LayoutNode.Children()) > 0 {
-			continue
-		}
+		// Lay out all floats (including those with content children)
+		// so they participate in the exclusion space and are rendered.
 		childStyle := item.Style
 		if childStyle == nil {
 			continue
@@ -91,6 +87,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		childWDM := NewWritingDirectionMode(childStyle)
 		childMargins := ResolveMargins(childStyle, childWDM, contentInlineSize)
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(childWDM, bla.ctx)).
 			SetAvailableSize(LogicalSize{
 				InlineSize: contentInlineSize,
 				BlockSize:  Indefinite,

@@ -33,9 +33,14 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 	candidates []OutOfFlowCandidate,
 	builder *BoxFragmentBuilder,
 ) {
-	contentInlineSize := p.containingBlockSize.InlineSize
-	contentBlockSize := p.containingBlockSize.BlockSize
+	cbInline := p.containingBlockSize.InlineSize
+	cbBlock := p.containingBlockSize.BlockSize
 	wdm := p.containingBlockWDM
+
+	// Convert logical CB size to physical for percentage resolution of
+	// inset properties (top/right/bottom/left percentages resolve against
+	// physical width/height, not logical axes).
+	cbPhys := ToPhysicalSize(p.containingBlockSize, wdm.WM)
 
 	for _, candidate := range candidates {
 		child := candidate.Node
@@ -49,75 +54,96 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		childWDM := NewWritingDirectionMode(childStyle)
 
 		// Build constraint space for the absolute child.
-		// Percentages resolve against the containing block's padding box.
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
 			SetAvailableSize(LogicalSize{
-				InlineSize: contentInlineSize,
-				BlockSize:  contentBlockSize,
+				InlineSize: cbInline,
+				BlockSize:  cbBlock,
 			}).
 			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: contentInlineSize,
-				BlockSize:  contentBlockSize,
+				InlineSize: cbInline,
+				BlockSize:  cbBlock,
 			}).
 			Build()
 
 		childResult := layoutElement(p.ctx, child, childSpace)
 		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 
-		// Get raw margins (preserving auto flags).
+		// Resolve physical insets using physical CB dimensions, then convert
+		// to logical insets based on the containing block's writing mode.
+		physOffset := childStyle.GetPositionOffsetResolved(cbPhys.Width, cbPhys.Height)
+		insets := PhysicalInsetsToLogical(physOffset, wdm)
+
+		// Resolve margins and get auto-margin flags in logical coordinates.
+		childMargins := ResolveMargins(childStyle, wdm, cbInline)
 		rawMargin := childStyle.GetMargin()
-		childMargins := ResolveMargins(childStyle, childWDM, contentInlineSize)
-		offset := childStyle.GetPositionOffsetResolved(contentInlineSize, contentBlockSize)
+		autoInlineStart, autoInlineEnd, autoBlockStart, autoBlockEnd :=
+			PhysicalAutoMarginsToLogical(rawMargin, wdm)
 
-		// CSS 2.1 §10.3.7: Inline position for abs-pos non-replaced.
+		// CSS 2.1 §10.3.7 / §10.6.4: Solve inline and block constraint
+		// equations entirely in logical coordinates.
+
+		// --- Inline axis ---
 		var inlineOffset float64
-		if offset.HasLeft {
-			inlineOffset = offset.Left + childMargins.InlineStart
-		} else if offset.HasRight {
-			inlineOffset = contentInlineSize - offset.Right - childMargins.InlineEnd - childLogical.InlineSize()
-		} else {
-			// Both left and right are auto: use static position (CSS §10.3.7).
-			inlineOffset = staticInline + childMargins.InlineStart
-		}
-
-		// CSS 2.1 §10.6.4: Block position for abs-pos non-replaced.
-		var blockOffset float64
-		if offset.HasTop && offset.HasBottom {
-			// Both top and bottom set — solve for auto margins.
+		if insets.HasInlineStart && insets.HasInlineEnd {
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
-			usedTop := offset.Top
-			usedBottom := offset.Bottom
-			usedHeight := childLogical.BlockSize()
-			usedBPBlock := childGeom.BlockBorderPadding()
-			remaining := contentBlockSize - usedTop - usedBottom - usedBPBlock - usedHeight
+			usedInlineSize := childLogical.InlineSize()
+			usedBPInline := childGeom.InlineBorderPadding()
+			remaining := cbInline - insets.InlineStart - insets.InlineEnd - usedBPInline - usedInlineSize
 
-			autoTop := rawMargin.AutoTop
-			autoBottom := rawMargin.AutoBottom
-			if wdm.IsVertical() {
-				autoTop = rawMargin.AutoLeft
-				autoBottom = rawMargin.AutoRight
-			}
-
-			if autoTop && autoBottom {
-				// Both auto: split evenly.
+			if autoInlineStart && autoInlineEnd {
 				halfMargin := remaining / 2
 				if halfMargin < 0 {
 					halfMargin = 0
 				}
-				blockOffset = usedTop + halfMargin
-			} else if autoTop {
-				blockOffset = usedTop + remaining - childMargins.BlockEnd
-			} else if autoBottom {
-				blockOffset = usedTop + childMargins.BlockStart
+				inlineOffset = insets.InlineStart + halfMargin
+			} else if autoInlineStart {
+				inlineOffset = insets.InlineStart + remaining - childMargins.InlineEnd
+			} else if autoInlineEnd {
+				inlineOffset = insets.InlineStart + childMargins.InlineStart
 			} else {
-				blockOffset = usedTop + childMargins.BlockStart
+				// Overconstrained: LTR ignores inline-end, RTL ignores inline-start.
+				if wdm.IsRTL() {
+					inlineOffset = cbInline - insets.InlineEnd - childMargins.InlineEnd - childLogical.InlineSize()
+				} else {
+					inlineOffset = insets.InlineStart + childMargins.InlineStart
+				}
 			}
-		} else if offset.HasTop {
-			blockOffset = offset.Top + childMargins.BlockStart
-		} else if offset.HasBottom {
-			blockOffset = contentBlockSize - offset.Bottom - childMargins.BlockEnd - childLogical.BlockSize()
+		} else if insets.HasInlineStart {
+			inlineOffset = insets.InlineStart + childMargins.InlineStart
+		} else if insets.HasInlineEnd {
+			inlineOffset = cbInline - insets.InlineEnd - childMargins.InlineEnd - childLogical.InlineSize()
 		} else {
-			// Both top and bottom are auto: use static position (CSS §10.6.4).
+			// Both auto: use static position.
+			inlineOffset = staticInline + childMargins.InlineStart
+		}
+
+		// --- Block axis ---
+		var blockOffset float64
+		if insets.HasBlockStart && insets.HasBlockEnd {
+			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+			usedBlockSize := childLogical.BlockSize()
+			usedBPBlock := childGeom.BlockBorderPadding()
+			remaining := cbBlock - insets.BlockStart - insets.BlockEnd - usedBPBlock - usedBlockSize
+
+			if autoBlockStart && autoBlockEnd {
+				halfMargin := remaining / 2
+				if halfMargin < 0 {
+					halfMargin = 0
+				}
+				blockOffset = insets.BlockStart + halfMargin
+			} else if autoBlockStart {
+				blockOffset = insets.BlockStart + remaining - childMargins.BlockEnd
+			} else if autoBlockEnd {
+				blockOffset = insets.BlockStart + childMargins.BlockStart
+			} else {
+				blockOffset = insets.BlockStart + childMargins.BlockStart
+			}
+		} else if insets.HasBlockStart {
+			blockOffset = insets.BlockStart + childMargins.BlockStart
+		} else if insets.HasBlockEnd {
+			blockOffset = cbBlock - insets.BlockEnd - childMargins.BlockEnd - childLogical.BlockSize()
+		} else {
+			// Both auto: use static position.
 			blockOffset = staticBlock + childMargins.BlockStart
 		}
 

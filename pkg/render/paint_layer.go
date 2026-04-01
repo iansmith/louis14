@@ -61,8 +61,11 @@ type PaintLayer struct {
 	FontBold      bool
 	FontItalic    bool
 	FontMono      bool
-	FontAhem      bool
-	LetterSpacing float64
+	FontAhem       bool
+	LetterSpacing  float64
+	IsVerticalText bool
+	IsSidewaysLR   bool
+	IsSidewaysRL   bool
 }
 
 // BuildPaintTree constructs a PaintLayer tree from a layout Box tree.
@@ -179,6 +182,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.FontMono = s.IsMonospaceFamily()
 	layer.FontAhem = s.IsAhemFamily()
 	layer.LetterSpacing = s.GetLetterSpacing()
+	layer.IsVerticalText = box.IsVerticalText
+	layer.IsSidewaysLR = box.IsSidewaysLR
+	layer.IsSidewaysRL = box.IsSidewaysRL
 
 	return layer
 }

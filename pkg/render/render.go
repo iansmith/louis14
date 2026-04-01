@@ -510,6 +510,74 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	metrics := r.dc.GetFontMetrics(fontID)
 	ascent := float64(metrics.Ascent) / 64.0
 
+	// Sideways text: each character is drawn at vertical positions.
+	// CSS Writing Modes §5.1: sideways modes rotate glyphs but for
+	// Ahem (1em squares) and simple Latin text, stacking characters
+	// vertically produces the correct visual result.
+	//
+	// For sideways-rl: text reads top-to-bottom (same glyph order as reading).
+	// For sideways-lr: text reads bottom-to-top (reversed).
+	if layer.IsSidewaysRL || layer.IsSidewaysLR {
+		runes := []rune(box.Text)
+		if layer.IsSidewaysLR {
+			// Sideways-lr: inline direction is bottom-to-top.
+			y := box.Y + box.Height - layer.FontSize
+			for _, ch := range runes {
+				charStr := string(ch)
+				charW := r.dc.MeasureText(charStr, fontID)
+				xOffset := (box.Width - charW) / 2
+				if xOffset < 0 {
+					xOffset = 0
+				}
+				r.dc.DrawText(charStr, fontID, box.X+xOffset, y+ascent)
+				y -= layer.FontSize
+				if layer.LetterSpacing != 0 {
+					y -= layer.LetterSpacing
+				}
+			}
+		} else {
+			// Sideways-rl: inline direction is top-to-bottom.
+			y := box.Y
+			for _, ch := range runes {
+				charStr := string(ch)
+				charW := r.dc.MeasureText(charStr, fontID)
+				xOffset := (box.Width - charW) / 2
+				if xOffset < 0 {
+					xOffset = 0
+				}
+				r.dc.DrawText(charStr, fontID, box.X+xOffset, y+ascent)
+				y += layer.FontSize
+				if layer.LetterSpacing != 0 {
+					y += layer.LetterSpacing
+				}
+			}
+		}
+		return
+	}
+
+	// Vertical text: draw each character stacked vertically.
+	// CSS Writing Modes §5.1: in vertical writing modes, upright glyphs
+	// advance in the block-progression (vertical) direction. For Ahem
+	// (1em × 1em squares) and other upright text, each character cell
+	// is fontSize tall and the glyph is centered horizontally.
+	if layer.IsVerticalText {
+		y := box.Y
+		for _, ch := range box.Text {
+			charStr := string(ch)
+			charW := r.dc.MeasureText(charStr, fontID)
+			xOffset := (box.Width - charW) / 2
+			if xOffset < 0 {
+				xOffset = 0
+			}
+			r.dc.DrawText(charStr, fontID, box.X+xOffset, y+ascent)
+			y += layer.FontSize
+			if layer.LetterSpacing != 0 {
+				y += layer.LetterSpacing
+			}
+		}
+		return
+	}
+
 	if layer.LetterSpacing != 0 {
 		x := box.X
 		baselineY := box.Y + ascent

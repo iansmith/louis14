@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"mazarin/textshape"
 )
@@ -299,6 +300,30 @@ func MeasureTextWithWeight(text string, fontSize float64, bold bool) (width, hei
 func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool) (width, height float64) {
 	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
 	return MeasureText(text, fontSize, fontPath)
+}
+
+// MeasureTextVertical returns the inline advance of text in a vertical writing
+// mode. For upright text (the default for Ahem and CJK), each glyph advances
+// by fontSize in the inline (vertical) direction. For sideways text, the
+// inline advance equals the horizontal advance (rotated glyphs keep their
+// horizontal width as the inline advance).
+//
+// CSS Writing Modes §5.1: text-orientation determines whether glyphs are
+// upright or sideways. For now, this treats all characters as upright,
+// which is correct for Ahem (1em × 1em squares) and CJK text.
+func MeasureTextVertical(text string, fontSize float64, bold, italic, mono, ahem bool) (inlineAdvance, blockAdvance float64) {
+	runeCount := utf8.RuneCountInString(text)
+	// Upright: each glyph advances by fontSize in the inline direction.
+	inlineAdvance = float64(runeCount) * fontSize
+	// Block advance = font height (line thickness in the block direction).
+	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
+	m := openFont(fontPath, fontSize)
+	if m.FontID >= 0 && m.Height > 0 {
+		blockAdvance = math.Round(float64(m.Height) / 64.0)
+	} else {
+		blockAdvance = math.Round(fontSize * 1.2)
+	}
+	return
 }
 
 // FontAscent returns the font ascent in pixels for the given style.

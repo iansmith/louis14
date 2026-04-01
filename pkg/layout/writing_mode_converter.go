@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/css"
+
 // WritingModeConverter converts between logical and physical coordinate systems.
 //
 // Ported from Blink's WritingModeConverter (writing_mode_converter.h/.cc).
@@ -228,6 +230,87 @@ func ToLogicalEdges(edges PhysicalEdges, wdm WritingDirectionMode) LogicalEdges 
 	}
 
 	return result
+}
+
+// LogicalInsets holds resolved CSS inset properties (top/right/bottom/left)
+// converted to logical coordinates (inline-start/end, block-start/end).
+// Each value carries a Has* flag indicating whether the property was set
+// (vs auto). Used by the abs-pos solver.
+//
+// Mirrors Blink's PhysicalToLogical conversion of inset properties.
+type LogicalInsets struct {
+	InlineStart, InlineEnd float64
+	BlockStart, BlockEnd   float64
+	HasInlineStart, HasInlineEnd bool
+	HasBlockStart, HasBlockEnd   bool
+}
+
+// PhysicalInsetsToLogical converts physical CSS insets (top/right/bottom/left)
+// to logical insets based on the containing block's writing direction mode.
+// The mapping follows Blink's PhysicalToLogical converter.
+func PhysicalInsetsToLogical(offset css.PositionOffset, wdm WritingDirectionMode) LogicalInsets {
+	var result LogicalInsets
+
+	switch wdm.WM {
+	case WritingModeHorizontalTB:
+		result = LogicalInsets{
+			InlineStart: offset.Left, InlineEnd: offset.Right,
+			BlockStart: offset.Top, BlockEnd: offset.Bottom,
+			HasInlineStart: offset.HasLeft, HasInlineEnd: offset.HasRight,
+			HasBlockStart: offset.HasTop, HasBlockEnd: offset.HasBottom,
+		}
+	case WritingModeVerticalRL, WritingModeSidewaysRL:
+		result = LogicalInsets{
+			InlineStart: offset.Top, InlineEnd: offset.Bottom,
+			BlockStart: offset.Right, BlockEnd: offset.Left,
+			HasInlineStart: offset.HasTop, HasInlineEnd: offset.HasBottom,
+			HasBlockStart: offset.HasRight, HasBlockEnd: offset.HasLeft,
+		}
+	case WritingModeVerticalLR:
+		result = LogicalInsets{
+			InlineStart: offset.Top, InlineEnd: offset.Bottom,
+			BlockStart: offset.Left, BlockEnd: offset.Right,
+			HasInlineStart: offset.HasTop, HasInlineEnd: offset.HasBottom,
+			HasBlockStart: offset.HasLeft, HasBlockEnd: offset.HasRight,
+		}
+	case WritingModeSidewaysLR:
+		result = LogicalInsets{
+			InlineStart: offset.Bottom, InlineEnd: offset.Top,
+			BlockStart: offset.Left, BlockEnd: offset.Right,
+			HasInlineStart: offset.HasBottom, HasInlineEnd: offset.HasTop,
+			HasBlockStart: offset.HasLeft, HasBlockEnd: offset.HasRight,
+		}
+	}
+
+	// RTL flips inline-start and inline-end.
+	if wdm.Dir == DirectionRTL {
+		result.InlineStart, result.InlineEnd = result.InlineEnd, result.InlineStart
+		result.HasInlineStart, result.HasInlineEnd = result.HasInlineEnd, result.HasInlineStart
+	}
+
+	return result
+}
+
+// PhysicalAutoMarginsToLogical converts physical auto-margin flags to logical.
+func PhysicalAutoMarginsToLogical(rawMargin css.BoxEdge, wdm WritingDirectionMode) (autoInlineStart, autoInlineEnd, autoBlockStart, autoBlockEnd bool) {
+	switch wdm.WM {
+	case WritingModeHorizontalTB:
+		autoInlineStart, autoInlineEnd = rawMargin.AutoLeft, rawMargin.AutoRight
+		autoBlockStart, autoBlockEnd = rawMargin.AutoTop, rawMargin.AutoBottom
+	case WritingModeVerticalRL, WritingModeSidewaysRL:
+		autoInlineStart, autoInlineEnd = rawMargin.AutoTop, rawMargin.AutoBottom
+		autoBlockStart, autoBlockEnd = rawMargin.AutoRight, rawMargin.AutoLeft
+	case WritingModeVerticalLR:
+		autoInlineStart, autoInlineEnd = rawMargin.AutoTop, rawMargin.AutoBottom
+		autoBlockStart, autoBlockEnd = rawMargin.AutoLeft, rawMargin.AutoRight
+	case WritingModeSidewaysLR:
+		autoInlineStart, autoInlineEnd = rawMargin.AutoBottom, rawMargin.AutoTop
+		autoBlockStart, autoBlockEnd = rawMargin.AutoLeft, rawMargin.AutoRight
+	}
+	if wdm.Dir == DirectionRTL {
+		autoInlineStart, autoInlineEnd = autoInlineEnd, autoInlineStart
+	}
+	return
 }
 
 // ToPhysicalEdges converts logical edges to physical edges.

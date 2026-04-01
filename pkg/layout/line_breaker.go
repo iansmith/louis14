@@ -207,8 +207,15 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		letterSpacing = item.Style.GetLetterSpacing()
 	}
 
-	// Measure the full text segment.
-	fullWidth, _ := text.MeasureTextWithStyle(content, fontSize, bold, italic, mono, ahem)
+	// Measure the full text segment. In vertical writing modes, use vertical
+	// measurement where each upright glyph advances by fontSize.
+	isVertical := lb.space.WritingDirection.IsVertical()
+	var fullWidth float64
+	if isVertical {
+		fullWidth, _ = text.MeasureTextVertical(content, fontSize, bold, italic, mono, ahem)
+	} else {
+		fullWidth, _ = text.MeasureTextWithStyle(content, fontSize, bold, italic, mono, ahem)
+	}
 	if letterSpacing != 0 {
 		runeCount := runeLen(content)
 		if runeCount > 1 {
@@ -239,7 +246,12 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	if lb.mode == LineBreakerContent {
 		stripped := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
 		if len(stripped) < len(content) {
-			strippedWidth, _ := text.MeasureTextWithStyle(stripped, fontSize, bold, italic, mono, ahem)
+			var strippedWidth float64
+			if isVertical {
+				strippedWidth, _ = text.MeasureTextVertical(stripped, fontSize, bold, italic, mono, ahem)
+			} else {
+				strippedWidth, _ = text.MeasureTextWithStyle(stripped, fontSize, bold, italic, mono, ahem)
+			}
 			if letterSpacing != 0 {
 				rc := runeLen(stripped)
 				if rc > 1 {
@@ -299,8 +311,14 @@ func (lb *LineBreaker) breakTextAtWord(
 	fitted := 0
 	usedWidth := 0.0
 
+	isVertical := lb.space.WritingDirection.IsVertical()
 	for i, word := range words {
-		wordWidth, _ := text.MeasureTextWithStyle(word, fontSize, bold, italic, mono, ahem)
+		var wordWidth float64
+		if isVertical {
+			wordWidth, _ = text.MeasureTextVertical(word, fontSize, bold, italic, mono, ahem)
+		} else {
+			wordWidth, _ = text.MeasureTextWithStyle(word, fontSize, bold, italic, mono, ahem)
+		}
 		if letterSpacing != 0 {
 			rc := runeLen(word)
 			if rc > 1 {
@@ -318,6 +336,34 @@ func (lb *LineBreaker) breakTextAtWord(
 		}
 
 		if usedWidth+wordWidth > remaining && fitted > 0 {
+			// CSS 2.1 §16.6.1: trailing collapsible whitespace hangs and does
+			// not contribute to the line's width. If stripping trailing spaces
+			// from this word makes it fit, include it — it would be the last
+			// word on the line, so its trailing space will be stripped.
+			trimmed := strings.TrimRightFunc(word, isCSSCollapsibleSpace)
+			if trimmed != word && trimmed != "" {
+				var trimmedWidth float64
+				if isVertical {
+					trimmedWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+				} else {
+					trimmedWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				}
+				if letterSpacing != 0 {
+					rc := runeLen(trimmed)
+					if rc > 1 {
+						trimmedWidth += letterSpacing * float64(rc-1)
+					}
+					if i > 0 {
+						trimmedWidth += letterSpacing
+					}
+				}
+				if usedWidth+trimmedWidth <= remaining {
+					// Fits without trailing whitespace — include it.
+					usedWidth += wordWidth
+					fitted++
+					break // but line is full, stop fitting more words
+				}
+			}
 			break
 		}
 
@@ -333,7 +379,11 @@ func (lb *LineBreaker) breakTextAtWord(
 		// Can't fit even the first word. If the line is empty, force it on.
 		if len(line.Results) == 0 {
 			fitted = 1
-			usedWidth, _ = text.MeasureTextWithStyle(words[0], fontSize, bold, italic, mono, ahem)
+			if isVertical {
+				usedWidth, _ = text.MeasureTextVertical(words[0], fontSize, bold, italic, mono, ahem)
+			} else {
+				usedWidth, _ = text.MeasureTextWithStyle(words[0], fontSize, bold, italic, mono, ahem)
+			}
 			if letterSpacing != 0 {
 				rc := runeLen(words[0])
 				if rc > 1 {
@@ -457,10 +507,11 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
 		// In sizing mode: compute the child's intrinsic size instead of
 		// doing full layout. Mirrors Blink's recursive min/max sizing.
-		childSpace := ConstraintSpace{
-			AvailableSize:    lb.space.AvailableSize,
-			WritingDirection: childWDM,
-		}
+		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(childWDM, lb.ctx)).
+			SetAvailableSize(lb.space.AvailableSize).
+			Build()
 		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
 		// ComputeMinMaxSizes returns content-box; convert to border-box
 		// for the atomic inline's contribution to the line.
@@ -474,6 +525,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	} else {
 		// Normal layout: lay out the atomic inline with shrink-to-fit.
 		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(childWDM, lb.ctx)).
 			SetAvailableSize(LogicalSize{
 				InlineSize: lb.availableWidth,
 				BlockSize:  Indefinite,
@@ -532,6 +585,7 @@ func (lb *LineBreaker) handleFloat(item *InlineItem, line *LineInfo) {
 
 // finishLine applies trailing whitespace trimming and sets final line properties.
 func (lb *LineBreaker) finishLine(line *LineInfo) {
+	isVertical := lb.space.WritingDirection.IsVertical()
 	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of the line.
 	for i := 0; i < len(line.Results); i++ {
 		r := &line.Results[i]
@@ -540,7 +594,12 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
 				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-				newWidth, _ := text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				var newWidth float64
+				if isVertical {
+					newWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+				} else {
+					newWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				}
 				line.Width -= (r.InlineSize - newWidth)
 				r.InlineSize = newWidth
 				r.TextStart = r.TextStart + (len(content) - len(trimmed))
@@ -560,7 +619,12 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			trimmed := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
 				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-				newWidth, _ := text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				var newWidth float64
+				if isVertical {
+					newWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+				} else {
+					newWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				}
 				line.Width -= (r.InlineSize - newWidth)
 				r.InlineSize = newWidth
 				r.TextEnd = r.TextStart + len(trimmed)

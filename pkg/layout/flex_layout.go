@@ -184,7 +184,7 @@ type flexLine struct {
 // Layout performs flex layout and returns the LayoutResult.
 func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := fla.space.WritingDirection
-	geom := ComputeFragmentGeometry(fla.style, wdm)
+	geom := CalculateInitialFragmentGeometry(fla.ctx, fla.node, fla.style, wdm, fla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(fla.node)
 
@@ -200,45 +200,19 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	reverseCross := wrapMode == "wrap-reverse"
 
 	// §9.2 — Resolve container inline-size.
-	var contentInlineSize float64
-	if explicitInline, ok := ResolveInlineSize(fla.style, wdm, fla.space, geom); ok {
-		contentInlineSize = explicitInline
-	} else if needsShrinkToFit(fla.style) {
-		minMax := ComputeMinMaxSizes(fla.ctx, fla.node, fla.space)
-		available := fla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
-		if available < 0 {
-			available = 0
-		}
-		contentInlineSize = minMax.ShrinkToFit(available)
-	} else {
-		contentInlineSize = fla.space.AvailableSize.InlineSize - geom.InlineBorderPadding()
-		if contentInlineSize < 0 {
-			contentInlineSize = 0
-		}
-	}
-	// Apply min/max inline constraints.
-	minInline := ResolveMinInlineSize(fla.style, wdm, fla.space, geom)
-	if contentInlineSize < minInline {
-		contentInlineSize = minInline
-	}
-	if maxInline, hasMax := ResolveMaxInlineSize(fla.style, wdm, fla.space, geom); hasMax {
-		if contentInlineSize > maxInline {
-			contentInlineSize = maxInline
-		}
+	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
+	if contentInlineSize < 0 {
+		contentInlineSize = 0
 	}
 
 	// Resolve container block-size.
-	explicitBlockSize, hasExplicitBlock := ResolveBlockSize(fla.style, wdm, fla.space, geom)
-
-	// If the parent has fixed the block-size via constraint space (e.g. nested flex stretch),
-	// use it as the definite height.
-	if !hasExplicitBlock && fla.space.IsFixedBlockSize && !fla.space.IsFixedBlockSizeIndefinite {
-		fixedBS := fla.space.AvailableSize.BlockSize - geom.BlockBorderPadding()
-		if fixedBS < 0 {
-			fixedBS = 0
+	hasExplicitBlock := geom.BorderBoxSize.BlockSize != Indefinite
+	var explicitBlockSize float64
+	if hasExplicitBlock {
+		explicitBlockSize = geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
+		if explicitBlockSize < 0 {
+			explicitBlockSize = 0
 		}
-		explicitBlockSize = fixedBS
-		hasExplicitBlock = true
 	}
 
 	// Determine container main/cross sizes (content-box).
@@ -267,7 +241,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	mainGap, crossGap := fla.resolveGaps(wdm, isRow, contentInlineSize)
 
 	// §9.3 — Collect flex items.
-	allItems := fla.collectItems(wdm, contentInlineSize, containerMainSize, hasDefiniteMain, containerCrossSize, hasDefiniteCross, isRow)
+	allItems := fla.collectItems(builder, wdm, contentInlineSize, containerMainSize, hasDefiniteMain, containerCrossSize, hasDefiniteCross, isRow)
 
 	// §9.3 — Sort by order property.
 	sortFlexItems(allItems)
@@ -307,6 +281,35 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				itemCross = lf.InlineSize()
 			}
 			item.crossSize = itemCross
+
+			// Replaced elements: derive cross size from main size via aspect ratio.
+			// The layout pass doesn't automatically preserve the aspect ratio when
+			// only the main size is fixed, so we recompute cross from the resolved
+			// main size and the intrinsic ratio (CSS Flexbox §9.3).
+			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
+				if info.HasAspectRatio && info.AspectRatio > 0 {
+					// Convert physical ratio (width/height) to logical (inline/block).
+					logicalRatio := info.AspectRatio
+					if item.wdm.IsVertical() {
+						// Vertical WM: inline=height, block=width → logical = 1/physical.
+						logicalRatio = 1.0 / info.AspectRatio
+					}
+					mainContent := item.resolvedMain
+					var crossContent float64
+					if item.mainIsItemInline {
+						// Main = inline axis → cross = block axis.
+						// logicalRatio = inline/block → block = inline/ratio.
+						crossContent = mainContent / logicalRatio
+					} else {
+						// Main = block axis → cross = inline axis.
+						// logicalRatio = inline/block → inline = block * ratio.
+						crossContent = mainContent * logicalRatio
+					}
+					item.crossSize = crossContent + item.crossBorderPadding()
+				}
+			}
+
 			// §9.4: line cross-size is the max outer cross-size (border-box + margins).
 			outerCross := itemCross + item.crossMarginSum()
 			if outerCross > lineCrossMax {
@@ -790,6 +793,7 @@ func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
 
 // collectItems walks node.Children() and returns flex items (skipping OOF and display:none).
 func (fla *FlexLayoutAlgorithm) collectItems(
+	builder *BoxFragmentBuilder,
 	wdm WritingDirectionMode,
 	contentInlineSize float64,
 	containerMainSize float64,
@@ -817,7 +821,10 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		}
 		pos := childStyle.GetPosition()
 		if pos == css.PositionAbsolute || pos == css.PositionFixed {
-			// TODO: Add as OOF candidate.
+			builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+				Node:         child,
+				StaticOffset: LogicalOffset{InlineOffset: 0, BlockOffset: 0},
+			})
 			continue
 		}
 
@@ -835,13 +842,11 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		order := fla.parseInt(childStyle, "order", 0)
 
 		// Constraint space for computing intrinsic sizes (§4.5, min/max).
-		itemSizingSpace := ConstraintSpace{
-			AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
-			PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
-			WritingDirection:         childWDM,
-			IsNewFormattingContext:   true,
-			IsInsideFlexibleBox:      true,
-		}
+		itemSizingSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetIsInsideFlexibleBox(true).
+			Build()
 
 		// Compute flex-basis and hypothetical main size.
 		flexBasis := fla.resolveFlexBasis(child, childStyle, childWDM, childGeom, wdm,
@@ -941,11 +946,10 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		// For orthogonal items the flex main axis corresponds to the item's BLOCK axis,
 		// so we must resolve the block-size property rather than the inline-size.
 		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
-		itemSpace := ConstraintSpace{
-			AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
-			PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
-			WritingDirection:         childWDM,
-		}
+		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			Build()
 		if mainIsItemInline {
 			// Normal (non-orthogonal): main axis = item's inline axis.
 			if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
@@ -980,16 +984,10 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 
 	// Numeric flex-basis.
 	// Parse as length (includes px, em, %, etc.)
-	parentSpace := ConstraintSpace{
-		AvailableSize: LogicalSize{
-			InlineSize: contentInlineSize,
-			BlockSize:  Indefinite,
-		},
-		PercentageResolutionSize: LogicalSize{
-			InlineSize: contentInlineSize,
-		},
-		WritingDirection: parentWDM,
-	}
+	parentSpace := NewConstraintSpaceBuilder(parentWDM, parentWDM, false).
+		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		Build()
 	if isRow {
 		// Resolve as inline-size against the container.
 		if v, ok := style.GetLength("flex-basis"); ok {
@@ -1052,17 +1050,10 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	contentInlineSize float64,
 	isRow bool,
 ) float64 {
-	space := ConstraintSpace{
-		AvailableSize: LogicalSize{
-			InlineSize: contentInlineSize,
-			BlockSize:  Indefinite,
-		},
-		PercentageResolutionSize: LogicalSize{
-			InlineSize: contentInlineSize,
-		},
-		WritingDirection:   childWDM,
-		IsNewFormattingContext: true,
-	}
+	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		Build()
 	if isRow {
 		mm := ComputeMinMaxSizes(fla.ctx, child, space)
 		return mm.MaxContent
@@ -1132,11 +1123,10 @@ func (fla *FlexLayoutAlgorithm) clampMainSize(
 	containerMainSize float64,
 	isRow bool,
 ) float64 {
-	parentSpace := ConstraintSpace{
-		AvailableSize:            LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
-		PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize},
-		WritingDirection:         childWDM,
-	}
+	parentSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		Build()
 	minMain := fla.flexItemMinMain(child, style, childWDM, childGeom, parentSpace, basis, isRow)
 	return fla.clampMainSizeWithMin(basis, minMain, style, childWDM, childGeom, parentSpace, isRow)
 }
@@ -1364,6 +1354,9 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 
 	// Mark this child as a flex item so inner layout can use flex-specific sizing rules.
 	b.SetIsInsideFlexibleBox(true)
+
+	// Set orthogonal fallback before SetAvailableSize so the swap can apply it.
+	b.SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx))
 
 	// NOTE: ConstraintSpaceBuilder.SetAvailableSize and SetIsFixedInlineSize/BlockSize
 	// automatically swap inline↔block axes for orthogonal children (!b.parallel).
@@ -1899,11 +1892,9 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		// §4.5: content-based minimum — must NOT short-circuit on explicit width.
 		// No flex-basis cap: the minimum is the full min-content size so that
 		// items with flex-basis:0 still have their content protected.
-		minContentSpace := ConstraintSpace{
-			AvailableSize:          LogicalSize{InlineSize: 0, BlockSize: Indefinite},
-			WritingDirection:       childWDM,
-			IsNewFormattingContext: true,
-		}
+		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+			SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
+			Build()
 		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
 		autoMin := mm.MinContent
 		if autoMin < 0 {
@@ -1917,12 +1908,10 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// minimum via text wrapping. The "content-based minimum" in the block axis
 	// means how tall the item must be when given its full available width.
 	containerInlineSize := space.AvailableSize.InlineSize
-	colMinSpace := ConstraintSpace{
-		AvailableSize:            LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite},
-		PercentageResolutionSize: LogicalSize{InlineSize: containerInlineSize},
-		WritingDirection:         childWDM,
-		IsNewFormattingContext:   true,
-	}
+	colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+		SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+		Build()
 	result := layoutElement(fla.ctx, child, colMinSpace)
 	lf := NewLogicalFragment(childWDM, result.Fragment)
 	minContentMain := lf.BlockSize() - childGeom.BlockBorderPadding()

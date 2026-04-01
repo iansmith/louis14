@@ -34,6 +34,18 @@ type Box struct {
 	// Text holds the rendered text content for inline text boxes.
 	Text string
 
+	// IsVerticalText is true when text should be rendered vertically
+	// (writing-mode is vertical-rl, vertical-lr, sideways-rl, or sideways-lr).
+	IsVerticalText bool
+
+	// IsSidewaysLR is true for sideways-lr writing mode, where inline direction
+	// is bottom-to-top (characters drawn from bottom to top within the fragment).
+	IsSidewaysLR bool
+
+	// IsSidewaysRL is true for sideways-rl writing mode, where the entire text
+	// line is rotated 90° CW (like horizontal text read by tilting head right).
+	IsSidewaysRL bool
+
 	// Inline fragment tracking.
 	IsFirstFragment bool
 	IsLastFragment  bool

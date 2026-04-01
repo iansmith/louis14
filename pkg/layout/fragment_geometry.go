@@ -9,6 +9,12 @@ import "louis14/pkg/css"
 type FragmentGeometry struct {
 	Border  LogicalEdges
 	Padding LogicalEdges
+
+	// BorderBoxSize is the resolved border-box size. InlineSize is always
+	// definite. BlockSize is Indefinite when auto (layout determines it).
+	// Populated by CalculateInitialFragmentGeometry; zero when computed via
+	// the lightweight ComputeFragmentGeometry (which only resolves edges).
+	BorderBoxSize LogicalSize
 }
 
 // BorderBoxPadding returns the total border + padding on each logical side.
@@ -319,4 +325,107 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 	}
 
 	return 0, false
+}
+
+// CalculateInitialFragmentGeometry computes the full FragmentGeometry including
+// the resolved border-box size. This mirrors Blink's CalculateInitialFragmentGeometry
+// and is used by block, flex, and table layout algorithms to resolve their own
+// inline-size and block-size before layout begins.
+func CalculateInitialFragmentGeometry(
+	ctx *LayoutContext,
+	node *LayoutInputNode,
+	style *css.Style,
+	wdm WritingDirectionMode,
+	space ConstraintSpace,
+) FragmentGeometry {
+	geom := ComputeFragmentGeometry(style, wdm)
+
+	// --- Resolve inline-size (produces border-box) ---
+	var borderBoxInline float64
+	if space.IsFixedInlineSize {
+		// Parent (e.g. flex) predetermined the size. AvailableSize is border-box.
+		borderBoxInline = space.AvailableSize.InlineSize
+	} else if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+		borderBoxInline = explicitInline + geom.InlineBorderPadding()
+	} else if needsShrinkToFit(style) || space.IsOrthogonalWritingModeRoot {
+		// CSS Writing Modes §7.3.1: orthogonal flows with auto inline-size
+		// use shrink-to-fit, constrained by the available inline-size (which
+		// is the ICB fallback for indefinite parents).
+		minMax := ComputeMinMaxSizes(ctx, node, space)
+		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
+	} else if space.IsInsideFlexibleBox && !space.IsFixedInlineSize {
+		minMax := ComputeMinMaxSizes(ctx, node, space)
+		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
+	} else {
+		// Auto inline-size: fill available space.
+		borderBoxInline = space.AvailableSize.InlineSize
+	}
+
+	// Apply min/max inline constraints (content-box comparison).
+	contentInline := borderBoxInline - geom.InlineBorderPadding()
+	if contentInline < 0 {
+		contentInline = 0
+	}
+	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	if contentInline < minInline {
+		contentInline = minInline
+	}
+	if maxInline, ok := ResolveMaxInlineSize(style, wdm, space, geom); ok {
+		if contentInline > maxInline {
+			contentInline = maxInline
+		}
+	}
+	borderBoxInline = contentInline + geom.InlineBorderPadding()
+
+	// --- Resolve block-size (produces border-box, or Indefinite) ---
+	// Order matches existing algorithms: explicit CSS first, then IsFixedBlockSize fallback.
+	var borderBoxBlock float64 = Indefinite
+	if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
+		borderBoxBlock = explicitBlock + geom.BlockBorderPadding()
+	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
+		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords
+		// that override the fixed constraint (e.g. max-height: min-content).
+		maxProp := "max-height"
+		if wdm.IsVertical() {
+			maxProp = "max-width"
+		}
+		useFixed := true
+		if v, ok := style.Get(maxProp); ok && v != "" && v != "none" {
+			if _, resolved := ResolveMaxBlockSize(style, wdm, space, geom); !resolved {
+				useFixed = false
+			}
+		}
+		if useFixed {
+			borderBoxBlock = space.AvailableSize.BlockSize
+		}
+	}
+
+	// Apply min/max block constraints only when block-size is definite.
+	if borderBoxBlock != Indefinite {
+		contentBlock := borderBoxBlock - geom.BlockBorderPadding()
+		if contentBlock < 0 {
+			contentBlock = 0
+		}
+		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
+		if contentBlock < minBlock {
+			contentBlock = minBlock
+		}
+		if maxBlock, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
+			if contentBlock > maxBlock {
+				contentBlock = maxBlock
+			}
+		}
+		borderBoxBlock = contentBlock + geom.BlockBorderPadding()
+	}
+
+	geom.BorderBoxSize = LogicalSize{InlineSize: borderBoxInline, BlockSize: borderBoxBlock}
+	return geom
 }
