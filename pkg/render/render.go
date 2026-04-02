@@ -510,48 +510,49 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	metrics := r.dc.GetFontMetrics(fontID)
 	ascent := float64(metrics.Ascent) / 64.0
 
-	// Sideways text: each character is drawn at vertical positions.
-	// CSS Writing Modes §5.1: sideways modes rotate glyphs but for
-	// Ahem (1em squares) and simple Latin text, stacking characters
-	// vertically produces the correct visual result.
-	//
-	// For sideways-rl: text reads top-to-bottom (same glyph order as reading).
-	// For sideways-lr: text reads bottom-to-top (reversed).
+	// Sideways text: CSS Writing Modes §7.3.
+	// sideways-rl / sideways-lr treat the entire line as horizontal text
+	// rotated 90°.  The physical box already has Width=lineHeight,
+	// Height=textAdvance.  Strategy: render the string horizontally into an
+	// off-screen (textAdvance × lineHeight) buffer, then rotate the pixels
+	// into a (lineHeight × textAdvance) destination and blit at box origin.
 	if layer.IsSidewaysRL || layer.IsSidewaysLR {
-		runes := []rune(box.Text)
-		if layer.IsSidewaysLR {
-			// Sideways-lr: inline direction is bottom-to-top.
-			y := box.Y + box.Height - layer.FontSize
-			for _, ch := range runes {
-				charStr := string(ch)
-				charW := r.dc.MeasureText(charStr, fontID)
-				xOffset := (box.Width - charW) / 2
-				if xOffset < 0 {
-					xOffset = 0
+		ta := int(math.Ceil(box.Height)) // text advance → off-screen width
+		lh := int(math.Ceil(box.Width))  // line height  → off-screen height
+		if ta <= 0 || lh <= 0 {
+			return
+		}
+
+		// Draw horizontal text into an off-screen buffer.
+		src := image.NewRGBA(image.Rect(0, 0, ta, lh))
+		childDC := r.dc.NewChildContext(src)
+		childDC.SetColor(color.RGBA{
+			R: layer.TextColor.R,
+			G: layer.TextColor.G,
+			B: layer.TextColor.B,
+			A: uint8(layer.TextColor.A * 255),
+		})
+		childDC.DrawText(box.Text, fontID, 0, ascent)
+
+		// Rotate pixels 90° into destination (lh × ta) buffer.
+		rot := image.NewRGBA(image.Rect(0, 0, lh, ta))
+		for y := 0; y < lh; y++ {
+			for x := 0; x < ta; x++ {
+				c := src.RGBAAt(x, y)
+				if c.A == 0 {
+					continue
 				}
-				r.dc.DrawText(charStr, fontID, box.X+xOffset, y+ascent)
-				y -= layer.FontSize
-				if layer.LetterSpacing != 0 {
-					y -= layer.LetterSpacing
-				}
-			}
-		} else {
-			// Sideways-rl: inline direction is top-to-bottom.
-			y := box.Y
-			for _, ch := range runes {
-				charStr := string(ch)
-				charW := r.dc.MeasureText(charStr, fontID)
-				xOffset := (box.Width - charW) / 2
-				if xOffset < 0 {
-					xOffset = 0
-				}
-				r.dc.DrawText(charStr, fontID, box.X+xOffset, y+ascent)
-				y += layer.FontSize
-				if layer.LetterSpacing != 0 {
-					y += layer.LetterSpacing
+				if layer.IsSidewaysRL {
+					// 90° CW: (x,y) → (lh-1-y, x)
+					rot.SetRGBA(lh-1-y, x, c)
+				} else {
+					// 90° CCW: (x,y) → (y, ta-1-x)
+					rot.SetRGBA(y, ta-1-x, c)
 				}
 			}
 		}
+
+		r.dc.DrawImage(rot, int(math.Round(box.X)), int(math.Round(box.Y)))
 		return
 	}
 

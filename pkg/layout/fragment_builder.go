@@ -138,8 +138,26 @@ func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset Logical
 func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	physSize := ToPhysicalSize(b.size, b.wdm.WM)
 
-	// Convert child offsets from logical to physical.
-	conv := NewConverter(b.wdm, physSize)
+	// Children are stored with content-relative logical offsets.
+	// The converter's outer size must be the CONTENT-BOX physical size so that
+	// "outerW - block - innerW" type formulas (used by RTL, vertical, sideways
+	// modes) give content-relative physical offsets that fragmentToBox can add
+	// to the content origin.  For boxes without borders/padding (line boxes,
+	// anonymous boxes), boxData is nil and physSize is already the content size.
+	convSize := physSize
+	if b.boxData != nil {
+		bd := b.boxData
+		w := physSize.Width - bd.Border.Left - bd.Border.Right - bd.Padding.Left - bd.Padding.Right
+		h := physSize.Height - bd.Border.Top - bd.Border.Bottom - bd.Padding.Top - bd.Padding.Bottom
+		if w < 0 {
+			w = 0
+		}
+		if h < 0 {
+			h = 0
+		}
+		convSize = PhysicalSize{Width: w, Height: h}
+	}
+	conv := NewConverter(b.wdm, convSize)
 	physChildren := make([]ChildLink, len(b.children))
 	for i, child := range b.children {
 		childPhysSize := child.fragment.Size
