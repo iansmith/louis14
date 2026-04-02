@@ -194,8 +194,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 // collectRows extracts table rows from the table's children,
 // handling row-groups (thead, tbody, tfoot).
+// CSS 2.1 §17.5: rendering order is thead, tbodies (in source order), tfoot.
 func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
-	var rows []tableRow
+	var headerRows, bodyRows, footerRows []tableRow
 
 	for _, child := range tla.node.Children() {
 		if child.IsText() {
@@ -209,10 +210,11 @@ func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
 
 		switch display {
 		case css.DisplayTableRow:
-			rows = append(rows, tla.buildRow(child, childStyle))
+			bodyRows = append(bodyRows, tla.buildRow(child, childStyle))
 
 		case css.DisplayTableHeaderGroup, css.DisplayTableRowGroup, css.DisplayTableFooterGroup:
-			// Row group: collect rows from its children.
+			// Collect rows from this group, then append to the correct bucket.
+			var groupRows []tableRow
 			for _, grandchild := range child.Children() {
 				if grandchild.IsText() {
 					continue
@@ -222,13 +224,21 @@ func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
 					continue
 				}
 				if gcStyle.GetDisplay() == css.DisplayTableRow {
-					rows = append(rows, tla.buildRow(grandchild, gcStyle))
+					groupRows = append(groupRows, tla.buildRow(grandchild, gcStyle))
 				}
+			}
+			switch display {
+			case css.DisplayTableHeaderGroup:
+				headerRows = append(headerRows, groupRows...)
+			case css.DisplayTableFooterGroup:
+				footerRows = append(footerRows, groupRows...)
+			default:
+				bodyRows = append(bodyRows, groupRows...)
 			}
 
 		case css.DisplayTableCell:
 			// Bare cell without a row — wrap in an anonymous row.
-			rows = append(rows, tableRow{
+			bodyRows = append(bodyRows, tableRow{
 				cells: []tableCell{{
 					node:    child,
 					style:   childStyle,
@@ -239,6 +249,11 @@ func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
 		}
 	}
 
+	// Render order: thead → tbody sections → tfoot.
+	rows := make([]tableRow, 0, len(headerRows)+len(bodyRows)+len(footerRows))
+	rows = append(rows, headerRows...)
+	rows = append(rows, bodyRows...)
+	rows = append(rows, footerRows...)
 	return rows
 }
 

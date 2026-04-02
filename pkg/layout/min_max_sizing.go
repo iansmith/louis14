@@ -1,5 +1,9 @@
 package layout
 
+import (
+	"louis14/pkg/css"
+	"strings"
+)
 
 // ComputeMinMaxSizes computes the intrinsic min-content and max-content
 // inline sizes for a layout node. Returns content-box values (excludes the
@@ -30,7 +34,11 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// Compute intrinsic sizes based on children (content-box).
 	var result MinMaxSizes
 
-	if hasOnlyInlineChildren(node) {
+	display := style.GetDisplay()
+	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+		// Flex containers: use flex-specific min/max computation.
+		result = measureFlexMinMax(node, ctx, space)
+	} else if hasOnlyInlineChildren(node) {
 		// Inline formatting context: measure via line breaker.
 		result = measureInlineMinMax(node, ctx, space)
 	} else {
@@ -138,6 +146,83 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 		}
 	}
 	return result
+}
+
+// measureFlexMinMax computes min/max content inline sizes for a flex container.
+//
+// For flex-direction: row (main = inline):
+//   - max-content = sum of items' max-content inline sizes + margins + border/padding
+//   - min-content = same (nowrap); max of items' min-content (wrap)
+//
+// For flex-direction: column (main = block):
+//   - max-content = max of items' max-content inline sizes (cross = inline)
+//   - min-content = max of items' min-content inline sizes
+func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+	style := node.Style()
+	wdm := space.WritingDirection
+
+	flexDir := "row"
+	if v, ok := style.Get("flex-direction"); ok {
+		v = strings.TrimSpace(v)
+		switch v {
+		case "row", "row-reverse", "column", "column-reverse":
+			flexDir = v
+		}
+	}
+	isRow := flexDir == "row" || flexDir == "row-reverse"
+	wrapMode := "nowrap"
+	if v, ok := style.Get("flex-wrap"); ok {
+		wrapMode = strings.TrimSpace(v)
+	}
+	canWrap := wrapMode == "wrap" || wrapMode == "wrap-reverse"
+
+	var sumMin, sumMax float64
+	var maxMin, maxMax float64
+
+	for _, child := range node.Children() {
+		if child.IsText() {
+			continue
+		}
+		childStyle := child.Style()
+		if childStyle == nil {
+			continue
+		}
+		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+
+		childWDM := NewWritingDirectionMode(childStyle)
+		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
+			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+			SetAvailableSize(space.AvailableSize).
+			Build()
+
+		childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+		childBP := childGeom.InlineBorderPadding()
+		childMargins := ResolveMargins(childStyle, childWDM, 0)
+		childMin := childMM.MinContent + childBP + childMargins.InlineSum()
+		childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
+
+		sumMin += childMin
+		sumMax += childMax
+		if childMin > maxMin {
+			maxMin = childMin
+		}
+		if childMax > maxMax {
+			maxMax = childMax
+		}
+	}
+
+	if isRow {
+		if canWrap {
+			// With wrapping, min-content = largest single item; max-content = sum.
+			return MinMaxSizes{MinContent: maxMin, MaxContent: sumMax}
+		}
+		return MinMaxSizes{MinContent: sumMin, MaxContent: sumMax}
+	}
+	// Column: inline = cross direction → max of items' inline sizes.
+	return MinMaxSizes{MinContent: maxMin, MaxContent: maxMax}
 }
 
 // measureBlockMinMax computes min/max content sizes for a node with
