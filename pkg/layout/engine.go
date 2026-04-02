@@ -198,7 +198,14 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 
 	// Text fragments carry their rendered text content.
 	if frag.Type == FragmentText {
-		box.Text = frag.TextContent
+		text := frag.TextContent
+		// UAX#9 L4: RTL runs (odd bidi level) must be drawn in visual order.
+		// The fragment text is in logical (Unicode) order; reverse rune order
+		// so the renderer draws characters left-to-right in visual order.
+		if frag.BidiLevel%2 == 1 {
+			text = reverseRunes(text)
+		}
+		box.Text = text
 		box.IsVerticalText = frag.WritingDirection.IsVertical()
 		box.IsSidewaysLR = frag.WritingDirection.WM == WritingModeSidewaysLR
 		box.IsSidewaysRL = frag.WritingDirection.WM == WritingModeSidewaysRL
@@ -257,5 +264,16 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	}
 
 	return box
+}
+
+// reverseRunes returns s with its Unicode code points in reversed order.
+// Used to convert RTL text from logical (Unicode) order to visual order
+// for left-to-right rendering.
+func reverseRunes(s string) string {
+	runes := []rune(s)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	return string(runes)
 }
 

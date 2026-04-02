@@ -67,7 +67,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		return 0, exclusionSpace, 0
 	}
 
-	// Phase 1b: Lay out inline floats and register them in the exclusion space.
+	// Phase 1b: Resolve UAX#9 bidi levels for all items.
+	// This sets BidiLevel on each InlineItem (0=LTR, 1=RTL).
+	// Mirrors Blink's BidiParagraph pass in InlineNode::PrepareLayout.
+	ResolveBidiLevels(itemsData, wdm.Dir)
+
+	// Phase 1c: Lay out inline floats and register them in the exclusion space.
 	// CSS 2.1 §9.5.1: floats are placed as high as possible.
 	// Floats in an IFC must be positioned before line breaking so that
 	// FindAvailableInlineSize returns the correct narrowed width.
@@ -214,6 +219,28 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			lineAvailableInline = contentInlineSize
 		}
 
+		// Collect out-of-flow candidates from inline items on this line.
+		// Their static position is (current block offset, inline position
+		// computed from the items preceding them on the line).
+		inlinePos := 0.0
+		for _, r := range line.Results {
+			if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
+				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+					Node: r.Item.LayoutNode,
+					StaticOffset: LogicalOffset{
+						InlineOffset: inlinePos,
+						BlockOffset:  blockOffset,
+					},
+				})
+			}
+			inlinePos += r.InlineSize
+		}
+
+		// Reorder line results from logical to visual order (UAX#9 L2)
+		// before positioning. Mirrors Blink's BidiReorder step in
+		// InlineLayoutAlgorithm::CreateLine.
+		ReorderLineVisual(line.Results)
+
 		lineFragment, lineHeight, lineAscent := createLineBox(
 			itemsData, &line, wdm, lineAvailableInline,
 		)
@@ -273,7 +300,7 @@ func createLineBox(
 	}
 
 	// Step 2: Compute text-align offset.
-	alignOffset := computeTextAlignOffset(line, availableInline)
+	alignOffset := computeTextAlignOffset(line, availableInline, wdm)
 
 	// Step 3: Build line box fragment with positioned children.
 	lineBuilder := NewBoxFragmentBuilder(wdm)
@@ -414,6 +441,7 @@ func createLineBox(
 				}, wdm.WM),
 				Type:             FragmentText,
 				TextContent:      content,
+				BidiLevel:        r.Item.BidiLevel,
 				Node:             parentNode,
 				Style:            r.Item.Style,
 				WritingDirection: wdm,
@@ -559,8 +587,9 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 }
 
 // computeTextAlignOffset computes the starting inline offset for text-align.
-// CSS 2.1 §16.2.
-func computeTextAlignOffset(line *LineInfo, availableInline float64) float64 {
+// CSS Text §7.1: "start" and "end" are direction-relative; "left" and "right"
+// are physical and independent of direction.
+func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm WritingDirectionMode) float64 {
 	slack := availableInline - line.Width
 	if slack <= 0 {
 		return 0
@@ -569,15 +598,25 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64) float64 {
 	switch line.TextAlign {
 	case "center", "-webkit-center":
 		return slack / 2
-	case "right", "end":
+	case "right":
 		return slack
+	case "end":
+		if wdm.IsRTL() {
+			return 0 // RTL end = physical left
+		}
+		return slack // LTR end = physical right
+	case "start":
+		if wdm.IsRTL() {
+			return slack // RTL start = physical right
+		}
+		return 0 // LTR start = physical left
 	case "justify":
 		if line.IsLastLine || line.HasForcedBreak {
 			return 0 // Last line of a paragraph is not justified.
 		}
 		// TODO: distribute inter-word spacing for justify.
 		return 0
-	default: // "left", "start", ""
+	default: // "left", ""
 		return 0
 	}
 }

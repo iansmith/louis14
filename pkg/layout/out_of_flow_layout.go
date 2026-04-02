@@ -53,31 +53,107 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 
 		childWDM := NewWritingDirectionMode(childStyle)
 
-		// Build constraint space for the absolute child.
-		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
-			SetAvailableSize(LogicalSize{
-				InlineSize: cbInline,
-				BlockSize:  cbBlock,
-			}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: cbInline,
-				BlockSize:  cbBlock,
-			}).
-			Build()
-
-		childResult := layoutElement(p.ctx, child, childSpace)
-		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
-
-		// Resolve physical insets using physical CB dimensions, then convert
-		// to logical insets based on the containing block's writing mode.
+		// Pre-compute all values needed for both sizing and positioning.
+		// Resolve physical insets, then convert to logical in CB's writing mode.
 		physOffset := childStyle.GetPositionOffsetResolved(cbPhys.Width, cbPhys.Height)
 		insets := PhysicalInsetsToLogical(physOffset, wdm)
 
-		// Resolve margins and get auto-margin flags in logical coordinates.
+		// Resolve margins and auto-margin flags in CB's logical coordinates.
 		childMargins := ResolveMargins(childStyle, wdm, cbInline)
 		rawMargin := childStyle.GetMargin()
 		autoInlineStart, autoInlineEnd, autoBlockStart, autoBlockEnd :=
 			PhysicalAutoMarginsToLogical(rawMargin, wdm)
+
+		// Compute child's fragment geometry (border/padding) in the child's WDM.
+		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+
+		// Determine if child and CB share the same inline axis.
+		parallel := wdm.IsVertical() == childWDM.IsVertical()
+
+		// --- Two-pass sizing (Blink: ComputeOutOfFlowInlineDimensions) ---
+		// When both insets are set and the corresponding dimension is auto,
+		// CSS §10.3.7 / §10.6.4 require computing the size from the
+		// constraint equation BEFORE layout.
+
+		availInline := cbInline
+		availBlock := cbBlock
+		useFixedInline := false
+		useFixedBlock := false
+
+		if insets.HasInlineStart && insets.HasInlineEnd {
+			if isAutoSizeInDirection(childStyle, wdm, true) {
+				// Child's border+padding in CB's inline direction.
+				var childBPInline float64
+				if parallel {
+					childBPInline = childGeom.InlineBorderPadding()
+				} else {
+					childBPInline = childGeom.BlockBorderPadding()
+				}
+				// Auto margins are treated as 0 for constraint equation.
+				mStart := childMargins.InlineStart
+				mEnd := childMargins.InlineEnd
+				if autoInlineStart {
+					mStart = 0
+				}
+				if autoInlineEnd {
+					mEnd = 0
+				}
+				contentInline := cbInline - insets.InlineStart - insets.InlineEnd -
+					mStart - mEnd - childBPInline
+				if contentInline < 0 {
+					contentInline = 0
+				}
+				availInline = contentInline + childBPInline // border-box
+				useFixedInline = true
+			}
+		}
+
+		if insets.HasBlockStart && insets.HasBlockEnd && cbBlock != Indefinite {
+			if isAutoSizeInDirection(childStyle, wdm, false) {
+				var childBPBlock float64
+				if parallel {
+					childBPBlock = childGeom.BlockBorderPadding()
+				} else {
+					childBPBlock = childGeom.InlineBorderPadding()
+				}
+				mStart := childMargins.BlockStart
+				mEnd := childMargins.BlockEnd
+				if autoBlockStart {
+					mStart = 0
+				}
+				if autoBlockEnd {
+					mEnd = 0
+				}
+				contentBlock := cbBlock - insets.BlockStart - insets.BlockEnd -
+					mStart - mEnd - childBPBlock
+				if contentBlock < 0 {
+					contentBlock = 0
+				}
+				availBlock = contentBlock + childBPBlock
+				useFixedBlock = true
+			}
+		}
+
+		// Build constraint space for the absolute child.
+		csb := NewConstraintSpaceBuilder(wdm, childWDM, true).
+			SetAvailableSize(LogicalSize{
+				InlineSize: availInline,
+				BlockSize:  availBlock,
+			}).
+			SetPercentageResolutionSize(LogicalSize{
+				InlineSize: cbInline,
+				BlockSize:  cbBlock,
+			})
+		if useFixedInline {
+			csb.SetIsFixedInlineSize(true)
+		}
+		if useFixedBlock {
+			csb.SetIsFixedBlockSize(true)
+		}
+		childSpace := csb.Build()
+
+		childResult := layoutElement(p.ctx, child, childSpace)
+		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 
 		// CSS 2.1 §10.3.7 / §10.6.4: Solve inline and block constraint
 		// equations entirely in logical coordinates.
@@ -85,9 +161,11 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		// --- Inline axis ---
 		var inlineOffset float64
 		if insets.HasInlineStart && insets.HasInlineEnd {
-			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			usedInlineSize := childLogical.InlineSize()
 			usedBPInline := childGeom.InlineBorderPadding()
+			if !parallel {
+				usedBPInline = childGeom.BlockBorderPadding()
+			}
 			remaining := cbInline - insets.InlineStart - insets.InlineEnd - usedBPInline - usedInlineSize
 
 			if autoInlineStart && autoInlineEnd {
@@ -120,9 +198,11 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		// --- Block axis ---
 		var blockOffset float64
 		if insets.HasBlockStart && insets.HasBlockEnd {
-			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			usedBlockSize := childLogical.BlockSize()
 			usedBPBlock := childGeom.BlockBorderPadding()
+			if !parallel {
+				usedBPBlock = childGeom.InlineBorderPadding()
+			}
 			remaining := cbBlock - insets.BlockStart - insets.BlockEnd - usedBPBlock - usedBlockSize
 
 			if autoBlockStart && autoBlockEnd {
@@ -152,4 +232,36 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			BlockOffset:  blockOffset,
 		})
 	}
+}
+
+// isAutoSizeInDirection checks if the child element has auto size in the
+// given direction of the containing block's writing mode.
+// If inline is true, checks the CB's inline axis; otherwise the block axis.
+func isAutoSizeInDirection(childStyle interface {
+	GetLength(string) (float64, bool)
+	GetPercentage(string) (float64, bool)
+}, cbWDM WritingDirectionMode, inline bool) bool {
+	// Determine the physical CSS property that controls this axis.
+	var prop string
+	if inline {
+		// CB's inline axis: width in HTB, height in vertical.
+		prop = "width"
+		if cbWDM.IsVertical() {
+			prop = "height"
+		}
+	} else {
+		// CB's block axis: height in HTB, width in vertical.
+		prop = "height"
+		if cbWDM.IsVertical() {
+			prop = "width"
+		}
+	}
+
+	if _, ok := childStyle.GetLength(prop); ok {
+		return false
+	}
+	if _, ok := childStyle.GetPercentage(prop); ok {
+		return false
+	}
+	return true
 }

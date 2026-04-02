@@ -128,6 +128,7 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	line.AvailableWidth = lb.availableWidth
 	line.HasForcedBreak = false
 	line.IsLastLine = false
+	line.BaseDirection = lb.space.WritingDirection.Dir
 	lb.position = 0
 
 	// Process items until the line is full or we run out.
@@ -156,6 +157,14 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 			}
 		case InlineItemFloat:
 			lb.handleFloat(item, line)
+		case InlineItemOutOfFlow:
+			// OOF items don't participate in line layout. Record them with
+			// zero advance so their static inline position is captured.
+			line.Results = append(line.Results, InlineItemResult{
+				Item:      item,
+				TextStart: item.StartOffset,
+				TextEnd:   item.StartOffset,
+			})
 		}
 
 		lb.currentItemIndex++

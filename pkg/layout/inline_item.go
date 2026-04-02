@@ -24,6 +24,11 @@ const (
 	InlineItemFloat
 	// InlineItemControl is a control character (forced line break, tab).
 	InlineItemControl
+	// InlineItemOutOfFlow is an absolutely or fixed positioned element
+	// within inline content. It is not part of the normal flow but its
+	// static position is determined by its position in the inline sequence.
+	// Ported from Blink's InlineItem::kOutOfFlowPositioned.
+	InlineItemOutOfFlow
 )
 
 // InlineItem is a segment of inline content within a formatting context.
@@ -103,6 +108,23 @@ func collectInlinesRecursive(
 
 		childStyle := child.Style()
 		if childStyle == nil {
+			continue
+		}
+
+		// Out-of-flow elements (abs-pos, fixed) are not part of the inline
+		// flow, but their static position is recorded during line layout.
+		// Ported from Blink's InlineItem::kOutOfFlowPositioned.
+		pos := childStyle.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			offset := text.Len()
+			data.Items = append(data.Items, &InlineItem{
+				Type:        InlineItemOutOfFlow,
+				StartOffset: offset,
+				EndOffset:   offset,
+				Node:        child.DOMNode,
+				LayoutNode:  child,
+				Style:       childStyle,
+			})
 			continue
 		}
 

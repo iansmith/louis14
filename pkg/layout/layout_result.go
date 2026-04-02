@@ -92,6 +92,10 @@ type PhysicalFragment struct {
 	// TextContent holds the rendered text for text fragments.
 	TextContent string
 
+	// BidiLevel is the resolved UAX#9 bidi embedding level for text fragments.
+	// 0 = LTR, 1 = RTL. Used by the renderer to draw RTL text in visual order.
+	BidiLevel int
+
 	// RelativeOffset is the CSS position:relative offset for this fragment.
 	// Computed during layout, applied at paint time (not baked into
 	// fragment tree positions). Zero for non-relative elements.

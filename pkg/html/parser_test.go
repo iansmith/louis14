@@ -2,16 +2,36 @@ package html
 
 import "testing"
 
+// bodyOf returns the <body> element from a document's implicit <html>/<body>
+// structure. HTML5 §8.2.6: block-level elements at the document root trigger
+// implicit <html> and <body> creation.
+func bodyOf(doc *Document) *Node {
+	for _, child := range doc.Root.Children {
+		if child.TagName == "html" {
+			for _, c := range child.Children {
+				if c.TagName == "body" {
+					return c
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func TestParser_SingleElement(t *testing.T) {
 	doc, err := Parse("<div></div>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(doc.Root.Children) != 1 {
-		t.Errorf("expected 1 child, got %d", len(doc.Root.Children))
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
 	}
-	if doc.Root.Children[0].TagName != "div" {
-		t.Errorf("expected tag 'div', got '%s'", doc.Root.Children[0].TagName)
+	if len(body.Children) != 1 {
+		t.Errorf("expected 1 child in body, got %d", len(body.Children))
+	}
+	if body.Children[0].TagName != "div" {
+		t.Errorf("expected tag 'div', got '%s'", body.Children[0].TagName)
 	}
 }
 
@@ -20,8 +40,12 @@ func TestParser_MultipleElements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(doc.Root.Children) != 2 {
-		t.Errorf("expected 2 children, got %d", len(doc.Root.Children))
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
+	}
+	if len(body.Children) != 2 {
+		t.Errorf("expected 2 children in body, got %d", len(body.Children))
 	}
 }
 
@@ -30,7 +54,14 @@ func TestParser_WithAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	style, ok := doc.Root.Children[0].GetAttribute("style")
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
+	}
+	if len(body.Children) == 0 {
+		t.Fatal("expected at least 1 child in body")
+	}
+	style, ok := body.Children[0].GetAttribute("style")
 	if !ok || style != "color: red" {
 		t.Error("expected style attribute 'color: red'")
 	}
@@ -43,12 +74,15 @@ func TestParser_NestedElements(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should have one child (div)
-	if len(doc.Root.Children) != 1 {
-		t.Fatalf("expected 1 child, got %d", len(doc.Root.Children))
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
+	}
+	if len(body.Children) != 1 {
+		t.Fatalf("expected 1 child in body, got %d", len(body.Children))
 	}
 
-	div := doc.Root.Children[0]
+	div := body.Children[0]
 	if div.TagName != "div" {
 		t.Errorf("expected 'div', got '%s'", div.TagName)
 	}
@@ -79,8 +113,12 @@ func TestParser_DeeplyNestedElements(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Navigate down the tree
-	div := doc.Root.Children[0]
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
+	}
+
+	div := body.Children[0]
 	if div.TagName != "div" || len(div.Children) != 1 {
 		t.Error("expected div with 1 child")
 	}
@@ -111,7 +149,12 @@ func TestParser_SiblingElements(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	div := doc.Root.Children[0]
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
+	}
+
+	div := body.Children[0]
 	if len(div.Children) != 2 {
 		t.Fatalf("expected div to have 2 children, got %d", len(div.Children))
 	}
@@ -135,16 +178,35 @@ func TestParser_ParentReferences(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	div := doc.Root.Children[0]
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
+	}
+	div := body.Children[0]
+	if div.TagName != "div" {
+		t.Fatalf("expected div, got %s", div.TagName)
+	}
 	p := div.Children[0]
+	if p.TagName != "p" {
+		t.Fatalf("expected p, got %s", p.TagName)
+	}
 
 	// Check parent references
 	if p.Parent != div {
 		t.Error("p's parent should be div")
 	}
 
-	if div.Parent != doc.Root {
-		t.Error("div's parent should be root")
+	if div.Parent != body {
+		t.Error("div's parent should be body")
+	}
+
+	htmlNode := doc.Root.Children[0]
+	if body.Parent != htmlNode {
+		t.Error("body's parent should be html")
+	}
+
+	if htmlNode.Parent != doc.Root {
+		t.Error("html's parent should be document root")
 	}
 }
 
@@ -156,13 +218,17 @@ func TestParser_StyleTag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Style tag should not appear in DOM tree
-	if len(doc.Root.Children) != 1 {
-		t.Fatalf("expected 1 child (div), got %d", len(doc.Root.Children))
+	// Style tag should not appear in DOM tree; <div> goes into implicit body
+	body := bodyOf(doc)
+	if body == nil {
+		t.Fatal("expected implicit <body> element")
+	}
+	if len(body.Children) != 1 {
+		t.Fatalf("expected 1 child (div) in body, got %d", len(body.Children))
 	}
 
-	if doc.Root.Children[0].TagName != "div" {
-		t.Errorf("expected div, got %s", doc.Root.Children[0].TagName)
+	if body.Children[0].TagName != "div" {
+		t.Errorf("expected div, got %s", body.Children[0].TagName)
 	}
 
 	// CSS should be extracted into Stylesheets
