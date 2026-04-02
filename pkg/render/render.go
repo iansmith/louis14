@@ -397,14 +397,14 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	// Scale image to box content area using nearest-neighbor into an RGBA buffer.
 	srcW := img.Bounds().Dx()
 	srcH := img.Bounds().Dy()
-	dstW := int(math.Round(box.Width - box.Border.Left - box.Border.Right))
-	dstH := int(math.Round(box.Height - box.Border.Top - box.Border.Bottom))
+	dstW := int(math.Round(box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right))
+	dstH := int(math.Round(box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom))
 	if dstW <= 0 || dstH <= 0 || srcW == 0 || srcH == 0 {
 		return
 	}
 	scaled := scaleImageNearest(img, srcW, srcH, dstW, dstH)
-	drawX := int(math.Round(box.X + box.Border.Left))
-	drawY := int(math.Round(box.Y + box.Border.Top))
+	drawX := int(math.Round(box.X + box.Border.Left + box.Padding.Left))
+	drawY := int(math.Round(box.Y + box.Border.Top + box.Padding.Top))
 	r.dc.DrawImage(scaled, drawX, drawY)
 }
 

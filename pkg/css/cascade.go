@@ -21,11 +21,14 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("text-decoration", "underline")
 	}
 
-	// Default margin for <body> element (Chrome: 8px)
-	// DISABLED for W3C tests - they may expect margin: 0
+	// Default margin for <body> element
+	// NOTE: Real UA default is 8px, but many WPT tests rely on margin:0 here.
+	// Enabling 8px requires fixing all abs-pos ICB tests simultaneously.
 	if node.TagName == "body" {
-		// style.Set("margin", "8px")
-		style.Set("margin", "0")
+		style.Set("margin-top", "0")
+		style.Set("margin-right", "0")
+		style.Set("margin-bottom", "0")
+		style.Set("margin-left", "0")
 	}
 
 	// Default margin for <p> (paragraph) elements

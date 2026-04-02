@@ -312,10 +312,32 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS 2.1 §10.6.4: Lay out absolutely positioned children.
 	// They are positioned relative to this containing block's padding box.
 	if len(builder.outOfFlowCandidates) > 0 {
+		// CSS 2.1 §10.1: If this element is not a positioned container
+		// (position: static), abs-pos children should use the ICB as their
+		// containing block. Use ICB block size as a floor so that
+		// bottom/right insets resolve against the viewport, not a 0-height body.
+		oofBlockSize := finalBlockSize
+		isPositioned := bla.style != nil && bla.style.GetPosition() != css.PositionStatic
+		if !isPositioned {
+			icbBlockSize := bla.ctx.ViewportHeight
+			if !wdm.IsHorizontal() {
+				icbBlockSize = bla.ctx.ViewportWidth
+			}
+			// OOF offsets are relative to this element's content box, not the ICB.
+			// Subtract this element's own block-start margin+border+padding so that
+			// the computed child offset, when added to this element's physical origin,
+			// yields the correct ICB-relative position.
+			ownMargins := ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize)
+			ownBlockStart := ownMargins.BlockStart + geom.Border.BlockStart + geom.Padding.BlockStart
+			icbEffective := icbBlockSize - ownBlockStart
+			if icbEffective > oofBlockSize {
+				oofBlockSize = icbEffective
+			}
+		}
 		oofPart := &OutOfFlowLayoutPart{
 			ctx:                 bla.ctx,
 			containingBlockWDM:  wdm,
-			containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+			containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: oofBlockSize},
 			geom:                geom,
 		}
 		oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
