@@ -78,6 +78,23 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		rtlReverseCross = true
 	}
 
+	// Pre-compute whether the physical cross axis is reversed from the natural cross axis.
+	// This is needed for auto-margin handling in positionItemsCrossAxis, which runs before
+	// the flip at step 11. shouldReverseCross is true when physical cross-start differs from
+	// natural cross-start (e.g. flex-wrap: wrap-reverse in a standard row flex → physical
+	// top is cross-END, so margin-top: auto should be treated as auto cross-END).
+	crossNaturallyReversed := false
+	if isVerticalRL && !isRow {
+		crossNaturallyReversed = true
+	}
+	if isSidewaysLR && isRow {
+		crossNaturallyReversed = true
+	}
+	if rtlReverseCross {
+		crossNaturallyReversed = !crossNaturallyReversed
+	}
+	shouldReverseCross := isWrapReverse != crossNaturallyReversed
+
 	// CSS Box Alignment §6.1: left/right in justify-content.
 	// When the main axis is NOT parallel to the inline axis (column direction in any WM),
 	// both left and right fall back to "start" (= flex-start for non-reverse, flex-end for reverse).
@@ -1692,13 +1709,13 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 			if lineIdx < len(lineOffsets) {
 				crossPos = lineOffsets[lineIdx]
 			}
-			positionItemsCrossAxis(line, crossPos, alignItems, isRow, safeAI, isRTL)
+			positionItemsCrossAxis(line, crossPos, alignItems, isRow, safeAI, isRTL, shouldReverseCross)
 		}
 	} else {
 		// Single-line or no definite cross size
 		safeAI := flexBox.Style.IsSafeAlignItems()
 		for i, line := range lines {
-			positionItemsCrossAxis(line, currentCrossPos, alignItems, isRow, safeAI, isRTL)
+			positionItemsCrossAxis(line, currentCrossPos, alignItems, isRow, safeAI, isRTL, shouldReverseCross)
 			currentCrossPos += line.CrossSize
 			if i < len(lines)-1 {
 				currentCrossPos += crossGap
@@ -1706,24 +1723,8 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
-	// CSS Writing Modes §7.1 + Flexbox §9.2: The cross axis direction depends on:
-	// 1. flex-wrap: wrap-reverse flips the cross direction
-	// 2. Writing mode: vertical-rl has right-to-left block axis (cross for original row)
-	// 3. direction: rtl on original column flex → cross axis (inline) goes right-to-left
-	crossNaturallyReversed := false
-	if isVerticalRL && !isRow {
-		// Physical column (original row in v-rl/sideways-rl): cross = horizontal block axis = right-to-left.
-		crossNaturallyReversed = true
-	}
-	if isSidewaysLR && isRow {
-		// Physical row (original column in sideways-lr): cross = vertical inline axis = bottom-to-top.
-		crossNaturallyReversed = true
-	}
-	if rtlReverseCross {
-		// Original column direction + RTL: cross axis = inline direction reversed.
-		crossNaturallyReversed = !crossNaturallyReversed
-	}
-	shouldReverseCross := isWrapReverse != crossNaturallyReversed
+	// CSS Writing Modes §7.1 + Flexbox §9.2: Reverse line order along the cross axis when needed.
+	// shouldReverseCross was pre-computed earlier (before cross-axis positioning).
 	if shouldReverseCross && (len(lines) > 1 || isRow) {
 		// Reverse line order along cross axis.
 		// When the container has a definite cross size, use it as the flip bound so that
@@ -1836,7 +1837,6 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 					item.Box.X = contentStartX + item.MainPos
 				}
 				item.Box.Y = contentStartY + item.CrossPos
-
 			} else {
 				item.Box.X = contentStartX + item.CrossPos
 				if isReverse {
@@ -2685,7 +2685,10 @@ func resolveFlexibleLengths(line *FlexLine, availableMain, mainGap float64, isRo
 // positionItemsCrossAxis positions items within a line along the cross axis.
 // safeAI indicates whether the container's align-items uses the "safe" overflow keyword.
 // containerIsRTL indicates that the flex container has direction: rtl (affects column flex cross-axis).
-func positionItemsCrossAxis(line *FlexLine, crossStart float64, alignItems css.AlignItems, isRow bool, safeAI bool, containerIsRTL bool) {
+// crossAxisIsReversed: true when the physical cross axis is reversed (e.g. flex-wrap:
+// wrap-reverse with no writing-mode reversal). When true, physical-start auto margins
+// are logically cross-end, not cross-start, so we swap hasAutoCrossStart/End.
+func positionItemsCrossAxis(line *FlexLine, crossStart float64, alignItems css.AlignItems, isRow bool, safeAI bool, containerIsRTL bool, crossAxisIsReversed bool) {
 	// CSS Flexbox §8.3: First pass — compute baselines for all baseline-aligned items
 	// and find the maximum "above baseline" and "below baseline" distances.
 	maxAboveFirst := math.Inf(-1)
@@ -2782,17 +2785,31 @@ func positionItemsCrossAxis(line *FlexLine, crossStart float64, alignItems css.A
 		hasAutoCrossStart := false
 		hasAutoCrossEnd := false
 		if isRow {
-			hasAutoCrossStart = margin.AutoTop
-			hasAutoCrossEnd = margin.AutoBottom
+			// In a row flex, cross axis is vertical. Physical-top corresponds to cross-start
+			// unless the cross axis is reversed (e.g. flex-wrap: wrap-reverse with no writing-mode
+			// reversal), in which case physical-top is cross-END.
+			physTopIsCrossStart := !crossAxisIsReversed
+			if physTopIsCrossStart {
+				hasAutoCrossStart = margin.AutoTop
+				hasAutoCrossEnd = margin.AutoBottom
+			} else {
+				hasAutoCrossStart = margin.AutoBottom
+				hasAutoCrossEnd = margin.AutoTop
+			}
 		} else {
 			// In RTL column flex, the cross-axis start is the right side (physical end).
 			// Auto margins: cross-start auto = right margin auto, cross-end auto = left margin auto.
-			if containerIsRTL {
-				hasAutoCrossStart = margin.AutoRight
-				hasAutoCrossEnd = margin.AutoLeft
-			} else {
+			// When cross axis is reversed (e.g. wrap-reverse in column flex), flip cross-start/end.
+			physLeftIsCrossStart := !containerIsRTL
+			if crossAxisIsReversed {
+				physLeftIsCrossStart = !physLeftIsCrossStart
+			}
+			if physLeftIsCrossStart {
 				hasAutoCrossStart = margin.AutoLeft
 				hasAutoCrossEnd = margin.AutoRight
+			} else {
+				hasAutoCrossStart = margin.AutoRight
+				hasAutoCrossEnd = margin.AutoLeft
 			}
 		}
 

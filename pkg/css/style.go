@@ -4493,9 +4493,6 @@ func (s *Style) GetAlignSelf() AlignSelf {
 			return AlignSelfCenter
 		case "stretch":
 			return AlignSelfStretch
-		case "normal":
-			// CSS Flexbox §4: 'normal' behaves as 'stretch' for flex items.
-			return AlignSelfStretch
 		case "initial":
 			// CSS spec: 'initial' for align-self is 'auto' — fall through to auto.
 			return AlignSelfAuto
