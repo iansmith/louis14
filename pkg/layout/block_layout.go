@@ -221,6 +221,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if collapseThrough {
 				// Margins collapse through: append block-end margin and continue
 				// without resolving or advancing the cursor.
+				// Pick up any propagated OOF candidates before continuing.
+				if len(childResult.PropagatedOOFCandidates) > 0 {
+					approxBlock := blockCursor + prevMarginStrut.Resolve()
+					bla.inheritPropagatedOOF(childResult, childStyle, wdm,
+						0, approxBlock, builder)
+				}
 				prevMarginStrut.Append(childMargins.BlockEnd)
 				continue
 			}
@@ -229,9 +235,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childInlineOffset := childMargins.InlineStart + floatStartOff
 
 			// Step 5: Handle parent-child top margin collapsing.
+			var actualChildBlockOff float64
 			if firstNonEmptyChild && canPropagateTop {
 				// Propagate the accumulated margin strut upward.
 				propagatedTopMargin = prevMarginStrut
+				actualChildBlockOff = 0
 				// Position child at offset 0 (margin moves outside parent).
 				builder.AddChild(childResult.Fragment, LogicalOffset{
 					InlineOffset: childInlineOffset,
@@ -241,12 +249,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			} else {
 				// Step 6: Normal margin resolution.
 				collapsedMargin := prevMarginStrut.Resolve()
-				childBlockOffset := blockCursor + collapsedMargin
+				actualChildBlockOff = blockCursor + collapsedMargin
 				builder.AddChild(childResult.Fragment, LogicalOffset{
 					InlineOffset: childInlineOffset,
-					BlockOffset:  childBlockOffset,
+					BlockOffset:  actualChildBlockOff,
 				})
-				blockCursor = childBlockOffset + childBlockSize
+				blockCursor = actualChildBlockOff + childBlockSize
+			}
+
+			// Inherit propagated OOF candidates from child.
+			// Non-positioned children propagate their abspos descendants
+			// upward for resolution by the containing block (this element
+			// or a higher ancestor).
+			if len(childResult.PropagatedOOFCandidates) > 0 {
+				bla.inheritPropagatedOOF(childResult, childStyle, wdm,
+					childInlineOffset, actualChildBlockOff, builder)
 			}
 
 			firstNonEmptyChild = false
@@ -324,39 +341,54 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS 2.1 §10.6.4: Lay out absolutely positioned children.
 	// They are positioned relative to this containing block's padding box.
+	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
-		// CSS 2.1 §10.1: If this element is not a positioned container
-		// (position: static), abs-pos children should use the ICB as their
-		// containing block. Use ICB block size as a floor so that
-		// bottom/right insets resolve against the viewport, not a 0-height body.
-		oofBlockSize := finalBlockSize
 		isPositioned := bla.style != nil && bla.style.GetPosition() != css.PositionStatic
-		if !isPositioned {
-			icbBlockSize := bla.ctx.ViewportHeight
-			if !wdm.IsHorizontal() {
-				icbBlockSize = bla.ctx.ViewportWidth
+		isRoot := bla.space.ForcedMinBlockSize > 0
+
+		if isPositioned {
+			// This element IS the containing block. Resolve with its content-box.
+			oofPart := &OutOfFlowLayoutPart{
+				ctx:                 bla.ctx,
+				containingBlockWDM:  wdm,
+				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+				geom:                geom,
 			}
-			// OOF offsets are relative to this element's content box, not the ICB.
-			// Subtract this element's own block-start margin+border+padding so that
-			// the computed child offset, when added to this element's physical origin,
-			// yields the correct ICB-relative position.
-			ownMargins := ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize)
-			ownBlockStart := ownMargins.BlockStart + geom.Border.BlockStart + geom.Padding.BlockStart
-			icbEffective := icbBlockSize - ownBlockStart
-			if icbEffective > oofBlockSize {
-				oofBlockSize = icbEffective
+			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+		} else if isRoot {
+			// Root element: resolve OOF with ICB (viewport) dimensions.
+			// The root's content box coincides with the ICB when it has no
+			// border/padding (the common case). OOF children are placed
+			// relative to the root's content box, which fragmentToBox
+			// positions at (0,0).
+			var icbInline, icbBlock float64
+			if wdm.IsHorizontal() {
+				icbInline = bla.ctx.ViewportWidth
+				icbBlock = bla.ctx.ViewportHeight
+			} else {
+				icbInline = bla.ctx.ViewportHeight
+				icbBlock = bla.ctx.ViewportWidth
 			}
+			oofPart := &OutOfFlowLayoutPart{
+				ctx:                 bla.ctx,
+				containingBlockWDM:  wdm,
+				containingBlockSize: LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
+				geom:                geom,
+			}
+			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+		} else {
+			// Not positioned, not root: propagate OOF candidates upward.
+			// The parent (or a higher ancestor) will resolve them.
+			propagatedOOF = builder.outOfFlowCandidates
 		}
-		oofPart := &OutOfFlowLayoutPart{
-			ctx:                 bla.ctx,
-			containingBlockWDM:  wdm,
-			containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: oofBlockSize},
-			geom:                geom,
-		}
-		oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
 	}
 
 	result := builder.Build()
+
+	// Attach propagated OOF candidates for the parent to resolve.
+	if len(propagatedOOF) > 0 {
+		result.PropagatedOOFCandidates = propagatedOOF
+	}
 
 	// CSS 2.1 §8.3.1: Propagate first child's margin for parent-child collapsing.
 	if !propagatedTopMargin.IsEmpty() {
@@ -394,6 +426,30 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	return result
+}
+
+// inheritPropagatedOOF adjusts and adopts OOF candidates from a child result.
+// Converts static positions from the child's content-box coordinates to this
+// element's content-box coordinates.
+func (bla *BlockLayoutAlgorithm) inheritPropagatedOOF(
+	childResult *LayoutResult,
+	childStyle *css.Style,
+	parentWDM WritingDirectionMode,
+	childInlineOff, childBlockOff float64,
+	builder *BoxFragmentBuilder,
+) {
+	// Compute child's border+padding in the parent's logical axes so we can
+	// translate from child content-box origin to parent content-box origin.
+	childBP := ComputeFragmentGeometry(childStyle, parentWDM)
+	blockAdj := childBlockOff + childBP.Border.BlockStart + childBP.Padding.BlockStart
+	inlineAdj := childInlineOff + childBP.Border.InlineStart + childBP.Padding.InlineStart
+
+	for _, cand := range childResult.PropagatedOOFCandidates {
+		adj := cand
+		adj.StaticPosition.Offset.BlockOffset += blockAdj
+		adj.StaticPosition.Offset.InlineOffset += inlineAdj
+		builder.AddOutOfFlowCandidate(adj)
+	}
 }
 
 // layoutFloat handles layout and positioning of a float child within the

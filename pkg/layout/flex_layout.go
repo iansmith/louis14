@@ -93,6 +93,10 @@ type flexItem struct {
 	// baseline is the first-line baseline position relative to the item's border-box top.
 	// 0 means no baseline available (fall back to flex-start).
 	baseline float64
+
+	// propagatedOOF holds OOF candidates that the item's layout couldn't resolve
+	// because the item is not a positioned container.
+	propagatedOOF []OutOfFlowCandidate
 }
 
 // mainMarginSum returns the total margin in the flex main axis.
@@ -273,6 +277,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
+			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
 			var itemCross float64
 			if isRow {
@@ -387,6 +392,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					item.resolvedMain, crossContent2, false)
 				result := layoutElement(fla.ctx, item.node, cs)
 				item.fragment = result.Fragment
+				item.propagatedOOF = result.PropagatedOOFCandidates
 				lf := NewLogicalFragment(wdm, item.fragment)
 				if isRow {
 					item.crossSize = lf.BlockSize()
@@ -632,6 +638,18 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				InlineOffset: inlineOff,
 				BlockOffset:  blockOff,
 			})
+			// Inherit OOF candidates propagated from non-positioned flex items.
+			if len(item.propagatedOOF) > 0 {
+				itemBP := ComputeFragmentGeometry(item.style, wdm)
+				blockAdj := blockOff + itemBP.Border.BlockStart + itemBP.Padding.BlockStart
+				inlineAdj := inlineOff + itemBP.Border.InlineStart + itemBP.Padding.InlineStart
+				for _, cand := range item.propagatedOOF {
+					adj := cand
+					adj.StaticPosition.Offset.BlockOffset += blockAdj
+					adj.StaticPosition.Offset.InlineOffset += inlineAdj
+					builder.AddOutOfFlowCandidate(adj)
+				}
+			}
 		}
 	}
 
@@ -693,17 +711,26 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	})
 
 	// Layout OOF children.
+	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
-		oofPart := &OutOfFlowLayoutPart{
-			ctx:                 fla.ctx,
-			containingBlockWDM:  wdm,
-			containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-			geom:                geom,
+		isPositioned := fla.style != nil && fla.style.GetPosition() != css.PositionStatic
+		if isPositioned {
+			oofPart := &OutOfFlowLayoutPart{
+				ctx:                 fla.ctx,
+				containingBlockWDM:  wdm,
+				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+				geom:                geom,
+			}
+			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+		} else {
+			propagatedOOF = builder.outOfFlowCandidates
 		}
-		oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
 	}
 
 	result := builder.Build()
+	if len(propagatedOOF) > 0 {
+		result.PropagatedOOFCandidates = propagatedOOF
+	}
 
 	// CSS position:relative.
 	if fla.style != nil && fla.style.GetPosition() == css.PositionRelative {
@@ -2038,6 +2065,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 					item.resolvedMain, stretchContent, true)
 				result := layoutElement(fla.ctx, item.node, cs)
 				item.fragment = result.Fragment
+				item.propagatedOOF = result.PropagatedOOFCandidates
 				lf := NewLogicalFragment(wdm, item.fragment)
 				if isRow {
 					item.crossSize = lf.BlockSize()

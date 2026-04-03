@@ -38,6 +38,13 @@ type LayoutResult struct {
 	// block has no block-start border or padding (and isn't a new BFC),
 	// the first child's margin propagates upward.
 	PropagatedTopMargin MarginStrut
+
+	// PropagatedOOFCandidates are absolutely/fixed positioned children
+	// that this non-positioned element cannot resolve. They propagate
+	// upward to the nearest positioned ancestor or the root (ICB).
+	// Mirrors Blink's approach where OOF candidates bubble up the tree
+	// until they reach their actual containing block.
+	PropagatedOOFCandidates []OutOfFlowCandidate
 }
 
 // FragmentType distinguishes box, line-box, and text fragments.
