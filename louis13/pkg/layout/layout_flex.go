@@ -3728,6 +3728,28 @@ func transformToVerticalRL(box *Box, wm string) {
 	// Compute the parent's content width for detecting block-fill children
 	parentContentW := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
 
+	// isBlockLevelForTransform returns true if the child is a block-level element
+	// that was laid out by HTB block layout (stacked vertically). For these children,
+	// the inline offset in the VRL column is their inline-start margin (child.Margin.Top
+	// for VRL/VLR), not their X position. Block-fill and explicit-width block children
+	// are both handled.
+	// Absolutely/fixed positioned children are excluded — they are handled by
+	// repositionAbsPosAfterVerticalTransform separately.
+	isBlockLevelForTransform := func(child *Box) bool {
+		if child == nil || child.Style == nil {
+			return false
+		}
+		// Abs-pos and fixed-pos are NOT laid out in normal flow; skip them.
+		if child.Position == css.PositionAbsolute || child.Position == css.PositionFixed {
+			return false
+		}
+		d := child.Style.GetDisplay()
+		return d == css.DisplayBlock || d == css.DisplayFlex || d == css.DisplayFlowRoot ||
+			d == css.DisplayGrid || d == css.DisplayInlineFlex || d == css.DisplayInlineGrid ||
+			d == css.DisplayTable || d == css.DisplayListItem ||
+			d == css.DisplayTableCell || d == css.DisplayTableRow
+	}
+
 	cols := make([]colInfo, len(lines))
 	for i, line := range lines {
 		for _, child := range line.children {
@@ -3736,9 +3758,28 @@ func transformToVerticalRL(box *Box, wm string) {
 			// These don't participate in column sizing.
 			blockStartM := dir.BlockStartEdge(child.Margin)
 			blockEndM := dir.BlockEndEdge(child.Margin)
+
 			rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
-			if rawOrigRelX < -1.0 {
+			// For non-block children, skip those outside the content area.
+			// For block-level children with block-direction margins, rawOrigRelX may be
+			// zero or negative because block-direction margins affect child.X in HTB
+			// pre-layout but are not inline offsets in VRL. Instead, use the
+			// inline-start margin (child.Margin.Top for VRL/VLR) as the inline offset.
+			if rawOrigRelX < -1.0 && !isBlockLevelForTransform(child) {
 				continue
+			}
+			var origRelX float64
+			if isBlockLevelForTransform(child) && (blockStartM > 0 || blockEndM > 0 || rawOrigRelX < 0) {
+				// Block child with block-direction margins: use inline-start margin.
+				origRelX = dir.InlineStartEdge(child.Margin)
+				if origRelX < 0 {
+					origRelX = 0
+				}
+			} else {
+				origRelX = rawOrigRelX
+				if origRelX < 0 {
+					origRelX = 0
+				}
 			}
 			if child.Width > cols[i].width {
 				cols[i].width = child.Width
@@ -3750,14 +3791,6 @@ func transformToVerticalRL(box *Box, wm string) {
 				} else if _, ok := child.Style.GetPercentage("width"); ok {
 					cols[i].hasExplicitW = true
 				}
-			}
-			// Subtract both block-start and block-end margins from origRelX:
-			// block-direction margins were applied to X by the h-tb layout
-			// but should not become Y offsets in the vertical column.
-			// Column spacing handles block-direction margins instead.
-			origRelX := rawOrigRelX
-			if origRelX < 0 {
-				origRelX = 0
 			}
 			extent := origRelX + child.Height
 			if extent > cols[i].height {
@@ -3823,10 +3856,30 @@ func transformToVerticalRL(box *Box, wm string) {
 		}
 	}
 
-	// Total new dimensions including column margins (except last block-end)
+	// Total new dimensions including column margins.
+	// The last column's block-end margin is included only when the parent's block-end
+	// border or padding prevents margin collapsing with the parent's own block-end edge.
+	// (CSS 2.1 §8.3.1: margins collapse only when there's no border/padding separation.)
 	totalWidth := 0.0
 	for i, c := range cols {
 		totalWidth += colMargins[i] + c.width
+	}
+	// Include last column's block-end margin if parent prevents collapsing.
+	if len(cols) > 0 {
+		lastBlockEndMarg := cols[len(cols)-1].blockEndMarg
+		var blockEndBorder, blockEndPadding float64
+		if isLR {
+			// VLR/sideways-lr: block-end direction = Right
+			blockEndBorder = box.Border.Right
+			blockEndPadding = box.Padding.Right
+		} else {
+			// VRL: block-end direction = Left
+			blockEndBorder = box.Border.Left
+			blockEndPadding = box.Padding.Left
+		}
+		if lastBlockEndMarg > 0 && (blockEndBorder > 0 || blockEndPadding > 0) {
+			totalWidth += lastBlockEndMarg
+		}
 	}
 	maxContentHeight := 0.0
 	for _, c := range cols {
@@ -3884,11 +3937,23 @@ func transformToVerticalRL(box *Box, wm string) {
 				blockEndM := dir.BlockEndEdge(child.Margin)
 				rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
 				if rawOrigRelX < -1.0 {
-					continue // skip outside-positioned children
+					if !isBlockLevelForTransform(child) {
+						continue // skip outside-positioned non-block children
+					}
 				}
-				origRelX := rawOrigRelX
-				if origRelX < 0 {
-					origRelX = 0
+				var origRelX float64
+				if isBlockLevelForTransform(child) && (blockStartM > 0 || blockEndM > 0 || rawOrigRelX < 0) {
+					// Block child with block-direction margins: use inline-start margin
+					// as the inline offset (child.Margin.Top for VRL/VLR).
+					origRelX = dir.InlineStartEdge(child.Margin)
+					if origRelX < 0 {
+						origRelX = 0
+					}
+				} else {
+					origRelX = rawOrigRelX
+					if origRelX < 0 {
+						origRelX = 0
+					}
 				}
 				newX := contentStartX + colX
 				var newY float64
@@ -3920,11 +3985,22 @@ func transformToVerticalRL(box *Box, wm string) {
 				blockEndM := dir.BlockEndEdge(child.Margin)
 				rawOrigRelX := child.X - contentStartX - blockStartM - blockEndM
 				if rawOrigRelX < -1.0 {
-					continue // skip outside-positioned children
+					if !isBlockLevelForTransform(child) {
+						continue // skip outside-positioned non-block children
+					}
 				}
-				origRelX := rawOrigRelX
-				if origRelX < 0 {
-					origRelX = 0
+				var origRelX float64
+				if isBlockLevelForTransform(child) && (blockStartM > 0 || blockEndM > 0 || rawOrigRelX < 0) {
+					// Block child with block-direction margins: use inline-start margin.
+					origRelX = dir.InlineStartEdge(child.Margin)
+					if origRelX < 0 {
+						origRelX = 0
+					}
+				} else {
+					origRelX = rawOrigRelX
+					if origRelX < 0 {
+						origRelX = 0
+					}
 				}
 				newX := contentStartX + colX
 				var newY float64
