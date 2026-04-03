@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+div#wrapper {
+  background: red;
+  color: black;
+  font-size: 20px;
+  height: 100px;
+  width: 100px;
+  writing-mode: vertical-rl;
+  border: 1px solid black;
+}
+div#floated-right {
+  float: right;
+  background: blue;
+}
+div#cleared-right {
+  background-color: green;
+  clear: right;
+  width: 50px;
+}
+</style>
+</head>
+<body>
+<p>float:right (blue) should be at right edge. cleared div (green) should be past it (left half).</p>
+<div id="wrapper">
+  <div id="floated-right">R</div>
+  <div id="cleared-right">C</div>
+</div>
+</body>
+</html>

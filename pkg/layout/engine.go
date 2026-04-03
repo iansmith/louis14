@@ -94,19 +94,21 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		rootWDM = NewWritingDirectionMode(rootStyle)
 	}
 
-	// The ICB is always horizontal-tb. Use it as the parent WDM so the
-	// ConstraintSpaceBuilder swaps axes when the root has a vertical writing mode.
-	icbWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	// Compute the orthogonal fallback: when an orthogonal child of the root
-	// has an indefinite inline-size, it falls back to the ICB dimension that
-	// corresponds to that child's inline axis.
-	var rootOrthogonalFallback float64
-	if rootWDM.IsVertical() {
-		// Root is vertical → orthogonal child is horizontal → inline = width
-		rootOrthogonalFallback = le.viewport.width
+	// Build the root constraint space in the root's own logical coordinate system.
+	// We use rootWDM as both parent and child so IsOrthogonalWritingModeRoot = false,
+	// ensuring the root element fills the viewport (stretch sizing) rather than
+	// using shrink-to-fit. The root always fills the ICB, never shrinks to content.
+	//
+	// Available sizes are expressed in the root's logical coordinates:
+	//   HTB:      InlineSize = viewport.width,  BlockSize = viewport.height
+	//   vertical: InlineSize = viewport.height, BlockSize = viewport.width
+	var rootInlineSize, rootBlockSize float64
+	if rootWDM.IsHorizontal() {
+		rootInlineSize = le.viewport.width
+		rootBlockSize = le.viewport.height
 	} else {
-		// Root is horizontal → orthogonal child is vertical → inline = height
-		rootOrthogonalFallback = le.viewport.height
+		rootInlineSize = le.viewport.height
+		rootBlockSize = le.viewport.width
 	}
 
 	// The root element must fill at least the ICB block-size.
@@ -118,16 +120,15 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		rootMinBlock = le.viewport.height
 	}
 
-	rootSpace := NewConstraintSpaceBuilder(icbWDM, rootWDM, true).
-		SetOrthogonalFallbackInlineSize(rootOrthogonalFallback).
+	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
 		SetForcedMinBlockSize(rootMinBlock).
 		SetAvailableSize(LogicalSize{
-			InlineSize: le.viewport.width,
-			BlockSize:  le.viewport.height,
+			InlineSize: rootInlineSize,
+			BlockSize:  rootBlockSize,
 		}).
 		SetPercentageResolutionSize(LogicalSize{
-			InlineSize: le.viewport.width,
-			BlockSize:  le.viewport.height,
+			InlineSize: rootInlineSize,
+			BlockSize:  rootBlockSize,
 		}).
 		Build()
 
