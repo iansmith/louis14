@@ -179,14 +179,14 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		// equations entirely in logical coordinates.
 
 		// --- Inline axis ---
+		// CSS 2.1 §10.3.7: The constraint equation is:
+		//   inset-start + margin-start + border-box-width + margin-end + inset-end = CB width
+		// childLogical.InlineSize() returns the border-box size, so "remaining"
+		// is the space available for auto margins.
 		var inlineOffset float64
 		if insets.HasInlineStart && insets.HasInlineEnd {
 			usedInlineSize := childLogical.InlineSize()
-			usedBPInline := childGeom.InlineBorderPadding()
-			if !parallel {
-				usedBPInline = childGeom.BlockBorderPadding()
-			}
-			remaining := cbInline - insets.InlineStart - insets.InlineEnd - usedBPInline - usedInlineSize
+			remaining := cbInline - insets.InlineStart - insets.InlineEnd - usedInlineSize
 
 			if autoInlineStart && autoInlineEnd {
 				halfMargin := remaining / 2
@@ -201,7 +201,7 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			} else {
 				// Overconstrained: LTR ignores inline-end, RTL ignores inline-start.
 				if wdm.IsRTL() {
-					inlineOffset = cbInline - insets.InlineEnd - childMargins.InlineEnd - childLogical.InlineSize()
+					inlineOffset = cbInline - insets.InlineEnd - childMargins.InlineEnd - usedInlineSize
 				} else {
 					inlineOffset = insets.InlineStart + childMargins.InlineStart
 				}
@@ -216,14 +216,11 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		}
 
 		// --- Block axis ---
+		// Same pattern: border-box size already includes border+padding.
 		var blockOffset float64
 		if insets.HasBlockStart && insets.HasBlockEnd {
 			usedBlockSize := childLogical.BlockSize()
-			usedBPBlock := childGeom.BlockBorderPadding()
-			if !parallel {
-				usedBPBlock = childGeom.InlineBorderPadding()
-			}
-			remaining := cbBlock - insets.BlockStart - insets.BlockEnd - usedBPBlock - usedBlockSize
+			remaining := cbBlock - insets.BlockStart - insets.BlockEnd - usedBlockSize
 
 			if autoBlockStart && autoBlockEnd {
 				halfMargin := remaining / 2
