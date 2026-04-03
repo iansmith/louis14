@@ -1,6 +1,6 @@
 module louis14
 
-go 1.25.5
+go 1.21
 
 require (
 	github.com/dop251/goja v0.0.0-20260106131823-651366fbe6e3
