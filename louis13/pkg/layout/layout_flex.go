@@ -895,23 +895,43 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 		}
 	}
 
-	// Step 5c: Re-layout block items that used block-fill (container width) for initial
-	// layout, but got a different (smaller) main size after flex resolution.
-	// Only fires for items where flex-basis:auto with no explicit CSS width triggered
-	// ComputeIntrinsicSizes (BlockFillBasis=true). These items's children were laid out
-	// at the container width and need re-layout at the correct intrinsic-based flex size.
-	// Items with explicit CSS widths or explicit flex-basis are correct as-is.
+	// Step 5c: Re-layout block items whose main-axis size changed after flex resolution.
+	// This covers two cases:
+	// 1. BlockFillBasis items: initial layout used block-fill (container width) since there
+	//    was no explicit CSS width. ComputeIntrinsicSizes was used for flex-basis. Children
+	//    were laid out at the container width and need re-layout at the resolved flex size.
+	// 2. Items with explicit CSS width that were shrunken below that width by flex resolution
+	//    (e.g. to their AutoMinMain). Children were laid out at the explicit CSS width and
+	//    need re-layout at the new narrower width so text wraps correctly.
+	//    Per CSS Flexbox §4.5: automatic minimum size can shrink items below their CSS width.
 	if isRow {
 		for _, line := range lines {
 			for _, item := range line.Items {
-				// Only items where block-fill initial layout was wrong.
-				if !item.BlockFillBasis {
-					continue
-				}
 				if item.Box.Node == nil || len(item.Box.Children) == 0 {
 					continue
 				}
-				// Width changed: re-layout children with the established width.
+				initW := initialSizes[item].w
+				widthChanged := math.Abs(item.Box.Width-initW) > 0.5
+				// Check if this item needs re-layout:
+				// - BlockFillBasis: initial layout used container width, not item width.
+				// - Or: item has explicit CSS width and was shrunken below it by flex algorithm
+				//   (e.g., shrunken to AutoMinMain, min-content < explicit width).
+				needsRelayout := item.BlockFillBasis
+				if !needsRelayout && widthChanged && item.Box.Width < initW-0.5 {
+					// Only re-layout non-replaced block containers. Replaced elements (img,
+					// canvas, video) get their children re-laid out in Step 5d via aspect ratio.
+					if item.Box.Node != nil && !isReplacedElement(item.Box.Node.TagName) {
+						childDisplay := item.Box.Style.GetDisplay()
+						if childDisplay != css.DisplayFlex && childDisplay != css.DisplayInlineFlex &&
+							childDisplay != css.DisplayGrid && childDisplay != css.DisplayInlineGrid {
+							needsRelayout = true
+						}
+					}
+				}
+				if !needsRelayout {
+					continue
+				}
+				// Width changed: re-layout children with the established flex-resolved width.
 				// Reset floats to floatBase so initial-layout floats (registered during
 				// createFlexItemsProper at the narrow container width) do not interfere with
 				// the re-layout float placement. Accumulated leftOffset from initial floats
@@ -921,24 +941,34 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 				le.floats = le.floats[:le.floatBase]
 				// item.Box.X/Y are border-box positions (margin already applied by initial layout).
 				// layoutNode expects margin-box start and adds margin internally, so subtract margin here.
-				newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X-item.Box.Margin.Left, item.Box.Y-item.Box.Margin.Top, item.Box.Width, computedStyles, flexBox)
+				// For items with explicit CSS width, temporarily remove it so the block fills
+				// the new flex-resolved available width instead of the original CSS width.
+				// (If we kept width:200px and passed availableWidth=100, block would still use 200px.)
+				reLayoutAvailW := item.Box.Width + item.Box.Margin.Left + item.Box.Margin.Right
+				var savedStyle *css.Style
+				if _, hasExplW := item.Box.Style.GetLength("width"); hasExplW && !item.BlockFillBasis {
+					styleForRelayout := item.Box.Style.Clone()
+					delete(styleForRelayout.Properties, "width")
+					savedStyle = computedStyles[item.Box.Node]
+					computedStyles[item.Box.Node] = styleForRelayout
+					item.Box.Style = styleForRelayout
+				}
+				newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X-item.Box.Margin.Left, item.Box.Y-item.Box.Margin.Top, reLayoutAvailW, computedStyles, flexBox)
+				if savedStyle != nil {
+					computedStyles[item.Box.Node] = savedStyle
+					item.Box.Style = savedStyle
+				}
 				le.floats = savedFloats
 				le.absoluteBoxes = le.absoluteBoxes[:savedAbsLen]
 				if newBox != nil {
 					item.Box.Children = newBox.Children
-					// For items where the re-layout width is LARGER than the initial layout width
-					// (e.g., flex-basis:content with a tiny container), the height may change
-					// significantly (e.g., floats that stacked at narrow width now fit on one line).
-					// Update the cross-axis height so Step 6 gets the correct line cross size.
-					// For items where the re-layout width is smaller (flex-basis:auto normal case),
-					// the height is already correct from the initial layout at container width.
-					initW := initialSizes[item].w
-					if item.Box.Width > initW+0.5 {
-						// Re-layout width is larger: height may have changed
-						_, hasExplicitH := item.Box.Style.GetLength("height")
-						if !hasExplicitH {
-							item.Box.Height = newBox.Height
-						}
+					// Update the cross-axis height when width changed:
+					// - Larger width: height may have decreased (text fits on fewer lines).
+					// - Smaller width: height may have increased (text wraps to more lines).
+					// Always update unless the item has an explicit CSS height constraint.
+					_, hasExplicitH := item.Box.Style.GetLength("height")
+					if !hasExplicitH {
+						item.Box.Height = newBox.Height
 					}
 				}
 			}
