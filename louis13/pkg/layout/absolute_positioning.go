@@ -207,6 +207,32 @@ func (le *LayoutEngine) applyAbsolutePositioning(box *Box) {
 			box.Padding.Left - box.Padding.Right - box.Border.Left - box.Border.Right
 	} else {
 		// CSS 2.1 §10.3.7: When left and right are auto, use the static position.
+		// In LTR, box.X already reflects the static position (set during normal flow).
+		// In RTL, spec §10.3.7 says use the static position for 'right' and solve for 'left'.
+		//
+		// The inline layout engine sets box.X = staticX = prevSibling.X + prevSibling.Width,
+		// which is the right edge of the element's hypothetical normal-flow box in RTL
+		// (since the element would appear to the LEFT of the preceding RTL content).
+		//
+		// rightStatic = distance from CB right edge to the hypothetical right edge of the element:
+		//   rightStatic = (cbX + cbWidth) - (box.X - outerWidth)
+		//               = (cbX + cbWidth) - box.X + outerWidth
+		//
+		// Solving for left:
+		//   box.X = cbX + cbWidth - rightStatic - outerWidth
+		//         = cbX + cbWidth - ((cbX + cbWidth) - box.X + outerWidth) - outerWidth
+		//         = box.X - 2 * outerWidth
+		if !isVertical && containingBlock != nil {
+			cbDir := css.DirectionLTR
+			if containingBlock.Style != nil {
+				cbDir = containingBlock.Style.GetDirection()
+			}
+			if cbDir == css.DirectionRTL {
+				outerWidth := box.Margin.Left + box.Border.Left + box.Padding.Left +
+					box.Width + box.Padding.Right + box.Border.Right + box.Margin.Right
+				box.X = box.X - 2*outerWidth
+			}
+		}
 	}
 
 	// CSS 2.1 §10.6.4: Vertical positioning for absolutely positioned elements
@@ -522,7 +548,16 @@ func repositionAbsPosInCB(cb *Box, cbWM string, cbPadWidth, cbPadHeight float64)
 			}
 			child.X = cbX + offset.Left + child.Margin.Left
 		} else if offset.HasLeft && offset.HasRight {
-			child.X = cbX + offset.Left + child.Margin.Left
+			// Over-constrained block axis: spec says ignore the "end" side and solve from "start".
+			// In vertical-rl: block-start = right, block-end = left → ignore left, use right.
+			// In vertical-lr: block-start = left, block-end = right → ignore right, use left.
+			if cbWM == "vertical-rl" || cbWM == "sideways-rl" {
+				child.X = cbX + cbPadWidth - offset.Right - child.Margin.Right -
+					child.Border.Right - child.Padding.Right - child.Width -
+					child.Padding.Left - child.Border.Left
+			} else {
+				child.X = cbX + offset.Left + child.Margin.Left
+			}
 		} else if offset.HasLeft {
 			child.X = cbX + offset.Left + child.Margin.Left
 		} else if offset.HasRight {
