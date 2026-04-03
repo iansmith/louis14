@@ -136,6 +136,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				BlockOffset:  0,
 			})
 
+			// Propagate OOF candidates from cell → row.
+			// The cell's content-box origin is offset from the row's content-box
+			// origin by (inlineOffset, 0) plus the cell's border+padding.
+			if len(cellResult.PropagatedOOFCandidates) > 0 && cell.style != nil {
+				PropagateOOFCandidates(cellResult, cell.style, wdm,
+					inlineOffset, 0, rowBuilder)
+			}
+
 			colIdx += cell.colSpan
 		}
 
@@ -159,6 +167,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			})
 		}
 
+		// Propagate OOF candidates from row → table.
+		// Row's content-box origin is at (0, blockOffset) in the table's
+		// content-box. Rows have no border/padding in CSS tables, but
+		// we propagate through the row builder to pick up cell-level candidates.
+		if len(rowBuilder.outOfFlowCandidates) > 0 {
+			for _, cand := range rowBuilder.outOfFlowCandidates {
+				adj := cand
+				adj.StaticPosition.Offset.BlockOffset += blockOffset
+				builder.AddOutOfFlowCandidate(adj)
+			}
+		}
+
 		rowResult := rowBuilder.Build()
 
 		builder.AddChild(rowResult.Fragment, LogicalOffset{
@@ -170,14 +190,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Compute table size.
-	totalInline := 0.0
+	contentInlineSize := 0.0
 	for _, w := range colWidths {
-		totalInline += w
+		contentInlineSize += w
 	}
+	finalBlockSize := blockOffset
 
 	builder.SetSize(LogicalSize{
-		InlineSize: totalInline + geom.InlineBorderPadding(),
-		BlockSize:  blockOffset + geom.BlockBorderPadding(),
+		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
+		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
 	})
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
@@ -189,7 +210,34 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		Padding: physPadding,
 	})
 
-	return builder.Build()
+	// CSS 2.1 §10.6.4 / CSS-POSITION-3: Resolve or propagate OOF candidates.
+	// Same pattern as block layout: if the table is positioned, it acts as
+	// the containing block and resolves OOF children. Otherwise, propagate
+	// candidates upward for a higher ancestor to resolve.
+	var propagatedOOF []OutOfFlowCandidate
+	if len(builder.outOfFlowCandidates) > 0 {
+		isPositioned := tla.style != nil && tla.style.GetPosition() != css.PositionStatic
+
+		if isPositioned {
+			oofPart := &OutOfFlowLayoutPart{
+				ctx:                 tla.ctx,
+				containingBlockWDM:  wdm,
+				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+				geom:                geom,
+			}
+			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+		} else {
+			propagatedOOF = builder.outOfFlowCandidates
+		}
+	}
+
+	result := builder.Build()
+
+	if len(propagatedOOF) > 0 {
+		result.PropagatedOOFCandidates = propagatedOOF
+	}
+
+	return result
 }
 
 // collectRows extracts table rows from the table's children,

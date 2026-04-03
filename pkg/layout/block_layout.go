@@ -438,6 +438,21 @@ func (bla *BlockLayoutAlgorithm) inheritPropagatedOOF(
 	childInlineOff, childBlockOff float64,
 	builder *BoxFragmentBuilder,
 ) {
+	PropagateOOFCandidates(childResult, childStyle, parentWDM, childInlineOff, childBlockOff, builder)
+}
+
+// PropagateOOFCandidates adjusts and adopts OOF candidates from a child result.
+// Converts static positions from the child's content-box coordinates to the
+// parent's content-box coordinates. Shared by block, table, and other layout algorithms.
+//
+// Mirrors Blink's propagation of OutOfFlowPositionedCandidates through the tree.
+func PropagateOOFCandidates(
+	childResult *LayoutResult,
+	childStyle *css.Style,
+	parentWDM WritingDirectionMode,
+	childInlineOff, childBlockOff float64,
+	builder *BoxFragmentBuilder,
+) {
 	// Compute child's border+padding in the parent's logical axes so we can
 	// translate from child content-box origin to parent content-box origin.
 	childBP := ComputeFragmentGeometry(childStyle, parentWDM)
