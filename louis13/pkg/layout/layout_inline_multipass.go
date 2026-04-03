@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/unicode/bidi"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -2935,6 +2937,29 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 					textContent = string(runes)
 					node.Text = textContent
 				}
+			} else if bidiVal == "plaintext" {
+				// CSS unicode-bidi: plaintext — per-paragraph (per-line) direction
+				// determined by the first strong bidi character (UAX#9 P3).
+				// When the first strong character is RTL, treat this text node like
+				// bidi-override with direction:rtl: reverse character sequence and
+				// apply bidi mirroring. This puts the text in visual order so that no
+				// box-level mirroring is needed (the container typically has ltr direction
+				// in plaintext mode, so mirrorInlineBoxesRTL would not run).
+				if firstStrongBidiIsRTL(textContent) {
+					runes := []rune(textContent)
+					// Reverse character order
+					for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+						runes[i], runes[j] = runes[j], runes[i]
+					}
+					// Apply bidi mirroring to paired bracket characters
+					for i, r := range runes {
+						if m := bidiMirror(r); m != r {
+							runes[i] = m
+						}
+					}
+					textContent = string(runes)
+					node.Text = textContent
+				}
 			} else if parentStyle.GetDirection() == css.DirectionRTL {
 				// In normal RTL context (without override), apply bidi mirroring
 				// to paired bracket/punctuation characters per Unicode Bidi Algorithm.
@@ -4421,6 +4446,22 @@ func (le *LayoutEngine) constructLineBoxesWithRetry(
 	return boxes, retryNeeded
 }
 
+// firstStrongBidiIsRTL returns true if the first strong bidi character in s
+// has RTL direction (class R, AL, RLE, RLO, or RLI). Used for implementing
+// CSS unicode-bidi: plaintext per UAX#9 P3.
+func firstStrongBidiIsRTL(s string) bool {
+	for _, r := range s {
+		p, _ := bidi.LookupRune(r)
+		switch p.Class() {
+		case bidi.L, bidi.LRE, bidi.LRO, bidi.LRI:
+			return false
+		case bidi.R, bidi.AL, bidi.RLE, bidi.RLO, bidi.RLI:
+			return true
+		}
+	}
+	return false
+}
+
 // bidiMirror returns the bidi-mirrored glyph for paired bracket and
 // punctuation characters (Unicode Bidi_Mirrored property). Returns the
 // same rune if no mirror exists.
@@ -4462,6 +4503,22 @@ func bidiMirror(r rune) rune {
 		return '\u208E' // ₎
 	case '\u208E': // ₎
 		return '\u208D' // ₍
+	case '\u2308': // ⌈
+		return '\u2309' // ⌉
+	case '\u2309': // ⌉
+		return '\u2308' // ⌈
+	case '\u230A': // ⌊
+		return '\u230B' // ⌋
+	case '\u230B': // ⌋
+		return '\u230A' // ⌊
+	case '\u2329': // 〈
+		return '\u232A' // 〉
+	case '\u232A': // 〉
+		return '\u2329' // 〈
+	case '\u27E8': // ⟨
+		return '\u27E9' // ⟩
+	case '\u27E9': // ⟩
+		return '\u27E8' // ⟨
 	}
 	return r
 }
