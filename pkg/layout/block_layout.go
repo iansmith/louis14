@@ -138,6 +138,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						InlineEdge: StaticEdgeStart,
 						BlockEdge:  StaticEdgeStart,
 					},
+					IsFixedPosition: childPos == css.PositionFixed,
 				})
 				continue
 			}
@@ -339,28 +340,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetEndMarginStrut(prevMarginStrut)
 	builder.SetExclusionSpace(exclusionSpace)
 
-	// CSS 2.1 §10.6.4: Lay out absolutely positioned children.
-	// They are positioned relative to this containing block's padding box.
+	// CSS 2.1 §10.6.4 / CSS-POSITION-3: Lay out out-of-flow children.
+	//
+	// Mirrors Blink's distinction between absolute and fixed candidates:
+	//   - position:absolute → containing block is nearest positioned ancestor
+	//   - position:fixed → containing block is the ICB (viewport), skipping
+	//     positioned ancestors. (Transform/filter ancestors that create a CB
+	//     for fixed are a future enhancement.)
+	//
+	// A positioned element resolves absolute candidates but must propagate
+	// fixed candidates upward. The root resolves ALL candidates.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := bla.style != nil && bla.style.GetPosition() != css.PositionStatic
 		isRoot := bla.space.ForcedMinBlockSize > 0
 
-		if isPositioned {
-			// This element IS the containing block. Resolve with its content-box.
-			oofPart := &OutOfFlowLayoutPart{
-				ctx:                 bla.ctx,
-				containingBlockWDM:  wdm,
-				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-				geom:                geom,
-			}
-			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
-		} else if isRoot {
-			// Root element: resolve OOF with ICB (viewport) dimensions.
-			// The root's content box coincides with the ICB when it has no
-			// border/padding (the common case). OOF children are placed
-			// relative to the root's content box, which fragmentToBox
-			// positions at (0,0).
+		if isRoot {
+			// Root element: resolve ALL OOF candidates (both absolute and fixed)
+			// with ICB (viewport) dimensions.
 			var icbInline, icbBlock float64
 			if wdm.IsHorizontal() {
 				icbInline = bla.ctx.ViewportWidth
@@ -376,9 +373,29 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				geom:                geom,
 			}
 			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+		} else if isPositioned {
+			// Positioned element: resolve absolute candidates here, but
+			// propagate fixed candidates upward toward the ICB.
+			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
+			for _, cand := range builder.outOfFlowCandidates {
+				if cand.IsFixedPosition {
+					fixedCandidates = append(fixedCandidates, cand)
+				} else {
+					absoluteCandidates = append(absoluteCandidates, cand)
+				}
+			}
+			if len(absoluteCandidates) > 0 {
+				oofPart := &OutOfFlowLayoutPart{
+					ctx:                 bla.ctx,
+					containingBlockWDM:  wdm,
+					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+					geom:                geom,
+				}
+				oofPart.LayoutCandidates(absoluteCandidates, builder)
+			}
+			propagatedOOF = fixedCandidates
 		} else {
-			// Not positioned, not root: propagate OOF candidates upward.
-			// The parent (or a higher ancestor) will resolve them.
+			// Not positioned, not root: propagate ALL candidates upward.
 			propagatedOOF = builder.outOfFlowCandidates
 		}
 	}

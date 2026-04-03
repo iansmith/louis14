@@ -710,18 +710,30 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		Padding: physPadding,
 	})
 
-	// Layout OOF children.
+	// Layout OOF children. Same fixed/absolute split as block layout:
+	// positioned flex containers resolve absolute but propagate fixed.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := fla.style != nil && fla.style.GetPosition() != css.PositionStatic
 		if isPositioned {
-			oofPart := &OutOfFlowLayoutPart{
-				ctx:                 fla.ctx,
-				containingBlockWDM:  wdm,
-				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-				geom:                geom,
+			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
+			for _, cand := range builder.outOfFlowCandidates {
+				if cand.IsFixedPosition {
+					fixedCandidates = append(fixedCandidates, cand)
+				} else {
+					absoluteCandidates = append(absoluteCandidates, cand)
+				}
 			}
-			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+			if len(absoluteCandidates) > 0 {
+				oofPart := &OutOfFlowLayoutPart{
+					ctx:                 fla.ctx,
+					containingBlockWDM:  wdm,
+					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+					geom:                geom,
+				}
+				oofPart.LayoutCandidates(absoluteCandidates, builder)
+			}
+			propagatedOOF = fixedCandidates
 		} else {
 			propagatedOOF = builder.outOfFlowCandidates
 		}
@@ -855,6 +867,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 					InlineEdge: StaticEdgeStart,
 					BlockEdge:  StaticEdgeStart,
 				},
+				IsFixedPosition: pos == css.PositionFixed,
 			})
 			continue
 		}

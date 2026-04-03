@@ -235,6 +235,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 						InlineEdge: StaticEdgeStart,
 						BlockEdge:  StaticEdgeStart,
 					},
+					IsFixedPosition: r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
 				})
 			}
 			inlinePos += r.InlineSize

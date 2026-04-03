@@ -16,6 +16,15 @@ type OutOfFlowCandidate struct {
 	//
 	// Mirrors Blink's LogicalStaticPosition.
 	StaticPosition LogicalStaticPosition
+
+	// IsFixedPosition distinguishes position:fixed from position:absolute.
+	// Fixed elements propagate past positioned ancestors to the viewport (ICB),
+	// unless an ancestor with transform/filter/will-change creates a containing
+	// block. Absolute elements stop at the nearest positioned ancestor.
+	//
+	// Mirrors Blink's NGOutOfFlowPositionedNode::is_for_fragmentation / inline_container
+	// type tracking in the candidate.
+	IsFixedPosition bool
 }
 
 // OutOfFlowLayoutPart handles layout of absolutely and fixed positioned

@@ -215,21 +215,31 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	})
 
 	// Mirrors Blink's single NGOutOfFlowLayoutPart::Run() at the end of
-	// NGTableLayoutAlgorithm::Layout(). All OOF candidates collected from
-	// cells are resolved here if the table is a containing block, or
-	// propagated upward otherwise.
+	// NGTableLayoutAlgorithm::Layout(). Positioned tables resolve absolute
+	// candidates but propagate fixed candidates toward the ICB.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := tla.style != nil && tla.style.GetPosition() != css.PositionStatic
 
 		if isPositioned {
-			oofPart := &OutOfFlowLayoutPart{
-				ctx:                 tla.ctx,
-				containingBlockWDM:  wdm,
-				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-				geom:                geom,
+			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
+			for _, cand := range builder.outOfFlowCandidates {
+				if cand.IsFixedPosition {
+					fixedCandidates = append(fixedCandidates, cand)
+				} else {
+					absoluteCandidates = append(absoluteCandidates, cand)
+				}
 			}
-			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+			if len(absoluteCandidates) > 0 {
+				oofPart := &OutOfFlowLayoutPart{
+					ctx:                 tla.ctx,
+					containingBlockWDM:  wdm,
+					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+					geom:                geom,
+				}
+				oofPart.LayoutCandidates(absoluteCandidates, builder)
+			}
+			propagatedOOF = fixedCandidates
 		} else {
 			propagatedOOF = builder.outOfFlowCandidates
 		}
