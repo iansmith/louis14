@@ -4268,9 +4268,15 @@ func transformBoxToVerticalRecursive(box *Box, wm string) {
 	// Fix inline border/padding gaps before column transform
 	removeInlineBorderGapsForVLR(box)
 
-	// After children are transformed, apply the column transform to this box
+	// After children are transformed, apply the column transform to this box.
+	// Before the transform, undo any pre-applied relative positioning offsets from
+	// inline layout. These offsets corrupt the transform's coordinate mapping
+	// (pre-transform X→Y and Y→column X in vertical-lr/rl). After the transform,
+	// reapply offsets correctly in physical coordinates (top/bottom→Y, left/right→X).
 	if len(box.Children) > 0 {
+		undoInlineRelativePosOffsets(box)
 		transformToVerticalRL(box, wm)
+		applyRelPosAfterVerticalTransform(box)
 	}
 }
 

@@ -978,11 +978,13 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		// Relative positioning: offset from normal position
 		offset := style.GetPositionOffset()
 
-		// CSS 2.1 §9.4.3: Percentage offsets resolve against containing block dimensions
+		// CSS 2.1 §9.4.3: Percentage offsets resolve against containing block dimensions.
+		// top/bottom resolve against physical CB height; left/right against physical CB width.
 		if !offset.HasTop {
 			if pct, ok := style.GetPercentage("top"); ok {
 				cbHeight := 0.0
 				if parent != nil {
+					// parent.Height is always physical height regardless of writing mode
 					cbHeight = parent.Height - parent.Border.Top - parent.Border.Bottom - parent.Padding.Top - parent.Padding.Bottom
 				}
 				offset.Top = cbHeight * (pct / 100.0)
@@ -1001,14 +1003,26 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 		if !offset.HasLeft {
 			if pct, ok := style.GetPercentage("left"); ok {
-				cbWidth := availableWidth
+				// left/right resolve against physical CB width, not logical inline size.
+				// In vertical modes, parent.Width is the physical width (block direction).
+				cbWidth := 0.0
+				if parent != nil {
+					cbWidth = parent.Width - parent.Border.Left - parent.Border.Right - parent.Padding.Left - parent.Padding.Right
+				} else {
+					cbWidth = availableWidth
+				}
 				offset.Left = cbWidth * (pct / 100.0)
 				offset.HasLeft = true
 			}
 		}
 		if !offset.HasRight {
 			if pct, ok := style.GetPercentage("right"); ok {
-				cbWidth := availableWidth
+				cbWidth := 0.0
+				if parent != nil {
+					cbWidth = parent.Width - parent.Border.Left - parent.Border.Right - parent.Padding.Left - parent.Padding.Right
+				} else {
+					cbWidth = availableWidth
+				}
 				offset.Right = cbWidth * (pct / 100.0)
 				offset.HasRight = true
 			}
@@ -2782,6 +2796,10 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						preTransformWidth := box.Width
 						preTransformHeight := box.Height
 
+						// Undo any pre-applied relative offsets from inline layout so the
+						// transform sees normal-flow positions (see undoInlineRelativePosOffsets).
+						undoInlineRelativePosOffsets(box)
+
 						transformToVerticalRL(box, wm)
 
 						// Mark this box as having been through the vertical transform so that
@@ -2789,6 +2807,12 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 						// column transform via transformBoxToVerticalRecursive, which would
 						// undo the correct column layout established here.
 						box.VerticalTransformed = true
+
+						// Apply physical relative-positioning offsets to position:relative children.
+						// These were deferred in layoutNode because applying them pre-transform
+						// would corrupt the coordinate mapping (pre-transform X→Y, Y→column X).
+						// Now that coordinates are physical, top/bottom→Y and left/right→X is correct.
+						applyRelPosAfterVerticalTransform(box)
 
 						// Re-position absolutely positioned children using vertical-mode
 						// constraint equations (CSS Writing Modes §7.1)
@@ -2802,6 +2826,112 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	return box
 }
 
+
+// applyRelPosAfterVerticalTransform applies CSS position:relative offsets to
+// direct children of a vertical-writing-mode container AFTER the coordinate
+// transform (transformToVerticalRL). Offsets are deferred from layoutNode because
+// the transform remaps pre-transform X→Y and pre-transform Y→column/X, so
+// applying physical offsets before the transform produces incorrect results.
+//
+// After the transform, box coordinates are physical, so:
+//   top/bottom → physical Y offset
+//   left/right → physical X offset
+//
+// Percentage offsets are resolved against the post-transform containing block
+// physical dimensions (parent.Width for left/right, parent.Height for top/bottom).
+func applyRelPosAfterVerticalTransform(box *Box) {
+	cbPhysWidth := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
+	cbPhysHeight := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+	for _, child := range box.Children {
+		if child.Position != css.PositionRelative || child.Style == nil {
+			continue
+		}
+		offset := child.Style.GetPositionOffset()
+		// Resolve percentage offsets against physical CB dimensions.
+		if !offset.HasTop {
+			if pct, ok := child.Style.GetPercentage("top"); ok {
+				offset.Top = cbPhysHeight * (pct / 100.0)
+				offset.HasTop = true
+			}
+		}
+		if !offset.HasBottom {
+			if pct, ok := child.Style.GetPercentage("bottom"); ok {
+				offset.Bottom = cbPhysHeight * (pct / 100.0)
+				offset.HasBottom = true
+			}
+		}
+		if !offset.HasLeft {
+			if pct, ok := child.Style.GetPercentage("left"); ok {
+				offset.Left = cbPhysWidth * (pct / 100.0)
+				offset.HasLeft = true
+			}
+		}
+		if !offset.HasRight {
+			if pct, ok := child.Style.GetPercentage("right"); ok {
+				offset.Right = cbPhysWidth * (pct / 100.0)
+				offset.HasRight = true
+			}
+		}
+		var dx, dy float64
+		if offset.HasTop {
+			dy = offset.Top
+		} else if offset.HasBottom {
+			dy = -offset.Bottom
+		}
+		if offset.HasLeft {
+			dx = offset.Left
+		} else if offset.HasRight {
+			dx = -offset.Right
+		}
+		if dx != 0 || dy != 0 {
+			child.X += dx
+			child.Y += dy
+			shiftAllDescendants(child, dx, dy)
+		}
+	}
+}
+
+// undoInlineRelativePosOffsets undoes any pre-applied absolute-length relative
+// positioning offsets from direct children of a box before the vertical transform.
+// Returns a map of child → [dx, dy] for re-application after the transform.
+//
+// Inline layout (LayoutInlineContentToBoxes) applies position:relative offsets
+// (absolute lengths only, not percentages) to inline boxes before they are
+// positioned in the column transform. These offsets corrupt the column transform
+// because the transform maps X→Y and Y→column assignment. This function reverses
+// them so the transform sees the correct normal-flow positions.
+//
+// After calling transformToVerticalRL, call applyRelPosAfterVerticalTransform
+// to apply the offsets correctly in physical coordinates.
+func undoInlineRelativePosOffsets(box *Box) map[*Box][2]float64 {
+	saved := make(map[*Box][2]float64)
+	for _, child := range box.Children {
+		if child.Position != css.PositionRelative || child.Style == nil {
+			continue
+		}
+		// GetPositionOffset returns only absolute-length offsets (no percentages).
+		offset := child.Style.GetPositionOffset()
+		var dx, dy float64
+		if offset.HasTop {
+			dy = offset.Top
+		} else if offset.HasBottom {
+			dy = -offset.Bottom
+		}
+		if offset.HasLeft {
+			dx = offset.Left
+		} else if offset.HasRight {
+			dx = -offset.Right
+		}
+		if dx != 0 || dy != 0 {
+			saved[child] = [2]float64{dx, dy}
+			// Undo the pre-applied offset so transformToVerticalRL sees normal-flow positions
+			child.X -= dx
+			child.Y -= dy
+			shiftAllDescendants(child, -dx, -dy)
+		}
+	}
+	return saved
+}
 
 // findPositionedAncestorBox walks up the Box parent chain to find the nearest
 // ancestor that creates a containing block for absolutely positioned elements.
