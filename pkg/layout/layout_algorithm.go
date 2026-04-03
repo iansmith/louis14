@@ -14,6 +14,10 @@ type LayoutAlgorithm interface {
 	Layout() *LayoutResult
 }
 
+// DocumentFetcher returns HTML content for a given URI. Used to load
+// nested documents for iframe/object elements during layout.
+type DocumentFetcher func(uri string) (string, error)
+
 // LayoutContext carries shared state needed by all layout algorithms.
 // Algorithms receive this context rather than being methods on a god object.
 // Style access is through LayoutInputNode.Style(), not a map lookup.
@@ -24,6 +28,9 @@ type LayoutContext struct {
 
 	// ImageFetcher for loading images during layout (intrinsic sizing).
 	ImageFetcher images.ImageFetcher
+
+	// DocumentFetcher for loading nested documents (iframe, object).
+	DocumentFetcher DocumentFetcher
 
 	// FontConfig provides font paths for text measurement, including @font-face fonts.
 	// If zero-value, DefaultFontConfig() is used.

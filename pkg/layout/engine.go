@@ -9,10 +9,11 @@ import (
 
 // LayoutEngine performs CSS layout, producing a tree of positioned Box fragments.
 type LayoutEngine struct {
-	viewport     viewport
-	imageFetcher images.ImageFetcher
-	fontConfig   text.FontConfig
-	scrollY      float64
+	viewport        viewport
+	imageFetcher    images.ImageFetcher
+	documentFetcher DocumentFetcher
+	fontConfig      text.FontConfig
+	scrollY         float64
 }
 
 type viewport struct {
@@ -30,6 +31,12 @@ func NewLayoutEngine(viewportWidth, viewportHeight float64) *LayoutEngine {
 // SetImageFetcher sets the image fetcher for loading network images during layout.
 func (le *LayoutEngine) SetImageFetcher(fetcher images.ImageFetcher) {
 	le.imageFetcher = fetcher
+}
+
+// SetDocumentFetcher sets the document fetcher for loading nested documents
+// (iframe, object) during layout.
+func (le *LayoutEngine) SetDocumentFetcher(fetcher DocumentFetcher) {
+	le.documentFetcher = fetcher
 }
 
 // SetFontConfig sets the font configuration for text measurement during layout.
@@ -64,10 +71,11 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		fontConfig = text.DefaultFontConfig()
 	}
 	ctx := &LayoutContext{
-		ViewportWidth:  le.viewport.width,
-		ViewportHeight: le.viewport.height,
-		ImageFetcher:   le.imageFetcher,
-		FontConfig:     fontConfig,
+		ViewportWidth:   le.viewport.width,
+		ViewportHeight:  le.viewport.height,
+		ImageFetcher:    le.imageFetcher,
+		DocumentFetcher: le.documentFetcher,
+		FontConfig:      fontConfig,
 	}
 
 	// Phase 3: Find the root element (skip document-level wrapper nodes).
@@ -139,6 +147,78 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	rootBox := fragmentToBox(result.Fragment, nil, 0, 0)
 
 	return []*Box{rootBox}
+}
+
+// layoutNestedDocument parses and lays out a nested HTML document (for iframe/object)
+// using the given physical dimensions as the viewport. Returns the root layout result,
+// or nil if parsing/layout fails.
+func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64) *LayoutResult {
+	doc, err := html.Parse(htmlContent)
+	if err != nil {
+		return nil
+	}
+
+	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
+	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+
+	rootElement := findRootElement(doc.Root)
+	if rootElement == nil {
+		return nil
+	}
+
+	stylesheets := css.ParseDocumentStylesheets(doc)
+	treeBuilder := &LayoutTreeBuilder{
+		styles:         computedStyles,
+		stylesheets:    stylesheets,
+		viewportWidth:  vpWidth,
+		viewportHeight: vpHeight,
+	}
+	layoutRoot := treeBuilder.BuildLayoutTree(rootElement)
+
+	// Build nested context — inherit image/document fetchers and fonts.
+	nestedCtx := &LayoutContext{
+		ViewportWidth:   vpWidth,
+		ViewportHeight:  vpHeight,
+		ImageFetcher:    ctx.ImageFetcher,
+		DocumentFetcher: ctx.DocumentFetcher,
+		FontConfig:      ctx.FontConfig,
+	}
+
+	rootStyle := layoutRoot.Style()
+	rootWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	if rootStyle != nil {
+		rootWDM = NewWritingDirectionMode(rootStyle)
+	}
+
+	var rootInlineSize, rootBlockSize float64
+	if rootWDM.IsHorizontal() {
+		rootInlineSize = vpWidth
+		rootBlockSize = vpHeight
+	} else {
+		rootInlineSize = vpHeight
+		rootBlockSize = vpWidth
+	}
+
+	var rootMinBlock float64
+	if rootWDM.IsVertical() {
+		rootMinBlock = vpWidth
+	} else {
+		rootMinBlock = vpHeight
+	}
+
+	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
+		SetForcedMinBlockSize(rootMinBlock).
+		SetAvailableSize(LogicalSize{
+			InlineSize: rootInlineSize,
+			BlockSize:  rootBlockSize,
+		}).
+		SetPercentageResolutionSize(LogicalSize{
+			InlineSize: rootInlineSize,
+			BlockSize:  rootBlockSize,
+		}).
+		Build()
+
+	return layoutElement(nestedCtx, layoutRoot, rootSpace)
 }
 
 // nonLayoutTags are elements that never participate in layout as root content.

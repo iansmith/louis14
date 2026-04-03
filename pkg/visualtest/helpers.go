@@ -77,6 +77,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	if basePath != "" {
 		fetcher = createFileImageFetcher(basePath, wptRoot)
 		engine.SetImageFetcher(fetcher)
+		engine.SetDocumentFetcher(createFileDocumentFetcher(basePath, wptRoot))
 	}
 
 	boxes := engine.Layout(doc)
@@ -92,6 +93,9 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 		engine2.SetFontConfig(fontConfig)
 		if fetcher != nil {
 			engine2.SetImageFetcher(fetcher)
+		}
+		if basePath != "" {
+			engine2.SetDocumentFetcher(createFileDocumentFetcher(basePath, wptRoot))
 		}
 		boxes = engine2.Layout(doc)
 	}
@@ -166,6 +170,32 @@ func createFileImageFetcher(basePath, wptRoot string) images.ImageFetcher {
 			imagePath = filepath.Join(basePath, uri)
 		}
 		return os.ReadFile(imagePath)
+	}
+}
+
+// createFileDocumentFetcher creates a DocumentFetcher that loads HTML documents
+// from the filesystem. Handles relative file paths and data:text/html, URIs.
+func createFileDocumentFetcher(basePath, wptRoot string) layout.DocumentFetcher {
+	return func(uri string) (string, error) {
+		// Handle data: URIs (e.g. data:text/html,<html>...</html>)
+		if strings.HasPrefix(uri, "data:text/html,") {
+			content := strings.TrimPrefix(uri, "data:text/html,")
+			return content, nil
+		}
+		if strings.HasPrefix(uri, "data:") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+			return "", fmt.Errorf("unsupported URI scheme: %s", uri)
+		}
+		var docPath string
+		if strings.HasPrefix(uri, "/") {
+			docPath = filepath.Join(wptRoot, uri)
+		} else {
+			docPath = filepath.Join(basePath, uri)
+		}
+		data, err := os.ReadFile(docPath)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
 	}
 }
 

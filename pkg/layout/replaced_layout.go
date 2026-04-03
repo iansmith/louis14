@@ -181,10 +181,56 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 		Padding: physPadding,
 	})
 
+	// For iframe/object elements with a document source, lay out the nested
+	// document and embed its content as children.
+	if rla.ctx.DocumentFetcher != nil && rla.node.DOMNode != nil {
+		if nestedFrag := rla.layoutNestedDocument(contentInline, contentBlock); nestedFrag != nil {
+			builder.AddChild(nestedFrag, LogicalOffset{})
+		}
+	}
+
 	// Propagate exclusion space unchanged.
 	if rla.space.ExclusionSpace != nil {
 		builder.SetExclusionSpace(rla.space.ExclusionSpace)
 	}
 
 	return builder.Build()
+}
+
+// layoutNestedDocument fetches and lays out the embedded document for
+// iframe/object elements. Returns the nested root fragment, or nil.
+func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentBlock float64) *PhysicalFragment {
+	dom := rla.node.DOMNode
+	tag := dom.TagName
+
+	// Get the document URI from the appropriate attribute.
+	var uri string
+	switch tag {
+	case "iframe":
+		uri, _ = dom.GetAttribute("src")
+	case "object":
+		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
+			uri, _ = dom.GetAttribute("data")
+		}
+	default:
+		return nil
+	}
+	if uri == "" {
+		return nil
+	}
+
+	htmlContent, err := rla.ctx.DocumentFetcher(uri)
+	if err != nil {
+		return nil
+	}
+
+	// Compute physical viewport for the nested document.
+	wdm := rla.space.WritingDirection
+	physSize := ToPhysicalSize(LogicalSize{InlineSize: contentInline, BlockSize: contentBlock}, wdm.WM)
+
+	result := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height)
+	if result == nil || result.Fragment == nil {
+		return nil
+	}
+	return result.Fragment
 }

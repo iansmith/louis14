@@ -98,7 +98,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var propagatedTopMargin MarginStrut
 
 	var firstLineAscent float64
-	if hasOnlyInlineChildren(bla.node) {
+
+	// Iframe/object with a document source: lay out the nested document
+	// instead of this element's DOM children.
+	if nestedFrag := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nestedFrag != nil {
+		builder.AddChild(nestedFrag, LogicalOffset{})
+	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
 		var inlineAscent float64
 		blockCursor, exclusionSpace, inlineAscent = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
@@ -464,6 +469,48 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		Side:         floatSide,
 	}
 	*outES = es.Add(exclusion)
+}
+
+// tryLayoutNestedDocument checks if this element is an iframe/object with a
+// document source. If so, fetches + lays out the nested document and returns
+// the root fragment. Returns nil if not applicable.
+func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *PhysicalFragment {
+	if bla.ctx.DocumentFetcher == nil || bla.node.DOMNode == nil {
+		return nil
+	}
+	dom := bla.node.DOMNode
+	var uri string
+	switch dom.TagName {
+	case "iframe":
+		uri, _ = dom.GetAttribute("src")
+	case "object":
+		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
+			uri, _ = dom.GetAttribute("data")
+		}
+	default:
+		return nil
+	}
+	if uri == "" {
+		return nil
+	}
+
+	htmlContent, err := bla.ctx.DocumentFetcher(uri)
+	if err != nil {
+		return nil
+	}
+
+	// Compute the content-box physical size for the nested viewport.
+	_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+	physSize := ToPhysicalSize(LogicalSize{
+		InlineSize: contentInlineSize,
+		BlockSize:  blockSize,
+	}, wdm.WM)
+
+	result := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height)
+	if result == nil || result.Fragment == nil {
+		return nil
+	}
+	return result.Fragment
 }
 
 // layoutElement dispatches to the appropriate layout algorithm based on
