@@ -92,6 +92,14 @@ func (le *LayoutEngine) buildTableInfo(tableBox *Box, computedStyles map[*html.N
 
 // Phase 9: layoutTable performs table layout
 func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64, computedStyles map[*html.Node]*css.Style) {
+	// CSS Writing Modes: in vertical writing modes, the inline axis (used for
+	// column sizing) is physical height, not width. All physical property lookups
+	// for inline-size (column widths) must use "height" in vertical modes.
+	// This mirrors Blink's NGTableCellNode::ComputeMinMaxSizes() which uses
+	// ResolveInlineSize() that automatically selects the correct property.
+	tableWM := WritingModeFromStyle(tableBox.Style)
+	tableIsVertical := tableWM == VerticalRL || tableWM == VerticalLR || tableWM == SidewaysLR
+
 	tableInfo := le.buildTableInfo(tableBox, computedStyles)
 
 	// Build cell grid accounting for rowspan/colspan
@@ -123,22 +131,27 @@ func (le *LayoutEngine) layoutTable(tableBox *Box, x, y, availableWidth float64,
 
 	// Calculate column widths
 	// Pass 0 for tableWidth when the table has no explicit width (shrink-to-fit)
+	// In vertical modes, the inline-size property is CSS "height", not "width".
+	inlineSizeProp := "width"
+	if tableIsVertical {
+		inlineSizeProp = "height"
+	}
 	explicitTableWidth := 0.0
-	if w, ok := tableBox.Style.GetLength("width"); ok {
+	if w, ok := tableBox.Style.GetLength(inlineSizeProp); ok {
 		explicitTableWidth = w
-	} else if _, ok := tableBox.Style.GetPercentage("width"); ok {
+	} else if _, ok := tableBox.Style.GetPercentage(inlineSizeProp); ok {
 		// Percentage width was already resolved in layoutNode → use the content width
 		explicitTableWidth = tableBox.Width - tableBox.Border.Left - tableBox.Border.Right - tableBox.Padding.Left - tableBox.Padding.Right
 	}
 	if tableBox.Style.GetTableLayout() == css.TableLayoutFixed && explicitTableWidth > 0 {
-		tableInfo.ColumnWidths = le.calculateColumnWidthsFixed(cellGrid, tableInfo, explicitTableWidth)
+		tableInfo.ColumnWidths = le.calculateColumnWidthsFixed(cellGrid, tableInfo, explicitTableWidth, inlineSizeProp)
 	} else {
-		tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth, computedStyles)
+		tableInfo.ColumnWidths = le.calculateColumnWidths(cellGrid, availableWidth, tableInfo, explicitTableWidth, computedStyles, inlineSizeProp)
 	}
 
 	// Set table width from column widths if not explicitly set
-	_, hasExplicitWidth := tableBox.Style.GetLength("width")
-	_, hasPercentWidth := tableBox.Style.GetPercentage("width")
+	_, hasExplicitWidth := tableBox.Style.GetLength(inlineSizeProp)
+	_, hasPercentWidth := tableBox.Style.GetPercentage(inlineSizeProp)
 	if !hasExplicitWidth && !hasPercentWidth {
 		totalW := 0.0
 		for _, cw := range tableInfo.ColumnWidths {
@@ -451,7 +464,7 @@ func (le *LayoutEngine) processTableRows(node *html.Node, style *css.Style, comp
 
 // Phase 9: calculateColumnWidths determines column widths
 // tableWidth is the explicit table width (0 for shrink-to-fit tables)
-func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, availableWidth float64, tableInfo *TableInfo, tableWidth float64, computedStyles map[*html.Node]*css.Style) []float64 {
+func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, availableWidth float64, tableInfo *TableInfo, tableWidth float64, computedStyles map[*html.Node]*css.Style, inlineSizeProp string) []float64 {
 	numCols := tableInfo.NumCols
 	if numCols == 0 {
 		return []float64{}
@@ -472,7 +485,7 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 			if cell == nil || cell.Box == nil || cell.Box.Style == nil || cell.ColIdx != colIdx {
 				continue
 			}
-			if w, ok := cell.Box.Style.GetLength("width"); ok && w > 0 {
+			if w, ok := cell.Box.Style.GetLength(inlineSizeProp); ok && w > 0 {
 				if w > columnWidths[colIdx] {
 					columnWidths[colIdx] = w
 					hasExplicit[colIdx] = true
@@ -553,7 +566,7 @@ func (le *LayoutEngine) calculateColumnWidths(cellGrid [][]*TableCell, available
 
 // calculateColumnWidthsFixed implements CSS 2.1 §17.5.2.1 fixed table layout.
 // Only the first row is examined to determine column widths.
-func (le *LayoutEngine) calculateColumnWidthsFixed(cellGrid [][]*TableCell, tableInfo *TableInfo, tableWidth float64) []float64 {
+func (le *LayoutEngine) calculateColumnWidthsFixed(cellGrid [][]*TableCell, tableInfo *TableInfo, tableWidth float64, inlineSizeProp string) []float64 {
 	numCols := tableInfo.NumCols
 	if numCols == 0 {
 		return []float64{}
@@ -569,7 +582,7 @@ func (le *LayoutEngine) calculateColumnWidthsFixed(cellGrid [][]*TableCell, tabl
 			if cell == nil || cell.Box == nil || cell.Box.Style == nil || cell.ColIdx != colIdx {
 				continue
 			}
-			if w, ok := cell.Box.Style.GetLength("width"); ok && w > 0 {
+			if w, ok := cell.Box.Style.GetLength(inlineSizeProp); ok && w > 0 {
 				if cell.ColSpan > 1 {
 					perCol := w / float64(cell.ColSpan)
 					for c := 0; c < cell.ColSpan && colIdx+c < numCols; c++ {
