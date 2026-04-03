@@ -75,14 +75,32 @@ func (p *Parser) Parse() (*Document, error) {
 			// Add to current parent (top of stack)
 			parent := p.currentParent()
 
-			// HTML5 §8.2.6: block-level elements appearing at the document root
-			// trigger implicit <html> and <body> creation, matching browser behavior
-			// for flat HTML documents (without explicit <html>/<body> tags).
-			// Head-level elements and inline elements at the document root do not
-			// trigger implicit body creation (they are handled in-place).
-			if parent.TagName == "document" && p.isBlockElement(token.TagName) {
-				p.ensureBody()
-				parent = p.currentParent()
+			// HTML5 §12.2.6.4: Ensure proper html > body structure.
+			// Block-level content and <body> tags must be inside <body>.
+			// This applies both at document root AND inside <html> (after </head>).
+			if parent.TagName == "document" {
+				if token.TagName == "body" {
+					p.ensureHTML()
+					parent = p.currentParent()
+					if parent.TagName == "body" {
+						continue // already have body on stack
+					}
+				} else if token.TagName == "html" {
+					p.adoptOrphanedChildren(node)
+					parent = p.currentParent()
+				} else if p.isBlockElement(token.TagName) {
+					p.ensureBody()
+					parent = p.currentParent()
+				}
+			} else if parent.TagName == "html" && token.TagName != "head" && token.TagName != "body" {
+				// Content inside <html> but outside <body>/<head>:
+				// create implicit <body> (HTML5 §12.2.6.4.7).
+				if token.TagName == "head" {
+					// <head> goes directly into <html>, no body needed.
+				} else if p.isBlockElement(token.TagName) || !isHeadElement(token.TagName) {
+					p.ensureBody()
+					parent = p.currentParent()
+				}
 			}
 
 			parent.AddChild(node)
@@ -190,30 +208,127 @@ func (p *Parser) isSelfClosing(tagName string) bool {
 // already on the parser stack. Called when bare text or non-structural
 // elements appear as direct children of the document root (e.g., text after
 // <!DOCTYPE html> without explicit <html>/<body> tags — HTML5 §8.2.6.4).
-func (p *Parser) ensureBody() {
+// ensureHTML creates an implicit <html> element at the document root if one
+// doesn't already exist on the parser stack. Moves orphaned head-level elements
+// (meta, title, link) from document.Root into an implicit <head> inside <html>.
+func (p *Parser) ensureHTML() {
 	for _, node := range p.stack {
 		if node.TagName == "html" {
-			return // <html> already on stack; <body> will be created normally
+			return // <html> already on stack
 		}
 	}
-	// Create implicit <html>
 	htmlNode := &Node{
 		Type:       ElementNode,
 		TagName:    "html",
 		Attributes: map[string]string{},
 		Children:   make([]*Node, 0),
 	}
-	p.currentParent().AddChild(htmlNode)
+	docRoot := p.currentParent()
+	// Move orphaned head-level elements into <html>/<head>.
+	p.moveOrphanedHeadElements(docRoot, htmlNode)
+	docRoot.AddChild(htmlNode)
 	p.push(htmlNode)
-	// Create implicit <body>
+}
+
+// ensureBody creates implicit <html> and <body> elements at the document root
+// if they don't already exist on the parser stack. Used when block-level content
+// appears at the document root without explicit <html>/<body> tags.
+func (p *Parser) ensureBody() {
+	// First ensure <html> exists.
+	p.ensureHTML()
+	// Check if <body> is already on the stack.
+	for _, node := range p.stack {
+		if node.TagName == "body" {
+			return
+		}
+	}
+	// Create implicit <body> inside <html>.
 	bodyNode := &Node{
 		Type:       ElementNode,
 		TagName:    "body",
 		Attributes: map[string]string{},
 		Children:   make([]*Node, 0),
 	}
-	htmlNode.AddChild(bodyNode)
+	p.currentParent().AddChild(bodyNode)
 	p.push(bodyNode)
+}
+
+// moveOrphanedHeadElements moves meta, title, link, and other head-level
+// elements from the document root into an implicit <head> inside the html node.
+func (p *Parser) moveOrphanedHeadElements(docRoot, htmlNode *Node) {
+	var headElements []*Node
+	var remaining []*Node
+	for _, child := range docRoot.Children {
+		if child.Type == ElementNode && isHeadElement(child.TagName) {
+			headElements = append(headElements, child)
+		} else {
+			remaining = append(remaining, child)
+		}
+	}
+	if len(headElements) > 0 {
+		headNode := &Node{
+			Type:       ElementNode,
+			TagName:    "head",
+			Attributes: map[string]string{},
+			Children:   make([]*Node, 0),
+		}
+		for _, el := range headElements {
+			el.Parent = headNode
+			headNode.Children = append(headNode.Children, el)
+		}
+		htmlNode.AddChild(headNode)
+		docRoot.Children = remaining
+	}
+}
+
+// adoptOrphanedChildren moves orphaned children from document.Root into an
+// explicit <html> element. Called when an explicit <html> tag is encountered
+// after head-level elements were already added to document.Root.
+func (p *Parser) adoptOrphanedChildren(htmlNode *Node) {
+	docRoot := p.currentParent()
+	if docRoot.TagName != "document" {
+		return
+	}
+	for _, child := range docRoot.Children {
+		if child.Type == ElementNode && isHeadElement(child.TagName) {
+			// Find or create <head> inside htmlNode
+			var headNode *Node
+			for _, hc := range htmlNode.Children {
+				if hc.TagName == "head" {
+					headNode = hc
+					break
+				}
+			}
+			if headNode == nil {
+				headNode = &Node{
+					Type:       ElementNode,
+					TagName:    "head",
+					Attributes: map[string]string{},
+					Children:   make([]*Node, 0),
+				}
+				htmlNode.AddChild(headNode)
+			}
+			child.Parent = headNode
+			headNode.Children = append(headNode.Children, child)
+		}
+	}
+	// Remove adopted children from document root
+	var remaining []*Node
+	for _, child := range docRoot.Children {
+		if child.Type != ElementNode || !isHeadElement(child.TagName) {
+			remaining = append(remaining, child)
+		}
+	}
+	docRoot.Children = remaining
+}
+
+// isHeadElement returns true for elements that belong in <head>.
+func isHeadElement(tagName string) bool {
+	switch tagName {
+	case "meta", "title", "link", "base", "noscript":
+		return true
+	}
+	return false
 }
 
 // closeTag pops the stack until the matching tag is found and closed

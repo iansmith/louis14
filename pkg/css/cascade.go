@@ -21,15 +21,13 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("text-decoration", "underline")
 	}
 
-	// Default margin for <body> element.
-	// NOTE: Real UA default is 8px, but XHTML test files and HTML5 ref files
-	// parse differently, causing asymmetric body margin application.
-	// Keeping at 0 until parser parity is achieved.
+	// Default margin for <body> element (CSS 2.1 §8.3.1).
+	// Physical: 8px on all sides, same in every writing mode.
 	if node.TagName == "body" {
-		style.Set("margin-top", "0")
-		style.Set("margin-right", "0")
-		style.Set("margin-bottom", "0")
-		style.Set("margin-left", "0")
+		style.Set("margin-top", "8px")
+		style.Set("margin-right", "8px")
+		style.Set("margin-bottom", "8px")
+		style.Set("margin-left", "8px")
 	}
 
 	// Default margin for block elements: use logical markers so that
