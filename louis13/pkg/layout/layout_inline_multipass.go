@@ -2938,28 +2938,35 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 					node.Text = textContent
 				}
 			} else if bidiVal == "plaintext" {
-				// CSS unicode-bidi: plaintext — per-paragraph (per-line) direction
-				// determined by the first strong bidi character (UAX#9 P3).
-				// When the first strong character is RTL, treat this text node like
-				// bidi-override with direction:rtl: reverse character sequence and
-				// apply bidi mirroring. This puts the text in visual order so that no
-				// box-level mirroring is needed (the container typically has ltr direction
-				// in plaintext mode, so mirrorInlineBoxesRTL would not run).
-				if firstStrongBidiIsRTL(textContent) {
-					runes := []rune(textContent)
-					// Reverse character order
-					for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
-						runes[i], runes[j] = runes[j], runes[i]
-					}
-					// Apply bidi mirroring to paired bracket characters
-					for i, r := range runes {
-						if m := bidiMirror(r); m != r {
-							runes[i] = m
+				// CSS unicode-bidi: plaintext — per-paragraph direction determined
+				// by the first strong bidi character (UAX#9 P3). Each paragraph
+				// (separated by hard line breaks) independently determines its
+				// direction from its own first strong character.
+				//
+				// Split at \n boundaries so <br>-separated content gets per-line
+				// direction detection. Segments whose first strong char is RTL get
+				// reversed+mirrored; LTR segments pass through unchanged.
+				//
+				// NOTE: This is a transitional implementation. The new layout engine
+				// (pkg/layout/inline_item.go) injects FSI/PDI control characters and
+				// lets the UAX#9 algorithm handle direction detection properly.
+				segments := strings.Split(textContent, "\n")
+				for i, seg := range segments {
+					if firstStrongBidiIsRTL(seg) {
+						runes := []rune(seg)
+						for a, b := 0, len(runes)-1; a < b; a, b = a+1, b-1 {
+							runes[a], runes[b] = runes[b], runes[a]
 						}
+						for j, r := range runes {
+							if m := bidiMirror(r); m != r {
+								runes[j] = m
+							}
+						}
+						segments[i] = string(runes)
 					}
-					textContent = string(runes)
-					node.Text = textContent
 				}
+				textContent = strings.Join(segments, "\n")
+				node.Text = textContent
 			} else if parentStyle.GetDirection() == css.DirectionRTL {
 				// In normal RTL context (without override), apply bidi mirroring
 				// to paired bracket/punctuation characters per Unicode Bidi Algorithm.

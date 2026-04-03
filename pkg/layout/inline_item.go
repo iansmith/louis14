@@ -192,6 +192,14 @@ func collectInlinesRecursive(
 		}
 
 		// Inline element (span, em, a, etc.) — emit open/close tags.
+
+		// CSS Writing Modes §2.2: Inject Unicode bidi control characters
+		// for elements with unicode-bidi set. This follows Blink's approach
+		// in InlineItemsBuilder::InsertBidiOverride/InsertBidiIsolate:
+		// control chars are inserted into TextContent so the UAX#9 algorithm
+		// (run by ResolveBidiLevels) handles embedding/isolation correctly.
+		injectBidiControlChars(childStyle, text, true /* isOpen */)
+
 		openOffset := text.Len()
 		data.Items = append(data.Items, &InlineItem{
 			Type:            InlineItemOpenTag,
@@ -216,6 +224,9 @@ func collectInlinesRecursive(
 			IsFirstFragment: child.IsFirstFragment(),
 			IsLastFragment:  child.IsLastFragment(),
 		})
+
+		// Inject closing bidi control characters.
+		injectBidiControlChars(childStyle, text, false /* isOpen */)
 
 		continue
 	}
@@ -311,6 +322,86 @@ func collectTextNode(
 			Node:        node,
 			Style:       parentStyle,
 		})
+	}
+}
+
+// injectBidiControlChars writes Unicode bidi control characters into the text
+// buffer for an element with CSS unicode-bidi set. This implements the same
+// logic as Blink's InlineItemsBuilder::InsertBidiOverride and InsertBidiIsolate.
+//
+// At the opening tag, directional embedding/override/isolate characters are
+// written. At the closing tag, the corresponding terminator (PDF or PDI) is
+// written. The existing ResolveBidiLevels (UAX#9 algorithm) then processes
+// these characters to compute correct bidi levels for all inline items.
+//
+// Control character mapping per CSS Writing Modes §2.2:
+//
+//	unicode-bidi    direction  open            close
+//	embed           ltr        LRE (U+202A)    PDF (U+202C)
+//	embed           rtl        RLE (U+202B)    PDF (U+202C)
+//	isolate         ltr        LRI (U+2066)    PDI (U+2069)
+//	isolate         rtl        RLI (U+2067)    PDI (U+2069)
+//	bidi-override   ltr        LRO (U+202D)    PDF (U+202C)
+//	bidi-override   rtl        RLO (U+202E)    PDF (U+202C)
+//	isolate-override ltr       LRI + LRO       PDF + PDI
+//	isolate-override rtl       RLI + RLO       PDF + PDI
+//	plaintext        —         FSI (U+2068)    PDI (U+2069)
+func injectBidiControlChars(style *css.Style, text *strings.Builder, isOpen bool) {
+	if style == nil {
+		return
+	}
+	bidiVal, hasBidi := style.Get("unicode-bidi")
+	if !hasBidi || bidiVal == "" || bidiVal == "normal" {
+		return
+	}
+
+	dir := style.GetDirection()
+	isRTL := dir == css.DirectionRTL
+
+	if isOpen {
+		switch bidiVal {
+		case "embed":
+			if isRTL {
+				text.WriteRune('\u202B') // RLE
+			} else {
+				text.WriteRune('\u202A') // LRE
+			}
+		case "isolate":
+			if isRTL {
+				text.WriteRune('\u2067') // RLI
+			} else {
+				text.WriteRune('\u2066') // LRI
+			}
+		case "bidi-override":
+			if isRTL {
+				text.WriteRune('\u202E') // RLO
+			} else {
+				text.WriteRune('\u202D') // LRO
+			}
+		case "isolate-override":
+			if isRTL {
+				text.WriteRune('\u2067') // RLI
+				text.WriteRune('\u202E') // RLO
+			} else {
+				text.WriteRune('\u2066') // LRI
+				text.WriteRune('\u202D') // LRO
+			}
+		case "plaintext":
+			text.WriteRune('\u2068') // FSI
+		}
+	} else {
+		// Close tag: emit terminator(s).
+		switch bidiVal {
+		case "embed", "bidi-override":
+			text.WriteRune('\u202C') // PDF
+		case "isolate":
+			text.WriteRune('\u2069') // PDI
+		case "isolate-override":
+			text.WriteRune('\u202C') // PDF
+			text.WriteRune('\u2069') // PDI
+		case "plaintext":
+			text.WriteRune('\u2069') // PDI
+		}
 	}
 }
 
