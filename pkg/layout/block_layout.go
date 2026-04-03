@@ -121,10 +121,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// The abs-pos element's in-flow position would be after the resolved margin, just
 				// like the next in-flow sibling. CSS §10.6.4: static position uses the hypothetical
 				// in-flow position.
+				//
+				// For block-level OOF children, the static inline offset is at inline-start (0)
+				// and the static block offset is at the current block cursor position.
+				// Edge annotations are both Start (the default for block-level OOF).
 				staticBlockOffset := blockCursor + prevMarginStrut.Resolve()
 				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-					Node:         child,
-					StaticOffset: LogicalOffset{InlineOffset: 0, BlockOffset: staticBlockOffset},
+					Node: child,
+					StaticPosition: LogicalStaticPosition{
+						Offset:     LogicalOffset{InlineOffset: 0, BlockOffset: staticBlockOffset},
+						InlineEdge: StaticEdgeStart,
+						BlockEdge:  StaticEdgeStart,
+					},
 				})
 				continue
 			}
@@ -352,14 +360,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS 2.1 §9.4.3: Compute position:relative offset during layout.
 	// Stored on the fragment for paint-time application (not baked into positions).
-	// Percentages resolve against the containing block's dimensions.
+	// Percentages resolve against the containing block's PHYSICAL dimensions:
+	// left/right against physical width, top/bottom against physical height.
 	if bla.style != nil && bla.style.GetPosition() == css.PositionRelative {
-		cbWidth := bla.space.AvailableSize.InlineSize
-		cbHeight := bla.space.AvailableSize.BlockSize
-		if cbHeight == Indefinite {
-			cbHeight = 0 // auto height → percentages compute to 0
+		logicalBlock := bla.space.AvailableSize.BlockSize
+		if logicalBlock == Indefinite {
+			logicalBlock = 0 // auto height → percentages compute to 0
 		}
-		offset := bla.style.GetPositionOffsetResolved(cbWidth, cbHeight)
+		physCB := ToPhysicalSize(LogicalSize{
+			InlineSize: bla.space.AvailableSize.InlineSize,
+			BlockSize:  logicalBlock,
+		}, wdm.WM)
+		offset := bla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
 		var dx, dy float64
 		// Left wins over right.
 		if offset.HasLeft {

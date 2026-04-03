@@ -2811,7 +2811,6 @@ func (r *Renderer) drawImage(box *layout.Box) {
 	if box.ImagePath == "" {
 		return
 	}
-
 	// Get effective Y position (adjusted for scroll offset)
 	effectiveY := r.getEffectiveY(box)
 

@@ -35,6 +35,10 @@ type PaintLayer struct {
 	HasClip  bool
 	ClipRect [4]float64 // x, y, w, h of padding box
 
+	// CSS clip: rect() (purely physical, per CSS Writing Modes §7.6):
+	HasCSSClip  bool
+	CSSClipRect [4]float64 // x, y, w, h of clip region
+
 	// Pre-computed paint properties — no Style access needed during paint.
 
 	// Compositing:
@@ -117,6 +121,26 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			box.Y + box.Border.Top,
 			clipW,
 			clipH,
+		}
+	}
+
+	// CSS clip: rect() — applies to absolutely positioned elements (CSS 2.1 §11.1.2).
+	// Values are physical offsets from the element's border-box top-left corner.
+	if cr := s.GetClipRect(); cr != nil {
+		layer.HasCSSClip = true
+		clipRight := cr.Right
+		if clipRight < 0 {
+			clipRight = box.Width // "auto" sentinel
+		}
+		clipBottom := cr.Bottom
+		if clipBottom < 0 {
+			clipBottom = box.Height // "auto" sentinel
+		}
+		layer.CSSClipRect = [4]float64{
+			box.X + cr.Left,
+			box.Y + cr.Top,
+			clipRight - cr.Left,
+			clipBottom - cr.Top,
 		}
 	}
 

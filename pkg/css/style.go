@@ -863,6 +863,41 @@ func (s *Style) GetPadding() BoxEdge {
 	}
 }
 
+// GetPaddingForWidth resolves all four padding values including percentage values
+// against the given containing block inline-size. Per CSS 2.1 §8.4, ALL padding
+// percentages (including top/bottom) resolve against the containing block's width
+// (inline-size in the containing block's writing mode).
+func (s *Style) GetPaddingForWidth(containingWidth float64) BoxEdge {
+	return BoxEdge{
+		Top:    s.resolvePaddingEdge("padding-top", containingWidth),
+		Right:  s.resolvePaddingEdge("padding-right", containingWidth),
+		Bottom: s.resolvePaddingEdge("padding-bottom", containingWidth),
+		Left:   s.resolvePaddingEdge("padding-left", containingWidth),
+	}
+}
+
+// resolvePaddingEdge resolves a single padding property, handling percentage values.
+// Padding cannot be negative (CSS 2.1 §8.4).
+func (s *Style) resolvePaddingEdge(prop string, containingWidth float64) float64 {
+	if val, ok := s.Get(prop); ok {
+		trimmed := strings.TrimSpace(val)
+		if strings.HasSuffix(trimmed, "%") {
+			if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
+				result := pct / 100.0 * containingWidth
+				if result < 0 {
+					return 0
+				}
+				return result
+			}
+		}
+	}
+	result := s.getLengthOrZero(prop)
+	if result < 0 {
+		return 0
+	}
+	return result
+}
+
 // GetBorderWidth returns the border width for all four sides
 func (s *Style) GetBorderWidth() BoxEdge {
 	styles := s.GetBorderStyle()

@@ -10,9 +10,12 @@ type OutOfFlowCandidate struct {
 	// Node is the layout tree node for the out-of-flow child.
 	Node *LayoutInputNode
 
-	// StaticOffset is the position the element would have in normal flow.
-	// Used when top/left/bottom/right are all 'auto'.
-	StaticOffset LogicalOffset
+	// StaticPosition is the position the element would have in normal flow,
+	// with edge annotations for alignment. Used when insets are 'auto'.
+	// Expressed in the containing block's logical coordinates.
+	//
+	// Mirrors Blink's LogicalStaticPosition.
+	StaticPosition LogicalStaticPosition
 }
 
 // OutOfFlowLayoutPart handles layout of absolutely and fixed positioned
@@ -44,14 +47,22 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 
 	for _, candidate := range candidates {
 		child := candidate.Node
-		staticBlock := candidate.StaticOffset.BlockOffset
-		staticInline := candidate.StaticOffset.InlineOffset
 		childStyle := child.Style()
 		if childStyle == nil {
 			continue
 		}
 
 		childWDM := NewWritingDirectionMode(childStyle)
+
+		// Blink's cross-WM static position conversion:
+		// The static position is in the containing block's logical coordinates.
+		// If the child has a different writing mode, convert:
+		//   container-logical → physical → child-logical
+		// Then back to container-logical for the constraint equation.
+		// For now, we keep the static position in the CB's logical coordinates
+		// since the constraint equation runs in CB coordinates.
+		staticInline := candidate.StaticPosition.Offset.InlineOffset
+		staticBlock := candidate.StaticPosition.Offset.BlockOffset
 
 		// Pre-compute all values needed for both sizing and positioning.
 		// Resolve physical insets, then convert to logical in CB's writing mode.

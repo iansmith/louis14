@@ -217,6 +217,18 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 // paintLayerContent paints the layer's own box and children in
 // CSS 2.1 Appendix E order using the pre-sorted PaintLayer lists.
 func (r *Renderer) paintLayerContent(layer *PaintLayer) {
+	// CSS clip: rect() — clips everything including backgrounds and borders.
+	// Purely physical coordinates per CSS Writing Modes §7.6.
+	cssClipping := false
+	if layer.HasCSSClip {
+		r.dc.Push()
+		cssClipping = true
+		r.dc.DrawRectangle(
+			layer.CSSClipRect[0], layer.CSSClipRect[1],
+			layer.CSSClipRect[2], layer.CSSClipRect[3])
+		r.dc.Clip()
+	}
+
 	// Step 1: Background and borders.
 	r.drawBackground(layer)
 	r.drawBorders(layer)
@@ -263,6 +275,10 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	if clipping {
+		r.dc.Pop()
+	}
+
+	if cssClipping {
 		r.dc.Pop()
 	}
 }
@@ -397,14 +413,53 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	// Scale image to box content area using nearest-neighbor into an RGBA buffer.
 	srcW := img.Bounds().Dx()
 	srcH := img.Bounds().Dy()
+	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
+	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
 	dstW := int(math.Round(box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right))
 	dstH := int(math.Round(box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom))
 	if dstW <= 0 || dstH <= 0 || srcW == 0 || srcH == 0 {
 		return
 	}
 	scaled := scaleImageNearest(img, srcW, srcH, dstW, dstH)
-	drawX := int(math.Round(box.X + box.Border.Left + box.Padding.Left))
-	drawY := int(math.Round(box.Y + box.Border.Top + box.Padding.Top))
+
+	// CSS clip: rect() — DrawImage bypasses the clip mask, so we must
+	// manually crop the scaled image to the CSS clip region.
+	drawX := int(contentX)
+	drawY := int(contentY)
+	if layer.HasCSSClip {
+		// CSSClipRect is [x, y, w, h] in absolute coordinates.
+		cx := int(math.Round(layer.CSSClipRect[0]))
+		cy := int(math.Round(layer.CSSClipRect[1]))
+		cw := int(math.Round(layer.CSSClipRect[2]))
+		ch := int(math.Round(layer.CSSClipRect[3]))
+		// Intersect clip region with image draw area.
+		ix0 := drawX
+		if cx > ix0 {
+			ix0 = cx
+		}
+		iy0 := drawY
+		if cy > iy0 {
+			iy0 = cy
+		}
+		ix1 := drawX + dstW
+		if cx+cw < ix1 {
+			ix1 = cx + cw
+		}
+		iy1 := drawY + dstH
+		if cy+ch < iy1 {
+			iy1 = cy + ch
+		}
+		if ix1 <= ix0 || iy1 <= iy0 {
+			return // Entirely clipped
+		}
+		// Extract the visible sub-image.
+		sub := scaled.(interface {
+			SubImage(image.Rectangle) image.Image
+		}).SubImage(image.Rect(ix0-drawX, iy0-drawY, ix1-drawX, iy1-drawY))
+		r.dc.DrawImage(sub, ix0, iy0)
+		return
+	}
+
 	r.dc.DrawImage(scaled, drawX, drawY)
 }
 

@@ -41,13 +41,21 @@ func (fg FragmentGeometry) BlockBorderPadding() float64 {
 
 // ComputeFragmentGeometry resolves border and padding from a CSS style
 // into logical edges for the given writing direction.
-func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode) FragmentGeometry {
+// An optional percentageBase (containing block inline-size) can be passed
+// to resolve percentage padding values. If not provided (or zero), percentage
+// padding resolves to zero.
+func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode, percentageBase ...float64) FragmentGeometry {
 	if style == nil {
 		return FragmentGeometry{}
 	}
 
 	physBorder := style.GetBorderWidth()
-	physPadding := style.GetPadding()
+	var physPadding css.BoxEdge
+	if len(percentageBase) > 0 && percentageBase[0] > 0 {
+		physPadding = style.GetPaddingForWidth(percentageBase[0])
+	} else {
+		physPadding = style.GetPadding()
+	}
 
 	return FragmentGeometry{
 		Border: ToLogicalEdges(PhysicalEdges{
@@ -338,7 +346,12 @@ func CalculateInitialFragmentGeometry(
 	wdm WritingDirectionMode,
 	space ConstraintSpace,
 ) FragmentGeometry {
-	geom := ComputeFragmentGeometry(style, wdm)
+	// CSS 2.1 §8.4: Percentage paddings resolve against containing block's
+	// inline-size (width in horizontal mode). The PercentageResolutionSize's
+	// InlineSize carries this value. Convert to physical width for the
+	// percentage resolution base.
+	pctBase := ToPhysicalSize(space.PercentageResolutionSize, space.WritingDirection.WM).Width
+	geom := ComputeFragmentGeometry(style, wdm, pctBase)
 
 	// --- Resolve inline-size (produces border-box) ---
 	var borderBoxInline float64

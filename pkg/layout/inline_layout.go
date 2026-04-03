@@ -227,9 +227,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 					Node: r.Item.LayoutNode,
-					StaticOffset: LogicalOffset{
-						InlineOffset: inlinePos,
-						BlockOffset:  blockOffset,
+					StaticPosition: LogicalStaticPosition{
+						Offset: LogicalOffset{
+							InlineOffset: inlinePos,
+							BlockOffset:  blockOffset,
+						},
+						InlineEdge: StaticEdgeStart,
+						BlockEdge:  StaticEdgeStart,
 					},
 				})
 			}

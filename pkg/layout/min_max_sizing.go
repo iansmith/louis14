@@ -230,6 +230,8 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
 	var result MinMaxSizes
 
+	parentWDM := space.WritingDirection
+
 	for _, child := range node.Children() {
 		if child.IsText() {
 			continue
@@ -240,28 +242,101 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		}
 
 		childWDM := NewWritingDirectionMode(childStyle)
-		childSpace := NewConstraintSpaceBuilder(space.WritingDirection, childWDM, false).
-			SetOrthogonalFallbackInlineSize(
-				orthogonalFallbackSize(childWDM, ctx)).
-			SetAvailableSize(space.AvailableSize).
-			Build()
+		isOrthogonal := parentWDM.IsOrthogonalTo(childWDM)
 
-		childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+		if isOrthogonal {
+			// Orthogonal child: the parent's inline direction aligns with the
+			// child's block direction. We need the child's block-size, which
+			// requires actually laying out the child.
+			// Mirrors Blink's NGOrthogonalWritingModeRootInlineSize().
+			childMin, childMax := measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space)
+			if childMin > result.MinContent {
+				result.MinContent = childMin
+			}
+			if childMax > result.MaxContent {
+				result.MaxContent = childMax
+			}
+		} else {
+			// Parallel child: use standard min/max inline-size computation.
+			childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetOrthogonalFallbackInlineSize(
+					orthogonalFallbackSize(childWDM, ctx)).
+				SetAvailableSize(space.AvailableSize).
+				Build()
 
-		// Convert child's content-box to border-box, then add margins.
-		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
-		childBP := childGeom.InlineBorderPadding()
-		childMargins := ResolveMargins(childStyle, childWDM, 0)
-		childMin := childMM.MinContent + childBP + childMargins.InlineSum()
-		childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
+			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
 
-		if childMin > result.MinContent {
-			result.MinContent = childMin
-		}
-		if childMax > result.MaxContent {
-			result.MaxContent = childMax
+			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+			childBP := childGeom.InlineBorderPadding()
+			childMargins := ResolveMargins(childStyle, childWDM, 0)
+			childMin := childMM.MinContent + childBP + childMargins.InlineSum()
+			childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
+
+			if childMin > result.MinContent {
+				result.MinContent = childMin
+			}
+			if childMax > result.MaxContent {
+				result.MaxContent = childMax
+			}
 		}
 	}
 
 	return result
+}
+
+// measureOrthogonalChild lays out an orthogonal child and returns its
+// contribution to the parent's min/max inline-size. The child's block-size
+// (after layout) becomes the parent's inline contribution.
+//
+// Uses a cache on LayoutContext to avoid redundant layouts and detect cycles.
+// On cycle detection, falls back to the orthogonal fallback size (ICB cross-size).
+func measureOrthogonalChild(
+	child *LayoutInputNode,
+	childStyle *css.Style,
+	childWDM, parentWDM WritingDirectionMode,
+	ctx *LayoutContext,
+	space ConstraintSpace,
+) (minContrib, maxContrib float64) {
+	// Check cache first.
+	if cached, isCycle := ctx.GetOrthogonalLayout(child); isCycle {
+		// Cycle detected: fall back to ICB cross-size.
+		fallback := orthogonalFallbackSize(childWDM, ctx)
+		childMargins := ResolveMargins(childStyle, parentWDM, 0)
+		contrib := fallback + childMargins.InlineSum()
+		return contrib, contrib
+	} else if cached != nil {
+		// Use cached result's block-size as the contribution.
+		childLogical := NewLogicalFragment(parentWDM, cached.Fragment)
+		childMargins := ResolveMargins(childStyle, parentWDM, 0)
+		contrib := childLogical.InlineSize() + childMargins.InlineSum()
+		return contrib, contrib
+	}
+
+	// Mark as computing (cycle detection sentinel).
+	ctx.SetOrthogonalComputing(child)
+
+	// Build constraint space for the orthogonal child.
+	// The child's inline-size will use the orthogonal fallback (ICB cross-size)
+	// when the parent's block-size is indefinite.
+	isChildNewFC := createsFormattingContext(childStyle)
+	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, isChildNewFC).
+		SetOrthogonalFallbackInlineSize(
+			orthogonalFallbackSize(childWDM, ctx)).
+		SetAvailableSize(space.AvailableSize).
+		Build()
+
+	// Lay out the child to get its block-size.
+	childResult := layoutElement(ctx, child, childSpace)
+
+	// Cache the result.
+	ctx.SetOrthogonalResult(child, childResult)
+
+	// The child's physical size viewed in the parent's logical coordinates:
+	// InlineSize() gives the extent in the parent's inline direction,
+	// which is the child's block-size (since they're orthogonal).
+	childLogical := NewLogicalFragment(parentWDM, childResult.Fragment)
+	childMargins := ResolveMargins(childStyle, parentWDM, 0)
+	contrib := childLogical.InlineSize() + childMargins.InlineSum()
+
+	return contrib, contrib
 }

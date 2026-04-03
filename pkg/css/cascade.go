@@ -21,9 +21,10 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("text-decoration", "underline")
 	}
 
-	// Default margin for <body> element
-	// NOTE: Real UA default is 8px, but many WPT tests rely on margin:0 here.
-	// Enabling 8px requires fixing all abs-pos ICB tests simultaneously.
+	// Default margin for <body> element.
+	// NOTE: Real UA default is 8px, but XHTML test files and HTML5 ref files
+	// parse differently, causing asymmetric body margin application.
+	// Keeping at 0 until parser parity is achieved.
 	if node.TagName == "body" {
 		style.Set("margin-top", "0")
 		style.Set("margin-right", "0")
@@ -31,10 +32,58 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("margin-left", "0")
 	}
 
-	// Default margin for <p> (paragraph) elements
-	if node.TagName == "p" {
+	// Default margin for block elements: use logical markers so that
+	// resolveLogicalBoxProperties maps to the correct physical side in
+	// vertical/sideways writing modes (HTML spec §15.3.3).
+	if node.TagName == "p" || node.TagName == "dl" ||
+		node.TagName == "hr" {
 		style.Set("margin-top", "1em")
 		style.Set("margin-bottom", "1em")
+		style.Set("_margin-block-start", "1em")
+		style.Set("_margin-block-end", "1em")
+	}
+
+	// Headings: logical block margins per HTML spec.
+	switch node.TagName {
+	case "h1":
+		style.Set("margin-top", "0.67em")
+		style.Set("margin-bottom", "0.67em")
+		style.Set("_margin-block-start", "0.67em")
+		style.Set("_margin-block-end", "0.67em")
+	case "h2":
+		style.Set("margin-top", "0.83em")
+		style.Set("margin-bottom", "0.83em")
+		style.Set("_margin-block-start", "0.83em")
+		style.Set("_margin-block-end", "0.83em")
+	case "h3":
+		style.Set("margin-top", "1em")
+		style.Set("margin-bottom", "1em")
+		style.Set("_margin-block-start", "1em")
+		style.Set("_margin-block-end", "1em")
+	case "h4":
+		style.Set("margin-top", "1.33em")
+		style.Set("margin-bottom", "1.33em")
+		style.Set("_margin-block-start", "1.33em")
+		style.Set("_margin-block-end", "1.33em")
+	case "h5":
+		style.Set("margin-top", "1.67em")
+		style.Set("margin-bottom", "1.67em")
+		style.Set("_margin-block-start", "1.67em")
+		style.Set("_margin-block-end", "1.67em")
+	case "h6":
+		style.Set("margin-top", "2.33em")
+		style.Set("margin-bottom", "2.33em")
+		style.Set("_margin-block-start", "2.33em")
+		style.Set("_margin-block-end", "2.33em")
+	}
+
+	// Lists and blockquotes: logical block margins.
+	if node.TagName == "ul" || node.TagName == "ol" || node.TagName == "menu" ||
+		node.TagName == "dir" || node.TagName == "blockquote" || node.TagName == "figure" {
+		style.Set("margin-top", "1em")
+		style.Set("margin-bottom", "1em")
+		style.Set("_margin-block-start", "1em")
+		style.Set("_margin-block-end", "1em")
 	}
 
 	// Non-rendered elements should be hidden by default

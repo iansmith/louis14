@@ -28,4 +28,47 @@ type LayoutContext struct {
 	// FontConfig provides font paths for text measurement, including @font-face fonts.
 	// If zero-value, DefaultFontConfig() is used.
 	FontConfig text.FontConfig
+
+	// OrthogonalLayoutCache caches layout results for orthogonal children
+	// during min/max sizing to avoid redundant layouts and detect cycles.
+	// Keyed by LayoutInputNode pointer. Mirrors Blink's NGLayoutCacheStatus.
+	OrthogonalLayoutCache map[*LayoutInputNode]*orthogonalCacheEntry
+}
+
+// orthogonalCacheEntry stores a cached layout result or a "computing" sentinel.
+type orthogonalCacheEntry struct {
+	Computing bool          // true while layout is in progress (cycle detection)
+	Result    *LayoutResult // cached result, nil if still computing
+}
+
+// GetOrthogonalLayout returns a cached layout result for an orthogonal child,
+// or nil if not cached. Returns (nil, true) if a cycle is detected.
+func (ctx *LayoutContext) GetOrthogonalLayout(node *LayoutInputNode) (*LayoutResult, bool) {
+	if ctx.OrthogonalLayoutCache == nil {
+		return nil, false
+	}
+	entry, ok := ctx.OrthogonalLayoutCache[node]
+	if !ok {
+		return nil, false
+	}
+	if entry.Computing {
+		return nil, true // cycle detected
+	}
+	return entry.Result, false
+}
+
+// SetOrthogonalComputing marks a node as being computed (cycle detection sentinel).
+func (ctx *LayoutContext) SetOrthogonalComputing(node *LayoutInputNode) {
+	if ctx.OrthogonalLayoutCache == nil {
+		ctx.OrthogonalLayoutCache = make(map[*LayoutInputNode]*orthogonalCacheEntry)
+	}
+	ctx.OrthogonalLayoutCache[node] = &orthogonalCacheEntry{Computing: true}
+}
+
+// SetOrthogonalResult stores a cached layout result for an orthogonal child.
+func (ctx *LayoutContext) SetOrthogonalResult(node *LayoutInputNode, result *LayoutResult) {
+	if ctx.OrthogonalLayoutCache == nil {
+		ctx.OrthogonalLayoutCache = make(map[*LayoutInputNode]*orthogonalCacheEntry)
+	}
+	ctx.OrthogonalLayoutCache[node] = &orthogonalCacheEntry{Result: result}
 }

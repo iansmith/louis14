@@ -822,8 +822,12 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		pos := childStyle.GetPosition()
 		if pos == css.PositionAbsolute || pos == css.PositionFixed {
 			builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-				Node:         child,
-				StaticOffset: LogicalOffset{InlineOffset: 0, BlockOffset: 0},
+				Node: child,
+				StaticPosition: LogicalStaticPosition{
+					Offset:     LogicalOffset{InlineOffset: 0, BlockOffset: 0},
+					InlineEdge: StaticEdgeStart,
+					BlockEdge:  StaticEdgeStart,
+				},
 			})
 			continue
 		}
