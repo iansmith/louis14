@@ -141,21 +141,29 @@ func TestApplyStylesToDocument(t *testing.T) {
 	// Phase 22: Pass viewport dimensions for media query evaluation
 	styles := ApplyStylesToDocument(doc, 800, 600)
 
-	// Should have 2 styled nodes (the divs)
+	// The parser creates implicit <html> and <body> wrappers per HTML5 §8.2.6.4.
+	// All 4 elements (html, body, 2 divs) should be styled.
+	// Only the 2 divs should have color set (from the CSS rules).
 	elementCount := 0
+	divCount := 0
 	for node, style := range styles {
 		if node.Type == html.ElementNode {
 			elementCount++
-
-			// Check the style was applied
-			if _, ok := style.Get("color"); !ok {
-				t.Error("expected color to be set")
+			if node.TagName == "div" {
+				divCount++
+				if _, ok := style.Get("color"); !ok {
+					t.Errorf("expected color to be set on div (class=%q)", node.Attributes["class"])
+				}
 			}
 		}
+		_ = style
 	}
 
-	if elementCount != 2 {
-		t.Errorf("expected 2 styled elements, got %d", elementCount)
+	if elementCount != 4 {
+		t.Errorf("expected 4 styled elements (html, body, 2 divs), got %d", elementCount)
+	}
+	if divCount != 2 {
+		t.Errorf("expected 2 divs, got %d", divCount)
 	}
 }
 

@@ -840,6 +840,19 @@ func (s *Style) GetMarginForWidth(containingWidth float64) BoxEdge {
 	}
 }
 
+// GetAllMarginsForWidth resolves all four margin values including percentage values
+// against the given containing block inline-size. Per CSS 2.1 §8.3, ALL margin
+// percentages (including top/bottom) resolve against the containing block's width
+// (inline-size in the containing block's writing mode).
+func (s *Style) GetAllMarginsForWidth(containingWidth float64) BoxEdge {
+	return BoxEdge{
+		Top:    s.resolveMarginEdge("margin-top", containingWidth),
+		Right:  s.resolveMarginEdge("margin-right", containingWidth),
+		Bottom: s.resolveMarginEdge("margin-bottom", containingWidth),
+		Left:   s.resolveMarginEdge("margin-left", containingWidth),
+	}
+}
+
 // GetPadding returns the padding values for all four sides
 func (s *Style) GetPadding() BoxEdge {
 	return BoxEdge{
@@ -1154,31 +1167,38 @@ type PositionOffset struct {
 	HasLeft   bool
 }
 
-// GetPositionOffset returns positioning offset values
+// GetPositionOffset returns positioning offset values.
+// Percentage values are not resolved (use GetPositionOffsetResolved for that).
 func (s *Style) GetPositionOffset() PositionOffset {
+	return s.GetPositionOffsetResolved(0, 0)
+}
+
+// GetPositionOffsetResolved returns positioning offset values with percentage
+// resolution. For top/bottom, percentages resolve against cbHeight. For
+// left/right, percentages resolve against cbWidth.
+func (s *Style) GetPositionOffsetResolved(cbWidth, cbHeight float64) PositionOffset {
 	offset := PositionOffset{}
-
-	if top, ok := s.GetLength("top"); ok {
-		offset.Top = top
-		offset.HasTop = true
-	}
-
-	if right, ok := s.GetLength("right"); ok {
-		offset.Right = right
-		offset.HasRight = true
-	}
-
-	if bottom, ok := s.GetLength("bottom"); ok {
-		offset.Bottom = bottom
-		offset.HasBottom = true
-	}
-
-	if left, ok := s.GetLength("left"); ok {
-		offset.Left = left
-		offset.HasLeft = true
-	}
-
+	offset.Top, offset.HasTop = s.resolveLengthOrPercent("top", cbHeight)
+	offset.Right, offset.HasRight = s.resolveLengthOrPercent("right", cbWidth)
+	offset.Bottom, offset.HasBottom = s.resolveLengthOrPercent("bottom", cbHeight)
+	offset.Left, offset.HasLeft = s.resolveLengthOrPercent("left", cbWidth)
 	return offset
+}
+
+// resolveLengthOrPercent tries to parse a property as a length or percentage.
+// If it's a percentage, it's resolved against the given reference value.
+func (s *Style) resolveLengthOrPercent(property string, reference float64) (float64, bool) {
+	val, ok := s.Get(property)
+	if !ok || val == "auto" {
+		return 0, false
+	}
+	if length, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+		return length, true
+	}
+	if pct, ok := ParsePercentage(val); ok {
+		return pct / 100.0 * reference, true
+	}
+	return 0, false
 }
 
 // GetZIndex returns the z-index value (default: 0)
@@ -1191,6 +1211,19 @@ func (s *Style) GetZIndex() int {
 		}
 	}
 	return 0
+}
+
+// HasExplicitZIndex returns true if z-index is set to an integer value
+// (not "auto" or unset). Only positioned elements with explicit z-index
+// create new stacking contexts.
+func (s *Style) HasExplicitZIndex() bool {
+	zindex, ok := s.Get("z-index")
+	if !ok || zindex == "auto" || zindex == "" {
+		return false
+	}
+	var z int
+	_, err := fmt.Sscanf(zindex, "%d", &z)
+	return err == nil
 }
 
 func ParseInlineStyle(styleAttr string) *Style {
@@ -4209,11 +4242,14 @@ func stripSafeUnsafe(val string) (string, bool) {
 
 // GetJustifyContent returns the justify-content value (default: flex-start).
 // Strips any "safe"/"unsafe" prefix; use IsSafeJustifyContent to check the safe flag.
+// Note: "normal" resolves to "flex-start" in flex context per CSS Flexbox spec.
 func (s *Style) GetJustifyContent() JustifyContent {
 	if jc, ok := s.Get("justify-content"); ok {
 		jc, _ = stripSafeUnsafe(jc)
 		switch jc {
-		case "flex-end":
+		case "flex-start", "start", "normal":
+			return JustifyContentFlexStart
+		case "flex-end", "end":
 			return JustifyContentFlexEnd
 		case "center":
 			return JustifyContentCenter
@@ -4225,10 +4261,6 @@ func (s *Style) GetJustifyContent() JustifyContent {
 			return JustifyContentSpaceEvenly
 		case "stretch":
 			return JustifyContentStretch
-		case "start":
-			return JustifyContentFlexStart
-		case "end":
-			return JustifyContentFlexEnd
 		case "left":
 			return JustifyContentLeft
 		case "right":
@@ -4251,20 +4283,25 @@ func (s *Style) IsSafeJustifyContent() bool {
 type AlignItems string
 
 const (
+	AlignItemsNormal       AlignItems = "normal"  // initial value; resolves to stretch in flex context
 	AlignItemsFlexStart    AlignItems = "flex-start"
 	AlignItemsFlexEnd      AlignItems = "flex-end"
 	AlignItemsCenter       AlignItems = "center"
 	AlignItemsStretch      AlignItems = "stretch"
 	AlignItemsBaseline     AlignItems = "baseline"
 	AlignItemsLastBaseline AlignItems = "last-baseline"
+	AlignItemsSelfStart    AlignItems = "self-start"
+	AlignItemsSelfEnd      AlignItems = "self-end"
 )
 
-// GetAlignItems returns the align-items value (default: stretch).
+// GetAlignItems returns the align-items value (default: normal, which acts as stretch in flex).
 // Strips any "safe"/"unsafe" prefix; use IsSafeAlignItems to check the safe flag.
 func (s *Style) GetAlignItems() AlignItems {
 	if ai, ok := s.Get("align-items"); ok {
 		ai, _ = stripSafeUnsafe(ai)
 		switch ai {
+		case "normal":
+			return AlignItemsNormal
 		case "flex-start", "start":
 			return AlignItemsFlexStart
 		case "flex-end", "end":
@@ -4275,11 +4312,15 @@ func (s *Style) GetAlignItems() AlignItems {
 			return AlignItemsBaseline
 		case "last baseline":
 			return AlignItemsLastBaseline
-		case "stretch", "normal":
+		case "stretch":
 			return AlignItemsStretch
+		case "self-start":
+			return AlignItemsSelfStart
+		case "self-end":
+			return AlignItemsSelfEnd
 		}
 	}
-	return AlignItemsStretch
+	return AlignItemsNormal
 }
 
 // IsSafeAlignItems returns true if align-items has the "safe" overflow keyword.
@@ -4295,6 +4336,7 @@ func (s *Style) IsSafeAlignItems() bool {
 type AlignContent string
 
 const (
+	AlignContentNormal       AlignContent = "normal"  // initial value; resolves to stretch in flex context
 	AlignContentFlexStart    AlignContent = "flex-start"
 	AlignContentFlexEnd      AlignContent = "flex-end"
 	AlignContentCenter       AlignContent = "center"
@@ -4304,18 +4346,22 @@ const (
 	AlignContentSpaceEvenly  AlignContent = "space-evenly"
 )
 
-// GetAlignContent returns the align-content value (default: stretch).
+// GetAlignContent returns the align-content value (default: normal, which acts as stretch in flex).
 // Strips any "safe"/"unsafe" prefix; use IsSafeAlignContent to check the safe flag.
 func (s *Style) GetAlignContent() AlignContent {
 	if ac, ok := s.Get("align-content"); ok {
 		ac, _ = stripSafeUnsafe(ac)
 		switch ac {
-		case "flex-start":
+		case "normal":
+			return AlignContentNormal
+		case "flex-start", "start":
 			return AlignContentFlexStart
-		case "flex-end":
+		case "flex-end", "end":
 			return AlignContentFlexEnd
 		case "center":
 			return AlignContentCenter
+		case "stretch":
+			return AlignContentStretch
 		case "space-between":
 			return AlignContentSpaceBetween
 		case "space-around":
@@ -4324,7 +4370,7 @@ func (s *Style) GetAlignContent() AlignContent {
 			return AlignContentSpaceEvenly
 		}
 	}
-	return AlignContentStretch
+	return AlignContentNormal
 }
 
 // IsSafeAlignContent returns true if align-content has the "safe" overflow keyword.
@@ -4413,7 +4459,8 @@ func (s *Style) GetFlexBasis() float64 {
 type AlignSelf string
 
 const (
-	AlignSelfAuto         AlignSelf = "auto"
+	AlignSelfAuto         AlignSelf = "auto"    // initial value — use container's align-items
+	AlignSelfNormal       AlignSelf = "normal"  // like auto for flex items
 	AlignSelfFlexStart    AlignSelf = "flex-start"
 	AlignSelfFlexEnd      AlignSelf = "flex-end"
 	AlignSelfCenter       AlignSelf = "center"
@@ -4424,11 +4471,16 @@ const (
 	AlignSelfSelfEnd      AlignSelf = "self-end"
 )
 
-// GetAlignSelf returns the align-self value (default: auto)
+// GetAlignSelf returns the align-self value (default: auto).
+// "auto" and "normal" both mean: use the container's align-items value.
 func (s *Style) GetAlignSelf() AlignSelf {
 	if as, ok := s.Get("align-self"); ok {
 		as, _ = stripSafeUnsafe(as)
 		switch as {
+		case "auto":
+			return AlignSelfAuto
+		case "normal":
+			return AlignSelfNormal
 		case "flex-start", "start":
 			return AlignSelfFlexStart
 		case "flex-end", "end":
@@ -4441,6 +4493,9 @@ func (s *Style) GetAlignSelf() AlignSelf {
 			return AlignSelfCenter
 		case "stretch":
 			return AlignSelfStretch
+		case "initial":
+			// CSS spec: 'initial' for align-self is 'auto' — fall through to auto.
+			return AlignSelfAuto
 		case "baseline", "first baseline":
 			return AlignSelfBaseline
 		case "last baseline":

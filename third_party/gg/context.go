@@ -536,6 +536,11 @@ func (dc *Context) ResetClip() {
 	dc.mask = nil
 }
 
+// HasMask returns true if a clipping mask is currently set.
+func (dc *Context) HasMask() bool {
+	return dc.mask != nil
+}
+
 // Convenient Drawing Functions
 
 // Clear fills the entire image with the current color.

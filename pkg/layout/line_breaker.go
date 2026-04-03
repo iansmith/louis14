@@ -1,0 +1,723 @@
+package layout
+
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/text"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+// isCSSCollapsibleSpace returns true for whitespace characters that CSS
+// considers collapsible (CSS 2.1 §16.6.1). U+00A0 (non-breaking space) is
+// explicitly excluded — it is never collapsed or stripped.
+func isCSSCollapsibleSpace(r rune) bool {
+	return r != '\u00A0' && unicode.IsSpace(r)
+}
+
+// LineBreakerMode controls line breaking behavior.
+// Ported from Blink's LineBreakerMode.
+type LineBreakerMode int
+
+const (
+	// LineBreakerContent performs normal line breaking for layout.
+	LineBreakerContent LineBreakerMode = iota
+	// LineBreakerMinContent breaks at every opportunity (for min-content sizing).
+	LineBreakerMinContent
+	// LineBreakerMaxContent never wraps (for max-content sizing).
+	LineBreakerMaxContent
+)
+
+// InlineItemResult is the measured output of line breaking for one item
+// within a line. Transient — produced by LineBreaker, consumed by
+// InlineLayoutAlgorithm.
+//
+// Ported from Blink's InlineItemResult (inline_item_result.h).
+type InlineItemResult struct {
+	// Item is the source InlineItem.
+	Item *InlineItem
+	// ItemIndex is the index into InlineItemsData.Items.
+	ItemIndex int
+	// TextStart and TextEnd are the portion of text used (may be a
+	// sub-range of the InlineItem if broken mid-item).
+	TextStart int
+	TextEnd   int
+	// InlineSize is the measured inline size of this result.
+	InlineSize float64
+	// LayoutResult is set for atomic inlines (inline-block, replaced).
+	LayoutResult *LayoutResult
+	// Margins holds the inline margins for open/close tags.
+	Margins LogicalEdges
+	// CanBreakAfter indicates a valid break opportunity after this item.
+	CanBreakAfter bool
+}
+
+// LineInfo represents a complete line produced by the LineBreaker.
+// Ported from Blink's LineInfo (line_info.h).
+type LineInfo struct {
+	// Results are the item results making up this line.
+	Results []InlineItemResult
+	// Width is the actual used width of the line content.
+	Width float64
+	// AvailableWidth is the space available for this line.
+	AvailableWidth float64
+	// TextAlign is the computed text-align for this line.
+	TextAlign string
+	// BaseDirection is the paragraph's base direction.
+	BaseDirection Direction
+	// IsLastLine is true if this is the final line.
+	IsLastLine bool
+	// HasForcedBreak is true if the line ends with a forced break (BR, newline).
+	HasForcedBreak bool
+}
+
+// LineBreaker consumes an InlineItemsData and produces lines one at a time.
+// Each call to NextLine() fills a LineInfo with the items for one line.
+//
+// Ported from Blink's LineBreaker (line_breaker.h).
+type LineBreaker struct {
+	itemsData      *InlineItemsData
+	ctx            *LayoutContext
+	space          ConstraintSpace
+	fonts          text.FontConfig
+	mode           LineBreakerMode
+	availableWidth float64
+
+	// Current position in the item list.
+	currentItemIndex int
+	// Current byte offset in TextContent.
+	currentTextOffset int
+	// Current inline position on the line being built.
+	position float64
+	// Whether we've finished all items.
+	done bool
+}
+
+// NewLineBreaker creates a line breaker for the given inline content.
+func NewLineBreaker(
+	itemsData *InlineItemsData,
+	ctx *LayoutContext,
+	space ConstraintSpace,
+	fonts text.FontConfig,
+	mode LineBreakerMode,
+) *LineBreaker {
+	availableWidth := space.AvailableSize.InlineSize
+	if mode == LineBreakerMaxContent {
+		availableWidth = 1e9 // effectively unlimited
+	}
+
+	return &LineBreaker{
+		itemsData:      itemsData,
+		ctx:            ctx,
+		space:          space,
+		fonts:          fonts,
+		mode:           mode,
+		availableWidth: availableWidth,
+	}
+}
+
+// NextLine produces the next line of content. Returns false when all
+// content has been consumed.
+func (lb *LineBreaker) NextLine(line *LineInfo) bool {
+	if lb.done {
+		return false
+	}
+
+	line.Results = line.Results[:0]
+	line.Width = 0
+	line.AvailableWidth = lb.availableWidth
+	line.HasForcedBreak = false
+	line.IsLastLine = false
+	line.BaseDirection = lb.space.WritingDirection.Dir
+	lb.position = 0
+
+	// Process items until the line is full or we run out.
+	for lb.currentItemIndex < len(lb.itemsData.Items) {
+		item := lb.itemsData.Items[lb.currentItemIndex]
+
+		switch item.Type {
+		case InlineItemText:
+			if lb.handleText(item, line) {
+				// Line is complete (overflow handled).
+				lb.finishLine(line)
+				return true
+			}
+		case InlineItemControl:
+			lb.handleControl(item, line)
+			lb.finishLine(line)
+			return true
+		case InlineItemOpenTag:
+			lb.handleOpenTag(item, line)
+		case InlineItemCloseTag:
+			lb.handleCloseTag(item, line)
+		case InlineItemAtomicInline:
+			if lb.handleAtomicInline(item, line) {
+				lb.finishLine(line)
+				return true
+			}
+		case InlineItemFloat:
+			lb.handleFloat(item, line)
+		case InlineItemOutOfFlow:
+			// OOF items don't participate in line layout. Record them with
+			// zero advance so their static inline position is captured.
+			line.Results = append(line.Results, InlineItemResult{
+				Item:      item,
+				TextStart: item.StartOffset,
+				TextEnd:   item.StartOffset,
+			})
+		}
+
+		lb.currentItemIndex++
+	}
+
+	// All items consumed.
+	lb.done = true
+	if len(line.Results) > 0 || line.Width > 0 {
+		line.IsLastLine = true
+		lb.finishLine(line)
+		return true
+	}
+	return false
+}
+
+// handleText measures text and handles line breaking within text items.
+// Returns true if the line should end after this item.
+func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
+	textStart := item.StartOffset
+	if lb.currentTextOffset > textStart {
+		textStart = lb.currentTextOffset
+	}
+	textEnd := item.EndOffset
+	content := lb.itemsData.TextContent[textStart:textEnd]
+
+	if len(content) == 0 {
+		return false
+	}
+
+	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of a line.
+	if lb.position == 0 && len(line.Results) == 0 {
+		trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
+		if len(trimmed) < len(content) {
+			textStart += len(content) - len(trimmed)
+			content = trimmed
+			if len(content) == 0 {
+				lb.currentTextOffset = textEnd
+				return false
+			}
+		}
+	}
+
+	// Get font properties from style.
+	fontSize, bold, italic, mono, ahem := fontPropsFromStyle(item.Style)
+
+	// CSS 2.1 §16.4: letter-spacing adds inter-character space.
+	letterSpacing := 0.0
+	if item.Style != nil {
+		letterSpacing = item.Style.GetLetterSpacing()
+	}
+
+	// Measure the full text segment. In vertical writing modes, use vertical
+	// measurement where each upright glyph advances by fontSize.
+	isVertical := lb.space.WritingDirection.IsVertical()
+	var fullWidth float64
+	if isVertical {
+		fullWidth, _ = text.MeasureTextVertical(content, fontSize, bold, italic, mono, ahem)
+	} else {
+		fullWidth, _ = text.MeasureTextWithStyle(content, fontSize, bold, italic, mono, ahem)
+	}
+	if letterSpacing != 0 {
+		runeCount := runeLen(content)
+		if runeCount > 1 {
+			fullWidth += letterSpacing * float64(runeCount-1)
+		}
+	}
+
+	// Check if it fits.
+	remaining := lb.availableWidth - lb.position
+	if fullWidth <= remaining || lb.mode == LineBreakerMaxContent {
+		// Fits — add the full text.
+		line.Results = append(line.Results, InlineItemResult{
+			Item:       item,
+			ItemIndex:  lb.currentItemIndex,
+			TextStart:  textStart,
+			TextEnd:    textEnd,
+			InlineSize: fullWidth,
+		})
+		lb.position += fullWidth
+		line.Width = lb.position
+		lb.currentTextOffset = textEnd
+		return false
+	}
+
+	// CSS 2.1 §16.6.1: trailing whitespace is always stripped at end-of-line.
+	// If the text with trailing whitespace doesn't fit but the text without does,
+	// treat it as fitting. finishLine will strip the trailing whitespace anyway.
+	if lb.mode == LineBreakerContent {
+		stripped := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
+		if len(stripped) < len(content) {
+			var strippedWidth float64
+			if isVertical {
+				strippedWidth, _ = text.MeasureTextVertical(stripped, fontSize, bold, italic, mono, ahem)
+			} else {
+				strippedWidth, _ = text.MeasureTextWithStyle(stripped, fontSize, bold, italic, mono, ahem)
+			}
+			if letterSpacing != 0 {
+				rc := runeLen(stripped)
+				if rc > 1 {
+					strippedWidth += letterSpacing * float64(rc-1)
+				}
+			}
+			if strippedWidth <= remaining {
+				line.Results = append(line.Results, InlineItemResult{
+					Item:       item,
+					ItemIndex:  lb.currentItemIndex,
+					TextStart:  textStart,
+					TextEnd:    textEnd,
+					InlineSize: fullWidth,
+				})
+				lb.position += fullWidth
+				line.Width = lb.position
+				lb.currentTextOffset = textEnd
+				return false
+			}
+		}
+	}
+
+	// Doesn't fit — find a break point.
+	if lb.mode == LineBreakerMinContent {
+		// Break at every word boundary.
+		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, bold, italic, mono, ahem, line, 0)
+	}
+
+	// Normal mode: find where to break.
+	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, bold, italic, mono, ahem, line, remaining)
+}
+
+// breakTextAtWord finds a break point within a text item.
+// Returns true if the line should end.
+func (lb *LineBreaker) breakTextAtWord(
+	item *InlineItem,
+	content string,
+	textStart, textEnd int,
+	fontSize float64,
+	bold, italic, mono, ahem bool,
+	line *LineInfo,
+	remaining float64,
+) bool {
+	// Find word boundaries.
+	words := splitIntoWords(content)
+	if len(words) == 0 {
+		return false
+	}
+
+	// CSS 2.1 §16.4: letter-spacing.
+	letterSpacing := 0.0
+	if item.Style != nil {
+		letterSpacing = item.Style.GetLetterSpacing()
+	}
+
+	// Try to fit as many words as possible.
+	fitted := 0
+	usedWidth := 0.0
+
+	isVertical := lb.space.WritingDirection.IsVertical()
+	for i, word := range words {
+		var wordWidth float64
+		if isVertical {
+			wordWidth, _ = text.MeasureTextVertical(word, fontSize, bold, italic, mono, ahem)
+		} else {
+			wordWidth, _ = text.MeasureTextWithStyle(word, fontSize, bold, italic, mono, ahem)
+		}
+		if letterSpacing != 0 {
+			rc := runeLen(word)
+			if rc > 1 {
+				wordWidth += letterSpacing * float64(rc-1)
+			}
+			// Also add letter-spacing before this word if not the first.
+			if i > 0 {
+				wordWidth += letterSpacing
+			}
+		}
+
+		if lb.mode == LineBreakerMinContent && i > 0 {
+			// Min-content: break after every word.
+			break
+		}
+
+		if usedWidth+wordWidth > remaining && fitted > 0 {
+			// CSS 2.1 §16.6.1: trailing collapsible whitespace hangs and does
+			// not contribute to the line's width. If stripping trailing spaces
+			// from this word makes it fit, include it — it would be the last
+			// word on the line, so its trailing space will be stripped.
+			trimmed := strings.TrimRightFunc(word, isCSSCollapsibleSpace)
+			if trimmed != word && trimmed != "" {
+				var trimmedWidth float64
+				if isVertical {
+					trimmedWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+				} else {
+					trimmedWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				}
+				if letterSpacing != 0 {
+					rc := runeLen(trimmed)
+					if rc > 1 {
+						trimmedWidth += letterSpacing * float64(rc-1)
+					}
+					if i > 0 {
+						trimmedWidth += letterSpacing
+					}
+				}
+				if usedWidth+trimmedWidth <= remaining {
+					// Fits without trailing whitespace — include it.
+					usedWidth += wordWidth
+					fitted++
+					break // but line is full, stop fitting more words
+				}
+			}
+			break
+		}
+
+		usedWidth += wordWidth
+		fitted++
+
+		if lb.mode == LineBreakerMinContent {
+			break
+		}
+	}
+
+	if fitted == 0 {
+		// Can't fit even the first word. If the line is empty, force it on.
+		if len(line.Results) == 0 {
+			fitted = 1
+			if isVertical {
+				usedWidth, _ = text.MeasureTextVertical(words[0], fontSize, bold, italic, mono, ahem)
+			} else {
+				usedWidth, _ = text.MeasureTextWithStyle(words[0], fontSize, bold, italic, mono, ahem)
+			}
+			if letterSpacing != 0 {
+				rc := runeLen(words[0])
+				if rc > 1 {
+					usedWidth += letterSpacing * float64(rc-1)
+				}
+			}
+		} else {
+			// End the line, retry this item on the next line.
+			return true
+		}
+	}
+
+	// Compute the byte offset for the break point.
+	fittedText := strings.Join(words[:fitted], "")
+	breakOffset := textStart + len(fittedText)
+
+	line.Results = append(line.Results, InlineItemResult{
+		Item:       item,
+		ItemIndex:  lb.currentItemIndex,
+		TextStart:  textStart,
+		TextEnd:    breakOffset,
+		InlineSize: usedWidth,
+	})
+	lb.position += usedWidth
+	line.Width = lb.position
+
+	if fitted < len(words) {
+		// More text remains — line is complete.
+		lb.currentTextOffset = breakOffset
+		return true
+	}
+
+	// All words fit.
+	lb.currentTextOffset = textEnd
+	return false
+}
+
+// handleControl handles control characters (forced line breaks).
+func (lb *LineBreaker) handleControl(item *InlineItem, line *LineInfo) {
+	line.HasForcedBreak = true
+	lb.currentItemIndex++
+	lb.currentTextOffset = item.EndOffset
+}
+
+// handleOpenTag processes the start of an inline element.
+func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
+	if item.Style == nil {
+		return
+	}
+
+	wdm := lb.space.WritingDirection
+	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
+	geom := ComputeFragmentGeometry(item.Style, wdm)
+
+	// CSS 2.1 §9.2.1.1: inline-start border/padding appears only on the first
+	// fragment of a split inline. For non-first continuations, omit it.
+	borderInlineStart := geom.Border.InlineStart
+	paddingInlineStart := geom.Padding.InlineStart
+	if !item.IsFirstFragment {
+		borderInlineStart = 0
+		paddingInlineStart = 0
+	}
+
+	// Add inline-start margin + border + padding.
+	startEdge := margins.InlineStart + borderInlineStart + paddingInlineStart
+	lb.position += startEdge
+
+	line.Results = append(line.Results, InlineItemResult{
+		Item:       item,
+		ItemIndex:  lb.currentItemIndex,
+		InlineSize: startEdge,
+		Margins:    margins,
+	})
+}
+
+// handleCloseTag processes the end of an inline element.
+func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
+	if item.Style == nil {
+		return
+	}
+
+	wdm := lb.space.WritingDirection
+	margins := ResolveMargins(item.Style, wdm, lb.availableWidth)
+	geom := ComputeFragmentGeometry(item.Style, wdm)
+
+	// CSS 2.1 §9.2.1.1: inline-end border/padding appears only on the last
+	// fragment of a split inline. For non-last continuations, omit it.
+	borderInlineEnd := geom.Border.InlineEnd
+	paddingInlineEnd := geom.Padding.InlineEnd
+	if !item.IsLastFragment {
+		borderInlineEnd = 0
+		paddingInlineEnd = 0
+	}
+
+	// Add inline-end border + padding + margin.
+	endEdge := borderInlineEnd + paddingInlineEnd + margins.InlineEnd
+	lb.position += endEdge
+
+	line.Results = append(line.Results, InlineItemResult{
+		Item:       item,
+		ItemIndex:  lb.currentItemIndex,
+		InlineSize: endEdge,
+		Margins:    margins,
+	})
+}
+
+// handleAtomicInline lays out an atomic inline element (inline-block, replaced).
+// Returns true if the line should end.
+func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool {
+	// Resolve margins for the atomic inline.
+	margins := LogicalEdges{}
+	if item.Style != nil {
+		margins = ResolveMargins(item.Style, lb.space.WritingDirection, lb.availableWidth)
+	}
+
+	var inlineSize float64
+	var result *LayoutResult
+
+	childWDM := NewWritingDirectionMode(item.Style)
+
+	if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
+		// In sizing mode: compute the child's intrinsic size instead of
+		// doing full layout. Mirrors Blink's recursive min/max sizing.
+		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(childWDM, lb.ctx)).
+			SetAvailableSize(lb.space.AvailableSize).
+			Build()
+		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
+		// ComputeMinMaxSizes returns content-box; convert to border-box
+		// for the atomic inline's contribution to the line.
+		childGeom := ComputeFragmentGeometry(item.Style, childWDM)
+		childBP := childGeom.InlineBorderPadding()
+		if lb.mode == LineBreakerMinContent {
+			inlineSize = childMM.MinContent + childBP
+		} else {
+			inlineSize = childMM.MaxContent + childBP
+		}
+	} else {
+		// Normal layout: lay out the atomic inline with shrink-to-fit.
+		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(childWDM, lb.ctx)).
+			SetAvailableSize(LogicalSize{
+				InlineSize: lb.availableWidth,
+				BlockSize:  Indefinite,
+			}).
+			Build()
+
+		result = layoutElement(lb.ctx, item.LayoutNode, childSpace)
+		childLogical := NewLogicalFragment(lb.space.WritingDirection, result.Fragment)
+		inlineSize = childLogical.InlineSize()
+	}
+
+	// Total inline size including margins.
+	totalInlineSize := margins.InlineStart + inlineSize + margins.InlineEnd
+
+	// Check if it fits.
+	remaining := lb.availableWidth - lb.position
+	// Break before the atom if it doesn't fit AND the line already has content.
+	// In LineBreakerContent mode: normal wrap.
+	// In LineBreakerMinContent mode: break at every opportunity so each atom
+	// contributes independently to the min-content width.
+	// In LineBreakerMaxContent mode: never break (place everything on one line).
+	if totalInlineSize > remaining && len(line.Results) > 0 && lb.mode != LineBreakerMaxContent {
+		// Doesn't fit and line has content — end the line.
+		return true
+	}
+
+	// Add inline-start margin.
+	lb.position += margins.InlineStart
+
+	line.Results = append(line.Results, InlineItemResult{
+		Item:         item,
+		ItemIndex:    lb.currentItemIndex,
+		TextStart:    item.StartOffset,
+		TextEnd:      item.EndOffset,
+		InlineSize:   inlineSize,
+		LayoutResult: result,
+		Margins:      margins,
+	})
+	lb.position += inlineSize
+
+	// Add inline-end margin.
+	lb.position += margins.InlineEnd
+	line.Width = lb.position
+	lb.currentTextOffset = item.EndOffset
+	return false
+}
+
+// handleFloat records a float item. Float positioning is handled by the
+// InlineLayoutAlgorithm, not the line breaker.
+func (lb *LineBreaker) handleFloat(item *InlineItem, line *LineInfo) {
+	line.Results = append(line.Results, InlineItemResult{
+		Item:      item,
+		ItemIndex: lb.currentItemIndex,
+	})
+}
+
+// finishLine applies trailing whitespace trimming and sets final line properties.
+func (lb *LineBreaker) finishLine(line *LineInfo) {
+	isVertical := lb.space.WritingDirection.IsVertical()
+	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of the line.
+	for i := 0; i < len(line.Results); i++ {
+		r := &line.Results[i]
+		if r.Item.Type == InlineItemText {
+			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+			trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
+			if len(trimmed) < len(content) && r.Item.Style != nil {
+				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+				var newWidth float64
+				if isVertical {
+					newWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+				} else {
+					newWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				}
+				line.Width -= (r.InlineSize - newWidth)
+				r.InlineSize = newWidth
+				r.TextStart = r.TextStart + (len(content) - len(trimmed))
+			}
+			break
+		}
+		if r.Item.Type != InlineItemOpenTag {
+			break
+		}
+	}
+
+	// Trim trailing whitespace from the last text result.
+	for i := len(line.Results) - 1; i >= 0; i-- {
+		r := &line.Results[i]
+		if r.Item.Type == InlineItemText {
+			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+			trimmed := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
+			if len(trimmed) < len(content) && r.Item.Style != nil {
+				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+				var newWidth float64
+				if isVertical {
+					newWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+				} else {
+					newWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+				}
+				line.Width -= (r.InlineSize - newWidth)
+				r.InlineSize = newWidth
+				r.TextEnd = r.TextStart + len(trimmed)
+			}
+			break
+		}
+		if r.Item.Type != InlineItemCloseTag && r.Item.Type != InlineItemOpenTag {
+			break
+		}
+	}
+
+	// Mark as last line if we've consumed all items.
+	if lb.currentItemIndex >= len(lb.itemsData.Items) {
+		line.IsLastLine = true
+	}
+}
+
+// splitIntoWords splits text into words, preserving spaces attached to
+// the following word (for correct break-before-word behavior).
+func splitIntoWords(s string) []string {
+	var words []string
+	start := 0
+	inSpace := false
+
+	for i, r := range s {
+		if isCSSCollapsibleSpace(r) {
+			if !inSpace && i > start {
+				words = append(words, s[start:i])
+			}
+			if !inSpace {
+				start = i
+			}
+			inSpace = true
+		} else {
+			if inSpace {
+				// Space run ends — attach spaces to the next word.
+				// Actually, keep space with preceding word for correct measurement.
+				if start < i {
+					if len(words) > 0 {
+						words[len(words)-1] += s[start:i]
+					} else {
+						// Leading spaces — make a separate entry.
+						words = append(words, s[start:i])
+					}
+				}
+				start = i
+			}
+			inSpace = false
+		}
+	}
+
+	// Trailing content.
+	if start < len(s) {
+		if inSpace {
+			if len(words) > 0 {
+				words[len(words)-1] += s[start:]
+			} else {
+				words = append(words, s[start:])
+			}
+		} else {
+			words = append(words, s[start:])
+		}
+	}
+
+	return words
+}
+
+// runeLen returns the number of Unicode code points in a string.
+func runeLen(s string) int {
+	return utf8.RuneCountInString(s)
+}
+
+// fontPropsFromStyle extracts font rendering properties from a CSS style.
+func fontPropsFromStyle(style *css.Style) (fontSize float64, bold, italic, mono, ahem bool) {
+	if style == nil {
+		return 16, false, false, false, false
+	}
+	fontSize = style.GetFontSize()
+	if fontSize <= 0 {
+		fontSize = 16
+	}
+	bold = style.GetFontWeight() == css.FontWeightBold
+	italic = style.GetFontStyle() == css.FontStyleItalic
+	mono = style.IsMonospaceFamily()
+	ahem = style.IsAhemFamily()
+	return
+}

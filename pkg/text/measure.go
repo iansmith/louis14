@@ -8,40 +8,105 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
-	"github.com/fogleman/gg"
+	"mazarin/textshape"
 )
 
-// measureCache caches text measurement results to avoid repeated font loading.
-// Key: "text\x00fontSize\x00fontPath", Value: [2]float64{width, height}
+// measureCache caches text advance widths keyed on "text\x00fontSize\x00fontPath".
 var measureCache sync.Map
 
 func measureCacheKey(text string, fontSize float64, fontPath string) string {
 	return fmt.Sprintf("%s\x00%.4f\x00%s", text, fontSize, fontPath)
 }
 
-// FontConfig holds paths to font files used for text measurement and rendering.
-type FontConfig struct {
-	Regular     string
-	Bold        string
-	Italic      string
-	BoldItalic  string
-	Monospace   string
-	MonoBold    string
-	Ahem        string         // Special test font where all glyphs are 1em x 1em squares
-	Registry    *FontRegistry  // Optional web font registry for @font-face fonts
+// sharedLayout is the package-level TextLayout used for all measurement.
+// Set via SetTextLayout (called by the renderer after creating its DrawContext)
+// or lazily initialized on first use. Safe for concurrent use.
+var (
+	sharedLayout   textshape.TextLayout
+	sharedLayoutMu sync.Mutex
+)
+
+func getLayout() textshape.TextLayout {
+	sharedLayoutMu.Lock()
+	defer sharedLayoutMu.Unlock()
+	if sharedLayout == nil {
+		sharedLayout = textshape.NewTextLayout(defaultFontsDir())
+	}
+	return sharedLayout
 }
 
-// defaultFontsDir returns the fonts directory relative to this source file.
+// SetTextLayout sets the shared TextLayout used for all text measurement.
+// Must be called by the renderer after creating its DrawContext so that
+// layout measurement and paint rendering share the same engine, font cache,
+// and shape cache. Resets all derived caches.
+func SetTextLayout(tl textshape.TextLayout) {
+	sharedLayoutMu.Lock()
+	sharedLayout = tl
+	sharedLayoutMu.Unlock()
+	fontIDCacheMu.Lock()
+	fontIDCache = make(map[fontIDKey]textshape.FontMetrics)
+	fontIDCacheMu.Unlock()
+	measureCache = sync.Map{}
+}
+
+// fontIDCache caches (fontPath, sizeInt32) → FontMetrics to avoid re-opening fonts.
+var (
+	fontIDCache   = make(map[fontIDKey]textshape.FontMetrics)
+	fontIDCacheMu sync.Mutex
+)
+
+type fontIDKey struct {
+	path string
+	size int32
+}
+
+// openFont returns the FontMetrics for the given path+size, opening it if needed.
+// Returns zero FontMetrics with FontID=-1 on error.
+func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
+	size := int32(math.Round(fontSize))
+	key := fontIDKey{path: fontPath, size: size}
+	fontIDCacheMu.Lock()
+	defer fontIDCacheMu.Unlock()
+	if m, ok := fontIDCache[key]; ok {
+		return m
+	}
+	metrics, err := getLayout().OpenFont(textshape.OpenFontRequest{
+		Path: fontPath,
+		Size: size,
+	})
+	if err != nil {
+		return textshape.FontMetrics{FontID: -1}
+	}
+	fontIDCache[key] = metrics
+	return metrics
+}
+
+// FontConfig holds paths to font files used for text measurement and rendering.
+type FontConfig struct {
+	Regular    string
+	Bold       string
+	Italic     string
+	BoldItalic string
+	Monospace  string
+	MonoBold   string
+	Ahem       string        // Special test font where all glyphs are 1em x 1em squares
+	Registry   *FontRegistry // Optional web font registry for @font-face fonts
+}
+
+// DefaultFontsDir returns the fonts directory relative to this source file.
+func DefaultFontsDir() string {
+	return defaultFontsDir()
+}
+
 func defaultFontsDir() string {
-	// Try relative to executable first
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Join(filepath.Dir(exe), "..", "fonts")
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			return dir
 		}
 	}
-	// Fall back to compile-time source location
 	_, thisFile, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(thisFile), "..", "..", "fonts")
 }
@@ -62,7 +127,6 @@ func DefaultFontConfig() FontConfig {
 
 // FontPath returns the font path for the given style combination.
 func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
-	// Ahem font takes precedence over all other fonts
 	if ahem && fc.Ahem != "" {
 		return fc.Ahem
 	}
@@ -73,7 +137,6 @@ func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
 		if fc.Monospace != "" {
 			return fc.Monospace
 		}
-		// fall through to proportional if no mono font configured
 	}
 	if bold && italic && fc.BoldItalic != "" {
 		return fc.BoldItalic
@@ -88,34 +151,25 @@ func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
 }
 
 // FontPathForFamily returns the font path for a CSS font-family string.
-// It parses comma-separated font-family lists and tries each family in order,
-// checking the web font registry and built-in aliases before falling back.
 func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem bool) string {
 	families := parseFontFamilyList(family)
-
 	for _, fam := range families {
-		// Check web font registry
 		if fc.Registry != nil {
 			if path := fc.Registry.Lookup(fam, bold, italic); path != "" {
 				return path
 			}
 		}
-		// Check bundled font aliases
 		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
 			return path
 		}
 	}
-	// Final fallback to default bundled font
 	return fc.FontPath(bold, italic, mono, ahem)
 }
 
-// parseFontFamilyList splits a CSS font-family value into individual family names.
-// e.g. `"Helvetica Neue", Arial, sans-serif` → ["helvetica neue", "arial", "sans-serif"]
 func parseFontFamilyList(raw string) []string {
 	var families []string
 	for _, part := range strings.Split(raw, ",") {
 		fam := strings.TrimSpace(part)
-		// Strip surrounding quotes
 		if len(fam) >= 2 && ((fam[0] == '"' && fam[len(fam)-1] == '"') || (fam[0] == '\'' && fam[len(fam)-1] == '\'')) {
 			fam = fam[1 : len(fam)-1]
 		}
@@ -127,12 +181,9 @@ func parseFontFamilyList(raw string) []string {
 	return families
 }
 
-// resolveBuiltinFamily maps well-known CSS font family names to bundled Liberation fonts.
 func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) string {
 	dir := defaultFontsDir()
-	lower := strings.ToLower(family)
-
-	switch lower {
+	switch strings.ToLower(family) {
 	case "helvetica", "helvetica neue", "arial",
 		"liberation sans", "nimbus sans", "sans-serif":
 		return liberationSansPath(dir, bold, italic)
@@ -183,59 +234,60 @@ func liberationMonoPath(dir string, bold, italic bool) string {
 	}
 }
 
-// DefaultFontPath is the path to the default font.
-// Deprecated: use DefaultFontConfig() instead.
 var DefaultFontPath = DefaultFontConfig().Regular
-
-// BoldFontPath is the path to the bold font.
-// Deprecated: use DefaultFontConfig() instead.
 var BoldFontPath = DefaultFontConfig().Bold
 
-// MeasureText measures the width and height of text with the given font size.
-// Results are cached by (text, fontSize, fontPath) to avoid repeated font loading.
-func MeasureText(text string, fontSize float64, fontPath string) (width, height float64) {
+// measureWidth returns the advance width of text for a given font path+size,
+// using the shared TextLayout (HarfBuzz shaping) with a sync.Map cache.
+func measureWidth(text string, fontSize float64, fontPath string) float64 {
 	key := measureCacheKey(text, fontSize, fontPath)
 	if v, ok := measureCache.Load(key); ok {
-		dims := v.([2]float64)
-		return dims[0], dims[1]
+		return v.(float64)
 	}
-
-	// Use a temporary context for measurement
-	dc := gg.NewContext(1000, 1000)
-
-	// Load the font
-	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
-		// If font loading fails, return rough estimate
-		w := float64(len(text)) * fontSize * 0.6
-		h := fontSize * 1.2
-		measureCache.Store(key, [2]float64{w, h})
-		return w, h
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		w := math.Round(float64(len(text)) * fontSize * 0.6)
+		measureCache.Store(key, w)
+		return w
 	}
-
-	// Measure the text and snap to integer pixels.
-	// Real browsers quantize character advance widths to integer pixels via
-	// font hinting, ensuring text positions stay on the integer grid.
-	// Without this, separate DrawString calls for adjacent text (e.g. table
-	// cells vs continuous strings) produce different sub-pixel anti-aliasing.
-	w, h := dc.MeasureString(text)
-	w = math.Round(w)
-	if w < 1 && len(text) > 0 {
-		w = 1
+	adv, err := getLayout().MeasureText(textshape.ShapingParams{
+		Text:   text,
+		FontID: m.FontID,
+	})
+	var w float64
+	if err != nil {
+		w = math.Floor(float64(len(text)) * fontSize * 0.6)
+	} else {
+		// Return the exact sub-pixel advance (no rounding).
+		// Layout accumulates these as float64, so adjacent text boxes are
+		// positioned at exact fractional-pixel boundaries. DrawText then
+		// decomposes each box's X into floor(X) + frac(X)*64 as StartPenX,
+		// producing glyph positions identical to a single combined run.
+		w = float64(adv) / 64.0
+		if w < 1 && len(text) > 0 {
+			w = 1
+		}
 	}
-	h = math.Round(h)
-	if h < 1 {
-		h = 1
-	}
-	measureCache.Store(key, [2]float64{w, h})
-	return w, h
+	measureCache.Store(key, w)
+	return w
 }
 
-// MeasureTextDefault measures text using the default font
+// MeasureText measures the width and height of text with the given font.
+func MeasureText(text string, fontSize float64, fontPath string) (width, height float64) {
+	w := measureWidth(text, fontSize, fontPath)
+	m := openFont(fontPath, fontSize)
+	if m.FontID >= 0 && m.Height > 0 {
+		return w, math.Round(float64(m.Height) / 64.0)
+	}
+	return w, math.Round(fontSize * 1.2)
+}
+
+// MeasureTextDefault measures text using the default font.
 func MeasureTextDefault(text string, fontSize float64) (width, height float64) {
 	return MeasureText(text, fontSize, DefaultFontPath)
 }
 
-// MeasureTextWithWeight measures text using the specified font weight
+// MeasureTextWithWeight measures text using the specified font weight.
 func MeasureTextWithWeight(text string, fontSize float64, bold bool) (width, height float64) {
 	fontPath := DefaultFontPath
 	if bold {
@@ -244,135 +296,116 @@ func MeasureTextWithWeight(text string, fontSize float64, bold bool) (width, hei
 	return MeasureText(text, fontSize, fontPath)
 }
 
-// MeasureTextWithStyle measures text using the specified font style (bold, italic, mono, ahem).
-// This is the comprehensive text measurement function that respects all font-family properties.
+// MeasureTextWithStyle measures text with the full style combination.
 func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool) (width, height float64) {
-	fontConfig := DefaultFontConfig()
-	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
+	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
 	return MeasureText(text, fontSize, fontPath)
 }
 
-// ascentCache caches font ascent results to avoid repeated font loading.
-// Key: "fontSize\x00fontPath", Value: float64 ascent
-var ascentCache sync.Map
-
-// FontAscent returns the font ascent in pixels (distance from baseline to top of glyph)
-// for the given font size and style parameters. This is used for baseline alignment.
-func FontAscent(fontSize float64, bold, italic, mono, ahem bool) float64 {
-	fontConfig := DefaultFontConfig()
-	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
-	key := fmt.Sprintf("%.4f\x00%s", fontSize, fontPath)
-	if v, ok := ascentCache.Load(key); ok {
-		return v.(float64)
+// MeasureTextVertical returns the inline advance of text in a vertical writing
+// mode. For upright text (the default for Ahem and CJK), each glyph advances
+// by fontSize in the inline (vertical) direction. For sideways text, the
+// inline advance equals the horizontal advance (rotated glyphs keep their
+// horizontal width as the inline advance).
+//
+// CSS Writing Modes §5.1: text-orientation determines whether glyphs are
+// upright or sideways. For now, this treats all characters as upright,
+// which is correct for Ahem (1em × 1em squares) and CJK text.
+func MeasureTextVertical(text string, fontSize float64, bold, italic, mono, ahem bool) (inlineAdvance, blockAdvance float64) {
+	runeCount := utf8.RuneCountInString(text)
+	// Upright: each glyph advances by fontSize in the inline direction.
+	inlineAdvance = float64(runeCount) * fontSize
+	// Block advance = font height (line thickness in the block direction).
+	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
+	m := openFont(fontPath, fontSize)
+	if m.FontID >= 0 && m.Height > 0 {
+		blockAdvance = math.Round(float64(m.Height) / 64.0)
+	} else {
+		blockAdvance = math.Round(fontSize * 1.2)
 	}
-	dc := gg.NewContext(1, 1)
-	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
-		// Fall back to 0.8 * fontSize (reasonable approximation)
-		ascent := fontSize * 0.8
-		ascentCache.Store(key, ascent)
-		return ascent
-	}
-	ascent := dc.FontAscent()
-	ascentCache.Store(key, ascent)
-	return ascent
+	return
 }
 
-// BreakTextAtCharacterBoundary splits text at a character boundary so the prefix fits within maxWidth.
-// Returns (prefix, remainder). If no character fits, prefix is empty and remainder is the full text.
-func BreakTextAtCharacterBoundary(textStr string, fontSize float64, bold, italic, mono, ahem bool, maxWidth float64) (string, string) {
-	fontConfig := DefaultFontConfig()
-	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
-
-	dc := gg.NewContext(1000, 1000)
-	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
-		return "", textStr
+// FontAscent returns the font ascent in pixels for the given style.
+func FontAscent(fontSize float64, bold, italic, mono, ahem bool) float64 {
+	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return fontSize * 0.8
 	}
+	return float64(m.Ascent) / 64.0
+}
 
+// BreakTextAtCharacterBoundary splits text so the prefix fits within maxWidth.
+func BreakTextAtCharacterBoundary(textStr string, fontSize float64, bold, italic, mono, ahem bool, maxWidth float64) (string, string) {
+	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
 	runes := []rune(textStr)
 	bestLen := 0
 	for i := 1; i <= len(runes); i++ {
 		prefix := string(runes[:i])
-		w, _ := dc.MeasureString(prefix)
+		w := measureWidth(prefix, fontSize, fontPath)
 		if w > maxWidth {
 			break
 		}
 		bestLen = i
 	}
-
 	if bestLen == 0 {
 		return "", textStr
 	}
 	return string(runes[:bestLen]), string(runes[bestLen:])
 }
 
-// Phase 6 Enhancement: BreakTextIntoLines breaks text into lines that fit within maxWidth
+// BreakTextIntoLines breaks text into lines that fit within maxWidth.
 func BreakTextIntoLines(text string, fontSize float64, bold bool, maxWidth float64) []string {
 	return BreakTextIntoLinesWithWrap(text, fontSize, bold, maxWidth, maxWidth)
 }
 
-// BreakTextIntoLinesWithWrap breaks text into lines where the first line fits
-// within firstLineMax and subsequent lines fit within remainingMax.
-// This handles the case where text starts partway through a line (e.g., after
-// an inline element) but subsequent lines use the full container width.
+// BreakTextIntoLinesWithWrap breaks text into lines with separate first/remaining widths.
 func BreakTextIntoLinesWithWrap(text string, fontSize float64, bold bool, firstLineMax, remainingMax float64) []string {
 	fontPath := DefaultFontPath
 	if bold {
 		fontPath = BoldFontPath
 	}
+	return breakLines(text, fontSize, fontPath, firstLineMax, remainingMax)
+}
 
-	// Use a temporary context for measurement
-	dc := gg.NewContext(1000, 1000)
-	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
-		// If font loading fails, return text as single line
+// BreakTextIntoLinesWithStyle breaks text with the full style combination.
+func BreakTextIntoLinesWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool, firstLineMax, remainingMax float64) []string {
+	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
+	return breakLines(text, fontSize, fontPath, firstLineMax, remainingMax)
+}
+
+func breakLines(text string, fontSize float64, fontPath string, firstLineMax, remainingMax float64) []string {
+	if measureWidth(text, fontSize, fontPath) <= firstLineMax {
 		return []string{text}
 	}
-
-	// Check if text fits on first line
-	textWidth, _ := dc.MeasureString(text)
-	if textWidth <= firstLineMax {
-		return []string{text}
-	}
-
-	// Preserve leading whitespace — important for inline flow where
-	// a text node like " more text" follows an inline element.
 	leadingSpace := ""
 	if len(text) > 0 && (text[0] == ' ' || text[0] == '\t' || text[0] == '\n') {
 		leadingSpace = " "
 	}
-
-	// Split into words
 	words := splitIntoWords(text)
 	if len(words) == 0 {
 		return []string{text}
 	}
-
-	// Build lines
-	lines := make([]string, 0)
+	var lines []string
 	currentLine := ""
 	lineNum := 0
-
 	for i, word := range words {
-		// Prepend leading space to first word if original text had leading whitespace
 		if i == 0 && leadingSpace != "" {
 			word = leadingSpace + word
 		}
-
 		testLine := currentLine
 		if testLine != "" {
 			testLine += " "
 		}
 		testLine += word
-
 		maxWidth := remainingMax
 		if lineNum == 0 {
 			maxWidth = firstLineMax
 		}
-
-		lineWidth, _ := dc.MeasureString(testLine)
-		if lineWidth <= maxWidth {
+		if measureWidth(testLine, fontSize, fontPath) <= maxWidth {
 			currentLine = testLine
 		} else {
-			// Word doesn't fit, start new line
 			if currentLine != "" {
 				lines = append(lines, currentLine)
 				lineNum++
@@ -380,24 +413,18 @@ func BreakTextIntoLinesWithWrap(text string, fontSize float64, bold bool, firstL
 			currentLine = word
 		}
 	}
-
-	// Add last line
 	if currentLine != "" {
 		lines = append(lines, currentLine)
 	}
-
 	if len(lines) == 0 {
 		return []string{text}
 	}
-
 	return lines
 }
 
-// splitIntoWords splits text into words preserving spaces
 func splitIntoWords(text string) []string {
-	words := make([]string, 0)
+	var words []string
 	currentWord := ""
-
 	for _, ch := range text {
 		if ch == ' ' || ch == '\t' || ch == '\n' {
 			if currentWord != "" {
@@ -408,97 +435,17 @@ func splitIntoWords(text string) []string {
 			currentWord += string(ch)
 		}
 	}
-
 	if currentWord != "" {
 		words = append(words, currentWord)
 	}
-
 	return words
 }
 
-// GetFirstWord returns the first word of the text (skipping leading whitespace)
+// GetFirstWord returns the first word of the text.
 func GetFirstWord(text string) string {
 	words := splitIntoWords(text)
 	if len(words) > 0 {
 		return words[0]
 	}
 	return ""
-}
-
-// BreakTextIntoLinesWithStyle breaks text into lines using the specified font style.
-// This is the comprehensive line-breaking function that respects all font-family properties.
-func BreakTextIntoLinesWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool, firstLineMax, remainingMax float64) []string {
-	fontConfig := DefaultFontConfig()
-	fontPath := fontConfig.FontPath(bold, italic, mono, ahem)
-
-	// Use a temporary context for measurement
-	dc := gg.NewContext(1000, 1000)
-	if err := dc.LoadFontFace(fontPath, fontSize); err != nil {
-		// If font loading fails, return text as single line
-		return []string{text}
-	}
-
-	// Check if text fits on first line
-	textWidth, _ := dc.MeasureString(text)
-	if textWidth <= firstLineMax {
-		return []string{text}
-	}
-
-	// Preserve leading whitespace
-	leadingSpace := ""
-	if len(text) > 0 && (text[0] == ' ' || text[0] == '\t' || text[0] == '\n') {
-		leadingSpace = " "
-	}
-
-	// Split into words
-	words := splitIntoWords(text)
-	if len(words) == 0 {
-		return []string{text}
-	}
-
-	// Build lines
-	lines := make([]string, 0)
-	currentLine := ""
-	lineNum := 0
-
-	for i, word := range words {
-		// Prepend leading space to first word if original text had leading whitespace
-		if i == 0 && leadingSpace != "" {
-			word = leadingSpace + word
-		}
-
-		testLine := currentLine
-		if testLine != "" {
-			testLine += " "
-		}
-		testLine += word
-
-		maxWidth := remainingMax
-		if lineNum == 0 {
-			maxWidth = firstLineMax
-		}
-
-		lineWidth, _ := dc.MeasureString(testLine)
-		if lineWidth <= maxWidth {
-			currentLine = testLine
-		} else {
-			// Word doesn't fit, start new line
-			if currentLine != "" {
-				lines = append(lines, currentLine)
-				lineNum++
-			}
-			currentLine = word
-		}
-	}
-
-	// Add last line
-	if currentLine != "" {
-		lines = append(lines, currentLine)
-	}
-
-	if len(lines) == 0 {
-		return []string{text}
-	}
-
-	return lines
 }

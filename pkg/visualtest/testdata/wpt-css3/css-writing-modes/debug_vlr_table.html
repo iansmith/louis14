@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+  writing-mode: vertical-lr;
+  border: 2px solid blue;
+}
+td {
+  width: 50px;
+  height: 50px;
+  padding: 0;
+}
+td.r { background: red; }
+td.g { background: green; }
+td.b { background: blue; }
+td.y { background: yellow; }
+</style>
+</head>
+<body>
+<p>VLR table (should show colored cells in vertical column layout):</p>
+<table>
+  <tr><td class="r"></td><td class="g"></td></tr>
+  <tr><td class="b"></td><td class="y"></td></tr>
+</table>
+
+<p>HTB table for comparison:</p>
+<table style="writing-mode: horizontal-tb;">
+  <tr><td class="r"></td><td class="g"></td></tr>
+  <tr><td class="b"></td><td class="y"></td></tr>
+</table>
+</body>
+</html>

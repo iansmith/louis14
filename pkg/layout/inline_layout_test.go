@@ -1,364 +1,434 @@
 package layout
 
 import (
-	"testing"
-
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/text"
+	"math"
+	"testing"
 )
 
-// TestInlineLayoutBaseline tests the current inline layout behavior
-// before refactoring. These tests capture the expected behavior that
-// must be preserved during refactoring.
+func makeTextNode(t string) *html.Node {
+	return &html.Node{Type: html.TextNode, Text: t}
+}
 
-// createTestEngine creates a minimal LayoutEngine for testing
-func createTestEngine() *LayoutEngine {
-	return &LayoutEngine{
-		floats:      make([]FloatInfo, 0),
-		floatBase:   0,
-		stylesheets: []*css.Stylesheet{},
-		viewport:    struct{ width, height float64 }{width: 800, height: 600},
-		counters:    make(map[string][]int),
+// inlineLayoutForTest exercises the inline layout pipeline directly:
+// CollectInlines -> LineBreaker -> createLineBox. This bypasses the
+// BlockLayoutAlgorithm dispatch so the tests work regardless of whether
+// inline layout is wired into the production path.
+func inlineLayoutForTest(
+	parent *html.Node,
+	styles map[*html.Node]*css.Style,
+	contentInlineSize float64,
+) (lineBoxes []*PhysicalFragment, totalBlockSize float64) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	ctx := testContext()
+
+	// Build layout tree.
+	layoutParent := buildTestTree(parent, styles)
+
+	// Phase 1: Collect inline items.
+	itemsData := CollectInlines(layoutParent)
+	if len(itemsData.Items) == 0 {
+		return nil, 0
+	}
+
+	// Phase 2: Create line breaker.
+	fonts := text.DefaultFontConfig()
+	lineSpace := ConstraintSpace{
+		AvailableSize:    LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
+		WritingDirection: wdm,
+	}
+	lb := NewLineBreaker(itemsData, ctx, lineSpace, fonts, LineBreakerContent)
+	lb.availableWidth = contentInlineSize
+
+	// Get text-align from container style.
+	textAlign := "start"
+	if parentStyle := layoutParent.Style(); parentStyle != nil {
+		if ta, ok := parentStyle.Get("text-align"); ok {
+			textAlign = ta
+		}
+	}
+
+	// Phase 3: Process lines.
+	blockOffset := 0.0
+	var line LineInfo
+
+	for lb.NextLine(&line) {
+		line.TextAlign = textAlign
+		lineFragment, lineHeight, _ := createLineBox(itemsData, &line, wdm, contentInlineSize)
+		lineBoxes = append(lineBoxes, lineFragment)
+		blockOffset += lineHeight
+	}
+
+	return lineBoxes, blockOffset
+}
+
+func TestInlineLayout_SimpleText(t *testing.T) {
+	textNode := makeTextNode("Hello")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
+
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 800)
+
+	if len(lineBoxes) != 1 {
+		t.Fatalf("expected 1 line box, got %d", len(lineBoxes))
+	}
+
+	lb := lineBoxes[0]
+	if lb.Type != FragmentLineBox {
+		t.Errorf("expected FragmentLineBox, got %d", lb.Type)
+	}
+
+	if len(lb.Children) != 1 {
+		t.Fatalf("expected 1 text fragment in line box, got %d", len(lb.Children))
+	}
+
+	textFrag := lb.Children[0].Fragment
+	if textFrag.Type != FragmentText {
+		t.Errorf("expected FragmentText, got %d", textFrag.Type)
+	}
+	if textFrag.TextContent != "Hello" {
+		t.Errorf("text content: got %q, want %q", textFrag.TextContent, "Hello")
 	}
 }
 
-// createTestNode creates a simple HTML node for testing
-func createTestNode(tagName string, children ...*html.Node) *html.Node {
-	node := &html.Node{
-		Type:     html.ElementNode,
-		TagName:  tagName,
-		Children: children,
-	}
-	return node
-}
+func TestInlineLayout_AutoHeight(t *testing.T) {
+	textNode := makeTextNode("Hello world")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-// createTextNode creates a text node
-func createTextNode(text string) *html.Node {
-	return &html.Node{
-		Type: html.TextNode,
-		Text: text,
+	_, totalHeight := inlineLayoutForTest(parent, styles, 800)
+
+	if totalHeight <= 0 {
+		t.Errorf("total height should be > 0, got %f", totalHeight)
 	}
 }
 
-// TestInlineLayoutNoChildren tests inline layout with no children
-func TestInlineLayoutNoChildren(t *testing.T) {
-	le := createTestEngine()
+func TestInlineLayout_MultipleLines(t *testing.T) {
+	textNode := makeTextNode("This is a longer piece of text that should definitely wrap across multiple lines when constrained")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-	// Create a simple div with no children
-	node := createTestNode("div")
+	lineBoxes, totalHeight := inlineLayoutForTest(parent, styles, 200)
 
-	computedStyles := map[*html.Node]*css.Style{
-		node: css.NewStyle(),
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
+	if len(lineBoxes) < 2 {
+		t.Errorf("expected multiple line boxes, got %d", len(lineBoxes))
 	}
 
-	// Should have no children
-	if len(box.Children) != 0 {
-		t.Errorf("Expected 0 children, got %d", len(box.Children))
+	for i, lb := range lineBoxes {
+		if lb.Type != FragmentLineBox {
+			t.Errorf("line %d: expected FragmentLineBox, got %d", i, lb.Type)
+		}
+	}
+
+	if totalHeight <= 0 {
+		t.Errorf("total height should be > 0, got %f", totalHeight)
 	}
 }
 
-// TestInlineLayoutTextOnly tests inline layout with a single text node
-func TestInlineLayoutTextOnly(t *testing.T) {
-	le := createTestEngine()
+func TestInlineLayout_TextAlignCenter(t *testing.T) {
+	textNode := makeTextNode("Hi")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "16px", "text-align", "center")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-	// Create a div with text
-	textNode := createTextNode("Hello World")
-	node := createTestNode("div", textNode)
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 400)
 
-	computedStyles := map[*html.Node]*css.Style{
-		node: css.NewStyle(),
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
+	if len(lineBoxes) < 1 || len(lineBoxes[0].Children) < 1 {
+		t.Fatal("no text fragment in line box")
 	}
 
-	// Should have text rendered (implementation may create text boxes or not)
-	// For now, just verify it doesn't crash
-	if box.Width < 0 || box.Height < 0 {
-		t.Error("Box has invalid dimensions")
+	textOffset := lineBoxes[0].Children[0].Offset.X
+	if textOffset <= 0 {
+		t.Errorf("text-align:center should offset text, got X=%f", textOffset)
 	}
 }
 
-// TestInlineLayoutSingleInlineChild tests inline layout with one inline child
-func TestInlineLayoutSingleInlineChild(t *testing.T) {
-	le := createTestEngine()
+func TestInlineLayout_TextAlignRight(t *testing.T) {
+	textNode := makeTextNode("Hi")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "16px", "text-align", "right")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-	// Create a div with an inline span
-	span := createTestNode("span", createTextNode("Text"))
-	node := createTestNode("div", span)
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 400)
 
-	spanStyle := css.NewStyle()
-	spanStyle.Set("display", "inline")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node: css.NewStyle(),
-		span: spanStyle,
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
+	textOffset := lineBoxes[0].Children[0].Offset.X
+	if textOffset <= 0 {
+		t.Errorf("text-align:right should offset text, got X=%f", textOffset)
 	}
 
-	// Should have at least one child (the span)
-	if len(box.Children) == 0 {
-		t.Error("Expected at least one child box")
+	// Compare with center: right should offset more.
+	textNodeC := makeTextNode("Hi")
+	parentC := makeNode("div", textNodeC)
+	parentStyleC := makeStyle("display", "block", "font-size", "16px", "text-align", "center")
+	stylesC := map[*html.Node]*css.Style{parentC: parentStyleC}
+
+	lineBoxesC, _ := inlineLayoutForTest(parentC, stylesC, 400)
+	centerOffset := lineBoxesC[0].Children[0].Offset.X
+
+	if textOffset <= centerOffset {
+		t.Errorf("right offset (%f) should be > center offset (%f)", textOffset, centerOffset)
 	}
 }
 
-// TestInlineLayoutWithFloat tests inline layout with a floated child
-func TestInlineLayoutWithFloat(t *testing.T) {
-	le := createTestEngine()
-
-	// Create a div with inline text and a floated span
-	text1 := createTextNode("Before")
-	floatSpan := createTestNode("span", createTextNode("Float"))
-	text2 := createTextNode("After")
-	node := createTestNode("div", text1, floatSpan, text2)
-
-	floatStyle := css.NewStyle()
-	floatStyle.Set("display", "inline")
-	floatStyle.Set("float", "left")
-	floatStyle.Set("width", "100px")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node:      css.NewStyle(),
-		floatSpan: floatStyle,
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
+func TestInlineLayout_HasOnlyInlineChildren(t *testing.T) {
+	tests := []struct {
+		name     string
+		children []*html.Node
+		styles   map[*html.Node]*css.Style
+		want     bool
+	}{
+		{
+			name:     "text only",
+			children: []*html.Node{makeTextNode("hello")},
+			want:     true,
+		},
+		{
+			name:     "whitespace only",
+			children: []*html.Node{makeTextNode("   ")},
+			want:     false,
+		},
+		{
+			name:     "block child",
+			children: []*html.Node{makeNode("div")},
+			styles:   map[*html.Node]*css.Style{},
+			want:     false,
+		},
 	}
 
-	// Should have children and float should be positioned
-	if len(box.Children) == 0 {
-		t.Error("Expected children boxes")
-	}
-
-	// Check that float was added to float list
-	if len(le.floats) == 0 {
-		t.Error("Expected float to be added to float list")
-	}
-}
-
-// TestInlineLayoutBlockInInline tests block-in-inline scenario
-func TestInlineLayoutBlockInInline(t *testing.T) {
-	le := createTestEngine()
-
-	// Create inline element with block child (should split inline box)
-	blockDiv := createTestNode("div", createTextNode("Block"))
-	span := createTestNode("span", createTextNode("Before"), blockDiv, createTextNode("After"))
-	node := createTestNode("div", span)
-
-	spanStyle := css.NewStyle()
-	spanStyle.Set("display", "inline")
-
-	blockStyle := css.NewStyle()
-	blockStyle.Set("display", "block")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node:     css.NewStyle(),
-		span:     spanStyle,
-		blockDiv: blockStyle,
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
-	}
-
-	// Should handle block-in-inline (creates fragments)
-	// Just verify it doesn't crash for now
-}
-
-// TestInlineLayoutComplexNesting tests deeply nested inline elements
-func TestInlineLayoutComplexNesting(t *testing.T) {
-	le := createTestEngine()
-
-	// Create nested structure: div > span > span > text
-	innerSpan := createTestNode("span", createTextNode("Nested"))
-	middleSpan := createTestNode("span", innerSpan)
-	outerSpan := createTestNode("span", middleSpan)
-	node := createTestNode("div", outerSpan)
-
-	spanStyle := css.NewStyle()
-	spanStyle.Set("display", "inline")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node:       css.NewStyle(),
-		outerSpan:  spanStyle,
-		middleSpan: spanStyle,
-		innerSpan:  spanStyle,
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
-	}
-
-	// Should handle nesting without crashing
-	if box.Width < 0 || box.Height < 0 {
-		t.Error("Box has invalid dimensions")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := makeNode("div", tt.children...)
+			if tt.styles == nil {
+				tt.styles = map[*html.Node]*css.Style{}
+			}
+			for _, c := range tt.children {
+				if c.Type == html.ElementNode {
+					if _, ok := tt.styles[c]; !ok {
+						tt.styles[c] = makeStyle("display", "block")
+					}
+				}
+			}
+			// Need parent style for tree builder.
+			if _, ok := tt.styles[parent]; !ok {
+				tt.styles[parent] = makeStyle("display", "block")
+			}
+			layoutParent := buildTestTree(parent, tt.styles)
+			got := hasOnlyInlineChildren(layoutParent)
+			if got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-// TestInlineLayoutMixedContent tests mix of inline, block, and text
-func TestInlineLayoutMixedContent(t *testing.T) {
-	le := createTestEngine()
+func TestInlineLayout_InlineSpan(t *testing.T) {
+	// <div>Hello <span>world</span></div>
+	text1 := makeTextNode("Hello ")
+	text2 := makeTextNode("world")
+	span := makeNode("span", text2)
+	parent := makeNode("div", text1, span)
 
-	// Create mixed content: text, inline span, block div, text
-	text1 := createTextNode("Text1")
-	span := createTestNode("span", createTextNode("Inline"))
-	blockDiv := createTestNode("div", createTextNode("Block"))
-	text2 := createTextNode("Text2")
-	node := createTestNode("div", text1, span, blockDiv, text2)
-
-	spanStyle := css.NewStyle()
-	spanStyle.Set("display", "inline")
-
-	blockStyle := css.NewStyle()
-	blockStyle.Set("display", "block")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node:     css.NewStyle(),
-		span:     spanStyle,
-		blockDiv: blockStyle,
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	spanStyle := makeStyle("display", "inline", "font-size", "16px")
+	styles := map[*html.Node]*css.Style{
+		parent: parentStyle,
+		span:   spanStyle,
 	}
 
-	// Should handle mixed content
-	if len(box.Children) == 0 {
-		t.Error("Expected children boxes")
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 800)
+
+	if len(lineBoxes) < 1 {
+		t.Fatal("expected at least 1 line box")
+	}
+
+	var allText string
+	for _, lb := range lineBoxes {
+		for _, child := range lb.Children {
+			if child.Fragment.Type == FragmentText {
+				allText += child.Fragment.TextContent
+			}
+		}
+	}
+
+	if allText != "Hello world" {
+		t.Errorf("all text: got %q, want %q", allText, "Hello world")
 	}
 }
 
-// TestInlineLayoutMultipleFloats tests multiple floated children
-func TestInlineLayoutMultipleFloats(t *testing.T) {
-	le := createTestEngine()
+func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
+	// Build a text fragment manually and verify fragmentToBox handles it.
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	parentNode := makeNode("div")
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
 
-	// Create div with multiple floats
-	float1 := createTestNode("span", createTextNode("Float1"))
-	float2 := createTestNode("span", createTextNode("Float2"))
-	text := createTextNode("Text")
-	node := createTestNode("div", float1, text, float2)
-
-	floatStyle := css.NewStyle()
-	floatStyle.Set("display", "inline")
-	floatStyle.Set("float", "left")
-	floatStyle.Set("width", "50px")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node:   css.NewStyle(),
-		float1: floatStyle,
-		float2: floatStyle,
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
+	textFrag := &PhysicalFragment{
+		Size:             PhysicalSize{Width: 50, Height: 16},
+		Type:             FragmentText,
+		TextContent:      "Test text",
+		Node:             parentNode,
+		Style:            parentStyle,
+		WritingDirection: wdm,
 	}
 
-	// Should have both floats in float list
-	if len(le.floats) < 2 {
-		t.Errorf("Expected at least 2 floats, got %d", len(le.floats))
+	lineFrag := &PhysicalFragment{
+		Size: PhysicalSize{Width: 800, Height: 20},
+		Children: []ChildLink{
+			{Offset: PhysicalOffset{X: 0, Y: 2}, Fragment: textFrag},
+		},
+		Type:             FragmentLineBox,
+		WritingDirection: wdm,
+	}
+
+	containerFrag := &PhysicalFragment{
+		Size: PhysicalSize{Width: 800, Height: 20},
+		Children: []ChildLink{
+			{Offset: PhysicalOffset{X: 0, Y: 0}, Fragment: lineFrag},
+		},
+		Node:             parentNode,
+		Style:            parentStyle,
+		WritingDirection: wdm,
+	}
+
+	box := fragmentToBox(containerFrag, nil, 0, 0)
+
+	found := false
+	var walk func(b *Box)
+	walk = func(b *Box) {
+		if b.Text == "Test text" {
+			found = true
+		}
+		for _, c := range b.Children {
+			walk(c)
+		}
+	}
+	walk(box)
+
+	if !found {
+		t.Error("fragmentToBox should produce a Box with Text='Test text'")
 	}
 }
 
-// TestInlineLayoutEmptyElements tests elements with no content
-func TestInlineLayoutEmptyElements(t *testing.T) {
-	le := createTestEngine()
+func TestInlineLayout_LineBoxHeight(t *testing.T) {
+	textNode := makeTextNode("Hello")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "20px")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-	// Create div with empty spans
-	span1 := createTestNode("span")
-	span2 := createTestNode("span")
-	node := createTestNode("div", span1, span2)
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 800)
 
-	spanStyle := css.NewStyle()
-	spanStyle.Set("display", "inline")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node:  css.NewStyle(),
-		span1: spanStyle,
-		span2: spanStyle,
-	}
-	computedStyles[node].Set("display", "block")
-
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
-
-	if box == nil {
-		t.Fatal("Expected box to be created")
+	if len(lineBoxes) < 1 {
+		t.Fatal("no line boxes")
 	}
 
-	// Should handle empty elements gracefully
+	h := lineBoxes[0].Size.Height
+	if h < 15 || h > 30 {
+		t.Errorf("line box height: got %f, expected ~20", h)
+	}
 }
 
-// TestInlineLayoutWithMarginsPadding tests inline elements with box model
-func TestInlineLayoutWithMarginsPadding(t *testing.T) {
-	le := createTestEngine()
+func TestInlineLayout_EmptyContainer(t *testing.T) {
+	parent := makeNode("div")
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-	// Create span with margins and padding
-	span := createTestNode("span", createTextNode("Text"))
-	node := createTestNode("div", span)
+	lineBoxes, totalHeight := inlineLayoutForTest(parent, styles, 800)
 
-	spanStyle := css.NewStyle()
-	spanStyle.Set("display", "inline")
-	spanStyle.Set("margin-left", "10px")
-	spanStyle.Set("margin-right", "10px")
-	spanStyle.Set("padding-left", "5px")
-	spanStyle.Set("padding-right", "5px")
-
-	computedStyles := map[*html.Node]*css.Style{
-		node: css.NewStyle(),
-		span: spanStyle,
+	if len(lineBoxes) != 0 {
+		t.Errorf("empty container should have 0 line boxes, got %d", len(lineBoxes))
 	}
-	computedStyles[node].Set("display", "block")
+	if totalHeight != 0 {
+		t.Errorf("empty container height: got %f, want 0", totalHeight)
+	}
+}
 
-	// Layout the node
-	box := le.layoutNodeHTB(node, 0, 0, 800, computedStyles, nil)
+func TestInlineLayout_TextPositioning(t *testing.T) {
+	textNode := makeTextNode("ABC")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
 
-	if box == nil {
-		t.Fatal("Expected box to be created")
+	lineBoxes, _ := inlineLayoutForTest(parent, styles, 800)
+
+	textFrag := lineBoxes[0].Children[0]
+
+	if math.Abs(textFrag.Offset.X) > 0.1 {
+		t.Errorf("left-aligned text X offset: got %f, want ~0", textFrag.Offset.X)
 	}
 
-	// Should apply margins and padding
-	if len(box.Children) == 0 {
-		t.Error("Expected at least one child box")
+	if textFrag.Fragment.Size.Width <= 0 {
+		t.Errorf("text width should be > 0, got %f", textFrag.Fragment.Size.Width)
+	}
+}
+
+func TestInlineLayout_CollectInlines(t *testing.T) {
+	text1 := makeTextNode("Hello ")
+	text2 := makeTextNode("world")
+	span := makeNode("span", text2)
+	parent := makeNode("div", text1, span)
+
+	spanStyle := makeStyle("display", "inline")
+	parentStyle := makeStyle("display", "block")
+	styles := map[*html.Node]*css.Style{span: spanStyle, parent: parentStyle}
+
+	layoutParent := buildTestTree(parent, styles)
+	data := CollectInlines(layoutParent)
+
+	if data.TextContent != "Hello world" {
+		t.Errorf("TextContent: got %q, want %q", data.TextContent, "Hello world")
+	}
+
+	// Should have: Text("Hello "), OpenTag(span), Text("world"), CloseTag(span)
+	if len(data.Items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(data.Items))
+	}
+
+	if data.Items[0].Type != InlineItemText {
+		t.Errorf("item 0: expected Text, got %d", data.Items[0].Type)
+	}
+	if data.Items[1].Type != InlineItemOpenTag {
+		t.Errorf("item 1: expected OpenTag, got %d", data.Items[1].Type)
+	}
+	if data.Items[2].Type != InlineItemText {
+		t.Errorf("item 2: expected Text, got %d", data.Items[2].Type)
+	}
+	if data.Items[3].Type != InlineItemCloseTag {
+		t.Errorf("item 3: expected CloseTag, got %d", data.Items[3].Type)
+	}
+}
+
+func TestInlineLayout_LineBreaker(t *testing.T) {
+	textNode := makeTextNode("Hello world")
+	parent := makeNode("div", textNode)
+	parentStyle := makeStyle("display", "block", "font-size", "16px")
+	styles := map[*html.Node]*css.Style{parent: parentStyle}
+
+	layoutParent := buildTestTree(parent, styles)
+	data := CollectInlines(layoutParent)
+	fonts := text.DefaultFontConfig()
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	ctx := testContext()
+
+	space := ConstraintSpace{
+		AvailableSize:    LogicalSize{InlineSize: 800, BlockSize: Indefinite},
+		WritingDirection: wdm,
+	}
+	lb := NewLineBreaker(data, ctx, space, fonts, LineBreakerContent)
+
+	var line LineInfo
+	lineCount := 0
+	for lb.NextLine(&line) {
+		lineCount++
+		if line.Width <= 0 {
+			t.Errorf("line %d width should be > 0", lineCount)
+		}
+	}
+
+	if lineCount != 1 {
+		t.Errorf("expected 1 line for short text, got %d", lineCount)
 	}
 }

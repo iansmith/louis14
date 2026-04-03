@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"louis14/pkg/html"
@@ -91,7 +90,4 @@ func main() {
 	}
 	fmt.Printf("Successfully rendered %s to %s\n", inputFile, outputFile)
 	fmt.Printf("Viewport: %.0fx%.0f, Rendered %d boxes\n", viewportWidth, viewportHeight, len(boxes))
-
-	// Try to open the output file; ignore errors (e.g. if "open" is not available)
-	exec.Command("open", outputFile).Start()
 }
