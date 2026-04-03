@@ -307,7 +307,17 @@ func createLineBox(
 	alignOffset := computeTextAlignOffset(line, availableInline, wdm)
 
 	// Step 3: Build line box fragment with positioned children.
-	lineBuilder := NewBoxFragmentBuilder(wdm)
+	// For horizontal writing modes, use LTR direction for the line box's
+	// internal coordinate system because items are already in visual LTR order
+	// (after bidi reordering in ReorderLineVisual). The RTL line box builder
+	// would flip all child positions via physX = outerW - inlineOffset -
+	// childWidth, reversing the visual order. The line box itself is positioned
+	// within the parent block using the parent's WDM.
+	lineWDM := wdm
+	if wdm.IsHorizontal() {
+		lineWDM.Dir = DirectionLTR
+	}
+	lineBuilder := NewBoxFragmentBuilder(lineWDM)
 	lineBuilder.SetSize(LogicalSize{
 		InlineSize: availableInline,
 		BlockSize:  lineHeight,
@@ -616,7 +626,11 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 		return 0 // LTR start = physical left
 	case "justify":
 		if line.IsLastLine || line.HasForcedBreak {
-			return 0 // Last line of a paragraph is not justified.
+			// Last line falls back to start alignment.
+			if wdm.IsRTL() {
+				return slack // RTL start = physical right
+			}
+			return 0 // LTR start = physical left
 		}
 		// TODO: distribute inter-word spacing for justify.
 		return 0
