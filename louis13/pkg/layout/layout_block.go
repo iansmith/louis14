@@ -165,6 +165,28 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 5: Check for float early to determine width calculation
 	floatType := style.GetFloat()
 
+	// CSS Writing Modes §6.3: float:left maps to line-left, float:right to
+	// line-right. In Blink, ResolveFloating() maps physical float values to
+	// logical before use. In horizontal-tb RTL, left=inline-end (physical right)
+	// and right=inline-start (physical left), so we swap. In vertical modes the
+	// mapping is handled by the vertical transform, so only HTB-RTL needs a swap
+	// at this point. The parent's direction determines the mapping.
+	if floatType != css.FloatNone && !dir.IsVertical() {
+		cbDir := "ltr"
+		if parent != nil && parent.Style != nil {
+			if d, ok := parent.Style.Get("direction"); ok {
+				cbDir = d
+			}
+		}
+		if cbDir == "rtl" {
+			if floatType == css.FloatLeft {
+				floatType = css.FloatRight
+			} else {
+				floatType = css.FloatLeft
+			}
+		}
+	}
+
 	// CSS 2.1 §9.7: Relationships between display, position, and float
 	// Floated or absolutely positioned inline elements compute to block display
 	if display == css.DisplayInline {
@@ -953,10 +975,26 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Phase 5: Check for clear property
 	clearType := style.GetClear()
 
+	// CSS Writing Modes §6.3: clear:left/right map to line-left/line-right.
+	// Same RTL swap as floats (see float mapping above).
+	if clearType != css.ClearNone && !dir.IsVertical() {
+		cbDir := "ltr"
+		if parent != nil && parent.Style != nil {
+			if d, ok := parent.Style.Get("direction"); ok {
+				cbDir = d
+			}
+		}
+		if cbDir == "rtl" {
+			switch clearType {
+			case css.ClearLeft:
+				clearType = css.ClearRight
+			case css.ClearRight:
+				clearType = css.ClearLeft
+			}
+		}
+	}
+
 	// Phase 5: Handle clear property - move Y down past floats.
-	// Layout always runs in HTB coordinates (pre-transform), so getClearY is
-	// correct for all elements. getClearDir would only be meaningful with native
-	// vertical layout (not yet implemented).
 	if clearType != css.ClearNone {
 		y = le.getClearY(clearType, y)
 	}

@@ -204,7 +204,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		// The fragment text is in logical (Unicode) order; reverse rune order
 		// so the renderer draws characters left-to-right in visual order.
 		if frag.BidiLevel%2 == 1 {
-			text = reverseRunes(text)
+			text = reverseAndMirrorRunes(text)
 		}
 		box.Text = text
 		box.IsVerticalText = frag.WritingDirection.IsVertical()
@@ -228,7 +228,12 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		}
 	}
 
-	if box.Style != nil {
+	// CSS position applies to boxes (elements), never to text runs.
+	// In Blink, NGPhysicalTextFragment does not carry a position property —
+	// only NGPhysicalBoxFragment does. Text fragments inherit their parent's
+	// complete style (including position: relative), but must not be classified
+	// as positioned elements in the paint layer, or they corrupt paint order.
+	if box.Style != nil && frag.Type != FragmentText {
 		box.Position = box.Style.GetPosition()
 		if box.Style.HasExplicitZIndex() {
 			box.ZIndex = box.Style.GetZIndex()
@@ -267,14 +272,79 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	return box
 }
 
-// reverseRunes returns s with its Unicode code points in reversed order.
-// Used to convert RTL text from logical (Unicode) order to visual order
-// for left-to-right rendering.
-func reverseRunes(s string) string {
+// reverseAndMirrorRunes returns s with its Unicode code points reversed and
+// bidi-mirrored per UAX#9 rule L4. Characters with the Bidi_Mirrored property
+// are substituted with their mirror glyph during reversal. This converts RTL
+// text from logical (Unicode) order to visual order for left-to-right rendering.
+func reverseAndMirrorRunes(s string) string {
 	runes := []rune(s)
-	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
-		runes[i], runes[j] = runes[j], runes[i]
+	for i, j := 0, len(runes)-1; i <= j; i, j = i+1, j-1 {
+		ri, rj := runes[i], runes[j]
+		ri = bidiMirror(ri)
+		rj = bidiMirror(rj)
+		runes[i], runes[j] = rj, ri
 	}
 	return string(runes)
+}
+
+// bidiMirror returns the bidi-mirrored glyph for paired bracket and
+// punctuation characters (Unicode Bidi_Mirrored property, UAX#9 L4).
+// Returns the same rune if no mirror exists.
+func bidiMirror(r rune) rune {
+	switch r {
+	case '(':
+		return ')'
+	case ')':
+		return '('
+	case '<':
+		return '>'
+	case '>':
+		return '<'
+	case '[':
+		return ']'
+	case ']':
+		return '['
+	case '{':
+		return '}'
+	case '}':
+		return '{'
+	case '\u00AB': // «
+		return '\u00BB' // »
+	case '\u00BB': // »
+		return '\u00AB' // «
+	case '\u2039': // ‹
+		return '\u203A' // ›
+	case '\u203A': // ›
+		return '\u2039' // ‹
+	case '\u2045': // ⁅
+		return '\u2046' // ⁆
+	case '\u2046': // ⁆
+		return '\u2045' // ⁅
+	case '\u207D': // ⁽
+		return '\u207E' // ⁾
+	case '\u207E': // ⁾
+		return '\u207D' // ⁽
+	case '\u208D': // ₍
+		return '\u208E' // ₎
+	case '\u208E': // ₎
+		return '\u208D' // ₍
+	case '\u2308': // ⌈
+		return '\u2309' // ⌉
+	case '\u2309': // ⌉
+		return '\u2308' // ⌈
+	case '\u230A': // ⌊
+		return '\u230B' // ⌋
+	case '\u230B': // ⌋
+		return '\u230A' // ⌊
+	case '\u2329': // 〈
+		return '\u232A' // 〉
+	case '\u232A': // 〉
+		return '\u2329' // 〈
+	case '\u27E8': // ⟨
+		return '\u27E9' // ⟩
+	case '\u27E9': // ⟩
+		return '\u27E8' // ⟨
+	}
+	return r
 }
 
