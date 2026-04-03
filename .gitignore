@@ -16,6 +16,9 @@ test-output.txt
 *.test
 *.out
 
+# Claude Code
+.claude/
+
 # IDE files
 .vscode/
 .idea/
