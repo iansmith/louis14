@@ -82,12 +82,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	colWidths := tla.computeColumnWidths(rows, numCols, availableInline, borderCollapse, hasExplicitTableWidth)
 
 	// Layout each row.
+	//
+	// Mirrors Blink's NGTableLayoutAlgorithm: rows and sections are
+	// structural-only — they do NOT participate in OOF propagation.
+	// OOF candidates from cell content are collected directly at the
+	// table level. Rows produce synthetic fragments for painting but
+	// have no NGLayoutResult of their own in Blink.
 	blockOffset := 0.0
 	for _, row := range rows {
 		rowHeight := 0.0
 		colIdx := 0
 
-		// Create row fragment.
+		// Create synthetic row fragment (structural only, no OOF role).
 		rowBuilder := NewBoxFragmentBuilder(wdm)
 		if row.node != nil {
 			rowBuilder.SetLayoutNode(row.node)
@@ -100,13 +106,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				cellWidth += colWidths[c]
 			}
 
-			// Compute inline offset for this cell.
-			inlineOffset := 0.0
+			// Compute inline offset for this cell within the row.
+			cellInlineOffset := 0.0
 			for c := 0; c < colIdx && c < numCols; c++ {
-				inlineOffset += colWidths[c]
+				cellInlineOffset += colWidths[c]
 			}
 
-			// Layout the cell's content.
+			// Layout the cell's content via block layout algorithm.
+			// This is where OOF descendants inside the cell are collected.
 			cellWDM := wdm
 			if cell.style != nil {
 				cellWDM = NewWritingDirectionMode(cell.style)
@@ -132,22 +139,31 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			rowBuilder.AddChild(cellResult.Fragment, LogicalOffset{
-				InlineOffset: inlineOffset,
+				InlineOffset: cellInlineOffset,
 				BlockOffset:  0,
 			})
 
-			// Propagate OOF candidates from cell → row.
-			// The cell's content-box origin is offset from the row's content-box
-			// origin by (inlineOffset, 0) plus the cell's border+padding.
+			// Collect OOF candidates from cell directly into the table builder.
+			// Mirrors Blink: table algorithm centrally collects all OOF descendants,
+			// bypassing row/section. Static positions are translated from cell
+			// content-box coordinates to table content-box coordinates in one step:
+			//   table-relative = cell-relative + cell-border/padding + cell-offset-in-table
 			if len(cellResult.PropagatedOOFCandidates) > 0 && cell.style != nil {
-				PropagateOOFCandidates(cellResult, cell.style, wdm,
-					inlineOffset, 0, rowBuilder)
+				cellGeom := ComputeFragmentGeometry(cell.style, wdm)
+				inlineAdj := cellInlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
+				blockAdj := blockOffset + cellGeom.Border.BlockStart + cellGeom.Padding.BlockStart
+				for _, cand := range cellResult.PropagatedOOFCandidates {
+					adj := cand
+					adj.StaticPosition.Offset.InlineOffset += inlineAdj
+					adj.StaticPosition.Offset.BlockOffset += blockAdj
+					builder.AddOutOfFlowCandidate(adj)
+				}
 			}
 
 			colIdx += cell.colSpan
 		}
 
-		// Set row size and add to table.
+		// Set row size and build synthetic fragment.
 		totalInline := 0.0
 		for _, w := range colWidths {
 			totalInline += w
@@ -165,18 +181,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				Border:  physBorder,
 				Padding: physPadding,
 			})
-		}
-
-		// Propagate OOF candidates from row → table.
-		// Row's content-box origin is at (0, blockOffset) in the table's
-		// content-box. Rows have no border/padding in CSS tables, but
-		// we propagate through the row builder to pick up cell-level candidates.
-		if len(rowBuilder.outOfFlowCandidates) > 0 {
-			for _, cand := range rowBuilder.outOfFlowCandidates {
-				adj := cand
-				adj.StaticPosition.Offset.BlockOffset += blockOffset
-				builder.AddOutOfFlowCandidate(adj)
-			}
 		}
 
 		rowResult := rowBuilder.Build()
@@ -210,10 +214,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		Padding: physPadding,
 	})
 
-	// CSS 2.1 §10.6.4 / CSS-POSITION-3: Resolve or propagate OOF candidates.
-	// Same pattern as block layout: if the table is positioned, it acts as
-	// the containing block and resolves OOF children. Otherwise, propagate
-	// candidates upward for a higher ancestor to resolve.
+	// Mirrors Blink's single NGOutOfFlowLayoutPart::Run() at the end of
+	// NGTableLayoutAlgorithm::Layout(). All OOF candidates collected from
+	// cells are resolved here if the table is a containing block, or
+	// propagated upward otherwise.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := tla.style != nil && tla.style.GetPosition() != css.PositionStatic
