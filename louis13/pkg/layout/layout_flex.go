@@ -1417,6 +1417,43 @@ func (le *LayoutEngine) layoutFlex(flexBox *Box, x, y, availableWidth float64, c
 						}
 						newBox := le.layoutGridContainer(item.Box.Node, item.Box.X, item.Box.Y, item.Box.Width, establishedH, item.Box.Style, computedStyles, flexBox)
 						item.Box.Children = newBox.Children
+					} else if isRow && isShrinkToFit && item.Box.Node != nil && item.Box.HeightIsDefinite &&
+						!isReplacedElement(item.Box.Node.TagName) {
+						// CSS Flexbox §9.4: For block containers in shrink-to-fit row flex
+						// containers (inline-flex, floated, abs-pos), re-layout with the
+						// newly-definite cross size (height) so that percentage-height children
+						// (e.g. height:100%) and replaced elements with intrinsic aspect ratios
+						// can resolve their dimensions against the established height.
+						// Only for shrink-to-fit containers because item widths affect the
+						// container width, and we need correct widths for step 8c.
+						// Skip replaced elements (img, canvas, video) — handled above via
+						// the intrinsic-ratio code.
+						// Skip orthogonal items (vertical writing-mode) — their block direction
+						// differs from the flex container's cross axis, so re-layout via
+						// layoutNodeHTB would be incorrect.
+						// Only re-layout when the item has no explicit CSS width (auto-width
+						// items depend on content for their width; fixed-width items don't).
+						itemWM, _ := item.Box.Style.Get("writing-mode")
+						itemIsOrthogonal := itemWM == "vertical-rl" || itemWM == "vertical-lr" || itemWM == "sideways-rl" || itemWM == "sideways-lr"
+						_, itemHasExplicitW := item.Box.Style.GetLength("width")
+						_, itemHasExplicitWPct := item.Box.Style.GetPercentage("width")
+						if !itemIsOrthogonal && !itemHasExplicitW && !itemHasExplicitWPct {
+							savedFloats := le.floats
+							savedAbsPos := le.absoluteBoxes
+							le.floats = le.floats[:le.floatBase]
+							le.absoluteBoxes = nil
+							newBox := le.layoutNodeHTB(item.Box.Node, item.Box.X-item.Box.Margin.Left, item.Box.Y-item.Box.Margin.Top, item.Box.Width, computedStyles, flexBox)
+							le.floats = savedFloats
+							le.absoluteBoxes = savedAbsPos
+							if newBox != nil {
+								item.Box.Children = newBox.Children
+								// Update item width if children changed it (e.g. replaced element
+								// with aspect-ratio expanded width after height was established).
+								if newBox.Width > item.Box.Width+0.5 {
+									item.Box.Width = newBox.Width
+								}
+							}
+						}
 					}
 				}
 			}

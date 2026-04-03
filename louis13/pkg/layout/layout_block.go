@@ -651,6 +651,36 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 		}
 	}
 
+	// Canvas intrinsic ratio sizing: canvas HTML width/height attributes define an intrinsic
+	// aspect ratio (like a replaced element). When author CSS changes one dimension relative
+	// to the HTML attribute value, the other dimension is derived from the intrinsic ratio.
+	// This follows the HTML5 spec: canvas width/height attrs act as a presentational hint
+	// for the aspect-ratio property.
+	if node != nil && node.TagName == "canvas" && hasExplicitWidth && hasExplicitHeight {
+		var canvasAttrW, canvasAttrH float64
+		if wAttr, ok := node.GetAttribute("width"); ok {
+			if w, err := strconv.ParseFloat(wAttr, 64); err == nil {
+				canvasAttrW = w
+			}
+		}
+		if hAttr, ok := node.GetAttribute("height"); ok {
+			if h, err := strconv.ParseFloat(hAttr, 64); err == nil {
+				canvasAttrH = h
+			}
+		}
+		if canvasAttrW > 0 && canvasAttrH > 0 {
+			widthFromAttr := math.Abs(contentWidth-canvasAttrW) < 0.5
+			heightFromAttr := math.Abs(contentHeight-canvasAttrH) < 0.5
+			if widthFromAttr && !heightFromAttr {
+				// Author CSS changed height; update width from intrinsic ratio.
+				contentWidth = contentHeight * canvasAttrW / canvasAttrH
+			} else if !widthFromAttr && heightFromAttr {
+				// Author CSS changed width; update height from intrinsic ratio.
+				contentHeight = contentWidth * canvasAttrH / canvasAttrW
+			}
+		}
+	}
+
 	// CSS3 box-sizing: border-box means specified inline/block size include padding+border
 	if style.GetBoxSizing() == "border-box" {
 		if hasExplicitWidth {
