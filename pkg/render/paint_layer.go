@@ -262,11 +262,13 @@ func domOrderedChildren(box *layout.Box) []*layout.Box {
 	// (block, anonymous block, or continuation). OOF LIN children are inserted
 	// at their DOM position without consuming an in-flow slot.
 	result := make([]*layout.Box, 0, len(box.Children))
+	inserted := make(map[*layout.Box]bool)
 	inFlowIdx := 0
 	for _, linChild := range lin.Children() {
 		if cb, ok := byLIN[linChild]; ok {
 			// Out-of-flow child: insert at this DOM position.
 			result = append(result, cb)
+			inserted[cb] = true
 		} else if linChild.IsText() {
 			// Text node: block layout never emits a box child for text nodes
 			// (they are handled by inline layout inside anonymous blocks).
@@ -283,6 +285,14 @@ func domOrderedChildren(box *layout.Box) []*layout.Box {
 	// Emit any remaining in-flow boxes (e.g. line boxes with no LIN).
 	for ; inFlowIdx < len(inFlow); inFlowIdx++ {
 		result = append(result, inFlow[inFlowIdx])
+	}
+	// Append OOF children that propagated up from descendants (not direct
+	// DOM children of this box). These weren't found during the DOM walk
+	// above because their LayoutInputNode lives deeper in the tree.
+	for _, child := range box.Children {
+		if oofSet[child] && !inserted[child] {
+			result = append(result, child)
+		}
 	}
 	return result
 }

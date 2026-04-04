@@ -199,12 +199,11 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			} else if autoInlineEnd {
 				inlineOffset = insets.InlineStart + childMargins.InlineStart
 			} else {
-				// Overconstrained: LTR ignores inline-end, RTL ignores inline-start.
-				if wdm.IsRTL() {
-					inlineOffset = cbInline - insets.InlineEnd - childMargins.InlineEnd - usedInlineSize
-				} else {
-					inlineOffset = insets.InlineStart + childMargins.InlineStart
-				}
+				// Overconstrained: CSS 2.1 §10.3.7 says ignore 'right' (LTR)
+				// or 'left' (RTL). Both are inline-end in logical terms.
+				// Always anchor from inline-start; the converter handles
+				// the physical flip for RTL/vertical modes.
+				inlineOffset = insets.InlineStart + childMargins.InlineStart
 			}
 		} else if insets.HasInlineStart {
 			inlineOffset = insets.InlineStart + childMargins.InlineStart

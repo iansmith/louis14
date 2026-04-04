@@ -320,6 +320,14 @@ func (lb *LineBreaker) breakTextAtWord(
 	fitted := 0
 	usedWidth := 0.0
 
+	// If remaining space is effectively zero and the line already has content,
+	// don't even try to fit the first word — end the line immediately.
+	// This prevents a single-word text item from being force-added to an
+	// already-full line (the fitted>0 guard only applies to subsequent words).
+	if remaining <= 0 && len(line.Results) > 0 {
+		return true
+	}
+
 	isVertical := lb.space.WritingDirection.IsVertical()
 	for i, word := range words {
 		var wordWidth float64

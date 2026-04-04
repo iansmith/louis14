@@ -75,6 +75,10 @@ type InlineItemsData struct {
 
 	// Items is the ordered sequence of inline items.
 	Items []*InlineItem
+
+	// RuneLevels holds the resolved bidi level for each rune in TextContent.
+	// Populated by ResolveBidiLevels, stripped by StripBidiControls.
+	RuneLevels []int
 }
 
 // CollectInlines performs a depth-first scan of the layout subtree rooted at

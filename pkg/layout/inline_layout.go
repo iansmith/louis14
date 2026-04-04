@@ -67,10 +67,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		return 0, exclusionSpace, 0
 	}
 
-	// Phase 1b: Resolve UAX#9 bidi levels for all items.
-	// This sets BidiLevel on each InlineItem (0=LTR, 1=RTL).
-	// Mirrors Blink's BidiParagraph pass in InlineNode::PrepareLayout.
+	// Phase 1b: Bidi pipeline (mirrors Blink's BidiParagraph + SegmentText).
+	// Uses a pure-Go UAX#9 resolver (the Go bidi package has a neutral
+	// resolution bug), then strips control chars and splits at level
+	// boundaries for correct L2 reordering.
 	ResolveBidiLevels(itemsData, wdm.Dir)
+	StripBidiControls(itemsData)
+	SplitItemsAtLevelBoundaries(itemsData)
 
 	// Phase 1c: Lay out inline floats and register them in the exclusion space.
 	// CSS 2.1 §9.5.1: floats are placed as high as possible.
@@ -314,6 +317,13 @@ func createLineBox(
 	// would flip all child positions via physX = outerW - inlineOffset -
 	// childWidth, reversing the visual order. The line box itself is positioned
 	// within the parent block using the parent's WDM.
+	// For horizontal writing modes, use LTR direction for the line box's
+	// internal coordinate system because items are already in visual LTR order
+	// (after bidi reordering in ReorderLineVisual). The RTL line box builder
+	// would flip all child positions via physX = outerW - inlineOffset -
+	// childWidth, reversing the visual order. For vertical writing modes,
+	// keep the original direction — the RTL flip correctly places items
+	// from the inline-start (bottom for vertical-lr + RTL).
 	lineWDM := wdm
 	if wdm.IsHorizontal() {
 		lineWDM.Dir = DirectionLTR
@@ -474,20 +484,36 @@ func createLineBox(
 				childLogical := NewLogicalFragment(wdm, r.LayoutResult.Fragment)
 				blockSize := childLogical.BlockSize()
 				var blockPos float64
-				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
-				// align inline-block so its baseline (= font ascent from top) sits
-				// at the line's maxAscent.
-				if r.Item.Style != nil &&
-					r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
-					r.Item.Style.GetOverflow() == css.OverflowVisible {
-					fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-					ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
-					// CSS 2.1 §10.8.1: maxAscent now includes margin-block-start,
-					// so blockPos correctly places the border-box after the top margin.
-					blockPos = maxAscent - ibAscent
-				} else {
-					// Default: bottom-align to baseline.
-					blockPos = maxAscent - blockSize
+
+				// CSS 2.1 §10.8.1: vertical-align determines block-direction
+				// positioning within the line box.
+				va := css.VerticalAlignBaseline
+				if r.Item.Style != nil {
+					va = r.Item.Style.GetVerticalAlign()
+				}
+
+				switch va {
+				case css.VerticalAlignTop:
+					blockPos = 0
+				case css.VerticalAlignBottom:
+					blockPos = lineHeight - blockSize
+					if blockPos < 0 {
+						blockPos = 0
+					}
+				default:
+					// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
+					// align inline-block so its baseline (= font ascent from top) sits
+					// at the line's maxAscent.
+					if r.Item.Style != nil &&
+						r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
+						r.Item.Style.GetOverflow() == css.OverflowVisible {
+						fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+						ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+						blockPos = maxAscent - ibAscent
+					} else {
+						// Default: bottom-align to baseline.
+						blockPos = maxAscent - blockSize
+					}
 				}
 				if blockPos < 0 {
 					blockPos = 0
@@ -530,6 +556,7 @@ func createLineBox(
 // Even empty inline elements (open/close tag with no text) still contribute
 // their font's line metrics (CSS 2.1 §9.4.2).
 func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, maxDescent float64) {
+	var maxTopBottom float64 // tallest vertical-align:top/bottom element
 	for _, r := range line.Results {
 		switch r.Item.Type {
 		case InlineItemOpenTag:
@@ -567,6 +594,22 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 			if r.LayoutResult != nil {
 				childLogical := NewLogicalFragment(wdm, r.LayoutResult.Fragment)
 				blockSize := childLogical.BlockSize()
+
+				// CSS 2.1 §10.8.1: vertical-align:top/bottom elements don't
+				// participate in baseline alignment. They contribute to line
+				// height but not to maxAscent/maxDescent directly.
+				va := css.VerticalAlignBaseline
+				if r.Item.Style != nil {
+					va = r.Item.Style.GetVerticalAlign()
+				}
+				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
+					// Track the tallest top/bottom-aligned element separately.
+					if blockSize > maxTopBottom {
+						maxTopBottom = blockSize
+					}
+					continue
+				}
+
 				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
 				// the baseline is the baseline of the last line box. Use the
 				// inline-block's font ascent as an approximation.
@@ -598,6 +641,15 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 			}
 		}
 	}
+
+	// CSS 2.1 §10.8.1: After computing baseline-based line height, ensure
+	// the line is tall enough to contain top/bottom-aligned elements.
+	baselineHeight := maxAscent + maxDescent
+	if maxTopBottom > baselineHeight {
+		// Expand the line box symmetrically by increasing maxDescent.
+		maxDescent += maxTopBottom - baselineHeight
+	}
+
 	return
 }
 
