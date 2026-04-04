@@ -1344,6 +1344,31 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 			style.Set("border-style", "solid")
 		}
 	}
+
+	// dir attribute → direction + unicode-bidi (HTML presentational hint).
+	// Per HTML spec §14.3.5, the dir attribute maps to:
+	//   direction: ltr/rtl
+	//   unicode-bidi: isolate (or isolate-override for <bdo>)
+	// As a presentational hint, author CSS can override these values.
+	if dirAttr, ok := node.GetAttribute("dir"); ok {
+		dirAttr = strings.ToLower(strings.TrimSpace(dirAttr))
+		switch dirAttr {
+		case "rtl":
+			style.Set("direction", "rtl")
+		case "ltr":
+			style.Set("direction", "ltr")
+		case "auto":
+			// TODO: implement first-strong heuristic (UAX#9 P2/P3)
+			style.Set("direction", "ltr")
+		}
+		if dirAttr == "rtl" || dirAttr == "ltr" || dirAttr == "auto" {
+			if node.TagName == "bdo" {
+				style.Set("unicode-bidi", "isolate-override")
+			} else {
+				style.Set("unicode-bidi", "isolate")
+			}
+		}
+	}
 }
 
 // fontSizeFromHTMLSize converts HTML <font size="N"> to CSS font-size.
