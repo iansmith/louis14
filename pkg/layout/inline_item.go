@@ -54,6 +54,11 @@ type InlineItem struct {
 	// BidiLevel is the resolved bidirectional embedding level (0 = LTR).
 	BidiLevel int
 
+	// ParagraphLevel is the bidi paragraph base embedding level (0 = LTR,
+	// 1 = RTL). For unicode-bidi: plaintext, paragraphs separated by
+	// forced breaks may have different base levels (UAX#9 P2/P3).
+	ParagraphLevel int
+
 	// IsFirstFragment / IsLastFragment track which visual fragment of an inline
 	// element this item represents. Used to suppress inline-start/inline-end
 	// borders for split inline elements (CSS 2.1 §9.2.1.1 block-in-inline).
@@ -79,6 +84,11 @@ type InlineItemsData struct {
 	// RuneLevels holds the resolved bidi level for each rune in TextContent.
 	// Populated by ResolveBidiLevels, stripped by StripBidiControls.
 	RuneLevels []int
+
+	// ParagraphLevels holds the paragraph base level for each rune.
+	// For plaintext mode, different paragraphs separated by forced breaks
+	// may have different base levels.
+	ParagraphLevels []int
 }
 
 // CollectInlines performs a depth-first scan of the layout subtree rooted at

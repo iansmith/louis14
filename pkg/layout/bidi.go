@@ -121,6 +121,12 @@ func ResolveBidiLevels(itemsData *InlineItemsData, baseDir Direction) {
 
 	itemsData.RuneLevels = levels
 
+	// Set paragraph levels (uniform for non-plaintext mode).
+	itemsData.ParagraphLevels = make([]int, nRunes)
+	for i := range itemsData.ParagraphLevels {
+		itemsData.ParagraphLevels[i] = baseLevel
+	}
+
 	// Build byte→rune index map for assigning levels to items.
 	runeAtByte := make([]int, len(itemsData.TextContent)+1)
 	ri := 0
@@ -132,6 +138,7 @@ func ResolveBidiLevels(itemsData *InlineItemsData, baseDir Direction) {
 
 	// Assign bidi levels to each InlineItem.
 	for _, item := range itemsData.Items {
+		item.ParagraphLevel = baseLevel
 		offset := item.StartOffset
 		if offset >= len(itemsData.TextContent) {
 			// Items past end of text get the paragraph embedding level,
@@ -142,6 +149,108 @@ func ResolveBidiLevels(itemsData *InlineItemsData, baseDir Direction) {
 		runeIdx := runeAtByte[offset]
 		if runeIdx < nRunes {
 			item.BidiLevel = levels[runeIdx]
+		}
+	}
+}
+
+// ResolveBidiLevelsPlaintext resolves bidi levels for unicode-bidi: plaintext
+// mode. Per CSS Writing Modes §2.2, each bidi paragraph (separated by forced
+// breaks / paragraph separators) independently determines its base direction
+// using UAX#9 rules P2/P3 (first strong character heuristic).
+//
+// This mirrors Blink's NGBidiParagraph which calls ICU's ubidi_setPara with
+// UBIDI_DEFAULT_LTR per paragraph when in plaintext mode.
+func ResolveBidiLevelsPlaintext(itemsData *InlineItemsData) {
+	text := itemsData.TextContent
+	if len(text) == 0 {
+		return
+	}
+
+	runes := []rune(text)
+	nRunes := len(runes)
+
+	// Get bidi class for each rune.
+	allClasses := make([]xbidi.Class, nRunes)
+	for i, r := range runes {
+		props, _ := xbidi.LookupRune(r)
+		allClasses[i] = props.Class()
+	}
+
+	allLevels := make([]int, nRunes)
+	paraLevels := make([]int, nRunes)
+
+	// Process each paragraph independently.
+	// Per UAX#9 P1, paragraph boundaries are at characters with bidi class B
+	// (paragraph separator, which includes \n from <br> elements).
+	// The separator is kept with the preceding paragraph.
+	paraStart := 0
+	for paraStart < nRunes {
+		// Find the end of this paragraph.
+		paraEnd := paraStart
+		for paraEnd < nRunes && allClasses[paraEnd] != xbidi.B {
+			paraEnd++
+		}
+		// Include the B character in this paragraph.
+		if paraEnd < nRunes {
+			paraEnd++
+		}
+
+		// Determine base direction for this paragraph via P2/P3.
+		// Exclude the paragraph separator itself from direction detection.
+		contentEnd := paraEnd
+		if contentEnd > paraStart && allClasses[contentEnd-1] == xbidi.B {
+			contentEnd--
+		}
+		baseLevel := 0
+		if contentEnd > paraStart && determineFSIDirection(runes[paraStart:contentEnd]) == 1 {
+			baseLevel = 1
+		}
+
+		// Extract this paragraph's classes (copy — computeEmbeddingLevels mutates).
+		paraRunes := runes[paraStart:paraEnd]
+		paraClasses := make([]xbidi.Class, len(paraRunes))
+		copy(paraClasses, allClasses[paraStart:paraEnd])
+
+		// Compute embedding levels, resolve weak/neutral types, apply L1.
+		embLevels := computeEmbeddingLevels(paraRunes, baseLevel, paraClasses)
+		levels := resolveAllLevels(paraClasses, embLevels, baseLevel)
+		applyL1(levels, paraRunes, baseLevel)
+
+		// Store results.
+		for i := 0; i < paraEnd-paraStart; i++ {
+			allLevels[paraStart+i] = levels[i]
+			paraLevels[paraStart+i] = baseLevel
+		}
+
+		paraStart = paraEnd
+	}
+
+	itemsData.RuneLevels = allLevels
+	itemsData.ParagraphLevels = paraLevels
+
+	// Build byte→rune index map.
+	runeAtByte := make([]int, len(text)+1)
+	ri := 0
+	for bi := range text {
+		runeAtByte[bi] = ri
+		ri++
+	}
+	runeAtByte[len(text)] = ri
+
+	// Assign levels to items.
+	for _, item := range itemsData.Items {
+		offset := item.StartOffset
+		if offset >= len(text) {
+			if nRunes > 0 {
+				item.BidiLevel = paraLevels[nRunes-1]
+				item.ParagraphLevel = paraLevels[nRunes-1]
+			}
+			continue
+		}
+		runeIdx := runeAtByte[offset]
+		if runeIdx < nRunes {
+			item.BidiLevel = allLevels[runeIdx]
+			item.ParagraphLevel = paraLevels[runeIdx]
 		}
 	}
 }
@@ -706,6 +815,10 @@ func StripBidiControls(itemsData *InlineItemsData) {
 	if itemsData.RuneLevels != nil {
 		strippedLevels = make([]int, 0, len(itemsData.RuneLevels))
 	}
+	var strippedParaLevels []int
+	if itemsData.ParagraphLevels != nil {
+		strippedParaLevels = make([]int, 0, len(itemsData.ParagraphLevels))
+	}
 	newOff := 0
 	runeIdx := 0
 
@@ -717,6 +830,9 @@ func StripBidiControls(itemsData *InlineItemsData) {
 			if itemsData.RuneLevels != nil && runeIdx < len(itemsData.RuneLevels) {
 				strippedLevels = append(strippedLevels, itemsData.RuneLevels[runeIdx])
 			}
+			if itemsData.ParagraphLevels != nil && runeIdx < len(itemsData.ParagraphLevels) {
+				strippedParaLevels = append(strippedParaLevels, itemsData.ParagraphLevels[runeIdx])
+			}
 		}
 		runeIdx++
 	}
@@ -724,6 +840,7 @@ func StripBidiControls(itemsData *InlineItemsData) {
 
 	itemsData.TextContent = stripped.String()
 	itemsData.RuneLevels = strippedLevels
+	itemsData.ParagraphLevels = strippedParaLevels
 
 	for _, item := range itemsData.Items {
 		item.StartOffset = offsetMap[item.StartOffset]
@@ -803,6 +920,7 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 					Node:            item.Node,
 					Style:           item.Style,
 					BidiLevel:       currentLevel,
+					ParagraphLevel:  item.ParagraphLevel,
 					IsFirstFragment: item.IsFirstFragment,
 					IsLastFragment:  item.IsLastFragment,
 				})
@@ -818,6 +936,7 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 			Node:            item.Node,
 			Style:           item.Style,
 			BidiLevel:       currentLevel,
+			ParagraphLevel:  item.ParagraphLevel,
 			IsFirstFragment: item.IsFirstFragment,
 			IsLastFragment:  item.IsLastFragment,
 		})

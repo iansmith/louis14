@@ -73,22 +73,29 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// boundaries for correct L2 reordering.
 	//
 	// Per CSS Writing Modes §2.2, when the block container has
-	// unicode-bidi: plaintext, the paragraph base direction is determined
-	// from the first strong character (UAX#9 P2/P3), not from the CSS
-	// direction property. This mirrors Blink's SegmentBidiRuns which
-	// passes nullopt to ICU for plaintext mode.
+	// unicode-bidi: plaintext, each bidi paragraph (separated by forced
+	// breaks) independently determines its base direction from the first
+	// strong character (UAX#9 P2/P3). This mirrors Blink's NGBidiParagraph
+	// which calls ICU with UBIDI_DEFAULT_LTR per paragraph for plaintext.
 	baseDir := wdm.Dir
+	isPlaintext := false
 	if bla.style != nil {
 		if bidi, ok := bla.style.Get("unicode-bidi"); ok && bidi == "plaintext" {
-			runes := []rune(itemsData.TextContent)
-			if determineFSIDirection(runes) == 1 {
-				baseDir = DirectionRTL
-			} else {
-				baseDir = DirectionLTR
-			}
+			isPlaintext = true
 		}
 	}
-	ResolveBidiLevels(itemsData, baseDir)
+	if isPlaintext {
+		ResolveBidiLevelsPlaintext(itemsData)
+		// Compute overall baseDir for fallback (first paragraph's direction).
+		runes := []rune(itemsData.TextContent)
+		if determineFSIDirection(runes) == 1 {
+			baseDir = DirectionRTL
+		} else {
+			baseDir = DirectionLTR
+		}
+	} else {
+		ResolveBidiLevels(itemsData, baseDir)
+	}
 	StripBidiControls(itemsData)
 	SplitItemsAtLevelBoundaries(itemsData)
 
@@ -261,19 +268,43 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			inlinePos += r.InlineSize
 		}
 
+		// Determine the paragraph level for this line. For plaintext mode,
+		// each paragraph between forced breaks may have its own direction.
+		lineParagraphLevel := 0
+		if baseDir == DirectionRTL {
+			lineParagraphLevel = 1
+		}
+		if isPlaintext {
+			for _, r := range line.Results {
+				if r.Item.Type == InlineItemText || r.Item.Type == InlineItemAtomicInline {
+					lineParagraphLevel = r.Item.ParagraphLevel
+					break
+				}
+			}
+			// Fallback: use any item's paragraph level.
+			if lineParagraphLevel == 0 {
+				for _, r := range line.Results {
+					if r.Item.ParagraphLevel != 0 {
+						lineParagraphLevel = r.Item.ParagraphLevel
+						break
+					}
+				}
+			}
+		}
+
 		// Reorder line results from logical to visual order (UAX#9 L2)
 		// before positioning. Mirrors Blink's BidiReorder step in
 		// InlineLayoutAlgorithm::CreateLine.
-		paragraphLevel := 0
-		if baseDir == DirectionRTL {
-			paragraphLevel = 1
-		}
-		ReorderLineVisual(line.Results, paragraphLevel)
+		ReorderLineVisual(line.Results, lineParagraphLevel)
 
-		// Use the effective base direction for line box construction.
-		// For unicode-bidi: plaintext, this may differ from wdm.Dir.
+		// Use the effective direction for this line's box construction.
+		// For plaintext mode, this may vary per line.
 		effectiveWDM := wdm
-		effectiveWDM.Dir = baseDir
+		if lineParagraphLevel%2 == 1 {
+			effectiveWDM.Dir = DirectionRTL
+		} else {
+			effectiveWDM.Dir = DirectionLTR
+		}
 		lineFragment, lineHeight, lineAscent := createLineBox(
 			itemsData, &line, effectiveWDM, lineAvailableInline,
 		)
