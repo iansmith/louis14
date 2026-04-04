@@ -71,7 +71,24 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// Uses a pure-Go UAX#9 resolver (the Go bidi package has a neutral
 	// resolution bug), then strips control chars and splits at level
 	// boundaries for correct L2 reordering.
-	ResolveBidiLevels(itemsData, wdm.Dir)
+	//
+	// Per CSS Writing Modes §2.2, when the block container has
+	// unicode-bidi: plaintext, the paragraph base direction is determined
+	// from the first strong character (UAX#9 P2/P3), not from the CSS
+	// direction property. This mirrors Blink's SegmentBidiRuns which
+	// passes nullopt to ICU for plaintext mode.
+	baseDir := wdm.Dir
+	if bla.style != nil {
+		if bidi, ok := bla.style.Get("unicode-bidi"); ok && bidi == "plaintext" {
+			runes := []rune(itemsData.TextContent)
+			if determineFSIDirection(runes) == 1 {
+				baseDir = DirectionRTL
+			} else {
+				baseDir = DirectionLTR
+			}
+		}
+	}
+	ResolveBidiLevels(itemsData, baseDir)
 	StripBidiControls(itemsData)
 	SplitItemsAtLevelBoundaries(itemsData)
 
@@ -247,10 +264,18 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// Reorder line results from logical to visual order (UAX#9 L2)
 		// before positioning. Mirrors Blink's BidiReorder step in
 		// InlineLayoutAlgorithm::CreateLine.
-		ReorderLineVisual(line.Results)
+		paragraphLevel := 0
+		if baseDir == DirectionRTL {
+			paragraphLevel = 1
+		}
+		ReorderLineVisual(line.Results, paragraphLevel)
 
+		// Use the effective base direction for line box construction.
+		// For unicode-bidi: plaintext, this may differ from wdm.Dir.
+		effectiveWDM := wdm
+		effectiveWDM.Dir = baseDir
 		lineFragment, lineHeight, lineAscent := createLineBox(
-			itemsData, &line, wdm, lineAvailableInline,
+			itemsData, &line, effectiveWDM, lineAvailableInline,
 		)
 		if firstLineAscent < 0 {
 			firstLineAscent = lineAscent

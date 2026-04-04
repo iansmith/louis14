@@ -147,8 +147,10 @@ func ResolveBidiLevels(itemsData *InlineItemsData, baseDir Direction) {
 }
 
 // resolveAllLevels applies W1-W7, N1-N2, and I1-I2 to compute final per-rune
-// levels. Characters at the same embedding level are processed together as
-// an isolating run sequence.
+// levels. Per UAX#9 BD13, level runs connected by isolate initiator/PDI pairs
+// are joined into isolating run sequences, and W/N rules are applied to each
+// sequence as a unit. This is critical for correct neutral resolution when
+// neutrals span across isolation boundaries.
 func resolveAllLevels(classes []xbidi.Class, embLevels []int, paraLevel int) []int {
 	n := len(classes)
 	if n == 0 {
@@ -159,8 +161,12 @@ func resolveAllLevels(classes []xbidi.Class, embLevels []int, paraLevel int) []i
 	types := make([]xbidi.Class, n)
 	copy(types, classes)
 
-	// Process each level run independently.
-	// Find contiguous runs at the same embedding level.
+	// Step 1: Split into level runs (contiguous spans at the same embedding level).
+	type levelRun struct {
+		start, end int
+		level      int
+	}
+	var runs []levelRun
 	i := 0
 	for i < n {
 		lvl := embLevels[i]
@@ -168,27 +174,120 @@ func resolveAllLevels(classes []xbidi.Class, embLevels []int, paraLevel int) []i
 		for i < n && embLevels[i] == lvl {
 			i++
 		}
-		end := i
+		runs = append(runs, levelRun{start, i, lvl})
+	}
 
-		// Determine sos and eos directions for this run.
-		// sos = typeForLevel(max(level_of_preceding_char, level_of_run))
-		// eos = typeForLevel(max(level_of_following_char, level_of_run))
+	// Step 2: Build isolating run sequences (BD13).
+	// Each sequence is a list of run indices. Level runs connected by an
+	// isolate initiator (last char) → matching PDI (first char of next run
+	// at the same level) are joined.
+	//
+	// Track which runs have been assigned to a sequence.
+	assigned := make([]bool, len(runs))
+	// Map: position of isolate initiator → index of run starting with matching PDI.
+	matchingPDIRun := make(map[int]int) // position → run index
+
+	// Find matching PDI for each isolate initiator using a stack.
+	var isoStack []int // stack of initiator positions
+	for pos := 0; pos < n; pos++ {
+		cls := classes[pos]
+		if cls == xbidi.LRI || cls == xbidi.RLI || cls == xbidi.FSI {
+			isoStack = append(isoStack, pos)
+		} else if cls == xbidi.PDI && len(isoStack) > 0 {
+			initPos := isoStack[len(isoStack)-1]
+			isoStack = isoStack[:len(isoStack)-1]
+			// Find which run starts with this PDI.
+			for ri, r := range runs {
+				if r.start == pos {
+					matchingPDIRun[initPos] = ri
+					break
+				}
+			}
+		}
+	}
+
+	// Build sequences by following isolate chains.
+	type isoRunSeq struct {
+		runIndices []int
+	}
+	var sequences []isoRunSeq
+
+	for ri, r := range runs {
+		if assigned[ri] {
+			continue
+		}
+		seq := isoRunSeq{runIndices: []int{ri}}
+		assigned[ri] = true
+
+		// Follow the chain: if the last char of the current run is an
+		// isolate initiator with a matching PDI run at the same level,
+		// extend the sequence.
+		curRun := r
+		for {
+			lastPos := curRun.end - 1
+			lastCls := classes[lastPos]
+			if lastCls != xbidi.LRI && lastCls != xbidi.RLI && lastCls != xbidi.FSI {
+				break
+			}
+			pdiRI, ok := matchingPDIRun[lastPos]
+			if !ok || assigned[pdiRI] || runs[pdiRI].level != curRun.level {
+				break
+			}
+			seq.runIndices = append(seq.runIndices, pdiRI)
+			assigned[pdiRI] = true
+			curRun = runs[pdiRI]
+		}
+
+		sequences = append(sequences, seq)
+	}
+
+	// Step 3: For each isolating run sequence, apply W and N rules.
+	for _, seq := range sequences {
+		// Collect indices of all characters in this sequence.
+		var indices []int
+		for _, ri := range seq.runIndices {
+			r := runs[ri]
+			for j := r.start; j < r.end; j++ {
+				indices = append(indices, j)
+			}
+		}
+		if len(indices) == 0 {
+			continue
+		}
+
+		// Extract types for processing.
+		seqTypes := make([]xbidi.Class, len(indices))
+		for k, idx := range indices {
+			seqTypes[k] = types[idx]
+		}
+
+		// Compute sos and eos for this sequence.
+		firstRun := runs[seq.runIndices[0]]
+		lastRun := runs[seq.runIndices[len(seq.runIndices)-1]]
+		lvl := firstRun.level
+
 		prevLevel := paraLevel
-		if start > 0 {
-			prevLevel = embLevels[start-1]
+		if firstRun.start > 0 {
+			prevLevel = embLevels[firstRun.start-1]
 		}
 		succLevel := paraLevel
-		if end < n {
-			succLevel = embLevels[end]
+		if lastRun.end < n {
+			succLevel = embLevels[lastRun.end]
 		}
 		sos := typeForLvl(maxInt(prevLevel, lvl))
 		eos := typeForLvl(maxInt(succLevel, lvl))
 
-		resolveWeakTypes(types[start:end], sos)
-		resolveNeutralTypes(types[start:end], lvl, sos, eos)
+		// Apply W and N rules to the concatenated sequence.
+		resolveWeakTypes(seqTypes, sos)
+		resolveNeutralTypes(seqTypes, lvl, sos, eos)
+
+		// Write resolved types back.
+		for k, idx := range indices {
+			types[idx] = seqTypes[k]
+		}
 	}
 
-	// Apply implicit levels (I1, I2).
+	// Step 4: Apply implicit levels (I1, I2).
 	levels := make([]int, n)
 	for j := range levels {
 		emb := embLevels[j]
@@ -661,7 +760,16 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 			// (which uses the paragraph embedding level for end-of-text items).
 			if item.StartOffset < len(text) {
 				rIdx := runeAtByte[item.StartOffset]
-				if rIdx < len(itemsData.RuneLevels) {
+				if item.Type == InlineItemCloseTag && rIdx > 0 {
+					// CloseTag: use the level of the rune BEFORE the offset
+					// (the last rune of the content being closed). This ensures
+					// the close tag stays with its content during L2 reordering,
+					// matching Blink's behavior where inline boundaries move
+					// with their content in bidi reordering.
+					if rIdx-1 < len(itemsData.RuneLevels) {
+						item.BidiLevel = itemsData.RuneLevels[rIdx-1]
+					}
+				} else if rIdx < len(itemsData.RuneLevels) {
 					item.BidiLevel = itemsData.RuneLevels[rIdx]
 				}
 			}
@@ -719,8 +827,14 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 }
 
 // ReorderLineVisual reorders a line's InlineItemResults from logical order
-// to visual order using the UAX#9 L2 algorithm.
-func ReorderLineVisual(results []InlineItemResult) {
+// to visual order using the UAX#9 L2 algorithm. paragraphLevel is the
+// paragraph embedding level (0 for LTR, 1 for RTL).
+//
+// Following ICU's ubidi_reorderVisual, when the paragraph level is odd
+// (RTL), minOdd is forced to 1 so that L2 reverses at the paragraph level
+// even when all items have even embedding levels (e.g., LRO-overridden
+// text in an RTL paragraph).
+func ReorderLineVisual(results []InlineItemResult, paragraphLevel int) {
 	if len(results) == 0 {
 		return
 	}
@@ -735,6 +849,13 @@ func ReorderLineVisual(results []InlineItemResult) {
 		if lvl%2 == 1 && lvl < minOdd {
 			minOdd = lvl
 		}
+	}
+
+	// ICU's approach: force minOdd to include the paragraph level.
+	// This ensures RTL paragraphs get reversed even when all items
+	// are at even levels (e.g., LRO override in RTL context).
+	if paragraphLevel%2 == 1 && paragraphLevel < minOdd {
+		minOdd = paragraphLevel
 	}
 
 	if maxLevel == 0 || minOdd == 256 {
