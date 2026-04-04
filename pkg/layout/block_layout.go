@@ -163,8 +163,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Determine child's writing direction.
 			childWDM := NewWritingDirectionMode(childStyle)
 
-			// Resolve child's margins.
-			childMargins := ResolveMargins(childStyle, childWDM, childAvailableInline)
+			// Resolve child's margins in the PARENT's logical coordinates.
+			// CSS 2.1 §8.3: percentage margins resolve against the containing
+			// block's inline-size. The logical mapping uses the parent's WDM
+			// because the parent's block layout positions children in its own
+			// coordinate system. Mirrors Blink's ComputeMargins which uses
+			// ConstraintSpace().GetWritingDirection() (the parent's).
+			childMargins := ResolveMargins(childStyle, wdm, childAvailableInline)
 
 			// Compute available inline for this child, accounting for floats.
 			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(blockCursor, 0)
@@ -499,7 +504,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	outES **ExclusionSpace,
 ) {
 	childWDM := NewWritingDirectionMode(childStyle)
-	childMargins := ResolveMargins(childStyle, childWDM, contentInlineSize)
+	// Resolve float margins in the parent's coordinates for positioning.
+	childMargins := ResolveMargins(childStyle, parentWDM, contentInlineSize)
 
 	// Floats establish a new BFC.
 	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).

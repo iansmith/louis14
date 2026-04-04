@@ -117,7 +117,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			continue
 		}
 		childWDM := NewWritingDirectionMode(childStyle)
-		childMargins := ResolveMargins(childStyle, childWDM, contentInlineSize)
+		// Resolve float margins in the parent's coordinates for positioning.
+		childMargins := ResolveMargins(childStyle, wdm, contentInlineSize)
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, bla.ctx)).
