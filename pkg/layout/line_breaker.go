@@ -629,6 +629,8 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 	}
 
 	// Trim trailing whitespace from the last text result.
+	// Skip over floats, OOF, open/close tags — they don't produce visible
+	// inline content that would prevent trailing-whitespace trimming.
 	for i := len(line.Results) - 1; i >= 0; i-- {
 		r := &line.Results[i]
 		if r.Item.Type == InlineItemText {
@@ -648,9 +650,12 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			}
 			break
 		}
-		if r.Item.Type != InlineItemCloseTag && r.Item.Type != InlineItemOpenTag {
-			break
+		// Continue past items that don't produce visible inline content.
+		if r.Item.Type == InlineItemCloseTag || r.Item.Type == InlineItemOpenTag ||
+			r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow {
+			continue
 		}
+		break // Atomic inline or other content — stop searching.
 	}
 
 	// Mark as last line if we've consumed all items.

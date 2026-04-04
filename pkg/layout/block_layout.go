@@ -82,6 +82,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if bla.space.IsNewFormattingContext || exclusionSpace == nil {
 		exclusionSpace = &ExclusionSpace{}
 	}
+	// Track whether this element owns any floats (added during its layout).
+	// Used by auto-height-clear: only clear our own floats, not inherited ones.
+	hasOwnFloats := bla.space.IsNewFormattingContext
 
 	// Lay out children in the block direction.
 	// CSS 2.1 §9.2.1.1: a block container has either all block-level or
@@ -105,8 +108,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		builder.AddChild(nestedFrag, LogicalOffset{})
 	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
+		prevES := exclusionSpace
 		var inlineAscent float64
 		blockCursor, exclusionSpace, inlineAscent = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
+		if exclusionSpace != prevES {
+			hasOwnFloats = true
+		}
 		firstLineAscent = inlineAscent
 		firstNonEmptyChild = false // inline content is "content"
 	} else {
@@ -147,16 +154,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if childStyle.GetFloat() != css.FloatNone {
 				bla.layoutFloat(child, childStyle, wdm, contentInlineSize, childAvailableBlock,
 					blockCursor, &prevMarginStrut, exclusionSpace, builder, &exclusionSpace)
+				hasOwnFloats = true
 				continue
 			}
 
 			// Handle clear property.
+			// CSS 2.1 §8.3.1: clearance prevents parent-child margin collapsing.
+			hasClearance := false
 			clearType := childStyle.GetClear()
 			if clearType != css.ClearNone {
 				clearedBlock := exclusionSpace.ClearanceOffset(clearType, blockCursor)
 				if clearedBlock > blockCursor {
 					blockCursor = clearedBlock
 					prevMarginStrut = MarginStrut{} // Clear resets margin collapsing.
+					hasClearance = true
 				}
 			}
 
@@ -179,7 +190,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			// Build constraint space for this child.
-			isChildNewFC := createsFormattingContext(childStyle)
+			// CSS Writing Modes §4.3: a block container with a different
+			// writing-mode than its parent establishes a new BFC.
+			isChildNewFC := createsFormattingContext(childStyle) ||
+				wdm.WM != childWDM.WM
 			blockForChild := childAvailableBlock
 			if wdm.IsOrthogonalTo(childWDM) {
 				blockForChild = orthogonalAvailableBlock
@@ -241,8 +255,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childInlineOffset := childMargins.InlineStart + floatStartOff
 
 			// Step 5: Handle parent-child top margin collapsing.
+			// CSS 2.1 §8.3.1: parent-child collapsing requires that the
+			// child has no clearance.
 			var actualChildBlockOff float64
-			if firstNonEmptyChild && canPropagateTop {
+			if firstNonEmptyChild && canPropagateTop && !hasClearance {
 				// Propagate the accumulated margin strut upward.
 				propagatedTopMargin = prevMarginStrut
 				actualChildBlockOff = 0
@@ -288,8 +304,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		prevMarginStrut = MarginStrut{} // consumed
 	}
 
-	// Ensure content clears all floats for auto block-size.
-	if !hasExplicitBlock {
+	// CSS 2.1 §10.6.7: For elements that own floats (BFC roots or elements
+	// that contain their own floats), auto block-size extends to clear them.
+	// Elements that only inherit floats from a parent BFC do not extend.
+	if !hasExplicitBlock && hasOwnFloats {
 		clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor)
 		if clearedBlock > blockCursor {
 			blockCursor = clearedBlock
