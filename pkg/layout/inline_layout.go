@@ -212,6 +212,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
 		}
 		lineAvailableInline := contentInlineSize - floatStart - floatEnd
+
+		// CSS 2.1 §9.5: if floats consume all available inline space,
+		// clear past them before generating the line. This avoids
+		// force-fitting content into zero-width space and then clearing,
+		// which produces incorrect line breaks.
+		if lineAvailableInline < 1 && exclusionSpace != nil && (floatStart > 0 || floatEnd > 0) {
+			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset)
+			if clearedBlock > blockOffset {
+				blockOffset = clearedBlock
+				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
+				lineAvailableInline = contentInlineSize - floatStart - floatEnd
+			}
+		}
 		if lineAvailableInline < 1 {
 			lineAvailableInline = 1
 		}
