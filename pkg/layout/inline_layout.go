@@ -139,10 +139,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		floatBlockOffset := exclusionSpace.FindFloatPosition(floatSide, floatInlineSize, floatBlockSize, contentInlineSize, 0)
 		var floatInlineOffset float64
 		if floatSide == css.FloatLeft {
-			startOff, _ := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+			startOff, _ := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 			floatInlineOffset = startOff + childMargins.InlineStart
 		} else {
-			_, endOff := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+			_, endOff := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 			floatInlineOffset = contentInlineSize - endOff - childMargins.InlineEnd - childLogical.InlineSize()
 		}
 		builder.AddChild(childResult.Fragment, LogicalOffset{
@@ -209,9 +209,22 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// at the current block position.
 		floatStart, floatEnd := 0.0, 0.0
 		if exclusionSpace != nil {
-			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0)
+			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
 		}
 		lineAvailableInline := contentInlineSize - floatStart - floatEnd
+
+		// CSS 2.1 §9.5: if floats consume all available inline space,
+		// clear past them before generating the line. This avoids
+		// force-fitting content into zero-width space and then clearing,
+		// which produces incorrect line breaks.
+		if lineAvailableInline < 1 && exclusionSpace != nil && (floatStart > 0 || floatEnd > 0) {
+			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset)
+			if clearedBlock > blockOffset {
+				blockOffset = clearedBlock
+				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
+				lineAvailableInline = contentInlineSize - floatStart - floatEnd
+			}
+		}
 		if lineAvailableInline < 1 {
 			lineAvailableInline = 1
 		}

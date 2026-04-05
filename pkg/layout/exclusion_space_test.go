@@ -12,7 +12,7 @@ func TestExclusionSpace_Empty(t *testing.T) {
 		t.Error("new ExclusionSpace should be empty")
 	}
 
-	start, end := es.FindAvailableInlineSize(0, 100)
+	start, end := es.FindAvailableInlineSize(0, 100, 800)
 	if start != 0 || end != 0 {
 		t.Errorf("empty space: got offsets (%v, %v), want (0, 0)", start, end)
 	}
@@ -24,7 +24,7 @@ func TestExclusionSpace_NilSafe(t *testing.T) {
 		t.Error("nil ExclusionSpace should be empty")
 	}
 
-	start, end := es.FindAvailableInlineSize(0, 100)
+	start, end := es.FindAvailableInlineSize(0, 100, 800)
 	if start != 0 || end != 0 {
 		t.Errorf("nil space: got offsets (%v, %v), want (0, 0)", start, end)
 	}
@@ -50,13 +50,13 @@ func TestExclusionSpace_SingleLeftFloat(t *testing.T) {
 	}
 
 	// At block=50 (within float range), left float occupies 100px inline.
-	start, end := es.FindAvailableInlineSize(50, 10)
+	start, end := es.FindAvailableInlineSize(50, 10, 800)
 	if start != 100 || end != 0 {
 		t.Errorf("at block=50: got (%v, %v), want (100, 0)", start, end)
 	}
 
 	// At block=250 (past float), no offsets.
-	start, end = es.FindAvailableInlineSize(250, 10)
+	start, end = es.FindAvailableInlineSize(250, 10, 800)
 	if start != 0 || end != 0 {
 		t.Errorf("at block=250: got (%v, %v), want (0, 0)", start, end)
 	}
@@ -65,14 +65,15 @@ func TestExclusionSpace_SingleLeftFloat(t *testing.T) {
 func TestExclusionSpace_SingleRightFloat(t *testing.T) {
 	es := &ExclusionSpace{}
 	es = es.Add(Exclusion{
-		InlineOffset: 500, // positioned at inline=500
+		InlineOffset: 500, // positioned at inline=500 in a 600px container
 		BlockOffset:  0,
 		InlineSize:   100,
 		BlockSize:    150,
 		Side:         css.FloatRight,
 	})
 
-	start, end := es.FindAvailableInlineSize(50, 10)
+	// containerInlineSize=600, float at offset 500 → consumed from end = 600-500 = 100
+	start, end := es.FindAvailableInlineSize(50, 10, 600)
 	if start != 0 || end != 100 {
 		t.Errorf("got (%v, %v), want (0, 100)", start, end)
 	}
@@ -91,13 +92,14 @@ func TestExclusionSpace_BothSides(t *testing.T) {
 		Side: css.FloatRight,
 	})
 
-	start, end := es.FindAvailableInlineSize(50, 10)
+	// containerInlineSize=620, float at offset 500 → consumed from end = 620-500 = 120
+	start, end := es.FindAvailableInlineSize(50, 10, 620)
 	if start != 80 || end != 120 {
 		t.Errorf("both sides: got (%v, %v), want (80, 120)", start, end)
 	}
 
 	// Past right float but still in left float range.
-	start, end = es.FindAvailableInlineSize(160, 10)
+	start, end = es.FindAvailableInlineSize(160, 10, 620)
 	if start != 80 || end != 0 {
 		t.Errorf("past right: got (%v, %v), want (80, 0)", start, end)
 	}
