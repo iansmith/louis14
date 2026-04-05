@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
@@ -17,6 +18,8 @@ type LayoutTreeBuilder struct {
 	stylesheets     []*css.Stylesheet
 	viewportWidth   float64
 	viewportHeight  float64
+	counters        map[string][]int // CSS counter stacks (name → stack of values)
+	quoteDepth      int              // nesting depth for open-quote/close-quote
 }
 
 // BuildLayoutTree creates the layout tree rooted at the given DOM node.
@@ -36,6 +39,11 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	// Text nodes are leaf nodes — no children to process.
 	if node.Type == html.TextNode {
 		return lin
+	}
+
+	// CSS 2.1 §12.5: Process counter-reset before content evaluation.
+	if style != nil {
+		b.processCounterReset(style)
 	}
 
 	// Build layout children, filtering out display:none and non-layout nodes.
@@ -264,6 +272,10 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 // createPseudoElement creates a LayoutInputNode for a ::before or ::after
 // pseudo-element if the element has matching CSS rules with content.
 // Returns nil if no pseudo-element should be generated.
+//
+// Handles CSS 2.1 §12.2 content values: text strings, url() images,
+// counter(), attr(), open-quote/close-quote. Also implements CSS 2.1 §9.7
+// display blockification for floated pseudo-elements.
 func (b *LayoutTreeBuilder) createPseudoElement(
 	node *html.Node, parentStyle *css.Style, pseudoType string,
 ) *LayoutInputNode {
@@ -280,13 +292,26 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		b.viewportWidth, b.viewportHeight, parentStyle,
 	)
 
-	// Check if the pseudo-element has content.
-	content, hasContent := pseudoStyle.GetContent()
-	if !hasContent {
+	// Check if the pseudo-element has content using the rich parser.
+	contentValues, hasContent := pseudoStyle.GetContentValues()
+	if !hasContent || len(contentValues) == 0 {
 		return nil
 	}
 	if pseudoStyle.GetDisplay() == css.DisplayNone {
 		return nil
+	}
+
+	// CSS 2.1 §12.5: Process counter-increment on pseudo-elements.
+	b.processCounterIncrement(pseudoStyle)
+
+	// CSS 2.1 §9.7: Blockify floated pseudo-elements.
+	// When float is set, display is forced to block.
+	display := pseudoStyle.GetDisplay()
+	if pseudoStyle.GetFloat() != css.FloatNone {
+		if display != css.DisplayBlock && display != css.DisplayTable {
+			pseudoStyle.Set("display", "block")
+			display = css.DisplayBlock
+		}
 	}
 
 	// Create a synthetic DOM node for the pseudo-element.
@@ -299,45 +324,100 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// Store the pseudo style in the styles map so it's accessible.
 	b.styles[pseudoNode] = pseudoStyle
 
-	// Build the LayoutInputNode.
-	display := pseudoStyle.GetDisplay()
-
-	if display == css.DisplayBlock || display == css.DisplayFlowRoot {
-		// Block-level pseudo-element.
-		lin := &LayoutInputNode{
-			DOMNode: pseudoNode,
-			style:   pseudoStyle,
+	// Build child nodes from content values.
+	// Collect quote strings from parent style.
+	quotes := []string{"\"", "\"", "'", "'"}
+	if parentStyle != nil {
+		if q, ok := parentStyle.Get("quotes"); ok {
+			quotes = b.parseQuotes(q)
 		}
-		// If there's text content, add it as a child text node.
-		if content != "" {
-			textNode := &html.Node{
-				Type: html.TextNode,
-				Text: content,
+	}
+
+	var children []*LayoutInputNode
+	for _, cv := range contentValues {
+		switch cv.Type {
+		case "text":
+			if cv.Value != "" {
+				textNode := &html.Node{Type: html.TextNode, Text: cv.Value}
+				textNode.Parent = pseudoNode
+				children = append(children, &LayoutInputNode{
+					DOMNode: textNode,
+					style:   pseudoStyle,
+				})
 			}
+		case "url":
+			// Create a synthetic <img> element for url() content.
+			imgNode := &html.Node{
+				Type:    html.ElementNode,
+				TagName: "img",
+				Attributes: map[string]string{
+					"src": cv.Value,
+				},
+			}
+			imgNode.Parent = pseudoNode
+			imgStyle := css.NewStyle()
+			imgStyle.Set("display", "inline")
+			imgStyle.ViewportWidth = b.viewportWidth
+			imgStyle.ViewportHeight = b.viewportHeight
+			b.styles[imgNode] = imgStyle
+			children = append(children, &LayoutInputNode{
+				DOMNode: imgNode,
+				style:   imgStyle,
+			})
+		case "counter":
+			// Evaluate counter value.
+			val := b.getCounterValue(cv.Value)
+			text := strconv.Itoa(val)
+			textNode := &html.Node{Type: html.TextNode, Text: text}
 			textNode.Parent = pseudoNode
-			lin.children = []*LayoutInputNode{{
+			children = append(children, &LayoutInputNode{
 				DOMNode: textNode,
 				style:   pseudoStyle,
-			}}
+			})
+		case "attr":
+			// Get attribute value from the element.
+			if node.Attributes != nil {
+				if attrVal, ok := node.Attributes[cv.Value]; ok {
+					textNode := &html.Node{Type: html.TextNode, Text: attrVal}
+					textNode.Parent = pseudoNode
+					children = append(children, &LayoutInputNode{
+						DOMNode: textNode,
+						style:   pseudoStyle,
+					})
+				}
+			}
+		case "open-quote":
+			idx := b.quoteDepth * 2
+			if idx < len(quotes) {
+				textNode := &html.Node{Type: html.TextNode, Text: quotes[idx]}
+				textNode.Parent = pseudoNode
+				children = append(children, &LayoutInputNode{
+					DOMNode: textNode,
+					style:   pseudoStyle,
+				})
+			}
+			b.quoteDepth++
+		case "close-quote":
+			if b.quoteDepth > 0 {
+				b.quoteDepth--
+			}
+			idx := b.quoteDepth*2 + 1
+			if idx < len(quotes) {
+				textNode := &html.Node{Type: html.TextNode, Text: quotes[idx]}
+				textNode.Parent = pseudoNode
+				children = append(children, &LayoutInputNode{
+					DOMNode: textNode,
+					style:   pseudoStyle,
+				})
+			}
 		}
-		return lin
 	}
 
-	// Inline pseudo-element (default).
+	// Build the LayoutInputNode with the generated children.
 	lin := &LayoutInputNode{
-		DOMNode: pseudoNode,
-		style:   pseudoStyle,
-	}
-	if content != "" {
-		textNode := &html.Node{
-			Type: html.TextNode,
-			Text: content,
-		}
-		textNode.Parent = pseudoNode
-		lin.children = []*LayoutInputNode{{
-			DOMNode: textNode,
-			style:   pseudoStyle,
-		}}
+		DOMNode:  pseudoNode,
+		style:    pseudoStyle,
+		children: children,
 	}
 	return lin
 }
@@ -608,4 +688,156 @@ func (b *LayoutTreeBuilder) splitFirstLetter(
 		return result
 	}
 	return children
+}
+
+// processCounterReset handles the counter-reset CSS property.
+// CSS 2.1 §12.5.1: counter-reset creates or resets one or more counters.
+func (b *LayoutTreeBuilder) processCounterReset(style *css.Style) {
+	val, ok := style.Get("counter-reset")
+	if !ok || val == "none" || val == "" {
+		return
+	}
+	if b.counters == nil {
+		b.counters = make(map[string][]int)
+	}
+	parts := strings.Fields(val)
+	for i := 0; i < len(parts); i++ {
+		name := parts[i]
+		if name == "none" {
+			continue
+		}
+		value := 0
+		if i+1 < len(parts) {
+			if v, err := strconv.Atoi(parts[i+1]); err == nil {
+				value = v
+				i++
+			}
+		}
+		// Push a new counter scope.
+		b.counters[name] = append(b.counters[name], value)
+	}
+}
+
+// processCounterIncrement handles the counter-increment CSS property.
+// CSS 2.1 §12.5.2: counter-increment increments an existing counter.
+func (b *LayoutTreeBuilder) processCounterIncrement(style *css.Style) {
+	val, ok := style.Get("counter-increment")
+	if !ok || val == "none" || val == "" {
+		return
+	}
+	if b.counters == nil {
+		b.counters = make(map[string][]int)
+	}
+	parts := strings.Fields(val)
+	for i := 0; i < len(parts); i++ {
+		name := parts[i]
+		if name == "none" {
+			continue
+		}
+		increment := 1
+		if i+1 < len(parts) {
+			if v, err := strconv.Atoi(parts[i+1]); err == nil {
+				increment = v
+				i++
+			}
+		}
+		stack := b.counters[name]
+		if len(stack) == 0 {
+			// Auto-instantiate counter at the root scope.
+			b.counters[name] = []int{increment}
+		} else {
+			stack[len(stack)-1] += increment
+		}
+	}
+}
+
+// getCounterValue returns the current value of a named counter.
+func (b *LayoutTreeBuilder) getCounterValue(name string) int {
+	if b.counters == nil {
+		return 0
+	}
+	stack := b.counters[name]
+	if len(stack) == 0 {
+		return 0
+	}
+	return stack[len(stack)-1]
+}
+
+// parseQuotes parses the CSS quotes property value into a list of quote strings.
+// Format: "open1" "close1" "open2" "close2" ...
+func (b *LayoutTreeBuilder) parseQuotes(val string) []string {
+	var quotes []string
+	val = strings.TrimSpace(val)
+	for len(val) > 0 {
+		val = strings.TrimSpace(val)
+		if len(val) == 0 {
+			break
+		}
+		if val[0] == '"' || val[0] == '\'' {
+			quote := val[0]
+			end := 1
+			for end < len(val) && val[end] != quote {
+				if val[end] == '\\' && end+1 < len(val) {
+					end += 2
+				} else {
+					end++
+				}
+			}
+			if end < len(val) {
+				text := val[1:end]
+				// Handle CSS escape sequences for quote characters.
+				text = b.unescapeQuoteText(text)
+				quotes = append(quotes, text)
+				val = val[end+1:]
+			} else {
+				break
+			}
+		} else {
+			// Skip non-quote tokens.
+			idx := strings.IndexByte(val, ' ')
+			if idx < 0 {
+				break
+			}
+			val = val[idx:]
+		}
+	}
+	return quotes
+}
+
+// unescapeQuoteText handles common CSS escape sequences in quote strings.
+func (b *LayoutTreeBuilder) unescapeQuoteText(text string) string {
+	if !strings.Contains(text, "\\") {
+		return text
+	}
+	var result strings.Builder
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\\' && i+1 < len(text) {
+			// Try to parse a hex escape: \XXXX
+			hexStart := i + 1
+			hexEnd := hexStart
+			for hexEnd < len(text) && hexEnd < hexStart+6 &&
+				((text[hexEnd] >= '0' && text[hexEnd] <= '9') ||
+					(text[hexEnd] >= 'a' && text[hexEnd] <= 'f') ||
+					(text[hexEnd] >= 'A' && text[hexEnd] <= 'F')) {
+				hexEnd++
+			}
+			if hexEnd > hexStart {
+				if codepoint, err := strconv.ParseInt(text[hexStart:hexEnd], 16, 32); err == nil {
+					result.WriteRune(rune(codepoint))
+					i = hexEnd - 1
+					// Skip optional trailing space after hex escape.
+					if i+1 < len(text) && text[i+1] == ' ' {
+						i++
+					}
+					continue
+				}
+			}
+			// Simple escape: skip the backslash.
+			i++
+			result.WriteByte(text[i])
+		} else {
+			result.WriteByte(text[i])
+		}
+	}
+	return result.String()
 }
