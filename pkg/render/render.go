@@ -103,6 +103,7 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	// If the root element (html) has no background, use the body's background.
 	r.dc.SetColor(color.RGBA{R: 255, G: 255, B: 255, A: 255})
 	r.dc.Clear()
+
 	r.paintCanvasBackground(boxes)
 
 	// Paint via PaintLayer tree (CSS 2.1 Appendix E stacking order).
@@ -223,9 +224,9 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	if layer.HasCSSClip {
 		r.dc.Push()
 		cssClipping = true
-		r.dc.DrawRectangle(
-			layer.CSSClipRect[0], layer.CSSClipRect[1],
+		cx, cy, cw, ch := pixelSnap(layer.CSSClipRect[0], layer.CSSClipRect[1],
 			layer.CSSClipRect[2], layer.CSSClipRect[3])
+		r.dc.DrawRectangle(cx, cy, cw, ch)
 		r.dc.Clip()
 	}
 
@@ -248,9 +249,9 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	if layer.HasClip {
 		r.dc.Push()
 		clipping = true
-		r.dc.DrawRectangle(
-			layer.ClipRect[0], layer.ClipRect[1],
+		ox, oy, ow, oh := pixelSnap(layer.ClipRect[0], layer.ClipRect[1],
 			layer.ClipRect[2], layer.ClipRect[3])
+		r.dc.DrawRectangle(ox, oy, ow, oh)
 		r.dc.Clip()
 	}
 
@@ -283,20 +284,33 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 }
 
+// pixelSnap rounds a box's position and size to integer pixel boundaries.
+// Width/height are computed by rounding the far edges to prevent cumulative
+// rounding errors. This matches Blink's approach of snapping coordinates
+// before painting to avoid sub-pixel boundary artifacts.
+func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
+	sx := math.Round(x)
+	sy := math.Round(y)
+	sw := math.Round(x+w) - sx
+	sh := math.Round(y+h) - sy
+	return sx, sy, sw, sh
+}
+
 // drawBackground paints the layer's background color and image (pre-computed).
 func (r *Renderer) drawBackground(layer *PaintLayer) {
 	box := layer.Box
+	sx, sy, sw, sh := pixelSnap(box.X, box.Y, box.Width, box.Height)
 
 	// Background color.
 	if c := layer.BackgroundColor; c.A > 0 {
 		r.setColor(c)
-		r.dc.DrawRectangle(box.X, box.Y, box.Width, box.Height)
+		r.dc.DrawRectangle(sx, sy, sw, sh)
 		r.dc.Fill()
 	}
 
 	// Background gradient (linear-gradient, etc.).
 	if layer.BackgroundGradient != "" {
-		r.drawLinearGradient(layer.BackgroundGradient, box.X, box.Y, box.Width, box.Height)
+		r.drawLinearGradient(layer.BackgroundGradient, sx, sy, sw, sh)
 	}
 
 	// Background image.
@@ -326,10 +340,11 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	// CSS3 Backgrounds §3.6: background-origin defaults to padding-box.
 	// The background image is positioned relative to the padding box, but
 	// clipped to the border box (background-clip defaults to border-box).
-	paddingX := box.X + box.Border.Left
-	paddingY := box.Y + box.Border.Top
-	paddingW := box.Width - box.Border.Left - box.Border.Right
-	paddingH := box.Height - box.Border.Top - box.Border.Bottom
+	// Pixel-snap all coordinates to match the snapped background color fill.
+	paddingX := math.Round(box.X + box.Border.Left)
+	paddingY := math.Round(box.Y + box.Border.Top)
+	paddingW := math.Round(box.X+box.Width-box.Border.Right) - paddingX
+	paddingH := math.Round(box.Y+box.Height-box.Border.Bottom) - paddingY
 	if paddingW < 0 {
 		paddingW = 0
 	}
@@ -345,13 +360,11 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	repeatX := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatX
 	repeatY := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatY
 
-	// Convert box bounds (border-box for clipping) to integers.
-	// Use Floor/Ceil to ensure the image tiles cover any sub-pixel area
-	// that the background-color rectangle (drawn with float coordinates) covers.
-	boxX0 := int(math.Floor(box.X))
-	boxY0 := int(math.Floor(box.Y))
-	boxX1 := int(math.Ceil(box.X + box.Width))
-	boxY1 := int(math.Ceil(box.Y + box.Height))
+	// Box clip bounds — use snapped coordinates matching the background fill.
+	boxX0 := int(math.Round(box.X))
+	boxY0 := int(math.Round(box.Y))
+	boxX1 := int(math.Round(box.X + box.Width))
+	boxY1 := int(math.Round(box.Y + box.Height))
 
 	// Snap initial tile origin to pixels.
 	x0 := int(math.Round(startX))
@@ -500,13 +513,13 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 		return
 	}
 
-	x, y, w, h := box.X, box.Y, box.Width, box.Height
+	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
 	outerLeft, outerTop := x, y
 	outerRight, outerBottom := x+w, y+h
-	innerLeft := math.Floor(x + bw.Left)
-	innerTop := math.Floor(y + bw.Top)
-	innerRight := math.Ceil(x + w - bw.Right - 1e-9)
-	innerBottom := math.Ceil(y + h - bw.Bottom - 1e-9)
+	innerLeft := math.Round(x + bw.Left)
+	innerTop := math.Round(y + bw.Top)
+	innerRight := math.Round(x + w - bw.Right)
+	innerBottom := math.Round(y + h - bw.Bottom)
 
 	// Top border (index 0).
 	if bw.Top > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
@@ -571,6 +584,7 @@ func (r *Renderer) setColor(c css.Color) {
 // drawText paints text content using pre-computed font/color properties.
 func (r *Renderer) drawText(layer *PaintLayer) {
 	box := layer.Box
+
 	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
 	fontID := r.openFont(fontPath, layer.FontSize)
 	if fontID < 0 {

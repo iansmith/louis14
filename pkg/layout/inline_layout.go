@@ -63,6 +63,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 ) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64) {
 	// Phase 1: Collect inline items from the layout subtree.
 	itemsData := CollectInlines(bla.node)
+
 	if len(itemsData.Items) == 0 {
 		return 0, exclusionSpace, 0, 0
 	}
@@ -514,13 +515,23 @@ func createLineBoxEx(
 						}
 						blockOverhang := geom.Border.BlockStart + geom.Padding.BlockStart
 						spanBlockSize := blockOverhang + lineHeight + geom.Padding.BlockEnd + geom.Border.BlockEnd
+						// Use a copy of the span style with position reset
+						// to static. Inline span background fragments are
+						// decorations that must paint in flow order (behind
+						// text), not as positioned elements in the z-index
+						// paint step which would paint ON TOP of text.
+						bgStyle := span.style
+						if span.style.GetPosition() != css.PositionStatic {
+							bgStyle = span.style.Clone()
+							bgStyle.Set("position", "static")
+						}
 						bgFrag := &PhysicalFragment{
 							Size: ToPhysicalSize(LogicalSize{
 								InlineSize: spanInlineSize,
 								BlockSize:  spanBlockSize,
 							}, wdm.WM),
 							Type:             FragmentBox,
-							Style:            span.style,
+							Style:            bgStyle,
 							Node:             span.node,
 							WritingDirection: wdm,
 							BoxData: &PhysicalBoxData{

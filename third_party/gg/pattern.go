@@ -103,11 +103,10 @@ func (r *patternPainter) Paint(ss []raster.Span, done bool) {
 					continue
 				}
 			}
-			// CSS rendering uses sharp pixel boundaries (no anti-aliasing).
-			// Any non-zero coverage is treated as fully opaque. This ensures
-			// that when overlapping border polygons share a diagonal edge,
-			// the later-drawn polygon always wins the boundary pixels.
-			ma = m // fully opaque
+			// Use the rasterizer's coverage value for proper alpha blending.
+			// Box coordinates are pixel-snapped at render time, so axis-aligned
+			// edges naturally align to integer pixels without anti-aliasing.
+			// Diagonal edges (border corners) get proper alpha coverage.
 			c := r.p.ColorAt(x, y)
 			cr, cg, cb, ca := c.RGBA()
 			dr := uint32(r.im.Pix[i+0])
