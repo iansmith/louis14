@@ -139,10 +139,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		floatBlockOffset := exclusionSpace.FindFloatPosition(floatSide, floatInlineSize, floatBlockSize, contentInlineSize, 0)
 		var floatInlineOffset float64
 		if floatSide == css.FloatLeft {
-			startOff, _ := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+			startOff, _ := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 			floatInlineOffset = startOff + childMargins.InlineStart
 		} else {
-			_, endOff := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+			_, endOff := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 			floatInlineOffset = contentInlineSize - endOff - childMargins.InlineEnd - childLogical.InlineSize()
 		}
 		builder.AddChild(childResult.Fragment, LogicalOffset{
@@ -209,7 +209,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// at the current block position.
 		floatStart, floatEnd := 0.0, 0.0
 		if exclusionSpace != nil {
-			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0)
+			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
 		}
 		lineAvailableInline := contentInlineSize - floatStart - floatEnd
 		if lineAvailableInline < 1 {

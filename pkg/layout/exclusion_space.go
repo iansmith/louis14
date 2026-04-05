@@ -46,12 +46,15 @@ func (es *ExclusionSpace) Add(e Exclusion) *ExclusionSpace {
 // FindAvailableInlineSize returns the inline offsets consumed by floats
 // at the given block position over the given block extent.
 //
+// containerInlineSize is the total inline size of the containing block,
+// needed to correctly compute end-side float consumption.
+//
 // Returns (startOffset, endOffset): the amount of inline space consumed
 // from the inline-start and inline-end edges respectively.
 //
 // Content should be placed starting at startOffset and ending at
-// (availableInlineSize - endOffset).
-func (es *ExclusionSpace) FindAvailableInlineSize(blockOffset, blockExtent float64) (startOffset, endOffset float64) {
+// (containerInlineSize - endOffset).
+func (es *ExclusionSpace) FindAvailableInlineSize(blockOffset, blockExtent, containerInlineSize float64) (startOffset, endOffset float64) {
 	if es == nil {
 		return 0, 0
 	}
@@ -76,9 +79,12 @@ func (es *ExclusionSpace) FindAvailableInlineSize(blockOffset, blockExtent float
 				startOffset = endEdge
 			}
 		} else if e.Side == css.FloatRight {
-			// End-side float: accumulate inline offset from end.
-			if e.InlineSize > endOffset {
-				endOffset = e.InlineSize
+			// End-side float: the consumed space from the inline-end edge
+			// is (containerInlineSize - e.InlineOffset). This correctly
+			// accumulates when multiple right-floats stack inward.
+			consumed := containerInlineSize - e.InlineOffset
+			if consumed > endOffset {
+				endOffset = consumed
 			}
 		}
 	}
@@ -125,7 +131,7 @@ func (es *ExclusionSpace) FindFloatPosition(side css.FloatType, floatInlineSize,
 	currentBlock := startBlockOffset
 
 	for attempt := 0; attempt < 100; attempt++ {
-		startOff, endOff := es.FindAvailableInlineSize(currentBlock, floatBlockSize)
+		startOff, endOff := es.FindAvailableInlineSize(currentBlock, floatBlockSize, availableInlineSize)
 		remaining := availableInlineSize - startOff - endOff
 
 		if floatInlineSize <= remaining {

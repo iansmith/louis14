@@ -183,7 +183,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childMargins := ResolveMargins(childStyle, wdm, childAvailableInline)
 
 			// Compute available inline for this child, accounting for floats.
-			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(blockCursor, 0)
+			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(blockCursor, 0, childAvailableInline)
 			childInlineForSpace := childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
 			if childInlineForSpace < 0 {
 				childInlineForSpace = 0
@@ -617,10 +617,10 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	// Compute the float's inline position.
 	var floatInlineOffset float64
 	if floatSide == css.FloatLeft {
-		startOff, _ := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+		startOff, _ := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 		floatInlineOffset = startOff + childMargins.InlineStart
 	} else {
-		_, endOff := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize)
+		_, endOff := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 		floatInlineOffset = contentInlineSize - endOff - childMargins.InlineEnd - childLogical.InlineSize()
 	}
 
