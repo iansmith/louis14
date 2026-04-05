@@ -3927,6 +3927,7 @@ const (
 	DisplayRuby            DisplayType = "ruby"
 	DisplayRubyText        DisplayType = "ruby-text"
 	DisplayRubyBase        DisplayType = "ruby-base"
+	DisplayInlineTable     DisplayType = "inline-table"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0).
@@ -4003,6 +4004,8 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayRubyText
 		case "ruby-base":
 			return DisplayRubyBase
+		case "inline-table":
+			return DisplayInlineTable
 		}
 	}
 	return DisplayBlock

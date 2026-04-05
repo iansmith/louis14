@@ -42,7 +42,7 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		}
 		display := style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock &&
-			display != css.DisplayInlineFlex {
+			display != css.DisplayInlineFlex && display != css.DisplayInlineTable {
 			return false // Block-level child found.
 		}
 		hasContent = true
@@ -628,9 +628,15 @@ func createLineBoxEx(
 				default:
 					// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
 					// align inline-block so its baseline sits at the line's maxAscent.
-					if r.Item.Style != nil &&
-						r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
-						r.Item.Style.GetOverflow() == css.OverflowVisible {
+					// Also handle inline-tables and other atomic inlines with baselines.
+					display := css.DisplayBlock
+					if r.Item.Style != nil {
+						display = r.Item.Style.GetDisplay()
+					}
+					isInlineBlockLike := r.Item.Style != nil &&
+						(display == css.DisplayInlineBlock || display == css.DisplayTable || display == css.DisplayInlineTable) &&
+						r.Item.Style.GetOverflow() == css.OverflowVisible
+					if isInlineBlockLike && (r.LayoutResult.LastBaseline > 0 || !centralBaseline) {
 						var ibAscent float64
 						if r.LayoutResult.LastBaseline > 0 {
 							ibAscent = r.LayoutResult.LastBaseline
@@ -641,6 +647,11 @@ func createLineBoxEx(
 							ibAscent = text.FontAscent(fontSize, bold, italic, mono, ahem)
 						}
 						blockPos = maxAscent - ibAscent
+					} else if centralBaseline {
+						// CSS Writing Modes 3 §4.3: In vertical modes with central
+						// baseline, replaced elements and atomic inlines without
+						// explicit baselines are centered on the central baseline.
+						blockPos = maxAscent - blockSize/2
 					} else {
 						// Default: bottom-align to baseline.
 						blockPos = maxAscent - blockSize
@@ -780,9 +791,15 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 
 				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
 				// the baseline is the baseline of the last line box.
-				if r.Item.Style != nil &&
-					r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
-					r.Item.Style.GetOverflow() == css.OverflowVisible {
+				// Also handle inline-tables and other atomic inlines with baselines.
+				display := css.DisplayBlock
+				if r.Item.Style != nil {
+					display = r.Item.Style.GetDisplay()
+				}
+				isInlineBlockLike := r.Item.Style != nil &&
+					(display == css.DisplayInlineBlock || display == css.DisplayTable || display == css.DisplayInlineTable) &&
+					r.Item.Style.GetOverflow() == css.OverflowVisible
+				if isInlineBlockLike && (r.LayoutResult.LastBaseline > 0 || !centralBaseline) {
 					var ibAscent float64
 					if r.LayoutResult.LastBaseline > 0 {
 						// Use the propagated last baseline from the inline-block's
@@ -811,6 +828,17 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					}
 					if ibDescent > maxDescent {
 						maxDescent = ibDescent
+					}
+				} else if centralBaseline {
+					// CSS Writing Modes 3 §4.3: In vertical modes with central
+					// baseline, replaced elements are centered on the central baseline.
+					ascent := blockSize / 2
+					descent := blockSize - ascent
+					if ascent > maxAscent {
+						maxAscent = ascent
+					}
+					if descent > maxDescent {
+						maxDescent = descent
 					}
 				} else {
 					// Default: treat full height as above baseline (bottom-aligned).
