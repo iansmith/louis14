@@ -67,6 +67,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		return 0, exclusionSpace, 0, 0
 	}
 
+	// Phase 1a: Block-level bidi control injection.
+	// CSS Writing Modes §2.2: When a block container has unicode-bidi set
+	// to embed, isolate, bidi-override, isolate-override, or plaintext,
+	// the corresponding Unicode bidi control characters must be injected
+	// around its inline content so the UAX#9 algorithm resolves levels
+	// correctly. This mirrors Blink's InlineItemsBuilder which checks the
+	// block container's own unicode-bidi before processing children.
+	//
+	// The inline-level injection (in collectInlinesRecursive via
+	// injectBidiControlChars) only handles inline elements. Block
+	// containers need their own injection here.
+	injectBlockBidiControls(bla.style, itemsData)
+
 	// Phase 1b: Bidi pipeline (mirrors Blink's BidiParagraph + SegmentText).
 	// Uses a pure-Go UAX#9 resolver (the Go bidi package has a neutral
 	// resolution bug), then strips control chars and splits at level
@@ -406,23 +419,21 @@ func createLineBoxEx(
 	alignOffset := computeTextAlignOffset(line, availableInline, wdm)
 
 	// Step 3: Build line box fragment with positioned children.
-	// For horizontal writing modes, use LTR direction for the line box's
-	// internal coordinate system because items are already in visual LTR order
-	// (after bidi reordering in ReorderLineVisual). The RTL line box builder
-	// would flip all child positions via physX = outerW - inlineOffset -
-	// childWidth, reversing the visual order. The line box itself is positioned
-	// within the parent block using the parent's WDM.
-	// For horizontal writing modes, use LTR direction for the line box's
-	// internal coordinate system because items are already in visual LTR order
-	// (after bidi reordering in ReorderLineVisual). The RTL line box builder
-	// would flip all child positions via physX = outerW - inlineOffset -
-	// childWidth, reversing the visual order. For vertical writing modes,
-	// keep the original direction — the RTL flip correctly places items
-	// from the inline-start (bottom for vertical-lr + RTL).
+	// Use LTR direction for the line box's internal coordinate system.
+	// Items are already in visual order (after bidi reordering in
+	// ReorderLineVisual), so they should be placed in increasing inline
+	// offset order. The RTL line box builder would flip all child positions,
+	// reversing the visual order. Instead, text-align handles RTL alignment
+	// by offsetting the starting inline position (computeTextAlignOffset
+	// returns 'slack' for RTL start alignment, pushing items toward the
+	// inline end).
+	//
+	// This applies to all writing modes — both horizontal and vertical.
+	// In vertical modes with direction:rtl, the inline axis is physical Y.
+	// text-align:start pushes items to the bottom (inline-start for RTL),
+	// which maps correctly via the parent block's ToPhysicalOffset.
 	lineWDM := wdm
-	if wdm.IsHorizontal() {
-		lineWDM.Dir = DirectionLTR
-	}
+	lineWDM.Dir = DirectionLTR
 	lineBuilder := NewBoxFragmentBuilder(lineWDM)
 	lineBuilder.SetSize(LogicalSize{
 		InlineSize: availableInline,
