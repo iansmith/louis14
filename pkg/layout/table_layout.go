@@ -384,8 +384,13 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 
 		switch display {
 		case css.DisplayTableCaption:
+			// caption-side is inherited but may not be in the cascade's
+			// inherited list. Check the caption's own style first, then
+			// fall back to the table's style.
 			side := "top"
 			if childStyle.GetCaptionSide() == "bottom" {
+				side = "bottom"
+			} else if tla.style.GetCaptionSide() == "bottom" {
 				side = "bottom"
 			}
 			captions = append(captions, tableCaption{
