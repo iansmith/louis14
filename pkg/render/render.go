@@ -323,19 +323,35 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	imgW := float64(imgWI)
 	imgH := float64(imgHI)
 
+	// CSS3 Backgrounds §3.6: background-origin defaults to padding-box.
+	// The background image is positioned relative to the padding box, but
+	// clipped to the border box (background-clip defaults to border-box).
+	paddingX := box.X + box.Border.Left
+	paddingY := box.Y + box.Border.Top
+	paddingW := box.Width - box.Border.Left - box.Border.Right
+	paddingH := box.Height - box.Border.Top - box.Border.Bottom
+	if paddingW < 0 {
+		paddingW = 0
+	}
+	if paddingH < 0 {
+		paddingH = 0
+	}
+
 	pos := layer.BackgroundPosition
-	startX := box.X + pos.ResolveX(box.Width, imgW)
-	startY := box.Y + pos.ResolveY(box.Height, imgH)
+	startX := paddingX + pos.ResolveX(paddingW, imgW)
+	startY := paddingY + pos.ResolveY(paddingH, imgH)
 
 	repeat := layer.BackgroundRepeat
 	repeatX := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatX
 	repeatY := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatY
 
-	// Convert box bounds and start position to integers.
-	boxX0 := int(math.Round(box.X))
-	boxY0 := int(math.Round(box.Y))
-	boxX1 := int(math.Round(box.X + box.Width))
-	boxY1 := int(math.Round(box.Y + box.Height))
+	// Convert box bounds (border-box for clipping) to integers.
+	// Use Floor/Ceil to ensure the image tiles cover any sub-pixel area
+	// that the background-color rectangle (drawn with float coordinates) covers.
+	boxX0 := int(math.Floor(box.X))
+	boxY0 := int(math.Floor(box.Y))
+	boxX1 := int(math.Ceil(box.X + box.Width))
+	boxY1 := int(math.Ceil(box.Y + box.Height))
 
 	// Snap initial tile origin to pixels.
 	x0 := int(math.Round(startX))
@@ -555,7 +571,7 @@ func (r *Renderer) setColor(c css.Color) {
 // drawText paints text content using pre-computed font/color properties.
 func (r *Renderer) drawText(layer *PaintLayer) {
 	box := layer.Box
-	fontPath := r.fonts.FontPath(layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
 	fontID := r.openFont(fontPath, layer.FontSize)
 	if fontID < 0 {
 		return

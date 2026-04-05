@@ -307,7 +307,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			effectiveWDM.Dir = DirectionLTR
 		}
 		lineFragment, lineHeight, lineAscent := createLineBox(
-			itemsData, &line, effectiveWDM, lineAvailableInline,
+			itemsData, &line, effectiveWDM, lineAvailableInline, fonts,
 		)
 		if firstLineAscent < 0 {
 			firstLineAscent = lineAscent
@@ -353,9 +353,10 @@ func createLineBox(
 	line *LineInfo,
 	wdm WritingDirectionMode,
 	availableInline float64,
+	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) { // returns (fragment, lineHeight, maxAscent)
 	// Step 1: Compute line height from font metrics of all items.
-	maxAscent, maxDescent := computeLineMetrics(line, wdm)
+	maxAscent, maxDescent := computeLineMetrics(line, wdm, fonts)
 	lineHeight := maxAscent + maxDescent
 	if lineHeight <= 0 {
 		// Empty line (forced break) — use default font metrics.
@@ -612,7 +613,7 @@ func createLineBox(
 // CSS 2.1 §10.8: line box height is determined by the tallest inline box.
 // Even empty inline elements (open/close tag with no text) still contribute
 // their font's line metrics (CSS 2.1 §9.4.2).
-func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, maxDescent float64) {
+func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
 	for _, r := range line.Results {
 		switch r.Item.Type {
@@ -623,9 +624,17 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 			if r.Item.Style == nil {
 				continue
 			}
-			fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-			ascent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+			fontPath := resolveFontPath(r.Item.Style, fonts)
+			ascent := text.FontAscentFromFont(fontSize, fontPath)
 			descent := fontSize - ascent
+			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
+			lineHt := r.Item.Style.GetLineHeight()
+			halfLeading := (lineHt - (ascent + descent)) / 2
+			if halfLeading > 0 {
+				ascent += halfLeading
+				descent += halfLeading
+			}
 			if ascent > maxAscent {
 				maxAscent = ascent
 			}
@@ -637,9 +646,19 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 			if r.TextEnd <= r.TextStart {
 				continue
 			}
-			fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-			ascent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+			fontPath := resolveFontPath(r.Item.Style, fonts)
+			ascent := text.FontAscentFromFont(fontSize, fontPath)
 			descent := fontSize - ascent
+			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
+			if r.Item.Style != nil {
+				lineHt := r.Item.Style.GetLineHeight()
+				halfLeading := (lineHt - (ascent + descent)) / 2
+				if halfLeading > 0 {
+					ascent += halfLeading
+					descent += halfLeading
+				}
+			}
 			if ascent > maxAscent {
 				maxAscent = ascent
 			}
@@ -673,8 +692,9 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode) (maxAscent, ma
 				if r.Item.Style != nil &&
 					r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
 					r.Item.Style.GetOverflow() == css.OverflowVisible {
-					fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-					ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+					fontPath := resolveFontPath(r.Item.Style, fonts)
+					fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+					ibAscent := text.FontAscentFromFont(fontSize, fontPath)
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
 					// the line box height. margin-block-start adds to the ascent
 					// (above the baseline) and margin-block-end adds to the descent.

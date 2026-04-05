@@ -128,7 +128,32 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 		prop = "height"
 	}
 
-	// Check for explicit length.
+	val, ok := style.Get(prop)
+	if !ok || val == "" || val == "auto" {
+		return 0, false
+	}
+
+	// CSS calc() with percentage terms: resolve against containing block's
+	// inline-size. GetLength alone resolves percentages with base=0, so
+	// calc(52px + 100% + 52px) would lose the percentage term.
+	if css.IsCalcWithPercent(val) {
+		result, calcOK := css.EvalCalcWithPercent(
+			val[5:len(val)-1], // strip "calc(" and ")"
+			style.GetFontSize(),
+			space.PercentageResolutionSize.InlineSize,
+		)
+		if calcOK {
+			if style.GetBoxSizing() == "border-box" {
+				result -= geom.InlineBorderPadding()
+				if result < 0 {
+					result = 0
+				}
+			}
+			return result, true
+		}
+	}
+
+	// Check for explicit length (handles calc without percentages, px, em, etc.).
 	if v, ok := style.GetLength(prop); ok {
 		result := v
 		if style.GetBoxSizing() == "border-box" {

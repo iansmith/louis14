@@ -208,7 +208,8 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	}
 
 	// Get font properties from style.
-	fontSize, bold, italic, mono, ahem := fontPropsFromStyle(item.Style)
+	fontSize, _, _, _, _ := fontPropsFromStyle(item.Style)
+	fontPath := resolveFontPath(item.Style, lb.fonts)
 
 	// CSS 2.1 §16.4: letter-spacing adds inter-character space.
 	letterSpacing := 0.0
@@ -221,9 +222,9 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	isVertical := lb.space.WritingDirection.IsVertical()
 	var fullWidth float64
 	if isVertical {
-		fullWidth, _ = text.MeasureTextVertical(content, fontSize, bold, italic, mono, ahem)
+		fullWidth, _ = text.MeasureTextVerticalFromFont(content, fontSize, fontPath)
 	} else {
-		fullWidth, _ = text.MeasureTextWithStyle(content, fontSize, bold, italic, mono, ahem)
+		fullWidth, _ = text.MeasureText(content, fontSize, fontPath)
 	}
 	if letterSpacing != 0 {
 		runeCount := runeLen(content)
@@ -257,9 +258,9 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		if len(stripped) < len(content) {
 			var strippedWidth float64
 			if isVertical {
-				strippedWidth, _ = text.MeasureTextVertical(stripped, fontSize, bold, italic, mono, ahem)
+				strippedWidth, _ = text.MeasureTextVerticalFromFont(stripped, fontSize, fontPath)
 			} else {
-				strippedWidth, _ = text.MeasureTextWithStyle(stripped, fontSize, bold, italic, mono, ahem)
+				strippedWidth, _ = text.MeasureText(stripped, fontSize, fontPath)
 			}
 			if letterSpacing != 0 {
 				rc := runeLen(stripped)
@@ -286,11 +287,11 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	// Doesn't fit — find a break point.
 	if lb.mode == LineBreakerMinContent {
 		// Break at every word boundary.
-		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, bold, italic, mono, ahem, line, 0)
+		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, 0)
 	}
 
 	// Normal mode: find where to break.
-	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, bold, italic, mono, ahem, line, remaining)
+	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
 }
 
 // breakTextAtWord finds a break point within a text item.
@@ -300,7 +301,7 @@ func (lb *LineBreaker) breakTextAtWord(
 	content string,
 	textStart, textEnd int,
 	fontSize float64,
-	bold, italic, mono, ahem bool,
+	fontPath string,
 	line *LineInfo,
 	remaining float64,
 ) bool {
@@ -332,9 +333,9 @@ func (lb *LineBreaker) breakTextAtWord(
 	for i, word := range words {
 		var wordWidth float64
 		if isVertical {
-			wordWidth, _ = text.MeasureTextVertical(word, fontSize, bold, italic, mono, ahem)
+			wordWidth, _ = text.MeasureTextVerticalFromFont(word, fontSize, fontPath)
 		} else {
-			wordWidth, _ = text.MeasureTextWithStyle(word, fontSize, bold, italic, mono, ahem)
+			wordWidth, _ = text.MeasureText(word, fontSize, fontPath)
 		}
 		if letterSpacing != 0 {
 			rc := runeLen(word)
@@ -361,9 +362,9 @@ func (lb *LineBreaker) breakTextAtWord(
 			if trimmed != word && trimmed != "" {
 				var trimmedWidth float64
 				if isVertical {
-					trimmedWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+					trimmedWidth, _ = text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
 				} else {
-					trimmedWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+					trimmedWidth, _ = text.MeasureText(trimmed, fontSize, fontPath)
 				}
 				if letterSpacing != 0 {
 					rc := runeLen(trimmed)
@@ -397,9 +398,9 @@ func (lb *LineBreaker) breakTextAtWord(
 		if len(line.Results) == 0 {
 			fitted = 1
 			if isVertical {
-				usedWidth, _ = text.MeasureTextVertical(words[0], fontSize, bold, italic, mono, ahem)
+				usedWidth, _ = text.MeasureTextVerticalFromFont(words[0], fontSize, fontPath)
 			} else {
-				usedWidth, _ = text.MeasureTextWithStyle(words[0], fontSize, bold, italic, mono, ahem)
+				usedWidth, _ = text.MeasureText(words[0], fontSize, fontPath)
 			}
 			if letterSpacing != 0 {
 				rc := runeLen(words[0])
@@ -610,12 +611,13 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 			trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
-				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+				fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+				fontPath := resolveFontPath(r.Item.Style, lb.fonts)
 				var newWidth float64
 				if isVertical {
-					newWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+					newWidth, _ = text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
 				} else {
-					newWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+					newWidth, _ = text.MeasureText(trimmed, fontSize, fontPath)
 				}
 				line.Width -= (r.InlineSize - newWidth)
 				r.InlineSize = newWidth
@@ -637,12 +639,13 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 			trimmed := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
-				fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+				fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+				fontPath := resolveFontPath(r.Item.Style, lb.fonts)
 				var newWidth float64
 				if isVertical {
-					newWidth, _ = text.MeasureTextVertical(trimmed, fontSize, bold, italic, mono, ahem)
+					newWidth, _ = text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
 				} else {
-					newWidth, _ = text.MeasureTextWithStyle(trimmed, fontSize, bold, italic, mono, ahem)
+					newWidth, _ = text.MeasureText(trimmed, fontSize, fontPath)
 				}
 				line.Width -= (r.InlineSize - newWidth)
 				r.InlineSize = newWidth
@@ -733,4 +736,18 @@ func fontPropsFromStyle(style *css.Style) (fontSize float64, bold, italic, mono,
 	mono = style.IsMonospaceFamily()
 	ahem = style.IsAhemFamily()
 	return
+}
+
+// resolveFontPath returns the font file path for a given CSS style,
+// using the font config to resolve the CSS font-family to a system font.
+func resolveFontPath(style *css.Style, fonts text.FontConfig) string {
+	if style == nil {
+		return fonts.Regular
+	}
+	bold := style.GetFontWeight() == css.FontWeightBold
+	italic := style.GetFontStyle() == css.FontStyleItalic
+	mono := style.IsMonospaceFamily()
+	ahem := style.IsAhemFamily()
+	family, _ := style.Get("font-family")
+	return fonts.FontPathForFamily(family, bold, italic, mono, ahem)
 }

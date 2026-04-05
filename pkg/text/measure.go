@@ -329,11 +329,30 @@ func MeasureTextVertical(text string, fontSize float64, bold, italic, mono, ahem
 // FontAscent returns the font ascent in pixels for the given style.
 func FontAscent(fontSize float64, bold, italic, mono, ahem bool) float64 {
 	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
+	return FontAscentFromFont(fontSize, fontPath)
+}
+
+// FontAscentFromFont returns the font ascent in pixels for the given font path.
+func FontAscentFromFont(fontSize float64, fontPath string) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return fontSize * 0.8
 	}
 	return float64(m.Ascent) / 64.0
+}
+
+// MeasureTextVerticalFromFont returns the inline advance of text in a vertical
+// writing mode using the given font path. Each upright glyph advances by fontSize.
+func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance float64) {
+	runeCount := utf8.RuneCountInString(text)
+	inlineAdvance = float64(runeCount) * fontSize
+	m := openFont(fontPath, fontSize)
+	if m.FontID >= 0 && m.Height > 0 {
+		blockAdvance = math.Round(float64(m.Height) / 64.0)
+	} else {
+		blockAdvance = math.Round(fontSize * 1.2)
+	}
+	return
 }
 
 // BreakTextAtCharacterBoundary splits text so the prefix fits within maxWidth.

@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"strings"
+
 	"louis14/pkg/css"
 )
 
@@ -320,12 +322,42 @@ func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
 }
 
 // buildRow extracts cells from a table-row element.
+// Per CSS Tables §2.1, non-table-cell children of a table-row are wrapped
+// in anonymous table-cell boxes: consecutive non-cell siblings share one
+// anonymous cell. Whitespace-only text nodes are ignored.
 func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Style) tableRow {
 	row := tableRow{node: node, style: style}
 	colIdx := 0
 
+	var anonChildren []*LayoutInputNode
+
+	flushAnon := func() {
+		if len(anonChildren) == 0 {
+			return
+		}
+		anonStyle := css.NewAnonymousTableCellStyle(style)
+		anonNode := &LayoutInputNode{
+			style:       anonStyle,
+			children:    anonChildren,
+			isAnonymous: true,
+		}
+		row.cells = append(row.cells, tableCell{
+			node:     anonNode,
+			style:    anonStyle,
+			colIndex: colIdx,
+			colSpan:  1,
+			rowSpan:  1,
+		})
+		colIdx++
+		anonChildren = nil
+	}
+
 	for _, child := range node.Children() {
 		if child.IsText() {
+			if strings.TrimSpace(child.TextContent()) == "" {
+				continue
+			}
+			anonChildren = append(anonChildren, child)
 			continue
 		}
 		childStyle := child.Style()
@@ -333,6 +365,7 @@ func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Styl
 			continue
 		}
 		if childStyle.GetDisplay() == css.DisplayTableCell {
+			flushAnon()
 			colSpan := 1
 			if child.DOMNode != nil {
 				if cs, ok := child.DOMNode.GetAttribute("colspan"); ok {
@@ -349,8 +382,12 @@ func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Styl
 				rowSpan:  1,
 			})
 			colIdx += colSpan
+		} else {
+			anonChildren = append(anonChildren, child)
 		}
 	}
+
+	flushAnon()
 
 	return row
 }

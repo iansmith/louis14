@@ -13,6 +13,7 @@ type Style struct {
 	Properties      map[string]string
 	ViewportWidth   float64 // Viewport width in pixels (for vw/vmin/vmax units)
 	ViewportHeight  float64 // Viewport height in pixels (for vh/vmin/vmax units)
+	ChWidth         float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
 }
 
 func NewStyle() *Style {
@@ -25,6 +26,7 @@ func (s *Style) Clone() *Style {
 		Properties:     make(map[string]string, len(s.Properties)),
 		ViewportWidth:  s.ViewportWidth,
 		ViewportHeight: s.ViewportHeight,
+		ChWidth:        s.ChWidth,
 	}
 	for k, v := range s.Properties {
 		dst.Properties[k] = v
@@ -207,13 +209,23 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	return parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())
 }
 
-// chScale returns the ch unit multiplier relative to fontSize for this style's writing mode.
-// In vertical writing modes, ch equals the vertical advance height of "0" ≈ 1em.
-// In horizontal writing modes, ch equals the horizontal advance width of "0" ≈ 0.5em.
+// chScale returns the ch unit multiplier relative to fontSize for this style's font.
+// CSS Values §6.1: ch is the advance measure of "0" in the element's font.
+// In horizontal modes, this is the horizontal advance width (measured by ChWidth).
+// In vertical modes, this is the vertical advance height (≈1em for most fonts).
 func (s *Style) chScale() float64 {
 	wm, _ := s.Get("writing-mode")
-	if wm == "vertical-rl" || wm == "vertical-lr" {
+	if wm == "vertical-rl" || wm == "vertical-lr" ||
+		wm == "sideways-rl" || wm == "sideways-lr" {
+		// Vertical modes: ch = vertical advance height of "0" ≈ 1em
 		return 1.0
+	}
+	// Horizontal mode: use measured horizontal advance width if available
+	if s.ChWidth > 0 {
+		fs := s.GetFontSize()
+		if fs > 0 {
+			return s.ChWidth / fs
+		}
 	}
 	return 0.5
 }
@@ -357,10 +369,16 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 	if strings.HasPrefix(val, "clamp(") && strings.HasSuffix(val, ")") {
 		return evalClamp(val[6:len(val)-1], fontSize, viewportWidth, viewportHeight)
 	}
-	// Handle calc() expressions
+	// Handle calc() expressions — pass full context so ch/vw/vh units resolve correctly.
 	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
 		expr := val[5 : len(val)-1] // strip "calc(" and ")"
-		result, ok := evalCalcExpr(expr, fontSize)
+		ctx := calcContext{
+			fontSize:       fontSize,
+			viewportWidth:  viewportWidth,
+			viewportHeight: viewportHeight,
+			chScale:        chScale,
+		}
+		result, ok := evalCalcFull(expr, ctx)
 		if ok {
 			return result, true
 		}
@@ -601,32 +619,54 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 	return num, true
 }
 
+// IsCalcWithPercent returns true if the value is a calc() expression containing a % term.
+func IsCalcWithPercent(val string) bool {
+	val = strings.TrimSpace(val)
+	return strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") &&
+		strings.Contains(val, "%")
+}
+
+// calcContext holds all parameters needed to resolve values inside calc() expressions.
+type calcContext struct {
+	fontSize       float64
+	percentBase    float64
+	viewportWidth  float64
+	viewportHeight float64
+	chScale        float64
+}
+
 // evalCalcExpr evaluates a CSS calc() expression with proper operator precedence.
 // Supports +, -, *, / operators and px/em/rem/%  values.
 func evalCalcExpr(expr string, fontSize float64) (float64, bool) {
 	return EvalCalcWithPercent(expr, fontSize, 0)
 }
 
-// EvalCalcWithPercent evaluates a CSS calc() expression with percent base support.
-// percentBase is the reference size for resolving % values (e.g. containing block width).
-func EvalCalcWithPercent(expr string, fontSize, percentBase float64) (float64, bool) {
+// evalCalcFull evaluates a calc() expression with full context (viewport, ch scale, percent base).
+func evalCalcFull(expr string, ctx calcContext) (float64, bool) {
 	expr = strings.TrimSpace(expr)
-	// Resolve env() variables before tokenizing (env() may appear inside calc())
 	if strings.Contains(expr, "env(") {
 		expr = resolveEnvValue(expr)
 		expr = strings.TrimSpace(expr)
 	}
-	// Tokenize: split into numbers (with optional units) and operators
 	tokens := tokenizeCalc(expr)
 	if len(tokens) == 0 {
 		return 0, false
 	}
-	// Parse with operator precedence: * and / before + and -
-	result, ok := parseCalcAddSub(tokens, 0, fontSize, percentBase)
+	result, ok := parseCalcAddSub(tokens, 0, ctx)
 	if !ok {
 		return 0, false
 	}
 	return result.value, true
+}
+
+// EvalCalcWithPercent evaluates a CSS calc() expression with percent base support.
+// percentBase is the reference size for resolving % values (e.g. containing block width).
+func EvalCalcWithPercent(expr string, fontSize, percentBase float64) (float64, bool) {
+	return evalCalcFull(expr, calcContext{
+		fontSize:    fontSize,
+		percentBase: percentBase,
+		chScale:     0.5,
+	})
 }
 
 type calcResult struct {
@@ -634,8 +674,8 @@ type calcResult struct {
 	pos   int // position in token slice after consuming
 }
 
-func parseCalcAddSub(tokens []string, pos int, fontSize, percentBase float64) (calcResult, bool) {
-	left, ok := parseCalcMulDiv(tokens, pos, fontSize, percentBase)
+func parseCalcAddSub(tokens []string, pos int, ctx calcContext) (calcResult, bool) {
+	left, ok := parseCalcMulDiv(tokens, pos, ctx)
 	if !ok {
 		return calcResult{}, false
 	}
@@ -644,7 +684,7 @@ func parseCalcAddSub(tokens []string, pos int, fontSize, percentBase float64) (c
 		if op != "+" && op != "-" {
 			break
 		}
-		right, ok := parseCalcMulDiv(tokens, left.pos+1, fontSize, percentBase)
+		right, ok := parseCalcMulDiv(tokens, left.pos+1, ctx)
 		if !ok {
 			return calcResult{}, false
 		}
@@ -658,8 +698,8 @@ func parseCalcAddSub(tokens []string, pos int, fontSize, percentBase float64) (c
 	return left, true
 }
 
-func parseCalcMulDiv(tokens []string, pos int, fontSize, percentBase float64) (calcResult, bool) {
-	left, ok := parseCalcAtom(tokens, pos, fontSize, percentBase)
+func parseCalcMulDiv(tokens []string, pos int, ctx calcContext) (calcResult, bool) {
+	left, ok := parseCalcAtom(tokens, pos, ctx)
 	if !ok {
 		return calcResult{}, false
 	}
@@ -668,7 +708,7 @@ func parseCalcMulDiv(tokens []string, pos int, fontSize, percentBase float64) (c
 		if op != "*" && op != "/" {
 			break
 		}
-		right, ok := parseCalcAtom(tokens, left.pos+1, fontSize, percentBase)
+		right, ok := parseCalcAtom(tokens, left.pos+1, ctx)
 		if !ok {
 			return calcResult{}, false
 		}
@@ -685,14 +725,14 @@ func parseCalcMulDiv(tokens []string, pos int, fontSize, percentBase float64) (c
 	return left, true
 }
 
-func parseCalcAtom(tokens []string, pos int, fontSize, percentBase float64) (calcResult, bool) {
+func parseCalcAtom(tokens []string, pos int, ctx calcContext) (calcResult, bool) {
 	if pos >= len(tokens) {
 		return calcResult{}, false
 	}
 	token := tokens[pos]
 	// Handle parenthesized sub-expressions
 	if token == "(" {
-		result, ok := parseCalcAddSub(tokens, pos+1, fontSize, percentBase)
+		result, ok := parseCalcAddSub(tokens, pos+1, ctx)
 		if !ok || result.pos >= len(tokens) || tokens[result.pos] != ")" {
 			return calcResult{}, false
 		}
@@ -700,14 +740,14 @@ func parseCalcAtom(tokens []string, pos int, fontSize, percentBase float64) (cal
 		return result, true
 	}
 	// Handle percentage values: resolve against percentBase
-	if strings.HasSuffix(token, "%") && percentBase > 0 {
+	if strings.HasSuffix(token, "%") && ctx.percentBase > 0 {
 		numStr := strings.TrimSuffix(token, "%")
 		if num, err := strconv.ParseFloat(numStr, 64); err == nil {
-			return calcResult{value: num * percentBase / 100, pos: pos + 1}, true
+			return calcResult{value: num * ctx.percentBase / 100, pos: pos + 1}, true
 		}
 	}
-	// Parse as a length value or plain number
-	val, ok := ParseLengthWithFontSize(token, fontSize)
+	// Parse as a length value using full context (viewport, ch scale)
+	val, ok := parseLengthFullWithCh(token, ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight, ctx.chScale)
 	if ok {
 		return calcResult{value: val, pos: pos + 1}, true
 	}
@@ -1226,6 +1266,20 @@ func (s *Style) resolveLengthOrPercent(property string, reference float64) (floa
 	val, ok := s.Get(property)
 	if !ok || val == "auto" {
 		return 0, false
+	}
+	// Handle calc() with percentage terms using the correct percentage base.
+	// Pass full context (viewport, ch scale) so that ch/vw/vh units resolve correctly.
+	if IsCalcWithPercent(val) {
+		ctx := calcContext{
+			fontSize:       s.GetFontSize(),
+			percentBase:    reference,
+			viewportWidth:  s.ViewportWidth,
+			viewportHeight: s.ViewportHeight,
+			chScale:        s.chScale(),
+		}
+		if result, calcOK := evalCalcFull(val[5:len(val)-1], ctx); calcOK {
+			return result, true
+		}
 	}
 	if length, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 		return length, true

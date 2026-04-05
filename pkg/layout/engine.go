@@ -65,11 +65,14 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	computedStyles := css.ApplyStylesToDocument(doc, le.viewport.width, le.viewport.height)
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
 
-	// Phase 2: Build layout context.
+	// Phase 1b: Compute ch widths from actual font metrics.
 	fontConfig := le.fontConfig
 	if fontConfig.Regular == "" {
 		fontConfig = text.DefaultFontConfig()
 	}
+	computeChWidths(computedStyles, fontConfig)
+
+	// Phase 2: Build layout context.
 	ctx := &LayoutContext{
 		ViewportWidth:   le.viewport.width,
 		ViewportHeight:  le.viewport.height,
@@ -160,6 +163,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 
 	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
+	computeChWidths(computedStyles, ctx.FontConfig)
 
 	rootElement := findRootElement(doc.Root)
 	if rootElement == nil {
@@ -426,5 +430,38 @@ func bidiMirror(r rune) rune {
 		return '\u27E8' // ⟨
 	}
 	return r
+}
+
+// computeChWidths measures the actual advance width of "0" for each style's
+// font and stores it on the Style. This makes the CSS ch unit resolve using
+// real font metrics instead of a fixed heuristic.
+func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
+	// Cache ch width per (fontPath, fontSize) to avoid redundant measurements.
+	type fontKey struct {
+		path     string
+		fontSize float64
+	}
+	cache := make(map[fontKey]float64)
+
+	for _, style := range styles {
+		if style == nil {
+			continue
+		}
+		fontSize := style.GetFontSize()
+		family, _ := style.Get("font-family")
+		bold := style.GetFontWeight() == css.FontWeightBold
+		italic := style.GetFontStyle() == css.FontStyleItalic
+		mono := style.IsMonospaceFamily()
+		ahem := style.IsAhemFamily()
+		fontPath := fc.FontPathForFamily(family, bold, italic, mono, ahem)
+
+		key := fontKey{path: fontPath, fontSize: fontSize}
+		ch, ok := cache[key]
+		if !ok {
+			ch, _ = text.MeasureText("0", fontSize, fontPath)
+			cache[key] = ch
+		}
+		style.ChWidth = ch
+	}
 }
 

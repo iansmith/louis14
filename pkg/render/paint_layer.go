@@ -66,6 +66,7 @@ type PaintLayer struct {
 	FontItalic    bool
 	FontMono      bool
 	FontAhem       bool
+	FontFamily     string
 	LetterSpacing  float64
 	IsVerticalText bool
 	IsSidewaysLR   bool
@@ -205,6 +206,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.FontItalic = s.GetFontStyle() == css.FontStyleItalic
 	layer.FontMono = s.IsMonospaceFamily()
 	layer.FontAhem = s.IsAhemFamily()
+	if family, ok := s.Get("font-family"); ok {
+		layer.FontFamily = family
+	}
 	layer.LetterSpacing = s.GetLetterSpacing()
 	layer.IsVerticalText = box.IsVerticalText
 	layer.IsSidewaysLR = box.IsSidewaysLR

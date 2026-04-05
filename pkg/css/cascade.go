@@ -15,6 +15,15 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		return
 	}
 
+	// CSS 2.1 §15.3: initial value of font-family is UA-dependent.
+	// Browsers default to serif; set on the root element so all descendants
+	// inherit it. Author/inline styles override via normal cascade rules.
+	if node.TagName == "html" {
+		if _, ok := style.Get("font-family"); !ok {
+			style.Set("font-family", "serif")
+		}
+	}
+
 	// Default styles for <a> (anchor/link) elements
 	if node.TagName == "a" {
 		style.Set("color", "#0645ad")           // Standard link blue
@@ -285,6 +294,9 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("display", "table")
 		style.Set("border-collapse", "separate")
 		style.Set("border-spacing", "2px")
+		// CSS Tables: table 'width' effectively specifies border-box width.
+		// Matches browser behavior where table width includes padding/border.
+		style.Set("box-sizing", "border-box")
 	case "thead":
 		style.Set("display", "table-header-group")
 	case "tbody":
@@ -733,7 +745,27 @@ func NewAnonymousBlockStyle(parent *Style) *Style {
 	s := NewStyle()
 	s.ViewportWidth = parent.ViewportWidth
 	s.ViewportHeight = parent.ViewportHeight
+	s.ChWidth = parent.ChWidth
 	s.Set("display", "block")
+	// Copy all inheritable properties from the parent.
+	for prop := range inheritableProperties {
+		if val, ok := parent.Get(prop); ok {
+			s.Set(prop, val)
+		}
+	}
+	return s
+}
+
+// NewAnonymousTableCellStyle creates a style for an anonymous table-cell box
+// that inherits from the parent row style. Per CSS Tables §2.1, when a
+// non-table-cell child appears inside a table-row, it must be wrapped in
+// an anonymous table-cell box.
+func NewAnonymousTableCellStyle(parent *Style) *Style {
+	s := NewStyle()
+	s.ViewportWidth = parent.ViewportWidth
+	s.ViewportHeight = parent.ViewportHeight
+	s.ChWidth = parent.ChWidth
+	s.Set("display", "table-cell")
 	// Copy all inheritable properties from the parent.
 	for prop := range inheritableProperties {
 		if val, ok := parent.Get(prop); ok {
