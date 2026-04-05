@@ -430,8 +430,10 @@ func TestListReftestResults(t *testing.T) {
 		testPNG := filepath.Join(tmpDir, "test.png")
 		refPNG := filepath.Join(tmpDir, "ref.png")
 
-		RenderHTMLToFile(string(content), testPNG, 800, 600)
-		RenderHTMLToFile(string(refContent), refPNG, 800, 600)
+		testBasePath := filepath.Dir(testFile)
+		refBasePath := filepath.Dir(refPath)
+		RenderHTMLToFileWithBase(string(content), testPNG, 800, 600, testBasePath)
+		RenderHTMLToFileWithBase(string(refContent), refPNG, 800, 600, refBasePath)
 
 		result, err := CompareImages(testPNG, refPNG, DefaultOptions())
 		if err != nil {
