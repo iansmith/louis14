@@ -333,19 +333,32 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		}
 	}
 
+	// Build child nodes from content values.
+	// Adjacent text-producing values (text, counter, attr, quote) are merged
+	// into a single text node to match how real DOM elements concatenate text.
+	// Only url() (replaced elements) forces a text flush.
 	var children []*LayoutInputNode
+	var pendingText strings.Builder
+
+	flushText := func() {
+		if pendingText.Len() > 0 {
+			textNode := &html.Node{Type: html.TextNode, Text: pendingText.String()}
+			textNode.Parent = pseudoNode
+			children = append(children, &LayoutInputNode{
+				DOMNode: textNode,
+				style:   pseudoStyle,
+			})
+			pendingText.Reset()
+		}
+	}
+
 	for _, cv := range contentValues {
 		switch cv.Type {
 		case "text":
-			if cv.Value != "" {
-				textNode := &html.Node{Type: html.TextNode, Text: cv.Value}
-				textNode.Parent = pseudoNode
-				children = append(children, &LayoutInputNode{
-					DOMNode: textNode,
-					style:   pseudoStyle,
-				})
-			}
+			pendingText.WriteString(cv.Value)
 		case "url":
+			// Flush any accumulated text before the image.
+			flushText()
 			// Create a synthetic <img> element for url() content.
 			imgNode := &html.Node{
 				Type:    html.ElementNode,
@@ -365,36 +378,18 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 				style:   imgStyle,
 			})
 		case "counter":
-			// Evaluate counter value.
 			val := b.getCounterValue(cv.Value)
-			text := strconv.Itoa(val)
-			textNode := &html.Node{Type: html.TextNode, Text: text}
-			textNode.Parent = pseudoNode
-			children = append(children, &LayoutInputNode{
-				DOMNode: textNode,
-				style:   pseudoStyle,
-			})
+			pendingText.WriteString(strconv.Itoa(val))
 		case "attr":
-			// Get attribute value from the element.
 			if node.Attributes != nil {
 				if attrVal, ok := node.Attributes[cv.Value]; ok {
-					textNode := &html.Node{Type: html.TextNode, Text: attrVal}
-					textNode.Parent = pseudoNode
-					children = append(children, &LayoutInputNode{
-						DOMNode: textNode,
-						style:   pseudoStyle,
-					})
+					pendingText.WriteString(attrVal)
 				}
 			}
 		case "open-quote":
 			idx := b.quoteDepth * 2
 			if idx < len(quotes) {
-				textNode := &html.Node{Type: html.TextNode, Text: quotes[idx]}
-				textNode.Parent = pseudoNode
-				children = append(children, &LayoutInputNode{
-					DOMNode: textNode,
-					style:   pseudoStyle,
-				})
+				pendingText.WriteString(quotes[idx])
 			}
 			b.quoteDepth++
 		case "close-quote":
@@ -403,15 +398,12 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 			}
 			idx := b.quoteDepth*2 + 1
 			if idx < len(quotes) {
-				textNode := &html.Node{Type: html.TextNode, Text: quotes[idx]}
-				textNode.Parent = pseudoNode
-				children = append(children, &LayoutInputNode{
-					DOMNode: textNode,
-					style:   pseudoStyle,
-				})
+				pendingText.WriteString(quotes[idx])
 			}
 		}
 	}
+	// Flush any remaining text.
+	flushText()
 
 	// Build the LayoutInputNode with the generated children.
 	lin := &LayoutInputNode{
