@@ -140,20 +140,26 @@ func (r *Renderer) paintCanvasBackground(boxes []*layout.Box) {
 	}
 }
 
-// hasBackground returns true if a box has a non-transparent background-color.
+// hasBackground returns true if a box has a visible background
+// (non-transparent background-color or a background-image/gradient).
 func (r *Renderer) hasBackground(box *layout.Box) bool {
 	if box.Style == nil {
 		return false
 	}
-	bgStr, ok := box.Style.Get("background-color")
-	if !ok || bgStr == "" || bgStr == "transparent" {
-		return false
+	// Check background-color.
+	if bgStr, ok := box.Style.Get("background-color"); ok && bgStr != "" && bgStr != "transparent" {
+		if bgColor, ok := css.ParseColor(bgStr); ok && bgColor.A > 0 {
+			return true
+		}
 	}
-	bgColor, ok := css.ParseColor(bgStr)
-	if !ok || bgColor.A == 0 {
-		return false
+	// Check background-image (url or gradient).
+	if _, ok := box.Style.GetBackgroundImage(); ok {
+		return true
 	}
-	return true
+	if val, ok := box.Style.Get("background-image"); ok && isGradientValue(val) {
+		return true
+	}
+	return false
 }
 
 // fillCanvasWithBackground fills the entire canvas with the box's background color.
