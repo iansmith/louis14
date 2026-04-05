@@ -158,10 +158,11 @@ func collectInlinesRecursive(
 			continue
 		}
 
-		// Block-level or atomic inline elements (inline-block, replaced).
+		// Block-level or atomic inline elements (inline-block, replaced, inline-table).
 		if display == css.DisplayBlock || display == css.DisplayFlex ||
 			display == css.DisplayTable || display == css.DisplayGrid ||
-			display == css.DisplayInlineBlock || display == css.DisplayInlineFlex {
+			display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
+			display == css.DisplayInlineTable {
 			// Atomic inline — represented as U+FFFC.
 			offset := text.Len()
 			text.WriteRune('\uFFFC')

@@ -794,7 +794,7 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		return emptyResult(space.WritingDirection)
 	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem, css.DisplayInlineBlock:
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
-	case css.DisplayTable:
+	case css.DisplayTable, css.DisplayInlineTable:
 		return NewTableLayoutAlgorithm(ctx, node, space).Layout()
 	case css.DisplayTableRow, css.DisplayTableRowGroup, css.DisplayTableHeaderGroup,
 		css.DisplayTableFooterGroup, css.DisplayTableCell, css.DisplayTableCaption:
@@ -869,7 +869,7 @@ func needsShrinkToFit(style *css.Style) bool {
 		return false
 	}
 	d := style.GetDisplay()
-	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex {
+	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex || d == css.DisplayInlineTable {
 		return true
 	}
 	if style.GetFloat() != css.FloatNone {
