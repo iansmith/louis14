@@ -88,7 +88,9 @@ func (p *Parser) Parse() (*Document, error) {
 				} else if token.TagName == "html" {
 					p.adoptOrphanedChildren(node)
 					parent = p.currentParent()
-				} else if p.isBlockElement(token.TagName) {
+				} else if !isHeadElement(token.TagName) {
+					// HTML5 §12.2.6.4: Any body-content element (block or inline)
+					// at the document root must be placed in an implicit <body>.
 					p.ensureBody()
 					parent = p.currentParent()
 				}
