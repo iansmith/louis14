@@ -40,9 +40,10 @@ type tableCell struct {
 
 // tableRow tracks a row during table layout.
 type tableRow struct {
-	node  *LayoutInputNode
-	style *css.Style
-	cells []tableCell
+	node       *LayoutInputNode
+	style      *css.Style
+	groupStyle *css.Style // style of the containing row group (thead/tbody/tfoot), nil if none
+	cells      []tableCell
 }
 
 // Layout performs table layout and returns the result.
@@ -70,13 +71,19 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		numCols = 1
 	}
 
+	borderCollapse := tla.style.GetBorderCollapse() == css.BorderCollapseCollapse
+
+	// In border-collapse mode, the table's own border is folded into the
+	// cell borders. Zero it out in geom so it doesn't affect sizing.
+	if borderCollapse {
+		geom.Border = LogicalEdges{}
+	}
+
 	// Resolve available inline size from the centralized border-box size.
 	availableInline := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if availableInline < 0 {
 		availableInline = 0
 	}
-
-	borderCollapse := tla.style.GetBorderCollapse() == css.BorderCollapseCollapse
 
 	// Compute logical border spacing (CSS 2.1 §17.6.1).
 	// In collapsed mode, spacing is always zero.
@@ -104,7 +111,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	var collapsedStyles map[string]*css.Style
 	if borderCollapse {
 		grid := newCellBorderGrid(rows, numCols)
-		collapsedStyles = grid.resolveCollapsedBorders(wdm)
+		// Collect row and row-group styles for element-type precedence.
+		rowStyles := make([]*css.Style, len(rows))
+		groupStyles := make([]*css.Style, len(rows))
+		for i, row := range rows {
+			rowStyles[i] = row.style
+			groupStyles[i] = row.groupStyle
+		}
+		collapsedStyles = grid.resolveCollapsedBorders(wdm, rowStyles, groupStyles, tla.style)
 
 		// Swap cell node styles to the collapsed versions so that
 		// column width computation and cell layout use half-border widths.
@@ -298,10 +312,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 		// Copy row style for background/border rendering.
 		if row.node != nil && row.style != nil {
-			physBorder := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Border, wdm)
+			rowPhysBorder := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Border, wdm)
+			if borderCollapse {
+				// In border-collapse mode, row borders participate in the
+				// collapsed model — the row fragment must not paint them.
+				rowPhysBorder = PhysicalEdges{}
+			}
 			physPadding := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Padding, wdm)
 			rowBuilder.SetBoxData(&PhysicalBoxData{
-				Border:  physBorder,
+				Border:  rowPhysBorder,
 				Padding: physPadding,
 			})
 		}
@@ -378,7 +397,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		builder.SetLastBaseline(baseline)
 	}
 
-	physBorder := ToPhysicalEdges(geom.Border, wdm)
+	physBorder := ToPhysicalEdges(geom.Border, wdm) // already zeroed for border-collapse
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(tla.style, wdm, tla.space.AvailableSize.InlineSize), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
@@ -476,7 +495,9 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					continue
 				}
 				if gcStyle.GetDisplay() == css.DisplayTableRow {
-					groupRows = append(groupRows, tla.buildRow(grandchild, gcStyle))
+					r := tla.buildRow(grandchild, gcStyle)
+					r.groupStyle = childStyle // tag with row group's style
+					groupRows = append(groupRows, r)
 				}
 			}
 			switch display {
@@ -947,7 +968,10 @@ func newCellBorderGrid(rows []tableRow, numCols int) *cellBorderGrid {
 // resolveCollapsedBorders computes half-border widths and winning colors for
 // all cells in the grid. Returns a map from "row,col" to a cloned style with
 // adjusted border properties. Only cells with modified borders are included.
-func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode) map[string]*css.Style {
+//
+// rowStyles/groupStyles/tableStyle provide borders from parent elements
+// (tr, thead/tbody/tfoot, table) for CSS 2.1 §17.6.2.1 element-type precedence.
+func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowStyles, groupStyles []*css.Style, tableStyle *css.Style) map[string]*css.Style {
 	iStart, iEnd, bStart, bEnd := physicalSideNames(wdm)
 	result := make(map[string]*css.Style)
 
@@ -1051,6 +1075,92 @@ func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode) map[s
 	// they have no adjacent cell to share with. Only the border color
 	// needs to be set on the clone (the width stays as-is from the
 	// original computed style). No halving is needed for outer borders.
+
+	// CSS 2.1 §17.6.2.1 element-type precedence: merge borders from
+	// parent elements (table → rowgroup → row) into cell borders.
+	// Processed in reverse precedence order; cell borders were written
+	// first, so they win ties via "first writer wins" in the conflict
+	// resolver (startCellWins=true means the existing cell border wins).
+	allSides := [4]string{iStart, iEnd, bStart, bEnd}
+
+	// mergeElementBorder resolves a single edge of a cell against an
+	// element (row/rowgroup/table) border. The cell's existing border
+	// wins on equal width+style (higher CSS precedence).
+	mergeElementBorder := func(row, col int, side string, elemEdge borderEdgeInfo) {
+		if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
+			return
+		}
+		cellStyle := g.styles[row][col]
+		if cellStyle == nil {
+			return
+		}
+		// Read the cell's current (possibly already resolved) border.
+		clone := getClone(row, col)
+		if clone == nil {
+			return
+		}
+		cellEdge := readBorderEdge(clone, side)
+
+		// Cell (A) wins ties; element (B) only wins if strictly wider
+		// or more prominent style.
+		winner := resolveBorderConflict(cellEdge, elemEdge, true)
+
+		// Only update if the element border actually won.
+		if winner.color != cellEdge.color || winner.width != cellEdge.width || winner.style != cellEdge.style {
+			// For outer edges, keep full width; for inner edges, the width
+			// was already halved during cell-to-cell resolution.
+			setBorderEdge(clone, side, winner.width, winner.style, winner.color)
+		}
+	}
+
+	// 1. Merge row (tr) borders — lower precedence than cell.
+	for row := 0; row < g.numRows; row++ {
+		rs := rowStyles[row]
+		if rs == nil {
+			continue
+		}
+		for _, side := range allSides {
+			elemEdge := readBorderEdge(rs, side)
+			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
+				continue
+			}
+			for col := 0; col < g.numCols; col++ {
+				mergeElementBorder(row, col, side, elemEdge)
+			}
+		}
+	}
+
+	// 2. Merge row group (thead/tbody/tfoot) borders — lower than row.
+	for row := 0; row < g.numRows; row++ {
+		gs := groupStyles[row]
+		if gs == nil {
+			continue
+		}
+		for _, side := range allSides {
+			elemEdge := readBorderEdge(gs, side)
+			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
+				continue
+			}
+			for col := 0; col < g.numCols; col++ {
+				mergeElementBorder(row, col, side, elemEdge)
+			}
+		}
+	}
+
+	// 3. Merge table borders — lowest precedence.
+	if tableStyle != nil {
+		for _, side := range allSides {
+			elemEdge := readBorderEdge(tableStyle, side)
+			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
+				continue
+			}
+			for row := 0; row < g.numRows; row++ {
+				for col := 0; col < g.numCols; col++ {
+					mergeElementBorder(row, col, side, elemEdge)
+				}
+			}
+		}
+	}
 
 	return result
 }
