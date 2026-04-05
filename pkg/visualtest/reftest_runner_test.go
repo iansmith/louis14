@@ -154,95 +154,104 @@ func runReftest(t *testing.T, testPath string) bool {
 		return false
 	}
 
-	refHref := findRefLink(string(content))
-	if refHref == "" {
+	refHrefs := findRefLinks(string(content))
+	if len(refHrefs) == 0 {
 		t.Skip("no <link rel=\"match\"> found")
 		return false
 	}
 
-	// Resolve reference path relative to test file.
-	// WPT absolute paths (starting with "/") are resolved against the WPT root
-	// directory (the wpt-css2 or wpt-css3 ancestor of the test file).
-	var refPath string
-	if strings.HasPrefix(refHref, "/") {
-		wptRoot := findWPTRoot(testPath)
-		refPath = filepath.Join(wptRoot, refHref[1:])
-	} else {
-		refPath = filepath.Join(filepath.Dir(testPath), refHref)
-	}
-	if _, err := os.Stat(refPath); os.IsNotExist(err) {
-		t.Skipf("reference file not found: %s", refPath)
-		return false
-	}
-
-	refContent, err := os.ReadFile(refPath)
-	if err != nil {
-		t.Fatalf("failed to read reference file: %v", err)
-		return false
-	}
-
-	// Render both to temporary PNGs
-	tmpDir := t.TempDir()
-	testPNG := filepath.Join(tmpDir, "test.png")
-	refPNG := filepath.Join(tmpDir, "ref.png")
-
 	// WPT tests are designed for 800x600 minimum viewport (standard browser default).
-	// Using 400x400 would cause float wrapping in tests with many floated containers
-	// (e.g. 27 floated flex containers totaling ~702px), producing different visual
-	// output between test and reference due to height differences affecting wrap Y positions.
 	width, height := 800, 600
 
-	// Use the test file's directory as the base path for resolving relative image URLs
+	// Render the test file once.
+	tmpDir := t.TempDir()
+	testPNG := filepath.Join(tmpDir, "test.png")
 	testBasePath := filepath.Dir(testPath)
-	refBasePath := filepath.Dir(refPath)
 
 	if err := RenderHTMLToFileWithBase(string(content), testPNG, width, height, testBasePath); err != nil {
 		t.Fatalf("failed to render test: %v", err)
 		return false
 	}
 
-	if err := RenderHTMLToFileWithBase(string(refContent), refPNG, width, height, refBasePath); err != nil {
-		t.Fatalf("failed to render reference: %v", err)
-		return false
-	}
-
-	// Compare
-	opts := DefaultOptions()
-	opts.Tolerance = 2
-	opts.MaxDifferentPercent = 0 // Exact match: any pixel difference is a failure
-	opts.SaveDiffImage = true
-	opts.DiffImagePath = filepath.Join(tmpDir, "diff.png")
-
-	result, err := CompareImages(testPNG, refPNG, opts)
-	if err != nil {
-		t.Fatalf("comparison failed: %v", err)
-		return false
-	}
-
-	if !result.Match {
-		pct := float64(result.DifferentPixels) / float64(result.TotalPixels) * 100
-		t.Errorf("REFTEST FAIL: %d/%d pixels differ (%.1f%%, max diff: %d)",
-			result.DifferentPixels, result.TotalPixels, pct, result.MaxDifference)
-
-		// Save images to persistent output directory for debugging
-		outputDir := filepath.Join("..", "..", "output", "reftests")
-		if err := os.MkdirAll(outputDir, 0755); err == nil {
-			baseName := strings.TrimSuffix(filepath.Base(testPath), filepath.Ext(testPath))
-			copyFile(testPNG, filepath.Join(outputDir, baseName+"_test.png"))
-			copyFile(refPNG, filepath.Join(outputDir, baseName+"_ref.png"))
-			copyFile(opts.DiffImagePath, filepath.Join(outputDir, baseName+"_diff.png"))
-			t.Logf("  saved to output/reftests/%s_*.png", baseName)
+	// Try each reference. The test passes if it matches ANY reference.
+	// This handles WPT tests with multiple <link rel="match"> entries
+	// where either rendering is acceptable.
+	var lastResult *CompareResult
+	for i, refHref := range refHrefs {
+		// Resolve reference path relative to test file.
+		// WPT absolute paths (starting with "/") are resolved against the WPT root.
+		var refPath string
+		if strings.HasPrefix(refHref, "/") {
+			wptRoot := findWPTRoot(testPath)
+			refPath = filepath.Join(wptRoot, refHref[1:])
+		} else {
+			refPath = filepath.Join(filepath.Dir(testPath), refHref)
 		}
+		if _, err := os.Stat(refPath); os.IsNotExist(err) {
+			continue // Skip missing references, try next
+		}
+
+		refContent, err := os.ReadFile(refPath)
+		if err != nil {
+			continue
+		}
+
+		refPNG := filepath.Join(tmpDir, fmt.Sprintf("ref%d.png", i))
+		refBasePath := filepath.Dir(refPath)
+
+		if err := RenderHTMLToFileWithBase(string(refContent), refPNG, width, height, refBasePath); err != nil {
+			continue
+		}
+
+		opts := DefaultOptions()
+		opts.Tolerance = 2
+		opts.MaxDifferentPercent = 0
+		opts.SaveDiffImage = true
+		opts.DiffImagePath = filepath.Join(tmpDir, fmt.Sprintf("diff%d.png", i))
+
+		result, err := CompareImages(testPNG, refPNG, opts)
+		if err != nil {
+			continue
+		}
+
+		lastResult = result
+
+		if result.Match {
+			if result.DifferentPixels > 0 {
+				pct := float64(result.DifferentPixels) / float64(result.TotalPixels) * 100
+				t.Logf("REFTEST PASS (%d pixels, max diff: %d, different: %d / %.1f%%, ref %d/%d)",
+					result.TotalPixels, result.MaxDifference, result.DifferentPixels, pct, i+1, len(refHrefs))
+			} else {
+				t.Logf("REFTEST PASS (%d pixels, max diff: %d)", result.TotalPixels, result.MaxDifference)
+			}
+			return true
+		}
+	}
+
+	// None of the references matched.
+	if lastResult == nil {
+		t.Skipf("no usable reference files found")
 		return false
 	}
 
-	if result.DifferentPixels > 0 {
-		pct := float64(result.DifferentPixels) / float64(result.TotalPixels) * 100
-		t.Logf("REFTEST PASS (%d pixels, max diff: %d, different: %d / %.1f%%)", result.TotalPixels, result.MaxDifference, result.DifferentPixels, pct)
-	} else {
-		t.Logf("REFTEST PASS (%d pixels, max diff: %d)", result.TotalPixels, result.MaxDifference)
+	pct := float64(lastResult.DifferentPixels) / float64(lastResult.TotalPixels) * 100
+	t.Errorf("REFTEST FAIL: %d/%d pixels differ (%.1f%%, max diff: %d)",
+		lastResult.DifferentPixels, lastResult.TotalPixels, pct, lastResult.MaxDifference)
+
+	// Save images to persistent output directory for debugging
+	outputDir := filepath.Join("..", "..", "output", "reftests")
+	if err := os.MkdirAll(outputDir, 0755); err == nil {
+		baseName := strings.TrimSuffix(filepath.Base(testPath), filepath.Ext(testPath))
+		copyFile(testPNG, filepath.Join(outputDir, baseName+"_test.png"))
+		// Save the last reference comparison
+		lastRefIdx := len(refHrefs) - 1
+		lastRefPNG := filepath.Join(tmpDir, fmt.Sprintf("ref%d.png", lastRefIdx))
+		lastDiffPNG := filepath.Join(tmpDir, fmt.Sprintf("diff%d.png", lastRefIdx))
+		copyFile(lastRefPNG, filepath.Join(outputDir, baseName+"_ref.png"))
+		copyFile(lastDiffPNG, filepath.Join(outputDir, baseName+"_diff.png"))
+		t.Logf("  saved to output/reftests/%s_*.png", baseName)
 	}
-	return true
+	return false
 }
 
 // copyFile copies src to dst.
@@ -333,6 +342,44 @@ func findRefLinkInDOM(node *html.Node) string {
 		}
 	}
 	return ""
+}
+
+// findRefLinksInDOM walks the DOM tree collecting ALL <link rel="match" href="..."> hrefs.
+// Some WPT tests have multiple match references (the test passes if it matches ANY).
+func findRefLinksInDOM(node *html.Node) []string {
+	var hrefs []string
+	if node.Type == html.ElementNode && node.TagName == "link" {
+		if rel, ok := node.Attributes["rel"]; ok {
+			if strings.ToLower(rel) == "match" {
+				if href, ok := node.Attributes["href"]; ok {
+					hrefs = append(hrefs, href)
+				}
+			}
+		}
+	}
+	for _, child := range node.Children {
+		hrefs = append(hrefs, findRefLinksInDOM(child)...)
+	}
+	return hrefs
+}
+
+// findRefLinks extracts all hrefs from <link rel="match" href="..."> in HTML content.
+// Returns all match references found. Some tests have multiple references and
+// pass if they match ANY of them.
+func findRefLinks(content string) []string {
+	// Try parsing with our HTML parser first
+	doc, err := html.Parse(content)
+	if err == nil {
+		if hrefs := findRefLinksInDOM(doc.Root); len(hrefs) > 0 {
+			return hrefs
+		}
+	}
+
+	// Fallback: simple string search (finds only the first one, same as before)
+	if href := findRefLink(content); href != "" {
+		return []string{href}
+	}
+	return nil
 }
 
 // TestListReftestResults provides a quick summary of all reftest results

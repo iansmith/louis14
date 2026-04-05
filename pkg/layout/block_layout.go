@@ -296,12 +296,26 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// CSS 2.1 §10.6.7: For BFC roots with auto block-size, the auto height
-	// extends to the last child's margin-bottom edge. For non-BFC containers,
-	// the trailing margin propagates outward via EndMarginStrut.
+	// CSS 2.1 §8.3.1: The bottom margin of an in-flow block box with a
+	// 'height' of 'auto' collapses with its last child's bottom margin if
+	// the box has no bottom border and no bottom padding. When block-size
+	// is explicit (not auto), OR there is border/padding at block-end,
+	// the trailing margin does NOT propagate out as EndMarginStrut.
+	// We consume it without extending the auto height.
+	canPropagateBottom := !bla.space.IsNewFormattingContext &&
+		!hasExplicitBlock &&
+		geom.Border.BlockEnd == 0 && geom.Padding.BlockEnd == 0
+
 	if bla.space.IsNewFormattingContext && !prevMarginStrut.IsEmpty() {
+		// BFC roots: trailing margins don't propagate out, and they
+		// extend the auto height (CSS 2.1 §10.6.7).
 		blockCursor += prevMarginStrut.Resolve()
 		prevMarginStrut = MarginStrut{} // consumed
+	} else if !canPropagateBottom && !prevMarginStrut.IsEmpty() {
+		// Non-BFC with explicit block-size or block-end border/padding:
+		// margins don't propagate (CSS 2.1 §8.3.1). Consume without
+		// extending auto height.
+		prevMarginStrut = MarginStrut{}
 	}
 
 	// CSS 2.1 §10.6.7: For elements that own floats (BFC roots or elements
@@ -485,7 +499,13 @@ func (bla *BlockLayoutAlgorithm) inheritPropagatedOOF(
 // Converts static positions from the child's content-box coordinates to the
 // parent's content-box coordinates. Shared by block, table, and other layout algorithms.
 //
-// Mirrors Blink's propagation of OutOfFlowPositionedCandidates through the tree.
+// When the child's writing mode differs from the parent's, the static position
+// is converted from child-logical to physical, then from physical to
+// parent-logical before adding the parent-logical offset adjustments.
+//
+// Mirrors Blink's propagation of OutOfFlowPositionedCandidates through the tree
+// and its cross-writing-mode static position conversion in
+// OutOfFlowLayoutPart::PropagateOOFPositionedInfo.
 func PropagateOOFCandidates(
 	childResult *LayoutResult,
 	childStyle *css.Style,
@@ -499,8 +519,46 @@ func PropagateOOFCandidates(
 	blockAdj := childBlockOff + childBP.Border.BlockStart + childBP.Padding.BlockStart
 	inlineAdj := childInlineOff + childBP.Border.InlineStart + childBP.Padding.InlineStart
 
+	// Detect cross-writing-mode propagation. When the child's writing mode
+	// is orthogonal to the parent's, static positions must be converted
+	// from child-logical coordinates to parent-logical coordinates.
+	childWDM := NewWritingDirectionMode(childStyle)
+	needsConversion := parentWDM.IsOrthogonalTo(childWDM)
+
+	// Pre-compute the child's content-box physical size for coordinate
+	// conversion. The static position is measured within this box.
+	var childContentPhys PhysicalSize
+	if needsConversion {
+		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+		physBP := ToPhysicalEdges(LogicalEdges{
+			InlineStart: childGeom.Border.InlineStart + childGeom.Padding.InlineStart,
+			InlineEnd:   childGeom.Border.InlineEnd + childGeom.Padding.InlineEnd,
+			BlockStart:  childGeom.Border.BlockStart + childGeom.Padding.BlockStart,
+			BlockEnd:    childGeom.Border.BlockEnd + childGeom.Padding.BlockEnd,
+		}, childWDM)
+		childContentPhys = PhysicalSize{
+			Width:  childResult.Fragment.Size.Width - physBP.Left - physBP.Right,
+			Height: childResult.Fragment.Size.Height - physBP.Top - physBP.Bottom,
+		}
+		if childContentPhys.Width < 0 {
+			childContentPhys.Width = 0
+		}
+		if childContentPhys.Height < 0 {
+			childContentPhys.Height = 0
+		}
+	}
+
 	for _, cand := range childResult.PropagatedOOFCandidates {
 		adj := cand
+
+		if needsConversion {
+			// Convert static position: child-logical → physical → parent-logical.
+			// The container for both conversions is the child's content-box
+			// (the space within which the static position was accumulated).
+			physSP := adj.StaticPosition.ConvertToPhysical(childWDM, childContentPhys)
+			adj.StaticPosition = physSP.ConvertToLogical(parentWDM, childContentPhys)
+		}
+
 		adj.StaticPosition.Offset.BlockOffset += blockAdj
 		adj.StaticPosition.Offset.InlineOffset += inlineAdj
 		builder.AddOutOfFlowCandidate(adj)
