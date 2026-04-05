@@ -51,8 +51,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(tla.node)
 
-	// Collect rows from the table's children (handling row-groups).
-	rows := tla.collectRows()
+	// Collect rows and captions from the table's children.
+	rows, captions := tla.collectRowsAndCaptions()
 
 	// Determine the number of columns.
 	numCols := 0
@@ -77,11 +77,69 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	borderCollapse := tla.style.GetBorderCollapse() == css.BorderCollapseCollapse
 
+	// Compute logical border spacing (CSS 2.1 §17.6.1).
+	// In collapsed mode, spacing is always zero.
+	inlineSpacing, blockSpacing := 0.0, 0.0
+	if !borderCollapse {
+		inlineSpacing, blockSpacing = tla.logicalBorderSpacing()
+	}
+
 	// Check if the table has an explicit inline-size (width/height).
 	_, hasExplicitTableWidth := ResolveInlineSize(tla.style, wdm, tla.space, geom)
 
 	// Compute column widths via auto table layout (CSS 2.1 §17.5.2).
-	colWidths := tla.computeColumnWidths(rows, numCols, availableInline, borderCollapse, hasExplicitTableWidth)
+	// Subtract inline spacing from available width for column sizing.
+	spacingForCols := 0.0
+	if numCols > 0 {
+		spacingForCols = inlineSpacing * float64(numCols+1) // before first + between + after last
+	}
+	availableForCols := availableInline - spacingForCols
+	if availableForCols < 0 {
+		availableForCols = 0
+	}
+	colWidths := tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth)
+
+	// Separate top and bottom captions.
+	var topCaptions, bottomCaptions []tableCaption
+	for _, cap := range captions {
+		if cap.side == "bottom" {
+			bottomCaptions = append(bottomCaptions, cap)
+		} else {
+			topCaptions = append(topCaptions, cap)
+		}
+	}
+
+	// Layout top (block-start) captions.
+	blockOffset := 0.0
+	for _, cap := range topCaptions {
+		capWDM := wdm
+		if cap.style != nil {
+			capWDM = NewWritingDirectionMode(cap.style)
+		}
+		capSpace := NewConstraintSpaceBuilder(wdm, capWDM, true).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(capWDM, tla.ctx)).
+			SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
+			SetAvailableSize(LogicalSize{
+				InlineSize: availableInline,
+				BlockSize:  Indefinite,
+			}).
+			SetPercentageResolutionSize(LogicalSize{
+				InlineSize: availableInline,
+				BlockSize:  0,
+			}).
+			SetPercentageResolutionInlineSize(availableInline).
+			Build()
+
+		capResult := layoutElement(tla.ctx, cap.node, capSpace)
+		capLogical := NewLogicalFragment(wdm, capResult.Fragment)
+
+		builder.AddChild(capResult.Fragment, LogicalOffset{
+			InlineOffset: 0,
+			BlockOffset:  blockOffset,
+		})
+		blockOffset += capLogical.BlockSize()
+	}
 
 	// Layout each row.
 	//
@@ -90,8 +148,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// OOF candidates from cell content are collected directly at the
 	// table level. Rows produce synthetic fragments for painting but
 	// have no NGLayoutResult of their own in Blink.
-	blockOffset := 0.0
-	for _, row := range rows {
+
+	// Add block-start spacing before first row (if border-spacing is non-zero).
+	if len(rows) > 0 && blockSpacing > 0 {
+		blockOffset += blockSpacing
+	}
+
+	for rowIdx, row := range rows {
+		// Add inter-row spacing (block spacing) between rows.
+		if rowIdx > 0 && blockSpacing > 0 {
+			blockOffset += blockSpacing
+		}
+
 		rowHeight := 0.0
 		colIdx := 0
 
@@ -108,10 +176,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				cellWidth += colWidths[c]
 			}
 
-			// Compute inline offset for this cell within the row.
-			cellInlineOffset := 0.0
+			// Compute inline offset for this cell within the row, including inline spacing.
+			cellInlineOffset := inlineSpacing // start with spacing before first column
 			for c := 0; c < colIdx && c < numCols; c++ {
-				cellInlineOffset += colWidths[c]
+				cellInlineOffset += colWidths[c] + inlineSpacing
 			}
 
 			// Layout the cell's content via block layout algorithm.
@@ -172,6 +240,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		for _, w := range colWidths {
 			totalInline += w
 		}
+		totalInline += spacingForCols // include inline spacing in row width
 		rowBuilder.SetSize(LogicalSize{
 			InlineSize: totalInline,
 			BlockSize:  rowHeight,
@@ -197,12 +266,50 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		blockOffset += rowHeight
 	}
 
+	// Add block-end spacing after last row.
+	if len(rows) > 0 && blockSpacing > 0 {
+		blockOffset += blockSpacing
+	}
+
+	// Layout bottom (block-end) captions.
+	for _, cap := range bottomCaptions {
+		capWDM := wdm
+		if cap.style != nil {
+			capWDM = NewWritingDirectionMode(cap.style)
+		}
+		capSpace := NewConstraintSpaceBuilder(wdm, capWDM, true).
+			SetOrthogonalFallbackInlineSize(
+				orthogonalFallbackSize(capWDM, tla.ctx)).
+			SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
+			SetAvailableSize(LogicalSize{
+				InlineSize: availableInline,
+				BlockSize:  Indefinite,
+			}).
+			SetPercentageResolutionSize(LogicalSize{
+				InlineSize: availableInline,
+				BlockSize:  0,
+			}).
+			SetPercentageResolutionInlineSize(availableInline).
+			Build()
+
+		capResult := layoutElement(tla.ctx, cap.node, capSpace)
+		capLogical := NewLogicalFragment(wdm, capResult.Fragment)
+
+		builder.AddChild(capResult.Fragment, LogicalOffset{
+			InlineOffset: 0,
+			BlockOffset:  blockOffset,
+		})
+		blockOffset += capLogical.BlockSize()
+	}
+
 	// Compute table size.
 	contentInlineSize := 0.0
 	for _, w := range colWidths {
 		contentInlineSize += w
 	}
+	contentInlineSize += spacingForCols // include inline spacing in total
 	finalBlockSize := blockOffset
+
 
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
@@ -258,11 +365,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	return result
 }
 
-// collectRows extracts table rows from the table's children,
+// collectRowsAndCaptions extracts table rows and captions from the table's children,
 // handling row-groups (thead, tbody, tfoot).
 // CSS 2.1 §17.5: rendering order is thead, tbodies (in source order), tfoot.
-func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
+func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCaption) {
 	var headerRows, bodyRows, footerRows []tableRow
+	var captions []tableCaption
 
 	for _, child := range tla.node.Children() {
 		if child.IsText() {
@@ -275,6 +383,17 @@ func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
 		display := childStyle.GetDisplay()
 
 		switch display {
+		case css.DisplayTableCaption:
+			side := "top"
+			if childStyle.GetCaptionSide() == "bottom" {
+				side = "bottom"
+			}
+			captions = append(captions, tableCaption{
+				node:  child,
+				style: childStyle,
+				side:  side,
+			})
+
 		case css.DisplayTableRow:
 			bodyRows = append(bodyRows, tla.buildRow(child, childStyle))
 
@@ -320,7 +439,7 @@ func (tla *TableLayoutAlgorithm) collectRows() []tableRow {
 	rows = append(rows, headerRows...)
 	rows = append(rows, bodyRows...)
 	rows = append(rows, footerRows...)
-	return rows
+	return rows, captions
 }
 
 // buildRow extracts cells from a table-row element.
@@ -412,11 +531,16 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 				break
 			}
 
-			// Check for explicit width on the cell.
+			// Check for explicit inline-size on the cell.
+			// In vertical writing modes, CSS "height" maps to inline-size.
 			explicitW := 0.0
 			hasExplicit := false
 			if cell.style != nil {
-				if w, ok := cell.style.GetLength("width"); ok && w > 0 {
+				inlineProp := "width"
+				if tla.space.WritingDirection.IsVertical() {
+					inlineProp = "height"
+				}
+				if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
 					explicitW = w
 					hasExplicit = true
 				}
@@ -523,6 +647,45 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	}
 
 	return colWidths
+}
+
+// tableCaption tracks a caption element during table layout.
+type tableCaption struct {
+	node  *LayoutInputNode
+	style *css.Style
+	side  string // "top" or "bottom"
+}
+
+// logicalBorderSpacing returns border spacing mapped to table logical coordinates.
+// CSS border-spacing first value = horizontal = between columns (inline spacing).
+// CSS border-spacing second value = vertical = between rows (block spacing).
+// Per CSS 2.1 §17.6.1, these are always "horizontal between columns" and
+// "vertical between rows" regardless of writing mode. The table layout algorithm
+// works in logical coordinates where columns are inline and rows are block,
+// so the mapping is always: inline=horizontal, block=vertical.
+//
+// We resolve em/rem units using the table's computed font-size rather than
+// relying on GetBorderSpacing() which uses a default 16px.
+func (tla *TableLayoutAlgorithm) logicalBorderSpacing() (inlineSpacing, blockSpacing float64) {
+	val, ok := tla.style.Get("border-spacing")
+	if !ok {
+		return 0, 0
+	}
+	fontSize := tla.style.GetFontSize()
+	parts := strings.Fields(val)
+	if len(parts) >= 1 {
+		if v, ok := css.ParseLengthWithFontSize(parts[0], fontSize); ok {
+			inlineSpacing = v
+		}
+	}
+	if len(parts) >= 2 {
+		if v, ok := css.ParseLengthWithFontSize(parts[1], fontSize); ok {
+			blockSpacing = v
+		}
+	} else {
+		blockSpacing = inlineSpacing // single value applies to both
+	}
+	return
 }
 
 // parseIntAttr parses an integer from an HTML attribute value.
