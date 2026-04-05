@@ -371,11 +371,12 @@ func CalculateInitialFragmentGeometry(
 	wdm WritingDirectionMode,
 	space ConstraintSpace,
 ) FragmentGeometry {
-	// CSS 2.1 §8.4: Percentage paddings resolve against containing block's
-	// inline-size (width in horizontal mode). The PercentageResolutionSize's
-	// InlineSize carries this value. Convert to physical width for the
-	// percentage resolution base.
-	pctBase := ToPhysicalSize(space.PercentageResolutionSize, space.WritingDirection.WM).Width
+	// CSS Writing Modes 3 §7.2 + CSS 2.1 §8.3/§8.4: Percentage paddings
+	// resolve against the containing block's inline-size. Use the dedicated
+	// PercentageResolutionInlineSize which is never axis-swapped for
+	// orthogonal children (unlike PercentageResolutionSize which gets
+	// swapped and may put the CB's inline-size into the BlockSize field).
+	pctBase := space.PercentageResolutionInlineSize
 	geom := ComputeFragmentGeometry(style, wdm, pctBase)
 
 	// --- Resolve inline-size (produces border-box) ---

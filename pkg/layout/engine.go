@@ -141,6 +141,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			InlineSize: rootInlineSize,
 			BlockSize:  rootBlockSize,
 		}).
+		SetPercentageResolutionInlineSize(rootInlineSize).
 		Build()
 
 	// Phase 6: Run layout.
@@ -220,6 +221,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 			InlineSize: rootInlineSize,
 			BlockSize:  rootBlockSize,
 		}).
+		SetPercentageResolutionInlineSize(rootInlineSize).
 		Build()
 
 	return layoutElement(nestedCtx, layoutRoot, rootSpace)

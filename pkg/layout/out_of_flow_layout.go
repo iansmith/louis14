@@ -163,7 +163,8 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			SetPercentageResolutionSize(LogicalSize{
 				InlineSize: cbInline,
 				BlockSize:  cbBlock,
-			})
+			}).
+			SetPercentageResolutionInlineSize(cbInline)
 		if useFixedInline {
 			csb.SetIsFixedInlineSize(true)
 		}

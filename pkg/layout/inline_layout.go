@@ -132,6 +132,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				InlineSize: contentInlineSize,
 				BlockSize:  0,
 			}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
 			Build()
 		childResult := layoutElement(bla.ctx, item.LayoutNode, childSpace)
 		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
