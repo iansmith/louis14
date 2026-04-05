@@ -1966,10 +1966,13 @@ func isLengthProperty(prop string) bool {
 // isColorProperty returns true for CSS properties that expect color values
 func isColorProperty(prop string) bool {
 	switch prop {
-	case "color", "background-color", "border-color",
+	case "color", "background-color",
 		"border-top-color", "border-right-color", "border-bottom-color", "border-left-color":
 		return true
 	}
+	// Note: "border-color" is a shorthand that accepts multiple space-separated
+	// color values (e.g., "green green green green"). It must NOT be validated
+	// as a single color — expandShorthand will split it into longhands.
 	return false
 }
 

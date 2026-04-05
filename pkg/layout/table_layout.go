@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"fmt"
 	"strings"
 
 	"louis14/pkg/css"
@@ -97,6 +98,31 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if availableForCols < 0 {
 		availableForCols = 0
 	}
+	// In border-collapse mode, resolve border conflicts and adjust cell styles
+	// BEFORE computing column widths and laying out cells.
+	// CSS 2.1 §17.6.2.1: each shared edge uses half the winning border's width.
+	var collapsedStyles map[string]*css.Style
+	if borderCollapse {
+		grid := newCellBorderGrid(rows, numCols)
+		collapsedStyles = grid.resolveCollapsedBorders(wdm)
+
+		// Swap cell node styles to the collapsed versions so that
+		// column width computation and cell layout use half-border widths.
+		for rowIdx, row := range rows {
+			colIdx := 0
+			for cellIdx := range row.cells {
+				key := fmt.Sprintf("%d,%d", rowIdx, colIdx)
+				if cloned, ok := collapsedStyles[key]; ok {
+					rows[rowIdx].cells[cellIdx].style = cloned
+					if rows[rowIdx].cells[cellIdx].node != nil {
+						rows[rowIdx].cells[cellIdx].node.style = cloned
+					}
+				}
+				colIdx += row.cells[cellIdx].colSpan
+			}
+		}
+	}
+
 	colWidths := tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth)
 
 	// Separate top and bottom captions.
@@ -170,6 +196,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			rowBuilder.SetLayoutNode(row.node)
 		}
 
+		// Two-pass cell layout: first lay out all cells to find row height,
+		// then stretch cells to fill the row (CSS 2.1 §17.5.3).
+		type cellLayoutInfo struct {
+			result       *LayoutResult
+			inlineOffset float64
+			cell         tableCell
+		}
+		cellLayouts := make([]cellLayoutInfo, 0, len(row.cells))
+
 		for _, cell := range row.cells {
 			// Compute cell width from column widths.
 			cellWidth := 0.0
@@ -184,7 +219,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			// Layout the cell's content via block layout algorithm.
-			// This is where OOF descendants inside the cell are collected.
 			cellWDM := wdm
 			if cell.style != nil {
 				cellWDM = NewWritingDirectionMode(cell.style)
@@ -211,29 +245,44 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				rowHeight = cellLogical.BlockSize()
 			}
 
-			rowBuilder.AddChild(cellResult.Fragment, LogicalOffset{
-				InlineOffset: cellInlineOffset,
+			cellLayouts = append(cellLayouts, cellLayoutInfo{
+				result:       cellResult,
+				inlineOffset: cellInlineOffset,
+				cell:         cell,
+			})
+
+			colIdx += cell.colSpan
+		}
+
+		// Second pass: stretch cells to row height and add to rowBuilder.
+		for _, cl := range cellLayouts {
+			cellLogical := NewLogicalFragment(wdm, cl.result.Fragment)
+			if cellLogical.BlockSize() < rowHeight {
+				// Stretch cell to fill row height. Convert rowHeight to physical size.
+				physSize := ToPhysicalSize(LogicalSize{
+					InlineSize: cellLogical.InlineSize(),
+					BlockSize:  rowHeight,
+				}, wdm.WM)
+				cl.result.Fragment.Size = physSize
+			}
+
+			rowBuilder.AddChild(cl.result.Fragment, LogicalOffset{
+				InlineOffset: cl.inlineOffset,
 				BlockOffset:  0,
 			})
 
 			// Collect OOF candidates from cell directly into the table builder.
-			// Mirrors Blink: table algorithm centrally collects all OOF descendants,
-			// bypassing row/section. Static positions are translated from cell
-			// content-box coordinates to table content-box coordinates in one step:
-			//   table-relative = cell-relative + cell-border/padding + cell-offset-in-table
-			if len(cellResult.PropagatedOOFCandidates) > 0 && cell.style != nil {
-				cellGeom := ComputeFragmentGeometry(cell.style, wdm)
-				inlineAdj := cellInlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
+			if len(cl.result.PropagatedOOFCandidates) > 0 && cl.cell.style != nil {
+				cellGeom := ComputeFragmentGeometry(cl.cell.style, wdm)
+				inlineAdj := cl.inlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
 				blockAdj := blockOffset + cellGeom.Border.BlockStart + cellGeom.Padding.BlockStart
-				for _, cand := range cellResult.PropagatedOOFCandidates {
+				for _, cand := range cl.result.PropagatedOOFCandidates {
 					adj := cand
 					adj.StaticPosition.Offset.InlineOffset += inlineAdj
 					adj.StaticPosition.Offset.BlockOffset += blockAdj
 					builder.AddOutOfFlowCandidate(adj)
 				}
 			}
-
-			colIdx += cell.colSpan
 		}
 
 		// Set row size and build synthetic fragment.
@@ -313,7 +362,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	contentInlineSize += spacingForCols // include inline spacing in total
 	finalBlockSize := blockOffset
-
 
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
@@ -705,6 +753,313 @@ func (tla *TableLayoutAlgorithm) logicalBorderSpacing() (inlineSpacing, blockSpa
 		blockSpacing = inlineSpacing // single value applies to both
 	}
 	return
+}
+
+// borderEdgeInfo holds a single border edge's resolved properties.
+type borderEdgeInfo struct {
+	width float64
+	style css.BorderStyle
+	color css.Color
+}
+
+// physicalSideNames maps logical edges to physical CSS property side names
+// based on writing mode and direction.
+// Returns (inlineStart, inlineEnd, blockStart, blockEnd) as "top"/"right"/"bottom"/"left".
+func physicalSideNames(wdm WritingDirectionMode) (inlineStart, inlineEnd, blockStart, blockEnd string) {
+	switch wdm.WM {
+	case WritingModeHorizontalTB:
+		if wdm.Dir == DirectionLTR {
+			return "left", "right", "top", "bottom"
+		}
+		return "right", "left", "top", "bottom"
+	case WritingModeVerticalLR, WritingModeSidewaysLR:
+		if wdm.Dir == DirectionLTR {
+			return "top", "bottom", "left", "right"
+		}
+		return "bottom", "top", "left", "right"
+	case WritingModeVerticalRL, WritingModeSidewaysRL:
+		if wdm.Dir == DirectionLTR {
+			return "top", "bottom", "right", "left"
+		}
+		return "bottom", "top", "right", "left"
+	}
+	return "left", "right", "top", "bottom"
+}
+
+// readBorderEdge reads a border edge (width, style, color) from a CSS style
+// for a given physical side ("top", "right", "bottom", "left").
+func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
+	if s == nil {
+		return borderEdgeInfo{}
+	}
+	styleProp := "border-" + side + "-style"
+	widthProp := "border-" + side + "-width"
+	colorProp := "border-" + side + "-color"
+
+	var info borderEdgeInfo
+	info.style = css.BorderStyleNone
+	if sv, ok := s.Get(styleProp); ok {
+		switch sv {
+		case "solid":
+			info.style = css.BorderStyleSolid
+		case "double":
+			info.style = css.BorderStyleDouble
+		case "dashed":
+			info.style = css.BorderStyleDashed
+		case "dotted":
+			info.style = css.BorderStyleDotted
+		case "none", "hidden":
+			info.style = css.BorderStyle(sv)
+		default:
+			info.style = css.BorderStyleSolid
+		}
+	}
+
+	if info.style == css.BorderStyleNone || info.style == "hidden" {
+		info.width = 0
+	} else if wv, ok := s.Get(widthProp); ok {
+		if v, ok := css.ParseLengthWithFontSize(wv, s.GetFontSize()); ok {
+			info.width = v
+		}
+	}
+
+	// Read color from longhand (e.g., border-top-color), fall back to currentColor.
+	currentColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}
+	if cv, ok := s.Get("color"); ok {
+		if c, ok := css.ParseColor(cv); ok {
+			currentColor = c
+		}
+	}
+
+	info.color = currentColor // default
+	if cv, ok := s.Get(colorProp); ok {
+		if c, ok := css.ParseColor(cv); ok {
+			info.color = c
+		}
+	}
+
+	return info
+}
+
+// borderStylePrecedence returns a numeric precedence for border style
+// per CSS 2.1 §17.6.2.1: double > solid > dashed > dotted > ridge > outset > groove > inset > none.
+func borderStylePrecedence(s css.BorderStyle) int {
+	switch s {
+	case "hidden":
+		return 100 // hidden always wins
+	case css.BorderStyleDouble:
+		return 9
+	case css.BorderStyleSolid:
+		return 8
+	case css.BorderStyleDashed:
+		return 7
+	case css.BorderStyleDotted:
+		return 6
+	case "ridge":
+		return 5
+	case "outset":
+		return 4
+	case "groove":
+		return 3
+	case "inset":
+		return 2
+	case css.BorderStyleNone:
+		return 0
+	}
+	return 1
+}
+
+// resolveBorderConflict applies CSS 2.1 §17.6.2.1 to determine which border wins.
+// startCellWins is true if cellA is the inline-start or block-start cell.
+// Returns the winning border.
+func resolveBorderConflict(a, b borderEdgeInfo, startCellWins bool) borderEdgeInfo {
+	// Rule 1: hidden wins (becomes no border).
+	if a.style == "hidden" || b.style == "hidden" {
+		return borderEdgeInfo{style: css.BorderStyleNone, width: 0}
+	}
+
+	// Rule 2: none loses.
+	aIsNone := a.style == css.BorderStyleNone || a.width == 0
+	bIsNone := b.style == css.BorderStyleNone || b.width == 0
+	if aIsNone && bIsNone {
+		return borderEdgeInfo{style: css.BorderStyleNone, width: 0}
+	}
+	if aIsNone {
+		return b
+	}
+	if bIsNone {
+		return a
+	}
+
+	// Rule 3: wider wins.
+	if a.width > b.width {
+		return a
+	}
+	if b.width > a.width {
+		return b
+	}
+
+	// Rule 4: style precedence (same width).
+	aPrecedence := borderStylePrecedence(a.style)
+	bPrecedence := borderStylePrecedence(b.style)
+	if aPrecedence > bPrecedence {
+		return a
+	}
+	if bPrecedence > aPrecedence {
+		return b
+	}
+
+	// Rule 5: same type — start cell wins.
+	// (We only handle cell-to-cell conflicts; no row/column/table precedence yet.)
+	if startCellWins {
+		return a
+	}
+	return b
+}
+
+// cellBorderGrid stores border info for each cell in the grid for conflict resolution.
+type cellBorderGrid struct {
+	numRows int
+	numCols int
+	// grid[row][col] stores the cell's style, or nil if empty.
+	styles [][]*css.Style
+}
+
+func newCellBorderGrid(rows []tableRow, numCols int) *cellBorderGrid {
+	g := &cellBorderGrid{
+		numRows: len(rows),
+		numCols: numCols,
+		styles:  make([][]*css.Style, len(rows)),
+	}
+	for rowIdx, row := range rows {
+		g.styles[rowIdx] = make([]*css.Style, numCols)
+		colIdx := 0
+		for _, cell := range row.cells {
+			if colIdx < numCols {
+				g.styles[rowIdx][colIdx] = cell.style
+			}
+			colIdx += cell.colSpan
+		}
+	}
+	return g
+}
+
+// resolveCollapsedBorders computes half-border widths and winning colors for
+// all cells in the grid. Returns a map from "row,col" to a cloned style with
+// adjusted border properties. Only cells with modified borders are included.
+func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode) map[string]*css.Style {
+	iStart, iEnd, bStart, bEnd := physicalSideNames(wdm)
+	result := make(map[string]*css.Style)
+
+	// Helper to ensure a cloned style exists for a cell.
+	getClone := func(row, col int) *css.Style {
+		key := fmt.Sprintf("%d,%d", row, col)
+		if s, ok := result[key]; ok {
+			return s
+		}
+		orig := g.styles[row][col]
+		if orig == nil {
+			return nil
+		}
+		clone := orig.Clone()
+		result[key] = clone
+		return clone
+	}
+
+	// Resolve inline-direction edges (between cells in the same row).
+	for row := 0; row < g.numRows; row++ {
+		for col := 0; col < g.numCols-1; col++ {
+			sA := g.styles[row][col]
+			sB := g.styles[row][col+1]
+			if sA == nil && sB == nil {
+				continue
+			}
+
+			// Cell A's inline-end border vs Cell B's inline-start border.
+			edgeA := readBorderEdge(sA, iEnd)
+			edgeB := readBorderEdge(sB, iStart)
+
+			if edgeA.width == 0 && edgeB.width == 0 {
+				continue
+			}
+
+			// CSS Writing Modes 3 §6.2 + CSS 2.1 §17.6.2.1: the inline-start
+			// cell always wins the tiebreaker. For LTR the tiebreaker is
+			// "line-left" and for RTL it's "line-right"; in both cases,
+			// inline-start is where cell A (lower index) lives.
+			aIsStart := true
+
+			winner := resolveBorderConflict(edgeA, edgeB, aIsStart)
+			halfWidth := winner.width / 2
+
+			// Apply to cell A's inline-end.
+			if sA != nil {
+				clone := getClone(row, col)
+				if clone != nil {
+					setBorderEdge(clone, iEnd, halfWidth, winner.style, winner.color)
+				}
+			}
+			// Apply to cell B's inline-start.
+			if sB != nil {
+				clone := getClone(row, col+1)
+				if clone != nil {
+					setBorderEdge(clone, iStart, halfWidth, winner.style, winner.color)
+				}
+			}
+		}
+	}
+
+	// Resolve block-direction edges (between cells in adjacent rows).
+	for row := 0; row < g.numRows-1; row++ {
+		for col := 0; col < g.numCols; col++ {
+			sA := g.styles[row][col]
+			sB := g.styles[row+1][col]
+			if sA == nil && sB == nil {
+				continue
+			}
+
+			// Cell A's block-end border vs Cell B's block-start border.
+			edgeA := readBorderEdge(sA, bEnd)
+			edgeB := readBorderEdge(sB, bStart)
+
+			if edgeA.width == 0 && edgeB.width == 0 {
+				continue
+			}
+
+			// CSS 2.1 §17.6.2.1: block-start cell always wins the tiebreaker.
+			// "Further to the top" in horizontal-tb maps to "further to block-start"
+			// in all writing modes. A (lower row index) is block-start.
+			winner := resolveBorderConflict(edgeA, edgeB, true)
+			halfWidth := winner.width / 2
+
+			if sA != nil {
+				clone := getClone(row, col)
+				if clone != nil {
+					setBorderEdge(clone, bEnd, halfWidth, winner.style, winner.color)
+				}
+			}
+			if sB != nil {
+				clone := getClone(row+1, col)
+				if clone != nil {
+					setBorderEdge(clone, bStart, halfWidth, winner.style, winner.color)
+				}
+			}
+		}
+	}
+
+	// Outer edges (edges at the table boundary) keep their full width —
+	// they have no adjacent cell to share with. Only the border color
+	// needs to be set on the clone (the width stays as-is from the
+	// original computed style). No halving is needed for outer borders.
+
+	return result
+}
+
+// setBorderEdge sets a specific physical border edge on a cloned style.
+func setBorderEdge(s *css.Style, side string, width float64, style css.BorderStyle, color css.Color) {
+	s.Properties["border-"+side+"-width"] = fmt.Sprintf("%.6gpx", width)
+	s.Properties["border-"+side+"-style"] = string(style)
+	s.Properties["border-"+side+"-color"] = fmt.Sprintf("rgb(%d,%d,%d)", color.R, color.G, color.B)
 }
 
 // parseIntAttr parses an integer from an HTML attribute value.
