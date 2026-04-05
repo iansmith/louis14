@@ -123,6 +123,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			cellSpace := NewConstraintSpaceBuilder(wdm, cellWDM, true).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(cellWDM, tla.ctx)).
+				SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{
 					InlineSize: cellWidth,
 					BlockSize:  Indefinite,
@@ -437,6 +438,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
 						SetOrthogonalFallbackInlineSize(
 							orthogonalFallbackSize(childWDM, tla.ctx)).
+						SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
 						SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
 						Build()
 					mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
