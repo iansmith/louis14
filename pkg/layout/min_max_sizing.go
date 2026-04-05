@@ -320,7 +320,11 @@ func measureOrthogonalChild(
 	// Build constraint space for the orthogonal child.
 	// The child's inline-size will use the orthogonal fallback (ICB cross-size)
 	// when the parent's block-size is indefinite.
-	isChildNewFC := createsFormattingContext(childStyle)
+	// CSS Writing Modes §4.3: an orthogonal flow always establishes a new BFC,
+	// so isChildNewFC is true by default for orthogonal children. Also check
+	// the element's own properties (overflow, float, etc.) for completeness.
+	isChildNewFC := createsFormattingContext(childStyle) ||
+		parentWDM.WM != childWDM.WM
 	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, isChildNewFC).
 		SetOrthogonalFallbackInlineSize(
 			orthogonalFallbackSize(childWDM, ctx)).

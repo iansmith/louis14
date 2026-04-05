@@ -111,7 +111,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		prevES := exclusionSpace
 		var inlineAscent, lastBaselineOff float64
 		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
-		if exclusionSpace != prevES {
+		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
 		}
 		firstLineAscent = inlineAscent
@@ -158,7 +158,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if childStyle.GetFloat() != css.FloatNone {
 				bla.layoutFloat(child, childStyle, wdm, contentInlineSize, childAvailableBlock,
 					blockCursor, &prevMarginStrut, exclusionSpace, builder, &exclusionSpace)
-				hasOwnFloats = true
+				// Only BFC roots extend auto block-size to clear floats
+				// (CSS 2.1 §10.6.7). Non-BFC parents let floats overflow;
+				// hasOwnFloats is already true for BFC roots (initialized
+				// from IsNewFormattingContext).
+
 				continue
 			}
 
@@ -348,7 +352,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			blockCursor = clearedBlock
 		}
 	}
-
 	// Compute final block-size.
 	intrinsicBlockSize := blockCursor
 	finalBlockSize := intrinsicBlockSize
