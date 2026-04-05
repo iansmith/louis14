@@ -744,26 +744,19 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		result.PropagatedOOFCandidates = propagatedOOF
 	}
 
-	// CSS position:relative.
+	// CSS position:relative — "start wins over end" in logical coordinates.
 	if fla.style != nil && fla.style.GetPosition() == css.PositionRelative {
 		cbWidth := fla.space.AvailableSize.InlineSize
 		cbHeight := fla.space.AvailableSize.BlockSize
 		if cbHeight == Indefinite {
 			cbHeight = 0
 		}
-		offset := fla.style.GetPositionOffsetResolved(cbWidth, cbHeight)
-		var dx, dy float64
-		if offset.HasLeft {
-			dx = offset.Left
-		} else if offset.HasRight {
-			dx = -offset.Right
-		}
-		if offset.HasTop {
-			dy = offset.Top
-		} else if offset.HasBottom {
-			dy = -offset.Bottom
-		}
-		result.Fragment.RelativeOffset = PhysicalOffset{X: dx, Y: dy}
+		physCB := ToPhysicalSize(LogicalSize{
+			InlineSize: cbWidth,
+			BlockSize:  cbHeight,
+		}, wdm.WM)
+		offset := fla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
+		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
 	}
 
 	return result

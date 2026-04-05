@@ -491,6 +491,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Stored on the fragment for paint-time application (not baked into positions).
 	// Percentages resolve against the containing block's PHYSICAL dimensions:
 	// left/right against physical width, top/bottom against physical height.
+	//
+	// The overconstrained resolution rule is "start wins over end" in logical
+	// coordinates, following Blink's ComputeRelativeOffset (relative_utils.cc).
 	if bla.style != nil && bla.style.GetPosition() == css.PositionRelative {
 		logicalBlock := bla.space.AvailableSize.BlockSize
 		if logicalBlock == Indefinite {
@@ -501,23 +504,75 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			BlockSize:  logicalBlock,
 		}, wdm.WM)
 		offset := bla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
-		var dx, dy float64
-		// Left wins over right.
-		if offset.HasLeft {
-			dx = offset.Left
-		} else if offset.HasRight {
-			dx = -offset.Right
-		}
-		// Top wins over bottom.
-		if offset.HasTop {
-			dy = offset.Top
-		} else if offset.HasBottom {
-			dy = -offset.Bottom
-		}
-		result.Fragment.RelativeOffset = PhysicalOffset{X: dx, Y: dy}
+		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
 	}
 
 	return result
+}
+
+// computeRelativeOffset computes the physical offset for position:relative,
+// applying the CSS overconstrained resolution rule in logical coordinates:
+// inline-start wins over inline-end, block-start wins over block-end.
+//
+// This matches Blink's ComputeRelativeOffset in relative_utils.cc.
+// The physical insets are first mapped to logical via PhysicalInsetsToLogical,
+// the "start wins" rule is applied, and then the logical deltas are mapped
+// back to physical dx/dy.
+func computeRelativeOffset(offset css.PositionOffset, wdm WritingDirectionMode) PhysicalOffset {
+	logical := PhysicalInsetsToLogical(offset, wdm)
+
+	// Start wins over end in both axes.
+	var inlineDelta, blockDelta float64
+	if logical.HasInlineStart {
+		inlineDelta = logical.InlineStart
+	} else if logical.HasInlineEnd {
+		inlineDelta = -logical.InlineEnd
+	}
+	if logical.HasBlockStart {
+		blockDelta = logical.BlockStart
+	} else if logical.HasBlockEnd {
+		blockDelta = -logical.BlockEnd
+	}
+
+	// Convert logical deltas back to physical dx/dy.
+	// Positive inlineDelta = shift toward inline-end (away from start).
+	// Positive blockDelta = shift toward block-end (away from start).
+	var dx, dy float64
+	switch wdm.WM {
+	case WritingModeHorizontalTB:
+		if wdm.Dir == DirectionLTR {
+			dx = inlineDelta
+		} else {
+			dx = -inlineDelta
+		}
+		dy = blockDelta
+
+	case WritingModeVerticalRL, WritingModeSidewaysRL:
+		if wdm.Dir == DirectionLTR {
+			dy = inlineDelta
+		} else {
+			dy = -inlineDelta
+		}
+		dx = -blockDelta // block-start is right, block-end is left
+
+	case WritingModeVerticalLR:
+		if wdm.Dir == DirectionLTR {
+			dy = inlineDelta
+		} else {
+			dy = -inlineDelta
+		}
+		dx = blockDelta // block-start is left, block-end is right
+
+	case WritingModeSidewaysLR:
+		if wdm.Dir == DirectionLTR {
+			dy = -inlineDelta
+		} else {
+			dy = inlineDelta
+		}
+		dx = blockDelta // block-start is left, block-end is right
+	}
+
+	return PhysicalOffset{X: dx, Y: dy}
 }
 
 // inheritPropagatedOOF adjusts and adopts OOF candidates from a child result.
