@@ -122,6 +122,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, bla.ctx)).
+			SetOrthogonalFallbackBlockSize(
+				bla.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{
 				InlineSize: contentInlineSize,
 				BlockSize:  Indefinite,

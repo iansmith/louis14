@@ -528,6 +528,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, lb.ctx)).
+			SetOrthogonalFallbackBlockSize(
+				lb.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(lb.space.AvailableSize).
 			Build()
 		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
@@ -545,6 +547,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, lb.ctx)).
+			SetOrthogonalFallbackBlockSize(
+				lb.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{
 				InlineSize: lb.availableWidth,
 				BlockSize:  Indefinite,

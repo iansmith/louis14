@@ -66,15 +66,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		childAvailableBlock = explicitBlockSize
 	}
 
-	// §10.3.2: For orthogonal children, when the parent's block-size is
-	// indefinite but has a max-block-size, use that as the available block.
-	// This prevents the ICB fallback from overriding the max constraint.
-	orthogonalAvailableBlock := childAvailableBlock
-	if childAvailableBlock == Indefinite {
-		if maxBlock, hasMax := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); hasMax {
-			orthogonalAvailableBlock = maxBlock
-		}
-	}
+	// §10.3.2: Compute the available block-size for orthogonal children.
+	// This accounts for the parent's height/min-height/max-height constraints
+	// and walks up to the nearest ancestor scroller or ICB when needed.
+	orthogonalAvailableBlock := computeOrthogonalAvailableBlock(
+		bla.style, wdm, bla.space, geom, bla.ctx,
+		childAvailableBlock, hasExplicitBlock, explicitBlockSize)
 
 	// Float exclusion tracking.
 	// Inherit exclusion space from parent, or start fresh for new BFCs.
@@ -208,6 +205,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(childWDM, bla.ctx)).
+				SetOrthogonalFallbackBlockSize(
+					computeOrthogonalFallbackBlockForChildren(
+						bla.style, wdm, bla.space, geom, bla.ctx,
+						hasExplicitBlock, explicitBlockSize)).
 				SetAvailableSize(LogicalSize{
 					InlineSize: childInlineForSpace,
 					BlockSize:  blockForChild,
@@ -616,6 +617,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetOrthogonalFallbackInlineSize(
 			orthogonalFallbackSize(childWDM, bla.ctx)).
+		SetOrthogonalFallbackBlockSize(
+			bla.space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(LogicalSize{
 			InlineSize: contentInlineSize,
 			BlockSize:  availableBlock,
@@ -822,4 +825,144 @@ func orthogonalFallbackSize(childWDM WritingDirectionMode, ctx *LayoutContext) f
 		return ctx.ViewportWidth
 	}
 	return ctx.ViewportHeight
+}
+
+// icbBlockSize returns the ICB (initial containing block) size in the
+// parent's block direction. This is the upper bound for orthogonal child
+// available inline-size.
+func icbBlockSize(parentWDM WritingDirectionMode, ctx *LayoutContext) float64 {
+	if parentWDM.IsHorizontal() {
+		// HTB parent: block direction is vertical → ICB block = viewport height
+		return ctx.ViewportHeight
+	}
+	// Vertical parent: block direction is horizontal → ICB block = viewport width
+	return ctx.ViewportWidth
+}
+
+// computeOrthogonalAvailableBlock computes the available block-size that
+// should be used for orthogonal children per CSS Writing Modes §10.3.2.
+//
+// The algorithm considers:
+//  1. If parent has definite height: use it, raised by min-height
+//  2. If parent is a scroller with max-height: use max-height, raised by min-height
+//  3. If parent has min-height (no overflow, no definite height): use min-height
+//  4. Fall back to nearest ancestor scroller (via OrthogonalFallbackBlockSize) or ICB
+//
+// The result is capped at the ICB size.
+func computeOrthogonalAvailableBlock(
+	style *css.Style,
+	wdm WritingDirectionMode,
+	space ConstraintSpace,
+	geom FragmentGeometry,
+	ctx *LayoutContext,
+	childAvailableBlock float64,
+	hasExplicitBlock bool,
+	explicitBlockSize float64,
+) float64 {
+	icb := icbBlockSize(wdm, ctx)
+	minBlock := ResolveMinBlockSize(style, wdm, space, geom)
+	maxBlock, hasMax := ResolveMaxBlockSize(style, wdm, space, geom)
+	isScroller := style.GetOverflow() != css.OverflowVisible
+
+	if hasExplicitBlock {
+		// Parent has definite height.
+		// Apply min/max clamping per CSS 2.1 §10.4:
+		// used = max(min-height, min(height, max-height))
+		result := explicitBlockSize
+		if hasMax && maxBlock < result {
+			result = maxBlock
+		}
+		if minBlock > result {
+			result = minBlock
+		}
+		return result
+	}
+
+	if isScroller {
+		// Parent is a scroller (overflow != visible) without definite height.
+		// Use max-height as the base constraint if available.
+		var result float64
+		if hasMax {
+			result = maxBlock
+		} else {
+			result = icb
+		}
+		// Raise by min-height.
+		if minBlock > result {
+			result = minBlock
+		}
+		// Cap at ICB: the orthogonal child can't see more than the viewport.
+		if result > icb {
+			result = icb
+		}
+		return result
+	}
+
+	// Parent is not a scroller and has no definite height.
+	// If parent has min-height, use it as the available size (the parent
+	// is guaranteed to be at least this tall).
+	if minBlock > 0 {
+		result := minBlock
+		if result > icb {
+			result = icb
+		}
+		return result
+	}
+
+	// Fall back to ancestor scroller's constraint or ICB.
+	if space.OrthogonalFallbackBlockSize > 0 {
+		result := space.OrthogonalFallbackBlockSize
+		if result > icb {
+			result = icb
+		}
+		return result
+	}
+
+	return icb
+}
+
+// computeOrthogonalFallbackBlockForChildren computes the
+// OrthogonalFallbackBlockSize value to propagate to children's constraint
+// spaces. Per CSS Writing Modes §10.3.2, the nearest ancestor scroller
+// (overflow != visible) with a constrained block-size overrides the ICB
+// fallback for orthogonal descendants.
+func computeOrthogonalFallbackBlockForChildren(
+	style *css.Style,
+	wdm WritingDirectionMode,
+	space ConstraintSpace,
+	geom FragmentGeometry,
+	ctx *LayoutContext,
+	hasExplicitBlock bool,
+	explicitBlockSize float64,
+) float64 {
+	isScroller := style.GetOverflow() != css.OverflowVisible
+
+	if isScroller {
+		// This element is a scroller. Compute its effective block-size
+		// constraint and propagate it to descendants.
+		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
+		maxBlock, hasMax := ResolveMaxBlockSize(style, wdm, space, geom)
+		icb := icbBlockSize(wdm, ctx)
+
+		var result float64
+		if hasExplicitBlock {
+			result = explicitBlockSize
+		} else if hasMax {
+			result = maxBlock
+		} else {
+			result = icb
+		}
+		// Apply min-height.
+		if minBlock > result {
+			result = minBlock
+		}
+		// Cap at ICB.
+		if result > icb {
+			result = icb
+		}
+		return result
+	}
+
+	// Not a scroller: inherit the ancestor's fallback unchanged.
+	return space.OrthogonalFallbackBlockSize
 }

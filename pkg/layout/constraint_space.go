@@ -56,6 +56,15 @@ type ConstraintSpace struct {
 	// an orthogonal child falls back to the ICB size.
 	OrthogonalFallbackInlineSize float64
 
+	// OrthogonalFallbackBlockSize is the block-size from the nearest ancestor
+	// scroller (overflow != visible) that has a constrained block-size. Per CSS
+	// Writing Modes §10.3.2, when the parent's block-size is indefinite, an
+	// orthogonal child's available inline-size is determined by walking up the
+	// ancestor chain to find the nearest scroller with a definite block-size.
+	// This field propagates that value down the constraint space chain.
+	// A value of 0 means no scroller ancestor was found (use ICB fallback).
+	OrthogonalFallbackBlockSize float64
+
 	// ForcedMinBlockSize is a minimum block-size forced by the parent.
 	// Used for the root element to ensure it fills at least the ICB block-size.
 	ForcedMinBlockSize float64
@@ -187,6 +196,13 @@ func (b *ConstraintSpaceBuilder) SetIsFixedBlockSizeIndefinite(v bool) *Constrai
 // the available-size swap.
 func (b *ConstraintSpaceBuilder) SetOrthogonalFallbackInlineSize(v float64) *ConstraintSpaceBuilder {
 	b.space.OrthogonalFallbackInlineSize = v
+	return b
+}
+
+// SetOrthogonalFallbackBlockSize propagates the nearest ancestor scroller's
+// block-size constraint down for orthogonal children per §10.3.2.
+func (b *ConstraintSpaceBuilder) SetOrthogonalFallbackBlockSize(v float64) *ConstraintSpaceBuilder {
+	b.space.OrthogonalFallbackBlockSize = v
 	return b
 }
 

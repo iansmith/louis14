@@ -194,6 +194,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		childWDM := NewWritingDirectionMode(childStyle)
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(space.AvailableSize).
 			Build()
 
@@ -261,6 +262,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(childWDM, ctx)).
+				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(space.AvailableSize).
 				Build()
 
@@ -322,6 +324,7 @@ func measureOrthogonalChild(
 	childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, isChildNewFC).
 		SetOrthogonalFallbackInlineSize(
 			orthogonalFallbackSize(childWDM, ctx)).
+		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(space.AvailableSize).
 		Build()
 

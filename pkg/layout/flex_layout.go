@@ -1401,6 +1401,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 
 	// Set orthogonal fallback before SetAvailableSize so the swap can apply it.
 	b.SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx))
+	b.SetOrthogonalFallbackBlockSize(fla.space.OrthogonalFallbackBlockSize)
 
 	// NOTE: ConstraintSpaceBuilder.SetAvailableSize and SetIsFixedInlineSize/BlockSize
 	// automatically swap inline↔block axes for orthogonal children (!b.parallel).
