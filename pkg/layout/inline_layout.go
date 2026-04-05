@@ -651,6 +651,8 @@ func createLineBoxEx(
 						// CSS Writing Modes 3 §4.3: In vertical modes with central
 						// baseline, replaced elements and atomic inlines without
 						// explicit baselines are centered on the central baseline.
+						// For tables/inline-tables, center on the content area
+						// (excluding padding), not the padded box.
 						blockPos = maxAscent - blockSize/2
 					} else {
 						// Default: bottom-align to baseline.

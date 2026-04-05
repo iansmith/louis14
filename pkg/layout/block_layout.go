@@ -814,7 +814,7 @@ func needsShrinkToFit(style *css.Style) bool {
 		return false
 	}
 	d := style.GetDisplay()
-	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex {
+	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex || d == css.DisplayInlineTable {
 		return true
 	}
 	if style.GetFloat() != css.FloatNone {

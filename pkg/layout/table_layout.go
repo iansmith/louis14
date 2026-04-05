@@ -91,7 +91,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// table level. Rows produce synthetic fragments for painting but
 	// have no NGLayoutResult of their own in Blink.
 	blockOffset := 0.0
-	for _, row := range rows {
+	firstRowHeight := 0.0
+	for rowIdx, row := range rows {
 		rowHeight := 0.0
 		colIdx := 0
 
@@ -194,6 +195,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			BlockOffset:  blockOffset,
 		})
 
+		if rowIdx == 0 {
+			firstRowHeight = rowHeight
+		}
 		blockOffset += rowHeight
 	}
 
@@ -208,6 +212,16 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
 	})
+
+	// CSS 2.1 §17.5.2 / CSS Writing Modes 3 §4.3: Set the table's baseline.
+	// The baseline of an inline-table is the baseline of its first row.
+	// For central baseline mode, this is the center of the first row.
+	// We store the distance from border-box block-start to the first row's
+	// center as LastBaseline so inline layout can use it.
+	if len(rows) > 0 && firstRowHeight > 0 {
+		baseline := geom.Border.BlockStart + geom.Padding.BlockStart + firstRowHeight/2
+		builder.SetLastBaseline(baseline)
+	}
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
