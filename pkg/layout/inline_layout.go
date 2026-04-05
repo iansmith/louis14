@@ -60,11 +60,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	contentInlineSize float64,
 	exclusionSpace *ExclusionSpace,
 	builder *BoxFragmentBuilder,
-) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64) {
+) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64) {
 	// Phase 1: Collect inline items from the layout subtree.
 	itemsData := CollectInlines(bla.node)
 	if len(itemsData.Items) == 0 {
-		return 0, exclusionSpace, 0
+		return 0, exclusionSpace, 0, 0
 	}
 
 	// Phase 1b: Bidi pipeline (mirrors Blink's BidiParagraph + SegmentText).
@@ -306,12 +306,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		} else {
 			effectiveWDM.Dir = DirectionLTR
 		}
-		lineFragment, lineHeight, lineAscent := createLineBox(
-			itemsData, &line, effectiveWDM, lineAvailableInline, fonts,
+		// Determine if the line uses central baseline. This depends on the
+		// container's writing mode and text-orientation. text-orientation:
+		// sideways causes vertical modes to use alphabetic baseline.
+		centralBaseline := wdm.UsesCentralBaselineWithStyle(bla.style)
+		lineFragment, lineHeight, lineAscent := createLineBoxEx(
+			itemsData, &line, effectiveWDM, lineAvailableInline, fonts, centralBaseline,
 		)
 		if firstLineAscent < 0 {
 			firstLineAscent = lineAscent
 		}
+		// Track the last line's baseline offset from the content area start.
+		// This is the block offset of the line + the line's ascent.
+		lastBaselineOffset = blockOffset + lineAscent
 
 		builder.AddChild(lineFragment, LogicalOffset{
 			InlineOffset: lineInlineOffset,
@@ -324,7 +331,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	if firstLineAscent < 0 {
 		firstLineAscent = 0
 	}
-	return blockOffset, exclusionSpace, firstLineAscent
+	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset
 }
 
 // hasVisibleInlinePaint returns true if an inline element's style has
@@ -346,6 +353,7 @@ func hasVisibleInlinePaint(style *css.Style) bool {
 }
 
 // createLineBox positions items within a line and produces a line box fragment.
+// This is the backward-compatible wrapper; uses wdm.UsesCentralBaseline().
 //
 // Ported from Blink's InlineLayoutAlgorithm::CreateLine and PlaceItems.
 func createLineBox(
@@ -354,9 +362,23 @@ func createLineBox(
 	wdm WritingDirectionMode,
 	availableInline float64,
 	fonts text.FontConfig,
+) (*PhysicalFragment, float64, float64) {
+	return createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline())
+}
+
+// createLineBoxEx positions items within a line and produces a line box fragment.
+// The centralBaseline flag determines whether to use central (vertical) or
+// alphabetic (horizontal/sideways) baseline alignment.
+func createLineBoxEx(
+	itemsData *InlineItemsData,
+	line *LineInfo,
+	wdm WritingDirectionMode,
+	availableInline float64,
+	fonts text.FontConfig,
+	centralBaseline bool,
 ) (*PhysicalFragment, float64, float64) { // returns (fragment, lineHeight, maxAscent)
 	// Step 1: Compute line height from font metrics of all items.
-	maxAscent, maxDescent := computeLineMetrics(line, wdm, fonts)
+	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline)
 	lineHeight := maxAscent + maxDescent
 	if lineHeight <= 0 {
 		// Empty line (forced break) — use default font metrics.
@@ -506,7 +528,14 @@ func createLineBox(
 			}
 
 			fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-			ascent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+			var ascent float64
+			if centralBaseline {
+				// CSS Writing Modes 3 §4.3: in vertical modes with central
+				// baseline, use fontSize / 2.
+				ascent = fontSize / 2
+			} else {
+				ascent = text.FontAscent(fontSize, bold, italic, mono, ahem)
+			}
 
 			// Baseline-align: position top of text at (maxAscent - textAscent).
 			blockPos := maxAscent - ascent
@@ -560,13 +589,19 @@ func createLineBox(
 					}
 				default:
 					// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
-					// align inline-block so its baseline (= font ascent from top) sits
-					// at the line's maxAscent.
+					// align inline-block so its baseline sits at the line's maxAscent.
 					if r.Item.Style != nil &&
 						r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
 						r.Item.Style.GetOverflow() == css.OverflowVisible {
-						fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-						ibAscent := text.FontAscent(fontSize, bold, italic, mono, ahem)
+						var ibAscent float64
+						if r.LayoutResult.LastBaseline > 0 {
+							ibAscent = r.LayoutResult.LastBaseline
+						} else if centralBaseline {
+							ibAscent = blockSize / 2
+						} else {
+							fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+							ibAscent = text.FontAscent(fontSize, bold, italic, mono, ahem)
+						}
 						blockPos = maxAscent - ibAscent
 					} else {
 						// Default: bottom-align to baseline.
@@ -606,14 +641,19 @@ func createLineBox(
 	return result.Fragment, lineHeight, maxAscent
 }
 
-// computeLineMetrics computes the maximum ascent and descent across all
+// computeLineMetrics is the backward-compatible wrapper that uses wdm.UsesCentralBaseline().
+func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig) (maxAscent, maxDescent float64) {
+	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline())
+}
+
+// computeLineMetricsEx computes the maximum ascent and descent across all
 // items in a line. The line box height = maxAscent + maxDescent, and all
 // text is baseline-aligned at maxAscent from the line box top.
 //
 // CSS 2.1 §10.8: line box height is determined by the tallest inline box.
 // Even empty inline elements (open/close tag with no text) still contribute
 // their font's line metrics (CSS 2.1 §9.4.2).
-func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig) (maxAscent, maxDescent float64) {
+func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
 	for _, r := range line.Results {
 		switch r.Item.Type {
@@ -625,9 +665,16 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 				continue
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-			fontPath := resolveFontPath(r.Item.Style, fonts)
-			ascent := text.FontAscentFromFont(fontSize, fontPath)
-			descent := fontSize - ascent
+			var ascent, descent float64
+			if centralBaseline {
+				// CSS Writing Modes 3 §4.3: central baseline = fontSize / 2.
+				ascent = fontSize / 2
+				descent = fontSize / 2
+			} else {
+				fontPath := resolveFontPath(r.Item.Style, fonts)
+				ascent = text.FontAscentFromFont(fontSize, fontPath)
+				descent = fontSize - ascent
+			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			lineHt := r.Item.Style.GetLineHeight()
 			halfLeading := (lineHt - (ascent + descent)) / 2
@@ -647,9 +694,16 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 				continue
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-			fontPath := resolveFontPath(r.Item.Style, fonts)
-			ascent := text.FontAscentFromFont(fontSize, fontPath)
-			descent := fontSize - ascent
+			var ascent, descent float64
+			if centralBaseline {
+				// CSS Writing Modes 3 §4.3: central baseline = fontSize / 2.
+				ascent = fontSize / 2
+				descent = fontSize / 2
+			} else {
+				fontPath := resolveFontPath(r.Item.Style, fonts)
+				ascent = text.FontAscentFromFont(fontSize, fontPath)
+				descent = fontSize - ascent
+			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			if r.Item.Style != nil {
 				lineHt := r.Item.Style.GetLineHeight()
@@ -687,14 +741,25 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 				}
 
 				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
-				// the baseline is the baseline of the last line box. Use the
-				// inline-block's font ascent as an approximation.
+				// the baseline is the baseline of the last line box.
 				if r.Item.Style != nil &&
 					r.Item.Style.GetDisplay() == css.DisplayInlineBlock &&
 					r.Item.Style.GetOverflow() == css.OverflowVisible {
-					fontPath := resolveFontPath(r.Item.Style, fonts)
-					fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-					ibAscent := text.FontAscentFromFont(fontSize, fontPath)
+					var ibAscent float64
+					if r.LayoutResult.LastBaseline > 0 {
+						// Use the propagated last baseline from the inline-block's
+						// layout result. This is the distance from the border-box
+						// block-start to the baseline of the last line box.
+						ibAscent = r.LayoutResult.LastBaseline
+					} else if centralBaseline {
+						// CSS Writing Modes 3 §4.3: fallback for empty inline-blocks
+						// in vertical modes with central baseline: blockSize / 2.
+						ibAscent = blockSize / 2
+					} else {
+						fontPath := resolveFontPath(r.Item.Style, fonts)
+						fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+						ibAscent = text.FontAscentFromFont(fontSize, fontPath)
+					}
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
 					// the line box height. margin-block-start adds to the ascent
 					// (above the baseline) and margin-block-end adds to the descent.

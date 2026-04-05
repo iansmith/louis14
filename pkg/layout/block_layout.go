@@ -101,6 +101,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var propagatedTopMargin MarginStrut
 
 	var firstLineAscent float64
+	var lastChildBaseline float64     // Baseline of the last in-flow block child.
+	var lastChildBlockOffset float64  // Block offset of the last in-flow block child.
+	hasLastChildBaseline := false
 
 	// Iframe/object with a document source: lay out the nested document
 	// instead of this element's DOM children.
@@ -109,12 +112,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
 		prevES := exclusionSpace
-		var inlineAscent float64
-		blockCursor, exclusionSpace, inlineAscent = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
+		var inlineAscent, lastBaselineOff float64
+		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder)
 		if exclusionSpace != prevES {
 			hasOwnFloats = true
 		}
 		firstLineAscent = inlineAscent
+		// Track the last line's baseline offset for inline-block alignment.
+		lastChildBaseline = lastBaselineOff
+		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
+		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
 	} else {
 		// Block formatting context: block-level children.
@@ -290,6 +297,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			firstNonEmptyChild = false
 
+			// Track the last in-flow block child's baseline for
+			// CSS 2.1 §10.8.1 inline-block baseline propagation.
+			// Use LastBaseline (last line box) if available, else Baseline.
+			lb := childResult.LastBaseline
+			if lb <= 0 {
+				lb = childResult.Baseline
+			}
+			if lb > 0 {
+				lastChildBaseline = lb
+				lastChildBlockOffset = actualChildBlockOff
+				hasLastChildBaseline = true
+			}
+
 			// Reset margin strut to the child's block-end margin.
 			prevMarginStrut = childResult.EndMarginStrut
 			prevMarginStrut.Append(childMargins.BlockEnd)
@@ -358,10 +378,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
-	// Set baseline: distance from border-box block-start to first line baseline.
-	// Used by flex layout for align-items: baseline.
+	// Set first baseline: for flex align-items:baseline (uses first line).
 	if firstLineAscent > 0 {
 		builder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
+	}
+	// Set last baseline: for inline-block alignment §10.8.1 (uses last line box).
+	// For inline children, lastChildBaseline is the last line's baseline offset.
+	// For block children, it's the last child's propagated baseline.
+	if hasLastChildBaseline {
+		builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
+			lastChildBlockOffset + lastChildBaseline)
+	} else if firstLineAscent > 0 {
+		// Single-line case: last baseline = first baseline.
+		builder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
 	}
 
 	// Set box data for the renderer.

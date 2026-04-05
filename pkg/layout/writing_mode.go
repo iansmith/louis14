@@ -87,3 +87,28 @@ func (wdm WritingDirectionMode) IsRTL() bool {
 func (wdm WritingDirectionMode) IsOrthogonalTo(other WritingDirectionMode) bool {
 	return wdm.IsHorizontal() != other.IsHorizontal()
 }
+
+// UsesCentralBaseline returns true if the writing mode uses the central
+// baseline as the dominant baseline for inline alignment. Per CSS Writing
+// Modes 3 §4.3, vertical-rl and vertical-lr use the central baseline
+// (with text-orientation: mixed or upright), while horizontal-tb,
+// sideways-rl, sideways-lr, and vertical modes with text-orientation:
+// sideways use the alphabetic baseline.
+func (wdm WritingDirectionMode) UsesCentralBaseline() bool {
+	return wdm.WM == WritingModeVerticalRL || wdm.WM == WritingModeVerticalLR
+}
+
+// UsesCentralBaselineWithStyle returns true if the combination of writing
+// mode and text-orientation results in the central baseline being dominant.
+// text-orientation: sideways causes vertical modes to use alphabetic baseline.
+func (wdm WritingDirectionMode) UsesCentralBaselineWithStyle(style *css.Style) bool {
+	if wdm.WM != WritingModeVerticalRL && wdm.WM != WritingModeVerticalLR {
+		return false
+	}
+	if style != nil {
+		if to, ok := style.Get("text-orientation"); ok && to == "sideways" {
+			return false
+		}
+	}
+	return true
+}

@@ -25,6 +25,11 @@ type LayoutResult struct {
 	// relative to the fragment's block-start edge. Used for alignment.
 	Baseline float64
 
+	// LastBaseline is the last baseline position in the block direction,
+	// relative to the fragment's block-start edge. Used for inline-block
+	// alignment per CSS 2.1 §10.8.1 (baseline of the last line box).
+	LastBaseline float64
+
 	// EndMarginStrut is the margin strut at the block-end of this fragment,
 	// for margin collapsing propagation to the next sibling or parent.
 	EndMarginStrut MarginStrut

@@ -38,8 +38,11 @@ type BoxFragmentBuilder struct {
 	// endMarginStrut for margin collapsing propagation.
 	endMarginStrut MarginStrut
 
-	// baseline position.
+	// baseline position (first baseline).
 	baseline float64
+
+	// lastBaseline position (last baseline, for inline-block alignment).
+	lastBaseline float64
 
 	// exclusionSpace after layout.
 	exclusionSpace *ExclusionSpace
@@ -88,9 +91,14 @@ func (b *BoxFragmentBuilder) SetEndMarginStrut(ms MarginStrut) {
 	b.endMarginStrut = ms
 }
 
-// SetBaseline sets the baseline position.
+// SetBaseline sets the first baseline position.
 func (b *BoxFragmentBuilder) SetBaseline(v float64) {
 	b.baseline = v
+}
+
+// SetLastBaseline sets the last baseline position.
+func (b *BoxFragmentBuilder) SetLastBaseline(v float64) {
+	b.lastBaseline = v
 }
 
 // SetExclusionSpace sets the updated float exclusion state.
@@ -181,6 +189,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		Fragment:           fragment,
 		IntrinsicBlockSize: b.intrinsicBlockSize,
 		Baseline:           b.baseline,
+		LastBaseline:       b.lastBaseline,
 		EndMarginStrut:     b.endMarginStrut,
 		ExclusionSpace:     b.exclusionSpace,
 	}
