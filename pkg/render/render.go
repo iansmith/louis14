@@ -109,6 +109,8 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	// Paint via PaintLayer tree (CSS 2.1 Appendix E stacking order).
 	for _, box := range boxes {
 		layer := BuildPaintTree(box)
+		// CSS 2.1 §14.2: root element's background paints the entire canvas.
+		layer.PaintsCanvasBackground = true
 		r.paintLayer(layer)
 	}
 }
@@ -352,6 +354,58 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 		paddingH = 0
 	}
 
+	// CSS3 Backgrounds §3.9: Resolve background-size.
+	bgSize := layer.BackgroundSize
+	if bgSize.Cover || bgSize.Contain {
+		if paddingW > 0 && paddingH > 0 && imgW > 0 && imgH > 0 {
+			scaleX := paddingW / imgW
+			scaleY := paddingH / imgH
+			var scale float64
+			if bgSize.Cover {
+				scale = math.Max(scaleX, scaleY)
+			} else {
+				scale = math.Min(scaleX, scaleY)
+			}
+			imgW = math.Round(imgW * scale)
+			imgH = math.Round(imgH * scale)
+			img = scaleImageNearest(img, imgWI, imgHI, int(imgW), int(imgH))
+			imgWI = int(imgW)
+			imgHI = int(imgH)
+		}
+	} else if bgSize.Width != 0 || bgSize.Height != 0 {
+		newW := imgW
+		newH := imgH
+		if bgSize.Width != 0 {
+			if bgSize.Width < 0 {
+				// Negative = percentage of padding-box width
+				newW = math.Round(paddingW * (-bgSize.Width) / 100)
+			} else {
+				newW = math.Round(bgSize.Width)
+			}
+		}
+		if bgSize.Height != 0 {
+			if bgSize.Height < 0 {
+				// Negative = percentage of padding-box height
+				newH = math.Round(paddingH * (-bgSize.Height) / 100)
+			} else {
+				newH = math.Round(bgSize.Height)
+			}
+		}
+		// Handle auto dimension: maintain aspect ratio
+		if bgSize.Width != 0 && bgSize.Height == 0 && imgW > 0 {
+			newH = math.Round(imgH * newW / imgW)
+		} else if bgSize.Width == 0 && bgSize.Height != 0 && imgH > 0 {
+			newW = math.Round(imgW * newH / imgH)
+		}
+		if newW > 0 && newH > 0 && (int(newW) != imgWI || int(newH) != imgHI) {
+			img = scaleImageNearest(img, imgWI, imgHI, int(newW), int(newH))
+			imgW = newW
+			imgH = newH
+			imgWI = int(newW)
+			imgHI = int(newH)
+		}
+	}
+
 	pos := layer.BackgroundPosition
 	startX := paddingX + pos.ResolveX(paddingW, imgW)
 	startY := paddingY + pos.ResolveY(paddingH, imgH)
@@ -360,11 +414,21 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	repeatX := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatX
 	repeatY := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatY
 
-	// Box clip bounds — use snapped coordinates matching the background fill.
-	boxX0 := int(math.Round(box.X))
-	boxY0 := int(math.Round(box.Y))
-	boxX1 := int(math.Round(box.X + box.Width))
-	boxY1 := int(math.Round(box.Y + box.Height))
+	// Clip bounds: normally the border box, but for the root element's
+	// background CSS 2.1 §14.2 says the background paints the entire canvas.
+	var boxX0, boxY0, boxX1, boxY1 int
+	if layer.PaintsCanvasBackground {
+		bounds := r.target.Bounds()
+		boxX0 = bounds.Min.X
+		boxY0 = bounds.Min.Y
+		boxX1 = bounds.Max.X
+		boxY1 = bounds.Max.Y
+	} else {
+		boxX0 = int(math.Round(box.X))
+		boxY0 = int(math.Round(box.Y))
+		boxX1 = int(math.Round(box.X + box.Width))
+		boxY1 = int(math.Round(box.Y + box.Height))
+	}
 
 	// Snap initial tile origin to pixels.
 	x0 := int(math.Round(startX))

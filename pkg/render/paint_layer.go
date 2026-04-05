@@ -54,6 +54,7 @@ type PaintLayer struct {
 	BackgroundGradient string                  // raw gradient value (linear-gradient(...) etc); empty if none
 	BackgroundRepeat   css.BackgroundRepeatType // repeat mode
 	BackgroundPosition css.BackgroundPosition   // position offsets
+	BackgroundSize     css.BackgroundSize       // background-size (cover/contain/explicit)
 
 	// Borders: indices 0=Top, 1=Right, 2=Bottom, 3=Left
 	BorderColors [4]css.Color
@@ -71,6 +72,11 @@ type PaintLayer struct {
 	IsVerticalText bool
 	IsSidewaysLR   bool
 	IsSidewaysRL   bool
+
+	// PaintsCanvasBackground is true for the root element (or body when
+	// background propagates). Per CSS 2.1 §14.2, the root element's background
+	// paints the entire canvas, not just its own box.
+	PaintsCanvasBackground bool
 }
 
 // BuildPaintTree constructs a PaintLayer tree from a layout Box tree.
@@ -170,6 +176,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.BackgroundImage = url
 		layer.BackgroundRepeat = s.GetBackgroundRepeat()
 		layer.BackgroundPosition = s.GetBackgroundPosition()
+		layer.BackgroundSize = s.GetBackgroundSize()
 	} else if val, ok := s.Get("background-image"); ok && isGradientValue(val) {
 		layer.BackgroundGradient = val
 	}
