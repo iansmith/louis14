@@ -80,6 +80,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	// Min-content: break at every opportunity.
 	minSpace := NewConstraintSpaceBuilder(wdm, wdm, false).
 		SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	var minContent float64
@@ -93,6 +94,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	// Max-content: never wrap.
 	maxSpace := NewConstraintSpaceBuilder(wdm, wdm, false).
 		SetAvailableSize(LogicalSize{InlineSize: 1e9, BlockSize: Indefinite}).
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
@@ -196,6 +198,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(space.AvailableSize).
+			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 			Build()
 
 		childMM := ComputeMinMaxSizes(ctx, child, childSpace)
@@ -264,6 +267,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 					orthogonalFallbackSize(childWDM, ctx)).
 				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(space.AvailableSize).
+				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 				Build()
 
 			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
@@ -330,6 +334,7 @@ func measureOrthogonalChild(
 			orthogonalFallbackSize(childWDM, ctx)).
 		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(space.AvailableSize).
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 
 	// Lay out the child to get its block-size.

@@ -221,6 +221,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					InlineSize: contentInlineSize,
 					BlockSize:  explicitBlockSize, // 0 if auto
 				}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
 				SetExclusionSpace(exclusionSpace).
 				Build()
 
@@ -326,7 +327,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// the box has no bottom border and no bottom padding. When block-size
 	// is explicit (not auto), OR there is border/padding at block-end,
 	// the trailing margin does NOT propagate out as EndMarginStrut.
-	// We consume it without extending the auto height.
 	canPropagateBottom := !bla.space.IsNewFormattingContext &&
 		!hasExplicitBlock &&
 		geom.Border.BlockEnd == 0 && geom.Padding.BlockEnd == 0
@@ -337,9 +337,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		blockCursor += prevMarginStrut.Resolve()
 		prevMarginStrut = MarginStrut{} // consumed
 	} else if !canPropagateBottom && !prevMarginStrut.IsEmpty() {
-		// Non-BFC with explicit block-size or block-end border/padding:
-		// margins don't propagate (CSS 2.1 §8.3.1). Consume without
-		// extending auto height.
+		if !hasExplicitBlock {
+			// Auto block-size with block-end border/padding: the last child's
+			// margin is trapped inside the parent and extends the auto height
+			// (CSS 2.1 §10.6.3). The margin does not propagate out.
+			blockCursor += prevMarginStrut.Resolve()
+		}
+		// Explicit block-size: margin doesn't propagate and doesn't extend
+		// height (the height is already fixed).
 		prevMarginStrut = MarginStrut{}
 	}
 
@@ -630,6 +635,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 			InlineSize: contentInlineSize,
 			BlockSize:  availableBlock, // resolves height:100% against container's explicit height
 		}).
+		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
 
 	// Layout the float's contents.

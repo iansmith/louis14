@@ -132,6 +132,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					InlineSize: cellWidth,
 					BlockSize:  0,
 				}).
+				SetPercentageResolutionInlineSize(cellWidth).
 				Build()
 
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
@@ -440,6 +441,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 							orthogonalFallbackSize(childWDM, tla.ctx)).
 						SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
 						SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
+						SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
 						Build()
 					mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
 					// Convert content-box to border-box for column sizing.

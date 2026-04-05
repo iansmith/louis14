@@ -889,6 +889,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		itemSizingSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
 			SetIsInsideFlexibleBox(true).
 			Build()
 
@@ -993,6 +994,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
 			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
 			Build()
 		if mainIsItemInline {
 			// Normal (non-orthogonal): main axis = item's inline axis.
@@ -1031,6 +1033,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 	parentSpace := NewConstraintSpaceBuilder(parentWDM, parentWDM, false).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
 	if isRow {
 		// Resolve as inline-size against the container.
@@ -1097,6 +1100,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
 	if isRow {
 		mm := ComputeMinMaxSizes(fla.ctx, child, space)
@@ -1170,6 +1174,7 @@ func (fla *FlexLayoutAlgorithm) clampMainSize(
 	parentSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
 	minMain := fla.flexItemMinMain(child, style, childWDM, childGeom, parentSpace, basis, isRow)
 	return fla.clampMainSizeWithMin(basis, minMain, style, childWDM, childGeom, parentSpace, isRow)
@@ -1430,6 +1435,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			InlineSize: mainSize,
 			BlockSize:  pctBlockSize,
 		})
+		b.SetPercentageResolutionInlineSize(contentInlineSize)
 		b.SetIsFixedInlineSize(true)
 		if crossSize != Indefinite {
 			b.SetIsFixedBlockSize(true)
@@ -1455,6 +1461,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			InlineSize: crossInlineContent,
 			BlockSize:  mainSize,
 		})
+		b.SetPercentageResolutionInlineSize(contentInlineSize)
 		b.SetIsFixedInlineSize(crossIsFixed)
 		if mainSize > 0 {
 			b.SetIsFixedBlockSize(true)
@@ -1939,6 +1946,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		// items with flex-basis:0 still have their content protected.
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
+			SetPercentageResolutionInlineSize(fla.space.PercentageResolutionInlineSize).
 			Build()
 		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
 		autoMin := mm.MinContent
@@ -1956,6 +1964,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 		SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+		SetPercentageResolutionInlineSize(containerInlineSize).
 		Build()
 	result := layoutElement(fla.ctx, child, colMinSpace)
 	lf := NewLogicalFragment(childWDM, result.Fragment)

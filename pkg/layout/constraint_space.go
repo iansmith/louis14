@@ -65,6 +65,14 @@ type ConstraintSpace struct {
 	// A value of 0 means no scroller ancestor was found (use ICB fallback).
 	OrthogonalFallbackBlockSize float64
 
+	// PercentageResolutionInlineSize is the containing block's inline-size
+	// used for resolving percentage margins and padding (CSS 2.1 §8.3, §8.4).
+	// Unlike PercentageResolutionSize, this value is NEVER axis-swapped for
+	// orthogonal children — it always stores the CB's inline-size in the
+	// parent's coordinate system. CSS Writing Modes 3 §7.2 clarifies that
+	// percentage margins/padding always resolve against the CB's inline-size.
+	PercentageResolutionInlineSize float64
+
 	// ForcedMinBlockSize is a minimum block-size forced by the parent.
 	// Used for the root element to ensure it fills at least the ICB block-size.
 	ForcedMinBlockSize float64
@@ -203,6 +211,15 @@ func (b *ConstraintSpaceBuilder) SetOrthogonalFallbackInlineSize(v float64) *Con
 // block-size constraint down for orthogonal children per §10.3.2.
 func (b *ConstraintSpaceBuilder) SetOrthogonalFallbackBlockSize(v float64) *ConstraintSpaceBuilder {
 	b.space.OrthogonalFallbackBlockSize = v
+	return b
+}
+
+// SetPercentageResolutionInlineSize sets the containing block's inline-size
+// for percentage margin/padding resolution. This value is NOT axis-swapped —
+// it is always the CB's inline-size regardless of whether the child is
+// orthogonal to the parent.
+func (b *ConstraintSpaceBuilder) SetPercentageResolutionInlineSize(v float64) *ConstraintSpaceBuilder {
+	b.space.PercentageResolutionInlineSize = v
 	return b
 }
 

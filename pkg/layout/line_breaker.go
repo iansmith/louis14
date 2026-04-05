@@ -531,6 +531,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 			SetOrthogonalFallbackBlockSize(
 				lb.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(lb.space.AvailableSize).
+			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
 			Build()
 		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
 		// ComputeMinMaxSizes returns content-box; convert to border-box
@@ -553,6 +554,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 				InlineSize: lb.availableWidth,
 				BlockSize:  Indefinite,
 			}).
+			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
 			Build()
 
 		result = layoutElement(lb.ctx, item.LayoutNode, childSpace)
