@@ -419,6 +419,88 @@ func injectBidiControlChars(style *css.Style, text *strings.Builder, isOpen bool
 	}
 }
 
+// injectBlockBidiControls prepends/appends Unicode bidi control characters
+// for a block container's own unicode-bidi property. This implements the
+// block-level counterpart to the inline-level injectBidiControlChars.
+//
+// CSS Writing Modes §2.2 specifies that when a block container has
+// unicode-bidi set to bidi-override, isolate-override, or plaintext,
+// it should affect the bidi resolution of its inline content by injecting
+// the corresponding control characters around the block's text content.
+//
+// For block containers, embed and isolate do NOT inject control characters
+// into the block's own inline content. These values only affect how the
+// block interacts with surrounding inline content (which is not applicable
+// for block-level elements). Only bidi-override, isolate-override, and
+// plaintext cause injection at the block level.
+//
+// This mirrors Blink's InlineItemsBuilder which checks the block container's
+// own unicode-bidi/direction before processing child inline items.
+func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
+	if style == nil {
+		return
+	}
+	bidiVal, hasBidi := style.Get("unicode-bidi")
+	if !hasBidi || bidiVal == "" || bidiVal == "normal" {
+		return
+	}
+
+	dir := style.GetDirection()
+	isRTL := dir == css.DirectionRTL
+
+	// Determine opening and closing control characters.
+	// Only bidi-override, isolate-override, and plaintext are relevant
+	// for block containers. embed and isolate on blocks don't inject
+	// controls into the block's own inline content.
+	var openChars, closeChars []rune
+	switch bidiVal {
+	case "bidi-override":
+		if isRTL {
+			openChars = []rune{'\u202E'} // RLO
+		} else {
+			openChars = []rune{'\u202D'} // LRO
+		}
+		closeChars = []rune{'\u202C'} // PDF
+	case "isolate-override":
+		if isRTL {
+			openChars = []rune{'\u2067', '\u202E'} // RLI + RLO
+		} else {
+			openChars = []rune{'\u2066', '\u202D'} // LRI + LRO
+		}
+		closeChars = []rune{'\u202C', '\u2069'} // PDF + PDI
+	case "plaintext":
+		openChars = []rune{'\u2068'} // FSI
+		closeChars = []rune{'\u2069'} // PDI
+	default:
+		// embed, isolate, and normal do not inject at block level.
+		return
+	}
+
+	if len(openChars) == 0 {
+		return
+	}
+
+	// Build the prefix string and compute its byte length.
+	var prefix string
+	for _, r := range openChars {
+		prefix += string(r)
+	}
+	var suffix string
+	for _, r := range closeChars {
+		suffix += string(r)
+	}
+	prefixLen := len(prefix)
+
+	// Shift all existing item offsets by the prefix length.
+	for _, item := range data.Items {
+		item.StartOffset += prefixLen
+		item.EndOffset += prefixLen
+	}
+
+	// Prepend prefix and append suffix to TextContent.
+	data.TextContent = prefix + data.TextContent + suffix
+}
+
 // isReplacedElement returns true for elements that are replaced
 // (have intrinsic dimensions, laid out as atomic inlines).
 func isReplacedElement(node *html.Node) bool {
