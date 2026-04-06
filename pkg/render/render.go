@@ -763,18 +763,23 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.applyClipPath(layer)
 	}
 
-	// Step 0: Outset box shadows (paint behind everything).
-	if len(layer.BoxShadows) > 0 {
-		r.drawOutsetBoxShadows(layer)
-	}
+	// empty-cells: hide — skip background, borders, and box shadows for
+	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
+	// The cell still occupies space; only painting is suppressed.
+	if !layer.EmptyCellHide {
+		// Step 0: Outset box shadows (paint behind everything).
+		if len(layer.BoxShadows) > 0 {
+			r.drawOutsetBoxShadows(layer)
+		}
 
-	// Step 1: Background and borders.
-	r.drawBackground(layer)
-	r.drawBorders(layer)
+		// Step 1: Background and borders.
+		r.drawBackground(layer)
+		r.drawBorders(layer)
 
-	// Step 1b: Inset box shadows (paint after background, inside borders).
-	if len(layer.BoxShadows) > 0 {
-		r.drawInsetBoxShadows(layer)
+		// Step 1b: Inset box shadows (paint after background, inside borders).
+		if len(layer.BoxShadows) > 0 {
+			r.drawInsetBoxShadows(layer)
+		}
 	}
 
 	// Column rules (between multicol columns).

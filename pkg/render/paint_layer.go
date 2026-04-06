@@ -4,8 +4,10 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
 
@@ -129,6 +131,10 @@ type PaintLayer struct {
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
 	PaintsCanvasBackground bool
+
+	// empty-cells: hide — skip background/border painting for empty table cells
+	// (CSS 2.1 §17.6.1.1, only in separate border model).
+	EmptyCellHide bool
 
 	// Column rules (for multicol containers):
 	IsMulticol      bool
@@ -429,7 +435,32 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.ColumnWidth = colWidth
 	}
 
+	// empty-cells: hide — suppress background/border for empty table cells
+	// in the separate border model (CSS 2.1 §17.6.1.1).
+	if s.GetDisplay() == css.DisplayTableCell &&
+		s.GetEmptyCells() == "hide" &&
+		s.GetBorderCollapse() == css.BorderCollapseSeparate &&
+		box.Node != nil && isCellNodeEmpty(box.Node) {
+		layer.EmptyCellHide = true
+	}
+
 	return layer
+}
+
+// isCellNodeEmpty returns true if a table cell's DOM node has no visible content.
+// Per CSS 2.1 §17.6.1.1: whitespace-only text is not "visible content",
+// but &nbsp; (U+00A0) IS content, and any child element means not empty.
+func isCellNodeEmpty(node *html.Node) bool {
+	for _, child := range node.Children {
+		if child.Type == html.TextNode {
+			if strings.TrimSpace(child.Text) != "" {
+				return false
+			}
+		} else if child.Type == html.ElementNode {
+			return false
+		}
+	}
+	return true
 }
 
 // computeListItemIndex returns the 1-based ordinal for a list item,
