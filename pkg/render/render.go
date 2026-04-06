@@ -498,6 +498,14 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.dc.Clip()
 	}
 
+	// CSS clip-path: clips all content to a shape.
+	clipPathActive := false
+	if layer.ClipPath != nil {
+		r.dc.Push()
+		clipPathActive = true
+		r.applyClipPath(layer)
+	}
+
 	// Step 0: Box shadows (paint behind everything).
 	if len(layer.BoxShadows) > 0 {
 		r.drawBoxShadows(layer)
@@ -566,6 +574,10 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.dc.Pop()
 	}
 
+	if clipPathActive {
+		r.dc.Pop()
+	}
+
 	if cssClipping {
 		r.dc.Pop()
 	}
@@ -581,6 +593,52 @@ func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 	sw := math.Round(x+w) - sx
 	sh := math.Round(y+h) - sy
 	return sx, sy, sw, sh
+}
+
+// applyClipPath builds the clip-path shape and calls Clip().
+// Caller must have already called Push(); will Pop() to restore.
+func (r *Renderer) applyClipPath(layer *PaintLayer) {
+	box := layer.Box
+	cp := layer.ClipPath.ResolveClipPath(box.Width, box.Height)
+
+	switch cp.Type {
+	case css.ClipPathCircle:
+		r.dc.DrawCircle(box.X+cp.Cx, box.Y+cp.Cy, cp.Radius)
+
+	case css.ClipPathEllipse:
+		cx, cy := box.X+cp.Cx, box.Y+cp.Cy
+		rx, ry := cp.Rx, cp.Ry
+		// Approximate ellipse with 4 cubic Bezier curves.
+		// kappa = 4*(sqrt(2)-1)/3 ≈ 0.5522847498
+		k := 0.5522847498
+		r.dc.MoveTo(cx+rx, cy)
+		r.dc.CubicTo(cx+rx, cy+ry*k, cx+rx*k, cy+ry, cx, cy+ry)
+		r.dc.CubicTo(cx-rx*k, cy+ry, cx-rx, cy+ry*k, cx-rx, cy)
+		r.dc.CubicTo(cx-rx, cy-ry*k, cx-rx*k, cy-ry, cx, cy-ry)
+		r.dc.CubicTo(cx+rx*k, cy-ry, cx+rx, cy-ry*k, cx+rx, cy)
+		r.dc.ClosePath()
+
+	case css.ClipPathPolygon:
+		pts := cp.Points
+		if len(pts) < 4 {
+			return // Need at least 2 points
+		}
+		for i := 0; i < len(pts)-1; i += 2 {
+			px := box.X + pts[i]
+			py := box.Y + pts[i+1]
+			if i == 0 {
+				r.dc.MoveTo(px, py)
+			} else {
+				r.dc.LineTo(px, py)
+			}
+		}
+		r.dc.ClosePath()
+
+	default:
+		return // Unknown type, no clipping
+	}
+
+	r.dc.Clip()
 }
 
 // hasBorderRadius returns true if any corner radius is non-zero.

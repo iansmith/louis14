@@ -118,6 +118,9 @@ type PaintLayer struct {
 	Filters   []css.FilterFunction
 	HasFilter bool
 
+	// CSS clip-path:
+	ClipPath *css.ClipPath // nil = no clip-path
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -347,6 +350,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.Filters = filters
 		layer.HasFilter = true
 	}
+
+	// CSS clip-path.
+	layer.ClipPath = s.GetClipPath()
 
 	return layer
 }

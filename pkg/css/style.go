@@ -6342,13 +6342,23 @@ const (
 	ClipPathPolygon ClipPathType = "polygon"
 )
 
-// ClipPath represents a parsed clip-path value
+// ClipPath represents a parsed clip-path value.
+// Pixel values are stored directly. Percentage values (0-100) are stored
+// in the Pct variants and the corresponding px field is set to -1.
 type ClipPath struct {
 	Type   ClipPathType
-	Radius float64   // circle radius (-1 = default closest-side)
-	Rx, Ry float64   // ellipse radii
-	Cx, Cy float64   // center position (-1 = default center)
-	Points []float64 // polygon points [x1, y1, x2, y2, ...]
+	Radius float64 // circle radius in px (-1 = default closest-side or use RadiusPct)
+	Rx, Ry float64 // ellipse radii in px (-1 = default or use RxPct/RyPct)
+	Cx, Cy float64 // center position in px (-1 = default center or use CxPct/CyPct)
+	Points []float64 // polygon points [x1, y1, x2, y2, ...] in px or pct (see PointsPct)
+
+	// Percentage flags — when true, the corresponding value is a percentage (0-100).
+	RadiusPct float64 // circle radius as percentage (-1 = not set)
+	RxPct     float64 // ellipse rx as percentage (-1 = not set)
+	RyPct     float64 // ellipse ry as percentage (-1 = not set)
+	CxPct     float64 // center x as percentage (-1 = not set)
+	CyPct     float64 // center y as percentage (-1 = not set)
+	PointsPct []bool  // per-coordinate: true = percentage, false = px
 }
 
 // GetClipPath parses the clip-path property
@@ -6431,22 +6441,43 @@ func (s *Style) GetClipRect() *ClipRect {
 	return cr
 }
 
+// parseClipPathValue parses a length or percentage for clip-path.
+// Returns (value, isPercent, ok). Percentages are returned as 0-100.
+func parseClipPathValue(s string) (float64, bool, bool) {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "%") {
+		numStr := strings.TrimSuffix(s, "%")
+		if v, err := strconv.ParseFloat(numStr, 64); err == nil {
+			return v, true, true
+		}
+		return 0, false, false
+	}
+	if v, ok := ParseLength(s); ok {
+		return v, false, true
+	}
+	return 0, false, false
+}
+
 func parseClipPathCircle(val string) *ClipPath {
 	// circle() or circle(radius) or circle(radius at cx cy)
 	inner := extractParens(val, "circle")
-	cp := &ClipPath{Type: ClipPathCircle, Radius: -1, Cx: -1, Cy: -1}
+	cp := &ClipPath{Type: ClipPathCircle, Radius: -1, Cx: -1, Cy: -1, RadiusPct: -1, RxPct: -1, RyPct: -1, CxPct: -1, CyPct: -1}
 	if inner == "" {
 		return cp // defaults
 	}
 	parts := strings.SplitN(inner, " at ", 2)
 	radiusPart := strings.TrimSpace(parts[0])
 	if radiusPart != "" && radiusPart != "closest-side" && radiusPart != "farthest-side" {
-		if r, ok := ParseLength(radiusPart); ok {
-			cp.Radius = r
+		if v, isPct, ok := parseClipPathValue(radiusPart); ok {
+			if isPct {
+				cp.RadiusPct = v
+			} else {
+				cp.Radius = v
+			}
 		}
 	}
 	if len(parts) == 2 {
-		parsePosition(strings.TrimSpace(parts[1]), &cp.Cx, &cp.Cy)
+		parseClipPathPosition(strings.TrimSpace(parts[1]), cp)
 	}
 	return cp
 }
@@ -6454,22 +6485,30 @@ func parseClipPathCircle(val string) *ClipPath {
 func parseClipPathEllipse(val string) *ClipPath {
 	// ellipse(rx ry at cx cy)
 	inner := extractParens(val, "ellipse")
-	cp := &ClipPath{Type: ClipPathEllipse, Rx: -1, Ry: -1, Cx: -1, Cy: -1}
+	cp := &ClipPath{Type: ClipPathEllipse, Rx: -1, Ry: -1, Cx: -1, Cy: -1, RadiusPct: -1, RxPct: -1, RyPct: -1, CxPct: -1, CyPct: -1}
 	if inner == "" {
 		return cp
 	}
 	parts := strings.SplitN(inner, " at ", 2)
 	radii := strings.Fields(strings.TrimSpace(parts[0]))
 	if len(radii) >= 2 {
-		if rx, ok := ParseLength(radii[0]); ok {
-			cp.Rx = rx
+		if v, isPct, ok := parseClipPathValue(radii[0]); ok {
+			if isPct {
+				cp.RxPct = v
+			} else {
+				cp.Rx = v
+			}
 		}
-		if ry, ok := ParseLength(radii[1]); ok {
-			cp.Ry = ry
+		if v, isPct, ok := parseClipPathValue(radii[1]); ok {
+			if isPct {
+				cp.RyPct = v
+			} else {
+				cp.Ry = v
+			}
 		}
 	}
 	if len(parts) == 2 {
-		parsePosition(strings.TrimSpace(parts[1]), &cp.Cx, &cp.Cy)
+		parseClipPathPosition(strings.TrimSpace(parts[1]), cp)
 	}
 	return cp
 }
@@ -6477,7 +6516,7 @@ func parseClipPathEllipse(val string) *ClipPath {
 func parseClipPathPolygon(val string) *ClipPath {
 	// polygon(x1 y1, x2 y2, ...)
 	inner := extractParens(val, "polygon")
-	cp := &ClipPath{Type: ClipPathPolygon}
+	cp := &ClipPath{Type: ClipPathPolygon, RadiusPct: -1, RxPct: -1, RyPct: -1, CxPct: -1, CyPct: -1}
 	if inner == "" {
 		return cp
 	}
@@ -6489,10 +6528,11 @@ func parseClipPathPolygon(val string) *ClipPath {
 	for _, pair := range pairs {
 		coords := strings.Fields(strings.TrimSpace(pair))
 		if len(coords) >= 2 {
-			if x, ok := ParseLength(coords[0]); ok {
-				if y, ok := ParseLength(coords[1]); ok {
-					cp.Points = append(cp.Points, x, y)
-				}
+			xVal, xPct, xOk := parseClipPathValue(coords[0])
+			yVal, yPct, yOk := parseClipPathValue(coords[1])
+			if xOk && yOk {
+				cp.Points = append(cp.Points, xVal, yVal)
+				cp.PointsPct = append(cp.PointsPct, xPct, yPct)
 			}
 		}
 	}
@@ -6528,19 +6568,64 @@ func parsePosition(pos string, cx, cy *float64) {
 	}
 }
 
-// ResolveClipPath resolves a ClipPath's default values against a box's border-box dimensions.
-// Returns the absolute coordinates for the clip shape.
+// parseClipPathPosition parses "cx cy" for clip-path, supporting percentages.
+func parseClipPathPosition(pos string, cp *ClipPath) {
+	fields := strings.Fields(pos)
+	if len(fields) >= 1 {
+		if fields[0] == "center" {
+			cp.Cx = -1
+		} else if v, isPct, ok := parseClipPathValue(fields[0]); ok {
+			if isPct {
+				cp.CxPct = v
+				cp.Cx = -1 // signal to use CxPct
+			} else {
+				cp.Cx = v
+			}
+		}
+	}
+	if len(fields) >= 2 {
+		if fields[1] == "center" {
+			cp.Cy = -1
+		} else if v, isPct, ok := parseClipPathValue(fields[1]); ok {
+			if isPct {
+				cp.CyPct = v
+				cp.Cy = -1 // signal to use CyPct
+			} else {
+				cp.Cy = v
+			}
+		}
+	}
+}
+
+// ResolveClipPath resolves a ClipPath's default values and percentages
+// against a box's border-box dimensions. Returns absolute pixel coordinates.
 func (cp *ClipPath) ResolveClipPath(boxWidth, boxHeight float64) *ClipPath {
 	resolved := *cp
+	// Copy slices so we don't mutate the original.
+	if len(cp.Points) > 0 {
+		resolved.Points = make([]float64, len(cp.Points))
+		copy(resolved.Points, cp.Points)
+	}
+
+	// Resolve center position.
+	if resolved.CxPct >= 0 {
+		resolved.Cx = resolved.CxPct / 100 * boxWidth
+	} else if resolved.Cx < 0 {
+		resolved.Cx = boxWidth / 2
+	}
+	if resolved.CyPct >= 0 {
+		resolved.Cy = resolved.CyPct / 100 * boxHeight
+	} else if resolved.Cy < 0 {
+		resolved.Cy = boxHeight / 2
+	}
+
 	switch cp.Type {
 	case ClipPathCircle:
-		if resolved.Cx < 0 {
-			resolved.Cx = boxWidth / 2
-		}
-		if resolved.Cy < 0 {
-			resolved.Cy = boxHeight / 2
-		}
-		if resolved.Radius < 0 {
+		if resolved.RadiusPct >= 0 {
+			// Per spec, percentage radius for circle() is relative to
+			// sqrt(width^2 + height^2) / sqrt(2).
+			resolved.Radius = resolved.RadiusPct / 100 * math.Sqrt(boxWidth*boxWidth+boxHeight*boxHeight) / math.Sqrt(2)
+		} else if resolved.Radius < 0 {
 			// closest-side: distance from center to closest edge
 			resolved.Radius = math.Min(
 				math.Min(resolved.Cx, boxWidth-resolved.Cx),
@@ -6548,17 +6633,24 @@ func (cp *ClipPath) ResolveClipPath(boxWidth, boxHeight float64) *ClipPath {
 			)
 		}
 	case ClipPathEllipse:
-		if resolved.Cx < 0 {
-			resolved.Cx = boxWidth / 2
-		}
-		if resolved.Cy < 0 {
-			resolved.Cy = boxHeight / 2
-		}
-		if resolved.Rx < 0 {
+		if resolved.RxPct >= 0 {
+			resolved.Rx = resolved.RxPct / 100 * boxWidth
+		} else if resolved.Rx < 0 {
 			resolved.Rx = boxWidth / 2
 		}
-		if resolved.Ry < 0 {
+		if resolved.RyPct >= 0 {
+			resolved.Ry = resolved.RyPct / 100 * boxHeight
+		} else if resolved.Ry < 0 {
 			resolved.Ry = boxHeight / 2
+		}
+	case ClipPathPolygon:
+		for i := 0; i < len(resolved.Points)-1; i += 2 {
+			if i < len(resolved.PointsPct) && resolved.PointsPct[i] {
+				resolved.Points[i] = resolved.Points[i] / 100 * boxWidth
+			}
+			if i+1 < len(resolved.PointsPct) && resolved.PointsPct[i+1] {
+				resolved.Points[i+1] = resolved.Points[i+1] / 100 * boxHeight
+			}
 		}
 	}
 	return &resolved
