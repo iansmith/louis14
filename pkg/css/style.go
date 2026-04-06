@@ -6427,6 +6427,7 @@ func (s *Style) GetIndividualRotate() (float64, bool) {
 
 // GetIndividualTranslate returns the CSS `translate` individual transform property as (tx, ty, hasValue).
 // A single value sets the X translation only.
+// Percentage values are encoded as negative numbers (same sentinel convention as parseTransformValue).
 func (s *Style) GetIndividualTranslate() (float64, float64, bool) {
 	if val, ok := s.Get("translate"); ok {
 		if val == "none" || val == "" {
@@ -6434,14 +6435,14 @@ func (s *Style) GetIndividualTranslate() (float64, float64, bool) {
 		}
 		parts := strings.Fields(val)
 		if len(parts) == 1 {
-			if v, ok2 := ParseLength(parts[0]); ok2 {
-				return v, 0, true
+			if v := parseTransformValue(parts[0]); v != nil {
+				return *v, 0, true
 			}
 		} else if len(parts) >= 2 {
-			vx, ok1 := ParseLength(parts[0])
-			vy, ok2 := ParseLength(parts[1])
-			if ok1 && ok2 {
-				return vx, vy, true
+			vx := parseTransformValue(parts[0])
+			vy := parseTransformValue(parts[1])
+			if vx != nil && vy != nil {
+				return *vx, *vy, true
 			}
 		}
 	}
