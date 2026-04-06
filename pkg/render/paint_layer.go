@@ -366,9 +366,34 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 	}
 
-	// CSS Transforms.
+	// CSS Transforms (individual properties + shorthand).
+	// Per CSS Transforms Level 2, the effective transform is:
+	//   translate * rotate * scale * transform
+	// i.e., individual properties are applied first, then the shorthand.
+
+	// Collect individual transform properties.
+	var individualTransforms []css.Transform
+	if tx, ty, ok := s.GetIndividualTranslate(); ok {
+		// Resolve percentage sentinels (negative values) against element dimensions.
+		if tx < 0 {
+			tx = (-tx / 100) * box.Width
+		}
+		if ty < 0 {
+			ty = (-ty / 100) * box.Height
+		}
+		individualTransforms = append(individualTransforms, css.Transform{Type: "translate", Values: []float64{tx, ty}})
+	}
+	if deg, ok := s.GetIndividualRotate(); ok {
+		individualTransforms = append(individualTransforms, css.Transform{Type: "rotate", Values: []float64{deg}})
+	}
+	if sx, sy, ok := s.GetIndividualScale(); ok {
+		individualTransforms = append(individualTransforms, css.Transform{Type: "scale", Values: []float64{sx, sy}})
+	}
+
+	// Collect shorthand transforms.
 	transforms := s.GetTransforms()
-	if len(transforms) > 0 {
+
+	if len(individualTransforms) > 0 || len(transforms) > 0 {
 		layer.HasTransform = true
 		origin := s.GetTransformOrigin()
 		// Resolve percentage origin to px relative to element's border box.
@@ -376,7 +401,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			origin.X * box.Width,
 			origin.Y * box.Height,
 		}
-		// Resolve percentage translate values against element's own dimensions.
+		// Resolve percentage translate values in shorthand transforms.
 		// parseTransformValue() uses negative values as a sentinel for percentages.
 		resolved := make([]css.Transform, len(transforms))
 		for i, t := range transforms {
@@ -393,7 +418,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 				}
 			}
 		}
-		layer.Transforms = resolved
+		// Compose: individual properties first, then shorthand.
+		layer.Transforms = append(individualTransforms, resolved...)
 	}
 
 	// CSS Filters.
