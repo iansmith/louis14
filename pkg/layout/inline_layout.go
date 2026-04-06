@@ -177,13 +177,41 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 
 	// Phase 2: Create line breaker.
 	fonts := bla.ctx.FontConfig
+
+	// CSS 2.1 §16.6: white-space: nowrap / pre prevent soft wrapping.
+	// Use unlimited available width so the line breaker produces a single line
+	// that may overflow the container (overflow:hidden will clip it).
+	lineAvailableWidth := contentInlineSize
+	noWrap := false
+	if bla.style != nil {
+		ws := bla.style.GetWhiteSpace()
+		if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
+			noWrap = true
+		}
+	}
+	// Also check inline items: if any text item's style has nowrap, apply.
+	if !noWrap {
+		for _, item := range itemsData.Items {
+			if item.Type == InlineItemText && item.Style != nil {
+				ws := item.Style.GetWhiteSpace()
+				if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
+					noWrap = true
+				}
+				break
+			}
+		}
+	}
+	if noWrap {
+		lineAvailableWidth = 1e9
+	}
+
 	lineSpace := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
+		AvailableSize:    LogicalSize{InlineSize: lineAvailableWidth, BlockSize: Indefinite},
 		WritingDirection: wdm,
 		ExclusionSpace:   exclusionSpace,
 	}
 	lb := NewLineBreaker(itemsData, bla.ctx, lineSpace, fonts, LineBreakerContent)
-	lb.availableWidth = contentInlineSize
+	lb.availableWidth = lineAvailableWidth
 
 	// Get text-align from the container's style.
 	textAlign := "start"
@@ -244,6 +272,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 		if lineAvailableInline < 1 {
 			lineAvailableInline = 1
+		}
+
+		// CSS 2.1 §16.6: white-space: nowrap / pre — override available width
+		// to prevent soft wrapping, allowing text to overflow the container.
+		if noWrap {
+			lineAvailableInline = 1e9
 		}
 
 		// Set available width for the line breaker, including text-indent on first line.
