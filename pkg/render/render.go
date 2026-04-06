@@ -1727,8 +1727,55 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		return
 	}
 
-	r.dc.MoveTo(box.X, lineY)
-	r.dc.LineTo(box.X+textWidth, lineY)
+	thickness := layer.TextDecorationThickness
+
+	switch layer.TextDecorationStyle {
+	case "dashed":
+		r.drawDashedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+	case "dotted":
+		r.drawDottedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+	case "double":
+		r.drawDoubleLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+	case "wavy":
+		r.drawWavyLine(box.X, lineY, textWidth, thickness)
+	default: // "solid"
+		r.dc.MoveTo(box.X, lineY)
+		r.dc.LineTo(box.X+textWidth, lineY)
+		r.dc.Stroke()
+	}
+}
+
+// drawWavyLine draws a wavy (sinusoidal) decoration line using quadratic curves.
+func (r *Renderer) drawWavyLine(x, y, width, thickness float64) {
+	if width <= 0 {
+		return
+	}
+	amplitude := thickness * 1.5
+	wavelength := thickness * 4
+	if wavelength < 4 {
+		wavelength = 4
+	}
+	halfWave := wavelength / 2
+
+	r.dc.SetLineWidth(thickness)
+	r.dc.MoveTo(x, y)
+
+	cx := x
+	up := true
+	for cx < x+width {
+		endX := cx + halfWave
+		if endX > x+width {
+			endX = x + width
+		}
+		midX := (cx + endX) / 2
+		if up {
+			r.dc.QuadraticTo(midX, y-amplitude, endX, y)
+		} else {
+			r.dc.QuadraticTo(midX, y+amplitude, endX, y)
+		}
+		cx = endX
+		up = !up
+	}
 	r.dc.Stroke()
 }
 
