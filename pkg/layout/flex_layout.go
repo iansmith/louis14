@@ -9,6 +9,7 @@ import (
 	"louis14/pkg/css"
 )
 
+
 // FlexLayoutAlgorithm implements the CSS Flexible Box Layout Module Level 1 §9.
 // It distributes flex items along the main axis and aligns them on the cross axis.
 //
@@ -514,33 +515,111 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// in §9.4 step 8, which is unchanged by align-content for single-line.
 	fla.stretchFlexItems(lines, alignItems, wdm, contentInlineSize, isRow)
 
+	// When the main axis is indefinite (auto-sized), compute the actual
+	// container main size from item outer sizes, then apply min/max constraints.
+	// This ensures justify-content sees the correct free space (e.g., min-height
+	// on a column flex gives extra space for justify-content to distribute).
+	if !hasDefiniteMain {
+		for _, line := range lines {
+			lineTotal := mainGap * float64(len(line.items)-1)
+			for _, item := range line.items {
+				lineTotal += item.outerMainSize()
+			}
+			if lineTotal > containerMainSize {
+				containerMainSize = lineTotal
+			}
+		}
+		// Apply min/max block constraints (only relevant for column flex where
+		// main axis = block axis and the container has min-height/max-height).
+		if !isRow {
+			minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
+			if containerMainSize < minBlock {
+				containerMainSize = minBlock
+			}
+			if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+				if containerMainSize > maxBlock {
+					containerMainSize = maxBlock
+				}
+			}
+		}
+	}
+
 	// §9.8 — Main axis alignment (justify-content) and item positioning.
 	justifyContent := fla.getJustifyContent()
-	// Resolve physical keywords (left/right) to logical equivalents.
-	// left/right are only meaningful when the main axis is horizontal.
-	// For vertical main axis, they fall back to flex-start.
+	// Resolve physical/logical keywords (left/right/start/end) to flex-relative
+	// equivalents (flex-start/flex-end), accounting for writing direction AND
+	// flex direction reversal.
+	//
+	// "left"/"right" are physical: they always refer to the physical left/right
+	// edge, regardless of flex-direction or writing mode.
+	// "start"/"end" are logical: they refer to the writing-mode start/end edge.
+	// "flex-start"/"flex-end" are flex-relative: they follow flex direction.
+	//
+	// In a reversed flex container (row-reverse/column-reverse), the physical
+	// start is at the opposite end, so the mapping flips.
 	mainIsHorizontal := !wdm.IsVertical() == isRow
 	if mainIsHorizontal {
 		isLTR := wdm.Dir != DirectionRTL
-		if justifyContent == "right" {
-			if isLTR {
+		// For horizontal main axis: determine if physical-left == flex-start.
+		// In row + LTR: left == flex-start
+		// In row + RTL: left == flex-end  (but RTL reversal is handled by logical coords)
+		// In row-reverse + LTR: left == flex-end (physical left is main-end)
+		// In row-reverse + RTL: left == flex-start
+		leftIsFlexStart := isLTR != reverseMain
+		if justifyContent == "left" {
+			if leftIsFlexStart {
+				justifyContent = "flex-start"
+			} else {
+				justifyContent = "flex-end"
+			}
+		} else if justifyContent == "right" {
+			if leftIsFlexStart {
 				justifyContent = "flex-end"
 			} else {
 				justifyContent = "flex-start"
 			}
-		} else if justifyContent == "left" {
-			if isLTR {
+		}
+		// "start"/"end" are logical (follow writing direction, not flex direction).
+		// In LTR, start == physical left; in RTL, start == physical right.
+		// Map through the same leftIsFlexStart logic.
+		if justifyContent == "start" {
+			if isLTR == leftIsFlexStart {
 				justifyContent = "flex-start"
 			} else {
 				justifyContent = "flex-end"
+			}
+		} else if justifyContent == "end" {
+			if isLTR == leftIsFlexStart {
+				justifyContent = "flex-end"
+			} else {
+				justifyContent = "flex-start"
 			}
 		}
 	} else {
-		// Vertical main axis: left/right are not applicable.
+		// Vertical main axis: left/right are not applicable, fall back to flex-start.
 		if justifyContent == "left" || justifyContent == "right" {
 			justifyContent = "flex-start"
 		}
+		// "start"/"end" on a vertical main axis: start == block-start == flex-start
+		// (unless column-reverse, where block-start == flex-end).
+		if justifyContent == "start" {
+			if reverseMain {
+				justifyContent = "flex-end"
+			} else {
+				justifyContent = "flex-start"
+			}
+		} else if justifyContent == "end" {
+			if reverseMain {
+				justifyContent = "flex-start"
+			} else {
+				justifyContent = "flex-end"
+			}
+		}
 	}
+
+	// Save the fully resolved justify-content so we can restore it after auto
+	// margin overrides on individual lines.
+	resolvedJustifyContent := justifyContent
 
 	// §9.9 — Cross axis alignment per item (align-self).
 	for lineIdx, line := range lines {
@@ -673,7 +752,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		_ = hasBaselineItem
 
 		// Reset justify-content for next line (may have been overridden by auto margins).
-		justifyContent = fla.getJustifyContent()
+		justifyContent = resolvedJustifyContent
 	}
 
 	// §9.9 — Add children to builder.
@@ -1574,13 +1653,21 @@ func computeItemMainOffsets(
 		totalItemSize += item.outerMainSize()
 	}
 	freeSpace := containerMainSize - totalItemSize
+
+	// Per CSS Flexbox spec §8.2: when free space is negative, distributing
+	// alignment values (space-between, space-around, space-evenly) fall back
+	// to flex-start. The negative free space is only used by flex-end and
+	// center to produce negative initial offsets (items overflow the start edge).
 	if freeSpace < 0 {
-		freeSpace = 0
+		switch justifyContent {
+		case "space-between", "space-around", "space-evenly":
+			justifyContent = "flex-start"
+		}
 	}
 
 	var initialOffset, gap float64
 	switch justifyContent {
-	case "flex-end", "end":
+	case "flex-end":
 		initialOffset = freeSpace
 		gap = mainGap
 	case "center":
@@ -1607,7 +1694,7 @@ func computeItemMainOffsets(
 		}
 		initialOffset = spacing
 		gap = spacing + mainGap
-	default: // flex-start, start
+	default: // flex-start
 		initialOffset = 0
 		gap = mainGap
 	}
