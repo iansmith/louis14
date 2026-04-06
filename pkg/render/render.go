@@ -330,6 +330,12 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 			applySaturate(buf, f.Value)
 		case "sepia":
 			applySepia(buf, clampFilter01(f.Value))
+		case "invert":
+			applyInvert(buf, clampFilter01(f.Value))
+		case "hue-rotate":
+			applyHueRotate(buf, f.Value)
+		case "drop-shadow":
+			applyDropShadow(buf, f)
 		}
 	}
 
@@ -573,6 +579,117 @@ func applySepia(img *image.RGBA, amount float64) {
 		pix[i+1] = clampByte(g*(1-amount) + sg*amount)
 		pix[i+2] = clampByte(b*(1-amount) + sb*amount)
 	}
+}
+
+// applyInvert inverts RGB channels by the given amount.
+// amount=1 is full inversion, amount=0 is no change.
+func applyInvert(img *image.RGBA, amount float64) {
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		if pix[i+3] == 0 {
+			continue
+		}
+		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
+		pix[i] = clampByte(r*(1-amount) + (255-r)*amount)
+		pix[i+1] = clampByte(g*(1-amount) + (255-g)*amount)
+		pix[i+2] = clampByte(b*(1-amount) + (255-b)*amount)
+	}
+}
+
+// applyHueRotate rotates the hue of all pixels by the given angle in degrees.
+func applyHueRotate(img *image.RGBA, degrees float64) {
+	// CSS filter hue-rotate uses the rotation matrix from the spec.
+	// https://www.w3.org/TR/filter-effects-1/#funcdef-filter-hue-rotate
+	rad := degrees * math.Pi / 180
+	cosA := math.Cos(rad)
+	sinA := math.Sin(rad)
+
+	// Rotation matrix coefficients from the spec.
+	m00 := 0.213 + cosA*0.787 - sinA*0.213
+	m01 := 0.715 - cosA*0.715 - sinA*0.715
+	m02 := 0.072 - cosA*0.072 + sinA*0.928
+	m10 := 0.213 - cosA*0.213 + sinA*0.143
+	m11 := 0.715 + cosA*0.285 + sinA*0.140
+	m12 := 0.072 - cosA*0.072 - sinA*0.283
+	m20 := 0.213 - cosA*0.213 - sinA*0.787
+	m21 := 0.715 - cosA*0.715 + sinA*0.715
+	m22 := 0.072 + cosA*0.928 + sinA*0.072
+
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		if pix[i+3] == 0 {
+			continue
+		}
+		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
+		pix[i] = clampByte(m00*r + m01*g + m02*b)
+		pix[i+1] = clampByte(m10*r + m11*g + m12*b)
+		pix[i+2] = clampByte(m20*r + m21*g + m22*b)
+	}
+}
+
+// applyDropShadow creates a shadow of the element's alpha shape.
+func applyDropShadow(img *image.RGBA, f css.FilterFunction) {
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	ox := int(math.Round(f.ShadowOffsetX))
+	oy := int(math.Round(f.ShadowOffsetY))
+	blurR := int(math.Round(f.ShadowBlur / 2))
+
+	// Shadow color defaults to black if not specified.
+	sr, sg, sb := uint8(0), uint8(0), uint8(0)
+	if f.ShadowColor.R > 0 || f.ShadowColor.G > 0 || f.ShadowColor.B > 0 || f.ShadowColor.A > 0 {
+		sr = uint8(f.ShadowColor.R)
+		sg = uint8(f.ShadowColor.G)
+		sb = uint8(f.ShadowColor.B)
+	}
+
+	// Create shadow image from alpha channel.
+	shadow := image.NewRGBA(bounds)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			srcX := x - ox
+			srcY := y - oy
+			if srcX >= 0 && srcX < w && srcY >= 0 && srcY < h {
+				si := srcY*img.Stride + srcX*4
+				a := img.Pix[si+3]
+				if a > 0 {
+					di := y*shadow.Stride + x*4
+					shadow.Pix[di] = sr
+					shadow.Pix[di+1] = sg
+					shadow.Pix[di+2] = sb
+					shadow.Pix[di+3] = a
+				}
+			}
+		}
+	}
+
+	// Blur the shadow.
+	if blurR > 0 {
+		boxBlur(shadow, blurR)
+		boxBlur(shadow, blurR)
+		boxBlur(shadow, blurR)
+	}
+
+	// Composite: shadow behind original content.
+	// Draw shadow first, then overlay original on top.
+	result := image.NewRGBA(bounds)
+	copy(result.Pix, shadow.Pix)
+	// Porter-Duff src-over compositing.
+	for i := 0; i < len(img.Pix); i += 4 {
+		sa := float64(img.Pix[i+3]) / 255
+		if sa == 0 {
+			continue
+		}
+		da := float64(result.Pix[i+3]) / 255
+		outA := sa + da*(1-sa)
+		if outA > 0 {
+			result.Pix[i] = clampByte((float64(img.Pix[i])*sa + float64(result.Pix[i])*da*(1-sa)) / outA)
+			result.Pix[i+1] = clampByte((float64(img.Pix[i+1])*sa + float64(result.Pix[i+1])*da*(1-sa)) / outA)
+			result.Pix[i+2] = clampByte((float64(img.Pix[i+2])*sa + float64(result.Pix[i+2])*da*(1-sa)) / outA)
+			result.Pix[i+3] = clampByte(outA * 255)
+		}
+	}
+	copy(img.Pix, result.Pix)
 }
 
 // applyTransforms applies the CSS transform list to the draw context.

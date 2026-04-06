@@ -6716,8 +6716,14 @@ func (cp *ClipPath) ResolveClipPath(boxWidth, boxHeight float64) *ClipPath {
 
 // FilterFunction represents a single CSS filter function
 type FilterFunction struct {
-	Name  string  // "opacity", "contrast", "grayscale", "blur", etc.
+	Name  string  // "opacity", "contrast", "grayscale", "blur", "drop-shadow", etc.
 	Value float64 // The function argument (0-1 for opacity, 0-N for contrast, etc.)
+
+	// drop-shadow specific fields.
+	ShadowOffsetX float64
+	ShadowOffsetY float64
+	ShadowBlur    float64
+	ShadowColor   Color
 }
 
 // GetFilter parses the filter property and returns filter functions
@@ -6735,26 +6741,104 @@ func (s *Style) GetFilter() []FilterFunction {
 			break
 		}
 		name := strings.TrimSpace(val[:parenIdx])
-		closeIdx := strings.Index(val[parenIdx:], ")")
+		// Find matching close paren (handles nested parens like rgb() in drop-shadow).
+		closeIdx := findMatchingParen(val[parenIdx:])
 		if closeIdx < 0 {
 			break
 		}
 		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
-		var value float64
-		if pct, ok := ParsePercentage(arg); ok {
-			value = pct / 100.0
-		} else if name == "hue-rotate" {
-			// hue-rotate takes an angle value (deg, rad, turn)
-			if a := parseAngle(arg); a != nil {
-				value = *a
+		if name == "drop-shadow" {
+			// drop-shadow(offsetX offsetY [blur] [color])
+			ff := FilterFunction{Name: name}
+			parts := splitFilterArgs(arg)
+			if len(parts) >= 2 {
+				ff.ShadowOffsetX = parseLengthValue(parts[0])
+				ff.ShadowOffsetY = parseLengthValue(parts[1])
 			}
-		} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
-			value = f
+			if len(parts) >= 3 {
+				// Could be blur or color.
+				if v := parseLengthValue(parts[2]); v > 0 || strings.HasSuffix(strings.TrimSpace(parts[2]), "px") {
+					ff.ShadowBlur = v
+					if len(parts) >= 4 {
+						if c, ok := ParseColor(strings.Join(parts[3:], " ")); ok {
+							ff.ShadowColor = c
+						}
+					}
+				} else {
+					if c, ok := ParseColor(strings.Join(parts[2:], " ")); ok {
+						ff.ShadowColor = c
+					}
+				}
+			}
+			filters = append(filters, ff)
+		} else {
+			var value float64
+			if pct, ok := ParsePercentage(arg); ok {
+				value = pct / 100.0
+			} else if name == "hue-rotate" {
+				// hue-rotate takes an angle value (deg, rad, turn)
+				if a := parseAngle(arg); a != nil {
+					value = *a
+				}
+			} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
+				value = f
+			}
+			filters = append(filters, FilterFunction{Name: name, Value: value})
 		}
-		filters = append(filters, FilterFunction{Name: name, Value: value})
 		val = val[parenIdx+closeIdx+1:]
 	}
 	return filters
+}
+
+// findMatchingParen finds the matching closing paren for an opening paren at s[0].
+// Returns the index of the matching ')' relative to s, or -1 if not found.
+func findMatchingParen(s string) int {
+	depth := 0
+	for i, ch := range s {
+		if ch == '(' {
+			depth++
+		} else if ch == ')' {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// splitFilterArgs splits a drop-shadow argument string into parts,
+// handling rgb()/rgba() color function arguments.
+func splitFilterArgs(s string) []string {
+	var parts []string
+	s = strings.TrimSpace(s)
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ' ', '\t':
+			if depth == 0 && i > start {
+				parts = append(parts, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			} else if depth == 0 {
+				start = i + 1
+			}
+		case ',':
+			// Inside rgb(), commas are part of the color
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if start < len(s) {
+		parts = append(parts, strings.TrimSpace(s[start:]))
+	}
+	return parts
 }
 
 // MixBlendMode represents the mix-blend-mode property value
