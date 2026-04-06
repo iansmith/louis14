@@ -222,6 +222,12 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS mix-blend-mode: render to offscreen buffer and blend-composite.
+	if layer.BlendMode != css.MixBlendModeNormal && layer.BlendMode != "" {
+		r.paintLayerWithBlend(layer)
+		return
+	}
+
 	// Apply CSS transform if present (wraps around opacity handling).
 	if layer.HasTransform {
 		r.dc.Push()
@@ -328,6 +334,135 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 
 	// Composite filtered buffer back to main canvas.
 	r.dc.DrawImage(buf, bx, by)
+}
+
+// paintLayerWithBlend renders the entire layer subtree into an offscreen
+// buffer, then blend-composites the result onto the destination using the
+// specified CSS mix-blend-mode.
+func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
+	box := layer.Box
+	bx := int(math.Floor(box.X))
+	by := int(math.Floor(box.Y))
+	bw := int(math.Ceil(box.Width+(box.X-float64(bx)))) + 1
+	bh := int(math.Ceil(box.Height+(box.Y-float64(by)))) + 1
+
+	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+		r.paintLayerContent(layer)
+		return
+	}
+
+	// Render to offscreen buffer.
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	origDC := r.dc
+	origTarget := r.target
+	childDC := origDC.NewChildContext(buf)
+	r.dc = childDC
+	r.target = buf
+	r.dc.Translate(float64(-bx), float64(-by))
+
+	// Apply transforms and opacity within the offscreen buffer.
+	if layer.HasTransform {
+		r.dc.Push()
+		r.applyTransforms(layer)
+	}
+	if layer.Opacity < 1.0 {
+		r.dc.PushGroup()
+		r.paintLayerContent(layer)
+		r.dc.PopGroupWithAlpha(layer.Opacity)
+	} else {
+		r.paintLayerContent(layer)
+	}
+	if layer.HasTransform {
+		r.dc.Pop()
+	}
+
+	// Restore original DC.
+	r.dc = origDC
+	r.target = origTarget
+
+	// Blend-composite the buffer onto the destination.
+	blendComposite(r.target, buf, bx, by, layer.BlendMode)
+}
+
+// blendComposite performs pixel-level blend compositing of src onto dst
+// at offset (ox, oy) using the specified CSS mix-blend-mode.
+func blendComposite(dst *image.RGBA, src *image.RGBA, ox, oy int, mode css.MixBlendMode) {
+	srcBounds := src.Bounds()
+	dstBounds := dst.Bounds()
+
+	for sy := 0; sy < srcBounds.Dy(); sy++ {
+		dy := sy + oy
+		if dy < dstBounds.Min.Y || dy >= dstBounds.Max.Y {
+			continue
+		}
+		for sx := 0; sx < srcBounds.Dx(); sx++ {
+			dx := sx + ox
+			if dx < dstBounds.Min.X || dx >= dstBounds.Max.X {
+				continue
+			}
+
+			srcOff := sy*src.Stride + sx*4
+			dstOff := (dy-dstBounds.Min.Y)*dst.Stride + (dx-dstBounds.Min.X)*4
+
+			sa := float64(src.Pix[srcOff+3]) / 255
+			if sa == 0 {
+				continue
+			}
+
+			sr := float64(src.Pix[srcOff]) / 255
+			sg := float64(src.Pix[srcOff+1]) / 255
+			sb := float64(src.Pix[srcOff+2]) / 255
+			dr := float64(dst.Pix[dstOff]) / 255
+			dg := float64(dst.Pix[dstOff+1]) / 255
+			db := float64(dst.Pix[dstOff+2]) / 255
+
+			var rr, rg, rb float64
+			switch mode {
+			case css.MixBlendModeMultiply:
+				rr, rg, rb = sr*dr, sg*dg, sb*db
+			case css.MixBlendModeScreen:
+				rr = sr + dr - sr*dr
+				rg = sg + dg - sg*dg
+				rb = sb + db - sb*db
+			case css.MixBlendModeOverlay:
+				rr = overlayChannel(dr, sr)
+				rg = overlayChannel(dg, sg)
+				rb = overlayChannel(db, sb)
+			case css.MixBlendModeDarken:
+				rr = math.Min(sr, dr)
+				rg = math.Min(sg, dg)
+				rb = math.Min(sb, db)
+			case css.MixBlendModeLighten:
+				rr = math.Max(sr, dr)
+				rg = math.Max(sg, dg)
+				rb = math.Max(sb, db)
+			case css.MixBlendModeDifference:
+				rr = math.Abs(sr - dr)
+				rg = math.Abs(sg - dg)
+				rb = math.Abs(sb - db)
+			default:
+				rr, rg, rb = sr, sg, sb
+			}
+
+			// Source-over compositing with blended color.
+			da := float64(dst.Pix[dstOff+3]) / 255
+			outA := sa + da*(1-sa)
+			if outA > 0 {
+				dst.Pix[dstOff] = clampByte((rr*sa + dr*da*(1-sa)) / outA * 255)
+				dst.Pix[dstOff+1] = clampByte((rg*sa + dg*da*(1-sa)) / outA * 255)
+				dst.Pix[dstOff+2] = clampByte((rb*sa + db*da*(1-sa)) / outA * 255)
+				dst.Pix[dstOff+3] = clampByte(outA * 255)
+			}
+		}
+	}
+}
+
+// overlayChannel implements the CSS overlay blend formula for a single channel.
+func overlayChannel(backdrop, source float64) float64 {
+	if backdrop < 0.5 {
+		return 2 * backdrop * source
+	}
+	return 1 - 2*(1-backdrop)*(1-source)
 }
 
 // clampFilter01 clamps a value to the [0, 1] range.

@@ -115,6 +115,9 @@ type PaintLayer struct {
 	Filters   []css.FilterFunction
 	HasFilter bool
 
+	// CSS mix-blend-mode:
+	BlendMode css.MixBlendMode
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -343,6 +346,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.Filters = filters
 		layer.HasFilter = true
 	}
+
+	// CSS mix-blend-mode.
+	layer.BlendMode = s.GetMixBlendMode()
 
 	return layer
 }
