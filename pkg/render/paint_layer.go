@@ -3,8 +3,10 @@ package render
 import (
 	"math"
 	"sort"
+	"strconv"
 
 	"louis14/pkg/css"
+	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
 
@@ -81,6 +83,11 @@ type PaintLayer struct {
 	TextDecoration          css.TextDecoration
 	TextDecorationColor     css.Color  // defaults to TextColor (currentColor)
 	TextDecorationThickness float64    // defaults to ~1px
+
+	// List markers:
+	IsListItem    bool
+	ListStyleType css.ListStyleType
+	ListItemIndex int // 1-based ordinal for ordered lists
 
 	// CSS Transforms:
 	Transforms      []css.Transform
@@ -255,6 +262,13 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
 
+	// List markers.
+	if s.GetDisplay() == css.DisplayListItem {
+		layer.IsListItem = true
+		layer.ListStyleType = s.GetListStyleType()
+		layer.ListItemIndex = computeListItemIndex(box)
+	}
+
 	// CSS Transforms.
 	transforms := s.GetTransforms()
 	if len(transforms) > 0 {
@@ -286,6 +300,36 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 
 	return layer
+}
+
+// computeListItemIndex returns the 1-based ordinal for a list item,
+// respecting <ol start="N"> and counting preceding element siblings.
+func computeListItemIndex(box *layout.Box) int {
+	if box.LayoutNode == nil || box.LayoutNode.DOMNode == nil {
+		return 1
+	}
+	node := box.LayoutNode.DOMNode
+	if node.Parent == nil {
+		return 1
+	}
+	// Check for <ol start="N">
+	start := 1
+	if val, ok := node.Parent.GetAttribute("start"); ok {
+		if n, err := strconv.Atoi(val); err == nil {
+			start = n
+		}
+	}
+	// Count preceding list-item siblings
+	idx := start
+	for _, sibling := range node.Parent.Children {
+		if sibling == node {
+			break
+		}
+		if sibling.Type == html.ElementNode {
+			idx++
+		}
+	}
+	return idx
 }
 
 // domOrderedChildren returns the children of box in DOM tree order.

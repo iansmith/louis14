@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -299,6 +300,11 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Step 1: Background and borders.
 	r.drawBackground(layer)
 	r.drawBorders(layer)
+
+	// List markers (disc, circle, square, decimal).
+	if layer.IsListItem && layer.ListStyleType != css.ListStyleTypeNone {
+		r.drawListMarker(layer)
+	}
 
 	// Text content.
 	if layer.Box.Text != "" {
@@ -1030,6 +1036,48 @@ func (r *Renderer) setColor(c css.Color) {
 		B: c.B,
 		A: uint8(c.A * 255),
 	})
+}
+
+// drawListMarker paints the list-item marker (bullet or number) to the left
+// of the content box, inside the padding area created by the UA stylesheet.
+func (r *Renderer) drawListMarker(layer *PaintLayer) {
+	box := layer.Box
+	markerSize := layer.FontSize * 0.35
+
+	// Position: to the left of the content box, vertically centered on first line.
+	contentLeft := box.X + box.Border.Left + box.Padding.Left
+	// Center marker in the padding area (between border and content).
+	mx := contentLeft - box.Padding.Left/2
+	// Vertically: approximately at the midpoint of the first line.
+	my := box.Y + box.Border.Top + layer.FontSize*0.55
+
+	r.setColor(layer.TextColor)
+
+	switch layer.ListStyleType {
+	case css.ListStyleTypeDisc:
+		r.dc.DrawCircle(mx, my, markerSize/2)
+		r.dc.Fill()
+	case css.ListStyleTypeCircle:
+		r.dc.DrawCircle(mx, my, markerSize/2)
+		r.dc.SetLineWidth(1)
+		r.dc.Stroke()
+	case css.ListStyleTypeSquare:
+		r.dc.DrawRectangle(mx-markerSize/2, my-markerSize/2, markerSize, markerSize)
+		r.dc.Fill()
+	case css.ListStyleTypeDecimal:
+		numStr := fmt.Sprintf("%d.", layer.ListItemIndex)
+		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+		fid := r.openFont(fontPath, layer.FontSize)
+		if fid >= 0 {
+			tw := r.dc.MeasureText(numStr, fid)
+			metrics := r.dc.GetFontMetrics(fid)
+			ascent := float64(metrics.Ascent) / 64.0
+			// Right-align number to the left of content.
+			numX := contentLeft - tw - markerSize*0.5
+			numY := box.Y + box.Border.Top + ascent
+			r.dc.DrawText(numStr, fid, numX, numY)
+		}
+	}
 }
 
 // drawText paints text content using pre-computed font/color properties.
