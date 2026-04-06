@@ -106,6 +106,9 @@ type PaintLayer struct {
 	// Text shadows:
 	TextShadows []css.TextShadow
 
+	// CSS font-variant-caps (small-caps, all-small-caps, etc.):
+	FontVariantCaps string
+
 	// CSS text-transform (uppercase, lowercase, capitalize):
 	TextTransform css.TextTransform
 
@@ -390,6 +393,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.TextDecorationStyle = s.GetTextDecorationStyle()
 	layer.TextUnderlineOffset = s.GetTextUnderlineOffset()
 	layer.TextShadows = s.GetTextShadow()
+	layer.FontVariantCaps = s.GetFontVariantCaps()
 	layer.TextTransform = s.GetTextTransform()
 	layer.TextOverflow = s.GetTextOverflow()
 
