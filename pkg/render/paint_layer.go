@@ -101,6 +101,9 @@ type PaintLayer struct {
 	// CSS text-transform (uppercase, lowercase, capitalize):
 	TextTransform css.TextTransform
 
+	// CSS text-overflow (clip or ellipsis):
+	TextOverflow css.TextOverflowType
+
 	// List markers:
 	IsListItem    bool
 	ListStyleType css.ListStyleType
@@ -299,6 +302,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.TextDecorationStyle = s.GetTextDecorationStyle()
 	layer.TextShadows = s.GetTextShadow()
 	layer.TextTransform = s.GetTextTransform()
+	layer.TextOverflow = s.GetTextOverflow()
 
 	// List markers.
 	if s.GetDisplay() == css.DisplayListItem {

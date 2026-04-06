@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"louis14/pkg/css"
 	"louis14/pkg/images"
@@ -1604,6 +1605,12 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		return
 	}
 
+	// Text overflow: ellipsis — truncate text if it overflows the
+	// nearest ancestor block container that has overflow:hidden.
+	// CSS text-overflow applies to the block container; we check both
+	// the text run's own style and ancestor styles for the property.
+	text = r.applyTextOverflowEllipsis(layer, text, box, fontID)
+
 	// Draw text shadows (behind actual text).
 	if len(layer.TextShadows) > 0 {
 		r.drawTextShadows(layer, text, box, fontID, ascent)
@@ -1626,6 +1633,79 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 
 	// Draw text decoration lines (underline, overline, line-through).
 	r.drawTextDecoration(layer, text, box, fontID, ascent)
+}
+
+// applyTextOverflowEllipsis truncates text and appends "…" when
+// text-overflow:ellipsis is active on a block container with overflow:hidden.
+// Returns the (possibly truncated) text string.
+func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box *layout.Box, fontID int32) string {
+	// Determine if text-overflow:ellipsis applies.
+	// It may be set on the text run's own style (when the text node's
+	// parent element is the block container) or on an ancestor.
+	hasEllipsis := layer.TextOverflow == css.TextOverflowEllipsis
+
+	// Walk up the box tree to find the nearest ancestor with overflow:hidden
+	// and text-overflow:ellipsis.
+	var clipAncestor *layout.Box
+	for p := box.Parent; p != nil; p = p.Parent {
+		if p.Style == nil {
+			continue
+		}
+		overflow := p.Style.GetOverflow()
+		if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+			if !hasEllipsis && p.Style.GetTextOverflow() == css.TextOverflowEllipsis {
+				hasEllipsis = true
+			}
+			if hasEllipsis {
+				clipAncestor = p
+			}
+			break
+		}
+	}
+
+	if !hasEllipsis || clipAncestor == nil {
+		return text
+	}
+
+	// Compute available width: right edge of ancestor's content box minus
+	// the text run's starting X position.
+	contentRight := clipAncestor.X + clipAncestor.Border.Left + clipAncestor.Padding.Left +
+		(clipAncestor.Width - clipAncestor.Border.Left - clipAncestor.Border.Right -
+			clipAncestor.Padding.Left - clipAncestor.Padding.Right)
+	availW := contentRight - box.X
+	if availW <= 0 {
+		return text
+	}
+
+	textW := r.dc.MeasureText(text, fontID)
+	if textW <= availW {
+		return text
+	}
+
+	// Text overflows — truncate and append ellipsis.
+	const ellipsis = "\u2026" // "…"
+	ellipsisW := r.dc.MeasureText(ellipsis, fontID)
+	truncW := availW - ellipsisW
+
+	if truncW <= 0 {
+		// Not enough room even for the ellipsis — just show ellipsis.
+		return ellipsis
+	}
+
+	// Find the truncation point by measuring characters.
+	w := 0.0
+	truncIdx := 0
+	for i, ch := range text {
+		cw := r.dc.MeasureText(string(ch), fontID)
+		if w+cw > truncW {
+			truncIdx = i
+			break
+		}
+		w += cw
+		truncIdx = i + utf8.RuneLen(ch)
+	}
+
+	return text[:truncIdx] + ellipsis
 }
 
 // drawTextShadows paints text shadows behind the actual text glyphs.
