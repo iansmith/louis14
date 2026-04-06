@@ -685,7 +685,7 @@ var inheritableProperties = map[string]bool{
 	"visibility": true, "list-style-type": true, "list-style-position": true,
 	"direction": true, "letter-spacing": true, "word-spacing": true,
 	"cursor": true, "writing-mode": true,
-	"empty-cells": true, "border-collapse": true, "border-spacing": true,
+	"empty-cells": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.

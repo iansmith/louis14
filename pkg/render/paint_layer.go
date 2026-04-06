@@ -518,6 +518,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if s.GetDisplay() == css.DisplayTableCell &&
 		s.GetEmptyCells() == "hide" &&
 		s.GetBorderCollapse() == css.BorderCollapseSeparate &&
+		len(box.Children) == 0 &&
 		box.Node != nil && isCellNodeEmpty(box.Node) {
 		layer.EmptyCellHide = true
 	}
