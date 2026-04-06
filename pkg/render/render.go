@@ -1085,7 +1085,7 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 
 	// Paint from bottom to top.
 	fl.IterateReverse(func(bg *css.FillLayer) {
-		// Background-color only on bottom layer.
+		// Background-color only on bottom layer (uses bottom layer's clip, already in sx/sy/sw/sh).
 		if bg.IsBottomLayer() {
 			if c := layer.BackgroundColor; c.A > 0 {
 				r.setColor(c)
@@ -1099,24 +1099,29 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 			}
 		}
 
+		// Per-layer clip rect and radii for gradient/image content.
+		lx, ly, lw, lh := backgroundClipRectForClip(layer.Box, bg.Clip)
+		lRadii := backgroundClipRadiiForClip(layer, bg.Clip)
+		lHasRadius := !lRadii.IsZero()
+
 		// Paint gradient.
 		if bg.Gradient != "" {
-			if hasRadius {
+			if lHasRadius {
 				r.dc.Push()
-				r.buildRoundedRectPath(sx, sy, sw, sh, radii)
+				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
 				r.dc.Clip()
-				r.drawLinearGradient(bg.Gradient, sx, sy, sw, sh)
+				r.drawLinearGradient(bg.Gradient, lx, ly, lw, lh)
 				r.dc.Pop()
 			} else {
-				r.drawLinearGradient(bg.Gradient, sx, sy, sw, sh)
+				r.drawLinearGradient(bg.Gradient, lx, ly, lw, lh)
 			}
 		}
 
 		// Paint image.
 		if bg.Image != "" && r.imageFetcher != nil {
-			if hasRadius {
+			if lHasRadius {
 				r.dc.Push()
-				r.buildRoundedRectPath(sx, sy, sw, sh, radii)
+				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
 				r.dc.Clip()
 				r.drawBackgroundImageLayer(layer, bg)
 				r.dc.Pop()
