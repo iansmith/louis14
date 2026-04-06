@@ -73,6 +73,33 @@ func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode, percent
 	}
 }
 
+// IsIntrinsicKeyword returns true if val is a CSS intrinsic sizing keyword:
+// min-content, max-content, fit-content, -webkit-min-content, -webkit-max-content,
+// -webkit-fill-available, -moz-min-content, -moz-max-content, -moz-fit-content.
+func IsIntrinsicKeyword(val string) bool {
+	switch val {
+	case "min-content", "max-content", "fit-content",
+		"-webkit-min-content", "-webkit-max-content", "-webkit-fill-available",
+		"-moz-min-content", "-moz-max-content", "-moz-fit-content":
+		return true
+	}
+	return false
+}
+
+// ResolveIntrinsicInlineSize resolves an intrinsic sizing keyword for inline-size
+// given pre-computed MinMaxSizes. Returns the content-box inline-size.
+func ResolveIntrinsicInlineSize(keyword string, minMax MinMaxSizes, available float64) float64 {
+	switch keyword {
+	case "min-content", "-webkit-min-content", "-moz-min-content":
+		return minMax.MinContent
+	case "max-content", "-webkit-max-content", "-moz-max-content":
+		return minMax.MaxContent
+	case "fit-content", "-moz-fit-content", "-webkit-fill-available":
+		return minMax.ShrinkToFit(available)
+	}
+	return 0
+}
+
 // MinMaxSizes holds the intrinsic min-content and max-content inline sizes
 // for a layout node. Used for shrink-to-fit width computation.
 //
@@ -379,11 +406,32 @@ func CalculateInitialFragmentGeometry(
 	pctBase := space.PercentageResolutionInlineSize
 	geom := ComputeFragmentGeometry(style, wdm, pctBase)
 
+	// Lazy cache for ComputeMinMaxSizes — computed at most once per element.
+	var minMaxCache *MinMaxSizes
+
 	// --- Resolve inline-size (produces border-box) ---
 	var borderBoxInline float64
+
+	// Check for intrinsic sizing keywords (min-content, max-content, fit-content)
+	// before the normal resolution path. These keywords are not lengths/percentages
+	// so ResolveInlineSize returns (0, false) for them — we handle them here where
+	// ComputeMinMaxSizes is available.
+	inlineProp := "width"
+	if wdm.IsVertical() {
+		inlineProp = "height"
+	}
+	inlineVal, _ := style.Get(inlineProp)
+
 	if space.IsFixedInlineSize {
 		// Parent (e.g. flex) predetermined the size. AvailableSize is border-box.
 		borderBoxInline = space.AvailableSize.InlineSize
+	} else if IsIntrinsicKeyword(inlineVal) {
+		minMax := ComputeMinMaxSizes(ctx, node, space)
+		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		borderBoxInline = ResolveIntrinsicInlineSize(inlineVal, minMax, available) + geom.InlineBorderPadding()
 	} else if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 		borderBoxInline = explicitInline + geom.InlineBorderPadding()
 	} else if needsShrinkToFit(style) || space.IsOrthogonalWritingModeRoot {
@@ -413,11 +461,41 @@ func CalculateInitialFragmentGeometry(
 	if contentInline < 0 {
 		contentInline = 0
 	}
+
+	// Resolve min-inline-size, handling intrinsic keywords.
+	minInlineProp := "min-width"
+	if wdm.IsVertical() {
+		minInlineProp = "min-height"
+	}
 	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	if minInlineVal, ok := style.Get(minInlineProp); ok && IsIntrinsicKeyword(minInlineVal) {
+		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
+		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		minInline = ResolveIntrinsicInlineSize(minInlineVal, minMax, available)
+	}
 	if contentInline < minInline {
 		contentInline = minInline
 	}
-	if maxInline, ok := ResolveMaxInlineSize(style, wdm, space, geom); ok {
+
+	// Resolve max-inline-size, handling intrinsic keywords.
+	maxInlineProp := "max-width"
+	if wdm.IsVertical() {
+		maxInlineProp = "max-height"
+	}
+	if maxInlineVal, ok := style.Get(maxInlineProp); ok && IsIntrinsicKeyword(maxInlineVal) {
+		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
+		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		maxInline := ResolveIntrinsicInlineSize(maxInlineVal, minMax, available)
+		if contentInline > maxInline {
+			contentInline = maxInline
+		}
+	} else if maxInline, ok := ResolveMaxInlineSize(style, wdm, space, geom); ok {
 		if contentInline > maxInline {
 			contentInline = maxInline
 		}
@@ -426,8 +504,21 @@ func CalculateInitialFragmentGeometry(
 
 	// --- Resolve block-size (produces border-box, or Indefinite) ---
 	// Order matches existing algorithms: explicit CSS first, then IsFixedBlockSize fallback.
+	//
+	// Intrinsic keywords (min-content, max-content, fit-content) on block-size
+	// effectively mean "auto" for block-level layout — the element sizes to its
+	// content. We detect them here and leave borderBoxBlock = Indefinite so that
+	// the layout algorithm determines the block-size from content.
+	blockProp := "height"
+	if wdm.IsVertical() {
+		blockProp = "width"
+	}
+	blockVal, _ := style.Get(blockProp)
+
 	var borderBoxBlock float64 = Indefinite
-	if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
+	if IsIntrinsicKeyword(blockVal) {
+		// Treat as auto — layout will determine block-size from content.
+	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
 		borderBoxBlock = explicitBlock + geom.BlockBorderPadding()
 	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
 		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords
@@ -501,4 +592,14 @@ func CalculateInitialFragmentGeometry(
 
 	geom.BorderBoxSize = LogicalSize{InlineSize: borderBoxInline, BlockSize: borderBoxBlock}
 	return geom
+}
+
+// computeMinMaxOnce lazily computes MinMaxSizes, caching the result.
+func computeMinMaxOnce(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace, cache **MinMaxSizes) MinMaxSizes {
+	if *cache != nil {
+		return **cache
+	}
+	mm := ComputeMinMaxSizes(ctx, node, space)
+	*cache = &mm
+	return mm
 }

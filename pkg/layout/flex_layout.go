@@ -392,6 +392,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					item.resolvedMain, crossContent2, false)
 				result := layoutElement(fla.ctx, item.node, cs)
 				item.fragment = result.Fragment
+				item.baseline = result.Baseline
 				item.propagatedOOF = result.PropagatedOOFCandidates
 				lf := NewLogicalFragment(wdm, item.fragment)
 				if isRow {
