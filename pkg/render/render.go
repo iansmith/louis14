@@ -618,7 +618,7 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	}
 }
 
-// drawImage paints an <img> element scaled to its box dimensions.
+// drawImage paints an <img> element with object-fit and object-position support.
 func (r *Renderer) drawImage(layer *PaintLayer) {
 	if layer.ImageSrc == "" || r.imageFetcher == nil {
 		return
@@ -628,57 +628,133 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	if err != nil {
 		return
 	}
-	// Scale image to box content area using nearest-neighbor into an RGBA buffer.
-	srcW := img.Bounds().Dx()
-	srcH := img.Bounds().Dy()
+
+	srcW := float64(img.Bounds().Dx())
+	srcH := float64(img.Bounds().Dy())
 	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
 	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
-	dstW := int(math.Round(box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right))
-	dstH := int(math.Round(box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom))
+	cw := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
+	ch := box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom
+	dstW := int(math.Round(cw))
+	dstH := int(math.Round(ch))
 	if dstW <= 0 || dstH <= 0 || srcW == 0 || srcH == 0 {
 		return
 	}
-	scaled := scaleImageNearest(img, srcW, srcH, dstW, dstH)
+
+	// Compute actual draw dimensions based on object-fit.
+	var drawW, drawH float64
+	switch layer.ObjectFit {
+	case css.ObjectFitContain:
+		scale := math.Min(cw/srcW, ch/srcH)
+		drawW, drawH = srcW*scale, srcH*scale
+	case css.ObjectFitCover:
+		scale := math.Max(cw/srcW, ch/srcH)
+		drawW, drawH = srcW*scale, srcH*scale
+	case css.ObjectFitNone:
+		drawW, drawH = srcW, srcH
+	case css.ObjectFitScaleDown:
+		scale := math.Min(1, math.Min(cw/srcW, ch/srcH))
+		drawW, drawH = srcW*scale, srcH*scale
+	default: // ObjectFitFill
+		drawW, drawH = cw, ch
+	}
+
+	// Scale image to draw dimensions.
+	scaledW, scaledH := int(math.Round(drawW)), int(math.Round(drawH))
+	if scaledW <= 0 || scaledH <= 0 {
+		return
+	}
+	scaled := scaleImageNearest(img, int(srcW), int(srcH), scaledW, scaledH)
+
+	// Position within content box using object-position.
+	dx := contentX + (cw-drawW)*layer.ObjectPosition[0]
+	dy := contentY + (ch-drawH)*layer.ObjectPosition[1]
+
+	// Determine if clipping to the content box is needed (image may extend beyond).
+	needsContentClip := layer.ObjectFit == css.ObjectFitCover || layer.ObjectFit == css.ObjectFitNone ||
+		(layer.ObjectFit == css.ObjectFitScaleDown && (srcW > cw || srcH > ch))
+
+	// finalImg and finalX/finalY will hold the image to draw after all clipping.
+	var finalImg image.Image
+	finalX, finalY := int(math.Round(dx)), int(math.Round(dy))
+
+	if needsContentClip {
+		// Crop the scaled image to the content box.
+		cropX := int(math.Round(contentX - dx))
+		cropY := int(math.Round(contentY - dy))
+		cropW := dstW
+		cropH := dstH
+		if cropX < 0 {
+			cropX = 0
+		}
+		if cropY < 0 {
+			cropY = 0
+		}
+		if cropX+cropW > scaledW {
+			cropW = scaledW - cropX
+		}
+		if cropY+cropH > scaledH {
+			cropH = scaledH - cropY
+		}
+		if cropW <= 0 || cropH <= 0 {
+			return
+		}
+		finalImg = scaled.(interface {
+			SubImage(image.Rectangle) image.Image
+		}).SubImage(image.Rect(cropX, cropY, cropX+cropW, cropY+cropH))
+		finalX = finalX + cropX
+		finalY = finalY + cropY
+	} else {
+		finalImg = scaled
+	}
 
 	// CSS clip: rect() — DrawImage bypasses the clip mask, so we must
-	// manually crop the scaled image to the CSS clip region.
-	drawX := int(contentX)
-	drawY := int(contentY)
+	// manually crop the image to the CSS clip region.
 	if layer.HasCSSClip {
 		// CSSClipRect is [x, y, w, h] in absolute coordinates.
 		cx := int(math.Round(layer.CSSClipRect[0]))
 		cy := int(math.Round(layer.CSSClipRect[1]))
-		cw := int(math.Round(layer.CSSClipRect[2]))
-		ch := int(math.Round(layer.CSSClipRect[3]))
+		ccw := int(math.Round(layer.CSSClipRect[2]))
+		cch := int(math.Round(layer.CSSClipRect[3]))
+
+		imgBounds := finalImg.Bounds()
+		imgW := imgBounds.Dx()
+		imgH := imgBounds.Dy()
+
 		// Intersect clip region with image draw area.
-		ix0 := drawX
+		ix0 := finalX
 		if cx > ix0 {
 			ix0 = cx
 		}
-		iy0 := drawY
+		iy0 := finalY
 		if cy > iy0 {
 			iy0 = cy
 		}
-		ix1 := drawX + dstW
-		if cx+cw < ix1 {
-			ix1 = cx + cw
+		ix1 := finalX + imgW
+		if cx+ccw < ix1 {
+			ix1 = cx + ccw
 		}
-		iy1 := drawY + dstH
-		if cy+ch < iy1 {
-			iy1 = cy + ch
+		iy1 := finalY + imgH
+		if cy+cch < iy1 {
+			iy1 = cy + cch
 		}
 		if ix1 <= ix0 || iy1 <= iy0 {
 			return // Entirely clipped
 		}
 		// Extract the visible sub-image.
-		sub := scaled.(interface {
+		sub := finalImg.(interface {
 			SubImage(image.Rectangle) image.Image
-		}).SubImage(image.Rect(ix0-drawX, iy0-drawY, ix1-drawX, iy1-drawY))
+		}).SubImage(image.Rect(
+			imgBounds.Min.X+(ix0-finalX),
+			imgBounds.Min.Y+(iy0-finalY),
+			imgBounds.Min.X+(ix1-finalX),
+			imgBounds.Min.Y+(iy1-finalY),
+		))
 		r.dc.DrawImage(sub, ix0, iy0)
 		return
 	}
 
-	r.dc.DrawImage(scaled, drawX, drawY)
+	r.dc.DrawImage(finalImg, finalX, finalY)
 }
 
 // scaleImageNearest scales src to dstW×dstH using nearest-neighbor.
