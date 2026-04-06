@@ -100,11 +100,22 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 		boxes = engine2.Layout(doc)
 	}
 
+	// Collect @counter-style rules from document stylesheets.
+	var counterStyles []css.CounterStyleRule
+	for _, cssText := range doc.Stylesheets {
+		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
+			counterStyles = append(counterStyles, stylesheet.CounterStyles...)
+		}
+	}
+
 	// Render
 	renderer := render.NewRenderer(width, height)
 	renderer.SetFonts(fontConfig)
 	if fetcher != nil {
 		renderer.SetImageFetcher(fetcher)
+	}
+	if len(counterStyles) > 0 {
+		renderer.SetCounterStyles(counterStyles)
 	}
 	renderer.Render(boxes)
 

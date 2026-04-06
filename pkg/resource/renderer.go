@@ -92,12 +92,18 @@ func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*imag
 	// Register @font-face web fonts
 	fonts := r.registerWebFonts(doc)
 
+	// Collect @counter-style rules
+	counterStyles := collectCounterStyles(doc)
+
 	// Create image at the measured height and render
 	target := image.NewRGBA(image.Rect(0, 0, width, int(contentHeight+0.5)))
 	renderer := render.NewRendererForImage(target)
 	renderer.SetFonts(fonts)
 	if imageFetcher != nil {
 		renderer.SetImageFetcher(imageFetcher)
+	}
+	if len(counterStyles) > 0 {
+		renderer.SetCounterStyles(counterStyles)
 	}
 	renderer.Render(boxes)
 
@@ -241,11 +247,17 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 	// Register @font-face web fonts
 	fonts := r.registerWebFonts(doc)
 
+	// Collect @counter-style rules
+	counterStyles := collectCounterStyles(doc)
+
 	// Render onto target image
 	renderer := render.NewRendererForImage(target)
 	renderer.SetFonts(fonts)
 	if imageFetcher != nil {
 		renderer.SetImageFetcher(imageFetcher)
+	}
+	if len(counterStyles) > 0 {
+		renderer.SetCounterStyles(counterStyles)
 	}
 	renderer.Render(boxes)
 
@@ -267,8 +279,22 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 		if imageFetcher != nil {
 			renderer2.SetImageFetcher(imageFetcher)
 		}
+		if len(counterStyles) > 0 {
+			renderer2.SetCounterStyles(counterStyles)
+		}
 		renderer2.Render(boxes2)
 	}
 
 	return nil
+}
+
+// collectCounterStyles extracts all @counter-style rules from a document's stylesheets.
+func collectCounterStyles(doc *html.Document) []css.CounterStyleRule {
+	var rules []css.CounterStyleRule
+	for _, cssText := range doc.Stylesheets {
+		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
+			rules = append(rules, stylesheet.CounterStyles...)
+		}
+	}
+	return rules
 }
