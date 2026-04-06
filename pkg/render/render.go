@@ -911,38 +911,60 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 
 // hasBorderRadius returns true if any corner radius is non-zero.
 func hasBorderRadius(layer *PaintLayer) bool {
-	return layer.BorderRadius != [4]float64{}
+	return !layer.BorderRadius.IsZero()
 }
 
-// buildRoundedRectPath traces a rounded rectangle path using QuadraticTo for corners.
-// radii: [TopLeft, TopRight, BottomRight, BottomLeft].
-func (r *Renderer) buildRoundedRectPath(x, y, w, h float64, radii [4]float64) {
-	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
-	r.dc.MoveTo(x+tl, y)
-	r.dc.LineTo(x+w-tr, y)
-	r.dc.QuadraticTo(x+w, y, x+w, y+tr)     // top-right
-	r.dc.LineTo(x+w, y+h-br)
-	r.dc.QuadraticTo(x+w, y+h, x+w-br, y+h) // bottom-right
-	r.dc.LineTo(x+bl, y+h)
-	r.dc.QuadraticTo(x, y+h, x, y+h-bl)     // bottom-left
-	r.dc.LineTo(x, y+tl)
-	r.dc.QuadraticTo(x, y, x+tl, y)         // top-left
-	r.dc.ClosePath()
+// buildRoundedRectPath traces a rounded rectangle path using CubicTo for
+// elliptical corner arcs. Uses kappa constant for quarter-ellipse approximation.
+func (r *Renderer) buildRoundedRectPath(x, y, w, h float64, radii css.EllipticalRadii) {
+	buildRoundedRectPathOnDC(r.dc, x, y, w, h, radii)
 }
 
 // buildRoundedRectPathReverse traces a rounded rectangle path in reverse (CCW)
 // for use with even-odd fill rule to cut out inner regions.
-func (r *Renderer) buildRoundedRectPathReverse(x, y, w, h float64, radii [4]float64) {
+func (r *Renderer) buildRoundedRectPathReverse(x, y, w, h float64, radii css.EllipticalRadii) {
+	const k = 0.5522847498 // kappa: 4*(sqrt(2)-1)/3
 	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
-	r.dc.MoveTo(x+tl, y)
-	r.dc.QuadraticTo(x, y, x, y+tl)         // top-left (reverse)
-	r.dc.LineTo(x, y+h-bl)
-	r.dc.QuadraticTo(x, y+h, x+bl, y+h)     // bottom-left (reverse)
-	r.dc.LineTo(x+w-br, y+h)
-	r.dc.QuadraticTo(x+w, y+h, x+w, y+h-br) // bottom-right (reverse)
-	r.dc.LineTo(x+w, y+tr)
-	r.dc.QuadraticTo(x+w, y, x+w-tr, y)     // top-right (reverse)
+	r.dc.MoveTo(x+tl.Rx, y)
+	// top-left (reverse: CW to CCW)
+	r.dc.CubicTo(x+tl.Rx-tl.Rx*k, y, x, y+tl.Ry-tl.Ry*k, x, y+tl.Ry)
+	r.dc.LineTo(x, y+h-bl.Ry)
+	// bottom-left (reverse)
+	r.dc.CubicTo(x, y+h-bl.Ry+bl.Ry*k, x+bl.Rx-bl.Rx*k, y+h, x+bl.Rx, y+h)
+	r.dc.LineTo(x+w-br.Rx, y+h)
+	// bottom-right (reverse)
+	r.dc.CubicTo(x+w-br.Rx+br.Rx*k, y+h, x+w, y+h-br.Ry+br.Ry*k, x+w, y+h-br.Ry)
+	r.dc.LineTo(x+w, y+tr.Ry)
+	// top-right (reverse)
+	r.dc.CubicTo(x+w, y+tr.Ry-tr.Ry*k, x+w-tr.Rx+tr.Rx*k, y, x+w-tr.Rx, y)
 	r.dc.ClosePath()
+}
+
+// buildRoundedRectPathOnDC traces an elliptical rounded rectangle path on any DrawContext.
+// This is the single source of truth for rounded-rect path construction.
+func buildRoundedRectPathOnDC(dc interface {
+	MoveTo(x, y float64)
+	LineTo(x, y float64)
+	CubicTo(x1, y1, x2, y2, x3, y3 float64)
+	ClosePath()
+}, x, y, w, h float64, radii css.EllipticalRadii) {
+	const k = 0.5522847498 // kappa: 4*(sqrt(2)-1)/3
+	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
+
+	dc.MoveTo(x+tl.Rx, y)
+	// Top edge → top-right corner
+	dc.LineTo(x+w-tr.Rx, y)
+	dc.CubicTo(x+w-tr.Rx+tr.Rx*k, y, x+w, y+tr.Ry-tr.Ry*k, x+w, y+tr.Ry)
+	// Right edge → bottom-right corner
+	dc.LineTo(x+w, y+h-br.Ry)
+	dc.CubicTo(x+w, y+h-br.Ry+br.Ry*k, x+w-br.Rx+br.Rx*k, y+h, x+w-br.Rx, y+h)
+	// Bottom edge → bottom-left corner
+	dc.LineTo(x+bl.Rx, y+h)
+	dc.CubicTo(x+bl.Rx-bl.Rx*k, y+h, x, y+h-bl.Ry+bl.Ry*k, x, y+h-bl.Ry)
+	// Left edge → top-left corner
+	dc.LineTo(x, y+tl.Ry)
+	dc.CubicTo(x, y+tl.Ry-tl.Ry*k, x+tl.Rx-tl.Rx*k, y, x+tl.Rx, y)
+	dc.ClosePath()
 }
 
 // backgroundClipRectForClip computes the background painting area based on
@@ -981,30 +1003,25 @@ func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, floa
 }
 
 // backgroundClipRadiiForClip adjusts border radii for a background-clip inset.
-func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) [4]float64 {
+// Uses Blink's Inset operation: shrink Rx by horizontal inset, Ry by vertical.
+func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) css.EllipticalRadii {
 	radii := layer.BorderRadius
 	box := layer.Box
 	switch clip {
 	case css.BackgroundClipPaddingBox:
-		radii = [4]float64{
-			math.Max(0, radii[0]-math.Max(box.Border.Left, box.Border.Top)),
-			math.Max(0, radii[1]-math.Max(box.Border.Right, box.Border.Top)),
-			math.Max(0, radii[2]-math.Max(box.Border.Right, box.Border.Bottom)),
-			math.Max(0, radii[3]-math.Max(box.Border.Left, box.Border.Bottom)),
-		}
+		return radii.Inset(box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left)
 	case css.BackgroundClipContentBox:
-		radii = [4]float64{
-			math.Max(0, radii[0]-math.Max(box.Border.Left+box.Padding.Left, box.Border.Top+box.Padding.Top)),
-			math.Max(0, radii[1]-math.Max(box.Border.Right+box.Padding.Right, box.Border.Top+box.Padding.Top)),
-			math.Max(0, radii[2]-math.Max(box.Border.Right+box.Padding.Right, box.Border.Bottom+box.Padding.Bottom)),
-			math.Max(0, radii[3]-math.Max(box.Border.Left+box.Padding.Left, box.Border.Bottom+box.Padding.Bottom)),
-		}
+		return radii.Inset(
+			box.Border.Top+box.Padding.Top,
+			box.Border.Right+box.Padding.Right,
+			box.Border.Bottom+box.Padding.Bottom,
+			box.Border.Left+box.Padding.Left)
 	}
 	return radii
 }
 
 // backgroundClipRadii returns radii for background-color's clip area.
-func backgroundClipRadii(layer *PaintLayer) [4]float64 {
+func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
 	clip := layer.BackgroundClip
 	if fl := layer.BackgroundLayers; fl != nil {
 		for cur := fl; cur != nil; cur = cur.Next {
@@ -1022,7 +1039,7 @@ func backgroundClipRadii(layer *PaintLayer) [4]float64 {
 func (r *Renderer) drawBackground(layer *PaintLayer) {
 	sx, sy, sw, sh := r.backgroundClipRect(layer)
 	radii := backgroundClipRadii(layer)
-	hasRadius := radii != [4]float64{}
+	hasRadius := !radii.IsZero()
 
 	fl := layer.BackgroundLayers
 
@@ -1554,12 +1571,7 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 	if uniform && bw.Top > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
 		// Simple case: draw a single stroked rounded rect at the midline.
 		hw := bw.Top / 2
-		midRadii := [4]float64{
-			math.Max(0, layer.BorderRadius[0]-hw),
-			math.Max(0, layer.BorderRadius[1]-hw),
-			math.Max(0, layer.BorderRadius[2]-hw),
-			math.Max(0, layer.BorderRadius[3]-hw),
-		}
+		midRadii := layer.BorderRadius.Inset(hw, hw, hw, hw)
 		r.setColor(layer.BorderColors[0])
 		r.dc.SetLineWidth(bw.Top)
 		r.buildRoundedRectPath(x+hw, y+hw, w-bw.Top, h-bw.Top, midRadii)
@@ -1571,17 +1583,12 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 	// between outer and inner rounded rects, clipped to each side's region.
 	outerRadii := layer.BorderRadius
 
-	// Inner rounded rect (border-box inset by border widths).
+	// Inner rounded rect (border-box inset by border widths) — Blink's Inset.
 	ix := x + bw.Left
 	iy := y + bw.Top
 	iw := w - bw.Left - bw.Right
 	ih := h - bw.Top - bw.Bottom
-	innerRadii := [4]float64{
-		math.Max(0, outerRadii[0]-math.Max(bw.Left, bw.Top)),
-		math.Max(0, outerRadii[1]-math.Max(bw.Right, bw.Top)),
-		math.Max(0, outerRadii[2]-math.Max(bw.Right, bw.Bottom)),
-		math.Max(0, outerRadii[3]-math.Max(bw.Left, bw.Bottom)),
-	}
+	innerRadii := outerRadii.Inset(bw.Top, bw.Right, bw.Bottom, bw.Left)
 
 	type borderSide struct {
 		width float64
@@ -1590,32 +1597,40 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 		clipX, clipY, clipW, clipH float64
 	}
 
+	// For clip region calculations, use the maximum of Rx and Ry per corner.
+	or := [4]float64{
+		math.Max(outerRadii[0].Rx, outerRadii[0].Ry),
+		math.Max(outerRadii[1].Rx, outerRadii[1].Ry),
+		math.Max(outerRadii[2].Rx, outerRadii[2].Ry),
+		math.Max(outerRadii[3].Rx, outerRadii[3].Ry),
+	}
+
 	// Compute clip regions for each side.
 	sides := [4]borderSide{
 		{ // Top
 			width: bw.Top, style: layer.BorderStyles[0], color: layer.BorderColors[0],
 			clipX: x, clipY: y,
 			clipW: w,
-			clipH: math.Max(bw.Top, math.Max(outerRadii[0], outerRadii[1])),
+			clipH: math.Max(bw.Top, math.Max(or[0], or[1])),
 		},
 		{ // Right
 			width: bw.Right, style: layer.BorderStyles[1], color: layer.BorderColors[1],
-			clipX: x + w - math.Max(bw.Right, math.Max(outerRadii[1], outerRadii[2])),
+			clipX: x + w - math.Max(bw.Right, math.Max(or[1], or[2])),
 			clipY: y,
-			clipW: math.Max(bw.Right, math.Max(outerRadii[1], outerRadii[2])),
+			clipW: math.Max(bw.Right, math.Max(or[1], or[2])),
 			clipH: h,
 		},
 		{ // Bottom
 			width: bw.Bottom, style: layer.BorderStyles[2], color: layer.BorderColors[2],
 			clipX: x,
-			clipY: y + h - math.Max(bw.Bottom, math.Max(outerRadii[2], outerRadii[3])),
+			clipY: y + h - math.Max(bw.Bottom, math.Max(or[2], or[3])),
 			clipW: w,
-			clipH: math.Max(bw.Bottom, math.Max(outerRadii[2], outerRadii[3])),
+			clipH: math.Max(bw.Bottom, math.Max(or[2], or[3])),
 		},
 		{ // Left
 			width: bw.Left, style: layer.BorderStyles[3], color: layer.BorderColors[3],
 			clipX: x, clipY: y,
-			clipW: math.Max(bw.Left, math.Max(outerRadii[0], outerRadii[3])),
+			clipW: math.Max(bw.Left, math.Max(or[0], or[3])),
 			clipH: h,
 		},
 	}
@@ -1709,7 +1724,7 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 	case "solid":
 		r.dc.SetLineWidth(layer.OutlineWidth)
 		if hasBorderRadius(layer) {
-			expandedRadii := expandRadii(layer.BorderRadius, off)
+			expandedRadii := layer.BorderRadius.Outset(off, off, off, off)
 			r.buildRoundedRectPath(ox, oy, ow, oh, expandedRadii)
 		} else {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
@@ -1744,16 +1759,6 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 		r.dc.SetLineWidth(layer.OutlineWidth)
 		r.dc.DrawRectangle(ox, oy, ow, oh)
 		r.dc.Stroke()
-	}
-}
-
-// expandRadii expands border radii by the given amount for outline/shadow shapes.
-func expandRadii(radii [4]float64, amount float64) [4]float64 {
-	return [4]float64{
-		math.Max(0, radii[0]+amount),
-		math.Max(0, radii[1]+amount),
-		math.Max(0, radii[2]+amount),
-		math.Max(0, radii[3]+amount),
 	}
 }
 
@@ -2478,31 +2483,104 @@ func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer) {
 			continue
 		}
 
-		r.setColor(shadow.Color)
+		// Expand border radii by spread for the shadow shape.
+		sp := shadow.Spread
+		shadowRadii := layer.BorderRadius.Outset(sp, sp, sp, sp)
 
-		if hasBorderRadius(layer) {
-			// Expand radii by spread amount for shadow shape.
-			shadowRadii := [4]float64{
-				math.Max(0, layer.BorderRadius[0]+shadow.Spread),
-				math.Max(0, layer.BorderRadius[1]+shadow.Spread),
-				math.Max(0, layer.BorderRadius[2]+shadow.Spread),
-				math.Max(0, layer.BorderRadius[3]+shadow.Spread),
-			}
-			if shadow.Blur > 0 {
-				r.drawBlurredShadow(sx, sy, sw, sh, shadowRadii, shadow)
-			} else {
-				r.buildRoundedRectPath(sx, sy, sw, sh, shadowRadii)
-				r.dc.Fill()
-			}
-		} else {
-			if shadow.Blur > 0 {
-				r.drawBlurredShadow(sx, sy, sw, sh, [4]float64{}, shadow)
-			} else {
-				r.dc.DrawRectangle(sx, sy, sw, sh)
-				r.dc.Fill()
+		// Use offscreen buffer to clip out the border box from the shadow.
+		// Per CSS spec: outset shadows are only visible outside the border edge.
+		r.drawOutsetShadowBuffer(sx, sy, sw, sh, shadowRadii,
+			x, y, w, h, layer.BorderRadius, shadow)
+	}
+}
+
+// drawOutsetShadowBuffer renders an outset shadow using an offscreen buffer.
+// Fills the shadow shape, clears the border box area, optionally blurs, then composites.
+func (r *Renderer) drawOutsetShadowBuffer(
+	sx, sy, sw, sh float64, shadowRadii css.EllipticalRadii,
+	bx, by, bw, bh float64, borderRadii css.EllipticalRadii,
+	shadow css.BoxShadow,
+) {
+	sigma := shadow.Blur / 2
+	extend := math.Ceil(sigma * 3)
+
+	// Compute the bounding box that covers both shadow and border box + blur.
+	minX := math.Min(sx, bx) - extend
+	minY := math.Min(sy, by) - extend
+	maxX := math.Max(sx+sw, bx+bw) + extend
+	maxY := math.Max(sy+sh, by+bh) + extend
+
+	bufW := int(math.Ceil(maxX - minX))
+	bufH := int(math.Ceil(maxY - minY))
+	if bufW <= 0 || bufH <= 0 || bufW > 4000 || bufH > 4000 {
+		return
+	}
+
+	buf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
+
+	// Draw the shadow shape into the buffer using rasterizer.
+	childDC := r.dc.NewChildContext(buf)
+	childDC.SetColor(color.RGBA{
+		R: shadow.Color.R,
+		G: shadow.Color.G,
+		B: shadow.Color.B,
+		A: uint8(shadow.Color.A * 255),
+	})
+
+	lsx, lsy := sx-minX, sy-minY
+	if !shadowRadii.IsZero() {
+		buildRoundedRectPathOnDC(childDC, lsx, lsy, sw, sh, shadowRadii)
+		childDC.Fill()
+	} else {
+		childDC.DrawRectangle(lsx, lsy, sw, sh)
+		childDC.Fill()
+	}
+
+	// Clear the border box area (make it transparent) using a rasterized mask.
+	holeMask := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
+	holeDC := r.dc.NewChildContext(holeMask)
+	holeDC.SetColor(color.White)
+
+	lbx, lby := bx-minX, by-minY
+	if !borderRadii.IsZero() {
+		buildRoundedRectPathOnDC(holeDC, lbx, lby, bw, bh, borderRadii)
+		holeDC.Fill()
+	} else {
+		holeDC.DrawRectangle(lbx, lby, bw, bh)
+		holeDC.Fill()
+	}
+
+	// Clear pixels where the hole mask is opaque.
+	for py := 0; py < bufH; py++ {
+		for px := 0; px < bufW; px++ {
+			moff := py*holeMask.Stride + px*4
+			a := holeMask.Pix[moff+3]
+			if a > 0 {
+				off := py*buf.Stride + px*4
+				if a == 255 {
+					buf.Pix[off+0] = 0
+					buf.Pix[off+1] = 0
+					buf.Pix[off+2] = 0
+					buf.Pix[off+3] = 0
+				} else {
+					keep := 255 - uint16(a)
+					buf.Pix[off+0] = uint8(uint16(buf.Pix[off+0]) * keep / 255)
+					buf.Pix[off+1] = uint8(uint16(buf.Pix[off+1]) * keep / 255)
+					buf.Pix[off+2] = uint8(uint16(buf.Pix[off+2]) * keep / 255)
+					buf.Pix[off+3] = uint8(uint16(buf.Pix[off+3]) * keep / 255)
+				}
 			}
 		}
 	}
+
+	// Apply box blur if needed.
+	if shadow.Blur > 0 {
+		boxBlur(buf, int(math.Round(sigma)))
+		boxBlur(buf, int(math.Round(sigma)))
+		boxBlur(buf, int(math.Round(sigma)))
+	}
+
+	r.dc.DrawImage(buf, int(math.Round(minX)), int(math.Round(minY)))
 }
 
 // drawInsetBoxShadows paints inset box shadows inside the element,
@@ -2522,18 +2600,8 @@ func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer) {
 		return
 	}
 
-	// Compute inner border radii (radii shrink by border width).
-	var outerRadii [4]float64
-	hasRadius := hasBorderRadius(layer)
-	if hasRadius {
-		outerRadii = layer.BorderRadius
-	}
-	innerRadii := [4]float64{
-		math.Max(0, outerRadii[0]-math.Max(box.Border.Left, box.Border.Top)),
-		math.Max(0, outerRadii[1]-math.Max(box.Border.Right, box.Border.Top)),
-		math.Max(0, outerRadii[2]-math.Max(box.Border.Right, box.Border.Bottom)),
-		math.Max(0, outerRadii[3]-math.Max(box.Border.Left, box.Border.Bottom)),
-	}
+	// Compute inner border radii (radii shrink by border width) — Blink's Inset.
+	innerRadii := layer.BorderRadius.Inset(box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left)
 
 	for i := len(layer.BoxShadows) - 1; i >= 0; i-- {
 		shadow := layer.BoxShadows[i]
@@ -2549,12 +2617,8 @@ func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer) {
 		ih := ph - 2*shadow.Spread
 
 		// Shrink inner radii by spread.
-		shadowInnerRadii := [4]float64{
-			math.Max(0, innerRadii[0]-shadow.Spread),
-			math.Max(0, innerRadii[1]-shadow.Spread),
-			math.Max(0, innerRadii[2]-shadow.Spread),
-			math.Max(0, innerRadii[3]-shadow.Spread),
-		}
+		sp := shadow.Spread
+		shadowInnerRadii := innerRadii.Inset(sp, sp, sp, sp)
 
 		r.setColor(shadow.Color)
 
@@ -2570,8 +2634,8 @@ func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer) {
 // Fills the buffer with shadow color, clears the inner hole, optionally blurs,
 // then clips to the padding box and composites.
 func (r *Renderer) drawInsetShadowBuffer(
-	px, py, pw, ph float64, clipRadii [4]float64,
-	ix, iy, iw, ih float64, innerRadii [4]float64,
+	px, py, pw, ph float64, clipRadii css.EllipticalRadii,
+	ix, iy, iw, ih float64, innerRadii css.EllipticalRadii,
 	shadow css.BoxShadow,
 ) {
 	sigma := shadow.Blur / 2
@@ -2616,18 +2680,8 @@ func (r *Renderer) drawInsetShadowBuffer(
 		holeMask := image.NewRGBA(image.Rect(0, 0, bw, bh))
 		childDC := r.dc.NewChildContext(holeMask)
 		childDC.SetColor(color.White)
-		if innerRadii != [4]float64{} {
-			tl, tr, br, bl := innerRadii[0], innerRadii[1], innerRadii[2], innerRadii[3]
-			childDC.MoveTo(lix+tl, liy)
-			childDC.LineTo(lix+iw-tr, liy)
-			childDC.QuadraticTo(lix+iw, liy, lix+iw, liy+tr)
-			childDC.LineTo(lix+iw, liy+ih-br)
-			childDC.QuadraticTo(lix+iw, liy+ih, lix+iw-br, liy+ih)
-			childDC.LineTo(lix+bl, liy+ih)
-			childDC.QuadraticTo(lix, liy+ih, lix, liy+ih-bl)
-			childDC.LineTo(lix, liy+tl)
-			childDC.QuadraticTo(lix, liy, lix+tl, liy)
-			childDC.ClosePath()
+		if !innerRadii.IsZero() {
+			buildRoundedRectPathOnDC(childDC, lix, liy, iw, ih, innerRadii)
 			childDC.Fill()
 		} else {
 			childDC.DrawRectangle(lix, liy, iw, ih)
@@ -2674,10 +2728,10 @@ func (r *Renderer) drawInsetShadowBuffer(
 
 // clipInsetShadowBuffer zeroes pixels outside the clip rect in a shadow buffer.
 // Uses a rasterized clip mask for rounded corners to match path rendering exactly.
-func (r *Renderer) clipInsetShadowBuffer(buf *image.RGBA, bx, by, cx, cy, cw, ch float64, radii [4]float64) {
+func (r *Renderer) clipInsetShadowBuffer(buf *image.RGBA, bx, by, cx, cy, cw, ch float64, radii css.EllipticalRadii) {
 	bounds := buf.Bounds()
 	bw, bh := bounds.Dx(), bounds.Dy()
-	hasRadius := radii != [4]float64{}
+	hasRadius := !radii.IsZero()
 
 	if !hasRadius {
 		// Simple rectangular clip.
@@ -2702,17 +2756,7 @@ func (r *Renderer) clipInsetShadowBuffer(buf *image.RGBA, bx, by, cx, cy, cw, ch
 	childDC := r.dc.NewChildContext(clipMask)
 	childDC.SetColor(color.White)
 	lcx, lcy := cx-bx, cy-by
-	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
-	childDC.MoveTo(lcx+tl, lcy)
-	childDC.LineTo(lcx+cw-tr, lcy)
-	childDC.QuadraticTo(lcx+cw, lcy, lcx+cw, lcy+tr)
-	childDC.LineTo(lcx+cw, lcy+ch-br)
-	childDC.QuadraticTo(lcx+cw, lcy+ch, lcx+cw-br, lcy+ch)
-	childDC.LineTo(lcx+bl, lcy+ch)
-	childDC.QuadraticTo(lcx, lcy+ch, lcx, lcy+ch-bl)
-	childDC.LineTo(lcx, lcy+tl)
-	childDC.QuadraticTo(lcx, lcy, lcx+tl, lcy)
-	childDC.ClosePath()
+	buildRoundedRectPathOnDC(childDC, lcx, lcy, cw, ch, radii)
 	childDC.Fill()
 
 	// Zero out pixels outside the clip mask.
@@ -2736,116 +2780,6 @@ func (r *Renderer) clipInsetShadowBuffer(buf *image.RGBA, bx, by, cx, cy, cw, ch
 			}
 		}
 	}
-}
-
-// isInsideRoundedRect checks if a point is inside a rounded rectangle.
-func isInsideRoundedRect(px, py, rx, ry, rw, rh float64, radii [4]float64) bool {
-	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
-	// Check each corner.
-	// Top-left corner
-	if px < rx+tl && py < ry+tl {
-		dx := px - (rx + tl)
-		dy := py - (ry + tl)
-		if dx*dx+dy*dy > tl*tl {
-			return false
-		}
-	}
-	// Top-right corner
-	if px > rx+rw-tr && py < ry+tr {
-		dx := px - (rx + rw - tr)
-		dy := py - (ry + tr)
-		if dx*dx+dy*dy > tr*tr {
-			return false
-		}
-	}
-	// Bottom-right corner
-	if px > rx+rw-br && py > ry+rh-br {
-		dx := px - (rx + rw - br)
-		dy := py - (ry + rh - br)
-		if dx*dx+dy*dy > br*br {
-			return false
-		}
-	}
-	// Bottom-left corner
-	if px < rx+bl && py > ry+rh-bl {
-		dx := px - (rx + bl)
-		dy := py - (ry + rh - bl)
-		if dx*dx+dy*dy > bl*bl {
-			return false
-		}
-	}
-	return true
-}
-
-// drawBlurredShadow renders a shadow shape to an offscreen buffer, applies
-// a 3-pass box blur (approximating Gaussian blur), then composites back.
-func (r *Renderer) drawBlurredShadow(sx, sy, sw, sh float64, radii [4]float64, shadow css.BoxShadow) {
-	// CSS box-shadow blur radius = 2*sigma, so sigma = blur/2.
-	// Extend buffer by 3*sigma on each side for the blur kernel.
-	sigma := shadow.Blur / 2
-	extend := math.Ceil(sigma * 3)
-
-	bx := sx - extend
-	by := sy - extend
-	bw := int(math.Ceil(sw + 2*extend))
-	bh := int(math.Ceil(sh + 2*extend))
-
-	if bw <= 0 || bh <= 0 {
-		return
-	}
-
-	// Cap buffer size to prevent OOM on huge shadows.
-	if bw > 2000 || bh > 2000 {
-		// Fall back to non-blurred shadow.
-		r.setColor(shadow.Color)
-		if radii != [4]float64{} {
-			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
-			r.dc.Fill()
-		} else {
-			r.dc.DrawRectangle(sx, sy, sw, sh)
-			r.dc.Fill()
-		}
-		return
-	}
-
-	// Create offscreen buffer.
-	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
-	childDC := r.dc.NewChildContext(buf)
-
-	// Draw shadow shape into buffer at local coordinates.
-	localX := sx - bx
-	localY := sy - by
-	childDC.SetColor(color.RGBA{
-		R: shadow.Color.R,
-		G: shadow.Color.G,
-		B: shadow.Color.B,
-		A: uint8(shadow.Color.A * 255),
-	})
-	if radii != [4]float64{} {
-		tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
-		childDC.MoveTo(localX+tl, localY)
-		childDC.LineTo(localX+sw-tr, localY)
-		childDC.QuadraticTo(localX+sw, localY, localX+sw, localY+tr)
-		childDC.LineTo(localX+sw, localY+sh-br)
-		childDC.QuadraticTo(localX+sw, localY+sh, localX+sw-br, localY+sh)
-		childDC.LineTo(localX+bl, localY+sh)
-		childDC.QuadraticTo(localX, localY+sh, localX, localY+sh-bl)
-		childDC.LineTo(localX, localY+tl)
-		childDC.QuadraticTo(localX, localY, localX+tl, localY)
-		childDC.ClosePath()
-		childDC.Fill()
-	} else {
-		childDC.DrawRectangle(localX, localY, sw, sh)
-		childDC.Fill()
-	}
-
-	// Apply 3-pass box blur (approximates Gaussian).
-	boxBlur(buf, int(math.Round(sigma)))
-	boxBlur(buf, int(math.Round(sigma)))
-	boxBlur(buf, int(math.Round(sigma)))
-
-	// Composite blurred buffer back to main canvas.
-	r.dc.DrawImage(buf, int(math.Round(bx)), int(math.Round(by)))
 }
 
 // boxBlur applies a separable box blur (horizontal then vertical pass)

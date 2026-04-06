@@ -198,6 +198,17 @@ func findCommaOutsideParens(s string) int {
 }
 
 func (s *Style) Set(property, value string) {
+	// CSS spec: box-shadow accepts either "none" OR a comma-separated list of
+	// shadows, but not both. Reject invalid declarations so they don't overwrite
+	// a previous valid value in the cascade.
+	if property == "box-shadow" && value != "none" {
+		parts := splitCommaSeparated(value)
+		for _, part := range parts {
+			if strings.TrimSpace(part) == "none" {
+				return // Invalid: "none" mixed with other values
+			}
+		}
+	}
 	s.Properties[property] = value
 }
 
@@ -1039,6 +1050,130 @@ type EllipticalRadius struct {
 // IsCircular returns true if both radii are equal.
 func (e EllipticalRadius) IsCircular() bool { return e.Rx == e.Ry }
 
+// IsZero returns true if both radii are zero.
+func (e EllipticalRadius) IsZero() bool { return e.Rx == 0 && e.Ry == 0 }
+
+// EllipticalRadii holds per-corner elliptical radii for a rounded rectangle.
+// Order: [0]=TopLeft, [1]=TopRight, [2]=BottomRight, [3]=BottomLeft.
+// Mirrors Blink's FloatRoundedRect::Radii.
+type EllipticalRadii [4]EllipticalRadius
+
+// IsZero returns true if all corners have zero radii.
+func (r EllipticalRadii) IsZero() bool {
+	return r[0].IsZero() && r[1].IsZero() && r[2].IsZero() && r[3].IsZero()
+}
+
+// IsCircular returns true if all corners have equal Rx and Ry.
+func (r EllipticalRadii) IsCircular() bool {
+	return r[0].IsCircular() && r[1].IsCircular() && r[2].IsCircular() && r[3].IsCircular()
+}
+
+// ConstrainRadii implements CSS Backgrounds 5.5 corner overlap reduction.
+// If the sum of adjacent radii exceeds the corresponding side length,
+// all radii are scaled down by a uniform factor.
+func (r EllipticalRadii) ConstrainRadii(w, h float64) EllipticalRadii {
+	if w <= 0 || h <= 0 {
+		return EllipticalRadii{}
+	}
+	f := 1.0
+	// Top edge: TL.Rx + TR.Rx vs width
+	if s := r[0].Rx + r[1].Rx; s > 0 && w/s < f {
+		f = w / s
+	}
+	// Bottom edge: BL.Rx + BR.Rx vs width
+	if s := r[3].Rx + r[2].Rx; s > 0 && w/s < f {
+		f = w / s
+	}
+	// Left edge: TL.Ry + BL.Ry vs height
+	if s := r[0].Ry + r[3].Ry; s > 0 && h/s < f {
+		f = h / s
+	}
+	// Right edge: TR.Ry + BR.Ry vs height
+	if s := r[1].Ry + r[2].Ry; s > 0 && h/s < f {
+		f = h / s
+	}
+	if f >= 1 {
+		return r
+	}
+	var out EllipticalRadii
+	for i := range r {
+		out[i].Rx = r[i].Rx * f
+		out[i].Ry = r[i].Ry * f
+		// Per Blink: if either component is zero after scaling, zero both.
+		if out[i].Rx <= 0 || out[i].Ry <= 0 {
+			out[i] = EllipticalRadius{}
+		}
+	}
+	return out
+}
+
+// Inset shrinks radii inward by the given amounts (Blink's Radii::Shrink).
+// TL: Rx -= left, Ry -= top; TR: Rx -= right, Ry -= top;
+// BR: Rx -= right, Ry -= bottom; BL: Rx -= left, Ry -= bottom.
+// If either component <= 0, BOTH become 0. Zero radii stay zero.
+func (r EllipticalRadii) Inset(top, right, bottom, left float64) EllipticalRadii {
+	var out EllipticalRadii
+	// TL
+	if !r[0].IsZero() {
+		out[0].Rx = r[0].Rx - left
+		out[0].Ry = r[0].Ry - top
+		if out[0].Rx <= 0 || out[0].Ry <= 0 {
+			out[0] = EllipticalRadius{}
+		}
+	}
+	// TR
+	if !r[1].IsZero() {
+		out[1].Rx = r[1].Rx - right
+		out[1].Ry = r[1].Ry - top
+		if out[1].Rx <= 0 || out[1].Ry <= 0 {
+			out[1] = EllipticalRadius{}
+		}
+	}
+	// BR
+	if !r[2].IsZero() {
+		out[2].Rx = r[2].Rx - right
+		out[2].Ry = r[2].Ry - bottom
+		if out[2].Rx <= 0 || out[2].Ry <= 0 {
+			out[2] = EllipticalRadius{}
+		}
+	}
+	// BL
+	if !r[3].IsZero() {
+		out[3].Rx = r[3].Rx - left
+		out[3].Ry = r[3].Ry - bottom
+		if out[3].Rx <= 0 || out[3].Ry <= 0 {
+			out[3] = EllipticalRadius{}
+		}
+	}
+	return out
+}
+
+// Outset expands radii outward by the given amounts (Blink's Radii::Outset).
+// Only adjusts non-zero radii. Zero radii stay zero.
+func (r EllipticalRadii) Outset(top, right, bottom, left float64) EllipticalRadii {
+	var out EllipticalRadii
+	for i := range r {
+		out[i] = r[i]
+	}
+	if !r[0].IsZero() {
+		out[0].Rx += left
+		out[0].Ry += top
+	}
+	if !r[1].IsZero() {
+		out[1].Rx += right
+		out[1].Ry += top
+	}
+	if !r[2].IsZero() {
+		out[2].Rx += right
+		out[2].Ry += bottom
+	}
+	if !r[3].IsZero() {
+		out[3].Rx += left
+		out[3].Ry += bottom
+	}
+	return out
+}
+
 // BorderRadiusCorners holds the radius for each corner of a box.
 type BorderRadiusCorners struct {
 	TopLeft     float64
@@ -1075,20 +1210,35 @@ func (s *Style) GetBorderRadius() float64 {
 
 // GetBorderRadiusCorners returns per-corner border-radius values.
 func (s *Style) GetBorderRadiusCorners() BorderRadiusCorners {
+	return s.GetBorderRadiusCornersResolved(0, 0)
+}
+
+// GetBorderRadiusCornersResolved returns per-corner border-radius values,
+// resolving percentage values against the given box dimensions.
+// Per CSS spec, horizontal radius percentages resolve against box width,
+// vertical radius percentages resolve against box height.
+// For the simplified (circular) case, we use the geometric mean approach:
+// percentage is resolved as pct * sqrt(width*height) for consistency, but
+// since this returns only horizontal radius, we resolve against width.
+func (s *Style) GetBorderRadiusCornersResolved(boxWidth, boxHeight float64) BorderRadiusCorners {
 	var corners BorderRadiusCorners
 
+	// For percentage resolution of circular border-radius, the spec says:
+	// horizontal radius: percentage of width; vertical radius: percentage of height.
+	// For the simplified single-radius case, we use the respective dimension.
+	// The diagonal reference (sqrt(w²+h²)/sqrt(2)) is NOT correct per spec.
+
 	// Check individual corners first (higher specificity)
-	// parseBorderRadiusValue handles "75px 50px" two-value syntax (returns first value)
-	if r := s.parseBorderRadiusFirst("border-top-left-radius"); r > 0 {
+	if r := s.parseBorderRadiusFirstWithRef("border-top-left-radius", boxWidth); r > 0 {
 		corners.TopLeft = r
 	}
-	if r := s.parseBorderRadiusFirst("border-top-right-radius"); r > 0 {
+	if r := s.parseBorderRadiusFirstWithRef("border-top-right-radius", boxWidth); r > 0 {
 		corners.TopRight = r
 	}
-	if r := s.parseBorderRadiusFirst("border-bottom-right-radius"); r > 0 {
+	if r := s.parseBorderRadiusFirstWithRef("border-bottom-right-radius", boxWidth); r > 0 {
 		corners.BottomRight = r
 	}
-	if r := s.parseBorderRadiusFirst("border-bottom-left-radius"); r > 0 {
+	if r := s.parseBorderRadiusFirstWithRef("border-bottom-left-radius", boxWidth); r > 0 {
 		corners.BottomLeft = r
 	}
 
@@ -1098,8 +1248,15 @@ func (s *Style) GetBorderRadiusCorners() BorderRadiusCorners {
 	}
 
 	// Fall back to shorthand border-radius (already expanded by expandShorthand)
-	if r, ok := s.GetLength("border-radius"); ok {
-		return BorderRadiusCorners{r, r, r, r}
+	// Check for percentage in shorthand
+	if val, ok := s.Get("border-radius"); ok {
+		if pct, ok := ParsePercentage(val); ok {
+			r := pct / 100 * boxWidth
+			return BorderRadiusCorners{r, r, r, r}
+		}
+		if r, ok := s.GetLength("border-radius"); ok {
+			return BorderRadiusCorners{r, r, r, r}
+		}
 	}
 
 	return corners // all zeros
@@ -1108,22 +1265,57 @@ func (s *Style) GetBorderRadiusCorners() BorderRadiusCorners {
 // parseBorderRadiusFirst parses a border-radius value, returning the first (horizontal) radius.
 // Handles both single value "10px" and two-value "75px 50px" syntax.
 func (s *Style) parseBorderRadiusFirst(property string) float64 {
+	return s.parseBorderRadiusFirstWithRef(property, 0)
+}
+
+// parseBorderRadiusFirstWithRef parses a border-radius value with a reference length for percentage resolution.
+// Per CSS spec: if either component is zero or negative, the corner is not rounded.
+func (s *Style) parseBorderRadiusFirstWithRef(property string, refLen float64) float64 {
 	val, ok := s.Get(property)
 	if !ok {
 		return 0
 	}
-	// Try as single value first
-	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+	parts := strings.Fields(val)
+
+	// Two-value syntax: "25px 0" or "50px -25px" — check both components.
+	if len(parts) == 2 {
+		rx := parseBorderRadiusComponent(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), refLen)
+		ry := parseBorderRadiusComponent(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), refLen)
+		// If either component is zero or negative, the corner is sharp.
+		// Negative values make the declaration invalid per CSS spec.
+		if rx <= 0 || ry <= 0 {
+			return 0
+		}
+		return rx
+	}
+
+	// Single value: try percentage, then length.
+	if pct, ok := ParsePercentage(val); ok {
+		r := pct / 100 * refLen
+		if r <= 0 {
+			return 0
+		}
 		return r
 	}
-	// Try two-value syntax: "75px 50px"
-	parts := strings.Fields(val)
-	if len(parts) >= 1 {
-		if r, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
-			return r
+	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+		if r <= 0 {
+			return 0
 		}
+		return r
 	}
 	return 0
+}
+
+// parseBorderRadiusComponent parses a single border-radius component (length or percentage).
+// Returns a negative value for invalid/negative inputs so callers can detect it.
+func parseBorderRadiusComponent(val string, fontSize, vw, vh, chScale, refLen float64) float64 {
+	if pct, ok := ParsePercentage(val); ok {
+		return pct / 100 * refLen
+	}
+	if r, ok := parseLengthFullWithCh(val, fontSize, vw, vh, chScale); ok {
+		return r
+	}
+	return -1 // unparseable = invalid
 }
 
 // GetBorderRadiusCornersElliptical returns per-corner elliptical border-radius values.
@@ -1190,6 +1382,77 @@ func (s *Style) parseBorderRadiusElliptical(property string) EllipticalRadius {
 		}
 	}
 	return result
+}
+
+// GetBorderRadiiResolved returns per-corner elliptical border-radius values,
+// resolving percentages: Rx% against boxWidth, Ry% against boxHeight.
+// Per CSS spec, negative values and values where either component is zero
+// result in a sharp (zero) corner.
+func (s *Style) GetBorderRadiiResolved(boxWidth, boxHeight float64) EllipticalRadii {
+	var radii EllipticalRadii
+	props := [4]string{
+		"border-top-left-radius", "border-top-right-radius",
+		"border-bottom-right-radius", "border-bottom-left-radius",
+	}
+	for i, prop := range props {
+		radii[i] = s.parseBorderRadiusEllipticalResolved(prop, boxWidth, boxHeight)
+	}
+	// Check if any was set via individual properties
+	anySet := false
+	for _, c := range radii {
+		if !c.IsZero() {
+			anySet = true
+			break
+		}
+	}
+	if !anySet {
+		// Fall back to shorthand border-radius
+		if val, ok := s.Get("border-radius"); ok {
+			rx := parseBorderRadiusComponent(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), boxWidth)
+			if rx > 0 {
+				// Single-value shorthand: same Rx and Ry
+				// For percentage, Ry resolves against height
+				ry := parseBorderRadiusComponent(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), boxHeight)
+				if ry > 0 {
+					e := EllipticalRadius{rx, ry}
+					return EllipticalRadii{e, e, e, e}
+				}
+			}
+		}
+	}
+	return radii
+}
+
+// parseBorderRadiusEllipticalResolved parses a per-corner border-radius value
+// with percentage resolution against the given box dimensions.
+func (s *Style) parseBorderRadiusEllipticalResolved(property string, boxWidth, boxHeight float64) EllipticalRadius {
+	val, ok := s.Get(property)
+	if !ok {
+		return EllipticalRadius{}
+	}
+	parts := strings.Fields(val)
+
+	fs := s.GetFontSize()
+	vw, vh, ch := s.ViewportWidth, s.ViewportHeight, s.chScale()
+
+	if len(parts) == 2 {
+		// Two-value syntax: "25px 50%" or "50px -25px"
+		rx := parseBorderRadiusComponent(parts[0], fs, vw, vh, ch, boxWidth)
+		ry := parseBorderRadiusComponent(parts[1], fs, vw, vh, ch, boxHeight)
+		// If either component is zero or negative, corner is sharp
+		if rx <= 0 || ry <= 0 {
+			return EllipticalRadius{}
+		}
+		return EllipticalRadius{rx, ry}
+	}
+
+	// Single value: resolves against both dimensions
+	rx := parseBorderRadiusComponent(val, fs, vw, vh, ch, boxWidth)
+	ry := parseBorderRadiusComponent(val, fs, vw, vh, ch, boxHeight)
+	if rx <= 0 || ry <= 0 {
+		return EllipticalRadius{}
+	}
+	return EllipticalRadius{rx, ry}
 }
 
 // GetMaxWidth returns the max-width value if set
@@ -2079,35 +2342,74 @@ func (s *Style) GetOutlineOffset() float64 {
 // Single value: all corners. Two values: TL+BR, TR+BL. Three: TL, TR+BL, BR. Four: TL TR BR BL.
 // Note: the "/" syntax for elliptical radii is not supported.
 func expandBorderRadiusProperty(style *Style, value string) {
-	// Ignore elliptical radii (slash syntax) for now
-	if strings.Contains(value, "/") {
-		// Just use the first (horizontal) set
-		value = strings.TrimSpace(strings.SplitN(value, "/", 2)[0])
+	// If the value is "inherit" or "initial", expand to all individual corner properties
+	// so that resolveInheritValues can find each corner on the parent.
+	lower := strings.TrimSpace(strings.ToLower(value))
+	if lower == "inherit" || lower == "initial" || lower == "unset" {
+		style.Set("border-top-left-radius", lower)
+		style.Set("border-top-right-radius", lower)
+		style.Set("border-bottom-right-radius", lower)
+		style.Set("border-bottom-left-radius", lower)
+		return
 	}
 
-	parts := strings.Fields(value)
+	// Handle elliptical radii (slash syntax): "10px 20px / 5px 15px"
+	// First set = horizontal radii (Rx), second set = vertical radii (Ry).
+	var hParts, vParts []string
+	if strings.Contains(value, "/") {
+		halves := strings.SplitN(value, "/", 2)
+		hParts = strings.Fields(strings.TrimSpace(halves[0]))
+		vParts = strings.Fields(strings.TrimSpace(halves[1]))
+	} else {
+		hParts = strings.Fields(value)
+		vParts = nil // no vertical set = same as horizontal
+	}
+
+	// Expand 1-4 values to exactly 4 per CSS spec (TL, TR, BR, BL pattern).
+	hExpanded := expandFourValues(hParts)
+	var vExpanded [4]string
+	if vParts != nil {
+		vExpanded = expandFourValues(vParts)
+	}
+
+	if hExpanded == [4]string{} {
+		return // no valid values
+	}
+
+	if vParts == nil && len(hParts) == 1 {
+		// Single value, no slash — store as shorthand for backward compat
+		style.Set("border-radius", hParts[0])
+		return
+	}
+
+	// Store per-corner as "Rx Ry" two-value or just "Rx" single-value
+	corners := [4]string{
+		"border-top-left-radius", "border-top-right-radius",
+		"border-bottom-right-radius", "border-bottom-left-radius",
+	}
+	for i, prop := range corners {
+		if vParts != nil && vExpanded[i] != "" {
+			style.Set(prop, hExpanded[i]+" "+vExpanded[i])
+		} else {
+			style.Set(prop, hExpanded[i])
+		}
+	}
+}
+
+// expandFourValues expands 1-4 CSS values to exactly 4 using the standard
+// TL TR BR BL pattern (same as margin/padding).
+func expandFourValues(parts []string) [4]string {
 	switch len(parts) {
 	case 1:
-		// All corners the same — store as shorthand for backward compat
-		style.Set("border-radius", parts[0])
+		return [4]string{parts[0], parts[0], parts[0], parts[0]}
 	case 2:
-		// TL+BR, TR+BL
-		style.Set("border-top-left-radius", parts[0])
-		style.Set("border-bottom-right-radius", parts[0])
-		style.Set("border-top-right-radius", parts[1])
-		style.Set("border-bottom-left-radius", parts[1])
+		return [4]string{parts[0], parts[1], parts[0], parts[1]}
 	case 3:
-		// TL, TR+BL, BR
-		style.Set("border-top-left-radius", parts[0])
-		style.Set("border-top-right-radius", parts[1])
-		style.Set("border-bottom-left-radius", parts[1])
-		style.Set("border-bottom-right-radius", parts[2])
+		return [4]string{parts[0], parts[1], parts[2], parts[1]}
 	case 4:
-		// TL, TR, BR, BL
-		style.Set("border-top-left-radius", parts[0])
-		style.Set("border-top-right-radius", parts[1])
-		style.Set("border-bottom-right-radius", parts[2])
-		style.Set("border-bottom-left-radius", parts[3])
+		return [4]string{parts[0], parts[1], parts[2], parts[3]}
+	default:
+		return [4]string{}
 	}
 }
 
@@ -2726,6 +3028,34 @@ func parseColorFloat01(s string, maxValue float64) float64 {
 	return v / maxValue
 }
 
+// parseSpaceSeparatedRGB parses CSS4 space-separated rgb/rgba syntax:
+// "R G B" or "R G B / A" where values can be numbers (0-255) or percentages.
+func parseSpaceSeparatedRGB(inner string) (Color, bool) {
+	parts, alpha := parseSpaceSeparatedColorArgs(inner)
+	if len(parts) < 3 {
+		return Color{}, false
+	}
+	r := int(math.Round(parseColorFloat01(parts[0], 255.0) * 255))
+	g := int(math.Round(parseColorFloat01(parts[1], 255.0) * 255))
+	b := int(math.Round(parseColorFloat01(parts[2], 255.0) * 255))
+	if r < 0 {
+		r = 0
+	} else if r > 255 {
+		r = 255
+	}
+	if g < 0 {
+		g = 0
+	} else if g > 255 {
+		g = 255
+	}
+	if b < 0 {
+		b = 0
+	} else if b > 255 {
+		b = 255
+	}
+	return Color{uint8(r), uint8(g), uint8(b), alpha}, true
+}
+
 // parseLabComponent parses a Lab a/b component.
 // Can be a raw number (-125 to 125) or a percentage (-100% to 100% of maxVal).
 func parseLabComponent(s string, maxVal float64) float64 {
@@ -2835,7 +3165,7 @@ func ParseColor(colorStr string) (Color, bool) {
 		return Color{0, 0, 0, 0.0}, true
 	}
 
-	// Handle rgb() format (3-arg and 4-arg)
+	// Handle rgb() format (comma-separated and CSS4 space-separated)
 	if strings.HasPrefix(colorStr, "rgb(") && strings.HasSuffix(colorStr, ")") {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgb("), ")")
 		parts := strings.Split(values, ",")
@@ -2858,6 +3188,11 @@ func ParseColor(colorStr string) (Color, bool) {
 			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
 				return Color{uint8(r), uint8(g), uint8(b), a}, true
 			}
+		} else if len(parts) == 1 {
+			// CSS Color Level 4: space-separated syntax: rgb(R G B) or rgb(R G B / A)
+			if c, ok := parseSpaceSeparatedRGB(values); ok {
+				return c, true
+			}
 		}
 	}
 
@@ -2874,6 +3209,11 @@ func ParseColor(colorStr string) (Color, bool) {
 			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
 			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
 				return Color{uint8(r), uint8(g), uint8(b), a}, true
+			}
+		} else if len(parts) == 1 {
+			// CSS4 space-separated: rgba(R G B / A)
+			if c, ok := parseSpaceSeparatedRGB(values); ok {
+				return c, true
 			}
 		}
 	}
@@ -3858,12 +4198,18 @@ func (s *Style) GetBoxShadow() []BoxShadow {
 		return nil
 	}
 
-	// Parse box-shadow: offsetX offsetY blur spread color
-	// Example: "2px 2px 5px 0px rgba(0,0,0,0.3)"
-	shadows := make([]BoxShadow, 0)
+	// Split by comma for multiple shadows, respecting parentheses in rgba() etc.
+	parts := splitCommaSeparated(shadowStr)
 
-	// Split by comma for multiple shadows
-	parts := strings.Split(shadowStr, ",")
+	// CSS spec: box-shadow accepts either "none" OR a comma-separated list of shadows.
+	// Mixing "none" with other values is invalid — reject the entire declaration.
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "none" {
+			return nil
+		}
+	}
+
+	shadows := make([]BoxShadow, 0)
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		shadow := parseBoxShadowValue(part)
@@ -3880,7 +4226,8 @@ func (s *Style) GetBoxShadow() []BoxShadow {
 // The color and inset keyword can appear at either the start or end.
 func parseBoxShadowValue(s string) *BoxShadow {
 	s = strings.TrimSpace(s)
-	tokens := strings.Fields(s)
+	// Tokenize respecting parenthesized groups like calc(), rgba(), etc.
+	tokens := tokenizeRespectingParens(s)
 
 	if len(tokens) < 2 {
 		return nil
@@ -3914,6 +4261,9 @@ func parseBoxShadowValue(s string) *BoxShadow {
 	}
 	if len(lengths) >= 3 {
 		shadow.Blur, _ = ParseLength(lengths[2])
+		if shadow.Blur < 0 {
+			return nil // Negative blur radius is invalid per spec
+		}
 	}
 	if len(lengths) >= 4 {
 		shadow.Spread, _ = ParseLength(lengths[3])
@@ -3931,6 +4281,50 @@ func parseBoxShadowValue(s string) *BoxShadow {
 	}
 
 	return shadow
+}
+
+// tokenizeRespectingParens splits a string by whitespace but keeps
+// parenthesized groups (like calc(), rgba()) together as single tokens.
+func tokenizeRespectingParens(s string) []string {
+	var tokens []string
+	depth := 0
+	start := -1
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case ch == '(':
+			depth++
+			if start == -1 {
+				// Find the start of this token (function name before the paren)
+				start = i
+				for start > 0 && s[start-1] != ' ' {
+					start--
+				}
+			}
+		case ch == ')':
+			depth--
+			if depth == 0 && start >= 0 {
+				tokens = append(tokens, s[start:i+1])
+				start = -1
+			}
+		case ch == ' ' || ch == '\t':
+			if depth > 0 {
+				continue // Inside parens, skip whitespace
+			}
+			if start >= 0 {
+				tokens = append(tokens, s[start:i])
+				start = -1
+			}
+		default:
+			if start == -1 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 && start < len(s) {
+		tokens = append(tokens, s[start:])
+	}
+	return tokens
 }
 
 // isColor checks if a token might be a color value
