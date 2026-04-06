@@ -695,6 +695,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// -webkit-line-clamp: limit block-size to N * line-height.
+	// Requires display:-webkit-box (mapped to flex) with -webkit-box-orient:vertical
+	// (mapped to column direction). The clamp acts as a max-block-size.
+	if lineClamp := fla.style.GetLineClamp(); lineClamp > 0 && !isRow {
+		clampHeight := float64(lineClamp) * fla.style.GetLineHeight()
+		if finalBlockSize > clampHeight {
+			finalBlockSize = clampHeight
+		}
+	}
+
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
