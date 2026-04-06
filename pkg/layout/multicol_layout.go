@@ -90,78 +90,130 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Create the anonymous content node wrapping multicol children.
-	contentNode := mla.contentNode()
-
-	// Determine column height.
-	var colHeight float64
-	if hasExplicitBlock {
-		colHeight = explicitBlockSize
-	} else {
-		// Column balancing: lay out unconstrained to get total content height,
-		// then balance across columns with iterative refinement.
-		colHeight = mla.balanceColumnHeight(contentNode, wdm, usedColWidth, numCols, gap)
+	// Split children into segments separated by column-span:all elements.
+	// Each segment is either a "column row" (normal multicol content) or
+	// a spanner (laid out at full container width).
+	type segment struct {
+		isSpanner bool
+		children  []*LayoutInputNode // for column rows
+		spanner   *LayoutInputNode   // for spanners
+	}
+	var segments []segment
+	var currentChildren []*LayoutInputNode
+	for _, child := range mla.node.Children() {
+		childStyle := child.Style()
+		if childStyle != nil && childStyle.GetColumnSpan() == "all" {
+			// Flush accumulated children as a column row segment.
+			if len(currentChildren) > 0 {
+				segments = append(segments, segment{children: currentChildren})
+				currentChildren = nil
+			}
+			segments = append(segments, segment{isSpanner: true, spanner: child})
+		} else {
+			currentChildren = append(currentChildren, child)
+		}
+	}
+	if len(currentChildren) > 0 {
+		segments = append(segments, segment{children: currentChildren})
 	}
 
-	// Layout columns using fragmentation.
-	var breakToken *BlockBreakToken
-	inlineOffset := 0.0
-	maxColHeight := 0.0
-	actualCols := 0
+	// Lay out each segment.
+	blockCursor := 0.0
 
-	for col := 0; col < numCols; col++ {
-		// Create constraint space for this column with fragmentation.
-		colSpace := NewConstraintSpaceBuilder(wdm, wdm, true). // New BFC per column
-			SetAvailableSize(LogicalSize{
-				InlineSize: usedColWidth,
-				BlockSize:  colHeight,
-			}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: usedColWidth,
-				BlockSize:  colHeight,
-			}).
-			SetPercentageResolutionInlineSize(usedColWidth).
-			SetIsFixedBlockSize(true).
-			SetHasBlockFragmentation(true).
-			SetFragmentainerBlockSize(colHeight).
-			SetFragmentainerOffset(0).
-			SetBlockFragmentationType(FragmentColumn).
-			SetBreakToken(breakToken).
-			Build()
+	for _, seg := range segments {
+		if seg.isSpanner {
+			// Column-span:all: lay out at full container width.
+			spannerSpace := NewConstraintSpaceBuilder(wdm, wdm, true).
+				SetAvailableSize(LogicalSize{
+					InlineSize: contentInlineSize,
+					BlockSize:  Indefinite,
+				}).
+				SetPercentageResolutionSize(LogicalSize{
+					InlineSize: contentInlineSize,
+					BlockSize:  0,
+				}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
 
-		// Delegate to BlockLayoutAlgorithm.
-		result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
-		if result == nil || result.Fragment == nil {
-			break
+			spanResult := layoutElement(mla.ctx, seg.spanner, spannerSpace)
+			if spanResult != nil && spanResult.Fragment != nil {
+				builder.AddChild(spanResult.Fragment, LogicalOffset{
+					InlineOffset: 0,
+					BlockOffset:  blockCursor,
+				})
+				spanBlockSize := NewLogicalFragment(wdm, spanResult.Fragment).BlockSize()
+				blockCursor += spanBlockSize
+			}
+			continue
 		}
 
-		// Add this column's fragment at the correct inline offset.
-		builder.AddChild(result.Fragment, LogicalOffset{
-			InlineOffset: inlineOffset,
-			BlockOffset:  0,
-		})
-
-		// Track actual column height for sizing.
-		colBlockSize := NewLogicalFragment(wdm, result.Fragment).BlockSize()
-		if colBlockSize > maxColHeight {
-			maxColHeight = colBlockSize
-		}
-		actualCols++
-
-		// Check if all content is exhausted.
-		breakToken = result.BreakToken
-		if breakToken == nil {
-			break
+		// Column row: lay out using fragmentation.
+		contentNode := &LayoutInputNode{
+			style:       mla.style,
+			children:    seg.children,
+			isAnonymous: true,
 		}
 
-		inlineOffset += usedColWidth + gap
+		// Determine column height for this row.
+		var colHeight float64
+		if hasExplicitBlock {
+			colHeight = explicitBlockSize
+		} else {
+			colHeight = mla.balanceColumnHeight(contentNode, wdm, usedColWidth, numCols, gap)
+		}
+
+		// Layout columns.
+		var breakToken *BlockBreakToken
+		inlineOffset := 0.0
+		maxColHeight := 0.0
+
+		for col := 0; col < numCols; col++ {
+			colSpace := NewConstraintSpaceBuilder(wdm, wdm, true).
+				SetAvailableSize(LogicalSize{
+					InlineSize: usedColWidth,
+					BlockSize:  colHeight,
+				}).
+				SetPercentageResolutionSize(LogicalSize{
+					InlineSize: usedColWidth,
+					BlockSize:  colHeight,
+				}).
+				SetPercentageResolutionInlineSize(usedColWidth).
+				SetIsFixedBlockSize(true).
+				SetHasBlockFragmentation(true).
+				SetFragmentainerBlockSize(colHeight).
+				SetFragmentainerOffset(0).
+				SetBlockFragmentationType(FragmentColumn).
+				SetBreakToken(breakToken).
+				Build()
+
+			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
+			if result == nil || result.Fragment == nil {
+				break
+			}
+
+			builder.AddChild(result.Fragment, LogicalOffset{
+				InlineOffset: inlineOffset,
+				BlockOffset:  blockCursor,
+			})
+
+			colBlockSize := NewLogicalFragment(wdm, result.Fragment).BlockSize()
+			if colBlockSize > maxColHeight {
+				maxColHeight = colBlockSize
+			}
+
+			breakToken = result.BreakToken
+			if breakToken == nil {
+				break
+			}
+
+			inlineOffset += usedColWidth + gap
+		}
+
+		blockCursor += maxColHeight
 	}
-
-	// If break token still exists after max columns, content overflows.
-	// (CSS spec says content overflows the last column.)
 
 	// Final block size.
-	finalBlockSize := maxColHeight
+	finalBlockSize := blockCursor
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
 	}
@@ -207,7 +259,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		Border:  physBorder,
 		Padding: physPadding,
 	})
-	builder.SetIntrinsicBlockSize(maxColHeight)
+	builder.SetIntrinsicBlockSize(blockCursor)
 
 	result := builder.Build()
 	result.PropagatedOOFCandidates = propagatedOOF
