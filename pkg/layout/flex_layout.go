@@ -547,73 +547,49 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// §9.8 — Main axis alignment (justify-content) and item positioning.
 	justifyContent := fla.getJustifyContent()
 	// Resolve physical/logical keywords (left/right/start/end) to flex-relative
-	// equivalents (flex-start/flex-end), accounting for writing direction AND
-	// flex direction reversal.
+	// equivalents (flex-start/flex-end).
 	//
-	// "left"/"right" are physical: they always refer to the physical left/right
-	// edge, regardless of flex-direction or writing mode.
-	// "start"/"end" are logical: they refer to the writing-mode start/end edge.
-	// "flex-start"/"flex-end" are flex-relative: they follow flex direction.
-	//
-	// In a reversed flex container (row-reverse/column-reverse), the physical
-	// start is at the opposite end, so the mapping flips.
-	mainIsHorizontal := !wdm.IsVertical() == isRow
-	if mainIsHorizontal {
+	// Step 1: Resolve left/right to start/end.
+	// Per CSS Box Alignment §4.1:
+	//   - When the main axis is the inline axis (isRow): left/right resolve
+	//     based on the CSS direction property (LTR/RTL).
+	//   - When the main axis is NOT the inline axis (!isRow): both left and
+	//     right fall back to "start".
+	if isRow {
 		isLTR := wdm.Dir != DirectionRTL
-		// For horizontal main axis: determine if physical-left == flex-start.
-		// In row + LTR: left == flex-start
-		// In row + RTL: left == flex-end  (but RTL reversal is handled by logical coords)
-		// In row-reverse + LTR: left == flex-end (physical left is main-end)
-		// In row-reverse + RTL: left == flex-start
-		leftIsFlexStart := isLTR != reverseMain
 		if justifyContent == "left" {
-			if leftIsFlexStart {
-				justifyContent = "flex-start"
+			if isLTR {
+				justifyContent = "start"
 			} else {
-				justifyContent = "flex-end"
+				justifyContent = "end"
 			}
 		} else if justifyContent == "right" {
-			if leftIsFlexStart {
-				justifyContent = "flex-end"
+			if isLTR {
+				justifyContent = "end"
 			} else {
-				justifyContent = "flex-start"
-			}
-		}
-		// "start"/"end" are logical (follow writing direction, not flex direction).
-		// In LTR, start == physical left; in RTL, start == physical right.
-		// Map through the same leftIsFlexStart logic.
-		if justifyContent == "start" {
-			if isLTR == leftIsFlexStart {
-				justifyContent = "flex-start"
-			} else {
-				justifyContent = "flex-end"
-			}
-		} else if justifyContent == "end" {
-			if isLTR == leftIsFlexStart {
-				justifyContent = "flex-end"
-			} else {
-				justifyContent = "flex-start"
+				justifyContent = "start"
 			}
 		}
 	} else {
-		// Vertical main axis: left/right are not applicable, fall back to flex-start.
 		if justifyContent == "left" || justifyContent == "right" {
+			justifyContent = "start"
+		}
+	}
+	// Step 2: Resolve start/end to flex-start/flex-end.
+	// "start" = main-axis start in the writing direction (inline-start for row,
+	// block-start for column). In a reversed flex container, the writing-direction
+	// start is the flex-end.
+	if justifyContent == "start" {
+		if reverseMain {
+			justifyContent = "flex-end"
+		} else {
 			justifyContent = "flex-start"
 		}
-		// "start"/"end" on a vertical main axis: start == block-start == flex-start
-		// (unless column-reverse, where block-start == flex-end).
-		if justifyContent == "start" {
-			if reverseMain {
-				justifyContent = "flex-end"
-			} else {
-				justifyContent = "flex-start"
-			}
-		} else if justifyContent == "end" {
-			if reverseMain {
-				justifyContent = "flex-start"
-			} else {
-				justifyContent = "flex-end"
-			}
+	} else if justifyContent == "end" {
+		if reverseMain {
+			justifyContent = "flex-start"
+		} else {
+			justifyContent = "flex-end"
 		}
 	}
 
