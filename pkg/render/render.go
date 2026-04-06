@@ -6,7 +6,9 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"strings"
 	"sync"
+	"unicode"
 
 	"louis14/pkg/css"
 	"louis14/pkg/images"
@@ -1032,9 +1034,47 @@ func (r *Renderer) setColor(c css.Color) {
 	})
 }
 
+// applyTextTransform applies CSS text-transform to a string.
+func applyTextTransform(s string, transform css.TextTransform) string {
+	switch transform {
+	case css.TextTransformUppercase:
+		return strings.ToUpper(s)
+	case css.TextTransformLowercase:
+		return strings.ToLower(s)
+	case css.TextTransformCapitalize:
+		return capitalizeWords(s)
+	}
+	return s
+}
+
+// capitalizeWords capitalizes the first letter of each word (CSS capitalize).
+func capitalizeWords(s string) string {
+	inWord := false
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) {
+			inWord = false
+			b.WriteRune(r)
+		} else if !inWord {
+			inWord = true
+			b.WriteRune(unicode.ToUpper(r))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // drawText paints text content using pre-computed font/color properties.
 func (r *Renderer) drawText(layer *PaintLayer) {
 	box := layer.Box
+
+	// Apply CSS text-transform.
+	text := box.Text
+	if layer.TextTransform != css.TextTransformNone {
+		text = applyTextTransform(text, layer.TextTransform)
+	}
 
 	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
 	fontID := r.openFont(fontPath, layer.FontSize)
@@ -1068,7 +1108,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			B: layer.TextColor.B,
 			A: uint8(layer.TextColor.A * 255),
 		})
-		childDC.DrawText(box.Text, fontID, 0, ascent)
+		childDC.DrawText(text, fontID, 0, ascent)
 
 		// Rotate pixels 90° into destination (lh × ta) buffer.
 		rot := image.NewRGBA(image.Rect(0, 0, lh, ta))
@@ -1099,7 +1139,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	// is fontSize tall and the glyph is centered horizontally.
 	if layer.IsVerticalText {
 		y := box.Y
-		for _, ch := range box.Text {
+		for _, ch := range text {
 			charStr := string(ch)
 			charW := r.dc.MeasureText(charStr, fontID)
 			xOffset := (box.Width - charW) / 2
@@ -1118,29 +1158,29 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	if layer.LetterSpacing != 0 {
 		x := box.X
 		baselineY := box.Y + ascent
-		for _, ch := range box.Text {
+		for _, ch := range text {
 			r.dc.DrawText(string(ch), fontID, x, baselineY)
 			charW := r.dc.MeasureText(string(ch), fontID)
 			x += charW + layer.LetterSpacing
 		}
 	} else {
-		r.dc.DrawText(box.Text, fontID, box.X, box.Y+ascent)
+		r.dc.DrawText(text, fontID, box.X, box.Y+ascent)
 	}
 
 	// Draw text decoration lines (underline, overline, line-through).
-	r.drawTextDecoration(layer, box, fontID, ascent)
+	r.drawTextDecoration(layer, text, box, fontID, ascent)
 }
 
 // drawTextDecoration renders underline, overline, or line-through decoration
 // lines for non-vertical, non-sideways text.
-func (r *Renderer) drawTextDecoration(layer *PaintLayer, box *layout.Box, fontID int32, ascent float64) {
+func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
 	if layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "" {
 		return
 	}
 
 	metrics := r.dc.GetFontMetrics(fontID)
 	descent := float64(metrics.Descent) / 64.0
-	textWidth := r.dc.MeasureText(box.Text, fontID)
+	textWidth := r.dc.MeasureText(text, fontID)
 
 	r.setColor(layer.TextDecorationColor)
 	r.dc.SetLineWidth(layer.TextDecorationThickness)

@@ -82,6 +82,9 @@ type PaintLayer struct {
 	TextDecorationColor     css.Color  // defaults to TextColor (currentColor)
 	TextDecorationThickness float64    // defaults to ~1px
 
+	// CSS text-transform (uppercase, lowercase, capitalize):
+	TextTransform css.TextTransform
+
 	// CSS Transforms:
 	Transforms      []css.Transform
 	TransformOrigin [2]float64 // resolved to px: (origin-x, origin-y)
@@ -254,6 +257,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.TextDecorationColor = currentColor
 	}
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
+	layer.TextTransform = s.GetTextTransform()
 
 	// CSS Transforms.
 	transforms := s.GetTransforms()
