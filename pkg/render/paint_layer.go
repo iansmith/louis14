@@ -115,6 +115,7 @@ type PaintLayer struct {
 	// List markers:
 	IsListItem      bool
 	ListStyleType   css.ListStyleType
+	ListStyleImage  string    // URL from list-style-image (empty or "none" means no image)
 	ListItemIndex   int // 1-based ordinal for ordered lists
 	MarkerContent   string    // custom content from ::marker { content: "..." }
 	MarkerColor     css.Color // color override from ::marker rules
@@ -396,6 +397,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.IsListItem = true
 		layer.ListStyleType = s.GetListStyleType()
 		layer.ListItemIndex = computeListItemIndex(box)
+		if imgVal, ok := s.Get("list-style-image"); ok && imgVal != "none" {
+			if u, valid := css.ParseURLValue(imgVal); valid {
+				layer.ListStyleImage = u
+			}
+		}
 
 		// ::marker pseudo-element: apply styling overrides.
 		if ms := box.MarkerStyle; ms != nil {

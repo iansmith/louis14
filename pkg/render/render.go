@@ -874,7 +874,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	// List markers (disc, circle, square, decimal, or custom ::marker content).
-	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "") {
+	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "" || layer.ListStyleImage != "") {
 		r.drawListMarker(layer)
 	}
 
@@ -2560,6 +2560,34 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 		r.setColor(layer.MarkerColor)
 	} else {
 		r.setColor(layer.TextColor)
+	}
+
+	// If list-style-image is set, try to load and draw it.
+	if layer.ListStyleImage != "" && r.imageFetcher != nil {
+		if img, err := images.LoadImageWithFetcher(layer.ListStyleImage, r.imageFetcher); err == nil {
+			imgW := img.Bounds().Dx()
+			imgH := img.Bounds().Dy()
+			if imgW > 0 && imgH > 0 {
+				// Scale to fit within 1em, preserving aspect ratio.
+				maxSize := fontSize
+				scale := 1.0
+				if float64(imgW) > maxSize || float64(imgH) > maxSize {
+					scale = math.Min(maxSize/float64(imgW), maxSize/float64(imgH))
+				}
+				dw := int(math.Round(float64(imgW) * scale))
+				dh := int(math.Round(float64(imgH) * scale))
+				if dw > 0 && dh > 0 {
+					scaled := scaleImageNearest(img, imgW, imgH, dw, dh)
+					// Position: right edge aligned to left of content, vertically
+					// centered on the first line (same as bullet markers).
+					ix := int(math.Round(contentLeft-box.Padding.Left/2)) - dw/2
+					iy := int(math.Round(my)) - dh/2
+					r.dc.DrawImage(scaled, ix, iy)
+					return
+				}
+			}
+		}
+		// Fall through to list-style-type if image fails to load.
 	}
 
 	// If ::marker has custom content, draw it as text.
