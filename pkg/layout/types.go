@@ -88,6 +88,10 @@ func (b *Box) CreatesStackingContext() bool {
 	if filters := b.Style.GetFilter(); len(filters) > 0 {
 		return true
 	}
+	// CSS mix-blend-mode: elements with non-normal blend mode create a stacking context.
+	if bm := b.Style.GetMixBlendMode(); bm != css.MixBlendModeNormal && bm != "" {
+		return true
+	}
 	return false
 }
 
