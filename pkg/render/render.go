@@ -936,11 +936,10 @@ func (r *Renderer) buildRoundedRectPathReverse(x, y, w, h float64, radii [4]floa
 	r.dc.ClosePath()
 }
 
-// backgroundClipRect computes the background painting area based on
-// the background-clip property (border-box, padding-box, content-box).
-func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
-	box := layer.Box
-	switch layer.BackgroundClip {
+// backgroundClipRectForClip computes the background painting area based on
+// a background-clip value (border-box, padding-box, content-box).
+func backgroundClipRectForClip(box *layout.Box, clip css.BackgroundClipType) (float64, float64, float64, float64) {
+	switch clip {
 	case css.BackgroundClipPaddingBox:
 		return pixelSnap(
 			box.X+box.Border.Left, box.Y+box.Border.Top,
@@ -957,13 +956,26 @@ func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, floa
 	}
 }
 
-// backgroundClipRadii adjusts border radii for the background-clip inset.
-// When painting inside the padding-box or content-box, radii must be reduced
-// by the inset amount to maintain correct curvature.
-func backgroundClipRadii(layer *PaintLayer) [4]float64 {
+// backgroundClipRect returns the clip rect for background-color.
+// Per CSS spec, background-color is clipped by the bottom-most layer's clip.
+func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
+	clip := layer.BackgroundClip
+	if fl := layer.BackgroundLayers; fl != nil {
+		// Find the bottom layer's clip for background-color.
+		for cur := fl; cur != nil; cur = cur.Next {
+			if cur.Next == nil {
+				clip = cur.Clip
+			}
+		}
+	}
+	return backgroundClipRectForClip(layer.Box, clip)
+}
+
+// backgroundClipRadiiForClip adjusts border radii for a background-clip inset.
+func backgroundClipRadiiForClip(layer *PaintLayer, clip css.BackgroundClipType) [4]float64 {
 	radii := layer.BorderRadius
 	box := layer.Box
-	switch layer.BackgroundClip {
+	switch clip {
 	case css.BackgroundClipPaddingBox:
 		radii = [4]float64{
 			math.Max(0, radii[0]-math.Max(box.Border.Left, box.Border.Top)),
@@ -982,58 +994,96 @@ func backgroundClipRadii(layer *PaintLayer) [4]float64 {
 	return radii
 }
 
-// drawBackground paints the layer's background color and image (pre-computed).
+// backgroundClipRadii returns radii for background-color's clip area.
+func backgroundClipRadii(layer *PaintLayer) [4]float64 {
+	clip := layer.BackgroundClip
+	if fl := layer.BackgroundLayers; fl != nil {
+		for cur := fl; cur != nil; cur = cur.Next {
+			if cur.Next == nil {
+				clip = cur.Clip
+			}
+		}
+	}
+	return backgroundClipRadiiForClip(layer, clip)
+}
+
+// drawBackground paints the layer's background color and image layers (pre-computed).
+// Layers are painted bottom-to-top (Blink's IterateFillLayersInReverseOrder).
+// Background-color is painted only with the bottommost layer.
 func (r *Renderer) drawBackground(layer *PaintLayer) {
 	sx, sy, sw, sh := r.backgroundClipRect(layer)
 	radii := backgroundClipRadii(layer)
 	hasRadius := radii != [4]float64{}
 
-	// Background color.
-	if c := layer.BackgroundColor; c.A > 0 {
-		r.setColor(c)
-		if hasRadius {
-			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
-			r.dc.Fill()
-		} else {
-			r.dc.DrawRectangle(sx, sy, sw, sh)
-			r.dc.Fill()
+	fl := layer.BackgroundLayers
+
+	if fl == nil {
+		// No layers — just paint background-color.
+		if c := layer.BackgroundColor; c.A > 0 {
+			r.setColor(c)
+			if hasRadius {
+				r.buildRoundedRectPath(sx, sy, sw, sh, radii)
+				r.dc.Fill()
+			} else {
+				r.dc.DrawRectangle(sx, sy, sw, sh)
+				r.dc.Fill()
+			}
 		}
+		return
 	}
 
-	// Background gradient (linear-gradient, etc.).
-	if layer.BackgroundGradient != "" {
-		if hasRadius {
-			r.dc.Push()
-			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
-			r.dc.Clip()
-			r.drawLinearGradient(layer.BackgroundGradient, sx, sy, sw, sh)
-			r.dc.Pop()
-		} else {
-			r.drawLinearGradient(layer.BackgroundGradient, sx, sy, sw, sh)
+	// Paint from bottom to top.
+	fl.IterateReverse(func(bg *css.FillLayer) {
+		// Background-color only on bottom layer.
+		if bg.IsBottomLayer() {
+			if c := layer.BackgroundColor; c.A > 0 {
+				r.setColor(c)
+				if hasRadius {
+					r.buildRoundedRectPath(sx, sy, sw, sh, radii)
+					r.dc.Fill()
+				} else {
+					r.dc.DrawRectangle(sx, sy, sw, sh)
+					r.dc.Fill()
+				}
+			}
 		}
-	}
 
-	// Background image.
-	if layer.BackgroundImage != "" && r.imageFetcher != nil {
-		if hasRadius {
-			r.dc.Push()
-			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
-			r.dc.Clip()
-			r.drawBackgroundImage(layer)
-			r.dc.Pop()
-		} else {
-			r.drawBackgroundImage(layer)
+		// Paint gradient.
+		if bg.Gradient != "" {
+			if hasRadius {
+				r.dc.Push()
+				r.buildRoundedRectPath(sx, sy, sw, sh, radii)
+				r.dc.Clip()
+				r.drawLinearGradient(bg.Gradient, sx, sy, sw, sh)
+				r.dc.Pop()
+			} else {
+				r.drawLinearGradient(bg.Gradient, sx, sy, sw, sh)
+			}
 		}
-	}
+
+		// Paint image.
+		if bg.Image != "" && r.imageFetcher != nil {
+			if hasRadius {
+				r.dc.Push()
+				r.buildRoundedRectPath(sx, sy, sw, sh, radii)
+				r.dc.Clip()
+				r.drawBackgroundImageLayer(layer, bg)
+				r.dc.Pop()
+			} else {
+				r.drawBackgroundImageLayer(layer, bg)
+			}
+		}
+	})
 }
 
-// drawBackgroundImage tiles the background image onto the layer's box.
+// drawBackgroundImageLayer tiles a single background layer's image onto the layer's box.
+// Reads image URL, origin, size, position, repeat from the FillLayer.
 // Tiles are manually clipped to the box bounds because DrawImage bypasses
 // the DrawContext clip mask (fast-path pixel blit ignores clipMask).
 // All arithmetic is integer-based to avoid fractional pixel misalignment.
-func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
+func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer) {
 	box := layer.Box
-	img, err := images.LoadImageWithFetcher(layer.BackgroundImage, r.imageFetcher)
+	img, err := images.LoadImageWithFetcher(bg.Image, r.imageFetcher)
 	if err != nil {
 		return
 	}
@@ -1046,10 +1096,8 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	imgH := float64(imgHI)
 
 	// CSS3 Backgrounds §3.6: background-origin determines the positioning area.
-	// The background image is positioned relative to this area, but clipped to
-	// the background-clip area. Pixel-snap to match snapped background color fill.
 	var originX, originY, originW, originH float64
-	switch layer.BackgroundOrigin {
+	switch bg.Origin {
 	case css.BackgroundOriginBorderBox:
 		originX = math.Round(box.X)
 		originY = math.Round(box.Y)
@@ -1074,7 +1122,7 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	}
 
 	// CSS3 Backgrounds §3.9: Resolve background-size.
-	bgSize := layer.BackgroundSize
+	bgSize := bg.Size
 	if bgSize.Cover || bgSize.Contain {
 		if originW > 0 && originH > 0 && imgW > 0 && imgH > 0 {
 			scaleX := originW / imgW
@@ -1096,7 +1144,6 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 		newH := imgH
 		if bgSize.Width != 0 {
 			if bgSize.Width < 0 {
-				// Negative = percentage of origin box width
 				newW = math.Round(originW * (-bgSize.Width) / 100)
 			} else {
 				newW = math.Round(bgSize.Width)
@@ -1104,13 +1151,11 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 		}
 		if bgSize.Height != 0 {
 			if bgSize.Height < 0 {
-				// Negative = percentage of origin box height
 				newH = math.Round(originH * (-bgSize.Height) / 100)
 			} else {
 				newH = math.Round(bgSize.Height)
 			}
 		}
-		// Handle auto dimension: maintain aspect ratio
 		if bgSize.Width != 0 && bgSize.Height == 0 && imgW > 0 {
 			newH = math.Round(imgH * newW / imgW)
 		} else if bgSize.Width == 0 && bgSize.Height != 0 && imgH > 0 {
@@ -1125,11 +1170,11 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 		}
 	}
 
-	pos := layer.BackgroundPosition
+	pos := bg.Position
 	startX := originX + pos.ResolveX(originW, imgW)
 	startY := originY + pos.ResolveY(originH, imgH)
 
-	repeat := layer.BackgroundRepeat
+	repeat := bg.Repeat
 	repeatX := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatX
 	repeatY := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatY
 
@@ -1167,7 +1212,6 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 
 	for ty := y0; ty < boxY1; ty += imgHI {
 		for tx := x0; tx < boxX1; tx += imgWI {
-			// Clip tile to box bounds.
 			dstX0 := tx
 			if dstX0 < boxX0 {
 				dstX0 = boxX0
@@ -1191,7 +1235,6 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 				continue
 			}
 
-			// Source sub-region within tile image.
 			srcX0 := dstX0 - tx
 			srcY0 := dstY0 - ty
 			srcX1 := dstX1 - tx

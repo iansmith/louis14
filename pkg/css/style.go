@@ -2449,16 +2449,15 @@ func expandFontProperty(style *Style, value string) {
 }
 
 // expandBackgroundProperty expands the background shorthand.
-// It extracts url(...), color, no-repeat, and position components.
+// Handles comma-separated layers: each layer parsed independently, longhands
+// stored as comma-joined strings.
 func expandBackgroundProperty(style *Style, value string) {
-	// If value contains var(), defer expansion — store as background-color
-	// (var() will be resolved later when the property is read)
+	// If value contains var(), defer expansion
 	if strings.Contains(value, "var(") {
 		style.Set("background-color", value)
 		return
 	}
 
-	// Handle "none" - resets background
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "none" {
 		style.Set("background-color", "transparent")
@@ -2466,196 +2465,222 @@ func expandBackgroundProperty(style *Style, value string) {
 		return
 	}
 
-	// Handle image-set() / -webkit-image-set() — extract the first URL candidate
-	// and treat it as a plain url() reference. Must happen before the url() check
-	// since image-set() contains url() inside it.
-	lowerValue := strings.ToLower(value)
-	if strings.Contains(lowerValue, "image-set(") {
-		// Find the image-set( span (possibly prefixed with -webkit-)
-		setIdx := strings.Index(lowerValue, "image-set(")
-		// Walk backwards to include an optional "-webkit-" prefix
-		prefixStart := setIdx
-		if setIdx >= 8 && lowerValue[setIdx-8:setIdx] == "-webkit-" {
-			prefixStart = setIdx - 8
-		}
-		// Find matching close paren for image-set(
-		depth := 1
-		setEnd := setIdx + len("image-set(")
-		for setEnd < len(value) && depth > 0 {
-			switch value[setEnd] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			}
-			if depth > 0 {
-				setEnd++
-			}
-		}
-		setEnd++ // include the closing ')'
-		// Extract the first URL from the image-set
-		imageSetExpr := value[prefixStart:setEnd]
-		if url, ok := extractImageSetFirstURL(imageSetExpr); ok {
-			style.Set("background-image", "url(\""+url+"\")")
-			// Remove image-set(...) from value so remaining tokens can be parsed
-			value = value[:prefixStart] + value[setEnd:]
-		}
-		// Fall through to parse remaining tokens (repeat, position, color)
-	}
+	// Split into comma-separated layers (depth-aware).
+	layers := splitCommaSeparated(trimmed)
 
-	// Extract url(...) first since it may contain spaces (e.g. data URIs).
-	// Must happen before gradient check, as background can have both url() and gradient
-	// in comma-separated layers (e.g., "url(img.svg), linear-gradient(...)").
-	urlStart := strings.Index(value, "url(")
-	if urlStart >= 0 {
-		// Find matching closing paren, accounting for nested parens
-		depth := 0
-		urlEnd := -1
-		for i := urlStart + 4; i < len(value); i++ {
-			if value[i] == '(' {
-				depth++
-			} else if value[i] == ')' {
-				if depth == 0 {
-					urlEnd = i + 1
+	// Per-layer accumulators for each longhand.
+	images := make([]string, len(layers))
+	repeats := make([]string, len(layers))
+	positions := make([]string, len(layers))
+	sizes := make([]string, len(layers))
+	origins := make([]string, len(layers))
+	clips := make([]string, len(layers))
+	bgColor := ""
+
+	for li, layerStr := range layers {
+		layerStr = strings.TrimSpace(layerStr)
+		remaining := layerStr
+
+		// Extract image-set() first
+		lowerRemaining := strings.ToLower(remaining)
+		if strings.Contains(lowerRemaining, "image-set(") {
+			setIdx := strings.Index(lowerRemaining, "image-set(")
+			prefixStart := setIdx
+			if setIdx >= 8 && lowerRemaining[setIdx-8:setIdx] == "-webkit-" {
+				prefixStart = setIdx - 8
+			}
+			depth := 1
+			setEnd := setIdx + len("image-set(")
+			for setEnd < len(remaining) && depth > 0 {
+				switch remaining[setEnd] {
+				case '(':
+					depth++
+				case ')':
+					depth--
+				}
+				if depth > 0 {
+					setEnd++
+				}
+			}
+			setEnd++
+			imageSetExpr := remaining[prefixStart:setEnd]
+			if url, ok := extractImageSetFirstURL(imageSetExpr); ok {
+				images[li] = "url(\"" + url + "\")"
+				remaining = remaining[:prefixStart] + remaining[setEnd:]
+			}
+		}
+
+		// Extract url()
+		if images[li] == "" {
+			if urlStart := strings.Index(remaining, "url("); urlStart >= 0 {
+				depth := 0
+				urlEnd := -1
+				for i := urlStart + 4; i < len(remaining); i++ {
+					if remaining[i] == '(' {
+						depth++
+					} else if remaining[i] == ')' {
+						if depth == 0 {
+							urlEnd = i + 1
+							break
+						}
+						depth--
+					}
+				}
+				if urlEnd > urlStart {
+					images[li] = remaining[urlStart:urlEnd]
+					remaining = remaining[:urlStart] + remaining[urlEnd:]
+				}
+			}
+		}
+
+		// Extract gradient function
+		if images[li] == "" {
+			for _, gradPrefix := range []string{"repeating-linear-gradient(", "repeating-radial-gradient(", "conic-gradient(", "linear-gradient(", "radial-gradient("} {
+				if idx := strings.Index(remaining, gradPrefix); idx >= 0 {
+					depth := 0
+					gradEnd := -1
+					for i := idx + len(gradPrefix) - 1; i < len(remaining); i++ {
+						if remaining[i] == '(' {
+							depth++
+						} else if remaining[i] == ')' {
+							depth--
+							if depth == 0 {
+								gradEnd = i + 1
+								break
+							}
+						}
+					}
+					if gradEnd > idx {
+						images[li] = remaining[idx:gradEnd]
+						remaining = remaining[:idx] + remaining[gradEnd:]
+					}
 					break
 				}
-				depth--
 			}
 		}
-		if urlEnd > urlStart {
-			urlPart := value[urlStart:urlEnd]
-			style.Set("background-image", urlPart)
-			// Remove url(...) from value to parse remaining parts
-			value = value[:urlStart] + value[urlEnd:]
-		}
-	}
 
-	// Check for gradient functions in the remaining value (after URL extraction)
-	for _, gradPrefix := range []string{"repeating-linear-gradient(", "repeating-radial-gradient(", "conic-gradient(", "linear-gradient(", "radial-gradient("} {
-		if idx := strings.Index(value, gradPrefix); idx >= 0 {
-			// Extract the gradient function with balanced parens
-			depth := 0
-			gradEnd := -1
-			for i := idx + len(gradPrefix) - 1; i < len(value); i++ {
-				if value[i] == '(' {
-					depth++
-				} else if value[i] == ')' {
-					depth--
-					if depth == 0 {
-						gradEnd = i + 1
+		// Extract color functions before field-splitting
+		colorFound := false
+		colorValue := ""
+		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "lab(", "hwb(", "color-mix(", "color("} {
+			if idx := strings.Index(remaining, prefix); idx >= 0 {
+				depth := 0
+				end := -1
+				for j := idx; j < len(remaining); j++ {
+					switch remaining[j] {
+					case '(':
+						depth++
+					case ')':
+						depth--
+						if depth == 0 {
+							end = j
+						}
+					}
+					if end >= 0 {
 						break
 					}
 				}
-			}
-			if gradEnd > idx {
-				gradientPart := value[idx:gradEnd]
-				style.Set("background-image", gradientPart)
-				// Parse remaining tokens (before and after gradient) for repeat/position
-				remaining := strings.TrimSpace(value[:idx] + value[gradEnd:])
-				for _, token := range strings.Fields(remaining) {
-					if token == "no-repeat" || token == "repeat" || token == "repeat-x" || token == "repeat-y" {
-						style.Set("background-repeat", token)
-					} else if token == "center" || token == "left" || token == "right" || token == "top" || token == "bottom" {
-						if prev, ok := style.Get("background-position"); ok {
-							style.Set("background-position", prev+" "+token)
-						} else {
-							style.Set("background-position", token)
-						}
+				if end >= 0 {
+					colorFunc := remaining[idx : end+1]
+					if _, ok := ParseColor(colorFunc); ok {
+						colorFound = true
+						colorValue = colorFunc
+						remaining = remaining[:idx] + remaining[end+1:]
 					}
 				}
-			} else {
-				// Fallback: store whole value
-				style.Set("background", value)
+				break
 			}
-			return
+		}
+
+		// Parse remaining tokens
+		parts := strings.Fields(remaining)
+		var positionTokens []string
+		var boxValues []string
+		for _, part := range parts {
+			if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
+				repeats[li] = part
+			} else if part == "border-box" || part == "padding-box" || part == "content-box" {
+				boxValues = append(boxValues, part)
+			} else if _, ok := ParseColor(part); ok {
+				if !colorFound {
+					colorFound = true
+					colorValue = part
+				}
+			} else if part == "transparent" {
+				if !colorFound {
+					colorFound = true
+					colorValue = "transparent"
+				}
+			} else if _, ok := ParseLength(part); ok {
+				positionTokens = append(positionTokens, part)
+			} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
+				positionTokens = append(positionTokens, part)
+			} else if part == "fixed" || part == "scroll" || part == "local" {
+				style.Set("background-attachment", part)
+			}
+		}
+
+		if len(boxValues) >= 1 {
+			origins[li] = boxValues[0]
+			if len(boxValues) >= 2 {
+				clips[li] = boxValues[1]
+			} else {
+				clips[li] = boxValues[0]
+			}
+		}
+
+		// CSS spec: background-color only in the last (bottommost) layer
+		if colorFound {
+			if li == len(layers)-1 {
+				bgColor = colorValue
+			}
+		}
+
+		if len(positionTokens) > 0 {
+			positions[li] = strings.Join(positionTokens, " ")
+		}
+
+		if images[li] == "" {
+			images[li] = "none"
 		}
 	}
 
-	// Extract rgb()/rgba()/hsl()/hsla() color functions before field-splitting,
-	// since they may contain spaces (e.g., "rgb(153, 153, 255)").
-	colorFound := false
-	colorValue := ""
-	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "lab(", "hwb(", "color-mix(", "color("} {
-		if idx := strings.Index(value, prefix); idx >= 0 {
-			// Find matching closing paren (depth-aware for nested parens in color-mix)
-			depth := 0
-			end := -1
-			for j := idx; j < len(value); j++ {
-				switch value[j] {
-				case 40:
-					depth++
-				case 41:
-					depth--
-					if depth == 0 {
-						end = j
-					}
-				}
-				if end >= 0 {
-					break
-				}
-			}
-			if end >= 0 {
-				colorFunc := value[idx : end+1]
-				if _, ok := ParseColor(colorFunc); ok {
-					colorFound = true
-					colorValue = colorFunc
-					// Remove from value for remaining parsing
-					value = value[:idx] + value[end+1:]
-				}
-			}
+	// Store longhands as comma-joined strings.
+	style.Set("background-image", strings.Join(images, ", "))
+	if joinNonEmpty(repeats) != "" {
+		style.Set("background-repeat", joinNonEmpty(repeats))
+	}
+	if joinNonEmpty(positions) != "" {
+		style.Set("background-position", joinNonEmpty(positions))
+	}
+	if joinNonEmpty(sizes) != "" {
+		style.Set("background-size", joinNonEmpty(sizes))
+	}
+	if joinNonEmpty(origins) != "" {
+		style.Set("background-origin", joinNonEmpty(origins))
+	}
+	if joinNonEmpty(clips) != "" {
+		style.Set("background-clip", joinNonEmpty(clips))
+	}
+	if bgColor != "" {
+		style.Set("background-color", bgColor)
+	}
+}
+
+// joinNonEmpty joins strings with commas, skipping empty entries.
+// Returns empty string if all entries are empty.
+func joinNonEmpty(parts []string) string {
+	hasNonEmpty := false
+	for _, p := range parts {
+		if p != "" {
+			hasNonEmpty = true
 			break
 		}
 	}
-
-	// Parse remaining tokens for color, repeat, position
-	parts := strings.Fields(value)
-	positionParts := []string{}
-	// CSS spec: in the background shorthand, box values (border-box/padding-box/content-box)
-	// appear as: [<box> || <box>] where first applies to background-origin and second to
-	// background-clip. If only one is given, it applies to both.
-	boxValues := []string{}
-	for _, part := range parts {
-		if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
-			style.Set("background-repeat", part)
-		} else if part == "border-box" || part == "padding-box" || part == "content-box" {
-			boxValues = append(boxValues, part)
-		} else if _, ok := ParseColor(part); ok {
-			if colorFound {
-				// Two color values = invalid declaration, skip entirely
-				return
-			}
-			colorFound = true
-			colorValue = part
-		} else if part == "transparent" {
-			if colorFound {
-				return
-			}
-			colorFound = true
-			colorValue = "transparent"
-		} else if _, ok := ParseLength(part); ok {
-			positionParts = append(positionParts, part)
-		} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
-			positionParts = append(positionParts, part)
-		} else if part == "fixed" || part == "scroll" || part == "local" {
-			style.Set("background-attachment", part)
-		}
+	if !hasNonEmpty {
+		return ""
 	}
-	// Apply box values: first is background-origin, second (if present) is background-clip.
-	// If only one value given, it applies to both origin and clip.
-	if len(boxValues) >= 1 {
-		style.Set("background-origin", boxValues[0])
-		if len(boxValues) >= 2 {
-			style.Set("background-clip", boxValues[1])
-		} else {
-			style.Set("background-clip", boxValues[0])
-		}
-	}
-	if colorFound {
-		style.Set("background-color", colorValue)
-	}
-	if len(positionParts) > 0 {
-		style.Set("background-position", strings.Join(positionParts, " "))
-	}
+	return strings.Join(parts, ", ")
 }
 
 // Phase 19: Enhanced color with alpha channel
@@ -6154,6 +6179,99 @@ func extractImageSetFirstURL(val string) (string, bool) {
 	return "", false
 }
 
+// FillLayer represents one layer in a multi-layer background (or mask).
+// Linked list: head = topmost CSS layer (painted last), tail = bottommost.
+// Mirrors Blink's FillLayer (third_party/blink/renderer/core/style/fill_layer.h).
+type FillLayer struct {
+	Next *FillLayer // next layer toward bottom; nil = bottommost
+
+	Image    string             // url() value, empty = none
+	Gradient string             // raw gradient string, empty = none
+	Repeat   BackgroundRepeatType
+	Position BackgroundPosition
+	Size     BackgroundSize
+	Origin   BackgroundOriginType
+	Clip     BackgroundClipType
+
+	// Per-property "set" flags — true if explicitly specified for this layer.
+	ImageSet    bool
+	RepeatSet   bool
+	PositionSet bool
+	SizeSet     bool
+	OriginSet   bool
+	ClipSet     bool
+}
+
+// IsBottomLayer returns true if this is the last layer (background-color applies here).
+func (fl *FillLayer) IsBottomLayer() bool { return fl.Next == nil }
+
+// Len returns the number of layers in the list.
+func (fl *FillLayer) Len() int {
+	n := 0
+	for cur := fl; cur != nil; cur = cur.Next {
+		n++
+	}
+	return n
+}
+
+// IterateReverse calls fn for each layer from bottom to top (Blink paint order).
+func (fl *FillLayer) IterateReverse(fn func(*FillLayer)) {
+	if fl == nil {
+		return
+	}
+	if fl.Next != nil {
+		fl.Next.IterateReverse(fn)
+	}
+	fn(fl)
+}
+
+// FillUnsetProperties cycles unset properties from the head of the list,
+// mirroring Blink's FillLayer::FillUnsetProperties.
+func (fl *FillLayer) FillUnsetProperties() {
+	if fl == nil {
+		return
+	}
+	for cur := fl; cur != nil; cur = cur.Next {
+		if !cur.RepeatSet {
+			cur.Repeat = BackgroundRepeatRepeat
+		}
+		if !cur.PositionSet {
+			cur.Position = BackgroundPosition{}
+		}
+		if !cur.SizeSet {
+			cur.Size = BackgroundSize{}
+		}
+		if !cur.OriginSet {
+			cur.Origin = BackgroundOriginPaddingBox
+		}
+		if !cur.ClipSet {
+			cur.Clip = BackgroundClipBorderBox
+		}
+	}
+}
+
+// CullEmptyLayers removes trailing layers that have no image or gradient.
+// Keeps at least one layer (the head) even if empty.
+func (fl *FillLayer) CullEmptyLayers() *FillLayer {
+	if fl == nil {
+		return nil
+	}
+	// Always keep the head. Cull from the tail.
+	fl.Next = fl.Next.cullEmpty()
+	return fl
+}
+
+func (fl *FillLayer) cullEmpty() *FillLayer {
+	if fl == nil {
+		return nil
+	}
+	fl.Next = fl.Next.cullEmpty()
+	if !fl.ImageSet && fl.Gradient == "" && fl.Image == "" {
+		return fl.Next
+	}
+	return fl
+}
+
 // BackgroundRepeatType represents background-repeat values
 type BackgroundRepeatType string
 
@@ -6378,6 +6496,254 @@ func (s *Style) GetBackgroundOrigin() BackgroundOriginType {
 		}
 	}
 	return BackgroundOriginPaddingBox
+}
+
+// GetBackgroundColorClip returns the background-clip value for background-color.
+// Per CSS spec, this is the clip of the bottom-most image layer, cycling clip values.
+func (s *Style) GetBackgroundColorClip() BackgroundClipType {
+	imgVal, _ := s.Get("background-image")
+	clipVal, clipOK := s.Get("background-clip")
+	if !clipOK {
+		return BackgroundClipBorderBox
+	}
+
+	clipParts := splitCommaSeparated(clipVal)
+	if len(clipParts) == 0 {
+		return BackgroundClipBorderBox
+	}
+
+	// Determine layer count from background-image (or 1 if absent).
+	layerCount := 1
+	if imgVal != "" && imgVal != "none" {
+		layerCount = len(splitCommaSeparated(imgVal))
+	}
+
+	// The bottom layer's clip is at index (layerCount-1) % len(clipParts).
+	idx := (layerCount - 1) % len(clipParts)
+	if c, ok := parseClipValue(clipParts[idx]); ok {
+		return c
+	}
+	return BackgroundClipBorderBox
+}
+
+// splitCommaSeparated splits a CSS value by commas, respecting parentheses depth.
+func splitCommaSeparated(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(s[start:]))
+	return parts
+}
+
+// parseRepeatValue parses a single background-repeat value.
+func parseRepeatValue(val string) (BackgroundRepeatType, bool) {
+	switch strings.TrimSpace(val) {
+	case "no-repeat":
+		return BackgroundRepeatNoRepeat, true
+	case "repeat-x":
+		return BackgroundRepeatRepeatX, true
+	case "repeat-y":
+		return BackgroundRepeatRepeatY, true
+	case "repeat":
+		return BackgroundRepeatRepeat, true
+	}
+	return BackgroundRepeatRepeat, false
+}
+
+// parseSizeValue parses a single background-size value.
+func parseSizeValue(val string) (BackgroundSize, bool) {
+	val = strings.TrimSpace(val)
+	switch val {
+	case "cover":
+		return BackgroundSize{Cover: true}, true
+	case "contain":
+		return BackgroundSize{Contain: true}, true
+	case "auto", "":
+		return BackgroundSize{}, false
+	}
+	parts := strings.Fields(val)
+	var size BackgroundSize
+	set := false
+	if len(parts) >= 1 && parts[0] != "auto" {
+		if w, ok := ParseLength(parts[0]); ok {
+			size.Width = w
+			set = true
+		} else if pct, ok := ParsePercentage(parts[0]); ok {
+			size.Width = -pct
+			set = true
+		}
+	}
+	if len(parts) >= 2 && parts[1] != "auto" {
+		if h, ok := ParseLength(parts[1]); ok {
+			size.Height = h
+			set = true
+		} else if pct, ok := ParsePercentage(parts[1]); ok {
+			size.Height = -pct
+			set = true
+		}
+	}
+	return size, set
+}
+
+// parseClipValue parses a single background-clip value.
+func parseClipValue(val string) (BackgroundClipType, bool) {
+	switch strings.TrimSpace(val) {
+	case "padding-box":
+		return BackgroundClipPaddingBox, true
+	case "content-box":
+		return BackgroundClipContentBox, true
+	case "border-box":
+		return BackgroundClipBorderBox, true
+	}
+	return BackgroundClipBorderBox, false
+}
+
+// parseBgOriginValue parses a single background-origin value.
+func parseBgOriginValue(val string) (BackgroundOriginType, bool) {
+	switch strings.TrimSpace(strings.ToLower(val)) {
+	case "border-box":
+		return BackgroundOriginBorderBox, true
+	case "content-box":
+		return BackgroundOriginContentBox, true
+	case "padding-box":
+		return BackgroundOriginPaddingBox, true
+	}
+	return BackgroundOriginPaddingBox, false
+}
+
+// GetBackgroundLayers builds a FillLayer linked list from the style's background
+// longhand properties. Layer count is determined by background-image (the longest
+// longhand). Other longhands cycle. Mirrors Blink's FillLayer construction.
+func (s *Style) GetBackgroundLayers() *FillLayer {
+	imgVal, _ := s.Get("background-image")
+	if imgVal == "" || imgVal == "none" {
+		return nil
+	}
+
+	// Split background-image by commas (depth-aware) to get layer count.
+	imgParts := splitCommaSeparated(imgVal)
+	if len(imgParts) == 0 {
+		return nil
+	}
+
+	// Split other longhands.
+	var repeatParts, posParts, sizeParts, clipParts, originParts []string
+	if v, ok := s.Get("background-repeat"); ok {
+		repeatParts = splitCommaSeparated(v)
+	}
+	if v, ok := s.Get("background-position"); ok {
+		posParts = splitCommaSeparated(v)
+	}
+	if v, ok := s.Get("background-size"); ok {
+		sizeParts = splitCommaSeparated(v)
+	}
+	if v, ok := s.Get("background-clip"); ok {
+		clipParts = splitCommaSeparated(v)
+	}
+	if v, ok := s.Get("background-origin"); ok {
+		originParts = splitCommaSeparated(v)
+	}
+
+	fontSize := s.GetFontSize()
+
+	// Build linked list head→tail (head = topmost CSS layer = first in declaration).
+	var head, prev *FillLayer
+	for i, imgStr := range imgParts {
+		layer := &FillLayer{}
+
+		// Image: check for url() or gradient
+		imgStr = strings.TrimSpace(imgStr)
+		if imgStr != "none" && imgStr != "" {
+			if isGradient(imgStr) {
+				layer.Gradient = imgStr
+				layer.ImageSet = true
+			} else if url, ok := ParseURLValue(imgStr); ok {
+				layer.Image = url
+				layer.ImageSet = true
+			} else if strings.Contains(strings.ToLower(imgStr), "image-set(") {
+				if url, ok := extractImageSetFirstURL(imgStr); ok {
+					layer.Image = url
+					layer.ImageSet = true
+				}
+			}
+		}
+
+		// Repeat
+		if i < len(repeatParts) {
+			if r, ok := parseRepeatValue(repeatParts[i]); ok {
+				layer.Repeat = r
+				layer.RepeatSet = true
+			}
+		}
+
+		// Position
+		if i < len(posParts) {
+			layer.Position = parseBackgroundPosition(posParts[i], fontSize)
+			layer.PositionSet = true
+		}
+
+		// Size
+		if i < len(sizeParts) {
+			if sz, ok := parseSizeValue(sizeParts[i]); ok {
+				layer.Size = sz
+				layer.SizeSet = true
+			}
+		}
+
+		// Clip
+		if i < len(clipParts) {
+			if c, ok := parseClipValue(clipParts[i]); ok {
+				layer.Clip = c
+				layer.ClipSet = true
+			}
+		}
+
+		// Origin
+		if i < len(originParts) {
+			if o, ok := parseBgOriginValue(originParts[i]); ok {
+				layer.Origin = o
+				layer.OriginSet = true
+			}
+		}
+
+		if head == nil {
+			head = layer
+		} else {
+			prev.Next = layer
+		}
+		prev = layer
+	}
+
+	if head != nil {
+		head.FillUnsetProperties()
+		head = head.CullEmptyLayers()
+	}
+
+	return head
+}
+
+// isGradient returns true if the value looks like a CSS gradient function.
+func isGradient(val string) bool {
+	lower := strings.ToLower(strings.TrimSpace(val))
+	for _, prefix := range []string{"linear-gradient(", "radial-gradient(", "repeating-linear-gradient(", "repeating-radial-gradient(", "conic-gradient("} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Phase 23: List styling

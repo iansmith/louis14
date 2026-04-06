@@ -53,14 +53,9 @@ type PaintLayer struct {
 	ObjectPosition [2]float64     // x%, y% in range [0,1]; default (0.5, 0.5)
 
 	// Background:
-	BackgroundColor    css.Color               // A==0 means no background
-	BackgroundImage    string                  // URL from background-image; empty if none
-	BackgroundGradient string                  // raw gradient value (linear-gradient(...) etc); empty if none
-	BackgroundRepeat   css.BackgroundRepeatType // repeat mode
-	BackgroundPosition css.BackgroundPosition   // position offsets
-	BackgroundSize     css.BackgroundSize       // background-size (cover/contain/explicit)
-	BackgroundClip     css.BackgroundClipType   // border-box, padding-box, content-box
-	BackgroundOrigin   css.BackgroundOriginType // border-box, padding-box, content-box
+	BackgroundColor  css.Color              // A==0 means no background
+	BackgroundClip   css.BackgroundClipType // clip for background-color (always set)
+	BackgroundLayers *css.FillLayer         // linked list of layers, head = topmost CSS layer
 
 	// Borders: indices 0=Top, 1=Right, 2=Bottom, 3=Left
 	BorderColors [4]css.Color
@@ -232,17 +227,33 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 	}
 
-	// Background image, repeat, position.
-	if url, ok := s.GetBackgroundImage(); ok {
-		layer.BackgroundImage = url
-		layer.BackgroundRepeat = s.GetBackgroundRepeat()
-		layer.BackgroundPosition = s.GetBackgroundPosition()
-		layer.BackgroundSize = s.GetBackgroundSize()
-	} else if val, ok := s.Get("background-image"); ok && isGradientValue(val) {
-		layer.BackgroundGradient = val
+	// Background clip for background-color (uses bottom layer's clip per CSS spec).
+	layer.BackgroundClip = s.GetBackgroundColorClip()
+
+	// Background layers (multi-layer support via FillLayer linked list).
+	layer.BackgroundLayers = s.GetBackgroundLayers()
+	// Fallback for single-layer backgrounds not caught by GetBackgroundLayers:
+	// e.g., when background-image is a single gradient not in url() form.
+	if layer.BackgroundLayers == nil {
+		if val, ok := s.Get("background-image"); ok && val != "none" && val != "" {
+			if isGradientValue(val) {
+				layer.BackgroundLayers = &css.FillLayer{
+					Gradient:    val,
+					ImageSet:    true,
+					Repeat:      s.GetBackgroundRepeat(),
+					RepeatSet:   true,
+					Position:    s.GetBackgroundPosition(),
+					PositionSet: true,
+					Size:        s.GetBackgroundSize(),
+					SizeSet:     true,
+					Clip:        s.GetBackgroundClip(),
+					ClipSet:     true,
+					Origin:      s.GetBackgroundOrigin(),
+					OriginSet:   true,
+				}
+			}
+		}
 	}
-	layer.BackgroundClip = s.GetBackgroundClip()
-	layer.BackgroundOrigin = s.GetBackgroundOrigin()
 
 	// Border colors: currentColor fallback.
 	currentColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}
