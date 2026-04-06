@@ -745,6 +745,40 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	} else {
 		r.dc.DrawText(box.Text, fontID, box.X, box.Y+ascent)
 	}
+
+	// Draw text decoration lines (underline, overline, line-through).
+	r.drawTextDecoration(layer, box, fontID, ascent)
+}
+
+// drawTextDecoration renders underline, overline, or line-through decoration
+// lines for non-vertical, non-sideways text.
+func (r *Renderer) drawTextDecoration(layer *PaintLayer, box *layout.Box, fontID int32, ascent float64) {
+	if layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "" {
+		return
+	}
+
+	metrics := r.dc.GetFontMetrics(fontID)
+	descent := float64(metrics.Descent) / 64.0
+	textWidth := r.dc.MeasureText(box.Text, fontID)
+
+	r.setColor(layer.TextDecorationColor)
+	r.dc.SetLineWidth(layer.TextDecorationThickness)
+
+	var lineY float64
+	switch layer.TextDecoration {
+	case css.TextDecorationUnderline:
+		lineY = box.Y + ascent + math.Abs(descent)*0.25
+	case css.TextDecorationOverline:
+		lineY = box.Y
+	case css.TextDecorationLineThrough:
+		lineY = box.Y + ascent*0.65
+	default:
+		return
+	}
+
+	r.dc.MoveTo(box.X, lineY)
+	r.dc.LineTo(box.X+textWidth, lineY)
+	r.dc.Stroke()
 }
 
 // SavePNG writes the rendered image to a PNG file.

@@ -73,6 +73,11 @@ type PaintLayer struct {
 	IsSidewaysLR   bool
 	IsSidewaysRL   bool
 
+	// Text decoration (underline, overline, line-through):
+	TextDecoration          css.TextDecoration
+	TextDecorationColor     css.Color  // defaults to TextColor (currentColor)
+	TextDecorationThickness float64    // defaults to ~1px
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -220,6 +225,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.IsVerticalText = box.IsVerticalText
 	layer.IsSidewaysLR = box.IsSidewaysLR
 	layer.IsSidewaysRL = box.IsSidewaysRL
+
+	// Text decoration.
+	layer.TextDecoration = s.GetTextDecoration()
+	if decColor, ok := s.GetTextDecorationColor(); ok {
+		layer.TextDecorationColor = decColor
+	} else {
+		layer.TextDecorationColor = currentColor
+	}
+	layer.TextDecorationThickness = s.GetTextDecorationThickness()
 
 	return layer
 }
