@@ -84,6 +84,10 @@ func (b *Box) CreatesStackingContext() bool {
 	if transforms := b.Style.GetTransforms(); len(transforms) > 0 {
 		return true
 	}
+	// CSS Filters: elements with a filter create a stacking context.
+	if filters := b.Style.GetFilter(); len(filters) > 0 {
+		return true
+	}
 	return false
 }
 

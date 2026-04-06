@@ -216,6 +216,12 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS Filters: render subtree to offscreen buffer, apply filters, composite.
+	if layer.HasFilter {
+		r.paintLayerWithFilter(layer)
+		return
+	}
+
 	// Apply CSS transform if present (wraps around opacity handling).
 	if layer.HasTransform {
 		r.dc.Push()
@@ -233,6 +239,203 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 
 	if layer.HasTransform {
 		r.dc.Pop()
+	}
+}
+
+// paintLayerWithFilter renders the entire layer subtree into an offscreen
+// buffer, applies CSS filter effects, and composites the result back.
+func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
+	box := layer.Box
+
+	// Determine buffer bounds. For blur filters, we need extra padding.
+	blurExtend := 0.0
+	for _, f := range layer.Filters {
+		if f.Name == "blur" {
+			sigma := f.Value / 2
+			blurExtend = math.Max(blurExtend, math.Ceil(sigma*3))
+		}
+	}
+
+	// Buffer covers the element's border-box plus blur extension.
+	bx := int(math.Floor(box.X - blurExtend))
+	by := int(math.Floor(box.Y - blurExtend))
+	bw := int(math.Ceil(box.Width + 2*blurExtend))
+	bh := int(math.Ceil(box.Height + 2*blurExtend))
+
+	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+		// Fallback: render without filters to avoid OOM.
+		r.paintLayerContent(layer)
+		return
+	}
+
+	// Save original state and render into offscreen buffer.
+	origDC := r.dc
+	origTarget := r.target
+
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	childDC := origDC.NewChildContext(buf)
+	r.dc = childDC
+	r.target = buf
+
+	// Offset so painting coordinates map to buffer-local coordinates.
+	r.dc.Translate(float64(-bx), float64(-by))
+
+	// Paint the layer content (including transforms, opacity, children).
+	if layer.HasTransform {
+		r.dc.Push()
+		r.applyTransforms(layer)
+	}
+	if layer.Opacity < 1.0 {
+		r.dc.PushGroup()
+		r.paintLayerContent(layer)
+		r.dc.PopGroupWithAlpha(layer.Opacity)
+	} else {
+		r.paintLayerContent(layer)
+	}
+	if layer.HasTransform {
+		r.dc.Pop()
+	}
+
+	// Restore original DC.
+	r.dc = origDC
+	r.target = origTarget
+
+	// Apply filter operations to the buffer.
+	for _, f := range layer.Filters {
+		switch f.Name {
+		case "blur":
+			sigma := f.Value / 2
+			radius := int(math.Round(sigma))
+			if radius > 0 {
+				boxBlur(buf, radius)
+				boxBlur(buf, radius)
+				boxBlur(buf, radius)
+			}
+		case "grayscale":
+			applyGrayscale(buf, clampFilter01(f.Value))
+		case "brightness":
+			applyBrightness(buf, f.Value)
+		case "contrast":
+			applyContrast(buf, f.Value)
+		case "opacity":
+			applyFilterOpacity(buf, clampFilter01(f.Value))
+		case "saturate":
+			applySaturate(buf, f.Value)
+		case "sepia":
+			applySepia(buf, clampFilter01(f.Value))
+		}
+	}
+
+	// Composite filtered buffer back to main canvas.
+	r.dc.DrawImage(buf, bx, by)
+}
+
+// clampFilter01 clamps a value to the [0, 1] range.
+func clampFilter01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// clampByte clamps a float64 to [0, 255] and returns a uint8.
+func clampByte(v float64) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}
+
+// applyGrayscale applies a grayscale filter to an RGBA image.
+// amount=1 is fully grayscale, amount=0 is no change.
+func applyGrayscale(img *image.RGBA, amount float64) {
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		if pix[i+3] == 0 {
+			continue
+		}
+		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
+		lum := 0.2126*r + 0.7152*g + 0.0722*b
+		pix[i] = clampByte(r*(1-amount) + lum*amount)
+		pix[i+1] = clampByte(g*(1-amount) + lum*amount)
+		pix[i+2] = clampByte(b*(1-amount) + lum*amount)
+	}
+}
+
+// applyBrightness multiplies RGB channels by factor.
+// factor=1 is no change, factor=0 is black, factor=2 is double brightness.
+func applyBrightness(img *image.RGBA, factor float64) {
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		if pix[i+3] == 0 {
+			continue
+		}
+		pix[i] = clampByte(float64(pix[i]) * factor)
+		pix[i+1] = clampByte(float64(pix[i+1]) * factor)
+		pix[i+2] = clampByte(float64(pix[i+2]) * factor)
+	}
+}
+
+// applyContrast adjusts contrast around the midpoint (127.5).
+// factor=1 is no change, factor=0 is flat gray, factor>1 increases contrast.
+func applyContrast(img *image.RGBA, factor float64) {
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		if pix[i+3] == 0 {
+			continue
+		}
+		pix[i] = clampByte((float64(pix[i])/255-0.5)*factor*255 + 127.5)
+		pix[i+1] = clampByte((float64(pix[i+1])/255-0.5)*factor*255 + 127.5)
+		pix[i+2] = clampByte((float64(pix[i+2])/255-0.5)*factor*255 + 127.5)
+	}
+}
+
+// applyFilterOpacity multiplies the alpha channel by amount.
+func applyFilterOpacity(img *image.RGBA, amount float64) {
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		pix[i+3] = clampByte(float64(pix[i+3]) * amount)
+	}
+}
+
+// applySaturate adjusts color saturation.
+// factor=1 is no change, factor=0 is grayscale, factor>1 is over-saturated.
+func applySaturate(img *image.RGBA, factor float64) {
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		if pix[i+3] == 0 {
+			continue
+		}
+		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
+		lum := 0.2126*r + 0.7152*g + 0.0722*b
+		pix[i] = clampByte(lum + (r-lum)*factor)
+		pix[i+1] = clampByte(lum + (g-lum)*factor)
+		pix[i+2] = clampByte(lum + (b-lum)*factor)
+	}
+}
+
+// applySepia applies a sepia tone filter.
+// amount=1 is full sepia, amount=0 is no change.
+func applySepia(img *image.RGBA, amount float64) {
+	pix := img.Pix
+	for i := 0; i < len(pix); i += 4 {
+		if pix[i+3] == 0 {
+			continue
+		}
+		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
+		// Standard sepia matrix coefficients.
+		sr := 0.393*r + 0.769*g + 0.189*b
+		sg := 0.349*r + 0.686*g + 0.168*b
+		sb := 0.272*r + 0.534*g + 0.131*b
+		pix[i] = clampByte(r*(1-amount) + sr*amount)
+		pix[i+1] = clampByte(g*(1-amount) + sg*amount)
+		pix[i+2] = clampByte(b*(1-amount) + sb*amount)
 	}
 }
 

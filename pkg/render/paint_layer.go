@@ -108,6 +108,10 @@ type PaintLayer struct {
 	TransformOrigin [2]float64 // resolved to px: (origin-x, origin-y)
 	HasTransform    bool
 
+	// CSS Filters:
+	Filters   []css.FilterFunction
+	HasFilter bool
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -325,6 +329,13 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			}
 		}
 		layer.Transforms = resolved
+	}
+
+	// CSS Filters.
+	filters := s.GetFilter()
+	if len(filters) > 0 {
+		layer.Filters = filters
+		layer.HasFilter = true
 	}
 
 	return layer
