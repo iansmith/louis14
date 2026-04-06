@@ -300,6 +300,11 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	r.drawBackground(layer)
 	r.drawBorders(layer)
 
+	// Outline (outside border-box, doesn't affect layout).
+	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
+		r.drawOutline(layer)
+	}
+
 	// Text content.
 	if layer.Box.Text != "" {
 		r.drawText(layer)
@@ -915,6 +920,76 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 		r.dc.Fill()
 		r.dc.SetFillRule(textshape.FillRuleWinding)
 		r.dc.Pop()
+	}
+}
+
+// drawOutline draws the CSS outline around the border-box, offset by outline-offset.
+func (r *Renderer) drawOutline(layer *PaintLayer) {
+	box := layer.Box
+	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+
+	// Outline is drawn at: border-box + offset + width/2 (stroke centered on path).
+	off := layer.OutlineOffset + layer.OutlineWidth/2
+	ox := x - off
+	oy := y - off
+	ow := w + 2*off
+	oh := h + 2*off
+
+	if ow <= 0 || oh <= 0 {
+		return
+	}
+
+	r.setColor(layer.OutlineColor)
+
+	switch layer.OutlineStyle {
+	case "solid":
+		r.dc.SetLineWidth(layer.OutlineWidth)
+		if hasBorderRadius(layer) {
+			expandedRadii := expandRadii(layer.BorderRadius, off)
+			r.buildRoundedRectPath(ox, oy, ow, oh, expandedRadii)
+		} else {
+			r.dc.DrawRectangle(ox, oy, ow, oh)
+		}
+		r.dc.Stroke()
+	case "dashed":
+		midOff := layer.OutlineOffset + layer.OutlineWidth/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDashedLine(mx, my, mx+mw, my, layer.OutlineWidth)       // top
+		r.drawDashedLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth) // right
+		r.drawDashedLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth) // bottom
+		r.drawDashedLine(mx, my, mx, my+mh, layer.OutlineWidth)       // left
+	case "dotted":
+		midOff := layer.OutlineOffset + layer.OutlineWidth/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDottedLine(mx, my, mx+mw, my, layer.OutlineWidth)
+		r.drawDottedLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth)
+		r.drawDottedLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth)
+		r.drawDottedLine(mx, my, mx, my+mh, layer.OutlineWidth)
+	case "double":
+		midOff := layer.OutlineOffset + layer.OutlineWidth/2
+		mx, my := x-midOff, y-midOff
+		mw, mh := w+2*midOff, h+2*midOff
+		r.drawDoubleLine(mx, my, mx+mw, my, layer.OutlineWidth)
+		r.drawDoubleLine(mx+mw, my, mx+mw, my+mh, layer.OutlineWidth)
+		r.drawDoubleLine(mx, my+mh, mx+mw, my+mh, layer.OutlineWidth)
+		r.drawDoubleLine(mx, my, mx, my+mh, layer.OutlineWidth)
+	default:
+		// Treat unknown styles as solid.
+		r.dc.SetLineWidth(layer.OutlineWidth)
+		r.dc.DrawRectangle(ox, oy, ow, oh)
+		r.dc.Stroke()
+	}
+}
+
+// expandRadii expands border radii by the given amount for outline/shadow shapes.
+func expandRadii(radii [4]float64, amount float64) [4]float64 {
+	return [4]float64{
+		math.Max(0, radii[0]+amount),
+		math.Max(0, radii[1]+amount),
+		math.Max(0, radii[2]+amount),
+		math.Max(0, radii[3]+amount),
 	}
 }
 

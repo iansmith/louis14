@@ -64,6 +64,12 @@ type PaintLayer struct {
 	// Box shadows (outset and inset):
 	BoxShadows []css.BoxShadow
 
+	// Outline (doesn't affect layout, drawn outside border-box):
+	OutlineStyle  string  // none, solid, dashed, dotted, double
+	OutlineWidth  float64
+	OutlineColor  css.Color
+	OutlineOffset float64
+
 	// Text:
 	TextColor     css.Color
 	FontSize      float64
@@ -227,6 +233,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	// Box shadows.
 	layer.BoxShadows = s.GetBoxShadow()
+
+	// Outline.
+	layer.OutlineStyle = s.GetOutlineStyle()
+	if layer.OutlineStyle != "none" {
+		layer.OutlineWidth = s.GetOutlineWidth()
+		r, g, b, a := s.GetOutlineColor()
+		layer.OutlineColor = css.Color{R: r, G: g, B: b, A: a}
+		layer.OutlineOffset = s.GetOutlineOffset()
+	}
 
 	// Text.
 	layer.TextColor = currentColor // default: currentColor
