@@ -2836,6 +2836,70 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 
 	// Draw text decoration lines (underline, overline, line-through).
 	r.drawTextDecoration(layer, text, box, fontID, ascent)
+
+	// Draw text emphasis marks (small marks above/below each character).
+	if layer.TextEmphasisMark != "" {
+		r.drawTextEmphasis(layer, text, box, fontID, ascent)
+	}
+}
+
+// drawTextEmphasis renders text emphasis marks (e.g., dots, circles, sesame)
+// above or below each character. The mark is drawn at ~50% of the text font
+// size, centered horizontally over each glyph.
+func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+	mark := layer.TextEmphasisMark
+	emphFontSize := layer.FontSize * 0.5
+	if emphFontSize < 4 {
+		emphFontSize = 4
+	}
+
+	// Open a font for the emphasis mark at half size.
+	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+	emphFontID := r.openFont(fontPath, emphFontSize)
+	if emphFontID < 0 {
+		return
+	}
+
+	r.setColor(layer.TextEmphasisColor)
+
+	emphMetrics := r.dc.GetFontMetrics(emphFontID)
+	emphAscent := float64(emphMetrics.Ascent) / 64.0
+	markW := r.dc.MeasureText(mark, emphFontID)
+
+	// Compute vertical position of the emphasis mark.
+	var emphY float64
+	if layer.TextEmphasisOver {
+		// Place mark above the text: top of the box, with mark baseline
+		// positioned so the mark sits above the text ascent line.
+		emphY = box.Y - emphFontSize*0.25 // small gap above text top
+	} else {
+		// Place mark below the text baseline.
+		emphY = box.Y + ascent + emphFontSize*0.5
+	}
+
+	// Iterate over each character and draw the mark centered above/below it.
+	x := box.X
+	for _, ch := range text {
+		charStr := string(ch)
+		charW := r.dc.MeasureText(charStr, fontID)
+
+		// Skip whitespace characters — no emphasis marks on spaces.
+		if !unicode.IsSpace(ch) {
+			markX := x + (charW-markW)/2
+			r.dc.DrawText(mark, emphFontID, markX, emphY+emphAscent)
+		}
+
+		x += charW
+		if layer.LetterSpacing != 0 {
+			x += layer.LetterSpacing
+		}
+		if ch == ' ' && layer.WordSpacing != 0 {
+			x += layer.WordSpacing
+		}
+	}
+
+	// Restore original text color.
+	r.setColor(layer.TextColor)
 }
 
 // smallCapsScale is the ratio of the small-caps glyph size to the normal size.
