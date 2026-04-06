@@ -7,6 +7,34 @@ import (
 	"strings"
 )
 
+// countLinesForWidth runs a dry-run line break at the given available width and
+// returns the number of lines produced. This is used by text-wrap: balance to
+// binary-search for the narrowest width that still yields the same line count.
+func countLinesForWidth(
+	itemsData *InlineItemsData,
+	ctx *LayoutContext,
+	wdm WritingDirectionMode,
+	width float64,
+	fonts text.FontConfig,
+) int {
+	space := ConstraintSpace{
+		AvailableSize:    LogicalSize{InlineSize: width, BlockSize: Indefinite},
+		WritingDirection: wdm,
+	}
+	lb := NewLineBreaker(itemsData, ctx, space, fonts, LineBreakerContent)
+	lb.availableWidth = width
+	var line LineInfo
+	count := 0
+	for lb.NextLine(&line) {
+		count++
+		// Safety: stop at a reasonable limit to avoid infinite loops.
+		if count > 100 {
+			break
+		}
+	}
+	return count
+}
+
 // hasOnlyInlineChildren returns true if the block container's children are
 // all inline-level (text nodes, display:inline, display:inline-block, etc.).
 // When true, the container should use an inline formatting context.
@@ -203,6 +231,31 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 	if noWrap {
 		lineAvailableWidth = 1e9
+	}
+
+	// CSS Text 4 §3.4: text-wrap: balance — make all lines approximately
+	// equal width by binary-searching for the narrowest available width
+	// that still produces the same number of lines. Per spec, only apply
+	// when the line count is ≤ 4. This mirrors Blink's text balancing in
+	// InlineLayoutAlgorithm.
+	if !noWrap && bla.style != nil && bla.style.GetTextWrap() == "balance" {
+		normalLineCount := countLinesForWidth(itemsData, bla.ctx, wdm, lineAvailableWidth, fonts)
+		if normalLineCount >= 2 && normalLineCount <= 4 {
+			// Binary search: find the narrowest width that still yields
+			// normalLineCount lines. The lower bound is 0 (would produce
+			// more lines), and the upper bound is the current available width.
+			lo := 0.0
+			hi := lineAvailableWidth
+			for hi-lo > 0.5 { // 0.5px precision
+				mid := (lo + hi) / 2
+				if countLinesForWidth(itemsData, bla.ctx, wdm, mid, fonts) <= normalLineCount {
+					hi = mid
+				} else {
+					lo = mid
+				}
+			}
+			lineAvailableWidth = hi
+		}
 	}
 
 	lineSpace := ConstraintSpace{
