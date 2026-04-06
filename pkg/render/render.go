@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"unicode"
-	"unicode/utf8"
 
 	"louis14/pkg/css"
 	"louis14/pkg/images"
@@ -2255,17 +2254,37 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 		return text
 	}
 
-	// Compute available width: right edge of ancestor's content box minus
-	// the text run's starting X position.
-	contentRight := clipAncestor.X + clipAncestor.Border.Left + clipAncestor.Padding.Left +
-		(clipAncestor.Width - clipAncestor.Border.Left - clipAncestor.Border.Right -
-			clipAncestor.Padding.Left - clipAncestor.Padding.Right)
-	availW := contentRight - box.X
+	// Compute available width: right edge of ancestor's padding box minus
+	// the text run's starting X position.  The padding box is the overflow
+	// clip boundary (CSS Overflow §3), so the ellipsis must fit within it.
+	paddingRight := clipAncestor.X + clipAncestor.Width - clipAncestor.Border.Right
+	availW := paddingRight - box.X
 	if availW <= 0 {
 		return text
 	}
 
-	textW := r.dc.MeasureText(text, fontID)
+	// Account for letter-spacing and word-spacing in width measurements.
+	ls := layer.LetterSpacing
+	ws := layer.WordSpacing
+	measureRunWidth := func(s string) float64 {
+		if ls == 0 && ws == 0 {
+			return r.dc.MeasureText(s, fontID)
+		}
+		total := 0.0
+		runes := []rune(s)
+		for i, ch := range runes {
+			total += r.dc.MeasureText(string(ch), fontID)
+			if i < len(runes)-1 {
+				total += ls
+			}
+			if ch == ' ' {
+				total += ws
+			}
+		}
+		return total
+	}
+
+	textW := measureRunWidth(text)
 	if textW <= availW {
 		return text
 	}
@@ -2283,14 +2302,22 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	// Find the truncation point by measuring characters.
 	w := 0.0
 	truncIdx := 0
-	for i, ch := range text {
+	runes := []rune(text)
+	for i, ch := range runes {
 		cw := r.dc.MeasureText(string(ch), fontID)
+		advance := cw
+		if i < len(runes)-1 {
+			advance += ls
+		}
+		if ch == ' ' {
+			advance += ws
+		}
 		if w+cw > truncW {
-			truncIdx = i
+			truncIdx = len(string(runes[:i]))
 			break
 		}
-		w += cw
-		truncIdx = i + utf8.RuneLen(ch)
+		w += advance
+		truncIdx = len(string(runes[:i+1]))
 	}
 
 	return text[:truncIdx] + ellipsis
