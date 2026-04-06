@@ -246,18 +246,20 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		if val, ok := s.Get("background-image"); ok && val != "none" && val != "" {
 			if isGradientValue(val) {
 				layer.BackgroundLayers = &css.FillLayer{
-					Gradient:    val,
-					ImageSet:    true,
-					Repeat:      s.GetBackgroundRepeat(),
-					RepeatSet:   true,
-					Position:    s.GetBackgroundPosition(),
-					PositionSet: true,
-					Size:        s.GetBackgroundSize(),
-					SizeSet:     true,
-					Clip:        s.GetBackgroundClip(),
-					ClipSet:     true,
-					Origin:      s.GetBackgroundOrigin(),
-					OriginSet:   true,
+					Gradient:      val,
+					ImageSet:      true,
+					Repeat:        s.GetBackgroundRepeat(),
+					RepeatSet:     true,
+					Position:      s.GetBackgroundPosition(),
+					PositionSet:   true,
+					Size:          s.GetBackgroundSize(),
+					SizeSet:       true,
+					Clip:          s.GetBackgroundClip(),
+					ClipSet:       true,
+					Origin:        s.GetBackgroundOrigin(),
+					OriginSet:     true,
+					Attachment:    s.GetBackgroundAttachment(),
+					AttachmentSet: true,
 				}
 			}
 		}

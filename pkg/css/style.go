@@ -6622,16 +6622,18 @@ type FillLayer struct {
 	Repeat   BackgroundRepeatType
 	Position BackgroundPosition
 	Size     BackgroundSize
-	Origin   BackgroundOriginType
-	Clip     BackgroundClipType
+	Origin     BackgroundOriginType
+	Clip       BackgroundClipType
+	Attachment BackgroundAttachmentType
 
 	// Per-property "set" flags — true if explicitly specified for this layer.
-	ImageSet    bool
-	RepeatSet   bool
-	PositionSet bool
-	SizeSet     bool
-	OriginSet   bool
-	ClipSet     bool
+	ImageSet      bool
+	RepeatSet     bool
+	PositionSet   bool
+	SizeSet       bool
+	OriginSet     bool
+	ClipSet       bool
+	AttachmentSet bool
 }
 
 // IsBottomLayer returns true if this is the last layer (background-color applies here).
@@ -6679,6 +6681,9 @@ func (fl *FillLayer) FillUnsetProperties() {
 		if !cur.ClipSet {
 			cur.Clip = BackgroundClipBorderBox
 		}
+		if !cur.AttachmentSet {
+			cur.Attachment = BackgroundAttachmentScroll
+		}
 	}
 }
 
@@ -6714,12 +6719,28 @@ const (
 	BackgroundRepeatRepeatY  BackgroundRepeatType = "repeat-y"
 )
 
+// BackgroundAttachmentType represents the background-attachment property value.
+type BackgroundAttachmentType string
+
+const (
+	BackgroundAttachmentScroll BackgroundAttachmentType = "scroll" // default
+	BackgroundAttachmentFixed  BackgroundAttachmentType = "fixed"
+	BackgroundAttachmentLocal  BackgroundAttachmentType = "local"
+)
+
 // GetBackgroundAttachment returns the background-attachment value (default: scroll)
-func (s *Style) GetBackgroundAttachment() string {
+func (s *Style) GetBackgroundAttachment() BackgroundAttachmentType {
 	if val, ok := s.Get("background-attachment"); ok {
-		return val
+		switch strings.TrimSpace(strings.ToLower(val)) {
+		case "fixed":
+			return BackgroundAttachmentFixed
+		case "local":
+			return BackgroundAttachmentLocal
+		default:
+			return BackgroundAttachmentScroll
+		}
 	}
-	return "scroll"
+	return BackgroundAttachmentScroll
 }
 
 // GetBackgroundRepeat returns the background-repeat value (default: repeat)
@@ -7072,7 +7093,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 	}
 
 	// Split other longhands.
-	var repeatParts, posParts, sizeParts, clipParts, originParts []string
+	var repeatParts, posParts, sizeParts, clipParts, originParts, attachParts []string
 	if v, ok := s.Get("background-repeat"); ok {
 		repeatParts = splitCommaSeparated(v)
 	}
@@ -7087,6 +7108,9 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 	}
 	if v, ok := s.Get("background-origin"); ok {
 		originParts = splitCommaSeparated(v)
+	}
+	if v, ok := s.Get("background-attachment"); ok {
+		attachParts = splitCommaSeparated(v)
 	}
 
 	fontSize := s.GetFontSize()
@@ -7148,6 +7172,21 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 			if o, ok := parseBgOriginValue(originParts[i]); ok {
 				layer.Origin = o
 				layer.OriginSet = true
+			}
+		}
+
+		// Attachment
+		if i < len(attachParts) {
+			switch strings.TrimSpace(strings.ToLower(attachParts[i])) {
+			case "fixed":
+				layer.Attachment = BackgroundAttachmentFixed
+				layer.AttachmentSet = true
+			case "local":
+				layer.Attachment = BackgroundAttachmentLocal
+				layer.AttachmentSet = true
+			case "scroll":
+				layer.Attachment = BackgroundAttachmentScroll
+				layer.AttachmentSet = true
 			}
 		}
 
