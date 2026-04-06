@@ -9,6 +9,7 @@ import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
+	"mazarin/textshape"
 )
 
 // PaintLayer represents a node in the pre-paint tree.
@@ -109,6 +110,10 @@ type PaintLayer struct {
 
 	// CSS font-variant-caps (small-caps, all-small-caps, etc.):
 	FontVariantCaps string
+
+	// CSS font-feature-settings: OpenType feature tags parsed into tag/value pairs.
+	// Populated from CSS like "kern" 1, "liga" 0. Empty when "normal".
+	FontFeatures []textshape.FontFeature
 
 	// Text emphasis marks (small marks above/below each character):
 	TextEmphasisMark     string    // resolved mark character ("●", "•", etc.); "" = none
@@ -408,6 +413,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.TextUnderlineOffset = s.GetTextUnderlineOffset()
 	layer.TextShadows = s.GetTextShadow()
 	layer.FontVariantCaps = s.GetFontVariantCaps()
+
+	// CSS font-feature-settings.
+	if ffs, ok := s.Get("font-feature-settings"); ok && ffs != "normal" && ffs != "" {
+		layer.FontFeatures = parseFontFeatureSettings(ffs)
+	}
 
 	// Text emphasis marks.
 	if mark := s.GetTextEmphasisMark(); mark != "" {
@@ -760,6 +770,57 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 			}
 		}
 	}
+}
+
+// parseFontFeatureSettings parses a CSS font-feature-settings value like
+// `"kern" 1, "liga" 0` into a slice of FontFeature.
+// CSS syntax: each entry is a 4-character tag in quotes, optionally followed by
+// an integer value (default 1) or "on"/"off".
+func parseFontFeatureSettings(value string) []textshape.FontFeature {
+	var features []textshape.FontFeature
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "normal" {
+			continue
+		}
+		// Split into tag and optional value.
+		fields := strings.Fields(part)
+		if len(fields) == 0 {
+			continue
+		}
+		// Extract tag: must be a quoted 4-character string.
+		tag := fields[0]
+		tag = strings.Trim(tag, `"'`)
+		if len(tag) != 4 {
+			continue
+		}
+		// Parse value: default is 1 (on).
+		val := uint32(1)
+		if len(fields) > 1 {
+			switch strings.ToLower(fields[1]) {
+			case "on":
+				val = 1
+			case "off":
+				val = 0
+			default:
+				// Parse integer.
+				n := 0
+				for _, c := range fields[1] {
+					if c >= '0' && c <= '9' {
+						n = n*10 + int(c-'0')
+					} else {
+						break
+					}
+				}
+				val = uint32(n)
+			}
+		}
+		features = append(features, textshape.FontFeature{
+			Tag:   [4]byte{tag[0], tag[1], tag[2], tag[3]},
+			Value: val,
+		})
+	}
+	return features
 }
 
 // sortZLists sorts NegativeZ and PositiveZ by z-index (ascending),

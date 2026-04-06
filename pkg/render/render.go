@@ -2927,6 +2927,23 @@ func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, font
 	}
 }
 
+// drawTextStr draws a text string, applying OpenType features if present on the layer.
+func (r *Renderer) drawTextStr(text string, fontID int32, x, y float64, features []textshape.FontFeature) {
+	if len(features) > 0 {
+		r.dc.DrawTextWithFeatures(text, fontID, x, y, features)
+	} else {
+		r.dc.DrawText(text, fontID, x, y)
+	}
+}
+
+// measureTextStr measures a text string, applying OpenType features if present.
+func (r *Renderer) measureTextStr(text string, fontID int32, features []textshape.FontFeature) float64 {
+	if len(features) > 0 {
+		return r.dc.MeasureTextWithFeatures(text, fontID, features)
+	}
+	return r.dc.MeasureText(text, fontID)
+}
+
 // drawText paints text content using pre-computed font/color properties.
 func (r *Renderer) drawText(layer *PaintLayer) {
 	box := layer.Box
@@ -2969,7 +2986,11 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			B: layer.TextColor.B,
 			A: uint8(layer.TextColor.A * 255),
 		})
-		childDC.DrawText(text, fontID, 0, ascent)
+		if len(layer.FontFeatures) > 0 {
+			childDC.DrawTextWithFeatures(text, fontID, 0, ascent, layer.FontFeatures)
+		} else {
+			childDC.DrawText(text, fontID, 0, ascent)
+		}
 
 		// Rotate pixels 90° into destination (lh × ta) buffer.
 		rot := image.NewRGBA(image.Rect(0, 0, lh, ta))
@@ -3002,12 +3023,12 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		y := box.Y
 		for _, ch := range text {
 			charStr := string(ch)
-			charW := r.dc.MeasureText(charStr, fontID)
+			charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
 			xOffset := (box.Width - charW) / 2
 			if xOffset < 0 {
 				xOffset = 0
 			}
-			r.dc.DrawText(charStr, fontID, box.X+xOffset, y+ascent)
+			r.drawTextStr(charStr, fontID, box.X+xOffset, y+ascent, layer.FontFeatures)
 			y += layer.FontSize
 			if layer.LetterSpacing != 0 {
 				y += layer.LetterSpacing
@@ -3041,8 +3062,8 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		if layer.LetterSpacing != 0 {
 			// Character-by-character rendering for letter-spacing.
 			for _, ch := range text {
-				r.dc.DrawText(string(ch), fontID, x, baselineY)
-				charW := r.dc.MeasureText(string(ch), fontID)
+				r.drawTextStr(string(ch), fontID, x, baselineY, layer.FontFeatures)
+				charW := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
 				x += charW + layer.LetterSpacing
 				if ch == ' ' {
 					x += layer.WordSpacing
@@ -3053,11 +3074,11 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			// Drawing words as units avoids sub-pixel accumulation errors
 			// that occur with per-character rendering.
 			words := strings.Split(text, " ")
-			spaceW := r.dc.MeasureText(" ", fontID)
+			spaceW := r.measureTextStr(" ", fontID, layer.FontFeatures)
 			for i, word := range words {
 				if word != "" {
-					r.dc.DrawText(word, fontID, x, baselineY)
-					x += r.dc.MeasureText(word, fontID)
+					r.drawTextStr(word, fontID, x, baselineY, layer.FontFeatures)
+					x += r.measureTextStr(word, fontID, layer.FontFeatures)
 				}
 				if i < len(words)-1 {
 					x += spaceW + layer.WordSpacing
@@ -3065,7 +3086,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			}
 		}
 	} else {
-		r.dc.DrawText(text, fontID, box.X, box.Y+ascent)
+		r.drawTextStr(text, fontID, box.X, box.Y+ascent, layer.FontFeatures)
 	}
 
 	// Draw text decoration lines (underline, overline, line-through).
@@ -3115,7 +3136,7 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	x := box.X
 	for _, ch := range text {
 		charStr := string(ch)
-		charW := r.dc.MeasureText(charStr, fontID)
+		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
 
 		// Skip whitespace characters — no emphasis marks on spaces.
 		if !unicode.IsSpace(ch) {
@@ -3186,13 +3207,13 @@ func (r *Renderer) drawTextSmallCaps(layer *PaintLayer, text string, box *layout
 			// Draw uppercase glyph at reduced size, baseline-aligned.
 			// The small font has a smaller ascent; shift down so baselines match.
 			smallBaselineY := baselineY + (ascent - smallAscent)
-			r.dc.DrawText(drawStr, smallFontID, x, smallBaselineY)
-			charW := r.dc.MeasureText(drawStr, smallFontID)
+			r.drawTextStr(drawStr, smallFontID, x, smallBaselineY, layer.FontFeatures)
+			charW := r.measureTextStr(drawStr, smallFontID, layer.FontFeatures)
 			x += charW
 		} else {
 			// Draw at normal size.
-			r.dc.DrawText(drawStr, fontID, x, baselineY)
-			charW := r.dc.MeasureText(drawStr, fontID)
+			r.drawTextStr(drawStr, fontID, x, baselineY, layer.FontFeatures)
+			charW := r.measureTextStr(drawStr, fontID, layer.FontFeatures)
 			x += charW
 		}
 
@@ -3215,7 +3236,7 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 	if layer.TabSizeIsLength {
 		tabStopPx = tabSizeVal
 	} else {
-		spaceW := r.dc.MeasureText(" ", fontID)
+		spaceW := r.measureTextStr(" ", fontID, layer.FontFeatures)
 		if spaceW <= 0 {
 			spaceW = layer.FontSize
 		}
@@ -3245,8 +3266,8 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 		if seg != "" {
 			if layer.LetterSpacing != 0 {
 				for _, ch := range seg {
-					r.dc.DrawText(string(ch), fontID, x, baselineY)
-					charW := r.dc.MeasureText(string(ch), fontID)
+					r.drawTextStr(string(ch), fontID, x, baselineY, layer.FontFeatures)
+					charW := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
 					x += charW + layer.LetterSpacing
 					posFromLineStart += charW + layer.LetterSpacing
 					if ch == ' ' {
@@ -3255,8 +3276,8 @@ func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.
 					}
 				}
 			} else {
-				r.dc.DrawText(seg, fontID, x, baselineY)
-				segW := r.dc.MeasureText(seg, fontID)
+				r.drawTextStr(seg, fontID, x, baselineY, layer.FontFeatures)
+				segW := r.measureTextStr(seg, fontID, layer.FontFeatures)
 				if layer.WordSpacing != 0 {
 					segW += layer.WordSpacing * float64(strings.Count(seg, " "))
 				}
@@ -3325,12 +3346,12 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	ws := layer.WordSpacing
 	measureRunWidth := func(s string) float64 {
 		if ls == 0 && ws == 0 {
-			return r.dc.MeasureText(s, fontID)
+			return r.measureTextStr(s, fontID, layer.FontFeatures)
 		}
 		total := 0.0
 		runes := []rune(s)
 		for i, ch := range runes {
-			total += r.dc.MeasureText(string(ch), fontID)
+			total += r.measureTextStr(string(ch), fontID, layer.FontFeatures)
 			if i < len(runes)-1 {
 				total += ls
 			}
@@ -3348,7 +3369,7 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 
 	// Text overflows — truncate and append ellipsis.
 	const ellipsis = "\u2026" // "…"
-	ellipsisW := r.dc.MeasureText(ellipsis, fontID)
+	ellipsisW := r.measureTextStr(ellipsis, fontID, layer.FontFeatures)
 	truncW := availW - ellipsisW
 
 	if truncW <= 0 {
@@ -3361,7 +3382,7 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	truncIdx := 0
 	runes := []rune(text)
 	for i, ch := range runes {
-		cw := r.dc.MeasureText(string(ch), fontID)
+		cw := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
 		advance := cw
 		if i < len(runes)-1 {
 			advance += ls
@@ -3394,15 +3415,15 @@ func (r *Renderer) drawTextShadows(layer *PaintLayer, text string, box *layout.B
 				x := box.X + shadow.OffsetX
 				baselineY := box.Y + ascent + shadow.OffsetY
 				for _, ch := range text {
-					r.dc.DrawText(string(ch), fontID, x, baselineY)
-					charW := r.dc.MeasureText(string(ch), fontID)
+					r.drawTextStr(string(ch), fontID, x, baselineY, layer.FontFeatures)
+					charW := r.measureTextStr(string(ch), fontID, layer.FontFeatures)
 					x += charW + layer.LetterSpacing
 					if ch == ' ' {
 						x += layer.WordSpacing
 					}
 				}
 			} else {
-				r.dc.DrawText(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY)
+				r.drawTextStr(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY, layer.FontFeatures)
 			}
 		}
 	}
@@ -3414,7 +3435,7 @@ func (r *Renderer) drawTextShadows(layer *PaintLayer, text string, box *layout.B
 // by drawing text into an offscreen buffer, applying box blur, then compositing.
 func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, shadow css.TextShadow) {
 	// Measure text to determine buffer size.
-	textWidth := r.dc.MeasureText(text, fontID)
+	textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
 	metrics := r.dc.GetFontMetrics(fontID)
 	textHeight := float64(metrics.Ascent-metrics.Descent) / 64.0
 
@@ -3426,7 +3447,7 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 	if bw <= 0 || bh <= 0 || bw > 2000 || bh > 2000 {
 		// Fallback: draw without blur.
 		r.setColor(shadow.Color)
-		r.dc.DrawText(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY)
+		r.drawTextStr(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY, layer.FontFeatures)
 		return
 	}
 
@@ -3439,7 +3460,11 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 		B: shadow.Color.B,
 		A: uint8(shadow.Color.A * 255),
 	})
-	childDC.DrawText(text, fontID, extend, extend+ascent)
+	if len(layer.FontFeatures) > 0 {
+		childDC.DrawTextWithFeatures(text, fontID, extend, extend+ascent, layer.FontFeatures)
+	} else {
+		childDC.DrawText(text, fontID, extend, extend+ascent)
+	}
 
 	// Apply 3-pass box blur (approximates Gaussian blur).
 	blurRadius := int(math.Round(sigma))
@@ -3462,7 +3487,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 
 	metrics := r.dc.GetFontMetrics(fontID)
 	descent := float64(metrics.Descent) / 64.0
-	textWidth := r.dc.MeasureText(text, fontID)
+	textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
 
 	r.setColor(layer.TextDecorationColor)
 	r.dc.SetLineWidth(layer.TextDecorationThickness)
