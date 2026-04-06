@@ -215,6 +215,12 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS mask-image: render subtree to offscreen buffer, apply mask, composite.
+	if layer.HasMaskImage {
+		r.paintLayerWithMask(layer)
+		return
+	}
+
 	// CSS Filters: render subtree to offscreen buffer, apply filters, composite.
 	if layer.HasFilter {
 		r.paintLayerWithFilter(layer)
@@ -245,6 +251,156 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer.HasTransform {
 		r.dc.Pop()
 	}
+}
+
+// paintLayerWithMask renders the entire layer subtree into an offscreen buffer,
+// generates or loads the mask image, and applies per-pixel alpha masking.
+//
+// Per CSS Masking Level 1:
+//   - url() images use the mask's alpha channel (mask-mode: alpha)
+//   - Gradients use the mask's luminance (mask-mode: luminance)
+//   - The default mask-mode is "match-source" which selects between the two
+//
+// For each pixel: result.A = element.A * maskValue
+// where maskValue is either mask.A (alpha mode) or luminance(mask) (luminance mode).
+func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
+	box := layer.Box
+	bx := int(math.Floor(box.X))
+	by := int(math.Floor(box.Y))
+	bw := int(math.Ceil(box.X+box.Width)) - bx + 1
+	bh := int(math.Ceil(box.Y+box.Height)) - by + 1
+
+	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+		// Fallback: render without mask to avoid OOM.
+		r.paintLayerContent(layer)
+		return
+	}
+
+	// Step 1: Render the element to an offscreen buffer.
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	origDC := r.dc
+	origTarget := r.target
+	childDC := origDC.NewChildContext(buf)
+	r.dc = childDC
+	r.target = buf
+	r.dc.Translate(float64(-bx), float64(-by))
+
+	// Paint with transforms and opacity in the offscreen buffer.
+	if layer.HasTransform {
+		r.dc.Push()
+		r.applyTransforms(layer)
+	}
+	if layer.Opacity < 1.0 {
+		r.dc.PushGroup()
+		r.paintLayerContent(layer)
+		r.dc.PopGroupWithAlpha(layer.Opacity)
+	} else {
+		r.paintLayerContent(layer)
+	}
+	if layer.HasTransform {
+		r.dc.Pop()
+	}
+
+	// Restore original context.
+	r.dc = origDC
+	r.target = origTarget
+
+	// Step 2: Generate the mask image.
+	maskVal := layer.MaskImage
+	useLuminance := false // default for url() images: alpha mode
+	var maskImg *image.RGBA
+
+	if isGradientValue(maskVal) {
+		// Gradient masks use luminance mode per match-source default.
+		useLuminance = true
+		maskImg = image.NewRGBA(image.Rect(0, 0, bw, bh))
+
+		// Create a temporary renderer to draw the gradient into the mask buffer.
+		maskR := &Renderer{
+			dc:           origDC.NewChildContext(maskImg),
+			target:       maskImg,
+			fonts:        r.fonts,
+			imageFetcher: r.imageFetcher,
+		}
+		maskR.drawLinearGradient(maskVal, 0, 0, float64(bw), float64(bh))
+	} else if strings.HasPrefix(maskVal, "url(") {
+		// Image mask: load the image and use its alpha channel.
+		src := maskVal
+		src = strings.TrimPrefix(src, "url(")
+		src = strings.TrimSuffix(src, ")")
+		src = strings.Trim(src, `"'`)
+		if loadedImg, err := images.LoadImageWithFetcher(src, r.imageFetcher); err == nil {
+			// Scale/stretch mask image to element bounds (default mask-size: auto → cover).
+			maskImg = image.NewRGBA(image.Rect(0, 0, bw, bh))
+			imgBounds := loadedImg.Bounds()
+			imgW := imgBounds.Dx()
+			imgH := imgBounds.Dy()
+			if imgW > 0 && imgH > 0 {
+				for py := 0; py < bh; py++ {
+					srcY := py * imgH / bh
+					if srcY >= imgH {
+						srcY = imgH - 1
+					}
+					for px := 0; px < bw; px++ {
+						srcX := px * imgW / bw
+						if srcX >= imgW {
+							srcX = imgW - 1
+						}
+						r, g, b, a := loadedImg.At(imgBounds.Min.X+srcX, imgBounds.Min.Y+srcY).RGBA()
+						maskImg.SetRGBA(px, py, color.RGBA{
+							R: uint8(r >> 8),
+							G: uint8(g >> 8),
+							B: uint8(b >> 8),
+							A: uint8(a >> 8),
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if maskImg == nil {
+		// No valid mask → just composite the element buffer as-is.
+		r.dc.DrawImage(buf, bx, by)
+		return
+	}
+
+	// Step 3: Apply the mask — modulate element alpha by mask value.
+	for py := 0; py < bh; py++ {
+		for px := 0; px < bw; px++ {
+			ei := buf.PixOffset(px, py)
+			mi := maskImg.PixOffset(px, py)
+
+			var maskFactor float64
+			if useLuminance {
+				// Luminance = 0.2126*R + 0.7152*G + 0.0722*B (sRGB coefficients).
+				// Premultiplied alpha: un-premultiply first.
+				ma := maskImg.Pix[mi+3]
+				if ma == 0 {
+					maskFactor = 0
+				} else {
+					maf := float64(ma) / 255.0
+					mr := float64(maskImg.Pix[mi+0]) / 255.0 / maf
+					mg := float64(maskImg.Pix[mi+1]) / 255.0 / maf
+					mb := float64(maskImg.Pix[mi+2]) / 255.0 / maf
+					lum := 0.2126*mr + 0.7152*mg + 0.0722*mb
+					maskFactor = lum * maf
+				}
+			} else {
+				// Alpha mode: use mask's alpha channel directly.
+				maskFactor = float64(maskImg.Pix[mi+3]) / 255.0
+			}
+
+			// Multiply all RGBA channels by maskFactor (premultiplied alpha).
+			buf.Pix[ei+0] = uint8(float64(buf.Pix[ei+0]) * maskFactor)
+			buf.Pix[ei+1] = uint8(float64(buf.Pix[ei+1]) * maskFactor)
+			buf.Pix[ei+2] = uint8(float64(buf.Pix[ei+2]) * maskFactor)
+			buf.Pix[ei+3] = uint8(float64(buf.Pix[ei+3]) * maskFactor)
+		}
+	}
+
+	// Step 4: Composite the masked buffer onto the canvas.
+	r.dc.DrawImage(buf, bx, by)
 }
 
 // paintLayerWithFilter renders the entire layer subtree into an offscreen
