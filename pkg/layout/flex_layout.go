@@ -2119,12 +2119,14 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	}
 
 	// §4.5: min-size is auto (default). The automatic minimum size is the
-	// content-based minimum size. Only applies when overflow is visible.
+	// content-based minimum size. Only applies when overflow is not scrollable.
+	// Per CSSWG resolution (issue #7714), only scroll containers disable auto-min.
+	// overflow: hidden and overflow: clip are NOT scroll containers.
 	overflow := "visible"
 	if v, ok := style.Get("overflow"); ok {
 		overflow = strings.TrimSpace(v)
 	}
-	if overflow != "visible" {
+	if overflow == "scroll" || overflow == "auto" {
 		return 0
 	}
 
@@ -2276,22 +2278,30 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		}
 	}
 
-	// §4.5: automatic minimum size = min(content suggestion, specified suggestion, transferred suggestion).
-	// Only include suggestions that are applicable (>= 0).
+	// §4.5: Combine the suggestions into the automatic minimum size.
+	// The formula differs for replaced vs non-replaced elements:
+	//   - Replaced:     min(content, transferred), then cap by specified
+	//   - Non-replaced: max(content, transferred), then cap by specified
+	// Per Blink's approach and the spec, "transferred" only applies when an
+	// aspect ratio is present and a definite cross-size is available.
+	isReplaced := child.DOMNode != nil && isReplacedElement(child.DOMNode)
 	autoMin := contentSuggestion
+	if transferredSuggestion >= 0 {
+		if isReplaced {
+			// Replaced: use the smaller of content and transferred.
+			if transferredSuggestion < autoMin {
+				autoMin = transferredSuggestion
+			}
+		} else {
+			// Non-replaced: use the larger of content and transferred.
+			if transferredSuggestion > autoMin {
+				autoMin = transferredSuggestion
+			}
+		}
+	}
+	// Cap by the specified size suggestion (if definite).
 	if specifiedSuggestion >= 0 && specifiedSuggestion < autoMin {
 		autoMin = specifiedSuggestion
-	}
-	if transferredSuggestion >= 0 && transferredSuggestion < autoMin {
-		autoMin = transferredSuggestion
-	}
-
-	// §4.5: for column flex, also cap by the item's preferred main size (flex-basis)
-	// if definite, when there's no specified or transferred suggestion to cap it.
-	if !isRow && specifiedSuggestion < 0 && transferredSuggestion < 0 {
-		if flexBasis >= 0 && flexBasis < autoMin {
-			autoMin = flexBasis
-		}
 	}
 
 	// §4.5: "In all cases, the size is capped by the item's max main size property, if definite."
