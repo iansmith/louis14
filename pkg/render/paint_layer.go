@@ -46,7 +46,9 @@ type PaintLayer struct {
 	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
-	ImageSrc string // src attribute value; empty if not an img element
+	ImageSrc       string         // src attribute value; empty if not an img element
+	ObjectFit      css.ObjectFit  // fill, contain, cover, none, scale-down
+	ObjectPosition [2]float64     // x%, y% in range [0,1]; default (0.5, 0.5)
 
 	// Background:
 	BackgroundColor    css.Color               // A==0 means no background
@@ -185,6 +187,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		if src, ok := box.Node.GetAttribute("src"); ok {
 			layer.ImageSrc = src
 		}
+		layer.ObjectFit = s.GetObjectFit()
+		opX, opY := s.GetObjectPosition()
+		layer.ObjectPosition = [2]float64{opX, opY}
 	}
 
 	// Background color.
