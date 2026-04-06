@@ -1191,14 +1191,32 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 
 		// Paint gradient.
 		if bg.Gradient != "" {
-			if lHasRadius {
+			// For fixed attachment, draw the gradient over the viewport
+			// but clip to the element's background-clip area.
+			gradX, gradY, gradW, gradH := lx, ly, lw, lh
+			if bg.Attachment == css.BackgroundAttachmentFixed {
+				bounds := r.target.Bounds()
+				gradX = float64(bounds.Min.X)
+				gradY = float64(bounds.Min.Y)
+				gradW = float64(bounds.Dx())
+				gradH = float64(bounds.Dy())
+				r.dc.Push()
+				if lHasRadius {
+					r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
+				} else {
+					r.dc.DrawRectangle(lx, ly, lw, lh)
+				}
+				r.dc.Clip()
+				r.drawLinearGradient(bg.Gradient, gradX, gradY, gradW, gradH)
+				r.dc.Pop()
+			} else if lHasRadius {
 				r.dc.Push()
 				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
 				r.dc.Clip()
-				r.drawLinearGradient(bg.Gradient, lx, ly, lw, lh)
+				r.drawLinearGradient(bg.Gradient, gradX, gradY, gradW, gradH)
 				r.dc.Pop()
 			} else {
-				r.drawLinearGradient(bg.Gradient, lx, ly, lw, lh)
+				r.drawLinearGradient(bg.Gradient, gradX, gradY, gradW, gradH)
 			}
 		}
 
@@ -1237,23 +1255,34 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	imgH := float64(imgHI)
 
 	// CSS3 Backgrounds §3.6: background-origin determines the positioning area.
+	// For background-attachment:fixed, the positioning area is the viewport
+	// (CSS3 Backgrounds §3.5), not the element's box.
+	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
 	var originX, originY, originW, originH float64
-	switch bg.Origin {
-	case css.BackgroundOriginBorderBox:
-		originX = math.Round(box.X)
-		originY = math.Round(box.Y)
-		originW = math.Round(box.X+box.Width) - originX
-		originH = math.Round(box.Y+box.Height) - originY
-	case css.BackgroundOriginContentBox:
-		originX = math.Round(box.X + box.Border.Left + box.Padding.Left)
-		originY = math.Round(box.Y + box.Border.Top + box.Padding.Top)
-		originW = math.Round(box.X+box.Width-box.Border.Right-box.Padding.Right) - originX
-		originH = math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - originY
-	default: // padding-box (default)
-		originX = math.Round(box.X + box.Border.Left)
-		originY = math.Round(box.Y + box.Border.Top)
-		originW = math.Round(box.X+box.Width-box.Border.Right) - originX
-		originH = math.Round(box.Y+box.Height-box.Border.Bottom) - originY
+	if isFixed {
+		bounds := r.target.Bounds()
+		originX = float64(bounds.Min.X)
+		originY = float64(bounds.Min.Y)
+		originW = float64(bounds.Dx())
+		originH = float64(bounds.Dy())
+	} else {
+		switch bg.Origin {
+		case css.BackgroundOriginBorderBox:
+			originX = math.Round(box.X)
+			originY = math.Round(box.Y)
+			originW = math.Round(box.X+box.Width) - originX
+			originH = math.Round(box.Y+box.Height) - originY
+		case css.BackgroundOriginContentBox:
+			originX = math.Round(box.X + box.Border.Left + box.Padding.Left)
+			originY = math.Round(box.Y + box.Border.Top + box.Padding.Top)
+			originW = math.Round(box.X+box.Width-box.Border.Right-box.Padding.Right) - originX
+			originH = math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - originY
+		default: // padding-box (default)
+			originX = math.Round(box.X + box.Border.Left)
+			originY = math.Round(box.Y + box.Border.Top)
+			originW = math.Round(box.X+box.Width-box.Border.Right) - originX
+			originH = math.Round(box.Y+box.Height-box.Border.Bottom) - originY
+		}
 	}
 	if originW < 0 {
 		originW = 0
