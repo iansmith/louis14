@@ -874,7 +874,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	// List markers (disc, circle, square, decimal, or custom ::marker content).
-	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "") {
+	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "" || layer.ListStyleImage != "") {
 		r.drawListMarker(layer)
 	}
 
@@ -2561,20 +2561,42 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 		r.setColor(layer.TextColor)
 	}
 
+	// If list-style-image is set, try to load and draw it.
+	if layer.ListStyleImage != "" && r.imageFetcher != nil {
+		if img, err := images.LoadImageWithFetcher(layer.ListStyleImage, r.imageFetcher); err == nil {
+			imgW := img.Bounds().Dx()
+			imgH := img.Bounds().Dy()
+			if imgW > 0 && imgH > 0 {
+				maxSize := fontSize
+				scale := 1.0
+				if float64(imgW) > maxSize || float64(imgH) > maxSize {
+					scale = math.Min(maxSize/float64(imgW), maxSize/float64(imgH))
+				}
+				dw := int(math.Round(float64(imgW) * scale))
+				dh := int(math.Round(float64(imgH) * scale))
+				if dw > 0 && dh > 0 {
+					scaled := scaleImageNearest(img, imgW, imgH, dw, dh)
+					imgMy := box.Y + box.Border.Top + fontSize*0.55
+					ix := int(math.Round(contentLeft-box.Padding.Left/2)) - dw/2
+					iy := int(math.Round(imgMy)) - dh/2
+					r.dc.DrawImage(scaled, ix, iy)
+					return
+				}
+			}
+		}
+		// Fall through to list-style-type if image fails to load.
+	}
+
 	if layer.ListStylePositionInside {
-		// Inside position: marker is at the content start, inline with text.
 		r.drawListMarkerInside(layer, box, fontSize, markerSize, contentLeft)
 	} else {
-		// Outside position: marker is in the padding area to the left of content.
 		r.drawListMarkerOutside(layer, box, fontSize, markerSize, contentLeft)
 	}
 }
 
 // drawListMarkerOutside draws the marker in the padding area (default outside position).
 func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
-	// Center marker in the padding area (between border and content).
 	mx := contentLeft - box.Padding.Left/2
-	// Vertically: approximately at the midpoint of the first line.
 	my := box.Y + box.Border.Top + fontSize*0.55
 
 	// If ::marker has custom content, draw it as text.
