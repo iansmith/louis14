@@ -1462,8 +1462,408 @@ func scaleImageNearest(src image.Image, srcW, srcH, dstW, dstH int) image.Image 
 	return dst
 }
 
+// drawBorderImage implements CSS border-image 9-slice rendering.
+// Returns true if the border-image was painted successfully, false if the
+// image could not be loaded (caller should fall back to regular borders).
+//
+// The source image is sliced into 9 regions and each is drawn into the
+// corresponding area of the border box:
+//
+//	+-------+-------------------+-------+
+//	| TL    |    Top edge       |  TR   |
+//	+-------+-------------------+-------+
+//	|       |                   |       |
+//	| Left  |   Center (fill)   | Right |
+//	|       |                   |       |
+//	+-------+-------------------+-------+
+//	| BL    |   Bottom edge     |  BR   |
+//	+-------+-------------------+-------+
+//
+// Mirrors Blink's NinePieceImagePainter.
+func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
+	if r.imageFetcher == nil {
+		return false
+	}
+
+	// Extract URL from url(...) wrapper if present.
+	src := layer.BorderImageSource
+	if strings.HasPrefix(src, "url(") {
+		src = strings.TrimPrefix(src, "url(")
+		src = strings.TrimSuffix(src, ")")
+		src = strings.Trim(src, "\"'")
+	}
+
+	img, err := images.LoadImageWithFetcher(src, r.imageFetcher)
+	if err != nil {
+		return false
+	}
+	imgW := img.Bounds().Dx()
+	imgH := img.Bounds().Dy()
+	if imgW == 0 || imgH == 0 {
+		return false
+	}
+
+	box := layer.Box
+	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+
+	// Border-image-width determines the area occupied by border slices.
+	biW := layer.BorderImageWidth // [top, right, bottom, left]
+
+	// Compute slice offsets in source image pixels.
+	slice := layer.BorderImageSlice
+	var sliceTop, sliceRight, sliceBottom, sliceLeft int
+	if slice.IsPercent {
+		sliceTop = int(math.Round(slice.Top * float64(imgH) / 100))
+		sliceRight = int(math.Round(slice.Right * float64(imgW) / 100))
+		sliceBottom = int(math.Round(slice.Bottom * float64(imgH) / 100))
+		sliceLeft = int(math.Round(slice.Left * float64(imgW) / 100))
+	} else {
+		sliceTop = int(math.Round(slice.Top))
+		sliceRight = int(math.Round(slice.Right))
+		sliceBottom = int(math.Round(slice.Bottom))
+		sliceLeft = int(math.Round(slice.Left))
+	}
+
+	// Clamp slices to image dimensions.
+	if sliceTop > imgH {
+		sliceTop = imgH
+	}
+	if sliceBottom > imgH {
+		sliceBottom = imgH
+	}
+	if sliceLeft > imgW {
+		sliceLeft = imgW
+	}
+	if sliceRight > imgW {
+		sliceRight = imgW
+	}
+	if sliceTop+sliceBottom > imgH {
+		sliceTop = imgH / 2
+		sliceBottom = imgH - sliceTop
+	}
+	if sliceLeft+sliceRight > imgW {
+		sliceLeft = imgW / 2
+		sliceRight = imgW - sliceLeft
+	}
+
+	// Destination areas (border-image-width in px).
+	dstTop := biW[0]
+	dstRight := biW[1]
+	dstBottom := biW[2]
+	dstLeft := biW[3]
+
+	// Clamp destination widths to box dimensions.
+	if dstTop+dstBottom > h {
+		ratio := h / (dstTop + dstBottom)
+		dstTop *= ratio
+		dstBottom *= ratio
+	}
+	if dstLeft+dstRight > w {
+		ratio := w / (dstLeft + dstRight)
+		dstLeft *= ratio
+		dstRight *= ratio
+	}
+
+	imgBounds := img.Bounds()
+	minX := imgBounds.Min.X
+	minY := imgBounds.Min.Y
+
+	// Helper: extract a sub-rectangle from the source image.
+	subImage := func(sx, sy, sw, sh int) image.Image {
+		if sw <= 0 || sh <= 0 {
+			return nil
+		}
+		return img.(interface {
+			SubImage(image.Rectangle) image.Image
+		}).SubImage(image.Rect(minX+sx, minY+sy, minX+sx+sw, minY+sy+sh))
+	}
+
+	// Helper: draw a source region scaled to a destination rectangle.
+	drawScaled := func(srcImg image.Image, dx, dy, dw, dh float64) {
+		if srcImg == nil || dw <= 0 || dh <= 0 {
+			return
+		}
+		sw := srcImg.Bounds().Dx()
+		sh := srcImg.Bounds().Dy()
+		if sw == 0 || sh == 0 {
+			return
+		}
+		idw := int(math.Round(dw))
+		idh := int(math.Round(dh))
+		if idw <= 0 || idh <= 0 {
+			return
+		}
+		scaled := scaleImageNearest(srcImg, sw, sh, idw, idh)
+		r.dc.DrawImage(scaled, int(math.Round(dx)), int(math.Round(dy)))
+	}
+
+	// Helper: draw a source region repeated/rounded/spaced along an edge.
+	drawEdge := func(srcImg image.Image, dx, dy, dw, dh float64, repeatMode string, horizontal bool) {
+		if srcImg == nil || dw <= 0 || dh <= 0 {
+			return
+		}
+		sw := srcImg.Bounds().Dx()
+		sh := srcImg.Bounds().Dy()
+		if sw == 0 || sh == 0 {
+			return
+		}
+
+		switch repeatMode {
+		case "stretch":
+			drawScaled(srcImg, dx, dy, dw, dh)
+
+		case "repeat":
+			if horizontal {
+				// Scale source height to match destination height, keep aspect ratio for width.
+				tileH := int(math.Round(dh))
+				tileW := int(math.Round(float64(sw) * dh / float64(sh)))
+				if tileW <= 0 || tileH <= 0 {
+					return
+				}
+				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				edgeX0 := int(math.Round(dx))
+				edgeX1 := int(math.Round(dx + dw))
+				edgeY := int(math.Round(dy))
+				// Center the tiling pattern.
+				totalW := float64(edgeX1 - edgeX0)
+				nTiles := math.Ceil(totalW / float64(tileW))
+				tiledW := nTiles * float64(tileW)
+				offset := int(math.Round((totalW - tiledW) / 2))
+				for tx := edgeX0 + offset; tx < edgeX1; tx += tileW {
+					// Clip to edge bounds.
+					srcX0 := 0
+					dstX0 := tx
+					if dstX0 < edgeX0 {
+						srcX0 = edgeX0 - dstX0
+						dstX0 = edgeX0
+					}
+					dstX1 := tx + tileW
+					if dstX1 > edgeX1 {
+						dstX1 = edgeX1
+					}
+					srcX1 := srcX0 + (dstX1 - dstX0)
+					if srcX1 > tileW {
+						srcX1 = tileW
+					}
+					if dstX1 <= dstX0 || srcX1 <= srcX0 {
+						continue
+					}
+					sub := tile.(interface {
+						SubImage(image.Rectangle) image.Image
+					}).SubImage(image.Rect(srcX0, 0, srcX1, tileH))
+					r.dc.DrawImage(sub, dstX0, edgeY)
+				}
+			} else {
+				// Vertical edge: scale source width to match destination width.
+				tileW := int(math.Round(dw))
+				tileH := int(math.Round(float64(sh) * dw / float64(sw)))
+				if tileW <= 0 || tileH <= 0 {
+					return
+				}
+				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				edgeY0 := int(math.Round(dy))
+				edgeY1 := int(math.Round(dy + dh))
+				edgeX := int(math.Round(dx))
+				totalH := float64(edgeY1 - edgeY0)
+				nTiles := math.Ceil(totalH / float64(tileH))
+				tiledH := nTiles * float64(tileH)
+				offset := int(math.Round((totalH - tiledH) / 2))
+				for ty := edgeY0 + offset; ty < edgeY1; ty += tileH {
+					srcY0 := 0
+					dstY0 := ty
+					if dstY0 < edgeY0 {
+						srcY0 = edgeY0 - dstY0
+						dstY0 = edgeY0
+					}
+					dstY1 := ty + tileH
+					if dstY1 > edgeY1 {
+						dstY1 = edgeY1
+					}
+					srcY1 := srcY0 + (dstY1 - dstY0)
+					if srcY1 > tileH {
+						srcY1 = tileH
+					}
+					if dstY1 <= dstY0 || srcY1 <= srcY0 {
+						continue
+					}
+					sub := tile.(interface {
+						SubImage(image.Rectangle) image.Image
+					}).SubImage(image.Rect(0, srcY0, tileW, srcY1))
+					r.dc.DrawImage(sub, edgeX, dstY0)
+				}
+			}
+
+		case "round":
+			if horizontal {
+				tileH := int(math.Round(dh))
+				naturalTileW := float64(sw) * dh / float64(sh)
+				if naturalTileW <= 0 || tileH <= 0 {
+					return
+				}
+				n := math.Max(1, math.Round(dw/naturalTileW))
+				tileW := int(math.Round(dw / n))
+				if tileW <= 0 {
+					return
+				}
+				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				edgeX0 := int(math.Round(dx))
+				edgeX1 := int(math.Round(dx + dw))
+				edgeY := int(math.Round(dy))
+				for tx := edgeX0; tx < edgeX1; tx += tileW {
+					tw := tileW
+					if tx+tw > edgeX1 {
+						tw = edgeX1 - tx
+					}
+					if tw <= 0 {
+						break
+					}
+					sub := tile.(interface {
+						SubImage(image.Rectangle) image.Image
+					}).SubImage(image.Rect(0, 0, tw, tileH))
+					r.dc.DrawImage(sub, tx, edgeY)
+				}
+			} else {
+				tileW := int(math.Round(dw))
+				naturalTileH := float64(sh) * dw / float64(sw)
+				if naturalTileH <= 0 || tileW <= 0 {
+					return
+				}
+				n := math.Max(1, math.Round(dh/naturalTileH))
+				tileH := int(math.Round(dh / n))
+				if tileH <= 0 {
+					return
+				}
+				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				edgeY0 := int(math.Round(dy))
+				edgeY1 := int(math.Round(dy + dh))
+				edgeX := int(math.Round(dx))
+				for ty := edgeY0; ty < edgeY1; ty += tileH {
+					th := tileH
+					if ty+th > edgeY1 {
+						th = edgeY1 - ty
+					}
+					if th <= 0 {
+						break
+					}
+					sub := tile.(interface {
+						SubImage(image.Rectangle) image.Image
+					}).SubImage(image.Rect(0, 0, tileW, th))
+					r.dc.DrawImage(sub, edgeX, ty)
+				}
+			}
+
+		case "space":
+			if horizontal {
+				tileH := int(math.Round(dh))
+				tileW := int(math.Round(float64(sw) * dh / float64(sh)))
+				if tileW <= 0 || tileH <= 0 {
+					return
+				}
+				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				edgeX0 := int(math.Round(dx))
+				edgeY := int(math.Round(dy))
+				n := int(dw) / tileW
+				if n <= 0 {
+					return
+				}
+				if n == 1 {
+					// Center single tile.
+					cx := edgeX0 + (int(math.Round(dw))-tileW)/2
+					r.dc.DrawImage(tile, cx, edgeY)
+				} else {
+					spacing := (dw - float64(n*tileW)) / float64(n-1)
+					for i := 0; i < n; i++ {
+						tx := edgeX0 + int(math.Round(float64(i)*(float64(tileW)+spacing)))
+						r.dc.DrawImage(tile, tx, edgeY)
+					}
+				}
+			} else {
+				tileW := int(math.Round(dw))
+				tileH := int(math.Round(float64(sh) * dw / float64(sw)))
+				if tileW <= 0 || tileH <= 0 {
+					return
+				}
+				tile := scaleImageNearest(srcImg, sw, sh, tileW, tileH)
+				edgeY0 := int(math.Round(dy))
+				edgeX := int(math.Round(dx))
+				n := int(dh) / tileH
+				if n <= 0 {
+					return
+				}
+				if n == 1 {
+					cy := edgeY0 + (int(math.Round(dh))-tileH)/2
+					r.dc.DrawImage(tile, edgeX, cy)
+				} else {
+					spacing := (dh - float64(n*tileH)) / float64(n-1)
+					for i := 0; i < n; i++ {
+						ty := edgeY0 + int(math.Round(float64(i)*(float64(tileH)+spacing)))
+						r.dc.DrawImage(tile, edgeX, ty)
+					}
+				}
+			}
+
+		default:
+			drawScaled(srcImg, dx, dy, dw, dh)
+		}
+	}
+
+	// Source image regions (9-slice coordinates).
+	middleW := imgW - sliceLeft - sliceRight
+	middleH := imgH - sliceTop - sliceBottom
+
+	// Destination middle area.
+	dstMiddleW := w - dstLeft - dstRight
+	dstMiddleH := h - dstTop - dstBottom
+
+	hRepeat := layer.BorderImageRepeat[0]
+	vRepeat := layer.BorderImageRepeat[1]
+
+	// 4 corners — always scaled (stretched) to fit.
+	if sliceTop > 0 && sliceLeft > 0 && dstTop > 0 && dstLeft > 0 {
+		drawScaled(subImage(0, 0, sliceLeft, sliceTop), x, y, dstLeft, dstTop)
+	}
+	if sliceTop > 0 && sliceRight > 0 && dstTop > 0 && dstRight > 0 {
+		drawScaled(subImage(imgW-sliceRight, 0, sliceRight, sliceTop), x+w-dstRight, y, dstRight, dstTop)
+	}
+	if sliceBottom > 0 && sliceLeft > 0 && dstBottom > 0 && dstLeft > 0 {
+		drawScaled(subImage(0, imgH-sliceBottom, sliceLeft, sliceBottom), x, y+h-dstBottom, dstLeft, dstBottom)
+	}
+	if sliceBottom > 0 && sliceRight > 0 && dstBottom > 0 && dstRight > 0 {
+		drawScaled(subImage(imgW-sliceRight, imgH-sliceBottom, sliceRight, sliceBottom), x+w-dstRight, y+h-dstBottom, dstRight, dstBottom)
+	}
+
+	// 4 edges — repeat mode controlled by border-image-repeat.
+	if middleW > 0 && sliceTop > 0 && dstTop > 0 && dstMiddleW > 0 {
+		drawEdge(subImage(sliceLeft, 0, middleW, sliceTop), x+dstLeft, y, dstMiddleW, dstTop, hRepeat, true)
+	}
+	if middleW > 0 && sliceBottom > 0 && dstBottom > 0 && dstMiddleW > 0 {
+		drawEdge(subImage(sliceLeft, imgH-sliceBottom, middleW, sliceBottom), x+dstLeft, y+h-dstBottom, dstMiddleW, dstBottom, hRepeat, true)
+	}
+	if middleH > 0 && sliceLeft > 0 && dstLeft > 0 && dstMiddleH > 0 {
+		drawEdge(subImage(0, sliceTop, sliceLeft, middleH), x, y+dstTop, dstLeft, dstMiddleH, vRepeat, false)
+	}
+	if middleH > 0 && sliceRight > 0 && dstRight > 0 && dstMiddleH > 0 {
+		drawEdge(subImage(imgW-sliceRight, sliceTop, sliceRight, middleH), x+w-dstRight, y+dstTop, dstRight, dstMiddleH, vRepeat, false)
+	}
+
+	// Center (fill): only drawn when the fill keyword is present.
+	if slice.Fill && middleW > 0 && middleH > 0 && dstMiddleW > 0 && dstMiddleH > 0 {
+		drawScaled(subImage(sliceLeft, sliceTop, middleW, middleH), x+dstLeft, y+dstTop, dstMiddleW, dstMiddleH)
+	}
+
+	return true
+}
+
 // drawBorders draws all four borders of the layer's box (pre-computed styles/colors).
 func (r *Renderer) drawBorders(layer *PaintLayer) {
+	// Border-image replaces regular border drawing when a source is set.
+	if layer.BorderImageSource != "" {
+		if r.drawBorderImage(layer) {
+			return // border-image painted successfully
+		}
+		// Fall through to regular borders if image failed to load.
+	}
+
 	box := layer.Box
 	bw := box.Border
 	if bw.Top == 0 && bw.Right == 0 && bw.Bottom == 0 && bw.Left == 0 {

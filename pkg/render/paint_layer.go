@@ -61,6 +61,12 @@ type PaintLayer struct {
 	BorderStyles [4]css.BorderStyle
 	BorderRadius css.EllipticalRadii // TopLeft, TopRight, BottomRight, BottomLeft (elliptical)
 
+	// Border image (9-slice): replaces regular border drawing when source is set.
+	BorderImageSource string             // URL or gradient; empty = none
+	BorderImageSlice  css.BorderImageSlice // 4 slice values + fill flag
+	BorderImageWidth  [4]float64         // top, right, bottom, left (px)
+	BorderImageRepeat [2]string          // [horizontal, vertical]: stretch/repeat/round/space
+
 	// Box shadows (outset and inset):
 	BoxShadows []css.BoxShadow
 
@@ -288,6 +294,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// Border radius — resolve percentages against box dimensions and constrain.
 	layer.BorderRadius = s.GetBorderRadiiResolved(box.Width, box.Height).
 		ConstrainRadii(box.Width, box.Height)
+
+	// Border image (9-slice).
+	if biSrc := s.GetBorderImageSource(); biSrc != "" && biSrc != "none" {
+		layer.BorderImageSource = biSrc
+		layer.BorderImageSlice = s.GetBorderImageSlice()
+		bwArr := [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
+		layer.BorderImageWidth = s.GetBorderImageWidth(bwArr)
+		layer.BorderImageRepeat = s.GetBorderImageRepeat()
+	}
 
 	// Box shadows. Resolve currentcolor to the element's text color.
 	layer.BoxShadows = s.GetBoxShadow()
