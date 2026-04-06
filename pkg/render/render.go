@@ -2538,8 +2538,11 @@ func formatListMarker(lst css.ListStyleType, index int) string {
 	}
 }
 
-// drawListMarker paints the list-item marker (bullet or number) to the left
+// drawListMarker paints the list-item marker (bullet or number).
+// For list-style-position:outside (default), the marker is drawn to the left
 // of the content box, inside the padding area created by the UA stylesheet.
+// For list-style-position:inside, the marker is drawn inline at the start of
+// the first line of the list item's content area.
 func (r *Renderer) drawListMarker(layer *PaintLayer) {
 	box := layer.Box
 	fontSize := layer.FontSize
@@ -2550,10 +2553,6 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 
 	// Position: to the left of the content box, vertically centered on first line.
 	contentLeft := box.X + box.Border.Left + box.Padding.Left
-	// Center marker in the padding area (between border and content).
-	mx := contentLeft - box.Padding.Left/2
-	// Vertically: approximately at the midpoint of the first line.
-	my := box.Y + box.Border.Top + fontSize*0.55
 
 	// Apply ::marker color if specified, else use text color.
 	if layer.HasMarkerColor {
@@ -2561,6 +2560,22 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 	} else {
 		r.setColor(layer.TextColor)
 	}
+
+	if layer.ListStylePositionInside {
+		// Inside position: marker is at the content start, inline with text.
+		r.drawListMarkerInside(layer, box, fontSize, markerSize, contentLeft)
+	} else {
+		// Outside position: marker is in the padding area to the left of content.
+		r.drawListMarkerOutside(layer, box, fontSize, markerSize, contentLeft)
+	}
+}
+
+// drawListMarkerOutside draws the marker in the padding area (default outside position).
+func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
+	// Center marker in the padding area (between border and content).
+	mx := contentLeft - box.Padding.Left/2
+	// Vertically: approximately at the midpoint of the first line.
+	my := box.Y + box.Border.Top + fontSize*0.55
 
 	// If ::marker has custom content, draw it as text.
 	if layer.MarkerContent != "" {
@@ -2599,6 +2614,57 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 			ascent := float64(metrics.Ascent) / 64.0
 			// Right-align marker text to the left of content.
 			numX := contentLeft - tw - markerSize*0.5
+			numY := box.Y + box.Border.Top + ascent
+			r.dc.DrawText(numStr, fid, numX, numY)
+		}
+	}
+}
+
+// drawListMarkerInside draws the marker inline at the start of the content area.
+// Per CSS Lists §4.2, the marker is placed as if it were an inline element at
+// the beginning of the first line box of the list item.
+func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
+	// For inside position, the marker is drawn at the content-left edge.
+	// Vertically: approximately at the midpoint of the first line.
+	my := box.Y + box.Border.Top + fontSize*0.55
+
+	// If ::marker has custom content, draw it as text at content start.
+	if layer.MarkerContent != "" {
+		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+		fid := r.openFont(fontPath, fontSize)
+		if fid >= 0 {
+			metrics := r.dc.GetFontMetrics(fid)
+			ascent := float64(metrics.Ascent) / 64.0
+			numX := contentLeft
+			numY := box.Y + box.Border.Top + ascent
+			r.dc.DrawText(layer.MarkerContent, fid, numX, numY)
+		}
+		return
+	}
+
+	switch layer.ListStyleType {
+	case css.ListStyleTypeDisc:
+		// Draw at the start of content, vertically centered on first line.
+		mx := contentLeft + markerSize/2
+		r.dc.DrawCircle(mx, my, markerSize/2)
+		r.dc.Fill()
+	case css.ListStyleTypeCircle:
+		mx := contentLeft + markerSize/2
+		r.dc.DrawCircle(mx, my, markerSize/2)
+		r.dc.SetLineWidth(1)
+		r.dc.Stroke()
+	case css.ListStyleTypeSquare:
+		r.dc.DrawRectangle(contentLeft, my-markerSize/2, markerSize, markerSize)
+		r.dc.Fill()
+	default:
+		// All text-based markers: decimal, alpha, roman, greek, disclosure, etc.
+		numStr := formatListMarker(layer.ListStyleType, layer.ListItemIndex)
+		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+		fid := r.openFont(fontPath, fontSize)
+		if fid >= 0 {
+			metrics := r.dc.GetFontMetrics(fid)
+			ascent := float64(metrics.Ascent) / 64.0
+			numX := contentLeft
 			numY := box.Y + box.Border.Top + ascent
 			r.dc.DrawText(numStr, fid, numX, numY)
 		}

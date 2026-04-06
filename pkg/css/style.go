@@ -7285,6 +7285,17 @@ func (s *Style) GetListStyleType() ListStyleType {
 	return ListStyleTypeDisc
 }
 
+// GetListStylePosition returns the list-style-position value.
+// Returns "outside" (default) or "inside".
+func (s *Style) GetListStylePosition() string {
+	if val, ok := s.Get("list-style-position"); ok {
+		if val == "inside" {
+			return "inside"
+		}
+	}
+	return "outside"
+}
+
 // Phase 25: clip-path, filter, mix-blend-mode, mask-image
 
 // ClipPathType represents the type of clip-path shape

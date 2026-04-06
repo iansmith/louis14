@@ -113,9 +113,10 @@ type PaintLayer struct {
 	TextOverflow css.TextOverflowType
 
 	// List markers:
-	IsListItem      bool
-	ListStyleType   css.ListStyleType
-	ListItemIndex   int // 1-based ordinal for ordered lists
+	IsListItem              bool
+	ListStyleType           css.ListStyleType
+	ListStylePositionInside bool // true = inside, false = outside (default)
+	ListItemIndex           int  // 1-based ordinal for ordered lists
 	MarkerContent   string    // custom content from ::marker { content: "..." }
 	MarkerColor     css.Color // color override from ::marker rules
 	HasMarkerColor  bool      // true if ::marker specifies a color
@@ -395,6 +396,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if s.GetDisplay() == css.DisplayListItem {
 		layer.IsListItem = true
 		layer.ListStyleType = s.GetListStyleType()
+		layer.ListStylePositionInside = s.GetListStylePosition() == "inside"
 		layer.ListItemIndex = computeListItemIndex(box)
 
 		// ::marker pseudo-element: apply styling overrides.
