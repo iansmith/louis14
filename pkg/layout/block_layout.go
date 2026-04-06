@@ -265,7 +265,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			// Step 4: Position child in the inline direction.
+			// CSS 2.1 §10.3.3: If both margin-inline-start and margin-inline-end are auto,
+			// and the element has a definite inline-size, center it.
 			childInlineOffset := childMargins.InlineStart + floatStartOff
+
+			rawMargin := childStyle.GetMargin()
+			autoInlineStart, autoInlineEnd, _, _ := PhysicalAutoMarginsToLogical(rawMargin, wdm)
+			if autoInlineStart || autoInlineEnd {
+				childInlineSize := NewLogicalFragment(wdm, childResult.Fragment).InlineSize()
+				remaining := childAvailableInline - childInlineSize - floatStartOff - floatEndOff
+				if remaining > 0 {
+					if autoInlineStart && autoInlineEnd {
+						childInlineOffset = floatStartOff + remaining/2
+					} else if autoInlineStart {
+						childInlineOffset = floatStartOff + remaining - childMargins.InlineEnd
+					}
+					// autoEnd && !autoStart: start margin is already used, end absorbs remaining (no change)
+				}
+			}
 
 			// Step 5: Handle parent-child top margin collapsing.
 			// CSS 2.1 §8.3.1: parent-child collapsing requires that the
