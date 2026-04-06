@@ -217,6 +217,12 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		letterSpacing = item.Style.GetLetterSpacing()
 	}
 
+	// CSS 2.1 §16.4: word-spacing adds extra space between words.
+	wordSpacing := 0.0
+	if item.Style != nil {
+		wordSpacing = item.Style.GetWordSpacing()
+	}
+
 	// Measure the full text segment. In vertical writing modes, use vertical
 	// measurement where each upright glyph advances by fontSize.
 	isVertical := lb.space.WritingDirection.IsVertical()
@@ -231,6 +237,9 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		if runeCount > 1 {
 			fullWidth += letterSpacing * float64(runeCount-1)
 		}
+	}
+	if wordSpacing != 0 {
+		fullWidth += wordSpacing * float64(strings.Count(content, " "))
 	}
 
 	// Check if it fits.
@@ -329,6 +338,12 @@ func (lb *LineBreaker) breakTextAtWord(
 		return true
 	}
 
+	// CSS 2.1 §16.4: word-spacing adds extra space between words.
+	wordSpacing := 0.0
+	if item.Style != nil {
+		wordSpacing = item.Style.GetWordSpacing()
+	}
+
 	isVertical := lb.space.WritingDirection.IsVertical()
 	for i, word := range words {
 		var wordWidth float64
@@ -346,6 +361,10 @@ func (lb *LineBreaker) breakTextAtWord(
 			if i > 0 {
 				wordWidth += letterSpacing
 			}
+		}
+		// Add word-spacing for each space character in this word.
+		if wordSpacing != 0 {
+			wordWidth += wordSpacing * float64(strings.Count(word, " "))
 		}
 
 		if lb.mode == LineBreakerMinContent && i > 0 {

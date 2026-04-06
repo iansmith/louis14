@@ -274,8 +274,14 @@ func collectTextNode(
 	startOffset := text.Len()
 
 	if !collapseSpaces {
-		// Preserve whitespace as-is.
-		text.WriteString(content)
+		// Preserve whitespace as-is. Use RawText which preserves the original
+		// whitespace from the HTML source (node.Text may have been collapsed
+		// during HTML parsing).
+		preservedContent := content
+		if node.RawText != "" {
+			preservedContent = node.RawText
+		}
+		text.WriteString(preservedContent)
 	} else {
 		// Collapse whitespace per CSS 2.1 §16.6.1.
 		// - Sequences of spaces/tabs collapse to a single space.

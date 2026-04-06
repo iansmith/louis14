@@ -2142,12 +2142,30 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	if layer.LetterSpacing != 0 || layer.WordSpacing != 0 {
 		x := box.X
 		baselineY := box.Y + ascent
-		for _, ch := range text {
-			r.dc.DrawText(string(ch), fontID, x, baselineY)
-			charW := r.dc.MeasureText(string(ch), fontID)
-			x += charW + layer.LetterSpacing
-			if ch == ' ' {
-				x += layer.WordSpacing
+		if layer.LetterSpacing != 0 {
+			// Character-by-character rendering for letter-spacing.
+			for _, ch := range text {
+				r.dc.DrawText(string(ch), fontID, x, baselineY)
+				charW := r.dc.MeasureText(string(ch), fontID)
+				x += charW + layer.LetterSpacing
+				if ch == ' ' {
+					x += layer.WordSpacing
+				}
+			}
+		} else {
+			// Word-by-word rendering for word-spacing only.
+			// Drawing words as units avoids sub-pixel accumulation errors
+			// that occur with per-character rendering.
+			words := strings.Split(text, " ")
+			spaceW := r.dc.MeasureText(" ", fontID)
+			for i, word := range words {
+				if word != "" {
+					r.dc.DrawText(word, fontID, x, baselineY)
+					x += r.dc.MeasureText(word, fontID)
+				}
+				if i < len(words)-1 {
+					x += spaceW + layer.WordSpacing
+				}
 			}
 		}
 	} else {

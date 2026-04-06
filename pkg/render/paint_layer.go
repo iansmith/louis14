@@ -6,7 +6,6 @@ import (
 	"strconv"
 
 	"louis14/pkg/css"
-	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
 
@@ -431,7 +430,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 }
 
 // computeListItemIndex returns the 1-based ordinal for a list item,
-// respecting <ol start="N"> and counting preceding element siblings.
+// respecting <ol start="N"> and counting preceding list-item siblings.
+// Only siblings with display:list-item are counted (not all element siblings),
+// which matches how the CSS list-item counter works.
 func computeListItemIndex(box *layout.Box) int {
 	if box.LayoutNode == nil || box.LayoutNode.DOMNode == nil {
 		return 1
@@ -447,17 +448,22 @@ func computeListItemIndex(box *layout.Box) int {
 			start = n
 		}
 	}
-	// Count preceding list-item siblings
-	idx := start
-	for _, sibling := range node.Parent.Children {
-		if sibling == node {
-			break
+	// Count preceding list-item siblings using the box tree, which gives
+	// access to computed styles. This correctly skips non-list-item elements
+	// (e.g., a <p> before a <div display:list-item>).
+	if box.Parent != nil {
+		idx := start
+		for _, sibling := range box.Parent.Children {
+			if sibling == box {
+				break
+			}
+			if sibling.Style != nil && sibling.Style.GetDisplay() == css.DisplayListItem {
+				idx++
+			}
 		}
-		if sibling.Type == html.ElementNode {
-			idx++
-		}
+		return idx
 	}
-	return idx
+	return start
 }
 
 // domOrderedChildren returns the children of box in DOM tree order.
