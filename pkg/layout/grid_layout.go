@@ -381,7 +381,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// CSS position:relative offset.
-	if gla.style != nil && gla.style.GetPosition() == css.PositionRelative {
+	if gla.style != nil && (gla.style.GetPosition() == css.PositionRelative || gla.style.GetPosition() == css.PositionSticky) {
 		cbWidth := gla.space.AvailableSize.InlineSize
 		cbHeight := gla.space.AvailableSize.BlockSize
 		if cbHeight == Indefinite {

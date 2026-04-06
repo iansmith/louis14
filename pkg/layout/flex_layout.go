@@ -755,7 +755,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// CSS position:relative — "start wins over end" in logical coordinates.
-	if fla.style != nil && fla.style.GetPosition() == css.PositionRelative {
+	if fla.style != nil && (fla.style.GetPosition() == css.PositionRelative || fla.style.GetPosition() == css.PositionSticky) {
 		cbWidth := fla.space.AvailableSize.InlineSize
 		cbHeight := fla.space.AvailableSize.BlockSize
 		if cbHeight == Indefinite {
