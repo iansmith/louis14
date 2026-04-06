@@ -59,6 +59,7 @@ type PaintLayer struct {
 	BackgroundRepeat   css.BackgroundRepeatType // repeat mode
 	BackgroundPosition css.BackgroundPosition   // position offsets
 	BackgroundSize     css.BackgroundSize       // background-size (cover/contain/explicit)
+	BackgroundClip     css.BackgroundClipType   // border-box, padding-box, content-box
 
 	// Borders: indices 0=Top, 1=Right, 2=Bottom, 3=Left
 	BorderColors [4]css.Color
@@ -223,6 +224,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	} else if val, ok := s.Get("background-image"); ok && isGradientValue(val) {
 		layer.BackgroundGradient = val
 	}
+	layer.BackgroundClip = s.GetBackgroundClip()
 
 	// Border colors: currentColor fallback.
 	currentColor := css.Color{R: 0, G: 0, B: 0, A: 1.0}

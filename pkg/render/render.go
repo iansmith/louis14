@@ -618,16 +618,63 @@ func (r *Renderer) buildRoundedRectPathReverse(x, y, w, h float64, radii [4]floa
 	r.dc.ClosePath()
 }
 
+// backgroundClipRect computes the background painting area based on
+// the background-clip property (border-box, padding-box, content-box).
+func (r *Renderer) backgroundClipRect(layer *PaintLayer) (float64, float64, float64, float64) {
+	box := layer.Box
+	switch layer.BackgroundClip {
+	case css.BackgroundClipPaddingBox:
+		return pixelSnap(
+			box.X+box.Border.Left, box.Y+box.Border.Top,
+			box.Width-box.Border.Left-box.Border.Right,
+			box.Height-box.Border.Top-box.Border.Bottom)
+	case css.BackgroundClipContentBox:
+		return pixelSnap(
+			box.X+box.Border.Left+box.Padding.Left,
+			box.Y+box.Border.Top+box.Padding.Top,
+			box.Width-box.Border.Left-box.Border.Right-box.Padding.Left-box.Padding.Right,
+			box.Height-box.Border.Top-box.Border.Bottom-box.Padding.Top-box.Padding.Bottom)
+	default: // border-box
+		return pixelSnap(box.X, box.Y, box.Width, box.Height)
+	}
+}
+
+// backgroundClipRadii adjusts border radii for the background-clip inset.
+// When painting inside the padding-box or content-box, radii must be reduced
+// by the inset amount to maintain correct curvature.
+func backgroundClipRadii(layer *PaintLayer) [4]float64 {
+	radii := layer.BorderRadius
+	box := layer.Box
+	switch layer.BackgroundClip {
+	case css.BackgroundClipPaddingBox:
+		radii = [4]float64{
+			math.Max(0, radii[0]-math.Max(box.Border.Left, box.Border.Top)),
+			math.Max(0, radii[1]-math.Max(box.Border.Right, box.Border.Top)),
+			math.Max(0, radii[2]-math.Max(box.Border.Right, box.Border.Bottom)),
+			math.Max(0, radii[3]-math.Max(box.Border.Left, box.Border.Bottom)),
+		}
+	case css.BackgroundClipContentBox:
+		radii = [4]float64{
+			math.Max(0, radii[0]-math.Max(box.Border.Left+box.Padding.Left, box.Border.Top+box.Padding.Top)),
+			math.Max(0, radii[1]-math.Max(box.Border.Right+box.Padding.Right, box.Border.Top+box.Padding.Top)),
+			math.Max(0, radii[2]-math.Max(box.Border.Right+box.Padding.Right, box.Border.Bottom+box.Padding.Bottom)),
+			math.Max(0, radii[3]-math.Max(box.Border.Left+box.Padding.Left, box.Border.Bottom+box.Padding.Bottom)),
+		}
+	}
+	return radii
+}
+
 // drawBackground paints the layer's background color and image (pre-computed).
 func (r *Renderer) drawBackground(layer *PaintLayer) {
-	box := layer.Box
-	sx, sy, sw, sh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	sx, sy, sw, sh := r.backgroundClipRect(layer)
+	radii := backgroundClipRadii(layer)
+	hasRadius := radii != [4]float64{}
 
 	// Background color.
 	if c := layer.BackgroundColor; c.A > 0 {
 		r.setColor(c)
-		if hasBorderRadius(layer) {
-			r.buildRoundedRectPath(sx, sy, sw, sh, layer.BorderRadius)
+		if hasRadius {
+			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
 			r.dc.Fill()
 		} else {
 			r.dc.DrawRectangle(sx, sy, sw, sh)
@@ -637,9 +684,9 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 
 	// Background gradient (linear-gradient, etc.).
 	if layer.BackgroundGradient != "" {
-		if hasBorderRadius(layer) {
+		if hasRadius {
 			r.dc.Push()
-			r.buildRoundedRectPath(sx, sy, sw, sh, layer.BorderRadius)
+			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
 			r.dc.Clip()
 			r.drawLinearGradient(layer.BackgroundGradient, sx, sy, sw, sh)
 			r.dc.Pop()
@@ -650,9 +697,9 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 
 	// Background image.
 	if layer.BackgroundImage != "" && r.imageFetcher != nil {
-		if hasBorderRadius(layer) {
+		if hasRadius {
 			r.dc.Push()
-			r.buildRoundedRectPath(sx, sy, sw, sh, layer.BorderRadius)
+			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
 			r.dc.Clip()
 			r.drawBackgroundImage(layer)
 			r.dc.Pop()
