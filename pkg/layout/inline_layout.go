@@ -215,10 +215,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 
 	// Get text-align from the container's style.
 	textAlign := "start"
+	textAlignLast := "auto"
 	if bla.style != nil {
 		if ta, ok := bla.style.Get("text-align"); ok {
 			textAlign = ta
 		}
+		textAlignLast = bla.style.GetTextAlignLast()
 		// Flex containers: emulate justify-content as text-align for inline content.
 		display := bla.style.GetDisplay()
 		if display == css.DisplayFlex || display == css.DisplayInlineFlex {
@@ -291,6 +293,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			break
 		}
 		line.TextAlign = textAlign
+
+		// CSS Text §9.7: text-align-last controls alignment of the last line
+		// of a block, or any line immediately before a forced break.
+		if line.IsLastLine || line.HasForcedBreak {
+			switch textAlignLast {
+			case "auto":
+				// "auto" means use text-align, except justify falls back to start.
+				// The justify fallback is already handled in computeTextAlignOffset,
+				// so nothing extra needed here.
+			case "start", "end", "left", "right", "center", "justify":
+				line.TextAlign = textAlignLast
+			}
+		}
 
 		// Apply text-indent to the first line only.
 		lineInlineOffset := floatStart
