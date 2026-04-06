@@ -1010,8 +1010,8 @@ func createsFormattingContext(style *css.Style) bool {
 		return true
 	}
 
-	// overflow != visible creates a BFC.
-	if style.GetOverflow() != css.OverflowVisible {
+	// overflow != visible on either axis creates a BFC.
+	if style.GetOverflowX() != css.OverflowVisible || style.GetOverflowY() != css.OverflowVisible {
 		return true
 	}
 
@@ -1101,7 +1101,7 @@ func computeOrthogonalAvailableBlock(
 	icb := icbBlockSize(wdm, ctx)
 	minBlock := ResolveMinBlockSize(style, wdm, space, geom)
 	maxBlock, hasMax := ResolveMaxBlockSize(style, wdm, space, geom)
-	isScroller := style.GetOverflow() != css.OverflowVisible
+	isScroller := style.GetOverflowX() != css.OverflowVisible || style.GetOverflowY() != css.OverflowVisible
 
 	if hasExplicitBlock {
 		// Parent has definite height.
@@ -1174,7 +1174,7 @@ func computeOrthogonalFallbackBlockForChildren(
 	hasExplicitBlock bool,
 	explicitBlockSize float64,
 ) float64 {
-	isScroller := style.GetOverflow() != css.OverflowVisible
+	isScroller := style.GetOverflowX() != css.OverflowVisible || style.GetOverflowY() != css.OverflowVisible
 
 	if isScroller {
 		// This element is a scroller. Compute its effective block-size

@@ -2241,15 +2241,15 @@ func (r *Renderer) applyTextOverflowEllipsis(layer *PaintLayer, text string, box
 	// parent element is the block container) or on an ancestor.
 	hasEllipsis := layer.TextOverflow == css.TextOverflowEllipsis
 
-	// Walk up the box tree to find the nearest ancestor with overflow:hidden
+	// Walk up the box tree to find the nearest ancestor with overflow-x:hidden
 	// and text-overflow:ellipsis.
 	var clipAncestor *layout.Box
 	for p := box.Parent; p != nil; p = p.Parent {
 		if p.Style == nil {
 			continue
 		}
-		overflow := p.Style.GetOverflow()
-		if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+		overflowX := p.Style.GetOverflowX()
+		if overflowX == css.OverflowHidden || overflowX == css.OverflowScroll || overflowX == css.OverflowAuto {
 			if !hasEllipsis && p.Style.GetTextOverflow() == css.TextOverflowEllipsis {
 				hasEllipsis = true
 			}
@@ -2495,13 +2495,15 @@ func (r *Renderer) SavePNG(filename string) error {
 }
 
 // hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto
-// or paint containment (which also clips and contains positioned descendants).
+// on either axis, or paint containment (which also clips and contains positioned descendants).
 func hasOverflowClipping(box *layout.Box) bool {
 	if box.Style == nil {
 		return false
 	}
-	overflow := box.Style.GetOverflow()
-	if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+	ox := box.Style.GetOverflowX()
+	oy := box.Style.GetOverflowY()
+	if ox == css.OverflowHidden || ox == css.OverflowScroll || ox == css.OverflowAuto ||
+		oy == css.OverflowHidden || oy == css.OverflowScroll || oy == css.OverflowAuto {
 		return true
 	}
 	// CSS Containment: paint containment clips content and contains descendants.

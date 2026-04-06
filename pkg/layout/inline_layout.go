@@ -684,7 +684,7 @@ func createLineBoxEx(
 					}
 					isInlineBlockLike := r.Item.Style != nil &&
 						(display == css.DisplayInlineBlock || display == css.DisplayTable || display == css.DisplayInlineTable) &&
-						r.Item.Style.GetOverflow() == css.OverflowVisible
+						r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
 					if isInlineBlockLike && (r.LayoutResult.LastBaseline > 0 || !centralBaseline) {
 						var ibAscent float64
 						if r.LayoutResult.LastBaseline > 0 {
@@ -849,7 +849,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				}
 				isInlineBlockLike := r.Item.Style != nil &&
 					(display == css.DisplayInlineBlock || display == css.DisplayTable || display == css.DisplayInlineTable) &&
-					r.Item.Style.GetOverflow() == css.OverflowVisible
+					r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
 				if isInlineBlockLike && (r.LayoutResult.LastBaseline > 0 || !centralBaseline) {
 					var ibAscent float64
 					if r.LayoutResult.LastBaseline > 0 {
