@@ -138,6 +138,10 @@ type PaintLayer struct {
 	// CSS clip-path:
 	ClipPath *css.ClipPath // nil = no clip-path
 
+	// CSS mask-image:
+	MaskImage    string // "none", url(...), or gradient value
+	HasMaskImage bool
+
 	// CSS mix-blend-mode:
 	BlendMode css.MixBlendMode
 
@@ -491,6 +495,12 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	// CSS clip-path.
 	layer.ClipPath = s.GetClipPath()
+
+	// CSS mask-image.
+	if mi := s.GetMaskImage(); mi != "" && mi != "none" {
+		layer.MaskImage = mi
+		layer.HasMaskImage = true
+	}
 
 	// CSS mix-blend-mode.
 	layer.BlendMode = s.GetMixBlendMode()
