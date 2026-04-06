@@ -1,11 +1,13 @@
 package layout
 
 import (
-	"louis14/pkg/css"
-	"louis14/pkg/text"
+	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"louis14/pkg/css"
+	"louis14/pkg/text"
 )
 
 // isCSSCollapsibleSpace returns true for whitespace characters that CSS
@@ -227,19 +229,26 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	// measurement where each upright glyph advances by fontSize.
 	isVertical := lb.space.WritingDirection.IsVertical()
 	var fullWidth float64
-	if isVertical {
-		fullWidth, _ = text.MeasureTextVerticalFromFont(content, fontSize, fontPath)
+
+	// CSS Text 3 §4.2: tab characters advance to the next tab stop.
+	// Tab stops are at multiples of (tab-size × space-width) or (tab-size px).
+	if strings.Contains(content, "\t") && item.Style != nil {
+		fullWidth = lb.measureTextWithTabs(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
 	} else {
-		fullWidth, _ = text.MeasureText(content, fontSize, fontPath)
-	}
-	if letterSpacing != 0 {
-		runeCount := runeLen(content)
-		if runeCount > 1 {
-			fullWidth += letterSpacing * float64(runeCount-1)
+		if isVertical {
+			fullWidth, _ = text.MeasureTextVerticalFromFont(content, fontSize, fontPath)
+		} else {
+			fullWidth, _ = text.MeasureText(content, fontSize, fontPath)
 		}
-	}
-	if wordSpacing != 0 {
-		fullWidth += wordSpacing * float64(strings.Count(content, " "))
+		if letterSpacing != 0 {
+			runeCount := runeLen(content)
+			if runeCount > 1 {
+				fullWidth += letterSpacing * float64(runeCount-1)
+			}
+		}
+		if wordSpacing != 0 {
+			fullWidth += wordSpacing * float64(strings.Count(content, " "))
+		}
 	}
 
 	// Check if it fits.
@@ -901,4 +910,79 @@ func resolveFontPath(style *css.Style, fonts text.FontConfig) string {
 	ahem := style.IsAhemFamily()
 	family, _ := style.Get("font-family")
 	return fonts.FontPathForFamily(family, bold, italic, mono, ahem)
+}
+
+// measureTextWithTabs computes the inline size of text containing tab characters.
+// CSS Text 3 §4.2: a tab character advances to the next tab stop, where tab
+// stops are at multiples of (tab-size × space-width) or (tab-size in px) from
+// the start of the line.
+func (lb *LineBreaker) measureTextWithTabs(
+	content string,
+	fontSize float64,
+	fontPath string,
+	letterSpacing, wordSpacing float64,
+	isVertical bool,
+) float64 {
+	// Compute tab stop interval in pixels.
+	tabSizeVal := 8.0
+	tabSizeIsLength := false
+	if lb.itemsData.Items[lb.currentItemIndex].Style != nil {
+		tabSizeVal, tabSizeIsLength = lb.itemsData.Items[lb.currentItemIndex].Style.GetTabSize()
+	}
+
+	var tabStopPx float64
+	if tabSizeIsLength {
+		tabStopPx = tabSizeVal
+	} else {
+		// tab-size is a character count: interval = N × advance-of-space.
+		var spaceW float64
+		if isVertical {
+			spaceW, _ = text.MeasureTextVerticalFromFont(" ", fontSize, fontPath)
+		} else {
+			spaceW, _ = text.MeasureText(" ", fontSize, fontPath)
+		}
+		if spaceW <= 0 {
+			spaceW = fontSize
+		}
+		tabStopPx = tabSizeVal * spaceW
+	}
+	if tabStopPx <= 0 {
+		tabStopPx = fontSize * 8
+	}
+
+	// Track position from the start of the line (lb.position is the current
+	// inline offset on this line).
+	pos := lb.position
+	segments := strings.Split(content, "\t")
+	for i, seg := range segments {
+		if len(seg) > 0 {
+			var segW float64
+			if isVertical {
+				segW, _ = text.MeasureTextVerticalFromFont(seg, fontSize, fontPath)
+			} else {
+				segW, _ = text.MeasureText(seg, fontSize, fontPath)
+			}
+			if letterSpacing != 0 {
+				rc := runeLen(seg)
+				if rc > 1 {
+					segW += letterSpacing * float64(rc-1)
+				}
+			}
+			if wordSpacing != 0 {
+				segW += wordSpacing * float64(strings.Count(seg, " "))
+			}
+			pos += segW
+		}
+		// After each segment except the last, advance to next tab stop.
+		if i < len(segments)-1 {
+			rem := math.Mod(pos, tabStopPx)
+			if rem < 1e-9 {
+				pos += tabStopPx
+			} else {
+				pos += tabStopPx - rem
+			}
+		}
+	}
+	// Return the width consumed by this text (difference from where we started).
+	return pos - lb.position
 }

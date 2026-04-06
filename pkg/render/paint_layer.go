@@ -83,7 +83,9 @@ type PaintLayer struct {
 	FontAhem       bool
 	FontFamily     string
 	LetterSpacing  float64
-	WordSpacing    float64
+	WordSpacing      float64
+	TabSize          float64 // tab-size value (character count or px)
+	TabSizeIsLength  bool    // true = px length, false = character count
 	IsVerticalText bool
 	IsSidewaysLR   bool
 	IsSidewaysRL   bool
@@ -353,6 +355,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 	layer.LetterSpacing = s.GetLetterSpacing()
 	layer.WordSpacing = s.GetWordSpacing()
+	layer.TabSize, layer.TabSizeIsLength = s.GetTabSize()
 	layer.IsVerticalText = box.IsVerticalText
 	layer.IsSidewaysLR = box.IsSidewaysLR
 	layer.IsSidewaysRL = box.IsSidewaysRL
