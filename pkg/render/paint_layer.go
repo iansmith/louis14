@@ -61,6 +61,9 @@ type PaintLayer struct {
 	BorderStyles [4]css.BorderStyle
 	BorderRadius [4]float64 // TopLeft, TopRight, BottomRight, BottomLeft (px, circular)
 
+	// Box shadows (outset and inset):
+	BoxShadows []css.BoxShadow
+
 	// Text:
 	TextColor     css.Color
 	FontSize      float64
@@ -221,6 +224,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if layer.BorderRadius != [4]float64{} {
 		reduceBorderRadii(&layer.BorderRadius, box.Width, box.Height)
 	}
+
+	// Box shadows.
+	layer.BoxShadows = s.GetBoxShadow()
 
 	// Text.
 	layer.TextColor = currentColor // default: currentColor

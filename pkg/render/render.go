@@ -291,6 +291,11 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.dc.Clip()
 	}
 
+	// Step 0: Box shadows (paint behind everything).
+	if len(layer.BoxShadows) > 0 {
+		r.drawBoxShadows(layer)
+	}
+
 	// Step 1: Background and borders.
 	r.drawBackground(layer)
 	r.drawBorders(layer)
@@ -1192,4 +1197,192 @@ func isContainedByOverflow(child, parent *layout.Box) bool {
 		return true
 	}
 	return false
+}
+
+// drawBoxShadows paints outset box shadows behind the element.
+// Shadows are painted in reverse declaration order (last = behind).
+func (r *Renderer) drawBoxShadows(layer *PaintLayer) {
+	box := layer.Box
+	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+
+	for i := len(layer.BoxShadows) - 1; i >= 0; i-- {
+		shadow := layer.BoxShadows[i]
+		if shadow.Inset {
+			continue // Skip inset shadows for now
+		}
+
+		// Shadow rectangle: offset by (offsetX, offsetY), expanded by spread.
+		sx := x + shadow.OffsetX - shadow.Spread
+		sy := y + shadow.OffsetY - shadow.Spread
+		sw := w + 2*shadow.Spread
+		sh := h + 2*shadow.Spread
+
+		if sw <= 0 || sh <= 0 {
+			continue
+		}
+
+		r.setColor(shadow.Color)
+
+		if hasBorderRadius(layer) {
+			// Expand radii by spread amount for shadow shape.
+			shadowRadii := [4]float64{
+				math.Max(0, layer.BorderRadius[0]+shadow.Spread),
+				math.Max(0, layer.BorderRadius[1]+shadow.Spread),
+				math.Max(0, layer.BorderRadius[2]+shadow.Spread),
+				math.Max(0, layer.BorderRadius[3]+shadow.Spread),
+			}
+			if shadow.Blur > 0 {
+				r.drawBlurredShadow(sx, sy, sw, sh, shadowRadii, shadow)
+			} else {
+				r.buildRoundedRectPath(sx, sy, sw, sh, shadowRadii)
+				r.dc.Fill()
+			}
+		} else {
+			if shadow.Blur > 0 {
+				r.drawBlurredShadow(sx, sy, sw, sh, [4]float64{}, shadow)
+			} else {
+				r.dc.DrawRectangle(sx, sy, sw, sh)
+				r.dc.Fill()
+			}
+		}
+	}
+}
+
+// drawBlurredShadow renders a shadow shape to an offscreen buffer, applies
+// a 3-pass box blur (approximating Gaussian blur), then composites back.
+func (r *Renderer) drawBlurredShadow(sx, sy, sw, sh float64, radii [4]float64, shadow css.BoxShadow) {
+	// CSS box-shadow blur radius = 2*sigma, so sigma = blur/2.
+	// Extend buffer by 3*sigma on each side for the blur kernel.
+	sigma := shadow.Blur / 2
+	extend := math.Ceil(sigma * 3)
+
+	bx := sx - extend
+	by := sy - extend
+	bw := int(math.Ceil(sw + 2*extend))
+	bh := int(math.Ceil(sh + 2*extend))
+
+	if bw <= 0 || bh <= 0 {
+		return
+	}
+
+	// Cap buffer size to prevent OOM on huge shadows.
+	if bw > 2000 || bh > 2000 {
+		// Fall back to non-blurred shadow.
+		r.setColor(shadow.Color)
+		if radii != [4]float64{} {
+			r.buildRoundedRectPath(sx, sy, sw, sh, radii)
+			r.dc.Fill()
+		} else {
+			r.dc.DrawRectangle(sx, sy, sw, sh)
+			r.dc.Fill()
+		}
+		return
+	}
+
+	// Create offscreen buffer.
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	childDC := r.dc.NewChildContext(buf)
+
+	// Draw shadow shape into buffer at local coordinates.
+	localX := sx - bx
+	localY := sy - by
+	childDC.SetColor(color.RGBA{
+		R: shadow.Color.R,
+		G: shadow.Color.G,
+		B: shadow.Color.B,
+		A: uint8(shadow.Color.A * 255),
+	})
+	if radii != [4]float64{} {
+		tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
+		childDC.MoveTo(localX+tl, localY)
+		childDC.LineTo(localX+sw-tr, localY)
+		childDC.QuadraticTo(localX+sw, localY, localX+sw, localY+tr)
+		childDC.LineTo(localX+sw, localY+sh-br)
+		childDC.QuadraticTo(localX+sw, localY+sh, localX+sw-br, localY+sh)
+		childDC.LineTo(localX+bl, localY+sh)
+		childDC.QuadraticTo(localX, localY+sh, localX, localY+sh-bl)
+		childDC.LineTo(localX, localY+tl)
+		childDC.QuadraticTo(localX, localY, localX+tl, localY)
+		childDC.ClosePath()
+		childDC.Fill()
+	} else {
+		childDC.DrawRectangle(localX, localY, sw, sh)
+		childDC.Fill()
+	}
+
+	// Apply 3-pass box blur (approximates Gaussian).
+	boxBlur(buf, int(math.Round(sigma)))
+	boxBlur(buf, int(math.Round(sigma)))
+	boxBlur(buf, int(math.Round(sigma)))
+
+	// Composite blurred buffer back to main canvas.
+	r.dc.DrawImage(buf, int(math.Round(bx)), int(math.Round(by)))
+}
+
+// boxBlur applies a separable box blur (horizontal then vertical pass)
+// to an RGBA image. The kernel size is (2*radius+1).
+func boxBlur(img *image.RGBA, radius int) {
+	if radius <= 0 {
+		return
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w == 0 || h == 0 {
+		return
+	}
+
+	stride := img.Stride
+
+	// Temporary buffer for intermediate results.
+	tmp := make([]uint8, len(img.Pix))
+
+	// Horizontal pass: read from img.Pix, write to tmp.
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var rSum, gSum, bSum, aSum uint32
+			count := uint32(0)
+			for kx := -radius; kx <= radius; kx++ {
+				sx := x + kx
+				if sx < 0 || sx >= w {
+					continue
+				}
+				off := y*stride + sx*4
+				rSum += uint32(img.Pix[off+0])
+				gSum += uint32(img.Pix[off+1])
+				bSum += uint32(img.Pix[off+2])
+				aSum += uint32(img.Pix[off+3])
+				count++
+			}
+			off := y*stride + x*4
+			tmp[off+0] = uint8(rSum / count)
+			tmp[off+1] = uint8(gSum / count)
+			tmp[off+2] = uint8(bSum / count)
+			tmp[off+3] = uint8(aSum / count)
+		}
+	}
+
+	// Vertical pass: read from tmp, write back to img.Pix.
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var rSum, gSum, bSum, aSum uint32
+			count := uint32(0)
+			for ky := -radius; ky <= radius; ky++ {
+				sy := y + ky
+				if sy < 0 || sy >= h {
+					continue
+				}
+				off := sy*stride + x*4
+				rSum += uint32(tmp[off+0])
+				gSum += uint32(tmp[off+1])
+				bSum += uint32(tmp[off+2])
+				aSum += uint32(tmp[off+3])
+				count++
+			}
+			off := y*stride + x*4
+			img.Pix[off+0] = uint8(rSum / count)
+			img.Pix[off+1] = uint8(gSum / count)
+			img.Pix[off+2] = uint8(bSum / count)
+			img.Pix[off+3] = uint8(aSum / count)
+		}
+	}
 }
