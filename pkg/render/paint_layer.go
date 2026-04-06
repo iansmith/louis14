@@ -79,6 +79,11 @@ type PaintLayer struct {
 	TextDecorationColor     css.Color  // defaults to TextColor (currentColor)
 	TextDecorationThickness float64    // defaults to ~1px
 
+	// CSS Transforms:
+	Transforms      []css.Transform
+	TransformOrigin [2]float64 // resolved to px: (origin-x, origin-y)
+	HasTransform    bool
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -243,6 +248,36 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.TextDecorationColor = currentColor
 	}
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
+
+	// CSS Transforms.
+	transforms := s.GetTransforms()
+	if len(transforms) > 0 {
+		layer.HasTransform = true
+		origin := s.GetTransformOrigin()
+		// Resolve percentage origin to px relative to element's border box.
+		layer.TransformOrigin = [2]float64{
+			origin.X * box.Width,
+			origin.Y * box.Height,
+		}
+		// Resolve percentage translate values against element's own dimensions.
+		// parseTransformValue() uses negative values as a sentinel for percentages.
+		resolved := make([]css.Transform, len(transforms))
+		for i, t := range transforms {
+			resolved[i] = css.Transform{Type: t.Type, Values: make([]float64, len(t.Values))}
+			copy(resolved[i].Values, t.Values)
+			if t.Type == "translate" {
+				// Values[0] is X (percentage relative to width)
+				// Values[1] is Y (percentage relative to height)
+				if len(resolved[i].Values) > 0 && resolved[i].Values[0] < 0 {
+					resolved[i].Values[0] = (-resolved[i].Values[0] / 100) * box.Width
+				}
+				if len(resolved[i].Values) > 1 && resolved[i].Values[1] < 0 {
+					resolved[i].Values[1] = (-resolved[i].Values[1] / 100) * box.Height
+				}
+			}
+		}
+		layer.Transforms = resolved
+	}
 
 	return layer
 }

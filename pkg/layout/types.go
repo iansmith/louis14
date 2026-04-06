@@ -80,6 +80,10 @@ func (b *Box) CreatesStackingContext() bool {
 			return true
 		}
 	}
+	// CSS Transforms: elements with a transform create a stacking context.
+	if transforms := b.Style.GetTransforms(); len(transforms) > 0 {
+		return true
+	}
 	return false
 }
 
