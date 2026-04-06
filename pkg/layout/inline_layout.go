@@ -614,6 +614,14 @@ func createLineBoxEx(
 				continue
 			}
 
+			// CSS Text 3 §5.2: soft hyphens (U+00AD) are invisible when not
+			// used as a break point. Strip them from the visible text.
+			// If HasHyphen is set, a visible "-" is appended.
+			content = strings.ReplaceAll(content, "\u00AD", "")
+			if r.HasHyphen {
+				content += "-"
+			}
+
 			fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
 			var ascent float64
 			if centralBaseline {

@@ -52,6 +52,9 @@ type InlineItemResult struct {
 	Margins LogicalEdges
 	// CanBreakAfter indicates a valid break opportunity after this item.
 	CanBreakAfter bool
+	// HasHyphen indicates the text was broken at a soft hyphen (U+00AD) or
+	// auto-hyphenation point and a visible "-" should be appended at the end.
+	HasHyphen bool
 }
 
 // LineInfo represents a complete line produced by the LineBreaker.
@@ -182,6 +185,32 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	return false
 }
 
+// measureTextContent measures text width, stripping soft hyphens (U+00AD)
+// which are zero-width when not at a break point.
+func measureTextContent(content string, fontSize float64, fontPath string, letterSpacing, wordSpacing float64, isVertical bool) float64 {
+	// Strip soft hyphens for measurement — they are invisible when not breaking.
+	visible := strings.ReplaceAll(content, "\u00AD", "")
+	if len(visible) == 0 {
+		return 0
+	}
+	var w float64
+	if isVertical {
+		w, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+	} else {
+		w, _ = text.MeasureText(visible, fontSize, fontPath)
+	}
+	if letterSpacing != 0 {
+		rc := runeLen(visible)
+		if rc > 1 {
+			w += letterSpacing * float64(rc-1)
+		}
+	}
+	if wordSpacing != 0 {
+		w += wordSpacing * float64(strings.Count(visible, " "))
+	}
+	return w
+}
+
 // handleText measures text and handles line breaking within text items.
 // Returns true if the line should end after this item.
 func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
@@ -232,8 +261,12 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 	// CSS Text 3 §4.2: tab characters advance to the next tab stop.
 	// Tab stops are at multiples of (tab-size × space-width) or (tab-size px).
+	hasSoftHyphen := strings.Contains(content, "\u00AD")
 	if strings.Contains(content, "\t") && item.Style != nil {
 		fullWidth = lb.measureTextWithTabs(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
+	} else if hasSoftHyphen {
+		// Soft hyphens are zero-width — measure without them.
+		fullWidth = measureTextContent(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
 	} else {
 		if isVertical {
 			fullWidth, _ = text.MeasureTextVerticalFromFont(content, fontSize, fontPath)
@@ -275,15 +308,19 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		stripped := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
 		if len(stripped) < len(content) {
 			var strippedWidth float64
-			if isVertical {
-				strippedWidth, _ = text.MeasureTextVerticalFromFont(stripped, fontSize, fontPath)
+			if hasSoftHyphen {
+				strippedWidth = measureTextContent(stripped, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
 			} else {
-				strippedWidth, _ = text.MeasureText(stripped, fontSize, fontPath)
-			}
-			if letterSpacing != 0 {
-				rc := runeLen(stripped)
-				if rc > 1 {
-					strippedWidth += letterSpacing * float64(rc-1)
+				if isVertical {
+					strippedWidth, _ = text.MeasureTextVerticalFromFont(stripped, fontSize, fontPath)
+				} else {
+					strippedWidth, _ = text.MeasureText(stripped, fontSize, fontPath)
+				}
+				if letterSpacing != 0 {
+					rc := runeLen(stripped)
+					if rc > 1 {
+						strippedWidth += letterSpacing * float64(rc-1)
+					}
 				}
 			}
 			if strippedWidth <= remaining {
@@ -305,9 +342,11 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	// Read word-break and overflow-wrap properties.
 	wordBreak := "normal"
 	overflowWrap := "normal"
+	hyphens := "manual"
 	if item.Style != nil {
 		wordBreak = item.Style.GetWordBreak()
 		overflowWrap = item.Style.GetOverflowWrap()
+		hyphens = item.Style.GetHyphens()
 	}
 
 	// Doesn't fit — find a break point.
@@ -318,7 +357,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, 0)
 		}
 		// Break at every word boundary.
-		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, 0, wordBreak, overflowWrap)
+		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, 0, wordBreak, overflowWrap, hyphens)
 	}
 
 	// word-break:break-all — break between any two characters.
@@ -327,7 +366,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	}
 
 	// Normal mode: find where to break.
-	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, wordBreak, overflowWrap)
+	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, wordBreak, overflowWrap, hyphens)
 }
 
 // breakTextAtWord finds a break point within a text item.
@@ -340,9 +379,10 @@ func (lb *LineBreaker) breakTextAtWord(
 	fontPath string,
 	line *LineInfo,
 	remaining float64,
-	wordBreak, overflowWrap string,
+	wordBreak, overflowWrap, hyphens string,
 ) bool {
-	// Find word boundaries.
+	// Find word boundaries. Pass hyphens mode so soft hyphens are treated
+	// as break opportunities (manual/auto) or ignored (none).
 	words := splitIntoWords(content)
 	if len(words) == 0 {
 		return false
@@ -373,26 +413,60 @@ func (lb *LineBreaker) breakTextAtWord(
 	}
 
 	isVertical := lb.space.WritingDirection.IsVertical()
-	for i, word := range words {
-		var wordWidth float64
+
+	// measureWord measures a word, stripping soft hyphens (zero-width).
+	measureWord := func(word string) float64 {
+		visible := strings.ReplaceAll(word, "\u00AD", "")
+		if len(visible) == 0 {
+			return 0
+		}
+		var w float64
 		if isVertical {
-			wordWidth, _ = text.MeasureTextVerticalFromFont(word, fontSize, fontPath)
+			w, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
 		} else {
-			wordWidth, _ = text.MeasureText(word, fontSize, fontPath)
+			w, _ = text.MeasureText(visible, fontSize, fontPath)
 		}
 		if letterSpacing != 0 {
-			rc := runeLen(word)
+			rc := runeLen(visible)
 			if rc > 1 {
-				wordWidth += letterSpacing * float64(rc-1)
-			}
-			// Also add letter-spacing before this word if not the first.
-			if i > 0 {
-				wordWidth += letterSpacing
+				w += letterSpacing * float64(rc-1)
 			}
 		}
-		// Add word-spacing for each space character in this word.
 		if wordSpacing != 0 {
-			wordWidth += wordSpacing * float64(strings.Count(word, " "))
+			w += wordSpacing * float64(strings.Count(visible, " "))
+		}
+		return w
+	}
+
+	// Measure the visible hyphen character width (for soft-hyphen breaks).
+	var hyphenWidth float64
+	hasSoftHyphen := strings.Contains(content, "\u00AD")
+	if hasSoftHyphen && hyphens != "none" {
+		if isVertical {
+			hyphenWidth, _ = text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
+		} else {
+			hyphenWidth, _ = text.MeasureText("-", fontSize, fontPath)
+		}
+	}
+
+	// CSS Text 3 §5.2: hyphens:auto — find auto-hyphenation break points.
+	// Only attempt when hyphens is "auto" and no soft hyphens are present.
+	if hyphens == "auto" && !hasSoftHyphen && remaining > 0 {
+		if result := lb.tryAutoHyphenation(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, letterSpacing, wordSpacing); result != nil {
+			return *result
+		}
+	}
+
+	// If hyphens:manual or hyphens:auto with soft hyphens present,
+	// split at soft-hyphen positions as break opportunities.
+	if hasSoftHyphen && hyphens != "none" {
+		return lb.breakTextAtSoftHyphen(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, hyphenWidth, letterSpacing, wordSpacing, overflowWrap)
+	}
+
+	for i, word := range words {
+		wordWidth := measureWord(word)
+		if letterSpacing != 0 && i > 0 {
+			wordWidth += letterSpacing
 		}
 
 		if lb.mode == LineBreakerMinContent && i > 0 {
@@ -407,20 +481,9 @@ func (lb *LineBreaker) breakTextAtWord(
 			// word on the line, so its trailing space will be stripped.
 			trimmed := strings.TrimRightFunc(word, isCSSCollapsibleSpace)
 			if trimmed != word && trimmed != "" {
-				var trimmedWidth float64
-				if isVertical {
-					trimmedWidth, _ = text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
-				} else {
-					trimmedWidth, _ = text.MeasureText(trimmed, fontSize, fontPath)
-				}
-				if letterSpacing != 0 {
-					rc := runeLen(trimmed)
-					if rc > 1 {
-						trimmedWidth += letterSpacing * float64(rc-1)
-					}
-					if i > 0 {
-						trimmedWidth += letterSpacing
-					}
+				trimmedWidth := measureWord(trimmed)
+				if letterSpacing != 0 && i > 0 {
+					trimmedWidth += letterSpacing
 				}
 				if usedWidth+trimmedWidth <= remaining {
 					// Fits without trailing whitespace — include it.
@@ -450,17 +513,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			}
 			// Force the whole word onto the empty line.
 			fitted = 1
-			if isVertical {
-				usedWidth, _ = text.MeasureTextVerticalFromFont(words[0], fontSize, fontPath)
-			} else {
-				usedWidth, _ = text.MeasureText(words[0], fontSize, fontPath)
-			}
-			if letterSpacing != 0 {
-				rc := runeLen(words[0])
-				if rc > 1 {
-					usedWidth += letterSpacing * float64(rc-1)
-				}
-			}
+			usedWidth = measureWord(words[0])
 		} else {
 			// End the line, retry this item on the next line.
 			return true
@@ -490,6 +543,407 @@ func (lb *LineBreaker) breakTextAtWord(
 	// All words fit.
 	lb.currentTextOffset = textEnd
 	return false
+}
+
+// breakTextAtSoftHyphen handles line breaking at soft hyphen (U+00AD) positions.
+// CSS Text 3 §5.2: soft hyphens are break opportunities that display a visible
+// hyphen when used as a break point.
+func (lb *LineBreaker) breakTextAtSoftHyphen(
+	item *InlineItem,
+	content string,
+	textStart, textEnd int,
+	fontSize float64,
+	fontPath string,
+	line *LineInfo,
+	remaining float64,
+	hyphenWidth float64,
+	letterSpacing, wordSpacing float64,
+	overflowWrap string,
+) bool {
+	isVertical := lb.space.WritingDirection.IsVertical()
+
+	// Find all soft-hyphen positions and regular word boundaries.
+	// We need to try breaking at each soft-hyphen position (and at
+	// regular word boundaries) to find the best fit.
+	var breaks []breakPoint
+
+	// Collect break points: regular word boundaries and soft-hyphen positions.
+	// Regular word boundaries from splitIntoWords:
+	wordsNoShy := splitIntoWords(strings.ReplaceAll(content, "\u00AD", ""))
+	_ = wordsNoShy // we handle regular word breaks implicitly
+
+	// Find all soft-hyphen byte positions.
+	for i := 0; i < len(content); {
+		r, size := utf8.DecodeRuneInString(content[i:])
+		if r == '\u00AD' {
+			breaks = append(breaks, breakPoint{byteOffset: i + size, isSoftHyph: true})
+		}
+		i += size
+	}
+
+	// Also add regular word boundaries (spaces).
+	inSpace := false
+	wordEnd := 0
+	for i, r := range content {
+		if r == '\u00AD' {
+			continue
+		}
+		if isCSSCollapsibleSpace(r) {
+			if !inSpace && i > 0 {
+				// End of a word — this is a break opportunity.
+				breaks = append(breaks, breakPoint{byteOffset: i, isSoftHyph: false})
+			}
+			inSpace = true
+		} else {
+			if inSpace {
+				wordEnd = i
+				_ = wordEnd
+			}
+			inSpace = false
+		}
+	}
+
+	// Sort breaks by byte offset.
+	sortBreakPoints(breaks)
+
+	// Try each break point, finding the last one that fits.
+	bestBreak := -1
+	bestIsShy := false
+	bestWidth := 0.0
+
+	for _, bp := range breaks {
+		segment := content[:bp.byteOffset]
+		// Strip soft hyphens from measurement.
+		visible := strings.ReplaceAll(segment, "\u00AD", "")
+		var segWidth float64
+		if isVertical {
+			segWidth, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+		} else {
+			segWidth, _ = text.MeasureText(visible, fontSize, fontPath)
+		}
+		if letterSpacing != 0 {
+			rc := runeLen(visible)
+			if rc > 1 {
+				segWidth += letterSpacing * float64(rc-1)
+			}
+		}
+		if wordSpacing != 0 {
+			segWidth += wordSpacing * float64(strings.Count(visible, " "))
+		}
+
+		totalWidth := segWidth
+		if bp.isSoftHyph {
+			totalWidth += hyphenWidth
+		}
+
+		if totalWidth <= remaining {
+			bestBreak = bp.byteOffset
+			bestIsShy = bp.isSoftHyph
+			bestWidth = segWidth
+		} else {
+			// Past remaining — stop searching.
+			break
+		}
+	}
+
+	if bestBreak <= 0 {
+		// No soft-hyphen break fits. Fall back to normal word breaking
+		// with soft hyphens stripped, or overflow-wrap.
+		if len(line.Results) == 0 {
+			if overflowWrap == "break-word" || overflowWrap == "anywhere" {
+				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+			}
+			// Force content onto the line — use the first break point.
+			if len(breaks) > 0 {
+				bp := breaks[0]
+				segment := content[:bp.byteOffset]
+				visible := strings.ReplaceAll(segment, "\u00AD", "")
+				var segWidth float64
+				if isVertical {
+					segWidth, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+				} else {
+					segWidth, _ = text.MeasureText(visible, fontSize, fontPath)
+				}
+				if letterSpacing != 0 {
+					rc := runeLen(visible)
+					if rc > 1 {
+						segWidth += letterSpacing * float64(rc-1)
+					}
+				}
+				totalWidth := segWidth
+				if bp.isSoftHyph {
+					totalWidth += hyphenWidth
+				}
+				line.Results = append(line.Results, InlineItemResult{
+					Item:       item,
+					ItemIndex:  lb.currentItemIndex,
+					TextStart:  textStart,
+					TextEnd:    textStart + bp.byteOffset,
+					InlineSize: totalWidth,
+					HasHyphen:  bp.isSoftHyph,
+				})
+				lb.position += totalWidth
+				line.Width = lb.position
+				lb.currentTextOffset = textStart + bp.byteOffset
+				return true
+			}
+			// No break points at all — force entire content.
+			fullWidth := measureTextContent(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
+			line.Results = append(line.Results, InlineItemResult{
+				Item:       item,
+				ItemIndex:  lb.currentItemIndex,
+				TextStart:  textStart,
+				TextEnd:    textEnd,
+				InlineSize: fullWidth,
+			})
+			lb.position += fullWidth
+			line.Width = lb.position
+			lb.currentTextOffset = textEnd
+			return false
+		}
+		return true
+	}
+
+	// Break at bestBreak.
+	totalWidth := bestWidth
+	if bestIsShy {
+		totalWidth += hyphenWidth
+	}
+
+	line.Results = append(line.Results, InlineItemResult{
+		Item:       item,
+		ItemIndex:  lb.currentItemIndex,
+		TextStart:  textStart,
+		TextEnd:    textStart + bestBreak,
+		InlineSize: totalWidth,
+		HasHyphen:  bestIsShy,
+	})
+	lb.position += totalWidth
+	line.Width = lb.position
+	lb.currentTextOffset = textStart + bestBreak
+
+	if bestBreak < len(content) {
+		return true
+	}
+	return false
+}
+
+// sortBreakPoints sorts break points by byte offset (insertion sort, small slices).
+func sortBreakPoints(bps []breakPoint) {
+	for i := 1; i < len(bps); i++ {
+		key := bps[i]
+		j := i - 1
+		for j >= 0 && bps[j].byteOffset > key.byteOffset {
+			bps[j+1] = bps[j]
+			j--
+		}
+		bps[j+1] = key
+	}
+}
+
+// breakPoint is a candidate line break position within text.
+type breakPoint struct {
+	byteOffset int  // offset in content where to break
+	isSoftHyph bool // true if this break is at a soft hyphen
+}
+
+// tryAutoHyphenation attempts heuristic hyphenation for English text.
+// CSS Text 3 §5.2: hyphens:auto — the UA may hyphenate words automatically.
+// Returns nil if no auto-hyphenation was applied (caller should continue
+// with normal word breaking), or a pointer to a bool result.
+func (lb *LineBreaker) tryAutoHyphenation(
+	item *InlineItem,
+	content string,
+	textStart, textEnd int,
+	fontSize float64,
+	fontPath string,
+	line *LineInfo,
+	remaining float64,
+	letterSpacing, wordSpacing float64,
+) *bool {
+	isVertical := lb.space.WritingDirection.IsVertical()
+
+	// Measure the visible hyphen.
+	var hyphenWidth float64
+	if isVertical {
+		hyphenWidth, _ = text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
+	} else {
+		hyphenWidth, _ = text.MeasureText("-", fontSize, fontPath)
+	}
+
+	// Split into words and try to hyphenate the word that doesn't fit.
+	words := splitIntoWords(content)
+	if len(words) == 0 {
+		return nil
+	}
+
+	// Measure words to find which one overflows.
+	usedWidth := 0.0
+	fittedWords := 0
+	overflowIdx := -1
+	for i, word := range words {
+		var w float64
+		if isVertical {
+			w, _ = text.MeasureTextVerticalFromFont(word, fontSize, fontPath)
+		} else {
+			w, _ = text.MeasureText(word, fontSize, fontPath)
+		}
+		if letterSpacing != 0 {
+			rc := runeLen(word)
+			if rc > 1 {
+				w += letterSpacing * float64(rc-1)
+			}
+			if i > 0 {
+				w += letterSpacing
+			}
+		}
+		if wordSpacing != 0 {
+			w += wordSpacing * float64(strings.Count(word, " "))
+		}
+		if usedWidth+w > remaining {
+			overflowIdx = i
+			break
+		}
+		usedWidth += w
+		fittedWords++
+	}
+
+	if overflowIdx < 0 {
+		return nil // everything fits, no hyphenation needed
+	}
+
+	// Try to hyphenate the overflowing word.
+	word := words[overflowIdx]
+	// Strip trailing whitespace for hyphenation analysis.
+	cleanWord := strings.TrimRightFunc(word, isCSSCollapsibleSpace)
+	hyphPoints := findAutoHyphenPoints(cleanWord)
+	if len(hyphPoints) == 0 {
+		return nil // no hyphenation points found
+	}
+
+	// Remaining space for the overflowing word.
+	wordRemaining := remaining - usedWidth
+
+	// Try each hyphenation point (they are rune offsets into cleanWord).
+	bestRuneOffset := -1
+	bestWidth := 0.0
+	runes := []rune(cleanWord)
+	for _, runeOff := range hyphPoints {
+		prefix := string(runes[:runeOff])
+		var prefixWidth float64
+		if isVertical {
+			prefixWidth, _ = text.MeasureTextVerticalFromFont(prefix, fontSize, fontPath)
+		} else {
+			prefixWidth, _ = text.MeasureText(prefix, fontSize, fontPath)
+		}
+		if letterSpacing != 0 {
+			rc := utf8.RuneCountInString(prefix)
+			if rc > 1 {
+				prefixWidth += letterSpacing * float64(rc-1)
+			}
+			if overflowIdx > 0 {
+				prefixWidth += letterSpacing
+			}
+		}
+		totalWidth := prefixWidth + hyphenWidth
+		if totalWidth <= wordRemaining {
+			bestRuneOffset = runeOff
+			bestWidth = prefixWidth
+		} else {
+			break
+		}
+	}
+
+	if bestRuneOffset < 0 {
+		return nil // no hyphenation point fits
+	}
+
+	// Build the break: all fitted words + prefix of the overflowing word.
+	prefix := string(runes[:bestRuneOffset])
+	prefixBytes := len(prefix)
+
+	// Compute byte offset of the break in content.
+	var bytesBefore int
+	for i := 0; i < overflowIdx; i++ {
+		bytesBefore += len(words[i])
+	}
+	breakOffset := textStart + bytesBefore + prefixBytes
+	totalInlineSize := usedWidth + bestWidth + hyphenWidth
+
+	result := true
+	line.Results = append(line.Results, InlineItemResult{
+		Item:       item,
+		ItemIndex:  lb.currentItemIndex,
+		TextStart:  textStart,
+		TextEnd:    breakOffset,
+		InlineSize: totalInlineSize,
+		HasHyphen:  true,
+	})
+	lb.position += totalInlineSize
+	line.Width = lb.position
+	lb.currentTextOffset = breakOffset
+	return &result
+}
+
+// findAutoHyphenPoints returns rune offsets where a word may be hyphenated.
+// Uses simple English heuristics: common suffixes and double-consonant splits.
+// Minimum 2 chars before break, 3 chars after.
+func findAutoHyphenPoints(word string) []int {
+	runes := []rune(strings.ToLower(word))
+	n := len(runes)
+	if n < 5 { // need at least 2+3
+		return nil
+	}
+
+	isConsonant := func(r rune) bool {
+		switch r {
+		case 'b', 'c', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm',
+			'n', 'p', 'q', 'r', 's', 't', 'v', 'w', 'x', 'y', 'z':
+			return true
+		}
+		return false
+	}
+
+	var points []int
+	seen := make(map[int]bool)
+
+	addPoint := func(pos int) {
+		if pos >= 2 && pos <= n-3 && !seen[pos] {
+			points = append(points, pos)
+			seen[pos] = true
+		}
+	}
+
+	// Common suffix patterns: break before the suffix.
+	suffixes := []string{"tion", "sion", "ment", "ness", "ing", "ble", "ful", "less", "ous", "ive", "ize", "ise", "ent", "ant", "ance", "ence"}
+	wordLower := string(runes)
+	for _, suf := range suffixes {
+		sufRunes := []rune(suf)
+		pos := n - len(sufRunes)
+		if pos >= 2 && strings.HasSuffix(wordLower, suf) {
+			addPoint(pos)
+		}
+	}
+
+	// Double consonants: break between them.
+	for i := 2; i < n-3; i++ {
+		if isConsonant(runes[i]) && runes[i] == runes[i+1] {
+			addPoint(i + 1)
+		}
+	}
+
+	// Sort points.
+	for i := 1; i < len(points); i++ {
+		key := points[i]
+		j := i - 1
+		for j >= 0 && points[j] > key {
+			points[j+1] = points[j]
+			j--
+		}
+		points[j+1] = key
+	}
+
+	return points
 }
 
 // breakTextAtCharacter breaks text at character boundaries.
