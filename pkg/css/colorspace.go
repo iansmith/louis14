@@ -59,36 +59,54 @@ func oklchToRGB(L, C, H float64) (r, g, b float64) {
 	return colorClamp01(r), colorClamp01(g), colorClamp01(b)
 }
 
-// labF is the CIE Lab forward transfer function.
+// labF is the CIE Lab reverse transfer function (f^{-1}).
 func labF(t float64) float64 {
-	if t > 0.206897 {
+	const delta = 6.0 / 29.0 // ≈ 0.206897
+	if t > delta {
 		return t * t * t
 	}
-	return (t - 16.0/116) / 7.787
+	return 3 * delta * delta * (t - 4.0/29.0)
+}
+
+// labToRGB converts CIE Lab color to sRGB [0,1] values.
+// L = lightness [0,100], a = green-red [-125,125], b = blue-yellow [-125,125]
+// Conversion chain: Lab → XYZ-D50 → XYZ-D65 → linear-sRGB → sRGB
+func labToRGB(L, a, bLab float64) (r, g, b float64) {
+	// Lab to XYZ-D50
+	// D50 illuminant: Xn=0.96422, Yn=1.0, Zn=0.82521
+	fy := (L + 16) / 116
+	fx := a/500 + fy
+	fz := fy - bLab/200
+
+	x := labF(fx) * 0.96422
+	y := labF(fy) * 1.0
+	z := labF(fz) * 0.82521
+
+	// Chromatic adaptation: D50 → D65 (Bradford method)
+	xd65 := 0.9555766*x + -0.0230393*y + 0.0631636*z
+	yd65 := -0.0282895*x + 1.0099416*y + 0.0210077*z
+	zd65 := 0.0122982*x + -0.0204830*y + 1.3299098*z
+
+	// XYZ D65 to linear sRGB
+	rl := 3.2406254*xd65 - 1.5372080*yd65 - 0.4986286*zd65
+	gl := -0.9689307*xd65 + 1.8757561*yd65 + 0.0415175*zd65
+	bl := 0.0557101*xd65 - 0.2040211*yd65 + 1.0569959*zd65
+
+	return colorClamp01(linearToSRGB(rl)), colorClamp01(linearToSRGB(gl)), colorClamp01(linearToSRGB(bl))
 }
 
 // lchToRGB converts CIELCh color to sRGB [0,1] values.
 // L = lightness [0,100], C = chroma [0,~230], H = hue [0,360 degrees]
+// CSS Color 4: LCH is the polar form of CIE Lab, which uses D50.
+// Chain: LCH → Lab → XYZ-D50 → XYZ-D65 (Bradford) → linear-sRGB → sRGB
 func lchToRGB(L, C, H float64) (r, g, b float64) {
-	// LCH to Lab
+	// LCH to Lab (polar to rectangular)
 	hRad := H * math.Pi / 180
 	a := C * math.Cos(hRad)
 	bLab := C * math.Sin(hRad)
 
-	// Lab to XYZ (D65)
-	fy := (L + 16) / 116
-	fx := a/500 + fy
-	fz := fy - bLab/200
-	x := labF(fx) * 0.95047
-	y := labF(fy) * 1.00000
-	z := labF(fz) * 1.08883
-
-	// XYZ to linear sRGB
-	rl := 3.2406*x - 1.5372*y - 0.4986*z
-	gl := -0.9689*x + 1.8758*y + 0.0415*z
-	bl := 0.0557*x - 0.2040*y + 1.0570*z
-
-	return colorClamp01(linearToSRGB(rl)), colorClamp01(linearToSRGB(gl)), colorClamp01(linearToSRGB(bl))
+	// Reuse labToRGB which does Lab → XYZ-D50 → D65 → sRGB correctly
+	return labToRGB(L, a, bLab)
 }
 
 // hwbToRGB converts HWB color to sRGB [0,1] values.
@@ -133,11 +151,49 @@ func hslHueToRGB(H float64) (r, g, b float64) {
 	return
 }
 
+// srgbToOKLab converts sRGB [0,1] to OKLab (L, a, b).
+func srgbToOKLab(r, g, b float64) (float64, float64, float64) {
+	lr := sRGBToLinear(r)
+	lg := sRGBToLinear(g)
+	lb := sRGBToLinear(b)
+
+	// linear sRGB to LMS
+	l := 0.4122214708*lr + 0.5363325363*lg + 0.0514459929*lb
+	m := 0.2119034982*lr + 0.6806995451*lg + 0.1073969566*lb
+	s := 0.0883024619*lr + 0.2817188376*lg + 0.6299787005*lb
+
+	// cube root
+	l_ := math.Cbrt(l)
+	m_ := math.Cbrt(m)
+	s_ := math.Cbrt(s)
+
+	L := 0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_
+	A := 1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_
+	B := 0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+	return L, A, B
+}
+
+// oklabToSRGB converts OKLab (L, a, b) to sRGB [0,1].
+func oklabToSRGB(L, a, bLab float64) (float64, float64, float64) {
+	l_ := L + 0.3963377774*a + 0.2158037573*bLab
+	m_ := L - 0.1055613458*a - 0.0638541728*bLab
+	s_ := L - 0.0894841775*a - 1.2914855480*bLab
+
+	l := l_ * l_ * l_
+	m := m_ * m_ * m_
+	s := s_ * s_ * s_
+
+	r := +4.0767416621*l - 3.3077115913*m + 0.2309699292*s
+	g := -1.2684380046*l + 2.6097574011*m - 0.3413193965*s
+	b := -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
+
+	return colorClamp01(linearToSRGB(r)), colorClamp01(linearToSRGB(g)), colorClamp01(linearToSRGB(b))
+}
+
 // parseColorMix parses a color-mix() CSS function and returns the mixed Color.
 // Supports: color-mix(in colorspace, color1 [pct%], color2 [pct%])
-// Mixing is always performed in sRGB regardless of the specified colorspace.
+// Interpolation is performed in the requested color space per CSS Color 5.
 func parseColorMix(val string) (Color, bool) {
-	// Find the outer parens: color-mix(...)
 	start := len("color-mix(")
 	end := strings.LastIndex(val, ")")
 	if end <= start {
@@ -145,15 +201,22 @@ func parseColorMix(val string) (Color, bool) {
 	}
 	inner := val[start:end]
 
-	// Split on commas, depth-aware (to handle rgb(), hsl(), etc. inside)
 	args := splitColorMixArgs(inner)
 	if len(args) < 3 {
 		return Color{}, false
 	}
 
-	// args[0] = "in oklch" or "in srgb" (colorspace, ignored for mixing)
-	// args[1] = "red 30%" or just "red"
-	// args[2] = "blue 70%" or just "blue"
+	// Parse colorspace: "in srgb", "in oklch", "in hsl", etc.
+	csArg := strings.TrimSpace(args[0])
+	colorspace := "srgb"
+	if strings.HasPrefix(csArg, "in ") {
+		colorspace = strings.TrimSpace(csArg[3:])
+		// Strip hue interpolation method if present (e.g., "oklch shorter hue")
+		if idx := strings.Index(colorspace, " "); idx >= 0 {
+			colorspace = colorspace[:idx]
+		}
+	}
+
 	color1, pct1 := parseColorWithPercent(strings.TrimSpace(args[1]))
 	color2, pct2 := parseColorWithPercent(strings.TrimSpace(args[2]))
 
@@ -173,13 +236,132 @@ func parseColorMix(val string) (Color, bool) {
 		pct2 /= total
 	}
 
-	// Mix in sRGB
-	r := uint8(math.Round(float64(color1.R)*pct1 + float64(color2.R)*pct2))
-	g := uint8(math.Round(float64(color1.G)*pct1 + float64(color2.G)*pct2))
-	b := uint8(math.Round(float64(color1.B)*pct1 + float64(color2.B)*pct2))
-	a := color1.A*pct1 + color2.A*pct2
+	alpha := color1.A*pct1 + color2.A*pct2
 
-	return Color{r, g, b, a}, true
+	r1, g1, b1 := float64(color1.R)/255, float64(color1.G)/255, float64(color1.B)/255
+	r2, g2, b2 := float64(color2.R)/255, float64(color2.G)/255, float64(color2.B)/255
+
+	// CSS Color 5: premultiplied alpha interpolation.
+	// Before interpolating, multiply color channels by alpha.
+	a1, a2 := color1.A, color2.A
+	r1 *= a1; g1 *= a1; b1 *= a1
+	r2 *= a2; g2 *= a2; b2 *= a2
+
+	var rf, gf, bf float64
+	switch colorspace {
+	case "oklch":
+		// Convert premultiplied sRGB to OKLab, then polar (OKLCH), interpolate
+		L1, la1, lbL1 := srgbToOKLab(r1, g1, b1)
+		L2, la2, lbL2 := srgbToOKLab(r2, g2, b2)
+		C1 := math.Sqrt(la1*la1 + lbL1*lbL1)
+		H1 := math.Atan2(lbL1, la1) * 180 / math.Pi
+		C2 := math.Sqrt(la2*la2 + lbL2*lbL2)
+		H2 := math.Atan2(lbL2, la2) * 180 / math.Pi
+		// Shorter hue interpolation (default)
+		diff := H2 - H1
+		if diff > 180 {
+			H1 += 360
+		} else if diff < -180 {
+			H2 += 360
+		}
+		L := L1*pct1 + L2*pct2
+		C := C1*pct1 + C2*pct2
+		H := H1*pct1 + H2*pct2
+		hRad := H * math.Pi / 180
+		rf, gf, bf = oklabToSRGB(L, C*math.Cos(hRad), C*math.Sin(hRad))
+	case "oklab":
+		L1, la1, lbL1 := srgbToOKLab(r1, g1, b1)
+		L2, la2, lbL2 := srgbToOKLab(r2, g2, b2)
+		L := L1*pct1 + L2*pct2
+		la := la1*pct1 + la2*pct2
+		lbL := lbL1*pct1 + lbL2*pct2
+		rf, gf, bf = oklabToSRGB(L, la, lbL)
+	case "hsl":
+		h1, s1, l1 := rgbToHSL(r1, g1, b1)
+		h2, s2, l2 := rgbToHSL(r2, g2, b2)
+		// Shorter hue interpolation
+		diff := h2 - h1
+		if diff > 180 {
+			h1 += 360
+		} else if diff < -180 {
+			h2 += 360
+		}
+		h := math.Mod(h1*pct1+h2*pct2, 360)
+		if h < 0 {
+			h += 360
+		}
+		s := s1*pct1 + s2*pct2
+		l := l1*pct1 + l2*pct2
+		rf, gf, bf = hslToRGB(h, s, l)
+	default:
+		// sRGB (default) — lerp each premultiplied channel
+		rf = r1*pct1 + r2*pct2
+		gf = g1*pct1 + g2*pct2
+		bf = b1*pct1 + b2*pct2
+	}
+
+	// Un-premultiply alpha from the result.
+	if alpha > 0 {
+		rf /= alpha
+		gf /= alpha
+		bf /= alpha
+	}
+
+	return Color{
+		R: uint8(math.Round(colorClamp01(rf) * 255)),
+		G: uint8(math.Round(colorClamp01(gf) * 255)),
+		B: uint8(math.Round(colorClamp01(bf) * 255)),
+		A: alpha,
+	}, true
+}
+
+// rgbToHSL converts sRGB [0,1] to HSL (H in degrees, S and L in [0,1]).
+func rgbToHSL(r, g, b float64) (float64, float64, float64) {
+	max := math.Max(r, math.Max(g, b))
+	min := math.Min(r, math.Min(g, b))
+	l := (max + min) / 2
+	if max == min {
+		return 0, 0, l
+	}
+	d := max - min
+	s := d / (1 - math.Abs(2*l-1))
+	var h float64
+	switch max {
+	case r:
+		h = math.Mod((g-b)/d, 6)
+	case g:
+		h = (b-r)/d + 2
+	case b:
+		h = (r-g)/d + 4
+	}
+	h *= 60
+	if h < 0 {
+		h += 360
+	}
+	return h, s, l
+}
+
+// hslToRGB converts HSL (H in degrees, S and L in [0,1]) to sRGB [0,1].
+func hslToRGB(h, s, l float64) (float64, float64, float64) {
+	c := (1 - math.Abs(2*l-1)) * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	m := l - c/2
+	var r, g, b float64
+	switch {
+	case h < 60:
+		r, g, b = c, x, 0
+	case h < 120:
+		r, g, b = x, c, 0
+	case h < 180:
+		r, g, b = 0, c, x
+	case h < 240:
+		r, g, b = 0, x, c
+	case h < 300:
+		r, g, b = x, 0, c
+	default:
+		r, g, b = c, 0, x
+	}
+	return r + m, g + m, b + m
 }
 
 // splitColorMixArgs splits a color-mix() inner string by commas, respecting

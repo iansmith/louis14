@@ -101,6 +101,20 @@ func (b *Box) CreatesStackingContext() bool {
 	if b.Style.HasLayoutContainment() || b.Style.HasPaintContainment() {
 		return true
 	}
+	// CSS Compositing Level 1 §2: isolation: isolate creates a stacking context.
+	if b.Style.GetIsolation() == "isolate" {
+		return true
+	}
+	// CSS Will Change Level 1 §2.2: will-change of certain properties creates
+	// a stacking context (same properties that create one when actually set).
+	for _, prop := range b.Style.GetWillChange() {
+		switch prop {
+		case "transform", "opacity", "filter", "backdrop-filter",
+			"clip-path", "mask", "mix-blend-mode", "isolation",
+			"perspective", "offset-path":
+			return true
+		}
+	}
 	return false
 }
 

@@ -2575,7 +2575,7 @@ func expandBackgroundProperty(style *Style, value string) {
 	// since they may contain spaces (e.g., "rgb(153, 153, 255)").
 	colorFound := false
 	colorValue := ""
-	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "hwb(", "color-mix(", "color("} {
+	for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "lab(", "hwb(", "color-mix(", "color("} {
 		if idx := strings.Index(value, prefix); idx >= 0 {
 			// Find matching closing paren (depth-aware for nested parens in color-mix)
 			depth := 0
@@ -2699,6 +2699,20 @@ func parseColorFloat01(s string, maxValue float64) float64 {
 	var v float64
 	fmt.Sscanf(s, "%f", &v)
 	return v / maxValue
+}
+
+// parseLabComponent parses a Lab a/b component.
+// Can be a raw number (-125 to 125) or a percentage (-100% to 100% of maxVal).
+func parseLabComponent(s string, maxVal float64) float64 {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "%") {
+		var v float64
+		fmt.Sscanf(strings.TrimSuffix(s, "%"), "%f", &v)
+		return v / 100.0 * maxVal
+	}
+	var v float64
+	fmt.Sscanf(s, "%f", &v)
+	return v
 }
 
 // parseHueDegrees parses a hue value in degrees.
@@ -2890,6 +2904,25 @@ func ParseColor(colorStr string) (Color, bool) {
 				G: uint8(math.Round((g1 + m) * 255)),
 				B: uint8(math.Round((b1 + m) * 255)),
 				A: a,
+			}, true
+		}
+	}
+
+	// Handle lab() format: lab(L a b) or lab(L a b / alpha)
+	// L is 0-100 or 0%-100%, a is -125 to 125, b is -125 to 125
+	if strings.HasPrefix(colorStr, "lab(") && strings.HasSuffix(colorStr, ")") {
+		inner := colorStr[4 : len(colorStr)-1]
+		parts, alpha := parseSpaceSeparatedColorArgs(inner)
+		if len(parts) >= 3 {
+			L := parseColorFloat01(parts[0], 100.0) * 100.0
+			a := parseLabComponent(parts[1], 125.0)
+			bLab := parseLabComponent(parts[2], 125.0)
+			r, g, b := labToRGB(L, a, bLab)
+			return Color{
+				R: uint8(math.Round(r * 255)),
+				G: uint8(math.Round(g * 255)),
+				B: uint8(math.Round(b * 255)),
+				A: alpha,
 			}, true
 		}
 	}
@@ -3884,7 +3917,7 @@ func parseBoxShadowValue(s string) *BoxShadow {
 func isColor(s string) bool {
 	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") ||
 		strings.HasPrefix(s, "oklch(") || strings.HasPrefix(s, "lch(") ||
-		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
+		strings.HasPrefix(s, "lab(") || strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
 		strings.HasPrefix(s, "color(") {
 		return true
 	}
@@ -6353,11 +6386,21 @@ func (s *Style) GetBackgroundOrigin() BackgroundOriginType {
 type ListStyleType string
 
 const (
-	ListStyleTypeDisc    ListStyleType = "disc"
-	ListStyleTypeCircle  ListStyleType = "circle"
-	ListStyleTypeSquare  ListStyleType = "square"
-	ListStyleTypeDecimal ListStyleType = "decimal"
-	ListStyleTypeNone    ListStyleType = "none"
+	ListStyleTypeDisc             ListStyleType = "disc"
+	ListStyleTypeCircle           ListStyleType = "circle"
+	ListStyleTypeSquare           ListStyleType = "square"
+	ListStyleTypeDecimal          ListStyleType = "decimal"
+	ListStyleTypeNone             ListStyleType = "none"
+	ListStyleTypeDecimalLeadingZero ListStyleType = "decimal-leading-zero"
+	ListStyleTypeLowerAlpha       ListStyleType = "lower-alpha"
+	ListStyleTypeUpperAlpha       ListStyleType = "upper-alpha"
+	ListStyleTypeLowerLatin       ListStyleType = "lower-latin"
+	ListStyleTypeUpperLatin       ListStyleType = "upper-latin"
+	ListStyleTypeLowerRoman       ListStyleType = "lower-roman"
+	ListStyleTypeUpperRoman       ListStyleType = "upper-roman"
+	ListStyleTypeLowerGreek       ListStyleType = "lower-greek"
+	ListStyleTypeDisclosureOpen   ListStyleType = "disclosure-open"
+	ListStyleTypeDisclosureClosed ListStyleType = "disclosure-closed"
 )
 
 // GetListStyleType returns the list-style-type value (default: disc)
@@ -6374,6 +6417,22 @@ func (s *Style) GetListStyleType() ListStyleType {
 			return ListStyleTypeDecimal
 		case "none":
 			return ListStyleTypeNone
+		case "decimal-leading-zero":
+			return ListStyleTypeDecimalLeadingZero
+		case "lower-alpha", "lower-latin":
+			return ListStyleTypeLowerAlpha
+		case "upper-alpha", "upper-latin":
+			return ListStyleTypeUpperAlpha
+		case "lower-roman":
+			return ListStyleTypeLowerRoman
+		case "upper-roman":
+			return ListStyleTypeUpperRoman
+		case "lower-greek":
+			return ListStyleTypeLowerGreek
+		case "disclosure-open":
+			return ListStyleTypeDisclosureOpen
+		case "disclosure-closed":
+			return ListStyleTypeDisclosureClosed
 		default:
 			// Handle custom string values (quoted strings like "\2022")
 			// Strip quotes if present

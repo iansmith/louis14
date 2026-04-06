@@ -723,11 +723,18 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) {
 			}
 			r.dc.Scale(sx, sy)
 		case "skew":
-			// Skew via matrix: [1, tan(ay), tan(ax), 1, 0, 0]
-			// DrawContext doesn't have Skew directly; skip for MVP.
+			// skew(ax, ay) = matrix(1, tan(ay), tan(ax), 1, 0, 0)
+			ax := t.Values[0] * math.Pi / 180
+			ay := 0.0
+			if len(t.Values) > 1 {
+				ay = t.Values[1] * math.Pi / 180
+			}
+			r.dc.MultiplyMatrix(1, math.Tan(ay), math.Tan(ax), 1, 0, 0)
 		case "matrix":
-			// matrix(a, b, c, d, e, f)
-			// DrawContext doesn't have a SetMatrix; skip for MVP.
+			// matrix(a, b, c, d, e, f) — general 2D affine transform
+			if len(t.Values) >= 6 {
+				r.dc.MultiplyMatrix(t.Values[0], t.Values[1], t.Values[2], t.Values[3], t.Values[4], t.Values[5])
+			}
 		}
 	}
 
@@ -1038,27 +1045,40 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	imgW := float64(imgWI)
 	imgH := float64(imgHI)
 
-	// CSS3 Backgrounds §3.6: background-origin defaults to padding-box.
-	// The background image is positioned relative to the padding box, but
-	// clipped to the border box (background-clip defaults to border-box).
-	// Pixel-snap all coordinates to match the snapped background color fill.
-	paddingX := math.Round(box.X + box.Border.Left)
-	paddingY := math.Round(box.Y + box.Border.Top)
-	paddingW := math.Round(box.X+box.Width-box.Border.Right) - paddingX
-	paddingH := math.Round(box.Y+box.Height-box.Border.Bottom) - paddingY
-	if paddingW < 0 {
-		paddingW = 0
+	// CSS3 Backgrounds §3.6: background-origin determines the positioning area.
+	// The background image is positioned relative to this area, but clipped to
+	// the background-clip area. Pixel-snap to match snapped background color fill.
+	var originX, originY, originW, originH float64
+	switch layer.BackgroundOrigin {
+	case css.BackgroundOriginBorderBox:
+		originX = math.Round(box.X)
+		originY = math.Round(box.Y)
+		originW = math.Round(box.X+box.Width) - originX
+		originH = math.Round(box.Y+box.Height) - originY
+	case css.BackgroundOriginContentBox:
+		originX = math.Round(box.X + box.Border.Left + box.Padding.Left)
+		originY = math.Round(box.Y + box.Border.Top + box.Padding.Top)
+		originW = math.Round(box.X+box.Width-box.Border.Right-box.Padding.Right) - originX
+		originH = math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - originY
+	default: // padding-box (default)
+		originX = math.Round(box.X + box.Border.Left)
+		originY = math.Round(box.Y + box.Border.Top)
+		originW = math.Round(box.X+box.Width-box.Border.Right) - originX
+		originH = math.Round(box.Y+box.Height-box.Border.Bottom) - originY
 	}
-	if paddingH < 0 {
-		paddingH = 0
+	if originW < 0 {
+		originW = 0
+	}
+	if originH < 0 {
+		originH = 0
 	}
 
 	// CSS3 Backgrounds §3.9: Resolve background-size.
 	bgSize := layer.BackgroundSize
 	if bgSize.Cover || bgSize.Contain {
-		if paddingW > 0 && paddingH > 0 && imgW > 0 && imgH > 0 {
-			scaleX := paddingW / imgW
-			scaleY := paddingH / imgH
+		if originW > 0 && originH > 0 && imgW > 0 && imgH > 0 {
+			scaleX := originW / imgW
+			scaleY := originH / imgH
 			var scale float64
 			if bgSize.Cover {
 				scale = math.Max(scaleX, scaleY)
@@ -1076,16 +1096,16 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 		newH := imgH
 		if bgSize.Width != 0 {
 			if bgSize.Width < 0 {
-				// Negative = percentage of padding-box width
-				newW = math.Round(paddingW * (-bgSize.Width) / 100)
+				// Negative = percentage of origin box width
+				newW = math.Round(originW * (-bgSize.Width) / 100)
 			} else {
 				newW = math.Round(bgSize.Width)
 			}
 		}
 		if bgSize.Height != 0 {
 			if bgSize.Height < 0 {
-				// Negative = percentage of padding-box height
-				newH = math.Round(paddingH * (-bgSize.Height) / 100)
+				// Negative = percentage of origin box height
+				newH = math.Round(originH * (-bgSize.Height) / 100)
 			} else {
 				newH = math.Round(bgSize.Height)
 			}
@@ -1106,8 +1126,8 @@ func (r *Renderer) drawBackgroundImage(layer *PaintLayer) {
 	}
 
 	pos := layer.BackgroundPosition
-	startX := paddingX + pos.ResolveX(paddingW, imgW)
-	startY := paddingY + pos.ResolveY(paddingH, imgH)
+	startX := originX + pos.ResolveX(originW, imgW)
+	startY := originY + pos.ResolveY(originH, imgH)
 
 	repeat := layer.BackgroundRepeat
 	repeatX := repeat == css.BackgroundRepeatRepeat || repeat == css.BackgroundRepeatRepeatX
@@ -1784,6 +1804,79 @@ func capitalizeWords(s string) string {
 	return b.String()
 }
 
+// toRoman converts a positive integer to a Roman numeral string.
+// Uses subtractive notation (e.g., 4=IV, 9=IX).
+func toRoman(n int) string {
+	if n <= 0 || n > 3999 {
+		return fmt.Sprintf("%d", n)
+	}
+	vals := []int{1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1}
+	syms := []string{"M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"}
+	var b strings.Builder
+	for i, v := range vals {
+		for n >= v {
+			b.WriteString(syms[i])
+			n -= v
+		}
+	}
+	return b.String()
+}
+
+// toAlpha converts a positive integer to alphabetic notation (a=1, b=2, ..., z=26, aa=27, ...).
+func toAlpha(n int) string {
+	if n <= 0 {
+		return fmt.Sprintf("%d", n)
+	}
+	var b strings.Builder
+	for n > 0 {
+		n-- // make 0-indexed
+		b.WriteByte(byte('a' + n%26))
+		n /= 26
+	}
+	// Reverse
+	s := []byte(b.String())
+	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+		s[i], s[j] = s[j], s[i]
+	}
+	return string(s)
+}
+
+// toGreek converts a positive integer to lower Greek letters (α=1, β=2, ...).
+func toGreek(n int) string {
+	// CSS counter-styles: lower-greek uses the 24-letter Greek alphabet
+	greek := []rune{'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π', 'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω'}
+	if n <= 0 || n > len(greek) {
+		return fmt.Sprintf("%d", n)
+	}
+	return string(greek[n-1])
+}
+
+// formatListMarker returns the marker text for a given list-style-type and index.
+func formatListMarker(lst css.ListStyleType, index int) string {
+	switch lst {
+	case css.ListStyleTypeDecimal:
+		return fmt.Sprintf("%d.", index)
+	case css.ListStyleTypeDecimalLeadingZero:
+		return fmt.Sprintf("%02d.", index)
+	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
+		return toAlpha(index) + "."
+	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
+		return strings.ToUpper(toAlpha(index)) + "."
+	case css.ListStyleTypeLowerRoman:
+		return strings.ToLower(toRoman(index)) + "."
+	case css.ListStyleTypeUpperRoman:
+		return toRoman(index) + "."
+	case css.ListStyleTypeLowerGreek:
+		return toGreek(index) + "."
+	case css.ListStyleTypeDisclosureOpen:
+		return "\u25BE" // ▾ downward-pointing triangle
+	case css.ListStyleTypeDisclosureClosed:
+		return "\u25B8" // ▸ right-pointing triangle
+	default:
+		return fmt.Sprintf("%d.", index)
+	}
+}
+
 // drawListMarker paints the list-item marker (bullet or number) to the left
 // of the content box, inside the padding area created by the UA stylesheet.
 func (r *Renderer) drawListMarker(layer *PaintLayer) {
@@ -1834,15 +1927,16 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 	case css.ListStyleTypeSquare:
 		r.dc.DrawRectangle(mx-markerSize/2, my-markerSize/2, markerSize, markerSize)
 		r.dc.Fill()
-	case css.ListStyleTypeDecimal:
-		numStr := fmt.Sprintf("%d.", layer.ListItemIndex)
+	default:
+		// All text-based markers: decimal, alpha, roman, greek, disclosure, etc.
+		numStr := formatListMarker(layer.ListStyleType, layer.ListItemIndex)
 		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
 		fid := r.openFont(fontPath, fontSize)
 		if fid >= 0 {
 			tw := r.dc.MeasureText(numStr, fid)
 			metrics := r.dc.GetFontMetrics(fid)
 			ascent := float64(metrics.Ascent) / 64.0
-			// Right-align number to the left of content.
+			// Right-align marker text to the left of content.
 			numX := contentLeft - tw - markerSize*0.5
 			numY := box.Y + box.Border.Top + ascent
 			r.dc.DrawText(numStr, fid, numX, numY)

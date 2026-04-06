@@ -455,6 +455,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// CSS Containment: layout and paint containment establish a containing
 		// block for absolutely positioned descendants (same as positioned elements).
 		isContainmentCB := bla.style != nil && (bla.style.HasLayoutContainment() || bla.style.HasPaintContainment())
+		// CSS Transforms §2.1 / Will Change §2.2: transform, perspective, or
+		// will-change naming them creates a containing block for all positioned
+		// descendants (including fixed).
+		isTransformCB := false
+		if bla.style != nil && !isContainmentCB {
+			if transforms := bla.style.GetTransforms(); len(transforms) > 0 {
+				isTransformCB = true
+			} else if filters := bla.style.GetFilter(); len(filters) > 0 {
+				isTransformCB = true
+			} else {
+				for _, prop := range bla.style.GetWillChange() {
+					if prop == "transform" || prop == "perspective" || prop == "filter" {
+						isTransformCB = true
+						break
+					}
+				}
+			}
+		}
 		isRoot := bla.space.ForcedMinBlockSize > 0
 
 		if isRoot {
@@ -475,8 +493,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				geom:                geom,
 			}
 			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
-		} else if isContainmentCB {
-			// CSS Containment: layout/paint containment makes this element a
+		} else if isContainmentCB || isTransformCB {
+			// CSS Containment / CSS Transforms: containment, transforms, filters,
+			// and will-change:transform/perspective/filter make this element a
 			// containing block for ALL positioned descendants, including fixed.
 			oofPart := &OutOfFlowLayoutPart{
 				ctx:                 bla.ctx,
@@ -830,6 +849,9 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 	case css.DisplayNone:
 		return emptyResult(space.WritingDirection)
 	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem, css.DisplayInlineBlock:
+		// TODO: CSS Multicol — requires true fragmentation (break tokens) to
+		// avoid regressing tests that currently pass via block fallback.
+		// Skeleton in multicol_layout.go; disabled until fragmentation is done.
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
 	case css.DisplayTable, css.DisplayInlineTable:
 		return NewTableLayoutAlgorithm(ctx, node, space).Layout()

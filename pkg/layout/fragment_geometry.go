@@ -447,6 +447,40 @@ func CalculateInitialFragmentGeometry(
 		}
 	}
 
+	// CSS Box Sizing 4 §5.1: aspect-ratio — when one dimension is definite
+	// and the other is auto, compute the auto dimension from the ratio.
+	// ratio = width / height (in physical terms).
+	// Per spec, if box-sizing: border-box, the ratio applies to the border-box;
+	// if box-sizing: content-box (default), it applies to the content-box.
+	if ar := style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+		ratio := ar.Width / ar.Height
+		if borderBoxBlock == Indefinite {
+			var resolvedBlock float64
+			if style.GetBoxSizing() == "border-box" {
+				// Ratio applies to border-box dimensions directly.
+				if wdm.IsHorizontal() {
+					resolvedBlock = borderBoxInline / ratio
+				} else {
+					resolvedBlock = borderBoxInline * ratio
+				}
+			} else {
+				// Ratio applies to content-box dimensions.
+				contentInline := borderBoxInline - geom.InlineBorderPadding()
+				if contentInline < 0 {
+					contentInline = 0
+				}
+				var contentBlock float64
+				if wdm.IsHorizontal() {
+					contentBlock = contentInline / ratio
+				} else {
+					contentBlock = contentInline * ratio
+				}
+				resolvedBlock = contentBlock + geom.BlockBorderPadding()
+			}
+			borderBoxBlock = resolvedBlock
+		}
+	}
+
 	// Apply min/max block constraints only when block-size is definite.
 	if borderBoxBlock != Indefinite {
 		contentBlock := borderBoxBlock - geom.BlockBorderPadding()
