@@ -226,13 +226,13 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 		// continuation nodes, copy properties from the inline element.
 		for _, c := range inlineRun {
 			if c.isContinuation {
-				if c.Style().GetPosition() == css.PositionRelative {
+				if c.Style().GetPosition() == css.PositionRelative || c.Style().GetPosition() == css.PositionSticky {
 					// Positioned inline: propagate the relative offset so the
 					// anonymous block shifts with the rest of the split inline.
 					// Do NOT copy background-color: for positioned inlines the
 					// span background fragment (inline-width) gives the correct
 					// visual. Copying it would paint full block-width background.
-					anonStyle.Set("position", "relative")
+					anonStyle.Set("position", string(c.Style().GetPosition()))
 					for _, prop := range []string{"top", "left", "right", "bottom"} {
 						if v, ok := c.Style().Get(prop); ok {
 							anonStyle.Set(prop, v)
@@ -553,9 +553,9 @@ func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
 				// wrap the block part in a transparent anonymous positioned block
 				// so the block part shifts together with the inline's continuations.
 				blockPart := grandchild
-				if child.Style().GetPosition() == css.PositionRelative {
+				if child.Style().GetPosition() == css.PositionRelative || child.Style().GetPosition() == css.PositionSticky {
 					wrapStyle := css.NewAnonymousBlockStyle(parentStyle)
-					wrapStyle.Set("position", "relative")
+					wrapStyle.Set("position", string(child.Style().GetPosition()))
 					for _, prop := range []string{"top", "left", "right", "bottom"} {
 						if v, ok := child.Style().Get(prop); ok {
 							wrapStyle.Set(prop, v)

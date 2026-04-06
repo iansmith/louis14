@@ -660,7 +660,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	//
 	// The overconstrained resolution rule is "start wins over end" in logical
 	// coordinates, following Blink's ComputeRelativeOffset (relative_utils.cc).
-	if bla.style != nil && bla.style.GetPosition() == css.PositionRelative {
+	if bla.style != nil && (bla.style.GetPosition() == css.PositionRelative || bla.style.GetPosition() == css.PositionSticky) {
 		logicalBlock := bla.space.AvailableSize.BlockSize
 		if logicalBlock == Indefinite {
 			logicalBlock = 0 // auto height → percentages compute to 0
