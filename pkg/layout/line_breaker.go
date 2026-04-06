@@ -293,14 +293,32 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		}
 	}
 
+	// Read word-break and overflow-wrap properties.
+	wordBreak := "normal"
+	overflowWrap := "normal"
+	if item.Style != nil {
+		wordBreak = item.Style.GetWordBreak()
+		overflowWrap = item.Style.GetOverflowWrap()
+	}
+
 	// Doesn't fit — find a break point.
 	if lb.mode == LineBreakerMinContent {
+		// overflow-wrap:anywhere affects min-content sizing: treat every
+		// character as a potential break point (CSS Text 3 §4.1).
+		if overflowWrap == "anywhere" || wordBreak == "break-all" {
+			return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, 0)
+		}
 		// Break at every word boundary.
-		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, 0)
+		return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, 0, wordBreak, overflowWrap)
+	}
+
+	// word-break:break-all — break between any two characters.
+	if wordBreak == "break-all" {
+		return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
 	}
 
 	// Normal mode: find where to break.
-	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, line, remaining, wordBreak, overflowWrap)
 }
 
 // breakTextAtWord finds a break point within a text item.
@@ -313,6 +331,7 @@ func (lb *LineBreaker) breakTextAtWord(
 	fontPath string,
 	line *LineInfo,
 	remaining float64,
+	wordBreak, overflowWrap string,
 ) bool {
 	// Find word boundaries.
 	words := splitIntoWords(content)
@@ -413,8 +432,14 @@ func (lb *LineBreaker) breakTextAtWord(
 	}
 
 	if fitted == 0 {
-		// Can't fit even the first word. If the line is empty, force it on.
+		// Can't fit even the first word.
 		if len(line.Results) == 0 {
+			// overflow-wrap:break-word or anywhere — break the word at a
+			// character boundary so it fits the available width (CSS Text 3 §4.1).
+			if overflowWrap == "break-word" || overflowWrap == "anywhere" {
+				return lb.breakTextAtCharacter(item, content, textStart, textEnd, fontSize, fontPath, line, remaining)
+			}
+			// Force the whole word onto the empty line.
 			fitted = 1
 			if isVertical {
 				usedWidth, _ = text.MeasureTextVerticalFromFont(words[0], fontSize, fontPath)
@@ -454,6 +479,107 @@ func (lb *LineBreaker) breakTextAtWord(
 	}
 
 	// All words fit.
+	lb.currentTextOffset = textEnd
+	return false
+}
+
+// breakTextAtCharacter breaks text at character boundaries.
+// Used for word-break:break-all and overflow-wrap:break-word/anywhere.
+// Returns true if the line should end.
+func (lb *LineBreaker) breakTextAtCharacter(
+	item *InlineItem,
+	content string,
+	textStart, textEnd int,
+	fontSize float64,
+	fontPath string,
+	line *LineInfo,
+	remaining float64,
+) bool {
+	if len(content) == 0 {
+		return false
+	}
+
+	letterSpacing := 0.0
+	if item.Style != nil {
+		letterSpacing = item.Style.GetLetterSpacing()
+	}
+
+	isVertical := lb.space.WritingDirection.IsVertical()
+
+	// Fit as many characters as possible within the remaining width.
+	fitted := 0
+	usedWidth := 0.0
+
+	// If remaining space is effectively zero and the line already has content,
+	// end the line immediately.
+	if remaining <= 0 && len(line.Results) > 0 {
+		return true
+	}
+
+	byteOffset := 0
+	for i, r := range content {
+		charStr := string(r)
+		var charWidth float64
+		if isVertical {
+			charWidth, _ = text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
+		} else {
+			charWidth, _ = text.MeasureText(charStr, fontSize, fontPath)
+		}
+		// Add letter-spacing between characters (not before the first).
+		if letterSpacing != 0 && fitted > 0 {
+			charWidth += letterSpacing
+		}
+
+		if usedWidth+charWidth > remaining && fitted > 0 {
+			break
+		}
+
+		usedWidth += charWidth
+		fitted++
+		byteOffset = i + utf8.RuneLen(r)
+
+		// In min-content mode, break after every character.
+		if lb.mode == LineBreakerMinContent && fitted > 0 {
+			break
+		}
+	}
+
+	if fitted == 0 {
+		if len(line.Results) == 0 {
+			// Force at least one character on an empty line.
+			r, size := utf8.DecodeRuneInString(content)
+			charStr := string(r)
+			if isVertical {
+				usedWidth, _ = text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
+			} else {
+				usedWidth, _ = text.MeasureText(charStr, fontSize, fontPath)
+			}
+			fitted = 1
+			byteOffset = size
+		} else {
+			return true
+		}
+	}
+
+	breakOffset := textStart + byteOffset
+
+	line.Results = append(line.Results, InlineItemResult{
+		Item:       item,
+		ItemIndex:  lb.currentItemIndex,
+		TextStart:  textStart,
+		TextEnd:    breakOffset,
+		InlineSize: usedWidth,
+	})
+	lb.position += usedWidth
+	line.Width = lb.position
+
+	if breakOffset < textEnd {
+		// More text remains — line is complete.
+		lb.currentTextOffset = breakOffset
+		return true
+	}
+
+	// All characters fit.
 	lb.currentTextOffset = textEnd
 	return false
 }
