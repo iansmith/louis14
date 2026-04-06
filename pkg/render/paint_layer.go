@@ -129,6 +129,15 @@ type PaintLayer struct {
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
 	PaintsCanvasBackground bool
+
+	// Column rules (for multicol containers):
+	IsMulticol      bool
+	ColumnCount     int     // number of columns actually rendered
+	ColumnWidth     float64 // used column width
+	ColumnGap       float64 // gap between columns
+	ColumnRuleWidth float64 // rule width in px
+	ColumnRuleStyle string  // none, solid, dashed, dotted, etc.
+	ColumnRuleColor css.Color
 }
 
 // BuildPaintTree constructs a PaintLayer tree from a layout Box tree.
@@ -399,6 +408,24 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	// CSS mix-blend-mode.
 	layer.BlendMode = s.GetMixBlendMode()
+
+	// Column rules for multicol containers.
+	if s.GetColumnCount() > 0 || s.GetColumnWidth() > 0 {
+		layer.IsMulticol = true
+		layer.ColumnRuleWidth = s.GetColumnRuleWidth()
+		layer.ColumnRuleStyle = s.GetColumnRuleStyle()
+		layer.ColumnRuleColor = s.GetColumnRuleColor()
+		layer.ColumnGap = s.GetColumnGapMulticol()
+
+		// Compute used column count and width from the content width.
+		contentW := box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right
+		if contentW < 0 {
+			contentW = 0
+		}
+		colCount, colWidth := layout.ResolveColumnCountForPaint(contentW, s.GetColumnCount(), s.GetColumnWidth(), layer.ColumnGap)
+		layer.ColumnCount = colCount
+		layer.ColumnWidth = colWidth
+	}
 
 	return layer
 }

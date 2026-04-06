@@ -774,6 +774,11 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	r.drawBackground(layer)
 	r.drawBorders(layer)
 
+	// Column rules (between multicol columns).
+	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
+		r.drawColumnRules(layer)
+	}
+
 	// Outline (outside border-box, doesn't affect layout).
 	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
 		r.drawOutline(layer)
@@ -1628,6 +1633,53 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 		r.dc.Fill()
 		r.dc.SetFillRule(textshape.FillRuleWinding)
 		r.dc.Pop()
+	}
+}
+
+// drawColumnRules draws vertical rules between multicol columns.
+// Rules are centered in the gap between adjacent columns.
+func (r *Renderer) drawColumnRules(layer *PaintLayer) {
+	box := layer.Box
+	ruleWidth := layer.ColumnRuleWidth
+	colWidth := layer.ColumnWidth
+	gap := layer.ColumnGap
+	numCols := layer.ColumnCount
+
+	if numCols < 2 || colWidth <= 0 {
+		return
+	}
+
+	r.setColor(layer.ColumnRuleColor)
+
+	// Content area start (inside border and padding).
+	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
+	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
+	contentH := math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - contentY
+
+	// Draw a rule between each pair of adjacent columns.
+	for i := 1; i < numCols; i++ {
+		// Center of gap between column i-1 and column i.
+		ruleX := contentX + float64(i)*(colWidth+gap) - gap/2
+
+		switch layer.ColumnRuleStyle {
+		case "solid":
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
+			r.dc.Fill()
+		case "dashed":
+			r.drawDashedLine(ruleX, contentY, ruleX, contentY+contentH, ruleWidth)
+		case "dotted":
+			r.drawDottedLine(ruleX, contentY, ruleX, contentY+contentH, ruleWidth)
+		case "double":
+			thirdW := ruleWidth / 3
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, thirdW, contentH)
+			r.dc.Fill()
+			r.dc.DrawRectangle(ruleX+ruleWidth/2-thirdW, contentY, thirdW, contentH)
+			r.dc.Fill()
+		default:
+			// For other styles (ridge, groove, inset, outset), fallback to solid.
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
+			r.dc.Fill()
+		}
 	}
 }
 

@@ -36,6 +36,12 @@ func isMulticolContainer(style *css.Style) bool {
 	return style.GetColumnCount() > 0 || style.GetColumnWidth() > 0
 }
 
+// ResolveColumnCountForPaint is a public wrapper around resolveColumnCount
+// for use by the paint layer builder.
+func ResolveColumnCountForPaint(availableInline float64, colCount int, colWidth float64, gap float64) (int, float64) {
+	return resolveColumnCount(availableInline, colCount, colWidth, gap)
+}
+
 // resolveColumnCount implements CSS Multicol §3.4 — the pseudo-algorithm
 // for resolving column-count and column-width into used values.
 // Returns (usedColumnCount, usedColumnWidth).
