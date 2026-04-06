@@ -341,6 +341,82 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	r.dc.DrawImage(buf, bx, by)
 }
 
+// applyBackdropFilter captures the rectangular region of the canvas behind
+// the element's border-box, applies the backdrop-filter pipeline to it,
+// and draws the filtered backdrop back. The element then paints on top.
+// Per CSS Filter Effects Module Level 2, backdrop-filter operates on the
+// "backdrop image" — the rendered content behind the element.
+func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
+	box := layer.Box
+
+	// Determine the element's border-box region.
+	bx := int(math.Floor(box.X))
+	by := int(math.Floor(box.Y))
+	bw := int(math.Ceil(box.X+box.Width)) - bx
+	bh := int(math.Ceil(box.Y+box.Height)) - by
+
+	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+		return
+	}
+
+	// Capture the current canvas content behind this element's border-box.
+	backdrop := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	targetBounds := r.target.Bounds()
+	for y := 0; y < bh; y++ {
+		dy := by + y
+		if dy < targetBounds.Min.Y || dy >= targetBounds.Max.Y {
+			continue
+		}
+		for x := 0; x < bw; x++ {
+			dx := bx + x
+			if dx < targetBounds.Min.X || dx >= targetBounds.Max.X {
+				continue
+			}
+			si := r.target.PixOffset(dx, dy)
+			di := backdrop.PixOffset(x, y)
+			backdrop.Pix[di+0] = r.target.Pix[si+0]
+			backdrop.Pix[di+1] = r.target.Pix[si+1]
+			backdrop.Pix[di+2] = r.target.Pix[si+2]
+			backdrop.Pix[di+3] = r.target.Pix[si+3]
+		}
+	}
+
+	// Apply the same filter pipeline used for regular CSS filter.
+	for _, f := range layer.BackdropFilters {
+		switch f.Name {
+		case "blur":
+			sigma := f.Value / 2
+			radius := int(math.Round(sigma))
+			if radius > 0 {
+				boxBlur(backdrop, radius)
+				boxBlur(backdrop, radius)
+				boxBlur(backdrop, radius)
+			}
+		case "grayscale":
+			applyGrayscale(backdrop, clampFilter01(f.Value))
+		case "brightness":
+			applyBrightness(backdrop, f.Value)
+		case "contrast":
+			applyContrast(backdrop, f.Value)
+		case "opacity":
+			applyFilterOpacity(backdrop, clampFilter01(f.Value))
+		case "saturate":
+			applySaturate(backdrop, f.Value)
+		case "sepia":
+			applySepia(backdrop, clampFilter01(f.Value))
+		case "invert":
+			applyInvert(backdrop, clampFilter01(f.Value))
+		case "hue-rotate":
+			applyHueRotate(backdrop, f.Value)
+		case "drop-shadow":
+			applyDropShadow(backdrop, f)
+		}
+	}
+
+	// Draw the filtered backdrop back to the canvas at the element's position.
+	r.dc.DrawImage(backdrop, bx, by)
+}
+
 // paintLayerWithBlend renders the entire layer subtree into an offscreen
 // buffer, then blend-composites the result onto the destination using the
 // specified CSS mix-blend-mode.
@@ -761,6 +837,11 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.dc.Push()
 		clipPathActive = true
 		r.applyClipPath(layer)
+	}
+
+	// CSS backdrop-filter: filter the region behind the element before painting.
+	if layer.HasBackdropFilter {
+		r.applyBackdropFilter(layer)
 	}
 
 	// Step 0: Outset box shadows (paint behind everything).
