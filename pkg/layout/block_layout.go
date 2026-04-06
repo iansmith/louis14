@@ -840,7 +840,8 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
 	case css.DisplayFlex, css.DisplayInlineFlex:
 		return NewFlexLayoutAlgorithm(ctx, node, space).Layout()
-	// TODO: DisplayGrid
+	case css.DisplayGrid, css.DisplayInlineGrid:
+		return NewGridLayoutAlgorithm(ctx, node, space).Layout()
 	default:
 		// For now, treat unknown display types as block.
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
