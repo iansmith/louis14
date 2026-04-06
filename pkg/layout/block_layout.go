@@ -91,6 +91,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	blockCursor := 0.0 // current block position within content box
 	var prevMarginStrut MarginStrut
 
+	// Fragmentation state: track incoming break token for resume.
+	incomingBreakToken := bla.space.BreakToken
+	resumeChildIdx := -1 // index in Children() to resume from (-1 = start from beginning)
+	var resumeChildBreakToken *BlockBreakToken
+	if incomingBreakToken != nil {
+		blockCursor = 0 // We start at 0 in the new fragmentainer; consumed is tracked by the token.
+		if len(incomingBreakToken.ChildBreakTokens) > 0 {
+			resumeChildBreakToken = incomingBreakToken.ChildBreakTokens[0]
+		}
+	}
+
 	// CSS 2.1 §8.3.1: Parent-child top margin collapsing.
 	// When a block has no block-start border/padding and isn't a new BFC,
 	// the first child's margin propagates upward.
@@ -124,7 +135,27 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		firstNonEmptyChild = false // inline content is "content"
 	} else {
 		// Block formatting context: block-level children.
-		for _, child := range bla.node.Children() {
+		children := bla.node.Children()
+
+		// When resuming from a break token, find the child to resume at.
+		if incomingBreakToken != nil && resumeChildBreakToken != nil {
+			for ci, ch := range children {
+				if ch == resumeChildBreakToken.Node {
+					resumeChildIdx = ci
+					break
+				}
+			}
+		} else if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
+			// All children were seen in a previous fragment; nothing to lay out.
+			resumeChildIdx = len(children)
+		}
+
+		for childIdx, child := range children {
+			// When resuming, skip children completed in previous fragments.
+			if resumeChildIdx >= 0 && childIdx < resumeChildIdx {
+				continue
+			}
+
 			// Skip text nodes (handled by inline layout in anonymous blocks).
 			if child.IsText() {
 				continue
@@ -208,7 +239,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if wdm.IsOrthogonalTo(childWDM) {
 				blockForChild = orthogonalAvailableBlock
 			}
-			childSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+			csBuilder := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(childWDM, bla.ctx)).
 				SetOrthogonalFallbackBlockSize(
@@ -224,8 +255,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					BlockSize:  explicitBlockSize, // 0 if auto
 				}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
-				SetExclusionSpace(exclusionSpace).
-				Build()
+				SetExclusionSpace(exclusionSpace)
+
+			// Propagate fragmentation context to children.
+			if bla.space.HasBlockFragmentation {
+				childFragOffset := bla.space.FragmentainerOffset + blockCursor + prevMarginStrut.Resolve()
+				csBuilder.
+					SetHasBlockFragmentation(true).
+					SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
+					SetFragmentainerOffset(childFragOffset).
+					SetBlockFragmentationType(bla.space.BlockFragmentationType)
+
+				// Pass child break token if resuming this specific child.
+				if childIdx == resumeChildIdx && resumeChildBreakToken != nil {
+					csBuilder.SetBreakToken(resumeChildBreakToken)
+				}
+			}
+
+			childSpace := csBuilder.Build()
 
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
@@ -338,6 +385,69 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Reset margin strut to the child's block-end margin.
 			prevMarginStrut = childResult.EndMarginStrut
 			prevMarginStrut.Append(childMargins.BlockEnd)
+
+			// Fragmentation: check if we've overflowed the fragmentainer.
+			if bla.space.HasBlockFragmentation {
+				fragSize := bla.space.FragmentainerBlockSize
+				if fragSize != Indefinite && blockCursor > fragSize-bla.space.FragmentainerOffset {
+					// Content overflowed. Create outgoing break token.
+					shortage := blockCursor - (fragSize - bla.space.FragmentainerOffset)
+
+					outToken := &BlockBreakToken{
+						Node:              bla.node,
+						ConsumedBlockSize: blockCursor,
+						SequenceNumber:    0,
+					}
+					if incomingBreakToken != nil {
+						outToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
+					}
+
+					// If the child itself broke, include its break token.
+					if childResult.BreakToken != nil {
+						outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, childResult.BreakToken)
+					} else {
+						// Child completed, but there are more siblings.
+						// Create a marker break token for the next sibling.
+						if childIdx+1 < len(children) {
+							nextChild := children[childIdx+1]
+							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+								Node:          nextChild,
+								IsBreakBefore: true,
+							})
+						} else {
+							outToken.HasSeenAllChildren = true
+						}
+					}
+
+					// Build the partial fragment.
+					intrinsicBlock := blockCursor
+					if !hasExplicitBlock {
+						borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
+						builder.SetSize(LogicalSize{
+							InlineSize: geom.BorderBoxSize.InlineSize,
+							BlockSize:  borderBoxBlock,
+						})
+					} else {
+						builder.SetSize(geom.BorderBoxSize)
+					}
+					builder.SetIntrinsicBlockSize(intrinsicBlock)
+					builder.SetNode(bla.node.DOMNode)
+					builder.SetStyle(bla.style)
+					builder.SetLayoutNode(bla.node)
+					builder.SetBoxData(&PhysicalBoxData{
+						Border:  ToPhysicalEdges(geom.Border, wdm),
+						Padding: ToPhysicalEdges(geom.Padding, wdm),
+					})
+					builder.SetEndMarginStrut(prevMarginStrut)
+					builder.SetExclusionSpace(exclusionSpace)
+					result := builder.Build()
+					result.BreakToken = outToken
+					result.MinSpaceShortage = shortage
+					result.PropagatedTopMargin = propagatedTopMargin
+					return result
+				}
+			}
 		}
 	}
 
