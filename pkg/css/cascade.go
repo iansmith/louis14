@@ -680,6 +680,7 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
+	"font-feature-settings": true,
 	"line-height": true, "text-align": true, "text-decoration": true,
 	"text-transform": true, "text-indent": true, "white-space": true,
 	"visibility": true, "list-style-type": true, "list-style-position": true, "list-style-image": true,
