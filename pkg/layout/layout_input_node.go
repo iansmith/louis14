@@ -53,6 +53,11 @@ type LayoutInputNode struct {
 	// MarkerContent is the resolved text content from ::marker { content: ... }.
 	// Set during layout tree building when counter() values can be resolved.
 	MarkerContent string
+
+	// FirstLineStyle is the computed ::first-line pseudo-element style.
+	// Set during layout tree building for block containers with matching
+	// ::first-line rules. Applied to inline items on the first formatted line.
+	FirstLineStyle *css.Style
 }
 
 // Style returns the computed style for this node.

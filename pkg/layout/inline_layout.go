@@ -307,6 +307,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			}
 		}
 
+		// CSS Pseudo-Elements §3: Apply ::first-line styles to items on the
+		// first formatted line. We override item styles after line breaking so
+		// that color, text-decoration, background, etc. take effect. Font
+		// properties that affect line breaking are not yet handled (would need
+		// two-pass layout).
+		if isFirstLine && bla.node.FirstLineStyle != nil {
+			applyFirstLineStyles(&line, bla.node.FirstLineStyle)
+		}
+
 		// Apply text-indent to the first line only.
 		lineInlineOffset := floatStart
 		if isFirstLine && textIndent != 0 {
@@ -411,6 +420,65 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		firstLineAscent = 0
 	}
 	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset
+}
+
+// firstLineAllowedProperties lists the CSS properties that ::first-line is
+// allowed to override (CSS Pseudo-Elements Level 4 §3).
+var firstLineAllowedProperties = []string{
+	// Font properties
+	"font-family", "font-size", "font-style", "font-weight",
+	"font-variant", "font-stretch", "font",
+	// Color and background
+	"color", "background", "background-color", "background-image",
+	"background-repeat", "background-position", "background-attachment",
+	"background-size", "background-origin", "background-clip",
+	// Text decoration
+	"text-decoration", "text-decoration-color", "text-decoration-line",
+	"text-decoration-style",
+	// Spacing and line
+	"letter-spacing", "word-spacing", "line-height",
+	// Text transform
+	"text-transform",
+	// Vertical align (for inline)
+	"vertical-align",
+}
+
+// applyFirstLineStyles merges ::first-line pseudo-element styles into the
+// items on the given line. Only the allowed subset of properties is applied.
+// Each item's Style is cloned before modification to avoid mutating shared styles.
+func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style) {
+	if firstLineStyle == nil {
+		return
+	}
+
+	// Collect the allowed property overrides from the first-line style.
+	overrides := make(map[string]string)
+	for _, prop := range firstLineAllowedProperties {
+		if val, ok := firstLineStyle.Properties[prop]; ok && val != "" {
+			overrides[prop] = val
+		}
+	}
+	if len(overrides) == 0 {
+		return
+	}
+
+	// Apply overrides to each item on the line that has a style.
+	for i := range line.Results {
+		r := &line.Results[i]
+		if r.Item.Style == nil {
+			continue
+		}
+		// Only apply to text items and open/close tags (inline spans).
+		switch r.Item.Type {
+		case InlineItemText, InlineItemOpenTag, InlineItemCloseTag:
+			// Clone the style to avoid mutating shared state.
+			cloned := r.Item.Style.Clone()
+			for prop, val := range overrides {
+				cloned.Properties[prop] = val
+			}
+			r.Item.Style = cloned
+		}
+	}
 }
 
 // hasVisibleInlinePaint returns true if an inline element's style has

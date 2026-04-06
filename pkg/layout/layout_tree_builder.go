@@ -103,6 +103,9 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	// CSS 2.1 §12.2: Apply ::first-letter pseudo-element styling.
 	rawChildren = b.applyFirstLetterSplit(rawChildren, node, style)
 
+	// CSS Pseudo-Elements §3: Compute ::first-line pseudo-element style.
+	b.computeFirstLineStyle(lin, node, style)
+
 	// CSS 2.1 §9.2.1.1: If a block container has both inline-level and
 	// block-level children, generate anonymous block boxes around consecutive
 	// runs of inline-level children.
@@ -608,6 +611,34 @@ func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
 		}
 	}
 	return result
+}
+
+// computeFirstLineStyle checks if a block container has matching ::first-line
+// rules and, if so, computes the pseudo-element style and stores it on the
+// LayoutInputNode. The style is later applied to inline items on the first
+// formatted line during inline layout.
+func (b *LayoutTreeBuilder) computeFirstLineStyle(lin *LayoutInputNode, node *html.Node, parentStyle *css.Style) {
+	if node == nil || node.Type != html.ElementNode {
+		return
+	}
+	if parentStyle == nil || !isBlockContainer(parentStyle.GetDisplay()) {
+		return
+	}
+	if len(b.stylesheets) == 0 {
+		return
+	}
+	if !css.HasFirstLineRules(node, b.stylesheets, b.viewportWidth, b.viewportHeight) {
+		return
+	}
+
+	// Compute the ::first-line style.
+	flStyle := css.ComputePseudoElementStyle(
+		node, "first-line", b.stylesheets,
+		b.viewportWidth, b.viewportHeight, parentStyle,
+	)
+	if flStyle != nil {
+		lin.FirstLineStyle = flStyle
+	}
 }
 
 // applyFirstLetterSplit implements CSS 2.1 §12.2 ::first-letter pseudo-element.
