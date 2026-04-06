@@ -655,8 +655,8 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.drawOutline(layer)
 	}
 
-	// List markers (disc, circle, square, decimal).
-	if layer.IsListItem && layer.ListStyleType != css.ListStyleTypeNone {
+	// List markers (disc, circle, square, decimal, or custom ::marker content).
+	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "") {
 		r.drawListMarker(layer)
 	}
 
@@ -1671,16 +1671,40 @@ func capitalizeWords(s string) string {
 // of the content box, inside the padding area created by the UA stylesheet.
 func (r *Renderer) drawListMarker(layer *PaintLayer) {
 	box := layer.Box
-	markerSize := layer.FontSize * 0.35
+	fontSize := layer.FontSize
+	if layer.HasMarkerFont {
+		fontSize = layer.MarkerFontSize
+	}
+	markerSize := fontSize * 0.35
 
 	// Position: to the left of the content box, vertically centered on first line.
 	contentLeft := box.X + box.Border.Left + box.Padding.Left
 	// Center marker in the padding area (between border and content).
 	mx := contentLeft - box.Padding.Left/2
 	// Vertically: approximately at the midpoint of the first line.
-	my := box.Y + box.Border.Top + layer.FontSize*0.55
+	my := box.Y + box.Border.Top + fontSize*0.55
 
-	r.setColor(layer.TextColor)
+	// Apply ::marker color if specified, else use text color.
+	if layer.HasMarkerColor {
+		r.setColor(layer.MarkerColor)
+	} else {
+		r.setColor(layer.TextColor)
+	}
+
+	// If ::marker has custom content, draw it as text.
+	if layer.MarkerContent != "" {
+		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+		fid := r.openFont(fontPath, fontSize)
+		if fid >= 0 {
+			tw := r.dc.MeasureText(layer.MarkerContent, fid)
+			metrics := r.dc.GetFontMetrics(fid)
+			ascent := float64(metrics.Ascent) / 64.0
+			numX := contentLeft - tw - markerSize*0.5
+			numY := box.Y + box.Border.Top + ascent
+			r.dc.DrawText(layer.MarkerContent, fid, numX, numY)
+		}
+		return
+	}
 
 	switch layer.ListStyleType {
 	case css.ListStyleTypeDisc:
@@ -1696,7 +1720,7 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 	case css.ListStyleTypeDecimal:
 		numStr := fmt.Sprintf("%d.", layer.ListItemIndex)
 		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, layer.FontSize)
+		fid := r.openFont(fontPath, fontSize)
 		if fid >= 0 {
 			tw := r.dc.MeasureText(numStr, fid)
 			metrics := r.dc.GetFontMetrics(fid)
@@ -2062,18 +2086,33 @@ func (r *Renderer) SavePNG(filename string) error {
 	return png.Encode(f, r.target)
 }
 
-// hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto.
+// hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto
+// or paint containment (which also clips and contains positioned descendants).
 func hasOverflowClipping(box *layout.Box) bool {
 	if box.Style == nil {
 		return false
 	}
 	overflow := box.Style.GetOverflow()
-	return overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto
+	if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+		return true
+	}
+	// CSS Containment: paint containment clips content and contains descendants.
+	return box.Style.HasPaintContainment()
 }
 
 // isContainedByOverflow returns true if the child is clipped by the parent's
-// overflow and should NOT escape to the ancestor stacking context.
+// overflow/containment and should NOT escape to the ancestor stacking context.
 func isContainedByOverflow(child, parent *layout.Box) bool {
+	if parent.Style == nil {
+		return false
+	}
+	// CSS Containment: layout and paint containment contain all positioned
+	// descendants (absolute and fixed), acting as a containing block.
+	if parent.Style.HasLayoutContainment() || parent.Style.HasPaintContainment() {
+		if child.Position != css.PositionStatic {
+			return true
+		}
+	}
 	if !hasOverflowClipping(parent) {
 		return false
 	}

@@ -161,7 +161,19 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := rla.space.WritingDirection
 	geom := ComputeFragmentGeometry(rla.style, wdm)
 
-	contentInline, contentBlock := ComputeReplacedSize(rla.ctx, rla.node, rla.style, rla.space)
+	var contentInline, contentBlock float64
+	if rla.style != nil && rla.style.HasSizeContainment() {
+		// CSS Containment: size containment — replaced element intrinsic size is 0.
+		// Only use explicit inline/block sizes if set.
+		if explInline, ok := ResolveInlineSize(rla.style, wdm, rla.space, geom); ok {
+			contentInline = explInline
+		}
+		if explBlock, ok := ResolveBlockSize(rla.style, wdm, rla.space, geom); ok {
+			contentBlock = explBlock
+		}
+	} else {
+		contentInline, contentBlock = ComputeReplacedSize(rla.ctx, rla.node, rla.style, rla.space)
+	}
 
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(rla.node)

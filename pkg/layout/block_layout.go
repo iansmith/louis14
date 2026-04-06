@@ -51,7 +51,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Replaced elements (img, etc.) with auto block-size: derive from aspect ratio.
 	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
-	if !hasExplicitBlock && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
+	// CSS Containment: size containment overrides intrinsic sizing — treat as 0.
+	hasSizeContain := bla.style != nil && bla.style.HasSizeContainment()
+	if !hasExplicitBlock && !hasSizeContain && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
 		_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
 		if blockSize > 0 {
 			explicitBlockSize = blockSize
@@ -376,6 +378,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	// Compute final block-size.
 	intrinsicBlockSize := blockCursor
+	// CSS Containment: size containment — element is sized as if empty.
+	// If block-size is auto (not explicit), intrinsic size is 0.
+	if bla.style != nil && bla.style.HasSizeContainment() && !hasExplicitBlock {
+		intrinsicBlockSize = 0
+	}
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
@@ -445,6 +452,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := bla.style != nil && bla.style.GetPosition() != css.PositionStatic
+		// CSS Containment: layout and paint containment establish a containing
+		// block for absolutely positioned descendants (same as positioned elements).
+		isContainmentCB := bla.style != nil && (bla.style.HasLayoutContainment() || bla.style.HasPaintContainment())
 		isRoot := bla.space.ForcedMinBlockSize > 0
 
 		if isRoot {
@@ -462,6 +472,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				ctx:                 bla.ctx,
 				containingBlockWDM:  wdm,
 				containingBlockSize: LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
+				geom:                geom,
+			}
+			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+		} else if isContainmentCB {
+			// CSS Containment: layout/paint containment makes this element a
+			// containing block for ALL positioned descendants, including fixed.
+			oofPart := &OutOfFlowLayoutPart{
+				ctx:                 bla.ctx,
+				containingBlockWDM:  wdm,
+				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
 				geom:                geom,
 			}
 			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
@@ -871,6 +891,11 @@ func createsFormattingContext(style *css.Style) bool {
 	// Flex/grid items create a BFC.
 	if d == css.DisplayFlex || d == css.DisplayInlineFlex ||
 		d == css.DisplayGrid || d == css.DisplayInlineGrid {
+		return true
+	}
+
+	// CSS Containment: layout and paint containment establish a BFC.
+	if style.HasLayoutContainment() || style.HasPaintContainment() {
 		return true
 	}
 

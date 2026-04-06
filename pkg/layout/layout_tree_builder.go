@@ -46,6 +46,18 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		b.processCounterReset(style)
 	}
 
+	// CSS Pseudo-4 §4.2: Compute ::marker style for list items,
+	// but only if there are actual ::marker rules matching.
+	if style != nil && style.GetDisplay() == css.DisplayListItem && len(b.stylesheets) > 0 {
+		if css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
+			markerStyle := css.ComputePseudoElementStyle(
+				node, "marker", b.stylesheets,
+				b.viewportWidth, b.viewportHeight, style,
+			)
+			lin.MarkerStyle = markerStyle
+		}
+	}
+
 	// Build layout children, filtering out display:none and non-layout nodes.
 	var rawChildren []*LayoutInputNode
 
@@ -412,6 +424,27 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		children: children,
 	}
 	return lin
+}
+
+// resolveContentText resolves CSS content values (text, counters) to a plain string.
+// Used for ::marker content resolution during layout tree building.
+func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue) string {
+	var buf strings.Builder
+	for _, cv := range contentVals {
+		switch cv.Type {
+		case "text":
+			buf.WriteString(cv.Value)
+		case "counter":
+			val := b.getCounterValue(cv.Value)
+			buf.WriteString(strconv.Itoa(val))
+		case "counters":
+			// counters(name, separator) — resolve to the counter value.
+			// cv.Value is the counter name, cv.Separator is the join string.
+			val := b.getCounterValue(cv.Value)
+			buf.WriteString(strconv.Itoa(val))
+		}
+	}
+	return buf.String()
 }
 
 // isBlockContainer returns true for display types that are block containers

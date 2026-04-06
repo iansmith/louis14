@@ -332,6 +332,13 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	if lin := frag.LayoutNode; lin != nil && !lin.IsText() && !lin.IsAnonymous() {
 		box.LayoutNode = lin
 		lin.Box = box
+		// Propagate ::marker style and resolved content from layout input to box.
+		if lin.MarkerStyle != nil {
+			box.MarkerStyle = lin.MarkerStyle
+		}
+		if lin.MarkerContent != "" {
+			box.MarkerContent = lin.MarkerContent
+		}
 	}
 
 	// CSS 2.1 §9.4.3: Apply position:relative offset from the fragment.

@@ -621,6 +621,40 @@ func HasFirstLineRules(node *html.Node, stylesheets []*Stylesheet, viewportWidth
 	return false
 }
 
+// HasPseudoElementRules returns true if any stylesheet rules with the given
+// pseudo-element match the given node.
+func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) bool {
+	for _, stylesheet := range stylesheets {
+		for _, rule := range stylesheet.Rules {
+			pseudo := rule.Selector.PseudoElement
+			if pseudo != pseudoElement {
+				// Also check for "descendant:" prefixed pseudo-elements.
+				if !strings.HasPrefix(pseudo, "descendant:") || strings.TrimPrefix(pseudo, "descendant:") != pseudoElement {
+					continue
+				}
+			}
+			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+				continue
+			}
+			if pseudo == pseudoElement {
+				if MatchesSelector(node, rule.Selector) {
+					return true
+				}
+			} else {
+				// Descendant pseudo-element: check if node is a descendant.
+				ancestor := node.Parent
+				for ancestor != nil {
+					if MatchesSelector(ancestor, rule.Selector) {
+						return true
+					}
+					ancestor = ancestor.Parent
+				}
+			}
+		}
+	}
+	return false
+}
+
 // resolveInheritValues resolves any "inherit" keyword values by copying from the parent's computed style.
 func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	for property, value := range style.Properties {

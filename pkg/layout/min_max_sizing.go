@@ -24,6 +24,12 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		return MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
 	}
 
+	// CSS Containment: size containment — intrinsic sizes are 0 (element sized as empty).
+	// Inline-size containment also zeroes intrinsic inline sizes.
+	if style.HasSizeContainment() || style.HasInlineSizeContainment() {
+		return MinMaxSizes{}
+	}
+
 	// Replaced elements (img, canvas, etc.) use ComputeReplacedSize for intrinsic sizing.
 	// CSS 2.1 §10.3.2: replaced elements have a single intrinsic inline-size.
 	if node.DOMNode != nil && isReplacedElement(node.DOMNode) {

@@ -31,6 +31,11 @@ type Box struct {
 	ImagePath     string
 	PseudoContent string
 
+	// MarkerStyle is the computed ::marker pseudo-element style, if any.
+	// Set during layout tree building for display:list-item elements.
+	MarkerStyle   *css.Style
+	MarkerContent string // Resolved ::marker content text (may include counter values)
+
 	// Text holds the rendered text content for inline text boxes.
 	Text string
 
@@ -90,6 +95,10 @@ func (b *Box) CreatesStackingContext() bool {
 	}
 	// CSS mix-blend-mode: elements with non-normal blend mode create a stacking context.
 	if bm := b.Style.GetMixBlendMode(); bm != css.MixBlendModeNormal && bm != "" {
+		return true
+	}
+	// CSS Containment: layout and paint containment create a stacking context.
+	if b.Style.HasLayoutContainment() || b.Style.HasPaintContainment() {
 		return true
 	}
 	return false

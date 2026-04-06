@@ -4038,6 +4038,64 @@ func (s *Style) GetContain() string {
 	return "none"
 }
 
+// HasLayoutContainment returns true if the element has layout containment.
+// This is set by contain: layout, contain: content, or contain: strict,
+// as well as space-separated combinations like "layout paint".
+func (s *Style) HasLayoutContainment() bool {
+	v := s.GetContain()
+	if v == "none" {
+		return false
+	}
+	if v == "strict" || v == "content" {
+		return true
+	}
+	return strings.Contains(v, "layout")
+}
+
+// HasPaintContainment returns true if the element has paint containment.
+// This is set by contain: paint, contain: content, or contain: strict,
+// as well as space-separated combinations like "layout paint".
+func (s *Style) HasPaintContainment() bool {
+	v := s.GetContain()
+	if v == "none" {
+		return false
+	}
+	if v == "strict" || v == "content" {
+		return true
+	}
+	return strings.Contains(v, "paint")
+}
+
+// HasSizeContainment returns true if the element has size containment.
+// This is set by contain: size or contain: strict,
+// as well as space-separated combinations like "layout paint size".
+func (s *Style) HasSizeContainment() bool {
+	v := s.GetContain()
+	if v == "none" || v == "content" {
+		return false
+	}
+	if v == "strict" {
+		return true
+	}
+	return strings.Contains(v, "size")
+}
+
+// HasInlineSizeContainment returns true if the element has inline-size containment.
+// This is set by contain: inline-size, or space-separated combinations.
+func (s *Style) HasInlineSizeContainment() bool {
+	v := s.GetContain()
+	if v == "none" {
+		return false
+	}
+	return strings.Contains(v, "inline-size")
+}
+
+// HasAnyContainment returns true if the element has any form of containment.
+func (s *Style) HasAnyContainment() bool {
+	v := s.GetContain()
+	return v != "none" && v != ""
+}
+
 // VerticalAlign represents the vertical-align property value
 type VerticalAlign string
 

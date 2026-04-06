@@ -105,9 +105,14 @@ type PaintLayer struct {
 	TextOverflow css.TextOverflowType
 
 	// List markers:
-	IsListItem    bool
-	ListStyleType css.ListStyleType
-	ListItemIndex int // 1-based ordinal for ordered lists
+	IsListItem      bool
+	ListStyleType   css.ListStyleType
+	ListItemIndex   int // 1-based ordinal for ordered lists
+	MarkerContent   string    // custom content from ::marker { content: "..." }
+	MarkerColor     css.Color // color override from ::marker rules
+	HasMarkerColor  bool      // true if ::marker specifies a color
+	MarkerFontSize  float64   // font-size override from ::marker rules
+	HasMarkerFont   bool      // true if ::marker specifies font-size
 
 	// CSS Transforms:
 	Transforms      []css.Transform
@@ -162,9 +167,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 	layer.ZIndex = box.ZIndex
 
-	// Overflow clip.
+	// Overflow clip (or paint containment clip at padding box).
 	overflow := s.GetOverflow()
-	if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto {
+	hasPaintContain := s.HasPaintContainment()
+	if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto || hasPaintContain {
 		layer.HasClip = true
 		clipW := math.Floor(box.Width - box.Border.Left - box.Border.Right)
 		clipH := math.Floor(box.Height - box.Border.Top - box.Border.Bottom)
@@ -315,6 +321,27 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.IsListItem = true
 		layer.ListStyleType = s.GetListStyleType()
 		layer.ListItemIndex = computeListItemIndex(box)
+
+		// ::marker pseudo-element: apply styling overrides.
+		if ms := box.MarkerStyle; ms != nil {
+			// Check for color override — only if different from the element's text color.
+			if colorStr, ok := ms.Get("color"); ok {
+				if c, valid := css.ParseColor(colorStr); valid {
+					if c != layer.TextColor {
+						layer.MarkerColor = c
+						layer.HasMarkerColor = true
+					}
+				}
+			}
+			// Check for font-size override.
+			if _, ok := ms.Get("font-size"); ok {
+				mfs := ms.GetFontSize()
+				if mfs > 0 && mfs != layer.FontSize {
+					layer.MarkerFontSize = mfs
+					layer.HasMarkerFont = true
+				}
+			}
+		}
 	}
 
 	// CSS Transforms.
