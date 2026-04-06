@@ -1174,6 +1174,49 @@ func (r EllipticalRadii) Outset(top, right, bottom, left float64) EllipticalRadi
 	return out
 }
 
+// adjustRadiusForSpread implements the CSS Backgrounds spec §5.4 shadow shape
+// radius adjustment. When r >= spread, it's simply r + spread. When r < spread,
+// a cubic interpolation is used: r + spread × (1 + (r/spread − 1)³).
+// See https://www.w3.org/TR/css-backgrounds-3/#shadow-shape
+func adjustRadiusForSpread(r, spread float64) float64 {
+	if spread <= 0 || r <= 0 {
+		return r + spread
+	}
+	if r >= spread {
+		return r + spread
+	}
+	ratio := r / spread
+	f := 1.0 + (ratio-1.0)*(ratio-1.0)*(ratio-1.0)
+	return r + spread*f
+}
+
+// OutsetForBoxShadow expands radii outward using the CSS shadow shape formula.
+// Unlike Outset (which uses simple addition), this applies the spec's cubic
+// interpolation when a radius component is smaller than the spread.
+func (r EllipticalRadii) OutsetForBoxShadow(top, right, bottom, left float64) EllipticalRadii {
+	var out EllipticalRadii
+	for i := range r {
+		out[i] = r[i]
+	}
+	if !r[0].IsZero() {
+		out[0].Rx = adjustRadiusForSpread(r[0].Rx, left)
+		out[0].Ry = adjustRadiusForSpread(r[0].Ry, top)
+	}
+	if !r[1].IsZero() {
+		out[1].Rx = adjustRadiusForSpread(r[1].Rx, right)
+		out[1].Ry = adjustRadiusForSpread(r[1].Ry, top)
+	}
+	if !r[2].IsZero() {
+		out[2].Rx = adjustRadiusForSpread(r[2].Rx, right)
+		out[2].Ry = adjustRadiusForSpread(r[2].Ry, bottom)
+	}
+	if !r[3].IsZero() {
+		out[3].Rx = adjustRadiusForSpread(r[3].Rx, left)
+		out[3].Ry = adjustRadiusForSpread(r[3].Ry, bottom)
+	}
+	return out
+}
+
 // BorderRadiusCorners holds the radius for each corner of a box.
 type BorderRadiusCorners struct {
 	TopLeft     float64

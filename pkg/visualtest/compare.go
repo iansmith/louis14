@@ -223,3 +223,107 @@ func maxInt(vals ...int) int {
 	}
 	return max
 }
+
+// EdgeLocalityResult contains results of edge-locality validation.
+type EdgeLocalityResult struct {
+	HighDiffPixels int // pixels exceeding baseTolerance
+	OnEdgePixels   int // of those, on color-transition boundaries
+	InteriorPixels int // of those, NOT on boundaries (potential bugs)
+}
+
+// ValidateEdgeLocality checks whether pixels that differ between two images
+// are located on color-transition boundaries. Anti-aliasing differences only
+// appear at edges between distinct color regions; diffs in flat interior regions
+// indicate rendering bugs rather than AA variation.
+//
+// baseTolerance: channel diff above which a pixel is considered "different" (e.g. 2).
+// edgeThreshold: min neighbor gradient to qualify as an edge pixel (e.g. 10).
+func ValidateEdgeLocality(actualPath, expectedPath string, baseTolerance, edgeThreshold int) (*EdgeLocalityResult, error) {
+	actualFile, err := os.Open(actualPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open actual image: %w", err)
+	}
+	defer actualFile.Close()
+	actualImg, err := png.Decode(actualFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode actual image: %w", err)
+	}
+
+	expectedFile, err := os.Open(expectedPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open expected image: %w", err)
+	}
+	defer expectedFile.Close()
+	expectedImg, err := png.Decode(expectedFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode expected image: %w", err)
+	}
+
+	bounds := actualImg.Bounds()
+	result := &EdgeLocalityResult{}
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			ar, ag, ab, aa := actualImg.At(x, y).RGBA()
+			er, eg, eb, ea := expectedImg.At(x, y).RGBA()
+			ar, ag, ab, aa = ar>>8, ag>>8, ab>>8, aa>>8
+			er, eg, eb, ea = er>>8, eg>>8, eb>>8, ea>>8
+
+			diff := maxInt(
+				absInt(int(ar)-int(er)),
+				absInt(int(ag)-int(eg)),
+				absInt(int(ab)-int(eb)),
+				absInt(int(aa)-int(ea)),
+			)
+			if diff <= baseTolerance {
+				continue
+			}
+
+			result.HighDiffPixels++
+
+			// Check if this pixel is on a color boundary in EITHER image.
+			// AA pixels sit where colors transition, so at least one neighbor
+			// should differ significantly from the center.
+			if isOnEdge(actualImg, x, y, bounds, edgeThreshold) ||
+				isOnEdge(expectedImg, x, y, bounds, edgeThreshold) {
+				result.OnEdgePixels++
+			} else {
+				result.InteriorPixels++
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// isOnEdge returns true if pixel (x,y) has at least one 8-connected neighbor
+// whose max channel difference from (x,y) is >= threshold.
+func isOnEdge(img image.Image, x, y int, bounds image.Rectangle, threshold int) bool {
+	cr, cg, cb, ca := img.At(x, y).RGBA()
+	cr, cg, cb, ca = cr>>8, cg>>8, cb>>8, ca>>8
+
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			nx, ny := x+dx, y+dy
+			if nx < bounds.Min.X || nx >= bounds.Max.X || ny < bounds.Min.Y || ny >= bounds.Max.Y {
+				continue
+			}
+			nr, ng, nb, na := img.At(nx, ny).RGBA()
+			nr, ng, nb, na = nr>>8, ng>>8, nb>>8, na>>8
+
+			grad := maxInt(
+				absInt(int(cr)-int(nr)),
+				absInt(int(cg)-int(ng)),
+				absInt(int(cb)-int(nb)),
+				absInt(int(ca)-int(na)),
+			)
+			if grad >= threshold {
+				return true
+			}
+		}
+	}
+	return false
+}

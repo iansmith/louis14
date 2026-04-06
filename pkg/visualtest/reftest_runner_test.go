@@ -4,12 +4,62 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	"louis14/pkg/html"
 )
+
+// wptFuzzy holds the parsed WPT fuzzy annotation values.
+type wptFuzzy struct {
+	MaxDifference int // max allowed per-channel difference
+	TotalPixels   int // max allowed number of differing pixels
+}
+
+// parseFuzzy extracts the WPT <meta name="fuzzy"> annotation from HTML content.
+// Supports both formats:
+//
+//	content="0-25;0-90"
+//	content="maxDifference=0-25;totalPixels=0-90"
+//
+// Returns nil if no fuzzy annotation is found.
+func parseFuzzy(content string) *wptFuzzy {
+	// Match <meta name="fuzzy" content="..."> or <meta name='fuzzy' content='...'>
+	re := regexp.MustCompile(`(?i)<meta\s+name=["']fuzzy["']\s+content=["']([^"']+)["']`)
+	m := re.FindStringSubmatch(content)
+	if m == nil {
+		return nil
+	}
+	raw := m[1]
+
+	// Split on ";" — first part is maxDifference, second is totalPixels.
+	parts := strings.Split(raw, ";")
+	if len(parts) != 2 {
+		return nil
+	}
+
+	parseRange := func(s string) int {
+		s = strings.TrimSpace(s)
+		// Strip optional label like "maxDifference=" or "totalPixels="
+		if idx := strings.Index(s, "="); idx >= 0 {
+			s = s[idx+1:]
+		}
+		// Could be "25" or "0-25" — we want the upper bound.
+		if idx := strings.LastIndex(s, "-"); idx > 0 {
+			s = s[idx+1:]
+		}
+		v, _ := strconv.Atoi(strings.TrimSpace(s))
+		return v
+	}
+
+	return &wptFuzzy{
+		MaxDifference: parseRange(parts[0]),
+		TotalPixels:   parseRange(parts[1]),
+	}
+}
 
 // TestWPTReftests runs WPT CSS 2.1 reftests by rendering both test and reference
 // HTML files and comparing the resulting images pixel-by-pixel.
@@ -224,6 +274,31 @@ func runReftest(t *testing.T, testPath string) bool {
 			} else {
 				t.Logf("REFTEST PASS (%d pixels, max diff: %d)", result.TotalPixels, result.MaxDifference)
 			}
+			return true
+		}
+
+		// Strict comparison failed. If a WPT fuzzy annotation is present,
+		// check whether the differences fall within the specified bounds
+		// AND all high-diff pixels are on color-transition edges (not in
+		// flat interior regions, which would indicate a rendering bug).
+		fuzzy := parseFuzzy(string(content))
+		if fuzzy != nil && result.MaxDifference <= fuzzy.MaxDifference && result.DifferentPixels <= fuzzy.TotalPixels {
+			edgeResult, edgeErr := ValidateEdgeLocality(testPNG, refPNG, 2, 10)
+			if edgeErr != nil {
+				t.Logf("edge-locality check failed: %v", edgeErr)
+				continue
+			}
+			if edgeResult.InteriorPixels > 0 {
+				t.Logf("REFTEST FAIL: fuzzy bounds [%d;%d] met but %d/%d high-diff pixels are in flat regions (not on edges)",
+					fuzzy.MaxDifference, fuzzy.TotalPixels,
+					edgeResult.InteriorPixels, edgeResult.HighDiffPixels)
+				continue
+			}
+			pct := float64(result.DifferentPixels) / float64(result.TotalPixels) * 100
+			t.Logf("REFTEST PASS via fuzzy [%d;%d], edge-validated (%d pixels, max diff: %d, different: %d / %.1f%%, all %d on edges, ref %d/%d)",
+				fuzzy.MaxDifference, fuzzy.TotalPixels,
+				result.TotalPixels, result.MaxDifference, result.DifferentPixels, pct,
+				edgeResult.OnEdgePixels, i+1, len(refHrefs))
 			return true
 		}
 	}
@@ -461,4 +536,58 @@ func TestListReftestResults(t *testing.T) {
 	t.Logf("  Pass %%:  %.0f%%", float64(passed)/float64(len(testFiles))*100)
 
 	_ = fmt.Sprintf("placeholder") // use fmt
+}
+
+func TestParseFuzzy(t *testing.T) {
+	tests := []struct {
+		name    string
+		html    string
+		want    *wptFuzzy
+	}{
+		{
+			name: "shorthand format",
+			html: `<meta name="fuzzy" content="0-25;0-90">`,
+			want: &wptFuzzy{MaxDifference: 25, TotalPixels: 90},
+		},
+		{
+			name: "named format",
+			html: `<meta name="fuzzy" content="maxDifference=0-55;totalPixels=0-299">`,
+			want: &wptFuzzy{MaxDifference: 55, TotalPixels: 299},
+		},
+		{
+			name: "named with spaces",
+			html: `<meta name="fuzzy" content="maxDifference=0-1; totalPixels=0-4000">`,
+			want: &wptFuzzy{MaxDifference: 1, TotalPixels: 4000},
+		},
+		{
+			name: "single value not range",
+			html: `<meta name="fuzzy" content="25;90">`,
+			want: &wptFuzzy{MaxDifference: 25, TotalPixels: 90},
+		},
+		{
+			name: "no fuzzy annotation",
+			html: `<meta name="author" content="test">`,
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseFuzzy(tt.html)
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected %+v, got nil", tt.want)
+			}
+			if got.MaxDifference != tt.want.MaxDifference || got.TotalPixels != tt.want.TotalPixels {
+				t.Errorf("got {%d, %d}, want {%d, %d}",
+					got.MaxDifference, got.TotalPixels,
+					tt.want.MaxDifference, tt.want.TotalPixels)
+			}
+		})
+	}
 }
