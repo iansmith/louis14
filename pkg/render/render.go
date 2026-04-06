@@ -212,15 +212,68 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer.Opacity <= 0 {
 		return
 	}
+
+	// Apply CSS transform if present (wraps around opacity handling).
+	if layer.HasTransform {
+		r.dc.Push()
+		r.applyTransforms(layer)
+	}
+
 	if layer.Opacity < 1.0 {
 		// CSS3 Color §4.2: render subtree to offscreen buffer and composite.
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
 		r.dc.PopGroupWithAlpha(layer.Opacity)
-		return
+	} else {
+		r.paintLayerContent(layer)
 	}
 
-	r.paintLayerContent(layer)
+	if layer.HasTransform {
+		r.dc.Pop()
+	}
+}
+
+// applyTransforms applies the CSS transform list to the draw context.
+// Transforms are applied relative to the transform-origin point.
+func (r *Renderer) applyTransforms(layer *PaintLayer) {
+	box := layer.Box
+	ox := box.X + layer.TransformOrigin[0]
+	oy := box.Y + layer.TransformOrigin[1]
+
+	// Move origin to transform-origin point.
+	r.dc.Translate(ox, oy)
+
+	// Apply transforms in order.
+	for _, t := range layer.Transforms {
+		switch t.Type {
+		case "translate":
+			tx := t.Values[0]
+			ty := 0.0
+			if len(t.Values) > 1 {
+				ty = t.Values[1]
+			}
+			r.dc.Translate(tx, ty)
+		case "rotate":
+			// parseAngle() returns degrees; DrawContext.Rotate() takes radians.
+			r.dc.Rotate(t.Values[0] * math.Pi / 180)
+		case "scale":
+			sx := t.Values[0]
+			sy := sx
+			if len(t.Values) > 1 {
+				sy = t.Values[1]
+			}
+			r.dc.Scale(sx, sy)
+		case "skew":
+			// Skew via matrix: [1, tan(ay), tan(ax), 1, 0, 0]
+			// DrawContext doesn't have Skew directly; skip for MVP.
+		case "matrix":
+			// matrix(a, b, c, d, e, f)
+			// DrawContext doesn't have a SetMatrix; skip for MVP.
+		}
+	}
+
+	// Move back from transform-origin.
+	r.dc.Translate(-ox, -oy)
 }
 
 // paintLayerContent paints the layer's own box and children in
