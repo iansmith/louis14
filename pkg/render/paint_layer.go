@@ -92,6 +92,9 @@ type PaintLayer struct {
 	TextDecorationColor     css.Color  // defaults to TextColor (currentColor)
 	TextDecorationThickness float64    // defaults to ~1px
 
+	// Text shadows:
+	TextShadows []css.TextShadow
+
 	// CSS text-transform (uppercase, lowercase, capitalize):
 	TextTransform css.TextTransform
 
@@ -284,6 +287,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.TextDecorationColor = currentColor
 	}
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
+	layer.TextShadows = s.GetTextShadow()
 	layer.TextTransform = s.GetTextTransform()
 
 	// List markers.

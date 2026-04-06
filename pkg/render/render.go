@@ -1354,6 +1354,11 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		return
 	}
 
+	// Draw text shadows (behind actual text).
+	if len(layer.TextShadows) > 0 {
+		r.drawTextShadows(layer, text, box, fontID, ascent)
+	}
+
 	if layer.LetterSpacing != 0 {
 		x := box.X
 		baselineY := box.Y + ascent
@@ -1368,6 +1373,76 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 
 	// Draw text decoration lines (underline, overline, line-through).
 	r.drawTextDecoration(layer, text, box, fontID, ascent)
+}
+
+// drawTextShadows paints text shadows behind the actual text glyphs.
+// Shadows are painted in reverse declaration order (last declared = behind).
+func (r *Renderer) drawTextShadows(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+	for i := len(layer.TextShadows) - 1; i >= 0; i-- {
+		shadow := layer.TextShadows[i]
+		if shadow.Blur > 0 {
+			r.drawBlurredTextShadow(layer, text, box, fontID, ascent, shadow)
+		} else {
+			// No blur: just draw text at offset position with shadow color.
+			r.setColor(shadow.Color)
+			if layer.LetterSpacing != 0 {
+				x := box.X + shadow.OffsetX
+				baselineY := box.Y + ascent + shadow.OffsetY
+				for _, ch := range text {
+					r.dc.DrawText(string(ch), fontID, x, baselineY)
+					charW := r.dc.MeasureText(string(ch), fontID)
+					x += charW + layer.LetterSpacing
+				}
+			} else {
+				r.dc.DrawText(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY)
+			}
+		}
+	}
+	// Restore text color for actual text drawing.
+	r.setColor(layer.TextColor)
+}
+
+// drawBlurredTextShadow renders a single text shadow with Gaussian-like blur
+// by drawing text into an offscreen buffer, applying box blur, then compositing.
+func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, shadow css.TextShadow) {
+	// Measure text to determine buffer size.
+	textWidth := r.dc.MeasureText(text, fontID)
+	metrics := r.dc.GetFontMetrics(fontID)
+	textHeight := float64(metrics.Ascent-metrics.Descent) / 64.0
+
+	sigma := shadow.Blur / 2
+	extend := math.Ceil(sigma * 3)
+
+	bw := int(math.Ceil(textWidth + 2*extend))
+	bh := int(math.Ceil(textHeight + 2*extend))
+	if bw <= 0 || bh <= 0 || bw > 2000 || bh > 2000 {
+		// Fallback: draw without blur.
+		r.setColor(shadow.Color)
+		r.dc.DrawText(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY)
+		return
+	}
+
+	// Render text into offscreen buffer.
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	childDC := r.dc.NewChildContext(buf)
+	childDC.SetColor(color.RGBA{
+		R: shadow.Color.R,
+		G: shadow.Color.G,
+		B: shadow.Color.B,
+		A: uint8(shadow.Color.A * 255),
+	})
+	childDC.DrawText(text, fontID, extend, extend+ascent)
+
+	// Apply 3-pass box blur (approximates Gaussian blur).
+	blurRadius := int(math.Round(sigma))
+	boxBlur(buf, blurRadius)
+	boxBlur(buf, blurRadius)
+	boxBlur(buf, blurRadius)
+
+	// Composite back at shadow offset position.
+	dx := int(math.Round(box.X + shadow.OffsetX - extend))
+	dy := int(math.Round(box.Y + shadow.OffsetY - extend))
+	r.dc.DrawImage(buf, dx, dy)
 }
 
 // drawTextDecoration renders underline, overline, or line-through decoration
