@@ -2156,8 +2156,8 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 
 	// §4.5 Content size suggestion: min-content size in the main axis.
 	contentSuggestion := -1.0
-	if isRow {
-		// Row flex: inline min-content size at zero available width.
+	if mainIsItemInline {
+		// Main axis = item's inline axis: inline min-content size at zero available width.
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
 			SetPercentageResolutionInlineSize(fla.space.PercentageResolutionInlineSize).
@@ -2165,7 +2165,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
 		contentSuggestion = mm.MinContent
 	} else {
-		// Column flex: block-direction minimum.
+		// Main axis = item's block axis: block-direction minimum via layout.
 		containerInlineSize := space.AvailableSize.InlineSize
 		colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
