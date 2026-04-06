@@ -50,6 +50,16 @@ type LayoutResult struct {
 	// Mirrors Blink's approach where OOF candidates bubble up the tree
 	// until they reach their actual containing block.
 	PropagatedOOFCandidates []OutOfFlowCandidate
+
+	// --- Fragmentation ---
+
+	// BreakToken is non-nil if there is more content to lay out in
+	// subsequent fragmentainers. Nil means all content fit.
+	BreakToken *BlockBreakToken
+
+	// MinSpaceShortage is the smallest overflow that caused a break.
+	// Used by column balancing to determine how much to stretch.
+	MinSpaceShortage float64
 }
 
 // FragmentType distinguishes box, line-box, and text fragments.

@@ -76,7 +76,39 @@ type ConstraintSpace struct {
 	// ForcedMinBlockSize is a minimum block-size forced by the parent.
 	// Used for the root element to ensure it fills at least the ICB block-size.
 	ForcedMinBlockSize float64
+
+	// --- Fragmentation ---
+
+	// HasBlockFragmentation is true inside a fragmentation context (multicol, print).
+	// When false (the default), block layout behavior is unchanged.
+	HasBlockFragmentation bool
+
+	// FragmentainerBlockSize is the block-size of the current fragmentainer
+	// (column height). Indefinite if unconstrained.
+	FragmentainerBlockSize float64
+
+	// FragmentainerOffset is the block offset from fragmentainer start to
+	// this constraint space's start. Used to compute remaining space.
+	FragmentainerOffset float64
+
+	// BlockFragmentationType distinguishes column vs page fragmentation.
+	BlockFragmentationType FragmentationType
+
+	// RequiresContentBeforeBreaking prevents empty fragmentainers.
+	RequiresContentBeforeBreaking bool
+
+	// BreakToken is the incoming break token for resuming layout.
+	BreakToken *BlockBreakToken
 }
+
+// FragmentationType distinguishes types of block fragmentation.
+type FragmentationType int
+
+const (
+	FragmentNone   FragmentationType = iota
+	FragmentColumn
+	FragmentPage
+)
 
 // Indefinite is the sentinel value for an unconstrained block-size.
 // Matches Blink's kIndefiniteSize.
@@ -85,6 +117,20 @@ const Indefinite float64 = -1
 // IsBlockSizeIndefinite returns true if the block-size is unconstrained.
 func (cs ConstraintSpace) IsBlockSizeIndefinite() bool {
 	return cs.AvailableSize.BlockSize < 0
+}
+
+// RemainingFragmentainerBlockSize returns how much block-size is available
+// from the current offset to the fragmentainer end. Returns Indefinite
+// when not in a fragmentation context.
+func (cs ConstraintSpace) RemainingFragmentainerBlockSize(currentOffset float64) float64 {
+	if !cs.HasBlockFragmentation || cs.FragmentainerBlockSize == Indefinite {
+		return Indefinite
+	}
+	remaining := cs.FragmentainerBlockSize - (cs.FragmentainerOffset + currentOffset)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // ConstraintSpaceBuilder constructs a ConstraintSpace for a child element.
@@ -227,6 +273,36 @@ func (b *ConstraintSpaceBuilder) SetPercentageResolutionInlineSize(v float64) *C
 // Used for the root element to ensure it fills at least the ICB.
 func (b *ConstraintSpaceBuilder) SetForcedMinBlockSize(v float64) *ConstraintSpaceBuilder {
 	b.space.ForcedMinBlockSize = v
+	return b
+}
+
+// SetHasBlockFragmentation enables block fragmentation for this child.
+func (b *ConstraintSpaceBuilder) SetHasBlockFragmentation(v bool) *ConstraintSpaceBuilder {
+	b.space.HasBlockFragmentation = v
+	return b
+}
+
+// SetFragmentainerBlockSize sets the fragmentainer's block-size.
+func (b *ConstraintSpaceBuilder) SetFragmentainerBlockSize(v float64) *ConstraintSpaceBuilder {
+	b.space.FragmentainerBlockSize = v
+	return b
+}
+
+// SetFragmentainerOffset sets the offset from fragmentainer start.
+func (b *ConstraintSpaceBuilder) SetFragmentainerOffset(v float64) *ConstraintSpaceBuilder {
+	b.space.FragmentainerOffset = v
+	return b
+}
+
+// SetBlockFragmentationType sets the type of block fragmentation.
+func (b *ConstraintSpaceBuilder) SetBlockFragmentationType(v FragmentationType) *ConstraintSpaceBuilder {
+	b.space.BlockFragmentationType = v
+	return b
+}
+
+// SetBreakToken sets the incoming break token for resuming layout.
+func (b *ConstraintSpaceBuilder) SetBreakToken(t *BlockBreakToken) *ConstraintSpaceBuilder {
+	b.space.BreakToken = t
 	return b
 }
 
