@@ -2705,9 +2705,13 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		r.drawTextShadows(layer, text, box, fontID, ascent)
 	}
 
-	// CSS Text 3 §4.2: tab characters advance to the next tab stop.
-	// Handle tabs before other text rendering paths.
-	if strings.Contains(text, "\t") {
+	// CSS font-variant-caps: small-caps / all-small-caps — synthesize small
+	// capitals by drawing lowercase (or all) letters as uppercase glyphs at a
+	// reduced font size (~70% of normal).  The baseline stays aligned.
+	if layer.FontVariantCaps == "small-caps" || layer.FontVariantCaps == "all-small-caps" {
+		r.drawTextSmallCaps(layer, text, box, fontPath, fontID, ascent)
+	} else if strings.Contains(text, "\t") {
+		// CSS Text 3 §4.2: tab characters advance to the next tab stop.
 		r.drawTextWithTabs(layer, text, box, fontID, ascent)
 	} else if layer.LetterSpacing != 0 || layer.WordSpacing != 0 {
 		x := box.X
@@ -2744,6 +2748,74 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 
 	// Draw text decoration lines (underline, overline, line-through).
 	r.drawTextDecoration(layer, text, box, fontID, ascent)
+}
+
+// smallCapsScale is the ratio of the small-caps glyph size to the normal size.
+// Blink uses ~0.7; CSS Fonts Level 4 suggests using the font's x-height/cap-height
+// ratio when available, but synthesis typically uses 0.7–0.8.
+const smallCapsScale = 0.7
+
+// drawTextSmallCaps renders text with font-variant-caps: small-caps or all-small-caps.
+// Lowercase letters (and for all-small-caps, uppercase too) are drawn as uppercase
+// glyphs at a reduced font size.  The baseline remains aligned with the normal text.
+func (r *Renderer) drawTextSmallCaps(layer *PaintLayer, text string, box *layout.Box, fontPath string, fontID int32, ascent float64) {
+	allSmall := layer.FontVariantCaps == "all-small-caps"
+
+	// Open a second font at the reduced size for small-cap glyphs.
+	smallSize := math.Round(layer.FontSize * smallCapsScale)
+	if smallSize < 1 {
+		smallSize = 1
+	}
+	smallFontID := r.openFont(fontPath, smallSize)
+	if smallFontID < 0 {
+		smallFontID = fontID // fallback: draw at normal size
+	}
+	smallMetrics := r.dc.GetFontMetrics(smallFontID)
+	smallAscent := float64(smallMetrics.Ascent) / 64.0
+
+	baselineY := box.Y + ascent
+	x := box.X
+
+	for _, ch := range text {
+		s := string(ch)
+
+		// Determine if this character should be drawn as a small cap.
+		isSmallCap := false
+		drawStr := s
+		if allSmall {
+			// all-small-caps: both upper and lowercase become small caps.
+			if unicode.IsLetter(ch) {
+				isSmallCap = true
+				drawStr = strings.ToUpper(s)
+			}
+		} else {
+			// small-caps: only lowercase letters become small caps.
+			if unicode.IsLower(ch) {
+				isSmallCap = true
+				drawStr = strings.ToUpper(s)
+			}
+		}
+
+		if isSmallCap {
+			// Draw uppercase glyph at reduced size, baseline-aligned.
+			// The small font has a smaller ascent; shift down so baselines match.
+			smallBaselineY := baselineY + (ascent - smallAscent)
+			r.dc.DrawText(drawStr, smallFontID, x, smallBaselineY)
+			charW := r.dc.MeasureText(drawStr, smallFontID)
+			x += charW
+		} else {
+			// Draw at normal size.
+			r.dc.DrawText(drawStr, fontID, x, baselineY)
+			charW := r.dc.MeasureText(drawStr, fontID)
+			x += charW
+		}
+
+		// Apply letter-spacing after each character.
+		x += layer.LetterSpacing
+		if ch == ' ' {
+			x += layer.WordSpacing
+		}
+	}
 }
 
 // drawTextWithTabs renders text containing tab characters. Tab characters
