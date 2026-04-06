@@ -95,7 +95,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Check if the table has an explicit inline-size (width/height).
 	_, hasExplicitTableWidth := ResolveInlineSize(tla.style, wdm, tla.space, geom)
 
-	// Compute column widths via auto table layout (CSS 2.1 §17.5.2).
 	// Subtract inline spacing from available width for column sizing.
 	spacingForCols := 0.0
 	if numCols > 0 {
@@ -137,7 +136,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	colWidths := tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth)
+	// Choose column width algorithm: fixed (CSS 2.1 §17.5.2.1) or auto (§17.5.2.2).
+	var colWidths []float64
+	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
+		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols)
+	} else {
+		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth)
+	}
 
 	// Separate top and bottom captions.
 	var topCaptions, bottomCaptions []tableCaption
@@ -599,6 +604,89 @@ func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Styl
 	flushAnon()
 
 	return row
+}
+
+// computeColumnWidthsFixed computes column widths using the fixed table layout
+// algorithm (CSS 2.1 §17.5.2.1). Only the first row is examined for sizing.
+// This is faster and more predictable than the auto algorithm.
+func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
+	rows []tableRow, numCols int, availableForCols float64, spacingForCols float64,
+) []float64 {
+	if numCols == 0 {
+		return []float64{}
+	}
+
+	colWidths := make([]float64, numCols)
+	hasExplicit := make([]bool, numCols)
+
+	// Step 1: Check first-row cells for explicit widths.
+	// Per CSS 2.1 §17.5.2.1: "a column element with a value other than 'auto'
+	// for the 'width' property sets the width for that column" — we don't
+	// currently track <col> elements, so skip to:
+	// "a cell in the first row with a value other than 'auto' for the 'width'
+	// property determines the width for that column."
+	if len(rows) > 0 {
+		colIdx := 0
+		for _, cell := range rows[0].cells {
+			if colIdx >= numCols {
+				break
+			}
+			if cell.style != nil {
+				inlineProp := "width"
+				if tla.space.WritingDirection.IsVertical() {
+					inlineProp = "height"
+				}
+				if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
+					if cell.colSpan > 1 {
+						// Distribute explicit width equally across spanned columns.
+						perCol := w / float64(cell.colSpan)
+						for c := 0; c < cell.colSpan && colIdx+c < numCols; c++ {
+							if !hasExplicit[colIdx+c] {
+								colWidths[colIdx+c] = perCol
+								hasExplicit[colIdx+c] = true
+							}
+						}
+					} else {
+						colWidths[colIdx] = w
+						hasExplicit[colIdx] = true
+					}
+				}
+			}
+			colIdx += cell.colSpan
+		}
+	}
+
+	// Step 2: Distribute remaining width equally among columns without
+	// explicit widths (CSS 2.1 §17.5.2.1 step 3).
+	usedWidth := 0.0
+	unsetCols := 0
+	for i := 0; i < numCols; i++ {
+		usedWidth += colWidths[i]
+		if !hasExplicit[i] {
+			unsetCols++
+		}
+	}
+
+	if unsetCols > 0 {
+		remaining := availableForCols - usedWidth
+		if remaining > 0 {
+			perCol := remaining / float64(unsetCols)
+			for i := 0; i < numCols; i++ {
+				if !hasExplicit[i] {
+					colWidths[i] = perCol
+				}
+			}
+		} else {
+			// Fallback: give unset columns a minimal width.
+			for i := 0; i < numCols; i++ {
+				if !hasExplicit[i] {
+					colWidths[i] = 10
+				}
+			}
+		}
+	}
+
+	return colWidths
 }
 
 // computeColumnWidths computes column widths using the auto table layout
