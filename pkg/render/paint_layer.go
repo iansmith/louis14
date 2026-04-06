@@ -106,6 +106,11 @@ type PaintLayer struct {
 	// Text shadows:
 	TextShadows []css.TextShadow
 
+	// Text emphasis marks (small marks above/below each character):
+	TextEmphasisMark     string    // resolved mark character ("●", "•", etc.); "" = none
+	TextEmphasisColor    css.Color // defaults to currentColor
+	TextEmphasisOver     bool      // true = over (above), false = under (below)
+
 	// CSS text-transform (uppercase, lowercase, capitalize):
 	TextTransform css.TextTransform
 
@@ -388,6 +393,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.TextDecorationStyle = s.GetTextDecorationStyle()
 	layer.TextUnderlineOffset = s.GetTextUnderlineOffset()
 	layer.TextShadows = s.GetTextShadow()
+
+	// Text emphasis marks.
+	if mark := s.GetTextEmphasisMark(); mark != "" {
+		layer.TextEmphasisMark = mark
+		layer.TextEmphasisColor = s.GetTextEmphasisColor()
+		pos := s.GetTextEmphasisPosition()
+		layer.TextEmphasisOver = !strings.Contains(pos, "under")
+	}
+
 	layer.TextTransform = s.GetTextTransform()
 	layer.TextOverflow = s.GetTextOverflow()
 
