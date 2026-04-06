@@ -2112,6 +2112,28 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		}
 	}
 
+	// §4.5: "In all cases, the size is capped by the item's max main size property, if definite."
+	{
+		maxSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
+			Build()
+		if mainIsItemInline {
+			if maxMain, hasMax := ResolveMaxInlineSize(style, childWDM, maxSpace, childGeom); hasMax {
+				if autoMin > maxMain {
+					autoMin = maxMain
+				}
+			}
+		} else {
+			if maxMain, hasMax := ResolveMaxBlockSize(style, childWDM, maxSpace, childGeom); hasMax {
+				if autoMin > maxMain {
+					autoMin = maxMain
+				}
+			}
+		}
+	}
+
 	if autoMin < 0 {
 		autoMin = 0
 	}
