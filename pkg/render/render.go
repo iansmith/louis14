@@ -595,50 +595,202 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 	if bw.Top > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
 		if c := layer.BorderColors[0]; c.A > 0 {
 			r.setColor(c)
-			r.dc.MoveTo(outerLeft, outerTop)
-			r.dc.LineTo(outerRight, outerTop)
-			r.dc.LineTo(innerRight, innerTop)
-			r.dc.LineTo(innerLeft, innerTop)
-			r.dc.ClosePath()
-			r.dc.Fill()
+			switch layer.BorderStyles[0] {
+			case css.BorderStyleDashed:
+				midY := (outerTop + innerTop) / 2
+				r.drawDashedLine(outerLeft, midY, outerRight, midY, bw.Top)
+			case css.BorderStyleDotted:
+				midY := (outerTop + innerTop) / 2
+				r.drawDottedLine(outerLeft, midY, outerRight, midY, bw.Top)
+			case css.BorderStyleDouble:
+				midY := (outerTop + innerTop) / 2
+				r.drawDoubleLine(outerLeft, midY, outerRight, midY, bw.Top)
+			default: // Solid, Hidden, Groove, Ridge, Inset, Outset — trapezoid
+				r.dc.MoveTo(outerLeft, outerTop)
+				r.dc.LineTo(outerRight, outerTop)
+				r.dc.LineTo(innerRight, innerTop)
+				r.dc.LineTo(innerLeft, innerTop)
+				r.dc.ClosePath()
+				r.dc.Fill()
+			}
 		}
 	}
 	// Right border (index 1).
 	if bw.Right > 0 && layer.BorderStyles[1] != css.BorderStyleNone {
 		if c := layer.BorderColors[1]; c.A > 0 {
 			r.setColor(c)
-			r.dc.MoveTo(outerRight, outerTop)
-			r.dc.LineTo(outerRight, outerBottom)
-			r.dc.LineTo(innerRight, innerBottom)
-			r.dc.LineTo(innerRight, innerTop)
-			r.dc.ClosePath()
-			r.dc.Fill()
+			switch layer.BorderStyles[1] {
+			case css.BorderStyleDashed:
+				midX := (outerRight + innerRight) / 2
+				r.drawDashedLine(midX, outerTop, midX, outerBottom, bw.Right)
+			case css.BorderStyleDotted:
+				midX := (outerRight + innerRight) / 2
+				r.drawDottedLine(midX, outerTop, midX, outerBottom, bw.Right)
+			case css.BorderStyleDouble:
+				midX := (outerRight + innerRight) / 2
+				r.drawDoubleLine(midX, outerTop, midX, outerBottom, bw.Right)
+			default:
+				r.dc.MoveTo(outerRight, outerTop)
+				r.dc.LineTo(outerRight, outerBottom)
+				r.dc.LineTo(innerRight, innerBottom)
+				r.dc.LineTo(innerRight, innerTop)
+				r.dc.ClosePath()
+				r.dc.Fill()
+			}
 		}
 	}
 	// Bottom border (index 2).
 	if bw.Bottom > 0 && layer.BorderStyles[2] != css.BorderStyleNone {
 		if c := layer.BorderColors[2]; c.A > 0 {
 			r.setColor(c)
-			r.dc.MoveTo(outerLeft, outerBottom)
-			r.dc.LineTo(innerLeft, innerBottom)
-			r.dc.LineTo(innerRight, innerBottom)
-			r.dc.LineTo(outerRight, outerBottom)
-			r.dc.ClosePath()
-			r.dc.Fill()
+			switch layer.BorderStyles[2] {
+			case css.BorderStyleDashed:
+				midY := (outerBottom + innerBottom) / 2
+				r.drawDashedLine(outerLeft, midY, outerRight, midY, bw.Bottom)
+			case css.BorderStyleDotted:
+				midY := (outerBottom + innerBottom) / 2
+				r.drawDottedLine(outerLeft, midY, outerRight, midY, bw.Bottom)
+			case css.BorderStyleDouble:
+				midY := (outerBottom + innerBottom) / 2
+				r.drawDoubleLine(outerLeft, midY, outerRight, midY, bw.Bottom)
+			default:
+				r.dc.MoveTo(outerLeft, outerBottom)
+				r.dc.LineTo(innerLeft, innerBottom)
+				r.dc.LineTo(innerRight, innerBottom)
+				r.dc.LineTo(outerRight, outerBottom)
+				r.dc.ClosePath()
+				r.dc.Fill()
+			}
 		}
 	}
 	// Left border (index 3).
 	if bw.Left > 0 && layer.BorderStyles[3] != css.BorderStyleNone {
 		if c := layer.BorderColors[3]; c.A > 0 {
 			r.setColor(c)
-			r.dc.MoveTo(outerLeft, outerTop)
-			r.dc.LineTo(innerLeft, innerTop)
-			r.dc.LineTo(innerLeft, innerBottom)
-			r.dc.LineTo(outerLeft, outerBottom)
-			r.dc.ClosePath()
-			r.dc.Fill()
+			switch layer.BorderStyles[3] {
+			case css.BorderStyleDashed:
+				midX := (outerLeft + innerLeft) / 2
+				r.drawDashedLine(midX, outerTop, midX, outerBottom, bw.Left)
+			case css.BorderStyleDotted:
+				midX := (outerLeft + innerLeft) / 2
+				r.drawDottedLine(midX, outerTop, midX, outerBottom, bw.Left)
+			case css.BorderStyleDouble:
+				midX := (outerLeft + innerLeft) / 2
+				r.drawDoubleLine(midX, outerTop, midX, outerBottom, bw.Left)
+			default:
+				r.dc.MoveTo(outerLeft, outerTop)
+				r.dc.LineTo(innerLeft, innerTop)
+				r.dc.LineTo(innerLeft, innerBottom)
+				r.dc.LineTo(outerLeft, outerBottom)
+				r.dc.ClosePath()
+				r.dc.Fill()
+			}
 		}
 	}
+}
+
+// drawDashedLine draws a dashed line from (x1,y1) to (x2,y2) with the given width.
+// Dash length and gap are both 3× the border width per CSS spec.
+func (r *Renderer) drawDashedLine(x1, y1, x2, y2, width float64) {
+	dx := x2 - x1
+	dy := y2 - y1
+	length := math.Sqrt(dx*dx + dy*dy)
+	if length == 0 {
+		return
+	}
+
+	dashLen := width * 3
+	gapLen := width * 3
+	ux, uy := dx/length, dy/length
+	nx, ny := -uy, ux // perpendicular
+	hw := width / 2
+
+	along := 0.0
+	for along < length {
+		segEnd := along + dashLen
+		if segEnd > length {
+			segEnd = length
+		}
+
+		sx, sy := x1+ux*along, y1+uy*along
+		ex, ey := x1+ux*segEnd, y1+uy*segEnd
+
+		r.dc.MoveTo(sx+nx*hw, sy+ny*hw)
+		r.dc.LineTo(ex+nx*hw, ey+ny*hw)
+		r.dc.LineTo(ex-nx*hw, ey-ny*hw)
+		r.dc.LineTo(sx-nx*hw, sy-ny*hw)
+		r.dc.ClosePath()
+		r.dc.Fill()
+
+		along = segEnd + gapLen
+	}
+}
+
+// drawDottedLine draws a dotted line from (x1,y1) to (x2,y2) with the given width.
+// Dot diameter equals the border width; gap equals the border width.
+func (r *Renderer) drawDottedLine(x1, y1, x2, y2, width float64) {
+	dx := x2 - x1
+	dy := y2 - y1
+	length := math.Sqrt(dx*dx + dy*dy)
+	if length == 0 {
+		return
+	}
+
+	dotRadius := width / 2
+	spacing := width * 2 // dot diameter + gap
+	ux, uy := dx/length, dy/length
+
+	along := dotRadius
+	for along < length {
+		cx := x1 + ux*along
+		cy := y1 + uy*along
+		r.dc.DrawCircle(cx, cy, dotRadius)
+		r.dc.Fill()
+		along += spacing
+	}
+}
+
+// drawDoubleLine draws two parallel lines from (x1,y1) to (x2,y2).
+// Each line is width/3 thick with a width/3 gap between them.
+// Falls back to solid for borders thinner than 3px.
+func (r *Renderer) drawDoubleLine(x1, y1, x2, y2, width float64) {
+	if width < 3 {
+		// Too thin for double — draw as solid line
+		r.drawSolidLine(x1, y1, x2, y2, width)
+		return
+	}
+	nx, ny := -(y2 - y1), (x2 - x1)
+	length := math.Sqrt(nx*nx + ny*ny)
+	if length == 0 {
+		return
+	}
+	nx, ny = nx/length, ny/length
+
+	lineW := width / 3
+	offset := width/2 - lineW/2
+	// Outer line
+	r.drawSolidLine(x1+nx*offset, y1+ny*offset, x2+nx*offset, y2+ny*offset, lineW)
+	// Inner line
+	r.drawSolidLine(x1-nx*offset, y1-ny*offset, x2-nx*offset, y2-ny*offset, lineW)
+}
+
+// drawSolidLine draws a filled rectangle along a line from (x1,y1) to (x2,y2) with the given width.
+func (r *Renderer) drawSolidLine(x1, y1, x2, y2, width float64) {
+	dx := x2 - x1
+	dy := y2 - y1
+	length := math.Sqrt(dx*dx + dy*dy)
+	if length == 0 {
+		return
+	}
+	nx, ny := -dy/length, dx/length
+	hw := width / 2
+
+	r.dc.MoveTo(x1+nx*hw, y1+ny*hw)
+	r.dc.LineTo(x2+nx*hw, y2+ny*hw)
+	r.dc.LineTo(x2-nx*hw, y2-ny*hw)
+	r.dc.LineTo(x1-nx*hw, y1-ny*hw)
+	r.dc.ClosePath()
+	r.dc.Fill()
 }
 
 // setColor sets the draw context color from a css.Color.
