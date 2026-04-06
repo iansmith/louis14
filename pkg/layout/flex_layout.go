@@ -903,7 +903,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 
 		// Compute §4.5 effective minimum main size (content-based; used for final clamp).
 		minMainSize := fla.flexItemMinMain(child, childStyle, childWDM, childGeom,
-			itemSizingSpace, flexBasis, isRow)
+			itemSizingSpace, flexBasis, isRow, containerCrossSize, hasDefiniteCross, contentInlineSize)
 
 		// For the hypothetical main size (used for wrap decisions and free-space computation),
 		// only clamp by the explicit CSS min-width/min-height. The content-based automatic
@@ -1180,7 +1180,7 @@ func (fla *FlexLayoutAlgorithm) clampMainSize(
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
-	minMain := fla.flexItemMinMain(child, style, childWDM, childGeom, parentSpace, basis, isRow)
+	minMain := fla.flexItemMinMain(child, style, childWDM, childGeom, parentSpace, basis, isRow, 0, false, contentInlineSize)
 	return fla.clampMainSizeWithMin(basis, minMain, style, childWDM, childGeom, parentSpace, isRow)
 }
 
@@ -1915,6 +1915,9 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	space ConstraintSpace,
 	flexBasis float64,
 	isRow bool,
+	containerCrossSize float64,
+	hasDefiniteCross bool,
+	contentInlineSize float64,
 ) float64 {
 	// Check if min-size is explicitly set (non-auto).
 	if isRow {
@@ -1943,45 +1946,172 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		return 0
 	}
 
+	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
+
+	// §4.5 Content size suggestion: min-content size in the main axis.
+	contentSuggestion := -1.0
 	if isRow {
 		// Row flex: inline min-content size at zero available width.
-		// §4.5: content-based minimum — must NOT short-circuit on explicit width.
-		// No flex-basis cap: the minimum is the full min-content size so that
-		// items with flex-basis:0 still have their content protected.
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
 			SetPercentageResolutionInlineSize(fla.space.PercentageResolutionInlineSize).
 			Build()
 		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
-		autoMin := mm.MinContent
-		if autoMin < 0 {
-			autoMin = 0
+		contentSuggestion = mm.MinContent
+	} else {
+		// Column flex: block-direction minimum.
+		containerInlineSize := space.AvailableSize.InlineSize
+		colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+			SetPercentageResolutionInlineSize(containerInlineSize).
+			Build()
+		result := layoutElement(fla.ctx, child, colMinSpace)
+		lf := NewLogicalFragment(childWDM, result.Fragment)
+		contentSuggestion = lf.BlockSize() - childGeom.BlockBorderPadding()
+	}
+	if contentSuggestion < 0 {
+		contentSuggestion = 0
+	}
+
+	// §4.5 Specified size suggestion: if the item has a definite preferred main size,
+	// that size (content-box). Only applies when the preferred size is definite.
+	specifiedSuggestion := -1.0
+	{
+		itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
+			Build()
+		if mainIsItemInline {
+			if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
+				specifiedSuggestion = explicit
+			}
+		} else {
+			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+				specifiedSuggestion = explicit
+			}
 		}
-		return autoMin
 	}
 
-	// Column flex: block-direction minimum.
-	// Use the container's actual inline size (not zero!) to avoid inflating the
-	// minimum via text wrapping. The "content-based minimum" in the block axis
-	// means how tall the item must be when given its full available width.
-	containerInlineSize := space.AvailableSize.InlineSize
-	colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
-		SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
-		SetPercentageResolutionInlineSize(containerInlineSize).
-		Build()
-	result := layoutElement(fla.ctx, child, colMinSpace)
-	lf := NewLogicalFragment(childWDM, result.Fragment)
-	minContentMain := lf.BlockSize() - childGeom.BlockBorderPadding()
+	// §4.5 Transferred size suggestion: if the item has an intrinsic aspect ratio
+	// and a definite size in the cross axis, compute the main size from:
+	// cross-content-size * aspect-ratio.
+	transferredSuggestion := -1.0
+	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+		info := GetIntrinsicSizingInfo(fla.ctx, child)
+		if info.HasAspectRatio && info.AspectRatio > 0 {
+			// Try to get a definite cross-size: first from explicit CSS, then from
+			// the container cross-size (for stretched items).
+			crossContentSize := -1.0
 
-	// §4.5: for column flex, cap by the item's preferred main size (flex-basis)
-	// if definite. This ensures items with flex-basis:0 don't get a non-zero minimum
-	// (they should grow from 0), while items with flex-basis:auto retain their
-	// natural minimum block size.
-	autoMin := minContentMain
-	if flexBasis >= 0 && flexBasis < autoMin {
-		autoMin = flexBasis
+			// Check for explicit cross-size on the item.
+			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if mainIsItemInline {
+				// Main = inline, cross = block.
+				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+					crossContentSize = explicit
+				}
+			} else {
+				// Main = block, cross = inline.
+				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
+					crossContentSize = explicit
+				}
+			}
+
+			// If no explicit cross-size but container cross is definite (item will be stretched),
+			// use the container cross-size minus item's cross border/padding/margins.
+			if crossContentSize < 0 && hasDefiniteCross {
+				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+				if mainIsItemInline {
+					crossContentSize = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
+				} else {
+					crossContentSize = containerCrossSize - childGeom.InlineBorderPadding() - crossMargins
+				}
+				if crossContentSize < 0 {
+					crossContentSize = 0
+				}
+			}
+
+			if crossContentSize >= 0 {
+				// Convert physical aspect ratio to logical.
+				logicalRatio := info.AspectRatio // width/height = inline/block for horizontal WM
+				if childWDM.IsVertical() {
+					logicalRatio = 1.0 / info.AspectRatio
+				}
+				if mainIsItemInline {
+					// Main = inline: transferred = cross * logicalRatio
+					transferredSuggestion = crossContentSize * logicalRatio
+				} else {
+					// Main = block: transferred = cross / logicalRatio
+					if logicalRatio > 0 {
+						transferredSuggestion = crossContentSize / logicalRatio
+					}
+				}
+			}
+		}
 	}
+	// Also check CSS aspect-ratio property for non-replaced elements.
+	if transferredSuggestion < 0 {
+		if ar := style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+			crossContentSize := -1.0
+			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if mainIsItemInline {
+				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+					crossContentSize = explicit
+				}
+			} else {
+				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
+					crossContentSize = explicit
+				}
+			}
+			if crossContentSize < 0 && hasDefiniteCross {
+				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+				if mainIsItemInline {
+					crossContentSize = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
+				} else {
+					crossContentSize = containerCrossSize - childGeom.InlineBorderPadding() - crossMargins
+				}
+				if crossContentSize < 0 {
+					crossContentSize = 0
+				}
+			}
+			if crossContentSize >= 0 {
+				if mainIsItemInline {
+					transferredSuggestion = crossContentSize * ar.Width / ar.Height
+				} else {
+					transferredSuggestion = crossContentSize * ar.Height / ar.Width
+				}
+			}
+		}
+	}
+
+	// §4.5: automatic minimum size = min(content suggestion, specified suggestion, transferred suggestion).
+	// Only include suggestions that are applicable (>= 0).
+	autoMin := contentSuggestion
+	if specifiedSuggestion >= 0 && specifiedSuggestion < autoMin {
+		autoMin = specifiedSuggestion
+	}
+	if transferredSuggestion >= 0 && transferredSuggestion < autoMin {
+		autoMin = transferredSuggestion
+	}
+
+	// §4.5: for column flex, also cap by the item's preferred main size (flex-basis)
+	// if definite, when there's no specified or transferred suggestion to cap it.
+	if !isRow && specifiedSuggestion < 0 && transferredSuggestion < 0 {
+		if flexBasis >= 0 && flexBasis < autoMin {
+			autoMin = flexBasis
+		}
+	}
+
 	if autoMin < 0 {
 		autoMin = 0
 	}
