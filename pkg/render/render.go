@@ -2116,8 +2116,8 @@ func isContainedByOverflow(child, parent *layout.Box) bool {
 	if !hasOverflowClipping(parent) {
 		return false
 	}
-	// position:relative children are always clipped by parent's overflow.
-	if child.Position == css.PositionRelative {
+	// position:relative and position:sticky children are always clipped by parent's overflow.
+	if child.Position == css.PositionRelative || child.Position == css.PositionSticky {
 		return true
 	}
 	// position:absolute children are clipped only when the parent is
