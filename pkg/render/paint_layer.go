@@ -123,6 +123,10 @@ type PaintLayer struct {
 	Filters   []css.FilterFunction
 	HasFilter bool
 
+	// CSS Backdrop Filters:
+	BackdropFilters   []css.FilterFunction
+	HasBackdropFilter bool
+
 	// CSS clip-path:
 	ClipPath *css.ClipPath // nil = no clip-path
 
@@ -456,6 +460,13 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if len(filters) > 0 {
 		layer.Filters = filters
 		layer.HasFilter = true
+	}
+
+	// CSS Backdrop Filters.
+	bdFilters := s.GetBackdropFilter()
+	if len(bdFilters) > 0 {
+		layer.BackdropFilters = bdFilters
+		layer.HasBackdropFilter = true
 	}
 
 	// CSS clip-path.
