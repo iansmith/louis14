@@ -65,21 +65,37 @@ func computeMainIsItemInline(containerWDM WritingDirectionMode, itemWDM WritingD
 // self-start/self-end use the *item's own* writing direction rather than the
 // container's.
 //
-// For row flex the cross axis is the block axis — we compare the physical side
-// that is "block-start" for the container vs the item. For column flex the
-// cross axis is the inline axis — we compare "inline-start".
+// Uses WebKit/Blink's three-branch approach:
+//  1. Orthogonal writing modes: compare container's IsFlippedBlocks against
+//     item's IsLTR (the axes are perpendicular so cross-block vs cross-inline).
+//  2. Non-orthogonal, flipped lines: compare container's IsFlippedBlocks
+//     vs item's IsFlippedBlocks.
+//  3. Non-orthogonal, direction: compare container's IsLTR vs item's IsLTR.
 //
-// Physical block-start sides:
-//   HTB → top,  VRL → right,  VLR → left,  sideways-rl → right,  sideways-lr → left
-// Physical inline-start sides (before applying direction):
-//   HTB+LTR → left, HTB+RTL → right, V*+LTR → top, V*+RTL → bottom
+// If any check detects a mismatch, self-start maps to cross-end (return false).
 func selfStartIsCrossStart(containerWDM, itemWDM WritingDirectionMode, isRow bool) bool {
-	if isRow {
-		// Cross axis = block axis. Compare physical block-start.
-		return physicalBlockStart(containerWDM) == physicalBlockStart(itemWDM)
+	isOrthogonal := containerWDM.IsHorizontal() != itemWDM.IsHorizontal()
+
+	if isOrthogonal {
+		// When writing modes are orthogonal, the cross axis of the container
+		// maps to a different physical axis than the item's. WebKit compares
+		// container's flipped-blocks against item's direction.
+		if containerWDM.IsFlippedBlocks() == itemWDM.IsLTR() {
+			return false // flip
+		}
+		return true
 	}
-	// Cross axis = inline axis. Compare physical inline-start.
-	return physicalInlineStart(containerWDM) == physicalInlineStart(itemWDM)
+
+	// Non-orthogonal: same axis family (both horizontal or both vertical).
+	// Check 1: flipped block progression (e.g., VRL vs VLR).
+	if containerWDM.IsFlippedBlocks() != itemWDM.IsFlippedBlocks() {
+		return false // flip
+	}
+	// Check 2: direction mismatch (LTR vs RTL).
+	if containerWDM.IsLTR() != itemWDM.IsLTR() {
+		return false // flip
+	}
+	return true
 }
 
 // physicalSide is a simple enum for the four physical sides.
@@ -546,6 +562,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 	// §9.8 — Main axis alignment (justify-content) and item positioning.
 	justifyContent := fla.getJustifyContent()
+	justifyContentSafe := fla.isJustifyContentSafe()
 	// Resolve physical/logical keywords (left/right/start/end) to flex-relative
 	// equivalents (flex-start/flex-end).
 	//
@@ -642,7 +659,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		// Compute main offsets using justify-content.
-		computeItemMainOffsets(line.items, containerMainSize, justifyContent, reverseMain, mainGap)
+		computeItemMainOffsets(line.items, containerMainSize, justifyContent, justifyContentSafe, reverseMain, mainGap)
 
 		crossStart := lineOffsets[lineIdx]
 
@@ -1616,6 +1633,7 @@ func computeItemMainOffsets(
 	items []*flexItem,
 	containerMainSize float64,
 	justifyContent string,
+	justifyContentSafe bool,
 	reverseMain bool,
 	mainGap float64,
 ) {
@@ -1630,14 +1648,19 @@ func computeItemMainOffsets(
 	}
 	freeSpace := containerMainSize - totalItemSize
 
-	// Per CSS Flexbox spec §8.2: when free space is negative, distributing
-	// alignment values (space-between, space-around, space-evenly) fall back
-	// to flex-start. The negative free space is only used by flex-end and
-	// center to produce negative initial offsets (items overflow the start edge).
+	// Per CSS Box Alignment §5.3: when free space is negative:
+	// - Distributing values (space-between, space-around, space-evenly) fall
+	//   back to flex-start per Flexbox Level 1 §8.2.
+	// - With "safe" overflow alignment, center and flex-end also fall back to
+	//   flex-start to prevent start-edge overflow (data loss prevention).
 	if freeSpace < 0 {
 		switch justifyContent {
 		case "space-between", "space-around", "space-evenly":
 			justifyContent = "flex-start"
+		case "center", "flex-end":
+			if justifyContentSafe {
+				justifyContent = "flex-start"
+			}
 		}
 	}
 
@@ -1837,6 +1860,13 @@ func stripOverflowKeyword(v string) string {
 	return strings.TrimSpace(v)
 }
 
+// hasOverflowSafe returns true if the value has the "safe" overflow keyword.
+// Per CSS Box Alignment §5.3, "safe" means if the aligned subject overflows
+// the alignment container, it is aligned as if the alignment mode were "start".
+func hasOverflowSafe(v string) bool {
+	return strings.HasPrefix(strings.TrimSpace(v), "safe ")
+}
+
 // getJustifyContent returns the justify-content value (default: "flex-start").
 func (fla *FlexLayoutAlgorithm) getJustifyContent() string {
 	if v, ok := fla.style.Get("justify-content"); ok {
@@ -1849,6 +1879,14 @@ func (fla *FlexLayoutAlgorithm) getJustifyContent() string {
 		}
 	}
 	return "flex-start"
+}
+
+// isJustifyContentSafe returns true if justify-content has the "safe" keyword.
+func (fla *FlexLayoutAlgorithm) isJustifyContentSafe() bool {
+	if v, ok := fla.style.Get("justify-content"); ok {
+		return hasOverflowSafe(v)
+	}
+	return false
 }
 
 // getAlignItems returns the align-items value (default: "stretch").
@@ -1901,7 +1939,7 @@ func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string
 // getAlignContent returns the align-content value (default: "stretch").
 func (fla *FlexLayoutAlgorithm) getAlignContent() string {
 	if v, ok := fla.style.Get("align-content"); ok {
-		v = strings.TrimSpace(v)
+		v = stripOverflowKeyword(v)
 		switch v {
 		case "stretch", "flex-start", "flex-end", "center",
 			"space-between", "space-around", "space-evenly",
