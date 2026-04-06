@@ -34,6 +34,8 @@ type PaintLayer struct {
 
 	// Overflow clip (pre-computed from Style):
 	HasClip  bool
+	ClipX    bool       // true if X axis is clipped (overflow-x != visible)
+	ClipY    bool       // true if Y axis is clipped (overflow-y != visible)
 	ClipRect [4]float64 // x, y, w, h of padding box
 
 	// CSS clip: rect() (purely physical, per CSS Writing Modes §7.6):
@@ -172,10 +174,21 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.ZIndex = box.ZIndex
 
 	// Overflow clip (or paint containment clip at padding box).
-	overflow := s.GetOverflow()
+	// Per CSS Overflow Level 3, overflow-x and overflow-y are independent:
+	// a box may clip in one axis but not the other.
+	overflowX := s.GetOverflowX()
+	overflowY := s.GetOverflowY()
 	hasPaintContain := s.HasPaintContainment()
-	if overflow == css.OverflowHidden || overflow == css.OverflowScroll || overflow == css.OverflowAuto || hasPaintContain {
+	clipX := overflowX == css.OverflowHidden || overflowX == css.OverflowScroll || overflowX == css.OverflowAuto || hasPaintContain
+	clipY := overflowY == css.OverflowHidden || overflowY == css.OverflowScroll || overflowY == css.OverflowAuto || hasPaintContain
+	if clipX || clipY {
 		layer.HasClip = true
+		layer.ClipX = clipX
+		layer.ClipY = clipY
+
+		// Padding box edges.
+		padX := box.X + box.Border.Left
+		padY := box.Y + box.Border.Top
 		clipW := math.Floor(box.Width - box.Border.Left - box.Border.Right)
 		clipH := math.Floor(box.Height - box.Border.Top - box.Border.Bottom)
 		if clipW < 0 {
@@ -184,12 +197,20 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		if clipH < 0 {
 			clipH = 0
 		}
-		layer.ClipRect = [4]float64{
-			box.X + box.Border.Left,
-			box.Y + box.Border.Top,
-			clipW,
-			clipH,
+
+		// For an unclipped axis, extend the clip rect to a very large range
+		// so that content is not clipped along that axis.
+		const largeExtent = 1e7
+		if !clipX {
+			padX = -largeExtent / 2
+			clipW = largeExtent
 		}
+		if !clipY {
+			padY = -largeExtent / 2
+			clipH = largeExtent
+		}
+
+		layer.ClipRect = [4]float64{padX, padY, clipW, clipH}
 	}
 
 	// CSS clip: rect() — applies to absolutely positioned elements (CSS 2.1 §11.1.2).
