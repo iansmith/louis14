@@ -59,6 +59,7 @@ type PaintLayer struct {
 	// Borders: indices 0=Top, 1=Right, 2=Bottom, 3=Left
 	BorderColors [4]css.Color
 	BorderStyles [4]css.BorderStyle
+	BorderRadius [4]float64 // TopLeft, TopRight, BottomRight, BottomLeft (px, circular)
 
 	// Text:
 	TextColor     css.Color
@@ -207,6 +208,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// Border styles.
 	bs := s.GetBorderStyle()
 	layer.BorderStyles = [4]css.BorderStyle{bs.Top, bs.Right, bs.Bottom, bs.Left}
+
+	// Border radius.
+	corners := s.GetBorderRadiusCorners()
+	layer.BorderRadius = [4]float64{corners.TopLeft, corners.TopRight, corners.BottomRight, corners.BottomLeft}
+	// CSS Backgrounds §5.5: corner overlap reduction.
+	if layer.BorderRadius != [4]float64{} {
+		reduceBorderRadii(&layer.BorderRadius, box.Width, box.Height)
+	}
 
 	// Text.
 	layer.TextColor = currentColor // default: currentColor
@@ -400,5 +409,37 @@ func (layer *PaintLayer) sortZLists() {
 	}
 	for _, child := range layer.FlowChildren {
 		child.sortZLists()
+	}
+}
+
+// reduceBorderRadii applies CSS Backgrounds §5.5 corner overlap reduction.
+// If the sum of adjacent radii exceeds the box dimension, all radii are
+// scaled down proportionally.
+func reduceBorderRadii(radii *[4]float64, w, h float64) {
+	if w <= 0 || h <= 0 {
+		*radii = [4]float64{}
+		return
+	}
+	f := 1.0
+	// Top edge: TL + TR
+	if s := radii[0] + radii[1]; s > 0 && w/s < f {
+		f = w / s
+	}
+	// Bottom edge: BL + BR
+	if s := radii[3] + radii[2]; s > 0 && w/s < f {
+		f = w / s
+	}
+	// Left edge: TL + BL
+	if s := radii[0] + radii[3]; s > 0 && h/s < f {
+		f = h / s
+	}
+	// Right edge: TR + BR
+	if s := radii[1] + radii[2]; s > 0 && h/s < f {
+		f = h / s
+	}
+	if f < 1 {
+		for i := range radii {
+			radii[i] *= f
+		}
 	}
 }

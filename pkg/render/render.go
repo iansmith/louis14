@@ -259,7 +259,11 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		clipping = true
 		ox, oy, ow, oh := pixelSnap(layer.ClipRect[0], layer.ClipRect[1],
 			layer.ClipRect[2], layer.ClipRect[3])
-		r.dc.DrawRectangle(ox, oy, ow, oh)
+		if hasBorderRadius(layer) {
+			r.buildRoundedRectPath(ox, oy, ow, oh, layer.BorderRadius)
+		} else {
+			r.dc.DrawRectangle(ox, oy, ow, oh)
+		}
 		r.dc.Clip()
 	}
 
@@ -304,6 +308,42 @@ func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 	return sx, sy, sw, sh
 }
 
+// hasBorderRadius returns true if any corner radius is non-zero.
+func hasBorderRadius(layer *PaintLayer) bool {
+	return layer.BorderRadius != [4]float64{}
+}
+
+// buildRoundedRectPath traces a rounded rectangle path using QuadraticTo for corners.
+// radii: [TopLeft, TopRight, BottomRight, BottomLeft].
+func (r *Renderer) buildRoundedRectPath(x, y, w, h float64, radii [4]float64) {
+	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
+	r.dc.MoveTo(x+tl, y)
+	r.dc.LineTo(x+w-tr, y)
+	r.dc.QuadraticTo(x+w, y, x+w, y+tr)     // top-right
+	r.dc.LineTo(x+w, y+h-br)
+	r.dc.QuadraticTo(x+w, y+h, x+w-br, y+h) // bottom-right
+	r.dc.LineTo(x+bl, y+h)
+	r.dc.QuadraticTo(x, y+h, x, y+h-bl)     // bottom-left
+	r.dc.LineTo(x, y+tl)
+	r.dc.QuadraticTo(x, y, x+tl, y)         // top-left
+	r.dc.ClosePath()
+}
+
+// buildRoundedRectPathReverse traces a rounded rectangle path in reverse (CCW)
+// for use with even-odd fill rule to cut out inner regions.
+func (r *Renderer) buildRoundedRectPathReverse(x, y, w, h float64, radii [4]float64) {
+	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
+	r.dc.MoveTo(x+tl, y)
+	r.dc.QuadraticTo(x, y, x, y+tl)         // top-left (reverse)
+	r.dc.LineTo(x, y+h-bl)
+	r.dc.QuadraticTo(x, y+h, x+bl, y+h)     // bottom-left (reverse)
+	r.dc.LineTo(x+w-br, y+h)
+	r.dc.QuadraticTo(x+w, y+h, x+w, y+h-br) // bottom-right (reverse)
+	r.dc.LineTo(x+w, y+tr)
+	r.dc.QuadraticTo(x+w, y, x+w-tr, y)     // top-right (reverse)
+	r.dc.ClosePath()
+}
+
 // drawBackground paints the layer's background color and image (pre-computed).
 func (r *Renderer) drawBackground(layer *PaintLayer) {
 	box := layer.Box
@@ -312,18 +352,39 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 	// Background color.
 	if c := layer.BackgroundColor; c.A > 0 {
 		r.setColor(c)
-		r.dc.DrawRectangle(sx, sy, sw, sh)
-		r.dc.Fill()
+		if hasBorderRadius(layer) {
+			r.buildRoundedRectPath(sx, sy, sw, sh, layer.BorderRadius)
+			r.dc.Fill()
+		} else {
+			r.dc.DrawRectangle(sx, sy, sw, sh)
+			r.dc.Fill()
+		}
 	}
 
 	// Background gradient (linear-gradient, etc.).
 	if layer.BackgroundGradient != "" {
-		r.drawLinearGradient(layer.BackgroundGradient, sx, sy, sw, sh)
+		if hasBorderRadius(layer) {
+			r.dc.Push()
+			r.buildRoundedRectPath(sx, sy, sw, sh, layer.BorderRadius)
+			r.dc.Clip()
+			r.drawLinearGradient(layer.BackgroundGradient, sx, sy, sw, sh)
+			r.dc.Pop()
+		} else {
+			r.drawLinearGradient(layer.BackgroundGradient, sx, sy, sw, sh)
+		}
 	}
 
 	// Background image.
 	if layer.BackgroundImage != "" && r.imageFetcher != nil {
-		r.drawBackgroundImage(layer)
+		if hasBorderRadius(layer) {
+			r.dc.Push()
+			r.buildRoundedRectPath(sx, sy, sw, sh, layer.BorderRadius)
+			r.dc.Clip()
+			r.drawBackgroundImage(layer)
+			r.dc.Pop()
+		} else {
+			r.drawBackgroundImage(layer)
+		}
 	}
 }
 
@@ -583,6 +644,12 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 		return
 	}
 
+	// Rounded borders: delegate to specialized method.
+	if hasBorderRadius(layer) {
+		r.drawRoundedBorders(layer)
+		return
+	}
+
 	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
 	outerLeft, outerTop := x, y
 	outerRight, outerBottom := x+w, y+h
@@ -686,6 +753,110 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 				r.dc.Fill()
 			}
 		}
+	}
+}
+
+// drawRoundedBorders draws borders for a box with border-radius.
+func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
+	box := layer.Box
+	bw := box.Border
+	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+
+	// Check if all sides have the same width, style, and color (uniform case).
+	uniform := bw.Top == bw.Right && bw.Right == bw.Bottom && bw.Bottom == bw.Left &&
+		layer.BorderStyles[0] == layer.BorderStyles[1] &&
+		layer.BorderStyles[1] == layer.BorderStyles[2] &&
+		layer.BorderStyles[2] == layer.BorderStyles[3] &&
+		layer.BorderColors[0] == layer.BorderColors[1] &&
+		layer.BorderColors[1] == layer.BorderColors[2] &&
+		layer.BorderColors[2] == layer.BorderColors[3]
+
+	if uniform && bw.Top > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
+		// Simple case: draw a single stroked rounded rect at the midline.
+		hw := bw.Top / 2
+		midRadii := [4]float64{
+			math.Max(0, layer.BorderRadius[0]-hw),
+			math.Max(0, layer.BorderRadius[1]-hw),
+			math.Max(0, layer.BorderRadius[2]-hw),
+			math.Max(0, layer.BorderRadius[3]-hw),
+		}
+		r.setColor(layer.BorderColors[0])
+		r.dc.SetLineWidth(bw.Top)
+		r.buildRoundedRectPath(x+hw, y+hw, w-bw.Top, h-bw.Top, midRadii)
+		r.dc.Stroke()
+		return
+	}
+
+	// Non-uniform borders with radius: draw each side using even-odd fill
+	// between outer and inner rounded rects, clipped to each side's region.
+	outerRadii := layer.BorderRadius
+
+	// Inner rounded rect (border-box inset by border widths).
+	ix := x + bw.Left
+	iy := y + bw.Top
+	iw := w - bw.Left - bw.Right
+	ih := h - bw.Top - bw.Bottom
+	innerRadii := [4]float64{
+		math.Max(0, outerRadii[0]-math.Max(bw.Left, bw.Top)),
+		math.Max(0, outerRadii[1]-math.Max(bw.Right, bw.Top)),
+		math.Max(0, outerRadii[2]-math.Max(bw.Right, bw.Bottom)),
+		math.Max(0, outerRadii[3]-math.Max(bw.Left, bw.Bottom)),
+	}
+
+	type borderSide struct {
+		width float64
+		style css.BorderStyle
+		color css.Color
+		clipX, clipY, clipW, clipH float64
+	}
+
+	// Compute clip regions for each side.
+	sides := [4]borderSide{
+		{ // Top
+			width: bw.Top, style: layer.BorderStyles[0], color: layer.BorderColors[0],
+			clipX: x, clipY: y,
+			clipW: w,
+			clipH: math.Max(bw.Top, math.Max(outerRadii[0], outerRadii[1])),
+		},
+		{ // Right
+			width: bw.Right, style: layer.BorderStyles[1], color: layer.BorderColors[1],
+			clipX: x + w - math.Max(bw.Right, math.Max(outerRadii[1], outerRadii[2])),
+			clipY: y,
+			clipW: math.Max(bw.Right, math.Max(outerRadii[1], outerRadii[2])),
+			clipH: h,
+		},
+		{ // Bottom
+			width: bw.Bottom, style: layer.BorderStyles[2], color: layer.BorderColors[2],
+			clipX: x,
+			clipY: y + h - math.Max(bw.Bottom, math.Max(outerRadii[2], outerRadii[3])),
+			clipW: w,
+			clipH: math.Max(bw.Bottom, math.Max(outerRadii[2], outerRadii[3])),
+		},
+		{ // Left
+			width: bw.Left, style: layer.BorderStyles[3], color: layer.BorderColors[3],
+			clipX: x, clipY: y,
+			clipW: math.Max(bw.Left, math.Max(outerRadii[0], outerRadii[3])),
+			clipH: h,
+		},
+	}
+
+	for _, side := range sides {
+		if side.width <= 0 || side.style == css.BorderStyleNone || side.color.A <= 0 {
+			continue
+		}
+		r.dc.Push()
+		r.dc.DrawRectangle(side.clipX, side.clipY, side.clipW, side.clipH)
+		r.dc.Clip()
+		r.setColor(side.color)
+		// Outer path (CW) + inner path (CCW) with even-odd fill.
+		r.buildRoundedRectPath(x, y, w, h, outerRadii)
+		if iw > 0 && ih > 0 {
+			r.buildRoundedRectPathReverse(ix, iy, iw, ih, innerRadii)
+		}
+		r.dc.SetFillRule(textshape.FillRuleEvenOdd)
+		r.dc.Fill()
+		r.dc.SetFillRule(textshape.FillRuleWinding)
+		r.dc.Pop()
 	}
 }
 
