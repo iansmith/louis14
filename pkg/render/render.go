@@ -2418,7 +2418,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	var lineY float64
 	switch layer.TextDecoration {
 	case css.TextDecorationUnderline:
-		lineY = box.Y + ascent + math.Abs(descent)*0.25
+		lineY = box.Y + ascent + math.Abs(descent)*0.25 + layer.TextUnderlineOffset
 	case css.TextDecorationOverline:
 		lineY = box.Y
 	case css.TextDecorationLineThrough:

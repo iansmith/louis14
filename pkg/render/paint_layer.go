@@ -89,6 +89,7 @@ type PaintLayer struct {
 	TextDecorationColor     css.Color  // defaults to TextColor (currentColor)
 	TextDecorationThickness float64    // defaults to ~1px
 	TextDecorationStyle     string     // solid, double, dotted, dashed, wavy
+	TextUnderlineOffset     float64    // additional offset for underline (px); 0 = auto/default
 
 	// Text shadows:
 	TextShadows []css.TextShadow
@@ -334,6 +335,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
 	layer.TextDecorationStyle = s.GetTextDecorationStyle()
+	layer.TextUnderlineOffset = s.GetTextUnderlineOffset()
 	layer.TextShadows = s.GetTextShadow()
 	layer.TextTransform = s.GetTextTransform()
 	layer.TextOverflow = s.GetTextOverflow()
