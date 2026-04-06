@@ -1305,7 +1305,7 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 			}
 			imgW = math.Round(imgW * scale)
 			imgH = math.Round(imgH * scale)
-			img = scaleImageNearest(img, imgWI, imgHI, int(imgW), int(imgH))
+			img = scaleImage(img, imgWI, imgHI, int(imgW), int(imgH), layer.ImageRendering)
 			imgWI = int(imgW)
 			imgHI = int(imgH)
 		}
@@ -1332,7 +1332,7 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 			newW = math.Round(imgW * newH / imgH)
 		}
 		if newW > 0 && newH > 0 && (int(newW) != imgWI || int(newH) != imgHI) {
-			img = scaleImageNearest(img, imgWI, imgHI, int(newW), int(newH))
+			img = scaleImage(img, imgWI, imgHI, int(newW), int(newH), layer.ImageRendering)
 			imgW = newW
 			imgH = newH
 			imgWI = int(newW)
@@ -1471,7 +1471,7 @@ func (r *Renderer) drawImage(layer *PaintLayer) {
 	if scaledW <= 0 || scaledH <= 0 {
 		return
 	}
-	scaled := scaleImageNearest(img, int(srcW), int(srcH), scaledW, scaledH)
+	scaled := scaleImage(img, int(srcW), int(srcH), scaledW, scaledH, layer.ImageRendering)
 
 	// Position within content box using object-position.
 	dx := contentX + (cw-drawW)*layer.ObjectPosition[0]
@@ -1575,6 +1575,84 @@ func scaleImageNearest(src image.Image, srcW, srcH, dstW, dstH int) image.Image 
 		}
 	}
 	return dst
+}
+
+// scaleImageBilinear scales src to dstW×dstH using bilinear interpolation.
+// This produces smoother results than nearest-neighbor for photographic images.
+func scaleImageBilinear(src image.Image, srcW, srcH, dstW, dstH int) image.Image {
+	if dstW <= 0 || dstH <= 0 || srcW <= 0 || srcH <= 0 {
+		return image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	b := src.Bounds()
+
+	for dy := 0; dy < dstH; dy++ {
+		// Map destination pixel center to source coordinate.
+		sy := (float64(dy)+0.5)*float64(srcH)/float64(dstH) - 0.5
+		sy0 := int(math.Floor(sy))
+		sy1 := sy0 + 1
+		fy := sy - float64(sy0)
+		if sy0 < 0 {
+			sy0 = 0
+		}
+		if sy1 >= srcH {
+			sy1 = srcH - 1
+		}
+
+		for dx := 0; dx < dstW; dx++ {
+			sx := (float64(dx)+0.5)*float64(srcW)/float64(dstW) - 0.5
+			sx0 := int(math.Floor(sx))
+			sx1 := sx0 + 1
+			fx := sx - float64(sx0)
+			if sx0 < 0 {
+				sx0 = 0
+			}
+			if sx1 >= srcW {
+				sx1 = srcW - 1
+			}
+
+			// Sample four source pixels.
+			r00, g00, b00, a00 := src.At(b.Min.X+sx0, b.Min.Y+sy0).RGBA()
+			r10, g10, b10, a10 := src.At(b.Min.X+sx1, b.Min.Y+sy0).RGBA()
+			r01, g01, b01, a01 := src.At(b.Min.X+sx0, b.Min.Y+sy1).RGBA()
+			r11, g11, b11, a11 := src.At(b.Min.X+sx1, b.Min.Y+sy1).RGBA()
+
+			// Bilinear interpolation.
+			lerp := func(v00, v10, v01, v11 uint32) uint8 {
+				top := float64(v00)*(1-fx) + float64(v10)*fx
+				bot := float64(v01)*(1-fx) + float64(v11)*fx
+				return uint8((top*(1-fy) + bot*fy) / 256)
+			}
+
+			dst.SetRGBA(dx, dy, color.RGBA{
+				R: lerp(r00, r10, r01, r11),
+				G: lerp(g00, g10, g01, g11),
+				B: lerp(b00, b10, b01, b11),
+				A: lerp(a00, a10, a01, a11),
+			})
+		}
+	}
+	return dst
+}
+
+// isNearestNeighborRendering returns true if the image-rendering value
+// requests nearest-neighbor (pixelated) interpolation.
+func isNearestNeighborRendering(imageRendering string) bool {
+	switch imageRendering {
+	case "pixelated", "crisp-edges", "-webkit-optimize-contrast":
+		return true
+	}
+	return false
+}
+
+// scaleImage scales src to dstW×dstH using interpolation determined by imageRendering.
+// "pixelated", "crisp-edges", "-webkit-optimize-contrast" use nearest-neighbor;
+// everything else (including "auto" and "") uses bilinear.
+func scaleImage(src image.Image, srcW, srcH, dstW, dstH int, imageRendering string) image.Image {
+	if isNearestNeighborRendering(imageRendering) {
+		return scaleImageNearest(src, srcW, srcH, dstW, dstH)
+	}
+	return scaleImageBilinear(src, srcW, srcH, dstW, dstH)
 }
 
 // drawBorderImage implements CSS border-image 9-slice rendering.

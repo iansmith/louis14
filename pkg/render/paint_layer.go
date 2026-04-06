@@ -51,9 +51,10 @@ type PaintLayer struct {
 	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
-	ImageSrc       string         // src attribute value; empty if not an img element
-	ObjectFit      css.ObjectFit  // fill, contain, cover, none, scale-down
-	ObjectPosition [2]float64     // x%, y% in range [0,1]; default (0.5, 0.5)
+	ImageSrc        string         // src attribute value; empty if not an img element
+	ObjectFit       css.ObjectFit  // fill, contain, cover, none, scale-down
+	ObjectPosition  [2]float64     // x%, y% in range [0,1]; default (0.5, 0.5)
+	ImageRendering  string         // auto, pixelated, crisp-edges, -webkit-optimize-contrast
 
 	// Background:
 	BackgroundColor  css.Color              // A==0 means no background
@@ -266,6 +267,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.ObjectFit = s.GetObjectFit()
 		opX, opY := s.GetObjectPosition()
 		layer.ObjectPosition = [2]float64{opX, opY}
+	}
+	// image-rendering applies to all elements (images and background images).
+	if ir, ok := s.Get("image-rendering"); ok {
+		layer.ImageRendering = ir
 	}
 
 	// Background color.
