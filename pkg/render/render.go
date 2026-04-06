@@ -2190,7 +2190,11 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		r.drawTextShadows(layer, text, box, fontID, ascent)
 	}
 
-	if layer.LetterSpacing != 0 || layer.WordSpacing != 0 {
+	// CSS Text 3 §4.2: tab characters advance to the next tab stop.
+	// Handle tabs before other text rendering paths.
+	if strings.Contains(text, "\t") {
+		r.drawTextWithTabs(layer, text, box, fontID, ascent)
+	} else if layer.LetterSpacing != 0 || layer.WordSpacing != 0 {
 		x := box.X
 		baselineY := box.Y + ascent
 		if layer.LetterSpacing != 0 {
@@ -2225,6 +2229,81 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 
 	// Draw text decoration lines (underline, overline, line-through).
 	r.drawTextDecoration(layer, text, box, fontID, ascent)
+}
+
+// drawTextWithTabs renders text containing tab characters. Tab characters
+// advance to the next tab stop without drawing a glyph. Tab stops are at
+// multiples of (tab-size × space-width) or (tab-size in px) from the line
+// start (containing block's content edge).
+func (r *Renderer) drawTextWithTabs(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+	// Compute tab stop interval in pixels.
+	tabSizeVal := layer.TabSize
+	var tabStopPx float64
+	if layer.TabSizeIsLength {
+		tabStopPx = tabSizeVal
+	} else {
+		spaceW := r.dc.MeasureText(" ", fontID)
+		if spaceW <= 0 {
+			spaceW = layer.FontSize
+		}
+		tabStopPx = tabSizeVal * spaceW
+	}
+	if tabStopPx <= 0 {
+		tabStopPx = layer.FontSize * 8
+	}
+
+	// Find the line start (containing block's content-area left edge).
+	// Walk up from the text box to find the nearest block container.
+	lineStartX := box.X
+	for p := box.Parent; p != nil; p = p.Parent {
+		if p.Style != nil {
+			lineStartX = p.X + p.Padding.Left + p.Border.Left
+			break
+		}
+	}
+
+	// Position within the line, measured from line start.
+	posFromLineStart := box.X - lineStartX
+	x := box.X
+	baselineY := box.Y + ascent
+
+	segments := strings.Split(text, "\t")
+	for i, seg := range segments {
+		if seg != "" {
+			if layer.LetterSpacing != 0 {
+				for _, ch := range seg {
+					r.dc.DrawText(string(ch), fontID, x, baselineY)
+					charW := r.dc.MeasureText(string(ch), fontID)
+					x += charW + layer.LetterSpacing
+					posFromLineStart += charW + layer.LetterSpacing
+					if ch == ' ' {
+						x += layer.WordSpacing
+						posFromLineStart += layer.WordSpacing
+					}
+				}
+			} else {
+				r.dc.DrawText(seg, fontID, x, baselineY)
+				segW := r.dc.MeasureText(seg, fontID)
+				if layer.WordSpacing != 0 {
+					segW += layer.WordSpacing * float64(strings.Count(seg, " "))
+				}
+				x += segW
+				posFromLineStart += segW
+			}
+		}
+		// After each segment except the last, advance to next tab stop.
+		if i < len(segments)-1 {
+			rem := math.Mod(posFromLineStart, tabStopPx)
+			var tabW float64
+			if rem < 1e-9 {
+				tabW = tabStopPx
+			} else {
+				tabW = tabStopPx - rem
+			}
+			x += tabW
+			posFromLineStart += tabW
+		}
+	}
 }
 
 // applyTextOverflowEllipsis truncates text and appends "…" when
