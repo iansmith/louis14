@@ -3842,12 +3842,13 @@ func (s *Style) GetOpacity() float64 {
 
 // BoxShadow represents a box-shadow effect
 type BoxShadow struct {
-	OffsetX float64
-	OffsetY float64
-	Blur    float64
-	Spread  float64
-	Color   Color
-	Inset   bool
+	OffsetX         float64
+	OffsetY         float64
+	Blur            float64
+	Spread          float64
+	Color           Color
+	Inset           bool
+	UseCurrentColor bool // true when color is currentcolor or omitted
 }
 
 // GetBoxShadow parses and returns box-shadow values
@@ -3874,7 +3875,9 @@ func (s *Style) GetBoxShadow() []BoxShadow {
 	return shadows
 }
 
-// parseBoxShadowValue parses a single box-shadow value
+// parseBoxShadowValue parses a single box-shadow value.
+// CSS syntax: [inset?] [<color>]? <offset-x> <offset-y> [<blur>]? [<spread>]? [<color>]? [inset?]
+// The color and inset keyword can appear at either the start or end.
 func parseBoxShadowValue(s string) *BoxShadow {
 	s = strings.TrimSpace(s)
 	tokens := strings.Fields(s)
@@ -3884,54 +3887,46 @@ func parseBoxShadowValue(s string) *BoxShadow {
 	}
 
 	shadow := &BoxShadow{
-		Color: Color{0, 0, 0, 1.0}, // Default: currentcolor (approximated as black)
+		Color:           Color{0, 0, 0, 1.0}, // Placeholder; resolved to currentcolor later
+		UseCurrentColor: true,                 // Default per CSS spec
 	}
 
-	tokenIndex := 0
-
-	// Check for 'inset'
-	if tokens[tokenIndex] == "inset" {
-		shadow.Inset = true
-		tokenIndex++
-	}
-
-	// Parse offset-x
-	if tokenIndex < len(tokens) {
-		if val, ok := ParseLength(tokens[tokenIndex]); ok {
-			shadow.OffsetX = val
-			tokenIndex++
+	// Pre-scan: extract 'inset' and color from either end, leaving only
+	// length tokens for the positional parse.
+	var lengths []string
+	var colorTokens []string
+	for _, tok := range tokens {
+		if tok == "inset" {
+			shadow.Inset = true
+			continue
+		}
+		if _, ok := ParseLength(tok); ok {
+			lengths = append(lengths, tok)
+		} else {
+			colorTokens = append(colorTokens, tok)
 		}
 	}
 
-	// Parse offset-y
-	if tokenIndex < len(tokens) {
-		if val, ok := ParseLength(tokens[tokenIndex]); ok {
-			shadow.OffsetY = val
-			tokenIndex++
-		}
+	// Parse lengths: offset-x, offset-y, [blur], [spread]
+	if len(lengths) >= 2 {
+		shadow.OffsetX, _ = ParseLength(lengths[0])
+		shadow.OffsetY, _ = ParseLength(lengths[1])
+	}
+	if len(lengths) >= 3 {
+		shadow.Blur, _ = ParseLength(lengths[2])
+	}
+	if len(lengths) >= 4 {
+		shadow.Spread, _ = ParseLength(lengths[3])
 	}
 
-	// Parse blur radius (optional)
-	if tokenIndex < len(tokens) && !isColor(tokens[tokenIndex]) {
-		if val, ok := ParseLength(tokens[tokenIndex]); ok {
-			shadow.Blur = val
-			tokenIndex++
-		}
-	}
-
-	// Parse spread radius (optional)
-	if tokenIndex < len(tokens) && !isColor(tokens[tokenIndex]) {
-		if val, ok := ParseLength(tokens[tokenIndex]); ok {
-			shadow.Spread = val
-			tokenIndex++
-		}
-	}
-
-	// Parse color (rest of the string)
-	if tokenIndex < len(tokens) {
-		colorStr := strings.Join(tokens[tokenIndex:], " ")
-		if color, ok := ParseColor(colorStr); ok {
-			shadow.Color = color
+	// Parse color from non-length, non-inset tokens.
+	if len(colorTokens) > 0 {
+		colorStr := strings.Join(colorTokens, " ")
+		if strings.EqualFold(colorStr, "currentcolor") {
+			shadow.UseCurrentColor = true
+		} else if c, ok := ParseColor(colorStr); ok {
+			shadow.Color = c
+			shadow.UseCurrentColor = false
 		}
 	}
 

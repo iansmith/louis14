@@ -293,8 +293,13 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		reduceBorderRadii(&layer.BorderRadius, box.Width, box.Height)
 	}
 
-	// Box shadows.
+	// Box shadows. Resolve currentcolor to the element's text color.
 	layer.BoxShadows = s.GetBoxShadow()
+	for i := range layer.BoxShadows {
+		if layer.BoxShadows[i].UseCurrentColor {
+			layer.BoxShadows[i].Color = currentColor
+		}
+	}
 
 	// Outline.
 	layer.OutlineStyle = s.GetOutlineStyle()

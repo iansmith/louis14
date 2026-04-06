@@ -208,7 +208,6 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 	if layer == nil {
 		return
 	}
-
 	// Pre-computed visibility and opacity.
 	if !layer.Visible {
 		return
@@ -765,14 +764,19 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.applyClipPath(layer)
 	}
 
-	// Step 0: Box shadows (paint behind everything).
+	// Step 0: Outset box shadows (paint behind everything).
 	if len(layer.BoxShadows) > 0 {
-		r.drawBoxShadows(layer)
+		r.drawOutsetBoxShadows(layer)
 	}
 
 	// Step 1: Background and borders.
 	r.drawBackground(layer)
 	r.drawBorders(layer)
+
+	// Step 1b: Inset box shadows (paint after background, inside borders).
+	if len(layer.BoxShadows) > 0 {
+		r.drawInsetBoxShadows(layer)
+	}
 
 	// Column rules (between multicol columns).
 	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
@@ -2452,16 +2456,16 @@ func isContainedByOverflow(child, parent *layout.Box) bool {
 	return false
 }
 
-// drawBoxShadows paints outset box shadows behind the element.
+// drawOutsetBoxShadows paints outset box shadows behind the element.
 // Shadows are painted in reverse declaration order (last = behind).
-func (r *Renderer) drawBoxShadows(layer *PaintLayer) {
+func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer) {
 	box := layer.Box
 	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
 
 	for i := len(layer.BoxShadows) - 1; i >= 0; i-- {
 		shadow := layer.BoxShadows[i]
 		if shadow.Inset {
-			continue // Skip inset shadows for now
+			continue
 		}
 
 		// Shadow rectangle: offset by (offsetX, offsetY), expanded by spread.
@@ -2499,6 +2503,278 @@ func (r *Renderer) drawBoxShadows(layer *PaintLayer) {
 			}
 		}
 	}
+}
+
+// drawInsetBoxShadows paints inset box shadows inside the element,
+// after background and borders. Per CSS spec, inset shadows are drawn
+// inside the padding box, creating a "donut" between the box edge and
+// the shadow inner rect.
+func (r *Renderer) drawInsetBoxShadows(layer *PaintLayer) {
+	box := layer.Box
+	// Inset shadows paint inside the padding box.
+	px := box.X + box.Border.Left
+	py := box.Y + box.Border.Top
+	pw := box.Width - box.Border.Left - box.Border.Right
+	ph := box.Height - box.Border.Top - box.Border.Bottom
+	px, py, pw, ph = pixelSnap(px, py, pw, ph)
+
+	if pw <= 0 || ph <= 0 {
+		return
+	}
+
+	// Compute inner border radii (radii shrink by border width).
+	var outerRadii [4]float64
+	hasRadius := hasBorderRadius(layer)
+	if hasRadius {
+		outerRadii = layer.BorderRadius
+	}
+	innerRadii := [4]float64{
+		math.Max(0, outerRadii[0]-math.Max(box.Border.Left, box.Border.Top)),
+		math.Max(0, outerRadii[1]-math.Max(box.Border.Right, box.Border.Top)),
+		math.Max(0, outerRadii[2]-math.Max(box.Border.Right, box.Border.Bottom)),
+		math.Max(0, outerRadii[3]-math.Max(box.Border.Left, box.Border.Bottom)),
+	}
+
+	for i := len(layer.BoxShadows) - 1; i >= 0; i-- {
+		shadow := layer.BoxShadows[i]
+		if !shadow.Inset {
+			continue
+		}
+
+		// Inner shadow rect: padding-box shrunk by spread, offset.
+		// Positive spread shrinks the hole (makes shadow wider).
+		ix := px + shadow.Spread + shadow.OffsetX
+		iy := py + shadow.Spread + shadow.OffsetY
+		iw := pw - 2*shadow.Spread
+		ih := ph - 2*shadow.Spread
+
+		// Shrink inner radii by spread.
+		shadowInnerRadii := [4]float64{
+			math.Max(0, innerRadii[0]-shadow.Spread),
+			math.Max(0, innerRadii[1]-shadow.Spread),
+			math.Max(0, innerRadii[2]-shadow.Spread),
+			math.Max(0, innerRadii[3]-shadow.Spread),
+		}
+
+		r.setColor(shadow.Color)
+
+		// Use offscreen buffer for all inset shadows: fill the padding box
+		// with shadow color, clear the inner hole, optionally blur, then
+		// composite clipped to the padding box.
+		r.drawInsetShadowBuffer(px, py, pw, ph, innerRadii,
+			ix, iy, iw, ih, shadowInnerRadii, shadow)
+	}
+}
+
+// drawInsetShadowBuffer renders an inset shadow using an offscreen buffer.
+// Fills the buffer with shadow color, clears the inner hole, optionally blurs,
+// then clips to the padding box and composites.
+func (r *Renderer) drawInsetShadowBuffer(
+	px, py, pw, ph float64, clipRadii [4]float64,
+	ix, iy, iw, ih float64, innerRadii [4]float64,
+	shadow css.BoxShadow,
+) {
+	sigma := shadow.Blur / 2
+	extend := math.Ceil(sigma * 3)
+
+	// Buffer covers the padding box + blur extend.
+	bx := px - extend
+	by := py - extend
+	bw := int(math.Ceil(pw + 2*extend))
+	bh := int(math.Ceil(ph + 2*extend))
+	if bw <= 0 || bh <= 0 || bw > 2000 || bh > 2000 {
+		return
+	}
+
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+
+	// Fill the entire buffer with shadow color.
+	sc := color.RGBA{
+		R: shadow.Color.R,
+		G: shadow.Color.G,
+		B: shadow.Color.B,
+		A: uint8(shadow.Color.A * 255),
+	}
+	for y := 0; y < bh; y++ {
+		for x := 0; x < bw; x++ {
+			off := y*buf.Stride + x*4
+			buf.Pix[off+0] = sc.R
+			buf.Pix[off+1] = sc.G
+			buf.Pix[off+2] = sc.B
+			buf.Pix[off+3] = sc.A
+		}
+	}
+
+	// Clear the inner hole (set to transparent) by drawing the inner shape
+	// as a mask and clearing pixels inside it. Uses the draw context's
+	// rasterizer for rounded corners to match other path rendering exactly.
+	if iw > 0 && ih > 0 {
+		lix := ix - bx
+		liy := iy - by
+
+		// Rasterize the inner shape to a mask buffer.
+		holeMask := image.NewRGBA(image.Rect(0, 0, bw, bh))
+		childDC := r.dc.NewChildContext(holeMask)
+		childDC.SetColor(color.White)
+		if innerRadii != [4]float64{} {
+			tl, tr, br, bl := innerRadii[0], innerRadii[1], innerRadii[2], innerRadii[3]
+			childDC.MoveTo(lix+tl, liy)
+			childDC.LineTo(lix+iw-tr, liy)
+			childDC.QuadraticTo(lix+iw, liy, lix+iw, liy+tr)
+			childDC.LineTo(lix+iw, liy+ih-br)
+			childDC.QuadraticTo(lix+iw, liy+ih, lix+iw-br, liy+ih)
+			childDC.LineTo(lix+bl, liy+ih)
+			childDC.QuadraticTo(lix, liy+ih, lix, liy+ih-bl)
+			childDC.LineTo(lix, liy+tl)
+			childDC.QuadraticTo(lix, liy, lix+tl, liy)
+			childDC.ClosePath()
+			childDC.Fill()
+		} else {
+			childDC.DrawRectangle(lix, liy, iw, ih)
+			childDC.Fill()
+		}
+
+		// Clear pixels where the hole mask is opaque.
+		for y := 0; y < bh; y++ {
+			for x := 0; x < bw; x++ {
+				moff := y*holeMask.Stride + x*4
+				a := holeMask.Pix[moff+3] // alpha channel
+				if a > 0 {
+					off := y*buf.Stride + x*4
+					if a == 255 {
+						buf.Pix[off+0] = 0
+						buf.Pix[off+1] = 0
+						buf.Pix[off+2] = 0
+						buf.Pix[off+3] = 0
+					} else {
+						// Partial coverage: blend.
+						keep := 255 - uint16(a)
+						buf.Pix[off+0] = uint8(uint16(buf.Pix[off+0]) * keep / 255)
+						buf.Pix[off+1] = uint8(uint16(buf.Pix[off+1]) * keep / 255)
+						buf.Pix[off+2] = uint8(uint16(buf.Pix[off+2]) * keep / 255)
+						buf.Pix[off+3] = uint8(uint16(buf.Pix[off+3]) * keep / 255)
+					}
+				}
+			}
+		}
+	}
+
+	// Apply box blur if needed.
+	if shadow.Blur > 0 {
+		boxBlur(buf, int(math.Round(sigma)))
+		boxBlur(buf, int(math.Round(sigma)))
+		boxBlur(buf, int(math.Round(sigma)))
+	}
+
+	// Clip the buffer to the padding box before compositing.
+	r.clipInsetShadowBuffer(buf, bx, by, px, py, pw, ph, clipRadii)
+
+	r.dc.DrawImage(buf, int(math.Round(bx)), int(math.Round(by)))
+}
+
+// clipInsetShadowBuffer zeroes pixels outside the clip rect in a shadow buffer.
+// Uses a rasterized clip mask for rounded corners to match path rendering exactly.
+func (r *Renderer) clipInsetShadowBuffer(buf *image.RGBA, bx, by, cx, cy, cw, ch float64, radii [4]float64) {
+	bounds := buf.Bounds()
+	bw, bh := bounds.Dx(), bounds.Dy()
+	hasRadius := radii != [4]float64{}
+
+	if !hasRadius {
+		// Simple rectangular clip.
+		for y := 0; y < bh; y++ {
+			for x := 0; x < bw; x++ {
+				px := bx + float64(x)
+				py := by + float64(y)
+				if px < cx || px >= cx+cw || py < cy || py >= cy+ch {
+					off := y*buf.Stride + x*4
+					buf.Pix[off+0] = 0
+					buf.Pix[off+1] = 0
+					buf.Pix[off+2] = 0
+					buf.Pix[off+3] = 0
+				}
+			}
+		}
+		return
+	}
+
+	// Rasterize the rounded clip rect to a mask.
+	clipMask := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	childDC := r.dc.NewChildContext(clipMask)
+	childDC.SetColor(color.White)
+	lcx, lcy := cx-bx, cy-by
+	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
+	childDC.MoveTo(lcx+tl, lcy)
+	childDC.LineTo(lcx+cw-tr, lcy)
+	childDC.QuadraticTo(lcx+cw, lcy, lcx+cw, lcy+tr)
+	childDC.LineTo(lcx+cw, lcy+ch-br)
+	childDC.QuadraticTo(lcx+cw, lcy+ch, lcx+cw-br, lcy+ch)
+	childDC.LineTo(lcx+bl, lcy+ch)
+	childDC.QuadraticTo(lcx, lcy+ch, lcx, lcy+ch-bl)
+	childDC.LineTo(lcx, lcy+tl)
+	childDC.QuadraticTo(lcx, lcy, lcx+tl, lcy)
+	childDC.ClosePath()
+	childDC.Fill()
+
+	// Zero out pixels outside the clip mask.
+	for y := 0; y < bh; y++ {
+		for x := 0; x < bw; x++ {
+			moff := y*clipMask.Stride + x*4
+			a := clipMask.Pix[moff+3]
+			if a == 0 {
+				off := y*buf.Stride + x*4
+				buf.Pix[off+0] = 0
+				buf.Pix[off+1] = 0
+				buf.Pix[off+2] = 0
+				buf.Pix[off+3] = 0
+			} else if a < 255 {
+				// Partial coverage: reduce.
+				off := y*buf.Stride + x*4
+				buf.Pix[off+0] = uint8(uint16(buf.Pix[off+0]) * uint16(a) / 255)
+				buf.Pix[off+1] = uint8(uint16(buf.Pix[off+1]) * uint16(a) / 255)
+				buf.Pix[off+2] = uint8(uint16(buf.Pix[off+2]) * uint16(a) / 255)
+				buf.Pix[off+3] = uint8(uint16(buf.Pix[off+3]) * uint16(a) / 255)
+			}
+		}
+	}
+}
+
+// isInsideRoundedRect checks if a point is inside a rounded rectangle.
+func isInsideRoundedRect(px, py, rx, ry, rw, rh float64, radii [4]float64) bool {
+	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
+	// Check each corner.
+	// Top-left corner
+	if px < rx+tl && py < ry+tl {
+		dx := px - (rx + tl)
+		dy := py - (ry + tl)
+		if dx*dx+dy*dy > tl*tl {
+			return false
+		}
+	}
+	// Top-right corner
+	if px > rx+rw-tr && py < ry+tr {
+		dx := px - (rx + rw - tr)
+		dy := py - (ry + tr)
+		if dx*dx+dy*dy > tr*tr {
+			return false
+		}
+	}
+	// Bottom-right corner
+	if px > rx+rw-br && py > ry+rh-br {
+		dx := px - (rx + rw - br)
+		dy := py - (ry + rh - br)
+		if dx*dx+dy*dy > br*br {
+			return false
+		}
+	}
+	// Bottom-left corner
+	if px < rx+bl && py > ry+rh-bl {
+		dx := px - (rx + bl)
+		dy := py - (ry + rh - bl)
+		if dx*dx+dy*dy > bl*bl {
+			return false
+		}
+	}
+	return true
 }
 
 // drawBlurredShadow renders a shadow shape to an offscreen buffer, applies
