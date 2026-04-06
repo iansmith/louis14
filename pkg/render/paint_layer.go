@@ -83,6 +83,7 @@ type PaintLayer struct {
 	FontAhem       bool
 	FontFamily     string
 	LetterSpacing  float64
+	WordSpacing    float64
 	IsVerticalText bool
 	IsSidewaysLR   bool
 	IsSidewaysRL   bool
@@ -279,6 +280,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.FontFamily = family
 	}
 	layer.LetterSpacing = s.GetLetterSpacing()
+	layer.WordSpacing = s.GetWordSpacing()
 	layer.IsVerticalText = box.IsVerticalText
 	layer.IsSidewaysLR = box.IsSidewaysLR
 	layer.IsSidewaysRL = box.IsSidewaysRL

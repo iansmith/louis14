@@ -1562,13 +1562,16 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		r.drawTextShadows(layer, text, box, fontID, ascent)
 	}
 
-	if layer.LetterSpacing != 0 {
+	if layer.LetterSpacing != 0 || layer.WordSpacing != 0 {
 		x := box.X
 		baselineY := box.Y + ascent
 		for _, ch := range text {
 			r.dc.DrawText(string(ch), fontID, x, baselineY)
 			charW := r.dc.MeasureText(string(ch), fontID)
 			x += charW + layer.LetterSpacing
+			if ch == ' ' {
+				x += layer.WordSpacing
+			}
 		}
 	} else {
 		r.dc.DrawText(text, fontID, box.X, box.Y+ascent)
@@ -1588,13 +1591,16 @@ func (r *Renderer) drawTextShadows(layer *PaintLayer, text string, box *layout.B
 		} else {
 			// No blur: just draw text at offset position with shadow color.
 			r.setColor(shadow.Color)
-			if layer.LetterSpacing != 0 {
+			if layer.LetterSpacing != 0 || layer.WordSpacing != 0 {
 				x := box.X + shadow.OffsetX
 				baselineY := box.Y + ascent + shadow.OffsetY
 				for _, ch := range text {
 					r.dc.DrawText(string(ch), fontID, x, baselineY)
 					charW := r.dc.MeasureText(string(ch), fontID)
 					x += charW + layer.LetterSpacing
+					if ch == ' ' {
+						x += layer.WordSpacing
+					}
 				}
 			} else {
 				r.dc.DrawText(text, fontID, box.X+shadow.OffsetX, box.Y+ascent+shadow.OffsetY)
