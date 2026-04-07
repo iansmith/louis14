@@ -1267,6 +1267,19 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 			return result
 		}
+		// Handle calc() with percentages, e.g. calc(50% - 10px).
+		if rawBasis, ok := style.Get("flex-basis"); ok && css.IsCalcWithPercent(rawBasis) {
+			if v, ok := css.EvalCalcWithPercent(rawBasis[5:len(rawBasis)-1], style.GetFontSize(), contentInlineSize); ok && v >= 0 {
+				result := v
+				if style.GetBoxSizing() == "border-box" {
+					result -= childGeom.InlineBorderPadding()
+					if result < 0 {
+						result = 0
+					}
+				}
+				return result
+			}
+		}
 	} else {
 		// Resolve as block-size.
 		if v, ok := style.GetLength("flex-basis"); ok && v >= 0 {
@@ -1288,6 +1301,19 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				}
 			}
 			return result
+		}
+		// Handle calc() with percentages for column flex.
+		if rawBasis, ok := style.Get("flex-basis"); ok && css.IsCalcWithPercent(rawBasis) && hasDefiniteMain {
+			if v, ok := css.EvalCalcWithPercent(rawBasis[5:len(rawBasis)-1], style.GetFontSize(), containerMainSize); ok && v >= 0 {
+				result := v
+				if style.GetBoxSizing() == "border-box" {
+					result -= childGeom.BlockBorderPadding()
+					if result < 0 {
+						result = 0
+					}
+				}
+				return result
+			}
 		}
 	}
 	_ = parentSpace
