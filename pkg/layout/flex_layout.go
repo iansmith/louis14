@@ -532,6 +532,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// §9.6 — align-content: distribute lines within container cross-size.
+	// Check for "safe" keyword before getAlignContent strips it.
+	rawAlignContent := ""
+	if v, ok := fla.style.Get("align-content"); ok {
+		rawAlignContent = strings.TrimSpace(v)
+	}
+	alignContentSafe := strings.Contains(rawAlignContent, "safe")
 	alignContent := fla.getAlignContent()
 	var lineOffsets []float64
 	if len(lines) == 1 {
@@ -541,6 +547,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			lineOffsets = []float64{containerCrossSize - lines[0].crossSize}
 		} else {
 			lineOffsets = []float64{0}
+		}
+		// §5.3 Safe alignment: if the line overflows past the start edge,
+		// clamp to 0 so overflow goes toward the end edge.
+		if alignContentSafe && lineOffsets[0] < 0 {
+			lineOffsets[0] = 0
 		}
 	} else {
 		lineOffsets = computeAlignContent(lines, containerCrossSize, totalLinesCross, alignContent, reverseCross, crossGap)
