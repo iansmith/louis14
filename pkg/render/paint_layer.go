@@ -703,15 +703,64 @@ func domOrderedChildren(box *layout.Box) []*layout.Box {
 	for ; inFlowIdx < len(inFlow); inFlowIdx++ {
 		result = append(result, inFlow[inFlowIdx])
 	}
-	// Append OOF children that propagated up from descendants (not direct
-	// DOM children of this box). These weren't found during the DOM walk
-	// above because their LayoutInputNode lives deeper in the tree.
+	// Insert OOF children that propagated up from descendants (not direct
+	// DOM children of this box) at their correct DOM position.
+	// These weren't found during the DOM walk above because their
+	// LayoutInputNode lives deeper in the tree. We use DOMIndex to find
+	// the ancestor that IS a direct child of this box, then insert the
+	// OOF child just before that ancestor so it's processed in correct
+	// DOM tree order relative to positioned descendants encountered
+	// during subtree recursion (CSS 2.1 Appendix E).
 	for _, child := range box.Children {
 		if oofSet[child] && !inserted[child] {
-			result = append(result, child)
+			pos := len(result)
+			// Find the DOMIndex of the direct child (of this box's LIN)
+			// that is an ancestor of this OOF child. The OOF child should
+			// be painted within that ancestor's subtree.
+			if child.LayoutNode != nil && lin != nil {
+				ancestorIdx := findAncestorDOMIndex(child.LayoutNode, lin)
+				if ancestorIdx >= 0 {
+					// Insert just before the ancestor in the result, so the
+					// OOF child is processed before the ancestor's subtree.
+					for k := 0; k < len(result); k++ {
+						if result[k].DOMIndex == ancestorIdx {
+							pos = k
+							break
+						}
+					}
+				}
+			}
+			result = append(result, nil)
+			copy(result[pos+1:], result[pos:])
+			result[pos] = child
 		}
 	}
 	return result
+}
+
+// findAncestorDOMIndex walks up from lin's DOM node to find the
+// LayoutInputNode that is a direct child of parentLIN, returning its DOMIndex.
+// Returns -1 if not found.
+func findAncestorDOMIndex(lin, parentLIN *layout.LayoutInputNode) int {
+	if lin.DOMNode == nil || parentLIN.DOMNode == nil {
+		return -1
+	}
+	parentDOM := parentLIN.DOMNode
+	// Walk up the DOM tree from lin's node to find the child of parentDOM.
+	node := lin.DOMNode
+	for node != nil && node.Parent != parentDOM {
+		node = node.Parent
+	}
+	if node == nil {
+		return -1
+	}
+	// node is a direct child of parentDOM. Find its LIN.
+	for _, ch := range parentLIN.Children() {
+		if ch.DOMNode == node {
+			return ch.DOMIndex
+		}
+	}
+	return -1
 }
 
 // buildPaintSubtree walks the Box tree, creating PaintLayers and assigning

@@ -63,6 +63,10 @@ type Box struct {
 	// Provides the Box→LayoutInputNode direction of the bidirectional link
 	// used by BuildPaintTree to walk children in DOM tree order.
 	LayoutNode *LayoutInputNode
+
+	// DOMIndex is a pre-order index in the DOM tree, used to ensure correct
+	// paint ordering when out-of-flow children propagate to ancestor boxes.
+	DOMIndex int
 }
 
 // CreatesStackingContext returns true if this box establishes a new

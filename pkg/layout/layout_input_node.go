@@ -58,6 +58,10 @@ type LayoutInputNode struct {
 	// Set during layout tree building for block containers with matching
 	// ::first-line rules. Applied to inline items on the first formatted line.
 	FirstLineStyle *css.Style
+
+	// DOMIndex is a pre-order index in the DOM tree, used to ensure correct
+	// paint ordering when out-of-flow children propagate to ancestor boxes.
+	DOMIndex int
 }
 
 // Style returns the computed style for this node.

@@ -24,7 +24,25 @@ type LayoutTreeBuilder struct {
 
 // BuildLayoutTree creates the layout tree rooted at the given DOM node.
 func (b *LayoutTreeBuilder) BuildLayoutTree(root *html.Node) *LayoutInputNode {
-	return b.buildNode(root)
+	tree := b.buildNode(root)
+	assignDOMIndices(tree)
+	return tree
+}
+
+// assignDOMIndices assigns a monotonically increasing pre-order index to each
+// LayoutInputNode. This ensures correct paint ordering when out-of-flow
+// children propagate to ancestor boxes (CSS 2.1 Appendix E tree order).
+func assignDOMIndices(root *LayoutInputNode) {
+	index := 0
+	var walk func(n *LayoutInputNode)
+	walk = func(n *LayoutInputNode) {
+		n.DOMIndex = index
+		index++
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 // buildNode recursively wraps a DOM node and its children.

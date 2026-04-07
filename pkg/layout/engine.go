@@ -331,6 +331,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	// across lines), and anonymous boxes don't have a stable identity.
 	if lin := frag.LayoutNode; lin != nil && !lin.IsText() && !lin.IsAnonymous() {
 		box.LayoutNode = lin
+		box.DOMIndex = lin.DOMIndex
 		lin.Box = box
 		// Propagate ::marker style and resolved content from layout input to box.
 		if lin.MarkerStyle != nil {
