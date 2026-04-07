@@ -1,13 +1,17 @@
 package layout
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
 )
+
+var flexDebug = os.Getenv("FLEX_DEBUG") == "1"
 
 
 // FlexLayoutAlgorithm implements the CSS Flexible Box Layout Module Level 1 §9.
@@ -287,6 +291,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// §9.1 — Determine flex direction and whether main axis == inline axis.
 	flexDir := fla.getFlexDirection()
 	isRow := flexDir == "row" || flexDir == "row-reverse"
+	if flexDebug {
+		fmt.Fprintf(os.Stderr, "FLEX-DBG === container wdm=%v flexDir=%s ===\n", wdm, flexDir)
+	}
 	reverseMain := flexDir == "row-reverse" || flexDir == "column-reverse"
 	// Note: RTL direction is handled automatically by the fragment builder's
 	// logical→physical coordinate conversion (ToPhysicalOffset). We do NOT
@@ -925,6 +932,14 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			} else {
 				inlineOff = item.crossOffset + item.crossMarginStart()
 				blockOff = item.mainOffset
+			}
+			if flexDebug {
+				fmt.Fprintf(os.Stderr, "FLEX-DBG item wdm=%v mainOff=%.1f crossOff=%.1f crossMarginStart=%.1f crossSize=%.1f mainIsItemInline=%v fragW=%.1f fragH=%.1f inlineOff=%.1f blockOff=%.1f margins={IS=%.1f IE=%.1f BS=%.1f BE=%.1f}\n",
+					item.wdm, item.mainOffset, item.crossOffset, item.crossMarginStart(),
+					item.crossSize, item.mainIsItemInline,
+					item.fragment.Size.Width, item.fragment.Size.Height,
+					inlineOff, blockOff,
+					item.margins.InlineStart, item.margins.InlineEnd, item.margins.BlockStart, item.margins.BlockEnd)
 			}
 			builder.AddChild(item.fragment, LogicalOffset{
 				InlineOffset: inlineOff,

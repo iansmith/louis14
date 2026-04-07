@@ -327,17 +327,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Step 3: Check if margins collapse through this element.
 			// CSS 2.1 §8.3.1: An element's margins collapse through it if
-			// it has no height, no border, no padding, does not contain a
-			// line box, and all of its in-flow children's margins (if any)
-			// are collapsed. We approximate this by checking that the
-			// element has no fragment children (no content).
+			// it has no height, no border, no padding, does not establish
+			// a new block formatting context, does not contain a line box,
+			// and all of its in-flow children's margins (if any) are collapsed.
+			// We approximate this by checking that the element has no fragment
+			// children (no content).
 			childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 			childBlockSize := childLogical.BlockSize()
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			collapseThrough := childBlockSize == 0 &&
 				len(childResult.Fragment.Children) == 0 &&
 				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
-				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0
+				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
+				!isChildNewFC
 
 			if collapseThrough {
 				// Margins collapse through: append block-end margin and continue
