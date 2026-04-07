@@ -2775,6 +2775,26 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				}
 			}
 
+			// §4.5: Also check min-cross-size as a constraint for the transferred
+			// size suggestion. Per the spec, if the item has an intrinsic aspect
+			// ratio, the transferred size is derived from "constraints in the
+			// other dimension", which includes min-height/min-width.
+			if crossContentSize < 0 {
+				if mainIsItemInline {
+					// Cross = block; check min-block-size (min-height).
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					if minCross > 0 {
+						crossContentSize = minCross
+					}
+				} else {
+					// Cross = inline; check min-inline-size (min-width).
+					minCross := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
+					if minCross > 0 {
+						crossContentSize = minCross
+					}
+				}
+			}
+
 			// If no explicit cross-size but container cross is definite (item will be stretched),
 			// use the container cross-size minus item's cross border/padding/margins.
 			if crossContentSize < 0 && hasDefiniteCross {
@@ -2823,6 +2843,20 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			} else {
 				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
 					crossContentSize = explicit
+				}
+			}
+			// Also check min-cross-size as a constraint for non-replaced elements.
+			if crossContentSize < 0 {
+				if mainIsItemInline {
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					if minCross > 0 {
+						crossContentSize = minCross
+					}
+				} else {
+					minCross := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
+					if minCross > 0 {
+						crossContentSize = minCross
+					}
 				}
 			}
 			if crossContentSize < 0 && hasDefiniteCross {
