@@ -1294,6 +1294,13 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 		}
 		// No explicit size (or flex-basis: content) → use max-content.
+		// For flex-basis: content, use computeContentMinMaxSizes to ignore
+		// the item's explicit CSS main-size (e.g. width:0px). The specified
+		// size must not affect the content-based flex basis.
+		if basisVal == "content" && isRow {
+			return fla.itemContentMaxMainSize(child, style, childWDM, parentWDM,
+				contentInlineSize)
+		}
 		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
 			contentInlineSize, isRow)
 	}
@@ -1380,6 +1387,24 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 	// Fallback: use max-content.
 	return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
 		contentInlineSize, isRow)
+}
+
+// itemContentMaxMainSize returns the max-content size in the main axis,
+// ignoring any explicit CSS main-size. Used for flex-basis: content.
+func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
+	child *LayoutInputNode,
+	style *css.Style,
+	childWDM WritingDirectionMode,
+	parentWDM WritingDirectionMode,
+	contentInlineSize float64,
+) float64 {
+	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		SetPercentageResolutionInlineSize(contentInlineSize).
+		Build()
+	mm := computeContentMinMaxSizes(fla.ctx, child, space)
+	return mm.MaxContent
 }
 
 // itemMaxContentMainSize returns the max-content size in the main axis.
