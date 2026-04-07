@@ -641,11 +641,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// §9.4 — Stretch items to line cross-size (align-self: stretch).
 	// Must happen AFTER align-content so multi-line containers use the final
 	// (possibly grown by align-content:stretch) line cross-sizes.
-	// For single-line nowrap containers, lines[0].crossSize was set to
+	// For single-line nowrap containers, lines[0].crossSize was already set to
 	// containerCrossSize in §9.4 step 8.
-	// For single-line wrapping containers with align-content:stretch, grow the
-	// line cross-size now (after offsets are computed) so stretch items get the
-	// correct target without affecting wrap-reverse line positioning.
+	// For single-line wrapping containers with align-content:stretch, grow
+	// the line cross-size now so that stretch items fill the container cross-size.
+	// This matches Blink's behavior: single-line wrapping + stretch → line fills cross.
 	if wrapMode != "nowrap" && len(lines) == 1 && hasDefiniteCross &&
 		alignContent == "stretch" && containerCrossSize > lines[0].crossSize {
 		lines[0].crossSize = containerCrossSize
