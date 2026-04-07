@@ -382,10 +382,14 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// For column flex: stretch items (without auto cross margins) lay out at the container
 			// inline-size (crossIsFixed=true). Non-stretch items and stretch items with auto
 			// cross margins shrink-to-fit their content (crossIsFixed=false).
+			// Exception: in wrapping column flex, the first pass must NOT fix the cross-size
+			// because we don't know the line cross-size yet. Items should use fit-content
+			// width. The stretch pass (stretchFlexItems) will later stretch them to the
+			// line cross-size.
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd &&
 				!fla.hasExplicitCrossSize(item.style, wdm, isRow)
-			crossIsFixed := !isRow && isStretch
+			crossIsFixed := !isRow && isStretch && wrapMode == "nowrap"
 			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
 				item.resolvedMain, Indefinite, crossIsFixed)
 			result := layoutElement(fla.ctx, item.node, cs)
@@ -587,8 +591,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	alignContentSafe := strings.Contains(rawAlignContent, "safe")
 	alignContent := fla.getAlignContent()
 	var lineOffsets []float64
-	if len(lines) == 1 {
-		// Single line: no multi-line alignment needed.
+	if wrapMode == "nowrap" && len(lines) == 1 {
+		// Single-line (nowrap) container: no multi-line alignment needed.
 		// But still respect reverseCross for single line.
 		if reverseCross && hasDefiniteCross {
 			lineOffsets = []float64{containerCrossSize - lines[0].crossSize}
@@ -602,13 +606,29 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	} else {
 		lineOffsets = computeAlignContent(lines, containerCrossSize, totalLinesCross, alignContent, reverseCross, crossGap)
+		// §5.3 Safe alignment: if any line overflows past the start edge,
+		// clamp to 0 so overflow goes toward the end edge.
+		if alignContentSafe {
+			for i := range lineOffsets {
+				if lineOffsets[i] < 0 {
+					lineOffsets[i] = 0
+				}
+			}
+		}
 	}
 
 	// §9.4 — Stretch items to line cross-size (align-self: stretch).
 	// Must happen AFTER align-content so multi-line containers use the final
 	// (possibly grown by align-content:stretch) line cross-sizes.
-	// For single-line containers, lines[0].crossSize was set to containerCrossSize
-	// in §9.4 step 8, which is unchanged by align-content for single-line.
+	// For single-line nowrap containers, lines[0].crossSize was set to
+	// containerCrossSize in §9.4 step 8.
+	// For single-line wrapping containers with align-content:stretch, grow the
+	// line cross-size now (after offsets are computed) so stretch items get the
+	// correct target without affecting wrap-reverse line positioning.
+	if wrapMode != "nowrap" && len(lines) == 1 && hasDefiniteCross &&
+		alignContent == "stretch" && containerCrossSize > lines[0].crossSize {
+		lines[0].crossSize = containerCrossSize
+	}
 	fla.stretchFlexItems(lines, alignItems, wdm, contentInlineSize, isRow)
 
 	// When the main axis is indefinite (auto-sized), compute the actual
@@ -1900,8 +1920,18 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		if crossSize != Indefinite {
 			crossInlineContent = crossSize
 		}
+		// For non-fixed cross items (wrapping column flex), subtract cross margins
+		// from the available inline-size so fit-content sizing respects the margin box.
+		// For fixed cross items (nowrap stretch), the stretch pass handles margins.
+		availInline := crossInlineContent + item.crossBorderPadding()
+		if !crossIsFixed {
+			availInline -= item.crossMarginSum()
+			if availInline < 0 {
+				availInline = 0
+			}
+		}
 		avail := LogicalSize{
-			InlineSize: crossInlineContent + item.crossBorderPadding(),
+			InlineSize: availInline,
 			BlockSize:  Indefinite,
 		}
 		if mainSize > 0 {
@@ -2108,8 +2138,11 @@ func computeAlignContent(
 			gap = spacing + crossGap
 		}
 	case "stretch":
-		if freeSpace > 0 {
-			// Distribute positive free space to lines.
+		if freeSpace > 0 && len(lines) > 1 {
+			// Distribute positive free space to lines (multi-line only).
+			// For single-line wrapping containers, the line keeps its intrinsic
+			// cross-size so that wrap-reverse positioning works correctly.
+			// The stretch pass (stretchFlexItems) handles item stretching separately.
 			extra := freeSpace / float64(len(lines))
 			for i := range lines {
 				lines[i].crossSize += extra
@@ -2123,16 +2156,18 @@ func computeAlignContent(
 		gap = crossGap
 	}
 
+	// Compute offsets in normal (non-reversed) order first.
 	cursor := initialOffset
+	for i, line := range lines {
+		offsets[i] = cursor
+		cursor += line.crossSize + gap
+	}
+
+	// For wrap-reverse, flip all offsets: each line's offset becomes
+	// containerCrossSize - offset - lineCrossSize, per Blink's approach.
 	if reverseCross {
-		for i := len(lines) - 1; i >= 0; i-- {
-			offsets[i] = cursor
-			cursor += lines[i].crossSize + gap
-		}
-	} else {
 		for i, line := range lines {
-			offsets[i] = cursor
-			cursor += line.crossSize + gap
+			offsets[i] = containerCrossSize - offsets[i] - line.crossSize
 		}
 	}
 
