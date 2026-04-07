@@ -1943,13 +1943,10 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 				}
 			} else {
 				if totalScaledShrink > 0 {
-					// §9.7 step 4d: if sum of raw flex-shrink < 1, only absorb
-					// (sum × |negativeSpace|). Use scaled factors for proportional split.
-					adjustedFreeSpace := freeSpace
-					if totalFactor < 1 {
-						adjustedFreeSpace = freeSpace * totalFactor
-					}
-					delta = adjustedFreeSpace * (item.flexShrink * item.flexBasis) / totalScaledShrink
+					// §9.7 step 4c: distribute negative free space proportionally
+					// using scaled flex shrink factors. The < 1 factor cap was
+					// already applied to freeSpace above (lines 1922-1927).
+					delta = freeSpace * (item.flexShrink * item.flexBasis) / totalScaledShrink
 				}
 			}
 			item.resolvedMain = item.flexBasis + delta
