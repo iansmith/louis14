@@ -1831,9 +1831,6 @@ func computeAlignContent(
 ) []float64 {
 	offsets := make([]float64, len(lines))
 	freeSpace := containerCrossSize - totalLinesCross
-	if freeSpace < 0 {
-		freeSpace = 0
-	}
 
 	var initialOffset, gap float64
 	switch alignContent {
@@ -1844,35 +1841,53 @@ func computeAlignContent(
 		initialOffset = freeSpace / 2
 		gap = crossGap
 	case "space-between":
-		initialOffset = 0
-		if len(lines) > 1 {
-			gap = (freeSpace + crossGap*float64(len(lines)-1)) / float64(len(lines)-1)
+		if freeSpace < 0 {
+			// Fallback to flex-start.
+			initialOffset = 0
+			gap = crossGap
 		} else {
-			gap = 0
+			initialOffset = 0
+			if len(lines) > 1 {
+				gap = (freeSpace + crossGap*float64(len(lines)-1)) / float64(len(lines)-1)
+			} else {
+				gap = 0
+			}
 		}
 	case "space-around":
-		perLine := 0.0
-		if len(lines) > 0 {
-			perLine = freeSpace / float64(len(lines))
+		if freeSpace < 0 {
+			// Fallback to center.
+			initialOffset = freeSpace / 2
+			gap = crossGap
+		} else {
+			perLine := 0.0
+			if len(lines) > 0 {
+				perLine = freeSpace / float64(len(lines))
+			}
+			initialOffset = perLine / 2
+			gap = perLine + crossGap
 		}
-		initialOffset = perLine / 2
-		gap = perLine + crossGap
 	case "space-evenly":
-		spacing := 0.0
-		if len(lines)+1 > 0 {
-			spacing = freeSpace / float64(len(lines)+1)
+		if freeSpace < 0 {
+			// Fallback to center.
+			initialOffset = freeSpace / 2
+			gap = crossGap
+		} else {
+			spacing := 0.0
+			if len(lines)+1 > 0 {
+				spacing = freeSpace / float64(len(lines)+1)
+			}
+			initialOffset = spacing
+			gap = spacing + crossGap
 		}
-		initialOffset = spacing
-		gap = spacing + crossGap
 	case "stretch":
-		// Distribute free space to lines.
-		extra := 0.0
-		if len(lines) > 0 {
-			extra = freeSpace / float64(len(lines))
+		if freeSpace > 0 {
+			// Distribute positive free space to lines.
+			extra := freeSpace / float64(len(lines))
+			for i := range lines {
+				lines[i].crossSize += extra
+			}
 		}
-		for i := range lines {
-			lines[i].crossSize += extra
-		}
+		// Fallback alignment for stretch is flex-start.
 		initialOffset = 0
 		gap = crossGap
 	default: // flex-start
