@@ -1164,26 +1164,25 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		basisVal = "auto"
 	}
 
-	// "content" is equivalent to auto for our purposes.
 	if basisVal == "auto" || basisVal == "content" {
-		// Use main-size property if explicitly set, else use max-content.
-		// For orthogonal items the flex main axis corresponds to the item's BLOCK axis,
-		// so we must resolve the block-size property rather than the inline-size.
 		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
-		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-			SetPercentageResolutionInlineSize(contentInlineSize).
-			Build()
-		if mainIsItemInline {
-			// Normal (non-orthogonal): main axis = item's inline axis.
-			if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-				return explicit
-			}
-		} else {
-			// Orthogonal: main axis = item's block axis.
-			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-				return explicit
+
+		// flex-basis: auto → use the specified main-size property if set.
+		// flex-basis: content → always use content sizing, ignoring specified main-size.
+		if basisVal == "auto" {
+			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if mainIsItemInline {
+				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
+					return explicit
+				}
+			} else {
+				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+					return explicit
+				}
 			}
 		}
 		// §9.2 aspect-ratio fallback when cross-size is definite.
@@ -1202,7 +1201,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				return crossContent * ar.Height / ar.Width
 			}
 		}
-		// No explicit size → use max-content.
+		// No explicit size (or flex-basis: content) → use max-content.
 		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
 			contentInlineSize, isRow)
 	}
