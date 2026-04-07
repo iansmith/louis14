@@ -1798,6 +1798,9 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		b.SetIsFixedInlineSize(crossIsFixed)
 		if mainSize > 0 {
 			b.SetIsFixedBlockSize(true)
+			// Per §9.5: the flex-resolved main size IS the used main size.
+			// Override the item's CSS height so the layout uses the flex size.
+			b.SetIsBlockSizeOverride(true)
 		}
 	}
 
@@ -2343,11 +2346,14 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		contentSuggestion = mm.MinContent
 	} else {
 		// Main axis = item's block axis: block-direction minimum via layout.
+		// Use IsContentSuggestionLayout to suppress the item's own CSS block-size
+		// so the layout produces the content-based block-size (§4.5).
 		containerInlineSize := space.AvailableSize.InlineSize
 		colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
 			SetPercentageResolutionInlineSize(containerInlineSize).
+			SetIsContentSuggestionLayout(true).
 			Build()
 		result := layoutElement(fla.ctx, child, colMinSpace)
 		lf := NewLogicalFragment(childWDM, result.Fragment)

@@ -519,6 +519,13 @@ func CalculateInitialFragmentGeometry(
 	var borderBoxBlock float64 = Indefinite
 	if IsIntrinsicKeyword(blockVal) {
 		// Treat as auto — layout will determine block-size from content.
+	} else if space.IsContentSuggestionLayout {
+		// §4.5 content suggestion: ignore the element's own explicit CSS
+		// block-size — only content determines the size.
+	} else if space.IsBlockSizeOverride && space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
+		// Parent algorithm (e.g., flex column) has determined the block-size
+		// authoritatively — it overrides the child's own CSS block-size.
+		borderBoxBlock = space.AvailableSize.BlockSize
 	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
 		borderBoxBlock = explicitBlock + geom.BlockBorderPadding()
 	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
