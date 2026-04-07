@@ -29,3 +29,6 @@ correct foundational code.
 - Always commit and push before launching worktree agents — worktrees start from
   HEAD, not the working directory.
 - Instruct agents to commit and report at each milestone, not just at the end.
+- When running in a worktree (any directory that is NOT ~/louis14), commit ONLY to
+  your worktree branch. Never commit directly to fix/* or master branches from a
+  worktree.
