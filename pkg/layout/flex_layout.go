@@ -2326,7 +2326,19 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			Build()
 		result := layoutElement(fla.ctx, child, colMinSpace)
 		lf := NewLogicalFragment(childWDM, result.Fragment)
-		contentSuggestion = lf.BlockSize() - childGeom.BlockBorderPadding()
+		isReplaced := child.DOMNode != nil && isReplacedElement(child.DOMNode)
+		if isReplaced {
+			// Replaced elements (img, canvas, etc.): use the fragment's resolved
+			// block-size, since IntrinsicBlockSize is 0 for childless elements
+			// in block layout (the image's computed size is in the fragment).
+			contentSuggestion = lf.BlockSize() - childGeom.BlockBorderPadding()
+		} else {
+			// Non-replaced elements: use IntrinsicBlockSize (the content's natural
+			// block-size before min/max/explicit constraints). The fragment's
+			// BlockSize includes explicit CSS height (e.g. height:50px), but the
+			// content size suggestion per §4.5 is the min-content block-size.
+			contentSuggestion = result.IntrinsicBlockSize
+		}
 	}
 	if contentSuggestion < 0 {
 		contentSuggestion = 0
