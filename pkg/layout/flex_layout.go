@@ -1281,9 +1281,19 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		// flex-basis: auto → use the specified main-size property if set.
 		// flex-basis: content → always use content sizing, ignoring specified main-size.
 		if basisVal == "auto" {
+			// For column flex with a definite main-size, pass it as the percentage
+			// resolution block-size so that height:100% on items resolves correctly.
+			// §9.8: If a flex container has a definite main size, percentage main
+			// sizes on flex items resolve against it.
+			pctBlockSize := 0.0
+			availBlockSize := Indefinite
+			if !isRow && hasDefiniteMain {
+				pctBlockSize = containerMainSize
+				availBlockSize = containerMainSize
+			}
 			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: availBlockSize}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
 				Build()
 			if mainIsItemInline {

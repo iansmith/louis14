@@ -335,6 +335,13 @@ func isHeadElement(tagName string) bool {
 
 // closeTag pops the stack until the matching tag is found and closed
 func (p *Parser) closeTag(tagName string) {
+	// Per HTML5 §12.2.6: </html> and </body> end tags should not actually
+	// remove the element from the stack in most contexts. Ignoring them
+	// prevents malformed HTML (e.g. </html> appearing before </head>)
+	// from orphaning subsequent content.
+	if tagName == "html" || tagName == "body" {
+		return
+	}
 	for i := len(p.stack) - 1; i >= 1; i-- {
 		if p.stack[i].TagName == tagName {
 			p.stack = p.stack[:i]

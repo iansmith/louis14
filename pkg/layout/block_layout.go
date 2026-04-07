@@ -223,6 +223,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// ConstraintSpace().GetWritingDirection() (the parent's).
 			childMargins := ResolveMargins(childStyle, wdm, childAvailableInline)
 
+			// Build constraint space for this child.
+			// CSS Writing Modes §4.3: a block container with a different
+			// writing-mode than its parent establishes a new BFC.
+			isChildNewFC := createsFormattingContext(childStyle) ||
+				wdm.WM != childWDM.WM
+
 			// Compute available inline for this child, accounting for floats.
 			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(blockCursor, 0, childAvailableInline)
 			childInlineForSpace := childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
@@ -230,11 +236,44 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				childInlineForSpace = 0
 			}
 
-			// Build constraint space for this child.
-			// CSS Writing Modes §4.3: a block container with a different
-			// writing-mode than its parent establishes a new BFC.
-			isChildNewFC := createsFormattingContext(childStyle) ||
-				wdm.WM != childWDM.WM
+			// CSS 2.1 §9.5: A BFC's border box must not overlap the margin
+			// box of any floats in the same BFC. If the child establishes a
+			// new BFC and its resolved inline-size doesn't fit beside the
+			// floats, push it below them.
+			if isChildNewFC && (floatStartOff > 0 || floatEndOff > 0) {
+				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
+				// Build a temporary constraint space to resolve the child's inline-size.
+				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+					SetAvailableSize(LogicalSize{
+						InlineSize: contentInlineSize,
+						BlockSize:  Indefinite,
+					}).
+					SetPercentageResolutionSize(LogicalSize{
+						InlineSize: contentInlineSize,
+						BlockSize:  explicitBlockSize,
+					}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					Build()
+				if resolvedInline, ok := ResolveInlineSize(childStyle, childWDM, tmpSpace, childGeomForBFC); ok {
+					// resolvedInline is content-box; add border+padding for border-box
+					neededInline := resolvedInline + childGeomForBFC.InlineBorderPadding() + childMargins.InlineSum()
+					if neededInline > childAvailableInline-floatStartOff-floatEndOff {
+						// Doesn't fit beside floats — clear past all floats.
+						clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor)
+						if clearedBlock > blockCursor {
+							blockCursor = clearedBlock
+							prevMarginStrut = MarginStrut{}
+							hasClearance = true
+						}
+						// Recompute float offsets at new position.
+						floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(blockCursor, 0, childAvailableInline)
+						childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
+						if childInlineForSpace < 0 {
+							childInlineForSpace = 0
+						}
+					}
+				}
+			}
 			blockForChild := childAvailableBlock
 			if wdm.IsOrthogonalTo(childWDM) {
 				blockForChild = orthogonalAvailableBlock
