@@ -187,15 +187,19 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	}
 	canWrap := wrapMode == "wrap" || wrapMode == "wrap-reverse"
 
-	// For row flex: resolve definite cross-size (block-size) for aspect-ratio transfer.
-	// Items with aspect-ratio that stretch to the container's cross-size can
-	// transfer that size to their inline dimension, affecting intrinsic width.
+	// Resolve the container's definite cross-size for aspect-ratio transfer.
+	// For row flex: cross = block-size; for column flex: cross = inline-size.
 	containerGeom := ComputeFragmentGeometry(style, wdm)
-	var definiteCrossSize float64
+	var containerCrossContent float64
 	var hasDefiniteCross bool
 	if isRow {
-		if explicitBlock, ok := ResolveBlockSize(style, wdm, space, containerGeom); ok {
-			definiteCrossSize = explicitBlock
+		if bs, ok := ResolveBlockSize(style, wdm, space, containerGeom); ok {
+			containerCrossContent = bs
+			hasDefiniteCross = true
+		}
+	} else {
+		if is, ok := ResolveInlineSize(style, wdm, space, containerGeom); ok {
+			containerCrossContent = is
 			hasDefiniteCross = true
 		}
 	}
@@ -249,6 +253,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			Build()
 
 		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+
 		childBP := childGeom.InlineBorderPadding()
 		childMargins := ResolveMargins(childStyle, childWDM, 0)
 
@@ -289,7 +294,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				}
 				if willStretch {
 					// Cross content size = container cross - item cross border/padding/margins.
-					crossContent := definiteCrossSize - childGeom.BlockBorderPadding() - childMargins.BlockSum()
+					crossContent := containerCrossContent - childGeom.BlockBorderPadding() - childMargins.BlockSum()
 					if crossContent < 0 {
 						crossContent = 0
 					}
