@@ -417,11 +417,14 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			item.crossSize = itemCross
 
-			// Replaced elements: derive cross size from main size via aspect ratio.
-			// The layout pass doesn't automatically preserve the aspect ratio when
-			// only the main size is fixed, so we recompute cross from the resolved
-			// main size and the intrinsic ratio (CSS Flexbox §9.3).
-			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+			// Replaced elements: derive cross size from main size via aspect ratio,
+			// but ONLY when the item does not have an explicit cross-size set in CSS.
+			// When both width and height are explicit, the layout pass already uses
+			// the explicit height; overriding with the aspect ratio would be wrong
+			// (e.g., a 100x100 image with CSS width:10px height:20px should be 20px
+			// tall, not 10px from the 1:1 intrinsic ratio).
+			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) &&
+				!fla.hasExplicitCrossSize(item.style, item.wdm, isRow) {
 				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
 				if info.HasAspectRatio && info.AspectRatio > 0 {
 					// Convert physical ratio (width/height) to logical (inline/block).
@@ -1823,19 +1826,27 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 	}
 	freeSpace := containerMainSize - usedSpace
 
-	// Initialize.
+	// §9.7 step 1: Set each item's target main size to its flex base size.
 	for _, item := range items {
-		item.resolvedMain = item.hypothetical
+		item.resolvedMain = item.flexBasis
 		item.frozen = false
 	}
 
 	if math.Abs(freeSpace) < 0.001 {
+		// No free space: all items stay at their hypothetical main size.
+		for _, item := range items {
+			item.resolvedMain = item.hypothetical
+		}
 		return
 	}
 
 	growing := freeSpace > 0
 
-	// Freeze items that won't participate.
+	// §9.7 step 2: Size inflexible items. Freeze, setting its target main
+	// size to its hypothetical main size:
+	//   - any item with a flex factor of zero
+	//   - if growing: any item with flex base size > hypothetical (max-clamped)
+	//   - if shrinking: any item with flex base size < hypothetical (min-clamped)
 	for _, item := range items {
 		// §12: Collapsed items don't participate in flex grow/shrink.
 		if item.collapsed {
@@ -1843,20 +1854,33 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 			item.resolvedMain = 0
 			continue
 		}
+		freeze := false
 		if growing && item.flexGrow == 0 {
-			item.frozen = true
+			freeze = true
 		} else if !growing && item.flexShrink == 0 {
+			freeze = true
+		}
+		if !freeze {
+			if growing && item.flexBasis > item.hypothetical {
+				freeze = true
+			} else if !growing && item.flexBasis < item.hypothetical {
+				freeze = true
+			}
+		}
+		if freeze {
+			item.resolvedMain = item.hypothetical
 			item.frozen = true
 		}
 	}
 
-	// Iterative flex algorithm.
+	// §9.7 step 3: Calculate initial free space.
+	// Already computed above from outer hypothetical sizes.
+	initialFreeSpace := freeSpace
+
+	// §9.7 step 4: Loop.
 	for iter := 0; iter < 100; iter++ {
-		// Compute total flex factor and scaled flex shrink factor of unfrozen items.
-		// §9.7: "flex factor" = flex-grow (growing) or flex-shrink (shrinking).
-		// The scaled shrink factor (shrink * basis) is used for proportional distribution,
-		// but the raw flex-shrink sum is used for the "< 1" threshold check.
-		var totalFactor float64     // raw flex factor sum (for < 1 check)
+		// 4a: Compute total flex factor and scaled flex shrink factor of unfrozen items.
+		var totalFactor float64       // raw flex factor sum (for < 1 check)
 		var totalScaledShrink float64 // scaled shrink factor sum (for proportional distribution)
 		var unfrozenCount int
 		for _, item := range items {
@@ -1874,33 +1898,48 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 			break
 		}
 
-		// Recompute free space from frozen items.
-		freeSpace = containerMainSize - mainGap*float64(len(items)-1)
+		// 4b: Calculate remaining free space.
+		// Frozen items use their target (resolvedMain), unfrozen use their flex base size.
+		freeSpace = containerMainSize - mainGap*float64(nonCollapsedCount-1)
+		if nonCollapsedCount == 0 {
+			freeSpace = containerMainSize
+		}
 		for _, item := range items {
-			freeSpace -= item.resolvedMain + item.mainBorderPadding() + item.mainMarginSum()
+			if item.collapsed {
+				continue
+			}
+			if item.frozen {
+				freeSpace -= item.resolvedMain + item.mainBorderPadding() + item.mainMarginSum()
+			} else {
+				freeSpace -= item.flexBasis + item.mainBorderPadding() + item.mainMarginSum()
+			}
+		}
+
+		// §9.7: If the sum of the unfrozen flex items' flex factors is less
+		// than one, multiply the initial free space by this sum. If the magnitude
+		// of this value is less than the magnitude of the remaining free space,
+		// use this as the remaining free space.
+		if totalFactor < 1 {
+			scaled := initialFreeSpace * totalFactor
+			if math.Abs(scaled) < math.Abs(freeSpace) {
+				freeSpace = scaled
+			}
 		}
 
 		if math.Abs(freeSpace) < 0.001 {
 			break
 		}
 
-		// Distribute free space.
-		anyUnfrozen := false
+		// 4c: Distribute free space. Set each unfrozen item's target main size
+		// to its flex base size plus a fraction of the remaining free space.
 		for _, item := range items {
 			if item.frozen {
 				continue
 			}
-			anyUnfrozen = true
 			var delta float64
 			if growing {
 				if totalFactor > 0 {
-					// §9.7: if sum of flex-grow < 1, use 1 as divisor so only
-					// (sum × freeSpace) is distributed, not all free space.
-					divisor := totalFactor
-					if divisor < 1 {
-						divisor = 1
-					}
-					delta = freeSpace * item.flexGrow / divisor
+					delta = freeSpace * item.flexGrow / totalFactor
 				}
 			} else {
 				if totalScaledShrink > 0 {
@@ -1913,37 +1952,71 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 					delta = adjustedFreeSpace * (item.flexShrink * item.flexBasis) / totalScaledShrink
 				}
 			}
-			item.resolvedMain += delta
+			item.resolvedMain = item.flexBasis + delta
 		}
 
-		if !anyUnfrozen {
-			break
+		// 4d: Fix min/max violations. Clamp each non-frozen item's target main
+		// size by its used min and max main sizes.
+		totalViolation := 0.0
+		type violation struct {
+			item *flexItem
+			adj  float64
 		}
-
-		// §9.7: Freeze items that hit their CSS min or max main size.
-		frozenAny := false
+		var violations []violation
 		for _, item := range items {
 			if item.frozen {
 				continue
 			}
-			if growing {
-				// Freeze at max if we've grown past it.
-				if item.maxMain != Indefinite && item.resolvedMain > item.maxMain {
-					item.resolvedMain = item.maxMain
-					item.frozen = true
+			clamped := item.resolvedMain
+			if clamped < item.minMain {
+				clamped = item.minMain
+			}
+			if item.maxMain != Indefinite && clamped > item.maxMain {
+				clamped = item.maxMain
+			}
+			if clamped < 0 {
+				clamped = 0
+			}
+			adj := clamped - item.resolvedMain
+			if math.Abs(adj) > 0.001 {
+				totalViolation += adj
+				violations = append(violations, violation{item, adj})
+			}
+			item.resolvedMain = clamped
+		}
+
+		// 4e: Freeze over-flexed items based on total violation.
+		if math.Abs(totalViolation) < 0.001 {
+			// Total violation is zero: freeze all items.
+			break
+		}
+		frozenAny := false
+		if totalViolation > 0 {
+			// Positive: freeze items with min violations.
+			for _, v := range violations {
+				if v.adj > 0 {
+					v.item.frozen = true
 					frozenAny = true
 				}
-			} else {
-				// Freeze at min if we've shrunk past it.
-				if item.resolvedMain < item.minMain {
-					item.resolvedMain = item.minMain
-					item.frozen = true
+			}
+		} else {
+			// Negative: freeze items with max violations.
+			for _, v := range violations {
+				if v.adj < 0 {
+					v.item.frozen = true
 					frozenAny = true
 				}
 			}
 		}
 		if !frozenAny {
 			break
+		}
+
+		// Reset unfrozen items' targets to flex base size for next iteration.
+		for _, item := range items {
+			if !item.frozen {
+				item.resolvedMain = item.flexBasis
+			}
 		}
 	}
 
