@@ -1059,9 +1059,15 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		// we handle auto margins later.
 		childMargins := fla.resolveItemMargins(childStyle, childWDM, contentInlineSize, isRow)
 
-		// Compute flex properties.
+		// Compute flex properties (negative values are invalid per spec).
 		flexGrow := fla.parseFloat(childStyle, "flex-grow", 0)
+		if flexGrow < 0 {
+			flexGrow = 0
+		}
 		flexShrink := fla.parseFloat(childStyle, "flex-shrink", 1)
+		if flexShrink < 0 {
+			flexShrink = 1
+		}
 		order := fla.parseInt(childStyle, "order", 0)
 
 		// Constraint space for computing intrinsic sizes (§4.5, min/max).
@@ -1461,15 +1467,20 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 
 	// Iterative flex algorithm.
 	for iter := 0; iter < 100; iter++ {
-		// Compute total flex factor of unfrozen items.
-		var totalFactor float64
+		// Compute total flex factor and scaled flex shrink factor of unfrozen items.
+		// §9.7: "flex factor" = flex-grow (growing) or flex-shrink (shrinking).
+		// The scaled shrink factor (shrink * basis) is used for proportional distribution,
+		// but the raw flex-shrink sum is used for the "< 1" threshold check.
+		var totalFactor float64     // raw flex factor sum (for < 1 check)
+		var totalScaledShrink float64 // scaled shrink factor sum (for proportional distribution)
 		var unfrozenCount int
 		for _, item := range items {
 			if !item.frozen {
 				if growing {
 					totalFactor += item.flexGrow
 				} else {
-					totalFactor += item.flexShrink * item.flexBasis
+					totalFactor += item.flexShrink
+					totalScaledShrink += item.flexShrink * item.flexBasis
 				}
 				unfrozenCount++
 			}
@@ -1507,13 +1518,14 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 					delta = freeSpace * item.flexGrow / divisor
 				}
 			} else {
-				if totalFactor > 0 {
-					// §9.7: same rule for shrink: if sum < 1, use 1 as divisor.
-					divisor := totalFactor
-					if divisor < 1 {
-						divisor = 1
+				if totalScaledShrink > 0 {
+					// §9.7 step 4d: if sum of raw flex-shrink < 1, only absorb
+					// (sum × |negativeSpace|). Use scaled factors for proportional split.
+					adjustedFreeSpace := freeSpace
+					if totalFactor < 1 {
+						adjustedFreeSpace = freeSpace * totalFactor
 					}
-					delta = freeSpace * (item.flexShrink * item.flexBasis) / divisor
+					delta = adjustedFreeSpace * (item.flexShrink * item.flexBasis) / totalScaledShrink
 				}
 			}
 			item.resolvedMain += delta
