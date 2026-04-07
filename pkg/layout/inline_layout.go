@@ -806,9 +806,13 @@ func createLineBoxEx(
 
 				switch va {
 				case css.VerticalAlignTop:
-					blockPos = 0
+					// CSS 2.1 §10.8.1: Align the top of the margin-box with the
+					// top of the line box. The border-box starts below the block-start margin.
+					blockPos = r.Margins.BlockStart
 				case css.VerticalAlignBottom:
-					blockPos = lineHeight - blockSize
+					// CSS 2.1 §10.8.1: Align the bottom of the margin-box with the
+					// bottom of the line box. Subtract margin-box height from line height.
+					blockPos = lineHeight - blockSize - r.Margins.BlockEnd
 					if blockPos < 0 {
 						blockPos = 0
 					}
@@ -1000,8 +1004,11 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				}
 				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
 					// Track the tallest top/bottom-aligned element separately.
-					if blockSize > maxTopBottom {
-						maxTopBottom = blockSize
+					// CSS 2.1 §10.8.1: The margin-box height of top/bottom-aligned
+					// inline-blocks determines the minimum line-box height.
+					outerBlockSize := blockSize + r.Margins.BlockStart + r.Margins.BlockEnd
+					if outerBlockSize > maxTopBottom {
+						maxTopBottom = outerBlockSize
 					}
 					continue
 				}

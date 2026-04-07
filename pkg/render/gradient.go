@@ -257,6 +257,16 @@ func interpolateGradientColor(stops []gradientStop, pos float64) color.RGBA {
 	}
 	for i := 1; i < len(stops); i++ {
 		if pos <= stops[i].pos {
+			// When pos equals a stop position exactly, advance past any later
+			// stops at the same position per CSS Images §3.4.3: at a coincident
+			// boundary the last color stop's color is used.
+			if pos == stops[i].pos {
+				for i+1 < len(stops) && stops[i+1].pos == pos {
+					i++
+				}
+				s := &stops[i]
+				return color.RGBA{R: uint8(s.r * 255), G: uint8(s.g * 255), B: uint8(s.b * 255), A: uint8(s.a * 255)}
+			}
 			a := &stops[i-1]
 			b := &stops[i]
 			span := b.pos - a.pos
