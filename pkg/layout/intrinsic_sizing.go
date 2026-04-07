@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/images"
+import (
+	"louis14/pkg/images"
+	"strconv"
+)
 
 // IntrinsicSizingInfo holds the natural dimensions and aspect ratio for a
 // replaced element. Uses PHYSICAL dimensions (not logical).
@@ -21,12 +24,35 @@ func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) Intrinsic
 	case "img":
 		return getImgIntrinsicInfo(ctx, node)
 	case "canvas":
-		// HTML spec: canvas intrinsic size is 300x150
-		return IntrinsicSizingInfo{300, 150, 2.0, true}
+		return getCanvasIntrinsicInfo(node)
 	default:
 		// video, iframe, embed, object, input, textarea, select, button
 		return IntrinsicSizingInfo{300, 150, 2.0, true}
 	}
+}
+
+// getCanvasIntrinsicInfo returns the intrinsic dimensions for a canvas element.
+// Per HTML spec, the intrinsic size comes from the width/height HTML attributes,
+// defaulting to 300x150 if not specified.
+func getCanvasIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
+	w, h := 300.0, 150.0
+	if node.DOMNode != nil {
+		if val, ok := node.DOMNode.GetAttribute("width"); ok {
+			if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
+				w = parsed
+			}
+		}
+		if val, ok := node.DOMNode.GetAttribute("height"); ok {
+			if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
+				h = parsed
+			}
+		}
+	}
+	ar := 2.0
+	if h > 0 {
+		ar = w / h
+	}
+	return IntrinsicSizingInfo{w, h, ar, true}
 }
 
 func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {

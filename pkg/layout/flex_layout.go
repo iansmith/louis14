@@ -1408,12 +1408,13 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 		}
 		// No explicit size (or flex-basis: content) → use max-content.
-		// For flex-basis: content, use computeContentMinMaxSizes to ignore
-		// the item's explicit CSS main-size (e.g. width:0px). The specified
-		// size must not affect the content-based flex basis.
-		if basisVal == "content" && isRow {
-			return fla.itemContentMaxMainSize(child, style, childWDM, parentWDM,
-				contentInlineSize)
+		// For flex-basis: content, use computeContentMinMaxSizes (row) or
+		// layout with IsContentSuggestionLayout (column) to ignore the item's
+		// explicit CSS main-size. Per CSS Flexbox §9.2, flex-basis:content
+		// sizes the item based on its content, not its CSS main-size property.
+		if basisVal == "content" {
+			return fla.itemContentMaxMainSize(child, style, childWDM, childGeom, parentWDM,
+				contentInlineSize, isRow)
 		}
 		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
 			contentInlineSize, isRow)
@@ -1529,20 +1530,64 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 
 // itemContentMaxMainSize returns the max-content size in the main axis,
 // ignoring any explicit CSS main-size. Used for flex-basis: content.
+// Mirrors Blink's ComputeMinAndMaxContentContributionForSelf() which uses
+// content-based sizing regardless of flex direction.
 func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	child *LayoutInputNode,
 	style *css.Style,
 	childWDM WritingDirectionMode,
+	childGeom FragmentGeometry,
 	parentWDM WritingDirectionMode,
 	contentInlineSize float64,
+	isRow bool,
 ) float64 {
+	// For replaced elements, use intrinsic sizes directly. flex-basis:content
+	// must ignore the item's CSS main-size, but ComputeReplacedSize (used by
+	// computeContentMinMaxSizes) consults CSS width/height. Use intrinsic
+	// dimensions instead, matching Blink's IntrinsicSize() path.
+	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+		info := GetIntrinsicSizingInfo(fla.ctx, child)
+		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
+		if mainIsItemInline {
+			if childWDM.IsVertical() {
+				return info.IntrinsicHeight
+			}
+			return info.IntrinsicWidth
+		}
+		if childWDM.IsVertical() {
+			return info.IntrinsicWidth
+		}
+		return info.IntrinsicHeight
+	}
+	if isRow {
+		// Row flex: main axis = inline. Use computeContentMinMaxSizes which
+		// ignores the item's explicit CSS inline-size (width).
+		space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
+			Build()
+		mm := computeContentMinMaxSizes(fla.ctx, child, space)
+		return mm.MaxContent
+	}
+	// Column flex: main axis = block. Lay out the item with indefinite
+	// block-size and IsContentSuggestionLayout to suppress its explicit CSS
+	// block-size (height). The resulting block-size is content-driven.
+	availInline := contentInlineSize
+	margins := ResolveMargins(style, childWDM, contentInlineSize)
+	availInline -= margins.InlineStart + margins.InlineEnd
+	if availInline < 0 {
+		availInline = 0
+	}
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
+		SetIsContentSuggestionLayout(true).
 		Build()
-	mm := computeContentMinMaxSizes(fla.ctx, child, space)
-	return mm.MaxContent
+	result := layoutElement(fla.ctx, child, space)
+	lf := NewLogicalFragment(parentWDM, result.Fragment)
+	return lf.BlockSize() - childGeom.BlockBorderPadding()
 }
 
 // itemMaxContentMainSize returns the max-content size in the main axis.

@@ -815,30 +815,38 @@ func createLineBoxEx(
 				default:
 					// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
 					// align inline-block so its baseline sits at the line's maxAscent.
-					// Also handle inline-tables and other atomic inlines with baselines.
+					// Also handle inline-tables, replaced elements, and other atomic
+					// inlines with baselines.
 					display := css.DisplayBlock
 					if r.Item.Style != nil {
 						display = r.Item.Style.GetDisplay()
 					}
+					isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
 					isInlineBlockLike := r.Item.Style != nil &&
 						(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 							display == css.DisplayTable || display == css.DisplayInlineTable) &&
 						r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
+					isAtomicForBaseline := isInlineBlockLike || isReplaced
 					// For inline-flex, use first baseline (CSS Flexbox §4.2).
 					// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
-					atomicBaseline2 := r.LayoutResult.LastBaseline
-					if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
-						atomicBaseline2 = r.LayoutResult.Baseline
+					// Replaced elements don't propagate baselines from line boxes.
+					atomicBaseline := float64(0)
+					if !isReplaced {
+						atomicBaseline = r.LayoutResult.LastBaseline
+						if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+							atomicBaseline = r.LayoutResult.Baseline
+						}
 					}
-					if isInlineBlockLike && (atomicBaseline2 > 0 || !centralBaseline) {
+					if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
 						var ibAscent float64
-						if atomicBaseline2 > 0 {
-							ibAscent = atomicBaseline2
+						if atomicBaseline > 0 {
+							ibAscent = atomicBaseline
 						} else if centralBaseline {
 							ibAscent = blockSize / 2
 						} else {
-							// CSS 2.1 §10.8.1: If the inline-block has no line boxes,
-							// the baseline is the bottom margin edge of the box.
+							// CSS 2.1 §10.8.1: For replaced elements, baseline
+							// is at the bottom. For inline-blocks with no line
+							// boxes, baseline is the bottom margin edge.
 							ibAscent = blockSize
 						}
 						blockPos = maxAscent - ibAscent
@@ -1001,21 +1009,29 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
 				// the baseline is the baseline of the last line box.
 				// Also handle inline-tables and other atomic inlines with baselines.
+				// Inline replaced elements (img, canvas, video, etc.) are also
+				// atomic inlines whose baseline is their bottom margin edge.
 				display := css.DisplayBlock
 				if r.Item.Style != nil {
 					display = r.Item.Style.GetDisplay()
 				}
+				isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
 				isInlineBlockLike := r.Item.Style != nil &&
 					(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 						display == css.DisplayTable || display == css.DisplayInlineTable) &&
 					r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
+				isAtomicForBaseline := isInlineBlockLike || isReplaced
 				// For inline-flex, use first baseline (CSS Flexbox §4.2).
 				// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
-				atomicBaseline := r.LayoutResult.LastBaseline
-				if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
-					atomicBaseline = r.LayoutResult.Baseline
+				// Replaced elements don't propagate baselines from line boxes.
+				atomicBaseline := float64(0)
+				if !isReplaced {
+					atomicBaseline = r.LayoutResult.LastBaseline
+					if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+						atomicBaseline = r.LayoutResult.Baseline
+					}
 				}
-				if isInlineBlockLike && (atomicBaseline > 0 || !centralBaseline) {
+				if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
 					var ibAscent float64
 					if atomicBaseline > 0 {
 						// Use the propagated baseline from the atomic inline's
@@ -1027,10 +1043,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 						// in vertical modes with central baseline: blockSize / 2.
 						ibAscent = blockSize / 2
 					} else {
-						// CSS 2.1 §10.8.1: If the inline-block has no line boxes,
-						// the baseline is the bottom margin edge of the box.
-						// This means ibAscent = blockSize (the entire box is above
-						// the baseline).
+						// CSS 2.1 §10.8.1: For replaced elements, baseline is at
+						// the bottom. For inline-blocks with no line boxes, baseline
+						// is the bottom margin edge.
 						ibAscent = blockSize
 					}
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
