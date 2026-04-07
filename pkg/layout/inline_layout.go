@@ -812,12 +812,19 @@ func createLineBoxEx(
 						display = r.Item.Style.GetDisplay()
 					}
 					isInlineBlockLike := r.Item.Style != nil &&
-						(display == css.DisplayInlineBlock || display == css.DisplayTable || display == css.DisplayInlineTable) &&
+						(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
+							display == css.DisplayTable || display == css.DisplayInlineTable) &&
 						r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
-					if isInlineBlockLike && (r.LayoutResult.LastBaseline > 0 || !centralBaseline) {
+					// For inline-flex, use first baseline (CSS Flexbox §4.2).
+					// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
+					atomicBaseline2 := r.LayoutResult.LastBaseline
+					if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+						atomicBaseline2 = r.LayoutResult.Baseline
+					}
+					if isInlineBlockLike && (atomicBaseline2 > 0 || !centralBaseline) {
 						var ibAscent float64
-						if r.LayoutResult.LastBaseline > 0 {
-							ibAscent = r.LayoutResult.LastBaseline
+						if atomicBaseline2 > 0 {
+							ibAscent = atomicBaseline2
 						} else if centralBaseline {
 							ibAscent = blockSize / 2
 						} else {
@@ -977,15 +984,22 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					display = r.Item.Style.GetDisplay()
 				}
 				isInlineBlockLike := r.Item.Style != nil &&
-					(display == css.DisplayInlineBlock || display == css.DisplayTable || display == css.DisplayInlineTable) &&
+					(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
+						display == css.DisplayTable || display == css.DisplayInlineTable) &&
 					r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
-				if isInlineBlockLike && (r.LayoutResult.LastBaseline > 0 || !centralBaseline) {
+				// For inline-flex, use first baseline (CSS Flexbox §4.2).
+				// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
+				atomicBaseline := r.LayoutResult.LastBaseline
+				if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+					atomicBaseline = r.LayoutResult.Baseline
+				}
+				if isInlineBlockLike && (atomicBaseline > 0 || !centralBaseline) {
 					var ibAscent float64
-					if r.LayoutResult.LastBaseline > 0 {
-						// Use the propagated last baseline from the inline-block's
+					if atomicBaseline > 0 {
+						// Use the propagated baseline from the atomic inline's
 						// layout result. This is the distance from the border-box
-						// block-start to the baseline of the last line box.
-						ibAscent = r.LayoutResult.LastBaseline
+						// block-start to the baseline.
+						ibAscent = atomicBaseline
 					} else if centralBaseline {
 						// CSS Writing Modes 3 §4.3: fallback for empty inline-blocks
 						// in vertical modes with central baseline: blockSize / 2.

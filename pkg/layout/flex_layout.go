@@ -898,6 +898,25 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	})
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
+	// §4.2 — Flex container baseline.
+	// The flex container's first baseline set is determined by the first flex item
+	// in the first line that participates in baseline alignment, or the first item
+	// if none does. The baseline is that item's baseline offset from the container's
+	// border-box block-start edge.
+	if len(lines) > 0 && len(lines[0].items) > 0 {
+		firstItem := lines[0].items[0]
+		var itemBlockOffset float64
+		if isRow {
+			itemBlockOffset = firstItem.crossOffset + firstItem.crossMarginStart()
+		} else {
+			itemBlockOffset = firstItem.mainOffset
+		}
+		containerBaseline := geom.Border.BlockStart + geom.Padding.BlockStart +
+			itemBlockOffset + firstItem.baseline
+		builder.SetBaseline(containerBaseline)
+		builder.SetLastBaseline(containerBaseline)
+	}
+
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(fla.style, wdm, fla.space.AvailableSize.InlineSize), wdm)
