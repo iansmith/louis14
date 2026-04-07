@@ -184,6 +184,25 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	}
 	canWrap := wrapMode == "wrap" || wrapMode == "wrap-reverse"
 
+	// For row flex: resolve definite cross-size (block-size) for aspect-ratio transfer.
+	// Items with aspect-ratio that stretch to the container's cross-size can
+	// transfer that size to their inline dimension, affecting intrinsic width.
+	containerGeom := ComputeFragmentGeometry(style, wdm)
+	var definiteCrossSize float64
+	var hasDefiniteCross bool
+	if isRow {
+		if explicitBlock, ok := ResolveBlockSize(style, wdm, space, containerGeom); ok {
+			definiteCrossSize = explicitBlock
+			hasDefiniteCross = true
+		}
+	}
+
+	// Resolve container align-items for stretch detection.
+	alignItems := "stretch"
+	if v, ok := style.Get("align-items"); ok {
+		alignItems = strings.TrimSpace(v)
+	}
+
 	var sumMin, sumMax float64
 	var maxMin, maxMax float64
 
@@ -207,12 +226,65 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 			Build()
 
-		childMM := ComputeMinMaxSizes(ctx, child, childSpace)
 		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 		childBP := childGeom.InlineBorderPadding()
 		childMargins := ResolveMargins(childStyle, childWDM, 0)
-		childMin := childMM.MinContent + childBP + childMargins.InlineSum()
-		childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
+
+		// Check for aspect-ratio transfer from definite cross-size.
+		// For row flex with definite height, items with aspect-ratio that
+		// will stretch get their inline size from cross × ratio.
+		transferred := false
+		var childMin, childMax float64
+		if isRow && hasDefiniteCross {
+			ar := childStyle.GetAspectRatio()
+			hasAR := ar.IsSet && ar.Width > 0 && ar.Height > 0
+
+			// Also check replaced elements for intrinsic aspect ratio.
+			if !hasAR && child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+				info := GetIntrinsicSizingInfo(ctx, child)
+				if info.HasAspectRatio && info.AspectRatio > 0 {
+					hasAR = true
+					ar = css.AspectRatio{IsSet: true, Width: info.AspectRatio, Height: 1}
+				}
+			}
+
+			if hasAR {
+				// Check if item will stretch: align-self not set → inherit align-items.
+				alignSelf := alignItems
+				if v, ok := childStyle.Get("align-self"); ok {
+					v = strings.TrimSpace(v)
+					if v != "" && v != "auto" {
+						alignSelf = v
+					}
+				}
+				// Item stretches if align is "stretch" and no explicit cross-size.
+				willStretch := alignSelf == "stretch"
+				if willStretch {
+					// Check for explicit cross-size (height for row flex).
+					if _, ok := ResolveBlockSize(childStyle, childWDM, childSpace, childGeom); ok {
+						willStretch = false
+					}
+				}
+				if willStretch {
+					// Cross content size = container cross - item cross border/padding/margins.
+					crossContent := definiteCrossSize - childGeom.BlockBorderPadding() - childMargins.BlockSum()
+					if crossContent < 0 {
+						crossContent = 0
+					}
+					// Transfer: inline = cross × (width/height).
+					inlineContent := crossContent * ar.Width / ar.Height
+					childMin = inlineContent + childBP + childMargins.InlineSum()
+					childMax = childMin
+					transferred = true
+				}
+			}
+		}
+
+		if !transferred {
+			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+			childMin = childMM.MinContent + childBP + childMargins.InlineSum()
+			childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
+		}
 
 		sumMin += childMin
 		sumMax += childMax
