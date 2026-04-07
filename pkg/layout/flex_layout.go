@@ -2868,8 +2868,11 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	contentSuggestion := -1.0
 	if mainIsItemInline {
 		// Main axis = item's inline axis: inline min-content size at zero available width.
+		// PercentageResolutionSize is set so percentage widths on flex items
+		// resolve against the flex container's content-box inline-size.
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 			SetPercentageResolutionInlineSize(fla.space.PercentageResolutionInlineSize).
 			Build()
 		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)
