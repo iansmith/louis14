@@ -346,6 +346,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	alignItems := fla.getAlignItems()
 	for _, line := range lines {
 		lineCrossMax := 0.0
+		maxAscent := 0.0
+		maxDescent := 0.0
+		hasBaselineItem := false
 		for _, item := range line.items {
 			// For column flex: stretch items (without auto cross margins) lay out at the container
 			// inline-size (crossIsFixed=true). Non-stretch items and stretch items with auto
@@ -397,10 +400,29 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
-			// §9.4: line cross-size is the max outer cross-size (border-box + margins).
-			outerCross := itemCross + item.crossMarginSum()
-			if outerCross > lineCrossMax {
-				lineCrossMax = outerCross
+			// §9.4: line cross-size computation.
+			outerCross := item.crossSize + item.crossMarginSum()
+			if selfAlign == "baseline" && item.baseline > 0 {
+				// Baseline items: track ascent and descent separately.
+				ascent := item.crossMarginStart() + item.baseline
+				descent := outerCross - ascent
+				if ascent > maxAscent {
+					maxAscent = ascent
+				}
+				if descent > maxDescent {
+					maxDescent = descent
+				}
+				hasBaselineItem = true
+			} else {
+				if outerCross > lineCrossMax {
+					lineCrossMax = outerCross
+				}
+			}
+		}
+		if hasBaselineItem {
+			baselineCross := maxAscent + maxDescent
+			if baselineCross > lineCrossMax {
+				lineCrossMax = baselineCross
 			}
 		}
 		line.crossSize = lineCrossMax
