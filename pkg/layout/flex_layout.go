@@ -1212,8 +1212,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			contentInlineSize, isRow)
 	}
 
-	// Numeric flex-basis.
-	// Parse as length (includes px, em, %, etc.)
+	// Numeric flex-basis (non-negative lengths/percentages only; negative → treat as auto).
 	parentSpace := NewConstraintSpaceBuilder(parentWDM, parentWDM, false).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
@@ -1221,7 +1220,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		Build()
 	if isRow {
 		// Resolve as inline-size against the container.
-		if v, ok := style.GetLength("flex-basis"); ok {
+		if v, ok := style.GetLength("flex-basis"); ok && v >= 0 {
 			result := v
 			if style.GetBoxSizing() == "border-box" {
 				result -= childGeom.InlineBorderPadding()
@@ -1243,7 +1242,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		}
 	} else {
 		// Resolve as block-size.
-		if v, ok := style.GetLength("flex-basis"); ok {
+		if v, ok := style.GetLength("flex-basis"); ok && v >= 0 {
 			result := v
 			if style.GetBoxSizing() == "border-box" {
 				result -= childGeom.BlockBorderPadding()
@@ -1253,7 +1252,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 			return result
 		}
-		if pct, ok := style.GetPercentage("flex-basis"); ok && hasDefiniteMain {
+		if pct, ok := style.GetPercentage("flex-basis"); ok && (hasDefiniteMain || pct == 0) {
 			result := containerMainSize * pct / 100
 			if style.GetBoxSizing() == "border-box" {
 				result -= childGeom.BlockBorderPadding()
@@ -1640,9 +1639,6 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			InlineSize: crossInlineContent + item.crossBorderPadding(),
 			BlockSize:  Indefinite,
 		}
-		// Only constrain the block-size when mainSize is a meaningful positive value.
-		// When mainSize=0, use intrinsic sizing so content (e.g. fixed-height children)
-		// can paint their full height via overflow:visible.
 		if mainSize > 0 {
 			avail.BlockSize = mainSize + item.mainBorderPadding()
 		}
