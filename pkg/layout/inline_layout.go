@@ -181,9 +181,18 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		floatInlineSize := childMargins.InlineSum() + childLogical.InlineSize()
 		floatBlockSize := childMargins.BlockSum() + childLogical.BlockSize()
 		floatSide := childStyle.GetFloat()
-		floatBlockOffset := exclusionSpace.FindFloatPosition(floatSide, floatInlineSize, floatBlockSize, contentInlineSize, 0)
+		// CSS float:left/right are physical. Convert to logical for positioning.
+		logicalSide := floatSide
+		if wdm.Dir == DirectionRTL {
+			if floatSide == css.FloatLeft {
+				logicalSide = css.FloatRight
+			} else {
+				logicalSide = css.FloatLeft
+			}
+		}
+		floatBlockOffset := exclusionSpace.FindFloatPosition(logicalSide, floatInlineSize, floatBlockSize, contentInlineSize, 0)
 		var floatInlineOffset float64
-		if floatSide == css.FloatLeft {
+		if logicalSide == css.FloatLeft {
 			startOff, _ := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 			floatInlineOffset = startOff + childMargins.InlineStart
 		} else {
@@ -199,7 +208,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			BlockOffset:  floatBlockOffset,
 			InlineSize:   floatInlineSize,
 			BlockSize:    floatBlockSize,
-			Side:         floatSide,
+			Side:         logicalSide,
 		})
 	}
 

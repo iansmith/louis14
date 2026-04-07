@@ -915,9 +915,22 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	floatBlockOffset := es.FindFloatPosition(floatSide, floatInlineSize, floatBlockSize,
 		contentInlineSize, floatBlockStart)
 
+	// CSS float:left/right are physical, but the positioning logic uses logical
+	// (inline-start/end) coordinates. In RTL, swap: physical left = inline-end,
+	// physical right = inline-start. The margins are already in the parent's
+	// logical frame so they align correctly after the swap.
+	logicalSide := floatSide
+	if parentWDM.Dir == DirectionRTL {
+		if floatSide == css.FloatLeft {
+			logicalSide = css.FloatRight
+		} else {
+			logicalSide = css.FloatLeft
+		}
+	}
+
 	// Compute the float's inline position.
 	var floatInlineOffset float64
-	if floatSide == css.FloatLeft {
+	if logicalSide == css.FloatLeft {
 		startOff, _ := es.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 		floatInlineOffset = startOff + childMargins.InlineStart
 	} else {
@@ -931,13 +944,14 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		BlockOffset:  floatBlockOffset + childMargins.BlockStart,
 	})
 
-	// Add an exclusion for this float.
+	// Add an exclusion for this float. Use the logical side so that the
+	// exclusion space correctly tracks which inline edge is consumed.
 	exclusion := Exclusion{
 		InlineOffset: floatInlineOffset - childMargins.InlineStart,
 		BlockOffset:  floatBlockOffset,
 		InlineSize:   floatInlineSize,
 		BlockSize:    floatBlockSize,
-		Side:         floatSide,
+		Side:         logicalSide,
 	}
 	*outES = es.Add(exclusion)
 }

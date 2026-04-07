@@ -190,15 +190,18 @@ type flexItem struct {
 
 // mainMarginSum returns the total margin in the flex main axis.
 func (fi *flexItem) mainMarginSum() float64 {
-	if fi.mainIsItemInline {
+	if fi.isRow {
 		return fi.margins.InlineSum()
 	}
 	return fi.margins.BlockSum()
 }
 
 // mainMarginStart returns the margin-start in the flex main axis.
+// Margins are resolved in the container's WDM, so InlineStart/End align with
+// the container's inline direction (correct for row flex) and BlockStart/End
+// align with the container's block direction (correct for column flex).
 func (fi *flexItem) mainMarginStart() float64 {
-	if fi.mainIsItemInline {
+	if fi.isRow {
 		return fi.margins.InlineStart
 	}
 	return fi.margins.BlockStart
@@ -206,7 +209,7 @@ func (fi *flexItem) mainMarginStart() float64 {
 
 // crossMarginStart returns the margin-start in the flex cross axis.
 func (fi *flexItem) crossMarginStart() float64 {
-	if fi.mainIsItemInline {
+	if fi.isRow {
 		return fi.margins.BlockStart
 	}
 	return fi.margins.InlineStart
@@ -214,7 +217,7 @@ func (fi *flexItem) crossMarginStart() float64 {
 
 // crossMarginSum returns the total margin in the flex cross axis.
 func (fi *flexItem) crossMarginSum() float64 {
-	if fi.mainIsItemInline {
+	if fi.isRow {
 		return fi.margins.BlockSum()
 	}
 	return fi.margins.InlineSum()
@@ -222,7 +225,7 @@ func (fi *flexItem) crossMarginSum() float64 {
 
 // crossMarginEnd returns the margin-end in the flex cross axis.
 func (fi *flexItem) crossMarginEnd() float64 {
-	if fi.mainIsItemInline {
+	if fi.isRow {
 		return fi.margins.BlockEnd
 	}
 	return fi.margins.InlineEnd
@@ -230,7 +233,7 @@ func (fi *flexItem) crossMarginEnd() float64 {
 
 // mainMarginEnd returns the margin-end in the flex main axis.
 func (fi *flexItem) mainMarginEnd() float64 {
-	if fi.mainIsItemInline {
+	if fi.isRow {
 		return fi.margins.InlineEnd
 	}
 	return fi.margins.BlockEnd
@@ -1189,7 +1192,12 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		// Resolve margins for the item.
 		// In flex layout, margin auto is used for alignment — resolve to 0 for now,
 		// we handle auto margins later.
-		childMargins := fla.resolveItemMargins(childStyle, childWDM, contentInlineSize, isRow)
+		// Margins are resolved in the CONTAINER's writing mode so that main/cross
+		// margin accessors align with the container's axis directions. Per CSS
+		// Flexbox §4.1, flex item margins participate in the container's formatting
+		// context. Using the item's WDM would swap inline-start/end for items whose
+		// direction differs from the container's.
+		childMargins := fla.resolveItemMargins(childStyle, wdm, contentInlineSize, isRow)
 
 		// Compute flex properties (negative values are invalid per spec).
 		flexGrow := fla.parseFloat(childStyle, "flex-grow", 0)
@@ -1242,7 +1250,8 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 
 		// Detect auto margins for §8.1 alignment.
 		itemMainIsInline := computeMainIsItemInline(wdm, childWDM, isRow)
-		mainAS, mainAE, crossAS, crossAE := getItemAutoMargins(childStyle, childWDM, itemMainIsInline)
+		// Auto margins are resolved in the container's WDM (same as margins above).
+		mainAS, mainAE, crossAS, crossAE := getItemAutoMargins(childStyle, wdm, isRow)
 
 		item := &flexItem{
 			node:           child,
