@@ -874,8 +874,20 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// crossOffset stores the position BEFORE crossMarginStart is added by the builder.
 			var itemCrossOffset float64
 			switch selfAlign {
-			case "flex-end", "end":
+			case "flex-end":
 				itemCrossOffset = crossStart + crossFreeForAlign
+			case "end":
+				if reverseCross {
+					itemCrossOffset = crossStart // acts like flex-start under wrap-reverse
+				} else {
+					itemCrossOffset = crossStart + crossFreeForAlign // acts like flex-end
+				}
+			case "start":
+				if reverseCross {
+					itemCrossOffset = crossStart + crossFreeForAlign // acts like flex-end under wrap-reverse
+				} else {
+					itemCrossOffset = crossStart // acts like flex-start
+				}
 			case "self-end":
 				if selfStartIsCrossStart(wdm, item.wdm, isRow) {
 					// Item's end maps to container's cross-end.
@@ -922,7 +934,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				} else {
 					itemCrossOffset = crossStart + crossFreeForAlign
 				}
-			default: // flex-start, start, stretch
+			default: // flex-start, stretch
 				itemCrossOffset = crossStart
 			}
 			item.crossOffset = itemCrossOffset
@@ -2295,12 +2307,25 @@ func computeAlignContent(
 
 	var initialOffset, gap float64
 	switch alignContent {
-	case "flex-end", "end":
+	case "flex-end":
 		if freeSpace < 0 {
-			// Fallback to flex-start when overflowing.
 			initialOffset = 0
 		} else {
 			initialOffset = freeSpace
+		}
+		gap = crossGap
+	case "end":
+		if reverseCross {
+			initialOffset = 0 // acts like flex-start under wrap-reverse
+		} else {
+			initialOffset = freeSpace // acts like flex-end
+		}
+		gap = crossGap
+	case "start":
+		if reverseCross {
+			initialOffset = freeSpace // acts like flex-end under wrap-reverse
+		} else {
+			initialOffset = 0 // acts like flex-start
 		}
 		gap = crossGap
 	case "center":
