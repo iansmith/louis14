@@ -456,13 +456,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		lineCrossMax := 0.0
 		for _, item := range line.items {
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			if selfAlign == "stretch" {
-				// Stretch items are handled in the stretch pass below.
-				if item.crossSize > lineCrossMax {
-					lineCrossMax = item.crossSize
-				}
-				continue
-			}
 			// Check if item has percentage cross-size or aspect-ratio that can now be resolved.
 			needsRelayout := false
 			if isRow {
@@ -478,6 +471,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// re-layout with definite cross-size so aspect-ratio items get correct cross-size.
 			if ar := item.style.GetAspectRatio(); ar.IsSet {
 				needsRelayout = true
+			}
+			if selfAlign == "stretch" && !needsRelayout {
+				// Stretch items without percentage cross-size are handled in the stretch pass below.
+				if item.crossSize > lineCrossMax {
+					lineCrossMax = item.crossSize
+				}
+				continue
 			}
 			if needsRelayout {
 				var crossBP2 float64
