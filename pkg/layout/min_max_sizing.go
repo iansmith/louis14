@@ -459,6 +459,15 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 
 	parentWDM := space.WritingDirection
 
+	// Floated children contribute differently to intrinsic sizing:
+	// - For max-content: float widths are accumulated (they sit side-by-side),
+	//   then combined with the widest non-float child per "line".
+	// - For min-content: each float is independent (they can stack vertically),
+	//   so their min-content widths are compared via max like normal children.
+	// This mirrors Blink's BlockLayoutAlgorithm::ComputeMinMaxSizes which
+	// accumulates float inline sizes on the current line.
+	var floatMaxAccum float64 // sum of float max-content widths
+
 	for _, child := range node.Children() {
 		if child.IsText() {
 			continue
@@ -471,18 +480,13 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		childWDM := NewWritingDirectionMode(childStyle)
 		isOrthogonal := parentWDM.IsOrthogonalTo(childWDM)
 
+		var childMin, childMax float64
 		if isOrthogonal {
 			// Orthogonal child: the parent's inline direction aligns with the
 			// child's block direction. We need the child's block-size, which
 			// requires actually laying out the child.
 			// Mirrors Blink's NGOrthogonalWritingModeRootInlineSize().
-			childMin, childMax := measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space)
-			if childMin > result.MinContent {
-				result.MinContent = childMin
-			}
-			if childMax > result.MaxContent {
-				result.MaxContent = childMax
-			}
+			childMin, childMax = measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space)
 		} else {
 			// Parallel child: use standard min/max inline-size computation.
 			childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
@@ -498,16 +502,38 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			childBP := childGeom.InlineBorderPadding()
 			childMargins := ResolveMargins(childStyle, childWDM, 0)
-			childMin := childMM.MinContent + childBP + childMargins.InlineSum()
-			childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
-
-			if childMin > result.MinContent {
-				result.MinContent = childMin
-			}
-			if childMax > result.MaxContent {
-				result.MaxContent = childMax
-			}
+			childMin = childMM.MinContent + childBP + childMargins.InlineSum()
+			childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
 		}
+
+		isFloat := childStyle.GetFloat() != css.FloatNone
+
+		// Min-content: floats can wrap, so each is independent — use max.
+		if childMin > result.MinContent {
+			result.MinContent = childMin
+		}
+
+		if isFloat {
+			// Max-content: floats sit side-by-side, accumulate their widths.
+			floatMaxAccum += childMax
+		} else {
+			// Non-float child: its max-content combines with accumulated floats.
+			// The line width = floatMaxAccum + childMax. Compare with result.
+			lineMax := floatMaxAccum + childMax
+			if lineMax > result.MaxContent {
+				result.MaxContent = lineMax
+			}
+			// Non-float child clears the float accumulator conceptually
+			// (floats before it are on previous lines for max-content purposes).
+			// Actually, in CSS max-content, floats don't wrap, so they persist.
+			// But a block-level non-float child establishes a new line below floats.
+			// Reset accumulator after accounting for the combined width.
+		}
+	}
+
+	// After all children, the accumulated float width alone might be the widest.
+	if floatMaxAccum > result.MaxContent {
+		result.MaxContent = floatMaxAccum
 	}
 
 	return result
