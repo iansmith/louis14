@@ -131,7 +131,10 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	}
 
 	var result MinMaxSizes
-	if hasOnlyInlineChildren(node) {
+	display := style.GetDisplay()
+	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+		result = measureFlexMinMax(node, ctx, space)
+	} else if hasOnlyInlineChildren(node) {
 		result = measureInlineMinMax(node, ctx, space)
 	} else {
 		result = measureBlockMinMax(node, ctx, space)
@@ -300,9 +303,80 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		}
 
 		if !transferred {
-			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
-			childMin = childMM.MinContent + childBP + childMargins.InlineSum()
-			childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
+			// CSS Flexbox §9.9.1: flex item contributions to the container's
+			// intrinsic main size depend on flex-basis, flex-grow, and flex-shrink.
+			// For row flex, main axis = inline axis, so we need intrinsic inline
+			// sizes of children combined with their flex base sizes.
+			if isRow {
+				childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+				contentMin := childMM.MinContent + childBP + childMargins.InlineSum()
+				contentMax := childMM.MaxContent + childBP + childMargins.InlineSum()
+
+				flexBasis, basisIsContent := resolveFlexBasisForIntrinsic(
+					childStyle, childWDM, childSpace,
+					ComputeFragmentGeometry(childStyle, childWDM),
+					ctx, child)
+
+				flexGrow := childStyle.GetFlexGrow()
+
+				if basisIsContent {
+					// §9.9.1: If flex-basis is "content" or depends on available
+					// space, use the item's content-based contribution directly.
+					childMin = contentMin
+					childMax = contentMax
+				} else {
+					// Flex base size (outer, content-box basis + border/padding + margins).
+					outerBasis := flexBasis + childBP + childMargins.InlineSum()
+
+					// Apply min/max main-size constraints to the flex base size.
+					childGeom2 := ComputeFragmentGeometry(childStyle, childWDM)
+					minMain := ResolveMinInlineSize(childStyle, childWDM, childSpace, childGeom2) + childBP + childMargins.InlineSum()
+					clampedBasis := outerBasis
+					if clampedBasis < minMain {
+						clampedBasis = minMain
+					}
+					if maxMain, ok := ResolveMaxInlineSize(childStyle, childWDM, childSpace, childGeom2); ok {
+						outerMax := maxMain + childBP + childMargins.InlineSum()
+						if clampedBasis > outerMax {
+							clampedBasis = outerMax
+						}
+					}
+
+					// Max-content contribution:
+					if flexGrow > 0 {
+						// §9.9.1: If flex-grow > 0, contribution = flex base size
+						// (clamped by min/max).
+						childMax = clampedBasis
+					} else {
+						// §9.9.1: Otherwise, contribution = max(flex base size, content)
+						// clamped by min/max.
+						childMax = clampedBasis
+						if contentMax > childMax {
+							childMax = contentMax
+						}
+					}
+
+					// Min-content contribution:
+					if flexGrow == 0 {
+						// §9.9.1: If flex-grow is zero, clamp flex base size from
+						// above by max main size, then from below by min(content, min/max clamped).
+						clampedMin := contentMin
+						childMin = clampedBasis
+						if clampedMin > childMin {
+							childMin = clampedMin
+						}
+					} else {
+						// §9.9.1: Otherwise, use min-content contribution.
+						childMin = contentMin
+					}
+				}
+			} else {
+				// Column flex: inline axis = cross axis. Item contributions
+				// are just their intrinsic inline (cross) sizes.
+				childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+				childMin = childMM.MinContent + childBP + childMargins.InlineSum()
+				childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
+			}
 		}
 
 		sumMin += childMin
@@ -331,6 +405,51 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	}
 	// Column: inline = cross direction → max of items' inline sizes.
 	return MinMaxSizes{MinContent: maxMin, MaxContent: maxMax}
+}
+
+// resolveFlexBasisForIntrinsic resolves a flex item's flex-basis to a definite
+// content-box value for use in the container's intrinsic sizing algorithm
+// (CSS Flexbox §9.9.1). Returns the resolved basis and whether the basis is
+// content-dependent (i.e., "content" keyword or "auto" with no explicit main size).
+func resolveFlexBasisForIntrinsic(
+	childStyle *css.Style,
+	childWDM WritingDirectionMode,
+	childSpace ConstraintSpace,
+	childGeom FragmentGeometry,
+	ctx *LayoutContext,
+	child *LayoutInputNode,
+) (float64, bool) {
+	fbv := childStyle.GetFlexBasisValue()
+
+	if fbv.IsContent {
+		return 0, true
+	}
+
+	if fbv.IsAuto {
+		if explicit, ok := ResolveInlineSize(childStyle, childWDM, childSpace, childGeom); ok {
+			return explicit, false
+		}
+		return 0, true
+	}
+
+	if fbv.IsPercent {
+		return 0, true
+	}
+	if fbv.IsCalc {
+		if resolved, ok := css.EvalCalcWithPercent(fbv.CalcExpr, fbv.FontSize, 0); ok {
+			if resolved < 0 {
+				resolved = 0
+			}
+			return resolved, false
+		}
+		return 0, true
+	}
+
+	basis := fbv.Length
+	if basis < 0 {
+		basis = 0
+	}
+	return basis, false
 }
 
 // measureBlockMinMax computes min/max content sizes for a node with
