@@ -11,7 +11,7 @@ import (
 	"louis14/pkg/css"
 )
 
-var flexDebug = os.Getenv("FLEX_DEBUG") == "1"
+const flexDebug = false
 
 
 // FlexLayoutAlgorithm implements the CSS Flexible Box Layout Module Level 1 §9.
@@ -69,37 +69,39 @@ func computeMainIsItemInline(containerWDM WritingDirectionMode, itemWDM WritingD
 // self-start/self-end use the *item's own* writing direction rather than the
 // container's.
 //
-// Uses WebKit/Blink's three-branch approach:
-//  1. Orthogonal writing modes: compare container's IsFlippedBlocks against
-//     item's IsLTR (the axes are perpendicular so cross-block vs cross-inline).
-//  2. Non-orthogonal, flipped lines: compare container's IsFlippedBlocks
-//     vs item's IsFlippedBlocks.
-//  3. Non-orthogonal, direction: compare container's IsLTR vs item's IsLTR.
+// The algorithm compares two physical sides:
+//  1. The container's cross-start (block-start for row, inline-start for column)
+//  2. The item's "start" on the same physical axis. If the cross axis is
+//     the item's block axis, this is the item's block-start; if it is the
+//     item's inline axis, this is the item's inline-start.
 //
-// If any check detects a mismatch, self-start maps to cross-end (return false).
+// When these physical sides match, self-start ≡ cross-start → return true.
 func selfStartIsCrossStart(containerWDM, itemWDM WritingDirectionMode, isRow bool) bool {
-	isOrthogonal := containerWDM.IsHorizontal() != itemWDM.IsHorizontal()
-
-	if isOrthogonal {
-		// When writing modes are orthogonal, the cross axis of the container
-		// maps to a different physical axis than the item's. WebKit compares
-		// container's flipped-blocks against item's direction.
-		if containerWDM.IsFlippedBlocks() == itemWDM.IsLTR() {
-			return false // flip
-		}
-		return true
+	// Determine the container's physical cross-start side.
+	var containerCrossStart physicalSide
+	if isRow {
+		// Row flex: cross = block axis.
+		containerCrossStart = physicalBlockStart(containerWDM)
+	} else {
+		// Column flex: cross = inline axis.
+		containerCrossStart = physicalInlineStart(containerWDM)
 	}
 
-	// Non-orthogonal: same axis family (both horizontal or both vertical).
-	// Check 1: flipped block progression (e.g., VRL vs VLR).
-	if containerWDM.IsFlippedBlocks() != itemWDM.IsFlippedBlocks() {
-		return false // flip
+	// Determine whether the cross axis (physical) aligns with the item's
+	// block axis or inline axis.
+	crossIsVertical := containerCrossStart == sideTop || containerCrossStart == sideBottom
+	itemBlockIsVertical := itemWDM.IsHorizontal() // HTB: block is vertical
+
+	var itemSelfStart physicalSide
+	if crossIsVertical == itemBlockIsVertical {
+		// Cross axis corresponds to item's block axis.
+		itemSelfStart = physicalBlockStart(itemWDM)
+	} else {
+		// Cross axis corresponds to item's inline axis.
+		itemSelfStart = physicalInlineStart(itemWDM)
 	}
-	// Check 2: direction mismatch (LTR vs RTL).
-	if containerWDM.IsLTR() != itemWDM.IsLTR() {
-		return false // flip
-	}
-	return true
+
+	return containerCrossStart == itemSelfStart
 }
 
 // physicalSide is a simple enum for the four physical sides.
@@ -630,6 +632,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 		}
+	}
+	if flexDebug {
+		fmt.Fprintf(os.Stderr, "FLEX-DBG lineOffsets=%v alignContent=%s reverseCross=%v wrapMode=%s containerCrossSize=%.1f totalLinesCross=%.1f nLines=%d\n",
+			lineOffsets, alignContent, reverseCross, wrapMode, containerCrossSize, totalLinesCross, len(lines))
 	}
 
 	// §9.4 — Stretch items to line cross-size (align-self: stretch).
