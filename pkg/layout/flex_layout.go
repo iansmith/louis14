@@ -2155,7 +2155,12 @@ func computeAlignContent(
 	var initialOffset, gap float64
 	switch alignContent {
 	case "flex-end", "end":
-		initialOffset = freeSpace
+		if freeSpace < 0 {
+			// Fallback to flex-start when overflowing.
+			initialOffset = 0
+		} else {
+			initialOffset = freeSpace
+		}
 		gap = crossGap
 	case "center":
 		initialOffset = freeSpace / 2
@@ -2202,9 +2207,8 @@ func computeAlignContent(
 	case "stretch":
 		if freeSpace > 0 && len(lines) > 1 {
 			// Distribute positive free space to lines (multi-line only).
-			// For single-line wrapping containers, the line keeps its intrinsic
-			// cross-size so that wrap-reverse positioning works correctly.
-			// The stretch pass (stretchFlexItems) handles item stretching separately.
+			// For single-line wrapping containers, the stretch pass
+			// (stretchFlexItems) handles item stretching separately.
 			extra := freeSpace / float64(len(lines))
 			for i := range lines {
 				lines[i].crossSize += extra
@@ -2213,7 +2217,7 @@ func computeAlignContent(
 		// Fallback alignment for stretch is flex-start.
 		initialOffset = 0
 		gap = crossGap
-	default: // flex-start
+	default: // flex-start, start
 		initialOffset = 0
 		gap = crossGap
 	}
