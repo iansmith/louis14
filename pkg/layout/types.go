@@ -79,6 +79,14 @@ func (b *Box) CreatesStackingContext() bool {
 	if b.Position != css.PositionStatic && b.Style.HasExplicitZIndex() {
 		return true
 	}
+	// CSS Flexbox §4.3: flex items with explicit z-index create stacking contexts
+	// even when position is static.
+	if b.Style.HasExplicitZIndex() && b.Parent != nil && b.Parent.Style != nil {
+		parentDisplay := b.Parent.Style.GetDisplay()
+		if parentDisplay == css.DisplayFlex || parentDisplay == css.DisplayInlineFlex {
+			return true
+		}
+	}
 	// opacity < 1.
 	if opacity, ok := b.Style.Get("opacity"); ok {
 		if o, err := strconv.ParseFloat(opacity, 64); err == nil && o < 1.0 {
