@@ -63,6 +63,20 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 	if !ok || src == "" {
 		return IntrinsicSizingInfo{}
 	}
+
+	// For SVG images, determine intrinsic dimensions from the SVG metadata.
+	// Per the SVG/CSS specs and Blink's behavior:
+	// - If the SVG has explicit width/height attributes → those are the intrinsic dimensions
+	// - If only viewBox → aspect ratio from viewBox, no intrinsic dimensions
+	//   (CSS default 300x150 applies, with aspect ratio constraint)
+	// - If explicit width + viewBox → derive height from aspect ratio (and vice versa)
+	if images.IsSVGPath(src) {
+		svgInfo, err := images.GetSVGSizingInfoWithFetcher(src, ctx.ImageFetcher)
+		if err == nil {
+			return svgIntrinsicInfo(svgInfo)
+		}
+	}
+
 	natW, natH, err := images.GetImageDimensionsWithFetcher(src, ctx.ImageFetcher)
 	if err != nil || natW <= 0 || natH <= 0 {
 		return IntrinsicSizingInfo{}
@@ -73,4 +87,45 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 		AspectRatio:     float64(natW) / float64(natH),
 		HasAspectRatio:  true,
 	}
+}
+
+// svgIntrinsicInfo computes intrinsic sizing info for an SVG based on its
+// root element attributes. Follows CSS/SVG spec rules and matches Blink:
+// - Explicit width/height → intrinsic dimensions
+// - viewBox only → aspect ratio, no intrinsic dimensions (use CSS default 300x150)
+// - One explicit dimension + viewBox → derive the other from aspect ratio
+func svgIntrinsicInfo(svg images.SVGSizingInfo) IntrinsicSizingInfo {
+	var info IntrinsicSizingInfo
+
+	// Compute aspect ratio from viewBox if available.
+	if svg.HasViewBox && svg.ViewBoxWidth > 0 && svg.ViewBoxHeight > 0 {
+		info.HasAspectRatio = true
+		info.AspectRatio = svg.ViewBoxWidth / svg.ViewBoxHeight
+	}
+
+	switch {
+	case svg.HasExplicitWidth && svg.HasExplicitHeight:
+		info.IntrinsicWidth = svg.ExplicitWidth
+		info.IntrinsicHeight = svg.ExplicitHeight
+		if !info.HasAspectRatio && info.IntrinsicHeight > 0 {
+			info.HasAspectRatio = true
+			info.AspectRatio = info.IntrinsicWidth / info.IntrinsicHeight
+		}
+
+	case svg.HasExplicitWidth && info.HasAspectRatio:
+		info.IntrinsicWidth = svg.ExplicitWidth
+		info.IntrinsicHeight = svg.ExplicitWidth / info.AspectRatio
+
+	case svg.HasExplicitHeight && info.HasAspectRatio:
+		info.IntrinsicHeight = svg.ExplicitHeight
+		info.IntrinsicWidth = svg.ExplicitHeight * info.AspectRatio
+
+	default:
+		// No explicit dimensions. Per CSS 2.1 §10.3.2, the replaced element
+		// uses the CSS default 300x150, but the viewBox provides the aspect ratio.
+		// We set IntrinsicWidth/Height to 0 to indicate no intrinsic dimensions.
+		// ComputeReplacedSize will use the 300/150 defaults.
+	}
+
+	return info
 }

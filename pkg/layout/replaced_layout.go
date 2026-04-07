@@ -22,8 +22,17 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 
 	// Logical aspect ratio: inline/block.
 	var logicalRatio float64
-	if info.HasAspectRatio && intrinsicBlock > 0 {
-		logicalRatio = intrinsicInline / intrinsicBlock
+	if info.HasAspectRatio {
+		if info.AspectRatio > 0 {
+			// Use pre-computed physical ratio, convert to logical.
+			if wdm.IsVertical() {
+				logicalRatio = 1.0 / info.AspectRatio
+			} else {
+				logicalRatio = info.AspectRatio
+			}
+		} else if intrinsicBlock > 0 {
+			logicalRatio = intrinsicInline / intrinsicBlock
+		}
 	}
 
 	// Resolve explicit CSS sizes.

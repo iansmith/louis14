@@ -351,6 +351,76 @@ func LoadImageWithFetcher(path string, fetcher ImageFetcher) (image.Image, error
 	return img, nil
 }
 
+// SVGSizingInfo holds the parsed intrinsic sizing metadata from an SVG file.
+// Per the SVG and CSS specs, an SVG's intrinsic dimensions come from its explicit
+// width/height attributes (not percentage-based). The viewBox provides the intrinsic
+// aspect ratio. When width/height are absent, the SVG has no intrinsic dimensions
+// but may have an intrinsic ratio from the viewBox.
+type SVGSizingInfo struct {
+	HasExplicitWidth  bool
+	HasExplicitHeight bool
+	ExplicitWidth     float64 // only valid when HasExplicitWidth is true
+	ExplicitHeight    float64 // only valid when HasExplicitHeight is true
+	HasViewBox        bool
+	ViewBoxWidth      float64
+	ViewBoxHeight     float64
+}
+
+// svgViewBoxRE matches a viewBox attribute on the root <svg> element.
+var svgViewBoxRE = regexp.MustCompile(`viewBox=["']([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)["']`)
+
+// GetSVGSizingInfo parses SVG data to extract explicit width/height and viewBox.
+func GetSVGSizingInfo(data []byte) SVGSizingInfo {
+	var info SVGSizingInfo
+	rootMatch := svgOpenTagRE.FindStringSubmatch(string(data))
+	if rootMatch == nil {
+		return info
+	}
+	rootAttrs := rootMatch[1]
+
+	// Extract explicit width/height (absolute values only, not percentages).
+	for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
+		val, _ := strconv.ParseFloat(m[2], 64)
+		if m[1] == "width" {
+			info.HasExplicitWidth = true
+			info.ExplicitWidth = val
+		} else if m[1] == "height" {
+			info.HasExplicitHeight = true
+			info.ExplicitHeight = val
+		}
+	}
+
+	// Extract viewBox.
+	if m := svgViewBoxRE.FindStringSubmatch(rootAttrs); m != nil {
+		info.HasViewBox = true
+		info.ViewBoxWidth, _ = strconv.ParseFloat(m[3], 64)
+		info.ViewBoxHeight, _ = strconv.ParseFloat(m[4], 64)
+	}
+
+	return info
+}
+
+// GetSVGSizingInfoWithFetcher fetches SVG data and returns sizing info.
+func GetSVGSizingInfoWithFetcher(path string, fetcher ImageFetcher) (SVGSizingInfo, error) {
+	if fetcher == nil {
+		return SVGSizingInfo{}, fmt.Errorf("no fetcher")
+	}
+	data, err := fetcher(path)
+	if err != nil {
+		return SVGSizingInfo{}, err
+	}
+	if !isSVGData(data) {
+		return SVGSizingInfo{}, fmt.Errorf("not SVG data")
+	}
+	return GetSVGSizingInfo(data), nil
+}
+
+// IsSVGPath returns true if the path likely refers to an SVG file.
+func IsSVGPath(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".svg") || strings.HasSuffix(lower, ".svgz")
+}
+
 // GetImageDimensionsWithFetcher returns the width and height of an image,
 // using the provided fetcher for network URIs.
 func GetImageDimensionsWithFetcher(path string, fetcher ImageFetcher) (width, height int, err error) {
