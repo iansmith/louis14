@@ -450,8 +450,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// §9.8 — Two-pass layout: now that line cross-sizes are known, re-layout
-	// non-stretch items that have percentage cross-sizes or aspect-ratio.
-	// This gives them access to the definite cross-size for % resolution.
+	// items that have percentage cross-sizes, percentage min/max cross-sizes,
+	// or aspect-ratio. This gives them access to the definite cross-size for
+	// % resolution. Stretch items are handled separately in stretchFlexItems.
 	for _, line := range lines {
 		lineCrossMax := 0.0
 		for _, item := range line.items {
@@ -462,8 +463,20 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				if _, ok := item.style.GetPercentage("height"); ok {
 					needsRelayout = true
 				}
+				if _, ok := item.style.GetPercentage("min-height"); ok {
+					needsRelayout = true
+				}
+				if _, ok := item.style.GetPercentage("max-height"); ok {
+					needsRelayout = true
+				}
 			} else {
 				if _, ok := item.style.GetPercentage("width"); ok {
+					needsRelayout = true
+				}
+				if _, ok := item.style.GetPercentage("min-width"); ok {
+					needsRelayout = true
+				}
+				if _, ok := item.style.GetPercentage("max-width"); ok {
 					needsRelayout = true
 				}
 			}
@@ -482,10 +495,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			if needsRelayout {
 				var crossBP2 float64
 				if item.mainIsItemInline {
-					// main=inline → cross=block
 					crossBP2 = item.geom.BlockBorderPadding()
 				} else {
-					// main=block → cross=inline
 					crossBP2 = item.geom.InlineBorderPadding()
 				}
 				crossContent2 := line.crossSize - item.crossMarginSum() - crossBP2
@@ -529,6 +540,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	} else {
 		// cross = inline (already constrained above via contentInlineSize)
+	}
+
+	// §9.4 step 8 (revisited): After min/max cross constraints, for single-line
+	// containers the line cross-size must match the container cross-size.
+	// This handles cases like min-height where the container cross-size was
+	// bumped but the line cross-size was set before the constraint was applied.
+	if wrapMode == "nowrap" && len(lines) == 1 {
+		if containerCrossSize > lines[0].crossSize {
+			lines[0].crossSize = containerCrossSize
+		}
 	}
 
 	// §9.6 — align-content: distribute lines within container cross-size.
@@ -2500,19 +2521,22 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 				}
 			}
 			newBorderBox := stretchContent + crossBP
-			if newBorderBox != item.crossSize {
-				cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
-					item.resolvedMain, stretchContent, true)
-				result := layoutElement(fla.ctx, item.node, cs)
-				item.fragment = result.Fragment
-				item.propagatedOOF = result.PropagatedOOFCandidates
-				lf := NewLogicalFragment(wdm, item.fragment)
-				if isRow {
-					item.crossSize = lf.BlockSize()
-				} else {
-					item.crossSize = lf.InlineSize()
-				}
+			// Always relayout: even if the border-box size is unchanged,
+			// the percentage resolution block-size changed from 0 (first pass
+			// with Indefinite cross) to stretchContent (now definite).
+			// This ensures descendants with percentage heights resolve correctly.
+			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+				item.resolvedMain, stretchContent, true)
+			result := layoutElement(fla.ctx, item.node, cs)
+			item.fragment = result.Fragment
+			item.propagatedOOF = result.PropagatedOOFCandidates
+			lf := NewLogicalFragment(wdm, item.fragment)
+			if isRow {
+				item.crossSize = lf.BlockSize()
+			} else {
+				item.crossSize = lf.InlineSize()
 			}
+			_ = newBorderBox // computed for potential future caching
 		}
 	}
 }
