@@ -1280,9 +1280,19 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	contentInlineSize float64,
 	isRow bool,
 ) float64 {
+	// For column flex, the item's cross-axis margins reduce the available
+	// inline space for layout (affects wrapping behavior and thus block-size).
+	availInline := contentInlineSize
+	if !isRow {
+		margins := ResolveMargins(style, childWDM, contentInlineSize)
+		availInline -= margins.InlineStart + margins.InlineEnd
+		if availInline < 0 {
+			availInline = 0
+		}
+	}
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
 	if isRow {
