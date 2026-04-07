@@ -1135,7 +1135,8 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		}
 
 		// Detect auto margins for §8.1 alignment.
-		mainAS, mainAE, crossAS, crossAE := getItemAutoMargins(childStyle, childWDM, isRow)
+		itemMainIsInline := computeMainIsItemInline(wdm, childWDM, isRow)
+		mainAS, mainAE, crossAS, crossAE := getItemAutoMargins(childStyle, childWDM, itemMainIsInline)
 
 		item := &flexItem{
 			node:           child,
@@ -1143,7 +1144,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 			wdm:            childWDM,
 			geom:           childGeom,
 			margins:        childMargins,
-			mainIsItemInline: computeMainIsItemInline(wdm, childWDM, isRow),
+			mainIsItemInline: itemMainIsInline,
 			flexBasis:      flexBasis,
 			hypothetical:   hyp,
 			flexGrow:       flexGrow,
@@ -1220,13 +1221,13 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		// §9.2 aspect-ratio fallback when cross-size is definite.
 		if ar := style.GetAspectRatio(); ar.IsSet && hasDefiniteCross {
 			if mainIsItemInline && ar.Height > 0 {
-				crossContent := containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+				crossContent := containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
 				if crossContent < 0 {
 					crossContent = 0
 				}
 				return crossContent * ar.Width / ar.Height
 			} else if !mainIsItemInline && ar.Width > 0 {
-				crossContent := containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+				crossContent := containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
 				if crossContent < 0 {
 					crossContent = 0
 				}
@@ -1368,10 +1369,10 @@ func (fla *FlexLayoutAlgorithm) clampMainSizeWithMin(
 }
 
 // resolveItemCrossMargins returns the total cross-axis margin sum for a flex item.
-// isRow=true: cross axis is block, sum = top+bottom margins.
-func resolveItemCrossMargins(style *css.Style, wdm WritingDirectionMode, containingInlineSize float64, isRow bool) float64 {
+// mainIsItemInline=true: cross = item's block axis. mainIsItemInline=false: cross = item's inline axis.
+func resolveItemCrossMargins(style *css.Style, wdm WritingDirectionMode, containingInlineSize float64, mainIsItemInline bool) float64 {
 	margins := ResolveMargins(style, wdm, containingInlineSize)
-	if isRow {
+	if mainIsItemInline {
 		return margins.BlockSum()
 	}
 	return margins.InlineSum()
@@ -2111,12 +2112,14 @@ func getItemAutoMargins(style *css.Style, wdm WritingDirectionMode, isRow bool) 
 		iAS, iAE = iAE, iAS
 	}
 
-	// Step 3: Map logical edges to main/cross axis based on flex direction.
+	// Step 3: Map logical edges to main/cross axis.
+	// isRow here acts as mainIsItemInline (caller must pass the correct value
+	// for orthogonal items).
 	if isRow {
-		// main axis = inline, cross axis = block
+		// main axis = item's inline, cross axis = item's block
 		return iAS, iAE, bAS, bAE
 	}
-	// main axis = block, cross axis = inline
+	// main axis = item's block, cross axis = item's inline
 	return bAS, bAE, iAS, iAE
 }
 
@@ -2136,18 +2139,21 @@ func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
 	space ConstraintSpace,
 	isRow bool,
 ) float64 {
-	if isRow {
-		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" {
-			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
+	if mainIsItemInline {
+		minProp := "min-width"
+		if childWDM.IsVertical() {
+			minProp = "min-height"
 		}
-		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
 			return ResolveMinInlineSize(style, childWDM, space, childGeom)
 		}
 	} else {
-		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" {
-			return ResolveMinBlockSize(style, childWDM, space, childGeom)
+		minProp := "min-height"
+		if childWDM.IsVertical() {
+			minProp = "min-width"
 		}
-		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
 			return ResolveMinBlockSize(style, childWDM, space, childGeom)
 		}
 	}
@@ -2167,18 +2173,25 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	contentInlineSize float64,
 ) float64 {
 	// Check if min-size is explicitly set (non-auto).
-	if isRow {
-		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" {
-			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+	// Use mainIsItemInline to determine which axis of the ITEM corresponds to
+	// the flex main axis — this is correct for orthogonal items too.
+	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
+	if mainIsItemInline {
+		// Main axis = item's inline axis → min-inline-size property.
+		minProp := "min-width"
+		if childWDM.IsVertical() {
+			minProp = "min-height"
 		}
-		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
 			return ResolveMinInlineSize(style, childWDM, space, childGeom)
 		}
 	} else {
-		if v, ok := style.Get("min-height"); ok && v != "" && v != "auto" {
-			return ResolveMinBlockSize(style, childWDM, space, childGeom)
+		// Main axis = item's block axis → min-block-size property.
+		minProp := "min-height"
+		if childWDM.IsVertical() {
+			minProp = "min-width"
 		}
-		if v, ok := style.Get("min-width"); ok && v != "" && v != "auto" && childWDM.IsVertical() {
+		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
 			return ResolveMinBlockSize(style, childWDM, space, childGeom)
 		}
 	}
@@ -2194,8 +2207,6 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	if overflow == "scroll" || overflow == "auto" {
 		return 0
 	}
-
-	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
 
 	// §4.5 Content size suggestion: min-content size in the main axis.
 	contentSuggestion := -1.0
@@ -2275,7 +2286,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			// If no explicit cross-size but container cross is definite (item will be stretched),
 			// use the container cross-size minus item's cross border/padding/margins.
 			if crossContentSize < 0 && hasDefiniteCross {
-				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
 				if mainIsItemInline {
 					crossContentSize = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
 				} else {
@@ -2323,7 +2334,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				}
 			}
 			if crossContentSize < 0 && hasDefiniteCross {
-				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
 				if mainIsItemInline {
 					crossContentSize = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
 				} else {
