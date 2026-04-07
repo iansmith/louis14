@@ -457,30 +457,13 @@ func CalculateInitialFragmentGeometry(
 	}
 
 	// Apply min/max inline constraints (content-box comparison).
+	// CSS 2.1 §10.4: Apply max first, then min. This ensures min wins when min > max.
 	contentInline := borderBoxInline - geom.InlineBorderPadding()
 	if contentInline < 0 {
 		contentInline = 0
 	}
 
-	// Resolve min-inline-size, handling intrinsic keywords.
-	minInlineProp := "min-width"
-	if wdm.IsVertical() {
-		minInlineProp = "min-height"
-	}
-	minInline := ResolveMinInlineSize(style, wdm, space, geom)
-	if minInlineVal, ok := style.Get(minInlineProp); ok && IsIntrinsicKeyword(minInlineVal) {
-		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
-		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
-		if available < 0 {
-			available = 0
-		}
-		minInline = ResolveIntrinsicInlineSize(minInlineVal, minMax, available)
-	}
-	if contentInline < minInline {
-		contentInline = minInline
-	}
-
-	// Resolve max-inline-size, handling intrinsic keywords.
+	// Resolve max-inline-size first (so min can override it).
 	maxInlineProp := "max-width"
 	if wdm.IsVertical() {
 		maxInlineProp = "max-height"
@@ -499,6 +482,24 @@ func CalculateInitialFragmentGeometry(
 		if contentInline > maxInline {
 			contentInline = maxInline
 		}
+	}
+
+	// Resolve min-inline-size second (min wins over max per CSS 2.1 §10.4).
+	minInlineProp := "min-width"
+	if wdm.IsVertical() {
+		minInlineProp = "min-height"
+	}
+	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	if minInlineVal, ok := style.Get(minInlineProp); ok && IsIntrinsicKeyword(minInlineVal) {
+		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
+		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		minInline = ResolveIntrinsicInlineSize(minInlineVal, minMax, available)
+	}
+	if contentInline < minInline {
+		contentInline = minInline
 	}
 	borderBoxInline = contentInline + geom.InlineBorderPadding()
 
@@ -573,19 +574,20 @@ func CalculateInitialFragmentGeometry(
 	}
 
 	// Apply min/max block constraints only when block-size is definite.
+	// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
 	if borderBoxBlock != Indefinite {
 		contentBlock := borderBoxBlock - geom.BlockBorderPadding()
 		if contentBlock < 0 {
 			contentBlock = 0
 		}
-		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
-		if contentBlock < minBlock {
-			contentBlock = minBlock
-		}
 		if maxBlock, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
 			if contentBlock > maxBlock {
 				contentBlock = maxBlock
 			}
+		}
+		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
+		if contentBlock < minBlock {
+			contentBlock = minBlock
 		}
 		borderBoxBlock = contentBlock + geom.BlockBorderPadding()
 	}
