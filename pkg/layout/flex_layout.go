@@ -785,6 +785,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		sharedLastDescend := 0.0
 		hasLastBaselineItem := false
 		for _, item := range line.items {
+			if item.collapsed {
+				continue // §12: collapsed items don't participate in baseline positioning
+			}
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			if selfAlign == "baseline" && item.baseline > 0 {
 				b := item.crossMarginStart() + item.baseline
@@ -1019,22 +1022,39 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
 	// §4.2 — Flex container baseline.
-	// The flex container's first baseline set is determined by the first flex item
-	// in the first line that participates in baseline alignment, or the first item
-	// if none does. The baseline is that item's baseline offset from the container's
-	// border-box block-start edge.
+	// The flex container's first baseline set is determined by the first non-collapsed
+	// flex item in the first line that participates in baseline alignment, or the first
+	// non-collapsed item if none does (CSS Flexbox §4.2).
 	if len(lines) > 0 && len(lines[0].items) > 0 {
-		firstItem := lines[0].items[0]
-		var itemBlockOffset float64
-		if isRow {
-			itemBlockOffset = firstItem.crossOffset + firstItem.crossMarginStart()
-		} else {
-			itemBlockOffset = firstItem.mainOffset
+		var baselineItem *flexItem
+		for _, item := range lines[0].items {
+			if item.collapsed {
+				continue
+			}
+			selfAlign := fla.getAlignSelf(item.style, alignItems)
+			if selfAlign == "baseline" && item.baseline > 0 {
+				baselineItem = item
+				break
+			}
+			if baselineItem == nil {
+				baselineItem = item // fallback to first non-collapsed item
+			}
 		}
-		containerBaseline := geom.Border.BlockStart + geom.Padding.BlockStart +
-			itemBlockOffset + firstItem.baseline
-		builder.SetBaseline(containerBaseline)
-		builder.SetLastBaseline(containerBaseline)
+		if baselineItem == nil && len(lines[0].items) > 0 {
+			baselineItem = lines[0].items[0] // ultimate fallback
+		}
+		if baselineItem != nil {
+			var itemBlockOffset float64
+			if isRow {
+				itemBlockOffset = baselineItem.crossOffset + baselineItem.crossMarginStart()
+			} else {
+				itemBlockOffset = baselineItem.mainOffset
+			}
+			containerBaseline := geom.Border.BlockStart + geom.Padding.BlockStart +
+				itemBlockOffset + baselineItem.baseline
+			builder.SetBaseline(containerBaseline)
+			builder.SetLastBaseline(containerBaseline)
+		}
 	}
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
