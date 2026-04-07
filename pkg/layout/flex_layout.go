@@ -1324,7 +1324,31 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			contentInlineSize, isRow)
 	}
 
-	// Numeric flex-basis (non-negative lengths/percentages only; negative → treat as auto).
+	// CSS Flexbox §7.3.3: flex-basis does not accept negative lengths.
+	// If a negative value was set, treat as auto (fall back to width/height).
+	if v, ok := style.GetLength("flex-basis"); ok && v < 0 {
+		basisVal = "auto"
+		// Re-run auto logic.
+		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
+		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
+			Build()
+		if mainIsItemInline {
+			if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
+				return explicit
+			}
+		} else {
+			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+				return explicit
+			}
+		}
+		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
+			contentInlineSize, isRow)
+	}
+
+	// Numeric flex-basis (non-negative lengths/percentages only).
 	parentSpace := NewConstraintSpaceBuilder(parentWDM, parentWDM, false).
 		SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
