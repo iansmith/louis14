@@ -181,6 +181,11 @@ type flexItem struct {
 	// propagatedOOF holds OOF candidates that the item's layout couldn't resolve
 	// because the item is not a positioned container.
 	propagatedOOF []OutOfFlowCandidate
+
+	// collapsed is true when the item has visibility:collapse (§12).
+	// Collapsed items contribute to the line's cross-size but occupy 0 main-size
+	// and are not rendered.
+	collapsed bool
 }
 
 // mainMarginSum returns the total margin in the flex main axis.
@@ -694,8 +699,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	for lineIdx, line := range lines {
 		// §8.1: Auto margins in the main axis absorb free space before justify-content.
 		// Count auto margin slots and available free space.
+		// §12: Collapsed items don't participate in auto margin distribution.
 		mainAutoCount := 0
 		for _, item := range line.items {
+			if item.collapsed {
+				continue
+			}
 			if item.mainAutoStart {
 				mainAutoCount++
 			}
@@ -1235,6 +1244,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 			mainAutoEnd:    mainAE,
 			crossAutoStart: crossAS,
 			crossAutoEnd:   crossAE,
+			collapsed:      childStyle.GetVisibility() == "collapse",
 		}
 		items = append(items, item)
 	}
@@ -1580,7 +1590,11 @@ func (fla *FlexLayoutAlgorithm) buildFlexLines(
 	currentSize := 0.0
 
 	for i, item := range items {
-		itemSize := item.outerHypotheticalMainSize()
+		// §12: Collapsed items contribute 0 to line main-size for wrapping.
+		itemSize := 0.0
+		if !item.collapsed {
+			itemSize = item.outerHypotheticalMainSize()
+		}
 
 		// CSS Flexbox §10: forced line breaks.
 		// break-before / page-break-before: always/left/right/page → new line.
@@ -1595,7 +1609,7 @@ func (fla *FlexLayoutAlgorithm) buildFlexLines(
 			continue
 		}
 		gap := 0.0
-		if len(currentLine) > 0 {
+		if len(currentLine) > 0 && !item.collapsed {
 			gap = mainGap
 		}
 		if forcedBreakBefore || (currentSize+gap+itemSize > containerMainSize && len(currentLine) > 0) {
@@ -1652,6 +1666,10 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 	// If no definite container main size, use hypothetical sizes clamped to minimum.
 	if !hasDefiniteMain {
 		for _, item := range items {
+			if item.collapsed {
+				item.resolvedMain = 0
+				continue
+			}
 			item.resolvedMain = item.hypothetical
 			if item.resolvedMain < item.minMain {
 				item.resolvedMain = item.minMain
@@ -1666,11 +1684,21 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 	// Compute initial free space.
 	// Free space = container content-box minus the outer hypothetical sizes of all items.
 	// Outer size = content-box + border-padding + margins.
-	usedSpace := mainGap * float64(len(items)-1)
-	if len(items) == 0 {
+	// §12: Collapsed items contribute 0 to used space.
+	nonCollapsedCount := 0
+	for _, item := range items {
+		if !item.collapsed {
+			nonCollapsedCount++
+		}
+	}
+	usedSpace := mainGap * float64(nonCollapsedCount-1)
+	if nonCollapsedCount == 0 {
 		usedSpace = 0
 	}
 	for _, item := range items {
+		if item.collapsed {
+			continue
+		}
 		usedSpace += item.outerHypotheticalMainSize()
 	}
 	freeSpace := containerMainSize - usedSpace
@@ -1689,6 +1717,12 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 
 	// Freeze items that won't participate.
 	for _, item := range items {
+		// §12: Collapsed items don't participate in flex grow/shrink.
+		if item.collapsed {
+			item.frozen = true
+			item.resolvedMain = 0
+			continue
+		}
 		if growing && item.flexGrow == 0 {
 			item.frozen = true
 		} else if !growing && item.flexShrink == 0 {
@@ -1905,9 +1939,22 @@ func computeItemMainOffsets(
 		return
 	}
 
-	// Compute total outer item sizes (content + border-padding + margins).
-	totalItemSize := mainGap * float64(len(items)-1)
+	// §12: Filter out collapsed items for spacing calculations.
+	// Collapsed items are positioned at the same offset as their predecessor
+	// but occupy 0 main-axis space.
+	var visibleItems []*flexItem
 	for _, item := range items {
+		if !item.collapsed {
+			visibleItems = append(visibleItems, item)
+		}
+	}
+
+	// Compute total outer item sizes (content + border-padding + margins).
+	totalItemSize := mainGap * float64(len(visibleItems)-1)
+	if len(visibleItems) == 0 {
+		totalItemSize = 0
+	}
+	for _, item := range visibleItems {
 		totalItemSize += item.outerMainSize()
 	}
 	freeSpace := containerMainSize - totalItemSize
@@ -1938,22 +1985,22 @@ func computeItemMainOffsets(
 		gap = mainGap
 	case "space-between":
 		initialOffset = 0
-		if len(items) > 1 {
-			gap = (freeSpace + mainGap*float64(len(items)-1)) / float64(len(items)-1)
+		if len(visibleItems) > 1 {
+			gap = (freeSpace + mainGap*float64(len(visibleItems)-1)) / float64(len(visibleItems)-1)
 		} else {
 			gap = 0
 		}
 	case "space-around":
 		perItem := 0.0
-		if len(items) > 0 {
-			perItem = freeSpace / float64(len(items))
+		if len(visibleItems) > 0 {
+			perItem = freeSpace / float64(len(visibleItems))
 		}
 		initialOffset = perItem / 2
 		gap = perItem + mainGap
 	case "space-evenly":
 		spacing := 0.0
-		if len(items)+1 > 0 {
-			spacing = freeSpace / float64(len(items)+1)
+		if len(visibleItems)+1 > 0 {
+			spacing = freeSpace / float64(len(visibleItems)+1)
 		}
 		initialOffset = spacing
 		gap = spacing + mainGap
@@ -1964,30 +2011,40 @@ func computeItemMainOffsets(
 
 	if reverseMain {
 		// Place items right-to-left from the main-end.
-		// When containerMainSize is less than totalItemSize (e.g. column-reverse with
-		// auto block-size), use totalItemSize as the effective container so items don't
-		// overflow to negative offsets.
 		effectiveSize := containerMainSize
 		if effectiveSize < totalItemSize {
 			effectiveSize = totalItemSize
 		}
 		cursor := effectiveSize - initialOffset
-		for i, item := range items {
-			_ = i
+		visIdx := 0
+		for _, item := range items {
+			if item.collapsed {
+				// Collapsed items are placed at the current cursor but take no space.
+				item.mainOffset = cursor + item.mainMarginStart()
+				continue
+			}
 			cursor -= item.outerMainSize()
 			item.mainOffset = cursor + item.mainMarginStart()
-			if i < len(items)-1 {
+			visIdx++
+			if visIdx < len(visibleItems) {
 				cursor -= gap
 			}
 		}
 	} else {
 		cursor := initialOffset
-		for i, item := range items {
-			if i > 0 {
+		visIdx := 0
+		for _, item := range items {
+			if item.collapsed {
+				// Collapsed items are placed at the current cursor but take no space.
+				item.mainOffset = cursor + item.mainMarginStart()
+				continue
+			}
+			if visIdx > 0 {
 				cursor += gap
 			}
 			item.mainOffset = cursor + item.mainMarginStart()
 			cursor += item.outerMainSize()
+			visIdx++
 		}
 	}
 }

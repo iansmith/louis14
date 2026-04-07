@@ -273,7 +273,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 
 	// Compositing.
-	if vis, ok := s.Get("visibility"); ok && vis == "hidden" {
+	if vis, ok := s.Get("visibility"); ok && (vis == "hidden" || vis == "collapse") {
 		layer.Visible = false
 	}
 	layer.Opacity = s.GetOpacity()
