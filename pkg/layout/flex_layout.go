@@ -335,11 +335,30 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	sortFlexItems(allItems)
 
 	// §9.3 — Build flex lines.
-	lines := fla.buildFlexLines(allItems, wrapMode, containerMainSize, hasDefiniteMain, mainGap)
+	// For column flex with no explicit height but max-height set, use max-height
+	// as the wrap boundary (items that exceed it wrap to the next column).
+	wrapMainSize := containerMainSize
+	hasWrapBoundary := hasDefiniteMain
+	if !isRow && !hasDefiniteMain && wrapMode != "nowrap" {
+		if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+			wrapMainSize = maxBlock
+			hasWrapBoundary = true
+		}
+	}
+	lines := fla.buildFlexLines(allItems, wrapMode, wrapMainSize, hasWrapBoundary, mainGap)
 
 	// §9.7 — Resolve flexible lengths for each line.
+	// For wrapping column flex with max-height (no explicit height), use the
+	// max-height-derived wrap boundary for flex resolution — items should
+	// grow to fill the line within that boundary.
+	resolveMainSize := containerMainSize
+	resolveDefinite := hasDefiniteMain
+	if hasWrapBoundary && !hasDefiniteMain && wrapMode != "nowrap" {
+		resolveMainSize = wrapMainSize
+		resolveDefinite = true
+	}
 	for _, line := range lines {
-		fla.resolveFlexibleLengths(line, containerMainSize, hasDefiniteMain, mainGap)
+		fla.resolveFlexibleLengths(line, resolveMainSize, resolveDefinite, mainGap)
 	}
 
 	// §9.4 — Determine cross-size of items and lines.
