@@ -570,13 +570,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// §9.4 step 8 (revisited): After min/max cross constraints, for single-line
-	// containers the line cross-size must match the container cross-size.
-	// This handles cases like min-height where the container cross-size was
-	// bumped but the line cross-size was set before the constraint was applied.
+	// containers the line cross-size must equal the container cross-size.
+	// This handles both min-height (expanding the line) and max-height (clamping
+	// the line down). Per Blink and the spec, the single flex line's cross-size
+	// always tracks the container's resolved cross-size.
 	if wrapMode == "nowrap" && len(lines) == 1 {
-		if containerCrossSize > lines[0].crossSize {
-			lines[0].crossSize = containerCrossSize
-		}
+		lines[0].crossSize = containerCrossSize
 	}
 
 	// §9.6 — align-content: distribute lines within container cross-size.
