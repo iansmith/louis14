@@ -203,8 +203,21 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		alignItems = strings.TrimSpace(v)
 	}
 
+	// Resolve main-axis gap for intrinsic sizing.
+	var mainGap float64
+	if isRow {
+		if v, ok := style.GetLength("column-gap"); ok {
+			mainGap = v
+		}
+	} else {
+		if v, ok := style.GetLength("row-gap"); ok {
+			mainGap = v
+		}
+	}
+
 	var sumMin, sumMax float64
 	var maxMin, maxMax float64
+	var itemCount int
 
 	for _, child := range node.Children() {
 		if child.IsText() {
@@ -215,6 +228,12 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			continue
 		}
 		if childStyle.GetDisplay() == css.DisplayNone {
+			continue
+		}
+		// Skip OOF children — they are not flex items and do not
+		// contribute to the container's intrinsic size or gap count.
+		pos := childStyle.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
 			continue
 		}
 
@@ -294,14 +313,21 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		if childMax > maxMax {
 			maxMax = childMax
 		}
+		itemCount++
+	}
+
+	// Add gaps between items: (N-1) * mainGap.
+	totalGap := 0.0
+	if itemCount > 1 && mainGap > 0 {
+		totalGap = float64(itemCount-1) * mainGap
 	}
 
 	if isRow {
 		if canWrap {
-			// With wrapping, min-content = largest single item; max-content = sum.
-			return MinMaxSizes{MinContent: maxMin, MaxContent: sumMax}
+			// With wrapping, min-content = largest single item; max-content = sum + gaps.
+			return MinMaxSizes{MinContent: maxMin, MaxContent: sumMax + totalGap}
 		}
-		return MinMaxSizes{MinContent: sumMin, MaxContent: sumMax}
+		return MinMaxSizes{MinContent: sumMin + totalGap, MaxContent: sumMax + totalGap}
 	}
 	// Column: inline = cross direction → max of items' inline sizes.
 	return MinMaxSizes{MinContent: maxMin, MaxContent: maxMax}
