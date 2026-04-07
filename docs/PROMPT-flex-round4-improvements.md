@@ -29,7 +29,26 @@ Column flex items are not correctly sized on the cross axis (inline/width dimens
 
 ### Root Cause (from code analysis)
 
-**Issue 1: buildItemConstraintSpace column path (line ~2120-2155)**
+**Issue 1: `end`/`start` alignment values conflated with `flex-end`/`flex-start` (line ~877)**
+
+At line 877, `end` is grouped with `flex-end`:
+```go
+case "flex-end", "end":
+    itemCrossOffset = crossStart + crossFreeForAlign
+```
+And `start` falls to the default case (treated as `flex-start`). Per the CSS Box Alignment spec and Gecko/Blink implementations, `start`/`end` must be resolved differently from `flex-start`/`flex-end` when `flex-wrap: wrap-reverse`:
+
+- `flex-start`/`flex-end`: always refer to the flex line's cross edges (not affected by wrap-reverse)
+- `start`/`end`: refer to the container's cross-start/cross-end edges, which FLIP under wrap-reverse
+
+The correct algorithm (from Gecko `nsFlexContainerFrame.cpp`):
+1. Map `self-start`/`self-end` → `start`/`end` using `ParallelAxisStartsOnSameSide` (already done via `selfStartIsCrossStart`)
+2. Map `start`/`end` → `flex-start`/`flex-end` based on `IsCrossAxisReversed()` (wrap-reverse):
+   - `start` = `flex-start` when NOT wrap-reverse, `flex-end` when wrap-reverse
+   - `end` = `flex-end` when NOT wrap-reverse, `flex-start` when wrap-reverse
+3. `flex-start`/`flex-end` are NOT affected by wrap-reverse
+
+**Issue 2: buildItemConstraintSpace column path (line ~2120-2155)**
 
 For column flex, the constraint space builder adds `crossBorderPadding()` to available inline-size:
 ```go
@@ -38,47 +57,88 @@ availInline := crossInlineContent + item.crossBorderPadding()
 ```
 This adds the item's own border-padding to the available size, which is wrong. Blink passes the cross-size directly as the available inline-size. The border-padding is already handled by the child layout's geometry.
 
-**Issue 2: Column stretch pass not handling wrapping correctly**
+**Issue 3: overflow:clip wrongly disables automatic minimum size (line ~2716)**
+
+The current code disables auto-min for ANY non-visible overflow:
+```go
+if overflowX != "visible" || overflowY != "visible" {
+    return 0
+}
+```
+But per Blink's `IsOverflowValueScrollable()` and CSSWG issue #7714, only **scroll containers** disable auto-min. `overflow:clip` is NOT a scroll container. The correct check: disable auto-min only for `overflow: hidden | auto | scroll`, NOT for `visible` or `clip`.
+
+**Issue 4: Column stretch pass not handling wrapping correctly**
 
 At line 404:
 ```go
 crossIsFixed := !isRow && isStretch && wrapMode == "nowrap"
 ```
-For wrapping column flex, stretch items get `crossIsFixed=false` in the first pass, causing them to fit-content. But after line cross-sizes are determined, the stretch pass should fix them. However, the stretch pass at line ~3029 computes:
-```go
-stretchBorderBox = line.crossSize - item.crossMarginSum()
-```
-This uses `line.crossSize` which for column flex is the max inline-size of items in the line. If all items fit-content'd to narrow widths, the line cross-size is small, and stretch items stretch to that small size instead of the container width.
+For wrapping column flex, stretch items get `crossIsFixed=false` in the first pass. The stretch pass at line ~3029 uses `line.crossSize` which for column flex is the max inline-size of items in the line. If all items fit-content'd to narrow widths, stretch items stretch to that small size instead of the container width.
 
-**Issue 3: §9.8 relayout over-broad**
+### What Blink/Gecko Does
 
-At line ~525, the two-pass relayout section relays out ALL non-stretch items with the definite line cross-size. This is expensive and can change items that were already correctly sized. Per Blink, only items with percentage cross-sizes or aspect ratios should be relaid out.
+**Alignment resolution** (from Gecko `nsFlexContainerFrame.cpp` ~line 4020):
+1. `self-start`/`self-end` → `start`/`end` via `ParallelAxisStartsOnSameSide()`
+2. `start`/`end` → `flex-start`/`flex-end` via `IsCrossAxisReversed()` (wrap-reverse flips them)
+3. `flex-start`/`flex-end` are the final physical alignment, unaffected by wrap-reverse
 
-### What Blink Does
-
-In Blink's `FlexLayoutAlgorithm::PlaceFlexItems()`:
-1. For the initial layout, items get the container's cross-size as the available size
-2. The available size does NOT include the item's own border-padding (that's the child's job)
+**Constraint space** (from Blink `flex_layout_algorithm.cc`):
+1. ALL flex items are laid out as new formatting contexts (`is_new_fc = true`)
+2. Available inline-size does NOT include the item's own border-padding
 3. For stretch items, Blink sets `is_fixed_block_size = true` with the stretched content-box size
-4. For the relayout pass, Blink only relays out items that have `NeedsRelayout()` = true, which checks for percentage heights, aspect ratios, and changed cross-sizes
+4. For the relayout pass, only items with `NeedsRelayout()` = true are relaid out
 
-Key Blink source: `third_party/blink/renderer/core/layout/flex/flex_layout_algorithm.cc`
+**Overflow/auto-min** (from Blink `IsOverflowValueScrollable()`):
+- `overflow: visible` → auto min ENABLED
+- `overflow: clip` → auto min ENABLED  
+- `overflow: hidden | auto | scroll` → auto min DISABLED
+
+Key sources:
+- Gecko: `layout/generic/nsFlexContainerFrame.cpp`
+- Blink: `third_party/blink/renderer/core/layout/flex/flex_layout_algorithm.cc`
+- CSSWG: https://github.com/w3c/csswg-drafts/issues/7714
 
 ### Fix Location
 
 **File: `pkg/layout/flex_layout.go`**
 
-1. **Fix `buildItemConstraintSpace` column path** (~line 2120-2155):
+1. **Fix `start`/`end` alignment resolution** (~line 877):
+   - Separate `start`/`end` from `flex-start`/`flex-end` in the switch statement
+   - Add wrap-reverse awareness: `start` → `flex-end` when `reverseCross`, `end` → `flex-start` when `reverseCross`
+   - `flex-start`/`flex-end` must NOT flip with wrap-reverse
+   ```go
+   case "start":
+       if reverseCross {
+           itemCrossOffset = crossStart + crossFreeForAlign // acts like flex-end
+       } else {
+           itemCrossOffset = crossStart // acts like flex-start
+       }
+   case "end":
+       if reverseCross {
+           itemCrossOffset = crossStart // acts like flex-start
+       } else {
+           itemCrossOffset = crossStart + crossFreeForAlign // acts like flex-end
+       }
+   ```
+
+2. **Fix overflow:clip auto-min check** (~line 2716):
+   - Change from `overflowX != "visible" || overflowY != "visible"` to only disable for scroll containers:
+   ```go
+   isScrollable := func(v string) bool {
+       return v != "visible" && v != "clip"
+   }
+   if isScrollable(overflowX) || isScrollable(overflowY) {
+       return 0
+   }
+   ```
+
+3. **Fix `buildItemConstraintSpace` column path** (~line 2120-2155):
    - Remove the `+ item.crossBorderPadding()` from `availInline`
    - The available inline-size should be `crossInlineContent` (or `contentInlineSize` when no cross-size is fixed)
    - For non-fixed cross items, subtract only margins (not border-padding) since the child handles its own BP
 
-2. **Fix column flex line cross-size for wrapping** (~line 350-380):
+4. **Fix column flex line cross-size for wrapping** (~line 350-380):
    - For wrapping column flex with `align-content: stretch`, ensure lines grow to container cross-size
-
-3. **Optimize §9.8 relayout** (~line 525-580):
-   - Only relayout items that have percentage cross-sizes or aspect ratios
-   - Check `item.style.GetPercentage("width")` (for column flex cross = width)
 
 ### Verification
 ```bash
