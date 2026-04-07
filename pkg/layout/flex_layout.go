@@ -411,6 +411,23 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			item.lastBaseline = result.LastBaseline
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
+
+			// For replaced elements with aspect ratios, the layout may have
+			// enlarged the main-size due to cross min/max constraints transferring
+			// through the aspect ratio (e.g., min-height on a row flex img).
+			// Update resolvedMain to match the actual fragment.
+			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+				var actualMain float64
+				if isRow {
+					actualMain = lf.InlineSize() - item.mainBorderPadding()
+				} else {
+					actualMain = lf.BlockSize() - item.mainBorderPadding()
+				}
+				if actualMain > item.resolvedMain {
+					item.resolvedMain = actualMain
+				}
+			}
+
 			var itemCross float64
 			if isRow {
 				itemCross = lf.BlockSize()
@@ -441,10 +458,26 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						// Main = inline axis → cross = block axis.
 						// logicalRatio = inline/block → block = inline/ratio.
 						crossContent = mainContent / logicalRatio
+						// Clamp by min/max block (cross) size.
+						minCross := ResolveMinBlockSize(item.style, item.wdm, cs, item.geom)
+						if crossContent < minCross {
+							crossContent = minCross
+						}
+						if maxCross, hasMax := ResolveMaxBlockSize(item.style, item.wdm, cs, item.geom); hasMax && crossContent > maxCross {
+							crossContent = maxCross
+						}
 					} else {
 						// Main = block axis → cross = inline axis.
 						// logicalRatio = inline/block → inline = block * ratio.
 						crossContent = mainContent * logicalRatio
+						// Clamp by min/max inline (cross) size.
+						minCross := ResolveMinInlineSize(item.style, item.wdm, cs, item.geom)
+						if crossContent < minCross {
+							crossContent = minCross
+						}
+						if maxCross, hasMax := ResolveMaxInlineSize(item.style, item.wdm, cs, item.geom); hasMax && crossContent > maxCross {
+							crossContent = maxCross
+						}
 					}
 					item.crossSize = crossContent + item.crossBorderPadding()
 				}
