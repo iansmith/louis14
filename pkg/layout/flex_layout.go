@@ -175,6 +175,8 @@ type flexItem struct {
 	// baseline is the first-line baseline position relative to the item's border-box top.
 	// 0 means no baseline available (fall back to flex-start).
 	baseline float64
+	// lastBaseline is the last-line baseline position relative to the item's border-box top.
+	lastBaseline float64
 
 	// propagatedOOF holds OOF candidates that the item's layout couldn't resolve
 	// because the item is not a positioned container.
@@ -349,6 +351,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		maxAscent := 0.0
 		maxDescent := 0.0
 		hasBaselineItem := false
+		maxLastAscent := 0.0
+		maxLastDescent := 0.0
+		hasLastBaselineItem := false
 		for _, item := range line.items {
 			// For column flex: stretch items (without auto cross margins) lay out at the container
 			// inline-size (crossIsFixed=true). Non-stretch items and stretch items with auto
@@ -362,6 +367,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
+			item.lastBaseline = result.LastBaseline
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
 			var itemCross float64
@@ -403,7 +409,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// §9.4: line cross-size computation.
 			outerCross := item.crossSize + item.crossMarginSum()
 			if selfAlign == "baseline" && item.baseline > 0 {
-				// Baseline items: track ascent and descent separately.
+				// First baseline items: track ascent and descent separately.
 				ascent := item.crossMarginStart() + item.baseline
 				descent := outerCross - ascent
 				if ascent > maxAscent {
@@ -413,6 +419,21 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					maxDescent = descent
 				}
 				hasBaselineItem = true
+			} else if selfAlign == "last baseline" {
+				// Last baseline items: track ascent (from top) and descent (from last baseline to bottom).
+				lb := item.lastBaseline
+				if lb <= 0 {
+					lb = item.crossSize // fallback: bottom of border-box
+				}
+				lastAscent := item.crossMarginStart() + lb
+				lastDescent := outerCross - lastAscent
+				if lastAscent > maxLastAscent {
+					maxLastAscent = lastAscent
+				}
+				if lastDescent > maxLastDescent {
+					maxLastDescent = lastDescent
+				}
+				hasLastBaselineItem = true
 			} else {
 				if outerCross > lineCrossMax {
 					lineCrossMax = outerCross
@@ -423,6 +444,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			baselineCross := maxAscent + maxDescent
 			if baselineCross > lineCrossMax {
 				lineCrossMax = baselineCross
+			}
+		}
+		if hasLastBaselineItem {
+			lastBaselineCross := maxLastAscent + maxLastDescent
+			if lastBaselineCross > lineCrossMax {
+				lineCrossMax = lastBaselineCross
 			}
 		}
 		line.crossSize = lineCrossMax
@@ -484,6 +511,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
+			item.lastBaseline = result.LastBaseline
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
 			if isRow {
@@ -693,9 +721,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		crossStart := lineOffsets[lineIdx]
 
 		// §9.9 baseline alignment: find the shared baseline for this line.
-		// The shared baseline = max(item.crossMarginStart + item.baseline) over all baseline items.
+		// First baseline: sharedBaseline = max(crossMarginStart + baseline) over baseline items.
 		sharedBaseline := 0.0
 		hasBaselineItem := false
+		// Last baseline: sharedLastDescend = max(crossMarginEnd + (crossSize - lastBaseline)).
+		sharedLastDescend := 0.0
+		hasLastBaselineItem := false
 		for _, item := range line.items {
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			if selfAlign == "baseline" && item.baseline > 0 {
@@ -704,6 +735,17 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					sharedBaseline = b
 				}
 				hasBaselineItem = true
+			}
+			if selfAlign == "last baseline" {
+				lb := item.lastBaseline
+				if lb <= 0 {
+					lb = item.crossSize // fallback: bottom of item
+				}
+				d := item.crossMarginEnd() + (item.crossSize - lb)
+				if d > sharedLastDescend {
+					sharedLastDescend = d
+				}
+				hasLastBaselineItem = true
 			}
 		}
 
@@ -766,12 +808,29 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				} else {
 					itemCrossOffset = crossStart
 				}
+			case "last baseline":
+				if hasLastBaselineItem {
+					// Align so that item's last baseline aligns with the shared last baseline,
+					// measured from the cross-end of the line.
+					lb := item.lastBaseline
+					if lb <= 0 {
+						lb = item.crossSize
+					}
+					// Position: line cross-end - sharedLastDescend = item's lastBaseline position.
+					// lastBaseline position = crossOffset + crossMarginStart + lb
+					itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginEnd() - (item.crossSize - lb) - item.crossMarginStart()
+					// Simplifies to:
+					// itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginSum() - item.crossSize + lb
+				} else {
+					itemCrossOffset = crossStart + crossFreeForAlign
+				}
 			default: // flex-start, start, stretch
 				itemCrossOffset = crossStart
 			}
 			item.crossOffset = itemCrossOffset
 		}
 		_ = hasBaselineItem
+		_ = hasLastBaselineItem
 
 		// Reset justify-content for next line (may have been overridden by auto margins).
 		justifyContent = resolvedJustifyContent
@@ -2002,7 +2061,7 @@ func (fla *FlexLayoutAlgorithm) getAlignItems() string {
 		v = stripOverflowKeyword(v)
 		switch v {
 		case "stretch", "flex-start", "flex-end", "center", "baseline",
-			"start", "end", "self-start", "self-end":
+			"start", "end", "self-start", "self-end", "last baseline":
 			return v
 		}
 	}
@@ -2035,7 +2094,7 @@ func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string
 		if v != "auto" && v != "" {
 			switch v {
 			case "stretch", "flex-start", "flex-end", "center", "baseline",
-				"start", "end", "self-start", "self-end":
+				"start", "end", "self-start", "self-end", "last baseline":
 				return v
 			}
 		}
@@ -2554,6 +2613,8 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 				item.resolvedMain, stretchContent, true)
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
+			item.baseline = result.Baseline
+			item.lastBaseline = result.LastBaseline
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
 			if isRow {
