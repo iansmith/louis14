@@ -446,7 +446,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 			// §9.4: line cross-size computation.
 			outerCross := item.crossSize + item.crossMarginSum()
-			if selfAlign == "baseline" && item.baseline > 0 {
+			// Baseline participation requires the item's block axis to be parallel
+			// to the flex container's cross axis (CSS Flexbox §9.4 step 8).
+			// Row flex: both same orientation. Column flex: orthogonal writing modes only.
+			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+			if selfAlign == "baseline" && item.baseline > 0 && baselineParallel {
 				// First baseline items: track ascent and descent separately.
 				ascent := item.crossMarginStart() + item.baseline
 				descent := outerCross - ascent
@@ -457,7 +462,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					maxDescent = descent
 				}
 				hasBaselineItem = true
-			} else if selfAlign == "last baseline" {
+			} else if selfAlign == "last baseline" && baselineParallel {
 				// Last baseline items: track ascent (from top) and descent (from last baseline to bottom).
 				lb := item.lastBaseline
 				if lb <= 0 {
@@ -789,14 +794,17 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				continue // §12: collapsed items don't participate in baseline positioning
 			}
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			if selfAlign == "baseline" && item.baseline > 0 {
+			// Baseline participation requires parallel axes.
+			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+			if selfAlign == "baseline" && item.baseline > 0 && baselineParallel {
 				b := item.crossMarginStart() + item.baseline
 				if b > sharedBaseline {
 					sharedBaseline = b
 				}
 				hasBaselineItem = true
 			}
-			if selfAlign == "last baseline" {
+			if selfAlign == "last baseline" && baselineParallel {
 				lb := item.lastBaseline
 				if lb <= 0 {
 					lb = item.crossSize // fallback: bottom of item
@@ -1022,17 +1030,21 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
 	// §4.2 — Flex container baseline.
-	// The flex container's first baseline set is determined by the first non-collapsed
-	// flex item in the first line that participates in baseline alignment, or the first
-	// non-collapsed item if none does (CSS Flexbox §4.2).
+	// The container's first baseline set is determined by the first non-collapsed
+	// flex item in the first line that participates in baseline alignment, or the
+	// first non-collapsed item if none does (CSS Flexbox §4.2).
 	if len(lines) > 0 && len(lines[0].items) > 0 {
+		// Find the first non-collapsed baseline-participating item, falling back
+		// to the first non-collapsed item.
 		var baselineItem *flexItem
 		for _, item := range lines[0].items {
 			if item.collapsed {
 				continue
 			}
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			if selfAlign == "baseline" && item.baseline > 0 {
+			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+			if selfAlign == "baseline" && item.baseline > 0 && baselineParallel {
 				baselineItem = item
 				break
 			}
