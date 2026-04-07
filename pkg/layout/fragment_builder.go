@@ -39,7 +39,8 @@ type BoxFragmentBuilder struct {
 	endMarginStrut MarginStrut
 
 	// baseline position (first baseline).
-	baseline float64
+	baseline    float64
+	hasBaseline bool
 
 	// lastBaseline position (last baseline, for inline-block alignment).
 	lastBaseline float64
@@ -94,6 +95,7 @@ func (b *BoxFragmentBuilder) SetEndMarginStrut(ms MarginStrut) {
 // SetBaseline sets the first baseline position.
 func (b *BoxFragmentBuilder) SetBaseline(v float64) {
 	b.baseline = v
+	b.hasBaseline = true
 }
 
 // SetLastBaseline sets the last baseline position.
@@ -189,6 +191,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		Fragment:           fragment,
 		IntrinsicBlockSize: b.intrinsicBlockSize,
 		Baseline:           b.baseline,
+		HasBaseline:        b.hasBaseline,
 		LastBaseline:       b.lastBaseline,
 		EndMarginStrut:     b.endMarginStrut,
 		ExclusionSpace:     b.exclusionSpace,

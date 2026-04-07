@@ -178,9 +178,10 @@ type flexItem struct {
 	crossAutoEnd   bool
 
 	// baseline is the first-line baseline position relative to the item's border-box top.
-	// 0 means no baseline available (fall back to flex-start).
-	baseline float64
-	// lastBaseline is the last-line baseline position relative to the item's border-box top.
+	// Per CSS Flexbox §9.4, items with align-self:baseline that have no natural
+	// baseline get a synthesized baseline at the block-end edge of the border-box.
+	baseline     float64
+	hasBaseline  bool // true if the layout produced a real baseline
 	lastBaseline float64
 
 	// propagatedOOF holds OOF candidates that the item's layout couldn't resolve
@@ -406,6 +407,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
+			item.hasBaseline = result.HasBaseline
 			item.lastBaseline = result.LastBaseline
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
@@ -457,7 +459,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
 			if selfAlign == "baseline" && item.baseline > 0 && baselineParallel {
 				// First baseline items: track ascent and descent separately.
-				ascent := item.crossMarginStart() + item.baseline
+				// Clamp baseline within the item's border-box to avoid
+				// overflowing baselines expanding the flex line.
+				bl := item.baseline
+				if bl > item.crossSize {
+					bl = item.crossSize
+				}
+				ascent := item.crossMarginStart() + bl
 				descent := outerCross - ascent
 				if ascent > maxAscent {
 					maxAscent = ascent
@@ -558,6 +566,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
+			item.hasBaseline = result.HasBaseline
 			item.lastBaseline = result.LastBaseline
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
@@ -792,6 +801,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		// Last baseline: sharedLastDescend = max(crossMarginEnd + (crossSize - lastBaseline)).
 		sharedLastDescend := 0.0
 		hasLastBaselineItem := false
+		// Baseline synthesis at block-end of border-box is only correct for
+		// horizontal writing modes. Vertical writing modes use the central
+		// baseline (text-orientation dependent) which is not yet implemented.
+		canSynthesize := isRow && !wdm.IsVertical()
 		for _, item := range line.items {
 			if item.collapsed {
 				continue // §12: collapsed items don't participate in baseline positioning
@@ -800,17 +813,28 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// Baseline participation requires parallel axes.
 			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
 				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-			if selfAlign == "baseline" && item.baseline > 0 && baselineParallel {
-				b := item.crossMarginStart() + item.baseline
-				if b > sharedBaseline {
-					sharedBaseline = b
+			if selfAlign == "baseline" && baselineParallel {
+				bl := item.baseline
+				if !item.hasBaseline && canSynthesize {
+					// CSS Flexbox §9.4 / CSS Align §4.2: synthesize baseline
+					// at block-end of border-box for items with no natural baseline.
+					bl = item.crossSize
 				}
-				hasBaselineItem = true
+				if bl > 0 || item.hasBaseline {
+					b := item.crossMarginStart() + bl
+					if b > sharedBaseline {
+						sharedBaseline = b
+					}
+					hasBaselineItem = true
+				}
 			}
 			if selfAlign == "last baseline" && baselineParallel {
 				lb := item.lastBaseline
 				if lb <= 0 {
-					lb = item.crossSize // fallback: bottom of item
+					lb = item.baseline
+				}
+				if !item.hasBaseline && lb <= 0 && canSynthesize {
+					lb = 0 // Synthesize at block-start for last baseline.
 				}
 				d := item.crossMarginEnd() + (item.crossSize - lb)
 				if d > sharedLastDescend {
@@ -871,27 +895,30 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			case "center":
 				itemCrossOffset = crossStart + crossFreeForAlign/2
 			case "baseline":
-				if hasBaselineItem && item.baseline > 0 {
-					// Align so that item.baseline aligns with sharedBaseline.
-					// crossOffset is position of item's margin-box start.
-					// item.crossMarginStart() + item.baseline should equal crossStart + sharedBaseline.
-					itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - item.baseline
+				if hasBaselineItem {
+					bl := item.baseline
+					if !item.hasBaseline && canSynthesize {
+						bl = item.crossSize
+					}
+					if bl > 0 || item.hasBaseline {
+						itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
+					} else {
+						itemCrossOffset = crossStart
+					}
 				} else {
 					itemCrossOffset = crossStart
 				}
 			case "last baseline":
 				if hasLastBaselineItem {
-					// Align so that item's last baseline aligns with the shared last baseline,
-					// measured from the cross-end of the line.
-					lb := item.lastBaseline
-					if lb <= 0 {
-						lb = item.crossSize
+					bl := item.lastBaseline
+					if bl <= 0 {
+						bl = item.baseline
 					}
-					// Position: line cross-end - sharedLastDescend = item's lastBaseline position.
-					// lastBaseline position = crossOffset + crossMarginStart + lb
-					itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginEnd() - (item.crossSize - lb) - item.crossMarginStart()
-					// Simplifies to:
-					// itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginSum() - item.crossSize + lb
+					if !item.hasBaseline && bl <= 0 && canSynthesize {
+						bl = 0
+					}
+					belowBL := item.crossSize - bl
+					itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - belowBL - item.crossMarginEnd()
 				} else {
 					itemCrossOffset = crossStart + crossFreeForAlign
 				}
@@ -1047,7 +1074,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
 				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-			if selfAlign == "baseline" && item.baseline > 0 && baselineParallel {
+			if selfAlign == "baseline" && baselineParallel {
 				baselineItem = item
 				break
 			}
@@ -1059,6 +1086,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			baselineItem = lines[0].items[0] // ultimate fallback
 		}
 		if baselineItem != nil {
+			bl := baselineItem.baseline
+			if !baselineItem.hasBaseline && isRow && !wdm.IsVertical() {
+				// Synthesize baseline at block-end of border-box.
+				bl = baselineItem.crossSize
+			}
 			var itemBlockOffset float64
 			if isRow {
 				itemBlockOffset = baselineItem.crossOffset + baselineItem.crossMarginStart()
@@ -1066,7 +1098,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				itemBlockOffset = baselineItem.mainOffset
 			}
 			containerBaseline := geom.Border.BlockStart + geom.Padding.BlockStart +
-				itemBlockOffset + baselineItem.baseline
+				itemBlockOffset + bl
 			builder.SetBaseline(containerBaseline)
 			builder.SetLastBaseline(containerBaseline)
 		}
@@ -3042,6 +3074,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
+			item.hasBaseline = result.HasBaseline
 			item.lastBaseline = result.LastBaseline
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)

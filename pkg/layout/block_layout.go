@@ -111,6 +111,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var propagatedTopMargin MarginStrut
 
 	var firstLineAscent float64
+	var firstChildBaseline float64    // Baseline of the first in-flow block child (for propagation).
+	var firstChildBlockOffset float64 // Block offset of the first in-flow block child.
+	hasFirstChildBaseline := false
 	var lastChildBaseline float64     // Baseline of the last in-flow block child.
 	var lastChildBlockOffset float64  // Block offset of the last in-flow block child.
 	hasLastChildBaseline := false
@@ -410,6 +413,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			firstNonEmptyChild = false
 
+			// CSS Inline §4.2: propagate the first in-flow block child's
+			// first baseline as this container's first baseline.
+			if !hasFirstChildBaseline && childResult.HasBaseline {
+				firstChildBaseline = childResult.Baseline
+				firstChildBlockOffset = actualChildBlockOff
+				hasFirstChildBaseline = true
+			}
+
 			// Track the last in-flow block child's baseline for
 			// CSS 2.1 §10.8.1 inline-block baseline propagation.
 			// Use LastBaseline (last line box) if available, else Baseline.
@@ -563,8 +574,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
 	// Set first baseline: for flex align-items:baseline (uses first line).
+	// CSS Inline §4.2: the first baseline of a block container is:
+	//   1. The first line box's baseline (inline children), OR
+	//   2. The first in-flow block child's propagated first baseline.
 	if firstLineAscent > 0 {
 		builder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
+	} else if hasFirstChildBaseline {
+		builder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
+			firstChildBlockOffset + firstChildBaseline)
 	}
 	// Set last baseline: for inline-block alignment §10.8.1 (uses last line box).
 	// For inline children, lastChildBaseline is the last line's baseline offset.

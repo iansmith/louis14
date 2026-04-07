@@ -25,6 +25,14 @@ type LayoutResult struct {
 	// relative to the fragment's block-start edge. Used for alignment.
 	Baseline float64
 
+	// HasBaseline indicates whether the Baseline value was explicitly set
+	// during layout (true) vs defaulting to zero because no baseline source
+	// existed (false). This distinction is needed for baseline synthesis:
+	// a layout result with Baseline=0 and HasBaseline=true has a real baseline
+	// at position 0 (e.g. line-height:0), while HasBaseline=false means no
+	// baseline was found and the parent should synthesize one.
+	HasBaseline bool
+
 	// LastBaseline is the last baseline position in the block direction,
 	// relative to the fragment's block-start edge. Used for inline-block
 	// alignment per CSS 2.1 §10.8.1 (baseline of the last line box).
