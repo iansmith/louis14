@@ -1487,6 +1487,93 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				return explicit
 			}
 		}
+		// §9.2 Part B: aspect-ratio fallback when the item's cross-size is definite.
+		// The item's cross-size is definite if it has an explicit CSS cross-size,
+		// OR if it will be stretched (align-self:stretch, no auto cross margins,
+		// no explicit cross-size) and the container cross-size is definite.
+		// Check both the CSS aspect-ratio property AND intrinsic aspect ratio
+		// for replaced elements (images, canvas, video, etc.).
+		var arW, arH float64
+		var hasAR bool
+		if ar := style.GetAspectRatio(); ar.IsSet {
+			arW, arH, hasAR = ar.Width, ar.Height, true
+		} else if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+			info := GetIntrinsicSizingInfo(fla.ctx, child)
+			if info.HasAspectRatio && info.AspectRatio > 0 {
+				// Intrinsic aspect ratio is width/height (physical).
+				// Convert to the item's logical frame: arW=inline, arH=block.
+				if childWDM.IsVertical() {
+					arW, arH, hasAR = info.IntrinsicHeight, info.IntrinsicWidth, true
+				} else {
+					arW, arH, hasAR = info.IntrinsicWidth, info.IntrinsicHeight, true
+				}
+			}
+		}
+		if hasAR {
+			// Determine the item's definite cross-size content value.
+			// Priority: 1) explicit CSS cross-size (clamped by min/max), 2) stretched container cross-size.
+			var itemCrossContent float64
+			var hasItemCross bool
+			if mainIsItemInline {
+				// Cross = block axis.
+				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+					itemCrossContent = explicit
+					// Clamp by min/max block size.
+					minBlock := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					if itemCrossContent < minBlock {
+						itemCrossContent = minBlock
+					}
+					if maxBlock, hasMax := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); hasMax && itemCrossContent > maxBlock {
+						itemCrossContent = maxBlock
+					}
+					hasItemCross = true
+				}
+			} else {
+				// Cross = inline axis.
+				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
+					itemCrossContent = explicit
+					// Clamp by min/max inline size.
+					minInline := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
+					if itemCrossContent < minInline {
+						itemCrossContent = minInline
+					}
+					if maxInline, hasMax := ResolveMaxInlineSize(style, childWDM, itemSpace, childGeom); hasMax && itemCrossContent > maxInline {
+						itemCrossContent = maxInline
+					}
+					hasItemCross = true
+				}
+			}
+			// If no explicit cross-size, check stretch alignment.
+			if !hasItemCross && hasDefiniteCross {
+				alignItems := "stretch"
+				if v, ok := fla.style.Get("align-items"); ok {
+					alignItems = strings.TrimSpace(v)
+				}
+				selfAlign := fla.getAlignSelf(style, alignItems)
+				// Check for auto margins in the cross axis.
+				_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+				hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
+				if selfAlign == "stretch" && !crossAS && !crossAE && !hasExplCross {
+					crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+					if mainIsItemInline {
+						itemCrossContent = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
+					} else {
+						itemCrossContent = containerCrossSize - childGeom.InlineBorderPadding() - crossMargins
+					}
+					if itemCrossContent < 0 {
+						itemCrossContent = 0
+					}
+					hasItemCross = true
+				}
+			}
+			if hasItemCross {
+				if mainIsItemInline && arH > 0 {
+					return itemCrossContent * arW / arH
+				} else if !mainIsItemInline && arW > 0 {
+					return itemCrossContent * arH / arW
+				}
+			}
+		}
 		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
 			contentInlineSize, isRow)
 	}
