@@ -2137,8 +2137,9 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		}
 		// For non-fixed cross items (wrapping column flex), subtract cross margins
 		// from the available inline-size so fit-content sizing respects the margin box.
-		// For fixed cross items (nowrap stretch), the stretch pass handles margins.
-		availInline := crossInlineContent + item.crossBorderPadding()
+		// For column flex, available inline-size is the cross content size.
+		// Border-padding is already handled by the child layout geometry.
+		availInline := crossInlineContent
 		if !crossIsFixed {
 			availInline -= item.crossMarginSum()
 			if availInline < 0 {
