@@ -2238,14 +2238,12 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	}
 
 	// §4.5: min-size is auto (default). The automatic minimum size is the
-	// content-based minimum size. Only applies when overflow is not scrollable.
-	// Per CSSWG resolution (issue #7714), only scroll containers disable auto-min.
-	// overflow: hidden and overflow: clip are NOT scroll containers.
-	overflow := "visible"
-	if v, ok := style.Get("overflow"); ok {
-		overflow = strings.TrimSpace(v)
-	}
-	if overflow == "scroll" || overflow == "auto" {
+	// content-based minimum size. Disabled when the item has non-visible overflow
+	// in either axis (i.e. when the item is a scroll container or has overflow:hidden/clip).
+	// Matches Blink's HasNonVisibleOverflow() check in FlexLayoutAlgorithm.
+	overflowX := style.GetOverflowX()
+	overflowY := style.GetOverflowY()
+	if overflowX != "visible" || overflowY != "visible" {
 		return 0
 	}
 
