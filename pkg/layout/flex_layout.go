@@ -1630,23 +1630,23 @@ func (fla *FlexLayoutAlgorithm) buildFlexLines(
 }
 
 // hasForcedBreakBefore returns true if the style requests a forced line break
-// before this item (CSS Flexbox §10). Checks both modern break-before and
-// legacy page-break-before properties.
+// before this item (CSS Flexbox §10). Only the modern break-before property
+// is checked, and only values that apply to flex line wrapping:
+//   - "always": forces a break in any fragmentation context
+//   - "column": forces a column break (flex lines in column flex ARE columns)
+//
+// The legacy page-break-before property does NOT force flex line breaks because
+// page-break-before:always maps to break-before:page (CSS Fragmentation §4.4),
+// which only applies to paged fragmentation contexts. Similarly, break-before
+// values "page", "left", "right", and "region" are context-specific and do not
+// apply to flex line wrapping.
 func hasForcedBreakBefore(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
-	// Check break-before first (modern property).
 	if v, ok := style.Get("break-before"); ok {
 		switch v {
-		case "always", "page", "left", "right", "column", "region":
-			return true
-		}
-	}
-	// Check legacy page-break-before.
-	if v, ok := style.Get("page-break-before"); ok {
-		switch v {
-		case "always", "left", "right":
+		case "always", "column":
 			return true
 		}
 	}
