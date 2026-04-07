@@ -837,8 +837,9 @@ func createLineBoxEx(
 						} else if centralBaseline {
 							ibAscent = blockSize / 2
 						} else {
-							fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
-							ibAscent = text.FontAscent(fontSize, bold, italic, mono, ahem)
+							// CSS 2.1 §10.8.1: If the inline-block has no line boxes,
+							// the baseline is the bottom margin edge of the box.
+							ibAscent = blockSize
 						}
 						blockPos = maxAscent - ibAscent
 					} else if centralBaseline {
@@ -921,11 +922,17 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize - ascent
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
+			// Negative half-leading (when line-height < font-size) is valid
+			// and reduces the inline box's ascent/descent contribution.
 			lineHt := r.Item.Style.GetLineHeight()
 			halfLeading := (lineHt - (ascent + descent)) / 2
-			if halfLeading > 0 {
-				ascent += halfLeading
-				descent += halfLeading
+			ascent += halfLeading
+			descent += halfLeading
+			if ascent < 0 {
+				ascent = 0
+			}
+			if descent < 0 {
+				descent = 0
 			}
 			if ascent > maxAscent {
 				maxAscent = ascent
@@ -950,12 +957,18 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize - ascent
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
+			// Negative half-leading (when line-height < font-size) is valid
+			// and reduces the inline box's ascent/descent contribution.
 			if r.Item.Style != nil {
 				lineHt := r.Item.Style.GetLineHeight()
 				halfLeading := (lineHt - (ascent + descent)) / 2
-				if halfLeading > 0 {
-					ascent += halfLeading
-					descent += halfLeading
+				ascent += halfLeading
+				descent += halfLeading
+				if ascent < 0 {
+					ascent = 0
+				}
+				if descent < 0 {
+					descent = 0
 				}
 			}
 			if ascent > maxAscent {
@@ -1014,9 +1027,11 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 						// in vertical modes with central baseline: blockSize / 2.
 						ibAscent = blockSize / 2
 					} else {
-						fontPath := resolveFontPath(r.Item.Style, fonts)
-						fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-						ibAscent = text.FontAscentFromFont(fontSize, fontPath)
+						// CSS 2.1 §10.8.1: If the inline-block has no line boxes,
+						// the baseline is the bottom margin edge of the box.
+						// This means ibAscent = blockSize (the entire box is above
+						// the baseline).
+						ibAscent = blockSize
 					}
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
 					// the line box height. margin-block-start adds to the ascent
