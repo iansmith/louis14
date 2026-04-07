@@ -1571,6 +1571,14 @@ func (fla *FlexLayoutAlgorithm) buildFlexLines(
 
 	for i, item := range items {
 		itemSize := item.outerHypotheticalMainSize()
+
+		// CSS Flexbox §10: forced line breaks.
+		// break-before / page-break-before: always/left/right/page → new line.
+		forcedBreakBefore := false
+		if i > 0 {
+			forcedBreakBefore = hasForcedBreakBefore(item.style)
+		}
+
 		if i == 0 {
 			currentLine = append(currentLine, item)
 			currentSize = itemSize
@@ -1580,7 +1588,7 @@ func (fla *FlexLayoutAlgorithm) buildFlexLines(
 		if len(currentLine) > 0 {
 			gap = mainGap
 		}
-		if currentSize+gap+itemSize > containerMainSize && len(currentLine) > 0 {
+		if forcedBreakBefore || (currentSize+gap+itemSize > containerMainSize && len(currentLine) > 0) {
 			lines = append(lines, &flexLine{items: currentLine})
 			currentLine = []*flexItem{item}
 			currentSize = itemSize
@@ -1596,6 +1604,30 @@ func (fla *FlexLayoutAlgorithm) buildFlexLines(
 		lines = []*flexLine{{}}
 	}
 	return lines
+}
+
+// hasForcedBreakBefore returns true if the style requests a forced line break
+// before this item (CSS Flexbox §10). Checks both modern break-before and
+// legacy page-break-before properties.
+func hasForcedBreakBefore(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	// Check break-before first (modern property).
+	if v, ok := style.Get("break-before"); ok {
+		switch v {
+		case "always", "page", "left", "right", "column", "region":
+			return true
+		}
+	}
+	// Check legacy page-break-before.
+	if v, ok := style.Get("page-break-before"); ok {
+		switch v {
+		case "always", "left", "right":
+			return true
+		}
+	}
+	return false
 }
 
 // resolveFlexibleLengths implements §9.7: the flex algorithm.
