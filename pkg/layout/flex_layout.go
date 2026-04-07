@@ -450,71 +450,46 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// §9.8 — Two-pass layout: now that line cross-sizes are known, re-layout
-	// items that have percentage cross-sizes, percentage min/max cross-sizes,
-	// or aspect-ratio. This gives them access to the definite cross-size for
-	// % resolution. Stretch items are handled separately in stretchFlexItems.
+	// ALL non-stretch items with the definite line cross-size. This matches
+	// Blink's GiveItemsFinalPositionAndSize which relayouts every item.
+	// crossIsFixed=false ensures items size to content (not forced to line
+	// cross-size), while avail.BlockSize and pctBlockSize are set to the
+	// line cross-size for percentage resolution in descendants.
+	// Stretch items are handled separately in stretchFlexItems below.
 	for _, line := range lines {
 		lineCrossMax := 0.0
 		for _, item := range line.items {
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			// Check if item has percentage cross-size or aspect-ratio that can now be resolved.
-			needsRelayout := false
-			if isRow {
-				if _, ok := item.style.GetPercentage("height"); ok {
-					needsRelayout = true
-				}
-				if _, ok := item.style.GetPercentage("min-height"); ok {
-					needsRelayout = true
-				}
-				if _, ok := item.style.GetPercentage("max-height"); ok {
-					needsRelayout = true
-				}
-			} else {
-				if _, ok := item.style.GetPercentage("width"); ok {
-					needsRelayout = true
-				}
-				if _, ok := item.style.GetPercentage("min-width"); ok {
-					needsRelayout = true
-				}
-				if _, ok := item.style.GetPercentage("max-width"); ok {
-					needsRelayout = true
-				}
-			}
-			// Aspect-ratio: if main-size was determined by aspect-ratio in first pass,
-			// re-layout with definite cross-size so aspect-ratio items get correct cross-size.
-			if ar := item.style.GetAspectRatio(); ar.IsSet {
-				needsRelayout = true
-			}
-			if selfAlign == "stretch" && !needsRelayout {
-				// Stretch items without percentage cross-size are handled in the stretch pass below.
+			if selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd &&
+				!fla.hasExplicitCrossSize(item.style, wdm, isRow) {
+				// Stretch items without auto margins are handled in the stretch pass below.
 				if item.crossSize > lineCrossMax {
 					lineCrossMax = item.crossSize
 				}
 				continue
 			}
-			if needsRelayout {
-				var crossBP2 float64
-				if item.mainIsItemInline {
-					crossBP2 = item.geom.BlockBorderPadding()
-				} else {
-					crossBP2 = item.geom.InlineBorderPadding()
-				}
-				crossContent2 := line.crossSize - item.crossMarginSum() - crossBP2
-				if crossContent2 < 0 {
-					crossContent2 = 0
-				}
-				cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
-					item.resolvedMain, crossContent2, false)
-				result := layoutElement(fla.ctx, item.node, cs)
-				item.fragment = result.Fragment
-				item.baseline = result.Baseline
-				item.propagatedOOF = result.PropagatedOOFCandidates
-				lf := NewLogicalFragment(wdm, item.fragment)
-				if isRow {
-					item.crossSize = lf.BlockSize()
-				} else {
-					item.crossSize = lf.InlineSize()
-				}
+			// Re-layout with the definite line cross-size for percentage resolution.
+			var crossBP2 float64
+			if item.mainIsItemInline {
+				crossBP2 = item.geom.BlockBorderPadding()
+			} else {
+				crossBP2 = item.geom.InlineBorderPadding()
+			}
+			crossContent2 := line.crossSize - item.crossMarginSum() - crossBP2
+			if crossContent2 < 0 {
+				crossContent2 = 0
+			}
+			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+				item.resolvedMain, crossContent2, false)
+			result := layoutElement(fla.ctx, item.node, cs)
+			item.fragment = result.Fragment
+			item.baseline = result.Baseline
+			item.propagatedOOF = result.PropagatedOOFCandidates
+			lf := NewLogicalFragment(wdm, item.fragment)
+			if isRow {
+				item.crossSize = lf.BlockSize()
+			} else {
+				item.crossSize = lf.InlineSize()
 			}
 			if item.crossSize > lineCrossMax {
 				lineCrossMax = item.crossSize
@@ -1687,7 +1662,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		})
 		b.SetPercentageResolutionInlineSize(contentInlineSize)
 		b.SetIsFixedInlineSize(true)
-		if crossSize != Indefinite {
+		if crossIsFixed && crossSize != Indefinite {
 			b.SetIsFixedBlockSize(true)
 		}
 	} else {
