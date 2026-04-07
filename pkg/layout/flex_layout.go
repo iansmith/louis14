@@ -13,7 +13,6 @@ import (
 
 const flexDebug = false
 
-
 // FlexLayoutAlgorithm implements the CSS Flexible Box Layout Module Level 1 §9.
 // It distributes flex items along the main axis and aligns them on the cross axis.
 //
@@ -633,11 +632,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 	}
-	if flexDebug {
-		fmt.Fprintf(os.Stderr, "FLEX-DBG lineOffsets=%v alignContent=%s reverseCross=%v wrapMode=%s containerCrossSize=%.1f totalLinesCross=%.1f nLines=%d\n",
-			lineOffsets, alignContent, reverseCross, wrapMode, containerCrossSize, totalLinesCross, len(lines))
-	}
-
 	// §9.4 — Stretch items to line cross-size (align-self: stretch).
 	// Must happen AFTER align-content so multi-line containers use the final
 	// (possibly grown by align-content:stretch) line cross-sizes.
