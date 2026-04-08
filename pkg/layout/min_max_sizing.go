@@ -188,18 +188,14 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	canWrap := wrapMode == "wrap" || wrapMode == "wrap-reverse"
 
 	// Resolve the container's definite cross-size for aspect-ratio transfer.
-	// For row flex: cross = block-size; for column flex: cross = inline-size.
+	// Only needed for row flex (cross = block-size). For column flex, the cross
+	// IS the inline-size we're computing, so it's never definite here.
 	containerGeom := ComputeFragmentGeometry(style, wdm)
 	var containerCrossContent float64
 	var hasDefiniteCross bool
 	if isRow {
 		if bs, ok := ResolveBlockSize(style, wdm, space, containerGeom); ok {
 			containerCrossContent = bs
-			hasDefiniteCross = true
-		}
-	} else {
-		if is, ok := ResolveInlineSize(style, wdm, space, containerGeom); ok {
-			containerCrossContent = is
 			hasDefiniteCross = true
 		}
 	}
