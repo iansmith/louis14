@@ -1309,15 +1309,35 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		}
 	}
 
-	// height attribute → CSS height
+	// height attribute → CSS height.
+	// Per HTML spec (2024), canvas and video height attributes do NOT map to CSS
+	// height directly — they define the element's intrinsic coordinate space height
+	// and establish a CSS aspect-ratio when paired with the width attribute.
+	// Excluding canvas/video from the height→CSS height mapping ensures that
+	// CSS Containment (contain:size) can correctly use the intrinsic aspect ratio
+	// to determine block-size from an author-set inline-size.
 	if val, ok := node.GetAttribute("height"); ok {
 		switch node.TagName {
-		case "table", "td", "th", "tr", "img", "input", "object", "embed", "video", "canvas":
+		case "table", "td", "th", "tr", "img", "input", "object", "embed":
 			if strings.HasSuffix(val, "%") {
 				style.Set("height", val)
 			} else {
 				style.Set("height", val+"px")
 			}
+		}
+	}
+
+	// canvas and video: width+height attributes → CSS aspect-ratio (per HTML spec 2024).
+	// When both numeric attributes are present, they establish the element's
+	// CSS aspect-ratio as a presentational hint. The width attribute continues
+	// to map to CSS width (above) for backward-compatibility and flex sizing.
+	switch node.TagName {
+	case "canvas", "video":
+		wVal, wOk := node.GetAttribute("width")
+		hVal, hOk := node.GetAttribute("height")
+		if wOk && hOk && !strings.HasSuffix(wVal, "%") && !strings.HasSuffix(hVal, "%") {
+			// Both numeric attributes present → set aspect-ratio presentational hint.
+			style.Set("aspect-ratio", wVal+"/"+hVal)
 		}
 	}
 

@@ -172,13 +172,44 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 
 	var contentInline, contentBlock float64
 	if rla.style != nil && rla.style.HasSizeContainment() {
-		// CSS Containment: size containment — replaced element intrinsic size is 0.
-		// Only use explicit inline/block sizes if set.
+		// CSS Containment: size containment — replaced element intrinsic dimensions
+		// are suppressed (treated as 0), but the element's intrinsic aspect ratio
+		// is preserved per CSS Containment §3.1.2.
+		//
+		// Sizing rules:
+		// - Explicit CSS width/height are used if set.
+		// - If only one explicit dimension is set, the intrinsic aspect ratio
+		//   (from the replaced element's native dimensions) is used to derive
+		//   the other dimension.
+		// - If neither is set, the element is 0×0 (no intrinsic dimensions under
+		//   size containment).
+		hasInline, hasBlock := false, false
 		if explInline, ok := ResolveInlineSize(rla.style, wdm, rla.space, geom); ok {
 			contentInline = explInline
+			hasInline = true
 		}
 		if explBlock, ok := ResolveBlockSize(rla.style, wdm, rla.space, geom); ok {
 			contentBlock = explBlock
+			hasBlock = true
+		}
+		// If only one dimension is set, use the element's intrinsic aspect ratio
+		// (preserved under contain: size) to derive the missing dimension.
+		if hasInline != hasBlock {
+			info := GetIntrinsicSizingInfo(rla.ctx, rla.node)
+			if info.HasAspectRatio && info.AspectRatio > 0 {
+				// Convert physical aspect ratio (width/height) to logical (inline/block).
+				logicalRatio := info.AspectRatio
+				if wdm.IsVertical() {
+					logicalRatio = 1.0 / info.AspectRatio
+				}
+				if logicalRatio > 0 {
+					if hasInline && !hasBlock {
+						contentBlock = contentInline / logicalRatio
+					} else if hasBlock && !hasInline {
+						contentInline = contentBlock * logicalRatio
+					}
+				}
+			}
 		}
 	} else {
 		contentInline, contentBlock = ComputeReplacedSize(rla.ctx, rla.node, rla.style, rla.space)

@@ -1470,33 +1470,71 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 					return explicit
 				}
 			}
-		}
-		// §9.2 aspect-ratio fallback when cross-size is definite.
-		if ar := style.GetAspectRatio(); ar.IsSet && hasDefiniteCross {
-			if mainIsItemInline && ar.Height > 0 {
-				crossContent := containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
-				if crossContent < 0 {
-					crossContent = 0
+			// §9.2 aspect-ratio fallback: when the item has a definite cross-size
+			// and a CSS aspect-ratio, derive the flex basis (main-size) from the
+			// cross-size × ratio. Only applies to flex-basis: auto — content sizing
+			// uses max-content which is independent of cross-size.
+			//
+			// The item's definite cross-size is (in priority order):
+			//  1. Its explicit CSS cross-size property (e.g. width in column flex).
+			//  2. Container cross-size, only if the item will stretch to fill it.
+			if ar := style.GetAspectRatio(); ar.IsSet {
+				var itemCrossContent float64
+				var hasItemCross bool
+				crossItemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+					SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					Build()
+				if mainIsItemInline {
+					// Cross = block axis. Check for explicit CSS block-size.
+					if explicitCross, ok := ResolveBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+						itemCrossContent = explicitCross
+						hasItemCross = true
+					}
+				} else {
+					// Cross = inline axis. Check for explicit CSS inline-size.
+					if explicitCross, ok := ResolveInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
+						itemCrossContent = explicitCross
+						hasItemCross = true
+					}
 				}
-				return crossContent * ar.Width / ar.Height
-			} else if !mainIsItemInline && ar.Width > 0 {
-				crossContent := containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
-				if crossContent < 0 {
-					crossContent = 0
+				// If no explicit cross-size, check if the item stretches to container.
+				if !hasItemCross && hasDefiniteCross {
+					alignItems := "stretch"
+					if v, ok := fla.style.Get("align-items"); ok {
+						alignItems = strings.TrimSpace(v)
+					}
+					selfAlign := fla.getAlignSelf(style, alignItems)
+					_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+					hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
+					if selfAlign == "stretch" && !crossAS && !crossAE && !hasExplCross {
+						if mainIsItemInline {
+							itemCrossContent = containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
+						} else {
+							itemCrossContent = containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
+						}
+						if itemCrossContent < 0 {
+							itemCrossContent = 0
+						}
+						hasItemCross = true
+					}
 				}
-				return crossContent * ar.Height / ar.Width
+				if hasItemCross {
+					if mainIsItemInline && ar.Height > 0 {
+						return itemCrossContent * ar.Width / ar.Height
+					} else if !mainIsItemInline && ar.Width > 0 {
+						return itemCrossContent * ar.Height / ar.Width
+					}
+				}
 			}
-		}
-		// No explicit size (or flex-basis: content) → use max-content.
-		// For flex-basis: content, use computeContentMinMaxSizes (row) or
-		// layout with IsContentSuggestionLayout (column) to ignore the item's
-		// explicit CSS main-size. Per CSS Flexbox §9.2, flex-basis:content
-		// sizes the item based on its content, not its CSS main-size property.
-		if basisVal == "content" {
-			return fla.itemContentMaxMainSize(child, style, childWDM, childGeom, parentWDM,
+			return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
 				contentInlineSize, isRow)
 		}
-		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
+		// flex-basis: content → use content-based max-content sizing.
+		// Per CSS Flexbox §9.2, flex-basis:content sizes the item based on its
+		// content, not its CSS main-size property or cross-size aspect-ratio.
+		return fla.itemContentMaxMainSize(child, style, childWDM, childGeom, parentWDM,
 			contentInlineSize, isRow)
 	}
 
