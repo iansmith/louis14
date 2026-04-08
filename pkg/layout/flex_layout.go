@@ -178,8 +178,8 @@ type flexItem struct {
 	crossAutoEnd   bool
 
 	// baseline is the first-line baseline position relative to the item's border-box top.
-	// Per CSS Flexbox §9.4, items with align-self:baseline that have no natural
-	// baseline get a synthesized baseline at the block-end edge of the border-box.
+	// Per CSS Align §4.4, items with no natural baseline get a synthesized first
+	// baseline at the block-start edge (0) and last baseline at block-end (crossSize).
 	baseline     float64
 	hasBaseline  bool // true if the layout produced a real baseline
 	lastBaseline float64
@@ -849,9 +849,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			if selfAlign == "baseline" && baselineParallel {
 				bl := item.baseline
 				if !item.hasBaseline && canSynthesize {
-					// CSS Flexbox §9.4 / CSS Align §4.2: synthesize baseline
-					// at block-end of border-box for items with no natural baseline.
-					bl = item.crossSize
+					// CSS Align §4.4: synthesize first baseline at block-start
+					// of border-box for items with no natural baseline.
+					bl = 0
 				}
 				if bl > 0 || item.hasBaseline {
 					b := item.crossMarginStart() + bl
@@ -867,7 +867,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					lb = item.baseline
 				}
 				if !item.hasBaseline && lb <= 0 && canSynthesize {
-					lb = 0 // Synthesize at block-start for last baseline.
+					lb = item.crossSize // CSS Align §4.4: synthesize last baseline at block-end.
 				}
 				d := item.crossMarginEnd() + (item.crossSize - lb)
 				if d > sharedLastDescend {
@@ -943,9 +943,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				if hasBaselineItem {
 					bl := item.baseline
 					if !item.hasBaseline && canSynthesize {
-						bl = item.crossSize
+						bl = 0 // CSS Align §4.4: synthesize first baseline at block-start
 					}
-					if bl > 0 || item.hasBaseline {
+					if bl > 0 || item.hasBaseline || canSynthesize {
 						itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
 					} else {
 						itemCrossOffset = crossStart
@@ -960,7 +960,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						bl = item.baseline
 					}
 					if !item.hasBaseline && bl <= 0 && canSynthesize {
-						bl = 0
+						bl = item.crossSize // CSS Align §4.4: synthesize last baseline at block-end
 					}
 					belowBL := item.crossSize - bl
 					itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - belowBL - item.crossMarginEnd()
@@ -1105,47 +1105,83 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
 	// §4.2 — Flex container baseline.
-	// The container's first baseline set is determined by the first non-collapsed
-	// flex item in the first line that participates in baseline alignment, or the
-	// first non-collapsed item if none does (CSS Flexbox §4.2).
-	if len(lines) > 0 && len(lines[0].items) > 0 {
-		// Find the first non-collapsed baseline-participating item, falling back
-		// to the first non-collapsed item.
-		var baselineItem *flexItem
-		for _, item := range lines[0].items {
-			if item.collapsed {
-				continue
+	// First baseline: from the first non-collapsed item in the first line that
+	// participates in baseline alignment (or the first non-collapsed item).
+	// Last baseline: from the last non-collapsed item in the last line.
+	if len(lines) > 0 {
+		crossBPStart := geom.Border.BlockStart + geom.Padding.BlockStart
+
+		// First baseline: search first line.
+		if len(lines[0].items) > 0 {
+			var firstBaselineItem *flexItem
+			for _, item := range lines[0].items {
+				if item.collapsed {
+					continue
+				}
+				selfAlign := fla.getAlignSelf(item.style, alignItems)
+				baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+					(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+				if selfAlign == "baseline" && baselineParallel {
+					firstBaselineItem = item
+					break
+				}
+				if firstBaselineItem == nil {
+					firstBaselineItem = item
+				}
 			}
-			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
-				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-			if selfAlign == "baseline" && baselineParallel {
-				baselineItem = item
-				break
+			if firstBaselineItem == nil {
+				firstBaselineItem = lines[0].items[0]
 			}
-			if baselineItem == nil {
-				baselineItem = item // fallback to first non-collapsed item
-			}
-		}
-		if baselineItem == nil && len(lines[0].items) > 0 {
-			baselineItem = lines[0].items[0] // ultimate fallback
-		}
-		if baselineItem != nil {
-			bl := baselineItem.baseline
-			if !baselineItem.hasBaseline && isRow && !wdm.IsVertical() {
-				// Synthesize baseline at block-end of border-box.
-				bl = baselineItem.crossSize
+			bl := firstBaselineItem.baseline
+			if !firstBaselineItem.hasBaseline && isRow && !wdm.IsVertical() {
+				bl = 0 // CSS Align §4.4: synthesize first baseline at block-start
 			}
 			var itemBlockOffset float64
 			if isRow {
-				itemBlockOffset = baselineItem.crossOffset + baselineItem.crossMarginStart()
+				itemBlockOffset = firstBaselineItem.crossOffset + firstBaselineItem.crossMarginStart()
 			} else {
-				itemBlockOffset = baselineItem.mainOffset
+				itemBlockOffset = firstBaselineItem.mainOffset
 			}
-			containerBaseline := geom.Border.BlockStart + geom.Padding.BlockStart +
-				itemBlockOffset + bl
-			builder.SetBaseline(containerBaseline)
-			builder.SetLastBaseline(containerBaseline)
+			builder.SetBaseline(crossBPStart + itemBlockOffset + bl)
+		}
+
+		// Last baseline: search last line.
+		lastLine := lines[len(lines)-1]
+		if len(lastLine.items) > 0 {
+			var lastBaselineItem *flexItem
+			for i := len(lastLine.items) - 1; i >= 0; i-- {
+				item := lastLine.items[i]
+				if item.collapsed {
+					continue
+				}
+				selfAlign := fla.getAlignSelf(item.style, alignItems)
+				baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+					(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+				if selfAlign == "last baseline" && baselineParallel {
+					lastBaselineItem = item
+					break
+				}
+				if lastBaselineItem == nil {
+					lastBaselineItem = item
+				}
+			}
+			if lastBaselineItem == nil {
+				lastBaselineItem = lastLine.items[len(lastLine.items)-1]
+			}
+			lb := lastBaselineItem.lastBaseline
+			if lb <= 0 {
+				lb = lastBaselineItem.baseline
+			}
+			if !lastBaselineItem.hasBaseline && isRow && !wdm.IsVertical() {
+				lb = lastBaselineItem.crossSize // CSS Align §4.4: synthesize last baseline at block-end
+			}
+			var itemBlockOffset float64
+			if isRow {
+				itemBlockOffset = lastBaselineItem.crossOffset + lastBaselineItem.crossMarginStart()
+			} else {
+				itemBlockOffset = lastBaselineItem.mainOffset
+			}
+			builder.SetLastBaseline(crossBPStart + itemBlockOffset + lb)
 		}
 	}
 
@@ -2658,6 +2694,8 @@ func (fla *FlexLayoutAlgorithm) getAlignItems() string {
 		case "stretch", "flex-start", "flex-end", "center", "baseline",
 			"start", "end", "self-start", "self-end", "last baseline":
 			return v
+		case "first baseline":
+			return "baseline"
 		}
 	}
 	// -webkit-box-align
@@ -2691,6 +2729,8 @@ func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string
 			case "stretch", "flex-start", "flex-end", "center", "baseline",
 				"start", "end", "self-start", "self-end", "last baseline":
 				return v
+			case "first baseline":
+				return "baseline"
 			}
 		}
 	}
