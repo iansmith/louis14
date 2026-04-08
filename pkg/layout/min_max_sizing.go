@@ -298,6 +298,11 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		if pos == css.PositionAbsolute || pos == css.PositionFixed {
 			continue
 		}
+		// CSS Flexbox §4.4: visibility:collapse items are not rendered and
+		// do not contribute to the container's main-axis intrinsic size.
+		if childStyle.GetVisibility() == "collapse" {
+			continue
+		}
 
 		childWDM := NewWritingDirectionMode(childStyle)
 		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
@@ -363,71 +368,73 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		}
 
 		if !transferred {
-			// CSS Flexbox §9.9.1: flex item contributions to the container's
-			// intrinsic main size depend on flex-basis, flex-grow, and flex-shrink.
-			// For row flex, main axis = inline axis, so we need intrinsic inline
-			// sizes of children combined with their flex base sizes.
+			// CSS Flexbox §9.9.3 + Blink's conservative algorithm (csswg-drafts #8884):
+			// For row flex, compute CSS Sizing-3 intrinsic contributions, then
+			// adjust based on whether the item can actually flex to reach them.
 			if isRow {
-				childMM := ComputeMinMaxSizes(ctx, child, childSpace)
-				contentMin := childMM.MinContent + childBP + childMargins.InlineSum()
-				contentMax := childMM.MaxContent + childBP + childMargins.InlineSum()
+				outerExtra := childBP + childMargins.InlineSum()
+				childGeom2 := ComputeFragmentGeometry(childStyle, childWDM)
+
+				// Pure content intrinsic sizes (content-box, ignores explicit width).
+				contentMM := computeContentMinMaxSizes(ctx, child, childSpace)
+
+				// Explicit width (content-box), if any.
+				explicit, hasExplicit := ResolveInlineSize(childStyle, childWDM, childSpace, childGeom2)
+
+				// CSS Sizing-3 contributions = max(content intrinsic, explicit width).
+				minContrib := contentMM.MinContent
+				maxContrib := contentMM.MaxContent
+				if hasExplicit {
+					if explicit > minContrib {
+						minContrib = explicit
+					}
+					if explicit > maxContrib {
+						maxContrib = explicit
+					}
+				}
 
 				flexBasis, basisIsContent := resolveFlexBasisForIntrinsic(
 					childStyle, childWDM, childSpace,
-					ComputeFragmentGeometry(childStyle, childWDM),
-					ctx, child)
-
-				flexGrow := childStyle.GetFlexGrow()
+					childGeom2, ctx, child)
 
 				if basisIsContent {
-					// §9.9.1: If flex-basis is "content" or depends on available
-					// space, use the item's content-based contribution directly.
-					childMin = contentMin
-					childMax = contentMax
+					// Basis is content-derived: use CSS Sizing-3 contributions directly.
+					childMin = minContrib + outerExtra
+					childMax = maxContrib + outerExtra
 				} else {
-					// Flex base size (outer, content-box basis + border/padding + margins).
-					outerBasis := flexBasis + childBP + childMargins.InlineSum()
+					flexGrow := childStyle.GetFlexGrow()
+					flexShrink := childStyle.GetFlexShrink()
 
-					// Apply min/max main-size constraints to the flex base size.
-					childGeom2 := ComputeFragmentGeometry(childStyle, childWDM)
-					minMain := ResolveMinInlineSize(childStyle, childWDM, childSpace, childGeom2) + childBP + childMargins.InlineSum()
-					clampedBasis := outerBasis
-					if clampedBasis < minMain {
-						clampedBasis = minMain
+					// Hypothetical main size = flex base size clamped by min/max main.
+					minMain := ResolveMinInlineSize(childStyle, childWDM, childSpace, childGeom2)
+					hyp := flexBasis
+					if hyp < minMain {
+						hyp = minMain
 					}
 					if maxMain, ok := ResolveMaxInlineSize(childStyle, childWDM, childSpace, childGeom2); ok {
-						outerMax := maxMain + childBP + childMargins.InlineSum()
-						if clampedBasis > outerMax {
-							clampedBasis = outerMax
+						if hyp > maxMain {
+							hyp = maxMain
 						}
+					}
+
+					// Conservative algorithm: if the item can't flex to reach the
+					// CSS Sizing-3 contribution, use its hypothetical main size instead.
+					// Min-content contribution:
+					cantGrowMin := flexGrow == 0 && flexBasis < minContrib
+					cantShrinkMin := flexShrink == 0 && flexBasis > minContrib
+					if cantGrowMin || cantShrinkMin {
+						childMin = hyp + outerExtra
+					} else {
+						childMin = minContrib + outerExtra
 					}
 
 					// Max-content contribution:
-					if flexGrow > 0 {
-						// §9.9.1: If flex-grow > 0, contribution = flex base size
-						// (clamped by min/max).
-						childMax = clampedBasis
+					cantGrowMax := flexGrow == 0 && flexBasis < maxContrib
+					cantShrinkMax := flexShrink == 0 && flexBasis > maxContrib
+					if cantGrowMax || cantShrinkMax {
+						childMax = hyp + outerExtra
 					} else {
-						// §9.9.1: Otherwise, contribution = max(flex base size, content)
-						// clamped by min/max.
-						childMax = clampedBasis
-						if contentMax > childMax {
-							childMax = contentMax
-						}
-					}
-
-					// Min-content contribution:
-					if flexGrow == 0 {
-						// §9.9.1: If flex-grow is zero, clamp flex base size from
-						// above by max main size, then from below by min(content, min/max clamped).
-						clampedMin := contentMin
-						childMin = clampedBasis
-						if clampedMin > childMin {
-							childMin = clampedMin
-						}
-					} else {
-						// §9.9.1: Otherwise, use min-content contribution.
-						childMin = contentMin
+						childMax = maxContrib + outerExtra
 					}
 				}
 			} else {
