@@ -343,7 +343,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Resolve gap properties.
-	mainGap, crossGap := fla.resolveGaps(wdm, isRow, contentInlineSize)
+	contentBlockSize := 0.0
+	hasDefiniteBlock := false
+	if hasExplicitBlock {
+		contentBlockSize = explicitBlockSize
+		hasDefiniteBlock = true
+	}
+	mainGap, crossGap := fla.resolveGaps(wdm, isRow, contentInlineSize, contentBlockSize, hasDefiniteBlock)
 
 	// §9.3 — Collect flex items.
 	allItems := fla.collectItems(builder, wdm, contentInlineSize, containerMainSize, hasDefiniteMain, containerCrossSize, hasDefiniteCross, isRow)
@@ -1393,7 +1399,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		// only clamp by the explicit CSS min-width/min-height. The content-based automatic
 		// minimum must NOT clamp the hypothetical (§4.5: "not clamped by the item's flex-basis",
 		// and items with flex-basis:0 must start at 0, not min-content).
-		explicitMin := fla.flexItemExplicitMin(childStyle, childWDM, childGeom, itemSizingSpace, isRow)
+		explicitMin := fla.flexItemExplicitMin(child, childStyle, childWDM, childGeom, itemSizingSpace, isRow, contentInlineSize)
 
 		// Clamp flex-basis by explicit min/max main size only.
 		hyp := fla.clampMainSizeWithMin(flexBasis, explicitMin, childStyle, childWDM, childGeom,
@@ -2752,13 +2758,19 @@ func (fla *FlexLayoutAlgorithm) getAlignContent() string {
 }
 
 // resolveGaps returns the main and cross gap values.
-func (fla *FlexLayoutAlgorithm) resolveGaps(wdm WritingDirectionMode, isRow bool, contentInlineSize float64) (mainGap, crossGap float64) {
+func (fla *FlexLayoutAlgorithm) resolveGaps(wdm WritingDirectionMode, isRow bool, contentInlineSize float64, contentBlockSize float64, hasDefiniteBlock bool) (mainGap, crossGap float64) {
 	// row-gap and column-gap.
+	// Per CSS Align Level 3 §8.1 and CSSWG issue #5081:
+	// - column-gap percentages resolve against the inline-size (always definite)
+	// - row-gap percentages resolve against the block-size; if indefinite, resolve to 0
 	var rowGap, colGap float64
 	if v, ok := fla.style.GetLength("row-gap"); ok {
 		rowGap = v
 	} else if pct, ok := fla.style.GetPercentage("row-gap"); ok {
-		rowGap = contentInlineSize * pct / 100
+		if hasDefiniteBlock {
+			rowGap = contentBlockSize * pct / 100
+		}
+		// else: indefinite block-size → percentage row-gap resolves to 0
 	}
 	if v, ok := fla.style.GetLength("column-gap"); ok {
 		colGap = v
@@ -2868,11 +2880,13 @@ func getItemAutoMargins(style *css.Style, wdm WritingDirectionMode, isRow bool) 
 // explicit minimum sizes, while NOT applying the content-based automatic minimum
 // (which is only enforced at the final clamp in resolveFlexibleLengths).
 func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
+	child *LayoutInputNode,
 	style *css.Style,
 	childWDM WritingDirectionMode,
 	childGeom FragmentGeometry,
 	space ConstraintSpace,
 	isRow bool,
+	contentInlineSize float64,
 ) float64 {
 	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
 	if mainIsItemInline {
@@ -2881,6 +2895,21 @@ func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
 			minProp = "min-height"
 		}
 		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
+			v = strings.TrimSpace(v)
+			if v == "min-content" || v == "max-content" || v == "fit-content" {
+				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+					SetAvailableSize(space.AvailableSize).
+					SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+					Build()
+				mm := ComputeMinMaxSizes(fla.ctx, child, childSpace)
+				switch v {
+				case "min-content":
+					return mm.MinContent
+				case "max-content", "fit-content":
+					return mm.MaxContent
+				}
+			}
 			return ResolveMinInlineSize(style, childWDM, space, childGeom)
 		}
 	} else {
@@ -2889,6 +2918,23 @@ func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
 			minProp = "min-width"
 		}
 		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
+			v = strings.TrimSpace(v)
+			if v == "min-content" || v == "max-content" || v == "fit-content" {
+				containerInlineSize := space.AvailableSize.InlineSize
+				minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+					SetPercentageResolutionInlineSize(containerInlineSize).
+					SetIsContentSuggestionLayout(true).
+					Build()
+				result := layoutElement(fla.ctx, child, minBlockSpace)
+				lf := NewLogicalFragment(childWDM, result.Fragment)
+				blockContent := lf.BlockSize() - childGeom.BlockBorderPadding()
+				if blockContent < 0 {
+					blockContent = 0
+				}
+				return blockContent
+			}
 			return ResolveMinBlockSize(style, childWDM, space, childGeom)
 		}
 	}
@@ -2918,6 +2964,22 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			minProp = "min-height"
 		}
 		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
+			v = strings.TrimSpace(v)
+			// Handle intrinsic keywords (min-content, max-content, fit-content).
+			if v == "min-content" || v == "max-content" || v == "fit-content" {
+				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+					SetAvailableSize(space.AvailableSize).
+					SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+					Build()
+				mm := ComputeMinMaxSizes(fla.ctx, child, childSpace)
+				switch v {
+				case "min-content":
+					return mm.MinContent
+				case "max-content", "fit-content":
+					return mm.MaxContent
+				}
+			}
 			return ResolveMinInlineSize(style, childWDM, space, childGeom)
 		}
 	} else {
@@ -2927,6 +2989,25 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			minProp = "min-width"
 		}
 		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
+			v = strings.TrimSpace(v)
+			// Handle intrinsic keywords — for the block axis, we need to
+			// lay out the item to determine its block-size contribution.
+			if v == "min-content" || v == "max-content" || v == "fit-content" {
+				containerInlineSize := space.AvailableSize.InlineSize
+				minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+					SetPercentageResolutionInlineSize(containerInlineSize).
+					SetIsContentSuggestionLayout(true).
+					Build()
+				result := layoutElement(fla.ctx, child, minBlockSpace)
+				lf := NewLogicalFragment(childWDM, result.Fragment)
+				blockContent := lf.BlockSize() - childGeom.BlockBorderPadding()
+				if blockContent < 0 {
+					blockContent = 0
+				}
+				return blockContent
+			}
 			return ResolveMinBlockSize(style, childWDM, space, childGeom)
 		}
 	}

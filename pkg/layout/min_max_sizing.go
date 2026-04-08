@@ -69,7 +69,62 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		}
 	}
 
+	// Apply intrinsic keyword min/max constraints (min-content, max-content, etc.)
+	// that ResolveMinInlineSize/ResolveMaxInlineSize can't handle.
+	applyIntrinsicKeywordMinMax(style, wdm, &result)
+
 	return result
+}
+
+// resolveIntrinsicInlineKeyword checks if a CSS property (min-width, max-width, etc.)
+// is an intrinsic sizing keyword and returns the resolved value.
+// For min-content → result.MinContent, max-content → result.MaxContent,
+// fit-content → result.MaxContent (unconstrained equivalent).
+func resolveIntrinsicInlineKeyword(style *css.Style, wdm WritingDirectionMode, prop string, result MinMaxSizes) (float64, bool) {
+	v, ok := style.Get(prop)
+	if !ok {
+		return 0, false
+	}
+	v = strings.TrimSpace(v)
+	switch v {
+	case "min-content":
+		return result.MinContent, true
+	case "max-content":
+		return result.MaxContent, true
+	case "fit-content":
+		return result.MaxContent, true
+	}
+	return 0, false
+}
+
+// applyIntrinsicKeywordMinMax applies intrinsic keyword min/max inline-size
+// constraints (min-content, max-content, fit-content) to computed min/max sizes.
+// This handles the cases that ResolveMinInlineSize/ResolveMaxInlineSize miss.
+func applyIntrinsicKeywordMinMax(style *css.Style, wdm WritingDirectionMode, result *MinMaxSizes) {
+	minProp := "min-width"
+	maxProp := "max-width"
+	if wdm.IsVertical() {
+		minProp = "min-height"
+		maxProp = "max-height"
+	}
+	// min-width: <intrinsic> acts as a floor.
+	if minVal, ok := resolveIntrinsicInlineKeyword(style, wdm, minProp, *result); ok {
+		if result.MinContent < minVal {
+			result.MinContent = minVal
+		}
+		if result.MaxContent < minVal {
+			result.MaxContent = minVal
+		}
+	}
+	// max-width: <intrinsic> acts as a cap.
+	if maxVal, ok := resolveIntrinsicInlineKeyword(style, wdm, maxProp, *result); ok {
+		if result.MinContent > maxVal {
+			result.MinContent = maxVal
+		}
+		if result.MaxContent > maxVal {
+			result.MaxContent = maxVal
+		}
+	}
 }
 
 // measureInlineMinMax computes min/max content sizes for a node with
@@ -156,6 +211,10 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 			result.MaxContent = maxInline
 		}
 	}
+
+	// Apply intrinsic keyword min/max constraints.
+	applyIntrinsicKeywordMinMax(style, wdm, &result)
+
 	return result
 }
 
