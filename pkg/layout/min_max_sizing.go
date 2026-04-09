@@ -440,9 +440,18 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			} else {
 				// Column flex: inline axis = cross axis. Item contributions
 				// are just their intrinsic inline (cross) sizes.
-				childMM := ComputeMinMaxSizes(ctx, child, childSpace)
-				childMin = childMM.MinContent + childBP + childMargins.InlineSum()
-				childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
+				// For orthogonal children, the child's block-size maps to the
+				// parent's inline-size, so we need measureOrthogonalChild.
+				isOrthogonal := wdm.IsOrthogonalTo(childWDM)
+				if isOrthogonal {
+					oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space)
+					childMin = oMin
+					childMax = oMax
+				} else {
+					childMM := ComputeMinMaxSizes(ctx, child, childSpace)
+					childMin = childMM.MinContent + childBP + childMargins.InlineSum()
+					childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
+				}
 			}
 		}
 

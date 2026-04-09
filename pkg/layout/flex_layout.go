@@ -449,7 +449,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// (e.g., a 100x100 image with CSS width:10px height:20px should be 20px
 			// tall, not 10px from the 1:1 intrinsic ratio).
 			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) &&
-				!fla.hasExplicitCrossSize(item.style, item.wdm, isRow) {
+				!fla.hasExplicitCrossSize(item.style, wdm, isRow) {
 				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
 				if info.HasAspectRatio && info.AspectRatio > 0 {
 					// Convert physical ratio (width/height) to logical (inline/block).
@@ -1406,8 +1406,11 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 			itemSizingSpace, isRow)
 
 		// Compute CSS max main size for §9.7 freeze loop.
+		// Must dispatch to the correct axis function based on mainIsItemInline,
+		// since for orthogonal items the flex main axis may be the item's block axis.
+		mainIsItemInlineForMax := computeMainIsItemInline(wdm, childWDM, isRow)
 		maxMainSize := Indefinite
-		if isRow {
+		if mainIsItemInlineForMax {
 			if max, ok := ResolveMaxInlineSize(childStyle, childWDM, itemSizingSpace, childGeom); ok {
 				maxMainSize = max
 			}
@@ -2888,15 +2891,35 @@ func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
 	isRow bool,
 	contentInlineSize float64,
 ) float64 {
+	// The CSS property controlling the flex main axis depends on the CONTAINER's
+	// writing mode, not the item's:
+	//   HTB row    → main = physical width  → "min-width"
+	//   VRL row    → main = physical height → "min-height"
+	//   HTB column → main = physical height → "min-height"
+	//   VRL column → main = physical width  → "min-width"
+	// The resolve function depends on the ITEM's writing mode (mainIsItemInline).
 	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
-	if mainIsItemInline {
-		minProp := "min-width"
-		if childWDM.IsVertical() {
-			minProp = "min-height"
+	containerIsVertical := fla.space.WritingDirection.IsVertical()
+
+	var minProp string
+	if isRow {
+		if containerIsVertical {
+			minProp = "min-height" // VRL row: main = physical height
+		} else {
+			minProp = "min-width" // HTB row: main = physical width
 		}
-		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
-			v = strings.TrimSpace(v)
-			if v == "min-content" || v == "max-content" || v == "fit-content" {
+	} else {
+		if containerIsVertical {
+			minProp = "min-width" // VRL column: main = physical width
+		} else {
+			minProp = "min-height" // HTB column: main = physical height
+		}
+	}
+
+	if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
+		v = strings.TrimSpace(v)
+		if v == "min-content" || v == "max-content" || v == "fit-content" {
+			if mainIsItemInline {
 				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
 					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 					SetAvailableSize(space.AvailableSize).
@@ -2909,17 +2932,7 @@ func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
 				case "max-content", "fit-content":
 					return mm.MaxContent
 				}
-			}
-			return ResolveMinInlineSize(style, childWDM, space, childGeom)
-		}
-	} else {
-		minProp := "min-height"
-		if childWDM.IsVertical() {
-			minProp = "min-width"
-		}
-		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
-			v = strings.TrimSpace(v)
-			if v == "min-content" || v == "max-content" || v == "fit-content" {
+			} else {
 				containerInlineSize := space.AvailableSize.InlineSize
 				minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
@@ -2935,8 +2948,11 @@ func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
 				}
 				return blockContent
 			}
-			return ResolveMinBlockSize(style, childWDM, space, childGeom)
 		}
+		if mainIsItemInline {
+			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+		}
+		return ResolveMinBlockSize(style, childWDM, space, childGeom)
 	}
 	return 0
 }
@@ -2954,19 +2970,32 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	contentInlineSize float64,
 ) float64 {
 	// Check if min-size is explicitly set (non-auto).
-	// Use mainIsItemInline to determine which axis of the ITEM corresponds to
-	// the flex main axis — this is correct for orthogonal items too.
+	// The CSS property controlling the flex main axis depends on the CONTAINER's
+	// writing mode (same logic as flexItemExplicitMin), while the resolve function
+	// depends on the ITEM's writing mode via mainIsItemInline.
 	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
-	if mainIsItemInline {
-		// Main axis = item's inline axis → min-inline-size property.
-		minProp := "min-width"
-		if childWDM.IsVertical() {
-			minProp = "min-height"
+	containerIsVertical := fla.space.WritingDirection.IsVertical()
+
+	var minProp string
+	if isRow {
+		if containerIsVertical {
+			minProp = "min-height" // VRL row: main = physical height
+		} else {
+			minProp = "min-width" // HTB row: main = physical width
 		}
-		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
-			v = strings.TrimSpace(v)
-			// Handle intrinsic keywords (min-content, max-content, fit-content).
-			if v == "min-content" || v == "max-content" || v == "fit-content" {
+	} else {
+		if containerIsVertical {
+			minProp = "min-width" // VRL column: main = physical width
+		} else {
+			minProp = "min-height" // HTB column: main = physical height
+		}
+	}
+
+	if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
+		v = strings.TrimSpace(v)
+		// Handle intrinsic keywords (min-content, max-content, fit-content).
+		if v == "min-content" || v == "max-content" || v == "fit-content" {
+			if mainIsItemInline {
 				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
 					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 					SetAvailableSize(space.AvailableSize).
@@ -2979,20 +3008,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				case "max-content", "fit-content":
 					return mm.MaxContent
 				}
-			}
-			return ResolveMinInlineSize(style, childWDM, space, childGeom)
-		}
-	} else {
-		// Main axis = item's block axis → min-block-size property.
-		minProp := "min-height"
-		if childWDM.IsVertical() {
-			minProp = "min-width"
-		}
-		if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
-			v = strings.TrimSpace(v)
-			// Handle intrinsic keywords — for the block axis, we need to
-			// lay out the item to determine its block-size contribution.
-			if v == "min-content" || v == "max-content" || v == "fit-content" {
+			} else {
 				containerInlineSize := space.AvailableSize.InlineSize
 				minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
@@ -3008,8 +3024,11 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				}
 				return blockContent
 			}
-			return ResolveMinBlockSize(style, childWDM, space, childGeom)
 		}
+		if mainIsItemInline {
+			return ResolveMinInlineSize(style, childWDM, space, childGeom)
+		}
+		return ResolveMinBlockSize(style, childWDM, space, childGeom)
 	}
 
 	// §4.5: min-size is auto (default). The automatic minimum size is the
