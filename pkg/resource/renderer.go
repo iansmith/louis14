@@ -12,6 +12,7 @@ import (
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
 	"louis14/pkg/text"
+	"mazarin/textshape"
 )
 
 // Renderer renders HTML content onto an image.
@@ -21,9 +22,10 @@ type Renderer interface {
 
 // Louis14Renderer renders HTML using the louis14 layout and rendering engine.
 type Louis14Renderer struct {
-	fetcher  Fetcher
-	fonts    text.FontConfig
-	jsEngine *js.Engine // nil = skip JS execution
+	fetcher       Fetcher
+	fonts         text.FontConfig
+	jsEngine      *js.Engine              // nil = skip JS execution
+	glyphProvider textshape.GlyphProvider // nil = use default DirectGlyphProvider
 }
 
 // SetJSEngine configures a JavaScript engine for DOM manipulation.
@@ -43,6 +45,28 @@ func NewLouis14Renderer(fetcher Fetcher, fonts ...text.FontConfig) *Louis14Rende
 		fc = fonts[0]
 	}
 	return &Louis14Renderer{fetcher: fetcher, fonts: fc}
+}
+
+// SetGlyphProvider configures a custom GlyphProvider for font rasterization.
+// When set, the renderer uses this provider instead of the default
+// DirectGlyphProvider (which requires font files on the local filesystem).
+func (r *Louis14Renderer) SetGlyphProvider(provider textshape.GlyphProvider) {
+	r.glyphProvider = provider
+}
+
+// newRenderer creates a render.Renderer for the given target image,
+// using the custom GlyphProvider if one was configured.
+func (r *Louis14Renderer) newRenderer(target *image.RGBA) *render.Renderer {
+	if r.glyphProvider != nil {
+		return render.NewRendererForImageWithProvider(target, r.glyphProvider)
+	}
+	return render.NewRendererForImage(target)
+}
+
+// newRendererForDC creates a render.Renderer using an existing DrawContext.
+// The DC's image, translation, and provider are used directly.
+func (r *Louis14Renderer) newRendererForDC(dc textshape.DrawContext) *render.Renderer {
+	return render.NewRendererForDrawContext(dc)
 }
 
 // RenderAutoHeight performs layout to measure content height, then renders at full height.
@@ -97,7 +121,7 @@ func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*imag
 
 	// Create image at the measured height and render
 	target := image.NewRGBA(image.Rect(0, 0, width, int(contentHeight+0.5)))
-	renderer := render.NewRendererForImage(target)
+	renderer := r.newRenderer(target)
 	renderer.SetFonts(fonts)
 	if imageFetcher != nil {
 		renderer.SetImageFetcher(imageFetcher)
@@ -251,7 +275,7 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 	counterStyles := collectCounterStyles(doc)
 
 	// Render onto target image
-	renderer := render.NewRendererForImage(target)
+	renderer := r.newRenderer(target)
 	renderer.SetFonts(fonts)
 	if imageFetcher != nil {
 		renderer.SetImageFetcher(imageFetcher)
@@ -284,6 +308,39 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 		}
 		renderer2.Render(boxes2)
 	}
+
+	return nil
+}
+
+// RenderWithDC renders HTML content using the provided DrawContext.
+// The DC's current translation and clipping define the viewport.
+// viewportW and viewportH specify the layout viewport size in pixels.
+func (r *Louis14Renderer) RenderWithDC(htmlContent string, dc textshape.DrawContext, viewportW, viewportH float64) error {
+	cssFetcher, imageFetcher := r.buildFetchers()
+
+	doc, err := html.ParseWithFetcher(htmlContent, cssFetcher)
+	if err != nil {
+		return fmt.Errorf("parsing HTML: %w", err)
+	}
+
+	layoutEngine := layout.NewLayoutEngine(viewportW, viewportH)
+	if imageFetcher != nil {
+		layoutEngine.SetImageFetcher(imageFetcher)
+	}
+	boxes := layoutEngine.Layout(doc)
+
+	fonts := r.registerWebFonts(doc)
+	counterStyles := collectCounterStyles(doc)
+
+	renderer := r.newRendererForDC(dc)
+	renderer.SetFonts(fonts)
+	if imageFetcher != nil {
+		renderer.SetImageFetcher(imageFetcher)
+	}
+	if len(counterStyles) > 0 {
+		renderer.SetCounterStyles(counterStyles)
+	}
+	renderer.Render(boxes)
 
 	return nil
 }

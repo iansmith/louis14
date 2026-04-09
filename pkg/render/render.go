@@ -70,6 +70,34 @@ func NewRendererForImage(target *image.RGBA) *Renderer {
 	}
 }
 
+// NewRendererForImageWithProvider creates a renderer that paints onto an
+// existing image using the supplied GlyphProvider for font rasterization.
+func NewRendererForImageWithProvider(target *image.RGBA, provider textshape.GlyphProvider) *Renderer {
+	dc := textshape.NewDrawContextForImage(target, provider)
+	text.SetTextLayout(dc.TextLayout())
+	return &Renderer{
+		dc:        dc,
+		target:    target,
+		fonts:     text.DefaultFontConfig(),
+		fontCache: make(map[fontCacheKey]int32),
+	}
+}
+
+// NewRendererForDrawContext creates a renderer that paints using an
+// existing DrawContext. The DrawContext's image, translation, and
+// clipping state are used directly — no intermediate buffer is created.
+// Use this when the caller already owns the drawing surface (e.g.,
+// mancini interactor framework).
+func NewRendererForDrawContext(dc textshape.DrawContext) *Renderer {
+	text.SetTextLayout(dc.TextLayout())
+	return &Renderer{
+		dc:        dc,
+		target:    dc.Image().(*image.RGBA),
+		fonts:     text.DefaultFontConfig(),
+		fontCache: make(map[fontCacheKey]int32),
+	}
+}
+
 // SetFonts configures font paths for text rendering.
 func (r *Renderer) SetFonts(fonts text.FontConfig) {
 	r.fonts = fonts

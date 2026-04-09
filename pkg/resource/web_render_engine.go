@@ -1,8 +1,9 @@
 package resource
 
 import (
-	"image"
 	"log"
+
+	"mazarin/textshape"
 )
 
 // WebEngine wraps a [Louis14Renderer] to satisfy the WebRenderEngine
@@ -16,20 +17,29 @@ type WebEngine struct {
 }
 
 // NewWebEngine creates a WebEngine using the default font configuration
-// and no resource fetcher (no network access).
+// and no resource fetcher (no network access). Uses the default
+// DirectGlyphProvider which loads fonts from the local filesystem.
 func NewWebEngine() *WebEngine {
 	return &WebEngine{
 		renderer: NewLouis14Renderer(nil),
 	}
 }
 
-// Render takes raw HTML bytes and a viewport size, renders the content,
-// and returns the resulting image. The HTML may be a fragment — it is
-// wrapped in a minimal document structure if needed by the parser.
-func (e *WebEngine) Render(html []byte, width, height int) *image.RGBA {
-	target := image.NewRGBA(image.Rect(0, 0, width, height))
-	if err := e.renderer.Render(string(html), target); err != nil {
-		log.Printf("WebEngine.Render: %v", err)
+// NewWebEngineWithProvider creates a WebEngine that uses the supplied
+// GlyphProvider for font rasterization instead of loading fonts from
+// the local filesystem. Use this in environments where fonts are
+// served via IPC (e.g., mazzy's fontsvc).
+func NewWebEngineWithProvider(provider textshape.GlyphProvider) *WebEngine {
+	r := NewLouis14Renderer(nil)
+	r.SetGlyphProvider(provider)
+	return &WebEngine{renderer: r}
+}
+
+// RenderDC renders raw HTML bytes using the provided DrawContext.
+// The DC's translation and clipping define the render area.
+// viewportW and viewportH specify the layout dimensions.
+func (e *WebEngine) RenderDC(html []byte, dc textshape.DrawContext, viewportW, viewportH float64) {
+	if err := e.renderer.RenderWithDC(string(html), dc, viewportW, viewportH); err != nil {
+		log.Printf("WebEngine.RenderDC: %v", err)
 	}
-	return target
 }
