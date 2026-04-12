@@ -239,7 +239,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			hasClearance := false
 			clearType := childStyle.GetClear()
 			if clearType != css.ClearNone && !exclusionSpace.IsEmpty() {
-				clearedBlock := exclusionSpace.ClearanceOffset(clearType, blockCursor)
+				clearedBlock := exclusionSpace.ClearanceOffset(clearType, blockCursor, wdm)
 				if clearedBlock > blockCursor {
 					// There are floats to be cleared. Compute where the element
 					// would land naturally via its collapsed margin.
@@ -296,7 +296,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					neededInline := resolvedInline + childGeomForBFC.InlineBorderPadding() + childMargins.InlineSum()
 					if neededInline > childAvailableInline-floatStartOff-floatEndOff {
 						// Doesn't fit beside floats — clear past all floats.
-						clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor)
+						clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor, wdm)
 						if clearedBlock > blockCursor {
 							blockCursor = clearedBlock
 							prevMarginStrut = MarginStrut{}
@@ -352,6 +352,49 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
+
+			// CSS 2.1 §9.5 Rule 5 / §10.3.3: A new BFC must not overlap
+			// float margin boxes. If the child doesn't fit alongside
+			// floats at the current block position, push it below them.
+			if isChildNewFC && (floatStartOff > 0 || floatEndOff > 0) {
+				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
+				neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
+				availableInline := childAvailableInline - floatStartOff - floatEndOff
+				if neededInline > availableInline {
+					// Child doesn't fit — find the block position where it does.
+					clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor, wdm)
+					if clearedBlock > blockCursor {
+						blockCursor = clearedBlock
+						prevMarginStrut = MarginStrut{}
+						// Recompute float offsets at the new position.
+						floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(blockCursor, 0, childAvailableInline)
+						childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
+						if childInlineForSpace < 0 {
+							childInlineForSpace = 0
+						}
+						// Re-layout with the new available size.
+						csBuilder2 := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+							SetOrthogonalFallbackInlineSize(
+								orthogonalFallbackSize(childWDM, bla.ctx)).
+							SetOrthogonalFallbackBlockSize(
+								computeOrthogonalFallbackBlockForChildren(
+									bla.style, wdm, bla.space, geom, bla.ctx,
+									hasExplicitBlock, explicitBlockSize)).
+							SetAvailableSize(LogicalSize{
+								InlineSize: childInlineForSpace,
+								BlockSize:  blockForChild,
+							}).
+							SetPercentageResolutionSize(LogicalSize{
+								InlineSize: contentInlineSize,
+								BlockSize:  explicitBlockSize,
+							}).
+							SetPercentageResolutionInlineSize(contentInlineSize).
+							SetExclusionSpace(exclusionSpace)
+						childSpace = csBuilder2.Build()
+						childResult = layoutElement(bla.ctx, child, childSpace)
+					}
+				}
+			}
 
 			// Step 1: Append child's block-start margin to the strut.
 			prevMarginStrut.Append(childMargins.BlockStart)
@@ -569,7 +612,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// that contain their own floats), auto block-size extends to clear them.
 	// Elements that only inherit floats from a parent BFC do not extend.
 	if !hasExplicitBlock && hasOwnFloats {
-		clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor)
+		clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor, wdm)
 		if clearedBlock > blockCursor {
 			blockCursor = clearedBlock
 		}
@@ -1088,14 +1131,14 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		BlockOffset:  floatBlockOffset + childMargins.BlockStart,
 	})
 
-	// Add an exclusion for this float. Use the logical side so that the
-	// exclusion space correctly tracks which inline edge is consumed.
+	// Add an exclusion for this float, converting the physical float side
+	// to the logical ExclusionSide (inline-start or inline-end).
 	exclusion := Exclusion{
 		InlineOffset: floatInlineOffset - childMargins.InlineStart,
 		BlockOffset:  floatBlockOffset,
 		InlineSize:   floatInlineSize,
 		BlockSize:    floatBlockSize,
-		Side:         logicalSide,
+		Side:         PhysicalFloatToExclusionSide(floatSide, parentWDM),
 	}
 	*outES = es.Add(exclusion)
 }
