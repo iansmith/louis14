@@ -2937,43 +2937,10 @@ func expandBackgroundProperty(style *Style, value string) {
 			}
 		}
 
-		// Extract calc() expressions before field-splitting so that
-		// "calc(100% - 278px) 8px" doesn't get broken by whitespace.
-		var calcTokens []string
-		for {
-			idx := strings.Index(remaining, "calc(")
-			if idx < 0 {
-				break
-			}
-			depth := 0
-			end := -1
-			for j := idx; j < len(remaining); j++ {
-				switch remaining[j] {
-				case '(':
-					depth++
-				case ')':
-					depth--
-					if depth == 0 {
-						end = j
-					}
-				}
-				if end >= 0 {
-					break
-				}
-			}
-			if end < 0 {
-				break
-			}
-			calcExpr := remaining[idx : end+1]
-			calcTokens = append(calcTokens, calcExpr)
-			remaining = remaining[:idx] + remaining[end+1:]
-		}
-
-		// Parse remaining tokens
-		parts := strings.Fields(remaining)
+		// Tokenize remaining with parenthesis awareness so that
+		// calc() expressions aren't broken by whitespace splitting.
+		parts := splitBackgroundPositionTokens(remaining)
 		var positionTokens []string
-		// Add extracted calc() expressions as position tokens.
-		positionTokens = append(positionTokens, calcTokens...)
 		var boxValues []string
 		for _, part := range parts {
 			if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
@@ -2991,6 +2958,10 @@ func expandBackgroundProperty(style *Style, value string) {
 					colorValue = "transparent"
 				}
 			} else if _, ok := ParseLength(part); ok {
+				positionTokens = append(positionTokens, part)
+			} else if strings.HasPrefix(part, "calc(") {
+				positionTokens = append(positionTokens, part)
+			} else if strings.HasSuffix(part, "%") {
 				positionTokens = append(positionTokens, part)
 			} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
 				positionTokens = append(positionTokens, part)
