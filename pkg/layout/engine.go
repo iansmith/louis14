@@ -107,8 +107,9 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 
 	// Build the root constraint space in the root's own logical coordinate system.
 	// We use rootWDM as both parent and child so IsOrthogonalWritingModeRoot = false,
-	// ensuring the root element fills the viewport (stretch sizing) rather than
-	// using shrink-to-fit. The root always fills the ICB, never shrinks to content.
+	// ensuring the root element fills the viewport inline-size (stretch sizing).
+	// The root's block-size is auto (determined by content); the canvas background
+	// covers any remaining viewport area per CSS 2.1 §14.2.
 	//
 	// Available sizes are expressed in the root's logical coordinates:
 	//   HTB:      InlineSize = viewport.width,  BlockSize = viewport.height
@@ -122,17 +123,8 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		rootBlockSize = le.viewport.width
 	}
 
-	// The root element must fill at least the ICB block-size.
-	// In HTB, this is the viewport height; in vertical modes, the viewport width.
-	var rootMinBlock float64
-	if rootWDM.IsVertical() {
-		rootMinBlock = le.viewport.width
-	} else {
-		rootMinBlock = le.viewport.height
-	}
-
 	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
-		SetForcedMinBlockSize(rootMinBlock).
+		SetIsRootElement(true).
 		SetAvailableSize(LogicalSize{
 			InlineSize: rootInlineSize,
 			BlockSize:  rootBlockSize,
@@ -148,7 +140,17 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	result := layoutElement(ctx, layoutRoot, rootSpace)
 
 	// Phase 7: Convert fragment tree to box tree.
-	rootBox := fragmentToBox(result.Fragment, nil, 0, 0)
+	// In vertical-rl, the root's block-start is the right edge of the ICB.
+	// If the root is narrower than the viewport, offset it so its right edge
+	// aligns with the viewport's right edge (block-start = right).
+	var rootOffsetX float64
+	if rootWDM.IsFlippedBlocks() {
+		rootWidth := result.Fragment.Size.Width
+		if rootWidth < le.viewport.width {
+			rootOffsetX = le.viewport.width - rootWidth
+		}
+	}
+	rootBox := fragmentToBox(result.Fragment, nil, rootOffsetX, 0)
 
 	return []*Box{rootBox}
 }
@@ -204,15 +206,8 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 		rootBlockSize = vpWidth
 	}
 
-	var rootMinBlock float64
-	if rootWDM.IsVertical() {
-		rootMinBlock = vpWidth
-	} else {
-		rootMinBlock = vpHeight
-	}
-
 	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
-		SetForcedMinBlockSize(rootMinBlock).
+		SetIsRootElement(true).
 		SetAvailableSize(LogicalSize{
 			InlineSize: rootInlineSize,
 			BlockSize:  rootBlockSize,

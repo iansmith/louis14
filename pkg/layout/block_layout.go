@@ -583,7 +583,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 		}
-		isRoot := bla.space.ForcedMinBlockSize > 0
+		isRoot := bla.space.IsRootElement
 
 		if isRoot {
 			// Root element: resolve ALL OOF candidates (both absolute and fixed)

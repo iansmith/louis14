@@ -77,6 +77,12 @@ type ConstraintSpace struct {
 	// Used for the root element to ensure it fills at least the ICB block-size.
 	ForcedMinBlockSize float64
 
+	// IsRootElement is true when this constraint space is for the document root element.
+	// Used to identify the root for OOF resolution (absolute/fixed positioning against
+	// the ICB). Separate from ForcedMinBlockSize so the root can shrink-to-fit in
+	// block direction while still serving as the OOF containing block.
+	IsRootElement bool
+
 	// --- Fragmentation ---
 
 	// HasBlockFragmentation is true inside a fragmentation context (multicol, print).
@@ -273,6 +279,12 @@ func (b *ConstraintSpaceBuilder) SetPercentageResolutionInlineSize(v float64) *C
 // Used for the root element to ensure it fills at least the ICB.
 func (b *ConstraintSpaceBuilder) SetForcedMinBlockSize(v float64) *ConstraintSpaceBuilder {
 	b.space.ForcedMinBlockSize = v
+	return b
+}
+
+// SetIsRootElement marks this constraint space as belonging to the document root.
+func (b *ConstraintSpaceBuilder) SetIsRootElement(v bool) *ConstraintSpaceBuilder {
+	b.space.IsRootElement = v
 	return b
 }
 
