@@ -1505,13 +1505,19 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	// CSS3 Backgrounds §3.6: background-origin determines the positioning area.
 	// For background-attachment:fixed, the positioning area is the viewport
 	// (CSS3 Backgrounds §3.5), not the element's box.
-	// CSS Backgrounds §7.2 / CSS 2.1 §14.2: when the body's background is
-	// propagated to the canvas (PaintsCanvasBackground=true on a non-root
-	// element), the background positioning area is the ICB (viewport), not
-	// the element's own box.
+	//
+	// CSS 2.1 §14.2 / CSS Backgrounds §7.2: When PaintsCanvasBackground is set,
+	// the painting area extends to the canvas, but the positioning area depends
+	// on whether the background is on the root or body:
+	// - Root element with attachment:scroll → positioning area = root's own box
+	//   (per background-origin, default padding-box)
+	// - Body (promoted to canvas) → positioning area = ICB (viewport)
+	// - Any element with attachment:fixed → positioning area = viewport
 	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
+	// Detect if this is a promoted body background (not the root element itself).
+	isPromotedBody := layer.PaintsCanvasBackground && box.Node != nil && box.Node.TagName == "body"
 	var originX, originY, originW, originH float64
-	if isFixed || layer.PaintsCanvasBackground {
+	if isFixed || isPromotedBody {
 		bounds := r.target.Bounds()
 		originX = float64(bounds.Min.X)
 		originY = float64(bounds.Min.Y)
