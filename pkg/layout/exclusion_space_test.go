@@ -29,7 +29,8 @@ func TestExclusionSpace_NilSafe(t *testing.T) {
 		t.Errorf("nil space: got offsets (%v, %v), want (0, 0)", start, end)
 	}
 
-	cleared := es.ClearanceOffset(css.ClearBoth, 50)
+	ltrWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	cleared := es.ClearanceOffset(css.ClearBoth, 50, ltrWDM)
 	if cleared != 50 {
 		t.Errorf("nil clearance: got %v, want 50", cleared)
 	}
@@ -42,7 +43,7 @@ func TestExclusionSpace_SingleLeftFloat(t *testing.T) {
 		BlockOffset:  0,
 		InlineSize:   100,
 		BlockSize:    200,
-		Side:         css.FloatLeft,
+		Side:         ExclusionInlineStart,
 	})
 
 	if es.IsEmpty() {
@@ -69,7 +70,7 @@ func TestExclusionSpace_SingleRightFloat(t *testing.T) {
 		BlockOffset:  0,
 		InlineSize:   100,
 		BlockSize:    150,
-		Side:         css.FloatRight,
+		Side:         ExclusionInlineEnd,
 	})
 
 	// containerInlineSize=600, float at offset 500 → consumed from end = 600-500 = 100
@@ -84,12 +85,12 @@ func TestExclusionSpace_BothSides(t *testing.T) {
 	es = es.Add(Exclusion{
 		InlineOffset: 0, BlockOffset: 0,
 		InlineSize: 80, BlockSize: 200,
-		Side: css.FloatLeft,
+		Side: ExclusionInlineStart,
 	})
 	es = es.Add(Exclusion{
 		InlineOffset: 500, BlockOffset: 0,
 		InlineSize: 120, BlockSize: 150,
-		Side: css.FloatRight,
+		Side: ExclusionInlineEnd,
 	})
 
 	// containerInlineSize=620, float at offset 500 → consumed from end = 620-500 = 120
@@ -110,34 +111,37 @@ func TestExclusionSpace_Clearance(t *testing.T) {
 	es = es.Add(Exclusion{
 		InlineOffset: 0, BlockOffset: 10,
 		InlineSize: 100, BlockSize: 90,
-		Side: css.FloatLeft,
+		Side: ExclusionInlineStart,
 	})
 	es = es.Add(Exclusion{
 		InlineOffset: 500, BlockOffset: 20,
 		InlineSize: 100, BlockSize: 130,
-		Side: css.FloatRight,
+		Side: ExclusionInlineEnd,
 	})
 
+	// Tests use HTB-LTR: clear:left matches inline-start, clear:right matches inline-end.
+	ltrWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+
 	// Clear left: should clear past block=10+90=100.
-	cleared := es.ClearanceOffset(css.ClearLeft, 0)
+	cleared := es.ClearanceOffset(css.ClearLeft, 0, ltrWDM)
 	if cleared != 100 {
 		t.Errorf("clear left: got %v, want 100", cleared)
 	}
 
 	// Clear right: should clear past block=20+130=150.
-	cleared = es.ClearanceOffset(css.ClearRight, 0)
+	cleared = es.ClearanceOffset(css.ClearRight, 0, ltrWDM)
 	if cleared != 150 {
 		t.Errorf("clear right: got %v, want 150", cleared)
 	}
 
 	// Clear both: max(100, 150) = 150.
-	cleared = es.ClearanceOffset(css.ClearBoth, 0)
+	cleared = es.ClearanceOffset(css.ClearBoth, 0, ltrWDM)
 	if cleared != 150 {
 		t.Errorf("clear both: got %v, want 150", cleared)
 	}
 
 	// Clear left when already past: no change.
-	cleared = es.ClearanceOffset(css.ClearLeft, 200)
+	cleared = es.ClearanceOffset(css.ClearLeft, 200, ltrWDM)
 	if cleared != 200 {
 		t.Errorf("clear left past: got %v, want 200", cleared)
 	}
@@ -149,7 +153,7 @@ func TestExclusionSpace_FloatDrop(t *testing.T) {
 	es = es.Add(Exclusion{
 		InlineOffset: 0, BlockOffset: 0,
 		InlineSize: 400, BlockSize: 100,
-		Side: css.FloatLeft,
+		Side: ExclusionInlineStart,
 	})
 
 	// A 300px float should fit beside the 400px float (600-400=200 < 300), so drops.
@@ -170,7 +174,7 @@ func TestExclusionSpace_Immutable(t *testing.T) {
 	es2 := es1.Add(Exclusion{
 		InlineOffset: 0, BlockOffset: 0,
 		InlineSize: 100, BlockSize: 100,
-		Side: css.FloatLeft,
+		Side: ExclusionInlineStart,
 	})
 
 	// Original should be unchanged.

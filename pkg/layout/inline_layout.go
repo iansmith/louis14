@@ -199,7 +199,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			BlockOffset:  floatBlockOffset,
 			InlineSize:   floatInlineSize,
 			BlockSize:    floatBlockSize,
-			Side:         floatSide,
+			Side:         PhysicalFloatToExclusionSide(floatSide, wdm),
 		})
 	}
 
@@ -318,7 +318,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// force-fitting content into zero-width space and then clearing,
 		// which produces incorrect line breaks.
 		if lineAvailableInline < 1 && exclusionSpace != nil && (floatStart > 0 || floatEnd > 0) {
-			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset)
+			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset, wdm)
 			if clearedBlock > blockOffset {
 				blockOffset = clearedBlock
 				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
@@ -383,7 +383,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// shift the block offset below the float and use the full width.
 		floatReducedWidth := contentInlineSize - floatStart - floatEnd
 		if (floatStart > 0 || floatEnd > 0) && line.Width > floatReducedWidth && exclusionSpace != nil {
-			blockOffset = exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset)
+			blockOffset = exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset, wdm)
 			lineInlineOffset = 0
 			lineAvailableInline = contentInlineSize
 		}

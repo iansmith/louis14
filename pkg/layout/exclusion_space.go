@@ -2,6 +2,45 @@ package layout
 
 import "louis14/pkg/css"
 
+// ExclusionSide indicates which logical side of the inline axis a float
+// occupies. This mirrors Blink's EFloat enum (kLeft = inline-start,
+// kRight = inline-end in the exclusion space's coordinate system).
+type ExclusionSide int
+
+const (
+	// ExclusionInlineStart means the float is on the inline-start side.
+	ExclusionInlineStart ExclusionSide = iota
+	// ExclusionInlineEnd means the float is on the inline-end side.
+	ExclusionInlineEnd
+)
+
+// IsInlineStartFloat converts a physical CSS float side to a logical
+// inline-start/inline-end determination based on the writing direction.
+//
+// Per CSS Writing Modes §6.2:
+//   - float:left  → line-left.  LTR: line-left = inline-start. RTL: line-left = inline-end.
+//   - float:right → line-right. LTR: line-right = inline-end.  RTL: line-right = inline-start.
+//
+// Note: In vertical writing modes, "left" still means line-left (physical top),
+// which is inline-start in LTR vertical modes and inline-end in RTL vertical modes.
+// The physical-to-line-left/right mapping is handled by the CSS spec: float:left
+// always goes to line-left regardless of writing mode.
+func IsInlineStartFloat(physicalSide css.FloatType, wdm WritingDirectionMode) bool {
+	if wdm.Dir == DirectionLTR {
+		return physicalSide == css.FloatLeft
+	}
+	return physicalSide == css.FloatRight
+}
+
+// PhysicalFloatToExclusionSide converts a physical CSS float value to the
+// logical ExclusionSide using the given writing direction mode.
+func PhysicalFloatToExclusionSide(physicalSide css.FloatType, wdm WritingDirectionMode) ExclusionSide {
+	if IsInlineStartFloat(physicalSide, wdm) {
+		return ExclusionInlineStart
+	}
+	return ExclusionInlineEnd
+}
+
 // Exclusion represents a float's occupied region in the formatting context,
 // expressed in logical coordinates relative to the BFC origin.
 //
@@ -15,8 +54,8 @@ type Exclusion struct {
 	InlineSize float64
 	// BlockSize is the float's margin-box block-size.
 	BlockSize float64
-	// Side indicates whether this is a start-side or end-side float.
-	Side css.FloatType
+	// Side indicates whether this is an inline-start or inline-end float.
+	Side ExclusionSide
 }
 
 // BlockEnd returns the block-end position of this exclusion.
@@ -72,13 +111,13 @@ func (es *ExclusionSpace) FindAvailableInlineSize(blockOffset, blockExtent, cont
 			}
 		}
 
-		if e.Side == css.FloatLeft {
+		if e.Side == ExclusionInlineStart {
 			// Start-side float: accumulate inline offset from start.
 			endEdge := e.InlineOffset + e.InlineSize
 			if endEdge > startOffset {
 				startOffset = endEdge
 			}
-		} else if e.Side == css.FloatRight {
+		} else if e.Side == ExclusionInlineEnd {
 			// End-side float: the consumed space from the inline-end edge
 			// is (containerInlineSize - e.InlineOffset). This correctly
 			// accumulates when multiple right-floats stack inward.
@@ -95,7 +134,12 @@ func (es *ExclusionSpace) FindAvailableInlineSize(blockOffset, blockExtent, cont
 // ClearanceOffset returns the block position needed to clear past floats
 // of the specified type. Returns the maximum block-end of all matching
 // floats, or currentBlockOffset if no clearing is needed.
-func (es *ExclusionSpace) ClearanceOffset(clearType css.ClearType, currentBlockOffset float64) float64 {
+//
+// The wdm parameter is needed because CSS clear:left/right are physical
+// values, but exclusions store logical sides (inline-start/inline-end).
+// We convert the physical clear side to logical using the same mapping
+// as float placement.
+func (es *ExclusionSpace) ClearanceOffset(clearType css.ClearType, currentBlockOffset float64, wdm WritingDirectionMode) float64 {
 	if es == nil || clearType == css.ClearNone {
 		return currentBlockOffset
 	}
@@ -105,9 +149,21 @@ func (es *ExclusionSpace) ClearanceOffset(clearType css.ClearType, currentBlockO
 		shouldClear := false
 		switch clearType {
 		case css.ClearLeft:
-			shouldClear = e.Side == css.FloatLeft
+			// clear:left clears floats on the line-left side.
+			// float:left also goes to line-left. In LTR, line-left = inline-start.
+			// In RTL, line-left = inline-end.
+			if IsInlineStartFloat(css.FloatLeft, wdm) {
+				shouldClear = e.Side == ExclusionInlineStart
+			} else {
+				shouldClear = e.Side == ExclusionInlineEnd
+			}
 		case css.ClearRight:
-			shouldClear = e.Side == css.FloatRight
+			// clear:right clears floats on the line-right side.
+			if IsInlineStartFloat(css.FloatRight, wdm) {
+				shouldClear = e.Side == ExclusionInlineStart
+			} else {
+				shouldClear = e.Side == ExclusionInlineEnd
+			}
 		case css.ClearBoth:
 			shouldClear = true
 		}

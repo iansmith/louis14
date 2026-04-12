@@ -62,6 +62,43 @@ type fontIDKey struct {
 	size int32
 }
 
+// fontPathToFamilyVariant extracts a logical family name and variant from a
+// font file path. For example:
+//
+//	"/.../AtkinsonHyperlegible-Bold.ttf" → ("AtkinsonHyperlegible", VariantBold)
+//	"/.../Ahem.ttf" → ("Ahem", VariantRegular)
+func fontPathToFamilyVariant(fontPath string) (string, int32) {
+	base := filepath.Base(fontPath)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+
+	variant := int32(textshape.VariantRegular)
+	family := name
+
+	if idx := strings.LastIndex(name, "-"); idx > 0 {
+		suffix := strings.ToLower(name[idx+1:])
+		family = name[:idx]
+		switch suffix {
+		case "bold":
+			variant = textshape.VariantBold
+		case "italic":
+			variant = textshape.VariantItalic
+		case "bolditalic":
+			variant = textshape.VariantBoldItalic
+		case "light":
+			variant = textshape.VariantLight
+		case "condensed":
+			variant = textshape.VariantCondensed
+		case "regular":
+			variant = textshape.VariantRegular
+		default:
+			// Unknown suffix — treat entire name as family.
+			family = name
+		}
+	}
+	return family, variant
+}
+
 // openFont returns the FontMetrics for the given path+size, opening it if needed.
 // Returns zero FontMetrics with FontID=-1 on error.
 func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
@@ -72,9 +109,11 @@ func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
 	if m, ok := fontIDCache[key]; ok {
 		return m
 	}
+	family, variant := fontPathToFamilyVariant(fontPath)
 	metrics, err := getLayout().OpenFont(textshape.OpenFontRequest{
-		Path: fontPath,
-		Size: size,
+		Family:  family,
+		Variant: variant,
+		Size:    size,
 	})
 	if err != nil {
 		return textshape.FontMetrics{FontID: -1}

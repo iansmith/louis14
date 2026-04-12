@@ -204,7 +204,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			hasClearance := false
 			clearType := childStyle.GetClear()
 			if clearType != css.ClearNone {
-				clearedBlock := exclusionSpace.ClearanceOffset(clearType, blockCursor)
+				clearedBlock := exclusionSpace.ClearanceOffset(clearType, blockCursor, wdm)
 				if clearedBlock > blockCursor {
 					blockCursor = clearedBlock
 					prevMarginStrut = MarginStrut{} // Clear resets margin collapsing.
@@ -481,7 +481,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// that contain their own floats), auto block-size extends to clear them.
 	// Elements that only inherit floats from a parent BFC do not extend.
 	if !hasExplicitBlock && hasOwnFloats {
-		clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor)
+		clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor, wdm)
 		if clearedBlock > blockCursor {
 			blockCursor = clearedBlock
 		}
@@ -892,13 +892,14 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 		BlockOffset:  floatBlockOffset + childMargins.BlockStart,
 	})
 
-	// Add an exclusion for this float.
+	// Add an exclusion for this float, converting the physical float side
+	// to the logical ExclusionSide (inline-start or inline-end).
 	exclusion := Exclusion{
 		InlineOffset: floatInlineOffset - childMargins.InlineStart,
 		BlockOffset:  floatBlockOffset,
 		InlineSize:   floatInlineSize,
 		BlockSize:    floatBlockSize,
-		Side:         floatSide,
+		Side:         PhysicalFloatToExclusionSide(floatSide, parentWDM),
 	}
 	*outES = es.Add(exclusion)
 }
