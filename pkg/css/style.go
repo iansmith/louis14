@@ -2954,8 +2954,9 @@ func expandBackgroundProperty(style *Style, value string) {
 			}
 		}
 
-		// Parse remaining tokens
-		parts := strings.Fields(remaining)
+		// Tokenize remaining with parenthesis awareness so that
+		// calc() expressions aren't broken by whitespace splitting.
+		parts := splitBackgroundPositionTokens(remaining)
 		var positionTokens []string
 		var boxValues []string
 		for _, part := range parts {
@@ -2974,6 +2975,10 @@ func expandBackgroundProperty(style *Style, value string) {
 					colorValue = "transparent"
 				}
 			} else if _, ok := ParseLength(part); ok {
+				positionTokens = append(positionTokens, part)
+			} else if strings.HasPrefix(part, "calc(") {
+				positionTokens = append(positionTokens, part)
+			} else if strings.HasSuffix(part, "%") {
 				positionTokens = append(positionTokens, part)
 			} else if part == "center" || part == "left" || part == "right" || part == "top" || part == "bottom" {
 				positionTokens = append(positionTokens, part)
@@ -6786,35 +6791,41 @@ type BackgroundPosition struct {
 	Y        float64
 	XIsPixel bool // true when X is a pixel value (may be negative)
 	YIsPixel bool // true when Y is a pixel value (may be negative)
+	// XOffset/YOffset hold the pixel offset from a calc() expression
+	// that combines a percentage and a pixel term, e.g. calc(100% - 278px).
+	// The percentage part is stored in X/Y (as negative), and the pixel
+	// offset is in XOffset/YOffset.
+	XOffset float64
+	YOffset float64
 }
 
-// ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage
+// ResolveX converts X to pixels: offset = (containerWidth - imageWidth) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveX(containerW, imageW float64) float64 {
 	if p.XIsPixel {
 		return p.X
 	}
 	if p.X < 0 {
-		return (containerW - imageW) * (-p.X) / 100
+		return (containerW-imageW)*(-p.X)/100 + p.XOffset
 	}
-	return p.X
+	return p.X + p.XOffset
 }
 
-// ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage
+// ResolveY converts Y to pixels: offset = (containerHeight - imageHeight) * percentage + pixelOffset
 func (p BackgroundPosition) ResolveY(containerH, imageH float64) float64 {
 	if p.YIsPixel {
 		return p.Y
 	}
 	if p.Y < 0 {
-		return (containerH - imageH) * (-p.Y) / 100
+		return (containerH-imageH)*(-p.Y)/100 + p.YOffset
 	}
-	return p.Y
+	return p.Y + p.YOffset
 }
 
 // GetBackgroundPosition parses background-position (default: 0 0)
 func (s *Style) GetBackgroundPosition() BackgroundPosition {
 	val, ok := s.Get("background-position")
 	if !ok {
-		return BackgroundPosition{0, 0, false, false}
+		return BackgroundPosition{}
 	}
 	return parseBackgroundPosition(val, s.GetFontSize())
 }
@@ -6824,8 +6835,47 @@ func ParseBackgroundPosition(val string) BackgroundPosition {
 	return parseBackgroundPosition(val, 16.0)
 }
 
+// splitBackgroundPositionTokens splits a background-position value into
+// tokens, respecting parenthesized expressions like calc(100% - 278px).
+func splitBackgroundPositionTokens(val string) []string {
+	val = strings.TrimSpace(val)
+	var tokens []string
+	i := 0
+	for i < len(val) {
+		// Skip whitespace.
+		for i < len(val) && (val[i] == ' ' || val[i] == '\t') {
+			i++
+		}
+		if i >= len(val) {
+			break
+		}
+		start := i
+		// If we're at a function call (e.g., calc(...)), consume the whole thing.
+		if j := strings.IndexByte(val[i:], '('); j >= 0 && !strings.ContainsAny(val[i:i+j], " \t") {
+			// Found opening paren without intervening space → function token.
+			i += j + 1 // skip past '('
+			depth := 1
+			for i < len(val) && depth > 0 {
+				if val[i] == '(' {
+					depth++
+				} else if val[i] == ')' {
+					depth--
+				}
+				i++
+			}
+		} else {
+			// Regular token: consume until whitespace.
+			for i < len(val) && val[i] != ' ' && val[i] != '\t' {
+				i++
+			}
+		}
+		tokens = append(tokens, val[start:i])
+	}
+	return tokens
+}
+
 func parseBackgroundPosition(val string, fontSize float64) BackgroundPosition {
-	parts := strings.Fields(val)
+	parts := splitBackgroundPositionTokens(val)
 	pos := BackgroundPosition{}
 	if len(parts) == 1 {
 		// Single keyword: CSS 2.1 §14.2.1 — vertical keywords set Y, horizontal set X
@@ -6846,34 +6896,110 @@ func parseBackgroundPosition(val string, fontSize float64) BackgroundPosition {
 			pos.X = -50 // center
 			pos.Y = -50 // center
 		default:
-			pos.X, pos.XIsPixel = parsePositionComponent(parts[0], fontSize)
+			rx := parsePositionComponentFull(parts[0], fontSize)
+			pos.X, pos.XIsPixel, pos.XOffset = rx.value, rx.isPixel, rx.offset
 			pos.Y = -50 // center
 		}
 	} else if len(parts) >= 2 {
-		pos.X, pos.XIsPixel = parsePositionComponent(parts[0], fontSize)
-		pos.Y, pos.YIsPixel = parsePositionComponent(parts[1], fontSize)
+		rx := parsePositionComponentFull(parts[0], fontSize)
+		ry := parsePositionComponentFull(parts[1], fontSize)
+		pos.X, pos.XIsPixel, pos.XOffset = rx.value, rx.isPixel, rx.offset
+		pos.Y, pos.YIsPixel, pos.YOffset = ry.value, ry.isPixel, ry.offset
 	}
 	return pos
 }
 
+// positionComponentResult holds the parsed result of a position component.
+// For calc() expressions, it may have both a percentage and a pixel offset.
+type positionComponentResult struct {
+	value   float64 // percentage (negative) or pixel value
+	isPixel bool
+	offset  float64 // additional pixel offset from calc()
+}
+
 func parsePositionComponent(val string, fontSize float64) (float64, bool) {
+	r := parsePositionComponentFull(val, fontSize)
+	return r.value, r.isPixel
+}
+
+func parsePositionComponentFull(val string, fontSize float64) positionComponentResult {
 	switch val {
 	case "left", "top":
-		return 0, false
+		return positionComponentResult{value: 0}
 	case "right", "bottom":
-		return -100, false // 100% stored as negative
+		return positionComponentResult{value: -100} // 100% stored as negative
 	case "center":
-		return -50, false // 50% stored as negative
+		return positionComponentResult{value: -50} // 50% stored as negative
+	}
+	// Handle calc() expressions.
+	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
+		inner := val[5 : len(val)-1]
+		return parseCalcPositionComponent(inner, fontSize)
 	}
 	if strings.HasSuffix(val, "%") {
 		if pct, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64); err == nil {
-			return -pct, false // Store percentage as negative
+			return positionComponentResult{value: -pct} // Store percentage as negative
 		}
 	}
 	if length, ok := ParseLengthWithFontSize(val, fontSize); ok {
-		return length, true // Pixel value (may be negative)
+		return positionComponentResult{value: length, isPixel: true}
 	}
-	return 0, false
+	return positionComponentResult{}
+}
+
+// parseCalcPositionComponent parses a calc() inner expression that may combine
+// a percentage and pixel terms, e.g. "100% - 278px".
+func parseCalcPositionComponent(expr string, fontSize float64) positionComponentResult {
+	expr = strings.TrimSpace(expr)
+	// Split into terms separated by + or - (respecting parentheses).
+	var pctSum float64
+	var pxSum float64
+	hasPct := false
+
+	// Simple tokenizer: split on + and - at the top level.
+	// We handle expressions like "100% - 278px" and "100% + 8px".
+	sign := 1.0
+	i := 0
+	for i < len(expr) {
+		// Skip whitespace.
+		for i < len(expr) && (expr[i] == ' ' || expr[i] == '\t') {
+			i++
+		}
+		if i >= len(expr) {
+			break
+		}
+		// Check for sign.
+		if expr[i] == '+' {
+			sign = 1.0
+			i++
+			continue
+		}
+		if expr[i] == '-' {
+			sign = -1.0
+			i++
+			continue
+		}
+		// Consume a term.
+		start := i
+		for i < len(expr) && expr[i] != ' ' && expr[i] != '\t' && expr[i] != '+' && expr[i] != '-' {
+			i++
+		}
+		term := expr[start:i]
+		if strings.HasSuffix(term, "%") {
+			if pct, err := strconv.ParseFloat(strings.TrimSuffix(term, "%"), 64); err == nil {
+				pctSum += sign * pct
+				hasPct = true
+			}
+		} else if length, ok := ParseLengthWithFontSize(term, fontSize); ok {
+			pxSum += sign * length
+		}
+		sign = 1.0 // reset sign for next term
+	}
+
+	if hasPct {
+		return positionComponentResult{value: -pctSum, offset: pxSum}
+	}
+	return positionComponentResult{value: pxSum, isPixel: true}
 }
 
 // BackgroundSize represents a parsed background-size value

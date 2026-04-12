@@ -454,6 +454,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 					// autoEnd && !autoStart: start margin is already used, end absorbs remaining (no change)
 				}
+			} else {
+				// CSS 2.1 §10.3.3: If none of the properties are 'auto',
+				// the values are said to be "over-constrained" and one of
+				// the margins must be adjusted. If 'direction' is 'ltr',
+				// margin-right (inline-end) is forced; if 'rtl', margin-left
+				// (inline-start) is forced.
+				childInlineSize := NewLogicalFragment(wdm, childResult.Fragment).InlineSize()
+				inlineEnd := childAvailableInline - floatStartOff - floatEndOff -
+					childMargins.InlineStart - childMargins.InlineEnd - childInlineSize
+				if inlineEnd != 0 {
+					childMargins.InlineEnd += inlineEnd
+				}
 			}
 
 			// Step 5: Handle parent-child top margin collapsing.
