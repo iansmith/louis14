@@ -35,7 +35,8 @@ type OutOfFlowCandidate struct {
 type OutOfFlowLayoutPart struct {
 	ctx                 *LayoutContext
 	containingBlockWDM  WritingDirectionMode
-	containingBlockSize LogicalSize // content-box of the containing block
+	containingBlockSize    LogicalSize    // padding-box of the containing block (CSS spec §10.3.7)
+	containingBlockPadding LogicalEdges   // CB's padding, used to adjust child offsets to content-box-relative
 	geom                FragmentGeometry
 }
 
@@ -212,7 +213,22 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			inlineOffset = cbInline - insets.InlineEnd - childMargins.InlineEnd - childLogical.InlineSize()
 		} else {
 			// Both auto: use static position.
-			inlineOffset = staticInline + childMargins.InlineStart
+			// staticInline is in the CB's content-box logical coordinates.
+			// The StaticPosition.InlineEdge annotation indicates which edge of the
+			// child the offset refers to (Start = child's inline-start, End = child's inline-end).
+			//
+			// For the Start case: inlineOffset = static margin-box inline-start + margin
+			// For the End case:   inlineOffset = static margin-box inline-end - size - margin-end
+			//
+			// The result is the border-box inline-start position from the CB's content-box origin.
+			switch candidate.StaticPosition.InlineEdge {
+			case StaticEdgeEnd:
+				// staticInline is the inline-end of the child's margin-box from CB content-start.
+				// Convert to border-box inline-start.
+				inlineOffset = staticInline - childMargins.InlineEnd - childLogical.InlineSize()
+			default: // StaticEdgeStart (most common for block-level OOF)
+				inlineOffset = staticInline + childMargins.InlineStart
+			}
 		}
 
 		// --- Block axis ---
@@ -241,12 +257,37 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			blockOffset = cbBlock - insets.BlockEnd - childMargins.BlockEnd - childLogical.BlockSize()
 		} else {
 			// Both auto: use static position.
-			blockOffset = staticBlock + childMargins.BlockStart
+			// See inline axis comment above for the edge annotation logic.
+			switch candidate.StaticPosition.BlockEdge {
+			case StaticEdgeEnd:
+				blockOffset = staticBlock - childMargins.BlockEnd - childLogical.BlockSize()
+			default: // StaticEdgeStart
+				blockOffset = staticBlock + childMargins.BlockStart
+			}
 		}
 
+		// CSS 2.1 §10.3.7: For inset-based positioning, insets are measured from the
+		// CB's padding-box edge. The CB size (cbInline/cbBlock) is the padding-box size,
+		// so inset-based offsets are relative to the padding-box origin. Subtract the CB's
+		// padding to convert to content-box-relative coordinates (what builder.AddChild expects).
+		//
+		// For static-position-based (both-auto) paths, the offset is already content-box-relative
+		// (static positions are accumulated from content-box origins), so no padding adjustment
+		// is needed. We handle this by only applying the adjustment for inset-based paths.
+		//
+		// Mirrors Blink's GetContainingBlockInfo() which starts container_offset at
+		// (border.inline_start, border.block_start) — only borders, not padding.
+		finalInlineOffset := inlineOffset
+		finalBlockOffset := blockOffset
+		if insets.HasInlineStart || insets.HasInlineEnd {
+			finalInlineOffset -= p.containingBlockPadding.InlineStart
+		}
+		if insets.HasBlockStart || insets.HasBlockEnd {
+			finalBlockOffset -= p.containingBlockPadding.BlockStart
+		}
 		builder.AddChild(childResult.Fragment, LogicalOffset{
-			InlineOffset: inlineOffset,
-			BlockOffset:  blockOffset,
+			InlineOffset: finalInlineOffset,
+			BlockOffset:  finalBlockOffset,
 		})
 	}
 }

@@ -597,20 +597,29 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				icbBlock = bla.ctx.ViewportWidth
 			}
 			oofPart := &OutOfFlowLayoutPart{
-				ctx:                 bla.ctx,
-				containingBlockWDM:  wdm,
-				containingBlockSize: LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
-				geom:                geom,
+				ctx:                    bla.ctx,
+				containingBlockWDM:     wdm,
+				// ICB is the viewport: no border or padding, so padding-box == content-box.
+				containingBlockSize:    LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
+				containingBlockPadding: LogicalEdges{},
+				geom:                   geom,
 			}
 			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
 		} else if isContainmentCB || isTransformCB {
 			// CSS Containment / CSS Transforms: containment, transforms, filters,
 			// and will-change:transform/perspective/filter make this element a
 			// containing block for ALL positioned descendants, including fixed.
+			//
+			// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
+			// CB size = padding-box = content + padding (borders excluded).
 			oofPart := &OutOfFlowLayoutPart{
 				ctx:                 bla.ctx,
 				containingBlockWDM:  wdm,
-				containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+				containingBlockSize: LogicalSize{
+					InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
+					BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
+				},
+				containingBlockPadding: geom.Padding,
 				geom:                geom,
 			}
 			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
@@ -626,10 +635,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			if len(absoluteCandidates) > 0 {
+				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
+				// CB size = padding-box = content + padding (borders excluded).
 				oofPart := &OutOfFlowLayoutPart{
 					ctx:                 bla.ctx,
 					containingBlockWDM:  wdm,
-					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
+					containingBlockSize: LogicalSize{
+						InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
+						BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
+					},
+					containingBlockPadding: geom.Padding,
 					geom:                geom,
 				}
 				oofPart.LayoutCandidates(absoluteCandidates, builder)
@@ -772,32 +787,50 @@ func PropagateOOFCandidates(
 	childInlineOff, childBlockOff float64,
 	builder *BoxFragmentBuilder,
 ) {
-	// Compute child's border+padding in the parent's logical axes so we can
-	// translate from child content-box origin to parent content-box origin.
-	childBP := ComputeFragmentGeometry(childStyle, parentWDM)
-	blockAdj := childBlockOff + childBP.Border.BlockStart + childBP.Padding.BlockStart
-	inlineAdj := childInlineOff + childBP.Border.InlineStart + childBP.Padding.InlineStart
-
-	// Detect cross-writing-mode propagation. When the child's writing mode
-	// is orthogonal to the parent's, static positions must be converted
-	// from child-logical coordinates to parent-logical coordinates.
+	// Compute the child's WDM first so we can use it for both BP computation
+	// and cross-WM static position conversion.
 	childWDM := NewWritingDirectionMode(childStyle)
-	needsConversion := parentWDM.IsOrthogonalTo(childWDM)
+
+	// Compute child's border+padding in the CHILD's logical axes (not parent's),
+	// then convert to physical, then to parent-logical coordinates.
+	//
+	// The bug with using parentWDM here: when child and parent have orthogonal
+	// writing modes, interpreting the child's physical borders using the parent's
+	// WDM gives wrong logical edge assignments. For example, a VRL child inside
+	// an HTB parent has its physical top mapped to block-start in VRL, but the
+	// parent's HTB WDM maps physical top to block-start (which is the same physical
+	// edge but correct). However, the child's inline-start in VRL = physical top,
+	// while parentWDM would assign physical top to parent's block-start.
+	//
+	// Mirrors Blink's use of child's own WDM for border/padding in
+	// OutOfFlowLayoutPart::PropagateOOFPositionedInfo.
+	childGeomBP := ComputeFragmentGeometry(childStyle, childWDM)
+	childBPLogical := LogicalEdges{
+		InlineStart: childGeomBP.Border.InlineStart + childGeomBP.Padding.InlineStart,
+		InlineEnd:   childGeomBP.Border.InlineEnd + childGeomBP.Padding.InlineEnd,
+		BlockStart:  childGeomBP.Border.BlockStart + childGeomBP.Padding.BlockStart,
+		BlockEnd:    childGeomBP.Border.BlockEnd + childGeomBP.Padding.BlockEnd,
+	}
+	// Convert child-logical BP edges to physical, then to parent-logical.
+	physBPEdges := ToPhysicalEdges(childBPLogical, childWDM)
+	parentLogicalBP := ToLogicalEdges(physBPEdges, parentWDM)
+	blockAdj := childBlockOff + parentLogicalBP.BlockStart
+	inlineAdj := childInlineOff + parentLogicalBP.InlineStart
+
+	// Detect when the child's writing direction differs from the parent's.
+	// This includes both orthogonal writing modes (e.g. HTB inside VRL) and
+	// same-axis writing modes with different directions (e.g. VLR-LTR inside
+	// VLR-RTL). In all these cases the static position must be re-expressed in
+	// the parent's logical coordinate system via a physical round-trip.
+	needsConversion := childWDM.WM != parentWDM.WM || childWDM.Dir != parentWDM.Dir
 
 	// Pre-compute the child's content-box physical size for coordinate
 	// conversion. The static position is measured within this box.
 	var childContentPhys PhysicalSize
 	if needsConversion {
-		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
-		physBP := ToPhysicalEdges(LogicalEdges{
-			InlineStart: childGeom.Border.InlineStart + childGeom.Padding.InlineStart,
-			InlineEnd:   childGeom.Border.InlineEnd + childGeom.Padding.InlineEnd,
-			BlockStart:  childGeom.Border.BlockStart + childGeom.Padding.BlockStart,
-			BlockEnd:    childGeom.Border.BlockEnd + childGeom.Padding.BlockEnd,
-		}, childWDM)
 		childContentPhys = PhysicalSize{
-			Width:  childResult.Fragment.Size.Width - physBP.Left - physBP.Right,
-			Height: childResult.Fragment.Size.Height - physBP.Top - physBP.Bottom,
+			Width:  childResult.Fragment.Size.Width - physBPEdges.Left - physBPEdges.Right,
+			Height: childResult.Fragment.Size.Height - physBPEdges.Top - physBPEdges.Bottom,
 		}
 		if childContentPhys.Width < 0 {
 			childContentPhys.Width = 0
