@@ -49,15 +49,29 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Replaced elements (img, etc.) with auto block-size: derive from aspect ratio.
+	// Replaced elements (img, etc.) with auto inline/block size: derive from
+	// intrinsic dimensions and aspect ratio.
+	// CSS 2.1 §10.3.2 (replaced inline): inline-size = intrinsic width.
 	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
 	// CSS Containment: size containment overrides intrinsic sizing — treat as 0.
 	hasSizeContain := bla.style != nil && bla.style.HasSizeContainment()
-	if !hasExplicitBlock && !hasSizeContain && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
-		_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
-		if blockSize > 0 {
-			explicitBlockSize = blockSize
-			hasExplicitBlock = true
+	if !hasSizeContain && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
+		// Check if inline-size is explicitly set. ResolveInlineSize returns false
+		// for auto/unset, which is when we should use the intrinsic inline-size.
+		_, explicitInlineOK := ResolveInlineSize(bla.style, wdm, bla.space, geom)
+		if !explicitInlineOK && !bla.space.IsFixedInlineSize {
+			// CSS 2.1 §10.3.2: replaced elements with auto width use intrinsic width.
+			inlineSize, _ := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+			if inlineSize > 0 && inlineSize < contentInlineSize {
+				contentInlineSize = inlineSize
+			}
+		}
+		if !hasExplicitBlock {
+			_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+			if blockSize > 0 {
+				explicitBlockSize = blockSize
+				hasExplicitBlock = true
+			}
 		}
 	}
 
@@ -120,8 +134,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Iframe/object with a document source: lay out the nested document
 	// instead of this element's DOM children.
-	if nestedFrag := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nestedFrag != nil {
-		builder.AddChild(nestedFrag, LogicalOffset{})
+	if nested := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nested != nil {
+		// For vertical-rl/sideways-rl nested roots, the root is anchored to the
+		// right edge of the iframe viewport. Apply the X offset as an inline offset.
+		offset := LogicalOffset{InlineOffset: nested.rootOffsetX}
+		builder.AddChild(nested.fragment, offset)
 	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
 		prevES := exclusionSpace
@@ -643,7 +660,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 		}
-		isRoot := bla.space.ForcedMinBlockSize > 0
+		isRoot := bla.space.IsRoot
 
 		if isRoot {
 			// Root element: resolve ALL OOF candidates (both absolute and fixed)
@@ -979,8 +996,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 
 // tryLayoutNestedDocument checks if this element is an iframe/object with a
 // document source. If so, fetches + lays out the nested document and returns
-// the root fragment. Returns nil if not applicable.
-func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *PhysicalFragment {
+// the root fragment and its X offset within the iframe viewport. Returns nil if not applicable.
+func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *nestedDocFragment {
 	if bla.ctx.DocumentFetcher == nil || bla.node.DOMNode == nil {
 		return nil
 	}
@@ -1012,11 +1029,11 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 		BlockSize:  blockSize,
 	}, wdm.WM)
 
-	result := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height)
-	if result == nil || result.Fragment == nil {
+	res := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
+	if res == nil {
 		return nil
 	}
-	return result.Fragment
+	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
 }
 
 // layoutElement dispatches to the appropriate layout algorithm based on

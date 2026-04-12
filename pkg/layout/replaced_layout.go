@@ -236,8 +236,13 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 	// For iframe/object elements with a document source, lay out the nested
 	// document and embed its content as children.
 	if rla.ctx.DocumentFetcher != nil && rla.node.DOMNode != nil {
-		if nestedFrag := rla.layoutNestedDocument(contentInline, contentBlock); nestedFrag != nil {
-			builder.AddChild(nestedFrag, LogicalOffset{})
+		if nested := rla.layoutNestedDocument(contentInline, contentBlock); nested != nil {
+			// For vertical-rl/sideways-rl nested roots, the root is physically
+			// anchored to the right edge of the iframe viewport. Apply the X
+			// offset as an inline offset (in the parent's HTB coordinate system,
+			// inline = horizontal = physical X).
+			offset := LogicalOffset{InlineOffset: nested.rootOffsetX}
+			builder.AddChild(nested.fragment, offset)
 		}
 	}
 
@@ -249,9 +254,15 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 	return builder.Build()
 }
 
+// nestedDocFragment wraps the result of laying out an embedded document.
+type nestedDocFragment struct {
+	fragment    *PhysicalFragment
+	rootOffsetX float64 // physical X offset of root within the iframe viewport
+}
+
 // layoutNestedDocument fetches and lays out the embedded document for
-// iframe/object elements. Returns the nested root fragment, or nil.
-func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentBlock float64) *PhysicalFragment {
+// iframe/object elements. Returns the nested root fragment and its X offset, or nil.
+func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentBlock float64) *nestedDocFragment {
 	dom := rla.node.DOMNode
 	tag := dom.TagName
 
@@ -280,9 +291,9 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 	wdm := rla.space.WritingDirection
 	physSize := ToPhysicalSize(LogicalSize{InlineSize: contentInline, BlockSize: contentBlock}, wdm.WM)
 
-	result := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height)
-	if result == nil || result.Fragment == nil {
+	res := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
+	if res == nil {
 		return nil
 	}
-	return result.Fragment
+	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
 }
