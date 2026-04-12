@@ -74,8 +74,15 @@ type ConstraintSpace struct {
 	PercentageResolutionInlineSize float64
 
 	// ForcedMinBlockSize is a minimum block-size forced by the parent.
-	// Used for the root element to ensure it fills at least the ICB block-size.
+	// Used for horizontal-tb root element to ensure it fills at least the ICB block-size.
+	// Not set for vertical writing mode roots (they determine block-size from content).
 	ForcedMinBlockSize float64
+
+	// IsRoot is true for the root element's constraint space.
+	// Used to determine that absolute-positioned descendants should use the ICB
+	// (viewport) as their containing block. This is separate from ForcedMinBlockSize
+	// which is only used for HTB roots.
+	IsRoot bool
 
 	// --- Fragmentation ---
 
@@ -273,6 +280,13 @@ func (b *ConstraintSpaceBuilder) SetPercentageResolutionInlineSize(v float64) *C
 // Used for the root element to ensure it fills at least the ICB.
 func (b *ConstraintSpaceBuilder) SetForcedMinBlockSize(v float64) *ConstraintSpaceBuilder {
 	b.space.ForcedMinBlockSize = v
+	return b
+}
+
+// SetIsRoot marks this constraint space as belonging to the document root element.
+// Used to ensure absolute-positioned descendants use the ICB as their containing block.
+func (b *ConstraintSpaceBuilder) SetIsRoot(v bool) *ConstraintSpaceBuilder {
+	b.space.IsRoot = v
 	return b
 }
 

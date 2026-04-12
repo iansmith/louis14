@@ -117,8 +117,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Iframe/object with a document source: lay out the nested document
 	// instead of this element's DOM children.
-	if nestedFrag := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nestedFrag != nil {
-		builder.AddChild(nestedFrag, LogicalOffset{})
+	if nested := bla.tryLayoutNestedDocument(contentInlineSize, wdm, geom); nested != nil {
+		// For vertical-rl/sideways-rl nested roots, the root is anchored to the
+		// right edge of the iframe viewport. Apply the X offset as an inline offset.
+		offset := LogicalOffset{InlineOffset: nested.rootOffsetX}
+		builder.AddChild(nested.fragment, offset)
 	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
 		prevES := exclusionSpace
@@ -583,7 +586,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 		}
-		isRoot := bla.space.ForcedMinBlockSize > 0
+		isRoot := bla.space.IsRoot
 
 		if isRoot {
 			// Root element: resolve ALL OOF candidates (both absolute and fixed)
@@ -905,8 +908,8 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 
 // tryLayoutNestedDocument checks if this element is an iframe/object with a
 // document source. If so, fetches + lays out the nested document and returns
-// the root fragment. Returns nil if not applicable.
-func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *PhysicalFragment {
+// the root fragment and its X offset within the iframe viewport. Returns nil if not applicable.
+func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *nestedDocFragment {
 	if bla.ctx.DocumentFetcher == nil || bla.node.DOMNode == nil {
 		return nil
 	}
@@ -938,11 +941,11 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 		BlockSize:  blockSize,
 	}, wdm.WM)
 
-	result := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height)
-	if result == nil || result.Fragment == nil {
+	res := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height)
+	if res == nil {
 		return nil
 	}
-	return result.Fragment
+	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
 }
 
 // layoutElement dispatches to the appropriate layout algorithm based on
