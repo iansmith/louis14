@@ -125,8 +125,55 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 	for _, box := range boxes {
 		layer := BuildPaintTree(box)
 		// CSS 2.1 §14.2: root element's background paints the entire canvas.
-		layer.PaintsCanvasBackground = true
+		// If the root has a background, it paints the canvas. If not, body's
+		// background is promoted to the canvas and body's layer also gets
+		// PaintsCanvasBackground=true so its background-image uses the ICB
+		// as the positioning area (CSS Backgrounds §7.2).
+		if r.hasBackground(box) {
+			layer.PaintsCanvasBackground = true
+		} else {
+			// Root has no background — promote body's layer.
+			// Body is a flow child of the root layer in most cases.
+			r.promoteBodyCanvasBackground(layer)
+		}
 		r.paintLayer(layer)
+	}
+}
+
+// promoteBodyCanvasBackground searches the root layer's children for body
+// and sets PaintsCanvasBackground=true on body's layer, per CSS 2.1 §14.2.
+// When body's background is promoted to the canvas, its background-image
+// positioning area is the ICB (viewport), not body's own box.
+func (r *Renderer) promoteBodyCanvasBackground(rootLayer *PaintLayer) {
+	// Search FlowChildren first (most common case).
+	for _, childLayer := range rootLayer.FlowChildren {
+		if childLayer.Box != nil && childLayer.Box.Node != nil &&
+			childLayer.Box.Node.TagName == "body" {
+			childLayer.PaintsCanvasBackground = true
+			return
+		}
+	}
+	// Body could be in AutoZero if it establishes a stacking context.
+	for _, childLayer := range rootLayer.AutoZero {
+		if childLayer.Box != nil && childLayer.Box.Node != nil &&
+			childLayer.Box.Node.TagName == "body" {
+			childLayer.PaintsCanvasBackground = true
+			return
+		}
+	}
+	for _, childLayer := range rootLayer.NegativeZ {
+		if childLayer.Box != nil && childLayer.Box.Node != nil &&
+			childLayer.Box.Node.TagName == "body" {
+			childLayer.PaintsCanvasBackground = true
+			return
+		}
+	}
+	for _, childLayer := range rootLayer.PositiveZ {
+		if childLayer.Box != nil && childLayer.Box.Node != nil &&
+			childLayer.Box.Node.TagName == "body" {
+			childLayer.PaintsCanvasBackground = true
+			return
+		}
 	}
 }
 
@@ -1425,9 +1472,13 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	// CSS3 Backgrounds §3.6: background-origin determines the positioning area.
 	// For background-attachment:fixed, the positioning area is the viewport
 	// (CSS3 Backgrounds §3.5), not the element's box.
+	// CSS Backgrounds §7.2 / CSS 2.1 §14.2: when the body's background is
+	// propagated to the canvas (PaintsCanvasBackground=true on a non-root
+	// element), the background positioning area is the ICB (viewport), not
+	// the element's own box.
 	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
 	var originX, originY, originW, originH float64
-	if isFixed {
+	if isFixed || layer.PaintsCanvasBackground {
 		bounds := r.target.Bounds()
 		originX = float64(bounds.Min.X)
 		originY = float64(bounds.Min.Y)
