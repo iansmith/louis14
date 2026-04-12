@@ -530,19 +530,21 @@ func resolveFlexBasisForIntrinsic(
 
 // measureBlockMinMax computes min/max content sizes for a node with
 // block-level children by taking the maximum of each child's sizes.
+//
+// Floats are handled specially: multiple same-side floats placed side-by-side
+// contribute their SUMMED inline sizes to max-content (since at max-content
+// width, all floats fit beside each other). Min-content = max single float
+// inline size (floats can always stack when width is insufficient).
 func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
 	var result MinMaxSizes
 
 	parentWDM := space.WritingDirection
 
-	// Floated children contribute differently to intrinsic sizing:
-	// - For max-content: float widths are accumulated (they sit side-by-side),
-	//   then combined with the widest non-float child per "line".
-	// - For min-content: each float is independent (they can stack vertically),
-	//   so their min-content widths are compared via max like normal children.
-	// This mirrors Blink's BlockLayoutAlgorithm::ComputeMinMaxSizes which
-	// accumulates float inline sizes on the current line.
-	var floatMaxAccum float64 // sum of float max-content widths
+	// Accumulate float inline sizes by side for max-content computation.
+	// Mirrors Blink's behavior: at max-content width, same-side floats are
+	// placed side-by-side, so their total inline size = sum of individual sizes.
+	var floatStartMaxSum float64 // sum of inline-start (left) float max-content sizes
+	var floatEndMaxSum float64   // sum of inline-end (right) float max-content sizes
 
 	for _, child := range node.Children() {
 		if child.IsText() {
@@ -580,36 +582,45 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			childMargins := ResolveMargins(childStyle, childWDM, 0)
 			childMin = childMM.MinContent + childBP + childMargins.InlineSum()
 			childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
+
+			floatType := childStyle.GetFloat()
+			if floatType == css.FloatLeft {
+				floatStartMaxSum += childMax
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+				continue
+			} else if floatType == css.FloatRight {
+				floatEndMaxSum += childMax
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+				continue
+			}
 		}
 
-		isFloat := childStyle.GetFloat() != css.FloatNone
-
-		// Min-content: floats can wrap, so each is independent — use max.
+		// Non-float child (or orthogonal child — floats handled above for parallel).
 		if childMin > result.MinContent {
 			result.MinContent = childMin
 		}
 
+		isFloat := childStyle.GetFloat() != css.FloatNone
 		if isFloat {
-			// Max-content: floats sit side-by-side, accumulate their widths.
-			floatMaxAccum += childMax
+			// Orthogonal float: accumulate as start-side (conservative).
+			floatStartMaxSum += childMax
 		} else {
-			// Non-float child: its max-content combines with accumulated floats.
-			// The line width = floatMaxAccum + childMax. Compare with result.
-			lineMax := floatMaxAccum + childMax
-			if lineMax > result.MaxContent {
-				result.MaxContent = lineMax
+			if childMax > result.MaxContent {
+				result.MaxContent = childMax
 			}
-			// Non-float child clears the float accumulator conceptually
-			// (floats before it are on previous lines for max-content purposes).
-			// Actually, in CSS max-content, floats don't wrap, so they persist.
-			// But a block-level non-float child establishes a new line below floats.
-			// Reset accumulator after accounting for the combined width.
 		}
 	}
 
-	// After all children, the accumulated float width alone might be the widest.
-	if floatMaxAccum > result.MaxContent {
-		result.MaxContent = floatMaxAccum
+	// Incorporate accumulated float sizes into max-content.
+	// Start-side and end-side floats are on opposite sides, so they add.
+	// Multiple same-side floats are placed side-by-side → sum.
+	floatMaxSum := floatStartMaxSum + floatEndMaxSum
+	if floatMaxSum > result.MaxContent {
+		result.MaxContent = floatMaxSum
 	}
 
 	return result

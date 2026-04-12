@@ -524,6 +524,23 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					rowSpan: 1,
 				}},
 			})
+
+		default:
+			// Non-table-structural child (e.g. a block or inline element) inside
+			// a table element. Per CSS Tables §2.1, anonymous table-row-group,
+			// table-row, and table-cell boxes are generated to wrap such children.
+			// Treat the child as an anonymous table-cell in an anonymous row,
+			// preserving the child's own layout algorithm via layoutElement.
+			if childStyle.GetDisplay() != css.DisplayNone {
+				bodyRows = append(bodyRows, tableRow{
+					cells: []tableCell{{
+						node:    child,
+						style:   childStyle,
+						colSpan: 1,
+						rowSpan: 1,
+					}},
+				})
+			}
 		}
 	}
 
