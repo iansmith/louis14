@@ -24,7 +24,13 @@ failing, the diff exceeds what the test author considered acceptable for renderi
 variation, which means it's a real bug. Identify the systemic issue and fix it with
 correct foundational code.
 
-## 4. Operational rules
+## 4. Test execution discipline
+Do not run the full test suite or even the full section test suite during feature
+work. Run only the specific tests associated with the feature being worked on —
+typically 1 to 4 tests. Broader test runs are expensive and should only happen when
+explicitly requested.
+
+## 5. Operational rules
 - Never use `open` to display files from agents — it disrupts the user's screen.
 - Always commit and push before launching worktree agents — worktrees start from
   HEAD, not the working directory.
