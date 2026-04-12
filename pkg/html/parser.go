@@ -64,6 +64,11 @@ func (p *Parser) Parse() (*Document, error) {
 				p.autoCloseP()
 			}
 
+			// HTML5 table parsing: auto-close table structural elements.
+			// colgroup is implicitly closed by tbody/tfoot/thead/tr/td/th.
+			// tbody/thead/tfoot are implicitly closed by each other.
+			p.autoCloseTableElements(token.TagName)
+
 			// Create new element node
 			node := &Node{
 				Type:       ElementNode,
@@ -349,6 +354,34 @@ func (p *Parser) closeTag(tagName string) {
 		}
 	}
 	// Tag not found on stack; ignore the end tag
+}
+
+// autoCloseTableElements implements HTML5 table implicit closing rules.
+// Key rules per HTML5 §12.2.6.4.9-12:
+//   - <colgroup> is implicitly closed when <tbody>, <tfoot>, <thead>, <tr>, <td>, <th> is seen
+//   - <tbody>/<thead>/<tfoot> are implicitly closed when another section element starts
+func (p *Parser) autoCloseTableElements(tagName string) {
+	parent := p.currentParent()
+	switch tagName {
+	case "tbody", "tfoot", "thead":
+		// Close <colgroup> if it is the current parent
+		if parent.TagName == "colgroup" {
+			p.pop()
+		}
+		// Close any open tbody/thead/tfoot so they become siblings, not nested
+		parent = p.currentParent()
+		if parent.TagName == "tbody" || parent.TagName == "thead" || parent.TagName == "tfoot" {
+			p.pop()
+		}
+	case "tr":
+		// Close <colgroup> if it is the current parent
+		if parent.TagName == "colgroup" {
+			p.pop()
+		}
+	case "td", "th":
+		// Close any open <tr> sibling (handled naturally by close tag)
+		// No action needed here: td/th go inside the current tr
+	}
 }
 
 // autoCloseP closes an open <p> element if one is on the stack

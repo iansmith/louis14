@@ -42,11 +42,24 @@ func countLinesForWidth(
 // CSS 2.1 §9.2.1.1: block containers have either all block-level or all
 // inline-level children. After anonymous block box generation by the layout
 // tree builder, this is always a clean split.
+// isTextContentEmpty returns true if text consists entirely of collapsible
+// whitespace (ASCII space, tab, newline, CR, form-feed). Non-breaking spaces
+// (U+00A0) are NOT collapsible and are treated as content per CSS §16.6.1,
+// matching the behaviour of collectTextNode which preserves U+00A0.
+func isTextContentEmpty(s string) bool {
+	for _, r := range s {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' && r != '\f' {
+			return false
+		}
+	}
+	return true
+}
+
 func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	hasContent := false
 	for _, child := range node.Children() {
 		if child.IsText() {
-			if strings.TrimSpace(child.TextContent()) != "" {
+			if !isTextContentEmpty(child.TextContent()) {
 				hasContent = true
 			}
 			continue

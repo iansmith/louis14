@@ -685,7 +685,7 @@ var inheritableProperties = map[string]bool{
 	"text-transform": true, "text-indent": true, "white-space": true,
 	"visibility": true, "list-style-type": true, "list-style-position": true, "list-style-image": true,
 	"direction": true, "letter-spacing": true, "word-spacing": true,
-	"cursor": true, "writing-mode": true,
+	"cursor": true, "writing-mode": true, "text-orientation": true,
 	"empty-cells": true,
 }
 

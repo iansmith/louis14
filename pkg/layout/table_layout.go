@@ -46,6 +46,14 @@ type tableRow struct {
 	cells      []tableCell
 }
 
+// tableColWidth tracks an explicit column width from a col/colgroup element.
+// Per CSS Tables, col/colgroup width properties establish column widths.
+type tableColWidth struct {
+	colIndex int
+	span     int     // number of columns covered
+	width    float64 // resolved width in pixels (0 = not set)
+}
+
 // Layout performs table layout and returns the result.
 func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := tla.space.WritingDirection
@@ -53,8 +61,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(tla.node)
 
-	// Collect rows and captions from the table's children.
-	rows, captions := tla.collectRowsAndCaptions()
+	// Collect rows, captions, and col/colgroup widths from the table's children.
+	rows, captions, colWidthSpecs := tla.collectRowsAndCaptions()
 
 	// Determine the number of columns.
 	numCols := 0
@@ -141,7 +149,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
 		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols)
 	} else {
-		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth)
+		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, colWidthSpecs)
+	}
+
+	// Track which columns have explicit col/colgroup widths (used for orthogonal cell row height).
+	colHasExplicit := make([]bool, numCols)
+	for _, cws := range colWidthSpecs {
+		for s := 0; s < cws.span; s++ {
+			ci := cws.colIndex + s
+			if ci < numCols {
+				colHasExplicit[ci] = true
+			}
+		}
 	}
 
 	// Separate top and bottom captions.
@@ -242,6 +261,11 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			if cell.style != nil {
 				cellWDM = NewWritingDirectionMode(cell.style)
 			}
+			// The column width is a fixed inline-size constraint from the table's
+			// perspective. For parallel (same-axis) cells this becomes a fixed
+			// InlineSize; for orthogonal cells the builder swaps it to
+			// IsFixedBlockSize so the cell fills the column width in its block
+			// direction (= the table's physical column width).
 			cellSpace := NewConstraintSpaceBuilder(wdm, cellWDM, true).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(cellWDM, tla.ctx)).
@@ -250,6 +274,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					InlineSize: cellWidth,
 					BlockSize:  Indefinite,
 				}).
+				SetIsFixedInlineSize(true).
 				SetPercentageResolutionSize(LogicalSize{
 					InlineSize: cellWidth,
 					BlockSize:  0,
@@ -260,8 +285,23 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
 			cellLogical := NewLogicalFragment(wdm, cellResult.Fragment)
 
-			if cellLogical.BlockSize() > rowHeight {
-				rowHeight = cellLogical.BlockSize()
+
+			// For orthogonal cells (e.g. vertical-rl in horizontal table):
+			// The cell's physical height (table block direction) comes from the cell's
+			// logical INLINE size in the cell's own WDM. However, for orthogonal cells
+			// where a col/colgroup provides an explicit column width, the row height is
+			// constrained to the column width (making the cell square). This matches
+			// browser behavior where the col's block-size (= table inline) also
+			// determines the row height for orthogonal cells.
+			isOrthogonalCell := wdm.IsVertical() != cellWDM.IsVertical()
+			cellBlockForRow := cellLogical.BlockSize() // table's block direction = physical height
+			if isOrthogonalCell && colHasExplicit[colIdx] {
+				// Use the cell's physical WIDTH (= column width) as the row height.
+				// This produces square cells when col width is explicitly specified.
+				cellBlockForRow = cellResult.Fragment.Size.Width
+			}
+			if cellBlockForRow > rowHeight {
+				rowHeight = cellBlockForRow
 			}
 
 			cellLayouts = append(cellLayouts, cellLayoutInfo{
@@ -451,12 +491,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	return result
 }
 
-// collectRowsAndCaptions extracts table rows and captions from the table's children,
-// handling row-groups (thead, tbody, tfoot).
+// collectRowsAndCaptions extracts table rows, captions, and col/colgroup width specs
+// from the table's children, handling row-groups (thead, tbody, tfoot).
 // CSS 2.1 §17.5: rendering order is thead, tbodies (in source order), tfoot.
-func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCaption) {
+// Also returns column width specifications from col/colgroup elements per CSS Tables §9.1.
+func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCaption, []tableColWidth) {
 	var headerRows, bodyRows, footerRows []tableRow
 	var captions []tableCaption
+	var colWidths []tableColWidth
+	colIdx := 0 // tracks current column index as col/colgroup are encountered
 
 	for _, child := range tla.node.Children() {
 		if child.IsText() {
@@ -467,6 +510,61 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			continue
 		}
 		display := childStyle.GetDisplay()
+
+
+		// Check for col/colgroup elements by tag name.
+		// These have display:block in our engine but affect column widths per CSS Tables §9.1.
+		if child.DOMNode != nil && (child.DOMNode.TagName == "col" || child.DOMNode.TagName == "colgroup") {
+			span := 1
+			// <col span="N"> or <colgroup span="N">
+			if spanAttr, ok := child.DOMNode.GetAttribute("span"); ok {
+				if n := parseIntAttr(spanAttr); n > 0 {
+					span = n
+				}
+			}
+			// Resolve width from the col/colgroup style (ch units use the element's own
+			// writing-mode and text-orientation, per CSS Values §6.1 and CSS WM §7.5).
+			if w, ok := childStyle.GetLength("width"); ok && w > 0 {
+				colWidths = append(colWidths, tableColWidth{
+					colIndex: colIdx,
+					span:     span,
+					width:    w,
+				})
+			} else if child.DOMNode.TagName == "colgroup" {
+				// colgroup without width: check child col elements
+				colChildIdx := colIdx
+				for _, colChild := range child.Children() {
+					if colChild.IsText() || colChild.DOMNode == nil || colChild.DOMNode.TagName != "col" {
+						continue
+					}
+					colChildStyle := colChild.Style()
+					if colChildStyle == nil {
+						colChildIdx++
+						continue
+					}
+					colChildSpan := 1
+					if spanAttr, ok := colChild.DOMNode.GetAttribute("span"); ok {
+						if n := parseIntAttr(spanAttr); n > 0 {
+							colChildSpan = n
+						}
+					}
+					if w, ok := colChildStyle.GetLength("width"); ok && w > 0 {
+						colWidths = append(colWidths, tableColWidth{
+							colIndex: colChildIdx,
+							span:     colChildSpan,
+							width:    w,
+						})
+					}
+					colChildIdx += colChildSpan
+				}
+				if colChildIdx > colIdx {
+					colIdx = colChildIdx
+					continue
+				}
+			}
+			colIdx += span
+			continue
+		}
 
 		switch display {
 		case css.DisplayTableCaption:
@@ -549,8 +647,9 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 	rows = append(rows, headerRows...)
 	rows = append(rows, bodyRows...)
 	rows = append(rows, footerRows...)
-	return rows, captions
+	return rows, captions, colWidths
 }
+
 
 // buildRow extracts cells from a table-row element.
 // Per CSS Tables §2.1, non-table-cell children of a table-row are wrapped
@@ -710,12 +809,37 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 // algorithm (CSS 2.1 §17.5.2).
 func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	rows []tableRow, numCols int, availableInline float64, borderCollapse bool, hasExplicitWidth bool,
+	colWidthSpecs []tableColWidth,
 ) []float64 {
 	colWidths := make([]float64, numCols)
 
 	// First pass: compute each column's min/max content width.
 	colMin := make([]float64, numCols)
 	colMax := make([]float64, numCols)
+
+	// Track which columns have explicit col/colgroup widths.
+	// When a column has an explicit col width, that width is authoritative:
+	// intrinsic cell sizing (which may return the cell's logical inline-size
+	// instead of the table's column width for orthogonal cells) is skipped.
+	colHasExplicit := make([]bool, numCols)
+
+	// Apply col/colgroup explicit widths first (CSS Tables §9.1).
+	// These establish the column widths from the column model.
+	for _, cws := range colWidthSpecs {
+		for s := 0; s < cws.span; s++ {
+			ci := cws.colIndex + s
+			if ci >= numCols {
+				break
+			}
+			if cws.width > colMin[ci] {
+				colMin[ci] = cws.width
+			}
+			if cws.width > colMax[ci] {
+				colMax[ci] = cws.width
+			}
+			colHasExplicit[ci] = true
+		}
+	}
 
 	for _, row := range rows {
 		colIdx := 0
@@ -724,18 +848,27 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 				break
 			}
 
-			// Check for explicit inline-size on the cell.
-			// In vertical writing modes, CSS "height" maps to inline-size.
+			// Check for explicit inline-size on the cell from the TABLE's perspective.
+			// For a horizontal table, the column width comes from the cell's physical width
+			// (= cell logical block-size for orthogonal vertical-rl/lr cells).
+			// We use the table's inline property ("width" for horizontal tables),
+			// NOT the cell's own logical inline property.
 			explicitW := 0.0
 			hasExplicit := false
 			if cell.style != nil {
-				inlineProp := "width"
-				if tla.space.WritingDirection.IsVertical() {
-					inlineProp = "height"
-				}
-				if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
+				// Always use "width" from the TABLE's perspective (physical column width).
+				// For orthogonal cells (vertical writing-mode in horizontal table),
+				// the cell's CSS "width" is its physical width = table column width.
+				// The cell's CSS "height" is its physical height = table row height (not column width).
+				if w, ok := cell.style.GetLength("width"); ok && w > 0 {
 					explicitW = w
 					hasExplicit = true
+				} else if tla.space.WritingDirection.IsVertical() {
+					// For a vertical table, column width is in the vertical dimension = "height"
+					if w, ok := cell.style.GetLength("height"); ok && w > 0 {
+						explicitW = w
+						hasExplicit = true
+					}
 				}
 			}
 
@@ -749,28 +882,42 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					}
 				} else {
 					// Compute intrinsic size.
+					// For orthogonal cells (e.g. vertical-rl cell in horizontal table),
+					// ComputeMinMaxSizes returns the cell's LOGICAL inline sizes (from the
+					// cell's own WDM perspective), which equals the TABLE's BLOCK direction
+					// (not the column width direction). However, this "accidental" behavior
+					// produces correct column widths when no explicit col width is given,
+					// because the cell's logical inline-size (= physical height for vertical-rl)
+					// represents the cell's contribution to column sizing in those cases.
+					//
+					// When an explicit col/colgroup width IS provided, it takes priority
+					// and we skip intrinsic sizing for orthogonal cells to avoid overriding it.
 					childWDM := tla.space.WritingDirection
 					if cell.style != nil {
 						childWDM = NewWritingDirectionMode(cell.style)
 					}
-					childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
-						SetOrthogonalFallbackInlineSize(
-							orthogonalFallbackSize(childWDM, tla.ctx)).
-						SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
-						SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
-						SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
-						Build()
-					mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
-					// Convert content-box to border-box for column sizing.
-					cellGeom := ComputeFragmentGeometry(cell.style, childWDM)
-					cellBP := cellGeom.InlineBorderPadding()
-					cellMin := mm.MinContent + cellBP
-					cellMax := mm.MaxContent + cellBP
-					if cellMin > colMin[colIdx] {
-						colMin[colIdx] = cellMin
-					}
-					if cellMax > colMax[colIdx] {
-						colMax[colIdx] = cellMax
+					isOrthogonal := tla.space.WritingDirection.IsVertical() != childWDM.IsVertical()
+					skipIntrinsic := isOrthogonal && colHasExplicit[colIdx]
+					if !skipIntrinsic {
+						childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
+							SetOrthogonalFallbackInlineSize(
+								orthogonalFallbackSize(childWDM, tla.ctx)).
+							SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
+							SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
+							SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
+							Build()
+						mm := ComputeMinMaxSizes(tla.ctx, cell.node, childSpace)
+						// Convert content-box to border-box for column sizing.
+						cellGeom := ComputeFragmentGeometry(cell.style, childWDM)
+						cellBP := cellGeom.InlineBorderPadding()
+						cellMin := mm.MinContent + cellBP
+						cellMax := mm.MaxContent + cellBP
+						if cellMin > colMin[colIdx] {
+							colMin[colIdx] = cellMin
+						}
+						if cellMax > colMax[colIdx] {
+							colMax[colIdx] = cellMax
+						}
 					}
 				}
 			}

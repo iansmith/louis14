@@ -221,24 +221,40 @@ func (s *Style) GetLength(property string) (float64, bool) {
 }
 
 // chScale returns the ch unit multiplier relative to fontSize for this style's font.
-// CSS Values §6.1: ch is the advance measure of "0" in the element's font.
-// In horizontal modes, this is the horizontal advance width (measured by ChWidth).
-// In vertical modes, this is the vertical advance height (≈1em for most fonts).
+// CSS Values §6.1: ch is the advance measure of "0" in the inline axis.
+// Per CSS Writing Modes §7.5 and Blink's IsHorizontalTypographicMode():
+//   - vertical-rl/vertical-lr with text-orientation: upright → ch = 1em (vertical advance)
+//   - vertical-rl/vertical-lr with text-orientation: sideways or mixed (default) → ch = horizontal advance
+//   - sideways-rl/sideways-lr → always rotated, ch = horizontal advance
+//   - horizontal-tb → ch = horizontal advance
 func (s *Style) chScale() float64 {
 	wm, _ := s.Get("writing-mode")
-	if wm == "vertical-rl" || wm == "vertical-lr" ||
-		wm == "sideways-rl" || wm == "sideways-lr" {
-		// Vertical modes: ch = vertical advance height of "0" ≈ 1em
-		return 1.0
-	}
-	// Horizontal mode: use measured horizontal advance width if available
-	if s.ChWidth > 0 {
-		fs := s.GetFontSize()
-		if fs > 0 {
-			return s.ChWidth / fs
+
+	horizontalCh := func() float64 {
+		if s.ChWidth > 0 {
+			if fs := s.GetFontSize(); fs > 0 {
+				return s.ChWidth / fs
+			}
 		}
+		return 0.5
 	}
-	return 0.5
+
+	switch wm {
+	case "vertical-rl", "vertical-lr":
+		to, _ := s.Get("text-orientation")
+		if to == "upright" {
+			// Upright glyphs: ch = vertical advance height of "0" ≈ 1em
+			return 1.0
+		}
+		// "sideways" or "mixed" (default): Latin "0" is rotated sideways
+		return horizontalCh()
+	case "sideways-rl", "sideways-lr":
+		// sideways-* always rotates glyphs regardless of text-orientation
+		return horizontalCh()
+	default:
+		// horizontal-tb: use measured horizontal advance width
+		return horizontalCh()
+	}
 }
 
 // ParsePercentage parses a percentage value (e.g., "140%") and returns the number (e.g., 140).
