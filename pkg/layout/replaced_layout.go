@@ -251,7 +251,7 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 	wdm := rla.space.WritingDirection
 	physSize := ToPhysicalSize(LogicalSize{InlineSize: contentInline, BlockSize: contentBlock}, wdm.WM)
 
-	res := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height)
+	res := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
 	if res == nil {
 		return nil
 	}

@@ -49,15 +49,29 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Replaced elements (img, etc.) with auto block-size: derive from aspect ratio.
+	// Replaced elements (img, etc.) with auto inline/block size: derive from
+	// intrinsic dimensions and aspect ratio.
+	// CSS 2.1 §10.3.2 (replaced inline): inline-size = intrinsic width.
 	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
 	// CSS Containment: size containment overrides intrinsic sizing — treat as 0.
 	hasSizeContain := bla.style != nil && bla.style.HasSizeContainment()
-	if !hasExplicitBlock && !hasSizeContain && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
-		_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
-		if blockSize > 0 {
-			explicitBlockSize = blockSize
-			hasExplicitBlock = true
+	if !hasSizeContain && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
+		// Check if inline-size is explicitly set. ResolveInlineSize returns false
+		// for auto/unset, which is when we should use the intrinsic inline-size.
+		_, explicitInlineOK := ResolveInlineSize(bla.style, wdm, bla.space, geom)
+		if !explicitInlineOK && !bla.space.IsFixedInlineSize {
+			// CSS 2.1 §10.3.2: replaced elements with auto width use intrinsic width.
+			inlineSize, _ := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+			if inlineSize > 0 && inlineSize < contentInlineSize {
+				contentInlineSize = inlineSize
+			}
+		}
+		if !hasExplicitBlock {
+			_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+			if blockSize > 0 {
+				explicitBlockSize = blockSize
+				hasExplicitBlock = true
+			}
 		}
 	}
 
@@ -941,7 +955,7 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 		BlockSize:  blockSize,
 	}, wdm.WM)
 
-	res := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height)
+	res := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
 	if res == nil {
 		return nil
 	}

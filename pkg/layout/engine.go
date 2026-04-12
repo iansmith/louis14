@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"path"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -163,7 +165,13 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	// computed within the root's coordinate system, so they inherit this shift.
 	var rootX, rootY float64
 	if rootWDM.WM == WritingModeVerticalRL || rootWDM.WM == WritingModeSidewaysRL {
-		rootX = le.viewport.width - result.Fragment.Size.Width
+		// For VRL/sideways-rl, the root's right edge is inset from the viewport
+		// right by its physical margin-right (block-start direction in VRL).
+		marginRight := 0.0
+		if result.Fragment.BoxData != nil {
+			marginRight = result.Fragment.BoxData.Margin.Right
+		}
+		rootX = le.viewport.width - result.Fragment.Size.Width - marginRight
 		if rootX < 0 {
 			rootX = 0
 		}
@@ -183,9 +191,19 @@ type NestedDocumentResult struct {
 }
 
 // layoutNestedDocument parses and lays out a nested HTML document (for iframe/object)
-// using the given physical dimensions as the viewport. Returns the root layout result,
-// or nil if parsing/layout fails.
-func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64) *NestedDocumentResult {
+// using the given physical dimensions as the viewport. nestedDocURI is the src/data
+// URI of the nested document, used to re-root relative image/document URIs so that
+// sub-resources of the nested document resolve correctly relative to its location.
+// Returns the root layout result, or nil if parsing/layout fails.
+func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64, nestedDocURI string) *NestedDocumentResult {
+	// Resolve relative url() references in the embedded document's CSS so that
+	// background images and other sub-resources render correctly. The outer
+	// renderer uses the outer document's base path; by pre-resolving relative
+	// URLs against the nested doc's directory we ensure correctness.
+	if base := path.Dir(nestedDocURI); base != "" && base != "." {
+		htmlContent = ResolveRelativeURLsInHTML(htmlContent, base)
+	}
+
 	doc, err := html.Parse(htmlContent)
 	if err != nil {
 		return nil
@@ -209,12 +227,14 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	}
 	layoutRoot := treeBuilder.BuildLayoutTree(rootElement)
 
-	// Build nested context — inherit image/document fetchers and fonts.
+	// Build nested context — inherit fonts; re-root fetchers to the nested doc's URI
+	// so that relative sub-resources (images, stylesheets, child iframes) resolve
+	// correctly relative to the nested document's location, not the outer document's.
 	nestedCtx := &LayoutContext{
 		ViewportWidth:   vpWidth,
 		ViewportHeight:  vpHeight,
-		ImageFetcher:    ctx.ImageFetcher,
-		DocumentFetcher: ctx.DocumentFetcher,
+		ImageFetcher:    ReRootedImageFetcher(ctx.ImageFetcher, nestedDocURI),
+		DocumentFetcher: ReRootedDocumentFetcher(ctx.DocumentFetcher, nestedDocURI),
 		FontConfig:      ctx.FontConfig,
 	}
 
@@ -261,9 +281,16 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 
 	// Compute the physical X offset for the root element within the viewport.
 	// For vertical-rl/sideways-rl, the root is anchored to the right edge.
+	// The root's right edge is inset by its physical margin-right (which in VRL
+	// maps to the block-start direction = physical right). Subtract both the
+	// right margin and the border-box width to get the root's left edge offset.
 	var rootOffsetX float64
 	if rootWDM.WM == WritingModeVerticalRL || rootWDM.WM == WritingModeSidewaysRL {
-		rootOffsetX = vpWidth - result.Fragment.Size.Width
+		marginRight := 0.0
+		if result.Fragment.BoxData != nil {
+			marginRight = result.Fragment.BoxData.Margin.Right
+		}
+		rootOffsetX = vpWidth - result.Fragment.Size.Width - marginRight
 		if rootOffsetX < 0 {
 			rootOffsetX = 0
 		}
