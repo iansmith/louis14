@@ -277,6 +277,49 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
 
+			// CSS 2.1 §9.5 Rule 5 / §10.3.3: A new BFC must not overlap
+			// float margin boxes. If the child doesn't fit alongside
+			// floats at the current block position, push it below them.
+			if isChildNewFC && (floatStartOff > 0 || floatEndOff > 0) {
+				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
+				neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
+				availableInline := childAvailableInline - floatStartOff - floatEndOff
+				if neededInline > availableInline {
+					// Child doesn't fit — find the block position where it does.
+					clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor, wdm)
+					if clearedBlock > blockCursor {
+						blockCursor = clearedBlock
+						prevMarginStrut = MarginStrut{}
+						// Recompute float offsets at the new position.
+						floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(blockCursor, 0, childAvailableInline)
+						childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
+						if childInlineForSpace < 0 {
+							childInlineForSpace = 0
+						}
+						// Re-layout with the new available size.
+						csBuilder2 := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+							SetOrthogonalFallbackInlineSize(
+								orthogonalFallbackSize(childWDM, bla.ctx)).
+							SetOrthogonalFallbackBlockSize(
+								computeOrthogonalFallbackBlockForChildren(
+									bla.style, wdm, bla.space, geom, bla.ctx,
+									hasExplicitBlock, explicitBlockSize)).
+							SetAvailableSize(LogicalSize{
+								InlineSize: childInlineForSpace,
+								BlockSize:  blockForChild,
+							}).
+							SetPercentageResolutionSize(LogicalSize{
+								InlineSize: contentInlineSize,
+								BlockSize:  explicitBlockSize,
+							}).
+							SetPercentageResolutionInlineSize(contentInlineSize).
+							SetExclusionSpace(exclusionSpace)
+						childSpace = csBuilder2.Build()
+						childResult = layoutElement(bla.ctx, child, childSpace)
+					}
+				}
+			}
+
 			// Step 1: Append child's block-start margin to the strut.
 			prevMarginStrut.Append(childMargins.BlockStart)
 
