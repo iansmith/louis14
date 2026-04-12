@@ -344,6 +344,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
 				!isChildNewFC
 
+			// Step 4: Position child in the inline direction.
+			// CSS 2.1 §10.3.3: If both margin-inline-start and margin-inline-end are auto,
+			// and the element has a definite inline-size, center it.
+			// NOTE: computed before collapse-through check so it can be used for OOF
+			// propagation even when the element collapses through.
+			childInlineOffset := childMargins.InlineStart + floatStartOff
+
 			if collapseThrough {
 				// Margins collapse through: append block-end margin and continue
 				// without resolving or advancing the cursor.
@@ -351,16 +358,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if len(childResult.PropagatedOOFCandidates) > 0 {
 					approxBlock := blockCursor + prevMarginStrut.Resolve()
 					bla.inheritPropagatedOOF(childResult, childStyle, wdm,
-						0, approxBlock, builder)
+						childInlineOffset, approxBlock, builder)
 				}
 				prevMarginStrut.Append(childMargins.BlockEnd)
 				continue
 			}
-
-			// Step 4: Position child in the inline direction.
-			// CSS 2.1 §10.3.3: If both margin-inline-start and margin-inline-end are auto,
-			// and the element has a definite inline-size, center it.
-			childInlineOffset := childMargins.InlineStart + floatStartOff
 
 			rawMargin := childStyle.GetMargin()
 			autoInlineStart, autoInlineEnd, _, _ := PhysicalAutoMarginsToLogical(rawMargin, wdm)
