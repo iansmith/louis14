@@ -109,8 +109,9 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 
 	// Build the root constraint space in the root's own logical coordinate system.
 	// We use rootWDM as both parent and child so IsOrthogonalWritingModeRoot = false,
-	// ensuring the root element fills the viewport in the inline direction via
-	// stretch sizing (available inline = viewport inline size).
+	// ensuring the root element fills the viewport inline-size (stretch sizing).
+	// The root's block-size is auto (determined by content); the canvas background
+	// covers any remaining viewport area per CSS 2.1 §14.2.
 	//
 	// Available sizes are expressed in the root's logical coordinates:
 	//   HTB:      InlineSize = viewport.width,  BlockSize = viewport.height
@@ -137,11 +138,10 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	if rootWDM.IsHorizontal() {
 		rootMinBlock = le.viewport.height
 	}
-	// For vertical modes, rootMinBlock = 0 (no forced minimum block size).
 
 	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
 		SetForcedMinBlockSize(rootMinBlock).
-		SetIsRoot(true).
+		SetIsRootElement(true).
 		SetAvailableSize(LogicalSize{
 			InlineSize: rootInlineSize,
 			BlockSize:  rootBlockSize,
@@ -157,26 +157,17 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	result := layoutElement(ctx, layoutRoot, rootSpace)
 
 	// Phase 7: Convert fragment tree to box tree.
-	//
-	// For vertical-rl and sideways-rl writing modes, the root element's
-	// block direction is right-to-left (physical left ← right). The root
-	// element is anchored to the right edge of the viewport, so its physical
-	// X offset = viewport.width - root.Width. Children's physical offsets are
-	// computed within the root's coordinate system, so they inherit this shift.
-	var rootX, rootY float64
-	if rootWDM.WM == WritingModeVerticalRL || rootWDM.WM == WritingModeSidewaysRL {
-		// For VRL/sideways-rl, the root's right edge is inset from the viewport
-		// right by its physical margin-right (block-start direction in VRL).
-		marginRight := 0.0
-		if result.Fragment.BoxData != nil {
-			marginRight = result.Fragment.BoxData.Margin.Right
-		}
-		rootX = le.viewport.width - result.Fragment.Size.Width - marginRight
-		if rootX < 0 {
-			rootX = 0
+	// In vertical-rl/sideways-rl, the root's block-start is the right edge of
+	// the ICB. If the root is narrower than the viewport, offset it so its
+	// right edge aligns with the viewport's right edge (block-start = right).
+	var rootOffsetX float64
+	if rootWDM.IsFlippedBlocks() {
+		rootWidth := result.Fragment.Size.Width
+		if rootWidth < le.viewport.width {
+			rootOffsetX = le.viewport.width - rootWidth
 		}
 	}
-	rootBox := fragmentToBox(result.Fragment, nil, rootX, rootY)
+	rootBox := fragmentToBox(result.Fragment, nil, rootOffsetX, 0)
 
 	return []*Box{rootBox}
 }
@@ -262,7 +253,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 
 	rootSpace := NewConstraintSpaceBuilder(rootWDM, rootWDM, true).
 		SetForcedMinBlockSize(rootMinBlock).
-		SetIsRoot(true).
+		SetIsRootElement(true).
 		SetAvailableSize(LogicalSize{
 			InlineSize: rootInlineSize,
 			BlockSize:  rootBlockSize,

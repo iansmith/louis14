@@ -89,11 +89,11 @@ type ConstraintSpace struct {
 	// Not set for vertical writing mode roots (they determine block-size from content).
 	ForcedMinBlockSize float64
 
-	// IsRoot is true for the root element's constraint space.
-	// Used to determine that absolute-positioned descendants should use the ICB
-	// (viewport) as their containing block. This is separate from ForcedMinBlockSize
-	// which is only used for HTB roots.
-	IsRoot bool
+	// IsRootElement is true when this constraint space is for the document root element.
+	// Used to identify the root for OOF resolution (absolute/fixed positioning against
+	// the ICB). Separate from ForcedMinBlockSize so the root can shrink-to-fit in
+	// block direction while still serving as the OOF containing block.
+	IsRootElement bool
 
 	// --- Fragmentation ---
 
@@ -309,10 +309,9 @@ func (b *ConstraintSpaceBuilder) SetForcedMinBlockSize(v float64) *ConstraintSpa
 	return b
 }
 
-// SetIsRoot marks this constraint space as belonging to the document root element.
-// Used to ensure absolute-positioned descendants use the ICB as their containing block.
-func (b *ConstraintSpaceBuilder) SetIsRoot(v bool) *ConstraintSpaceBuilder {
-	b.space.IsRoot = v
+// SetIsRootElement marks this constraint space as belonging to the document root.
+func (b *ConstraintSpaceBuilder) SetIsRootElement(v bool) *ConstraintSpaceBuilder {
+	b.space.IsRootElement = v
 	return b
 }
 
