@@ -14,9 +14,10 @@ import (
 // It maintains a node-to-proxy cache so the same JS object is returned for
 // the same underlying *html.Node (needed for === identity checks).
 type domContext struct {
-	vm    *goja.Runtime
-	doc   *html.Document
-	cache map[*html.Node]goja.Value
+	vm     *goja.Runtime
+	doc    *html.Document
+	cache  map[*html.Node]goja.Value
+	engine *Engine // back-reference to register onload callbacks; may be nil
 }
 
 func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
@@ -546,6 +547,15 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 			e.node.Attributes = make(map[string]string)
 		}
 		e.node.Attributes["src"] = val.String()
+		return true
+	case "onload":
+		// Store element-level onload callback so the engine can fire it after
+		// iframes (and other resources) have been loaded during layout.
+		if e.ctx.engine != nil {
+			if fn, ok := goja.AssertFunction(val); ok {
+				e.ctx.engine.RegisterOnloadCallback(e.node, fn)
+			}
+		}
 		return true
 	}
 	return false

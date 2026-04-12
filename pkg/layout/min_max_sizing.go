@@ -237,10 +237,21 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 
 // measureBlockMinMax computes min/max content sizes for a node with
 // block-level children by taking the maximum of each child's sizes.
+//
+// Floats are handled specially: multiple same-side floats placed side-by-side
+// contribute their SUMMED inline sizes to max-content (since at max-content
+// width, all floats fit beside each other). Min-content = max single float
+// inline size (floats can always stack when width is insufficient).
 func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
 	var result MinMaxSizes
 
 	parentWDM := space.WritingDirection
+
+	// Accumulate float inline sizes by side for max-content computation.
+	// Mirrors Blink's behavior: at max-content width, same-side floats are
+	// placed side-by-side, so their total inline size = sum of individual sizes.
+	var floatStartMaxSum float64 // sum of inline-start (left) float max-content sizes
+	var floatEndMaxSum float64   // sum of inline-end (right) float max-content sizes
 
 	for _, child := range node.Children() {
 		if child.IsText() {
@@ -284,14 +295,42 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			childMin := childMM.MinContent + childBP + childMargins.InlineSum()
 			childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
 
-			if childMin > result.MinContent {
-				result.MinContent = childMin
-			}
-			if childMax > result.MaxContent {
-				result.MaxContent = childMax
+			floatType := childStyle.GetFloat()
+			if floatType == css.FloatLeft {
+				// Start-side float: accumulate for max-content (side-by-side placement).
+				floatStartMaxSum += childMax
+				// Min-content: a single float must fit → max over all start-side floats.
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+				// Max-content updated below after summing.
+			} else if floatType == css.FloatRight {
+				// End-side float: accumulate for max-content.
+				floatEndMaxSum += childMax
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+			} else {
+				// Non-float block child.
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+				if childMax > result.MaxContent {
+					result.MaxContent = childMax
+				}
 			}
 		}
 	}
+
+	// Incorporate accumulated float sizes into max-content.
+	// Start-side and end-side floats are on opposite sides, so they add.
+	// Multiple same-side floats are placed side-by-side → sum.
+	floatMaxSum := floatStartMaxSum + floatEndMaxSum
+	if floatMaxSum > result.MaxContent {
+		result.MaxContent = floatMaxSum
+	}
+	// Float min-content: the largest single start-side or end-side float.
+	// (Already tracked above via result.MinContent for floats.)
 
 	return result
 }

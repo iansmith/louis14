@@ -2575,32 +2575,33 @@ func expandBorderProperty(style *Style, value string) {
 		style.Set("border-"+side+"-color", "currentcolor")
 	}
 
-	// Now apply the specified values
+	// Now apply the specified values.
+	// IMPORTANT: Store ONLY longhands (border-top-width, etc.), NOT intermediate
+	// shorthand keys (border-width, border-style, border-color). Storing shorthands
+	// causes them to be re-expanded by the cascade when iterating rule.Declarations,
+	// which may overwrite longhands set by later declarations in the same rule
+	// (e.g. border-width: 40px 20px 60px 30px appearing after border: 0px solid).
 	parts := strings.Fields(value)
 	for _, part := range parts {
 		if bw, ok := borderWidthKeyword(part); ok {
-			style.Set("border-width", bw)
 			style.Set("border-top-width", bw)
 			style.Set("border-right-width", bw)
 			style.Set("border-bottom-width", bw)
 			style.Set("border-left-width", bw)
 		} else if _, ok := ParseLength(part); ok {
 			// Width (px, em, mm, or bare number)
-			style.Set("border-width", part)
 			style.Set("border-top-width", part)
 			style.Set("border-right-width", part)
 			style.Set("border-bottom-width", part)
 			style.Set("border-left-width", part)
 		} else if part == "solid" || part == "dotted" || part == "dashed" || part == "double" || part == "none" || part == "inset" || part == "outset" || part == "groove" || part == "ridge" {
 			// Style
-			style.Set("border-style", part)
 			style.Set("border-top-style", part)
 			style.Set("border-right-style", part)
 			style.Set("border-bottom-style", part)
 			style.Set("border-left-style", part)
 		} else {
 			// Color
-			style.Set("border-color", part)
 			style.Set("border-top-color", part)
 			style.Set("border-right-color", part)
 			style.Set("border-bottom-color", part)
