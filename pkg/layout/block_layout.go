@@ -219,19 +219,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				continue
 			}
 
-			// Handle clear property.
-			// CSS 2.1 §8.3.1: clearance prevents parent-child margin collapsing.
-			hasClearance := false
-			clearType := childStyle.GetClear()
-			if clearType != css.ClearNone {
-				clearedBlock := exclusionSpace.ClearanceOffset(clearType, blockCursor)
-				if clearedBlock > blockCursor {
-					blockCursor = clearedBlock
-					prevMarginStrut = MarginStrut{} // Clear resets margin collapsing.
-					hasClearance = true
-				}
-			}
-
 			// Determine child's writing direction.
 			childWDM := NewWritingDirectionMode(childStyle)
 
@@ -242,6 +229,36 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// coordinate system. Mirrors Blink's ComputeMargins which uses
 			// ConstraintSpace().GetWritingDirection() (the parent's).
 			childMargins := ResolveMargins(childStyle, wdm, childAvailableInline)
+
+			// Handle clear property.
+			// CSS 2.1 §8.3.1: The element is placed so its border edge is at or below
+			// the bottom outer edge of all relevant floats. The clearance amount is
+			// max(0, floatEnd - (blockCursor + collapsedMargin)). If the collapsed
+			// margin already places the element past the float, clearance = 0, but
+			// the clear property still inhibits parent-child margin collapsing.
+			hasClearance := false
+			clearType := childStyle.GetClear()
+			if clearType != css.ClearNone && !exclusionSpace.IsEmpty() {
+				clearedBlock := exclusionSpace.ClearanceOffset(clearType, blockCursor)
+				if clearedBlock > blockCursor {
+					// There are floats to be cleared. Compute where the element
+					// would land naturally via its collapsed margin.
+					tempStrut := prevMarginStrut
+					tempStrut.Append(childMargins.BlockStart)
+					tentativeBlockOff := blockCursor + tempStrut.Resolve()
+					if clearedBlock > tentativeBlockOff {
+						// Margin alone is insufficient; inject clearance gap.
+						// Set blockCursor so that blockCursor + childMargins.BlockStart
+						// = clearedBlock after the strut is reset and the child's
+						// block-start margin is re-appended at step 1 below.
+						blockCursor = clearedBlock - childMargins.BlockStart
+						prevMarginStrut = MarginStrut{} // consumed by clearance
+					}
+					// Whether or not a gap was inserted, the clear property
+					// inhibits parent-child margin collapsing (CSS 2.1 §8.3.1).
+					hasClearance = true
+				}
+			}
 
 			// Build constraint space for this child.
 			// CSS Writing Modes §4.3: a block container with a different

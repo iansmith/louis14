@@ -35,6 +35,10 @@ type PaintLayer struct {
 	// Non-positioned children in DOM order (Appendix E steps 3-5):
 	FlowChildren []*PaintLayer
 
+	// Float children (Appendix E step 4: floats paint after non-float blocks).
+	// Floats are separated from FlowChildren so they paint above block backgrounds.
+	FloatChildren []*PaintLayer
+
 	// Overflow clip (pre-computed from Style):
 	HasClip  bool
 	ClipX    bool       // true if X axis is clipped (overflow-x != visible)
@@ -794,6 +798,11 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 					currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
 				}
 				buildPaintSubtree(child, childLayer, childLayer)
+			} else if isFloat(child) {
+				// CSS 2.1 Appendix E step 4: floats paint after non-float block
+				// backgrounds (step 3) so they appear above block backgrounds.
+				parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
+				buildPaintSubtree(child, childLayer, currentSC)
 			} else {
 				parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 				buildPaintSubtree(child, childLayer, currentSC)
@@ -834,6 +843,15 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 			}
 		}
 	}
+}
+
+// isFloat returns true if the box has float:left or float:right.
+func isFloat(box *layout.Box) bool {
+	if box.Style == nil {
+		return false
+	}
+	f := box.Style.GetFloat()
+	return f == css.FloatLeft || f == css.FloatRight
 }
 
 // parseFontFeatureSettings parses a CSS font-feature-settings value like
@@ -906,6 +924,9 @@ func (layer *PaintLayer) sortZLists() {
 		child.sortZLists()
 	}
 	for _, child := range layer.FlowChildren {
+		child.sortZLists()
+	}
+	for _, child := range layer.FloatChildren {
 		child.sortZLists()
 	}
 }

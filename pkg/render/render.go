@@ -1152,7 +1152,12 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	// Steps 3-5: Non-positioned content in DOM order.
+	// Step 3: non-float block-level and inline descendants.
 	for _, child := range layer.FlowChildren {
+		r.paintLayer(child)
+	}
+	// Step 4: Floats paint after non-float block backgrounds (CSS 2.1 Appendix E).
+	for _, child := range layer.FloatChildren {
 		r.paintLayer(child)
 	}
 
