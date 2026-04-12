@@ -768,66 +768,122 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	return result
 }
 
-// computeRelativeOffset computes the physical offset for position:relative,
-// applying the CSS overconstrained resolution rule in logical coordinates:
-// inline-start wins over inline-end, block-start wins over block-end.
+// computeRelativeOffset computes the physical offset for position:relative.
 //
-// This matches Blink's ComputeRelativeOffset in relative_utils.cc.
-// The physical insets are first mapped to logical via PhysicalInsetsToLogical,
-// the "start wins" rule is applied, and then the logical deltas are mapped
-// back to physical dx/dy.
+// CSS Writing Modes §7.1 maps CSS 2.1 §9.4.3's overconstrained rules to
+// logical axes. The "start wins" rule applies in the logical space:
+//   - inline-start wins over inline-end (direction determines start)
+//   - block-start wins over block-end (always)
+//
+// In horizontal writing modes:
+//   - left/right are inline (direction-dependent: LTR→left wins, RTL→right wins)
+//   - top/bottom are block (top = block-start, always wins)
+//
+// In vertical writing modes (vlr, vrl):
+//   - left/right are block (block-start wins: vlr→left, vrl→right, always)
+//   - top/bottom are inline (direction-dependent: LTR→top wins, RTL→bottom wins)
+//
+// In sideways-lr:
+//   - inline direction is inverted (bottom-to-top for LTR)
+//   - left/right are block (left = block-start, always wins)
+//   - top/bottom are inline (LTR→bottom wins, RTL→top wins)
 func computeRelativeOffset(offset css.PositionOffset, wdm WritingDirectionMode) PhysicalOffset {
-	logical := PhysicalInsetsToLogical(offset, wdm)
-
-	// Start wins over end in both axes.
-	var inlineDelta, blockDelta float64
-	if logical.HasInlineStart {
-		inlineDelta = logical.InlineStart
-	} else if logical.HasInlineEnd {
-		inlineDelta = -logical.InlineEnd
-	}
-	if logical.HasBlockStart {
-		blockDelta = logical.BlockStart
-	} else if logical.HasBlockEnd {
-		blockDelta = -logical.BlockEnd
-	}
-
-	// Convert logical deltas back to physical dx/dy.
-	// Positive inlineDelta = shift toward inline-end (away from start).
-	// Positive blockDelta = shift toward block-end (away from start).
 	var dx, dy float64
+
 	switch wdm.WM {
 	case WritingModeHorizontalTB:
+		// Inline axis = horizontal: direction determines which of left/right wins.
 		if wdm.Dir == DirectionLTR {
-			dx = inlineDelta
+			if offset.HasLeft {
+				dx = offset.Left
+			} else if offset.HasRight {
+				dx = -offset.Right
+			}
 		} else {
-			dx = -inlineDelta
+			if offset.HasRight {
+				dx = -offset.Right
+			} else if offset.HasLeft {
+				dx = offset.Left
+			}
 		}
-		dy = blockDelta
-
-	case WritingModeVerticalRL, WritingModeSidewaysRL:
-		if wdm.Dir == DirectionLTR {
-			dy = inlineDelta
-		} else {
-			dy = -inlineDelta
+		// Block axis = vertical: top = block-start, always wins.
+		if offset.HasTop {
+			dy = offset.Top
+		} else if offset.HasBottom {
+			dy = -offset.Bottom
 		}
-		dx = -blockDelta // block-start is right, block-end is left
 
 	case WritingModeVerticalLR:
-		if wdm.Dir == DirectionLTR {
-			dy = inlineDelta
-		} else {
-			dy = -inlineDelta
+		// Block axis = horizontal: left = block-start in vlr, always wins.
+		if offset.HasLeft {
+			dx = offset.Left
+		} else if offset.HasRight {
+			dx = -offset.Right
 		}
-		dx = blockDelta // block-start is left, block-end is right
+		// Inline axis = vertical: direction determines which of top/bottom wins.
+		if wdm.Dir == DirectionLTR {
+			// LTR: top = inline-start.
+			if offset.HasTop {
+				dy = offset.Top
+			} else if offset.HasBottom {
+				dy = -offset.Bottom
+			}
+		} else {
+			// RTL: bottom = inline-start.
+			if offset.HasBottom {
+				dy = -offset.Bottom
+			} else if offset.HasTop {
+				dy = offset.Top
+			}
+		}
+
+	case WritingModeVerticalRL, WritingModeSidewaysRL:
+		// Block axis = horizontal: right = block-start in vrl, always wins.
+		if offset.HasRight {
+			dx = -offset.Right
+		} else if offset.HasLeft {
+			dx = offset.Left
+		}
+		// Inline axis = vertical: direction determines which of top/bottom wins.
+		if wdm.Dir == DirectionLTR {
+			// LTR: top = inline-start.
+			if offset.HasTop {
+				dy = offset.Top
+			} else if offset.HasBottom {
+				dy = -offset.Bottom
+			}
+		} else {
+			// RTL: bottom = inline-start.
+			if offset.HasBottom {
+				dy = -offset.Bottom
+			} else if offset.HasTop {
+				dy = offset.Top
+			}
+		}
 
 	case WritingModeSidewaysLR:
-		if wdm.Dir == DirectionLTR {
-			dy = -inlineDelta
-		} else {
-			dy = inlineDelta
+		// Block axis = horizontal: left = block-start, always wins.
+		if offset.HasLeft {
+			dx = offset.Left
+		} else if offset.HasRight {
+			dx = -offset.Right
 		}
-		dx = blockDelta // block-start is left, block-end is right
+		// Inline axis = vertical but inverted (bottom-to-top for LTR).
+		if wdm.Dir == DirectionLTR {
+			// LTR: bottom = inline-start (inverted).
+			if offset.HasBottom {
+				dy = -offset.Bottom
+			} else if offset.HasTop {
+				dy = offset.Top
+			}
+		} else {
+			// RTL: top = inline-start (inverted).
+			if offset.HasTop {
+				dy = offset.Top
+			} else if offset.HasBottom {
+				dy = -offset.Bottom
+			}
+		}
 	}
 
 	return PhysicalOffset{X: dx, Y: dy}

@@ -790,8 +790,18 @@ func createLineBoxEx(
 			})
 
 		case InlineItemAtomicInline:
-			// Apply inline-start margin before the child.
-			inlinePos += r.Margins.InlineStart
+			// Apply inline-start margin before the child. For RTL items
+			// (odd BidiLevel) that have been visually reversed by BIDI
+			// reordering, InlineStart is the physical-right side of the item.
+			// In visual (left-to-right) placement order, the physical-right is
+			// the trailing side, so InlineEnd comes first (leading gap) and
+			// InlineStart comes last (trailing gap).
+			itemIsRTL := r.Item.BidiLevel%2 == 1
+			if itemIsRTL {
+				inlinePos += r.Margins.InlineEnd
+			} else {
+				inlinePos += r.Margins.InlineStart
+			}
 			if r.LayoutResult != nil {
 				childLogical := NewLogicalFragment(wdm, r.LayoutResult.Fragment)
 				blockSize := childLogical.BlockSize()
@@ -874,8 +884,13 @@ func createLineBoxEx(
 					BlockOffset:  blockPos,
 				})
 			}
-			// Advance past content + inline-end margin, skip default advance.
-			inlinePos += r.InlineSize + r.Margins.InlineEnd
+			// Advance past content + trailing margin, skip default advance.
+			// For RTL items, InlineStart is the trailing (physical-right) gap.
+			if itemIsRTL {
+				inlinePos += r.InlineSize + r.Margins.InlineStart
+			} else {
+				inlinePos += r.InlineSize + r.Margins.InlineEnd
+			}
 			continue
 
 		case InlineItemOpenTag, InlineItemCloseTag:
