@@ -138,11 +138,34 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	fonts := ctx.FontConfig
 	wdm := space.WritingDirection
 
+	// Resolve the node's own definite block-size for percentage resolution.
+	// This allows children with percentage heights (e.g., img { height: 100% })
+	// to resolve against the containing block's height.
+	blockForPct := Indefinite
+	if nodeStyle := node.Style(); nodeStyle != nil {
+		nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm)
+		if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
+			blockForPct = bs
+		} else if space.PercentageResolutionSize.BlockSize > 0 {
+			blockForPct = space.PercentageResolutionSize.BlockSize
+		}
+	}
+
 	// Min-content: break at every opportunity.
-	minSpace := NewConstraintSpaceBuilder(wdm, wdm, false).
-		SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-		Build()
+	minAvailBlock := Indefinite
+	if blockForPct != Indefinite {
+		minAvailBlock = blockForPct
+	}
+	minBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: minAvailBlock}).
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+	if blockForPct != Indefinite {
+		minBuilder.SetPercentageResolutionSize(LogicalSize{
+			InlineSize: space.PercentageResolutionInlineSize,
+			BlockSize:  blockForPct,
+		})
+	}
+	minSpace := minBuilder.Build()
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	var minContent float64
 	var line LineInfo
@@ -153,10 +176,16 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	}
 
 	// Max-content: never wrap.
-	maxSpace := NewConstraintSpaceBuilder(wdm, wdm, false).
-		SetAvailableSize(LogicalSize{InlineSize: 1e9, BlockSize: Indefinite}).
-		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-		Build()
+	maxBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
+		SetAvailableSize(LogicalSize{InlineSize: 1e9, BlockSize: minAvailBlock}).
+		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+	if blockForPct != Indefinite {
+		maxBuilder.SetPercentageResolutionSize(LogicalSize{
+			InlineSize: space.PercentageResolutionInlineSize,
+			BlockSize:  blockForPct,
+		})
+	}
+	maxSpace := maxBuilder.Build()
 	maxLB := NewLineBreaker(itemsData, ctx, maxSpace, fonts, LineBreakerMaxContent)
 	var maxContent float64
 	for maxLB.NextLine(&line) {
@@ -540,6 +569,22 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 
 	parentWDM := space.WritingDirection
 
+	// Resolve the node's own definite block-size (CSS height for HTB).
+	// This is used as the percentage resolution block-size for children,
+	// so that percentage-height descendants can resolve (e.g., img { height: 100% }
+	// inside a div with explicit height).
+	nodeBlockSize := Indefinite
+	if nodeStyle := node.Style(); nodeStyle != nil {
+		nodeGeom := ComputeFragmentGeometry(nodeStyle, parentWDM)
+		if bs, ok := ResolveBlockSize(nodeStyle, parentWDM, space, nodeGeom); ok {
+			nodeBlockSize = bs
+		} else if space.PercentageResolutionSize.BlockSize > 0 {
+			// Parent provided a definite block percentage resolution size
+			// (e.g., from a flex item's explicit cross-size). Propagate it.
+			nodeBlockSize = space.PercentageResolutionSize.BlockSize
+		}
+	}
+
 	// Accumulate float inline sizes by side for max-content computation.
 	// Mirrors Blink's behavior: at max-content width, same-side floats are
 	// placed side-by-side, so their total inline size = sum of individual sizes.
@@ -567,13 +612,28 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			childMin, childMax = measureOrthogonalChild(child, childStyle, childWDM, parentWDM, ctx, space)
 		} else {
 			// Parallel child: use standard min/max inline-size computation.
-			childSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			// Pass the node's definite block-size so children can resolve
+			// percentage heights against it (e.g., img { height: 100% }
+			// inside a div with height: 100px).
+			csBuilder := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(childWDM, ctx)).
 				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(space.AvailableSize).
-				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-				Build()
+				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+			if nodeBlockSize != Indefinite {
+				csBuilder.SetPercentageResolutionSize(LogicalSize{
+					InlineSize: space.PercentageResolutionInlineSize,
+					BlockSize:  nodeBlockSize,
+				})
+				// Set available block-size to make IsBlockSizeIndefinite() return false
+				// so percentage heights resolve.
+				csBuilder.SetAvailableSize(LogicalSize{
+					InlineSize: space.AvailableSize.InlineSize,
+					BlockSize:  nodeBlockSize,
+				})
+			}
+			childSpace := csBuilder.Build()
 
 			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
 

@@ -1133,14 +1133,20 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	if lb.mode == LineBreakerMinContent || lb.mode == LineBreakerMaxContent {
 		// In sizing mode: compute the child's intrinsic size instead of
 		// doing full layout. Mirrors Blink's recursive min/max sizing.
-		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+		csBuilder := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, lb.ctx)).
 			SetOrthogonalFallbackBlockSize(
 				lb.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(lb.space.AvailableSize).
-			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
-			Build()
+			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
+		// Propagate percentage resolution block-size from parent so that
+		// percentage-height replaced elements (e.g., img { height: 100% })
+		// can resolve against their containing block's definite height.
+		if lb.space.PercentageResolutionSize.BlockSize > 0 {
+			csBuilder.SetPercentageResolutionSize(lb.space.PercentageResolutionSize)
+		}
+		childSpace := csBuilder.Build()
 		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
 		// ComputeMinMaxSizes returns content-box; convert to border-box
 		// for the atomic inline's contribution to the line.
@@ -1153,16 +1159,28 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		}
 	} else {
 		// Normal layout: lay out the atomic inline with shrink-to-fit.
-		childSpace := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
+		// Propagate the percentage resolution block-size from the parent's space
+		// so that percentage-height children can resolve.
+		availBlock := Indefinite
+		if lb.space.PercentageResolutionSize.BlockSize > 0 {
+			availBlock = lb.space.PercentageResolutionSize.BlockSize
+		} else if lb.space.AvailableSize.BlockSize >= 0 {
+			availBlock = lb.space.AvailableSize.BlockSize
+		}
+		csb := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, lb.ctx)).
 			SetOrthogonalFallbackBlockSize(
 				lb.space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(LogicalSize{
 				InlineSize: lb.availableWidth,
-				BlockSize:  Indefinite,
+				BlockSize:  availBlock,
 			}).
-			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize).
+			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
+		if lb.space.PercentageResolutionSize.BlockSize > 0 {
+			csb.SetPercentageResolutionSize(lb.space.PercentageResolutionSize)
+		}
+		childSpace := csb.
 			Build()
 
 		result = layoutElement(lb.ctx, item.LayoutNode, childSpace)

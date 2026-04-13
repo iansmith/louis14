@@ -2316,13 +2316,29 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		if crossSize != Indefinite {
 			avail.BlockSize = crossSize + item.crossBorderPadding()
 		}
-		b.SetAvailableSize(avail)
 		// §9.8: Use the actual cross-size for percentage block-size resolution when definite.
-		// When crossSize is Indefinite (first pass), use 0 so children treat % block-sizes as auto.
+		// When crossSize is Indefinite (first pass), check if the item has an explicit
+		// CSS cross-size (e.g., height: 100px). Per CSS 2.1 §10.5, percentage heights
+		// resolve against the containing block's content height, which is the item's
+		// explicit CSS height if set.
 		pctBlockSize := 0.0
 		if crossSize != Indefinite {
 			pctBlockSize = crossSize
+		} else {
+			// Check for explicit CSS block-size on the item.
+			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if explicit, ok := ResolveBlockSize(item.style, childWDM, itemSpace, item.geom); ok {
+				pctBlockSize = explicit
+				// Also set the available block-size so IsBlockSizeIndefinite()
+				// returns false and inner percentage heights can resolve.
+				avail.BlockSize = explicit + item.crossBorderPadding()
+			}
 		}
+		b.SetAvailableSize(avail)
 		b.SetPercentageResolutionSize(LogicalSize{
 			InlineSize: mainSize,
 			BlockSize:  pctBlockSize,
@@ -3048,9 +3064,35 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		// Main axis = item's inline axis: inline min-content size at zero available width.
 		// PercentageResolutionSize is set so percentage widths on flex items
 		// resolve against the flex container's content-box inline-size.
+		// Per Blink: if the item has a definite cross-size (block-size), pass it
+		// as the percentage resolution block-size so that percentage-height
+		// descendants can resolve (e.g., img { height: 100% } inside an item
+		// with explicit height).
+		pctBlockSize := Indefinite
+		{
+			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+				pctBlockSize = explicit
+			} else if hasDefiniteCross {
+				// Item will be stretched to the container cross-size.
+				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
+				pctBlockSize = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
+				if pctBlockSize < 0 {
+					pctBlockSize = 0
+				}
+			}
+		}
+		pctResSize := LogicalSize{InlineSize: contentInlineSize}
+		if pctBlockSize != Indefinite {
+			pctResSize.BlockSize = pctBlockSize
+		}
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionSize(pctResSize).
 			SetPercentageResolutionInlineSize(fla.space.PercentageResolutionInlineSize).
 			Build()
 		mm := computeContentMinMaxSizes(fla.ctx, child, minContentSpace)

@@ -280,10 +280,20 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 	}
 
+	// Propagate the percentage resolution block-size from the parent constraint
+	// space so that percentage-height children (e.g., img { height: 100% })
+	// can resolve against their containing block's definite height.
+	lineAvailBlock := Indefinite
+	if bla.space.PercentageResolutionSize.BlockSize > 0 {
+		lineAvailBlock = bla.space.PercentageResolutionSize.BlockSize
+	} else if bla.space.AvailableSize.BlockSize >= 0 {
+		lineAvailBlock = bla.space.AvailableSize.BlockSize
+	}
 	lineSpace := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: lineAvailableWidth, BlockSize: Indefinite},
-		WritingDirection: wdm,
-		ExclusionSpace:   exclusionSpace,
+		AvailableSize:            LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock},
+		PercentageResolutionSize: bla.space.PercentageResolutionSize,
+		WritingDirection:         wdm,
+		ExclusionSpace:           exclusionSpace,
 	}
 	lb := NewLineBreaker(itemsData, bla.ctx, lineSpace, fonts, LineBreakerContent)
 	lb.availableWidth = lineAvailableWidth
