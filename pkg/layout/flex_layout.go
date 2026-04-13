@@ -702,25 +702,67 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// This ensures justify-content sees the correct free space (e.g., min-height
 	// on a column flex gives extra space for justify-content to distribute).
 	if !hasDefiniteMain {
+		hypotheticalMainSize := 0.0
 		for _, line := range lines {
 			lineTotal := mainGap * float64(len(line.items)-1)
 			for _, item := range line.items {
 				lineTotal += item.outerMainSize()
 			}
-			if lineTotal > containerMainSize {
-				containerMainSize = lineTotal
+			if lineTotal > hypotheticalMainSize {
+				hypotheticalMainSize = lineTotal
 			}
 		}
+		containerMainSize = hypotheticalMainSize
 		// Apply min/max block constraints (only relevant for column flex where
 		// main axis = block axis and the container has min-height/max-height).
+		// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
 		if !isRow {
+			if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+				if containerMainSize > maxBlock {
+					containerMainSize = maxBlock
+				}
+			}
 			minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
 			if containerMainSize < minBlock {
 				containerMainSize = minBlock
 			}
-			if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
-				if containerMainSize > maxBlock {
-					containerMainSize = maxBlock
+		}
+
+		// If min/max constraints changed the container main size, the items need
+		// to be re-resolved with the new definite size. Per CSS Flexbox §9.7,
+		// when a column flex container's auto block-size is constrained by
+		// min-height/max-height, the flex algorithm must run again with the
+		// constrained size to properly distribute space (grow/shrink).
+		if math.Abs(containerMainSize-hypotheticalMainSize) > 0.001 {
+			for _, line := range lines {
+				// Reset frozen/resolved state.
+				for _, item := range line.items {
+					item.frozen = false
+					item.resolvedMain = item.flexBasis
+				}
+				fla.resolveFlexibleLengths(line, containerMainSize, true, mainGap)
+			}
+			// Re-layout items at the new resolved main sizes.
+			for _, line := range lines {
+				for _, item := range line.items {
+					selfAlign := fla.getAlignSelf(item.style, alignItems)
+					isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd &&
+						!fla.hasExplicitCrossSize(item.style, wdm, isRow)
+					crossIsFixed := !isRow && isStretch && wrapMode == "nowrap"
+					cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+						item.resolvedMain, Indefinite, crossIsFixed)
+					result := layoutElement(fla.ctx, item.node, cs)
+					item.fragment = result.Fragment
+					item.baseline = result.Baseline
+					item.hasBaseline = result.HasBaseline
+					item.lastBaseline = result.LastBaseline
+					item.propagatedOOF = result.PropagatedOOFCandidates
+					lf := NewLogicalFragment(wdm, item.fragment)
+					if isRow {
+						item.crossSize = lf.BlockSize()
+					} else {
+						item.crossSize = lf.InlineSize()
+					}
 				}
 			}
 		}
@@ -1084,14 +1126,15 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Apply min/max block constraints.
-	minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
-	if finalBlockSize < minBlock {
-		finalBlockSize = minBlock
-	}
+	// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
 	if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}
+	}
+	minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
+	if finalBlockSize < minBlock {
+		finalBlockSize = minBlock
 	}
 
 	// -webkit-line-clamp: limit block-size to N * line-height.
@@ -3624,12 +3667,84 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 				}
 			}
 			newBorderBox := stretchContent + crossBP
-			// Always relayout: even if the border-box size is unchanged,
-			// the percentage resolution block-size changed from 0 (first pass
-			// with Indefinite cross) to stretchContent (now definite).
-			// This ensures descendants with percentage heights resolve correctly.
-			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
-				item.resolvedMain, stretchContent, true)
+
+			// CSS Flexbox §9.2 step B / §9.4: For <img> elements with an intrinsic
+			// aspect ratio, no explicit CSS main-size, and a stretch cross-size that
+			// constrains below the intrinsic cross-size, build the constraint space
+			// without fixing the main-size. This lets ComputeReplacedSize derive the
+			// main-size from the cross-size via the aspect ratio, producing correct
+			// sizing (e.g., a 60x60 image in a 25px-tall flex container → 25x25).
+			//
+			// This only applies to <img> elements — iframes, canvas, and other replaced
+			// elements have default sizes that don't establish a real aspect ratio for
+			// flex sizing purposes (per CSS Sizing 3 §5.2).
+			useAspectRatioStretch := false
+			if item.node.DOMNode != nil && item.node.DOMNode.TagName == "img" {
+				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
+				if info.HasAspectRatio && info.AspectRatio > 0 {
+					hasExplicitMainSize := false
+					tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
+						SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+						SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+						SetPercentageResolutionInlineSize(contentInlineSize).
+						Build()
+					if item.mainIsItemInline {
+						_, hasExplicitMainSize = ResolveInlineSize(item.style, item.wdm, tmpSpace, item.geom)
+					} else {
+						_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
+					}
+					if !hasExplicitMainSize {
+						useAspectRatioStretch = true
+					}
+				}
+			}
+
+			var cs ConstraintSpace
+			if useAspectRatioStretch {
+				// Build constraint space with cross-size fixed but main-size NOT
+				// fixed. ComputeReplacedSize will derive the main-size from the
+				// fixed cross-size and the image's intrinsic aspect ratio.
+				childWDM := item.wdm
+				b := NewConstraintSpaceBuilder(wdm, childWDM, true)
+				b.SetIsInsideFlexibleBox(true)
+				b.SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx))
+				b.SetOrthogonalFallbackBlockSize(fla.space.OrthogonalFallbackBlockSize)
+				if isRow {
+					avail := LogicalSize{
+						InlineSize: item.resolvedMain + item.mainBorderPadding(),
+						BlockSize:  stretchContent + item.crossBorderPadding(),
+					}
+					b.SetAvailableSize(avail)
+					b.SetPercentageResolutionSize(LogicalSize{
+						InlineSize: item.resolvedMain,
+						BlockSize:  stretchContent,
+					})
+					b.SetPercentageResolutionInlineSize(contentInlineSize)
+					// Do NOT fix inline-size: let aspect ratio derive it from cross.
+					b.SetIsFixedBlockSize(true)
+				} else {
+					avail := LogicalSize{
+						InlineSize: stretchContent + item.crossBorderPadding(),
+						BlockSize:  item.resolvedMain + item.mainBorderPadding(),
+					}
+					b.SetAvailableSize(avail)
+					b.SetPercentageResolutionSize(LogicalSize{
+						InlineSize: stretchContent,
+						BlockSize:  item.resolvedMain,
+					})
+					b.SetPercentageResolutionInlineSize(contentInlineSize)
+					b.SetIsFixedInlineSize(true)
+					// Do NOT fix block-size: let aspect ratio derive it from cross.
+				}
+				cs = b.Build()
+			} else {
+				// Always relayout: even if the border-box size is unchanged,
+				// the percentage resolution block-size changed from 0 (first pass
+				// with Indefinite cross) to stretchContent (now definite).
+				// This ensures descendants with percentage heights resolve correctly.
+				cs = fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+					item.resolvedMain, stretchContent, true)
+			}
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
