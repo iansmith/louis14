@@ -96,6 +96,13 @@ func fontPathToFamilyVariant(fontPath string) (string, int32) {
 			family = name
 		}
 	}
+	// For absolute paths (e.g., @font-face web fonts cached in temp dirs with
+	// hash-based filenames), return the full path as the family so that
+	// resolveFamily() can use it directly via its filepath.IsAbs() check.
+	if filepath.IsAbs(fontPath) {
+		family = fontPath
+	}
+
 	return family, variant
 }
 

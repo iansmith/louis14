@@ -192,6 +192,12 @@ type flexItem struct {
 	// Collapsed items contribute to the line's cross-size but occupy 0 main-size
 	// and are not rendered.
 	collapsed bool
+
+	// strutCrossSize is the cross-size "strut" for collapsed items per §12.
+	// When an item collapses, it carries the cross-size of the line it was on
+	// in the pre-collapse pass. This strut contributes to the cross-size of
+	// whatever line the collapsed item ends up on after re-wrapping.
+	strutCrossSize float64
 }
 
 // mainMarginSum returns the total margin in the flex main axis.
@@ -283,6 +289,119 @@ type flexLine struct {
 	crossSize float64
 }
 
+// computeStrutSizes performs a pre-collapse layout pass per CSS Flexbox §12.
+// It temporarily treats collapsed items as non-collapsed to form lines with
+// their real main sizes, computes line cross-sizes (including align-content
+// stretch), then records each collapsed item's strut = its line's cross-size.
+func (fla *FlexLayoutAlgorithm) computeStrutSizes(
+	items []*flexItem,
+	wdm WritingDirectionMode,
+	contentInlineSize, containerMainSize float64,
+	hasDefiniteMain bool,
+	containerCrossSize float64,
+	hasDefiniteCross bool,
+	isRow bool,
+	wrapMode string,
+	mainGap, crossGap float64,
+) {
+	// Temporarily un-collapse items for line formation.
+	collapsedSet := make(map[*flexItem]bool)
+	for _, item := range items {
+		if item.collapsed {
+			collapsedSet[item] = true
+			item.collapsed = false
+		}
+	}
+	defer func() {
+		for item := range collapsedSet {
+			item.collapsed = true
+		}
+	}()
+
+	// Form lines with real sizes.
+	preLines := fla.buildFlexLines(items, wrapMode, containerMainSize, hasDefiniteMain, mainGap)
+
+	// Resolve flexible lengths.
+	for _, line := range preLines {
+		fla.resolveFlexibleLengths(line, containerMainSize, hasDefiniteMain, mainGap)
+	}
+
+	// Compute cross-sizes for pre-collapse lines.
+	alignItems := fla.getAlignItems()
+	for _, line := range preLines {
+		lineCrossMax := 0.0
+		for _, item := range line.items {
+			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+				item.resolvedMain, Indefinite, false)
+			result := layoutElement(fla.ctx, item.node, cs)
+			lf := NewLogicalFragment(wdm, result.Fragment)
+			var itemCross float64
+			if isRow {
+				itemCross = lf.BlockSize()
+			} else {
+				itemCross = lf.InlineSize()
+			}
+
+			selfAlign := fla.getAlignSelf(item.style, alignItems)
+			outerCross := itemCross + item.crossMarginSum()
+			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+			if selfAlign == "baseline" && baselineParallel {
+				if outerCross > lineCrossMax {
+					lineCrossMax = outerCross
+				}
+			} else {
+				if outerCross > lineCrossMax {
+					lineCrossMax = outerCross
+				}
+			}
+		}
+		line.crossSize = lineCrossMax
+	}
+
+	// Single-line definite cross-size override.
+	if wrapMode == "nowrap" && len(preLines) == 1 && hasDefiniteCross {
+		preLines[0].crossSize = containerCrossSize
+	}
+
+	// Apply align-content stretch if applicable (§12: strut captures the
+	// STRETCHED line cross-size, not the original).
+	alignContent := fla.getAlignContent()
+	if alignContent == "stretch" && hasDefiniteCross && len(preLines) > 0 {
+		totalCross := 0.0
+		for i, line := range preLines {
+			totalCross += line.crossSize
+			if i < len(preLines)-1 {
+				totalCross += crossGap
+			}
+		}
+		if totalCross < containerCrossSize {
+			extra := containerCrossSize - totalCross
+			if extra > 0 {
+				perLine := extra / float64(len(preLines))
+				for _, line := range preLines {
+					line.crossSize += perLine
+				}
+			}
+		}
+	}
+
+	// Record strut sizes for collapsed items.
+	for _, line := range preLines {
+		for _, item := range line.items {
+			if collapsedSet[item] {
+				item.strutCrossSize = line.crossSize
+			}
+		}
+	}
+
+	// Reset flex resolution state so the normal pass can re-resolve.
+	for _, item := range items {
+		item.frozen = false
+		item.resolvedMain = item.flexBasis
+	}
+}
+
 // Layout performs flex layout and returns the LayoutResult.
 func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := fla.space.WritingDirection
@@ -368,6 +487,24 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			hasWrapBoundary = true
 		}
 	}
+	// §12 — Pre-collapse pass: if any items have visibility:collapse in a
+	// wrapping container, compute strut cross-sizes before the real layout.
+	// The spec requires running the algorithm twice: first with collapsed
+	// items at their real sizes to determine line cross-sizes (including
+	// stretch), then again with collapsed items at zero main-size.
+	hasCollapsedItems := false
+	for _, item := range allItems {
+		if item.collapsed {
+			hasCollapsedItems = true
+			break
+		}
+	}
+	if hasCollapsedItems && wrapMode != "nowrap" {
+		fla.computeStrutSizes(allItems, wdm, contentInlineSize, wrapMainSize,
+			hasWrapBoundary, containerCrossSize, hasDefiniteCross, isRow,
+			wrapMode, mainGap, crossGap)
+	}
+
 	lines := fla.buildFlexLines(allItems, wrapMode, wrapMainSize, hasWrapBoundary, mainGap)
 
 	// §9.7 — Resolve flexible lengths for each line.
@@ -485,8 +622,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			// §9.4: line cross-size computation.
+			// §12: Collapsed items contribute their strut cross-size (from the
+			// pre-collapse pass) rather than their own outer cross-size.
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			outerCross := item.crossSize + item.crossMarginSum()
+			if item.collapsed && item.strutCrossSize > 0 {
+				outerCross = item.strutCrossSize
+			}
 			// Baseline participation requires the item's block axis to be parallel
 			// to the flex container's cross axis (CSS Flexbox §9.4 step 8).
 			// Row flex: both same orientation. Column flex: orthogonal writing modes only.
