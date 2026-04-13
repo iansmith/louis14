@@ -473,8 +473,18 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// container's writing mode and text-orientation. text-orientation:
 		// sideways causes vertical modes to use alphabetic baseline.
 		centralBaseline := wdm.UsesCentralBaselineWithStyle(bla.style)
+		// Compute containing block physical size for inline relative positioning.
+		// Percentages for top/bottom resolve against CB height, left/right against width.
+		cbBlockSize := bla.space.AvailableSize.BlockSize
+		if cbBlockSize == Indefinite {
+			cbBlockSize = 0
+		}
+		cbPhys := ToPhysicalSize(LogicalSize{
+			InlineSize: contentInlineSize,
+			BlockSize:  cbBlockSize,
+		}, wdm.WM)
 		lineFragment, lineHeight, lineAscent := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineAvailableInline, fonts, centralBaseline,
+			itemsData, &line, effectiveWDM, lineAvailableInline, fonts, centralBaseline, cbPhys, bla.style,
 		)
 		if firstLineAscent < 0 {
 			firstLineAscent = lineAscent
@@ -585,7 +595,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	return createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline())
+	return createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil)
 }
 
 // createLineBoxEx positions items within a line and produces a line box fragment.
@@ -598,9 +608,11 @@ func createLineBoxEx(
 	availableInline float64,
 	fonts text.FontConfig,
 	centralBaseline bool,
+	cbPhysicalSize PhysicalSize,
+	parentStyle *css.Style,
 ) (*PhysicalFragment, float64, float64) { // returns (fragment, lineHeight, maxAscent)
 	// Step 1: Compute line height from font metrics of all items.
-	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline)
+	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
 	lineHeight := maxAscent + maxDescent
 	if lineHeight <= 0 {
 		// Empty line (forced break) — use default font metrics.
@@ -731,6 +743,12 @@ func createLineBoxEx(
 								Padding: ToPhysicalEdges(geom.Padding, wdm),
 							},
 						}
+						// CSS 2.1 §9.4.3: inline span backgrounds also shift with
+						// position:relative. Use the original (non-reset) style.
+						if span.style.GetPosition() == css.PositionRelative || span.style.GetPosition() == css.PositionSticky {
+							offset := span.style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
+							bgFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
+						}
 						lineBuilder.AddChild(bgFrag, LogicalOffset{
 							InlineOffset: fragStart,
 							BlockOffset:  -blockOverhang,
@@ -795,6 +813,19 @@ func createLineBoxEx(
 				Node:             parentNode,
 				Style:            r.Item.Style,
 				WritingDirection: wdm,
+			}
+
+			// CSS 2.1 §9.4.3: Apply position:relative offset to inline-level
+			// text fragments. Only applies when the parent is a true inline element
+			// (display:inline), not a block container. Block containers handle their
+			// own position:relative offset in block layout — applying it here would
+			// double-offset the text.
+			if r.Item.Style != nil && r.Item.Style.GetDisplay() == css.DisplayInline {
+				pos := r.Item.Style.GetPosition()
+				if pos == css.PositionRelative || pos == css.PositionSticky {
+					offset := r.Item.Style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
+					textFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
+				}
 			}
 
 			lineBuilder.AddChild(textFrag, LogicalOffset{
@@ -892,6 +923,14 @@ func createLineBoxEx(
 				if blockPos < 0 {
 					blockPos = 0
 				}
+				// CSS 2.1 §9.4.3: Apply position:relative offset to atomic inlines.
+				if r.Item.Style != nil {
+					pos := r.Item.Style.GetPosition()
+					if pos == css.PositionRelative || pos == css.PositionSticky {
+						offset := r.Item.Style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
+						r.LayoutResult.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
+					}
+				}
 				lineBuilder.AddChild(r.LayoutResult.Fragment, LogicalOffset{
 					InlineOffset: inlinePos,
 					BlockOffset:  blockPos,
@@ -929,7 +968,7 @@ func createLineBoxEx(
 
 // computeLineMetrics is the backward-compatible wrapper that uses wdm.UsesCentralBaseline().
 func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig) (maxAscent, maxDescent float64) {
-	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline())
+	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline(), nil)
 }
 
 // computeLineMetricsEx computes the maximum ascent and descent across all
@@ -939,8 +978,40 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 // CSS 2.1 §10.8: line box height is determined by the tallest inline box.
 // Even empty inline elements (open/close tag with no text) still contribute
 // their font's line metrics (CSS 2.1 §9.4.2).
-func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool) (maxAscent, maxDescent float64) {
+//
+// parentStyle is the block container's style, used to establish the root
+// inline box ("strut") per CSS 2.1 §10.8.1.
+func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
+
+	// CSS 2.1 §10.8.1: "the minimum height consists of a minimum height
+	// above the baseline and a minimum height below it, exactly as if each
+	// line box starts with a zero-width inline box with the element's font
+	// and line height properties." This is the "strut".
+	if parentStyle != nil {
+		fontSize, _, _, _, _ := fontPropsFromStyle(parentStyle)
+		var strutAscent, strutDescent float64
+		if centralBaseline {
+			strutAscent = fontSize / 2
+			strutDescent = fontSize / 2
+		} else {
+			fontPath := resolveFontPath(parentStyle, fonts)
+			strutAscent = text.FontAscentFromFont(fontSize, fontPath)
+			strutDescent = fontSize - strutAscent
+		}
+		lineHt := parentStyle.GetLineHeight()
+		halfLeading := (lineHt - (strutAscent + strutDescent)) / 2
+		strutAscent += halfLeading
+		strutDescent += halfLeading
+		if strutAscent < 0 {
+			strutAscent = 0
+		}
+		if strutDescent < 0 {
+			strutDescent = 0
+		}
+		maxAscent = strutAscent
+		maxDescent = strutDescent
+	}
 	for _, r := range line.Results {
 		switch r.Item.Type {
 		case InlineItemOpenTag:

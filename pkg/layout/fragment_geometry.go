@@ -527,7 +527,23 @@ func CalculateInitialFragmentGeometry(
 		// authoritatively — it overrides the child's own CSS block-size.
 		borderBoxBlock = space.AvailableSize.BlockSize
 	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
-		borderBoxBlock = explicitBlock + geom.BlockBorderPadding()
+		// CSS Tables: browsers (Blink, WebKit, Gecko) treat table/inline-table
+		// height as border-box — the specified height already includes borders.
+		// Per Blink's TableLayoutAlgorithm, table height is resolved with
+		// kIncludingBorderPadding (border-box semantics).
+		display := css.DisplayBlock
+		if style != nil {
+			display = style.GetDisplay()
+		}
+		isTable := display == css.DisplayTable || display == css.DisplayInlineTable
+		if isTable && style.GetBoxSizing() != "border-box" {
+			// Table border-box quirk: treat height as border-box even when
+			// box-sizing is content-box. The explicitBlock from ResolveBlockSize
+			// is content-box, so use it directly as border-box (don't add BP).
+			borderBoxBlock = explicitBlock
+		} else {
+			borderBoxBlock = explicitBlock + geom.BlockBorderPadding()
+		}
 	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
 		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords
 		// that override the fixed constraint (e.g. max-height: min-content).

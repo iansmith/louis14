@@ -79,7 +79,10 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 
 	natW, natH, err := images.GetImageDimensionsWithFetcher(src, ctx.ImageFetcher)
 	if err != nil || natW <= 0 || natH <= 0 {
-		return IntrinsicSizingInfo{}
+		// Image failed to load. Per Blink's behavior, fall back to the HTML
+		// width/height attributes to determine intrinsic dimensions. This
+		// ensures layout is consistent regardless of whether the image loaded.
+		return getImgAttrFallbackInfo(node)
 	}
 	return IntrinsicSizingInfo{
 		IntrinsicWidth:  float64(natW),
@@ -87,6 +90,37 @@ func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSiz
 		AspectRatio:     float64(natW) / float64(natH),
 		HasAspectRatio:  true,
 	}
+}
+
+// getImgAttrFallbackInfo returns intrinsic dimensions from the HTML width/height
+// attributes when the image file can't be loaded. Matches Blink's behavior:
+// broken images still use the element's width/height attributes for layout.
+func getImgAttrFallbackInfo(node *LayoutInputNode) IntrinsicSizingInfo {
+	var w, h float64
+	if node.DOMNode != nil {
+		if val, ok := node.DOMNode.GetAttribute("width"); ok {
+			if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
+				w = parsed
+			}
+		}
+		if val, ok := node.DOMNode.GetAttribute("height"); ok {
+			if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
+				h = parsed
+			}
+		}
+	}
+	if w <= 0 && h <= 0 {
+		return IntrinsicSizingInfo{}
+	}
+	info := IntrinsicSizingInfo{
+		IntrinsicWidth:  w,
+		IntrinsicHeight: h,
+	}
+	if w > 0 && h > 0 {
+		info.AspectRatio = w / h
+		info.HasAspectRatio = true
+	}
+	return info
 }
 
 // svgIntrinsicInfo computes intrinsic sizing info for an SVG based on its

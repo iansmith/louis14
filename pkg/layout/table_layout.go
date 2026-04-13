@@ -218,6 +218,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		blockOffset += blockSpacing
 	}
 
+	// Track per-row info for height distribution and vertical-align.
+	type cellAlignInfo struct {
+		contentBlockSize float64 // original content-derived block size
+		style            *css.Style
+	}
+	type rowInfo struct {
+		height      float64
+		hasExplicit bool // true if any cell has explicit height
+		cellAligns  []cellAlignInfo
+	}
+	rowInfos := make([]rowInfo, len(rows))
+
 	firstRowHeight := 0.0
 	for rowIdx, row := range rows {
 		// Add inter-row spacing (block spacing) between rows.
@@ -285,7 +297,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
 			cellLogical := NewLogicalFragment(wdm, cellResult.Fragment)
 
-
 			// For orthogonal cells (e.g. vertical-rl in horizontal table):
 			// The cell's physical height (table block direction) comes from the cell's
 			// logical INLINE size in the cell's own WDM. However, for orthogonal cells
@@ -304,6 +315,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				rowHeight = cellBlockForRow
 			}
 
+			// Track if any cell has an explicit height (for distribution).
+			if cell.style != nil {
+				if _, ok := ResolveBlockSize(cell.style, wdm, ConstraintSpace{}, ComputeFragmentGeometry(cell.style, wdm)); ok {
+					rowInfos[rowIdx].hasExplicit = true
+				}
+			}
+
 			cellLayouts = append(cellLayouts, cellLayoutInfo{
 				result:       cellResult,
 				inlineOffset: cellInlineOffset,
@@ -314,10 +332,19 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		// Second pass: stretch cells to row height and add to rowBuilder.
+		// Vertical-align is applied after row height redistribution below.
 		for _, cl := range cellLayouts {
 			cellLogical := NewLogicalFragment(wdm, cl.result.Fragment)
-			if cellLogical.BlockSize() < rowHeight {
-				// Stretch cell to fill row height. Convert rowHeight to physical size.
+			contentBlockSize := cellLogical.BlockSize()
+
+			// Store original content block size for vertical-align pass.
+			rowInfos[rowIdx].cellAligns = append(rowInfos[rowIdx].cellAligns, cellAlignInfo{
+				contentBlockSize: contentBlockSize,
+				style:            cl.cell.style,
+			})
+
+			if contentBlockSize < rowHeight {
+				// Stretch cell to fill row height.
 				physSize := ToPhysicalSize(LogicalSize{
 					InlineSize: cellLogical.InlineSize(),
 					BlockSize:  rowHeight,
@@ -377,6 +404,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			BlockOffset:  blockOffset,
 		})
 
+		rowInfos[rowIdx].height = rowHeight
 		if rowIdx == 0 {
 			firstRowHeight = rowHeight
 		}
@@ -386,6 +414,166 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Add block-end spacing after last row.
 	if len(rows) > 0 && blockSpacing > 0 {
 		blockOffset += blockSpacing
+	}
+
+	// CSS 2.1 §17.5.3: If the table has an explicit height larger than the
+	// content-derived height, distribute the excess among auto-height rows.
+	// This matches Blink's behavior where auto-height rows expand to fill
+	// the remaining space in a table with an explicit height constraint.
+	if geom.BorderBoxSize.BlockSize != Indefinite && len(rows) > 0 {
+		explicitContentBlock := geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
+		if explicitContentBlock < 0 {
+			explicitContentBlock = 0
+		}
+		if explicitContentBlock > blockOffset {
+			excess := explicitContentBlock - blockOffset
+			// Count auto-height rows (no cell has an explicit CSS height).
+			autoCount := 0
+			for _, ri := range rowInfos {
+				if !ri.hasExplicit {
+					autoCount++
+				}
+			}
+			if autoCount == 0 {
+				autoCount = len(rowInfos)
+				for i := range rowInfos {
+					rowInfos[i].hasExplicit = false
+				}
+			}
+			perRow := excess / float64(autoCount)
+
+			// Redistribute: adjust row fragment block-sizes and reposition.
+			accumOffset := 0.0
+			// Find the first row's block offset (after spacing and captions).
+			firstRowBlockOff := 0.0
+			for _, ch := range builder.children {
+				if ch.fragment != nil && ch.fragment.Type == FragmentBox {
+					if ch.fragment.Node != nil && ch.fragment.Node.TagName == "tr" {
+						firstRowBlockOff = ch.offset.BlockOffset
+						break
+					}
+					if ch.fragment.LayoutNode != nil && ch.fragment.LayoutNode.Style() != nil {
+						d := ch.fragment.LayoutNode.Style().GetDisplay()
+						if d == css.DisplayTableRow {
+							firstRowBlockOff = ch.offset.BlockOffset
+							break
+						}
+					}
+				}
+			}
+			// Reposition row fragments with adjusted heights.
+			rowChildIdx := 0
+			accumOffset = firstRowBlockOff
+			for i, ch := range builder.children {
+				if rowChildIdx >= len(rowInfos) {
+					break
+				}
+				isRow := false
+				if ch.fragment != nil && ch.fragment.Node != nil && ch.fragment.Node.TagName == "tr" {
+					isRow = true
+				}
+				if !isRow && ch.fragment != nil && ch.fragment.LayoutNode != nil && ch.fragment.LayoutNode.Style() != nil {
+					d := ch.fragment.LayoutNode.Style().GetDisplay()
+					if d == css.DisplayTableRow {
+						isRow = true
+					}
+				}
+				if !isRow {
+					continue
+				}
+				newHeight := rowInfos[rowChildIdx].height
+				if !rowInfos[rowChildIdx].hasExplicit {
+					newHeight += perRow
+				}
+				builder.children[i].offset.BlockOffset = accumOffset
+				oldLogical := NewLogicalFragment(wdm, ch.fragment)
+				newSize := ToPhysicalSize(LogicalSize{
+					InlineSize: oldLogical.InlineSize(),
+					BlockSize:  newHeight,
+				}, wdm.WM)
+				builder.children[i].fragment.Size = newSize
+				accumOffset += newHeight
+				if rowChildIdx > 0 {
+					accumOffset += blockSpacing
+				}
+				rowChildIdx++
+			}
+			// Update blockOffset to reflect new total.
+			blockOffset = accumOffset
+			if blockSpacing > 0 {
+				blockOffset += blockSpacing
+			}
+		}
+	}
+
+	// CSS 2.1 §17.5.4: Apply vertical-align to cell content.
+	// This runs after row height redistribution so cells in expanded rows
+	// get correctly centered/aligned to their final row height.
+	{
+		rowChildIdx := 0
+		for i, ch := range builder.children {
+			if rowChildIdx >= len(rowInfos) {
+				break
+			}
+			isRow := false
+			if ch.fragment != nil && ch.fragment.Node != nil && ch.fragment.Node.TagName == "tr" {
+				isRow = true
+			}
+			if !isRow && ch.fragment != nil && ch.fragment.LayoutNode != nil && ch.fragment.LayoutNode.Style() != nil {
+				d := ch.fragment.LayoutNode.Style().GetDisplay()
+				if d == css.DisplayTableRow {
+					isRow = true
+				}
+			}
+			if !isRow {
+				continue
+			}
+
+			rowFrag := builder.children[i].fragment
+			rowLogical := NewLogicalFragment(wdm, rowFrag)
+			finalRowHeight := rowLogical.BlockSize()
+
+			for ci, ca := range rowInfos[rowChildIdx].cellAligns {
+				if ci >= len(rowFrag.Children) {
+					break
+				}
+				if ca.contentBlockSize >= finalRowHeight {
+					continue // cell fills or exceeds row — no alignment needed
+				}
+
+				// Stretch cell fragment to final row height.
+				cellFrag := rowFrag.Children[ci].Fragment
+				cellLogical := NewLogicalFragment(wdm, cellFrag)
+				cellFrag.Size = ToPhysicalSize(LogicalSize{
+					InlineSize: cellLogical.InlineSize(),
+					BlockSize:  finalRowHeight,
+				}, wdm.WM)
+
+				va := css.VerticalAlignMiddle // default for td/th
+				if ca.style != nil {
+					va = ca.style.GetVerticalAlign()
+				}
+				var blockShift float64
+				switch va {
+				case css.VerticalAlignMiddle:
+					blockShift = (finalRowHeight - ca.contentBlockSize) / 2
+				case css.VerticalAlignBottom:
+					blockShift = finalRowHeight - ca.contentBlockSize
+				}
+					if blockShift > 0 {
+					conv := NewConverter(wdm, cellFrag.Size)
+					physShift := conv.ToPhysicalOffset(LogicalOffset{
+						InlineOffset: 0,
+						BlockOffset:  blockShift,
+					}, PhysicalSize{})
+					for cci := range cellFrag.Children {
+						cellFrag.Children[cci].Offset.X += physShift.X
+						cellFrag.Children[cci].Offset.Y += physShift.Y
+					}
+				}
+			}
+			rowChildIdx++
+		}
 	}
 
 	// Layout bottom (block-end) captions.
