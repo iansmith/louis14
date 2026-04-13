@@ -1589,7 +1589,29 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 						hasItemCross = true
 					}
 				}
+				// Clamp cross-size by min/max constraints before transferring.
 				if hasItemCross {
+					if mainIsItemInline {
+						minCross := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom)
+						if itemCrossContent < minCross {
+							itemCrossContent = minCross
+						}
+						if maxCross, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+							if itemCrossContent > maxCross {
+								itemCrossContent = maxCross
+							}
+						}
+					} else {
+						minCross := ResolveMinInlineSize(style, childWDM, crossItemSpace, childGeom)
+						if itemCrossContent < minCross {
+							itemCrossContent = minCross
+						}
+						if maxCross, ok := ResolveMaxInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
+							if itemCrossContent > maxCross {
+								itemCrossContent = maxCross
+							}
+						}
+					}
 					if mainIsItemInline && ar.Height > 0 {
 						return itemCrossContent * ar.Width / ar.Height
 					} else if !mainIsItemInline && ar.Width > 0 {
