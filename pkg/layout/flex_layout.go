@@ -2403,22 +2403,28 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		// CSS cross-size (e.g., height: 100px). Per CSS 2.1 §10.5, percentage heights
 		// resolve against the containing block's content height, which is the item's
 		// explicit CSS height if set.
+		// Determine the percentage resolution block-size for descendants.
+		// Per CSS 2.1 §10.5, percentage heights resolve against the containing
+		// block's content height. For flex items, this is the item's own CSS height
+		// (if explicit), NOT the line's cross-size. The line cross-size controls
+		// available space but the item's explicit height controls percentage resolution.
 		pctBlockSize := 0.0
-		if crossSize != Indefinite {
-			pctBlockSize = crossSize
-		} else {
-			// Check for explicit CSS block-size on the item.
-			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build()
-			if explicit, ok := ResolveBlockSize(item.style, childWDM, itemSpace, item.geom); ok {
-				pctBlockSize = explicit
-				// Also set the available block-size so IsBlockSizeIndefinite()
+		// Always check for an explicit CSS block-size on the item first.
+		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
+			Build()
+		if explicit, ok := ResolveBlockSize(item.style, childWDM, itemSpace, item.geom); ok {
+			pctBlockSize = explicit
+			if crossSize == Indefinite {
+				// First pass: also set available block-size so IsBlockSizeIndefinite()
 				// returns false and inner percentage heights can resolve.
 				avail.BlockSize = explicit + item.crossBorderPadding()
 			}
+		} else if crossSize != Indefinite {
+			// No explicit CSS height; use the line's cross-size for percentage resolution.
+			pctBlockSize = crossSize
 		}
 		b.SetAvailableSize(avail)
 		b.SetPercentageResolutionSize(LogicalSize{
