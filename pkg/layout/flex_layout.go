@@ -1529,14 +1529,25 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				}
 			}
 			// §9.2 aspect-ratio fallback: when the item has a definite cross-size
-			// and a CSS aspect-ratio, derive the flex basis (main-size) from the
-			// cross-size × ratio. Only applies to flex-basis: auto — content sizing
-			// uses max-content which is independent of cross-size.
+			// and an aspect ratio (CSS or intrinsic), derive the flex basis
+			// (main-size) from the cross-size × ratio. Only applies to flex-basis:
+			// auto — content sizing uses max-content which is independent of
+			// cross-size.
 			//
 			// The item's definite cross-size is (in priority order):
 			//  1. Its explicit CSS cross-size property (e.g. width in column flex).
 			//  2. Container cross-size, only if the item will stretch to fill it.
-			if ar := style.GetAspectRatio(); ar.IsSet {
+			ar := style.GetAspectRatio()
+			if !ar.IsSet && child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+				info := GetIntrinsicSizingInfo(fla.ctx, child)
+				if info.HasAspectRatio && info.AspectRatio > 0 {
+					ar = css.AspectRatio{IsSet: true, Width: info.AspectRatio, Height: 1}
+					if childWDM.IsVertical() {
+						ar = css.AspectRatio{IsSet: true, Width: 1, Height: info.AspectRatio}
+					}
+				}
+			}
+			if ar.IsSet {
 				var itemCrossContent float64
 				var hasItemCross bool
 				crossItemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
