@@ -1834,75 +1834,23 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	contentInlineSize float64,
 	isRow bool,
 ) float64 {
-	// For replaced elements, flex-basis:content means the max-content size.
-	// We must ignore the item's CSS main-size property, but respect its CSS
-	// cross-size property (which can constrain the main-size via aspect ratio).
-	// ComputeReplacedSize consults CSS width/height directly, so we replicate
-	// the logic here, skipping the main-size property. This matches Blink's
-	// IntrinsicSize() path with cross-size transfer through aspect ratio.
+	// For replaced elements, use intrinsic sizes directly. flex-basis:content
+	// must ignore the item's CSS main-size, but ComputeReplacedSize (used by
+	// computeContentMinMaxSizes) consults CSS width/height. Use intrinsic
+	// dimensions instead, matching Blink's IntrinsicSize() path.
 	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
 		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
-
-		// Determine intrinsic main and cross dimensions.
-		var intrinsicMain, intrinsicCross float64
 		if mainIsItemInline {
 			if childWDM.IsVertical() {
-				intrinsicMain = info.IntrinsicHeight
-				intrinsicCross = info.IntrinsicWidth
-			} else {
-				intrinsicMain = info.IntrinsicWidth
-				intrinsicCross = info.IntrinsicHeight
+				return info.IntrinsicHeight
 			}
-		} else {
-			if childWDM.IsVertical() {
-				intrinsicMain = info.IntrinsicWidth
-				intrinsicCross = info.IntrinsicHeight
-			} else {
-				intrinsicMain = info.IntrinsicHeight
-				intrinsicCross = info.IntrinsicWidth
-			}
+			return info.IntrinsicWidth
 		}
-
-		// Check for explicit CSS cross-size. If the item has an explicit cross-size
-		// and an intrinsic aspect ratio, derive the main-size from it.
-		if info.HasAspectRatio && info.AspectRatio > 0 {
-			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build()
-			if mainIsItemInline {
-				// Main=inline, cross=block. Check for explicit CSS block-size.
-				if explicitCross, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-					// Derive inline main from block cross via aspect ratio.
-					// aspect ratio = inline/block (logical).
-					logicalRatio := info.AspectRatio
-					if childWDM.IsVertical() {
-						logicalRatio = 1.0 / info.AspectRatio
-					}
-					if logicalRatio > 0 {
-						return explicitCross * logicalRatio
-					}
-				}
-			} else {
-				// Main=block, cross=inline. Check for explicit CSS inline-size.
-				if explicitCross, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-					// Derive block main from inline cross via aspect ratio.
-					logicalRatio := info.AspectRatio
-					if childWDM.IsVertical() {
-						logicalRatio = 1.0 / info.AspectRatio
-					}
-					if logicalRatio > 0 {
-						return explicitCross / logicalRatio
-					}
-				}
-			}
+		if childWDM.IsVertical() {
+			return info.IntrinsicWidth
 		}
-
-		// No cross-size constraint or no aspect ratio: use intrinsic main dimension.
-		_ = intrinsicCross
-		return intrinsicMain
+		return info.IntrinsicHeight
 	}
 	if isRow {
 		// Row flex: main axis = inline. Use computeContentMinMaxSizes which
