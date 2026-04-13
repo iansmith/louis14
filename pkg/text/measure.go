@@ -62,6 +62,43 @@ type fontIDKey struct {
 	size int32
 }
 
+// fontPathToFamilyVariant extracts a logical family name and variant from a
+// font file path. For example:
+//
+//	"/.../AtkinsonHyperlegible-Bold.ttf" → ("AtkinsonHyperlegible", VariantBold)
+//	"/.../Ahem.ttf" → ("Ahem", VariantRegular)
+func fontPathToFamilyVariant(fontPath string) (string, int32) {
+	base := filepath.Base(fontPath)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+
+	variant := int32(textshape.VariantRegular)
+	family := name
+
+	if idx := strings.LastIndex(name, "-"); idx > 0 {
+		suffix := strings.ToLower(name[idx+1:])
+		family = name[:idx]
+		switch suffix {
+		case "bold":
+			variant = textshape.VariantBold
+		case "italic":
+			variant = textshape.VariantItalic
+		case "bolditalic":
+			variant = textshape.VariantBoldItalic
+		case "light":
+			variant = textshape.VariantLight
+		case "condensed":
+			variant = textshape.VariantCondensed
+		case "regular":
+			variant = textshape.VariantRegular
+		default:
+			// Unknown suffix — treat entire name as family.
+			family = name
+		}
+	}
+	return family, variant
+}
+
 // openFont returns the FontMetrics for the given path+size, opening it if needed.
 // Returns zero FontMetrics with FontID=-1 on error.
 func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
@@ -72,9 +109,11 @@ func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
 	if m, ok := fontIDCache[key]; ok {
 		return m
 	}
+	family, variant := fontPathToFamilyVariant(fontPath)
 	metrics, err := getLayout().OpenFont(textshape.OpenFontRequest{
-		Path: fontPath,
-		Size: size,
+		Family:  family,
+		Variant: variant,
+		Size:    size,
 	})
 	if err != nil {
 		return textshape.FontMetrics{FontID: -1}
@@ -186,51 +225,52 @@ func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) stri
 	switch strings.ToLower(family) {
 	case "helvetica", "helvetica neue", "arial",
 		"liberation sans", "nimbus sans", "sans-serif":
-		return liberationSansPath(dir, bold, italic)
-	case "times", "times new roman", "liberation serif", "serif":
-		return liberationSerifPath(dir, bold, italic)
+		return latinModernSansPath(dir, bold, italic)
+	case "times", "times new roman", "liberation serif",
+		"latin modern roman", "computer modern", "serif":
+		return latinModernRomanPath(dir, bold, italic)
 	case "courier", "courier new", "liberation mono", "monospace":
-		return liberationMonoPath(dir, bold, italic)
+		return atkinsonMonoPath(dir, bold, italic)
 	}
 	return ""
 }
 
-func liberationSansPath(dir string, bold, italic bool) string {
+func latinModernSansPath(dir string, bold, italic bool) string {
 	switch {
 	case bold && italic:
-		return filepath.Join(dir, "LiberationSans-BoldItalic.ttf")
+		return filepath.Join(dir, "lmsans10-boldoblique.otf")
 	case bold:
-		return filepath.Join(dir, "LiberationSans-Bold.ttf")
+		return filepath.Join(dir, "lmsans10-bold.otf")
 	case italic:
-		return filepath.Join(dir, "LiberationSans-Italic.ttf")
+		return filepath.Join(dir, "lmsans10-oblique.otf")
 	default:
-		return filepath.Join(dir, "LiberationSans-Regular.ttf")
+		return filepath.Join(dir, "lmsans10-regular.otf")
 	}
 }
 
-func liberationSerifPath(dir string, bold, italic bool) string {
+func latinModernRomanPath(dir string, bold, italic bool) string {
 	switch {
 	case bold && italic:
-		return filepath.Join(dir, "LiberationSerif-BoldItalic.ttf")
+		return filepath.Join(dir, "lmroman10-bolditalic.otf")
 	case bold:
-		return filepath.Join(dir, "LiberationSerif-Bold.ttf")
+		return filepath.Join(dir, "lmroman10-bold.otf")
 	case italic:
-		return filepath.Join(dir, "LiberationSerif-Italic.ttf")
+		return filepath.Join(dir, "lmroman10-italic.otf")
 	default:
-		return filepath.Join(dir, "LiberationSerif-Regular.ttf")
+		return filepath.Join(dir, "lmroman10-regular.otf")
 	}
 }
 
-func liberationMonoPath(dir string, bold, italic bool) string {
+func atkinsonMonoPath(dir string, bold, italic bool) string {
 	switch {
 	case bold && italic:
-		return filepath.Join(dir, "LiberationMono-BoldItalic.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-BoldItalic.otf")
 	case bold:
-		return filepath.Join(dir, "LiberationMono-Bold.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-Bold.otf")
 	case italic:
-		return filepath.Join(dir, "LiberationMono-Italic.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-RegularItalic.otf")
 	default:
-		return filepath.Join(dir, "LiberationMono-Regular.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-Regular.otf")
 	}
 }
 
