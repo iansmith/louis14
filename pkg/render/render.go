@@ -170,14 +170,16 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 
 // promoteBodyCanvasBackground searches the root layer's children for body
 // and sets PaintsCanvasBackground=true on body's layer, per CSS 2.1 §14.2.
-// When body's background is promoted to the canvas, its background-image
-// positioning area is the ICB (viewport), not body's own box.
+// CSS Backgrounds Level 3 §2.11.2: the positioning area for the promoted
+// body background is the root element's padding box.
 func (r *Renderer) promoteBodyCanvasBackground(rootLayer *PaintLayer) {
+	rootBox := rootLayer.Box
 	// Search FlowChildren first (most common case).
 	for _, childLayer := range rootLayer.FlowChildren {
 		if childLayer.Box != nil && childLayer.Box.Node != nil &&
 			childLayer.Box.Node.TagName == "body" {
 			childLayer.PaintsCanvasBackground = true
+			childLayer.CanvasBackgroundRootBox = rootBox
 			return
 		}
 	}
@@ -186,6 +188,7 @@ func (r *Renderer) promoteBodyCanvasBackground(rootLayer *PaintLayer) {
 		if childLayer.Box != nil && childLayer.Box.Node != nil &&
 			childLayer.Box.Node.TagName == "body" {
 			childLayer.PaintsCanvasBackground = true
+			childLayer.CanvasBackgroundRootBox = rootBox
 			return
 		}
 	}
@@ -193,6 +196,7 @@ func (r *Renderer) promoteBodyCanvasBackground(rootLayer *PaintLayer) {
 		if childLayer.Box != nil && childLayer.Box.Node != nil &&
 			childLayer.Box.Node.TagName == "body" {
 			childLayer.PaintsCanvasBackground = true
+			childLayer.CanvasBackgroundRootBox = rootBox
 			return
 		}
 	}
@@ -200,6 +204,7 @@ func (r *Renderer) promoteBodyCanvasBackground(rootLayer *PaintLayer) {
 		if childLayer.Box != nil && childLayer.Box.Node != nil &&
 			childLayer.Box.Node.TagName == "body" {
 			childLayer.PaintsCanvasBackground = true
+			childLayer.CanvasBackgroundRootBox = rootBox
 			return
 		}
 	}
@@ -1506,18 +1511,24 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	// For background-attachment:fixed, the positioning area is the viewport
 	// (CSS3 Backgrounds §3.5), not the element's box.
 	//
-	// CSS 2.1 §14.2 / CSS Backgrounds §7.2: When PaintsCanvasBackground is set,
-	// the painting area extends to the canvas, but the positioning area depends
-	// on whether the background is on the root or body:
-	// - Root element with attachment:scroll → positioning area = root's own box
-	//   (per background-origin, default padding-box)
-	// - Body (promoted to canvas) → positioning area = ICB (viewport)
+	// CSS 2.1 §14.2 / CSS Backgrounds Level 3 §2.11.2:
+	// When PaintsCanvasBackground is set, the painting area extends to the
+	// canvas, but the positioning area depends on the element:
+	// - Root element: positioning area = root's own box (per background-origin)
+	// - Body (promoted to canvas): positioning area = root element's padding box
+	//   (§2.11.2: "the background positioning area of the root is the
+	//   background positioning area that would be used if the background
+	//   were specified on the body element" — but since it's promoted to
+	//   the root, the positioning area is the root's, not body's)
 	// - Any element with attachment:fixed → positioning area = viewport
 	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
-	// Detect if this is a promoted body background (not the root element itself).
-	isPromotedBody := layer.PaintsCanvasBackground && box.Node != nil && box.Node.TagName == "body"
+	// For promoted body backgrounds, use the root element's box for positioning.
+	posBox := box
+	if layer.CanvasBackgroundRootBox != nil {
+		posBox = layer.CanvasBackgroundRootBox
+	}
 	var originX, originY, originW, originH float64
-	if isFixed || isPromotedBody {
+	if isFixed {
 		bounds := r.target.Bounds()
 		originX = float64(bounds.Min.X)
 		originY = float64(bounds.Min.Y)
@@ -1526,20 +1537,20 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	} else {
 		switch bg.Origin {
 		case css.BackgroundOriginBorderBox:
-			originX = math.Round(box.X)
-			originY = math.Round(box.Y)
-			originW = math.Round(box.X+box.Width) - originX
-			originH = math.Round(box.Y+box.Height) - originY
+			originX = math.Round(posBox.X)
+			originY = math.Round(posBox.Y)
+			originW = math.Round(posBox.X+posBox.Width) - originX
+			originH = math.Round(posBox.Y+posBox.Height) - originY
 		case css.BackgroundOriginContentBox:
-			originX = math.Round(box.X + box.Border.Left + box.Padding.Left)
-			originY = math.Round(box.Y + box.Border.Top + box.Padding.Top)
-			originW = math.Round(box.X+box.Width-box.Border.Right-box.Padding.Right) - originX
-			originH = math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - originY
+			originX = math.Round(posBox.X + posBox.Border.Left + posBox.Padding.Left)
+			originY = math.Round(posBox.Y + posBox.Border.Top + posBox.Padding.Top)
+			originW = math.Round(posBox.X+posBox.Width-posBox.Border.Right-posBox.Padding.Right) - originX
+			originH = math.Round(posBox.Y+posBox.Height-posBox.Border.Bottom-posBox.Padding.Bottom) - originY
 		default: // padding-box (default)
-			originX = math.Round(box.X + box.Border.Left)
-			originY = math.Round(box.Y + box.Border.Top)
-			originW = math.Round(box.X+box.Width-box.Border.Right) - originX
-			originH = math.Round(box.Y+box.Height-box.Border.Bottom) - originY
+			originX = math.Round(posBox.X + posBox.Border.Left)
+			originY = math.Round(posBox.Y + posBox.Border.Top)
+			originW = math.Round(posBox.X+posBox.Width-posBox.Border.Right) - originX
+			originH = math.Round(posBox.Y+posBox.Height-posBox.Border.Bottom) - originY
 		}
 	}
 	if originW < 0 {

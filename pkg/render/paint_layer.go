@@ -170,6 +170,12 @@ type PaintLayer struct {
 	// paints the entire canvas, not just its own box.
 	PaintsCanvasBackground bool
 
+	// CanvasBackgroundRootBox is set on a promoted body layer to store the
+	// root element's box. Per CSS Backgrounds Level 3 §2.11.2, when the
+	// body's background is promoted to the canvas, the positioning area is
+	// the root element's padding box, not the body's.
+	CanvasBackgroundRootBox *layout.Box
+
 	// empty-cells: hide — skip background/border painting for empty table cells
 	// (CSS 2.1 §17.6.1.1, only in separate border model).
 	EmptyCellHide bool
