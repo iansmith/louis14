@@ -206,6 +206,14 @@ func (es *ExclusionSpace) FindFloatPosition(side css.FloatType, floatInlineSize,
 			}
 		}
 
+		// If no exclusion ends past the current position, the float
+		// simply doesn't fit in the available inline size. Per CSS 2.1
+		// §9.5.1 rule 6, place it as high as possible — further scanning
+		// won't find more room since there are no exclusions to clear.
+		if !foundNext {
+			return currentBlock
+		}
+
 		currentBlock = nextBlock
 
 		if currentBlock > startBlockOffset+10000 {

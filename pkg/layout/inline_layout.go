@@ -1223,13 +1223,20 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 // are physical and independent of direction.
 func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm WritingDirectionMode) float64 {
 	slack := availableInline - line.Width
+
+	// Center alignment returns slack/2 even when negative (content overflows),
+	// matching Blink's behavior. This ensures text is centered symmetrically
+	// regardless of whether it fits in the container.
+	switch line.TextAlign {
+	case "center", "-webkit-center":
+		return slack / 2
+	}
+
 	if slack <= 0 {
 		return 0
 	}
 
 	switch line.TextAlign {
-	case "center", "-webkit-center":
-		return slack / 2
 	case "right":
 		return slack
 	case "end":
