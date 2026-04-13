@@ -398,6 +398,17 @@ func FontDescentFromFont(fontSize float64, fontPath string) float64 {
 	return float64(m.Descent) / 64.0
 }
 
+// FontHeightFromFont returns the font's recommended line height in pixels.
+// This is the font's own hhea ascent + descent (+ line gap), which is
+// the correct value for CSS line-height: normal.
+func FontHeightFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return fontSize * 1.2
+	}
+	return float64(m.Height) / 64.0
+}
+
 // MeasureTextVerticalFromFont returns the inline advance of text in a vertical
 // writing mode using the given font path. Each upright glyph advances by fontSize.
 func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance float64) {

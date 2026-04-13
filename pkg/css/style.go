@@ -4657,6 +4657,17 @@ func (s *Style) GetVerticalAlignOffset() float64 {
 // CSS line-height accepts unitless numbers (e.g., "1.5") meaning a multiplier
 // of the current font-size, unlike other CSS length properties where bare
 // numbers are invalid.
+// IsLineHeightNormal returns true when line-height is 'normal' (the initial value).
+// When true, the used line-height should come from the font's own metrics
+// (ascent + descent) rather than a fixed multiplier.
+func (s *Style) IsLineHeightNormal() bool {
+	val, ok := s.Get("line-height")
+	if !ok {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(val), "normal")
+}
+
 func (s *Style) GetLineHeight() float64 {
 	val, ok := s.Get("line-height")
 	if !ok {

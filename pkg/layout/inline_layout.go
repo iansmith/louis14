@@ -1056,7 +1056,14 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			strutAscent = text.FontAscentFromFont(fontSize, fontPath)
 			strutDescent = text.FontDescentFromFont(fontSize, fontPath)
 		}
+		// CSS 2.1 §10.8.1: line-height: normal uses the font's recommended
+		// line height rather than a fixed 1.2× multiplier. This ensures the
+		// strut height matches the font's built-in metrics.
 		lineHt := parentStyle.GetLineHeight()
+		if parentStyle.IsLineHeightNormal() && !centralBaseline {
+			fontPath := resolveFontPath(parentStyle, fonts)
+			lineHt = text.FontHeightFromFont(fontSize, fontPath)
+		}
 		halfLeading := (lineHt - (strutAscent + strutDescent)) / 2
 		strutAscent += halfLeading
 		strutDescent += halfLeading
@@ -1093,6 +1100,10 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
 			lineHt := r.Item.Style.GetLineHeight()
+			if r.Item.Style.IsLineHeightNormal() && !centralBaseline {
+				fontPath := resolveFontPath(r.Item.Style, fonts)
+				lineHt = text.FontHeightFromFont(fontSize, fontPath)
+			}
 			halfLeading := (lineHt - (ascent + descent)) / 2
 			ascent += halfLeading
 			descent += halfLeading
@@ -1129,6 +1140,10 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// and reduces the inline box's ascent/descent contribution.
 			if r.Item.Style != nil {
 				lineHt := r.Item.Style.GetLineHeight()
+				if r.Item.Style.IsLineHeightNormal() && !centralBaseline {
+					fontPath := resolveFontPath(r.Item.Style, fonts)
+					lineHt = text.FontHeightFromFont(fontSize, fontPath)
+				}
 				halfLeading := (lineHt - (ascent + descent)) / 2
 				ascent += halfLeading
 				descent += halfLeading
