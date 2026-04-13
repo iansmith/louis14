@@ -119,7 +119,21 @@ func (b *Box) CreatesStackingContext() bool {
 			return true
 		}
 	}
+	// CSS Flexbox §4.3: A flex item with an explicit z-index creates a
+	// stacking context even if position is static.
+	if b.IsFlexItem() && b.Style.HasExplicitZIndex() {
+		return true
+	}
 	return false
+}
+
+// IsFlexItem returns true if this box is a child of a flex container.
+func (b *Box) IsFlexItem() bool {
+	if b.Parent == nil || b.Parent.Style == nil {
+		return false
+	}
+	d := b.Parent.Style.GetDisplay()
+	return d == css.DisplayFlex || d == css.DisplayInlineFlex
 }
 
 // LineBox represents a line in an inline formatting context.

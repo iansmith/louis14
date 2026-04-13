@@ -639,6 +639,16 @@ func computeListItemIndex(box *layout.Box) int {
 // children at their correct DOM position while keeping in-flow children
 // (including anonymous boxes) in their original order.
 func domOrderedChildren(box *layout.Box) []*layout.Box {
+	// Flex containers: children are already in order-modified document order
+	// from flex layout. CSS Flexbox §4.3 says flex items paint in this order,
+	// NOT in DOM order. Skip the DOM reordering.
+	if box.Style != nil {
+		d := box.Style.GetDisplay()
+		if d == css.DisplayFlex || d == css.DisplayInlineFlex {
+			return box.Children
+		}
+	}
+
 	lin := box.LayoutNode
 	if lin == nil {
 		return box.Children
@@ -730,6 +740,25 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 
 		childLayer := newPaintLayer(child)
 		isPositioned := child.Position != css.PositionStatic && child.Position != ""
+
+		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
+		// contexts even if position is static. They participate in the nearest
+		// ancestor stacking context's z-lists, just like positioned elements
+		// with explicit z-index.
+		if !isPositioned && child.IsFlexItem() && child.Style.HasExplicitZIndex() {
+			z := child.ZIndex
+			switch {
+			case z < 0:
+				currentSC.NegativeZ = append(currentSC.NegativeZ, childLayer)
+			case z > 0:
+				currentSC.PositiveZ = append(currentSC.PositiveZ, childLayer)
+			default:
+				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+			}
+			// New stacking context — descendants collected by childLayer.
+			buildPaintSubtree(child, childLayer, childLayer)
+			continue
+		}
 
 		if !isPositioned {
 			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
