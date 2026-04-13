@@ -1054,7 +1054,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		} else {
 			fontPath := resolveFontPath(parentStyle, fonts)
 			strutAscent = text.FontAscentFromFont(fontSize, fontPath)
-			strutDescent = fontSize - strutAscent
+			strutDescent = text.FontDescentFromFont(fontSize, fontPath)
 		}
 		lineHt := parentStyle.GetLineHeight()
 		halfLeading := (lineHt - (strutAscent + strutDescent)) / 2
@@ -1087,7 +1087,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
 				ascent = text.FontAscentFromFont(fontSize, fontPath)
-				descent = fontSize - ascent
+				descent = text.FontDescentFromFont(fontSize, fontPath)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
@@ -1122,7 +1122,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
 				ascent = text.FontAscentFromFont(fontSize, fontPath)
-				descent = fontSize - ascent
+				descent = text.FontDescentFromFont(fontSize, fontPath)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid

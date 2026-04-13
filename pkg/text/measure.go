@@ -388,6 +388,16 @@ func FontAscentFromFont(fontSize float64, fontPath string) float64 {
 	return float64(m.Ascent) / 64.0
 }
 
+// FontDescentFromFont returns the font descent in pixels for the given font path.
+// Descent is the distance from the baseline to the bottom of the em box (positive value).
+func FontDescentFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return fontSize * 0.2
+	}
+	return float64(m.Descent) / 64.0
+}
+
 // MeasureTextVerticalFromFont returns the inline advance of text in a vertical
 // writing mode using the given font path. Each upright glyph advances by fontSize.
 func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance float64) {
