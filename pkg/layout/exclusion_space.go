@@ -220,3 +220,25 @@ func (es *ExclusionSpace) FindFloatPosition(side css.FloatType, floatInlineSize,
 func (es *ExclusionSpace) IsEmpty() bool {
 	return es == nil || len(es.exclusions) == 0
 }
+
+// OffsetBlockPosition returns a new ExclusionSpace with all exclusion block
+// offsets shifted by -delta. This translates the exclusion space from BFC-origin
+// coordinates to a child's local coordinate system, where the child starts at
+// `delta` in the parent's block direction.
+//
+// For example, if a float occupies BFC block [0, 20) and a child element starts
+// at BFC block 20, calling OffsetBlockPosition(20) shifts the float to [-20, 0)
+// in the child's coordinates, so it no longer affects the child's content.
+func (es *ExclusionSpace) OffsetBlockPosition(delta float64) *ExclusionSpace {
+	if es == nil || delta == 0 {
+		return es
+	}
+	newES := &ExclusionSpace{
+		exclusions: make([]Exclusion, len(es.exclusions)),
+	}
+	for i, e := range es.exclusions {
+		e.BlockOffset -= delta
+		newES.exclusions[i] = e
+	}
+	return newES
+}

@@ -101,6 +101,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	contentInlineSize float64,
 	exclusionSpace *ExclusionSpace,
 	builder *BoxFragmentBuilder,
+	bfcBlockOrigin float64,
 ) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64) {
 	// Phase 1: Collect inline items from the layout subtree.
 	itemsData := CollectInlines(bla.node)
@@ -203,7 +204,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				logicalSide = css.FloatLeft
 			}
 		}
-		floatBlockOffset := exclusionSpace.FindFloatPosition(logicalSide, floatInlineSize, floatBlockSize, contentInlineSize, 0)
+		floatBlockOffset := exclusionSpace.FindFloatPosition(logicalSide, floatInlineSize, floatBlockSize, contentInlineSize, bfcBlockOrigin)
 		var floatInlineOffset float64
 		if logicalSide == css.FloatLeft {
 			startOff, _ := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
@@ -212,13 +213,16 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			_, endOff := exclusionSpace.FindAvailableInlineSize(floatBlockOffset, floatBlockSize, contentInlineSize)
 			floatInlineOffset = contentInlineSize - endOff - childMargins.InlineEnd - childLogical.InlineSize()
 		}
+		// The float's position and exclusion are in BFC coordinates. Convert
+		// the block offset to local coordinates for the fragment offset.
+		localFloatBlock := floatBlockOffset - bfcBlockOrigin
 		builder.AddChild(childResult.Fragment, LogicalOffset{
 			InlineOffset: floatInlineOffset,
-			BlockOffset:  floatBlockOffset + childMargins.BlockStart,
+			BlockOffset:  localFloatBlock + childMargins.BlockStart,
 		})
 		exclusionSpace = exclusionSpace.Add(Exclusion{
 			InlineOffset: floatInlineOffset - childMargins.InlineStart,
-			BlockOffset:  floatBlockOffset,
+			BlockOffset:  floatBlockOffset, // BFC-relative
 			InlineSize:   floatInlineSize,
 			BlockSize:    floatBlockSize,
 			Side:         PhysicalFloatToExclusionSide(floatSide, wdm),
@@ -338,10 +342,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	for {
 		// CSS 2.1 §9.5: account for floats when computing available inline size.
 		// FindAvailableInlineSize returns the space consumed by left/right floats
-		// at the current block position.
+		// at the current block position. The exclusion space uses BFC-relative
+		// coordinates, so we add bfcBlockOrigin to translate local offsets.
 		floatStart, floatEnd := 0.0, 0.0
+		bfcBlock := bfcBlockOrigin + blockOffset
 		if exclusionSpace != nil {
-			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
+			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, contentInlineSize)
 		}
 		lineAvailableInline := contentInlineSize - floatStart - floatEnd
 
@@ -350,10 +356,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// force-fitting content into zero-width space and then clearing,
 		// which produces incorrect line breaks.
 		if lineAvailableInline < 1 && exclusionSpace != nil && (floatStart > 0 || floatEnd > 0) {
-			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset, wdm)
-			if clearedBlock > blockOffset {
-				blockOffset = clearedBlock
-				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(blockOffset, 0, contentInlineSize)
+			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcBlock, wdm)
+			if clearedBlock > bfcBlock {
+				blockOffset = clearedBlock - bfcBlockOrigin
+				bfcBlock = clearedBlock
+				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, contentInlineSize)
 				lineAvailableInline = contentInlineSize - floatStart - floatEnd
 			}
 		}
@@ -415,7 +422,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// shift the block offset below the float and use the full width.
 		floatReducedWidth := contentInlineSize - floatStart - floatEnd
 		if (floatStart > 0 || floatEnd > 0) && line.Width > floatReducedWidth && exclusionSpace != nil {
-			blockOffset = exclusionSpace.ClearanceOffset(css.ClearBoth, blockOffset, wdm)
+			clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcBlockOrigin+blockOffset, wdm)
+			blockOffset = clearedBfc - bfcBlockOrigin
 			lineInlineOffset = 0
 			lineAvailableInline = contentInlineSize
 		}
