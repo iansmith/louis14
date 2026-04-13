@@ -779,13 +779,37 @@ func findAncestorDOMIndex(lin, parentLIN *layout.LayoutInputNode) int {
 	return -1
 }
 
+// isFlexContainer returns true if box is a flex or inline-flex container.
+func isFlexContainer(box *layout.Box) bool {
+	if box.Style == nil {
+		return false
+	}
+	d := box.Style.GetDisplay()
+	return d == css.DisplayFlex || d == css.DisplayInlineFlex
+}
+
+// paintOrderChildren returns the children of box in the order they should
+// be painted. For flex containers, box.Children is already in order-modified
+// document order (sorted by the CSS order property during flex layout).
+// For other boxes, DOM tree order is used.
+func paintOrderChildren(box *layout.Box) []*layout.Box {
+	if isFlexContainer(box) {
+		// Flex layout produces children in order-modified document order
+		// (sorted by CSS order property, ties broken by DOM order).
+		// Use this order directly — do NOT re-sort to DOM order.
+		return box.Children
+	}
+	return domOrderedChildren(box)
+}
+
 // buildPaintSubtree walks the Box tree, creating PaintLayers and assigning
 // them to the correct parent/stacking-context lists.
 //
 // parentLayer: the PaintLayer that owns FlowChildren at this level.
 // currentSC:   the nearest ancestor stacking context's PaintLayer.
 func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
-	for _, child := range domOrderedChildren(box) {
+	flexParent := isFlexContainer(box)
+	for _, child := range paintOrderChildren(box) {
 		if child.Style == nil {
 			// Unstyled box (line box, text run) — no PaintLayer.
 			// Recurse to find any styled descendants.
@@ -795,6 +819,25 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 
 		childLayer := newPaintLayer(child)
 		isPositioned := child.Position != css.PositionStatic && child.Position != ""
+
+		// CSS Flexbox §4.3: Flex items with an explicit z-index create
+		// stacking contexts and participate in z-index sorting, even when
+		// position:static. This is unlike normal flow where z-index only
+		// applies to positioned elements.
+		if flexParent && !isPositioned && child.Style.HasExplicitZIndex() {
+			z := child.ZIndex
+			switch {
+			case z < 0:
+				currentSC.NegativeZ = append(currentSC.NegativeZ, childLayer)
+			case z > 0:
+				currentSC.PositiveZ = append(currentSC.PositiveZ, childLayer)
+			default:
+				currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+			}
+			// New stacking context — descendants collected by childLayer.
+			buildPaintSubtree(child, childLayer, childLayer)
+			continue
+		}
 
 		if !isPositioned {
 			// CSS Flexbox §4.3: flex items with explicit z-index create stacking
