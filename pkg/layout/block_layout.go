@@ -277,7 +277,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// box of any floats in the same BFC. If the child establishes a
 			// new BFC and its resolved inline-size doesn't fit beside the
 			// floats, push it below them.
-			if isChildNewFC && (floatStartOff > 0 || floatEndOff > 0) {
+			//
+			// Per Blink's LayoutNewFormattingContext: for orthogonal children,
+			// the child's inline dimension is perpendicular to the parent's
+			// inline axis (where floats live). The child always "fits" beside
+			// floats in the parent's inline direction — its inline-size uses
+			// the ICB as a fallback. Float offsets only constrain the parent's
+			// inline axis, which becomes the child's available block-size
+			// (handled via the constraint space). So skip the float-avoidance
+			// push for orthogonal children.
+			isOrthogonal := wdm.IsOrthogonalTo(childWDM)
+			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
 				// Build a temporary constraint space to resolve the child's inline-size.
 				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
@@ -312,7 +322,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			blockForChild := childAvailableBlock
-			if wdm.IsOrthogonalTo(childWDM) {
+			if isOrthogonal {
 				blockForChild = orthogonalAvailableBlock
 			}
 			csBuilder := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
@@ -356,7 +366,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// CSS 2.1 §9.5 Rule 5 / §10.3.3: A new BFC must not overlap
 			// float margin boxes. If the child doesn't fit alongside
 			// floats at the current block position, push it below them.
-			if isChildNewFC && (floatStartOff > 0 || floatEndOff > 0) {
+			// Skip for orthogonal children (same reasoning as pre-layout check).
+			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
 				neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
 				availableInline := childAvailableInline - floatStartOff - floatEndOff
@@ -1096,6 +1107,16 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	// Resolve the collapsed margin at the current position.
 	collapsedMargin := prevMarginStrut.Resolve()
 	floatBlockStart := blockCursor + collapsedMargin
+
+	// CSS 2.1 §9.5.2: The clear property applies to floats too.
+	// If this float has clear, advance past matching floats before positioning.
+	clearType := childStyle.GetClear()
+	if clearType != css.ClearNone {
+		clearedBlock := es.ClearanceOffset(clearType, floatBlockStart, parentWDM)
+		if clearedBlock > floatBlockStart {
+			floatBlockStart = clearedBlock
+		}
+	}
 
 	// Find where the float fits (CSS 2.1 §9.5.1 Rule 6: as high as possible).
 	floatSide := childStyle.GetFloat()
