@@ -3265,7 +3265,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				}
 			}
 
-			// §4.5: Also check min-cross-size as a constraint for the transferred
+			// §4.5: Also check min-cross-size as a fallback for the transferred
 			// size suggestion. Per the spec, if the item has an intrinsic aspect
 			// ratio, the transferred size is derived from "constraints in the
 			// other dimension", which includes min-height/min-width.
@@ -3281,6 +3281,35 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 					minCross := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
 					if minCross > 0 {
 						crossContentSize = minCross
+					}
+				}
+			}
+
+			// Clamp crossContentSize by cross-axis min/max constraints.
+			// Per §4.5, the transferred size uses "cross size constraints"
+			// which includes min/max.
+			if crossContentSize >= 0 {
+				if mainIsItemInline {
+					// Cross = block.
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					if crossContentSize < minCross {
+						crossContentSize = minCross
+					}
+					if maxCross, ok := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); ok {
+						if crossContentSize > maxCross {
+							crossContentSize = maxCross
+						}
+					}
+				} else {
+					// Cross = inline.
+					minCross := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
+					if crossContentSize < minCross {
+						crossContentSize = minCross
+					}
+					if maxCross, ok := ResolveMaxInlineSize(style, childWDM, itemSpace, childGeom); ok {
+						if crossContentSize > maxCross {
+							crossContentSize = maxCross
+						}
 					}
 				}
 			}
@@ -3335,7 +3364,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 					crossContentSize = explicit
 				}
 			}
-			// Also check min-cross-size as a constraint for non-replaced elements.
+			// Also check min-cross-size as a fallback for non-replaced elements.
 			if crossContentSize < 0 {
 				if mainIsItemInline {
 					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
@@ -3346,6 +3375,30 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 					minCross := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
 					if minCross > 0 {
 						crossContentSize = minCross
+					}
+				}
+			}
+			// Clamp crossContentSize by cross-axis min/max constraints.
+			if crossContentSize >= 0 {
+				if mainIsItemInline {
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					if crossContentSize < minCross {
+						crossContentSize = minCross
+					}
+					if maxCross, ok := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); ok {
+						if crossContentSize > maxCross {
+							crossContentSize = maxCross
+						}
+					}
+				} else {
+					minCross := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
+					if crossContentSize < minCross {
+						crossContentSize = minCross
+					}
+					if maxCross, ok := ResolveMaxInlineSize(style, childWDM, itemSpace, childGeom); ok {
+						if crossContentSize > maxCross {
+							crossContentSize = maxCross
+						}
 					}
 				}
 			}
