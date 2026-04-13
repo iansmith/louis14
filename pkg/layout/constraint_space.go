@@ -39,6 +39,12 @@ type ConstraintSpace struct {
 	// Nil means no floats to avoid (or new BFC).
 	ExclusionSpace *ExclusionSpace
 
+	// BfcBlockOffset is this child's block-start position relative to the
+	// BFC origin. Non-BFC children use this to translate local block offsets
+	// to BFC-relative coordinates when querying the ExclusionSpace.
+	// Mirrors Blink's BfcOffset concept.
+	BfcBlockOffset float64
+
 	// IsInsideFlexibleBox is true when this child is a direct flex item.
 	// Used by §4.5 to compute the automatic minimum size (min-content instead of 0
 	// for min-width:auto), and by ResolveBlockSize to suppress percentage resolution
@@ -247,6 +253,13 @@ func (b *ConstraintSpaceBuilder) SetExclusionSpace(es *ExclusionSpace) *Constrai
 	if !b.space.IsNewFormattingContext {
 		b.space.ExclusionSpace = es
 	}
+	return b
+}
+
+// SetBfcBlockOffset sets the child's block-start position relative to the
+// BFC origin. Used by non-BFC children to correctly query the ExclusionSpace.
+func (b *ConstraintSpaceBuilder) SetBfcBlockOffset(v float64) *ConstraintSpaceBuilder {
+	b.space.BfcBlockOffset = v
 	return b
 }
 
