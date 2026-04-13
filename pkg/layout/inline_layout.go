@@ -892,7 +892,7 @@ func createLineBoxEx(
 					isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
 					isInlineBlockLike := r.Item.Style != nil &&
 						(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
-							display == css.DisplayTable || display == css.DisplayInlineTable) &&
+							display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
 						r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
 					isAtomicForBaseline := isInlineBlockLike || isReplaced
 					// For inline-flex, use first baseline (CSS Flexbox §4.2).
@@ -1134,7 +1134,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
 				isInlineBlockLike := r.Item.Style != nil &&
 					(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
-						display == css.DisplayTable || display == css.DisplayInlineTable) &&
+						display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
 					r.Item.Style.GetOverflowX() == css.OverflowVisible && r.Item.Style.GetOverflowY() == css.OverflowVisible
 				isAtomicForBaseline := isInlineBlockLike || isReplaced
 				// For inline-flex, use first baseline (CSS Flexbox §4.2).

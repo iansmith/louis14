@@ -655,6 +655,16 @@ func computeListItemIndex(box *layout.Box) int {
 // children at their correct DOM position while keeping in-flow children
 // (including anonymous boxes) in their original order.
 func domOrderedChildren(box *layout.Box) []*layout.Box {
+	// Flex containers: children are already in order-modified document order
+	// from flex layout. CSS Flexbox §4.3 says flex items paint in this order,
+	// NOT in DOM order. Skip the DOM reordering.
+	if box.Style != nil {
+		d := box.Style.GetDisplay()
+		if d == css.DisplayFlex || d == css.DisplayInlineFlex {
+			return box.Children
+		}
+	}
+
 	lin := box.LayoutNode
 	if lin == nil {
 		return box.Children
@@ -808,7 +818,6 @@ func paintOrderChildren(box *layout.Box) []*layout.Box {
 // parentLayer: the PaintLayer that owns FlowChildren at this level.
 // currentSC:   the nearest ancestor stacking context's PaintLayer.
 func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
-	flexParent := isFlexContainer(box)
 	for _, child := range paintOrderChildren(box) {
 		if child.Style == nil {
 			// Unstyled box (line box, text run) — no PaintLayer.
@@ -820,11 +829,11 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 		childLayer := newPaintLayer(child)
 		isPositioned := child.Position != css.PositionStatic && child.Position != ""
 
-		// CSS Flexbox §4.3: Flex items with an explicit z-index create
-		// stacking contexts and participate in z-index sorting, even when
-		// position:static. This is unlike normal flow where z-index only
-		// applies to positioned elements.
-		if flexParent && !isPositioned && child.Style.HasExplicitZIndex() {
+		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
+		// contexts even if position is static. They participate in the nearest
+		// ancestor stacking context's z-lists, just like positioned elements
+		// with explicit z-index.
+		if !isPositioned && child.IsFlexItem() && child.Style.HasExplicitZIndex() {
 			z := child.ZIndex
 			switch {
 			case z < 0:
