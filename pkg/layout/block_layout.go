@@ -1322,9 +1322,14 @@ func createsFormattingContext(style *css.Style) bool {
 		return true
 	}
 
-	// Flex/grid items create a BFC.
+	// Flex/grid containers create a BFC.
 	if d == css.DisplayFlex || d == css.DisplayInlineFlex ||
 		d == css.DisplayGrid || d == css.DisplayInlineGrid {
+		return true
+	}
+
+	// Table boxes establish a BFC (CSS 2.1 §17.4).
+	if d == css.DisplayTable || d == css.DisplayInlineTable {
 		return true
 	}
 
