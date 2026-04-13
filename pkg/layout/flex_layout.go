@@ -2445,8 +2445,23 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		// For non-fixed cross items (wrapping column flex), subtract cross margins
 		// from the available inline-size so fit-content sizing respects the margin box.
 		// For column flex, available inline-size is the cross content size.
-		// Border-padding is already handled by the child layout geometry.
+		// AvailableSize is always border-box per ConstraintSpace convention.
+		// When IsFixedInlineSize is set, CalculateInitialFragmentGeometry uses
+		// AvailableSize.InlineSize directly as the border-box inline-size.
+		// crossInlineContent is content-box when coming from crossSize (stretch/line),
+		// or the container's content-box inline-size otherwise. For fixed cross items,
+		// convert content-box to border-box by adding the item's cross border+padding.
 		availInline := crossInlineContent
+		if crossIsFixed && crossSize != Indefinite {
+			// crossInlineContent = crossSize (content-box). Convert to border-box.
+			var crossBPInline float64
+			if item.mainIsItemInline {
+				crossBPInline = item.geom.BlockBorderPadding()
+			} else {
+				crossBPInline = item.geom.InlineBorderPadding()
+			}
+			availInline += crossBPInline
+		}
 		if !crossIsFixed {
 			availInline -= item.crossMarginSum()
 			if availInline < 0 {

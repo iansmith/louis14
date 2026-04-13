@@ -52,6 +52,79 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		result = measureBlockMinMax(node, ctx, space)
 	}
 
+	// CSS Sizing 4: aspect-ratio on non-replaced elements.
+	// When an element has a preferred aspect ratio and definite block-size
+	// constraints, those transfer through the ratio to affect intrinsic
+	// inline sizes. This mirrors Blink's NGBlockNode::ComputeMinMaxSizes
+	// which accounts for aspect-ratio before applying min/max inline constraints.
+	if ar := style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+		isBorderBox := style.GetBoxSizing() == "border-box"
+		bp := geom.InlineBorderPadding()
+
+		// Helper to convert an aspect-ratio transfer from block to inline.
+		// The ratio applies to the content-box unless box-sizing: border-box,
+		// in which case it applies to the border-box.
+		transferBlockToInline := func(blockVal float64, blockBP float64) float64 {
+			if isBorderBox {
+				// border-box: ratio applies to the border-box
+				return blockVal * ar.Width / ar.Height
+			}
+			// content-box: ratio applies to content, blockVal is content-box
+			return blockVal * ar.Width / ar.Height
+		}
+
+		// Check for definite block-size (height).
+		if blockSize, ok := ResolveBlockSize(style, wdm, space, geom); ok {
+			inlineFromRatio := transferBlockToInline(blockSize, geom.BlockBorderPadding())
+			if isBorderBox {
+				// blockSize from ResolveBlockSize with border-box already had BP subtracted.
+				// Add it back for the ratio, then subtract inline BP.
+				inlineFromRatio = (blockSize + geom.BlockBorderPadding()) * ar.Width / ar.Height - bp
+				if inlineFromRatio < 0 {
+					inlineFromRatio = 0
+				}
+			}
+			result.MinContent = inlineFromRatio
+			result.MaxContent = inlineFromRatio
+		}
+
+		// Check for min-block-size (min-height) transferring to min-inline-size.
+		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
+		if minBlock > 0 {
+			minInlineFromRatio := transferBlockToInline(minBlock, geom.BlockBorderPadding())
+			if isBorderBox {
+				// minBlock from ResolveMinBlockSize with border-box already had BP subtracted.
+				minInlineFromRatio = (minBlock + geom.BlockBorderPadding()) * ar.Width / ar.Height - bp
+				if minInlineFromRatio < 0 {
+					minInlineFromRatio = 0
+				}
+			}
+			if minInlineFromRatio > result.MinContent {
+				result.MinContent = minInlineFromRatio
+			}
+			if minInlineFromRatio > result.MaxContent {
+				result.MaxContent = minInlineFromRatio
+			}
+		}
+
+		// Check for max-block-size (max-height) transferring to max-inline-size.
+		if maxBlock, hasMax := ResolveMaxBlockSize(style, wdm, space, geom); hasMax {
+			maxInlineFromRatio := transferBlockToInline(maxBlock, geom.BlockBorderPadding())
+			if isBorderBox {
+				maxInlineFromRatio = (maxBlock + geom.BlockBorderPadding()) * ar.Width / ar.Height - bp
+				if maxInlineFromRatio < 0 {
+					maxInlineFromRatio = 0
+				}
+			}
+			if maxInlineFromRatio < result.MinContent {
+				result.MinContent = maxInlineFromRatio
+			}
+			if maxInlineFromRatio < result.MaxContent {
+				result.MaxContent = maxInlineFromRatio
+			}
+		}
+	}
+
 	// Apply min/max inline-size constraints (all content-box).
 	minInline := ResolveMinInlineSize(style, wdm, space, geom)
 	if result.MinContent < minInline {
