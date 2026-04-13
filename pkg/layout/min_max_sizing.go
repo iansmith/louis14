@@ -717,14 +717,30 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			childMax = childMM.MaxContent + childBP + childMargins.InlineSum()
 
 			floatType := childStyle.GetFloat()
-			if floatType == css.FloatLeft {
-				floatStartMaxSum += childMax
-				if childMin > result.MinContent {
-					result.MinContent = childMin
+			if floatType == css.FloatLeft || floatType == css.FloatRight {
+				// CSS 2.1 §9.5.1: clear forces a float below previous floats
+				// on the cleared side(s), so cleared floats cannot be placed
+				// side-by-side with earlier same-side floats. Flush the
+				// current float row before starting a new one.
+				clearType := childStyle.GetClear()
+				if clearType != css.ClearNone {
+					floatMaxRow := floatStartMaxSum + floatEndMaxSum
+					if floatMaxRow > result.MaxContent {
+						result.MaxContent = floatMaxRow
+					}
+					if clearType == css.ClearLeft || clearType == css.ClearBoth {
+						floatStartMaxSum = 0
+					}
+					if clearType == css.ClearRight || clearType == css.ClearBoth {
+						floatEndMaxSum = 0
+					}
 				}
-				continue
-			} else if floatType == css.FloatRight {
-				floatEndMaxSum += childMax
+
+				if floatType == css.FloatLeft {
+					floatStartMaxSum += childMax
+				} else {
+					floatEndMaxSum += childMax
+				}
 				if childMin > result.MinContent {
 					result.MinContent = childMin
 				}
@@ -739,9 +755,32 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 
 		isFloat := childStyle.GetFloat() != css.FloatNone
 		if isFloat {
+			// Orthogonal float: check clear before accumulating.
+			clearType := childStyle.GetClear()
+			if clearType != css.ClearNone {
+				floatMaxRow := floatStartMaxSum + floatEndMaxSum
+				if floatMaxRow > result.MaxContent {
+					result.MaxContent = floatMaxRow
+				}
+				if clearType == css.ClearLeft || clearType == css.ClearBoth {
+					floatStartMaxSum = 0
+				}
+				if clearType == css.ClearRight || clearType == css.ClearBoth {
+					floatEndMaxSum = 0
+				}
+			}
 			// Orthogonal float: accumulate as start-side (conservative).
 			floatStartMaxSum += childMax
 		} else {
+			// Non-float block child: flush any pending float row, since
+			// floats preceding this child occupy their own block positions
+			// and don't extend into this child's inline space at max-content.
+			floatMaxRow := floatStartMaxSum + floatEndMaxSum
+			if floatMaxRow > result.MaxContent {
+				result.MaxContent = floatMaxRow
+			}
+			floatStartMaxSum = 0
+			floatEndMaxSum = 0
 			if childMax > result.MaxContent {
 				result.MaxContent = childMax
 			}
