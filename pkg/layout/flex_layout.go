@@ -702,25 +702,67 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// This ensures justify-content sees the correct free space (e.g., min-height
 	// on a column flex gives extra space for justify-content to distribute).
 	if !hasDefiniteMain {
+		hypotheticalMainSize := 0.0
 		for _, line := range lines {
 			lineTotal := mainGap * float64(len(line.items)-1)
 			for _, item := range line.items {
 				lineTotal += item.outerMainSize()
 			}
-			if lineTotal > containerMainSize {
-				containerMainSize = lineTotal
+			if lineTotal > hypotheticalMainSize {
+				hypotheticalMainSize = lineTotal
 			}
 		}
+		containerMainSize = hypotheticalMainSize
 		// Apply min/max block constraints (only relevant for column flex where
 		// main axis = block axis and the container has min-height/max-height).
+		// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
 		if !isRow {
+			if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+				if containerMainSize > maxBlock {
+					containerMainSize = maxBlock
+				}
+			}
 			minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
 			if containerMainSize < minBlock {
 				containerMainSize = minBlock
 			}
-			if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
-				if containerMainSize > maxBlock {
-					containerMainSize = maxBlock
+		}
+
+		// If min/max constraints changed the container main size, the items need
+		// to be re-resolved with the new definite size. Per CSS Flexbox §9.7,
+		// when a column flex container's auto block-size is constrained by
+		// min-height/max-height, the flex algorithm must run again with the
+		// constrained size to properly distribute space (grow/shrink).
+		if math.Abs(containerMainSize-hypotheticalMainSize) > 0.001 {
+			for _, line := range lines {
+				// Reset frozen/resolved state.
+				for _, item := range line.items {
+					item.frozen = false
+					item.resolvedMain = item.flexBasis
+				}
+				fla.resolveFlexibleLengths(line, containerMainSize, true, mainGap)
+			}
+			// Re-layout items at the new resolved main sizes.
+			for _, line := range lines {
+				for _, item := range line.items {
+					selfAlign := fla.getAlignSelf(item.style, alignItems)
+					isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd &&
+						!fla.hasExplicitCrossSize(item.style, wdm, isRow)
+					crossIsFixed := !isRow && isStretch && wrapMode == "nowrap"
+					cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+						item.resolvedMain, Indefinite, crossIsFixed)
+					result := layoutElement(fla.ctx, item.node, cs)
+					item.fragment = result.Fragment
+					item.baseline = result.Baseline
+					item.hasBaseline = result.HasBaseline
+					item.lastBaseline = result.LastBaseline
+					item.propagatedOOF = result.PropagatedOOFCandidates
+					lf := NewLogicalFragment(wdm, item.fragment)
+					if isRow {
+						item.crossSize = lf.BlockSize()
+					} else {
+						item.crossSize = lf.InlineSize()
+					}
 				}
 			}
 		}
@@ -1084,14 +1126,15 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Apply min/max block constraints.
-	minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
-	if finalBlockSize < minBlock {
-		finalBlockSize = minBlock
-	}
+	// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
 	if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}
+	}
+	minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
+	if finalBlockSize < minBlock {
+		finalBlockSize = minBlock
 	}
 
 	// -webkit-line-clamp: limit block-size to N * line-height.
@@ -1791,23 +1834,75 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	contentInlineSize float64,
 	isRow bool,
 ) float64 {
-	// For replaced elements, use intrinsic sizes directly. flex-basis:content
-	// must ignore the item's CSS main-size, but ComputeReplacedSize (used by
-	// computeContentMinMaxSizes) consults CSS width/height. Use intrinsic
-	// dimensions instead, matching Blink's IntrinsicSize() path.
+	// For replaced elements, flex-basis:content means the max-content size.
+	// We must ignore the item's CSS main-size property, but respect its CSS
+	// cross-size property (which can constrain the main-size via aspect ratio).
+	// ComputeReplacedSize consults CSS width/height directly, so we replicate
+	// the logic here, skipping the main-size property. This matches Blink's
+	// IntrinsicSize() path with cross-size transfer through aspect ratio.
 	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
 		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
+
+		// Determine intrinsic main and cross dimensions.
+		var intrinsicMain, intrinsicCross float64
 		if mainIsItemInline {
 			if childWDM.IsVertical() {
-				return info.IntrinsicHeight
+				intrinsicMain = info.IntrinsicHeight
+				intrinsicCross = info.IntrinsicWidth
+			} else {
+				intrinsicMain = info.IntrinsicWidth
+				intrinsicCross = info.IntrinsicHeight
 			}
-			return info.IntrinsicWidth
+		} else {
+			if childWDM.IsVertical() {
+				intrinsicMain = info.IntrinsicWidth
+				intrinsicCross = info.IntrinsicHeight
+			} else {
+				intrinsicMain = info.IntrinsicHeight
+				intrinsicCross = info.IntrinsicWidth
+			}
 		}
-		if childWDM.IsVertical() {
-			return info.IntrinsicWidth
+
+		// Check for explicit CSS cross-size. If the item has an explicit cross-size
+		// and an intrinsic aspect ratio, derive the main-size from it.
+		if info.HasAspectRatio && info.AspectRatio > 0 {
+			itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if mainIsItemInline {
+				// Main=inline, cross=block. Check for explicit CSS block-size.
+				if explicitCross, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
+					// Derive inline main from block cross via aspect ratio.
+					// aspect ratio = inline/block (logical).
+					logicalRatio := info.AspectRatio
+					if childWDM.IsVertical() {
+						logicalRatio = 1.0 / info.AspectRatio
+					}
+					if logicalRatio > 0 {
+						return explicitCross * logicalRatio
+					}
+				}
+			} else {
+				// Main=block, cross=inline. Check for explicit CSS inline-size.
+				if explicitCross, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
+					// Derive block main from inline cross via aspect ratio.
+					logicalRatio := info.AspectRatio
+					if childWDM.IsVertical() {
+						logicalRatio = 1.0 / info.AspectRatio
+					}
+					if logicalRatio > 0 {
+						return explicitCross / logicalRatio
+					}
+				}
+			}
 		}
-		return info.IntrinsicHeight
+
+		// No cross-size constraint or no aspect ratio: use intrinsic main dimension.
+		_ = intrinsicCross
+		return intrinsicMain
 	}
 	if isRow {
 		// Row flex: main axis = inline. Use computeContentMinMaxSizes which
