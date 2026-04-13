@@ -31,11 +31,12 @@ func NewTableLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Co
 
 // tableCell tracks a cell during table layout.
 type tableCell struct {
-	node     *LayoutInputNode
-	style    *css.Style
-	colIndex int
-	colSpan  int
-	rowSpan  int
+	node        *LayoutInputNode
+	style       *css.Style
+	colIndex    int
+	colSpan     int
+	rowSpan     int
+	isAnonymous bool // true for non-table-structural children wrapped in anonymous cell boxes
 }
 
 // tableRow tracks a row during table layout.
@@ -273,6 +274,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			if cell.style != nil {
 				cellWDM = NewWritingDirectionMode(cell.style)
 			}
+
+			// For anonymous cell wrappers, the child's inline margins reduce
+			// the available width for content (the anonymous cell acts as a
+			// block container whose content area = column width - child margins).
+			// The child is then offset by its inline-start margin within the row.
+			layoutWidth := cellWidth
+			if cell.isAnonymous && cell.style != nil {
+				childMargins := ResolveMargins(cell.style, wdm, cellWidth)
+				layoutWidth -= childMargins.InlineStart + childMargins.InlineEnd
+				if layoutWidth < 0 {
+					layoutWidth = 0
+				}
+				cellInlineOffset += childMargins.InlineStart
+			}
+
 			// The column width is a fixed inline-size constraint from the table's
 			// perspective. For parallel (same-axis) cells this becomes a fixed
 			// InlineSize; for orthogonal cells the builder swaps it to
@@ -283,15 +299,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					orthogonalFallbackSize(cellWDM, tla.ctx)).
 				SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{
-					InlineSize: cellWidth,
+					InlineSize: layoutWidth,
 					BlockSize:  Indefinite,
 				}).
 				SetIsFixedInlineSize(true).
 				SetPercentageResolutionSize(LogicalSize{
-					InlineSize: cellWidth,
+					InlineSize: layoutWidth,
 					BlockSize:  0,
 				}).
-				SetPercentageResolutionInlineSize(cellWidth).
+				SetPercentageResolutionInlineSize(layoutWidth).
 				Build()
 
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
@@ -310,6 +326,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				// Use the cell's physical WIDTH (= column width) as the row height.
 				// This produces square cells when col width is explicitly specified.
 				cellBlockForRow = cellResult.Fragment.Size.Width
+			}
+			// For anonymous cell wrappers (non-table-structural children wrapped per
+			// CSS Tables §2.1), the child's block margins must be included in the row
+			// height. Real table-cell boxes suppress margins (CSS 2.1 §17.5.3), but
+			// anonymous cell wrappers act as block containers — the child's margin-box
+			// determines the cell's content height.
+			if cell.isAnonymous && cell.style != nil {
+				childMargins := ResolveMargins(cell.style, wdm, cellWidth)
+				cellBlockForRow += childMargins.BlockStart + childMargins.BlockEnd
 			}
 			if cellBlockForRow > rowHeight {
 				rowHeight = cellBlockForRow
@@ -337,13 +362,26 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			cellLogical := NewLogicalFragment(wdm, cl.result.Fragment)
 			contentBlockSize := cellLogical.BlockSize()
 
-			// Store original content block size for vertical-align pass.
+			cellBlockOffset := 0.0
+			if cl.cell.isAnonymous && cl.cell.style != nil {
+				// Anonymous cell wrappers: the child's block margins contribute
+				// to the row height but the child's border-box stays unchanged.
+				// Offset the child by its block-start margin within the row.
+				// Set contentBlockSize to rowHeight so the vertical-align pass
+				// (which defaults to middle for cells) doesn't shift the child —
+				// the margin space is not free space for alignment.
+				childMargins := ResolveMargins(cl.cell.style, wdm, cellLogical.InlineSize())
+				cellBlockOffset = childMargins.BlockStart
+				contentBlockSize = rowHeight
+			}
+
+			// Store content block size for vertical-align pass.
 			rowInfos[rowIdx].cellAligns = append(rowInfos[rowIdx].cellAligns, cellAlignInfo{
 				contentBlockSize: contentBlockSize,
 				style:            cl.cell.style,
 			})
 
-			if contentBlockSize < rowHeight {
+			if !cl.cell.isAnonymous && contentBlockSize < rowHeight {
 				// Stretch cell to fill row height.
 				physSize := ToPhysicalSize(LogicalSize{
 					InlineSize: cellLogical.InlineSize(),
@@ -354,7 +392,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 			rowBuilder.AddChild(cl.result.Fragment, LogicalOffset{
 				InlineOffset: cl.inlineOffset,
-				BlockOffset:  0,
+				BlockOffset:  cellBlockOffset,
 			})
 
 			// Collect OOF candidates from cell directly into the table builder.
@@ -820,10 +858,11 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			if childStyle.GetDisplay() != css.DisplayNone {
 				bodyRows = append(bodyRows, tableRow{
 					cells: []tableCell{{
-						node:    child,
-						style:   childStyle,
-						colSpan: 1,
-						rowSpan: 1,
+						node:        child,
+						style:       childStyle,
+						colSpan:     1,
+						rowSpan:     1,
+						isAnonymous: true,
 					}},
 				})
 			}
