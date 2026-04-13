@@ -1,8 +1,6 @@
 package layout
 
-import (
-	"louis14/pkg/css"
-)
+import "louis14/pkg/css"
 
 // BlockLayoutAlgorithm implements the block formatting context layout.
 // It positions block-level children sequentially in the block direction,
@@ -267,7 +265,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				wdm.WM != childWDM.WM
 
 			// Compute available inline for this child, accounting for floats.
-			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(blockCursor, 0, childAvailableInline)
+			// For BFC children, the child will be placed at the tentative block
+			// position (after margin collapse), not at blockCursor. We need to
+			// check float offsets at the tentative position so we detect floats
+			// that the child would overlap after margin resolution.
+			isOrthogonal := wdm.IsOrthogonalTo(childWDM)
+			floatCheckBlock := blockCursor
+			if isChildNewFC {
+				// BFC children don't propagate margins through, so the
+				// tentative position is fully determined by the current strut
+				// and the child's block-start margin.
+				tentativeStrut := prevMarginStrut
+				tentativeStrut.Append(childMargins.BlockStart)
+				floatCheckBlock = blockCursor + tentativeStrut.Resolve()
+			}
+			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(floatCheckBlock, 0, childAvailableInline)
 			childInlineForSpace := childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
 			if childInlineForSpace < 0 {
 				childInlineForSpace = 0
@@ -278,15 +290,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// new BFC and its resolved inline-size doesn't fit beside the
 			// floats, push it below them.
 			//
-			// Per Blink's LayoutNewFormattingContext: for orthogonal children,
-			// the child's inline dimension is perpendicular to the parent's
-			// inline axis (where floats live). The child always "fits" beside
-			// floats in the parent's inline direction — its inline-size uses
-			// the ICB as a fallback. Float offsets only constrain the parent's
-			// inline axis, which becomes the child's available block-size
-			// (handled via the constraint space). So skip the float-avoidance
-			// push for orthogonal children.
-			isOrthogonal := wdm.IsOrthogonalTo(childWDM)
+			// The pre-layout inline-size check uses ResolveInlineSize in the
+			// child's writing mode, which gives the wrong dimension for
+			// orthogonal children (their inline axis is perpendicular to the
+			// parent's float axis). Skip the pre-layout check for orthogonal
+			// children; the post-layout check handles them correctly.
 			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
 				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
 				// Build a temporary constraint space to resolve the child's inline-size.
@@ -305,10 +313,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// resolvedInline is content-box; add border+padding for border-box
 					neededInline := resolvedInline + childGeomForBFC.InlineBorderPadding() + childMargins.InlineSum()
 					if neededInline > childAvailableInline-floatStartOff-floatEndOff {
-						// Doesn't fit beside floats — clear past all floats.
-						clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor, wdm)
-						if clearedBlock > blockCursor {
-							blockCursor = clearedBlock
+						// Doesn't fit — find the earliest block position
+						// where the BFC fits alongside remaining floats.
+						// Use FindFloatPosition which iterates through float
+						// boundaries (CSS 2.1 §9.5 Rule 5).
+						newBlock := exclusionSpace.FindFloatPosition(
+							css.FloatLeft, neededInline, 0,
+							childAvailableInline, floatCheckBlock)
+						if newBlock > blockCursor {
+							blockCursor = newBlock
 							prevMarginStrut = MarginStrut{}
 							hasClearance = true
 						}
@@ -366,16 +379,22 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// CSS 2.1 §9.5 Rule 5 / §10.3.3: A new BFC must not overlap
 			// float margin boxes. If the child doesn't fit alongside
 			// floats at the current block position, push it below them.
-			// Skip for orthogonal children (same reasoning as pre-layout check).
-			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
+			// This check uses NewLogicalFragment(parentWDM, ...) which
+			// correctly maps the child's dimensions to the parent's frame,
+			// so it works for both same-mode and orthogonal children.
+			if isChildNewFC && (floatStartOff > 0 || floatEndOff > 0) {
 				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
 				neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
 				availableInline := childAvailableInline - floatStartOff - floatEndOff
 				if neededInline > availableInline {
-					// Child doesn't fit — find the block position where it does.
-					clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, blockCursor, wdm)
-					if clearedBlock > blockCursor {
-						blockCursor = clearedBlock
+					// Child doesn't fit — find the earliest block position
+					// where the BFC fits alongside remaining floats.
+					bfcBlockSize := childLogicalTmp.BlockSize() + childMargins.BlockSum()
+					newBlock := exclusionSpace.FindFloatPosition(
+						css.FloatLeft, neededInline, bfcBlockSize,
+						childAvailableInline, floatCheckBlock)
+					if newBlock > blockCursor {
+						blockCursor = newBlock
 						prevMarginStrut = MarginStrut{}
 						// Recompute float offsets at the new position.
 						floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(blockCursor, 0, childAvailableInline)
@@ -492,7 +511,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				blockCursor = actualChildBlockOff + childBlockSize
 			}
 
-			// Inherit propagated OOF candidates from child.
+// Inherit propagated OOF candidates from child.
 			// Non-positioned children propagate their abspos descendants
 			// upward for resolution by the containing block (this element
 			// or a higher ancestor).
@@ -1466,3 +1485,4 @@ func computeOrthogonalFallbackBlockForChildren(
 	// Not a scroller: inherit the ancestor's fallback unchanged.
 	return space.OrthogonalFallbackBlockSize
 }
+

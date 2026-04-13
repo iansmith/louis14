@@ -303,9 +303,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 
 	// Background color.
-	if bg, ok := s.Get("background-color"); ok {
-		if c, ok := css.ParseColor(bg); ok {
-			layer.BackgroundColor = c
+	// Text runs (box.Text != "") inherit the parent element's style which may
+	// include background-color, but CSS backgrounds are painted on element boxes,
+	// not on individual text runs within them. Skip background for text runs
+	// to avoid painting the inherited background outside the element's area.
+	if box.Text == "" {
+		if bg, ok := s.Get("background-color"); ok {
+			if c, ok := css.ParseColor(bg); ok {
+				layer.BackgroundColor = c
+			}
 		}
 	}
 

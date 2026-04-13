@@ -147,7 +147,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Choose column width algorithm: fixed (CSS 2.1 §17.5.2.1) or auto (§17.5.2.2).
 	var colWidths []float64
 	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
-		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols)
+		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols, colWidthSpecs)
 	} else {
 		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, colWidthSpecs)
 	}
@@ -915,6 +915,7 @@ func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Styl
 // This is faster and more predictable than the auto algorithm.
 func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 	rows []tableRow, numCols int, availableForCols float64, spacingForCols float64,
+	colWidthSpecs []tableColWidth,
 ) []float64 {
 	if numCols == 0 {
 		return []float64{}
@@ -923,11 +924,23 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 	colWidths := make([]float64, numCols)
 	hasExplicit := make([]bool, numCols)
 
-	// Step 1: Check first-row cells for explicit widths.
-	// Per CSS 2.1 §17.5.2.1: "a column element with a value other than 'auto'
-	// for the 'width' property sets the width for that column" — we don't
-	// currently track <col> elements, so skip to:
-	// "a cell in the first row with a value other than 'auto' for the 'width'
+	// Step 1a: Apply <col> element widths (CSS 2.1 §17.5.2.1 step 1).
+	// "A column element with a value other than 'auto' for the 'width'
+	// property sets the width for that column."
+	for _, cws := range colWidthSpecs {
+		if cws.width > 0 {
+			for s := 0; s < cws.span; s++ {
+				ci := cws.colIndex + s
+				if ci < numCols && !hasExplicit[ci] {
+					colWidths[ci] = cws.width
+					hasExplicit[ci] = true
+				}
+			}
+		}
+	}
+
+	// Step 1b: Check first-row cells for explicit widths.
+	// "A cell in the first row with a value other than 'auto' for the 'width'
 	// property determines the width for that column."
 	if len(rows) > 0 {
 		colIdx := 0

@@ -358,6 +358,28 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 		prop = "width"
 	}
 
+	val, _ := style.Get(prop)
+
+	// CSS calc() with percentage terms: resolve against containing block's
+	// block-size. GetLength alone resolves percentages with base=0, so
+	// calc(100% - 16px) would lose the percentage term.
+	if css.IsCalcWithPercent(val) && !space.IsBlockSizeIndefinite() {
+		result, calcOK := css.EvalCalcWithPercent(
+			val[5:len(val)-1], // strip "calc(" and ")"
+			style.GetFontSize(),
+			space.PercentageResolutionSize.BlockSize,
+		)
+		if calcOK {
+			if style.GetBoxSizing() == "border-box" {
+				result -= geom.BlockBorderPadding()
+				if result < 0 {
+					result = 0
+				}
+			}
+			return result, true
+		}
+	}
+
 	if v, ok := style.GetLength(prop); ok {
 		result := v
 		if style.GetBoxSizing() == "border-box" {
