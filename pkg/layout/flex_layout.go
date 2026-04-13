@@ -3436,12 +3436,39 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 				}
 			}
 			newBorderBox := stretchContent + crossBP
+
+			// For replaced elements with an intrinsic aspect ratio, stretching
+			// the cross-size should also update the main-size to preserve the
+			// aspect ratio. Per CSS Flexbox §9.4, stretch affects the cross-size
+			// but the spec notes that "for replaced elements, stretch affects both
+			// axes" — the replaced element's sizing algorithm derives the main
+			// size from the cross-size via the aspect ratio.
+			mainForLayout := item.resolvedMain
+			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
+				if info.HasAspectRatio && info.AspectRatio > 0 {
+					logicalRatio := info.AspectRatio // width/height = inline/block
+					if item.wdm.IsVertical() {
+						logicalRatio = 1.0 / info.AspectRatio
+					}
+					if item.mainIsItemInline {
+						// Main = inline, cross = block: main = cross * ratio
+						mainForLayout = stretchContent * logicalRatio
+					} else {
+						// Main = block, cross = inline: main = cross / ratio
+						if logicalRatio > 0 {
+							mainForLayout = stretchContent / logicalRatio
+						}
+					}
+				}
+			}
+
 			// Always relayout: even if the border-box size is unchanged,
 			// the percentage resolution block-size changed from 0 (first pass
 			// with Indefinite cross) to stretchContent (now definite).
 			// This ensures descendants with percentage heights resolve correctly.
 			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
-				item.resolvedMain, stretchContent, true)
+				mainForLayout, stretchContent, true)
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
