@@ -3437,38 +3437,83 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			}
 			newBorderBox := stretchContent + crossBP
 
-			// For replaced elements with an intrinsic aspect ratio, stretching
-			// the cross-size should also update the main-size to preserve the
-			// aspect ratio. Per CSS Flexbox §9.4, stretch affects the cross-size
-			// but the spec notes that "for replaced elements, stretch affects both
-			// axes" — the replaced element's sizing algorithm derives the main
-			// size from the cross-size via the aspect ratio.
-			mainForLayout := item.resolvedMain
-			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+			// CSS Flexbox §9.2 step B / §9.4: For <img> elements with an intrinsic
+			// aspect ratio, no explicit CSS main-size, and a stretch cross-size that
+			// constrains below the intrinsic cross-size, build the constraint space
+			// without fixing the main-size. This lets ComputeReplacedSize derive the
+			// main-size from the cross-size via the aspect ratio, producing correct
+			// sizing (e.g., a 60x60 image in a 25px-tall flex container → 25x25).
+			//
+			// This only applies to <img> elements — iframes, canvas, and other replaced
+			// elements have default sizes that don't establish a real aspect ratio for
+			// flex sizing purposes (per CSS Sizing 3 §5.2).
+			useAspectRatioStretch := false
+			if item.node.DOMNode != nil && item.node.DOMNode.TagName == "img" {
 				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
 				if info.HasAspectRatio && info.AspectRatio > 0 {
-					logicalRatio := info.AspectRatio // width/height = inline/block
-					if item.wdm.IsVertical() {
-						logicalRatio = 1.0 / info.AspectRatio
-					}
+					hasExplicitMainSize := false
+					tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
+						SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+						SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+						SetPercentageResolutionInlineSize(contentInlineSize).
+						Build()
 					if item.mainIsItemInline {
-						// Main = inline, cross = block: main = cross * ratio
-						mainForLayout = stretchContent * logicalRatio
+						_, hasExplicitMainSize = ResolveInlineSize(item.style, item.wdm, tmpSpace, item.geom)
 					} else {
-						// Main = block, cross = inline: main = cross / ratio
-						if logicalRatio > 0 {
-							mainForLayout = stretchContent / logicalRatio
-						}
+						_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
+					}
+					if !hasExplicitMainSize {
+						useAspectRatioStretch = true
 					}
 				}
 			}
 
-			// Always relayout: even if the border-box size is unchanged,
-			// the percentage resolution block-size changed from 0 (first pass
-			// with Indefinite cross) to stretchContent (now definite).
-			// This ensures descendants with percentage heights resolve correctly.
-			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
-				mainForLayout, stretchContent, true)
+			var cs ConstraintSpace
+			if useAspectRatioStretch {
+				// Build constraint space with cross-size fixed but main-size NOT
+				// fixed. ComputeReplacedSize will derive the main-size from the
+				// fixed cross-size and the image's intrinsic aspect ratio.
+				childWDM := item.wdm
+				b := NewConstraintSpaceBuilder(wdm, childWDM, true)
+				b.SetIsInsideFlexibleBox(true)
+				b.SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx))
+				b.SetOrthogonalFallbackBlockSize(fla.space.OrthogonalFallbackBlockSize)
+				if isRow {
+					avail := LogicalSize{
+						InlineSize: item.resolvedMain + item.mainBorderPadding(),
+						BlockSize:  stretchContent + item.crossBorderPadding(),
+					}
+					b.SetAvailableSize(avail)
+					b.SetPercentageResolutionSize(LogicalSize{
+						InlineSize: item.resolvedMain,
+						BlockSize:  stretchContent,
+					})
+					b.SetPercentageResolutionInlineSize(contentInlineSize)
+					// Do NOT fix inline-size: let aspect ratio derive it from cross.
+					b.SetIsFixedBlockSize(true)
+				} else {
+					avail := LogicalSize{
+						InlineSize: stretchContent + item.crossBorderPadding(),
+						BlockSize:  item.resolvedMain + item.mainBorderPadding(),
+					}
+					b.SetAvailableSize(avail)
+					b.SetPercentageResolutionSize(LogicalSize{
+						InlineSize: stretchContent,
+						BlockSize:  item.resolvedMain,
+					})
+					b.SetPercentageResolutionInlineSize(contentInlineSize)
+					b.SetIsFixedInlineSize(true)
+					// Do NOT fix block-size: let aspect ratio derive it from cross.
+				}
+				cs = b.Build()
+			} else {
+				// Always relayout: even if the border-box size is unchanged,
+				// the percentage resolution block-size changed from 0 (first pass
+				// with Indefinite cross) to stretchContent (now definite).
+				// This ensures descendants with percentage heights resolve correctly.
+				cs = fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
+					item.resolvedMain, stretchContent, true)
+			}
 			result := layoutElement(fla.ctx, item.node, cs)
 			item.fragment = result.Fragment
 			item.baseline = result.Baseline
