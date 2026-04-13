@@ -397,17 +397,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		maxLastDescent := 0.0
 		hasLastBaselineItem := false
 		for _, item := range line.items {
-			// For column flex: stretch items (without auto cross margins) lay out at the container
-			// inline-size (crossIsFixed=true). Non-stretch items and stretch items with auto
-			// cross margins shrink-to-fit their content (crossIsFixed=false).
-			// Exception: in wrapping column flex, the first pass must NOT fix the cross-size
-			// because we don't know the line cross-size yet. Items should use fit-content
-			// width. The stretch pass (stretchFlexItems) will later stretch them to the
-			// line cross-size.
-			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd &&
-				!fla.hasExplicitCrossSize(item.style, wdm, isRow)
-			crossIsFixed := !isRow && isStretch && wrapMode == "nowrap"
+			// For column flex: the initial layout pass measures intrinsic cross-sizes.
+			// Stretch items are NOT given crossIsFixed=true here; instead the stretch
+			// pass (stretchFlexItems) re-lays them out at the final line cross-size.
+			// This is critical for multi-line column flex where each line may have a
+			// different cross-size.
+			crossIsFixed := false
 			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
 				item.resolvedMain, Indefinite, crossIsFixed)
 			result := layoutElement(fla.ctx, item.node, cs)
@@ -490,6 +485,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			// §9.4: line cross-size computation.
+			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			outerCross := item.crossSize + item.crossMarginSum()
 			// Baseline participation requires the item's block axis to be parallel
 			// to the flex container's cross axis (CSS Flexbox §9.4 step 8).
@@ -618,8 +614,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				lineCrossMax = item.crossSize
 			}
 		}
-		// Don't shrink the line below its first-pass size.
-		if lineCrossMax > line.crossSize {
+		// Don't shrink the line below its first-pass size — UNLESS this is
+		// a single-line container with a definite cross-size, in which case
+		// the line cross-size was already fixed to the container's cross-size
+		// in §9.4 step 8 and must not grow.
+		isSingleLineDefinite := wrapMode == "nowrap" && len(lines) == 1 && hasDefiniteCross
+		if !isSingleLineDefinite && lineCrossMax > line.crossSize {
 			line.crossSize = lineCrossMax
 		}
 	}
@@ -745,10 +745,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// Re-layout items at the new resolved main sizes.
 			for _, line := range lines {
 				for _, item := range line.items {
-					selfAlign := fla.getAlignSelf(item.style, alignItems)
-					isStretch := selfAlign == "stretch" && !item.crossAutoStart && !item.crossAutoEnd &&
-						!fla.hasExplicitCrossSize(item.style, wdm, isRow)
-					crossIsFixed := !isRow && isStretch && wrapMode == "nowrap"
+					crossIsFixed := false
 					cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
 						item.resolvedMain, Indefinite, crossIsFixed)
 					result := layoutElement(fla.ctx, item.node, cs)
@@ -987,8 +984,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			case "center":
 				itemCrossOffset = crossStart + crossFreeForAlign/2
-			case "baseline":
-				if hasBaselineItem {
+			case "baseline", "first baseline":
+				// Baseline alignment only applies in row flex where cross axis = block.
+				// In column flex, the cross axis is inline and baselines are perpendicular,
+				// so fall back to flex-start per CSS Box Alignment §9.3.
+				if isRow && hasBaselineItem {
 					bl := item.baseline
 					if !item.hasBaseline && canSynthesize {
 						bl = 0 // CSS Align §4.4: synthesize first baseline at block-start
@@ -2898,8 +2898,10 @@ func (fla *FlexLayoutAlgorithm) getAlignItems() string {
 		case "stretch", "flex-start", "flex-end", "center", "baseline",
 			"start", "end", "self-start", "self-end", "last baseline":
 			return v
-		case "first baseline":
+		case "first baseline", "first-baseline":
 			return "baseline"
+		case "last-baseline":
+			return "last baseline"
 		}
 	}
 	// -webkit-box-align
@@ -2933,8 +2935,10 @@ func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string
 			case "stretch", "flex-start", "flex-end", "center", "baseline",
 				"start", "end", "self-start", "self-end", "last baseline":
 				return v
-			case "first baseline":
+			case "first baseline", "first-baseline":
 				return "baseline"
+			case "last-baseline":
+				return "last baseline"
 			}
 		}
 	}
