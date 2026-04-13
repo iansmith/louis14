@@ -45,6 +45,18 @@ type ConstraintSpace struct {
 	// Mirrors Blink's BfcOffset concept.
 	BfcBlockOffset float64
 
+	// BfcInlineOffset is this child's content-area inline-start position
+	// relative to the BFC origin. Non-BFC children use this to translate
+	// float exclusion inline offsets to local coordinates when computing
+	// line box positions. Per CSS 2.1 §9.5, non-BFC block boxes flow as
+	// if floats don't exist, but their line boxes shorten around floats.
+	BfcInlineOffset float64
+
+	// BfcContainerInlineSize is the BFC container's content inline-size.
+	// Used by non-BFC children to correctly query the ExclusionSpace
+	// with the BFC's inline-size rather than the child's own inline-size.
+	BfcContainerInlineSize float64
+
 	// IsInsideFlexibleBox is true when this child is a direct flex item.
 	// Used by §4.5 to compute the automatic minimum size (min-content instead of 0
 	// for min-width:auto), and by ResolveBlockSize to suppress percentage resolution
@@ -260,6 +272,21 @@ func (b *ConstraintSpaceBuilder) SetExclusionSpace(es *ExclusionSpace) *Constrai
 // BFC origin. Used by non-BFC children to correctly query the ExclusionSpace.
 func (b *ConstraintSpaceBuilder) SetBfcBlockOffset(v float64) *ConstraintSpaceBuilder {
 	b.space.BfcBlockOffset = v
+	return b
+}
+
+// SetBfcInlineOffset sets the child's content-area inline-start position
+// relative to the BFC origin. Used by non-BFC children for float-line
+// interaction in the inline layout.
+func (b *ConstraintSpaceBuilder) SetBfcInlineOffset(v float64) *ConstraintSpaceBuilder {
+	b.space.BfcInlineOffset = v
+	return b
+}
+
+// SetBfcContainerInlineSize sets the BFC container's content inline-size.
+// Used by non-BFC children to correctly query the ExclusionSpace.
+func (b *ConstraintSpaceBuilder) SetBfcContainerInlineSize(v float64) *ConstraintSpaceBuilder {
+	b.space.BfcContainerInlineSize = v
 	return b
 }
 

@@ -107,6 +107,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		bfcBlockOrigin = bla.space.BfcBlockOffset + geom.Border.BlockStart + geom.Padding.BlockStart
 	}
 
+	// BFC inline origin: the inline offset of this element's content box
+	// relative to the BFC origin. Used to translate float exclusion inline
+	// offsets to local coordinates for line box computation.
+	bfcInlineOrigin := 0.0
+	bfcContainerInlineSize := contentInlineSize
+	if !bla.space.IsNewFormattingContext {
+		bfcInlineOrigin = bla.space.BfcInlineOffset + geom.Border.InlineStart + geom.Padding.InlineStart
+		if bla.space.BfcContainerInlineSize > 0 {
+			bfcContainerInlineSize = bla.space.BfcContainerInlineSize
+		}
+	}
+
 	// Lay out children in the block direction.
 	// CSS 2.1 §9.2.1.1: a block container has either all block-level or
 	// all inline-level children.
@@ -151,7 +163,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// Inline formatting context: text nodes and inline-level children.
 		prevES := exclusionSpace
 		var inlineAscent, lastBaselineOff float64
-		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin)
+		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
 		}
@@ -287,7 +299,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				floatCheckBlock = bfcBlockOrigin + blockCursor + tentativeStrut.Resolve()
 			}
 			floatStartOff, floatEndOff := exclusionSpace.FindAvailableInlineSize(floatCheckBlock, 0, childAvailableInline)
-			childInlineForSpace := childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
+			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist;
+			// only their line boxes shorten around floats. So only BFC children
+			// have their available inline-size reduced by float exclusions.
+			childInlineForSpace := childAvailableInline - childMargins.InlineSum()
+			if isChildNewFC {
+				childInlineForSpace -= floatStartOff + floatEndOff
+			}
 			if childInlineForSpace < 0 {
 				childInlineForSpace = 0
 			}
@@ -360,13 +378,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				SetPercentageResolutionInlineSize(contentInlineSize).
 				SetExclusionSpace(exclusionSpace)
 
-			// For non-BFC children, propagate the BFC block offset so they
-			// can correctly query the exclusion space in their own layout.
+			// For non-BFC children, propagate the BFC block and inline offsets
+			// so they can correctly query the exclusion space in their own layout.
 			if !isChildNewFC {
 				// The child's tentative BFC offset = parent's BFC origin +
 				// child's local position (blockCursor + pending margin).
 				tentativeChildBfcOff := bfcBlockOrigin + blockCursor + prevMarginStrut.Resolve() + childMargins.BlockStart
 				csBuilder.SetBfcBlockOffset(tentativeChildBfcOff)
+				// The child's BFC inline offset = parent's BFC inline origin +
+				// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
+				// position as if floats don't exist, so use margin only.
+				csBuilder.SetBfcInlineOffset(bfcInlineOrigin + childMargins.InlineStart)
+				csBuilder.SetBfcContainerInlineSize(bfcContainerInlineSize)
 			}
 
 			// Propagate fragmentation context to children.
@@ -466,11 +489,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				!isChildNewFC
 
 			// Step 4: Position child in the inline direction.
+			// CSS 2.1 §9.5: Non-BFC block boxes flow as if floats don't exist.
+			// Only BFC children (isChildNewFC) are offset past floats.
+			// Non-BFC children are positioned at their margin; their line boxes
+			// shorten around floats instead.
 			// CSS 2.1 §10.3.3: If both margin-inline-start and margin-inline-end are auto,
 			// and the element has a definite inline-size, center it.
 			// NOTE: computed before collapse-through check so it can be used for OOF
 			// propagation even when the element collapses through.
-			childInlineOffset := childMargins.InlineStart + floatStartOff
+			childInlineOffset := childMargins.InlineStart
+			if isChildNewFC {
+				childInlineOffset += floatStartOff
+			}
 
 			if collapseThrough {
 				// Margins collapse through: append block-end margin and continue
@@ -489,12 +519,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			autoInlineStart, autoInlineEnd, _, _ := PhysicalAutoMarginsToLogical(rawMargin, wdm)
 			if autoInlineStart || autoInlineEnd {
 				childInlineSize := NewLogicalFragment(wdm, childResult.Fragment).InlineSize()
-				remaining := childAvailableInline - childInlineSize - floatStartOff - floatEndOff
+				// CSS 2.1 §10.3.3: auto margins center within the containing block.
+				// For BFC children, float exclusions reduce the available space (they
+				// must not overlap float margin boxes per §9.5). For non-BFC children,
+				// use the full containing block width — they flow as if floats don't exist.
+				floatStartForMargin, floatEndForMargin := floatStartOff, floatEndOff
+				if !isChildNewFC {
+					floatStartForMargin, floatEndForMargin = 0, 0
+				}
+				remaining := childAvailableInline - childInlineSize - floatStartForMargin - floatEndForMargin
 				if remaining > 0 {
 					if autoInlineStart && autoInlineEnd {
-						childInlineOffset = floatStartOff + remaining/2
+						childInlineOffset = floatStartForMargin + remaining/2
 					} else if autoInlineStart {
-						childInlineOffset = floatStartOff + remaining - childMargins.InlineEnd
+						childInlineOffset = floatStartForMargin + remaining - childMargins.InlineEnd
 					}
 					// autoEnd && !autoStart: start margin is already used, end absorbs remaining (no change)
 				}

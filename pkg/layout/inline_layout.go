@@ -102,6 +102,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	exclusionSpace *ExclusionSpace,
 	builder *BoxFragmentBuilder,
 	bfcBlockOrigin float64,
+	bfcInlineOrigin float64,
+	bfcContainerInlineSize float64,
 ) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64) {
 	// Phase 1: Collect inline items from the layout subtree.
 	itemsData := CollectInlines(bla.node)
@@ -344,12 +346,35 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// FindAvailableInlineSize returns the space consumed by left/right floats
 		// at the current block position. The exclusion space uses BFC-relative
 		// coordinates, so we add bfcBlockOrigin to translate local offsets.
+		//
+		// For non-BFC blocks whose content area is at a non-zero BFC inline
+		// position (e.g., blocks with negative margins or explicit width that
+		// differs from the BFC container), we compute the intersection of the
+		// block's content area and the float-free region in BFC coordinates,
+		// then convert to local coordinates.
 		floatStart, floatEnd := 0.0, 0.0
 		bfcBlock := bfcBlockOrigin + blockOffset
 		if exclusionSpace != nil {
-			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, contentInlineSize)
+			floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)
 		}
-		lineAvailableInline := contentInlineSize - floatStart - floatEnd
+
+		// Compute line box bounds in BFC coordinates.
+		lineStartBFC := bfcInlineOrigin
+		lineEndBFC := bfcInlineOrigin + contentInlineSize
+		if floatStart > 0 && floatStart > lineStartBFC {
+			lineStartBFC = floatStart
+		}
+		if floatEnd > 0 {
+			rightEdge := bfcContainerInlineSize - floatEnd
+			if rightEdge < lineEndBFC {
+				lineEndBFC = rightEdge
+			}
+		}
+		lineInlineOffsetFromFloat := lineStartBFC - bfcInlineOrigin // local offset
+		lineAvailableInline := lineEndBFC - lineStartBFC
+		if lineAvailableInline < 0 {
+			lineAvailableInline = 0
+		}
 
 		// CSS 2.1 §9.5: if floats consume all available inline space,
 		// clear past them before generating the line. This avoids
@@ -360,8 +385,23 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			if clearedBlock > bfcBlock {
 				blockOffset = clearedBlock - bfcBlockOrigin
 				bfcBlock = clearedBlock
-				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, contentInlineSize)
-				lineAvailableInline = contentInlineSize - floatStart - floatEnd
+				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)
+				lineStartBFC = bfcInlineOrigin
+				lineEndBFC = bfcInlineOrigin + contentInlineSize
+				if floatStart > 0 && floatStart > lineStartBFC {
+					lineStartBFC = floatStart
+				}
+				if floatEnd > 0 {
+					rightEdge := bfcContainerInlineSize - floatEnd
+					if rightEdge < lineEndBFC {
+						lineEndBFC = rightEdge
+					}
+				}
+				lineInlineOffsetFromFloat = lineStartBFC - bfcInlineOrigin
+				lineAvailableInline = lineEndBFC - lineStartBFC
+				if lineAvailableInline < 0 {
+					lineAvailableInline = 0
+				}
 			}
 		}
 		if lineAvailableInline < 1 {
@@ -409,7 +449,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 
 		// Apply text-indent to the first line only.
-		lineInlineOffset := floatStart
+		lineInlineOffset := lineInlineOffsetFromFloat
 		if isFirstLine && textIndent != 0 {
 			lineInlineOffset += textIndent
 			lineAvailableInline -= textIndent
@@ -420,8 +460,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 
 		// CSS 2.1 §9.5: if the line content doesn't fit beside the float,
 		// shift the block offset below the float and use the full width.
-		floatReducedWidth := contentInlineSize - floatStart - floatEnd
-		if (floatStart > 0 || floatEnd > 0) && line.Width > floatReducedWidth && exclusionSpace != nil {
+		if (floatStart > 0 || floatEnd > 0) && line.Width > lineAvailableInline && exclusionSpace != nil {
 			clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcBlockOrigin+blockOffset, wdm)
 			blockOffset = clearedBfc - bfcBlockOrigin
 			lineInlineOffset = 0
