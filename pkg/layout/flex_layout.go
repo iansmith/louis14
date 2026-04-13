@@ -1010,8 +1010,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					if !item.hasBaseline && bl <= 0 && canSynthesize {
 						bl = item.crossSize // CSS Align §4.4: synthesize last baseline at block-end
 					}
-					belowBL := item.crossSize - bl
-					itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - belowBL - item.crossMarginEnd()
+					// Position so that the item's last baseline aligns with the shared
+					// last baseline. The shared position from line-start is
+					// (line.crossSize - sharedLastDescend).
+					itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginStart() - bl
 				} else {
 					itemCrossOffset = crossStart + crossFreeForAlign
 				}
@@ -1930,6 +1932,9 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 }
 
 // itemMaxContentMainSize returns the max-content size in the main axis.
+// For replaced elements, returns intrinsic dimensions directly to avoid
+// CSS min/max clamping — the flex algorithm applies min/max separately
+// when computing the hypothetical main size (§9.2 step 3).
 func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	child *LayoutInputNode,
 	style *css.Style,
@@ -1939,6 +1944,95 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	contentInlineSize float64,
 	isRow bool,
 ) float64 {
+	// Replaced elements: compute max-content main size with CROSS-axis
+	// min/max constraints (which affect sizing via aspect ratio) but
+	// WITHOUT main-axis min/max constraints. The flex algorithm applies
+	// main-axis min/max separately in the hypothetical/resolve steps.
+	// A full layout (below for non-replaced) applies ALL min/max
+	// constraints, which is incorrect for the flex base size (§9.2).
+	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+		info := GetIntrinsicSizingInfo(fla.ctx, child)
+		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
+
+		// Convert physical intrinsic dimensions to logical.
+		var intrinsicInline, intrinsicBlock float64
+		if childWDM.IsVertical() {
+			intrinsicInline = info.IntrinsicHeight
+			intrinsicBlock = info.IntrinsicWidth
+		} else {
+			intrinsicInline = info.IntrinsicWidth
+			intrinsicBlock = info.IntrinsicHeight
+		}
+		logicalRatio := 0.0
+		if info.HasAspectRatio && info.AspectRatio > 0 {
+			if childWDM.IsVertical() {
+				logicalRatio = 1.0 / info.AspectRatio
+			} else {
+				logicalRatio = info.AspectRatio
+			}
+		}
+
+		// Determine base inline and block sizes (same as ComputeReplacedSize default case).
+		inlineSize := intrinsicInline
+		if inlineSize <= 0 {
+			if logicalRatio > 0 && intrinsicBlock > 0 {
+				inlineSize = intrinsicBlock * logicalRatio
+			} else {
+				inlineSize = 300
+			}
+		}
+		blockSize := intrinsicBlock
+		if blockSize <= 0 {
+			if logicalRatio > 0 && inlineSize > 0 {
+				blockSize = inlineSize / logicalRatio
+			} else {
+				blockSize = 150
+			}
+		}
+
+		// Apply ONLY cross-axis min/max constraints, re-deriving via aspect ratio.
+		crossItemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
+			Build()
+		if mainIsItemInline {
+			// Main=inline, cross=block. Apply block min/max only.
+			minBlock := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom)
+			if blockSize < minBlock {
+				blockSize = minBlock
+				if logicalRatio > 0 {
+					inlineSize = blockSize * logicalRatio
+				}
+			}
+			if maxBlock, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+				if blockSize > maxBlock {
+					blockSize = maxBlock
+					if logicalRatio > 0 {
+						inlineSize = blockSize * logicalRatio
+					}
+				}
+			}
+			return inlineSize
+		}
+		// Main=block, cross=inline. Apply inline min/max only.
+		minInline := ResolveMinInlineSize(style, childWDM, crossItemSpace, childGeom)
+		if inlineSize < minInline {
+			inlineSize = minInline
+			if logicalRatio > 0 {
+				blockSize = inlineSize / logicalRatio
+			}
+		}
+		if maxInline, ok := ResolveMaxInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
+			if inlineSize > maxInline {
+				inlineSize = maxInline
+				if logicalRatio > 0 {
+					blockSize = inlineSize / logicalRatio
+				}
+			}
+		}
+		return blockSize
+	}
 	// For column flex, the item's cross-axis margins reduce the available
 	// inline space for layout (affects wrapping behavior and thus block-size).
 	availInline := contentInlineSize
