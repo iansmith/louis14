@@ -1419,6 +1419,19 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 				maxMainSize = max
 			}
 		}
+		// Handle intrinsic keywords for max main size (e.g., max-height: min-content).
+		if maxMainSize == Indefinite {
+			maxMainSize = fla.resolveIntrinsicMaxMain(child, childStyle, childWDM, childGeom,
+				itemSizingSpace, isRow, mainIsItemInlineForMax, contentInlineSize)
+		}
+
+		// Clamp the hypothetical main size by the intrinsic max main size
+		// (which may have been resolved from min-content, max-content keywords).
+		// clampMainSizeWithMin only handles length/percentage max values, so
+		// intrinsic keywords need this additional clamp.
+		if maxMainSize != Indefinite && hyp > maxMainSize {
+			hyp = maxMainSize
+		}
 
 		// Detect auto margins for §8.1 alignment.
 		itemMainIsInline := computeMainIsItemInline(wdm, childWDM, isRow)
@@ -1873,6 +1886,75 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	result := layoutElement(fla.ctx, child, space)
 	lf := NewLogicalFragment(parentWDM, result.Fragment)
 	return lf.BlockSize() - childGeom.BlockBorderPadding()
+}
+
+// resolveIntrinsicMaxMain resolves intrinsic keywords (min-content, max-content,
+// fit-content) for the max main size property (max-width / max-height).
+// Returns Indefinite if the property is not an intrinsic keyword.
+func (fla *FlexLayoutAlgorithm) resolveIntrinsicMaxMain(
+	child *LayoutInputNode,
+	style *css.Style,
+	childWDM WritingDirectionMode,
+	childGeom FragmentGeometry,
+	space ConstraintSpace,
+	isRow bool,
+	mainIsItemInline bool,
+	contentInlineSize float64,
+) float64 {
+	containerIsVertical := fla.space.WritingDirection.IsVertical()
+	var maxProp string
+	if isRow {
+		if containerIsVertical {
+			maxProp = "max-height"
+		} else {
+			maxProp = "max-width"
+		}
+	} else {
+		if containerIsVertical {
+			maxProp = "max-width"
+		} else {
+			maxProp = "max-height"
+		}
+	}
+	val, ok := style.Get(maxProp)
+	if !ok {
+		return Indefinite
+	}
+	val = strings.TrimSpace(val)
+	if val != "min-content" && val != "max-content" && val != "fit-content" {
+		return Indefinite
+	}
+
+	if mainIsItemInline {
+		childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+			SetAvailableSize(space.AvailableSize).
+			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+			Build()
+		mm := ComputeMinMaxSizes(fla.ctx, child, childSpace)
+		switch val {
+		case "min-content":
+			return mm.MinContent
+		case "max-content", "fit-content":
+			return mm.MaxContent
+		}
+	} else {
+		// Block-axis intrinsic keyword: lay out the item to determine its content block-size.
+		containerInlineSize := space.AvailableSize.InlineSize
+		minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+			SetPercentageResolutionInlineSize(containerInlineSize).
+			SetIsContentSuggestionLayout(true).
+			Build()
+		result := layoutElement(fla.ctx, child, minBlockSpace)
+		blockContent := result.IntrinsicBlockSize
+		if blockContent < 0 {
+			blockContent = 0
+		}
+		return blockContent
+	}
+	return Indefinite
 }
 
 // clampMainSizeWithMin clamps the flex-basis to the CSS max constraint only.
