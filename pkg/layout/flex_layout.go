@@ -2163,12 +2163,53 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	}
 	// Main axis = item's block axis. Lay out with indefinite block-size and
 	// IsContentSuggestionLayout to suppress its explicit CSS block-size.
+	//
+	// CSS Sizing 3 §5.1: The max-content block size is the block size when
+	// the box is laid out at its max-content inline size. For column flex
+	// items without explicit cross-size, this means using the item's
+	// shrink-to-fit (fit-content) width, NOT the container's cross-axis size.
+	// This ensures percentage padding on descendants resolves against the
+	// item's actual width, not the container width.
 	availInline := contentInlineSize
 	if !parentWDM.IsOrthogonalTo(childWDM) {
 		margins := ResolveMargins(style, childWDM, contentInlineSize)
 		availInline -= margins.InlineStart + margins.InlineEnd
 		if availInline < 0 {
 			availInline = 0
+		}
+	}
+	// If the item has no explicit inline-size (cross-size in column flex)
+	// and won't stretch, compute its max-content inline-size and use that
+	// for the layout. This gives the correct shrink-to-fit width for
+	// percentage resolution.
+	alignItems := "stretch"
+	if v, ok := fla.style.Get("align-items"); ok {
+		alignItems = strings.TrimSpace(v)
+	}
+	selfAlign := fla.getAlignSelf(style, alignItems)
+	_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+	willStretch := selfAlign == "stretch" && !crossAS && !crossAE
+	if !willStretch {
+		if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
+			NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build(), childGeom); !hasExplicitInline {
+			mmSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+				SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			mm := computeContentMinMaxSizes(fla.ctx, child, mmSpace)
+			// computeContentMinMaxSizes returns content-box sizes.
+			// AvailableSize.InlineSize is border-box, so add border+padding.
+			fitContentInline := mm.MaxContent + childGeom.InlineBorderPadding()
+			if fitContentInline > availInline {
+				fitContentInline = availInline
+			}
+			availInline = fitContentInline
 		}
 	}
 	parentBlockSize := Indefinite
@@ -2305,6 +2346,44 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	parentBlockSize := Indefinite
 	if parentWDM.IsOrthogonalTo(childWDM) {
 		parentBlockSize = fla.space.AvailableSize.BlockSize
+	}
+	if !mainIsItemInline {
+		// CSS Sizing 3 §5.1: The max-content block size is the block size
+		// when the box is laid out at its max-content inline size. For column
+		// flex items without explicit inline-size that won't stretch, compute
+		// shrink-to-fit width so that percentage padding on descendants
+		// resolves against the item's actual width rather than the container's
+		// cross-axis size.
+		alignItems := "stretch"
+		if v, ok := fla.style.Get("align-items"); ok {
+			alignItems = strings.TrimSpace(v)
+		}
+		selfAlign := fla.getAlignSelf(style, alignItems)
+		_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+		willStretch := selfAlign == "stretch" && !crossAS && !crossAE
+		if !willStretch {
+			if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
+				NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+					SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					Build(), childGeom); !hasExplicitInline {
+				mmSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+					SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					Build()
+				mm := computeContentMinMaxSizes(fla.ctx, child, mmSpace)
+				// computeContentMinMaxSizes returns content-box sizes.
+				// AvailableSize.InlineSize is border-box, so add border+padding.
+				fitContentInline := mm.MaxContent + childGeom.InlineBorderPadding()
+				if fitContentInline > availInline {
+					fitContentInline = availInline
+				}
+				availInline = fitContentInline
+			}
+		}
 	}
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
@@ -3694,7 +3773,46 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		// Main axis = item's block axis: block-direction minimum via layout.
 		// Use IsContentSuggestionLayout to suppress the item's own CSS block-size
 		// so the layout produces the content-based block-size (§4.5).
+		//
+		// CSS Sizing 3 §5.1: The min-content block size equals the max-content
+		// block size, which is the block size when laid out at the item's
+		// max-content inline size (shrink-to-fit width). For column flex items
+		// without explicit inline-size, compute the shrink-to-fit width first
+		// so that percentage padding on descendants resolves correctly.
 		containerInlineSize := space.AvailableSize.InlineSize
+		// Only use shrink-to-fit for items that won't stretch to the container
+		// cross-size. Stretch items use the full container width, so their
+		// content suggestion should be computed at that width.
+		alignItems := "stretch"
+		if v, ok := fla.style.Get("align-items"); ok {
+			alignItems = strings.TrimSpace(v)
+		}
+		selfAlign := fla.getAlignSelf(style, alignItems)
+		_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+		willStretch := selfAlign == "stretch" && !crossAS && !crossAE
+		if !willStretch {
+			if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
+				NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
+					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					Build(), childGeom); !hasExplicitInline {
+				mmSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
+					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					Build()
+				mm := computeContentMinMaxSizes(fla.ctx, child, mmSpace)
+				// computeContentMinMaxSizes returns content-box sizes.
+				// AvailableSize.InlineSize is border-box, so add border+padding.
+				fitContentInline := mm.MaxContent + childGeom.InlineBorderPadding()
+				if fitContentInline > containerInlineSize {
+					fitContentInline = containerInlineSize
+				}
+				containerInlineSize = fitContentInline
+			}
+		}
 		colMinSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
