@@ -5104,7 +5104,7 @@ func (s *Style) GetFlexBasisValue() FlexBasisValue {
 		expr := basis[5 : len(basis)-1]
 		return FlexBasisValue{IsCalc: true, CalcExpr: expr, FontSize: s.GetFontSize()}
 	}
-	if length, ok := ParseLengthWithFontSize(basis, s.GetFontSize()); ok {
+	if length, ok := parseLengthFullWithCh(basis, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 		// CSS Flexbox §7.3.3: flex-basis does not accept negative lengths
 		if length < 0 {
 			return FlexBasisValue{IsAuto: true}
@@ -5121,7 +5121,7 @@ func (s *Style) GetFlexBasis() float64 {
 		if basis == "auto" || basis == "content" {
 			return -1
 		}
-		if length, ok := ParseLengthWithFontSize(basis, s.GetFontSize()); ok {
+		if length, ok := parseLengthFullWithCh(basis, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 			return length
 		}
 	}
