@@ -401,10 +401,14 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	var maxMin, maxMax float64
 	var itemCount int
 
-	for _, child := range node.Children() {
-		if child.IsText() {
-			continue
-		}
+	// Use the same anonymous flex item wrapping as the full layout path.
+	// CSS Flexbox §4: bare text nodes in a flex container are wrapped in
+	// anonymous block flex items. Without this, text-only flex containers
+	// (e.g., <div style="display:inline-flex">Success!</div>) would compute
+	// zero intrinsic size because text nodes are skipped.
+	flexChildren := buildFlexChildren(node, style)
+
+	for _, child := range flexChildren {
 		childStyle := child.Style()
 		if childStyle == nil {
 			continue
@@ -432,10 +436,10 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 			Build()
 
-		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+		childGeom := ComputeFragmentGeometry(childStyle, childWDM, space.PercentageResolutionInlineSize)
 
 		childBP := childGeom.InlineBorderPadding()
-		childMargins := ResolveMargins(childStyle, childWDM, 0)
+		childMargins := ResolveMargins(childStyle, childWDM, space.PercentageResolutionInlineSize)
 
 		// Check for aspect-ratio transfer from definite cross-size.
 		// For row flex with definite height, items with aspect-ratio that

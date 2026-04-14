@@ -1481,11 +1481,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 }
 
 // buildFlexChildList pre-processes the flex container's children to implement
-// CSS Flexbox §4 anonymous flex item wrapping. Each contiguous run of text
-// nodes (with display:none elements being transparent) is grouped into a
-// single anonymous block flex item so that inter-word spaces are preserved.
-// OOF children (position:absolute/fixed) interrupt text runs.
-func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
+// buildFlexChildren implements CSS Flexbox §4 anonymous flex item wrapping.
+// Each contiguous run of text nodes (with display:none elements being transparent)
+// is grouped into a single anonymous block flex item so that inter-word spaces
+// are preserved. OOF children (position:absolute/fixed) interrupt text runs.
+// This is a standalone function so both the full layout path and intrinsic
+// sizing (measureFlexMinMax) can share the same wrapping logic.
+func buildFlexChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutInputNode {
 	var result []*LayoutInputNode
 	var textRun []*LayoutInputNode // accumulates text nodes for current run
 
@@ -1507,7 +1509,7 @@ func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
 			}
 		}
 		if hasContent {
-			anonStyle := css.NewAnonymousBlockStyle(fla.style)
+			anonStyle := css.NewAnonymousBlockStyle(parentStyle)
 			result = append(result, &LayoutInputNode{
 				style:       anonStyle,
 				children:    textRun,
@@ -1517,7 +1519,7 @@ func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
 		textRun = nil
 	}
 
-	for _, child := range fla.node.Children() {
+	for _, child := range node.Children() {
 		if child.IsText() {
 			textRun = append(textRun, child)
 			continue
@@ -1544,6 +1546,11 @@ func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
 	}
 	flushTextRun()
 	return result
+}
+
+// buildFlexChildList wraps the standalone buildFlexChildren for the algorithm.
+func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
+	return buildFlexChildren(fla.node, fla.style)
 }
 
 // isCSSWhitespaceOnly returns true if s contains only CSS-collapsible whitespace
@@ -1604,7 +1611,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		}
 
 		childWDM := NewWritingDirectionMode(childStyle)
-		childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+		childGeom := ComputeFragmentGeometry(childStyle, childWDM, contentInlineSize)
 
 		// Resolve margins for the item.
 		// In flex layout, margin auto is used for alignment — resolve to 0 for now,
