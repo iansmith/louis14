@@ -463,6 +463,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
+			// CSS 2.1 §9.5: Floats from non-BFC children escape to the
+			// parent BFC. After laying out a non-BFC child, update our
+			// exclusion space so subsequent siblings see the child's floats.
+			// Mirrors Blink's: exclusion_space_ = layout_result->ExclusionSpace()
+			if !isChildNewFC && childResult.ExclusionSpace != nil {
+				exclusionSpace = childResult.ExclusionSpace
+			}
+
 			// Step 1: Append child's block-start margin to the strut.
 			prevMarginStrut.Append(childMargins.BlockStart)
 
