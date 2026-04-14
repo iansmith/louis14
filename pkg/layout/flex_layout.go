@@ -1489,10 +1489,15 @@ func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
 		if len(textRun) == 0 {
 			return
 		}
-		// Drop whitespace-only runs.
+		// Drop whitespace-only runs per CSS Flexbox §4: "A sequence of child
+		// text content that contains only white space (i.e., characters that
+		// can be affected by the white-space property) is not rendered."
+		// Only CSS-collapsible whitespace (U+0020 space, U+0009 tab,
+		// U+000A LF, U+000D CR) is dropped. Non-breaking space (U+00A0)
+		// is NOT collapsible and must create an anonymous flex item.
 		hasContent := false
 		for _, n := range textRun {
-			if strings.TrimSpace(n.TextContent()) != "" {
+			if !isCSSWhitespaceOnly(n.TextContent()) {
 				hasContent = true
 				break
 			}
@@ -1535,6 +1540,21 @@ func (fla *FlexLayoutAlgorithm) buildFlexChildList() []*LayoutInputNode {
 	}
 	flushTextRun()
 	return result
+}
+
+// isCSSWhitespaceOnly returns true if s contains only CSS-collapsible whitespace
+// characters (space U+0020, tab U+0009, LF U+000A, CR U+000D). Non-breaking
+// space (U+00A0) and other Unicode spaces are NOT CSS-collapsible.
+func isCSSWhitespaceOnly(s string) bool {
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // collectItems walks node.Children() and returns flex items (skipping OOF and display:none).
@@ -3266,6 +3286,18 @@ func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string
 		return alignItems
 	}
 	if v, ok := style.Get("align-self"); ok {
+		// Per WPT flexbox-safe-overflow-position-006: "safe" overflow keyword
+		// has no effect on legacy -webkit-box containers. When "safe" is present,
+		// ignore the entire align-self value and fall back to the container's
+		// align-items (from -webkit-box-align).
+		if hasOverflowSafe(v) {
+			if d, ok2 := fla.style.Get("display"); ok2 {
+				d = strings.TrimSpace(d)
+				if d == "-webkit-box" || d == "-webkit-inline-box" {
+					return alignItems
+				}
+			}
+		}
 		v = stripOverflowKeyword(v)
 		if v != "auto" && v != "" {
 			switch v {
