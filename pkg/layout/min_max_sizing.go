@@ -20,8 +20,26 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	geom := ComputeFragmentGeometry(style, wdm)
 
 	// If the node has an explicit inline-size, min = max = that size (content-box).
+	// Don't return early — continue to apply min/max inline-size constraints.
 	if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
-		return MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
+		result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
+		// Apply min/max inline-size constraints (all content-box).
+		minInline := ResolveMinInlineSize(style, wdm, space, geom)
+		if result.MinContent < minInline {
+			result.MinContent = minInline
+		}
+		if result.MaxContent < minInline {
+			result.MaxContent = minInline
+		}
+		if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+			if result.MinContent > maxInline {
+				result.MinContent = maxInline
+			}
+			if result.MaxContent > maxInline {
+				result.MaxContent = maxInline
+			}
+		}
+		return result
 	}
 
 	// CSS Containment: size containment — intrinsic sizes are 0 (element sized as empty).
