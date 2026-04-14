@@ -3497,7 +3497,12 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		v = strings.TrimSpace(v)
 		// Handle intrinsic keywords (min-content, max-content, fit-content).
 		if v == "min-content" || v == "max-content" || v == "fit-content" {
-			if mainIsItemInline {
+			// Per CSS Sizing 3 §5.1, min-content in the block axis is equivalent
+			// to auto. For flex items, auto triggers the §4.5 automatic minimum
+			// size algorithm, so we fall through to that code below.
+			if v == "min-content" && !mainIsItemInline {
+				// Fall through to §4.5 automatic minimum size below.
+			} else if mainIsItemInline {
 				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
 					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 					SetAvailableSize(space.AvailableSize).
@@ -3526,11 +3531,12 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				}
 				return blockContent
 			}
+		} else {
+			if mainIsItemInline {
+				return ResolveMinInlineSize(style, childWDM, space, childGeom)
+			}
+			return ResolveMinBlockSize(style, childWDM, space, childGeom)
 		}
-		if mainIsItemInline {
-			return ResolveMinInlineSize(style, childWDM, space, childGeom)
-		}
-		return ResolveMinBlockSize(style, childWDM, space, childGeom)
 	}
 
 	// §4.5: min-size is auto (default). The automatic minimum size is the
@@ -3828,6 +3834,14 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// Per Blink's approach and the spec, "transferred" only applies when an
 	// aspect ratio is present and a definite cross-size is available.
 	isReplaced := child.DOMNode != nil && isReplacedElement(child.DOMNode)
+	if flexDebug {
+		tag := ""
+		if child.DOMNode != nil {
+			tag = child.DOMNode.TagName
+		}
+		fmt.Printf("  AUTO-MIN <%s>: content=%.2f specified=%.2f transferred=%.2f isReplaced=%v mainIsInline=%v\n",
+			tag, contentSuggestion, specifiedSuggestion, transferredSuggestion, isReplaced, mainIsItemInline)
+	}
 	autoMin := contentSuggestion
 	if transferredSuggestion >= 0 {
 		if isReplaced {
