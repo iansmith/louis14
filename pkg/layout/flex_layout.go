@@ -1754,15 +1754,15 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 					return explicit
 				}
 			}
-			// §9.2 aspect-ratio fallback: when the item has a definite cross-size
-			// and an aspect ratio (CSS or intrinsic), derive the flex basis
-			// (main-size) from the cross-size × ratio. Only applies to flex-basis:
-			// auto — content sizing uses max-content which is independent of
-			// cross-size.
+			// §9.2 aspect-ratio fallback: when the item has an aspect ratio
+			// (CSS or intrinsic) and a definite cross-size, derive the flex basis
+			// (main-size) from the cross-size × ratio.
 			//
-			// The item's definite cross-size is (in priority order):
-			//  1. Its explicit CSS cross-size property (e.g. width in column flex).
-			//  2. Container cross-size, only if the item will stretch to fill it.
+			// For replaced elements, only use EXPLICIT cross-size (CSS property),
+			// not stretch-predicted cross-size. Replaced elements' natural content
+			// dimensions should be used when no explicit cross-size forces a
+			// different proportion. Stretch prediction gives wrong results when the
+			// stretch cross-size differs from the intrinsic cross-size.
 			ar := style.GetAspectRatio()
 			if !ar.IsSet && child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 				info := GetIntrinsicSizingInfo(fla.ctx, child)
@@ -1773,6 +1773,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 					}
 				}
 			}
+			isReplaced := child.DOMNode != nil && isReplacedElement(child.DOMNode)
 			if ar.IsSet {
 				var itemCrossContent float64
 				var hasItemCross bool
@@ -1795,7 +1796,10 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 					}
 				}
 				// If no explicit cross-size, check if the item stretches to container.
-				if !hasItemCross && hasDefiniteCross {
+				// Skip stretch prediction for replaced elements — their intrinsic
+				// content dimensions should be used when no explicit cross-size
+				// forces a different proportion via aspect ratio.
+				if !hasItemCross && hasDefiniteCross && !isReplaced {
 					alignItems := "stretch"
 					if v, ok := fla.style.Get("align-items"); ok {
 						alignItems = strings.TrimSpace(v)
@@ -1875,12 +1879,9 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				return explicit
 			}
 		}
-		// §9.2 Part B: aspect-ratio fallback when the item's cross-size is definite.
-		// The item's cross-size is definite if it has an explicit CSS cross-size,
-		// OR if it will be stretched (align-self:stretch, no auto cross margins,
-		// no explicit cross-size) and the container cross-size is definite.
-		// Check both the CSS aspect-ratio property AND intrinsic aspect ratio
-		// for replaced elements (images, canvas, video, etc.).
+		// §9.2 Part B: aspect-ratio fallback when the item has an aspect ratio
+		// (CSS or intrinsic) and a definite cross-size. For replaced elements,
+		// only use explicit cross-size, not stretch-predicted cross-size.
 		var arW, arH float64
 		var hasAR bool
 		if ar := style.GetAspectRatio(); ar.IsSet {
@@ -1888,8 +1889,6 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		} else if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 			info := GetIntrinsicSizingInfo(fla.ctx, child)
 			if info.HasAspectRatio && info.AspectRatio > 0 {
-				// Intrinsic aspect ratio is width/height (physical).
-				// Convert to the item's logical frame: arW=inline, arH=block.
 				if childWDM.IsVertical() {
 					arW, arH, hasAR = info.IntrinsicHeight, info.IntrinsicWidth, true
 				} else {
@@ -1897,6 +1896,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				}
 			}
 		}
+		isReplacedB := child.DOMNode != nil && isReplacedElement(child.DOMNode)
 		if hasAR {
 			// Determine the item's definite cross-size content value.
 			// Priority: 1) explicit CSS cross-size (clamped by min/max), 2) stretched container cross-size.
@@ -1932,7 +1932,8 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				}
 			}
 			// If no explicit cross-size, check stretch alignment.
-			if !hasItemCross && hasDefiniteCross {
+			// Skip stretch prediction for replaced elements.
+			if !hasItemCross && hasDefiniteCross && !isReplacedB {
 				alignItems := "stretch"
 				if v, ok := fla.style.Get("align-items"); ok {
 					alignItems = strings.TrimSpace(v)
@@ -2067,6 +2068,9 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	// must ignore the item's CSS main-size, but ComputeReplacedSize (used by
 	// computeContentMinMaxSizes) consults CSS width/height. Use intrinsic
 	// dimensions instead, matching Blink's IntrinsicSize() path.
+	// CSS cross-size constraints (e.g. height:8px) affect final layout via AR
+	// but do not change the element's content size — the content is always
+	// the intrinsic dimensions.
 	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
