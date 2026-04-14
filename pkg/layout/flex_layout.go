@@ -527,11 +527,15 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	alignItems := fla.getAlignItems()
 	for _, line := range lines {
 		lineCrossMax := 0.0
-		maxAscent := 0.0
-		maxDescent := 0.0
+		// Initialize baseline accumulators to -MaxFloat64 (like Blink's
+		// LayoutUnit::Min()) so that a single item whose baseline is
+		// outside its border-box produces ascent+descent = crossSize
+		// instead of inflating the line. See baseline-outside-flex-item test.
+		maxAscent := -math.MaxFloat64
+		maxDescent := -math.MaxFloat64
 		hasBaselineItem := false
-		maxLastAscent := 0.0
-		maxLastDescent := 0.0
+		maxLastAscent := -math.MaxFloat64
+		maxLastDescent := -math.MaxFloat64
 		hasLastBaselineItem := false
 		for _, item := range line.items {
 			// For column flex: the initial layout pass measures intrinsic cross-sizes.
@@ -634,13 +638,18 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// Row flex: both same orientation. Column flex: orthogonal writing modes only.
 			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
 				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-			if selfAlign == "baseline" && item.baseline > 0 && baselineParallel {
+			// canSynthesizeRow: baseline synthesis at block-start is valid for
+			// horizontal writing mode row flex. Vertical/column modes need
+			// orientation-specific synthesis not yet implemented.
+			canSynthesizeRow := isRow && !wdm.IsVertical()
+			if selfAlign == "baseline" && baselineParallel &&
+				(item.hasBaseline || item.baseline > 0 || canSynthesizeRow) {
 				// First baseline items: track ascent and descent separately.
-				// Clamp baseline within the item's border-box to avoid
-				// overflowing baselines expanding the flex line.
+				// Per Blink, baselines outside the border box are valid — do NOT
+				// clamp. Items with zero baseline (top of border box) participate.
 				bl := item.baseline
-				if bl > item.crossSize {
-					bl = item.crossSize
+				if !item.hasBaseline && canSynthesizeRow {
+					bl = 0 // CSS Align §4.4: synthesize first baseline at block-start
 				}
 				ascent := item.crossMarginStart() + bl
 				descent := outerCross - ascent
@@ -1057,13 +1066,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						bl = 0
 					}
 				}
-				if bl > 0 || item.hasBaseline || columnSameWM {
-					b := item.crossMarginStart() + bl
-					if b > sharedBaseline {
-						sharedBaseline = b
-					}
-					hasBaselineItem = true
+				b := item.crossMarginStart() + bl
+				if b > sharedBaseline {
+					sharedBaseline = b
 				}
+				hasBaselineItem = true
 			}
 			if selfAlign == "last baseline" && baselineParallel {
 				lb := item.lastBaseline
@@ -1152,7 +1159,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						if wdm.Dir == DirectionRTL {
 							bl = item.crossSize
 						}
-					} else if isRow {
+					} else if item.hasBaseline || item.baseline > 0 || canSynthesizeRow {
 						bl = item.baseline
 						if !item.hasBaseline && canSynthesizeRow {
 							bl = 0 // CSS Align §4.4: synthesize first baseline at block-start
@@ -1161,7 +1168,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					if bl > 0 || item.hasBaseline || canSynthesizeRow || columnSameWM {
 						itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
 					} else {
-						itemCrossOffset = crossStart
+						itemCrossOffset = crossStart // fallback to flex-start
 					}
 				} else {
 					itemCrossOffset = crossStart
@@ -1332,11 +1339,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// Last baseline: from the last non-collapsed item in the last line.
 	if len(lines) > 0 {
 		crossBPStart := geom.Border.BlockStart + geom.Padding.BlockStart
+		firstBLLine := lines[0]
+		lastBLLine := lines[len(lines)-1]
 
-		// First baseline: search first line.
-		if len(lines[0].items) > 0 {
+		// First baseline: search firstBLLine.
+		if len(firstBLLine.items) > 0 {
 			var firstBaselineItem *flexItem
-			for _, item := range lines[0].items {
+			for _, item := range firstBLLine.items {
 				if item.collapsed {
 					continue
 				}
@@ -1352,7 +1361,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			if firstBaselineItem == nil {
-				firstBaselineItem = lines[0].items[0]
+				firstBaselineItem = firstBLLine.items[0]
 			}
 			bl := firstBaselineItem.baseline
 			if !firstBaselineItem.hasBaseline && isRow && !wdm.IsVertical() {
@@ -1367,12 +1376,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			builder.SetBaseline(crossBPStart + itemBlockOffset + bl)
 		}
 
-		// Last baseline: search last line.
-		lastLine := lines[len(lines)-1]
-		if len(lastLine.items) > 0 {
+		// Last baseline: search lastBLLine.
+		if len(lastBLLine.items) > 0 {
 			var lastBaselineItem *flexItem
-			for i := len(lastLine.items) - 1; i >= 0; i-- {
-				item := lastLine.items[i]
+			for i := len(lastBLLine.items) - 1; i >= 0; i-- {
+				item := lastBLLine.items[i]
 				if item.collapsed {
 					continue
 				}
@@ -1388,7 +1396,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			if lastBaselineItem == nil {
-				lastBaselineItem = lastLine.items[len(lastLine.items)-1]
+				lastBaselineItem = lastBLLine.items[len(lastBLLine.items)-1]
 			}
 			lb := lastBaselineItem.lastBaseline
 			if lb <= 0 {
