@@ -2064,22 +2064,59 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	contentInlineSize float64,
 	isRow bool,
 ) float64 {
-	// For replaced elements, use intrinsic sizes directly. flex-basis:content
-	// must ignore the item's CSS main-size, but ComputeReplacedSize (used by
-	// computeContentMinMaxSizes) consults CSS width/height. Use intrinsic
-	// dimensions instead, matching Blink's IntrinsicSize() path.
-	// CSS cross-size constraints (e.g. height:8px) affect final layout via AR
-	// but do not change the element's content size — the content is always
-	// the intrinsic dimensions.
+	// For replaced elements in the inline axis, return intrinsic inline-size
+	// directly. For the block axis, use ComputeReplacedSize with the CSS
+	// block-size suppressed (flex-basis:content ignores the main-size) —
+	// this correctly derives block-size from cross-size × AR when the item
+	// has an explicit CSS cross-size.
 	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
 		if mainIsItemInline {
+			// Inline axis: intrinsic inline-size is the content size.
 			if childWDM.IsVertical() {
 				return info.IntrinsicHeight
 			}
 			return info.IntrinsicWidth
 		}
+		// Block axis: resolve CSS cross-size (inline-size) and derive
+		// block-size via aspect ratio, suppressing any CSS block-size.
+		// This mirrors ComputeReplacedSize §10.6.2 with height:auto.
+		availInline := contentInlineSize
+		if !parentWDM.IsOrthogonalTo(childWDM) {
+			margins := ResolveMargins(style, childWDM, contentInlineSize)
+			availInline -= margins.InlineStart + margins.InlineEnd
+			if availInline < 0 {
+				availInline = 0
+			}
+		}
+		crossSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+			SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
+			SetPercentageResolutionInlineSize(contentInlineSize).
+			Build()
+		// Check for explicit CSS cross-size (inline-size).
+		crossSize, hasCross := ResolveInlineSize(style, childWDM, crossSpace, childGeom)
+		if !hasCross {
+			// No explicit CSS inline-size; use intrinsic block dimension.
+			if childWDM.IsVertical() {
+				return info.IntrinsicWidth
+			}
+			return info.IntrinsicHeight
+		}
+		// CSS cross-size is set. Derive block-size via intrinsic AR.
+		var logicalRatio float64
+		if info.HasAspectRatio && info.AspectRatio > 0 {
+			if childWDM.IsVertical() {
+				logicalRatio = 1.0 / info.AspectRatio
+			} else {
+				logicalRatio = info.AspectRatio
+			}
+		}
+		if logicalRatio > 0 {
+			return crossSize / logicalRatio
+		}
+		// No AR — use intrinsic block dimension.
 		if childWDM.IsVertical() {
 			return info.IntrinsicWidth
 		}
