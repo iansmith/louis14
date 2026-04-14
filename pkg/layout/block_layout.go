@@ -286,7 +286,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Build constraint space for this child.
 			// CSS Writing Modes §4.3: a block container with a different
 			// writing-mode than its parent establishes a new BFC.
-			isChildNewFC := createsFormattingContext(childStyle) ||
+			isChildNewFC := createsFormattingContext(childStyle, child) ||
 				wdm.WM != childWDM.WM
 
 			// Compute available inline for this child, accounting for floats.
@@ -1336,7 +1336,9 @@ func emptyResult(wdm WritingDirectionMode) *LayoutResult {
 
 // createsFormattingContext returns true if the element establishes a new
 // block formatting context (CSS 2.1 §9.4.1).
-func createsFormattingContext(style *css.Style) bool {
+// The optional node parameter is used for the body element overflow
+// propagation rule (CSS Overflow 3 §3.1).
+func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool {
 	if style == nil {
 		return false
 	}
@@ -1358,7 +1360,14 @@ func createsFormattingContext(style *css.Style) bool {
 	}
 
 	// overflow != visible on either axis creates a BFC.
-	if style.GetOverflowX() != css.OverflowVisible || style.GetOverflowY() != css.OverflowVisible {
+	// CSS Overflow 3 §3.1: The <body> element's overflow value is propagated
+	// to the viewport (when <html> has overflow:visible), so the body element
+	// itself does NOT establish a BFC from its overflow property.
+	isBody := false
+	if len(nodes) > 0 && nodes[0] != nil && nodes[0].DOMNode != nil {
+		isBody = nodes[0].DOMNode.TagName == "body"
+	}
+	if !isBody && (style.GetOverflowX() != css.OverflowVisible || style.GetOverflowY() != css.OverflowVisible) {
 		return true
 	}
 
