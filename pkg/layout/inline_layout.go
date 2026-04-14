@@ -1076,14 +1076,31 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		maxAscent = strutAscent
 		maxDescent = strutDescent
 	}
+	// CSS 2.1 §10.8.1: Elements with vertical-align: top/bottom "do not
+	// affect the calculation of the baseline." Track nesting depth so that
+	// children of top/bottom-aligned inline boxes are also excluded.
+	var topBottomDepth int
+
 	for _, r := range line.Results {
 		switch r.Item.Type {
+		case InlineItemCloseTag:
+			if r.Item.Style != nil {
+				va := r.Item.Style.GetVerticalAlign()
+				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
+					topBottomDepth--
+				}
+			}
+
 		case InlineItemOpenTag:
 			// Empty inline boxes (e.g. <span></span>) have no InlineItemText but
 			// still establish a strut: their font's ascent/descent determine the
 			// minimum line box height per CSS 2.1 §10.8.
 			if r.Item.Style == nil {
 				continue
+			}
+			va := r.Item.Style.GetVerticalAlign()
+			if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
+				topBottomDepth++
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
 			var ascent, descent float64
@@ -1113,6 +1130,14 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			if descent < 0 {
 				descent = 0
 			}
+			// CSS 2.1 §10.8.1: Inside a vertical-align: top/bottom subtree,
+			// contribute to maxTopBottom instead of baseline calculation.
+			if topBottomDepth > 0 || va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
+				if h := ascent + descent; h > maxTopBottom {
+					maxTopBottom = h
+				}
+				continue
+			}
 			if ascent > maxAscent {
 				maxAscent = ascent
 			}
@@ -1123,6 +1148,13 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		case InlineItemText:
 			if r.TextEnd <= r.TextStart {
 				continue
+			}
+			// Check if this text is inside a vertical-align: top/bottom subtree,
+			// or if its own style specifies top/bottom alignment.
+			isInTopBottom := topBottomDepth > 0
+			if !isInTopBottom && r.Item.Style != nil {
+				va := r.Item.Style.GetVerticalAlign()
+				isInTopBottom = va == css.VerticalAlignTop || va == css.VerticalAlignBottom
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
 			var ascent, descent float64
@@ -1153,6 +1185,12 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				if descent < 0 {
 					descent = 0
 				}
+			}
+			if isInTopBottom {
+				if h := ascent + descent; h > maxTopBottom {
+					maxTopBottom = h
+				}
+				continue
 			}
 			if ascent > maxAscent {
 				maxAscent = ascent

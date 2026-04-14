@@ -1376,7 +1376,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			} else {
 				itemBlockOffset = firstBaselineItem.mainOffset
 			}
-			builder.SetBaseline(crossBPStart + itemBlockOffset + bl)
+			containerBL := crossBPStart + itemBlockOffset + bl
+			builder.SetBaseline(containerBL)
 		}
 
 		// Last baseline: search lastBLLine.
