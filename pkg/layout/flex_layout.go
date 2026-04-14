@@ -2065,9 +2065,9 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	// must ignore the item's CSS main-size, but ComputeReplacedSize (used by
 	// computeContentMinMaxSizes) consults CSS width/height. Use intrinsic
 	// dimensions instead, matching Blink's IntrinsicSize() path.
+	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
-		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 		if mainIsItemInline {
 			if childWDM.IsVertical() {
 				return info.IntrinsicHeight
@@ -2079,34 +2079,45 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 		}
 		return info.IntrinsicHeight
 	}
-	if isRow {
-		// Row flex: main axis = inline. Use computeContentMinMaxSizes which
-		// ignores the item's explicit CSS inline-size (width).
+	if mainIsItemInline {
+		// Main axis = item's inline axis. Use computeContentMinMaxSizes which
+		// ignores the item's explicit CSS inline-size.
+		parentBlockSize := Indefinite
+		if parentWDM.IsOrthogonalTo(childWDM) {
+			parentBlockSize = fla.space.AvailableSize.BlockSize
+		}
 		space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: parentBlockSize}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
 			Build()
 		mm := computeContentMinMaxSizes(fla.ctx, child, space)
 		return mm.MaxContent
 	}
-	// Column flex: main axis = block. Lay out the item with indefinite
-	// block-size and IsContentSuggestionLayout to suppress its explicit CSS
-	// block-size (height). The resulting block-size is content-driven.
+	// Main axis = item's block axis. Lay out with indefinite block-size and
+	// IsContentSuggestionLayout to suppress its explicit CSS block-size.
 	availInline := contentInlineSize
-	margins := ResolveMargins(style, childWDM, contentInlineSize)
-	availInline -= margins.InlineStart + margins.InlineEnd
-	if availInline < 0 {
-		availInline = 0
+	if !parentWDM.IsOrthogonalTo(childWDM) {
+		margins := ResolveMargins(style, childWDM, contentInlineSize)
+		availInline -= margins.InlineStart + margins.InlineEnd
+		if availInline < 0 {
+			availInline = 0
+		}
+	}
+	parentBlockSize := Indefinite
+	if parentWDM.IsOrthogonalTo(childWDM) {
+		parentBlockSize = fla.space.AvailableSize.BlockSize
 	}
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: parentBlockSize}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
 		SetIsContentSuggestionLayout(true).
 		Build()
 	result := layoutElement(fla.ctx, child, space)
-	lf := NewLogicalFragment(parentWDM, result.Fragment)
+	lf := NewLogicalFragment(childWDM, result.Fragment)
 	return lf.BlockSize() - childGeom.BlockBorderPadding()
 }
 
@@ -2212,28 +2223,36 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 		}
 		return blockSize
 	}
-	// For column flex, the item's cross-axis margins reduce the available
-	// inline space for layout (affects wrapping behavior and thus block-size).
+	// When main = item's block axis, cross-axis margins (inline margins)
+	// reduce available inline space for layout.
+	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 	availInline := contentInlineSize
-	if !isRow {
+	if !mainIsItemInline && !parentWDM.IsOrthogonalTo(childWDM) {
 		margins := ResolveMargins(style, childWDM, contentInlineSize)
 		availInline -= margins.InlineStart + margins.InlineEnd
 		if availInline < 0 {
 			availInline = 0
 		}
 	}
+	// For orthogonal items, pass the container's block-size so the builder can
+	// set the child's available inline-size via axis swapping.
+	parentBlockSize := Indefinite
+	if parentWDM.IsOrthogonalTo(childWDM) {
+		parentBlockSize = fla.space.AvailableSize.BlockSize
+	}
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
+		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
+		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: parentBlockSize}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
-	if isRow {
+	if mainIsItemInline {
 		mm := ComputeMinMaxSizes(fla.ctx, child, space)
 		return mm.MaxContent
 	}
-	// Column: lay out item at full width to get intrinsic block-size.
+	// Main = item's block axis: lay out to get intrinsic block-size.
 	result := layoutElement(fla.ctx, child, space)
-	lf := NewLogicalFragment(parentWDM, result.Fragment)
+	lf := NewLogicalFragment(childWDM, result.Fragment)
 	return lf.BlockSize() - childGeom.BlockBorderPadding()
 }
 
