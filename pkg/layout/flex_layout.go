@@ -642,13 +642,18 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// horizontal writing mode row flex. Vertical/column modes need
 			// orientation-specific synthesis not yet implemented.
 			canSynthesizeRow := isRow && !wdm.IsVertical()
-			if selfAlign == "baseline" && baselineParallel &&
-				(item.hasBaseline || item.baseline > 0 || canSynthesizeRow) {
+			if selfAlign == "baseline" &&
+				((baselineParallel && (item.hasBaseline || item.baseline > 0 || canSynthesizeRow)) ||
+					(!baselineParallel && canSynthesizeRow)) {
 				// First baseline items: track ascent and descent separately.
 				// Per Blink, baselines outside the border box are valid — do NOT
 				// clamp. Items with zero baseline (top of border box) participate.
 				bl := item.baseline
-				if !item.hasBaseline && canSynthesizeRow {
+				if !baselineParallel && canSynthesizeRow {
+					// Orthogonal item: synthesize first baseline at block-end
+					// of border box in container's cross-axis direction (Blink behavior).
+					bl = item.crossSize
+				} else if !item.hasBaseline && canSynthesizeRow {
 					bl = 0 // CSS Align §4.4: synthesize first baseline at block-start
 				}
 				ascent := item.crossMarginStart() + bl
@@ -660,10 +665,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					maxDescent = descent
 				}
 				hasBaselineItem = true
-			} else if selfAlign == "last baseline" && baselineParallel {
+			} else if selfAlign == "last baseline" &&
+				(baselineParallel || canSynthesizeRow) {
 				// Last baseline items: track ascent (from top) and descent (from last baseline to bottom).
 				lb := item.lastBaseline
-				if lb <= 0 {
+				if !baselineParallel && canSynthesizeRow {
+					// Orthogonal item: synthesize baseline at block-end of border
+					// box (= crossSize) — matches CSS 2.1 §10.8.1 inline-block
+					// behavior for items without line boxes in the cross-axis.
+					lb = item.crossSize
+				} else if lb <= 0 {
 					lb = item.crossSize // fallback: bottom of border-box
 				}
 				lastAscent := item.crossMarginStart() + lb
@@ -1050,7 +1061,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// In RTL this equals cross-end (baseline=crossSize), causing items to
 			// align by their physical left edges — matching Blink's behavior.
 			columnSameWM := !isRow && item.wdm.IsVertical() == wdm.IsVertical()
-			if selfAlign == "baseline" && (baselineParallel || columnSameWM) {
+			if selfAlign == "baseline" &&
+				((baselineParallel && (item.hasBaseline || item.baseline > 0 || canSynthesizeRow)) ||
+					columnSameWM ||
+					(!baselineParallel && canSynthesizeRow)) {
 				var bl float64
 				if columnSameWM {
 					// Synthesize inline-axis baseline at line-left edge.
@@ -1058,6 +1072,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						bl = item.crossSize
 					}
 					// LTR: bl = 0 (line-left = inline-start)
+				} else if !baselineParallel && canSynthesizeRow {
+					// Orthogonal item: synthesize first baseline at block-end
+					// of border box in container's cross-axis direction.
+					bl = item.crossSize
 				} else {
 					bl = item.baseline
 					if !item.hasBaseline && canSynthesizeRow {
@@ -1072,13 +1090,20 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				hasBaselineItem = true
 			}
-			if selfAlign == "last baseline" && baselineParallel {
-				lb := item.lastBaseline
-				if lb <= 0 {
-					lb = item.baseline
-				}
-				if !item.hasBaseline && lb <= 0 && canSynthesizeRow {
-					lb = item.crossSize // CSS Align §4.4: synthesize last baseline at block-end.
+			if selfAlign == "last baseline" && (baselineParallel || canSynthesizeRow) {
+				var lb float64
+				if !baselineParallel && canSynthesizeRow {
+					// Orthogonal item: synthesize baseline at block-end of border
+					// box (= crossSize) — matches CSS 2.1 §10.8.1 inline-block.
+					lb = item.crossSize
+				} else {
+					lb = item.lastBaseline
+					if lb <= 0 {
+						lb = item.baseline
+					}
+					if !item.hasBaseline && lb <= 0 && canSynthesizeRow {
+						lb = item.crossSize // CSS Align §4.4: synthesize last baseline at block-end.
+					}
 				}
 				d := item.crossMarginEnd() + (item.crossSize - lb)
 				if d > sharedLastDescend {
@@ -1152,6 +1177,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				itemCrossOffset = crossStart + crossFreeForAlign/2
 			case "baseline", "first baseline":
 				if hasBaselineItem {
+					baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+						(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
 					columnSameWM := !isRow && item.wdm.IsVertical() == wdm.IsVertical()
 					var bl float64
 					if columnSameWM {
@@ -1159,6 +1186,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						if wdm.Dir == DirectionRTL {
 							bl = item.crossSize
 						}
+					} else if !baselineParallel && canSynthesizeRow {
+						// Orthogonal item: synthesize first baseline at block-end
+						// of border box in container's cross-axis direction.
+						bl = item.crossSize
 					} else if item.hasBaseline || item.baseline > 0 || canSynthesizeRow {
 						bl = item.baseline
 						if !item.hasBaseline && canSynthesizeRow {
@@ -1175,12 +1206,21 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			case "last baseline":
 				if hasLastBaselineItem {
-					bl := item.lastBaseline
-					if bl <= 0 {
-						bl = item.baseline
-					}
-					if !item.hasBaseline && bl <= 0 && canSynthesizeRow {
-						bl = item.crossSize // CSS Align §4.4: synthesize last baseline at block-end
+					baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+						(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+					var bl float64
+					if !baselineParallel && canSynthesizeRow {
+						// Orthogonal item: synthesize baseline at block-end of border
+						// box (= crossSize) — matches CSS 2.1 §10.8.1 inline-block.
+						bl = item.crossSize
+					} else {
+						bl = item.lastBaseline
+						if bl <= 0 {
+							bl = item.baseline
+						}
+						if !item.hasBaseline && bl <= 0 && canSynthesizeRow {
+							bl = item.crossSize // CSS Align §4.4: synthesize last baseline at block-end
+						}
 					}
 					// Position so that the item's last baseline aligns with the shared
 					// last baseline. The shared position from line-start is
