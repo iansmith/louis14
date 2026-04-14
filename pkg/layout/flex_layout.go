@@ -2536,9 +2536,16 @@ func (fla *FlexLayoutAlgorithm) resolveFlexibleLengths(
 	}
 
 	if math.Abs(freeSpace) < 0.001 {
-		// No free space: all items stay at their hypothetical main size.
+		// No free space: all items stay at their hypothetical main size,
+		// but still clamp to their effective minimum (§4.5 automatic minimum).
 		for _, item := range items {
 			item.resolvedMain = item.hypothetical
+			if item.resolvedMain < item.minMain {
+				item.resolvedMain = item.minMain
+			}
+			if item.resolvedMain < 0 {
+				item.resolvedMain = 0
+			}
 		}
 		return
 	}
@@ -2844,10 +2851,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		}
 		avail := LogicalSize{
 			InlineSize: availInline,
-			BlockSize:  Indefinite,
-		}
-		if mainSize > 0 {
-			avail.BlockSize = mainSize + item.mainBorderPadding()
+			BlockSize:  mainSize + item.mainBorderPadding(),
 		}
 		b.SetAvailableSize(avail)
 		b.SetPercentageResolutionSize(LogicalSize{
@@ -2856,12 +2860,10 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		})
 		b.SetPercentageResolutionInlineSize(contentInlineSize)
 		b.SetIsFixedInlineSize(crossIsFixed)
-		if mainSize > 0 {
-			b.SetIsFixedBlockSize(true)
-			// Per §9.5: the flex-resolved main size IS the used main size.
-			// Override the item's CSS height so the layout uses the flex size.
-			b.SetIsBlockSizeOverride(true)
-		}
+		b.SetIsFixedBlockSize(true)
+		// Per §9.5: the flex-resolved main size IS the used main size.
+		// Override the item's CSS height so the layout uses the flex size.
+		b.SetIsBlockSizeOverride(true)
 	}
 
 	return b.Build()
