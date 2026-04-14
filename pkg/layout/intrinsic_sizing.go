@@ -25,9 +25,36 @@ func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) Intrinsic
 		return getImgIntrinsicInfo(ctx, node)
 	case "canvas":
 		return getCanvasIntrinsicInfo(node)
-	default:
-		// video, iframe, embed, object, input, textarea, select, button
+	case "video":
+		// Per HTML spec, video has intrinsic dimensions (default 300×150 if no
+		// source) and an intrinsic aspect ratio.
 		return IntrinsicSizingInfo{300, 150, 2.0, true}
+	case "iframe", "embed", "object":
+		// Per CSS 2.1 §10.3.2, these have a default 300×150 size but NO
+		// intrinsic aspect ratio. Unlike images/video, their content doesn't
+		// define a natural ratio between width and height.
+		return IntrinsicSizingInfo{300, 150, 0, false}
+	case "textarea":
+		// Form controls have intrinsic dimensions but no aspect ratio.
+		// Textarea default: ~173×54 border-box per UA stylesheet; content-box
+		// is 167×48 (minus 2×1px border + 2×2px padding).
+		return IntrinsicSizingInfo{167, 48, 0, false}
+	case "input":
+		inputType, _ := node.DOMNode.GetAttribute("type")
+		if inputType == "checkbox" || inputType == "radio" {
+			return IntrinsicSizingInfo{13, 13, 1.0, true}
+		}
+		// Text input default: ~173×19 border-box per UA stylesheet; content-box
+		// is 165×11 (minus 2×2px border + 2×(1+2)px padding).
+		return IntrinsicSizingInfo{165, 11, 0, false}
+	case "select":
+		// Select default: ~173×19 border-box; content-box is 167×13.
+		return IntrinsicSizingInfo{167, 13, 0, false}
+	case "button":
+		// Button sizes to content; provide reasonable fallback.
+		return IntrinsicSizingInfo{0, 0, 0, false}
+	default:
+		return IntrinsicSizingInfo{300, 150, 0, false}
 	}
 }
 
