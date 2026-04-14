@@ -1365,7 +1365,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			bl := firstBaselineItem.baseline
 			if !firstBaselineItem.hasBaseline && isRow && !wdm.IsVertical() {
-				bl = 0 // CSS Align §4.4: synthesize first baseline at block-start
+				// CSS Inline 3 §A.3 / CSS Align §4.4: synthesize first baseline
+				// at the block-end (bottom) of the item's border box.
+				// Blink: SynthesizedBaseline returns block_size for alphabetic baseline.
+				bl = firstBaselineItem.crossSize
 			}
 			var itemBlockOffset float64
 			if isRow {
@@ -4095,32 +4098,41 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			}
 			newBorderBox := stretchContent + crossBP
 
-			// CSS Flexbox §9.2 step B / §9.4: For <img> elements with an intrinsic
-			// aspect ratio, no explicit CSS main-size, and a stretch cross-size that
-			// constrains below the intrinsic cross-size, build the constraint space
-			// without fixing the main-size. This lets ComputeReplacedSize derive the
-			// main-size from the cross-size via the aspect ratio, producing correct
-			// sizing (e.g., a 60x60 image in a 25px-tall flex container → 25x25).
+			// CSS Flexbox §9.2 step B / §9.4: For elements with an aspect ratio
+			// (intrinsic for <img>, or CSS aspect-ratio), no explicit CSS main-size,
+			// and a stretch cross-size, build the constraint space without fixing
+			// the main-size so it can be derived from the cross-size via the ratio.
 			//
-			// This only applies to <img> elements — iframes, canvas, and other replaced
-			// elements have default sizes that don't establish a real aspect ratio for
-			// flex sizing purposes (per CSS Sizing 3 §5.2).
+			// For <img>: uses intrinsic aspect ratio from the image.
+			// For other elements: uses CSS aspect-ratio property.
+			//
+			// Only applies when the item's main-size was NOT resolved by
+			// flex-grow/flex-shrink (i.e., flex-grow is 0 and no explicit main-size).
+			// Otherwise, flex:1 items would have their grown main-size overridden.
 			useAspectRatioStretch := false
-			if item.node.DOMNode != nil && item.node.DOMNode.TagName == "img" {
-				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
-				if info.HasAspectRatio && info.AspectRatio > 0 {
-					hasExplicitMainSize := false
-					tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
-						SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-						SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-						SetPercentageResolutionInlineSize(contentInlineSize).
-						Build()
-					if item.mainIsItemInline {
-						_, hasExplicitMainSize = ResolveInlineSize(item.style, item.wdm, tmpSpace, item.geom)
-					} else {
-						_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
+			hasExplicitMainSize := false
+			tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if item.mainIsItemInline {
+				_, hasExplicitMainSize = ResolveInlineSize(item.style, item.wdm, tmpSpace, item.geom)
+			} else {
+				_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
+			}
+			if !hasExplicitMainSize {
+				if item.node.DOMNode != nil && item.node.DOMNode.TagName == "img" {
+					info := GetIntrinsicSizingInfo(fla.ctx, item.node)
+					if info.HasAspectRatio && info.AspectRatio > 0 {
+						useAspectRatioStretch = true
 					}
-					if !hasExplicitMainSize {
+				} else if ar := item.style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+					// CSS aspect-ratio property on non-replaced elements.
+					// Only apply when flex-grow is 0 — if the item grew via flex,
+					// its main-size is already determined and shouldn't be overridden.
+					flexGrow := item.style.GetFlexGrow()
+					if flexGrow == 0 {
 						useAspectRatioStretch = true
 					}
 				}

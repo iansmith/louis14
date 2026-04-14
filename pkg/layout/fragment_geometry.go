@@ -433,6 +433,7 @@ func CalculateInitialFragmentGeometry(
 
 	// --- Resolve inline-size (produces border-box) ---
 	var borderBoxInline float64
+	inlineSizeIsAuto := false // true if inline-size was not explicitly set
 
 	// Check for intrinsic sizing keywords (min-content, max-content, fit-content)
 	// before the normal resolution path. These keywords are not lengths/percentages
@@ -466,6 +467,7 @@ func CalculateInitialFragmentGeometry(
 			available = 0
 		}
 		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
+		inlineSizeIsAuto = true
 	} else if space.IsInsideFlexibleBox && !space.IsFixedInlineSize {
 		minMax := ComputeMinMaxSizes(ctx, node, space)
 		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
@@ -473,9 +475,11 @@ func CalculateInitialFragmentGeometry(
 			available = 0
 		}
 		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
+		inlineSizeIsAuto = true
 	} else {
 		// Auto inline-size: fill available space.
 		borderBoxInline = space.AvailableSize.InlineSize
+		inlineSizeIsAuto = true
 	}
 
 	// Apply min/max inline constraints (content-box comparison).
@@ -615,6 +619,28 @@ func CalculateInitialFragmentGeometry(
 				resolvedBlock = contentBlock + geom.BlockBorderPadding()
 			}
 			borderBoxBlock = resolvedBlock
+		} else if inlineSizeIsAuto && borderBoxBlock != Indefinite {
+			// CSS Sizing 4 §5.1: reverse direction — derive inline from block
+			// when inline-size is auto and block-size is definite.
+			if style.GetBoxSizing() == "border-box" {
+				if wdm.IsHorizontal() {
+					borderBoxInline = borderBoxBlock * ratio
+				} else {
+					borderBoxInline = borderBoxBlock / ratio
+				}
+			} else {
+				contentBlock := borderBoxBlock - geom.BlockBorderPadding()
+				if contentBlock < 0 {
+					contentBlock = 0
+				}
+				var contentInline float64
+				if wdm.IsHorizontal() {
+					contentInline = contentBlock * ratio
+				} else {
+					contentInline = contentBlock / ratio
+				}
+				borderBoxInline = contentInline + geom.InlineBorderPadding()
+			}
 		}
 	}
 
