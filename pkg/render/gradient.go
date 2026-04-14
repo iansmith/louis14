@@ -22,21 +22,28 @@ func isGradientValue(val string) bool {
 
 // gradientStop holds a single color stop.
 type gradientStop struct {
-	r, g, b  float64 // 0-1
-	a        float64 // 0-1
-	pos      float64 // position along gradient line in pixels
-	posIsSet bool
+	r, g, b   float64 // 0-1
+	a         float64 // 0-1
+	pos       float64 // position along gradient line in pixels (after resolution)
+	posIsSet  bool
+	isPercent bool    // true if pos is a percentage (0-100) needing lineLen resolution
 }
 
 // parseLinearGradient parses a linear-gradient(...) value.
 // Returns angle in degrees (0=to top, 90=to right, 180=to bottom, 270=to left),
 // and the list of color stops.
-func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok bool) {
+func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok bool, repeating bool) {
 	lower := strings.ToLower(strings.TrimSpace(val))
-	if !strings.HasPrefix(lower, "linear-gradient(") {
-		return 0, nil, false
+	var prefixLen int
+	if strings.HasPrefix(lower, "repeating-linear-gradient(") {
+		prefixLen = len("repeating-linear-gradient(")
+		repeating = true
+	} else if strings.HasPrefix(lower, "linear-gradient(") {
+		prefixLen = len("linear-gradient(")
+	} else {
+		return 0, nil, false, false
 	}
-	inner := val[len("linear-gradient("):]
+	inner := val[prefixLen:]
 	if idx := strings.LastIndex(inner, ")"); idx >= 0 {
 		inner = inner[:idx]
 	}
@@ -44,7 +51,7 @@ func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok
 
 	args := splitGradientArgs(inner)
 	if len(args) == 0 {
-		return 0, nil, false
+		return 0, nil, false, false
 	}
 
 	// Default direction: to bottom (180 degrees).
@@ -101,9 +108,9 @@ func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok
 	}
 
 	if len(stops) < 2 {
-		return 0, nil, false
+		return 0, nil, false, false
 	}
-	return angleDeg, stops, true
+	return angleDeg, stops, true, repeating
 }
 
 // parseColorStop parses a color stop like "green 25px", "red 50%", "#ff0000".
@@ -126,9 +133,10 @@ func parseColorStop(s string) (gradientStop, bool) {
 		a: c.A,
 	}
 	if posStr != "" {
-		if pos, posOk := parseStopPosition(posStr); posOk {
+		if pos, posOk, isPct := parseStopPosition(posStr); posOk {
 			stop.pos = pos
 			stop.posIsSet = true
+			stop.isPercent = isPct
 		}
 	}
 	return stop, true
@@ -167,19 +175,25 @@ func splitColorAndPosition(s string) (colorStr, posStr string) {
 	return s, ""
 }
 
-// parseStopPosition parses "25px", "0" as a pixel position.
-func parseStopPosition(s string) (float64, bool) {
+// parseStopPosition parses "25px", "50%", "0" as a stop position.
+// For percentage values, returns the percentage (0-100) and isPercent=true.
+// For pixel values, returns the pixel value and isPercent=false.
+func parseStopPosition(s string) (pos float64, ok bool, isPercent bool) {
 	s = strings.TrimSpace(s)
 	if s == "0" {
-		return 0, true
+		return 0, true, false
 	}
 	if strings.HasSuffix(s, "px") {
 		if f, err := strconv.ParseFloat(strings.TrimSuffix(s, "px"), 64); err == nil {
-			return f, true
+			return f, true, false
 		}
 	}
-	// % positions not supported yet — skip.
-	return 0, false
+	if strings.HasSuffix(s, "%") {
+		if f, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64); err == nil {
+			return f, true, true
+		}
+	}
+	return 0, false, false
 }
 
 // splitGradientArgs splits a gradient argument list respecting nested parens.
@@ -209,6 +223,13 @@ func resolveStopPositions(stops []gradientStop, lineLen float64) {
 	n := len(stops)
 	if n == 0 {
 		return
+	}
+	// First resolve percentage stops to pixel positions.
+	for i := range stops {
+		if stops[i].posIsSet && stops[i].isPercent {
+			stops[i].pos = stops[i].pos / 100.0 * lineLen
+			stops[i].isPercent = false
+		}
 	}
 	if !stops[0].posIsSet {
 		stops[0].pos = 0
@@ -302,7 +323,7 @@ func clamp01(v float64) float64 {
 // drawLinearGradient renders a linear-gradient onto the target RGBA image
 // within the box bounds [x, y, w, h].
 func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
-	angleDeg, stops, ok := parseLinearGradient(gradVal)
+	angleDeg, stops, ok, repeating := parseLinearGradient(gradVal)
 	if !ok {
 		return
 	}
@@ -324,7 +345,24 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 		return
 	}
 
-	resolveStopPositions(stops, lineLen)
+	// For repeating gradients, the line length is determined by the stop
+	// positions, not the box size. The pattern repeats to fill the box.
+	// Per CSS Images 3 §3.4: the repeating gradient tiles the gradient line
+	// between the first and last color stop positions.
+	var repeatLen float64
+	if repeating {
+		// Resolve percentage stops against the full lineLen first.
+		resolveStopPositions(stops, lineLen)
+		repeatLen = stops[len(stops)-1].pos - stops[0].pos
+		if repeatLen <= 0 {
+			// Degenerate: all stops at same position → use last stop color.
+			return
+		}
+	}
+
+	if !repeating {
+		resolveStopPositions(stops, lineLen)
+	}
 
 	x0 := int(math.Round(x))
 	y0 := int(math.Round(y))
@@ -334,41 +372,87 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 		return
 	}
 
-	bounds := r.target.Bounds()
-	imgX1 := bounds.Max.X
-	imgY1 := bounds.Max.Y
+	// Clip drawing bounds to the active clip region (overflow:hidden, CSS clip).
+	// The gg context's clip doesn't affect direct pixel writes, so we enforce
+	// clip bounds ourselves.
+	clipMinX, clipMinY, clipMaxX, clipMaxY := r.activeClipBounds()
+	if x0 < clipMinX {
+		x0 = clipMinX
+	}
+	if y0 < clipMinY {
+		y0 = clipMinY
+	}
+	if x1 > clipMaxX {
+		x1 = clipMaxX
+	}
+	if y1 > clipMaxY {
+		y1 = clipMaxY
+	}
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+
+	// Original (unclipped) gradient extent for position calculation.
+	origX0 := int(math.Round(x))
+	origY0 := int(math.Round(y))
+	origX1 := int(math.Round(x + w))
+	origY1 := int(math.Round(y + h))
+	gradW := origX1 - origX0
+	gradH := origY1 - origY0
+	if gradW <= 0 || gradH <= 0 {
+		return
+	}
+
+	// wrapPos wraps a gradient position for repeating gradients.
+	// For repeating-linear-gradient, the pattern tiles between the first
+	// and last stop positions.
+	startPos := 0.0
+	if repeating && len(stops) > 0 {
+		startPos = stops[0].pos
+	}
+	wrapPos := func(pos float64) float64 {
+		if !repeating {
+			return pos
+		}
+		pos = pos - startPos
+		pos = math.Mod(pos, repeatLen)
+		if pos < 0 {
+			pos += repeatLen
+		}
+		return pos + startPos
+	}
 
 	if math.Abs(dx) < 1e-6 {
 		// Vertical gradient.
-		for py := y0; py < y1 && py < imgY1; py++ {
+		for py := y0; py < y1; py++ {
 			var pos float64
 			if dy > 0 {
-				pos = float64(py-y0) / float64(y1-y0) * lineLen
+				pos = float64(py-origY0) / float64(gradH) * lineLen
 			} else {
-				pos = float64(y1-1-py) / float64(y1-y0) * lineLen
+				pos = float64(origY1-1-py) / float64(gradH) * lineLen
 			}
-			c := interpolateGradientColor(stops, pos)
+			c := interpolateGradientColor(stops, wrapPos(pos))
 			if c.A == 0 {
 				continue
 			}
-			for px := x0; px < x1 && px < imgX1; px++ {
+			for px := x0; px < x1; px++ {
 				r.target.SetRGBA(px, py, c)
 			}
 		}
 	} else if math.Abs(dy) < 1e-6 {
 		// Horizontal gradient.
-		for px := x0; px < x1 && px < imgX1; px++ {
+		for px := x0; px < x1; px++ {
 			var pos float64
 			if dx > 0 {
-				pos = float64(px-x0) / float64(x1-x0) * lineLen
+				pos = float64(px-origX0) / float64(gradW) * lineLen
 			} else {
-				pos = float64(x1-1-px) / float64(x1-x0) * lineLen
+				pos = float64(origX1-1-px) / float64(gradW) * lineLen
 			}
-			c := interpolateGradientColor(stops, pos)
+			c := interpolateGradientColor(stops, wrapPos(pos))
 			if c.A == 0 {
 				continue
 			}
-			for py := y0; py < y1 && py < imgY1; py++ {
+			for py := y0; py < y1; py++ {
 				r.target.SetRGBA(px, py, c)
 			}
 		}
@@ -376,12 +460,12 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 		// Diagonal gradient: per-pixel projection.
 		cx := x + w/2
 		cy := y + h/2
-		for py := y0; py < y1 && py < imgY1; py++ {
-			for px := x0; px < x1 && px < imgX1; px++ {
+		for py := y0; py < y1; py++ {
+			for px := x0; px < x1; px++ {
 				projX := float64(px)+0.5 - cx
 				projY := float64(py)+0.5 - cy
 				pos := projX*dx + projY*dy + lineLen/2
-				c := interpolateGradientColor(stops, pos)
+				c := interpolateGradientColor(stops, wrapPos(pos))
 				if c.A == 0 {
 					continue
 				}

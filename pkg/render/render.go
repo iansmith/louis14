@@ -39,6 +39,16 @@ type Renderer struct {
 
 	// Custom @counter-style rules, keyed by name.
 	counterStyles map[string]css.CounterStyleRule
+
+	// clipStack tracks active overflow:hidden clip rectangles. Gradient rendering
+	// writes directly to the pixel buffer (bypassing the gg context's clip), so
+	// we maintain our own clip bounds to intersect with during direct pixel writes.
+	clipStack []clipRect
+}
+
+// clipRect represents an active clip rectangle.
+type clipRect struct {
+	x, y, w, h float64
 }
 
 // newProvider creates a DirectGlyphProvider for the default fonts directory.
@@ -111,6 +121,48 @@ func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
 // SetScrollY sets the vertical scroll offset.
 func (r *Renderer) SetScrollY(scrollY float64) {
 	r.scrollY = scrollY
+}
+
+// pushClipRect pushes a clip rectangle onto the stack. Direct pixel-writing
+// operations (like gradient rendering) must respect these bounds.
+func (r *Renderer) pushClipRect(x, y, w, h float64) {
+	r.clipStack = append(r.clipStack, clipRect{x, y, w, h})
+}
+
+// popClipRect removes the most recent clip rectangle from the stack.
+func (r *Renderer) popClipRect() {
+	if len(r.clipStack) > 0 {
+		r.clipStack = r.clipStack[:len(r.clipStack)-1]
+	}
+}
+
+// activeClipBounds returns the intersection of all active clip rectangles.
+// Returns the image bounds if no clips are active.
+func (r *Renderer) activeClipBounds() (x0, y0, x1, y1 int) {
+	bounds := r.target.Bounds()
+	fx0 := float64(bounds.Min.X)
+	fy0 := float64(bounds.Min.Y)
+	fx1 := float64(bounds.Max.X)
+	fy1 := float64(bounds.Max.Y)
+	for _, c := range r.clipStack {
+		cx0 := c.x
+		cy0 := c.y
+		cx1 := c.x + c.w
+		cy1 := c.y + c.h
+		if cx0 > fx0 {
+			fx0 = cx0
+		}
+		if cy0 > fy0 {
+			fy0 = cy0
+		}
+		if cx1 < fx1 {
+			fx1 = cx1
+		}
+		if cy1 < fy1 {
+			fy1 = cy1
+		}
+	}
+	return int(math.Round(fx0)), int(math.Round(fy0)), int(math.Round(fx1)), int(math.Round(fy1))
 }
 
 // SetCounterStyles registers custom @counter-style rules for list marker rendering.
@@ -1077,6 +1129,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 			layer.CSSClipRect[2], layer.CSSClipRect[3])
 		r.dc.DrawRectangle(cx, cy, cw, ch)
 		r.dc.Clip()
+		r.pushClipRect(cx, cy, cw, ch)
 	}
 
 	// CSS clip-path: clips all content to a shape.
@@ -1149,6 +1202,8 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
 		}
 		r.dc.Clip()
+		// Push clip bounds for direct pixel writers (gradient renderer).
+		r.pushClipRect(ox, oy, ow, oh)
 	}
 
 	// Step 2: Negative z-index stacking contexts.
@@ -1177,6 +1232,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	if clipping {
+		r.popClipRect()
 		r.dc.Pop()
 	}
 
@@ -1185,6 +1241,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	if cssClipping {
+		r.popClipRect()
 		r.dc.Pop()
 	}
 }
