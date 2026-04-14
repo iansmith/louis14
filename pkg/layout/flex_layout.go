@@ -1617,7 +1617,8 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 
 		// Compute §4.5 effective minimum main size (content-based; used for final clamp).
 		minMainSize := fla.flexItemMinMain(child, childStyle, childWDM, childGeom,
-			itemSizingSpace, flexBasis, isRow, containerCrossSize, hasDefiniteCross, contentInlineSize)
+			itemSizingSpace, flexBasis, isRow, containerCrossSize, hasDefiniteCross, contentInlineSize,
+			containerMainSize, hasDefiniteMain)
 
 		// For the hypothetical main size (used for wrap decisions and free-space computation),
 		// only clamp by the explicit CSS min-width/min-height. The content-based automatic
@@ -1628,6 +1629,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		// Clamp flex-basis by explicit min/max main size only.
 		hyp := fla.clampMainSizeWithMin(flexBasis, explicitMin, childStyle, childWDM, childGeom,
 			itemSizingSpace, isRow)
+
 
 		// Compute CSS max main size for §9.7 freeze loop.
 		// Must dispatch to the correct axis function based on mainIsItemInline,
@@ -2389,7 +2391,7 @@ func (fla *FlexLayoutAlgorithm) clampMainSize(
 		SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
-	minMain := fla.flexItemMinMain(child, style, childWDM, childGeom, parentSpace, basis, isRow, 0, false, contentInlineSize)
+	minMain := fla.flexItemMinMain(child, style, childWDM, childGeom, parentSpace, basis, isRow, 0, false, contentInlineSize, 0, false)
 	return fla.clampMainSizeWithMin(basis, minMain, style, childWDM, childGeom, parentSpace, isRow)
 }
 
@@ -3489,6 +3491,8 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	containerCrossSize float64,
 	hasDefiniteCross bool,
 	contentInlineSize float64,
+	containerMainSize float64,
+	hasDefiniteMain bool,
 ) float64 {
 	// Check if min-size is explicitly set (non-auto).
 	// The CSS property controlling the flex main axis depends on the CONTAINER's
@@ -3641,11 +3645,19 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 
 	// §4.5 Specified size suggestion: if the item has a definite preferred main size,
 	// that size (content-box). Only applies when the preferred size is definite.
+	// Per §9.8, percentage main sizes on flex items resolve against the container's
+	// definite main size, so we pass it for percentage resolution.
 	specifiedSuggestion := -1.0
 	{
+		pctBlockSize := 0.0
+		availBlockSize := Indefinite
+		if !mainIsItemInline && hasDefiniteMain {
+			pctBlockSize = containerMainSize
+			availBlockSize = containerMainSize
+		}
 		itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
-			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: availBlockSize}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
 			Build()
 		if mainIsItemInline {
