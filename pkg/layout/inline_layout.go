@@ -1204,9 +1204,16 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				// Replaced elements don't propagate baselines from line boxes.
 				atomicBaseline := float64(0)
 				if !isReplaced {
-					atomicBaseline = r.LayoutResult.LastBaseline
-					if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+					// CSS Flexbox §4.2: inline-flex uses first baseline.
+					// CSS 2.1 §17.5.2: inline-table baseline is "baseline of first row"
+					// — use first baseline (Baseline), not LastBaseline.
+					// CSS 2.1 §10.8.1: inline-block uses last line box baseline.
+					if (display == css.DisplayInlineFlex || display == css.DisplayFlex) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
+					} else if (display == css.DisplayInlineTable || display == css.DisplayTable) && r.LayoutResult.Baseline > 0 {
+						atomicBaseline = r.LayoutResult.Baseline
+					} else {
+						atomicBaseline = r.LayoutResult.LastBaseline
 					}
 				}
 				if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {

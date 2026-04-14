@@ -232,6 +232,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	rowInfos := make([]rowInfo, len(rows))
 
 	firstRowHeight := 0.0
+	firstRowBaseline := 0.0  // max cell baseline in first row (for table first baseline)
+	lastRowBaseline := 0.0   // max cell baseline in last row (for table last baseline)
+	lastRowBlockOffset := 0.0 // block offset of last row
 	for rowIdx, row := range rows {
 		// Add inter-row spacing (block spacing) between rows.
 		if rowIdx > 0 && blockSpacing > 0 {
@@ -442,10 +445,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			BlockOffset:  blockOffset,
 		})
 
+		// Track cell baselines for this row (CSS 2.1 §17.5.2).
+		// The row baseline is the max cell first-baseline across all cells
+		// that have a baseline, mirroring Blink's RowBaselineTabulator.
+		rowBaseline := 0.0
+		for _, cl := range cellLayouts {
+			cellBL := cl.result.Baseline
+			if cellBL > 0 && cellBL > rowBaseline {
+				rowBaseline = cellBL
+			}
+		}
+
 		rowInfos[rowIdx].height = rowHeight
 		if rowIdx == 0 {
 			firstRowHeight = rowHeight
+			firstRowBaseline = rowBaseline
 		}
+		lastRowBaseline = rowBaseline
+		lastRowBlockOffset = blockOffset
 		blockOffset += rowHeight
 	}
 
@@ -658,14 +675,26 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
 	})
 
-	// CSS 2.1 §17.5.2 / CSS Writing Modes 3 §4.3: Set the table's baseline.
-	// The baseline of an inline-table is the baseline of its first row.
-	// For central baseline mode, this is the center of the first row.
-	// We store the distance from border-box block-start to the first row's
-	// center as LastBaseline so inline layout can use it.
-	if len(rows) > 0 && firstRowHeight > 0 {
-		baseline := geom.Border.BlockStart + geom.Padding.BlockStart + firstRowHeight/2
-		builder.SetLastBaseline(baseline)
+	// CSS 2.1 §17.5.2: "The baseline of an inline-table is the baseline of
+	// the first row." Blink computes this via RowBaselineTabulator: the row
+	// baseline is the max first-baseline of all baseline-aligned cells.
+	// We propagate the first row's baseline as the table's first baseline,
+	// and the last row's baseline as the table's last baseline.
+	if len(rows) > 0 {
+		borderPaddingStart := geom.Border.BlockStart + geom.Padding.BlockStart
+		if firstRowBaseline > 0 {
+			// First baseline: distance from table border-box block-start
+			// to the first row's text baseline.
+			builder.SetBaseline(borderPaddingStart + firstRowBaseline)
+		} else if firstRowHeight > 0 {
+			// Fallback: center of first row (no cells had a text baseline).
+			builder.SetBaseline(borderPaddingStart + firstRowHeight/2)
+		}
+		if lastRowBaseline > 0 {
+			builder.SetLastBaseline(borderPaddingStart + lastRowBlockOffset + lastRowBaseline)
+		} else if firstRowHeight > 0 {
+			builder.SetLastBaseline(borderPaddingStart + firstRowHeight/2)
+		}
 	}
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm) // already zeroed for border-collapse
@@ -727,8 +756,41 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 	var colWidths []tableColWidth
 	colIdx := 0 // tracks current column index as col/colgroup are encountered
 
+	// CSS 2.1 §17.2.1: text and inline content directly inside a table
+	// element must be wrapped in anonymous table-row + table-cell boxes.
+	// Consecutive inline children (text nodes + inline elements) share
+	// one anonymous cell, mirroring buildRow's anonymous cell batching.
+	var anonInlineChildren []*LayoutInputNode
+
+	flushAnonInline := func() {
+		if len(anonInlineChildren) == 0 {
+			return
+		}
+		// Create anonymous cell style inheriting from the table.
+		anonCellStyle := css.NewAnonymousTableCellStyle(tla.style)
+		anonCellNode := &LayoutInputNode{
+			style:       anonCellStyle,
+			children:    anonInlineChildren,
+			isAnonymous: true,
+		}
+		bodyRows = append(bodyRows, tableRow{
+			cells: []tableCell{{
+				node:    anonCellNode,
+				style:   anonCellStyle,
+				colSpan: 1,
+				rowSpan: 1,
+			}},
+		})
+		anonInlineChildren = nil
+	}
+
 	for _, child := range tla.node.Children() {
 		if child.IsText() {
+			// Whitespace-only text nodes are ignored per CSS Tables §2.1.
+			if strings.TrimSpace(child.TextContent()) == "" {
+				continue
+			}
+			anonInlineChildren = append(anonInlineChildren, child)
 			continue
 		}
 		childStyle := child.Style()
@@ -792,6 +854,22 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			continue
 		}
 
+		// Inline-level elements (display:inline, inline-block, etc.) are batched
+		// with text nodes into the anonymous inline cell.
+		isInlineLevel := display == css.DisplayInline || display == css.DisplayInlineBlock ||
+			display == css.DisplayInlineFlex || display == css.DisplayInlineTable
+		// <br> is always inline content regardless of computed display.
+		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+			isInlineLevel = true
+		}
+		if isInlineLevel && display != css.DisplayNone {
+			anonInlineChildren = append(anonInlineChildren, child)
+			continue
+		}
+
+		// Table-structural element — flush any pending inline content first.
+		flushAnonInline()
+
 		switch display {
 		case css.DisplayTableCaption:
 			// caption-side is inherited but may not be in the cascade's
@@ -850,7 +928,7 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			})
 
 		default:
-			// Non-table-structural child (e.g. a block or inline element) inside
+			// Non-table-structural child (e.g. a block element) inside
 			// a table element. Per CSS Tables §2.1, anonymous table-row-group,
 			// table-row, and table-cell boxes are generated to wrap such children.
 			// Treat the child as an anonymous table-cell in an anonymous row,
@@ -868,6 +946,9 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			}
 		}
 	}
+
+	// Flush any remaining inline content at the end.
+	flushAnonInline()
 
 	// Render order: thead → tbody sections → tfoot.
 	rows := make([]tableRow, 0, len(headerRows)+len(bodyRows)+len(footerRows))
