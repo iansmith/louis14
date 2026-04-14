@@ -1881,7 +1881,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				}
 			}
 			return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
-				contentInlineSize, isRow)
+				contentInlineSize, isRow, containerCrossSize, hasDefiniteCross)
 		}
 		// flex-basis: content → use content-based max-content sizing.
 		// Per CSS Flexbox §9.2, flex-basis:content sizes the item based on its
@@ -1995,7 +1995,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 		}
 		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
-			contentInlineSize, isRow)
+			contentInlineSize, isRow, containerCrossSize, hasDefiniteCross)
 	}
 
 	// Numeric flex-basis (non-negative lengths/percentages only).
@@ -2079,7 +2079,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 
 	// Fallback: use max-content.
 	return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
-		contentInlineSize, isRow)
+		contentInlineSize, isRow, containerCrossSize, hasDefiniteCross)
 }
 
 // itemContentMaxMainSize returns the max-content size in the main axis,
@@ -2248,6 +2248,8 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	parentWDM WritingDirectionMode,
 	contentInlineSize float64,
 	isRow bool,
+	containerCrossSize float64,
+	hasDefiniteCross bool,
 ) float64 {
 	// Replaced elements: compute max-content main size with CROSS-axis
 	// min/max constraints (which affect sizing via aspect ratio) but
@@ -2355,6 +2357,30 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	if parentWDM.IsOrthogonalTo(childWDM) {
 		parentBlockSize = fla.space.AvailableSize.BlockSize
 	}
+	// CSS Flexbox §9.8: If a single-line flex container has a definite cross
+	// size, the automatic preferred outer cross size of any stretched flex items
+	// is the flex container's inner cross size and is considered definite.
+	// For orthogonal items, the container's cross-size maps to the item's
+	// inline-size (via axis swap). Use the definite cross-size so percentage
+	// padding/sizing in descendants resolves against the stretched size during
+	// flex basis computation. This matches the spec assertion: "Item's stretched
+	// size is used for laying out descendants when determining flex base size."
+	stretchedCrossForBasis := Indefinite
+	if hasDefiniteCross {
+		alignItems := "stretch"
+		if v, ok := fla.style.Get("align-items"); ok {
+			alignItems = strings.TrimSpace(v)
+		}
+		selfAlign := fla.getAlignSelf(style, alignItems)
+		_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+		hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
+		if selfAlign == "stretch" && !crossAS && !crossAE && !hasExplCross {
+			stretchedCrossForBasis = containerCrossSize
+			if parentWDM.IsOrthogonalTo(childWDM) {
+				parentBlockSize = containerCrossSize
+			}
+		}
+	}
 	if !mainIsItemInline {
 		// CSS Sizing 3 §5.1: The max-content block size is the block size
 		// when the box is laid out at its max-content inline size. For column
@@ -2393,12 +2419,19 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 			}
 		}
 	}
-	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
+	csb := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: parentBlockSize}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
-		SetPercentageResolutionInlineSize(contentInlineSize).
-		Build()
+		SetPercentageResolutionInlineSize(contentInlineSize)
+	// CSS Flexbox §9.8: When the stretched cross-size is definite for flex
+	// basis computation, fix the item's cross dimension in the constraint
+	// space. For orthogonal items this swaps to IsFixedInlineSize, ensuring
+	// the item uses the definite stretched size instead of shrink-to-fit.
+	if stretchedCrossForBasis != Indefinite {
+		csb.SetIsFixedBlockSize(true)
+	}
+	space := csb.Build()
 	if mainIsItemInline {
 		mm := ComputeMinMaxSizes(fla.ctx, child, space)
 		return mm.MaxContent
