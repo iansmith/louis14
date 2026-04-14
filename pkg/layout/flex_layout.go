@@ -1185,6 +1185,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			default: // flex-start, stretch
 				itemCrossOffset = crossStart
 			}
+			// Per CSS Box Alignment §5.3: when "safe" overflow alignment is
+			// specified and the item overflows the line (negative free space),
+			// fall back to start alignment to prevent start-edge overflow.
+			if itemCrossOffset < crossStart && fla.isAlignSelfSafe(item.style) {
+				itemCrossOffset = crossStart
+			}
 			item.crossOffset = itemCrossOffset
 		}
 		_ = hasBaselineItem
@@ -3202,6 +3208,36 @@ func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string
 		}
 	}
 	return alignItems
+}
+
+// isAlignSelfSafe returns true if the effective align-self for an item has the
+// "safe" overflow keyword. Per CSS Box Alignment §5.3, "safe" means if the
+// aligned subject overflows the alignment container, it is aligned as if the
+// alignment mode were "start" (i.e., offset clamped to 0).
+// Per WPT flexbox-safe-overflow-position-006, "safe" has no effect on
+// legacy -webkit-box containers.
+func (fla *FlexLayoutAlgorithm) isAlignSelfSafe(style *css.Style) bool {
+	// "safe" is not supported in legacy -webkit-box mode.
+	if v, ok := fla.style.Get("display"); ok {
+		v = strings.TrimSpace(v)
+		if v == "-webkit-box" || v == "-webkit-inline-box" {
+			return false
+		}
+	}
+	if style != nil {
+		if v, ok := style.Get("align-self"); ok {
+			v = strings.TrimSpace(v)
+			stripped := stripOverflowKeyword(v)
+			if stripped != "auto" && stripped != "" {
+				return hasOverflowSafe(v)
+			}
+		}
+	}
+	// Falls back to align-items.
+	if v, ok := fla.style.Get("align-items"); ok {
+		return hasOverflowSafe(v)
+	}
+	return false
 }
 
 // getAlignContent returns the align-content value (default: "stretch").
