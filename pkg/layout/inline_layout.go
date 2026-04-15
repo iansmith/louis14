@@ -286,18 +286,31 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 	}
 
-	// Propagate the percentage resolution block-size from the parent constraint
-	// space so that percentage-height children (e.g., img { height: 100% })
-	// can resolve against their containing block's definite height.
+	// Compute the percentage resolution block-size for inline children.
+	// CSS 2.1 §10.5: percentage heights resolve against the containing block's
+	// content height. The containing block is THIS element, so if it has a
+	// definite (explicit) block-size, use that — not the parent's percentage
+	// resolution size. This mirrors what block_layout.go does for block children
+	// at lines 40-48 + 374-376.
+	geomForPct := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
+	pctBlockSize := bla.space.PercentageResolutionSize.BlockSize
+	if geomForPct.BorderBoxSize.BlockSize != Indefinite {
+		ownContentBlock := geomForPct.BorderBoxSize.BlockSize - geomForPct.BlockBorderPadding()
+		if ownContentBlock < 0 {
+			ownContentBlock = 0
+		}
+		pctBlockSize = ownContentBlock
+	}
+
 	lineAvailBlock := Indefinite
-	if bla.space.PercentageResolutionSize.BlockSize > 0 {
-		lineAvailBlock = bla.space.PercentageResolutionSize.BlockSize
+	if pctBlockSize > 0 {
+		lineAvailBlock = pctBlockSize
 	} else if bla.space.AvailableSize.BlockSize >= 0 {
 		lineAvailBlock = bla.space.AvailableSize.BlockSize
 	}
 	lineSpace := ConstraintSpace{
 		AvailableSize:            LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock},
-		PercentageResolutionSize: bla.space.PercentageResolutionSize,
+		PercentageResolutionSize: LogicalSize{InlineSize: bla.space.PercentageResolutionSize.InlineSize, BlockSize: pctBlockSize},
 		WritingDirection:         wdm,
 		ExclusionSpace:           exclusionSpace,
 	}
