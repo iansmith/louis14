@@ -225,9 +225,11 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		style            *css.Style
 	}
 	type rowInfo struct {
-		height      float64
-		hasExplicit bool // true if any cell has explicit height
-		cellAligns  []cellAlignInfo
+		height       float64
+		hasExplicit  bool // true if any cell has explicit height
+		cellAligns   []cellAlignInfo
+		childIdx     int // index of this row's fragment in builder.children
+		blockOffset  float64 // block offset at which the row was placed
 	}
 	rowInfos := make([]rowInfo, len(rows))
 
@@ -440,6 +442,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 		rowResult := rowBuilder.Build()
 
+		rowInfos[rowIdx].childIdx = len(builder.children)
+		rowInfos[rowIdx].blockOffset = blockOffset
 		builder.AddChild(rowResult.Fragment, LogicalOffset{
 			InlineOffset: 0,
 			BlockOffset:  blockOffset,
@@ -497,63 +501,38 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			perRow := excess / float64(autoCount)
 
-			// Redistribute: adjust row fragment block-sizes and reposition.
+			// Reposition row fragments with adjusted heights. Row indices were
+			// recorded in rowInfos[].childIdx when rows were appended, so this
+			// works uniformly for DOM-backed rows (tr) and anonymous rows.
 			accumOffset := 0.0
-			// Find the first row's block offset (after spacing and captions).
-			firstRowBlockOff := 0.0
-			for _, ch := range builder.children {
-				if ch.fragment != nil && ch.fragment.Type == FragmentBox {
-					if ch.fragment.Node != nil && ch.fragment.Node.TagName == "tr" {
-						firstRowBlockOff = ch.offset.BlockOffset
-						break
-					}
-					if ch.fragment.LayoutNode != nil && ch.fragment.LayoutNode.Style() != nil {
-						d := ch.fragment.LayoutNode.Style().GetDisplay()
-						if d == css.DisplayTableRow {
-							firstRowBlockOff = ch.offset.BlockOffset
-							break
-						}
-					}
-				}
+			if len(rowInfos) > 0 {
+				accumOffset = rowInfos[0].blockOffset
 			}
-			// Reposition row fragments with adjusted heights.
-			rowChildIdx := 0
-			accumOffset = firstRowBlockOff
-			for i, ch := range builder.children {
-				if rowChildIdx >= len(rowInfos) {
-					break
-				}
-				isRow := false
-				if ch.fragment != nil && ch.fragment.Node != nil && ch.fragment.Node.TagName == "tr" {
-					isRow = true
-				}
-				if !isRow && ch.fragment != nil && ch.fragment.LayoutNode != nil && ch.fragment.LayoutNode.Style() != nil {
-					d := ch.fragment.LayoutNode.Style().GetDisplay()
-					if d == css.DisplayTableRow {
-						isRow = true
-					}
-				}
-				if !isRow {
-					continue
-				}
+			for rowChildIdx := range rowInfos {
 				newHeight := rowInfos[rowChildIdx].height
 				if !rowInfos[rowChildIdx].hasExplicit {
 					newHeight += perRow
 				}
+				i := rowInfos[rowChildIdx].childIdx
+				if i < 0 || i >= len(builder.children) {
+					continue
+				}
+				ch := builder.children[i]
 				builder.children[i].offset.BlockOffset = accumOffset
+				rowInfos[rowChildIdx].blockOffset = accumOffset
 				oldLogical := NewLogicalFragment(wdm, ch.fragment)
 				newSize := ToPhysicalSize(LogicalSize{
 					InlineSize: oldLogical.InlineSize(),
 					BlockSize:  newHeight,
 				}, wdm.WM)
 				builder.children[i].fragment.Size = newSize
+				rowInfos[rowChildIdx].height = newHeight
 				accumOffset += newHeight
-				if rowChildIdx > 0 {
+				if rowChildIdx < len(rowInfos)-1 && blockSpacing > 0 {
 					accumOffset += blockSpacing
 				}
-				rowChildIdx++
 			}
-			// Update blockOffset to reflect new total.
+			// Update blockOffset to reflect the new total end position.
 			blockOffset = accumOffset
 			if blockSpacing > 0 {
 				blockOffset += blockSpacing
@@ -563,71 +542,59 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS 2.1 §17.5.4: Apply vertical-align to cell content.
 	// This runs after row height redistribution so cells in expanded rows
-	// get correctly centered/aligned to their final row height.
-	{
-		rowChildIdx := 0
-		for i, ch := range builder.children {
-			if rowChildIdx >= len(rowInfos) {
+	// get correctly centered/aligned to their final row height. Row fragment
+	// indices are read from rowInfos[].childIdx so both DOM-backed rows (tr)
+	// and anonymous rows are handled uniformly.
+	for rowChildIdx := range rowInfos {
+		i := rowInfos[rowChildIdx].childIdx
+		if i < 0 || i >= len(builder.children) {
+			continue
+		}
+		rowFrag := builder.children[i].fragment
+		if rowFrag == nil {
+			continue
+		}
+		rowLogical := NewLogicalFragment(wdm, rowFrag)
+		finalRowHeight := rowLogical.BlockSize()
+
+		for ci, ca := range rowInfos[rowChildIdx].cellAligns {
+			if ci >= len(rowFrag.Children) {
 				break
 			}
-			isRow := false
-			if ch.fragment != nil && ch.fragment.Node != nil && ch.fragment.Node.TagName == "tr" {
-				isRow = true
-			}
-			if !isRow && ch.fragment != nil && ch.fragment.LayoutNode != nil && ch.fragment.LayoutNode.Style() != nil {
-				d := ch.fragment.LayoutNode.Style().GetDisplay()
-				if d == css.DisplayTableRow {
-					isRow = true
-				}
-			}
-			if !isRow {
-				continue
+			if ca.contentBlockSize >= finalRowHeight {
+				continue // cell fills or exceeds row — no alignment needed
 			}
 
-			rowFrag := builder.children[i].fragment
-			rowLogical := NewLogicalFragment(wdm, rowFrag)
-			finalRowHeight := rowLogical.BlockSize()
+			// Stretch cell fragment to final row height.
+			cellFrag := rowFrag.Children[ci].Fragment
+			cellLogical := NewLogicalFragment(wdm, cellFrag)
+			cellFrag.Size = ToPhysicalSize(LogicalSize{
+				InlineSize: cellLogical.InlineSize(),
+				BlockSize:  finalRowHeight,
+			}, wdm.WM)
 
-			for ci, ca := range rowInfos[rowChildIdx].cellAligns {
-				if ci >= len(rowFrag.Children) {
-					break
-				}
-				if ca.contentBlockSize >= finalRowHeight {
-					continue // cell fills or exceeds row — no alignment needed
-				}
-
-				// Stretch cell fragment to final row height.
-				cellFrag := rowFrag.Children[ci].Fragment
-				cellLogical := NewLogicalFragment(wdm, cellFrag)
-				cellFrag.Size = ToPhysicalSize(LogicalSize{
-					InlineSize: cellLogical.InlineSize(),
-					BlockSize:  finalRowHeight,
-				}, wdm.WM)
-
-				va := css.VerticalAlignMiddle // default for td/th
-				if ca.style != nil {
-					va = ca.style.GetVerticalAlign()
-				}
-				var blockShift float64
-				switch va {
-				case css.VerticalAlignMiddle:
-					blockShift = (finalRowHeight - ca.contentBlockSize) / 2
-				case css.VerticalAlignBottom:
-					blockShift = finalRowHeight - ca.contentBlockSize
-				}
-					if blockShift > 0 {
-					conv := NewConverter(wdm, cellFrag.Size)
-					physShift := conv.ToPhysicalOffset(LogicalOffset{
-						InlineOffset: 0,
-						BlockOffset:  blockShift,
-					}, PhysicalSize{})
-					for cci := range cellFrag.Children {
-						cellFrag.Children[cci].Offset.X += physShift.X
-						cellFrag.Children[cci].Offset.Y += physShift.Y
-					}
+			va := css.VerticalAlignMiddle // default for td/th
+			if ca.style != nil {
+				va = ca.style.GetVerticalAlign()
+			}
+			var blockShift float64
+			switch va {
+			case css.VerticalAlignMiddle:
+				blockShift = (finalRowHeight - ca.contentBlockSize) / 2
+			case css.VerticalAlignBottom:
+				blockShift = finalRowHeight - ca.contentBlockSize
+			}
+			if blockShift > 0 {
+				conv := NewConverter(wdm, cellFrag.Size)
+				physShift := conv.ToPhysicalOffset(LogicalOffset{
+					InlineOffset: 0,
+					BlockOffset:  blockShift,
+				}, PhysicalSize{})
+				for cci := range cellFrag.Children {
+					cellFrag.Children[cci].Offset.X += physShift.X
+					cellFrag.Children[cci].Offset.Y += physShift.Y
 				}
 			}
-			rowChildIdx++
 		}
 	}
 
