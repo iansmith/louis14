@@ -297,8 +297,9 @@ func (fi *flexItem) outerHypotheticalMainSize() float64 {
 // baseline alignment at all (has a usable baseline).
 func (fi *flexItem) resolvedFirstBaseline(baselineParallel, canSynthesizeRow bool) (bl float64, participates bool) {
 	if !baselineParallel && canSynthesizeRow {
-		// Orthogonal item: synthesize at block-end of border box.
-		return fi.crossSize, true
+		// Orthogonal item: synthesize first baseline at cross-start (block-start
+		// of border box = 0), per CSS Box Alignment §5.4.
+		return 0, true
 	}
 	if baselineParallel {
 		if fi.hasBaseline || fi.baseline > 0 {
@@ -754,6 +755,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		lines[0].crossSize = containerCrossSize
 	}
 
+	// For single-line wrapping containers with align-content:stretch (the default),
+	// grow the line cross-size to the container cross-size. This must happen before
+	// lineOffsets computation so that wrap-reverse offset flipping uses the correct
+	// (stretched) line size. Matches Blink's behavior.
+	alignContent := fla.getAlignContent()
+	if wrapMode != "nowrap" && len(lines) == 1 && hasDefiniteCross &&
+		alignContent == "stretch" && containerCrossSize > lines[0].crossSize {
+		lines[0].crossSize = containerCrossSize
+	}
+
 	// §9.5 — Compute total cross-size of all lines.
 	totalLinesCross := 0.0
 	for i, line := range lines {
@@ -859,7 +870,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		rawAlignContent = strings.TrimSpace(v)
 	}
 	alignContentSafe := strings.Contains(rawAlignContent, "safe")
-	alignContent := fla.getAlignContent()
+	alignContent = fla.getAlignContent()
 	var lineOffsets []float64
 	if wrapMode == "nowrap" && len(lines) == 1 {
 		// Single-line (nowrap) container: no multi-line alignment needed.
@@ -889,15 +900,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// §9.4 — Stretch items to line cross-size (align-self: stretch).
 	// Must happen AFTER align-content so multi-line containers use the final
 	// (possibly grown by align-content:stretch) line cross-sizes.
-	// For single-line nowrap containers, lines[0].crossSize was already set to
-	// containerCrossSize in §9.4 step 8.
-	// For single-line wrapping containers with align-content:stretch, grow
-	// the line cross-size now so that stretch items fill the container cross-size.
-	// This matches Blink's behavior: single-line wrapping + stretch → line fills cross.
-	if wrapMode != "nowrap" && len(lines) == 1 && hasDefiniteCross &&
-		alignContent == "stretch" && containerCrossSize > lines[0].crossSize {
-		lines[0].crossSize = containerCrossSize
-	}
 	fla.stretchFlexItems(lines, alignItems, wdm, contentInlineSize, isRow)
 
 	// When the main axis is indefinite (auto-sized), compute the actual
@@ -1077,10 +1079,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 		// §9.9 baseline alignment: find the shared baseline for this line.
 		// First baseline: sharedBaseline = max(crossMarginStart + baseline) over baseline items.
-		sharedBaseline := 0.0
+		sharedBaseline := -math.MaxFloat64
 		hasBaselineItem := false
 		// Last baseline: sharedLastDescend = max(crossMarginEnd + (crossSize - lastBaseline)).
-		sharedLastDescend := 0.0
+		sharedLastDescend := -math.MaxFloat64
 		hasLastBaselineItem := false
 		// Baseline synthesis at block-end of border-box is only correct for
 		// horizontal writing modes. Vertical writing modes use the central
@@ -1111,7 +1113,14 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					}
 					hasBaselineItem = true
 				} else if bl, ok := item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow); ok {
-					b := item.crossMarginStart() + bl
+					var b float64
+					if reverseCross {
+						// wrap-reverse: first-baseline items align from cross-end.
+						// sharedBaseline = max(crossMarginEnd + (crossSize - bl)).
+						b = item.crossMarginEnd() + (item.crossSize - bl)
+					} else {
+						b = item.crossMarginStart() + bl
+					}
 					if b > sharedBaseline {
 						sharedBaseline = b
 					}
@@ -1120,7 +1129,14 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			if selfAlign == "last baseline" {
 				if lb, ok := item.resolvedLastBaseline(baselineParallel, canSynthesizeRow); ok {
-					d := item.crossMarginEnd() + (item.crossSize - lb)
+					var d float64
+					if reverseCross {
+						// wrap-reverse: last-baseline items align from cross-start.
+						// sharedLastDescend = max(crossMarginStart + lb).
+						d = item.crossMarginStart() + lb
+					} else {
+						d = item.crossMarginEnd() + (item.crossSize - lb)
+					}
 					if d > sharedLastDescend {
 						sharedLastDescend = d
 					}
@@ -1203,7 +1219,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						}
 						itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
 					} else if bl, ok := item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow); ok {
-						itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
+						if reverseCross {
+							// wrap-reverse: first-baseline items align from cross-end (bottom).
+							// sharedBaseline = max(crossMarginEnd + crossSize - bl).
+							itemCrossOffset = crossStart + line.crossSize - sharedBaseline - bl - item.crossMarginStart()
+						} else {
+							itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
+						}
 					} else {
 						itemCrossOffset = crossStart // fallback to flex-start
 					}
@@ -1215,7 +1237,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
 						(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
 					if bl, ok := item.resolvedLastBaseline(baselineParallel, canSynthesizeRow); ok {
-						itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginStart() - bl
+						if reverseCross {
+							// wrap-reverse: last-baseline items align from cross-start (top).
+							itemCrossOffset = crossStart + sharedLastDescend - item.crossMarginStart() - bl
+						} else {
+							itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginStart() - bl
+						}
 					} else {
 						itemCrossOffset = crossStart + crossFreeForAlign
 					}
