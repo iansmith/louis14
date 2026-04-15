@@ -55,10 +55,11 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		return MinMaxSizes{}
 	}
 
-	// Replaced elements (img, canvas, etc.) use ComputeReplacedSize for intrinsic sizing.
-	// CSS 2.1 §10.3.2: replaced elements have a single intrinsic inline-size.
+	// Replaced elements (img, canvas, etc.): compute intrinsic inline-size without
+	// block-axis min/max constraints transferring through aspect ratio.
+	// CSS Sizing 3 §5.1: intrinsic sizes are based on content, not block constraints.
 	if node.DOMNode != nil && isReplacedElement(node.DOMNode) {
-		inlineSize, _ := ComputeReplacedSize(ctx, node, style, space)
+		inlineSize := ComputeReplacedIntrinsicInlineSize(ctx, node, style, space)
 		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
 	}
 

@@ -2,6 +2,84 @@ package layout
 
 import "louis14/pkg/css"
 
+// ComputeReplacedIntrinsicInlineSize returns the intrinsic inline-size for a
+// replaced element without applying min/max block-size constraints that would
+// transfer through the aspect ratio. This is used for intrinsic sizing (min/max
+// content width) where block-axis constraints like min-height should NOT inflate
+// the inline-size per CSS Sizing 3 §5.1.
+func ComputeReplacedIntrinsicInlineSize(ctx *LayoutContext, node *LayoutInputNode, style *css.Style, space ConstraintSpace) float64 {
+	wdm := space.WritingDirection
+	geom := ComputeFragmentGeometry(style, wdm)
+	info := GetIntrinsicSizingInfo(ctx, node)
+
+	var intrinsicInline, intrinsicBlock float64
+	if wdm.IsVertical() {
+		intrinsicInline = info.IntrinsicHeight
+		intrinsicBlock = info.IntrinsicWidth
+	} else {
+		intrinsicInline = info.IntrinsicWidth
+		intrinsicBlock = info.IntrinsicHeight
+	}
+
+	var logicalRatio float64
+	if info.HasAspectRatio {
+		if info.AspectRatio > 0 {
+			if wdm.IsVertical() {
+				logicalRatio = 1.0 / info.AspectRatio
+			} else {
+				logicalRatio = info.AspectRatio
+			}
+		} else if intrinsicBlock > 0 {
+			logicalRatio = intrinsicInline / intrinsicBlock
+		}
+	}
+
+	explicitInline, hasExplicitInline := ResolveInlineSize(style, wdm, space, geom)
+	explicitBlock, hasExplicitBlock := ResolveBlockSize(style, wdm, space, geom)
+
+	if space.IsFixedInlineSize {
+		explicitInline = space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		if explicitInline < 0 {
+			explicitInline = 0
+		}
+		hasExplicitInline = true
+	}
+
+	var inlineSize float64
+	switch {
+	case hasExplicitInline:
+		inlineSize = explicitInline
+	case hasExplicitBlock:
+		if logicalRatio > 0 {
+			inlineSize = explicitBlock * logicalRatio
+		} else if intrinsicInline > 0 {
+			inlineSize = intrinsicInline
+		} else {
+			inlineSize = 300
+		}
+	default:
+		if intrinsicInline > 0 {
+			inlineSize = intrinsicInline
+		} else if logicalRatio > 0 && intrinsicBlock > 0 {
+			inlineSize = intrinsicBlock * logicalRatio
+		} else {
+			inlineSize = 300
+		}
+	}
+
+	// Apply only inline-axis min/max constraints (not block-axis).
+	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	if inlineSize < minInline {
+		inlineSize = minInline
+	}
+	maxInline, hasMaxInline := ResolveMaxInlineSize(style, wdm, space, geom)
+	if hasMaxInline && inlineSize > maxInline {
+		inlineSize = maxInline
+	}
+
+	return inlineSize
+}
+
 // ComputeReplacedSize implements CSS 2.1 §10.3.2 + §10.6.2 constraint
 // resolution for replaced elements. Returns content-box inline-size and
 // block-size in logical coordinates.
