@@ -2800,6 +2800,9 @@ func expandFontProperty(style *Style, value string) {
 			style.Set("line-height", sizeStr[idx+1:])
 		} else {
 			style.Set("font-size", sizeStr)
+			// CSS spec: font shorthand resets line-height to normal when
+			// not explicitly specified (CSS Fonts 4 §4).
+			style.Set("line-height", "normal")
 		}
 		i++
 	}
