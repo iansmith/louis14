@@ -3216,11 +3216,9 @@ func computeItemMainOffsets(
 
 	if reverseMain {
 		// Place items right-to-left from the main-end.
-		effectiveSize := containerMainSize
-		if effectiveSize < totalItemSize {
-			effectiveSize = totalItemSize
-		}
-		cursor := effectiveSize - initialOffset
+		// Use containerMainSize directly — items that overflow will get negative
+		// offsets, which is correct (overflow:hidden clips them).
+		cursor := containerMainSize - initialOffset
 		visIdx := 0
 		for _, item := range items {
 			if item.collapsed {
