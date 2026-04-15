@@ -4296,6 +4296,18 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			if item.crossAutoStart || item.crossAutoEnd {
 				continue
 			}
+			// CSS Flexbox §9.4 + CSS Sizing 3: replaced elements with only an
+			// intrinsic aspect ratio (no intrinsic dimensions) are not stretched.
+			// Their cross-size was determined by the replaced element sizing
+			// algorithm using the CSS default (300×150), and the transferred size
+			// suggestion used that definite size. Stretching would override both
+			// the cross-size and (via aspect ratio) the flex-resolved main-size.
+			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
+				if info.HasAspectRatio && info.IntrinsicWidth == 0 && info.IntrinsicHeight == 0 {
+					continue
+				}
+			}
 			// Stretch item's border-box to the line cross-size minus cross margins.
 			stretchBorderBox := line.crossSize - item.crossMarginSum()
 			if stretchBorderBox < 0 {
