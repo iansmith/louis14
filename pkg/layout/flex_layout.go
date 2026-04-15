@@ -2136,8 +2136,31 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
+		// Logical aspect ratio: inline/block.
+		var logicalRatio float64
+		if info.HasAspectRatio && info.AspectRatio > 0 {
+			if childWDM.IsVertical() {
+				logicalRatio = 1.0 / info.AspectRatio
+			} else {
+				logicalRatio = info.AspectRatio
+			}
+		}
 		if mainIsItemInline {
-			// Inline axis: intrinsic inline-size is the content size.
+			// Inline axis: check for explicit CSS cross-size (block-size).
+			// If the item has an explicit cross-size and aspect ratio,
+			// the content inline-size is derived from cross × ratio
+			// (CSS 2.1 §10.3.2: auto width with definite height and ratio).
+			// flex-basis:content suppresses the main-size (width) but the
+			// cross-size (height) still applies.
+			crossSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
+				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
+			if crossSize, hasCross := ResolveBlockSize(style, childWDM, crossSpace, childGeom); hasCross && logicalRatio > 0 {
+				return crossSize * logicalRatio
+			}
+			// No explicit cross-size or no AR: use intrinsic inline-size.
 			if childWDM.IsVertical() {
 				return info.IntrinsicHeight
 			}
@@ -2169,14 +2192,6 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 			return info.IntrinsicHeight
 		}
 		// CSS cross-size is set. Derive block-size via intrinsic AR.
-		var logicalRatio float64
-		if info.HasAspectRatio && info.AspectRatio > 0 {
-			if childWDM.IsVertical() {
-				logicalRatio = 1.0 / info.AspectRatio
-			} else {
-				logicalRatio = info.AspectRatio
-			}
-		}
 		if logicalRatio > 0 {
 			return crossSize / logicalRatio
 		}
@@ -2452,10 +2467,17 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 			}
 		}
 	}
+	// CSS Flexbox §9.8: When the item will be stretched, its cross-size is
+	// treated as definite. Pass it as PercentageResolutionSize.BlockSize so
+	// descendants with percentage heights can resolve against it.
+	pctBlock := float64(0)
+	if stretchedCrossForBasis != Indefinite {
+		pctBlock = stretchedCrossForBasis
+	}
 	csb := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
 		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: parentBlockSize}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline, BlockSize: pctBlock}).
 		SetPercentageResolutionInlineSize(contentInlineSize)
 	// CSS Flexbox §9.8: When the stretched cross-size is definite for flex
 	// basis computation, fix the item's cross dimension in the constraint

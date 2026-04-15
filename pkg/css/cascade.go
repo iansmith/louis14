@@ -1297,9 +1297,13 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	}
 
 	// width attribute → CSS width (on table, td, th, img, etc.)
+	// Per HTML spec (2022+), canvas and video width/height attributes set
+	// intrinsic dimensions and aspect-ratio, NOT CSS width/height. This lets
+	// CSS height override the attribute height and have the width transfer
+	// through the aspect ratio correctly.
 	if val, ok := node.GetAttribute("width"); ok {
 		switch node.TagName {
-		case "table", "td", "th", "col", "colgroup", "img", "input", "object", "embed", "video", "canvas", "hr":
+		case "table", "td", "th", "col", "colgroup", "img", "input", "object", "embed", "hr":
 			if strings.HasSuffix(val, "%") {
 				style.Set("width", val)
 			} else {

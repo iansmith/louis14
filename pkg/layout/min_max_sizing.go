@@ -20,26 +20,33 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	geom := ComputeFragmentGeometry(style, wdm)
 
 	// If the node has an explicit inline-size, min = max = that size (content-box).
-	// Don't return early — continue to apply min/max inline-size constraints.
-	if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
-		result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
-		// Apply min/max inline-size constraints (all content-box).
-		minInline := ResolveMinInlineSize(style, wdm, space, geom)
-		if result.MinContent < minInline {
-			result.MinContent = minInline
-		}
-		if result.MaxContent < minInline {
-			result.MaxContent = minInline
-		}
-		if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
-			if result.MinContent > maxInline {
-				result.MinContent = maxInline
+	// Skip this fast-path for replaced elements: their inline-size may be
+	// overridden by the CSS 2.1 §10.3.2 constraint resolution when a
+	// percentage block-size resolves to a definite value and an aspect ratio
+	// transfers it to the inline dimension. ComputeReplacedSize handles
+	// this correctly, so replaced elements always go through that path below.
+	isReplaced := node.DOMNode != nil && isReplacedElement(node.DOMNode)
+	if !isReplaced {
+		if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
+			// Apply min/max inline-size constraints (all content-box).
+			minInline := ResolveMinInlineSize(style, wdm, space, geom)
+			if result.MinContent < minInline {
+				result.MinContent = minInline
 			}
-			if result.MaxContent > maxInline {
-				result.MaxContent = maxInline
+			if result.MaxContent < minInline {
+				result.MaxContent = minInline
 			}
+			if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+				if result.MinContent > maxInline {
+					result.MinContent = maxInline
+				}
+				if result.MaxContent > maxInline {
+					result.MaxContent = maxInline
+				}
+			}
+			return result
 		}
-		return result
 	}
 
 	// CSS Containment: size containment — intrinsic sizes are 0 (element sized as empty).
@@ -429,24 +436,65 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		}
 
 		childWDM := NewWritingDirectionMode(childStyle)
-		childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
+		csb := NewConstraintSpaceBuilder(wdm, childWDM, false).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 			SetAvailableSize(space.AvailableSize).
-			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-			Build()
+			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
+		childSpace := csb.Build()
 
 		childGeom := ComputeFragmentGeometry(childStyle, childWDM, space.PercentageResolutionInlineSize)
 
 		childBP := childGeom.InlineBorderPadding()
 		childMargins := ResolveMargins(childStyle, childWDM, space.PercentageResolutionInlineSize)
 
+		// Determine if this item will stretch in the cross axis.
+		willStretch := false
+		if isRow && hasDefiniteCross {
+			alignSelf := alignItems
+			if v, ok := childStyle.Get("align-self"); ok {
+				v = strings.TrimSpace(v)
+				if v != "" && v != "auto" {
+					alignSelf = v
+				}
+			}
+			if alignSelf == "stretch" {
+				if _, ok := ResolveBlockSize(childStyle, childWDM, childSpace, childGeom); !ok {
+					willStretch = true
+				}
+			}
+		}
+
+		// CSS Flexbox §9.8: When a stretched flex item's cross-size is definite,
+		// descendants with percentage heights should resolve against it.
+		// Rebuild the constraint space with the stretched cross-size as the
+		// percentage resolution block-size.
+		if willStretch {
+			crossContent := containerCrossContent - childGeom.BlockBorderPadding() - childMargins.BlockSum()
+			if crossContent < 0 {
+				crossContent = 0
+			}
+			childSpace = NewConstraintSpaceBuilder(wdm, childWDM, false).
+				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
+				SetAvailableSize(LogicalSize{
+					InlineSize: space.AvailableSize.InlineSize,
+					BlockSize:  crossContent,
+				}).
+				SetPercentageResolutionSize(LogicalSize{
+					InlineSize: space.PercentageResolutionInlineSize,
+					BlockSize:  crossContent,
+				}).
+				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+				Build()
+		}
+
 		// Check for aspect-ratio transfer from definite cross-size.
 		// For row flex with definite height, items with aspect-ratio that
 		// will stretch get their inline size from cross × ratio.
 		transferred := false
 		var childMin, childMax float64
-		if isRow && hasDefiniteCross {
+		if willStretch && isRow && hasDefiniteCross {
 			ar := childStyle.GetAspectRatio()
 			hasAR := ar.IsSet && ar.Width > 0 && ar.Height > 0
 
@@ -460,34 +508,16 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			}
 
 			if hasAR {
-				// Check if item will stretch: align-self not set → inherit align-items.
-				alignSelf := alignItems
-				if v, ok := childStyle.Get("align-self"); ok {
-					v = strings.TrimSpace(v)
-					if v != "" && v != "auto" {
-						alignSelf = v
-					}
+				// Cross content size = container cross - item cross border/padding/margins.
+				crossContent := containerCrossContent - childGeom.BlockBorderPadding() - childMargins.BlockSum()
+				if crossContent < 0 {
+					crossContent = 0
 				}
-				// Item stretches if align is "stretch" and no explicit cross-size.
-				willStretch := alignSelf == "stretch"
-				if willStretch {
-					// Check for explicit cross-size (height for row flex).
-					if _, ok := ResolveBlockSize(childStyle, childWDM, childSpace, childGeom); ok {
-						willStretch = false
-					}
-				}
-				if willStretch {
-					// Cross content size = container cross - item cross border/padding/margins.
-					crossContent := containerCrossContent - childGeom.BlockBorderPadding() - childMargins.BlockSum()
-					if crossContent < 0 {
-						crossContent = 0
-					}
-					// Transfer: inline = cross × (width/height).
-					inlineContent := crossContent * ar.Width / ar.Height
-					childMin = inlineContent + childBP + childMargins.InlineSum()
-					childMax = childMin
-					transferred = true
-				}
+				// Transfer: inline = cross × (width/height).
+				inlineContent := crossContent * ar.Width / ar.Height
+				childMin = inlineContent + childBP + childMargins.InlineSum()
+				childMax = childMin
+				transferred = true
 			}
 		}
 
