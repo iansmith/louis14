@@ -343,9 +343,123 @@ func (fi *flexItem) resolvedLastBaseline(baselineParallel, canSynthesizeRow bool
 }
 
 // flexLine holds the items on one flex line.
+//
+// majorBaseline / minorBaseline / crossAxisOffset mirror Blink's FlexLine
+// fields (see third_party/blink/renderer/core/layout/flex/flex_line.h and
+// flex_layout_algorithm.cc:1460-1559 for their population). The accumulator
+// at :80-153 reads them as:
+//
+//	first_major_baseline = cross_axis_offset + major_baseline
+//	first_minor_baseline = cross_axis_offset + line_cross_size - minor_baseline
+//
+// majorBaseline uses the "distance from line cross-start to shared baseline"
+// convention; minorBaseline uses "distance from line cross-end to baseline"
+// (the max_minor_ascent value on the FlexLine is already that descent-style
+// quantity because BaselineAscent adds margins.CrossEnd() for minor items —
+// see flex_layout_algorithm.cc:388-392). unsetBaseline marks "no
+// baseline-aligned item participated on this line" (analogous to Blink's
+// LayoutUnit::Min()).
 type flexLine struct {
-	items     []*flexItem
-	crossSize float64
+	items           []*flexItem
+	crossSize       float64
+	majorBaseline   float64 // unsetBaseline if no baseline-aligned item on line
+	minorBaseline   float64 // unsetBaseline if no last-baseline-aligned item on line
+	crossAxisOffset float64 // physical cross-start offset in container space (post wrap-reverse flip)
+}
+
+// unsetBaseline marks "no participant" for flexLine.majorBaseline /
+// minorBaseline and baselineAccumulator's optional fields. Mirrors Blink's
+// use of LayoutUnit::Min() as a sentinel (flex_layout_algorithm.cc:107-112).
+var unsetBaseline = math.Inf(-1)
+
+// baselineAccumulator ports Blink's FlexLayoutAlgorithm::BaselineAccumulator
+// (third_party/blink/renderer/core/layout/flex/flex_layout_algorithm.cc:80-153).
+// It aggregates per-line major/minor baselines plus per-item fallbacks to
+// produce the container's exported first and last baselines.
+//
+// Priority (asymmetric — this is from Blink):
+//
+//	FirstBaseline() = firstMajor → firstMinor → firstFallback
+//	LastBaseline()  = lastMinor  → lastMajor  → lastFallback
+type baselineAccumulator struct {
+	firstMajor, firstMinor, firstFallback float64
+	lastMajor, lastMinor, lastFallback    float64
+}
+
+func newBaselineAccumulator() *baselineAccumulator {
+	return &baselineAccumulator{
+		firstMajor: unsetBaseline, firstMinor: unsetBaseline, firstFallback: unsetBaseline,
+		lastMajor: unsetBaseline, lastMinor: unsetBaseline, lastFallback: unsetBaseline,
+	}
+}
+
+// accumulateLine mirrors BaselineAccumulator::AccumulateLine
+// (flex_layout_algorithm.cc:104-125). Caller passes line already annotated
+// with crossAxisOffset reflecting the post-ApplyReversals physical offset.
+// isFirst/isLast are physical-order booleans.
+func (a *baselineAccumulator) accumulateLine(line *flexLine, isFirst, isLast bool) {
+	if isFirst {
+		if line.majorBaseline != unsetBaseline {
+			a.firstMajor = line.crossAxisOffset + line.majorBaseline
+		}
+		if line.minorBaseline != unsetBaseline {
+			a.firstMinor = line.crossAxisOffset + line.crossSize - line.minorBaseline
+		}
+	}
+	if isLast {
+		if line.majorBaseline != unsetBaseline {
+			a.lastMajor = line.crossAxisOffset + line.majorBaseline
+		}
+		if line.minorBaseline != unsetBaseline {
+			a.lastMinor = line.crossAxisOffset + line.crossSize - line.minorBaseline
+		}
+	}
+}
+
+// accumulateFirstFallback mirrors the is_first_line branch of
+// BaselineAccumulator::AccumulateItem (flex_layout_algorithm.cc:91-96).
+// Only the first-ever call wins (matches Blink's `if (!first_fallback_baseline_)`).
+func (a *baselineAccumulator) accumulateFirstFallback(blockOffsetPlusBaseline float64) {
+	if a.firstFallback == unsetBaseline {
+		a.firstFallback = blockOffsetPlusBaseline
+	}
+}
+
+// accumulateLastFallback mirrors the is_last_line branch
+// (flex_layout_algorithm.cc:98-101). Unconditionally overwrites — Blink
+// lets later items on the last line supersede earlier ones.
+func (a *baselineAccumulator) accumulateLastFallback(blockOffsetPlusBaseline float64) {
+	a.lastFallback = blockOffsetPlusBaseline
+}
+
+// firstBaseline returns the container's exported first baseline, using
+// the major → minor → fallback priority from flex_layout_algorithm.cc:128-134.
+func (a *baselineAccumulator) firstBaseline() (float64, bool) {
+	if a.firstMajor != unsetBaseline {
+		return a.firstMajor, true
+	}
+	if a.firstMinor != unsetBaseline {
+		return a.firstMinor, true
+	}
+	if a.firstFallback != unsetBaseline {
+		return a.firstFallback, true
+	}
+	return 0, false
+}
+
+// lastBaseline returns the container's exported last baseline, using
+// the minor → major → fallback priority from flex_layout_algorithm.cc:135-141.
+func (a *baselineAccumulator) lastBaseline() (float64, bool) {
+	if a.lastMinor != unsetBaseline {
+		return a.lastMinor, true
+	}
+	if a.lastMajor != unsetBaseline {
+		return a.lastMajor, true
+	}
+	if a.lastFallback != unsetBaseline {
+		return a.lastFallback, true
+	}
+	return 0, false
 }
 
 // computeStrutSizes performs a pre-collapse layout pass per CSS Flexbox §12.
@@ -743,6 +857,26 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 		line.crossSize = lineCrossMax
+
+		// Record per-line major/minor baselines for the container's baseline
+		// export (see baselineAccumulator). Mirrors Blink's
+		// FlexLayoutAlgorithm::PlaceFlexItems at
+		// flex_layout_algorithm.cc:1557-1559 which stores max_major_ascent and
+		// max_minor_ascent onto FlexLine. majorBaseline uses the
+		// "cross-start-to-baseline" convention; minorBaseline uses the
+		// "cross-end-to-baseline" convention (Blink's BaselineAscent at :390-392
+		// returns margins.CrossEnd()+baseline for minor items, equivalent to
+		// outerCross - maxLastAscent = maxLastDescent here).
+		if hasBaselineItem {
+			line.majorBaseline = maxAscent
+		} else {
+			line.majorBaseline = unsetBaseline
+		}
+		if hasLastBaselineItem {
+			line.minorBaseline = maxLastDescent
+		} else {
+			line.minorBaseline = unsetBaseline
+		}
 	}
 
 	// §9.4 step 8: If single-line and container has definite cross size,
@@ -1399,91 +1533,51 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetIntrinsicBlockSize(intrinsicBlockSize)
 
 	// §4.2 — Flex container baseline.
-	// First baseline: from the first non-collapsed item in the first line that
-	// participates in baseline alignment (or the first non-collapsed item).
-	// Last baseline: from the last non-collapsed item in the last line.
 	//
-	// Under flex-wrap: wrap-reverse, source-first line gets placed at the
-	// (physical) cross-end. Per CSSWG resolution (w3c/csswg-drafts#7774) and
-	// Blink's FlexLayoutAlgorithm::ApplyReversals, the "first" flex line for
-	// baseline purposes is the visually topmost line — EXCEPT when a line
-	// contains an align-self:baseline item, in which case that line wins
-	// (matching Blink's major/minor baseline accumulation across lines and the
-	// reference rendering of wpt tests like flexbox-baseline-multi-line-horiz-*).
-	// We implement this by: (a) picking the first source-order line with a
-	// baseline-aligned item, if any; (b) otherwise, using the visually-topmost
-	// line (lines[len-1] under wrap-reverse, else lines[0]).
+	// This is a port of Blink's BaselineAccumulator mechanism from
+	// third_party/blink/renderer/core/layout/flex/flex_layout_algorithm.cc.
+	// The accumulator (:80-153) aggregates each line's major/minor baselines
+	// into the container's exported first/last baselines, with per-item
+	// fallbacks used when no baseline-aligned item participates.
+	//
+	// Iteration order is "physical", matching Blink's post-ApplyReversals
+	// frame (:1589-1599): under flex-wrap: wrap-reverse, lines[] remains in
+	// source order in louis14, so we walk the index sequence in reverse.
+	// Each line's crossAxisOffset is populated from the (already-flipped)
+	// lineOffsets so that the accumulator's
+	//
+	//	first_major_baseline = cross_axis_offset + major_baseline
+	//
+	// invariant holds verbatim against the container's physical frame.
+	//
+	// AccumulateLine is row-only in Blink (see the !is_column_ guard at
+	// :1784); columns rely exclusively on the per-item fallback path.
 	if len(lines) > 0 {
 		crossBPStart := geom.Border.BlockStart + geom.Padding.BlockStart
 
-		// hasBaselineAligned reports whether the line has an item whose
-		// align-self resolves to the requested baseline mode and whose axis
-		// is compatible with the container's baseline axis.
-		hasBaselineAligned := func(line *flexLine, mode string) bool {
-			if !isRow {
-				return false // baseline export only prefers aligned items in row flex
-			}
-			for _, item := range line.items {
-				if item.collapsed {
-					continue
-				}
-				sa := fla.getAlignSelf(item.style, alignItems)
-				mainAxisParallel := item.wdm.IsVertical() == wdm.IsVertical()
-				if sa == mode && mainAxisParallel {
-					return true
-				}
-			}
-			return false
+		// Populate each line's crossAxisOffset with its physical cross-start
+		// offset from the container's border-box start. lineOffsets already
+		// reflects the wrap-reverse flip (applied inside computeAlignContent
+		// and in the nowrap single-line path above).
+		for i, line := range lines {
+			line.crossAxisOffset = crossBPStart + lineOffsets[i]
 		}
 
-		// Per CSS Flexbox §8.5: only items on the source-first line matter for
-		// baseline alignment (the "startmost" line in source order, NOT visual
-		// order). If that line has a baseline-aligned item, it sets the
-		// container's first baseline — even if wrap-reverse places it
-		// physically at the bottom. If that line has no baseline-aligned item,
-		// the container's first baseline is synthesized from the FIRST ITEM on
-		// the visually-topmost line (lines[N-1] under wrap-reverse, else
-		// lines[0]). This matches Blink's multi-line wrap-reverse tests
-		// (flexbox-baseline-multi-line-horiz-*).
-		var firstBLLine *flexLine
-		if hasBaselineAligned(lines[0], "baseline") {
-			firstBLLine = lines[0]
-		} else if reverseCross {
-			firstBLLine = lines[len(lines)-1]
-		} else {
-			firstBLLine = lines[0]
-		}
+		canSynthesize := !wdm.IsVertical()
 
-		// Last baseline mirrors the first-baseline rule in reverse:
-		// source-last line wins if it has a last-baseline item; else
-		// visually-bottom line.
-		var lastBLLine *flexLine
-		if hasBaselineAligned(lines[len(lines)-1], "last baseline") {
-			lastBLLine = lines[len(lines)-1]
-		} else if reverseCross {
-			lastBLLine = lines[0]
-		} else {
-			lastBLLine = lines[len(lines)-1]
-		}
-
-		// For the container's exported baseline (CSS Flexbox §8.5), the item's
-		// baseline is usable when the item's BASELINE axis is parallel to the
-		// container's baseline axis — i.e., same writing-mode verticality.
-		// This differs from the per-line baseline ALIGNMENT check (which is
-		// about main-axis parallelism).
+		// baselineAxisParallel gates the fallback path to items whose
+		// baseline axis is parallel to the container's (same writing-mode
+		// verticality). Differs from per-line baseline ALIGNMENT (which is
+		// main-axis parallel) — the container baseline export cares about
+		// the item's block-axis orientation per CSS Flexbox §8.5.
 		baselineAxisParallel := func(item *flexItem) bool {
 			return item.wdm.IsVertical() == wdm.IsVertical()
 		}
 
-		// canSynthesize: for horizontal-WM containers, we can synthesize an
-		// alphabetic baseline at block-end of the item's border box. For
-		// vertical-WM containers the alphabetic baseline is not meaningful;
-		// leave unset to use the builder's default.
-		canSynthesize := !wdm.IsVertical()
-
 		// itemBlockOffset returns the block-axis offset of the item's
 		// border-box block-start edge, relative to the container's
-		// content-box block-start (before crossBPStart is added).
+		// content-box block-start. Matches Blink's offset.block_offset that
+		// is passed to AccumulateItem at :1980-1981.
 		itemBlockOffset := func(item *flexItem) float64 {
 			if isRow {
 				return item.crossOffset + item.crossMarginStart()
@@ -1491,9 +1585,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			return item.mainOffset
 		}
 
-		// resolveContainerFirst returns the item's first-baseline position
-		// (relative to its border-box block-start edge), or synthesizes one.
-		resolveContainerFirst := func(item *flexItem) (float64, bool) {
+		// fallbackFirstBaseline mirrors LogicalBoxFragment::FirstBaselineOrSynthesize
+		// combined with Blink's baseline-axis gate. Returns the distance from
+		// the item's border-box block-start to its first baseline.
+		fallbackFirstBaseline := func(item *flexItem) (float64, bool) {
 			if baselineAxisParallel(item) && (item.hasBaseline || item.baseline > 0) {
 				return item.baseline, true
 			}
@@ -1503,9 +1598,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			return 0, false
 		}
 
-		// resolveContainerLast returns the item's last-baseline position,
-		// falling back to first baseline, then synthesizing at block-end.
-		resolveContainerLast := func(item *flexItem) (float64, bool) {
+		// fallbackLastBaseline mirrors LastBaselineOrSynthesize, falling back
+		// to first baseline when no last-baseline is present.
+		fallbackLastBaseline := func(item *flexItem) (float64, bool) {
 			if baselineAxisParallel(item) {
 				if item.lastBaseline > 0 {
 					return item.lastBaseline, true
@@ -1520,68 +1615,94 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			return 0, false
 		}
 
-		// Per CSS Flexbox §8.5: prefer an item with align-self:baseline if it
-		// participates in baseline alignment (only in row flex, where the
-		// item's baseline is parallel to the container's main axis).
-		// In column flex, align-self:baseline does NOT affect the container's
-		// exported baseline; the first non-collapsed item is used.
-		preferBaselineAligned := isRow
-
-		// First baseline: search firstBLLine for a baseline-aligned item,
-		// falling back to the first non-collapsed item.
-		if len(firstBLLine.items) > 0 {
-			var firstBaselineItem *flexItem
-			for _, item := range firstBLLine.items {
-				if item.collapsed {
-					continue
-				}
-				if preferBaselineAligned {
-					selfAlign := fla.getAlignSelf(item.style, alignItems)
-					mainAxisParallel := item.wdm.IsVertical() == wdm.IsVertical()
-					if selfAlign == "baseline" && mainAxisParallel {
-						firstBaselineItem = item
-						break
+		// Under row-reverse / column-reverse, Blink's ApplyReversals
+		// (flex_layout_algorithm.cc:1594-1598) reverses each line's
+		// item_indices. AccumulateItem then iterates post-reversal order:
+		// "first item iterated" = source-last, "last item iterated" (whose
+		// last_fallback value wins, overwriting earlier ones) = source-first.
+		// We emulate that by flipping firstNonCollapsed/lastNonCollapsed under
+		// reverseMain.
+		firstNonCollapsed := func(items []*flexItem) *flexItem {
+			if reverseMain {
+				for i := len(items) - 1; i >= 0; i-- {
+					if !items[i].collapsed {
+						return items[i]
 					}
 				}
-				if firstBaselineItem == nil {
-					firstBaselineItem = item
+				return nil
+			}
+			for _, it := range items {
+				if !it.collapsed {
+					return it
 				}
 			}
-			if firstBaselineItem == nil {
-				firstBaselineItem = firstBLLine.items[0]
+			return nil
+		}
+		lastNonCollapsed := func(items []*flexItem) *flexItem {
+			if reverseMain {
+				for _, it := range items {
+					if !it.collapsed {
+						return it
+					}
+				}
+				return nil
 			}
-			if bl, ok := resolveContainerFirst(firstBaselineItem); ok {
-				builder.SetBaseline(crossBPStart + itemBlockOffset(firstBaselineItem) + bl)
+			for i := len(items) - 1; i >= 0; i-- {
+				if !items[i].collapsed {
+					return items[i]
+				}
+			}
+			return nil
+		}
+
+		// Physical iteration: under wrap-reverse source-last is physical-first.
+		order := make([]int, len(lines))
+		for i := range order {
+			order[i] = i
+		}
+		if reverseCross {
+			for l, r := 0, len(order)-1; l < r; l, r = l+1, r-1 {
+				order[l], order[r] = order[r], order[l]
 			}
 		}
 
-		// Last baseline: search lastBLLine for a last-baseline-aligned item,
-		// falling back to the last non-collapsed item.
-		if len(lastBLLine.items) > 0 {
-			var lastBaselineItem *flexItem
-			for i := len(lastBLLine.items) - 1; i >= 0; i-- {
-				item := lastBLLine.items[i]
-				if item.collapsed {
-					continue
-				}
-				if preferBaselineAligned {
-					selfAlign := fla.getAlignSelf(item.style, alignItems)
-					mainAxisParallel := item.wdm.IsVertical() == wdm.IsVertical()
-					if selfAlign == "last baseline" && mainAxisParallel {
-						lastBaselineItem = item
-						break
+		accum := newBaselineAccumulator()
+		for i, idx := range order {
+			line := lines[idx]
+			isFirst := i == 0
+			isLast := i == len(order)-1
+
+			// AccumulateLine is row-only in Blink (flex_layout_algorithm.cc:1784).
+			if isRow {
+				accum.accumulateLine(line, isFirst, isLast)
+			}
+
+			// Per-item fallback — mirrors AccumulateItem at :1980-1981.
+			// We only need to feed the first item on the first physical line
+			// and the last item on the last physical line (the intervening
+			// AccumulateItem calls in Blink are no-ops because of the
+			// is_first_line / is_last_line guards at :91-101).
+			if isFirst {
+				if it := firstNonCollapsed(line.items); it != nil {
+					if bl, ok := fallbackFirstBaseline(it); ok {
+						accum.accumulateFirstFallback(crossBPStart + itemBlockOffset(it) + bl)
 					}
 				}
-				if lastBaselineItem == nil {
-					lastBaselineItem = item
+			}
+			if isLast {
+				if it := lastNonCollapsed(line.items); it != nil {
+					if bl, ok := fallbackLastBaseline(it); ok {
+						accum.accumulateLastFallback(crossBPStart + itemBlockOffset(it) + bl)
+					}
 				}
 			}
-			if lastBaselineItem == nil {
-				lastBaselineItem = lastBLLine.items[len(lastBLLine.items)-1]
-			}
-			if lb, ok := resolveContainerLast(lastBaselineItem); ok {
-				builder.SetLastBaseline(crossBPStart + itemBlockOffset(lastBaselineItem) + lb)
-			}
+		}
+
+		if bl, ok := accum.firstBaseline(); ok {
+			builder.SetBaseline(bl)
+		}
+		if bl, ok := accum.lastBaseline(); ok {
+			builder.SetLastBaseline(bl)
 		}
 	}
 
