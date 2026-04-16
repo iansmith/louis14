@@ -114,9 +114,15 @@ func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 	}
 
 	// Parse viewBox "min-x min-y width height" for aspect ratio.
+	// Our HTML tokenizer lowercases attribute names, so SVG's camelCase
+	// viewBox is stored as "viewbox". Try both to be robust.
 	var vbW, vbH float64
 	hasViewBox := false
-	if vb, ok := node.DOMNode.GetAttribute("viewBox"); ok {
+	vb, ok := node.DOMNode.GetAttribute("viewBox")
+	if !ok {
+		vb, ok = node.DOMNode.GetAttribute("viewbox")
+	}
+	if ok {
 		parts := strings.Fields(vb)
 		if len(parts) == 4 {
 			if w, err := strconv.ParseFloat(parts[2], 64); err == nil && w > 0 {
