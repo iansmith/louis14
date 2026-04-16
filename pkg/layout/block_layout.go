@@ -60,8 +60,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		if !explicitInlineOK && !bla.space.IsFixedInlineSize {
 			// CSS 2.1 §10.3.2: replaced elements with auto width use intrinsic width.
 			inlineSize, _ := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
-			if inlineSize > 0 && inlineSize < contentInlineSize {
-				contentInlineSize = inlineSize
+			if inlineSize > 0 {
+				// CSS Sizing 4 §6.3 / CSS 2.1 §10.3.2: when block-size is fixed
+				// by the parent (e.g., flex aspect-ratio stretch) and the element
+				// has an aspect ratio, inline-size is transferred from the cross
+				// axis via the ratio. In that case ComputeReplacedSize's value may
+				// exceed the shrink-to-fit intrinsic contentInlineSize — use it.
+				blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
+				if inlineSize < contentInlineSize || blockFixed {
+					contentInlineSize = inlineSize
+				}
 			}
 		}
 		if !hasExplicitBlock {
