@@ -544,12 +544,26 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	var rowspanPending []pendingRowspan
 
 	firstRowHeight := 0.0
-	firstRowBaseline := 0.0  // max cell baseline in first row (for table first baseline)
-	lastRowBaseline := 0.0   // max cell baseline in last row (for table last baseline)
-	lastRowBlockOffset := 0.0 // block offset of last row
+	firstRowBaseline := 0.0  // max cell baseline in first VISIBLE row
+	lastRowBaseline := 0.0   // max cell baseline in last VISIBLE row
+	lastRowBlockOffset := 0.0 // block offset of last VISIBLE row
+	emittedRows := 0          // count of visible (non-collapsed) rows emitted
 	for rowIdx, row := range rows {
-		// Add inter-row spacing (block spacing) between rows.
-		if rowIdx > 0 && blockSpacing > 0 {
+		// CSS Tables 3 §3.5 (visibility:collapse): a collapsed row is
+		// removed from layout. Skip it entirely — no row fragment,
+		// no inter-row spacing, no blockOffset advance, no cells
+		// emitted. Cells originating here (rowSpan==1 or rowSpan>1
+		// originators) are not displayed, propagating the row's
+		// collapse to its cells. Mirrors Blink's
+		// TableSectionLayoutAlgorithm row loop which skips collapsed
+		// rows for fragment construction.
+		if spRows[rowIdx].IsCollapsed {
+			continue
+		}
+
+		// Add inter-row spacing only between VISIBLE rows: the
+		// collapsed row's spacing is removed along with the row.
+		if emittedRows > 0 && blockSpacing > 0 {
 			blockOffset += blockSpacing
 		}
 
@@ -671,13 +685,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		})
 
 		rowBaseline := measured[rowIdx].baseline
-		if rowIdx == 0 {
+		if emittedRows == 0 {
 			firstRowHeight = rowHeight
 			firstRowBaseline = rowBaseline
 		}
 		lastRowBaseline = rowBaseline
 		lastRowBlockOffset = blockOffset
 		blockOffset += rowHeight
+		emittedRows++
 	}
 
 	// --- Phase 3b: place rowspan cells across spanned rows ---
@@ -2035,6 +2050,19 @@ func computeRows(intrinsics []tableRowIntrinsic, wdm WritingDirectionMode) Table
 			if s.GetVisibility() == "collapse" {
 				row.IsCollapsed = true
 			}
+		}
+
+		// CSS Tables 3 §3.5 (visibility:collapse on a row): "If the
+		// visibility of a row is collapse, the row must not be
+		// displayed. The space the row would have taken up is removed
+		// from the table". Zero the row's block-size regardless of any
+		// cell intrinsic computed in Phase 1 — a collapsed row occupies
+		// zero space in the table's block axis. Mirrors Blink's
+		// DistributeRowspanCellToRows / DistributeExcessBlockSizeToRows
+		// gating on !IsCollapsed, plus TableSectionLayoutAlgorithm's
+		// zero-advance treatment of collapsed rows.
+		if row.IsCollapsed {
+			row.BlockSize = 0
 		}
 	}
 	return result
