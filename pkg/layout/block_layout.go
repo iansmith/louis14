@@ -590,9 +590,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			firstNonEmptyChild = false
 
+			// For a <fieldset>, the first/last baseline comes from the
+			// anonymous content block, not the <legend>. Mirrors Blink's
+			// FieldsetLayoutAlgorithm, which exports the content fragment's
+			// baselines (fieldset_layout_algorithm.cc:409-419).
+			isLegendOfFieldset := bla.node.DOMNode != nil &&
+				bla.node.DOMNode.TagName == "fieldset" &&
+				child.DOMNode != nil && child.DOMNode.TagName == "legend"
+
 			// CSS Inline §4.2: propagate the first in-flow block child's
 			// first baseline as this container's first baseline.
-			if !hasFirstChildBaseline && childResult.HasBaseline {
+			if !isLegendOfFieldset && !hasFirstChildBaseline && childResult.HasBaseline {
 				firstChildBaseline = childResult.Baseline
 				firstChildBlockOffset = actualChildBlockOff
 				hasFirstChildBaseline = true
@@ -605,7 +613,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if lb <= 0 {
 				lb = childResult.Baseline
 			}
-			if lb > 0 {
+			if !isLegendOfFieldset && lb > 0 {
 				lastChildBaseline = lb
 				lastChildBlockOffset = actualChildBlockOff
 				hasLastChildBaseline = true

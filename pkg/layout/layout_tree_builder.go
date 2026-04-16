@@ -630,6 +630,7 @@ func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue) s
 func isBlockContainer(d css.DisplayType) bool {
 	switch d {
 	case css.DisplayBlock, css.DisplayListItem, css.DisplayFlowRoot,
+		css.DisplayInlineBlock,
 		css.DisplayTableCell, css.DisplayTableCaption:
 		return true
 	}
