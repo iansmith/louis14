@@ -1750,14 +1750,15 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 			itemSizingSpace, flexBasis, isRow, containerCrossSize, hasDefiniteCross, contentInlineSize,
 			containerMainSize, hasDefiniteMain)
 
-		// For the hypothetical main size (used for wrap decisions and free-space computation),
-		// only clamp by the explicit CSS min-width/min-height. The content-based automatic
-		// minimum must NOT clamp the hypothetical (§4.5: "not clamped by the item's flex-basis",
-		// and items with flex-basis:0 must start at 0, not min-content).
-		explicitMin := fla.flexItemExplicitMin(child, childStyle, childWDM, childGeom, itemSizingSpace, isRow, contentInlineSize)
-
-		// Clamp flex-basis by explicit min/max main size only.
-		hyp := fla.clampMainSizeWithMin(flexBasis, explicitMin, childStyle, childWDM, childGeom,
+		// Per CSS Flexbox §9.2 step 4: "The hypothetical main size is the item's
+		// flex base size clamped according to its used min and max main sizes
+		// (and flooring the content box size at zero)." The "used min" includes the
+		// §4.5 content-based automatic minimum, so clamp by the full minMainSize.
+		// This makes inflexible items (flex-grow/shrink == 0) freeze at the right
+		// size in §9.7 step 3, and makes wrap decisions respect auto-min properly.
+		// Growing items (flex-basis:0, flex-grow>0) are unaffected because §9.7
+		// step 1 starts target main size at flex-base, not hypothetical.
+		hyp := fla.clampMainSizeWithMin(flexBasis, minMainSize, childStyle, childWDM, childGeom,
 			itemSizingSpace, isRow)
 
 
@@ -2632,11 +2633,10 @@ func (fla *FlexLayoutAlgorithm) resolveIntrinsicMaxMain(
 	return Indefinite
 }
 
-// clampMainSizeWithMin clamps the flex-basis to the CSS max constraint only.
-// The minimum (§4.5 content-based) is stored in item.minMain and enforced
-// by the final clamp in resolveFlexibleLengths — NOT here. This ensures
-// growing items (flex-grow>0) start at their flex-basis (e.g. 0), not at
-// their content-based minimum, so free space distributes correctly.
+// clampMainSizeWithMin clamps a size by a given minimum and the CSS max main
+// size constraint. Used to compute the hypothetical main size per CSS Flexbox
+// §9.2 step 4. The caller passes the full §4.5 effective minimum (including the
+// content-based automatic minimum when min-width/min-height is auto).
 func (fla *FlexLayoutAlgorithm) clampMainSizeWithMin(
 	basis float64,
 	minMain float64,
@@ -2647,8 +2647,6 @@ func (fla *FlexLayoutAlgorithm) clampMainSizeWithMin(
 	isRow bool,
 ) float64 {
 	result := basis
-	// Apply explicit minimum (e.g. min-width/min-height). Content-based automatic
-	// minimums are NOT applied here — they're enforced in resolveFlexibleLengths.
 	if result < minMain {
 		result = minMain
 	}
@@ -3717,86 +3715,6 @@ func getItemAutoMargins(style *css.Style, wdm WritingDirectionMode, isRow bool) 
 // §4.5: For min-width/min-height:auto (the initial value for flex items), returns
 // min(min-content-size, flex-basis) — the "automatic minimum size".
 // Returns the explicit CSS min value if explicitly set to a non-auto value.
-// flexItemExplicitMin returns the explicit CSS minimum main size (min-width / min-height).
-// Returns 0 when the minimum is "auto" (i.e. not explicitly set).
-// This is used to clamp the hypothetical main size so that wrapping decisions respect
-// explicit minimum sizes, while NOT applying the content-based automatic minimum
-// (which is only enforced at the final clamp in resolveFlexibleLengths).
-func (fla *FlexLayoutAlgorithm) flexItemExplicitMin(
-	child *LayoutInputNode,
-	style *css.Style,
-	childWDM WritingDirectionMode,
-	childGeom FragmentGeometry,
-	space ConstraintSpace,
-	isRow bool,
-	contentInlineSize float64,
-) float64 {
-	// The CSS property controlling the flex main axis depends on the CONTAINER's
-	// writing mode, not the item's:
-	//   HTB row    → main = physical width  → "min-width"
-	//   VRL row    → main = physical height → "min-height"
-	//   HTB column → main = physical height → "min-height"
-	//   VRL column → main = physical width  → "min-width"
-	// The resolve function depends on the ITEM's writing mode (mainIsItemInline).
-	mainIsItemInline := computeMainIsItemInline(fla.space.WritingDirection, childWDM, isRow)
-	containerIsVertical := fla.space.WritingDirection.IsVertical()
-
-	var minProp string
-	if isRow {
-		if containerIsVertical {
-			minProp = "min-height" // VRL row: main = physical height
-		} else {
-			minProp = "min-width" // HTB row: main = physical width
-		}
-	} else {
-		if containerIsVertical {
-			minProp = "min-width" // VRL column: main = physical width
-		} else {
-			minProp = "min-height" // HTB column: main = physical height
-		}
-	}
-
-	if v, ok := style.Get(minProp); ok && v != "" && v != "auto" {
-		v = strings.TrimSpace(v)
-		if v == "min-content" || v == "max-content" || v == "fit-content" {
-			if mainIsItemInline {
-				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
-					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
-					SetAvailableSize(space.AvailableSize).
-					SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
-					Build()
-				mm := ComputeMinMaxSizes(fla.ctx, child, childSpace)
-				switch v {
-				case "min-content":
-					return mm.MinContent
-				case "max-content", "fit-content":
-					return mm.MaxContent
-				}
-			} else {
-				containerInlineSize := space.AvailableSize.InlineSize
-				minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
-					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
-					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
-					SetPercentageResolutionInlineSize(containerInlineSize).
-					SetIsContentSuggestionLayout(true).
-					Build()
-				result := layoutElement(fla.ctx, child, minBlockSpace)
-				lf := NewLogicalFragment(childWDM, result.Fragment)
-				blockContent := lf.BlockSize() - childGeom.BlockBorderPadding()
-				if blockContent < 0 {
-					blockContent = 0
-				}
-				return blockContent
-			}
-		}
-		if mainIsItemInline {
-			return ResolveMinInlineSize(style, childWDM, space, childGeom)
-		}
-		return ResolveMinBlockSize(style, childWDM, space, childGeom)
-	}
-	return 0
-}
-
 func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	child *LayoutInputNode,
 	style *css.Style,
