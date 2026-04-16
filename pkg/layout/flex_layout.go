@@ -285,57 +285,59 @@ func (fi *flexItem) outerHypotheticalMainSize() float64 {
 }
 
 // resolvedFirstBaseline returns the first baseline position for this item
-// relative to its border-box block-start edge, using Blink's unified rules:
-//   1. If the item has a natural baseline parallel to the requested axis
-//      (baselineParallel = true), use that baseline.
-//   2. If the item has no natural baseline but synthesis is possible
-//      (canSynthesizeRow), synthesize at block-end of the border box
-//      (= crossSize) per Blink's SynthesizedBaseline() and CSS Box Alignment
-//      §5.4 (alphabetic baseline = block-end edge of the margin/border box).
-//   3. For orthogonal items (baselineParallel = false) that can synthesize,
-//      also synthesize at block-end — Blink treats no-baseline and
-//      wrong-axis-baseline identically.
+// relative to its border-box block-start edge.
+//
+// Orthogonal items (baselineParallel = false) are excluded from baseline
+// alignment per CSS Flexbox §8.3: "baseline values ... only valid ... for
+// items whose block axis is parallel to the main axis ... items with a
+// writing mode orthogonal to the flex container's ... will act as if they
+// specified 'flex-start' instead." Chrome and Firefox both implement this
+// exclusion (wpt.fyi: flexbox-align-self-baseline-horiz-006 status P/P).
+//
+// For non-orthogonal items:
+//  1. Use natural baseline if available.
+//  2. Otherwise synthesize at block-end of border box (= crossSize) per
+//     Blink's SynthesizedBaseline() and CSS Box Alignment §5.4.
 //
 // The second return value indicates whether this item should participate in
-// baseline alignment at all (has a usable baseline).
+// baseline alignment at all.
 func (fi *flexItem) resolvedFirstBaseline(baselineParallel, canSynthesizeRow bool) (bl float64, participates bool) {
-	if baselineParallel && (fi.hasBaseline || fi.baseline > 0) {
+	if !baselineParallel {
+		// Orthogonal item: excluded from baseline accumulation.
+		return 0, false
+	}
+	if fi.hasBaseline || fi.baseline > 0 {
 		return fi.baseline, true
 	}
 	if canSynthesizeRow {
-		// Synthesize at block-end per Blink (same for orthogonal items and
-		// items with no natural baseline).
 		return fi.crossSize, true
 	}
 	return 0, false
 }
 
 // resolvedLastBaseline returns the last baseline position for this item
-// relative to its border-box block-start edge, using Blink's unified rules:
-//   1. If the item is orthogonal, synthesize at block-end (= crossSize) —
-//      same as first baseline, matching CSS 2.1 §10.8.1 for items without
-//      line boxes.
-//   2. Use lastBaseline from layout if available.
-//   3. Fall back to first baseline if lastBaseline is not set.
-//   4. If no baseline at all, synthesize at block-end (= crossSize).
+// relative to its border-box block-start edge.
+//
+// Orthogonal items are excluded from baseline accumulation (see
+// resolvedFirstBaseline for citation).
+//
+// For non-orthogonal items:
+//  1. Use lastBaseline from layout if available.
+//  2. Fall back to first baseline if lastBaseline is not set.
+//  3. If no baseline at all, synthesize at block-end (= crossSize).
 func (fi *flexItem) resolvedLastBaseline(baselineParallel, canSynthesizeRow bool) (bl float64, participates bool) {
-	if !baselineParallel && canSynthesizeRow {
-		// Orthogonal item: synthesize at block-end of border box.
-		return fi.crossSize, true
+	if !baselineParallel {
+		// Orthogonal item: excluded from baseline accumulation.
+		return 0, false
 	}
-	if baselineParallel {
-		lb := fi.lastBaseline
-		if lb > 0 {
-			return lb, true
-		}
-		// Fall back to first baseline.
-		if fi.baseline > 0 || fi.hasBaseline {
-			return fi.baseline, true
-		}
-		if canSynthesizeRow {
-			// No natural baseline: synthesize at block-end per Blink.
-			return fi.crossSize, true
-		}
+	if lb := fi.lastBaseline; lb > 0 {
+		return lb, true
+	}
+	if fi.baseline > 0 || fi.hasBaseline {
+		return fi.baseline, true
+	}
+	if canSynthesizeRow {
+		return fi.crossSize, true
 	}
 	return 0, false
 }
