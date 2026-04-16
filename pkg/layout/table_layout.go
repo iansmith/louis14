@@ -237,6 +237,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		cell             tableCell
 		contentBlockSize float64
 		cellBlockOffset  float64 // block offset of the child inside an anon-cell wrapper
+		// intrinsicBlockSize is the cell's own minimum block-size — the
+		// value that contributes to row intrinsic for rowSpan == 1 cells,
+		// and that DistributeRowspanCellToRows distributes across spanned
+		// rows for rowSpan > 1 cells. Includes anon-cell child margins.
+		intrinsicBlockSize float64
+		rowIndex           int // originating row for rowspan cells
 	}
 	type rowMeasurement struct {
 		intrinsic       float64
@@ -364,8 +370,18 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				childMargins := ResolveMargins(cell.style, wdm, cellWidth)
 				cellBlockForRow += childMargins.BlockStart + childMargins.BlockEnd
 			}
-			if cellBlockForRow > rowHeight {
-				rowHeight = cellBlockForRow
+			// Rowspan cells contribute to MULTIPLE rows' intrinsic
+			// block-sizes via DistributeRowspanCellToRows after Phase 1
+			// — their block-size is *not* attributed to the originating
+			// row's intrinsic. Mirrors Blink's
+			// ComputeMinimumRowBlockSize, which excludes rowspan-
+			// originator cells from the per-row max and runs
+			// DistributeRowspanCellToRows separately
+			// (table_layout_utils.cc ~L1606).
+			if cell.rowSpan == 1 {
+				if cellBlockForRow > rowHeight {
+					rowHeight = cellBlockForRow
+				}
 			}
 
 			// Track if any cell has an explicit height (for distribution).
@@ -388,11 +404,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			cellLayouts = append(cellLayouts, cellMeasurement{
-				result:           cellResult,
-				inlineOffset:     cellInlineOffset,
-				cell:             cell,
-				contentBlockSize: contentBlockSize,
-				cellBlockOffset:  cellBlockOffset,
+				result:             cellResult,
+				inlineOffset:       cellInlineOffset,
+				cell:               cell,
+				contentBlockSize:   contentBlockSize,
+				cellBlockOffset:    cellBlockOffset,
+				intrinsicBlockSize: cellBlockForRow,
+				rowIndex:           rowIdx,
 			})
 		}
 
@@ -448,6 +466,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	spRows := computeRows(intrinsics, wdm)
 
+	// Distribute rowspan-originator cells' minimum block-sizes across
+	// the rows they span. Mirrors Blink's DistributeRowspanCellToRows
+	// (table_layout_utils.cc ~L1606): runs after computeRows and before
+	// the table-block-size excess distribution so that, by the time
+	// excess distribution sees the row vector, each row already
+	// reflects the contribution of every rowspan cell it participates
+	// in. This is what makes a rowspan cell "pull up" the rows below
+	// its originating row even when those rows would otherwise have
+	// smaller intrinsics.
+	for ri := range measured {
+		for _, cl := range measured[ri].cells {
+			if cl.cell.rowSpan > 1 {
+				distributeRowspanCellToRows(spRows, cl.rowIndex, cl.cell.rowSpan,
+					cl.intrinsicBlockSize, blockSpacing)
+			}
+		}
+	}
+
 	// CSS 2.1 §17.5.3: if the table has an explicit block-size larger
 	// than its intrinsic content, distribute the excess across the rows.
 	if geom.BorderBoxSize.BlockSize != Indefinite && len(rows) > 0 {
@@ -456,16 +492,16 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			explicitContentBlock = 0
 		}
 
-		// Intrinsic rows-block total (spacings + row intrinsics), reproducing
-		// the legacy accumulator so parity is preserved with ckpt 2's
-		// byte-equal behavior. blockOffset already includes top captions
-		// and the leading border-spacing before the first row.
+		// Intrinsic rows-block total (spacings + post-rowspan-distribution
+		// row block-sizes). Reads from spRows[i].BlockSize so the rowspan
+		// pre-pass's contributions are included in the "what's already
+		// claimed" count.
 		intrinsicTotal := blockOffset
 		for i := range rows {
 			if i > 0 && blockSpacing > 0 {
 				intrinsicTotal += blockSpacing
 			}
-			intrinsicTotal += measured[i].intrinsic
+			intrinsicTotal += spRows[i].BlockSize
 		}
 		if blockSpacing > 0 {
 			intrinsicTotal += blockSpacing // block-end border spacing
@@ -1915,6 +1951,116 @@ func computeRows(intrinsics []tableRowIntrinsic, wdm WritingDirectionMode) Table
 //
 // Collapsed rows (IsCollapsed) never participate — their block-size
 // stays zero. Same constraint as Blink.
+// distributeRowspanCellToRows enforces a rowspan cell's minimum
+// block-size by growing the rows it spans when their combined
+// block-size (plus the row spacings between them) is less than the
+// cell's own intrinsic block-size. Mirrors Blink's
+// DistributeRowspanCellToRows in
+// third_party/blink/renderer/core/layout/table/table_layout_utils.cc
+// (~L1606).
+//
+// Inputs:
+//   - rows:      the row vector to mutate in place.
+//   - rowIdx:    the rowspan cell's originating row index.
+//   - rowSpan:   the rowspan attribute (already clamped by
+//                assignColumnIndices's slot grid; we re-clamp defensively
+//                so this helper is safe to call directly).
+//   - cellBlock: the cell's intrinsic block-size (the value that would
+//                otherwise have been folded into the originating row's
+//                intrinsic max in the rowSpan == 1 path).
+//   - rowSpacing: CSS 2.1 §17.6.1 border-spacing in the block axis.
+//
+// Distribution rules (matches Blink):
+//
+//   - Compute `current` = Σ rows[R..R+s-1].BlockSize +
+//     (s-1) * rowSpacing. This is the space the rowspan cell already
+//     occupies given prior intrinsic sizing.
+//   - If cellBlock > current, the cell has a deficit of
+//     `cellBlock - current` that must be absorbed by growing the
+//     spanned rows.
+//   - If at least one spanned row has BlockSize > 0, the deficit is
+//     distributed proportionally to each row's existing BlockSize
+//     (matching Blink's "scale by current row block-size" rule).
+//   - If every spanned row has BlockSize == 0, the deficit is
+//     distributed evenly.
+//   - Distribution uses last-row remainder accounting so the
+//     post-distribution sum is exact (no float drift).
+func distributeRowspanCellToRows(
+	rows TableTypesRows,
+	rowIdx, rowSpan int,
+	cellBlock, rowSpacing float64,
+) {
+	if rowSpan <= 1 || cellBlock <= 0 || len(rows) == 0 {
+		return
+	}
+	if rowIdx < 0 || rowIdx >= len(rows) {
+		return
+	}
+	end := rowIdx + rowSpan
+	if end > len(rows) {
+		end = len(rows)
+	}
+	span := end - rowIdx
+	if span <= 1 {
+		// Cell does not actually span past the originating row (clamped
+		// by table size). Treat its block-size as a contribution to the
+		// originating row's intrinsic instead.
+		if rows[rowIdx].BlockSize < cellBlock {
+			rows[rowIdx].BlockSize = cellBlock
+		}
+		return
+	}
+
+	current := 0.0
+	for i := rowIdx; i < end; i++ {
+		current += rows[i].BlockSize
+	}
+	current += float64(span-1) * rowSpacing
+
+	if cellBlock <= current {
+		return
+	}
+
+	deficit := cellBlock - current
+
+	// Total of current row block-sizes (excluding the spacings) — this
+	// is what the proportional split sees.
+	totalRowBlock := 0.0
+	for i := rowIdx; i < end; i++ {
+		totalRowBlock += rows[i].BlockSize
+	}
+
+	accum := 0.0
+	if totalRowBlock > 0 {
+		// Proportional distribution.
+		for k := 0; k < span; k++ {
+			i := rowIdx + k
+			var share float64
+			if k == span-1 {
+				share = deficit - accum
+			} else {
+				share = deficit * rows[i].BlockSize / totalRowBlock
+				accum += share
+			}
+			rows[i].BlockSize += share
+		}
+	} else {
+		// All-zero spanned rows — distribute evenly.
+		per := deficit / float64(span)
+		for k := 0; k < span; k++ {
+			i := rowIdx + k
+			var share float64
+			if k == span-1 {
+				share = deficit - accum
+			} else {
+				share = per
+				accum += share
+			}
+			rows[i].BlockSize += share
+		}
+	}
+}
+
 func distributeTableBlockSizeToRows(rows TableTypesRows, excess float64) {
 	if len(rows) == 0 || excess <= 0 {
 		return
