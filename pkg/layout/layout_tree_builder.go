@@ -25,8 +25,37 @@ type LayoutTreeBuilder struct {
 // BuildLayoutTree creates the layout tree rooted at the given DOM node.
 func (b *LayoutTreeBuilder) BuildLayoutTree(root *html.Node) *LayoutInputNode {
 	tree := b.buildNode(root)
+	b.normalizeTableSubtrees(tree)
 	assignDOMIndices(tree)
 	return tree
+}
+
+// normalizeTableSubtrees walks the built layout tree and applies CSS 2.1
+// §17.2.1 anonymous-table-box generation inside every real table /
+// inline-table subtree. Scoping the normalization to table roots (rather
+// than running it from buildNode at every level) matches what Blink does:
+// standalone display:table-row-group / table-row / table-cell boxes whose
+// ancestor is not a table (e.g. a pseudo-element
+// `div:before { display: table-row-group }` on a non-table div) are left
+// alone — louis14 has not yet implemented the reverse §17.2.1 rule that
+// would generate an anonymous containing table around them, and existing
+// reftests rely on the legacy fall-through-to-block layout.
+func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
+	if node == nil {
+		return
+	}
+	if s := node.Style(); s != nil {
+		switch s.GetDisplay() {
+		case css.DisplayTable, css.DisplayInlineTable:
+			node.children = b.wrapAnonymousTableBoxes(node.children, s)
+			// wrapAnonymousTableBoxes recurses through the proper-table
+			// subtree for us, so no further walk is needed here.
+			return
+		}
+	}
+	for _, c := range node.children {
+		b.normalizeTableSubtrees(c)
+	}
 }
 
 // assignDOMIndices assigns a monotonically increasing pre-order index to each
@@ -130,6 +159,134 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	lin.children = b.maybeWrapAnonymousBlocks(rawChildren, style)
 
 	return lin
+}
+
+// isProperTableChild reports whether a child is a proper table child per
+// CSS 2.1 §17.2.1: table-caption, table-row-group variants, or (because
+// louis14 does not yet map <col>/<colgroup> to dedicated display values)
+// the col/colgroup HTML elements.
+func isProperTableChild(c *LayoutInputNode) bool {
+	s := c.Style()
+	if s == nil {
+		return false
+	}
+	switch s.GetDisplay() {
+	case css.DisplayTableCaption, css.DisplayTableRowGroup,
+		css.DisplayTableHeaderGroup, css.DisplayTableFooterGroup:
+		return true
+	}
+	if c.DOMNode != nil {
+		switch c.DOMNode.TagName {
+		case "col", "colgroup":
+			return true
+		}
+	}
+	return false
+}
+
+// isProperRowGroupChild reports whether a child is a proper row-group child
+// per CSS 2.1 §17.2.1 (only table-row).
+func isProperRowGroupChild(c *LayoutInputNode) bool {
+	s := c.Style()
+	if s == nil {
+		return false
+	}
+	return s.GetDisplay() == css.DisplayTableRow
+}
+
+// isProperRowChild reports whether a child is a proper row child per
+// CSS 2.1 §17.2.1 (only table-cell).
+func isProperRowChild(c *LayoutInputNode) bool {
+	s := c.Style()
+	if s == nil {
+		return false
+	}
+	return s.GetDisplay() == css.DisplayTableCell
+}
+
+// wrapAnonymousTableBoxes applies CSS 2.1 §17.2.1 anonymous table-box
+// generation to a parent's children. Mirrors Blink's
+// LayoutTable::AddChild / LayoutTableSection::AddChild /
+// LayoutTableRow::AddChild: runs of stray children collapse into a single
+// anonymous wrapper (one wrapper per run, not one per child), and the
+// wrapper's children are recursively wrapped for the next table level so
+// e.g. a bare block directly inside a <table> becomes
+// anon-row-group → anon-row → anon-cell → <block>.
+//
+// Whitespace-only stray runs are discarded: text between table-internal
+// boxes is not content (CSS 2.1 §17.2.1 "Anonymous table objects" note).
+func (b *LayoutTreeBuilder) wrapAnonymousTableBoxes(
+	children []*LayoutInputNode, parentStyle *css.Style,
+) []*LayoutInputNode {
+	if parentStyle == nil || len(children) == 0 {
+		return children
+	}
+
+	var accepts func(*LayoutInputNode) bool
+	var newWrapperStyle func(*css.Style) *css.Style
+	switch parentStyle.GetDisplay() {
+	case css.DisplayTable, css.DisplayInlineTable:
+		accepts = isProperTableChild
+		newWrapperStyle = css.NewAnonymousTableRowGroupStyle
+	case css.DisplayTableRowGroup, css.DisplayTableHeaderGroup,
+		css.DisplayTableFooterGroup:
+		accepts = isProperRowGroupChild
+		newWrapperStyle = css.NewAnonymousTableRowStyle
+	case css.DisplayTableRow:
+		accepts = isProperRowChild
+		newWrapperStyle = css.NewAnonymousTableCellStyle
+	default:
+		return children
+	}
+
+	var result []*LayoutInputNode
+	var stray []*LayoutInputNode
+
+	flush := func() {
+		if len(stray) == 0 {
+			return
+		}
+		// Drop whitespace-only stray runs (non-content text between table
+		// elements). Non-text or non-whitespace content must generate boxes.
+		allWS := true
+		for _, c := range stray {
+			if !c.IsText() || strings.TrimSpace(c.TextContent()) != "" {
+				allWS = false
+				break
+			}
+		}
+		if allWS {
+			stray = nil
+			return
+		}
+		wrapperStyle := newWrapperStyle(parentStyle)
+		// Recurse so the wrapper's own level is normalized too.
+		wrapperChildren := b.wrapAnonymousTableBoxes(stray, wrapperStyle)
+		result = append(result, &LayoutInputNode{
+			style:       wrapperStyle,
+			children:    wrapperChildren,
+			isAnonymous: true,
+		})
+		stray = nil
+	}
+
+	for _, child := range children {
+		if accepts(child) {
+			flush()
+			// Recurse through authored descendants too, so a real
+			// <tbody> gets its <tr>s normalized and real <tr>s get
+			// their cells normalized. Without this the post-pass
+			// would only traverse into synthesized wrappers.
+			if cs := child.Style(); cs != nil {
+				child.children = b.wrapAnonymousTableBoxes(child.children, cs)
+			}
+			result = append(result, child)
+		} else {
+			stray = append(stray, child)
+		}
+	}
+	flush()
+	return result
 }
 
 // isBlockLevel returns true if the child is a block-level box.

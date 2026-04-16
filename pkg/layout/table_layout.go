@@ -247,10 +247,11 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		colIdx := 0
 
 		// Create synthetic row fragment (structural only, no OOF role).
+		// row.node is always set after CSS 2.1 §17.2.1 anonymous-box
+		// normalization at tree-build time — anonymous and authored rows
+		// are indistinguishable here.
 		rowBuilder := NewBoxFragmentBuilder(wdm)
-		if row.node != nil {
-			rowBuilder.SetLayoutNode(row.node)
-		}
+		rowBuilder.SetLayoutNode(row.node)
 
 		// Two-pass cell layout: first lay out all cells to find row height,
 		// then stretch cells to fill the row (CSS 2.1 §17.5.3).
@@ -425,8 +426,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			BlockSize:  rowHeight,
 		})
 
-		// Copy row style for background/border rendering.
-		if row.node != nil && row.style != nil {
+		// Copy row style for background/border rendering. Anonymous row
+		// wrappers have zero border/padding per CSS 2.1 §17.2.1, so this
+		// block safely degrades to a no-op for them.
+		if row.style != nil {
 			rowPhysBorder := ToPhysicalEdges(ComputeFragmentGeometry(row.style, wdm).Border, wdm)
 			if borderCollapse {
 				// In border-collapse mode, row borders participate in the
@@ -723,41 +726,16 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 	var colWidths []tableColWidth
 	colIdx := 0 // tracks current column index as col/colgroup are encountered
 
-	// CSS 2.1 §17.2.1: text and inline content directly inside a table
-	// element must be wrapped in anonymous table-row + table-cell boxes.
-	// Consecutive inline children (text nodes + inline elements) share
-	// one anonymous cell, mirroring buildRow's anonymous cell batching.
-	var anonInlineChildren []*LayoutInputNode
-
-	flushAnonInline := func() {
-		if len(anonInlineChildren) == 0 {
-			return
-		}
-		// Create anonymous cell style inheriting from the table.
-		anonCellStyle := css.NewAnonymousTableCellStyle(tla.style)
-		anonCellNode := &LayoutInputNode{
-			style:       anonCellStyle,
-			children:    anonInlineChildren,
-			isAnonymous: true,
-		}
-		bodyRows = append(bodyRows, tableRow{
-			cells: []tableCell{{
-				node:    anonCellNode,
-				style:   anonCellStyle,
-				colSpan: 1,
-				rowSpan: 1,
-			}},
-		})
-		anonInlineChildren = nil
-	}
-
+	// Per CSS 2.1 §17.2.1 the layout tree is already normalized at
+	// tree-build time (see LayoutTreeBuilder.wrapAnonymousTableBoxes).
+	// Every direct child of a table is a caption, a row-group, or a
+	// col/colgroup — stray text/inlines/bare rows/bare cells/bare blocks
+	// have all been wrapped in anonymous row-groups upstream. Matches
+	// Blink: by the time the table layout algorithm runs, anonymous and
+	// authored row-groups are indistinguishable.
 	for _, child := range tla.node.Children() {
 		if child.IsText() {
-			// Whitespace-only text nodes are ignored per CSS Tables §2.1.
-			if strings.TrimSpace(child.TextContent()) == "" {
-				continue
-			}
-			anonInlineChildren = append(anonInlineChildren, child)
+			// Defensive: whitespace text is dropped at tree-build.
 			continue
 		}
 		childStyle := child.Style()
@@ -766,19 +744,16 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 		}
 		display := childStyle.GetDisplay()
 
-
-		// Check for col/colgroup elements by tag name.
-		// These have display:block in our engine but affect column widths per CSS Tables §9.1.
+		// col/colgroup — affect column widths per CSS Tables §9.1.
+		// These have display:block in louis14 (no dedicated display value),
+		// so detect by tag name.
 		if child.DOMNode != nil && (child.DOMNode.TagName == "col" || child.DOMNode.TagName == "colgroup") {
 			span := 1
-			// <col span="N"> or <colgroup span="N">
 			if spanAttr, ok := child.DOMNode.GetAttribute("span"); ok {
 				if n := parseIntAttr(spanAttr); n > 0 {
 					span = n
 				}
 			}
-			// Resolve width from the col/colgroup style (ch units use the element's own
-			// writing-mode and text-orientation, per CSS Values §6.1 and CSS WM §7.5).
 			if w, ok := childStyle.GetLength("width"); ok && w > 0 {
 				colWidths = append(colWidths, tableColWidth{
 					colIndex: colIdx,
@@ -821,22 +796,6 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			continue
 		}
 
-		// Inline-level elements (display:inline, inline-block, etc.) are batched
-		// with text nodes into the anonymous inline cell.
-		isInlineLevel := display == css.DisplayInline || display == css.DisplayInlineBlock ||
-			display == css.DisplayInlineFlex || display == css.DisplayInlineTable
-		// <br> is always inline content regardless of computed display.
-		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
-			isInlineLevel = true
-		}
-		if isInlineLevel && display != css.DisplayNone {
-			anonInlineChildren = append(anonInlineChildren, child)
-			continue
-		}
-
-		// Table-structural element — flush any pending inline content first.
-		flushAnonInline()
-
 		switch display {
 		case css.DisplayTableCaption:
 			// caption-side is inherited but may not be in the cascade's
@@ -853,9 +812,6 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 				style: childStyle,
 				side:  side,
 			})
-
-		case css.DisplayTableRow:
-			bodyRows = append(bodyRows, tla.buildRow(child, childStyle))
 
 		case css.DisplayTableHeaderGroup, css.DisplayTableRowGroup, css.DisplayTableFooterGroup:
 			// Collect rows from this group, then append to the correct bucket.
@@ -882,40 +838,8 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			default:
 				bodyRows = append(bodyRows, groupRows...)
 			}
-
-		case css.DisplayTableCell:
-			// Bare cell without a row — wrap in an anonymous row.
-			bodyRows = append(bodyRows, tableRow{
-				cells: []tableCell{{
-					node:    child,
-					style:   childStyle,
-					colSpan: 1,
-					rowSpan: 1,
-				}},
-			})
-
-		default:
-			// Non-table-structural child (e.g. a block element) inside
-			// a table element. Per CSS Tables §2.1, anonymous table-row-group,
-			// table-row, and table-cell boxes are generated to wrap such children.
-			// Treat the child as an anonymous table-cell in an anonymous row,
-			// preserving the child's own layout algorithm via layoutElement.
-			if childStyle.GetDisplay() != css.DisplayNone {
-				bodyRows = append(bodyRows, tableRow{
-					cells: []tableCell{{
-						node:        child,
-						style:       childStyle,
-						colSpan:     1,
-						rowSpan:     1,
-						isAnonymous: true,
-					}},
-				})
-			}
 		}
 	}
-
-	// Flush any remaining inline content at the end.
-	flushAnonInline()
 
 	// Render order: thead → tbody sections → tfoot.
 	rows := make([]tableRow, 0, len(headerRows)+len(bodyRows)+len(footerRows))
@@ -926,75 +850,102 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 }
 
 
-// buildRow extracts cells from a table-row element.
-// Per CSS Tables §2.1, non-table-cell children of a table-row are wrapped
-// in anonymous table-cell boxes: consecutive non-cell siblings share one
-// anonymous cell. Whitespace-only text nodes are ignored.
+// buildRow extracts cells from a table-row element. After tree-build
+// normalization (LayoutTreeBuilder.wrapAnonymousTableBoxes), every row
+// child is a table-cell — either authored or an anonymous wrapper around
+// stray content. Anonymous and authored cells are both layout-time cells;
+// only the isAnonymous flag disambiguates for the row-height / margin
+// accounting in Layout().
 func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Style) tableRow {
 	row := tableRow{node: node, style: style}
 	colIdx := 0
 
-	var anonChildren []*LayoutInputNode
-
-	flushAnon := func() {
-		if len(anonChildren) == 0 {
-			return
-		}
-		anonStyle := css.NewAnonymousTableCellStyle(style)
-		anonNode := &LayoutInputNode{
-			style:       anonStyle,
-			children:    anonChildren,
-			isAnonymous: true,
-		}
-		row.cells = append(row.cells, tableCell{
-			node:     anonNode,
-			style:    anonStyle,
-			colIndex: colIdx,
-			colSpan:  1,
-			rowSpan:  1,
-		})
-		colIdx++
-		anonChildren = nil
-	}
-
 	for _, child := range node.Children() {
 		if child.IsText() {
-			if strings.TrimSpace(child.TextContent()) == "" {
-				continue
-			}
-			anonChildren = append(anonChildren, child)
 			continue
 		}
 		childStyle := child.Style()
 		if childStyle == nil {
 			continue
 		}
-		if childStyle.GetDisplay() == css.DisplayTableCell {
-			flushAnon()
-			colSpan := 1
-			if child.DOMNode != nil {
-				if cs, ok := child.DOMNode.GetAttribute("colspan"); ok {
-					if v := parseIntAttr(cs); v > 0 {
-						colSpan = v
-					}
+		if childStyle.GetDisplay() != css.DisplayTableCell {
+			// Defensive — tree-build should have wrapped this.
+			continue
+		}
+
+		// For anonymous cell wrappers holding a single block element,
+		// expose that inner block directly as the cell's node/style.
+		// This preserves the pre-refactor semantics where a bare block
+		// inside a <table> contributed its margins to the row height
+		// via the special cell.isAnonymous path (lines ~288/340 in
+		// Layout()). Without this unwrap, cell.style would be the
+		// anon-cell's (margin-free) style and those margins would be
+		// lost.
+		cellNode := child
+		cellStyleUsed := childStyle
+		isAnon := child.IsAnonymous()
+		if isAnon {
+			if inner := singleBlockInnerChild(child); inner != nil {
+				cellNode = inner
+				cellStyleUsed = inner.Style()
+			}
+		}
+
+		colSpan := 1
+		if child.DOMNode != nil {
+			if cs, ok := child.DOMNode.GetAttribute("colspan"); ok {
+				if v := parseIntAttr(cs); v > 0 {
+					colSpan = v
 				}
 			}
-			row.cells = append(row.cells, tableCell{
-				node:     child,
-				style:    childStyle,
-				colIndex: colIdx,
-				colSpan:  colSpan,
-				rowSpan:  1,
-			})
-			colIdx += colSpan
-		} else {
-			anonChildren = append(anonChildren, child)
 		}
+		row.cells = append(row.cells, tableCell{
+			node:        cellNode,
+			style:       cellStyleUsed,
+			colIndex:    colIdx,
+			colSpan:     colSpan,
+			rowSpan:     1,
+			isAnonymous: isAnon,
+		})
+		colIdx += colSpan
 	}
 
-	flushAnon()
-
 	return row
+}
+
+// singleBlockInnerChild returns the sole non-text, non-whitespace child of
+// an anonymous cell wrapper if exactly one exists and it is a block-level
+// element — otherwise nil. Used by buildRow to preserve margin-propagation
+// semantics for bare blocks wrapped at tree-build time.
+func singleBlockInnerChild(wrapper *LayoutInputNode) *LayoutInputNode {
+	var found *LayoutInputNode
+	for _, c := range wrapper.Children() {
+		if c.IsText() {
+			if strings.TrimSpace(c.TextContent()) == "" {
+				continue
+			}
+			return nil // non-whitespace text ⇒ inline content, keep wrapper
+		}
+		s := c.Style()
+		if s == nil {
+			return nil
+		}
+		// Inline-level children stay inside the wrapper (multi-inline runs
+		// or mixed inline/block can't be collapsed to a single content box).
+		d := s.GetDisplay()
+		switch d {
+		case css.DisplayBlock, css.DisplayFlex, css.DisplayFlowRoot,
+			css.DisplayGrid, css.DisplayTable, css.DisplayListItem:
+			// ok
+		default:
+			return nil
+		}
+		if found != nil {
+			return nil // more than one block child
+		}
+		found = c
+	}
+	return found
 }
 
 // computeColumnWidthsFixed computes column widths using the fixed table layout

@@ -811,6 +811,44 @@ func NewAnonymousTableCellStyle(parent *Style) *Style {
 	return s
 }
 
+// NewAnonymousTableRowStyle creates a style for an anonymous table-row box.
+// Per CSS 2.1 §17.2.1, non-row children of a table-row-group (and bare
+// non-row siblings of rows in a table) are wrapped in anonymous table-row
+// boxes. Mirrors Blink's LayoutTableRow::CreateAnonymousWithParent.
+func NewAnonymousTableRowStyle(parent *Style) *Style {
+	s := NewStyle()
+	s.ViewportWidth = parent.ViewportWidth
+	s.ViewportHeight = parent.ViewportHeight
+	s.ChWidth = parent.ChWidth
+	s.Set("display", "table-row")
+	// Copy all inheritable properties from the parent.
+	for prop := range inheritableProperties {
+		if val, ok := parent.Get(prop); ok {
+			s.Set(prop, val)
+		}
+	}
+	return s
+}
+
+// NewAnonymousTableRowGroupStyle creates a style for an anonymous
+// table-row-group box. Per CSS 2.1 §17.2.1, a run of non-proper-table
+// children of a table/inline-table is wrapped in an anonymous
+// table-row-group. Mirrors Blink's LayoutTableSection::CreateAnonymousWithParent.
+func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
+	s := NewStyle()
+	s.ViewportWidth = parent.ViewportWidth
+	s.ViewportHeight = parent.ViewportHeight
+	s.ChWidth = parent.ChWidth
+	s.Set("display", "table-row-group")
+	// Copy all inheritable properties from the parent.
+	for prop := range inheritableProperties {
+		if val, ok := parent.Get(prop); ok {
+			s.Set(prop, val)
+		}
+	}
+	return s
+}
+
 // resolveOrthogonalDisplay implements CSS Writing Modes §2.1:
 // If an inline-level box has a different writing-mode axis than its containing
 // block, its display value computes to inline-block. This causes inline spans
