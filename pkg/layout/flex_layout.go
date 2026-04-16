@@ -1092,21 +1092,24 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
 				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
 			// Column containers with same writing mode: items participate
-			// using synthesized inline-axis baselines per CSS Box Alignment §4.4.
+			// using a synthesized inline-axis baseline at the item's
+			// inline-start edge (CSS Box Alignment §7 baseline synthesis).
+			// For LTR this is bl=0; for RTL this is bl=crossSize. The
+			// baseline framework below handles the reverseCross flip.
 			columnSameWM := !isRow && item.wdm.IsVertical() == wdm.IsVertical()
 			if selfAlign == "baseline" {
+				var bl float64
+				var ok bool
 				if columnSameWM {
-					// Synthesize inline-axis baseline at line-left edge.
-					var bl float64
+					bl = 0
 					if wdm.Dir == DirectionRTL {
 						bl = item.crossSize
 					}
-					b := item.crossMarginStart() + bl
-					if b > sharedBaseline {
-						sharedBaseline = b
-					}
-					hasBaselineItem = true
-				} else if bl, ok := item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow); ok {
+					ok = true
+				} else {
+					bl, ok = item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow)
+				}
+				if ok {
 					var b float64
 					if reverseCross {
 						// wrap-reverse: first-baseline items align from cross-end.
@@ -1202,17 +1205,23 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			case "center":
 				itemCrossOffset = crossStart + crossFreeForAlign/2
 			case "baseline", "first baseline":
+				baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
+					(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
+				columnSameWM := !isRow && item.wdm.IsVertical() == wdm.IsVertical()
 				if hasBaselineItem {
-					baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
-						(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-					columnSameWM := !isRow && item.wdm.IsVertical() == wdm.IsVertical()
+					var bl float64
+					var ok bool
 					if columnSameWM {
-						var bl float64
+						// Synthesized inline-axis baseline: inline-start edge.
+						bl = 0
 						if wdm.Dir == DirectionRTL {
 							bl = item.crossSize
 						}
-						itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
-					} else if bl, ok := item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow); ok {
+						ok = true
+					} else {
+						bl, ok = item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow)
+					}
+					if ok {
 						if reverseCross {
 							// wrap-reverse: first-baseline items align from cross-end (bottom).
 							// sharedBaseline = max(crossMarginEnd + crossSize - bl).
