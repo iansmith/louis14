@@ -567,6 +567,14 @@ func ParseWithFetcher(htmlContent string, cssFetcher CSSFetcher) (*Document, err
 // ParseFragment parses an HTML fragment string and returns detached child nodes.
 // Unlike Parse, <script> and <style> tags become DOM nodes instead of being
 // extracted into Document.Scripts/Stylesheets.
+//
+// The full-document parser auto-wraps bare text and body-level elements in
+// synthetic <html><body>…</body></html> per HTML5 §12.2.6.4. For fragments
+// produced by element.innerHTML= (HTML5 §13.4 "Fragment parsing algorithm"),
+// those wrappers must not appear in the result — the fragment's content
+// becomes direct children of the context element. Strip a single top-level
+// synthetic <html> wrapper and return the body's children instead (plus any
+// head children, flattened, so script/style survive innerHTML round-trips).
 func ParseFragment(htmlContent string) ([]*Node, error) {
 	parser := NewParser(htmlContent)
 	parser.fragmentMode = true
@@ -574,9 +582,24 @@ func ParseFragment(htmlContent string) ([]*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Detach children from the synthetic root
-	children := make([]*Node, len(doc.Root.Children))
-	copy(children, doc.Root.Children)
+	rootChildren := doc.Root.Children
+	// Unwrap the synthetic <html> → <head>? + <body> created by the document
+	// parser. Per the fragment parsing algorithm, innerHTML content sits
+	// directly inside the context element with no html/body shell.
+	if len(rootChildren) == 1 && rootChildren[0].Type == ElementNode && rootChildren[0].TagName == "html" {
+		var flat []*Node
+		for _, c := range rootChildren[0].Children {
+			if c.Type == ElementNode && (c.TagName == "head" || c.TagName == "body") {
+				flat = append(flat, c.Children...)
+			} else {
+				flat = append(flat, c)
+			}
+		}
+		rootChildren = flat
+	}
+	// Detach from any synthetic parent so adopters own the nodes outright.
+	children := make([]*Node, len(rootChildren))
+	copy(children, rootChildren)
 	for _, child := range children {
 		child.Parent = nil
 	}
