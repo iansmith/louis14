@@ -135,6 +135,23 @@ type ConstraintSpace struct {
 
 	// BreakToken is the incoming break token for resuming layout.
 	BreakToken *BlockBreakToken
+
+	// --- Tables (single-pass sizing) ---
+
+	// TableSectionData carries the immutable, finalized row/section
+	// sizing vector from the table algorithm into its section and row
+	// sub-spaces. Nil outside of a table subtree. Mirrors Blink's
+	// ConstraintSpace::TableSectionData() which returns the threaded
+	// TableConstraintSpaceData pointer.
+	//
+	// Populated by refactor-b checkpoint 2+; the legacy build-then-mutate
+	// table path ignores this field.
+	TableSectionData *TableConstraintSpaceData
+
+	// TableSectionIndex is the index of the current section within
+	// TableSectionData.Sections, or -1 when not layout-ing a section.
+	// Mirrors Blink's TableSectionIndex accessor.
+	TableSectionIndex int
 }
 
 // FragmentationType distinguishes types of block fragmentation.
