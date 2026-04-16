@@ -1400,10 +1400,69 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// First baseline: from the first non-collapsed item in the first line that
 	// participates in baseline alignment (or the first non-collapsed item).
 	// Last baseline: from the last non-collapsed item in the last line.
+	//
+	// Under flex-wrap: wrap-reverse, source-first line gets placed at the
+	// (physical) cross-end. Per CSSWG resolution (w3c/csswg-drafts#7774) and
+	// Blink's FlexLayoutAlgorithm::ApplyReversals, the "first" flex line for
+	// baseline purposes is the visually topmost line — EXCEPT when a line
+	// contains an align-self:baseline item, in which case that line wins
+	// (matching Blink's major/minor baseline accumulation across lines and the
+	// reference rendering of wpt tests like flexbox-baseline-multi-line-horiz-*).
+	// We implement this by: (a) picking the first source-order line with a
+	// baseline-aligned item, if any; (b) otherwise, using the visually-topmost
+	// line (lines[len-1] under wrap-reverse, else lines[0]).
 	if len(lines) > 0 {
 		crossBPStart := geom.Border.BlockStart + geom.Padding.BlockStart
-		firstBLLine := lines[0]
-		lastBLLine := lines[len(lines)-1]
+
+		// hasBaselineAligned reports whether the line has an item whose
+		// align-self resolves to the requested baseline mode and whose axis
+		// is compatible with the container's baseline axis.
+		hasBaselineAligned := func(line *flexLine, mode string) bool {
+			if !isRow {
+				return false // baseline export only prefers aligned items in row flex
+			}
+			for _, item := range line.items {
+				if item.collapsed {
+					continue
+				}
+				sa := fla.getAlignSelf(item.style, alignItems)
+				mainAxisParallel := item.wdm.IsVertical() == wdm.IsVertical()
+				if sa == mode && mainAxisParallel {
+					return true
+				}
+			}
+			return false
+		}
+
+		// Per CSS Flexbox §8.5: only items on the source-first line matter for
+		// baseline alignment (the "startmost" line in source order, NOT visual
+		// order). If that line has a baseline-aligned item, it sets the
+		// container's first baseline — even if wrap-reverse places it
+		// physically at the bottom. If that line has no baseline-aligned item,
+		// the container's first baseline is synthesized from the FIRST ITEM on
+		// the visually-topmost line (lines[N-1] under wrap-reverse, else
+		// lines[0]). This matches Blink's multi-line wrap-reverse tests
+		// (flexbox-baseline-multi-line-horiz-*).
+		var firstBLLine *flexLine
+		if hasBaselineAligned(lines[0], "baseline") {
+			firstBLLine = lines[0]
+		} else if reverseCross {
+			firstBLLine = lines[len(lines)-1]
+		} else {
+			firstBLLine = lines[0]
+		}
+
+		// Last baseline mirrors the first-baseline rule in reverse:
+		// source-last line wins if it has a last-baseline item; else
+		// visually-bottom line.
+		var lastBLLine *flexLine
+		if hasBaselineAligned(lines[len(lines)-1], "last baseline") {
+			lastBLLine = lines[len(lines)-1]
+		} else if reverseCross {
+			lastBLLine = lines[0]
+		} else {
+			lastBLLine = lines[len(lines)-1]
+		}
 
 		// For the container's exported baseline (CSS Flexbox §8.5), the item's
 		// baseline is usable when the item's BASELINE axis is parallel to the
