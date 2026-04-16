@@ -529,6 +529,20 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// --- Phase 3: assemble row fragments at final sizes ---
+	//
+	// Rowspan cells are deferred and emitted as direct children of the
+	// table builder *after* every row fragment has been added. Mirrors
+	// Blink's painting-order rule for rowspan cells: row backgrounds
+	// (drawn from row fragments) sit beneath cell content, and a
+	// rowspan cell visually overlaps the rows it spans. Adding rowspan
+	// cells last means their content paints on top of the row
+	// backgrounds for rows R+1..R+s-1.
+	type pendingRowspan struct {
+		cl          cellMeasurement
+		blockOffset float64 // originating row's final block-offset
+	}
+	var rowspanPending []pendingRowspan
+
 	firstRowHeight := 0.0
 	firstRowBaseline := 0.0  // max cell baseline in first row (for table first baseline)
 	lastRowBaseline := 0.0   // max cell baseline in last row (for table last baseline)
@@ -549,6 +563,19 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		rowBuilder.SetLayoutNode(row.node)
 
 		for _, cl := range measured[rowIdx].cells {
+			if cl.cell.rowSpan > 1 {
+				// Defer rowspan cells: they are NOT children of any
+				// single row fragment; they attach directly to the
+				// table builder at the originating row's block-offset
+				// after the row loop, with their fragment stretched
+				// to the total spanned block-size.
+				rowspanPending = append(rowspanPending, pendingRowspan{
+					cl:          cl,
+					blockOffset: blockOffset,
+				})
+				continue
+			}
+
 			cellFrag := cl.result.Fragment
 			contentBlockSize := cl.contentBlockSize
 
@@ -651,6 +678,91 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		lastRowBaseline = rowBaseline
 		lastRowBlockOffset = blockOffset
 		blockOffset += rowHeight
+	}
+
+	// --- Phase 3b: place rowspan cells across spanned rows ---
+	//
+	// Each deferred rowspan cell stretches to
+	//   Σ rows[R..R+s-1].BlockSize + (s-1) * blockSpacing
+	// (mirrors Blink's TableSectionLayoutAlgorithm row-loop cell offset
+	// calculation in core/layout/table/table_section_layout_algorithm.cc)
+	// and attaches at the originating row's block-offset, just like a
+	// rowSpan == 1 cell would. Because Rowspan B grew spRows so that
+	// the spanned span ≥ cell intrinsic block-size, the stretch grows
+	// the cell, never shrinks it.
+	for _, p := range rowspanPending {
+		cl := p.cl
+		rowIdx := cl.rowIndex
+		end := rowIdx + cl.cell.rowSpan
+		if end > len(spRows) {
+			end = len(spRows)
+		}
+		span := end - rowIdx
+		spannedBlock := 0.0
+		for i := rowIdx; i < end; i++ {
+			spannedBlock += spRows[i].BlockSize
+		}
+		if span > 1 && blockSpacing > 0 {
+			spannedBlock += float64(span-1) * blockSpacing
+		}
+
+		cellFrag := cl.result.Fragment
+		cellLogical := NewLogicalFragment(wdm, cellFrag)
+		contentBlockSize := cellLogical.BlockSize()
+
+		// §17.5.4: stretch fragment + apply vertical-align using the
+		// total spanned block-size as the row-equivalent height.
+		if contentBlockSize < spannedBlock {
+			cellFrag.Size = ToPhysicalSize(LogicalSize{
+				InlineSize: cellLogical.InlineSize(),
+				BlockSize:  spannedBlock,
+			}, wdm.WM)
+
+			va := css.VerticalAlignMiddle // default for td/th
+			if cl.cell.style != nil {
+				va = cl.cell.style.GetVerticalAlign()
+			}
+			var blockShift float64
+			switch va {
+			case css.VerticalAlignMiddle:
+				blockShift = (spannedBlock - contentBlockSize) / 2
+			case css.VerticalAlignBottom:
+				blockShift = spannedBlock - contentBlockSize
+			}
+			if blockShift > 0 {
+				conv := NewConverter(wdm, cellFrag.Size)
+				physShift := conv.ToPhysicalOffset(LogicalOffset{
+					InlineOffset: 0,
+					BlockOffset:  blockShift,
+				}, PhysicalSize{})
+				for cci := range cellFrag.Children {
+					cellFrag.Children[cci].Offset.X += physShift.X
+					cellFrag.Children[cci].Offset.Y += physShift.Y
+				}
+			}
+		}
+
+		// Attach directly to the table builder at the originating
+		// row's block-offset.
+		builder.AddChild(cellFrag, LogicalOffset{
+			InlineOffset: cl.inlineOffset,
+			BlockOffset:  p.blockOffset + cl.cellBlockOffset,
+		})
+
+		// OOF candidates from rowspan cell content reference the
+		// originating row's final block-offset (same convention as
+		// non-rowspan cells in the row loop above).
+		if len(cl.result.PropagatedOOFCandidates) > 0 && cl.cell.style != nil {
+			cellGeom := ComputeFragmentGeometry(cl.cell.style, wdm)
+			inlineAdj := cl.inlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
+			blockAdj := p.blockOffset + cellGeom.Border.BlockStart + cellGeom.Padding.BlockStart
+			for _, cand := range cl.result.PropagatedOOFCandidates {
+				adj := cand
+				adj.StaticPosition.Offset.InlineOffset += inlineAdj
+				adj.StaticPosition.Offset.BlockOffset += blockAdj
+				builder.AddOutOfFlowCandidate(adj)
+			}
+		}
 	}
 
 	// Add block-end spacing after last row.
