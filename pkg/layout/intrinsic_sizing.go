@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/images"
 	"strconv"
+	"strings"
 )
 
 // IntrinsicSizingInfo holds the natural dimensions and aspect ratio for a
@@ -23,6 +24,8 @@ func GetIntrinsicSizingInfo(ctx *LayoutContext, node *LayoutInputNode) Intrinsic
 	switch node.DOMNode.TagName {
 	case "img":
 		return getImgIntrinsicInfo(ctx, node)
+	case "svg":
+		return getInlineSVGIntrinsicInfo(node)
 	case "canvas":
 		return getCanvasIntrinsicInfo(node)
 	case "video":
@@ -80,6 +83,74 @@ func getCanvasIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 		ar = w / h
 	}
 	return IntrinsicSizingInfo{w, h, ar, true}
+}
+
+// getInlineSVGIntrinsicInfo returns intrinsic sizing info for an inline <svg>
+// element based on its width/height/viewBox attributes. Matches Blink's
+// behavior and svgIntrinsicInfo for SVG images:
+// - Explicit width + height → intrinsic dimensions (aspect ratio derived).
+// - viewBox only → aspect ratio from viewBox; no intrinsic dimensions
+//   (ComputeReplacedSize applies the CSS default 300x150 subject to ratio).
+// - One explicit dimension + viewBox → derive the other via aspect ratio.
+func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
+	if node == nil || node.DOMNode == nil {
+		return IntrinsicSizingInfo{}
+	}
+	var info IntrinsicSizingInfo
+
+	var explW, explH float64
+	var hasExplW, hasExplH bool
+	if val, ok := node.DOMNode.GetAttribute("width"); ok {
+		if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
+			explW = parsed
+			hasExplW = true
+		}
+	}
+	if val, ok := node.DOMNode.GetAttribute("height"); ok {
+		if parsed, err := strconv.ParseFloat(val, 64); err == nil && parsed > 0 {
+			explH = parsed
+			hasExplH = true
+		}
+	}
+
+	// Parse viewBox "min-x min-y width height" for aspect ratio.
+	var vbW, vbH float64
+	hasViewBox := false
+	if vb, ok := node.DOMNode.GetAttribute("viewBox"); ok {
+		parts := strings.Fields(vb)
+		if len(parts) == 4 {
+			if w, err := strconv.ParseFloat(parts[2], 64); err == nil && w > 0 {
+				if h, err2 := strconv.ParseFloat(parts[3], 64); err2 == nil && h > 0 {
+					vbW, vbH = w, h
+					hasViewBox = true
+					info.HasAspectRatio = true
+					info.AspectRatio = vbW / vbH
+				}
+			}
+		}
+	}
+
+	switch {
+	case hasExplW && hasExplH:
+		info.IntrinsicWidth = explW
+		info.IntrinsicHeight = explH
+		if !info.HasAspectRatio && explH > 0 {
+			info.HasAspectRatio = true
+			info.AspectRatio = explW / explH
+		}
+	case hasExplW && hasViewBox:
+		info.IntrinsicWidth = explW
+		info.IntrinsicHeight = explW / info.AspectRatio
+	case hasExplH && hasViewBox:
+		info.IntrinsicHeight = explH
+		info.IntrinsicWidth = explH * info.AspectRatio
+	default:
+		// No explicit dimensions. Aspect ratio (if any) from viewBox is
+		// preserved; intrinsic dimensions remain 0 so ComputeReplacedSize
+		// applies the CSS 2.1 §10.3.2 default (300x150) subject to ratio.
+	}
+
+	return info
 }
 
 func getImgIntrinsicInfo(ctx *LayoutContext, node *LayoutInputNode) IntrinsicSizingInfo {

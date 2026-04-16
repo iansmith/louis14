@@ -437,6 +437,32 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if !lb.NextLine(&line) {
 			break
 		}
+
+		// CSS 2.1 §9.4.2: a line box that contains only out-of-flow
+		// candidates (and possibly collapsible whitespace that contributes
+		// nothing to the line) should not generate a line box. Record the
+		// OOF candidates at the current block offset and continue without
+		// advancing. This matches Blink's behavior where a trailing line
+		// after a <br> containing only positioned content collapses away.
+		if lineHasOnlyOutOfFlow(&line, itemsData) {
+			for _, r := range line.Results {
+				if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
+					builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+						Node: r.Item.LayoutNode,
+						StaticPosition: LogicalStaticPosition{
+							Offset: LogicalOffset{
+								InlineOffset: 0,
+								BlockOffset:  blockOffset,
+							},
+							InlineEdge: StaticEdgeStart,
+							BlockEdge:  StaticEdgeStart,
+						},
+						IsFixedPosition: r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
+					})
+				}
+			}
+			continue
+		}
 		line.TextAlign = textAlign
 
 		// CSS Text §9.7: text-align-last controls alignment of the last line
@@ -1374,4 +1400,32 @@ func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm Writing
 	default: // "left", ""
 		return 0
 	}
+}
+
+// lineHasOnlyOutOfFlow returns true if the given line contains no visible
+// in-flow content — i.e., no atomic inlines, no forced breaks, and no text
+// with non-whitespace characters. Out-of-flow candidates and collapsible
+// whitespace are ignored for this determination.
+//
+// Such lines should not generate a line box: they would otherwise add a
+// line-height's worth of empty space. Mirrors Blink's suppression of trailing
+// line boxes that contain only positioned content after a forced break.
+func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData) bool {
+	if line.HasForcedBreak || line.Width > 0 {
+		return false
+	}
+	for _, r := range line.Results {
+		switch r.Item.Type {
+		case InlineItemAtomicInline, InlineItemControl, InlineItemFloat:
+			return false
+		case InlineItemText:
+			if r.TextEnd > r.TextStart && r.TextEnd <= len(itemsData.TextContent) {
+				content := itemsData.TextContent[r.TextStart:r.TextEnd]
+				if strings.TrimFunc(content, isCSSCollapsibleSpace) != "" {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }

@@ -469,9 +469,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// §9.1 — Determine flex direction and whether main axis == inline axis.
 	flexDir := fla.getFlexDirection()
 	isRow := flexDir == "row" || flexDir == "row-reverse"
-	if flexDebug {
-		fmt.Fprintf(os.Stderr, "FLEX-DBG === container wdm=%v flexDir=%s ===\n", wdm, flexDir)
-	}
 	reverseMain := flexDir == "row-reverse" || flexDir == "column-reverse"
 	// Note: RTL direction is handled automatically by the fragment builder's
 	// logical→physical coordinate conversion (ToPhysicalOffset). We do NOT
