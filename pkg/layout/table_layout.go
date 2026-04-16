@@ -2,39 +2,9 @@ package layout
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"louis14/pkg/css"
-)
-
-// Feature flags for the refactor-(b) single-pass row sizing pipeline.
-//
-// Checkpoint 2 (current): both flags default false. The new single-pass
-// sizing machinery (computeRows + distributeTableBlockSizeToRows +
-// TableConstraintSpaceData) is built in parallel to the legacy
-// build-then-mutate-then-reposition flow but gated off by default. Flip
-// useSinglePassTableSizing to true locally to exercise the new path.
-// Checkpoint 3 will flip the default to true and delete the legacy path.
-//
-// Mirrors Blink's TableLayoutAlgorithm::ComputeRows /
-// DistributeTableBlockSizeToSections pipeline — see
-// third_party/blink/renderer/core/layout/table/table_layout_algorithm.cc
-// (ComputeRows ~L2073, Layout ~L2285) and table_layout_utils.cc
-// (ComputeMinimumRowBlockSize ~L315, DistributeExcessBlockSizeToRows ~L1095).
-var (
-	// useSinglePassTableSizing, when true, routes row-block-size
-	// distribution through computeRows / distributeTableBlockSizeToRows
-	// instead of the legacy auto-only even-distribution code path.
-	// Checkpoint 3 flips this to true and removes the legacy path.
-	useSinglePassTableSizing = false
-
-	// debugVerifySinglePassParity, when true, asserts at runtime that
-	// the single-pass and legacy paths produce identical row block-sizes
-	// (within 0.01px tolerance). Panics with a diagnostic on mismatch.
-	// Only meaningful when useSinglePassTableSizing is also true, since
-	// both paths must run to be compared.
-	debugVerifySinglePassParity = false
 )
 
 // TableLayoutAlgorithm implements CSS 2.1 §17 table layout.
@@ -236,72 +206,83 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		blockOffset += capLogical.BlockSize()
 	}
 
-	// Layout each row.
+	// Layout each row — single-pass pipeline (refactor-b ckpt 3).
 	//
-	// Mirrors Blink's NGTableLayoutAlgorithm: rows and sections are
-	// structural-only — they do NOT participate in OOF propagation.
-	// OOF candidates from cell content are collected directly at the
-	// table level. Rows produce synthetic fragments for painting but
-	// have no NGLayoutResult of their own in Blink.
+	// Mirrors Blink's NGTableLayoutAlgorithm::Layout (table_layout_algorithm.cc
+	// ~L2285) in three phases:
+	//
+	//   Phase 1 — measure: lay out every cell once to collect intrinsic
+	//             row heights, baselines, cell alignment data. No row
+	//             fragments are appended to the table builder yet.
+	//
+	//   Phase 2 — size: build TableTypesRows via computeRows, then run
+	//             distributeTableBlockSizeToRows (5-priority distribution
+	//             matching table_layout_utils.cc DistributeExcessBlockSize
+	//             ToRows). Finalized row block-sizes are then read by the
+	//             assembly phase — no post-append mutation, no reposition
+	//             sweep.
+	//
+	//   Phase 3 — assemble: build each row fragment at its final block-size,
+	//             stretching cells and applying §17.5.4 vertical-align
+	//             inline (row block-size is known at cell-placement time).
+	//
+	// Rows and sections are structural-only (no NGLayoutResult of their own
+	// in Blink); OOF candidates from cell content are collected directly at
+	// the table builder at their final block-offsets.
 
 	// Add block-start spacing before first row (if border-spacing is non-zero).
 	if len(rows) > 0 && blockSpacing > 0 {
 		blockOffset += blockSpacing
 	}
 
-	// Track per-row info for height distribution and vertical-align.
-	type cellAlignInfo struct {
-		contentBlockSize float64 // original content-derived block size
-		style            *css.Style
+	// Per-cell measurement data captured during Phase 1 and consumed by
+	// Phase 3. contentBlockSize is the size used by the §17.5.4 check
+	// (cell's intrinsic block-size for real cells; the row's intrinsic
+	// height for anonymous-cell wrappers — their block margins fill the
+	// row, so VA on the wrapped child is suppressed at the intrinsic size).
+	type cellMeasurement struct {
+		result           *LayoutResult
+		inlineOffset     float64
+		cell             tableCell
+		contentBlockSize float64
+		cellBlockOffset  float64 // block offset of the child inside an anon-cell wrapper
 	}
-	type rowInfo struct {
-		height      float64
-		hasExplicit bool // true if any cell has explicit height
-		cellAligns  []cellAlignInfo
-		childIdx    int     // index of this row's fragment in builder.children
-		blockOffset float64 // block offset at which the row was placed
-
-		// Refactor-(b) ckpt 2: fields below feed computeRows for the
-		// single-pass sizing path. Always populated so the two paths
-		// stay byte-for-byte comparable when the parity flag is on.
-		cellCount       int
-		startCellIndex  int
-		rowBaseline     float64
+	type rowMeasurement struct {
+		intrinsic       float64
+		hasExplicit     bool
+		baseline        float64
 		hasRowspanStart bool
+		cells           []cellMeasurement
 	}
-	rowInfos := make([]rowInfo, len(rows))
+	measured := make([]rowMeasurement, len(rows))
 
-	// Flat cell counter for TableTypesRow.StartCellIndex / CellCount.
-	flatCellCursor := 0
+	// Build the immutable TableConstraintSpaceData pointer that is threaded
+	// through each cell's sub-space (and in the future, row/section
+	// sub-spaces). Mirrors Blink's
+	// TableLayoutAlgorithm::CreateConstraintSpaceData
+	// (table_layout_algorithm.cc ~L979-1044).
+	//
+	// In louis14 today cell layout does not read from the section data —
+	// but the pointer is shared by every sub-space so that future features
+	// (percentage resolution against section block-size, rowspan
+	// distribution) can publish final sizes via one in-place update after
+	// distribution.
+	tableData := &TableConstraintSpaceData{
+		Rows:              make(TableTypesRows, len(rows)),
+		ColumnInlineSizes: append([]float64(nil), colWidths...),
+	}
+	if len(rows) > 0 {
+		tableData.Sections = []TableTypesSection{{
+			StartRowIndex: 0,
+			RowCount:      len(rows),
+		}}
+	}
 
-	firstRowHeight := 0.0
-	firstRowBaseline := 0.0  // max cell baseline in first row (for table first baseline)
-	lastRowBaseline := 0.0   // max cell baseline in last row (for table last baseline)
-	lastRowBlockOffset := 0.0 // block offset of last row
+	// --- Phase 1: measure ---
 	for rowIdx, row := range rows {
-		// Add inter-row spacing (block spacing) between rows.
-		if rowIdx > 0 && blockSpacing > 0 {
-			blockOffset += blockSpacing
-		}
-
 		rowHeight := 0.0
 		colIdx := 0
-
-		// Create synthetic row fragment (structural only, no OOF role).
-		// row.node is always set after CSS 2.1 §17.2.1 anonymous-box
-		// normalization at tree-build time — anonymous and authored rows
-		// are indistinguishable here.
-		rowBuilder := NewBoxFragmentBuilder(wdm)
-		rowBuilder.SetLayoutNode(row.node)
-
-		// Two-pass cell layout: first lay out all cells to find row height,
-		// then stretch cells to fill the row (CSS 2.1 §17.5.3).
-		type cellLayoutInfo struct {
-			result       *LayoutResult
-			inlineOffset float64
-			cell         tableCell
-		}
-		cellLayouts := make([]cellLayoutInfo, 0, len(row.cells))
+		cellLayouts := make([]cellMeasurement, 0, len(row.cells))
 
 		for _, cell := range row.cells {
 			// Compute cell width from column widths.
@@ -341,6 +322,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// InlineSize; for orthogonal cells the builder swaps it to
 			// IsFixedBlockSize so the cell fills the column width in its block
 			// direction (= the table's physical column width).
+			//
+			// The TableSectionData pointer threads the (soon-to-be-final)
+			// row sizing vector into the cell sub-space, mirroring Blink's
+			// TableSectionConstraintSpaceBuilder chain.
 			cellSpace := NewConstraintSpaceBuilder(wdm, cellWDM, true).
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(cellWDM, tla.ctx)).
@@ -355,6 +340,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					BlockSize:  0,
 				}).
 				SetPercentageResolutionInlineSize(layoutWidth).
+				SetTableSectionData(tableData).
+				SetTableSectionIndex(0).
 				Build()
 
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
@@ -390,59 +377,197 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// Track if any cell has an explicit height (for distribution).
 			if cell.style != nil {
 				if _, ok := ResolveBlockSize(cell.style, wdm, ConstraintSpace{}, ComputeFragmentGeometry(cell.style, wdm)); ok {
-					rowInfos[rowIdx].hasExplicit = true
+					measured[rowIdx].hasExplicit = true
 				}
 			}
 
-			cellLayouts = append(cellLayouts, cellLayoutInfo{
-				result:       cellResult,
-				inlineOffset: cellInlineOffset,
-				cell:         cell,
+			// contentBlockSize: for real cells, the cell fragment's own
+			// block-size; for anonymous wrappers, the row's intrinsic
+			// height (assigned below after the row's max cell settles).
+			// cellBlockOffset positions the wrapped child within the anon
+			// cell to honor the child's block-start margin.
+			contentBlockSize := cellLogical.BlockSize()
+			cellBlockOffset := 0.0
+			if cell.isAnonymous && cell.style != nil {
+				childMargins := ResolveMargins(cell.style, wdm, cellLogical.InlineSize())
+				cellBlockOffset = childMargins.BlockStart
+			}
+
+			cellLayouts = append(cellLayouts, cellMeasurement{
+				result:           cellResult,
+				inlineOffset:     cellInlineOffset,
+				cell:             cell,
+				contentBlockSize: contentBlockSize,
+				cellBlockOffset:  cellBlockOffset,
 			})
 
 			colIdx += cell.colSpan
 		}
 
-		// Second pass: stretch cells to row height and add to rowBuilder.
-		// Vertical-align is applied after row height redistribution below.
-		for _, cl := range cellLayouts {
-			cellLogical := NewLogicalFragment(wdm, cl.result.Fragment)
-			contentBlockSize := cellLogical.BlockSize()
-
-			cellBlockOffset := 0.0
-			if cl.cell.isAnonymous && cl.cell.style != nil {
-				// Anonymous cell wrappers: the child's block margins contribute
-				// to the row height but the child's border-box stays unchanged.
-				// Offset the child by its block-start margin within the row.
-				// Set contentBlockSize to rowHeight so the vertical-align pass
-				// (which defaults to middle for cells) doesn't shift the child —
-				// the margin space is not free space for alignment.
-				childMargins := ResolveMargins(cl.cell.style, wdm, cellLogical.InlineSize())
-				cellBlockOffset = childMargins.BlockStart
-				contentBlockSize = rowHeight
+		// Anonymous-cell wrappers: their contentBlockSize is the row's
+		// intrinsic height, so the §17.5.4 pass does not shift the wrapped
+		// child when the row does not grow past its intrinsic size. Matches
+		// the legacy "no VA for anon at intrinsic height" behavior.
+		for ci := range cellLayouts {
+			if cellLayouts[ci].cell.isAnonymous && cellLayouts[ci].cell.style != nil {
+				cellLayouts[ci].contentBlockSize = rowHeight
 			}
+		}
 
-			// Store content block size for vertical-align pass.
-			rowInfos[rowIdx].cellAligns = append(rowInfos[rowIdx].cellAligns, cellAlignInfo{
-				contentBlockSize: contentBlockSize,
-				style:            cl.cell.style,
-			})
+		// Track cell baselines for this row (CSS 2.1 §17.5.2).
+		// The row baseline is the max cell first-baseline across all cells
+		// that have a baseline, mirroring Blink's RowBaselineTabulator.
+		rowBaseline := 0.0
+		for _, cl := range cellLayouts {
+			if cl.result.Baseline > 0 && cl.result.Baseline > rowBaseline {
+				rowBaseline = cl.result.Baseline
+			}
+		}
 
-			if !cl.cell.isAnonymous && contentBlockSize < rowHeight {
-				// Stretch cell to fill row height.
-				physSize := ToPhysicalSize(LogicalSize{
+		measured[rowIdx].intrinsic = rowHeight
+		measured[rowIdx].baseline = rowBaseline
+		measured[rowIdx].cells = cellLayouts
+		for _, cl := range cellLayouts {
+			if cl.cell.rowSpan > 1 {
+				measured[rowIdx].hasRowspanStart = true
+				break
+			}
+		}
+	}
+
+	// --- Phase 2: compute final row block-sizes ---
+	// Build TableTypesRows from measured intrinsics, then apply the
+	// 5-priority distribution when the table has an explicit block-size
+	// larger than the intrinsic content. Mirrors Blink's ComputeRows +
+	// DistributeTableBlockSizeToSections pair.
+	intrinsics := make([]tableRowIntrinsic, len(rows))
+	flat := 0
+	for i := range rows {
+		intrinsics[i] = tableRowIntrinsic{
+			intrinsicHeight: measured[i].intrinsic,
+			hasExplicitCell: measured[i].hasExplicit,
+			cellCount:       len(measured[i].cells),
+			startCellIndex:  flat,
+			hasRowspanStart: measured[i].hasRowspanStart,
+			baseline:        measured[i].baseline,
+			row:             &rows[i],
+		}
+		flat += len(measured[i].cells)
+	}
+	spRows := computeRows(intrinsics, wdm)
+
+	// CSS 2.1 §17.5.3: if the table has an explicit block-size larger
+	// than its intrinsic content, distribute the excess across the rows.
+	if geom.BorderBoxSize.BlockSize != Indefinite && len(rows) > 0 {
+		explicitContentBlock := geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
+		if explicitContentBlock < 0 {
+			explicitContentBlock = 0
+		}
+
+		// Intrinsic rows-block total (spacings + row intrinsics), reproducing
+		// the legacy accumulator so parity is preserved with ckpt 2's
+		// byte-equal behavior. blockOffset already includes top captions
+		// and the leading border-spacing before the first row.
+		intrinsicTotal := blockOffset
+		for i := range rows {
+			if i > 0 && blockSpacing > 0 {
+				intrinsicTotal += blockSpacing
+			}
+			intrinsicTotal += measured[i].intrinsic
+		}
+		if blockSpacing > 0 {
+			intrinsicTotal += blockSpacing // block-end border spacing
+		}
+
+		if explicitContentBlock > intrinsicTotal {
+			excess := explicitContentBlock - intrinsicTotal
+			distributeTableBlockSizeToRows(spRows, excess)
+		}
+	}
+
+	// Publish finalized sizes into the shared constraint-space data.
+	// Cells laid out in Phase 1 hold a pointer to tableData; updating in
+	// place here is the single-pass analogue of Blink's
+	// CreateConstraintSpaceData-after-distribution pattern. Cell layout
+	// today does not read from it, but future rowspan / percentage code
+	// will.
+	copy(tableData.Rows, spRows)
+	if len(tableData.Sections) > 0 {
+		sectionBlock := 0.0
+		for i := range spRows {
+			sectionBlock += spRows[i].BlockSize
+		}
+		tableData.Sections[0].BlockSize = sectionBlock
+	}
+
+	// --- Phase 3: assemble row fragments at final sizes ---
+	firstRowHeight := 0.0
+	firstRowBaseline := 0.0  // max cell baseline in first row (for table first baseline)
+	lastRowBaseline := 0.0   // max cell baseline in last row (for table last baseline)
+	lastRowBlockOffset := 0.0 // block offset of last row
+	for rowIdx, row := range rows {
+		// Add inter-row spacing (block spacing) between rows.
+		if rowIdx > 0 && blockSpacing > 0 {
+			blockOffset += blockSpacing
+		}
+
+		rowHeight := spRows[rowIdx].BlockSize
+
+		// Create synthetic row fragment (structural only, no OOF role).
+		// row.node is always set after CSS 2.1 §17.2.1 anonymous-box
+		// normalization at tree-build time — anonymous and authored rows
+		// are indistinguishable here.
+		rowBuilder := NewBoxFragmentBuilder(wdm)
+		rowBuilder.SetLayoutNode(row.node)
+
+		for _, cl := range measured[rowIdx].cells {
+			cellFrag := cl.result.Fragment
+			contentBlockSize := cl.contentBlockSize
+
+			// §17.5.4: stretch the cell fragment to the final row
+			// block-size and apply vertical-align. For anon-cell wrappers
+			// contentBlockSize equals the row's intrinsic size, so this
+			// only fires when distribution grew the row — matching the
+			// legacy post-append VA sweep semantics.
+			if contentBlockSize < rowHeight {
+				cellLogical := NewLogicalFragment(wdm, cellFrag)
+				cellFrag.Size = ToPhysicalSize(LogicalSize{
 					InlineSize: cellLogical.InlineSize(),
 					BlockSize:  rowHeight,
 				}, wdm.WM)
-				cl.result.Fragment.Size = physSize
+
+				va := css.VerticalAlignMiddle // default for td/th
+				if cl.cell.style != nil {
+					va = cl.cell.style.GetVerticalAlign()
+				}
+				var blockShift float64
+				switch va {
+				case css.VerticalAlignMiddle:
+					blockShift = (rowHeight - contentBlockSize) / 2
+				case css.VerticalAlignBottom:
+					blockShift = rowHeight - contentBlockSize
+				}
+				if blockShift > 0 {
+					conv := NewConverter(wdm, cellFrag.Size)
+					physShift := conv.ToPhysicalOffset(LogicalOffset{
+						InlineOffset: 0,
+						BlockOffset:  blockShift,
+					}, PhysicalSize{})
+					for cci := range cellFrag.Children {
+						cellFrag.Children[cci].Offset.X += physShift.X
+						cellFrag.Children[cci].Offset.Y += physShift.Y
+					}
+				}
 			}
 
-			rowBuilder.AddChild(cl.result.Fragment, LogicalOffset{
+			rowBuilder.AddChild(cellFrag, LogicalOffset{
 				InlineOffset: cl.inlineOffset,
-				BlockOffset:  cellBlockOffset,
+				BlockOffset:  cl.cellBlockOffset,
 			})
 
 			// Collect OOF candidates from cell directly into the table builder.
+			// blockOffset here is the row's FINAL block-offset (single-pass),
+			// so OOF static positions reference the row's final location.
 			if len(cl.result.PropagatedOOFCandidates) > 0 && cl.cell.style != nil {
 				cellGeom := ComputeFragmentGeometry(cl.cell.style, wdm)
 				inlineAdj := cl.inlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
@@ -485,39 +610,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		rowResult := rowBuilder.Build()
-
-		rowInfos[rowIdx].childIdx = len(builder.children)
-		rowInfos[rowIdx].blockOffset = blockOffset
 		builder.AddChild(rowResult.Fragment, LogicalOffset{
 			InlineOffset: 0,
 			BlockOffset:  blockOffset,
 		})
 
-		// Track cell baselines for this row (CSS 2.1 §17.5.2).
-		// The row baseline is the max cell first-baseline across all cells
-		// that have a baseline, mirroring Blink's RowBaselineTabulator.
-		rowBaseline := 0.0
-		for _, cl := range cellLayouts {
-			cellBL := cl.result.Baseline
-			if cellBL > 0 && cellBL > rowBaseline {
-				rowBaseline = cellBL
-			}
-		}
-
-		rowInfos[rowIdx].height = rowHeight
-		rowInfos[rowIdx].startCellIndex = flatCellCursor
-		rowInfos[rowIdx].cellCount = len(cellLayouts)
-		rowInfos[rowIdx].rowBaseline = rowBaseline
-		// hasRowspanStart: rowSpan is always 1 in louis14 today, so this
-		// is always false. Kept as a field so ckpt 3 / future rowspan
-		// support can set it without another struct change.
-		for _, cl := range cellLayouts {
-			if cl.cell.rowSpan > 1 {
-				rowInfos[rowIdx].hasRowspanStart = true
-				break
-			}
-		}
-		flatCellCursor += len(cellLayouts)
+		rowBaseline := measured[rowIdx].baseline
 		if rowIdx == 0 {
 			firstRowHeight = rowHeight
 			firstRowBaseline = rowBaseline
@@ -530,188 +628,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Add block-end spacing after last row.
 	if len(rows) > 0 && blockSpacing > 0 {
 		blockOffset += blockSpacing
-	}
-
-	// CSS 2.1 §17.5.3: If the table has an explicit height larger than the
-	// content-derived height, distribute the excess among auto-height rows.
-	// This matches Blink's behavior where auto-height rows expand to fill
-	// the remaining space in a table with an explicit height constraint.
-	//
-	// Refactor-(b) ckpt 2: the single-pass path (useSinglePassTableSizing)
-	// builds a TableTypesRows vector via computeRows, runs
-	// distributeTableBlockSizeToRows to apply the 5-priority distribution,
-	// and then feeds the finalized BlockSize values into the existing
-	// reposition sweep. The legacy path continues to work when the flag
-	// is off; ckpt 3 deletes the legacy auto-height redistribution.
-	if geom.BorderBoxSize.BlockSize != Indefinite && len(rows) > 0 {
-		explicitContentBlock := geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
-		if explicitContentBlock < 0 {
-			explicitContentBlock = 0
-		}
-		if explicitContentBlock > blockOffset {
-			excess := explicitContentBlock - blockOffset
-
-			// Compute per-row NEW heights via the selected path.
-			newHeights := make([]float64, len(rowInfos))
-
-			// --- Legacy path ---
-			// Produces legacyHeights[] even when the single-pass flag is
-			// on, so debugVerifySinglePassParity can compare them.
-			legacyHeights := make([]float64, len(rowInfos))
-			legacyHasExplicit := make([]bool, len(rowInfos))
-			for i, ri := range rowInfos {
-				legacyHasExplicit[i] = ri.hasExplicit
-			}
-			legacyAutoCount := 0
-			for _, he := range legacyHasExplicit {
-				if !he {
-					legacyAutoCount++
-				}
-			}
-			if legacyAutoCount == 0 {
-				legacyAutoCount = len(rowInfos)
-				for i := range legacyHasExplicit {
-					legacyHasExplicit[i] = false
-				}
-			}
-			legacyPerRow := excess / float64(legacyAutoCount)
-			for i, ri := range rowInfos {
-				h := ri.height
-				if !legacyHasExplicit[i] {
-					h += legacyPerRow
-				}
-				legacyHeights[i] = h
-			}
-
-			// --- Single-pass path ---
-			// Build TableTypesRows from the already-collected intrinsics
-			// and run the 5-priority distribution. Always computed (at
-			// negligible cost) so the parity flag can do its job.
-			intrinsics := make([]tableRowIntrinsic, len(rowInfos))
-			for i := range rowInfos {
-				intrinsics[i] = tableRowIntrinsic{
-					intrinsicHeight: rowInfos[i].height,
-					hasExplicitCell: rowInfos[i].hasExplicit,
-					cellCount:       rowInfos[i].cellCount,
-					startCellIndex:  rowInfos[i].startCellIndex,
-					hasRowspanStart: rowInfos[i].hasRowspanStart,
-					baseline:        rowInfos[i].rowBaseline,
-					row:             &rows[i],
-				}
-			}
-			spRows := computeRows(intrinsics, wdm)
-			distributeTableBlockSizeToRows(spRows, excess)
-			// Build the immutable constraint-space data. Not yet
-			// consumed in ckpt 2 — reserved for ckpt 3's fragment-
-			// construction refactor.
-			_ = buildTableConstraintSpaceData(spRows, colWidths)
-
-			// Parity check.
-			if useSinglePassTableSizing && debugVerifySinglePassParity {
-				verifySinglePassParity(spRows, legacyHeights)
-			}
-
-			// Select which set of heights to feed into the reposition sweep.
-			if useSinglePassTableSizing {
-				for i := range spRows {
-					newHeights[i] = spRows[i].BlockSize
-				}
-			} else {
-				copy(newHeights, legacyHeights)
-			}
-
-			// Reposition row fragments with adjusted heights. Row indices were
-			// recorded in rowInfos[].childIdx when rows were appended, so this
-			// works uniformly for DOM-backed rows (tr) and anonymous rows.
-			accumOffset := 0.0
-			if len(rowInfos) > 0 {
-				accumOffset = rowInfos[0].blockOffset
-			}
-			for rowChildIdx := range rowInfos {
-				newHeight := newHeights[rowChildIdx]
-				i := rowInfos[rowChildIdx].childIdx
-				if i < 0 || i >= len(builder.children) {
-					continue
-				}
-				ch := builder.children[i]
-				builder.children[i].offset.BlockOffset = accumOffset
-				rowInfos[rowChildIdx].blockOffset = accumOffset
-				oldLogical := NewLogicalFragment(wdm, ch.fragment)
-				newSize := ToPhysicalSize(LogicalSize{
-					InlineSize: oldLogical.InlineSize(),
-					BlockSize:  newHeight,
-				}, wdm.WM)
-				builder.children[i].fragment.Size = newSize
-				rowInfos[rowChildIdx].height = newHeight
-				accumOffset += newHeight
-				if rowChildIdx < len(rowInfos)-1 && blockSpacing > 0 {
-					accumOffset += blockSpacing
-				}
-			}
-			// Update blockOffset to reflect the new total end position.
-			blockOffset = accumOffset
-			if blockSpacing > 0 {
-				blockOffset += blockSpacing
-			}
-		}
-	}
-
-	// CSS 2.1 §17.5.4: Apply vertical-align to cell content.
-	// This runs after row height redistribution so cells in expanded rows
-	// get correctly centered/aligned to their final row height. Row fragment
-	// indices are read from rowInfos[].childIdx so both DOM-backed rows (tr)
-	// and anonymous rows are handled uniformly.
-	for rowChildIdx := range rowInfos {
-		i := rowInfos[rowChildIdx].childIdx
-		if i < 0 || i >= len(builder.children) {
-			continue
-		}
-		rowFrag := builder.children[i].fragment
-		if rowFrag == nil {
-			continue
-		}
-		rowLogical := NewLogicalFragment(wdm, rowFrag)
-		finalRowHeight := rowLogical.BlockSize()
-
-		for ci, ca := range rowInfos[rowChildIdx].cellAligns {
-			if ci >= len(rowFrag.Children) {
-				break
-			}
-			if ca.contentBlockSize >= finalRowHeight {
-				continue // cell fills or exceeds row — no alignment needed
-			}
-
-			// Stretch cell fragment to final row height.
-			cellFrag := rowFrag.Children[ci].Fragment
-			cellLogical := NewLogicalFragment(wdm, cellFrag)
-			cellFrag.Size = ToPhysicalSize(LogicalSize{
-				InlineSize: cellLogical.InlineSize(),
-				BlockSize:  finalRowHeight,
-			}, wdm.WM)
-
-			va := css.VerticalAlignMiddle // default for td/th
-			if ca.style != nil {
-				va = ca.style.GetVerticalAlign()
-			}
-			var blockShift float64
-			switch va {
-			case css.VerticalAlignMiddle:
-				blockShift = (finalRowHeight - ca.contentBlockSize) / 2
-			case css.VerticalAlignBottom:
-				blockShift = finalRowHeight - ca.contentBlockSize
-			}
-			if blockShift > 0 {
-				conv := NewConverter(wdm, cellFrag.Size)
-				physShift := conv.ToPhysicalOffset(LogicalOffset{
-					InlineOffset: 0,
-					BlockOffset:  blockShift,
-				}, PhysicalSize{})
-				for cci := range cellFrag.Children {
-					cellFrag.Children[cci].Offset.X += physShift.X
-					cellFrag.Children[cci].Offset.Y += physShift.Y
-				}
-			}
-		}
 	}
 
 	// Layout bottom (block-end) captions.
@@ -1789,15 +1705,14 @@ func parseIntAttr(s string) int {
 	return v
 }
 
-// --- Refactor (b) checkpoint 2: single-pass row sizing helpers ---
+// --- Single-pass row sizing helpers ---
 //
 // The types, helpers, and distribution algorithm below mirror Blink's
 // single-pass table sizing pipeline in
-// third_party/blink/renderer/core/layout/table/. In ckpt 2 these run in
-// parallel to the legacy path; only the row-block-size values they
-// produce are used (via the feature flag in Layout()). Ckpt 3 will
-// delete the legacy redistribution loop and migrate fragment
-// construction to read sizes directly from the computed Rows vector.
+// third_party/blink/renderer/core/layout/table/. Layout() calls these
+// in three phases (measure → size → assemble) as the sole row-sizing
+// path. The legacy build-then-mutate-then-reposition flow was removed
+// in refactor-(b) ckpt 3.
 
 // tableRowIntrinsic holds the per-row data needed to build a
 // TableTypesRow. It is populated during the cell-layout sweep inside
@@ -2083,40 +1998,3 @@ func distributeTableBlockSizeToRows(rows TableTypesRows, excess float64) {
 	}
 }
 
-// buildTableConstraintSpaceData packs finalized row sizes into an
-// immutable TableConstraintSpaceData for downstream fragment
-// construction. Mirrors Blink's
-// TableLayoutAlgorithm::CreateConstraintSpaceData
-// (table_layout_algorithm.cc ~L979-1044). In ckpt 2 this is wired but
-// not yet consumed by cell layout — ckpt 3 will thread it through the
-// row/section sub-spaces.
-func buildTableConstraintSpaceData(rows TableTypesRows, colWidths []float64) *TableConstraintSpaceData {
-	data := &TableConstraintSpaceData{
-		Sections:          nil, // populated by ckpt 3 (section-level pass)
-		Rows:              make(TableTypesRows, len(rows)),
-		ColumnInlineSizes: append([]float64(nil), colWidths...),
-	}
-	copy(data.Rows, rows)
-	return data
-}
-
-// verifySinglePassParity panics if the single-pass and legacy row
-// block-sizes disagree by more than 0.01px at the same index.
-// Invoked only when both debugVerifySinglePassParity and
-// useSinglePassTableSizing are true — the single-pass path produces
-// `spRows` and the legacy path produces `legacyHeights` before the
-// reposition sweep.
-func verifySinglePassParity(spRows TableTypesRows, legacyHeights []float64) {
-	if len(spRows) != len(legacyHeights) {
-		panic(fmt.Sprintf("table single-pass parity: row count mismatch sp=%d legacy=%d",
-			len(spRows), len(legacyHeights)))
-	}
-	for i := range spRows {
-		diff := math.Abs(spRows[i].BlockSize - legacyHeights[i])
-		if diff > 0.01 {
-			panic(fmt.Sprintf(
-				"table single-pass parity: row %d sp=%.4f legacy=%.4f diff=%.4f",
-				i, spRows[i].BlockSize, legacyHeights[i], diff))
-		}
-	}
-}

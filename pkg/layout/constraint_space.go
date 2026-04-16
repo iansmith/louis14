@@ -211,6 +211,9 @@ func NewConstraintSpaceBuilder(parentWDM, childWDM WritingDirectionMode, isNewFC
 	b.space.WritingDirection = childWDM
 	b.space.IsNewFormattingContext = isNewFC
 	b.space.IsOrthogonalWritingModeRoot = !b.parallel
+	// Default to "not inside a table section". Table layout calls
+	// SetTableSectionIndex explicitly when threading sizing data.
+	b.space.TableSectionIndex = -1
 	return b
 }
 
@@ -399,6 +402,25 @@ func (b *ConstraintSpaceBuilder) SetBlockFragmentationType(v FragmentationType) 
 // SetBreakToken sets the incoming break token for resuming layout.
 func (b *ConstraintSpaceBuilder) SetBreakToken(t *BlockBreakToken) *ConstraintSpaceBuilder {
 	b.space.BreakToken = t
+	return b
+}
+
+// SetTableSectionData threads the immutable table sizing data into the
+// child's constraint space. Mirrors Blink's
+// NGTableConstraintSpaceData pointer propagated via
+// TableSectionConstraintSpaceBuilder when the table algorithm builds
+// sub-spaces for sections / rows / cells
+// (table_layout_algorithm.cc ~L979-1044).
+func (b *ConstraintSpaceBuilder) SetTableSectionData(d *TableConstraintSpaceData) *ConstraintSpaceBuilder {
+	b.space.TableSectionData = d
+	return b
+}
+
+// SetTableSectionIndex identifies which section within TableSectionData
+// this child belongs to, or -1 when outside the table subtree.
+// Mirrors Blink's ConstraintSpace::TableSectionIndex accessor.
+func (b *ConstraintSpaceBuilder) SetTableSectionIndex(i int) *ConstraintSpaceBuilder {
+	b.space.TableSectionIndex = i
 	return b
 }
 
