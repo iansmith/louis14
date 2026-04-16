@@ -2,9 +2,39 @@ package layout
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"louis14/pkg/css"
+)
+
+// Feature flags for the refactor-(b) single-pass row sizing pipeline.
+//
+// Checkpoint 2 (current): both flags default false. The new single-pass
+// sizing machinery (computeRows + distributeTableBlockSizeToRows +
+// TableConstraintSpaceData) is built in parallel to the legacy
+// build-then-mutate-then-reposition flow but gated off by default. Flip
+// useSinglePassTableSizing to true locally to exercise the new path.
+// Checkpoint 3 will flip the default to true and delete the legacy path.
+//
+// Mirrors Blink's TableLayoutAlgorithm::ComputeRows /
+// DistributeTableBlockSizeToSections pipeline — see
+// third_party/blink/renderer/core/layout/table/table_layout_algorithm.cc
+// (ComputeRows ~L2073, Layout ~L2285) and table_layout_utils.cc
+// (ComputeMinimumRowBlockSize ~L315, DistributeExcessBlockSizeToRows ~L1095).
+var (
+	// useSinglePassTableSizing, when true, routes row-block-size
+	// distribution through computeRows / distributeTableBlockSizeToRows
+	// instead of the legacy auto-only even-distribution code path.
+	// Checkpoint 3 flips this to true and removes the legacy path.
+	useSinglePassTableSizing = false
+
+	// debugVerifySinglePassParity, when true, asserts at runtime that
+	// the single-pass and legacy paths produce identical row block-sizes
+	// (within 0.01px tolerance). Panics with a diagnostic on mismatch.
+	// Only meaningful when useSinglePassTableSizing is also true, since
+	// both paths must run to be compared.
+	debugVerifySinglePassParity = false
 )
 
 // TableLayoutAlgorithm implements CSS 2.1 §17 table layout.
@@ -225,13 +255,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		style            *css.Style
 	}
 	type rowInfo struct {
-		height       float64
-		hasExplicit  bool // true if any cell has explicit height
-		cellAligns   []cellAlignInfo
-		childIdx     int // index of this row's fragment in builder.children
-		blockOffset  float64 // block offset at which the row was placed
+		height      float64
+		hasExplicit bool // true if any cell has explicit height
+		cellAligns  []cellAlignInfo
+		childIdx    int     // index of this row's fragment in builder.children
+		blockOffset float64 // block offset at which the row was placed
+
+		// Refactor-(b) ckpt 2: fields below feed computeRows for the
+		// single-pass sizing path. Always populated so the two paths
+		// stay byte-for-byte comparable when the parity flag is on.
+		cellCount       int
+		startCellIndex  int
+		rowBaseline     float64
+		hasRowspanStart bool
 	}
 	rowInfos := make([]rowInfo, len(rows))
+
+	// Flat cell counter for TableTypesRow.StartCellIndex / CellCount.
+	flatCellCursor := 0
 
 	firstRowHeight := 0.0
 	firstRowBaseline := 0.0  // max cell baseline in first row (for table first baseline)
@@ -464,6 +505,19 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		rowInfos[rowIdx].height = rowHeight
+		rowInfos[rowIdx].startCellIndex = flatCellCursor
+		rowInfos[rowIdx].cellCount = len(cellLayouts)
+		rowInfos[rowIdx].rowBaseline = rowBaseline
+		// hasRowspanStart: rowSpan is always 1 in louis14 today, so this
+		// is always false. Kept as a field so ckpt 3 / future rowspan
+		// support can set it without another struct change.
+		for _, cl := range cellLayouts {
+			if cl.cell.rowSpan > 1 {
+				rowInfos[rowIdx].hasRowspanStart = true
+				break
+			}
+		}
+		flatCellCursor += len(cellLayouts)
 		if rowIdx == 0 {
 			firstRowHeight = rowHeight
 			firstRowBaseline = rowBaseline
@@ -482,6 +536,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// content-derived height, distribute the excess among auto-height rows.
 	// This matches Blink's behavior where auto-height rows expand to fill
 	// the remaining space in a table with an explicit height constraint.
+	//
+	// Refactor-(b) ckpt 2: the single-pass path (useSinglePassTableSizing)
+	// builds a TableTypesRows vector via computeRows, runs
+	// distributeTableBlockSizeToRows to apply the 5-priority distribution,
+	// and then feeds the finalized BlockSize values into the existing
+	// reposition sweep. The legacy path continues to work when the flag
+	// is off; ckpt 3 deletes the legacy auto-height redistribution.
 	if geom.BorderBoxSize.BlockSize != Indefinite && len(rows) > 0 {
 		explicitContentBlock := geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
 		if explicitContentBlock < 0 {
@@ -489,20 +550,75 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		if explicitContentBlock > blockOffset {
 			excess := explicitContentBlock - blockOffset
-			// Count auto-height rows (no cell has an explicit CSS height).
-			autoCount := 0
-			for _, ri := range rowInfos {
-				if !ri.hasExplicit {
-					autoCount++
+
+			// Compute per-row NEW heights via the selected path.
+			newHeights := make([]float64, len(rowInfos))
+
+			// --- Legacy path ---
+			// Produces legacyHeights[] even when the single-pass flag is
+			// on, so debugVerifySinglePassParity can compare them.
+			legacyHeights := make([]float64, len(rowInfos))
+			legacyHasExplicit := make([]bool, len(rowInfos))
+			for i, ri := range rowInfos {
+				legacyHasExplicit[i] = ri.hasExplicit
+			}
+			legacyAutoCount := 0
+			for _, he := range legacyHasExplicit {
+				if !he {
+					legacyAutoCount++
 				}
 			}
-			if autoCount == 0 {
-				autoCount = len(rowInfos)
-				for i := range rowInfos {
-					rowInfos[i].hasExplicit = false
+			if legacyAutoCount == 0 {
+				legacyAutoCount = len(rowInfos)
+				for i := range legacyHasExplicit {
+					legacyHasExplicit[i] = false
 				}
 			}
-			perRow := excess / float64(autoCount)
+			legacyPerRow := excess / float64(legacyAutoCount)
+			for i, ri := range rowInfos {
+				h := ri.height
+				if !legacyHasExplicit[i] {
+					h += legacyPerRow
+				}
+				legacyHeights[i] = h
+			}
+
+			// --- Single-pass path ---
+			// Build TableTypesRows from the already-collected intrinsics
+			// and run the 5-priority distribution. Always computed (at
+			// negligible cost) so the parity flag can do its job.
+			intrinsics := make([]tableRowIntrinsic, len(rowInfos))
+			for i := range rowInfos {
+				intrinsics[i] = tableRowIntrinsic{
+					intrinsicHeight: rowInfos[i].height,
+					hasExplicitCell: rowInfos[i].hasExplicit,
+					cellCount:       rowInfos[i].cellCount,
+					startCellIndex:  rowInfos[i].startCellIndex,
+					hasRowspanStart: rowInfos[i].hasRowspanStart,
+					baseline:        rowInfos[i].rowBaseline,
+					row:             &rows[i],
+				}
+			}
+			spRows := computeRows(intrinsics, wdm)
+			distributeTableBlockSizeToRows(spRows, excess)
+			// Build the immutable constraint-space data. Not yet
+			// consumed in ckpt 2 — reserved for ckpt 3's fragment-
+			// construction refactor.
+			_ = buildTableConstraintSpaceData(spRows, colWidths)
+
+			// Parity check.
+			if useSinglePassTableSizing && debugVerifySinglePassParity {
+				verifySinglePassParity(spRows, legacyHeights)
+			}
+
+			// Select which set of heights to feed into the reposition sweep.
+			if useSinglePassTableSizing {
+				for i := range spRows {
+					newHeights[i] = spRows[i].BlockSize
+				}
+			} else {
+				copy(newHeights, legacyHeights)
+			}
 
 			// Reposition row fragments with adjusted heights. Row indices were
 			// recorded in rowInfos[].childIdx when rows were appended, so this
@@ -512,10 +628,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				accumOffset = rowInfos[0].blockOffset
 			}
 			for rowChildIdx := range rowInfos {
-				newHeight := rowInfos[rowChildIdx].height
-				if !rowInfos[rowChildIdx].hasExplicit {
-					newHeight += perRow
-				}
+				newHeight := newHeights[rowChildIdx]
 				i := rowInfos[rowChildIdx].childIdx
 				if i < 0 || i >= len(builder.children) {
 					continue
@@ -1674,4 +1787,336 @@ func parseIntAttr(s string) int {
 		}
 	}
 	return v
+}
+
+// --- Refactor (b) checkpoint 2: single-pass row sizing helpers ---
+//
+// The types, helpers, and distribution algorithm below mirror Blink's
+// single-pass table sizing pipeline in
+// third_party/blink/renderer/core/layout/table/. In ckpt 2 these run in
+// parallel to the legacy path; only the row-block-size values they
+// produce are used (via the feature flag in Layout()). Ckpt 3 will
+// delete the legacy redistribution loop and migrate fragment
+// construction to read sizes directly from the computed Rows vector.
+
+// tableRowIntrinsic holds the per-row data needed to build a
+// TableTypesRow. It is populated during the cell-layout sweep inside
+// Layout() — the same sweep the legacy path uses. This is the
+// "already-collected rows/cells" input computeRows walks.
+//
+// Fields mirror the inputs to Blink's ComputeMinimumRowBlockSize
+// (table_layout_utils.cc ~L315) after cell layout has produced
+// intrinsic block-sizes for each cell.
+type tableRowIntrinsic struct {
+	// intrinsicHeight is the row's max cell min-content block-size
+	// (the legacy path's rowInfos[i].height pre-redistribution).
+	intrinsicHeight float64
+
+	// hasExplicitCell is true if any cell in the row has an explicit
+	// CSS block-size (height or width on orthogonal cells). Maps to
+	// Blink's per-cell IsConstrained contribution to the row.
+	hasExplicitCell bool
+
+	// cellCount is the number of cells originating in this row.
+	cellCount int
+
+	// startCellIndex is the flat cell index at which this row's cells
+	// begin. Mirrors Blink's TableTypes::Row::start_cell_index.
+	startCellIndex int
+
+	// hasRowspanStart is true if any originating cell has rowspan > 1.
+	// We do not currently support rowspan sizing, so this is a carry-over
+	// for the 5-priority distribution's step 2; see the rowspan note in
+	// the commit message.
+	hasRowspanStart bool
+
+	// baseline is the max cell first-baseline across baseline-aligned
+	// cells in this row (Blink's RowBaselineTabulator result).
+	baseline float64
+
+	// row points to the underlying tableRow (for style access when
+	// deriving percent / collapsed / constrained flags).
+	row *tableRow
+}
+
+// computeRows builds a TableTypesRows vector from the already-collected
+// per-row intrinsic data. Mirrors Blink's
+// TableLayoutAlgorithm::ComputeRows (table_layout_algorithm.cc ~L2073)
+// which aggregates per-row minimums via ComputeMinimumRowBlockSize
+// (table_layout_utils.cc ~L315).
+//
+// We intentionally do NOT re-layout cells here — the legacy cell-layout
+// sweep has already produced the intrinsic block-sizes we need.
+// Extracting the aggregation logic (not the cell layout itself) is the
+// "extract, don't invent" contract called out in the ckpt 2 prompt.
+func computeRows(intrinsics []tableRowIntrinsic, wdm WritingDirectionMode) TableTypesRows {
+	result := make(TableTypesRows, len(intrinsics))
+	for i, in := range intrinsics {
+		row := &result[i]
+		row.BlockSize = in.intrinsicHeight
+		row.StartCellIndex = in.startCellIndex
+		row.CellCount = in.cellCount
+		row.Baseline = in.baseline
+		row.Percent = TableTypesRowAbsentPercent
+		row.IsConstrained = in.hasExplicitCell
+		row.HasRowspanStart = in.hasRowspanStart
+		row.IsCollapsed = false
+
+		// Pull row-level modifiers from the row's style (percent
+		// block-size, explicit block-size, visibility:collapse) if
+		// available. Note: Blink reads these in
+		// ComputeMinimumRowBlockSize and propagates them onto each
+		// TableTypes::Row before distribution.
+		if in.row != nil && in.row.style != nil {
+			s := in.row.style
+			// Row percentage block-size: CSS 2.1 §17.5.3 allows <tr>
+			// to carry a percentage height that resolves against the
+			// table's definite height. We record it on the row
+			// regardless — the distribution pass will ignore it when
+			// the table has no definite height (Percent path goes
+			// through priority 1 only when Percent > 0 and the table
+			// block size is known).
+			prop := "height"
+			if wdm.IsVertical() {
+				prop = "width"
+			}
+			if pct, ok := s.GetPercentage(prop); ok && pct > 0 {
+				row.Percent = pct
+			}
+			if _, ok := s.GetLength(prop); ok {
+				row.IsConstrained = true
+			}
+			if s.GetVisibility() == "collapse" {
+				row.IsCollapsed = true
+			}
+		}
+	}
+	return result
+}
+
+// distributeTableBlockSizeToRows distributes `excess` block-size across
+// `rows` in place, matching Blink's 5-priority distribution in
+// DistributeExcessBlockSizeToRows (table_layout_utils.cc ~L1095).
+//
+// The five priorities (applied in order; later priorities only fire if
+// no earlier priority consumed the excess):
+//
+//  1. Percent rows: rows with Percent != TableTypesRowAbsentPercent
+//     receive a share proportional to their percentage, capped at what
+//     the table actually has to give. Blink: line ~1127.
+//  2. Rowspan-originator rows: rows flagged HasRowspanStart. When no
+//     percent rows participated, these absorb the full excess first,
+//     distributed evenly across originators. Blink: line ~1201.
+//  3. Unconstrained non-empty rows: rows with !IsConstrained and a
+//     non-zero BlockSize absorb remaining excess evenly. Blink: ~L1253.
+//  4. Empty rows (BlockSize == 0): if no rows in priorities 1-3 were
+//     eligible, distribute evenly across empty rows. Blink: ~L1286.
+//  5. Proportional fallback: all rows participate, distributed in
+//     proportion to their current BlockSize (or evenly if all zero).
+//     Blink: ~L1318.
+//
+// Collapsed rows (IsCollapsed) never participate — their block-size
+// stays zero. Same constraint as Blink.
+func distributeTableBlockSizeToRows(rows TableTypesRows, excess float64) {
+	if len(rows) == 0 || excess <= 0 {
+		return
+	}
+
+	// Build the participating-row index sets for each priority.
+	var percentIdx, rowspanIdx, unconstrainedIdx, emptyIdx, fallbackIdx []int
+	for i := range rows {
+		if rows[i].IsCollapsed {
+			continue
+		}
+		fallbackIdx = append(fallbackIdx, i)
+		if rows[i].Percent != TableTypesRowAbsentPercent && rows[i].Percent > 0 {
+			percentIdx = append(percentIdx, i)
+		}
+		if rows[i].HasRowspanStart {
+			rowspanIdx = append(rowspanIdx, i)
+		}
+		if !rows[i].IsConstrained && rows[i].BlockSize > 0 {
+			unconstrainedIdx = append(unconstrainedIdx, i)
+		}
+		if rows[i].BlockSize <= 0 && !rows[i].IsConstrained {
+			emptyIdx = append(emptyIdx, i)
+		}
+	}
+
+	remaining := excess
+
+	// Priority 1 — percent rows.
+	// Blink (table_layout_utils.cc ~L1127): scale each percent row's
+	// block-size up to its percent-derived target, bounded by the
+	// available excess. We compute the total percent demand and hand
+	// each row its proportional slice.
+	if remaining > 0 && len(percentIdx) > 0 {
+		totalPct := 0.0
+		for _, i := range percentIdx {
+			totalPct += rows[i].Percent
+		}
+		if totalPct > 0 {
+			// Proportional share of the excess — not a "grow to
+			// percent-of-table" target, matching Blink's behavior
+			// when the excess is the authoritative budget.
+			distribute := remaining
+			if totalPct > 100 {
+				// Over-specified percents: scale back so the total
+				// share cannot exceed 100% of the excess.
+				totalPct = 100
+			}
+			portion := distribute * totalPct / 100
+			if portion > remaining {
+				portion = remaining
+			}
+			// Split `portion` proportionally among percent rows.
+			accum := 0.0
+			for k, i := range percentIdx {
+				var share float64
+				if k == len(percentIdx)-1 {
+					share = portion - accum
+				} else {
+					share = portion * rows[i].Percent / totalPct
+					accum += share
+				}
+				rows[i].BlockSize += share
+			}
+			remaining -= portion
+		}
+	}
+
+	// Priority 2 — rowspan originators.
+	// Blink (~L1201): evenly distribute remaining excess across rows
+	// that originate a rowspan > 1 cell. We do not currently track
+	// individual rowspan cells' minimum contribution here (ckpt 2
+	// matches current behavior); Blink's DistributeRowspanCellToRows
+	// is a separate pre-pass. So this bucket simply grants priority
+	// for any remaining excess to rowspan-originator rows.
+	if remaining > 0 && len(rowspanIdx) > 0 {
+		per := remaining / float64(len(rowspanIdx))
+		accum := 0.0
+		for k, i := range rowspanIdx {
+			var share float64
+			if k == len(rowspanIdx)-1 {
+				share = remaining - accum
+			} else {
+				share = per
+				accum += share
+			}
+			rows[i].BlockSize += share
+		}
+		remaining = 0
+	}
+
+	// Priority 3 — unconstrained non-empty rows.
+	// Blink (~L1253): evenly distribute across rows with !IsConstrained
+	// and BlockSize > 0. This is the case the legacy louis14 path
+	// already handled ("auto-height rows").
+	if remaining > 0 && len(unconstrainedIdx) > 0 {
+		per := remaining / float64(len(unconstrainedIdx))
+		accum := 0.0
+		for k, i := range unconstrainedIdx {
+			var share float64
+			if k == len(unconstrainedIdx)-1 {
+				share = remaining - accum
+			} else {
+				share = per
+				accum += share
+			}
+			rows[i].BlockSize += share
+		}
+		remaining = 0
+	}
+
+	// Priority 4 — empty rows.
+	// Blink (~L1286): when no unconstrained non-empty rows existed,
+	// empty rows absorb the excess evenly.
+	if remaining > 0 && len(emptyIdx) > 0 {
+		per := remaining / float64(len(emptyIdx))
+		accum := 0.0
+		for k, i := range emptyIdx {
+			var share float64
+			if k == len(emptyIdx)-1 {
+				share = remaining - accum
+			} else {
+				share = per
+				accum += share
+			}
+			rows[i].BlockSize += share
+		}
+		remaining = 0
+	}
+
+	// Priority 5 — proportional fallback.
+	// Blink (~L1318): every non-collapsed row gets a share proportional
+	// to its current BlockSize, or evenly if all sizes are zero.
+	if remaining > 0 && len(fallbackIdx) > 0 {
+		totalSize := 0.0
+		for _, i := range fallbackIdx {
+			totalSize += rows[i].BlockSize
+		}
+		accum := 0.0
+		if totalSize > 0 {
+			for k, i := range fallbackIdx {
+				var share float64
+				if k == len(fallbackIdx)-1 {
+					share = remaining - accum
+				} else {
+					share = remaining * rows[i].BlockSize / totalSize
+					accum += share
+				}
+				rows[i].BlockSize += share
+			}
+		} else {
+			per := remaining / float64(len(fallbackIdx))
+			for k, i := range fallbackIdx {
+				var share float64
+				if k == len(fallbackIdx)-1 {
+					share = remaining - accum
+				} else {
+					share = per
+					accum += share
+				}
+				rows[i].BlockSize += share
+			}
+		}
+	}
+}
+
+// buildTableConstraintSpaceData packs finalized row sizes into an
+// immutable TableConstraintSpaceData for downstream fragment
+// construction. Mirrors Blink's
+// TableLayoutAlgorithm::CreateConstraintSpaceData
+// (table_layout_algorithm.cc ~L979-1044). In ckpt 2 this is wired but
+// not yet consumed by cell layout — ckpt 3 will thread it through the
+// row/section sub-spaces.
+func buildTableConstraintSpaceData(rows TableTypesRows, colWidths []float64) *TableConstraintSpaceData {
+	data := &TableConstraintSpaceData{
+		Sections:          nil, // populated by ckpt 3 (section-level pass)
+		Rows:              make(TableTypesRows, len(rows)),
+		ColumnInlineSizes: append([]float64(nil), colWidths...),
+	}
+	copy(data.Rows, rows)
+	return data
+}
+
+// verifySinglePassParity panics if the single-pass and legacy row
+// block-sizes disagree by more than 0.01px at the same index.
+// Invoked only when both debugVerifySinglePassParity and
+// useSinglePassTableSizing are true — the single-pass path produces
+// `spRows` and the legacy path produces `legacyHeights` before the
+// reposition sweep.
+func verifySinglePassParity(spRows TableTypesRows, legacyHeights []float64) {
+	if len(spRows) != len(legacyHeights) {
+		panic(fmt.Sprintf("table single-pass parity: row count mismatch sp=%d legacy=%d",
+			len(spRows), len(legacyHeights)))
+	}
+	for i := range spRows {
+		diff := math.Abs(spRows[i].BlockSize - legacyHeights[i])
+		if diff > 0.01 {
+			panic(fmt.Sprintf(
+				"table single-pass parity: row %d sp=%.4f legacy=%.4f diff=%.4f",
+				i, spRows[i].BlockSize, legacyHeights[i], diff))
+		}
+	}
 }
