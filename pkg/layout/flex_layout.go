@@ -2148,15 +2148,23 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 			return result
 		}
-		if pct, ok := style.GetPercentage("flex-basis"); ok && (hasDefiniteMain || pct == 0) {
-			result := containerMainSize * pct / 100
-			if style.GetBoxSizing() == "border-box" {
-				result -= childGeom.BlockBorderPadding()
-				if result < 0 {
-					result = 0
+		if pct, ok := style.GetPercentage("flex-basis"); ok {
+			if hasDefiniteMain {
+				result := containerMainSize * pct / 100
+				if style.GetBoxSizing() == "border-box" {
+					result -= childGeom.BlockBorderPadding()
+					if result < 0 {
+						result = 0
+					}
 				}
+				return result
 			}
-			return result
+			// Per CSS Flexbox §7.2: a percentage main-size on a flex item
+			// whose container's main size is indefinite is treated as
+			// 'content'. Fall through to content-based sizing (which applies
+			// aspect-ratio cross→main transfer for replaced elements).
+			return fla.itemContentMaxMainSize(child, style, childWDM, childGeom, parentWDM,
+				contentInlineSize, isRow)
 		}
 		// Handle calc() with percentages for column flex.
 		if rawBasis, ok := style.Get("flex-basis"); ok && css.IsCalcWithPercent(rawBasis) && hasDefiniteMain {
