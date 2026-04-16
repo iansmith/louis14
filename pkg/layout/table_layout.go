@@ -712,13 +712,25 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		if end > len(spRows) {
 			end = len(spRows)
 		}
-		span := end - rowIdx
+		// CSS Tables 3 §3.5: "cells whose row span overlaps the
+		// collapsed row remain displayed but must be clipped at the
+		// row's edge". The cell's visible geometric extent is the sum
+		// of the NON-collapsed spanned rows, with inter-row spacing
+		// counted only between visible spanned rows. Collapsed rows
+		// already have BlockSize == 0 from computeRows, but we also
+		// skip their spacing contribution explicitly so the span's
+		// total matches what the section actually lays out.
 		spannedBlock := 0.0
+		visibleSpanCount := 0
 		for i := rowIdx; i < end; i++ {
+			if spRows[i].IsCollapsed {
+				continue
+			}
 			spannedBlock += spRows[i].BlockSize
+			visibleSpanCount++
 		}
-		if span > 1 && blockSpacing > 0 {
-			spannedBlock += float64(span-1) * blockSpacing
+		if visibleSpanCount > 1 && blockSpacing > 0 {
+			spannedBlock += float64(visibleSpanCount-1) * blockSpacing
 		}
 
 		cellFrag := cl.result.Fragment
