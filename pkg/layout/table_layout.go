@@ -65,17 +65,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Collect rows, captions, and col/colgroup widths from the table's children.
 	rows, captions, colWidthSpecs := tla.collectRowsAndCaptions()
 
-	// Determine the number of columns.
-	numCols := 0
-	for _, row := range rows {
-		colCount := 0
-		for _, cell := range row.cells {
-			colCount += cell.colSpan
-		}
-		if colCount > numCols {
-			numCols = colCount
-		}
-	}
+	// Assign final cell colIndex using a slot grid that honors rowspan
+	// reservations from prior rows. Returns the grid's max column count.
+	// Mirrors Blink's LayoutTableSection slot tracking.
+	numCols := assignColumnIndices(rows)
 	if numCols == 0 {
 		numCols = 1
 	}
@@ -131,16 +124,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// Swap cell node styles to the collapsed versions so that
 		// column width computation and cell layout use half-border widths.
 		for rowIdx, row := range rows {
-			colIdx := 0
 			for cellIdx := range row.cells {
-				key := fmt.Sprintf("%d,%d", rowIdx, colIdx)
+				key := fmt.Sprintf("%d,%d", rowIdx, row.cells[cellIdx].colIndex)
 				if cloned, ok := collapsedStyles[key]; ok {
 					rows[rowIdx].cells[cellIdx].style = cloned
 					if rows[rowIdx].cells[cellIdx].node != nil {
 						rows[rowIdx].cells[cellIdx].node.style = cloned
 					}
 				}
-				colIdx += row.cells[cellIdx].colSpan
 			}
 		}
 	}
@@ -281,10 +272,13 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// --- Phase 1: measure ---
 	for rowIdx, row := range rows {
 		rowHeight := 0.0
-		colIdx := 0
 		cellLayouts := make([]cellMeasurement, 0, len(row.cells))
 
 		for _, cell := range row.cells {
+			// cell.colIndex was assigned by assignColumnIndices and
+			// honors rowspan reservations from earlier rows.
+			colIdx := cell.colIndex
+
 			// Compute cell width from column widths.
 			cellWidth := 0.0
 			for c := colIdx; c < colIdx+cell.colSpan && c < numCols; c++ {
@@ -400,8 +394,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				contentBlockSize: contentBlockSize,
 				cellBlockOffset:  cellBlockOffset,
 			})
-
-			colIdx += cell.colSpan
 		}
 
 		// Anonymous-cell wrappers: their contentBlockSize is the row's
@@ -921,25 +913,103 @@ func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Styl
 		}
 
 		colSpan := 1
+		rowSpan := 1
 		if child.DOMNode != nil {
 			if cs, ok := child.DOMNode.GetAttribute("colspan"); ok {
 				if v := parseIntAttr(cs); v > 0 {
 					colSpan = v
 				}
 			}
+			// WHATWG HTML §4.9.11: rowspan is a non-negative integer.
+			// Per spec, rowspan="0" means "span all remaining rows in
+			// the row group." Blink implements this in
+			// HTMLTableCellElement::rowSpan by returning kMaxRowIndex
+			// (65534) and letting the table section layout clamp down.
+			// We do the same: encode 0 as 65534 and let the slot grid
+			// in assignColumnIndices clamp rowSpan so it cannot extend
+			// past the last row. Non-zero values above 65534 are also
+			// clamped (WHATWG HTML parser's limit).
+			if rs, ok := child.DOMNode.GetAttribute("rowspan"); ok {
+				if v, ok := parseIntAttrWithZero(rs); ok {
+					if v == 0 || v > 65534 {
+						v = 65534
+					}
+					rowSpan = v
+				}
+			}
 		}
 		row.cells = append(row.cells, tableCell{
 			node:        cellNode,
 			style:       cellStyleUsed,
-			colIndex:    colIdx,
+			colIndex:    colIdx, // provisional; assignColumnIndices overwrites
 			colSpan:     colSpan,
-			rowSpan:     1,
+			rowSpan:     rowSpan,
 			isAnonymous: isAnon,
 		})
 		colIdx += colSpan
 	}
 
 	return row
+}
+
+// assignColumnIndices walks `rows` in order and fills in each cell's
+// final colIndex using a slot grid. Mirrors Blink's slot tracking in
+// LayoutTableSection::AddChild / LayoutTableSection::AppendCell
+// (core/layout/table/layout_table_section.{h,cc}).
+//
+// Rules:
+//   - A cell at (row R, column C) with span (r, c) reserves the
+//     r×c rectangle of slots [R..R+r-1] × [C..C+c-1].
+//   - Placing a cell in row R starts at the first unoccupied column
+//     at or after the previous cell's end column.
+//   - rowSpan is clamped so it never extends past the last row — a
+//     cell at row N-1 with rowSpan=10 ends up spanning only row N-1.
+//     Matches CSS 2.1 §17.6.1 / HTML5 behavior (rowspan clamps to
+//     end of the table; cross-section handling is a future concern).
+//
+// Returns the total number of columns (max reserved slot + 1).
+func assignColumnIndices(rows []tableRow) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	occupied := make([][]bool, len(rows))
+	for i := range occupied {
+		occupied[i] = make([]bool, 0, 8)
+	}
+	ensureCols := func(rowIdx, upto int) {
+		for len(occupied[rowIdx]) < upto {
+			occupied[rowIdx] = append(occupied[rowIdx], false)
+		}
+	}
+	maxCol := 0
+	for rowIdx := range rows {
+		col := 0
+		for ci := range rows[rowIdx].cells {
+			cell := &rows[rowIdx].cells[ci]
+			// Skip past slots already reserved by rowspan cells
+			// from earlier rows.
+			for col < len(occupied[rowIdx]) && occupied[rowIdx][col] {
+				col++
+			}
+			cell.colIndex = col
+			// Clamp rowSpan so it cannot extend past the end of rows.
+			spanEnd := rowIdx + cell.rowSpan
+			if spanEnd > len(rows) {
+				spanEnd = len(rows)
+			}
+			for r := rowIdx; r < spanEnd; r++ {
+				ensureCols(r, col+cell.colSpan)
+				for c := col; c < col+cell.colSpan; c++ {
+					occupied[r][c] = true
+				}
+			}
+			col += cell.colSpan
+			if col > maxCol {
+				maxCol = col
+			}
+		}
+	}
+	return maxCol
 }
 
 // singleBlockInnerChild returns the sole non-text, non-whitespace child of
@@ -1010,10 +1080,10 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 	// "A cell in the first row with a value other than 'auto' for the 'width'
 	// property determines the width for that column."
 	if len(rows) > 0 {
-		colIdx := 0
 		for _, cell := range rows[0].cells {
+			colIdx := cell.colIndex
 			if colIdx >= numCols {
-				break
+				continue
 			}
 			if cell.style != nil {
 				inlineProp := "width"
@@ -1036,7 +1106,6 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 					}
 				}
 			}
-			colIdx += cell.colSpan
 		}
 	}
 
@@ -1110,10 +1179,10 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	}
 
 	for _, row := range rows {
-		colIdx := 0
 		for _, cell := range row.cells {
+			colIdx := cell.colIndex
 			if colIdx >= numCols {
-				break
+				continue
 			}
 
 			// Check for explicit inline-size on the cell from the TABLE's perspective.
@@ -1189,8 +1258,6 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 					}
 				}
 			}
-
-			colIdx += cell.colSpan
 		}
 	}
 
@@ -1474,12 +1541,10 @@ func newCellBorderGrid(rows []tableRow, numCols int) *cellBorderGrid {
 	}
 	for rowIdx, row := range rows {
 		g.styles[rowIdx] = make([]*css.Style, numCols)
-		colIdx := 0
 		for _, cell := range row.cells {
-			if colIdx < numCols {
-				g.styles[rowIdx][colIdx] = cell.style
+			if cell.colIndex < numCols {
+				g.styles[rowIdx][cell.colIndex] = cell.style
 			}
-			colIdx += cell.colSpan
 		}
 	}
 	return g
@@ -1703,6 +1768,24 @@ func parseIntAttr(s string) int {
 		}
 	}
 	return v
+}
+
+// parseIntAttrWithZero is like parseIntAttr but reports whether any
+// digits were consumed, distinguishing an explicit "0" from a missing
+// / non-numeric value. Used by rowspan parsing where 0 has a distinct
+// meaning ("span to end of section" per WHATWG HTML §4.9.11).
+func parseIntAttrWithZero(s string) (int, bool) {
+	v := 0
+	seen := false
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			v = v*10 + int(c-'0')
+			seen = true
+		} else {
+			break
+		}
+	}
+	return v, seen
 }
 
 // --- Single-pass row sizing helpers ---
