@@ -509,7 +509,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 		if explicitContentBlock > intrinsicTotal {
 			excess := explicitContentBlock - intrinsicTotal
-			distributeTableBlockSizeToRows(spRows, excess)
+			// Build the rowspan-cell vector for priority-2 preferential
+			// distribution: each entry is (originating row, rowSpan,
+			// minimum block-size). Mirrors the list Blink carries inside
+			// TableTypes across ComputeRows →
+			// DistributeTableBlockSizeToSections.
+			var rowspanCells []rowspanCellInfo
+			for ri := range measured {
+				for _, cl := range measured[ri].cells {
+					if cl.cell.rowSpan > 1 {
+						rowspanCells = append(rowspanCells, rowspanCellInfo{
+							rowIndex: cl.rowIndex,
+							rowSpan:  cl.cell.rowSpan,
+							minBlock: cl.intrinsicBlockSize,
+						})
+					}
+				}
+			}
+			distributeTableBlockSizeToRows(spRows, excess, rowspanCells, blockSpacing)
 		}
 	}
 
@@ -2080,19 +2097,34 @@ func computeRows(intrinsics []tableRowIntrinsic, wdm WritingDirectionMode) Table
 	return result
 }
 
+// rowspanCellInfo is the triple (originating row, rowspan, minimum
+// block-size) the priority-2 distribution step needs to compute each
+// rowspan cell's unmet deficit. Mirrors the per-cell loop in Blink's
+// DistributeExcessBlockSizeToRows (table_layout_utils.cc ~L1201) which
+// reads the same data off the rowspan-cell bookkeeping it built during
+// ComputeRows.
+type rowspanCellInfo struct {
+	rowIndex int
+	rowSpan  int
+	minBlock float64
+}
+
 // distributeTableBlockSizeToRows distributes `excess` block-size across
 // `rows` in place, matching Blink's 5-priority distribution in
 // DistributeExcessBlockSizeToRows (table_layout_utils.cc ~L1095).
 //
-// The five priorities (applied in order; later priorities only fire if
-// no earlier priority consumed the excess):
+// The five priorities (applied in order; later priorities fire on any
+// excess that the earlier buckets did not absorb):
 //
 //  1. Percent rows: rows with Percent != TableTypesRowAbsentPercent
 //     receive a share proportional to their percentage, capped at what
 //     the table actually has to give. Blink: line ~1127.
-//  2. Rowspan-originator rows: rows flagged HasRowspanStart. When no
-//     percent rows participated, these absorb the full excess first,
-//     distributed evenly across originators. Blink: line ~1201.
+//  2. Rowspan-originator rows (preferential): for each rowspan cell,
+//     compute its unmet deficit (min block-size minus current spanned
+//     block-size) and attribute a per-row share. Distribute
+//     min(remaining, totalDeficit) proportionally to the accumulated
+//     per-row deficit. Priority 2 does NOT consume surplus excess —
+//     any remainder flows to priority 3. Blink: ~L1201.
 //  3. Unconstrained non-empty rows: rows with !IsConstrained and a
 //     non-zero BlockSize absorb remaining excess evenly. Blink: ~L1253.
 //  4. Empty rows (BlockSize == 0): if no rows in priorities 1-3 were
@@ -2213,13 +2245,22 @@ func distributeRowspanCellToRows(
 	}
 }
 
-func distributeTableBlockSizeToRows(rows TableTypesRows, excess float64) {
+func distributeTableBlockSizeToRows(
+	rows TableTypesRows,
+	excess float64,
+	rowspanCells []rowspanCellInfo,
+	rowSpacing float64,
+) {
 	if len(rows) == 0 || excess <= 0 {
 		return
 	}
 
 	// Build the participating-row index sets for each priority.
-	var percentIdx, rowspanIdx, unconstrainedIdx, emptyIdx, fallbackIdx []int
+	// Priority 2 reads rowspan data from `rowspanCells` directly, so
+	// no rowspan-originator index is built here (HasRowspanStart still
+	// lives on TableTypesRow for Blink-struct parity, but is no longer
+	// consulted by this function).
+	var percentIdx, unconstrainedIdx, emptyIdx, fallbackIdx []int
 	for i := range rows {
 		if rows[i].IsCollapsed {
 			continue
@@ -2227,9 +2268,6 @@ func distributeTableBlockSizeToRows(rows TableTypesRows, excess float64) {
 		fallbackIdx = append(fallbackIdx, i)
 		if rows[i].Percent != TableTypesRowAbsentPercent && rows[i].Percent > 0 {
 			percentIdx = append(percentIdx, i)
-		}
-		if rows[i].HasRowspanStart {
-			rowspanIdx = append(rowspanIdx, i)
 		}
 		if !rows[i].IsConstrained && rows[i].BlockSize > 0 {
 			unconstrainedIdx = append(unconstrainedIdx, i)
@@ -2281,27 +2319,86 @@ func distributeTableBlockSizeToRows(rows TableTypesRows, excess float64) {
 		}
 	}
 
-	// Priority 2 — rowspan originators.
-	// Blink (~L1201): evenly distribute remaining excess across rows
-	// that originate a rowspan > 1 cell. We do not currently track
-	// individual rowspan cells' minimum contribution here (ckpt 2
-	// matches current behavior); Blink's DistributeRowspanCellToRows
-	// is a separate pre-pass. So this bucket simply grants priority
-	// for any remaining excess to rowspan-originator rows.
-	if remaining > 0 && len(rowspanIdx) > 0 {
-		per := remaining / float64(len(rowspanIdx))
-		accum := 0.0
-		for k, i := range rowspanIdx {
-			var share float64
-			if k == len(rowspanIdx)-1 {
-				share = remaining - accum
-			} else {
-				share = per
-				accum += share
+	// Priority 2 — rowspan originators (Blink-style preferential).
+	// Blink (~L1201): each rowspan cell wants Σ spanned rows + (s-1) *
+	// rowSpacing ≥ its minimum block-size. Compute the per-row
+	// contribution to each cell's unmet deficit (proportional to row
+	// block-size when any spanned row is non-zero, else even-split —
+	// same rule as distributeRowspanCellToRows), then distribute
+	// min(remaining, totalDeficit) in proportion to the accumulated
+	// per-row deficit. Surplus flows to priority 3.
+	if remaining > 0 && len(rowspanCells) > 0 {
+		rowDeficit := make([]float64, len(rows))
+		totalDeficit := 0.0
+		for _, rc := range rowspanCells {
+			if rc.rowIndex < 0 || rc.rowIndex >= len(rows) {
+				continue
 			}
-			rows[i].BlockSize += share
+			end := rc.rowIndex + rc.rowSpan
+			if end > len(rows) {
+				end = len(rows)
+			}
+			span := end - rc.rowIndex
+			if span <= 1 {
+				continue
+			}
+			current := 0.0
+			for i := rc.rowIndex; i < end; i++ {
+				current += rows[i].BlockSize
+			}
+			current += float64(span-1) * rowSpacing
+			if rc.minBlock <= current {
+				continue
+			}
+			cellDeficit := rc.minBlock - current
+			totalRowBlock := 0.0
+			for i := rc.rowIndex; i < end; i++ {
+				totalRowBlock += rows[i].BlockSize
+			}
+			if totalRowBlock > 0 {
+				for i := rc.rowIndex; i < end; i++ {
+					share := cellDeficit * rows[i].BlockSize / totalRowBlock
+					rowDeficit[i] += share
+					totalDeficit += share
+				}
+			} else {
+				per := cellDeficit / float64(span)
+				for i := rc.rowIndex; i < end; i++ {
+					rowDeficit[i] += per
+					totalDeficit += per
+				}
+			}
 		}
-		remaining = 0
+
+		if totalDeficit > 0 {
+			toDistribute := remaining
+			if toDistribute > totalDeficit {
+				toDistribute = totalDeficit
+			}
+			// Last row with a non-zero deficit absorbs the rounding
+			// remainder; a zero-deficit row must not pick it up.
+			lastIdx := -1
+			for i := range rows {
+				if rowDeficit[i] > 0 {
+					lastIdx = i
+				}
+			}
+			accum := 0.0
+			for i := range rows {
+				if rowDeficit[i] <= 0 {
+					continue
+				}
+				var share float64
+				if i == lastIdx {
+					share = toDistribute - accum
+				} else {
+					share = toDistribute * rowDeficit[i] / totalDeficit
+					accum += share
+				}
+				rows[i].BlockSize += share
+			}
+			remaining -= toDistribute
+		}
 	}
 
 	// Priority 3 — unconstrained non-empty rows.
