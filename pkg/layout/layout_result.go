@@ -131,6 +131,14 @@ type PhysicalFragment struct {
 	// fragment tree positions). Zero for non-relative elements.
 	// Mirrors Blink's approach where relative offsets are paint properties.
 	RelativeOffset PhysicalOffset
+
+	// ClipContentToBorderBox forces the renderer to clip this fragment's
+	// children to its border-box, independent of the CSS `overflow`
+	// property. Set by the table layout algorithm on rowspan cells that
+	// span a visibility:collapse row (CSS Tables 3 §5.4.1: "clip the
+	// content to the table-cell's border-box"). Default is false;
+	// normal overflow semantics apply.
+	ClipContentToBorderBox bool
 }
 
 // ChildLink is a positioned child within a parent fragment.

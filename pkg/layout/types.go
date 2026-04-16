@@ -67,6 +67,12 @@ type Box struct {
 	// DOMIndex is a pre-order index in the DOM tree, used to ensure correct
 	// paint ordering when out-of-flow children propagate to ancestor boxes.
 	DOMIndex int
+
+	// ClipContentToBorderBox forces the paint layer to clip children to
+	// this box's border-box regardless of the computed `overflow` style.
+	// Carried from the producing PhysicalFragment (see layout_result.go).
+	// Used by CSS Tables 3 §5.4.1 rowspan-over-collapsed-row clipping.
+	ClipContentToBorderBox bool
 }
 
 // CreatesStackingContext returns true if this box establishes a new

@@ -230,16 +230,39 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	hasPaintContain := s.HasPaintContainment()
 	clipX := overflowX == css.OverflowHidden || overflowX == css.OverflowScroll || overflowX == css.OverflowAuto || hasPaintContain
 	clipY := overflowY == css.OverflowHidden || overflowY == css.OverflowScroll || overflowY == css.OverflowAuto || hasPaintContain
+
+	// CSS Tables 3 §5.4.1: rowspan cells whose span overlaps a
+	// visibility:collapse row must clip content to their border-box,
+	// regardless of the computed `overflow` property (the default on
+	// <td> is `visible`). Layout sets Box.ClipContentToBorderBox on
+	// such cells; here we promote it into a two-axis clip with the
+	// border-box as the clip rectangle (not the padding box, per the
+	// spec wording "clip the content to the table-cell's border-box").
+	forceBorderBoxClip := box.ClipContentToBorderBox
+	if forceBorderBoxClip {
+		clipX = true
+		clipY = true
+	}
+
 	if clipX || clipY {
 		layer.HasClip = true
 		layer.ClipX = clipX
 		layer.ClipY = clipY
 
-		// Padding box edges.
-		padX := box.X + box.Border.Left
-		padY := box.Y + box.Border.Top
-		clipW := math.Floor(box.Width - box.Border.Left - box.Border.Right)
-		clipH := math.Floor(box.Height - box.Border.Top - box.Border.Bottom)
+		var padX, padY, clipW, clipH float64
+		if forceBorderBoxClip {
+			// Border-box clip: include border region.
+			padX = box.X
+			padY = box.Y
+			clipW = math.Floor(box.Width)
+			clipH = math.Floor(box.Height)
+		} else {
+			// Overflow clip defaults to the padding box.
+			padX = box.X + box.Border.Left
+			padY = box.Y + box.Border.Top
+			clipW = math.Floor(box.Width - box.Border.Left - box.Border.Right)
+			clipH = math.Floor(box.Height - box.Border.Top - box.Border.Bottom)
+		}
 		if clipW < 0 {
 			clipW = 0
 		}

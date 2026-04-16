@@ -495,15 +495,23 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// Intrinsic rows-block total (spacings + post-rowspan-distribution
 		// row block-sizes). Reads from spRows[i].BlockSize so the rowspan
 		// pre-pass's contributions are included in the "what's already
-		// claimed" count.
+		// claimed" count. Collapsed rows are not emitted (§3.5 / §5.4.1)
+		// so they must be excluded from both the row block-sum and the
+		// inter-row spacing contribution — otherwise the table thinks it
+		// is already using the space that belongs to a non-displayed row.
 		intrinsicTotal := blockOffset
+		emittedCount := 0
 		for i := range rows {
-			if i > 0 && blockSpacing > 0 {
+			if spRows[i].IsCollapsed {
+				continue
+			}
+			if emittedCount > 0 && blockSpacing > 0 {
 				intrinsicTotal += blockSpacing
 			}
 			intrinsicTotal += spRows[i].BlockSize
+			emittedCount++
 		}
-		if blockSpacing > 0 {
+		if emittedCount > 0 && blockSpacing > 0 {
 			intrinsicTotal += blockSpacing // block-end border spacing
 		}
 
@@ -729,18 +737,22 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		if end > len(spRows) {
 			end = len(spRows)
 		}
-		// CSS Tables 3 §3.5: "cells whose row span overlaps the
-		// collapsed row remain displayed but must be clipped at the
-		// row's edge". The cell's visible geometric extent is the sum
-		// of the NON-collapsed spanned rows, with inter-row spacing
-		// counted only between visible spanned rows. Collapsed rows
-		// already have BlockSize == 0 from computeRows, but we also
-		// skip their spacing contribution explicitly so the span's
-		// total matches what the section actually lays out.
+		// CSS Tables 3 §5.4.1: "If the table-cell is spanning more than
+		// one table-track, and at least one of those table-track is set
+		// to visibility: collapse then clip the content to the
+		// table-cell's border-box." The cell's border-box block-extent
+		// is the sum of the NON-collapsed spanned rows, plus inter-row
+		// spacing between visible pairs. Mirrors Blink's
+		// ComputeCellBlockSize (table_layout_utils.cc): collapsed rows
+		// are skipped; the cell fragment is unconditionally sized to
+		// that reduced extent, and any child content that overflows is
+		// clipped at paint time via ClipContentToBorderBox.
 		spannedBlock := 0.0
 		visibleSpanCount := 0
+		spansCollapsedRow := false
 		for i := rowIdx; i < end; i++ {
 			if spRows[i].IsCollapsed {
+				spansCollapsedRow = true
 				continue
 			}
 			spannedBlock += spRows[i].BlockSize
@@ -754,14 +766,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		cellLogical := NewLogicalFragment(wdm, cellFrag)
 		contentBlockSize := cellLogical.BlockSize()
 
-		// §17.5.4: stretch fragment + apply vertical-align using the
-		// total spanned block-size as the row-equivalent height.
-		if contentBlockSize < spannedBlock {
-			cellFrag.Size = ToPhysicalSize(LogicalSize{
-				InlineSize: cellLogical.InlineSize(),
-				BlockSize:  spannedBlock,
-			}, wdm.WM)
+		// §17.5.4 + §5.4.1: always resize the cell fragment to
+		// spannedBlock. When spannedBlock >= content (normal case),
+		// apply vertical-align to position content within the row
+		// extent. When spannedBlock < content (collapsed-row case),
+		// shrink the fragment so its border-box matches the visible
+		// spanned extent, anchor content at the block-start edge
+		// (§5.4.1 "the top left content of the cell will continue to
+		// show"), and flag the fragment for border-box clipping so
+		// overflowing content is hidden.
+		cellFrag.Size = ToPhysicalSize(LogicalSize{
+			InlineSize: cellLogical.InlineSize(),
+			BlockSize:  spannedBlock,
+		}, wdm.WM)
 
+		if contentBlockSize < spannedBlock {
 			va := css.VerticalAlignMiddle // default for td/th
 			if cl.cell.style != nil {
 				va = cl.cell.style.GetVerticalAlign()
@@ -784,6 +803,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					cellFrag.Children[cci].Offset.Y += physShift.Y
 				}
 			}
+		}
+		if spansCollapsedRow {
+			cellFrag.ClipContentToBorderBox = true
 		}
 
 		// Attach directly to the table builder at the originating
@@ -2081,18 +2103,24 @@ func computeRows(intrinsics []tableRowIntrinsic, wdm WritingDirectionMode) Table
 			}
 		}
 
-		// CSS Tables 3 §3.5 (visibility:collapse on a row): "If the
-		// visibility of a row is collapse, the row must not be
-		// displayed. The space the row would have taken up is removed
-		// from the table". Zero the row's block-size regardless of any
-		// cell intrinsic computed in Phase 1 — a collapsed row occupies
-		// zero space in the table's block axis. Mirrors Blink's
-		// DistributeRowspanCellToRows / DistributeExcessBlockSizeToRows
-		// gating on !IsCollapsed, plus TableSectionLayoutAlgorithm's
-		// zero-advance treatment of collapsed rows.
-		if row.IsCollapsed {
-			row.BlockSize = 0
-		}
+		// CSS Tables 3 §3.5 (visibility:collapse on a row): the row is
+		// not displayed, but its intrinsic block-size MUST be retained
+		// during rowspan-cell distribution so the rowspan cell's minimum
+		// is split proportionally across ALL spanned rows (collapsed or
+		// not) — otherwise the non-collapsed spanned rows absorb the
+		// collapsed row's share and over-grow, hiding the clipping
+		// behavior §5.4.1 mandates for cells spanning collapsed rows.
+		//
+		// Collapsed rows are removed from the table at EMISSION time
+		// (Phase 3): no fragment, no block-offset advance, no
+		// inter-row spacing. Cell fragment sizing (§5.4.1 "clip the
+		// content to the table-cell's border-box") is handled in
+		// Phase 3b by summing only non-collapsed spanned rows in
+		// spannedBlock and forcing the cell fragment to that extent.
+		// Mirrors Blink's flow: is_collapsed flag set here, row
+		// block-size kept (see table_layout_utils.cc), row emission
+		// skipped in table_section_layout_algorithm.cc, cell block-size
+		// reduced in ComputeCellBlockSize.
 	}
 	return result
 }
