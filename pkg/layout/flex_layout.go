@@ -352,12 +352,14 @@ func (fi *flexItem) resolvedLastBaseline(baselineParallel, canSynthesizeRow bool
 //	first_major_baseline = cross_axis_offset + major_baseline
 //	first_minor_baseline = cross_axis_offset + line_cross_size - minor_baseline
 //
-// majorBaseline uses the "distance from line cross-start to shared baseline"
-// convention; minorBaseline uses "distance from line cross-end to baseline"
-// (the max_minor_ascent value on the FlexLine is already that descent-style
-// quantity because BaselineAscent adds margins.CrossEnd() for minor items —
-// see flex_layout_algorithm.cc:388-392). unsetBaseline marks "no
-// baseline-aligned item participated on this line" (analogous to Blink's
+// majorBaseline = Blink's max_major_ascent: max over kMajor items of
+// margins.CrossStart() + (possibly wrap-reverse-flipped) baseline.
+// minorBaseline = Blink's max_minor_ascent: max over kMinor items of
+// margins.CrossEnd() + (possibly wrap-reverse-flipped) baseline.
+// Group membership swaps under wrap-reverse per DetermineBaselineGroup
+// (baseline_utils.h:51-89); the flip is applied in the cross-sizing loop
+// per BaselineAscent (flex_layout_algorithm.cc:382-384). unsetBaseline marks
+// "no item in that group participated on this line" (analogous to Blink's
 // LayoutUnit::Min()).
 type flexLine struct {
 	items           []*flexItem
@@ -806,33 +808,51 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
 				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
 			canSynthesizeRow := isRow && !wdm.IsVertical()
-			if selfAlign == "baseline" {
-				if bl, ok := item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow); ok {
-					ascent := item.crossMarginStart() + bl
-					descent := outerCross - ascent
-					if ascent > maxAscent {
-						maxAscent = ascent
-					}
-					if descent > maxDescent {
-						maxDescent = descent
-					}
-					hasBaselineItem = true
+			if selfAlign == "baseline" || selfAlign == "last baseline" {
+				isLastBaseline := selfAlign == "last baseline"
+				var baselineVal float64
+				var ok bool
+				if isLastBaseline {
+					baselineVal, ok = item.resolvedLastBaseline(baselineParallel, canSynthesizeRow)
 				} else {
-					if outerCross > lineCrossMax {
-						lineCrossMax = outerCross
-					}
+					baselineVal, ok = item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow)
 				}
-			} else if selfAlign == "last baseline" {
-				if lb, ok := item.resolvedLastBaseline(baselineParallel, canSynthesizeRow); ok {
-					lastAscent := item.crossMarginStart() + lb
-					lastDescent := outerCross - lastAscent
-					if lastAscent > maxLastAscent {
-						maxLastAscent = lastAscent
+				if ok {
+					// Mirror Blink's BaselineAscent (flex_layout_algorithm.cc:378-392):
+					//   baseline = is_last_baseline ? LastBaseline : FirstBaseline;
+					//   if (is_wrap_reverse_ != is_last_baseline)
+					//       baseline = BlockSize() - baseline;
+					//   return is_major ? CrossStart + baseline : CrossEnd + baseline;
+					if reverseCross != isLastBaseline {
+						baselineVal = item.crossSize - baselineVal
 					}
-					if lastDescent > maxLastDescent {
-						maxLastDescent = lastDescent
+					// baseline_group per DetermineBaselineGroup (baseline_utils.h:51-89):
+					//   Normal wrap: align:baseline→kMajor, align:last-baseline→kMinor.
+					//   Wrap-reverse swaps both → align:baseline→kMinor,
+					//   align:last-baseline→kMajor. Equivalently:
+					//   isMajor = (isLastBaseline == reverseCross).
+					isMajor := isLastBaseline == reverseCross
+					if isMajor {
+						ascent := item.crossMarginStart() + baselineVal
+						descent := outerCross - ascent
+						if ascent > maxAscent {
+							maxAscent = ascent
+						}
+						if descent > maxDescent {
+							maxDescent = descent
+						}
+						hasBaselineItem = true
+					} else {
+						lastAscent := item.crossMarginEnd() + baselineVal
+						lastDescent := outerCross - lastAscent
+						if lastAscent > maxLastAscent {
+							maxLastAscent = lastAscent
+						}
+						if lastDescent > maxLastDescent {
+							maxLastDescent = lastDescent
+						}
+						hasLastBaselineItem = true
 					}
-					hasLastBaselineItem = true
 				} else {
 					if outerCross > lineCrossMax {
 						lineCrossMax = outerCross
@@ -860,20 +880,21 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 		// Record per-line major/minor baselines for the container's baseline
 		// export (see baselineAccumulator). Mirrors Blink's
-		// FlexLayoutAlgorithm::PlaceFlexItems at
-		// flex_layout_algorithm.cc:1557-1559 which stores max_major_ascent and
-		// max_minor_ascent onto FlexLine. majorBaseline uses the
-		// "cross-start-to-baseline" convention; minorBaseline uses the
-		// "cross-end-to-baseline" convention (Blink's BaselineAscent at :390-392
-		// returns margins.CrossEnd()+baseline for minor items, equivalent to
-		// outerCross - maxLastAscent = maxLastDescent here).
+		// FlexLayoutAlgorithm::PlaceFlexItems at flex_layout_algorithm.cc:1557-1559
+		// which stores max_major_ascent and max_minor_ascent onto FlexLine.
+		//   majorBaseline = max_major_ascent = max over kMajor items of
+		//                   margins.CrossStart() + (possibly flipped) baseline.
+		//   minorBaseline = max_minor_ascent = max over kMinor items of
+		//                   margins.CrossEnd()   + (possibly flipped) baseline.
+		// Membership of items in kMajor/kMinor swaps under wrap-reverse per
+		// DetermineBaselineGroup (baseline_utils.h:51-89).
 		if hasBaselineItem {
 			line.majorBaseline = maxAscent
 		} else {
 			line.majorBaseline = unsetBaseline
 		}
 		if hasLastBaselineItem {
-			line.minorBaseline = maxLastDescent
+			line.minorBaseline = maxLastAscent
 		} else {
 			line.minorBaseline = unsetBaseline
 		}
