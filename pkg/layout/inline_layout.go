@@ -861,9 +861,72 @@ func createLineBoxEx(
 	}
 
 	// Position each item within the line.
+	//
+	// CSS 2.1 §10.8.1 aligned-subtree semantics: each inline box with
+	// vertical-align:top/bottom roots an independent "aligned subtree" that is
+	// baseline-aligned internally, then shifted so the subtree's top (bottom)
+	// aligns with the line-top (line-bottom). For text children inside such a
+	// subtree, the effective block-offset is not the line-level baseline-align
+	// offset — it is the subtree-root's ascent minus the text's ascent (for
+	// top-aligned; symmetric for bottom). This mirrors Blink's
+	// InlineBoxState::ApplyBaselineShift (inline_box_state.cc).
+	type vaFrame struct {
+		vAlign   css.VerticalAlign
+		rootAsc  float64 // subtree root inline-box ascent (font-asc + half-leading)
+		rootDesc float64
+	}
+	var vaStack []vaFrame
+	// inlineBoxAsDesc computes an inline box's ascent/descent contribution the
+	// same way computeLineMetricsEx does for an OpenTag: font ascent/descent
+	// plus half-leading from line-height. Used to derive subtree-root metrics.
+	inlineBoxAsDesc := func(style *css.Style) (asc, desc float64) {
+		if style == nil {
+			return 0, 0
+		}
+		fs, _, _, _, _ := fontPropsFromStyle(style)
+		if centralBaseline {
+			asc, desc = fs/2, fs/2
+		} else {
+			fontPath := resolveFontPath(style, fonts)
+			asc = text.FontAscentFromFont(fs, fontPath)
+			desc = text.FontDescentFromFont(fs, fontPath)
+		}
+		lineHt := style.GetLineHeight()
+		if style.IsLineHeightNormal() && !centralBaseline {
+			fontPath := resolveFontPath(style, fonts)
+			lineHt = text.FontHeightFromFont(fs, fontPath)
+		}
+		halfLeading := (lineHt - (asc + desc)) / 2
+		asc += halfLeading
+		desc += halfLeading
+		if asc < 0 {
+			asc = 0
+		}
+		if desc < 0 {
+			desc = 0
+		}
+		return
+	}
 	inlinePos := alignOffset
 	for _, r := range line.Results {
 		switch r.Item.Type {
+		case InlineItemOpenTag:
+			if r.Item.Style != nil {
+				va := r.Item.Style.GetVerticalAlign()
+				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
+					a, d := inlineBoxAsDesc(r.Item.Style)
+					vaStack = append(vaStack, vaFrame{vAlign: va, rootAsc: a, rootDesc: d})
+				}
+			}
+		case InlineItemCloseTag:
+			if r.Item.Style != nil {
+				va := r.Item.Style.GetVerticalAlign()
+				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
+					if n := len(vaStack); n > 0 {
+						vaStack = vaStack[:n-1]
+					}
+				}
+			}
 		case InlineItemText:
 			content := itemsData.TextContent[r.TextStart:r.TextEnd]
 			if len(content) == 0 {
@@ -889,8 +952,36 @@ func createLineBoxEx(
 				ascent = text.FontAscent(fontSize, bold, italic, mono, ahem)
 			}
 
-			// Baseline-align: position top of text at (maxAscent - textAscent).
+			// Default: baseline-align the text fragment so its baseline sits
+			// at the line's maxAscent.
 			blockPos := maxAscent - ascent
+
+			// CSS 2.1 §10.8.1: if this text is inside a vertical-align:top or
+			// bottom aligned subtree, shift the fragment so the subtree's top
+			// (bottom) edge lines up with the line-top (line-bottom), while
+			// preserving baseline-alignment internally to the subtree root.
+			// Innermost enclosing subtree wins. For text whose direct parent
+			// carries vertical-align:top/bottom but has no enclosing OpenTag
+			// (degenerate collection), fall back to the parent's own metrics.
+			effectiveVA := css.VerticalAlignBaseline
+			var rootAsc, rootDesc float64
+			if n := len(vaStack); n > 0 {
+				f := vaStack[n-1]
+				effectiveVA = f.vAlign
+				rootAsc, rootDesc = f.rootAsc, f.rootDesc
+			} else if r.Item.Style != nil {
+				va := r.Item.Style.GetVerticalAlign()
+				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
+					effectiveVA = va
+					rootAsc, rootDesc = inlineBoxAsDesc(r.Item.Style)
+				}
+			}
+			switch effectiveVA {
+			case css.VerticalAlignTop:
+				blockPos = rootAsc - ascent
+			case css.VerticalAlignBottom:
+				blockPos = lineHeight - rootDesc - ascent
+			}
 
 			// Use parent element as Node so the renderer can access styles.
 			parentNode := r.Item.Node
@@ -1040,10 +1131,6 @@ func createLineBoxEx(
 				inlinePos += r.InlineSize + r.Margins.InlineEnd
 			}
 			continue
-
-		case InlineItemOpenTag, InlineItemCloseTag:
-			// Margins/borders/padding contribution to InlineSize is already
-			// accounted for by the line breaker.
 
 		case InlineItemFloat:
 			// Floats are positioned by the parent block formatting context.
