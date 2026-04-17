@@ -3386,8 +3386,13 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 			BlockSize:  mainSize + item.mainBorderPadding(),
 		}
 		b.SetAvailableSize(avail)
+		// Percentage resolution: per CSS2.1 §10.2 and Flexbox §4, a flex item's
+		// containing block is the flex container, so percentage inline-sizes
+		// resolve against the container's content inline-size — NOT the flex
+		// line's cross-size. For multi-line column flex, using the line cross
+		// would make width:50% resolve against half the container.
 		b.SetPercentageResolutionSize(LogicalSize{
-			InlineSize: crossInlineContent,
+			InlineSize: contentInlineSize,
 			BlockSize:  mainSize,
 		})
 		b.SetPercentageResolutionInlineSize(contentInlineSize)

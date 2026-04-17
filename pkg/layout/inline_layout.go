@@ -330,7 +330,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 	lineSpace := ConstraintSpace{
 		AvailableSize:            LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock},
-		PercentageResolutionSize: LogicalSize{InlineSize: bla.space.PercentageResolutionSize.InlineSize, BlockSize: pctBlockSize},
+		PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize},
 		WritingDirection:         wdm,
 		ExclusionSpace:           exclusionSpace,
 	}

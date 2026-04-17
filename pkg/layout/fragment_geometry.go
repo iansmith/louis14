@@ -7,8 +7,9 @@ import "louis14/pkg/css"
 //
 // Ported from Blink's FragmentGeometry.
 type FragmentGeometry struct {
-	Border  LogicalEdges
-	Padding LogicalEdges
+	Border    LogicalEdges
+	Scrollbar LogicalEdges // classic scrollbar reservation per CSS Overflow §3.3
+	Padding   LogicalEdges
 
 	// BorderBoxSize is the resolved border-box size. InlineSize is always
 	// definite. BlockSize is Indefinite when auto (layout determines it).
@@ -17,26 +18,45 @@ type FragmentGeometry struct {
 	BorderBoxSize LogicalSize
 }
 
-// BorderBoxPadding returns the total border + padding on each logical side.
+// BorderBoxPadding returns the total border + scrollbar + padding on each
+// logical side. This is the inset from border-box to content-box per
+// CSS Overflow §3.3 (scrollbars sit between the border and padding edges).
+// Matches Blink's BorderScrollbarPadding().
 func (fg FragmentGeometry) BorderBoxPadding() LogicalEdges {
 	return LogicalEdges{
-		InlineStart: fg.Border.InlineStart + fg.Padding.InlineStart,
-		InlineEnd:   fg.Border.InlineEnd + fg.Padding.InlineEnd,
-		BlockStart:  fg.Border.BlockStart + fg.Padding.BlockStart,
-		BlockEnd:    fg.Border.BlockEnd + fg.Padding.BlockEnd,
+		InlineStart: fg.Border.InlineStart + fg.Scrollbar.InlineStart + fg.Padding.InlineStart,
+		InlineEnd:   fg.Border.InlineEnd + fg.Scrollbar.InlineEnd + fg.Padding.InlineEnd,
+		BlockStart:  fg.Border.BlockStart + fg.Scrollbar.BlockStart + fg.Padding.BlockStart,
+		BlockEnd:    fg.Border.BlockEnd + fg.Scrollbar.BlockEnd + fg.Padding.BlockEnd,
 	}
 }
 
-// InlineBorderPadding returns the total inline-direction border + padding.
+// InlineBorderPadding returns the total inline-direction border + scrollbar
+// + padding (i.e., the inset from border-box to content-box on the inline
+// axis). Matches Blink's BorderScrollbarPadding().InlineSum().
 func (fg FragmentGeometry) InlineBorderPadding() float64 {
 	return fg.Border.InlineStart + fg.Border.InlineEnd +
+		fg.Scrollbar.InlineStart + fg.Scrollbar.InlineEnd +
 		fg.Padding.InlineStart + fg.Padding.InlineEnd
 }
 
-// BlockBorderPadding returns the total block-direction border + padding.
+// BlockBorderPadding returns the total block-direction border + scrollbar
+// + padding (i.e., the inset from border-box to content-box on the block
+// axis). Matches Blink's BorderScrollbarPadding().BlockSum().
 func (fg FragmentGeometry) BlockBorderPadding() float64 {
 	return fg.Border.BlockStart + fg.Border.BlockEnd +
+		fg.Scrollbar.BlockStart + fg.Scrollbar.BlockEnd +
 		fg.Padding.BlockStart + fg.Padding.BlockEnd
+}
+
+// InlineScrollbarSum returns the inline-direction scrollbar reservation.
+func (fg FragmentGeometry) InlineScrollbarSum() float64 {
+	return fg.Scrollbar.InlineStart + fg.Scrollbar.InlineEnd
+}
+
+// BlockScrollbarSum returns the block-direction scrollbar reservation.
+func (fg FragmentGeometry) BlockScrollbarSum() float64 {
+	return fg.Scrollbar.BlockStart + fg.Scrollbar.BlockEnd
 }
 
 // ComputeFragmentGeometry resolves border and padding from a CSS style
@@ -64,6 +84,7 @@ func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode, percent
 			Bottom: physBorder.Bottom,
 			Left:   physBorder.Left,
 		}, wdm),
+		Scrollbar: ComputeScrollbarLogicalEdges(style, wdm),
 		Padding: ToLogicalEdges(PhysicalEdges{
 			Top:    physPadding.Top,
 			Right:  physPadding.Right,
@@ -71,6 +92,73 @@ func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode, percent
 			Left:   physPadding.Left,
 		}, wdm),
 	}
+}
+
+// ComputeScrollbarLogicalEdges returns the classic-scrollbar reservation as
+// logical edges for the given element's writing-direction. Per CSS Overflow §3
+// scrollbars sit between the inner border edge and the outer padding edge.
+//
+// The horizontal scrollbar (overflow-x) is always placed on the physical
+// bottom edge; the vertical scrollbar (overflow-y) is placed on the physical
+// right edge by default, or on the physical left edge when the vertical
+// scrollbar belongs on the left per Blink's ShouldPlaceVerticalScrollbarOnLeft
+// (RTL horizontal-tb, or vertical-rl).
+func ComputeScrollbarLogicalEdges(style *css.Style, wdm WritingDirectionMode) LogicalEdges {
+	if style == nil {
+		return LogicalEdges{}
+	}
+	width := classicScrollbarWidth(style)
+	if width == 0 {
+		return LogicalEdges{}
+	}
+	var phys PhysicalEdges
+	if reservesClassicScrollbar(style.GetOverflowX()) {
+		phys.Bottom = width
+	}
+	if reservesClassicScrollbar(style.GetOverflowY()) {
+		if placeVerticalScrollbarOnLeft(wdm) {
+			phys.Left = width
+		} else {
+			phys.Right = width
+		}
+	}
+	return ToLogicalEdges(phys, wdm)
+}
+
+// reservesClassicScrollbar reports whether the overflow value reserves
+// a classic-scrollbar gutter. Per CSS Overflow, only "scroll" unconditionally
+// reserves; "auto" reserves only when content actually overflows (which we
+// cannot determine before layout and therefore treat as non-reserving here,
+// matching Blink's pre-layout assumption for non-auto-reserved gutters).
+func reservesClassicScrollbar(overflow css.OverflowType) bool {
+	return overflow == css.OverflowScroll
+}
+
+// classicScrollbarWidth returns the per-edge width of the classic scrollbar.
+// WPT reftests use a fixed 15px (matching kScrollbarThicknessForWebTests in
+// scrollbar_theme_aura.cc); "thin" uses 10px; "none" disables the gutter.
+func classicScrollbarWidth(style *css.Style) float64 {
+	switch style.GetScrollbarWidth() {
+	case "none":
+		return 0
+	case "thin":
+		return 10
+	default: // "auto" (and any unknown value)
+		return 15
+	}
+}
+
+// placeVerticalScrollbarOnLeft mirrors Blink's
+// LayoutBox::ShouldPlaceVerticalScrollbarOnLeft. Vertical scrollbars go on the
+// physical-left edge for RTL horizontal-tb and for vertical-rl writing modes.
+func placeVerticalScrollbarOnLeft(wdm WritingDirectionMode) bool {
+	if wdm.IsFlippedBlocks() {
+		return true
+	}
+	if !wdm.IsVertical() && wdm.IsRTL() {
+		return true
+	}
+	return false
 }
 
 // IsIntrinsicKeyword returns true if val is a CSS intrinsic sizing keyword:
@@ -141,6 +229,36 @@ func ResolveMargins(style *css.Style, wdm WritingDirectionMode, containingBlockI
 	}, wdm)
 }
 
+// applyBoxSizingInline converts a user-declared inline size into a content-box
+// inline size, honoring box-sizing and scrollbar reservation. Per CSS Overflow
+// §3.3 the classic scrollbar reduces the content area without enlarging the
+// border-box, so for content-box sizing the scrollbar reservation steals from
+// the declared content (matching Blink).
+func applyBoxSizingInline(style *css.Style, geom FragmentGeometry, declared float64) float64 {
+	if style.GetBoxSizing() == "border-box" {
+		declared -= geom.InlineBorderPadding()
+	} else {
+		declared -= geom.InlineScrollbarSum()
+	}
+	if declared < 0 {
+		declared = 0
+	}
+	return declared
+}
+
+// applyBoxSizingBlock is the block-direction counterpart of applyBoxSizingInline.
+func applyBoxSizingBlock(style *css.Style, geom FragmentGeometry, declared float64) float64 {
+	if style.GetBoxSizing() == "border-box" {
+		declared -= geom.BlockBorderPadding()
+	} else {
+		declared -= geom.BlockScrollbarSum()
+	}
+	if declared < 0 {
+		declared = 0
+	}
+	return declared
+}
+
 // ResolveInlineSize resolves the element's inline-size from CSS.
 // Returns the content inline-size and whether it was explicitly set.
 // If not explicit (auto), the caller should use the available inline-size.
@@ -170,38 +288,19 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 			space.PercentageResolutionSize.InlineSize,
 		)
 		if calcOK {
-			if style.GetBoxSizing() == "border-box" {
-				result -= geom.InlineBorderPadding()
-				if result < 0 {
-					result = 0
-				}
-			}
-			return result, true
+			return applyBoxSizingInline(style, geom, result), true
 		}
 	}
 
 	// Check for explicit length (handles calc without percentages, px, em, etc.).
 	if v, ok := style.GetLength(prop); ok {
-		result := v
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.InlineBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result, true
+		return applyBoxSizingInline(style, geom, v), true
 	}
 
 	// Check for percentage.
 	if pct, ok := style.GetPercentage(prop); ok {
 		result := space.PercentageResolutionSize.InlineSize * pct / 100
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.InlineBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result, true
+		return applyBoxSizingInline(style, geom, result), true
 	}
 
 	return 0, false
@@ -218,24 +317,11 @@ func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 		prop = "min-height"
 	}
 	if v, ok := style.GetLength(prop); ok {
-		result := v
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.InlineBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result
+		return applyBoxSizingInline(style, geom, v)
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
 		result := space.PercentageResolutionSize.InlineSize * pct / 100
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.InlineBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result
+		return applyBoxSizingInline(style, geom, result)
 	}
 	return 0
 }
@@ -255,24 +341,11 @@ func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 		return 0, false
 	}
 	if v, ok := style.GetLength(prop); ok {
-		result := v
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.InlineBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result, true
+		return applyBoxSizingInline(style, geom, v), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
 		result := space.PercentageResolutionSize.InlineSize * pct / 100
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.InlineBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result, true
+		return applyBoxSizingInline(style, geom, result), true
 	}
 	return 0, false
 }
@@ -287,24 +360,11 @@ func ResolveMinBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 		prop = "min-width"
 	}
 	if v, ok := style.GetLength(prop); ok {
-		result := v
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.BlockBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result
+		return applyBoxSizingBlock(style, geom, v)
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
 		result := space.PercentageResolutionSize.BlockSize * pct / 100
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.BlockBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result
+		return applyBoxSizingBlock(style, geom, result)
 	}
 	return 0
 }
@@ -324,24 +384,11 @@ func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 		return 0, false
 	}
 	if v, ok := style.GetLength(prop); ok {
-		result := v
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.BlockBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result, true
+		return applyBoxSizingBlock(style, geom, v), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
 		result := space.PercentageResolutionSize.BlockSize * pct / 100
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.BlockBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result, true
+		return applyBoxSizingBlock(style, geom, result), true
 	}
 	return 0, false
 }
@@ -370,37 +417,18 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 			space.PercentageResolutionSize.BlockSize,
 		)
 		if calcOK {
-			if style.GetBoxSizing() == "border-box" {
-				result -= geom.BlockBorderPadding()
-				if result < 0 {
-					result = 0
-				}
-			}
-			return result, true
+			return applyBoxSizingBlock(style, geom, result), true
 		}
 	}
 
 	if v, ok := style.GetLength(prop); ok {
-		result := v
-		if style.GetBoxSizing() == "border-box" {
-			result -= geom.BlockBorderPadding()
-			if result < 0 {
-				result = 0
-			}
-		}
-		return result, true
+		return applyBoxSizingBlock(style, geom, v), true
 	}
 
 	if pct, ok := style.GetPercentage(prop); ok {
 		if !space.IsBlockSizeIndefinite() {
 			result := space.PercentageResolutionSize.BlockSize * pct / 100
-			if style.GetBoxSizing() == "border-box" {
-				result -= geom.BlockBorderPadding()
-				if result < 0 {
-					result = 0
-				}
-			}
-			return result, true
+			return applyBoxSizingBlock(style, geom, result), true
 		}
 		// Percentage against indefinite → auto.
 		return 0, false
