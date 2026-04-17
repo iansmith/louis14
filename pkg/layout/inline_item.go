@@ -144,6 +144,24 @@ func collectInlinesRecursive(
 
 		display := childStyle.GetDisplay()
 
+		// <br> elements always produce a forced line break, regardless of
+		// CSS display. In Blink, HTMLBRElement always creates a LayoutBR
+		// (a LayoutText subclass), so the `display` property cannot turn
+		// <br> into an atomic inline-block. Mirror that here by classifying
+		// <br> as a control break before the float/atomic branches.
+		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+			brOffset := text.Len()
+			text.WriteRune('\n')
+			data.Items = append(data.Items, &InlineItem{
+				Type:        InlineItemControl,
+				StartOffset: brOffset,
+				EndOffset:   text.Len(),
+				Node:        child.DOMNode,
+				Style:       childStyle,
+			})
+			continue
+		}
+
 		// Floats within inline content.
 		if childStyle.GetFloat() != css.FloatNone {
 			offset := text.Len()
@@ -172,20 +190,6 @@ func collectInlinesRecursive(
 				EndOffset:   text.Len(),
 				Node:        child.DOMNode,
 				LayoutNode:  child,
-				Style:       childStyle,
-			})
-			continue
-		}
-
-		// <br> elements produce a forced line break.
-		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
-			brOffset := text.Len()
-			text.WriteRune('\n')
-			data.Items = append(data.Items, &InlineItem{
-				Type:        InlineItemControl,
-				StartOffset: brOffset,
-				EndOffset:   text.Len(),
-				Node:        child.DOMNode,
 				Style:       childStyle,
 			})
 			continue
