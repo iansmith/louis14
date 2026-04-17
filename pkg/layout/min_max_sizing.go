@@ -526,7 +526,15 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			// CSS Flexbox §9.9.3 + Blink's conservative algorithm (csswg-drafts #8884):
 			// For row flex, compute CSS Sizing-3 intrinsic contributions, then
 			// adjust based on whether the item can actually flex to reach them.
-			if isRow {
+			if isRow && wdm.IsOrthogonalTo(childWDM) {
+				// Orthogonal row-flex child: the parent's main-axis = child's
+				// block-axis. Use measureOrthogonalChild, which lays out the
+				// child and returns its block-size (+ parent-WDM inline margins)
+				// as the contribution to the parent's inline/main axis.
+				oMin, oMax := measureOrthogonalChild(child, childStyle, childWDM, wdm, ctx, space)
+				childMin = oMin
+				childMax = oMax
+			} else if isRow {
 				outerExtra := childBP + childMargins.InlineSum()
 				childGeom2 := ComputeFragmentGeometry(childStyle, childWDM)
 
