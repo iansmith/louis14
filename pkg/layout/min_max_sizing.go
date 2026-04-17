@@ -19,6 +19,40 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	wdm := space.WritingDirection
 	geom := ComputeFragmentGeometry(style, wdm)
 
+	// Table with table-layout:fixed + percentage inline-size: max-content is effectively
+	// infinite. Mirrors Blink's TableLayoutAlgorithm::ComputeMinMaxSizes
+	// (table_layout_algorithm.cc:727): `if (is_fixed_layout && Style().LogicalWidth().HasPercent())
+	// min_max.max_size = TableTypes::kTableMaxInlineSize`. This lets ancestors doing
+	// max-content sizing (flex basis:auto, shrink-to-fit) see the table as "wants as
+	// much space as available", rather than summing potentially-zero column max-contents.
+	// Skip the fast path so we don't collapse to a 0-resolved percent width.
+	disp := style.GetDisplay()
+	if (disp == css.DisplayTable || disp == css.DisplayInlineTable) &&
+		style.GetTableLayout() == css.TableLayoutFixed &&
+		hasPercentLogicalWidth(style, wdm) {
+		minResult := measureBlockMinMax(node, ctx, space)
+		result := MinMaxSizes{
+			MinContent: minResult.MinContent,
+			MaxContent: kTableMaxInlineSize,
+		}
+		minInline := ResolveMinInlineSize(style, wdm, space, geom)
+		if result.MinContent < minInline {
+			result.MinContent = minInline
+		}
+		if result.MaxContent < minInline {
+			result.MaxContent = minInline
+		}
+		if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+			if result.MinContent > maxInline {
+				result.MinContent = maxInline
+			}
+			if result.MaxContent > maxInline {
+				result.MaxContent = maxInline
+			}
+		}
+		return result
+	}
+
 	// If the node has an explicit inline-size, min = max = that size (content-box).
 	// Skip this fast-path for replaced elements: their inline-size may be
 	// overridden by the CSS 2.1 §10.3.2 constraint resolution when a
@@ -694,6 +728,30 @@ func resolveFlexBasisForIntrinsic(
 // measureBlockMinMax computes min/max content sizes for a node with
 // block-level children by taking the maximum of each child's sizes.
 //
+// hasPercentLogicalWidth reports whether the node's logical inline-size
+// is a percentage (including calc() expressions containing a % term).
+// Mirrors Blink's Style().LogicalWidth().HasPercent() check.
+func hasPercentLogicalWidth(style *css.Style, wdm WritingDirectionMode) bool {
+	prop := "width"
+	if wdm.IsVertical() {
+		prop = "height"
+	}
+	val, ok := style.Get(prop)
+	if !ok {
+		return false
+	}
+	val = strings.TrimSpace(val)
+	if strings.HasSuffix(val, "%") {
+		if _, ok := css.ParsePercentage(val); ok {
+			return true
+		}
+	}
+	if css.IsCalcWithPercent(val) {
+		return true
+	}
+	return false
+}
+
 // Floats are handled specially: multiple same-side floats placed side-by-side
 // contribute their SUMMED inline sizes to max-content (since at max-content
 // width, all floats fit beside each other). Min-content = max single float

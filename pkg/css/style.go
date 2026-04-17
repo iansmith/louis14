@@ -957,6 +957,17 @@ func (s *Style) resolvePaddingEdge(prop string, containingWidth float64) float64
 				return result
 			}
 		}
+		// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
+		if IsCalcWithPercent(trimmed) {
+			if v, ok := EvalCalcWithPercent(
+				trimmed[5:len(trimmed)-1], s.GetFontSize(), containingWidth,
+			); ok {
+				if v < 0 {
+					return 0
+				}
+				return v
+			}
+		}
 	}
 	result := s.getLengthOrZero(prop)
 	if result < 0 {

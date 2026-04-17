@@ -875,9 +875,20 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	contentInlineSize += spacingForCols // include inline spacing in total
 	finalBlockSize := blockOffset
 
+	// CSS 2.1 §17.5.3: honor an explicit table block-size as a floor, even
+	// when the table has no rows (or fewer rows than the specified height
+	// requires). The per-row distribution above (line 489) only runs when
+	// len(rows) > 0; for empty tables we still need to apply the specified
+	// height so `<table style="height:30px"></table>` renders 30px tall.
+	borderBoxBlock := finalBlockSize + geom.BlockBorderPadding()
+	if geom.BorderBoxSize.BlockSize != Indefinite &&
+		geom.BorderBoxSize.BlockSize > borderBoxBlock {
+		borderBoxBlock = geom.BorderBoxSize.BlockSize
+	}
+
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
-		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
+		BlockSize:  borderBoxBlock,
 	})
 
 	// CSS 2.1 §17.5.2: "The baseline of an inline-table is the baseline of

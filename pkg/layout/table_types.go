@@ -15,6 +15,13 @@ package layout
 // Blink uses LayoutUnit for sizes; louis14 uses plain float64 throughout
 // (see LogicalSize, Box, ConstraintSpace). No custom LayoutUnit type.
 
+// kTableMaxInlineSize mirrors Blink's TableTypes::kTableMaxInlineSize
+// (table_layout_algorithm_types.h:26). It is the "effectively infinite"
+// sentinel used as the max-content inline-size for tables with
+// table-layout:fixed + percentage width, so ancestors doing max-content
+// sizing (flex basis, shrink-to-fit) see the table as unbounded.
+const kTableMaxInlineSize = 1_000_000
+
 // TableTypesRow mirrors Blink's TableTypes::Row. Each Row represents the
 // finalized intrinsic + distributed block metrics for a single table row
 // so that, once computed, fragment construction reads sizes directly
