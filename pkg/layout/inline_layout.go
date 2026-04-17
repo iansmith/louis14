@@ -1075,11 +1075,22 @@ func createLineBoxEx(
 					// For inline-flex, use first baseline (CSS Flexbox §4.2).
 					// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
 					// Replaced elements don't propagate baselines from line boxes.
+					// For orthogonal inline-blocks, synthesize baseline at the
+					// block-end edge in the outer writing mode (per Blink, matches
+					// CSS Writing Modes §4.3 "no baseline from orthogonal content").
 					atomicBaseline := float64(0)
+					childIsOrthogonal := false
+					if r.Item.Style != nil {
+						childIsOrthogonal = NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)
+					}
 					if !isReplaced {
-						atomicBaseline = r.LayoutResult.LastBaseline
-						if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
-							atomicBaseline = r.LayoutResult.Baseline
+						if childIsOrthogonal {
+							atomicBaseline = blockSize
+						} else {
+							atomicBaseline = r.LayoutResult.LastBaseline
+							if display == css.DisplayInlineFlex && r.LayoutResult.Baseline > 0 {
+								atomicBaseline = r.LayoutResult.Baseline
+							}
 						}
 					}
 					if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
@@ -1366,13 +1377,17 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				// For inline-flex, use first baseline (CSS Flexbox §4.2).
 				// For inline-block/inline-table, use last baseline (CSS 2.1 §10.8.1).
 				// Replaced elements don't propagate baselines from line boxes.
+				// For orthogonal inline-blocks, synthesize baseline at block-end
+				// (matches Blink for orthogonal writing-mode roots).
 				atomicBaseline := float64(0)
+				childIsOrthogonal := false
+				if r.Item.Style != nil {
+					childIsOrthogonal = NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)
+				}
 				if !isReplaced {
-					// CSS Flexbox §4.2: inline-flex uses first baseline.
-					// CSS 2.1 §17.5.2: inline-table baseline is "baseline of first row"
-					// — use first baseline (Baseline), not LastBaseline.
-					// CSS 2.1 §10.8.1: inline-block uses last line box baseline.
-					if (display == css.DisplayInlineFlex || display == css.DisplayFlex) && r.LayoutResult.Baseline > 0 {
+					if childIsOrthogonal {
+						atomicBaseline = blockSize
+					} else if (display == css.DisplayInlineFlex || display == css.DisplayFlex) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline
 					} else if (display == css.DisplayInlineTable || display == css.DisplayTable) && r.LayoutResult.Baseline > 0 {
 						atomicBaseline = r.LayoutResult.Baseline

@@ -287,24 +287,22 @@ func (fi *flexItem) outerHypotheticalMainSize() float64 {
 // resolvedFirstBaseline returns the first baseline position for this item
 // relative to its border-box block-start edge.
 //
-// Orthogonal items (baselineParallel = false) are excluded from baseline
-// alignment per CSS Flexbox §8.3: "baseline values ... only valid ... for
-// items whose block axis is parallel to the main axis ... items with a
-// writing mode orthogonal to the flex container's ... will act as if they
-// specified 'flex-start' instead." Chrome and Firefox both implement this
-// exclusion (wpt.fyi: flexbox-align-self-baseline-horiz-006 status P/P).
+// Orthogonal items participate in baseline alignment with a synthesized
+// baseline at the block-end edge (= crossSize) per Blink's
+// DetermineBaselineWritingMode (baseline_utils.h:15-44) and
+// LogicalBoxFragment::FirstBaselineOrSynthesize. For a row flex with a
+// horizontal-tb container and vertical-rl child, the child's baseline is
+// read in horizontal-tb and synthesizes to the item's physical bottom.
 //
 // For non-orthogonal items:
 //  1. Use natural baseline if available.
 //  2. Otherwise synthesize at block-end of border box (= crossSize) per
 //     Blink's SynthesizedBaseline() and CSS Box Alignment §5.4.
-//
-// The second return value indicates whether this item should participate in
-// baseline alignment at all.
 func (fi *flexItem) resolvedFirstBaseline(baselineParallel, canSynthesizeRow bool) (bl float64, participates bool) {
 	if !baselineParallel {
-		// Orthogonal item: excluded from baseline accumulation.
-		return 0, false
+		// Orthogonal item: per Blink, baseline is synthesized at block-end
+		// of the item in the container's block-axis frame (= crossSize).
+		return fi.crossSize, true
 	}
 	if fi.hasBaseline || fi.baseline > 0 {
 		return fi.baseline, true
@@ -318,8 +316,10 @@ func (fi *flexItem) resolvedFirstBaseline(baselineParallel, canSynthesizeRow boo
 // resolvedLastBaseline returns the last baseline position for this item
 // relative to its border-box block-start edge.
 //
-// Orthogonal items are excluded from baseline accumulation (see
-// resolvedFirstBaseline for citation).
+// Orthogonal items participate with a synthesized last-baseline at
+// block-end (= crossSize), same as first-baseline; the subsequent
+// wrap-reverse/is_last_baseline flip (flex_layout_algorithm.cc:382-384)
+// transforms this into the appropriate last-baseline position.
 //
 // For non-orthogonal items:
 //  1. Use lastBaseline from layout if available.
@@ -327,8 +327,9 @@ func (fi *flexItem) resolvedFirstBaseline(baselineParallel, canSynthesizeRow boo
 //  3. If no baseline at all, synthesize at block-end (= crossSize).
 func (fi *flexItem) resolvedLastBaseline(baselineParallel, canSynthesizeRow bool) (bl float64, participates bool) {
 	if !baselineParallel {
-		// Orthogonal item: excluded from baseline accumulation.
-		return 0, false
+		// Orthogonal item: synthesize at block-end (flipped to 0 later for
+		// non-wrap-reverse last-baseline per Blink BaselineAscent).
+		return fi.crossSize, true
 	}
 	if lb := fi.lastBaseline; lb > 0 {
 		return lb, true
@@ -1810,7 +1811,13 @@ func buildFlexChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutI
 		// is NOT collapsible and must create an anonymous flex item.
 		hasContent := false
 		for _, n := range textRun {
-			if !isCSSWhitespaceOnly(n.TextContent()) {
+			if n.IsText() {
+				if !isCSSWhitespaceOnly(n.TextContent()) {
+					hasContent = true
+					break
+				}
+			} else {
+				// Inline element (e.g. <br>) is always renderable content.
 				hasContent = true
 				break
 			}
@@ -1845,6 +1852,16 @@ func buildFlexChildren(node *LayoutInputNode, parentStyle *css.Style) []*LayoutI
 		if pos == css.PositionAbsolute || pos == css.PositionFixed {
 			flushTextRun()
 			result = append(result, child)
+			continue
+		}
+		// <br> joins the surrounding text run. In Blink, LayoutBR is a
+		// LayoutText subclass, so the "contiguous run of text" wrapping
+		// rule (CSS Flexbox 1 §4) groups it with adjacent text into a
+		// single anonymous block-level flex item. Other inline-level
+		// elements (e.g. <i>, <span>) are blockified per CSS Display 3
+		// §2.4 and become their own flex items.
+		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+			textRun = append(textRun, child)
 			continue
 		}
 		// Visible in-flow element: flush any pending text run, then add element.
