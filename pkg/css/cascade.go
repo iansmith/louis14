@@ -687,6 +687,9 @@ var inheritableProperties = map[string]bool{
 	"direction": true, "letter-spacing": true, "word-spacing": true,
 	"cursor": true, "writing-mode": true, "text-orientation": true,
 	"empty-cells": true,
+	// CSS Text 3 inherited properties:
+	"word-break": true, "overflow-wrap": true, "hyphens": true,
+	"line-break": true, "tab-size": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
