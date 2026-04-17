@@ -1332,17 +1332,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			case "flex-end":
 				itemCrossOffset = crossStart + crossFreeForAlign
 			case "end":
-				if reverseCross {
-					itemCrossOffset = crossStart // acts like flex-start under wrap-reverse
-				} else {
-					itemCrossOffset = crossStart + crossFreeForAlign // acts like flex-end
-				}
+				// Per Blink's ResolvedAlignSelf (flex_layout_algorithm.cc:308-310),
+				// `end` resolves to FlexEnd with an EARLY RETURN — the wrap-reverse
+				// flip (applied later to FlexStart/FlexEnd) does not affect `end`.
+				// So `end` always aligns to cross-end regardless of wrap-reverse.
+				itemCrossOffset = crossStart + crossFreeForAlign
 			case "start":
-				if reverseCross {
-					itemCrossOffset = crossStart + crossFreeForAlign // acts like flex-end under wrap-reverse
-				} else {
-					itemCrossOffset = crossStart // acts like flex-start
-				}
+				// Per Blink's ResolvedAlignSelf (flex_layout_algorithm.cc:305-307),
+				// `start` resolves to FlexStart with an EARLY RETURN — wrap-reverse
+				// does not flip `start`. Always aligns to cross-start.
+				itemCrossOffset = crossStart
 			case "self-end":
 				if selfStartIsCrossStart(wdm, item.wdm, isRow) {
 					// Item's end maps to container's cross-end.

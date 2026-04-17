@@ -73,6 +73,15 @@ func (wdm WritingDirectionMode) IsFlippedBlocks() bool {
 	return wdm.WM == WritingModeVerticalRL || wdm.WM == WritingModeSidewaysRL
 }
 
+// IsSideways returns true for sideways-rl and sideways-lr writing modes.
+// Per CSS Writing Modes 3 §5.1, these modes force text-orientation: sideways
+// regardless of the computed value: all glyphs are rotated 90° from the
+// horizontal baseline, and the inline advance equals the glyph's horizontal
+// advance (not a per-glyph em-square cell).
+func (wdm WritingDirectionMode) IsSideways() bool {
+	return wdm.WM == WritingModeSidewaysRL || wdm.WM == WritingModeSidewaysLR
+}
+
 // IsLTR returns true for direction: ltr.
 func (wdm WritingDirectionMode) IsLTR() bool {
 	return wdm.Dir == DirectionLTR

@@ -256,7 +256,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 	// Measure the full text segment. In vertical writing modes, use vertical
 	// measurement where each upright glyph advances by fontSize.
-	isVertical := lb.space.WritingDirection.IsVertical()
+	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
 	var fullWidth float64
 
 	// CSS Text 3 §4.2: tab characters advance to the next tab stop.
@@ -412,7 +412,7 @@ func (lb *LineBreaker) breakTextAtWord(
 		wordSpacing = item.Style.GetWordSpacing()
 	}
 
-	isVertical := lb.space.WritingDirection.IsVertical()
+	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
 
 	// measureWord measures a word, stripping soft hyphens (zero-width).
 	measureWord := func(word string) float64 {
@@ -560,7 +560,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 	letterSpacing, wordSpacing float64,
 	overflowWrap string,
 ) bool {
-	isVertical := lb.space.WritingDirection.IsVertical()
+	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
 
 	// Find all soft-hyphen positions and regular word boundaries.
 	// We need to try breaking at each soft-hyphen position (and at
@@ -761,7 +761,7 @@ func (lb *LineBreaker) tryAutoHyphenation(
 	remaining float64,
 	letterSpacing, wordSpacing float64,
 ) *bool {
-	isVertical := lb.space.WritingDirection.IsVertical()
+	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
 
 	// Measure the visible hyphen.
 	var hyphenWidth float64
@@ -967,7 +967,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 		letterSpacing = item.Style.GetLetterSpacing()
 	}
 
-	isVertical := lb.space.WritingDirection.IsVertical()
+	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
 
 	// Fit as many characters as possible within the remaining width.
 	fitted := 0
@@ -1235,7 +1235,7 @@ func (lb *LineBreaker) handleFloat(item *InlineItem, line *LineInfo) {
 
 // finishLine applies trailing whitespace trimming and sets final line properties.
 func (lb *LineBreaker) finishLine(line *LineInfo) {
-	isVertical := lb.space.WritingDirection.IsVertical()
+	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
 	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of the line.
 	for i := 0; i < len(line.Results); i++ {
 		r := &line.Results[i]
