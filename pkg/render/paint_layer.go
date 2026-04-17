@@ -897,15 +897,11 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 			continue
 		}
 
-		// Positioned child. Check if contained by parent's overflow clip.
-		// Contained children stay in DOM-order painting (FlowChildren).
-		if isContainedByOverflow(child, box) {
-			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
-			buildPaintSubtree(child, childLayer, currentSC)
-			continue
-		}
-
-		// Positioned and not contained — assign to stacking context z-lists.
+		// Positioned child forming a stacking context. Per CSS 2.1 Appendix E,
+		// z-index ordering takes precedence over overflow containment — the
+		// child is z-sorted in the nearest ancestor stacking context even
+		// when clipped by a parent's overflow. Clipping is applied at paint
+		// time; it does not change z-order.
 		if child.CreatesStackingContext() {
 			z := child.ZIndex
 			switch {
@@ -918,16 +914,25 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 			}
 			// New stacking context — descendants collected by childLayer.
 			buildPaintSubtree(child, childLayer, childLayer)
+			continue
+		}
+
+		// Positioned child without stacking context. Check overflow clip:
+		// contained children stay in DOM-order painting (FlowChildren).
+		if isContainedByOverflow(child, box) {
+			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
+			buildPaintSubtree(child, childLayer, currentSC)
+			continue
+		}
+
+		// Positioned, z-index:auto, not contained — participates at Appendix E step 6.
+		currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+		if hasOverflowClipping(child) {
+			// Overflow containment boundary — positioned descendants
+			// stay within this subtree.
+			buildPaintSubtree(child, childLayer, childLayer)
 		} else {
-			// Positioned, z-index:auto — participates at Appendix E step 6.
-			currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
-			if hasOverflowClipping(child) {
-				// Overflow containment boundary — positioned descendants
-				// stay within this subtree.
-				buildPaintSubtree(child, childLayer, childLayer)
-			} else {
-				buildPaintSubtree(child, childLayer, currentSC)
-			}
+			buildPaintSubtree(child, childLayer, currentSC)
 		}
 	}
 }
