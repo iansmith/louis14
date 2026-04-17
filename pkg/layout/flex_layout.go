@@ -3442,15 +3442,21 @@ func computeItemMainOffsets(
 	// Per CSS Box Alignment §5.3: when free space is negative:
 	// - Distributing values (space-between, space-around, space-evenly) fall
 	//   back to flex-start per Flexbox Level 1 §8.2.
-	// - With "safe" overflow alignment, center and flex-end also fall back to
-	//   flex-start to prevent start-edge overflow (data loss prevention).
+	// - With "safe" overflow alignment, alignment falls back to the writing-mode
+	//   start edge to prevent start-edge overflow (data loss prevention). For a
+	//   reversed main axis (row-reverse/column-reverse), the writing-mode start
+	//   is the flex-end, so the safe fallback is flex-end there.
 	if freeSpace < 0 {
 		switch justifyContent {
 		case "space-between", "space-around", "space-evenly":
 			justifyContent = "flex-start"
-		case "center", "flex-end":
+		case "center", "flex-end", "flex-start":
 			if justifyContentSafe {
-				justifyContent = "flex-start"
+				if reverseMain {
+					justifyContent = "flex-end"
+				} else {
+					justifyContent = "flex-start"
+				}
 			}
 		}
 	}
