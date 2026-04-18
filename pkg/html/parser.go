@@ -80,6 +80,25 @@ func (p *Parser) Parse() (*Document, error) {
 			// Add to current parent (top of stack)
 			parent := p.currentParent()
 
+			// HTML5 §13.2.6.4.7 "in body" insertion mode: a second <body> start
+			// tag is a parse error and is ignored as an element (attributes are
+			// merged into the existing body, but that's not load-bearing for
+			// layout). Skip creating a new element if a body is already on the
+			// stack — important when content before <body> (e.g. <p>text</p>)
+			// triggered an implicit body, and an explicit <body> follows.
+			if token.TagName == "body" {
+				alreadyHaveBody := false
+				for _, n := range p.stack {
+					if n.TagName == "body" {
+						alreadyHaveBody = true
+						break
+					}
+				}
+				if alreadyHaveBody {
+					continue
+				}
+			}
+
 			// HTML5 §12.2.6.4: Ensure proper html > body structure.
 			// Block-level content and <body> tags must be inside <body>.
 			// This applies both at document root AND inside <html> (after </head>).
