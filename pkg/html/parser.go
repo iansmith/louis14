@@ -157,9 +157,12 @@ func (p *Parser) Parse() (*Document, error) {
 				}
 			}
 			if text != "" {
-				// HTML5 §8.2.6.4: bare text at document root (e.g. after <!DOCTYPE html>
-				// with no <html>/<body> tags) must be placed in an implicit <body>.
-				if parent.TagName == "document" && strings.TrimSpace(text) != "" {
+				// HTML5 §12.2.6.4: bare non-whitespace text outside <body> must be
+				// placed in an implicit <body>. This applies both at document root
+				// (no <html>/<body>) and inside <html> after </head> (no explicit
+				// <body>). HTML5 "after head" insertion mode treats a non-whitespace
+				// character as an implicit <body> start tag.
+				if (parent.TagName == "document" || parent.TagName == "html") && strings.TrimSpace(text) != "" {
 					p.ensureBody()
 					parent = p.currentParent()
 				}
