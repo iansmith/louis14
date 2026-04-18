@@ -16,6 +16,9 @@ type LayoutEngine struct {
 	documentFetcher DocumentFetcher
 	fontConfig      text.FontConfig
 	scrollY         float64
+
+	lastStyles    map[*html.Node]*css.Style
+	lastNodeBoxes map[*html.Node]*Box
 }
 
 type viewport struct {
@@ -169,7 +172,49 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	}
 	rootBox := fragmentToBox(result.Fragment, nil, rootOffsetX, 0)
 
+	le.lastStyles = computedStyles
+	le.lastNodeBoxes = buildNodeBoxIndex([]*Box{rootBox})
+
 	return []*Box{rootBox}
+}
+
+// ComputedStyles returns the per-node computed style map produced by the most
+// recent Layout() call. Used by JS bindings to back getComputedStyle().
+func (le *LayoutEngine) ComputedStyles() map[*html.Node]*css.Style {
+	return le.lastStyles
+}
+
+// NodeBoxes returns a node→principal-box index from the most recent Layout()
+// call. Used by JS bindings to back getComputedStyle() for layout-dependent
+// used values (width, margins, padding, borders).
+func (le *LayoutEngine) NodeBoxes() map[*html.Node]*Box {
+	return le.lastNodeBoxes
+}
+
+// buildNodeBoxIndex walks the box tree and returns a map from DOM node to the
+// first (principal) box produced by that node. Anonymous boxes and line boxes
+// are skipped. When an element produces multiple fragments (split inlines,
+// continuations), the first one encountered wins.
+func buildNodeBoxIndex(boxes []*Box) map[*html.Node]*Box {
+	idx := make(map[*html.Node]*Box)
+	var walk func(*Box)
+	walk = func(b *Box) {
+		if b == nil {
+			return
+		}
+		if b.Node != nil {
+			if _, ok := idx[b.Node]; !ok {
+				idx[b.Node] = b
+			}
+		}
+		for _, c := range b.Children {
+			walk(c)
+		}
+	}
+	for _, b := range boxes {
+		walk(b)
+	}
+	return idx
 }
 
 // NestedDocumentResult wraps the root layout result for a nested document

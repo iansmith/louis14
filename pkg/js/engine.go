@@ -3,7 +3,9 @@ package js
 import (
 	"fmt"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/layout"
 
 	"github.com/dop251/goja"
 )
@@ -14,6 +16,11 @@ type Engine struct {
 	// onloadCallbacks stores element-level onload callbacks registered via
 	// element.onload = fn. Keyed by *html.Node for fast lookup.
 	onloadCallbacks map[*html.Node]goja.Callable
+
+	// Layout snapshot from the most recent layout pass, used to back
+	// getComputedStyle. Set via SetLayoutSnapshot before Execute.
+	layoutStyles map[*html.Node]*css.Style
+	layoutBoxes  map[*html.Node]*layout.Box
 }
 
 // New creates a new JS engine with a fresh goja runtime.
@@ -57,6 +64,14 @@ func (e *Engine) RegisterOnloadCallback(node *html.Node, fn goja.Callable) {
 	e.onloadCallbacks[node] = fn
 }
 
+// SetLayoutSnapshot stores the computed-style map and node→box index from the
+// most recent layout pass so that getComputedStyle can return real values.
+// Callers should invoke this after layout completes but before Execute.
+func (e *Engine) SetLayoutSnapshot(styles map[*html.Node]*css.Style, boxes map[*html.Node]*layout.Box) {
+	e.layoutStyles = styles
+	e.layoutBoxes = boxes
+}
+
 // Execute runs all scripts from the document against the DOM.
 // Scripts are executed in order. Any JS errors are returned but
 // callers may choose to log and continue rather than fail.
@@ -70,6 +85,8 @@ func (e *Engine) Execute(doc *html.Document) error {
 	// Give the DOM context a reference to the engine so element proxies
 	// can register onload callbacks.
 	ctx.engine = e
+	ctx.layoutStyles = e.layoutStyles
+	ctx.layoutBoxes = e.layoutBoxes
 
 	// Execute each script in document order
 	for i, script := range doc.Scripts {

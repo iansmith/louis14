@@ -85,6 +85,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// Execute JavaScript if the document has scripts, then re-layout.
 	if len(doc.Scripts) > 0 {
 		jsEng := js.New()
+		jsEng.SetLayoutSnapshot(engine.ComputedStyles(), engine.NodeBoxes())
 		if err := jsEng.Execute(doc); err != nil {
 			log.Printf("js: %v", err)
 		}

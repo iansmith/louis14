@@ -5,7 +5,9 @@ import (
 	"strings"
 	"unicode"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/layout"
 
 	"github.com/dop251/goja"
 )
@@ -18,6 +20,11 @@ type domContext struct {
 	doc    *html.Document
 	cache  map[*html.Node]goja.Value
 	engine *Engine // back-reference to register onload callbacks; may be nil
+
+	// Layout snapshot for backing getComputedStyle. May be nil if the caller
+	// did not populate layout state (e.g. pure DOM-manipulation tests).
+	layoutStyles map[*html.Node]*css.Style
+	layoutBoxes  map[*html.Node]*layout.Box
 }
 
 func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
@@ -99,17 +106,22 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	// globals on the window object (e.g., <div id="flex"> → window.flex).
 	registerNamedElements(ctx, doc.Root)
 
-	// getComputedStyle: returns a stub CSSStyleDeclaration.
-	// Tests call this to flush style recalculation; the returned value is rarely used.
+	// getComputedStyle returns a CSSStyleDeclaration proxy backed by the
+	// layout snapshot (node→computed style + node→principal Box). For
+	// layout-dependent properties (width, height, margin-*, padding-*,
+	// border-*-width), the used value is read from the Box and formatted
+	// as "Npx". Everything else falls back to the cascade Properties map.
 	vm.Set("getComputedStyle", func(call goja.FunctionCall) goja.Value {
-		stub := vm.NewObject()
-		stub.Set("getPropertyValue", func(call goja.FunctionCall) goja.Value {
-			return vm.ToValue("")
+		var node *html.Node
+		if len(call.Arguments) > 0 {
+			node = ctx.unwrapNode(call.Arguments[0])
+		}
+		return vm.NewDynamicObject(&computedStyleAccessor{
+			vm:     vm,
+			node:   node,
+			styles: ctx.layoutStyles,
+			boxes:  ctx.layoutBoxes,
 		})
-		stub.Set("setProperty", func(call goja.FunctionCall) goja.Value {
-			return goja.Undefined()
-		})
-		return stub
 	})
 
 	// forceLayout: WPT tests call this as a layout-flush idiom. No-op for us.
