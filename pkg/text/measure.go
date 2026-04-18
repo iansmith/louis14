@@ -393,28 +393,33 @@ func FontAscent(fontSize float64, bold, italic, mono, ahem bool) float64 {
 	return FontAscentFromFont(fontSize, fontPath)
 }
 
-// FontAscentFromFont returns the font ascent in pixels for the given font path.
+// FontAscentFromFont returns the font ascent in pixels for the given font path,
+// rounded to the nearest integer. Matches Blink's int_ascent_ (lroundf in
+// SimpleFontData::PlatformInit) so the strut/leading math produces integer-aligned
+// line-box heights and stacked block containers don't accumulate sub-pixel drift.
 func FontAscentFromFont(fontSize float64, fontPath string) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
-		return fontSize * 0.8
+		return math.Round(fontSize * 0.8)
 	}
-	return float64(m.Ascent) / 64.0
+	return math.Round(float64(m.Ascent) / 64.0)
 }
 
-// FontDescentFromFont returns the font descent in pixels for the given font path.
-// Descent is the distance from the baseline to the bottom of the em box (positive value).
+// FontDescentFromFont returns the font descent in pixels for the given font path,
+// rounded to the nearest integer (positive value). See FontAscentFromFont for
+// the rationale on integer rounding.
 func FontDescentFromFont(fontSize float64, fontPath string) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
-		return fontSize * 0.2
+		return math.Round(fontSize * 0.2)
 	}
-	return float64(m.Descent) / 64.0
+	return math.Round(float64(m.Descent) / 64.0)
 }
 
-// FontHeightFromFont returns the font's recommended line height in pixels.
-// This is the font's own hhea ascent + descent (+ line gap), which is
-// the correct value for CSS line-height: normal.
+// FontHeightFromFont returns the font's recommended line height in pixels for
+// CSS line-height: normal. Returns the unrounded m.Height so line-height:normal
+// matches the font's intrinsic spacing exactly; integer rounding is applied at
+// the strut sites (via FontAscent/Descent) where it matters for line-box layout.
 func FontHeightFromFont(fontSize float64, fontPath string) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {

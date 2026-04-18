@@ -933,12 +933,6 @@ func createLineBoxEx(
 		halfLeading := (lineHt - (asc + desc)) / 2
 		asc += halfLeading
 		desc += halfLeading
-		if asc < 0 {
-			asc = 0
-		}
-		if desc < 0 {
-			desc = 0
-		}
 		return
 	}
 	inlinePos := alignOffset
@@ -1235,15 +1229,14 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			fontPath := resolveFontPath(parentStyle, fonts)
 			lineHt = text.FontHeightFromFont(fontSize, fontPath)
 		}
+		// CSS 2.1 §10.8.1: half-leading is allowed to be negative when
+		// line-height < ascent+descent. Mirror Blink (font_height.cc::AddLeading
+		// has no clamp): let strut ascent/descent go negative so a taller atomic
+		// inline (canvas, replaced) wins cleanly via the per-side max() below
+		// instead of leaking residual sub-pixel descent into the line box.
 		halfLeading := (lineHt - (strutAscent + strutDescent)) / 2
 		strutAscent += halfLeading
 		strutDescent += halfLeading
-		if strutAscent < 0 {
-			strutAscent = 0
-		}
-		if strutDescent < 0 {
-			strutDescent = 0
-		}
 		maxAscent = strutAscent
 		maxDescent = strutDescent
 	}
@@ -1295,12 +1288,6 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			halfLeading := (lineHt - (ascent + descent)) / 2
 			ascent += halfLeading
 			descent += halfLeading
-			if ascent < 0 {
-				ascent = 0
-			}
-			if descent < 0 {
-				descent = 0
-			}
 			// CSS 2.1 §10.8.1: Inside a vertical-align: top/bottom subtree,
 			// contribute to maxTopBottom instead of baseline calculation.
 			if topBottomDepth > 0 || va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
@@ -1350,12 +1337,6 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				halfLeading := (lineHt - (ascent + descent)) / 2
 				ascent += halfLeading
 				descent += halfLeading
-				if ascent < 0 {
-					ascent = 0
-				}
-				if descent < 0 {
-					descent = 0
-				}
 			}
 			if isInTopBottom {
 				if h := ascent + descent; h > maxTopBottom {
