@@ -1119,6 +1119,11 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					}
 				}
 			}
+			// Re-apply stretch after re-layout: the re-layout above uses
+			// crossIsFixed=false and Indefinite cross, which shrinks stretch
+			// items back to their hypothetical cross-size. Stretch them back
+			// to the (now finalized) line cross-size.
+			fla.stretchFlexItems(lines, alignItems, wdm, contentInlineSize, isRow)
 		}
 	}
 
