@@ -233,9 +233,10 @@ func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) stri
 	case "helvetica", "helvetica neue", "arial",
 		"liberation sans", "nimbus sans", "sans-serif":
 		return latinModernSansPath(dir, bold, italic)
-	case "times", "times new roman", "liberation serif",
-		"latin modern roman", "computer modern", "serif":
+	case "latin modern roman", "computer modern":
 		return latinModernRomanPath(dir, bold, italic)
+	case "times", "times new roman", "liberation serif", "serif":
+		return liberationSerifPath(dir, bold, italic)
 	case "courier", "courier new", "liberation mono", "monospace":
 		return atkinsonMonoPath(dir, bold, italic)
 	}
@@ -265,6 +266,19 @@ func latinModernRomanPath(dir string, bold, italic bool) string {
 		return filepath.Join(dir, "lmroman10-italic.otf")
 	default:
 		return filepath.Join(dir, "lmroman10-regular.otf")
+	}
+}
+
+func liberationSerifPath(dir string, bold, italic bool) string {
+	switch {
+	case bold && italic:
+		return filepath.Join(dir, "LiberationSerif-BoldItalic.ttf")
+	case bold:
+		return filepath.Join(dir, "LiberationSerif-Bold.ttf")
+	case italic:
+		return filepath.Join(dir, "LiberationSerif-Italic.ttf")
+	default:
+		return filepath.Join(dir, "LiberationSerif-Regular.ttf")
 	}
 }
 
