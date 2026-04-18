@@ -3379,6 +3379,15 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		if crossIsFixed && crossSize != Indefinite {
 			b.SetIsFixedBlockSize(true)
 		}
+		// Per §9.5: the flex-resolved main size IS the used main size. For
+		// orthogonal items in row flex, the parent's inline (main) axis maps
+		// to the child's block axis; without marking the block-size as an
+		// override, CalculateInitialFragmentGeometry would let the child's
+		// CSS block-size (e.g. `width:33px` on a VLR canvas) take precedence
+		// over the flex-resolved main. The override only fires when
+		// IsFixedBlockSize is true, which is the case only for orthogonal
+		// children here (IsFixedInlineSize → IsFixedBlockSize after swap).
+		b.SetIsBlockSizeOverride(true)
 	} else {
 		// Main axis = parent block. Cross axis = parent inline.
 		crossInlineContent := contentInlineSize
