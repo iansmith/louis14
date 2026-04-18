@@ -268,7 +268,7 @@ func interpolateGradientColor(stops []gradientStop, pos float64) color.RGBA {
 	if len(stops) == 0 {
 		return color.RGBA{A: 255}
 	}
-	if pos <= stops[0].pos {
+	if pos < stops[0].pos {
 		s := &stops[0]
 		return color.RGBA{R: uint8(s.r * 255), G: uint8(s.g * 255), B: uint8(s.b * 255), A: uint8(s.a * 255)}
 	}
