@@ -1321,23 +1321,43 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 			// §8.1: Auto margins in the cross axis override align-self.
 			// crossFreeSpace = line cross-size minus item's outer cross-size (border-box + margins).
+			// Resolved auto margins are written back into item.margins so they
+			// surface on the fragment's BoxData.Margin (for CSSOM resolved values)
+			// and so positioning can re-use item.crossMarginStart() uniformly.
 			crossFreeSpace := line.crossSize - item.crossSize - item.crossMarginSum()
 			if item.crossAutoStart && item.crossAutoEnd {
 				// Both auto margins: each absorbs half of free space, centering
 				// the item. Matches Blink: when the item overflows the line
 				// (negative free space), the item is centered with equal
 				// overflow on both sides — equivalent to align-self:center.
-				item.crossOffset = crossStart + crossFreeSpace/2
+				half := crossFreeSpace / 2
+				if item.isRow {
+					item.margins.BlockStart += half
+					item.margins.BlockEnd += half
+				} else {
+					item.margins.InlineStart += half
+					item.margins.InlineEnd += half
+				}
+				item.crossOffset = crossStart
 				continue
 			}
 			if crossFreeSpace > 0 && (item.crossAutoStart || item.crossAutoEnd) {
 				if item.crossAutoStart {
-					// Auto start only: push to end.
-					item.crossOffset = crossStart + crossFreeSpace
+					// Auto start only: absorbs all free space at the start.
+					if item.isRow {
+						item.margins.BlockStart += crossFreeSpace
+					} else {
+						item.margins.InlineStart += crossFreeSpace
+					}
 				} else {
-					// Auto end only: stays at start.
-					item.crossOffset = crossStart
+					// Auto end only: absorbs all free space at the end.
+					if item.isRow {
+						item.margins.BlockEnd += crossFreeSpace
+					} else {
+						item.margins.InlineEnd += crossFreeSpace
+					}
 				}
+				item.crossOffset = crossStart
 				continue
 			}
 
@@ -1493,6 +1513,14 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					item.fragment.Size.Width, item.fragment.Size.Height,
 					inlineOff, blockOff,
 					item.margins.InlineStart, item.margins.InlineEnd, item.margins.BlockStart, item.margins.BlockEnd)
+			}
+			// Propagate auto-margin resolution (§8.1) onto the item fragment's
+			// physical margins. Flex layout owns margin resolution for its
+			// items, so the fragment's BoxData.Margin must reflect the
+			// container-WDM logical item.margins after auto-margin absorption.
+			// CSSOM getComputedStyle reads used margins from this field.
+			if item.fragment != nil && item.fragment.BoxData != nil {
+				item.fragment.BoxData.Margin = ToPhysicalEdges(item.margins, wdm)
 			}
 			builder.AddChild(item.fragment, LogicalOffset{
 				InlineOffset: inlineOff,
