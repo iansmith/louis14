@@ -232,6 +232,13 @@ code — a worktree agent could take it in parallel with Targets 1/2/4/5.
 
 ## Target 4: Auto margins in flex — calc() and column flow (~2 tests, ~10,238 px)
 
+### Status update (2026-04-18)
+`auto-margins-001`'s computed-style assertions flipped from FAIL to PASS
+after commit `ed0aada8` ("Propagate flex auto-margin resolution to fragment
+margins"); pixel diff dropped from 1491 → 1056 (remaining diff is
+pre-existing vertical-rl text rendering, not a flex bug).
+
+
 ### Problem
 CSS Flexbox §9.6 ("Align with auto margins"): an `auto` margin on a flex item
 absorbs free space. louis14's auto-margin path (`getItemAutoMargins` in
