@@ -453,3 +453,30 @@ tests passing**.
 If any test turns out to be a genuine WPT defect (test/ref mismatch that
 Chromium also fails, verified on wpt.fyi), document the Edge status with a
 wpt.fyi link and skip. Do not patch around WPT defects.
+
+---
+
+## Remaining Target 6 failures (deferred — text-rendering, not flex layout)
+
+These three failures are NOT flex layout bugs. They all stem from text
+measurement/shaping — specifically how text is measured when it crosses
+an element boundary (anonymous flex item split, span boundary, etc.).
+Fixing them requires work in `pkg/text/` and `pkg/layout/inline_layout.go`,
+not in `flex_layout.go`. Leaving them for a dedicated text-rendering round.
+
+- **css-box-justify-content** (2596 px) — `&nbsp;` anonymous flex item
+  width vs inline-block space width. In the test, `&nbsp;` between flex
+  item divs becomes an anon flex item at ~8 px wide; in the ref (inline-
+  block layout), the whitespace between inline-blocks collapses to ~4 px.
+  Fix requires making anon flex item text measurement agree with inline
+  text measurement for the same glyph run.
+- **flexbox-order-only-flexitems** (97 px) — text shaping across span
+  boundaries. The test has three sibling `<span>` elements with the same
+  style; the ref expects the shaping to be continuous (as if all three
+  spans were one text run). Fix requires text-shaper to merge adjacent
+  runs with equivalent style.
+- **flex-direction-modify** (85 px) — same root cause as above. The test
+  has `<h1>flex-direction:<span id="current_direction">row</h1>` (text
+  split across an inline element); the ref is a single continuous text
+  node. Shaping mismatch at the `:` / `r` boundary (kerning, maybe
+  ligature).
