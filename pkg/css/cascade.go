@@ -230,13 +230,15 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline-block")
 		}
-		// UA uses border-box sizing (matches real browser UA stylesheets)
-		style.Set("box-sizing", "border-box")
+		// Blink/Firefox/Safari: textarea defaults to content-box (border-box is
+		// gated behind the experimental AppearanceBase feature). Default width
+		// 173px and height 54px are border-box-ish approximations of 20 cols × 2 rows
+		// but we express them as content-box to match the standard box model.
 		if _, ok := style.Get("width"); !ok {
-			style.Set("width", "173px")
+			style.Set("width", "167px")
 		}
 		if _, ok := style.Get("height"); !ok {
-			style.Set("height", "54px")
+			style.Set("height", "48px")
 		}
 		setFormPadding(style, "2px", "2px", "2px", "2px")
 		setFormBorder(style, "1px", "solid", "#767676")
