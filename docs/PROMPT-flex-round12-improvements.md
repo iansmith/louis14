@@ -463,13 +463,33 @@ wpt.fyi link and skip. Do not patch around WPT defects.
 
 ---
 
-## Remaining Target 6 failures (deferred — text-rendering, not flex layout)
+## Remaining Target 3/6 failures (deferred — text-rendering / strut drift, not flex layout)
 
-These three failures are NOT flex layout bugs. They all stem from text
-measurement/shaping — specifically how text is measured when it crosses
-an element boundary (anonymous flex item split, span boundary, etc.).
-Fixing them requires work in `pkg/text/` and `pkg/layout/inline_layout.go`,
-not in `flex_layout.go`. Leaving them for a dedicated text-rendering round.
+These failures are NOT flex layout bugs. They stem from text
+measurement/shaping or sub-pixel line-box height drift in block
+references. Fixing them requires work in `pkg/text/` and
+`pkg/layout/inline_layout.go`, not in `flex_layout.go`. Leaving them
+for a dedicated text-rendering round.
+
+### Strut sub-pixel drift (Target 3)
+
+- **flexbox-basic-textarea-horiz-001** (1640 px, was 3005) — test uses
+  flex (rows are exactly 22 px); ref uses block layout where each row's
+  line box is 22.18 px (font strut descent leaks 0.18 px because
+  Liberation Serif ascent+descent = 14.55 > line-height 8 → halfLeading
+  -3.275, residual descent 3.45 - 3.275 = 0.18, not clamped). Cumulative
+  drift crosses 0.5 by row 3+ → ref's later rows shift down by 1 px.
+- **flexbox-basic-canvas-horiz-001v** (2234 px, was 751) — same
+  mechanism with `<canvas writing-mode:vertical-lr>`. Test (flex) is
+  drift-free; ref (block) drifts 1 px starting at row E.
+
+Both fixes require either (a) Chrome-equivalent Times metrics where
+ascent+descent ≤ line-height, (b) USE_TYPO_METRICS from OS/2 table, or
+(c) snap line-box heights to integers in block layout. Out of round-12
+flex scope.
+
+### Text shaping across element boundaries (Target 6)
+
 
 - **css-box-justify-content** (2596 px) — `&nbsp;` anonymous flex item
   width vs inline-block space width. In the test, `&nbsp;` between flex
