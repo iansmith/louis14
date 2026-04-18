@@ -1312,12 +1312,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// §8.1: Auto margins in the cross axis override align-self.
 			// crossFreeSpace = line cross-size minus item's outer cross-size (border-box + margins).
 			crossFreeSpace := line.crossSize - item.crossSize - item.crossMarginSum()
+			if item.crossAutoStart && item.crossAutoEnd {
+				// Both auto margins: each absorbs half of free space, centering
+				// the item. Matches Blink: when the item overflows the line
+				// (negative free space), the item is centered with equal
+				// overflow on both sides — equivalent to align-self:center.
+				item.crossOffset = crossStart + crossFreeSpace/2
+				continue
+			}
 			if crossFreeSpace > 0 && (item.crossAutoStart || item.crossAutoEnd) {
-				if item.crossAutoStart && item.crossAutoEnd {
-					// Both auto: center the item.
-					// crossOffset is relative to container, builder adds crossMarginStart.
-					item.crossOffset = crossStart + crossFreeSpace/2
-				} else if item.crossAutoStart {
+				if item.crossAutoStart {
 					// Auto start only: push to end.
 					item.crossOffset = crossStart + crossFreeSpace
 				} else {
