@@ -22,6 +22,14 @@ type FlexLayoutAlgorithm struct {
 	node  *LayoutInputNode
 	style *css.Style
 	space ConstraintSpace
+
+	// Container cross-size (content-box), populated during runLayout.
+	// Used by buildItemConstraintSpace to provide a percentage base for
+	// flex items' own cross-axis sizes (e.g., height:calc(100%-4em) in row
+	// flex), so items can resolve their own percentage heights during the
+	// first layout pass before the line cross-size is known.
+	containerCrossSize float64
+	hasDefiniteCross   bool
 }
 
 // NewFlexLayoutAlgorithm creates a flex layout algorithm for the given node.
@@ -633,6 +641,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		containerCrossSize = contentInlineSize
 		hasDefiniteCross = true
 	}
+	fla.containerCrossSize = containerCrossSize
+	fla.hasDefiniteCross = hasDefiniteCross
 
 	// Resolve gap properties.
 	contentBlockSize := 0.0
@@ -3330,23 +3340,34 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		// block's content height. For flex items, this is the item's own CSS height
 		// (if explicit), NOT the line's cross-size. The line cross-size controls
 		// available space but the item's explicit height controls percentage resolution.
+		// Per CSS Flexbox §4.5, percentage cross-sizes on a flex item resolve
+		// against the container's content-box cross-size when definite. Use
+		// fla.containerCrossSize as the available + percentage-resolution
+		// block-size for both the item's own % height resolution (itemSpace)
+		// and for the cs passed to the child's layout.
 		pctBlockSize := 0.0
-		// Always check for an explicit CSS block-size on the item first.
+		itemSpaceBlock := float64(Indefinite)
+		if fla.hasDefiniteCross {
+			pctBlockSize = fla.containerCrossSize
+			itemSpaceBlock = fla.containerCrossSize
+		}
 		itemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: itemSpaceBlock}).
+			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}).
 			SetPercentageResolutionInlineSize(contentInlineSize).
 			Build()
-		if explicit, ok := ResolveBlockSize(item.style, childWDM, itemSpace, item.geom); ok {
-			pctBlockSize = explicit
-			if crossSize == Indefinite {
-				// First pass: also set available block-size so IsBlockSizeIndefinite()
-				// returns false and inner percentage heights can resolve.
-				avail.BlockSize = explicit + item.crossBorderPadding()
-			}
-		} else if crossSize != Indefinite {
-			// No explicit CSS height; use the line's cross-size for percentage resolution.
+		if explicit, ok := ResolveBlockSize(item.style, childWDM, itemSpace, item.geom); ok && crossSize == Indefinite {
+			// First pass: set available block-size so IsBlockSizeIndefinite()
+			// returns false and inner percentage heights can resolve.
+			avail.BlockSize = explicit + item.crossBorderPadding()
+		} else if crossSize != Indefinite && !fla.hasDefiniteCross {
+			// Fallback: use the line's cross-size as the percentage base when
+			// the container's cross isn't definite.
 			pctBlockSize = crossSize
+		} else if crossSize == Indefinite && fla.hasDefiniteCross {
+			// No explicit height and no line cross yet: make avail definite so
+			// calc(%) in the child's own geometry computation can resolve.
+			avail.BlockSize = fla.containerCrossSize + item.crossBorderPadding()
 		}
 		b.SetAvailableSize(avail)
 		b.SetPercentageResolutionSize(LogicalSize{
