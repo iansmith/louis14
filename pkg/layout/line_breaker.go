@@ -98,6 +98,29 @@ type LineBreaker struct {
 	done bool
 }
 
+// isVerticalMeasurement returns true when text in the given style should be
+// measured using vertical font metrics (em advance per glyph). This applies
+// only when text-orientation is "upright" — which renders all glyphs upright
+// with each one advancing by one em in the inline direction.
+//
+// For writing-mode: vertical-rl/lr with the default text-orientation "mixed",
+// Latin characters are rendered sideways and advance by their horizontal width.
+// For "sideways" or "sideways-rl/lr" modes the same applies. Horizontal
+// measurement (MeasureText) is correct in all non-upright cases.
+//
+// Mirrors CSS Writing Modes §7.5 / Blink's IsHorizontalTypographicMode().
+func (lb *LineBreaker) isVerticalMeasurement(style *css.Style) bool {
+	if !lb.space.WritingDirection.IsVertical() || lb.space.WritingDirection.IsSideways() {
+		return false
+	}
+	// VRL/VLR: use em advance only for text-orientation: upright.
+	if style == nil {
+		return false
+	}
+	to, _ := style.Get("text-orientation")
+	return to == "upright"
+}
+
 // NewLineBreaker creates a line breaker for the given inline content.
 func NewLineBreaker(
 	itemsData *InlineItemsData,
@@ -256,7 +279,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 	// Measure the full text segment. In vertical writing modes, use vertical
 	// measurement where each upright glyph advances by fontSize.
-	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
+	isVertical := lb.isVerticalMeasurement(item.Style)
 	var fullWidth float64
 
 	// CSS Text 3 §4.2: tab characters advance to the next tab stop.
@@ -412,7 +435,7 @@ func (lb *LineBreaker) breakTextAtWord(
 		wordSpacing = item.Style.GetWordSpacing()
 	}
 
-	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
+	isVertical := lb.isVerticalMeasurement(item.Style)
 
 	// measureWord measures a word, stripping soft hyphens (zero-width).
 	measureWord := func(word string) float64 {
@@ -560,7 +583,7 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 	letterSpacing, wordSpacing float64,
 	overflowWrap string,
 ) bool {
-	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
+	isVertical := lb.isVerticalMeasurement(item.Style)
 
 	// Find all soft-hyphen positions and regular word boundaries.
 	// We need to try breaking at each soft-hyphen position (and at
@@ -761,7 +784,7 @@ func (lb *LineBreaker) tryAutoHyphenation(
 	remaining float64,
 	letterSpacing, wordSpacing float64,
 ) *bool {
-	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
+	isVertical := lb.isVerticalMeasurement(item.Style)
 
 	// Measure the visible hyphen.
 	var hyphenWidth float64
@@ -967,7 +990,7 @@ func (lb *LineBreaker) breakTextAtCharacter(
 		letterSpacing = item.Style.GetLetterSpacing()
 	}
 
-	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
+	isVertical := lb.isVerticalMeasurement(item.Style)
 
 	// Fit as many characters as possible within the remaining width.
 	fitted := 0
@@ -1235,7 +1258,16 @@ func (lb *LineBreaker) handleFloat(item *InlineItem, line *LineInfo) {
 
 // finishLine applies trailing whitespace trimming and sets final line properties.
 func (lb *LineBreaker) finishLine(line *LineInfo) {
-	isVertical := lb.space.WritingDirection.IsVertical() && !lb.space.WritingDirection.IsSideways()
+	// Determine measurement mode from the first text item's style (text-orientation
+	// is inherited so all items on this line share the same value).
+	var firstTextStyle *css.Style
+	for i := range line.Results {
+		if line.Results[i].Item.Type == InlineItemText && line.Results[i].Item.Style != nil {
+			firstTextStyle = line.Results[i].Item.Style
+			break
+		}
+	}
+	isVertical := lb.isVerticalMeasurement(firstTextStyle)
 	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of the line.
 	for i := 0; i < len(line.Results); i++ {
 		r := &line.Results[i]

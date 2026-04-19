@@ -405,6 +405,18 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		box.IsVerticalText = frag.WritingDirection.IsVertical()
 		box.IsSidewaysLR = frag.WritingDirection.WM == WritingModeSidewaysLR
 		box.IsSidewaysRL = frag.WritingDirection.WM == WritingModeSidewaysRL
+		// CSS Writing Modes §5.1: in vertical-rl/lr with text-orientation: mixed
+		// (the default), Latin/etc. characters are rendered sideways (90° CW).
+		// Only text-orientation: upright uses the vertical stacking path.
+		if box.IsVerticalText && !box.IsSidewaysRL && !box.IsSidewaysLR {
+			to := ""
+			if frag.Style != nil {
+				to, _ = frag.Style.Get("text-orientation")
+			}
+			if to != "upright" {
+				box.IsSidewaysRL = true
+			}
+		}
 	}
 
 	// Apply box model edges if present.
