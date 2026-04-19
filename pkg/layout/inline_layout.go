@@ -1644,7 +1644,36 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData) bool {
 					return false
 				}
 			}
+		case InlineItemOpenTag, InlineItemCloseTag:
+			// CSS 2.1 §9.2.1.1 + §9.4.2: an inline element with visible paint
+			// (background, border, or non-zero padding/margin) still generates
+			// a line box even when empty — its box decorations must render.
+			// Empty span with padding/border is the canonical case
+			// (wpt-css2/linebox/empty-inline-002).
+			if r.Item.Style != nil && hasVisibleInlineBoxDecoration(r.Item.Style) {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+// hasVisibleInlineBoxDecoration returns true if the inline element has
+// any box decoration that must paint: visible background/border, or any
+// non-zero padding/margin that affects the inline-box extent. Ported
+// from Blink's ComputedStyle::HasBoxDecorationBackground semantics for
+// inline boxes.
+func hasVisibleInlineBoxDecoration(style *css.Style) bool {
+	if hasVisibleInlinePaint(style) {
+		return true
+	}
+	pad := style.GetPadding()
+	if pad.Top > 0 || pad.Right > 0 || pad.Bottom > 0 || pad.Left > 0 {
+		return true
+	}
+	m := style.GetMargin()
+	if m.Top > 0 || m.Right > 0 || m.Bottom > 0 || m.Left > 0 {
+		return true
+	}
+	return false
 }
