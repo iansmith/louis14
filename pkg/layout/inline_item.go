@@ -210,6 +210,29 @@ func collectInlinesRecursive(
 			continue
 		}
 
+		// CSS Writing Modes §7.3: An inline element whose writing mode is
+		// orthogonal to its parent's (one is vertical, the other horizontal)
+		// is promoted to an atomic inline — laid out in its own writing mode
+		// and treated like display:inline-block in the parent's line.
+		// Mirrors Blink's LayoutObject::IsAtomicInlineLevel() for orthogonal roots.
+		if node.Style() != nil {
+			parentWDM := NewWritingDirectionMode(node.Style())
+			childWDM := NewWritingDirectionMode(childStyle)
+			if childWDM.IsOrthogonalTo(parentWDM) {
+				offset := text.Len()
+				text.WriteRune('\uFFFC')
+				data.Items = append(data.Items, &InlineItem{
+					Type:        InlineItemAtomicInline,
+					StartOffset: offset,
+					EndOffset:   text.Len(),
+					Node:        child.DOMNode,
+					LayoutNode:  child,
+					Style:       childStyle,
+				})
+				continue
+			}
+		}
+
 		// Inline element (span, em, a, etc.) — emit open/close tags.
 
 		// CSS Writing Modes §2.2: Inject Unicode bidi control characters
@@ -278,14 +301,47 @@ func collectTextNode(
 	startOffset := text.Len()
 
 	if !collapseSpaces {
-		// Preserve whitespace as-is. Use RawText which preserves the original
-		// whitespace from the HTML source (node.Text may have been collapsed
-		// during HTML parsing).
+		// Preserve whitespace as-is (white-space: pre / pre-wrap).
+		// Use RawText which preserves the original whitespace from the HTML
+		// source (node.Text may have been collapsed during HTML parsing).
 		preservedContent := content
 		if node.RawText != "" {
 			preservedContent = node.RawText
 		}
-		text.WriteString(preservedContent)
+		// CSS 2.1 §16.6: newlines in preserved-whitespace content cause forced
+		// line breaks. Split on '\n' and emit InlineItemControl for each break,
+		// mirroring the collapseSpaces path's newline handling.
+		for _, seg := range strings.SplitAfter(preservedContent, "\n") {
+			if strings.HasSuffix(seg, "\n") {
+				// Emit any text before the newline.
+				before := seg[:len(seg)-1]
+				if len(before) > 0 {
+					segStart := text.Len()
+					text.WriteString(before)
+					data.Items = append(data.Items, &InlineItem{
+						Type:        InlineItemText,
+						StartOffset: segStart,
+						EndOffset:   text.Len(),
+						Node:        node,
+						Style:       parentStyle,
+					})
+				}
+				// Emit control item for the forced break.
+				brOffset := text.Len()
+				text.WriteRune('\n')
+				data.Items = append(data.Items, &InlineItem{
+					Type:        InlineItemControl,
+					StartOffset: brOffset,
+					EndOffset:   text.Len(),
+					Node:        node,
+					Style:       parentStyle,
+				})
+				startOffset = text.Len()
+			} else if len(seg) > 0 {
+				// Segment after the last newline (or entire content if no newline).
+				text.WriteString(seg)
+			}
+		}
 	} else {
 		// Collapse whitespace per CSS 2.1 §16.6.1.
 		// - Sequences of spaces/tabs collapse to a single space.

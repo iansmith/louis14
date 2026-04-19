@@ -17,6 +17,17 @@ func isCSSCollapsibleSpace(r rune) bool {
 	return r != '\u00A0' && unicode.IsSpace(r)
 }
 
+// cssPreservesWhitespace returns true when the style's white-space value
+// mandates that spaces at line start and end must not be stripped.
+// CSS 2.1 §16.6.1: 'pre' and 'pre-wrap' preserve all whitespace verbatim.
+func cssPreservesWhitespace(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	ws := style.GetWhiteSpace()
+	return ws == css.WhiteSpacePre || ws == css.WhiteSpacePreWrap
+}
+
 // LineBreakerMode controls line breaking behavior.
 // Ported from Blink's LineBreakerMode.
 type LineBreakerMode int
@@ -249,7 +260,8 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	}
 
 	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of a line.
-	if lb.position == 0 && len(line.Results) == 0 {
+	// Skipped for white-space: pre / pre-wrap which preserve all whitespace.
+	if lb.position == 0 && len(line.Results) == 0 && !cssPreservesWhitespace(item.Style) {
 		trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
 		if len(trimmed) < len(content) {
 			textStart += len(content) - len(trimmed)
@@ -1272,9 +1284,13 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 	// Skip past floats, CloseTags, OpenTags, and OOF items to find the first actual
 	// text — a line that begins with a float still strips leading whitespace from
 	// the text that follows it (e.g., " B" after a float:right on a new column).
+	// Skipped for white-space: pre / pre-wrap which preserve all whitespace.
 	for i := 0; i < len(line.Results); i++ {
 		r := &line.Results[i]
 		if r.Item.Type == InlineItemText {
+			if cssPreservesWhitespace(r.Item.Style) {
+				break
+			}
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 			trimmed := strings.TrimLeftFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
@@ -1310,6 +1326,9 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 	for i := len(line.Results) - 1; i >= 0; i-- {
 		r := &line.Results[i]
 		if r.Item.Type == InlineItemText {
+			if cssPreservesWhitespace(r.Item.Style) {
+				break
+			}
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 			trimmed := strings.TrimRightFunc(content, isCSSCollapsibleSpace)
 			if len(trimmed) < len(content) && r.Item.Style != nil {
