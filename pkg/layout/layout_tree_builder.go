@@ -401,26 +401,21 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 		}
 		anonStyle := css.NewAnonymousBlockStyle(parentStyle)
 		// CSS 2.1 §9.2.1.1: If the inline run contains block-in-inline
-		// continuation nodes, copy properties from the inline element.
+		// continuation nodes, copy background-color from the inline element
+		// so the anonymous block fills the full block width with the inline's
+		// background.
+		//
+		// Do NOT propagate position:relative/sticky to this anon block: the
+		// inline continuation's own fragments already carry the offset (see
+		// inline_layout.go RelativeOffset handling). Copying it here would
+		// double-offset the inline paint position (CSS 2.1 §9.4.3). Also skip
+		// background-color for positioned inlines — their span background
+		// fragment renders the inline-width background; copying here would
+		// paint a full block-width bar that the spec doesn't call for.
 		for _, c := range inlineRun {
 			if c.isContinuation {
-				if c.Style().GetPosition() == css.PositionRelative || c.Style().GetPosition() == css.PositionSticky {
-					// Positioned inline: propagate the relative offset so the
-					// anonymous block shifts with the rest of the split inline.
-					// Do NOT copy background-color: for positioned inlines the
-					// span background fragment (inline-width) gives the correct
-					// visual. Copying it would paint full block-width background.
-					anonStyle.Set("position", string(c.Style().GetPosition()))
-					for _, prop := range []string{"top", "left", "right", "bottom"} {
-						if v, ok := c.Style().Get(prop); ok {
-							anonStyle.Set(prop, v)
-						}
-					}
-				} else {
-					// Non-positioned inline: copy background-color so the anonymous
-					// block fills the full block width with the inline's background.
-					// CSS 2.1 §9.2.1.1: background of anonymous blocks comes from
-					// the inline element that generated them.
+				pos := c.Style().GetPosition()
+				if pos != css.PositionRelative && pos != css.PositionSticky {
 					if bg, ok := c.Style().Get("background-color"); ok {
 						anonStyle.Set("background-color", bg)
 					}
