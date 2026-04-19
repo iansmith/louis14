@@ -1269,6 +1269,9 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 	}
 	isVertical := lb.isVerticalMeasurement(firstTextStyle)
 	// CSS 2.1 §16.6.1: strip leading collapsible whitespace at the start of the line.
+	// Skip past floats, CloseTags, OpenTags, and OOF items to find the first actual
+	// text — a line that begins with a float still strips leading whitespace from
+	// the text that follows it (e.g., " B" after a float:right on a new column).
 	for i := 0; i < len(line.Results); i++ {
 		r := &line.Results[i]
 		if r.Item.Type == InlineItemText {
@@ -1289,14 +1292,21 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 			}
 			break
 		}
-		if r.Item.Type != InlineItemOpenTag {
-			break
+		if r.Item.Type == InlineItemOpenTag || r.Item.Type == InlineItemCloseTag ||
+			r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow {
+			continue
 		}
+		break
 	}
 
 	// Trim trailing whitespace from the last text result.
 	// Skip over floats, OOF, open/close tags — they don't produce visible
 	// inline content that would prevent trailing-whitespace trimming.
+	// If a text item is trimmed to empty, continue scanning backwards to also
+	// trim trailing whitespace from the preceding text item — this handles the
+	// case where a space-only text node sits between two floats (e.g., "A " …
+	// [float:left] … " " … [float:right]) and the inter-float space was trimmed
+	// to zero but the preceding "A " still carries a trailing space.
 	for i := len(line.Results) - 1; i >= 0; i-- {
 		r := &line.Results[i]
 		if r.Item.Type == InlineItemText {
@@ -1314,6 +1324,9 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 				line.Width -= (r.InlineSize - newWidth)
 				r.InlineSize = newWidth
 				r.TextEnd = r.TextStart + len(trimmed)
+				if len(trimmed) == 0 {
+					continue // trimmed to empty — keep scanning for more trailing space
+				}
 			}
 			break
 		}

@@ -611,10 +611,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 
 		// Apply text-indent to the first line only.
+		appliedTextIndent := 0.0
 		lineInlineOffset := lineInlineOffsetFromFloat
 		if isFirstLine && textIndent != 0 {
 			lineInlineOffset += textIndent
 			lineAvailableInline -= textIndent
+			appliedTextIndent = textIndent
 			isFirstLine = false
 		} else {
 			isFirstLine = false
@@ -637,7 +639,16 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// LineBreaker::HandleFloat / InlineLayoutAlgorithm::PlaceFloatingObjects
 		// (inline_layout_algorithm.cc:835-917).
 		inlinePos := 0.0
-		for _, r := range line.Results {
+		floatsPlacedOnLine := false
+		// committedBefore tracks the inline size of non-float content committed to
+		// this line before the current float, used to decide whether a float should
+		// be deferred to the next line.
+		committedBeforeFloat := 0.0
+		// trackAvail mirrors lineAvailableInline and is decremented per placed float
+		// so that subsequent float-deferral checks use the updated available space.
+		trackAvail := lineAvailableInline
+		lineResultsTruncateAt := -1
+		for i, r := range line.Results {
 			if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 					Node: r.Item.LayoutNode,
@@ -653,11 +664,83 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				})
 			} else if r.Item.Type == InlineItemFloat {
 				if pf, ok := pendingFloats[r.Item]; ok {
+					floatInlineSize := pf.margins.InlineSum() + pf.childLogical.InlineSize()
+					// Defer this float if placing it would displace committed inline
+					// content that fits beside the previously-placed floats. Condition:
+					//   (a) committed content fits beside this float alone (fitsAlone), and
+					//   (b) available after placing this float < committed content.
+					// This mirrors Blink's InlineLayoutAlgorithm float placement which
+					// detects that a second float would evict already-committed text.
+					// fitsAlone ensures we don't defer a float when the text doesn't
+					// fit beside it even in isolation (in that case the existing
+					// push-down code moves the text past the float, not the float).
+					if committedBeforeFloat > 0 {
+						availableAfterFloat := trackAvail - floatInlineSize
+						if availableAfterFloat < 0 {
+							availableAfterFloat = 0
+						}
+						fitsAlone := committedBeforeFloat <= contentInlineSize-floatInlineSize
+						if fitsAlone && availableAfterFloat < committedBeforeFloat {
+							// Defer this float and everything after it to the next line.
+							lineResultsTruncateAt = i
+							lb.currentItemIndex = r.ItemIndex
+							lb.done = false
+							if lb.currentItemIndex < len(itemsData.Items) {
+								lb.currentTextOffset = itemsData.Items[lb.currentItemIndex].StartOffset
+							}
+							break
+						}
+					}
 					exclusionSpace = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
 					delete(pendingFloats, r.Item)
+					floatsPlacedOnLine = true
+					trackAvail -= floatInlineSize
+					if trackAvail < 0 {
+						trackAvail = 0
+					}
 				}
+			} else {
+				committedBeforeFloat += r.InlineSize
 			}
 			inlinePos += r.InlineSize
+		}
+		// If a float was deferred, truncate the line results and update line width
+		// to reflect only the content that will be placed on this line.
+		if lineResultsTruncateAt >= 0 {
+			newWidth := 0.0
+			for j := 0; j < lineResultsTruncateAt; j++ {
+				rj := line.Results[j]
+				if rj.Item.Type != InlineItemFloat && rj.Item.Type != InlineItemOutOfFlow {
+					newWidth += rj.InlineSize
+				}
+			}
+			line.Results = line.Results[:lineResultsTruncateAt]
+			line.Width = newWidth
+		}
+
+		// After placing inline floats, re-query the exclusion space so text on
+		// the same line is positioned beside the float rather than at inline=0.
+		// Mirrors Blink's InlineLayoutAlgorithm::PlaceFloatingObjects which
+		// updates ConstraintSpaceForLine after committing floats.
+		if floatsPlacedOnLine && exclusionSpace != nil {
+			bfcBlockNow := bfcBlockOrigin + blockOffset
+			newFloatStart, newFloatEnd := exclusionSpace.FindAvailableInlineSize(bfcBlockNow, 0, bfcContainerInlineSize)
+			newStartBFC := bfcInlineOrigin
+			newEndBFC := bfcInlineOrigin + contentInlineSize
+			if newFloatStart > 0 && newFloatStart > newStartBFC {
+				newStartBFC = newFloatStart
+			}
+			if newFloatEnd > 0 {
+				rightEdge := bfcContainerInlineSize - newFloatEnd
+				if rightEdge < newEndBFC {
+					newEndBFC = rightEdge
+				}
+			}
+			lineInlineOffset = newStartBFC - bfcInlineOrigin + appliedTextIndent
+			lineAvailableInline = newEndBFC - newStartBFC - appliedTextIndent
+			if lineAvailableInline < 0 {
+				lineAvailableInline = 0
+			}
 		}
 
 		// Determine the paragraph level for this line. For plaintext mode,
