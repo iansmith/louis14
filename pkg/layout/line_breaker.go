@@ -1433,6 +1433,15 @@ func canMergeShapingContext(a, b *InlineItem) bool {
 	if a.BidiLevel != b.BidiLevel {
 		return false
 	}
+	// Skip cross-span kerning for RTL (odd bidi level) runs. ShapeAdvances
+	// currently shapes LTR only; HarfBuzz with RTL direction emits clusters
+	// in descending order, which the cum[] LTR cluster-ascending assumption
+	// cannot interpret. Measuring RTL items standalone is correct — kerning
+	// between adjacent RTL spans is skipped, which is acceptable for scripts
+	// without contextual shaping (e.g. Hebrew) and avoids scrambled widths.
+	if a.BidiLevel%2 != 0 {
+		return false
+	}
 	if a.Style == nil || b.Style == nil {
 		return a.Style == b.Style
 	}
