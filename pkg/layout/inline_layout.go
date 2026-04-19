@@ -488,6 +488,104 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			}
 			continue
 		}
+
+		// CSS 2.1 §9.5.2: shortened line box push-down.
+		// If this line contains a pending float (not yet placed) followed by
+		// non-float content that won't fit beside the float in the shortened
+		// line box, place the float first at the current block offset, then
+		// push the remaining content down past the float and re-break the
+		// line. Mirrors Blink's LineBreaker::HandleFloat which commits the
+		// float to the exclusion space before testing line-fit for subsequent
+		// content. Only applies when no committed content precedes the float
+		// on the line — retroactively moving already-positioned content is
+		// handled by a separate path.
+		if exclusionSpace != nil && len(pendingFloats) > 0 {
+			lastPendingFloatIdx := -1
+			contentBeforeFloat := false
+			for i, r := range line.Results {
+				switch r.Item.Type {
+				case InlineItemFloat:
+					if _, ok := pendingFloats[r.Item]; ok && !contentBeforeFloat {
+						lastPendingFloatIdx = i
+					}
+				case InlineItemText:
+					if lastPendingFloatIdx < 0 {
+						content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+						if strings.TrimFunc(content, isCSSCollapsibleSpace) != "" {
+							contentBeforeFloat = true
+						}
+					}
+				case InlineItemAtomicInline:
+					if lastPendingFloatIdx < 0 {
+						contentBeforeFloat = true
+					}
+				}
+			}
+
+			if lastPendingFloatIdx >= 0 {
+				pendingFloatInline := 0.0
+				for i := 0; i <= lastPendingFloatIdx; i++ {
+					r := &line.Results[i]
+					if r.Item.Type != InlineItemFloat {
+						continue
+					}
+					if pf, ok := pendingFloats[r.Item]; ok {
+						pendingFloatInline += pf.margins.InlineSum() + pf.childLogical.InlineSize()
+					}
+				}
+
+				contentAfterFloatWidth := 0.0
+				hasContentAfterFloat := false
+				for i := lastPendingFloatIdx + 1; i < len(line.Results); i++ {
+					r := line.Results[i]
+					if r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow {
+						continue
+					}
+					contentAfterFloatWidth += r.InlineSize
+					switch r.Item.Type {
+					case InlineItemText:
+						content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+						if strings.TrimFunc(content, isCSSCollapsibleSpace) != "" {
+							hasContentAfterFloat = true
+						}
+					case InlineItemAtomicInline:
+						hasContentAfterFloat = true
+					}
+				}
+
+				shortenedAvail := lineAvailableInline - pendingFloatInline
+				if shortenedAvail < 0 {
+					shortenedAvail = 0
+				}
+
+				if hasContentAfterFloat && contentAfterFloatWidth > shortenedAvail {
+					for i := 0; i <= lastPendingFloatIdx; i++ {
+						r := &line.Results[i]
+						if r.Item.Type != InlineItemFloat {
+							continue
+						}
+						if pf, ok := pendingFloats[r.Item]; ok {
+							exclusionSpace = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
+							delete(pendingFloats, r.Item)
+						}
+					}
+
+					clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcBlockOrigin+blockOffset, wdm)
+					if clearedBfc > bfcBlockOrigin+blockOffset {
+						blockOffset = clearedBfc - bfcBlockOrigin
+					}
+
+					lastFloatItemIdx := line.Results[lastPendingFloatIdx].ItemIndex
+					lb.currentItemIndex = lastFloatItemIdx + 1
+					lb.done = false
+					if lb.currentItemIndex < len(itemsData.Items) {
+						lb.currentTextOffset = itemsData.Items[lb.currentItemIndex].StartOffset
+					}
+					continue
+				}
+			}
+		}
+
 		line.TextAlign = textAlign
 
 		// CSS Text §9.7: text-align-last controls alignment of the last line

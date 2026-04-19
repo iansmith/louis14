@@ -19,6 +19,11 @@ test-output.txt
 # Claude Code
 .claude/
 
+# planning-with-files skill (session-local working memory)
+task_plan.md
+findings.md
+progress.md
+
 # IDE files
 .vscode/
 .idea/
