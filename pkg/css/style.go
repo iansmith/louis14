@@ -1958,62 +1958,42 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("_padding-block-end", parts[1])
 		}
 	case "border-inline":
-		expandBorderSideProperty(style, "border-left", value)
-		expandBorderSideProperty(style, "border-right", value)
 		storeBorderLogicalMarker(style, "_border-inline-start", value)
 		storeBorderLogicalMarker(style, "_border-inline-end", value)
 	case "border-block":
-		expandBorderSideProperty(style, "border-top", value)
-		expandBorderSideProperty(style, "border-bottom", value)
 		storeBorderLogicalMarker(style, "_border-block-start", value)
 		storeBorderLogicalMarker(style, "_border-block-end", value)
 	case "border-inline-start":
-		expandBorderSideProperty(style, "border-left", value)
 		storeBorderLogicalMarker(style, "_border-inline-start", value)
 	case "border-inline-end":
-		expandBorderSideProperty(style, "border-right", value)
 		storeBorderLogicalMarker(style, "_border-inline-end", value)
 	case "border-block-start":
-		expandBorderSideProperty(style, "border-top", value)
 		storeBorderLogicalMarker(style, "_border-block-start", value)
 	case "border-block-end":
-		expandBorderSideProperty(style, "border-bottom", value)
 		storeBorderLogicalMarker(style, "_border-block-end", value)
 	case "border-inline-start-width":
-		style.Set("border-left-width", value)
 		style.Set("_border-inline-start-width", value)
 	case "border-inline-end-width":
-		style.Set("border-right-width", value)
 		style.Set("_border-inline-end-width", value)
 	case "border-block-start-width":
-		style.Set("border-top-width", value)
 		style.Set("_border-block-start-width", value)
 	case "border-block-end-width":
-		style.Set("border-bottom-width", value)
 		style.Set("_border-block-end-width", value)
 	case "border-inline-start-style":
-		style.Set("border-left-style", value)
 		style.Set("_border-inline-start-style", value)
 	case "border-inline-end-style":
-		style.Set("border-right-style", value)
 		style.Set("_border-inline-end-style", value)
 	case "border-block-start-style":
-		style.Set("border-top-style", value)
 		style.Set("_border-block-start-style", value)
 	case "border-block-end-style":
-		style.Set("border-bottom-style", value)
 		style.Set("_border-block-end-style", value)
 	case "border-inline-start-color":
-		style.Set("border-left-color", value)
 		style.Set("_border-inline-start-color", value)
 	case "border-inline-end-color":
-		style.Set("border-right-color", value)
 		style.Set("_border-inline-end-color", value)
 	case "border-block-start-color":
-		style.Set("border-top-color", value)
 		style.Set("_border-block-start-color", value)
 	case "border-block-end-color":
-		style.Set("border-bottom-color", value)
 		style.Set("_border-block-end-color", value)
 	case "inset-inline-start":
 		style.Set("left", value)

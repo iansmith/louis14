@@ -1130,16 +1130,10 @@ func resolveLogicalBoxProperties(style *Style) {
 		for _, suffix := range []string{"-width", "-style", "-color"} {
 			marker := m.markerPrefix + suffix
 			if val, ok := style.Get(marker); ok {
-				wrongProp := "border-" + m.wrongSide + suffix
 				correctProp := "border-" + m.correctSide + suffix
 
 				if _, alreadySet := style.Get(correctProp); !alreadySet {
 					style.Set(correctProp, val)
-				}
-				if m.wrongSide != m.correctSide {
-					if curVal, curOk := style.Get(wrongProp); curOk && curVal == val {
-						delete(style.Properties, wrongProp)
-					}
 				}
 				delete(style.Properties, marker)
 			}
