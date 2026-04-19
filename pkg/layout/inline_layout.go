@@ -392,13 +392,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 
 		// Compute line box bounds in BFC coordinates.
+		// floatStart/floatEnd are in local (container-relative) coords; convert to BFC-absolute.
 		lineStartBFC := bfcInlineOrigin
 		lineEndBFC := bfcInlineOrigin + contentInlineSize
-		if floatStart > 0 && floatStart > lineStartBFC {
-			lineStartBFC = floatStart
+		if floatStart > 0 && bfcInlineOrigin+floatStart > lineStartBFC {
+			lineStartBFC = bfcInlineOrigin + floatStart
 		}
 		if floatEnd > 0 {
-			rightEdge := bfcContainerInlineSize - floatEnd
+			rightEdge := bfcInlineOrigin + contentInlineSize - floatEnd
 			if rightEdge < lineEndBFC {
 				lineEndBFC = rightEdge
 			}
@@ -421,11 +422,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				floatStart, floatEnd = exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)
 				lineStartBFC = bfcInlineOrigin
 				lineEndBFC = bfcInlineOrigin + contentInlineSize
-				if floatStart > 0 && floatStart > lineStartBFC {
-					lineStartBFC = floatStart
+				if floatStart > 0 && bfcInlineOrigin+floatStart > lineStartBFC {
+					lineStartBFC = bfcInlineOrigin + floatStart
 				}
 				if floatEnd > 0 {
-					rightEdge := bfcContainerInlineSize - floatEnd
+					rightEdge := bfcInlineOrigin + contentInlineSize - floatEnd
 					if rightEdge < lineEndBFC {
 						lineEndBFC = rightEdge
 					}
@@ -727,11 +728,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			newFloatStart, newFloatEnd := exclusionSpace.FindAvailableInlineSize(bfcBlockNow, 0, bfcContainerInlineSize)
 			newStartBFC := bfcInlineOrigin
 			newEndBFC := bfcInlineOrigin + contentInlineSize
-			if newFloatStart > 0 && newFloatStart > newStartBFC {
-				newStartBFC = newFloatStart
+			if newFloatStart > 0 && bfcInlineOrigin+newFloatStart > newStartBFC {
+				newStartBFC = bfcInlineOrigin + newFloatStart
 			}
 			if newFloatEnd > 0 {
-				rightEdge := bfcContainerInlineSize - newFloatEnd
+				rightEdge := bfcInlineOrigin + contentInlineSize - newFloatEnd
 				if rightEdge < newEndBFC {
 					newEndBFC = rightEdge
 				}
