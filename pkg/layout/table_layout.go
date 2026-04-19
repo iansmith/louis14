@@ -93,7 +93,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if !borderCollapse {
 		inlineSpacing, blockSpacing = tla.logicalBorderSpacing()
 	}
-
 	// Check if the table has an explicit inline-size (width/height).
 	_, hasExplicitTableWidth := ResolveInlineSize(tla.style, wdm, tla.space, geom)
 
@@ -1316,9 +1315,15 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 					inlineProp = "height"
 				}
 				if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
+					// Convert content-box to border-box for column sizing.
+					wBB := w
+					if cell.style.GetBoxSizing() != "border-box" {
+						cellGeom := ComputeFragmentGeometry(cell.style, tla.space.WritingDirection)
+						wBB += cellGeom.InlineBorderPadding()
+					}
 					if cell.colSpan > 1 {
 						// Distribute explicit width equally across spanned columns.
-						perCol := w / float64(cell.colSpan)
+						perCol := wBB / float64(cell.colSpan)
 						for c := 0; c < cell.colSpan && colIdx+c < numCols; c++ {
 							if !hasExplicit[colIdx+c] {
 								colWidths[colIdx+c] = perCol
@@ -1326,7 +1331,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
 							}
 						}
 					} else {
-						colWidths[colIdx] = w
+						colWidths[colIdx] = wBB
 						hasExplicit[colIdx] = true
 					}
 				}
@@ -1411,36 +1416,39 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 			}
 
 			// Check for explicit inline-size on the cell from the TABLE's perspective.
-			// For a horizontal table, the column width comes from the cell's physical width
-			// (= cell logical block-size for orthogonal vertical-rl/lr cells).
-			// We use the table's inline property ("width" for horizontal tables),
-			// NOT the cell's own logical inline property.
+			// Column widths are the table's inline dimension:
+			//   HTB table: inline=horizontal → use CSS "width"
+			//   VLR/VRL table: inline=vertical → use CSS "height"
+			// For orthogonal cells (cell WM differs from table WM), the cell's physical
+			// "width" equals the table's inline extent regardless of writing mode.
 			explicitW := 0.0
 			hasExplicit := false
 			if cell.style != nil {
-				// Always use "width" from the TABLE's perspective (physical column width).
-				// For orthogonal cells (vertical writing-mode in horizontal table),
-				// the cell's CSS "width" is its physical width = table column width.
-				// The cell's CSS "height" is its physical height = table row height (not column width).
-				if w, ok := cell.style.GetLength("width"); ok && w > 0 {
+				inlineProp := "width"
+				if tla.space.WritingDirection.IsVertical() {
+					inlineProp = "height"
+				}
+				if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
 					explicitW = w
 					hasExplicit = true
-				} else if tla.space.WritingDirection.IsVertical() {
-					// For a vertical table, column width is in the vertical dimension = "height"
-					if w, ok := cell.style.GetLength("height"); ok && w > 0 {
-						explicitW = w
-						hasExplicit = true
-					}
 				}
 			}
 
 			if cell.colSpan == 1 {
 				if hasExplicit {
-					if explicitW > colMin[colIdx] {
-						colMin[colIdx] = explicitW
+					// explicitW is a content-box width; column sizing uses border-box.
+					// If the cell has box-sizing:border-box the value already includes BP;
+					// otherwise add the cell's inline border+padding (from the table's axis).
+					explicitBB := explicitW
+					if cell.style == nil || cell.style.GetBoxSizing() != "border-box" {
+						cellGeom := ComputeFragmentGeometry(cell.style, tla.space.WritingDirection)
+						explicitBB += cellGeom.InlineBorderPadding()
 					}
-					if explicitW > colMax[colIdx] {
-						colMax[colIdx] = explicitW
+					if explicitBB > colMin[colIdx] {
+						colMin[colIdx] = explicitBB
+					}
+					if explicitBB > colMax[colIdx] {
+						colMax[colIdx] = explicitBB
 					}
 				} else {
 					// Compute intrinsic size.
@@ -1557,12 +1565,10 @@ type tableCaption struct {
 }
 
 // logicalBorderSpacing returns border spacing mapped to table logical coordinates.
-// CSS border-spacing first value = horizontal = between columns (inline spacing).
-// CSS border-spacing second value = vertical = between rows (block spacing).
-// Per CSS 2.1 §17.6.1, these are always "horizontal between columns" and
-// "vertical between rows" regardless of writing mode. The table layout algorithm
-// works in logical coordinates where columns are inline and rows are block,
-// so the mapping is always: inline=horizontal, block=vertical.
+// CSS border-spacing first value = horizontal = inline spacing (between columns).
+// CSS border-spacing second value = vertical = block spacing (between rows).
+// Per CSS Writing Modes 3 §7.2, the first value maps to the inline dimension and
+// the second to the block dimension across all writing modes.
 //
 // We resolve em/rem units using the table's computed font-size rather than
 // relying on GetBorderSpacing() which uses a default 16px.
