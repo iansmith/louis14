@@ -341,10 +341,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.BackgroundClip = s.GetBackgroundColorClip()
 
 	// Background layers (multi-layer support via FillLayer linked list).
-	layer.BackgroundLayers = s.GetBackgroundLayers()
+	// Text runs inherit the parent element's style but CSS background-image
+	// is painted on element boxes, not on individual text runs within them.
+	if box.Text == "" {
+		layer.BackgroundLayers = s.GetBackgroundLayers()
+	}
 	// Fallback for single-layer backgrounds not caught by GetBackgroundLayers:
 	// e.g., when background-image is a single gradient not in url() form.
-	if layer.BackgroundLayers == nil {
+	// Text runs do not paint backgrounds (see above).
+	if layer.BackgroundLayers == nil && box.Text == "" {
 		if val, ok := s.Get("background-image"); ok && val != "none" && val != "" {
 			if isGradientValue(val) {
 				layer.BackgroundLayers = &css.FillLayer{
