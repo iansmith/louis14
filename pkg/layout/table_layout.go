@@ -55,6 +55,15 @@ type tableColWidth struct {
 	width    float64 // resolved width in pixels (0 = not set)
 }
 
+// tableColStyle carries a col/colgroup element's computed style for use in
+// border-collapse resolution (CSS 2.1 §17.6.2.1).
+type tableColStyle struct {
+	colIndex int
+	span     int
+	style    *css.Style
+	isGroup  bool // true = colgroup (lower priority than col)
+}
+
 // Layout performs table layout and returns the result.
 func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := tla.space.WritingDirection
@@ -62,8 +71,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(tla.node)
 
-	// Collect rows, captions, and col/colgroup widths from the table's children.
-	rows, captions, colWidthSpecs := tla.collectRowsAndCaptions()
+	// Collect rows, captions, col/colgroup widths, and col/colgroup border styles.
+	rows, captions, colWidthSpecs, colStyleSpecs := tla.collectRowsAndCaptions()
 
 	// Assign final cell colIndex using a slot grid that honors rowspan
 	// reservations from prior rows. Returns the grid's max column count.
@@ -118,7 +127,27 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			rowStyles[i] = row.style
 			groupStyles[i] = row.groupStyle
 		}
-		collapsedStyles = grid.resolveCollapsedBorders(wdm, rowStyles, groupStyles, tla.style)
+		// Build per-column style slices for col/colgroup border resolution.
+		colStyles := make([]*css.Style, numCols)
+		colGroupStyles := make([]*css.Style, numCols)
+		for _, cs := range colStyleSpecs {
+			for i := 0; i < cs.span; i++ {
+				idx := cs.colIndex + i
+				if idx >= numCols {
+					break
+				}
+				if cs.isGroup {
+					if colGroupStyles[idx] == nil {
+						colGroupStyles[idx] = cs.style
+					}
+				} else {
+					if colStyles[idx] == nil {
+						colStyles[idx] = cs.style
+					}
+				}
+			}
+		}
+		collapsedStyles = grid.resolveCollapsedBorders(wdm, rowStyles, groupStyles, colStyles, colGroupStyles, tla.style)
 
 		// Swap cell node styles to the collapsed versions so that
 		// column width computation and cell layout use half-border widths.
@@ -964,11 +993,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 // collectRowsAndCaptions extracts table rows, captions, and col/colgroup width specs
 // from the table's children, handling row-groups (thead, tbody, tfoot).
 // CSS 2.1 §17.5: rendering order is thead, tbodies (in source order), tfoot.
-// Also returns column width specifications from col/colgroup elements per CSS Tables §9.1.
-func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCaption, []tableColWidth) {
+// Also returns column width specifications and border styles from col/colgroup elements.
+func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCaption, []tableColWidth, []tableColStyle) {
 	var headerRows, bodyRows, footerRows []tableRow
 	var captions []tableCaption
 	var colWidths []tableColWidth
+	var colStyleSpecs []tableColStyle
 	colIdx := 0 // tracks current column index as col/colgroup are encountered
 
 	// Per CSS 2.1 §17.2.1 the layout tree is already normalized at
@@ -1005,8 +1035,16 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					span:     span,
 					width:    w,
 				})
-			} else if child.DOMNode.TagName == "colgroup" {
-				// colgroup without width: check child col elements
+			}
+			// Collect style for border-collapse resolution (CSS 2.1 §17.6.2.1).
+			colStyleSpecs = append(colStyleSpecs, tableColStyle{
+				colIndex: colIdx,
+				span:     span,
+				style:    childStyle,
+				isGroup:  child.DOMNode.TagName == "colgroup",
+			})
+			if child.DOMNode.TagName == "colgroup" {
+				// Check child col elements for per-column widths and styles.
 				colChildIdx := colIdx
 				for _, colChild := range child.Children() {
 					if colChild.IsText() || colChild.DOMNode == nil || colChild.DOMNode.TagName != "col" {
@@ -1030,6 +1068,12 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 							width:    w,
 						})
 					}
+					colStyleSpecs = append(colStyleSpecs, tableColStyle{
+						colIndex: colChildIdx,
+						span:     colChildSpan,
+						style:    colChildStyle,
+						isGroup:  false,
+					})
 					colChildIdx += colChildSpan
 				}
 				if colChildIdx > colIdx {
@@ -1091,7 +1135,7 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 	rows = append(rows, headerRows...)
 	rows = append(rows, bodyRows...)
 	rows = append(rows, footerRows...)
-	return rows, captions, colWidths
+	return rows, captions, colWidths, colStyleSpecs
 }
 
 
@@ -1785,9 +1829,8 @@ func newCellBorderGrid(rows []tableRow, numCols int) *cellBorderGrid {
 // all cells in the grid. Returns a map from "row,col" to a cloned style with
 // adjusted border properties. Only cells with modified borders are included.
 //
-// rowStyles/groupStyles/tableStyle provide borders from parent elements
-// (tr, thead/tbody/tfoot, table) for CSS 2.1 §17.6.2.1 element-type precedence.
-func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowStyles, groupStyles []*css.Style, tableStyle *css.Style) map[string]*css.Style {
+// CSS 2.1 §17.6.2.1 precedence (highest first): cell > row > row-group > col > col-group > table.
+func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowStyles, groupStyles, colStyles, colGroupStyles []*css.Style, tableStyle *css.Style) map[string]*css.Style {
 	iStart, iEnd, bStart, bEnd := physicalSideNames(wdm)
 	result := make(map[string]*css.Style)
 
@@ -1963,7 +2006,41 @@ func (g *cellBorderGrid) resolveCollapsedBorders(wdm WritingDirectionMode, rowSt
 		}
 	}
 
-	// 3. Merge table borders — lowest precedence.
+	// 3. Merge column (col) borders — lower precedence than row-group.
+	for col := 0; col < g.numCols; col++ {
+		cs := colStyles[col]
+		if cs == nil {
+			continue
+		}
+		for _, side := range allSides {
+			elemEdge := readBorderEdge(cs, side)
+			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
+				continue
+			}
+			for row := 0; row < g.numRows; row++ {
+				mergeElementBorder(row, col, side, elemEdge)
+			}
+		}
+	}
+
+	// 4. Merge column-group (colgroup) borders — lower precedence than col.
+	for col := 0; col < g.numCols; col++ {
+		cgs := colGroupStyles[col]
+		if cgs == nil {
+			continue
+		}
+		for _, side := range allSides {
+			elemEdge := readBorderEdge(cgs, side)
+			if elemEdge.width == 0 && elemEdge.style == css.BorderStyleNone {
+				continue
+			}
+			for row := 0; row < g.numRows; row++ {
+				mergeElementBorder(row, col, side, elemEdge)
+			}
+		}
+	}
+
+	// 5. Merge table borders — lowest precedence.
 	if tableStyle != nil {
 		for _, side := range allSides {
 			elemEdge := readBorderEdge(tableStyle, side)
