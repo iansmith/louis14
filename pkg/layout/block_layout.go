@@ -95,6 +95,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		bla.style, wdm, bla.space, geom, bla.ctx,
 		childAvailableBlock, hasExplicitBlock, explicitBlockSize)
 
+
 	// Float exclusion tracking.
 	// Inherit exclusion space from parent, or start fresh for new BFCs.
 	exclusionSpace := bla.space.ExclusionSpace
@@ -737,19 +738,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		finalBlockSize = explicitBlockSize
 	}
 
-	// Apply min/max block-size constraints (CSS 2.1 §10.7).
+	// Apply min/max block-size constraints per CSS 2.1 §10.7.
+	// Order matters: max-height is applied first (step 2), then min-height (step 3).
+	// When min-height > max-height, min-height wins because step 3 overrides step 2.
 	minBlock := ResolveMinBlockSize(bla.style, wdm, bla.space, geom)
 	// The root element must fill at least the ICB block-size (ForcedMinBlockSize).
 	if bla.space.ForcedMinBlockSize > minBlock {
 		minBlock = bla.space.ForcedMinBlockSize
 	}
-	if finalBlockSize < minBlock {
-		finalBlockSize = minBlock
-	}
 	if maxBlock, hasMax := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); hasMax {
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}
+	}
+	if finalBlockSize < minBlock {
+		finalBlockSize = minBlock
 	}
 
 	// Set the fragment size.
@@ -1515,8 +1518,18 @@ func computeOrthogonalAvailableBlock(
 	}
 
 	// Parent is not a scroller and has no definite height.
-	// If parent has min-height, use it as the available size (the parent
-	// is guaranteed to be at least this tall).
+	// Per §7.3: use the tightest size constraint (max-height if present,
+	// otherwise min-height), capped at ICB.
+	if hasMax {
+		result := maxBlock
+		if minBlock > result {
+			result = minBlock
+		}
+		if result > icb {
+			result = icb
+		}
+		return result
+	}
 	if minBlock > 0 {
 		result := minBlock
 		if result > icb {

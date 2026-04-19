@@ -485,10 +485,20 @@ func CalculateInitialFragmentGeometry(
 		borderBoxInline = ResolveIntrinsicInlineSize(inlineVal, minMax, available) + geom.InlineBorderPadding()
 	} else if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 		borderBoxInline = explicitInline + geom.InlineBorderPadding()
+	} else if space.IsOrthogonalWritingModeRoot && !needsShrinkToFit(style) {
+		// §7.3: block-level orthogonal auto inline-size fills available space
+		// minus inline margins. Constrained by min/max inline-size.
+		margins := ResolveMargins(style, wdm, pctBase)
+		minMax := ComputeMinMaxSizes(ctx, node, space)
+		available := space.AvailableSize.InlineSize - margins.InlineStart - margins.InlineEnd - geom.InlineBorderPadding()
+		if available < 0 {
+			available = 0
+		}
+		borderBoxInline = minMax.ShrinkToFit(available) + geom.InlineBorderPadding()
+		inlineSizeIsAuto = true
 	} else if needsShrinkToFit(style) || space.IsOrthogonalWritingModeRoot {
-		// CSS Writing Modes §7.3.1: orthogonal flows with auto inline-size
-		// use shrink-to-fit, constrained by the available inline-size (which
-		// is the ICB fallback for indefinite parents).
+		// Shrink-to-fit: floats, abs-pos, inline-block, or orthogonal
+		// positioned/float elements.
 		minMax := ComputeMinMaxSizes(ctx, node, space)
 		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
 		if available < 0 {

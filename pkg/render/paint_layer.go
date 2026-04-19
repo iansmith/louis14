@@ -871,17 +871,17 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 		}
 
 		if !isPositioned {
-			// CSS Flexbox §4.3: flex items with explicit z-index create stacking
-			// contexts even when position:static. They participate in z-index sorting.
 			if child.CreatesStackingContext() {
-				z := child.ZIndex
-				switch {
-				case z < 0:
-					currentSC.NegativeZ = append(currentSC.NegativeZ, childLayer)
-				case z > 0:
-					currentSC.PositiveZ = append(currentSC.PositiveZ, childLayer)
-				default:
-					currentSC.AutoZero = append(currentSC.AutoZero, childLayer)
+				// Non-positioned elements that create stacking contexts (due to
+				// opacity, transform, contain:layout/paint, etc.) paint in DOM
+				// order at step 3/4/5 of CSS 2.1 Appendix E, not in z-order at
+				// step 6/7. This preserves overflow:hidden clipping from ancestor
+				// elements. They do, however, act as a new stacking context root
+				// for their own children.
+				if isFloat(child) {
+					parentLayer.FloatChildren = append(parentLayer.FloatChildren, childLayer)
+				} else {
+					parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 				}
 				buildPaintSubtree(child, childLayer, childLayer)
 			} else if isFloat(child) {
