@@ -1,7 +1,6 @@
 package render
 
 import (
-	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -254,14 +253,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			// Border-box clip: include border region.
 			padX = box.X
 			padY = box.Y
-			clipW = math.Floor(box.Width)
-			clipH = math.Floor(box.Height)
+			clipW = box.Width
+			clipH = box.Height
 		} else {
 			// Overflow clip defaults to the padding box.
 			padX = box.X + box.Border.Left
 			padY = box.Y + box.Border.Top
-			clipW = math.Floor(box.Width - box.Border.Left - box.Border.Right)
-			clipH = math.Floor(box.Height - box.Border.Top - box.Border.Bottom)
+			clipW = box.Width - box.Border.Left - box.Border.Right
+			clipH = box.Height - box.Border.Top - box.Border.Bottom
 		}
 		if clipW < 0 {
 			clipW = 0
