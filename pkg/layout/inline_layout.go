@@ -970,14 +970,15 @@ func createLineBoxEx(
 				content += "-"
 			}
 
-			fontSize, bold, italic, mono, ahem := fontPropsFromStyle(r.Item.Style)
+			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
 			var ascent float64
 			if centralBaseline {
 				// CSS Writing Modes 3 §4.3: in vertical modes with central
 				// baseline, use fontSize / 2.
 				ascent = fontSize / 2
 			} else {
-				ascent = text.FontAscent(fontSize, bold, italic, mono, ahem)
+				fontPath := resolveFontPath(r.Item.Style, fonts)
+				ascent = text.FontAscentFromFont(fontSize, fontPath)
 			}
 
 			// Default: baseline-align the text fragment so its baseline sits
