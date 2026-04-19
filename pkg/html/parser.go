@@ -127,6 +127,13 @@ func (p *Parser) Parse() (*Document, error) {
 					p.ensureBody()
 					parent = p.currentParent()
 				}
+			} else if parent.TagName == "head" && !isHeadElement(token.TagName) {
+				// HTML5 "in head" insertion mode: a non-head-content element
+				// (e.g. <div> immediately after </style> with no </head>) closes
+				// <head> implicitly and transitions to body content.
+				p.closeTag("head")
+				p.ensureBody()
+				parent = p.currentParent()
 			}
 
 			parent.AddChild(node)
