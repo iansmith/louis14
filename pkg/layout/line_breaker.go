@@ -1425,6 +1425,14 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 // run. Font-feature-settings is not compared because MeasureText does not
 // apply features today; if that changes, this check must be tightened.
 func canMergeShapingContext(a, b *InlineItem) bool {
+	// Bidi-split items must not be merged across bidi-level boundaries.
+	// Shaping a concatenation of different-direction runs scrambles the
+	// per-cluster x-advance mapping used by ShapeAdvances — HarfBuzz's
+	// script-specific handling (e.g. Hebrew) breaks the assumption that
+	// glyph order matches byte order within the combined string.
+	if a.BidiLevel != b.BidiLevel {
+		return false
+	}
 	if a.Style == nil || b.Style == nil {
 		return a.Style == b.Style
 	}
