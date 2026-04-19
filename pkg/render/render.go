@@ -3244,12 +3244,11 @@ func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, font
 }
 
 // drawTextStr draws a text string, applying OpenType features if present on the layer.
-// Text draw positions are pixel-snapped (rounded to nearest integer) so that glyphs
-// always land on exact pixel boundaries, matching Blink's SnapToDevicePixels behavior.
-// This eliminates anti-aliasing differences between equivalent layouts (e.g. flex vs
-// block) that may position text at slightly different fractional offsets.
+// The baseline Y is pixel-snapped; X is passed through fractionally so the
+// rasterizer's subpixel pen carry (StartPenX in textshape.DrawText) produces
+// consistent glyph positioning regardless of how a line's text is split across
+// inline runs.
 func (r *Renderer) drawTextStr(text string, fontID int32, x, y float64, features []textshape.FontFeature) {
-	x = math.Round(x)
 	y = math.Round(y)
 	if len(features) > 0 {
 		r.dc.DrawTextWithFeatures(text, fontID, x, y, features)
