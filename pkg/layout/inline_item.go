@@ -479,11 +479,15 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 			openChars = []rune{'\u2066', '\u202D'} // LRI + LRO
 		}
 		closeChars = []rune{'\u202C', '\u2069'} // PDF + PDI
-	case "plaintext":
-		openChars = []rune{'\u2068'} // FSI
-		closeChars = []rune{'\u2069'} // PDI
 	default:
-		// embed, isolate, and normal do not inject at block level.
+		// embed, isolate, normal, and plaintext do not inject control
+		// characters at block level. For plaintext specifically, the
+		// block itself is the paragraph — wrapping its content in FSI/PDI
+		// would defeat UAX#9 P2/P3 first-strong-character detection
+		// (the isolate would hide the strong character from P2/P3).
+		// ResolveBidiLevelsPlaintext handles auto-direction per paragraph
+		// directly on the unwrapped content, matching Blink's call of ICU
+		// with UBIDI_DEFAULT_LTR on each paragraph.
 		return
 	}
 
