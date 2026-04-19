@@ -1293,10 +1293,161 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 		break // Atomic inline or other content — stop searching.
 	}
 
+	// Cross-span kerning: adjacent text items with compatible shaping context
+	// are measured independently by handleText, which loses HarfBuzz pair kerns
+	// that span inline boundaries (e.g., the " T" kern in
+	// `<span>First,</span> <span>Third</span>`). Re-measure compatible runs as
+	// a single string and redistribute per-item InlineSize so the boundary
+	// positions reflect the cross-span kern. Blink accomplishes this via
+	// HarfBuzzShaper over the full IFC text plus ShapeResult::CopyRange; this
+	// is a targeted substitute that fixes paint positioning in the common
+	// case.
+	lb.applyCrossSpanKerning(line, isVertical)
+
 	// Mark as last line if we've consumed all items.
 	if lb.currentItemIndex >= len(lb.itemsData.Items) {
 		line.IsLastLine = true
 	}
+}
+
+// applyCrossSpanKerning re-measures runs of adjacent text items that share
+// the same shaping context as a single concatenated string, then assigns
+// each item its context-aware advance. Items are considered compatible when
+// they use the same font/weight/style/size, letter-spacing, and word-spacing,
+// and are separated only by zero-edge open/close tags.
+//
+// Skipped in vertical writing modes, where measurement is rune-count-based
+// and not affected by horizontal kerning.
+func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
+	if isVertical {
+		return
+	}
+
+	i := 0
+	for i < len(line.Results) {
+		if line.Results[i].Item.Type != InlineItemText {
+			i++
+			continue
+		}
+
+		// Extend the run across compatible text items, tolerating
+		// intervening zero-edge open/close tags.
+		runStart := i
+		runEnd := i + 1
+		for runEnd < len(line.Results) {
+			r := &line.Results[runEnd]
+			switch r.Item.Type {
+			case InlineItemOpenTag, InlineItemCloseTag:
+				if r.InlineSize != 0 {
+					goto runDone
+				}
+				runEnd++
+				continue
+			case InlineItemText:
+				if !canMergeShapingContext(line.Results[runStart].Item, r.Item) {
+					goto runDone
+				}
+				runEnd++
+				continue
+			}
+			goto runDone
+		}
+	runDone:
+
+		// Collect indices of the text items in this run.
+		var textIndices []int
+		for j := runStart; j < runEnd; j++ {
+			if line.Results[j].Item.Type == InlineItemText {
+				textIndices = append(textIndices, j)
+			}
+		}
+
+		if len(textIndices) < 2 {
+			i = runEnd
+			continue
+		}
+
+		// Concatenate text items in the run and shape once. Per-byte
+		// cumulative advances let us slice each item's context-aware width,
+		// including the advance adjustment applied to the LAST glyph of an
+		// item by a kern pair that spans into the NEXT item.
+		first := &line.Results[textIndices[0]]
+		fontSize, _, _, _, _ := fontPropsFromStyle(first.Item.Style)
+		fontPath := resolveFontPath(first.Item.Style, lb.fonts)
+		letterSpacing, wordSpacing := 0.0, 0.0
+		if first.Item.Style != nil {
+			letterSpacing = first.Item.Style.GetLetterSpacing()
+			wordSpacing = first.Item.Style.GetWordSpacing()
+		}
+
+		var combined strings.Builder
+		itemRanges := make([][2]int, len(textIndices))
+		for k, idx := range textIndices {
+			r := &line.Results[idx]
+			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+			start := combined.Len()
+			combined.WriteString(content)
+			itemRanges[k] = [2]int{start, combined.Len()}
+		}
+
+		cum, ok := text.ShapeAdvances(combined.String(), fontSize, fontPath)
+		if !ok {
+			i = runEnd
+			continue
+		}
+
+		for k, idx := range textIndices {
+			r := &line.Results[idx]
+			rng := itemRanges[k]
+			content := combined.String()[rng[0]:rng[1]]
+			segmentWidth := cum[rng[1]] - cum[rng[0]]
+
+			if letterSpacing != 0 {
+				rc := runeLen(content)
+				if rc > 1 {
+					segmentWidth += letterSpacing * float64(rc-1)
+				}
+			}
+			if wordSpacing != 0 {
+				segmentWidth += wordSpacing * float64(strings.Count(content, " "))
+			}
+
+			line.Width += segmentWidth - r.InlineSize
+			r.InlineSize = segmentWidth
+		}
+
+		i = runEnd
+	}
+}
+
+// canMergeShapingContext reports whether two inline items share the same
+// HarfBuzz shaping context and can therefore be measured together as one
+// run. Font-feature-settings is not compared because MeasureText does not
+// apply features today; if that changes, this check must be tightened.
+func canMergeShapingContext(a, b *InlineItem) bool {
+	if a.Style == nil || b.Style == nil {
+		return a.Style == b.Style
+	}
+	aSize, aBold, aItalic, aMono, aAhem := fontPropsFromStyle(a.Style)
+	bSize, bBold, bItalic, bMono, bAhem := fontPropsFromStyle(b.Style)
+	if aSize != bSize || aBold != bBold || aItalic != bItalic || aMono != bMono || aAhem != bAhem {
+		return false
+	}
+	aFamily, _ := a.Style.Get("font-family")
+	bFamily, _ := b.Style.Get("font-family")
+	if aFamily != bFamily {
+		return false
+	}
+	if a.Style.GetLetterSpacing() != b.Style.GetLetterSpacing() {
+		return false
+	}
+	if a.Style.GetWordSpacing() != b.Style.GetWordSpacing() {
+		return false
+	}
+	if a.Style.GetDirection() != b.Style.GetDirection() {
+		return false
+	}
+	return true
 }
 
 // splitIntoWords splits text into words, preserving spaces attached to

@@ -428,6 +428,68 @@ func FontHeightFromFont(fontSize float64, fontPath string) float64 {
 	return float64(m.Height) / 64.0
 }
 
+// ShapeAdvances shapes text with HarfBuzz and returns the cumulative advance,
+// in pixels, through each byte offset. The returned slice has length
+// len(text)+1; index i holds the pixel X at which text[i:] begins within the
+// shaped run. Index 0 is always 0; the final index equals the advance returned
+// by MeasureText.
+//
+// This is used to recover per-item context-aware widths when multiple inline
+// items share a shaping context (same font/style) — measure the concatenation
+// once via this function, then slice by item byte-range to get each item's
+// advance in context of its neighbors (including any cross-item kerning).
+//
+// Returns nil and false on any shaping failure, so callers can fall back to
+// standalone measurement. Clusters that don't map 1:1 to byte offsets (complex
+// shaping, reordered glyphs, ligatures) are handled best-effort by attributing
+// each glyph's advance to its cluster byte offset; offsets between cluster
+// boundaries receive the most recent cluster's cumulative X.
+func ShapeAdvances(textStr string, fontSize float64, fontPath string) ([]float64, bool) {
+	if textStr == "" {
+		return []float64{0}, true
+	}
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return nil, false
+	}
+	run, err := getLayout().ShapeText(textshape.ShapingParams{
+		Text:   textStr,
+		FontID: m.FontID,
+	})
+	if err != nil {
+		return nil, false
+	}
+
+	cum := make([]float64, len(textStr)+1)
+	// Fill with -1 as sentinel to detect missing cluster samples.
+	for i := range cum {
+		cum[i] = -1
+	}
+	cum[0] = 0
+	var x int32
+	for _, g := range run.Glyphs {
+		c := int(g.Cluster)
+		if c >= 0 && c <= len(textStr) && cum[c] < 0 {
+			cum[c] = float64(x) / 64.0
+		}
+		x += g.XAdvance
+	}
+	cum[len(textStr)] = float64(x) / 64.0
+	// Forward-fill missing cluster boundaries with the last known cumulative X.
+	// Offsets that fall inside a multi-byte cluster or between ligature parts
+	// inherit the cluster-start position, which is the correct approximation
+	// for byte ranges that don't land on a cluster boundary.
+	last := 0.0
+	for i, v := range cum {
+		if v < 0 {
+			cum[i] = last
+		} else {
+			last = v
+		}
+	}
+	return cum, true
+}
+
 // MeasureTextVerticalFromFont returns the inline advance of text in a vertical
 // writing mode using the given font path. Each upright glyph advances by fontSize.
 func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance float64) {

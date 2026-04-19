@@ -182,6 +182,12 @@ func TestWPTCSS3Reftests(t *testing.T) {
 	for _, testFile := range testFiles {
 		relPath, _ := filepath.Rel(testDir, testFile)
 		t.Run(relPath, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("REFTEST PANIC: %v", r)
+					failed++
+				}
+			}()
 			if runReftest(t, testFile) {
 				passed++
 			} else {
