@@ -1320,6 +1320,12 @@ func setFormPadding(style *Style, top, right, bottom, left string) {
 	}
 }
 
+// pxValue appends "px" to s, stripping any existing "px" suffix first so that
+// attribute values like "100px" don't become "100pxpx".
+func pxValue(s string) string {
+	return strings.TrimSuffix(s, "px") + "px"
+}
+
 // applyPresentationalAttributes maps HTML presentational attributes to CSS properties.
 // These have lower priority than author CSS — they're applied before stylesheet rules
 // and inline styles, so CSS can override them.
@@ -1345,7 +1351,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 				style.Set("width", val)
 			} else {
 				// Numeric value = pixels
-				style.Set("width", val+"px")
+				style.Set("width", pxValue(val))
 			}
 		}
 	}
@@ -1363,7 +1369,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 			if strings.HasSuffix(val, "%") {
 				style.Set("height", val)
 			} else {
-				style.Set("height", val+"px")
+				style.Set("height", pxValue(val))
 			}
 		}
 	}
@@ -1409,7 +1415,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// border attribute on table → border-width on cells
 	if val, ok := node.GetAttribute("border"); ok {
 		if node.TagName == "table" {
-			style.Set("border-width", val+"px")
+			style.Set("border-width", pxValue(val))
 			style.Set("border-style", "outset")
 		}
 	}
@@ -1418,7 +1424,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// cellspacing on table → border-spacing
 	if val, ok := node.GetAttribute("cellspacing"); ok {
 		if node.TagName == "table" {
-			style.Set("border-spacing", val+"px")
+			style.Set("border-spacing", pxValue(val))
 		}
 	}
 
@@ -1433,8 +1439,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		for p := node.Parent; p != nil; p = p.Parent {
 			if p.TagName == "table" {
 				if cp, ok := p.GetAttribute("cellpadding"); ok {
-					padding := cp + "px"
-					style.Set("padding", padding)
+					style.Set("padding", pxValue(cp))
 				}
 				break
 			}
@@ -1469,7 +1474,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// <img> border attribute
 	if node.TagName == "img" {
 		if val, ok := node.GetAttribute("border"); ok {
-			style.Set("border-width", val+"px")
+			style.Set("border-width", pxValue(val))
 			style.Set("border-style", "solid")
 		}
 	}
