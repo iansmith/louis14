@@ -520,6 +520,14 @@ func CalculateInitialFragmentGeometry(
 		// Treat as auto — layout will determine block-size from content.
 	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
 		borderBoxBlock = explicitBlock + geom.BlockBorderPadding()
+	} else if space.IsBlockSizeOverride && space.IsFixedBlockSize {
+		// Flex has resolved the main size and passed it as AvailableSize.BlockSize.
+		// Use it directly as the border-box block-size without consulting CSS.
+		// This prevents CSS width/height from overriding the flex-resolved size,
+		// which is critical for sideways-lr items where the CSS block property is 'width'.
+		//
+		// Mirrors Blink's handling of ConstraintSpace::IsBlockSizeOverride.
+		borderBoxBlock = space.AvailableSize.BlockSize
 	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
 		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords
 		// that override the fixed constraint (e.g. max-height: min-content).
