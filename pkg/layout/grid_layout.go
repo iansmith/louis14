@@ -180,7 +180,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// For row auto-sizing, use the maximum content height of items in each row.
 	rowSizes := gla.resolveTrackSizes(rowTracks, explicitBlockSize, rowGap, false, items, numCols, numRows, wdm, geom)
 
-	// For auto rows, size them to the maximum content height of their items.
+	// For auto rows, size them to the maximum content block-size of their items.
+	// In vertical writing modes, block-size is the physical width; in HTB it is height.
 	for r := 0; r < numRows; r++ {
 		if r < len(rowTracks) && !rowTracks[r].Auto && rowTracks[r].Fr == 0 {
 			continue // fixed row
@@ -192,9 +193,14 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 				if span <= 0 {
 					span = 1
 				}
-				itemH := item.result.Fragment.Size.Height
+				var itemH float64
+				if wdm.IsVertical() {
+					itemH = item.result.Fragment.Size.Width
+				} else {
+					itemH = item.result.Fragment.Size.Height
+				}
 				itemH += item.margins.BlockStart + item.margins.BlockEnd
-				// Distribute item height evenly across spanned rows.
+				// Distribute item block-size evenly across spanned rows.
 				contribution := itemH / float64(span)
 				if contribution > maxHeight {
 					maxHeight = contribution
@@ -220,16 +226,21 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		itemBlock := gla.spannedSize(rowSizes, item.rowStart, item.rowEnd, rowGap)
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
 
-		// Check if item needs full block-size (stretch or percentage height).
+		// Check if item needs full block-size (stretch or percentage block-size).
+		// The logical block-size CSS property is "height" in HTB and "width" in vertical modes.
+		blockSizeProp := "height"
+		if wdm.IsVertical() {
+			blockSizeProp = "width"
+		}
 		needsRelayout := false
-		if _, ok := item.style.GetPercentage("height"); ok {
+		if _, ok := item.style.GetPercentage(blockSizeProp); ok {
 			needsRelayout = true
 		}
 		// Default alignment for grid items is stretch.
 		selfAlign := gla.getAlignSelf(item.style)
 		if selfAlign == "stretch" || selfAlign == "normal" {
 			// Only stretch if item has auto block-size.
-			if _, ok := item.style.Get("height"); !ok {
+			if _, ok := item.style.Get(blockSizeProp); !ok {
 				needsRelayout = true
 			}
 		}
@@ -735,7 +746,11 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 				}
 				var itemSize float64
 				if item.result != nil {
-					if isInline {
+					// Use the physical dimension that corresponds to the logical direction.
+					// For inline tracks: inline = Width in HTB, Height in VLR.
+					// For block tracks:  block  = Height in HTB, Width in VLR.
+					// Formula: useWidth when (isInline != wdm.IsVertical()).
+					if isInline != wdm.IsVertical() {
 						itemSize = item.result.Fragment.Size.Width
 					} else {
 						itemSize = item.result.Fragment.Size.Height
@@ -765,6 +780,32 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 
 	// Distribute fr units.
 	gla.distributeFr(tracks, sizes, available-gap*float64(n-1))
+
+	// CSS Grid §12.5 step 5: stretch auto tracks to fill remaining free space
+	// when the container has a definite size (justify/align-content: normal).
+	if available >= 0 {
+		totalUsed := 0.0
+		autoCount := 0
+		for i, t := range tracks {
+			if t.Auto && t.Fr == 0 {
+				autoCount++
+			} else {
+				totalUsed += sizes[i]
+			}
+		}
+		if autoCount > 0 {
+			totalGap := gap * float64(n-1)
+			freeSpace := available - totalUsed - totalGap
+			if freeSpace > 0 {
+				share := freeSpace / float64(autoCount)
+				for i, t := range tracks {
+					if t.Auto && t.Fr == 0 && sizes[i] < share {
+						sizes[i] = share
+					}
+				}
+			}
+		}
+	}
 
 	return sizes
 }
