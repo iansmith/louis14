@@ -176,6 +176,149 @@ vet + test clean, but they're still debug code. Before every commit, grep the
 diff for `fmt.Printf`, `fmt.Println`, `log.Printf` and remove anything that's
 not gated behind a debug flag or logger.
 
+## JS Test Infrastructure Inventory (2026-04-20)
+
+Reference snapshot for any future agent extending the JS surface. Captured while
+planning the `bidi-dynamic-iframe-001` dispatch. Cites verified line numbers.
+
+### Engine entry points (`pkg/js/engine.go`)
+
+- One `goja.Runtime` per page; `New()` at engine.go:27.
+- `vm.Set("window", vm.GlobalObject())` at engine.go:40 — `window` is the global.
+- `requestAnimationFrame` / `cancelAnimationFrame` registered synchronously at
+  engine.go:46-57 — the rAF callback fires same-tick (single-threaded test env).
+- `Execute(doc)` at engine.go:83 runs **after** layout:
+  1. Register document global (`registerDocument`, dom.go:39).
+  2. Run each script in `doc.Scripts` in document order (engine.go:93-98). The
+     HTML parser appends `<script>` text to `doc.Scripts` in `pkg/html/parser.go`.
+  3. Fire `window.onload` if set (engine.go:100-108).
+  4. Fire `<body onload="...">` attribute (engine.go:112-119).
+  5. Fire every callback in `onloadCallbacks` (engine.go:121-132), populated by
+     `element.onload = fn` via `RegisterOnloadCallback` (engine.go:64).
+
+### DOM bindings (`pkg/js/dom.go`)
+
+Exposed today (spot-check grep against `elementAccessor.Get`/`Set`):
+
+- `document`: `getElementById`, `getElementsByTagName`, `getElementsByClassName`,
+  `createElement`, `createTextNode`, `querySelector`, `querySelectorAll`, `body`,
+  `head`, `documentElement`, `getComputedStyle`.
+- `Element`: `tagName`, `id`, `className`, `src`, `innerHTML`, `outerHTML`,
+  `textContent`, `nodeValue`, `style`, `onload` (dom.go:563), `nodeType`,
+  `nodeName`; attribute ops (`getAttribute`, `setAttribute`, `hasAttribute`,
+  `removeAttribute`); traversal (firstChild, lastChild, nextSibling,
+  previousSibling, parentElement, parentNode, children, childNodes, etc.);
+  mutation (`appendChild`, `removeChild`, `insertBefore`, `append`, `prepend`,
+  `before`, `after`, `replaceChild`, `replaceWith`, `replaceChildren`, `remove`,
+  `cloneNode`, `contains`, `hasChildNodes`); selectors (`querySelector`,
+  `matches`, `closest`); layout getters (`getBoundingClientRect` returns zeros,
+  `offsetTop/Left/Width/Height` return 0).
+- `Text` node: `splitText(offset)` at dom.go:281-310; `textContent` and
+  `nodeValue` via the shared element paths (dom.go:260, 276, 534, 552).
+
+**MISSING on Text / CharacterData:** `appendData(s)`, `data` property, the rest
+of CharacterData (`insertData`, `deleteData`, `replaceData`, `substringData`,
+`length`). Grep `contentDocument|contentWindow|appendData|srcdoc` against
+`pkg/js` returns zero matches.
+
+**MISSING on iframe:** no specialization at all. `iframe.contentDocument` and
+`iframe.contentWindow` do not exist; iframe uses the generic `elementAccessor`.
+
+### Iframe sub-document handling
+
+- Layout-time: `ReplacedLayoutAlgorithm.layoutNestedDocument` in
+  `pkg/layout/replaced_layout.go:344-378` reads `src` (iframe) or `data`
+  (object), calls `ctx.DocumentFetcher(uri)`, and runs
+  `pkg/layout/engine.go::layoutNestedDocument` (engine.go:234) to produce a
+  nested `NestedDocumentResult`. The resulting `nestedDocFragment` is inlined
+  into the iframe's replaced box and then dropped — **no reference is retained
+  on the iframe's `*html.Node`**.
+- **`srcdoc` attribute is NOT handled.** replaced_layout.go:350-358 switches
+  only on `"iframe"` (reads `src`) and `"object"` (reads `data`). A `<iframe
+  srcdoc="...">` with no `src` returns an empty URI and bails at line 360-362,
+  so the nested document is never produced.
+
+### Existing JS-using passing tests (reference pattern)
+
+`orthogonal-root-resize-icb-001..007` (merged in I4, commit `6814437e`). They
+depend on:
+- `iframe.onload = fn` (element-level onload → engine.go:126 firing path)
+- nested `requestAnimationFrame(...)` calls
+- `iframe.style.height = "100px"` mutation
+- `document.documentElement.classList.remove("reftest-wait")`
+
+They do **not** introspect the iframe's sub-document; the opaque nested-layout
+treatment is sufficient. `bidi-dynamic-iframe-001` is the first test that
+requires cross-document DOM access.
+
+### Target test `bidi-dynamic-iframe-001.html`
+
+The full script, with API gap annotations:
+
+```js
+onload = function() {
+  let frame = document.querySelector("iframe");       // OK
+  let target = document.getElementById("target");     // OK
+  let doc = frame.contentDocument;                    // MISSING: iframe.contentDocument
+  let bidiString = frame.getAttribute("srcdoc");      // attribute read OK, but
+                                                      //   layout must honor srcdoc
+  let node = doc.createTextNode("");                  // NEW: createTextNode on
+                                                      //   the *nested* document
+  doc.body.appendChild(node);                         // NEW: body on nested doc
+  node.appendData(bidiString);                        // MISSING: Text.appendData
+  target.appendChild(node);                           // OK (moves node between
+                                                      //   docs; verify adoption)
+  frame.remove();                                     // OK
+}
+```
+
+Rendering contract: `target` ends up as a `<p>` containing an RTL Hebrew text
+run; `bidi-dynamic-iframe-001-ref.html` shows the expected pixels.
+
+### Gap list (small → large)
+
+1. **`Text.appendData(s)` + `Text.data`** in `pkg/js/dom.go`. In
+   `elementAccessor.Get` for `TextNode`, mirror the `splitText` block
+   (dom.go:281-310) to return a `data` string and an `appendData` callable;
+   handle `"data"` assignment in `Set`. ~20 lines.
+
+2. **`<iframe srcdoc>` support** in `pkg/layout/replaced_layout.go:348-362`. In
+   the `"iframe"` case, check `srcdoc` first; if non-empty, bypass the fetch
+   and pass the attribute value straight into `layoutNestedDocument` as
+   `htmlContent`. ~10 lines, no signature churn.
+
+3. **`iframe.contentDocument`** — largest. Requires three coordinated changes:
+   - Retain the parsed nested `*html.Document` on the iframe's `*html.Node`
+     (add a `NestedDocument *html.Document` field on `html.Node`, set from
+     `ReplacedLayoutAlgorithm.layoutNestedDocument` before returning).
+   - Refactor `registerDocument` (`pkg/js/dom.go:39`) so a nested `*html.Document`
+     can produce its own document proxy (separate `body`/`head`/
+     `createTextNode`/`querySelector` surface over the nested tree). Today
+     `registerDocument` installs one `document` global; we'll need a helper
+     that returns a per-document proxy object without touching globals.
+   - In `elementAccessor.Get`, when `e.node.TagName == "iframe"` and
+     `key == "contentDocument"`, return a proxy for the retained
+     `NestedDocument` (or `null` if absent).
+   - Verify cross-document `appendChild`: `target.appendChild(node)` where
+     `node` was created by the nested document. `appendChild` in `dom.go` sets
+     `child.Parent` and pushes into `parent.Children`. Per DOM spec's adopt
+     algorithm, a single shared `*html.Node` graph already behaves correctly;
+     confirm the nested-doc's `createTextNode` allocates a `*html.Node` that
+     can be reparented without state held elsewhere.
+
+### Blink references
+
+- `third_party/blink/renderer/core/html/html_iframe_element.cc` — `contentDocument()` accessor.
+- `third_party/blink/renderer/core/html/html_iframe_element.cc::OpenLayoutNestedBrowsingContext` — srcdoc path.
+- `third_party/blink/renderer/core/dom/document.cc::adoptNode` — cross-document adoption semantics.
+- `third_party/blink/renderer/core/dom/character_data.cc::appendData` — reference impl.
+
+### Prior I4/B6 milestone
+Commits `ffee0eb0` (rAF + element onload) and `6814437e` (I4 merge) landed the
+engine-side scaffolding this test's JS needs. B6 did NOT add `contentDocument`,
+`appendData`, or `srcdoc` because the `orthogonal-root-resize-icb-*` tests
+didn't exercise them. That work is the scope of the next dispatch.
+
 ## Resources
 
 Per-area implementation plans (detailed code traces, line numbers, verification steps):
