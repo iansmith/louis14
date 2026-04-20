@@ -62,6 +62,50 @@ type fontIDKey struct {
 	size int32
 }
 
+// fontPathToFamilyVariant extracts a logical family name and variant from a
+// font file path. For example:
+//
+//	"/.../AtkinsonHyperlegible-Bold.ttf" → ("AtkinsonHyperlegible", VariantBold)
+//	"/.../Ahem.ttf" → ("Ahem", VariantRegular)
+func fontPathToFamilyVariant(fontPath string) (string, int32) {
+	base := filepath.Base(fontPath)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+
+	variant := int32(textshape.VariantRegular)
+	family := name
+
+	if idx := strings.LastIndex(name, "-"); idx > 0 {
+		suffix := strings.ToLower(name[idx+1:])
+		family = name[:idx]
+		switch suffix {
+		case "bold":
+			variant = textshape.VariantBold
+		case "italic":
+			variant = textshape.VariantItalic
+		case "bolditalic":
+			variant = textshape.VariantBoldItalic
+		case "light":
+			variant = textshape.VariantLight
+		case "condensed":
+			variant = textshape.VariantCondensed
+		case "regular":
+			variant = textshape.VariantRegular
+		default:
+			// Unknown suffix — treat entire name as family.
+			family = name
+		}
+	}
+	// For absolute paths (e.g., @font-face web fonts cached in temp dirs with
+	// hash-based filenames), return the full path as the family so that
+	// resolveFamily() can use it directly via its filepath.IsAbs() check.
+	if filepath.IsAbs(fontPath) {
+		family = fontPath
+	}
+
+	return family, variant
+}
+
 // openFont returns the FontMetrics for the given path+size, opening it if needed.
 // Returns zero FontMetrics with FontID=-1 on error.
 func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
@@ -72,9 +116,11 @@ func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
 	if m, ok := fontIDCache[key]; ok {
 		return m
 	}
+	family, variant := fontPathToFamilyVariant(fontPath)
 	metrics, err := getLayout().OpenFont(textshape.OpenFontRequest{
-		Path: fontPath,
-		Size: size,
+		Family:  family,
+		Variant: variant,
+		Size:    size,
 	})
 	if err != nil {
 		return textshape.FontMetrics{FontID: -1}
@@ -186,25 +232,40 @@ func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) stri
 	switch strings.ToLower(family) {
 	case "helvetica", "helvetica neue", "arial",
 		"liberation sans", "nimbus sans", "sans-serif":
-		return liberationSansPath(dir, bold, italic)
+		return latinModernSansPath(dir, bold, italic)
+	case "latin modern roman", "computer modern":
+		return latinModernRomanPath(dir, bold, italic)
 	case "times", "times new roman", "liberation serif", "serif":
 		return liberationSerifPath(dir, bold, italic)
 	case "courier", "courier new", "liberation mono", "monospace":
-		return liberationMonoPath(dir, bold, italic)
+		return atkinsonMonoPath(dir, bold, italic)
 	}
 	return ""
 }
 
-func liberationSansPath(dir string, bold, italic bool) string {
+func latinModernSansPath(dir string, bold, italic bool) string {
 	switch {
 	case bold && italic:
-		return filepath.Join(dir, "LiberationSans-BoldItalic.ttf")
+		return filepath.Join(dir, "lmsans10-boldoblique.otf")
 	case bold:
-		return filepath.Join(dir, "LiberationSans-Bold.ttf")
+		return filepath.Join(dir, "lmsans10-bold.otf")
 	case italic:
-		return filepath.Join(dir, "LiberationSans-Italic.ttf")
+		return filepath.Join(dir, "lmsans10-oblique.otf")
 	default:
-		return filepath.Join(dir, "LiberationSans-Regular.ttf")
+		return filepath.Join(dir, "lmsans10-regular.otf")
+	}
+}
+
+func latinModernRomanPath(dir string, bold, italic bool) string {
+	switch {
+	case bold && italic:
+		return filepath.Join(dir, "lmroman10-bolditalic.otf")
+	case bold:
+		return filepath.Join(dir, "lmroman10-bold.otf")
+	case italic:
+		return filepath.Join(dir, "lmroman10-italic.otf")
+	default:
+		return filepath.Join(dir, "lmroman10-regular.otf")
 	}
 }
 
@@ -221,16 +282,16 @@ func liberationSerifPath(dir string, bold, italic bool) string {
 	}
 }
 
-func liberationMonoPath(dir string, bold, italic bool) string {
+func atkinsonMonoPath(dir string, bold, italic bool) string {
 	switch {
 	case bold && italic:
-		return filepath.Join(dir, "LiberationMono-BoldItalic.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-BoldItalic.otf")
 	case bold:
-		return filepath.Join(dir, "LiberationMono-Bold.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-Bold.otf")
 	case italic:
-		return filepath.Join(dir, "LiberationMono-Italic.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-RegularItalic.otf")
 	default:
-		return filepath.Join(dir, "LiberationMono-Regular.ttf")
+		return filepath.Join(dir, "AtkinsonHyperlegibleMono-Regular.otf")
 	}
 }
 
@@ -240,6 +301,11 @@ var BoldFontPath = DefaultFontConfig().Bold
 // measureWidth returns the advance width of text for a given font path+size,
 // using the shared TextLayout (HarfBuzz shaping) with a sync.Map cache.
 func measureWidth(text string, fontSize float64, fontPath string) float64 {
+	// font-size: 0 — all text has zero advance width.  This is an author
+	// technique to collapse whitespace between inline-block elements.
+	if fontSize == 0 {
+		return 0
+	}
 	key := measureCacheKey(text, fontSize, fontPath)
 	if v, ok := measureCache.Load(key); ok {
 		return v.(float64)
@@ -332,13 +398,101 @@ func FontAscent(fontSize float64, bold, italic, mono, ahem bool) float64 {
 	return FontAscentFromFont(fontSize, fontPath)
 }
 
-// FontAscentFromFont returns the font ascent in pixels for the given font path.
+// FontAscentFromFont returns the font ascent in pixels for the given font path,
+// rounded to the nearest integer. Matches Blink's int_ascent_ (lroundf in
+// SimpleFontData::PlatformInit) so the strut/leading math produces integer-aligned
+// line-box heights and stacked block containers don't accumulate sub-pixel drift.
 func FontAscentFromFont(fontSize float64, fontPath string) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
-		return fontSize * 0.8
+		return math.Round(fontSize * 0.8)
 	}
-	return float64(m.Ascent) / 64.0
+	return math.Round(float64(m.Ascent) / 64.0)
+}
+
+// FontDescentFromFont returns the font descent in pixels for the given font path,
+// rounded to the nearest integer (positive value). See FontAscentFromFont for
+// the rationale on integer rounding.
+func FontDescentFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return math.Round(fontSize * 0.2)
+	}
+	return math.Round(float64(m.Descent) / 64.0)
+}
+
+// FontHeightFromFont returns the font's recommended line height in pixels for
+// CSS line-height: normal. Returns the unrounded m.Height so line-height:normal
+// matches the font's intrinsic spacing exactly; integer rounding is applied at
+// the strut sites (via FontAscent/Descent) where it matters for line-box layout.
+func FontHeightFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return fontSize * 1.2
+	}
+	return float64(m.Height) / 64.0
+}
+
+// ShapeAdvances shapes text with HarfBuzz and returns the cumulative advance,
+// in pixels, through each byte offset. The returned slice has length
+// len(text)+1; index i holds the pixel X at which text[i:] begins within the
+// shaped run. Index 0 is always 0; the final index equals the advance returned
+// by MeasureText.
+//
+// This is used to recover per-item context-aware widths when multiple inline
+// items share a shaping context (same font/style) — measure the concatenation
+// once via this function, then slice by item byte-range to get each item's
+// advance in context of its neighbors (including any cross-item kerning).
+//
+// Returns nil and false on any shaping failure, so callers can fall back to
+// standalone measurement. Clusters that don't map 1:1 to byte offsets (complex
+// shaping, reordered glyphs, ligatures) are handled best-effort by attributing
+// each glyph's advance to its cluster byte offset; offsets between cluster
+// boundaries receive the most recent cluster's cumulative X.
+func ShapeAdvances(textStr string, fontSize float64, fontPath string) ([]float64, bool) {
+	if textStr == "" {
+		return []float64{0}, true
+	}
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return nil, false
+	}
+	run, err := getLayout().ShapeText(textshape.ShapingParams{
+		Text:   textStr,
+		FontID: m.FontID,
+	})
+	if err != nil {
+		return nil, false
+	}
+
+	cum := make([]float64, len(textStr)+1)
+	// Fill with -1 as sentinel to detect missing cluster samples.
+	for i := range cum {
+		cum[i] = -1
+	}
+	cum[0] = 0
+	var x int32
+	for _, g := range run.Glyphs {
+		c := int(g.Cluster)
+		if c >= 0 && c <= len(textStr) && cum[c] < 0 {
+			cum[c] = float64(x) / 64.0
+		}
+		x += g.XAdvance
+	}
+	cum[len(textStr)] = float64(x) / 64.0
+	// Forward-fill missing cluster boundaries with the last known cumulative X.
+	// Offsets that fall inside a multi-byte cluster or between ligature parts
+	// inherit the cluster-start position, which is the correct approximation
+	// for byte ranges that don't land on a cluster boundary.
+	last := 0.0
+	for i, v := range cum {
+		if v < 0 {
+			cum[i] = last
+		} else {
+			last = v
+		}
+	}
+	return cum, true
 }
 
 // MeasureTextVerticalFromFont returns the inline advance of text in a vertical
