@@ -216,3 +216,29 @@ Post-merge multi-category baseline surfaced a **CSS2 nil-pointer panic regressio
   - 9c — verification gate: CSS2 99/99, wm ≥771, flex 621/629, css-position ≥50.
 - **Sequencing rule:** 9a before 9b. The panic may originate in a shared code path affecting the wm drift.
 - **Blocks:** Phase 5b (abs-pos VLR), Phase 6 (delivery), Phase 7 (B2 Mongolian dispatch), any new-category work.
+
+### Phase 9 execution (2026-04-20, COMPLETE)
+
+**9a — CSS2 nil-pointer panic: fix `2bc9076c`**
+- Panic site (corrected from plan): `fragment_builder.go:124` in `SetLayoutNode` via `table_layout.go:630`, not `block_layout.go:1330`. `lin` was nil when `row.node` was nil on an anonymous row.
+- Culprit: commit `92728908` (inside I4 merge `6814437e`) added a `default:` branch to `collectRowsAndCaptions` wrapping non-structural table children in anonymous rows per CSS 2.1 §17.2.1, but only populated `tableRow.cells` — left `tableRow.node` and `tableRow.style` nil. The pre-existing `DisplayTableCell` bare-cell branch had the same latent bug.
+- Fix: construct a real anonymous `LayoutInputNode` with `NewAnonymousTableRowStyle(tla.style)` and wire into `tableRow.node` + `tableRow.style` for both anonymous-row branches.
+- Verified: `before-after-display-types-001.xht` PASS at 0% diff; `orthogonal-root-resize-icb-004` (92728908's target) PASS at 0%; full CSS2 99/99.
+
+**9b — WM 22-test drift: revert `df19b64a`**
+- Diff `output/baselines/wm.log` (2026-04-20) vs `output/wm-baseline/failing.txt` (Phase 0) surfaced 25 new failures (one more than estimated).
+- All 25 concentrated in a single bucket: 24 `writing-mode: sideways-lr` tests + 2 `vertical-lr` + `text-orientation: sideways` tests. Direct hit on hypothesis ranking (sideways/VLR → I2 salvage `8700eb9c`).
+- `inline-block-alignment-007` (B1.2's intended fix target) still fails post-salvage → salvage was net **0 fixes, 25 regressions**.
+- Fix: revert `8700eb9c` entirely (B1.2 swap + B1.3 broadening + `IsSidewaysLRMode` helper). Helper had no non-salvage users.
+
+**9c — Verification (all targets met or exceeded)**
+- CSS2: **99/99** pass (target 99/99) ✓
+- css-writing-modes: **775/787** pass (target ≥771) ✓ +4 above estimate
+- css-flexbox: **621/629** pass (target 621/629) ✓ exact
+- css-position: **50/104** pass (target ≥50) ✓
+
+**Remaining wm failures (6, all pre-existing Phase 0):** `inline-block-alignment-007`, `block-plaintext-004`, `block-plaintext-006`, `mongolian-orientation-001`, `mongolian-orientation-002`, `orthogonal-root-resize-icb-007`.
+
+**Lesson for Phase 7 B2:** the Blink-aligned baseline-swap isn't a simple "swap ascent/descent for all sideways-lr strut/text items" — that approach regresses 25 tests without fixing the intended target. A fresh B2 agent should model Blink's `LogicalBoxFragment::BaselineMetrics` more precisely (swap likely belongs to inline-block baseline export, not every line-metric accumulator).
+
+Phase 9 complete. Phase 7 B2 dispatch unblocked.

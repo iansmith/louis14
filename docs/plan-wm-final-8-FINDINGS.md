@@ -422,7 +422,41 @@ Project CLAUDE.md: `/Users/iansmith/louis14/CLAUDE.md` — foundational correctn
 
 ---
 
-## Phase 9 Integration Regression Audit — Working Hypotheses (2026-04-20)
+## Phase 9 Integration Regression Audit — Outcome (2026-04-20, COMPLETE)
+
+**Result:** CSS2 99/99 restored (commit `2bc9076c`). WM at 775/787 — +26 net, +4 above plan estimate (commit `df19b64a`). No flex or css-position regressions.
+
+### 9a — CSS2 panic (actual root cause)
+
+Plan hypothesized the nil-deref was in `block_layout.go:1330`. Correction: the nil-deref was in `fragment_builder.go:124` (`SetLayoutNode` reading `lin.DOMNode`), called from `table_layout.go:630` (`rowBuilder.SetLayoutNode(row.node)`). The `block_layout.go` frames in the panic stack were bystanders in the call chain.
+
+Culprit commit: `92728908` ("Wrap non-table-structural children of display:table in anonymous rows") — squashed into I4 merge `6814437e`. It added the `default:` branch to `collectRowsAndCaptions` but built the anonymous `tableRow{}` with only `cells` populated; `tableRow.node` (typed `*LayoutInputNode`) stayed nil. The pre-existing `DisplayTableCell` bare-cell branch had the same latent bug but was rarely exercised.
+
+Matches hypothesis ranking #1 (I4). First-step diagnostic (read the test fixture) was decisive — the fixture uses `::before` with `display: table-row` which flows straight into the defective branch.
+
+**Fix:** build a real `LayoutInputNode` with `css.NewAnonymousTableRowStyle(tla.style)` and set `tableRow.node` + `tableRow.style` for both anonymous-row branches. Matches Blink's anonymous-row construction in `LayoutTreeBuilder::WrapAnonymousTableBoxes`.
+
+### 9b — WM drift (actual root cause)
+
+25 new failures (one more than the 22 estimated), all in a single bucket:
+- 24 `writing-mode: sideways-lr` keyword tests (block-flow-direction-slr-*, line-box-direction-slr-*, row-progression-slr-*, inline-block-alignment-slr-009)
+- 2 `vertical-lr` + `text-orientation: sideways` tests (line-box-height-vlr-007, line-box-height-vlr-009)
+
+All 26 conditions match exactly the branch that B1.2's ascent/descent swap fires in `computeLineMetricsEx` via `IsSidewaysLRMode`. That swap was the sole cause. B1.3's fragmentToBox broadening (post-render Box.IsSidewaysLR flag) was not independently harmful for any currently-passing test.
+
+Matches hypothesis ranking (sideways/VLR → I2 salvage). Attribution was immediate from the test-name bucket alone.
+
+**Revert**: `8700eb9c` entirely. `inline-block-alignment-007` (the swap's intended target) still fails post-salvage, so the swap was net **0 fixes, 25 regressions**. The helper `IsSidewaysLRMode` went with it (no non-salvage users).
+
+### Lessons
+
+1. **Stack frames lie about line numbers when `+0x` offsets aren't the top frame.** The plan estimate said "block_layout.go:1330" based on the stack but the actual nil-deref was two frames higher. Future diagnosis: read the top frame, not a middle one.
+2. **Integration merges need a post-merge full-category check**, not just per-fix. The plan's "99/99 unaffected" claim was asserted per-commit but never re-verified after four merges landed. The 2026-04-20 baseline was the first post-integration check and it surfaced both bugs.
+3. **B1.2's swap was wrong for pure SLR mode.** The Blink-aligned approach (per `LogicalBoxFragment::BaselineMetrics`) likely swaps only for inline-block baseline export, not for every strut/text item in the line-metric accumulator. Phase 7 B2 agent must model this more carefully.
+
+---
+
+## Phase 9 Working Hypotheses (historical, captured before diagnosis)
 
 Two independent regressions surfaced by the 2026-04-20 multi-category baseline after all four integration merges (I1/I2/I3/I4) landed. Tracked as Phase 9 in TASK doc.
 

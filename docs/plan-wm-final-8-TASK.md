@@ -55,7 +55,7 @@ Fix the last 8 failing `css-writing-modes` WPT tests to 0% pixel diff, using Bli
 
 ## Current Phase
 
-Phase 9 — integration regression audit (9a CSS2 panic → 9b wm drift → 9c verification). Phases 2-6 merged; Phase 7 (B2) still outstanding and **blocked by Phase 9**; Phase 8 (iframe capability gap) landed 2026-04-20 as merge `cdc8d449`. Multi-category baseline surfaced a **CSS2 panic regression** at `generated-content/before-after-display-types-001.xht` (nil-deref through `block_layout.go:1330`) plus a **22-test wm drift** (771 estimated → 749 measured) — both introduced by one or more of the I1/I2/I3/I4 merges. Blocks Phase 5b, Phase 6 delivery, Phase 7 B2 dispatch, and any new-category work until resolved.
+Phase 9 — integration regression audit **COMPLETE** (2026-04-20). 9a (CSS2 panic) fixed via commit `2bc9076c`. 9b (wm drift) fixed via commit `df19b64a` reverting I2 salvage `8700eb9c`. 9c verification green: CSS2 99/99, wm 775/787 (+26 vs pre-9b baseline, +4 above plan estimate), flex 621/629, css-position 50/104. Phase 7 (B2) now unblocked.
 
 ## Phases
 
@@ -177,7 +177,15 @@ B2 (Mongolian / per-character orientation) was not completed by I2. Needs a focu
 | `TestReftest` returned no tests | 1 | Correct name is `TestWPTCSS3Reftests` |
 | Plan agents (read-only) could not commit plan files | 1 | Parent agent saves plan content returned in agent result message |
 
-## Phase 9: Integration regression audit (2026-04-20) — **ACTIVE, BLOCKS PHASE 5b/6/7**
+## Phase 9: Integration regression audit (2026-04-20) — **COMPLETE**
+
+**Outcome:** CSS2 back to 99/99 (9a fix `2bc9076c`); wm at 775/787 — 4 above plan estimate (9b revert `df19b64a`); flex + css-position unchanged. B1.2 swap was the sole cause of the wm drift.
+
+**What B1.2's revert means for Phase 7 B2:** the Mongolian agent needs to revisit the baseline-swap question from scratch — the salvage's swap didn't fix `inline-block-alignment-007`, and it broke 25 sideways-lr/VLR+sideways tests. Blink's `IsFlippedLinesWritingMode` path may need a more nuanced implementation (swap only for inline-block baseline export, not for line metrics on every strut/text item).
+
+---
+
+### Historical record (active phase — now complete)
 
 Post-I1/I2/I3/I4 merge regressions surfaced by the 2026-04-20 four-category baseline. Two independent regressions (9a CSS2 crash, 9b wm drift) with 9c as the combined verification gate. Phase 7 (B2 Mongolian dispatch) is blocked on this because B2 touches layout paths that may have shifted under these regressions.
 
