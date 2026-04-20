@@ -1395,6 +1395,13 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
 
+	// B1.2: in sideways-lr (or vertical-lr + text-orientation:sideways) the 90° CCW
+	// rotation maps horizontal descent → block-start (ascent_line) and horizontal
+	// ascent → block-end (descent_line). Swap the two so all items share the same
+	// colored baseline edge after rotation. Mirrors Blink's
+	// IsFlippedLinesWritingMode handling in LogicalBoxFragment::BaselineMetrics.
+	sidewaysLR := wdm.IsSidewaysLRMode(parentStyle)
+
 	// CSS 2.1 §10.8.1: "the minimum height consists of a minimum height
 	// above the baseline and a minimum height below it, exactly as if each
 	// line box starts with a zero-width inline box with the element's font
@@ -1409,6 +1416,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			fontPath := resolveFontPath(parentStyle, fonts)
 			strutAscent = text.FontAscentFromFont(fontSize, fontPath)
 			strutDescent = text.FontDescentFromFont(fontSize, fontPath)
+			if sidewaysLR {
+				strutAscent, strutDescent = strutDescent, strutAscent
+			}
 		}
 		// CSS 2.1 §10.8.1: line-height: normal uses the font's recommended
 		// line height rather than a fixed 1.2× multiplier. This ensures the
@@ -1465,6 +1475,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				fontPath := resolveFontPath(r.Item.Style, fonts)
 				ascent = text.FontAscentFromFont(fontSize, fontPath)
 				descent = text.FontDescentFromFont(fontSize, fontPath)
+				if sidewaysLR {
+					ascent, descent = descent, ascent
+				}
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
@@ -1513,6 +1526,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				fontPath := resolveFontPath(r.Item.Style, fonts)
 				ascent = text.FontAscentFromFont(fontSize, fontPath)
 				descent = text.FontDescentFromFont(fontSize, fontPath)
+				if sidewaysLR {
+					ascent, descent = descent, ascent
+				}
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid

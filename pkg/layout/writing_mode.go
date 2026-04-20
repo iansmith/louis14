@@ -121,3 +121,22 @@ func (wdm WritingDirectionMode) UsesCentralBaselineWithStyle(style *css.Style) b
 	}
 	return true
 }
+
+// IsSidewaysLRMode returns true when text is rendered with a CCW (counter-
+// clockwise) 90° rotation — sideways-lr writing mode, or vertical-lr with
+// text-orientation: sideways. In this rotation, horizontal ascent maps to
+// block-end and horizontal descent maps to block-start, so ascent/descent
+// must be swapped when computing block-axis line metrics (B1.2).
+//
+// Mirrors Blink's IsFlippedLinesWritingMode combined with sideways detection.
+func (wdm WritingDirectionMode) IsSidewaysLRMode(style *css.Style) bool {
+	if wdm.WM == WritingModeSidewaysLR {
+		return true
+	}
+	if wdm.WM == WritingModeVerticalLR && style != nil {
+		if to, ok := style.Get("text-orientation"); ok && to == "sideways" {
+			return true
+		}
+	}
+	return false
+}
