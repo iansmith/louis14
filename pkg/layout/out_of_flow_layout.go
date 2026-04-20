@@ -212,7 +212,14 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			inlineOffset = cbInline - insets.InlineEnd - childMargins.InlineEnd - childLogical.InlineSize()
 		} else {
 			// Both auto: use static position.
-			inlineOffset = staticInline + childMargins.InlineStart
+			// InlineEdge annotation from static position tells us which edge
+			// of the child the offset refers to.
+			switch candidate.StaticPosition.InlineEdge {
+			case StaticEdgeEnd:
+				inlineOffset = staticInline - childMargins.InlineEnd - childLogical.InlineSize()
+			default: // StaticEdgeStart (most common)
+				inlineOffset = staticInline + childMargins.InlineStart
+			}
 		}
 
 		// --- Block axis ---
@@ -241,7 +248,22 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			blockOffset = cbBlock - insets.BlockEnd - childMargins.BlockEnd - childLogical.BlockSize()
 		} else {
 			// Both auto: use static position.
-			blockOffset = staticBlock + childMargins.BlockStart
+			// staticBlock is in the CB's content-box logical coordinates.
+			// The StaticPosition.BlockEdge annotation indicates which edge of the
+			// child the offset refers to (Start = child's block-start, End = child's block-end).
+			//
+			// For the Start case: blockOffset = static margin-box block-start + margin
+			// For the End case:   blockOffset = static margin-box block-end - size - margin-end
+			//
+			// The result is the border-box block-start position from the CB's content-box origin.
+			switch candidate.StaticPosition.BlockEdge {
+			case StaticEdgeEnd:
+				// staticBlock is the block-end of the child's margin-box from CB content-start.
+				// Convert to border-box block-start.
+				blockOffset = staticBlock - childMargins.BlockEnd - childLogical.BlockSize()
+			default: // StaticEdgeStart (most common for block-level OOF)
+				blockOffset = staticBlock + childMargins.BlockStart
+			}
 		}
 
 		builder.AddChild(childResult.Fragment, LogicalOffset{
