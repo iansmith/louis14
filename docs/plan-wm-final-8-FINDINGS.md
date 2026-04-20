@@ -319,6 +319,37 @@ engine-side scaffolding this test's JS needs. B6 did NOT add `contentDocument`,
 `appendData`, or `srcdoc` because the `orthogonal-root-resize-icb-*` tests
 didn't exercise them. That work is the scope of the next dispatch.
 
+## Multi-category baseline & CSS2 regression (2026-04-20)
+
+Sanctioned cross-category run after the iframe merge (`cdc8d449`). No code changes landed between the I2 salvage (`8700eb9c`) and this run aside from findings-doc edits.
+
+| Category | PASS | FAIL | Panic | Pass rate |
+|---|---|---|---|---|
+| CSS2 (`TestWPTReftests`) | 37 | 0 | **1 — aborts run** | — |
+| css-flexbox | 621 | 8 | 0 | 98.7% |
+| css-writing-modes | 749 | 32 | 0 | 94.6% |
+| css-position | 50 | 54 | 0 | 45.5% |
+
+Logs: `output/baselines/{css2,wm,flex,css-position}.log`.
+
+### CSS2 regression (blocks delivery)
+
+Nil-pointer dereference at `generated-content/before-after-display-types-001.xht`:
+```
+pkg/layout/block_layout.go:1330 (layoutElement)
+pkg/layout/block_layout.go:422  (BlockLayoutAlgorithm.Layout)
+pkg/layout/engine.go:160        (LayoutEngine.Layout)
+```
+Introduced by one of the four merges landed this round: `2ef71c5f` (I1 cascade/parser), `489020db` (I3 constraint-space/OOF), `6814437e` (I4 JS/float/table), or `8700eb9c` (I2 salvage). The "CSS2 99/99 unaffected" claim in the plan was made per-individual-fix, never post-integration. Must bisect and fix before any further feature work.
+
+### WM pass-count drift
+
+Plan's rolling estimate said 771/16. Measured baseline says **749/32** — 22 extra failures unaccounted for. Likely the same merge fallout that produced the CSS2 crash; diagnosis should be combined.
+
+### Next-category prioritization (after CSS2 fixed)
+
+css-position at 45.5% passing is the highest-ROI target outside wm; tables deliberately de-prioritized (high implementation cost, not in the top failure-density tier). Two independent data points now suggest our containing-block / ancestor-walk helpers have `position`-shaped holes: icb-007 (below) and I3's B3 `IsOrthogonalTo` narrowing — worth auditing before dedicated css-position work.
+
 ## orthogonal-root-resize-icb-007 — ancestor walk gated on position (2026-04-20)
 
 **Test:** `orthogonal-root-resize-icb-007.html` (1.1%, 5400px diff). Sibling

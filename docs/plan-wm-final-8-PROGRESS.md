@@ -168,6 +168,16 @@
 
 *Next action: commit + push these doc updates; then dispatch a fresh sonnet-4.6 B2-only worktree agent starting from HEAD of `fix/flexbox-fast`. Agent prompt must require milestone commits (one per B2.x step) and prohibit exploration outside `pkg/text/orientation.go`, `pkg/layout/engine.go`, `pkg/layout/line_breaker.go`, `pkg/layout/writing_mode.go`.*
 
+### Phase 8 merge (2026-04-20) — iframe agent integration
+
+- Merged `worktree-agent-a8f2863d` into `fix/flexbox-fast` as merge commit **`cdc8d449`** (`--no-ff`).
+- Post-merge build+vet clean; `bidi-dynamic-iframe-001.html` verified PASS at 0% diff.
+- Regression spot-check `orthogonal-root-resize-icb-001..006` PASS; `icb-007` still at 1.1% (pre-existing singleton — see findings.md).
+
+### Phase 9 kickoff (2026-04-20) — integration regression audit
+
+Post-merge multi-category baseline surfaced a **CSS2 nil-pointer panic regression** at `generated-content/before-after-display-types-001.xht` and a **wm pass-count drift** (plan estimate 771/16, measured 749/32). See findings.md "Multi-category baseline & CSS2 regression". No diagnosis work started yet; blocks delivery.
+
 ### Phase 8: Deferred bidi-dynamic-iframe-001 (worktree-agent-a8f2863d)
 - **Status:** complete
 - **Completed:** 2026-04-20

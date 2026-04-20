@@ -55,7 +55,7 @@ Fix the last 8 failing `css-writing-modes` WPT tests to 0% pixel diff, using Bli
 
 ## Current Phase
 
-Phase 7 — B2 fresh-agent dispatch + final verification (Phases 2-6 complete, I2 was stopped mid-run and its B1.2/B1.3 output was hand-salvaged; B2 orientation refactor remains outstanding).
+Phase 9 — integration regression audit. Phases 2-6 merged; Phase 7 (B2) still outstanding; Phase 8 (iframe capability gap) landed 2026-04-20 as merge `cdc8d449`. Multi-category baseline surfaced a **CSS2 panic regression** at `generated-content/before-after-display-types-001.xht` (nil-deref through `block_layout.go:1330`) — introduced by one of the I1/I2/I3/I4 merges. Blocks delivery until resolved.
 
 ## Phases
 
@@ -151,7 +151,7 @@ B2 (Mongolian / per-character orientation) was not completed by I2. Needs a focu
 | 5 | `block-plaintext-006` | B4 | Low (0.9%) | 2 |
 | 6 | `sideways-lr-main-axis` | B5 | Low (0.6%) | 4 |
 | 7-13 | `orthogonal-root-resize-icb-001..007` | B6 | Medium | 5 |
-| defer | `bidi-dynamic-iframe-001` | needs `iframe.contentDocument` | — | — |
+| done | `bidi-dynamic-iframe-001` | Phase 8 merge `cdc8d449` (Text.appendData + srcdoc + contentDocument) | — | 8 |
 
 ## Key Questions
 
@@ -176,6 +176,14 @@ B2 (Mongolian / per-character orientation) was not completed by I2. Needs a focu
 | `go test` failed with `invalid go version '1.25.5'` | 1 | Use `GOTOOLCHAIN=go1.25.5 ~/sdk/go1.25.5/bin/go test` |
 | `TestReftest` returned no tests | 1 | Correct name is `TestWPTCSS3Reftests` |
 | Plan agents (read-only) could not commit plan files | 1 | Parent agent saves plan content returned in agent result message |
+
+## Phase 9: Integration regression audit (2026-04-20) — **ACTIVE**
+
+- [ ] Diagnose CSS2 nil-pointer panic at `generated-content/before-after-display-types-001.xht`. Stack: `block_layout.go:1330 → 422 → engine.go:160`. Bisect across merges on `fix/flexbox-fast`: `2ef71c5f` (I1) → `489020db` (I3) → `6814437e` (I4) → `8700eb9c` (I2 salvage).
+- [ ] Re-measure wm pass count; reconcile the drift from "771/16" (plan estimate) to "749/32" (2026-04-20 measured baseline). 22 unaccounted failures — likely fallout from the same merges that broke CSS2.
+- [ ] After fixes: verify CSS2 back at 99/99 and wm at ≥771 passing.
+
+Raw multi-category baselines: `output/baselines/{css2,wm,flex,css-position}.log`.
 
 ## Notes
 
