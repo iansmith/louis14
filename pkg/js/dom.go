@@ -218,6 +218,72 @@ func (ctx *domContext) elementProxy(node *html.Node) goja.Value {
 	return v
 }
 
+// documentProxy builds a document-like JS object for the given *html.Document.
+// It shares the same cache and vm as the outer domContext, so nodes created
+// through this proxy (e.g. createTextNode) are discoverable by unwrapNode in
+// the outer context — enabling cross-document DOM operations like appendChild.
+func (ctx *domContext) documentProxy(doc *html.Document) goja.Value {
+	vm := ctx.vm
+	docObj := vm.NewObject()
+
+	docObj.Set("getElementById", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return goja.Null()
+		}
+		id := call.Arguments[0].String()
+		node := getElementById(doc.Root, id)
+		if node == nil {
+			return goja.Null()
+		}
+		return ctx.elementProxy(node)
+	})
+	docObj.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return ctx.elementArray(nil)
+		}
+		tag := strings.ToLower(call.Arguments[0].String())
+		nodes := getElementsByTagName(doc.Root, tag)
+		return ctx.elementArray(nodes)
+	})
+	docObj.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return ctx.elementArray(nil)
+		}
+		cls := call.Arguments[0].String()
+		nodes := getElementsByClassName(doc.Root, cls)
+		return ctx.elementArray(nodes)
+	})
+	docObj.Set("createElement", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(vm.NewTypeError("Failed to execute 'createElement' on 'Document': 1 argument required"))
+		}
+		tag := strings.ToLower(call.Arguments[0].String())
+		node := &html.Node{
+			Type:       html.ElementNode,
+			TagName:    tag,
+			Attributes: make(map[string]string),
+			Children:   make([]*html.Node, 0),
+		}
+		return ctx.elementProxy(node)
+	})
+	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
+		text := ""
+		if len(call.Arguments) > 0 {
+			text = call.Arguments[0].String()
+		}
+		node := &html.Node{
+			Type: html.TextNode,
+			Text: text,
+		}
+		return ctx.elementProxy(node)
+	})
+	// querySelector/querySelectorAll on the nested document root
+	registerQuerySelectors(ctx, docObj, doc.Root)
+	// body, head, documentElement properties
+	registerDocumentProperties(ctx, docObj, doc)
+	return docObj
+}
+
 // unwrapNode extracts the *html.Node from a goja value that wraps an elementAccessor.
 func (ctx *domContext) unwrapNode(val goja.Value) *html.Node {
 	if val == nil || goja.IsNull(val) || goja.IsUndefined(val) {
@@ -525,6 +591,19 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			return e.ctx.elementArray(result)
 		})
 
+	case "contentDocument":
+		// HTMLIFrameElement.contentDocument: return a document-like proxy for
+		// the nested document if one was retained during layout. This allows
+		// cross-document DOM access (e.g. bidi-dynamic-iframe-001 pattern).
+		if e.node.TagName == "iframe" || e.node.TagName == "object" {
+			if e.node.NestedDocument != nil {
+				return e.ctx.documentProxy(e.node.NestedDocument)
+			}
+		}
+		return goja.Null()
+	case "contentWindow":
+		// HTMLIFrameElement.contentWindow: not fully supported; return null.
+		return goja.Null()
 	case "getBoundingClientRect":
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			// Returns a DOMRect-like object. We don't have layout info here,
@@ -605,7 +684,8 @@ func (e *elementAccessor) Has(key string) bool {
 		"remove", "append", "prepend", "before", "after", "replaceChild", "replaceWith", "replaceChildren",
 		"cloneNode", "contains", "hasChildNodes",
 		"getElementsByTagName", "getElementsByClassName",
-		"onload":
+		"onload",
+		"contentDocument", "contentWindow":
 		return true
 	}
 	return false
@@ -632,6 +712,7 @@ func (e *elementAccessor) Keys() []string {
 		"cloneNode", "contains", "hasChildNodes",
 		"getElementsByTagName", "getElementsByClassName",
 		"onload",
+		"contentDocument", "contentWindow",
 	}
 }
 

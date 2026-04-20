@@ -314,7 +314,7 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 
 	// For iframe/object elements with a document source, lay out the nested
 	// document and embed its content as children.
-	if rla.ctx.DocumentFetcher != nil && rla.node.DOMNode != nil {
+	if rla.node.DOMNode != nil {
 		if nested := rla.layoutNestedDocument(contentInline, contentBlock); nested != nil {
 			// For vertical-rl/sideways-rl nested roots, the root is physically
 			// anchored to the right edge of the iframe viewport. Apply the X
@@ -370,7 +370,7 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 
 	// If we have inline srcdoc content, skip the fetcher entirely.
 	if htmlContent == "" {
-		if uri == "" {
+		if uri == "" || rla.ctx.DocumentFetcher == nil {
 			return nil
 		}
 		var err error
@@ -387,6 +387,11 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 	res := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
 	if res == nil {
 		return nil
+	}
+	// Retain the parsed nested document on the iframe/object DOM node so that
+	// JS can access iframe.contentDocument after layout completes.
+	if res.Doc != nil {
+		dom.NestedDocument = res.Doc
 	}
 	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
 }

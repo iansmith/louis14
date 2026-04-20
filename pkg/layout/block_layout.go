@@ -1272,14 +1272,22 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 // document source. If so, fetches + lays out the nested document and returns
 // the root fragment and its X offset within the iframe viewport. Returns nil if not applicable.
 func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float64, wdm WritingDirectionMode, geom FragmentGeometry) *nestedDocFragment {
-	if bla.ctx.DocumentFetcher == nil || bla.node.DOMNode == nil {
+	if bla.node.DOMNode == nil {
 		return nil
 	}
 	dom := bla.node.DOMNode
 	var uri string
+	var htmlContent string
+
 	switch dom.TagName {
 	case "iframe":
-		uri, _ = dom.GetAttribute("src")
+		// srcdoc takes priority over src per HTML spec.
+		if srcdoc, ok := dom.GetAttribute("srcdoc"); ok && srcdoc != "" {
+			htmlContent = srcdoc
+			uri = ""
+		} else {
+			uri, _ = dom.GetAttribute("src")
+		}
 	case "object":
 		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
 			uri, _ = dom.GetAttribute("data")
@@ -1287,13 +1295,17 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 	default:
 		return nil
 	}
-	if uri == "" {
-		return nil
-	}
 
-	htmlContent, err := bla.ctx.DocumentFetcher(uri)
-	if err != nil {
-		return nil
+	// If we have inline srcdoc content, skip the fetcher entirely.
+	if htmlContent == "" {
+		if uri == "" || bla.ctx.DocumentFetcher == nil {
+			return nil
+		}
+		var err error
+		htmlContent, err = bla.ctx.DocumentFetcher(uri)
+		if err != nil {
+			return nil
+		}
 	}
 
 	// Compute the content-box physical size for the nested viewport.
@@ -1306,6 +1318,11 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 	res := layoutNestedDocument(bla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
 	if res == nil {
 		return nil
+	}
+	// Retain the parsed nested document on the iframe/object DOM node so that
+	// JS can access iframe.contentDocument after layout completes.
+	if res.Doc != nil {
+		dom.NestedDocument = res.Doc
 	}
 	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
 }
