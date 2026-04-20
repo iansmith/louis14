@@ -274,66 +274,47 @@ func collectTextNode(
 	startOffset := text.Len()
 
 	if !collapseSpaces {
-		// Preserve whitespace as-is. Use RawText which preserves the original
-		// whitespace from the HTML source (node.Text may have been collapsed
-		// during HTML parsing).
+		// Preserve whitespace as-is (white-space: pre / pre-wrap).
+		// Use RawText which preserves the original whitespace from the HTML
+		// source (node.Text may have been collapsed during HTML parsing).
 		preservedContent := content
 		if node.RawText != "" {
 			preservedContent = node.RawText
 		}
-		if preserveNewlines {
-			// Split on \n and emit alternating InlineItemText + InlineItemControl,
-			// mirroring Blink's inline_items_builder.cc::AppendText behaviour.
-			// This ensures the line breaker sees kControl items at each hard newline
-			// so that each paragraph starts on its own line (required for
-			// unicode-bidi:plaintext multi-paragraph rendering).
-			segments := strings.SplitAfter(preservedContent, "\n")
-			for i, seg := range segments {
-				isLast := i == len(segments)-1
-				if isLast {
-					// Last segment: no trailing \n — emit text only if non-empty.
-					if seg != "" {
-						segStart := text.Len()
-						text.WriteString(seg)
-						data.Items = append(data.Items, &InlineItem{
-							Type:        InlineItemText,
-							StartOffset: segStart,
-							EndOffset:   text.Len(),
-							Node:        node,
-							Style:       parentStyle,
-						})
-					}
-				} else {
-					// Segment ends with \n (SplitAfter keeps the delimiter).
-					// Emit text for the part before \n, then a Control for \n.
-					textPart := seg[:len(seg)-1] // strip trailing \n
-					if textPart != "" {
-						segStart := text.Len()
-						text.WriteString(textPart)
-						data.Items = append(data.Items, &InlineItem{
-							Type:        InlineItemText,
-							StartOffset: segStart,
-							EndOffset:   text.Len(),
-							Node:        node,
-							Style:       parentStyle,
-						})
-					}
-					// Emit the \n as a control item.
-					ctrlStart := text.Len()
-					text.WriteByte('\n')
+		// CSS 2.1 §16.6: newlines in preserved-whitespace content cause forced
+		// line breaks. Split on '\n' and emit InlineItemControl for each break,
+		// mirroring Blink's inline_items_builder.cc::AppendText behaviour.
+		for _, seg := range strings.SplitAfter(preservedContent, "\n") {
+			if strings.HasSuffix(seg, "\n") {
+				// Emit any text before the newline.
+				before := seg[:len(seg)-1]
+				if len(before) > 0 {
+					segStart := text.Len()
+					text.WriteString(before)
 					data.Items = append(data.Items, &InlineItem{
-						Type:        InlineItemControl,
-						StartOffset: ctrlStart,
+						Type:        InlineItemText,
+						StartOffset: segStart,
 						EndOffset:   text.Len(),
 						Node:        node,
 						Style:       parentStyle,
 					})
 				}
+				// Emit control item for the forced break.
+				brOffset := text.Len()
+				text.WriteRune('\n')
+				data.Items = append(data.Items, &InlineItem{
+					Type:        InlineItemControl,
+					StartOffset: brOffset,
+					EndOffset:   text.Len(),
+					Node:        node,
+					Style:       parentStyle,
+				})
+				startOffset = text.Len()
+			} else if len(seg) > 0 {
+				// Segment after the last newline (or entire content if no newline).
+				text.WriteString(seg)
 			}
-			// Items emitted inside the loop; skip the trailing emit below.
-			return
 		}
-		text.WriteString(preservedContent)
 	} else {
 		// Collapse whitespace per CSS 2.1 §16.6.1.
 		// - Sequences of spaces/tabs collapse to a single space.
@@ -527,11 +508,13 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 			openChars = []rune{'\u2066', '\u202D'} // LRI + LRO
 		}
 		closeChars = []rune{'\u202C', '\u2069'} // PDF + PDI
-	case "plaintext":
-		openChars = []rune{'\u2068'} // FSI
-		closeChars = []rune{'\u2069'} // PDI
 	default:
-		// embed, isolate, and normal do not inject at block level.
+		// embed, isolate, normal, and plaintext do not inject control
+		// characters at block level. For plaintext specifically, the
+		// block itself is the paragraph — wrapping its content in FSI/PDI
+		// would defeat UAX#9 P2/P3 first-strong-character detection
+		// (the isolate would hide the strong character from P2/P3).
+		// ResolveBidiLevelsPlaintext handles auto-direction per paragraph.
 		return
 	}
 

@@ -225,6 +225,19 @@ func (b *LayoutTreeBuilder) maybeWrapAnonymousBlocks(children []*LayoutInputNode
 			return
 		}
 		anonStyle := css.NewAnonymousBlockStyle(parentStyle)
+		// CSS Writing Modes §2.2: unicode-bidi does not inherit, but a
+		// plaintext/bidi-override/isolate-override block's inline content
+		// forms its paragraphs. When that inline content is wrapped into
+		// an anonymous block (because sibling blocks break up the inline
+		// run), the anonymous block must continue to apply the parent's
+		// unicode-bidi behaviour — otherwise each inline-run chunk loses
+		// its auto paragraph-direction resolution.
+		if bidiVal, ok := parentStyle.Get("unicode-bidi"); ok {
+			switch bidiVal {
+			case "plaintext", "bidi-override", "isolate-override":
+				anonStyle.Set("unicode-bidi", bidiVal)
+			}
+		}
 		// CSS 2.1 §9.2.1.1: If the inline run contains block-in-inline
 		// continuation nodes, copy properties from the inline element.
 		for _, c := range inlineRun {
