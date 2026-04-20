@@ -422,4 +422,38 @@ Project CLAUDE.md: `/Users/iansmith/louis14/CLAUDE.md` — foundational correctn
 
 ---
 
+## Phase 9 Integration Regression Audit — Working Hypotheses (2026-04-20)
+
+Two independent regressions surfaced by the 2026-04-20 multi-category baseline after all four integration merges (I1/I2/I3/I4) landed. Tracked as Phase 9 in TASK doc.
+
+### 9a — CSS2 nil-pointer panic
+
+- **Test:** `tests/wpt-css2/generated-content/before-after-display-types-001.xht`.
+- **Stack:** `pkg/layout/block_layout.go:1330 → :422 → pkg/layout/engine.go:160` (from baseline panic output).
+- **Hypothesis ranking (most likely first):**
+  1. **I4 (`6814437e`)** — touched `block_layout.go` for table-row wrapping + float max-content handling. `:1330` may be in or adjacent to the table-row or float path. Generated content (`::before`/`::after` with `display: table-row` or similar) is exactly the kind of boundary case that would hit new table-row code without a populated fragment.
+  2. **I3 (`489020db`)** — OOF changes in `PropagateOOFCandidates` (`block_layout.go`). `::before`/`::after` pseudos combined with OOF propagation could leave a context pointer nil.
+  3. **I2 salvage (`8700eb9c`)** — confined to `inline_layout.go` + `engine.go` + `writing_mode.go`; least likely to affect CSS2 block_layout paths.
+  4. **I1 (`2ef71c5f`)** — cascade + parser only; would be surprising to land nil-deref here.
+- **First diagnostic step:** read the test and identify whether the nil pointer is a `LayoutBox`, `Fragment`, or `ConstraintSpace` field. The type narrows the merge candidate immediately.
+
+### 9b — WM 22-test pass-count drift
+
+- **Plan estimate:** 771 pass / 16 fail (after 5a landed 3 logical-props + Phase 8 iframe fix).
+- **Measured 2026-04-20:** 749 pass / 32 fail.
+- **Gap:** 22 tests regressed post-integration.
+- **Bucketing plan:** diff `output/baselines/wm.log` failures against Phase 0 `output/wm-baseline/failing.txt`. Group *new* failures by test-name prefix.
+- **Hypothesis ranking per expected bucket:**
+  - **Float / table buckets** — blame I4 (`6814437e`), which broadened float max-content and table-row wrapping.
+  - **Abs-pos / OOF buckets** — blame I3 (`489020db`), OOF static-position switch may over-fire on VLR paths not covered by `abs-pos-border-offset-003`.
+  - **Bidi / paragraph buckets** — blame I1 (`2ef71c5f`), if the `InlineItemControl` per-newline emit in `collectTextNode` regresses any non-plaintext bidi tests.
+  - **Sideways / VLR buckets** — blame I2 salvage (`8700eb9c`), the broadened `IsSidewaysLR` setter in `fragmentToBox` could leak into VLR-but-not-sideways tests.
+- **Don't forget:** verify the 3 Phase 5a logical-props tests (commit `e639eca6`) are still passing. They may be among the 22.
+
+### Methodology reminder
+
+Single-test bisect: `GOTOOLCHAIN=go1.25.5 /opt/homebrew/Cellar/go/1.26.2/bin/go test ./pkg/visualtest/ -run 'TestWPTCSS3Reftests/css-writing-modes/<subpath>' -v`. For CSS2: `TestWPTReftests/generated-content/...`. Checkout each merge SHA, run the one test, record pass/fail. Avoid full-suite re-runs (CLAUDE.md §4) until 9c verification.
+
+---
+
 *Per-area plans under `docs/` are the authoritative detailed references. This file indexes themes and decisions.*

@@ -55,7 +55,7 @@ Fix the last 8 failing `css-writing-modes` WPT tests to 0% pixel diff, using Bli
 
 ## Current Phase
 
-Phase 9 — integration regression audit. Phases 2-6 merged; Phase 7 (B2) still outstanding; Phase 8 (iframe capability gap) landed 2026-04-20 as merge `cdc8d449`. Multi-category baseline surfaced a **CSS2 panic regression** at `generated-content/before-after-display-types-001.xht` (nil-deref through `block_layout.go:1330`) — introduced by one of the I1/I2/I3/I4 merges. Blocks delivery until resolved.
+Phase 9 — integration regression audit (9a CSS2 panic → 9b wm drift → 9c verification). Phases 2-6 merged; Phase 7 (B2) still outstanding and **blocked by Phase 9**; Phase 8 (iframe capability gap) landed 2026-04-20 as merge `cdc8d449`. Multi-category baseline surfaced a **CSS2 panic regression** at `generated-content/before-after-display-types-001.xht` (nil-deref through `block_layout.go:1330`) plus a **22-test wm drift** (771 estimated → 749 measured) — both introduced by one or more of the I1/I2/I3/I4 merges. Blocks Phase 5b, Phase 6 delivery, Phase 7 B2 dispatch, and any new-category work until resolved.
 
 ## Phases
 
@@ -177,11 +177,42 @@ B2 (Mongolian / per-character orientation) was not completed by I2. Needs a focu
 | `TestReftest` returned no tests | 1 | Correct name is `TestWPTCSS3Reftests` |
 | Plan agents (read-only) could not commit plan files | 1 | Parent agent saves plan content returned in agent result message |
 
-## Phase 9: Integration regression audit (2026-04-20) — **ACTIVE**
+## Phase 9: Integration regression audit (2026-04-20) — **ACTIVE, BLOCKS PHASE 5b/6/7**
 
-- [ ] Diagnose CSS2 nil-pointer panic at `generated-content/before-after-display-types-001.xht`. Stack: `block_layout.go:1330 → 422 → engine.go:160`. Bisect across merges on `fix/flexbox-fast`: `2ef71c5f` (I1) → `489020db` (I3) → `6814437e` (I4) → `8700eb9c` (I2 salvage).
-- [ ] Re-measure wm pass count; reconcile the drift from "771/16" (plan estimate) to "749/32" (2026-04-20 measured baseline). 22 unaccounted failures — likely fallout from the same merges that broke CSS2.
-- [ ] After fixes: verify CSS2 back at 99/99 and wm at ≥771 passing.
+Post-I1/I2/I3/I4 merge regressions surfaced by the 2026-04-20 four-category baseline. Two independent regressions (9a CSS2 crash, 9b wm drift) with 9c as the combined verification gate. Phase 7 (B2 Mongolian dispatch) is blocked on this because B2 touches layout paths that may have shifted under these regressions.
+
+Merge order on `fix/flexbox-fast`:
+1. `2ef71c5f` — I1: cascade + parser (B1.1, B4.1, B4.2)
+2. `489020db` — I3: constraint-space + OOF static position (B5, B3)
+3. `6814437e` — I4: JS engine rAF + element onload, float max-content, table-row wrapping (B6)
+4. `8700eb9c` — I2 salvage: B1.2 baseline swap, B1.3 sideways broadening for VLR
+
+### 9a — CSS2 nil-pointer panic (blocks any CSS2 run)
+
+- [ ] Read `tests/wpt-css2/generated-content/before-after-display-types-001.xht` (and its `-ref.xht`) to understand the DOM shape that reaches the deref.
+- [ ] Identify the exact nil-deref site one step up from `pkg/layout/block_layout.go:1330` — capture which pointer is nil and from which call site.
+- [ ] Git bisect across the 4 merges above by running just this single test at each SHA. Command: `GOTOOLCHAIN=go1.25.5 /opt/homebrew/Cellar/go/1.26.2/bin/go test ./pkg/visualtest/ -run 'TestWPTReftests/generated-content/before-after-display-types-001' -v`.
+- [ ] Root-cause within the offending merge. Favor upgrading the caller that fails to populate the needed field over adding nil-guards in hot paths.
+- [ ] Land fix on `fix/flexbox-fast` with a commit that references this phase and the bisect SHA.
+
+### 9b — WM pass-count drift (22 tests)
+
+- [ ] Diff `output/baselines/wm.log` (2026-04-20, 32 fails) against `output/wm-baseline/failing.txt` (Phase 0 baseline). Compute the exact set of *new* failures introduced post-integration.
+- [ ] Bucket new failures by test-name prefix (bidi / orthogonal / abs-pos / sideways / text-orientation / float / table / ...).
+- [ ] Attribute each bucket to a specific merge by running one representative test per bucket at each of the 4 merge SHAs.
+- [ ] Fix per bucket. Likely candidates: I4's float max-content or table-row wrapping changes; I3's OOF `PropagateOOFCandidates` broadening; I2-salvage's sideways broadening.
+- [ ] Confirm Phase 5a's 3 logical-props tests (commit `e639eca6`) are still passing — they may be part of the 22.
+
+### 9c — Verification gate (blocks Phase 5b/6/7)
+
+- [ ] Full CSS2 re-run: expect 99/99 pass.
+- [ ] Full css-writing-modes re-run: expect ≥771/781 pass (Phase 0 baseline minus 8 targeted + 5a + Phase 8 iframe fix).
+- [ ] Spot-check css-flexbox (expect 621/629 unchanged) and css-position (expect ≥50/104).
+- [ ] Append final counts to `docs/plan-wm-final-8-PROGRESS.md`.
+
+### Sequencing
+
+Do not open 9b until 9a's crash is fixed — the panic aborts CSS2 mid-run, and if it originates in a shared code path (e.g. `block_layout.go` changed in I3/I4) it may also explain some of the wm drift.
 
 Raw multi-category baselines: `output/baselines/{css2,wm,flex,css-position}.log`.
 

@@ -204,3 +204,15 @@ Post-merge multi-category baseline surfaced a **CSS2 nil-pointer panic regressio
   - `bidi-dynamic-iframe-001`: PASS at 0% diff, no JS errors (was: failing with `TypeError: Cannot read property 'createTextNode'`)
   - `orthogonal-root-resize-icb-001..006`: all PASS at 0% diff (unchanged)
   - `orthogonal-root-resize-icb-007`: FAIL at 1.1% — pre-existing failure (confirmed: same failure on `fix/flexbox-fast` HEAD before any changes)
+
+### Phase 9: Integration regression audit (2026-04-20, ACTIVE)
+- **Status:** plan expanded into 9a/9b/9c; diagnosis not yet started.
+- **Trigger:** 2026-04-20 four-category baseline (`output/baselines/{css2,wm,flex,css-position}.log`) surfaced two independent regressions vs plan expectations:
+  1. **CSS2 panic**: nil-pointer in `pkg/layout/block_layout.go:1330` at test `generated-content/before-after-display-types-001.xht`. Aborts the CSS2 run — only 37 tests complete before crash (baseline was 99/99).
+  2. **WM drift**: 749 pass / 32 fail vs plan's expected 771 pass / 16 fail. 22 unaccounted regressions post-I1/I2/I3/I4 merges.
+- **Plan structure added to `docs/plan-wm-final-8-TASK.md` Phase 9:**
+  - 9a — diagnose and fix CSS2 panic. Read test fixture, identify nil-deref site, bisect across 4 merges (`2ef71c5f` → `489020db` → `6814437e` → `8700eb9c`), root-cause in offending merge.
+  - 9b — diff wm failures against Phase 0 `failing.txt`, bucket 22 new failures by test-name prefix, attribute each bucket to a merge, fix per bucket.
+  - 9c — verification gate: CSS2 99/99, wm ≥771, flex 621/629, css-position ≥50.
+- **Sequencing rule:** 9a before 9b. The panic may originate in a shared code path affecting the wm drift.
+- **Blocks:** Phase 5b (abs-pos VLR), Phase 6 (delivery), Phase 7 (B2 Mongolian dispatch), any new-category work.
