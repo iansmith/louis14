@@ -135,15 +135,16 @@ func reservesClassicScrollbar(overflow css.OverflowType) bool {
 }
 
 // classicScrollbarWidth returns the per-edge width of the classic scrollbar.
-// Mac WPT reftests run with overlay scrollbars (non-space-taking), so the
-// default ("auto") returns 0. Only explicit scrollbar-width:thin uses 10px;
-// scrollbar-width:none keeps 0.
+// WPT reftests use a fixed 15px (matching kScrollbarThicknessForWebTests in
+// scrollbar_theme_aura.cc); "thin" uses 10px; "none" disables the gutter.
 func classicScrollbarWidth(style *css.Style) float64 {
 	switch style.GetScrollbarWidth() {
+	case "none":
+		return 0
 	case "thin":
 		return 10
-	default: // "auto", "none", and any unknown value
-		return 0
+	default: // "auto" (and any unknown value)
+		return 15
 	}
 }
 

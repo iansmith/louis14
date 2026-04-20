@@ -61,6 +61,22 @@ func parseFuzzy(content string) *wptFuzzy {
 	}
 }
 
+// hasWPTFlag reports whether the HTML content has a <meta name="flags"> element
+// whose content includes the given flag token (e.g. "dom", "svg", "scroll").
+func hasWPTFlag(content, flag string) bool {
+	re := regexp.MustCompile(`(?i)<meta\s+name=["']flags["']\s+content=["']([^"']+)["']`)
+	m := re.FindStringSubmatch(content)
+	if m == nil {
+		return false
+	}
+	for _, f := range strings.Fields(m[1]) {
+		if strings.EqualFold(f, flag) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestWPTReftests runs WPT CSS 2.1 reftests by rendering both test and reference
 // HTML files and comparing the resulting images pixel-by-pixel.
 func TestWPTReftests(t *testing.T) {
@@ -213,6 +229,13 @@ func runReftest(t *testing.T, testPath string) bool {
 	refHrefs := findRefLinks(string(content))
 	if len(refHrefs) == 0 {
 		t.Skip("no <link rel=\"match\"> found")
+		return false
+	}
+
+	// WPT tests with flags="dom" require JavaScript DOM scripting which our
+	// static renderer does not support. Skip them rather than fail incorrectly.
+	if hasWPTFlag(string(content), "dom") {
+		t.Skip("requires dom scripting (flags=dom)")
 		return false
 	}
 
