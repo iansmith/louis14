@@ -347,9 +347,19 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 
 	// Get the document URI from the appropriate attribute.
 	var uri string
+	var htmlContent string
+
 	switch tag {
 	case "iframe":
-		uri, _ = dom.GetAttribute("src")
+		// srcdoc takes priority over src per HTML spec.
+		if srcdoc, ok := dom.GetAttribute("srcdoc"); ok && srcdoc != "" {
+			// Wrap the srcdoc text in a minimal document so the HTML parser has
+			// a proper <html><body> context, then lay it out without fetching.
+			htmlContent = srcdoc
+			uri = ""
+		} else {
+			uri, _ = dom.GetAttribute("src")
+		}
 	case "object":
 		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
 			uri, _ = dom.GetAttribute("data")
@@ -357,13 +367,17 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 	default:
 		return nil
 	}
-	if uri == "" {
-		return nil
-	}
 
-	htmlContent, err := rla.ctx.DocumentFetcher(uri)
-	if err != nil {
-		return nil
+	// If we have inline srcdoc content, skip the fetcher entirely.
+	if htmlContent == "" {
+		if uri == "" {
+			return nil
+		}
+		var err error
+		htmlContent, err = rla.ctx.DocumentFetcher(uri)
+		if err != nil {
+			return nil
+		}
 	}
 
 	// Compute physical viewport for the nested document.
