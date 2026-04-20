@@ -778,8 +778,9 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 	}
 
 	// Accumulate float inline sizes by side for max-content computation.
-	// Mirrors Blink's behavior: at max-content width, same-side floats are
-	// placed side-by-side, so their total inline size = sum of individual sizes.
+	// Mirrors Blink's NGBlockLayoutAlgorithm::ComputeMinMaxSizes: at max-content
+	// width, same-side floats are placed side-by-side, so their total inline
+	// size = sum of individual sizes.
 	var floatStartMaxSum float64 // sum of inline-start (left) float max-content sizes
 	var floatEndMaxSum float64   // sum of inline-end (right) float max-content sizes
 

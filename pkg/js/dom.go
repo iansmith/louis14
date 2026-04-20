@@ -587,7 +587,8 @@ func (e *elementAccessor) Has(key string) bool {
 		"classList",
 		"remove", "append", "prepend", "before", "after", "replaceChild", "replaceWith", "replaceChildren",
 		"cloneNode", "contains", "hasChildNodes",
-		"getElementsByTagName", "getElementsByClassName":
+		"getElementsByTagName", "getElementsByClassName",
+		"onload":
 		return true
 	}
 	return false
@@ -612,6 +613,7 @@ func (e *elementAccessor) Keys() []string {
 		"remove", "append", "prepend", "before", "after", "replaceChild", "replaceWith", "replaceChildren",
 		"cloneNode", "contains", "hasChildNodes",
 		"getElementsByTagName", "getElementsByClassName",
+		"onload",
 	}
 }
 

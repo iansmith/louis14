@@ -51,6 +51,7 @@ func New() *Engine {
 		}
 		return vm.ToValue(rafID)
 	})
+	// cancelAnimationFrame: no-op in test env (rAF has already fired synchronously).
 	vm.Set("cancelAnimationFrame", func(call goja.FunctionCall) goja.Value {
 		return goja.Undefined()
 	})
