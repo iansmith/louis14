@@ -415,13 +415,18 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 	}
 
-	// Outline.
-	layer.OutlineStyle = s.GetOutlineStyle()
-	if layer.OutlineStyle != "none" {
-		layer.OutlineWidth = s.GetOutlineWidth()
-		r, g, b, a := s.GetOutlineColor()
-		layer.OutlineColor = css.Color{R: r, G: g, B: b, A: a}
-		layer.OutlineOffset = s.GetOutlineOffset()
+	// Outline — applies to element boxes only, not text runs.
+	// Text run boxes inherit the parent element's style (including outline),
+	// but CSS outlines are drawn on the element's border-box, not per text run.
+	// This mirrors how background-color is suppressed for text runs above.
+	if box.Text == "" {
+		layer.OutlineStyle = s.GetOutlineStyle()
+		if layer.OutlineStyle != "none" {
+			layer.OutlineWidth = s.GetOutlineWidth()
+			r, g, b, a := s.GetOutlineColor()
+			layer.OutlineColor = css.Color{R: r, G: g, B: b, A: a}
+			layer.OutlineOffset = s.GetOutlineOffset()
+		}
 	}
 
 	// Text.
