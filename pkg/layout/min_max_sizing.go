@@ -242,6 +242,12 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 
 	parentWDM := space.WritingDirection
 
+	// Floats accumulate separately: for max-content, all start-side floats
+	// on the same "line" sum up (they fit side-by-side in max-content mode).
+	// Mirrors Blink's NGBlockLayoutAlgorithm::ComputeMinMaxSizes.
+	var floatStartMaxSum float64 // running sum of start-side float max-content sizes
+	var floatEndMaxSum float64   // running sum of end-side float max-content sizes
+
 	for _, child := range node.Children() {
 		if child.IsText() {
 			continue
@@ -284,14 +290,39 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			childMin := childMM.MinContent + childBP + childMargins.InlineSum()
 			childMax := childMM.MaxContent + childBP + childMargins.InlineSum()
 
-			if childMin > result.MinContent {
-				result.MinContent = childMin
-			}
-			if childMax > result.MaxContent {
-				result.MaxContent = childMax
+			floatType := childStyle.GetFloat()
+			if floatType == css.FloatLeft {
+				// Start-side float: accumulates for max-content (side-by-side).
+				floatStartMaxSum += childMax
+				// Min-content: largest individual start-side float.
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+			} else if floatType == css.FloatRight {
+				// End-side float: accumulates for max-content (side-by-side).
+				floatEndMaxSum += childMax
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+			} else {
+				// Non-floated block child: contributes inline-size to both.
+				if childMin > result.MinContent {
+					result.MinContent = childMin
+				}
+				if childMax > result.MaxContent {
+					result.MaxContent = childMax
+				}
 			}
 		}
 	}
+
+	// Float max-content: all floats on the same "line" sum up.
+	// The total float contribution is start-side sum + end-side sum.
+	floatMaxTotal := floatStartMaxSum + floatEndMaxSum
+	if floatMaxTotal > result.MaxContent {
+		result.MaxContent = floatMaxTotal
+	}
+	// Floats also contribute to min-content via individual min sizes (handled above).
 
 	return result
 }
