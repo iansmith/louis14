@@ -588,6 +588,13 @@ func CalculateInitialFragmentGeometry(
 	} else if space.IsBlockSizeOverride && space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
 		// Parent algorithm (e.g., flex column) has determined the block-size
 		// authoritatively — it overrides the child's own CSS block-size.
+		// This is checked BEFORE ResolveBlockSize so the flex-resolved main
+		// size takes priority over the item's explicit CSS block property.
+		// Critical for sideways-lr: the CSS block property is 'width', and
+		// without this override, the item's explicit width would replace the
+		// flex-resolved size.
+		//
+		// Mirrors Blink's handling of ConstraintSpace::IsBlockSizeOverride.
 		borderBoxBlock = space.AvailableSize.BlockSize
 	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
 		// CSS Tables: browsers (Blink, WebKit, Gecko) treat table/inline-table

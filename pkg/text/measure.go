@@ -301,6 +301,11 @@ var BoldFontPath = DefaultFontConfig().Bold
 // measureWidth returns the advance width of text for a given font path+size,
 // using the shared TextLayout (HarfBuzz shaping) with a sync.Map cache.
 func measureWidth(text string, fontSize float64, fontPath string) float64 {
+	// font-size: 0 — all text has zero advance width.  This is an author
+	// technique to collapse whitespace between inline-block elements.
+	if fontSize == 0 {
+		return 0
+	}
 	key := measureCacheKey(text, fontSize, fontPath)
 	if v, ok := measureCache.Load(key); ok {
 		return v.(float64)

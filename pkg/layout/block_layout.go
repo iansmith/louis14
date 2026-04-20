@@ -1101,13 +1101,9 @@ func PropagateOOFCandidates(
 	// Compute child's border+padding in the CHILD's logical axes (not parent's),
 	// then convert to physical, then to parent-logical coordinates.
 	//
-	// The bug with using parentWDM here: when child and parent have orthogonal
-	// writing modes, interpreting the child's physical borders using the parent's
-	// WDM gives wrong logical edge assignments. For example, a VRL child inside
-	// an HTB parent has its physical top mapped to block-start in VRL, but the
-	// parent's HTB WDM maps physical top to block-start (which is the same physical
-	// edge but correct). However, the child's inline-start in VRL = physical top,
-	// while parentWDM would assign physical top to parent's block-start.
+	// The bug with using parentWDM here: when child and parent have orthogonal or
+	// parallel-but-different writing modes, interpreting the child's physical borders
+	// using the parent's WDM gives wrong logical edge assignments.
 	//
 	// Mirrors Blink's use of child's own WDM for border/padding in
 	// OutOfFlowLayoutPart::PropagateOOFPositionedInfo.
@@ -1127,7 +1123,7 @@ func PropagateOOFCandidates(
 	// Detect when the child's writing direction differs from the parent's.
 	// This includes both orthogonal writing modes (e.g. HTB inside VRL) and
 	// same-axis writing modes with different directions (e.g. VLR-LTR inside
-	// VLR-RTL). In all these cases the static position must be re-expressed in
+	// VLR-RTL, or VLR inside VRL). In all these cases the static position must be re-expressed in
 	// the parent's logical coordinate system via a physical round-trip.
 	needsConversion := childWDM.WM != parentWDM.WM || childWDM.Dir != parentWDM.Dir
 

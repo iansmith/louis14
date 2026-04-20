@@ -71,13 +71,18 @@ type ConstraintSpace struct {
 	// IsBlockSizeOverride is true when the parent algorithm (e.g., flex) has
 	// determined the block-size and it should take priority over the child's
 	// explicit CSS block-size property. Per CSS Flexbox §9.5, the flex-resolved
-	// main size IS the item's used main size.
+	// main size IS the item's used main size. This bypasses
+	// CalculateInitialFragmentGeometry's ResolveBlockSize call, which matters
+	// for sideways-lr items where the CSS block property is 'width'.
+	//
+	// Mirrors Blink's ConstraintSpace::IsBlockSizeOverride flag.
 	IsBlockSizeOverride bool
 
 	// IsContentSuggestionLayout is true when this layout is performed for §4.5
 	// content size suggestion. The element's own explicit CSS block-size must
 	// be ignored — only content determines the block-size.
 	IsContentSuggestionLayout bool
+
 
 	// OrthogonalFallbackInlineSize is the ICB size used when an orthogonal
 	// child would otherwise get Indefinite as its available inline-size.
@@ -326,6 +331,10 @@ func (b *ConstraintSpaceBuilder) SetIsFixedBlockSizeIndefinite(v bool) *Constrai
 // SetIsBlockSizeOverride marks the fixed block-size as authoritative,
 // overriding the child's own CSS block-size property. Used by flex column
 // layout where the flex-resolved main size IS the used main size (§9.5).
+// When true, CalculateInitialFragmentGeometry uses AvailableSize.BlockSize
+// directly as the border-box block-size instead of re-deriving it from CSS.
+//
+// Mirrors Blink's ConstraintSpaceBuilder::SetIsBlockSizeOverride.
 func (b *ConstraintSpaceBuilder) SetIsBlockSizeOverride(v bool) *ConstraintSpaceBuilder {
 	b.space.IsBlockSizeOverride = v
 	return b
@@ -337,6 +346,7 @@ func (b *ConstraintSpaceBuilder) SetIsContentSuggestionLayout(v bool) *Constrain
 	b.space.IsContentSuggestionLayout = v
 	return b
 }
+
 
 // SetOrthogonalFallbackInlineSize sets the ICB fallback for orthogonal children.
 // This must be called BEFORE SetAvailableSize, as the fallback is applied during

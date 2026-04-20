@@ -260,8 +260,10 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			// See inline axis comment above for the edge annotation logic.
 			switch candidate.StaticPosition.BlockEdge {
 			case StaticEdgeEnd:
+				// staticBlock is the block-end of the child's margin-box from CB content-start.
+				// Convert to border-box block-start.
 				blockOffset = staticBlock - childMargins.BlockEnd - childLogical.BlockSize()
-			default: // StaticEdgeStart
+			default: // StaticEdgeStart (most common for block-level OOF)
 				blockOffset = staticBlock + childMargins.BlockStart
 			}
 		}

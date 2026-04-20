@@ -792,6 +792,16 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 			continue
 		}
 
+		// Out-of-flow children (position:absolute or position:fixed) are
+		// removed from the normal flow and must NOT contribute to min/max
+		// intrinsic sizing. CSS 2.1 §9.3: positioned elements don't
+		// participate in the flow. Mirrors Blink's LayoutBox::ComputeIntrinsicLogicalWidths
+		// which skips out-of-flow children.
+		childPos := childStyle.GetPosition()
+		if childPos == css.PositionAbsolute || childPos == css.PositionFixed {
+			continue
+		}
+
 		childWDM := NewWritingDirectionMode(childStyle)
 		isOrthogonal := parentWDM.IsOrthogonalTo(childWDM)
 

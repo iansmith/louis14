@@ -1602,7 +1602,12 @@ func fontPropsFromStyle(style *css.Style) (fontSize float64, bold, italic, mono,
 		return 16, false, false, false, false
 	}
 	fontSize = style.GetFontSize()
-	if fontSize <= 0 {
+	// GetFontSize already returns 16.0 when font-size is not set.
+	// Only clamp NEGATIVE values (invalid) — do NOT clamp 0, which means the
+	// author explicitly set font-size:0 (e.g. to collapse whitespace between
+	// inline-block items).  Clamping 0→16 would make space characters visible
+	// even when the author intended zero-width spaces.
+	if fontSize < 0 {
 		fontSize = 16
 	}
 	bold = style.GetFontWeight() == css.FontWeightBold
