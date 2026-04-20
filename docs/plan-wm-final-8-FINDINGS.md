@@ -319,6 +319,48 @@ engine-side scaffolding this test's JS needs. B6 did NOT add `contentDocument`,
 `appendData`, or `srcdoc` because the `orthogonal-root-resize-icb-*` tests
 didn't exercise them. That work is the scope of the next dispatch.
 
+## orthogonal-root-resize-icb-007 — ancestor walk gated on position (2026-04-20)
+
+**Test:** `orthogonal-root-resize-icb-007.html` (1.1%, 5400px diff). Sibling
+tests `icb-001..006` all pass. Surfaced while the iframe dispatch was running.
+
+**Structural diff vs the passing siblings:**
+
+```
+icb-006 (pass):  10×10 div > position:relative > position:absolute > WM:vertical-rl orthogonal root
+icb-007 (fail):  10×10 div > plain div           > display:inline-block;           > WM:vertical-rl orthogonal root
+```
+
+Every icb test wants the orthogonal root's available inline-size to resolve to
+the ICB (100×100 iframe viewport post-resize) so two 100×50 floats fit
+side-by-side as a solid green 100×100 square. 006 gets there via an abspos
+chain; 007 uses a plain **inline-block** inside a non-positioned ancestor.
+After the iframe resizes to 100×100, the inline-block in 007 still receives
+only its grandparent's 10px width, so the two floats don't both fit → residual
+red pixels.
+
+**Hypothesized root cause:** our orthogonal-root available-inline-size lookup
+is gated on an abspos/positioned ancestor when it should walk unconditionally
+to the ICB (or the nearest definite-size ancestor). Per CSS WM3 §7.3, every
+orthogonal flow root resolves its inline-size from the containing-block chain
+up to the ICB — independent of `position`.
+
+**Blink references:**
+- `LayoutBoxModelObject::ContainingBlockLogicalWidthForOrthogonalChild` — walks
+  up past non-CB ancestors unconditionally (no `position` gate).
+- `block_layout_algorithm.cc::ComputeOrthogonalWritingModeRootInlineSize` —
+  entry point; should be hit for inline-block as well as abspos.
+
+**Implication for css-position focus:** icb-007 is the second piece of
+evidence (first: I3's B3 needed a broader `needsConversion`) that our
+containing-block / ancestor-walk helpers have `position`-shaped holes. A
+disciplined audit of every call site that conditions on `IsPositioned` /
+`IsAbsolute` is likely to unblock this test plus unknown others in css-position
+and css-writing-modes.
+
+**Not yet fixed.** Deferred singleton; currently tracked in the active plan as
+"icb-007 — 1.1%" alongside B2 Mongolian.
+
 ## Resources
 
 Per-area implementation plans (detailed code traces, line numbers, verification steps):
