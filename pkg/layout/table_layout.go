@@ -524,6 +524,26 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					rowSpan: 1,
 				}},
 			})
+
+		default:
+			// Non-table-structural children (display:block, display:inline, etc.)
+			// must be wrapped in an anonymous table-row + anonymous table-cell per
+			// CSS 2.1 §17.2.1. Each such child becomes the sole cell of an
+			// anonymous row.
+			anonCellStyle := css.NewAnonymousTableCellStyle(tla.style)
+			anonCell := &LayoutInputNode{
+				style:       anonCellStyle,
+				children:    []*LayoutInputNode{child},
+				isAnonymous: true,
+			}
+			bodyRows = append(bodyRows, tableRow{
+				cells: []tableCell{{
+					node:     anonCell,
+					style:    anonCellStyle,
+					colSpan:  1,
+					rowSpan:  1,
+				}},
+			})
 		}
 	}
 
