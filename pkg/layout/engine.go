@@ -406,19 +406,8 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		}
 		box.Text = text
 		box.IsVerticalText = frag.WritingDirection.IsVertical()
-		// B1.3: broaden IsSidewaysLR/RL to cover vertical-lr/rl + text-orientation:
-		// sideways. In those cases text is rotated 90° just like the sideways-lr/rl
-		// keywords (CCW for vertical-lr, CW for vertical-rl).
-		sidewaysOrient := false
-		if frag.Style != nil {
-			if to, ok := frag.Style.Get("text-orientation"); ok && to == "sideways" {
-				sidewaysOrient = true
-			}
-		}
-		box.IsSidewaysLR = frag.WritingDirection.WM == WritingModeSidewaysLR ||
-			(frag.WritingDirection.WM == WritingModeVerticalLR && sidewaysOrient)
-		box.IsSidewaysRL = frag.WritingDirection.WM == WritingModeSidewaysRL ||
-			(frag.WritingDirection.WM == WritingModeVerticalRL && sidewaysOrient)
+		box.IsSidewaysLR = frag.WritingDirection.WM == WritingModeSidewaysLR
+		box.IsSidewaysRL = frag.WritingDirection.WM == WritingModeSidewaysRL
 		// CSS Writing Modes §5.1: in vertical-rl/lr with text-orientation: mixed
 		// (the default), Latin/etc. characters are rendered sideways (90° CW).
 		// Only text-orientation: upright uses the vertical stacking path.
