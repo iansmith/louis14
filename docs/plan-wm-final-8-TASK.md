@@ -55,7 +55,7 @@ Fix the last 8 failing `css-writing-modes` WPT tests to 0% pixel diff, using Bli
 
 ## Current Phase
 
-Phase 2
+Phase 7 — B2 fresh-agent dispatch + final verification (Phases 2-6 complete, I2 was stopped mid-run and its B1.2/B1.3 output was hand-salvaged; B2 orientation refactor remains outstanding).
 
 ## Phases
 
@@ -71,58 +71,74 @@ Phase 2
 
 Low-risk pure-cascade changes. Tests: `block-plaintext-006`, partial foundation for `inline-block-alignment-007`.
 
-- [ ] B1.1 Add `text-orientation` to `inheritableProperties` in `pkg/css/cascade.go`
-- [ ] B4.1 Comment-aware leading `\n` strip in `pkg/html/parser.go`
-- [ ] B4.2 Emit `InlineItemControl` per `\n` in `collectTextNode` `!collapseSpaces` branch (`pkg/layout/inline_item.go`)
-- [ ] Verify `block-plaintext-006` at 0% diff
-- [ ] Regression spot-check: `bidi-plaintext-*`, `block-plaintext-001..005`
-- **Status:** pending
+- [x] B1.1 Add `text-orientation` to `inheritableProperties` in `pkg/css/cascade.go`
+- [x] B4.1 Comment-aware leading `\n` strip in `pkg/html/parser.go`
+- [x] B4.2 Emit `InlineItemControl` per `\n` in `collectTextNode` `!collapseSpaces` branch (`pkg/layout/inline_item.go`)
+- [x] Verify `block-plaintext-006` at 0% diff
+- [x] Regression spot-check: `bidi-plaintext-*`, `block-plaintext-001..005`
+- **Status:** complete — merged as `2ef71c5f` ("Merge I1: cascade + parser fixes")
 
-### Phase 3: Dispatch I2 — Baseline + Orientation Refactor
+### Phase 3: Dispatch I2 — Baseline + Orientation Refactor (PARTIAL — I2 STOPPED, SALVAGED)
 
 Medium risk. Tests: `inline-block-alignment-007`, `text-orientation-script-001a/002a`.
 
-- [ ] B1.2 Swap ascent/descent in `computeLineMetricsEx` for VLR/VRL+sideways (`pkg/layout/inline_layout.go`)
-- [ ] B1.3 Broaden `IsSidewaysLR/RL` setter in `fragmentToBox` (`pkg/layout/engine.go`)
+- [x] B1.2 Swap ascent/descent in `computeLineMetricsEx` for VLR/VRL+sideways (`pkg/layout/inline_layout.go`) — hand-salvaged
+- [x] B1.3 Broaden `IsSidewaysLR/RL` setter in `fragmentToBox` (`pkg/layout/engine.go`) — hand-salvaged; `IsSidewaysLRMode` helper added to `writing_mode.go`
 - [ ] B2.1 Add `IsVerticalScriptCharacter` to `pkg/text/orientation.go`; wire `ShouldRotateSideways` into layout pipeline
 - [ ] B2.2 Per-character orientation split in `engine.go` lines 408-419
 - [ ] B2.3 `isVerticalMeasurement` upright-advance for vertical-script chars (`pkg/layout/line_breaker.go`)
 - [ ] Verify `inline-block-alignment-007`, `text-orientation-script-001a/002a` at 0% diff
 - [ ] Regression spot-check: `text-orientation-mixed-*`, `inline-block-alignment-001..006`
-- **Status:** pending
+- **Status:** partial — B1.2/B1.3 landed via salvage commit `8700eb9c`; B2.1-B2.3 deferred to Phase 7 fresh agent.
+- **Incident:** I2 worktree agent (abfec5f25422a25ec) rabbit-holed into `mazzy/mazarin/textshape/draw_context.go` (out of scope), never committed a milestone. Stopped per user direction. 14.8KB uncommitted diff captured to `/tmp/i2-salvage.patch`; B1.2+B1.3 portions re-applied by hand on `fix/flexbox-fast`, stripping 4 `fmt.Printf` debug lines, a `go.mod` go1.21→1.25.5 bump, out-of-scope `cascade.go` presentational-attr px/em handling, and a `pkg/render/render.go` debug print.
 
 ### Phase 4: Dispatch I3 — Constraint Space + OOF Static Position
 
 Medium risk; B3 bugs are coupled and must land atomically. Tests: `sideways-lr-main-axis`, `abs-pos-border-offset-003`.
 
-- [ ] B5.1 Add `IsBlockSizeOverride` field + builder method to `pkg/layout/constraint_space.go`
-- [ ] B5.2 Honor flag in `CalculateInitialFragmentGeometry` (`pkg/layout/fragment_geometry.go`)
-- [ ] B5.3 Set flag in row + column branches of `buildItemConstraintSpace` (`pkg/layout/flex_layout.go`)
-- [ ] B3.1 Switch on `InlineEdge`/`BlockEdge` in `pkg/layout/out_of_flow_layout.go`
-- [ ] B3.2 Broaden `needsConversion` in `PropagateOOFCandidates` (`pkg/layout/block_layout.go`)
-- [ ] B3.3 Extend `childContentPhys` computation for parallel-but-different WM
-- [ ] ⚠ Apply B3.1+B3.2+B3.3 in a single commit (bugs cancel each other)
-- [ ] Verify `sideways-lr-main-axis` and all 6 containers of `abs-pos-border-offset-003` at 0% diff
-- [ ] Regression spot-check: `abs-pos-border-offset-001/002`, `flexbox-writing-mode-slr*`
-- **Status:** pending
+- [x] B5.1 Add `IsBlockSizeOverride` field + builder method to `pkg/layout/constraint_space.go`
+- [x] B5.2 Honor flag in `CalculateInitialFragmentGeometry` (`pkg/layout/fragment_geometry.go`)
+- [x] B5.3 Set flag in row + column branches of `buildItemConstraintSpace` (`pkg/layout/flex_layout.go`)
+- [x] B3.1 Switch on `InlineEdge`/`BlockEdge` in `pkg/layout/out_of_flow_layout.go`
+- [x] B3.2 Broaden `needsConversion` in `PropagateOOFCandidates` (`pkg/layout/block_layout.go`)
+- [x] B3.3 Extend `childContentPhys` computation for parallel-but-different WM
+- [x] ⚠ Apply B3.1+B3.2+B3.3 in a single commit (bugs cancel each other)
+- [x] Verify `sideways-lr-main-axis` and all 6 containers of `abs-pos-border-offset-003` at 0% diff
+- [x] Regression spot-check: `abs-pos-border-offset-001/002`, `flexbox-writing-mode-slr*`
+- **Status:** complete — merged as `489020db` ("Merge I3: constraint-space + OOF static position").
 
 ### Phase 5: Dispatch I4 — JS Engine
 
 Low risk, no layout overlap. Tests: `orthogonal-root-resize-icb-001..007` (7 tests).
 
-- [ ] B6.1 Add `onloadCallbacks` to `Engine`; register synchronous `requestAnimationFrame`/`cancelAnimationFrame` in `pkg/js/engine.go::New`
-- [ ] B6.2 `domContext.engine` field; `elementAccessor.Set` handles `"onload"` (`pkg/js/dom.go`)
-- [ ] B6.3 `Execute()` fires element-level `onload` + `<body onload>` attribute
-- [ ] Verify all 7 `orthogonal-root-resize-icb-*` tests at 0% diff
-- **Status:** pending
+- [x] B6.1 Add `onloadCallbacks` to `Engine`; register synchronous `requestAnimationFrame`/`cancelAnimationFrame` in `pkg/js/engine.go::New`
+- [x] B6.2 `domContext.engine` field; `elementAccessor.Set` handles `"onload"` (`pkg/js/dom.go`)
+- [x] B6.3 `Execute()` fires element-level `onload` + `<body onload>` attribute
+- [x] Verify all 7 `orthogonal-root-resize-icb-*` tests at 0% diff
+- **Status:** complete — merged as `6814437e` ("Merge I4: JS engine rAF + element onload, float max-content, table-row wrapping (B6)").
 
 ### Phase 6: Integration & Verification
 
-- [ ] Merge I1 → I2 → I3 → I4 (in order) into the fix branch
-- [ ] Full `TestWPTCSS3Reftests` css-writing-modes run
+- [x] Merge I1 → I3 → I4 (in that order) into `fix/flexbox-fast` — I2 was stopped; salvage followed the three merges.
+- [x] Build + `go vet ./...` clean after each merge and after salvage.
+- [ ] Full `TestWPTCSS3Reftests` css-writing-modes run (blocked on B2 completion)
 - [ ] Confirm all 7 targeted tests pass; document deferred `bidi-dynamic-iframe-001`
 - [ ] Broader regression spot-check against any passing vertical/bidi tests
-- **Status:** pending
+- **Status:** in_progress — merges landed, final WPT run gated on Phase 7.
+
+### Phase 7: Dispatch B2-only fresh agent (new)
+
+B2 (Mongolian / per-character orientation) was not completed by I2. Needs a focused sonnet-4.6 worktree agent.
+
+- [ ] B2.1 Add `IsVerticalScriptCharacter` to `pkg/text/orientation.go`; wire `ShouldRotateSideways` into layout pipeline
+- [ ] B2.2 Per-character orientation split in `pkg/layout/engine.go` (current monolithic decision ~lines 411-419)
+- [ ] B2.3 `isVerticalMeasurement` upright em-square advance for vertical-script chars (`pkg/layout/line_breaker.go`)
+- [ ] Verify `text-orientation-script-001a/002a` at 0% diff
+- [ ] Verify `inline-block-alignment-007` at 0% diff (B1.2/B1.3 landed; should now pass or be close — agent must confirm)
+- [ ] Regression spot-check: `text-orientation-mixed-*`, `inline-block-alignment-001..006`
+- [ ] Commit at each B2.x milestone; final commit on the worktree branch
+- **Status:** pending dispatch
+- **Agent bootstrap:** must read `CLAUDE.md`, this file, `docs/plan-wm-final-8-FINDINGS.md` (integration lessons), `docs/plan-wm-final-8-PROGRESS.md`, and `docs/plan-B2-mongolian-orientation.md` (now augmented with explicit Blink references).
 
 ## Failure → Plan Mapping
 

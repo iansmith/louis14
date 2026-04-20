@@ -107,6 +107,75 @@ Every plan independently surfaced one or more of:
 | `go test` fails with `invalid go version '1.25.5'` | Use `GOTOOLCHAIN=go1.25.5 ~/sdk/go1.25.5/bin/go test`. |
 | Test name `TestReftest` returns no tests | Correct name is `TestWPTCSS3Reftests`. |
 
+## Integration Lessons (2026-04-20)
+
+These are durable lessons from the I1/I2/I3/I4 dispatch round. Future agents MUST read this section.
+
+### 1. Worktree agents start from HEAD, not the working directory
+
+Per CLAUDE.md §5. If parent-side changes are not committed + pushed before a
+worktree agent is launched, the agent won't see them. Always run
+`git add -A && git commit && git push` on the authoritative branch before
+dispatching. This is especially critical when multiple sequential dispatches
+depend on the previous dispatch's output being merged first.
+
+### 2. Enforce milestone commits — never "I'll commit everything at the end"
+
+I2 ran ~3 hours without a single commit. When stopped, the only artifact was a
+14.8KB uncommitted diff in its worktree. Had B1.2/B1.3 been committed at
+milestones, they would have been cherry-pickable directly. Every dispatch prompt
+must say: *"Commit at every B-step milestone. Report the SHA of each milestone
+commit back in your summary. Do not batch commits to the end."*
+
+### 3. Agents will drift scope if the prompt is loose
+
+I2 rabbit-holed into `mazzy/mazarin/textshape/draw_context.go` looking for an
+unrelated transform matrix — nowhere in B1/B2's scope. Dispatch prompts must
+explicitly enumerate the files the agent is permitted to modify, and forbid
+exploration outside that set without first reporting back.
+
+### 4. Check `subagents/<id>.jsonl` mtime, not `.output`, to tell if an agent is live
+
+The parent's `.output` file gets stale while the agent continues to stream into
+`subagents/<id>.jsonl`. I misread a stale `.output` (mtime 3h42m) as "hung"
+when the agent was actively writing to the jsonl (mtime ~1 min). The jsonl mtime
+is the source of truth for liveness.
+
+### 5. Salvage, don't cherry-pick, when an agent never committed
+
+If the agent has zero commits on its branch, `git cherry-pick` has nothing to
+take. Capture `git diff > /tmp/<slug>.patch` from the worktree, audit it
+line-by-line (debug prints, go.mod bumps, out-of-scope edits must be stripped),
+and hand-apply the in-scope portion on the authoritative branch.
+
+### 6. Merge in file-surface-grouped order, not timeline order
+
+Dispatches I1/I2/I3/I4 were grouped by file surface (cascade/parser vs
+baseline/orientation vs constraint-space vs JS) specifically so merge conflicts
+would be minimal. Merging I1 → I3 → I4 (skipping the stopped I2) produced
+3 + 5 + 6 manageable conflicts; an arbitrary order would have been worse. When
+a dispatch is stopped, keep the original order for the remaining branches.
+
+### 7. Build + vet after every merge
+
+After each merge commit, before the next one, run
+`GOTOOLCHAIN=go1.25.5 ~/sdk/go1.25.5/bin/go build ./... && go vet ./...`.
+If something breaks, fix on the merge commit — don't pile on the next merge.
+
+### 8. Dedupe overlapping work at merge time
+
+I2 and I1 both added `text-orientation` to `inheritableProperties`. I1 and I4
+both changed `OpenFontRequest` from `Path` to `Family/Variant`. At merge, take
+the earlier-landing version and drop the duplicate; don't carry dual
+implementations into the integrated branch.
+
+### 9. Strip debug prints before committing merge resolutions
+
+The I2 salvage patch had 4 `fmt.Printf` debug lines. They will happily build +
+vet + test clean, but they're still debug code. Before every commit, grep the
+diff for `fmt.Printf`, `fmt.Println`, `log.Printf` and remove anything that's
+not gated behind a debug flag or logger.
+
 ## Resources
 
 Per-area implementation plans (detailed code traces, line numbers, verification steps):
