@@ -1,5 +1,54 @@
 # Task Plan: Final 8 CSS Writing Modes Test Failures
 
+## Project Rules (Non-Negotiable — From `/Users/iansmith/louis14/CLAUDE.md`)
+
+Every implementation agent MUST read `CLAUDE.md` at the repo root and follow these rules exactly:
+
+1. **Foundational correctness over quick wins.** Never chase near-passing tests or
+   low-hanging fruit. Every fix must work for ALL cases. If a fix doesn't
+   generalize, it's the wrong fix. Pick a category and solve it completely.
+
+2. **Study Blink BEFORE writing any code.** When starting work on a new area, the
+   first step is to look at what Blink/Chromium does. Study their abstractions,
+   algorithms, types. Only then write code. Mirror their type names, algorithm
+   structure, and constraint-passing patterns.
+
+3. **All tests must pass at 0% diff.** A 0.5% diff is a failure just like 28%.
+   Never dismiss failures as "font rendering" or "anti-aliasing" — WPT tests have
+   built-in fuzzy tolerances set by the test authors. If a test is failing, the
+   diff exceeds what the author considered acceptable. Identify the systemic issue
+   and fix it with correct foundational code.
+
+4. **Test execution discipline.** Do not run the full test suite during feature
+   work. Run only the 1-4 tests associated with the area being worked on.
+
+5. **Operational rules:**
+   - Never use `open` to display files from agents — it disrupts the user's screen.
+   - Always commit and push before launching worktree agents — worktrees start
+     from HEAD, not the working directory.
+   - Instruct agents to commit at each milestone, not just at the end.
+   - When running in a worktree, commit ONLY to your worktree branch. Never
+     commit directly to `fix/*` or `master` from a worktree.
+
+Additional dispatch constraints for this task:
+- All implementation agents must use `model: "sonnet"` (Sonnet 4.6). Opus is for
+  planning/synthesis only.
+- Agents commit checkpoint reports after each B-step milestone.
+- Agents append a dated entry to `docs/plan-wm-final-8-PROGRESS.md` before
+  handing back, recording: phase, files changed, test verification result.
+
+## Required Reading (Agent Bootstrap)
+
+Before writing code, every implementation agent must read:
+
+- `/Users/iansmith/louis14/CLAUDE.md` — project rules (verbatim above).
+- `docs/plan-wm-final-8-TASK.md` (this file) — phased plan.
+- `docs/plan-wm-final-8-FINDINGS.md` — research context, cross-cutting themes.
+- `docs/plan-B<N>-*.md` for the specific B-item(s) the agent owns — detailed
+  code traces, line numbers, and per-step instructions.
+- `docs/plan-wm-final-8-PROGRESS.md` — prior session log (append new entries
+  here; do not rewrite existing entries).
+
 ## Goal
 
 Fix the last 8 failing `css-writing-modes` WPT tests to 0% pixel diff, using Blink-aligned algorithms across 6 root-cause areas (B1-B6), with 1 test deferred pending new JS APIs.
