@@ -308,6 +308,23 @@ func (e *elementAccessor) Get(key string) goja.Value {
 			}
 			return e.ctx.elementProxy(newNode)
 		})
+	case "data":
+		// CharacterData.data: returns the text content of a Text node.
+		if e.node.Type == html.TextNode {
+			return vm.ToValue(e.node.Text)
+		}
+		return goja.Undefined()
+	case "appendData":
+		// CharacterData.appendData(data): appends the given string to the text node's data.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if e.node.Type != html.TextNode {
+				return goja.Undefined()
+			}
+			if len(call.Arguments) > 0 {
+				e.node.Text += call.Arguments[0].String()
+			}
+			return goja.Undefined()
+		})
 	case "getAttribute":
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
@@ -549,7 +566,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 	case "innerHTML":
 		e.setInnerHTML(val.String())
 		return true
-	case "nodeValue":
+	case "nodeValue", "data":
 		if e.node.Type == html.TextNode {
 			e.node.Text = val.String()
 		}
@@ -576,7 +593,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
 	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
-		"textContent", "innerHTML", "outerHTML", "src", "splitText",
+		"textContent", "innerHTML", "outerHTML", "src", "splitText", "data", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
@@ -600,8 +617,9 @@ func (e *elementAccessor) Delete(key string) bool {
 
 func (e *elementAccessor) Keys() []string {
 	return []string{
-		"tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
+		"tagName", "nodeName", "nodeType", "nodeValue", "data", "id", "className",
 		"textContent", "innerHTML", "outerHTML",
+		"splitText", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
