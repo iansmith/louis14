@@ -601,7 +601,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// CSS Inline §4.2: propagate the first in-flow block child's
 			// first baseline as this container's first baseline.
-			if !isLegendOfFieldset && !hasFirstChildBaseline && childResult.HasBaseline {
+			// CSS Align §9.1: orthogonal children don't contribute baselines
+			// in the parent's writing mode, so skip them.
+			if !isLegendOfFieldset && !isOrthogonal && !hasFirstChildBaseline && childResult.HasBaseline {
 				firstChildBaseline = childResult.Baseline
 				firstChildBlockOffset = actualChildBlockOff
 				hasFirstChildBaseline = true
@@ -610,11 +612,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Track the last in-flow block child's baseline for
 			// CSS 2.1 §10.8.1 inline-block baseline propagation.
 			// Use LastBaseline (last line box) if available, else Baseline.
+			// CSS Align §9.1: orthogonal children don't contribute baselines.
 			lb := childResult.LastBaseline
 			if lb <= 0 {
 				lb = childResult.Baseline
 			}
-			if !isLegendOfFieldset && lb > 0 {
+			if !isLegendOfFieldset && !isOrthogonal && lb > 0 {
 				lastChildBaseline = lb
 				lastChildBlockOffset = actualChildBlockOff
 				hasLastChildBaseline = true
