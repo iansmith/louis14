@@ -50,6 +50,15 @@ type ConstraintSpace struct {
 	// Children should treat percentage block-sizes as auto (resolve to 0) on this pass.
 	IsFixedBlockSizeIndefinite bool
 
+	// IsBlockSizeOverride is true when the block-size in AvailableSize is the
+	// flex-resolved main size and must be used directly as the border-box block-size,
+	// bypassing CalculateInitialFragmentGeometry's ResolveBlockSize call.
+	// This prevents CSS width/height from overriding the flex algorithm's resolved size,
+	// which matters for sideways-lr items where the CSS block property is 'width'.
+	//
+	// Mirrors Blink's ConstraintSpace::IsBlockSizeOverride flag.
+	IsBlockSizeOverride bool
+
 	// OrthogonalFallbackInlineSize is the ICB size used when an orthogonal
 	// child would otherwise get Indefinite as its available inline-size.
 	// Per CSS Writing Modes §10.3.2, when the parent's block-size is indefinite,
@@ -242,6 +251,16 @@ func (b *ConstraintSpaceBuilder) SetIsInsideFlexibleBox(v bool) *ConstraintSpace
 // the block-size is nominally fixed but children should treat % block-sizes as auto.
 func (b *ConstraintSpaceBuilder) SetIsFixedBlockSizeIndefinite(v bool) *ConstraintSpaceBuilder {
 	b.space.IsFixedBlockSizeIndefinite = v
+	return b
+}
+
+// SetIsBlockSizeOverride marks the block-size as a flex-resolved override.
+// When true, CalculateInitialFragmentGeometry will use AvailableSize.BlockSize
+// directly as the border-box block-size instead of re-deriving it from CSS.
+//
+// Mirrors Blink's ConstraintSpaceBuilder::SetIsBlockSizeOverride.
+func (b *ConstraintSpaceBuilder) SetIsBlockSizeOverride(v bool) *ConstraintSpaceBuilder {
+	b.space.IsBlockSizeOverride = v
 	return b
 }
 
