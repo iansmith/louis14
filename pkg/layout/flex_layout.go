@@ -1594,6 +1594,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		})
 		b.SetPercentageResolutionInlineSize(contentInlineSize)
 		b.SetIsFixedInlineSize(true)
+		b.SetIsBlockSizeOverride(true)
 		if crossSize != Indefinite {
 			b.SetIsFixedBlockSize(true)
 		}
@@ -1622,6 +1623,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		b.SetIsFixedInlineSize(crossIsFixed)
 		if mainSize > 0 {
 			b.SetIsFixedBlockSize(true)
+			b.SetIsBlockSizeOverride(true)
 		}
 	}
 
