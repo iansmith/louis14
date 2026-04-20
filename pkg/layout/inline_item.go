@@ -310,7 +310,8 @@ func collectTextNode(
 		}
 		// CSS 2.1 §16.6: newlines in preserved-whitespace content cause forced
 		// line breaks. Split on '\n' and emit InlineItemControl for each break,
-		// mirroring the collapseSpaces path's newline handling.
+		// mirroring Blink's inline_items_builder.cc::AppendText and the
+		// collapseSpaces path's newline handling.
 		for _, seg := range strings.SplitAfter(preservedContent, "\n") {
 			if strings.HasSuffix(seg, "\n") {
 				// Emit any text before the newline.

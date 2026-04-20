@@ -5,6 +5,7 @@ import (
 	"louis14/pkg/html"
 	"louis14/pkg/text"
 	"strings"
+	"unicode"
 )
 
 // countLinesForWidth runs a dry-run line break at the given available width and
@@ -42,24 +43,22 @@ func countLinesForWidth(
 // CSS 2.1 §9.2.1.1: block containers have either all block-level or all
 // inline-level children. After anonymous block box generation by the layout
 // tree builder, this is always a clean split.
-// isTextContentEmpty returns true if text consists entirely of collapsible
-// whitespace (ASCII space, tab, newline, CR, form-feed). Non-breaking spaces
-// (U+00A0) are NOT collapsible and are treated as content per CSS §16.6.1,
-// matching the behaviour of collectTextNode which preserves U+00A0.
-func isTextContentEmpty(s string) bool {
-	for _, r := range s {
-		if r != ' ' && r != '\t' && r != '\n' && r != '\r' && r != '\f' {
-			return false
-		}
-	}
-	return true
+// isCSSCollapsibleRune returns true for whitespace characters that CSS
+// considers collapsible in normal white-space mode. U+00A0 (non-breaking
+// space) is explicitly excluded — it never collapses (CSS 2.1 §16.6.1).
+func isCSSCollapsibleRune(r rune) bool {
+	return r != '\u00A0' && unicode.IsSpace(r)
 }
 
 func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	hasContent := false
 	for _, child := range node.Children() {
 		if child.IsText() {
-			if !isTextContentEmpty(child.TextContent()) {
+			// Use CSS-aware trimming: U+00A0 (non-breaking space) is not
+			// collapsible and counts as visible content (CSS 2.1 §16.6.1).
+			if strings.IndexFunc(child.TextContent(), func(r rune) bool {
+				return !isCSSCollapsibleRune(r)
+			}) >= 0 {
 				hasContent = true
 			}
 			continue
@@ -442,6 +441,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			lineAvailableInline = 1
 		}
 
+		// lineVisualInline is the actual container width used for text alignment
+		// and line box sizing. It is always the physical container width, not
+		// the inflated value used for noWrap line breaking.
+		lineVisualInline := lineAvailableInline
+
 		// CSS 2.1 §16.6: white-space: nowrap / pre — override available width
 		// to prevent soft wrapping, allowing text to overflow the container.
 		if noWrap {
@@ -618,6 +622,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			lineInlineOffset += textIndent
 			lineAvailableInline -= textIndent
 			appliedTextIndent = textIndent
+			lineVisualInline -= textIndent
 			isFirstLine = false
 		} else {
 			isFirstLine = false
@@ -630,6 +635,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			blockOffset = clearedBfc - bfcBlockOrigin
 			lineInlineOffset = 0
 			lineAvailableInline = contentInlineSize
+			lineVisualInline = contentInlineSize
 		}
 
 		// Collect out-of-flow candidates from inline items on this line.
@@ -796,7 +802,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			BlockSize:  cbBlockSize,
 		}, wdm.WM)
 		lineFragment, lineHeight, lineAscent := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineAvailableInline, fonts, centralBaseline, cbPhys, bla.style,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style,
 		)
 		if firstLineAscent < 0 {
 			firstLineAscent = lineAscent
@@ -1526,6 +1532,36 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					maxTopBottom = h
 				}
 				continue
+			}
+			if ascent > maxAscent {
+				maxAscent = ascent
+			}
+			if descent > maxDescent {
+				maxDescent = descent
+			}
+
+		case InlineItemControl:
+			// A control item (forced line break) contributes a strut using its
+			// parent element's font metrics. This ensures blank lines in
+			// white-space: pre content have the correct height (CSS 2.1 §10.8).
+			if r.Item.Style == nil {
+				continue
+			}
+			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+			var ascent, descent float64
+			if centralBaseline {
+				ascent = fontSize / 2
+				descent = fontSize / 2
+			} else {
+				fontPath := resolveFontPath(r.Item.Style, fonts)
+				ascent = text.FontAscentFromFont(fontSize, fontPath)
+				descent = fontSize - ascent
+			}
+			lineHt := r.Item.Style.GetLineHeight()
+			halfLeading := (lineHt - (ascent + descent)) / 2
+			if halfLeading > 0 {
+				ascent += halfLeading
+				descent += halfLeading
 			}
 			if ascent > maxAscent {
 				maxAscent = ascent

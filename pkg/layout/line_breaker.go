@@ -1085,6 +1085,16 @@ func (lb *LineBreaker) breakTextAtCharacter(
 // handleControl handles control characters (forced line breaks).
 func (lb *LineBreaker) handleControl(item *InlineItem, line *LineInfo) {
 	line.HasForcedBreak = true
+	// Include the control item in Results so that computeLineMetricsEx can
+	// use its style (parent element's font) to compute the strut for blank
+	// lines. CSS 2.1 §10.8: a line box starts with a zero-width strut whose
+	// metrics match the block container's font and line-height.
+	line.Results = append(line.Results, InlineItemResult{
+		Item:      item,
+		ItemIndex: lb.currentItemIndex,
+		TextStart: item.StartOffset,
+		TextEnd:   item.EndOffset,
+	})
 	lb.currentItemIndex++
 	lb.currentTextOffset = item.EndOffset
 }
