@@ -281,6 +281,58 @@ func collectTextNode(
 		if node.RawText != "" {
 			preservedContent = node.RawText
 		}
+		if preserveNewlines {
+			// Split on \n and emit alternating InlineItemText + InlineItemControl,
+			// mirroring Blink's inline_items_builder.cc::AppendText behaviour.
+			// This ensures the line breaker sees kControl items at each hard newline
+			// so that each paragraph starts on its own line (required for
+			// unicode-bidi:plaintext multi-paragraph rendering).
+			segments := strings.SplitAfter(preservedContent, "\n")
+			for i, seg := range segments {
+				isLast := i == len(segments)-1
+				if isLast {
+					// Last segment: no trailing \n — emit text only if non-empty.
+					if seg != "" {
+						segStart := text.Len()
+						text.WriteString(seg)
+						data.Items = append(data.Items, &InlineItem{
+							Type:        InlineItemText,
+							StartOffset: segStart,
+							EndOffset:   text.Len(),
+							Node:        node,
+							Style:       parentStyle,
+						})
+					}
+				} else {
+					// Segment ends with \n (SplitAfter keeps the delimiter).
+					// Emit text for the part before \n, then a Control for \n.
+					textPart := seg[:len(seg)-1] // strip trailing \n
+					if textPart != "" {
+						segStart := text.Len()
+						text.WriteString(textPart)
+						data.Items = append(data.Items, &InlineItem{
+							Type:        InlineItemText,
+							StartOffset: segStart,
+							EndOffset:   text.Len(),
+							Node:        node,
+							Style:       parentStyle,
+						})
+					}
+					// Emit the \n as a control item.
+					ctrlStart := text.Len()
+					text.WriteByte('\n')
+					data.Items = append(data.Items, &InlineItem{
+						Type:        InlineItemControl,
+						StartOffset: ctrlStart,
+						EndOffset:   text.Len(),
+						Node:        node,
+						Style:       parentStyle,
+					})
+				}
+			}
+			// Items emitted inside the loop; skip the trailing emit below.
+			return
+		}
 		text.WriteString(preservedContent)
 	} else {
 		// Collapse whitespace per CSS 2.1 §16.6.1.

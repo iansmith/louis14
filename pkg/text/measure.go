@@ -73,8 +73,8 @@ func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
 		return m
 	}
 	metrics, err := getLayout().OpenFont(textshape.OpenFontRequest{
-		Path: fontPath,
-		Size: size,
+		Family: fontPath, // absolute path; resolveFamily falls back to direct path use
+		Size:   size,
 	})
 	if err != nil {
 		return textshape.FontMetrics{FontID: -1}

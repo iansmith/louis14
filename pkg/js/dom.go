@@ -14,9 +14,10 @@ import (
 // It maintains a node-to-proxy cache so the same JS object is returned for
 // the same underlying *html.Node (needed for === identity checks).
 type domContext struct {
-	vm    *goja.Runtime
-	doc   *html.Document
-	cache map[*html.Node]goja.Value
+	vm     *goja.Runtime
+	doc    *html.Document
+	cache  map[*html.Node]goja.Value
+	engine *Engine // set by Execute() after registerDocument; used for element.onload
 }
 
 func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
@@ -547,6 +548,11 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		e.node.Attributes["src"] = val.String()
 		return true
+	case "onload":
+		if fn, ok := goja.AssertFunction(val); ok && e.ctx.engine != nil {
+			e.ctx.engine.RegisterOnloadCallback(e.node, fn)
+		}
+		return true
 	}
 	return false
 }
@@ -565,7 +571,8 @@ func (e *elementAccessor) Has(key string) bool {
 		"classList",
 		"remove", "append", "prepend", "before", "after", "replaceChild", "replaceWith", "replaceChildren",
 		"cloneNode", "contains", "hasChildNodes",
-		"getElementsByTagName", "getElementsByClassName":
+		"getElementsByTagName", "getElementsByClassName",
+		"onload":
 		return true
 	}
 	return false
@@ -590,6 +597,7 @@ func (e *elementAccessor) Keys() []string {
 		"remove", "append", "prepend", "before", "after", "replaceChild", "replaceWith", "replaceChildren",
 		"cloneNode", "contains", "hasChildNodes",
 		"getElementsByTagName", "getElementsByClassName",
+		"onload",
 	}
 }
 
