@@ -167,3 +167,30 @@
 ---
 
 *Next action: commit + push these doc updates; then dispatch a fresh sonnet-4.6 B2-only worktree agent starting from HEAD of `fix/flexbox-fast`. Agent prompt must require milestone commits (one per B2.x step) and prohibit exploration outside `pkg/text/orientation.go`, `pkg/layout/engine.go`, `pkg/layout/line_breaker.go`, `pkg/layout/writing_mode.go`.*
+
+### Phase 8: Deferred bidi-dynamic-iframe-001 (worktree-agent-a8f2863d)
+- **Status:** complete
+- **Completed:** 2026-04-20
+- Actions taken:
+  - Rebased `worktree-agent-a8f2863d` onto `fix/flexbox-fast` (commit `47a7c192`) to get I4 JS infrastructure.
+  - **Step 1 (milestone 1, commit `c4906855`)**: Added `Text.appendData(s)` and `Text.data` property bindings to `pkg/js/dom.go` `elementAccessor.Get/Set/Has/Keys`, mirroring the existing `splitText` block. `appendData` appends to `e.node.Text`; `data` is a get/set alias for `nodeValue` on TextNodes.
+  - **Step 2 (milestone 2, commit `c04f8aa5`)**: In `pkg/layout/replaced_layout.go::layoutNestedDocument`, added `srcdoc` attribute check for iframes (per HTML spec, `srcdoc` takes priority over `src`). When `srcdoc` is non-empty, use its value directly as `htmlContent` and skip `DocumentFetcher`. Also moved `DocumentFetcher == nil` guard inside the fetch-only branch.
+  - **Step 3 (milestone 3, commit `83906cd3`)**: Three coordinated changes:
+    - `pkg/html/dom.go`: Added `NestedDocument *html.Document` field to `html.Node`.
+    - `pkg/layout/engine.go`: Added `Doc *html.Document` to `NestedDocumentResult`.
+    - `pkg/layout/block_layout.go`: Updated `tryLayoutNestedDocument` (the actual execution path for iframes — `ReplacedLayoutAlgorithm` is defined but not called in the current layout dispatch) to handle `srcdoc`, store `res.Doc` in `dom.NestedDocument`, and only gate on `DocumentFetcher` when no srcdoc is present.
+    - `pkg/layout/replaced_layout.go`: Mirrored block_layout changes for consistency.
+    - `pkg/js/dom.go`: Added `documentProxy(doc *html.Document)` helper that creates a nested document proxy sharing the outer `domContext`'s `cache` map — enabling `unwrapNode` to find nodes created in the nested context (cross-document `appendChild` works without special adoption). Added `contentDocument` and `contentWindow` to `elementAccessor.Get/Has/Keys`.
+- **Key discovery**: `ReplacedLayoutAlgorithm` is not called by `layoutElement` in the current layout dispatch — `BlockLayoutAlgorithm` handles all display:block/inline-block replaced elements (including iframes) via `tryLayoutNestedDocument`. The `srcdoc` fix and `NestedDocument` retention had to be added to both paths, but `block_layout.go` is the live path.
+- **Cross-document adoption**: Sharing the outer `domContext.cache` between outer and nested doc proxies means nodes created via `doc.createTextNode()` are automatically registered in the shared cache, and `target.appendChild(node)` (outer doc calling `unwrapNode` on a nested-doc proxy) works without any DOM adoption algorithm needed.
+- Files modified:
+  - `pkg/html/dom.go`
+  - `pkg/js/dom.go`
+  - `pkg/layout/block_layout.go`
+  - `pkg/layout/engine.go`
+  - `pkg/layout/replaced_layout.go`
+- Branch commits: `c4906855`, `c04f8aa5`, `83906cd3` on `worktree-agent-a8f2863d`
+- Test results:
+  - `bidi-dynamic-iframe-001`: PASS at 0% diff, no JS errors (was: failing with `TypeError: Cannot read property 'createTextNode'`)
+  - `orthogonal-root-resize-icb-001..006`: all PASS at 0% diff (unchanged)
+  - `orthogonal-root-resize-icb-007`: FAIL at 1.1% — pre-existing failure (confirmed: same failure on `fix/flexbox-fast` HEAD before any changes)

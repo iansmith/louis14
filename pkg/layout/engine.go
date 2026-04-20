@@ -224,6 +224,9 @@ func buildNodeBoxIndex(boxes []*Box) map[*html.Node]*Box {
 type NestedDocumentResult struct {
 	Result      *LayoutResult
 	RootOffsetX float64
+	// Doc is the parsed *html.Document for the nested document. Retained so
+	// callers (e.g. iframe layout) can expose it via iframe.contentDocument.
+	Doc *html.Document
 }
 
 // layoutNestedDocument parses and lays out a nested HTML document (for iframe/object)
@@ -332,7 +335,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 		}
 	}
 
-	return &NestedDocumentResult{Result: result, RootOffsetX: rootOffsetX}
+	return &NestedDocumentResult{Result: result, RootOffsetX: rootOffsetX, Doc: doc}
 }
 
 // nonLayoutTags are elements that never participate in layout as root content.

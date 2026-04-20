@@ -314,7 +314,7 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 
 	// For iframe/object elements with a document source, lay out the nested
 	// document and embed its content as children.
-	if rla.ctx.DocumentFetcher != nil && rla.node.DOMNode != nil {
+	if rla.node.DOMNode != nil {
 		if nested := rla.layoutNestedDocument(contentInline, contentBlock); nested != nil {
 			// For vertical-rl/sideways-rl nested roots, the root is physically
 			// anchored to the right edge of the iframe viewport. Apply the X
@@ -347,9 +347,19 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 
 	// Get the document URI from the appropriate attribute.
 	var uri string
+	var htmlContent string
+
 	switch tag {
 	case "iframe":
-		uri, _ = dom.GetAttribute("src")
+		// srcdoc takes priority over src per HTML spec.
+		if srcdoc, ok := dom.GetAttribute("srcdoc"); ok && srcdoc != "" {
+			// Wrap the srcdoc text in a minimal document so the HTML parser has
+			// a proper <html><body> context, then lay it out without fetching.
+			htmlContent = srcdoc
+			uri = ""
+		} else {
+			uri, _ = dom.GetAttribute("src")
+		}
 	case "object":
 		if dataType, _ := dom.GetAttribute("type"); dataType == "text/html" || dataType == "" {
 			uri, _ = dom.GetAttribute("data")
@@ -357,13 +367,17 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 	default:
 		return nil
 	}
-	if uri == "" {
-		return nil
-	}
 
-	htmlContent, err := rla.ctx.DocumentFetcher(uri)
-	if err != nil {
-		return nil
+	// If we have inline srcdoc content, skip the fetcher entirely.
+	if htmlContent == "" {
+		if uri == "" || rla.ctx.DocumentFetcher == nil {
+			return nil
+		}
+		var err error
+		htmlContent, err = rla.ctx.DocumentFetcher(uri)
+		if err != nil {
+			return nil
+		}
 	}
 
 	// Compute physical viewport for the nested document.
@@ -373,6 +387,11 @@ func (rla *ReplacedLayoutAlgorithm) layoutNestedDocument(contentInline, contentB
 	res := layoutNestedDocument(rla.ctx, htmlContent, physSize.Width, physSize.Height, uri)
 	if res == nil {
 		return nil
+	}
+	// Retain the parsed nested document on the iframe/object DOM node so that
+	// JS can access iframe.contentDocument after layout completes.
+	if res.Doc != nil {
+		dom.NestedDocument = res.Doc
 	}
 	return &nestedDocFragment{fragment: res.Result.Fragment, rootOffsetX: res.RootOffsetX}
 }

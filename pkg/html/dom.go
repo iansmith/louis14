@@ -13,6 +13,10 @@ type Node struct {
 	RawText    string // Original text with whitespace preserved (for pre-wrap contexts)
 	Children   []*Node
 	Parent     *Node // Phase 2: Support proper tree structure
+
+	// NestedDocument is set on <iframe> and <object> nodes after layout to
+	// retain the parsed sub-document. This allows JS to access iframe.contentDocument.
+	NestedDocument *Document
 }
 
 type NodeType int
