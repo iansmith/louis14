@@ -11,11 +11,12 @@ import (
 type CSSFetcher func(uri string) (string, error)
 
 type Parser struct {
-	tokenizer       *Tokenizer
-	doc             *Document
-	stack           []*Node // Phase 2: Stack for tracking nested elements
-	cssFetcher      CSSFetcher // Optional fetcher for external stylesheets
-	fragmentMode    bool       // When true, <script>/<style> become DOM nodes
+	tokenizer        *Tokenizer
+	doc              *Document
+	stack            []*Node // Phase 2: Stack for tracking nested elements
+	cssFetcher       CSSFetcher // Optional fetcher for external stylesheets
+	fragmentMode     bool       // When true, <script>/<style> become DOM nodes
+	commentSeenInPre bool       // True when a comment has been seen inside a <pre> element
 }
 
 func NewParser(html string) *Parser {
@@ -136,6 +137,15 @@ func (p *Parser) Parse() (*Document, error) {
 				p.push(node)
 			}
 
+		case TokenComment:
+			// HTML comment inside a <pre>: treat it as a child for the purpose of
+			// the leading-newline strip rule. HTML5 §13.2.6.4.1 says to strip only
+			// the first newline of a <pre> text node when the <pre> has no prior
+			// children; a comment before the text counts as such a child.
+			if p.isInsidePreformatted() {
+				p.commentSeenInPre = true
+			}
+
 		case TokenText:
 			// Add text to current parent
 			// Use raw text (preserving whitespace) inside preformatted elements
@@ -145,8 +155,10 @@ func (p *Parser) Parse() (*Document, error) {
 			if rawText != "" && p.isInsidePreformatted() {
 				text = rawText
 				// HTML spec: strip a single leading newline in <pre> elements.
-				// This applies to the first text node immediately after the <pre> tag.
-				if parent.TagName == "pre" && len(parent.Children) == 0 && len(text) > 0 && text[0] == '\n' {
+				// This applies to the first text node immediately after the <pre> tag,
+				// but only when no comment preceded the text (a comment acts as a
+				// child, suppressing the strip — matching browsers and the WPT tests).
+				if parent.TagName == "pre" && len(parent.Children) == 0 && !p.commentSeenInPre && len(text) > 0 && text[0] == '\n' {
 					text = text[1:]
 					rawText = text
 				}
@@ -164,6 +176,10 @@ func (p *Parser) Parse() (*Document, error) {
 			}
 
 		case TokenEndTag:
+			// Reset commentSeenInPre when leaving a <pre> element.
+			if token.TagName == "pre" {
+				p.commentSeenInPre = false
+			}
 			// Pop stack until we find the matching tag
 			p.closeTag(token.TagName)
 		}

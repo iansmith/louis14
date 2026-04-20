@@ -13,6 +13,7 @@ const (
 	TokenStartTag TokenType = iota
 	TokenEndTag
 	TokenText
+	TokenComment
 	TokenEOF
 )
 
@@ -58,12 +59,12 @@ func (t *Tokenizer) readTag() (Token, error) {
 		for t.pos+2 < len(t.input) {
 			if t.input[t.pos] == '-' && t.input[t.pos+1] == '-' && t.input[t.pos+2] == '>' {
 				t.pos += 3
-				return t.NextToken()
+				return Token{Type: TokenComment}, nil
 			}
 			t.pos++
 		}
 		t.pos = len(t.input)
-		return t.NextToken()
+		return Token{Type: TokenComment}, nil
 	}
 
 	// Handle <?xml ...?> and other processing instructions
