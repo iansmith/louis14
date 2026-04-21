@@ -169,9 +169,12 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] **Gate:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓ (+0 vs post-Phase-3 baseline). css-position **68 → 74** (+6). Closes `position-absolute-center-001/003/004/006` (G-ABS-CENTER) + `hypothetical-dynamic-change-001/002` (G-HYPO).
 - [ ] Residual (3 of 8 targets) pushed to Commit 3: `position-absolute-center-002` (vertical-rl + column flex + align-items:center), `position-absolute-center-007` (`display:table` with auto margins + both insets + `margin-top:-50px`), `hypothetical-dynamic-change-003` (position:relative ancestor's left-offset must propagate into fixed descendant's static position).
 
-#### Commit 3 — Triage
-- [ ] Whatever the 8 tests reveal that isn't covered by the pure port. Likely small integration-specific quirks (e.g., block-FC hypothetical-inline-box line-start computation). Fix in scope; do not expand to other G-* groups.
-- [ ] **Gate:** all 8 target tests at 0 diff; invariants hold.
+#### Commit 3 — Residual 3 tests — **landed 2026-04-21**
+- [x] `hypothetical-dynamic-change-003`: `block_layout.go` PropagateOOFCandidates now adds the positioned ancestor's `RelativeOffset` to each propagated candidate's `StaticPosition.Offset` so the fixed descendant's static position reflects the ancestor's `left`. Mirrors Blink's `OutOfFlowLayoutPart::PropagateOOFPositionedInfo` carrying `RelativeOffset`.
+- [x] `position-absolute-center-002`: removed legacy `_writing-mode-inherited` early-return in `pkg/css/cascade.go` and `pkg/css/style.go` `resolveLogicalSizeProperties`. The skip was a louis13 artifact tied to a `transformToVerticalRL` post-pass that doesn't exist in louis14; it caused inline descendants of a `vertical-rl` container to keep `inline-size` mapped to physical `width` instead of `height`. +1 target test, +19 other CSS3 tests, zero regressions.
+- [x] `position-absolute-center-007`: `out_of_flow_layout.go` now gates the IMCB stretched-fit path on `isNonStretchableDisplay(childStyle)` — tables (`display:table` / `display:inline-table`) keep intrinsic sizing and let auto margins absorb leftover space per CSS 2 §17.5 + Align 3 §8.2. Mirrors Blink's `node.IsTable()` gate in `absolute_utils.cc` `ComputeOof{Block,Inline}Dimensions`.
+- [x] Paint-ordering regression (flex): `paint_layer.go` `sortZLists` preserves order-modified paint for flex items. DOMIndex-sort of AutoZero (added for hypothetical-003) broke flex paint ordering because flex items can hoist to an enclosing stacking context. Fix: skip the DOMIndex sort whenever any AutoZero entry `IsFlexItem()`.
+- [x] **Gate:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓, css-position 74 → 77 (+3). All 3 residual tests at 0 diff.
 
 **Representatives:** `position-absolute-center-001.html` (0.4%, drives Commits 2-3), `position-absolute-center-007.html` (2.1%, most likely to exercise center-clipping), `hypothetical-dynamic-change-001.html` (G-HYPO verification).
 
@@ -214,7 +217,7 @@ Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 - **M1:** G-TABLE-REL closed → +11 primary (50 → 61). **Achieved 2026-04-21** via commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Verified at re-baseline post OOF re-entrance: also closed `position-relative-012` (was conjectured). 8 `-absolute-child` variants still failing at 1.0% — distinct root cause, deferred to G-ABS-IN-INLINE / G-ABS-IN-TABLE.
 - **M2:** ~~G-CB-CHANGE~~ — group dissolved 2026-04-21. Tests reassigned to G-FIXED / G-SINGLETONS / G-SCROLL.
 - **M3:** G-DYN-STATIC closed → +6 (→ 68). **Achieved 2026-04-21** (Parts a+b+d via commits `233d408f`, `d250c5cf`; Part c via commit `5399d328` — orphan-cell vertical-align + transform percent-sentinel fix). Bonus: +9 css-transforms (162 → 171).
-- **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ ~76).
+- **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ 77). **Achieved 2026-04-21** via Phase 4 Commits 1 (`a3c8db38`), 2 (`d9f6628b`), and 3. Group closed.
 - **M5a:** G-FIXED Part A — OOF resolver re-entrance. **Achieved 2026-04-21** via commit `ed16475f`. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (62 PASS total). Reduced `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (residual paint-clip).
 - **M5b:** G-ROOT-FLEX-GRID closed → +4 (→ ~80). G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL.
 - **M6:** G-ABS-IN-INLINE closed → +2 (→ ~82).

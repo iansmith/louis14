@@ -506,7 +506,7 @@ Updated 2026-04-21 post Phase 4 Commit 2 (IMCB wire-up + flex alignment capture 
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **74 PASS / 30 FAIL** (post Phase 4 Commit 2) | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **77 PASS / 27 FAIL** (post Phase 4 Commit 3) | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |
@@ -546,6 +546,27 @@ Paint-time resolvers now read `IsPercent[i]` per component instead of sign-check
 Updated callers in `pkg/render/paint_layer.go` plus 3 `louis13/` sites (`stacking.go`, `containing_block.go`, `render.go` — louis13 shares the module).
 
 Net: +1 Phase 3(c) target test, +9 css-transforms tests closed for free (other negative-pixel translate cases). Zero regressions in wm / CSS2 / flex.
+
+### Logical-size remap must run for inherited writing-mode too (fixed 2026-04-21, Phase 4 Commit 3)
+Phase 4 Commit 3 debugging, `position-absolute-center-002`. In this test a flex item (a `<span>`) inherits `writing-mode: vertical-rl` from the flex container and sets `inline-size: 50px`. `inline-size` should remap to physical `height` in vertical writing modes, but the span was being laid out at width=50, height=fit-content.
+
+Root cause: `resolveLogicalSizeProperties` in `pkg/css/cascade.go` and `pkg/css/style.go` early-returned when the element had `_writing-mode-inherited="true"`. That marker was a louis13 artifact tied to a `transformToVerticalRL` post-pass that doesn't exist in louis14 — so the skip left the logical-size remap incomplete for any vertical-writing-mode descendant that inherited its writing-mode.
+
+Fix: removed both early-returns. Logical-axis remap (`inline-size` ↔ `width`/`height`, `block-size` ↔ `width`/`height`, plus min/max variants) now runs uniformly whether writing-mode is explicitly set or inherited. +1 target test (`position-absolute-center-002`) plus 19 other CSS3 tests, zero regressions in wm/CSS2/flex.
+
+### Absolutely-positioned `display:table` must not stretch to the IMCB (fixed 2026-04-21, Phase 4 Commit 3)
+Phase 4 Commit 3, `position-absolute-center-007`. The test has a `display:table` abspos with `top:0; bottom:0; margin:auto; width:100px` inside a 100×200 relpos. Expected: the table sizes to content (100×100) and `margin:auto` centers it vertically. Got: the table stretched to the IMCB (200 tall), consuming the auto-margin leftover space.
+
+Root cause: `out_of_flow_layout.go` `layoutCandidatesOnce` sets `useFixedBlock = true` whenever both block insets are specified and the size is auto, forcing the child's constraint space to the IMCB-derived size. This matches CSS 2 §10.6.4 for block-level *non-replaced* elements, but it is wrong for tables: per CSS 2 §17.5 a table's auto block-size is content-based, not stretched. Blink gates the same branch with `!node.IsTable()` in `absolute_utils.cc` `ComputeOof{Block,Inline}Dimensions`.
+
+Fix: added `isNonStretchableDisplay(childStyle)` returning true for `DisplayTable` / `DisplayInlineTable`, and gated both `useFixedInline` and `useFixedBlock` on the child being stretchable. Auto margins then absorb the leftover space via the existing `ComputeMargins` path. +1 target test, zero regressions in wm / CSS2 / flex / css-position.
+
+### Flex items hoisted into outer stacking contexts defeat DOMIndex-sort of `AutoZero` (fixed 2026-04-21, Phase 4 Commit 3)
+Phase 4 Commit 3, flex paint-ordering regression introduced alongside the hypothetical-003 fix. DOMIndex-sorting `AutoZero` entries restored CSS 2.1 Appendix E tree-order for z-index:auto positioned descendants, but it broke flex order-modified paint when a flex item has its own z-index (becoming a positioned element with its own stacking context, hoisted to the enclosing non-flex SC).
+
+Root cause: guarding the sort on the current layer being a flex container only catches the direct flex-child case. When flex items have z-index, they can land in a higher AutoZero list whose owning layer is not itself a flex container.
+
+Fix: `paint_layer.go` `sortZLists` now scans `AutoZero` entries for any `IsFlexItem()` box before sorting; if any is present, it skips the DOMIndex sort and preserves the insertion order (which reflects order-modified document order per CSS Flexbox §4.3). Zero regressions in flex, CSS2, or css-position.
 
 ## Notes
 - Attack order is **not** by % diff. Shared-root-cause grouping is prioritised (CLAUDE.md §1).
