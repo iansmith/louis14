@@ -220,4 +220,19 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/Cellar/go/1.26.2/bin/go te
 
 **Regression sweep owed:** targeted run of other wm tests that exercise `%` font-size or blank lines in `<pre>`/`white-space: pre`. Both fixes are foundational so broader-than-plaintext benefit is expected, but the regression risk is non-zero where adjacent tests depended on the old behavior.
 
-**Next:** commit Group B, then Group A (icb-007 orthogonal-root ancestor walk).
+**Commit:** `c0536939` "Phase 5f Group B: fix block-plaintext-004/006 at 0 pixel diff".
+
+### Regression sweep (2026-04-21, post-commit)
+
+Grep of wm test data shows `%` font-size is used by ~96 test drivers across `bidi-*` and `block-*` buckets (refs included, 180 files total). `<pre>` is used by `block-plaintext-006` and `block-flow-direction-vrl-026`. Ran the full `(bidi|block)-` pattern plus CSS2.
+
+| Scope | Result |
+|---|---|
+| `TestWPTCSS3Reftests/css-writing-modes/(bidi\|block)-` | 163 matched, 162 PASS, 1 FAIL |
+| CSS2 full (`TestWPTReftests`) | 99/99 PASS |
+
+The one FAIL is `inline-block-alignment-007.xht` — pre-existing Group C at 8.4%, unchanged. Zero new regressions.
+
+All `bidi-*` buckets (embed/isolate/isolate-override/normal/override/plaintext/table/unset: 79 tests) stayed green — the `%` font-size fix doesn't regress any bidi test that inherits `%` font-size from the reference scaffolding. Both `block-plaintext-004` and `block-plaintext-006` re-verified at 0 diff in the broad run. `block-flow-direction-vrl-026` (the other `<pre>` case) also PASS.
+
+**Next:** Group A (icb-007 orthogonal-root ancestor walk).
