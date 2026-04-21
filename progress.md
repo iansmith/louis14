@@ -236,3 +236,37 @@ The one FAIL is `inline-block-alignment-007.xht` — pre-existing Group C at 8.4
 All `bidi-*` buckets (embed/isolate/isolate-override/normal/override/plaintext/table/unset: 79 tests) stayed green — the `%` font-size fix doesn't regress any bidi test that inherits `%` font-size from the reference scaffolding. Both `block-plaintext-004` and `block-plaintext-006` re-verified at 0 diff in the broad run. `block-flow-direction-vrl-026` (the other `<pre>` case) also PASS.
 
 **Next:** Group A (icb-007 orthogonal-root ancestor walk).
+
+## Phase 5f Group A — `orthogonal-root-resize-icb-007` at 0 diff (2026-04-21)
+
+**Root cause.** The block-child path at `block_layout.go:368-370` correctly passed the §10.3.2 orthogonal-available-block (walked to ICB via `computeOrthogonalAvailableBlock`) to orthogonal children, but the **atomic-inline path** (`line_breaker.handleAtomicInline` at `line_breaker.go:1205-1234`) did not. It used the raw `lb.space.AvailableSize.BlockSize` that had flowed down from a grandparent's content-box (10px in icb-007), so the orthogonal inline-block root's axis-swapped inline-size was 10 instead of ICB = 100. A second amplifier: `layoutInlineChildren`'s hand-constructed `lineSpace` dropped `OrthogonalFallbackInlineSize`/`OrthogonalFallbackBlockSize` from `bla.space`, so even the existing Indefinite→ICB fallback couldn't fire.
+
+**Fix (3 files, 46 insertions / 4 deletions):**
+
+1. **`pkg/layout/constraint_space.go`** — new field `ConstraintSpace.OrthogonalAvailableBlock` carrying the pre-resolved available block-size that orthogonal atomic-inline descendants of the current IFC should see.
+2. **`pkg/layout/inline_layout.go`** — `layoutInlineChildren` now computes `hasExplicitBlock`/`explicitBlockSize` from `geomForPct`, calls `computeOrthogonalAvailableBlock` (same helper as block-child path), and populates the new field plus `OrthogonalFallbackInlineSize` + `OrthogonalFallbackBlockSize` (via `computeOrthogonalFallbackBlockForChildren`) on `lineSpace`.
+3. **`pkg/layout/line_breaker.go`** — `handleAtomicInline`'s normal layout branch now checks `lb.space.WritingDirection.IsOrthogonalTo(childWDM)` and prefers `lb.space.OrthogonalAvailableBlock` as the parent-side BlockSize. The axis-swap in `SetAvailableSize` then gives the child the correct ICB-capped inline-size.
+
+**Blink verification.** Confirmed via `block_node.cc` + `space_utils.cc` fetches that Blink applies the same ancestor-walk-to-ICB algorithm to atomic-inline orthogonal roots as to block-level ones — no position:static gate, no inline-vs-block gate. Our fix mirrors that symmetry.
+
+**Verification commands:**
+```
+GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ \
+  -run 'TestWPTCSS3Reftests/css-writing-modes/orthogonal-root-resize-icb-007' -v
+→ PASS (480000 pixels, max diff: 0)
+```
+
+**Regression sweep (post-fix):**
+
+| Scope | Result |
+|---|---|
+| `TestWPTCSS3Reftests/css-writing-modes/*` (full) | 780/781 PASS — only Group C `inline-block-alignment-007` still FAIL (unchanged 8.4%) |
+| `TestWPTCSS3Reftests/css-writing-modes/(inline-block-\|orthogonal-\|available-)` | 42/43 PASS — same pre-existing Group C |
+| `TestWPTReftests` (CSS2) | 99/99 PASS |
+| `TestWPTCSS3Reftests/(css-position\|css-display\|css-flexbox)/` | 703/813 PASS — **identical before and after** (baselined via stash) |
+
+Zero regressions across writing-modes, CSS2, and broader layout suites. The remaining writing-modes FAIL is Group C (deliberately deferred — prior broad attempts regressed 25 tests, requires precise Blink baseline-metrics study).
+
+**Files modified:** `pkg/layout/constraint_space.go`, `pkg/layout/inline_layout.go`, `pkg/layout/line_breaker.go`.
+
+**Next:** Group C (`inline-block-alignment-007`) or exit Phase 5f.

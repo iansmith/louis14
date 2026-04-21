@@ -99,6 +99,16 @@ type ConstraintSpace struct {
 	// A value of 0 means no scroller ancestor was found (use ICB fallback).
 	OrthogonalFallbackBlockSize float64
 
+	// OrthogonalAvailableBlock is the pre-resolved available block-size that
+	// orthogonal children of the inline formatting context should use as their
+	// (axis-swapped) inline-size. It is computed by the parent block layout
+	// via computeOrthogonalAvailableBlock (§10.3.2 ancestor walk with ICB cap),
+	// and propagated into the line breaker's space so handleAtomicInline gives
+	// orthogonal atomic-inline roots the same available block-size as the
+	// block-child path (block_layout.go:368-370). Zero means "use the
+	// constraint space's AvailableSize.BlockSize" (parallel child default).
+	OrthogonalAvailableBlock float64
+
 	// PercentageResolutionInlineSize is the containing block's inline-size
 	// used for resolving percentage margins and padding (CSS 2.1 §8.3, §8.4).
 	// Unlike PercentageResolutionSize, this value is NEVER axis-swapped for

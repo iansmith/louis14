@@ -1212,6 +1212,15 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		} else if lb.space.AvailableSize.BlockSize >= 0 {
 			availBlock = lb.space.AvailableSize.BlockSize
 		}
+		// §10.3.2: For an atomic-inline orthogonal root, the available block-size
+		// that becomes the child's (axis-swapped) inline-size must come from the
+		// parent's own constraints — walked up to the nearest definite ancestor
+		// or ICB — not from whatever block-size happened to flow down. Mirrors
+		// the block-child path at block_layout.go:368-370 using the value
+		// pre-computed in layoutInlineChildren.
+		if lb.space.WritingDirection.IsOrthogonalTo(childWDM) && lb.space.OrthogonalAvailableBlock > 0 {
+			availBlock = lb.space.OrthogonalAvailableBlock
+		}
 		csb := NewConstraintSpaceBuilder(lb.space.WritingDirection, childWDM, true).
 			SetOrthogonalFallbackInlineSize(
 				orthogonalFallbackSize(childWDM, lb.ctx)).

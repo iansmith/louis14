@@ -327,11 +327,34 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	} else if bla.space.AvailableSize.BlockSize >= 0 {
 		lineAvailBlock = bla.space.AvailableSize.BlockSize
 	}
+
+	// §10.3.2: Pre-resolve the available block-size that orthogonal
+	// atomic-inline children (inline-block with perpendicular writing mode)
+	// should use. Mirrors block_layout.go:94-96 so the atomic-inline path in
+	// line_breaker.handleAtomicInline gets the same ancestor-walk + ICB cap
+	// as the block-child path at block_layout.go:368-370.
+	hasExplicitBlock := geomForPct.BorderBoxSize.BlockSize != Indefinite
+	var explicitBlockSize float64
+	if hasExplicitBlock {
+		explicitBlockSize = geomForPct.BorderBoxSize.BlockSize - geomForPct.BlockBorderPadding()
+		if explicitBlockSize < 0 {
+			explicitBlockSize = 0
+		}
+	}
+	orthogonalAvailableBlock := computeOrthogonalAvailableBlock(
+		bla.style, wdm, bla.space, geomForPct, bla.ctx,
+		lineAvailBlock, hasExplicitBlock, explicitBlockSize)
+
 	lineSpace := ConstraintSpace{
-		AvailableSize:            LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock},
-		PercentageResolutionSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize},
-		WritingDirection:         wdm,
-		ExclusionSpace:           exclusionSpace,
+		AvailableSize:                LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock},
+		PercentageResolutionSize:     LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize},
+		WritingDirection:             wdm,
+		ExclusionSpace:               exclusionSpace,
+		OrthogonalFallbackInlineSize: bla.space.OrthogonalFallbackInlineSize,
+		OrthogonalFallbackBlockSize: computeOrthogonalFallbackBlockForChildren(
+			bla.style, wdm, bla.space, geomForPct, bla.ctx,
+			hasExplicitBlock, explicitBlockSize),
+		OrthogonalAvailableBlock: orthogonalAvailableBlock,
 	}
 	lb := NewLineBreaker(itemsData, bla.ctx, lineSpace, fonts, LineBreakerContent)
 	lb.availableWidth = lineAvailableWidth
