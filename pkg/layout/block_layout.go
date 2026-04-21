@@ -854,6 +854,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				containingBlockSize:    LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
 				containingBlockPadding: LogicalEdges{},
 				geom:                   geom,
+				resolvesFixed:          true,
 			}
 			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
 		} else if isContainmentCB || isTransformCB {
@@ -872,6 +873,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				},
 				containingBlockPadding: geom.Padding,
 				geom:                geom,
+				resolvesFixed:       true,
 			}
 			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
 		} else if isPositioned {
@@ -898,7 +900,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					containingBlockPadding: geom.Padding,
 					geom:                geom,
 				}
-				oofPart.LayoutCandidates(absoluteCandidates, builder)
+				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
+					fixedCandidates = append(fixedCandidates, extra...)
+				}
 			}
 			propagatedOOF = fixedCandidates
 		} else {

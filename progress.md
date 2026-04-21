@@ -13,7 +13,14 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 1 (G-TABLE-REL) DONE 2026-04-21.** All 11 primary `position-relative-table-*` tests PASS at 0 px diff. Commits `d174049b` (Part A), `ac2dc780` (Part B), `a8bb41e6` (interim), plus the LastBaseline §10.8.1 fix (pending commit).
+**Phase 5 G-FIXED Part A — OOF resolver re-entrance landed 2026-04-21.** `OutOfFlowLayoutPart.LayoutCandidates` rewritten as a worklist loop (mirroring Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`), now consumes `childResult.PropagatedOOFCandidates` from each laid-out OOF candidate. Added `resolvesFixed bool` on the part to select ICB / containment / transform CB sites that absorb fixed; ordinary positioned sites return unresolved fixed to caller for further propagation. Updated all 7 call sites (block, flex, grid, multicol, table). Closes `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0% PASS); reduces `position-fixed-scroll-nested-fixed` from 4.2% → 1.0% (residual is paint-clip / scrollTop, deferred to G-SCROLL). Net: css-position **62 PASS / 42 FAIL** (was 50/54 at the 2026-04-21 baseline). wm 781/781 ✓, CSS2 ✓, flexbox 626/629 ✓ (no regression).
+
+**Phase 2 (G-CB-CHANGE) closed 2026-04-21 as a no-op — group dissolved.** Audit found that our test harness already re-layouts from scratch after JS, so Blink's `RemovePositionedObjects` invalidation pattern doesn't apply. The 3 tests fail for unrelated foundational reasons and have been re-grouped (see findings.md "G-CB-CHANGE — Phase 2 audit invalidated"):
+- `absolute-pos-box-inside-fixed-pos-box-with-changing-height` → G-FIXED **(closed by Phase 5 Part A)**
+- `containing-block-change-button` → G-SINGLETONS (button vertical-centering)
+- `containing-block-change-scrollframe` → new G-SCROLL (needs `Element.scrollTop` + overflow:hidden scroll paint)
+
+**Phase 1 (G-TABLE-REL) DONE 2026-04-21.** All 11 primary `position-relative-table-*` tests PASS at 0 px diff. Commits `d174049b` (Part A), `ac2dc780` (Part B), `b6ec7d3f` (§10.8.1 fix).
 
 ### Phase 1 summary
 - Part A: `BoxFragmentBuilder.AddChild` computes RelativeOffset for any child whose `Style.GetPosition()` is relative/sticky and whose RelativeOffset is still zero. `SetChildAvailableSize` wired through block/flex/grid/inline/table.
@@ -23,7 +30,11 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 - Known limitations: 8 `-absolute-child` variants still failing at 1.0–1.7% — abspos descendants in a positioned section/cell. Not Phase 1 scope; tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE.
 
 ### Next
-Pick the next phase per the attack order: G-CB-CHANGE (3 tests, invalidation-only) or G-DYN-STATIC (6 tests, prerequisite for G-ABS-CENTER + G-HYPO).
+**G-FIXED Part B residual + adjacent groups.** The OOF resolver is now re-entrant (commit pending). `position-fixed-scroll-nested-fixed` still fails at 1.0% — the inner fixed paints but is clipped by the outer `overflow:auto` and lacks `Element.scrollTop` honoring. Both belong to scroll/paint, not OOF layout. Defer until G-SCROLL is opened.
+
+Adjacent verifications run: 8 `position-relative-table-*-absolute-child` tests are still at 1.0% — different root cause (G-ABS-IN-INLINE / G-ABS-IN-TABLE), not the OOF re-entrance bug. 4 `position-{fixed,absolute}-root-element-{flex,grid}` tests also still 0.8% — distinct G-ROOT-FLEX-GRID issue.
+
+Pick up next: **Phase 3 G-DYN-STATIC** (foundational, prerequisite for IMCB phase) per the attack order in task_plan.md.
 
 ## Test Results
 | Date | Scope | Pass | Fail | NORUN | Notes |
@@ -35,13 +46,17 @@ Pick the next phase per the attack order: G-CB-CHANGE (3 tests, invalidation-onl
 | 2026-04-21 | `position-relative-table-*` (11 primary, post §10.8.1 fix) | 11 | 0 | 0 | Phase 1 DONE. All `-absolute-child` variants (8) still failing — out of Phase 1 scope. |
 | 2026-04-21 | css-writing-modes (post §10.8.1 fix) | 781 | 0 | 0 | Gate held. |
 | 2026-04-21 | CSS2 (post §10.8.1 fix) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | css-position (post OOF re-entrance fix) | 62 | 42 | — | +12 vs baseline. `absolute-pos-box-inside-fixed-pos-box-with-changing-height` 0.5% → 0% PASS. `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (paint-clip residual). |
+| 2026-04-21 | css-writing-modes (post OOF re-entrance fix) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post OOF re-entrance fix) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | css-flexbox (post OOF re-entrance fix) | 626 | 3 | 0 | No regression vs ≥621 baseline; 3 unrelated pre-existing failures. |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |
 |---|---|---|
-| css-writing-modes | 781/781 | 2026-04-21 (post-9913a9e4) |
-| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (pre-Phase-1 baseline implicit) |
-| css-flexbox | ≥621/629 | 2026-04-20 (stale — re-verify after Phase 1) |
+| css-writing-modes | 781/781 | 2026-04-21 (post OOF re-entrance) |
+| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post OOF re-entrance) |
+| css-flexbox | 626/629 | 2026-04-21 (post OOF re-entrance) |
 
 ## Session: 2026-04-21
 

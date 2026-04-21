@@ -49,7 +49,7 @@ Grouped by hypothesised shared root cause, not by diff %. Largest-cluster-first.
 **Status:** All 11 primary `position-relative-table-*` tests PASS at 0 px diff.
 - Part A (shared `AddChild` RelativeOffset) — committed `d174049b`.
 - Part B (section fragments for positioned row groups) — committed `ac2dc780`.
-- Inline-block baseline fix (§10.8.1 fallback) — pending commit. Two edits:
+- Inline-block baseline fix (§10.8.1 fallback) — committed `b6ec7d3f`. Two edits:
   - `table_layout.go`: removed content-box-end LastBaseline synthesis when no cell has a text baseline. Per Blink's `LayoutBox::LastBaselineForInlineBlock`, LastBaseline is nullopt in this case; the fallback to the bottom margin edge lives at the inline-block site, not at the table.
   - `block_layout.go`: block-child baseline propagation no longer falls back from LastBaseline to Baseline. A block's last-baseline must originate from an actual line box (propagated recursively); otherwise the enclosing inline-block uses §10.8.1's bottom-margin-edge fallback at atomic-inline placement.
   - Unblocked all 12 section tests (thead/tbody/tfoot × {top,left}, tr × {top,left}) plus caption/td tests.
@@ -134,12 +134,27 @@ position-absolute-center-007.html   2.1%
 
 **Shared dependency:** `LogicalStaticPosition` is consumed by this machinery — any fix here interlocks with G-DYN-STATIC (which owns static-position rebuilding) and G-HYPO (which uses the both-auto-insets branch).
 
-### G-CB-CHANGE — 3 tests
+### G-CB-CHANGE — 3 tests — **Phase 2 audit invalidated the grouping (2026-04-21)**
 ```
 containing-block-change-scrollframe.html               10.4%
 containing-block-change-button.html                    4.2%
 absolute-pos-box-inside-fixed-pos-box-with-changing-height.html  0.5%
 ```
+**Audit finding (2026-04-21).** The Blink "invalidation-only" model does not apply to our codebase. Our harness (`pkg/visualtest/helpers.go:85-102`) **already** throws away `engine1` and runs `engine2 := layout.NewLayoutEngine(...)` from scratch on the post-JS DOM. That's the moral equivalent of `RemovePositionedObjects` + relayout — there is no caching to invalidate. JS mutations *do* land on the DOM (verified: `fixed.style.height = "300px"` writes `"height: 300px"` to the inline-style attribute and pass-2 sees it).
+
+The 3 tests fail for **heterogeneous, non-CB-change** reasons:
+
+1. **`absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0.5%)** — our layout output box-tree is missing `position:fixed` boxes. Debug dump showed `<div style="position:absolute">` collapsed to `0×0` with no children rendered, and the inner `#fixed` box absent entirely. Likely a foundational gap: positioned-fragment propagation into the principal box tree (or render walk skipping `OutOfFlow` lists). Not a "CB change" issue.
+
+2. **`containing-block-change-button` (4.2%)** — confounded with a `<button>` vertical-centering rendering bug. The reference renders an in-flow `<div>` inside `<button id=button>` with `padding:0` and expects browser default behaviour (vertical-center its 100×100 child in the 400×400 button → green box at viewport (50,200)). Our reference render shows green at viewport (50,50) — i.e. button is NOT vertical-centering content. Until that is fixed, the test cannot pass even with perfect CB-change handling.
+
+3. **`containing-block-change-scrollframe` (10.4%)** — needs *two* unimplemented features: `Element.scrollTop` JS setter (not present in `pkg/js`), and `overflow:hidden` paint-time scroll honoring. Without `scrollTop`, the bottom-`#bottom` div sits at viewport y=800 (off-screen) and the abspos sits at viewport y=500 (clipped by `overflow:hidden`). Both green boxes invisible. Still not a "CB change" issue.
+
+**Planning consequence.** Phase 2 as originally designed (mirror Blink's `NeedsPositionedLayout` + `RemovePositionedObjects`) is a **no-op** for our codebase. Each test should be reclassified into its real category. Provisional re-grouping:
+- `absolute-pos-box-inside-fixed-pos-box-with-changing-height` → **G-FIXED** (positioned-fragment box-tree gap, overlaps with the existing `position-fixed-scroll-nested-fixed` test).
+- `containing-block-change-button` → **G-SINGLETONS** (`<button>` vertical-centering bug).
+- `containing-block-change-scrollframe` → new sub-group **G-SCROLL** (needs `Element.scrollTop` setter + `overflow:hidden` scrolling paint). May share with `hypothetical-box-scroll-*` (currently listed NORUN due to `window.scrollTo`).
+
 **What they exercise.** JS mutates a property that establishes a new containing block — `overflow: hidden` on a div, or insertion of a button — after the page has laid out. Abspos children must re-resolve to the new CB.
 
 **Blink entry points (studied 2026-04-21):**
@@ -230,11 +245,55 @@ position-absolute-root-element-grid.html 0.8%
 
 **Blink entry point:** `layout_view.cc` + flex/grid root-element special-cases.
 
-### G-FIXED — 1 test
+### G-FIXED — 2 tests (1 closed 2026-04-21)
 ```
-position-fixed-scroll-nested-fixed.html   4.2%
+absolute-pos-box-inside-fixed-pos-box-with-changing-height.html  0.5% → 0% PASS  (closed)
+position-fixed-scroll-nested-fixed.html                          4.2% → 1.0%      (paint-clip residual)
 ```
-Nested `position: fixed` inside a scrolling fixed container; inner fixed should escape the scroller and paint above.
+
+**Status (2026-04-21).** Foundational OOF re-entrance fix landed. Closes test #1; reduces test #2 from 4.2% to 1.0%. The remaining 1.0% is paint/scroll territory (fixed must escape `overflow:auto` clip and `outer.scrollTop=200` requires JS scrollTop setter), not OOF layout — pushed to G-SCROLL / paint-time work.
+
+**Root cause (was; fixed 2026-04-21).** Single foundational bug: `OutOfFlowLayoutPart.LayoutCandidates` (`pkg/layout/out_of_flow_layout.go:177`) called `layoutElement(child)` to lay out each OOF candidate, then added the child's fragment to the builder — but **silently dropped** `childResult.PropagatedOOFCandidates`. Any OOF descendant of an OOF candidate was lost.
+
+**Fix shape applied.** `LayoutCandidates` rewritten as worklist loop mirroring Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`. After each child layout, `childResult.PropagatedOOFCandidates` is partitioned: at sites that act as the CB for fixed (root, transform/containment CB) the descendants are appended to the worklist and resolved by the same CB; at ordinary positioned sites only absolute is resolvable here, so fixed is returned to the caller for further propagation. Added `resolvesFixed bool` field on `OutOfFlowLayoutPart`; updated all 7 call sites in block/flex/grid/multicol/table layout. Method now returns `[]OutOfFlowCandidate` (unresolved fixed) which positioned callers append into their own propagated-fixed list.
+
+Block/flex/grid/table layout algorithms all propagate correctly via `result.PropagatedOOFCandidates` (verified — see refs in `block_layout.go:526,587,914`, `flex_layout.go:737,982,1123,1817`, `grid_layout.go:314,391`, `table_layout.go:785,789,956,960,1099`, `multicol_layout.go:271`). Re-collection is implemented in formatting-context parents. The hole is exclusively in `LayoutCandidates` — the OOF resolution loop that ought to be re-entrant.
+
+**Per-test trace.**
+
+1. **`position-fixed-scroll-nested-fixed`** (4.2%):
+   - `<div id=outer>` is `position:fixed` → propagated up to root.
+   - Root's `OutOfFlowLayoutPart.LayoutCandidates` lays out `outer` via `layoutElement`.
+   - Inside `outer`'s block layout, the inner `<div style="position:fixed">` propagates up out of `outer` (because `outer` is positioned, the code at `block_layout.go:879-903` correctly propagates fixed candidates upward).
+   - Inner fixed lands on `outer`'s `LayoutResult.PropagatedOOFCandidates`.
+   - `LayoutCandidates` ignores that, attaches only `outer`'s fragment, never resolves inner fixed against ICB.
+   - **Test image**: red 100×100 outer visible, inner green 200×100 missing entirely.
+
+2. **`absolute-pos-box-inside-fixed-pos-box-with-changing-height`** (0.5%):
+   - `<div style="position:absolute">` propagates up.
+   - Its layout produces propagated `<div id=fixed>` (fixed inside abspos parent → propagates further).
+   - When `<div id=fixed>` finally resolves at root and is laid out via `layoutElement`, its child `.box` (also abspos) propagates as `PropagatedOOFCandidates` on `#fixed`'s result. `LayoutCandidates` drops it.
+   - Verified by debug box-tree dump: post-layout principal boxes show only `<html>` and the abspos wrapper at `0×0`; `#fixed` and `.box` absent.
+
+**Likely wider impact.** This bug surfaces whenever an OOF box has OOF descendants. Expected affected tests (subset of css-position failures, conjecture pending verification):
+- `position-fixed-scroll-nested-fixed` ✓ confirmed
+- `absolute-pos-box-inside-fixed-pos-box-with-changing-height` ✓ confirmed
+- Possibly the 8 `position-relative-table-*-absolute-child` variants (currently classified G-ABS-IN-INLINE / G-ABS-IN-TABLE) — though those have a different setup
+- Possibly several `position-fixed-root-element-{flex,grid}` and `position-absolute-root-element-{flex,grid}` (G-ROOT-FLEX-GRID), if those involve nested OOFs
+
+**Blink reference.** Blink's `OutOfFlowLayoutPart::LayoutOOFNodes` is the recursive entry point. After laying out each OOF candidate, it inspects the produced fragment for descendant OOFs (via `LayoutResult::OutOfFlowPositionedDescendants()`) and either:
+- Re-runs OOF layout for absolute descendants whose CB is the just-laid-out box (the box is positioned, so it's the new CB).
+- Continues propagating fixed descendants up to the ICB resolution.
+The control structure is a worklist loop, not a single pass.
+
+**Fix shape (proposed, ready to implement).** In `LayoutCandidates`:
+1. After `childResult := layoutElement(child, childSpace)`, partition `childResult.PropagatedOOFCandidates`:
+   - **Absolute candidates** with CB = the just-laid-out child → resolve them inline by spinning up a new `OutOfFlowLayoutPart` with `child`'s fragment geometry as the CB.
+   - **Fixed candidates** → if we're at the root (ICB), resolve them in this same pass; otherwise return them on the result so the calling formatting context can re-propagate.
+2. Make `LayoutCandidates` return a `[]OutOfFlowCandidate` of unresolved-fixed candidates, so the root's call (block_layout.go:858) can iterate until empty.
+3. Add a guard against infinite loops (cycle in OOF propagation should be impossible per spec, but a depth limit costs nothing).
+
+**Scope to confirm before coding.** Suggest a quick sweep: run the 8 `*-absolute-child` table variants and the 4 `position-{fixed,absolute}-root-element-{flex,grid}` after the fix; if many close, this single foundational fix could close 10+ tests in one commit.
 
 ### G-ABS-IN-INLINE — 2 tests
 ```

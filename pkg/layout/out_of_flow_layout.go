@@ -38,14 +38,52 @@ type OutOfFlowLayoutPart struct {
 	containingBlockSize    LogicalSize    // padding-box of the containing block (CSS spec §10.3.7)
 	containingBlockPadding LogicalEdges   // CB's padding, used to adjust child offsets to content-box-relative
 	geom                FragmentGeometry
+
+	// resolvesFixed controls whether fixed-position descendants discovered
+	// while laying out OOF children are absorbed by this CB (true) or
+	// propagated to the caller for a higher CB to resolve (false).
+	// True at the ICB (root) and at transform/containment CBs.
+	// False at ordinary positioned ancestors which only contain absolute.
+	resolvesFixed bool
 }
 
 // LayoutCandidates positions all out-of-flow candidates and adds their
-// fragments to the builder.
+// fragments to the builder. Returns any fixed-position descendants that
+// could not be resolved here and must propagate to a higher CB.
+//
+// Mirrors Blink's OutOfFlowLayoutPart::LayoutOOFNodes worklist pattern:
+// laying out an OOF child can surface further OOF descendants (collected
+// during the child's normal-flow pass), which must themselves be resolved
+// against this CB (or propagated upward).
 func (p *OutOfFlowLayoutPart) LayoutCandidates(
 	candidates []OutOfFlowCandidate,
 	builder *BoxFragmentBuilder,
-) {
+) []OutOfFlowCandidate {
+	var propagated []OutOfFlowCandidate
+	worklist := candidates
+	for len(worklist) > 0 {
+		next := worklist
+		worklist = nil
+		descendants := p.layoutCandidatesOnce(next, builder)
+		for _, d := range descendants {
+			if p.resolvesFixed || !d.IsFixedPosition {
+				worklist = append(worklist, d)
+			} else {
+				propagated = append(propagated, d)
+			}
+		}
+	}
+	return propagated
+}
+
+// layoutCandidatesOnce processes a single batch of candidates, adding their
+// fragments to the builder and returning any OOF descendants the children
+// surfaced via PropagatedOOFCandidates.
+func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
+	candidates []OutOfFlowCandidate,
+	builder *BoxFragmentBuilder,
+) []OutOfFlowCandidate {
+	var descendants []OutOfFlowCandidate
 	cbInline := p.containingBlockSize.InlineSize
 	cbBlock := p.containingBlockSize.BlockSize
 	wdm := p.containingBlockWDM
@@ -175,6 +213,9 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 		childSpace := csb.Build()
 
 		childResult := layoutElement(p.ctx, child, childSpace)
+		if len(childResult.PropagatedOOFCandidates) > 0 {
+			descendants = append(descendants, childResult.PropagatedOOFCandidates...)
+		}
 		childLogical := NewLogicalFragment(wdm, childResult.Fragment)
 
 		// CSS 2.1 §10.3.7 / §10.6.4: Solve inline and block constraint
@@ -292,6 +333,7 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(
 			BlockOffset:  finalBlockOffset,
 		})
 	}
+	return descendants
 }
 
 // isAutoSizeInDirection checks if the child element has auto size in the

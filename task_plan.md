@@ -59,7 +59,7 @@ Full detail in `findings.md`. 54 failing tests cluster into **11 groups** by lik
 | 4 | **G-DYN-STATIC** — dynamic static-position re-layout (JS-triggered property flips affect float/inline/table-cell static pos) | 6 | 0.3–2.1% | Static position rectangle recomputation on relayout |
 | 5 | **G-HYPO** — hypothetical position dynamic change + scroll (fixed/abs ancestor moves) | 3+2 NORUN | 2.1–4.2% | `HypotheticalBoxPosition` not recomputed when ancestor offset changes |
 | 6 | **G-ROOT-FLEX-GRID** — `<html>` as position:fixed/absolute root with `display: flex|grid` | 4 | 0.8% | Root-element OOF sizing — insets must resolve against ICB even when `display` is flex/grid |
-| 7 | **G-FIXED** — nested `position: fixed` inside a scrolling fixed container | 1 | 4.2% | Scroll offset propagation through fixed-nested-fixed |
+| 7 | **G-FIXED** — nested OOF re-entrance + scroll-clip escape for fixed | 2 (1 closed) | 0.5–4.2% | OOF resolver wasn't re-entrant. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` 2026-04-21. Residual on `position-fixed-scroll-nested-fixed` is paint-clip / scrollTop, not layout. |
 | 8 | **G-ABS-IN-INLINE** — abspos whose containing block is an inline (CSS2 §10.1.4) | 2 | 2.3–2.9% | Inline-CB bounding box computation for abspos children |
 | 9 | **G-STICKY** — `position: sticky` at scroll=0 must stay in normal flow | 1 | 3.4% | We treat sticky as relative (applies `top:10px` unconditionally); needs scroll-aware algorithm |
 | 10 | **G-REPLACED** — abspos replaced elements with no intrinsic size / `max-content` sizing | 1 | 2.1% | CSS 2.2 §10.3.7 / §10.6.5 abs-replaced-width/height |
@@ -106,12 +106,14 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] Regression sweeps held: wm 781/781, CSS2 99/99.
 - [x] Result: all 11 primary `position-relative-table-*` tests pass at 0 px diff. 8 `-absolute-child` variants remain out of scope (tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE).
 
-### Phase 2: G-CB-CHANGE (3 tests) — invalidation only
+### Phase 2: G-CB-CHANGE (3 tests) — **plan invalidated 2026-04-21; group dissolved**
 - [x] Blink research: `StyleDifference::NeedsPositionedLayout` + `LayoutBlock::RemovePositionedObjects(stay_within)`.
-- [ ] Audit: does our style-change path detect position/containment-establishing changes? If not, add `NeedsPositionedLayout` bit.
-- [ ] Implement `RemovePositionedObjects` on our containing-block-capable fragments.
-- [ ] Representative: `containing-block-change-scrollframe` (10.4%).
-- [ ] Regression + commit.
+- [x] Audit (2026-04-21): our `pkg/visualtest/helpers.go:85-102` already runs `engine2 := layout.NewLayoutEngine(...)` from-scratch on the post-JS DOM. There is no caching to invalidate. JS mutations land correctly (`fixed.style.height = "300px"` → inline-style attr `"height: 300px"`, pass-2 sees it). The Blink invalidation pattern doesn't apply.
+- [x] Per-test triage (see `findings.md` "G-CB-CHANGE — Phase 2 audit invalidated"):
+  - `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0.5%) → **G-FIXED** (positioned-fragment box-tree gap; pos:fixed/absolute boxes absent from box tree).
+  - `containing-block-change-button` (4.2%) → **G-SINGLETONS** (`<button>` vertical-centering rendering bug).
+  - `containing-block-change-scrollframe` (10.4%) → new **G-SCROLL** sub-group (needs `Element.scrollTop` setter + `overflow:hidden` scroll paint).
+- [x] Phase 2 closed as a no-op — no code changes needed for "invalidation". Move on to next phase per revised attack order.
 
 ### Phase 3: G-DYN-STATIC (6 tests) — foundational
 - [x] Blink research: static position NOT cached; rebuilt each pass via `LayoutResult::OutOfFlowPositionedDescendants` list.
@@ -128,8 +130,10 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [ ] If hypothetical tests pass without additional work, mark G-HYPO closed.
 - [ ] Regression + commit.
 
-### Phase 5: G-ROOT-FLEX-GRID + G-FIXED (5 tests)
-- [ ] **Blink research (deferred from Phase 0):** `layout_view.cc` root-element OOF sizing + nested-fixed scroll propagation.
+### Phase 5: G-ROOT-FLEX-GRID + G-FIXED (5 tests, 1 closed)
+- [x] **G-FIXED Part A — OOF resolver re-entrance.** `OutOfFlowLayoutPart.LayoutCandidates` was dropping `childResult.PropagatedOOFCandidates`. Mirrored Blink's `OutOfFlowLayoutPart::LayoutOOFNodes` worklist pattern. Returns unresolved fixed candidates to caller; new `resolvesFixed` flag selects ICB / transform-or-containment-CB sites that absorb fixed. Updated all 7 call sites. Closes `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0.5% → 0%); reduces `position-fixed-scroll-nested-fixed` (4.2% → 1.0%). Residual diff is paint-time scroll/clipping (fixed escaping `overflow:auto`), not layout — defer.
+- [ ] **Blink research (deferred from Phase 0):** `layout_view.cc` root-element OOF sizing for the 4 G-ROOT-FLEX-GRID tests (still 0.8% each).
+- [ ] G-FIXED residual: scroll-clip escape for fixed inside `overflow:auto` scrollable, plus `Element.scrollTop` JS setter (overlaps G-SCROLL).
 - [ ] Implement + verify.
 - [ ] Regression + commit.
 

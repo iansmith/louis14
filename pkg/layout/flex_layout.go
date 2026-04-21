@@ -1804,7 +1804,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
 					geom:                geom,
 				}
-				oofPart.LayoutCandidates(absoluteCandidates, builder)
+				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
+					fixedCandidates = append(fixedCandidates, extra...)
+				}
 			}
 			propagatedOOF = fixedCandidates
 		} else {
