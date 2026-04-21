@@ -239,19 +239,27 @@ Same fix for height (~line 1364-1367). This makes `width="100px"` → CSS `width
 
 After 5a, 5b, 5d (Mongolian B2), and the singleton sweep, four wm failures remain. They cluster into **three foundational issues**, not four — 004 and 006 likely share one root cause.
 
-### Group A — Orthogonal-root ancestor walk (`orthogonal-root-resize-icb-007`, 1.1%)
+### Group A — Orthogonal-root ancestor walk (`orthogonal-root-resize-icb-007`, 1.1%) — **DONE 2026-04-21** (`c9ff9826`)
 
 **Test structure:** `body > div(10×10) > div(plain) > div(inline-block, WM: vertical-rl, width: 100px) > float+float (each 100×50)`.
 
-**Failure:** after iframe resize to 100×100, inline-block orthogonal root still gets only 10px inline-size (grandparent's definite block-size), so the two floats stack instead of fitting side-by-side — 5400px of residual red.
+**Failure (pre-fix):** after iframe resize to 100×100, inline-block orthogonal root still got only 10px inline-size (grandparent's definite block-size), so the two floats stacked instead of fitting side-by-side — 5400px of residual red.
 
-**Blink reference (confirmed via WebFetch 2026-04-20):** in LayoutNG, orthogonal-root inline-size resolution has **no `position` gate**. The walk looks for the nearest ancestor with definite inline-size; if none exists, it falls back to the ICB. `display: inline-block`, abspos, and inline orthogonal roots all use the same algorithm. `LayoutBoxModelObject::ContainingBlockLogicalWidthForOrthogonalChild` (legacy) and LayoutNG's `ComputeOrthogonalChildrenInlineSize` both walk unconditionally.
+**Blink reference (confirmed via WebFetch 2026-04-20 and again 2026-04-21 via `block_node.cc` + `space_utils.cc`):** orthogonal-root inline-size resolution has **no `position` gate** and **no atomic-inline vs block-level gate**. `SetOrthogonalFallbackInlineSizeIfNeeded` applies the same ancestor-walk-to-ICB algorithm to inline-block orthogonal roots as to block-level ones.
 
-**Our code (`pkg/layout/block_layout.go:1487` `computeOrthogonalAvailableBlock`):** climbs via `childAvailableBlock` (parent's already-resolved block-size), caps at ICB, falls back to `OrthogonalFallbackBlockSize`. The algorithm exists but the sibling tests `icb-001..006` all gate their orthogonal root through an abspos chain — abspos gets ICB via a different path in our code. Inline-block likely routes through `inline_layout.go` atomic-inline layout (`contentInlineSize` indefinite for block axis, but the orthogonal child's block-size comes from the grandparent's 10px, not the ICB).
+**Actual root cause (diverged from hypothesis).** The walk algorithm already existed (`block_layout.go:1487` `computeOrthogonalAvailableBlock`), and the block-child path at `block_layout.go:368-370` used it correctly (`blockForChild = orthogonalAvailableBlock` when `isOrthogonal`). The divergence was in the **atomic-inline path** — `line_breaker.handleAtomicInline` at `line_breaker.go:1205-1234` — which used the raw `lb.space.AvailableSize.BlockSize` (10px, inherited down from the grandparent's content-box) instead of calling the same walk. After the axis-swap in `SetAvailableSize`, the orthogonal child saw inline-size=10 and the second float overflowed.
 
-**Fix shape:** when building the orthogonal child's constraint space from inline-layout (atomic inline path at `inline_layout.go:186-202`), the block-size passed must match the abspos path — walk ancestors unconditionally to nearest definite block-size or ICB, ignoring `position`.
+A second amplifier: `inline_layout.layoutInlineChildren` hand-constructs a `lineSpace` `ConstraintSpace{}` and in doing so dropped `OrthogonalFallbackInlineSize` and `OrthogonalFallbackBlockSize` from `bla.space`. Even the existing "Indefinite→ICB" fallback in `ConstraintSpaceBuilder.SetAvailableSize` couldn't fire because the fallback fields were 0 on `lb.space`.
 
-**Broader impact:** per the findings already recorded — two independent data points (icb-007 + I3's B3 `IsOrthogonalTo` narrowing) suggest "position-gated" holes in our containing-block helpers. Unblocking icb-007 is likely also a wedge into css-position (54 failures currently).
+**Fix (3 files, 46 insertions / 4 deletions):**
+
+1. `pkg/layout/constraint_space.go` — new field `ConstraintSpace.OrthogonalAvailableBlock` holding the pre-resolved available block-size for orthogonal atomic-inline descendants of the current IFC.
+2. `pkg/layout/inline_layout.go` — `layoutInlineChildren` computes `hasExplicitBlock`/`explicitBlockSize` from `geomForPct`, calls `computeOrthogonalAvailableBlock` (same helper as block-child path), and propagates the result plus `OrthogonalFallbackInlineSize` + `OrthogonalFallbackBlockSize` (via `computeOrthogonalFallbackBlockForChildren`) onto `lineSpace`.
+3. `pkg/layout/line_breaker.go` — `handleAtomicInline` normal-layout branch checks `lb.space.WritingDirection.IsOrthogonalTo(childWDM)` and prefers `lb.space.OrthogonalAvailableBlock` as the parent-side BlockSize; the axis-swap in `SetAvailableSize` then gives the child the correct ICB-capped inline-size.
+
+**Result:** `orthogonal-root-resize-icb-007` at 0 pixel diff. Zero regressions: css-writing-modes 780/781 (only Group C remains), CSS2 99/99, css-position + css-display + css-flexbox 703/110 identical to baseline (verified via `git stash`).
+
+**Broader impact observation (not yet exploited).** Two independent data points (icb-007 + I3's B3 `IsOrthogonalTo` narrowing) suggested "position-gated" holes in containing-block helpers. The icb-007 fix was NOT position-related — it was an inline-vs-block path divergence. If Group C or css-position uncovers another abspos-vs-static asymmetry, investigate whether a similar atomic-inline vs block-level symmetry break is present.
 
 ### Group B — `unicode-bidi: plaintext` paragraph resolution (`block-plaintext-004`, 0.9% & `block-plaintext-006`, 1.0`) — **DONE 2026-04-21**
 
@@ -302,8 +310,8 @@ Both tests exercise UAX#9 P2/P3 where each paragraph is separated by a hard brea
 
 Ranked by "foundational impact per unit of effort", not by % diff:
 
-1. ~~**Group B (block-plaintext-004 + 006)**~~ — **DONE 2026-04-21**. Two foundational fixes: font-size % inheritance in cascade, and `InlineItemControl` strut alignment with `InlineItemText` strut for `line-height: normal`. Root cause was not paragraph-level sourcing.
-2. **Group A (icb-007)** — 1 test but unblocks the "position-gated ancestor walk" class of bugs; likely also unblocks unknown css-position failures. Moderate complexity.
+1. ~~**Group B (block-plaintext-004 + 006)**~~ — **DONE 2026-04-21** (`c0536939`). Two foundational fixes: font-size % inheritance in cascade, and `InlineItemControl` strut alignment with `InlineItemText` strut for `line-height: normal`. Root cause was not paragraph-level sourcing.
+2. ~~**Group A (icb-007)**~~ — **DONE 2026-04-21** (`c9ff9826`). Atomic-inline orthogonal-root path aligned with block-child path via new `ConstraintSpace.OrthogonalAvailableBlock` field. Not position-related (hypothesis was wrong) — it was inline-vs-block path divergence.
 3. **Group C (inline-block-alignment-007)** — hardest. Needs precise Blink baseline-metrics study before touching code; prior broad attempts regressed 25 tests each time. Save for last, dispatch as its own focused task with narrow scope guard.
 
 ## Multi-category baseline — 2026-04-20
