@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/css"
+
 // OutOfFlowCandidate records an absolutely or fixed positioned child
 // discovered during normal layout. Collected by BoxFragmentBuilder,
 // resolved by OutOfFlowLayoutPart after the containing block's size
@@ -179,7 +181,13 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 		useFixedInline := false
 		useFixedBlock := false
 
-		if insets.HasInlineStart && insets.HasInlineEnd &&
+		// Tables (and inline-tables) are intrinsically sized: auto width/height
+		// means "size to content", not "fill available". Skip the stretched-fit
+		// path so the child's own layout pass determines the size. Auto margins
+		// then absorb leftover space as usual (CSS 2 §17.4 / Align 3 §8.2).
+		stretchable := !isNonStretchableDisplay(childStyle)
+
+		if stretchable && insets.HasInlineStart && insets.HasInlineEnd &&
 			isAutoSizeInDirection(childStyle, wdm, true) {
 			mStart := childMargins.InlineStart
 			mEnd := childMargins.InlineEnd
@@ -197,7 +205,7 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 			useFixedInline = true
 		}
 
-		if insets.HasBlockStart && insets.HasBlockEnd && cbBlock != Indefinite &&
+		if stretchable && insets.HasBlockStart && insets.HasBlockEnd && cbBlock != Indefinite &&
 			isAutoSizeInDirection(childStyle, wdm, false) {
 			mStart := childMargins.BlockStart
 			mEnd := childMargins.BlockEnd
@@ -366,6 +374,17 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 		}
 	}
 	return descendants
+}
+
+// isNonStretchableDisplay reports whether a display type has intrinsic
+// (content-based) sizing and therefore should not stretch to fill the IMCB
+// when both insets are specified. Tables follow CSS 2 §17.5 table sizing,
+// independent of the inset-based stretch-fit rule for block-level non-replaced
+// elements. Mirrors Blink's node.IsTable() gate in absolute_utils.cc's
+// ComputeOofBlockDimensions/ComputeOofInlineDimensions.
+func isNonStretchableDisplay(style *css.Style) bool {
+	d := style.GetDisplay()
+	return d == css.DisplayTable || d == css.DisplayInlineTable
 }
 
 // isAutoSizeInDirection checks if the child element has auto size in the

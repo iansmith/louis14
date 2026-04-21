@@ -8760,12 +8760,8 @@ func ResolveLogicalProperties(node *html.Node, style *Style) {
 		}
 	}
 
-	// Remap inline-size / block-size — but skip for inherited writing-mode,
-	// because transformToVerticalRL handles positioning as a post-pass and
-	// expects children to use horizontal dimensions.
-	if inherited, _ := style.Get("_writing-mode-inherited"); inherited == "true" {
-		return
-	}
+	// Remap inline-size / block-size for both explicit and inherited
+	// writing-mode — louis14 lays out natively in logical space.
 	if val, ok := style.Get("_inline-size"); ok {
 		if isVertical {
 			style.Set("height", val)

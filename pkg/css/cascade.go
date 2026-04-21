@@ -912,14 +912,8 @@ func resolveLogicalSizeProperties(style *Style) {
 	if !isVertical {
 		return // horizontal-tb: default mapping is correct
 	}
-	// If writing-mode was inherited (not explicitly set), don't remap logical
-	// size properties. The layout engine's transformToVerticalRL handles vertical
-	// positioning as a post-pass and expects children to use horizontal dimensions.
-	// Only elements that explicitly set writing-mode should have their logical
-	// properties remapped to the vertical axis.
-	if inherited, _ := style.Get("_writing-mode-inherited"); inherited == "true" {
-		return
-	}
+	// Remap for both explicitly-set and inherited writing-mode — logical
+	// axes are always computed from the element's used writing-mode.
 
 	// For vertical writing modes:
 	//   inline-size -> height (not width)

@@ -1177,8 +1177,19 @@ func PropagateOOFCandidates(
 	// Convert child-logical BP edges to physical, then to parent-logical.
 	physBPEdges := ToPhysicalEdges(childBPLogical, childWDM)
 	parentLogicalBP := ToLogicalEdges(physBPEdges, parentWDM)
-	blockAdj := childBlockOff + parentLogicalBP.BlockStart
-	inlineAdj := childInlineOff + parentLogicalBP.InlineStart
+
+	// If the child has a position:relative/sticky RelativeOffset, the child is
+	// visually displaced from its normal-flow position. Propagated OOF
+	// descendants whose CB is the parent or higher (e.g. fixed descendants of a
+	// relative ancestor) anchor at the child's VISUAL position per the
+	// hypothetical-box algorithm. Mirrors Blink's
+	// OutOfFlowLayoutPart::PropagateOOFPositionedInfo accumulating the
+	// container's relative offset into the descendant's static position.
+	relOffsetLog := NewConverter(parentWDM, PhysicalSize{}).
+		ToLogicalOffset(childResult.Fragment.RelativeOffset, PhysicalSize{})
+
+	blockAdj := childBlockOff + parentLogicalBP.BlockStart + relOffsetLog.BlockOffset
+	inlineAdj := childInlineOff + parentLogicalBP.InlineStart + relOffsetLog.InlineOffset
 
 	// Detect when the child's writing direction differs from the parent's.
 	// This includes both orthogonal writing modes (e.g. HTB inside VRL) and

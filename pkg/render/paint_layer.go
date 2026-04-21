@@ -1003,8 +1003,11 @@ func parseFontFeatureSettings(value string) []textshape.FontFeature {
 	return features
 }
 
-// sortZLists sorts NegativeZ and PositiveZ by z-index (ascending),
-// then recurses into all child layers.
+// sortZLists sorts NegativeZ and PositiveZ by z-index (ascending). AutoZero
+// is DOMIndex-sorted only when no entry is a flex item: for CSS 2.1 Appendix
+// E step 6 we want tree order on z-index:auto positioned descendants, but
+// flex items paint in order-modified document order per CSS Flexbox §4.3 and
+// their insertion order already reflects that — don't clobber it.
 func (layer *PaintLayer) sortZLists() {
 	sort.SliceStable(layer.NegativeZ, func(i, j int) bool {
 		return layer.NegativeZ[i].ZIndex < layer.NegativeZ[j].ZIndex
@@ -1012,6 +1015,22 @@ func (layer *PaintLayer) sortZLists() {
 	sort.SliceStable(layer.PositiveZ, func(i, j int) bool {
 		return layer.PositiveZ[i].ZIndex < layer.PositiveZ[j].ZIndex
 	})
+	hasFlexItem := false
+	for _, entry := range layer.AutoZero {
+		if entry.Box != nil && entry.Box.IsFlexItem() {
+			hasFlexItem = true
+			break
+		}
+	}
+	if !hasFlexItem {
+		sort.SliceStable(layer.AutoZero, func(i, j int) bool {
+			bi, bj := layer.AutoZero[i].Box, layer.AutoZero[j].Box
+			if bi == nil || bj == nil {
+				return false
+			}
+			return bi.DOMIndex < bj.DOMIndex
+		})
+	}
 	for _, child := range layer.NegativeZ {
 		child.sortZLists()
 	}
