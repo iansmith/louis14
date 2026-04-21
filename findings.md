@@ -339,7 +339,7 @@ When a fixed-pos ancestor moves via JS, step 1 naturally picks up the new value 
 
 **Residual: `hypothetical-dynamic-change-003` (4.2%).** Different root cause — `position: relative` ancestor's visual `left:100px` must propagate into the fixed descendant's static position when the descendant is OOF-resolved at the ICB. Today our normal-flow capture records the relative ancestor's in-flow position (0, 0); the relative offset is applied at paint time via `fragment.RelativeOffset` and never reaches the OOF worklist. Blink computes the "accumulated container offset" during `PropagateOOFPositionedInfo` and includes the ancestor's relative translation. **Fix scope:** during OOF propagation in `block_layout.go` `PropagateOOFCandidates`, when the containing `childResult.Fragment` has a non-zero `RelativeOffset`, add that offset (in parent's logical axes) to `adj.StaticPosition.Offset` before appending. Pushed to Commit 3.
 
-### G-ROOT-FLEX-GRID — 4 tests (CLOSED 2026-04-21, Phase 5)
+### G-ROOT-FLEX-GRID — 4 tests (CLOSED 2026-04-21, Phase 5 M5b, commit `7e686a28`)
 ```
 position-fixed-root-element-flex.html    0.8% → 0% PASS
 position-fixed-root-element-grid.html    0.8% → 0% PASS
