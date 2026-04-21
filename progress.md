@@ -102,11 +102,11 @@ Mirror Blink's table section fragments. Today `table_layout.go:1105-1129` concat
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | css-position category, Phase 0 + Phase 0b done (Blink research + NORUN triage). Phase 1 (G-TABLE-REL, 16 tests) next. |
+| Where am I? | css-position category, Phase 1 (G-TABLE-REL, 11 primary tests) DONE. Pick next phase: G-CB-CHANGE (3 tests, invalidation) or G-DYN-STATIC (6 tests, foundational for Phase 4). |
 | Where am I going? | 100/100 runnable css-position at 0 diff (4 SKIPs out of scope for layout plan). |
 | What's the goal? | All runnable css-position tests at 0 diff; wm 781/781 and CSS2 99/99 must hold. |
-| What have I learned? | Blink applies relative offsets at `BoxFragmentBuilder::AddChild` — fragment-builder-level, uniform across display types. Our mirror should push the check down into the shared AddChild. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only. |
-| What have I done? | Phase 5f (wm) complete. Fresh css-position baseline captured. Failures grouped into 11 clusters. Attack order set. Tracking docs restructured. Blink research completed for 7 of 10 groups. NORUN triage done. |
+| What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block container's LastBaseline must originate from a line-box descendant — blocks must not synthesize content-box-end baselines, and block_layout must not fall back from LastBaseline to Baseline. The §10.8.1 bottom-margin-edge fallback for inline-blocks lives at atomic-inline placement. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only. |
+| What have I done? | Phase 5f (wm) complete. Fresh css-position baseline captured. Failures grouped into 11 clusters. Attack order set. Blink research for 7/10 groups. NORUN triage done. Phase 1 (G-TABLE-REL) closed — commits `d174049b` (Part A), `ac2dc780` (Part B), `b6ec7d3f` (§10.8.1 fix). All 11 primary tests PASS; wm 781/781 and CSS2 99/99 held. |
 
 ## Error Log
 *(populated as work progresses)*

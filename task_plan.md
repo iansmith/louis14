@@ -53,7 +53,7 @@ Full detail in `findings.md`. 54 failing tests cluster into **11 groups** by lik
 
 | # | Group | Count | % range | Estimated shape of root cause |
 |---|---|---|---|---|
-| 1 | **G-TABLE-REL** — position:relative on table-internal elements (thead/tbody/tfoot/tr/td) | 16 | 0.4–1.7% | `table_layout.go` never applies `RelativeOffset` — all 16 likely one commit |
+| 1 | ~~**G-TABLE-REL**~~ — position:relative on table-internal elements (thead/tbody/tfoot/tr/td) — **DONE** | 11 (primary) | 0.4–1.7% | Closed by commits `d174049b`, `ac2dc780`, `b6ec7d3f`. 8 `-absolute-child` variants moved to G-ABS-IN-INLINE / G-ABS-IN-TABLE. |
 | 2 | **G-ABS-CENTER** — abspos centering with `margin: auto` + both-axis insets (`css-align-3` abspos sizing) | 5 | 0.3–2.1% | Abspos available-space = 2 × distance(center→closest edge); auto-margin distribution |
 | 3 | **G-CB-CHANGE** — dynamic change of containing-block establishment (JS toggle of overflow/button/height) | 3 | 0.5–10.4% | Abspos children need re-resolve to new CB after JS mutation |
 | 4 | **G-DYN-STATIC** — dynamic static-position re-layout (JS-triggered property flips affect float/inline/table-cell static pos) | 6 | 0.3–2.1% | Static position rectangle recomputation on relayout |
@@ -69,7 +69,7 @@ Full detail in `findings.md`. 54 failing tests cluster into **11 groups** by lik
 
 Research insights from Blink study (2026-04-21) reshape the ordering — **G-DYN-STATIC is a prerequisite for both G-ABS-CENTER and G-HYPO**, and the IMCB machinery is shared between G-ABS-CENTER and G-HYPO.
 
-1. **G-TABLE-REL (16 tests, ~one fix).** `table_layout.go` / `AddChild` has no `RelativeOffset` path. Blink applies relative offsets at the fragment-builder level — pushing the check down into our shared `AddChild` equivalent fixes tables and prevents the same bug in any future layout algorithm. **Start here.**
+1. ~~**G-TABLE-REL (11 primary tests).**~~ **Done 2026-04-21** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Relative offset moved into shared `BoxFragmentBuilder.AddChild`; positioned thead/tbody/tfoot emit section fragments; inline-block §10.8.1 last-baseline fallback corrected.
 2. **G-CB-CHANGE (3 tests) — invalidation-only.** Add the style-change path: `StyleDifference::NeedsPositionedLayout` + `RemovePositionedObjects(stay_within)` so abspos children re-register with their new CB. No sizing changes.
 3. **G-DYN-STATIC (6 tests) — foundational.** Rebuild static position every layout pass via an `OutOfFlowPositionedDescendants` list on `LayoutResult`. Drop any existing static-position caching. Required before IMCB can be exercised with dynamic inputs.
 4. **G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests).** Both depend on `ComputeUnclampedIMCBInOneAxis` / `ResizeIMCBInOneAxis` in a new `pkg/layout/absolute_utils.go`. The hypothetical-box tests *are* the both-insets-auto branch — they may pass for free once IMCB lands. Verify after the IMCB commit and split if needed.
@@ -96,17 +96,15 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] Triage the 5 NORUN entries → 4 SKIP (infra), 1 real FAIL (`position-change.html`). Details in `findings.md` "NORUN triage".
 - [x] Blink research for 7 groups (G-TABLE-REL, G-CB-CHANGE, G-DYN-STATIC, G-ABS-CENTER, G-HYPO, G-STICKY, G-ABS-IN-INLINE) — see `findings.md` per-group "Blink entry points" sections.
 
-### Phase 1: G-TABLE-REL (16-18 tests) — **IN PROGRESS**
+### Phase 1: G-TABLE-REL (11 primary tests) — **DONE 2026-04-21**
 - [x] Blink research: relative offset is applied in `BoxFragmentBuilder::AddChild` via `ComputeRelativeOffsetForBoxFragment`. Fragment-builder-level, not algorithm-level.
 - [x] Decision (2026-04-21, user-directed): do what Blink does — push the check into our shared `BoxFragmentBuilder.AddChild`. Parent's content-box size is the CB for percentage resolution.
-- [x] Scope expanded after code audit (2026-04-21): the fix is two-part.
-    - **Part A**: move RelativeOffset into shared `AddChild`; remove duplicate tail blocks in `block_layout.go:929-940`, `flex_layout.go:1821-1832`, `grid_layout.go:395-403`, and 3 call-sites in `inline_layout.go` (1122/1286/1401). Fixes `tr-*` (4 tests).
-    - **Part B**: emit section fragments (thead/tbody/tfoot) in `table_layout.go` so the shared AddChild has a fragment to attach to. Today the row-group buckets at line 1105-1129 flatten into one row list — no section fragment exists. Fixes `thead-*`/`tbody-*`/`tfoot-*` (12 tests).
-- [ ] First: run `td-top` isolated to confirm cells already honor `RelativeOffset` via `block_layout.go`'s tail block — if they do, td failures are unrelated and G-TABLE-REL is 16 tests (not 18).
-- [ ] Implement Part A. Verify block/flex/grid/inline passes unchanged (regression: wm + CSS2 + flex).
-- [ ] Implement Part B. Verify the 16 (or 18) table-relative tests + `position-relative-001/002` + `position-relative-011/012/013` table-percentage tests.
-- [ ] Regression: full wm + CSS2 + flex spot-check.
-- [ ] Commit: "Phase 1 Part A: RelativeOffset at shared fragment-builder AddChild" and "Phase 1 Part B: emit thead/tbody/tfoot section fragments".
+- [x] Scope narrowed after isolated test run (2026-04-21): `td-top` / `td-left` diffs were a *baseline* bug, not a RelativeOffset bug. The green cell box was already shifted correctly; residual was a ~4px text-offset below the table.
+- [x] Part A — RelativeOffset at shared `AddChild`. Committed `d174049b`. Removed duplicate tail blocks in block/flex/grid/inline layout algorithms.
+- [x] Part B — emit section fragments (thead/tbody/tfoot) in `table_layout.go` so positioned sections have a fragment to attach to. Committed `ac2dc780`.
+- [x] §10.8.1 fix — inline-block last-baseline. Committed `b6ec7d3f`. Two edits: stop synthesizing table LastBaseline at content-box block-end when no cell has a text baseline, and stop propagating `childResult.Baseline` as `LastBaseline` in block_layout. Per Blink's `LayoutBox::LastBaselineForInlineBlock`, a block has a last-baseline only if a line-box descendant provides one; otherwise the inline-block's §10.8.1 bottom-margin-edge fallback fires at atomic-inline placement.
+- [x] Regression sweeps held: wm 781/781, CSS2 99/99.
+- [x] Result: all 11 primary `position-relative-table-*` tests pass at 0 px diff. 8 `-absolute-child` variants remain out of scope (tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE).
 
 ### Phase 2: G-CB-CHANGE (3 tests) — invalidation only
 - [x] Blink research: `StyleDifference::NeedsPositionedLayout` + `LayoutBlock::RemovePositionedObjects(stay_within)`.
@@ -164,7 +162,7 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 ## Milestones (commit + report after each)
 Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 
-- **M1:** G-TABLE-REL closed → +16 (50 → 66). May also close `position-relative-011/012/013` (67–69).
+- **M1:** G-TABLE-REL closed → +11 primary (50 → 61). **Achieved 2026-04-21** via commits `d174049b`, `ac2dc780`, `b6ec7d3f`. 8 `-absolute-child` variants deferred to G-ABS-IN-INLINE / G-ABS-IN-TABLE. May also have closed `position-relative-011/012/013` — verify at next baseline refresh.
 - **M2:** G-CB-CHANGE closed → +3 (→ ~69–72).
 - **M3:** G-DYN-STATIC closed → +6 (→ ~75–78).
 - **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ ~83–86).
