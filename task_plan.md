@@ -38,8 +38,15 @@ Highest-diff outliers (top 5 by pixel count):
 |  4.2% | 20000 | `hypothetical-dynamic-change-003.html` | G-HYPO |
 |  3.4% | 16308 | `sticky-top-001.html` | G-STICKY |
 
-5 NORUN (tests that execute but emit no PASS/FAIL line — harness quirk or timeout):
-`hypothetical-box-scroll-parent`, `hypothetical-box-scroll-viewport`, `position-absolute-multicol-001`, `position-change`, `replaced-object-backdrop`. Triage each in Phase 0.
+5 NORUN — **triaged 2026-04-21** (full table in `findings.md`):
+- 4 are runner **SKIPs** ("no usable reference files found") — infrastructure gaps, not layout bugs:
+  - `hypothetical-box-scroll-parent` (ref file missing from snapshot)
+  - `hypothetical-box-scroll-viewport` (missing `window.scrollTo` + ref)
+  - `position-absolute-multicol-001` (absolute-path ref unresolved by runner)
+  - `replaced-object-backdrop` (`<object popover>` JS unsupported + absolute-path ref)
+- 1 is a real **FAIL** miscounted as NORUN because the parser-error log format doesn't match our regex: `position-change.html` — HTML parser bails with `tokenizer error: expected '>' but reached EOF`. Counted as a real failure (moves to G-SINGLETONS).
+
+**Target revision.** True runnable set = 100 tests; true failure count = 55 (54 original + position-change). The 4 SKIPs need harness / JS-engine work and are **out of scope for this plan**. Deliverable: **100/100 runnable at 0 diff** (104 total if the SKIPs are later un-skipped by separate infra work).
 
 ## Groups (root-cause-oriented, not %-diff-oriented)
 Full detail in `findings.md`. 54 failing tests cluster into **11 groups** by likely shared root cause. Fix one representative test per group; if the root cause is correct, siblings fall out for free.
@@ -60,15 +67,17 @@ Full detail in `findings.md`. 54 failing tests cluster into **11 groups** by lik
 
 ## Attack order (foundational impact ÷ effort)
 
-1. **G-TABLE-REL (16 tests, ~one fix).** `table_layout.go` has no `RelativeOffset` path. This is the biggest single-root-cause cluster and the cleanest unlock. **Start here.**
-2. **G-DYN-STATIC + G-CB-CHANGE (9 tests).** Both classes hinge on recomputing abspos children when JS mutates a property. Likely share a common missing-invalidation path. Tackle together after #1.
-3. **G-ABS-CENTER (5 tests).** CSS-align-3 abspos sizing — well-specified, bounded scope, no JS-driven state.
-4. **G-HYPO (5 tests).** Hypothetical-box recomputation when ancestor moves. Includes the two NORUN `hypothetical-box-scroll-*` tests — triage whether those are harness issues or real.
-5. **G-ROOT-FLEX-GRID + G-FIXED (5 tests).** Root-element OOF + nested fixed. May share scrollable-fixed CB handling.
-6. **G-ABS-IN-INLINE (2 tests).** §10.1.4 inline CB for abspos.
-7. **G-STICKY (1 test).** Minimum viable sticky: at scroll=0, no offset.
-8. **G-REPLACED (1 test).** Abs-replaced sizing for `max-content`.
-9. **G-SINGLETONS (11 tests).** Sweep last — `clear-001` and `dynamic-list-marker` may already be within fuzz tolerances and need only careful inspection.
+Research insights from Blink study (2026-04-21) reshape the ordering — **G-DYN-STATIC is a prerequisite for both G-ABS-CENTER and G-HYPO**, and the IMCB machinery is shared between G-ABS-CENTER and G-HYPO.
+
+1. **G-TABLE-REL (16 tests, ~one fix).** `table_layout.go` / `AddChild` has no `RelativeOffset` path. Blink applies relative offsets at the fragment-builder level — pushing the check down into our shared `AddChild` equivalent fixes tables and prevents the same bug in any future layout algorithm. **Start here.**
+2. **G-CB-CHANGE (3 tests) — invalidation-only.** Add the style-change path: `StyleDifference::NeedsPositionedLayout` + `RemovePositionedObjects(stay_within)` so abspos children re-register with their new CB. No sizing changes.
+3. **G-DYN-STATIC (6 tests) — foundational.** Rebuild static position every layout pass via an `OutOfFlowPositionedDescendants` list on `LayoutResult`. Drop any existing static-position caching. Required before IMCB can be exercised with dynamic inputs.
+4. **G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests).** Both depend on `ComputeUnclampedIMCBInOneAxis` / `ResizeIMCBInOneAxis` in a new `pkg/layout/absolute_utils.go`. The hypothetical-box tests *are* the both-insets-auto branch — they may pass for free once IMCB lands. Verify after the IMCB commit and split if needed.
+5. **G-ROOT-FLEX-GRID + G-FIXED (5 tests).** Blink research **deferred** to phase start — study `layout_view.cc` root-element specials + nested-fixed scroll offset at that point.
+6. **G-ABS-IN-INLINE (2 tests).** New `pkg/layout/inline_containing_block.go` mirroring `InlineContainingBlockUtils::ComputeInlineContainerGeometry` — union rects of first + last line-boxes.
+7. **G-STICKY (1 test).** Minimum viable: at layout, sticky boxes get zero offset; `sticky-top-001` naturally passes. Full `StickyPositionScrollingConstraints` can wait until a scroll-based sticky test appears.
+8. **G-REPLACED (1 test).** Blink research **deferred** to phase start — CSS 2.2 §10.3.7 / §10.6.5 abs-replaced sizing.
+9. **G-SINGLETONS (11 tests, includes `position-change`).** Sweep last; some (e.g. `position-relative-011/012/013`) are expected to close when G-TABLE-REL lands.
 
 Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 1. **Study Blink.** Read the relevant Blink file (entry points in `findings.md`). No code before this step.
@@ -84,49 +93,81 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] Fresh baseline run: `output/baselines/css-position-2026-04-21.log`
 - [x] Parse into failing list: `/tmp/css-position-fails.tsv`
 - [x] Group by root cause: 11 groups, see `findings.md`
-- [x] Triage the 5 NORUN entries (classify as real failures vs harness artifacts) → see `findings.md` "NORUN triage"
+- [x] Triage the 5 NORUN entries → 4 SKIP (infra), 1 real FAIL (`position-change.html`). Details in `findings.md` "NORUN triage".
+- [x] Blink research for 7 groups (G-TABLE-REL, G-CB-CHANGE, G-DYN-STATIC, G-ABS-CENTER, G-HYPO, G-STICKY, G-ABS-IN-INLINE) — see `findings.md` per-group "Blink entry points" sections.
 
 ### Phase 1: G-TABLE-REL (16 tests) — **NEXT**
-- [ ] Study Blink `layout_table.cc`, `layout_table_row.cc`, `layout_table_cell.cc` for `ComputeRelativeOffset` application.
-- [ ] Identify where `table_layout.go` terminates children (fragment emission) and add a `RelativeOffset` step mirroring `block_layout.go:928-939`.
-- [ ] Run one test per sub-shape (`thead-top`, `tbody-left`, `tr-top`, `td-top`, `*-absolute-child`, `position-relative-001/002`).
+- [x] Blink research: relative offset is applied in `BoxFragmentBuilder::AddChild` via `ComputeRelativeOffsetForBoxFragment`. Fragment-builder-level, not algorithm-level.
+- [ ] Decide: push the check into our shared `AddChild` equivalent (preferred — Blink's design), or patch `table_layout.go` at the two add-sites (lines 685, 735). Preferred minimises future repeat-bugs.
+- [ ] Implement and run one test per sub-shape (`thead-top`, `tbody-left`, `tr-top`, `td-top`, `*-absolute-child`, `position-relative-001/002`).
+- [ ] Verify the three `position-relative-01[123]` table-percentage tests — expected to close too.
 - [ ] Regression: full wm + CSS2 + flex spot-check.
-- [ ] Commit: "Phase 1: relative positioning on table-internal elements".
+- [ ] Commit: "Phase 1: relative positioning at fragment-builder AddChild".
 
-### Phase 2: G-DYN-STATIC + G-CB-CHANGE (9 tests)
-- [ ] Study Blink `out_of_flow_layout_part.cc` + `LayoutInvalidation` for how abspos children re-resolve when constraints/CB mutate.
-- [ ] Representative: `containing-block-change-scrollframe` (10.4%) — triggers abspos re-layout after JS adds overflow.
+### Phase 2: G-CB-CHANGE (3 tests) — invalidation only
+- [x] Blink research: `StyleDifference::NeedsPositionedLayout` + `LayoutBlock::RemovePositionedObjects(stay_within)`.
+- [ ] Audit: does our style-change path detect position/containment-establishing changes? If not, add `NeedsPositionedLayout` bit.
+- [ ] Implement `RemovePositionedObjects` on our containing-block-capable fragments.
+- [ ] Representative: `containing-block-change-scrollframe` (10.4%).
 - [ ] Regression + commit.
 
-### Phase 3: G-ABS-CENTER (5 tests)
-- [ ] Study Blink `ng_absolute_utils.cc` `ComputeOutOfFlowInsetSize` + auto-margin distribution.
-- [ ] Representative: `position-absolute-center-001`.
+### Phase 3: G-DYN-STATIC (6 tests) — foundational
+- [x] Blink research: static position NOT cached; rebuilt each pass via `LayoutResult::OutOfFlowPositionedDescendants` list.
+- [ ] Remove any existing static-position caching in our OOF path.
+- [ ] Add `OutOfFlowPositionedDescendants` (mirror name) to `LayoutResult` carrying `{node, static_position, inline_container}`.
+- [ ] Representative: `position-absolute-dynamic-static-position-inline` (2.1%).
 - [ ] Regression + commit.
 
-### Phase 4: G-HYPO (3 fails + 2 NORUN)
-- [ ] Study Blink `HypotheticalBoxPosition` (needs exact file name from Blink search).
-- [ ] Representative: `hypothetical-dynamic-change-001`.
-- [ ] Decide whether `hypothetical-box-scroll-*` NORUN are harness or real failures.
+### Phase 4: G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests)
+- [x] Blink research: `absolute_utils.cc` IMCB machinery. G-HYPO is the both-insets-auto branch.
+- [ ] New `pkg/layout/absolute_utils.go` with `InsetModifiedContainingBlock`, `ComputeUnclampedIMCBInOneAxis`, `ResizeIMCBInOneAxis`, `ComputeOofInlineDimensions`, `ComputeOofBlockDimensions`.
+- [ ] Route existing OOF sizing through the new module.
+- [ ] Representatives: `position-absolute-center-001` + `hypothetical-dynamic-change-001`.
+- [ ] If hypothetical tests pass without additional work, mark G-HYPO closed.
+- [ ] Regression + commit.
 
 ### Phase 5: G-ROOT-FLEX-GRID + G-FIXED (5 tests)
+- [ ] **Blink research (deferred from Phase 0):** `layout_view.cc` root-element OOF sizing + nested-fixed scroll propagation.
+- [ ] Implement + verify.
+- [ ] Regression + commit.
+
 ### Phase 6: G-ABS-IN-INLINE (2 tests)
-### Phase 7: G-STICKY (1 test)
+- [x] Blink research: `inline_containing_block_utils.cc` — union of first + last line-box fragment rects.
+- [ ] New `pkg/layout/inline_containing_block.go` with `computeInlineContainerGeometry`.
+- [ ] Wire into OOF pass for abspos children whose CB resolves to an inline.
+- [ ] Regression + commit.
+
+### Phase 7: G-STICKY (1 test) — minimum viable
+- [x] Blink research: `sticky_position_scrolling_constraints.h` + `ComputeStickyPositionConstraints`; scroll-time offset, not layout-time.
+- [ ] Short-circuit: for `position: sticky` at layout, emit zero `RelativeOffset` when the natural flow satisfies the threshold (at scroll=0 this is always true for sticky-top-001).
+- [ ] Note: full `StickyPositionScrollingConstraints` deferred until scroll-based sticky tests appear.
+- [ ] Regression + commit.
+
 ### Phase 8: G-REPLACED (1 test)
-### Phase 9: G-SINGLETONS (11 tests)
+- [ ] **Blink research (deferred from Phase 0):** CSS 2.2 §10.3.7 / §10.6.5 abs-replaced width/height with `max-content`.
+- [ ] Implement + verify.
+- [ ] Regression + commit.
+
+### Phase 9: G-SINGLETONS (11 tests, includes `position-change`)
+- [ ] Per-test triage; many may already be closed by earlier phases.
+- [ ] `position-change.html` — fix HTML parser to not bail on `expected '>' but reached EOF`.
+
 ### Phase 10: Delivery
-- [ ] Confirm 104/104 at 0 diff.
+- [ ] Confirm 100/100 runnable at 0 diff (104 total if SKIPs are later un-skipped by separate infra work).
 - [ ] Confirm wm 781/781, CSS2 99/99, flex unchanged.
 - [ ] Final session log summary.
 
 ## Milestones (commit + report after each)
-- **M1:** G-TABLE-REL closed → expect +16 tests (50 → 66 pass).
-- **M2:** G-DYN-STATIC + G-CB-CHANGE closed → expect +9 tests (66 → 75).
-- **M3:** G-ABS-CENTER closed → +5 (75 → 80).
-- **M4:** G-HYPO closed → +3–5 (80 → 85).
-- **M5:** G-ROOT-FLEX-GRID + G-FIXED closed → +5 (85 → 90).
-- **M6:** G-ABS-IN-INLINE closed → +2 (90 → 92).
-- **M7:** G-STICKY + G-REPLACED closed → +2 (92 → 94).
-- **M8:** G-SINGLETONS swept → +10 (94 → 104 = all pass).
+Counts are against **runnable tests (100)**; 4 SKIPs excluded.
+
+- **M1:** G-TABLE-REL closed → +16 (50 → 66). May also close `position-relative-011/012/013` (67–69).
+- **M2:** G-CB-CHANGE closed → +3 (→ ~69–72).
+- **M3:** G-DYN-STATIC closed → +6 (→ ~75–78).
+- **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ ~83–86).
+- **M5:** G-ROOT-FLEX-GRID + G-FIXED closed → +5 (→ ~88–91).
+- **M6:** G-ABS-IN-INLINE closed → +2 (→ ~90–93).
+- **M7:** G-STICKY + G-REPLACED closed → +2 (→ ~92–95).
+- **M8:** G-SINGLETONS (including `position-change`) swept → → 100/100 runnable.
 
 ## Test command templates
 ```
@@ -146,15 +187,21 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualte
 ```
 
 ## Key Questions
-1. Does `table_layout.go` emit intermediate fragments that would receive `RelativeOffset`, or does it fold rows/cells into the table's single fragment? (If the latter, the fix touches fragment construction, not the terminal commit.) Answer in Phase 1.
-2. Are the 6 `dynamic-static-position-*` failures all driven by the same missing invalidation point, or do the `inline`/`table-cell`/`floats` branches each need separate plumbing? Answer in Phase 2 representative study.
-3. Is our `position: sticky` currently defined (fallback to relative is the visible behavior); does closing G-STICKY require implementing scroll-aware sticky or just gating the offset on scroll delta? Likely the latter for `sticky-top-001` specifically.
+1. ~~Does `table_layout.go` emit intermediate fragments?~~ **Answered (2026-04-21):** yes, it emits per-row and per-cell fragments at `table_layout.go:685` and `:735`. The fix targets those add-sites (or better, the shared `AddChild` below them, matching Blink's `BoxFragmentBuilder::AddChild`).
+2. Are the 6 `dynamic-static-position-*` failures all driven by static-position caching, or do the `inline`/`table-cell`/`floats` branches each need separate plumbing? Blink evidence says "all driven by the same cached-vs-rebuilt static position." Confirm with Phase 3 representative.
+3. **G-STICKY scope:** minimum viable is zero offset at scroll=0 — sufficient for `sticky-top-001`. Full `StickyPositionScrollingConstraints` is deferred until scroll-based tests appear.
+4. **New:** is the hypothetical-box algorithm already folded into the IMCB both-auto-insets branch, or does it need separate plumbing? Blink evidence says it is the same branch. If Phase 4 makes the hypothetical tests pass for free, G-HYPO collapses into G-ABS-CENTER.
 
 ## Decisions Made
 | Decision | Rationale |
 |----------|-----------|
 | Attack G-TABLE-REL first | 16 tests, one likely root cause, cleanest unlock. Foundational correctness §1. |
-| NORUN tests logged as failures until proven harness | Cannot silently drop them — §3 ("all tests must pass") includes these. |
+| Prefer pushing relative-offset check into shared `AddChild` | Mirrors Blink's `BoxFragmentBuilder::AddChild`; prevents the same class of bug recurring in future layouts. |
+| NORUN — 4 SKIPs out of scope, 1 real FAIL folded into G-SINGLETONS | Triage 2026-04-21: SKIPs are harness/JS gaps; target is 100/100 runnable. |
+| Bundle G-ABS-CENTER + G-HYPO into one phase | Both use the same Blink IMCB machinery; the hypothetical-box algorithm IS the both-insets-auto branch. |
+| G-DYN-STATIC precedes G-ABS-CENTER/G-HYPO | The IMCB reads `LogicalStaticPosition`; without rebuild-per-pass, dynamic inputs won't flow through. |
+| G-CB-CHANGE is invalidation-only | Blink evidence: `StyleDifference::NeedsPositionedLayout` + `RemovePositionedObjects` are the whole story. No sizing math involved. |
+| G-STICKY minimum viable acceptable | Full constraint machinery is overkill for the one failing test; flag as tech debt for when scroll-based sticky tests appear. |
 | Do not run the full css-position category more than once per milestone | CLAUDE.md §4 — broad runs only at baselines and milestone verifications. |
 | css-writing-modes stays at 781/781 as an invariant | Phase 5f is complete; any regression in wm reverts the commit. |
 
