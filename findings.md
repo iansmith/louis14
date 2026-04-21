@@ -479,6 +479,10 @@ sticky-top-001.html   3.4%
 
 **Minimum viable fix for sticky-top-001 only.** Short-circuit: treat `position: sticky` as `relative` *but* gate the offset on whether the natural flow satisfies the threshold. At scroll=0 with natural top ≥ inset_top, emit zero offset. This fixes the one failing test without building the full constraint machinery; flag as tech debt until scroll-based tests appear.
 
+**DONE 2026-04-21 (Phase 7, commit `05aff97e`).** Picked the more Blink-faithful variant over the "gate by threshold" short-circuit: sticky now emits **zero** layout-time offset at every `RelativeOffset` computation site, matching Blink's layout-time behavior exactly (sticky offset is scroll-time via `StickyPositionScrollingConstraints`, never baked into layout fragments). Dropped `PositionSticky` from 7 gates: `fragment_builder.go` AddChild; `block_layout.go` / `flex_layout.go` / `grid_layout.go` own-result tails; `inline_layout.go` span-background / text / atomic-inline sites. Kept sticky in the structural gates (positioned-inline splits, table section fragments, positioned-inline CB stack) so scroll-time wiring will have a place to attach. `StickyPositionScrollingConstraints` + scroll-time `ComputeStickyOffset` remain deferred.
+
+Why zero-at-layout rather than threshold-gated: the threshold test needs the ancestor scroll container's edge and the box's natural position — both available only after layout. Doing the right thing at layout time (zero) and deferring the scroll-time update keeps the layout path simple and matches Blink verbatim. `sticky-top-001` passes because our engine has no scroll path yet, so zero-at-layout IS the final rendered offset.
+
 ### G-REPLACED — 1 test
 ```
 position-absolute-replaced-no-intrinsic-size.tentative.html   2.1%
@@ -517,11 +521,11 @@ Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positi
 | G-HYPO | DONE (Phase 4) | 3 | 2 NORUN (out of scope) | **77** |
 | G-ROOT-FLEX-GRID | **DONE (Phase 5, M5b)** | 4 | 0 | **81** |
 | G-ABS-IN-INLINE | **DONE (Phase 6, M6)** | 2 | 8 table abs-child variants (different root cause — G-ABS-IN-TABLE) | **83** |
-| G-STICKY | open | 0 | 1 | — |
+| G-STICKY | **DONE (Phase 7)** | 1 | 0 | **84** |
 | G-REPLACED | open | 0 | 1 | — |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
 | G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **33** | **24 (+ 4 SKIPs out of scope)** | **83 / 100 runnable** |
+| **Total** | — | **34** | **23 (+ 4 SKIPs out of scope)** | **84 / 100 runnable** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -532,7 +536,7 @@ Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positi
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **83 PASS / 22 FAIL** (post Phase 6 M6, commit `01f468d9`) | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **84 PASS / 20 FAIL** (post Phase 7, commit `05aff97e`) | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |

@@ -13,7 +13,9 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 6 G-ABS-IN-INLINE — CLOSED 2026-04-21 (2/2).** See "Phase 6 M6 — G-ABS-IN-INLINE closed" below. css-position now 83/100 runnable. Next work target: Phase 5 G-FIXED Part B (paint-clip/scrollTop, overlaps G-SCROLL) or Phase 7 (G-STICKY minimum viable).
+**Phase 7 G-STICKY — CLOSED 2026-04-21 (1/1, commit `05aff97e`).** See "Phase 7 — G-STICKY closed" below. css-position now 84/100 runnable. Next work target: Phase 8 (G-REPLACED, 1 test) or Phase 9 (G-SINGLETONS, 11 tests including `position-change` HTML parser bug).
+
+**Phase 6 G-ABS-IN-INLINE — CLOSED 2026-04-21 (2/2).** See "Phase 6 M6 — G-ABS-IN-INLINE closed" below.
 
 **Phase 3 G-DYN-STATIC — CLOSED 2026-04-21 (all 6/6).** Parts (a)+(b)+(d) landed earlier; Part (c) (`table-cell`) closed 2026-04-21 with two independent fixes.
 
@@ -83,13 +85,18 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-21 | css-flexbox (post Phase 6 M6) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
 | 2026-04-21 | absolute-tables (post Phase 6 M6) | 14 | 0 | 0 | No regression. |
 | 2026-04-21 | `position-relative-003/004/005` (post Phase 6 M6) | 3 | 0 | 0 | Regression-guard check after `BuildPositionedInlineMap` / nil-geometry fix. |
+| 2026-04-21 | `sticky-top-001` (post Phase 7) | 1 | 0 | 0 | 3.4% → 0% after dropping sticky from RelativeOffset-computation gates. |
+| 2026-04-21 | css-position (post Phase 7) | 84 | 20 | — | +1 vs 83. Exactly `sticky-top-001` flipped; no other status changed. |
+| 2026-04-21 | css-writing-modes (post Phase 7) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post Phase 7) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | css-flexbox (post Phase 7) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |
 |---|---|---|
-| css-writing-modes | 781/781 | 2026-04-21 (post Phase 6 M6) |
-| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post Phase 6 M6) |
-| css-flexbox | 626/629 | 2026-04-21 (post Phase 6 M6) |
+| css-writing-modes | 781/781 | 2026-04-21 (post Phase 7) |
+| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post Phase 7) |
+| css-flexbox | 626/629 | 2026-04-21 (post Phase 7) |
 | css-transforms (watch, not invariant) | 171/381 | 2026-04-21 (post Phase 3(c), +9 vs baseline) |
 
 ## Session: 2026-04-21
@@ -296,14 +303,35 @@ Both `position-absolute-in-inline-003` and `-004` now PASS at 0 diff. G-ABS-IN-I
 
 **Verification:** css-position **81 → 83** (+2 of 2 targets). All regression gates held: wm 781/781, CSS2 99/99, flex 626/629, absolute-tables 14/14, position-relative-003/004/005 unchanged. position-relative-002/011/013 baseline-failing tests still at their baseline percentages (unchanged).
 
+### Phase 7 — G-STICKY closed (2026-04-21, commit `05aff97e`)
+`sticky-top-001` now PASS at 0 diff (3.4% → 0%). G-STICKY complete.
+
+- **Blink research (done per CLAUDE.md §2).** `sticky_position_scrolling_constraints.h` is NOT under `core/layout` — that's the tell. `StickyPositionScrollingConstraints::ComputeStickyOffset(scroll_position)` runs at **scroll time**, slides the box between min/max inset thresholds clamped to the CB range. At layout time Blink emits the box at its natural-flow position (zero RelativeOffset for sticky).
+- **Fix shape.** Minimum-viable variant taken: layout-time zero. Dropped `PositionSticky` from the 7 RelativeOffset-computation gates:
+  - `pkg/layout/fragment_builder.go` — centralized `AddChild` gate.
+  - `pkg/layout/block_layout.go`, `pkg/layout/flex_layout.go`, `pkg/layout/grid_layout.go` — per-algo own-result tail blocks.
+  - `pkg/layout/inline_layout.go` — span background, text, atomic inline sites.
+- Structural gates kept `PositionSticky` (scroll-time wiring needs these to survive):
+  - `pkg/layout/layout_tree_builder.go` — positioned-inline splits.
+  - `pkg/layout/table_layout.go` — section fragment emission for positioned row groups.
+  - `pkg/layout/inline_containing_block.go` — sticky inline is non-static so it still establishes a CB for OOF descendants.
+
+**Why zero-at-layout rather than threshold-gated.** The findings.md minimum-viable originally proposed "treat sticky as relative but gate the offset on whether natural flow satisfies the threshold." Checking the threshold requires the ancestor scroll container's edge plus the box's natural position — both layout-time quantities. Zero-at-layout matches Blink exactly and is simpler. Because our engine doesn't have a scroll-time fragment offset path, zero-at-layout IS the final rendered offset today — `sticky-top-001` passes for the right reason.
+
+**Verification:** css-position **83 → 84** (+1 of 1 target). `sticky-basic-001` (top:0, already 0% PASS) unchanged — the change is a no-op for zero-inset sticky. No change to other status: all position-relative-003–010/012/014, position-absolute-in-inline-003/004, and G-DYN-STATIC tests still pass; known baseline failures unchanged.
+
+**Gates held:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓.
+
+**Deferred:** `StickyPositionScrollingConstraints` (min/max inset, sticky box range, CB range) + scroll-time `ComputeStickyOffset`. Pick up when scroll-based sticky tests arrive or the engine gains scroll-time fragment offsets.
+
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | css-position category, **83/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 dissolved; Phase 3 (G-DYN-STATIC) DONE; Phase 4 (G-ABS-CENTER + G-HYPO, IMCB) DONE. **Phase 5: G-FIXED Part A + G-ROOT-FLEX-GRID DONE (M5a, M5b).** **Phase 6: G-ABS-IN-INLINE DONE (M6, 2026-04-21).** Next: Phase 5 G-FIXED Part B (paint-clip / scrollTop, overlaps G-SCROLL) or Phase 7 (G-STICKY). |
+| Where am I? | css-position category, **84/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 dissolved; Phase 3 (G-DYN-STATIC) DONE; Phase 4 (G-ABS-CENTER + G-HYPO, IMCB) DONE. **Phase 5: G-FIXED Part A + G-ROOT-FLEX-GRID DONE (M5a, M5b).** **Phase 6: G-ABS-IN-INLINE DONE (M6).** **Phase 7: G-STICKY DONE (2026-04-21, commit `05aff97e`).** Next: Phase 8 (G-REPLACED, 1 test) or Phase 9 (G-SINGLETONS, 11 tests). Phase 5 G-FIXED Part B (paint-clip/scrollTop) still pending; overlaps G-SCROLL. |
 | Where am I going? | 100/100 runnable css-position at 0 diff (4 SKIPs out of scope for layout plan). |
 | What's the goal? | All runnable css-position tests at 0 diff; wm 781/781, CSS2 99/99, flex ≥621 must hold. |
-| What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block's LastBaseline must originate from a line-box descendant. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only and turned out to be a no-op for our harness (we already do fresh re-layout post-JS). **OOF resolution must be re-entrant** (Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`): after laying out an OOF child, drain `PropagatedOOFCandidates` and continue resolving. ICB / containment / transform CB sites absorb fixed; ordinary positioned sites return unresolved fixed to caller. **Orphan `display:table-cell` bypasses `table_layout.go`** — falls through to `block_layout.go` via unimplemented reverse §17.2.1 anonymous-table generation; needs its own vertical-align handling at the block-layout site. **Transform parser must not use sign as a percent/length sentinel** — negative pixel lengths encode negatively and will be misread as percent. Use explicit `IsPercent []bool`. **`_writing-mode-inherited` is a dead louis13 marker** — logical-size remap must run uniformly for inherited and explicit writing-mode. **Positioned ancestors propagate `RelativeOffset` to descendant static positions** — Blink's `PropagateOOFPositionedInfo` carries it through so hypothetical-box static positions reflect the ancestor's `left`/`top`. **Tables are non-stretchable in OOF sizing** — the IMCB stretched-fit path applies only to block-level non-replaced elements; tables/replaced/inline-table keep intrinsic sizing. **Flex items with z-index hoist to enclosing SC** — when sorting `AutoZero` by DOMIndex (tree order), guard on `IsFlexItem()` in the entries, not only on the owning layer. |
-| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. **Phase 3 G-DYN-STATIC closed (6/6)** — commits `233d408f` (a), `d250c5cf` (b)+(d), `5399d328` (c). **Phase 4 closed (8/8)** — Commit 1 `a3c8db38`, Commit 2 `d9f6628b`, Commit 3 (residual 3). **Phase 5 M5b — G-ROOT-FLEX-GRID closed (4/4)** — commit `7e686a28`: new `pkg/layout/positioned_root.go` routes `<html>` with `position:absolute/fixed` through IMCB sizing against the ICB + final-offset pipeline (`ComputeMargins` + `ComputeInsets` + `NewConverter`). **Phase 6 M6 — G-ABS-IN-INLINE closed (2/2)** — commit `01f468d9`: new `pkg/layout/inline_containing_block.go` (`ComputeInlineContainerGeometry` + `BuildPositionedInlineMap` + `InlineCBLogical`), with wiring in `inline_layout.go` / `block_layout.go` / `out_of_flow_layout.go` / `layout_tree_builder.go`. Net: 50 → 83 PASS. wm 781/781, CSS2 99/99, flex 626/629, absolute-tables 14/14 all gates held. |
+| What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block's LastBaseline must originate from a line-box descendant. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only and turned out to be a no-op for our harness (we already do fresh re-layout post-JS). **OOF resolution must be re-entrant** (Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`): after laying out an OOF child, drain `PropagatedOOFCandidates` and continue resolving. ICB / containment / transform CB sites absorb fixed; ordinary positioned sites return unresolved fixed to caller. **Orphan `display:table-cell` bypasses `table_layout.go`** — falls through to `block_layout.go` via unimplemented reverse §17.2.1 anonymous-table generation; needs its own vertical-align handling at the block-layout site. **Transform parser must not use sign as a percent/length sentinel** — negative pixel lengths encode negatively and will be misread as percent. Use explicit `IsPercent []bool`. **`_writing-mode-inherited` is a dead louis13 marker** — logical-size remap must run uniformly for inherited and explicit writing-mode. **Positioned ancestors propagate `RelativeOffset` to descendant static positions** — Blink's `PropagateOOFPositionedInfo` carries it through so hypothetical-box static positions reflect the ancestor's `left`/`top`. **Tables are non-stretchable in OOF sizing** — the IMCB stretched-fit path applies only to block-level non-replaced elements; tables/replaced/inline-table keep intrinsic sizing. **Flex items with z-index hoist to enclosing SC** — when sorting `AutoZero` by DOMIndex (tree order), guard on `IsFlexItem()` in the entries, not only on the owning layer. **Sticky offset is scroll-time, never layout-time** — Blink emits zero `RelativeOffset` for `position:sticky` and applies the slide at scroll-time via `StickyPositionScrollingConstraints::ComputeStickyOffset`. Layout-time zero matches Blink and is the minimum-viable fix while scroll-time fragment offsets are unimplemented. |
+| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. **Phase 3 G-DYN-STATIC closed (6/6)** — commits `233d408f` (a), `d250c5cf` (b)+(d), `5399d328` (c). **Phase 4 closed (8/8)** — Commit 1 `a3c8db38`, Commit 2 `d9f6628b`, Commit 3 (residual 3). **Phase 5 M5b — G-ROOT-FLEX-GRID closed (4/4)** — commit `7e686a28`: new `pkg/layout/positioned_root.go` routes `<html>` with `position:absolute/fixed` through IMCB sizing against the ICB + final-offset pipeline (`ComputeMargins` + `ComputeInsets` + `NewConverter`). **Phase 6 M6 — G-ABS-IN-INLINE closed (2/2)** — commit `01f468d9`: new `pkg/layout/inline_containing_block.go` (`ComputeInlineContainerGeometry` + `BuildPositionedInlineMap` + `InlineCBLogical`), with wiring in `inline_layout.go` / `block_layout.go` / `out_of_flow_layout.go` / `layout_tree_builder.go`. **Phase 7 — G-STICKY closed (1/1)** — commit `05aff97e`: sticky emits zero layout-time offset (Blink-faithful), dropped from 7 RelativeOffset-computation gates; structural sticky gates preserved. Net: 50 → 84 PASS. wm 781/781, CSS2 99/99, flex 626/629 all gates held. |
 
 ## Error Log
 *(populated as work progresses)*
