@@ -452,9 +452,9 @@ position-absolute-in-inline-004.html   2.3%
 3. **Static position is captured in block content-box coords; IMCB math needs CB coords.** Inline OOF items record static position relative to the block content-box. The inline CB's origin (`cbOriginInBuilder`) is a non-zero offset within that block. The OOF resolver must subtract `cbOriginInBuilder` from the static-position inline/block offsets before IMCB sizing, and add it back at `AddChild` time when positioning the final fragment. Missed subtraction gave 0.8% horizontal diff on `position-absolute-in-inline-003`.
 4. **Block-in-inline splits need an empty leading continuation for the span's start to be visible.** When a positioned inline contains a block-in-inline split with trailing inline content but no leading inline content (e.g. `<span>[block]text</span>`), only the trailing fragment got emitted. `ComputeInlineContainerGeometry` then found only the post-block line, so the CB's start corner was anchored after the block — wrong. Fix in `layout_tree_builder.go`: look ahead for trailing inline content before emitting a zero-length leading continuation. Gated on `hasTrailingInlineContent` to avoid regressing `position-relative-002` (where the span has only block children and the blockified-wrapper path is the correct one).
 
-### G-STICKY — 1 test
+### G-STICKY — 1 test — **DONE 2026-04-21 (Phase 7, commit `05aff97e`)**
 ```
-sticky-top-001.html   3.4%
+sticky-top-001.html   3.4% → 0%
 ```
 **What it exercises.** `position: sticky; top: 10px` in the middle of content at scroll=0 should stay in normal flow (offset 0), NOT offset by 10px.
 

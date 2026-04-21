@@ -30,13 +30,13 @@ Log: `output/baselines/css-position-2026-04-21.log`
 - Latest (post Phase 8 closed, commit `0e1fde9f`): **85 PASS · 19 FAIL** in this category.
 - Failing test list + diffs: `/tmp/css-position-fails.tsv` (regenerate via `/tmp/parse_css_position.sh`).
 
-Highest-diff outliers (top 5 by pixel count, current state):
+Highest-diff outliers (snapshot at baseline; `hypothetical-dynamic-change-003.html`, `sticky-top-001.html` closed in Phases 4/7 respectively):
 | % | px | test | group |
 |---|---|------|-------|
 | 10.4% | 50000 | `containing-block-change-scrollframe.html` | G-SCROLL (was G-CB-CHANGE) |
 |  4.2% | 20000 | `containing-block-change-button.html` | G-SINGLETONS (was G-CB-CHANGE) |
-|  4.2% | 20000 | `hypothetical-dynamic-change-003.html` | G-HYPO |
-|  3.4% | 16308 | `sticky-top-001.html` | G-STICKY |
+|  4.2% | 20000 | ~~`hypothetical-dynamic-change-003.html`~~ | ~~G-HYPO~~ — **DONE** |
+|  3.4% | 16308 | ~~`sticky-top-001.html`~~ | ~~G-STICKY~~ — **DONE** |
 |  1.0% |  4672 | `position-fixed-scroll-nested-fixed.html` | G-FIXED residual (paint-clip / scrollTop) |
 
 5 NORUN — **triaged 2026-04-21** (full table in `findings.md`):
@@ -62,8 +62,8 @@ Full detail in `findings.md`. 54 failing tests cluster into **11 groups** by lik
 | 6 | **G-ROOT-FLEX-GRID** — `<html>` as position:fixed/absolute root with `display: flex|grid` | 4 | 0.8% | Root-element OOF sizing — insets must resolve against ICB even when `display` is flex/grid |
 | 7 | **G-FIXED** — nested OOF re-entrance + scroll-clip escape for fixed | 2 (1 closed) | 0.5–4.2% | OOF resolver wasn't re-entrant. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` 2026-04-21. Residual on `position-fixed-scroll-nested-fixed` is paint-clip / scrollTop, not layout. |
 | 8 | **G-ABS-IN-INLINE** — abspos whose containing block is an inline (CSS2 §10.1.4) | 2 | 2.3–2.9% | Inline-CB bounding box computation for abspos children |
-| 9 | **G-STICKY** — `position: sticky` at scroll=0 must stay in normal flow | 1 | 3.4% | We treat sticky as relative (applies `top:10px` unconditionally); needs scroll-aware algorithm |
-| 10 | **G-REPLACED** — abspos replaced elements with no intrinsic size / `max-content` sizing | 1 | 2.1% | CSS 2.2 §10.3.7 / §10.6.5 abs-replaced-width/height |
+| 9 | ~~**G-STICKY**~~ — `position: sticky` at scroll=0 must stay in normal flow — **DONE** | 1 | 3.4% → 0% | Closed by commit `05aff97e` — sticky emits zero layout-time offset (Blink-faithful); scroll-time `StickyPositionScrollingConstraints` deferred. |
+| 10 | ~~**G-REPLACED**~~ — abspos replaced elements with no intrinsic size / `max-content` sizing — **DONE** | 1 | 2.1% → 0% | Closed by commit `0e1fde9f` — stretch-fit gate now excludes replaced elements; `ComputeReplacedSize` + auto-margin path (CSS 2.2 §10.3.7 / §10.6.5). |
 | 11 | **G-SINGLETONS** — `clear-001` (96px), `position-absolute-dynamic-list-marker` (18px), `stack-floats-001`, `position-absolute-iframe-print-001/002`, `position-relative-011/012/013` (%-top on table rows), plus 3 NORUN (`position-change`, `replaced-object-backdrop`, `position-absolute-multicol-001`) | 11 | 0.0–1.7% | Heterogeneous; attack last |
 
 ## Attack order (foundational impact ÷ effort)
@@ -73,12 +73,12 @@ Research insights from Blink study (2026-04-21) reshape the ordering — **G-DYN
 1. ~~**G-TABLE-REL (11 primary tests).**~~ **Done 2026-04-21** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Relative offset moved into shared `BoxFragmentBuilder.AddChild`; positioned thead/tbody/tfoot emit section fragments; inline-block §10.8.1 last-baseline fallback corrected.
 2. ~~**G-CB-CHANGE (3 tests).**~~ **Dissolved 2026-04-21** (audit no-op) — our harness already does fresh relayout post-JS. Tests reassigned to G-FIXED / G-SINGLETONS / G-SCROLL.
 3. ~~**G-DYN-STATIC (6 tests).**~~ **Done 2026-04-21** — commits `233d408f` (a), `d250c5cf` (b+d), `5399d328` (c) (orphan-cell vertical-align at `block_layout.go` + transform percent-sentinel fix at `pkg/css/style.go`). Original "rebuild via `OutOfFlowPositionedDescendants` list" hypothesis was invalidated — our harness already relays out fresh; the real bugs were per-FC static-position computation at each capture site.
-4. **G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests).** Both depend on `ComputeUnclampedIMCBInOneAxis` / `ResizeIMCBInOneAxis` in a new `pkg/layout/absolute_utils.go`. The hypothetical-box tests *are* the both-insets-auto branch — they may pass for free once IMCB lands. Verify after the IMCB commit and split if needed. **Now unblocked — G-DYN-STATIC prerequisite satisfied.**
-5. **G-ROOT-FLEX-GRID + G-FIXED (5 tests).** Blink research **deferred** to phase start — study `layout_view.cc` root-element specials + nested-fixed scroll offset at that point.
-6. **G-ABS-IN-INLINE (2 tests).** New `pkg/layout/inline_containing_block.go` mirroring `InlineContainingBlockUtils::ComputeInlineContainerGeometry` — union rects of first + last line-boxes.
-7. **G-STICKY (1 test).** Minimum viable: at layout, sticky boxes get zero offset; `sticky-top-001` naturally passes. Full `StickyPositionScrollingConstraints` can wait until a scroll-based sticky test appears.
-8. **G-REPLACED (1 test).** Blink research **deferred** to phase start — CSS 2.2 §10.3.7 / §10.6.5 abs-replaced sizing.
-9. **G-SINGLETONS (11 tests, includes `position-change`).** Sweep last; some (e.g. `position-relative-011/012/013`) are expected to close when G-TABLE-REL lands.
+4. ~~**G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests).**~~ **Done 2026-04-21** — commits `a3c8db38` (Commit 1: absolute_utils.go), `d9f6628b` (Commit 2: wire resolver), Commit 3 (residual 3). IMCB machinery ported at Blink type/function parity.
+5. ~~**G-ROOT-FLEX-GRID + G-FIXED (5 tests).**~~ **Done 2026-04-21 (partial)** — G-FIXED Part A (OOF re-entrance) via commit `ed16475f`; G-ROOT-FLEX-GRID via commit `7e686a28` (`pkg/layout/positioned_root.go`). Residual: G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL, deferred.
+6. ~~**G-ABS-IN-INLINE (2 tests).**~~ **Done 2026-04-21** — commit `01f468d9`: new `pkg/layout/inline_containing_block.go` mirrors `InlineContainingBlockUtils::ComputeInlineContainerGeometry`.
+7. ~~**G-STICKY (1 test).**~~ **Done 2026-04-21** — commit `05aff97e`: sticky emits zero layout-time offset, matching Blink. Full `StickyPositionScrollingConstraints` deferred until scroll-based sticky tests appear.
+8. ~~**G-REPLACED (1 test).**~~ **Done 2026-04-21** — commit `0e1fde9f`: stretch-fit gate in `out_of_flow_layout.go` now excludes replaced elements so abs-replaced stays on `ComputeReplacedSize` + auto-margin path (CSS 2.2 §10.3.7 / §10.6.5).
+9. **G-SINGLETONS (11 tests, includes `position-change`).** Sweep last; some (e.g. `position-relative-011/012/013`) are expected to close when G-TABLE-REL lands. **Next up.**
 
 Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 1. **Study Blink.** Read the relevant Blink file (entry points in `findings.md`). No code before this step.
