@@ -535,8 +535,8 @@ Updated 2026-04-21 post Phase 9 first landing (relpos percent insets via commit 
 | G-STICKY | **DONE (Phase 7)** | 1 | 0 | **84** |
 | G-REPLACED | **DONE (Phase 8)** | 1 | 0 | **85** |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
-| G-SINGLETONS | **Phase 9 first landing** | 5 (`position-relative-001/002/011/012/013`) | 5 runnable (`stack-floats-001`, `iframe-print-001/002`, `clear-001`, `dynamic-list-marker`, `containing-block-change-button`) + 1 `position-change` parser + 2 NORUN out of scope | **90** |
-| **Total** | — | **40** | **17 (+ 4 SKIPs out of scope)** | **90 / 100 runnable** |
+| G-SINGLETONS | **Phase 9 second landing** | 7 (`position-relative-001/002/011/012/013` + `dynamic-list-marker` + `containing-block-change-button`) | 1 runnable (`stack-floats-001` — paint-phase refactor pending) + 3 deferred-out-of-scope (`clear-001` Blink subpixel quirk, `iframe-print-001/002` harness infra) + 1 `position-change` parser | **92** |
+| **Total** | — | **42** | **15 (+ 4 SKIPs + 3 deferred-out-of-scope + 1 parser)** | **92 / 100 runnable (100 / 100 if paint-phase refactor lands)** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -547,7 +547,7 @@ Updated 2026-04-21 post Phase 9 first landing (relpos percent insets via commit 
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **85 PASS / 19 FAIL** (post Phase 8, commit `0e1fde9f`) | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **92 PASS / 12 FAIL** (post Phase 9 second landing: `1bdcfc85` marker + `a22cfe10` button) | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |
@@ -608,6 +608,72 @@ Phase 4 Commit 3, flex paint-ordering regression introduced alongside the hypoth
 Root cause: guarding the sort on the current layer being a flex container only catches the direct flex-child case. When flex items have z-index, they can land in a higher AutoZero list whose owning layer is not itself a flex container.
 
 Fix: `paint_layer.go` `sortZLists` now scans `AutoZero` entries for any `IsFlexItem()` box before sorting; if any is present, it skips the DOMIndex sort and preserves the insertion order (which reflects order-modified document order per CSS Flexbox §4.3). Zero regressions in flex, CSS2, or css-position.
+
+### Stack-floats-001 paint-phase analysis (pending 2026-04-21)
+`stack-floats-001.xht` is the one remaining runnable G-SINGLETONS failure. Current diff: **1.7%** (8000/480000 pixels, 80% red + 20% lime in the differing column — expected: all lime).
+
+**Test.** Inside a 5em × 5em container (red bg, font:20px Ahem):
+- `.float` (float:left, 5em×5em, red bg, padding:1em 0, margin-bottom:-5em) containing `.block` (lime, 3em tall).
+- `.inline` (display:inline, color:lime) containing `XXXXX` + `.block` (red, 3em — block-in-inline split) + `XXXXX`.
+
+Expected rendering (all lime inside the 1px black border) comes from CSS 2.1 Appendix E stacking steps 3/4/5:
+- Step 3 (block-level non-positioned backgrounds): `.inline .block` red at y=72..131.
+- Step 4 (non-positioned floats): `.float` red bg at y=52..151 + `.float .block` lime at y=72..131.
+- Step 5 (inline content): `XXXXX` lime lines at y=52..71 and y=132..151.
+
+**Current box + paint tree** (verified 2026-04-21 via layout dump):
+```
+div.container
+├ anon_block_1 (the §9.2.1.1 wrapper that contains the float AND the leading XXXXX line)
+│   FlowChildren = [div.inline (TEXT=XXXXX)]
+│   FloatChildren = [div.float → div.block (lime)]
+├ div.block (block-in-inline split, red)
+└ anon_block_2 (§9.2.1.1 wrapper for trailing inline)
+    FlowChildren = [div.inline (TEXT=XXXXX)]
+```
+
+**Current single-pass paint walk** (render.go paintLayerContent):
+1. container red bg.
+2. anon_block_1.FlowChildren → XXXXX lime at y=52..71.
+3. anon_block_1.FloatChildren → float red bg y=52..151 + float's lime block y=72..131. Float's red overpaints top XXXXX → top 20px RED.
+4. div.block (red) at y=72..131. Overpaints float's lime middle → middle 60px RED.
+5. anon_block_2.FlowChildren → XXXXX lime at y=132..151 (float's red bg already there; XXXXX overpaints → bottom 20px LIME).
+
+Result: RED top + RED middle + LIME bottom = 80% red, 20% lime. Matches measured pixel delta.
+
+**Why no single-pass reorder fixes this.** Attempts enumerated:
+- *Swap FlowChildren/FloatChildren order*: still has block-in-inline painting after the float's lime (red middle stays).
+- *Hoist float to container's FloatChildren*: floats then paint after all FlowChildren; but XXXXX in anon_block_1 still paints in step 3 and is overpainted by the later step-4 float's red bg (top/bottom go red).
+- *Paint block-level siblings before anon wrappers*: only shifts which color overpaints which; inline text is structurally inside anon wrappers that paint at step 3.
+
+The structural issue: `XXXXX` is inside `anon_block_1.FlowChildren`, and once `anon_block_1`'s subtree painting completes, we cannot revisit its inlines to repaint them after step-4 floats. CSS 2.1 requires block bgs at step 3 AND inline text at step 5, with floats (step 4) in between. This cannot be expressed by list reordering.
+
+**Blink's approach.** `third_party/blink/renderer/core/paint/paint_phase.h` defines `kBlockBackground` / `kFloat` / `kForeground` / `kOutline`. `PaintLayerPainter::Paint()` calls `BoxPainter::Paint*` multiple times, once per phase. For each phase, the painter recurses through the box tree but only renders the subset of content belonging to that phase (bg/border in kBlockBackground, floats in kFloat, text/images/lines in kForeground). Non-self-painting layers paint through their ancestor's phase pass; self-painting layers (positioned + z-index, opacity<1, etc.) are visited from the stacking context's z-lists and run their own full phase loop.
+
+**Louis14 fix sketch.** Add `PaintPhase` enum to `pkg/render`. Modify `paintLayerContent` to take a phase parameter:
+- `PhaseBlockBackground`: paint self bg + borders; recurse `FlowChildren` in same phase; skip `FloatChildren`; skip text/image/marker; skip z-lists.
+- `PhaseFloat`: skip self bg; recurse `FlowChildren` in same phase; paint `FloatChildren` (each float runs full phase loop within itself); skip text/image/marker; skip z-lists.
+- `PhaseForeground`: skip self bg; recurse `FlowChildren` in same phase; paint self text/image/marker/list-marker content; skip `FloatChildren`.
+
+`paintLayer` (the entry point that handles transforms/opacity/filter wrappers) then drives the phase loop at stacking-context boundaries:
+```
+paintLayer(layer) for SC root:
+    drawOutsetBoxShadows + self bg (step 1, once)
+    paint NegativeZ (step 2)
+    paintLayerContent(layer, PhaseBlockBackground)    // step 3, skip self bg (already done)
+    paintLayerContent(layer, PhaseFloat)              // step 4
+    paintLayerContent(layer, PhaseForeground)         // step 5
+    paint AutoZero (step 6)
+    paint PositiveZ (step 7)
+```
+
+Non-SC layers recursed into from phases honor the incoming phase and do not re-run the loop.
+
+**Scope estimate.** ~200-400 LOC across `render.go` (paintLayerContent + top-level paintLayer phase driver) and possibly `paint_layer.go` (phase-aware z-list split on NegativeZ painted between step 1 and step 3). All 6720 CSS3 tests + 99 CSS2 + 781 wm are affected; phased output must be pixel-identical to current for the ~6000+ currently-passing cases. Regression risk is concentrated where current painting accidentally produces correct visuals by painting inlines-before-floats when the two don't overlap — phased painting puts inlines strictly after floats.
+
+**Gate for landing.** wm 781/781, CSS2 99/99, flex 626/629, css-position 92 → 93 (flipping only stack-floats-001), no regression in the broader CSS3 category sweep.
+
+**Why deferred.** The refactor is the right architectural move per CLAUDE.md §1/§2, but it is a full paint-pipeline rewrite for one test. Worth doing when the paint category is the active attack target, rather than bundled as a one-off. Picking it up needs a dedicated session + broad CSS3 sweep budget.
 
 ## Notes
 - Attack order is **not** by % diff. Shared-root-cause grouping is prioritised (CLAUDE.md §1).
