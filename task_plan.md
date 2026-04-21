@@ -209,7 +209,13 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] Regression + commit. wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓. css-position 84 → 85.
 
 ### Phase 9: G-SINGLETONS (11 tests, includes `position-change`)
-- [ ] Per-test triage; many may already be closed by earlier phases.
+- [x] Per-test triage; many may already be closed by earlier phases.
+- [x] **2026-04-21 (commit `a7e79598`):** closed `position-relative-001/002` (non-table %-top/left) + `position-relative-011/012/013` (%-top on table tbody/tr/td under position:relative). Three fixes:
+  - `NewBlockifiedStyle` preserves `position` + `top/right/bottom/left` when block-in-inline split collapses to a single anonymous wrapper.
+  - Anonymous auto-height block wrappers propagate parent's `PercentageResolutionSize.BlockSize` instead of resetting to 0.
+  - Table cell constraint space carries row's SPECIFIED block-size as its percentage resolution block size; table row's `RelativeOffset` is pre-computed against row group's SPECIFIED block-size (mirrors Blink's chromium bug 1227884 fix).
+  - Gates hold: wm 781/781, CSS2 99/99, flex 626/629. css-position 85 → 90.
+- [ ] Remaining Phase 9 runnable tests: `stack-floats-001` (1.7%), `position-absolute-iframe-print-001/002` (0.3%), `clear-001` (96px), `position-absolute-dynamic-list-marker` (18px).
 - [ ] `position-change.html` — fix HTML parser to not bail on `expected '>' but reached EOF`.
 
 ### Phase 10: Delivery

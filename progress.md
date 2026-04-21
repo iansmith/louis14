@@ -13,7 +13,9 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 8 G-REPLACED — CLOSED 2026-04-21 (1/1, commit `0e1fde9f`).** See "Phase 8 — G-REPLACED closed" below. css-position now 85/100 runnable. Next work target: Phase 9 (G-SINGLETONS, 11 tests including `position-change` HTML parser bug) or G-SCROLL residuals (G-FIXED Part B + `containing-block-change-scrollframe`).
+**Phase 9 G-SINGLETONS — IN PROGRESS (5/11 closed, commit `a7e79598`).** Closed `position-relative-001/002/011/012/013` with three fixes: `NewBlockifiedStyle` preserves `position`+insets, anon auto-height blocks propagate `PercentageResolutionSize.BlockSize`, and table cell/row percent insets resolve against parent's SPECIFIED height (Blink chromium bug 1227884). css-position now **90/100 runnable**. Gates hold: wm 781/781, CSS2 99/99, flex 626/629. Remaining Phase 9 runnable: `stack-floats-001`, `iframe-print-001/002`, `clear-001`, `dynamic-list-marker`, plus `position-change` (HTML parser bug) + 3 NORUN out of scope.
+
+**Phase 8 G-REPLACED — CLOSED 2026-04-21 (1/1, commit `0e1fde9f`).** See "Phase 8 — G-REPLACED closed" below.
 
 **Phase 7 G-STICKY — CLOSED 2026-04-21 (1/1, commit `05aff97e`).** See "Phase 7 — G-STICKY closed" below.
 
@@ -94,6 +96,11 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-21 | css-flexbox (post Phase 7) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
 | 2026-04-21 | `position-absolute-replaced-no-intrinsic-size` (post Phase 8) | 1 | 0 | 0 | 2.1% → 0 after gating IMCB stretch-fit off for replaced nodes. |
 | 2026-04-21 | css-position (post Phase 8) | 85 | 19 | — | +1 vs 84. Exactly the G-REPLACED target flipped; no other status changed. |
+| 2026-04-21 | `position-relative-001/002/011/012/013` (Phase 9 first landing, commit `a7e79598`) | 5 | 0 | 0 | Both block-in-inline %-inset tests (1.0%→0) and all three table-internals %-top tests (0.4%→0). |
+| 2026-04-21 | css-position (post Phase 9 first landing) | 90 | 14 | — | +5 vs 85. No unrelated status flips. |
+| 2026-04-21 | css-writing-modes (post Phase 9 first landing) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post Phase 9 first landing) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | css-flexbox (post Phase 9 first landing) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
 | 2026-04-21 | css-writing-modes (post Phase 8) | 781 | 0 | 0 | Gate held. |
 | 2026-04-21 | CSS2 (post Phase 8) | 99 | 0 | 0 | Gate held. |
 | 2026-04-21 | css-flexbox (post Phase 8) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
@@ -101,9 +108,9 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 ## Invariants (must stay green)
 | Category | Count | Last verified |
 |---|---|---|
-| css-writing-modes | 781/781 | 2026-04-21 (post Phase 8) |
-| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post Phase 8) |
-| css-flexbox | 626/629 | 2026-04-21 (post Phase 8) |
+| css-writing-modes | 781/781 | 2026-04-21 (post Phase 9 first landing) |
+| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post Phase 9 first landing) |
+| css-flexbox | 626/629 | 2026-04-21 (post Phase 9 first landing) |
 | css-transforms (watch, not invariant) | 171/381 | 2026-04-21 (post Phase 3(c), +9 vs baseline) |
 
 ## Session: 2026-04-21
