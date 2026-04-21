@@ -25,6 +25,24 @@ func NewBlockLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Co
 	}
 }
 
+// childPercResolutionBlockSize returns the percentage-resolution block size
+// to pass to children. When this block is an anonymous wrap (e.g. block-in-
+// inline split) with auto block size, the parent's resolution base passes
+// through so percent CB-block resolution (CSS 2.1 §9.4.3 relative-offset,
+// height:% etc.) reaches the real containing block. Mirrors Blink's
+// PercentageResolutionBlockSize propagation for anonymous auto-height blocks.
+func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bool, explicitBlockSize float64) float64 {
+	if hasExplicitBlock {
+		return explicitBlockSize
+	}
+	if bla.node != nil && bla.node.isAnonymous {
+		if bla.space.PercentageResolutionSize.BlockSize > 0 {
+			return bla.space.PercentageResolutionSize.BlockSize
+		}
+	}
+	return explicitBlockSize // 0 if auto and not an anonymous passthrough
+}
+
 // Layout performs block layout and returns the result.
 func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := bla.space.WritingDirection
@@ -400,7 +418,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}).
 				SetPercentageResolutionSize(LogicalSize{
 					InlineSize: contentInlineSize,
-					BlockSize:  explicitBlockSize, // 0 if auto
+					BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
 				}).
 				SetPercentageResolutionInlineSize(contentInlineSize).
 				SetExclusionSpace(exclusionSpace)
@@ -480,7 +498,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							}).
 							SetPercentageResolutionSize(LogicalSize{
 								InlineSize: contentInlineSize,
-								BlockSize:  explicitBlockSize,
+								BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
 							}).
 							SetPercentageResolutionInlineSize(contentInlineSize).
 							SetExclusionSpace(exclusionSpace)
@@ -1056,13 +1074,22 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// position); the scroll-time path is deferred until scroll-based tests
 	// appear.
 	if bla.style != nil && bla.style.GetPosition() == css.PositionRelative {
-		logicalBlock := bla.space.AvailableSize.BlockSize
-		if logicalBlock == Indefinite {
-			logicalBlock = 0 // auto height → percentages compute to 0
+		// Percentages resolve against the containing block's physical size.
+		// Mirrors Blink's ComputeRelativeOffset, which reads AvailableSize —
+		// but we use PercentageResolutionSize instead so that anonymous
+		// auto-height wraps (e.g. block-in-inline splits) do not collapse the
+		// block-axis CB to zero for their descendants.
+		cbInline := bla.space.PercentageResolutionSize.InlineSize
+		if cbInline == Indefinite {
+			cbInline = 0
+		}
+		cbBlock := bla.space.PercentageResolutionSize.BlockSize
+		if cbBlock == Indefinite {
+			cbBlock = 0
 		}
 		physCB := ToPhysicalSize(LogicalSize{
-			InlineSize: bla.space.AvailableSize.InlineSize,
-			BlockSize:  logicalBlock,
+			InlineSize: cbInline,
+			BlockSize:  cbBlock,
 		}, wdm.WM)
 		offset := bla.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
 		result.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)

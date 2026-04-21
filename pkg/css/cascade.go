@@ -776,10 +776,13 @@ func ApplyInheritedFrom(child, parent *Style) {
 // so that non-inheritable stacking context properties (opacity, transform,
 // filter) from the inline are preserved. Backgrounds, borders, padding, and
 // margins are NOT copied — they belong only to the inline's own box edges.
+//
+// position:relative/sticky + top/right/bottom/left are also preserved so the
+// blocks inside a positioned inline shift with the inline (CSS 2.1 §9.4.3).
 func NewBlockifiedStyle(inline *Style) *Style {
 	s := NewAnonymousBlockStyle(inline)
 	// Preserve stacking-context-creating non-inheritable properties.
-	for _, prop := range []string{"opacity", "transform", "filter", "isolation", "will-change"} {
+	for _, prop := range []string{"opacity", "transform", "filter", "isolation", "will-change", "position", "top", "right", "bottom", "left"} {
 		if val, ok := inline.Get(prop); ok {
 			s.Set(prop, val)
 		}

@@ -325,6 +325,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		rowHeight := 0.0
 		cellLayouts := make([]cellMeasurement, 0, len(row.cells))
 
+		// CSS Tables + chromium bug 1227884: percent insets on a
+		// position:relative table-cell resolve against the ROW's
+		// SPECIFIED block-size (not the used/distributed size). If
+		// the row has no explicit height, percent resolves to 0.
+		// Mirrors Blink's table_row_constraint_space_builder behavior
+		// where the cell sub-space's percentage_resolution_block_size
+		// comes from the row's specified dimension.
+		rowSpecBlock := 0.0
+		if row.style != nil {
+			prop := "height"
+			if wdm.IsVertical() {
+				prop = "width"
+			}
+			if v, ok := row.style.GetLength(prop); ok {
+				rowSpecBlock = v
+			}
+		}
+
 		for _, cell := range row.cells {
 			// cell.colIndex was assigned by assignColumnIndices and
 			// honors rowspan reservations from earlier rows.
@@ -382,7 +400,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				SetIsFixedInlineSize(true).
 				SetPercentageResolutionSize(LogicalSize{
 					InlineSize: layoutWidth,
-					BlockSize:  0,
+					BlockSize:  rowSpecBlock,
 				}).
 				SetPercentageResolutionInlineSize(layoutWidth).
 				SetTableSectionData(tableData).
@@ -824,6 +842,33 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		rowResult := rowBuilder.Build()
+
+		// CSS Tables + chromium bug 1227884: percent insets on a
+		// position:relative table-row resolve against the row GROUP's
+		// SPECIFIED block-size (tbody/thead/tfoot height), not the
+		// used/distributed size. Pre-compute the row's RelativeOffset
+		// here so the default AddChild auto-compute (which would use
+		// the table's available block-size) is skipped. Mirrors
+		// Blink's table_section_layout path for position:relative rows.
+		if row.style != nil && row.style.GetPosition() == css.PositionRelative && rowResult.Fragment.RelativeOffset == (PhysicalOffset{}) {
+			groupSpecBlock := 0.0
+			if row.groupStyle != nil {
+				prop := "height"
+				if wdm.IsVertical() {
+					prop = "width"
+				}
+				if v, ok := row.groupStyle.GetLength(prop); ok {
+					groupSpecBlock = v
+				}
+			}
+			physCB := ToPhysicalSize(LogicalSize{
+				InlineSize: totalInlineForRows,
+				BlockSize:  groupSpecBlock,
+			}, wdm.WM)
+			off := row.style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
+			rowResult.Fragment.RelativeOffset = computeRelativeOffset(off, wdm)
+		}
+
 		if sectionBuilder != nil {
 			// Row is inside a positioned row group: attach to the
 			// section with offset relative to the section's origin.
