@@ -72,7 +72,7 @@ Research insights from Blink study (2026-04-21) reshape the ordering — **G-DYN
 
 1. ~~**G-TABLE-REL (11 primary tests).**~~ **Done 2026-04-21** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Relative offset moved into shared `BoxFragmentBuilder.AddChild`; positioned thead/tbody/tfoot emit section fragments; inline-block §10.8.1 last-baseline fallback corrected.
 2. ~~**G-CB-CHANGE (3 tests).**~~ **Dissolved 2026-04-21** (audit no-op) — our harness already does fresh relayout post-JS. Tests reassigned to G-FIXED / G-SINGLETONS / G-SCROLL.
-3. ~~**G-DYN-STATIC (6 tests).**~~ **Done 2026-04-21** — commits `233d408f` (a), `d250c5cf` (b+d), + uncommitted (c) (orphan-cell vertical-align at `block_layout.go` + transform percent-sentinel fix at `pkg/css/style.go`). Original "rebuild via `OutOfFlowPositionedDescendants` list" hypothesis was invalidated — our harness already relays out fresh; the real bugs were per-FC static-position computation at each capture site.
+3. ~~**G-DYN-STATIC (6 tests).**~~ **Done 2026-04-21** — commits `233d408f` (a), `d250c5cf` (b+d), `5399d328` (c) (orphan-cell vertical-align at `block_layout.go` + transform percent-sentinel fix at `pkg/css/style.go`). Original "rebuild via `OutOfFlowPositionedDescendants` list" hypothesis was invalidated — our harness already relays out fresh; the real bugs were per-FC static-position computation at each capture site.
 4. **G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests).** Both depend on `ComputeUnclampedIMCBInOneAxis` / `ResizeIMCBInOneAxis` in a new `pkg/layout/absolute_utils.go`. The hypothetical-box tests *are* the both-insets-auto branch — they may pass for free once IMCB lands. Verify after the IMCB commit and split if needed. **Now unblocked — G-DYN-STATIC prerequisite satisfied.**
 5. **G-ROOT-FLEX-GRID + G-FIXED (5 tests).** Blink research **deferred** to phase start — study `layout_view.cc` root-element specials + nested-fixed scroll offset at that point.
 6. **G-ABS-IN-INLINE (2 tests).** New `pkg/layout/inline_containing_block.go` mirroring `InlineContainingBlockUtils::ComputeInlineContainerGeometry` — union rects of first + last line-boxes.
@@ -127,13 +127,48 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] Per-site commits with wm 781/781 + CSS2 99/99 regression gate after each.
 - [x] Representative drivers: `inline` (2.1%) for (a); `floats-001` (0.7%) for (b); `table-cell` (2.1%) for (c); `floats-004` (0.7%) for (d).
 
-### Phase 4: G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests)
-- [x] Blink research: `absolute_utils.cc` IMCB machinery. G-HYPO is the both-insets-auto branch.
-- [ ] New `pkg/layout/absolute_utils.go` with `InsetModifiedContainingBlock`, `ComputeUnclampedIMCBInOneAxis`, `ResizeIMCBInOneAxis`, `ComputeOofInlineDimensions`, `ComputeOofBlockDimensions`.
-- [ ] Route existing OOF sizing through the new module.
-- [ ] Representatives: `position-absolute-center-001` + `hypothetical-dynamic-change-001`.
-- [ ] If hypothetical tests pass without additional work, mark G-HYPO closed.
-- [ ] Regression + commit.
+### Phase 4: G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests) — reframed 2026-04-21 as Blink-parity-first
+**Goal.** Port Blink's OOF sizing layer (`absolute_utils.cc`) to louis14 at function/type/algorithm parity. Closing the 8 target tests is a *verification* that the port is correct, not the target. Reframing driven by CLAUDE.md §2 — "study Blink, mirror names and structure" — and the concern that point-fixing the 8 tests would let our OOF sizing code diverge further from Blink before we port it cleanly.
+
+**Blink-parity items our code is missing today** (audit 2026-04-21):
+1. `InsetBias` enum (kStart/kEnd/kEqual).
+2. `LogicalAlignment` struct (carries `align-self`/`justify-self` to the resolver). `align-self`/`justify-self` are NOT currently consulted for abspos.
+3. `InsetModifiedContainingBlock` type (CB size minus insets; used for percentage resolution of the abspos child — today we pass the raw CB size to `SetPercentageResolutionSize`).
+4. `LogicalOofDimensions` output struct (inset + size + margins, capturing the resolved rect).
+5. Center-clipping collapse in `ComputeUnclampedIMCBInOneAxis` (the `2 × min(static, cb − static)` rule in the both-insets-auto + kEqual branch). Never exercised today because no candidate site sets `StaticEdgeCenter`.
+
+**Existing Blink-parity items** (reuse):
+- `LogicalStaticPosition` with `InlineEdge/BlockEdge` (`StaticEdgeStart/Center/End`) — already 1:1 with Blink. `pkg/layout/static_position.go:25-29`.
+- `LogicalInsets` with `HasInlineStart/...` flags — close to Blink's `LogicalOofInsets`; we will reuse.
+- OOF resolver worklist pattern — mirrored in Phase 5 Part A (`out_of_flow_layout.go:58-77`).
+- Both container + child WDM already threaded (`out_of_flow_layout.go:37-39, 89, 103`).
+
+**Explicit scope boundaries — NOT ported in Phase 4** (named now so later Blink-parity work doesn't find hidden gaps):
+- Anchor positioning (`LogicalAnchorCenterPosition`, `anchor-center` alignment). No WPT tests in css-position exercise it. Leave `TODO(anchor-positioning)` breadcrumbs where Blink's signatures take anchor params.
+- Table-specific IMCB clamp in `ComputeInsetModifiedContainingBlock`'s table-overflow branch. Skip until a css-tables test requires it.
+- Fragmentation column/page context for OOF. Out of scope.
+
+#### Commit 1 — Pure module (types + algorithmic functions, no wiring)
+- [ ] Create `pkg/layout/absolute_utils.go`:
+  - Types: `InsetBias` (enum), `LogicalAlignment`, `InsetModifiedContainingBlock`, `LogicalOofDimensions`.
+  - Pure functions (Blink naming, signatures adapted to Go): `GetAlignmentInsetBias`, `ComputeUnclampedIMCBInOneAxis` (including center-clipping collapse), `ResizeIMCBInOneAxis`, `ComputeUnclampedIMCB`, `ComputeMargins`, `ComputeInsets`, `ComputeOofInlineDimensions`, `ComputeOofBlockDimensions`.
+  - No integration; no existing caller changes.
+- [ ] Small `absolute_utils_test.go` covering the three IMCB branches + kEqual collapse + safe/default bias as no-op.
+- [ ] **Gate:** compiles; new unit tests pass.
+
+#### Commit 2 — Wire resolver + alignment (Blink-parity behavior change)
+- [ ] `out_of_flow_layout.go:132-310`: replace inline constraint-equation code with `ComputeOofInlineDimensions` + `ComputeOofBlockDimensions`.
+- [ ] Pass IMCB size (not raw CB size) to `SetPercentageResolutionSize` (line 202-206).
+- [ ] Extend `OutOfFlowCandidate` with `Alignment LogicalAlignment`; read `align-self` / `justify-self` on the child at candidate-creation sites in `block_layout.go`, `flex_layout.go`, `grid_layout.go`.
+- [ ] Flex/grid candidate sites: when parent has `justify-content: center` (or child has `justify-self: center`), set `InlineEdge: StaticEdgeCenter`. Symmetric for block axis / `align-*`.
+- [ ] Thread `LogicalAlignment` through `ComputeUnclampedIMCB` so the kEqual branch is reachable.
+- [ ] **Gate:** wm 781/781, CSS2 99/99, flex ≥621, css-transforms ≥171. Run 5 G-ABS-CENTER + 3 G-HYPO representatives — expect all 8 to close. css-position: 68 → ~76.
+
+#### Commit 3 — Triage
+- [ ] Whatever the 8 tests reveal that isn't covered by the pure port. Likely small integration-specific quirks (e.g., block-FC hypothetical-inline-box line-start computation). Fix in scope; do not expand to other G-* groups.
+- [ ] **Gate:** all 8 target tests at 0 diff; invariants hold.
+
+**Representatives:** `position-absolute-center-001.html` (0.4%, drives Commits 2-3), `position-absolute-center-007.html` (2.1%, most likely to exercise center-clipping), `hypothetical-dynamic-change-001.html` (G-HYPO verification).
 
 ### Phase 5: G-ROOT-FLEX-GRID + G-FIXED (5 tests, 1 closed)
 - [x] **G-FIXED Part A — OOF resolver re-entrance.** `OutOfFlowLayoutPart.LayoutCandidates` was dropping `childResult.PropagatedOOFCandidates`. Mirrored Blink's `OutOfFlowLayoutPart::LayoutOOFNodes` worklist pattern. Returns unresolved fixed candidates to caller; new `resolvesFixed` flag selects ICB / transform-or-containment-CB sites that absorb fixed. Updated all 7 call sites. Closes `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0.5% → 0%); reduces `position-fixed-scroll-nested-fixed` (4.2% → 1.0%). Residual diff is paint-time scroll/clipping (fixed escaping `overflow:auto`), not layout — defer.
@@ -173,7 +208,7 @@ Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 
 - **M1:** G-TABLE-REL closed → +11 primary (50 → 61). **Achieved 2026-04-21** via commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Verified at re-baseline post OOF re-entrance: also closed `position-relative-012` (was conjectured). 8 `-absolute-child` variants still failing at 1.0% — distinct root cause, deferred to G-ABS-IN-INLINE / G-ABS-IN-TABLE.
 - **M2:** ~~G-CB-CHANGE~~ — group dissolved 2026-04-21. Tests reassigned to G-FIXED / G-SINGLETONS / G-SCROLL.
-- **M3:** G-DYN-STATIC closed → +6 (→ 68). **Achieved 2026-04-21** (Parts a+b+d via commits `233d408f`, `d250c5cf`; Part c uncommitted — orphan-cell vertical-align + transform percent-sentinel fix). Bonus: +9 css-transforms (162 → 171).
+- **M3:** G-DYN-STATIC closed → +6 (→ 68). **Achieved 2026-04-21** (Parts a+b+d via commits `233d408f`, `d250c5cf`; Part c via commit `5399d328` — orphan-cell vertical-align + transform percent-sentinel fix). Bonus: +9 css-transforms (162 → 171).
 - **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ ~76).
 - **M5a:** G-FIXED Part A — OOF resolver re-entrance. **Achieved 2026-04-21** via commit `ed16475f`. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (62 PASS total). Reduced `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (residual paint-clip).
 - **M5b:** G-ROOT-FLEX-GRID closed → +4 (→ ~80). G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL.

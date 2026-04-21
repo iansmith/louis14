@@ -134,6 +134,35 @@ position-absolute-center-007.html   2.1%
 
 **Shared dependency:** `LogicalStaticPosition` is consumed by this machinery — any fix here interlocks with G-DYN-STATIC (which owns static-position rebuilding) and G-HYPO (which uses the both-auto-insets branch).
 
+#### Phase 4 audit (2026-04-21) — reframed as Blink-parity-first
+
+Audit of our current OOF sizing path (`pkg/layout/out_of_flow_layout.go:82-337`):
+
+**Blink-parity items ALREADY in louis14:**
+- `LogicalStaticPosition` (`pkg/layout/static_position.go:25-29`) — fields and edge enums `StaticEdgeStart/Center/End` match Blink's `LogicalStaticPosition::{InlineEdge, BlockEdge}` 1:1.
+- `LogicalInsets` (`pkg/layout/writing_mode_converter.go:241-246`) — close to Blink's `LogicalOofInsets`; carries `HasInlineStart` / `HasInlineEnd` / `HasBlockStart` / `HasBlockEnd`.
+- Worklist pattern for OOF resolution (`OutOfFlowLayoutPart.LayoutCandidates`, `:58-77`) — mirrored in Phase 5 Part A, `resolvesFixed` gate and all.
+- Both container + child WDM already threaded at the resolver.
+- Static-position cross-WM conversion (`static_position.go:56-130`) via `ConvertToPhysical` / `ConvertToLogical`.
+
+**Blink-parity items MISSING in louis14:**
+1. **`InsetBias` enum** (kStart/kEnd/kEqual). No equivalent exists.
+2. **`LogicalAlignment` struct.** `align-self` / `justify-self` are **not** read on abspos children today. Static edges are set per-FC at candidate creation but with no alignment-awareness beyond block-level default (`StaticEdgeStart`).
+3. **`InsetModifiedContainingBlock` type.** Today `layoutCandidatesOnce` passes the *raw* CB size to `SetPercentageResolutionSize` (`out_of_flow_layout.go:202-206`) — so `width:50%` on an abspos child resolves against full CB instead of the IMCB.
+4. **`LogicalOofDimensions` output struct.** Offsets/sizes are computed inline across `:132-310`; no reusable output shape.
+5. **Center-clipping collapse** (`2 × min(static_offset, cb_size − static_offset)` in the both-insets-auto + kEqual branch). Our both-auto case (`:256-272, :300-310`) hard-codes offsets with no alignment bias or clipping.
+
+**Scope boundaries for Phase 4** (named as known non-ports, not hidden gaps):
+- Anchor positioning (`LogicalAnchorCenterPosition`, `anchor-center`) — leave `TODO(anchor-positioning)` breadcrumbs at Blink signature positions. Not in any current css-position test.
+- Table-specific IMCB clamp (the table-overflow branch of `ComputeInsetModifiedContainingBlock`) — defer.
+- Fragmentation column/page OOF — out of scope.
+
+**Call-site surface the port touches:**
+- `out_of_flow_layout.go:132-310` — replace entirely with `ComputeOofInlineDimensions` / `ComputeOofBlockDimensions` calls.
+- `out_of_flow_layout.go:202-206` — pass IMCB size to percentage-resolution setter.
+- `OutOfFlowCandidate` struct (`out_of_flow_layout.go:9-28`) — add `Alignment LogicalAlignment`.
+- Candidate-creation sites: `block_layout.go:245-253` (block-level default: kStart/kStart), plus flex/grid sites that currently exist but don't propagate alignment. Grid/flex must set `StaticEdgeCenter` when parent uses center alignment per the flex static-position spec.
+
 ### G-CB-CHANGE — 3 tests — **Phase 2 audit invalidated the grouping (2026-04-21)**
 ```
 containing-block-change-scrollframe.html               10.4%
