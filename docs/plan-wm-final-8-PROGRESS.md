@@ -242,3 +242,56 @@ Post-merge multi-category baseline surfaced a **CSS2 nil-pointer panic regressio
 **Lesson for Phase 7 B2:** the Blink-aligned baseline-swap isn't a simple "swap ascent/descent for all sideways-lr strut/text items" — that approach regresses 25 tests without fixing the intended target. A fresh B2 agent should model Blink's `LogicalBoxFragment::BaselineMetrics` more precisely (swap likely belongs to inline-block baseline export, not every line-metric accumulator).
 
 Phase 9 complete. Phase 7 B2 dispatch unblocked.
+
+### Phase 7 B2: Mongolian orientation (2026-04-20, COMPLETE, commit `1dcffb34`)
+
+- **Approach taken:** style-level override in `collectTextNode` rather than the
+  plan's per-character orientation iterator in the layout engine. Deemed a
+  narrower, more targeted fix after reading Blink's behavior: when a font's
+  vertical metrics coincide with its horizontal metrics (as they do for fonts
+  designed for vertical-script display), `mixed`/`upright`/`sideways` all
+  converge. We simulate that convergence at the style level.
+
+- **Files changed:**
+  - `pkg/text/orientation.go`: added `IsVerticalScriptCharacter` for
+    Mongolian/Phags-Pa ranges (UTR#50 VO=U/Tu subset).
+  - `pkg/layout/inline_item.go`: `collectTextNode` clones the parent style and
+    sets `text-orientation: sideways` for all-vertical-script runs, so every
+    downstream query (measurement, painting, baseline) takes the unified path.
+  - `pkg/layout/inline_layout.go`: added `lineIsSidewaysResolved`; before
+    passing `centralBaseline` to `createLineBoxEx`, flip to alphabetic when
+    every text run on the line was already resolved to sideways. Keeps the
+    container's central-baseline choice consistent with its children's
+    rewritten orientation.
+
+- **Test results:**
+  - `mongolian-orientation-001`: 1.3% → 0% PASS.
+  - `mongolian-orientation-002`: 0.9% → 0% PASS.
+  - `mongolian-span-001`: still PASS at 0% (no path change).
+  - `text-orientation-*` (full glob): all pass, no regressions.
+  - `inline-block-alignment-001..006`: pass, `007` still fails at pre-existing
+    8.4% (not touched — deferred).
+  - `css-flexbox`: 621/629, unchanged.
+  - `css-writing-modes`: 4 remaining failures (block-plaintext-004/006,
+    inline-block-alignment-007, orthogonal-root-resize-icb-007) — all
+    pre-existing, unchanged diff counts verified against HEAD~1.
+
+- **What the plan got right:** file map (`pkg/text/orientation.go`,
+  `pkg/layout/engine.go`, `pkg/layout/line_breaker.go`,
+  `pkg/layout/writing_mode.go`), B2.1 helper shape, awareness that
+  `UsesCentralBaselineWithStyle` needed content-awareness.
+
+- **Where the plan diverged from reality:**
+  - Initial fix attempted at `MeasureTextVerticalFromFont` (per-rune
+    horizontal advance) and `drawText` vertical-text path (per-rune
+    advance) — both had no effect on the pixel diff because the box
+    positions/sizes are computed earlier from style, not per-rune.
+  - B2.2 per-character orientation iterator (Blink's `OrientationIterator`
+    pattern) would be the architecturally correct approach for mixed
+    Latin+Mongolian runs; for the existing tests (uniform Mongolian runs)
+    the style override is sufficient and narrower.
+  - B2.3 as the plan stated ("upright em-square advance for vertical-script
+    chars") was backwards — the bug was that upright WAS using em-square
+    and needed the horizontal-advance path. The style override routes the
+    whole run through the existing sideways path which uses horizontal
+    advance naturally.
