@@ -6114,10 +6114,14 @@ func (s *Style) GetJustifyItems() JustifyItems {
 
 // Phase 16: CSS Transforms
 
-// Transform represents a CSS transform
+// Transform represents a CSS transform.
+// For translate*, each Values[i] is either a pixel length or a percentage; the
+// corresponding IsPercent[i] disambiguates. Non-translate transforms ignore
+// IsPercent (angles, scalars).
 type Transform struct {
-	Type   string    // "translate", "rotate", "scale", "skew"
-	Values []float64 // Parameter values
+	Type      string
+	Values    []float64
+	IsPercent []bool
 }
 
 // GetTransforms parses the transform property and returns a list of transforms
@@ -6191,27 +6195,30 @@ func parseTransformFunction(name, args string) *Transform {
 	case "translate":
 		// translate(x, y) or translate(x)
 		parts := strings.Split(args, ",")
-		values := make([]float64, 0)
+		values := make([]float64, 0, 2)
+		pct := make([]bool, 0, 2)
 		for _, part := range parts {
-			if val := parseTransformValue(strings.TrimSpace(part)); val != nil {
-				values = append(values, *val)
+			if v, isPct, ok := parseTransformValue(strings.TrimSpace(part)); ok {
+				values = append(values, v)
+				pct = append(pct, isPct)
 			}
 		}
 		if len(values) == 1 {
-			values = append(values, 0) // y defaults to 0
+			values = append(values, 0)
+			pct = append(pct, false)
 		}
 		if len(values) >= 2 {
-			return &Transform{Type: "translate", Values: values[:2]}
+			return &Transform{Type: "translate", Values: values[:2], IsPercent: pct[:2]}
 		}
-		
+
 	case "translateX":
-		if val := parseTransformValue(args); val != nil {
-			return &Transform{Type: "translate", Values: []float64{*val, 0}}
+		if v, isPct, ok := parseTransformValue(args); ok {
+			return &Transform{Type: "translate", Values: []float64{v, 0}, IsPercent: []bool{isPct, false}}
 		}
-		
+
 	case "translateY":
-		if val := parseTransformValue(args); val != nil {
-			return &Transform{Type: "translate", Values: []float64{0, *val}}
+		if v, isPct, ok := parseTransformValue(args); ok {
+			return &Transform{Type: "translate", Values: []float64{0, v}, IsPercent: []bool{false, isPct}}
 		}
 		
 	case "rotate":
@@ -6290,27 +6297,27 @@ func parseTransformFunction(name, args string) *Transform {
 	return nil
 }
 
-// parseTransformValue parses a length value that might be pixels or percentage
-func parseTransformValue(val string) *float64 {
+// parseTransformValue parses a length-or-percentage value for a translate
+// component. Returns (value, isPercent, ok). Legitimate negative pixel
+// lengths (e.g. `-50px`) are preserved — a prior sign-sentinel encoding
+// silently flipped such values into positive percentages.
+func parseTransformValue(val string) (float64, bool, bool) {
 	val = strings.TrimSpace(val)
-	
-	// Check for percentage
+
 	if strings.HasSuffix(val, "%") {
 		percentStr := strings.TrimSuffix(val, "%")
 		if percent, err := strconv.ParseFloat(percentStr, 64); err == nil {
-			// Return negative value to indicate percentage (will be resolved later with element size)
-			result := -percent // Negative indicates percentage
-			return &result
+			return percent, true, true
 		}
+		return 0, false, false
 	}
-	
-	// Check for px or unitless
+
 	val = strings.TrimSuffix(val, "px")
 	if length, err := strconv.ParseFloat(val, 64); err == nil {
-		return &length
+		return length, false, true
 	}
-	
-	return nil
+
+	return 0, false, false
 }
 
 // parseAngle parses an angle value (deg, rad, turn)
@@ -6452,28 +6459,30 @@ func (s *Style) GetIndividualRotate() (float64, bool) {
 	return 0, false
 }
 
-// GetIndividualTranslate returns the CSS `translate` individual transform property as (tx, ty, hasValue).
-// A single value sets the X translation only.
-// Percentage values are encoded as negative numbers (same sentinel convention as parseTransformValue).
-func (s *Style) GetIndividualTranslate() (float64, float64, bool) {
+// GetIndividualTranslate returns the CSS `translate` individual transform
+// property as (tx, ty, txPercent, tyPercent, hasValue). A single value sets
+// the X translation only. Percentage and length values are distinguished by
+// the explicit flags rather than a sign sentinel, so `translate: 0 -50px`
+// round-trips correctly.
+func (s *Style) GetIndividualTranslate() (float64, float64, bool, bool, bool) {
 	if val, ok := s.Get("translate"); ok {
 		if val == "none" || val == "" {
-			return 0, 0, false
+			return 0, 0, false, false, false
 		}
 		parts := strings.Fields(val)
 		if len(parts) == 1 {
-			if v := parseTransformValue(parts[0]); v != nil {
-				return *v, 0, true
+			if v, isPct, ok := parseTransformValue(parts[0]); ok {
+				return v, 0, isPct, false, true
 			}
 		} else if len(parts) >= 2 {
-			vx := parseTransformValue(parts[0])
-			vy := parseTransformValue(parts[1])
-			if vx != nil && vy != nil {
-				return *vx, *vy, true
+			vx, xPct, okx := parseTransformValue(parts[0])
+			vy, yPct, oky := parseTransformValue(parts[1])
+			if okx && oky {
+				return vx, vy, xPct, yPct, true
 			}
 		}
 	}
-	return 0, 0, false
+	return 0, 0, false, false, false
 }
 
 // Phase 24: Background image support

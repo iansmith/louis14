@@ -104,7 +104,7 @@ func boxIsContainingBlockForAbsPos(box *Box) bool {
 			return true
 		}
 		// Individual transform properties
-		if _, _, ok := box.Style.GetIndividualTranslate(); ok {
+		if _, _, _, _, ok := box.Style.GetIndividualTranslate(); ok {
 			return true
 		}
 		if _, ok := box.Style.GetIndividualRotate(); ok {
@@ -169,7 +169,7 @@ func boxIsContainingBlockForFixedPos(box *Box) bool {
 			return true
 		}
 		// Individual transform properties
-		if _, _, ok := box.Style.GetIndividualTranslate(); ok {
+		if _, _, _, _, ok := box.Style.GetIndividualTranslate(); ok {
 			return true
 		}
 		if _, ok := box.Style.GetIndividualRotate(); ok {

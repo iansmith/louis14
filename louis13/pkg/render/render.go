@@ -490,7 +490,7 @@ func (r *Renderer) paintStackingContext(box *layout.Box) {
 		// Build combined transform list: individual properties (translate → rotate → scale)
 		// applied before the transform shorthand, per CSS Transforms Level 2.
 		var allTransforms []css.Transform
-		if tx, ty, ok := box.Style.GetIndividualTranslate(); ok {
+		if tx, ty, _, _, ok := box.Style.GetIndividualTranslate(); ok {
 			allTransforms = append(allTransforms, css.Transform{Type: "translate", Values: []float64{tx, ty}})
 		}
 		if deg, ok := box.Style.GetIndividualRotate(); ok {

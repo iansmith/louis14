@@ -89,7 +89,7 @@ func BoxCreatesStackingContext(box *Box) bool {
 		if _, ok := box.Style.GetIndividualRotate(); ok {
 			return true
 		}
-		if _, _, ok := box.Style.GetIndividualTranslate(); ok {
+		if _, _, _, _, ok := box.Style.GetIndividualTranslate(); ok {
 			return true
 		}
 	}

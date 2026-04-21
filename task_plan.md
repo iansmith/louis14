@@ -1,11 +1,12 @@
 # Task Plan: Pass the entire css-position category
 
 ## Goal
-All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post OOF re-entrance): **62 passing, 42 failing**. Remaining: close 42 without regressing:
+All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 3 closed): **68 passing, 36 failing**. Remaining: close 36 without regressing:
 
 - css-writing-modes (currently 781/781 PASS — Phase 5f complete)
 - CSS2 (99/99 PASS)
-- css-flexbox (626/629 PASS — verified post OOF re-entrance)
+- css-flexbox (626/629 PASS — verified post Phase 3(c))
+- css-transforms (watch, not invariant: 171/381 after Phase 3(c) percent-sentinel fix, +9 vs baseline)
 
 ## Rules & Discipline
 Authoritative sources (re-read at session start):
@@ -26,7 +27,7 @@ Do not duplicate wm notes here.
 ## Baseline snapshot (2026-04-21)
 Log: `output/baselines/css-position-2026-04-21.log`
 - 104 tests exercised: **50 PASS · 54 FAIL · 5 NORUN** at baseline.
-- Latest (post OOF re-entrance, commit `ed16475f`): **62 PASS · 42 FAIL** in this category.
+- Latest (post Phase 3 G-DYN-STATIC closed): **68 PASS · 36 FAIL** in this category.
 - Failing test list + diffs: `/tmp/css-position-fails.tsv` (regenerate via `/tmp/parse_css_position.sh`).
 
 Highest-diff outliers (top 5 by pixel count, current state):
@@ -70,9 +71,9 @@ Full detail in `findings.md`. 54 failing tests cluster into **11 groups** by lik
 Research insights from Blink study (2026-04-21) reshape the ordering — **G-DYN-STATIC is a prerequisite for both G-ABS-CENTER and G-HYPO**, and the IMCB machinery is shared between G-ABS-CENTER and G-HYPO.
 
 1. ~~**G-TABLE-REL (11 primary tests).**~~ **Done 2026-04-21** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Relative offset moved into shared `BoxFragmentBuilder.AddChild`; positioned thead/tbody/tfoot emit section fragments; inline-block §10.8.1 last-baseline fallback corrected.
-2. **G-CB-CHANGE (3 tests) — invalidation-only.** Add the style-change path: `StyleDifference::NeedsPositionedLayout` + `RemovePositionedObjects(stay_within)` so abspos children re-register with their new CB. No sizing changes.
-3. **G-DYN-STATIC (6 tests) — foundational.** Rebuild static position every layout pass via an `OutOfFlowPositionedDescendants` list on `LayoutResult`. Drop any existing static-position caching. Required before IMCB can be exercised with dynamic inputs.
-4. **G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests).** Both depend on `ComputeUnclampedIMCBInOneAxis` / `ResizeIMCBInOneAxis` in a new `pkg/layout/absolute_utils.go`. The hypothetical-box tests *are* the both-insets-auto branch — they may pass for free once IMCB lands. Verify after the IMCB commit and split if needed.
+2. ~~**G-CB-CHANGE (3 tests).**~~ **Dissolved 2026-04-21** (audit no-op) — our harness already does fresh relayout post-JS. Tests reassigned to G-FIXED / G-SINGLETONS / G-SCROLL.
+3. ~~**G-DYN-STATIC (6 tests).**~~ **Done 2026-04-21** — commits `233d408f` (a), `d250c5cf` (b+d), + uncommitted (c) (orphan-cell vertical-align at `block_layout.go` + transform percent-sentinel fix at `pkg/css/style.go`). Original "rebuild via `OutOfFlowPositionedDescendants` list" hypothesis was invalidated — our harness already relays out fresh; the real bugs were per-FC static-position computation at each capture site.
+4. **G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests).** Both depend on `ComputeUnclampedIMCBInOneAxis` / `ResizeIMCBInOneAxis` in a new `pkg/layout/absolute_utils.go`. The hypothetical-box tests *are* the both-insets-auto branch — they may pass for free once IMCB lands. Verify after the IMCB commit and split if needed. **Now unblocked — G-DYN-STATIC prerequisite satisfied.**
 5. **G-ROOT-FLEX-GRID + G-FIXED (5 tests).** Blink research **deferred** to phase start — study `layout_view.cc` root-element specials + nested-fixed scroll offset at that point.
 6. **G-ABS-IN-INLINE (2 tests).** New `pkg/layout/inline_containing_block.go` mirroring `InlineContainingBlockUtils::ComputeInlineContainerGeometry` — union rects of first + last line-boxes.
 7. **G-STICKY (1 test).** Minimum viable: at layout, sticky boxes get zero offset; `sticky-top-001` naturally passes. Full `StickyPositionScrollingConstraints` can wait until a scroll-based sticky test appears.
@@ -115,15 +116,16 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
   - `containing-block-change-scrollframe` (10.4%) → new **G-SCROLL** sub-group (needs `Element.scrollTop` setter + `overflow:hidden` scroll paint).
 - [x] Phase 2 closed as a no-op — no code changes needed for "invalidation". Move on to next phase per revised attack order.
 
-### Phase 3: G-DYN-STATIC (6 tests) — **per-FC computation fixes; original rebuild-list hypothesis invalidated 2026-04-21**
+### Phase 3: G-DYN-STATIC (6 tests) — **DONE 2026-04-21**
 - [x] Blink research: static position NOT cached; rebuilt each pass via `LayoutResult::OutOfFlowPositionedDescendants` list.
 - [x] Audit (2026-04-21): we already rebuild every pass via fresh `engine2`. Original "add OutOfFlowPositionedDescendants list" hypothesis is a no-op. Real root causes are per-FC COMPUTATION bugs in static-position capture sites. See `findings.md` "G-DYN-STATIC — Phase 3 hypothesis invalidated".
-- [x] **(a) `inline_layout.go:682-694`** — split by child's `display`. Block-level abspos → `(0, lineBlockEnd)` when in-flow content precedes on the line, `(0, blockOffset)` otherwise; inline-level abspos → `(inlinePos, blockOffset)`. Helper `isInlineLevelDisplay` mirrors Blink's `ComputedStyle::IsOriginalDisplayInlineType`. `hasInflowOnLine` flag mirrors `line_box_.LineBoxBlockEnd()` at time-of-encounter so the first-child-block-level case (no prior in-flow) stays at `blockOffset`. Closes `inline` (2.1% → 0%). wm 781/781 ✓, CSS2 99/99 ✓.
-- [x] **(b) `block_layout.go:217-237`** — for inline-level abspos children, query `exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)` and use the returned inline-start offset directly as `InlineOffset` (no bfcInlineOrigin subtraction — floats are stored with LOCAL inline offsets, matching how inline_layout's line-start recomputation uses them). Closes `floats-001` (0.7% → 0%), `floats-002` (0.3% → 0%), `floats-003` (0.3% → 0%), AND `floats-004` RTL (0.7% → 0%). Turns out (d) is covered by the shared exclusion-space path (`PhysicalFloatToExclusionSide` already flips for RTL; the query is direction-agnostic). wm 781/781 ✓, CSS2 99/99 ✓.
-- [ ] **(c) `table_layout.go`** (abspos-in-table-cell capture site) — apply vertical-align to static-position block-offset. Fixes `table-cell` test.
+- [x] **(a) `inline_layout.go:682-694`** — split by child's `display`. Block-level abspos → `(0, lineBlockEnd)` when in-flow content precedes on the line, `(0, blockOffset)` otherwise; inline-level abspos → `(inlinePos, blockOffset)`. Helper `isInlineLevelDisplay` mirrors Blink's `ComputedStyle::IsOriginalDisplayInlineType`. `hasInflowOnLine` flag mirrors `line_box_.LineBoxBlockEnd()` at time-of-encounter so the first-child-block-level case (no prior in-flow) stays at `blockOffset`. Closes `inline` (2.1% → 0%). wm 781/781 ✓, CSS2 99/99 ✓. Commit `233d408f`.
+- [x] **(b) `block_layout.go:217-237`** — for inline-level abspos children, query `exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)` and use the returned inline-start offset directly as `InlineOffset` (no bfcInlineOrigin subtraction — floats are stored with LOCAL inline offsets, matching how inline_layout's line-start recomputation uses them). Closes `floats-001` (0.7% → 0%), `floats-002` (0.3% → 0%), `floats-003` (0.3% → 0%), AND `floats-004` RTL (0.7% → 0%). Turns out (d) is covered by the shared exclusion-space path (`PhysicalFloatToExclusionSide` already flips for RTL; the query is direction-agnostic). wm 781/781 ✓, CSS2 99/99 ✓. Commit `d250c5cf`.
+- [x] **(c) orphan table-cell (NOT the originally-planned site).** Investigation: target test uses `display:table-cell` with **no table ancestor**. `normalizeTableSubtrees` in `layout_tree_builder.go` doesn't wrap it (reverse §17.2.1 is unimplemented), so layout dispatches to `block_layout.go`, not `table_layout.go`. Two fixes: (i) orphan-cell vertical-align in `block_layout.go` (applied to in-flow children + OOF candidates, guarded by `space.TableSectionData == nil`); (ii) transform parser percent-sentinel fix in `pkg/css/style.go` + `pkg/render/paint_layer.go` (added `IsPercent []bool` on `Transform`; widened `GetIndividualTranslate` signature to return explicit percent flags; updated 3 `louis13/` callers). Closes `table-cell` (2.1% → 0%) and +9 css-transforms for free. **Uncommitted** pending user review.
 - [x] **(d) RTL-direction awareness** — **NO-OP, closed by (b)**. `floats-004` passes because `exclusionSpace.FindAvailableInlineSize` operates on `PhysicalFloatToExclusionSide`-normalised sides (ExclusionInlineStart = visual-start regardless of direction). No separate edge-annotation flip needed on capture.
-- [ ] Per-site commits with wm 781/781 + CSS2 99/99 regression gate after each.
-- [ ] Representative drivers: `inline` (2.1%) for (a); `floats-001` (0.7%) for (b); `table-cell` (2.1%) for (c); `floats-004` (0.7%) for (d).
+- [ ] **Tech debt**: proper-table path vertical-align on propagated OOF candidates. Structural design (OOF-candidate `vaBlockShift` during row sweep in `table_layout.go`) drafted but dropped from this phase because the `contentBlockSize` pre-stretch change regressed 3 wm orthogonal-writing-mode tests. Revisit when a test requires vertical-align centering of abspos inside a real `<table><td>`.
+- [x] Per-site commits with wm 781/781 + CSS2 99/99 regression gate after each.
+- [x] Representative drivers: `inline` (2.1%) for (a); `floats-001` (0.7%) for (b); `table-cell` (2.1%) for (c); `floats-004` (0.7%) for (d).
 
 ### Phase 4: G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests)
 - [x] Blink research: `absolute_utils.cc` IMCB machinery. G-HYPO is the both-insets-auto branch.
@@ -171,7 +173,7 @@ Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 
 - **M1:** G-TABLE-REL closed → +11 primary (50 → 61). **Achieved 2026-04-21** via commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Verified at re-baseline post OOF re-entrance: also closed `position-relative-012` (was conjectured). 8 `-absolute-child` variants still failing at 1.0% — distinct root cause, deferred to G-ABS-IN-INLINE / G-ABS-IN-TABLE.
 - **M2:** ~~G-CB-CHANGE~~ — group dissolved 2026-04-21. Tests reassigned to G-FIXED / G-SINGLETONS / G-SCROLL.
-- **M3:** G-DYN-STATIC closed → +6 (→ ~68).
+- **M3:** G-DYN-STATIC closed → +6 (→ 68). **Achieved 2026-04-21** (Parts a+b+d via commits `233d408f`, `d250c5cf`; Part c uncommitted — orphan-cell vertical-align + transform percent-sentinel fix). Bonus: +9 css-transforms (162 → 171).
 - **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ ~76).
 - **M5a:** G-FIXED Part A — OOF resolver re-entrance. **Achieved 2026-04-21** via commit `ed16475f`. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (62 PASS total). Reduced `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (residual paint-clip).
 - **M5b:** G-ROOT-FLEX-GRID closed → +4 (→ ~80). G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL.
@@ -214,8 +216,28 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualte
 | G-FIXED OOF re-entrance via worklist loop, not single-pass | Mirrors Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`. New `resolvesFixed` flag distinguishes ICB / containment / transform CB sites (absorb fixed) from ordinary positioned sites (return unresolved fixed to caller). |
 | Split G-FIXED into Part A (re-entrance, layout) and Part B (paint-clip / scrollTop) | Re-entrance closed 1 of 2 cleanly; the residual is squarely in paint/scroll, not OOF layout. Don't conflate — Part B will be picked up alongside G-SCROLL. |
 | G-STICKY minimum viable acceptable | Full constraint machinery is overkill for the one failing test; flag as tech debt for when scroll-based sticky tests appear. |
+| ExclusionSpace stores LOCAL inline offsets (not BFC-absolute) | Learned 2026-04-21 while fixing Phase 3(b). Readers must NOT subtract `bfcInlineOrigin` from `FindAvailableInlineSize` results. Invariant holds for any caller in the same enclosing block that owns the exclusion space. Full write-up in `findings.md` "Coordinate-system notes". |
+| Inline-FC OOF block-end read "at time of encounter" | Mirrors Blink's `line_box_.LineBoxBlockEnd()` semantics. `hasInflowOnLine` incremental flag is the correct primitive; deferred emission at end-of-line without this gate regresses orthogonal-float wm tests. |
+| Transform parser uses explicit `IsPercent []bool`, not sign sentinel | Sign-based percent sentinel (`result := -percent`) collided with legitimate negative pixel lengths. `translate: 0 -50px` was rendering as `+50px`. Fixed by storing percent-ness per component; widened `GetIndividualTranslate` signature. +1 css-position + 9 css-transforms for free. |
+| Orphan `display:table-cell` gets vertical-align at `block_layout.go`, not via §17.2.1 anon-wrapping | Reverse §17.2.1 anonymous-table generation is unimplemented, so orphan cells dispatch to block layout. Adding a guarded vertical-align shift at the block-layout end-of-pass is cheaper (and bounded) than implementing reverse §17.2.1. `TableSectionData == nil` guard prevents double-shift on the proper-table path. |
 | Do not run the full css-position category more than once per milestone | CLAUDE.md §4 — broad runs only at baselines and milestone verifications. |
 | css-writing-modes stays at 781/781 as an invariant | Phase 5f is complete; any regression in wm reverts the commit. |
+
+## Deferred / parked work (may not be needed; capture so we don't lose it)
+
+### Proper-table-path vertical-align on propagated OOF candidates
+**Context.** During Phase 3(c) I drafted a `table_layout.go` change that (i) recomputed `contentBlockSize` from the cell's pre-stretch intrinsic content + box-model (instead of the post-stretch `cellLogical.BlockSize()`), and (ii) extracted `vaBlockShift` into a variable so it could be added to `PropagatedOOFCandidates[].StaticPosition.Offset.BlockOffset` during the per-row sweep (matching Blink's `TableCellLayoutAlgorithm` applying `intrinsic_padding_before` before OOF propagation).
+
+**Why it didn't ship.** The Phase 3(c) target test turned out to use *orphan* `display:table-cell` (no table ancestor) and never exercised the proper-table path. Worse, the `contentBlockSize` pre-stretch change regressed 3 wm orthogonal-writing-mode tests (`box-offsets-rel-pos-vlr-005`, `box-offsets-rel-pos-vrl-004`, `orthogonal-cell-001`) — the pre-stretch shape interacts badly with orthogonal cells where `cellBlockForRow` reads the cell's *inline* size as the row's block size.
+
+**When to revisit.** The moment a test requires vertical-align centering of an abspos descendant inside a real `<table><td>...`. Candidate triggers: future G-HYPO tests using `<td>`, any css-tables-3 test with abspos + vertical-align inside a cell.
+
+**What to redo.**
+1. Re-apply the `vaBlockShift` extraction + `PropagatedOOFCandidates` shift in `table_layout.go` (structurally it's correct — mirrors Blink).
+2. Debug the `contentBlockSize` shape separately against `orthogonal-cell-001` before landing. The fix likely needs to detect orthogonal cells and use a different pre-stretch quantity (cell's inline-size in its own WDM rather than block-size). Do not ship one without the other.
+3. Drop the `TableSectionData == nil` guard in `block_layout.go` only if the proper-table path handles the shift — otherwise keep both paths.
+
+**Pointer.** See `findings.md` § "G-DYN-STATIC — (c) table-cell" → "Not shipped — proper-table-path vertical-align capture" for the exact diff that was dropped.
 
 ## Notes
 - `output/baselines/` holds raw logs; parse scripts live in `/tmp/` and are regenerated per session.

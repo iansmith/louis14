@@ -13,7 +13,7 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 3 G-DYN-STATIC Parts (a)+(b)+(d) — landed 2026-04-21.** 5 of 6 G-DYN-STATIC tests now PASS (inline + floats-001/002/003/004). Only `table-cell` remains (task (c)).
+**Phase 3 G-DYN-STATIC — CLOSED 2026-04-21 (all 6/6).** Parts (a)+(b)+(d) landed earlier; Part (c) (`table-cell`) closed 2026-04-21 with two independent fixes.
 
 - **Part (a) `inline_layout.go`** splits `InlineItemOutOfFlow` capture by specified display: inline-level → `(inlinePos, blockOffset)`; block-level with prior in-flow on the line → `(0, blockOffset + lineHeight)` at end-of-line; block-level with no prior in-flow → `(0, blockOffset)` immediately. Mirrors Blink's `InlineLayoutAlgorithm::HandleOutOfFlowPositioned` reading `line_box_.LineBoxBlockEnd()` at time-of-encounter. New helper `isInlineLevelDisplay` mirrors `ComputedStyle::IsOriginalDisplayInlineType`. Closes `inline` (2.1% → 0%).
 - **Part (b) `block_layout.go`** detects inline-level abspos (`isInlineLevelDisplay(childStyle.GetDisplay())`) and queries `exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)`; uses the returned inline-start offset directly as `InlineOffset`. Closes `floats-001/002/003/004`.
@@ -38,7 +38,7 @@ Gates: wm 781/781 ✓, CSS2 99/99 ✓ after both (a) and (b). (a)'s `hasInflowOn
 - Known limitations: 8 `-absolute-child` variants still failing at 1.0–1.7% — abspos descendants in a positioned section/cell. Not Phase 1 scope; tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE.
 
 ### Next
-**Phase 3 Part (c) only remaining.** `position-absolute-dynamic-static-position-table-cell` (2.1%) — abspos inside `display:table-cell; vertical-align:middle` with JS-applied `translate:0 -50px; top:auto`. Needs table-cell static-position capture to account for the cell's vertical-align offset.
+**G-DYN-STATIC fully closed.** IMCB (Phase 4, G-ABS-CENTER + G-HYPO bundled) is now unblocked — static-position inputs are Blink-faithful across all FCs.
 
 **G-FIXED Part B residual + adjacent groups** still outstanding. `position-fixed-scroll-nested-fixed` still fails at 1.0% — the inner fixed paints but is clipped by the outer `overflow:auto` and lacks `Element.scrollTop` honoring. Both belong to scroll/paint, not OOF layout. Defer until G-SCROLL is opened.
 
@@ -64,13 +64,19 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-21 | css-writing-modes (post Phase 3(b)) | 781 | 0 | 0 | Gate held. |
 | 2026-04-21 | CSS2 (post Phase 3(b)) | 99 | 0 | 0 | Gate held. |
 | 2026-04-21 | `position-absolute-dynamic-static-position-*` (10 tests, post Phase 3(b)+(d)) | 9 | 1 | 0 | +4 from (b): floats-001/002/003/004. Only `table-cell` (2.1%) remains. |
+| 2026-04-21 | `position-absolute-dynamic-static-position-table-cell` (post Phase 3(c)) | 1 | 0 | 0 | 0 diff, max 0. G-DYN-STATIC 6/6 closed. |
+| 2026-04-21 | css-writing-modes (post Phase 3(c)) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | css-position (post Phase 3(c)) | 68 | 36 | — | +1 vs 62 baseline (target test). |
+| 2026-04-21 | css-transforms (post Phase 3(c) transform parser fix) | 171 | 210 | — | +9 vs 162 baseline (percent-sentinel fix unlocks other translate cases). |
+| 2026-04-21 | css-flexbox (post Phase 3(c)) | 626 | 3 | 0 | No regression. Same 3 pre-existing failures. |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |
 |---|---|---|
-| css-writing-modes | 781/781 | 2026-04-21 (post OOF re-entrance) |
-| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post OOF re-entrance) |
-| css-flexbox | 626/629 | 2026-04-21 (post OOF re-entrance) |
+| css-writing-modes | 781/781 | 2026-04-21 (post Phase 3(c)) |
+| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post Phase 3(b)) |
+| css-flexbox | 626/629 | 2026-04-21 (post Phase 3(c)) |
+| css-transforms (watch, not invariant) | 171/381 | 2026-04-21 (post Phase 3(c), +9 vs baseline) |
 
 ## Session: 2026-04-21
 
@@ -179,14 +185,45 @@ See `findings.md` "G-DYN-STATIC — 6 tests — Phase 3 hypothesis invalidated" 
 
 Paused before coding to let the user confirm the revised approach.
 
+### Phase 3 (a) inline_layout.go — DONE 2026-04-21, commit `233d408f`
+- Added `isInlineLevelDisplay` helper mirroring `ComputedStyle::IsOriginalDisplayInlineType`.
+- Capture loop now splits on specified `display`; inline-level OOF emits at `(inlinePos, blockOffset)` immediately; block-level OOF with preceding in-flow on the line is deferred and emitted at `(0, blockOffset + lineHeight)` after `createLineBoxEx` finalises line height; block-level OOF with no preceding in-flow emits immediately at `(0, blockOffset)`.
+- Refinement that avoided a 4-test wm regression: initial attempt emitted ALL block-level OOFs at `(0, blockOffset + lineHeight)`. That broke `float-{lft,rgt}-orthog-v{lr,rl}-in-htb-002/003` whose REFERENCE HTML has a block-level `position:absolute` div as the first child of an inline FC. Blink reads `line_box_.LineBoxBlockEnd()` at time-of-encounter (not end-of-line), so the `hasInflowOnLine` flag must gate the deferred path.
+- `inline` test closed (2.1% → 0%). wm 781/781 ✓, CSS2 99/99 ✓.
+
+### Phase 3 (c) table-cell — DONE 2026-04-21 (uncommitted)
+Target test `position-absolute-dynamic-static-position-table-cell` (2.1% → 0%). Investigation revealed the original plan's fix site was wrong: this test uses **orphan** `display:table-cell` (no `<table>` ancestor), which bypasses `table_layout.go` entirely. `normalizeTableSubtrees` in `layout_tree_builder.go` doesn't wrap it (reverse §17.2.1 anonymous-table generation is unimplemented), so the cell falls through to `block_layout.go`.
+
+Instrumentation confirmed the static-position capture at the cell was correct (block-offset = 50) once vertical-align was honoured. Pixel-scanner output then pointed at a separate transform rendering issue.
+
+**Two fixes landed:**
+1. **Orphan-cell vertical-align (`pkg/layout/block_layout.go`).** After layout, if `style.GetDisplay() == DisplayTableCell && space.TableSectionData == nil && finalBlockSize > intrinsicBlockSize`, compute the `vertical-align` shift (`middle` → half surplus, `bottom` → full surplus) and apply it to both in-flow children and propagated OOF candidates. `TableSectionData == nil` keeps the proper-table path unaffected.
+2. **Transform parser percent-sentinel (`pkg/css/style.go` + `pkg/render/paint_layer.go`).** Removed the sign-sentinel encoding (`result := -percent`) that collided with legitimate negative pixel lengths. Added `IsPercent []bool` on `Transform`; widened `GetIndividualTranslate` to return explicit percent flags. Updated 3 `louis13/` callers for the new signature.
+
+**Investigated but dropped:** an edit to `table_layout.go` (pre-stretch `contentBlockSize` + OOF-candidate `vaBlockShift` for the proper-table path). Not needed for the target test, and the `contentBlockSize` change regressed 3 wm orthogonal-writing-mode tests (`box-offsets-rel-pos-vlr-005`, `box-offsets-rel-pos-vrl-004`, `orthogonal-cell-001`). The structural design is correct but the `contentBlockSize` shape needs re-debugging against orthogonal cases before it can land. Filed as tech debt.
+
+Gates: wm 781/781 ✓, css-position 67 → 68 (+1), css-transforms 162 → 171 (+9 free wins from percent fix), css-flexbox 626/629 ✓.
+
+### Phase 3 (b) block_layout.go + (d) RTL — DONE 2026-04-21, commit `d250c5cf`
+- Block-FC abspos now queries `exclusionSpace.FindAvailableInlineSize(bfcBlockOrigin + staticBlockOffset, 0, bfcContainerInlineSize)` when the abspos child is inline-level per its specified display; the returned inline-start consumption is used directly as `InlineOffset`.
+- Debugging surfaced an **ExclusionSpace coordinate-system invariant** not documented in the code: floats are stored with LOCAL inline offsets (from the enclosing block's content-box inline-start), not BFC-absolute. First attempt subtracted `bfcInlineOrigin` from the query result and landed the target at local `(22, 0)` instead of `(40, 0)`. Removed the subtraction. Full write-up in `findings.md` "Coordinate-system notes".
+- RTL (`floats-004`) closed INCIDENTALLY: `ExclusionSpace` normalises physical sides through `PhysicalFloatToExclusionSide` at write time, so `FindAvailableInlineSize` is direction-agnostic. No separate (d) change needed.
+- Closes `floats-001/002/003` and `floats-004` (RTL). wm 781/781 ✓, CSS2 99/99 ✓.
+
+### Session learnings (2026-04-21, distilled)
+1. **Per-FC capture, not cache invalidation.** `G-DYN-STATIC` tests aren't about re-layout; they're about each FC's static-position computation matching Blink's per-FC logic.
+2. **"At time of encounter" metrics matter.** Inline FC reads `LineBoxBlockEnd()` when an OOF is encountered, not at end-of-line. Incremental tracking (`hasInflowOnLine`) is the right primitive.
+3. **ExclusionSpace stores LOCAL inline offsets.** Readers must use returned offsets directly; don't translate by `bfcInlineOrigin`. The in-flow inline-layout line-start code happens to add-then-subtract origin for clarity; new readers should skip both steps.
+4. **RTL often free via push-down normalisation.** `PhysicalFloatToExclusionSide` already flips at write, so readers don't need a direction branch.
+
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | css-position category, **62/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 (G-CB-CHANGE) dissolved; Phase 5 G-FIXED Part A DONE. Pick next: **Phase 3 G-DYN-STATIC** (foundational, prerequisite for IMCB Phase 4). |
+| Where am I? | css-position category, **68/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 (G-CB-CHANGE) dissolved; Phase 3 (G-DYN-STATIC) DONE; Phase 5 G-FIXED Part A DONE. Pick next: **Phase 4 IMCB (G-ABS-CENTER + G-HYPO bundled, 8 tests)**. |
 | Where am I going? | 100/100 runnable css-position at 0 diff (4 SKIPs out of scope for layout plan). |
 | What's the goal? | All runnable css-position tests at 0 diff; wm 781/781, CSS2 99/99, flex ≥621 must hold. |
-| What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block's LastBaseline must originate from a line-box descendant. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only and turned out to be a no-op for our harness (we already do fresh re-layout post-JS). **OOF resolution must be re-entrant** (Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`): after laying out an OOF child, drain `PropagatedOOFCandidates` and continue resolving. ICB / containment / transform CB sites absorb fixed; ordinary positioned sites return unresolved fixed to caller. |
-| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. Net: 50 → 62 PASS. wm 781/781, CSS2 99/99, flex 626/629 all gates held. |
+| What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block's LastBaseline must originate from a line-box descendant. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only and turned out to be a no-op for our harness (we already do fresh re-layout post-JS). **OOF resolution must be re-entrant** (Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`): after laying out an OOF child, drain `PropagatedOOFCandidates` and continue resolving. ICB / containment / transform CB sites absorb fixed; ordinary positioned sites return unresolved fixed to caller. **Orphan `display:table-cell` bypasses `table_layout.go`** — falls through to `block_layout.go` via unimplemented reverse §17.2.1 anonymous-table generation; needs its own vertical-align handling at the block-layout site. **Transform parser must not use sign as a percent/length sentinel** — negative pixel lengths encode negatively and will be misread as percent. Use explicit `IsPercent []bool`. |
+| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. **Phase 3 G-DYN-STATIC closed (6/6)** — commits `233d408f` (a), `d250c5cf` (b)+(d), plus uncommitted Phase 3(c) landing orphan-cell vertical-align + transform percent-sentinel fix. Net: 50 → 68 PASS. wm 781/781, CSS2 99/99, flex 626/629 all gates held. Bonus +9 in css-transforms from the percent-sentinel fix. |
 
 ## Error Log
 *(populated as work progresses)*

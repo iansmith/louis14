@@ -818,6 +818,44 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder.SetEndMarginStrut(prevMarginStrut)
 	builder.SetExclusionSpace(exclusionSpace)
 
+	// CSS 2.1 §17.5.3 + CSS Tables 3 §5.4.1 — orphan table-cell vertical-align.
+	//
+	// A `display: table-cell` box whose ancestor is NOT a proper <table>
+	// falls through to block layout here (see layout_tree_builder.go's
+	// `normalizeTableSubtrees` — reverse §17.2.1 anonymous-table generation
+	// is not implemented yet). For orphan cells we still need to honour
+	// vertical-align so content centres within the cell's explicit
+	// block-size, matching what browsers render after they wrap the
+	// standalone cell in anon table/row boxes.
+	//
+	// Proper-table cells take the equivalent shift in table_layout.go's
+	// per-row sweep (see the `vaBlockShift` block). We skip this branch
+	// for those (distinguished by a non-nil TableSectionData on the
+	// constraint space), so the shift is applied exactly once.
+	//
+	// Mirrors Blink's `TableCellLayoutAlgorithm` applying
+	// `intrinsic_padding_before` to the cell's content when the row grows
+	// past the cell's intrinsic block-size.
+	if bla.style != nil && bla.style.GetDisplay() == css.DisplayTableCell &&
+		bla.space.TableSectionData == nil && finalBlockSize > intrinsicBlockSize {
+		va := bla.style.GetVerticalAlign()
+		var vaShift float64
+		switch va {
+		case css.VerticalAlignMiddle:
+			vaShift = (finalBlockSize - intrinsicBlockSize) / 2
+		case css.VerticalAlignBottom:
+			vaShift = finalBlockSize - intrinsicBlockSize
+		}
+		if vaShift > 0 {
+			for i := range builder.children {
+				builder.children[i].offset.BlockOffset += vaShift
+			}
+			for i := range builder.outOfFlowCandidates {
+				builder.outOfFlowCandidates[i].StaticPosition.Offset.BlockOffset += vaShift
+			}
+		}
+	}
+
 	// CSS 2.1 §10.6.4 / CSS-POSITION-3: Lay out out-of-flow children.
 	//
 	// Mirrors Blink's distinction between absolute and fixed candidates:

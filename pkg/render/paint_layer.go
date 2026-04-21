@@ -519,13 +519,12 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	// Collect individual transform properties.
 	var individualTransforms []css.Transform
-	if tx, ty, ok := s.GetIndividualTranslate(); ok {
-		// Resolve percentage sentinels (negative values) against element dimensions.
-		if tx < 0 {
-			tx = (-tx / 100) * box.Width
+	if tx, ty, txPct, tyPct, ok := s.GetIndividualTranslate(); ok {
+		if txPct {
+			tx = (tx / 100) * box.Width
 		}
-		if ty < 0 {
-			ty = (-ty / 100) * box.Height
+		if tyPct {
+			ty = (ty / 100) * box.Height
 		}
 		individualTransforms = append(individualTransforms, css.Transform{Type: "translate", Values: []float64{tx, ty}})
 	}
@@ -547,20 +546,18 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			origin.X * box.Width,
 			origin.Y * box.Height,
 		}
-		// Resolve percentage translate values in shorthand transforms.
-		// parseTransformValue() uses negative values as a sentinel for percentages.
+		// Resolve percentage translate values in shorthand transforms via the
+		// explicit IsPercent flag from the parser.
 		resolved := make([]css.Transform, len(transforms))
 		for i, t := range transforms {
 			resolved[i] = css.Transform{Type: t.Type, Values: make([]float64, len(t.Values))}
 			copy(resolved[i].Values, t.Values)
 			if t.Type == "translate" {
-				// Values[0] is X (percentage relative to width)
-				// Values[1] is Y (percentage relative to height)
-				if len(resolved[i].Values) > 0 && resolved[i].Values[0] < 0 {
-					resolved[i].Values[0] = (-resolved[i].Values[0] / 100) * box.Width
+				if len(resolved[i].Values) > 0 && len(t.IsPercent) > 0 && t.IsPercent[0] {
+					resolved[i].Values[0] = (resolved[i].Values[0] / 100) * box.Width
 				}
-				if len(resolved[i].Values) > 1 && resolved[i].Values[1] < 0 {
-					resolved[i].Values[1] = (-resolved[i].Values[1] / 100) * box.Height
+				if len(resolved[i].Values) > 1 && len(t.IsPercent) > 1 && t.IsPercent[1] {
+					resolved[i].Values[1] = (resolved[i].Values[1] / 100) * box.Height
 				}
 			}
 		}

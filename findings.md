@@ -180,56 +180,87 @@ The 3 tests fail for **heterogeneous, non-CB-change** reasons:
 
 **Related:** overlaps with G-DYN-STATIC (both require style-change to re-trigger OOF layout) but is distinct — G-CB-CHANGE is about *which CB* the child belongs to; G-DYN-STATIC is about *which static position* inside the unchanged CB.
 
-### G-DYN-STATIC — 6 tests — **Phase 3 hypothesis invalidated 2026-04-21; group splits into per-site COMPUTATION bugs**
+### G-DYN-STATIC — 6 tests — **CLOSED 2026-04-21 (Parts a+b+c+d)**
 ```
-position-absolute-dynamic-static-position-floats-001.html   0.7%
-position-absolute-dynamic-static-position-floats-002.html   0.3%
-position-absolute-dynamic-static-position-floats-003.html   0.3%
-position-absolute-dynamic-static-position-floats-004.html   0.7%
-position-absolute-dynamic-static-position-inline.html       2.1%
-position-absolute-dynamic-static-position-table-cell.html   2.1%
+position-absolute-dynamic-static-position-floats-001.html   0.7% → 0% ✓ (b)
+position-absolute-dynamic-static-position-floats-002.html   0.3% → 0% ✓ (b)
+position-absolute-dynamic-static-position-floats-003.html   0.3% → 0% ✓ (b)
+position-absolute-dynamic-static-position-floats-004.html   0.7% → 0% ✓ (b,d)
+position-absolute-dynamic-static-position-inline.html       2.1% → 0% ✓ (a)
+position-absolute-dynamic-static-position-table-cell.html   2.1% → 0% ✓ (c)
 ```
 **What they exercise.** JS flips a property (float insertion, `display: inline → block`, table-cell vertical-align interaction) that changes the abspos child's static position. Triggers re-layout; the new static position must be picked up.
 
-**Audit finding (2026-04-21):** the original plan's hypothesis ("static position is cached; add `OutOfFlowPositionedDescendants` rebuild") is **WRONG** for our codebase. Like G-CB-CHANGE, we already rebuild every pass — `pkg/visualtest/helpers.go:85-102` uses a fresh `engine2 := layout.NewLayoutEngine(...)` on the post-JS DOM, no caching. Confirmed by instrumenting the `inline` test: post-JS, `target.style.display='block'` reaches `computed display: block` in the 2nd pass's `ComputedStyles()`, but the RENDERING still places target beside the inline-block (where display:inline static position points) instead of below (where display:block belongs).
+**Audit finding (2026-04-21):** the original plan's hypothesis ("static position is cached; add `OutOfFlowPositionedDescendants` rebuild") is **WRONG** for our codebase. Like G-CB-CHANGE, we already rebuild every pass — `pkg/visualtest/helpers.go:85-102` uses a fresh `engine2 := layout.NewLayoutEngine(...)` on the post-JS DOM, no caching. Confirmed by instrumenting the `inline` test: post-JS, `target.style.display='block'` reaches `computed display: block` in the 2nd pass's `ComputedStyles()`, but the RENDERING still placed target beside the inline-block (where display:inline static position points) instead of below (where display:block belongs). The bug was purely in how we COMPUTE static position per-FC, not in whether we recompute.
 
-The 6 tests are failing for **heterogeneous, per-formatting-context COMPUTATION bugs** in our static-position capture sites:
+#### Per-site root causes and fixes
 
-1. **`inline_layout.go:682-694` (and :497-509)** — inline-FC line loop captures static as `(inlinePos, blockOffset)` regardless of the abspos child's `display`. Per Blink's `InlineLayoutAlgorithm::HandleOutOfFlowPositioned`, a **block-level** abspos (display: block/table/flex/grid) in an inline FC gets static position `(0, currentLineBlockEnd)` (a new line below), while an **inline-level** abspos keeps `(inlinePos, lineBlockStart)`. — **breaks `position-absolute-dynamic-static-position-inline` (2.1%).** Confirmed visually: test shows target at `(100, 0)` (beside the inline-block) instead of `(0, 50)` (below it).
+**(a) inline_layout.go — DONE 2026-04-21, commit `233d408f`.**
+- *Bug:* line loop captured OOF candidates at `(inlinePos, blockOffset)` regardless of the child's originally-specified `display`.
+- *Fix:* splits on `isInlineLevelDisplay(style.GetDisplay())` (new helper mirroring Blink's `ComputedStyle::IsOriginalDisplayInlineType`):
+  - inline-level abspos → `(inlinePos, blockOffset)` (emitted immediately).
+  - block-level abspos preceded by in-flow content on the line → deferred to `(0, blockOffset + lineHeight)` after `createLineBoxEx` finalises the line height.
+  - block-level abspos NOT preceded by any in-flow content → emitted immediately at `(0, blockOffset)`.
+- *Refinement that blocked the first attempt:* initially I emitted ALL block-level OOFs at `(0, blockOffset + lineHeight)`. That regressed 4 orthogonal-float wm tests (`float-{lft,rgt}-orthog-v{lr,rl}-in-htb-002/003`) whose REFERENCE HTML places `<div id="orthog-vert" position:absolute>` as the first child of an inline FC. Those tests had passed in the pre-fix state because the old code emitted at `(inlinePos=0, blockOffset=0)`. My "always use lineHeight" version captured at `(0, 40)`, moving the abspos 40px down. The fix was to mirror Blink's `line_box_.LineBoxBlockEnd()` which is read AT THE TIME OF ENCOUNTER — if no in-flow content has been placed yet on the line, `LineBoxBlockEnd() == 0`, not `lineHeight`. The `hasInflowOnLine` flag accumulates this as the loop iterates.
+- *Result:* `inline` (2.1% → 0%), wm 781/781 preserved.
 
-2. **`block_layout.go:217-237`** — block-FC abspos hardcodes `InlineOffset: 0`, ignoring float exclusions and inline-level semantics. Per Blink, an **inline-level** abspos (display: inline) in a block FC whose nearest line cursor sits beside a float should capture static position = `(floatExclusionInlineStart, lineBlockStart)`. — **breaks `floats-001` (0.7%).** Confirmed visually: target appears at `(0, 0)` (overlapping green float at left) instead of `(40, 0)` (beside float at right). 0.7% diff is just the 40×80 red-through strip where target should be.
+**(b) block_layout.go — DONE 2026-04-21, commit `d250c5cf`.**
+- *Bug:* block-FC abspos hardcoded `InlineOffset: 0`, ignoring float exclusions and inline-level-abspos semantics.
+- *Fix:* when `isInlineLevelDisplay(childStyle.GetDisplay())` is true, query `exclusionSpace.FindAvailableInlineSize(bfcBlockOrigin + staticBlockOffset, 0, bfcContainerInlineSize)` and use the returned inline-start consumption directly as `InlineOffset`.
+- *Result:* `floats-001` (0.7% → 0%), `floats-002` (0.3% → 0%), `floats-003` (0.3% → 0%), `floats-004` RTL (0.7% → 0%).
+- *Subtlety learned while debugging:* my first attempt subtracted `bfcInlineOrigin` from the query result (I'd assumed `FindAvailableInlineSize` returned BFC-absolute offsets). The target then rendered at local `(22, 0)` instead of `(40, 0)`. See "ExclusionSpace coordinate-system note" below.
 
-3. **`floats-002/003/004` (0.3% / 0.3% / 0.7%)** — variations of (2). floats-002 adds a `<div id="block" height:40>` sibling; floats-003 nests the float inside that block; floats-004 is RTL. Confirmation pending per-test trace, but the common thread is still block-FC static-position capture ignoring float-exclusion state.
+**(c) table-cell — DONE 2026-04-21.**
+- *Test:* `position-absolute-dynamic-static-position-table-cell` (2.1% → 0%).
+- *Scenario:* abspos inside `display:table-cell; vertical-align:middle` with post-JS `translate:0 -50px; top:auto`.
+- *Expected:* cell's vertical-align centers the hypothetical (anonymous) box vertically within the cell; the abspos static-position block-offset reflects that centering; target then paints 50px above.
+- **Two-part bug.** The original plan hypothesised a single fix at a table-cell capture site. Actual investigation (instrumentation + pixel scanner) found two independent bugs, both needed:
+  1. **Orphan `display: table-cell` doesn't go through `table_layout.go`.** The test's `<div style="display:table-cell">` has no `<table>` ancestor, so `normalizeTableSubtrees` in `layout_tree_builder.go` doesn't wrap it (reverse §17.2.1 anonymous-table generation is unimplemented). Layout dispatches to `block_layout.go`, which had no vertical-align handling. The proper-table path in `table_layout.go` was already correct for this phase.
+  2. **Transform parser percent-sentinel collision.** `parseTransformValue` encoded percentages by sign-flipping the number (`result := -percent`), intending sign as a percent-vs-length sentinel. A legitimate negative pixel length `-50px` was stored as `-50.0`, then re-interpreted at paint time as `-50%` → resolved to `+50px`. `translate: 0 -50px` rendered as `+50px`, flipping the sign of every negative-pixel translate.
+- *Fix 1 — orphan-cell vertical-align (block_layout.go):* after layout, if `bla.style.GetDisplay() == css.DisplayTableCell && bla.space.TableSectionData == nil && finalBlockSize > intrinsicBlockSize`, compute `vaShift` from `vertical-align` (`middle` → half the surplus, `bottom` → full surplus) and add it to both `builder.children[i].offset.BlockOffset` and `builder.outOfFlowCandidates[i].StaticPosition.Offset.BlockOffset`. `TableSectionData == nil` guard ensures the proper-table path (when it eventually needs the same behaviour) isn't double-shifted.
+- *Fix 2 — transform parser (pkg/css/style.go):* replaced the sign-sentinel with an explicit `IsPercent []bool` on the `Transform` struct. New signatures:
+  - `parseTransformValue(val string) (value float64, isPercent bool, ok bool)`
+  - `GetIndividualTranslate() (tx float64, ty float64, txPercent bool, tyPercent bool, ok bool)`
+  - `Transform.Values` pairs with `Transform.IsPercent` by index; paint-time resolvers (`pkg/render/paint_layer.go` shorthand + individual cases) read `IsPercent[i]` instead of checking sign. Percent values are resolved as `(v / 100) * boxDim`.
+  - Migrated 3 `louis13/` callers to the new signature (louis13 shares the same module).
+- *Not shipped — proper-table-path vertical-align capture.* First attempt also touched `table_layout.go`: changed `contentBlockSize` from post-stretch cellLogical.BlockSize() to pre-stretch `IntrinsicBlockSize + borders + paddings`, and applied `vaBlockShift` to propagated OOF candidates. Dropped because (i) the target test doesn't exercise the proper-table path, and (ii) the `contentBlockSize` change regressed 3 wm tests (`box-offsets-rel-pos-vlr-005`, `box-offsets-rel-pos-vrl-004`, `orthogonal-cell-001`). Will revisit when a test actually exercises vertical-align centering of abspos descendants inside a real `<table><td>...` — the structural pattern (va-shift applied to OOF candidates during row sweep) is correct but needs the `contentBlockSize` shape debugged against orthogonal writing-mode cases before landing.
+- *Verification:* target test passes at 480000/480000 pixels, max diff 0. wm 781/781 held. css-position 67 → 68 PASS (+1). css-transforms 162 → 171 PASS (+9, from the percent-sentinel fix correcting other translate cases). css-flexbox 626/629 unchanged (3 pre-existing failures).
 
-4. **`position-absolute-dynamic-static-position-table-cell` (2.1%)** — abspos inside `display:table-cell; vertical-align:middle` with `translate:0 -50px; top:auto` (post-JS). Expected behavior: cell's vertical-align centers the anonymous (hypothetical) box; our capture site ignores this and puts target at `(0,0)` cell-content-origin. — **needs table-cell static-position capture to account for vertical-align.**
+**(d) RTL awareness — CLOSED INCIDENTALLY by (b).**
+- Initial concern: `floats-004` is the RTL variant and I expected a separate `direction`-aware flip of the inline edge annotation.
+- Actual finding: `ExclusionSpace` already uses `PhysicalFloatToExclusionSide`-normalised sides. `ExclusionInlineStart` means "visual-start in the direction of content flow", so `FindAvailableInlineSize(...)` returns the correct inline-start consumption for both LTR and RTL floats. The query in (b) is direction-agnostic.
 
-**Revised plan for Phase 3.** Not one fix, four sites. All mirror Blink's per-FC OOF handling:
-- (a) **DONE 2026-04-21 (commit `233d408f`).** `inline_layout.go`: splits `InlineItemOutOfFlow` handling by child's `display`; block-level gets `(0, lineBlockEnd)` when in-flow content precedes on the line, `(0, blockOffset)` otherwise. Refinement: the "no in-flow precedes" branch is necessary because Blink's `LineBoxBlockEnd()` is read at the time of encounter, not at end-of-line. Without it, a block-level abspos as the FIRST child of an inline FC (e.g. `float-lft-orthog-vlr-in-htb-002`'s reference HTML with `<div id="orthog-vert" position:absolute>` before an inline `<span>`) captured at `(0, lineHeight)` instead of `(0, 0)` — regressed 4 orthogonal-float wm tests at 1.0% before the refinement landed.
-- (b) **DONE 2026-04-21.** `block_layout.go`: detects inline-level abspos via `isInlineLevelDisplay(childStyle.GetDisplay())` and queries `exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)`. Uses the returned inline-start offset directly as `InlineOffset` (no bfcInlineOrigin subtraction — the exclusion space stores LOCAL inline offsets from the enclosing block's content-box, and the in-flow inline path already treats the return value as local; see `inline_layout.go` line-start recomputation). Closes `floats-001/002/003` AND RTL `floats-004`.
-- (c) `table_layout.go` (or the table-cell block-layout entry): static-position for abspos inside `display:table-cell` must shift by the vertical-align offset of the hypothetical in-flow position.
-- (d) **CLOSED incidentally by (b).** The `ExclusionSpace` already uses `PhysicalFloatToExclusionSide`-normalised sides (ExclusionInlineStart = visual-start regardless of `direction`), so the `FindAvailableInlineSize` query in (b) returns the correct inline-start consumption for both LTR and RTL floats. No separate edge-annotation flip is required on capture.
+#### Coordinate-system notes (learned 2026-04-21 while fixing (b))
 
-None of (a)–(d) require changing `LayoutResult` shape or adding an `OutOfFlowPositionedDescendants` list. Our existing `PropagatedOOFCandidates` path is sufficient. **Phase 3's original design goal is a no-op; the real work is point fixes at the four capture sites.**
+The `ExclusionSpace` comment claims floats are stored "BFC-relative". **In practice floats are stored with LOCAL inline offsets** — the offset recorded at `Exclusion.InlineOffset` is what `floatInlineOffset` computed in `layoutFloat`, which is measured from the enclosing block's content-box inline-start (NOT from the BFC root's content-box inline-start). `FindAvailableInlineSize`'s `containerInlineSize` parameter is only used for END-side float consumption (`containerInlineSize - e.InlineOffset`); start-side consumption (`e.InlineOffset + e.InlineSize`) ignores it.
 
-**Blink entry points (studied 2026-04-21, re-validated 2026-04-21 audit):**
+This means:
+- Callers in the same enclosing block that owns the exclusion space can use the returned inline-start value directly as a local offset. This is what the in-flow inline-layout line-start recomputation does (`inline_layout.go` around line 820) — it adds `bfcInlineOrigin` to build a BFC value for clarity, then subtracts it again to land on `lineInlineOffset = local`.
+- The Phase 3(b) capture site can use the value directly without any translation.
+- A float that crosses nesting levels (e.g. a float placed inside a non-BFC child, queried from an ancestor) is a known inconsistency but does not affect the current tests.
+
+This invariant is not documented in the `ExclusionSpace` file; it's implicit in how `layoutFloat` and the line-start recomputation currently pair up. Do NOT add a `- bfcInlineOrigin` correction to readers — it will silently offset by the parent's border/padding. If we ever normalise the exclusion space to BFC-absolute coords, readers AND writers must be updated together.
+
+#### Blink entry points (re-validated 2026-04-21)
 - `third_party/blink/renderer/core/layout/inline/inline_layout_algorithm.cc`:
-  - `HandleOutOfFlowPositioned` (line ~540) — computes the static position for abspos children encountered during line building. Splits on `style.IsOriginalDisplayInlineType()`:
+  - `HandleOutOfFlowPositioned` — splits on `style.IsOriginalDisplayInlineType()`:
     - Inline-level: `(current_inline_cursor, line_block_start)`.
-    - Block-level: `(0, current_line_block_end)` — treated as if it started a new block-flow line.
+    - Block-level: `(0, line_box_.LineBoxBlockEnd())` — block-end read at the time of encounter, NOT at end-of-line (key subtlety; see refinement under (a) above).
 - `third_party/blink/renderer/core/layout/block_layout_algorithm.cc`:
-  - Abspos is handled in `HandleOutOfFlowPositioned`; for inline-level display, it defers to the inline formatting sub-pass (the anonymous inline box is laid out and then static position is captured there).
-- `third_party/blink/renderer/core/layout/table/table_cell_layout_algorithm.cc`: vertical-align is applied to the cell's content-box before static-position capture.
-- `third_party/blink/renderer/core/layout/out_of_flow_layout_part.cc`: we already mirror this (see `pkg/layout/out_of_flow_layout.go`).
+  - Abspos is handled in `HandleOutOfFlowPositioned`; for inline-level display, the hypothetical inline box's line-start is used (equivalent to our `FindAvailableInlineSize` return).
+- `third_party/blink/renderer/core/layout/table/table_cell_layout_algorithm.cc`: `intrinsic_padding_before` (vertical-align translation) is applied before OOF propagation.
+- `third_party/blink/renderer/core/layout/out_of_flow_layout_part.cc`: already mirrored in `pkg/layout/out_of_flow_layout.go` (Phase 5 G-FIXED Part A).
 
-**Key insight (corrected 2026-04-21).** Yes, Blink does not cache static position — but neither do we. Our failing tests are not about staleness; they are about **per-formatting-context capture of the correct static position**. The four capture sites (inline-FC line loop, block-FC child loop, table-cell algorithm, RTL direction handling) each need targeted Blink-mirrored fixes. No `LayoutResult` schema change is required.
+#### Key insights (corrected 2026-04-21, with (a)+(b) hindsight)
+- **The bug class is per-FC capture, not cache invalidation.** Every FC that emits OOF candidates needs its own Blink-faithful computation of the static position. `OutOfFlowPositionedDescendants` as a LayoutResult field would be a no-op because our harness already re-lays out fresh.
+- **Blink's "at time of encounter" contract matters.** Whenever a handler reads a line-level or flow-level metric (like `LineBoxBlockEnd()`), the value at the time of handling — not at end-of-pass — is what matters. Incremental tracking (the `hasInflowOnLine` flag) is the right primitive, not deferred post-processing.
+- **RTL is often free if your physical-to-logical normalisation is already push-down.** `PhysicalFloatToExclusionSide` normalises at write time, so readers get direction-agnostic results. When a capture site regresses in RTL, the fix is usually in the normalisation layer, not at the capture site.
+- **Check the exclusion-space coordinate system before subtracting origins.** Our exclusions are stored with local inline offsets. A naive "translate to local" step was the difference between 22px and 40px in Phase 3(b) debugging.
 
-**Our mirror targets (per-site):**
-- `pkg/layout/inline_layout.go:682-694` and `:497-509`: split by `display`. Block-level abspos → `(0, lineBlockEnd)`; inline-level → `(inlinePos, lineBlockStart)`.
-- `pkg/layout/block_layout.go:217-237`: for inline-level abspos children, peek at the pending inline line (or the exclusion-space inline cursor at `blockCursor`) to compute a float-aware inline offset.
-- `pkg/layout/table_layout.go` (wherever abspos inside a table-cell is captured): apply cell's vertical-align to the captured static-position block-offset.
-- Direction-awareness: `inline-edge` annotation + RTL flipping on capture.
-
-**Prerequisite for G-HYPO.** The hypothetical-box algorithm reads static position via this same path, so G-DYN-STATIC must land before G-HYPO can be fully correct.
+#### Remaining and downstream
+- G-DYN-STATIC is now fully closed (6/6). All per-FC capture sites compute static position correctly.
+- **Prerequisite for G-HYPO satisfied.** The hypothetical-box algorithm reads static position via this same path. IMCB work (Phase 4) can proceed with confidence that static-position inputs are Blink-faithful across inline / block / table-cell formatting contexts.
+- **Tech debt recorded for proper-table path.** When a future test exercises vertical-align centering of abspos descendants inside a real `<table><td>`, revisit `table_layout.go`'s OOF-candidate shift — the structure is designed but was dropped because the `contentBlockSize` pre-stretch change regressed 3 wm tests in orthogonal writing modes.
 
 ### G-HYPO — 3 FAIL + 2 NORUN
 ```
@@ -397,13 +428,13 @@ Mixed shapes; likely several independent root causes. Sweep last.
 **Note:** `position-relative-011/012/013` are table-related (`%-top` on `<tr>`/`<tbody>`/`<td>` under position:relative) — they may share a root cause with G-TABLE-REL. If so, closing Phase 1 may also close them. Verify in Phase 1's regression sweep.
 
 ## Super-cluster counts
-Updated 2026-04-21 post OOF re-entrance (commit `ed16475f`). G-CB-CHANGE was dissolved; tests redistributed.
+Updated 2026-04-21 post Phase 3 (full G-DYN-STATIC closed). G-CB-CHANGE was dissolved; tests redistributed.
 
 | Cluster | Status | Closed | Remaining | Cumulative passing |
 |---|---|---|---|---|
 | G-TABLE-REL | DONE (Phase 1) | 11 + position-relative-012 | 8 `-absolute-child` (moved to G-ABS-IN-INLINE/TABLE) | 62 |
 | G-FIXED | Part A done (Phase 5a) | 1 | 1 (paint-clip residual, → G-SCROLL) | — |
-| G-DYN-STATIC | open | 0 | 6 | — |
+| G-DYN-STATIC | **DONE (Phase 3)** | 6 | 0 | **68** |
 | G-ABS-CENTER | open | 0 | 5 | — |
 | G-HYPO | open | 0 | 3 + 2 NORUN | — |
 | G-ROOT-FLEX-GRID | open | 0 | 4 | — |
@@ -412,7 +443,7 @@ Updated 2026-04-21 post OOF re-entrance (commit `ed16475f`). G-CB-CHANGE was dis
 | G-REPLACED | open | 0 | 1 | — |
 | G-SCROLL | open (new) | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
 | G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **12** | **42 (+ 4 SKIPs out of scope)** | **62 / 100 runnable** |
+| **Total** | — | **18** | **36 (+ 4 SKIPs out of scope)** | **68 / 100 runnable** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -423,10 +454,11 @@ Updated 2026-04-21 post OOF re-entrance (commit `ed16475f`). G-CB-CHANGE was dis
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **62 PASS / 42 FAIL** | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **68 PASS / 36 FAIL** | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |
+| css-transforms (watch) | 381 | 162 PASS | **171 PASS / 210 FAIL** (+9 from percent-sentinel fix) | improve opportunistically |
 
 ## Decisions Made
 | Decision | Rationale |
@@ -437,7 +469,21 @@ Updated 2026-04-21 post OOF re-entrance (commit `ed16475f`). G-CB-CHANGE was dis
 | Preserve wm invariants as hard gate | Phase 5f complete; any wm regression reverts the offending commit. |
 
 ## Issues Encountered (for this category)
-*(populated as work progresses)*
+
+### Transform parser — percent-vs-length sign-sentinel collision (fixed 2026-04-21)
+While debugging Phase 3(c) (`position-absolute-dynamic-static-position-table-cell`) I confirmed via instrumentation that layout was correct (static block-offset = 50, no positioning insets). Pixel-scanning the test output showed the target rendering 100px *below* its expected location — the translate `0 -50px` was being applied as `+50px`.
+
+Root cause: `parseTransformValue` in `pkg/css/style.go` used negative numbers as a sentinel for percentage values (`result := -percent`). A legitimate `-50px` pixel length also encodes negatively, so `paint_layer.go` misread it as `-50%` and resolved it to `+50px`. Sign-flipped every negative-pixel translate.
+
+Fix: added `IsPercent []bool` to the `Transform` struct. Widened signatures:
+- `parseTransformValue(val string) (value float64, isPercent bool, ok bool)`
+- `GetIndividualTranslate() (tx, ty float64, txPercent, tyPercent, ok bool)`
+
+Paint-time resolvers now read `IsPercent[i]` per component instead of sign-checking. Same pattern works for both shorthand `translate()` and individual `translate` property.
+
+Updated callers in `pkg/render/paint_layer.go` plus 3 `louis13/` sites (`stacking.go`, `containing_block.go`, `render.go` — louis13 shares the module).
+
+Net: +1 Phase 3(c) target test, +9 css-transforms tests closed for free (other negative-pixel translate cases). Zero regressions in wm / CSS2 / flex.
 
 ## Notes
 - Attack order is **not** by % diff. Shared-root-cause grouping is prioritised (CLAUDE.md §1).
