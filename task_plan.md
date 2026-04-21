@@ -12,11 +12,11 @@ Authoritative sources — re-read both at the start of any session before planni
 If you find yourself about to type a rule verbatim into this file or into code comments, stop and link instead.
 
 ## Current Phase
-Phase 5 (singletons). **Reality-check 2026-04-20:** multi-category baseline shows wm at 749 PASS / 32 FAIL (not the 771/16 previously estimated — drift unexplained). Phase 1/B2/iframe capability gaps all closed since the snapshot was taken; divergence likely comes from merge fallout that also produced the CSS2 crash (see Phase 7).
+Phase 5f (foundational grouping). **2026-04-21:** Group B landed — both `block-plaintext-004` and `block-plaintext-006` PASS at 0 pixel diff. Remaining wm failures: 2 (Group A icb-007, Group C inline-block-alignment-007).
 
 - `bidi-dynamic-iframe-001` — **FIXED** 2026-04-20 via merge `[pending SHA]` (Text.appendData + Text.data, `<iframe srcdoc>`, iframe.contentDocument). Regression spot-check icb-001..006 clean.
-- 5a done (3 tests). 5b root cause identified, fix still pending.
-- **URGENT:** CSS2 suite now crashes (nil pointer) at `generated-content/before-after-display-types-001.xht`. Panics through `block_layout.go:1330 → 422 → engine.go:160`. Introduced by one of the I1/I2/I3/I4 merges — the "CSS2 99/99 unaffected" claim was per-fix, never re-checked post-integration. Must be fixed before any further feature work (blocks Phase 6 delivery).
+- 5a/5b/5c/5d done. 5f Group B **DONE** 2026-04-21.
+- Phase 7 complete (CSS2 99/99 restored `2bc9076c`; I2 salvage reverted `df19b64a`).
 
 ## Baseline snapshot (from Phase 0)
 - 113 failures / 787 tests (85.6% passing before any wm-specific work)
@@ -72,7 +72,8 @@ All other Phase 5 targets now PASS at 0% diff (5a, 5b, 5d, and singletons: img-i
 | orthogonal-root-resize-icb-007.html | 1.1% | orthogonal root resize | open |
 | mongolian-orientation-002.html | 0.9% | Mongolian orientation | open |
 | abs-pos-border-offset-003.html | 0.9% | abs-pos in VRL | open |
-| block-plaintext-006.html | 0.8% | white-space:pre in plaintext block | **PARKED** |
+| block-plaintext-004.html | 0.9% | %-font-size + Control strut | **FIXED** 2026-04-21 (cascade % + Control strut align with Text) |
+| block-plaintext-006.html | 1.0% | %-font-size + Control strut | **FIXED** 2026-04-21 (same fix as 004) |
 | sideways-lr-main-axis.html | 0.6% | sideways-lr | open |
 | img-intrinsic-size-contribution-002.html | 0.3% | img intrinsic size | open |
 | bidi-dynamic-iframe-001.html | 0.3% | iframe | **FIXED** 2026-04-20 (Text.appendData + srcdoc + contentDocument) |
@@ -91,10 +92,13 @@ Attack order: group by shared root cause, fix smallest/most isolated cluster fir
 - [x] Sub-phase 5d: mongolian-orientation (2 tests) — fixed via B2 style-level sideways resolution (commit `1dcffb34`).
 - [x] Sub-phase 5e singleton sweep: `block-flow-direction-vrl-026`, `sideways-lr-main-axis`, `outline-inline-block-vrl-006`, `baseline-with-orthogonal-flow-001` all pass at 0% diff.
 - [ ] **Sub-phase 5f: foundational-grouping finish (4 remaining tests, 3 root causes)** — see `findings.md` "Phase 5 Remaining — Foundational Grouping". Attack order is foundational-impact-first, not %-diff-first:
-  1. **Group B — plaintext paragraph-level line flow (2 tests)**: `block-plaintext-004` (0.9%), `block-plaintext-006` (1.0%). Single root cause hypothesis: per-line paragraph level sourced wrong. Lowest regression risk, highest ratio (2 tests / 1 fix).
+  1. **Group B — plaintext paragraph-level line flow (2 tests)** — **DONE 2026-04-21**. Root cause was not paragraph-level sourcing but two deeper foundational bugs:
+     - `pkg/css/cascade.go:709-729` — `ApplyInheritedProperties` only resolved `em` font-size against parent; missing percentage handling. `<pre>` with `font-size: 150%` kept `150%` string and `GetFontSize` fell back to 16px.
+     - `pkg/layout/inline_layout.go:1577-1614` — `computeLineMetricsEx` `InlineItemControl` case diverged from the `InlineItemText` path for `line-height: normal`: used `GetLineHeight()`'s 1.2×fontSize fallback instead of `FontHeightFromFont`; used `fontSize - ascent` instead of `FontDescentFromFont`; gated half-leading on `> 0` instead of applying unconditionally. Blank-line struts therefore had wrong height even when text lines on the same element were correct.
+     Both `block-plaintext-004` and `block-plaintext-006` now PASS at 0 pixel diff.
   2. **Group A — orthogonal-root ancestor walk (1 test)**: `orthogonal-root-resize-icb-007` (1.1%). Blink walks unconditionally past non-positioned ancestors to ICB; our inline-block path stops at grandparent. Likely unblocks css-position failures that share the same position-gate.
   3. **Group C — VLR + text-orientation:sideways baseline (1 test)**: `inline-block-alignment-007` (8.4%). Hardest; prior bulk-swap attempt was net -25 on wm. Save for last; dispatch as its own narrow-scope task targeting only the inline-block-baseline-export site.
-- **Status: active — starting 5f, Group B first**
+- **Status: active — Group B DONE, next Group A**
 
 ### Phase 6: Delivery
 - [ ] Confirm all 787 wm tests pass at 0 diff

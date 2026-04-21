@@ -706,13 +706,21 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 		return
 	}
 
-	// Resolve font-size em values using parent's font-size
+	// Resolve font-size em and percentage values using parent's font-size.
+	// Parent has already been processed (top-down cascade), so its font-size
+	// is resolved to an absolute px value. This propagates through to
+	// children so 1em and 100% both resolve correctly per CSS 2.1 §15.7.
 	if fsVal, hasFontSize := style.Get("font-size"); hasFontSize {
-		if strings.HasSuffix(strings.TrimSpace(fsVal), "em") {
-			parentFS := 16.0
-			if parentStyle != nil {
-				parentFS = parentStyle.GetFontSize()
+		trimmed := strings.TrimSpace(fsVal)
+		parentFS := 16.0
+		if parentStyle != nil {
+			parentFS = parentStyle.GetFontSize()
+		}
+		if strings.HasSuffix(trimmed, "%") {
+			if pct, ok := ParsePercentage(trimmed); ok {
+				style.Set("font-size", fmt.Sprintf("%.6gpx", pct/100.0*parentFS))
 			}
+		} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
 			if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
 				style.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
 			}

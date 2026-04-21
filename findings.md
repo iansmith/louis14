@@ -253,7 +253,7 @@ After 5a, 5b, 5d (Mongolian B2), and the singleton sweep, four wm failures remai
 
 **Broader impact:** per the findings already recorded — two independent data points (icb-007 + I3's B3 `IsOrthogonalTo` narrowing) suggest "position-gated" holes in our containing-block helpers. Unblocking icb-007 is likely also a wedge into css-position (54 failures currently).
 
-### Group B — `unicode-bidi: plaintext` paragraph resolution (`block-plaintext-004`, 0.9% & `block-plaintext-006`, 1.0%)
+### Group B — `unicode-bidi: plaintext` paragraph resolution (`block-plaintext-004`, 0.9% & `block-plaintext-006`, 1.0`) — **DONE 2026-04-21**
 
 Both tests exercise UAX#9 P2/P3 where each paragraph is separated by a hard break and gets its own base direction from its first strong character. 004 uses `<div class="test" unicode-bidi:plaintext>` with `<br>` separators; 006 uses `<pre unicode-bidi:plaintext>` with literal `\n` separators inside `white-space: pre`.
 
@@ -266,14 +266,21 @@ Both tests exercise UAX#9 P2/P3 where each paragraph is separated by a hard brea
 - `parser.go`: `commentSeenInPre` prevents stripping leading `\n` from `<pre>` when a comment precedes text.
 - `bidi.go::ResolveBidiLevelsPlaintext` (line 163): per-paragraph P2/P3 — splits at `xbidi.B` class (which `\n` has), runs `determineFSIDirection` on each paragraph independently.
 
-**Hypothesis (to verify):** since both tests survived their own targeted fixes but still fail at ~1%, the remaining delta is likely in how the resolved `ParagraphLevel` flows into **line-level alignment / visual reorder / line-box positioning**. Candidates:
-1. `lineParagraphLevel` taken from a single item (e.g. the first), not per-line from the item's own `ParagraphLevel`.
-2. `ReorderLineVisual` re-orders using `BidiLevel` but aligns based on `lineParagraphLevel` — one of them may be sourced from the wrong place after paragraph splits.
-3. `<br>` InlineItemControl carries its own `Style` / `ParagraphLevel` which may override the next line's base direction incorrectly.
+**Actual root causes (the paragraph-level hypothesis was wrong — existing paragraph resolution was correct).** The remaining ~1% delta came from two independent foundational bugs, both exercised by this test's `<pre>` element which has `font-size: 150%`:
 
-**Blink reference:** `inline_items_builder.cc::AppendText` emits `InlineItem::kControl` for `\n` regardless of `collapseSpaces` (we match this). `inline_node.cc::SegmentBidiRuns` runs bidi resolution per paragraph (we match via `ResolveBidiLevelsPlaintext`). The divergence is downstream at line-layout — our `inline_layout.go` likely loses the per-paragraph base level when assembling visual order.
+1. **Font-size percentage inheritance (`pkg/css/cascade.go:709-729`)**. `ApplyInheritedProperties` only resolved `em` font-size values against the parent's computed font-size. Percentage values were left as-is (e.g. `"150%"`). Downstream `GetFontSize()` ran the string through `ParseLengthWithFontSize` which doesn't understand `%`, and fell back to the 16px default — so the `<pre>` rendered at 16px instead of 24px. Fix: parse `%` the same way we parse `em`, using parent's font-size. Top-down cascade guarantees the parent is already resolved to an absolute px value.
 
-**Fix shape:** trace which line-layout site reads paragraph level. It should source from each line's own items, not a block-global value. Same fix is expected to close both 004 and 006 (single root cause hypothesis — verify by fixing 004 first and checking 006's diff drops without touching 006-specific code).
+2. **`InlineItemControl` strut metrics diverged from `InlineItemText` (`pkg/layout/inline_layout.go:1577-1614`).** For blank lines (two consecutive `\n` in `<pre>` produce a Control-only line), `computeLineMetricsEx` sized the strut wrong when `line-height: normal`:
+   - Used `GetLineHeight()`'s 1.2×fontSize fallback instead of `text.FontHeightFromFont` (typographic ascent+descent). Text lines on the same element used the typographic path, so blank lines had a different height than text lines.
+   - Used `fontSize - ascent` for descent instead of `text.FontDescentFromFont` — wrong for fonts where the typographic descent is not `fontSize - ascent` (e.g. Ahem at 24px: descent 0.2×em, but `fontSize - ascent` gave a different value when the ascent metric was derived from the font file).
+   - Gated half-leading on `halfLeading > 0` — dropped it for `line-height: normal` where `lineHeight == ascent+descent` exactly.
+   Fix: mirror the `InlineItemText` branch exactly — use `FontHeightFromFont` when `IsLineHeightNormal()`, `FontDescentFromFont` for descent, and apply half-leading unconditionally.
+
+**Why the previous hypothesis was wrong.** We assumed since targeted bidi fixes had already landed, the remaining delta must be bidi-direction flow. Actually, visual inspection of the test/ref PNGs (via `/tmp/scanimg.go` pixel scanner) showed the boxes were the right shape and horizontally correct — only the vertical line spacing was off. That pointed at line metrics, not bidi.
+
+**Result:** both 004 and 006 PASS at 0 pixel diff. The two fixes are foundational (CSS 2.1 §15.7 font-size inheritance; CSS 2.1 §10.8 line-box strut) — they should not be interpreted as plaintext-specific. Any other test exercising `%` font-size or blank-line-in-`white-space:pre` benefits.
+
+**Regression check to run before closing:** targeted sweep of tests that use either mechanism — `font-size: NN%` in any wm test, and `<pre>` with preserved empty lines in any suite.
 
 ### Group C — VLR + `text-orientation: sideways` baseline (`inline-block-alignment-007`, 8.4%)
 
@@ -295,7 +302,7 @@ Both tests exercise UAX#9 P2/P3 where each paragraph is separated by a hard brea
 
 Ranked by "foundational impact per unit of effort", not by % diff:
 
-1. **Group B (block-plaintext-004 + 006)** — fixes 2 tests via one root cause; localizes to a line-layout paragraph-level sourcing bug; low regression risk (bidi cluster already at 47/49).
+1. ~~**Group B (block-plaintext-004 + 006)**~~ — **DONE 2026-04-21**. Two foundational fixes: font-size % inheritance in cascade, and `InlineItemControl` strut alignment with `InlineItemText` strut for `line-height: normal`. Root cause was not paragraph-level sourcing.
 2. **Group A (icb-007)** — 1 test but unblocks the "position-gated ancestor walk" class of bugs; likely also unblocks unknown css-position failures. Moderate complexity.
 3. **Group C (inline-block-alignment-007)** — hardest. Needs precise Blink baseline-metrics study before touching code; prior broad attempts regressed 25 tests each time. Save for last, dispatch as its own focused task with narrow scope guard.
 

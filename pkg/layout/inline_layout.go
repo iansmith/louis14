@@ -1577,6 +1577,9 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// A control item (forced line break) contributes a strut using its
 			// parent element's font metrics. This ensures blank lines in
 			// white-space: pre content have the correct height (CSS 2.1 §10.8).
+			// Must mirror the InlineItemText path exactly so that a control-only
+			// line (blank line between two \n in <pre>) has the same ascent/descent
+			// that a text-bearing line would have with the same font.
 			if r.Item.Style == nil {
 				continue
 			}
@@ -1588,14 +1591,16 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
 				ascent = text.FontAscentFromFont(fontSize, fontPath)
-				descent = fontSize - ascent
+				descent = text.FontDescentFromFont(fontSize, fontPath)
 			}
 			lineHt := r.Item.Style.GetLineHeight()
-			halfLeading := (lineHt - (ascent + descent)) / 2
-			if halfLeading > 0 {
-				ascent += halfLeading
-				descent += halfLeading
+			if r.Item.Style.IsLineHeightNormal() && !centralBaseline {
+				fontPath := resolveFontPath(r.Item.Style, fonts)
+				lineHt = text.FontHeightFromFont(fontSize, fontPath)
 			}
+			halfLeading := (lineHt - (ascent + descent)) / 2
+			ascent += halfLeading
+			descent += halfLeading
 			if ascent > maxAscent {
 				maxAscent = ascent
 			}

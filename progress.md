@@ -121,11 +121,11 @@ Captured in `docs/plan-wm-final-8-FINDINGS.md`. Inline-block orthogonal root ins
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 7 (new) — integration regression audit, now expanded into 7a (CSS2 panic) / 7b (wm drift) / 7c (verification). Diagnosis not yet started. Phase 5b root cause identified, blocked on 7. iframe capability gap closed. |
-| Where am I going? | 7a CSS2 panic → 7b wm 22-test drift → 7c full-suite verification → 5b (abs-pos VLR) → 5c/5d/5e → 6 (delivery). After wm is green: css-position (45% passing — biggest headroom). |
-| What's the goal? | All 787 wm tests at 0 diff; CSS2 back to 99/99. |
-| What have I learned? | wm actual baseline is 749/32, not the estimated 771/16. css-position sits at 50/104 — highest-ROI next category. The iframe agent fix validated that the JS-infra inventory approach unblocks capability-gap dispatches cleanly. Phase 7 is now structured with merge-bisect methodology + hypothesis ranking per bucket in findings.md. |
-| What have I done? | Phases 1+2+5a complete; iframe capability gap closed via merge; multi-category baseline run; icb-007 diagnosed but not fixed; CSS2 regression discovered; Phase 7 structured into 7a/7b/7c across root + tracked plan docs. |
+| Where am I? | Phase 5f (foundational grouping). Group B DONE 2026-04-21 (both block-plaintext-004/006 PASS at 0 diff). Group A (icb-007) is next. Phase 7 integration audit complete. |
+| Where am I going? | Group A (orthogonal-root-resize-icb-007) → Group C (inline-block-alignment-007, hardest) → Phase 6 delivery (all 787 wm at 0 diff, CSS2 99/99). Then pivot to css-position (54-test headroom). |
+| What's the goal? | All 787 wm tests at 0 diff; CSS2 stays at 99/99. |
+| What have I learned? | Group B's plan hypothesis (paragraph-level sourcing) was wrong; the real fixes were two foundational bugs (% font-size cascade + Control-strut alignment with Text-strut). Fix #1 alone regressed because it exposed dormant fix #2 — both bugs were partially canceling. Always quantify visual delta with pixel scanners (`/tmp/scanimg.go`) when visual diff is ambiguous. |
+| What have I done? | Phases 1 + 2 + 5a + 5b + 5c + 5d + 5e + 5f Group B complete; iframe capability gap closed; Phase 7 integration audit complete (CSS2 99/99 restored, I2 salvage reverted). 2 wm failures remain (Group A + Group C). |
 
 ## Session log entry — 2026-04-20 (Phase 7 plan expansion)
 - Expanded Phase 7 in `task_plan.md`, `findings.md`, `progress.md` (root) and `docs/plan-wm-final-8-{TASK,FINDINGS,PROGRESS}.md` (tracked).
@@ -183,6 +183,41 @@ Next options: 7 B2 Mongolian dispatch, 5b abs-pos VLR, or pivot to css-position 
 - **Group C — VLR + `text-orientation: sideways` baseline:** inline-block-alignment-007 (8.4%). Prior I2 salvage bulk swap was wrong (net -25 wm); per the post-mortem, Blink's `LogicalBoxFragment::BaselineMetrics` swaps ascent/descent only for inline-block baseline export, not for strut/text metrics inside the child. Any future attempt must narrow scope to the export site.
 
 ### Attack order (foundational correctness, not % diff)
-1. Group B — two tests, one root cause, low regression risk.
+1. Group B — two tests, one root cause, low regression risk. **DONE 2026-04-21.**
 2. Group A — one test, but unlocks containing-block / ancestor-walk class of bugs.
 3. Group C — hardest, needs focused Blink study; save for last.
+
+## Session log entry — 2026-04-21 (Group B — DONE)
+
+**Tests fixed:** `block-plaintext-004.html` (was 0.9%) and `block-plaintext-006.html` (was 1.0%) — both now PASS at 0 pixel diff.
+
+**Hypothesis revision.** The plan's single-root-cause hypothesis ("per-line paragraph level sourced wrong") was **wrong**. Visual scanning of the output PNGs via `/tmp/scanimg.go` showed the boxes were shaped/ordered correctly; only vertical line spacing was off. That pointed at line-box metrics, not paragraph-direction flow.
+
+**Actual root causes — both foundational (not plaintext-specific):**
+
+1. **`pkg/css/cascade.go:709-729`** — `ApplyInheritedProperties` only handled `em` font-size values against parent's computed font-size; missing `%`. The test's `<pre>` has `font-size: 150%`, but `GetFontSize()` fell back to 16px because `ParseLengthWithFontSize` doesn't understand `%`. Fix: resolve `%` the same way as `em`, using parent's already-cascaded absolute value (CSS 2.1 §15.7). Added `ParsePercentage` path + `!HasSuffix "rem"` guard alongside the existing em path.
+
+2. **`pkg/layout/inline_layout.go:1577-1614`** — `computeLineMetricsEx`'s `InlineItemControl` case (which sizes blank-line struts for `\n\n` in `white-space: pre`) diverged from the `InlineItemText` case when `line-height: normal`: used `GetLineHeight()`'s 1.2×fontSize fallback, used `fontSize - ascent` for descent, and gated half-leading on `>0`. Fix: mirror `InlineItemText` exactly — `FontHeightFromFont` when `IsLineHeightNormal()`, `FontDescentFromFont` for descent, unconditional half-leading application (CSS 2.1 §10.8).
+
+**Key insight.** Fix #1 alone caused a **regression** (0.9% → 1.7%). It correctly bumped `<pre>` font-size from 16→24px, but that exposed the dormant strut divergence — blank lines had the wrong height at the new font-size. Fix #2 brought both tests to 0 diff. Interpretation: the tests were previously "close" only because both bugs were canceling partially. Either fix alone is a regression; both together are correct.
+
+**Debug process:**
+- `/tmp/scanimg.go` — Go pixel scanner that located orange border rows and dark-glyph rows in both test and ref PNGs. Quantified "box is 40px too tall" objectively when visual diff was ambiguous.
+- Stderr instrumentation in `layoutInlineChildren` logging `{tag, font-size, line-height, font-path, fontHeight, lineHeight, ascent}` per line. Showed 5 lines × 19.2px each = 96px content for the `<pre>` — correct structure but at 16px font. After fix #1: 5 lines × wrong-per-line = incorrect. After fix #2: 5 lines × correct = 0 diff.
+
+**Verification commands:**
+```
+GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/Cellar/go/1.26.2/bin/go test \
+  ./pkg/visualtest/ -run 'TestWPTCSS3Reftests/css-writing-modes/(block-plaintext-004|block-plaintext-006)' -v
+→ 2/2 PASS at max diff 0.
+```
+
+**Cleanup before commit:**
+- Removed stderr instrumentation (`fmt`, `os` imports + `fmt.Fprintf(os.Stderr, ...)` block after `createLineBoxEx`).
+- Reverted `go.mod` 1.25.5 → 1.25.5 (test runner bumps to 1.26.2 automatically).
+
+**Files modified:** `pkg/css/cascade.go`, `pkg/layout/inline_layout.go` (2 files, ~23 insertions / 10 deletions).
+
+**Regression sweep owed:** targeted run of other wm tests that exercise `%` font-size or blank lines in `<pre>`/`white-space: pre`. Both fixes are foundational so broader-than-plaintext benefit is expected, but the regression risk is non-zero where adjacent tests depended on the old behavior.
+
+**Next:** commit Group B, then Group A (icb-007 orthogonal-root ancestor walk).
