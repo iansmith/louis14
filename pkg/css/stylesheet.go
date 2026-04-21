@@ -1275,6 +1275,14 @@ func parseSelector(selectorStr string) Selector {
 		pseudoElement = "descendant:" + pseudoElement
 	}
 
+	// Per CSS Selectors Level 3 §6.6, a bare pseudo-element like "::marker" is
+	// shorthand for "*::marker" — the universal selector with the pseudo-element
+	// attached. Without this, the parts list ends up empty and MatchesSelector
+	// rejects every node, so rules like "::marker { color: white }" never apply.
+	if selectorStr == "" && pseudoElement != "" {
+		selectorStr = "*"
+	}
+
 	// Split by combinators while preserving them
 	parts := make([]SelectorPart, 0)
 	combinators := make([]CombinatorType, 0)
