@@ -217,7 +217,14 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 		// means "size to content", not "fill available". Skip the stretched-fit
 		// path so the child's own layout pass determines the size. Auto margins
 		// then absorb leftover space as usual (CSS 2 §17.4 / Align 3 §8.2).
+		// Replaced elements follow CSS 2.2 §10.3.7 / §10.6.5: size is resolved
+		// by ComputeReplacedSize (intrinsic size + ratio + specified sizes),
+		// never by stretch-fit to the IMCB. Mirrors Blink's abs-replaced
+		// dispatch in absolute_utils.cc.
 		stretchable := !isNonStretchableDisplay(childStyle)
+		if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+			stretchable = false
+		}
 
 		if stretchable && insets.HasInlineStart && insets.HasInlineEnd &&
 			isAutoSizeInDirection(childStyle, wdm, true) {
