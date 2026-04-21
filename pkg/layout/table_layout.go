@@ -96,6 +96,22 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		availableInline = 0
 	}
 
+	// Record the table's content-box size so row / section / cell fragments
+	// added via builder.AddChild get their position:relative offset resolved
+	// against the correct CB (CSS 2.1 §9.4.3). Mirrors Blink's
+	// FragmentBuilder::SetAvailableSize usage in table_layout_algorithm.cc.
+	tableContentBlock := Indefinite
+	if geom.BorderBoxSize.BlockSize != Indefinite {
+		tableContentBlock = geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
+		if tableContentBlock < 0 {
+			tableContentBlock = 0
+		}
+	}
+	builder.SetChildAvailableSize(LogicalSize{
+		InlineSize: availableInline,
+		BlockSize:  tableContentBlock,
+	})
+
 	// Compute logical border spacing (CSS 2.1 §17.6.1).
 	// In collapsed mode, spacing is always zero.
 	inlineSpacing, blockSpacing := 0.0, 0.0

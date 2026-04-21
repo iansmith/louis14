@@ -13,7 +13,13 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 0 complete** (baseline + groupings + Blink research + NORUN triage). **Phase 1 (G-TABLE-REL) next.**
+**Phase 0 complete** (baseline + groupings + Blink research + NORUN triage). **Phase 1 (G-TABLE-REL) in progress — design locked 2026-04-21.**
+
+### Phase 1 readiness (2026-04-21)
+- Design decision: push `RelativeOffset` into shared `BoxFragmentBuilder.AddChild` (user-directed "do what Blink does").
+- Scope: two parts (Part A = shared AddChild, Part B = emit section fragments). See "Part A design" / "Part B design" below.
+- Open `td-*` question resolved — moved to G-SINGLETONS. Phase 1 target is 16 tests (4 tr + 12 thead/tbody/tfoot).
+- Ready to code. Next turn should start with Part A.
 
 ## Test Results
 | Date | Scope | Pass | Fail | NORUN | Notes |
@@ -59,7 +65,30 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 - G-ABS-CENTER + G-HYPO bundled into one phase (shared IMCB).
 
 ### Phase 1 preparation
-Blink study for G-TABLE-REL is complete. Ready to code: push the `RelativeOffset` check into the shared `AddChild` (preferred) or patch `table_layout.go:685` and `:735` directly.
+Blink study for G-TABLE-REL is complete. User directed (2026-04-21): do what Blink does — push the `RelativeOffset` check into the shared `BoxFragmentBuilder.AddChild`.
+
+Code audit revealed the fix is **two-part**:
+- **Part A — shared AddChild** (Blink's design). Centralize `RelativeOffset` computation in `BoxFragmentBuilder.AddChild`. Remove the duplicated tail blocks from `block_layout.go:929-940`, `flex_layout.go:1821-1832`, `grid_layout.go:395-403`, and 3 sites in `inline_layout.go`. Fixes `tr-*` tests (4).
+- **Part B — section fragments**. Today `table_layout.go:1105-1129` buckets thead/tbody/tfoot rows but emits NO section fragment — rows go straight into the table builder. `position: relative` on `<thead>` has nowhere to attach. Blink emits section PhysicalBoxFragments (structural-only, no NGLayoutResult). We must mirror. Fixes `thead-*`/`tbody-*`/`tfoot-*` (12 tests).
+
+**Open question** → **ANSWERED** (2026-04-21 isolated run + debug print):
+- td-top: `bla.style.GetPosition()` returns `PositionRelative` for `display: table-cell` and `result.Fragment.RelativeOffset` is correctly set to `(0, 100)`. The green cell box renders at the **correct** shifted position in test.png (verified against ref.png).
+- The 3099-pixel diff is text `"You should see a green box above..."` ~5px off vertically below the table. This means the table's total content block-size is slightly off — a row-height / baseline issue, NOT a relative-offset issue.
+- Verdict: `td-top` / `td-left` are **NOT** G-TABLE-REL. Revised Phase 1 scope: 4 `tr-*` tests (Part A fixes) + 12 section tests (Part B fixes) = 16 tests. `td-*` moves to G-SINGLETONS (task #4).
+
+### Part A design (ready to implement)
+**Blink pattern.** `BoxFragmentBuilder::AddChild` inspects `box_child.Style().GetPosition()`. If relative/sticky, calls `ComputeRelativeOffsetForBoxFragment(box_child, writing_direction, child_available_size_)`. Parent builder owns `child_available_size_`.
+
+**Our mirror.**
+1. Add `childAvailableSize LogicalSize` + `SetChildAvailableSize(LogicalSize)` to `BoxFragmentBuilder`.
+2. Each layout algorithm calls `builder.SetChildAvailableSize(computedChildCBSize)` before adding children. (For block/flex/grid/inline: this is the parent's content size available to children. For table: same — rowBuilder gets the row's inline-size / indefinite block.)
+3. `AddChild` reads `fragment.Style.GetPosition()`; if relative/sticky, computes `RelativeOffset` using `childAvailableSize` as CB and sets on `fragment`.
+4. Delete the tail blocks at `block_layout.go:929-940`, `flex_layout.go:1821-1832`, `grid_layout.go:395-403`, plus three inline sites (`inline_layout.go:1122/1286/1401`).
+
+**Risk.** Removing 7 tail-block sites in one go risks regressing wm (781/781) and CSS2 (99/99). Mitigation: land Part A as one commit with *both* the centralization and the deletion, run full wm + CSS2 regression in a single gate. If anything regresses, the check is symmetric with the deleted sites so debugging is local.
+
+### Part B design (ready to implement after Part A)
+Mirror Blink's table section fragments. Today `table_layout.go:1105-1129` concatenates thead/body/footer rows into one flat list; we must instead emit one `sectionBuilder` per group (thead, each tbody, tfoot), each holding the rows of that group, then addChild the section fragment to the table builder. Blink treats these as "structural-only" — they still carry a Style and are real PhysicalBoxFragments, they just have no per-section layout algorithm.
 
 ## 5-Question Reboot Check
 | Question | Answer |

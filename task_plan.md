@@ -96,13 +96,17 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] Triage the 5 NORUN entries → 4 SKIP (infra), 1 real FAIL (`position-change.html`). Details in `findings.md` "NORUN triage".
 - [x] Blink research for 7 groups (G-TABLE-REL, G-CB-CHANGE, G-DYN-STATIC, G-ABS-CENTER, G-HYPO, G-STICKY, G-ABS-IN-INLINE) — see `findings.md` per-group "Blink entry points" sections.
 
-### Phase 1: G-TABLE-REL (16 tests) — **NEXT**
+### Phase 1: G-TABLE-REL (16-18 tests) — **IN PROGRESS**
 - [x] Blink research: relative offset is applied in `BoxFragmentBuilder::AddChild` via `ComputeRelativeOffsetForBoxFragment`. Fragment-builder-level, not algorithm-level.
-- [ ] Decide: push the check into our shared `AddChild` equivalent (preferred — Blink's design), or patch `table_layout.go` at the two add-sites (lines 685, 735). Preferred minimises future repeat-bugs.
-- [ ] Implement and run one test per sub-shape (`thead-top`, `tbody-left`, `tr-top`, `td-top`, `*-absolute-child`, `position-relative-001/002`).
-- [ ] Verify the three `position-relative-01[123]` table-percentage tests — expected to close too.
+- [x] Decision (2026-04-21, user-directed): do what Blink does — push the check into our shared `BoxFragmentBuilder.AddChild`. Parent's content-box size is the CB for percentage resolution.
+- [x] Scope expanded after code audit (2026-04-21): the fix is two-part.
+    - **Part A**: move RelativeOffset into shared `AddChild`; remove duplicate tail blocks in `block_layout.go:929-940`, `flex_layout.go:1821-1832`, `grid_layout.go:395-403`, and 3 call-sites in `inline_layout.go` (1122/1286/1401). Fixes `tr-*` (4 tests).
+    - **Part B**: emit section fragments (thead/tbody/tfoot) in `table_layout.go` so the shared AddChild has a fragment to attach to. Today the row-group buckets at line 1105-1129 flatten into one row list — no section fragment exists. Fixes `thead-*`/`tbody-*`/`tfoot-*` (12 tests).
+- [ ] First: run `td-top` isolated to confirm cells already honor `RelativeOffset` via `block_layout.go`'s tail block — if they do, td failures are unrelated and G-TABLE-REL is 16 tests (not 18).
+- [ ] Implement Part A. Verify block/flex/grid/inline passes unchanged (regression: wm + CSS2 + flex).
+- [ ] Implement Part B. Verify the 16 (or 18) table-relative tests + `position-relative-001/002` + `position-relative-011/012/013` table-percentage tests.
 - [ ] Regression: full wm + CSS2 + flex spot-check.
-- [ ] Commit: "Phase 1: relative positioning at fragment-builder AddChild".
+- [ ] Commit: "Phase 1 Part A: RelativeOffset at shared fragment-builder AddChild" and "Phase 1 Part B: emit thead/tbody/tfoot section fragments".
 
 ### Phase 2: G-CB-CHANGE (3 tests) — invalidation only
 - [x] Blink research: `StyleDifference::NeedsPositionedLayout` + `LayoutBlock::RemovePositionedObjects(stay_within)`.

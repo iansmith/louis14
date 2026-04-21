@@ -50,6 +50,14 @@ type BoxFragmentBuilder struct {
 
 	// outOfFlowCandidates collects abs-pos/fixed children for deferred layout.
 	outOfFlowCandidates []OutOfFlowCandidate
+
+	// childAvailableSize is the content-box size of this fragment — the
+	// containing block for children's position:relative/sticky percentage
+	// resolution. Mirrors Blink's FragmentBuilder::child_available_size_.
+	// Set by the enclosing layout algorithm via SetChildAvailableSize before
+	// adding children; consumed by AddChild to compute a child's RelativeOffset.
+	childAvailableSize    LogicalSize
+	hasChildAvailableSize bool
 }
 
 type logicalChildLink struct {
@@ -132,9 +140,40 @@ func (b *BoxFragmentBuilder) AddOutOfFlowCandidate(c OutOfFlowCandidate) {
 	b.outOfFlowCandidates = append(b.outOfFlowCandidates, c)
 }
 
+// SetChildAvailableSize records the content-box size that serves as the
+// containing block for children's position:relative/sticky percentage
+// resolution. Layout algorithms call this once before adding children.
+// Mirrors Blink's FragmentBuilder::SetAvailableSize.
+func (b *BoxFragmentBuilder) SetChildAvailableSize(size LogicalSize) {
+	b.childAvailableSize = size
+	b.hasChildAvailableSize = true
+}
+
 // AddChild adds a child fragment at the given logical offset.
 // The offset is relative to this fragment's content box origin.
+//
+// CSS 2.1 §9.4.3: if the child is position:relative or :sticky and its
+// RelativeOffset has not already been computed by the layout algorithm,
+// compute it here from the child's style and the parent's childAvailableSize.
+// Mirrors Blink's BoxFragmentBuilder::AddChild, which unconditionally calls
+// ComputeRelativeOffsetForBoxFragment at add-time; the RelativeOffset == 0
+// guard lets existing per-algorithm tail blocks short-circuit the work.
 func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset LogicalOffset) {
+	if fragment != nil && fragment.Style != nil && fragment.RelativeOffset == (PhysicalOffset{}) && b.hasChildAvailableSize {
+		pos := fragment.Style.GetPosition()
+		if pos == css.PositionRelative || pos == css.PositionSticky {
+			cbBlock := b.childAvailableSize.BlockSize
+			if cbBlock == Indefinite {
+				cbBlock = 0 // auto CB height → percentages compute to 0
+			}
+			physCB := ToPhysicalSize(LogicalSize{
+				InlineSize: b.childAvailableSize.InlineSize,
+				BlockSize:  cbBlock,
+			}, b.wdm.WM)
+			off := fragment.Style.GetPositionOffsetResolved(physCB.Width, physCB.Height)
+			fragment.RelativeOffset = computeRelativeOffset(off, b.wdm)
+		}
+	}
 	b.children = append(b.children, logicalChildLink{
 		offset:   offset,
 		fragment: fragment,
