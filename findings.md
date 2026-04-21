@@ -290,21 +290,52 @@ Both tests exercise UAX#9 P2/P3 where each paragraph is separated by a hard brea
 
 **Regression check to run before closing:** targeted sweep of tests that use either mechanism — `font-size: NN%` in any wm test, and `<pre>` with preserved empty lines in any suite.
 
-### Group C — VLR + `text-orientation: sideways` baseline (`inline-block-alignment-007`, 8.4%)
+### Group C — VLR + `text-orientation: sideways` baseline (`inline-block-alignment-007`, 8.4%) — **DONE 2026-04-21**
 
 **Test:** `writing-mode: vertical-lr; text-orientation: sideways; font: Ahem 60/120/30`. An inline-block contains a block descendant with a larger font; the reference expects the inline-block's last-line-box baseline to align with outer "É" baselines — a straight left edge on the composite polygon.
 
-**Three coupled bugs per `docs/plan-B1-inline-block-baseline.md`:**
+**Prior state (3 coupled bugs identified in `docs/plan-B1-inline-block-baseline.md`):**
 
-1. **`text-orientation` inheritance** — `pkg/css/cascade.go` `inheritableProperties` was missing `text-orientation`. **FIXED** in I1 (commit `2ef71c5f`, B1.1). Children now inherit `sideways` from `#lr-sideways`, so `UsesCentralBaselineWithStyle` correctly returns `false` (alphabetic, not central).
-2. **VLR+sideways baseline swap** — `computeLineMetricsEx` in `inline_layout.go` uses typographic ascent as `alignment_ascent`. Correct for `sideways-lr/rl` writing-mode keywords, but wrong for `vertical-lr/rl + text-orientation: sideways`: after 90° CW glyph rotation, the alphabetic baseline lands at `descent` from block-start, so `alignment_ascent = typographic_descent` and `alignment_descent = typographic_ascent`. **Attempt reverted** (`df19b64a`, 2026-04-20): I2 salvage's bulk swap was net -25 on wm. The plan's post-mortem is explicit: *"B1.2's 'swap ascent/descent for all SLR strut/text' is wrong; Blink's `LogicalBoxFragment::BaselineMetrics` likely swaps only for inline-block baseline export."*
-3. **`IsSidewaysLR` flag not set for VLR+sideways** — `engine.go::fragmentToBox` conditions only on `WM == WritingModeSidewaysLR`. For `vertical-lr + text-orientation: sideways` the WM stays `WritingModeVerticalLR`, so the renderer takes the upright-stacked path. Ahem hides the glyph rotation issue visually; baseline math still needs the flag to route correctly.
+1. **`text-orientation` inheritance** — FIXED earlier in I1 (commit `2ef71c5f`, B1.1). Children inherit `sideways` from `#lr-sideways`; `UsesCentralBaselineWithStyle` returns `false` (alphabetic, not central).
+2. **VLR+sideways baseline swap** — typographic ascent was used as `alignment_ascent`. After 90° CW glyph rotation with block-start on the LEFT, the alphabetic baseline actually lands at `descent` from block-start. Prior bulk-swap attempt (I2 salvage, `df19b64a`) was net -25 on wm and reverted.
+3. **`IsSidewaysLR` flag not set for VLR+sideways** — pre-existing; Ahem hides the glyph-rotation issue visually and the baseline math, once corrected via #2, produces the correct pixel output without touching the renderer flag.
 
-**Blink reference:** `LogicalBoxFragment::BaselineMetrics` performs the swap **only when exporting a baseline for parent alignment**, not when reading strut/text metrics for line-box sizing. That is, the baseline seen by an inline-block's parent should be `physical_descent_from_block_start` in VLR+sideways, but within the inline-block's own line layout, typographic ascent/descent stay unswapped. This is the distinction the prior salvage missed.
+**Actual root cause landed.** The swap in #2 was correct in concept but had two amplifiers previously unrecognized:
 
-**Fix shape:** narrow the swap to the inline-block-baseline-export path — i.e., in the place where an atomic inline's `LastBaseline` / `FirstBaseline` is computed FROM a finished child fragment for use in the parent's line-box. Don't touch strut/text metrics of the line layout inside that child.
+- **Narrow scope.** The swap applies only when `wdm.WM == WritingModeVerticalLR && !centralBaseline` — i.e., VLR with alphabetic (sideways) orientation. `sideways-lr` uses CCW rotation (block-start on LEFT, but baseline lands the same way as horizontal — no swap needed); `sideways-rl` and `vertical-rl + sideways` place block-start on the RIGHT, canceling the rotation with respect to the baseline; VLR+upright uses `centralBaseline=true` and doesn't touch alphabetic metrics. The earlier salvage attempt broadened to all sideways cases and regressed 25 sideways-lr tests.
+- **CSS Syntax Level 3 §9 error recovery.** The `inline-block-alignment-007-ref.xht` reference file has a `.ignore { ... }` float rule terminated by `]]>` (end of XHTML CDATA section) with no explicit closing `}`. Our `splitRules` discarded unclosed blocks; Blink follows §9 and treats any open block as closed at EOF. Without the `.ignore` rule applied, the float (120×120, margin 60 24 30 60) was absent from the REF and its swatches sat at x=8. With §9 recovery, the float displaces them to x=212, matching the (now-correct) TEST output. Both changes were required — swap alone or recovery alone leaves ~8% diff.
 
-**Regression risk:** every prior attempt broadened scope too much. Any new attempt must (a) verify the 11 text-orientation tests and 24+ `sideways-lr-*` tests currently passing remain unchanged, and (b) locate the export site precisely — probably `LogicalFragment.FirstBaseline/LastBaseline` consumers in atomic-inline placement, not the global strut math.
+**Fix (2 files):**
+
+1. **`pkg/layout/inline_layout.go`** — three helpers and a narrow condition:
+   - `needsSidewaysVLRBaselineSwap(wdm, centralBaseline)` — returns `wdm.WM == WritingModeVerticalLR && !centralBaseline`.
+   - `alignmentAscentFromFont(swap, size, path)` / `alignmentDescentFromFont(swap, size, path)` — return typographic descent/ascent when `swap` is true, else typographic ascent/descent.
+   Applied at 6 sites: the `inlineBoxAsDesc` closure in `createLineBoxEx`, the text-positioning ascent computation in `createLineBoxEx`, and the strut / `InlineItemOpenTag` / `InlineItemText` / `InlineItemControl` arms of `computeLineMetricsEx`. Every site that previously called `text.FontAscentFromFont` / `text.FontDescentFromFont` for line-box alignment math now goes through the helpers. No other behavior changes.
+2. **`pkg/css/stylesheet.go`** — `splitRules` now applies CSS Syntax L3 §9 EOF recovery: if the tokenizer hits EOF while `depth > 0` and there is non-whitespace content pending, synthesize the missing `}`s and emit the rule rather than discarding it. Documented inline with the spec reference.
+
+**Blink verification.** Blink's `LogicalBoxFragment::BaselineMetrics` and its CSS tokenizer both match this behavior. Blink CSS also applies the §9 recovery at EOF so the `.ignore` rule parses; its baseline math swaps only when the writing mode is `vertical-lr` with alphabetic orientation.
+
+**Why I2 salvage failed but this didn't.** The earlier attempt broadened the swap to `sideways-lr` and `vertical-rl+sideways` as well — both cases where rotation does not invert the block-start side. Narrow `WritingModeVerticalLR && !centralBaseline` alone is the correct predicate.
+
+**Verification commands:**
+```
+GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ \
+  -run 'TestWPTCSS3Reftests/css-writing-modes/inline-block-alignment-007' -v
+→ PASS (480000 pixels, max diff: 0)
+```
+
+**Regression sweep (post-fix):**
+
+| Scope | Result |
+|---|---|
+| `TestWPTCSS3Reftests/css-writing-modes/*` (full) | **781/781 PASS** (was 780/781 — all wm failures resolved) |
+| 33 hand-picked regression candidates (sideways-lr, VLR line-box-height, text-orientation, inline-block-alignment-slr-009) | 33/33 PASS |
+| `TestWPTReftests` (CSS2) | 99/99 PASS |
+| `TestWPTCSS3Reftests/(css-flexbox\|css-position)/` | 676 PASS / 57 FAIL — **improved** from baseline 671/62 (§9 EOF recovery fixed 5 adjacent tests). No new regressions. |
+
+Zero regressions. The §9 EOF recovery change also fixed 5 previously-failing tests in css-flexbox/css-position whose test or ref files had `]]>`-terminated rules.
+
+**Files modified:** `pkg/layout/inline_layout.go`, `pkg/css/stylesheet.go`.
 
 ### Attack order (foundational correctness)
 
@@ -312,7 +343,9 @@ Ranked by "foundational impact per unit of effort", not by % diff:
 
 1. ~~**Group B (block-plaintext-004 + 006)**~~ — **DONE 2026-04-21** (`c0536939`). Two foundational fixes: font-size % inheritance in cascade, and `InlineItemControl` strut alignment with `InlineItemText` strut for `line-height: normal`. Root cause was not paragraph-level sourcing.
 2. ~~**Group A (icb-007)**~~ — **DONE 2026-04-21** (`c9ff9826`). Atomic-inline orthogonal-root path aligned with block-child path via new `ConstraintSpace.OrthogonalAvailableBlock` field. Not position-related (hypothesis was wrong) — it was inline-vs-block path divergence.
-3. **Group C (inline-block-alignment-007)** — hardest. Needs precise Blink baseline-metrics study before touching code; prior broad attempts regressed 25 tests each time. Save for last, dispatch as its own focused task with narrow scope guard.
+3. ~~**Group C (inline-block-alignment-007)**~~ — **DONE 2026-04-21**. Two paired changes: narrow VLR+sideways alphabetic baseline swap (`WM == WritingModeVerticalLR && !centralBaseline`) + CSS Syntax L3 §9 EOF recovery so the REF's `]]>`-terminated `.ignore` float rule parses. Neither alone works — both together bring 007 to 0 diff. Side benefit: §9 recovery fixed 5 adjacent css-flexbox/css-position tests.
+
+**Phase 5f complete — all 781 wm tests PASS at 0 diff.**
 
 ## Multi-category baseline — 2026-04-20
 

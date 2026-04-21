@@ -1157,6 +1157,7 @@ func createLineBoxEx(
 	// inlineBoxAsDesc computes an inline box's ascent/descent contribution the
 	// same way computeLineMetricsEx does for an OpenTag: font ascent/descent
 	// plus half-leading from line-height. Used to derive subtree-root metrics.
+	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 	inlineBoxAsDesc := func(style *css.Style) (asc, desc float64) {
 		if style == nil {
 			return 0, 0
@@ -1166,8 +1167,8 @@ func createLineBoxEx(
 			asc, desc = fs/2, fs/2
 		} else {
 			fontPath := resolveFontPath(style, fonts)
-			asc = text.FontAscentFromFont(fs, fontPath)
-			desc = text.FontDescentFromFont(fs, fontPath)
+			asc = alignmentAscentFromFont(sidewaysVLR, fs, fontPath)
+			desc = alignmentDescentFromFont(sidewaysVLR, fs, fontPath)
 		}
 		lineHt := style.GetLineHeight()
 		if style.IsLineHeightNormal() && !centralBaseline {
@@ -1222,7 +1223,7 @@ func createLineBoxEx(
 				ascent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
-				ascent = text.FontAscentFromFont(fontSize, fontPath)
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
 
 			// Default: baseline-align the text fragment so its baseline sits
@@ -1433,6 +1434,38 @@ func createLineBoxEx(
 	return result.Fragment, lineHeight, maxAscent
 }
 
+// needsSidewaysVLRBaselineSwap reports whether alphabetic ascent/descent must
+// be swapped for line-metric and text-placement purposes. This applies only to
+// writing-mode: vertical-lr combined with text-orientation: sideways: the
+// glyphs are rotated 90° CW and the block-start side is on the LEFT, so the
+// alphabetic baseline lands at the typographic descent from block-start (not
+// ascent). sideways-lr uses CCW rotation and sideways-rl / vertical-rl +
+// sideways place block-start on the RIGHT, so those keep the normal mapping.
+// See CSS Writing Modes 3 §4.3 and §5.1.
+func needsSidewaysVLRBaselineSwap(wdm WritingDirectionMode, centralBaseline bool) bool {
+	return wdm.WM == WritingModeVerticalLR && !centralBaseline
+}
+
+// alignmentAscentFromFont returns the distance from the line's block-start to
+// the alphabetic baseline for a font. When swap is true (VLR+sideways per
+// needsSidewaysVLRBaselineSwap), this returns the typographic descent.
+func alignmentAscentFromFont(swap bool, fontSize float64, fontPath string) float64 {
+	if swap {
+		return text.FontDescentFromFont(fontSize, fontPath)
+	}
+	return text.FontAscentFromFont(fontSize, fontPath)
+}
+
+// alignmentDescentFromFont returns the distance from the alphabetic baseline
+// to the line's block-end for a font. When swap is true, this returns the
+// typographic ascent.
+func alignmentDescentFromFont(swap bool, fontSize float64, fontPath string) float64 {
+	if swap {
+		return text.FontAscentFromFont(fontSize, fontPath)
+	}
+	return text.FontDescentFromFont(fontSize, fontPath)
+}
+
 // computeLineMetrics is the backward-compatible wrapper that uses wdm.UsesCentralBaseline().
 func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig) (maxAscent, maxDescent float64) {
 	return computeLineMetricsEx(line, wdm, fonts, wdm.UsesCentralBaseline(), nil)
@@ -1450,6 +1483,7 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 // inline box ("strut") per CSS 2.1 §10.8.1.
 func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
+	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 
 	// CSS 2.1 §10.8.1: "the minimum height consists of a minimum height
 	// above the baseline and a minimum height below it, exactly as if each
@@ -1463,8 +1497,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			strutDescent = fontSize / 2
 		} else {
 			fontPath := resolveFontPath(parentStyle, fonts)
-			strutAscent = text.FontAscentFromFont(fontSize, fontPath)
-			strutDescent = text.FontDescentFromFont(fontSize, fontPath)
+			strutAscent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+			strutDescent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
 		}
 		// CSS 2.1 §10.8.1: line-height: normal uses the font's recommended
 		// line height rather than a fixed 1.2× multiplier. This ensures the
@@ -1519,8 +1553,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
-				ascent = text.FontAscentFromFont(fontSize, fontPath)
-				descent = text.FontDescentFromFont(fontSize, fontPath)
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
@@ -1567,8 +1601,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
-				ascent = text.FontAscentFromFont(fontSize, fontPath)
-				descent = text.FontDescentFromFont(fontSize, fontPath)
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
@@ -1613,8 +1647,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
-				ascent = text.FontAscentFromFont(fontSize, fontPath)
-				descent = text.FontDescentFromFont(fontSize, fontPath)
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
 			lineHt := r.Item.Style.GetLineHeight()
 			if r.Item.Style.IsLineHeightNormal() && !centralBaseline {

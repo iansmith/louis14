@@ -515,7 +515,14 @@ func splitRules(css string) []string {
 		}
 	}
 
-	// Any trailing content without a closing brace is discarded (error recovery)
+	// CSS Syntax Level 3 §9 (error handling): at EOF, treat any open block as
+	// if it were closed. This handles CDATA-wrapped stylesheets where the
+	// trailing "]]>" stands in for the closing "}". Real browsers apply this
+	// recovery; Blink's CSS parser does the same via its tokenizer.
+	if depth > 0 && start < len(css) && strings.TrimSpace(css[start:]) != "" {
+		synthesized := css[start:] + strings.Repeat("}", depth)
+		rules = append(rules, synthesized)
+	}
 	return rules
 }
 

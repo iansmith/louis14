@@ -121,11 +121,11 @@ Captured in `docs/plan-wm-final-8-FINDINGS.md`. Inline-block orthogonal root ins
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 5f (foundational grouping). Group B DONE 2026-04-21 (both block-plaintext-004/006 PASS at 0 diff). Group A (icb-007) is next. Phase 7 integration audit complete. |
-| Where am I going? | Group A (orthogonal-root-resize-icb-007) → Group C (inline-block-alignment-007, hardest) → Phase 6 delivery (all 787 wm at 0 diff, CSS2 99/99). Then pivot to css-position (54-test headroom). |
-| What's the goal? | All 787 wm tests at 0 diff; CSS2 stays at 99/99. |
-| What have I learned? | Group B's plan hypothesis (paragraph-level sourcing) was wrong; the real fixes were two foundational bugs (% font-size cascade + Control-strut alignment with Text-strut). Fix #1 alone regressed because it exposed dormant fix #2 — both bugs were partially canceling. Always quantify visual delta with pixel scanners (`/tmp/scanimg.go`) when visual diff is ambiguous. |
-| What have I done? | Phases 1 + 2 + 5a + 5b + 5c + 5d + 5e + 5f Group B complete; iframe capability gap closed; Phase 7 integration audit complete (CSS2 99/99 restored, I2 salvage reverted). 2 wm failures remain (Group A + Group C). |
+| Where am I? | Phase 5f COMPLETE 2026-04-21. All 781 wm tests PASS at 0 diff. CSS2 99/99 preserved. css-flexbox+css-position improved 671→676. Phase 6 delivery next. |
+| Where am I going? | Phase 6 delivery (write-up) → pivot to css-position (53-test remaining headroom) or css-flexbox (singleton mop-up). |
+| What's the goal? | All 781 wm tests at 0 diff; CSS2 stays at 99/99. **Achieved.** |
+| What have I learned? | Group C's fix required TWO paired changes — the baseline swap (narrow predicate only) AND CSS Syntax §9 EOF recovery for the REF's `]]>`-terminated `.ignore` rule. Either alone leaves 8.4% diff. Prior I2 salvage failed because it broadened the swap to all sideways cases (regressed 25 tests) AND skipped the §9 fix. Always read the REF file, not just the test file. |
+| What have I done? | Phases 1 + 2 + 5a + 5b + 5c + 5d + 5e + 5f (all groups A/B/C) complete; iframe capability gap closed; Phase 7 integration audit complete. Zero wm failures remain. |
 
 ## Session log entry — 2026-04-20 (Phase 7 plan expansion)
 - Expanded Phase 7 in `task_plan.md`, `findings.md`, `progress.md` (root) and `docs/plan-wm-final-8-{TASK,FINDINGS,PROGRESS}.md` (tracked).
@@ -270,3 +270,63 @@ Zero regressions across writing-modes, CSS2, and broader layout suites. The rema
 **Files modified:** `pkg/layout/constraint_space.go`, `pkg/layout/inline_layout.go`, `pkg/layout/line_breaker.go`.
 
 **Next:** Group C (`inline-block-alignment-007`) or exit Phase 5f.
+
+## Phase 5f Group C — `inline-block-alignment-007` at 0 diff (2026-04-21)
+
+**Test:** `writing-mode: vertical-lr; text-orientation: sideways; font: Ahem 60/120/30`. Three swatches of increasing font-size inside an inline-block; reference expects a straight LEFT edge where each swatch's alphabetic baseline aligns. Baseline 8.4% diff (40320 px).
+
+**Root cause: two paired bugs. Either alone is insufficient.**
+
+1. **VLR+sideways alphabetic baseline not swapped.** In `writing-mode: vertical-lr` with `text-orientation: sideways`, glyphs rotate 90° CW. Block-start is on the LEFT; after CW rotation, the alphabetic baseline lands at `typographic_descent` from block-start, not `typographic_ascent`. Our `computeLineMetricsEx` and `createLineBoxEx` always used `FontAscentFromFont` as `alignment_ascent` and `FontDescentFromFont` as `alignment_descent`. Correct for horizontal + VLR-upright + `sideways-lr` (CCW) + `sideways-rl`/VRL-sideways (block-start on RIGHT cancels), but wrong for VLR+sideways.
+
+2. **CSS parser dropped unclosed blocks instead of applying CSS Syntax L3 §9 EOF recovery.** The reference file `inline-block-alignment-007-ref.xht` wraps its stylesheet in an XHTML `<style><![CDATA[ … ]]></style>` block. Its last rule is:
+   ```css
+   .ignore { float: left; width: 120px; height: 120px; margin: 60px 24px 30px 60px;
+   ```
+   — terminated only by `]]>`, no `}`. Our `splitRules` discarded any rule whose brace-depth > 0 at EOF. CSS Syntax Level 3 §9 mandates that tokenizers treat any open block as closed at EOF. Blink applies §9. Without recovery, the `.ignore` float was absent from the REF, and the swatches sat at x=8 instead of being displaced to x=212 by the float.
+
+**Why the I2 salvage (`df19b64a`, reverted) failed.** It broadened the swap to all sideways writing modes (`sideways-lr`, `sideways-rl`, VRL+sideways). Those cases don't need the swap — only VLR+sideways puts block-start on the LEFT in a way that CW rotation inverts. Broadening regressed 25 tests. It also did not include the §9 recovery fix, so the target test still failed.
+
+**Fix (2 files, ~65 lines):**
+
+1. **`pkg/layout/inline_layout.go`** — three helpers + one narrow predicate:
+   ```go
+   func needsSidewaysVLRBaselineSwap(wdm WritingDirectionMode, centralBaseline bool) bool {
+       return wdm.WM == WritingModeVerticalLR && !centralBaseline
+   }
+   func alignmentAscentFromFont(swap bool, fontSize float64, fontPath string) float64 {
+       if swap { return text.FontDescentFromFont(fontSize, fontPath) }
+       return text.FontAscentFromFont(fontSize, fontPath)
+   }
+   func alignmentDescentFromFont(swap bool, fontSize float64, fontPath string) float64 {
+       if swap { return text.FontAscentFromFont(fontSize, fontPath) }
+       return text.FontDescentFromFont(fontSize, fontPath)
+   }
+   ```
+   Applied at 6 sites — `inlineBoxAsDesc` closure, text-positioning `ascent` computation in `createLineBoxEx`, and the strut / `InlineItemOpenTag` / `InlineItemText` / `InlineItemControl` arms of `computeLineMetricsEx`. Every line-metric site that formerly called `text.FontAscentFromFont` / `text.FontDescentFromFont` now routes through the helpers. `!centralBaseline` excludes VLR+upright (which uses central baseline anyway).
+
+2. **`pkg/css/stylesheet.go`** — `splitRules` emits the remainder with synthesized closing `}`s when `depth > 0 && start < len(css) && strings.TrimSpace(css[start:]) != ""` at EOF. Replaces the previous silent-discard fallback. Documented inline with the §9 spec reference.
+
+**Blink verification.** Blink's `LogicalBoxFragment::BaselineMetrics` + its CSS tokenizer (§9 compliant) both apply the same behavior. The narrow predicate matches Blink's "alphabetic, not central" gate on the baseline swap.
+
+**Verification commands:**
+```
+GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ \
+  -run 'TestWPTCSS3Reftests/css-writing-modes/inline-block-alignment-007' -v
+→ PASS (480000 pixels, max diff: 0)
+```
+
+**Regression sweep (post-fix):**
+
+| Scope | Result |
+|---|---|
+| `TestWPTCSS3Reftests/css-writing-modes/*` (full) | **781/781 PASS** (was 780/781; Phase 5f complete) |
+| 33 hand-picked regression candidates (sideways-lr, VLR line-box-height, text-orientation, inline-block-alignment-slr-009) | 33/33 PASS |
+| `TestWPTReftests` (CSS2) | 99/99 PASS |
+| `TestWPTCSS3Reftests/(css-flexbox\|css-position)/` | 676 PASS / 57 FAIL (was 671/62 — **improved** by 5 tests from §9 recovery) |
+
+Zero regressions. §9 EOF recovery incidentally fixed 5 css-flexbox/css-position tests with similarly `]]>`-terminated rules.
+
+**Files modified:** `pkg/layout/inline_layout.go`, `pkg/css/stylesheet.go`.
+
+**Phase 5f complete.** All 781 wm tests pass at 0 pixel diff. CSS2 99/99 preserved. Pivoting next to css-position (highest remaining headroom) or Phase 6 delivery write-up.

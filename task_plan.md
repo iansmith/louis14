@@ -12,10 +12,10 @@ Authoritative sources — re-read both at the start of any session before planni
 If you find yourself about to type a rule verbatim into this file or into code comments, stop and link instead.
 
 ## Current Phase
-Phase 5f (foundational grouping). **2026-04-21:** Groups B and A landed. Remaining wm failure: 1 (Group C `inline-block-alignment-007`).
+Phase 5f (foundational grouping) — **COMPLETE 2026-04-21**. All 781 wm tests PASS at 0 diff. Ready for Phase 6 delivery.
 
 - `bidi-dynamic-iframe-001` — **FIXED** 2026-04-20 via merge `[pending SHA]` (Text.appendData + Text.data, `<iframe srcdoc>`, iframe.contentDocument). Regression spot-check icb-001..006 clean.
-- 5a/5b/5c/5d done. 5f Group B **DONE** 2026-04-21 (`c0536939`). 5f Group A **DONE** 2026-04-21 (`c9ff9826`).
+- 5a/5b/5c/5d done. 5f Group B **DONE** 2026-04-21 (`c0536939`). 5f Group A **DONE** 2026-04-21 (`c9ff9826`). 5f Group C **DONE** 2026-04-21.
 - Phase 7 complete (CSS2 99/99 restored `2bc9076c`; I2 salvage reverted `df19b64a`).
 
 ## Baseline snapshot (from Phase 0)
@@ -65,7 +65,7 @@ All other Phase 5 targets now PASS at 0% diff (5a, 5b, 5d, and singletons: img-i
 | Test | Diff | Group | Status |
 |------|------|-------|--------|
 | scrollbar-vertical-rl.html | 12.7% | scrollbar | **PARKED** (capability gap) |
-| inline-block-alignment-007.xht | 8.4% | inline-block vertical alignment | open |
+| inline-block-alignment-007.xht | 8.4% | inline-block vertical alignment | **FIXED** 2026-04-21 (narrow VLR+sideways alphabetic swap + CSS Syntax L3 §9 EOF recovery) |
 | img-intrinsic-size-contribution-001.html | 4.4% | img intrinsic size | open |
 | block-flow-direction-vrl-026.xht | 2.6% | block-flow direction | open |
 | mongolian-orientation-001.html | 1.3% | Mongolian orientation | open |
@@ -97,8 +97,8 @@ Attack order: group by shared root cause, fix smallest/most isolated cluster fir
      - `pkg/layout/inline_layout.go:1577-1614` — `computeLineMetricsEx` `InlineItemControl` case diverged from the `InlineItemText` path for `line-height: normal`: used `GetLineHeight()`'s 1.2×fontSize fallback instead of `FontHeightFromFont`; used `fontSize - ascent` instead of `FontDescentFromFont`; gated half-leading on `> 0` instead of applying unconditionally. Blank-line struts therefore had wrong height even when text lines on the same element were correct.
      Both `block-plaintext-004` and `block-plaintext-006` now PASS at 0 pixel diff.
   2. **Group A — orthogonal-root ancestor walk (1 test)** — **DONE 2026-04-21** (`c9ff9826`). Root cause: atomic-inline path at `line_breaker.handleAtomicInline` used raw `lb.space.AvailableSize.BlockSize` (grandparent content-box) for orthogonal children instead of the §10.3.2 ancestor-walk value used by the block-child path at `block_layout.go:368-370`. A second amplifier: `layoutInlineChildren` hand-constructed `lineSpace` dropped `OrthogonalFallbackInlineSize`/`OrthogonalFallbackBlockSize`, disabling the existing Indefinite→ICB fallback. Fix: new `ConstraintSpace.OrthogonalAvailableBlock` field pre-computed in `layoutInlineChildren` via `computeOrthogonalAvailableBlock`; `handleAtomicInline` uses it when child is orthogonal. Blink-verified via `block_node.cc` + `space_utils.cc`: no position/inline-level gate on the walk. `icb-007` at 0 diff; zero regressions across wm (780/781 — only Group C remains), CSS2 (99/99), css-position/display/flexbox (703/110 identical to baseline).
-  3. **Group C — VLR + text-orientation:sideways baseline (1 test)**: `inline-block-alignment-007` (8.4%). Hardest; prior bulk-swap attempt was net -25 on wm. Save for last; dispatch as its own narrow-scope task targeting only the inline-block-baseline-export site.
-- **Status: active — Groups A + B DONE, only Group C remains**
+  3. **Group C — VLR + text-orientation:sideways baseline (1 test)** — **DONE 2026-04-21**. `inline-block-alignment-007` at 0 diff via two paired changes. (a) Narrow VLR+sideways alphabetic baseline swap (`pkg/layout/inline_layout.go`): new helpers `needsSidewaysVLRBaselineSwap` / `alignmentAscentFromFont` / `alignmentDescentFromFont` applied at 6 line-metric sites, gated on `wdm.WM == WritingModeVerticalLR && !centralBaseline`. Narrow enough to avoid the prior bulk-swap regression (I2 salvage was net -25). (b) CSS Syntax Level 3 §9 EOF recovery in `pkg/css/stylesheet.go::splitRules`: the reference file's `.ignore` float rule is terminated by `]]>` (CDATA end) with no closing `}`; without recovery, the float was dropped and the REF's swatches sat at x=8. Both changes are required. Side benefit: css-flexbox/css-position improved 671/62 → 676/57 (5 adjacent tests also had `]]>`-terminated rules).
+- **Status: COMPLETE — all 3 groups DONE. All 781 wm tests PASS at 0 diff.**
 
 ### Phase 6: Delivery
 - [ ] Confirm all 787 wm tests pass at 0 diff
