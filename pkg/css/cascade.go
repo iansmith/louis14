@@ -272,10 +272,18 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 		style.Set("overflow", "hidden")
 	case "button":
+		// Blink's <button> is an inline flex container with cross-axis centering
+		// (align-items:center) and start-aligned main-axis content
+		// (justify-content defaults to flex-start). Horizontal centering of text
+		// content is handled separately by text-align:center below.
+		// Mirrors third_party/blink/renderer/core/html/forms/html_button_element.cc
+		// and the UA defaults in third_party/blink/renderer/core/html/resources/html.css.
 		if _, ok := style.Get("display"); !ok {
-			style.Set("display", "inline-block")
+			style.Set("display", "inline-flex")
 		}
-		// UA uses border-box sizing (matches real browser UA stylesheets)
+		if _, ok := style.Get("align-items"); !ok {
+			style.Set("align-items", "center")
+		}
 		style.Set("box-sizing", "border-box")
 		setFormPadding(style, "1px", "6px", "1px", "6px")
 		setFormBorder(style, "2px", "solid", "#767676")

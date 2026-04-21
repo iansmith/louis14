@@ -1798,11 +1798,17 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			if len(absoluteCandidates) > 0 {
+				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
+				// CB size = padding-box = content + padding (borders excluded).
 				oofPart := &OutOfFlowLayoutPart{
 					ctx:                 fla.ctx,
 					containingBlockWDM:  wdm,
-					containingBlockSize: LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize},
-					geom:                geom,
+					containingBlockSize: LogicalSize{
+						InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
+						BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
+					},
+					containingBlockPadding: geom.Padding,
+					geom:                   geom,
 				}
 				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
 					fixedCandidates = append(fixedCandidates, extra...)
