@@ -1044,7 +1044,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		if lastRowBaseline > 0 {
 			builder.SetLastBaseline(borderPaddingStart + lastRowBlockOffset + lastRowBaseline)
 		} else if firstRowHeight > 0 {
-			builder.SetLastBaseline(borderPaddingStart + firstRowHeight/2)
+			// No row has a text-alignment baseline (e.g., cells contain
+			// only non-text blocks). CSS 2.1 §10.8.1 requires a synthesized
+			// baseline at the content-box block-end for inline-block/atomic
+			// inline baseline alignment — otherwise a block wrapping the
+			// table propagates a mid-table baseline up to its enclosing
+			// inline-block, shifting the line box below it. Mirrors Blink's
+			// LayoutBox::SynthesizedBaselineFromContentBox fallback when
+			// LastBaselineForInlineBlock returns nullopt.
+			builder.SetLastBaseline(borderPaddingStart + finalBlockSize)
 		}
 	}
 
