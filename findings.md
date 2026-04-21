@@ -163,6 +163,21 @@ Audit of our current OOF sizing path (`pkg/layout/out_of_flow_layout.go:82-337`)
 - `OutOfFlowCandidate` struct (`out_of_flow_layout.go:9-28`) — add `Alignment LogicalAlignment`.
 - Candidate-creation sites: `block_layout.go:245-253` (block-level default: kStart/kStart), plus flex/grid sites that currently exist but don't propagate alignment. Grid/flex must set `StaticEdgeCenter` when parent uses center alignment per the flex static-position spec.
 
+#### Phase 4 Commit 2 landing (2026-04-21, commit `d9f6628b`)
+
+Wire-up complete. Closed 4 of 5 G-ABS-CENTER tests — `position-absolute-center-001/003/004/006` — all at 0 pixel diff. Residual: `position-absolute-center-002` (vertical-rl abspos inside column flex with align-items:center; 0.8% diff); `position-absolute-center-007` (`display:table` + both block insets + auto margins inside a `margin-top:-50px` wrapper; 2.1% diff). Both pushed to Commit 3.
+
+**What shipped in Commit 2:**
+1. `layoutCandidatesOnce` now uses `ComputeUnclampedIMCB` → `ComputeMargins` → `ComputeInsets`. Static positions shifted into CB-padding-box (`+ containingBlockPadding.Start`) on input and back to CB-content-box on output (`- containingBlockPadding.Start`). IMCB size feeds percentage resolution inside the constraint space build.
+2. Pre-layout fixed-size (both axes) when both insets specified and the child's size is auto: `IMCB.size - non-auto-margins - child-BP`.
+3. `OutOfFlowCandidate.Alignment LogicalAlignment` added. Zero value (ItemPositionNormal) yields BiasStart — preserves behavior for sites that don't yet populate it (block, grid, inline, table).
+4. Flex OOF capture derives `StaticPosition.InlineEdge` / `.BlockEdge` from the container's `justify-content` (main) + `align-items` (cross) via new `flexOOFStaticMain` / `flexOOFStaticCross` helpers. Main→inline/block mapping is row-vs-column.
+5. `absolute_utils.go` both-auto BiasEqual branch arms `defaultInsetBias = BiasStart` so overflowing centered abspos snap to the start edge (Blink parity).
+6. `ComputeUnclampedIMCB` propagates a static-center overflow flag (both insets auto + `StaticEdgeCenter`) into `InsetModifiedContainingBlock.InlineHasDefaultAlignmentOverflow` / `BlockHasDefaultAlignmentOverflow` so the default-overflow fallback fires for statics too, not just alignment.
+7. Indefinite-cbBlock fallback preserves per-case formulas for the block axis when IMCB math isn't meaningful.
+
+**Deferred to Commit 3.** `center-002`: probe vertical-rl cross-axis sizing under column flex — suspect `flexOOFStaticCross` misses a writing-mode conversion between the container's align-items axis (parent WDM) and the child's abspos static-edge axis (child WDM). `center-007`: probe `display:table` intrinsic sizing — `width:100px` is specified but block-axis is intrinsic; verify that IMCB's both-insets-specified + auto-block path passes through to the child with the correct available-block so table sizing picks 100px.
+
 ### G-CB-CHANGE — 3 tests — **Phase 2 audit invalidated the grouping (2026-04-21)**
 ```
 containing-block-change-scrollframe.html               10.4%
@@ -316,6 +331,14 @@ When a fixed-pos ancestor moves via JS, step 1 naturally picks up the new value 
 
 **Prerequisite chain:** G-DYN-STATIC (rebuild static position) → G-ABS-CENTER (IMCB+alignment) → G-HYPO (both-auto-insets branch). If IMCB lands first the hypothetical tests may already pass; re-check before starting Phase 4.
 
+#### Phase 4 Commit 2 results (2026-04-21, commit `d9f6628b`)
+
+`hypothetical-dynamic-change-001` and `-002` now PASS at 0 pixel diff. Closed by two changes in Commit 2, not by the IMCB port alone:
+- Flex container's `justify-content: center` + `align-items: center` now populate `StaticPosition.InlineEdge`/`BlockEdge` on propagated OOF candidates (was `StaticEdgeStart`).
+- Propagated OOF candidates from a laid-out OOF ancestor had their `StaticPosition.Offset` in the ancestor's content-box coordinates, but `layoutCandidatesOnce` was re-adding them to the worklist without translating to the CB's content-box. Fix: shift by `(finalInlineOffset + parentBP.InlineStart, finalBlockOffset + parentBP.BlockStart)` — mirrors `block_layout.go`'s `PropagateOOFCandidates`.
+
+**Residual: `hypothetical-dynamic-change-003` (4.2%).** Different root cause — `position: relative` ancestor's visual `left:100px` must propagate into the fixed descendant's static position when the descendant is OOF-resolved at the ICB. Today our normal-flow capture records the relative ancestor's in-flow position (0, 0); the relative offset is applied at paint time via `fragment.RelativeOffset` and never reaches the OOF worklist. Blink computes the "accumulated container offset" during `PropagateOOFPositionedInfo` and includes the ancestor's relative translation. **Fix scope:** during OOF propagation in `block_layout.go` `PropagateOOFCandidates`, when the containing `childResult.Fragment` has a non-zero `RelativeOffset`, add that offset (in parent's logical axes) to `adj.StaticPosition.Offset` before appending. Pushed to Commit 3.
+
 ### G-ROOT-FLEX-GRID — 4 tests
 ```
 position-fixed-root-element-flex.html    0.8%
@@ -457,22 +480,22 @@ Mixed shapes; likely several independent root causes. Sweep last.
 **Note:** `position-relative-011/012/013` are table-related (`%-top` on `<tr>`/`<tbody>`/`<td>` under position:relative) — they may share a root cause with G-TABLE-REL. If so, closing Phase 1 may also close them. Verify in Phase 1's regression sweep.
 
 ## Super-cluster counts
-Updated 2026-04-21 post Phase 3 (full G-DYN-STATIC closed). G-CB-CHANGE was dissolved; tests redistributed.
+Updated 2026-04-21 post Phase 4 Commit 2 (IMCB wire-up + flex alignment capture + propagated-OOF coordinate translation).
 
 | Cluster | Status | Closed | Remaining | Cumulative passing |
 |---|---|---|---|---|
 | G-TABLE-REL | DONE (Phase 1) | 11 + position-relative-012 | 8 `-absolute-child` (moved to G-ABS-IN-INLINE/TABLE) | 62 |
 | G-FIXED | Part A done (Phase 5a) | 1 | 1 (paint-clip residual, → G-SCROLL) | — |
-| G-DYN-STATIC | **DONE (Phase 3)** | 6 | 0 | **68** |
-| G-ABS-CENTER | open | 0 | 5 | — |
-| G-HYPO | open | 0 | 3 + 2 NORUN | — |
+| G-DYN-STATIC | DONE (Phase 3) | 6 | 0 | 68 |
+| G-ABS-CENTER | **Phase 4 Commit 2 partial** | 4 | 1 (`center-002` vertical-rl, `center-007` display:table → Commit 3) | 72 |
+| G-HYPO | **Phase 4 Commit 2 partial** | 2 | 1 (`hypothetical-003` relative-offset propagation) + 2 NORUN | **74** |
 | G-ROOT-FLEX-GRID | open | 0 | 4 | — |
 | G-ABS-IN-INLINE | open | 0 | 2 + 8 table abs-child variants | — |
 | G-STICKY | open | 0 | 1 | — |
 | G-REPLACED | open | 0 | 1 | — |
-| G-SCROLL | open (new) | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
+| G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
 | G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **18** | **36 (+ 4 SKIPs out of scope)** | **68 / 100 runnable** |
+| **Total** | — | **24** | **30 (+ 4 SKIPs out of scope)** | **74 / 100 runnable** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -483,7 +506,7 @@ Updated 2026-04-21 post Phase 3 (full G-DYN-STATIC closed). G-CB-CHANGE was diss
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **68 PASS / 36 FAIL** | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **74 PASS / 30 FAIL** (post Phase 4 Commit 2) | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |
@@ -498,6 +521,16 @@ Updated 2026-04-21 post Phase 3 (full G-DYN-STATIC closed). G-CB-CHANGE was diss
 | Preserve wm invariants as hard gate | Phase 5f complete; any wm regression reverts the offending commit. |
 
 ## Issues Encountered (for this category)
+
+### IMCB center-clipping default-overflow must fire for statics too (fixed 2026-04-21)
+Phase 4 Commit 2 debugging, `position-absolute-center-001`. After wiring up the IMCB the test still failed at 0.4% — the 100px-wide abspos inside a 40px flex main-size landed at `(freeSpace / 2)` instead of the start edge. Blink's center-clipping collapse `2 × min(static, cb − static)` produces a zero-size IMCB for this case (static=20, cb=40 → 2×20=40, then clipped-symmetric gives 0 because the child overflows by 60). The BiasEqual branch then split the remaining negative free space equally, centering the overflow — wrong.
+
+Fix: the both-auto BiasEqual branch now emits `defaultOut, hasDefaultOut = BiasStart, true`, and `ComputeUnclampedIMCB` propagates a static-center overflow flag so the default-overflow fallback in `ComputeInsets` fires whenever `StaticEdgeCenter` is the static bias and both insets are auto — not only when alignment is center. Mirrors Blink's arm-the-fallback-on-any-center-source behavior.
+
+### Propagated OOFs from an ancestor OOF need coordinate translation (fixed 2026-04-21)
+Phase 4 Commit 2 debugging, `hypothetical-dynamic-change-001`. When `LayoutCandidates` lays out an OOF ancestor (e.g. a fixed container), the child's normal-flow pass produces `PropagatedOOFCandidates` whose `StaticPosition.Offset` is in the ancestor's content-box coordinates. `layoutCandidatesOnce` was appending them to the worklist as-is, so they'd be re-processed as if they were already in the CB's content-box — placing the descendant at the ancestor's origin instead of at the ancestor's resolved position within the CB.
+
+Fix: drain moved to after `finalInlineOffset` / `finalBlockOffset` are computed. Each propagated candidate's offset is shifted by `(finalInlineOffset + parentBP.InlineStart, finalBlockOffset + parentBP.BlockStart)`. Cross-WM physical round-trip applied when `childWDM != wdm`. Mirrors `block_layout.go`'s `PropagateOOFCandidates` — same invariant (candidate static positions are always CB-content-box-relative on the worklist).
 
 ### Transform parser — percent-vs-length sign-sentinel collision (fixed 2026-04-21)
 While debugging Phase 3(c) (`position-absolute-dynamic-static-position-table-cell`) I confirmed via instrumentation that layout was correct (static block-offset = 50, no positioning insets). Pixel-scanning the test output showed the target rendering 100px *below* its expected location — the translate `0 -50px` was being applied as `+50px`.
