@@ -495,28 +495,33 @@ position-absolute-replaced-no-intrinsic-size.tentative.html   2.1% → 0%
 
 **Fix.** Extend the `stretchable` gate in `out_of_flow_layout.go` with an `isReplacedElement(child.DOMNode)` check. 7 LOC. Replaced layout then resolves 100×100 (width:100px + 1:1 viewBox ratio), and auto-margins put the 100px leftover block-axis space at 50/50 → image at y=50 within the 200px CB, matching the ref's centered 100×100 square.
 
-### G-SINGLETONS — 11 tests (includes 3 NORUN)
+### G-SINGLETONS — 11 tests (5 CLOSED Phase 9 first landing `a7e79598`, 5 runnable open, 1 NORUN + 3 NORUN originally)
 ```
-position-relative-001.html                          1.0%  non-table % top/left
-position-relative-002.html                          1.0%
-position-relative-011.html                          0.4%  tbody %-top shouldn't resolve
-position-relative-012.html                          0.4%  tbody position:relative + top:100%
-position-relative-013.html                          0.4%  td position:relative + top:100%
-stack-floats-001.xht                                1.7%  CSS 2.1 §9.9 stacking order
-position-absolute-iframe-print-001.sub.html         0.3%  abspos iframe in pagination
-position-absolute-iframe-print-002.sub.html         0.3%
-clear-001.xht                                       0.0%  96 px; CSS 2.1 §9.5 clear
-position-absolute-dynamic-list-marker.html          0.0%  18 px; ::marker + abspos
-position-change.html                                NORUN
-replaced-object-backdrop.html                       NORUN
-position-absolute-multicol-001.html                 NORUN
+position-relative-001.html                          1.0% → 0%   CLOSED (block-in-inline %-top/left)
+position-relative-002.html                          1.0% → 0%   CLOSED
+position-relative-011.html                          0.4% → 0%   CLOSED (%-top on tbody under position:relative)
+position-relative-012.html                          0.4% → 0%   CLOSED (already passed — Phase 1 regression check)
+position-relative-013.html                          0.4% → 0%   CLOSED (%-top on td under position:relative)
+stack-floats-001.xht                                1.7%        OPEN  CSS 2.1 §9.9 float/inline stacking order bug
+position-absolute-iframe-print-001.sub.html         0.3%        OPEN  cross-origin iframe content (WPT {{hosts}} subst)
+position-absolute-iframe-print-002.sub.html         0.3%        OPEN
+clear-001.xht                                       0.0% 96 px  OPEN  height:1in renders 96+96; ref hardcodes 97+95 (Blink subpixel quirk)
+position-absolute-dynamic-list-marker.html          0.0% 18 px  OPEN  `::marker` pseudo-element not honored (black bullet visible)
+containing-block-change-button.html                 4.2%        OPEN  native `<button>` content vertical-centering not implemented
+position-change.html                                NORUN       OPEN  HTML parser bails on `expected '>' but reached EOF`
+replaced-object-backdrop.html                       NORUN       OUT OF SCOPE
+position-absolute-multicol-001.html                 NORUN       OUT OF SCOPE
 ```
-Mixed shapes; likely several independent root causes. Sweep last.
 
-**Note:** `position-relative-011/012/013` are table-related (`%-top` on `<tr>`/`<tbody>`/`<td>` under position:relative) — they may share a root cause with G-TABLE-REL. If so, closing Phase 1 may also close them. Verify in Phase 1's regression sweep.
+Phase 9 first-landing fixes (commit `a7e79598`):
+1. `NewBlockifiedStyle` (`pkg/css/cascade.go`) now preserves `position` + `top/right/bottom/left` when a block-in-inline split collapses to a single anonymous wrapper.
+2. Anonymous auto-height block wrappers (`pkg/layout/block_layout.go` `childPercResolutionBlockSize`) propagate the parent's `PercentageResolutionSize.BlockSize` instead of resetting to 0.
+3. Table cell constraint space (`pkg/layout/table_layout.go` cellSpace builder) carries the row's SPECIFIED block-size as its percentage-resolution block size; table row `RelativeOffset` is pre-computed against row-group's SPECIFIED block-size before the main table builder's AddChild auto-compute. Mirrors Blink's chromium bug 1227884 fix (%-insets on `position:relative` table internals resolve against specified, not distributed/used, parent height).
+
+Remaining 5 runnable G-SINGLETONS each have independent root causes — see Phase 9 section of `task_plan.md` for per-test triage notes.
 
 ## Super-cluster counts
-Updated 2026-04-21 post Phase 8 (abs-replaced non-stretch via `out_of_flow_layout.go` gate).
+Updated 2026-04-21 post Phase 9 first landing (relpos percent insets via commit `a7e79598`).
 
 | Cluster | Status | Closed | Remaining | Cumulative passing |
 |---|---|---|---|---|
@@ -530,8 +535,8 @@ Updated 2026-04-21 post Phase 8 (abs-replaced non-stretch via `out_of_flow_layou
 | G-STICKY | **DONE (Phase 7)** | 1 | 0 | **84** |
 | G-REPLACED | **DONE (Phase 8)** | 1 | 0 | **85** |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
-| G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **35** | **22 (+ 4 SKIPs out of scope)** | **85 / 100 runnable** |
+| G-SINGLETONS | **Phase 9 first landing** | 5 (`position-relative-001/002/011/012/013`) | 5 runnable (`stack-floats-001`, `iframe-print-001/002`, `clear-001`, `dynamic-list-marker`, `containing-block-change-button`) + 1 `position-change` parser + 2 NORUN out of scope | **90** |
+| **Total** | — | **40** | **17 (+ 4 SKIPs out of scope)** | **90 / 100 runnable** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
