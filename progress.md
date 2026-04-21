@@ -70,6 +70,10 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-21 | css-position (post Phase 3(c)) | 68 | 36 | — | +1 vs 62 baseline (target test). |
 | 2026-04-21 | css-transforms (post Phase 3(c) transform parser fix) | 171 | 210 | — | +9 vs 162 baseline (percent-sentinel fix unlocks other translate cases). |
 | 2026-04-21 | css-flexbox (post Phase 3(c)) | 626 | 3 | 0 | No regression. Same 3 pre-existing failures. |
+| 2026-04-21 | css-position (post Phase 4 Commit 2 IMCB wire-up) | 74 | 30 | — | +6 vs 68. Closes 4 G-ABS-CENTER (001/003/004/006) + 2 G-HYPO (hypothetical-dynamic-change-001/002). Residual: center-002, center-007, hypothetical-003 → Commit 3. |
+| 2026-04-21 | css-writing-modes (post Commit 2) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post Commit 2) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | css-flexbox (post Commit 2) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |
@@ -227,17 +231,30 @@ Ported Blink's `absolute_utils.cc` IMCB machinery at type/function parity. New `
 
 Gates: no existing callers modified; no integration with layout engine yet. wm / CSS2 / flex all unchanged (module is dead code pending Commit 2). Pre-existing `TestBlockLayout_FloatLeft` failure in `exclusion_space_test.go` is unrelated (confirmed by running before `absolute_utils.go` was created).
 
-### Next — Phase 4 Commit 2
-Wire OOF resolver + alignment: add `ComputeOofInlineDimensions`/`ComputeOofBlockDimensions` to `absolute_utils.go`; extend `OutOfFlowCandidate` with `Alignment LogicalAlignment`; rewrite `out_of_flow_layout.go:132-310` to use IMCB (fixing the latent bug where raw CB size is passed to `SetPercentageResolutionSize`); populate `Alignment` at block/flex/grid candidate sites; set `StaticEdgeCenter` for flex/grid-centered candidates. Gate: wm 781/781, CSS2 99/99, flex ≥621. Target: close 5 G-ABS-CENTER + 3 G-HYPO.
+### Phase 4 Commit 2 — wire OOF resolver with IMCB (in flight 2026-04-21)
+Rewrote `OutOfFlowLayoutPart.layoutCandidatesOnce` to use the IMCB module from Commit 1:
+- Static position shifted into CB-padding-box on input and back to CB-content-box on output.
+- Pre-layout fixed-size when both insets specified + auto size; otherwise pass through and let the child size itself.
+- Post-layout resolution via `ComputeMargins` + `ComputeInsets`, reading IMCB's default / safe / alignment biases.
+- `cbBlock != Indefinite` guard — block axis falls back to simple per-case formulas when IMCB math isn't meaningful.
+- `OutOfFlowCandidate.Alignment LogicalAlignment` added (zero-value BiasStart → backwards-compatible).
+- Flex OOF static-edge derived from parent's `justify-content` / `align-items` via new `flexOOFStaticMain` / `flexOOFStaticCross` helpers.
+- Added `defaultInsetBias = BiasStart` in `absolute_utils.go`'s both-auto BiasEqual branch (Blink-parity: overflow-centered abspos snaps to start).
+- `ComputeUnclampedIMCB` now propagates a static-center overflow flag so the default-overflow fallback fires for uncentered statics too.
+- Propagated OOF candidates from a laid-out OOF ancestor get their static positions translated from the ancestor's content-box into the CB's content-box (new drain at end of per-candidate loop, with cross-WM physical round-trip). Mirrors `block_layout.go` `PropagateOOFCandidates`.
+
+**Verification:** css-position **68 → 74** (+6 of 8 targets closed). Closed: `position-absolute-center-001/003/004/006` (G-ABS-CENTER), `hypothetical-dynamic-change-001/002` (G-HYPO). Residual (3) pushed to Commit 3 — see `task_plan.md` Phase 4 Commit 2 entry.
+
+**Gates:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓ (0 regression). Pre-existing `TestBlockLayout_FloatLeft` unit test failure confirmed unrelated (stashed + reproduced).
 
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | css-position category, **68/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 (G-CB-CHANGE) dissolved; Phase 3 (G-DYN-STATIC) DONE; Phase 5 G-FIXED Part A DONE. **Phase 4 Commit 1 (pure IMCB module) landed as `a3c8db38`** — Commit 2 (wire resolver + alignment) next. |
+| Where am I? | css-position category, **74/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 dissolved; Phase 3 (G-DYN-STATIC) DONE; Phase 5 G-FIXED Part A DONE. **Phase 4 Commit 1 landed (`a3c8db38`). Phase 4 Commit 2 (IMCB wire-up + flex alignment + propagated-OOF translation) staged** — closes 6 of 8 targets (001/003/004/006, hypothetical-001/002). Remaining 3 residuals → Commit 3. |
 | Where am I going? | 100/100 runnable css-position at 0 diff (4 SKIPs out of scope for layout plan). |
 | What's the goal? | All runnable css-position tests at 0 diff; wm 781/781, CSS2 99/99, flex ≥621 must hold. |
 | What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block's LastBaseline must originate from a line-box descendant. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only and turned out to be a no-op for our harness (we already do fresh re-layout post-JS). **OOF resolution must be re-entrant** (Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`): after laying out an OOF child, drain `PropagatedOOFCandidates` and continue resolving. ICB / containment / transform CB sites absorb fixed; ordinary positioned sites return unresolved fixed to caller. **Orphan `display:table-cell` bypasses `table_layout.go`** — falls through to `block_layout.go` via unimplemented reverse §17.2.1 anonymous-table generation; needs its own vertical-align handling at the block-layout site. **Transform parser must not use sign as a percent/length sentinel** — negative pixel lengths encode negatively and will be misread as percent. Use explicit `IsPercent []bool`. |
-| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. **Phase 3 G-DYN-STATIC closed (6/6)** — commits `233d408f` (a), `d250c5cf` (b)+(d), `5399d328` (c) landing orphan-cell vertical-align + transform percent-sentinel fix. **Phase 4 Commit 1 landed** — commit `a3c8db38`, pure IMCB module (`pkg/layout/absolute_utils.go` + 16 passing unit tests) ported at Blink type/function parity. No wiring yet. Net: 50 → 68 PASS. wm 781/781, CSS2 99/99, flex 626/629 all gates held. Bonus +9 in css-transforms from the percent-sentinel fix. |
+| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. **Phase 3 G-DYN-STATIC closed (6/6)** — commits `233d408f` (a), `d250c5cf` (b)+(d), `5399d328` (c) landing orphan-cell vertical-align + transform percent-sentinel fix. **Phase 4 Commit 1 landed** — commit `a3c8db38`, pure IMCB module. **Phase 4 Commit 2 staged** — OOF resolver rewritten to use IMCB + `ComputeMargins` + `ComputeInsets`, `OutOfFlowCandidate.Alignment` field added, flex candidate sites now populate `StaticPosition` from `justify-content`/`align-items`, propagated-OOF coordinate translation fix, overflow-centered abspos snaps to start. Closes 6 of 8 Phase 4 targets (4 G-ABS-CENTER + 2 G-HYPO). Net: 50 → 74 PASS. wm 781/781, CSS2 99/99, flex 626/629 all gates held. Bonus +9 in css-transforms from the Phase 3(c) percent-sentinel fix. |
 
 ## Error Log
 *(populated as work progresses)*

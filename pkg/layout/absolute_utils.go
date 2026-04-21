@@ -328,6 +328,12 @@ func ComputeUnclampedIMCBInOneAxis(
 			}
 			imcbStart = staticPositionOffset - half
 			imcbEnd = availableSize - staticPositionOffset - half
+			// Mirrors Blink: when the static edge is kCenter and the box
+			// overflows the center-clipped IMCB, snap to the start edge
+			// instead of splitting negative free space equally. The caller
+			// consults hasDefaultAlignmentOverflow on the IMCB struct to
+			// arm this fallback; we surface the default bias here.
+			defaultOut, hasDefaultOut = BiasStart, true
 		case BiasEnd:
 			// |<------------*|
 			imcbStart = 0
@@ -423,12 +429,20 @@ func ComputeUnclampedIMCB(
 	blockAlignBias, blockHasOverflow, blockDef, blockHasDef, blockSafe, blockHasSafe :=
 		GetAlignmentInsetBias(alignment.BlockAlignment, containerWDM, selfWDM, false)
 
+	// Static-position center (both-auto branch) also arms overflow fallback —
+	// ComputeUnclampedIMCBInOneAxis surfaces a default bias in that case but
+	// the overflow-armed flag lives on the IMCB struct and is OR'd in here.
+	inlineStaticCenter := !insets.HasInlineStart && !insets.HasInlineEnd &&
+		staticInlineBias == BiasEqual
+	blockStaticCenter := !insets.HasBlockStart && !insets.HasBlockEnd &&
+		staticBlockBias == BiasEqual
+
 	imcb := InsetModifiedContainingBlock{
 		AvailableSize:                     availableSize,
 		HasAutoInlineInset:                !insets.HasInlineStart || !insets.HasInlineEnd,
 		HasAutoBlockInset:                 !insets.HasBlockStart || !insets.HasBlockEnd,
-		InlineHasDefaultAlignmentOverflow: inlineHasOverflow,
-		BlockHasDefaultAlignmentOverflow:  blockHasOverflow,
+		InlineHasDefaultAlignmentOverflow: inlineHasOverflow || inlineStaticCenter,
+		BlockHasDefaultAlignmentOverflow:  blockHasOverflow || blockStaticCenter,
 	}
 
 	imcb.InlineStart, imcb.InlineEnd,

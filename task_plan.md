@@ -157,13 +157,17 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] `absolute_utils_test.go`: 16 unit tests — three IMCB branches, ResizeIMCB, ComputeMargins, GetAlignmentInsetBias, ComputeInsets end-overflow fallback. All pass.
 - [x] **Gate:** compiles; 16/16 new unit tests pass; no wm/CSS2/flex impact (dead code pending Commit 2).
 
-#### Commit 2 — Wire resolver + alignment (Blink-parity behavior change)
-- [ ] `out_of_flow_layout.go:132-310`: replace inline constraint-equation code with `ComputeOofInlineDimensions` + `ComputeOofBlockDimensions`.
-- [ ] Pass IMCB size (not raw CB size) to `SetPercentageResolutionSize` (line 202-206).
-- [ ] Extend `OutOfFlowCandidate` with `Alignment LogicalAlignment`; read `align-self` / `justify-self` on the child at candidate-creation sites in `block_layout.go`, `flex_layout.go`, `grid_layout.go`.
-- [ ] Flex/grid candidate sites: when parent has `justify-content: center` (or child has `justify-self: center`), set `InlineEdge: StaticEdgeCenter`. Symmetric for block axis / `align-*`.
-- [ ] Thread `LogicalAlignment` through `ComputeUnclampedIMCB` so the kEqual branch is reachable.
-- [ ] **Gate:** wm 781/781, CSS2 99/99, flex ≥621, css-transforms ≥171. Run 5 G-ABS-CENTER + 3 G-HYPO representatives — expect all 8 to close. css-position: 68 → ~76.
+#### Commit 2 — Wire resolver + alignment (Blink-parity behavior change) — **landed 2026-04-21**
+- [x] `out_of_flow_layout.go` `layoutCandidatesOnce`: rewritten to use `ComputeUnclampedIMCB` + `ComputeMargins` + `ComputeInsets`. Static position shifted into CB-padding-box on input (`+ containingBlockPadding.Start`) and back to CB-content-box on output (`- containingBlockPadding.Start`).
+- [x] Pre-layout fixed-size on both axes when both insets specified + child size is auto: `IMCB.size - non-auto-margins - child-BP`.
+- [x] Indefinite-cbBlock fallback (preserves prior per-case formulas for the block axis when IMCB math isn't meaningful).
+- [x] `OutOfFlowCandidate.Alignment LogicalAlignment` field added; zero value (ItemPositionNormal) yields BiasStart → compatibility with existing callers that don't populate it yet.
+- [x] Flex OOF static-edge derived from parent's `justify-content` (main) + `align-items` (cross) via new helpers `flexOOFStaticMain` / `flexOOFStaticCross`. Mapped back to inline/block based on row-vs-column. (`flex_layout.go`.)
+- [x] `absolute_utils.go` both-auto `BiasEqual` branch arms `defaultInsetBias = BiasStart` so the default-overflow fallback snaps centered abspos to the start edge when overflowing (mirrors Blink).
+- [x] `ComputeUnclampedIMCB` propagates static-center overflow flag (both insets auto + `StaticEdgeCenter`) into `InsetModifiedContainingBlock.InlineHasDefaultAlignmentOverflow` / `BlockHasDefaultAlignmentOverflow`.
+- [x] Propagated OOF candidates from a laid-out OOF ancestor: coordinate-translate their `StaticPosition.Offset` from the ancestor's content-box into the CB's content-box (add `finalInlineOffset + parentBP.InlineStart`, symmetric for block). Cross-WM physical-round-trip when `childWDM != wdm`. Mirrors `block_layout.go` `PropagateOOFCandidates`.
+- [x] **Gate:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓ (+0 vs post-Phase-3 baseline). css-position **68 → 74** (+6). Closes `position-absolute-center-001/003/004/006` (G-ABS-CENTER) + `hypothetical-dynamic-change-001/002` (G-HYPO).
+- [ ] Residual (3 of 8 targets) pushed to Commit 3: `position-absolute-center-002` (vertical-rl + column flex + align-items:center), `position-absolute-center-007` (`display:table` with auto margins + both insets + `margin-top:-50px`), `hypothetical-dynamic-change-003` (position:relative ancestor's left-offset must propagate into fixed descendant's static position).
 
 #### Commit 3 — Triage
 - [ ] Whatever the 8 tests reveal that isn't covered by the pure port. Likely small integration-specific quirks (e.g., block-FC hypothetical-inline-box line-start computation). Fix in scope; do not expand to other G-* groups.

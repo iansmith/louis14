@@ -1971,12 +1971,31 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		}
 		pos := childStyle.GetPosition()
 		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			// Mirrors Blink's LayoutFlexibleBox::PrepareChildForPositionedLayout:
+			// the static position of an OOF flex-child is where it would have
+			// been placed if in-flow, derived from the container's
+			// justify-content (main) and align-items (cross) values. The OOF
+			// resolver reads the edge annotation and drives IMCB center-
+			// clipping / start-end pinning off of it.
+			mainEdge, mainOff := flexOOFStaticMain(
+				fla.getJustifyContent(), containerMainSize, hasDefiniteMain)
+			crossEdge, crossOff := flexOOFStaticCross(
+				fla.getAlignItems(), containerCrossSize, hasDefiniteCross)
+			var inlineEdge, blockEdge StaticPositionEdge
+			var inlineOff, blockOff float64
+			if isRow {
+				inlineEdge, inlineOff = mainEdge, mainOff
+				blockEdge, blockOff = crossEdge, crossOff
+			} else {
+				blockEdge, blockOff = mainEdge, mainOff
+				inlineEdge, inlineOff = crossEdge, crossOff
+			}
 			builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 				Node: child,
 				StaticPosition: LogicalStaticPosition{
-					Offset:     LogicalOffset{InlineOffset: 0, BlockOffset: 0},
-					InlineEdge: StaticEdgeStart,
-					BlockEdge:  StaticEdgeStart,
+					Offset:     LogicalOffset{InlineOffset: inlineOff, BlockOffset: blockOff},
+					InlineEdge: inlineEdge,
+					BlockEdge:  blockEdge,
 				},
 				IsFixedPosition: pos == css.PositionFixed,
 			})
@@ -3776,6 +3795,48 @@ func stripOverflowKeyword(v string) string {
 // the alignment container, it is aligned as if the alignment mode were "start".
 func hasOverflowSafe(v string) bool {
 	return strings.HasPrefix(strings.TrimSpace(v), "safe ")
+}
+
+// flexOOFStaticMain maps the container's resolved justify-content to a
+// (StaticPositionEdge, offset-in-content-box) pair along the main axis.
+// Only the "packing" values collapse to a single point; the distributed
+// values (space-between / space-around / space-evenly) behave as start
+// for a single item, matching Blink.
+//
+// If the main size is indefinite (column flex with auto block-size in an
+// indefinite parent), the static offset falls back to (start, 0) — there is
+// no meaningful center/end coordinate.
+func flexOOFStaticMain(jc string, mainSize float64, hasDefiniteMain bool) (StaticPositionEdge, float64) {
+	if !hasDefiniteMain {
+		return StaticEdgeStart, 0
+	}
+	switch jc {
+	case "center":
+		return StaticEdgeCenter, mainSize / 2
+	case "flex-end", "end", "right":
+		return StaticEdgeEnd, mainSize
+	default:
+		return StaticEdgeStart, 0
+	}
+}
+
+// flexOOFStaticCross maps the container's align-items to (edge, offset) on
+// the cross axis. Mirrors the same rules as flexOOFStaticMain but reads
+// align-items values. "stretch" (default) and "baseline" fall through to
+// start — the OOF cannot stretch its own cross-size, so there's no coherent
+// center/end point for those keywords.
+func flexOOFStaticCross(ai string, crossSize float64, hasDefiniteCross bool) (StaticPositionEdge, float64) {
+	if !hasDefiniteCross {
+		return StaticEdgeStart, 0
+	}
+	switch ai {
+	case "center":
+		return StaticEdgeCenter, crossSize / 2
+	case "flex-end", "end", "self-end", "last baseline":
+		return StaticEdgeEnd, crossSize
+	default:
+		return StaticEdgeStart, 0
+	}
 }
 
 // getJustifyContent returns the justify-content value (default: "flex-start").
