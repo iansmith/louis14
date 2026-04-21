@@ -13,7 +13,13 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 3 G-DYN-STATIC Part (a) — inline-FC static-position split landed 2026-04-21.** `inline_layout.go` now splits OOF candidate capture by child's specified display: inline-level abspos captures at `(inlinePos, blockOffset)`; block-level abspos with prior in-flow content on the line captures at `(0, blockOffset + lineHeight)` after the line box finalises; block-level abspos with no prior in-flow content on the line captures at `(0, blockOffset)` immediately. Mirrors Blink's `InlineLayoutAlgorithm::HandleOutOfFlowPositioned` reading `line_box_.LineBoxBlockEnd()` at the point of encounter. New helper `isInlineLevelDisplay` mirrors `ComputedStyle::IsOriginalDisplayInlineType`. Closes `position-absolute-dynamic-static-position-inline` (2.1% → 0% PASS). wm 781/781 ✓, CSS2 99/99 ✓ (regression gate held after the `hasInflowOnLine` refinement — an earlier unconditional `(0, lineEnd)` capture regressed 4 orthogonal-float wm tests that place block-level abspos as the first child of their inline FC).
+**Phase 3 G-DYN-STATIC Parts (a)+(b)+(d) — landed 2026-04-21.** 5 of 6 G-DYN-STATIC tests now PASS (inline + floats-001/002/003/004). Only `table-cell` remains (task (c)).
+
+- **Part (a) `inline_layout.go`** splits `InlineItemOutOfFlow` capture by specified display: inline-level → `(inlinePos, blockOffset)`; block-level with prior in-flow on the line → `(0, blockOffset + lineHeight)` at end-of-line; block-level with no prior in-flow → `(0, blockOffset)` immediately. Mirrors Blink's `InlineLayoutAlgorithm::HandleOutOfFlowPositioned` reading `line_box_.LineBoxBlockEnd()` at time-of-encounter. New helper `isInlineLevelDisplay` mirrors `ComputedStyle::IsOriginalDisplayInlineType`. Closes `inline` (2.1% → 0%).
+- **Part (b) `block_layout.go`** detects inline-level abspos (`isInlineLevelDisplay(childStyle.GetDisplay())`) and queries `exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)`; uses the returned inline-start offset directly as `InlineOffset`. Closes `floats-001/002/003/004`.
+- **Part (d) RTL** closed incidentally by (b) — `ExclusionSpace` already uses `PhysicalFloatToExclusionSide`-normalised sides, so `FindAvailableInlineSize` is direction-agnostic. `floats-004` (RTL) passes without any dedicated RTL capture logic.
+
+Gates: wm 781/781 ✓, CSS2 99/99 ✓ after both (a) and (b). (a)'s `hasInflowOnLine` refinement was necessary to avoid a 4-test regression in orthogonal-float wm tests whose reference HTML places a block-level abspos as the first child of an inline FC.
 
 **Phase 5 G-FIXED Part A — OOF resolver re-entrance landed 2026-04-21.** `OutOfFlowLayoutPart.LayoutCandidates` rewritten as a worklist loop (mirroring Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`), now consumes `childResult.PropagatedOOFCandidates` from each laid-out OOF candidate. Added `resolvesFixed bool` on the part to select ICB / containment / transform CB sites that absorb fixed; ordinary positioned sites return unresolved fixed to caller for further propagation. Updated all 7 call sites (block, flex, grid, multicol, table). Closes `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0% PASS); reduces `position-fixed-scroll-nested-fixed` from 4.2% → 1.0% (residual is paint-clip / scrollTop, deferred to G-SCROLL). Net: css-position **62 PASS / 42 FAIL** (was 50/54 at the 2026-04-21 baseline). wm 781/781 ✓, CSS2 ✓, flexbox 626/629 ✓ (no regression).
 
@@ -32,10 +38,7 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 - Known limitations: 8 `-absolute-child` variants still failing at 1.0–1.7% — abspos descendants in a positioned section/cell. Not Phase 1 scope; tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE.
 
 ### Next
-**Phase 3 remaining sub-fixes.** Part (a) is landed; the other 5 G-DYN-STATIC failures map cleanly:
-- `floats-001` (0.7%), `floats-002` (0.3%), `floats-003` (0.3%) → Part (b): block-FC float-aware inline offset for inline-level abspos.
-- `floats-004` (0.7%) → Part (d): RTL direction awareness on capture.
-- `table-cell` (2.1%) → Part (c): table-cell vertical-align for abspos static-position block-offset.
+**Phase 3 Part (c) only remaining.** `position-absolute-dynamic-static-position-table-cell` (2.1%) — abspos inside `display:table-cell; vertical-align:middle` with JS-applied `translate:0 -50px; top:auto`. Needs table-cell static-position capture to account for the cell's vertical-align offset.
 
 **G-FIXED Part B residual + adjacent groups** still outstanding. `position-fixed-scroll-nested-fixed` still fails at 1.0% — the inner fixed paints but is clipped by the outer `overflow:auto` and lacks `Element.scrollTop` honoring. Both belong to scroll/paint, not OOF layout. Defer until G-SCROLL is opened.
 
@@ -58,6 +61,9 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-21 | css-writing-modes (post Phase 3(a)) | 781 | 0 | 0 | Gate held. |
 | 2026-04-21 | CSS2 (post Phase 3(a)) | 99 | 0 | 0 | Gate held. |
 | 2026-04-21 | `position-absolute-dynamic-static-position-*` (10 tests, post Phase 3(a)) | 5 | 5 | 0 | `inline` now PASS. Remaining: 3× `floats-00{1,2,3}` → Part (b), `floats-004` → Part (d), `table-cell` → Part (c). |
+| 2026-04-21 | css-writing-modes (post Phase 3(b)) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post Phase 3(b)) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | `position-absolute-dynamic-static-position-*` (10 tests, post Phase 3(b)+(d)) | 9 | 1 | 0 | +4 from (b): floats-001/002/003/004. Only `table-cell` (2.1%) remains. |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |

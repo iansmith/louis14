@@ -219,15 +219,33 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// The abs-pos element's in-flow position would be after the resolved margin, just
 				// like the next in-flow sibling. CSS §10.6.4: static position uses the hypothetical
 				// in-flow position.
-				//
-				// For block-level OOF children, the static inline offset is at inline-start (0)
-				// and the static block offset is at the current block cursor position.
-				// Edge annotations are both Start (the default for block-level OOF).
 				staticBlockOffset := blockCursor + prevMarginStrut.Resolve()
+
+				// Static inline offset: block-level abspos gets inline-start (0).
+				// Inline-level abspos (display:inline/inline-*) in a block FC would
+				// have established an anonymous inline line box — its hypothetical
+				// inline cursor is where that line box would begin, which is past
+				// any inline-start float exclusions active at this block position.
+				// Mirrors Blink's InlineLayoutAlgorithm sub-pass which queries the
+				// exclusion space for the line's inline-start when placing the
+				// hypothetical inline-level OOF.
+				staticInlineOffset := 0.0
+				if isInlineLevelDisplay(childStyle.GetDisplay()) && exclusionSpace != nil {
+					// FindAvailableInlineSize returns inline-start offset in the
+					// same coordinate system the enclosing block uses when
+					// placing in-flow inline content (mirrors inline_layout.go
+					// line-start recomputation after placing floats).
+					bfcBlock := bfcBlockOrigin + staticBlockOffset
+					floatStartOff, _ := exclusionSpace.FindAvailableInlineSize(bfcBlock, 0, bfcContainerInlineSize)
+					if floatStartOff > 0 {
+						staticInlineOffset = floatStartOff
+					}
+				}
+
 				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 					Node: child,
 					StaticPosition: LogicalStaticPosition{
-						Offset:     LogicalOffset{InlineOffset: 0, BlockOffset: staticBlockOffset},
+						Offset:     LogicalOffset{InlineOffset: staticInlineOffset, BlockOffset: staticBlockOffset},
 						InlineEdge: StaticEdgeStart,
 						BlockEdge:  StaticEdgeStart,
 					},
