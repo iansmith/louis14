@@ -483,11 +483,17 @@ sticky-top-001.html   3.4%
 
 Why zero-at-layout rather than threshold-gated: the threshold test needs the ancestor scroll container's edge and the box's natural position — both available only after layout. Doing the right thing at layout time (zero) and deferring the scroll-time update keeps the layout path simple and matches Blink verbatim. `sticky-top-001` passes because our engine has no scroll path yet, so zero-at-layout IS the final rendered offset.
 
-### G-REPLACED — 1 test
+### G-REPLACED — 1 test — **DONE 2026-04-21 (Phase 8, commit `0e1fde9f`)**
 ```
-position-absolute-replaced-no-intrinsic-size.tentative.html   2.1%
+position-absolute-replaced-no-intrinsic-size.tentative.html   2.1% → 0%
 ```
 `<img>` with `position: absolute; top:0; bottom:0; height: max-content; width: 100px; margin: auto` on an SVG with `viewBox='0 0 50 50'`. CSS 2.2 §10.3.7 / §10.6.5.
+
+**Root cause.** `out_of_flow_layout.go` `layoutCandidatesOnce` was stretching any OOF child whose size was "auto in that axis" (no length, no percentage) to fill the IMCB when both insets were specified. `isAutoSizeInDirection` treats intrinsic keywords (`max-content`/`min-content`/`fit-content`) as auto — correct for non-replaced — so the image's `height:max-content` forced block-size to 200 (IMCB), bypassing `ComputeReplacedSize`.
+
+**Blink mirror.** `absolute_utils.cc` `ComputeOof{Inline,Block}Dimensions` dispatches replaced elements directly to `ComputeReplacedSize` (intrinsic size / ratio / specified dims per CSS 2.2 §10.3.7 / §10.6.5), never to stretch-fit. Auto margins then distribute leftover space via `ComputeMargins`.
+
+**Fix.** Extend the `stretchable` gate in `out_of_flow_layout.go` with an `isReplacedElement(child.DOMNode)` check. 7 LOC. Replaced layout then resolves 100×100 (width:100px + 1:1 viewBox ratio), and auto-margins put the 100px leftover block-axis space at 50/50 → image at y=50 within the 200px CB, matching the ref's centered 100×100 square.
 
 ### G-SINGLETONS — 11 tests (includes 3 NORUN)
 ```
@@ -510,7 +516,7 @@ Mixed shapes; likely several independent root causes. Sweep last.
 **Note:** `position-relative-011/012/013` are table-related (`%-top` on `<tr>`/`<tbody>`/`<td>` under position:relative) — they may share a root cause with G-TABLE-REL. If so, closing Phase 1 may also close them. Verify in Phase 1's regression sweep.
 
 ## Super-cluster counts
-Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positioned_root.go`).
+Updated 2026-04-21 post Phase 8 (abs-replaced non-stretch via `out_of_flow_layout.go` gate).
 
 | Cluster | Status | Closed | Remaining | Cumulative passing |
 |---|---|---|---|---|
@@ -522,10 +528,10 @@ Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positi
 | G-ROOT-FLEX-GRID | **DONE (Phase 5, M5b)** | 4 | 0 | **81** |
 | G-ABS-IN-INLINE | **DONE (Phase 6, M6)** | 2 | 8 table abs-child variants (different root cause — G-ABS-IN-TABLE) | **83** |
 | G-STICKY | **DONE (Phase 7)** | 1 | 0 | **84** |
-| G-REPLACED | open | 0 | 1 | — |
+| G-REPLACED | **DONE (Phase 8)** | 1 | 0 | **85** |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
 | G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **34** | **23 (+ 4 SKIPs out of scope)** | **84 / 100 runnable** |
+| **Total** | — | **35** | **22 (+ 4 SKIPs out of scope)** | **85 / 100 runnable** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -536,7 +542,7 @@ Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positi
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **84 PASS / 20 FAIL** (post Phase 7, commit `05aff97e`) | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **85 PASS / 19 FAIL** (post Phase 8, commit `0e1fde9f`) | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |

@@ -1,7 +1,7 @@
 # Task Plan: Pass the entire css-position category
 
 ## Goal
-All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 7 closed): **84 passing, 20 failing**. Remaining: close 20 without regressing:
+All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 8 closed): **85 passing, 19 failing**. Remaining: close 19 without regressing:
 
 - css-writing-modes (currently 781/781 PASS — Phase 5f complete)
 - CSS2 (99/99 PASS)
@@ -27,7 +27,7 @@ Do not duplicate wm notes here.
 ## Baseline snapshot (2026-04-21)
 Log: `output/baselines/css-position-2026-04-21.log`
 - 104 tests exercised: **50 PASS · 54 FAIL · 5 NORUN** at baseline.
-- Latest (post Phase 7 closed, commit `05aff97e`): **84 PASS · 20 FAIL** in this category.
+- Latest (post Phase 8 closed, commit `0e1fde9f`): **85 PASS · 19 FAIL** in this category.
 - Failing test list + diffs: `/tmp/css-position-fails.tsv` (regenerate via `/tmp/parse_css_position.sh`).
 
 Highest-diff outliers (top 5 by pixel count, current state):
@@ -202,10 +202,11 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] `StickyPositionScrollingConstraints` (min/max inset, CB range, sticky box range) deferred until scroll-based sticky tests appear or the engine gains scroll-time fragment offsets.
 - [x] Regression + commit (`05aff97e`). sticky-top-001 3.4% → 0%; sticky-basic-001 unchanged (already 0% via top:0). css-position **83 → 84**. Gates: wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓.
 
-### Phase 8: G-REPLACED (1 test)
-- [ ] **Blink research (deferred from Phase 0):** CSS 2.2 §10.3.7 / §10.6.5 abs-replaced width/height with `max-content`.
-- [ ] Implement + verify.
-- [ ] Regression + commit.
+### Phase 8: G-REPLACED (1 test) — **DONE 2026-04-21 via commit `0e1fde9f`**
+- [x] **Blink research:** CSS 2.2 §10.3.7 / §10.6.5 abs-replaced width/height. Blink's `absolute_utils.cc` `ComputeOof{Inline,Block}Dimensions` dispatches replaced elements to `ComputeReplacedSize` and skips the stretch-fit path that applies to block-level non-replaced non-table children.
+- [x] **Audit:** `isAutoSizeInDirection` reports `height:max-content` as auto (no length, no percentage), so with both block-axis insets specified the replaced element was being stretched to IMCB (200px) instead of resolving to intrinsic/ratio-derived 100px.
+- [x] **Fix:** in `out_of_flow_layout.go` `layoutCandidatesOnce`, extend the `stretchable` gate to exclude replaced elements (`isReplacedElement(child.DOMNode)`). Then `ComputeReplacedSize` returns 100×100 from `width:100px` + 1:1 viewBox ratio, and `ComputeMargins` auto-distributes the block-axis leftover 100px (margin-top/bottom = 50/50). 7-line change, mirrors Blink's abs-replaced dispatch.
+- [x] Regression + commit. wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓. css-position 84 → 85.
 
 ### Phase 9: G-SINGLETONS (11 tests, includes `position-change`)
 - [ ] Per-test triage; many may already be closed by earlier phases.
@@ -253,7 +254,8 @@ Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 - **M5a:** G-FIXED Part A — OOF resolver re-entrance. **Achieved 2026-04-21** via commit `ed16475f`. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (62 PASS total). Reduced `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (residual paint-clip).
 - **M5b:** G-ROOT-FLEX-GRID closed → +4 (77 → 81). **Achieved 2026-04-21** via commit `7e686a28` (new `pkg/layout/positioned_root.go` routing positioned `<html>` through IMCB sizing). G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL, still open.
 - **M6:** G-ABS-IN-INLINE closed → +2 (81 → 83). **Achieved 2026-04-21** via commit `01f468d9`. New `pkg/layout/inline_containing_block.go` mirrors Blink's `InlineContainingBlockUtils::ComputeInlineContainerGeometry` (start/end fragment union rects, transparent walk through anonymous-block continuations). OOF resolver routed through inline-CB sizing with `cbOriginInBuilder` tracking; `InlineContainer` stamped on OOF items via `BuildPositionedInlineMap` (position:fixed excluded — viewport CB). Empty-leading-continuation emitted in `layout_tree_builder.go` for positioned inlines with block-in-inline splits to keep the first-line union rect anchored at the span's start.
-- **M7:** G-STICKY closed → +1 (83 → 84). **Achieved 2026-04-21** via commit `05aff97e`. Dropped sticky from the 7 RelativeOffset-computation sites — sticky now emits zero layout-time offset (Blink-faithful; scroll-time `StickyPositionScrollingConstraints` wiring deferred). G-REPLACED (+1) remains open → will fold into M7b or M8.
+- **M7:** G-STICKY closed → +1 (83 → 84). **Achieved 2026-04-21** via commit `05aff97e`. Dropped sticky from the 7 RelativeOffset-computation sites — sticky now emits zero layout-time offset (Blink-faithful; scroll-time `StickyPositionScrollingConstraints` wiring deferred).
+- **M7b:** G-REPLACED closed → +1 (84 → 85). **Achieved 2026-04-21** via commit `0e1fde9f`. Extended the `layoutCandidatesOnce` `stretchable` gate to exclude replaced elements so abs-replaced sizing stays on the `ComputeReplacedSize` + auto-margin path per CSS 2.2 §10.3.7 / §10.6.5.
 - **M8:** G-SINGLETONS (including `position-change`) + G-SCROLL swept → 100/100 runnable.
 - **M9 (parallel track):** Phase 11 flex residuals swept → css-flexbox 629/629. Independent of css-position delivery; pick up opportunistically or after M8.
 
