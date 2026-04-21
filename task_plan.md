@@ -211,6 +211,33 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [ ] Confirm wm 781/781, CSS2 99/99, flex unchanged.
 - [ ] Final session log summary.
 
+### Phase 11: css-flexbox watch-category residuals (3 tests)
+Parallel / tail-end track. The css-flexbox suite is a *watch* invariant (must stay ≥621 PASS), not part of the css-position delivery goal. Three residuals have sat at the same counts since Phase 1; document them here so the scoped Blink research doesn't get lost. Pick up after css-position 100/100 is delivered — or opportunistically if a css-position fix happens to touch the relevant flex paths.
+
+#### 11a — `auto-margins-001.html` (0.2% diff, ~1024 px)
+- [ ] **Blink research (done 2026-04-21):** sub-case 2 (the `writing-mode: vertical-rl` flex container + `<p style="margin:auto">OK</p>`) is the offender — VRL centering rather than VRL block-start flush. Sub-case 1 (HTB) and the 3-concentric-circles sub-case render identically modulo AA noise.
+- [ ] **Blink references:** `third_party/blink/renderer/core/layout/flex/flex_layout_algorithm.cc` — `ApplyReversals`, `AlignFlexLines`, the auto-margin block inside item placement (search `auto_margins` / `ResolveAutoMargins`). `third_party/blink/renderer/core/layout/flex/flex_item.cc` — `HasAutoMarginsInCrossAxis` and cross-axis stretch suppression. `third_party/blink/renderer/core/layout/geometry/writing_mode_converter.{h,cc}` — physical↔logical mapping reference.
+- [ ] **louis14 touchpoints:** `pkg/layout/flex_layout.go` — `getItemAutoMargins` (~lines 4043-4086) and the cross-axis auto-margin resolution (~lines 1318-1360 / §8.1 block ~line 2086).
+- [ ] **Hypothesis:** `getItemAutoMargins` loses the item-vs-container writing-mode distinction (`mainIsItemInline`) for the cross axis in VRL. When the container is a flex *row* (main=inline, cross=block) in VRL, the physical `margin-top/bottom` of the `<p>` should map through the container's logical converter; today the mapping centers instead of leaving block-start flush. Gate the cross-axis stretch-suppression on both-auto cross margins via the correct logical-axis conversion.
+- [ ] **Gate:** target passes at 0 diff; wm 781/781 and CSS2 99/99 hold; no regression to other flex tests.
+
+#### 11b — `content-height-with-scrollbars.html` (14.4% diff, ~69200 px) — classic-scrollbar reservation
+- [ ] **Blink research (done 2026-04-21):** this is not a flex bug — it is a platform/layout gap. WPT Chromium reference PNGs are generated with *classic* (space-taking) scrollbars at 15px; louis14's `classicScrollbarWidth()` in `pkg/layout/fragment_geometry.go:141` returns **0** for the default `"auto"` scrollbar-width, so `overflow: scroll` elements reserve zero space. The `FragmentGeometry.Scrollbar` / `BorderBoxPadding` / `Inline/BlockScrollbarSum` pipeline is already threaded through all layout algorithms — the single defect is the constant.
+- [ ] **Blink references:** `third_party/blink/renderer/core/layout/layout_box.h` — `VerticalScrollbarWidth()` / `HorizontalScrollbarHeight()`. `third_party/blink/renderer/platform/scroll/scrollbar_theme_aura.cc` — `ScrollbarThickness()` returns 15px (classic default). `third_party/blink/renderer/core/layout/ng/ng_box_fragment_builder.cc` — `SetScrollbar()` populates `FragmentGeometry::scrollbar` from `ComputeScrollbars()`. `ng_length_utils.cc` — `CalculateBoxSizes` subtracts scrollbar from available inline/block size.
+- [ ] **louis14 touchpoints:** `pkg/layout/fragment_geometry.go` — `classicScrollbarWidth()`. Change the `"auto"` return from `0` to `15` when the element reserves a classic scrollbar; keep `10` for `thin`, `0` for `none`. No other code changes needed.
+- [ ] **Scope boundary:** layout-only reservation; we do not paint the scrollbar chrome (matches existing louis14 rendering model).
+- [ ] **Regression risk:** any existing test implicitly passing because louis14 ignored scrollbar reservation will shift. Candidate fallout in `cross-axis-scrollbar.html`, `contain-size-scrollbars-002.html`, `scrollable-overflow-transform-unreachable-region.html`, plus non-flex `overflow: scroll` tests across css2 and css-position. Triage in the same commit; do not split.
+- [ ] **Gate:** target + candidate-fallout tests all at 0 diff; wm 781/781 and CSS2 99/99 hold; css-flexbox stays ≥626 (no regressions).
+
+#### 11c — `flexbox-align-self-vert-004.xhtml` (0.8% diff, ~3664 px)
+- [ ] **Blink research (done 2026-04-21):** two candidate roots, in priority order:
+  1. `align-self: baseline` in the column-direction container. `flex_layout.go:1403-1433` (placement) synthesizes `bl = 0` for column-sameWM baseline — inline-start edge — bypassing `resolvedFirstBaseline`. But the first-pass line-cross accumulation at `flex_layout.go:822-871` still routes baseline items through `resolvedFirstBaseline`, which for `baselineParallel=false` returns `crossSize` as the synthetic baseline — inflating `maxAscent = crossMarginStart + crossSize`. Line-cross and per-item offset disagree.
+  2. `align-self: stretch` with items wider than the 4px container. `stretchFlexItems` (`flex_layout.go:4643`) clamps `stretchBorderBox` to 0 when `line.crossSize - crossMarginSum < 0`, then re-lays out the item at 0 content-width. Blink's `DetermineUsedCrossSize` takes the max of the stretched size and the item's min-content, so an item with `width:50px` keeps 50px.
+- [ ] **Blink references:** `third_party/blink/renderer/core/layout/flex/flex_layout_algorithm.cc` — `PlaceFlexItems`, `DetermineUsedCrossSize`, `BaselineAscent`, `ApplyFinalAlignmentAndReversals`. `third_party/blink/renderer/core/layout/flex/baseline_utils.{h,cc}` — `DetermineBaselineWritingMode`, `DetermineBaselineGroup` (~lines 51-89), `SynthesizedBaseline`.
+- [ ] **louis14 touchpoints:** `pkg/layout/flex_layout.go` — unify the two baseline-resolution paths (first-pass accumulation at ~:819-871 vs placement at ~:1403-1433) so column-sameWM synthesizes at inline-start in *both*. In `stretchFlexItems` (~:4607+), honor min-content / explicit `width` when line cross-size is smaller than the item. `resolvedFirstBaseline` at ~:309 needs a column-sameWM caller contract or a dedicated helper so accumulation uses `bl = 0` matching placement.
+- [ ] **Hypothesis:** unify column-sameWM baseline synthesis to inline-start in both the accumulation and placement paths; in stretch, clamp to `max(line.crossSize, itemMinContent/explicitCross)` instead of zero. Fixes the residual pixels.
+- [ ] **Gate:** target passes at 0 diff; wm 781/781 and CSS2 99/99 hold; css-flexbox stays ≥626.
+
 ## Milestones (commit + report after each)
 Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 
@@ -223,6 +250,7 @@ Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 - **M6:** G-ABS-IN-INLINE closed → +2 (→ ~82).
 - **M7:** G-STICKY + G-REPLACED closed → +2 (→ ~84).
 - **M8:** G-SINGLETONS (including `position-change`) + G-SCROLL swept → 100/100 runnable.
+- **M9 (parallel track):** Phase 11 flex residuals swept → css-flexbox 629/629. Independent of css-position delivery; pick up opportunistically or after M8.
 
 ## Test command templates
 ```
