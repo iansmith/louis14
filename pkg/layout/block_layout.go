@@ -868,6 +868,70 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// fixed candidates upward. The root resolves ALL candidates.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
+		// CSS 2.1 §10.1.4 / CSS Position 3 §def-cb: an OOF whose CB resolves
+		// to an inline element is sized against the inline's first/last-line
+		// fragment union rect. Only the block that owns the inline's line
+		// fragments has the geometry — resolve here when this block is
+		// non-anonymous (anonymous blocks pass through to the parent which
+		// walks transparently into them via ComputeInlineContainerGeometry).
+		var inlineCBCandidates, regularCandidates []OutOfFlowCandidate
+		for _, c := range builder.outOfFlowCandidates {
+			if c.InlineContainer != nil {
+				inlineCBCandidates = append(inlineCBCandidates, c)
+			} else {
+				regularCandidates = append(regularCandidates, c)
+			}
+		}
+
+		if len(inlineCBCandidates) > 0 {
+			if bla.node.IsAnonymous() {
+				// Anonymous block — propagate so the nearest non-anon ancestor
+				// can compute the inline CB across its full child set
+				// (including a block-in-inline split's sibling anon blocks).
+				propagatedOOF = append(propagatedOOF, inlineCBCandidates...)
+			} else {
+				blockContentPhys := ToPhysicalSize(LogicalSize{
+					InlineSize: contentInlineSize,
+					BlockSize:  finalBlockSize,
+				}, wdm.WM)
+				for _, cand := range inlineCBCandidates {
+					inlineGeom := ComputeInlineContainerGeometry(
+						builder.children,
+						cand.InlineContainer,
+						wdm,
+						blockContentPhys,
+					)
+					if inlineGeom == nil {
+						// Inline produced no line-box fragments in this block.
+						// CSS 2.1 §9.4.2 suppresses a line box whose only content
+						// is OOF items (e.g. <span pos:relative><div pos:abs/></span>
+						// with no text). In that case the inline has no geometry
+						// to derive a CB from, so fall through to normal
+						// non-inline CB handling: clear InlineContainer and
+						// propagate as a regular candidate so an enclosing
+						// positioned ancestor (or the ICB) can resolve it
+						// against its own content box.
+						cand.InlineContainer = nil
+						regularCandidates = append(regularCandidates, cand)
+						continue
+					}
+					cbSize, cbOriginLogical := inlineGeom.InlineCBLogical(wdm, blockContentPhys)
+					oofPart := &OutOfFlowLayoutPart{
+						ctx:                    bla.ctx,
+						containingBlockWDM:     wdm,
+						containingBlockSize:    cbSize,
+						containingBlockPadding: LogicalEdges{},
+						geom:                   geom,
+						resolvesFixed:          false,
+						cbOriginInBuilder:      cbOriginLogical,
+					}
+					if extra := oofPart.LayoutCandidates([]OutOfFlowCandidate{cand}, builder); len(extra) > 0 {
+						propagatedOOF = append(propagatedOOF, extra...)
+					}
+				}
+			}
+		}
+
 		isPositioned := bla.style != nil && bla.style.GetPosition() != css.PositionStatic
 		// CSS Containment: layout and paint containment establish a containing
 		// block for absolutely positioned descendants (same as positioned elements).
@@ -912,7 +976,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				geom:                   geom,
 				resolvesFixed:          true,
 			}
-			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+			oofPart.LayoutCandidates(regularCandidates, builder)
 		} else if isContainmentCB || isTransformCB {
 			// CSS Containment / CSS Transforms: containment, transforms, filters,
 			// and will-change:transform/perspective/filter make this element a
@@ -931,12 +995,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				geom:                geom,
 				resolvesFixed:       true,
 			}
-			oofPart.LayoutCandidates(builder.outOfFlowCandidates, builder)
+			oofPart.LayoutCandidates(regularCandidates, builder)
 		} else if isPositioned {
 			// Positioned element: resolve absolute candidates here, but
 			// propagate fixed candidates upward toward the ICB.
 			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
-			for _, cand := range builder.outOfFlowCandidates {
+			for _, cand := range regularCandidates {
 				if cand.IsFixedPosition {
 					fixedCandidates = append(fixedCandidates, cand)
 				} else {
@@ -960,10 +1024,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					fixedCandidates = append(fixedCandidates, extra...)
 				}
 			}
-			propagatedOOF = fixedCandidates
+			propagatedOOF = append(propagatedOOF, fixedCandidates...)
 		} else {
 			// Not positioned, not root: propagate ALL candidates upward.
-			propagatedOOF = builder.outOfFlowCandidates
+			propagatedOOF = append(propagatedOOF, regularCandidates...)
 		}
 	}
 

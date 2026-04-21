@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+)
 
 // OutOfFlowCandidate records an absolutely or fixed positioned child
 // discovered during normal layout. Collected by BoxFragmentBuilder,
@@ -35,6 +38,18 @@ type OutOfFlowCandidate struct {
 	// Mirrors Blink's NGOutOfFlowPositionedNode::is_for_fragmentation / inline_container
 	// type tracking in the candidate.
 	IsFixedPosition bool
+
+	// InlineContainer, when non-nil, marks the candidate's containing block
+	// as an inline element (CSS 2.1 §10.1.4 / CSS Position 3 §def-cb). The
+	// CB geometry is derived from the inline's first-line and last-line
+	// fragment rects at OOF resolution time via ComputeInlineContainerGeometry.
+	//
+	// The DOM node is stored (not the LayoutInputNode) because span
+	// background fragments are matched by DOMNode identity during the
+	// fragment walk; the style of the inline is available on those fragments.
+	//
+	// Mirrors Blink's NGOutOfFlowPositionedNode::inline_container.
+	InlineContainer *html.Node
 }
 
 // OutOfFlowLayoutPart handles layout of absolutely and fixed positioned
@@ -55,6 +70,15 @@ type OutOfFlowLayoutPart struct {
 	// True at the ICB (root) and at transform/containment CBs.
 	// False at ordinary positioned ancestors which only contain absolute.
 	resolvesFixed bool
+
+	// cbOriginInBuilder is the offset of the CB's inline-start/block-start
+	// corner within the resolving block's content-box. Non-zero only when
+	// the CB is an inline (CSS 2.1 §10.1.4): the inline CB's origin is the
+	// start-line union rect's start corner, while the resolved fragment is
+	// added as a child of the block — so we shift the final per-candidate
+	// AddChild offset by this amount to land it in the block's coordinate
+	// space. Zero for normal block CBs (CB == this builder's content box).
+	cbOriginInBuilder LogicalOffset
 }
 
 // LayoutCandidates positions all out-of-flow candidates and adds their
@@ -127,10 +151,18 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 		// Static position in CB-content-box coords. Shift to padding-box for
 		// IMCB math; we undo the shift when we convert back to the
 		// content-box offset that builder.AddChild expects.
+		//
+		// For inline-CB resolutions the candidate's StaticPosition was captured
+		// in the OWNING BLOCK's content-box coords (the line-breaker doesn't
+		// know about the inline CB), so subtract cbOriginInBuilder to bring it
+		// into the inline CB's coords before IMCB math runs. The final offset
+		// is shifted back by the same amount at AddChild time below.
 		staticInlinePad := candidate.StaticPosition.Offset.InlineOffset +
-			p.containingBlockPadding.InlineStart
+			p.containingBlockPadding.InlineStart -
+			p.cbOriginInBuilder.InlineOffset
 		staticBlockPad := candidate.StaticPosition.Offset.BlockOffset +
-			p.containingBlockPadding.BlockStart
+			p.containingBlockPadding.BlockStart -
+			p.cbOriginInBuilder.BlockOffset
 		staticInlineBias := BiasFromStaticEdge(candidate.StaticPosition.InlineEdge)
 		staticBlockBias := BiasFromStaticEdge(candidate.StaticPosition.BlockEdge)
 
@@ -324,8 +356,8 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 			p.containingBlockPadding.InlineStart
 
 		builder.AddChild(childResult.Fragment, LogicalOffset{
-			InlineOffset: finalInlineOffset,
-			BlockOffset:  finalBlockOffset,
+			InlineOffset: finalInlineOffset + p.cbOriginInBuilder.InlineOffset,
+			BlockOffset:  finalBlockOffset + p.cbOriginInBuilder.BlockOffset,
 		})
 
 		// Descendant OOFs the laid-out child surfaced need their static
@@ -343,8 +375,11 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 			}
 			physBPEdges := ToPhysicalEdges(childBPLogicalInChild, childWDM)
 			parentBP := ToLogicalEdges(physBPEdges, wdm)
-			inlineAdj := finalInlineOffset + parentBP.InlineStart
-			blockAdj := finalBlockOffset + parentBP.BlockStart
+			// Inline-CB resolutions add cbOriginInBuilder to AddChild offsets;
+			// match that here so propagated descendants' static positions land
+			// in the resolving block's content-box coords (not the inline CB's).
+			inlineAdj := finalInlineOffset + parentBP.InlineStart + p.cbOriginInBuilder.InlineOffset
+			blockAdj := finalBlockOffset + parentBP.BlockStart + p.cbOriginInBuilder.BlockOffset
 
 			needsConv := childWDM.WM != wdm.WM || childWDM.Dir != wdm.Dir
 			var childContentPhys PhysicalSize

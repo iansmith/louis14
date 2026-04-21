@@ -713,7 +713,34 @@ func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
 		// Split this inline element around its block children.
 		// Each segment of inline children becomes a continuation of the
 		// original inline element (same DOMNode + style).
-		// CSS 2.1 §9.2.1.1: empty/whitespace-only continuations are suppressed.
+		// CSS 2.1 §9.2.1.1: empty/whitespace-only continuations are suppressed
+		// for non-positioned inlines. Positioned inlines (relative/sticky)
+		// emit an empty LEADING continuation when the inline starts with a
+		// block child AND has later in-flow inline content, so the inline
+		// containing block (CSS Position 3 §def-cb) spans from the span's
+		// start position rather than from the first text after the block.
+		// Without this, abspos descendants that anchor to the CB's start
+		// would land on the post-block segment instead of the pre-block
+		// (empty) segment. When the inline has ONLY block children and no
+		// trailing inline content, fall through to the !hasCont &&
+		// len(blockParts)>0 blockified-wrapper path below, which preserves
+		// the span's stacking-context/visual-properties around the blocks.
+		isPositionedInline := child.Style() != nil &&
+			child.Style().GetPosition() != css.PositionStatic
+		hasTrailingInlineContent := false
+		if isPositionedInline {
+			seenFirstBlock := false
+			for _, gc := range child.Children() {
+				if isBlockLevel(gc) {
+					seenFirstBlock = true
+					continue
+				}
+				if seenFirstBlock && !isWhitespaceOnly([]*LayoutInputNode{gc}) {
+					hasTrailingInlineContent = true
+					break
+				}
+			}
+		}
 		var segment []*LayoutInputNode
 		var blockParts []*LayoutInputNode
 		// continuations tracks all continuation nodes in order so we can
@@ -722,8 +749,11 @@ func (b *LayoutTreeBuilder) expandInlineWithBlockChildren(
 		hasCont := false
 		for _, grandchild := range child.Children() {
 			if isBlockLevel(grandchild) {
-				// Flush the inline segment as a continuation (skip if whitespace-only).
-				if len(segment) > 0 && !isWhitespaceOnly(segment) {
+				// Flush the inline segment as a continuation (skip if whitespace-only,
+				// unless this is an empty LEADING segment for a positioned inline).
+				hasSegment := len(segment) > 0 && !isWhitespaceOnly(segment)
+				emitEmptyLeading := isPositionedInline && hasTrailingInlineContent && !hasCont && !hasSegment
+				if hasSegment || emitEmptyLeading {
 					cont := &LayoutInputNode{
 						DOMNode:        child.DOMNode,
 						style:          child.Style(),

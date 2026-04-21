@@ -178,6 +178,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	StripBidiControls(itemsData)
 	SplitItemsAtLevelBoundaries(itemsData)
 
+	// Phase 1d: Map each OOF item to its innermost positioned-inline
+	// ancestor (DOM node), so the OOF candidate can carry the inline CB
+	// reference (CSS 2.1 §10.1.4 / CSS Position 3 §def-cb). Built once
+	// up front because the line-breaker emits OpenTag/CloseTag once per
+	// inline item — not per line a span spans across — so a per-line
+	// stack would miss spans that wrap across multiple lines.
+	positionedInlineMap := BuildPositionedInlineMap(itemsData.Items)
+
 	// Phase 1c: Lay out inline floats (compute their size only). Positioning
 	// is deferred until line breaking so that floats declared after a forced
 	// break (e.g. after <br>) are placed at the block-start of the post-break
@@ -418,6 +426,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	isFirstLine := true
 	firstLineAscent = -1.0 // -1 means not yet set
 
+	// openInlineStack tracks inline spans opened on prior lines that are
+	// still open at the start of the current line. Passed into createLineBoxEx
+	// so spans that wrap multiple lines emit a fragment per line, and updated
+	// from the residual returned after each line. Mirrors Blink's persistent
+	// InlineLayoutStateStack across NGInlineLayoutAlgorithm iterations.
+	var openInlineStack []*InlineItem
+
 	for {
 		// CSS 2.1 §9.5: account for floats when computing available inline size.
 		// FindAvailableInlineSize returns the space consumed by left/right floats
@@ -528,6 +543,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 							BlockEdge:  StaticEdgeStart,
 						},
 						IsFixedPosition: r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
+						InlineContainer: positionedInlineMap[r.Item],
 					})
 				} else if r.Item.Type == InlineItemFloat {
 					if pf, ok := pendingFloats[r.Item]; ok {
@@ -710,8 +726,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// terminated. Mirrors Blink's InlineLayoutAlgorithm::HandleOutOfFlowPositioned
 		// reading line_box_.LineBoxBlockEnd() at the time of encounter.
 		var blockLevelOOFOnLine []struct {
-			node    *LayoutInputNode
-			isFixed bool
+			node            *LayoutInputNode
+			isFixed         bool
+			inlineContainer *html.Node
 		}
 		hasInflowOnLine := false
 		for i, r := range line.Results {
@@ -731,6 +748,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 							BlockEdge:  StaticEdgeStart,
 						},
 						IsFixedPosition: isFixed,
+						InlineContainer: positionedInlineMap[r.Item],
 					})
 				} else if !hasInflowOnLine {
 					// No in-flow content precedes this block-level OOF on the line:
@@ -746,12 +764,14 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 							BlockEdge:  StaticEdgeStart,
 						},
 						IsFixedPosition: isFixed,
+						InlineContainer: positionedInlineMap[r.Item],
 					})
 				} else {
 					blockLevelOOFOnLine = append(blockLevelOOFOnLine, struct {
-						node    *LayoutInputNode
-						isFixed bool
-					}{node: r.Item.LayoutNode, isFixed: isFixed})
+						node            *LayoutInputNode
+						isFixed         bool
+						inlineContainer *html.Node
+					}{node: r.Item.LayoutNode, isFixed: isFixed, inlineContainer: positionedInlineMap[r.Item]})
 				}
 			} else if r.Item.Type == InlineItemFloat {
 				if pf, ok := pendingFloats[r.Item]; ok {
@@ -899,9 +919,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineSize: contentInlineSize,
 			BlockSize:  cbBlockSize,
 		}, wdm.WM)
-		lineFragment, lineHeight, lineAscent := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style,
+		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack,
 		)
+		openInlineStack = residualStack
 		if firstLineAscent < 0 {
 			firstLineAscent = lineAscent
 		}
@@ -932,6 +953,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					BlockEdge:  StaticEdgeStart,
 				},
 				IsFixedPosition: d.isFixed,
+				InlineContainer: d.inlineContainer,
 			})
 		}
 
@@ -1055,12 +1077,23 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	return createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil)
+	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil)
+	return frag, h, a
 }
 
 // createLineBoxEx positions items within a line and produces a line box fragment.
 // The centralBaseline flag determines whether to use central (vertical) or
 // alphabetic (horizontal/sideways) baseline alignment.
+//
+// enteringSpanStack carries inline spans that were opened on prior lines and
+// remain open at the start of this line — mirrors Blink's
+// InlineLayoutStateStack persistence across NGInlineLayoutAlgorithm iterations.
+// The returned residualSpanStack is the subset still open at end-of-line, to
+// be passed as enteringSpanStack for the next line. CSS 2.1 §9.2.1.1 / §10.8.1:
+// each line a span appears on produces its own fragment (first-line gets
+// inline-start border/padding, last-line gets inline-end, middle lines get
+// neither), and positioned inlines need a fragment per line so descendant
+// abspos children can derive their inline containing block from the union.
 func createLineBoxEx(
 	itemsData *InlineItemsData,
 	line *LineInfo,
@@ -1070,7 +1103,8 @@ func createLineBoxEx(
 	centralBaseline bool,
 	cbPhysicalSize PhysicalSize,
 	parentStyle *css.Style,
-) (*PhysicalFragment, float64, float64) { // returns (fragment, lineHeight, maxAscent)
+	enteringSpanStack []*InlineItem,
+) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
 	lineHeight := maxAscent + maxDescent
@@ -1113,8 +1147,19 @@ func createLineBoxEx(
 	// CSS 2.1 §9.2.1.1: for a split inline element (block-in-inline), the
 	// inline-start border/padding appears only on the first fragment and the
 	// inline-end border/padding appears only on the last fragment.
+	//
+	// A span that wraps multiple lines produces one fragment per line: the
+	// first line carries IS border/padding, the last line carries IE border/
+	// padding, and middle lines carry neither. Span state entering this line
+	// comes from enteringSpanStack (spans opened on prior lines, still open).
+	// Any span still in the stack at end-of-line becomes the residual returned
+	// to the caller — its fragment on this line is emitted with
+	// isLastFragment=false (no IE edges). Mirrors Blink's InlineLayoutStateStack
+	// persistence across NGInlineLayoutAlgorithm iterations.
+	var residualSpanStack []*InlineItem
 	{
 		type spanEntry struct {
+			item            *InlineItem
 			style           *css.Style
 			node            *html.Node
 			borderStart     float64
@@ -1122,12 +1167,102 @@ func createLineBoxEx(
 			isLastFragment  bool
 		}
 		var spanStack []spanEntry
+		emit := func(span spanEntry, endPos float64) {
+			// Emit a fragment when there is something to paint OR when the span
+			// is positioned. Positioned inlines (relative/sticky) need a
+			// fragment per line so descendant abspos children can derive their
+			// inline containing block from the union of these rects (CSS 2.1
+			// §10.1.4 / CSS Position 3 §def-cb). The fragment is also where
+			// RelativeOffset is anchored for paint-time sticky/relative shifts.
+			if !(hasVisibleInlinePaint(span.style) || span.style.GetPosition() != css.PositionStatic) {
+				return
+			}
+			geom := ComputeFragmentGeometry(span.style, wdm)
+			// Save original inline-end edges before suppression.
+			origIEBorder := geom.Border.InlineEnd
+			origIEPadding := geom.Padding.InlineEnd
+			if !span.isFirstFragment {
+				geom.Border.InlineStart = 0
+				geom.Padding.InlineStart = 0
+			}
+			if !span.isLastFragment {
+				geom.Border.InlineEnd = 0
+				geom.Padding.InlineEnd = 0
+			}
+			// Fragment inline extent:
+			// - First-fragment: border-box starts at margin end (border IS included)
+			// - Non-first: no IS border/padding, border-box start = content start
+			// - Last-fragment: border-box right = content_end + IE border + padding
+			// - Non-last: border-box right = content_end
+			fragStart := span.borderStart
+			fragEnd := endPos
+			if span.isLastFragment {
+				fragEnd += origIEBorder + origIEPadding
+			}
+			spanInlineSize := fragEnd - fragStart
+			if spanInlineSize < 0 {
+				spanInlineSize = 0
+			}
+			blockOverhang := geom.Border.BlockStart + geom.Padding.BlockStart
+			spanBlockSize := blockOverhang + lineHeight + geom.Padding.BlockEnd + geom.Border.BlockEnd
+			// Inline span background fragments must paint in flow order (behind
+			// text), not via the z-index paint step which would paint ON TOP of
+			// text. Reset the copy's position to static for paint purposes.
+			bgStyle := span.style
+			if span.style.GetPosition() != css.PositionStatic {
+				bgStyle = span.style.Clone()
+				bgStyle.Set("position", "static")
+			}
+			bgFrag := &PhysicalFragment{
+				Size: ToPhysicalSize(LogicalSize{
+					InlineSize: spanInlineSize,
+					BlockSize:  spanBlockSize,
+				}, wdm.WM),
+				Type:             FragmentBox,
+				Style:            bgStyle,
+				Node:             span.node,
+				WritingDirection: wdm,
+				BoxData: &PhysicalBoxData{
+					Border:  ToPhysicalEdges(geom.Border, wdm),
+					Padding: ToPhysicalEdges(geom.Padding, wdm),
+				},
+			}
+			// CSS 2.1 §9.4.3: inline span backgrounds also shift with
+			// position:relative. Use the original (non-reset) style.
+			if span.style.GetPosition() == css.PositionRelative || span.style.GetPosition() == css.PositionSticky {
+				offset := span.style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
+				bgFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
+			}
+			lineBuilder.AddChild(bgFrag, LogicalOffset{
+				InlineOffset: fragStart,
+				BlockOffset:  -blockOverhang,
+			})
+		}
+
+		// Pre-populate with spans opened on prior lines. These enter the line
+		// at the content-area start (alignOffset) with no inline-start
+		// border/padding (they are non-first-line fragments).
+		for _, item := range enteringSpanStack {
+			if item == nil || item.Style == nil {
+				continue
+			}
+			spanStack = append(spanStack, spanEntry{
+				item:            item,
+				style:           item.Style,
+				node:            item.Node,
+				borderStart:     alignOffset,
+				isFirstFragment: false,
+				isLastFragment:  false,
+			})
+		}
+
 		trackPos := alignOffset
 		for _, r := range line.Results {
 			switch r.Item.Type {
 			case InlineItemOpenTag:
 				if r.Item.Style != nil {
 					spanStack = append(spanStack, spanEntry{
+						item:            r.Item,
 						style:           r.Item.Style,
 						node:            r.Item.Node,
 						borderStart:     trackPos + r.Margins.InlineStart,
@@ -1139,81 +1274,12 @@ func createLineBoxEx(
 				if len(spanStack) > 0 && r.Item.Style != nil {
 					span := spanStack[len(spanStack)-1]
 					spanStack = spanStack[:len(spanStack)-1]
-					if hasVisibleInlinePaint(span.style) {
-						geom := ComputeFragmentGeometry(span.style, wdm)
-
-						// Save original inline-end edges before suppression.
-						// CSS 2.1 §9.2.1.1: inline-start border/padding appears only
-						// on the first fragment; inline-end only on the last fragment.
-						origIEBorder := geom.Border.InlineEnd
-						origIEPadding := geom.Padding.InlineEnd
-						if !span.isFirstFragment {
-							geom.Border.InlineStart = 0
-							geom.Padding.InlineStart = 0
-						}
-						if !span.isLastFragment {
-							geom.Border.InlineEnd = 0
-							geom.Padding.InlineEnd = 0
-						}
-
-						// Fragment inline extent.
-						// span.borderStart = trackPos_at_openTag + margins.InlineStart.
-						// At CloseTag time, trackPos = content_end (before CloseTag advance).
-						//
-						// The border-box left edge is span.borderStart for ALL cases:
-						// - First fragment: border-box starts at margin end (border IS included in size)
-						// - Non-first: no IS border/padding, so border-box start = content start = span.borderStart
-						//
-						// The border-box right edge:
-						// - Last fragment: content_end + IE border + IE padding
-						// - Non-last: content_end (no IE border/padding)
-						fragStart := span.borderStart
-						fragEnd := trackPos
-						if span.isLastFragment {
-							fragEnd += origIEBorder + origIEPadding
-						}
-
-						spanInlineSize := fragEnd - fragStart
-						if spanInlineSize < 0 {
-							spanInlineSize = 0
-						}
-						blockOverhang := geom.Border.BlockStart + geom.Padding.BlockStart
-						spanBlockSize := blockOverhang + lineHeight + geom.Padding.BlockEnd + geom.Border.BlockEnd
-						// Use a copy of the span style with position reset
-						// to static. Inline span background fragments are
-						// decorations that must paint in flow order (behind
-						// text), not as positioned elements in the z-index
-						// paint step which would paint ON TOP of text.
-						bgStyle := span.style
-						if span.style.GetPosition() != css.PositionStatic {
-							bgStyle = span.style.Clone()
-							bgStyle.Set("position", "static")
-						}
-						bgFrag := &PhysicalFragment{
-							Size: ToPhysicalSize(LogicalSize{
-								InlineSize: spanInlineSize,
-								BlockSize:  spanBlockSize,
-							}, wdm.WM),
-							Type:             FragmentBox,
-							Style:            bgStyle,
-							Node:             span.node,
-							WritingDirection: wdm,
-							BoxData: &PhysicalBoxData{
-								Border:  ToPhysicalEdges(geom.Border, wdm),
-								Padding: ToPhysicalEdges(geom.Padding, wdm),
-							},
-						}
-						// CSS 2.1 §9.4.3: inline span backgrounds also shift with
-						// position:relative. Use the original (non-reset) style.
-						if span.style.GetPosition() == css.PositionRelative || span.style.GetPosition() == css.PositionSticky {
-							offset := span.style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
-							bgFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
-						}
-						lineBuilder.AddChild(bgFrag, LogicalOffset{
-							InlineOffset: fragStart,
-							BlockOffset:  -blockOverhang,
-						})
-					}
+					// The closing fragment carries inline-end border/padding
+					// only if the InlineItem is the last split fragment. A
+					// prior-line pre-populated entry inherits this from the
+					// InlineItem being closed now.
+					span.isLastFragment = r.Item.IsLastFragment
+					emit(span, trackPos)
 				}
 			case InlineItemAtomicInline:
 				// Atomic inlines advance by margin+size+margin (no default advance).
@@ -1221,6 +1287,13 @@ func createLineBoxEx(
 				continue
 			}
 			trackPos += r.InlineSize
+		}
+
+		// Emit synthetic fragments for spans still open at end-of-line and
+		// record them as the residual for the next line's enteringSpanStack.
+		for _, span := range spanStack {
+			emit(span, trackPos)
+			residualSpanStack = append(residualSpanStack, span.item)
 		}
 	}
 
@@ -1517,7 +1590,7 @@ func createLineBoxEx(
 
 	result := lineBuilder.Build()
 	result.Fragment.Type = FragmentLineBox
-	return result.Fragment, lineHeight, maxAscent
+	return result.Fragment, lineHeight, maxAscent, residualSpanStack
 }
 
 // needsSidewaysVLRBaselineSwap reports whether alphabetic ascent/descent must
