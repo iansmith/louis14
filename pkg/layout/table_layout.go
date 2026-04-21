@@ -43,7 +43,8 @@ type tableCell struct {
 type tableRow struct {
 	node       *LayoutInputNode
 	style      *css.Style
-	groupStyle *css.Style // style of the containing row group (thead/tbody/tfoot), nil if none
+	groupStyle *css.Style       // style of the containing row group (thead/tbody/tfoot), nil if none
+	groupNode  *LayoutInputNode // LayoutInputNode of the containing row group, nil if none
 	cells      []tableCell
 }
 
@@ -612,6 +613,46 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	var rowspanPending []pendingRowspan
 
+	// Total inline-size of a row fragment — sum of column widths plus
+	// inline-axis border-spacing. Identical across rows; lifted out of
+	// the row loop so the section-fragment path can reuse it.
+	totalInlineForRows := 0.0
+	for _, w := range colWidths {
+		totalInlineForRows += w
+	}
+	totalInlineForRows += spacingForCols
+
+	// Section fragment state. When a row group (thead/tbody/tfoot) has
+	// position:relative or position:sticky its rows are wrapped in a
+	// section PhysicalBoxFragment so the group's RelativeOffset can
+	// attach to something at paint time. Non-positioned groups still
+	// flatten into the table builder (unchanged behaviour).
+	//
+	// Mirrors Blink's NGTableSectionLayoutAlgorithm output — sections
+	// are structural fragments carrying their group's style.
+	var sectionBuilder *BoxFragmentBuilder
+	var sectionStartBlock float64
+	var lastGroupNode *LayoutInputNode
+	flushSection := func(endBlock float64) {
+		if sectionBuilder == nil {
+			return
+		}
+		sectionBlockSize := endBlock - sectionStartBlock
+		if sectionBlockSize < 0 {
+			sectionBlockSize = 0
+		}
+		sectionBuilder.SetSize(LogicalSize{
+			InlineSize: totalInlineForRows,
+			BlockSize:  sectionBlockSize,
+		})
+		sectionResult := sectionBuilder.Build()
+		builder.AddChild(sectionResult.Fragment, LogicalOffset{
+			InlineOffset: 0,
+			BlockOffset:  sectionStartBlock,
+		})
+		sectionBuilder = nil
+	}
+
 	firstRowHeight := 0.0
 	firstRowBaseline := 0.0  // max cell baseline in first VISIBLE row
 	lastRowBaseline := 0.0   // max cell baseline in last VISIBLE row
@@ -630,11 +671,46 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			continue
 		}
 
+		// Group boundary: crossing from one row group into another
+		// (or between a grouped and ungrouped row) closes any open
+		// positioned section at the bottom of the previous row. The
+		// section's block-extent ends at the current blockOffset,
+		// before inter-row spacing is added — spacing sits BETWEEN
+		// sections, not inside them.
+		isGroupBoundary := row.groupNode != lastGroupNode
+		if isGroupBoundary && sectionBuilder != nil {
+			flushSection(blockOffset)
+		}
+
 		// Add inter-row spacing only between VISIBLE rows: the
 		// collapsed row's spacing is removed along with the row.
 		if emittedRows > 0 && blockSpacing > 0 {
 			blockOffset += blockSpacing
 		}
+
+		// Entering a row group whose computed position is relative
+		// or sticky: open a section BoxFragmentBuilder to hold the
+		// group's rows. The section's RelativeOffset is computed by
+		// the main table builder's AddChild when flushSection emits
+		// the section fragment. Non-positioned groups continue to
+		// flatten into the table builder (legacy behaviour).
+		if isGroupBoundary && row.groupStyle != nil {
+			pos := row.groupStyle.GetPosition()
+			if pos == css.PositionRelative || pos == css.PositionSticky {
+				sectionBuilder = NewBoxFragmentBuilder(wdm)
+				sectionBuilder.SetLayoutNode(row.groupNode)
+				sectionStartBlock = blockOffset
+				// Nested position:relative/sticky children inside the
+				// section resolve percentages against the section's
+				// content area. Match the table-level convention of
+				// Indefinite block-size (percentages → 0).
+				sectionBuilder.SetChildAvailableSize(LogicalSize{
+					InlineSize: totalInlineForRows,
+					BlockSize:  Indefinite,
+				})
+			}
+		}
+		lastGroupNode = row.groupNode
 
 		rowHeight := spRows[rowIdx].BlockSize
 
@@ -748,10 +824,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		rowResult := rowBuilder.Build()
-		builder.AddChild(rowResult.Fragment, LogicalOffset{
-			InlineOffset: 0,
-			BlockOffset:  blockOffset,
-		})
+		if sectionBuilder != nil {
+			// Row is inside a positioned row group: attach to the
+			// section with offset relative to the section's origin.
+			// The section fragment itself is added to the main table
+			// builder by flushSection, carrying its own block-offset.
+			sectionBuilder.AddChild(rowResult.Fragment, LogicalOffset{
+				InlineOffset: 0,
+				BlockOffset:  blockOffset - sectionStartBlock,
+			})
+		} else {
+			builder.AddChild(rowResult.Fragment, LogicalOffset{
+				InlineOffset: 0,
+				BlockOffset:  blockOffset,
+			})
+		}
 
 		rowBaseline := measured[rowIdx].baseline
 		if emittedRows == 0 {
@@ -763,6 +850,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		blockOffset += rowHeight
 		emittedRows++
 	}
+
+	// Close any still-open positioned section at the bottom of the
+	// last emitted row.
+	flushSection(blockOffset)
 
 	// --- Phase 3b: place rowspan cells across spanned rows ---
 	//
@@ -1132,6 +1223,7 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 				if gcStyle.GetDisplay() == css.DisplayTableRow {
 					r := tla.buildRow(grandchild, gcStyle)
 					r.groupStyle = childStyle // tag with row group's style
+					r.groupNode = child       // tag with row group's LayoutInputNode (for section fragments)
 					groupRows = append(groupRows, r)
 				}
 			}
