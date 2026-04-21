@@ -114,14 +114,46 @@ Code audit revealed the fix is **two-part**:
 ### Part B design (ready to implement after Part A)
 Mirror Blink's table section fragments. Today `table_layout.go:1105-1129` concatenates thead/body/footer rows into one flat list; we must instead emit one `sectionBuilder` per group (thead, each tbody, tfoot), each holding the rows of that group, then addChild the section fragment to the table builder. Blink treats these as "structural-only" — they still carry a Style and are real PhysicalBoxFragments, they just have no per-section layout algorithm.
 
+## Session: 2026-04-21 (OOF re-entrance)
+
+### Phase 2 audit + dissolution
+Audit (`pkg/visualtest/helpers.go:85-102`) showed our harness already runs `engine2 := layout.NewLayoutEngine(...)` from-scratch on the post-JS DOM — moral equivalent of Blink's `RemovePositionedObjects` + relayout. JS mutations land correctly. Group dissolved; tests reassigned by actual root cause:
+- `absolute-pos-box-inside-fixed-pos-box-with-changing-height` → G-FIXED
+- `containing-block-change-button` → G-SINGLETONS (`<button>` vertical-centering)
+- `containing-block-change-scrollframe` → new G-SCROLL
+
+### Phase 5 G-FIXED scoping
+Read `pkg/layout/out_of_flow_layout.go` end-to-end. Confirmed bug at line 177: `childResult := layoutElement(...)` → `builder.AddChild(...)` with no handling of `childResult.PropagatedOOFCandidates`. Verified block/flex/grid/multicol/table propagation is correct in their respective formatting contexts; the hole is exclusively in the OOF resolver. Both G-FIXED tests share this root cause.
+
+### Phase 5 G-FIXED Part A — OOF resolver re-entrance (commit `ed16475f`)
+Mirrored Blink's `OutOfFlowLayoutPart::LayoutOOFNodes` worklist pattern:
+- Wrapped per-candidate iteration in a worklist loop. After each `layoutElement(child)` and `builder.AddChild(...)`, drained `childResult.PropagatedOOFCandidates`.
+- Added `resolvesFixed bool` field on `OutOfFlowLayoutPart`. ICB / containment-CB / transform-CB sites set it true (descendants are appended to worklist for resolution by this CB). Ordinary positioned sites set it false (descendants are returned to caller as unresolved fixed for further propagation).
+- Changed `LayoutCandidates` return type to `[]OutOfFlowCandidate`.
+- Updated all 7 call sites (block × 3, flex, grid × 2, multicol, table). Positioned-only callers append the return value into their `propagatedOOF` list.
+
+### Verification
+- `absolute-pos-box-inside-fixed-pos-box-with-changing-height`: 0.5% → **0% PASS**.
+- `position-fixed-scroll-nested-fixed`: 4.2% → 1.0% (still failing). Inner fixed now paints, but is being clipped by outer `overflow:auto` and lacks `Element.scrollTop=200` honoring. Both are paint/scroll territory, not OOF layout. Deferred to G-SCROLL / paint-time work (G-FIXED Part B).
+- Adjacent sweep ruled out (different root causes): 8 `position-relative-table-*-absolute-child` still 1.0% (G-ABS-IN-INLINE/TABLE); 4 `position-{fixed,absolute}-root-element-{flex,grid}` still 0.8% (G-ROOT-FLEX-GRID).
+- Full css-position: 50 → 62 PASS (+12). The +12 comprises the 1 G-FIXED close plus 11 carried over from Phase 1 commits since the 2026-04-21 baseline (10 `position-relative-table-*` primary + `position-relative-012`).
+
+### Gates held
+- wm 781/781 ✓
+- CSS2 99/99 ✓
+- flexbox 626/629 ✓ (no regression vs ≥621 baseline; 3 unrelated pre-existing failures: `auto-margins-001`, `content-height-with-scrollbars`, `flexbox-align-self-vert-004`)
+
+### Next
+Phase 3 **G-DYN-STATIC** (6 tests). Foundational: rebuild static position every pass via `OutOfFlowPositionedDescendants` list on `LayoutResult`. Prerequisite for Phase 4 (IMCB / G-ABS-CENTER + G-HYPO).
+
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | css-position category, Phase 1 (G-TABLE-REL, 11 primary tests) DONE. Pick next phase: G-CB-CHANGE (3 tests, invalidation) or G-DYN-STATIC (6 tests, foundational for Phase 4). |
+| Where am I? | css-position category, **62/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 (G-CB-CHANGE) dissolved; Phase 5 G-FIXED Part A DONE. Pick next: **Phase 3 G-DYN-STATIC** (foundational, prerequisite for IMCB Phase 4). |
 | Where am I going? | 100/100 runnable css-position at 0 diff (4 SKIPs out of scope for layout plan). |
-| What's the goal? | All runnable css-position tests at 0 diff; wm 781/781 and CSS2 99/99 must hold. |
-| What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block container's LastBaseline must originate from a line-box descendant — blocks must not synthesize content-box-end baselines, and block_layout must not fall back from LastBaseline to Baseline. The §10.8.1 bottom-margin-edge fallback for inline-blocks lives at atomic-inline placement. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only. |
-| What have I done? | Phase 5f (wm) complete. Fresh css-position baseline captured. Failures grouped into 11 clusters. Attack order set. Blink research for 7/10 groups. NORUN triage done. Phase 1 (G-TABLE-REL) closed — commits `d174049b` (Part A), `ac2dc780` (Part B), `b6ec7d3f` (§10.8.1 fix). All 11 primary tests PASS; wm 781/781 and CSS2 99/99 held. |
+| What's the goal? | All runnable css-position tests at 0 diff; wm 781/781, CSS2 99/99, flex ≥621 must hold. |
+| What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block's LastBaseline must originate from a line-box descendant. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only and turned out to be a no-op for our harness (we already do fresh re-layout post-JS). **OOF resolution must be re-entrant** (Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`): after laying out an OOF child, drain `PropagatedOOFCandidates` and continue resolving. ICB / containment / transform CB sites absorb fixed; ordinary positioned sites return unresolved fixed to caller. |
+| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. Net: 50 → 62 PASS. wm 781/781, CSS2 99/99, flex 626/629 all gates held. |
 
 ## Error Log
 *(populated as work progresses)*

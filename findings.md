@@ -375,18 +375,22 @@ Mixed shapes; likely several independent root causes. Sweep last.
 **Note:** `position-relative-011/012/013` are table-related (`%-top` on `<tr>`/`<tbody>`/`<td>` under position:relative) — they may share a root cause with G-TABLE-REL. If so, closing Phase 1 may also close them. Verify in Phase 1's regression sweep.
 
 ## Super-cluster counts
-| Cluster | Count | Cumulative if closed |
-|---|---|---|
-| G-TABLE-REL | 16 | 66 |
-| G-DYN-STATIC + G-CB-CHANGE | 9 | 75 |
-| G-ABS-CENTER | 5 | 80 |
-| G-HYPO | 5 | 85 |
-| G-ROOT-FLEX-GRID + G-FIXED | 5 | 90 |
-| G-ABS-IN-INLINE | 2 | 92 |
-| G-STICKY | 1 | 93 |
-| G-REPLACED | 1 | 94 |
-| G-SINGLETONS | 11 | 105 (capped at 104 in practice) |
-| **Total** | **54 + 5 NORUN** | **104 if all close** |
+Updated 2026-04-21 post OOF re-entrance (commit `ed16475f`). G-CB-CHANGE was dissolved; tests redistributed.
+
+| Cluster | Status | Closed | Remaining | Cumulative passing |
+|---|---|---|---|---|
+| G-TABLE-REL | DONE (Phase 1) | 11 + position-relative-012 | 8 `-absolute-child` (moved to G-ABS-IN-INLINE/TABLE) | 62 |
+| G-FIXED | Part A done (Phase 5a) | 1 | 1 (paint-clip residual, → G-SCROLL) | — |
+| G-DYN-STATIC | open | 0 | 6 | — |
+| G-ABS-CENTER | open | 0 | 5 | — |
+| G-HYPO | open | 0 | 3 + 2 NORUN | — |
+| G-ROOT-FLEX-GRID | open | 0 | 4 | — |
+| G-ABS-IN-INLINE | open | 0 | 2 + 8 table abs-child variants | — |
+| G-STICKY | open | 0 | 1 | — |
+| G-REPLACED | open | 0 | 1 | — |
+| G-SCROLL | open (new) | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
+| G-SINGLETONS | open | 0 | 11 | — |
+| **Total** | — | **12** | **42 (+ 4 SKIPs out of scope)** | **62 / 100 runnable** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -395,12 +399,12 @@ Mixed shapes; likely several independent root causes. Sweep last.
 - [ ] Confirm whether Blink applies relative offsets to `<caption>` (none of our failing tests use caption, so this is a bounds check only).
 
 ## Test Results
-| Scope | Test count | Baseline | Target |
-|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | 104 PASS |
-| css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS |
-| CSS2 (invariant) | 99 | 99 PASS | 99 PASS |
-| css-flexbox (watch) | ~629 | 621 PASS (as of 2026-04-20 baseline) | ≥621 |
+| Scope | Test count | Baseline | Current (2026-04-21) | Target |
+|---|---|---|---|---|
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **62 PASS / 42 FAIL** | 100 PASS (4 SKIPs out of scope) |
+| css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
+| CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
+| css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |
 
 ## Decisions Made
 | Decision | Rationale |

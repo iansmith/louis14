@@ -1,11 +1,11 @@
 # Task Plan: Pass the entire css-position category
 
 ## Goal
-All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run** → close 59 tests without regressing:
+All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post OOF re-entrance): **62 passing, 42 failing**. Remaining: close 42 without regressing:
 
 - css-writing-modes (currently 781/781 PASS — Phase 5f complete)
 - CSS2 (99/99 PASS)
-- css-flexbox (~621/629 PASS at last measure; verify before major changes)
+- css-flexbox (626/629 PASS — verified post OOF re-entrance)
 
 ## Rules & Discipline
 Authoritative sources (re-read at session start):
@@ -25,18 +25,18 @@ Do not duplicate wm notes here.
 
 ## Baseline snapshot (2026-04-21)
 Log: `output/baselines/css-position-2026-04-21.log`
-- 104 tests exercised: **50 PASS · 54 FAIL · 5 NORUN**
-- Pass rate 48% — lowest of the four categories in the 2026-04-20 multi-baseline.
+- 104 tests exercised: **50 PASS · 54 FAIL · 5 NORUN** at baseline.
+- Latest (post OOF re-entrance, commit `ed16475f`): **62 PASS · 42 FAIL** in this category.
 - Failing test list + diffs: `/tmp/css-position-fails.tsv` (regenerate via `/tmp/parse_css_position.sh`).
 
-Highest-diff outliers (top 5 by pixel count):
+Highest-diff outliers (top 5 by pixel count, current state):
 | % | px | test | group |
 |---|---|------|-------|
-| 10.4% | 50000 | `containing-block-change-scrollframe.html` | G-CB-CHANGE |
-|  4.2% | 20000 | `containing-block-change-button.html` | G-CB-CHANGE |
-|  4.2% | 20000 | `position-fixed-scroll-nested-fixed.html` | G-FIXED |
+| 10.4% | 50000 | `containing-block-change-scrollframe.html` | G-SCROLL (was G-CB-CHANGE) |
+|  4.2% | 20000 | `containing-block-change-button.html` | G-SINGLETONS (was G-CB-CHANGE) |
 |  4.2% | 20000 | `hypothetical-dynamic-change-003.html` | G-HYPO |
 |  3.4% | 16308 | `sticky-top-001.html` | G-STICKY |
+|  1.0% |  4672 | `position-fixed-scroll-nested-fixed.html` | G-FIXED residual (paint-clip / scrollTop) |
 
 5 NORUN — **triaged 2026-04-21** (full table in `findings.md`):
 - 4 are runner **SKIPs** ("no usable reference files found") — infrastructure gaps, not layout bugs:
@@ -166,14 +166,15 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 ## Milestones (commit + report after each)
 Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 
-- **M1:** G-TABLE-REL closed → +11 primary (50 → 61). **Achieved 2026-04-21** via commits `d174049b`, `ac2dc780`, `b6ec7d3f`. 8 `-absolute-child` variants deferred to G-ABS-IN-INLINE / G-ABS-IN-TABLE. May also have closed `position-relative-011/012/013` — verify at next baseline refresh.
-- **M2:** G-CB-CHANGE closed → +3 (→ ~69–72).
-- **M3:** G-DYN-STATIC closed → +6 (→ ~75–78).
-- **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ ~83–86).
-- **M5:** G-ROOT-FLEX-GRID + G-FIXED closed → +5 (→ ~88–91).
-- **M6:** G-ABS-IN-INLINE closed → +2 (→ ~90–93).
-- **M7:** G-STICKY + G-REPLACED closed → +2 (→ ~92–95).
-- **M8:** G-SINGLETONS (including `position-change`) swept → → 100/100 runnable.
+- **M1:** G-TABLE-REL closed → +11 primary (50 → 61). **Achieved 2026-04-21** via commits `d174049b`, `ac2dc780`, `b6ec7d3f`. Verified at re-baseline post OOF re-entrance: also closed `position-relative-012` (was conjectured). 8 `-absolute-child` variants still failing at 1.0% — distinct root cause, deferred to G-ABS-IN-INLINE / G-ABS-IN-TABLE.
+- **M2:** ~~G-CB-CHANGE~~ — group dissolved 2026-04-21. Tests reassigned to G-FIXED / G-SINGLETONS / G-SCROLL.
+- **M3:** G-DYN-STATIC closed → +6 (→ ~68).
+- **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ ~76).
+- **M5a:** G-FIXED Part A — OOF resolver re-entrance. **Achieved 2026-04-21** via commit `ed16475f`. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (62 PASS total). Reduced `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (residual paint-clip).
+- **M5b:** G-ROOT-FLEX-GRID closed → +4 (→ ~80). G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL.
+- **M6:** G-ABS-IN-INLINE closed → +2 (→ ~82).
+- **M7:** G-STICKY + G-REPLACED closed → +2 (→ ~84).
+- **M8:** G-SINGLETONS (including `position-change`) + G-SCROLL swept → 100/100 runnable.
 
 ## Test command templates
 ```
@@ -206,7 +207,9 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualte
 | NORUN — 4 SKIPs out of scope, 1 real FAIL folded into G-SINGLETONS | Triage 2026-04-21: SKIPs are harness/JS gaps; target is 100/100 runnable. |
 | Bundle G-ABS-CENTER + G-HYPO into one phase | Both use the same Blink IMCB machinery; the hypothetical-box algorithm IS the both-insets-auto branch. |
 | G-DYN-STATIC precedes G-ABS-CENTER/G-HYPO | The IMCB reads `LogicalStaticPosition`; without rebuild-per-pass, dynamic inputs won't flow through. |
-| G-CB-CHANGE is invalidation-only | Blink evidence: `StyleDifference::NeedsPositionedLayout` + `RemovePositionedObjects` are the whole story. No sizing math involved. |
+| G-CB-CHANGE is invalidation-only → group dissolved | Audit 2026-04-21: harness already does fresh re-layout post-JS, so Blink's invalidation pattern is a no-op for us. Tests reassigned by actual root cause. |
+| G-FIXED OOF re-entrance via worklist loop, not single-pass | Mirrors Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`. New `resolvesFixed` flag distinguishes ICB / containment / transform CB sites (absorb fixed) from ordinary positioned sites (return unresolved fixed to caller). |
+| Split G-FIXED into Part A (re-entrance, layout) and Part B (paint-clip / scrollTop) | Re-entrance closed 1 of 2 cleanly; the residual is squarely in paint/scroll, not OOF layout. Don't conflate — Part B will be picked up alongside G-SCROLL. |
 | G-STICKY minimum viable acceptable | Full constraint machinery is overkill for the one failing test; flag as tech debt for when scroll-based sticky tests appear. |
 | Do not run the full css-position category more than once per milestone | CLAUDE.md §4 — broad runs only at baselines and milestone verifications. |
 | css-writing-modes stays at 781/781 as an invariant | Phase 5f is complete; any regression in wm reverts the commit. |
