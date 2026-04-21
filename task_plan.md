@@ -87,10 +87,14 @@ All other Phase 5 targets now PASS at 0% diff (5a, 5b, 5d, and singletons: img-i
 Attack order: group by shared root cause, fix smallest/most isolated cluster first, work up to larger diffs.
 - [x] Sub-phase 5a: logical-props (3 tests, 0.1% each) — logical border cascade contamination (commit `e639eca6`)
 - [x] Sub-phase 5b: abs-pos VLR (3 tests) — already fixed by `d9d313c3` (`pxValue` strips existing `"px"` before appending). Verified 2026-04-20: all three tests at 0% diff. Progress doc was stale.
-- [ ] Sub-phase 5c: img-intrinsic (2 tests) — intrinsic size contribution in orthogonal flow
+- [x] Sub-phase 5c: img-intrinsic (2 tests) — passing at 0% diff (incidental fix from cascade/intrinsic-sizing cleanup; commit trail via `7f138825`, `8dd8021f`).
 - [x] Sub-phase 5d: mongolian-orientation (2 tests) — fixed via B2 style-level sideways resolution (commit `1dcffb34`).
-- [ ] Sub-phase 5e: remaining singletons (block-flow-direction, orthogonal-root-resize, sideways-lr, outline, baseline-orthog, inline-block-alignment)
-- **Status: active — starting 5c (img-intrinsic) or 5e singleton sweep**
+- [x] Sub-phase 5e singleton sweep: `block-flow-direction-vrl-026`, `sideways-lr-main-axis`, `outline-inline-block-vrl-006`, `baseline-with-orthogonal-flow-001` all pass at 0% diff.
+- [ ] **Sub-phase 5f: foundational-grouping finish (4 remaining tests, 3 root causes)** — see `findings.md` "Phase 5 Remaining — Foundational Grouping". Attack order is foundational-impact-first, not %-diff-first:
+  1. **Group B — plaintext paragraph-level line flow (2 tests)**: `block-plaintext-004` (0.9%), `block-plaintext-006` (1.0%). Single root cause hypothesis: per-line paragraph level sourced wrong. Lowest regression risk, highest ratio (2 tests / 1 fix).
+  2. **Group A — orthogonal-root ancestor walk (1 test)**: `orthogonal-root-resize-icb-007` (1.1%). Blink walks unconditionally past non-positioned ancestors to ICB; our inline-block path stops at grandparent. Likely unblocks css-position failures that share the same position-gate.
+  3. **Group C — VLR + text-orientation:sideways baseline (1 test)**: `inline-block-alignment-007` (8.4%). Hardest; prior bulk-swap attempt was net -25 on wm. Save for last; dispatch as its own narrow-scope task targeting only the inline-block-baseline-export site.
+- **Status: active — starting 5f, Group B first**
 
 ### Phase 6: Delivery
 - [ ] Confirm all 787 wm tests pass at 0 diff
