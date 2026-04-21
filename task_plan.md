@@ -115,12 +115,15 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
   - `containing-block-change-scrollframe` (10.4%) → new **G-SCROLL** sub-group (needs `Element.scrollTop` setter + `overflow:hidden` scroll paint).
 - [x] Phase 2 closed as a no-op — no code changes needed for "invalidation". Move on to next phase per revised attack order.
 
-### Phase 3: G-DYN-STATIC (6 tests) — foundational
+### Phase 3: G-DYN-STATIC (6 tests) — **per-FC computation fixes; original rebuild-list hypothesis invalidated 2026-04-21**
 - [x] Blink research: static position NOT cached; rebuilt each pass via `LayoutResult::OutOfFlowPositionedDescendants` list.
-- [ ] Remove any existing static-position caching in our OOF path.
-- [ ] Add `OutOfFlowPositionedDescendants` (mirror name) to `LayoutResult` carrying `{node, static_position, inline_container}`.
-- [ ] Representative: `position-absolute-dynamic-static-position-inline` (2.1%).
-- [ ] Regression + commit.
+- [x] Audit (2026-04-21): we already rebuild every pass via fresh `engine2`. Original "add OutOfFlowPositionedDescendants list" hypothesis is a no-op. Real root causes are per-FC COMPUTATION bugs in static-position capture sites. See `findings.md` "G-DYN-STATIC — Phase 3 hypothesis invalidated".
+- [x] **(a) `inline_layout.go:682-694`** — split by child's `display`. Block-level abspos → `(0, lineBlockEnd)` when in-flow content precedes on the line, `(0, blockOffset)` otherwise; inline-level abspos → `(inlinePos, blockOffset)`. Helper `isInlineLevelDisplay` mirrors Blink's `ComputedStyle::IsOriginalDisplayInlineType`. `hasInflowOnLine` flag mirrors `line_box_.LineBoxBlockEnd()` at time-of-encounter so the first-child-block-level case (no prior in-flow) stays at `blockOffset`. Closes `inline` (2.1% → 0%). wm 781/781 ✓, CSS2 99/99 ✓.
+- [ ] **(b) `block_layout.go:217-237`** — for inline-level abspos children, peek at exclusion space at `blockCursor` and use the float-aware inline-start as `InlineOffset`. Fixes `floats-001` and likely `floats-002/003`.
+- [ ] **(c) `table_layout.go`** (abspos-in-table-cell capture site) — apply vertical-align to static-position block-offset. Fixes `table-cell` test.
+- [ ] **(d) RTL-direction awareness** on capture (inline-edge annotation + flip). Fixes `floats-004`.
+- [ ] Per-site commits with wm 781/781 + CSS2 99/99 regression gate after each.
+- [ ] Representative drivers: `inline` (2.1%) for (a); `floats-001` (0.7%) for (b); `table-cell` (2.1%) for (c); `floats-004` (0.7%) for (d).
 
 ### Phase 4: G-ABS-CENTER + G-HYPO combined (5 + 3 = 8 tests)
 - [x] Blink research: `absolute_utils.cc` IMCB machinery. G-HYPO is the both-insets-auto branch.

@@ -50,6 +50,28 @@ func isCSSCollapsibleRune(r rune) bool {
 	return r != '\u00A0' && unicode.IsSpace(r)
 }
 
+// isInlineLevelDisplay reports whether a specified display value is
+// inline-level per CSS Display §3. Used to capture the static position of
+// an out-of-flow box in an inline formatting context: an inline-level
+// abspos captures beside the current inline cursor; a block-level abspos
+// captures at the block-end of the current line box (as if it started a
+// new block-flow line). Mirrors Blink's
+// ComputedStyle::IsOriginalDisplayInlineType.
+func isInlineLevelDisplay(d css.DisplayType) bool {
+	switch d {
+	case css.DisplayInline,
+		css.DisplayInlineBlock,
+		css.DisplayInlineFlex,
+		css.DisplayInlineGrid,
+		css.DisplayInlineTable,
+		css.DisplayRuby,
+		css.DisplayRubyText,
+		css.DisplayRubyBase:
+		return true
+	}
+	return false
+}
+
 func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	hasContent := false
 	for _, child := range node.Children() {
@@ -678,20 +700,59 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// so that subsequent float-deferral checks use the updated available space.
 		trackAvail := lineAvailableInline
 		lineResultsTruncateAt := -1
+		// Block-level abspos children that appear AFTER in-flow content on this
+		// line capture static position at the block-end of the line box (as if
+		// they started a new block-flow line below this one). Their emission is
+		// deferred until the final line height is known via createLineBoxEx.
+		// Block-level abspos children that appear BEFORE any in-flow content
+		// emit immediately at (0, blockOffset) — their block-flow line would
+		// begin at the current cursor since no preceding content needs to be
+		// terminated. Mirrors Blink's InlineLayoutAlgorithm::HandleOutOfFlowPositioned
+		// reading line_box_.LineBoxBlockEnd() at the time of encounter.
+		var blockLevelOOFOnLine []struct {
+			node    *LayoutInputNode
+			isFixed bool
+		}
+		hasInflowOnLine := false
 		for i, r := range line.Results {
 			if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
-				builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
-					Node: r.Item.LayoutNode,
-					StaticPosition: LogicalStaticPosition{
-						Offset: LogicalOffset{
-							InlineOffset: inlinePos,
-							BlockOffset:  blockOffset,
+				oofStyle := r.Item.Style
+				inlineLevel := oofStyle != nil && isInlineLevelDisplay(oofStyle.GetDisplay())
+				isFixed := oofStyle != nil && oofStyle.GetPosition() == css.PositionFixed
+				if inlineLevel {
+					builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+						Node: r.Item.LayoutNode,
+						StaticPosition: LogicalStaticPosition{
+							Offset: LogicalOffset{
+								InlineOffset: inlinePos,
+								BlockOffset:  blockOffset,
+							},
+							InlineEdge: StaticEdgeStart,
+							BlockEdge:  StaticEdgeStart,
 						},
-						InlineEdge: StaticEdgeStart,
-						BlockEdge:  StaticEdgeStart,
-					},
-					IsFixedPosition: r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
-				})
+						IsFixedPosition: isFixed,
+					})
+				} else if !hasInflowOnLine {
+					// No in-flow content precedes this block-level OOF on the line:
+					// its block-flow position starts at the current block cursor.
+					builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+						Node: r.Item.LayoutNode,
+						StaticPosition: LogicalStaticPosition{
+							Offset: LogicalOffset{
+								InlineOffset: 0,
+								BlockOffset:  blockOffset,
+							},
+							InlineEdge: StaticEdgeStart,
+							BlockEdge:  StaticEdgeStart,
+						},
+						IsFixedPosition: isFixed,
+					})
+				} else {
+					blockLevelOOFOnLine = append(blockLevelOOFOnLine, struct {
+						node    *LayoutInputNode
+						isFixed bool
+					}{node: r.Item.LayoutNode, isFixed: isFixed})
+				}
 			} else if r.Item.Type == InlineItemFloat {
 				if pf, ok := pendingFloats[r.Item]; ok {
 					floatInlineSize := pf.margins.InlineSum() + pf.childLogical.InlineSize()
@@ -731,6 +792,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				}
 			} else {
 				committedBeforeFloat += r.InlineSize
+				// Any non-OOF, non-float item placed on the line causes the
+				// line box to grow — a block-level OOF encountered AFTER this
+				// point must capture its static position at the line's block-end.
+				hasInflowOnLine = true
 			}
 			inlinePos += r.InlineSize
 		}
@@ -848,6 +913,27 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineOffset: lineInlineOffset,
 			BlockOffset:  blockOffset,
 		})
+
+		// Emit deferred block-level OOF candidates at the block-end of the
+		// line box. Per Blink's InlineLayoutAlgorithm::HandleOutOfFlowPositioned,
+		// a block-level abspos encountered AFTER in-flow content on the line
+		// receives static position (inline-start, line_block_end) — if it had
+		// been in flow it would have started a new block-flow line below the
+		// current line box.
+		for _, d := range blockLevelOOFOnLine {
+			builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
+				Node: d.node,
+				StaticPosition: LogicalStaticPosition{
+					Offset: LogicalOffset{
+						InlineOffset: 0,
+						BlockOffset:  blockOffset + lineHeight,
+					},
+					InlineEdge: StaticEdgeStart,
+					BlockEdge:  StaticEdgeStart,
+				},
+				IsFixedPosition: d.isFixed,
+			})
+		}
 
 		blockOffset += lineHeight
 	}

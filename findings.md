@@ -180,7 +180,7 @@ The 3 tests fail for **heterogeneous, non-CB-change** reasons:
 
 **Related:** overlaps with G-DYN-STATIC (both require style-change to re-trigger OOF layout) but is distinct — G-CB-CHANGE is about *which CB* the child belongs to; G-DYN-STATIC is about *which static position* inside the unchanged CB.
 
-### G-DYN-STATIC — 6 tests
+### G-DYN-STATIC — 6 tests — **Phase 3 hypothesis invalidated 2026-04-21; group splits into per-site COMPUTATION bugs**
 ```
 position-absolute-dynamic-static-position-floats-001.html   0.7%
 position-absolute-dynamic-static-position-floats-002.html   0.3%
@@ -191,21 +191,43 @@ position-absolute-dynamic-static-position-table-cell.html   2.1%
 ```
 **What they exercise.** JS flips a property (float insertion, `display: inline → block`, table-cell vertical-align interaction) that changes the abspos child's static position. Triggers re-layout; the new static position must be picked up.
 
-**Blink entry points (studied 2026-04-21):**
-- `third_party/blink/renderer/core/layout/out_of_flow_layout_part.cc`:
-  - `OutOfFlowLayoutPart::SetupNodeInfo` — gathers CB info per candidate.
-  - `LayoutCandidates` — main loop that consumes pending OOF candidates.
-  - `CalculateOffset` / `TryCalculateOffset` — wrap `absolute_utils.cc`.
-- `third_party/blink/renderer/core/layout/oof_positioned_node.h`:
-  - `struct LogicalStaticPosition` (line 240): `{LogicalOffset offset; LogicalDirection inline_edge; LogicalDirection block_edge;}`.
-  - `OofPositionedNode<LogicalOffset, LogicalStaticPosition>` — the per-candidate record.
-  - `LayoutResult::OutOfFlowPositionedDescendants()` — the list that bubbles candidates up the fragment tree.
+**Audit finding (2026-04-21):** the original plan's hypothesis ("static position is cached; add `OutOfFlowPositionedDescendants` rebuild") is **WRONG** for our codebase. Like G-CB-CHANGE, we already rebuild every pass — `pkg/visualtest/helpers.go:85-102` uses a fresh `engine2 := layout.NewLayoutEngine(...)` on the post-JS DOM, no caching. Confirmed by instrumenting the `inline` test: post-JS, `target.style.display='block'` reaches `computed display: block` in the 2nd pass's `ComputedStyles()`, but the RENDERING still places target beside the inline-block (where display:inline static position points) instead of below (where display:block belongs).
 
-**Key insight.** Blink does **not cache** the static position. Every layout pass rebuilds the OOF-descendants list on each `LayoutResult`, and it bubbles up to the nearest containing block that can establish an OOF CB. At CB time, static positions are fresh — so JS-driven changes that alter static position (new float, display flip, table-cell vertical-align shift) show up "for free" provided the enclosing layout is rerun.
+The 6 tests are failing for **heterogeneous, per-formatting-context COMPUTATION bugs** in our static-position capture sites:
 
-**Our gap.** Our OOF path likely caches something (result fragments, cached inset resolution, or the abspos child's earlier static position). The four `floats-00*` tests, `inline`, and `table-cell` tests all point at a single missing fixture: the static-position record must be rebuilt every pass, not memoised.
+1. **`inline_layout.go:682-694` (and :497-509)** — inline-FC line loop captures static as `(inlinePos, blockOffset)` regardless of the abspos child's `display`. Per Blink's `InlineLayoutAlgorithm::HandleOutOfFlowPositioned`, a **block-level** abspos (display: block/table/flex/grid) in an inline FC gets static position `(0, currentLineBlockEnd)` (a new line below), while an **inline-level** abspos keeps `(inlinePos, lineBlockStart)`. — **breaks `position-absolute-dynamic-static-position-inline` (2.1%).** Confirmed visually: test shows target at `(100, 0)` (beside the inline-block) instead of `(0, 50)` (below it).
 
-**Our mirror target.** An `OutOfFlowPositionedDescendants` field on `LayoutResult` (or its equivalent), carrying `{node, static_position, inline_container}` records. Remove any static-position caching; always rebuild from current layout state.
+2. **`block_layout.go:217-237`** — block-FC abspos hardcodes `InlineOffset: 0`, ignoring float exclusions and inline-level semantics. Per Blink, an **inline-level** abspos (display: inline) in a block FC whose nearest line cursor sits beside a float should capture static position = `(floatExclusionInlineStart, lineBlockStart)`. — **breaks `floats-001` (0.7%).** Confirmed visually: target appears at `(0, 0)` (overlapping green float at left) instead of `(40, 0)` (beside float at right). 0.7% diff is just the 40×80 red-through strip where target should be.
+
+3. **`floats-002/003/004` (0.3% / 0.3% / 0.7%)** — variations of (2). floats-002 adds a `<div id="block" height:40>` sibling; floats-003 nests the float inside that block; floats-004 is RTL. Confirmation pending per-test trace, but the common thread is still block-FC static-position capture ignoring float-exclusion state.
+
+4. **`position-absolute-dynamic-static-position-table-cell` (2.1%)** — abspos inside `display:table-cell; vertical-align:middle` with `translate:0 -50px; top:auto` (post-JS). Expected behavior: cell's vertical-align centers the anonymous (hypothetical) box; our capture site ignores this and puts target at `(0,0)` cell-content-origin. — **needs table-cell static-position capture to account for vertical-align.**
+
+**Revised plan for Phase 3.** Not one fix, four sites. All mirror Blink's per-FC OOF handling:
+- (a) `inline_layout.go`: split `InlineItemOutOfFlow` handling by child's `display`; block-level gets `(0, lineBlockEnd)`.
+- (b) `block_layout.go`: for abspos children whose `display` is inline-level, read the current inline cursor from the pending line (or from the exclusion space if the line has no committed content yet) and use that as `InlineOffset`.
+- (c) `table_layout.go` (or the table-cell block-layout entry): static-position for abspos inside `display:table-cell` must shift by the vertical-align offset of the hypothetical in-flow position.
+- (d) RTL: `floats-004` capture site must use `direction`-aware inline-start (right edge for RTL).
+
+None of (a)–(d) require changing `LayoutResult` shape or adding an `OutOfFlowPositionedDescendants` list. Our existing `PropagatedOOFCandidates` path is sufficient. **Phase 3's original design goal is a no-op; the real work is point fixes at the four capture sites.**
+
+**Blink entry points (studied 2026-04-21, re-validated 2026-04-21 audit):**
+- `third_party/blink/renderer/core/layout/inline/inline_layout_algorithm.cc`:
+  - `HandleOutOfFlowPositioned` (line ~540) — computes the static position for abspos children encountered during line building. Splits on `style.IsOriginalDisplayInlineType()`:
+    - Inline-level: `(current_inline_cursor, line_block_start)`.
+    - Block-level: `(0, current_line_block_end)` — treated as if it started a new block-flow line.
+- `third_party/blink/renderer/core/layout/block_layout_algorithm.cc`:
+  - Abspos is handled in `HandleOutOfFlowPositioned`; for inline-level display, it defers to the inline formatting sub-pass (the anonymous inline box is laid out and then static position is captured there).
+- `third_party/blink/renderer/core/layout/table/table_cell_layout_algorithm.cc`: vertical-align is applied to the cell's content-box before static-position capture.
+- `third_party/blink/renderer/core/layout/out_of_flow_layout_part.cc`: we already mirror this (see `pkg/layout/out_of_flow_layout.go`).
+
+**Key insight (corrected 2026-04-21).** Yes, Blink does not cache static position — but neither do we. Our failing tests are not about staleness; they are about **per-formatting-context capture of the correct static position**. The four capture sites (inline-FC line loop, block-FC child loop, table-cell algorithm, RTL direction handling) each need targeted Blink-mirrored fixes. No `LayoutResult` schema change is required.
+
+**Our mirror targets (per-site):**
+- `pkg/layout/inline_layout.go:682-694` and `:497-509`: split by `display`. Block-level abspos → `(0, lineBlockEnd)`; inline-level → `(inlinePos, lineBlockStart)`.
+- `pkg/layout/block_layout.go:217-237`: for inline-level abspos children, peek at the pending inline line (or the exclusion-space inline cursor at `blockCursor`) to compute a float-aware inline offset.
+- `pkg/layout/table_layout.go` (wherever abspos inside a table-cell is captured): apply cell's vertical-align to the captured static-position block-offset.
+- Direction-awareness: `inline-edge` annotation + RTL flipping on capture.
 
 **Prerequisite for G-HYPO.** The hypothetical-box algorithm reads static position via this same path, so G-DYN-STATIC must land before G-HYPO can be fully correct.
 

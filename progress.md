@@ -13,6 +13,8 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
+**Phase 3 G-DYN-STATIC Part (a) — inline-FC static-position split landed 2026-04-21.** `inline_layout.go` now splits OOF candidate capture by child's specified display: inline-level abspos captures at `(inlinePos, blockOffset)`; block-level abspos with prior in-flow content on the line captures at `(0, blockOffset + lineHeight)` after the line box finalises; block-level abspos with no prior in-flow content on the line captures at `(0, blockOffset)` immediately. Mirrors Blink's `InlineLayoutAlgorithm::HandleOutOfFlowPositioned` reading `line_box_.LineBoxBlockEnd()` at the point of encounter. New helper `isInlineLevelDisplay` mirrors `ComputedStyle::IsOriginalDisplayInlineType`. Closes `position-absolute-dynamic-static-position-inline` (2.1% → 0% PASS). wm 781/781 ✓, CSS2 99/99 ✓ (regression gate held after the `hasInflowOnLine` refinement — an earlier unconditional `(0, lineEnd)` capture regressed 4 orthogonal-float wm tests that place block-level abspos as the first child of their inline FC).
+
 **Phase 5 G-FIXED Part A — OOF resolver re-entrance landed 2026-04-21.** `OutOfFlowLayoutPart.LayoutCandidates` rewritten as a worklist loop (mirroring Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`), now consumes `childResult.PropagatedOOFCandidates` from each laid-out OOF candidate. Added `resolvesFixed bool` on the part to select ICB / containment / transform CB sites that absorb fixed; ordinary positioned sites return unresolved fixed to caller for further propagation. Updated all 7 call sites (block, flex, grid, multicol, table). Closes `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0% PASS); reduces `position-fixed-scroll-nested-fixed` from 4.2% → 1.0% (residual is paint-clip / scrollTop, deferred to G-SCROLL). Net: css-position **62 PASS / 42 FAIL** (was 50/54 at the 2026-04-21 baseline). wm 781/781 ✓, CSS2 ✓, flexbox 626/629 ✓ (no regression).
 
 **Phase 2 (G-CB-CHANGE) closed 2026-04-21 as a no-op — group dissolved.** Audit found that our test harness already re-layouts from scratch after JS, so Blink's `RemovePositionedObjects` invalidation pattern doesn't apply. The 3 tests fail for unrelated foundational reasons and have been re-grouped (see findings.md "G-CB-CHANGE — Phase 2 audit invalidated"):
@@ -30,11 +32,14 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 - Known limitations: 8 `-absolute-child` variants still failing at 1.0–1.7% — abspos descendants in a positioned section/cell. Not Phase 1 scope; tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE.
 
 ### Next
-**G-FIXED Part B residual + adjacent groups.** The OOF resolver is now re-entrant (commit pending). `position-fixed-scroll-nested-fixed` still fails at 1.0% — the inner fixed paints but is clipped by the outer `overflow:auto` and lacks `Element.scrollTop` honoring. Both belong to scroll/paint, not OOF layout. Defer until G-SCROLL is opened.
+**Phase 3 remaining sub-fixes.** Part (a) is landed; the other 5 G-DYN-STATIC failures map cleanly:
+- `floats-001` (0.7%), `floats-002` (0.3%), `floats-003` (0.3%) → Part (b): block-FC float-aware inline offset for inline-level abspos.
+- `floats-004` (0.7%) → Part (d): RTL direction awareness on capture.
+- `table-cell` (2.1%) → Part (c): table-cell vertical-align for abspos static-position block-offset.
 
-Adjacent verifications run: 8 `position-relative-table-*-absolute-child` tests are still at 1.0% — different root cause (G-ABS-IN-INLINE / G-ABS-IN-TABLE), not the OOF re-entrance bug. 4 `position-{fixed,absolute}-root-element-{flex,grid}` tests also still 0.8% — distinct G-ROOT-FLEX-GRID issue.
+**G-FIXED Part B residual + adjacent groups** still outstanding. `position-fixed-scroll-nested-fixed` still fails at 1.0% — the inner fixed paints but is clipped by the outer `overflow:auto` and lacks `Element.scrollTop` honoring. Both belong to scroll/paint, not OOF layout. Defer until G-SCROLL is opened.
 
-Pick up next: **Phase 3 G-DYN-STATIC** (foundational, prerequisite for IMCB phase) per the attack order in task_plan.md.
+Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child` tests are still at 1.0% — different root cause (G-ABS-IN-INLINE / G-ABS-IN-TABLE). 4 `position-{fixed,absolute}-root-element-{flex,grid}` tests also still 0.8% — distinct G-ROOT-FLEX-GRID issue.
 
 ## Test Results
 | Date | Scope | Pass | Fail | NORUN | Notes |
@@ -50,6 +55,9 @@ Pick up next: **Phase 3 G-DYN-STATIC** (foundational, prerequisite for IMCB phas
 | 2026-04-21 | css-writing-modes (post OOF re-entrance fix) | 781 | 0 | 0 | Gate held. |
 | 2026-04-21 | CSS2 (post OOF re-entrance fix) | 99 | 0 | 0 | Gate held. |
 | 2026-04-21 | css-flexbox (post OOF re-entrance fix) | 626 | 3 | 0 | No regression vs ≥621 baseline; 3 unrelated pre-existing failures. |
+| 2026-04-21 | css-writing-modes (post Phase 3(a)) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post Phase 3(a)) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | `position-absolute-dynamic-static-position-*` (10 tests, post Phase 3(a)) | 5 | 5 | 0 | `inline` now PASS. Remaining: 3× `floats-00{1,2,3}` → Part (b), `floats-004` → Part (d), `table-cell` → Part (c). |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |
@@ -145,6 +153,25 @@ Mirrored Blink's `OutOfFlowLayoutPart::LayoutOOFNodes` worklist pattern:
 
 ### Next
 Phase 3 **G-DYN-STATIC** (6 tests). Foundational: rebuild static position every pass via `OutOfFlowPositionedDescendants` list on `LayoutResult`. Prerequisite for Phase 4 (IMCB / G-ABS-CENTER + G-HYPO).
+
+### Phase 3 audit (2026-04-21) — planned hypothesis INVALIDATED
+Instrumented the `inline` test (`position-absolute-dynamic-static-position-inline`, 2.1%) and confirmed:
+- `helpers.go:85-102` already uses fresh `engine2` on post-JS DOM. No static-position caching.
+- JS mutation `target.style.display='block'` DOES reach the 2nd layout pass: post-JS `ComputedStyles()[target].GetDisplay()` returns `block`.
+- Yet test renders target beside inline-block (display-inline static position) rather than below (display-block static position).
+- Diagnosis: the 2nd pass correctly sees `display:block`, but `inline_layout.go:682-694` captures static as `(inlinePos, blockOffset)` regardless of whether the abspos child is inline-level or block-level.
+
+Additional ocular proof from `floats-001` test.png: target (40×80 green) is placed at CB content-origin `(0, 0)`, overlapping the float, instead of `(40, 0)` beside the float. Confirms `block_layout.go:226` hardcodes `InlineOffset: 0` without float awareness.
+
+Revised Phase 3: **no `LayoutResult` schema change** (we already rebuild every pass). Instead, 4 per-formatting-context point fixes mirroring Blink's per-FC OOF handling:
+1. `inline_layout.go:682-694` and `:497-509`: split by `display` — block-level abspos → `(0, lineBlockEnd)`; inline-level → `(inlinePos, lineBlockStart)`.
+2. `block_layout.go:217-237`: for inline-level abspos, compute float-aware `InlineOffset` from the exclusion space at `blockCursor`.
+3. `table_layout.go` / table-cell path: apply vertical-align to static-position block-offset.
+4. RTL direction awareness on capture (floats-004).
+
+See `findings.md` "G-DYN-STATIC — 6 tests — Phase 3 hypothesis invalidated" for detail.
+
+Paused before coding to let the user confirm the revised approach.
 
 ## 5-Question Reboot Check
 | Question | Answer |
