@@ -1820,7 +1820,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// CSS position:relative — "start wins over end" in logical coordinates.
-	if fla.style != nil && (fla.style.GetPosition() == css.PositionRelative || fla.style.GetPosition() == css.PositionSticky) {
+	// Sticky is scroll-time, not layout-time; leave RelativeOffset zero here.
+	if fla.style != nil && fla.style.GetPosition() == css.PositionRelative {
 		cbWidth := fla.space.AvailableSize.InlineSize
 		cbHeight := fla.space.AvailableSize.BlockSize
 		if cbHeight == Indefinite {

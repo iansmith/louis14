@@ -1229,7 +1229,8 @@ func createLineBoxEx(
 			}
 			// CSS 2.1 §9.4.3: inline span backgrounds also shift with
 			// position:relative. Use the original (non-reset) style.
-			if span.style.GetPosition() == css.PositionRelative || span.style.GetPosition() == css.PositionSticky {
+			// Sticky is scroll-time, not layout-time — leave zero.
+			if span.style.GetPosition() == css.PositionRelative {
 				offset := span.style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
 				bgFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
 			}
@@ -1442,7 +1443,7 @@ func createLineBoxEx(
 			// double-offset the text.
 			if r.Item.Style != nil && r.Item.Style.GetDisplay() == css.DisplayInline {
 				pos := r.Item.Style.GetPosition()
-				if pos == css.PositionRelative || pos == css.PositionSticky {
+				if pos == css.PositionRelative {
 					offset := r.Item.Style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
 					textFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
 				}
@@ -1555,9 +1556,10 @@ func createLineBoxEx(
 					blockPos = 0
 				}
 				// CSS 2.1 §9.4.3: Apply position:relative offset to atomic inlines.
+				// Sticky is scroll-time, not layout-time.
 				if r.Item.Style != nil {
 					pos := r.Item.Style.GetPosition()
-					if pos == css.PositionRelative || pos == css.PositionSticky {
+					if pos == css.PositionRelative {
 						offset := r.Item.Style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
 						r.LayoutResult.Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)
 					}

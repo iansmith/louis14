@@ -394,8 +394,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		result.PropagatedOOFCandidates = propagatedOOF
 	}
 
-	// CSS position:relative offset.
-	if gla.style != nil && (gla.style.GetPosition() == css.PositionRelative || gla.style.GetPosition() == css.PositionSticky) {
+	// CSS position:relative offset. Sticky is scroll-time, not layout-time.
+	if gla.style != nil && gla.style.GetPosition() == css.PositionRelative {
 		cbWidth := gla.space.AvailableSize.InlineSize
 		cbHeight := gla.space.AvailableSize.BlockSize
 		if cbHeight == Indefinite {

@@ -1050,7 +1050,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	//
 	// The overconstrained resolution rule is "start wins over end" in logical
 	// coordinates, following Blink's ComputeRelativeOffset (relative_utils.cc).
-	if bla.style != nil && (bla.style.GetPosition() == css.PositionRelative || bla.style.GetPosition() == css.PositionSticky) {
+	//
+	// position:sticky is NOT included — its offset is scroll-time, not
+	// layout-time. At layout we leave RelativeOffset zero (normal-flow
+	// position); the scroll-time path is deferred until scroll-based tests
+	// appear.
+	if bla.style != nil && bla.style.GetPosition() == css.PositionRelative {
 		logicalBlock := bla.space.AvailableSize.BlockSize
 		if logicalBlock == Indefinite {
 			logicalBlock = 0 // auto height → percentages compute to 0
