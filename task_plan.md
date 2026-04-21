@@ -1,7 +1,7 @@
 # Task Plan: Pass the entire css-position category
 
 ## Goal
-All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 3 closed): **68 passing, 36 failing**. Remaining: close 36 without regressing:
+All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 6 M6 closed): **83 passing, 22 failing**. Remaining: close 22 without regressing:
 
 - css-writing-modes (currently 781/781 PASS — Phase 5f complete)
 - CSS2 (99/99 PASS)
@@ -27,7 +27,7 @@ Do not duplicate wm notes here.
 ## Baseline snapshot (2026-04-21)
 Log: `output/baselines/css-position-2026-04-21.log`
 - 104 tests exercised: **50 PASS · 54 FAIL · 5 NORUN** at baseline.
-- Latest (post Phase 3 G-DYN-STATIC closed): **68 PASS · 36 FAIL** in this category.
+- Latest (post Phase 6 M6 closed, commit `01f468d9`): **83 PASS · 22 FAIL** in this category.
 - Failing test list + diffs: `/tmp/css-position-fails.tsv` (regenerate via `/tmp/parse_css_position.sh`).
 
 Highest-diff outliers (top 5 by pixel count, current state):

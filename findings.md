@@ -521,7 +521,7 @@ Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positi
 | G-REPLACED | open | 0 | 1 | — |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
 | G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **33** | **24 (+ 4 SKIPs out of scope)** | **83 / 100 runnable (projected)** |
+| **Total** | — | **33** | **24 (+ 4 SKIPs out of scope)** | **83 / 100 runnable** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -532,7 +532,7 @@ Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positi
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **81 PASS / 23 FAIL** (projected post Phase 5 M5b) | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **83 PASS / 22 FAIL** (post Phase 6 M6, commit `01f468d9`) | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |
