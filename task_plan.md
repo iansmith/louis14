@@ -148,13 +148,14 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - Table-specific IMCB clamp in `ComputeInsetModifiedContainingBlock`'s table-overflow branch. Skip until a css-tables test requires it.
 - Fragmentation column/page context for OOF. Out of scope.
 
-#### Commit 1 — Pure module (types + algorithmic functions, no wiring)
-- [ ] Create `pkg/layout/absolute_utils.go`:
-  - Types: `InsetBias` (enum), `LogicalAlignment`, `InsetModifiedContainingBlock`, `LogicalOofDimensions`.
-  - Pure functions (Blink naming, signatures adapted to Go): `GetAlignmentInsetBias`, `ComputeUnclampedIMCBInOneAxis` (including center-clipping collapse), `ResizeIMCBInOneAxis`, `ComputeUnclampedIMCB`, `ComputeMargins`, `ComputeInsets`, `ComputeOofInlineDimensions`, `ComputeOofBlockDimensions`.
+#### Commit 1 — Pure module (types + algorithmic functions, no wiring) — **DONE 2026-04-21, commit `a3c8db38`**
+- [x] Created `pkg/layout/absolute_utils.go` (612 lines):
+  - Types: `InsetBias` (enum), `ItemPosition` (enum), `AlignmentData`, `LogicalAlignment`, `LogicalOofInsets` (+ `LogicalInsets.AsOofInsets()`), `InsetModifiedContainingBlock`, `LogicalOofDimensions`.
+  - Pure functions (Blink naming): `GetAlignmentInsetBias`, `axesOppose`, `ComputeUnclampedIMCBInOneAxis` (including center-clipping collapse `2 × min(static, cb − static)`), `ResizeIMCBInOneAxis`, `ComputeUnclampedIMCB`, `BiasFromStaticEdge`, `ComputeMargins`, `ComputeInsets`.
+  - `ComputeOofInlineDimensions` / `ComputeOofBlockDimensions` deferred to Commit 2 (need layout-engine context).
   - No integration; no existing caller changes.
-- [ ] Small `absolute_utils_test.go` covering the three IMCB branches + kEqual collapse + safe/default bias as no-op.
-- [ ] **Gate:** compiles; new unit tests pass.
+- [x] `absolute_utils_test.go`: 16 unit tests — three IMCB branches, ResizeIMCB, ComputeMargins, GetAlignmentInsetBias, ComputeInsets end-overflow fallback. All pass.
+- [x] **Gate:** compiles; 16/16 new unit tests pass; no wm/CSS2/flex impact (dead code pending Commit 2).
 
 #### Commit 2 — Wire resolver + alignment (Blink-parity behavior change)
 - [ ] `out_of_flow_layout.go:132-310`: replace inline constraint-equation code with `ComputeOofInlineDimensions` + `ComputeOofBlockDimensions`.
