@@ -791,6 +791,16 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// container's writing mode and text-orientation. text-orientation:
 		// sideways causes vertical modes to use alphabetic baseline.
 		centralBaseline := wdm.UsesCentralBaselineWithStyle(bla.style)
+		// When every text run on the line has been resolved to
+		// text-orientation: sideways (e.g. because its content is all
+		// vertical-script — see collectTextNode), the line must use the
+		// alphabetic baseline even if the container's computed value is
+		// mixed/upright. This mirrors Blink's per-run font-metrics-driven
+		// baseline selection when the font's vertical metrics coincide with
+		// its horizontal metrics.
+		if centralBaseline && lineIsSidewaysResolved(line.Results) {
+			centralBaseline = false
+		}
 		// Compute containing block physical size for inline relative positioning.
 		// Percentages for top/bottom resolve against CB height, left/right against width.
 		cbBlockSize := bla.space.AvailableSize.BlockSize
@@ -900,6 +910,29 @@ func hasVisibleInlinePaint(style *css.Style) bool {
 	}
 	bw := style.GetBorderWidth()
 	return bw.Top > 0 || bw.Right > 0 || bw.Bottom > 0 || bw.Left > 0
+}
+
+// lineIsSidewaysResolved reports whether every text/atomic run on the line has
+// an effective text-orientation of "sideways". collectTextNode rewrites
+// text-orientation for all-vertical-script runs so their downstream metrics
+// converge with a sideways layout; this helper lets the caller pick the
+// matching alphabetic baseline when that rewrite covered the entire line.
+func lineIsSidewaysResolved(results []InlineItemResult) bool {
+	sawText := false
+	for _, r := range results {
+		if r.Item == nil || r.Item.Style == nil {
+			continue
+		}
+		if r.Item.Type != InlineItemText {
+			continue
+		}
+		sawText = true
+		to, _ := r.Item.Style.Get("text-orientation")
+		if to != "sideways" {
+			return false
+		}
+	}
+	return sawText
 }
 
 // createLineBox positions items within a line and produces a line box fragment.

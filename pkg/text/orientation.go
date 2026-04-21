@@ -1,5 +1,22 @@
 package text
 
+// IsVerticalScriptCharacter reports whether r belongs to a script natively
+// written vertically. Per UTR#50, these scripts' glyphs are designed for
+// vertical flow — their horizontal advance equals the cell used in vertical
+// upright mode. Mirrors the Mongolian subset of Blink's
+// Character::IsUprightInMixedVertical (property VO = U/Tu for these ranges).
+func IsVerticalScriptCharacter(r rune) bool {
+	switch {
+	case r >= 0x1800 && r <= 0x18AF: // Mongolian
+		return true
+	case r >= 0xA840 && r <= 0xA87F: // Phags-Pa
+		return true
+	case r >= 0x11660 && r <= 0x1166C: // Mongolian Supplement
+		return true
+	}
+	return false
+}
+
 // ShouldRotateSideways returns true if the character should be rotated
 // 90° CW in vertical text with text-orientation: mixed.
 // Based on Unicode UTR#50 Vertical_Orientation property:

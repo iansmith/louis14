@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/html"
+	textpkg "louis14/pkg/text"
 	"strings"
 	"unicode"
 )
@@ -274,6 +275,24 @@ func collectInlinesRecursive(
 	}
 }
 
+// isAllVerticalScript reports whether content consists entirely of runes from
+// scripts natively written vertically (Mongolian, Phags-Pa) plus ASCII
+// whitespace. Used to decide whether to collapse text-orientation values to
+// `sideways` for this run — see collectTextNode.
+func isAllVerticalScript(content string) bool {
+	sawVerticalScript := false
+	for _, r := range content {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		if !textpkg.IsVerticalScriptCharacter(r) {
+			return false
+		}
+		sawVerticalScript = true
+	}
+	return sawVerticalScript
+}
+
 // collectTextNode adds a text node's content to the inline items,
 // performing CSS white-space collapsing.
 func collectTextNode(
@@ -285,6 +304,20 @@ func collectTextNode(
 	content := node.Text
 	if len(content) == 0 {
 		return
+	}
+
+	// CSS Writing Modes §5.1 interop: for scripts natively written vertically
+	// (Mongolian, Phags-Pa) the font's vertical metrics equal its horizontal
+	// metrics, so `mixed`, `upright`, and `sideways` produce the same visual.
+	// We mirror Blink's font-driven convergence at the style level by treating
+	// all-vertical-script text runs as text-orientation: sideways — downstream
+	// baseline selection, measurement, and painting then take the unified path.
+	if parentStyle != nil && isAllVerticalScript(content) {
+		if to, _ := parentStyle.Get("text-orientation"); to != "sideways" {
+			clone := parentStyle.Clone()
+			clone.Set("text-orientation", "sideways")
+			parentStyle = clone
+		}
 	}
 
 	// Determine white-space handling.
