@@ -1,423 +1,241 @@
-# Findings & Decisions — wm category (css-writing-modes)
+# Findings & Decisions — css-position category
 
 ## Rules pointer
 Do not restate project rules here. They live in:
 - `/Users/iansmith/louis14/CLAUDE.md`
-- `/Users/iansmith/.claude/projects/-Users-iansmith-louis14/memory/MEMORY.md` (auto-memory index)
+- `/Users/iansmith/.claude/projects/-Users-iansmith-louis14/memory/MEMORY.md`
 
 Findings should assume those rules are already loaded in context.
 
+## Archived wm work
+All writing-modes category findings — 787 tests, bidi root-causes, orthogonal sizing, Phase 5f Groups A/B/C — have been moved to `docs/findings-wm.md`. Do not duplicate here.
+
 ## Requirements
-- 787 wm tests actually exercised by `TestWPTCSS3Reftests/css-writing-modes` (of 867 files on disk — the rest are refs / not test drivers).
-- Goal: all 787 pass at 0% diff. Baseline 674/787 (85.6%) → 113 failures to close.
-- Do not regress the 99/99 CSS2 suite.
+- 104 css-position tests actually exercised by `TestWPTCSS3Reftests/css-position`.
+- Goal: all 104 pass at 0 diff. Baseline 50/104 (48%) → close 54 failures + 5 NORUN.
+- Do not regress: css-writing-modes (781/781), CSS2 (99/99), css-flexbox (~621/629).
 
-## Phase 0 Baseline (complete — 2026-04-19)
-Raw log: `output/wm-baseline/raw.log` (~57s runtime)
-Failing list: `output/wm-baseline/failing.txt` (113 entries)
-With diffs: `output/wm-baseline/failing_with_diff.tsv` (sorted by % diff, desc)
+## Phase 0 Baseline (complete — 2026-04-21)
+Raw log: `output/baselines/css-position-2026-04-21.log`
+Parsed list: `/tmp/css-position-fails.tsv` (regenerate via `/tmp/parse_css_position.sh`)
 
-**Runner note:** wm suite is under `TestWPTCSS3Reftests` (not `TestWPTReftests`, which walks wpt-css2 only). Future bucket runs use:
-`go test ./pkg/visualtest/ -run 'TestWPTCSS3Reftests/css-writing-modes/<prefix>' -v`
+### Overall
+- 104 tests run · **50 PASS · 54 FAIL · 5 NORUN**
+- Highest diff: `containing-block-change-scrollframe.html` (10.4% / 50000 px).
+- Lowest diff (still failing): `position-absolute-dynamic-list-marker.html` (0.0% / 18 px) — likely a 1-pixel geometric slip, not visible fuzz.
 
-### Failure distribution by filename-prefix bucket
-| Count | Bucket | Phase |
-|------:|--------|-------|
-| 22 | `available-size-*` | 2 (orthog/sizing) |
-|  8 | `sizing-orthog-htb-in-vlr/vrl` | 2 |
-|  8 | `bidi-plaintext-*` | 1 (bidi) |
-|  6 | `bidi-isolate-*` | 1 |
-|  6 | `bidi-isolate-override-*` | 1 |
-|  5 | `block-plaintext-*` | 1 |
-|  5 | `bidi-embed-*` | 1 |
-|  5 | `bidi-normal-*` | 1 |
-|  4 | `border-spacing-*` | 4 (tables) |
-|  4 | `float-lft-orthog-*` | 2 |
-|  4 | `bidi-override-*` | 1 |
-|  4 | `bidi-unset-*` | 1 |
-|  3 | `float-vlr-*` | 3 (floats) |
-|  3 | `float-vrl-*` | 3 |
-|  3 | `block-embed-*` | 1 |
-|  3 | misc (singletons) | 5 |
-|  2 | `inline-block-alignment-*` | 5 |
-|  2 | `img-intrinsic-size-contribution-*` | 5 |
-|  2 | `mongolian-*` | 5 |
-|  2 | `border-conflict-element-*` | 4 |
-|  2 | `abs-pos-*` (other) | 5 |
-|  2 | `logical-props-*` | 5 |
-|  1 | `scrollbar-vertical-rl` | 5 |
-|  1 | `block-flow-direction-vrl-026` | 5 |
-|  1 | `orthogonal-*` | 2 |
-|  1 | `abs-pos-border-offset-003` | 5 |
-|  1 | `bidi-dynamic-iframe` | 1 |
-|  1 | `block-override-*` | 1 |
-|  1 | `block-override-isolate-*` | 1 |
-|  1 | `baseline-*` | 5 |
+### NORUN triage
+These 5 tests produce `=== RUN` but no `REFTEST PASS/FAIL` line. Possible causes: harness timeout, crash in render, JS-only test that doesn't reach the screenshot step, or reftest-wait never resolving.
 
-### Super-clusters (drives the rebalanced phase plan)
-| Count | Cluster |
-|------:|---------|
-| 49 | **Bidi × writing-modes** — all `bidi-*` (39) + `block-{plaintext,embed,override,override-isolate}-*` (10) |
-| 35 | **Orthogonal / sizing** — `available-size` (22) + `sizing-orthog` (8) + `float-lft-orthog` (4) + `orthogonal` (1) |
-|  6 | **Floats in vertical modes** — `float-vrl` (3) + `float-vlr` (3) |
-|  6 | **Tables in vertical modes** — `border-spacing` (4) + `border-conflict` (2) |
-| 17 | **Singletons & small groups** — abs-pos(3), inline-block-align(2), img-intrinsic(2), mongolian(2), logical-props(2), misc(3), baseline(1), scrollbar(1), block-flow-direction(1) |
-| **113** | **Total** |
+| Test | Likely cause (pre-investigation) |
+|------|---|
+| `hypothetical-box-scroll-parent.html` | Uses `scrollLeft = 1000` + text mutation; harness may not flush scroll in sync |
+| `hypothetical-box-scroll-viewport.html` | Similar: scroll-then-mutate dependency |
+| `position-absolute-multicol-001.html` | Multicol abspos; possible unsupported feature dropping test |
+| `position-change.html` | `reftest-wait` + double rAF + `takeScreenshot`; may hang if rAF is not driving |
+| `replaced-object-backdrop.html` | Likely `<object>` element rendering — may be unsupported |
 
-### High-diff outliers (top 10 by % diff — study these first within each bucket)
-| % | px | test |
-|---|---|------|
-| 12.7% | 61004 | `scrollbar-vertical-rl.html` |
-|  8.4% | 40320 | `inline-block-alignment-007.xht` |
-|  4.6% | 22105 | `available-size-022.html` |
-|  4.4% | 20996 | `img-intrinsic-size-contribution-001.html` |
-|  3.0% | 14319 | `available-size-023.html` |
-|  2.6% | 12452 | `block-flow-direction-vrl-026.xht` |
-|  2.5% | 12023 | `available-size-020.html` |
-|  2.5% | 12023 | `available-size-021.html` |
-|  2.1% | 10000 | `border-spacing-vlr-005.xht` |
-|  2.1% | 10000 | `border-spacing-vrl-004.xht` |
+Treat all 5 as failing for planning purposes. Each gets a 10-minute triage pass in its owning phase (most fall under Phase 4 G-HYPO or Phase 9 G-SINGLETONS).
 
-Most other failures are ≤ 0.5% — likely subtle axis-mapping bugs, not large layout misses. The scrollbar-vertical-rl outlier is a singleton; handle it in Phase 5.
+## Group breakdown (54 fails + 5 NORUN = 59)
 
-## Phase 1 Technical Findings — bidi × writing-modes (COMPLETE)
+Grouped by hypothesised shared root cause, not by diff %. Largest-cluster-first.
 
-### Result
-49 bidi-bucket failures → 2 remaining. 2 remaining are out-of-bucket (iframe, `white-space: pre`). CSS2 unaffected throughout.
-
-### Root Cause 1: Cross-span kerning merged items across bidi-level boundaries (closes 38/49)
-**Location:** `pkg/layout/line_breaker.go` — `applyCrossSpanKerning` / `canMergeShapingContext`
-
-Cross-span kerning concatenates adjacent text items sharing the same font properties and re-shapes the combined string once, then slices per-item widths from the cumulative advance array. After `SplitItemsAtLevelBoundaries` + `ReorderLineVisual`, items in visual order have bidi levels that don't correspond to source byte order. Concatenating them in visual order produced a scrambled mixed-direction string (e.g., `"> aא >  >"`) shaped as LTR — cluster→x positions were meaningless relative to per-item byte ranges.
-
-**Fix (commit `bbec3193`):** `canMergeShapingContext` returns false when `a.BidiLevel != b.BidiLevel`.
-
-### Root Cause 2: Block-level `unicode-bidi: plaintext` injected FSI/PDI control chars (closes 4/49)
-**Location:** `pkg/layout/inline_item.go` — `injectBlockBidiControls`; `pkg/layout/layout_tree_builder.go` — `maybeWrapAnonymousBlocks`
-
-Sub-bug A: `injectBlockBidiControls` had a `case "plaintext"` that wrapped the block's inline content in FSI (U+2068) + PDI (U+2069). `determineFSIDirection` skips content inside isolate pairs when scanning for the first strong character (UAX #9 P2), so the paragraph direction resolved to 0 (LTR default) instead of the correct RTL (strong Hebrew as first char). The plaintext block IS the paragraph; it should not be wrapped in an isolate — it should run P2/P3 resolution directly on its content.
-
-Sub-bug B: When a block with `unicode-bidi: plaintext` contained inline content followed by a block-level child, CSS 2.1 §9.2.1.1 wraps the initial inline content in an anonymous block. That anonymous block was created without inheriting `unicode-bidi`, so it lost the plaintext semantics.
-
-**Fix (commit `9a2f675e`):** Removed `"plaintext"` case from `injectBlockBidiControls` (block is its own paragraph — no FSI/PDI wrapper). Propagated `unicode-bidi: plaintext/bidi-override/isolate-override` to the anonymous block style in `maybeWrapAnonymousBlocks`.
-
-### Root Cause 3: Same-level RTL cross-span kerning shaped as LTR (closes 4/49)
-**Location:** `pkg/layout/line_breaker.go` — `canMergeShapingContext`; `pkg/text/measure.go` — `ShapeAdvances`
-
-Even when all adjacent items share the same bidi level (odd = RTL), they were merged for cross-span kerning. `ShapeAdvances` calls HarfBuzz with no direction field, defaulting to LTR. HarfBuzz with direction=RTL returns glyphs in descending cluster order; the `cum[]` LTR-ascending assumption cannot interpret these — yielding scrambled / negative per-item widths (e.g., `"א > ב"` got width -41.78px).
-
-`ShapingParams.Direction` supports `textshape.RTL` but `ShapeAdvances` never sets it. The `cum[]` slicing logic (`cum[end] - cum[start]`) also assumes ascending clusters, which is inverted for RTL.
-
-**Fix (commit `233a65de`):** `canMergeShapingContext` returns false when `a.BidiLevel % 2 != 0`. RTL items measure standalone. Cross-span kerning between RTL spans is skipped — acceptable for Hebrew (no contextual shaping across span boundaries) and avoids scrambled widths.
-
-**RTL shaping left for later:** If an Arabic test ever requires cross-span contextual forms, `ShapeAdvances` will need an `rtl bool` parameter, and `cum[]` will need to be built from per-glyph cluster sums (summing advances for glyphs in each byte range) rather than a prefix array.
-
-### Phase 1 remaining (non-bidi root causes — parked in Phase 5)
-- `bidi-dynamic-iframe-001`: iframe rendering capability gap (empty box). Not a bidi bug.
-- `block-plaintext-006`: `white-space: pre` preservation failure inside `unicode-bidi: plaintext` block. Not a bidi ordering bug.
-
-### Blink References — Phase 1
-- `third_party/blink/renderer/core/layout/inline/inline_node.cc`
-  - `InlineNode::SegmentBidiRuns`, `InlineNode::SegmentScriptRuns`
-- `third_party/blink/renderer/platform/text/bidi_paragraph.h` / `.cc` — paragraph-level bidi level resolution (plaintext / auto direction uses this)
-- `platform/text/bidi_resolver.h` — run resolution
-- Unicode Bidirectional Algorithm (UAX #9) — especially paragraph direction rules for `unicode-bidi: plaintext`
-- Writing-mode ↔ direction coupling: `ComputedStyle::GetWritingDirection`, `WritingDirectionMode`
-
-### Phase 2 — orthogonal / sizing (35 tests)
-- `core/layout/block_node.cc`
-  - `BlockNode::ComputeMinMaxSizes` (orthogonal branches)
-  - `BlockNode::Layout` (orthogonal root handling)
-- `core/layout/constraint_space_builder.{h,cc}` — `SetIsOrthogonalWritingModeRoot`, available-size propagation
-- `core/layout/length_utils.{h,cc}` — `ResolveMainInlineLength`, `ResolveMainBlockLength`
-- `available-size` spec: CSS Writing Modes L3 §7.3 (available size in orthogonal flow)
-
-### Phase 3 — floats in vertical modes (6 tests)
-- `core/layout/inline/line_breaker.cc` — float positioning in line layout (vertical axis mapping)
-- `core/layout/exclusions/exclusion_space.{h,cc}` — physical vs logical exclusion geometry
-- `core/layout/block_layout_algorithm.cc` — `PositionFloat`, `PerformFloatLayout`
-
-### Phase 4 — tables in vertical modes (6 tests)
-- `core/layout/table/table_layout_algorithm.cc` — column-width propagation in vertical modes
-- `core/layout/table/table_borders.cc` — border conflict resolution with logical vs physical edges
-- Spec: CSS Writing Modes L3 §7.1 (table row/column axes)
-
-### Phase 5 — singletons / misc (17 tests)
-- Scrollbar layout: `core/layout/scrollable_overflow_calculator.cc`
-- Inline-block alignment: `core/layout/inline/inline_box_state.cc` — baseline derivation for inline-block
-- `img-intrinsic-size-contribution`: `core/layout/layout_replaced.cc` — intrinsic ratio in orthogonal writing mode
-- Mongolian (`vertical-lr` with CJK): text orientation tables in `platform/fonts/orientation_iterator.cc`
-- `logical-props-*`: `core/css/properties/longhands/` logical-property ↔ physical mapping
-
-## Phase 2 Technical Findings — orthogonal / sizing (COMPLETE)
-
-### Float displacement in non-BFC-establishing containers (commit `994a6018`)
-**Tests:** `float-lft-orthog-{001,002,003,004}.html`
-**Location:** `pkg/layout/inline_layout.go` (line layout float positioning)
-
-`bfcInlineOrigin` (the inline offset from the current block's content edge to the BFC's content edge) was not being added to `floatStart` before comparing against the BFC-absolute float exclusion zones. The float would be positioned as if the block had no inline offset from the BFC, causing it to land at the wrong position.
-
-**Fix:** Add `bfcInlineOrigin` to `floatStart` before the BFC-absolute comparison.
-
-### Orthogonal available-size for scroller ancestors (commit `d660e64f`)
-**Tests:** `available-size-022.html` (4.6%), `available-size-023.html` (3.0%)
-**Location:** `pkg/layout/constraint_space.go` (available-size propagation)
-
-Orthogonal writing-mode children needed available-size from their scroll container ancestors propagated correctly. The fix ensured scroller ancestor sizes were included in the orthogonal available-size computation.
-
-## Phase 5a Technical Findings — logical-props (COMPLETE)
-
-### Logical border property cascade contamination (commit `e639eca6`)
-**Tests:** `logical-props-003.html`, `logical-props-004.html`, `logical-physical-mapping-001.html` (all 0.1% diff)
-**Location:** `pkg/css/cascade.go` (logical border property cascade resolution)
-
-Logical border properties (`border-block-start-width`, `border-inline-end-width`, etc.) were being contaminated by physical border property values set earlier in the cascade. When a physical border was set and then overridden by a logical border, the physical value was leaking into the computed logical value, producing incorrect border dimensions in vertical writing modes.
-
-**Fix:** Fixed cascade resolution for logical border shorthand properties to not carry over physical border values.
-
-## Phase 5b Technical Findings — abs-pos VLR (DONE — 2026-04-20)
-
-**Tests fixed:** all three at 0% diff — `abs-pos-vlr-border-001.html`, `abs-pos-vlr-padding-001.html`, `abs-pos-border-offset-003.html`.
-
-**Fix landed in commit `d9d313c3`** ("Fix double-px suffix in presentational attribute pixel values"): introduced a `pxValue(s)` helper in `pkg/css/cascade.go:1323-1327` that strips an existing `"px"` suffix before appending `"px"`. `applyPresentationalAttributes` now calls `style.Set("width", pxValue(val))` and `pxValue` for height. `width="100px"` now produces CSS `width: 100px` (not `100pxpx`), so the length parser accepts it, the img gets its intrinsic width from the explicit CSS, and the VLR-RTL static-position math lands the fragment correctly.
-
-**Re-verified 2026-04-20:** all three 5b tests pass at 0% diff.
-
-Below is the original root-cause analysis retained for historical context.
-
-### Root cause: `applyPresentationalAttributes` double-px bug
-**Tests:** `abs-pos-vlr-border-001.html` (0.1% diff — block 4 only, the `<img>` case)
-**Location:** `pkg/css/cascade.go:1341-1369` (`applyPresentationalAttributes`)
-
-HTML presentational attributes like `width="100px"` are mapped to CSS properties by appending "px":
-```go
-style.Set("width", val+"px")  // "100px" + "px" = "100pxpx" (INVALID CSS)
+### G-TABLE-REL — 16 tests — **Phase 1 target**
 ```
-The CSS length parser cannot parse "100pxpx", so the width remains unset.
-
-**Downstream effects:**
-1. `getImgAttrFallbackInfo` (`intrinsic_sizing.go:202`) uses `strconv.ParseFloat(val, 64)` which fails for "100px" → returns empty `IntrinsicSizingInfo{}` (no intrinsic dimensions, no ratio).
-2. `ComputeReplacedIntrinsicInlineSize` (`replaced_layout.go`): `hasExplicitBlock=true` (author CSS sets `height:40px`), no ratio, no intrinsic inline → `inlineSize = 300` (CSS 2.1 §10.3.2 replaced-element default).
-3. Fragment width = 304px (300 content + 4 border).
-4. Static position in VLR-RTL: `{BlockOffset=117, BlockEdge=End}`.
-5. `blockOffset = 117 - 304 = -187` → physical x = -183 (far off-screen left).
-
-**Contrast with canvas (passes):** `<canvas width="100" height="40">` is NOT in the list that sets CSS width (excluded by spec — canvas width/height set intrinsic space, not CSS width). `getCanvasIntrinsicInfo` defaults to 300×150 with `ratio=2.0` regardless of attribute parse success → `inlineSize = 40×2.0 = 80` → fragment width = 84px → `blockOffset = 117-84 = 33` → x = 37 (correct).
-
-**Fix needed:**
-```go
-// cascade.go ~line 1346-1349 — strip existing "px" before appending:
-numStr := strings.TrimSuffix(strings.TrimSpace(val), "px")
-style.Set("width", numStr+"px")
+position-relative-table-thead-top.html       1.2%
+position-relative-table-thead-left.html      1.2%
+position-relative-table-tfoot-top.html       1.2%
+position-relative-table-tfoot-left.html      1.2%
+position-relative-table-tbody-top.html       1.2%
+position-relative-table-tbody-left.html      1.2%
+position-relative-table-tr-top.html          1.7%
+position-relative-table-tr-left.html         1.7%
+position-relative-table-tfoot-top-absolute-child.html  1.7%
+position-relative-table-tr-top-absolute-child.html     1.0%
+position-relative-table-tr-left-absolute-child.html    1.0%
+position-relative-table-thead-top-absolute-child.html  1.0%
+position-relative-table-thead-left-absolute-child.html 1.0%
+position-relative-table-tfoot-left-absolute-child.html 1.0%
+position-relative-table-tbody-top-absolute-child.html  1.0%
+position-relative-table-tbody-left-absolute-child.html 1.0%
+position-relative-table-td-top.html          0.6%
+position-relative-table-td-left.html         0.6%
 ```
-Same fix for height (~line 1364-1367). This makes `width="100px"` → CSS `width: 100px` (valid).
+**Hypothesis.** `pkg/layout/table_layout.go` has no `PositionRelative`/`PositionSticky` branch. `block_layout.go:928-939`, `flex_layout.go:1821-1832`, `grid_layout.go:395-403`, and `inline_layout.go:1122/1286/1401` all set `Fragment.RelativeOffset = computeRelativeOffset(offset, wdm)` when the style's position is relative/sticky. The table algorithm emits fragments but never calls this.
 
-**Open question:** After this fix, the img will have intrinsic width=100px from CSS (explicit inline). The static position conversion from HTB-RTL→VLR-RTL gives `{BlockOffset=117, BlockEdge=End, InlineOffset=52, InlineEdge=End}`. With correct inline size (104px with border), `blockOffset = 117-104 = 13` → physical x = 17. Reference expects x ≈ 5. The remaining delta (12px) needs further investigation once the fix is applied.
+**Blink entry points (to read in Phase 1):**
+- `third_party/blink/renderer/core/layout/layout_table_section.cc` — section (thead/tbody/tfoot) layout + paint.
+- `third_party/blink/renderer/core/layout/layout_table_row.cc` — row layout.
+- `third_party/blink/renderer/core/layout/layout_object.cc` — `ComputeRelativeOffset`.
+- `third_party/blink/renderer/core/layout/ng/table/ng_table_layout_algorithm.cc` — NG table algorithm.
 
-**Files involved:**
-- `pkg/css/cascade.go:1341-1369` — `applyPresentationalAttributes`
-- `pkg/layout/intrinsic_sizing.go:162-228` — `getImgAttrFallbackInfo`
-- `pkg/layout/replaced_layout.go:1-81` — `ComputeReplacedIntrinsicInlineSize`
-- `pkg/layout/out_of_flow_layout.go:45-293` — `LayoutCandidates` (BlockEdge=End path: line 258-267)
-- `pkg/layout/static_position.go` — `ConvertToPhysical` / `ConvertToLogical`
+**Expected fix shape.** In `table_layout.go`, after emitting each row/section/cell fragment, check the child's style. If `Position == Relative || Sticky`, compute `offset` from inset properties (`top/right/bottom/left`) against the containing-block dimensions and set `fragment.RelativeOffset`. Mirror `computeRelativeOffset` from `block_layout.go:964`.
 
-## Technical Decisions
+**Open question:** table sections and rows may or may not generate their own fragments in our current architecture. If they are folded into the table's single fragment, the `RelativeOffset` has to be applied during fragment tree construction rather than at algorithm exit. Answer before writing code.
+
+### G-ABS-CENTER — 5 tests
+```
+position-absolute-center-001.html   0.4%
+position-absolute-center-002.html   0.8%
+position-absolute-center-003.html   0.3%
+position-absolute-center-004.html   0.3%
+position-absolute-center-007.html   2.1%
+```
+**What the tests exercise.** `position: absolute` with either `margin: auto` + both insets, or `justify-content: center` on a flex container, combined with CSS Align 3 abspos sizing (available space = 2 × distance from center of static-position rectangle to closest CB edge).
+
+**Blink entry points:**
+- `third_party/blink/renderer/core/layout/ng/ng_absolute_utils.cc` — `ComputeOutOfFlowInsetSize`, `ComputeOutOfFlowBlockSize`.
+- `third_party/blink/renderer/core/layout/ng/ng_out_of_flow_layout_part.cc` — dispatch.
+
+**Spec:** <https://drafts.csswg.org/css-align-3/#abspos-sizing>. Available-space algorithm is non-trivial — center alignment needs the center of the static-position rect to be known before sizing.
+
+### G-CB-CHANGE — 3 tests
+```
+containing-block-change-scrollframe.html               10.4%
+containing-block-change-button.html                    4.2%
+absolute-pos-box-inside-fixed-pos-box-with-changing-height.html  0.5%
+```
+**What they exercise.** JS mutates a property that establishes a new containing block — `overflow: hidden` on a div, or insertion of a button — after the page has laid out. Abspos children must re-resolve to the new CB.
+
+**Blink entry points:**
+- `third_party/blink/renderer/core/style/computed_style.cc` — `NeedsContainingBlockInvalidation`.
+- `third_party/blink/renderer/core/layout/layout_object.cc` — `ContainingBlock()`, `ContainingBlockForAbsolutePosition()`.
+- `third_party/blink/renderer/core/layout/layout_object.cc` — `StyleDidChange` containing-block-change path.
+
+**Related:** overlaps with G-DYN-STATIC when the CB change happens through a `display` or `position` flip.
+
+### G-DYN-STATIC — 6 tests
+```
+position-absolute-dynamic-static-position-floats-001.html   0.7%
+position-absolute-dynamic-static-position-floats-002.html   0.3%
+position-absolute-dynamic-static-position-floats-003.html   0.3%
+position-absolute-dynamic-static-position-floats-004.html   0.7%
+position-absolute-dynamic-static-position-inline.html       2.1%
+position-absolute-dynamic-static-position-table-cell.html   2.1%
+```
+**What they exercise.** JS flips a property (float insertion, `display: inline → block`, table-cell vertical-align interaction) that changes the abspos child's static position. Triggers re-layout; the new static position must be picked up.
+
+**Blink entry point:** `ng_out_of_flow_layout_part.cc::LayoutCandidate` + static-position caching in layout-input.
+
+### G-HYPO — 3 FAIL + 2 NORUN
+```
+hypothetical-dynamic-change-001.html   2.1%  (fixed-pos ancestor moves)
+hypothetical-dynamic-change-002.html   2.1%
+hypothetical-dynamic-change-003.html   4.2%
+hypothetical-box-scroll-parent.html    NORUN
+hypothetical-box-scroll-viewport.html  NORUN
+```
+**What they exercise.** CSS Position 3 hypothetical-box algorithm: `position: absolute` with auto-left/auto-right uses the parent's in-flow position. When the ancestor itself moves (via JS), the child's hypothetical position must re-derive.
+
+**Blink entry points:**
+- `third_party/blink/renderer/core/layout/ng/ng_block_layout_algorithm.cc` — `PrepareLayout` for OOF.
+- Hypothetical-position reference: <https://drafts.csswg.org/css-position/#size-and-position-details>.
+
+### G-ROOT-FLEX-GRID — 4 tests
+```
+position-fixed-root-element-flex.html    0.8%
+position-fixed-root-element-grid.html    0.8%
+position-absolute-root-element-flex.html 0.8%
+position-absolute-root-element-grid.html 0.8%
+```
+**What they exercise.** `<html>` element with `position: fixed|absolute` and `display: flex|grid`. Insets define the box size relative to ICB; not a shrink-to-fit.
+
+**Blink entry point:** `layout_view.cc` + flex/grid root-element special-cases.
+
+### G-FIXED — 1 test
+```
+position-fixed-scroll-nested-fixed.html   4.2%
+```
+Nested `position: fixed` inside a scrolling fixed container; inner fixed should escape the scroller and paint above.
+
+### G-ABS-IN-INLINE — 2 tests
+```
+position-absolute-in-inline-003.html   2.9%
+position-absolute-in-inline-004.html   2.3%
+```
+**What they exercise.** Inline as containing block for abspos descendants. Spec: <https://www.w3.org/TR/css-position-3/#def-cb> + CSS 2.1 §10.1.4 ("if the element is inline-level, the containing block depends on the `direction` property of the container").
+
+**Blink entry point:** `inline_box.cc` + `InlineNode::ComputeContainingBlockForOutOfFlow`.
+
+### G-STICKY — 1 test
+```
+sticky-top-001.html   3.4%
+```
+**What it exercises.** `position: sticky; top: 10px` in the middle of content at scroll=0 should stay in normal flow (offset 0), NOT offset by 10px.
+
+**Current behavior.** Our code treats sticky identically to relative (`block_layout.go:929`, etc.), applying `computeRelativeOffset` unconditionally. At scroll=0, the top inset is applied, giving wrong result.
+
+**Blink entry point:** `third_party/blink/renderer/core/layout/sticky_position_constraint.h` + `scroll_anchor.cc`.
+
+**Minimum viable fix:** for `position: sticky`, emit zero `RelativeOffset` when the scroll container's scroll offset is 0 (or more generally, when the sticky's flow position satisfies `flow_top >= scroll_offset + inset_top`).
+
+### G-REPLACED — 1 test
+```
+position-absolute-replaced-no-intrinsic-size.tentative.html   2.1%
+```
+`<img>` with `position: absolute; top:0; bottom:0; height: max-content; width: 100px; margin: auto` on an SVG with `viewBox='0 0 50 50'`. CSS 2.2 §10.3.7 / §10.6.5.
+
+### G-SINGLETONS — 11 tests (includes 3 NORUN)
+```
+position-relative-001.html                          1.0%  non-table % top/left
+position-relative-002.html                          1.0%
+position-relative-011.html                          0.4%  tbody %-top shouldn't resolve
+position-relative-012.html                          0.4%  tbody position:relative + top:100%
+position-relative-013.html                          0.4%  td position:relative + top:100%
+stack-floats-001.xht                                1.7%  CSS 2.1 §9.9 stacking order
+position-absolute-iframe-print-001.sub.html         0.3%  abspos iframe in pagination
+position-absolute-iframe-print-002.sub.html         0.3%
+clear-001.xht                                       0.0%  96 px; CSS 2.1 §9.5 clear
+position-absolute-dynamic-list-marker.html          0.0%  18 px; ::marker + abspos
+position-change.html                                NORUN
+replaced-object-backdrop.html                       NORUN
+position-absolute-multicol-001.html                 NORUN
+```
+Mixed shapes; likely several independent root causes. Sweep last.
+
+**Note:** `position-relative-011/012/013` are table-related (`%-top` on `<tr>`/`<tbody>`/`<td>` under position:relative) — they may share a root cause with G-TABLE-REL. If so, closing Phase 1 may also close them. Verify in Phase 1's regression sweep.
+
+## Super-cluster counts
+| Cluster | Count | Cumulative if closed |
+|---|---|---|
+| G-TABLE-REL | 16 | 66 |
+| G-DYN-STATIC + G-CB-CHANGE | 9 | 75 |
+| G-ABS-CENTER | 5 | 80 |
+| G-HYPO | 5 | 85 |
+| G-ROOT-FLEX-GRID + G-FIXED | 5 | 90 |
+| G-ABS-IN-INLINE | 2 | 92 |
+| G-STICKY | 1 | 93 |
+| G-REPLACED | 1 | 94 |
+| G-SINGLETONS | 11 | 105 (capped at 104 in practice) |
+| **Total** | **54 + 5 NORUN** | **104 if all close** |
+
+## Blink study checklist (before Phase 1 code)
+- [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
+- [ ] Read `ComputeRelativeOffset` (likely `layout_object.cc` or `ng_relative_utils.cc`).
+- [ ] Find where Blink applies `RelativeOffset` to table sections/rows/cells — `PaintLayer`? Fragment construction?
+- [ ] Confirm whether Blink applies relative offsets to `<caption>` (none of our failing tests use caption, so this is a bounds check only).
+
+## Test Results
+| Scope | Test count | Baseline | Target |
+|---|---|---|---|
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | 104 PASS |
+| css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS |
+| CSS2 (invariant) | 99 | 99 PASS | 99 PASS |
+| css-flexbox (watch) | ~629 | 621 PASS (as of 2026-04-20 baseline) | ≥621 |
+
+## Decisions Made
 | Decision | Rationale |
 |----------|-----------|
-| Phase 0 single full wm run (done) | Baseline is a one-time cost; subsequent runs are per-bucket + 20 regression-adjacent (CLAUDE.md §4) |
-| Rebalanced phase order: bidi → orthog/sizing → floats → tables → singletons | Follows actual failure distribution — bidi is 43% of failures, dwarfing abs-pos (which has only 3 failures) |
-| CSS2 regression check at each phase boundary | wm fixes touch inline layout + length resolution, used by CSS2 too |
-| Use `TestWPTCSS3Reftests` not `TestWPTReftests` | `TestWPTReftests` scans wpt-css2 only; wm lives under wpt-css3 |
+| Start with G-TABLE-REL | Highest single-root-cause yield (16 tests); `table_layout.go` clearly missing the branch. |
+| Treat NORUN as failing | CLAUDE.md §3 — all tests must pass; cannot silently drop. |
+| Do not run css-position category in full except at milestone verifications | CLAUDE.md §4 — only failing-test + adjacent runs during feature work. |
+| Preserve wm invariants as hard gate | Phase 5f complete; any wm regression reverts the offending commit. |
 
-## Issues Encountered
-| Issue | Resolution |
-|-------|------------|
-| Initial `TestWPTReftests/css-writing-modes` returned 0/99 | Wrong test function; switched to `TestWPTCSS3Reftests` |
-| First pixel-diff parser showed 0.0% / ? everywhere | Anchor was wrong; fixed by tracking `=== RUN` → next `REFTEST FAIL` |
+## Issues Encountered (for this category)
+*(populated as work progresses)*
 
-## Phase 5 Remaining — Foundational Grouping (2026-04-20)
-
-After 5a, 5b, 5d (Mongolian B2), and the singleton sweep, four wm failures remain. They cluster into **three foundational issues**, not four — 004 and 006 likely share one root cause.
-
-### Group A — Orthogonal-root ancestor walk (`orthogonal-root-resize-icb-007`, 1.1%) — **DONE 2026-04-21** (`c9ff9826`)
-
-**Test structure:** `body > div(10×10) > div(plain) > div(inline-block, WM: vertical-rl, width: 100px) > float+float (each 100×50)`.
-
-**Failure (pre-fix):** after iframe resize to 100×100, inline-block orthogonal root still got only 10px inline-size (grandparent's definite block-size), so the two floats stacked instead of fitting side-by-side — 5400px of residual red.
-
-**Blink reference (confirmed via WebFetch 2026-04-20 and again 2026-04-21 via `block_node.cc` + `space_utils.cc`):** orthogonal-root inline-size resolution has **no `position` gate** and **no atomic-inline vs block-level gate**. `SetOrthogonalFallbackInlineSizeIfNeeded` applies the same ancestor-walk-to-ICB algorithm to inline-block orthogonal roots as to block-level ones.
-
-**Actual root cause (diverged from hypothesis).** The walk algorithm already existed (`block_layout.go:1487` `computeOrthogonalAvailableBlock`), and the block-child path at `block_layout.go:368-370` used it correctly (`blockForChild = orthogonalAvailableBlock` when `isOrthogonal`). The divergence was in the **atomic-inline path** — `line_breaker.handleAtomicInline` at `line_breaker.go:1205-1234` — which used the raw `lb.space.AvailableSize.BlockSize` (10px, inherited down from the grandparent's content-box) instead of calling the same walk. After the axis-swap in `SetAvailableSize`, the orthogonal child saw inline-size=10 and the second float overflowed.
-
-A second amplifier: `inline_layout.layoutInlineChildren` hand-constructs a `lineSpace` `ConstraintSpace{}` and in doing so dropped `OrthogonalFallbackInlineSize` and `OrthogonalFallbackBlockSize` from `bla.space`. Even the existing "Indefinite→ICB" fallback in `ConstraintSpaceBuilder.SetAvailableSize` couldn't fire because the fallback fields were 0 on `lb.space`.
-
-**Fix (3 files, 46 insertions / 4 deletions):**
-
-1. `pkg/layout/constraint_space.go` — new field `ConstraintSpace.OrthogonalAvailableBlock` holding the pre-resolved available block-size for orthogonal atomic-inline descendants of the current IFC.
-2. `pkg/layout/inline_layout.go` — `layoutInlineChildren` computes `hasExplicitBlock`/`explicitBlockSize` from `geomForPct`, calls `computeOrthogonalAvailableBlock` (same helper as block-child path), and propagates the result plus `OrthogonalFallbackInlineSize` + `OrthogonalFallbackBlockSize` (via `computeOrthogonalFallbackBlockForChildren`) onto `lineSpace`.
-3. `pkg/layout/line_breaker.go` — `handleAtomicInline` normal-layout branch checks `lb.space.WritingDirection.IsOrthogonalTo(childWDM)` and prefers `lb.space.OrthogonalAvailableBlock` as the parent-side BlockSize; the axis-swap in `SetAvailableSize` then gives the child the correct ICB-capped inline-size.
-
-**Result:** `orthogonal-root-resize-icb-007` at 0 pixel diff. Zero regressions: css-writing-modes 780/781 (only Group C remains), CSS2 99/99, css-position + css-display + css-flexbox 703/110 identical to baseline (verified via `git stash`).
-
-**Broader impact observation (not yet exploited).** Two independent data points (icb-007 + I3's B3 `IsOrthogonalTo` narrowing) suggested "position-gated" holes in containing-block helpers. The icb-007 fix was NOT position-related — it was an inline-vs-block path divergence. If Group C or css-position uncovers another abspos-vs-static asymmetry, investigate whether a similar atomic-inline vs block-level symmetry break is present.
-
-### Group B — `unicode-bidi: plaintext` paragraph resolution (`block-plaintext-004`, 0.9% & `block-plaintext-006`, 1.0`) — **DONE 2026-04-21**
-
-Both tests exercise UAX#9 P2/P3 where each paragraph is separated by a hard break and gets its own base direction from its first strong character. 004 uses `<div class="test" unicode-bidi:plaintext>` with `<br>` separators; 006 uses `<pre unicode-bidi:plaintext>` with literal `\n` separators inside `white-space: pre`.
-
-**Expected output (both):** 3 content lines with per-line directions derived from first strong char — LTR, RTL, LTR. 006 additionally expects a blank leading/trailing line from preserved newlines.
-
-**Prior work landed:**
-- `5502e36a` B4.2: emit `InlineItemControl` per `\n` in the `!collapseSpaces+preserveNewlines` branch of `collectTextNode`.
-- `8413ef9f`: blank-line strut via control-item style in `computeLineMetricsEx`; NBSP content-height via CSS-aware trimming; RTL alignment uses real container width.
-- `21c779ea`: preserve leading/trailing whitespace for `white-space: pre/pre-wrap`.
-- `parser.go`: `commentSeenInPre` prevents stripping leading `\n` from `<pre>` when a comment precedes text.
-- `bidi.go::ResolveBidiLevelsPlaintext` (line 163): per-paragraph P2/P3 — splits at `xbidi.B` class (which `\n` has), runs `determineFSIDirection` on each paragraph independently.
-
-**Actual root causes (the paragraph-level hypothesis was wrong — existing paragraph resolution was correct).** The remaining ~1% delta came from two independent foundational bugs, both exercised by this test's `<pre>` element which has `font-size: 150%`:
-
-1. **Font-size percentage inheritance (`pkg/css/cascade.go:709-729`)**. `ApplyInheritedProperties` only resolved `em` font-size values against the parent's computed font-size. Percentage values were left as-is (e.g. `"150%"`). Downstream `GetFontSize()` ran the string through `ParseLengthWithFontSize` which doesn't understand `%`, and fell back to the 16px default — so the `<pre>` rendered at 16px instead of 24px. Fix: parse `%` the same way we parse `em`, using parent's font-size. Top-down cascade guarantees the parent is already resolved to an absolute px value.
-
-2. **`InlineItemControl` strut metrics diverged from `InlineItemText` (`pkg/layout/inline_layout.go:1577-1614`).** For blank lines (two consecutive `\n` in `<pre>` produce a Control-only line), `computeLineMetricsEx` sized the strut wrong when `line-height: normal`:
-   - Used `GetLineHeight()`'s 1.2×fontSize fallback instead of `text.FontHeightFromFont` (typographic ascent+descent). Text lines on the same element used the typographic path, so blank lines had a different height than text lines.
-   - Used `fontSize - ascent` for descent instead of `text.FontDescentFromFont` — wrong for fonts where the typographic descent is not `fontSize - ascent` (e.g. Ahem at 24px: descent 0.2×em, but `fontSize - ascent` gave a different value when the ascent metric was derived from the font file).
-   - Gated half-leading on `halfLeading > 0` — dropped it for `line-height: normal` where `lineHeight == ascent+descent` exactly.
-   Fix: mirror the `InlineItemText` branch exactly — use `FontHeightFromFont` when `IsLineHeightNormal()`, `FontDescentFromFont` for descent, and apply half-leading unconditionally.
-
-**Why the previous hypothesis was wrong.** We assumed since targeted bidi fixes had already landed, the remaining delta must be bidi-direction flow. Actually, visual inspection of the test/ref PNGs (via `/tmp/scanimg.go` pixel scanner) showed the boxes were the right shape and horizontally correct — only the vertical line spacing was off. That pointed at line metrics, not bidi.
-
-**Result:** both 004 and 006 PASS at 0 pixel diff. The two fixes are foundational (CSS 2.1 §15.7 font-size inheritance; CSS 2.1 §10.8 line-box strut) — they should not be interpreted as plaintext-specific. Any other test exercising `%` font-size or blank-line-in-`white-space:pre` benefits.
-
-**Regression check to run before closing:** targeted sweep of tests that use either mechanism — `font-size: NN%` in any wm test, and `<pre>` with preserved empty lines in any suite.
-
-### Group C — VLR + `text-orientation: sideways` baseline (`inline-block-alignment-007`, 8.4%) — **DONE 2026-04-21**
-
-**Test:** `writing-mode: vertical-lr; text-orientation: sideways; font: Ahem 60/120/30`. An inline-block contains a block descendant with a larger font; the reference expects the inline-block's last-line-box baseline to align with outer "É" baselines — a straight left edge on the composite polygon.
-
-**Prior state (3 coupled bugs identified in `docs/plan-B1-inline-block-baseline.md`):**
-
-1. **`text-orientation` inheritance** — FIXED earlier in I1 (commit `2ef71c5f`, B1.1). Children inherit `sideways` from `#lr-sideways`; `UsesCentralBaselineWithStyle` returns `false` (alphabetic, not central).
-2. **VLR+sideways baseline swap** — typographic ascent was used as `alignment_ascent`. After 90° CW glyph rotation with block-start on the LEFT, the alphabetic baseline actually lands at `descent` from block-start. Prior bulk-swap attempt (I2 salvage, `df19b64a`) was net -25 on wm and reverted.
-3. **`IsSidewaysLR` flag not set for VLR+sideways** — pre-existing; Ahem hides the glyph-rotation issue visually and the baseline math, once corrected via #2, produces the correct pixel output without touching the renderer flag.
-
-**Actual root cause landed.** The swap in #2 was correct in concept but had two amplifiers previously unrecognized:
-
-- **Narrow scope.** The swap applies only when `wdm.WM == WritingModeVerticalLR && !centralBaseline` — i.e., VLR with alphabetic (sideways) orientation. `sideways-lr` uses CCW rotation (block-start on LEFT, but baseline lands the same way as horizontal — no swap needed); `sideways-rl` and `vertical-rl + sideways` place block-start on the RIGHT, canceling the rotation with respect to the baseline; VLR+upright uses `centralBaseline=true` and doesn't touch alphabetic metrics. The earlier salvage attempt broadened to all sideways cases and regressed 25 sideways-lr tests.
-- **CSS Syntax Level 3 §9 error recovery.** The `inline-block-alignment-007-ref.xht` reference file has a `.ignore { ... }` float rule terminated by `]]>` (end of XHTML CDATA section) with no explicit closing `}`. Our `splitRules` discarded unclosed blocks; Blink follows §9 and treats any open block as closed at EOF. Without the `.ignore` rule applied, the float (120×120, margin 60 24 30 60) was absent from the REF and its swatches sat at x=8. With §9 recovery, the float displaces them to x=212, matching the (now-correct) TEST output. Both changes were required — swap alone or recovery alone leaves ~8% diff.
-
-**Fix (2 files):**
-
-1. **`pkg/layout/inline_layout.go`** — three helpers and a narrow condition:
-   - `needsSidewaysVLRBaselineSwap(wdm, centralBaseline)` — returns `wdm.WM == WritingModeVerticalLR && !centralBaseline`.
-   - `alignmentAscentFromFont(swap, size, path)` / `alignmentDescentFromFont(swap, size, path)` — return typographic descent/ascent when `swap` is true, else typographic ascent/descent.
-   Applied at 6 sites: the `inlineBoxAsDesc` closure in `createLineBoxEx`, the text-positioning ascent computation in `createLineBoxEx`, and the strut / `InlineItemOpenTag` / `InlineItemText` / `InlineItemControl` arms of `computeLineMetricsEx`. Every site that previously called `text.FontAscentFromFont` / `text.FontDescentFromFont` for line-box alignment math now goes through the helpers. No other behavior changes.
-2. **`pkg/css/stylesheet.go`** — `splitRules` now applies CSS Syntax L3 §9 EOF recovery: if the tokenizer hits EOF while `depth > 0` and there is non-whitespace content pending, synthesize the missing `}`s and emit the rule rather than discarding it. Documented inline with the spec reference.
-
-**Blink verification.** Blink's `LogicalBoxFragment::BaselineMetrics` and its CSS tokenizer both match this behavior. Blink CSS also applies the §9 recovery at EOF so the `.ignore` rule parses; its baseline math swaps only when the writing mode is `vertical-lr` with alphabetic orientation.
-
-**Why I2 salvage failed but this didn't.** The earlier attempt broadened the swap to `sideways-lr` and `vertical-rl+sideways` as well — both cases where rotation does not invert the block-start side. Narrow `WritingModeVerticalLR && !centralBaseline` alone is the correct predicate.
-
-**Verification commands:**
-```
-GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ \
-  -run 'TestWPTCSS3Reftests/css-writing-modes/inline-block-alignment-007' -v
-→ PASS (480000 pixels, max diff: 0)
-```
-
-**Regression sweep (post-fix):**
-
-| Scope | Result |
-|---|---|
-| `TestWPTCSS3Reftests/css-writing-modes/*` (full) | **781/781 PASS** (was 780/781 — all wm failures resolved) |
-| 33 hand-picked regression candidates (sideways-lr, VLR line-box-height, text-orientation, inline-block-alignment-slr-009) | 33/33 PASS |
-| `TestWPTReftests` (CSS2) | 99/99 PASS |
-| `TestWPTCSS3Reftests/(css-flexbox\|css-position)/` | 676 PASS / 57 FAIL — **improved** from baseline 671/62 (§9 EOF recovery fixed 5 adjacent tests). No new regressions. |
-
-Zero regressions. The §9 EOF recovery change also fixed 5 previously-failing tests in css-flexbox/css-position whose test or ref files had `]]>`-terminated rules.
-
-**Files modified:** `pkg/layout/inline_layout.go`, `pkg/css/stylesheet.go`.
-
-### Attack order (foundational correctness)
-
-Ranked by "foundational impact per unit of effort", not by % diff:
-
-1. ~~**Group B (block-plaintext-004 + 006)**~~ — **DONE 2026-04-21** (`c0536939`). Two foundational fixes: font-size % inheritance in cascade, and `InlineItemControl` strut alignment with `InlineItemText` strut for `line-height: normal`. Root cause was not paragraph-level sourcing.
-2. ~~**Group A (icb-007)**~~ — **DONE 2026-04-21** (`c9ff9826`). Atomic-inline orthogonal-root path aligned with block-child path via new `ConstraintSpace.OrthogonalAvailableBlock` field. Not position-related (hypothesis was wrong) — it was inline-vs-block path divergence.
-3. ~~**Group C (inline-block-alignment-007)**~~ — **DONE 2026-04-21**. Two paired changes: narrow VLR+sideways alphabetic baseline swap (`WM == WritingModeVerticalLR && !centralBaseline`) + CSS Syntax L3 §9 EOF recovery so the REF's `]]>`-terminated `.ignore` float rule parses. Neither alone works — both together bring 007 to 0 diff. Side benefit: §9 recovery fixed 5 adjacent css-flexbox/css-position tests.
-
-**Phase 5f complete — all 781 wm tests PASS at 0 diff.**
-
-## Multi-category baseline — 2026-04-20
-
-Sanctioned cross-category baseline run after iframe merge. Raw logs in `output/baselines/`.
-
-| Category | PASS | FAIL | Panic | Pass rate | Log |
-|---|---|---|---|---|---|
-| CSS2 (`TestWPTReftests`) | 37 | 0 | **1 — aborts run** | — | `output/baselines/css2.log` |
-| css-flexbox | 621 | 8 | 0 | 98.7% | `output/baselines/flex.log` |
-| css-writing-modes | 749 | 32 | 0 | 94.6% | `output/baselines/wm.log` |
-| css-position | 50 | 54 | 0 | 45.5% | `output/baselines/css-position.log` |
-
-### CSS2 crash (regression, blocks delivery)
-Nil-pointer dereference at `generated-content/before-after-display-types-001.xht`. Stack:
-```
-pkg/layout/block_layout.go:1330 (layoutElement)
-pkg/layout/block_layout.go:422  (BlockLayoutAlgorithm.Layout)
-pkg/layout/engine.go:160        (LayoutEngine.Layout)
-```
-No code has landed between `8700eb9c` (I2 salvage) and the baseline run except findings-doc edits — so the regression was introduced by one of the four merges themselves: `2ef71c5f` (I1) → `489020db` (I3) → `6814437e` (I4) → `8700eb9c` (I2 salvage). The plan-doc claim "CSS2 regression check: 99/99 unaffected" was done per-individual-fix, never post-integration.
-
-### WM pass-count discrepancy
-Plan's running tally said 771/16. Measured baseline is **749/32** — 22 more failures than expected. Either 5a's 3 fixes silently regressed, or a subsequent merge (e.g. I4's B6 float/table work) hit wm tests that were previously passing.
-
-### Next-category ranking (derived from the table)
-1. **CSS2 panic** — urgent; unblocks delivery and the "don't regress CSS2" invariant.
-2. **css-writing-modes** — stay on current plan; ~22 unaccounted failures to reconcile.
-3. **css-position** — biggest headroom (54 fails at 45% pass rate). Second-best ROI.
-4. **css-flexbox** — 8 singletons, likely cheap to mop up.
-Tables deliberately de-prioritized — not in the top-4 failure-density pile and the table layout algorithm carries high implementation cost.
-
-## Phase 7 — Integration Regression Audit (2026-04-20, URGENT)
-
-Blocks Phase 5b/6/7. Two independent regressions from the integration merges on `fix/flexbox-fast`. Structured as 7a/7b/7c.
-
-### Merge timeline on `fix/flexbox-fast`
-1. `2ef71c5f` — I1: cascade + parser (B1.1, B4.1, B4.2)
-2. `489020db` — I3: constraint-space + OOF static position (B5, B3)
-3. `6814437e` — I4: JS engine rAF + element onload, float max-content, table-row wrapping (B6)
-4. `8700eb9c` — I2 salvage: B1.2 baseline swap, B1.3 sideways broadening for VLR
-
-### 7a — CSS2 nil-pointer panic
-- Test: `generated-content/before-after-display-types-001.xht`
-- Stack: `block_layout.go:1330 → :422 → engine.go:160`
-- **Most likely culprit:** I4 (touched `block_layout.go` for table-row wrapping + float max-content; generated content with `display: table-row` fits the shape). Second guess: I3 (OOF `PropagateOOFCandidates` touched same file).
-- **Diagnostic first step:** read the test, identify what type the nil pointer is (`LayoutBox` / `Fragment` / `ConstraintSpace`). The type narrows the culprit immediately.
-- **Bisect cmd:** `GOTOOLCHAIN=go1.25.5 /opt/homebrew/Cellar/go/1.26.2/bin/go test ./pkg/visualtest/ -run 'TestWPTReftests/generated-content/before-after-display-types-001' -v` at each of the 4 SHAs.
-
-### 7b — WM 22-test drift
-- Diff `output/baselines/wm.log` failures (32) vs Phase 0 `output/wm-baseline/failing.txt` (originally 16+8=24 expected).
-- Bucket by test-name prefix; attribute per bucket:
-  - float/table buckets → I4
-  - abs-pos/OOF buckets → I3
-  - bidi/plaintext buckets → I1
-  - sideways/VLR buckets → I2 salvage
-- Verify Phase 5a's 3 logical-props tests (commit `e639eca6`) still pass — they may be in the 22.
-
-### 7c — Verification gate
-- CSS2: 99/99 pass.
-- css-writing-modes: ≥771/781 pass.
-- css-flexbox: ≥621/629 unchanged.
-- css-position: ≥50/104 unchanged or improved.
-
-### Sequencing
-Do not open 7b until 7a's crash is fixed — the panic may originate in a shared code path (block_layout.go is mutated by both I3 and I4) that is also causing some of the wm drift.
-
-## Resources
-- Test dir: `/Users/iansmith/louis14/pkg/visualtest/testdata/wpt-css3/css-writing-modes/`
-- Test runner: `pkg/visualtest/reftest_runner_test.go` (function `TestWPTCSS3Reftests`)
-- Layout entry points: `pkg/layout/block_layout.go`, `pkg/layout/inline_layout.go`, `pkg/layout/writing_direction_mode.go`
-- Baseline artifacts: `output/wm-baseline/{raw.log,failing.txt,failing_with_diff.tsv}`, `output/baselines/{css2,wm,flex,css-position}.log`
-- WM-final-8 detail docs (per-phase plans, Blink refs, JS-infra inventory, icb-007 diagnosis): `docs/plan-wm-final-8-{TASK,FINDINGS,PROGRESS}.md`
-
----
-*Update after every 2 view/browser/search operations*
+## Notes
+- Attack order is **not** by % diff. Shared-root-cause grouping is prioritised (CLAUDE.md §1).
+- Every group's first step is Blink study (CLAUDE.md §2). Do not start coding a group without that.
+- Each phase commits at completion of the group plus passing regression sweeps. Intermediate milestones can commit WIP if blocked, but must note the blocker.
