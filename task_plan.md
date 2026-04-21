@@ -215,7 +215,12 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
   - Anonymous auto-height block wrappers propagate parent's `PercentageResolutionSize.BlockSize` instead of resetting to 0.
   - Table cell constraint space carries row's SPECIFIED block-size as its percentage resolution block size; table row's `RelativeOffset` is pre-computed against row group's SPECIFIED block-size (mirrors Blink's chromium bug 1227884 fix).
   - Gates hold: wm 781/781, CSS2 99/99, flex 626/629. css-position 85 → 90.
-- [ ] Remaining Phase 9 runnable tests: `stack-floats-001` (1.7%), `position-absolute-iframe-print-001/002` (0.3%), `clear-001` (96px), `position-absolute-dynamic-list-marker` (18px).
+- [ ] Remaining Phase 9 runnable tests (triaged 2026-04-21, each needs independent investigation):
+  - `clear-001.xht` (96px): ref hardcodes blue=97px/orange=95px for height:1in divs. Blink's 1in rendering produces 97+95 (sub-pixel-rounding quirk); our engine renders exact 96+96. Need to match Blink's quirk or investigate inch-to-px subpixel math.
+  - `position-absolute-dynamic-list-marker.html` (18px): `<li>` renders a black bullet marker that the test suppresses via `::marker { color: white }`. Our engine doesn't honor `::marker` pseudo-element — black dot shows against white page background. Fix: implement ::marker color/style cascading.
+  - `position-absolute-iframe-print-001/002.sub.html` (1491px each): cross-origin iframe rendering. Uses `{{hosts[alt][www]}}:{{ports[http][0]}}` WPT server substitutions. Our harness probably can't load cross-origin iframe content.
+  - `stack-floats-001.xht` (1.7%): CSS 2.1 §9.9 stacking order of floats + inlines. Test renders mostly red; expected: all lime green. Float/inline z-ordering bug in painter.
+  - `containing-block-change-button.html` (4.2%): `<button>` content vertical-centering not implemented. Ref div renders at button top; test abs div uses `top:150px` to match an *assumed* vertical-centered in-flow. Our engine doesn't vertically center button content, so ref and test render at different y. Fix: implement native button content centering.
 - [ ] `position-change.html` — fix HTML parser to not bail on `expected '>' but reached EOF`.
 
 ### Phase 10: Delivery
