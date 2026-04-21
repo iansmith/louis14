@@ -180,9 +180,10 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 
 ### Phase 5: G-ROOT-FLEX-GRID + G-FIXED (5 tests, 1 closed)
 - [x] **G-FIXED Part A — OOF resolver re-entrance.** `OutOfFlowLayoutPart.LayoutCandidates` was dropping `childResult.PropagatedOOFCandidates`. Mirrored Blink's `OutOfFlowLayoutPart::LayoutOOFNodes` worklist pattern. Returns unresolved fixed candidates to caller; new `resolvesFixed` flag selects ICB / transform-or-containment-CB sites that absorb fixed. Updated all 7 call sites. Closes `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (0.5% → 0%); reduces `position-fixed-scroll-nested-fixed` (4.2% → 1.0%). Residual diff is paint-time scroll/clipping (fixed escaping `overflow:auto`), not layout — defer.
-- [ ] **Blink research (deferred from Phase 0):** `layout_view.cc` root-element OOF sizing for the 4 G-ROOT-FLEX-GRID tests (still 0.8% each).
+- [x] **G-ROOT-FLEX-GRID (4 tests).** Blink research (2026-04-21): `layout_view.cc` has no special ICB-level IMCB short-circuit; `LayoutView::LayoutRoot` builds a viewport-sized fixed constraint space, then the root `<html>` is discovered as OOF in the LayoutView's in-flow pass and routed through `OutOfFlowLayoutPart::LayoutOOFNodes` → `absolute_utils.cc`'s `ComputeOof{Inline,Block}Dimensions`. With both insets specified + `align-self: normal`, the auto length resolves to `Length::Stretch()` against `imcb.InlineSize()` — box fills IMCB instead of shrinkwrapping.
+- [x] Implementation: new `pkg/layout/positioned_root.go` with `buildRootConstraintSpace` + `resolvePositionedRootOffset`. When the root is `position:absolute/fixed`, pre-layout the root against an IMCB-derived constraint space (fixed inline/block size when both insets are specified + size is auto), then post-layout compute the final physical offset via `ComputeMargins` + `ComputeInsets` + WritingModeConverter. `engine.go` Layout() and `layoutNestedDocument()` both route through the helpers; non-positioned roots keep the existing viewport-stretched path verbatim.
+- [x] **Gate:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓ (unchanged). All 4 G-ROOT-FLEX-GRID tests at 0 diff: `position-absolute-root-element-flex`, `position-absolute-root-element-grid`, `position-fixed-root-element-flex`, `position-fixed-root-element-grid`.
 - [ ] G-FIXED residual: scroll-clip escape for fixed inside `overflow:auto` scrollable, plus `Element.scrollTop` JS setter (overlaps G-SCROLL).
-- [ ] Implement + verify.
 - [ ] Regression + commit.
 
 ### Phase 6: G-ABS-IN-INLINE (2 tests)
@@ -246,7 +247,7 @@ Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 - **M3:** G-DYN-STATIC closed → +6 (→ 68). **Achieved 2026-04-21** (Parts a+b+d via commits `233d408f`, `d250c5cf`; Part c via commit `5399d328` — orphan-cell vertical-align + transform percent-sentinel fix). Bonus: +9 css-transforms (162 → 171).
 - **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ 77). **Achieved 2026-04-21** via Phase 4 Commits 1 (`a3c8db38`), 2 (`d9f6628b`), and 3. Group closed.
 - **M5a:** G-FIXED Part A — OOF resolver re-entrance. **Achieved 2026-04-21** via commit `ed16475f`. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (62 PASS total). Reduced `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (residual paint-clip).
-- **M5b:** G-ROOT-FLEX-GRID closed → +4 (→ ~80). G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL.
+- **M5b:** G-ROOT-FLEX-GRID closed → +4 (77 → 81). **Achieved 2026-04-21** via new `pkg/layout/positioned_root.go` routing positioned `<html>` through IMCB sizing. G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL, still open.
 - **M6:** G-ABS-IN-INLINE closed → +2 (→ ~82).
 - **M7:** G-STICKY + G-REPLACED closed → +2 (→ ~84).
 - **M8:** G-SINGLETONS (including `position-change`) + G-SCROLL swept → 100/100 runnable.

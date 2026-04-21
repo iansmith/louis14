@@ -339,16 +339,34 @@ When a fixed-pos ancestor moves via JS, step 1 naturally picks up the new value 
 
 **Residual: `hypothetical-dynamic-change-003` (4.2%).** Different root cause — `position: relative` ancestor's visual `left:100px` must propagate into the fixed descendant's static position when the descendant is OOF-resolved at the ICB. Today our normal-flow capture records the relative ancestor's in-flow position (0, 0); the relative offset is applied at paint time via `fragment.RelativeOffset` and never reaches the OOF worklist. Blink computes the "accumulated container offset" during `PropagateOOFPositionedInfo` and includes the ancestor's relative translation. **Fix scope:** during OOF propagation in `block_layout.go` `PropagateOOFCandidates`, when the containing `childResult.Fragment` has a non-zero `RelativeOffset`, add that offset (in parent's logical axes) to `adj.StaticPosition.Offset` before appending. Pushed to Commit 3.
 
-### G-ROOT-FLEX-GRID — 4 tests
+### G-ROOT-FLEX-GRID — 4 tests (CLOSED 2026-04-21, Phase 5)
 ```
-position-fixed-root-element-flex.html    0.8%
-position-fixed-root-element-grid.html    0.8%
-position-absolute-root-element-flex.html 0.8%
-position-absolute-root-element-grid.html 0.8%
+position-fixed-root-element-flex.html    0.8% → 0% PASS
+position-fixed-root-element-grid.html    0.8% → 0% PASS
+position-absolute-root-element-flex.html 0.8% → 0% PASS
+position-absolute-root-element-grid.html 0.8% → 0% PASS
 ```
-**What they exercise.** `<html>` element with `position: fixed|absolute` and `display: flex|grid`. Insets define the box size relative to ICB; not a shrink-to-fit.
+**What they exercise.** `<html>` element with `position: fixed|absolute` and `display: flex|grid`, all four insets set, `box-sizing:border-box`, `border: 5px dashed`. The test assertion: "It shouldn't just shrinkwrap this text's height." The root must stretch to fill `viewport − insets`.
 
-**Blink entry point:** `layout_view.cc` + flex/grid root-element special-cases.
+**Blink entry points.**
+- `third_party/blink/renderer/core/layout/layout_view.cc` — `LayoutView::LayoutRoot` (~864-903) builds `ConstraintSpaceBuilder(..., is_new_fc=true).SetAvailableSize(InitialContainingBlockSize()).SetIsFixedInlineSize(true).SetIsFixedBlockSize(true)`, then runs `BlockNode(this).Layout(space)`. **No ICB-level IMCB short-circuit.**
+- `block_layout_algorithm.cc` `HandleOutOfFlowPositioned` (~997-998, 1607-1713): LayoutView's in-flow pass sees `<html>` as `IsOutOfFlowPositioned()` and adds it as an OOF candidate.
+- `out_of_flow_layout_part.cc` `OutOfFlowLayoutPart::Run` (~589-661) → `LayoutCandidates` → `LayoutOOFNode` (~1925-2031) → `CalculateOffset` → `absolute_utils.cc`.
+- `absolute_utils.cc` `ComputeOofInlineDimensions` (~677-791) / `ComputeOofBlockDimensions` (~835+): when `!imcb.has_auto_inline_inset && align_position == kNormal`, auto length resolves to `Length::Stretch()` against `imcb.InlineSize()` — stretch-to-IMCB, not shrink-to-fit.
+
+**Porting implication.** The root goes through the generic OOF resolver. No special ICB code needed beyond building the right constraint space.
+
+**Fix shape applied.** New file `pkg/layout/positioned_root.go` with two helpers:
+- `buildRootConstraintSpace(rootStyle, rootWDM, vpW, vpH)` — returns `(ConstraintSpace, rootIsPositioned bool)`. For in-flow roots keeps the classic viewport-stretched path verbatim. For positioned roots runs IMCB sizing against the ICB: if both inline insets specified + inline-size auto, sets `IsFixedInlineSize(true)` with `AvailableSize.InlineSize = IMCB.InlineSize() - margins - BP + BP` (cancelled: IMCB - autoless-margins); same for block.
+- `resolvePositionedRootOffset(...)` — post-layout, runs the same `ComputeUnclampedIMCB` + `ComputeMargins` + `ComputeInsets` pipeline used by `OutOfFlowLayoutPart.layoutCandidatesOnce` against the ICB, then converts logical inset-start + margin-start to physical via `NewConverter(rootWDM, viewport)`.
+
+`engine.go` `Layout()` + `layoutNestedDocument()` call the helpers unconditionally; the `rootIsPositioned` flag chooses between the existing VRL-right-anchor offset and the new IMCB-offset.
+
+**CB padding = 0.** The ICB has no padding, so the CB-padding-box shift done by `OutOfFlowLayoutPart.layoutCandidatesOnce` collapses to identity here.
+
+**WDM.** Insets resolve against physical viewport via `GetPositionOffsetResolved(vpW, vpH)`, then go through `PhysicalInsetsToLogical(offset, rootWDM)` — matches Blink's `container_writing_direction` handling.
+
+**Gate passed.** 4/4 tests at 0 diff; wm 781/781 ✓; CSS2 99/99 ✓; flex 626/629 ✓ (unchanged).
 
 ### G-FIXED — 2 tests (1 closed 2026-04-21)
 ```
@@ -480,22 +498,22 @@ Mixed shapes; likely several independent root causes. Sweep last.
 **Note:** `position-relative-011/012/013` are table-related (`%-top` on `<tr>`/`<tbody>`/`<td>` under position:relative) — they may share a root cause with G-TABLE-REL. If so, closing Phase 1 may also close them. Verify in Phase 1's regression sweep.
 
 ## Super-cluster counts
-Updated 2026-04-21 post Phase 4 Commit 2 (IMCB wire-up + flex alignment capture + propagated-OOF coordinate translation).
+Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positioned_root.go`).
 
 | Cluster | Status | Closed | Remaining | Cumulative passing |
 |---|---|---|---|---|
 | G-TABLE-REL | DONE (Phase 1) | 11 + position-relative-012 | 8 `-absolute-child` (moved to G-ABS-IN-INLINE/TABLE) | 62 |
 | G-FIXED | Part A done (Phase 5a) | 1 | 1 (paint-clip residual, → G-SCROLL) | — |
 | G-DYN-STATIC | DONE (Phase 3) | 6 | 0 | 68 |
-| G-ABS-CENTER | **Phase 4 Commit 2 partial** | 4 | 1 (`center-002` vertical-rl, `center-007` display:table → Commit 3) | 72 |
-| G-HYPO | **Phase 4 Commit 2 partial** | 2 | 1 (`hypothetical-003` relative-offset propagation) + 2 NORUN | **74** |
-| G-ROOT-FLEX-GRID | open | 0 | 4 | — |
+| G-ABS-CENTER | DONE (Phase 4) | 5 | 0 | — |
+| G-HYPO | DONE (Phase 4) | 3 | 2 NORUN (out of scope) | **77** |
+| G-ROOT-FLEX-GRID | **DONE (Phase 5, M5b)** | 4 | 0 | **81** |
 | G-ABS-IN-INLINE | open | 0 | 2 + 8 table abs-child variants | — |
 | G-STICKY | open | 0 | 1 | — |
 | G-REPLACED | open | 0 | 1 | — |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
 | G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **24** | **30 (+ 4 SKIPs out of scope)** | **74 / 100 runnable** |
+| **Total** | — | **31** | **26 (+ 4 SKIPs out of scope)** | **81 / 100 runnable (projected)** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -506,7 +524,7 @@ Updated 2026-04-21 post Phase 4 Commit 2 (IMCB wire-up + flex alignment capture 
 ## Test Results
 | Scope | Test count | Baseline | Current (2026-04-21) | Target |
 |---|---|---|---|---|
-| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **77 PASS / 27 FAIL** (post Phase 4 Commit 3) | 100 PASS (4 SKIPs out of scope) |
+| css-position (TestWPTCSS3Reftests) | 104 | 50 PASS / 54 FAIL / 5 NORUN | **81 PASS / 23 FAIL** (projected post Phase 5 M5b) | 100 PASS (4 SKIPs out of scope) |
 | css-writing-modes (invariant) | 781 | 781 PASS | 781 PASS | 781 PASS |
 | CSS2 (invariant) | 99 | 99 PASS | 99 PASS | 99 PASS |
 | css-flexbox (watch) | 629 | 621 PASS | 626 PASS / 3 FAIL | ≥621 |
