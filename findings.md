@@ -44,7 +44,17 @@ Ran each test individually with `-v` to see what the runner actually emitted. Fo
 
 Grouped by hypothesised shared root cause, not by diff %. Largest-cluster-first.
 
-### G-TABLE-REL — 16 tests — **Phase 1 target**
+### G-TABLE-REL — 11 tests — **Phase 1 DONE (2026-04-21)**
+
+**Status:** All 11 primary `position-relative-table-*` tests PASS at 0 px diff.
+- Part A (shared `AddChild` RelativeOffset) — committed `d174049b`.
+- Part B (section fragments for positioned row groups) — committed `ac2dc780`.
+- Inline-block baseline fix (§10.8.1 fallback) — pending commit. Two edits:
+  - `table_layout.go`: removed content-box-end LastBaseline synthesis when no cell has a text baseline. Per Blink's `LayoutBox::LastBaselineForInlineBlock`, LastBaseline is nullopt in this case; the fallback to the bottom margin edge lives at the inline-block site, not at the table.
+  - `block_layout.go`: block-child baseline propagation no longer falls back from LastBaseline to Baseline. A block's last-baseline must originate from an actual line box (propagated recursively); otherwise the enclosing inline-block uses §10.8.1's bottom-margin-edge fallback at atomic-inline placement.
+  - Unblocked all 12 section tests (thead/tbody/tfoot × {top,left}, tr × {top,left}) plus caption/td tests.
+
+The 8 `-absolute-child` variants remain out of scope for Phase 1 (tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE).
 ```
 position-relative-table-thead-top.html       1.2%
 position-relative-table-thead-left.html      1.2%

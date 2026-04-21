@@ -1043,17 +1043,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		if lastRowBaseline > 0 {
 			builder.SetLastBaseline(borderPaddingStart + lastRowBlockOffset + lastRowBaseline)
-		} else if firstRowHeight > 0 {
-			// No row has a text-alignment baseline (e.g., cells contain
-			// only non-text blocks). CSS 2.1 §10.8.1 requires a synthesized
-			// baseline at the content-box block-end for inline-block/atomic
-			// inline baseline alignment — otherwise a block wrapping the
-			// table propagates a mid-table baseline up to its enclosing
-			// inline-block, shifting the line box below it. Mirrors Blink's
-			// LayoutBox::SynthesizedBaselineFromContentBox fallback when
-			// LastBaselineForInlineBlock returns nullopt.
-			builder.SetLastBaseline(borderPaddingStart + finalBlockSize)
 		}
+		// When no row has a text-alignment baseline, leave LastBaseline
+		// unset. Blink's LayoutBox::LastBaselineForInlineBlock returns
+		// nullopt in this case; the fallback to the bottom margin edge
+		// (CSS 2.1 §10.8.1) happens at the enclosing inline-block's
+		// atomic-inline placement, not here. Synthesizing a content-box
+		// baseline here would propagate through block wrappers and
+		// incorrectly shift the inline-block's baseline.
 	}
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm) // already zeroed for border-collapse

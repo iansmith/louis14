@@ -611,14 +611,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Track the last in-flow block child's baseline for
 			// CSS 2.1 §10.8.1 inline-block baseline propagation.
-			// Use LastBaseline (last line box) if available, else Baseline.
+			// Only a genuine last-baseline (from a line box, propagated up
+			// through block descendants) counts — never the first-baseline.
+			// If no descendant has a last-baseline, the enclosing
+			// inline-block falls back to its bottom margin edge at
+			// atomic-inline placement time (inline_layout.go).
 			// CSS Align §9.1: orthogonal children don't contribute baselines.
-			lb := childResult.LastBaseline
-			if lb <= 0 {
-				lb = childResult.Baseline
-			}
-			if !isLegendOfFieldset && !isOrthogonal && lb > 0 {
-				lastChildBaseline = lb
+			if !isLegendOfFieldset && !isOrthogonal && childResult.LastBaseline > 0 {
+				lastChildBaseline = childResult.LastBaseline
 				lastChildBlockOffset = actualChildBlockOff
 				hasLastChildBaseline = true
 			}

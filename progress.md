@@ -13,19 +13,28 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 0 complete** (baseline + groupings + Blink research + NORUN triage). **Phase 1 (G-TABLE-REL) in progress — design locked 2026-04-21.**
+**Phase 1 (G-TABLE-REL) DONE 2026-04-21.** All 11 primary `position-relative-table-*` tests PASS at 0 px diff. Commits `d174049b` (Part A), `ac2dc780` (Part B), `a8bb41e6` (interim), plus the LastBaseline §10.8.1 fix (pending commit).
 
-### Phase 1 readiness (2026-04-21)
-- Design decision: push `RelativeOffset` into shared `BoxFragmentBuilder.AddChild` (user-directed "do what Blink does").
-- Scope: two parts (Part A = shared AddChild, Part B = emit section fragments). See "Part A design" / "Part B design" below.
-- Open `td-*` question resolved — moved to G-SINGLETONS. Phase 1 target is 16 tests (4 tr + 12 thead/tbody/tfoot).
-- Ready to code. Next turn should start with Part A.
+### Phase 1 summary
+- Part A: `BoxFragmentBuilder.AddChild` computes RelativeOffset for any child whose `Style.GetPosition()` is relative/sticky and whose RelativeOffset is still zero. `SetChildAvailableSize` wired through block/flex/grid/inline/table.
+- Part B: positioned row groups emit a section `PhysicalBoxFragment` via a per-section `BoxFragmentBuilder`, added to the main table builder on boundary crossings and at end-of-loop. Non-positioned groups unchanged.
+- Inline-block baseline fix: table no longer synthesizes LastBaseline at content-box block-end when no cell has a text baseline; block no longer propagates Baseline-as-LastBaseline. Per Blink's `LayoutBox::LastBaselineForInlineBlock`, a block container has a LastBaseline only if a descendant line box provides one. The enclosing inline-block's §10.8.1 bottom-margin-edge fallback lives at atomic-inline placement (`inline_layout.go`). Without this fix the 2-row table's synthesized baseline (=100) propagated through `<div>` wrappers up to the `.group` inline-block, shifting the line box below it ~4px too high.
+- Regression gates: wm 781/781 ✓, CSS2 99/99 ✓.
+- Known limitations: 8 `-absolute-child` variants still failing at 1.0–1.7% — abspos descendants in a positioned section/cell. Not Phase 1 scope; tracked under G-ABS-IN-INLINE / G-ABS-IN-TABLE.
+
+### Next
+Pick the next phase per the attack order: G-CB-CHANGE (3 tests, invalidation-only) or G-DYN-STATIC (6 tests, prerequisite for G-ABS-CENTER + G-HYPO).
 
 ## Test Results
 | Date | Scope | Pass | Fail | NORUN | Notes |
 |------|-------|------|------|-------|-------|
 | 2026-04-21 | css-position (TestWPTCSS3Reftests) — baseline | 50 | 54 | 5 | Fresh run post-Phase 5f. Log: `output/baselines/css-position-2026-04-21.log`. |
-| 2026-04-21 | css-writing-modes (invariant) | 781 | 0 | 0 | Phase 5f complete. |
+| 2026-04-21 | css-writing-modes (invariant, post-Part-B) | 781 | 0 | 0 | Gate held post-`ac2dc780`. |
+| 2026-04-21 | CSS2 (TestWPTReftests, invariant, post-Part-B) | 99 | 0 | 0 | Gate held post-`ac2dc780`. |
+| 2026-04-21 | `position-relative-table-*` (16 Phase 1 primary) | 0 | 16 | 0 | All fail at identical 3099px / 0.6% — downstream text-offset bug (task #4), not G-TABLE-REL. Green box visually correct. |
+| 2026-04-21 | `position-relative-table-*` (11 primary, post §10.8.1 fix) | 11 | 0 | 0 | Phase 1 DONE. All `-absolute-child` variants (8) still failing — out of Phase 1 scope. |
+| 2026-04-21 | css-writing-modes (post §10.8.1 fix) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post §10.8.1 fix) | 99 | 0 | 0 | Gate held. |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |
