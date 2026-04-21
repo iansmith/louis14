@@ -295,3 +295,27 @@ Phase 9 complete. Phase 7 B2 dispatch unblocked.
     and needed the horizontal-advance path. The style override routes the
     whole run through the existing sideways path which uses horizontal
     advance naturally.
+
+### B2.2 / B2.3 assessment (2026-04-20)
+Evaluated pursuing these after B2 landed (user request: "if not extremely
+difficult, adapt blink's strategy"). Declined both for now.
+
+- **B2.3** (per-rune em-square vs horizontal advance in
+  `MeasureTextVerticalFromFont`): code change is trivial (one loop with
+  `IsVerticalScriptCharacter` branch). But renderer's `drawText` vertical
+  path would need a matching per-rune advance, and the prior attempt at
+  that was reverted for reintroducing baseline drift. Implementing
+  measurement alone creates a measurement/render misalignment. No failing
+  test exercises the path (all Mongolian runs resolve to `sideways` via
+  B2's style rewrite, so they never reach `MeasureTextVerticalFromFont`).
+
+- **B2.2** (per-character orientation segmentation in `collectTextNode`,
+  mirroring Blink's `OrientationIterator`): moderate complexity — split
+  each text node by UTR#50 class, clone style per segment, preserve
+  whitespace-collapse semantics across segment boundaries. Would only
+  activate for mixed Latin+vertical-script content, for which WPT wm suite
+  contains no tests.
+
+- **Rule followed:** CLAUDE.md §1 — don't add features beyond what the
+  task requires. Both items are pure architecture with no test driving
+  them; revisit if a future mixed-orientation test surfaces the gap.
