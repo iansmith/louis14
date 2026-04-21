@@ -13,6 +13,8 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
+**Phase 6 G-ABS-IN-INLINE — CLOSED 2026-04-21 (2/2).** See "Phase 6 M6 — G-ABS-IN-INLINE closed" below. css-position now 83/100 runnable. Next work target: Phase 5 G-FIXED Part B (paint-clip/scrollTop, overlaps G-SCROLL) or Phase 7 (G-STICKY minimum viable).
+
 **Phase 3 G-DYN-STATIC — CLOSED 2026-04-21 (all 6/6).** Parts (a)+(b)+(d) landed earlier; Part (c) (`table-cell`) closed 2026-04-21 with two independent fixes.
 
 - **Part (a) `inline_layout.go`** splits `InlineItemOutOfFlow` capture by specified display: inline-level → `(inlinePos, blockOffset)`; block-level with prior in-flow on the line → `(0, blockOffset + lineHeight)` at end-of-line; block-level with no prior in-flow → `(0, blockOffset)` immediately. Mirrors Blink's `InlineLayoutAlgorithm::HandleOutOfFlowPositioned` reading `line_box_.LineBoxBlockEnd()` at time-of-encounter. New helper `isInlineLevelDisplay` mirrors `ComputedStyle::IsOriginalDisplayInlineType`. Closes `inline` (2.1% → 0%). Commit `233d408f`.
@@ -74,13 +76,20 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-21 | css-writing-modes (post Commit 2) | 781 | 0 | 0 | Gate held. |
 | 2026-04-21 | CSS2 (post Commit 2) | 99 | 0 | 0 | Gate held. |
 | 2026-04-21 | css-flexbox (post Commit 2) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
+| 2026-04-21 | `position-absolute-in-inline-003/004` (post Phase 6 M6) | 2 | 0 | 0 | Both targets close at 0 diff. |
+| 2026-04-21 | css-position (post Phase 6 M6) | 83 | 22 | — | +2 vs 81. Exactly the 2 G-ABS-IN-INLINE targets flipped; no other status changed. |
+| 2026-04-21 | css-writing-modes (post Phase 6 M6) | 781 | 0 | 0 | Gate held. |
+| 2026-04-21 | CSS2 (post Phase 6 M6) | 99 | 0 | 0 | Gate held. |
+| 2026-04-21 | css-flexbox (post Phase 6 M6) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
+| 2026-04-21 | absolute-tables (post Phase 6 M6) | 14 | 0 | 0 | No regression. |
+| 2026-04-21 | `position-relative-003/004/005` (post Phase 6 M6) | 3 | 0 | 0 | Regression-guard check after `BuildPositionedInlineMap` / nil-geometry fix. |
 
 ## Invariants (must stay green)
 | Category | Count | Last verified |
 |---|---|---|
-| css-writing-modes | 781/781 | 2026-04-21 (post Phase 3(c)) |
-| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post Phase 3(b)) |
-| css-flexbox | 626/629 | 2026-04-21 (post Phase 3(c)) |
+| css-writing-modes | 781/781 | 2026-04-21 (post Phase 6 M6) |
+| CSS2 (TestWPTReftests) | 99/99 | 2026-04-21 (post Phase 6 M6) |
+| css-flexbox | 626/629 | 2026-04-21 (post Phase 6 M6) |
 | css-transforms (watch, not invariant) | 171/381 | 2026-04-21 (post Phase 3(c), +9 vs baseline) |
 
 ## Session: 2026-04-21
@@ -269,14 +278,32 @@ All 4 positioned-root tests closed in a single commit. Phase 5 now has both Part
 - **Verification:** css-position **77 → 81** (+4 of 4 targets closed). All 4 tests pass at 0 diff: `position-absolute-root-element-flex`, `position-absolute-root-element-grid`, `position-fixed-root-element-flex`, `position-fixed-root-element-grid`.
 - **Gates:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓ (unchanged — 3 expected Phase 11 residuals).
 
+### Phase 6 M6 — G-ABS-IN-INLINE closed (2026-04-21, commit `01f468d9`)
+Both `position-absolute-in-inline-003` and `-004` now PASS at 0 diff. G-ABS-IN-INLINE complete.
+
+- **Blink research (done per CLAUDE.md §2).** `InlineContainingBlockUtils::ComputeInlineContainerGeometry` (`inline_containing_block_utils.cc`) iterates inline fragment items, matches by DOM node, and unions the first-line rects into `start_fragment_union_rect` and the last-line rects into `end_fragment_union_rect`. `NGOutOfFlowPositionedNode::inline_container` is set while building the OOF candidate list during inline layout. At resolution, the OOF resolver reads both rects, converts to logical via the block's writing-mode converter, and uses the start→end axis-aligned bounding box as the CB.
+- **Fix shape.** New file `pkg/layout/inline_containing_block.go` (~290 LOC): `ComputeInlineContainerGeometry` walks `BoxFragmentBuilder`-in-progress children (with a parallel physical walk for descended anonymous-block continuations from block-in-inline splits), collecting first-line and last-line fragment rects of the target inline. `BuildPositionedInlineMap` runs over the inline item stream maintaining a stack of positioned-inline ancestors; stamps each `InlineItemOutOfFlow`'s innermost positioned-inline ancestor. `InlineCBLogical` converts the physical start/end rects to logical CB size + CB origin within the block's content-box.
+- `inline_layout.go` calls `BuildPositionedInlineMap` and copies the mapped inline node to `InlineItem.InlineContainer` at OOF-emission time (span fragments are already emitted per line with `Node = span.DOMNode` by the span-state threading done earlier in this phase).
+- `block_layout.go` runs `ComputeInlineContainerGeometry` for each candidate with non-nil `InlineContainer`. Nil result (line-box suppressed per §9.4.2) falls through to regular CB routing with `InlineContainer` cleared.
+- `out_of_flow_layout.go` tracks `cbOriginInBuilder` when the candidate's CB is an inline: subtracts it from static-position inline/block offsets so IMCB math runs in CB coords, adds it back at final `AddChild`.
+- `layout_tree_builder.go` emits an empty leading continuation for positioned inlines whose children contain a block-in-inline split with trailing inline content — keeps the start union rect anchored at the span's start. Gated on `hasTrailingInlineContent` to avoid regressing `position-relative-002`.
+
+**Non-obvious landings:**
+1. **Fixed elements cannot use a positioned inline as CB** (CSS 2.1 §10.1.4): skip `PositionFixed` in `BuildPositionedInlineMap`.
+2. **Line-box suppression (§9.4.2) needs a nil-geometry fallback**: clear `InlineContainer` and route as regular candidate.
+3. **Static-position coords**: captured in block content-box, IMCB needs CB coords — subtract `cbOriginInBuilder` on input and add back on output.
+4. **Empty leading continuation** for block-in-inline splits with trailing inline content, otherwise the start line-box union rect anchors at the wrong position.
+
+**Verification:** css-position **81 → 83** (+2 of 2 targets). All regression gates held: wm 781/781, CSS2 99/99, flex 626/629, absolute-tables 14/14, position-relative-003/004/005 unchanged. position-relative-002/011/013 baseline-failing tests still at their baseline percentages (unchanged).
+
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | css-position category, **81/100 runnable PASS (projected)**. Phase 1 (G-TABLE-REL) DONE; Phase 2 dissolved; Phase 3 (G-DYN-STATIC) DONE; Phase 4 (G-ABS-CENTER + G-HYPO, IMCB) DONE. **Phase 5: G-FIXED Part A + G-ROOT-FLEX-GRID both DONE — M5a and M5b landed.** Next: Phase 5 G-FIXED Part B (paint-clip / scrollTop, overlaps G-SCROLL) or Phase 6 (G-ABS-IN-INLINE). |
+| Where am I? | css-position category, **83/100 runnable PASS**. Phase 1 (G-TABLE-REL) DONE; Phase 2 dissolved; Phase 3 (G-DYN-STATIC) DONE; Phase 4 (G-ABS-CENTER + G-HYPO, IMCB) DONE. **Phase 5: G-FIXED Part A + G-ROOT-FLEX-GRID DONE (M5a, M5b).** **Phase 6: G-ABS-IN-INLINE DONE (M6, 2026-04-21).** Next: Phase 5 G-FIXED Part B (paint-clip / scrollTop, overlaps G-SCROLL) or Phase 7 (G-STICKY). |
 | Where am I going? | 100/100 runnable css-position at 0 diff (4 SKIPs out of scope for layout plan). |
 | What's the goal? | All runnable css-position tests at 0 diff; wm 781/781, CSS2 99/99, flex ≥621 must hold. |
 | What have I learned? | Relative offsets belong at `BoxFragmentBuilder.AddChild` (shared across display types). Per §10.8.1 / Blink's `LayoutBox::LastBaselineForInlineBlock`, a block's LastBaseline must originate from a line-box descendant. IMCB machinery in `absolute_utils.cc` is shared between G-ABS-CENTER and G-HYPO. Static position is never cached in Blink. G-CB-CHANGE is invalidation-only and turned out to be a no-op for our harness (we already do fresh re-layout post-JS). **OOF resolution must be re-entrant** (Blink's `OutOfFlowLayoutPart::LayoutOOFNodes`): after laying out an OOF child, drain `PropagatedOOFCandidates` and continue resolving. ICB / containment / transform CB sites absorb fixed; ordinary positioned sites return unresolved fixed to caller. **Orphan `display:table-cell` bypasses `table_layout.go`** — falls through to `block_layout.go` via unimplemented reverse §17.2.1 anonymous-table generation; needs its own vertical-align handling at the block-layout site. **Transform parser must not use sign as a percent/length sentinel** — negative pixel lengths encode negatively and will be misread as percent. Use explicit `IsPercent []bool`. **`_writing-mode-inherited` is a dead louis13 marker** — logical-size remap must run uniformly for inherited and explicit writing-mode. **Positioned ancestors propagate `RelativeOffset` to descendant static positions** — Blink's `PropagateOOFPositionedInfo` carries it through so hypothetical-box static positions reflect the ancestor's `left`/`top`. **Tables are non-stretchable in OOF sizing** — the IMCB stretched-fit path applies only to block-level non-replaced elements; tables/replaced/inline-table keep intrinsic sizing. **Flex items with z-index hoist to enclosing SC** — when sorting `AutoZero` by DOMIndex (tree order), guard on `IsFlexItem()` in the entries, not only on the owning layer. |
-| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. **Phase 3 G-DYN-STATIC closed (6/6)** — commits `233d408f` (a), `d250c5cf` (b)+(d), `5399d328` (c). **Phase 4 closed (8/8)** — Commit 1 `a3c8db38`, Commit 2 `d9f6628b`, Commit 3 (residual 3). **Phase 5 M5b — G-ROOT-FLEX-GRID closed (4/4)** — commit `7e686a28`: new `pkg/layout/positioned_root.go` routes `<html>` with `position:absolute/fixed` through IMCB sizing against the ICB + final-offset pipeline (`ComputeMargins` + `ComputeInsets` + `NewConverter`). Net: 50 → 81 PASS (projected). wm 781/781, CSS2 99/99, flex 626/629 all gates held. |
+| What have I done? | Phase 5f (wm) complete. css-position baseline captured. Failures grouped. Attack order set. Blink research for 7/10 groups. NORUN triage done. **Phase 1 (G-TABLE-REL) closed** — commits `d174049b`, `ac2dc780`, `b6ec7d3f`. **Phase 2 (G-CB-CHANGE) dissolved** as no-op. **Phase 5 G-FIXED Part A closed** — commit `ed16475f`, OOF resolver re-entrance. **Phase 3 G-DYN-STATIC closed (6/6)** — commits `233d408f` (a), `d250c5cf` (b)+(d), `5399d328` (c). **Phase 4 closed (8/8)** — Commit 1 `a3c8db38`, Commit 2 `d9f6628b`, Commit 3 (residual 3). **Phase 5 M5b — G-ROOT-FLEX-GRID closed (4/4)** — commit `7e686a28`: new `pkg/layout/positioned_root.go` routes `<html>` with `position:absolute/fixed` through IMCB sizing against the ICB + final-offset pipeline (`ComputeMargins` + `ComputeInsets` + `NewConverter`). **Phase 6 M6 — G-ABS-IN-INLINE closed (2/2)** — commit `01f468d9`: new `pkg/layout/inline_containing_block.go` (`ComputeInlineContainerGeometry` + `BuildPositionedInlineMap` + `InlineCBLogical`), with wiring in `inline_layout.go` / `block_layout.go` / `out_of_flow_layout.go` / `layout_tree_builder.go`. Net: 50 → 83 PASS. wm 781/781, CSS2 99/99, flex 626/629, absolute-tables 14/14 all gates held. |
 
 ## Error Log
 *(populated as work progresses)*

@@ -186,11 +186,15 @@ Each group runs through the same discipline loop (CLAUDE.md §1–§4):
 - [x] Regression + commit (`7e686a28` code, `6c53f52d` planning).
 - [ ] G-FIXED residual: scroll-clip escape for fixed inside `overflow:auto` scrollable, plus `Element.scrollTop` JS setter (overlaps G-SCROLL).
 
-### Phase 6: G-ABS-IN-INLINE (2 tests)
+### Phase 6: G-ABS-IN-INLINE (2 tests) — **DONE 2026-04-21**
 - [x] Blink research: `inline_containing_block_utils.cc` — union of first + last line-box fragment rects.
-- [ ] New `pkg/layout/inline_containing_block.go` with `computeInlineContainerGeometry`.
-- [ ] Wire into OOF pass for abspos children whose CB resolves to an inline.
-- [ ] Regression + commit.
+- [x] New `pkg/layout/inline_containing_block.go`: `ComputeInlineContainerGeometry` + `BuildPositionedInlineMap` + `InlineCBLogical`. Walks line-box fragments (transparently descends anonymous block continuations from block-in-inline splits), unions first-line and last-line fragment rects for the target inline's DOM node, converts to logical via the block's writing-mode converter.
+- [x] Wire into OOF pass. `inline_layout.go` tags `InlineItemOutOfFlow.InlineContainer` via `BuildPositionedInlineMap` (position:fixed excluded — CB is viewport, not inline). `block_layout.go` resolves geometry before OOF layout; when the inline produced no line-box fragments (CSS 2.1 §9.4.2 line-box suppression for OOF-only lines) the candidate is routed as a regular non-inline-CB candidate. `out_of_flow_layout.go` tracks `cbOriginInBuilder` and subtracts it from static-position offsets so IMCB math runs in CB coords, then adds it back at `AddChild` time. `layout_tree_builder.go` emits an empty leading continuation for positioned inlines with block-in-inline splits when trailing inline content exists, so the start line-box union rect covers the span's start.
+- [x] Regression + commit: M6 landed 2026-04-21 via commit `01f468d9`.
+
+**Verification:** css-position **81 → 83** (+2 of 2 targets closed). `position-absolute-in-inline-003.html` and `position-absolute-in-inline-004.html` both pass at 0 diff.
+
+**Gates:** wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓ (pre-existing residuals unchanged), absolute-tables 14/14 ✓, position-relative-003/004/005 ✓ (no regression), position-relative-002/011/013 baseline unchanged.
 
 ### Phase 7: G-STICKY (1 test) — minimum viable
 - [x] Blink research: `sticky_position_scrolling_constraints.h` + `ComputeStickyPositionConstraints`; scroll-time offset, not layout-time.
@@ -248,7 +252,7 @@ Counts are against **runnable tests (100)**; 4 SKIPs excluded.
 - **M4:** G-ABS-CENTER + G-HYPO combined (IMCB) → +8 (→ 77). **Achieved 2026-04-21** via Phase 4 Commits 1 (`a3c8db38`), 2 (`d9f6628b`), and 3. Group closed.
 - **M5a:** G-FIXED Part A — OOF resolver re-entrance. **Achieved 2026-04-21** via commit `ed16475f`. Closed `absolute-pos-box-inside-fixed-pos-box-with-changing-height` (62 PASS total). Reduced `position-fixed-scroll-nested-fixed` 4.2% → 1.0% (residual paint-clip).
 - **M5b:** G-ROOT-FLEX-GRID closed → +4 (77 → 81). **Achieved 2026-04-21** via commit `7e686a28` (new `pkg/layout/positioned_root.go` routing positioned `<html>` through IMCB sizing). G-FIXED Part B (paint-clip / scrollTop) overlaps G-SCROLL, still open.
-- **M6:** G-ABS-IN-INLINE closed → +2 (→ ~82).
+- **M6:** G-ABS-IN-INLINE closed → +2 (81 → 83). **Achieved 2026-04-21** via commit `01f468d9`. New `pkg/layout/inline_containing_block.go` mirrors Blink's `InlineContainingBlockUtils::ComputeInlineContainerGeometry` (start/end fragment union rects, transparent walk through anonymous-block continuations). OOF resolver routed through inline-CB sizing with `cbOriginInBuilder` tracking; `InlineContainer` stamped on OOF items via `BuildPositionedInlineMap` (position:fixed excluded — viewport CB). Empty-leading-continuation emitted in `layout_tree_builder.go` for positioned inlines with block-in-inline splits to keep the first-line union rect anchored at the span's start.
 - **M7:** G-STICKY + G-REPLACED closed → +2 (→ ~84).
 - **M8:** G-SINGLETONS (including `position-change`) + G-SCROLL swept → 100/100 runnable.
 - **M9 (parallel track):** Phase 11 flex residuals swept → css-flexbox 629/629. Independent of css-position delivery; pick up opportunistically or after M8.

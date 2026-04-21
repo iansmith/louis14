@@ -444,6 +444,14 @@ position-absolute-in-inline-004.html   2.3%
 - Call from the OOF pass whenever the child's CB is an inline.
 - The two failing tests (`position-absolute-in-inline-003/004`) both rely on the correct start/end line handling — once the union-rect logic is in, they resolve.
 
+**DONE 2026-04-21 (Phase 6, M6, commit `01f468d9`).** Shipped `ComputeInlineContainerGeometry` + `BuildPositionedInlineMap` + `InlineCBLogical` in `pkg/layout/inline_containing_block.go`; wired via `inline_layout.go` OOF item stamping, `block_layout.go` candidate routing, `out_of_flow_layout.go` `cbOriginInBuilder` tracking, and `layout_tree_builder.go` empty-leading-continuation emission. Closed `position-absolute-in-inline-003` and `-004` at 0 diff. Non-obvious learnings below.
+
+**Landed learnings (2026-04-21):**
+1. **Position:fixed must be excluded from the positioned-inline map.** `BuildPositionedInlineMap` originally stamped every OOF item inside a position:non-static inline ancestor. But CSS 2.1 §10.1.4 / CSS Position 3 §def-cb: a fixed element's CB is the viewport (modulo transform/contain ancestors); a `position:relative` inline does NOT establish a CB for fixed descendants. Stamping fixed routes it to inline-CB sizing in `block_layout.go`, preventing propagation to the root. Fix: skip `PositionFixed` items in the walk.
+2. **Line-box suppression (§9.4.2) requires a nil-geometry fallback.** When a line contains only OOF items, `createLineBoxEx` suppresses the line box. `ComputeInlineContainerGeometry` then returns nil (no line-box fragments emitted for the target inline). Re-propagating the candidate with `InlineContainer` still set would loop forever on inline-CB routing. Fix: `cand.InlineContainer = nil` + route as a regular candidate when geometry is nil.
+3. **Static position is captured in block content-box coords; IMCB math needs CB coords.** Inline OOF items record static position relative to the block content-box. The inline CB's origin (`cbOriginInBuilder`) is a non-zero offset within that block. The OOF resolver must subtract `cbOriginInBuilder` from the static-position inline/block offsets before IMCB sizing, and add it back at `AddChild` time when positioning the final fragment. Missed subtraction gave 0.8% horizontal diff on `position-absolute-in-inline-003`.
+4. **Block-in-inline splits need an empty leading continuation for the span's start to be visible.** When a positioned inline contains a block-in-inline split with trailing inline content but no leading inline content (e.g. `<span>[block]text</span>`), only the trailing fragment got emitted. `ComputeInlineContainerGeometry` then found only the post-block line, so the CB's start corner was anchored after the block — wrong. Fix in `layout_tree_builder.go`: look ahead for trailing inline content before emitting a zero-length leading continuation. Gated on `hasTrailingInlineContent` to avoid regressing `position-relative-002` (where the span has only block children and the blockified-wrapper path is the correct one).
+
 ### G-STICKY — 1 test
 ```
 sticky-top-001.html   3.4%
@@ -508,12 +516,12 @@ Updated 2026-04-21 post Phase 5 M5b (positioned root → IMCB sizing via `positi
 | G-ABS-CENTER | DONE (Phase 4) | 5 | 0 | — |
 | G-HYPO | DONE (Phase 4) | 3 | 2 NORUN (out of scope) | **77** |
 | G-ROOT-FLEX-GRID | **DONE (Phase 5, M5b)** | 4 | 0 | **81** |
-| G-ABS-IN-INLINE | open | 0 | 2 + 8 table abs-child variants | — |
+| G-ABS-IN-INLINE | **DONE (Phase 6, M6)** | 2 | 8 table abs-child variants (different root cause — G-ABS-IN-TABLE) | **83** |
 | G-STICKY | open | 0 | 1 | — |
 | G-REPLACED | open | 0 | 1 | — |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
 | G-SINGLETONS | open | 0 | 11 | — |
-| **Total** | — | **31** | **26 (+ 4 SKIPs out of scope)** | **81 / 100 runnable (projected)** |
+| **Total** | — | **33** | **24 (+ 4 SKIPs out of scope)** | **83 / 100 runnable (projected)** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
