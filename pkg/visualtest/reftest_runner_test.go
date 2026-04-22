@@ -246,8 +246,10 @@ func runReftest(t *testing.T, testPath string) bool {
 	tmpDir := t.TempDir()
 	testPNG := filepath.Join(tmpDir, "test.png")
 	testBasePath := filepath.Dir(testPath)
+	testWPTRoot := findWPTRoot(testPath)
+	testContent := ApplyWPTSubstitutions(string(content), testPath, testWPTRoot)
 
-	if err := RenderHTMLToFileWithBase(string(content), testPNG, width, height, testBasePath); err != nil {
+	if err := RenderHTMLToFileWithBase(testContent, testPNG, width, height, testBasePath); err != nil {
 		t.Fatalf("failed to render test: %v", err)
 		return false
 	}
@@ -277,8 +279,10 @@ func runReftest(t *testing.T, testPath string) bool {
 
 		refPNG := filepath.Join(tmpDir, fmt.Sprintf("ref%d.png", i))
 		refBasePath := filepath.Dir(refPath)
+		refWPTRoot := findWPTRoot(refPath)
+		refSubstituted := ApplyWPTSubstitutions(string(refContent), refPath, refWPTRoot)
 
-		if err := RenderHTMLToFileWithBase(string(refContent), refPNG, width, height, refBasePath); err != nil {
+		if err := RenderHTMLToFileWithBase(refSubstituted, refPNG, width, height, refBasePath); err != nil {
 			continue
 		}
 

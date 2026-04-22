@@ -170,9 +170,17 @@ func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontCon
 
 // createFileImageFetcher creates an ImageFetcher that loads images from the filesystem.
 // Absolute paths are resolved relative to wptRoot; relative paths relative to basePath.
+// URLs pointing at a configured WPT host (e.g. `http://web-platform.test:8000/...`)
+// are rewritten to wptRoot-rooted filesystem paths.
 func createFileImageFetcher(basePath, wptRoot string) images.ImageFetcher {
+	cfg := DefaultWPTServerConfig()
 	return func(uri string) ([]byte, error) {
-		if strings.HasPrefix(uri, "data:") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+		if strings.HasPrefix(uri, "data:") {
+			return nil, fmt.Errorf("unsupported URI scheme: %s", uri)
+		}
+		if rewritten, ok := stripWPTHost(uri, cfg); ok {
+			uri = rewritten
+		} else if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "//") {
 			return nil, fmt.Errorf("unsupported URI scheme: %s", uri)
 		}
 		var imagePath string
@@ -186,15 +194,23 @@ func createFileImageFetcher(basePath, wptRoot string) images.ImageFetcher {
 }
 
 // createFileDocumentFetcher creates a DocumentFetcher that loads HTML documents
-// from the filesystem. Handles relative file paths and data:text/html, URIs.
+// from the filesystem. Handles relative file paths, data:text/html, URIs, and
+// WPT-host URLs (e.g. `//www.not-web-platform.test:8000/...`). If the fetched
+// file has a `.sub.` stem its contents are run through ApplyWPTSubstitutions.
 func createFileDocumentFetcher(basePath, wptRoot string) layout.DocumentFetcher {
+	cfg := DefaultWPTServerConfig()
 	return func(uri string) (string, error) {
 		// Handle data: URIs (e.g. data:text/html,<html>...</html>)
 		if strings.HasPrefix(uri, "data:text/html,") {
 			content := strings.TrimPrefix(uri, "data:text/html,")
 			return content, nil
 		}
-		if strings.HasPrefix(uri, "data:") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+		if strings.HasPrefix(uri, "data:") {
+			return "", fmt.Errorf("unsupported URI scheme: %s", uri)
+		}
+		if rewritten, ok := stripWPTHost(uri, cfg); ok {
+			uri = rewritten
+		} else if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "//") {
 			return "", fmt.Errorf("unsupported URI scheme: %s", uri)
 		}
 		var docPath string
@@ -207,7 +223,11 @@ func createFileDocumentFetcher(basePath, wptRoot string) layout.DocumentFetcher 
 		if err != nil {
 			return "", err
 		}
-		return string(data), nil
+		content := string(data)
+		if strings.Contains(filepath.Base(docPath), ".sub.") {
+			content = ApplyWPTSubstitutions(content, docPath, wptRoot)
+		}
+		return content, nil
 	}
 }
 

@@ -104,7 +104,18 @@ func (b *Box) CreatesStackingContext() bool {
 		}
 	}
 	// CSS Transforms: elements with a transform create a stacking context.
+	// Per CSS Transforms Level 2 §3, individual transform properties
+	// (translate, rotate, scale) also create a stacking context.
 	if transforms := b.Style.GetTransforms(); len(transforms) > 0 {
+		return true
+	}
+	if _, _, _, _, ok := b.Style.GetIndividualTranslate(); ok {
+		return true
+	}
+	if _, ok := b.Style.GetIndividualRotate(); ok {
+		return true
+	}
+	if _, _, ok := b.Style.GetIndividualScale(); ok {
 		return true
 	}
 	// CSS Filters: elements with a filter create a stacking context.

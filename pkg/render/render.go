@@ -1118,6 +1118,20 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) {
 
 // paintLayerContent paints the layer's own box and children in
 // CSS 2.1 Appendix E order using the pre-sorted PaintLayer lists.
+//
+// The walk is split into phases (mirrors Blink's PaintLayerPainter):
+//   1. Self decorations — bg, borders, shadows, outline, list marker.
+//   2. NegativeZ z-children (step 2).
+//   3. PhaseBackground across non-self-painting descendants (step 3).
+//   4. PhaseFloat across non-self-painting descendants (step 4).
+//   5. Self foreground — text + image.
+//   6. PhaseForeground across non-self-painting descendants (step 5).
+//   7. AutoZero + PositiveZ z-children (steps 6-7).
+//
+// Descendant painting is split into phases so floats (step 4) can paint
+// above earlier siblings' block backgrounds but below later siblings'
+// inline content — a constraint that a single DOM-order walk cannot
+// satisfy for block-in-inline structures.
 func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// CSS clip: rect() — clips everything including backgrounds and borders.
 	// Purely physical coordinates per CSS Writing Modes §7.6.
@@ -1145,49 +1159,8 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.applyBackdropFilter(layer)
 	}
 
-	// empty-cells: hide — skip background, borders, and box shadows for
-	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
-	// The cell still occupies space; only painting is suppressed.
-	if !layer.EmptyCellHide {
-		// Step 0: Outset box shadows (paint behind everything).
-		if len(layer.BoxShadows) > 0 {
-			r.drawOutsetBoxShadows(layer)
-		}
-
-		// Step 1: Background and borders.
-		r.drawBackground(layer)
-		r.drawBorders(layer)
-
-		// Step 1b: Inset box shadows (paint after background, inside borders).
-		if len(layer.BoxShadows) > 0 {
-			r.drawInsetBoxShadows(layer)
-		}
-	}
-
-	// Column rules (between multicol columns).
-	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
-		r.drawColumnRules(layer)
-	}
-
-	// Outline (outside border-box, doesn't affect layout).
-	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
-		r.drawOutline(layer)
-	}
-
-	// List markers (disc, circle, square, decimal, or custom ::marker content).
-	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "" || layer.ListStyleImage != "") {
-		r.drawListMarker(layer)
-	}
-
-	// Text content.
-	if layer.Box.Text != "" {
-		r.drawText(layer)
-	}
-
-	// Replaced element image (<img>).
-	if layer.ImageSrc != "" {
-		r.drawImage(layer)
-	}
+	// Self decorations: bg, borders, shadows, outline, list marker.
+	r.paintSelfDecorations(layer)
 
 	// Overflow clip using pre-computed rectangle.
 	clipping := false
@@ -1211,15 +1184,17 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.paintLayer(child)
 	}
 
-	// Steps 3-5: Non-positioned content in DOM order.
-	// Step 3: non-float block-level and inline descendants.
-	for _, child := range layer.FlowChildren {
-		r.paintLayer(child)
-	}
-	// Step 4: Floats paint after non-float block backgrounds (CSS 2.1 Appendix E).
-	for _, child := range layer.FloatChildren {
-		r.paintLayer(child)
-	}
+	// Step 3: Descendant block backgrounds (non-self-painting subtree).
+	r.paintDescendantsPhase(layer, PhaseBackground)
+
+	// Step 4: Floats (each runs its own full phase loop).
+	r.paintDescendantsPhase(layer, PhaseFloat)
+
+	// Step 5a: Self foreground — text + image content.
+	r.paintSelfForeground(layer)
+
+	// Step 5b: Descendant foreground (text/image + non-positioned SCs).
+	r.paintDescendantsPhase(layer, PhaseForeground)
 
 	// Step 6: z-index:auto positioned + z-index:0 SCs.
 	for _, child := range layer.AutoZero {
@@ -1244,6 +1219,198 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		r.popClipRect()
 		r.dc.Pop()
 	}
+}
+
+// paintSelfDecorations paints a layer's own background, borders,
+// shadows, column rules, outline, and list marker — the subset of
+// painting that precedes descendant painting in CSS 2.1 Appendix E.
+// Called once per layer (not once per phase).
+func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
+	// empty-cells: hide — skip background, borders, and box shadows for
+	// empty table cells in the separate border model (CSS 2.1 §17.6.1.1).
+	// The cell still occupies space; only painting is suppressed.
+	if !layer.EmptyCellHide {
+		if len(layer.BoxShadows) > 0 {
+			r.drawOutsetBoxShadows(layer)
+		}
+		r.drawBackground(layer)
+		r.drawBorders(layer)
+		if len(layer.BoxShadows) > 0 {
+			r.drawInsetBoxShadows(layer)
+		}
+	}
+
+	if layer.IsMulticol && layer.ColumnRuleStyle != "none" && layer.ColumnRuleWidth > 0 && layer.ColumnCount > 1 {
+		r.drawColumnRules(layer)
+	}
+
+	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
+		r.drawOutline(layer)
+	}
+
+	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "" || layer.ListStyleImage != "") {
+		r.drawListMarker(layer)
+	}
+}
+
+// paintSelfForeground paints a layer's own text and replaced-element
+// image — the content that paints at CSS 2.1 Appendix E step 5
+// (inline foreground), after step-4 floats.
+func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
+	if layer.Box != nil && layer.Box.Text != "" {
+		r.drawText(layer)
+	}
+	if layer.ImageSrc != "" {
+		r.drawImage(layer)
+	}
+}
+
+// paintDescendantsPhase walks the non-self-painting descendants of
+// layer, painting only the work associated with phase. Self-painting
+// descendants (positioned + z-index, opacity<1, transform, etc.) are
+// not visited here — they are reached via the enclosing stacking
+// context's z-lists instead.
+//
+// Non-positioned stacking contexts live in FlowChildren for DOM-order
+// placement (buildPaintSubtree) but paint atomically: they are
+// visited only during PhaseForeground, where paintLayer drives their
+// own full phase loop.
+func (r *Renderer) paintDescendantsPhase(layer *PaintLayer, phase PaintPhase) {
+	for _, child := range layer.FlowChildren {
+		r.paintDescendantPhase(child, phase)
+	}
+	if phase == PhaseFloat {
+		for _, child := range layer.FloatChildren {
+			// Each float runs its own full phase loop — a non-positioned
+			// float still paints bg/border/content in Appendix E order
+			// within the step-4 slot.
+			r.paintLayer(child)
+		}
+	}
+}
+
+// paintDescendantPhase paints a single non-self-painting descendant
+// (a direct or transitive FlowChild) at the given phase, then
+// recurses into its own descendants for the same phase.
+//
+// Stacking-context descendants short-circuit to paintLayer during
+// PhaseForeground; they are otherwise skipped (their own phase loop
+// runs inside paintLayer).
+//
+// Atomic inlines (display: inline-block / inline-flex / inline-grid /
+// inline-table) paint atomically: parent's PhaseForeground calls
+// paintLayer which drives the atomic inline's own full phase loop.
+// Their internal floats thus paint between their own bg and their
+// own text, not at the outer SC's step 4.
+//
+// Pure inlines (display: inline) defer self decorations to
+// PhaseForeground but recurse through their subtree on every phase so
+// any nested atomic inlines, block-in-inline wrappers, or floats get
+// their correct phase slot.
+func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
+	if child == nil {
+		return
+	}
+	if !child.Visible || child.Opacity <= 0 {
+		return
+	}
+	if child.Box != nil && child.Box.CreatesStackingContext() {
+		if phase == PhaseForeground {
+			r.paintLayer(child)
+		}
+		return
+	}
+
+	if isAtomicInlineForPaint(child) {
+		if phase == PhaseForeground {
+			r.paintLayer(child)
+		}
+		return
+	}
+
+	pureInline := isPureInlineForPaint(child)
+
+	switch phase {
+	case PhaseBackground:
+		if !pureInline {
+			r.paintSelfDecorations(child)
+		}
+		// Pure inline defers self decorations to PhaseForeground.
+	case PhaseForeground:
+		if pureInline {
+			r.paintSelfDecorations(child)
+		}
+		r.paintSelfForeground(child)
+	case PhaseFloat:
+		// Skip self — floats paint their own bg during their paintLayer.
+	}
+
+	// Overflow clip on a non-SC descendant still applies to its own
+	// descendants' phase work. Wrap the recursion in the same clip
+	// setup used at the SC level, but scoped per phase so each phase
+	// pass is independently clipped.
+	clipping := false
+	if child.HasClip {
+		r.dc.Push()
+		clipping = true
+		ox, oy, ow, oh := pixelSnap(child.ClipRect[0], child.ClipRect[1],
+			child.ClipRect[2], child.ClipRect[3])
+		if hasBorderRadius(child) {
+			r.buildRoundedRectPath(ox, oy, ow, oh, child.BorderRadius)
+		} else {
+			r.dc.DrawRectangle(ox, oy, ow, oh)
+		}
+		r.dc.Clip()
+		r.pushClipRect(ox, oy, ow, oh)
+	}
+
+	r.paintDescendantsPhase(child, phase)
+
+	if clipping {
+		r.popClipRect()
+		r.dc.Pop()
+	}
+}
+
+// isAtomicInlineForPaint returns true for boxes that paint as a
+// single atomic unit at CSS 2.1 Appendix E step 5. These include:
+//   - Atomic inline-level boxes: inline-block, inline-flex,
+//     inline-grid, inline-table (CSS 2.1 §10.3.7).
+//   - Flex items (CSS Flexbox §13: "flex items paint exactly the
+//     same as inline blocks").
+//   - Grid items (CSS Grid §17 painting, same treatment).
+//
+// Atomic-paint boxes short-circuit the phase walk: the parent calls
+// paintLayer during PhaseForeground, driving the box's own full
+// phase loop. This ensures their bg, internal floats, and text all
+// paint within their own z-range, not interleaved with siblings'.
+func isAtomicInlineForPaint(layer *PaintLayer) bool {
+	if layer == nil || layer.Box == nil || layer.Box.Style == nil {
+		return false
+	}
+	switch layer.Box.Style.GetDisplay() {
+	case css.DisplayInlineBlock,
+		css.DisplayInlineFlex,
+		css.DisplayInlineGrid,
+		css.DisplayInlineTable:
+		return true
+	}
+	if layer.Box.IsFlexItem() {
+		return true
+	}
+	return false
+}
+
+// isPureInlineForPaint returns true for display: inline — a
+// non-atomic inline-level box whose bg / borders paint with its text
+// at step 5, but whose subtree is still walked per phase by the
+// containing stacking context (for any atomic-inline or block-level
+// descendants).
+func isPureInlineForPaint(layer *PaintLayer) bool {
+	if layer == nil || layer.Box == nil || layer.Box.Style == nil {
+		return false
+	}
+	return layer.Box.Style.GetDisplay() == css.DisplayInline
 }
 
 // pixelSnap rounds a box's position and size to integer pixel boundaries.

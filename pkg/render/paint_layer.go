@@ -11,6 +11,30 @@ import (
 	"mazarin/textshape"
 )
 
+// PaintPhase selects the subset of painting work done in one pass over
+// a stacking-context subtree. Mirrors Blink's PaintPhase enum
+// (kDescendantBlockBackgroundsOnly / kFloat / kForeground).
+//
+// CSS 2.1 Appendix E splits non-positioned descendant painting into
+// three ordered passes: block backgrounds (step 3), floats (step 4),
+// inline foreground (step 5). A single DOM-order tree walk cannot
+// express this ordering because inline foreground must paint AFTER
+// floats even though the inline is structurally inside a sibling.
+type PaintPhase int
+
+const (
+	// PhaseBackground paints backgrounds, borders, outlines, and list
+	// markers of non-self-painting descendants (Appendix E step 3).
+	PhaseBackground PaintPhase = iota
+	// PhaseFloat recurses into non-self-painting descendants looking
+	// for floats, each of which is painted with its full phase loop
+	// (Appendix E step 4).
+	PhaseFloat
+	// PhaseForeground paints text, images, and replaced content of
+	// non-self-painting descendants (Appendix E step 5).
+	PhaseForeground
+)
+
 // PaintLayer represents a node in the pre-paint tree.
 // Built from the layout Box tree before painting, PaintLayers pre-sort
 // children by CSS 2.1 Appendix E stacking order and pre-compute
@@ -852,6 +876,16 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 			// Unstyled box (line box, text run) — no PaintLayer.
 			// Recurse to find any styled descendants.
 			buildPaintSubtree(child, parentLayer, currentSC)
+			continue
+		}
+		// Text fragments (LayoutNode==nil with Text set) carry their parent
+		// element's Style so the renderer can resolve font/color. The
+		// parent style's `float:left` does NOT apply to text content —
+		// a text run is inline-level and paints during the parent's
+		// foreground phase, not as an independent float at step 4.
+		if child.LayoutNode == nil && child.Text != "" {
+			childLayer := newPaintLayer(child)
+			parentLayer.FlowChildren = append(parentLayer.FlowChildren, childLayer)
 			continue
 		}
 
