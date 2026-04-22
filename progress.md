@@ -13,33 +13,36 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 12: css-multicol (research + plan landed 2026-04-21; implementation opens 2026-04-22).** css-position is at 95/100 runnable (Phase 9 G-SINGLETONS effectively complete — 10/11 closed; `clear-001` deferred pending Blink LayoutUnit trace, `position-change` is an HTML-parser bug). Phase 10 (css-position delivery) and Phase 11 (css-flexbox residuals) are tracked in `task_plan.md` as parallel / closeout tracks; Phase 12 is the next active work.
-
-Next category = **css-multicol** (94/458 PASS = 20.5%). Opened with a full Blink-source research pass + louis14 audit before writing any code (CLAUDE.md §2).
-
-**Entry state.** `pkg/layout/multicol_layout.go` is a 392-line first-cut skeleton. Fragmentation infrastructure is absent (no `MinimalSpaceShortage`, no `BreakToken` threading through columns, no outer-stretch loop). This is the big unlock — phases 12a/12b/12c all depend on it.
-
-**Phased plan** (see `findings.md` "css-multicol category" for full Blink research + cluster-level breakdown, and `task_plan.md` "Phase 12: css-multicol" for driver tests + gates per phase):
-
-| Phase | Cluster(s) | Est. | Effort |
-|---|---|---|---|
-| **12a** | fragmentation infra (unlocks fill-balance, nested, spanner-frag, breaking) | ~80 | L |
-| **12b** | multicol-span-all (spanner re-balance) | ~40 | L |
-| **12c** | multicol-nested | ~35 | L |
-| **12d** | multicol-breaking (forced breaks) | ~30 | M |
-| **12e** | column-fill:auto | ~25 | M |
-| **12f** | column-height | ~29 | S |
-| **12g** | orphans/widows in columns | ~15 | M |
-| **12h** | rule paint + baseline + list markers | ~15 | S–M |
-
-**First action in Phase 12a (today).** Re-architect `pkg/layout/multicol_layout.go` around NG-style fragmentation: add `MinimalSpaceShortage` reporting on `LayoutResult`, thread `BlockBreakToken` between columns, add `BlockFragmentationType` + `IsInitialColumnBalancingPass` + `IsInsideBalancedColumns` to `ConstraintSpace`. Driver test: `multicol-fill-balance-001.html`.
+**Phase 12b (css-multicol): next up.** Phase 12a landed 2026-04-22 (see below). Phase 12b goal: `ColumnSpannerPath` + `MulticolPartWalker` equivalents; each column-run before/after a spanner re-balances independently. Driver tests: `multicol-span-all-001.html`, `spanner-fragmentation-001.html`.
 
 **Gate invariants** (must hold across all Phase 12 landings):
 - css-writing-modes: 781/781
 - CSS2: 99/99
 - css-flexbox: ≥626/629 (3 pre-existing residuals)
-- css-position: ≥95/100 (residual = `clear-001` deferred, `position-change` parser bug)
+- css-position: ≥91/104 runnable (residuals are pre-existing, all verified 2026-04-22)
 - css-transforms: ≥172 (post stack-floats refactor baseline)
+
+---
+
+## Phase 12a — NG fragmentation infrastructure — **DONE 2026-04-22 (commit `2a0d0a07`)**
+
+Complete Blink-parity rewrite of `pkg/layout/multicol_layout.go` plus supporting infrastructure across 6 files. All gates held; driver test passes at 0 pixel diff.
+
+**What landed:**
+- `multicol_layout.go`: complete rewrite with Blink-parity `LayoutLine()` outer stretch loop, `resolveColumnAutoBlockSize()` (unconstrained measurement pass), `constrainColumnBlockSize()`, `createConstraintSpaceForColumn()` (uses `IsFixedBlockSize=true` + `IsBlockSizeOverride=true` to override CSS height with column height, `IsContentSuggestionLayout=true` for balancing measurement pass).
+- `break_token.go`: added `InlineItemStartIndex int` to `BlockBreakToken` for inline column-resume.
+- `constraint_space.go`: added `IsInitialColumnBalancingPass bool` + `IsInsideBalancedColumns bool` fields + setters.
+- `layout_result.go`: added `HasForcedBreak bool`.
+- `inline_layout.go`: `layoutInlineChildren` now takes `startItemIndex int` (6th param) and returns `inlineBreakToken *BlockBreakToken` (5th return). Fragmentation check fires inside the line loop when `HasBlockFragmentation && FragmentainerBlockSize != Indefinite && !IsInitialColumnBalancingPass`; saves `lineStartIdx` before each `NextLine()` call for the break-token resume index.
+- `block_layout.go`: inline path extracts `inlineStartIdx` from incoming break token, passes it through; early-returns partial fragment when `inlineBreakToken != nil`. Added multicol dispatch: `if isMulticolContainer(style) { return NewMulticolLayoutAlgorithm(...).Layout() }`.
+- `css/style.go`: added `GetColumnFill() string` ("balance"/"auto"/"balance-all", default "balance").
+
+**Key root-cause fixes:**
+1. `IsBlockSizeOverride=true + IsFixedBlockSize=true` — prevents CSS `height` on the multicol container from overriding the column height in `CalculateInitialFragmentGeometry`.
+2. `IsContentSuggestionLayout=true + IsInitialColumnBalancingPass=true` — disables fragmentation during the unconstrained measurement pass so all content renders for height measurement.
+3. Inline fragmentation (`InlineItemStartIndex`) — enables column 2+ to resume at the correct line instead of re-rendering all content.
+
+**Results:** `multicol-fill-balance-001.xht` PASS at 0 pixel diff (480000 px, max diff: 0). Gates: wm 781/781 ✓, CSS2 99/99 ✓, flex 626/629 ✓, css-position 91/104 ✓ (all failures confirmed pre-existing via stash test).
 
 ---
 

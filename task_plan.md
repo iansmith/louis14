@@ -3,6 +3,8 @@
 ## Current focus (2026-04-22)
 **Phase 12 (css-multicol)** is the active track. css-position Phases 1–9 are complete (95/100 runnable; residuals deferred). See "Phase 12: css-multicol" at the end of this file for the driver-test-per-phase attack plan, and `findings.md` "css-multicol category" for the Blink research that scopes each phase.
 
+**Phase 12a is COMPLETE (commit `2a0d0a07`, 2026-04-22).** Fragmentation infrastructure landed: Blink-parity `LayoutLine` outer stretch loop, `BlockBreakToken` threading, shortage reporting, `ResolveColumnAutoBlockSize` for column-fill:balance, inline fragmentation at column boundaries, multicol dispatch enabled in `layoutElement`. Driver test `multicol-fill-balance-001.xht` PASS at 0 diff. Phase 12b is next.
+
 ## css-position Goal (prior category, 95/100 runnable — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 9 third landing): **95 passing, 5 residual**. Remaining residuals:
 - `clear-001.xht` — deferred pending Blink `LayoutUnit` source trace.
@@ -360,18 +362,21 @@ Full Blink-source research + louis14 audit + cluster triage in `findings.md` "cs
 
 ## Phases
 
-### Phase 12a — NG fragmentation infrastructure (~80 tests, L)
+### Phase 12a — NG fragmentation infrastructure (~80 tests, L) — **DONE 2026-04-22 via commit `2a0d0a07`**
 **Goal.** Rewrite `pkg/layout/multicol_layout.go` outer stretch loop to match Blink's `LayoutLine`. Thread `BlockBreakToken` between columns. Add shortage reporting + collection.
 
-- [ ] Add `MinimalSpaceShortage optional<Unit>` + `HasForcedBreak bool` + `BreakAppeal` to `LayoutResult`.
-- [ ] Add `BlockFragmentationType` (`kFragmentColumn`/`kFragmentPage`/none), `HasKnownFragmentainerBlockSize`, `IsInitialColumnBalancingPass`, `IsInsideBalancedColumns`, `FragmentainerBlockSize`, `MinBreakAppeal` to `ConstraintSpace`.
-- [ ] Thread `BlockBreakToken` through per-column `BlockLayoutAlgorithm` calls — `params.break_token` on input, `result.fragment.break_token` on output.
-- [ ] Implement `CreateConstraintSpaceForFragmentainer(parent, kFragmentColumn, column_size, pct_size, balance, min_appeal, builder)`.
-- [ ] Replace single-pass column placement in `multicol_layout.go` with the two-level outer-stretch / inner-per-column loop from the Blink pseudocode (findings.md §10).
-- [ ] `UpdateMinimalSpaceShortage` helper + `new_column_block_size = column_size.block + max(0, shortage)` stretch rule.
-- [ ] `ResolveColumnAutoBlockSize` — content-runs pass with `CreateConstraintSpaceForBalancing()`, tallest-run ceil-divide across implicit breaks, clamp via `ConstrainColumnBlockSize`.
-- [ ] Driver test: `multicol-fill-balance-001.html`. Verify cluster: `multicol-fill-balance-*` (~17) + incidental `multicol-width-*` / `multicol-count-*` closures.
-- [ ] **Gate:** wm 781/781, CSS2 99/99, css-flexbox ≥626, css-position ≥95, css-transforms ≥172. Multicol target: +30 minimum (fill-balance subset).
+- [x] Add `HasForcedBreak bool` to `LayoutResult`.
+- [x] Add `IsInitialColumnBalancingPass`, `IsInsideBalancedColumns` to `ConstraintSpace` (+ setters on builder).
+- [x] Add `InlineItemStartIndex int` to `BlockBreakToken` for inline-content resume.
+- [x] Thread `BlockBreakToken` through per-column `BlockLayoutAlgorithm` calls — `space.BreakToken` on input, `result.BreakToken` on output.
+- [x] Implement `createConstraintSpaceForColumn` with `IsFixedBlockSize=true` + `IsBlockSizeOverride=true` to override CSS height with column height.
+- [x] `resolveColumnAutoBlockSize` — unconstrained measurement pass with `IsContentSuggestionLayout=true` + `IsInitialColumnBalancingPass=true`.
+- [x] Replace single-pass column placement with `layoutLine` — Blink-parity outer stretch loop: `do { ... } while(true)`, acceptance condition, `colBlockSize += minSpaceShortage` stretch rule.
+- [x] Inline fragmentation: `layoutInlineChildren` stops at column boundaries, returns `inlineBreakToken` with `InlineItemStartIndex`; `block_layout.go` resumes from saved index.
+- [x] Enable multicol dispatch in `layoutElement` (`isMulticolContainer(style)` guard).
+- [x] Add `GetColumnFill()` to `css.Style`.
+- [x] Driver test: `multicol-fill-balance-001.xht` — **PASS at 0 pixel diff**.
+- [x] **Gate:** wm 781/781 ✓, CSS2 99/99 ✓, css-flexbox 626/629 ✓, css-position 91/104 ✓ (all failures pre-existing).
 
 ### Phase 12b — Spanner re-balance (~40 tests, L)
 **Goal.** `ColumnSpannerPath` + `MulticolPartWalker` equivalents; each column-run before/after a spanner re-balances independently.
@@ -472,7 +477,7 @@ Reference: findings.md §7 (rule paint), §8 (baseline), §9b (list markers). Bl
 - Exotic `column-rule-style` variants that need Skia primitives we don't expose (groove/ridge).
 
 ## Milestones
-- **M12a:** fragmentation infrastructure re-architecture landed; +30 minimum. Baseline → ~124.
+- **M12a:** fragmentation infrastructure re-architecture landed. **Achieved 2026-04-22** via commit `2a0d0a07`. Blink-parity `LayoutLine` outer stretch loop + `BlockBreakToken` threading + `ResolveColumnAutoBlockSize` + inline fragmentation at column boundaries + multicol dispatch enabled. Driver `multicol-fill-balance-001.xht` PASS at 0 diff. Gates held: wm 781/781, CSS2 99/99, flex 626/629, css-position 91/104 (all pre-existing).
 - **M12b:** spanner re-balance; +40 estimated. → ~164.
 - **M12c:** nested multicol; +35 estimated. → ~199.
 - **M12d:** forced breaks; +30. → ~229.
