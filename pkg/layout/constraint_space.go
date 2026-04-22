@@ -151,6 +151,18 @@ type ConstraintSpace struct {
 	// BreakToken is the incoming break token for resuming layout.
 	BreakToken *BlockBreakToken
 
+	// IsInitialColumnBalancingPass is true during the special measurement pass
+	// that determines balanced column height. Content must flow freely (no
+	// available block-size constraint) so that total block-size can be tallied.
+	// Mirrors Blink's ConstraintSpace::IsInitialColumnBalancingPass().
+	IsInitialColumnBalancingPass bool
+
+	// IsInsideBalancedColumns is true when this space is inside a balanced
+	// column context. Used for nested multicol: inner columns should also
+	// balance, and shortage propagates outward to the outer column algorithm.
+	// Mirrors Blink's ConstraintSpace::IsInsideBalancedColumns().
+	IsInsideBalancedColumns bool
+
 	// --- Tables (single-pass sizing) ---
 
 	// TableSectionData carries the immutable, finalized row/section
@@ -422,6 +434,20 @@ func (b *ConstraintSpaceBuilder) SetBlockFragmentationType(v FragmentationType) 
 // SetBreakToken sets the incoming break token for resuming layout.
 func (b *ConstraintSpaceBuilder) SetBreakToken(t *BlockBreakToken) *ConstraintSpaceBuilder {
 	b.space.BreakToken = t
+	return b
+}
+
+// SetIsInitialColumnBalancingPass marks this as the measurement pass for
+// balanced column height estimation. Content flows freely (no block-size limit).
+func (b *ConstraintSpaceBuilder) SetIsInitialColumnBalancingPass(v bool) *ConstraintSpaceBuilder {
+	b.space.IsInitialColumnBalancingPass = v
+	return b
+}
+
+// SetIsInsideBalancedColumns marks this space as inside a balanced column
+// context. Used for nested multicol shortage propagation.
+func (b *ConstraintSpaceBuilder) SetIsInsideBalancedColumns(v bool) *ConstraintSpaceBuilder {
+	b.space.IsInsideBalancedColumns = v
 	return b
 }
 

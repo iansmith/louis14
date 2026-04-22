@@ -4817,6 +4817,18 @@ func (s *Style) GetColumnSpan() string {
 	return "none"
 }
 
+// GetColumnFill returns the column-fill value ("balance", "auto", or "balance-all").
+// Default is "balance" per CSS Multicol §3.5.
+func (s *Style) GetColumnFill() string {
+	if v, ok := s.Get("column-fill"); ok {
+		v = strings.TrimSpace(strings.ToLower(v))
+		if v == "auto" || v == "balance" || v == "balance-all" {
+			return v
+		}
+	}
+	return "balance"
+}
+
 // GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em)
 func (s *Style) GetColumnGapMulticol() float64 {
 	if val, ok := s.Get("column-gap"); ok {

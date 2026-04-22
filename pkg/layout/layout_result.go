@@ -68,6 +68,12 @@ type LayoutResult struct {
 	// MinSpaceShortage is the smallest overflow that caused a break.
 	// Used by column balancing to determine how much to stretch.
 	MinSpaceShortage float64
+
+	// HasForcedBreak is true if this layout emitted a forced column/page break
+	// (break-before:column, break-after:column, etc.). Mirrors Blink's
+	// LayoutResult::HasForcedBreak() used by ColumnLayoutAlgorithm to count
+	// forced breaks and decide when no soft-break opportunities remain.
+	HasForcedBreak bool
 }
 
 // FragmentType distinguishes box, line-box, and text fragments.

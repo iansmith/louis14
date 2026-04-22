@@ -188,9 +188,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		builder.AddChild(nested.fragment, offset)
 	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
+		// When resuming from a column break, start the line breaker at the
+		// saved item index from the incoming break token.
+		inlineStartIdx := 0
+		if incomingBreakToken != nil && incomingBreakToken.InlineItemStartIndex > 0 {
+			inlineStartIdx = incomingBreakToken.InlineItemStartIndex
+		}
 		prevES := exclusionSpace
 		var inlineAscent, lastBaselineOff float64
-		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
+		var inlineBreakToken *BlockBreakToken
+		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx)
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
 		}
@@ -200,6 +207,38 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
+
+		// Inline fragmentation: if the inline layout stopped mid-content due to
+		// column overflow, build a partial fragment and return early with the
+		// inline break token. Mirrors the block-children fragmentation path.
+		if inlineBreakToken != nil {
+			shortage := (blockCursor + inlineBreakToken.ConsumedBlockSize) - bla.space.FragmentainerBlockSize
+			if shortage < 0 {
+				shortage = 0
+			}
+			if hasExplicitBlock {
+				builder.SetSize(geom.BorderBoxSize)
+			} else {
+				borderBoxBlock := blockCursor + geom.BlockBorderPadding()
+				builder.SetSize(LogicalSize{
+					InlineSize: geom.BorderBoxSize.InlineSize,
+					BlockSize:  borderBoxBlock,
+				})
+			}
+			builder.SetIntrinsicBlockSize(blockCursor)
+			builder.SetNode(bla.node.DOMNode)
+			builder.SetStyle(bla.style)
+			builder.SetLayoutNode(bla.node)
+			builder.SetBoxData(&PhysicalBoxData{
+				Border:  ToPhysicalEdges(geom.Border, wdm),
+				Padding: ToPhysicalEdges(geom.Padding, wdm),
+			})
+			result := builder.Build()
+			result.BreakToken = inlineBreakToken
+			result.MinSpaceShortage = shortage
+			result.PropagatedOOFCandidates = builder.outOfFlowCandidates
+			return result
+		}
 	} else {
 		// Block formatting context: block-level children.
 		children := bla.node.Children()
@@ -1508,9 +1547,9 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 	case css.DisplayNone:
 		return emptyResult(space.WritingDirection)
 	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem, css.DisplayInlineBlock:
-		// TODO: CSS Multicol — requires true fragmentation (break tokens) to
-		// avoid regressing tests that currently pass via block fallback.
-		// Skeleton in multicol_layout.go; disabled until fragmentation is done.
+		if isMulticolContainer(style) {
+			return NewMulticolLayoutAlgorithm(ctx, node, space).Layout()
+		}
 		return NewBlockLayoutAlgorithm(ctx, node, space).Layout()
 	case css.DisplayTable, css.DisplayInlineTable:
 		return NewTableLayoutAlgorithm(ctx, node, space).Layout()

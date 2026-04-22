@@ -32,6 +32,12 @@ type BlockBreakToken struct {
 	// MonolithicOverflow tracks how much a monolithic (unbreakable) element
 	// overflowed the fragmentainer.
 	MonolithicOverflow float64
+
+	// InlineItemStartIndex is the index into InlineItemsData.Items at which
+	// inline layout should resume in the next column. Non-zero only for break
+	// tokens produced by inline-content fragmentation. Mirrors Blink's
+	// approach of recording the line-box boundary as a resume point.
+	InlineItemStartIndex int
 }
 
 // HasBreakToken returns true if there is more content to lay out.

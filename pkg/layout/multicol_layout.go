@@ -7,10 +7,10 @@ import (
 )
 
 // MulticolLayoutAlgorithm implements CSS Multi-column Layout Module Level 1.
-// It resolves column count/width per §3.4, creates a fragmentation context,
-// and delegates content layout to the fragmentation-aware BlockLayoutAlgorithm.
+// Mirrors Blink's ColumnLayoutAlgorithm (column_layout_algorithm.{h,cc}).
 //
-// Mirrors Blink's ColumnLayoutAlgorithm.
+// Phase 12a: fragmentation infrastructure — outer stretch / inner column loop,
+// MinimalSpaceShortage feedback, inline content fragmentation.
 type MulticolLayoutAlgorithm struct {
 	ctx   *LayoutContext
 	node  *LayoutInputNode
@@ -69,6 +69,7 @@ func resolveColumnCount(availableInline float64, colCount int, colWidth float64,
 }
 
 // Layout performs multi-column layout and returns the result.
+// Mirrors Blink's ColumnLayoutAlgorithm::Layout().
 func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := mla.space.WritingDirection
 	geom := CalculateInitialFragmentGeometry(mla.ctx, mla.node, mla.style, wdm, mla.space)
@@ -86,7 +87,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	gap := mla.style.GetColumnGapMulticol()
 	numCols, usedColWidth := resolveColumnCount(contentInlineSize, colCount, colWidth, gap)
 
-	// Block-size: use explicit height if set, else auto (balance).
+	// Container explicit block-size (from CSS height/max-height).
 	hasExplicitBlock := geom.BorderBoxSize.BlockSize != Indefinite
 	var explicitBlockSize float64
 	if hasExplicitBlock {
@@ -96,20 +97,24 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// column-fill: balance forces balanced column distribution.
+	// Also forced when nested inside an outer initial-balancing pass.
+	columnFill := mla.style.GetColumnFill()
+	balanceColumns := columnFill == "balance" || columnFill == "" ||
+		(mla.space.HasBlockFragmentation && !mla.space.IsInitialColumnBalancingPass &&
+			mla.space.FragmentainerBlockSize == Indefinite)
+
 	// Split children into segments separated by column-span:all elements.
-	// Each segment is either a "column row" (normal multicol content) or
-	// a spanner (laid out at full container width).
 	type segment struct {
 		isSpanner bool
-		children  []*LayoutInputNode // for column rows
-		spanner   *LayoutInputNode   // for spanners
+		children  []*LayoutInputNode
+		spanner   *LayoutInputNode
 	}
 	var segments []segment
 	var currentChildren []*LayoutInputNode
 	for _, child := range mla.node.Children() {
 		childStyle := child.Style()
 		if childStyle != nil && childStyle.GetColumnSpan() == "all" {
-			// Flush accumulated children as a column row segment.
 			if len(currentChildren) > 0 {
 				segments = append(segments, segment{children: currentChildren})
 				currentChildren = nil
@@ -123,7 +128,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		segments = append(segments, segment{children: currentChildren})
 	}
 
-	// Lay out each segment.
 	blockCursor := 0.0
 
 	for _, seg := range segments {
@@ -153,74 +157,24 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			continue
 		}
 
-		// Column row: lay out using fragmentation.
+		// Column row: lay out via LayoutLine.
 		contentNode := &LayoutInputNode{
 			style:       mla.style,
 			children:    seg.children,
 			isAnonymous: true,
 		}
 
-		// Determine column height for this row.
-		var colHeight float64
-		if hasExplicitBlock {
-			colHeight = explicitBlockSize
-		} else {
-			colHeight = mla.balanceColumnHeight(contentNode, wdm, usedColWidth, numCols, gap)
-		}
-
-		// Layout columns.
-		var breakToken *BlockBreakToken
-		inlineOffset := 0.0
-		maxColHeight := 0.0
-
-		for col := 0; col < numCols; col++ {
-			colSpace := NewConstraintSpaceBuilder(wdm, wdm, true).
-				SetAvailableSize(LogicalSize{
-					InlineSize: usedColWidth,
-					BlockSize:  colHeight,
-				}).
-				SetPercentageResolutionSize(LogicalSize{
-					InlineSize: usedColWidth,
-					BlockSize:  colHeight,
-				}).
-				SetPercentageResolutionInlineSize(usedColWidth).
-				SetIsFixedBlockSize(true).
-				SetHasBlockFragmentation(true).
-				SetFragmentainerBlockSize(colHeight).
-				SetFragmentainerOffset(0).
-				SetBlockFragmentationType(FragmentColumn).
-				SetBreakToken(breakToken).
-				Build()
-
-			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
-			if result == nil || result.Fragment == nil {
-				break
-			}
-
-			builder.AddChild(result.Fragment, LogicalOffset{
-				InlineOffset: inlineOffset,
-				BlockOffset:  blockCursor,
-			})
-
-			colBlockSize := NewLogicalFragment(wdm, result.Fragment).BlockSize()
-			if colBlockSize > maxColHeight {
-				maxColHeight = colBlockSize
-			}
-
-			breakToken = result.BreakToken
-			if breakToken == nil {
-				break
-			}
-
-			inlineOffset += usedColWidth + gap
-		}
-
-		blockCursor += maxColHeight
+		rowBlockAdvance := mla.layoutLine(
+			contentNode, wdm, usedColWidth, numCols, gap,
+			balanceColumns, hasExplicitBlock, explicitBlockSize,
+			blockCursor, builder,
+		)
+		blockCursor += rowBlockAdvance
 	}
 
 	// Final block size.
 	finalBlockSize := blockCursor
-	if hasExplicitBlock {
+	if hasExplicitBlock && finalBlockSize < explicitBlockSize {
 		finalBlockSize = explicitBlockSize
 	}
 
@@ -254,7 +208,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Set final size and box data.
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
@@ -274,28 +227,173 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	return result
 }
 
-// contentNode creates an anonymous LayoutInputNode wrapping the multicol
-// container's children. This mirrors Blink's "flow thread" concept — a
-// single block node containing all multicol content that gets fragmented
-// across columns.
-func (mla *MulticolLayoutAlgorithm) contentNode() *LayoutInputNode {
-	return &LayoutInputNode{
-		style:       mla.style,
-		children:    mla.node.Children(),
-		isAnonymous: true,
+// layoutLine implements the outer stretch / inner per-column loop for one
+// "column row" (all columns between two spanners, or the whole container if
+// no spanners). Returns the block-size consumed by this row.
+//
+// Mirrors Blink's ColumnLayoutAlgorithm::LayoutLine() (cla.cc:858).
+func (mla *MulticolLayoutAlgorithm) layoutLine(
+	contentNode *LayoutInputNode,
+	wdm WritingDirectionMode,
+	usedColWidth float64,
+	numCols int,
+	gap float64,
+	balanceColumns bool,
+	hasExplicitBlock bool,
+	explicitBlockSize float64,
+	lineOffset float64,
+	builder *BoxFragmentBuilder,
+) float64 {
+	// Determine initial column block-size.
+	var colBlockSize float64
+	if balanceColumns {
+		// Balanced: estimate from content, then iterate via shortage.
+		colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap)
+		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize)
+	} else if hasExplicitBlock {
+		// Sequential fill with known container height.
+		colBlockSize = explicitBlockSize
+	} else {
+		// Sequential fill, auto height: columns grow to content.
+		colBlockSize = Indefinite
 	}
+
+	var maxColHeight float64
+	var finalColumns []struct {
+		fragment *PhysicalFragment
+		offset   LogicalOffset
+	}
+
+	// Outer stretch loop: mirrors Blink's do { ... } while (true) at cla.cc:967.
+	for {
+		var columns []struct {
+			fragment *PhysicalFragment
+			offset   LogicalOffset
+		}
+		minSpaceShortage := math.MaxFloat64
+		hasShortage := false
+		actualColumnCount := 0
+		forcedBreakCount := 0
+		hasViolatingBreak := false
+
+		var colBreakToken *BlockBreakToken
+		inlineOffset := 0.0
+
+		// Inner per-column loop.
+		for col := 0; col < numCols || colBlockSize == Indefinite; col++ {
+			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, lineOffset, colBreakToken, balanceColumns)
+			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
+			if result == nil || result.Fragment == nil {
+				break
+			}
+
+			colFrag := result.Fragment
+			colHeight := NewLogicalFragment(wdm, colFrag).BlockSize()
+
+			columns = append(columns, struct {
+				fragment *PhysicalFragment
+				offset   LogicalOffset
+			}{
+				fragment: colFrag,
+				offset:   LogicalOffset{InlineOffset: inlineOffset, BlockOffset: lineOffset},
+			})
+
+			// Track shortage for balancing stretch.
+			if result.MinSpaceShortage > 0 {
+				if result.MinSpaceShortage < minSpaceShortage {
+					minSpaceShortage = result.MinSpaceShortage
+					hasShortage = true
+				}
+			}
+
+			actualColumnCount++
+			if result.HasForcedBreak {
+				forcedBreakCount++
+			}
+			if colBlockSize != Indefinite && colHeight > colBlockSize {
+				hasViolatingBreak = true
+			}
+
+			colBreakToken = result.BreakToken
+			if colBreakToken == nil {
+				// All content fit in this column — done.
+				break
+			}
+			inlineOffset += usedColWidth + gap
+
+			// Stop inner loop when we've filled all columns (but content
+			// continues — will be handled by a spanner or caller).
+			if col+1 >= numCols {
+				break
+			}
+		}
+
+		finalColumns = columns
+
+		// For sequential fill (non-balanced), accept first layout.
+		if !balanceColumns {
+			break
+		}
+
+		// Acceptance condition: content fits with no violations and used
+		// at most numCols columns, with no remaining break token.
+		if !hasViolatingBreak &&
+			actualColumnCount <= numCols &&
+			(colBreakToken == nil) {
+			break
+		}
+
+		// Cannot make progress: all breaks are forced.
+		if numCols <= forcedBreakCount+1 {
+			break
+		}
+
+		if !hasShortage {
+			break
+		}
+
+		// Stretch column height by the minimum shortage and retry.
+		newColBlockSize := colBlockSize + minSpaceShortage
+		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, hasExplicitBlock, explicitBlockSize)
+		if newColBlockSize <= colBlockSize {
+			// Propagate shortage outward for nested balanced columns.
+			if mla.space.IsInsideBalancedColumns && !mla.space.IsInitialColumnBalancingPass {
+				// (shortage propagation to outer builder deferred to Phase 12c)
+			}
+			break
+		}
+		colBlockSize = newColBlockSize
+	}
+
+	// Commit final columns to the parent builder.
+	maxColHeight = 0.0
+	for _, col := range finalColumns {
+		builder.AddChild(col.fragment, col.offset)
+		h := NewLogicalFragment(wdm, col.fragment).BlockSize()
+		if h > maxColHeight {
+			maxColHeight = h
+		}
+	}
+
+	return maxColHeight
 }
 
-// balanceColumnHeight computes a balanced column height by doing an
-// unconstrained layout first, then iteratively refining.
-func (mla *MulticolLayoutAlgorithm) balanceColumnHeight(
+// resolveColumnAutoBlockSize estimates the balanced column height by doing an
+// unconstrained layout of the content to get total height, then dividing by
+// the number of columns. Mirrors Blink's ResolveColumnAutoBlockSizeInternal().
+func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	contentNode *LayoutInputNode,
 	wdm WritingDirectionMode,
 	colWidth float64,
 	numCols int,
 	gap float64,
 ) float64 {
-	// Step 1: Unconstrained layout to get total content height.
+	// Unconstrained layout: ignore the container's CSS height, let content flow
+	// freely to measure its intrinsic block-size.
+	// IsContentSuggestionLayout suppresses the element's own CSS block-size
+	// (height: 3em etc.) so we see the true content height.
+	// IsInitialColumnBalancingPass disables inline fragmentation breaks during
+	// this measurement pass.
 	unconstrainedSpace := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{
 			InlineSize: colWidth,
@@ -306,87 +404,89 @@ func (mla *MulticolLayoutAlgorithm) balanceColumnHeight(
 			BlockSize:  0,
 		}).
 		SetPercentageResolutionInlineSize(colWidth).
+		SetIsContentSuggestionLayout(true).
+		SetIsInitialColumnBalancingPass(true).
+		SetHasBlockFragmentation(true).
+		SetBlockFragmentationType(FragmentColumn).
 		Build()
 
-	unconstrainedResult := NewBlockLayoutAlgorithm(mla.ctx, contentNode, unconstrainedSpace).Layout()
-	if unconstrainedResult == nil {
+	result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, unconstrainedSpace).Layout()
+	if result == nil {
 		return 1
 	}
-	totalHeight := unconstrainedResult.IntrinsicBlockSize
+	totalHeight := result.IntrinsicBlockSize
 	if totalHeight <= 0 {
 		return 1
 	}
 
-	// Step 2: Initial estimate.
+	// Initial estimate: ceil-divide total height across columns.
 	estimate := math.Ceil(totalHeight / float64(numCols))
 	if estimate < 1 {
 		estimate = 1
 	}
-
-	// Step 3: Iterative balancing (max numCols+1 iterations).
-	for iter := 0; iter < numCols+1; iter++ {
-		actualCols, minShortage := mla.trialLayout(contentNode, wdm, colWidth, estimate, numCols)
-
-		if actualCols <= numCols && minShortage == 0 {
-			break // Balanced
-		}
-
-		if minShortage > 0 {
-			estimate += minShortage
-		} else {
-			break // No progress possible
-		}
-	}
-
 	return estimate
 }
 
-// trialLayout performs a trial fragmented layout to check how many columns
-// are used and what the minimum space shortage is.
-func (mla *MulticolLayoutAlgorithm) trialLayout(
-	contentNode *LayoutInputNode,
+// constrainColumnBlockSize clamps the candidate column height to the
+// container's explicit height (if any) and ensures it is positive.
+// Mirrors Blink's ConstrainColumnBlockSize() (cla.cc:1974).
+func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
+	size float64,
+	hasExplicitBlock bool,
+	explicitBlockSize float64,
+) float64 {
+	if size < 1 {
+		size = 1
+	}
+	if hasExplicitBlock && size > explicitBlockSize {
+		size = explicitBlockSize
+	}
+	return size
+}
+
+// createConstraintSpaceForColumn builds the constraint space for a single
+// column fragmentainer. Mirrors Blink's CreateConstraintSpaceForFragmentainer()
+// (fragmentation_utils.cc).
+func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	wdm WritingDirectionMode,
 	colWidth float64,
-	colHeight float64,
-	maxCols int,
-) (actualCols int, minShortage float64) {
-	var breakToken *BlockBreakToken
-	actualCols = 0
+	colBlockSize float64,
+	lineOffset float64,
+	breakToken *BlockBreakToken,
+	balanceColumns bool,
+) ConstraintSpace {
+	availBlock := colBlockSize
+	isFixed := colBlockSize != Indefinite
 
-	for col := 0; col < maxCols; col++ {
-		colSpace := NewConstraintSpaceBuilder(wdm, wdm, true).
-			SetAvailableSize(LogicalSize{
-				InlineSize: colWidth,
-				BlockSize:  colHeight,
-			}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: colWidth,
-				BlockSize:  colHeight,
-			}).
-			SetPercentageResolutionInlineSize(colWidth).
-			SetIsFixedBlockSize(true).
-			SetHasBlockFragmentation(true).
-			SetFragmentainerBlockSize(colHeight).
-			SetFragmentainerOffset(0).
-			SetBlockFragmentationType(FragmentColumn).
-			SetBreakToken(breakToken).
-			Build()
+	b := NewConstraintSpaceBuilder(wdm, wdm, true).
+		SetAvailableSize(LogicalSize{
+			InlineSize: colWidth,
+			BlockSize:  availBlock,
+		}).
+		SetPercentageResolutionSize(LogicalSize{
+			InlineSize: colWidth,
+			BlockSize:  availBlock,
+		}).
+		SetPercentageResolutionInlineSize(colWidth).
+		SetHasBlockFragmentation(true).
+		SetBlockFragmentationType(FragmentColumn).
+		SetIsInsideBalancedColumns(balanceColumns)
 
-		result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
-		if result == nil {
-			break
-		}
-		actualCols++
-
-		if result.MinSpaceShortage > 0 && (minShortage == 0 || result.MinSpaceShortage < minShortage) {
-			minShortage = result.MinSpaceShortage
-		}
-
-		breakToken = result.BreakToken
-		if breakToken == nil {
-			break
-		}
+	if isFixed {
+		// IsBlockSizeOverride + IsFixedBlockSize: the column height overrides any
+		// CSS block-size on the content node (e.g. the multicol container's own
+		// height:3em). This ensures the column fragment is exactly colBlockSize tall
+		// and fragmentation breaks at the right boundary.
+		// Mirrors Blink: column constraint space always has HasKnownFragmentainerBlockSize.
+		b = b.SetIsFixedBlockSize(true).
+			SetIsBlockSizeOverride(true).
+			SetFragmentainerBlockSize(colBlockSize).
+			SetFragmentainerOffset(lineOffset)
 	}
 
-	return actualCols, minShortage
+	if breakToken != nil {
+		b = b.SetBreakToken(breakToken)
+	}
+
+	return b.Build()
 }

@@ -125,12 +125,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	bfcBlockOrigin float64,
 	bfcInlineOrigin float64,
 	bfcContainerInlineSize float64,
-) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64) {
+	startItemIndex int,
+) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64, inlineBreakToken *BlockBreakToken) {
 	// Phase 1: Collect inline items from the layout subtree.
 	itemsData := CollectInlines(bla.node)
 
 	if len(itemsData.Items) == 0 {
-		return 0, exclusionSpace, 0, 0
+		return 0, exclusionSpace, 0, 0, nil
 	}
 
 	// Phase 1a: Block-level bidi control injection.
@@ -388,6 +389,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 	lb := NewLineBreaker(itemsData, bla.ctx, lineSpace, fonts, LineBreakerContent)
 	lb.availableWidth = lineAvailableWidth
+	if startItemIndex > 0 && startItemIndex < len(itemsData.Items) {
+		lb.currentItemIndex = startItemIndex
+		lb.currentTextOffset = itemsData.Items[startItemIndex].StartOffset
+	}
 
 	// Get text-align from the container's style.
 	textAlign := "start"
@@ -434,6 +439,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	var openInlineStack []*InlineItem
 
 	for {
+		// Save item index at the start of this line iteration, before NextLine
+		// advances the line breaker. Used to create inline break tokens that
+		// allow the next column to resume from this line's start.
+		lineStartIdx := lb.currentItemIndex
+
 		// CSS 2.1 §9.5: account for floats when computing available inline size.
 		// FindAvailableInlineSize returns the space consumed by left/right floats
 		// at the current block position. The exclusion space uses BFC-relative
@@ -923,6 +933,35 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack,
 		)
 		openInlineStack = residualStack
+
+		// Block fragmentation: check if this line fits in the current fragmentainer.
+		// Mirrors Blink's InlineLayoutAlgorithm fragmentation at the line-box level.
+		// Only check when we have a real (non-indefinite) fragmentainer block-size and
+		// this is NOT the initial balancing pass (which runs unconstrained to measure
+		// total content height).
+		if bla.space.HasBlockFragmentation &&
+			bla.space.FragmentainerBlockSize != Indefinite &&
+			!bla.space.IsInitialColumnBalancingPass {
+			fragEnd := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
+			if blockOffset+lineHeight > fragEnd && blockOffset > 0 {
+				// This line overflows. Stop here and signal the parent to create a
+				// break token so the next column resumes from this line.
+				// blockOffset > 0 guard: never emit an empty column (at least one
+				// line must have been placed, mirroring Blink's RequiresContent guard).
+				inlineBreakToken = &BlockBreakToken{
+					Node:                 bla.node,
+					ConsumedBlockSize:    blockOffset + bla.space.FragmentainerOffset,
+					InlineItemStartIndex: lineStartIdx,
+					SequenceNumber:       0,
+				}
+				if bla.space.BreakToken != nil {
+					inlineBreakToken.ConsumedBlockSize += bla.space.BreakToken.ConsumedBlockSize
+					inlineBreakToken.SequenceNumber = bla.space.BreakToken.SequenceNumber + 1
+				}
+				break
+			}
+		}
+
 		if firstLineAscent < 0 {
 			firstLineAscent = lineAscent
 		}
@@ -963,7 +1002,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	if firstLineAscent < 0 {
 		firstLineAscent = 0
 	}
-	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset
+	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset, inlineBreakToken
 }
 
 // firstLineAllowedProperties lists the CSS properties that ::first-line is
