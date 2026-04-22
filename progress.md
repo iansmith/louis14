@@ -26,7 +26,7 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 css-position now **95/100 runnable**. Gates hold: wm 781/781, CSS2 99/99, flex 626/629.
 
 **Remaining Phase 9 runnable:**
-- `clear-001.xht` — **deferred out-of-scope.** Blink sub-pixel rounding quirk (ref hardcodes 97+95 for 1in divs; we render exact 96+96). Not a layout bug.
+- `clear-001.xht` — **deferred; research incomplete.** Symptom is known (97+95 vs 96+96 split for two `height:1in` divs; total identical). Category points at Blink's `LayoutUnit` fixed-point + asymmetric fragment-boundary rounding, but the actual Blink call site has not been traced. Before picking this up, do a Blink source-trace session (see `findings.md` "clear-001 partially researched"); the trace output gates fix scope (narrow snap vs full LayoutUnit port).
 - `position-change.html` — HTML parser bug (`expected '>' but reached EOF`). Parser infra.
 
 **Phase 8 G-REPLACED — CLOSED 2026-04-21 (1/1, commit `0e1fde9f`).** See "Phase 8 — G-REPLACED closed" below.

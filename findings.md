@@ -535,8 +535,8 @@ Updated 2026-04-21 post Phase 9 first landing (relpos percent insets via commit 
 | G-STICKY | **DONE (Phase 7)** | 1 | 0 | **84** |
 | G-REPLACED | **DONE (Phase 8)** | 1 | 0 | **85** |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
-| G-SINGLETONS | **Phase 9 third landing** | 10 (`position-relative-001/002/011/012/013` + `dynamic-list-marker` + `containing-block-change-button` + `stack-floats-001` + `iframe-print-001/002`) | 1 deferred-out-of-scope (`clear-001` Blink subpixel quirk) + 1 `position-change` parser | **95** |
-| **Total** | — | **45** | **12 (+ 4 SKIPs + 1 deferred-out-of-scope + 1 parser)** | **95 / 100 runnable (96 / 100 once `position-change` parser + clear-001 infra land)** |
+| G-SINGLETONS | **Phase 9 third landing** | 10 (`position-relative-001/002/011/012/013` + `dynamic-list-marker` + `containing-block-change-button` + `stack-floats-001` + `iframe-print-001/002`) | 1 deferred-research-incomplete (`clear-001` — Blink LayoutUnit call site not traced) + 1 `position-change` parser | **95** |
+| **Total** | — | **45** | **12 (+ 4 SKIPs + 1 deferred-research-incomplete + 1 parser)** | **95 / 100 runnable (97 / 100 once `position-change` parser + clear-001 infra land)** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -734,8 +734,20 @@ Z-sorting is **orthogonal** to the phase loop — the loop runs inside each SC r
   - NegativeZ → PhaseBackground → PhaseFloat → PhaseForeground → AutoZero → PositiveZ.
 - Non-SC layers (reached via FlowChildren recursion) pass the incoming phase through — no re-loop.
 
-### clear-001 confirmed out-of-scope (2026-04-21, agent research)
-`height:1in` divs. Louis14 renders 96+96 = 192px (spec-correct per `pkg/css/style.go:602`, `return num * 96.0`). Blink renders 97+95 = 192px via internal sub-pixel rounding/fractional-LayoutUnit accumulation distributed asymmetrically across adjacent 1in boxes. Float-clear logic in `pkg/layout/exclusion_space.go:142-177` is correct; no rounding bug in our code. Matching Blink's quirk requires introducing LayoutUnit fixed-point arithmetic + their specific rounding path — a category-level infrastructure change, not a layout bug. Defer.
+### clear-001 partially researched — deferred pending Blink-source trace (2026-04-21)
+
+**What is known.**
+- `height:1in` divs. Louis14 renders 96+96 = 192px (spec-correct per `pkg/css/style.go:602`, `return num * 96.0`). Blink renders 97+95 = 192px via asymmetric distribution across adjacent 1in boxes.
+- Total is identical; only the split differs.
+- Float-clear logic in `pkg/layout/exclusion_space.go:142-177` is correct; no rounding bug in our code.
+- Category identified: Blink's `LayoutUnit` fixed-point arithmetic (64ths-of-a-pixel) plus its specific snap-at-fragment-boundary path is the general mechanism responsible for this class of asymmetric-rounding outcome.
+
+**What is NOT researched (must be done before any attempt).**
+- **Exact Blink call site.** We have not traced which function produces the 97+95 split from two stacked `height:1in` boxes. Candidates (from memory of LayoutNG structure, not verified): `LayoutUnit::Round()` on accumulated block offsets, `FragmentBuilder` snap during `SetSize`, or `ComputeContentAndScrollbarLogicalHeightUsing` on the content box. Needs source read of `layout_box.cc` / `ng_fragment_builder.cc` / `length_utils.cc` before coding.
+- **Blast radius.** Is the asymmetry specific to `in`/`cm`/`mm` physical units that compute to fractional device px at 96 dpi (1in = 96 × 1px, but 1cm ≈ 37.795px — fractional), or does it hit any fractional length (`0.5em` at odd font-sizes, `%` of odd CBs)? Answer determines whether a LayoutUnit port fixes one obscure test or shifts hundreds.
+- **Narrower-fix feasibility.** Can a snap-only-at-fragment-boundaries pass reproduce the split without a full LayoutUnit port? Unknown until the call site is located.
+
+**Implied next-research step (before any code).** Source-trace session in Blink: open two consecutive `<div style="height:1in">` in a debug build, dump the fragment block-offsets at each SetSize boundary, and record which `LayoutUnit::Round()` call produces the 1/64px residue that accumulates into the +1/-1 asymmetric split. Output: a specific Blink file:line-range pointer + a call-graph note in `findings.md`. Only then decide between (a) narrow snap helper vs (b) full LayoutUnit port.
 
 ### iframe-print-001/002 landed (2026-04-21, WPT sub preprocessor + http→local rewriter)
 Both tests use `<iframe src="//{{hosts[alt][www]}}:{{ports[http][0]}}{{location[path]}}/../resources/position-absolute-iframe-child*.html">`. Implemented:
