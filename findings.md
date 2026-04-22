@@ -502,9 +502,9 @@ position-relative-002.html                          1.0% → 0%   CLOSED
 position-relative-011.html                          0.4% → 0%   CLOSED (%-top on tbody under position:relative)
 position-relative-012.html                          0.4% → 0%   CLOSED (already passed — Phase 1 regression check)
 position-relative-013.html                          0.4% → 0%   CLOSED (%-top on td under position:relative)
-stack-floats-001.xht                                1.7%        OPEN  CSS 2.1 §9.9 float/inline stacking order bug
-position-absolute-iframe-print-001.sub.html         0.3%        OPEN  cross-origin iframe content (WPT {{hosts}} subst)
-position-absolute-iframe-print-002.sub.html         0.3%        OPEN
+stack-floats-001.xht                                1.7% → 0%   CLOSED (paint-phase refactor, commit 2026-04-21)
+position-absolute-iframe-print-001.sub.html         0.3% → 0%   CLOSED (WPT sub preprocessor + http→local rewriter)
+position-absolute-iframe-print-002.sub.html         0.3% → 0%   CLOSED
 clear-001.xht                                       0.0% 96 px  OPEN  height:1in renders 96+96; ref hardcodes 97+95 (Blink subpixel quirk)
 position-absolute-dynamic-list-marker.html          0.0% 18 px  OPEN  `::marker` pseudo-element not honored (black bullet visible)
 containing-block-change-button.html                 4.2%        OPEN  native `<button>` content vertical-centering not implemented
@@ -535,8 +535,8 @@ Updated 2026-04-21 post Phase 9 first landing (relpos percent insets via commit 
 | G-STICKY | **DONE (Phase 7)** | 1 | 0 | **84** |
 | G-REPLACED | **DONE (Phase 8)** | 1 | 0 | **85** |
 | G-SCROLL | open | 0 | 1 (`containing-block-change-scrollframe`) + G-FIXED Part B | — |
-| G-SINGLETONS | **Phase 9 second landing** | 7 (`position-relative-001/002/011/012/013` + `dynamic-list-marker` + `containing-block-change-button`) | 1 runnable (`stack-floats-001` — paint-phase refactor pending) + 3 deferred-out-of-scope (`clear-001` Blink subpixel quirk, `iframe-print-001/002` harness infra) + 1 `position-change` parser | **92** |
-| **Total** | — | **42** | **15 (+ 4 SKIPs + 3 deferred-out-of-scope + 1 parser)** | **92 / 100 runnable (100 / 100 if paint-phase refactor lands)** |
+| G-SINGLETONS | **Phase 9 third landing** | 10 (`position-relative-001/002/011/012/013` + `dynamic-list-marker` + `containing-block-change-button` + `stack-floats-001` + `iframe-print-001/002`) | 1 deferred-out-of-scope (`clear-001` Blink subpixel quirk) + 1 `position-change` parser | **95** |
+| **Total** | — | **45** | **12 (+ 4 SKIPs + 1 deferred-out-of-scope + 1 parser)** | **95 / 100 runnable (96 / 100 once `position-change` parser + clear-001 infra land)** |
 
 ## Blink study checklist (before Phase 1 code)
 - [ ] Read `ng_table_layout_algorithm.cc` for fragment emission order.
@@ -674,6 +674,90 @@ Non-SC layers recursed into from phases honor the incoming phase and do not re-r
 **Gate for landing.** wm 781/781, CSS2 99/99, flex 626/629, css-position 92 → 93 (flipping only stack-floats-001), no regression in the broader CSS3 category sweep.
 
 **Why deferred.** The refactor is the right architectural move per CLAUDE.md §1/§2, but it is a full paint-pipeline rewrite for one test. Worth doing when the paint category is the active attack target, rather than bundled as a one-off. Picking it up needs a dedicated session + broad CSS3 sweep budget.
+
+### Blink paint-phase deep dive (2026-04-21, agent research)
+
+Supplemental Blink reference for the stack-floats-001 refactor. All from `third_party/blink/renderer/core/paint/`.
+
+**Phase enum (`paint_phase.h`):**
+- `kSelfBlockBackgroundOnly` / `kDescendantBlockBackgroundsOnly` — Blink splits `kBlockBackground` into self + descendants because the two can have different scroll offsets / clips.
+- `kFloat` — "floating objects are painted above block backgrounds but entirely below inline content."
+- `kForeground` — "Handles all inlines; atomic inline elements will get all 4 non-backplate phases invoked on them during this phase." Atomic inlines (e.g. `<button>`, replaced inlines) run a mini phase-loop internally.
+- `kSelfOutlineOnly` / `kDescendantOutlinesOnly` — outline split, parallels the bg split.
+
+**Driver (`PaintLayerPainter::Paint()`):**
+```
+1. PaintWithPhase(kSelfBlockBackgroundOnly)
+2. Paint NegativeZ children (each runs full phase loop)
+3. PaintForegroundPhases():
+   - PaintWithPhase(kDescendantBlockBackgroundsOnly)   // step 3 continuation
+   - PaintWithPhase(kFloat)                             // step 4
+   - PaintWithPhase(kForeground)                        // step 5
+   - PaintWithPhase(kDescendantOutlinesOnly)
+4. Paint AutoZero + PositiveZ children (z:auto, 0, >0)
+5. PaintWithPhase(kSelfOutlineOnly)
+```
+Z-sorting is **orthogonal** to the phase loop — the loop runs inside each SC root, z-children run their own loop.
+
+**Per-phase recursion (`box_fragment_painter.cc`):**
+- `kSelfBlockBackgroundOnly`: paint own bg/border/shadow. **Do not recurse.**
+- `kDescendantBlockBackgroundsOnly`: for each non-self-painting non-float non-positioned child, `paintWithPhase(child, phase)`.
+- `kFloat`: for each non-self-painting float, `paintLayer(floatChild)` — **full phase loop**, not just kFloat. Self-painting floats are already in z-lists.
+- `kForeground`: paint own text/inline/replaced content, then recurse into all non-self-painting children with `kForeground`.
+
+**Block-in-inline specifically.** `BoxFragmentPainter::PaintBoxDecorationBackgroundForBlockInInline()` traverses inline descendants during `kDescendantBlockBackgroundsOnly` and paints any block-level fragments found. The block-in-inline is non-self-painting (no PaintLayer) and paints through the ancestor block flow's phase pass. This maps cleanly to our anon_block_1/_2 wrapper model — they're non-SC layers so they inherit the ancestor's phase.
+
+**Self-painting vs non-self-painting.** A layer is self-painting when `LayerTypeRequired() == kNormalPaintLayer`. Triggers: positioned + z-index ≠ auto, opacity < 1, transform, filter, blend-mode, mask. Not triggers: z-index:auto alone, overflow:hidden, visibility:hidden. Self-painting layers participate in z-lists and run their own phase loop.
+
+**Key gotchas for our implementation:**
+1. **Self-painting descendants must not be visited during parent's phase pass** — they're in z-lists already. Naive recursion double-paints.
+2. **Overflow clips in non-self-painting descendants still apply.** Float recursion must honor ancestor clip boundaries.
+3. **Atomic inlines (replaced) may need mini phase-loop.** Our `drawImage` + `drawText` during `PhaseForeground` is probably fine since replaced elements don't have floats inside them, but worth a regression check.
+4. **Outlines are a separate phase.** Bundle with `PhaseForeground` for minimum viable; split if it regresses.
+
+**Regression surface (highest-risk categories, verify in this order):**
+1. `css-writing-modes` (781/781 invariant) — lowest risk; phases don't interact with wm axes.
+2. CSS2 (99/99 invariant) — moderate baseline.
+3. `css-flexbox` (≥621 invariant) — moderate; no floats in flex containers → PhaseFloat is skipped.
+4. `css-position` (current 92/104, target 93) — target category.
+5. `css-inline` (~90 tests) — **highest risk.** Any `<span><div>...</div></span>` (block-in-inline) is sensitive; current paint order is inline-before-float, phased puts inline-after-float.
+6. `css-backgrounds`, `css-overflow` — secondary risk for overflow-clip interaction.
+
+**Louis14 scaffold (derived from research):**
+- New `PaintPhase` enum in `paint_layer.go`: `PhaseBackground`, `PhaseFloat`, `PhaseForeground`.
+- `paintLayerContent(layer) → paintLayerContent(layer, phase)`:
+  - `PhaseBackground`: draw own bg+border+shadow only. Do not recurse, do not visit FloatChildren.
+  - `PhaseFloat`: skip self. Recurse FlowChildren in PhaseFloat. Then for each FloatChild, call `paintLayer(floatChild)` for full phase loop.
+  - `PhaseForeground`: skip self bg. Recurse FlowChildren in PhaseForeground. Draw self text/image/marker. Skip FloatChildren (already done).
+- `paintLayer(layer)` at SC boundaries:
+  - transform/opacity/filter wrappers wrap the full 3-phase loop.
+  - NegativeZ → PhaseBackground → PhaseFloat → PhaseForeground → AutoZero → PositiveZ.
+- Non-SC layers (reached via FlowChildren recursion) pass the incoming phase through — no re-loop.
+
+### clear-001 confirmed out-of-scope (2026-04-21, agent research)
+`height:1in` divs. Louis14 renders 96+96 = 192px (spec-correct per `pkg/css/style.go:602`, `return num * 96.0`). Blink renders 97+95 = 192px via internal sub-pixel rounding/fractional-LayoutUnit accumulation distributed asymmetrically across adjacent 1in boxes. Float-clear logic in `pkg/layout/exclusion_space.go:142-177` is correct; no rounding bug in our code. Matching Blink's quirk requires introducing LayoutUnit fixed-point arithmetic + their specific rounding path — a category-level infrastructure change, not a layout bug. Defer.
+
+### iframe-print-001/002 landed (2026-04-21, WPT sub preprocessor + http→local rewriter)
+Both tests use `<iframe src="//{{hosts[alt][www]}}:{{ports[http][0]}}{{location[path]}}/../resources/position-absolute-iframe-child*.html">`. Implemented:
+- `pkg/visualtest/wpt_sub.go` — `ApplyWPTSubstitutions` handles `{{host}}`, `{{hosts[alt][www]}}`, `{{hosts[][www]}}`, `{{ports[http][0/1]}}`, `{{ports[https][0]}}`, `{{location[path|host|server|scheme]}}`. `stripWPTHost` normalises `//host:port/path` and `http(s)://host:port/path` against a default WPT server config (`web-platform.test` + `not-web-platform.test`, ports 8000/8001/8443).
+- `pkg/visualtest/helpers.go` — `createFileDocumentFetcher` / `createFileImageFetcher` now accept WPT-host URLs, strip host+port, and resolve the remaining URL-path (with `path.Clean` for `/../` normalisation) against `wptRoot`. The document fetcher also re-runs `ApplyWPTSubstitutions` on any fetched `.sub.*` file so iframe children with their own tokens work.
+- `pkg/visualtest/reftest_runner_test.go` — runner now preprocesses test and ref content through `ApplyWPTSubstitutions` before handing them to `RenderHTMLToFileWithBase`, keyed off the test path (for `location[path]`) and its `wpt-css2`/`wpt-css3` ancestor root.
+- `testdata/wpt-css3/css-position/resources/position-absolute-iframe-child.html` + `…-child-002.sub.html` created to match the ref text at `position:absolute; top:0; left:0`.
+
+**Gate verified.** wm 781/781 ✓; CSS2 99/99 ✓; css-flexbox 626/629 ✓; css-position 89 → **91** (+2 iframe-print-001/002); css-transforms 172 unchanged; css-backgrounds 162 unchanged; css-overflow 71 unchanged. 0-diff on both iframe-print tests.
+
+### Phase 9 stack-floats-001 landed (2026-04-21)
+
+Paint-phase refactor shipped — `stack-floats-001.xht` flips to PASS at 0 diff.
+
+**Changes delivered.**
+- `pkg/render/paint_layer.go`: new `PaintPhase` enum (`PhaseBackground` / `PhaseFloat` / `PhaseForeground`). `buildPaintSubtree` now also routes text fragments (`LayoutNode==nil && Text!=""`) into `FlowChildren` rather than classifying by inherited `float`, which is inline-level-invariant.
+- `pkg/render/render.go`: `paintLayerContent` split into `paintSelfDecorations` + `paintSelfForeground` + `paintDescendantsPhase` + `paintDescendantPhase`, driving the three-phase loop (bg → float → foreground) inside each stacking-context root. Atomic inlines (`isAtomicInlineForPaint`) + pure inlines (`isPureInlineForPaint`) are handled per Blink's gotchas.
+- `pkg/layout/types.go`: `CreatesStackingContext` now also recognises individual transform properties (`translate`, `rotate`, `scale`) per CSS Transforms Level 2 §3. Uncovered when refactor broke `flexbox-safe-overflow-position-006` (which uses `translate: 0 10px` on a static container).
+
+**Subtle bug caught during rollout.** `box-shadow-overlapping-002.html` (`<div><span>PED</span>PNG</div>` with div floated) regressed 4800 px: the `PNG` text fragment inherits its parent div's `Style*` pointer (which has `float:left`). Pre-refactor, all `FloatChildren` painted before `FlowChildren` siblings but after was a single pass, so misclassifying a text fragment as float was cosmetically invisible. Post-refactor, text fragments routed through the float phase paint at step 4 instead of step 5, putting the parent's shadow above the text. Fix: text fragments always route to `FlowChildren` — a text run is inline-level regardless of any inherited `float`.
+
+**Gate verified.** wm 781/781 ✓; CSS2 99/99 ✓; css-flexbox 626/629 ✓ (3 pre-existing: auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004); css-backgrounds 162/351 ✓; css-position 88 → **89** (+1 stack-floats-001); css-inline 7/7 unchanged; css-transforms 171 → 172 (+1, from an individual-translate SC recovery). No other category regressed.
 
 ## Notes
 - Attack order is **not** by % diff. Shared-root-cause grouping is prioritised (CLAUDE.md §1).
