@@ -1,12 +1,20 @@
-# Task Plan: Pass the entire css-position category
+# Task Plan: css-position (Phases 0–11) → css-multicol (Phase 12)
 
-## Goal
-All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 8 closed): **85 passing, 19 failing**. Remaining: close 19 without regressing:
+## Current focus (2026-04-22)
+**Phase 12 (css-multicol)** is the active track. css-position Phases 1–9 are complete (95/100 runnable; residuals deferred). See "Phase 12: css-multicol" at the end of this file for the driver-test-per-phase attack plan, and `findings.md` "css-multicol category" for the Blink research that scopes each phase.
 
-- css-writing-modes (currently 781/781 PASS — Phase 5f complete)
-- CSS2 (99/99 PASS)
-- css-flexbox (626/629 PASS — verified post Phase 3(c))
-- css-transforms (watch, not invariant: 171/381 after Phase 3(c) percent-sentinel fix, +9 vs baseline)
+## css-position Goal (prior category, 95/100 runnable — effectively complete)
+All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 9 third landing): **95 passing, 5 residual**. Remaining residuals:
+- `clear-001.xht` — deferred pending Blink `LayoutUnit` source trace.
+- `position-change.html` — HTML parser bug (`expected '>' but reached EOF`).
+- 4 runner SKIPs (infra/JS gaps, out of scope for layout plan).
+
+Invariants (must stay green in every Phase 12 landing too):
+- css-writing-modes 781/781 PASS (Phase 5f complete).
+- CSS2 99/99 PASS.
+- css-flexbox ≥626/629 PASS (3 pre-existing residuals tracked in Phase 11).
+- css-transforms 172/381 watch (not invariant; post Phase 9 stack-floats refactor, +10 vs baseline).
+- **css-position ≥95/100 runnable** (downgraded from target to watch — remaining residuals are out-of-scope for layout plan).
 
 ## Rules & Discipline
 Authoritative sources (re-read at session start):
@@ -333,3 +341,143 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualte
 ## Notes
 - `output/baselines/` holds raw logs; parse scripts live in `/tmp/` and are regenerated per session.
 - Current branch: `fix/flexbox-fast`. Master is the delivery target.
+
+---
+
+# Phase 12: css-multicol (next category)
+
+Opening 2026-04-21 after css-position hit 95/100. Current: **94 PASS / 361 FAIL / 3 SKIP** out of 458 (20.5%).
+
+Baseline extracted to `/tmp/multicol-all.txt` and `/tmp/multicol-fails.txt`.
+
+## Research & plan
+Full Blink-source research + louis14 audit + cluster triage in `findings.md` "css-multicol category (2026-04-21)". Must be re-read before starting any phase. Key facts that drive the plan:
+
+- **Blink has deleted legacy multicol** (`LayoutMultiColumnFlowThread`, `LayoutMultiColumnSet`, `MultiColumnFragmentainerGroup`, `LayoutMultiColumnSpannerPlaceholder`). NG model is the only model. Mirror that.
+- **Fragmentation infrastructure (`MinimalSpaceShortage` + `BlockBreakToken` + `ConstraintSpace` fragmentainer flags)** is the common dependency for ~80 failing tests across fill-balance, nested, spanner-fragmentation, and breaking clusters. Phase 12a first.
+- **`ColumnSpannerPath` + `MulticolPartWalker`** are NG's replacement for the legacy spanner-placeholder + fragmentainer-group model. Phase 12b.
+- **Outward shortage propagation** (`IsInsideBalancedColumns` + `PropagateSpaceShortage`) is what makes nested multicol work. Phase 12c.
+
+## Phases
+
+### Phase 12a — NG fragmentation infrastructure (~80 tests, L)
+**Goal.** Rewrite `pkg/layout/multicol_layout.go` outer stretch loop to match Blink's `LayoutLine`. Thread `BlockBreakToken` between columns. Add shortage reporting + collection.
+
+- [ ] Add `MinimalSpaceShortage optional<Unit>` + `HasForcedBreak bool` + `BreakAppeal` to `LayoutResult`.
+- [ ] Add `BlockFragmentationType` (`kFragmentColumn`/`kFragmentPage`/none), `HasKnownFragmentainerBlockSize`, `IsInitialColumnBalancingPass`, `IsInsideBalancedColumns`, `FragmentainerBlockSize`, `MinBreakAppeal` to `ConstraintSpace`.
+- [ ] Thread `BlockBreakToken` through per-column `BlockLayoutAlgorithm` calls — `params.break_token` on input, `result.fragment.break_token` on output.
+- [ ] Implement `CreateConstraintSpaceForFragmentainer(parent, kFragmentColumn, column_size, pct_size, balance, min_appeal, builder)`.
+- [ ] Replace single-pass column placement in `multicol_layout.go` with the two-level outer-stretch / inner-per-column loop from the Blink pseudocode (findings.md §10).
+- [ ] `UpdateMinimalSpaceShortage` helper + `new_column_block_size = column_size.block + max(0, shortage)` stretch rule.
+- [ ] `ResolveColumnAutoBlockSize` — content-runs pass with `CreateConstraintSpaceForBalancing()`, tallest-run ceil-divide across implicit breaks, clamp via `ConstrainColumnBlockSize`.
+- [ ] Driver test: `multicol-fill-balance-001.html`. Verify cluster: `multicol-fill-balance-*` (~17) + incidental `multicol-width-*` / `multicol-count-*` closures.
+- [ ] **Gate:** wm 781/781, CSS2 99/99, css-flexbox ≥626, css-position ≥95, css-transforms ≥172. Multicol target: +30 minimum (fill-balance subset).
+
+### Phase 12b — Spanner re-balance (~40 tests, L)
+**Goal.** `ColumnSpannerPath` + `MulticolPartWalker` equivalents; each column-run before/after a spanner re-balances independently.
+
+- [ ] `ColumnSpannerPath` struct + accessor on `LayoutResult`.
+- [ ] Inner `BlockLayoutAlgorithm` encountering `IsColumnSpanAll()` returns early with `column_spanner_path` set.
+- [ ] `MulticolPartWalker` in `multicol_layout.go` that serializes (column-run, spanner, column-run, …).
+- [ ] `LayoutSpanner` — full-container-width constraint space (`is_new_fc=true`), commit at intrinsic_block_size, `PropagateBaselineFromChild` (first spanner with baseline wins).
+- [ ] Post-spanner column run re-enters `LayoutLine` with its own `next_column_token`, its own `ResolveColumnAutoBlockSize` estimate.
+- [ ] Spanner-forces-balance-on-preceding-row rule for `column-fill:auto` (the switch-to-balance-mode branch in Blink at cla.cc:1130–1140).
+- [ ] Driver tests: `multicol-span-all-001.html`, `spanner-fragmentation-001.html`. Verify clusters: `multicol-span-*` (~50), `spanner-fragmentation-*` (~13).
+- [ ] **Gate:** same invariants as 12a.
+
+### Phase 12c — Nested multicol (~35 tests, L)
+**Goal.** Outward shortage propagation + nested-initial-balancing override.
+
+- [ ] Nested-initial-balancing override at the `balance_columns` branch: force balance when `HasBlockFragmentation() && !HasKnownFragmentainerBlockSize()`.
+- [ ] Outer-fragmentainer clamp: `available_outer_space = max(min_col_bsize, FragmentainerSpaceLeftForChildren() - line_offset)`.
+- [ ] `PropagateSpaceShortage` → outer builder when inner gives up and `IsInsideBalancedColumns() && !IsInitialColumnBalancingPass()`.
+- [ ] `MulticolBreakTokenData{consumed_row_block_size}` for row-split-across-outer-fragmentainers resume; `OffsetInCurrentRow` read-back.
+- [ ] Driver test: `multicol-nested-001.html`. Verify cluster: `multicol-nested-*` (~34).
+- [ ] **Gate:** same invariants.
+
+### Phase 12d — Forced breaks in column context (~30 tests, M)
+**Goal.** `break-before/after:column` + `break-inside:avoid-column` honored via `BreakToken` + `BreakAppeal`.
+
+- [ ] `IsForcedBreakValue(space, ebreakbetween)` dispatch on `BlockFragmentationType`.
+- [ ] `IsAvoidBreakValue<Property>` dispatch for `avoid-column`.
+- [ ] `BreakBeforeChildIfNeeded` wired into block/inline algorithms (existing column callers only for this phase; others stay the same).
+- [ ] `BreakAppeal` enum ordering: `LastResort < ViolatingOrphansAndWidows < ViolatingBreakAvoid < Perfect`.
+- [ ] `has_violating_break` tracked in outer stretch loop (demote on non-perfect appeal).
+- [ ] Driver test: `multicol-breaking-001.html`. Verify cluster: `multicol-breaking-*` (~13).
+- [ ] **Gate:** same invariants.
+
+### Phase 12e — column-fill:auto (~25 tests, M)
+**Goal.** Sequential-fill branch; honors `block-size` + outer remaining space; spanner-forces-balance special case.
+
+- [ ] Branch in `LayoutLine` on `column-fill` (shared with 12a but activates the `!balance_columns` exit).
+- [ ] `column_size.block = content_box_block_size` when definite.
+- [ ] Outer-constrained clamp at `FragmentainerSpaceLeftForChildren()`.
+- [ ] Driver test: `columnfill-auto-001.html`. Verify cluster: `multicol-fill-auto-*`.
+- [ ] **Gate:** same invariants.
+
+### Phase 12f — column-height + column-wrap (~29 tests, S)
+**Goal.** Add CSS Multi-column L2 §4.2 `column-height: auto | <length [0,∞]>` + companion `column-wrap: nowrap | wrap` and wire them through the five `column_layout_algorithm.cc` consumption sites. Blink gates both on the `MulticolColumnWrapping` runtime flag (stable); we enable unconditionally.
+
+Reference: findings.md §9a. Blink registration: `core/css/css_properties.json5`.
+
+- [ ] Add `column-height` + `column-wrap` to the CSS property table and parser; defaults `column-height:auto`, `column-wrap:nowrap`. No percentage support on `column-height`.
+- [ ] `ShouldWrapColumns()`, `HasRowHeight()`, `RowHeight()` helpers (mirror Blink cla.cc names).
+- [ ] `OffsetInCurrentRow(block_offset)` / `OffsetToNextRow(block_offset)` / `RemainingRowHeightAtOffset(block_offset)` helpers.
+- [ ] `ConstrainColumnBlockSize` clamp: stretch upper bound is `RemainingRowHeightAtOffset(line_offset)` (cla.cc:1974–1977 parity).
+- [ ] LayoutLine block-size override: when `HasRowHeight()`, seed `column_size.block` from `RowHeight()` rather than `ResolveColumnAutoBlockSize()` (cla.cc:858–875 parity).
+- [ ] Row-wrap loop: when `ShouldWrapColumns()` and a column-break-token remains, advance `line_offset += RowHeight()` and re-enter `LayoutLine()` (cla.cc:789–836 parity).
+- [ ] Intrinsic block-size top-off at end of `Layout()` for non-auto `column-height` — pad up to `clamp(RemainingRowHeightAtOffset(...), 0, outer_left)` (cla.cc:342–356 parity).
+- [ ] `MulticolBreakTokenData{consumed_row_block_size}` row-carry on outgoing break tokens; `OffsetInCurrentRow()` reads it on resume (cla.cc:2087–2093 parity). Shares plumbing with 12c — verify or add.
+- [ ] Driver test: `column-height-001.html` (exercises `column-wrap:wrap` + `column-fill:auto` + fixed `column-height`). Verify cluster: `column-height-*` (~29).
+- [ ] **Gate:** same invariants.
+
+### Phase 12g — Orphans/widows in columns (~15 tests, M)
+**Goal.** Port Blink's per-line-count break-appeal demotion + EarlyBreak retry.
+
+- [ ] `UpdateEarlyBreakBetweenLines` in our block-layout line loop.
+- [ ] `EarlyBreak` struct storing `{line_number, appeal}` on builder.
+- [ ] `RelayoutAndBreakEarlier<MulticolLayoutAlgorithm>` path — re-enter multicol with `early_break` hint when violating appeal better than current.
+- [ ] Thread `has_violating_break` via `result.GetBreakAppeal() != Perfect` in outer stretch loop.
+- [ ] Driver test: pick one `multicol-widows-orphans-*` from the failing list. Verify cluster: ~15.
+- [ ] **Gate:** same invariants.
+
+### Phase 12h — Rule paint + baseline + list markers (~15 tests, S–M)
+**Goal.** Cleanup of painting + alignment APIs — three small concerns that all ride on the multicol container's post-layout hooks.
+
+Reference: findings.md §7 (rule paint), §8 (baseline), §9b (list markers). Blink list-marker protocol: `core/layout/list/unpositioned_list_marker.{h,cc}`.
+
+- [ ] `GapGeometry{kMultiColumn}` populated with cross_gaps, main_gaps, columns_per_row; attached to multicol fragment via `SetGapGeometry` (cla.cc:424–481 parity).
+- [ ] `GapDecorationsPainter` equivalent (or extend existing column-rule painter to consume `GapGeometry`).
+- [ ] `PropagateBaselineFromChild` on column commits (cla.cc:1336, first column with baseline wins) + spanner commits (cla.cc:1496, first spanner with baseline wins).
+- [ ] `UnpositionedListMarker` protocol — carry a pending outside-marker through multicol layout with four callsites:
+  - Constructor: pull inherited `UnpositionedListMarker` off parent builder (cla.cc:250–264 parity).
+  - `LayoutLine` after first-column commit of each line: attempt marker baseline alignment (cla.cc:1302 parity). Only the first column of each line may try.
+  - `LayoutSpanner` after commit: spanner may claim an unclaimed marker (cla.cc:1498 parity).
+  - End-of-`Layout` fallback `PositionAnyUnclaimedListMarker`: place against container's own box (cla.cc:383 parity).
+- [ ] Driver tests: `multicol-rule-001.html` (`multicol-rule-*` ~30) and `multicol-list-item-001.xht` (`multicol-list-*` ~7).
+- [ ] **Gate:** same invariants.
+
+## Discipline (CLAUDE.md recap)
+1. Re-read `findings.md` "css-multicol" Blink research section at the start of each phase.
+2. Pick a single driver test. Do not start coding before reading that test + its reference HTML.
+3. Mirror Blink type names, function names, algorithm order. No louis14-original abstractions in this category — we have reference code.
+4. Run only the phase's target test + ≤2 adjacent tests (CLAUDE.md §4). Full category only at phase completion.
+5. Regression sweep (all 5 gate invariants) before each commit.
+6. Commit at phase boundaries with a milestone note.
+
+## Deferred / out-of-scope for Phase 12
+- Orthogonal-WDM multicol (no visible cluster in the FAIL list).
+- Print / paged-media × multicol interaction (separate category).
+- `::column` pseudo-element tree (CSS Overflow L4 — no WPT coverage).
+- Exotic `column-rule-style` variants that need Skia primitives we don't expose (groove/ridge).
+
+## Milestones
+- **M12a:** fragmentation infrastructure re-architecture landed; +30 minimum. Baseline → ~124.
+- **M12b:** spanner re-balance; +40 estimated. → ~164.
+- **M12c:** nested multicol; +35 estimated. → ~199.
+- **M12d:** forced breaks; +30. → ~229.
+- **M12e:** column-fill:auto; +25. → ~254.
+- **M12f:** column-height; +29. → ~283.
+- **M12g:** orphans/widows; +15. → ~298.
+- **M12h:** rule paint + baseline + list markers; +15. → ~313+.
+- Targets are conservative; overlapping cluster closures (e.g., `multicol-count-*`, `multicol-columns-*`, `multicol-gap-*`, `multicol-width-*`) likely push the final number higher without explicit phase work.

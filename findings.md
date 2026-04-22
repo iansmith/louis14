@@ -1,4 +1,8 @@
-# Findings & Decisions — css-position category
+# Findings & Decisions — css-position (complete) → css-multicol (active)
+
+> **Two categories tracked in this file.**
+> - Lines 1–773: css-position (phases 1–9, 95/100 runnable, effectively complete 2026-04-21).
+> - Lines 776+: css-multicol (Phase 12, research landed 2026-04-21, implementation opens 2026-04-22).
 
 ## Rules pointer
 Do not restate project rules here. They live in:
@@ -770,6 +774,362 @@ Paint-phase refactor shipped — `stack-floats-001.xht` flips to PASS at 0 diff.
 **Subtle bug caught during rollout.** `box-shadow-overlapping-002.html` (`<div><span>PED</span>PNG</div>` with div floated) regressed 4800 px: the `PNG` text fragment inherits its parent div's `Style*` pointer (which has `float:left`). Pre-refactor, all `FloatChildren` painted before `FlowChildren` siblings but after was a single pass, so misclassifying a text fragment as float was cosmetically invisible. Post-refactor, text fragments routed through the float phase paint at step 4 instead of step 5, putting the parent's shadow above the text. Fix: text fragments always route to `FlowChildren` — a text run is inline-level regardless of any inherited `float`.
 
 **Gate verified.** wm 781/781 ✓; CSS2 99/99 ✓; css-flexbox 626/629 ✓ (3 pre-existing: auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004); css-backgrounds 162/351 ✓; css-position 88 → **89** (+1 stack-floats-001); css-inline 7/7 unchanged; css-transforms 171 → 172 (+1, from an individual-translate SC recovery). No other category regressed.
+
+---
+
+# Findings — css-multicol category (2026-04-21)
+
+Next category after css-position. Opened with full Blink-research pass + louis14 audit so we enter implementation with the phased plan already made.
+
+## Baseline
+- Full status log: `/tmp/multicol-all.txt` (458 entries).
+- Failures only: `/tmp/multicol-fails.txt` (361 entries).
+- **94 PASS · 361 FAIL · 3 SKIP · 0 NORUN** = 94/458 runnable (20.5%).
+- Failing-prefix histogram (top):
+
+| Count | Prefix |
+|---|---|
+| 50 | `multicol-span-*` |
+| 34 | `multicol-nested-*` |
+| 30 | `multicol-rule-*` |
+| 29 | `column-height-*` |
+| 27 | `multicol-fill-*` |
+| 13 | `spanner-fragmentation-*` |
+| 13 | `multicol-width-*` |
+| 13 | `multicol-breaking-*` |
+| 11 | `multicol-count-*` |
+| 10 | `multicol-columns-*` |
+| 9 | `multicol-gap-*` |
+| 7 | `multicol-list-*` |
+
+## Blink-source research (2026-04-21)
+
+Fetched Chromium `main` (2026-04-21). Primary files read:
+- `third_party/blink/renderer/core/layout/column_layout_algorithm.{h,cc}` (2124 lines in `.cc`) — **not** `.../columns/`, that subdirectory does not exist
+- `third_party/blink/renderer/core/layout/block_break_token.h`
+- `third_party/blink/renderer/core/layout/constraint_space.h`
+- `third_party/blink/renderer/core/layout/fragmentation_utils.{h,cc}`
+- `third_party/blink/renderer/core/layout/block_layout_algorithm.cc` (orphans/widows at ~lines 3199–3320)
+- `third_party/blink/renderer/core/layout/column_spanner_path.h`
+- `third_party/blink/renderer/core/layout/multicol_break_token_data.h`
+- `third_party/blink/renderer/core/layout/gap/gap_geometry.h`
+
+### 0. Blink NG model (what's gone vs what replaced it)
+The legacy `LayoutMultiColumnFlowThread` / `LayoutMultiColumnSet` / `MultiColumnFragmentainerGroup` / `LayoutMultiColumnSpannerPlaceholder` have all been **removed** from Blink. Multicol is now entirely in LayoutNG as:
+- `ColumnLayoutAlgorithm` — one algorithm, produces column (`kColumnBox`) and spanner fragments as children of the multicol container fragment.
+- `ColumnSpannerPath` — GC'd linked list from multicol container down to the first spanner found during layout.
+- `MulticolPartWalker` (local to the `.cc`) — serializes multicol into (column-content run, spanner, column-content run, spanner, …).
+- `MulticolBreakTokenData { LayoutUnit consumed_row_block_size; }` — optional payload on outer-fragmentainer break tokens when a multicol row is split across outer fragmentainers.
+
+The "set of sibling `kColumnBox` fragments between two spanners" replaces the `MultiColumnFragmentainerGroup` concept (no explicit group object; implicit in the fragment tree).
+
+### 1. Fragmentation infrastructure
+- `ColumnLayoutAlgorithm::Layout()` calls `container_builder_.SetIsBlockFragmentationContextRoot()` (cla.cc:326).
+- Each column is produced by running a `BlockLayoutAlgorithm` on a `ConstraintSpace` built via `CreateConstraintSpaceForFragmentainer(parent_space, kFragmentColumn, column_size, pct_size, balance_columns, min_break_appeal, container_builder)` (cla.cc:990; declaration at `fragmentation_utils.h:578`).
+- The column algorithm sets `SetBoxType(PhysicalFragment::kColumnBox)` (cla.cc:1004).
+- `BlockBreakToken` threads through columns: `column_break_token = column.GetBreakToken();` (cla.cc:1066) → next iteration's `params.break_token`.
+- **`MinimalSpaceShortage`** (`layout_result.h:330`) — "how much more block-size this column would have needed to fit the content that overflowed it," or `std::nullopt` in the initial balancing pass. Reported by child via `PropagateSpaceShortage(space, result, frag_offset, frag_size, builder, …)` (fragmentation_utils.h:473), collected per-column at cla.cc:1044 via `UpdateMinimalSpaceShortage()` (takes the min across columns). Feedback into balancing loop: `new_column_block_size = column_size.block_size + max(0, minimal_space_shortage)` (cla.cc:1226–1230). Stretching by exactly the smallest amount any column needed — not doubling, not binary-searching.
+- **Outer stretch loop**: `do { ... } while (true);` at cla.cc:967–1252. Inner per-column loop at cla.cc:988–1127. Termination guard at 1237: `if (new_column_block_size <= column_size.block_size) break;`
+
+### 2. column-fill: balance vs auto
+Branch lives in `LayoutLine()`, cla.cc:899–902:
+```
+bool balance_columns =
+    Style().GetColumnFill() == EColumnFill::kBalance ||
+    (GetConstraintSpace().HasBlockFragmentation() &&
+     !GetConstraintSpace().HasKnownFragmentainerBlockSize());
+```
+Second disjunct forces balancing when nested inside an outer's initial-balancing pass (otherwise inner would over-report block-size).
+
+- **Balanced path** (cla.cc:1129–1252): estimate via `ResolveColumnAutoBlockSize()` → lay out all columns → check `!has_violating_break && actual_column_count <= used_column_count_ && (!column_break_token || hit_spanner)` → if not accepted, stretch by shortage, clear row, retry.
+- **Sequential-fill path** (column-fill:auto, non-nested): `balance_columns=false`; `column_size.block` set from content-box block-size; columns laid out sequentially; exits after first layout **unless a spanner is hit**, in which case `balance_columns` flips to true for the preceding row (cla.cc:1130–1140).
+
+`ResolveColumnAutoBlockSizeInternal()` (cla.cc:1691–1891) does a special balancing pass with a `CreateConstraintSpaceForBalancing()` space (`SetFragmentationType(kFragmentColumn)`, no available block-size, `SetIsInsideBalancedColumns()`). Produces "content runs" between forced breaks; `ContentRuns::DistributeImplicitBreaks(used_column_count_)` ceil-divides the tallest run across extra columns; `TallestColumnBlockSize()` returns the estimate; `ConstrainColumnBlockSize()` clamps by `tallest_unbreakable_block_size_` / outer fragmentainer space / container min/max/block-size / `column-height` via `RemainingRowHeightAtOffset()`.
+
+### 3. Spanners (column-span: all)
+- **`ColumnSpannerPath`**: `{BlockNode box_, Member<const ColumnSpannerPath> child_}`. Built by child `BlockLayoutAlgorithm` when it encounters `child.IsColumnSpanAll()` in a column BFC; stored on `LayoutResult.rare_data_->column_spanner_path` (layout_result.h:730). Accessed via `LayoutResult::GetColumnSpannerPath()` (layout_result.h:207).
+- Column params carry `column_spanner_path_` (cla.cc:1001) so nested container layouts know they're on the path to a spanner.
+- **Detection flow**:
+  1. Inner block algorithm finds spanner, returns early with `column_spanner_path` set.
+  2. `LayoutLine()` breaks out of per-column loop at cla.cc:1048.
+  3. `LayoutChildren` sees `result.GetColumnSpannerPath()` (cla.cc:643), calls `GetSpannerFromPath(path)` (cla.cc:225), then `walker.MoveToSpanner(spanner_node, next_column_token)` (cla.cc:657).
+- **`LayoutSpanner()`** (cla.cc:1397–1522):
+  1. `CreateConstraintSpaceForSpanner()` — available size is multicol container's `ChildAvailableSize()` (full container width), `is_new_fc=true`.
+  2. `spanner_node.Layout(spanner_space, break_token, early_break_in_child)`.
+  3. If wrapping enabled and spanner doesn't fit remaining row → push to end of row + `row_gap_size_` and retry (or `AddBreakBeforeChild`).
+  4. Nested: `BreakBeforeChildIfNeeded(spanner_node, *result, …)` at cla.cc:1469.
+  5. Commit: `AddResult(*result, offset)`, then `PropagateBaselineFromChild()` — first spanner with baseline contributes multicol baseline.
+- **After a spanner: re-balance yes.** Each column-run after a spanner is a separate `LayoutLine()` call driven by the `do…while (next_column_token && ShouldWrapColumns() && !result.GetColumnSpannerPath())` loop in `LayoutFragmentationContext()` (cla.cc:770–836). Each line gets its own `balance_columns` decision and its own `ResolveColumnAutoBlockSize()` estimate on the remaining content via the incoming `next_column_token`.
+
+### 4. Forced breaks
+- **`BreakBeforeChildIfNeeded()`** (fragmentation_utils.h:433) — called by every block/inline/flex/grid algorithm for each in-flow child.
+- Chain: `IsForcedBreakValue(ConstraintSpace, EBreakBetween)` (fu.h:56) dispatches on `BlockFragmentationType()` (`kFragmentColumn` vs `kFragmentPage`); `IsAvoidBreakValue<Property>()` (fu.h:61) for avoid-column.
+- Forced → `BlockBreakToken::CreateBreakBefore(node, /*is_forced_break=*/true)` (bbt.h:38–48), readable via `IsForcedBreak()` (bbt.h:145).
+- Avoid-but-must-break → demote `appeal_before` to `kBreakAppealViolatingBreakAvoid`.
+- Column counting uses `result->HasForcedBreak()` (layout_result.h:427). At cla.cc:1211: `if (used_column_count_ <= forced_break_count + 1)` means no soft-break opportunities remain.
+- Space flag: `BlockFragmentationType() == kFragmentColumn` (cs.h:40); set by `CreateConstraintSpaceForFragmentainer(..., kFragmentColumn, ...)`.
+
+### 5. Nested multicol
+- Detection: `is_constrained_by_outer_fragmentation_context_ = GetConstraintSpace().HasKnownFragmentainerBlockSize();` (cla.cc:310). `HasBlockFragmentation()` on parent space = true when nested.
+- **Outer initial-balancing pass**: `IsInitialColumnBalancingPass()` true, `HasKnownFragmentainerBlockSize()` false (cs.h:320). Inner detects this and forces balancing (otherwise would over-report block-size).
+- **Outer stretch pass**: inner has known outer fragmentainer size. At cla.cc:879–888: `available_outer_space = max(minimum_column_block_size, FragmentainerSpaceLeftForChildren() - line_offset)`. Inner columns can't exceed `available_outer_space`.
+- **Shortage propagation outward** (cla.cc:1238–1244):
+  ```
+  if (GetConstraintSpace().IsInsideBalancedColumns()) {
+    if (!IsInitialColumnBalancingPass())
+      container_builder_.PropagateSpaceShortage(minimal_space_shortage);
+    break;
+  }
+  ```
+- Row carry-over: `MulticolBreakTokenData{consumed_row_block_size}` attached to outgoing break token when an outer fragmentainer splits in the middle of a column row. Read back by `OffsetInCurrentRow()` (cla.cc:2087–2093) on resume.
+
+### 6. Orphans/widows during column breaks
+Enforced inside `BlockLayoutAlgorithm` (**not** in `ColumnLayoutAlgorithm`) at bla.cc:3199–3273:
+- `line_count = container_builder_.LineCount();`
+- `minimum_line_count = Style().Orphans();` (raised to `max(Orphans, Widows)` between breaks).
+- `line_count < minimum_line_count` → demote appeal to `kBreakAppealViolatingOrphansAndWidows`.
+- `line_count >= minimum_line_count` → compute `widows_found = line_count - first_overflowing_line_ + 1;`. If `widows_found < Widows()`, **return `BreakStatus::kContinue`** — keep laying out additional lines so the break can move earlier.
+- `UpdateEarlyBreakBetweenLines()` (bla.cc:3287–3320): `line_number = max(line_count - Widows, min(line_count - 1, Orphans))`. If violating either rule, demote appeal.
+- `EarlyBreak(line_number, appeal)` stored on builder. Worse actual break → `RelayoutAndBreakEarlier<ColumnLayoutAlgorithm>(early_break)` (cla.cc:334).
+- Interaction with balancing: `has_violating_break |= result.GetBreakAppeal() != kBreakAppealPerfect` (cla.cc:1053) → forces stretch loop to continue.
+
+### 7. Column rule painting (NG)
+- **No `ColumnRulePainter` anymore.** Column rules are unified "gap decorations" painted by `GapDecorationsPainter` (core/paint/gap_decorations_painter.{h,cc}).
+- Column algorithm builds a `GapGeometry` (core/layout/gap/gap_geometry.h) of type `kMultiColumn` (cla.cc:424): populates `SetCrossGaps`, `SetMainGaps`, `SetInlineGapSize`, `SetBlockGapSize`, `SetContentInlineOffsets`, `SetContentBlockOffsets`, `SetMainDirection(kForRows)`, then `container_builder_.SetGapGeometry(gap_geometry)` (cla.cc:481).
+- `cross_gaps_` (Vector<CrossGap>, cla.h:323), `main_gaps_` (Vector<MainGap>, cla.h:320), `columns_per_row_` (optional Vector, cla.h:346). Spanners marked `kNotFound`. `UpdateCrossGapSegmentStates()` (cla.cc:1552) flags cross-gaps as blocked / empty-on-one-side / flanked based on spanner adjacency.
+
+### 8. Baseline alignment from multicol
+- **`ColumnLayoutAlgorithm::PropagateBaselineFromChild(const PhysicalBoxFragment&, LayoutUnit block_offset)`** (cla.cc:1655–1677):
+  - `first_baseline = min(block_offset + fragment.FirstBaseline(), existing_first)` → `SetFirstBaseline(...)`.
+  - `last_baseline = max(block_offset + fragment.LastBaseline(), existing_last)` → `SetLastBaseline(...)`.
+  - `SetUseLastBaselineForInlineBaseline();`.
+- Called at cla.cc:1336 after each column commit (first column with baseline wins) and at cla.cc:1496 after spanner commit (first spanner with baseline wins — spec comment at 1493–1495).
+
+### 9a. column-height / column-wrap (Phase 12f target)
+**Spec.** CSS Multi-column Level 2 §4.2. Grammar `auto | <length [0,∞]>`; no percentages. Companion property `column-wrap: nowrap | wrap`. Both properties are gated on the `MulticolColumnWrapping` runtime feature flag (stable).
+
+**Registration.** Both properties live in `third_party/blink/renderer/core/css/css_properties.json5`. When `MulticolColumnWrapping` is off, `column-height` is absent and the old `height`-as-column-block-size path is used instead.
+
+**Consumption sites in `column_layout_algorithm.cc`** (five places — all the interesting behavior is here, not in ComputedStyle):
+1. **LayoutLine block-size override** (cla.cc:858–875). `LayoutLine()` chooses the column's block-size before the outer stretch loop. If `HasRowHeight()` (i.e. `column-height` is non-auto or outer row is constrained), the initial `column_size.block_size` is set from `RowHeight()` rather than `ResolveColumnAutoBlockSize()`. This makes `column-height: <len>` the hard upper bound on a single row of columns.
+2. **Row-wrap loop in `LayoutFragmentationContext()`** (cla.cc:789–836). When `ShouldWrapColumns()` is true, after laying out one row of columns the algorithm advances `line_offset += RowHeight()` and starts a new `LayoutLine()` iteration with the remaining content. This is the "columns wrap to a new row" behavior that `column-wrap: wrap` turns on.
+3. **`ConstrainColumnBlockSize`** (cla.cc:1974–1977). The balancing loop's stretch upper bound is clamped by `RemainingRowHeightAtOffset(line_offset)` — once the stretch candidate exceeds what fits in the current row, the row ends.
+4. **Intrinsic block-size top-off at end of `Layout()`** (cla.cc:342–356). When non-auto `column-height` is set, intrinsic_block_size is padded up to `clamp(RemainingRowHeightAtOffset(...), 0, outer_left)` so the multicol container reports the full row-height even if content is short.
+5. **`MulticolBreakTokenData` row carryover**. When an outer fragmentainer splits in the middle of a column row, `consumed_row_block_size` is written on the outgoing break token; on resume, `OffsetInCurrentRow()` (cla.cc:2087–2093) reconstructs where in the row we are.
+
+**Helper functions** (all in `column_layout_algorithm.cc`):
+- `ShouldWrapColumns()` — true when `column-wrap: wrap` or outer is row-constrained.
+- `HasRowHeight()` — true when `column-height` is non-auto **or** an outer row clamps our block-size.
+- `RowHeight()` — the current row's usable block-size.
+- `OffsetInCurrentRow(block_offset)` — offset within the current row (subtracts row starts).
+- `OffsetToNextRow(block_offset)` — remaining space to advance to the next row start.
+- `RemainingRowHeightAtOffset(block_offset)` — `RowHeight() - OffsetInCurrentRow(block_offset)`.
+
+**First-target test.** `column-height-001.html` exercises `column-wrap:wrap` + `column-fill:auto` + a fixed `column-height`. Fails today because `column-height` isn't recognized at all. Expected to close ~29 `column-height-*` tests when this lands.
+
+### 9b. List markers inside multicol (Phase 12h target)
+**Protocol.** Blink uses the `UnpositionedListMarker` pattern at `third_party/blink/renderer/core/layout/list/unpositioned_list_marker.{h,cc}`. A list marker whose `outside` box hasn't yet found a baseline to align to is carried through layout as an `UnpositionedListMarker` on the container builder; once a suitable line or spanner is found, `AddToBoxWithoutLineBoxes()` / `AddToBox(...)` places it and clears the pending marker. If layout finishes with a marker still unpositioned, `PositionAnyUnclaimedListMarker()` places it against the container's own box.
+
+**Four callsites in `ColumnLayoutAlgorithm`:**
+1. **Constructor** (cla.cc:250–264). Pulls an `UnpositionedListMarker` off the parent builder if the multicol container inherits one (e.g., multicol inside a `display:list-item` whose marker hasn't been placed yet).
+2. **`LayoutLine` after each line** (cla.cc:1302). Only the **first column of a line** may attempt marker baseline alignment — after committing the first column, `PositionListMarker(result, offset)` is called on the pending marker if any. This is the "marker aligns to first line of first column" rule.
+3. **`LayoutSpanner`** (cla.cc:1498). After a spanner commits, a still-unpositioned marker may align to the spanner's first baseline. Spec allows this because a spanner's baseline is conceptually outside the column flow.
+4. **`PositionAnyUnclaimedListMarker` at end of `Layout()`** (cla.cc:383). Fallback — if nothing above claimed the marker, place it against the multicol container's own content-box start. Ensures the marker always paints somewhere.
+
+**Rule.** Only the first column of each line may attempt marker alignment; a spanner may also claim an unclaimed marker; container fallback ensures no orphaned markers. This is intentionally narrow: we do **not** try to place the marker in the second, third, etc. column of a line.
+
+**First-target test.** `multicol-list-item-001.xht` — list-items as children of a multicol (not the container-is-list-item variant, which is handled by the constructor path). Expected to close ~7 `multicol-list-*` tests and reduce the `multicol-rule-*` cluster residual once combined with `GapGeometry` in the same phase.
+
+### 9. Key data structures (reference)
+| Name | Role |
+|---|---|
+| `ColumnLayoutAlgorithm` | The sole multicol algorithm; produces column + spanner fragments. |
+| `BlockLayoutAlgorithm` (`kColumnBox` box type) | Per-column layout; reports shortage, forced-break, spanner-path, break-appeal. |
+| `BlockBreakToken` | Continuation handle. Fields: `ConsumedBlockSize`, `SequenceNumber`, `IsBreakBefore`, `IsForcedBreak`, `IsCausedByColumnSpanner`, child tokens, optional `BreakTokenAlgorithmData`. |
+| `ConstraintSpace` | Multicol flags: `BlockFragmentationType`, `HasKnownFragmentainerBlockSize`, `IsInitialColumnBalancingPass`, `IsInsideBalancedColumns`, `IsInColumnBfc`, `MinBreakAppeal`, `FragmentainerOffset`, `FragmentainerBlockSize`. |
+| `ColumnSpannerPath` | GC'd linked list to first spanner. |
+| `MulticolBreakTokenData` | `LayoutUnit consumed_row_block_size`. |
+| `MulticolPartWalker` | Iterator over {column-content, spanner, resumed OOF} parts. |
+| `GapGeometry` + `MainGap`/`CrossGap` | Gap decoration geometry for painting. |
+| `PhysicalBoxFragment` + `IsColumnBox()`/`IsFragmentainerBox()` | Output fragments. |
+| `LayoutResult` | Per-layout signals: shortage, unbreakable size, spanner path, early-break, break-appeal, forced-break, initial/final break values. |
+| `BreakAppeal` + `EarlyBreak` | Breakpoint scoring. Ordering (low→high): `LastResort < ViolatingOrphansAndWidows < ViolatingBreakAvoid < Perfect`. |
+
+### 10. Algorithm pseudocode
+Full skeleton at Blink-parity below. Mirror this structure when re-architecting `pkg/layout/multicol_layout.go`.
+
+```
+ColumnLayoutAlgorithm::Layout():                                 // cla.cc:266
+  row_gap_size       = ResolveRowGapForMulticol(style, avail.block)
+  used_column_count  = ResolveUsedColumnCount(style, avail.inline)
+  combined_col_isize = avail.inline - gap_sum_within_content_box
+  column_gap_size    = gap_sum_until_overflow / used_column_count
+  inline_stride      = combined_col_isize + gap_sum_until_overflow
+  is_constrained_by_outer = space.HasKnownFragmentainerBlockSize()
+  remaining_content_block_size = border_box.block - BSP_sum
+  if nested and definite block-size:
+      remaining_content_block_size -= break_token.ConsumedBlockSize()
+  container_builder.SetIsBlockFragmentationContextRoot()
+  intrinsic_block_size = BorderScrollbarPadding.block_start
+
+  status = LayoutChildren()
+  if status == kNeedsEarlierBreak:
+      return RelayoutAndBreakEarlier<ColumnLayoutAlgorithm>(early_break)
+
+  if non-auto column-height:
+      intrinsic_block_size += clamp(RemainingRowHeightAtOffset(...), 0, outer_left)
+  intrinsic_block_size += BorderScrollbarPadding.block_end
+
+  block_size = ComputeBlockSizeForFragment(space, node, bp,
+                    previously_consumed + intrinsic_block_size, border.inline)
+  container_builder.SetFragmentsTotalBlockSize(block_size)
+  if nested: FinishFragmentation(container_builder)
+  container_builder.HandleOofsAndSpecialDescendants()
+  if gap_rule: build GapGeometry; container_builder.SetGapGeometry(...)
+  return container_builder.ToBoxFragment()
+
+LayoutLine(next_column_token, line_offset, min_col_bsize, ...):  // cla.cc:858
+  column_size.inline = ColumnInlineSize()
+  column_size.block  = initial-from-column-height-or-remaining
+  balance_columns    = (column-fill:balance) or
+                       (nested and outer is in initial balancing pass)
+  has_content_based  = balance_columns or
+                       (column_size.block indefinite and not outer-constrained)
+  if has_content_based:
+      column_size.block = ResolveColumnAutoBlockSize(...)
+
+  do:                                 # outer stretch loop
+      new_columns.clear()
+      minimal_space_shortage = kIndefiniteSize
+      column_break_token     = next_column_token
+      actual_column_count    = 0
+      forced_break_count     = 0
+      has_violating_break    = false
+
+      do:                             # inner per-column loop
+          child_space = CreateConstraintSpaceForFragmentainer(
+              parent_space, kFragmentColumn, column_size, pct_size,
+              balance_columns, min_break_appeal, container_builder)
+          result = BlockLayoutAlgorithm(params).Layout()  # kColumnBox
+          new_columns.push(result, {column_inline_offset, line_offset})
+          UpdateMinimalSpaceShortage(result.MinimalSpaceShortage(),
+                                     &minimal_space_shortage)
+          actual_column_count += 1
+          if result.GetColumnSpannerPath(): break
+          has_violating_break |= result.GetBreakAppeal() != kBreakAppealPerfect
+          column_inline_offset += progression_distributor.Next()
+          if result.HasForcedBreak(): forced_break_count += 1
+          column_break_token = result.fragment.GetBreakToken()
+          if column_break_token and actual_column_count >= used_column_count
+              and not overflow_in_inline: break
+      while column_break_token
+
+      if not balance_columns:
+          if result.GetColumnSpannerPath():
+              balance_columns = true
+              column_size.block = ResolveColumnAutoBlockSize(...)
+              continue
+          break
+
+      if not has_violating_break
+         and actual_column_count <= used_column_count
+         and (not column_break_token or result.GetColumnSpannerPath()):
+          break
+
+      if used_column_count <= forced_break_count + 1:
+          if not nested: break
+          new_column_bsize = LayoutUnit::Max
+      else:
+          new_column_bsize = column_size.block + max(0, minimal_space_shortage)
+      new_column_bsize = ConstrainColumnBlockSize(new_column_bsize, ...)
+      if new_column_bsize <= column_size.block:
+          if IsInsideBalancedColumns and not InitialPass:
+              container_builder.PropagateSpaceShortage(minimal_space_shortage)
+          break
+      column_size.block = new_column_bsize
+  while true
+
+  for result_with_offset in new_columns:
+      container_builder.AddChild(column, offset)
+      PropagateBaselineFromChild(column, offset.block)
+  intrinsic_block_size = line_offset + ...
+  return result
+```
+
+## Louis14 audit (2026-04-21)
+
+Current implementation: `pkg/layout/multicol_layout.go` (392 lines). First-cut skeleton.
+
+**Implemented (Blink-parity):**
+- `resolveColumnCount` per spec §3.4.
+- Basic column placement with inline progression + `column-gap`.
+- `column-rule` parsing.
+- Spanner detection (flag a child as spanner).
+- Balanced column-height for the single-row case.
+
+**Partial / incorrect:**
+- `column-fill` always treated as `balance`.
+- Orphans/widows parsed but not enforced at column-break time.
+- `column-height` pseudo-prop not recognized.
+- Baseline export stubbed (returns nullopt).
+- Column-rule painter stubbed (no `GapGeometry` equivalent).
+- Intrinsic sizing broken (doesn't match Blink's content-runs approach).
+
+**Missing:**
+- Fragmentation infrastructure: no `MinimalSpaceShortage`, no re-layout iteration, no `BreakToken` propagation across columns.
+- Forced-break directives (`break-before:column` etc.) not dispatched.
+- `column-fill:auto` sequential path.
+- Spanner re-balance for preceding row (post-spanner multi-row continuation).
+- Floats + multicol interaction.
+- Replaced-element sizing inside columns.
+- Orthogonal writing-mode (multicol with different WDM from parent).
+- Dynamic re-layout on style/content mutation.
+- Nested multicol (inner's IMCB-like clamp, outward shortage propagation).
+- List markers inside columns.
+
+**File-path anchors:**
+- `pkg/layout/multicol_layout.go:1-392` — primary algorithm.
+- `pkg/layout/block_layout.go:~1511` — TODO marker where spanner detection should report back.
+- `pkg/layout/constraint_space.go` — needs `BlockFragmentationType`, `IsInitialColumnBalancingPass`, `IsInsideBalancedColumns`, `FragmentainerBlockSize`, `MinBreakAppeal`.
+- `pkg/css/style.go` — needs `column-height` property recognition.
+- `pkg/layout/fragment_geometry.go` — needs fragmentainer-aware border/scrollbar/padding layout.
+
+## Failure clusters and phased plan
+
+**Attack order** (Blink-dependency first, then functional coverage):
+
+| Phase | Cluster(s) | Est. tests | Effort | Why this order |
+|---|---|---|---|---|
+| **12a** | fragmentation infra (affects fill-balance, nested, spanner-frag, breaking) | ~80 | L | Nothing works correctly until shortage + break-token + constraint-space fragmentation plumbing exists. Everything downstream depends on this. |
+| **12b** | multicol-span-all (spanner re-balance) | ~40 | L | Needs 12a's break-token infrastructure first. `ColumnSpannerPath` + `MulticolPartWalker` go on top. |
+| **12c** | multicol-nested | ~35 | L | Needs 12a's `IsInsideBalancedColumns` + shortage-propagation-outward. |
+| **12d** | multicol-breaking (forced breaks) | ~30 | M | Needs 12a's break-token + `BreakBeforeChildIfNeeded` dispatch. Cleaner once fragmentation infra is real. |
+| **12e** | column-fill:auto | ~25 | M | Needs 12a's branch between balanced and sequential fill. Spanner-forces-balance also lives here. |
+| **12f** | column-height / column-wrap | ~29 | S | Add `column-height` + `column-wrap` properties (L2, `MulticolColumnWrapping` flag). Five cla.cc consumption sites (see §9a). Small surface but behavior-rich. |
+| **12g** | orphans/widows in columns | ~15 | M | Needs 12a's `BreakAppeal` scoring + `EarlyBreak` + `RelayoutAndBreakEarlier` retry. Otherwise orthogonal to column algorithm. |
+| **12h** | multicol-rule paint + baseline + list markers (grab bag) | ~15 | S–M | `GapGeometry` for column rules; `PropagateBaselineFromChild`; `UnpositionedListMarker` protocol with four cla.cc callsites (see §9b). |
+
+Clusters that may close for free after 12a–12c:
+- `multicol-count-*` (11): likely incidental to fragmentation-correct layout.
+- `multicol-columns-*` (10): probably resolved by correct used-column-count × column-width interplay (already mostly right in `resolveColumnCount`).
+- `multicol-gap-*` (9): possibly resolved by `GapGeometry` (12h), possibly incidental.
+- `multicol-width-*` (13): same.
+
+Representative driver tests (one per cluster, pick when beginning phase):
+- 12a: `multicol-fill-balance-001.html`
+- 12b: `multicol-span-all-001.html` + `spanner-fragmentation-001.html`
+- 12c: `multicol-nested-001.html` + `multicol-nested-balancing-000.html`
+- 12d: `multicol-breaking-001.html`
+- 12e: `columnfill-auto-001.html`
+- 12f: `column-height-001.html` (exercises `column-wrap:wrap` + `column-fill:auto` + fixed `column-height`).
+- 12g: pick one from `multicol-widows-orphans-*` (inside the multicol-breaking cluster).
+- 12h: `multicol-rule-001.html`, `multicol-list-item-001.xht`.
+
+## Out-of-scope for css-multicol phase
+- Orthogonal WDM multicol (no cluster of tests visibly targets it in the FAIL list; defer until a representative test demands it).
+- `column-rule-style` variants (dashed/dotted/groove/ridge) that depend on Skia primitives we don't expose yet — handle opportunistically in 12h; drop if Skia gap is deep.
+- Printed multicol with paged media interaction — paged media is a separate category.
+- `::column` pseudo-element tree (CSS Overflow L4) — no spec coverage in current WPT multicol directory.
 
 ## Notes
 - Attack order is **not** by % diff. Shared-root-cause grouping is prioritised (CLAUDE.md §1).
