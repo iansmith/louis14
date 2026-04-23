@@ -407,12 +407,12 @@ Full Blink-source research + louis14 audit + cluster triage in `findings.md` "cs
 - [x] Fix `spanner-fragmentation-002` — same leaf-block fragment height fix. Closed 2026-04-22.
 - [x] Fix `spanner-fragmentation-004` through `010` — outer fragmentation (IIM break propagation, `buildOuterBreakResult`, `beforeSpannerToken` threading). Closed 2026-04-22.
 - [x] Fix `spanner-fragmentation-009` — `break-before:column` with no prior content in column. Zero-height fragment with suppressed border+padding BoxData (only margin emitted). Resumed fragment draws full borders. Closed 2026-04-23.
-- [ ] Fix `spanner-fragmentation-011` (5000px failure) — `break-after:column` followed by sibling content. Root cause: `groupInlineChildrenForMulticol` produces different `*LayoutInputNode` pointer slices on each call. Break token stores pointer from first invocation; resumed layout's `Children()` returns different pointers → pointer comparison fails → `resumeChildIdx=-1` → IIM not skipped → runs twice → col-content displaced 100px down.
-- [ ] Fix `spanner-fragmentation-012` (2500px failure) — same root cause as 011.
+- [x] Fix `spanner-fragmentation-011` (5000px failure) — two-part fix: (1) `groupedChildrenCache` on `LayoutInputNode` gives anonymous block wrappers stable pointer identity across repeated `Layout()` calls; (2) whitespace-only inline run suppression in `flushRun` eliminates spurious IIM re-layout after `break-after:column`. PASS at 0 diff. (2026-04-23, commit `931f48c5`)
+- [x] Fix `spanner-fragmentation-012` (2500px failure) — same two-part fix. PASS at 0 diff. (2026-04-23, commit `931f48c5`)
 - [x] Remove debug code from `multicol_layout.go` and `block_layout.go`. (2026-04-23)
 - [x] **Gate:** wm 781/781 ✓, CSS2 99/99 ✓, css-flexbox 626/629 ✓.
 
-**Results as of 2026-04-23 (uncommitted):**
+**Results as of 2026-04-23 (commit `931f48c5`): all 13 PASS at 0 pixel diff.**
 | Test | Status | Pixels wrong |
 |------|--------|-------------|
 | spanner-fragmentation-000 | **PASS** | 0 |
@@ -426,8 +426,8 @@ Full Blink-source research + louis14 audit + cluster triage in `findings.md` "cs
 | spanner-fragmentation-008 | **PASS** | 0 |
 | spanner-fragmentation-009 | **PASS** | 0 |
 | spanner-fragmentation-010 | **PASS** | 0 |
-| spanner-fragmentation-011 | FAIL | 5000 |
-| spanner-fragmentation-012 | FAIL | 2500 |
+| spanner-fragmentation-011 | **PASS** | 0 |
+| spanner-fragmentation-012 | **PASS** | 0 |
 
 ### Phase 12c — Nested multicol (~35 tests, L)
 **Goal.** Outward shortage propagation + nested-initial-balancing override.
