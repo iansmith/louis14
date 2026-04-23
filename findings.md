@@ -1135,3 +1135,136 @@ Representative driver tests (one per cluster, pick when beginning phase):
 - Attack order is **not** by % diff. Shared-root-cause grouping is prioritised (CLAUDE.md §1).
 - Every group's first step is Blink study (CLAUDE.md §2). Do not start coding a group without that.
 - Each phase commits at completion of the group plus passing regression sweeps. Intermediate milestones can commit WIP if blocked, but must note the blocker.
+
+---
+
+## Phase 12c kickoff research (2026-04-23)
+
+### Blink source — four canonical sites (verified against chromium.googlesource.com trunk)
+
+Fetched and quoted verbatim; louis14 must mirror these.
+
+**1. Outer-fragmentainer clamp (cla.cc:860–895, inside `LayoutLine()`).**
+```cpp
+LayoutUnit available_outer_space = kIndefiniteSize;
+if (is_constrained_by_outer_fragmentation_context_) {
+  available_outer_space =
+      std::max(minimum_column_block_size,
+               FragmentainerSpaceLeftForChildren() - line_offset);
+  DCHECK_GE(available_outer_space, LayoutUnit());
+  column_known_to_fit_in_outer =
+      column_size.block_size != kIndefiniteSize &&
+      column_size.block_size <= available_outer_space;
+}
+```
+
+**2. Nested-initial-balancing override (cla.cc:1025, balance_columns decision).**
+```cpp
+bool balance_columns =
+    Style().GetColumnFill() == EColumnFill::kBalance ||
+    (GetConstraintSpace().HasBlockFragmentation() &&
+     !GetConstraintSpace().HasKnownFragmentainerBlockSize());
+```
+
+The second clause fires when inside outer fragmentation with no known outer column block-size — i.e. during the outer's initial balancing pass. Inner must balance because it can't sequential-fill without knowing outer column height.
+
+**3. Outward shortage propagation (cla.cc:1235–1250, inside the outer stretch loop).**
+```cpp
+if (GetConstraintSpace().IsInsideBalancedColumns()) {
+  // If we're doing nested column balancing, propagate any space shortage
+  // to the outer multicol container, so that the outer multicol container
+  // can attempt to stretch, so that this inner one may fit as well.
+  if (!GetConstraintSpace().IsInitialColumnBalancingPass()) {
+    container_builder_.PropagateSpaceShortage(minimal_space_shortage);
+  }
+}
+break;
+```
+
+**4. `MulticolBreakTokenData` row-carry (cla.cc:2080–2100).** Gated on `ShouldWrapColumns() && HasRowHeight() && is_first_row && HasKnownFragmentainerBlockSize()` — CSS Multicol L2 `column-wrap`/`column-height` territory. **Out of scope for 12c; load-bearing for 12f.** Scaffold minimally only if 12c tests require it.
+
+### Louis14 audit vs. those sites (2026-04-23)
+
+| Site | Louis14 status | File:line |
+|---|---|---|
+| #1 Outer-fragmentainer clamp | **Already implemented** via `outerRemaining` + `constrainColumnBlockSize` | `multicol_layout.go:573–581, 877–879` |
+| #2 Nested-initial-balancing override | **Partly implemented, with reversed guard** (see below) | `multicol_layout.go:106–108` |
+| #3 Outward shortage propagation | **Stub only** ("deferred to Phase 12c") | `multicol_layout.go:720–722` |
+| #4 `MulticolBreakTokenData` | **Missing**; deferred to 12f | `break_token.go` (no variant support) |
+
+### Finding: balance_columns guard at `multicol_layout.go:107–108` is reversed
+
+Current:
+```go
+balanceColumns := columnFill == "balance" || columnFill == "" ||
+    (mla.space.HasBlockFragmentation && !mla.space.IsInitialColumnBalancingPass &&
+        mla.space.FragmentainerBlockSize == Indefinite)
+```
+
+The `!IsInitialColumnBalancingPass` clause excludes the very case Blink targets — the outer's initial balancing pass is exactly when the outer's fragmentainer block-size is indefinite AND the inner must force-balance. In practice the clause makes the override **dead code** today:
+- Outer's initial pass: `IsInitialColumnBalancingPass=true` → our clause false (disabled).
+- Outer's stretch pass: `FragmentainerBlockSize` is definite (set to column block-size by `createConstraintSpaceForColumn`) → our clause false.
+
+**Fix:** drop `!mla.space.IsInitialColumnBalancingPass` from the condition. Blink-parity behavior: force-balance when nested in fragmentation with no known outer column size.
+
+### Finding: missing `FragmentainerOffset` propagation through `block_layout` (NOT in task_plan checklist)
+
+This is the root cause of the driver test failures (007–010 all ~1.2–1.6% fail). Not in the Blink-source-only research; surfaced by inspecting our integration.
+
+**Symptom.** Tests 007–010 follow the shape: outer multicol (2-col fill:auto, H≥120) contains a 100px green block followed by an inner multicol (2-col fill:auto, H=100) whose content overflows its inner columns. Inner multicol starts at block-offset 100 within the outer column (which has total block-size 120–160). Inner needs to see ~20–60px of remaining outer space and break across the outer column boundary.
+
+**Root cause.** When louis14 block_layout places a child at block-offset `y` inside a column fragmentainer, the child's constraint space gets `FragmentainerOffset=0` regardless of `y`. Inner multicol's `outerRemaining` calc at `multicol_layout.go:577` reads `FragmentainerBlockSize - FragmentainerOffset - lineOffset` and gets the FULL outer column size, not the remaining-after-child-1. Inner then tries to fit 100px of content into what it thinks is 120px of outer space, never fragments across the outer boundary.
+
+**Blink parity.** Blink's `BlockLayoutAlgorithm` computes `child_fragmentainer_offset = parent_fragmentainer_offset + child_block_offset` for every child placement inside a fragmentation context. Louis14 must mirror: add child block-offset to `FragmentainerOffset` when building child constraint space.
+
+**Fix site.** Almost certainly in `block_layout.go` near where `layoutElement` or the child constraint space builder is called. Will confirm with instrumentation.
+
+### Driver selection: `multicol-nested-010.html`
+
+Reviewed the low-numbered `multicol-nested-*` cluster. Observations:
+- `multicol-nested-002.xht`: margin collapsing test, not a nested-fragmentation test (mis-named cluster).
+- `multicol-nested-005.xht`: proper-algorithm constrained-dimensions test; uses column-count:3 + text rendering, too indirect for a driver.
+- `multicol-nested-006.html`: orphans/widows inside nested — 12g mix.
+- `multicol-nested-007–010`: canonical Morten Stenshorne nested-fragmentation tests. Outer 2-col fill:auto + inner 2-col fill:auto. Reference is the shared `ref-filled-green-100px-square.xht`.
+- 007: inner content = 2× inline-block (atomic inlines).
+- 008: inner content = single block with `break-inside:avoid` (12d mechanism).
+- 009: inner content = single inline-block (atomic inline).
+- 010: inner content = single block with `contain:size`, width:200%, height:100 (cleanest pure-block fragmentation case).
+
+**Pick: 010.** Simplest inner geometry, avoids break-inside:avoid (12d) and inline-block (atomic inline quirks). Currently 1.2% (6000px) fail — close enough that one structural fix (likely the `FragmentainerOffset` propagation) should close it.
+
+Sibling tests 007/008/009 expected to close in sympathy; any residuals get triaged after 010 passes.
+
+**Expected visual:** `<div>` 100×100 red background fully covered by green — outer multicol produces 2 columns of 50×120; inner multicol fragments across the outer column boundary so that the combined green blocks fill the red.
+
+### Scope boundary (for the record, so 12d/12f/etc. don't leak in)
+
+- `MulticolBreakTokenData{consumed_row_block_size}` — defer to 12f.
+- `HasKnownFragmentainerBlockSize()` as a named helper — optional cleanup; the inline `FragmentainerBlockSize != Indefinite` check works.
+- `layoutSpanner` missing `IsInsideBalancedColumns` propagation — edge case (nested multicol inside a spanner), not exercised by 007–010, defer.
+- `break-inside:avoid` inside nested (test 008) — if it doesn't close for free, that's 12d.
+- Orphans/widows inside nested (test 006) — 12g.
+
+### Phase 12c landing summary (2026-04-23)
+
+Four Blink-parity items closed (changes in `multicol_layout.go`, `fragment_builder.go`):
+1. Balance_columns guard at `multicol_layout.go:106–108` now matches cla.cc:1025 — dropped the `!IsInitialColumnBalancingPass` clause that made the override dead code.
+2. `BoxFragmentBuilder.PropagateSpaceShortage` added (`fragment_builder.go`); stub at `multicol_layout.go:720` replaced with real call gated on `IsInsideBalancedColumns && !IsInitialColumnBalancingPass && hasShortage`.
+3. Outer-fragmentainer clamp verified already correct (`outerRemaining` in `multicol_layout.go:573–581` + `constrainColumnBlockSize`).
+4. `MulticolBreakTokenData` row-carry deferred to 12f.
+
+Bonus (not in checklist, bug surfaced by driver test): resume-break emission when the outer fragmentation context is active and the inner layoutLine returns a column-rows break token. Previously the inner multicol fell through to the non-break final `builder.Build()` in this case, so outer block_layout never saw a break token → inner not resumed in the outer's next column. Now calls `buildOuterBreakResult(nil, nil)` gated on `hasOuterFrag`. Paired with resume-path: `nextColToken ← colRowsResumeToken` when the incoming break token carries a column-rows continuation with no spanner state.
+
+Also verified: `FragmentainerOffset` propagation through `block_layout.go:537` was already correct (`childFragOffset := bla.space.FragmentainerOffset + blockCursor + prevMarginStrut.Resolve()`). My initial hypothesis that this was missing was wrong; audit corrected.
+
+**Outcomes:**
+- Driver `multicol-nested-010.html`: 6000 px (1.2%) → 3500 px (0.7%).
+- css-multicol category: 108 → 130 PASS (+22 of 458 tests across nested, span-all, fill-auto/balance, columns, width, and multiple other clusters).
+- Gates hold (wm 781/781, CSS2 99/99, css-flexbox 626/629, css-position 91/104).
+
+**Driver 010 residual is paint/leaf-fragmentation territory, not 12c.** Analysis:
+- Our render: outer col 1 right strip (25×100, ~2500 px) is red because inner col 1 fragmentainer isn't created on resume (content exhausts in inner col 0). Plus ~1000 px below the inner fragment where outer container's red shows.
+- Blink's actual behavior (per cla.cc reading): the per-column loop also exits when content's break token is nil. So Blink's layout tree is identical. The difference must be in painting: Blink's multicol likely paints each column as a window into the underlying content, so inner col 1 — even empty in the layout tree — paints its slice of the leaf's 100-wide content. Our painter only paints what's in the fragment tree.
+- Or: `contain:size` + width:200% has a block-fragmentation semantic in Blink we don't mirror.
+
+Either hypothesis is a "multicol column painting" phase, not nested-balancing infrastructure. Tracked as follow-up; not a 12c residual.

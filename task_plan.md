@@ -429,15 +429,26 @@ Full Blink-source research + louis14 audit + cluster triage in `findings.md` "cs
 | spanner-fragmentation-011 | **PASS** | 0 |
 | spanner-fragmentation-012 | **PASS** | 0 |
 
-### Phase 12c — Nested multicol (~35 tests, L)
-**Goal.** Outward shortage propagation + nested-initial-balancing override.
+### Phase 12c — Nested multicol (Blink-parity infra landed 2026-04-23)
+**Goal.** Outward shortage propagation + nested-initial-balancing override + missing resume-break emission for nested multicol hitting outer fragmentainer boundary.
 
-- [ ] Nested-initial-balancing override at the `balance_columns` branch: force balance when `HasBlockFragmentation() && !HasKnownFragmentainerBlockSize()`.
-- [ ] Outer-fragmentainer clamp: `available_outer_space = max(min_col_bsize, FragmentainerSpaceLeftForChildren() - line_offset)`.
-- [ ] `PropagateSpaceShortage` → outer builder when inner gives up and `IsInsideBalancedColumns() && !IsInitialColumnBalancingPass()`.
-- [ ] `MulticolBreakTokenData{consumed_row_block_size}` for row-split-across-outer-fragmentainers resume; `OffsetInCurrentRow` read-back.
-- [ ] Driver test: `multicol-nested-001.html`. Verify cluster: `multicol-nested-*` (~34).
-- [ ] **Gate:** same invariants.
+**Driver:** `multicol-nested-010.html` (baseline 6000 px / 1.2% fail → current 3500 px / 0.7% fail). `multicol-nested-001.html` in the original plan does not exist in our snapshot; series starts at `-002`.
+
+Blink-source-verified checklist (cla.cc line anchors, full source quoted in `findings.md`):
+
+- [x] **Outer-fragmentainer clamp** (cla.cc:860–895). Already implemented pre-12c via `outerRemaining` (`multicol_layout.go:573–581`) + `constrainColumnBlockSize` (`:877–879`). No change needed.
+- [x] **Nested-initial-balancing override** (cla.cc:1025). Dropped the reversed `!IsInitialColumnBalancingPass` clause at `multicol_layout.go:106–108` so the override fires during the outer's initial pass. Blink-parity: `HasBlockFragmentation() && !HasKnownFragmentainerBlockSize()`.
+- [x] **Outward shortage propagation** (cla.cc:1235). New `BoxFragmentBuilder.PropagateSpaceShortage` in `fragment_builder.go`; wrote into `LayoutResult.MinSpaceShortage` at `Build()`. Replaced stub at `multicol_layout.go:720` with real call gated on `IsInsideBalancedColumns && !IsInitialColumnBalancingPass && hasShortage`.
+- [x] **Resume-break emission for nested hit** (NOT in original checklist; root cause of driver 010's 6000-px diff). When the outer fragmentation context is active and inner `layoutLine` returns with `remainingToken != nil` and no spanner, now calls `buildOuterBreakResult(nil, nil)` so the outer block_layout gets a break token to resume the inner in its next outer column. Paired with a resume-path wiring: `nextColToken ← colRowsResumeToken` when the incoming break token carries a column-rows continuation with no spanner state.
+- [x] **FragmentainerOffset propagation through block_layout** — audit confirmed already correct at `block_layout.go:537` (`childFragOffset := bla.space.FragmentainerOffset + blockCursor + prevMarginStrut.Resolve()`). No change needed.
+- [ ] `MulticolBreakTokenData{consumed_row_block_size}` — deferred to 12f (gated on `ShouldWrapColumns() && HasRowHeight()`; not exercised by current 12c tests).
+- [x] **Gate 2026-04-23:** wm 781/781, CSS2 99/99, css-flexbox 626/629, css-position 91/104. css-multicol 130/458 (+22 vs 108 baseline post-12b).
+
+**Driver residual (010 still 3500 px).** Not a Blink-parity-checklist miss — the remaining gap is in how a single explicit-height leaf block fragments across inner columns on resume (inner col 1 missing when leaf finishes in inner col 0 + how the inline-overflow region of the leaf is painted vs the inner multicol bg). This is paint/leaf-fragmentation work that's deeper than the four canonical 12c sites. Candidates for follow-up phase or dedicated fix:
+- Inner column painting: Blink likely slices content across inner columns via the painting pass (each inner column paints the same underlying leaf content at a column-specific inline offset, clipped per-column), producing the "all-green" visual even when only one column has a layout fragment. Our engine paints only what each column's fragment tree contains.
+- Or: `contain:size` + width:200% interacting with block fragmentation in a way we don't mirror.
+
+Sibling tests 007/008/009/011/013/014 unchanged from their 1.2–1.6% baselines; same root cause. Don't treat them as 12c residuals — open under a focused "nested multicol leaf/paint" follow-up whose scope is paint-level slicing, not balancing infrastructure.
 
 ### Phase 12d — Forced breaks in column context (~30 tests, M)
 **Goal.** `break-before/after:column` + `break-inside:avoid-column` honored via `BreakToken` + `BreakAppeal`.

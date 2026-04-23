@@ -13,7 +13,19 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 12b (css-multicol): COMPLETE (commit `931f48c5`, 2026-04-23).** All 13 spanner-fragmentation-* tests PASS at 0 pixel diff. Gate: wm 781/781, CSS2 99/99, css-flexbox 626/629. Next: Phase 12c (nested multicol).
+**Phase 12c (css-multicol nested): Blink-parity infrastructure LANDED 2026-04-23.** Four checklist items closed:
+1. **Outer-fragmentainer clamp** — already implemented pre-12c (no change).
+2. **Nested-initial-balancing override** — fixed reversed `!IsInitialColumnBalancingPass` guard at `multicol_layout.go:106–108`. Now mirrors Blink cla.cc:1025 exactly.
+3. **Outward shortage propagation** — new `BoxFragmentBuilder.PropagateSpaceShortage` (fragment_builder.go), written into `LayoutResult.MinSpaceShortage` at Build(). Replaced the multicol_layout.go:720 stub with real call gated per Blink cla.cc:1235.
+4. **`MulticolBreakTokenData` row-carry** — deferred to 12f (gated on `ShouldWrapColumns() && HasRowHeight()`; not exercised by current 12c tests).
+
+Also fixed a resume-break-emission bug surfaced by driver 010 (NOT in checklist): when the outer fragmentation context is active and inner `layoutLine` returns with a column-rows break token (spannerPath==nil), the inner multicol now emits `buildOuterBreakResult(nil, nil)` instead of falling through to a non-break result — so the outer block_layout correctly threads the inner into its next outer column. Paired with a resume-path wiring: if the incoming break token carries a column-rows continuation with no spanner state, `nextColToken ← colRowsResumeToken` before the first `layoutLine` call. The audit also confirmed that `FragmentainerOffset` propagation through `block_layout.go:537` was already correct — no change needed there.
+
+**Results 2026-04-23:** Driver `multicol-nested-010.html` 6000 → 3500 px (1.2% → 0.7%). css-multicol category 108 → **130 PASS** (+22 across the 458-test cluster, spanning multicol-nested, multicol-span-*, multicol-fill-auto/balance, multicol-columns, multicol-width, etc.). Gates hold: wm 781/781, CSS2 99/99, css-flexbox 626/629, css-position 91/104.
+
+**Driver 010 residual (3500 px) is out-of-12c scope** — it's paint/leaf-fragmentation, not balancing infra. Tests 007/008/009/011/013/014 hold at their 1.2–1.6% baselines for the same reason. Follow-up phase should target "nested multicol column painting" (how Blink distributes a single explicit-height leaf's content across inner columns at paint time) rather than trying to extract more from 12c's four Blink-parity checklist items. Details and candidate hypotheses in `task_plan.md` Phase 12c section.
+
+**Phase 12b (css-multicol): COMPLETE (commit `931f48c5`, 2026-04-23).** All 13 spanner-fragmentation-* tests PASS at 0 pixel diff. Gate: wm 781/781, CSS2 99/99, css-flexbox 626/629.
 
 **Gate invariants** (must hold across all Phase 12 landings):
 - css-writing-modes: 781/781
