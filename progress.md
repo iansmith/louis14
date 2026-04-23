@@ -19,7 +19,7 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 - css-writing-modes: 781/781
 - CSS2: 99/99
 - css-flexbox: ≥626/629 (3 pre-existing residuals)
-- css-position: ≥91/104 runnable (residuals are pre-existing, all verified 2026-04-22)
+- css-position: ≥91/104 — verified 2026-04-23; 13 pre-existing failures (8 G-ABS-IN-TABLE, 3 G-SEMI-REPLACED, 2 deferred singletons); tracking file previously claimed 95 which was wrong
 - css-transforms: ≥172 (post stack-floats refactor baseline)
 
 ---

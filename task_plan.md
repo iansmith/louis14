@@ -7,18 +7,30 @@
 
 **Phase 12b is COMPLETE (commit `931f48c5`, 2026-04-23).** All 13 spanner-fragmentation-* tests PASS at 0 pixel diff. Gate: wm 781/781, CSS2 99/99, css-flexbox 626/629.
 
-## css-position Goal (prior category, 95/100 runnable — effectively complete)
-All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 9 third landing): **95 passing, 5 residual**. Remaining residuals:
-- `clear-001.xht` — deferred pending Blink `LayoutUnit` source trace.
-- `position-change.html` — HTML parser bug (`expected '>' but reached EOF`).
-- 4 runner SKIPs (infra/JS gaps, out of scope for layout plan).
+## css-position Goal (prior category, 91/104 — effectively complete)
+All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-23, verified): **91 passing, 13 failing**. The 13 failures are all pre-existing residuals — none caused by Phase 12:
+
+| Test | Pixels | Group | Notes |
+|------|--------|-------|-------|
+| `clear-001.xht` | 96 (0.0%) | G-SINGLETONS | deferred pending Blink LayoutUnit trace |
+| `position-change.html` | crash | G-SINGLETONS | HTML parser bug |
+| `containing-block-change-scrollframe.html` | 50000 (10.4%) | G-SCROLL | scroll-based CB change |
+| `position-absolute-semi-replaced-stretch-button.html` | 15885 (3.3%) | G-SEMI-REPLACED | abspos stretch on button |
+| `position-absolute-semi-replaced-stretch-input.html` | 25509 (5.3%) | G-SEMI-REPLACED | abspos stretch on input |
+| `position-absolute-semi-replaced-stretch-other.html` | 4217 (0.9%) | G-SEMI-REPLACED | abspos stretch on other |
+| `position-relative-table-tbody-left/top-absolute-child` (×2) | 5000 (1.0%) each | G-ABS-IN-TABLE | abspos child of position:relative tbody |
+| `position-relative-table-tfoot-left/top-absolute-child` (×2) | 5000 each | G-ABS-IN-TABLE | abspos child of tfoot |
+| `position-relative-table-thead-left/top-absolute-child` (×2) | 5000 each | G-ABS-IN-TABLE | abspos child of thead |
+| `position-relative-table-tr-left/top-absolute-child` (×2) | 5000 each | G-ABS-IN-TABLE | abspos child of tr |
+
+**Note:** The tracking file previously claimed "95 passing" — this was incorrect. The actual count has been 91/104 since Phase 9 completion (verified 2026-04-23). The 8 G-ABS-IN-TABLE and 3 G-SEMI-REPLACED tests were never fixed; they were inadvertently omitted from the residuals list.
 
 Invariants (must stay green in every Phase 12 landing too):
 - css-writing-modes 781/781 PASS (Phase 5f complete).
 - CSS2 99/99 PASS.
 - css-flexbox ≥626/629 PASS (3 pre-existing residuals tracked in Phase 11).
 - css-transforms 172/381 watch (not invariant; post Phase 9 stack-floats refactor, +10 vs baseline).
-- **css-position ≥95/100 runnable** (downgraded from target to watch — remaining residuals are out-of-scope for layout plan).
+- **css-position ≥91/104** (downgraded from 95 — remaining residuals are pre-existing, out-of-scope for Phase 12).
 
 ## Rules & Discipline
 Authoritative sources (re-read at session start):
