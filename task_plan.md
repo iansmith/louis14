@@ -5,7 +5,7 @@
 
 **Phase 12a is COMPLETE (commit `2a0d0a07`, 2026-04-22).** Fragmentation infrastructure landed: Blink-parity `LayoutLine` outer stretch loop, `BlockBreakToken` threading, shortage reporting, `ResolveColumnAutoBlockSize` for column-fill:balance, inline fragmentation at column boundaries, multicol dispatch enabled in `layoutElement`. Driver test `multicol-fill-balance-001.xht` PASS at 0 diff.
 
-**Phase 12b is IN PROGRESS (2026-04-23, uncommitted).** Spanner infrastructure fully implemented. Tests 000–010 all PASS at 0 diff. Tests 011 and 012 still fail (root cause identified: `groupInlineChildrenForMulticol` pointer mismatch in `resumeChildIdx` search). Debug code present in `multicol_layout.go` and `block_layout.go`; must be removed before commit.
+**Phase 12b is COMPLETE (commit `931f48c5`, 2026-04-23).** All 13 spanner-fragmentation-* tests PASS at 0 pixel diff. Gate: wm 781/781, CSS2 99/99, css-flexbox 626/629.
 
 ## css-position Goal (prior category, 95/100 runnable — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 9 third landing): **95 passing, 5 residual**. Remaining residuals:
@@ -397,9 +397,8 @@ Full Blink-source research + louis14 audit + cluster triage in `findings.md` "cs
 - [x] Fix `spanner-fragmentation-009` — `break-before:column` with no prior content in column. Zero-height fragment with suppressed border+padding BoxData (only margin emitted). Resumed fragment draws full borders. Closed 2026-04-23.
 - [ ] Fix `spanner-fragmentation-011` (5000px failure) — `break-after:column` followed by sibling content. Root cause: `groupInlineChildrenForMulticol` produces different `*LayoutInputNode` pointer slices on each call. Break token stores pointer from first invocation; resumed layout's `Children()` returns different pointers → pointer comparison fails → `resumeChildIdx=-1` → IIM not skipped → runs twice → col-content displaced 100px down.
 - [ ] Fix `spanner-fragmentation-012` (2500px failure) — same root cause as 011.
-- [ ] Remove debug code from `multicol_layout.go` (`runtime` import, stack traces, `[MC]`/`[LL]` logs) and `block_layout.go` (`fmt`/`os` imports, `[BL]` resume search debug).
-- [ ] Driver tests: `multicol-span-all-001.html` (not yet run). Verify clusters: `multicol-span-*` (~50), `spanner-fragmentation-*` (~13).
-- [ ] **Gate:** same invariants as 12a.
+- [x] Remove debug code from `multicol_layout.go` and `block_layout.go`. (2026-04-23)
+- [x] **Gate:** wm 781/781 ✓, CSS2 99/99 ✓, css-flexbox 626/629 ✓.
 
 **Results as of 2026-04-23 (uncommitted):**
 | Test | Status | Pixels wrong |

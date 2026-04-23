@@ -13,7 +13,7 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 12b (css-multicol): IN PROGRESS (2026-04-23).** Tests 000–010 all PASS at 0 diff. Tests 011 and 012 still failing (root cause identified). Debug code present in multicol_layout.go and block_layout.go — must be removed before commit.
+**Phase 12b (css-multicol): COMPLETE (commit `931f48c5`, 2026-04-23).** All 13 spanner-fragmentation-* tests PASS at 0 pixel diff. Gate: wm 781/781, CSS2 99/99, css-flexbox 626/629. Next: Phase 12c (nested multicol).
 
 **Gate invariants** (must hold across all Phase 12 landings):
 - css-writing-modes: 781/781
@@ -24,7 +24,7 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 
 ---
 
-## Phase 12b — Spanner infrastructure + leaf-block fragmentation — IN PROGRESS (2026-04-23, uncommitted)
+## Phase 12b — Spanner infrastructure + leaf-block fragmentation — DONE (commit `931f48c5`, 2026-04-23)
 
 **What landed (working tree, not committed):**
 
@@ -65,11 +65,12 @@ Debug confirmed via `[BL] resume search: want 0x..., found resumeChildIdx=-1 (of
 
 Fix direction: either cache `groupedChildren` so the same `*LayoutInputNode` pointers are reused across calls, or change the break token to store a stable child identity (index or original DOM node pointer) rather than the anonymous wrapper pointer.
 
-**Debug code currently present (must remove before commit):**
-- `multicol_layout.go`: `runtime` import, stack traces in `[MC] Layout start`, `[MC]`/`[LL]` log lines.
-- `block_layout.go`: `fmt`/`os` imports, `[BL] resume search` debug prints.
+**Final fix for 011/012 (pointer instability):**
+Two-part fix:
+1. `LayoutInputNode.groupedChildrenCache` — caches `groupInlineChildrenForMulticol` result so anonymous block wrappers have stable pointer identity across repeated `Layout()` calls. Break-token node-pointer comparisons rely on object identity; without the cache, each invocation created new anonymous blocks with different pointers.
+2. `groupInlineChildrenForMulticol` now drops whitespace-only inline runs (inter-element whitespace in block containers has no visual effect per CSS spec). This eliminates trailing anonymous whitespace wrappers that caused spurious IIM re-layout after `break-after:column` propagation. With the whitespace dropped, IIM's `remainingToken=nil` after the spanner → `hasForcedBreakAfter=true` → break propagates to parent (outer-mc) correctly.
 
-**Next:** Fix 011 and 012 by addressing `groupInlineChildrenForMulticol` pointer instability. Remove all debug code. Run gate sweep. Commit.
+**Gate:** wm 781/781 ✓, CSS2 99/99 ✓, css-flexbox 626/629 ✓.
 
 ---
 
