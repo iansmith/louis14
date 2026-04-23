@@ -1,8 +1,8 @@
 # Findings & Decisions — css-position (complete) → css-multicol (active)
 
 > **Two categories tracked in this file.**
-> - Lines 1–773: css-position (phases 1–9, 95/100 runnable, effectively complete 2026-04-21).
-> - Lines 776+: css-multicol (Phase 12, research landed 2026-04-21, implementation opens 2026-04-22).
+> - Lines 1–773: css-position (phases 1–9, 91/104, pre-existing residuals deferred; baseline was corrected from 95 to 91 on 2026-04-23).
+> - Lines 776+: css-multicol (Phase 12, research landed 2026-04-21; 12a/12b/12c infrastructure landed 2026-04-22 through 2026-04-23; next is 12d forced breaks).
 
 ## Rules pointer
 Do not restate project rules here. They live in:

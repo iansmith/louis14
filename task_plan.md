@@ -364,7 +364,7 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualte
 
 # Phase 12: css-multicol (next category)
 
-Opening 2026-04-21 after css-position hit 95/100. Current: **94 PASS / 361 FAIL / 3 SKIP** out of 458 (20.5%).
+Opening 2026-04-21. css-position at 91/104 (baseline corrected 2026-04-23; prior "95/100" was an inaccurate tracking claim — see the `## css-position Goal` note above for details). Entry baseline for css-multicol: **94 PASS / 361 FAIL / 3 SKIP** out of 458 (20.5%). After 12a+12b+12c: **130 PASS / 325 FAIL / 3 SKIP** (28.4%).
 
 Baseline extracted to `/tmp/multicol-all.txt` and `/tmp/multicol-fails.txt`.
 
