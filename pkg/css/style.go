@@ -4829,6 +4829,24 @@ func (s *Style) GetColumnFill() string {
 	return "balance"
 }
 
+// GetBreakBefore returns the break-before value ("auto", "column", "page", etc.).
+// Default is "auto" (no forced break).
+func (s *Style) GetBreakBefore() string {
+	if v, ok := s.Get("break-before"); ok {
+		return strings.TrimSpace(strings.ToLower(v))
+	}
+	return "auto"
+}
+
+// GetBreakAfter returns the break-after value ("auto", "column", "page", etc.).
+// Default is "auto" (no forced break).
+func (s *Style) GetBreakAfter() string {
+	if v, ok := s.Get("break-after"); ok {
+		return strings.TrimSpace(strings.ToLower(v))
+	}
+	return "auto"
+}
+
 // GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em)
 func (s *Style) GetColumnGapMulticol() float64 {
 	if val, ok := s.Get("column-gap"); ok {
@@ -4836,7 +4854,7 @@ func (s *Style) GetColumnGapMulticol() float64 {
 		if val == "normal" {
 			return s.GetFontSize()
 		}
-		if w, ok := ParseLength(val); ok {
+		if w, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
 			return w
 		}
 	}

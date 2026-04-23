@@ -38,6 +38,12 @@ type BlockBreakToken struct {
 	// tokens produced by inline-content fragmentation. Mirrors Blink's
 	// approach of recording the line-box boundary as a resume point.
 	InlineItemStartIndex int
+
+	// InlineTextOffset is the byte offset within the text buffer at which to
+	// resume inline layout in the next column. Paired with InlineItemStartIndex
+	// to correctly resume when a break occurred mid-text-item (a single text
+	// item may span multiple lines if it contains multiple words).
+	InlineTextOffset int
 }
 
 // HasBreakToken returns true if there is more content to lay out.

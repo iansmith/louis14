@@ -3,7 +3,9 @@
 ## Current focus (2026-04-22)
 **Phase 12 (css-multicol)** is the active track. css-position Phases 1–9 are complete (95/100 runnable; residuals deferred). See "Phase 12: css-multicol" at the end of this file for the driver-test-per-phase attack plan, and `findings.md` "css-multicol category" for the Blink research that scopes each phase.
 
-**Phase 12a is COMPLETE (commit `2a0d0a07`, 2026-04-22).** Fragmentation infrastructure landed: Blink-parity `LayoutLine` outer stretch loop, `BlockBreakToken` threading, shortage reporting, `ResolveColumnAutoBlockSize` for column-fill:balance, inline fragmentation at column boundaries, multicol dispatch enabled in `layoutElement`. Driver test `multicol-fill-balance-001.xht` PASS at 0 diff. Phase 12b is next.
+**Phase 12a is COMPLETE (commit `2a0d0a07`, 2026-04-22).** Fragmentation infrastructure landed: Blink-parity `LayoutLine` outer stretch loop, `BlockBreakToken` threading, shortage reporting, `ResolveColumnAutoBlockSize` for column-fill:balance, inline fragmentation at column boundaries, multicol dispatch enabled in `layoutElement`. Driver test `multicol-fill-balance-001.xht` PASS at 0 diff.
+
+**Phase 12b is IN PROGRESS (2026-04-23, uncommitted).** Spanner infrastructure fully implemented. Tests 000–010 all PASS at 0 diff. Tests 011 and 012 still fail (root cause identified: `groupInlineChildrenForMulticol` pointer mismatch in `resumeChildIdx` search). Debug code present in `multicol_layout.go` and `block_layout.go`; must be removed before commit.
 
 ## css-position Goal (prior category, 95/100 runnable — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` pass at 0% diff via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-21 post Phase 9 third landing): **95 passing, 5 residual**. Remaining residuals:
@@ -381,14 +383,40 @@ Full Blink-source research + louis14 audit + cluster triage in `findings.md` "cs
 ### Phase 12b — Spanner re-balance (~40 tests, L)
 **Goal.** `ColumnSpannerPath` + `MulticolPartWalker` equivalents; each column-run before/after a spanner re-balances independently.
 
-- [ ] `ColumnSpannerPath` struct + accessor on `LayoutResult`.
-- [ ] Inner `BlockLayoutAlgorithm` encountering `IsColumnSpanAll()` returns early with `column_spanner_path` set.
-- [ ] `MulticolPartWalker` in `multicol_layout.go` that serializes (column-run, spanner, column-run, …).
-- [ ] `LayoutSpanner` — full-container-width constraint space (`is_new_fc=true`), commit at intrinsic_block_size, `PropagateBaselineFromChild` (first spanner with baseline wins).
-- [ ] Post-spanner column run re-enters `LayoutLine` with its own `next_column_token`, its own `ResolveColumnAutoBlockSize` estimate.
-- [ ] Spanner-forces-balance-on-preceding-row rule for `column-fill:auto` (the switch-to-balance-mode branch in Blink at cla.cc:1130–1140).
-- [ ] Driver tests: `multicol-span-all-001.html`, `spanner-fragmentation-001.html`. Verify clusters: `multicol-span-*` (~50), `spanner-fragmentation-*` (~13).
+- [x] `ColumnSpannerPath` struct + accessor on `LayoutResult`.
+- [x] Inner `BlockLayoutAlgorithm` encountering `IsColumnSpanAll()` returns early with `column_spanner_path` set.
+- [x] `MulticolPartWalker` in `multicol_layout.go` that serializes (column-run, spanner, column-run, …).
+- [x] `LayoutSpanner` — full-container-width constraint space, commit at intrinsic_block_size.
+- [x] Post-spanner column run re-enters `LayoutLine` with its own `next_column_token`, its own `ResolveColumnAutoBlockSize` estimate.
+- [x] Spanner-forces-balance-on-preceding-row rule for `column-fill:auto`.
+- [x] Ghost-row fix: `resolveColumnAutoBlockSize` returns 0 (not 1) when all content is spanners; `constrainColumnBlockSize` allows 0; `createConstraintSpaceForColumn` treats `colBlockSize=0` as `Indefinite` so no 1px phantom row precedes each spanner.
+- [x] Leaf-block fragmentation fix: `block_layout.go` Change 1 — detect leaf block overflow, create `BlockBreakToken{ConsumedBlockSize}` for the leaf instead of pointing to the next sibling (spanner). Change 2 — resumed explicit-height leaf blocks compute `remaining = explicitBlockSize - ConsumedBlockSize` as the fragment height. (2026-04-22, uncommitted.)
+- [x] Fix `spanner-fragmentation-001` — trailing leaf child fragment height after spanners. Root cause: leaf block overflowed column, resumed with full height instead of `remaining = explicit - consumed`. Closed 2026-04-22.
+- [x] Fix `spanner-fragmentation-002` — same leaf-block fragment height fix. Closed 2026-04-22.
+- [x] Fix `spanner-fragmentation-004` through `010` — outer fragmentation (IIM break propagation, `buildOuterBreakResult`, `beforeSpannerToken` threading). Closed 2026-04-22.
+- [x] Fix `spanner-fragmentation-009` — `break-before:column` with no prior content in column. Zero-height fragment with suppressed border+padding BoxData (only margin emitted). Resumed fragment draws full borders. Closed 2026-04-23.
+- [ ] Fix `spanner-fragmentation-011` (5000px failure) — `break-after:column` followed by sibling content. Root cause: `groupInlineChildrenForMulticol` produces different `*LayoutInputNode` pointer slices on each call. Break token stores pointer from first invocation; resumed layout's `Children()` returns different pointers → pointer comparison fails → `resumeChildIdx=-1` → IIM not skipped → runs twice → col-content displaced 100px down.
+- [ ] Fix `spanner-fragmentation-012` (2500px failure) — same root cause as 011.
+- [ ] Remove debug code from `multicol_layout.go` (`runtime` import, stack traces, `[MC]`/`[LL]` logs) and `block_layout.go` (`fmt`/`os` imports, `[BL]` resume search debug).
+- [ ] Driver tests: `multicol-span-all-001.html` (not yet run). Verify clusters: `multicol-span-*` (~50), `spanner-fragmentation-*` (~13).
 - [ ] **Gate:** same invariants as 12a.
+
+**Results as of 2026-04-23 (uncommitted):**
+| Test | Status | Pixels wrong |
+|------|--------|-------------|
+| spanner-fragmentation-000 | **PASS** | 0 |
+| spanner-fragmentation-001 | **PASS** | 0 |
+| spanner-fragmentation-002 | **PASS** | 0 |
+| spanner-fragmentation-003 | **PASS** | 0 |
+| spanner-fragmentation-004 | **PASS** | 0 |
+| spanner-fragmentation-005 | **PASS** | 0 |
+| spanner-fragmentation-006 | **PASS** | 0 |
+| spanner-fragmentation-007 | **PASS** | 0 |
+| spanner-fragmentation-008 | **PASS** | 0 |
+| spanner-fragmentation-009 | **PASS** | 0 |
+| spanner-fragmentation-010 | **PASS** | 0 |
+| spanner-fragmentation-011 | FAIL | 5000 |
+| spanner-fragmentation-012 | FAIL | 2500 |
 
 ### Phase 12c — Nested multicol (~35 tests, L)
 **Goal.** Outward shortage propagation + nested-initial-balancing override.

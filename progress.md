@@ -13,7 +13,7 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
-**Phase 12b (css-multicol): next up.** Phase 12a landed 2026-04-22 (see below). Phase 12b goal: `ColumnSpannerPath` + `MulticolPartWalker` equivalents; each column-run before/after a spanner re-balances independently. Driver tests: `multicol-span-all-001.html`, `spanner-fragmentation-001.html`.
+**Phase 12b (css-multicol): IN PROGRESS (2026-04-23).** Tests 000–010 all PASS at 0 diff. Tests 011 and 012 still failing (root cause identified). Debug code present in multicol_layout.go and block_layout.go — must be removed before commit.
 
 **Gate invariants** (must hold across all Phase 12 landings):
 - css-writing-modes: 781/781
@@ -21,6 +21,55 @@ Do not copy old wm content back into this file. If a wm regression is discovered
 - css-flexbox: ≥626/629 (3 pre-existing residuals)
 - css-position: ≥91/104 runnable (residuals are pre-existing, all verified 2026-04-22)
 - css-transforms: ≥172 (post stack-floats refactor baseline)
+
+---
+
+## Phase 12b — Spanner infrastructure + leaf-block fragmentation — IN PROGRESS (2026-04-23, uncommitted)
+
+**What landed (working tree, not committed):**
+
+- `multicol_layout.go`: Complete spanner infrastructure on top of Phase 12a base:
+  - `MulticolPartWalker`-style loop alternating `layoutLine` (column rows) / `layoutSpanner` calls.
+  - `layoutSpanner`: full-container-width constraint space, lay out at intrinsic height, advance block cursor.
+  - `beforeSpannerToken`: break token carrying the spanner path for re-detection after outer fragmentation.
+  - `buildOuterBreakResult`: closure finalizing the current fragment and returning a `BreakToken` capturing walker state for the next outer column.
+  - `ColumnSpannerPath` detection: block layout returns early with `ColumnSpannerPath` set when encountering a `column-span:all` element.
+  - Ghost-row fix (three-part): `resolveColumnAutoBlockSize` returns 0 (not 1) when all content is spanners; `constrainColumnBlockSize` allows 0; `createConstraintSpaceForColumn` treats `colBlockSize=0` as `Indefinite` to avoid phantom 1px rows before spanners.
+  - **`break-before:column` with no prior content** (test 009): When `blockCursor==0` and spanner has `break-before:column`, produce a zero-height fragment. Key detail: `BoxData` must have zero borders (only margin emitted); setting `BlockSize=0` alone still causes border painting. Resumed fragment draws full borders. (2026-04-23)
+
+- `block_layout.go`: Leaf-block fragmentation fix (two changes):
+  - **Change 1**: When a leaf block (explicit height, no children) fits in the column but its declared size overflows the fragmentainer, create a `BlockBreakToken{ConsumedBlockSize: fragEnd - actualChildBlockOff}` for the leaf instead of pointing to the next sibling (which would skip the leaf in column 2).
+  - **Change 2**: When resuming an explicit-height leaf block with `ConsumedBlockSize > 0` and `intrinsicBlockSize == 0`, compute `remaining = explicitBlockSize - ConsumedBlockSize` as the fragment height instead of repeating the full declared height.
+
+**Test results (2026-04-23):**
+| Test | Result | Pixels wrong |
+|------|--------|-------------|
+| spanner-fragmentation-000 | **PASS** | 0 |
+| spanner-fragmentation-001 | **PASS** | 0 |
+| spanner-fragmentation-002 | **PASS** | 0 |
+| spanner-fragmentation-003 | **PASS** | 0 |
+| spanner-fragmentation-004 | **PASS** | 0 |
+| spanner-fragmentation-005 | **PASS** | 0 |
+| spanner-fragmentation-006 | **PASS** | 0 |
+| spanner-fragmentation-007 | **PASS** | 0 |
+| spanner-fragmentation-008 | **PASS** | 0 |
+| spanner-fragmentation-009 | **PASS** | 0 |
+| spanner-fragmentation-010 | **PASS** | 0 |
+| spanner-fragmentation-011 | FAIL | 5000 |
+| spanner-fragmentation-012 | FAIL | 2500 |
+
+**Root cause of 011 and 012 (identified, not yet fixed):**
+`groupInlineChildrenForMulticol` produces different `*LayoutInputNode` pointer slices on each invocation. The break token stores a pointer from the first invocation; when layout resumes, the inner `bla.node.Children()` call produces a new slice with different pointers. The `ch == resumeChildBreakToken.Node` comparison then fails for all children → `resumeChildIdx=-1` → the skip condition `resumeChildIdx >= 0 && childIdx < resumeChildIdx` never fires → IIM (inner inner multicol) is not skipped → IIM runs again with a break token → IIM produces a 100px fragment → col-content is displaced 100px down instead of appearing at y=0.
+
+Debug confirmed via `[BL] resume search: want 0x..., found resumeChildIdx=-1 (of 3 children)` output.
+
+Fix direction: either cache `groupedChildren` so the same `*LayoutInputNode` pointers are reused across calls, or change the break token to store a stable child identity (index or original DOM node pointer) rather than the anonymous wrapper pointer.
+
+**Debug code currently present (must remove before commit):**
+- `multicol_layout.go`: `runtime` import, stack traces in `[MC] Layout start`, `[MC]`/`[LL]` log lines.
+- `block_layout.go`: `fmt`/`os` imports, `[BL] resume search` debug prints.
+
+**Next:** Fix 011 and 012 by addressing `groupInlineChildrenForMulticol` pointer instability. Remove all debug code. Run gate sweep. Commit.
 
 ---
 

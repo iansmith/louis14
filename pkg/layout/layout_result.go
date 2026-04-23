@@ -74,6 +74,25 @@ type LayoutResult struct {
 	// LayoutResult::HasForcedBreak() used by ColumnLayoutAlgorithm to count
 	// forced breaks and decide when no soft-break opportunities remain.
 	HasForcedBreak bool
+
+	// ColumnSpannerPath is non-nil when a column-span:all element was
+	// encountered and the algorithm returned early without laying it out.
+	// The multicol algorithm extracts the spanner via this path and lays it
+	// out at full container width. Mirrors Blink's ColumnSpannerPath
+	// (column_spanner_path.h) and LayoutResult::GetColumnSpannerPath().
+	ColumnSpannerPath *ColumnSpannerPath
+}
+
+// ColumnSpannerPath is a linked list identifying the path from the current
+// node down to the first column-span:all element encountered during column
+// layout. Mirrors Blink's ColumnSpannerPath (column_spanner_path.h).
+type ColumnSpannerPath struct {
+	// Box is the node at this level of the path — either the spanner itself
+	// (for a direct column child) or an intermediate container.
+	Box *LayoutInputNode
+	// Child is the next level of the path toward the spanner (nil when Box
+	// is the spanner itself).
+	Child *ColumnSpannerPath
 }
 
 // FragmentType distinguishes box, line-box, and text fragments.

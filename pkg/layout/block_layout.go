@@ -1,6 +1,8 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"louis14/pkg/css"
+)
 
 // BlockLayoutAlgorithm implements the block formatting context layout.
 // It positions block-level children sequentially in the block direction,
@@ -191,13 +193,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// When resuming from a column break, start the line breaker at the
 		// saved item index from the incoming break token.
 		inlineStartIdx := 0
+		inlineStartTextOffset := 0
 		if incomingBreakToken != nil && incomingBreakToken.InlineItemStartIndex > 0 {
 			inlineStartIdx = incomingBreakToken.InlineItemStartIndex
+			inlineStartTextOffset = incomingBreakToken.InlineTextOffset
 		}
 		prevES := exclusionSpace
 		var inlineAscent, lastBaselineOff float64
 		var inlineBreakToken *BlockBreakToken
-		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx)
+		blockCursor, exclusionSpace, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, exclusionSpace, builder, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset)
 		if exclusionSpace != prevES && bla.space.IsNewFormattingContext {
 			hasOwnFloats = true
 		}
@@ -321,6 +325,58 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// from IsNewFormattingContext).
 
 				continue
+			}
+
+			// Spanner detection: inside a column fragmentation context, a child
+			// with column-span:all must be laid out by the multicol algorithm at
+			// full container width, not as column content. Return early so multicol
+			// can extract + lay out the spanner, then resume from after it.
+			// Mirrors Blink's BlockLayoutAlgorithm detecting child.IsColumnSpanAll().
+			if bla.space.HasBlockFragmentation &&
+				bla.space.BlockFragmentationType == FragmentColumn &&
+				childStyle.GetColumnSpan() == "all" {
+
+				// Break token resumes AFTER the spanner on the next LayoutLine call.
+				var spannerBreakToken *BlockBreakToken
+				if childIdx+1 < len(children) {
+					spannerBreakToken = &BlockBreakToken{
+						Node:             bla.node,
+						ConsumedBlockSize: blockCursor,
+						ChildBreakTokens: []*BlockBreakToken{{
+							Node:          children[childIdx+1],
+							IsBreakBefore: true,
+						}},
+					}
+					if incomingBreakToken != nil {
+						spannerBreakToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						spannerBreakToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
+					}
+				}
+				// Build the partial fragment for content laid out before the spanner.
+				intrinsicBlock := blockCursor
+				builder.SetIntrinsicBlockSize(intrinsicBlock)
+				builder.SetNode(bla.node.DOMNode)
+				builder.SetStyle(bla.style)
+				builder.SetLayoutNode(bla.node)
+				if !hasExplicitBlock {
+					builder.SetSize(LogicalSize{
+						InlineSize: geom.BorderBoxSize.InlineSize,
+						BlockSize:  intrinsicBlock + geom.BlockBorderPadding(),
+					})
+				} else {
+					builder.SetSize(geom.BorderBoxSize)
+				}
+				builder.SetBoxData(&PhysicalBoxData{
+					Border:  ToPhysicalEdges(geom.Border, wdm),
+					Padding: ToPhysicalEdges(geom.Padding, wdm),
+				})
+				builder.SetEndMarginStrut(prevMarginStrut)
+				builder.SetExclusionSpace(exclusionSpace)
+				result := builder.Build()
+				result.BreakToken = spannerBreakToken
+				result.ColumnSpannerPath = &ColumnSpannerPath{Box: child}
+				result.PropagatedTopMargin = propagatedTopMargin
+				return result
 			}
 
 			// Determine child's writing direction.
@@ -483,7 +539,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					SetHasBlockFragmentation(true).
 					SetFragmentainerBlockSize(bla.space.FragmentainerBlockSize).
 					SetFragmentainerOffset(childFragOffset).
-					SetBlockFragmentationType(bla.space.BlockFragmentationType)
+					SetBlockFragmentationType(bla.space.BlockFragmentationType).
+					SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
+					SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns)
 
 				// Pass child break token if resuming this specific child.
 				if childIdx == resumeChildIdx && resumeChildBreakToken != nil {
@@ -705,9 +763,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Fragmentation: check if we've overflowed the fragmentainer.
 			if bla.space.HasBlockFragmentation {
 				fragSize := bla.space.FragmentainerBlockSize
-				if fragSize != Indefinite && blockCursor > fragSize-bla.space.FragmentainerOffset {
-					// Content overflowed. Create outgoing break token.
-					shortage := blockCursor - (fragSize - bla.space.FragmentainerOffset)
+				fragEnd := fragSize - bla.space.FragmentainerOffset
+				// Stop when blockCursor overflows OR when blockCursor exactly
+				// reaches the fragmentainer boundary AND the child still has
+				// remaining content (its BreakToken signals it didn't fully fit).
+				// Without the second condition, a child that exactly fills the
+				// column would let the loop continue to the next sibling (e.g. a
+				// column-span:all spanner), causing the child's remaining content
+				// to be discarded and only one column to be populated.
+				childHasBreak := childResult.BreakToken != nil
+				if fragSize != Indefinite && (blockCursor > fragEnd || (blockCursor == fragEnd && childHasBreak)) {
+					// Content overflowed (or exactly filled with break). Create outgoing break token.
+					shortage := blockCursor - fragEnd
+					if shortage < 0 {
+						shortage = 0
+					}
 
 					outToken := &BlockBreakToken{
 						Node:              bla.node,
@@ -722,9 +792,38 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// If the child itself broke, include its break token.
 					if childResult.BreakToken != nil {
 						outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, childResult.BreakToken)
+					} else if len(child.Children()) == 0 && !hasOnlyInlineChildren(child) {
+						// Leaf block: child completed but its declared size overflowed.
+						childConsumed := fragEnd - actualChildBlockOff
+						if childConsumed == 0 {
+							// Child starts exactly at fragEnd: fresh start next fragmentainer.
+							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+								Node:          child,
+								IsBreakBefore: true,
+							})
+						} else if bla.space.IsBlockSizeOverride {
+							// Inner column context: fragment leaf block at column boundary so
+							// its background/content is correctly split across columns.
+							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+								Node:              child,
+								ConsumedBlockSize: childConsumed,
+							})
+						} else {
+							// Non-column context (e.g. spanner content in outer fragmentainer):
+							// treat leaf as monolithic — place it in full (overflow:visible)
+							// and resume at the next sibling rather than splitting mid-block.
+							if childIdx+1 < len(children) {
+								nextChild := children[childIdx+1]
+								outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+									Node:          nextChild,
+									IsBreakBefore: true,
+								})
+							} else {
+								outToken.HasSeenAllChildren = true
+							}
+						}
 					} else {
-						// Child completed, but there are more siblings.
-						// Create a marker break token for the next sibling.
+						// Child completed (all content fit in this column); resume at next sibling.
 						if childIdx+1 < len(children) {
 							nextChild := children[childIdx+1]
 							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
@@ -760,6 +859,56 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					result := builder.Build()
 					result.BreakToken = outToken
 					result.MinSpaceShortage = shortage
+					result.PropagatedTopMargin = propagatedTopMargin
+					return result
+				}
+
+				// Forced column break propagated from a child (break-before/after:column).
+				// Fires even when blockCursor < fragEnd (column isn't full yet).
+				if fragSize != Indefinite && childResult.HasForcedBreak {
+					outToken := &BlockBreakToken{
+						Node:              bla.node,
+						ConsumedBlockSize: blockCursor,
+					}
+					if incomingBreakToken != nil {
+						outToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
+					}
+					if childResult.BreakToken != nil {
+						outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, childResult.BreakToken)
+					} else {
+						if childIdx+1 < len(children) {
+							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+								Node:          children[childIdx+1],
+								IsBreakBefore: true,
+							})
+						} else {
+							outToken.HasSeenAllChildren = true
+						}
+					}
+					intrinsicBlock := blockCursor
+					if !hasExplicitBlock {
+						borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
+						builder.SetSize(LogicalSize{
+							InlineSize: geom.BorderBoxSize.InlineSize,
+							BlockSize:  borderBoxBlock,
+						})
+					} else {
+						builder.SetSize(geom.BorderBoxSize)
+					}
+					builder.SetIntrinsicBlockSize(intrinsicBlock)
+					builder.SetNode(bla.node.DOMNode)
+					builder.SetStyle(bla.style)
+					builder.SetLayoutNode(bla.node)
+					builder.SetBoxData(&PhysicalBoxData{
+						Border:  ToPhysicalEdges(geom.Border, wdm),
+						Padding: ToPhysicalEdges(geom.Padding, wdm),
+					})
+					builder.SetEndMarginStrut(prevMarginStrut)
+					builder.SetExclusionSpace(exclusionSpace)
+					result := builder.Build()
+					result.BreakToken = outToken
+					result.HasForcedBreak = true
 					result.PropagatedTopMargin = propagatedTopMargin
 					return result
 				}
@@ -814,6 +963,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
+		if incomingBreakToken != nil && !bla.space.IsBlockSizeOverride && intrinsicBlockSize > 0 {
+			// Resumed non-column block (e.g. spanner content in outer fragmentainer):
+			// use the actual content placed in this fragment, not the CSS explicit height.
+			// The CSS height belonged to the first fragment; this resumed fragment shows
+			// whatever content was placed (its children, which may overflow the CSS height).
+			finalBlockSize = intrinsicBlockSize
+		} else if incomingBreakToken != nil && incomingBreakToken.ConsumedBlockSize > 0 && intrinsicBlockSize == 0 {
+			// Resumed leaf block: show remaining declared height (CSS height - consumed).
+			remaining := explicitBlockSize - incomingBreakToken.ConsumedBlockSize
+			if remaining >= 0 && remaining < finalBlockSize {
+				finalBlockSize = remaining
+			}
+		}
 	}
 
 	// Apply min/max block-size constraints per CSS 2.1 §10.7.

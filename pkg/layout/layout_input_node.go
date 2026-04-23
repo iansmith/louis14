@@ -62,6 +62,13 @@ type LayoutInputNode struct {
 	// DOMIndex is a pre-order index in the DOM tree, used to ensure correct
 	// paint ordering when out-of-flow children propagate to ancestor boxes.
 	DOMIndex int
+
+	// groupedChildrenCache caches the result of groupInlineChildrenForMulticol
+	// so that repeated Layout() calls on the same multicol node return the same
+	// anonymous block pointer identities. Without this cache, each invocation
+	// creates fresh anonymous wrappers, causing break-token node-pointer
+	// comparisons to fail when resuming a column in a later outer column.
+	groupedChildrenCache []*LayoutInputNode
 }
 
 // Style returns the computed style for this node.

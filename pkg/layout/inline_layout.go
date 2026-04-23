@@ -126,6 +126,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	bfcInlineOrigin float64,
 	bfcContainerInlineSize float64,
 	startItemIndex int,
+	startTextOffset int,
 ) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64, inlineBreakToken *BlockBreakToken) {
 	// Phase 1: Collect inline items from the layout subtree.
 	itemsData := CollectInlines(bla.node)
@@ -391,7 +392,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	lb.availableWidth = lineAvailableWidth
 	if startItemIndex > 0 && startItemIndex < len(itemsData.Items) {
 		lb.currentItemIndex = startItemIndex
-		lb.currentTextOffset = itemsData.Items[startItemIndex].StartOffset
+		if startTextOffset > itemsData.Items[startItemIndex].StartOffset {
+			lb.currentTextOffset = startTextOffset
+		} else {
+			lb.currentTextOffset = itemsData.Items[startItemIndex].StartOffset
+		}
 	}
 
 	// Get text-align from the container's style.
@@ -439,10 +444,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	var openInlineStack []*InlineItem
 
 	for {
-		// Save item index at the start of this line iteration, before NextLine
-		// advances the line breaker. Used to create inline break tokens that
-		// allow the next column to resume from this line's start.
+		// Save item index and text offset at the start of this line iteration,
+		// before NextLine advances the line breaker. Both are needed for inline
+		// break tokens so the next column resumes at exactly this line's start
+		// (item index alone is insufficient when a text item spans multiple lines).
 		lineStartIdx := lb.currentItemIndex
+		lineStartTextOffset := lb.currentTextOffset
 
 		// CSS 2.1 §9.5: account for floats when computing available inline size.
 		// FindAvailableInlineSize returns the space consumed by left/right floats
@@ -952,6 +959,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					Node:                 bla.node,
 					ConsumedBlockSize:    blockOffset + bla.space.FragmentainerOffset,
 					InlineItemStartIndex: lineStartIdx,
+					InlineTextOffset:     lineStartTextOffset,
 					SequenceNumber:       0,
 				}
 				if bla.space.BreakToken != nil {
