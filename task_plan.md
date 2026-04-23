@@ -1,11 +1,13 @@
 # Task Plan: css-position (Phases 0–11) → css-multicol (Phase 12)
 
-## Current focus (2026-04-22)
-**Phase 12 (css-multicol)** is the active track. css-position Phases 1–9 are complete (95/100 runnable; residuals deferred). See "Phase 12: css-multicol" at the end of this file for the driver-test-per-phase attack plan, and `findings.md` "css-multicol category" for the Blink research that scopes each phase.
+## Current focus (2026-04-23)
+**Phase 12 (css-multicol)** is the active track. css-position Phases 1–9 are complete (91/104, pre-existing residuals deferred). See "Phase 12: css-multicol" at the end of this file for the driver-test-per-phase attack plan, and `findings.md` "css-multicol category" for the Blink research that scopes each phase.
 
 **Phase 12a is COMPLETE (commit `2a0d0a07`, 2026-04-22).** Fragmentation infrastructure landed: Blink-parity `LayoutLine` outer stretch loop, `BlockBreakToken` threading, shortage reporting, `ResolveColumnAutoBlockSize` for column-fill:balance, inline fragmentation at column boundaries, multicol dispatch enabled in `layoutElement`. Driver test `multicol-fill-balance-001.xht` PASS at 0 diff.
 
 **Phase 12b is COMPLETE (commit `931f48c5`, 2026-04-23).** All 13 spanner-fragmentation-* tests PASS at 0 pixel diff. Gate: wm 781/781, CSS2 99/99, css-flexbox 626/629.
+
+**Phase 12c Blink-parity infra LANDED (commits `cccbd05e` + `b0825367`, 2026-04-23).** Three of four canonical cla.cc sites closed: nested-initial-balancing override (guard fix), outward shortage propagation (`PropagateSpaceShortage` on `BoxFragmentBuilder`), resume-break emission for nested outer-boundary hit. `MulticolBreakTokenData` row-carry deferred to 12f. Driver `multicol-nested-010.html` 6000 → 3500 px (1.2% → 0.7%); css-multicol 108 → **130 PASS** (+22 across nested, span-all, fill-auto/balance, columns, width). Driver residual is paint/leaf-fragmentation, not a 12c scope miss — tracked as follow-up.
 
 ## css-position Goal (prior category, 91/104 — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-23, verified): **91 passing, 13 failing**. The 13 failures are all pre-existing residuals — none caused by Phase 12:
@@ -528,8 +530,8 @@ Reference: findings.md §7 (rule paint), §8 (baseline), §9b (list markers). Bl
 
 ## Milestones
 - **M12a:** fragmentation infrastructure re-architecture landed. **Achieved 2026-04-22** via commit `2a0d0a07`. Blink-parity `LayoutLine` outer stretch loop + `BlockBreakToken` threading + `ResolveColumnAutoBlockSize` + inline fragmentation at column boundaries + multicol dispatch enabled. Driver `multicol-fill-balance-001.xht` PASS at 0 diff. Gates held: wm 781/781, CSS2 99/99, flex 626/629, css-position 91/104 (all pre-existing).
-- **M12b:** spanner re-balance; +40 estimated. → ~164.
-- **M12c:** nested multicol; +35 estimated. → ~199.
+- **M12b:** spanner re-balance. **Achieved 2026-04-23** via commit `931f48c5`. All 13 spanner-fragmentation-* tests PASS at 0 diff. css-multicol 95 → 108.
+- **M12c:** nested multicol Blink-parity infra (3 of 4 cla.cc sites + resume-break emission). **Achieved 2026-04-23** via commits `cccbd05e` + `b0825367`. css-multicol 108 → 130 (+22). Driver 010 6000 → 3500 px; residual is paint/leaf-fragmentation (not 12c scope).
 - **M12d:** forced breaks; +30. → ~229.
 - **M12e:** column-fill:auto; +25. → ~254.
 - **M12f:** column-height; +29. → ~283.
