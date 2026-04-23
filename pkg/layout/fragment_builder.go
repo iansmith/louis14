@@ -58,6 +58,14 @@ type BoxFragmentBuilder struct {
 	// adding children; consumed by AddChild to compute a child's RelativeOffset.
 	childAvailableSize    LogicalSize
 	hasChildAvailableSize bool
+
+	// minimalSpaceShortage tracks the smallest block-size overflow that
+	// caused an unforced break in any descendant column during a nested
+	// balancing pass. Mirrors Blink's
+	// FragmentBuilder::minimal_space_shortage_ (fragment_builder.h). Read
+	// into LayoutResult.MinSpaceShortage at Build().
+	minimalSpaceShortage    float64
+	hasMinimalSpaceShortage bool
 }
 
 type logicalChildLink struct {
@@ -136,6 +144,20 @@ func (b *BoxFragmentBuilder) SetLayoutNode(lin *LayoutInputNode) {
 
 // AddOutOfFlowCandidate records an absolutely/fixed positioned child
 // for deferred layout by OutOfFlowLayoutPart.
+// PropagateSpaceShortage records a minimum space shortage reported by an
+// inner nested multicol whose balancing pass gave up. The outer balancing
+// loop consumes LayoutResult.MinSpaceShortage to decide its next stretch.
+// Mirrors Blink's FragmentBuilder::PropagateSpaceShortage (cla.cc:1241).
+func (b *BoxFragmentBuilder) PropagateSpaceShortage(shortage float64) {
+	if shortage <= 0 {
+		return
+	}
+	if !b.hasMinimalSpaceShortage || shortage < b.minimalSpaceShortage {
+		b.minimalSpaceShortage = shortage
+		b.hasMinimalSpaceShortage = true
+	}
+}
+
 func (b *BoxFragmentBuilder) AddOutOfFlowCandidate(c OutOfFlowCandidate) {
 	b.outOfFlowCandidates = append(b.outOfFlowCandidates, c)
 }
@@ -231,7 +253,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		LayoutNode:       b.layoutNode,
 	}
 
-	return &LayoutResult{
+	result := &LayoutResult{
 		Fragment:           fragment,
 		IntrinsicBlockSize: b.intrinsicBlockSize,
 		Baseline:           b.baseline,
@@ -240,4 +262,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		EndMarginStrut:     b.endMarginStrut,
 		ExclusionSpace:     b.exclusionSpace,
 	}
+	if b.hasMinimalSpaceShortage {
+		result.MinSpaceShortage = b.minimalSpaceShortage
+	}
+	return result
 }

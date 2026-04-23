@@ -101,11 +101,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// column-fill: balance forces balanced column distribution.
-	// Also forced when nested inside an outer initial-balancing pass.
+	// Also forced when nested inside an outer fragmentation context whose
+	// fragmentainer block-size isn't known yet (Blink cla.cc:1025) — this is
+	// how the outer's initial balancing pass asks inner multicols to balance.
+	// Equivalent to Blink's HasBlockFragmentation() && !HasKnownFragmentainerBlockSize().
 	columnFill := mla.style.GetColumnFill()
 	balanceColumns := columnFill == "balance" || columnFill == "" ||
-		(mla.space.HasBlockFragmentation && !mla.space.IsInitialColumnBalancingPass &&
-			mla.space.FragmentainerBlockSize == Indefinite)
+		(mla.space.HasBlockFragmentation && mla.space.FragmentainerBlockSize == Indefinite)
 
 	// Anonymous content node wrapping all multicol children. Using an anonymous
 	// style (no borders/padding/explicit dimensions) so block layout computes
@@ -187,6 +189,15 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// Phase 12c: pure nested resume. If the outer break token carries a column-
+	// rows continuation with no spanner state (ChildBreakTokens[0] == nil),
+	// promote it to nextColToken so the first layoutLine call resumes the
+	// remaining content at the start of this outer fragmentainer.
+	if nextColToken == nil && colRowsResumeToken != nil && !hasSpannerResume {
+		nextColToken = colRowsResumeToken
+		colRowsResumeToken = nil
+	}
+
 	// Content-overflow pending state: a spanner's box fit in this outer column
 	// but its children overflowed the fragmentainer boundary. We continue
 	// placing subsequent content (other spanners, column rows) before generating
@@ -254,13 +265,18 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		blockCursor += rowBlockAdvance
 
 		if spannerPath == nil {
-			// Capture any remaining column break token (columns hit the outer
-			// boundary before consuming all content). Stored in the outer break
-			// result so OC2 can resume the column rows.
-			if remainingToken != nil {
+			// Phase 12c: nested multicol hit the outer fragmentainer boundary
+			// with content still pending. Emit an outer break result carrying the
+			// column-rows continuation so the outer fragmentation context can
+			// resume this multicol in its next outer column.
+			// Mirrors Blink's ColumnLayoutAlgorithm returning with a remaining
+			// BreakToken when columns exit before consuming all content inside
+			// an outer fragmentation context.
+			if remainingToken != nil && hasOuterFrag {
 				pendingColRowsBreakToken = remainingToken
+				return buildOuterBreakResult(nil, nil)
 			}
-			break // all column content done (or outer boundary hit)
+			break // all column content done (no outer fragmentation context)
 		}
 
 		spanner := spannerPath.Box
@@ -716,9 +732,15 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		newColBlockSize := colBlockSize + minSpaceShortage
 		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, hasExplicitBlock, explicitBlockSize, outerRemaining)
 		if newColBlockSize <= colBlockSize {
-			// Propagate shortage outward for nested balanced columns.
-			if mla.space.IsInsideBalancedColumns && !mla.space.IsInitialColumnBalancingPass {
-				// (shortage propagation to outer builder deferred to Phase 12c)
+			// Nested balancing: we can't stretch any further in this inner
+			// multicol. Report the minimum shortage upward so the outer
+			// multicol's stretch loop can widen its own columns on the next
+			// iteration, then try us again with more outer space.
+			// Mirrors Blink cla.cc:1235-1250.
+			if mla.space.IsInsideBalancedColumns &&
+				!mla.space.IsInitialColumnBalancingPass &&
+				hasShortage {
+				builder.PropagateSpaceShortage(minSpaceShortage)
 			}
 			break
 		}
