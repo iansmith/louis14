@@ -54,7 +54,9 @@ Port both to louis14:
 
 No new field needed — Blink's algorithm uses the existing `intrinsic_block_size_` + modulo-of-line_offset plumbing.
 
-**Cumulative results post-F3d:**
+**Fifth increment (F3e, non-auto column-height triggers multicol, 2026-04-24):** per CSS Multicol L2 §4.2, a non-auto `column-height` alone should establish multicol — `isMulticolContainer` only checked `column-count` / `column-width`. One-line fix adds `column-height >= 0` to the predicate. `column-height-012` PASS. Also added 4 Blink-research-agent findings to `findings.md` §F3 (spanner row-stride, multi-spanner sequencing, nowrap overflow, auto-height trailing row). Agents 3 and 4 findings surfaced but their corresponding fixes either need paint-layer changes (nowrap paints past declared width) or real-Blink tracing (trailing-row auto-height math) — both deferred with full research notes captured for future work.
+
+**Cumulative results post-F3d/e:**
 - `column-height-017` PASS (was 7000 px / 1.5 %).
 - `column-height-019` PASS (was 500 px / 0.1 %).
 - `abspos-after-spanner-static-pos` PASS.
@@ -63,7 +65,7 @@ No new field needed — Blink's algorithm uses the existing `intrinsic_block_siz
 - **Regression:** `column-height-029` FAIL at 1350 px (was accidentally PASS under the old pre-snap-less layout; nested-multicol test where the inner-sub-col-2 region now shows red due to a different-shape layout produced by the Blink-parity snap). Pragmatically accepted as a cleaner-but-failing shape; -029's accidental-pass was masking the same inner-multicol placement bug visible elsewhere in the cluster.
 - Cluster `column-height-*`: 11 PASS → 13 PASS.
 
-Gate: css-multicol **165 → 167 (+2 net from F3d; cumulative +12 from F3 start)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions outside multicol.
+Gate: css-multicol **165 → 167 → 168 (+3 from F3d+F3e; cumulative +13 from F3 start; +14 from pre-F3 baseline of 154)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions outside multicol.
 
 Remaining (largest): `-013` (6500 px, multi-spanner row-gap; the Blink-parity pre-snap fires on its single-spanner portion but the multi-spanner sequence has its own alignment puzzle), `column-wrap-no-constraints-002` (6000 px), `-006` (5250), `-005/-011/-030` (5000 each). Several tests in the 1000-3000 range. The 2026-04-24 agent research block added to findings §F3 gives the exact Blink line refs for the next incremental attack.
 
