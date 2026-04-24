@@ -34,8 +34,12 @@ type MulticolLayoutAlgorithm struct {
 	// an outer fragmentainer boundary (cla.cc:2087). Zero when this is the
 	// first outer column of the multicol.
 	consumedRowBlockSize float64
-	// rowGapSize is the block-axis gap between column rows. Zero today —
-	// CSS Multicol L2 row-gap between column rows is not yet plumbed.
+	// rowGapSize is the block-axis gap between column rows in a
+	// `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6). Read from
+	// the element's `row-gap` property via GetRowGapMulticol. Resolved
+	// once in Layout(); `normal` computes to 1em. Matches Blink's
+	// row_gap_ in column_layout_algorithm.cc used by
+	// RemainingRowHeightAtOffset / row-wrap loop (cla.cc:789–836).
 	rowGapSize float64
 }
 
@@ -217,6 +221,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// fragmentainers (cla.cc:2087). Default 0 on fresh layout; wired from the
 	// break token when 12f.6 lands.
 	mla.consumedRowBlockSize = 0
+
+	// F3 (2026-04-24): row-gap between column rows when column-wrap:wrap.
+	// Resolve once per layout; `normal` computes to 1em. Matches Blink's
+	// row_gap_ in column_layout_algorithm.cc.
+	mla.rowGapSize = mla.style.GetRowGapMulticol()
 
 	// Phase 12e: max-height as a column-height constraint when the multicol's
 	// own block-size is auto. With column-fill:auto and an auto multicol height,

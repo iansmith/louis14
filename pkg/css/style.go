@@ -4903,6 +4903,24 @@ func (s *Style) GetColumnGapMulticol() float64 {
 	return s.GetFontSize() // multicol default is "normal" = 1em
 }
 
+// GetRowGapMulticol returns the row-gap between column rows in a
+// `column-wrap: wrap` multicol (CSS Multicol L2 §4.2.6). Default `normal`
+// computes to 1em, matching `column-gap` and Blink's row_gap_ resolution
+// in column_layout_algorithm.cc. Mirrors GetColumnGapMulticol so em
+// resolution goes through the element's own font-size.
+func (s *Style) GetRowGapMulticol() float64 {
+	if val, ok := s.Get("row-gap"); ok {
+		val = strings.TrimSpace(val)
+		if val == "normal" {
+			return s.GetFontSize()
+		}
+		if w, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+			return w
+		}
+	}
+	return s.GetFontSize()
+}
+
 // Phase 10: Flexbox layout
 
 // FlexDirection represents the flex-direction property value

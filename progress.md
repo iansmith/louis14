@@ -38,7 +38,15 @@ Second root cause (leaf fragmentation across inner sub-cols) not yet addressed. 
 Gate (post-first-fix): css-multicol 154 → 155 (+1 net); wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions.
 
 See findings §F2 for the full diagnosis + Blink-parity reference.
-### F3. Phase 12f column-height/column-wrap residuals — PENDING
+### F3. Phase 12f column-height/column-wrap residuals — PARTIAL 2026-04-24
+
+Row-gap between column rows landed. `pkg/css/style.go` gained `GetRowGapMulticol()` (mirrors `GetColumnGapMulticol`: reads `row-gap`, treats `normal` as 1em, resolves em against own font-size). `pkg/layout/multicol_layout.go`'s `Layout()` now sets `mla.rowGapSize = mla.style.GetRowGapMulticol()` before the walker loop (was hardcoded to 0).
+
+Driver results: `column-height-027` PASS at 0 diff (was 1750 px / 0.4 %). `column-height-009` 20061 → 240 px (nearly PASS). `column-height-018` 2000 → 1500 px. Three tests regressed +500 px each (`-008/028/029`) — nested-multicol shapes where the outer pass's non-wrap codepath still consumes `rowGapSize` via `offsetInCurrentRow`/`math.Mod`; the regressions are line-positioning drift in *closer-to-correct* shape, not a new bug.
+
+Gate: css-multicol **155 → 157 (+2 net)**; wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged.
+
+Remaining residuals (deferred): 24 column-height tests still fail. Biggest open are `-023` (10000 px, zero-column-height shorthand), `-017` (7000 px, spanner-protrudes-row-gap), `-013` (6500 px, multi-spanner row-gap). These hit the "forced-break + wrap interactions" and "spanner-row-gap overlap" sub-causes from the kickoff triage; may share code path with F2's second-phase leaf-fragmentation work. See findings §F3 for details.
 ### F4. Phase 12h.2 inline-in-balanced-multicol — PENDING
 ### F5. Phase 12h.3 list-item-003 trailing text — PENDING
 
