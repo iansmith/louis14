@@ -24,7 +24,11 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 - spanner-fragmentation 12/13
 - css-writing-modes 779/781 (F1 target is to restore 781/781)
 
-### F1. wm bidi regression — PENDING
+### F1. wm bidi tests — RECLASSIFIED + DEFERRED 2026-04-24
+
+Investigation showed these 2 tests were *never passing*, not a regression. Verified via `git worktree` at `9913a9e4` (claimed phase-5f landing): same 1598 px diff, and wm at that commit was **757/781**, not 781/781 as tracking claimed. HEAD at 779/781 is actually *+22 since 5f*.
+
+Instrumentation of `injectBidiControlChars` + `StripBidiControls` + bidi-level computation showed control-char injection and UAX#9 level resolution are correct for the TEST case (Hebrew chars inside LRE span resolve to level 3 as expected). Rendered `.test` wrapper is ~11 px shorter per line than the `.ref` wrapper, with 29 px accumulated gap by wrapper 2's bottom. Likely culprits are bidi-mirror-glyph substitution (`>` → `<` at odd levels) and/or multi-item line-box boundary behavior, not a missing control-char injection. Deferred pending a dedicated bidi-parity phase. See findings §F1 for the full diagnosis + Blink-parity reference.
 ### F2. Phase 12c nested-multicol leaf paint-slicing — PENDING
 ### F3. Phase 12f column-height/column-wrap residuals — PENDING
 ### F4. Phase 12h.2 inline-in-balanced-multicol — PENDING

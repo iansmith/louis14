@@ -29,7 +29,7 @@ Companion scratch blocks live at the top of `findings.md` (research notes per ta
 
 | # | Target | Category | Ambition | Status | Driver |
 |---|---|---|---|---|---|
-| F1 | wm `bidi-embed-006` + `bidi-override-006` (0.3% / 1598 px each) | css-writing-modes gate invariant | +2 wm (restores 781/781) | Research DONE 2026-04-24; bisect/fix PENDING | `bidi-embed-006.html` |
+| F1 | wm `bidi-embed-006` + `bidi-override-006` (0.3% / 1598 px each) | css-writing-modes *deeper bidi fix* (NOT a regression — never passed) | +2 wm (long-term; current baseline is 779/781, not 781/781) | **DEFERRED 2026-04-24.** Investigation at `9913a9e4` proved these were never passing; tracking claim was wrong. Full diagnosis in findings §F1; likely bidi-mirror-glyph substitution + line-box boundary behavior. Re-open as dedicated bidi-parity phase. | `bidi-embed-006.html` |
 | F2 | Phase 12c nested-multicol leaf paint-slicing | css-multicol paint | +~7 multicol (`-nested-007..014`) | Research DONE 2026-04-24; conjecture *corrected* (not painter replication — clip divergence on our `kColumnBox`); fix PENDING | `multicol-nested-010.html` (1.2 % → 0.7 % post-12c) |
 | F3 | Phase 12f `column-height`/`column-wrap` cluster residuals (24 tests, 0.1–4.2 %) | css-multicol layout | +up to 24 multicol (partial closure likely) | Research DONE 2026-04-24 (re-pointed to §4.2 in findings); triage PENDING | Pick one from the cluster; likely `column-height-008.html` (row-gap) or a `column-wrap:nowrap` overflow variant |
 | F4 | Phase 12h.2 inline-in-balanced-multicol | css-multicol layout | +2 multicol (`-large-001`, `-stacking-001`) + unblocks capability | Research DONE 2026-04-24 (Blink entry chain cla.cc:763 → bla.cc:593 → ila.cc:1071); fix PENDING | `multicol-rule-stacking-001.xht` |
@@ -44,7 +44,7 @@ Companion scratch blocks live at the top of `findings.md` (research notes per ta
 4. Run only the target + ≤2 adjacent tests during feature work; full category only at completion.
 5. Gate sweep (all 5 invariants) before each commit.
 
-**Invariants to hold on each landing:** CSS2 99/99, css-flexbox 626/629, css-position 91/105, spanner-fragmentation 12/13, css-writing-modes 779/781 (→ 781/781 after F1 lands).
+**Invariants to hold on each landing:** CSS2 99/99, css-flexbox 626/629, css-position 91/105, spanner-fragmentation 12/13, css-writing-modes 779/781. (The F1 "→ 781/781 after F1 lands" target was dropped 2026-04-24 when investigation showed those 2 bidi tests have always been failing; current 779/781 is the real ceiling until we do a dedicated bidi-parity phase.)
 
 ---
 

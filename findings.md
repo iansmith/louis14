@@ -18,11 +18,15 @@ All writing-modes category findings — 787 tests, bidi root-causes, orthogonal 
 
 Paired with the "ACTIVE FOLLOW-UP BATCH" block at the top of `task_plan.md`. Drop research notes per target as we investigate. Keep entries short until a concrete root cause surfaces — no speculative paragraphs.
 
-### F1. wm `bidi-embed-006` + `bidi-override-006` (gate regression)
-- **Status:** Blink research landed; regression bisect pending.
-- **Known:** both fail at 1598 px / 0.3 %. Verified via `git stash` during Phase 12h step 4 gate check that they predate that fix, so blame lies earlier on `fix/flexbox-fast`. Tracking files had incorrectly carried "wm 781/781" from the phase-5f (2026-04-21) landing.
-- **Next:** `git log --oneline -- pkg/layout pkg/text pkg/render` since `9913a9e4` and run the 2 drivers at each interesting commit to bisect. Separately, audit louis14's bidi-control emission against the Blink-parity reference below — the recent `BidiParagraph` move to `platform/text/` is a strong hint that louis14's equivalent may have absorbed stale behavior from the older header location.
-- **Scope stance:** we passed 781 at 5f, so this is a specific later regression, not a full-algorithm port. Research still noted below so any fix mirrors Blink's current vocabulary.
+### F1. wm `bidi-embed-006` + `bidi-override-006` — **RECLASSIFIED 2026-04-24 — not a regression, deeper bidi fix**
+- **Status:** Blink research landed; scope reclassified from "regression bisect" to "deeper bidi layout fix." Deferred for now.
+- **What I actually found (2026-04-24):**
+  - Verified via `git worktree` at `9913a9e4` that these tests ALSO failed there with the identical 1598 px diff. They were never passing. Tracking's "wm 781/781" claim was inaccurate; actual baseline at 5f is **757/781**. HEAD is 779/781 — *net +22 since 5f*, not a regression.
+  - Instrumented `injectBidiControlChars` + `StripBidiControls` + bidi-level computation. Control-char injection IS happening for `unicode-bidi: embed`/`bidi-override` spans. Bidi levels for the TEST case (line 2) come out correctly: `[0 1 0 0 0 0 3 3 3 3 3 2 0 0 0 1]` — Hebrew+neutrals inside the LRE span resolve to the expected level-3 RTL run (matches UAX#9 §N1 / §N2 rule for neutrals between two R-class runs).
+  - Diff-region analysis of the output images: test and ref differ at 6 horizontal border Y-positions of the 2 wrapper boxes, suggesting the `.test` box renders ~11 px shorter than the `.ref` box, with the gap accumulating (29 px by bottom of wrapper 2). This is a *content-height* difference in the `.test` wrapper (span-embed case) vs the `.ref` wrapper (literal-LRO case).
+  - Stripped text content in both cases is near-identical (one leading space difference on line 2). Line-wrap width is not an obvious trigger. The likely culprit is a secondary layout effect from the extra `OpenTag`/`CloseTag` `InlineItem`s (5-items vs 1-item) interacting with line-box construction or whitespace collapsing at item boundaries — or, more plausibly, bidi-mirror-glyph substitution of `>` → `<` at odd levels not happening in our paint path (our rendered `>` at level 3 stays as `>`, producing a different width in the chosen serif fallback vs the ref's literal `<`).
+- **Scope stance:** not urgent — failing tests have been failing for a long time and are only 2 of 781. Re-open as a dedicated bidi-parity phase when we're ready to audit line-box construction + bidi-mirror-glyph substitution against the Blink reference below. Do NOT try to knock off as a 1-commit fix.
+- **Next (when revisited):** (1) confirm mirror-glyph substitution path — search for `ubidi_getMirror` / `CharMirror` equivalents in our `pkg/text/shape` and compare against Blink's `u_charMirror` call at paint time. (2) audit line-box construction's handling of multi-item runs under bidi vs single-item runs — whitespace collapse at `OpenTag`/`CloseTag` boundaries may measure differently. (3) compare rendered image pixel-by-pixel for the inner text line alone (strip out the orange borders to isolate the text-width diff).
 
 **Blink-parity reference (fetched 2026-04-24 against `refs/heads/main`).**
 
