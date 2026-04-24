@@ -4847,6 +4847,15 @@ func (s *Style) GetBreakAfter() string {
 	return "auto"
 }
 
+// GetBreakInside returns the break-inside value ("auto", "avoid", "avoid-column",
+// "avoid-page"). Default is "auto" (no break-avoidance).
+func (s *Style) GetBreakInside() string {
+	if v, ok := s.Get("break-inside"); ok {
+		return strings.TrimSpace(strings.ToLower(v))
+	}
+	return "auto"
+}
+
 // GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em)
 func (s *Style) GetColumnGapMulticol() float64 {
 	if val, ok := s.Get("column-gap"); ok {

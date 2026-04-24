@@ -1,8 +1,6 @@
 package layout
 
 import (
-	"fmt"
-	"os"
 	"path"
 
 	"louis14/pkg/css"
@@ -421,10 +419,6 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	for _, childLink := range frag.Children {
 		childAbsX := contentX + childLink.Offset.X
 		childAbsY := contentY + childLink.Offset.Y
-		if childLink.Fragment != nil && childLink.Fragment.Size.Height == 20 && childLink.Fragment.Size.Width == 25 {
-			fmt.Fprintf(os.Stderr, "[FTB] placing 25x20 child at absY=%.0f contentY=%.0f offsetY=%.0f -> childAbsY=%.0f borderTop=%.0f padTop=%.0f\n",
-				absY, contentY, childLink.Offset.Y, childAbsY, box.Border.Top, box.Padding.Top)
-		}
 		childBox := fragmentToBox(childLink.Fragment, box, childAbsX, childAbsY)
 		box.Children = append(box.Children, childBox)
 	}

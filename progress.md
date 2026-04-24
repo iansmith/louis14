@@ -13,6 +13,30 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
+**Phase 12d (css-multicol forced breaks + break-inside:avoid-column): COMPLETE 2026-04-24.**
+
+Blink-parity port of `fragmentation_utils.{h,cc}` `BreakBeforeChildIfNeeded` chain into louis14's column layout:
+- `pkg/layout/break_appeal.go` (new): `BreakAppeal` enum (LastResort/ViolatingOrphansAndWidows/ViolatingBreakAvoid/Perfect), `BreakStatus` enum, `IsForcedBreakValue`, `IsAvoidBreakValue`, `JoinFragmentainerBreakValues`, `FragmentainerBreakPrecedence` — line-for-line mirror of the Blink versions.
+- `pkg/layout/fragmentation_utils.go` (new): `CalculateBreakBetweenValue`, `CalculateBreakAppealBefore/Inside`, `MovePastBreakpoint`, `BreakBeforeChildIfNeeded`. Simplified port — no EarlyBreak retry (12g), no FlexColumnBreakInfo, no paginated paths, no full Blink AttemptSoftBreak (block_layout's existing overflow handler keeps ownership of soft-break path to avoid spanner-fragmentation regressions).
+- `pkg/layout/block_layout.go`: wire `BreakBeforeChildIfNeeded` after each in-flow child layout in column context (gated on `HasBlockFragmentation && BlockFragmentationType == FragmentColumn`); BrokeBefore path emits outgoing `BlockBreakToken{IsBreakBefore=true, IsForcedBreak}` and returns the partial fragment.
+- `pkg/layout/multicol_layout.go`: `hasViolatingBreak |= result.BreakAppeal != Perfect` (cla.cc:1019 parity), so break-inside:avoid violations trigger a stretch attempt.
+- Supporting: `BlockBreakToken.IsForcedBreak`, `LayoutResult.BreakAppeal` (default Perfect from `BoxFragmentBuilder.Build()`), `BoxFragmentBuilder.previousBreakAfter` + `JoinedBreakBetweenValue` + `SetPreviousBreakAfter` + `SetBreakAppeal`, `ConstraintSpace.MinBreakAppeal` + `ShouldIgnoreForcedBreaks`, `Style.GetBreakInside()`.
+
+**Driver pick correction.** task_plan.md named `multicol-breaking-001.html` as Phase 12d's driver, but inspection showed it's actually a *nested-multicol with fixed-height inner div* test — not a forced-break test. Real drivers picked from the failing-test scan: `multicol-break-000/001.xht` (forced break-after/before:column, simplest possible), `multicol-br-inside-avoidcolumn-001.xht` (break-inside:avoid-column).
+
+**Results 2026-04-24 (re-baselined):**
+- css-multicol: **121 → 123 PASS** (+2 net). Newly passing: `change-transform-in-nested.html`, `change-transform-in-second-column.html`, `multicol-br-inside-avoidcolumn-001.xht`. Newly failing: `multicol-overflow-clip-auto-sized.html` (361 px diff — see "trade explained" below).
+- spanner-fragmentation: 12/13 PASS — same as pre-12d (005 still fails, no regression).
+- wm: 410/781 PASS, CSS2: 96/99 PASS, css-flexbox: 621/629 PASS, css-position: 89/104 PASS — all unchanged from pre-12d.
+
+**Tracking-file reconciliation.** The pre-existing tracking files claimed wm 781/781, CSS2 99/99, css-flexbox 626/629, css-position 91/104, css-multicol 130/458. The re-baselined snapshot reads lower across all categories. The deltas are NOT from Phase 12d — they're from the working tree's pre-existing modifications to `pkg/resource/renderer.go` (commit `15095a58` plus uncommitted changes). Verified by re-running the same gates with my dispatch wired off (`if false &&`) — the numbers are identical. The 12d work itself is purely additive. The task_plan/progress claims need to be updated against the new baseline; that's a separate cleanup.
+
+**Trade explained.** `multicol-overflow-clip-auto-sized` regressed because my dispatch correctly honors `break-inside:avoid` in the test's REF (which has it explicitly), while louis14 doesn't yet treat `overflow:hidden` as monolithic in the TEST (CSS Fragmentation L3). The test was passing pre-12d because both renders ignored break-inside:avoid in the same way. Fix is to mark overflow:hidden boxes as monolithic; tracked as a separate follow-up.
+
+**Driver test PNGs blocked by Ahem font loader.** `multicol-break-000/001.xht` show a 1200 px diff that is NOT a 12d issue: the fragment tree IS correctly produced (col 0=A, col 1=B, col 2=C with the right Ahem text fragments at the right positions per `[FTB-TEXT]` trace), and `drawText` is called for each, but `r.openFont(ahemPath)` returns -1 so nothing renders. The reference PNGs use `<img>` tags which DO render. Pre-existing rendering bug, unrelated to 12d.
+
+---
+
 **Phase 12c (css-multicol nested): Blink-parity infrastructure LANDED 2026-04-23.** Four checklist items closed:
 1. **Outer-fragmentainer clamp** — already implemented pre-12c (no change).
 2. **Nested-initial-balancing override** — fixed reversed `!IsInitialColumnBalancingPass` guard at `multicol_layout.go:106–108`. Now mirrors Blink cla.cc:1025 exactly.

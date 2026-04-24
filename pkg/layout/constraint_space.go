@@ -163,6 +163,18 @@ type ConstraintSpace struct {
 	// Mirrors Blink's ConstraintSpace::IsInsideBalancedColumns().
 	IsInsideBalancedColumns bool
 
+	// MinBreakAppeal is the lowest break appeal that is acceptable in this
+	// fragmentation context. Read by CalculateBreakAppealBefore +
+	// IsBreakableAtStartOfResumedContainer; defaults to LastResort (any break
+	// is acceptable). Mirrors Blink's ConstraintSpace::MinBreakAppeal().
+	MinBreakAppeal BreakAppeal
+
+	// ShouldIgnoreForcedBreaks is set on inner constraint spaces where forced
+	// breaks should NOT trigger fragmentainer breaks (e.g. inside a row of an
+	// inline-table layout). Mirrors Blink's
+	// ConstraintSpace::ShouldIgnoreForcedBreaks().
+	ShouldIgnoreForcedBreaks bool
+
 	// --- Tables (single-pass sizing) ---
 
 	// TableSectionData carries the immutable, finalized row/section
@@ -448,6 +460,13 @@ func (b *ConstraintSpaceBuilder) SetIsInitialColumnBalancingPass(v bool) *Constr
 // context. Used for nested multicol shortage propagation.
 func (b *ConstraintSpaceBuilder) SetIsInsideBalancedColumns(v bool) *ConstraintSpaceBuilder {
 	b.space.IsInsideBalancedColumns = v
+	return b
+}
+
+// SetMinBreakAppeal sets the lowest acceptable break appeal for this space.
+// Mirrors Blink's ConstraintSpaceBuilder::SetMinBreakAppeal.
+func (b *ConstraintSpaceBuilder) SetMinBreakAppeal(v BreakAppeal) *ConstraintSpaceBuilder {
+	b.space.MinBreakAppeal = v
 	return b
 }
 

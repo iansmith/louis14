@@ -75,6 +75,13 @@ type LayoutResult struct {
 	// forced breaks and decide when no soft-break opportunities remain.
 	HasForcedBreak bool
 
+	// BreakAppeal scores how appealing the break that produced this result
+	// is. The multicol stretch loop demotes acceptance when any column's
+	// result has a non-Perfect appeal (cla.cc:1019 / cla.cc:1034). Default
+	// (zero value) is BreakAppealLastResort; layouts that didn't break set
+	// this to BreakAppealPerfect. Mirrors Blink's LayoutResult::GetBreakAppeal.
+	BreakAppeal BreakAppeal
+
 	// ColumnSpannerPath is non-nil when a column-span:all element was
 	// encountered and the algorithm returned early without laying it out.
 	// The multicol algorithm extracts the spanner via this path and lays it

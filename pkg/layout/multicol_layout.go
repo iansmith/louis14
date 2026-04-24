@@ -641,7 +641,6 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 			colFrag := result.Fragment
 			colHeight := NewLogicalFragment(wdm, colFrag).BlockSize()
-
 			// Column fragmentainers always clip their content — child fragments
 			// may have their full declared size (e.g. a leaf block with height:40px
 			// placed in a 20px column), but only the portion within the column
@@ -679,6 +678,11 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 				forcedBreakCount++
 			}
 			if colBlockSize != Indefinite && colHeight > colBlockSize {
+				hasViolatingBreak = true
+			}
+			// Phase 12d (Blink cla.cc:1019): demote acceptance when any column's
+			// break appeal is below Perfect (e.g. break-inside:avoid violated).
+			if result.BreakAppeal != BreakAppealPerfect {
 				hasViolatingBreak = true
 			}
 

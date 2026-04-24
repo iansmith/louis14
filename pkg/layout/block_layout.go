@@ -665,6 +665,72 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				continue
 			}
 
+			// Phase 12d: forced-break / break-appeal dispatch in column context.
+			// Mirrors Blink's BreakBeforeChildIfNeeded called by every block
+			// algorithm right after laying out an in-flow child. Skipped for
+			// resumed children (childIdx == resumeChildIdx) — break-before at
+			// the start of a fragmentainer is a no-op per CSS Fragmentation §3.
+			if bla.space.HasBlockFragmentation &&
+				bla.space.BlockFragmentationType == FragmentColumn &&
+				!(resumeChildBreakToken != nil && childIdx == resumeChildIdx) {
+
+				hasContainerSeparation := !firstNonEmptyChild
+				tentativeBlockOff := blockCursor + prevMarginStrut.Resolve()
+				fragOff := bla.space.FragmentainerOffset + tentativeBlockOff
+				status, isForced := BreakBeforeChildIfNeeded(
+					bla.space, child, childResult,
+					fragOff, bla.space.FragmentainerBlockSize,
+					hasContainerSeparation, builder)
+
+				if status == BreakStatusBrokeBefore {
+					// Emit a partial fragment without placing this child;
+					// outgoing break token points at THIS child with
+					// IsBreakBefore=true (and IsForcedBreak when the value
+					// was column/page).
+					outToken := &BlockBreakToken{
+						Node:              bla.node,
+						ConsumedBlockSize: blockCursor,
+					}
+					if incomingBreakToken != nil {
+						outToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
+					}
+					outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+						Node:          child,
+						IsBreakBefore: true,
+						IsForcedBreak: isForced,
+					})
+
+					intrinsicBlock := blockCursor
+					if !hasExplicitBlock {
+						borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
+						builder.SetSize(LogicalSize{
+							InlineSize: geom.BorderBoxSize.InlineSize,
+							BlockSize:  borderBoxBlock,
+						})
+					} else {
+						builder.SetSize(geom.BorderBoxSize)
+					}
+					builder.SetIntrinsicBlockSize(intrinsicBlock)
+					builder.SetNode(bla.node.DOMNode)
+					builder.SetStyle(bla.style)
+					builder.SetLayoutNode(bla.node)
+					builder.SetBoxData(&PhysicalBoxData{
+						Border:  ToPhysicalEdges(geom.Border, wdm),
+						Padding: ToPhysicalEdges(geom.Padding, wdm),
+					})
+					builder.SetEndMarginStrut(prevMarginStrut)
+					builder.SetExclusionSpace(exclusionSpace)
+					result := builder.Build()
+					result.BreakToken = outToken
+					if isForced {
+						result.HasForcedBreak = true
+					}
+					result.PropagatedTopMargin = propagatedTopMargin
+					return result
+				}
+			}
+
 			rawMargin := childStyle.GetMargin()
 			autoInlineStart, autoInlineEnd, _, _ := PhysicalAutoMarginsToLogical(rawMargin, wdm)
 			if autoInlineStart || autoInlineEnd {
@@ -720,6 +786,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if len(childResult.PropagatedOOFCandidates) > 0 {
 				bla.inheritPropagatedOOF(childResult, childStyle, wdm,
 					childInlineOffset, actualChildBlockOff, builder)
+			}
+
+			// Phase 12d: record this child's break-after on the builder so the
+			// next sibling's break-between value can join with it. Mirrors
+			// Blink's BoxFragmentBuilder::AddChild → SetPreviousBreakAfter
+			// (which reads layout_result.FinalBreakAfter — for non-fragmented
+			// children that's the same as the child's style break-after). Only
+			// fire when non-auto so a default-everywhere "auto" doesn't
+			// inadvertently overwrite a non-default previous value.
+			if bla.space.HasBlockFragmentation &&
+				bla.space.BlockFragmentationType == FragmentColumn {
+				if ba := childStyle.GetBreakAfter(); ba != "auto" {
+					builder.SetPreviousBreakAfter(ba)
+				}
 			}
 
 			firstNonEmptyChild = false

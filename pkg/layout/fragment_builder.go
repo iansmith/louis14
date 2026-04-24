@@ -66,6 +66,19 @@ type BoxFragmentBuilder struct {
 	// into LayoutResult.MinSpaceShortage at Build().
 	minimalSpaceShortage    float64
 	hasMinimalSpaceShortage bool
+
+	// previousBreakAfter is the break-after value of the most recently added
+	// in-flow child. JoinedBreakBetweenValue joins it with the next child's
+	// break-before to compute the effective break-between. Mirrors Blink's
+	// BoxFragmentBuilder::previous_break_after_ + JoinedBreakBetweenValue.
+	previousBreakAfter string
+
+	// breakAppeal is the appeal of the break that produced this fragment;
+	// BreakAppealPerfect when no break was inserted. Read into
+	// LayoutResult.BreakAppeal at Build(). Mirrors Blink's
+	// FragmentBuilder::break_appeal_.
+	breakAppeal    BreakAppeal
+	hasBreakAppeal bool
 }
 
 type logicalChildLink struct {
@@ -156,6 +169,30 @@ func (b *BoxFragmentBuilder) PropagateSpaceShortage(shortage float64) {
 		b.minimalSpaceShortage = shortage
 		b.hasMinimalSpaceShortage = true
 	}
+}
+
+// SetPreviousBreakAfter records the break-after value of the most recently
+// added in-flow child. JoinedBreakBetweenValue uses it to compute the
+// effective break-between value when a subsequent child is added.
+// Mirrors Blink's BoxFragmentBuilder::SetPreviousBreakAfter.
+func (b *BoxFragmentBuilder) SetPreviousBreakAfter(v string) {
+	b.previousBreakAfter = v
+}
+
+// JoinedBreakBetweenValue returns the join of the previous child's break-after
+// with the new child's break-before, picking the dominant value. Mirrors
+// Blink's BoxFragmentBuilder::JoinedBreakBetweenValue.
+func (b *BoxFragmentBuilder) JoinedBreakBetweenValue(childBreakBefore string) string {
+	return JoinFragmentainerBreakValues(b.previousBreakAfter, childBreakBefore)
+}
+
+// SetBreakAppeal records the appeal of the break that produced this fragment.
+// BreakAppealPerfect when no soft break was inserted; lower values when a
+// break-avoid value or orphans/widows constraint was violated. Mirrors Blink's
+// FragmentBuilder::SetBreakAppeal.
+func (b *BoxFragmentBuilder) SetBreakAppeal(appeal BreakAppeal) {
+	b.breakAppeal = appeal
+	b.hasBreakAppeal = true
 }
 
 func (b *BoxFragmentBuilder) AddOutOfFlowCandidate(c OutOfFlowCandidate) {
@@ -261,9 +298,13 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		LastBaseline:       b.lastBaseline,
 		EndMarginStrut:     b.endMarginStrut,
 		ExclusionSpace:     b.exclusionSpace,
+		BreakAppeal:        BreakAppealPerfect,
 	}
 	if b.hasMinimalSpaceShortage {
 		result.MinSpaceShortage = b.minimalSpaceShortage
+	}
+	if b.hasBreakAppeal {
+		result.BreakAppeal = b.breakAppeal
 	}
 	return result
 }

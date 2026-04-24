@@ -22,6 +22,11 @@ type BlockBreakToken struct {
 	// begin fresh in the next fragmentainer.
 	IsBreakBefore bool
 
+	// IsForcedBreak means the break was caused by a forced break value
+	// (break-before:column, break-after:column, etc.) rather than running
+	// out of fragmentainer space. Mirrors Blink's BlockBreakToken::IsForcedBreak.
+	IsForcedBreak bool
+
 	// IsCausedByColumnSpanner means a column-span:all element caused the break.
 	IsCausedByColumnSpanner bool
 
