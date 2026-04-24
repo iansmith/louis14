@@ -29,11 +29,11 @@ Companion scratch blocks live at the top of `findings.md` (research notes per ta
 
 | # | Target | Category | Ambition | Status | Driver |
 |---|---|---|---|---|---|
-| F1 | wm `bidi-embed-006` + `bidi-override-006` (0.3% / 1598 px each) | css-writing-modes gate invariant | +2 wm (restores 781/781) | PENDING | `bidi-embed-006.html` |
-| F2 | Phase 12c nested-multicol leaf paint-slicing | css-multicol paint | +~7 multicol (`-nested-007..014`) | PENDING | `multicol-nested-010.html` (1.2 % → 0.7 % post-12c, residual is paint-level) |
-| F3 | Phase 12f `column-height`/`column-wrap` cluster residuals (24 tests, 0.1–4.2 %) | css-multicol layout | +up to 24 multicol (partial closure likely) | PENDING | Pick one from the cluster; likely `column-height-008.html` (row-gap) or a `column-wrap:nowrap` overflow variant |
-| F4 | Phase 12h.2 inline-in-balanced-multicol | css-multicol layout | +2 multicol (`-large-001`, `-stacking-001`) + unblocks capability | PENDING | `multicol-rule-stacking-001.xht` (cleanest shape — no wide-rule overlap dominating the diff) |
-| F5 | Phase 12h.3 `multicol-list-item-003` trailing inline-after-spanner | css-multicol layout (opens Phase 12b inline-after-spanner) | +1 multicol + opens downstream | PENDING | `multicol-list-item-003.html` |
+| F1 | wm `bidi-embed-006` + `bidi-override-006` (0.3% / 1598 px each) | css-writing-modes gate invariant | +2 wm (restores 781/781) | Research DONE 2026-04-24; bisect/fix PENDING | `bidi-embed-006.html` |
+| F2 | Phase 12c nested-multicol leaf paint-slicing | css-multicol paint | +~7 multicol (`-nested-007..014`) | Research DONE 2026-04-24; conjecture *corrected* (not painter replication — clip divergence on our `kColumnBox`); fix PENDING | `multicol-nested-010.html` (1.2 % → 0.7 % post-12c) |
+| F3 | Phase 12f `column-height`/`column-wrap` cluster residuals (24 tests, 0.1–4.2 %) | css-multicol layout | +up to 24 multicol (partial closure likely) | Research DONE 2026-04-24 (re-pointed to §4.2 in findings); triage PENDING | Pick one from the cluster; likely `column-height-008.html` (row-gap) or a `column-wrap:nowrap` overflow variant |
+| F4 | Phase 12h.2 inline-in-balanced-multicol | css-multicol layout | +2 multicol (`-large-001`, `-stacking-001`) + unblocks capability | Research DONE 2026-04-24 (Blink entry chain cla.cc:763 → bla.cc:593 → ila.cc:1071); fix PENDING | `multicol-rule-stacking-001.xht` |
+| F5 | Phase 12h.3 `multicol-list-item-003` trailing inline-after-spanner | css-multicol layout (opens Phase 12b inline-after-spanner) | +1 multicol + opens downstream | Research DONE 2026-04-24 (confirmed NOT marker-protocol; `InlineBreakToken` forwarding via `next_column_token`); fix PENDING | `multicol-list-item-003.html` |
 
 **Ordering rationale.** F1 first because a broken gate invariant compromises every subsequent landing's regression signal. F2 because it's a tight cluster behind a single paint-level concept (inner-column slicing of a leaf fragment) — highest tests/effort ratio. F3 because even partial closure of the 24-cluster is the largest remaining named bucket. F4/F5 are about unblocking downstream capability more than the immediate test-count win.
 

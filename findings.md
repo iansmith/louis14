@@ -19,35 +19,188 @@ All writing-modes category findings — 787 tests, bidi root-causes, orthogonal 
 Paired with the "ACTIVE FOLLOW-UP BATCH" block at the top of `task_plan.md`. Drop research notes per target as we investigate. Keep entries short until a concrete root cause surfaces — no speculative paragraphs.
 
 ### F1. wm `bidi-embed-006` + `bidi-override-006` (gate regression)
-- **Status:** not yet investigated.
+- **Status:** Blink research landed; regression bisect pending.
 - **Known:** both fail at 1598 px / 0.3 %. Verified via `git stash` during Phase 12h step 4 gate check that they predate that fix, so blame lies earlier on `fix/flexbox-fast`. Tracking files had incorrectly carried "wm 781/781" from the phase-5f (2026-04-21) landing.
-- **Next:** `git log --oneline -- pkg/layout pkg/text pkg/render` since `9913a9e4` and run the 2 drivers at each interesting commit to bisect.
-- **Out of scope for this target:** full bidi algorithm rework — we passed 781 at 5f, so this is a specific later regression, not a Blink-parity gap.
+- **Next:** `git log --oneline -- pkg/layout pkg/text pkg/render` since `9913a9e4` and run the 2 drivers at each interesting commit to bisect. Separately, audit louis14's bidi-control emission against the Blink-parity reference below — the recent `BidiParagraph` move to `platform/text/` is a strong hint that louis14's equivalent may have absorbed stale behavior from the older header location.
+- **Scope stance:** we passed 781 at 5f, so this is a specific later regression, not a full-algorithm port. Research still noted below so any fix mirrors Blink's current vocabulary.
+
+**Blink-parity reference (fetched 2026-04-24 against `refs/heads/main`).**
+
+*Notable refactors since ~2023 — likely hot spots for our divergence:*
+- `BidiParagraph` moved from `core/layout/inline/bidi_paragraph.{h,cc}` to `platform/text/bidi_paragraph.{h,cc}` (now `PLATFORM_EXPORT` + `STACK_ALLOCATED`, not layout-local).
+- `UnicodeBidi` enum moved out of `core/style/computed_style_base_constants.h` into dedicated `platform/text/unicode_bidi.h`. `css_properties.json5` declares `{normal, embed, bidi-override, isolate, plaintext, isolate-override}` with `type_name: UnicodeBidi`.
+- `BidiParagraph::SetParagraph` now carries a `CHECK_LE(text.length(), int32::max()/12)` ICU-overflow guard (crbug.com/504629701) — not behavior-relevant but watch size limits.
+
+*Entry points:*
+- Per-inline-box: `InlineItemsBuilderTemplate::EnterInline(LayoutInline*)` — `inline_items_builder.cc:1510-1548`. Dispatches on `style->GetUnicodeBidi()` only when `RtlOrdering() == EOrder::kLogical`.
+- Block-level: `InlineItemsBuilderTemplate::EnterBlock(const ComputedStyle*)` — same file around line 1459. For `EOrder::kVisual`, always wraps the block in LRO/RLO+PDF.
+- Paragraph resolution: `InlineNode::SegmentBidiRuns(InlineNodeData*)` — `inline_node.cc:1329`.
+
+*Types / enums:*
+- `UnicodeBidi` values: `kNormal, kEmbed, kBidiOverride, kIsolate, kPlaintext, kIsolateOverride` (`platform/text/unicode_bidi.h:31-38`). Helpers `IsIsolated`, `IsOverride`.
+- `BidiParagraph` owns `std::unique_ptr<UBiDi>`, `TextDirection base_direction_`, inner `struct Run { unsigned start, end; UBiDiLevel level; }`.
+- `InlineItem::kBidiControl` — item kind appended for control chars.
+- `InlineItemsBuilderTemplate::BidiContext { LayoutObject* node; UChar enter; UChar exit; }` — push/pop stack entry.
+
+*Control-character insertion* (all via `EnterBidiContext` which does `AppendOpaque(InlineItem::kBidiControl, enter)` + stacks exit char; `inline_items_builder.cc:1438-1456, 1517-1547`):
+- `embed` → LRE (U+202A) / RLE (U+202B) based on `style->Direction()`, exit PDF (U+202C).
+- `bidi-override` → LRO (U+202D) / RLO (U+202E), exit PDF.
+- `isolate` → LRI (U+2066) / RLI (U+2067), exit PDI (U+2069).
+- `plaintext` → FSI (U+2068) unconditionally, exit PDI; sets `has_unicode_bidi_plain_text_`.
+- `isolate-override` → TWO pushes: FSI…PDI wrapping LRO/RLO…PDF (FSI outer, override inner). Same pattern on block-level path but the block path only emits override for `kBidiOverride`/`kIsolateOverride` and relies on `SetParagraph` for the paragraph level of `isolate`/`embed`/`plaintext`.
+
+*ICU calls:*
+- `ubidi_open()` / `ubidi_close()`: `BidiParagraph` ctor via `UBidiPtr`, `bidi_paragraph.cc:24, 124`.
+- `ubidi_setPara`: `BidiParagraph::SetParagraph`, `bidi_paragraph.cc:36`. Called from `SegmentBidiRuns:1343` and again at 1395 when out-of-flow objects are re-injected as U+FFFC.
+- `ubidi_getDirection` / `ubidi_getParaLevel`: `bidi_paragraph.h:48`, `.cc:43`.
+- `ubidi_getLogicalRun`: `BidiParagraph::GetLogicalRun`, `bidi_paragraph.cc:115`. Driven from `SegmentBidiRuns:1414` in a `for (start < text_len)` loop that calls `InlineItem::SetBidiLevel(items, item_index, end, level)` to split items at run boundaries.
+- `ubidi_reorderVisual`: `BidiParagraph::IndicesInVisualOrder`, `bidi_paragraph.cc:155` (lazy, only via `GetVisualRuns`). *No direct `ubidi_countRuns` call — Blink walks `GetLogicalRun` until `start == text_len`.*
+
+*Divergence hot spots to check first:*
+1. `isolate-override` double-push ordering (FSI outer, LRO/RLO inner — louis14 may have swapped).
+2. Block-level path not emitting controls for `embed`/`isolate` (Blink delegates those to `SetParagraph` paragraph-level only).
+3. The out-of-flow re-injection with U+FFFC and a *second* `SetParagraph` call (`inline_node.cc:1375-1405`). If louis14 skipped this second pass, item splits land at stale run boundaries.
+4. `base_direction` passed as nullopt iff `UnicodeBidi::kPlaintext` (*exact* condition, not `HasUnicodeBidiPlainText()`).
 
 ### F2. Phase 12c nested-multicol leaf paint-slicing
-- **Status:** not yet investigated post-12c.
-- **Known (from `task_plan.md` Phase 12c "Driver residual" note):** `multicol-nested-010.html` at 0.7 % (3500 px). Siblings 007/008/009/011/013/014 share the same ~1.2–1.6 % diff shape. Conjecture in the 12c notes: Blink paints the same leaf content at a column-specific inline offset clipped per inner column, producing "all-green" visuals even when only one column has a layout fragment. Our engine paints only what each column's fragment tree contains.
-- **Next:** read the `multicol-nested-010` ref + test side-by-side; study Blink's `PaintInlineChildFragments` / column box paint ordering for how a single leaf fragment paints into multiple columns.
-- **Blink pointer:** `core/paint/box_fragment_painter.cc` + `core/layout/column_layout_algorithm.cc` column-box paint path.
+- **Status:** Blink research landed; conjecture *corrected* — Blink doesn't slice in paint.
+- **Known (from `task_plan.md` Phase 12c "Driver residual" note):** `multicol-nested-010.html` at 0.7 % (3500 px). Siblings 007/008/009/011/013/014 share the same ~1.2–1.6 % diff shape.
+- **Revised root cause (from research below):** The "all-green" visual in Chromium is *not* painter-side replication. The child fragment (width:200 %) is laid out once inside the first column's constraint space and *overflows*; Blink's painter walks `Children()` once, uniformly, and the overflowing fragment paints through adjacent columns because there's no per-column clip. louis14's divergence is almost certainly either an over-eager per-column-box clip in our `paintLayer` / `BoxFragmentPainter` equivalent on `kColumnBox`, or the inner multicol builder dropping the overflow that Blink keeps.
+- **Next:** audit our column-box paint path for any clip that Blink's `PaintBlockChild` fragmentainer branch doesn't push. Also confirm the first-column fragment still carries the full-width overflow child at layout time.
+
+**Blink-parity reference (fetched 2026-04-24 against `refs/heads/main`).**
+
+*Fragmentainer predicates & box type* (`core/layout/physical_fragment.h`):
+- `enum BoxType { kNormalBox, kInlineBox, kColumnBox, kPageContainer, kPageBorderBox, kPageMargin, kPageArea, ... }`.
+- `bool IsColumnBox() const`, `bool IsFragmentainerBox() const`, `static bool IsFragmentainerBoxType(BoxType)`.
+- `PhysicalBoxFragment` exposes `Children()` / `PostLayoutChildren()` — no column-specific child list. A column box is just a `PhysicalBoxFragment` with `BoxType == kColumnBox`.
+
+*Paint entry path* (`core/paint/box_fragment_painter.{h,cc}`):
+- `PaintBlockChildren(const PaintInfo&, PhysicalOffset)` iterates `box_fragment_.Children()` uniformly — no column filtering.
+- `PaintBlockChild(...)` has the only fragmentainer branch:
+  ```
+  if (box_child_fragment.IsFragmentainerBox()) {
+    PhysicalOffset child_offset = paint_offset + child.offset;
+    unsigned identifier = FragmentainerUniqueIdentifier(box_child_fragment);
+    ScopedDisplayItemFragment scope(paint_info.context, identifier);
+    BoxFragmentPainter(box_child_fragment).PaintObject(paint_info, child_offset);
+    return;
+  }
+  ```
+  Two things special here: (a) `ScopedDisplayItemFragment` for paint-cache identity, (b) calling `PaintObject` instead of `Paint` (skips self-painting-layer short-circuit). **No extra clip, no inline-offset transform, no flow-thread walk.**
+
+*Where the "same leaf appears in every column" comes from:* NOT a painter-side replication. The column layout algorithm (`column_layout_algorithm.cc`) drives per-column layout via `BlockLayoutAlgorithm` with `SetBoxType(kColumnBox)`, iterated by `column_break_token`. Each column's fragment contains **only the children laid out for that column** (offset relative to that column box). A child with `width:200 %` is laid out once inside the first column's constraint space and *overflows* — its physical fragment extends past the column slab. The visible "spans every inner column" rendering is because the inner multicol's surrounding visual-overflow clip (on the inner multicol box itself, inline-size = sum of columns + gaps) does not clip between columns; the first-column fragment's overflow paints under subsequent columns' background/slab.
+
+*`GapDecorationsPainter` context:* called from `BoxFragmentPainter::PaintGapDecorations(...)` with `kForRows`/`kForColumns`. `PaintColumnRules()` is a sibling that iterates `Children()` looking for `child->IsColumnBox()` to space rules between them. Unrelated to per-column child-set replication.
+
+*Recent refactors:* no post-2023 introduction of `ColumnBoxPaintContext`, `ColumnRowPainter`, `FragmentainerBoxPainter`. `ScrollTranslationInColumnBox` / `ColumnBoxPaintOffset` are **not present** in current `box_fragment_painter.{h,cc}`. Painter stays deliberately thin over the layout-produced fragment tree.
+
+*Files inspected:* `core/paint/box_fragment_painter.{h,cc}`, `core/layout/physical_fragment.h`, `core/layout/physical_box_fragment.h`, `core/layout/column_layout_algorithm.cc`, `core/layout/block_layout_algorithm.cc`, `core/paint/paint_layer_painter.cc`.
+
+*Implication for the bug.* Mirroring Blink means: do **not** invent per-column "walk the flow thread and clip" logic. Verify (a) inner columns' first-column fragment still carries the full-width overflow child, and (b) our column-box equivalent doesn't push an inline clip that Blink's fragmentainer branch doesn't. The divergence is almost certainly over-eager clip on the `kColumnBox` path, or the inner multicol builder dropping overflow that Blink keeps.
 
 ### F3. Phase 12f column-height/column-wrap cluster residuals
-- **Status:** not yet investigated post-12f.
+- **Status:** not yet investigated post-12f; Blink algorithm already documented below.
 - **Known (from Phase 12f section of `progress.md`):** 24 cluster residuals at 0.1–4.2 %. Named sub-causes: row-gap plumbing (`rowGapSize = 0` hardcoded), `MulticolBreakTokenData` row-carry (12f.6 deferred), forced-break + wrap interactions, overflow-past-declared-columns for `column-wrap:nowrap`.
 - **Next:** triage the 24 tests by shape. Whichever sub-cause hits the most is the first target. Likely starting candidate: `column-height-008.html` (row-gap) because it's a concrete one-property fix.
-- **Blink pointer:** `column_layout_algorithm.cc` §4.2 sites 1–5 already documented in the Phase 12f findings block.
+
+**Blink-parity reference (restated from §9a, so this block is self-contained).**
+
+Spec: CSS Multi-column Level 2 §4.2. `column-height: auto | <length [0,∞]>` (no percentages). Companion `column-wrap: nowrap | wrap`. Gated on runtime feature `MulticolColumnWrapping`.
+
+Types (all in `core/layout/column_layout_algorithm.cc` / `.h` unless noted):
+- `MulticolBreakTokenData { LayoutUnit consumed_row_block_size; }` — optional payload on outer-fragmentainer break tokens when a row is split across outer fragmentainers.
+- `ColumnSpannerPath` — GC'd linked list of spanners (used by row-wrap loop to stop at spanner boundaries).
+- Predicates on `ColumnLayoutAlgorithm`:
+  - `ShouldWrapColumns()` — `column-wrap: wrap` OR outer row-constrained.
+  - `HasRowHeight()` — `column-height` non-auto OR outer clamps block-size.
+  - `HasAutoColumnHeight()` — complement of `HasRowHeight()`.
+- Row-geometry accessors on `ColumnLayoutAlgorithm`:
+  - `RowHeight()` — current row's usable block-size.
+  - `OffsetInCurrentRow(block_offset)` — offset within the current row (subtracts row starts).
+  - `OffsetToNextRow(block_offset)` — remaining space to advance to next row start.
+  - `RemainingRowHeightAtOffset(block_offset)` — `RowHeight() - OffsetInCurrentRow(block_offset)`.
+
+Five consumption sites — all in `column_layout_algorithm.cc`:
+1. **LayoutLine block-size override** (cla.cc:858–875). `LayoutLine()` chooses the column's block-size before the outer stretch loop. If `HasRowHeight()`, initial `column_size.block_size` = `RowHeight()` instead of `ResolveColumnAutoBlockSize()`.
+2. **Row-wrap loop in `LayoutFragmentationContext()`** (cla.cc:789–836). When `ShouldWrapColumns()`, after laying out one row the algorithm advances `line_offset += RowHeight()` and starts a new `LayoutLine()` iteration with the remaining content.
+3. **`ConstrainColumnBlockSize`** (cla.cc:1974–1977). The balancing loop's stretch upper bound is clamped by `RemainingRowHeightAtOffset(line_offset)` — stretch candidate exceeding the row ends the row.
+4. **Intrinsic block-size top-off** (cla.cc:342–356). When non-auto `column-height`, `intrinsic_block_size` padded up to `clamp(RemainingRowHeightAtOffset(...), 0, outer_left)` so the container reports full row-height even if content is short.
+5. **`MulticolBreakTokenData` row carryover** (cla.cc:2087–2093, `OffsetInCurrentRow()`). When an outer fragmentainer splits in the middle of a row, `consumed_row_block_size` is written on the outgoing break token; on resume, `OffsetInCurrentRow()` reconstructs where in the row we are.
+
+Row gap (CSS Multicol L2): the row-axis gap between wrapped column rows is read from computed `row-gap` (not `column-gap`). Blink's row-wrap loop at cla.cc:789–836 adds the gap when advancing `line_offset`.
+
+**louis14 status** (per Phase 12f section):
+- Sites 1–4 implemented (landed in Phase 12f).
+- Site 5 (`MulticolBreakTokenData` row-carry) deferred — `nextColToken=nil, consumedRowBlockSize=0` is the safe default until a nested-row-split driver needs it.
+- Row-gap: our `rowGapSize = 0` hardcoded; needs reading from `row-gap`.
 
 ### F4. Phase 12h.2 inline-in-balanced-multicol
-- **Status:** root-caused during Phase 12h step 2 (see "Phase 12h step 2 reclassified" block).
+- **Status:** root-caused during Phase 12h step 2 symptom-wise (see "Phase 12h step 2 reclassified"); Blink entry chain documented below. Fix not yet attempted.
 - **Known:** `stacking-001` sets `Box.RenderedColumnCount=2` on `column-count:4`; `large-001` puts inline Ahem text entirely in column 0. Our balanced-multicol path isn't distributing inline items across the 4 intended columns.
-- **Next:** read Blink's `BlockLayoutAlgorithm` inline handling inside multicol — specifically how inline items get broken between columns when balancing. Suspected site is `layoutInlineChildren` exit/resume and whether it continues emitting fragments after the first column's `InlineItemStartIndex` checkpoint.
-- **Blink pointer:** `block_layout_algorithm.cc` inline-children path + `InlineChildLayoutContext`.
+- **Louis14 symptom mapping:** `RenderedColumnCount=1/2` is consistent with the outer multicol loop not feeding the inline child's outgoing break token back into the next column's `BlockLayoutAlgorithm` params (missing `params.break_token = column_break_token` at the column step and/or missing `SetBreakToken(line_info.GetBreakToken())` at the inline step). Verify both that the `kFragmentColumn` constraint (`FragmentainerBlockSize`) reaches `InlineLayoutAlgorithm` AND that the `BlockBreakToken` returned by each column carries a child `InlineBreakToken` with a non-zero `StartItemIndex`.
 - **Driver pick rationale:** `stacking-001` is cleaner than `large-001` because the wide-rule-overlap visual doesn't dominate — the diff is driven by column count, not rule geometry.
 
+**Blink-parity reference (fetched 2026-04-24 against `refs/heads/main`).**
+
+*Entry chain for a balanced multicol column fragmentainer:*
+1. `ColumnLayoutAlgorithm::LayoutFragmentationContext` calls `LayoutLine` in a `do { ... } while (next_column_token && ShouldWrapColumns() && !result.GetColumnSpannerPath())` driven by `next_column_token` (`column_layout_algorithm.cc:763, 809, 860`).
+2. `LayoutLine` builds per-column `column_size` (balanced via `ResolveColumnAutoBlockSize`, `cla.cc:913`) then at `cla.cc:989-992` calls `CreateConstraintSpaceForFragmentainer(..., kFragmentColumn, column_size, ..., balance_columns, ...)`. Space carries `FragmentainerBlockSize = column_size.block_size`, `BlockFragmentationType = kFragmentColumn`, `IsInsideBalancedColumns`.
+3. Constructs `BlockLayoutAlgorithm child_algorithm(params)` with `params.break_token = column_break_token`, calls `child_algorithm.Layout()` (`cla.cc:1007`). Outgoing break token harvested via `column.GetBreakToken()` → `column_break_token` → `next_column_token` for the next column.
+4. Inside `BlockLayoutAlgorithm::Layout()` (`block_layout_algorithm.cc:593`), an IFC root dispatches to `LayoutInlineChild` → `Layout(context)` (`bla.cc:707, 735`), calls `HandleInflow` per line (`bla.cc:1093`). `HandleInflow` → `LayoutInflow` → `InlineLayoutAlgorithm::Layout()` (`inline_layout_algorithm.cc:1071`).
+
+*Per-line truncation + resume token:*
+- Active loop in `InlineLayoutAlgorithm::Layout()` (while at `~ila.cc:1155`). Instantiates `LineBreakStrategy` with incoming `GetBreakToken()` (an `InlineBreakToken*`), calls `line_breaker.NextLine(&line_info)` (`ila.cc:1226`).
+- On success: `container_builder_.SetBreakToken(line_info.GetBreakToken())` (`ila.cc:1447`). Token is `InlineBreakToken` (`inline_break_token.h:46`), carrying resume cursor in `start_.item_index` (`StartItemIndex`) and `start_.text_offset` (`StartTextOffset`) at `ibt.h:86-88`. `InlineBreakToken::CreateForParallelBlockFlow` wraps a child `BlockBreakToken` for block-in-inline/float cases (`ibt.h:74`).
+- When a line would overflow the fragmentainer: `BlockLayoutAlgorithm::FinishInflow` invokes `BreakBeforeChildIfNeeded` (`bla.cc:2624`); on `BreakStatus::kBrokeBefore` the line is not placed in this column and the unconsumed inline break token is left as the outgoing break token for the column's own `BlockBreakToken`. Parallel-flow tokens are also added: `container_builder_.AddBreakToken(token, /*is_in_parallel_flow=*/true)` (`bla.cc:2663`).
+
+*Outer wiring between columns:*
+- `CreateConstraintSpaceForFragmentainer` (callsite `cla.cc:990`) sets `kFragmentColumn` + `SetIsInsideBalancedColumns` (see `cla.cc:2051, 2058`).
+- `params.break_token = column_break_token` feeds the column's `BlockLayoutAlgorithm` the resume point; its descendant inline break token is nested inside that `BlockBreakToken`'s child break tokens.
+- `HasKnownFragmentainerBlockSize()` (`constraint_space.h:327`) + `FragmentainerOffset()` (`cs.h:341`) tell the inline layer where the column's block-end is.
+
+*Key types:*
+- `InlineBreakToken` — fields `start_.item_index`, `start_.text_offset`, flags enum `InlineBreakTokenFlags`, `GetBlockBreakToken()` for parallel-flow sub-token.
+- `InlineChildLayoutContext` / `SimpleInlineChildLayoutContext` / `OptimalInlineChildLayoutContext` (`inline_child_layout_context.h:28, 120, 135`) — holds `BoxStates`, `ParallelFlowBreakTokens`, line-info cache.
+- `LogicalLineContainer` / `LogicalLineItems` (populated by `LogicalLineBuilder::CreateLine`, `ila.cc:365`); materialised to a `LineBoxFragment` via `container_builder_.ToLineBoxFragment()`.
+- `LineBreaker` (`line_breaker.h`) owns the cursor over `InlineItemsData`; its `NextLine` output `LineInfo::GetBreakToken()` is the resume token.
+
+*Pitfalls (from Blink comments):*
+- If `line_info.GetBreakToken()` is nullptr, the IFC is complete — no token is emitted (`ila.cc:1532`).
+- `AddAnyClearanceAfterLine` returning false forces `Abort(kOutOfFragmentainerSpace)` (`ila.cc:1491`); column finishes without the line, *previous* line's break token resumes.
+- Parallel block-in-inline tokens must be propagated both from leading floats AND from `LineInfo::ParallelFlowBreakTokens()` (`ila.cc:1453`); forgetting either drops content in subsequent columns.
+- Do not set the inline break token from `CreateLine` before `AddAnyClearanceAfterLine` passes — leaks stale state on abort.
+
+*All expected files present at current `main`; none moved.*
+
 ### F5. Phase 12h.3 `multicol-list-item-003` trailing inline-after-spanner
-- **Status:** noted in kickoff survey; not yet root-caused.
+- **Status:** Blink research landed; reproduction + fragment-tree verification pending.
 - **Known (from kickoff survey):** container is `display:list-item`; content is `[height:150 div, column-span:all h:50 div, "← Marker here" text]`. Our render drops the trailing text entirely. The marker itself positions correctly — it's inline flow after the spanner that breaks.
-- **Next:** reproduce, verify the fragment tree contains the trailing text (or doesn't). If missing, it's a block_layout resume bug after spanner commit; if present, it's paint.
-- **Blink pointer:** `column_layout_algorithm.cc:1498` (spanner-commit path) + how `BlockLayoutAlgorithm` resumes after a returned spanner.
+- **Confirmed from Blink (see below):** the fix path is in how the multicol-container's `BlockLayoutAlgorithm` forwards the `InlineBreakToken` via `next_column_token` — NOT in the `UnpositionedListMarker` protocol. The marker has no interaction with the post-spanner resume path.
+- **Next:** reproduce, verify the fragment tree contains the trailing text (or doesn't). Confirm our column algorithm's equivalent of `walker.MoveToSpanner(spanner_node, next_column_token)` stores the right `next_column_token` and that the post-spanner re-entry produces a `BlockBreakToken` whose child break tokens include an `InlineBreakToken` with `StartItemIndex` past the spanner.
+
+**Blink-parity reference (fetched 2026-04-24 against `refs/heads/main`).**
+
+*`ColumnLayoutAlgorithm::Layout()` loop* (`column_layout_algorithm.cc:620-714`):
+The multicol algorithm drives a `walker` over its flow. Each iteration that lays out a column row calls `LayoutFragmentationContext(child_break_token, &margin_strut)` (the `LayoutLine`-equivalent). On return it inspects `result->GetColumnSpannerPath()`:
+- **Non-null:** `GetSpannerFromPath(path)` descends to the innermost `ColumnSpannerPath` node (line 225: `while (path->Child()) path = path->Child();`). `walker.MoveToSpanner(spanner_node, next_column_token)` — `next_column_token` is the outgoing `BlockBreakToken` from the column-row fragment, and it is the token the next row will resume from. Then `LayoutSpanner(spanner_node, child_break_token, &margin_strut)` commits the spanner fragment (cla.cc:701; spanner layout is its own direct `spanner_node.Layout(spanner_space, break_token, early_break)` call — NOT nested in columns). After returning, `spanner_path_` is cleared (cla.cc:1401) and the outer `while` re-enters `LayoutFragmentationContext` with the stored `next_column_token`, producing a fresh column row that resumes past the spanner.
+- **Null:** normal column-row case.
+
+*`BlockBreakToken` "I'm resuming past a spanner"* (`block_break_token.h:153`, `block_break_token.cc:68`):
+- `bool IsCausedByColumnSpanner()` returns `is_caused_by_column_spanner_`, set in token ctor from `builder->FoundColumnSpanner()`.
+- The `next_column_token` emitted by the column row that hit the spanner has this flag set, plus child break tokens for every descendant on the spanner's container chain whose inline position (including `InlineItemStartIndex` / `InlineBreakToken`) points *past* the spanner.
+- `block_layout_algorithm.cc:874-880` uses `IsCausedByColumnSpanner()` to suppress `discard_margins`, so the resumed block's trailing inline items aren't accidentally swallowed by margin-discard.
+
+*`ColumnSpannerPath` GC'd linked list* (`column_spanner_path.h`):
+A `GarbageCollected` singly-linked list of `BlockNode`s from multicol container (outermost) to spanner (innermost, `IsColumnSpanAll()`). Constructed bottom-up in `block_layout_algorithm.cc:1036-1042`: first a leaf `ColumnSpannerPath(spanner_child)`, then current container wraps it as `ColumnSpannerPath(Node(), child_spanner_path)`, `container_builder_.SetColumnSpannerPath(...)` propagates it upward in the layout result. Each parent walks it via `FollowColumnSpannerPath(path, child)` (`fragmentation_utils.h:564`): if `path->Child()->GetBlockNode() == child`, descend; otherwise return nullptr. `LayoutBlockChild` / `LayoutInflow` (`bla.cc:112-135`) pass only the remaining path down, so only ancestors-of-the-spanner receive a non-null path.
+
+*How trailing inline items after the spanner are picked up:*
+`BlockLayoutAlgorithm` at the spanner's parent (multicol container here) inserts break-before tokens for every post-spanner sibling via the loop at `bla.cc:1054-1063` (`container_builder_.AddBreakBeforeChild(sibling, ...)`). For an **inline** trailing child (the `<ul-container>` trailing text), the flow differs: the parent's `BlockBreakToken` records an `InlineBreakToken` at `item_index` past the spanner so that when `ColumnLayoutAlgorithm` re-enters `LayoutFragmentationContext` with `next_column_token`, the inner `BlockLayoutAlgorithm` for the multicol container sees a break-token child-entry whose inline child resumes at the correct `InlineItemStartIndex`. The column algorithm does **not** keep walking the flow itself — it re-runs the whole column-row pipeline with a different resume token, and the inline layout iterator (`InlineLayoutAlgorithm` / `LineBreaker`) honors `InlineBreakToken::StartItemIndex()`.
+
+*List-item edge case:*
+`BlockBreakToken::HasUnpositionedListMarker()` (`bbt.h:192`) is initialized from `node.IsListItem()` (`bbt.h:46`). Marker carries across fragmentainers independently of the spanner path; `ColumnLayoutAlgorithm::LayoutSpanner` calls `AttemptToPositionListMarker(spanner_fragment, block_offset)` (cla.cc:1498) so the marker can latch onto the spanner's first fragment if still unpositioned. **It is not what suppresses trailing inline content** — `UnpositionedListMarker` has no interaction with the post-spanner resume path. If trailing text vanishes, the bug is in how the multicol-container's `BlockLayoutAlgorithm` forwards `InlineBreakToken` via `next_column_token`, NOT the marker protocol.
+
+*Files cited:* `column_layout_algorithm.{h,cc}:225, 293, 643, 657, 701, 1397-1501, 1886-1896`; `column_spanner_path.h` (full); `block_layout_algorithm.cc:108-135, 305, 342, 785, 874-880, 1036-1063`; `block_break_token.{h,cc}:46, 68, 153, 192`; `fragmentation_utils.h:564`.
 
 ---
 
