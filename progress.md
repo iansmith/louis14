@@ -12,6 +12,26 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
+## ACTIVE FOLLOW-UP BATCH — landing log (2026-04-24) — TEMPORARY
+
+Paired with the "ACTIVE FOLLOW-UP BATCH" block in `task_plan.md` and the research notes in `findings.md`. Append a dated entry here when a target lands (or partially lands, with the scoped-out piece captured). When all five resolve or get reclassified, move the entries into their real phase section and delete this block.
+
+Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
+- css-multicol **154** / 458
+- CSS2 99/99
+- css-flexbox 626/629
+- css-position 91/105
+- spanner-fragmentation 12/13
+- css-writing-modes 779/781 (F1 target is to restore 781/781)
+
+### F1. wm bidi regression — PENDING
+### F2. Phase 12c nested-multicol leaf paint-slicing — PENDING
+### F3. Phase 12f column-height/column-wrap residuals — PENDING
+### F4. Phase 12h.2 inline-in-balanced-multicol — PENDING
+### F5. Phase 12h.3 list-item-003 trailing text — PENDING
+
+---
+
 ## Current Phase
 **Phase 12h steps 2+4 (column-rule em resolution): LANDED 2026-04-24.**
 

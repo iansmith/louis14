@@ -14,6 +14,43 @@ Findings should assume those rules are already loaded in context.
 ## Archived wm work
 All writing-modes category findings — 787 tests, bidi root-causes, orthogonal sizing, Phase 5f Groups A/B/C — have been moved to `docs/findings-wm.md`. Do not duplicate here.
 
+## ACTIVE FOLLOW-UP BATCH — research notes (2026-04-24) — TEMPORARY
+
+Paired with the "ACTIVE FOLLOW-UP BATCH" block at the top of `task_plan.md`. Drop research notes per target as we investigate. Keep entries short until a concrete root cause surfaces — no speculative paragraphs.
+
+### F1. wm `bidi-embed-006` + `bidi-override-006` (gate regression)
+- **Status:** not yet investigated.
+- **Known:** both fail at 1598 px / 0.3 %. Verified via `git stash` during Phase 12h step 4 gate check that they predate that fix, so blame lies earlier on `fix/flexbox-fast`. Tracking files had incorrectly carried "wm 781/781" from the phase-5f (2026-04-21) landing.
+- **Next:** `git log --oneline -- pkg/layout pkg/text pkg/render` since `9913a9e4` and run the 2 drivers at each interesting commit to bisect.
+- **Out of scope for this target:** full bidi algorithm rework — we passed 781 at 5f, so this is a specific later regression, not a Blink-parity gap.
+
+### F2. Phase 12c nested-multicol leaf paint-slicing
+- **Status:** not yet investigated post-12c.
+- **Known (from `task_plan.md` Phase 12c "Driver residual" note):** `multicol-nested-010.html` at 0.7 % (3500 px). Siblings 007/008/009/011/013/014 share the same ~1.2–1.6 % diff shape. Conjecture in the 12c notes: Blink paints the same leaf content at a column-specific inline offset clipped per inner column, producing "all-green" visuals even when only one column has a layout fragment. Our engine paints only what each column's fragment tree contains.
+- **Next:** read the `multicol-nested-010` ref + test side-by-side; study Blink's `PaintInlineChildFragments` / column box paint ordering for how a single leaf fragment paints into multiple columns.
+- **Blink pointer:** `core/paint/box_fragment_painter.cc` + `core/layout/column_layout_algorithm.cc` column-box paint path.
+
+### F3. Phase 12f column-height/column-wrap cluster residuals
+- **Status:** not yet investigated post-12f.
+- **Known (from Phase 12f section of `progress.md`):** 24 cluster residuals at 0.1–4.2 %. Named sub-causes: row-gap plumbing (`rowGapSize = 0` hardcoded), `MulticolBreakTokenData` row-carry (12f.6 deferred), forced-break + wrap interactions, overflow-past-declared-columns for `column-wrap:nowrap`.
+- **Next:** triage the 24 tests by shape. Whichever sub-cause hits the most is the first target. Likely starting candidate: `column-height-008.html` (row-gap) because it's a concrete one-property fix.
+- **Blink pointer:** `column_layout_algorithm.cc` §4.2 sites 1–5 already documented in the Phase 12f findings block.
+
+### F4. Phase 12h.2 inline-in-balanced-multicol
+- **Status:** root-caused during Phase 12h step 2 (see "Phase 12h step 2 reclassified" block).
+- **Known:** `stacking-001` sets `Box.RenderedColumnCount=2` on `column-count:4`; `large-001` puts inline Ahem text entirely in column 0. Our balanced-multicol path isn't distributing inline items across the 4 intended columns.
+- **Next:** read Blink's `BlockLayoutAlgorithm` inline handling inside multicol — specifically how inline items get broken between columns when balancing. Suspected site is `layoutInlineChildren` exit/resume and whether it continues emitting fragments after the first column's `InlineItemStartIndex` checkpoint.
+- **Blink pointer:** `block_layout_algorithm.cc` inline-children path + `InlineChildLayoutContext`.
+- **Driver pick rationale:** `stacking-001` is cleaner than `large-001` because the wide-rule-overlap visual doesn't dominate — the diff is driven by column count, not rule geometry.
+
+### F5. Phase 12h.3 `multicol-list-item-003` trailing inline-after-spanner
+- **Status:** noted in kickoff survey; not yet root-caused.
+- **Known (from kickoff survey):** container is `display:list-item`; content is `[height:150 div, column-span:all h:50 div, "← Marker here" text]`. Our render drops the trailing text entirely. The marker itself positions correctly — it's inline flow after the spanner that breaks.
+- **Next:** reproduce, verify the fragment tree contains the trailing text (or doesn't). If missing, it's a block_layout resume bug after spanner commit; if present, it's paint.
+- **Blink pointer:** `column_layout_algorithm.cc:1498` (spanner-commit path) + how `BlockLayoutAlgorithm` resumes after a returned spanner.
+
+---
+
 ## Requirements
 - 104 css-position tests actually exercised by `TestWPTCSS3Reftests/css-position`.
 - Goal: all 104 pass at 0 diff. Baseline 50/104 (48%) → close 54 failures + 5 NORUN.

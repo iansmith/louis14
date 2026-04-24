@@ -19,6 +19,35 @@
 
 **Phase 12h KICKOFF SURVEY (2026-04-24).** Scope revised from the §7/§8/§9b name-parity port. Survey (see `findings.md` "Phase 12h kickoff survey (2026-04-24)") shows that `multicol-list-item-001/002` already PASS, most `multicol-rule-*` failures are Ahem font-loader or sub-pixel AA, and the named Blink abstractions close ~0 tests on their own. Revised attack order: (1) Ahem font loader **[DONE 2026-04-24, +2]**, (2) high-diff rule-paint fixes (`-large-001`, `-stacking-001`, `-nested-balancing-003`), (3) `multicol-list-item-003` trailing-text, (4) tiny-diff `-solid/ridge/groove/…-000` cluster sweep; `GapGeometry` / `PropagateBaselineFromChild` / `UnpositionedListMarker` parity ports deferred until a test demands them.
 
+---
+
+## ACTIVE FOLLOW-UP BATCH (2026-04-24 — post-12h step 4) — TEMPORARY
+
+Five highest-value targets from the deferred list, picked after Phase 12h step 4 landed (css-multicol 154/458). This is a **scratch planning block**: as each target lands, move its completed summary into its real phase section below and strike the entry here. When all five resolve or get reclassified, delete this block.
+
+Companion scratch blocks live at the top of `findings.md` (research notes per target) and `progress.md` (landing/partial summaries per target).
+
+| # | Target | Category | Ambition | Status | Driver |
+|---|---|---|---|---|---|
+| F1 | wm `bidi-embed-006` + `bidi-override-006` (0.3% / 1598 px each) | css-writing-modes gate invariant | +2 wm (restores 781/781) | PENDING | `bidi-embed-006.html` |
+| F2 | Phase 12c nested-multicol leaf paint-slicing | css-multicol paint | +~7 multicol (`-nested-007..014`) | PENDING | `multicol-nested-010.html` (1.2 % → 0.7 % post-12c, residual is paint-level) |
+| F3 | Phase 12f `column-height`/`column-wrap` cluster residuals (24 tests, 0.1–4.2 %) | css-multicol layout | +up to 24 multicol (partial closure likely) | PENDING | Pick one from the cluster; likely `column-height-008.html` (row-gap) or a `column-wrap:nowrap` overflow variant |
+| F4 | Phase 12h.2 inline-in-balanced-multicol | css-multicol layout | +2 multicol (`-large-001`, `-stacking-001`) + unblocks capability | PENDING | `multicol-rule-stacking-001.xht` (cleanest shape — no wide-rule overlap dominating the diff) |
+| F5 | Phase 12h.3 `multicol-list-item-003` trailing inline-after-spanner | css-multicol layout (opens Phase 12b inline-after-spanner) | +1 multicol + opens downstream | PENDING | `multicol-list-item-003.html` |
+
+**Ordering rationale.** F1 first because a broken gate invariant compromises every subsequent landing's regression signal. F2 because it's a tight cluster behind a single paint-level concept (inner-column slicing of a leaf fragment) — highest tests/effort ratio. F3 because even partial closure of the 24-cluster is the largest remaining named bucket. F4/F5 are about unblocking downstream capability more than the immediate test-count win.
+
+**Discipline per target** (CLAUDE.md recap):
+1. Read the target driver + its reference HTML before writing code.
+2. Study the Blink reference for the algorithm, not just an adjacent passing test.
+3. Do not settle for small diffs — 0.1 % is a failure just like 28 %.
+4. Run only the target + ≤2 adjacent tests during feature work; full category only at completion.
+5. Gate sweep (all 5 invariants) before each commit.
+
+**Invariants to hold on each landing:** CSS2 99/99, css-flexbox 626/629, css-position 91/105, spanner-fragmentation 12/13, css-writing-modes 779/781 (→ 781/781 after F1 lands).
+
+---
+
 ## css-position Goal (prior category, 91/104 — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-23, verified): **91 passing, 13 failing**. The 13 failures are all pre-existing residuals — none caused by Phase 12:
 
