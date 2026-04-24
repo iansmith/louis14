@@ -67,6 +67,14 @@ No new field needed — Blink's algorithm uses the existing `intrinsic_block_siz
 
 Gate: css-multicol **165 → 167 → 168 (+3 from F3d+F3e; cumulative +13 from F3 start; +14 from pre-F3 baseline of 154)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions outside multicol.
 
+**F3 stop decision (2026-04-24).** 19 column-height/wrap residuals remain. Each is a distinct spec edge case; two of the biggest clusters need work outside the layout algorithm itself:
+- **`-005`-class** (`column-wrap:nowrap` + `column-height` overflow, 3 tests × ~5000 px): Blink keeps spawning columns past `column-count` (cla.cc:1081-1084 + `ColumnsOverflowInInlineDirection` at cla.cc:2025-2044) and lets them paint past the multicol's border-box as ink-overflow. A trial port that added the extra-column spawning produced the columns internally but our painter clips them at the multicol's declared width — a proper fix needs a **paint-layer change** alongside the layout change. Deferred.
+- **`-024`-class** (auto-height trailing overflow row, 2 tests): agent simulation of the Blink source produced our port's value (120 px) not the ref's (100 px). Likely there's a suppression path (empty-row check, `ClampIntrinsicBlockSize` chain, etc.) whose actual behavior the agent couldn't confirm without running the test in a **real Blink build**. Deferred.
+
+Remaining singletons (`-002/-006/-007/-008/-009/-013/-018/-019/-020/-021/-022/-025/-028/-029`) each need individual deep-dives ranging from nested-multicol-with-spanner interactions (`-013` multi-spanner row-gap: pre-snap runs correctly per agent research; residual likely in pre-spanner + post-last-spanner content sequencing) to abspos-in-multicol edge cases.
+
+**Recommended next target: F4 (inline-in-balanced-multicol).** Research in findings §F4 is clean: Blink entry chain is concrete (`cla.cc:763` → `bla.cc:593` → `ila.cc:1071`), the symptom (`RenderedColumnCount=1/2` on `column-count:4`) maps to a specific Blink field (`InlineBreakToken.start_.item_index`), and the hypothesised fix is mechanical (forward `params.break_token = column_break_token` into `BlockLayoutAlgorithm` calls; forward `line_info.GetBreakToken()` into `InlineLayoutAlgorithm`). F4 also shares code path with F2 phase 2 (`multicol-nested-010` nested-multicol leaf-fragmentation), so a correct port potentially double-counts.
+
 Remaining (largest): `-013` (6500 px, multi-spanner row-gap; the Blink-parity pre-snap fires on its single-spanner portion but the multi-spanner sequence has its own alignment puzzle), `column-wrap-no-constraints-002` (6000 px), `-006` (5250), `-005/-011/-030` (5000 each). Several tests in the 1000-3000 range. The 2026-04-24 agent research block added to findings §F3 gives the exact Blink line refs for the next incremental attack.
 
 ### F3. Detailed breakdown
