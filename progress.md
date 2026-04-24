@@ -103,7 +103,21 @@ Remaining (largest): `-013` (6500 px, multi-spanner row-gap; the Blink-parity pr
 Gate: css-multicol **157 → 165 (+8 net from F3b; +10 cumulative from F3)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged.
 
 Remaining (largest): `-017` (7000 px, spanner protrudes into row-gap), `-013` (6500 px, multi-spanner row-gap), `column-wrap-no-constraints-002` (6000 px), `-006` (5250 px), plus mid-range. Next target: `-017`. See findings §F3.
-### F4. Phase 12h.2 inline-in-balanced-multicol — PENDING
+### F4. Phase 12h.2 inline-in-balanced-multicol — PARTIAL 2026-04-24
+
+**One-line gating bug in two places.** Both `pkg/layout/block_layout.go` and `pkg/layout/inline_layout.go` restored the inline line-breaker cursor only when `InlineItemStartIndex > 0`. Blink's `InlineBreakToken.start_` carries BOTH item-index and text-offset; a single-text-item IFC (e.g. `<div>xx xx<br>xx xx<br>xx xx</div>`) keeps `item_index=0` across all lines and advances only `text_offset`. Pre-fix every subsequent column re-started at the beginning — content never distributed past 2 columns.
+
+Fix: change both gates to `(InlineItemStartIndex > 0 || InlineTextOffset > 0)`.
+
+Results:
+- `multicol-rule-large-001` PASS at 0 diff (was 13.1 % / 62800 px — flagship F4 driver).
+- `multicol-rule-stacking-001` 19840 → 32 px (sub-pixel near-pass).
+- +11 spillover passes from balance-trial iterations now producing correct break tokens: `multicol-containing-002`, `multicol-count-002`, `multicol-fill-auto-001/003`, `multicol-rule-003`, `multicol-rule-color-inherit-002`, `multicol-rule-fraction-001/002`, `multicol-rule-percent-001`, `multicol-span-all-003`, `multicol-width-count-002`.
+- **Regressions (4 margin-family):** `multicol-inherit-001`, `multicol-margin-001`, `multicol-margin-child-001`, `multicol-nested-margin-001`. Tied to a pre-existing bug where a block child pushed past the column's fragmentainer boundary still emits a partial inline break token. Pre-fix, col 1 ignored that state and re-laid out from scratch; the stale content was in col 0's invisible overflow region so the visual coincidentally matched the ref. Post-fix, col 1 honors the resume → the `"ef "` (first 4 chars of test text) placed in col 0's invisible overflow is counted as consumed → col 1 only shows `"gh ij kl"` → regression. The real fix is a break-before-child-when-overflowing in outer block_layout so the anon block never emits a mid-text partial token. Deferred with research in findings §F4.
+
+Gate: css-multicol **168 → 176 (+8 net; cumulative +22 from pre-F3 baseline of 154)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged.
+
+**F2 phase 2 check:** `multicol-nested-010` diff unchanged at 3500 px. The fix did NOT unlock F2 phase 2 — nested leaf-fragmentation is genuinely a separate bug from inline-text-break-token forwarding. F2 phase 2 stays deferred.
 ### F5. Phase 12h.3 list-item-003 trailing text — PENDING
 
 ---
