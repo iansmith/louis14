@@ -2278,13 +2278,13 @@ func findBorderImageSourceEnd(s string) int {
 	return i
 }
 
-// GetColumnRuleWidth returns the column-rule-width in pixels
+// GetColumnRuleWidth returns the column-rule-width in pixels. Lengths in
+// font-relative units (em/rem/ex/ch) resolve against this style's own
+// computed font-size, matching how GetBorderWidth and GetColumnGapMulticol
+// handle the same units.
 func (s *Style) GetColumnRuleWidth() float64 {
 	if v, ok := s.Get("column-rule-width"); ok {
 		v = strings.TrimSpace(v)
-		if px, ok2 := ParseLength(v); ok2 {
-			return px
-		}
 		switch v {
 		case "thin":
 			return 1
@@ -2292,6 +2292,9 @@ func (s *Style) GetColumnRuleWidth() float64 {
 			return 3
 		case "thick":
 			return 5
+		}
+		if px, ok2 := parseLengthFullWithCh(v, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok2 {
+			return px
 		}
 	}
 	return 0

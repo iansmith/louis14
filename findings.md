@@ -1466,3 +1466,53 @@ Symptom: every WPT test that includes `<link rel="stylesheet" href="/fonts/ahem.
 - `multicol-rule-001.xht`: 1200 px FAIL / 0.25% (was 16000 px / 3.3%). Ahem renders; residual is a column-rule paint edge bug where the green `column-rule: green solid 20em` doesn't quite cover the first and last ~5 px of the row, revealing the `background-color:red`. Folds into step 2 (`-large-001` / `-stacking-001` / `-nested-balancing-003` cluster).
 
 Gain below the pre-landing "+4-6" estimate because break-000/001 and rule-001 had non-Ahem bugs masked by the loader failure; those are now visible and drive subsequent steps.
+
+## Phase 12h step 4 (column-rule em resolution) (2026-04-24)
+
+**Root cause.** `pkg/css/style.go` `GetColumnRuleWidth()` called `ParseLength(v)` which hard-codes the em base to 16 px. Every other length getter on the same `Style` struct — `GetBorderWidth`, `GetColumnGapMulticol`, the generic `GetLength`, the border-radius parser — uses `parseLengthFullWithCh(v, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())`. The rule-width getter was the outlier, almost certainly because it landed before the others converged on that helper.
+
+Effect: for any multicol container whose own computed `font-size` isn't 16 px, an em-based `column-rule-width` rendered too narrow in proportion to `font-size / 16`.
+
+**Confirmation via `multicol-rule-solid-000.xht`.** Container: `div { font: 3.125em/1 Ahem; width: 8.2em; columns: 2; column-gap: 0.2em; column-rule: lime solid 0.2em; }`. Font-size = 50 px, so the declared 0.2 em rule should render at 10 px. Before fix: 0.2 × 16 = 3.2 px. After fix: 0.2 × 50 = 10 px, matching the reference div's `border-left: lime solid 0.2em` (which resolves its em against the same 50-px font-size via `GetBorderWidth`).
+
+**Fix.** One getter in `pkg/css/style.go`:
+
+```go
+func (s *Style) GetColumnRuleWidth() float64 {
+    if v, ok := s.Get("column-rule-width"); ok {
+        v = strings.TrimSpace(v)
+        switch v {
+        case "thin":
+            return 1
+        case "medium":
+            return 3
+        case "thick":
+            return 5
+        }
+        if px, ok2 := parseLengthFullWithCh(v, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok2 {
+            return px
+        }
+    }
+    return 0
+}
+```
+
+The thin/medium/thick keyword branch is tried before the length parser because `parseLengthFullWithCh` doesn't recognise the keywords.
+
+**Results (2026-04-24).**
+- All 8 `-{solid,ridge,groove,outset,inset,dashed,dotted,double}-000.xht`: PASS at 0 diff (were 0.1 % / 300 px each).
+- `-color-001.xht`, `-000.xht`, `-001.xht`: PASS at 0 diff (were 0.1–0.25 %).
+- `multicol-rule-*` cluster: **6 → 16 PASS** of 32 total.
+- Full css-multicol: **135 → 154 PASS (+19).** The extra 8 beyond the -rule-* gains are tests elsewhere in the cluster whose font-size-scaled rule widths previously clipped their rendered output.
+
+**Gate invariants held** — CSS2 99/99, css-flexbox 626/629, css-position 91/105, spanner-fragmentation 12/13 unchanged. css-writing-modes currently 779/781 (2 pre-existing `bidi-embed-006` / `bidi-override-006` fails verified via `git stash` to predate this fix; tracking files had incorrectly carried "781/781" from phase-5f — filed as a separate pre-existing regression to look at later).
+
+## Phase 12h step 2 reclassified (2026-04-24) — LAYOUT-BLOCKED, NOT PAINT
+
+The three named drivers (`multicol-rule-large-001`, `-stacking-001`, `-nested-balancing-003`) were triaged into Phase 12h step 2 under the hypothesis that they were painter bugs (rule-wider-than-gap overlap, paint-order, nested-rule-resume). Debug instrumentation of `drawColumnRules` during step 2 proved otherwise:
+
+- `multicol-rule-stacking-001.xht`: `column-count:4` on the container, but `Box.RenderedColumnCount = 2`. Layout is placing the 8 lines of "xx xx" content across **2** columns, not 4. The painter correctly draws the 1 rule those 2 columns yield; the 3-rule union the ref expects requires the layout to distribute content across 4.
+- `multicol-rule-large-001.xht`: same root cause. Only column 0 receives the inline lime text. After step 1 unmasked Ahem, the diff rose from 7.8 % → 13.1 % because the missing lime in cols 1–3 became visible. This is a Phase 12b-territory inline-in-balanced-multicol bug, not a painter fix.
+- `multicol-rule-nested-balancing-003.html`: debug printed correct `contentH` values for every painter call (outer 250, inner fragments 200). The 7.6 % diff comes from our *rendering of the reference HTML*: the ref uses `column-fill:auto` + `height:200` on the inner article, and our layout sizes the inner boxes at 250 and 400 respectively rather than 200. That's a `column-fill:auto` height-resolution bug on nested multicol, separate from rule painting.
+
+These three tests are **deferred**, not closed. Each needs a dedicated driver once its underlying layout fault is addressed. The relevant phases when we pick them up: step-2-large / stacking → Phase 12b inline-in-multicol; step-2-nested-balancing → nested `column-fill:auto` height resolution.

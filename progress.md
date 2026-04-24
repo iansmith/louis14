@@ -13,6 +13,37 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
+**Phase 12h steps 2+4 (column-rule em resolution): LANDED 2026-04-24.**
+
+Single-line root cause. `pkg/css/style.go` `GetColumnRuleWidth` was parsing `column-rule-width` via `ParseLength(v)` which hard-codes the em base to `16px`. Every other length getter on the same struct (`GetBorderWidth` → `GetLength`, `GetColumnGapMulticol` → `ParseLengthWithFontSize`, etc.) uses `parseLengthFullWithCh(v, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())` which resolves em/rem/ex/ch against the element's own computed font-size. The column-rule getter was the outlier — added before the others were converged.
+
+Symptom: any test whose multicol container has a non-default font-size and a em-based `column-rule-width` rendered the rule too narrow in proportion to the `font-size/16` ratio. For `multicol-rule-solid-000` the div has `font: 3.125em/1 Ahem` → font-size 50px, `column-rule: lime solid 0.2em` → declared 10px but louis14 drew 3.2px (0.2 × 16). 10 → 3.2 px in a 410×100 canvas is a 300-pixel / 0.1% diff on the test, which is exactly what the "tiny-diff cluster" consistently showed.
+
+Fix: `GetColumnRuleWidth` now calls `parseLengthFullWithCh(v, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())` after the thin/medium/thick keyword check (keyword check moved above the numeric path since `parseLengthFullWithCh` doesn't recognise keywords).
+
+**Driver results 2026-04-24:**
+- All 8 `multicol-rule-{solid,ridge,groove,outset,inset,dashed,dotted,double}-000.xht` — PASS at 0 diff (were 0.1% / 300 px each).
+- `multicol-rule-color-001.xht` — PASS at 0 diff (was 0.1% per kickoff-survey bucket).
+- `multicol-rule-000.xht` — PASS at 0 diff.
+- `multicol-rule-001.xht` — PASS at 0 diff (was 0.25% Ahem+edge residual from step 1). The "column-rule edge bug" described in step 1 was actually the same em-resolution bug applied to a rule with `1em` width; 16 px vs the 20 px the test author expected gave the 4-px green mis-alignment.
+- Total `multicol-rule-*` cluster: 16 PASS / 16 FAIL (was 6 PASS / 26 FAIL).
+
+**Gate (2026-04-24):**
+- css-multicol: **135 → 154 PASS (+19)** — the +19 includes the 11 `-rule-*` wins above plus additional spill-over in other multicol tests whose font-size-scaled rule widths previously clipped.
+- CSS2 99/99, css-flexbox 626/629, css-position 91/105, spanner-fragmentation 12/13 — all unchanged from pre-fix baseline.
+- css-writing-modes: 779/781 — `bidi-embed-006` and `bidi-override-006` fail at 0.3% (1598 px each). Verified via `git stash` that these were failing *before* this fix, so they are a pre-existing regression of some earlier change (tracking files incorrectly stated wm 781/781 from the phase-5f landing). **Filed as a pre-existing regression to look at separately; do NOT attribute to Phase 12h.**
+
+**Phase 12h step 2 (`-large-001`, `-stacking-001`, `-nested-balancing-003`): BLOCKED BY LAYOUT BUGS, NOT PAINT.** Instrumented `drawColumnRules` and confirmed:
+- `multicol-rule-stacking-001.xht`: `column-count:4` but `Box.RenderedColumnCount=2`. Layout is placing content in 2 columns when the test expects 4. The painter correctly draws a single (448-px-wide) rule for the 2 columns it's given; the 4-column rule visual the ref expects requires the layout to actually distribute the 8 lines of content across 4 columns.
+- `multicol-rule-large-001.xht`: same root cause — only column 0 gets the inline text. After step 1 unmasked Ahem, diff went from 7.8% → 13.1% because we now CAN see the lime text in col 0 but still can't see the other 3 cols. Fixing this is a Phase 12b-adjacent inline-in-balanced-multicol bug, not a painter fix.
+- `multicol-rule-nested-balancing-003.html`: the painter is given the *correct* `contentH` values (outer 250, inner fragments 200) — confirmed via debug print. The 7.6% diff stems from our rendering of the ref HTML: the ref uses `column-fill:auto` + `height:200` on the inner article, and our layout sizes the inner boxes at 250 and 400 respectively instead of 200. That's a `column-fill:auto` height-resolution bug on nested multicol, separate from step 2's painter scope.
+
+Step 2 reclassified: the three named tests are each waiting on a distinct layout fix. Re-open as a separate follow-up phase when those underlying layout issues get a driver. Step 3 (list-item-003 trailing text) and step 4 (tiny-diff cluster) proceed independently — step 4 LANDED here.
+
+Code: `pkg/css/style.go` — one getter changed. ~10 lines including updated doc comment.
+
+---
+
 **Phase 12h step 1 (Ahem font loader): LANDED 2026-04-24.**
 
 Root cause: `@font-face` handling in `pkg/text/fontcache.go` cached fetched font bytes under a SHA-256 hash basename (`<hash>.ttf`). `FontPathToFamilyVariant` (pkg/text/measure.go:75) derives (family, variant) from the basename, so the hash-named cache file round-tripped as family `"<hash>"`, which `DirectGlyphProvider.resolveFamily` (mazzy rasterize.go:225) cannot find in `fonts.csv` and whose path-fallback also misses (no `/` / `.ttf` / `.otf` in the stripped basename). Result: `r.dc.OpenFont` returned an error → `Renderer.openFont` returned -1 → `drawText` silently dropped every Ahem glyph. The fix writes the cache file as `<family>-<variant>.ttf` (e.g. `Ahem-Regular.ttf`) so the reverse-derivation matches `fonts.csv`, which routes "Ahem/Regular" to the built-in `fonts/Ahem.ttf` (identical bytes to the @font-face src for WPT). Bespoke font-face families not in `fonts.csv` remain unresolvable — out of scope for this step; the foundational fix for those is provider-side registration (noted in the measure.go comment).
