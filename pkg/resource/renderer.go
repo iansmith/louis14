@@ -340,7 +340,10 @@ func (r *Louis14Renderer) RenderWithDC(htmlContent string, dc textshape.DrawCont
 	if len(counterStyles) > 0 {
 		renderer.SetCounterStyles(counterStyles)
 	}
-	renderer.Render(boxes)
+	// Use RenderEmbedded so the canvas-background fill is scoped to the
+	// caller-supplied viewport rect rather than calling dc.Clear() (which
+	// would blank the entire host DrawContext, including sibling UI).
+	renderer.RenderEmbedded(boxes, viewportW, viewportH)
 
 	return nil
 }

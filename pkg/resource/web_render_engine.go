@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"image"
 	"log"
 
 	"mazarin/textshape"
@@ -38,8 +39,32 @@ func NewWebEngineWithProvider(provider textshape.GlyphProvider) *WebEngine {
 // RenderDC renders raw HTML bytes using the provided DrawContext.
 // The DC's translation and clipping define the render area.
 // viewportW and viewportH specify the layout dimensions.
-func (e *WebEngine) RenderDC(html []byte, dc textshape.DrawContext, viewportW, viewportH float64) {
+//
+// Returns a non-nil error if the underlying renderer could not produce
+// output for this HTML (e.g. tokenizer rejected the markup); callers are
+// expected to paint their own placeholder so the user gets visible
+// feedback instead of stale pixels from a previous render.
+func (e *WebEngine) RenderDC(html []byte, dc textshape.DrawContext, viewportW, viewportH float64) error {
 	if err := e.renderer.RenderWithDC(string(html), dc, viewportW, viewportH); err != nil {
 		log.Printf("WebEngine.RenderDC: %v", err)
+		return err
 	}
+	return nil
+}
+
+// RenderToImage lays the HTML out at the given fixed width and renders
+// into a fresh RGBA buffer whose height is the natural content height
+// (no clipping). Wraps the renderer's RenderAutoHeight, which performs
+// the layout-then-render-tall pass so callers can cache the result and
+// blit a viewport from it on subsequent draws — saving a full layout
+// pipeline per scroll or redraw frame.
+//
+// Returns a non-nil error and a nil image on parser/layout failure.
+func (e *WebEngine) RenderToImage(html []byte, width int) (*image.RGBA, error) {
+	img, err := e.renderer.RenderAutoHeight(string(html), width)
+	if err != nil {
+		log.Printf("WebEngine.RenderToImage: %v", err)
+		return nil, err
+	}
+	return img, nil
 }

@@ -62,12 +62,17 @@ type fontIDKey struct {
 	size int32
 }
 
-// fontPathToFamilyVariant extracts a logical family name and variant from a
+// FontPathToFamilyVariant extracts a logical family name and variant from a
 // font file path. For example:
 //
 //	"/.../AtkinsonHyperlegible-Bold.ttf" → ("AtkinsonHyperlegible", VariantBold)
 //	"/.../Ahem.ttf" → ("Ahem", VariantRegular)
-func fontPathToFamilyVariant(fontPath string) (string, int32) {
+//
+// Exported so other louis14 packages (e.g. render) translate paths to
+// family+variant before calling DrawContext.OpenFont — otherwise IPC-only
+// providers like mazzy fontsvc receive an unparseable path string as the
+// "family" argument.
+func FontPathToFamilyVariant(fontPath string) (string, int32) {
 	base := filepath.Base(fontPath)
 	ext := filepath.Ext(base)
 	name := strings.TrimSuffix(base, ext)
@@ -81,9 +86,11 @@ func fontPathToFamilyVariant(fontPath string) (string, int32) {
 		switch suffix {
 		case "bold":
 			variant = textshape.VariantBold
-		case "italic":
+		case "italic", "oblique":
+			// Latin Modern fonts use "oblique" instead of "italic"
+			// (e.g. lmsans10-oblique.otf is the italic variant).
 			variant = textshape.VariantItalic
-		case "bolditalic":
+		case "bolditalic", "boldoblique":
 			variant = textshape.VariantBoldItalic
 		case "light":
 			variant = textshape.VariantLight
@@ -96,13 +103,15 @@ func fontPathToFamilyVariant(fontPath string) (string, int32) {
 			family = name
 		}
 	}
-	// For absolute paths (e.g., @font-face web fonts cached in temp dirs with
-	// hash-based filenames), return the full path as the family so that
-	// resolveFamily() can use it directly via its filepath.IsAbs() check.
-	if filepath.IsAbs(fontPath) {
-		family = fontPath
-	}
-
+	// Note: previously absolute paths were passed through as the family
+	// argument so DirectGlyphProvider could resolve them via its
+	// filepath.IsAbs() fallback. That coupled louis14 to filesystem-based
+	// providers and broke IPC providers (e.g. mazzy fontsvc) which only
+	// understand logical family names. Both providers now receive the
+	// basename-derived family + variant. @font-face web fonts with
+	// hash-style filenames lose the family-name hint here; provider-
+	// specific registration (e.g. RegisterFontFace pushing the file into
+	// the provider's index by basename) is the right fix for that case.
 	return family, variant
 }
 
@@ -116,7 +125,7 @@ func openFont(fontPath string, fontSize float64) textshape.FontMetrics {
 	if m, ok := fontIDCache[key]; ok {
 		return m
 	}
-	family, variant := fontPathToFamilyVariant(fontPath)
+	family, variant := FontPathToFamilyVariant(fontPath)
 	metrics, err := getLayout().OpenFont(textshape.OpenFontRequest{
 		Family:  family,
 		Variant: variant,

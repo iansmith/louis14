@@ -44,6 +44,14 @@ type Renderer struct {
 	// writes directly to the pixel buffer (bypassing the gg context's clip), so
 	// we maintain our own clip bounds to intersect with during direct pixel writes.
 	clipStack []clipRect
+
+	// embeddedViewport, when non-zero, signals that the renderer is painting
+	// inside a host DrawContext that owns more area than just the HTML viewport
+	// (e.g. mancini's WebInteractor inside a larger app). In that mode the
+	// canvas-background fills must be scoped to (0,0)-(viewport.W, viewport.H)
+	// instead of calling dc.Clear() which blanks the entire host DC.
+	// Set by RenderEmbedded; cleared on entry to Render.
+	embeddedViewport struct{ W, H float64 }
 }
 
 // clipRect represents an active clip rectangle.
@@ -174,6 +182,9 @@ func (r *Renderer) SetCounterStyles(rules []css.CounterStyleRule) {
 }
 
 // openFont returns the fontID for the given path+size, opening it if needed.
+// The path is parsed into a logical (family, variant) pair before calling
+// dc.OpenFont so that IPC-only providers (e.g. mazzy fontsvc) receive a
+// resolvable family name rather than the raw filesystem path.
 func (r *Renderer) openFont(fontPath string, fontSize float64) int32 {
 	size := int32(math.Round(fontSize))
 	key := fontCacheKey{path: fontPath, size: size}
@@ -182,7 +193,8 @@ func (r *Renderer) openFont(fontPath string, fontSize float64) int32 {
 	if id, ok := r.fontCache[key]; ok {
 		return id
 	}
-	metrics, err := r.dc.OpenFont(fontPath, 0, size)
+	family, variant := text.FontPathToFamilyVariant(fontPath)
+	metrics, err := r.dc.OpenFont(family, variant, size)
 	if err != nil {
 		return -1
 	}
@@ -190,15 +202,61 @@ func (r *Renderer) openFont(fontPath string, fontSize float64) int32 {
 	return metrics.FontID
 }
 
-// Render paints the box tree onto the image.
+// Render paints the box tree onto the image. Clears the entire underlying
+// DrawContext to white first; intended for the standalone case where the DC
+// owns the whole image. Embedded callers (e.g. WebInteractor inside a larger
+// mancini scene) should use [RenderEmbedded] instead so the surrounding DC
+// content isn't blanked.
+//
 // Implements CSS 2.1 Appendix E paint order (simplified).
 func (r *Renderer) Render(boxes []*layout.Box) {
+	r.embeddedViewport.W = 0
+	r.embeddedViewport.H = 0
+
 	// CSS 2.1 §14.2: Canvas background.
 	// The root element's background becomes the canvas background.
 	// If the root element (html) has no background, use the body's background.
 	r.dc.SetColor(color.RGBA{R: 255, G: 255, B: 255, A: 255})
 	r.dc.Clear()
 
+	r.paintBoxes(boxes)
+}
+
+// RenderEmbedded paints the box tree onto the DrawContext without calling
+// dc.Clear(). The white canvas background is painted with FillRectangle
+// scoped to (0,0)-(viewportW,viewportH), so any clip the caller pushed is
+// respected and pixels outside the viewport are left untouched. Use this
+// when the renderer's DrawContext is shared with other UI components
+// (e.g. mancini's WebInteractor).
+//
+// The viewport is also recorded so subsequent canvas-background fills
+// triggered by paintCanvasBackground / fillCanvasWithBackground use a
+// scoped FillRectangle instead of dc.Clear().
+func (r *Renderer) RenderEmbedded(boxes []*layout.Box, viewportW, viewportH float64) {
+	r.embeddedViewport.W = viewportW
+	r.embeddedViewport.H = viewportH
+
+	r.dc.SetColor(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	r.dc.FillRectangle(0, 0, viewportW, viewportH)
+
+	r.paintBoxes(boxes)
+}
+
+// fillCanvasScoped paints the canvas background with the current fill colour.
+// In embedded mode it fills only the recorded viewport rectangle so the host
+// DrawContext's surrounding pixels are untouched; in standalone mode it
+// delegates to dc.Clear() which fills the entire underlying image.
+func (r *Renderer) fillCanvasScoped() {
+	if r.embeddedViewport.W > 0 && r.embeddedViewport.H > 0 {
+		r.dc.FillRectangle(0, 0, r.embeddedViewport.W, r.embeddedViewport.H)
+		return
+	}
+	r.dc.Clear()
+}
+
+// paintBoxes performs the per-box paint pass shared by [Render] and
+// [RenderEmbedded]. The canvas-background fill is the caller's responsibility.
+func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	r.paintCanvasBackground(boxes)
 
 	// Paint via PaintLayer tree (CSS 2.1 Appendix E stacking order).
@@ -328,7 +386,7 @@ func (r *Renderer) fillCanvasWithBackground(box *layout.Box) {
 		B: bgColor.B,
 		A: uint8(bgColor.A * 255),
 	})
-	r.dc.Clear()
+	r.fillCanvasScoped()
 }
 
 // clampColor clamps RGBA values to [0,255] and returns a color.RGBA.
