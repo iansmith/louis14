@@ -726,6 +726,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					if isForced {
 						result.HasForcedBreak = true
 					}
+					// Phase 12g: when a soft break-before fires (not forced), the
+					// child didn't fit in the remaining fragmentainer space and
+					// was pushed to the next one. The space we WOULD have needed
+					// is the child's block-size, and the space we HAVE is
+					// (fragmentainerBlockSize − fragOff). Report the difference
+					// as MinSpaceShortage so the multicol balancing loop can
+					// stretch just enough to keep the child whole with its
+					// siblings. Without this, avoid-inside violations on
+					// subsequent children report shortage=0 and the stretch
+					// loop has no signal to grow the column.
+					if !isForced && childResult != nil && childResult.Fragment != nil &&
+						bla.space.FragmentainerBlockSize != Indefinite {
+						childBlock := NewLogicalFragment(wdm, childResult.Fragment).BlockSize()
+						spaceLeft := bla.space.FragmentainerBlockSize - fragOff
+						if childBlock > spaceLeft {
+							result.MinSpaceShortage = childBlock - spaceLeft
+						}
+					}
 					result.PropagatedTopMargin = propagatedTopMargin
 					return result
 				}
@@ -945,7 +963,79 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					})
 					builder.SetEndMarginStrut(prevMarginStrut)
 					builder.SetExclusionSpace(exclusionSpace)
+					// Phase 12g: demote BreakAppeal when this break path violates a
+					// break-inside / break-between:avoid rule. Blink:
+					// MovePastBreakpoint + AttemptSoftBreak propagate
+					// BreakAppealViolatingBreakAvoid up; the multicol outer
+					// stretch loop then sees has_violating_break and retries
+					// with a larger column block-size.
+					// Drivers: balance-break-avoidance-000/001/002,
+					// balance-orphans-widows-000.
+					worstAppeal := BreakAppealPerfect
+					if childResult != nil && childResult.BreakAppeal < worstAppeal {
+						worstAppeal = childResult.BreakAppeal
+					}
+					// Break INSIDE the current child: its own break-inside
+					// governs. Triggered when the child itself carries a break
+					// token OR when a leaf child is split at the fragmentainer
+					// boundary under IsBlockSizeOverride (childConsumed > 0
+					// above). If childConsumed == 0 (leaf) the break is a
+					// break-BEFORE the current child, covered by the break-
+					// between check below, not here.
+					isInsideCurrent := childResult != nil && childResult.BreakToken != nil
+					if !isInsideCurrent && len(child.Children()) == 0 &&
+						!hasOnlyInlineChildren(child) && bla.space.IsBlockSizeOverride {
+						if fragEnd-actualChildBlockOff > 0 {
+							isInsideCurrent = true
+						}
+					}
+					if isInsideCurrent && childStyle != nil {
+						if IsAvoidBreakValue(bla.space, childStyle.GetBreakInside()) &&
+							worstAppeal > BreakAppealViolatingBreakAvoid {
+							worstAppeal = BreakAppealViolatingBreakAvoid
+						}
+					}
+					// Break BEFORE the current child: violates join(prev.break-
+					// after, current.break-before). Triggered when the break
+					// path emits an IsBreakBefore token for the CURRENT child
+					// (leaf with childConsumed==0).
+					isBreakBeforeCurrent := !isInsideCurrent &&
+						len(child.Children()) == 0 &&
+						!hasOnlyInlineChildren(child) &&
+						fragEnd-actualChildBlockOff == 0
+					if isBreakBeforeCurrent && childStyle != nil {
+						breakBetween := builder.JoinedBreakBetweenValue(
+							childStyle.GetBreakBefore())
+						if IsAvoidBreakValue(bla.space, breakBetween) &&
+							worstAppeal > BreakAppealViolatingBreakAvoid {
+							worstAppeal = BreakAppealViolatingBreakAvoid
+						}
+					}
+					// Break BETWEEN the current child and the next sibling: when
+					// the current child completed (no break token of its own)
+					// but we're deferring a later sibling to the next
+					// fragmentainer. The violation is join(current.break-after,
+					// next.break-before).
+					deferredNextSibling := childIdx + 1 < len(children)
+					if !isInsideCurrent && !isBreakBeforeCurrent && deferredNextSibling {
+						nextChild := children[childIdx+1]
+						var curAfter, nextBefore string
+						if childStyle != nil {
+							curAfter = childStyle.GetBreakAfter()
+						}
+						if s := nextChild.Style(); s != nil {
+							nextBefore = s.GetBreakBefore()
+						}
+						between := JoinFragmentainerBreakValues(curAfter, nextBefore)
+						if IsAvoidBreakValue(bla.space, between) &&
+							worstAppeal > BreakAppealViolatingBreakAvoid {
+							worstAppeal = BreakAppealViolatingBreakAvoid
+						}
+					}
 					result := builder.Build()
+					if worstAppeal < BreakAppealPerfect {
+						result.BreakAppeal = worstAppeal
+					}
 					result.BreakToken = outToken
 					result.MinSpaceShortage = shortage
 					result.PropagatedTopMargin = propagatedTopMargin

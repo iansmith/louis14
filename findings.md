@@ -1339,3 +1339,45 @@ Most column-height cluster failures are 0.1–1.5% diffs. Inspection of a sampli
 - `MulticolBreakTokenData{consumed_row_block_size}` row-carry across outer fragmentainers (cla.cc:2087). Deferred: today's driver doesn't need it; it's gated on `ShouldWrapColumns() && HasRowHeight() && is_first_row && HasKnownFragmentainerBlockSize()`. Adding it is 12f.6 follow-up.
 - CSS Multicol L2 row-gap plumbing (between column rows). Also follow-up.
 - Directional (block-only) column clip — flagged as 12e residual, still applicable to some 12f residuals.
+
+---
+
+## Phase 12g findings (2026-04-24) — break-avoidance stretch retry
+
+**Drivers.** `balance-break-avoidance-000/001/002.html` (Morten Stenshorne — break-inside:avoid / break-after:avoid / break-before:avoid interactions with multicol balancing). `balance-orphans-widows-000.html` (orphans/widows enforced by stretch).
+
+### Scoping correction vs. task_plan.md
+
+The original 12g plan called for a full port of Blink's `EarlyBreak` struct + `UpdateEarlyBreakBetweenLines` + `RelayoutAndBreakEarlier<MulticolLayoutAlgorithm>`. Blink-source research (see "Blink cla.cc / early_break.h / fragmentation_utils.cc excerpts" fetched 2026-04-24) established that for the 4 visible drivers, EarlyBreak is NOT load-bearing.
+
+Blink's flow for `balance-break-avoidance-000`:
+1. Initial balancing picks `column_size.block_size ≈ 25`.
+2. Leaf child (100 tall, `break-inside:avoid`) can't fit in 25; `AttemptSoftBreak` produces a break before the child with `BreakAppealViolatingBreakAvoid`.
+3. Outer stretch loop at cla.cc:1053 flips `has_violating_break=true`; acceptance gate at cla.cc:1204 fails; stretch branch at cla.cc:1210+ picks `column_size.block_size + minimal_space_shortage ≈ 100`; retry.
+4. Retry fits the child whole at appeal=Perfect; stretch loop accepts.
+
+EarlyBreak only matters in Blink when the retry can snap to an EARLIER break point (e.g. a prior paragraph line that satisfies orphans/widows better than the current position). With a single child, the retry is just "stretch and try again." Our multicol stretch-retry loop landed in Phase 12a; the 12g work is making sure non-Perfect appeals actually PRODUCE a non-zero `MinSpaceShortage` and propagate up.
+
+### The two foundational fixes
+
+1. **`block_layout.go` fragmentainer-split overflow writes BreakAppeal.** Four violation cases need inspection at the split point, before `builder.Build()`:
+   - **Break INSIDE the current child.** Fires when the child itself fragmented (`childResult.BreakToken != nil`) OR when a leaf child under `IsBlockSizeOverride` is split at the column boundary (leaf branch, childConsumed > 0). Violates `current.break-inside:avoid`.
+   - **Break BEFORE the current child.** Fires when a leaf child placed exactly at the column boundary (childConsumed == 0) — the child IS being deferred to the next fragmentainer. Violates `join(prev.break-after, current.break-before)`. Uses the builder's `previousBreakAfter` (set by Phase 12d on each in-flow child commit).
+   - **Break BETWEEN current and next sibling.** Fires when the current child completed in-fragmentainer but a later sibling is deferred. Violates `join(current.break-after, next.break-before)`.
+   - **Child's existing appeal** — inherited when the child's own inner layout already raised a violation (e.g. a nested multicol/block with its own avoid).
+   The worst (lowest) appeal across these is written to `result.BreakAppeal`. `builder.Build()` defaults to `BreakAppealPerfect`, so this is an explicit override.
+
+2. **`BreakBeforeChildIfNeeded → BrokeBefore` computes MinSpaceShortage.** Previously zero, so the multicol stretch loop (`if !hasShortage { break }` at `multicol_layout.go:979`) saw no shortage and exited without retrying. Now computes `childBlock − spaceLeft` when the child didn't fit, matching Blink's `PropagateSpaceShortage` at `fragmentation_utils.cc`'s MovePastBreakpoint.
+
+### Why the plan's EarlyBreak work was deferred
+
+- **`balance-orphans-widows-000.html` already passes pre-12g** via the Phase 12d stretch-retry flow — the test is designed so that the "perfect" widow/orphan layout IS achievable by stretching. No EarlyBreak needed.
+- **The 3 `balance-break-avoidance-*` tests** are all covered by stretch-retry as shown above.
+- **No other widow/orphan-specific multicol test** exists in our test set (searched for `multicol-widows-orphans-*` pattern the plan named — not present).
+
+Re-introduce EarlyBreak when: a multi-paragraph test violates widow/orphan rules and no stretch magnitude resolves it, OR `RelayoutAndBreakEarlier` becomes necessary for `break-before:avoid` with multiple candidate break sites.
+
+### What the fix does NOT do
+
+- It does not yet refactor `BreakBeforeChildIfNeeded` to own the split-path BreakAppeal demotion. The split path lives in `block_layout.go`'s overflow handler (as of Phase 12d's "scope-restriction note" — taking it over regressed spanner-fragmentation tests). Full parity with Blink's `MovePastBreakpoint` is a later cleanup.
+- It does not honor `break-inside:avoid` on containers (only on leaves). A container whose children fragment across columns with `break-inside:avoid` on the container itself wouldn't demote appeal today. No visible failing test requires this.

@@ -15,6 +15,8 @@
 
 **Phase 12f PARTIAL (2026-04-24).** Driver `column-height-001.html` PASS at 0 diff. Blink-parity port of CSS Multi-column L2 §4.2 `column-height` + `column-wrap` — 6 of 5 cla.cc consumption sites landed (row-height clamp, LayoutLine block-size override, row-wrap loop, intrinsic top-off, break-token slot-layout fix, block_layout leaf cumulative-consumed fix). Net +6 multicol PASS (124 → 130). 24 cluster residuals (0.1–4.2% diffs) tracked as follow-ups: row-gap plumbing, MulticolBreakTokenData row-carry (12f.6 deferred), forced-break + wrap interactions, overflow-past-declared-columns for `column-wrap:nowrap`.
 
+**Phase 12g PARTIAL (2026-04-24).** Three `balance-break-avoidance-*` drivers PASS at 0 diff. Blink-parity port of break-appeal propagation from the block_layout fragmentainer-split overflow path + MinSpaceShortage computation for the BreakBefore soft-break path. Full `EarlyBreak` + `RelayoutAndBreakEarlier` retry NOT ported — stretch-retry alone handles current drivers (Blink cla.cc:1053 ↔ 1210+ flow). Net +3 multicol PASS (130 → 133).
+
 ## css-position Goal (prior category, 91/104 — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-23, verified): **91 passing, 13 failing**. The 13 failures are all pre-existing residuals — none caused by Phase 12:
 
@@ -543,15 +545,19 @@ Reference: findings.md §9a. Blink source: `core/layout/column_layout_algorithm.
 - [x] Cluster status: 6/31 PASS (`column-height-001/010/014/015/016/026`); 24 FAIL at 0.1%–4.2% diff. Residuals are row-gap plumbing, MulticolBreakTokenData row-carry, forced-break + wrap interactions, and `column-wrap:nowrap` overflow-past-declared-columns for `column-height-009`.
 - [x] **Gate (2026-04-24):** wm 410/781, CSS2 96/99, css-flexbox 621/629, css-position 89/104, spanner-fragmentation 12/13 — all unchanged from pre-12f baseline. css-multicol **124 → 130 PASS** (+6 net).
 
-### Phase 12g — Orphans/widows in columns (~15 tests, M)
-**Goal.** Port Blink's per-line-count break-appeal demotion + EarlyBreak retry.
+### Phase 12g — Break-avoidance stretch retry + orphans/widows (PARTIAL 2026-04-24)
+**Goal.** Port Blink's break-appeal propagation so that `break-inside:avoid` / `break-before:avoid` / `break-after:avoid` violations in column context trigger the multicol stretch loop to grow `colBlockSize` until the violation resolves.
 
-- [ ] `UpdateEarlyBreakBetweenLines` in our block-layout line loop.
-- [ ] `EarlyBreak` struct storing `{line_number, appeal}` on builder.
-- [ ] `RelayoutAndBreakEarlier<MulticolLayoutAlgorithm>` path — re-enter multicol with `early_break` hint when violating appeal better than current.
-- [ ] Thread `has_violating_break` via `result.GetBreakAppeal() != Perfect` in outer stretch loop.
-- [ ] Driver test: pick one `multicol-widows-orphans-*` from the failing list. Verify cluster: ~15.
-- [ ] **Gate:** same invariants.
+**Scoping correction from original plan.** The plan called for full `UpdateEarlyBreakBetweenLines` + `EarlyBreak` storage + `RelayoutAndBreakEarlier` retry. Research into Blink source (see findings.md "Phase 12g findings") revealed that for the visible failing tests, EarlyBreak storage is NOT the driver — it's the `has_violating_break |= result.GetBreakAppeal() != kBreakAppealPerfect` threading (cla.cc:1053) feeding the stretch loop (cla.cc:1210+). EarlyBreak only matters when a PRIOR acceptable break point needs to be snapped to (widows/orphans mid-paragraph). The one widow/orphan driver in our test set (`balance-orphans-widows-000.html`) passes via stretch-retry alone.
+
+- [x] **Thread `has_violating_break` via `result.GetBreakAppeal() != Perfect`** — landed in Phase 12d at `multicol_layout.go:933`. 12g extends the PRODUCERS of non-Perfect appeals:
+- [x] **`block_layout.go` fragmentainer-split overflow path writes `result.BreakAppeal`.** Worst of {child's existing appeal, break-inside:avoid violation when splitting the current child, break-before:avoid violation when a leaf child starts exactly at the column boundary (childConsumed==0), break-between:avoid violation when deferring the next sibling past the column boundary}.
+- [x] **`BreakBeforeChildIfNeeded → BrokeBefore` computes MinSpaceShortage.** When a soft break-before fires because the child didn't fit and has `break-inside:avoid`, shortage = `childBlock − spaceLeft` so the multicol stretch loop has a signal to grow colBlockSize to fit the child.
+- [x] Driver tests: `balance-break-avoidance-000/001/002.html` — all 3 PASS at 0 diff. `balance-orphans-widows-000.html` — already passed pre-12g; verified no regression.
+- [x] **Gate (2026-04-24):** css-multicol 130 → **133 PASS** (+3 net); css-position 89/104, css-flexbox 621/629, CSS2 96/99, spanner-fragmentation 12/13 all unchanged.
+- [ ] `UpdateEarlyBreakBetweenLines` — **deferred** until a widow/orphan test demands it.
+- [ ] `EarlyBreak` struct + `RelayoutAndBreakEarlier<MulticolLayoutAlgorithm>` path — **deferred** until a test demands it.
+- [ ] Full Blink-parity `MovePastBreakpoint` refactoring (currently split between `BreakBeforeChildIfNeeded` in fragmentation_utils.go and the overflow path in block_layout.go) — **deferred** cleanup.
 
 ### Phase 12h — Rule paint + baseline + list markers (~15 tests, S–M)
 **Goal.** Cleanup of painting + alignment APIs — three small concerns that all ride on the multicol container's post-layout hooks.
@@ -590,6 +596,6 @@ Reference: findings.md §7 (rule paint), §8 (baseline), §9b (list markers). Bl
 - **M12d:** forced breaks + break-inside:avoid-column. **Achieved 2026-04-24** — Blink-parity `BreakBeforeChildIfNeeded` + `BreakAppeal` machinery. Net +2 multicol PASS (121→123 in re-baselined run). Drivers `multicol-break-000/001` blocked by Ahem font loader bug (fragmentation tree verified correct), `multicol-br-inside-avoidcolumn-001` PASS at 0 diff. Spanner-fragmentation invariant held (12/13 PASS, no regression). Note: the +2 net in this run is small because the re-baselined snapshot reads 121 (not the previously-claimed 130) — see progress.md for the reconciliation.
 - **M12e:** column-fill:auto; **PARTIAL 2026-04-24** — driver `multicol-fill-auto-block-children-003` (max-height-imposes-on-columns) PASS at 0 diff. Net +1 multicol PASS (123 → 124). Cluster residuals are missing-text-rendering, inline-overflow-clip, "more forced breaks than columns" (auto-height), and spanner+block-children — all separate root causes documented in the Phase 12e section.
 - **M12f:** column-height + column-wrap (Blink-parity port of CSS Multicol L2 §4.2). **PARTIAL 2026-04-24** — driver `column-height-001.html` PASS at 0 diff. Net +6 multicol PASS (124 → 130); cluster 6/31. Leaf cumulative-consumed fix + break-token slot-layout fix unblocked row-wrap; 12f.6 `MulticolBreakTokenData` row-carry and row-gap between column rows deferred. Details in Phase 12f section.
-- **M12g:** orphans/widows; +15. → ~298.
+- **M12g:** break-avoidance stretch retry (scoped port of Blink's has_violating_break propagation). **PARTIAL 2026-04-24** — 3 `balance-break-avoidance-*` drivers PASS at 0 diff. Net +3 multicol PASS (130 → 133). Full `EarlyBreak` + `RelayoutAndBreakEarlier` retry deferred (not needed by visible failing tests — stretch-retry alone handles them). Details in Phase 12g section + findings.md.
 - **M12h:** rule paint + baseline + list markers; +15. → ~313+.
 - Targets are conservative; overlapping cluster closures (e.g., `multicol-count-*`, `multicol-columns-*`, `multicol-gap-*`, `multicol-width-*`) likely push the final number higher without explicit phase work.

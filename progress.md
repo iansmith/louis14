@@ -13,6 +13,37 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
+**Phase 12g (css-multicol break-avoidance stretch retry): PARTIAL 2026-04-24.**
+
+Blink-parity port of the break-appeal propagation that drives `column-fill:balance` stretch retry when `break-inside:avoid` / `break-before:avoid` / `break-after:avoid` is violated. Full `EarlyBreak` + `RelayoutAndBreakEarlier` machinery is NOT ported — Blink's EarlyBreak only matters when a PRIOR acceptable break point exists (widows/orphans mid-paragraph); for the current multicol drivers the stretch-retry loop alone is sufficient (Blink cla.cc:1053 ↔ 1210+), and louis14 already had that loop since Phase 12a.
+
+Two foundational fixes in `pkg/layout/block_layout.go`:
+
+1. **Demote BreakAppeal on fragmentainer-split overflow path** (the `if blockCursor > fragEnd || (==, childHasBreak)` branch). Previously the break path finalized the partial fragment with `result.BreakAppeal = Perfect` (builder default). It now considers:
+   - **Break INSIDE the current child** — when the child itself fragmented, or when a leaf child under `IsBlockSizeOverride` is split at the column boundary (childConsumed > 0). Violates `current.break-inside:avoid`.
+   - **Break BEFORE the current child** — when a leaf child starts exactly at the column boundary (childConsumed == 0). Violates `join(prev.break-after, current.break-before)`.
+   - **Break BETWEEN the current child and the next sibling** — when the current child completed in-fragmentainer but a later sibling is deferred. Violates `join(current.break-after, next.break-before)`.
+   Worst of (child's existing appeal, current-inside avoid, break-before avoid, break-between avoid) is written to `result.BreakAppeal`. The multicol outer-stretch loop already thresholds on `BreakAppeal != Perfect` (Phase 12d), so this plumbs directly into the `hasViolatingBreak` check at `multicol_layout.go:933`.
+
+2. **Compute MinSpaceShortage for the `BreakBeforeChildIfNeeded` → BrokeBefore path.** Previously, when `BreakBeforeChildIfNeeded` decided to push a child to the next fragmentainer because of a `break-inside:avoid` violation, the caller didn't set `MinSpaceShortage`, so the multicol stretch loop saw `hasShortage=false` and broke out without retrying. Now the BrokeBefore branch computes `shortage = childBlock − spaceLeft` so the stretch loop can grow colBlockSize to fit the child whole.
+
+**Drivers (all PASS at 0 diff 2026-04-24):**
+- `balance-break-avoidance-000.html` (single `break-inside:avoid` leaf, initial colSize too small).
+- `balance-break-avoidance-001.html` (A + B with `break-after:avoid` on A and `break-inside:avoid` on both).
+- `balance-break-avoidance-002.html` (4 leaves with `break-before:avoid` on the third).
+- `balance-orphans-widows-000.html` (was already passing before 12g; verified no regression).
+
+**Results:**
+- css-multicol: **130 → 133 PASS** (+3 net, exactly the three `balance-break-avoidance-*` tests).
+- css-position 89/104, css-flexbox 621/629, CSS2 96/99, spanner-fragmentation 12/13 — all unchanged from pre-12g baseline. No regressions in any other category.
+
+**Out of scope for 12g (documented, not deferred to a later phase unless a test demands them):**
+- `EarlyBreak` storage + `RelayoutAndBreakEarlier` retry. Only needed when a better break point EARLIER in the layout can be snapped to — i.e. widows/orphans within a paragraph, or break-avoid on one of several acceptable candidates. The only existing widow/orphan driver (`balance-orphans-widows-000.html`) passes via the stretch-retry loop without EarlyBreak. Add when a representative test demands it.
+- Full `UpdateEarlyBreakBetweenLines` for line-count-based break scoring. Same reason.
+- `BreakBeforeChildIfNeeded`'s own demote path for the split case (currently handled in `block_layout.go`'s overflow path instead). Re-factoring into fragmentation_utils.go parity with Blink can happen when we port full `MovePastBreakpoint`.
+
+---
+
 **Phase 12f (css-multicol column-height + column-wrap): PARTIAL 2026-04-24.**
 
 Blink-parity port of CSS Multi-column Level 2 §4.2 `column-height: auto | <length>` + `column-wrap: auto | nowrap | wrap` into louis14. Five `column_layout_algorithm.cc` consumption sites wired:
