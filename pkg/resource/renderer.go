@@ -135,13 +135,15 @@ func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*imag
 }
 
 // measureContentHeight walks the box tree and returns the maximum Y extent.
+// For html and body roots we ALWAYS use the children's extent rather than
+// the box's own bottom. The layout engine inflates body's height to fill
+// the (deliberately huge) viewport when no explicit height is set, which
+// would make the auto-height render produce a viewport-tall image of mostly
+// blank space. Trusting only the children gives us the true content extent.
 func measureContentHeight(boxes []*layout.Box) float64 {
 	maxY := 0.0
 	for _, box := range boxes {
-		// For html/body with percentage heights, use children extent
-		// instead of the inflated explicit height (which resolves against
-		// the large initial viewport in auto-height mode)
-		if isPercentageHeightRoot(box) {
+		if isAutoHeightRoot(box) {
 			if childMax := measureContentHeight(box.Children); childMax > maxY {
 				maxY = childMax
 			}
@@ -159,19 +161,18 @@ func measureContentHeight(boxes []*layout.Box) float64 {
 	return maxY
 }
 
-// isPercentageHeightRoot returns true for html/body elements with percentage heights.
-// These elements inflate to the viewport height during layout, but for auto-height
-// rendering we want the actual content extent instead.
-func isPercentageHeightRoot(box *layout.Box) bool {
-	if box.Node == nil || box.Style == nil {
+// isAutoHeightRoot returns true for html and body elements. These are
+// treated as auto-height containers when measuring content extent for
+// auto-height rendering — the layout engine inflates them to the
+// viewport height (which is intentionally large to allow vh units to
+// resolve), and using their bottom would yield a viewport-sized image
+// of mostly blank space instead of just the actual content.
+func isAutoHeightRoot(box *layout.Box) bool {
+	if box.Node == nil {
 		return false
 	}
 	tag := box.Node.TagName
-	if tag != "html" && tag != "body" {
-		return false
-	}
-	_, hasPct := box.Style.GetPercentage("height")
-	return hasPct
+	return tag == "html" || tag == "body"
 }
 
 // buildFetchers creates CSS and image fetcher functions from the Fetcher interface.
