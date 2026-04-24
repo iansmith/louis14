@@ -420,13 +420,18 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// walker enters a new column-run after a spanner placement.
 	isFirstRow := true
 	for {
-		// Phase 12f (Blink cla.cc:795–805): pre-LayoutLine row advance for
-		// subsequent rows within the same column-run when we should wrap or the
-		// previous row filled exactly. At an exact row boundary offsetToNextRow
-		// degenerates to row_gap_size (zero today), which preserves existing
-		// non-wrap behaviour. Also bail out when the next row wouldn't fit in
-		// the outer fragmentainer.
-		if !isFirstRow {
+		// Blink cla.cc:795-797 row-advance guard. Fires whenever !isFirstRow
+		// OR (on the first iteration) we find ourselves past the start of
+		// the current row — e.g. after a spanner that didn't quite align to
+		// a row boundary even after the pre-commit snap, or in the initial
+		// position when `column-height: 0` makes every offset a row-start.
+		needsRowAdvance := !isFirstRow
+		if !needsRowAdvance && mla.shouldWrapColumns() && mla.hasRowHeight() &&
+			mla.rowHeight() > 0 &&
+			mla.remainingRowHeightAtOffset(blockCursor) <= 0 {
+			needsRowAdvance = true
+		}
+		if needsRowAdvance {
 			if mla.hasRowHeight() {
 				blockCursor += mla.offsetToNextRow(blockCursor)
 			}
@@ -601,6 +606,20 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 
 		if spanFrag != nil {
+			// Blink cla.cc:1427-1459 (pre-commit row snap). Before placing a
+			// spanner under column-wrap:wrap, if we're past the start of the
+			// current column row (IsPastStartInWrappingRow), snap
+			// intrinsicBlockSize forward to the next row-stride boundary so
+			// the spanner lands on a row boundary — not mid-row. Without this
+			// snap, after a spanner that doesn't start at a row boundary, the
+			// next LayoutLine's offsetInCurrentRow math reports negative or
+			// tiny remaining-row-space and column rows get placed wrong.
+			// Mirror the condition: shouldWrapColumns + hasRowHeight +
+			// current blockCursor is past a row start (offsetInCurrentRow > 0).
+			if mla.shouldWrapColumns() && mla.hasRowHeight() && mla.rowHeight() > 0 &&
+				mla.offsetInCurrentRow(blockCursor) > 0 {
+				blockCursor += mla.offsetToNextRow(blockCursor)
+			}
 			// Outer fragmentation: check whether the spanner fits in the remaining
 			// space of the current outer column.
 			if hasOuterFrag && blockCursor+spanHeight > outerAvailable {

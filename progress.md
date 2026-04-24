@@ -38,7 +38,36 @@ Second root cause (leaf fragmentation across inner sub-cols) not yet addressed. 
 Gate (post-first-fix): css-multicol 154 → 155 (+1 net); wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions.
 
 See findings §F2 for the full diagnosis + Blink-parity reference.
-### F3. Phase 12f column-height/column-wrap residuals — IN PROGRESS 2026-04-24
+### F3. Phase 12f column-height/column-wrap residuals — IN PROGRESS 2026-04-24 (F3c+F3d)
+
+**Third increment (F3c, spanner-first-row advance):** `pkg/layout/multicol_layout.go`'s layoutLine returned `maxColHeight` as row advance when a spanner was detected, even when no pre-spanner in-column content was placed. With IsFixedBlockSize + column-height, an empty column fragment reports the forced row height via `BlockSize()` — so spanner placement ended up below a phantom row. When NO column of the spanner row placed any intrinsic content, commit the spanner at the row origin (advance = 0) instead. Mirror Blink's per-column intrinsic tracking. Improved `column-height-017` 7000→1000 px; `column-height-019` 500→250 px; spanner-fragmentation 12/13 held.
+
+**Fourth increment (F3d, Blink-parity spanner-row alignment, 2026-04-24):** dispatched a targeted Blink-research agent against `column_layout_algorithm.cc` to learn the *exact* mechanism for how Blink keeps row-stride aligned across spanners. Finding: Blink does NOT carry a row-origin field — instead it relies on two pieces:
+
+1. **Pre-commit snap in `LayoutSpanner` (cc:1427-1459).** Before placing a spanner under column-wrap:wrap when `IsPastStartInWrappingRow(block_offset)` is true, advance `intrinsic_block_size_` to the next row-stride boundary (`+= RemainingRowHeightAtOffset(block_offset) + row_gap_size_`). Ensures the spanner commits on a row boundary.
+
+2. **Row-wrap guard in `LayoutFragmentationContext` (cc:795-797).** Combined condition: `!is_first_row || (ShouldWrapColumns && HasRowHeight && RowHeight>0 && RemainingRowHeightAtOffset(line_offset) <= 0)`. The first-iteration arm fires when a preceding spanner left blockCursor past the row's start — either because the spanner ended mid-row-gap, or because an edge condition (e.g. column-height:0) made every position "past" the row start.
+
+Port both to louis14:
+- `multicol_layout.go` spanner-commit site: pre-snap when `shouldWrapColumns && hasRowHeight && rowHeight>0 && offsetInCurrentRow(blockCursor) > 0`.
+- `multicol_layout.go` row-wrap loop: extend the existing `!isFirstRow` guard to also fire when `shouldWrapColumns && hasRowHeight && rowHeight>0 && remainingRowHeightAtOffset(blockCursor) <= 0`, matching Blink's first-iteration arm.
+
+No new field needed — Blink's algorithm uses the existing `intrinsic_block_size_` + modulo-of-line_offset plumbing.
+
+**Cumulative results post-F3d:**
+- `column-height-017` PASS (was 7000 px / 1.5 %).
+- `column-height-019` PASS (was 500 px / 0.1 %).
+- `abspos-after-spanner-static-pos` PASS.
+- `spanner-fragmentation-000` PASS (had regressed briefly; now restored).
+- `spanner-fragmentation-002` PASS (same).
+- **Regression:** `column-height-029` FAIL at 1350 px (was accidentally PASS under the old pre-snap-less layout; nested-multicol test where the inner-sub-col-2 region now shows red due to a different-shape layout produced by the Blink-parity snap). Pragmatically accepted as a cleaner-but-failing shape; -029's accidental-pass was masking the same inner-multicol placement bug visible elsewhere in the cluster.
+- Cluster `column-height-*`: 11 PASS → 13 PASS.
+
+Gate: css-multicol **165 → 167 (+2 net from F3d; cumulative +12 from F3 start)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions outside multicol.
+
+Remaining (largest): `-013` (6500 px, multi-spanner row-gap; the Blink-parity pre-snap fires on its single-spanner portion but the multi-spanner sequence has its own alignment puzzle), `column-wrap-no-constraints-002` (6000 px), `-006` (5250), `-005/-011/-030` (5000 each). Several tests in the 1000-3000 range. The 2026-04-24 agent research block added to findings §F3 gives the exact Blink line refs for the next incremental attack.
+
+### F3. Phase 12f column-height/column-wrap residuals — IN PROGRESS 2026-04-24 (ORIGINAL ENTRY BELOW)
 
 **First increment (F3a): row-gap plumbing (commit `ea88390b`)** — `GetRowGapMulticol()` read from style; multicol 155→157.
 
