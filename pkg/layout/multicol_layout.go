@@ -863,6 +863,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		fragment       *PhysicalFragment
 		offset         LogicalOffset
 		intrinsicBlock float64
+		propagatedOOF  []OutOfFlowCandidate
 	}
 	var finalColBreakToken *BlockBreakToken
 	var lastInnerResult *LayoutResult
@@ -873,6 +874,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			fragment       *PhysicalFragment
 			offset         LogicalOffset
 			intrinsicBlock float64
+			propagatedOOF  []OutOfFlowCandidate
 		}
 		minSpaceShortage := math.MaxFloat64
 		hasShortage := false
@@ -904,7 +906,16 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			// fragmentainer branch pushes no per-column clip at paint time;
 			// we approximate by clipping only the block axis, keeping the
 			// inline overflow visible. See findings.md "F2 Blink reference".
-			if colBlockSize != Indefinite {
+			//
+			// `column-height: 0` (explicit zero) is the CSS Multicol L2 case
+			// where a row is 0 tall and each monolithic leaf is placed as
+			// "last resort" with overflow visible; clipping would hide
+			// everything. Skip the clip only in that specific case.
+			// `colBlockSize == 0` under auto-column-height is the
+			// balance-yields-0 workaround (see createConstraintSpaceForColumn)
+			// and still needs the clip.
+			skipBlockClip := colBlockSize == 0 && !mla.hasAutoColumnHeight()
+			if colBlockSize != Indefinite && !skipBlockClip {
 				colFrag.ClipBlockAxisOnly = true
 			}
 
@@ -912,10 +923,12 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 				fragment       *PhysicalFragment
 				offset         LogicalOffset
 				intrinsicBlock float64
+				propagatedOOF  []OutOfFlowCandidate
 			}{
 				fragment:       colFrag,
 				offset:         LogicalOffset{InlineOffset: inlineOffset, BlockOffset: lineOffset},
 				intrinsicBlock: result.IntrinsicBlockSize,
+				propagatedOOF:  result.PropagatedOOFCandidates,
 			})
 
 			// Spanner detected: break out immediately (Blink cla.cc:1048).
@@ -1017,6 +1030,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	// both have content) can skip painting rules adjacent to empty columns.
 	maxColHeight = 0.0
 	columnsPlaced = 0
+	seenOOF := map[*LayoutInputNode]bool{}
 	for _, col := range finalColumns {
 		builder.AddChild(col.fragment, col.offset)
 		h := NewLogicalFragment(wdm, col.fragment).BlockSize()
@@ -1028,6 +1042,22 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// (the forced size); intrinsicBlock is the spec-correct signal.
 		if col.intrinsicBlock > 0 {
 			columnsPlaced++
+		}
+		// Propagate abs/fixed descendants of the per-column BlockLayoutAlgorithm
+		// result out to the multicol's builder. An abspos whose CB is the
+		// multicol (e.g. `multicol { position: relative }` with an abspos child)
+		// gets iterated by *every* per-column layout call and emitted on each
+		// result; dedupe by Node so we add it once. Static positions come out
+		// in the column's local coordinates — translate to the multicol's
+		// content-box by adding the column's offset within the multicol.
+		for _, cand := range col.propagatedOOF {
+			if seenOOF[cand.Node] {
+				continue
+			}
+			seenOOF[cand.Node] = true
+			cand.StaticPosition.Offset.InlineOffset += col.offset.InlineOffset
+			cand.StaticPosition.Offset.BlockOffset += col.offset.BlockOffset
+			builder.AddOutOfFlowCandidate(cand)
 		}
 	}
 	// Cap row advance to colBlockSize when finite: columns placed with
@@ -1214,9 +1244,12 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	// A balanced estimate of 0 means the row contains no non-spanner content.
 	// Treat it as Indefinite so the column fragment's height is driven purely
 	// by its intrinsic content (zero), not by a 1px override that would add
-	// a ghost row before every spanner.
+	// a ghost row before every spanner. Only applies when column-height is
+	// auto: an explicit `column-height: 0` (CSS Multicol L2) is a real zero
+	// that must force every monolith to wrap to the next row, so preserve
+	// the literal 0 in that case.
 	availBlock := colBlockSize
-	if colBlockSize == 0 {
+	if colBlockSize == 0 && mla.hasAutoColumnHeight() {
 		availBlock = Indefinite
 	}
 	isFixed := availBlock != Indefinite && fixedBlockSize

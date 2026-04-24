@@ -1853,10 +1853,13 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("justify-self", parts[1])
 		}
 	case "columns":
-		// columns shorthand: <column-width> <column-count> | auto
-		parts := strings.Fields(value)
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
+		// columns shorthand. CSS Multicol L1: <column-width> || <column-count>.
+		// CSS Multicol L2 §4.1 extends this with an optional `/ <column-height>`
+		// suffix: `columns: 2 / 100px`, `columns: 20em auto / 200px`, etc.
+		// Split on `/` first: the segment after the `/` is column-height (any
+		// length or `auto`). The segment before is the L1 shorthand.
+		headValue, heightValue, hasSlash := strings.Cut(value, "/")
+		for _, part := range strings.Fields(headValue) {
 			if part == "auto" {
 				continue
 			}
@@ -1864,6 +1867,12 @@ func expandShorthand(style *Style, property, value string) {
 				style.Set("column-count", part)
 			} else {
 				style.Set("column-width", part)
+			}
+		}
+		if hasSlash {
+			h := strings.TrimSpace(heightValue)
+			if h != "" {
+				style.Set("column-height", h)
 			}
 		}
 	case "overflow":

@@ -38,15 +38,32 @@ Second root cause (leaf fragmentation across inner sub-cols) not yet addressed. 
 Gate (post-first-fix): css-multicol 154 → 155 (+1 net); wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions.
 
 See findings §F2 for the full diagnosis + Blink-parity reference.
-### F3. Phase 12f column-height/column-wrap residuals — PARTIAL 2026-04-24
+### F3. Phase 12f column-height/column-wrap residuals — IN PROGRESS 2026-04-24
 
-Row-gap between column rows landed. `pkg/css/style.go` gained `GetRowGapMulticol()` (mirrors `GetColumnGapMulticol`: reads `row-gap`, treats `normal` as 1em, resolves em against own font-size). `pkg/layout/multicol_layout.go`'s `Layout()` now sets `mla.rowGapSize = mla.style.GetRowGapMulticol()` before the walker loop (was hardcoded to 0).
+**First increment (F3a): row-gap plumbing (commit `ea88390b`)** — `GetRowGapMulticol()` read from style; multicol 155→157.
 
-Driver results: `column-height-027` PASS at 0 diff (was 1750 px / 0.4 %). `column-height-009` 20061 → 240 px (nearly PASS). `column-height-018` 2000 → 1500 px. Three tests regressed +500 px each (`-008/028/029`) — nested-multicol shapes where the outer pass's non-wrap codepath still consumes `rowGapSize` via `offsetInCurrentRow`/`math.Mod`; the regressions are line-positioning drift in *closer-to-correct* shape, not a new bug.
+**Second increment (F3b, four linked fixes):**
 
-Gate: css-multicol **155 → 157 (+2 net)**; wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged.
+1. **`columns: <width-count> / <height>` shorthand** (`pkg/css/style.go`). CSS Multicol L2 §4.1 adds the optional `/` suffix to the `columns` shorthand. Our parser split on whitespace and mis-parsed `columns: 2 / 0` as column-count=0 (the `0` after `/` clobbered the 2). Fix: split once on `/`, apply the L1 shorthand to the head, use the tail as `column-height`.
 
-Remaining residuals (deferred): 24 column-height tests still fail. Biggest open are `-023` (10000 px, zero-column-height shorthand), `-017` (7000 px, spanner-protrudes-row-gap), `-013` (6500 px, multi-spanner row-gap). These hit the "forced-break + wrap interactions" and "spanner-row-gap overlap" sub-causes from the kickoff triage; may share code path with F2's second-phase leaf-fragmentation work. See findings §F3 for details.
+2. **createConstraintSpaceForColumn: distinguish balance-estimate-0 from explicit `column-height: 0`** (`pkg/layout/multicol_layout.go`). The previous workaround unconditionally promoted `colBlockSize == 0` to Indefinite to avoid a 1px-ghost-row before spanners under column-fill:balance. Gate that on `hasAutoColumnHeight()` so explicit `column-height: 0` stays literally zero.
+
+3. **block_layout zero-fragmentainer last-resort** (`pkg/layout/block_layout.go`). When `IsBlockSizeOverride && fragSize == 0 && childConsumed == 0`, the previous branch emitted a break token resuming *this* child, which made the row-wrap loop ping-pong forever (each iteration placed the monolith and asked to resume the same monolith). Blink's `kBreakAppealLastResort` behavior is "advance to next sibling"; mirror that.
+
+4. **Multicol OOF aggregation** (`pkg/layout/multicol_layout.go`). Per-column `BlockLayoutAlgorithm` results carry `PropagatedOOFCandidates`, but multicol never consumed them — abspos/fixed children of a `position:relative` multicol were dropped. Thread `result.PropagatedOOFCandidates` through the per-column `columns` struct and feed them into `builder.AddOutOfFlowCandidate` after the stretch loop converges. Dedupe by `Node` (each column layout iterates the same DOM abspos). Translate static positions from column-local to multicol-local coordinates by adding `col.offset`.
+
+5. **Block-axis clip gating for zero-height fragments.** When explicit `column-height: 0`, clipping the (zero-tall) column fragment would hide everything — the monoliths placed as last-resort must remain visible. Skip `ClipBlockAxisOnly = true` only for explicit column-height:0 (not for the balance-estimate-0 case, which still needs clip).
+
+**Driver results:**
+- `column-height-023` PASS (was 10000 px / 2.1 %).
+- `column-height-003/004` PASS (were failing).
+- `column-height-021` 100 → 150 px (nearly PASS); `-022` 300 → 350 px (nearly PASS).
+- `column-height-009` remains at 240 px.
+- Spill-over PASSes: `abspos-after-spanner-static-pos`, `abspos-autopos-contained-by-viewport-000`, `multicol-containing-003`, `multicol-width-003`, `nested-oofs-in-relative-multicol` — all were blocked on multicol OOF aggregation.
+
+Gate: css-multicol **157 → 165 (+8 net from F3b; +10 cumulative from F3)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged.
+
+Remaining (largest): `-017` (7000 px, spanner protrudes into row-gap), `-013` (6500 px, multi-spanner row-gap), `column-wrap-no-constraints-002` (6000 px), `-006` (5250 px), plus mid-range. Next target: `-017`. See findings §F3.
 ### F4. Phase 12h.2 inline-in-balanced-multicol — PENDING
 ### F5. Phase 12h.3 list-item-003 trailing text — PENDING
 

@@ -893,12 +893,35 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					} else if len(child.Children()) == 0 && !hasOnlyInlineChildren(child) {
 						// Leaf block: child completed but its declared size overflowed.
 						childConsumed := fragEnd - actualChildBlockOff
-						if childConsumed == 0 {
-							// Child starts exactly at fragEnd: fresh start next fragmentainer.
+						if childConsumed == 0 && (fragSize > 0 || !bla.space.IsBlockSizeOverride) {
+							// Child starts exactly at fragEnd. For a non-zero fragmentainer
+							// this is a clean "fresh start next fragmentainer". For a zero-
+							// sized fragmentainer produced by the balance-estimate path
+							// (!IsBlockSizeOverride), preserve this behavior too — the
+							// column-size will grow on the next balance iteration.
 							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
 								Node:          child,
 								IsBreakBefore: true,
 							})
+						} else if childConsumed == 0 && fragSize == 0 && bla.space.IsBlockSizeOverride {
+							// True zero-height fragmentainer (e.g. `column-height: 0` with
+							// `column-wrap: wrap`, CSS Multicol L2): no room for a break
+							// before THIS child to advance — every break-before lands at
+							// the same zero-height boundary. Treat the leaf as
+							// monolithic-last-resort: it was already placed (with overflow)
+							// in this column, so advance past it to the next sibling.
+							// Matches Blink's kBreakAppealLastResort behavior for
+							// zero-space fragmentainers; without this the row-wrap loop
+							// in multicol_layout.go never terminates.
+							if childIdx+1 < len(children) {
+								nextChild := children[childIdx+1]
+								outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+									Node:          nextChild,
+									IsBreakBefore: true,
+								})
+							} else {
+								outToken.HasSeenAllChildren = true
+							}
 						} else if bla.space.IsBlockSizeOverride {
 							// Inner column context: fragment leaf block at column boundary so
 							// its background/content is correctly split across columns.
