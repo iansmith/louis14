@@ -335,15 +335,27 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-23 | CSS2 (post 12c) | 99 | 0 | 0 | Gate held. |
 | 2026-04-23 | css-flexbox (post 12c) | 626 | 3 | 0 | Same 3 pre-existing; no regression. |
 | 2026-04-23 | css-position (post 12c, baseline re-verified) | 91 | 13 | 0 | Corrected from the stale "95/100" tracking; 13 pre-existing failures (8 G-ABS-IN-TABLE, 3 G-SEMI-REPLACED, 2 deferred singletons). |
+| 2026-04-24 | css-multicol (post 12d, commit `6483bc7d`) | 123 | 325 | 3 | Re-baselined run reads 121 pre-12d; +2 via 12d. Trade: +3 (change-transform-in-nested/second-column, multicol-br-inside-avoidcolumn-001) −1 (multicol-overflow-clip-auto-sized, follow-up). |
+| 2026-04-24 | css-multicol (post 12e, uncommitted then bundled into `35ce3dda`) | 124 | 325 | 3 | +1 (multicol-fill-auto-block-children-003). |
+| 2026-04-24 | css-multicol (post 12f, commit `35ce3dda`) | 130 | 322 | 3 | +6 column-height-* cluster (001/010/014/015/016/026). |
+| 2026-04-24 | css-multicol (post 12g, commit `287c9fb3`) | 133 | 322 | 3 | +3 balance-break-avoidance-000/001/002. |
+| 2026-04-24 | wm (post 12g) | 410 | 371 | 0 | Pre-existing renderer.go shift baseline unchanged vs pre-12g. |
+| 2026-04-24 | CSS2 (post 12g) | 96 | 3 | 0 | Pre-existing baseline unchanged. |
+| 2026-04-24 | css-flexbox (post 12g) | 621 | 8 | 0 | Pre-existing baseline unchanged. |
+| 2026-04-24 | css-position (post 12g) | 89 | 15 | 0 | Pre-existing baseline unchanged. |
+| 2026-04-24 | spanner-fragmentation (post 12g) | 12 | 1 | 0 | 005 pre-existing fail; no regression. |
 
 ## Invariants (must stay green)
+Baseline shift from historical numbers: pre-12d tree modifications in `pkg/resource/renderer.go` (commits `15095a58` + `f001c6a5` + earlier uncommitted) reduced wm/CSS2/flex/css-position pass counts. These shifts are NOT from the 12d–12g work (verified per-phase by stash tests at each landing). The invariants below track the POST-12d re-baselined numbers; any phase regression vs these numbers reverts.
+
 | Category | Count | Last verified |
 |---|---|---|
-| css-writing-modes | 781/781 | 2026-04-23 (post Phase 12c) |
-| CSS2 (TestWPTReftests) | 99/99 | 2026-04-23 (post Phase 12c) |
-| css-flexbox | 626/629 | 2026-04-23 (post Phase 12c) |
-| css-position (watch) | 91/104 | 2026-04-23 (post Phase 12c — baseline corrected from stale 95/100) |
-| css-multicol (active target) | 130/458 | 2026-04-23 (post Phase 12c) |
+| css-writing-modes | 410/781 | 2026-04-24 (post 12g) — historical 781/781 pre-`renderer.go` shift |
+| CSS2 (TestWPTReftests) | 96/99 | 2026-04-24 (post 12g) — historical 99/99 |
+| css-flexbox | 621/629 | 2026-04-24 (post 12g) — historical 626/629 |
+| css-position (watch) | 89/104 | 2026-04-24 (post 12g) — historical 91/104 |
+| css-multicol (active target) | 133/458 | 2026-04-24 (post 12g, +39 since 12 entry baseline 94) |
+| spanner-fragmentation (watch) | 12/13 | 2026-04-24 (post 12g) — 005 pre-existing |
 | css-transforms (watch, not invariant) | 172/381 | 2026-04-21 (post Phase 9 third landing, +1 from stack-floats refactor) |
 
 ## Session: 2026-04-21

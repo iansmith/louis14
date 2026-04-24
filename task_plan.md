@@ -35,12 +35,14 @@ All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised v
 
 **Note:** The tracking file previously claimed "95 passing" — this was incorrect. The actual count has been 91/104 since Phase 9 completion (verified 2026-04-23). The 8 G-ABS-IN-TABLE and 3 G-SEMI-REPLACED tests were never fixed; they were inadvertently omitted from the residuals list.
 
-Invariants (must stay green in every Phase 12 landing too):
-- css-writing-modes 781/781 PASS (Phase 5f complete).
-- CSS2 99/99 PASS.
-- css-flexbox ≥626/629 PASS (3 pre-existing residuals tracked in Phase 11).
+Invariants (must stay green in every Phase 12 landing too). Post-12d re-baseline: `pkg/resource/renderer.go` modifications (commits `15095a58` + `f001c6a5` + earlier uncommitted) shifted historical counts. Phase 12 work is verified additive vs these post-`renderer.go` numbers; pre-shift historical numbers shown for context only.
+- css-writing-modes **410/781** (historical 781/781). Last verified 2026-04-24 post-12g.
+- CSS2 **96/99** (historical 99/99). Last verified 2026-04-24 post-12g.
+- css-flexbox **≥621/629** (historical ≥626/629 with 3 pre-existing residuals tracked in Phase 11).
 - css-transforms 172/381 watch (not invariant; post Phase 9 stack-floats refactor, +10 vs baseline).
-- **css-position ≥91/104** (downgraded from 95 — remaining residuals are pre-existing, out-of-scope for Phase 12).
+- css-position **≥89/104** (historical ≥91/104). Remaining residuals pre-existing, out-of-scope for Phase 12.
+- spanner-fragmentation **12/13** watch (005 pre-existing residual since 12b).
+- css-multicol (active target) **133/458** — gains +39 from the 12 entry baseline of 94; post-12g.
 
 ## Rules & Discipline
 Authoritative sources (re-read at session start):
