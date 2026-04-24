@@ -1068,7 +1068,25 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 	// Determine spanner path and remaining token from the last inner result.
 	if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
-		return maxColHeight, columnsPlaced, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken
+		// When a spanner is detected and NO pre-spanner in-column content was
+		// placed in any column of this row (all intrinsic sizes are 0), commit
+		// the spanner at the row origin — not below an empty forced slot
+		// (IsFixedBlockSize + column-height can make an empty column fragment
+		// report a full row height via BlockSize()). For rows where at least
+		// one column placed content before the spanner, keep the existing
+		// forced-row-height advance so subsequent rows align correctly.
+		anyIntrinsic := false
+		for _, col := range finalColumns {
+			if col.intrinsicBlock > 0 {
+				anyIntrinsic = true
+				break
+			}
+		}
+		rowAdvance := maxColHeight
+		if !anyIntrinsic {
+			rowAdvance = 0
+		}
+		return rowAdvance, columnsPlaced, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken
 	}
 	// Return any remaining column break token so the caller can include it
 	// in the outer break result and resume column rows in the next outer column.
