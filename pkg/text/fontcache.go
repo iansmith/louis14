@@ -1,12 +1,13 @@
 package text
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"mazarin/textshape"
 )
 
 // FontFetcher fetches font data from a URL.
@@ -55,9 +56,13 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 		data = decompressed
 	}
 
-	// Cache to disk with hash-based filename
-	hash := sha256.Sum256(data)
-	fileName := fmt.Sprintf("%x.ttf", hash[:8])
+	// Cache to disk using a family+variant filename so FontPathToFamilyVariant
+	// can recover the logical (family, variant) pair from the path. A hashed
+	// basename would strand the file outside DirectGlyphProvider's resolver
+	// (it can't reverse-parse the hash back to a family), which silently drops
+	// all text drawn in the @font-face family.
+	variant := textshape.BoolsToVariant(normalizeWeight(weight) == "bold", normalizeStyle(style) == "italic")
+	fileName := fmt.Sprintf("%s-%s.ttf", sanitizeFamily(family), textshape.VariantToStyle(variant))
 	filePath := filepath.Join(fr.cacheDir, fileName)
 
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
@@ -110,6 +115,28 @@ func (fr *FontRegistry) Lookup(family string, bold, italic bool) string {
 	}
 
 	return ""
+}
+
+// sanitizeFamily returns a filesystem-safe form of a CSS font-family name.
+// Any rune outside [A-Za-z0-9] is replaced with '_' so that FontPathToFamilyVariant
+// can still split the resulting "<family>-<variant>.ttf" basename on the final
+// '-'. An empty or fully-stripped family collapses to "font".
+func sanitizeFamily(family string) string {
+	var b strings.Builder
+	b.Grow(len(family))
+	for _, r := range family {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	s := b.String()
+	if s == "" || strings.Trim(s, "_") == "" {
+		return "font"
+	}
+	return s
 }
 
 // normalizeWeight converts CSS font-weight values to "normal" or "bold".

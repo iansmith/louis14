@@ -938,7 +938,7 @@ Enforced inside `BlockLayoutAlgorithm` (**not** in `ColumnLayoutAlgorithm`) at b
 
 **Rule.** Only the first column of each line may attempt marker alignment; a spanner may also claim an unclaimed marker; container fallback ensures no orphaned markers. This is intentionally narrow: we do **not** try to place the marker in the second, third, etc. column of a line.
 
-**First-target test.** `multicol-list-item-001.xht` — list-items as children of a multicol (not the container-is-list-item variant, which is handled by the constructor path). Expected to close ~7 `multicol-list-*` tests and reduce the `multicol-rule-*` cluster residual once combined with `GapGeometry` in the same phase.
+**First-target test.** `multicol-list-item-001.xht` — list-items as children of a multicol (not the container-is-list-item variant, which is handled by the constructor path). Expected to close ~7 `multicol-list-*` tests and reduce the `multicol-rule-*` cluster residual once combined with `GapGeometry` in the same phase. **Driver-pick superseded 2026-04-24** — see "Phase 12h kickoff survey" below; `-001` and `-002` already pass, so the real marker-protocol driver is `multicol-list-item-003.html` (container-is-list-item with inline content after a spanner, currently rendering the trailing text wrong).
 
 ### 9. Key data structures (reference)
 | Name | Role |
@@ -1381,3 +1381,88 @@ Re-introduce EarlyBreak when: a multi-paragraph test violates widow/orphan rules
 
 - It does not yet refactor `BreakBeforeChildIfNeeded` to own the split-path BreakAppeal demotion. The split path lives in `block_layout.go`'s overflow handler (as of Phase 12d's "scope-restriction note" — taking it over regressed spanner-fragmentation tests). Full parity with Blink's `MovePastBreakpoint` is a later cleanup.
 - It does not honor `break-inside:avoid` on containers (only on leaves). A container whose children fragment across columns with `break-inside:avoid` on the container itself wouldn't demote appeal today. No visible failing test requires this.
+
+---
+
+## Phase 12h kickoff survey (2026-04-24)
+
+**Purpose.** Before opening the Phase 12h work (rule paint via `GapGeometry`, `PropagateBaselineFromChild`, `UnpositionedListMarker`), surveyed the two cluster directories named as 12h's drivers (`multicol-list-item-*` and `multicol-rule-*`) against current HEAD (`91814cad`, post-12g). Findings materially change the scope + attack order described in §7/§8/§9b above.
+
+### multicol-list-item-* cluster (8 tests)
+
+| Test | Status | Notes |
+|------|--------|-------|
+| `multicol-list-item-001.xht` | **PASS (0 diff)** | Original §9b "first-target test"; marker protocol already works for list-items inside multicol. |
+| `multicol-list-item-002.html` | **PASS (0 diff)** | JS-dynamic `classList.add('multicol')`; marker survives the transition. |
+| `multicol-list-item-003.html` | FAIL (372 px / 0.1%) | Container is `display:list-item`; content is `[height:150 div, column-span:all h:50 div, "← Marker here" text]`. **Our render drops the trailing text entirely.** Not a marker-position bug — a layout bug in inline-after-spanner flow. |
+| `multicol-list-item-004.html` | FAIL (455 px / 0.1%) | Same shape as -003 with the trailing text inside the spanner div. Marker + text positioning right; diff is text AA only. |
+| `multicol-list-item-005.html` | FAIL (258 px / 0.1%) | Marker positioning right; `"Marker NOT here"` text AA diff only. |
+| `multicol-list-item-006.html` | FAIL ( 34 px / 0.0%) | AA diff only. |
+| `multicol-list-item-007.html` | FAIL (  7 px / 0.0%) | AA diff only. |
+| `multicol-list-item-008.html` | FAIL ( 26 px / 0.0%) | AA diff only. |
+
+**Implication for §9b.** The `UnpositionedListMarker` protocol is NOT gated on these tests — marker placement already works (001 and 002 pass structurally at 0 diff). The only real structural bug in the cluster is `-003`'s dropped inline-text-after-spanner, which is a `block_layout` / IIM bug, not list-marker scope. Porting the four callsites is still defensible on foundational-correctness grounds (Blink-parity) but it will not close any visible failing test by itself.
+
+### multicol-rule-* cluster (32 tests)
+
+Current state from the post-HEAD run (6 PASS / 26 FAIL). Grouping by diff magnitude:
+
+| Bucket | Count | Representative |
+|---|---|---|
+| PASS | 6 | `-hidden-000`, `-none-000`, `-percent-001`, `-nested-balancing-001/002/004` |
+| 0.1% (700 px) | 8 | `-solid-000`, `-ridge-000`, `-groove-000`, `-outset-000`, `-inset-000`, `-dashed-000`, `-dotted-000`, `-double-000`, `-color-001` — all rule-style variants. Diff is two offset red bars on the first stripe, consistent with a column-width mismatch on the test div. |
+| 2.1% (10000 px) | 2 | `-shorthand-001`, `-samelength-001` |
+| 2.6% (12544 px) | 2 | `-px-001`, `-shorthand-2` |
+| 3.3% (16000 px) | 1 | `-001` — **Ahem font-loader bug** (per progress.md 12d notes; `r.openFont(ahemPath)` returns -1 despite the font existing on disk). Out of 12h paint scope. |
+| 3.7% (17792 px) | 1 | `-stacking-001` |
+| 7.6% (36400 px) | 1 | `-nested-balancing-003` |
+| 7.8% (37200 px) | 1 | `-large-001` — column-rule much wider than the content; red background shows around rule edges. |
+| other | rest | `-fraction-001/002/003`, `-color-inherit-001/002`, `-000/002/003/004` — 0.1–3.3%. |
+
+**Implication for §7.** The current painter (`drawColumnRules` + Phase 12e `Box.RenderedColumnCount`) already handles: simple 2-col rules, nested balancing, "rules only between columns that both have content". A full Blink-parity `GapGeometry` + `GapDecorationsPainter` refactor will close **zero** of the 0.1% tests (those need positional/width fixes inside the painter, not a new abstraction) and **zero** of the Ahem-font-loader failure (`-001`). The high-value targets are `-large-001`, `-stacking-001`, `-nested-balancing-003` — each likely a specific painter bug (rule-wider-than-gap overlap, paint-order of rule vs. overlapping content, nested-multicol rule position on outer resume), not a missing abstraction.
+
+### Revised 12h scope
+
+Based on the survey, a Blink-parity name-for-name port of §7/§8/§9b will close 0 tests on its own. Better-targeted order (approved 2026-04-24):
+
+1. **Fix the Ahem font loader first.** `r.openFont(ahemPath)` returns -1 despite `/Users/iansmith/louis14/fonts/Ahem.ttf` + `/Users/iansmith/louis14/pkg/visualtest/testdata/wpt-css3/fonts/Ahem.ttf` existing. Multiple 12a–12g residuals (multicol-break-000/001, multicol-rule-001, columnfill-auto-max-height-001/002) are blocked on this, not on their named feature. Plausibly +4–6 tests just from the loader fix.
+2. **Root-cause the high-diff rule-paint bugs.** `-large-001` (7.8%), `-stacking-001` (3.7%), `-nested-balancing-003` (7.6%). Study Blink's `GapDecorationsPainter` for clip/order semantics but fix inside `drawColumnRules` + `paintLayer` — do not port `GapGeometry` as a type unless a test demands the structural change.
+3. **Root-cause `multicol-list-item-003`'s dropped trailing text.** Read Blink's handling of inline-text-after-spanner; this is IIM/`block_layout` work, not marker protocol.
+4. **Tiny-diff sweep.** The 0.1% solid/ridge/groove/outset/inset cluster looks like one shared positional bug on the test div (column-width or gap resolution). Single fix should close 8 tests.
+5. **`UnpositionedListMarker` protocol + `PropagateBaselineFromChild` — defer** until a test demands them. Document in `task_plan.md` Phase 12h so later sessions don't re-discover.
+
+### Adjusted expected gains
+
+- Task #7 (Ahem loader): ~+4–6 tests across multiple categories (not just css-multicol).
+- Steps 2–4: ~+8–12 multicol tests if the tiny-diff cluster shares a root cause and the high-diff tests yield to focused painter fixes.
+- Total 12h ambition: ~133 → 145-150 multicol PASS. Below the original §9b estimate of ~148 (133 + 15), but closer to reality given that Ahem failures and IIM bugs are pre-existing, not 12h-scope issues.
+
+### Files touched during survey
+None yet — survey is read-only. Image diffs generated into `output/reftests/multicol-{rule,list-item}-*_{test,ref,diff}.png` are runner artifacts from the targeted test runs.
+
+## Phase 12h step 1: Ahem font loader (2026-04-24)
+
+**Root cause.** Two-layer mismatch between louis14's web-font cache and mazzy's font resolver:
+
+1. `pkg/text/fontcache.go` `RegisterFontFace` cached fetched @font-face bytes under a SHA-256 hash basename (`<hash8>.ttf`). The path was then returned from `Registry.Lookup` as the "resolved" font path.
+2. `pkg/text/measure.go` `FontPathToFamilyVariant(path)` derives `(family, variant)` from the basename. Built-in fonts like `AtkinsonHyperlegible-Bold.ttf` round-trip to `("AtkinsonHyperlegible", VariantBold)` — but the hashed basename `<hash8>` rips the family name out of the pipeline.
+3. `Renderer.openFont` (render.go:197) calls `dc.OpenFont(family="<hash8>", variant=Regular, size)`. `DirectGlyphProvider.resolveFamily` (mazzy/textshape/rasterize.go:225):
+   - fontIndex has no `<hash8>` entry.
+   - Path-fallback needs the "family" string to contain `/`, `.ttf`, or `.otf` — the stripped `<hash8>` has none of those.
+   - Last-resort `filepath.Join(fontDir, "<hash8>")` yields a non-existent path under the built-in fonts dir.
+4. `OpenFont` returns an error → `Renderer.openFont` returns -1 → `drawText` silently drops the glyph run.
+
+Symptom: every WPT test that includes `<link rel="stylesheet" href="/fonts/ahem.css">` + `font: 1em Ahem` (or the longhand equivalents) silently rendered blank where Ahem glyphs belonged. The measure.go comment already flagged this: *"RegisterFontFace pushing the file into the provider's index by basename is the right fix for that case."*
+
+**Fix.** `pkg/text/fontcache.go`: name the cache file `<sanitize(family)>-<VariantToStyle(variant)>.ttf` (e.g. `Ahem-Regular.ttf`). `sanitize` keeps `[A-Za-z0-9]` and maps every other rune to `_`. `FontPathToFamilyVariant` now reverse-derives `("Ahem", Regular)` from the cache path, which `fonts.csv` has (`Ahem,Regular,Ahem.ttf,0`), so `resolveFamily` returns `/Users/iansmith/louis14/fonts/Ahem.ttf` — byte-identical to what `@font-face src: url(/fonts/Ahem.ttf)` fetched for every WPT test.
+
+**Limitation.** This works when the registered family is in `fonts.csv`. Bespoke @font-face families with names not in the index still fail the same way — the cached path gets reverse-derived to a family the provider can't resolve. The real fix for those is an `DirectGlyphProvider.RegisterFile(family, variant, absPath)` hook that louis14 calls from `Renderer.SetFonts` after processing @font-face rules. Deferred — not needed by any visible failing test; all WPT Ahem consumers hit the built-in path now.
+
+**Results (2026-04-24).**
+- `columnfill-auto-max-height-001.html`: PASS at 0 diff (was 2.1% / 10000 px).
+- `columnfill-auto-max-height-002.html`: PASS at 0 diff (was 2.1% / 10000 px).
+- `multicol-break-000.xht`: 820 px FAIL (was 1200 px). Ahem renders; residual is a `break-after:column` positioning bug — squares B and C sit ~10 px left of their column origins. Non-Ahem, non-12h; tracked for Phase 12d follow-up.
+- `multicol-break-001.xht`: 820 px FAIL (was 1200 px). Same root cause as -000.
+- `multicol-rule-001.xht`: 1200 px FAIL / 0.25% (was 16000 px / 3.3%). Ahem renders; residual is a column-rule paint edge bug where the green `column-rule: green solid 20em` doesn't quite cover the first and last ~5 px of the row, revealing the `background-color:red`. Folds into step 2 (`-large-001` / `-stacking-001` / `-nested-balancing-003` cluster).
+
+Gain below the pre-landing "+4-6" estimate because break-000/001 and rule-001 had non-Ahem bugs masked by the loader failure; those are now visible and drive subsequent steps.

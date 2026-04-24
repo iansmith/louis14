@@ -13,6 +13,38 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
+**Phase 12h step 1 (Ahem font loader): LANDED 2026-04-24.**
+
+Root cause: `@font-face` handling in `pkg/text/fontcache.go` cached fetched font bytes under a SHA-256 hash basename (`<hash>.ttf`). `FontPathToFamilyVariant` (pkg/text/measure.go:75) derives (family, variant) from the basename, so the hash-named cache file round-tripped as family `"<hash>"`, which `DirectGlyphProvider.resolveFamily` (mazzy rasterize.go:225) cannot find in `fonts.csv` and whose path-fallback also misses (no `/` / `.ttf` / `.otf` in the stripped basename). Result: `r.dc.OpenFont` returned an error → `Renderer.openFont` returned -1 → `drawText` silently dropped every Ahem glyph. The fix writes the cache file as `<family>-<variant>.ttf` (e.g. `Ahem-Regular.ttf`) so the reverse-derivation matches `fonts.csv`, which routes "Ahem/Regular" to the built-in `fonts/Ahem.ttf` (identical bytes to the @font-face src for WPT). Bespoke font-face families not in `fonts.csv` remain unresolvable — out of scope for this step; the foundational fix for those is provider-side registration (noted in the measure.go comment).
+
+Code: `pkg/text/fontcache.go` — replaced hash-basename with `sanitizeFamily(family)-VariantToStyle(variant).ttf`; added `sanitizeFamily` helper. One file, ~20 lines.
+
+**Driver results 2026-04-24:**
+- `columnfill-auto-max-height-001.html`: **PASS at 0 diff** (was 10000 px / 2.1%).
+- `columnfill-auto-max-height-002.html`: **PASS at 0 diff** (was 10000 px / 2.1%).
+- `multicol-break-000.xht`: FAIL 820 px (was 1200 px). Ahem glyphs render — residual is a multicol `break-after:column` positioning bug, not Ahem scope. Separate 12d-adjacent follow-up.
+- `multicol-break-001.xht`: FAIL 820 px (was 1200 px). Same as -000.
+- `multicol-rule-001.xht`: FAIL 1200 px / 0.25% (was 16000 px / 3.3%). Ahem renders — residual is a column-rule paint edge artifact; step 2 territory.
+
+**Gate spot check:** spanner-fragmentation 12/13 PASS (005 still pre-existing fail). No regression. wm/CSS2/css-flex/css-position not re-run per CLAUDE.md §4 (phase-boundary check only).
+
+**Net css-multicol gain: +2 (expected 133 → 135).** Below the "plausibly +4-6" pre-landing estimate — the gap is because break-000/001 and rule-001 have independent non-Ahem bugs that were masked by the loader failure and are now exposed.
+
+---
+
+**Phase 12h (css-multicol rule paint + baseline + list markers): KICKOFF SURVEY 2026-04-24.**
+
+Survey in `findings.md` "Phase 12h kickoff survey (2026-04-24)" establishes that a Blink-parity `GapGeometry` / `PropagateBaselineFromChild` / `UnpositionedListMarker` port closes ~0 tests by itself — `multicol-list-item-001/002` already PASS, most `-rule-*` failures are sub-pixel AA or the Ahem font-loader bug, and the named §7/§8/§9b abstractions aren't gated by any visible test. Revised scope:
+1. Fix Ahem font loader (blocks multicol-break-000/001, multicol-rule-001, columnfill-auto-max-height-001/002 across phases 12d/12e). **DONE 2026-04-24 — see above.**
+2. Root-cause `multicol-rule-large-001` / `-stacking-001` / `-nested-balancing-003` (3.7–7.8%).
+3. Root-cause `multicol-list-item-003`'s dropped inline-text-after-spanner.
+4. Sweep the 0.1% `-solid/ridge/groove/outset/inset/dashed/dotted/double-000` cluster (looks like one shared positional bug on the test div).
+5. `UnpositionedListMarker` + `PropagateBaselineFromChild` deferred until a test demands them.
+
+Expected gain: ~133 → 145-150 multicol PASS plus several cross-category Ahem wins. Below the §9b-predicted 148 ambition but justified by the survey. No code changes yet.
+
+---
+
 **Phase 12g (css-multicol break-avoidance stretch retry): PARTIAL 2026-04-24.**
 
 Blink-parity port of the break-appeal propagation that drives `column-fill:balance` stretch retry when `break-inside:avoid` / `break-before:avoid` / `break-after:avoid` is violated. Full `EarlyBreak` + `RelayoutAndBreakEarlier` machinery is NOT ported — Blink's EarlyBreak only matters when a PRIOR acceptable break point exists (widows/orphans mid-paragraph); for the current multicol drivers the stretch-retry loop alone is sufficient (Blink cla.cc:1053 ↔ 1210+), and louis14 already had that loop since Phase 12a.

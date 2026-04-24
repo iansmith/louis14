@@ -17,6 +17,8 @@
 
 **Phase 12g PARTIAL (2026-04-24).** Three `balance-break-avoidance-*` drivers PASS at 0 diff. Blink-parity port of break-appeal propagation from the block_layout fragmentainer-split overflow path + MinSpaceShortage computation for the BreakBefore soft-break path. Full `EarlyBreak` + `RelayoutAndBreakEarlier` retry NOT ported — stretch-retry alone handles current drivers (Blink cla.cc:1053 ↔ 1210+ flow). Net +3 multicol PASS (130 → 133).
 
+**Phase 12h KICKOFF SURVEY (2026-04-24).** Scope revised from the §7/§8/§9b name-parity port. Survey (see `findings.md` "Phase 12h kickoff survey (2026-04-24)") shows that `multicol-list-item-001/002` already PASS, most `multicol-rule-*` failures are Ahem font-loader or sub-pixel AA, and the named Blink abstractions close ~0 tests on their own. Revised attack order: (1) Ahem font loader **[DONE 2026-04-24, +2]**, (2) high-diff rule-paint fixes (`-large-001`, `-stacking-001`, `-nested-balancing-003`), (3) `multicol-list-item-003` trailing-text, (4) tiny-diff `-solid/ridge/groove/…-000` cluster sweep; `GapGeometry` / `PropagateBaselineFromChild` / `UnpositionedListMarker` parity ports deferred until a test demands them.
+
 ## css-position Goal (prior category, 91/104 — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-23, verified): **91 passing, 13 failing**. The 13 failures are all pre-existing residuals — none caused by Phase 12:
 
@@ -561,21 +563,23 @@ Reference: findings.md §9a. Blink source: `core/layout/column_layout_algorithm.
 - [ ] `EarlyBreak` struct + `RelayoutAndBreakEarlier<MulticolLayoutAlgorithm>` path — **deferred** until a test demands it.
 - [ ] Full Blink-parity `MovePastBreakpoint` refactoring (currently split between `BreakBeforeChildIfNeeded` in fragmentation_utils.go and the overflow path in block_layout.go) — **deferred** cleanup.
 
-### Phase 12h — Rule paint + baseline + list markers (~15 tests, S–M)
-**Goal.** Cleanup of painting + alignment APIs — three small concerns that all ride on the multicol container's post-layout hooks.
+### Phase 12h — Rule paint + baseline + list markers (~15 tests, S–M) — **SCOPE REVISED 2026-04-24 (kickoff survey)**
 
-Reference: findings.md §7 (rule paint), §8 (baseline), §9b (list markers). Blink list-marker protocol: `core/layout/list/unpositioned_list_marker.{h,cc}`.
+**Survey finding (2026-04-24).** See `findings.md` "Phase 12h kickoff survey (2026-04-24)" for full data. The originally-planned §7/§8/§9b Blink-parity abstractions close ~0 visible tests on their own: `multicol-list-item-001/002` already PASS; most `multicol-rule-*` failures are sub-pixel AA or the Ahem font-loader bug; the §9b "first-target test" is already green; and the current `drawColumnRules` painter + Phase 12e `RenderedColumnCount` plumbing is more capable than the pre-12a §7 audit assumed.
 
-- [ ] `GapGeometry{kMultiColumn}` populated with cross_gaps, main_gaps, columns_per_row; attached to multicol fragment via `SetGapGeometry` (cla.cc:424–481 parity).
-- [ ] `GapDecorationsPainter` equivalent (or extend existing column-rule painter to consume `GapGeometry`).
-- [ ] `PropagateBaselineFromChild` on column commits (cla.cc:1336, first column with baseline wins) + spanner commits (cla.cc:1496, first spanner with baseline wins).
-- [ ] `UnpositionedListMarker` protocol — carry a pending outside-marker through multicol layout with four callsites:
-  - Constructor: pull inherited `UnpositionedListMarker` off parent builder (cla.cc:250–264 parity).
-  - `LayoutLine` after first-column commit of each line: attempt marker baseline alignment (cla.cc:1302 parity). Only the first column of each line may try.
-  - `LayoutSpanner` after commit: spanner may claim an unclaimed marker (cla.cc:1498 parity).
-  - End-of-`Layout` fallback `PositionAnyUnclaimedListMarker`: place against container's own box (cla.cc:383 parity).
-- [ ] Driver tests: `multicol-rule-001.html` (`multicol-rule-*` ~30) and `multicol-list-item-001.xht` (`multicol-list-*` ~7).
-- [ ] **Gate:** same invariants.
+**Revised scope (priority order; stop at each step if gate invariants move unexpectedly):**
+
+1. [x] **Ahem font loader.** **DONE 2026-04-24** — `pkg/text/fontcache.go` now writes @font-face cache files as `<family>-<variant>.ttf` so `FontPathToFamilyVariant` can reverse-derive the logical family and `DirectGlyphProvider.resolveFamily` routes to the fonts.csv entry. Net +2 multicol PASS (`columnfill-auto-max-height-001/002` at 0 diff). `multicol-break-000/001` and `multicol-rule-001` now render Ahem glyphs but still fail on separate non-Ahem residuals (break-after:column positioning; column-rule edge paint) that were masked before. Bespoke @font-face families not in fonts.csv remain unresolvable — deferred pending provider-side registration; not demanded by any current test. Details in `progress.md` "Phase 12h step 1".
+2. [ ] **Root-cause high-diff rule-paint failures.** `multicol-rule-large-001` (7.8%), `multicol-rule-stacking-001` (3.7%), `multicol-rule-nested-balancing-003` (7.6%). Read Blink's `GapDecorationsPainter` for clip/order semantics but fix inside `drawColumnRules` + `paintLayer` — do not port `GapGeometry` as a type unless a test demands the structural change.
+3. [ ] **`multicol-list-item-003` dropped trailing text.** Inline text after a `column-span:all` spanner disappears in our render. Marker position is already correct; this is `block_layout` / IIM work (post-spanner inline flow), not marker-protocol work. Likely closes just -003 but touches Phase 12b territory.
+4. [ ] **Tiny-diff cluster sweep.** `multicol-rule-solid/ridge/groove/outset/inset/dashed/dotted/double/color-000` all fail at 700 px with a diff that looks like a ~10 px column-width error on the test div. Looks like a single shared root cause — candidate fix closes ~8 tests.
+5. [ ] **Deferred (keep for future phase, not abandoned):**
+  - `GapGeometry{kMultiColumn}` + `GapDecorationsPainter` structural port (cla.cc:424–481) — revisit when a test demands cross_gaps / columns_per_row / spanner-adjacency flagging (`UpdateCrossGapSegmentStates`).
+  - `PropagateBaselineFromChild` on column + spanner commits (cla.cc:1336, 1496) — revisit when a multicol-inside-flex/grid test needs the outer's baseline to track the inner.
+  - `UnpositionedListMarker` four-callsite protocol (cla.cc:250, 1302, 1498, 383) — revisit when a test exercises marker protocol beyond what our current path already handles (001/002 PASS; 003's bug is elsewhere).
+
+- [ ] Driver tests (updated): task #7 Ahem loader; `multicol-rule-large-001.xht` for step 2; `multicol-list-item-003.html` for step 3; `multicol-rule-solid-000.xht` for step 4.
+- [ ] **Gate:** wm, CSS2, css-flexbox, css-position, spanner-fragmentation 12/13 all hold; css-multicol should trend ~133 → 145–150.
 
 ## Discipline (CLAUDE.md recap)
 1. Re-read `findings.md` "css-multicol" Blink research section at the start of each phase.
@@ -599,5 +603,5 @@ Reference: findings.md §7 (rule paint), §8 (baseline), §9b (list markers). Bl
 - **M12e:** column-fill:auto; **PARTIAL 2026-04-24** — driver `multicol-fill-auto-block-children-003` (max-height-imposes-on-columns) PASS at 0 diff. Net +1 multicol PASS (123 → 124). Cluster residuals are missing-text-rendering, inline-overflow-clip, "more forced breaks than columns" (auto-height), and spanner+block-children — all separate root causes documented in the Phase 12e section.
 - **M12f:** column-height + column-wrap (Blink-parity port of CSS Multicol L2 §4.2). **PARTIAL 2026-04-24** — driver `column-height-001.html` PASS at 0 diff. Net +6 multicol PASS (124 → 130); cluster 6/31. Leaf cumulative-consumed fix + break-token slot-layout fix unblocked row-wrap; 12f.6 `MulticolBreakTokenData` row-carry and row-gap between column rows deferred. Details in Phase 12f section.
 - **M12g:** break-avoidance stretch retry (scoped port of Blink's has_violating_break propagation). **PARTIAL 2026-04-24** — 3 `balance-break-avoidance-*` drivers PASS at 0 diff. Net +3 multicol PASS (130 → 133). Full `EarlyBreak` + `RelayoutAndBreakEarlier` retry deferred (not needed by visible failing tests — stretch-retry alone handles them). Details in Phase 12g section + findings.md.
-- **M12h:** rule paint + baseline + list markers; +15. → ~313+.
+- **M12h:** rule paint + baseline + list markers — **scope revised 2026-04-24 (kickoff survey)**. Original §7/§8/§9b abstractions close ~0 tests on their own; `multicol-list-item-001/002` already PASS; most `multicol-rule-*` failures are Ahem-font-loader or sub-pixel AA. Revised attack: (1) Ahem loader, (2) high-diff rule-paint bugs, (3) `multicol-list-item-003` trailing-text, (4) tiny-diff cluster sweep; `GapGeometry` / `PropagateBaselineFromChild` / `UnpositionedListMarker` parity ports deferred until a test demands them. Ambition: css-multicol 133 → 145–150 + cross-category Ahem wins.
 - Targets are conservative; overlapping cluster closures (e.g., `multicol-count-*`, `multicol-columns-*`, `multicol-gap-*`, `multicol-width-*`) likely push the final number higher without explicit phase work.
