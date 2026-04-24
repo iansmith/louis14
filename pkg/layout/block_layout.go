@@ -191,10 +191,30 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	} else if hasOnlyInlineChildren(bla.node) {
 		// Inline formatting context: text nodes and inline-level children.
 		// When resuming from a column break, start the line breaker at the
-		// saved item index from the incoming break token.
+		// saved item index + text offset from the incoming break token.
+		// Mirror Blink's `InlineBreakToken.start_` which carries both the
+		// item-index AND the text-offset (cla.cc path, cf. findings §F4).
+		// Resume when EITHER is non-zero — a single-text-item IFC (e.g.
+		// `<div>xx xx<br/>xx xx<br/>xx xx</div>`) advances only the text
+		// offset while the item index stays 0, so gating on
+		// `InlineItemStartIndex > 0` alone would re-start at idx=0 and the
+		// next column re-lays the same prefix.
+		// The inline state on the break token is only meaningful when the
+		// token refers to THIS block's own IFC (Node == bla.node); when a
+		// mixed block+inline multicol forwards a break token whose inline
+		// state belongs to a sibling block's IFC, this block must ignore
+		// those fields to avoid resuming with the wrong cursor.
 		inlineStartIdx := 0
 		inlineStartTextOffset := 0
-		if incomingBreakToken != nil && incomingBreakToken.InlineItemStartIndex > 0 {
+		// Honor the inline resume state on the incoming break token.
+		// Mirrors Blink's `InlineBreakToken.start_` which carries both
+		// item-index AND text-offset — single-text-item IFCs advance only
+		// the text offset across columns, so gating on
+		// `InlineItemStartIndex > 0` alone re-starts at idx=0 and loses
+		// the resume point (findings §F4).
+		if incomingBreakToken != nil &&
+			(incomingBreakToken.InlineItemStartIndex > 0 ||
+				incomingBreakToken.InlineTextOffset > 0) {
 			inlineStartIdx = incomingBreakToken.InlineItemStartIndex
 			inlineStartTextOffset = incomingBreakToken.InlineTextOffset
 		}

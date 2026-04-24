@@ -390,7 +390,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 	lb := NewLineBreaker(itemsData, bla.ctx, lineSpace, fonts, LineBreakerContent)
 	lb.availableWidth = lineAvailableWidth
-	if startItemIndex > 0 && startItemIndex < len(itemsData.Items) {
+	// Resume cursor from incoming break token. Mirrors Blink's
+	// `InlineBreakToken::start_` which carries both item-index AND
+	// text-offset. Restore when EITHER advances past 0 — a single-text-
+	// item IFC (e.g. `<div>xx xx<br/>xx xx<br/>xx xx</div>`) keeps
+	// startItemIndex=0 while startTextOffset advances line-by-line, so
+	// gating on `startItemIndex > 0` alone loses the resume point and
+	// makes each subsequent column re-start at the beginning.
+	// See findings §F4.
+	if (startItemIndex > 0 || startTextOffset > 0) && startItemIndex < len(itemsData.Items) {
 		lb.currentItemIndex = startItemIndex
 		if startTextOffset > itemsData.Items[startItemIndex].StartOffset {
 			lb.currentTextOffset = startTextOffset
