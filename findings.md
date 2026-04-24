@@ -119,6 +119,35 @@ Paired with the "ACTIVE FOLLOW-UP BATCH" block at the top of `task_plan.md`. Dro
 - **Known (from Phase 12f section of `progress.md`):** 24 cluster residuals at 0.1–4.2 %. Named sub-causes: row-gap plumbing (`rowGapSize = 0` hardcoded), `MulticolBreakTokenData` row-carry (12f.6 deferred), forced-break + wrap interactions, overflow-past-declared-columns for `column-wrap:nowrap`.
 - **Next:** triage the 24 tests by shape. Whichever sub-cause hits the most is the first target. Likely starting candidate: `column-height-008.html` (row-gap) because it's a concrete one-property fix.
 
+**Blink-parity research agents (2026-04-24). Four agent investigations against `refs/heads/main`:**
+
+**Agent 1 — Spanner row-stride after a spanner.** Blink does NOT use a `current_row_offset_` / `row_origin_` member. Row alignment is maintained by (a) pre-commit snap inside `LayoutSpanner` (cla.cc:1427-1459) and (b) post-spanner first-iteration row-advance guard in `LayoutFragmentationContext` (cla.cc:795-797). Exact formulas:
+- `OffsetInCurrentRow(line_offset)` = `(CurrentContentBlockOffset(line_offset) + break_token_data->consumed_row_block_size) % row_stride` — no row-origin subtracted. cla.cc:2122-2139.
+- `OffsetToNextRow` = `RowHeight() - OffsetInCurrentRow(line_offset) + row_gap_size_`. cla.cc:2146-2158.
+- Pre-commit snap: if spanner doesn't fit in remaining row AND past row start, `intrinsic_block_size_ += RemainingRowHeightAtOffset(intrinsic_block_size_) + row_gap_size_`. Gated on `IsPastStartInWrappingRow` (cla.cc:2160-2163 = `ShouldWrapColumns && OffsetInCurrentRow(line_offset) > 0`).
+- Row-advance guard: `!is_first_row || (ShouldWrapColumns && HasRowHeight && RowHeight>0 && RemainingRowHeightAtOffset(line_offset) <= 0)`. cla.cc:795-797.
+- `MulticolBreakTokenData::consumed_row_block_size` (cla.cc:2134) is an OUTER-fragmentation carry for row split across outer fragmentainers — NOT a spanner-reset mechanism.
+- **Ported as F3d** (commit `dde9de54`).
+
+**Agent 2 — Multi-spanner row-gap sequencing.** Consecutive `column-span: all` spanners: `LayoutSpanner()` is called twice, `LayoutFragmentationContext()` is NOT re-entered between them. The walker's `MoveToNext()` (cla.cc:195-223) explicitly chains siblings (line 207-213: *"Otherwise, if there's a next spanner, we'll use that."*). Between adjacent spanners: NO row-gap, only a margin-strut (cla.cc:1408-1409: *"Collapse the block-start margin of this spanner with the block-end margin of an immediately preceding spanner, if any."*). Pre-commit snap runs independently per spanner (cla.cc:1418-1425: `block_offset = intrinsic_block_size_ + margin_strut->Sum()` recomputed each call). If spanner 1 left `intrinsic_block_size_` exactly on a row boundary, `IsPastStartInWrappingRow(block_offset) == false` and spanner 2 is placed back-to-back with no snap/no row-gap; if mid-row, spanner 2 snaps via cla.cc:1436-1445 (consume remainder + add `row_gap_size_`). No row-gap between adjacent spanners is the key takeaway. cla.cc:617-714, 681-713, 764-834, 1397-1522.
+
+**Agent 3 — `column-wrap: nowrap` + `column-height` overflow.** With nowrap, Blink keeps spawning columns past `column-count` when content remains. Exact mechanism:
+- Per-column loop terminates only on `(column_break_token && actual_column_count >= used_column_count_ && !overflow_in_inline_direction)` (cla.cc:1081-1084).
+- `ColumnsOverflowInInlineDirection()` (cla.cc:2025-2044): returns true for unnested `column-wrap:nowrap`. So the cap at `used_column_count_` is skipped and the loop exits only when `column_break_token == nil` (content exhausted).
+- Overflow columns' inline offsets: `column_inline_offset += progression_distributor.Next()` (cla.cc:1055); the `LayoutUnitDiffuser(inline_stride_, used_column_count_)` resets per full cycle (cla.cc:1057-1061) so overflow columns step by `column_width + column_gap` with the same stride.
+- Multicol container's *own* inline-size is taken once at cla.cc:267 from `InitialBorderBoxSize()` and **never grows** — overflow columns paint past the container's declared width as ink/scrollable overflow.
+- `column-fill: auto` vs `balance`: balance-pass flips back to stretching to fit `used_column_count_` rather than spawning extras; auto stays with fixed `column-height` per column.
+- **Not yet ported.** Our engine caps at `numCols` unconditionally (`if col+1 >= numCols { break }`). A trial implementation that added the nowrap-exemption produced the extra columns internally but the painter clips them at the multicol's declared width — needs a corresponding paint-layer change to allow overflow columns to paint past the border-box. Deferred.
+
+**Agent 4 — Multicol auto-height with trailing overflow row.** The agent's simulation of column-height-024 against the exact cited code produced `intrinsic_block_size_ = 120` (our port's value), not 100 (what Blink actually reports for this test). Likely suppression paths in order of plausibility:
+- A per-line cap on `intrinsic_block_size_contribution` via `column_size.block_size = RemainingRowHeightAtOffset(line_offset)` at cla.cc:868 — already matched by our port.
+- The `ConstrainColumnBlockSize` re-clamp at cla.cc:2017-2020: `if (HasRowHeight()) size = std::min(size, RemainingRowHeightAtOffset(line_offset));` ("Never become taller than used `column-height`") — already matched.
+- Possible `is_empty` suppression at cla.cc:1288-1290 — but for -024 the 40-tall child creates a real fragment, so `is_empty=false`.
+- Blink's `ClampIntrinsicBlockSize` at cla.cc:369-371 before `ComputeBlockSizeForFragment` at cla.cc:373.
+- **Open question.** Worth running the test in a real Blink build before attempting a port. Deferred.
+
+---
+
 **Blink-parity reference (restated from §9a, so this block is self-contained).**
 
 Spec: CSS Multi-column Level 2 §4.2. `column-height: auto | <length [0,∞]>` (no percentages). Companion `column-wrap: nowrap | wrap`. Gated on runtime feature `MulticolColumnWrapping`.

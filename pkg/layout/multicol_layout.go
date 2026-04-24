@@ -54,11 +54,17 @@ func NewMulticolLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space
 }
 
 // isMulticolContainer returns true if the style triggers multi-column layout.
+// CSS Multicol L1: column-count or column-width establishes multicol.
+// CSS Multicol L2 §4.2: a non-auto column-height ALSO establishes multicol
+// (see WPT column-height-012 "Non-auto column-height should turn it into
+// a multicol"). Mirrors Blink's ComputedStyle::HasMultiColumn which checks
+// all three properties.
 func isMulticolContainer(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
-	return style.GetColumnCount() > 0 || style.GetColumnWidth() > 0
+	return style.GetColumnCount() > 0 || style.GetColumnWidth() > 0 ||
+		style.GetColumnHeight() >= 0
 }
 
 // ResolveColumnCountForPaint is a public wrapper around resolveColumnCount
