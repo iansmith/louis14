@@ -67,7 +67,7 @@ Gate: css-multicol **165 → 167 (+2 net from F3d; cumulative +12 from F3 start)
 
 Remaining (largest): `-013` (6500 px, multi-spanner row-gap; the Blink-parity pre-snap fires on its single-spanner portion but the multi-spanner sequence has its own alignment puzzle), `column-wrap-no-constraints-002` (6000 px), `-006` (5250), `-005/-011/-030` (5000 each). Several tests in the 1000-3000 range. The 2026-04-24 agent research block added to findings §F3 gives the exact Blink line refs for the next incremental attack.
 
-### F3. Phase 12f column-height/column-wrap residuals — IN PROGRESS 2026-04-24 (ORIGINAL ENTRY BELOW)
+### F3. Detailed breakdown
 
 **First increment (F3a): row-gap plumbing (commit `ea88390b`)** — `GetRowGapMulticol()` read from style; multicol 155→157.
 
