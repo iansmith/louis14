@@ -1691,12 +1691,6 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 	if fl == nil {
 		// No layers — just paint background-color.
 		if c := layer.BackgroundColor; c.A > 0 {
-			if sy+sh >= 149 && sw <= 26 {
-				fmt.Fprintf(os.Stderr, "[DBG] drawBackground: x=%.0f y=%.0f w=%.0f h=%.0f color=(%d,%d,%d)\n", sx, sy, sw, sh, c.R, c.G, c.B)
-				if layer.Box != nil {
-					fmt.Fprintf(os.Stderr, "[DBG]   box: X=%.0f Y=%.0f W=%.0f H=%.0f style=%v\n", layer.Box.X, layer.Box.Y, layer.Box.Width, layer.Box.Height, layer.Box.Style != nil)
-				}
-			}
 			r.setColor(c)
 			if hasRadius {
 				r.buildRoundedRectPath(sx, sy, sw, sh, radii)

@@ -267,6 +267,30 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
+	// Multicol column fragmentainer: block-axis clip only, so a child
+	// wider than the column's inline extent (e.g. width:200 % in a
+	// narrow sub-column) paints through adjacent columns. See the
+	// PhysicalFragment.ClipBlockAxisOnly doc comment and findings.md
+	// "F2 Blink reference".
+	blockAxisOnlyClip := box.ClipBlockAxisOnly
+	if blockAxisOnlyClip {
+		blockAxisIsY := true
+		if box.Style != nil {
+			if wm, ok := box.Style.Get("writing-mode"); ok {
+				if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
+					blockAxisIsY = false
+				}
+			}
+		}
+		if blockAxisIsY {
+			clipY = true
+			clipX = false
+		} else {
+			clipX = true
+			clipY = false
+		}
+	}
+
 	if clipX || clipY {
 		layer.HasClip = true
 		layer.ClipX = clipX

@@ -29,7 +29,15 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 Investigation showed these 2 tests were *never passing*, not a regression. Verified via `git worktree` at `9913a9e4` (claimed phase-5f landing): same 1598 px diff, and wm at that commit was **757/781**, not 781/781 as tracking claimed. HEAD at 779/781 is actually *+22 since 5f*.
 
 Instrumentation of `injectBidiControlChars` + `StripBidiControls` + bidi-level computation showed control-char injection and UAX#9 level resolution are correct for the TEST case (Hebrew chars inside LRE span resolve to level 3 as expected). Rendered `.test` wrapper is ~11 px shorter per line than the `.ref` wrapper, with 29 px accumulated gap by wrapper 2's bottom. Likely culprits are bidi-mirror-glyph substitution (`>` → `<` at odd levels) and/or multi-item line-box boundary behavior, not a missing control-char injection. Deferred pending a dedicated bidi-parity phase. See findings §F1 for the full diagnosis + Blink-parity reference.
-### F2. Phase 12c nested-multicol leaf paint-slicing — PENDING
+### F2. Phase 12c nested-multicol leaf paint-slicing — PARTIAL 2026-04-24
+
+First of two root causes fixed. New field `PhysicalFragment.ClipBlockAxisOnly` + `Box.ClipBlockAxisOnly`, threaded via `engine.go`. Multicol column fragmentainers now request block-axis-only clipping (inline overflow allowed, block overflow still clipped) — matches Blink's "painter has no per-column clip" model without sacrificing our engine's existing reliance on clip for block-axis monolith handling. Driver `multicol-nested-010.html`: 4500 → 3500 px diff (visual progress; top 60 rows now fully green, previously 25×60 green + 25×40 red in col 2).
+
+Second root cause (leaf fragmentation across inner sub-cols) not yet addressed. Our inner-multicol places the `contain:size; width:200%; height:100px` leaf in *both* inner sub-cols of child 2 (3 fragments, declared heights 100/80/60) where Blink places it only in sub-col 1's continuation across the outer boundary. Remaining 40-row red band in col 2 stems from this.
+
+Gate (post-first-fix): css-multicol 154 → 155 (+1 net); wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged. No regressions.
+
+See findings §F2 for the full diagnosis + Blink-parity reference.
 ### F3. Phase 12f column-height/column-wrap residuals — PENDING
 ### F4. Phase 12h.2 inline-in-balanced-multicol — PENDING
 ### F5. Phase 12h.3 list-item-003 trailing text — PENDING

@@ -885,13 +885,18 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 			colFrag := result.Fragment
 			colHeight := NewLogicalFragment(wdm, colFrag).BlockSize()
-			// Column fragmentainers always clip their content — child fragments
-			// may have their full declared size (e.g. a leaf block with height:40px
-			// placed in a 20px column), but only the portion within the column
-			// should be visible. Mirrors Blink's SetShouldClipFragment on column
-			// fragmentainer fragments.
+			// Column fragmentainers clip their content in the BLOCK axis only:
+			// a child taller than the column fragment (e.g. our engine's
+			// leaf-with-height:40 placed in a 20-tall column) must not paint
+			// beyond the column's block extent. But in the INLINE axis, wide
+			// children must be allowed to overflow into adjacent columns —
+			// this is how CSS multicol expresses a width:200 % leaf inside a
+			// narrow sub-column. Blink's BoxFragmentPainter::PaintBlockChild
+			// fragmentainer branch pushes no per-column clip at paint time;
+			// we approximate by clipping only the block axis, keeping the
+			// inline overflow visible. See findings.md "F2 Blink reference".
 			if colBlockSize != Indefinite {
-				colFrag.ClipContentToBorderBox = true
+				colFrag.ClipBlockAxisOnly = true
 			}
 
 			columns = append(columns, struct {
