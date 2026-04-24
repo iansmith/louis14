@@ -171,6 +171,13 @@ type PhysicalFragment struct {
 	// content to the table-cell's border-box"). Default is false;
 	// normal overflow semantics apply.
 	ClipContentToBorderBox bool
+
+	// RenderedColumnCount is the number of column fragments actually placed
+	// in this multicol fragment (column-fill:auto may render fewer columns
+	// than column-count when content fits in a subset). Zero for non-multicol
+	// fragments. Used by the column-rule painter to honor the spec rule that
+	// rules are only drawn between columns that both have content.
+	RenderedColumnCount int
 }
 
 // ChildLink is a positioned child within a parent fragment.

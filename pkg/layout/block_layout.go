@@ -884,9 +884,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						} else if bla.space.IsBlockSizeOverride {
 							// Inner column context: fragment leaf block at column boundary so
 							// its background/content is correctly split across columns.
+							// Accumulate consumed across fragmentainers (Phase 12f): the
+							// outgoing token reports the cumulative portion of the leaf's
+							// declared size that has been visually placed, not just this
+							// column's share. Without this, column-wrap:wrap resumes the
+							// leaf from the same position every row, never terminating.
+							totalConsumed := childConsumed
+							if resumeChildBreakToken != nil && childIdx == resumeChildIdx {
+								totalConsumed += resumeChildBreakToken.ConsumedBlockSize
+							}
 							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
 								Node:              child,
-								ConsumedBlockSize: childConsumed,
+								ConsumedBlockSize: totalConsumed,
 							})
 						} else {
 							// Non-column context (e.g. spanner content in outer fragmentainer):

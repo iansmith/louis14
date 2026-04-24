@@ -14,11 +14,29 @@ import (
 // MinimalSpaceShortage feedback, inline content fragmentation.
 // Phase 12b: ColumnSpannerPath detection + MulticolPartWalker-style walk loop,
 // LayoutSpanner, re-balance after spanner, column-fill:auto + spanner flip.
+// Phase 12f: column-height / column-wrap (CSS Multicol Level 2 §4.2) — row
+// block-size override, row-wrap loop, intrinsic-block-size top-off,
+// MulticolBreakTokenData.consumed_row_block_size row-phase carry across outer
+// fragmentainers.
 type MulticolLayoutAlgorithm struct {
 	ctx   *LayoutContext
 	node  *LayoutInputNode
 	style *css.Style
 	space ConstraintSpace
+
+	// Phase 12f row-wrap state. Populated in Layout() before the walker loop.
+	// remainingContentBlockSize is Blink's remaining_content_block_size_
+	// (cla.cc:313): the content-box block size minus any size consumed from an
+	// outer fragmentation context, clamped to zero; Indefinite for an auto
+	// multicol height. Used by rowHeight() when column-height is auto.
+	remainingContentBlockSize float64
+	// consumedRowBlockSize carries the MulticolBreakTokenData row phase across
+	// an outer fragmentainer boundary (cla.cc:2087). Zero when this is the
+	// first outer column of the multicol.
+	consumedRowBlockSize float64
+	// rowGapSize is the block-axis gap between column rows. Zero today —
+	// CSS Multicol L2 row-gap between column rows is not yet plumbed.
+	rowGapSize float64
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -71,6 +89,84 @@ func resolveColumnCount(availableInline float64, colCount int, colWidth float64,
 	return N, W
 }
 
+// hasAutoColumnHeight returns true when the CSS column-height is auto (or
+// unset). Mirrors Blink's Style().HasAutoColumnHeight().
+func (mla *MulticolLayoutAlgorithm) hasAutoColumnHeight() bool {
+	return mla.style.GetColumnHeight() < 0
+}
+
+// hasRowHeight mirrors Blink's HasRowHeight() (column_layout_algorithm.h:258).
+// True when column-height is non-auto, or the multicol has a definite remaining
+// content block-size (inherited from a definite block-size on the container).
+func (mla *MulticolLayoutAlgorithm) hasRowHeight() bool {
+	return !mla.hasAutoColumnHeight() ||
+		(mla.remainingContentBlockSize != Indefinite && mla.remainingContentBlockSize > 0)
+}
+
+// rowHeight mirrors Blink's RowHeight() (column_layout_algorithm.h:267). When
+// column-height is non-auto it returns the CSS value; otherwise the remaining
+// content block-size (which the caller guarantees is positive via hasRowHeight).
+func (mla *MulticolLayoutAlgorithm) rowHeight() float64 {
+	if !mla.hasAutoColumnHeight() {
+		return mla.style.GetColumnHeight()
+	}
+	return mla.remainingContentBlockSize
+}
+
+// rowStride is row_height + row_gap_size (cla.cc:2122).
+func (mla *MulticolLayoutAlgorithm) rowStride() float64 {
+	return mla.rowHeight() + mla.rowGapSize
+}
+
+// shouldWrapColumns mirrors Blink's ShouldWrapColumns() (column_layout_algorithm.h:221).
+// Wrap is forced by column-wrap:wrap, suppressed by column-wrap:nowrap, and for
+// column-wrap:auto follows HasAutoColumnHeight (wrap when column-height is set).
+func (mla *MulticolLayoutAlgorithm) shouldWrapColumns() bool {
+	switch mla.style.GetColumnWrap() {
+	case "wrap":
+		return true
+	case "nowrap":
+		return false
+	}
+	return !mla.hasAutoColumnHeight()
+}
+
+// offsetInCurrentRow mirrors Blink's OffsetInCurrentRow (cla.cc:2122). Returns
+// the block-axis offset within the current column row. At exact row boundaries
+// the result is zero — so remainingRowHeightAtOffset at such a boundary equals
+// the full row height (a fresh row is available).
+func (mla *MulticolLayoutAlgorithm) offsetInCurrentRow(lineOffset float64) float64 {
+	stride := mla.rowStride()
+	if stride <= 0 {
+		return 0
+	}
+	// CurrentContentBlockOffset(line_offset) = line_offset - border_padding.start.
+	// lineOffset is already content-box relative in our builder (columns add at
+	// content-box offset, border/padding applied separately), so no subtraction.
+	cbo := lineOffset + mla.consumedRowBlockSize
+	return math.Mod(cbo, stride)
+}
+
+// remainingRowHeightAtOffset mirrors Blink (cla.cc:2141). RowHeight() minus the
+// offset within the current row.
+func (mla *MulticolLayoutAlgorithm) remainingRowHeightAtOffset(lineOffset float64) float64 {
+	return mla.rowHeight() - mla.offsetInCurrentRow(lineOffset)
+}
+
+// offsetToNextRow mirrors Blink (cla.cc:2146). When hasRowHeight and we are
+// past a row start, returns the distance to the row end plus row_gap_size. At
+// an exact row boundary (offset_within_row == 0) returns only row_gap_size.
+func (mla *MulticolLayoutAlgorithm) offsetToNextRow(lineOffset float64) float64 {
+	var offsetToRowEnd float64
+	if mla.hasRowHeight() {
+		within := mla.offsetInCurrentRow(lineOffset)
+		if within > 0 {
+			offsetToRowEnd = mla.rowHeight() - within
+		}
+	}
+	return offsetToRowEnd + mla.rowGapSize
+}
+
 // Layout performs multi-column layout and returns the result.
 // Mirrors Blink's ColumnLayoutAlgorithm::Layout().
 func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
@@ -90,13 +186,53 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	gap := mla.style.GetColumnGapMulticol()
 	numCols, usedColWidth := resolveColumnCount(contentInlineSize, colCount, colWidth, gap)
 
-	// Container explicit block-size (from CSS height/max-height).
+	// Container explicit block-size (from CSS height).
 	hasExplicitBlock := geom.BorderBoxSize.BlockSize != Indefinite
 	var explicitBlockSize float64
 	if hasExplicitBlock {
 		explicitBlockSize = geom.BorderBoxSize.BlockSize - geom.BlockBorderPadding()
 		if explicitBlockSize < 0 {
 			explicitBlockSize = 0
+		}
+	}
+
+	// Phase 12f: remaining_content_block_size_ (Blink cla.cc:313). The content
+	// block-size minus what the outer fragmentation context has already consumed
+	// for us, clamped to zero. Indefinite when the multicol has an auto height.
+	// Used by hasRowHeight()/rowHeight() when column-height is auto.
+	mla.remainingContentBlockSize = Indefinite
+	if hasExplicitBlock {
+		mla.remainingContentBlockSize = explicitBlockSize
+		if mla.space.BreakToken != nil &&
+			mla.space.HasBlockFragmentation &&
+			mla.space.FragmentainerBlockSize != Indefinite &&
+			!mla.space.IsInitialColumnBalancingPass {
+			mla.remainingContentBlockSize -= mla.space.BreakToken.ConsumedBlockSize
+			if mla.remainingContentBlockSize < 0 {
+				mla.remainingContentBlockSize = 0
+			}
+		}
+	}
+	// Phase 12f: MulticolBreakTokenData row phase carry across outer
+	// fragmentainers (cla.cc:2087). Default 0 on fresh layout; wired from the
+	// break token when 12f.6 lands.
+	mla.consumedRowBlockSize = 0
+
+	// Phase 12e: max-height as a column-height constraint when the multicol's
+	// own block-size is auto. With column-fill:auto and an auto multicol height,
+	// max-height bounds each column box's height (Blink behavior; CSS Multi-
+	// column L1 §7.1 "fill columns sequentially"; WPT columnfill-auto-max-height-*
+	// + multicol-fill-auto-block-children-003).
+	//
+	// We only consult max-height when hasExplicitBlock is false. When the
+	// multicol HAS an explicit (resolved) height, that height is already clamped
+	// by max/min via CalculateInitialFragmentGeometry — applying max-height
+	// again here would incorrectly override min-height (which can override
+	// max per CSS 2.1 §10.7's "max applies, then min" rule).
+	effectiveMaxBlockSize := Indefinite
+	if !hasExplicitBlock {
+		if maxBS, ok := ResolveMaxBlockSize(mla.style, wdm, mla.space, geom); ok {
+			effectiveMaxBlockSize = maxBS
 		}
 	}
 
@@ -136,6 +272,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	blockCursor := 0.0
+	// Total column fragments placed across all column rows (excludes spanners).
+	// Surfaced on the multicol fragment so the column-rule painter can honor
+	// "rules between columns that both have content" (CSS Multicol L1 §5).
+	totalColumnsRendered := 0
 
 	// Detect outer fragmentation context: we are inside another multicol or
 	// paged-media fragmentainer that has a finite block size. When present,
@@ -173,7 +313,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		if len(bt.ChildBreakTokens) > 0 {
 			nextColToken = bt.ChildBreakTokens[0]
 		}
-		if len(bt.ChildBreakTokens) > 1 {
+		if len(bt.ChildBreakTokens) > 1 && bt.ChildBreakTokens[1] != nil {
 			partialToken := bt.ChildBreakTokens[1]
 			spannerConsumed = partialToken.ConsumedBlockSize
 			hasSpannerResume = true
@@ -236,12 +376,18 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			Padding: physPadding,
 		})
 		result := builder.Build()
-		childTokens := []*BlockBreakToken{prevNextColToken}
-		if partialSpannerToken != nil {
-			childTokens = append(childTokens, partialSpannerToken)
-		}
-		if pendingColRowsBreakToken != nil {
-			childTokens = append(childTokens, pendingColRowsBreakToken)
+		// Token-slot layout (mirrors the parser at the top of Layout):
+		//   [0] nextColToken (pre-spanner column rows)
+		//   [1] partialSpannerToken (mid-spanner resume state)
+		//   [2] pendingColRowsBreakToken (post-spanner column rows resume)
+		// Keep the slots fixed so [2] is never misread as [1] — if a col-rows
+		// resume exists without a partial spanner, a nil placeholder fills
+		// slot [1].
+		childTokens := []*BlockBreakToken{prevNextColToken, partialSpannerToken, pendingColRowsBreakToken}
+		// Trim trailing nil slots to keep the break-token minimal. Keep [0]
+		// at minimum so the parser can still pick up nextColToken.
+		for len(childTokens) > 1 && childTokens[len(childTokens)-1] == nil {
+			childTokens = childTokens[:len(childTokens)-1]
 		}
 		result.BreakToken = &BlockBreakToken{
 			Node:             mla.node,
@@ -250,21 +396,63 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		if len(builder.outOfFlowCandidates) > 0 {
 			result.PropagatedOOFCandidates = builder.outOfFlowCandidates
 		}
+		if result.Fragment != nil {
+			result.Fragment.RenderedColumnCount = totalColumnsRendered
+		}
 		return result
 	}
 
 	// MulticolPartWalker-style loop: LayoutLine until a spanner is detected,
 	// lay out the spanner at full width, then resume LayoutLine from after it.
 	// Mirrors Blink's ColumnLayoutAlgorithm::LayoutChildren() + LayoutFragmentationContext().
+	// isFirstRow tracks the first row within a column-run (the run between
+	// spanners, or before the first spanner). Phase 12f row-wrap advances
+	// line_offset only after the first row in a run. Reset to true when the
+	// walker enters a new column-run after a spanner placement.
+	isFirstRow := true
 	for {
-		rowBlockAdvance, spannerPath, remainingToken := mla.layoutLine(
+		// Phase 12f (Blink cla.cc:795–805): pre-LayoutLine row advance for
+		// subsequent rows within the same column-run when we should wrap or the
+		// previous row filled exactly. At an exact row boundary offsetToNextRow
+		// degenerates to row_gap_size (zero today), which preserves existing
+		// non-wrap behaviour. Also bail out when the next row wouldn't fit in
+		// the outer fragmentainer.
+		if !isFirstRow {
+			if mla.hasRowHeight() {
+				blockCursor += mla.offsetToNextRow(blockCursor)
+			}
+			if hasOuterFrag && mla.hasRowHeight() &&
+				mla.rowHeight() > outerAvailable-blockCursor {
+				// No room for another row in the outer fragmentainer — stop now
+				// and let the outer context resume any remaining content in the
+				// next outer column.
+				if nextColToken != nil {
+					pendingColRowsBreakToken = nextColToken
+					return buildOuterBreakResult(nil, nil)
+				}
+				break
+			}
+		}
+
+		rowBlockAdvance, columnsPlaced, spannerPath, remainingToken := mla.layoutLine(
 			contentNode, wdm, usedColWidth, numCols, gap,
 			balanceColumns, hasExplicitBlock, explicitBlockSize,
+			effectiveMaxBlockSize,
 			blockCursor, nextColToken, builder,
 		)
 		blockCursor += rowBlockAdvance
+		totalColumnsRendered += columnsPlaced
 
 		if spannerPath == nil {
+			// Phase 12f (Blink cla.cc:835): row-wrap — when wrap is in effect
+			// and a column row exited with content still pending, continue the
+			// same column-run by starting another row below the one we just
+			// placed. Driver: column-height-001.html.
+			if remainingToken != nil && mla.shouldWrapColumns() && mla.hasRowHeight() {
+				nextColToken = remainingToken
+				isFirstRow = false
+				continue
+			}
 			// Phase 12c: nested multicol hit the outer fragmentainer boundary
 			// with content still pending. Emit an outer break result carrying the
 			// column-rows continuation so the outer fragmentation context can
@@ -463,11 +651,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				nextColToken = remainingToken
 				nextSpannerClipToken = nil
 				didContentOverflowResume = false
+				isFirstRow = true
 				continue
 			}
 			if colRowsResumeToken != nil {
 				nextColToken = colRowsResumeToken
 				colRowsResumeToken = nil // consume it
+				isFirstRow = true
 				continue
 			}
 			break
@@ -493,6 +683,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		if nextColToken == nil {
 			break // nothing after the spanner
 		}
+		isFirstRow = true
 	}
 
 	// If a spanner's children overflowed the outer fragmentainer boundary, emit
@@ -504,10 +695,42 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		return buildOuterBreakResult(pendingBeforeSpannerToken, pendingPartialSpannerToken)
 	}
 
+	// Phase 12f (Blink cla.cc:342): intrinsic block-size top-off. When column-
+	// height is non-auto, pad the cursor up to the current row's end (clamped
+	// by the outer fragmentainer's remaining space when nested) — unless the
+	// cursor is already at an exact row boundary, in which case the remaining
+	// equals the full row height and we must not allocate a new empty row.
+	// Protects rows whose alignment was broken by a spanner (blockCursor stops
+	// mid-row) and guarantees the multicol container reports row-aligned block
+	// size even when forced-fixed column fragments are later removed.
+	if !mla.hasAutoColumnHeight() {
+		remaining := mla.remainingRowHeightAtOffset(blockCursor)
+		if hasOuterFrag {
+			outerLeft := outerAvailable - blockCursor
+			if remaining > outerLeft {
+				remaining = outerLeft
+			}
+			if remaining < 0 {
+				remaining = 0
+			}
+		}
+		if remaining < mla.rowHeight() {
+			blockCursor += remaining
+		}
+	}
+
 	// Final block size.
 	finalBlockSize := blockCursor
 	if hasExplicitBlock && finalBlockSize < explicitBlockSize {
 		finalBlockSize = explicitBlockSize
+	}
+	// Phase 12e: max-height caps the multicol's content block-size when no
+	// explicit height is set. fragment_geometry already applies max-height to
+	// BorderBoxSize when the block-size is definite, so this only affects the
+	// auto-height case (hasExplicitBlock == false).
+	if !hasExplicitBlock && effectiveMaxBlockSize != Indefinite &&
+		finalBlockSize > effectiveMaxBlockSize {
+		finalBlockSize = effectiveMaxBlockSize
 	}
 
 	// Handle out-of-flow candidates.
@@ -559,6 +782,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if hasForcedBreakAfter {
 		result.HasForcedBreak = true
 	}
+	if result.Fragment != nil {
+		result.Fragment.RenderedColumnCount = totalColumnsRendered
+	}
 	return result
 }
 
@@ -578,10 +804,11 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	balanceColumns bool,
 	hasExplicitBlock bool,
 	explicitBlockSize float64,
+	maxBlockSize float64,
 	lineOffset float64,
 	nextColToken *BlockBreakToken,
 	builder *BoxFragmentBuilder,
-) (rowBlockAdvance float64, spannerPath *ColumnSpannerPath, remainingToken *BlockBreakToken) {
+) (rowBlockAdvance float64, columnsPlaced int, spannerPath *ColumnSpannerPath, remainingToken *BlockBreakToken) {
 
 	// Outer remaining space: cap column height so columns don't exceed what
 	// fits in the current outer fragmentainer. Mirrors Blink's
@@ -597,20 +824,36 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	}
 
 	// Determine initial column block-size.
+	// Phase 12f (Blink cla.cc:864): non-auto column-height fixes the column
+	// block-size to the row's remaining height at this line offset, bypassing
+	// the balancing / max-height / auto branches. This is the hard upper bound
+	// on a single row of columns.
+	// Phase 12e (Blink behaviour): column-fill:auto + max-height on an auto-
+	// height multicol uses max-height as the column block-size so columns fill
+	// sequentially up to that height. Otherwise the column block-size is
+	// content-driven (auto), which would collapse the multicol to a single
+	// column of indefinite height.
 	var colBlockSize float64
-	if balanceColumns {
+	switch {
+	case !mla.hasAutoColumnHeight():
+		colBlockSize = mla.remainingRowHeightAtOffset(lineOffset)
+		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+	case balanceColumns:
 		colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken)
-		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, outerRemaining)
-	} else if hasExplicitBlock {
-		colBlockSize = mla.constrainColumnBlockSize(explicitBlockSize, hasExplicitBlock, explicitBlockSize, outerRemaining)
-	} else {
+		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+	case hasExplicitBlock:
+		colBlockSize = mla.constrainColumnBlockSize(explicitBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+	case maxBlockSize != Indefinite:
+		colBlockSize = mla.constrainColumnBlockSize(maxBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+	default:
 		colBlockSize = Indefinite
 	}
 
 	var maxColHeight float64
 	var finalColumns []struct {
-		fragment *PhysicalFragment
-		offset   LogicalOffset
+		fragment       *PhysicalFragment
+		offset         LogicalOffset
+		intrinsicBlock float64
 	}
 	var finalColBreakToken *BlockBreakToken
 	var lastInnerResult *LayoutResult
@@ -618,8 +861,9 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	// Outer stretch loop: mirrors Blink's do { ... } while (true) at cla.cc:967.
 	for {
 		var columns []struct {
-			fragment *PhysicalFragment
-			offset   LogicalOffset
+			fragment       *PhysicalFragment
+			offset         LogicalOffset
+			intrinsicBlock float64
 		}
 		minSpaceShortage := math.MaxFloat64
 		hasShortage := false
@@ -633,7 +877,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 		// Inner per-column loop.
 		for col := 0; col < numCols || colBlockSize == Indefinite; col++ {
-			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, colBreakToken, balanceColumns)
+			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, colBreakToken, balanceColumns, true)
 			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
 			if result == nil || result.Fragment == nil {
 				break
@@ -651,11 +895,13 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			}
 
 			columns = append(columns, struct {
-				fragment *PhysicalFragment
-				offset   LogicalOffset
+				fragment       *PhysicalFragment
+				offset         LogicalOffset
+				intrinsicBlock float64
 			}{
-				fragment: colFrag,
-				offset:   LogicalOffset{InlineOffset: inlineOffset, BlockOffset: lineOffset},
+				fragment:       colFrag,
+				offset:         LogicalOffset{InlineOffset: inlineOffset, BlockOffset: lineOffset},
+				intrinsicBlock: result.IntrinsicBlockSize,
 			})
 
 			// Spanner detected: break out immediately (Blink cla.cc:1048).
@@ -706,7 +952,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
 				balanceColumns = true
 				colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken)
-				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, outerRemaining)
+				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 				continue
 			}
 			break
@@ -734,7 +980,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 		// Stretch column height by the minimum shortage and retry.
 		newColBlockSize := colBlockSize + minSpaceShortage
-		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, hasExplicitBlock, explicitBlockSize, outerRemaining)
+		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 		if newColBlockSize <= colBlockSize {
 			// Nested balancing: we can't stretch any further in this inner
 			// multicol. Report the minimum shortage upward so the outer
@@ -752,12 +998,22 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	}
 
 	// Commit final columns to the parent builder.
+	// columnsPlaced reports how many columns actually received content so the
+	// column-rule painter (CSS Multicol L1 §5: rules only between columns that
+	// both have content) can skip painting rules adjacent to empty columns.
 	maxColHeight = 0.0
+	columnsPlaced = 0
 	for _, col := range finalColumns {
 		builder.AddChild(col.fragment, col.offset)
 		h := NewLogicalFragment(wdm, col.fragment).BlockSize()
 		if h > maxColHeight {
 			maxColHeight = h
+		}
+		// A column counts as non-empty if it has intrinsic content. With
+		// IsFixedBlockSize a column fragment can have h>0 even when empty
+		// (the forced size); intrinsicBlock is the spec-correct signal.
+		if col.intrinsicBlock > 0 {
+			columnsPlaced++
 		}
 	}
 	// Cap row advance to colBlockSize when finite: columns placed with
@@ -768,11 +1024,11 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 	// Determine spanner path and remaining token from the last inner result.
 	if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
-		return maxColHeight, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken
+		return maxColHeight, columnsPlaced, lastInnerResult.ColumnSpannerPath, lastInnerResult.BreakToken
 	}
 	// Return any remaining column break token so the caller can include it
 	// in the outer break result and resume column rows in the next outer column.
-	return maxColHeight, nil, finalColBreakToken
+	return maxColHeight, columnsPlaced, nil, finalColBreakToken
 }
 
 // layoutSpanner lays out a column-span:all element at the full multicol
@@ -883,16 +1139,19 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 }
 
 // constrainColumnBlockSize clamps the candidate column height to the
-// container's explicit height (if any), the outer fragmentainer's remaining
-// space, and ensures it is non-negative. Mirrors Blink's
-// ConstrainColumnBlockSize() (cla.cc:1974) which clamps by
-// RemainingRowHeightAtOffset(line_offset).
+// container's explicit height (if any), max-height (if set), the outer
+// fragmentainer's remaining space, the row-height at this offset (Phase 12f),
+// and ensures it is non-negative. Mirrors Blink's ConstrainColumnBlockSize()
+// (cla.cc:2017 — clamp by RemainingRowHeightAtOffset(line_offset)).
+// maxBlockSize == Indefinite means the container has no max-height constraint.
 // outerRemaining > 0 means columns cannot exceed this outer limit.
 func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 	size float64,
 	hasExplicitBlock bool,
 	explicitBlockSize float64,
+	maxBlockSize float64,
 	outerRemaining float64,
+	lineOffset float64,
 ) float64 {
 	if size < 0 {
 		size = 0
@@ -900,8 +1159,16 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 	if hasExplicitBlock && size > explicitBlockSize {
 		size = explicitBlockSize
 	}
+	if maxBlockSize != Indefinite && size > maxBlockSize {
+		size = maxBlockSize
+	}
 	if outerRemaining > 0 && size > outerRemaining {
 		size = outerRemaining
+	}
+	if mla.hasRowHeight() {
+		if rem := mla.remainingRowHeightAtOffset(lineOffset); size > rem {
+			size = rem
+		}
 	}
 	return size
 }
@@ -914,12 +1181,21 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 // block position 0. The lineOffset (absolute position of this row within the
 // multicol container) is used only for positioning column fragments in the
 // parent builder, not for fragmentation overflow calculations.
+//
+// fixedBlockSize: when true, force the column fragment's block-size to
+// colBlockSize via IsFixedBlockSize+IsBlockSizeOverride. Used for
+// column-fill:balance (columns are balanced to fill the column row height).
+// When false, colBlockSize is only the fragmentainer constraint — content
+// fragments at it but the column box itself is intrinsic-sized. Used for
+// column-fill:auto with auto block-size so the multicol container's intrinsic
+// block-size is content-driven instead of locked to max-height.
 func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	wdm WritingDirectionMode,
 	colWidth float64,
 	colBlockSize float64,
 	breakToken *BlockBreakToken,
 	balanceColumns bool,
+	fixedBlockSize bool,
 ) ConstraintSpace {
 	// A balanced estimate of 0 means the row contains no non-spanner content.
 	// Treat it as Indefinite so the column fragment's height is driven purely
@@ -929,7 +1205,7 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	if colBlockSize == 0 {
 		availBlock = Indefinite
 	}
-	isFixed := availBlock != Indefinite
+	isFixed := availBlock != Indefinite && fixedBlockSize
 
 	b := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{
@@ -952,6 +1228,12 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		b = b.SetIsFixedBlockSize(true).
 			SetIsBlockSizeOverride(true).
 			SetFragmentainerBlockSize(colBlockSize).
+			SetFragmentainerOffset(0)
+	} else if availBlock != Indefinite {
+		// column-fill:auto: still need fragmentainer info so that block_layout
+		// fragments overflowing leaves at the column boundary (Phase 12b leaf
+		// fragmentation), even though we don't force the column fragment size.
+		b = b.SetFragmentainerBlockSize(colBlockSize).
 			SetFragmentainerOffset(0)
 	}
 

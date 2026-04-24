@@ -631,6 +631,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		colCount, colWidth := layout.ResolveColumnCountForPaint(contentW, s.GetColumnCount(), s.GetColumnWidth(), layer.ColumnGap)
 		layer.ColumnCount = colCount
 		layer.ColumnWidth = colWidth
+		// CSS Multicol L1 §5: column rules are only drawn between columns that
+		// both have content. With column-fill:auto a row may render fewer
+		// columns than column-count, in which case multicol layout reports the
+		// actual placed count via Box.RenderedColumnCount. Zero means
+		// non-multicol or pre-12e fallback (paint all CSS-count rules).
+		if box.RenderedColumnCount > 0 && box.RenderedColumnCount < colCount {
+			layer.ColumnCount = box.RenderedColumnCount
+		}
 	}
 
 	// empty-cells: hide — suppress background/border for empty table cells

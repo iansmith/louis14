@@ -13,6 +13,60 @@ Phase 5f of the css-writing-modes effort is complete (commit `9913a9e4`, 2026-04
 Do not copy old wm content back into this file. If a wm regression is discovered during css-position work, link to the relevant archived section rather than duplicating.
 
 ## Current Phase
+**Phase 12f (css-multicol column-height + column-wrap): PARTIAL 2026-04-24.**
+
+Blink-parity port of CSS Multi-column Level 2 §4.2 `column-height: auto | <length>` + `column-wrap: auto | nowrap | wrap` into louis14. Five `column_layout_algorithm.cc` consumption sites wired:
+
+- `pkg/css/style.go`: new `GetColumnHeight()` (-1 sentinel for auto) + `GetColumnWrap()` ("auto"/"nowrap"/"wrap", default auto).
+- `pkg/layout/multicol_layout.go`: new `hasAutoColumnHeight`, `hasRowHeight`, `rowHeight`, `rowStride`, `shouldWrapColumns`, `offsetInCurrentRow`, `remainingRowHeightAtOffset`, `offsetToNextRow` — mirror Blink cla.h helpers. `MulticolLayoutAlgorithm` now carries `remainingContentBlockSize`, `consumedRowBlockSize`, `rowGapSize` fields populated at top of `Layout()`.
+- `layoutLine` column block-size choice (cla.cc:864): non-auto column-height branches to `remainingRowHeightAtOffset(lineOffset)` before the balance / max-height / auto branches.
+- `constrainColumnBlockSize` (cla.cc:2017): new `lineOffset` parameter; when `hasRowHeight()`, clamp by `remainingRowHeightAtOffset(lineOffset)`.
+- `Layout()` walker loop: row-wrap branch (cla.cc:835) — when `spannerPath==nil && remainingToken!=nil && shouldWrapColumns() && hasRowHeight()`, set `nextColToken=remainingToken`, `isFirstRow=false`, continue. Pre-LayoutLine advance (cla.cc:795): for `!isFirstRow`, advance `blockCursor += offsetToNextRow(blockCursor)` and bail out to outer-fragmentainer when the next row can't fit. Reset `isFirstRow=true` after a spanner placement so each column-run starts fresh.
+- `Layout()` intrinsic block-size top-off (cla.cc:342): when column-height is non-auto and the cursor sits inside a row, pad `blockCursor += remainingRowHeightAtOffset(blockCursor)` (clamped by outer-fragmentainer remaining space); skip at exact row boundaries (where `remainingRowHeightAtOffset == rowHeight`).
+- `buildOuterBreakResult` slot layout fix: child-break-token slots are now fixed `[nextColToken, partialSpannerToken, pendingColRowsBreakToken]` so a col-rows resume without a partial spanner never mis-loads slot 1 as a spanner. The parser nil-checks slot 1 before treating it as a partial-spanner token.
+- `pkg/layout/block_layout.go` leaf fragmentation fix: when a leaf block is split across fragmentainers under `IsBlockSizeOverride`, the outgoing child break token now carries the CUMULATIVE consumed size (previously each fragmentainer emitted just its own share, so a wrap resume always saw the same "remaining" and looped forever). Unblocks `column-wrap:wrap` of leaves taller than one row. Does not change behaviour for non-wrap layouts: their child tokens were never resumed past the row.
+
+**Driver.** `column-height-001.html` (Morten Stenshorne canonical `column-wrap:wrap` + `column-fill:auto` + fixed `column-height` + 2-column 100×200 content) — **PASS at 0 pixel diff**.
+
+**Results 2026-04-24:**
+- css-multicol: **124 → 130 PASS** (+6). New passers (all in the column-height-* cluster): `column-height-001`, `-010`, `-014`, `-015`, `-016`, `-026`.
+- column-height-* cluster: 6/31 PASS; 24 FAIL at small diffs (0.1%–4.2%), 1 filter match (`column-height-009-ref.html`) is a reference file not a test.
+- spanner-fragmentation: 12/13 PASS — unchanged (005 pre-existing fail, no regression).
+- Gates: css-position 89/104, css-flexbox 621/629, CSS2 96/99 — all unchanged from pre-12f baseline. wm run in progress.
+
+**Residuals NOT closed by 12f (separate root causes):**
+- Row-gap between column rows: `rowGapSize` hardcoded to 0; tests with explicit `gap: <row> <column>` (e.g. `column-height-008.html` uses `gap:10px 0`) miss the between-row padding.
+- `MulticolBreakTokenData.consumed_row_block_size` row-phase carry across outer fragmentainers (cla.cc:2087) — deferred. Not exercised by driver; needed for nested multicol whose column row splits across an outer column boundary.
+- Forced-break counting interacting with `column-wrap:wrap` (several fails with forced breaks + rows).
+- `column-height-009` (4.2%): `column-wrap:nowrap` + overflow rendering — a nowrap multicol with more content than fits in `column-height × numCols` should overflow into additional columns past the declared count.
+- Small diffs (0.1%–1.5%) in 20 other column-height tests — appear to be adjacent foundational issues (margin handling between rows, padding at row boundaries, forced-break propagation within a row).
+
+---
+
+**Phase 12e (css-multicol column-fill:auto): PARTIAL 2026-04-24.**
+
+Phase 12e Blink-parity max-height handling for column-fill:auto landed:
+- `pkg/layout/multicol_layout.go`: new `effectiveMaxBlockSize` resolved at top of `Layout()` from `ResolveMaxBlockSize` (only when `!hasExplicitBlock`, since explicit heights are already clamped through min/max in `CalculateInitialFragmentGeometry` — re-applying max here would override min per CSS 2.1 §10.7). Threaded into `layoutLine` as a new arg + `constrainColumnBlockSize` param. New branch `} else if maxBlockSize != Indefinite { colBlockSize = constrainColumnBlockSize(maxBlockSize, ...) }` so column-fill:auto + auto height + max-height fills columns sequentially up to max-height. Final multicol block-size also capped by max-height. Mirrors Blink's `column_layout_algorithm.cc` setting `column_size.block_size = available_block_size` (which inherits max-height clamping from Blink's `ComputeBlockSizeForFragment`).
+- `pkg/layout/layout_result.go`, `pkg/layout/types.go`, `pkg/layout/engine.go`: new `RenderedColumnCount int` field on `PhysicalFragment` and `Box`, plumbed through `engine.go` box construction.
+- `pkg/layout/multicol_layout.go`: `layoutLine` now returns `columnsPlaced int` (counted by `intrinsicBlock > 0` so a forced-size empty column doesn't count). `Layout()` accumulates `totalColumnsRendered` across rows and writes it to `result.Fragment.RenderedColumnCount` (and on the outer-break-result path).
+- `pkg/render/paint_layer.go`: column-rule painter narrows `layer.ColumnCount` to `box.RenderedColumnCount` when fewer columns rendered than CSS column-count. CSS Multicol L1 §5: rules only between columns that both have content. Eliminates spurious red column-rule painting in `columnfill-auto-max-height-001/002` (previously a 100×100 red bar appeared in the column-gap with both cols empty).
+
+**Driver-pick correction.** task_plan named `columnfill-auto-001.html` but the actual file is `multicol-fill-auto-001.xht` (already passing pre-12e). Picked `multicol-fill-auto-block-children-003.html` (canonical Mozilla "max-height imposes constraint on column boxes' height" test) as the driver — passes at 0 diff.
+
+**Results 2026-04-24:**
+- css-multicol: **123 → 124 PASS** (+1 net for the driver). Cluster column-fill:auto: +1 PASS (block-children-003); other 8 cluster tests have residual diffs from non-12e root causes (see Residuals below).
+- spanner-fragmentation: 12/13 PASS — same as pre-12e (005 still pre-existing fail, no regression).
+- Gates: wm 410/781, CSS2 96/99, css-flexbox 621/629, css-position 89/104 — all unchanged from pre-12e baseline (which is the post-12d baseline). The wm/CSS2/css-pos/flex deltas vs the historic 781/99/104 numbers are pre-existing in the working tree's `pkg/resource/renderer.go` modifications — not from 12e.
+
+**Residuals NOT closed by 12e (separate root causes):**
+- `columnfill-auto-max-height-001/002.html` (10000 px each, 2.1%): Ahem text not rendering. Diff is exactly the 100×100 expected green text region. Pre-existed before 12e — column-rule paint fix + max-height handling now produces a clean white column-1 area where the green text should be, but the text itself is missing. Likely an Ahem-loading issue specific to `font-family:Ahem` longhand + separate `font-size`/`line-height` declarations (vs `font: 1.25em/1 Ahem` shorthand which works).
+- `columnfill-auto-max-height-003.html` (5000 px, 1.0%): inline-overflow content (`width:200%`) clipped by column-fragmentainer's `ClipContentToBorderBox`. CSS Multicol L1 §3.7 says columns clip in BLOCK direction only, not inline. Tried narrowing the clip to "only when `result.IntrinsicBlockSize > colBlockSize`" but it regressed `spanner-fragmentation-004/006` (which need the inline clip too in their nested-spanner cases). Reverted; tracked as follow-up needing a directional (block-only) clip API.
+- `multicol-fill-auto-003.xht` (30000 px, 6.2%): long unbreakable digit token (`1234567890` = 10 chars × 20px = 200px) overflows 180px column inline; our inline layout drops the content entirely instead of overflowing. Inline-layout bug, not 12e scope.
+- `multicol-fill-auto-004/005.html` (9000/8000 px): "more forced breaks than columns" + auto-height inner multicol; spec edge case requiring auto-height + forced-break-count > column-count handling (overflow with extra columns past the parent).
+- `multicol-fill-auto-block-children-001/002.xht` (78295/56077 px, 16%/12%): h1 spanner + dl block children with explicit body height; body height overflowing canvas. Spanner+block interaction.
+
+---
+
 **Phase 12d (css-multicol forced breaks + break-inside:avoid-column): COMPLETE 2026-04-24.**
 
 Blink-parity port of `fragmentation_utils.{h,cc}` `BreakBeforeChildIfNeeded` chain into louis14's column layout:

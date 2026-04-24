@@ -329,6 +329,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		Height:                 frag.Size.Height,
 		Parent:                 parent,
 		ClipContentToBorderBox: frag.ClipContentToBorderBox,
+		RenderedColumnCount:    frag.RenderedColumnCount,
 	}
 
 	// Text fragments carry their rendered text content.

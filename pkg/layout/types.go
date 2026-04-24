@@ -73,6 +73,12 @@ type Box struct {
 	// Carried from the producing PhysicalFragment (see layout_result.go).
 	// Used by CSS Tables 3 §5.4.1 rowspan-over-collapsed-row clipping.
 	ClipContentToBorderBox bool
+
+	// RenderedColumnCount is the number of column fragments actually placed
+	// inside a multicol container. Used at paint time so column-rule painting
+	// honors the spec rule that rules are only drawn between columns that both
+	// have content (CSS Multicol L1 §5: column-rule). Zero for non-multicol.
+	RenderedColumnCount int
 }
 
 // CreatesStackingContext returns true if this box establishes a new

@@ -4856,6 +4856,36 @@ func (s *Style) GetBreakInside() string {
 	return "auto"
 }
 
+// GetColumnHeight returns the column-height value in CSS pixels.
+// Returns -1 for "auto" (the default) or when unset or invalid.
+// CSS Multi-column Level 2 §4.2: auto | <length [0,∞]>; no percentage.
+func (s *Style) GetColumnHeight() float64 {
+	if val, ok := s.Get("column-height"); ok {
+		v := strings.TrimSpace(strings.ToLower(val))
+		if v == "" || v == "auto" {
+			return -1
+		}
+		if h, ok := ParseLengthWithFontSize(v, s.GetFontSize()); ok && h >= 0 {
+			return h
+		}
+	}
+	return -1
+}
+
+// GetColumnWrap returns the column-wrap value ("auto", "nowrap", or "wrap").
+// Default is "auto" per CSS Multi-column Level 2 §4.2; "auto" resolves to
+// "wrap" when column-height is non-auto, "nowrap" otherwise (Blink:
+// ColumnLayoutAlgorithm::ShouldWrapColumns).
+func (s *Style) GetColumnWrap() string {
+	if v, ok := s.Get("column-wrap"); ok {
+		v = strings.TrimSpace(strings.ToLower(v))
+		if v == "wrap" || v == "nowrap" {
+			return v
+		}
+	}
+	return "auto"
+}
+
 // GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em)
 func (s *Style) GetColumnGapMulticol() float64 {
 	if val, ok := s.Get("column-gap"); ok {
