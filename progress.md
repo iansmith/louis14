@@ -43,8 +43,8 @@ This is the deferred Phase 12h Step 1 limitation captured verbatim in `findings.
 F1 is the visible test that demands it.
 
 **Plan revised:**
-- **F1d (the actual closer):** plumb `DirectGlyphProvider.RegisterFile` through `mazarin/textshape`; call it from BOTH renderer (post-`SetFonts`) AND layout engine before `Layout()`. Touches `mazarin/textshape`, `pkg/text` (FontRegistry → provider sync), `pkg/layout/engine.go`, possibly `pkg/visualtest/helpers.go`. Generalizes — fixes F1, unblocks every future webfont test.
-- **F1a/F1b (already implemented):** Blink-parity unified shape pass. Currently no-op for F1 (shape calls fail upstream at `openFont`), but the right Blink-parity shape and likely needed once F1d lets HarfBuzz actually fire — sub-pixel cross-fragment kerning may still cause a residual diff. Land as separate scoped commits.
+- **F1d (the actual closer, NOT YET STARTED):** plumb `DirectGlyphProvider.RegisterFile` through `mazarin/textshape`; call it from BOTH renderer (post-`SetFonts`) AND layout engine before `Layout()`. Touches `mazarin/textshape`, `pkg/text` (FontRegistry → provider sync), `pkg/layout/engine.go`, possibly `pkg/visualtest/helpers.go`. Generalizes — fixes F1, unblocks every future webfont test.
+- **F1a/F1b LANDED 2026-04-24 (commit `418cfaa6`).** Blink-parity unified shape pass infrastructure: `text.ShapeAdvancesMixed(text, []DirectionRun, fontSize, fontPath)` + relaxed `canMergeShapingContext`. css-writing-modes 779/781 unchanged (the 2 failing tests are F1; build/vet clean). Currently no-op for F1 because shaping fails upstream at `openFont`, but becomes load-bearing once F1d lets HarfBuzz fire — sub-pixel cross-fragment kerning may still cause a residual diff that this addresses.
 - **F1c (paint-side consistency):** investigate after F1d lands.
 
 See findings §F1 for the full diagnosis + Blink-parity reference + out-of-scope-for-now bidi-parity items.
