@@ -37,6 +37,14 @@ type Renderer struct {
 	fontCache   map[fontCacheKey]int32
 	fontCacheMu sync.Mutex
 
+	// tempFontIDs collects fontIDs returned by openFont during the
+	// current Render call. Each public Render entry point resets this
+	// to empty on entry and defers a closeTempFonts that releases each
+	// ID via dc.CloseTemporaryFont. Permanent-pool fontIDs (returned
+	// by the OpenTemporaryFont permanent-first dedupe) close to a no-op,
+	// so this list can include any fontID openFont produced.
+	tempFontIDs []int32
+
 	// Custom @counter-style rules, keyed by name.
 	counterStyles map[string]css.CounterStyleRule
 
@@ -187,8 +195,15 @@ func (r *Renderer) SetCounterStyles(rules []css.CounterStyleRule) {
 
 // openFont returns the fontID for the given path+size, opening it if needed.
 // The path is parsed into a logical (family, variant) pair before calling
-// dc.OpenFont so that IPC-only providers (e.g. mazzy fontsvc) receive a
-// resolvable family name rather than the raw filesystem path.
+// dc.OpenTemporaryFont so that IPC-only providers (e.g. mazzy fontsvc) receive
+// a resolvable family name rather than the raw filesystem path.
+//
+// Uses OpenTemporaryFont so that fontIDs returned during a single Render
+// call can be released en masse at the end via closeTempFonts. Fonts that
+// dedupe against the provider's permanent pool (system fonts, repeats
+// across renders) come back as permanent-range fontIDs whose
+// CloseTemporaryFont is a no-op — so the open/close discipline is
+// uniform regardless of which pool actually services the request.
 func (r *Renderer) openFont(fontPath string, fontSize float64) int32 {
 	size := int32(math.Round(fontSize))
 	key := fontCacheKey{path: fontPath, size: size}
@@ -198,12 +213,33 @@ func (r *Renderer) openFont(fontPath string, fontSize float64) int32 {
 		return id
 	}
 	family, variant := text.FontPathToFamilyVariant(fontPath)
-	metrics, err := r.dc.OpenFont(family, variant, size)
+	metrics, err := r.dc.OpenTemporaryFont(family, variant, size)
 	if err != nil {
 		return -1
 	}
 	r.fontCache[key] = metrics.FontID
+	r.tempFontIDs = append(r.tempFontIDs, metrics.FontID)
 	return metrics.FontID
+}
+
+// closeTempFonts releases every fontID openFont produced during the
+// current Render call, then drops the per-render fontCache. Permanent-
+// range fontIDs close to no-op at the provider level. The cache is
+// cleared so the next Render re-opens (and re-defers-close) cleanly —
+// without this, a stale fontID could survive into the next render
+// where the provider may have recycled the underlying slot.
+//
+// Called via defer from each public Render entry point.
+func (r *Renderer) closeTempFonts() {
+	r.fontCacheMu.Lock()
+	defer r.fontCacheMu.Unlock()
+	for _, id := range r.tempFontIDs {
+		_ = r.dc.CloseTemporaryFont(id)
+	}
+	r.tempFontIDs = r.tempFontIDs[:0]
+	if len(r.fontCache) > 0 {
+		r.fontCache = make(map[fontCacheKey]int32)
+	}
 }
 
 // Render paints the box tree onto the image. Clears the entire underlying
@@ -216,6 +252,9 @@ func (r *Renderer) openFont(fontPath string, fontSize float64) int32 {
 func (r *Renderer) Render(boxes []*layout.Box) {
 	r.embeddedViewport.W = 0
 	r.embeddedViewport.H = 0
+
+	r.tempFontIDs = r.tempFontIDs[:0]
+	defer r.closeTempFonts()
 
 	// CSS 2.1 §14.2: Canvas background.
 	// The root element's background becomes the canvas background.
@@ -239,6 +278,9 @@ func (r *Renderer) Render(boxes []*layout.Box) {
 func (r *Renderer) RenderEmbedded(boxes []*layout.Box, viewportW, viewportH float64) {
 	r.embeddedViewport.W = viewportW
 	r.embeddedViewport.H = viewportH
+
+	r.tempFontIDs = r.tempFontIDs[:0]
+	defer r.closeTempFonts()
 
 	r.dc.SetColor(color.RGBA{R: 255, G: 255, B: 255, A: 255})
 	r.dc.FillRectangle(0, 0, viewportW, viewportH)
