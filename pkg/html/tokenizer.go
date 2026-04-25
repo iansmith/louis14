@@ -81,10 +81,14 @@ func (t *Tokenizer) readTag() (Token, error) {
 		return t.NextToken()
 	}
 
-	// Handle <!DOCTYPE ...>
+	// Handle <!DOCTYPE ...> — DOCTYPE content is informational and dropped.
+	// HTML5 §13.2.5.53 "DOCTYPE state" / §13.2.5.61 "After DOCTYPE name state":
+	// EOF is a parse error but parsing continues. We don't surface DOCTYPE
+	// content to the parser, so on EOF we just consume what we have and
+	// emit no token; NextToken() will return TokenEOF on its next call.
 	if t.pos < len(t.input) && t.input[t.pos] == '!' {
 		if err := t.skipTo('>'); err != nil {
-			return Token{}, err
+			return Token{Type: TokenEOF}, nil
 		}
 		t.pos++
 		return t.NextToken()
@@ -100,8 +104,14 @@ func (t *Tokenizer) readTag() (Token, error) {
 		return Token{}, fmt.Errorf("expected tag name at position %d", t.pos)
 	}
 	if isEndTag {
+		// HTML5 §13.2.5.8 "Tag name state": EOF in tag is a parse error;
+		// the spec emits an EOF token (dropping the partial end tag) and
+		// the tree-builder closes any open elements at EOF anyway. We
+		// emit the end tag with the name we have — equivalent visual
+		// result and slightly more permissive against truncated input
+		// like `</html` (no closing '>') that real browsers also accept.
 		if err := t.skipTo('>'); err != nil {
-			return Token{}, err
+			return Token{Type: TokenEndTag, TagName: tagName}, nil
 		}
 		t.pos++
 		return Token{Type: TokenEndTag, TagName: tagName}, nil
@@ -110,7 +120,13 @@ func (t *Tokenizer) readTag() (Token, error) {
 	for {
 		t.skipWhitespace()
 		if t.pos >= len(t.input) {
-			return Token{}, fmt.Errorf("unexpected EOF in tag")
+			// HTML5 §13.2.5.32 "Before attribute name state" / §13.2.5.34
+			// "Attribute name state": EOF in tag is a parse error. Spec
+			// drops the partial start tag; we emit it with attributes
+			// parsed so far so subsequent content (if any) doesn't lose
+			// structural context. Matches the tree-builder's EOF closure
+			// behavior in effect.
+			return Token{Type: TokenStartTag, TagName: tagName, Attributes: attributes}, nil
 		}
 		if t.input[t.pos] == '>' {
 			t.pos++
@@ -182,7 +198,11 @@ func (t *Tokenizer) readAttributeValue() (string, error) {
 			t.pos++
 		}
 		if t.pos >= len(t.input) {
-			return "", fmt.Errorf("unterminated attribute value")
+			// HTML5 §13.2.5.38/.39 "Attribute value (double-/single-quoted)
+			// state": EOF in tag is a parse error. Recover by emitting the
+			// attribute value built so far; the enclosing readTag loop will
+			// then hit its own EOF branch and emit the partial start tag.
+			return t.input[start:t.pos], nil
 		}
 		value := t.input[start:t.pos]
 		t.pos++
