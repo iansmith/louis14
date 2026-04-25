@@ -1,7 +1,9 @@
-# Task Plan: css-position (Phases 0–11) → css-multicol (Phase 12)
+# Task Plan: css-position (Phases 0–11) → css-multicol (Phase 12) → LayoutUnit precision (Phase 13)
 
-## Current focus (2026-04-24)
-**Phase 12 (css-multicol)** is the active track. css-position Phases 1–9 are complete (91/104, pre-existing residuals deferred). See "Phase 12: css-multicol" at the end of this file for the driver-test-per-phase attack plan, and `findings.md` "css-multicol category" for the Blink research that scopes each phase.
+## Current focus (2026-04-25)
+**Phase 12 (css-multicol)** remains the active layout-feature track at 179/455. Most active follow-up targets done: F1 (wm 781/781), F5 (multicol +3 list-item tests), HTML tokenizer EOF-recovery (css-position 92/104). F2/F3/F4 remain PARTIAL with documented residuals. **Phase 13 (LayoutUnit precision discipline) is queued as plan-only** — see "Phase 13: LayoutUnit precision discipline" below for the eight-sub-phase breakdown and `findings.md` "Phase 13: LayoutUnit research" for the Blink-parity reference.
+
+css-position is at **92/104** post HTML-tokenizer EOF-recovery fix (2026-04-25); the 12 remaining failures are pre-existing residuals across G-SINGLETONS / G-SCROLL / G-SEMI-REPLACED / G-ABS-IN-TABLE classes — see "css-position Goal" below.
 
 **Phase 12a is COMPLETE (commit `2a0d0a07`, 2026-04-22).** Fragmentation infrastructure landed: Blink-parity `LayoutLine` outer stretch loop, `BlockBreakToken` threading, shortage reporting, `ResolveColumnAutoBlockSize` for column-fill:balance, inline fragmentation at column boundaries, multicol dispatch enabled in `layoutElement`. Driver test `multicol-fill-balance-001.xht` PASS at 0 diff.
 
@@ -24,6 +26,8 @@
 ## ACTIVE FOLLOW-UP BATCH (2026-04-24 — post-12h step 4) — TEMPORARY
 
 Five highest-value targets from the deferred list, picked after Phase 12h step 4 landed (css-multicol 154/458). This is a **scratch planning block**: as each target lands, move its completed summary into its real phase section below and strike the entry here. When all five resolve or get reclassified, delete this block.
+
+**Status as of 2026-04-25:** F1 DONE, F5 DONE, F2/F3/F4 PARTIAL (residuals captured in their respective rows). Plus two follow-on landings outside the original five: HTML-tokenizer EOF-recovery (closed `position-change.html`, +1 css-position) and Phase 13 LayoutUnit plan (no code yet). Block stays open until F2/F3/F4 reach DONE or get reclassified into their own phases.
 
 Companion scratch blocks live at the top of `findings.md` (research notes per target) and `progress.md` (landing/partial summaries per target).
 
@@ -127,7 +131,7 @@ Invariants (must stay green in every Phase 12 landing too). Post-12d re-baseline
 - CSS2 **96/99** (historical 99/99). Last verified 2026-04-24 post-12g.
 - css-flexbox **≥621/629** (historical ≥626/629 with 3 pre-existing residuals tracked in Phase 11).
 - css-transforms 172/381 watch (not invariant; post Phase 9 stack-floats refactor, +10 vs baseline).
-- css-position **≥89/104** (historical ≥91/104). Remaining residuals pre-existing, out-of-scope for Phase 12.
+- css-position **≥92/104** (raised 2026-04-25 by HTML tokenizer EOF-recovery fix; was 91/104 since Phase 9). Remaining 12 residuals pre-existing, out-of-scope for Phase 12.
 - spanner-fragmentation **12/13** watch (005 pre-existing residual since 12b).
 - css-multicol (active target) **133/458** — gains +39 from the 12 entry baseline of 94; post-12g.
 

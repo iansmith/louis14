@@ -20,9 +20,17 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 - css-multicol **154** / 458
 - CSS2 99/99
 - css-flexbox 626/629
-- css-position 91/105
+- css-position 91/104
 - spanner-fragmentation 12/13
-- css-writing-modes 779/781 (F1 target is to restore 781/781)
+- css-writing-modes 779/781 (F1 target was to restore 781/781)
+
+Current state (2026-04-25):
+- css-multicol **179** / 455 (+25 cumulative across F2/F3/F4/F5)
+- CSS2 99/99 (unchanged)
+- css-flexbox 626/629 (unchanged)
+- css-position **92** / 104 (+1 from HTML-tokenizer EOF-recovery fix `dc44ab99`, 2026-04-25)
+- spanner-fragmentation 12/13 (unchanged)
+- css-writing-modes **781** / 781 (+2 from F1 closing at commit `41b674ef` + mazzy `d6b27049`/`cde2c29`, 2026-04-25)
 
 ### Phase 13: LayoutUnit precision discipline — PLAN 2026-04-25
 
@@ -618,17 +626,18 @@ Adjacent verifications run earlier: 8 `position-relative-table-*-absolute-child`
 | 2026-04-24 | spanner-fragmentation (post 12g) | 12 | 1 | 0 | 005 pre-existing fail; no regression. |
 
 ## Invariants (must stay green)
-Baseline shift from historical numbers: pre-12d tree modifications in `pkg/resource/renderer.go` (commits `15095a58` + `f001c6a5` + earlier uncommitted) reduced wm/CSS2/flex/css-position pass counts. These shifts are NOT from the 12d–12g work (verified per-phase by stash tests at each landing). The invariants below track the POST-12d re-baselined numbers; any phase regression vs these numbers reverts.
 
-| Category | Count | Last verified |
-|---|---|---|
-| css-writing-modes | 410/781 | 2026-04-24 (post 12g) — historical 781/781 pre-`renderer.go` shift |
-| CSS2 (TestWPTReftests) | 96/99 | 2026-04-24 (post 12g) — historical 99/99 |
-| css-flexbox | 621/629 | 2026-04-24 (post 12g) — historical 626/629 |
-| css-position (watch) | 89/104 | 2026-04-24 (post 12g) — historical 91/104 |
-| css-multicol (active target) | 133/458 | 2026-04-24 (post 12g, +39 since 12 entry baseline 94) |
-| spanner-fragmentation (watch) | 12/13 | 2026-04-24 (post 12g) — 005 pre-existing |
-| css-transforms (watch, not invariant) | 172/381 | 2026-04-21 (post Phase 9 third landing, +1 from stack-floats refactor) |
+Earlier in 2026-04-24 a `pkg/resource/renderer.go` modification (commits `15095a58` + `f001c6a5` + earlier uncommitted) had temporarily depressed wm/CSS2/flex/css-position pass counts. That period has ended — counts are back to historical levels and rising via F1 / parser fix landings. Re-baselined as of 2026-04-25:
+
+| Category | Count | Last verified | Notes |
+|---|---|---|---|
+| css-writing-modes | **781/781** | 2026-04-25 (post F1) | +2 from F1 closing 2026-04-25 |
+| CSS2 (TestWPTReftests) | **99/99** | 2026-04-25 | unchanged from historical |
+| css-flexbox | **626/629** | 2026-04-25 | 3 pre-existing residuals |
+| css-position (watch) | **92/104** | 2026-04-25 (post HTML tokenizer fix) | +1 from `dc44ab99`; 12 pre-existing residuals |
+| css-multicol (active target) | **179/455** | 2026-04-25 | +85 since Phase 12 entry baseline 94 |
+| spanner-fragmentation (watch) | **12/13** | 2026-04-25 | 005 pre-existing |
+| css-transforms (watch, not invariant) | 172/381 | 2026-04-21 (post Phase 9 third landing, +1 from stack-floats refactor) | not re-verified post-F1 |
 
 ## Session: 2026-04-21
 
