@@ -213,9 +213,9 @@ func TestBlockLayout_FloatLeft(t *testing.T) {
 
 	// Float should be at (0, 0) with size 200x100.
 	floatFrag := result.Fragment.Children[0]
-	if floatFrag.Fragment.Size.Width != 200 || floatFrag.Fragment.Size.Height != 100 {
+	if floatFrag.Fragment.Size.WidthF64() != 200 || floatFrag.Fragment.Size.HeightF64() != 100 {
 		t.Errorf("float size: got %vx%v, want 200x100",
-			floatFrag.Fragment.Size.Width, floatFrag.Fragment.Size.Height)
+			floatFrag.Fragment.Size.WidthF64(), floatFrag.Fragment.Size.HeightF64())
 	}
 	if floatFrag.Offset.LeftF64() != 0 || floatFrag.Offset.TopF64() != 0 {
 		t.Errorf("float offset: got (%v,%v), want (0,0)",
@@ -259,8 +259,8 @@ func TestBlockLayout_FloatRight(t *testing.T) {
 	}
 
 	// Parent auto height should include float (clear:both at end).
-	if result.Fragment.Size.Height != 100 {
-		t.Errorf("parent height: got %v, want 100", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 100 {
+		t.Errorf("parent height: got %v, want 100", result.Fragment.Size.HeightF64())
 	}
 }
 

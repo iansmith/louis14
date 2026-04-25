@@ -55,8 +55,8 @@ func TestBlockLayout_SingleDivExplicitSize(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 200 || result.Fragment.Size.Height != 100 {
-		t.Errorf("got %vx%v, want 200x100", result.Fragment.Size.Width, result.Fragment.Size.Height)
+	if result.Fragment.Size.WidthF64() != 200 || result.Fragment.Size.HeightF64() != 100 {
+		t.Errorf("got %vx%v, want 200x100", result.Fragment.Size.WidthF64(), result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -76,11 +76,11 @@ func TestBlockLayout_AutoInlineSize(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 800 {
-		t.Errorf("width: got %v, want 800", result.Fragment.Size.Width)
+	if result.Fragment.Size.WidthF64() != 800 {
+		t.Errorf("width: got %v, want 800", result.Fragment.Size.WidthF64())
 	}
-	if result.Fragment.Size.Height != 50 {
-		t.Errorf("height: got %v, want 50", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 50 {
+		t.Errorf("height: got %v, want 50", result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -105,11 +105,11 @@ func TestBlockLayout_NestedBlocks(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 400 {
-		t.Errorf("parent width: got %v, want 400", result.Fragment.Size.Width)
+	if result.Fragment.Size.WidthF64() != 400 {
+		t.Errorf("parent width: got %v, want 400", result.Fragment.Size.WidthF64())
 	}
-	if result.Fragment.Size.Height != 250 {
-		t.Errorf("parent height: got %v, want 250", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 250 {
+		t.Errorf("parent height: got %v, want 250", result.Fragment.Size.HeightF64())
 	}
 
 	if len(result.Fragment.Children) != 2 {
@@ -120,23 +120,23 @@ func TestBlockLayout_NestedBlocks(t *testing.T) {
 	if c1.Offset.TopF64() != 0 {
 		t.Errorf("child1 Y: got %v, want 0", c1.Offset.TopF64())
 	}
-	if c1.Fragment.Size.Height != 100 {
-		t.Errorf("child1 height: got %v, want 100", c1.Fragment.Size.Height)
+	if c1.Fragment.Size.HeightF64() != 100 {
+		t.Errorf("child1 height: got %v, want 100", c1.Fragment.Size.HeightF64())
 	}
 
 	c2 := result.Fragment.Children[1]
 	if c2.Offset.TopF64() != 100 {
 		t.Errorf("child2 Y: got %v, want 100", c2.Offset.TopF64())
 	}
-	if c2.Fragment.Size.Height != 150 {
-		t.Errorf("child2 height: got %v, want 150", c2.Fragment.Size.Height)
+	if c2.Fragment.Size.HeightF64() != 150 {
+		t.Errorf("child2 height: got %v, want 150", c2.Fragment.Size.HeightF64())
 	}
 
-	if c1.Fragment.Size.Width != 400 {
-		t.Errorf("child1 width: got %v, want 400", c1.Fragment.Size.Width)
+	if c1.Fragment.Size.WidthF64() != 400 {
+		t.Errorf("child1 width: got %v, want 400", c1.Fragment.Size.WidthF64())
 	}
-	if c2.Fragment.Size.Width != 400 {
-		t.Errorf("child2 width: got %v, want 400", c2.Fragment.Size.Width)
+	if c2.Fragment.Size.WidthF64() != 400 {
+		t.Errorf("child2 width: got %v, want 400", c2.Fragment.Size.WidthF64())
 	}
 }
 
@@ -161,8 +161,8 @@ func TestBlockLayout_MarginCollapsing(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Height != 230 {
-		t.Errorf("height: got %v, want 230", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 230 {
+		t.Errorf("height: got %v, want 230", result.Fragment.Size.HeightF64())
 	}
 
 	c2 := result.Fragment.Children[1]
@@ -194,11 +194,11 @@ func TestBlockLayout_WithPadding(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 430 {
-		t.Errorf("width: got %v, want 430", result.Fragment.Size.Width)
+	if result.Fragment.Size.WidthF64() != 430 {
+		t.Errorf("width: got %v, want 430", result.Fragment.Size.WidthF64())
 	}
-	if result.Fragment.Size.Height != 130 {
-		t.Errorf("height: got %v, want 130", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 130 {
+		t.Errorf("height: got %v, want 130", result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -227,11 +227,11 @@ func TestBlockLayout_WithBorder(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 306 {
-		t.Errorf("width: got %v, want 306", result.Fragment.Size.Width)
+	if result.Fragment.Size.WidthF64() != 306 {
+		t.Errorf("width: got %v, want 306", result.Fragment.Size.WidthF64())
 	}
-	if result.Fragment.Size.Height != 90 {
-		t.Errorf("height: got %v, want 90", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 90 {
+		t.Errorf("height: got %v, want 90", result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -262,8 +262,8 @@ func TestBlockLayout_DisplayNoneSkipped(t *testing.T) {
 		t.Fatalf("children: got %d, want 2", len(result.Fragment.Children))
 	}
 
-	if result.Fragment.Size.Height != 100 {
-		t.Errorf("height: got %v, want 100", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 100 {
+		t.Errorf("height: got %v, want 100", result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -292,11 +292,11 @@ func TestBlockLayout_BoxSizingBorderBox(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 400 {
-		t.Errorf("width: got %v, want 400", result.Fragment.Size.Width)
+	if result.Fragment.Size.WidthF64() != 400 {
+		t.Errorf("width: got %v, want 400", result.Fragment.Size.WidthF64())
 	}
-	if result.Fragment.Size.Height != 300 {
-		t.Errorf("height: got %v, want 300", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 300 {
+		t.Errorf("height: got %v, want 300", result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -319,8 +319,8 @@ func TestBlockLayout_ExplicitBlockSize(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Height != 500 {
-		t.Errorf("height: got %v, want 500", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 500 {
+		t.Errorf("height: got %v, want 500", result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -401,8 +401,8 @@ func TestBlockLayout_VRL_SwapsAxes(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 200 || result.Fragment.Size.Height != 300 {
-		t.Errorf("got %vx%v, want 200x300", result.Fragment.Size.Width, result.Fragment.Size.Height)
+	if result.Fragment.Size.WidthF64() != 200 || result.Fragment.Size.HeightF64() != 300 {
+		t.Errorf("got %vx%v, want 200x300", result.Fragment.Size.WidthF64(), result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -421,8 +421,8 @@ func TestLayoutElement_DispatchesBlock(t *testing.T) {
 
 	result := layoutElement(ctx, layoutRoot, space)
 
-	if result.Fragment.Size.Width != 100 || result.Fragment.Size.Height != 50 {
-		t.Errorf("got %vx%v, want 100x50", result.Fragment.Size.Width, result.Fragment.Size.Height)
+	if result.Fragment.Size.WidthF64() != 100 || result.Fragment.Size.HeightF64() != 50 {
+		t.Errorf("got %vx%v, want 100x50", result.Fragment.Size.WidthF64(), result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -441,9 +441,9 @@ func TestLayoutElement_DisplayNone(t *testing.T) {
 
 	result := layoutElement(ctx, layoutRoot, space)
 
-	if result.Fragment.Size.Width != 0 || result.Fragment.Size.Height != 0 {
+	if result.Fragment.Size.WidthF64() != 0 || result.Fragment.Size.HeightF64() != 0 {
 		t.Errorf("display:none should produce zero-size, got %vx%v",
-			result.Fragment.Size.Width, result.Fragment.Size.Height)
+			result.Fragment.Size.WidthF64(), result.Fragment.Size.HeightF64())
 	}
 }
 
@@ -494,20 +494,20 @@ func TestBlockLayout_DeeplyNested(t *testing.T) {
 
 	result := NewBlockLayoutAlgorithm(ctx, layoutRoot, space).Layout()
 
-	if result.Fragment.Size.Width != 600 {
-		t.Errorf("outer width: got %v, want 600", result.Fragment.Size.Width)
+	if result.Fragment.Size.WidthF64() != 600 {
+		t.Errorf("outer width: got %v, want 600", result.Fragment.Size.WidthF64())
 	}
-	if result.Fragment.Size.Height != 40 {
-		t.Errorf("outer height: got %v, want 40", result.Fragment.Size.Height)
+	if result.Fragment.Size.HeightF64() != 40 {
+		t.Errorf("outer height: got %v, want 40", result.Fragment.Size.HeightF64())
 	}
 
 	midFrag := result.Fragment.Children[0].Fragment
-	if midFrag.Size.Width != 600 {
-		t.Errorf("mid width: got %v, want 600", midFrag.Size.Width)
+	if midFrag.Size.WidthF64() != 600 {
+		t.Errorf("mid width: got %v, want 600", midFrag.Size.WidthF64())
 	}
 
 	innerFrag := midFrag.Children[0].Fragment
-	if innerFrag.Size.Width != 600 {
-		t.Errorf("inner width: got %v, want 600", innerFrag.Size.Width)
+	if innerFrag.Size.WidthF64() != 600 {
+		t.Errorf("inner width: got %v, want 600", innerFrag.Size.WidthF64())
 	}
 }

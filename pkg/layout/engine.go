@@ -127,7 +127,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 			rootStyle, rootWDM, le.viewport.width, le.viewport.height, result.Fragment,
 		)
 	} else if rootWDM.IsFlippedBlocks() {
-		rootWidth := result.Fragment.Size.Width
+		rootWidth := result.Fragment.Size.WidthF64()
 		if rootWidth < le.viewport.width {
 			rootOffsetX = le.viewport.width - rootWidth
 		}
@@ -265,7 +265,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 		if result.Fragment.BoxData != nil {
 			marginRight = result.Fragment.BoxData.Margin.Right
 		}
-		rootOffsetX = vpWidth - result.Fragment.Size.Width - marginRight
+		rootOffsetX = vpWidth - result.Fragment.Size.WidthF64() - marginRight
 		if rootOffsetX < 0 {
 			rootOffsetX = 0
 		}
@@ -325,8 +325,8 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		Style:                  frag.Style,
 		X:                      absX,
 		Y:                      absY,
-		Width:                  frag.Size.Width,
-		Height:                 frag.Size.Height,
+		Width:                  frag.Size.WidthF64(),
+		Height:                 frag.Size.HeightF64(),
 		Parent:                 parent,
 		ClipContentToBorderBox: frag.ClipContentToBorderBox,
 		ClipBlockAxisOnly:      frag.ClipBlockAxisOnly,

@@ -122,7 +122,7 @@ const (
 // Ported from Blink's PhysicalFragment (physical_fragment.h).
 type PhysicalFragment struct {
 	// Size is the border-box size in physical coordinates.
-	Size PhysicalSize
+	Size geometry.PhysicalSize
 
 	// Children are the positioned child fragments.
 	Children []ChildLink
@@ -225,13 +225,13 @@ func NewLogicalFragment(wdm WritingDirectionMode, fragment *PhysicalFragment) Lo
 
 // InlineSize returns the fragment's inline-size (width in HTB, height in vertical).
 func (lf LogicalFragment) InlineSize() float64 {
-	ls := ToLogicalSize(lf.fragment.Size, lf.wdm.WM)
+	ls := ToLogicalSize(geomSizeToOld(lf.fragment.Size), lf.wdm.WM)
 	return ls.InlineSize
 }
 
 // BlockSize returns the fragment's block-size (height in HTB, width in vertical).
 func (lf LogicalFragment) BlockSize() float64 {
-	ls := ToLogicalSize(lf.fragment.Size, lf.wdm.WM)
+	ls := ToLogicalSize(geomSizeToOld(lf.fragment.Size), lf.wdm.WM)
 	return ls.BlockSize
 }
 

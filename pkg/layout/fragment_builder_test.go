@@ -1,6 +1,10 @@
 package layout
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/geometry"
+)
 
 func TestBoxFragmentBuilder_HTB_LTR(t *testing.T) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
@@ -9,14 +13,14 @@ func TestBoxFragmentBuilder_HTB_LTR(t *testing.T) {
 
 	// Add a child at logical offset (100, 50) with size 200x100.
 	childFragment := &PhysicalFragment{
-		Size: PhysicalSize{Width: 200, Height: 100},
+		Size: geometry.NewPhysicalSize(200, 100),
 	}
 	builder.AddChild(childFragment, LogicalOffset{InlineOffset: 100, BlockOffset: 50})
 
 	result := builder.Build()
 
 	// HTB+LTR: physical size = (800, 600), child at (100, 50).
-	if result.Fragment.Size.Width != 800 || result.Fragment.Size.Height != 600 {
+	if result.Fragment.Size.WidthF64() != 800 || result.Fragment.Size.HeightF64() != 600 {
 		t.Errorf("size: got %v, want 800x600", result.Fragment.Size)
 	}
 	if len(result.Fragment.Children) != 1 {
@@ -37,14 +41,14 @@ func TestBoxFragmentBuilder_VRL_LTR(t *testing.T) {
 	// A child of logical size inline=50, block=100 (physical 100x50).
 	// At logical offset inline=20, block=30.
 	childFragment := &PhysicalFragment{
-		Size: PhysicalSize{Width: 100, Height: 50}, // block=100(W), inline=50(H)
+		Size: geometry.NewPhysicalSize(100, 50), // block=100(W), inline=50(H)
 	}
 	builder.AddChild(childFragment, LogicalOffset{InlineOffset: 20, BlockOffset: 30})
 
 	result := builder.Build()
 
 	// VRL: physical size = (block=800, inline=600) = (800, 600).
-	if result.Fragment.Size.Width != 800 || result.Fragment.Size.Height != 600 {
+	if result.Fragment.Size.WidthF64() != 800 || result.Fragment.Size.HeightF64() != 600 {
 		t.Errorf("size: got %v, want 800x600", result.Fragment.Size)
 	}
 
@@ -62,7 +66,7 @@ func TestBoxFragmentBuilder_VLR_LTR(t *testing.T) {
 	builder.SetSize(LogicalSize{InlineSize: 600, BlockSize: 800})
 
 	childFragment := &PhysicalFragment{
-		Size: PhysicalSize{Width: 100, Height: 50},
+		Size: geometry.NewPhysicalSize(100, 50),
 	}
 	builder.AddChild(childFragment, LogicalOffset{InlineOffset: 20, BlockOffset: 30})
 
@@ -81,7 +85,7 @@ func TestBoxFragmentBuilder_HTB_RTL(t *testing.T) {
 	builder.SetSize(LogicalSize{InlineSize: 800, BlockSize: 600})
 
 	childFragment := &PhysicalFragment{
-		Size: PhysicalSize{Width: 200, Height: 100},
+		Size: geometry.NewPhysicalSize(200, 100),
 	}
 	// Logical inline=100 from inline-start (which is the right edge in RTL).
 	builder.AddChild(childFragment, LogicalOffset{InlineOffset: 100, BlockOffset: 50})
@@ -122,7 +126,7 @@ func TestMarginStrut(t *testing.T) {
 func TestLogicalFragment_ReadLogicalSize(t *testing.T) {
 	// A physical fragment of size 800x600.
 	phys := &PhysicalFragment{
-		Size: PhysicalSize{Width: 800, Height: 600},
+		Size: geometry.NewPhysicalSize(800, 600),
 	}
 
 	// Read in HTB: inline=800 (width), block=600 (height).

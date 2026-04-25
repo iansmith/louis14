@@ -89,7 +89,7 @@ func (s *ifcWalkState) walkLogical(
 		if frag == nil {
 			continue
 		}
-		physOff := parentConv.ToPhysicalOffset(childLink.offset, frag.Size)
+		physOff := parentConv.ToPhysicalOffset(childLink.offset, geomSizeToOld(frag.Size))
 		absOff := PhysicalOffset{
 			X: originInBlock.X + physOff.X,
 			Y: originInBlock.Y + physOff.Y,
@@ -147,7 +147,7 @@ func (s *ifcWalkState) processLine(lineBox *PhysicalFragment, lineOriginInBlock 
 				X: lineOriginInBlock.X + sub.Offset.LeftF64(),
 				Y: lineOriginInBlock.Y + sub.Offset.TopF64(),
 			},
-			Size: sub.Fragment.Size,
+			Size: geomSizeToOld(sub.Fragment.Size),
 		}
 		lineMatches = append(lineMatches, rect)
 	}

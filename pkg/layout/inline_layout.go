@@ -1269,10 +1269,10 @@ func createLineBoxEx(
 				bgStyle.Set("position", "static")
 			}
 			bgFrag := &PhysicalFragment{
-				Size: ToPhysicalSize(LogicalSize{
+				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 					InlineSize: spanInlineSize,
 					BlockSize:  spanBlockSize,
-				}, wdm.WM),
+				}, wdm.WM)),
 				Type:             FragmentBox,
 				Style:            bgStyle,
 				Node:             span.node,
@@ -1479,10 +1479,10 @@ func createLineBoxEx(
 			}
 
 			textFrag := &PhysicalFragment{
-				Size: ToPhysicalSize(LogicalSize{
+				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 					InlineSize: r.InlineSize,
 					BlockSize:  fontSize,
-				}, wdm.WM),
+				}, wdm.WM)),
 				Type:             FragmentText,
 				TextContent:      content,
 				BidiLevel:        r.Item.BidiLevel,

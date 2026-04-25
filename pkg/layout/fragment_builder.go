@@ -274,7 +274,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	conv := NewConverter(b.wdm, convSize)
 	physChildren := make([]ChildLink, len(b.children))
 	for i, child := range b.children {
-		childPhysSize := child.fragment.Size
+		childPhysSize := geomSizeToOld(child.fragment.Size)
 		physOff := conv.ToPhysicalOffset(child.offset, childPhysSize)
 		physChildren[i] = ChildLink{
 			Offset:   geometry.PhysicalOffsetFromF64Round(physOff.X, physOff.Y),
@@ -283,7 +283,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 
 	fragment := &PhysicalFragment{
-		Size:             physSize,
+		Size:             oldSizeToGeom(physSize),
 		Children:         physChildren,
 		WritingDirection: b.wdm,
 		BoxData:          b.boxData,

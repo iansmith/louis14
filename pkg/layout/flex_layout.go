@@ -1489,8 +1489,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				physI := sorted[i].mainOffset
 				physJ := sorted[j].mainOffset
 				if isRTL {
-					physI = contentInlineSize - sorted[i].mainOffset - sorted[i].fragment.Size.Width
-					physJ = contentInlineSize - sorted[j].mainOffset - sorted[j].fragment.Size.Width
+					physI = contentInlineSize - sorted[i].mainOffset - sorted[i].fragment.Size.WidthF64()
+					physJ = contentInlineSize - sorted[j].mainOffset - sorted[j].fragment.Size.WidthF64()
 				}
 				return physI < physJ
 			}
@@ -1510,7 +1510,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				fmt.Fprintf(os.Stderr, "FLEX-DBG item wdm=%v mainOff=%.1f crossOff=%.1f crossMarginStart=%.1f crossSize=%.1f mainIsItemInline=%v fragW=%.1f fragH=%.1f inlineOff=%.1f blockOff=%.1f margins={IS=%.1f IE=%.1f BS=%.1f BE=%.1f}\n",
 					item.wdm, item.mainOffset, item.crossOffset, item.crossMarginStart(),
 					item.crossSize, item.mainIsItemInline,
-					item.fragment.Size.Width, item.fragment.Size.Height,
+					item.fragment.Size.WidthF64(), item.fragment.Size.HeightF64(),
 					inlineOff, blockOff,
 					item.margins.InlineStart, item.margins.InlineEnd, item.margins.BlockStart, item.margins.BlockEnd)
 			}

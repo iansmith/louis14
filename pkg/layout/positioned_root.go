@@ -241,6 +241,6 @@ func resolvePositionedRootOffset(
 	phys := conv.ToPhysicalOffset(LogicalOffset{
 		InlineOffset: insetStartI + marginStartI,
 		BlockOffset:  insetStartB + marginStartB,
-	}, fragment.Size)
+	}, geomSizeToOld(fragment.Size))
 	return phys.X, phys.Y
 }

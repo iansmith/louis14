@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 // MulticolLayoutAlgorithm implements CSS Multi-column Layout Module Level 1.
@@ -573,9 +574,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					// visual result; the background-color fills the clipped height.
 					frag := fullResult.Fragment
 					if wdm.IsHorizontal() {
-						frag.Size.Height = spanHeight
+						frag.Size.Height = layoutunit.FromFloat64Round(spanHeight)
 					} else {
-						frag.Size.Width = spanHeight
+						frag.Size.Width = layoutunit.FromFloat64Round(spanHeight)
 					}
 					spanFrag = frag
 				}
@@ -632,9 +633,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				available := outerAvailable - blockCursor
 				// Clip the spanner to the available space and place it.
 				if wdm.IsHorizontal() {
-					spanFrag.Size.Height = available
+					spanFrag.Size.Height = layoutunit.FromFloat64Round(available)
 				} else {
-					spanFrag.Size.Width = available
+					spanFrag.Size.Width = layoutunit.FromFloat64Round(available)
 				}
 				builder.AddChild(spanFrag, LogicalOffset{
 					InlineOffset: 0,

@@ -268,7 +268,7 @@ func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
 	parentStyle := makeStyle("display", "block", "font-size", "16px")
 
 	textFrag := &PhysicalFragment{
-		Size:             PhysicalSize{Width: 50, Height: 16},
+		Size:             geometry.NewPhysicalSize(50, 16),
 		Type:             FragmentText,
 		TextContent:      "Test text",
 		Node:             parentNode,
@@ -277,7 +277,7 @@ func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
 	}
 
 	lineFrag := &PhysicalFragment{
-		Size: PhysicalSize{Width: 800, Height: 20},
+		Size: geometry.NewPhysicalSize(800, 20),
 		Children: []ChildLink{
 			{Offset: geometry.PhysicalOffsetFromF64Round(0, 2), Fragment: textFrag},
 		},
@@ -286,7 +286,7 @@ func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
 	}
 
 	containerFrag := &PhysicalFragment{
-		Size: PhysicalSize{Width: 800, Height: 20},
+		Size: geometry.NewPhysicalSize(800, 20),
 		Children: []ChildLink{
 			{Offset: geometry.PhysicalOffsetFromF64Round(0, 0), Fragment: lineFrag},
 		},
@@ -326,7 +326,7 @@ func TestInlineLayout_LineBoxHeight(t *testing.T) {
 		t.Fatal("no line boxes")
 	}
 
-	h := lineBoxes[0].Size.Height
+	h := lineBoxes[0].Size.HeightF64()
 	if h < 15 || h > 30 {
 		t.Errorf("line box height: got %f, expected ~20", h)
 	}
@@ -361,8 +361,8 @@ func TestInlineLayout_TextPositioning(t *testing.T) {
 		t.Errorf("left-aligned text X offset: got %f, want ~0", textFrag.Offset.LeftF64())
 	}
 
-	if textFrag.Fragment.Size.Width <= 0 {
-		t.Errorf("text width should be > 0, got %f", textFrag.Fragment.Size.Width)
+	if textFrag.Fragment.Size.WidthF64() <= 0 {
+		t.Errorf("text width should be > 0, got %f", textFrag.Fragment.Size.WidthF64())
 	}
 }
 

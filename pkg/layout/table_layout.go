@@ -423,7 +423,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			if isOrthogonalCell && colHasExplicit[colIdx] {
 				// Use the cell's physical WIDTH (= column width) as the row height.
 				// This produces square cells when col width is explicitly specified.
-				cellBlockForRow = cellResult.Fragment.Size.Width
+				cellBlockForRow = cellResult.Fragment.Size.WidthF64()
 			}
 			// For anonymous cell wrappers (non-table-structural children wrapped per
 			// CSS Tables §2.1), the child's block margins must be included in the row
@@ -764,10 +764,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// legacy post-append VA sweep semantics.
 			if contentBlockSize < rowHeight {
 				cellLogical := NewLogicalFragment(wdm, cellFrag)
-				cellFrag.Size = ToPhysicalSize(LogicalSize{
+				cellFrag.Size = oldSizeToGeom(ToPhysicalSize(LogicalSize{
 					InlineSize: cellLogical.InlineSize(),
 					BlockSize:  rowHeight,
-				}, wdm.WM)
+				}, wdm.WM))
 
 				va := css.VerticalAlignMiddle // default for td/th
 				if cl.cell.style != nil {
@@ -781,7 +781,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					blockShift = rowHeight - contentBlockSize
 				}
 				if blockShift > 0 {
-					conv := NewConverter(wdm, cellFrag.Size)
+					conv := NewConverter(wdm, geomSizeToOld(cellFrag.Size))
 					physShift := conv.ToPhysicalOffset(LogicalOffset{
 						InlineOffset: 0,
 						BlockOffset:  blockShift,
@@ -956,10 +956,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// (§5.4.1 "the top left content of the cell will continue to
 		// show"), and flag the fragment for border-box clipping so
 		// overflowing content is hidden.
-		cellFrag.Size = ToPhysicalSize(LogicalSize{
+		cellFrag.Size = oldSizeToGeom(ToPhysicalSize(LogicalSize{
 			InlineSize: cellLogical.InlineSize(),
 			BlockSize:  spannedBlock,
-		}, wdm.WM)
+		}, wdm.WM))
 
 		if contentBlockSize < spannedBlock {
 			va := css.VerticalAlignMiddle // default for td/th
@@ -974,7 +974,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				blockShift = spannedBlock - contentBlockSize
 			}
 			if blockShift > 0 {
-				conv := NewConverter(wdm, cellFrag.Size)
+				conv := NewConverter(wdm, geomSizeToOld(cellFrag.Size))
 				physShift := conv.ToPhysicalOffset(LogicalOffset{
 					InlineOffset: 0,
 					BlockOffset:  blockShift,

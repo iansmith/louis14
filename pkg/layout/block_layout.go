@@ -1727,8 +1727,8 @@ func PropagateOOFCandidates(
 	var childContentPhys PhysicalSize
 	if needsConversion {
 		childContentPhys = PhysicalSize{
-			Width:  childResult.Fragment.Size.Width - physBPEdges.Left - physBPEdges.Right,
-			Height: childResult.Fragment.Size.Height - physBPEdges.Top - physBPEdges.Bottom,
+			Width:  childResult.Fragment.Size.WidthF64() - physBPEdges.Left - physBPEdges.Right,
+			Height: childResult.Fragment.Size.HeightF64() - physBPEdges.Top - physBPEdges.Bottom,
 		}
 		if childContentPhys.Width < 0 {
 			childContentPhys.Width = 0

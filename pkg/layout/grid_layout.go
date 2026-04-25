@@ -195,9 +195,9 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				var itemH float64
 				if wdm.IsVertical() {
-					itemH = item.result.Fragment.Size.Width
+					itemH = item.result.Fragment.Size.WidthF64()
 				} else {
-					itemH = item.result.Fragment.Size.Height
+					itemH = item.result.Fragment.Size.HeightF64()
 				}
 				itemH += item.margins.BlockStart + item.margins.BlockEnd
 				// Distribute item block-size evenly across spanned rows.
@@ -293,7 +293,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		blockOffset := rowOffsets[item.rowStart] + margins.BlockStart
 
 		// Align item within its grid area.
-		fragSize := ToLogicalSize(item.result.Fragment.Size, wdm.WM)
+		fragSize := ToLogicalSize(geomSizeToOld(item.result.Fragment.Size), wdm.WM)
 		fragInline := fragSize.InlineSize
 		fragBlock := fragSize.BlockSize
 		availInline := itemInline - margins.InlineStart - margins.InlineEnd
@@ -754,9 +754,9 @@ func (gla *GridLayoutAlgorithm) resolveTrackSizes(tracks []css.GridTrack, availa
 					// For block tracks:  block  = Height in HTB, Width in VLR.
 					// Formula: useWidth when (isInline != wdm.IsVertical()).
 					if isInline != wdm.IsVertical() {
-						itemSize = item.result.Fragment.Size.Width
+						itemSize = item.result.Fragment.Size.WidthF64()
 					} else {
-						itemSize = item.result.Fragment.Size.Height
+						itemSize = item.result.Fragment.Size.HeightF64()
 					}
 				}
 				contribution := itemSize / float64(span)
