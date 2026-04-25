@@ -24,6 +24,20 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 - spanner-fragmentation 12/13
 - css-writing-modes 779/781 (F1 target is to restore 781/781)
 
+### Phase 13: LayoutUnit precision discipline — PLAN 2026-04-25
+
+Plan-only entry. No code yet. See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown and `findings.md` "Phase 13: LayoutUnit research" for the full Blink-parity reference.
+
+**Driver:** `clear-001.xht` is the labeled "deferred pending Blink LayoutUnit trace" residual. Re-examined via pixel-probe today: the diff is a 1-px y-offset at the blue/orange boundary (our render: blue=96 tall, orange=96 tall; ref expects blue=97 tall, orange=95 tall, total height matches at 192 px). `1in = 96 CSS px` is integer-clean and a faithful LayoutUnit port produces 96 either way — so clear-001 may NOT close from LayoutUnit arithmetic alone. The most likely closure path is Phase 13g's paint-time `SnapSizeToPixel` analog (sub-pixel-edge / thin-line preservation), not 13a-f's arithmetic discipline. The plan stands on its own merits (foundational correctness, bit-exact reproducibility for paint-invalidation hashing, eliminate the `pkg/layout` ~580-`float64`-references precision-discipline gap), regardless of clear-001's specific cause; re-examine clear-001 after 13g.
+
+**Approach:** mirror Blink. New `pkg/geometry/layoutunit` package (`LayoutUnit{raw int32}`, 6 fractional bits, 1/64 px quantum, saturating arithmetic via clamped `int32` add/sub/mul, `MulDiv` for percentages, explicit `FromFloat64Round/Ceil/Floor` entry points). Composite `LogicalOffset/Size/Rect` and `PhysicalOffset/Size/Rect` types with writing-mode-conversion methods that stay in LayoutUnit (no float ever touched, mirrors `core/layout/geometry/writing_mode_converter.cc`). HarfBuzz output stays `float64` inside `mazarin/textshape`; the boundary is `MeasureText() LayoutUnit` analogous to Blink's `ShapeResult::SnappedWidth = LayoutUnit::FromFloatCeil(width_)`.
+
+**Sub-phases (plan):** 13a foundational `LayoutUnit` type → 13b geometry composites → 13c fragment offsets/sizes (largest single migration; behind a feature flag) → 13d `ConstraintSpace`+`LayoutResult` → 13e length/percentage resolution (single-call-site rounding, eliminates sibling-percentage drift) → 13f text-shaping boundary → 13g paint-time `SnapSizeToPixel` (most likely clear-001 closer) → 13h verification.
+
+**Acceptance:** all invariants held; zero `float64` fields in geometry structs under `pkg/layout/`; greppable invariant that all float→LayoutUnit conversions go through a `From*` constructor with explicit rounding mode.
+
+---
+
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
 
 `pkg/html/tokenizer.go` aborted parsing with `tokenizer error: expected '>' but reached EOF` whenever input ended mid-tag (DOCTYPE without `>`, end tag like `</html` without `>`, start tag attribute loop hitting EOF, unterminated quoted attribute value). HTML5 §13.2.5.7-8/.32/.34/.38/.39 classify all of these as **recoverable** parse errors — emit what the tokenizer has built and let the tree-builder close any still-open elements at EOF. Real browsers (and Blink's `HTMLTokenizer`) accept these inputs.

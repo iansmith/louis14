@@ -1880,3 +1880,164 @@ The three named drivers (`multicol-rule-large-001`, `-stacking-001`, `-nested-ba
 - `multicol-rule-nested-balancing-003.html`: debug printed correct `contentH` values for every painter call (outer 250, inner fragments 200). The 7.6 % diff comes from our *rendering of the reference HTML*: the ref uses `column-fill:auto` + `height:200` on the inner article, and our layout sizes the inner boxes at 250 and 400 respectively rather than 200. That's a `column-fill:auto` height-resolution bug on nested multicol, separate from rule painting.
 
 These three tests are **deferred**, not closed. Each needs a dedicated driver once its underlying layout fault is addressed. The relevant phases when we pick them up: step-2-large / stacking → Phase 12b inline-in-multicol; step-2-nested-balancing → nested `column-fill:auto` height resolution.
+
+## Phase 13: LayoutUnit research (2026-04-25)
+
+Driver: `clear-001.xht` is the labeled "deferred pending Blink LayoutUnit trace" residual. Re-examination 2026-04-25 (see "clear-001 diagnosis" below) shows the diff is unlikely to be LayoutUnit arithmetic per se, but the migration is foundational regardless and probably closes clear-001 at the paint-time pixel-snap step (Phase 13g).
+
+Companion plan: `task_plan.md` "Phase 13: LayoutUnit precision discipline".
+
+### What `LayoutUnit` IS in Blink
+
+`LayoutUnit` is an instantiation of a `FixedPoint<fractional_bits, Storage>` template defined in `third_party/blink/renderer/platform/geometry/layout_unit.h`:
+
+```cpp
+using LayoutUnit        = FixedPoint<6,  int32_t>;   // 1/64 px, 26.6
+using TextRunLayoutUnit = FixedPoint<16, int32_t>;   // 1/65536 px, 16.16
+using InlineLayoutUnit  = FixedPoint<16, int64_t>;   // 1/65536 px, 48.16
+inline constexpr LayoutUnit kIndefiniteSize(-1);
+```
+
+Constants:
+- `kFractionalBits = 6`
+- `kFixedPointDenominator = 1 << kFractionalBits = 64`
+- `kIntMax = kRawValueMax / kFixedPointDenominator ≈ 33,554,431` (about 33M CSS pixels of representable headroom)
+- `Epsilon = 1/64 = 0.015625f`
+
+The 6-bit fractional choice (1/64 px quantum) matches HarfBuzz's `hb_position_t` (1/64 of a font unit) and FreeType's 26.6 fixed-point — chosen so the text-layout boundary doesn't introduce an extra precision impedance mismatch. Header comment cites https://trac.webkit.org/wiki/LayoutUnit for the original sub-pixel-layout design rationale.
+
+Why integer fixed-point instead of `float64`:
+- **Bit-exact reproducibility**: layout output drives paint invalidation, scroll anchoring, IntersectionObserver — float associativity failures would cause hash mismatches.
+- **Rounding consistency**: edge-snapping (block-collapse, float-clear, table line-height, baseline alignment) demands two siblings computing "the same value" produce the same value bit-exactly.
+- **Saturating overflow**: every op is `base::ClampAdd/Sub/Mul`; insanely large content (`height: 1e30px`) saturates at `Max()` instead of becoming `+inf`/`NaN` that would propagate through the tree.
+- **Compactness**: `LayoutUnit` is 4 bytes vs 8 for `double`; layout fragments aggregate hundreds of thousands of these.
+
+### Construction from scalars (`layout_unit.h:100-150`)
+
+```cpp
+constexpr explicit FixedPoint(float  v)  : value_(ClampRawValue(v * kFixedPointDenominator)) {}  // truncates
+constexpr explicit FixedPoint(double v)  : value_(ClampRawValue(v * kFixedPointDenominator)) {}  // truncates
+static FixedPoint FromFloatRound (float v) { return FromRawValueWithClamp(roundf(v * 64)); }
+static FixedPoint FromFloatCeil  (float v) { return FromRawValueWithClamp(ceilf (v * 64)); }
+static FixedPoint FromFloatFloor (float v) { return FromRawValueWithClamp(floorf(v * 64)); }
+static FixedPoint FromDoubleRound(double v){ return FromRawValueWithClamp(round (v * 64)); }
+```
+
+The implicit `(float)` ctor truncates — to get explicit semantics callers MUST use `FromFloatRound/Ceil/Floor`. Also `FromFloatEncompassRound(start, end)` floors `start` and ceils `end` so a float interval never shrinks under quantization (used for selection rects, ink overflow).
+
+Operator surface highlights:
+- Implicit `operator double() / operator float()` — going OUT to float is lossless and unmarked.
+- `operator int() = delete` and `operator unsigned() = delete` — going to an integer pixel count must be explicit via `Round() / Floor() / Ceil() / ToInt()`.
+- All `+`, `-` route through `base::ClampAdd / ClampSub` (saturating).
+- `*(LayoutUnit, LayoutUnit)` does `int64_t result = (int64) a.raw * (int64) b.raw / kFixedPointDenominator` with overflow saturation (`BoundedMultiply` ~`layout_unit.h:460-490`).
+- `MulDiv(m, d)` widens to `int64` — used for percentages to avoid intermediate saturation.
+- `Round()` is round-half-away-from-zero (not banker's): `ToInt() + ((Fraction().raw + 32) >> 6)`.
+
+### Coordinate types (`core/layout/geometry/`)
+
+NG (logical / physical) types are pure `LayoutUnit` aggregates:
+
+```cpp
+// core/layout/geometry/logical_offset.h
+struct LogicalOffset {
+  LayoutUnit inline_offset;
+  LayoutUnit block_offset;
+  LogicalOffset(double, double) = delete;                 // float entry blocked
+  PhysicalOffset ConvertToPhysical(WritingDirectionMode, outer_size, inner_size) const;
+};
+```
+
+The writing-mode conversion (`writing_mode_converter.cc:30-65 SlowToPhysical`) is plain LayoutUnit subtraction, no float ever touched:
+
+```cpp
+case kVerticalRl:
+  return PhysicalOffset(outer_size_.width - offset.block_offset - inner_size.width,
+                        offset.inline_offset);
+```
+
+Logical and physical are 1-1 permutations/subtractions in LayoutUnit; conversion preserves bit-exact equality. Going to/from `gfx::SizeF` / `gfx::PointF` (float-based UI geometry) requires explicit `From*Round/Floor` in, lossless `operator gfx::*F()` out.
+
+### Where LayoutUnit appears in layout algorithms
+
+`BlockLayoutAlgorithm::Layout()` returns `const LayoutResult*`. Its inputs (`ConstraintSpace`) and outputs (`BoxFragmentBuilder` accumulating `PhysicalRect`/`LogicalRect`) are LayoutUnit end-to-end:
+
+```cpp
+// block_layout_algorithm.cc
+LayoutUnit previously_consumed_block_size;
+if (GetBreakToken() && !container_builder_.IsFragmentainerBoxType())
+  previously_consumed_block_size = GetBreakToken()->ConsumedBlockSize();
+```
+
+`BlockBreakToken::ConsumedBlockSize()` (`block_break_token.h`) returns `LayoutUnit consumed_block_size_` — paginated layouts accumulate fragmentainer offsets in LayoutUnit so page N+1's start is bit-exactly page N's end.
+
+`ExclusionSpace::ClearanceOffset(EClear)` (`exclusion_space.h:537`) returns `LayoutUnit` — float-clear's bottom-edge is computed once and consumed verbatim. With `float64` arithmetic, two siblings consulting "the same float bottom" can disagree at ULP precision.
+
+### Float ↔ LayoutUnit boundary
+
+Three legitimate float-survival sites in current Blink:
+
+1. **Style resolution.** `Length` (`platform/geometry/length.h`) stores `float value_`. Resolution converts to `LayoutUnit` via `LayoutUnit(...)` (truncating) or `LengthFunctions::ValueForLength` (uses `FromFloatRound`).
+2. **Transforms.** `gfx::Transform` is a 4×4 `double` matrix. Geometry passing through is mapped in `gfx::RectF`; on return it goes via `PhysicalRect::EnclosingRect(gfx::RectF)` (floor offset / ceil far-edges) so the LayoutUnit rect is a *superset* of the float rect. Same superset principle as text below.
+3. **Text shaping.** HarfBuzz output is float (`hb_position_t / 64.f`). Crossing point: `ShapeResult::SnappedWidth() = LayoutUnit::FromFloatCeil(width_)` (`shape_result.h:131`). Selection-edge functions:
+
+   ```cpp
+   LayoutUnit SnappedStartPositionForOffset(unsigned o) const { return LayoutUnit::FromFloatFloor(...); }
+   LayoutUnit SnappedEndPositionForOffset  (unsigned o) const { return LayoutUnit::FromFloatCeil (...); }
+   ```
+
+   `Floor` for start and `Ceil` for end deliberately — guarantees the LayoutUnit-quantized substring is a superset of the float substring, so selection/highlight rects never miss a pixel.
+
+   Inside the shaper, advances accumulate in `TextRunLayoutUnit` (16/16 fixed-point); only at the line-breaker boundary do they down-convert to the 6-bit `LayoutUnit` the rest of layout speaks.
+
+### Paint-time pixel snap (`layout_unit.h:720-740`)
+
+```cpp
+inline int SnapSizeToPixel(LayoutUnit size, LayoutUnit location) {
+  LayoutUnit fraction = location.Fraction();
+  int result = (fraction + size).Round() - fraction.Round();
+  if (result == 0 && (size.RawValue() > 4 || size.RawValue() < -4)) [[unlikely]]
+    return size > 0 ? 1 : -1;
+  return result;
+}
+```
+
+The "preserve thin lines" branch (`>4` raw → `±1`) is what keeps a 0.5 px border at integer origin from disappearing. Crucially, the paint snap is **non-mutating** on the layout tree — the LayoutUnit rect stays at sub-pixel precision so two adjacent boxes both at `x=0.4 width=10.2` and `x=10.6 width=10.2` snap to integer pixels `(0..11)` and `(11..21)` without overlap or gap. If layout had pre-snapped, the second box would be at `x=11..21` against `x=0..10` and there'd be a 1-px gap at row 10.
+
+### Pitfalls Blink hit during NG migration
+
+1. **Percentage-resolution disagreement between siblings.** Two children both compute `width: 50%` of a 101px parent; one path computes via `Length::Pixels(50.5f)` then `FromFloatRound` (= raw 3232 = 50.5 px), the other path via intermediate `int` ((101*50)/100 = 50). Sibling alignment off by 0.5 px. **Fix: every percentage resolution goes through one site** (`MinimumValueForLength(Length, LayoutUnit basis)` → `LayoutUnit::FromFloatRound(length.Pixels() * basis.Float() * 0.01f)`). Single rounding mode at every call site. **For louis14 this is Phase 13e.**
+2. **Float-typed cached intrinsic widths feeding LayoutUnit consumers.** `min-content`/`max-content` cached as float caused 1-px wobble in `auto`-sized tables. Cache changed to `MinMaxSizes { LayoutUnit min_size, max_size }`.
+3. **Transforms.** Geometry round-tripping through `gfx::Transform` must come back via `EnclosingRect` (floor/ceil), never `round` both ways — otherwise a hit-test rect of "exactly the visible box" can shrink under transformation and fail to hit-test its own edge.
+
+Reference: `crbug.com/641952` ("subpixel layout regressions in float clearance") plus the `FlexLayoutAlgorithm` percentage-heights family of bugs (fixed by routing fractional-distribution computations through `LayoutUnit::MulDiv`).
+
+### clear-001 diagnosis (re-examined 2026-04-25)
+
+Previous tracking-file label: "deferred pending Blink LayoutUnit trace". Re-examined via pixel-probe of the test/ref images:
+
+- **Test (our render):** blue square y=49→145 (96 tall), orange square y=145→241 (96 tall).
+- **Ref (expected):** blue square y=49→146 (97 tall), orange square y=146→241 (95 tall).
+- Total stack height matches at 192 px. Only the dividing line differs by 1 px.
+
+`1in = 96 CSS px` is integer-clean; a faithful LayoutUnit port produces 96, not 97. So **clear-001 may NOT close from LayoutUnit arithmetic alone**. The likely real cause is one of:
+
+- **Sub-pixel placement at float-bottom edge.** Real Blink may place the float at a non-integer y (e.g. due to leading whitespace ascender/descender contribution that we collapse differently for an empty `<div>`), then the `clear:left` constraint snaps the cleared block's top to a different integer than ours.
+- **Paint-time anti-alias detail.** The float's bottom edge might be drawn with a 1-px AA fringe in real Blink that we render as a hard edge.
+- **Author's reference was generated on a non-standard DPI** and 97/95 is just what that browser produced; with no `<meta name=fuzzy>` annotation, we can't know without a real Blink trace.
+
+**Most likely closure path:** Phase 13g (paint-time `SnapSizeToPixel` analog) — the right-thing-architecturally fix for the sub-pixel-edge class of bugs, regardless of clear-001's specific cause. Re-examine clear-001 after 13g lands.
+
+### Migration plan
+
+See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown (13a foundational types → 13b geometry types → 13c fragment offsets/sizes → 13d ConstraintSpace+LayoutResult → 13e length/percentage resolution → 13f text-shaping boundary → 13g paint-time pixel snap → 13h verification). Each sub-phase commits independently behind a gate-sweep of all WPT invariants.
+
+### Files cited (Chromium tree)
+
+- `third_party/blink/renderer/platform/geometry/layout_unit.h` — `FixedPoint` template, `LayoutUnit/TextRunLayoutUnit/InlineLayoutUnit` aliases, all operators, `SnapSizeToPixel`.
+- `third_party/blink/renderer/platform/geometry/{physical_offset,physical_size,length}.h` — float-side counterparts; `Length.value` is `float`.
+- `third_party/blink/renderer/core/layout/geometry/{logical_offset,logical_size,physical_rect,writing_mode_converter}.{h,cc}` — NG geometry types; pure LayoutUnit, deleted `(double, double)` ctors.
+- `third_party/blink/renderer/core/layout/block_break_token.h` — `ConsumedBlockSize() -> LayoutUnit`.
+- `third_party/blink/renderer/core/layout/exclusions/exclusion_space.h:537` — `ClearanceOffset(EClear) -> LayoutUnit`.
+- `third_party/blink/renderer/platform/fonts/shaping/shape_result.h:131,159-162` — `SnappedWidth/SnappedStart/EndPositionForOffset` boundary.
+- `third_party/blink/renderer/platform/fonts/shaping/shape_result.cc` — `TextRunLayoutUnit::FromFloatRound` for shaper-internal accumulation.
+- `third_party/blink/renderer/core/layout/inline/line_breaker.cc` — uses `shape_result->SnappedWidth()` to enter LayoutUnit.

@@ -56,6 +56,55 @@ Companion scratch blocks live at the top of `findings.md` (research notes per ta
 
 ---
 
+## Phase 13: LayoutUnit precision discipline (PLAN ONLY, 2026-04-25)
+
+**Goal.** Port Blink's `LayoutUnit` precision discipline to louis14. Today every geometry value in `pkg/layout/` is `float64`; ~580 `float64` references across 43 files. Blink uses `int32` fixed-point with 6 fractional bits (1/64 px = `Epsilon`), saturating arithmetic, and explicit rounding-mode entry/exit at every float boundary (text shaping, transforms, length resolution).
+
+**Why now.** Three drivers:
+
+1. **`clear-001.xht` is the labeled residual** (96 px / 0.0%, marked "deferred pending Blink LayoutUnit trace"). Diagnosis re-examined 2026-04-25: the diff is a 1-px y-offset at the blue/orange boundary (our blue=96 tall, ref expects 97 tall, both totals match at 192). `1in = 96 CSS px` is integer-clean; a faithful LayoutUnit port would still produce 96, not 97. So **clear-001 may NOT close from this work alone** — its real cause is likely sub-pixel placement at the float-bottom snap or a paint-time anti-alias detail. Phase 13 still lays the groundwork; the actual fix may need Phase 13's `SnapSizeToPixel` paint-time analog plus a separate float-clear bottom-edge investigation.
+2. **Bit-exact reproducibility is foundational** (CLAUDE.md rule 1). Float arithmetic associativity failures cause sibling drift that hasn't surfaced as a category but will once we tighten other categories — pagination, scroll anchoring, paint invalidation hashing.
+3. **Sub-pixel snapping at paint** (Blink's `SnapSizeToPixel`) is the right architectural shape for "0.5px border at 0.5px origin draws as 1px" cases that are currently ad-hoc in our painter.
+
+**Approach.** Mirror Blink. New `pkg/geometry/layoutunit` package with `LayoutUnit{raw int32}` and the methods/coordinate types from Blink's `platform/geometry/`. Migrate consumers in dependency order — foundational types first, fragments next, constraint-space and length resolution after. The text-shaping boundary stays in `float64` internally (HarfBuzz output) and crosses into `LayoutUnit` via `FromFloatCeil` / `FromFloatRound` at well-defined call sites.
+
+See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity reference (`platform/geometry/layout_unit.h`, `core/layout/geometry/`, `ShapeResult::SnappedWidth`, `PhysicalRect::EnclosingRect`, `SnapSizeToPixel`, the 6-fractional-bit rationale, the saturating-arithmetic guards, and the migration pitfalls Blink hit during NG).
+
+### Phase 13 sub-phases
+
+| # | Phase | Files touched | Test target | Risk |
+|---|---|---|---|---|
+| 13a | **Foundational types** — new `pkg/geometry/layoutunit` package: `LayoutUnit{raw int32}`, `New(int)`, `FromFloat64Round/Ceil/Floor`, `Float64()`, `Round/Floor/Ceil int32`, `Add/Sub/Mul/Div` (saturating via `math.MaxInt32`/`MinInt32` clamp), `MulDiv` (int64 widening for percentages), `Fraction()`, `Abs()`, `IsIndefinite()` (sentinel `kIndefinite = -64` raw, matching Blink's `kIndefiniteSize == -1` px). | New package only; no existing callers. | Pure new code; comprehensive unit tests for arithmetic correctness, saturation, rounding modes. | Low. |
+| 13b | **Geometry types** — `LogicalOffset{Inline, Block LayoutUnit}`, `LogicalSize{Inline, Block}`, `LogicalRect`, `PhysicalOffset{Left, Top}`, `PhysicalSize{Width, Height}`, `PhysicalRect`. Each has `New*` constructors, `From*F64Round/Ceil/Floor` for entry from float, `*F64()` accessors for exit, plus the writing-mode permutation methods (Logical↔Physical conversion via `WritingDirectionMode`). | New package; no migration yet. | Unit tests for the writing-mode conversions (matches `writing_mode_converter.cc` `SlowToPhysical`). | Low. |
+| 13c | **Fragment offsets/sizes** — `pkg/layout/PhysicalFragment.Offset`, `Size`, `RelativeOffset`, `Children[].Offset` migrate from `float64` pairs to `PhysicalOffset` / `PhysicalSize`. The `Box` tree (`fragmentToBox`) keeps `float64` *for now* at the layout↔render boundary; conversion is `frag.Size.WidthF64()`. | `pkg/layout/box_fragment.go`, `engine.go fragmentToBox`, all `BlockLayoutAlgorithm` / `MulticolLayoutAlgorithm` / `InlineLayoutAlgorithm` / `TableLayoutAlgorithm` / `FlexLayoutAlgorithm` / `GridLayoutAlgorithm` fragment-emission sites. | Largest single migration. Watch CSS2, css-position, css-writing-modes, css-flexbox, css-multicol invariants. | Medium-high. Land behind a feature flag during phase to allow rollback. |
+| 13d | **ConstraintSpace + LayoutResult** — replace `float64` available-size / percentage-resolution-size / line-offset / clearance-offset fields with `LayoutUnit`. | `pkg/layout/constraint_space.go`, `layout_result.go`, `block_break_token.go ConsumedBlockSize`, `exclusion_space.go ClearanceOffset`. | Closes the precision discipline at the layout-input boundary — all internal arithmetic from this phase forward is `LayoutUnit`. | Medium. |
+| 13e | **Length / percentage resolution** — `pkg/css/length` keeps `Length.value float32` (matches Blink) but its public `Resolve(basis LayoutUnit) LayoutUnit` returns `LayoutUnit`. Single rounding mode at the boundary (`FromFloatRound` for length, `MulDiv` for percentages). Eliminates the "two siblings of same percentage compute different LayoutUnits" class of bug. | `pkg/css/length.go`, all percentage-resolution call sites. | Closes percentage-of-percentage drift; verify against `flexbox-percentage-heights-*` and `css-tables` clusters. | Medium. |
+| 13f | **Text-shaping boundary** — `pkg/text` exposes `MeasureText` returning `LayoutUnit` (via `FromFloatCeil` analog of `ShapeResult::SnappedWidth`). `ShapeAdvances` returns `[]LayoutUnit` cumulative advances using `FromFloatFloor` / `FromFloatCeil` per Blink's `SnappedStart/EndPositionForOffset`. HarfBuzz output stays `float64` *inside* the `mazarin/textshape` package. | `pkg/text/measure.go`, `pkg/layout/line_breaker.go`, `pkg/layout/inline_layout.go`. Cross-repo coordination with `mazarin/textshape` may be needed if we want a `TextRunLayoutUnit` (16-bit fractional) for shaper-internal accumulation. | Verify wm 781/781 holds; sub-pixel kerning behavior may shift slightly. | Medium. |
+| 13g | **Paint-time pixel snap** — port `SnapSizeToPixel(size, location)` to `pkg/render`. Replaces ad-hoc `math.Round` in border/background-edge painting. The "preserve thin lines" rule (Blink's `>4 raw → ±1 px` clause for lines below 1/16 px that would round to 0) closes the class of "0.5px border vanishes" bugs. | `pkg/render/paint_*`. | Verify clear-001 + any `border-*-width: 0.5px` test. **This is where clear-001 most likely closes** — sub-pixel snap differences, not LayoutUnit arithmetic, are the suspected cause. | Medium. |
+| 13h | **Verification + cleanup** — re-run full gate sweep, re-examine clear-001, file follow-ups for any newly-surfaced bugs, document the float64 → LayoutUnit migration retrospective. | Tracking files. | Closure. | Low. |
+
+### Acceptance criteria
+
+- All invariants held: CSS2 99/99, css-flexbox 626/629, css-position **≥92/104** (target: 93/104 if clear-001 closes from 13g), spanner-fragmentation 12/13, css-writing-modes 781/781, css-multicol ≥179/455.
+- Zero `float64` fields in any geometry struct under `pkg/layout/`. Verified by static scan (a small custom analyzer or `go vet`-style rule).
+- All float→LayoutUnit conversions go through a `From*` constructor with explicit rounding mode. Greppable invariant: no `LayoutUnit{int32(x*64)}`-style raw coercion outside the package.
+- New package builds clean and unit tests cover saturating arithmetic, rounding modes, percentage round-trip, writing-mode permutations.
+
+### Discipline (per-phase)
+
+1. Read the relevant Blink site before each sub-phase (cited in findings.md §Phase 13).
+2. Land each sub-phase in its own commit gated on full WPT invariant sweep. No "land 13a-c then test" big-bang merges.
+3. Sub-pixel diff regressions (≤200 px cumulative) are real bugs per CLAUDE.md rule 3 — fix at source, do not accept.
+4. If a sub-phase regresses an invariant, roll back and re-design before continuing — do NOT bandaid forward.
+
+### Out of scope for Phase 13
+
+- `pkg/css` length parsing stays `float32` for the `Length.value` field — Blink does the same. The migration changes `Resolve()`'s return type, not internal storage.
+- Transforms (`pkg/render` matrix operations) stay `float64`. Conversion at the boundary uses an `EnclosingRect`-style "floor offset / ceil far-edges" rule. A full transform-precision audit is its own future phase.
+- Mazzy-side `mazarin/textshape` changes (e.g. an `InlineLayoutUnit` 16-bit-fractional shaper-internal accumulator) are deferred. Phase 13 does the louis14 side; if shaper precision shows up as a residual we revisit then.
+
+---
+
 ## css-position Goal (prior category, 92/104 — effectively complete)
 All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-25): **92 passing, 12 failing**. The 12 failures are all pre-existing residuals — none caused by Phase 12. (`position-change.html` was the 13th deferred residual until 2026-04-25 when the HTML tokenizer was fixed to handle EOF-in-tag per HTML5 §13.2.5.7-8 instead of aborting parse — see progress.md.)
 
