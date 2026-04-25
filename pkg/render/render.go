@@ -59,9 +59,13 @@ type clipRect struct {
 	x, y, w, h float64
 }
 
-// newProvider creates a DirectGlyphProvider for the default fonts directory.
+// newProvider returns the shared GlyphProvider used by both layout-time
+// measurement and paint-time rendering. Reusing the same provider — instead
+// of constructing a fresh DirectGlyphProvider per renderer — keeps
+// @font-face buffers (registered via [text.FontRegistry.RegisterFontFace])
+// visible across the layout↔render handoff. See `text.CurrentProvider`.
 func newProvider() textshape.GlyphProvider {
-	return textshape.NewDirectGlyphProvider(text.DefaultFontsDir())
+	return text.CurrentProvider()
 }
 
 // NewRenderer creates a new renderer with a fresh image of the given dimensions.

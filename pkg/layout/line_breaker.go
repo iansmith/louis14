@@ -1376,15 +1376,25 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 		break // Atomic inline or other content — stop searching.
 	}
 
-	// Cross-span kerning: adjacent text items with compatible shaping context
-	// are measured independently by handleText, which loses HarfBuzz pair kerns
-	// that span inline boundaries (e.g., the " T" kern in
-	// `<span>First,</span> <span>Third</span>`). Re-measure compatible runs as
-	// a single string and redistribute per-item InlineSize so the boundary
-	// positions reflect the cross-span kern. Blink accomplishes this via
-	// HarfBuzzShaper over the full IFC text plus ShapeResult::CopyRange; this
-	// is a targeted substitute that fixes paint positioning in the common
-	// case.
+	// Cross-span kerning re-measures adjacent same-context text items as a
+	// single shaped string and overrides per-item widths from the merged
+	// shape's slices. Paint, however, reshapes each item separately — so
+	// when measure-merged and paint-per-item produce different widths, the
+	// items render squished or gapped.
+	//
+	// For pure-LTR text at paragraph base level 0 the difference is sub-
+	// pixel kerning that's worth keeping (otherwise span-broken Latin
+	// drifts ~1 px per boundary, e.g. `flexbox-order-only-flexitems`). For
+	// any item above the paragraph base (level >= 1, i.e. bidi reordering
+	// is in play) the per-item paint reshape produces structurally different
+	// glyph positions from the merged-shape slice, and using the merged
+	// widths makes items overlap or gap by many pixels (`bidi-normal-005`,
+	// `bidi-unset-005/006` etc.).
+	//
+	// Blink solves this in general via `ShapeResult::CopyRange` so paint
+	// reads from the merged shape (the F1c work in findings.md). Until that
+	// lands, gate cross-span kerning on the LTR-paragraph-no-bidi case where
+	// it's safe.
 	lb.applyCrossSpanKerning(line, isVertical)
 
 	// Mark as last line if we've consumed all items.
@@ -1424,6 +1434,19 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 				if r.InlineSize != 0 {
 					goto runDone
 				}
+				// Spans that carry a non-normal unicode-bidi value
+				// (embed/override/isolate/plaintext/isolate-override)
+				// inject a Unicode bidi control character into the text
+				// content at the span boundary. Blink models these as
+				// `kBidiControl` items of length 1 between adjacent text
+				// items, which break shape merging via the `else { break }`
+				// path in `inline_node.cc:1660-1702`. We don't materialize
+				// kBidiControl as an InlineItem, so the equivalent break
+				// must be enforced here on the OpenTag/CloseTag for any
+				// span whose `unicode-bidi` is non-normal.
+				if isBidiBoundary(r.Item.Style) {
+					goto runDone
+				}
 				runEnd++
 				continue
 			case InlineItemText:
@@ -1446,6 +1469,24 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 		}
 
 		if len(textIndices) < 2 {
+			i = runEnd
+			continue
+		}
+
+		// Cross-span merging is only safe when every item in the run is at
+		// the paragraph base level (level 0, LTR). At level >= 1 the per-item
+		// paint reshape produces glyph widths that don't match the merged-
+		// shape slice, so applying merged widths to layout makes items render
+		// at different positions than where their glyphs actually paint.
+		// See the comment at the call site for the full rationale (F1c).
+		allLevelZero := true
+		for _, idx := range textIndices {
+			if line.Results[idx].Item.BidiLevel != 0 {
+				allLevelZero = false
+				break
+			}
+		}
+		if !allLevelZero {
 			i = runEnd
 			continue
 		}
@@ -1522,16 +1563,51 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 	}
 }
 
+// isBidiBoundary reports whether an InlineItem's style introduces a Unicode
+// bidi control character at this span boundary. CSS Writing Modes §2.2:
+// `unicode-bidi: embed/override/isolate/plaintext/isolate-override` inject
+// LRE/RLE/LRO/RLO/RLI/LRI/FSI and matching PDF/PDI characters around the
+// element's content. These act like Blink's `kBidiControl` items between
+// adjacent text items: shape merging must not cross them.
+func isBidiBoundary(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	bidi, ok := style.Get("unicode-bidi")
+	if !ok || bidi == "" || bidi == "normal" {
+		return false
+	}
+	return true
+}
+
 // canMergeShapingContext reports whether two inline items share the same
 // HarfBuzz shaping context and can therefore be measured together as one
-// run. Items at different bidi levels CAN merge — the merged run is shaped
-// once via ShapeAdvancesMixed, which segments by direction internally and
-// returns a logical-byte-indexed cumulative advance map. Font-feature-
-// settings is not compared because MeasureText does not apply features
-// today; if that changes, this check must be tightened.
+// concatenated run. Items must have:
+//
+//   - matching font (size/weight/style/family/mono/ahem),
+//   - matching letter-spacing and word-spacing,
+//   - matching CSS direction,
+//   - and **the same resolved bidi level** (not just same parity).
+//
+// The bidi-level requirement mirrors Blink: after bidi resolution, every
+// InlineItem has exactly one level (split by `InlineItem::SetBidiLevel` and
+// by injected `kBidiControl` items at unicode-bidi:embed/override/isolate
+// boundaries — see Blink `inline_node.cc:1660-1702`). Two items at levels
+// 1 and 3 are both RTL parity but live in different embedding contexts and
+// must shape as separate HarfBuzz buffers, exactly like ICU's
+// `ubidi_getLogicalRun` returns runs of equal level.
+//
+// Pre-fix this predicate compared only direction parity, which let the
+// embed boundary's level transition (1→3→1 in `<div dir=rtl>a <span style=
+// "unicode-bidi:embed;direction:rtl">…</span> b</div>`) merge into a single
+// shaping context — masking glyph positions that should differ from a single
+// LRO-pre-ordered reference run.
 func canMergeShapingContext(a, b *InlineItem) bool {
 	if a.Style == nil || b.Style == nil {
 		return a.Style == b.Style
+	}
+	if a.BidiLevel != b.BidiLevel {
+		return false
 	}
 	aSize, aBold, aItalic, aMono, aAhem := fontPropsFromStyle(a.Style)
 	bSize, bBold, bItalic, bMono, bAhem := fontPropsFromStyle(b.Style)

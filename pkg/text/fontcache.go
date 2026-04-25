@@ -2,8 +2,6 @@ package text
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -13,30 +11,41 @@ import (
 // FontFetcher fetches font data from a URL.
 type FontFetcher func(url string) ([]byte, error)
 
-// fontEntry stores a cached font file path for a specific family/weight/style combo.
-type fontEntry struct {
-	Family   string
-	Weight   string
-	Style    string
-	FilePath string // Cached file path on disk
+// bufferEntry stores a fetched @font-face buffer keyed by (family, weight, style).
+// Lookup matches against family/weight/style; the buffer is registered with the
+// underlying [textshape.GlyphProvider] via [FontRegistry.ApplyTo] so layout-time
+// and render-time text shaping can resolve the font without filesystem I/O.
+type bufferEntry struct {
+	Family  string
+	Weight  string
+	Style   string
+	Variant int32
+	Data    []byte
 }
 
-// FontRegistry manages fetched web fonts, caching them to disk for reuse.
+// FontRegistry holds fetched @font-face font buffers and applies them to a
+// [textshape.TextLayout] (which forwards to its underlying GlyphProvider via
+// [textshape.GlyphProvider.RegisterBuffer]).
+//
+// No filesystem state. Replaces the prior temp-file caching scheme: the parsed
+// buffer is the source of truth, and [Lookup] returns a synthetic path (just
+// `<family>-<Variant>.ttf`) so existing path-based call sites (FontPathToFamilyVariant,
+// openFont) round-trip cleanly. The synthetic path is never opened from disk —
+// the GlyphProvider's registered map intercepts the family+variant lookup first.
 type FontRegistry struct {
 	mu      sync.Mutex
-	entries []fontEntry
-	cacheDir string
+	entries []bufferEntry
 }
 
-// NewFontRegistry creates a new FontRegistry that caches fonts in a temp directory.
+// NewFontRegistry creates a new FontRegistry.
 func NewFontRegistry() *FontRegistry {
-	dir, _ := os.MkdirTemp("", "louis14-fonts-*")
-	return &FontRegistry{cacheDir: dir}
+	return &FontRegistry{}
 }
 
-// RegisterFontFace fetches a font from srcURL and registers it for the given family/weight/style.
-// The fetcher function is used to download the font data.
-// Returns the cached file path on success.
+// RegisterFontFace fetches a font from srcURL, decompresses WOFF1 if needed,
+// and stores the resulting TTF/OTF buffer under (family, weight, style).
+// Returns a synthetic path that round-trips through FontPathToFamilyVariant
+// back to (family, variant).
 func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style string, fetcher FontFetcher) (string, error) {
 	if fetcher == nil {
 		return "", fmt.Errorf("no font fetcher available")
@@ -47,7 +56,6 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 		return "", fmt.Errorf("fetching font %s: %w", srcURL, err)
 	}
 
-	// Decompress WOFF1 if needed
 	if format == "woff" || (format == "" && isWOFF1(data)) {
 		decompressed, err := decompressWOFF1(data)
 		if err != nil {
@@ -56,33 +64,31 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 		data = decompressed
 	}
 
-	// Cache to disk using a family+variant filename so FontPathToFamilyVariant
-	// can recover the logical (family, variant) pair from the path. A hashed
-	// basename would strand the file outside DirectGlyphProvider's resolver
-	// (it can't reverse-parse the hash back to a family), which silently drops
-	// all text drawn in the @font-face family.
 	variant := textshape.BoolsToVariant(normalizeWeight(weight) == "bold", normalizeStyle(style) == "italic")
-	fileName := fmt.Sprintf("%s-%s.ttf", sanitizeFamily(family), textshape.VariantToStyle(variant))
-	filePath := filepath.Join(fr.cacheDir, fileName)
-
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		return "", fmt.Errorf("caching font: %w", err)
-	}
 
 	fr.mu.Lock()
-	defer fr.mu.Unlock()
-	fr.entries = append(fr.entries, fontEntry{
-		Family:   strings.ToLower(family),
-		Weight:   normalizeWeight(weight),
-		Style:    normalizeStyle(style),
-		FilePath: filePath,
+	fr.entries = append(fr.entries, bufferEntry{
+		Family:  strings.ToLower(family),
+		Weight:  normalizeWeight(weight),
+		Style:   normalizeStyle(style),
+		Variant: variant,
+		Data:    data,
 	})
+	fr.mu.Unlock()
 
-	return filePath, nil
+	// Register the buffer with the shared GlyphProvider. Both layout-time
+	// measurement (via getLayout) and paint-time rendering (via the
+	// renderer's DrawContext, which reuses CurrentProvider) see the same
+	// `registered` map, so a single registration is enough.
+	if err := CurrentProvider().RegisterBuffer(family, variant, data); err != nil {
+		return "", fmt.Errorf("RegisterBuffer(%s): %w", family, err)
+	}
+
+	return syntheticFontPath(family, variant), nil
 }
 
-// Lookup returns the cached file path for a font matching the given family, weight, and style.
-// Returns "" if no match is found.
+// Lookup returns the synthetic path for a font matching the given family,
+// weight, and style. Returns "" if no match is found.
 func (fr *FontRegistry) Lookup(family string, bold, italic bool) string {
 	if fr == nil {
 		return ""
@@ -100,43 +106,42 @@ func (fr *FontRegistry) Lookup(family string, bold, italic bool) string {
 		targetStyle = "italic"
 	}
 
-	// Exact match first
 	for _, e := range fr.entries {
 		if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == targetStyle {
-			return e.FilePath
+			return syntheticFontPath(e.Family, e.Variant)
 		}
 	}
-
-	// Fallback: match family only (ignore weight/style)
 	for _, e := range fr.entries {
 		if e.Family == lowerFamily {
-			return e.FilePath
+			return syntheticFontPath(e.Family, e.Variant)
 		}
 	}
-
 	return ""
 }
 
-// sanitizeFamily returns a filesystem-safe form of a CSS font-family name.
-// Any rune outside [A-Za-z0-9] is replaced with '_' so that FontPathToFamilyVariant
-// can still split the resulting "<family>-<variant>.ttf" basename on the final
-// '-'. An empty or fully-stripped family collapses to "font".
-func sanitizeFamily(family string) string {
-	var b strings.Builder
-	b.Grow(len(family))
-	for _, r := range family {
-		switch {
-		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
+// ApplyTo registers every buffer in this registry with the given TextLayout.
+// Idempotent — re-applying replaces any prior registration on the layout's
+// underlying provider with the same (family, variant) key.
+func (fr *FontRegistry) ApplyTo(tl textshape.TextLayout) error {
+	if fr == nil || tl == nil {
+		return nil
+	}
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	for _, e := range fr.entries {
+		if err := tl.RegisterBuffer(e.Family, e.Variant, e.Data); err != nil {
+			return fmt.Errorf("RegisterBuffer(%s, %d): %w", e.Family, e.Variant, err)
 		}
 	}
-	s := b.String()
-	if s == "" || strings.Trim(s, "_") == "" {
-		return "font"
-	}
-	return s
+	return nil
+}
+
+// syntheticFontPath returns a basename-style path that FontPathToFamilyVariant
+// can round-trip back to (family, variant). The path is not a real filesystem
+// location; the GlyphProvider's registered map resolves the family+variant
+// without ever opening the file.
+func syntheticFontPath(family string, variant int32) string {
+	return family + "-" + textshape.VariantToStyle(variant) + ".ttf"
 }
 
 // normalizeWeight converts CSS font-weight values to "normal" or "bold".

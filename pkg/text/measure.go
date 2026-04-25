@@ -34,8 +34,14 @@ func measureCacheKey(text string, fontSize float64, fontPath string) string {
 // sharedLayout is the package-level TextLayout used for all measurement.
 // Set via SetTextLayout (called by the renderer after creating its DrawContext)
 // or lazily initialized on first use. Safe for concurrent use.
+//
+// sharedProvider is the GlyphProvider underneath sharedLayout. Tracked
+// separately so the renderer can reuse the same provider when constructing
+// its DrawContext — keeping @font-face RegisterBuffer entries visible to
+// both layout-time and paint-time text shaping.
 var (
 	sharedLayout   textshape.TextLayout
+	sharedProvider textshape.GlyphProvider
 	sharedLayoutMu sync.Mutex
 )
 
@@ -43,15 +49,31 @@ func getLayout() textshape.TextLayout {
 	sharedLayoutMu.Lock()
 	defer sharedLayoutMu.Unlock()
 	if sharedLayout == nil {
-		sharedLayout = textshape.NewTextLayout(defaultFontsDir())
+		sharedProvider = textshape.NewDirectGlyphProvider(defaultFontsDir())
+		sharedLayout = textshape.NewTextLayoutWithProvider(sharedProvider)
 	}
 	return sharedLayout
 }
 
+// CurrentProvider returns the shared GlyphProvider, lazy-initializing it on
+// first call. Renderers reuse this provider for their DrawContext so that
+// @font-face buffers registered via [FontRegistry.RegisterFontFace] are
+// visible at both layout time and paint time.
+func CurrentProvider() textshape.GlyphProvider {
+	sharedLayoutMu.Lock()
+	defer sharedLayoutMu.Unlock()
+	if sharedProvider == nil {
+		sharedProvider = textshape.NewDirectGlyphProvider(defaultFontsDir())
+		sharedLayout = textshape.NewTextLayoutWithProvider(sharedProvider)
+	}
+	return sharedProvider
+}
+
 // SetTextLayout sets the shared TextLayout used for all text measurement.
 // Must be called by the renderer after creating its DrawContext so that
-// layout measurement and paint rendering share the same engine, font cache,
-// and shape cache. Resets all derived caches.
+// layout measurement and paint rendering share the same shape cache.
+// Resets per-layout caches; the underlying GlyphProvider (with its
+// @font-face registered map) is preserved across the swap.
 func SetTextLayout(tl textshape.TextLayout) {
 	sharedLayoutMu.Lock()
 	sharedLayout = tl
