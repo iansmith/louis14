@@ -983,6 +983,25 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			if result.BreakAppeal != BreakAppealPerfect {
 				hasViolatingBreak = true
 			}
+			// F5: "terminal shortage in a continuation row" — this column
+			// overflowed monolithically (shortage > 0) AND its break token says
+			// HasSeenAllChildren with no child break tokens, meaning no
+			// subsequent column can absorb the overflow. Restricted to
+			// continuation rows (lineOffset > 0, e.g. post-spanner): in that
+			// context, monolithic overflow comes from short trailing content
+			// (e.g. a single inline line) that the initial balance estimate
+			// underestimated, and stretching is the correct response. For
+			// lineOffset == 0 (first row), HasSeenAllChildren-with-shortage
+			// represents normal "all siblings stacked overflow" that pre-
+			// existing acceptance handles via ClipBlockAxisOnly without
+			// changing visible layout shape (matches REF rendering for
+			// nested-balancing tests). Driver: multicol-list-item-003.
+			if lineOffset > 0 &&
+				result.MinSpaceShortage > 0 && result.BreakToken != nil &&
+				result.BreakToken.HasSeenAllChildren &&
+				len(result.BreakToken.ChildBreakTokens) == 0 {
+				hasViolatingBreak = true
+			}
 
 			colBreakToken = result.BreakToken
 			lastInnerResult = result
