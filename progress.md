@@ -24,30 +24,49 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 - spanner-fragmentation 12/13
 - css-writing-modes 779/781 (F1 target is to restore 781/781)
 
-### F1. wm bidi tests — ACTIVE, RE-DIAGNOSED TWICE 2026-04-24
+### F1. wm bidi tests — DONE 2026-04-25
 
-The "never passing, deferred" stance still holds for the regression-history claim (verified at `9913a9e4`: same 1598 px diff, wm at that commit was 757/781). The *cause* diagnosis has now been corrected twice.
+`bidi-embed-006` and `bidi-override-006` PASS at 0 diff. css-writing-modes **779/781 → 781/781**. F1 closed. Net wm gain in this landing: +2.
 
-**Stale (wrong):** `.test` renders 11 px shorter per line than `.ref`; suspected mirror-glyph substitution missing.
+The closer turned out to be three layered fixes; only the first matched the original F1d plan, the others surfaced only once the @font-face glyphs actually loaded and the byte-count fallback's masking went away. See findings §F1 for the full root-cause walk (including the two prior wrong diagnoses) and the per-test before/after.
 
-**Second-pass diagnosis (also wrong, or at best downstream):** sub-pixel kerning drift from per-fragment HarfBuzz shaping. Implemented Option A (F1a `ShapeAdvancesMixed` + F1b relaxed `canMergeShapingContext`) — code clean, no regressions, **F1 tests still 1598 px**, exactly unchanged.
+**1. Provider-side @font-face registration (F1d).**
+- mazzy `mazarin/textshape`: added `RegisterBuffer(family, variant, []byte) error` to the `GlyphProvider` / `TextLayout` / `DrawContext` interfaces. `DirectGlyphProvider` keeps a `registered map[regKey]*registeredFace` (parses with `goFont.ParseTTF` once at registration); `OpenFont` consults it before the filesystem path. `FontSvcGlyphProvider` mirrors with `cache=nil, registered=true, scale=size/upem` — `GlyphByGID` short-circuits to in-process `RenderGlyph` for registered fonts (no `fontsvc.maz` protocol changes). Exported `ComputeFontMetricsWithData` so the FontSvc registered path produces OS/2-sTypo-aware metrics matching Direct.
+- mazzy `harfbuzz.go`: `maxFonts` 32 → 256. The host visualtest harness accumulates ~120 unique (family, variant, size) combos across 6720 tests sharing one provider; 32 ran out of slots and silently fell back. 256 has plenty of headroom; ~8 KB extra memory.
+- louis14 `pkg/text/measure.go`: `sharedProvider` package var + `CurrentProvider()` so layout-time and paint-time use the **same** `DirectGlyphProvider`. Prior to this, `getLayout()` lazy-init created provider A and `render.NewRenderer()` created a separate provider B; @font-face buffers registered on one were invisible to the other. `SetTextLayout` swap now preserves `sharedProvider` across the swap (only `sharedLayout` and the per-layout caches reset).
+- louis14 `pkg/render/render.go`: `newProvider()` returns `text.CurrentProvider()` instead of constructing a fresh `DirectGlyphProvider` per renderer.
+- louis14 `pkg/text/fontcache.go`: full rewrite. `FontRegistry.entries` is now `[]bufferEntry{Family, Weight, Style, Variant, Data}` — no temp-file cache, no `os.MkdirTemp`/`WriteFile`/`cacheDir`, no `sanitizeFamily`, no `<family>-<variant>.ttf` basename ceremony. `RegisterFontFace` fetches → optionally decompresses WOFF1 → calls `CurrentProvider().RegisterBuffer(family, variant, data)`. `Lookup` returns a synthetic basename `family-Variant.ttf` so existing path-based call sites (`FontPathToFamilyVariant`, `openFont`) round-trip unchanged.
+- No changes needed in `pkg/visualtest/helpers.go` or `pkg/resource/renderer.go` — `RegisterFontFace` does the registration in-line.
 
-**Real diagnosis (2026-04-24, via debug print of `openFont`):** the @font-face font `ezra_silregular` returns `FontID: -1` from `getLayout().OpenFont()` at layout time. The shared `text.TextLayout` is set by `Renderer.NewRenderer` (which runs AFTER layout); the lazy-init layout in use during `engine.Layout()` knows nothing about the visualtest's `text.FontRegistry`. Layout-pass `measureWidth` therefore falls back to `math.Round(len(text) × fontSize × 0.6)` for every Hebrew item.
+**2. Bidi-level merge predicate (was F1a/F1b, now extended).**
+The 2026-04-24 F1a/F1b infrastructure (`ShapeAdvancesMixed` + relaxed `canMergeShapingContext` from commit `418cfaa6`) was load-bearing once F1d lit up shaping, but the original parity-only level check still merged across embed boundaries. Blink-research agent confirmed (see findings §F1) that Blink keeps every InlineItem at exactly one bidi level (split by `InlineItem::SetBidiLevel`) and breaks shape merging at any bidi-level transition because `kBidiControl` items between text items hit the `else { break }` arm in `inline_node.cc:1660-1702`. Two fixes in `pkg/layout/line_breaker.go`:
+- `canMergeShapingContext` now requires `a.BidiLevel == b.BidiLevel` (not just same parity). Mirrors ICU `ubidi_getLogicalRun`'s contract that a run is a maximal same-level span.
+- New `isBidiBoundary(style)` predicate breaks the merge run at any `OpenTag`/`CloseTag` whose `unicode-bidi` is non-normal — Blink's `kBidiControl` analog. We don't materialize bidi controls as `InlineItem`s in our IR; this gate enforces the equivalent split.
 
-Result: `.test` line 2 measures its 5 items as `29+43+101+43+29=245` and squeezes onto one line (overflow tolerance), while `.ref`'s single 18-byte item is too wide for one line and word-wraps into prefix(202) + suffix(29) across two lines. Different wrap geometry → second wrapper at different y → 1598 px of border mismatch.
+These together unmasked-and-fixed `bidi-embed-005` (640 → 0), `bidi-override-005` (526 → 0), `bidi-isolate-006` (985 → 0), `bidi-override-012` (142 → 0), `bidi-plaintext-002` (296 → 0). All were rendering wrong before, masked by the byte-count heuristic on `ezra_silregular` giving identical bogus widths to .test and .ref. Once shaping fired correctly, the bug surfaced.
 
-This is the deferred Phase 12h Step 1 limitation captured verbatim in `findings.md`:
+**3. Cross-span kerning gate.**
+`applyCrossSpanKerning` re-measures merge runs via `ShapeAdvancesMixed` and overrides per-item widths from the merged shape's slices. Paint reshapes per-item — when measure-merged and paint-per-item disagree on widths, items render squished or gapped. For pure-LTR Latin at level 0 the disagreement is sub-pixel kerning that's worth keeping (`flexbox-order-only-flexitems` regressed by 73 px when the function was disabled entirely). For any item above the paragraph base level, per-item paint reshape produces structurally different glyph positions from the merged-shape slice, and applying merged widths makes items overlap/gap by hundreds of pixels (this is what `bidi-normal-005`, `bidi-unset-005/006` started exhibiting once shaping fired). Gate: `applyCrossSpanKerning` runs only when every text item in the merge run is at level 0. The proper fix — paint reading from the upfront-cached merged shape, Blink's `ShapeResult::CopyRange` — is the deferred F1c work.
 
-> The real fix is a `DirectGlyphProvider.RegisterFile(family, variant, absPath)` hook that louis14 calls from `Renderer.SetFonts` after processing @font-face rules. **Deferred** — not needed by any visible failing test...
+**Test impact:**
+- F1 primary: `bidi-embed-006` PASS (was 1598 px), `bidi-override-006` PASS (was 1598 px).
+- Spillover: `bidi-embed-005`, `bidi-override-005`, `bidi-isolate-006`, `bidi-override-012`, `bidi-plaintext-002` — all PASS (were silently wrong via byte-count masking pre-F1d).
+- `bidi-plaintext-006` PASS (the holdout that needed isBidiBoundary).
+- css-writing-modes 779 → **781/781**.
 
-F1 is the visible test that demands it.
+**Gate sweep (all invariants held):**
+- CSS2 99/99 ✓ (unchanged)
+- css-flexbox 626/629 ✓ (unchanged — same 3 pre-existing residuals)
+- css-position 91/104 ✓ (unchanged)
+- css-multicol 179/455 ✓ (unchanged)
+- spanner-fragmentation 12/13 ✓ (unchanged)
+- css-writing-modes **781/781** (was 779/781; +2 from F1)
 
-**Plan revised:**
-- **F1d (the actual closer, NOT YET STARTED):** plumb `DirectGlyphProvider.RegisterFile` through `mazarin/textshape`; call it from BOTH renderer (post-`SetFonts`) AND layout engine before `Layout()`. Touches `mazarin/textshape`, `pkg/text` (FontRegistry → provider sync), `pkg/layout/engine.go`, possibly `pkg/visualtest/helpers.go`. Generalizes — fixes F1, unblocks every future webfont test.
-- **F1a/F1b LANDED 2026-04-24 (commit `418cfaa6`).** Blink-parity unified shape pass infrastructure: `text.ShapeAdvancesMixed(text, []DirectionRun, fontSize, fontPath)` + relaxed `canMergeShapingContext`. css-writing-modes 779/781 unchanged (the 2 failing tests are F1; build/vet clean). Currently no-op for F1 because shaping fails upstream at `openFont`, but becomes load-bearing once F1d lets HarfBuzz fire — sub-pixel cross-fragment kerning may still cause a residual diff that this addresses.
-- **F1c (paint-side consistency):** investigate after F1d lands.
+**Deferred (separate landings):**
+- F1d cleanup pass: `openFont(path, size)` → `openFont(family, variant, size)`; remove `FontPathToFamilyVariant`; remove `DirectGlyphProvider.resolveFamily` path/filename fallback (`mazzy/textshape/rasterize.go:225-242`); change `FontConfig.FontPathForFamily`/`Registry.Lookup` to return `(family, variant)` instead of paths. Mechanical refactors not required for F1.
+- F1c paint-side shape sharing (Blink's `ShapeResult::CopyRange`). Would let `applyCrossSpanKerning` fire for non-level-0 items too, recovering cross-span kerning for bidi cases.
 
-See findings §F1 for the full diagnosis + Blink-parity reference + out-of-scope-for-now bidi-parity items.
+See findings §F1 for the full Blink research notes (`HarfBuzzShaper` segmentation, `InlineItem::SetBidiLevel`, `inline_node.cc:1660-1702` shape-merge loop) that drove the level-equality and isBidiBoundary fixes.
 ### F2. Phase 12c nested-multicol leaf paint-slicing — PARTIAL 2026-04-24
 
 First of two root causes fixed. New field `PhysicalFragment.ClipBlockAxisOnly` + `Box.ClipBlockAxisOnly`, threaded via `engine.go`. Multicol column fragmentainers now request block-axis-only clipping (inline overflow allowed, block overflow still clipped) — matches Blink's "painter has no per-column clip" model without sacrificing our engine's existing reliance on clip for block-axis monolith handling. Driver `multicol-nested-010.html`: 4500 → 3500 px diff (visual progress; top 60 rows now fully green, previously 25×60 green + 25×40 red in col 2).
@@ -204,7 +223,7 @@ Code: `pkg/css/style.go` — one getter changed. ~10 lines including updated doc
 
 **Phase 12h step 1 (Ahem font loader): LANDED 2026-04-24.**
 
-Root cause: `@font-face` handling in `pkg/text/fontcache.go` cached fetched font bytes under a SHA-256 hash basename (`<hash>.ttf`). `FontPathToFamilyVariant` (pkg/text/measure.go:75) derives (family, variant) from the basename, so the hash-named cache file round-tripped as family `"<hash>"`, which `DirectGlyphProvider.resolveFamily` (mazzy rasterize.go:225) cannot find in `fonts.csv` and whose path-fallback also misses (no `/` / `.ttf` / `.otf` in the stripped basename). Result: `r.dc.OpenFont` returned an error → `Renderer.openFont` returned -1 → `drawText` silently dropped every Ahem glyph. The fix writes the cache file as `<family>-<variant>.ttf` (e.g. `Ahem-Regular.ttf`) so the reverse-derivation matches `fonts.csv`, which routes "Ahem/Regular" to the built-in `fonts/Ahem.ttf` (identical bytes to the @font-face src for WPT). Bespoke font-face families not in `fonts.csv` remain unresolvable — out of scope for this step; the foundational fix for those is provider-side registration. **Picked up as F1d 2026-04-24** when the css-writing-modes bidi-embed/override-006 tests were re-diagnosed and shown to fail through the bespoke-family path (`ezra_silregular`, Hebrew). See progress §F1 / findings §F1.
+Root cause: `@font-face` handling in `pkg/text/fontcache.go` cached fetched font bytes under a SHA-256 hash basename (`<hash>.ttf`). `FontPathToFamilyVariant` (pkg/text/measure.go:75) derives (family, variant) from the basename, so the hash-named cache file round-tripped as family `"<hash>"`, which `DirectGlyphProvider.resolveFamily` (mazzy rasterize.go:225) cannot find in `fonts.csv` and whose path-fallback also misses (no `/` / `.ttf` / `.otf` in the stripped basename). Result: `r.dc.OpenFont` returned an error → `Renderer.openFont` returned -1 → `drawText` silently dropped every Ahem glyph. The fix writes the cache file as `<family>-<variant>.ttf` (e.g. `Ahem-Regular.ttf`) so the reverse-derivation matches `fonts.csv`, which routes "Ahem/Regular" to the built-in `fonts/Ahem.ttf` (identical bytes to the @font-face src for WPT). Bespoke font-face families not in `fonts.csv` remain unresolvable — out of scope for this step; the foundational fix for those is provider-side registration. **Picked up as F1d 2026-04-24** when the css-writing-modes bidi-embed/override-006 tests were re-diagnosed and shown to fail through the bespoke-family path (`ezra_silregular`, Hebrew). **F1d redesigned 2026-04-25** as `GlyphProvider.RegisterBuffer` on the interface — once it lands, this entire Step 1 basename-ceremony (`sanitizeFamily`, `<family>-<variant>.ttf`, `FontPathToFamilyVariant` reverse-derivation) becomes deletable and is replaced by direct buffer-to-provider registration. See progress §F1 / findings §F1 ("Architecture review 2026-04-25").
 
 Code: `pkg/text/fontcache.go` — replaced hash-basename with `sanitizeFamily(family)-VariantToStyle(variant).ttf`; added `sanitizeFamily` helper. One file, ~20 lines.
 

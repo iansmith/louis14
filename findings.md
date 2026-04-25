@@ -18,9 +18,11 @@ All writing-modes category findings — 787 tests, bidi root-causes, orthogonal 
 
 Paired with the "ACTIVE FOLLOW-UP BATCH" block at the top of `task_plan.md`. Drop research notes per target as we investigate. Keep entries short until a concrete root cause surfaces — no speculative paragraphs.
 
-### F1. wm `bidi-embed-006` + `bidi-override-006` — **RE-DIAGNOSED TWICE 2026-04-24, ACTIVE**
+### F1. wm `bidi-embed-006` + `bidi-override-006` — **DONE 2026-04-25**
 
-This entry has been corrected twice. The earlier "11 px shorter" diagnosis was wrong; the second-pass "sub-pixel kerning drift from per-fragment shaping" diagnosis was *also* wrong (or at best, downstream of the real bug). The actual root cause was uncovered by debug-printing layout-time `openFont` for `ezra_silregular` and discovering it returns -1.
+css-writing-modes 779/781 → **781/781**. Spillover: `bidi-embed-005`, `bidi-override-005`, `bidi-isolate-006`, `bidi-override-012`, `bidi-plaintext-002`, `bidi-plaintext-006` were rendering wrong pre-F1d but matched ref by coincidence (byte-count fallback gave identical bogus widths to .test and .ref); now correctly shaped and matched. See progress.md §F1 for the per-test before/after and the file-by-file change list. The remainder of this section is the diagnostic + research walk that drove the implementation; kept verbatim for the record.
+
+This entry was corrected twice before the real cause surfaced. The earlier "11 px shorter" diagnosis was wrong; the second-pass "sub-pixel kerning drift from per-fragment shaping" diagnosis was *also* wrong (or at best, downstream of the real bug). The actual root cause was uncovered by debug-printing layout-time `openFont` for `ezra_silregular` and discovering it returns -1.
 
 #### Real root cause (2026-04-24): @font-face fonts aren't registered with the layout-time text provider
 
@@ -51,6 +53,31 @@ This is exactly the deferred limitation captured during Phase 12h Step 1:
 
 F1 *is* the visible failing test that demands it.
 
+#### Architecture review 2026-04-25 — F1d redesigned around `RegisterBuffer`
+
+A WebInteractor-context review surfaced a more general framing. `mazarin/textshape.GlyphProvider` is already the seam between two backends (`DirectGlyphProvider` for standalone louis14; `fontcache.FontSvcGlyphProvider` for the WebInteractor-in-mazarin case where the host has no filesystem) and both already produce a `*goFont.Face` that feeds the shared `textshape.HarfBuzzShaper`. Confirmed by inspection:
+
+- `mazarin/fontcache/protocol.go:41` exposes raw font bytes zero-copy on the in-process injection path (`InternalOpenFontResult.FontData`).
+- `shared/wm/uring_font.go:31` `OpenFontReply` carries `FontAddr`/`FontSize`/`NumFontPages` — fontsvc already shares the font *file* via mapped pages on the cross-SID IPC path. `mazarin/fontcache/provider.go:85-87` already does `unsafe.Slice` over those pages and parses them with `goFont.ParseTTF` (line 93). So HarfBuzz is in-process today regardless of which provider is active; there is no per-shape IPC anywhere.
+- louis14 has zero direct imports of `go-text/typesetting` or `harfbuzz` — the in-louis14 references are descriptive comments, not duplicate implementations. No HarfBuzz duplication to remove.
+
+**The right shape for F1d.** Add `RegisterBuffer(family string, variant int32, data []byte) error` to the `GlyphProvider` interface — *not* a `DirectGlyphProvider`-specific `RegisterFile`. Both providers implement it identically: parse with `goFont.ParseTTF`, store a `*registeredFace{face, fontData}` in a `registered map[regKey]*registeredFace` field, and have `OpenFont` consult that map before its existing path (filesystem for Direct, fontsvc IPC for FontSvc).
+
+For `FontSvcGlyphProvider`, the @font-face branch stays **local** — no fontsvc IPC, no protocol changes, no runtime registration in `fontsvc.maz`. With `cache == nil` for webfonts, `GlyphByGID` falls through to in-process `RenderGlyph(face, gid, scale)` (already what `DirectGlyphProvider.GlyphByGID` does for tier-2 misses). Webfonts give up the shared-memory glyph atlas, which is irrelevant for a single web view; system fonts keep it. fontsvc remains a pure preloaded-system-font optimization.
+
+**Cleanups enabled by F1d (do alongside).** The current path-as-identifier scaffolding exists *only* to compensate for the missing `RegisterBuffer`. Once it lands, delete:
+
+1. `pkg/text/fontcache.go:33,50-69` — temp-file caching (`cacheDir`, `os.MkdirTemp`, `os.WriteFile`, `FilePath` on `fontEntry`). Keep WOFF1 decompress; it just runs before `RegisterBuffer` instead of before `WriteFile`.
+2. `pkg/text/fontcache.go` `sanitizeFamily` and the `<family>-<variant>.ttf` basename ceremony (Phase 12h Step 1's hack — only existed so reverse-derivation worked).
+3. `pkg/text/measure.go:86-127` `FontPathToFamilyVariant` — entire reverse-derivation goes away.
+4. `pkg/text/measure.go:131` `openFont(fontPath, fontSize)` → `openFont(family, variant, size)`. `fontIDCache` key changes from `{path, size}` to `{family, variant, size}`. ~9 callers in measure.go and the openFont in `pkg/render/render.go:188`.
+5. `pkg/text/measure.go FontConfig.FontPathForFamily` and `Registry.Lookup` — both stop returning paths and return `(family, variant)` (registry-resolved or builtin). `FontConfig`'s `Regular`/`Bold`/etc. path fields can become family names with one-time `RegisterBuffer` at startup, eliminating the path-vs-family split entirely.
+6. F1d's *original* planned `DirectGlyphProvider.RegisterFile` — the file path doesn't generalize to `FontSvcGlyphProvider`. Replace with the universal `RegisterBuffer`. If file convenience is still useful for the standalone CLI, keep `RegisterFile` as a non-interface helper on `DirectGlyphProvider`: `os.ReadFile + RegisterBuffer`.
+7. `mazzy/textshape/rasterize.go:233-238` `DirectGlyphProvider.resolveFamily`'s "looks like a path/filename" fallback — was a backstop for @font-face arriving as a path. Confirmed 2026-04-25 that no test uses it (`glyph_cache_test.go` passes `"AtkinsonHyperlegible"` resolved via `fonts.csv`); remove.
+8. `FontRegistry.entries` slice (in `pkg/text/fontcache.go`) shrinks to a `map[string]struct{}` (or `sync.Once` per family) — the only thing it tracks once the provider owns registered fonts is "has family X been fetched yet" to dedupe URL fetches.
+
+Net effect: the @font-face flow becomes `download → maybe-WOFF-decompress → provider.RegisterBuffer → done`. No temp files, no path round-trips, no `FontPathToFamilyVariant`, no provider-specific branches in louis14.
+
 #### Mirror-glyph and unified-shape are not the F1 bug
 
 Two earlier hypotheses, both falsified once HarfBuzz was actually invoked:
@@ -60,7 +87,7 @@ Two earlier hypotheses, both falsified once HarfBuzz was actually invoked:
 
 #### Plan
 
-- **F1d (the actual F1 closer):** plumb `DirectGlyphProvider.RegisterFile(family, variant, absPath)` through the text layout, and call it from BOTH the renderer (post-`SetFonts`, already documented as the intended hook) AND the layout engine before `Layout()` runs (so layout-time `openFont` sees the @font-face family). Touches `mazarin/textshape` (DirectGlyphProvider), `pkg/text` (FontRegistry → provider sync), `pkg/layout/engine.go` (or wherever the engine learns about FontConfig.Registry), and `pkg/visualtest/helpers.go` (call order). This generalizes — fixes F1, unblocks future webfont tests in any category.
+- **F1d (the actual F1 closer) — REDESIGNED 2026-04-25:** add `RegisterBuffer(family, variant, []byte)` to the `mazarin/textshape.GlyphProvider` *interface*. Both `DirectGlyphProvider` and `fontcache.FontSvcGlyphProvider` get matching implementations (parse with `goFont.ParseTTF`, store `*registeredFace` in a `registered map[regKey]` field, consulted by `OpenFont` before the existing path). `FontSvcGlyphProvider`'s @font-face branch stays local (no fontsvc IPC; `RenderGlyph` runs in-process when `cache==nil`). Hook called from BOTH the renderer (post-`SetFonts`) AND the layout engine before `Layout()` runs (so layout-time `openFont` sees the @font-face family). Touches `mazarin/textshape` (interface + Direct impl), `mazarin/fontcache` (FontSvc impl), `pkg/text` (FontRegistry hands buffers directly to provider; remove temp-file caching), `pkg/layout/engine.go` (engine learns about FontConfig.Registry), `pkg/visualtest/helpers.go` (call order). The original "RegisterFile on DirectGlyphProvider" plan was Direct-specific and didn't generalize to the WebInteractor-in-mazarin case; the buffer-shaped interface fixes that. See "Architecture review 2026-04-25" above for the full rationale and the list of cleanups enabled.
 
 - **F1a / F1b (Blink-parity infrastructure, already implemented):** new `text.ShapeAdvancesMixed(text, []DirectionRun, fontSize, fontPath)` that segments by direction internally and returns a logical-byte-indexed cumulative advance; `canMergeShapingContext` no longer refuses bidi-level boundaries or odd-level items. Currently a no-op for F1 because shaping fails upstream at `openFont`. Useful long-term — once F1d lands, the sub-pixel kerning concern resurfaces and F1a/F1b is the right shape. Land alongside F1d as separate scoped commits.
 
@@ -113,6 +140,46 @@ Open these as additional F1.x sub-tasks if a future test demands them.
 2. Block-level path not emitting controls for `embed`/`isolate` (Blink delegates those to `SetParagraph` paragraph-level only).
 3. The out-of-flow re-injection with U+FFFC and a *second* `SetParagraph` call (`inline_node.cc:1375-1405`). If louis14 skipped this second pass, item splits land at stale run boundaries.
 4. `base_direction` passed as nullopt iff `UnicodeBidi::kPlaintext` (*exact* condition, not `HasUnicodeBidiPlainText()`).
+
+#### Blink-parity reference 2 (fetched 2026-04-25): HarfBuzzShaper segmentation
+
+When F1d landed and shaping started firing, six previously byte-count-masked tests surfaced. The 2026-04-25 research dispatch against `chromium/src/main/third_party/blink/renderer/{platform/fonts/shaping,core/layout/inline}` answered: when does Blink put two adjacent inline-text items into the **same** HarfBuzz buffer vs separate buffers, with bidi-level boundaries explicitly considered?
+
+*One `Shape()` call is one (script, font, direction) sub-range, not bidi-level-aware:*
+- `HarfBuzzShaper::Shape()` (`harfbuzz_shaper.cc:1055-1099`) drives one `RunSegmenter` (`run_segmenter.cc:44`) that splits only on script / symbols / vertical orientation — bidi level is **not** an input. Inside, `ShapeSegment` → `ShapeRange` (`harfbuzz_shaper.cc:299-347`) sets `hb_buffer_set_direction()` from a single `TextDirection` (LTR/RTL parity, not absolute level — see `inline_item.h:163` `Direction() = DirectionFromLevel(BidiLevel())`).
+
+*Bidi-level separation lives upstream in InlineItem:*
+- ICU `ubidi_getLogicalRun` returns runs of **equal level** (not equal direction). `BidiParagraph::GetLogicalRun` (`bidi_paragraph.cc:113-117`) iterates these and `InlineItem::SetBidiLevel` (`inline_item.cc:207-241`) **splits an item if a level boundary lands inside it**. After this pass every InlineItem has exactly one bidi level.
+- `InlineItemsBuilder::EnterInline` (`inline_items_builder.cc:1510-1548`) emits a length-1 `kBidiControl` item for every CSS `unicode-bidi != normal` span (LRE/RLE/LRO/RLO/RLI/LRI/FSI on open; PDF/PDI on close). The control char is part of `text_content`, not "opaque to text processing".
+
+*Shape-merge predicate at `inline_node.cc:1660-1702`:*
+```cpp
+for (; end_index < items.size(); end_index++) {
+  const InlineItem& item = *items[end_index];
+  if (item.Type() == InlineItem::kControl) break;
+  if (item.Type() == InlineItem::kText) {
+    if (ShouldBreakShapingBeforeText(item, ...)) break;
+    ...
+  } else if (item.Type() == InlineItem::kOpenTag) {
+    if (ShouldBreakShapingBeforeBox(item)) break;
+    DCHECK_EQ(0u, item.Length());
+  } else if (item.Type() == InlineItem::kCloseTag) {
+    if (ShouldBreakShapingAfterBox(item)) break;
+    DCHECK_EQ(0u, item.Length());
+  } else {
+    break;          // <-- kBidiControl, kAtomicInline, etc. all hit this
+  }
+}
+```
+`ShouldBreakShapingBeforeText` (`inline_node.cc:472-491`) checks: same `Font`, same `Direction()` (parity), same `EqualsRunSegment` (script + orientation + fallback priority). It does **not** explicitly compare absolute level — it doesn't need to, because (1) the kBidiControl item from any non-normal `unicode-bidi` separator hits the `else { break }` arm, and (2) `SetBidiLevel` already chopped items at implicit-level boundaries.
+
+*Concrete trace for `<div dir="rtl">a <span style="unicode-bidi:embed;direction:rtl">א ב</span> d</div>`* (paragraph base level 1 RTL; embed pushes to 3): three HarfBuzz buffers — `"a "` (level 1), `"א ב"` (level 3), `" d"` (level 1) — separated by the kBidiControl items. Each buffer shaped with `HB_DIRECTION_RTL`. Visual reordering is item-level via `ubidi_reorderVisual` on the per-item levels; the shape result stays in logical order, paint walks items in visual order accumulating advances.
+
+*Recommended segmentation policy for our engine:* take Blink's invariant directly. Either inject `kBidiControl` synthetic items for non-normal `unicode-bidi` (matches `EnterBidiContext`), or add `start_item.BidiLevel() != item.BidiLevel()` to the merge predicate (the belt-and-braces version, since `SetBidiLevel`-equivalent splitting already exists in `bidi.go:851 SplitItemsAtLevelBoundaries`). We chose level-equality + `isBidiBoundary` together — level-equality handles implicit-level-change splits within a single text node, `isBidiBoundary` handles the `unicode-bidi != normal` span boundary case where our IR doesn't materialize the control char as an InlineItem.
+
+*Tied-back to ICU:* `ubidi_getLogicalRun`'s contract is that a run is a maximal **same-level** span. Two adjacent runs always differ in level. Requiring equal level in the merge predicate matches this contract; requiring only equal parity (the pre-fix predicate) is strictly weaker and was the root cause of the bidi-level merge bug.
+
+Source files cited: `third_party/blink/renderer/platform/fonts/shaping/{harfbuzz_shaper.cc, run_segmenter.cc}`, `third_party/blink/renderer/core/layout/inline/{inline_node.cc, inline_items_builder.cc, inline_item.h, inline_item.cc, line_breaker.cc}`, `third_party/blink/renderer/platform/text/bidi_paragraph.cc`.
 
 ### F2. Phase 12c nested-multicol leaf paint-slicing — **PARTIAL 2026-04-24**
 - **Status:** block-axis-only-clip fix LANDED. One hypothesized root cause confirmed + fixed. Second (deeper) root cause — leaf fragmentation across inner sub-cols — not addressed; remaining diff on nested-010 is due to that.
@@ -1753,7 +1820,7 @@ Symptom: every WPT test that includes `<link rel="stylesheet" href="/fonts/ahem.
 
 **Fix.** `pkg/text/fontcache.go`: name the cache file `<sanitize(family)>-<VariantToStyle(variant)>.ttf` (e.g. `Ahem-Regular.ttf`). `sanitize` keeps `[A-Za-z0-9]` and maps every other rune to `_`. `FontPathToFamilyVariant` now reverse-derives `("Ahem", Regular)` from the cache path, which `fonts.csv` has (`Ahem,Regular,Ahem.ttf,0`), so `resolveFamily` returns `/Users/iansmith/louis14/fonts/Ahem.ttf` — byte-identical to what `@font-face src: url(/fonts/Ahem.ttf)` fetched for every WPT test.
 
-**Limitation.** This works when the registered family is in `fonts.csv`. Bespoke @font-face families with names not in the index still fail the same way — the cached path gets reverse-derived to a family the provider can't resolve. The real fix for those is an `DirectGlyphProvider.RegisterFile(family, variant, absPath)` hook that louis14 calls from `Renderer.SetFonts` after processing @font-face rules, AND from `engine.SetFontConfig`/`Layout` so layout-time `openFont` sees the same registry (the renderer-only path leaves layout-pass measurement falling back to `len(text) × fontSize × 0.6`). **Active as F1d (2026-04-24)** — the css-writing-modes `bidi-embed-006` / `bidi-override-006` reftests use `@font-face: ezra_silregular` (Hebrew), which is not in `fonts.csv`, and were re-diagnosed (twice) to fail through this exact path. See findings §F1 for the full trace.
+**Limitation.** This works when the registered family is in `fonts.csv`. Bespoke @font-face families with names not in the index still fail the same way — the cached path gets reverse-derived to a family the provider can't resolve. **Active as F1d (2026-04-24).** The css-writing-modes `bidi-embed-006` / `bidi-override-006` reftests use `@font-face: ezra_silregular` (Hebrew), which is not in `fonts.csv`, and were re-diagnosed (twice) to fail through this exact path. **F1d redesigned 2026-04-25** as `RegisterBuffer(family, variant, []byte)` on the `GlyphProvider` *interface* (both `DirectGlyphProvider` and `FontSvcGlyphProvider` implement it identically; FontSvc's @font-face path stays local with no fontsvc IPC). Once F1d lands, this entire Step 1 basename-ceremony becomes deletable — buffers go straight to the provider, no temp file, no `FontPathToFamilyVariant` reverse-derivation. See findings §F1 "Architecture review 2026-04-25" for the redesign and cleanup list.
 
 **Results (2026-04-24).**
 - `columnfill-auto-max-height-001.html`: PASS at 0 diff (was 2.1% / 10000 px).
