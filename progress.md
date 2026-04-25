@@ -32,11 +32,11 @@ Current state (2026-04-25):
 - spanner-fragmentation 12/13 (unchanged)
 - css-writing-modes **781** / 781 (+2 from F1 closing at commit `41b674ef` + mazzy `d6b27049`/`cde2c29`, 2026-04-25)
 
-**Phase 13 progress (2026-04-25):** 13a (commit `3897b43e`, foundational `LayoutUnit` scalar) + 13b (commit `20f25053`, composite geometry types + `WritingModeConverter`) landed. Pure new code, 27 unit tests across `pkg/geometry/layoutunit` and `pkg/geometry`, no callers in `pkg/layout` yet. All six gate invariants held by construction — verified post-13b. 13c (fragment offsets/sizes, marked Medium-High risk) is next; it will be the first commit that migrates an existing `pkg/layout` `float64` field.
+**Phase 13 progress (2026-04-25):** 13a (commit `3897b43e`, foundational `LayoutUnit` scalar) + 13b (commit `20f25053`, composite geometry types + `WritingModeConverter`) landed earlier today. **13c (fragment offsets/sizes) landed in three checkpoint commits this session**: 13c.1 `RelativeOffset` (`6e689d8e`) → 13c.2 `Children[].Offset` (`4dc4ac0b`) → 13c.3 `Size` (`912c03fa`). Every `PhysicalFragment` coordinate field is now on `geometry.PhysicalSize/PhysicalOffset` (LayoutUnit-backed). All six gate invariants held at every checkpoint: CSS2 99/99, css-flexbox 626/629, css-position 92/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13. 13d (ConstraintSpace + LayoutResult) is next.
 
-### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b done)
+### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b + 13c done)
 
-13a (commit `3897b43e`) and 13b (commit `20f25053`) landed. 13c–13h queued. See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown, `findings.md` "Phase 13: LayoutUnit research" for the Blink-parity reference, and the per-sub-phase landing notes below.
+13a (`3897b43e`), 13b (`20f25053`), and 13c (`6e689d8e` / `4dc4ac0b` / `912c03fa`) landed. 13d–13h queued. See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown, `findings.md` "Phase 13: LayoutUnit research" for the Blink-parity reference, and the per-sub-phase landing notes below.
 
 **Driver:** `clear-001.xht` is the labeled "deferred pending Blink LayoutUnit trace" residual. Re-examined via pixel-probe today: the diff is a 1-px y-offset at the blue/orange boundary (our render: blue=96 tall, orange=96 tall; ref expects blue=97 tall, orange=95 tall, total height matches at 192 px). `1in = 96 CSS px` is integer-clean and a faithful LayoutUnit port produces 96 either way — so clear-001 may NOT close from LayoutUnit arithmetic alone. The most likely closure path is Phase 13g's paint-time `SnapSizeToPixel` analog (sub-pixel-edge / thin-line preservation), not 13a-f's arithmetic discipline. The plan stands on its own merits (foundational correctness, bit-exact reproducibility for paint-invalidation hashing, eliminate the `pkg/layout` ~580-`float64`-references precision-discipline gap), regardless of clear-001's specific cause; re-examine clear-001 after 13g.
 
@@ -114,6 +114,28 @@ New parent package `pkg/geometry` on top of `pkg/geometry/layoutunit`. Mirrors B
 
 **Files added:** `pkg/geometry/geometry.go` (package doc + `LayoutUnit` re-export), `pkg/geometry/writing_mode.go`, `pkg/geometry/logical.go`, `pkg/geometry/physical.go`, `pkg/geometry/converter.go`, `pkg/geometry/converter_test.go`.
 **Files touched in pkg/layout/:** none. 13c is the first sub-phase that migrates an existing layout-side `float64` field — fragment offsets/sizes (largest single migration).
+
+#### Phase 13c: PhysicalFragment offsets/sizes — DONE 2026-04-25
+
+Largest single migration of Phase 13. Every `PhysicalFragment` coordinate field is now on the new LayoutUnit-backed geometry types. Landed in three small checkpoint commits, each gate-swept.
+
+**13c.1 — `PhysicalFragment.RelativeOffset` (commit `6e689d8e`).** Smallest blast radius: 4 access sites total. `block_layout.go computeRelativeOffset` returns `geometry.PhysicalOffset` via `PhysicalOffsetFromF64Round` at the float→LayoutUnit boundary. `engine.go fragmentToBox` uses `LayoutUnit.IsZero()` for the zero check and `LeftF64/TopF64` to apply the offset to the float64 `Box`. The `block_layout.go PropagateOOFCandidates` site bridges back to old `pkg/layout.PhysicalOffset` for the pkg/layout converter (later 13d/e migrate the converter itself). 5 files / 17 insertions / 9 deletions.
+
+**13c.2 — `ChildLink.Offset` (commit `4dc4ac0b`).** Mid-blast: ~45 read sites + 4 write sites. `fragment_builder.go Build()` wraps the existing `WritingModeConverter.ToPhysicalOffset` result through `PhysicalOffsetFromF64Round` at construction (single rounding point at the layout↔storage boundary, mirroring Blink's `layout_result.cc` LayoutUnit-typed accumulators). `table_layout.go` vertical-align cell-content shift switches from `+= physShift.X` field mutation to `Offset.Add(geometry.PhysicalOffset{...})` since the new type is value-typed with no per-field setters. Read sites use `LeftF64/TopF64`. 9 files / 49 insertions / 47 deletions.
+
+**13c.3 — `PhysicalFragment.Size` (commit `912c03fa`).** Largest: ~115 access sites across `pkg/layout/`, plus mutations and value-typed passes. Two transitional bridge helpers added in `pkg/layout/physical.go`: `geomSizeToOld` (geometry → pkg/layout) and `oldSizeToGeom` (pkg/layout → geometry). Used at every site where the new field type meets a legacy converter (`NewConverter`, `ToPhysicalSize`, `ToLogicalSize`). Mutations in `multicol_layout.go` (4 spanner-clip dimension assignments) use `layoutunit.FromFloat64Round`. Read sites use `WidthF64/HeightF64`. The bridge helpers shrink as 13d/e migrate the converter itself. 17 files / 128 insertions / 107 deletions.
+
+**Discipline checkpoints (per-step gate sweep — all six invariants held at every commit):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓
+- css-position 92/104 ✓ (12 known residuals + 1 reclassified by runner counting; matches baseline exactly)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓
+- spanner-fragmentation 12/13 ✓
+
+**Old types still alive.** `pkg/layout/{logical,physical,writing_mode,writing_mode_converter}.go` still load-bearing for non-fragment surface — `LogicalSize/Offset/Edges`, `WritingMode`, `WritingDirectionMode`, `NewConverter`, `ToPhysicalSize/Offset`, `ToLogicalSize/Offset`, `PhysicalEdges`, `PhysicalRect`, plus the float64 `pkg/layout.PhysicalOffset/PhysicalSize` which are now used as transient bridge types between the new `geometry.*` fragment fields and the legacy converter API. Deletion is deferred until later sub-phases migrate those consumers.
+
+**Files touched in pkg/layout/ across 13c.1–13c.3:** layout_result.go, fragment_builder.go (+test), engine.go, block_layout.go (+test), table_layout.go, multicol_layout.go, grid_layout.go, out_of_flow_layout.go, flex_layout.go, inline_layout.go (+test), inline_containing_block.go, positioned_root.go, exclusion_space_test.go, physical.go (bridge helpers).
 
 ---
 
