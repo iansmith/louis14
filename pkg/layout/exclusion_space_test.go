@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"testing"
 )
@@ -30,9 +31,9 @@ func TestExclusionSpace_NilSafe(t *testing.T) {
 	}
 
 	ltrWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	cleared := es.ClearanceOffset(css.ClearBoth, 50, ltrWDM)
-	if cleared != 50 {
-		t.Errorf("nil clearance: got %v, want 50", cleared)
+	cleared := es.ClearanceOffset(css.ClearBoth, layoutunit.New(50), ltrWDM)
+	if cleared.Float64() != 50 {
+		t.Errorf("nil clearance: got %v, want 50", cleared.Float64())
 	}
 }
 
@@ -123,27 +124,27 @@ func TestExclusionSpace_Clearance(t *testing.T) {
 	ltrWDM := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 
 	// Clear left: should clear past block=10+90=100.
-	cleared := es.ClearanceOffset(css.ClearLeft, 0, ltrWDM)
-	if cleared != 100 {
-		t.Errorf("clear left: got %v, want 100", cleared)
+	cleared := es.ClearanceOffset(css.ClearLeft, layoutunit.New(0), ltrWDM)
+	if cleared.Float64() != 100 {
+		t.Errorf("clear left: got %v, want 100", cleared.Float64())
 	}
 
 	// Clear right: should clear past block=20+130=150.
-	cleared = es.ClearanceOffset(css.ClearRight, 0, ltrWDM)
-	if cleared != 150 {
-		t.Errorf("clear right: got %v, want 150", cleared)
+	cleared = es.ClearanceOffset(css.ClearRight, layoutunit.New(0), ltrWDM)
+	if cleared.Float64() != 150 {
+		t.Errorf("clear right: got %v, want 150", cleared.Float64())
 	}
 
 	// Clear both: max(100, 150) = 150.
-	cleared = es.ClearanceOffset(css.ClearBoth, 0, ltrWDM)
-	if cleared != 150 {
-		t.Errorf("clear both: got %v, want 150", cleared)
+	cleared = es.ClearanceOffset(css.ClearBoth, layoutunit.New(0), ltrWDM)
+	if cleared.Float64() != 150 {
+		t.Errorf("clear both: got %v, want 150", cleared.Float64())
 	}
 
 	// Clear left when already past: no change.
-	cleared = es.ClearanceOffset(css.ClearLeft, 200, ltrWDM)
-	if cleared != 200 {
-		t.Errorf("clear left past: got %v, want 200", cleared)
+	cleared = es.ClearanceOffset(css.ClearLeft, layoutunit.New(200), ltrWDM)
+	if cleared.Float64() != 200 {
+		t.Errorf("clear left past: got %v, want 200", cleared.Float64())
 	}
 }
 

@@ -422,7 +422,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			clearType := childStyle.GetClear()
 			if clearType != css.ClearNone && !exclusionSpace.IsEmpty() {
 				bfcCursor := bfcBlockOrigin + blockCursor
-				clearedBlockBfc := exclusionSpace.ClearanceOffset(clearType, bfcCursor, wdm)
+				clearedBlockBfc := exclusionSpace.ClearanceOffset(clearType, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()
 				if clearedBlockBfc > bfcCursor {
 					// Convert BFC-relative cleared position to local coordinates.
 					clearedBlock := clearedBlockBfc - bfcBlockOrigin
@@ -1171,7 +1171,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Elements that only inherit floats from a parent BFC do not extend.
 	if !hasExplicitBlock && hasOwnFloats {
 		bfcCursor := bfcBlockOrigin + blockCursor
-		clearedBlockBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcCursor, wdm)
+		clearedBlockBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()
 		clearedBlock := clearedBlockBfc - bfcBlockOrigin
 		if clearedBlock > blockCursor {
 			blockCursor = clearedBlock
@@ -1810,7 +1810,7 @@ func (bla *BlockLayoutAlgorithm) layoutFloat(
 	// If this float has clear, advance past matching floats before positioning.
 	clearType := childStyle.GetClear()
 	if clearType != css.ClearNone {
-		clearedBlock := es.ClearanceOffset(clearType, floatBlockStart, parentWDM)
+		clearedBlock := es.ClearanceOffset(clearType, layoutunit.FromFloat64Round(floatBlockStart), parentWDM).Float64()
 		if clearedBlock > floatBlockStart {
 			floatBlockStart = clearedBlock
 		}

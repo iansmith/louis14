@@ -500,7 +500,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// force-fitting content into zero-width space and then clearing,
 		// which produces incorrect line breaks.
 		if lineAvailableInline < 1 && exclusionSpace != nil && (floatStart > 0 || floatEnd > 0) {
-			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcBlock, wdm)
+			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlock), wdm).Float64()
 			if clearedBlock > bfcBlock {
 				blockOffset = clearedBlock - bfcBlockOrigin
 				bfcBlock = clearedBlock
@@ -662,7 +662,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 						}
 					}
 
-					clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcBlockOrigin+blockOffset, wdm)
+					clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlockOrigin+blockOffset), wdm).Float64()
 					if clearedBfc > bfcBlockOrigin+blockOffset {
 						blockOffset = clearedBfc - bfcBlockOrigin
 					}
@@ -718,7 +718,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// CSS 2.1 §9.5: if the line content doesn't fit beside the float,
 		// shift the block offset below the float and use the full width.
 		if (floatStart > 0 || floatEnd > 0) && line.Width > lineAvailableInline && exclusionSpace != nil {
-			clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, bfcBlockOrigin+blockOffset, wdm)
+			clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlockOrigin+blockOffset), wdm).Float64()
 			blockOffset = clearedBfc - bfcBlockOrigin
 			lineInlineOffset = 0
 			lineAvailableInline = contentInlineSize

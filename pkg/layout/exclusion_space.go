@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
+)
 
 // ExclusionSide indicates which logical side of the inline axis a float
 // occupies. This mirrors Blink's EFloat enum (kLeft = inline-start,
@@ -139,12 +142,12 @@ func (es *ExclusionSpace) FindAvailableInlineSize(blockOffset, blockExtent, cont
 // values, but exclusions store logical sides (inline-start/inline-end).
 // We convert the physical clear side to logical using the same mapping
 // as float placement.
-func (es *ExclusionSpace) ClearanceOffset(clearType css.ClearType, currentBlockOffset float64, wdm WritingDirectionMode) float64 {
+func (es *ExclusionSpace) ClearanceOffset(clearType css.ClearType, currentBlockOffset layoutunit.LayoutUnit, wdm WritingDirectionMode) layoutunit.LayoutUnit {
 	if es == nil || clearType == css.ClearNone {
 		return currentBlockOffset
 	}
 
-	maxBlockEnd := currentBlockOffset
+	maxBlockEnd := currentBlockOffset.Float64()
 	for _, e := range es.exclusions {
 		shouldClear := false
 		switch clearType {
@@ -173,7 +176,7 @@ func (es *ExclusionSpace) ClearanceOffset(clearType css.ClearType, currentBlockO
 		}
 	}
 
-	return maxBlockEnd
+	return layoutunit.FromFloat64Round(maxBlockEnd)
 }
 
 // FindFloatPosition finds the block offset where a float of the given size
