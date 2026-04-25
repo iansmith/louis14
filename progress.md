@@ -32,7 +32,7 @@ Current state (2026-04-25):
 - spanner-fragmentation 12/13 (unchanged)
 - css-writing-modes **781** / 781 (+2 from F1 closing at commit `41b674ef` + mazzy `d6b27049`/`cde2c29`, 2026-04-25)
 
-**Phase 13 progress (2026-04-25):** 13a (`3897b43e`, foundational `LayoutUnit` scalar) + 13b (`20f25053`, composite geometry types + `WritingModeConverter`) landed earlier today. **13c (fragment offsets/sizes) and 13d (ConstraintSpace+ExclusionSpace precision fields) both landed this session**: 13c.1 RelativeOffset (`6e689d8e`) → 13c.2 Children[].Offset (`4dc4ac0b`) → 13c.3 Size (`912c03fa`); then 13d.1 ConsumedBlockSize (`7d64570a`) → 13d.2 ClearanceOffset (`c6211fb8`) → 13d.3 Bfc offsets (`d1687adc`) → 13d.4a AvailableSize (`3e7d598c`) → 13d.4b PercentageResolutionSize (`7db1f2fd`). Every `PhysicalFragment` coordinate field plus every plan-named `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision field is now LayoutUnit-backed. All six gate invariants held at every of the eight checkpoint commits: CSS2 99/99, css-flexbox 626/629, css-position 92/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13. 13e (length/percentage resolution) is next.
+**Phase 13 progress (2026-04-25):** 13a (`3897b43e`, foundational `LayoutUnit` scalar) + 13b (`20f25053`, composite geometry types + `WritingModeConverter`) landed earlier today. **13c (fragment offsets/sizes) and 13d (ConstraintSpace+ExclusionSpace precision fields) both landed this session**: 13c.1 RelativeOffset (`6e689d8e`) → 13c.2 Children[].Offset (`4dc4ac0b`) → 13c.3 Size (`912c03fa`); then 13d.1 ConsumedBlockSize (`7d64570a`) → 13d.2 ClearanceOffset (`c6211fb8`) → 13d.3 Bfc offsets (`d1687adc`) → 13d.4a AvailableSize (`3e7d598c`) → 13d.4b PercentageResolutionSize (`7db1f2fd`). Every `PhysicalFragment` coordinate field plus every plan-named `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision field is now LayoutUnit-backed. **13e CLOSED** at 13e.6 (`ff45432a`); every percentage-resolution call site flows through `layoutunit.ResolvePercent`. **13f.1 landed** (this commit): text-shaping snap helpers `shapeWidthSnap`/`shapeAdvancePairSnap` in new `pkg/text/shape_snap.go`, mirroring Blink's `ShapeResult::SnappedWidth` (CEIL) and `SnappedStart/EndPositionForOffset` (FLOOR/CEIL pair). Additive: no public API changes, no callers yet — 13f.2 (MeasureText* return type) and 13f.3 (ShapeAdvances* return type) consume the helpers next. All six gate invariants held at every checkpoint commit: CSS2 99/99, css-flexbox 626/629, css-position 91/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13.
 
 ### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b + 13c + 13d done)
 
@@ -342,6 +342,31 @@ result := layoutunit.ResolvePercent(
 Files: `pkg/layout/fragment_geometry.go` (+6/-4).
 
 **Phase 13e is now CLOSED.** Every percentage-resolution call site in the layout pipeline flows through `layoutunit.ResolvePercent`. Queued next: **13e′** (return-type promotion of `ResolveInlineSize` / `ResolveBlockSize` / `ResolveMin*` / `ResolveMax*` from `float64` → `LayoutUnit`, ~50-site ripple across callers — the inverse-direction migration that closes the float boundary at the exit of these functions), then **13f** (text-shaping boundary), **13g** (paint-time pixel snap), **13h** (verification + cleanup).
+
+#### Phase 13f.1: text-shaping snap helpers (additive) — DONE 2026-04-25
+
+13f.1 is the additive boundary helper for the text-shaping migration: two new private helpers in `pkg/text/shape_snap.go` mirroring Blink's `ShapeResult::SnappedWidth` and `SnappedStart/EndPositionForOffset` (verified against `refs/heads/main` `third_party/blink/renderer/platform/fonts/shaping/shape_result.h`):
+
+- `shapeWidthSnap(w float64) LayoutUnit` = `FromFloat64Ceil(w)` (Blink: `LayoutUnit::FromFloatCeil(width_)`). CEIL is conservative for line-fit decisions — over-reporting is safe, under-reporting overflows the line box.
+- `shapeAdvancePairSnap(cum []float64) (start, end []LayoutUnit)` builds the floor/ceil pair (Blink: `Floor` for start, `Ceil` for end). `End[e].Sub(Start[s])` is a Blink-parity snapped width that over-reports the unsnapped width by ≤ 2 raw quanta total — independent of how many cluster offsets are between `s` and `e`. Summing per-cluster snapped widths instead would accumulate ≤ N quanta over N clusters; the pair-of-positions form caps the error at a constant.
+
+No public API changes yet — `MeasureText*` and `ShapeAdvances*` still return `float64`. 13f.2 routes the producer side of `MeasureText*` through `shapeWidthSnap`; 13f.3 routes `ShapeAdvances`/`ShapeAdvancesMixed` through `shapeAdvancePairSnap` and consumes the pair at `pkg/layout/line_breaker.go:1546` (which is already pair-of-positions shaped — `cum[rng[1]] - cum[rng[0]]` becomes `End[rng[1]].Sub(Start[rng[0]])`).
+
+**Tests cover the load-bearing 13f invariant.** `TestFloorCeilPairInvariant` (in `pkg/geometry/layoutunit/`) verifies `FromFloat64Ceil(v) - FromFloat64Floor(v) ∈ {0, 1 raw quantum}` for both exact-on-quantum inputs (HarfBuzz hot path: each value is `int32 XAdvance / 64.0`, exact-1/64-px) and sub-quantum residue inputs. `TestShapeAdvancePairSnap` exercises empty input, the HarfBuzz hot path (Start==End everywhere), sub-quantum residue (End-Start = 1 raw), monotonicity preservation under both snaps (line-breaker's `cum[end].Sub(cum[start])` must stay non-negative), and the constant-bound property (a 100-cluster pair-snap over-reports by ≤ 2/64 px, not 100/64).
+
+**`FromFloat64Floor` confirmed pre-existing in `pkg/geometry/layoutunit/layoutunit.go`** (added in 13a alongside `FromFloat64Ceil`/`FromFloat64Round`); no new constructor in 13f.1.
+
+**13f.4 verdict (deferred resolution).** The plan-text option of coordinating with `mazarin/textshape` to expose a `TextRunLayoutUnit` for shaper-internal accumulation is unnecessary: HarfBuzz `g.XAdvance` is already `int32` 26.6 fixed-point, and `float64(adv)/64.0` lands exactly on a LayoutUnit raw quantum. The "shaper-internal LayoutUnit" abstraction Blink wraps around HarfBuzz exists to harmonize a C++ shape-runtime; louis14's path is already lossless from HarfBuzz fixed-point through to the LayoutUnit boundary. 13f.4 is closed as "skip" in `findings.md` 13f research — no cross-repo coordination required.
+
+**Gate-sweep (six invariants at 13f.1 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (629 - 3 fails)
+- css-position 91/104 ✓ (104 - 13 fails)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (455 - 276 fails)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+Files: `pkg/text/shape_snap.go` (+58, new), `pkg/text/shape_snap_test.go` (+108, new), `pkg/geometry/layoutunit/layoutunit_test.go` (+33), `findings.md` (+101 — Phase 13f research notes), `task_plan.md` (Phase 13 sub-phases 13f row + status lines), `progress.md` (this section).
 
 ---
 

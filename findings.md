@@ -2121,3 +2121,114 @@ case Length::kPercent:
 **Tests cover the headline invariants.** `TestResolvePercent` includes a sibling-determinism check (two `ResolvePercent` calls with identical inputs must produce bit-identical LayoutUnits — the load-bearing 13e contract) and a Trunc-vs-Round divergence guard with an explicit error message ("If you got 32 the helper is using FromFloat64Round, not Trunc"). The truncation discipline is tested at sub-quantum (0.01 → 0), at the half-raw boundary (0.498 → 31, distinct from Round's 32), at the negative-toward-zero (-0.498 → -31, distinct from Floor's -32), and at saturation in both directions.
 
 **Deferred to 13e′ (NOT in 13e scope).** Promoting `ResolveInlineSize/ResolveBlockSize/ResolveMin{Inline,Block}Size/ResolveMax{Inline,Block}Size` return types from `float64` to `LayoutUnit` would ripple through ~50 sites in `pkg/layout/` and is its own phase. 13e.2–13e.6 keep the existing return types and call `.Float64()` on the helper's result at the consumer's API boundary; the canonical-helper invariant ("two siblings agree bit-exactly") holds because float64 round-trips LayoutUnit losslessly across the LayoutUnit range.
+
+### Phase 13f research: text-shaping boundary snap discipline (2026-04-25)
+
+**Goal of 13f.** Move the float64 → LayoutUnit boundary in `pkg/text` (`MeasureText*`, `ShapeAdvances`, `ShapeAdvancesMixed`) to the *exit* of the package, mirroring Blink's `ShapeResult` — internal width/advance kept as float64 (HarfBuzz output is naturally exact 1/64-px from `g.XAdvance / 64.0`, but the API contract is "any float"); snap once at the public API boundary using Blink's exact ceil/floor discipline.
+
+**The three Blink anchors.** Verified 2026-04-25 against `refs/heads/main` `third_party/blink/renderer/platform/fonts/shaping/shape_result.h`:
+
+```cpp
+float Width() const { return width_; }                    // unsnapped
+LayoutUnit SnappedWidth() const {
+  return LayoutUnit::FromFloatCeil(width_);               // CEIL on width
+}
+LayoutUnit SnappedStartPositionForOffset(unsigned offset) const {
+  return LayoutUnit::FromFloatFloor(PositionForOffset(offset));
+                                                          // FLOOR on start
+}
+LayoutUnit SnappedEndPositionForOffset(unsigned offset) const {
+  return LayoutUnit::FromFloatCeil(PositionForOffset(offset));
+                                                          // CEIL on end
+}
+```
+
+**Three-way asymmetry.** A run's *width* is CEIL-snapped. A *start* offset position is FLOOR-snapped. An *end* offset position is CEIL-snapped. The single underlying `PositionForOffset(offset)` float is the same; `Snapped{Start,End}` differ only in rounding direction. This is the load-bearing finding for 13f.
+
+**Why floor-at-start, ceil-at-end.** Snapped width between two cluster offsets `[s, e]` is `SnappedEndPositionForOffset(e) - SnappedStartPositionForOffset(s) = ceil(P(e)) - floor(P(s)) >= P(e) - P(s)` for monotone-non-decreasing `P`. The pair-of-positions difference is therefore an *upper bound* on the unsnapped width, by at most ~2 raw quanta (~2/64 ≈ 0.031 px). This gives break-opportunity calculations a "safety pad": a width that *just* fits the line under unsnapped arithmetic still fits — or falls just over and is broken at the previous cluster — but is never silently over-fitted. Summing per-cluster *snapped widths* (each a separate ceil) instead of using the position pair would accumulate up to N quanta of error over N clusters; pair-of-positions caps it at 2 quanta total.
+
+**Why CEIL on whole-run width.** `SnappedWidth()` is used for line-fit decisions where over-reporting is safe (caller may break early) and under-reporting is unsafe (caller may overflow the line box). Ceil is the conservative direction.
+
+**Cumulative-position internals.** Blink's `ShapeResult` keeps `float width_` and computes `PositionForOffset(offset)` on demand by float accumulation across runs (`x += run->width_`). It does NOT pre-snap the cumulative array. `Snapped{Start,End}PositionForOffset` is a thin wrapper that calls `PositionForOffset` and applies floor/ceil at the public-API boundary. Subsequent `CachedPositionForOffset` / `CachedWidth(start, end)` are post-snap caches over the same primitives.
+
+**Consumer pattern: line_breaker.cc.** `core/layout/inline/line_breaker.cc` consumes via `shape_result.CachedWidth(start_offset, end_offset)` — a pair-of-positions read, NOT a sum of per-character widths. Representative call site (in `FastMinTextContext::Add`):
+
+```cpp
+LayoutUnit width = shape_result.CachedWidth(start_offset, end_offset);
+```
+
+**louis14 consumer pattern is already Blink-aligned.** `pkg/layout/line_breaker.go:1546` already reads positions as a pair:
+
+```go
+cum, ok := text.ShapeAdvancesMixed(combined.String(), runs, fontSize, fontPath)
+// ...
+segmentWidth := cum[rng[1]] - cum[rng[0]]
+```
+
+`cum[]` is `[]float64`, end and start are not separately snapped — the slice is a single per-byte cumulative float. The 13f.3 migration shape is therefore: keep the internal computation in float64 (it already is), and either (a) return a single `[]LayoutUnit` snapped one way that the consumer subtracts, or (b) return floor- and ceil-snapped pair slices, or (c) return the float slice plus snap helpers (closest to Blink).
+
+**At HarfBuzz output cluster boundaries, floor and ceil agree.** `ShapeAdvances` builds `cum[c] = float64(x) / 64.0` from `int32 x` accumulated 26.6 — every value is exact-1/64-px, so for those bytes `floor(cum[c]) == ceil(cum[c])` bit-exactly in LayoutUnit raw. The floor/ceil distinction only matters when *non-cluster-boundary* bytes inherit a forward-filled value (irrelevant — same exact float) or, looking forward, when letter-spacing / word-spacing / inter-cluster pad introduces sub-1/64-px positions. The current `pkg/layout/line_breaker.go:1551-1555` letter/word-spacing pad happens *after* the `cum[end] - cum[start]` subtraction, so spacing does not leak into the cum[] array. Conclusion: in the *current* code path, a single `[]LayoutUnit` (snapped via either Floor or Ceil — pick CEIL to match Blink's whole-run `SnappedWidth` direction) gives bit-identical results to the pair-of-snaps approach. We adopt the pair-of-snaps approach anyway because (i) it is the load-bearing Blink discipline; (ii) it future-proofs against any refactor that puts inter-cluster sub-quantum residue into the cum slice; (iii) the cost is one extra slice allocation per shape call, dwarfed by the HarfBuzz call itself.
+
+**Shape of the 13f.3 API.** Choose option (b) — return a typed pair holding both floor- and ceil-snapped cumulative arrays:
+
+```go
+// ShapeCumulative is the snapped output of ShapeAdvances/ShapeAdvancesMixed.
+// Start[i]  = LayoutUnit::FromFloatFloor(cum_float[i])  // floor for run-start positions
+// End[i]    = LayoutUnit::FromFloatCeil (cum_float[i])  // ceil  for run-end positions
+// Snapped width of byte range [s, e] = End[e].Sub(Start[s]).
+//
+// Blink-parity: SnappedStart/EndPositionForOffset in shape_result.h.
+type ShapeCumulative struct {
+    Start []layoutunit.LayoutUnit
+    End   []layoutunit.LayoutUnit
+}
+```
+
+Consumer at `line_breaker.go:1546` becomes:
+
+```go
+segmentWidthLU := cum.End[rng[1]].Sub(cum.Start[rng[0]])
+segmentWidth := segmentWidthLU.Float64()  // bridge to existing float64 segmentWidth
+```
+
+— a one-line bridge, identical in shape to the 13c/13d/13e ".Float64() at consumer" idiom. Existing `letterSpacing` / `wordSpacing` adjustments (line 1548–1556) stay in float64, applied to `segmentWidth` post-bridge, until 13e′ promotes the surrounding accumulator.
+
+**Shape of the 13f.2 API.** `MeasureText*` returns `(width, height layoutunit.LayoutUnit)` — internal `measureWidth` keeps float64 accumulation (HarfBuzz `int32 adv / 64.0`), then snaps via `FromFloat64Ceil` at the boundary. `MeasureTextVertical*` similarly: inline-advance built from `runeCount * fontSize` (a float multiply, may have sub-quantum residue at non-integer fontSize) → CEIL; block-advance from `m.Height / 64.0` → CEIL. CEIL chosen for both axes to mirror `SnappedWidth`. Bridge consumer sites in `engine.go` (1 site, `style.ChWidth = ch.Float64()`) and `line_breaker.go` (~22 sites — each `w, _ = text.MeasureText...` becomes the same `_, _ = .Float64()` bridge).
+
+**Helpers in pkg/text (13f.1).** Two private helpers carrying the snap discipline named after their Blink counterparts:
+
+```go
+// shapeWidthSnap is the Blink ShapeResult::SnappedWidth analog: CEIL.
+func shapeWidthSnap(w float64) layoutunit.LayoutUnit {
+    return layoutunit.FromFloat64Ceil(w)
+}
+
+// shapeAdvancePairSnap takes a float64 cumulative-positions slice and returns
+// the Blink Snapped{Start,End}PositionForOffset pair: Floor for Start, Ceil
+// for End. Consumer width = End[e].Sub(Start[s]) >= unsnapped width by <= 2
+// raw quanta total (NOT N quanta over N clusters).
+func shapeAdvancePairSnap(cumFloat []float64) ShapeCumulative {
+    n := len(cumFloat)
+    out := ShapeCumulative{
+        Start: make([]layoutunit.LayoutUnit, n),
+        End:   make([]layoutunit.LayoutUnit, n),
+    }
+    for i, v := range cumFloat {
+        out.Start[i] = layoutunit.FromFloat64Floor(v)
+        out.End[i]   = layoutunit.FromFloat64Ceil(v)
+    }
+    return out
+}
+```
+
+`FromFloat64Floor` and `FromFloat64Ceil` already exist in `pkg/geometry/layoutunit/layoutunit.go` (added in 13a alongside `FromFloat64Round`); 13f.1 confirms (no new constructor needed) and adds the `pkg/text` private helpers above + a unit test that asserts the pair-snap invariant `End[i] - Start[i] ∈ {0, 1 raw quantum}` for any float input AND that `End[i] - Start[i] == 0` whenever the float is exact-1/64-px (the hot path for HarfBuzz output).
+
+**13f.4 verdict: skip.** The plan-text option of coordinating with `mazarin/textshape` to expose a `TextRunLayoutUnit` (16-bit fractional, Blink-internal) for shaper-internal accumulation is unnecessary because:
+
+- HarfBuzz's `g.XAdvance` is already `int32` in 26.6 fixed-point. Dividing by 64.0 lands exactly in LayoutUnit's 1/64-px raw quantum — no precision loss, no accumulation error inside textshape.
+- Blink's `TextRunLayoutUnit` exists because Blink wants the shaper to use a *consistent* LayoutUnit-shaped type even when calling external HarfBuzz. louis14 already has the equivalent: `int32` raw HarfBuzz output passed straight through to the LayoutUnit boundary. No middle layer to harmonize.
+- `mazarin/textshape` is a separate repo and the coordination cost is high. Default 13f.4 to skip per the task plan.
+
+**Risk profile.** wm 781/781 is the canary. The migration changes *where* the float→LayoutUnit snap happens, not *what* the snap value is — at HarfBuzz cluster boundaries (the dominant case) Floor and Ceil agree, so cum-slice values pre/post-13f match bit-exact. Off-boundary effects can appear if any consumer reads a non-cluster cum[] entry without the pair-of-positions wrap; the line-breaker's only such site (line 1546) already reads as a pair, so no semantic shift. If a regression appears, the most likely cause is a missed `.Float64()` bridge on the writing-modes path (vertical measurement); rolling back per CLAUDE.md rule 1 and re-reading shape_result.cc is the prescribed recovery.
+
+**Out of scope for 13f.** (1) `MeasureTextVertical` block-advance from font metrics — that's a font-table read, not a shape result; the snap there mirrors `FontHeight` not `ShapeResult::SnappedWidth`. We CEIL it the same way for consistency, but it's not the load-bearing site. (2) Letter/word-spacing pad — applied post-shape, post-bridge, in float64; LayoutUnit promotion of `segmentWidth` is a 13e′ ripple. (3) The `BreakTextAtCharacterBoundary` and `BreakTextIntoLines*` family — these consume `measureWidth` internally (private), don't cross the public API boundary in question, and aren't on the 13f migration list.

@@ -115,6 +115,40 @@ func TestFromFloat64CeilFloor(t *testing.T) {
 	}
 }
 
+// TestFloorCeilPairInvariant verifies the load-bearing 13f text-shaping snap
+// invariant: for any float64 v, FromFloat64Ceil(v) - FromFloat64Floor(v) is
+// either 0 (v is exact-on-1/64-px-quantum) or 1 raw quantum (v has sub-quantum
+// residue). Mirrors Blink's ShapeResult::SnappedStart/EndPositionForOffset
+// pair (shape_result.h: Floor for start, Ceil for end). The pair-of-positions
+// snapped width is therefore an upper bound on the unsnapped width, by at
+// most 1 quantum per endpoint and at most 2 quanta total — independent of how
+// many cluster offsets are in between.
+func TestFloorCeilPairInvariant(t *testing.T) {
+	exactOnQuantum := []float64{
+		0.0, 1.0 / 64.0, 2.0 / 64.0, 0.5, 1.0, 1.5, 1000.0,
+		-(1.0 / 64.0), -1.0, -1000.0,
+	}
+	for _, v := range exactOnQuantum {
+		ceil := FromFloat64Ceil(v).Raw()
+		floor := FromFloat64Floor(v).Raw()
+		if diff := ceil - floor; diff != 0 {
+			t.Errorf("exact-quantum v=%v: ceil-floor = %d, want 0 (HarfBuzz hot path must be lossless)", v, diff)
+		}
+	}
+
+	subQuantum := []float64{
+		0.01, 0.005, 1.0/64.0 + 1e-9, 1.5 + 1e-9, 1000.0 + 0.01,
+		-0.01, -1.0/64.0 - 1e-9,
+	}
+	for _, v := range subQuantum {
+		ceil := FromFloat64Ceil(v).Raw()
+		floor := FromFloat64Floor(v).Raw()
+		if diff := ceil - floor; diff != 1 {
+			t.Errorf("sub-quantum v=%v: ceil-floor = %d, want 1", v, diff)
+		}
+	}
+}
+
 func TestFloat64RoundTrip(t *testing.T) {
 	// Quanta survive round-trip exactly.
 	for _, raw := range []int32{0, 1, -1, 64, -64, 6144, -6144, math.MaxInt32, math.MinInt32} {
