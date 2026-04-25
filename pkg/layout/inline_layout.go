@@ -435,7 +435,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if v, ok := bla.style.GetLength("text-indent"); ok {
 			textIndent = v
 		} else if pct, ok := bla.style.GetPercentage("text-indent"); ok {
-			textIndent = contentInlineSize * pct / 100
+			textIndent = layoutunit.ResolvePercent(
+				layoutunit.FromFloat64Round(contentInlineSize), pct).Float64()
 		}
 	}
 

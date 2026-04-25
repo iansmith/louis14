@@ -195,6 +195,32 @@ case Length::kPercent:
 - 11 known call sites compute `basis.Float64() * pct / 100` and need to route through `ResolvePercent`. Inventoried: inline_layout text-indent (1), flex_layout row-gap + column-gap (2), flex_layout flex-basis (2), fragment_geometry Min/Max{Inline,Block}Size (4), fragment_geometry ResolveInlineSize/BlockSize (2). The `calc(...%...)` paths via `css.EvalCalcWithPercent` are already centralized and stay as-is.
 - Return-type promotion (`ResolveInlineSize/BlockSize` etc. returning `LayoutUnit` instead of `float64`) is deferred to a separate phase (13e′ if it surfaces) — that ripples through ~50 layout sites and is its own work.
 
+#### Phase 13e.2: text-indent percentage → ResolvePercent — DONE 2026-04-25
+
+One call site in `pkg/layout/inline_layout.go:438`:
+
+```go
+// Before:
+textIndent = contentInlineSize * pct / 100
+// After:
+textIndent = layoutunit.ResolvePercent(
+    layoutunit.FromFloat64Round(contentInlineSize), pct).Float64()
+```
+
+`contentInlineSize` is `float64` at this site (the `ResolveInlineSize` return-type promotion is deferred to 13e′ — see 13e.1 notes). Bridge pattern matches the 13d setter convention: wrap float64 input through `FromFloat64Round` at the helper boundary, exit via `.Float64()` at the consumer's API boundary. The float64 round-trip is lossless across the LayoutUnit range, so determinism in LayoutUnit-space propagates back to determinism in float64-space.
+
+**Tracking-file accuracy correction (caught during 13e.2 gate sweep).** task_plan.md and progress.md previously claimed `css-position 92/104` as the invariant. Actual baseline measured at 13e.1 HEAD (commit `ce5dc7f2`, additive only — cannot have regressed) is **91/104** (13 failures), matching exactly the 13 deferred residuals listed in task_plan.md's css-position table. The earlier "92/104 (+1 from HTML tokenizer fix)" line either miscounted or referred to a transient state. 13e.2 invariant lines updated to 91/104; the residuals table is unchanged. This is fact-correction, not bandaid-forward — no test regressed under 13e.2.
+
+**Gate-sweep (per CLAUDE.md Phase 13 discipline; all six invariants verified at 13e.2 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (3 pre-existing residuals)
+- css-position **91/104 ✓** (13 pre-existing residuals — corrected from earlier-claimed 92)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (276 pre-existing residuals)
+- spanner-fragmentation 12/13 ✓ (1 pre-existing residual)
+
+Files: `pkg/layout/inline_layout.go` (+2/-1).
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
