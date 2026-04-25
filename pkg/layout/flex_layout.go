@@ -2179,11 +2179,11 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				Build()
 			if mainIsItemInline {
 				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-					return explicit
+					return explicit.Float64()
 				}
 			} else {
 				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-					return explicit
+					return explicit.Float64()
 				}
 			}
 			// §9.2 aspect-ratio fallback: when the item has an aspect ratio
@@ -2217,13 +2217,13 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				if mainIsItemInline {
 					// Cross = block axis. Check for explicit CSS block-size.
 					if explicitCross, ok := ResolveBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
-						itemCrossContent = explicitCross
+						itemCrossContent = explicitCross.Float64()
 						hasItemCross = true
 					}
 				} else {
 					// Cross = inline axis. Check for explicit CSS inline-size.
 					if explicitCross, ok := ResolveInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
-						itemCrossContent = explicitCross
+						itemCrossContent = explicitCross.Float64()
 						hasItemCross = true
 					}
 				}
@@ -2304,11 +2304,11 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			Build()
 		if mainIsItemInline {
 			if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-				return explicit
+				return explicit.Float64()
 			}
 		} else {
 			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-				return explicit
+				return explicit.Float64()
 			}
 		}
 		// §9.2 Part B: aspect-ratio fallback when the item has an aspect ratio
@@ -2337,7 +2337,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			if mainIsItemInline {
 				// Cross = block axis.
 				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-					itemCrossContent = explicit
+					itemCrossContent = explicit.Float64()
 					// Clamp by min/max block size.
 					minBlock := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
 					if itemCrossContent < minBlock {
@@ -2351,7 +2351,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			} else {
 				// Cross = inline axis.
 				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-					itemCrossContent = explicit
+					itemCrossContent = explicit.Float64()
 					// Clamp by min/max inline size.
 					minInline := ResolveMinInlineSize(style, childWDM, itemSpace, childGeom)
 					if itemCrossContent < minInline {
@@ -2536,7 +2536,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 				SetPercentageResolutionInlineSize(contentInlineSize).
 				Build()
 			if crossSize, hasCross := ResolveBlockSize(style, childWDM, crossSpace, childGeom); hasCross && logicalRatio > 0 {
-				return crossSize * logicalRatio
+				return crossSize.Float64() * logicalRatio
 			}
 			// No explicit cross-size or no AR: use intrinsic inline-size.
 			if childWDM.IsVertical() {
@@ -2561,7 +2561,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 			SetPercentageResolutionInlineSize(contentInlineSize).
 			Build()
 		// Check for explicit CSS cross-size (inline-size).
-		crossSize, hasCross := ResolveInlineSize(style, childWDM, crossSpace, childGeom)
+		crossSizeLU, hasCross := ResolveInlineSize(style, childWDM, crossSpace, childGeom)
 		if !hasCross {
 			// No explicit CSS inline-size; use intrinsic block dimension.
 			if childWDM.IsVertical() {
@@ -2571,7 +2571,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 		}
 		// CSS cross-size is set. Derive block-size via intrinsic AR.
 		if logicalRatio > 0 {
-			return crossSize / logicalRatio
+			return crossSizeLU.Float64() / logicalRatio
 		}
 		// No AR — use intrinsic block dimension.
 		if childWDM.IsVertical() {
@@ -3418,7 +3418,7 @@ func (fla *FlexLayoutAlgorithm) buildItemConstraintSpace(
 		if explicit, ok := ResolveBlockSize(item.style, childWDM, itemSpace, item.geom); ok && crossSize == Indefinite {
 			// First pass: set available block-size so IsBlockSizeIndefinite()
 			// returns false and inner percentage heights can resolve.
-			avail.BlockSize = explicit + item.crossBorderPadding()
+			avail.BlockSize = explicit.Float64() + item.crossBorderPadding()
 		} else if crossSize != Indefinite && !fla.hasDefiniteCross {
 			// Fallback: use the line's cross-size as the percentage base when
 			// the container's cross isn't definite.
@@ -4212,7 +4212,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				SetPercentageResolutionInlineSize(contentInlineSize).
 				Build()
 			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-				pctBlockSize = explicit
+				pctBlockSize = explicit.Float64()
 			} else if hasDefiniteCross {
 				// Item will be stretched to the container cross-size.
 				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
@@ -4322,11 +4322,11 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			Build()
 		if mainIsItemInline {
 			if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-				specifiedSuggestion = explicit
+				specifiedSuggestion = explicit.Float64()
 			}
 		} else {
 			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-				specifiedSuggestion = explicit
+				specifiedSuggestion = explicit.Float64()
 			}
 		}
 	}
@@ -4351,12 +4351,12 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			if mainIsItemInline {
 				// Main = inline, cross = block.
 				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-					crossContentSize = explicit
+					crossContentSize = explicit.Float64()
 				}
 			} else {
 				// Main = block, cross = inline.
 				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-					crossContentSize = explicit
+					crossContentSize = explicit.Float64()
 				}
 			}
 
@@ -4452,11 +4452,11 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				Build()
 			if mainIsItemInline {
 				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-					crossContentSize = explicit
+					crossContentSize = explicit.Float64()
 				}
 			} else {
 				if explicit, ok := ResolveInlineSize(style, childWDM, itemSpace, childGeom); ok {
-					crossContentSize = explicit
+					crossContentSize = explicit.Float64()
 				}
 			}
 			// Also check min-cross-size as a fallback for non-replaced elements.

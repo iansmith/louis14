@@ -264,9 +264,20 @@ func applyBoxSizingBlock(style *css.Style, geom FragmentGeometry, declared float
 // ResolveInlineSize resolves the element's inline-size from CSS.
 // Returns the content inline-size and whether it was explicitly set.
 // If not explicit (auto), the caller should use the available inline-size.
-func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (float64, bool) {
+//
+// Returns LayoutUnit at the boundary (Phase 13e′). Internal arithmetic
+// stays float64 — `applyBoxSizingInline` consumes float64 from the CSS
+// length / calc / percentage paths. The boundary uses `FromFloat64Round`
+// (round-half-away-from-zero) rather than Blink's truncating
+// `LayoutUnit(value)` ctor: louis14 stores `Length.value` as float64
+// (Blink uses float32), so em-times-fontSize products like `8.2 * 50` land
+// at `409.999999999...` in IEEE 754 — Trunc would amplify the rounding
+// error to 409.984 (off by 1/64 raw), Round snaps to 410.0 exact. Already
+// 1/64-clean values (the dominant case: percentages from `ResolvePercent`,
+// integer pixel values from CSS) round-trip identically under either mode.
+func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (layoutunit.LayoutUnit, bool) {
 	if style == nil {
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 
 	// Determine which CSS property controls inline-size.
@@ -277,7 +288,7 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 
 	val, ok := style.Get(prop)
 	if !ok || val == "" || val == "auto" {
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 
 	// CSS calc() with percentage terms: resolve against containing block's
@@ -290,23 +301,23 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 			space.PercentageResolutionSize.InlineSize.Float64(),
 		)
 		if calcOK {
-			return applyBoxSizingInline(style, geom, result), true
+			return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result)), true
 		}
 	}
 
 	// Check for explicit length (handles calc without percentages, px, em, etc.).
 	if v, ok := style.GetLength(prop); ok {
-		return applyBoxSizingInline(style, geom, v), true
+		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, v)), true
 	}
 
 	// Check for percentage.
 	if pct, ok := style.GetPercentage(prop); ok {
 		result := layoutunit.ResolvePercent(
 			space.PercentageResolutionSize.InlineSize, pct).Float64()
-		return applyBoxSizingInline(style, geom, result), true
+		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result)), true
 	}
 
-	return 0, false
+	return layoutunit.LayoutUnit{}, false
 }
 
 // ResolveMinInlineSize resolves min-width/min-height as min-inline-size.
@@ -402,9 +413,12 @@ func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 
 // ResolveBlockSize resolves the element's block-size from CSS.
 // Returns the content block-size and whether it was explicitly set.
-func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (float64, bool) {
+//
+// Returns LayoutUnit at the boundary (Phase 13e′) — see ResolveInlineSize
+// for the FromFloat64Round rounding-mode rationale.
+func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (layoutunit.LayoutUnit, bool) {
 	if style == nil {
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 
 	prop := "height"
@@ -424,25 +438,25 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 			space.PercentageResolutionSize.BlockSize.Float64(),
 		)
 		if calcOK {
-			return applyBoxSizingBlock(style, geom, result), true
+			return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result)), true
 		}
 	}
 
 	if v, ok := style.GetLength(prop); ok {
-		return applyBoxSizingBlock(style, geom, v), true
+		return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, v)), true
 	}
 
 	if pct, ok := style.GetPercentage(prop); ok {
 		if !space.IsBlockSizeIndefinite() {
 			result := layoutunit.ResolvePercent(
 				space.PercentageResolutionSize.BlockSize, pct).Float64()
-			return applyBoxSizingBlock(style, geom, result), true
+			return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result)), true
 		}
 		// Percentage against indefinite → auto.
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 
-	return 0, false
+	return layoutunit.LayoutUnit{}, false
 }
 
 // CalculateInitialFragmentGeometry computes the full FragmentGeometry including
@@ -492,7 +506,7 @@ func CalculateInitialFragmentGeometry(
 		}
 		borderBoxInline = ResolveIntrinsicInlineSize(inlineVal, minMax, available) + geom.InlineBorderPadding()
 	} else if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
-		borderBoxInline = explicitInline + geom.InlineBorderPadding()
+		borderBoxInline = explicitInline.Float64() + geom.InlineBorderPadding()
 	} else if space.IsOrthogonalWritingModeRoot && !needsShrinkToFit(style) {
 		// §7.3: block-level orthogonal auto inline-size fills available space
 		// minus inline margins. Constrained by min/max inline-size.
@@ -619,9 +633,9 @@ func CalculateInitialFragmentGeometry(
 			// Table border-box quirk: treat height as border-box even when
 			// box-sizing is content-box. The explicitBlock from ResolveBlockSize
 			// is content-box, so use it directly as border-box (don't add BP).
-			borderBoxBlock = explicitBlock
+			borderBoxBlock = explicitBlock.Float64()
 		} else {
-			borderBoxBlock = explicitBlock + geom.BlockBorderPadding()
+			borderBoxBlock = explicitBlock.Float64() + geom.BlockBorderPadding()
 		}
 	} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
 		// Parent (e.g. flex) has fixed the block-size. Check for max-block-size keywords

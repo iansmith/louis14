@@ -34,8 +34,10 @@ func ComputeReplacedIntrinsicInlineSize(ctx *LayoutContext, node *LayoutInputNod
 		}
 	}
 
-	explicitInline, hasExplicitInline := ResolveInlineSize(style, wdm, space, geom)
-	explicitBlock, hasExplicitBlock := ResolveBlockSize(style, wdm, space, geom)
+	explicitInlineLU, hasExplicitInline := ResolveInlineSize(style, wdm, space, geom)
+	explicitBlockLU, hasExplicitBlock := ResolveBlockSize(style, wdm, space, geom)
+	explicitInline := explicitInlineLU.Float64()
+	explicitBlock := explicitBlockLU.Float64()
 
 	if space.IsFixedInlineSize {
 		explicitInline = space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
@@ -114,8 +116,10 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 	}
 
 	// Resolve explicit CSS sizes.
-	explicitInline, hasExplicitInline := ResolveInlineSize(style, wdm, space, geom)
-	explicitBlock, hasExplicitBlock := ResolveBlockSize(style, wdm, space, geom)
+	explicitInlineLU, hasExplicitInline := ResolveInlineSize(style, wdm, space, geom)
+	explicitBlockLU, hasExplicitBlock := ResolveBlockSize(style, wdm, space, geom)
+	explicitInline := explicitInlineLU.Float64()
+	explicitBlock := explicitBlockLU.Float64()
 
 
 	// Handle fixed inline-size from parent (e.g. flex).
@@ -264,11 +268,11 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 		//   size containment).
 		hasInline, hasBlock := false, false
 		if explInline, ok := ResolveInlineSize(rla.style, wdm, rla.space, geom); ok {
-			contentInline = explInline
+			contentInline = explInline.Float64()
 			hasInline = true
 		}
 		if explBlock, ok := ResolveBlockSize(rla.style, wdm, rla.space, geom); ok {
-			contentBlock = explBlock
+			contentBlock = explBlock.Float64()
 			hasBlock = true
 		}
 		// If only one dimension is set, use the element's intrinsic aspect ratio

@@ -493,7 +493,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					Build()
 				if resolvedInline, ok := ResolveInlineSize(childStyle, childWDM, tmpSpace, childGeomForBFC); ok {
-					neededInline := resolvedInline + childGeomForBFC.InlineBorderPadding() + childMargins.InlineSum()
+					neededInline := resolvedInline.Float64() + childGeomForBFC.InlineBorderPadding() + childMargins.InlineSum()
 					availBesideFloats := childAvailableInline - floatStartOff - floatEndOff
 					if neededInline > availBesideFloats {
 						// Doesn't fit — find the earliest block position

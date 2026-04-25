@@ -455,6 +455,47 @@ The `.Float64()` bridge keeps the surrounding `letterSpacing` / `wordSpacing` pa
 
 Files: `pkg/text/shape_snap.go` (+30/-3: added `ShapeCumulative` type + `SnappedWidth` method; helper now returns `ShapeCumulative`), `pkg/text/shape_snap_test.go` (+8/-8: tests rewritten against the bundled return), `pkg/text/measure.go` (+25/-7: `ShapeAdvances`/`ShapeAdvancesMixed` wrap private float helpers + snap), `pkg/layout/line_breaker.go` (+3/-1 at one site), `task_plan.md` + `progress.md`.
 
+#### Phase 13e′.1: ResolveInlineSize + ResolveBlockSize → LayoutUnit — DONE 2026-04-25
+
+Promoted the two highest-fan-out length resolvers in `pkg/layout/fragment_geometry.go` from `(float64, bool)` to `(layoutunit.LayoutUnit, bool)`:
+
+```go
+// Before:
+func ResolveInlineSize(...) (float64, bool)
+func ResolveBlockSize (...) (float64, bool)
+
+// After (Phase 13e′.1):
+func ResolveInlineSize(...) (layoutunit.LayoutUnit, bool)
+func ResolveBlockSize (...) (layoutunit.LayoutUnit, bool)
+```
+
+**Internal arithmetic preserved.** The `applyBoxSizingInline` / `applyBoxSizingBlock` helpers stay `float64`-typed; the boundary snap happens once at each return statement via `layoutunit.FromFloat64Round(applyBoxSizing*(style, geom, value))`. All three branches (calc()-with-percent, GetLength, GetPercentage) use the same wrapper. The percentage branch additionally pre-snaps via `ResolvePercent → .Float64()` before subtracting border/padding, so its consumer-visible value round-trips bit-exactly.
+
+**Rounding-mode discovery.** First attempt used `FromFloat64Trunc` to mirror Blink's `LayoutUnit(float)` ctor at every `Resolve*LengthInternal` leaf. Gate sweep regressed css-multicol 179 → 172 (7 NEW failures, all `multicol-rule-{dashed,double,groove,inset,outset,ridge,solid}-000.xht`, 50/480000 px diff each — a 1-px column-rule shift). Root cause: louis14 stores `Length.value` as `float64` (Blink stores `float32`); `8.2em` × 50px font-size in IEEE 754 doubles yields `409.99999999999994316`, not `410.0` — Trunc amplified the error to `409.984` (off by 1/64 raw px). Switching to `FromFloat64Round` absorbs the IEEE 754 noise (`Round(409.999...) = 410.0`) while preserving bit-exact round-trips for already-1/64-clean values. See `findings.md` "Phase 13e′ research" for the full Blink-parity rationale and the float64-vs-float32 storage divergence.
+
+**Consumer fan-out: 40 active call sites bridged.** Replaced/min-max/flex/block/multicol consumers absorb LayoutUnit via inline `.Float64()` bridges (matches the 13c/13d/13e idiom). The producers' `(LayoutUnit, bool)` return is decomposed via `if explicitLU, ok := Resolve*Size(...); ok { var := explicitLU.Float64(); ... }` at sites where the float64 is reassigned in a fixed-size branch (replaced_layout.go), or via direct `.Float64()` at first use within an `if`-body (flex_layout.go, min_max_sizing.go, block_layout.go).
+
+**Files touched:**
+- `pkg/layout/fragment_geometry.go` — 2 producers + 2 self-references in `CalculateInitialFragmentGeometry`
+- `pkg/layout/block_layout.go` — 1 site (BFC inline-size check)
+- `pkg/layout/replaced_layout.go` — 4 sites (intrinsic inline, ComputeReplacedSize, ReplacedLayoutAlgorithm.Layout container)
+- `pkg/layout/min_max_sizing.go` — 7 sites (computeIntrinsicMinMaxSizes, aspect-ratio transfer, flex-basis intrinsic, percentage block resolution)
+- `pkg/layout/flex_layout.go` — 26 sites (item flex-basis, cross-size resolution, specified/transferred suggestion paths × multiple algorithms)
+
+The remaining sites use `_` for the LayoutUnit return (just the bool is consumed) and need no bridge.
+
+**Gate-sweep (six invariants at 13e′.1 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (629 - 3 fails)
+- css-position 91/104 ✓ (104 - 13 fails)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (455 - 276 fails)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+**Risk profile.** Delivered cleanly after one rollback cycle (Trunc → Round). The Round-mode boundary keeps every existing pass at 0% diff and breaks no Blink-parity invariant that matters at this layer of the pipeline (length-resolution exit). The next two sub-steps (13e′.2 + 13e′.3) follow the same idiom — same rounding mode, smaller fan-out.
+
+Files: `pkg/layout/fragment_geometry.go` (+25/-13: function signatures + 3 return-statement wraps × 2 functions + self-reference bridges + doc-comment), `pkg/layout/block_layout.go` (+1/-1), `pkg/layout/replaced_layout.go` (+8/-4), `pkg/layout/min_max_sizing.go` (+10/-7), `pkg/layout/flex_layout.go` (+26/-26 at 26 sites), `findings.md` (+58 — Phase 13e′ research + rounding-mode discovery), `task_plan.md` + `progress.md`.
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

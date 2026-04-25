@@ -61,7 +61,8 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// this correctly, so replaced elements always go through that path below.
 	isReplaced := node.DOMNode != nil && isReplacedElement(node.DOMNode)
 	if !isReplaced {
-		if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
 			// Apply min/max inline-size constraints (all content-box).
 			minInline := ResolveMinInlineSize(style, wdm, space, geom)
@@ -134,7 +135,8 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		}
 
 		// Check for definite block-size (height).
-		if blockSize, ok := ResolveBlockSize(style, wdm, space, geom); ok {
+		if blockSizeLU, ok := ResolveBlockSize(style, wdm, space, geom); ok {
+			blockSize := blockSizeLU.Float64()
 			inlineFromRatio := transferBlockToInline(blockSize, geom.BlockBorderPadding())
 			if isBorderBox {
 				// blockSize from ResolveBlockSize with border-box already had BP subtracted.
@@ -278,7 +280,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	if nodeStyle := node.Style(); nodeStyle != nil {
 		nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm)
 		if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
-			blockForPct = bs
+			blockForPct = bs.Float64()
 		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
 			blockForPct = space.PercentageResolutionSize.BlockSize.Float64()
 		}
@@ -416,7 +418,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	var hasDefiniteCross bool
 	if isRow {
 		if bs, ok := ResolveBlockSize(style, wdm, space, containerGeom); ok {
-			containerCrossContent = bs
+			containerCrossContent = bs.Float64()
 			hasDefiniteCross = true
 		}
 	}
@@ -576,7 +578,8 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				contentMM := computeContentMinMaxSizes(ctx, child, childSpace)
 
 				// Explicit width (content-box), if any.
-				explicit, hasExplicit := ResolveInlineSize(childStyle, childWDM, childSpace, childGeom2)
+				explicitLU, hasExplicit := ResolveInlineSize(childStyle, childWDM, childSpace, childGeom2)
+				explicit := explicitLU.Float64()
 
 				// CSS Sizing-3 contributions = max(content intrinsic, explicit width).
 				minContrib := contentMM.MinContent
@@ -700,7 +703,7 @@ func resolveFlexBasisForIntrinsic(
 
 	if fbv.IsAuto {
 		if explicit, ok := ResolveInlineSize(childStyle, childWDM, childSpace, childGeom); ok {
-			return explicit, false
+			return explicit.Float64(), false
 		}
 		return 0, true
 	}
@@ -769,7 +772,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 	if nodeStyle := node.Style(); nodeStyle != nil {
 		nodeGeom := ComputeFragmentGeometry(nodeStyle, parentWDM)
 		if bs, ok := ResolveBlockSize(nodeStyle, parentWDM, space, nodeGeom); ok {
-			nodeBlockSize = bs
+			nodeBlockSize = bs.Float64()
 		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
 			// Parent provided a definite block percentage resolution size
 			// (e.g., from a flex item's explicit cross-size). Propagate it.

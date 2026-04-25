@@ -2232,3 +2232,113 @@ func shapeAdvancePairSnap(cumFloat []float64) ShapeCumulative {
 **Risk profile.** wm 781/781 is the canary. The migration changes *where* the float→LayoutUnit snap happens, not *what* the snap value is — at HarfBuzz cluster boundaries (the dominant case) Floor and Ceil agree, so cum-slice values pre/post-13f match bit-exact. Off-boundary effects can appear if any consumer reads a non-cluster cum[] entry without the pair-of-positions wrap; the line-breaker's only such site (line 1546) already reads as a pair, so no semantic shift. If a regression appears, the most likely cause is a missed `.Float64()` bridge on the writing-modes path (vertical measurement); rolling back per CLAUDE.md rule 1 and re-reading shape_result.cc is the prescribed recovery.
 
 **Out of scope for 13f.** (1) `MeasureTextVertical` block-advance from font metrics — that's a font-table read, not a shape result; the snap there mirrors `FontHeight` not `ShapeResult::SnappedWidth`. We CEIL it the same way for consistency, but it's not the load-bearing site. (2) Letter/word-spacing pad — applied post-shape, post-bridge, in float64; LayoutUnit promotion of `segmentWidth` is a 13e′ ripple. (3) The `BreakTextAtCharacterBoundary` and `BreakTextIntoLines*` family — these consume `measureWidth` internally (private), don't cross the public API boundary in question, and aren't on the 13f migration list.
+
+### Phase 13e′ research: Resolve*Size return-type promotion (2026-04-25)
+
+**Driver.** Phase 13e (closed at 13e.6) migrated the *entry* boundary of length resolution: every percentage-resolution call site in `pkg/layout/fragment_geometry.go` flows through `layoutunit.ResolvePercent(basis LayoutUnit, percent float64) LayoutUnit`. The canonical chokepoint is in place. **Phase 13e′ closes the EXIT boundary**: promote the return type of the six size-resolvers in `pkg/layout/fragment_geometry.go` from `float64` (or `(float64, bool)`) to `layoutunit.LayoutUnit` (or `(layoutunit.LayoutUnit, bool)`). After 13e′ lands, the layout-pipeline length-resolution surface is LayoutUnit-typed at both endpoints.
+
+**Blink reference (verified against `refs/heads/main` 2026-04-25 via `length_utils.h` + `length_utils.cc`).**
+
+Blink's homologous functions all return `LayoutUnit`:
+
+```cpp
+// length_utils.h (verbatim signatures):
+
+CORE_EXPORT LayoutUnit
+ResolveInlineLength(const ConstraintSpace&, const ComputedStyle&,
+                    const BoxStrut& border_padding,
+                    MinMaxSizesFunctionRef, const Length&,
+                    const Length* auto_length,
+                    LengthTypeInternal length_type,
+                    FitContentMode fit_content_mode,
+                    LayoutUnit override_available_size,
+                    CalcSizeKeywordBehavior calc_size_keyword_behavior);
+
+inline LayoutUnit ResolveMinInlineLength(...) {
+  const LayoutUnit result = ResolveInlineLengthInternal(
+      ..., LengthTypeInternal::kMin, ...);
+  return result == kIndefiniteSize ? border_padding.InlineSum() : result;
+}
+
+inline LayoutUnit ResolveMaxInlineLength(...) {
+  const LayoutUnit result = ResolveInlineLengthInternal(
+      ..., LengthTypeInternal::kMax, ...);
+  return result == kIndefiniteSize ? LayoutUnit::Max() : result;
+}
+```
+
+`ResolveMin*` / `ResolveMax*` delegate to the same internal resolver with a different `LengthTypeInternal` enum (`kMin`, `kMax`, `kMain`), then **post-process the indefinite sentinel**: Min returns `border_padding.{InlineSum,BlockSum}()`; Max returns `LayoutUnit::Max()`. The base resolver dispatches on `Length::GetType()` (kFixed → MinimumValueForLength, kPercent → MinimumValueForLength, kCalculated → MinimumValueForLength, intrinsic-keywords → callback, kStretch/kAuto → fallback). At every leaf the return is `LayoutUnit`-typed — no float intermediary surfaces above the kPercent/kFixed→`LayoutUnit(value)` truncating ctor (per the 13e research, this is the kPercent chokepoint mirrored in louis14's `ResolvePercent` via `FromFloat64Trunc`).
+
+**Consumer pattern (from `block_layout_algorithm.cc` and homologous algorithms).** Blink consumers store the result in a `LayoutUnit` local — *no explicit `.ToFloat()` at the call site*. LayoutUnit flows through subsequent comparisons (`if (content_inline > max_inline)`), arithmetic (`border_box_inline = content_inline + border_padding.InlineSum()`), and clamps (`clampTo<LayoutUnit>`) untouched. The only float exits are at paint-time pixel-snap boundaries.
+
+**louis14 surface (HEAD: commit `29c5fccd`).** Six functions in `pkg/layout/fragment_geometry.go`:
+
+| Function | Current return | Target return | Existing internal float path |
+|---|---|---|---|
+| `ResolveInlineSize` | `(float64, bool)` | `(LayoutUnit, bool)` | `ResolvePercent(...).Float64()` → `applyBoxSizingInline` (float64) → return |
+| `ResolveBlockSize` | `(float64, bool)` | `(LayoutUnit, bool)` | same shape, block axis |
+| `ResolveMinInlineSize` | `float64` | `LayoutUnit` | same shape; bare value (no bool, no `none`) |
+| `ResolveMaxInlineSize` | `(float64, bool)` | `(LayoutUnit, bool)` | same shape; bool false for `none`/unset |
+| `ResolveMinBlockSize` | `float64` | `LayoutUnit` | same shape |
+| `ResolveMaxBlockSize` | `(float64, bool)` | `(LayoutUnit, bool)` | same shape |
+
+**Consumer fan-out (live grep at HEAD).** `grep -rn 'ResolveInlineSize\|ResolveBlockSize\|ResolveMin\|ResolveMax' pkg/layout/ | grep -v _test.go | wc -l` = **145 lines** (some are doc/comment refs; ~120+ real call sites). Concentration:
+
+- `pkg/layout/flex_layout.go` — ~80+ sites (largest fan-out by far)
+- `pkg/layout/min_max_sizing.go` — ~16 sites
+- `pkg/layout/replaced_layout.go` — ~12 sites
+- `pkg/layout/block_layout.go` — ~9 sites
+- `pkg/layout/fragment_geometry.go` — 7 sites (self-references inside `CalculateInitialFragmentGeometry`)
+- `pkg/layout/grid_layout.go` — 3 sites
+- `pkg/layout/table_layout.go` — 2 sites
+- `pkg/layout/multicol_layout.go` — 1 site
+
+All consumer-side accumulators (`borderBoxInline`, `contentInline`, `minInline`, `maxBlock`, `crossSize`, …) are `float64`-typed. Per the user's instruction (`task_plan.md` 13e′ row): **bridge consumers with `.Float64()`** in 13e′; promoting accumulators to LayoutUnit is a separate phase (queued as 13e′.4 if needed, or folded into 13g/13h).
+
+**Migration strategy (matches 13c/13d/13e bridge-helper idiom).** At each producer's return statement:
+
+```go
+// Before (float64 return — current HEAD):
+result := layoutunit.ResolvePercent(space.PercentageResolutionSize.InlineSize, pct).Float64()
+return applyBoxSizingInline(style, geom, result), true
+
+// After (LayoutUnit return — 13e′ target):
+result := layoutunit.ResolvePercent(space.PercentageResolutionSize.InlineSize, pct).Float64()
+return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result)), true
+```
+
+**Rounding-mode discovery (2026-04-25, during 13e′.1 implementation).** First attempt used `FromFloat64Trunc` to mirror Blink's `LayoutUnit(float)` ctor at every `Resolve*LengthInternal` leaf. Gate sweep regressed css-multicol 179 → 172 (7 NEW failures, all `multicol-rule-{dashed,double,groove,inset,outset,ridge,solid}-000.xht`). Diff: 50/480000 pixels (1-px-wide × 50-px-tall column-rule shifted by 1 pixel).
+
+Root cause: louis14 stores `Length.value` as `float64` (Blink stores `float32`). The em-times-fontSize product `8.2 * 50.0` in IEEE 754 double-precision yields `409.99999999999994316`, NOT exactly `410.0` — the closest representation of 8.2 in double is slightly under 8.2. Blink's float32 arithmetic of `8.2f * 50.0f` happens to round to a value much closer to 410, and Blink's `LayoutUnit(float)` truncating ctor lands at raw 26239 or 26240 depending on the float32 representation. louis14's float64 arithmetic on the *same* visible value lands at `409.99999...` and `FromFloat64Trunc` truncates to raw 26239 (`409.984375`) — a 1/64-px shift downward from the user-declared `8.2em`-of-50px = 410px. That 0.0156-px container-width shift then propagates to the column-rule X position via `(width - gap) / N`, shifting the rule by ~0.008 px and triggering visible AA pixel diffs.
+
+**Fix: switch to `FromFloat64Round` at the boundary.** Round-half-away-from-zero absorbs the IEEE 754 noise (`Round(409.99999...) = 410.0`) while preserving bit-exact round-trips for already-1/64-clean values (the dominant case: percentages from `ResolvePercent`, integer pixel values, half-pixel values). This breaks Blink's exact rounding-mode parity at the kFixed/kPercent leaf, but Blink's truncating ctor only works for them because their *input* is float32 from CSS storage — louis14's input is float64, so the precision-loss pattern differs and trunc would amplify rather than absorb the error. The correct mirror is "snap-to-1/64 with the rounding mode that produces the cleanest answer for the dominant 1/64-clean inputs", which is Round in louis14's float64 world. (Once `pkg/css/length` migrates Length.value to float32 per Blink — out of scope for Phase 13 — the rounding mode could revert to Trunc.)
+
+The internal `applyBoxSizingInline` / `applyBoxSizingBlock` helpers stay `float64`-typed for 13e′; the float-quantum residue from CSS-parsed border/padding sums (e.g. `1.6px` from `0.1em` at 16px font-size = 102.4/64, not 1/64-clean) is absorbed by the rounding boundary snap.
+
+At each consumer site that holds a `float64` accumulator, append `.Float64()`:
+
+```go
+// Before:
+if explicit, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+    borderBoxInline = explicit + geom.InlineBorderPadding()
+}
+
+// After (consumer-side bridge — 13e′):
+if explicit, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+    borderBoxInline = explicit.Float64() + geom.InlineBorderPadding()
+}
+```
+
+**Sub-step staging (one commit per sub-step, gate-sweep all six invariants before each commit).**
+
+| Sub-step | Promotion | Approx. consumer sites | Risk |
+|---|---|---|---|
+| **13e′.1** | `ResolveInlineSize` + `ResolveBlockSize` → `(LayoutUnit, bool)` | ~70+ | Highest fan-out; mirrors 13e.6's entry-side migration. Bridge with `.Float64()` at every consumer. |
+| **13e′.2** | `ResolveMinInlineSize` + `ResolveMaxInlineSize` → `LayoutUnit` (Max stays `(LayoutUnit, bool)`) | ~25 | Medium. Many consumers compare against an existing `float64` clamp (`if contentInline > maxInline`); these sites can absorb LayoutUnit by either bridging at the comparison or promoting the clamp variable. **Use `.Float64()` bridge to keep the diff small** — promoting `contentInline` to LayoutUnit is a 13e′.4 / 13h concern. |
+| **13e′.3** | `ResolveMinBlockSize` + `ResolveMaxBlockSize` → `LayoutUnit` (Max stays `(LayoutUnit, bool)`) | ~25 | Same shape as 13e′.2. |
+
+**Six invariants at 13f.3 HEAD (must hold at every 13e′.x commit).** CSS2 99/99 · css-flexbox 626/629 · css-position 91/104 · css-writing-modes 781/781 · css-multicol 179/455 · spanner-fragmentation 12/13.
+
+**Risk profile.** Medium. The migration is *bit-exact for the percentage path* by construction (the value already round-trips through `ResolvePercent → .Float64() → FromFloat64Round → .Float64()` and lands on the same 1/64 quantum). The only path that introduces a NEW snap is the `style.GetLength(...)` exit (CSS-parsed length values), which can be sub-1/64 dirty when a length is computed from `em` at non-power-of-2 font sizes (e.g. `8.2 * 50 = 409.99999...` per the IEEE 754 discovery above). Round-to-nearest of those values restores the user-declared value exactly. If any of the six invariants regresses at a checkpoint, ROLL BACK and re-examine before continuing (per CLAUDE.md rule 1 — no bandaid forward); the 13e′.1 round-trip discovery cost one rollback cycle and was resolved by switching from Trunc to Round at the boundary.
+
+**Out of scope for 13e′.** (1) Promoting `applyBoxSizingInline` / `applyBoxSizingBlock` to `LayoutUnit` — these are private helpers; the float→LayoutUnit snap at the producer's return suffices to close the public boundary. (2) Promoting consumer-side accumulators (`borderBoxInline`, `contentInline`, …) to `LayoutUnit` — that's a separate sweep (queue as 13e′.4 or fold into 13g/13h). (3) Promoting `MinMaxSizes` (`MinContent` / `MaxContent` `float64` fields) — these are intrinsic-content sizes, computed elsewhere; on the 13g/13h migration list. (4) `pkg/css/length` internal `Length.value float32` — Blink keeps the same; not in 13e′ scope (per the original Phase 13 plan, "Out of scope for Phase 13").
