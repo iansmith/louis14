@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 	"louis14/pkg/text"
 	"math"
@@ -142,7 +143,7 @@ func TestInlineLayout_TextAlignCenter(t *testing.T) {
 		t.Fatal("no text fragment in line box")
 	}
 
-	textOffset := lineBoxes[0].Children[0].Offset.X
+	textOffset := lineBoxes[0].Children[0].Offset.LeftF64()
 	if textOffset <= 0 {
 		t.Errorf("text-align:center should offset text, got X=%f", textOffset)
 	}
@@ -156,7 +157,7 @@ func TestInlineLayout_TextAlignRight(t *testing.T) {
 
 	lineBoxes, _ := inlineLayoutForTest(parent, styles, 400)
 
-	textOffset := lineBoxes[0].Children[0].Offset.X
+	textOffset := lineBoxes[0].Children[0].Offset.LeftF64()
 	if textOffset <= 0 {
 		t.Errorf("text-align:right should offset text, got X=%f", textOffset)
 	}
@@ -168,7 +169,7 @@ func TestInlineLayout_TextAlignRight(t *testing.T) {
 	stylesC := map[*html.Node]*css.Style{parentC: parentStyleC}
 
 	lineBoxesC, _ := inlineLayoutForTest(parentC, stylesC, 400)
-	centerOffset := lineBoxesC[0].Children[0].Offset.X
+	centerOffset := lineBoxesC[0].Children[0].Offset.LeftF64()
 
 	if textOffset <= centerOffset {
 		t.Errorf("right offset (%f) should be > center offset (%f)", textOffset, centerOffset)
@@ -278,7 +279,7 @@ func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
 	lineFrag := &PhysicalFragment{
 		Size: PhysicalSize{Width: 800, Height: 20},
 		Children: []ChildLink{
-			{Offset: PhysicalOffset{X: 0, Y: 2}, Fragment: textFrag},
+			{Offset: geometry.PhysicalOffsetFromF64Round(0, 2), Fragment: textFrag},
 		},
 		Type:             FragmentLineBox,
 		WritingDirection: wdm,
@@ -287,7 +288,7 @@ func TestInlineLayout_FragmentToBox_PreservesText(t *testing.T) {
 	containerFrag := &PhysicalFragment{
 		Size: PhysicalSize{Width: 800, Height: 20},
 		Children: []ChildLink{
-			{Offset: PhysicalOffset{X: 0, Y: 0}, Fragment: lineFrag},
+			{Offset: geometry.PhysicalOffsetFromF64Round(0, 0), Fragment: lineFrag},
 		},
 		Node:             parentNode,
 		Style:            parentStyle,
@@ -356,8 +357,8 @@ func TestInlineLayout_TextPositioning(t *testing.T) {
 
 	textFrag := lineBoxes[0].Children[0]
 
-	if math.Abs(textFrag.Offset.X) > 0.1 {
-		t.Errorf("left-aligned text X offset: got %f, want ~0", textFrag.Offset.X)
+	if math.Abs(textFrag.Offset.LeftF64()) > 0.1 {
+		t.Errorf("left-aligned text X offset: got %f, want ~0", textFrag.Offset.LeftF64())
 	}
 
 	if textFrag.Fragment.Size.Width <= 0 {

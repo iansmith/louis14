@@ -108,8 +108,8 @@ func (s *ifcWalkState) walkPhysical(parent *PhysicalFragment, originInBlock Phys
 			continue
 		}
 		absOff := PhysicalOffset{
-			X: originInBlock.X + childLink.Offset.X,
-			Y: originInBlock.Y + childLink.Offset.Y,
+			X: originInBlock.X + childLink.Offset.LeftF64(),
+			Y: originInBlock.Y + childLink.Offset.TopF64(),
 		}
 		s.visit(frag, absOff)
 	}
@@ -144,8 +144,8 @@ func (s *ifcWalkState) processLine(lineBox *PhysicalFragment, lineOriginInBlock 
 		}
 		rect := PhysicalRect{
 			Offset: PhysicalOffset{
-				X: lineOriginInBlock.X + sub.Offset.X,
-				Y: lineOriginInBlock.Y + sub.Offset.Y,
+				X: lineOriginInBlock.X + sub.Offset.LeftF64(),
+				Y: lineOriginInBlock.Y + sub.Offset.TopF64(),
 			},
 			Size: sub.Fragment.Size,
 		}

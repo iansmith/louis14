@@ -217,19 +217,19 @@ func TestBlockLayout_FloatLeft(t *testing.T) {
 		t.Errorf("float size: got %vx%v, want 200x100",
 			floatFrag.Fragment.Size.Width, floatFrag.Fragment.Size.Height)
 	}
-	if floatFrag.Offset.X != 0 || floatFrag.Offset.Y != 0 {
+	if floatFrag.Offset.LeftF64() != 0 || floatFrag.Offset.TopF64() != 0 {
 		t.Errorf("float offset: got (%v,%v), want (0,0)",
-			floatFrag.Offset.X, floatFrag.Offset.Y)
+			floatFrag.Offset.LeftF64(), floatFrag.Offset.TopF64())
 	}
 
 	// Block child should be shifted right by float (inline offset = 200).
 	blockFrag := result.Fragment.Children[1]
-	if blockFrag.Offset.X != 200 {
-		t.Errorf("block inline offset: got %v, want 200", blockFrag.Offset.X)
+	if blockFrag.Offset.LeftF64() != 200 {
+		t.Errorf("block inline offset: got %v, want 200", blockFrag.Offset.LeftF64())
 	}
 	// Block should be at Y=0 (floats don't push in-flow content down).
-	if blockFrag.Offset.Y != 0 {
-		t.Errorf("block Y: got %v, want 0", blockFrag.Offset.Y)
+	if blockFrag.Offset.TopF64() != 0 {
+		t.Errorf("block Y: got %v, want 0", blockFrag.Offset.TopF64())
 	}
 }
 
@@ -254,8 +254,8 @@ func TestBlockLayout_FloatRight(t *testing.T) {
 
 	// Right float should be at inline = 600 - 200 = 400.
 	floatFrag := result.Fragment.Children[0]
-	if floatFrag.Offset.X != 400 {
-		t.Errorf("right float X: got %v, want 400", floatFrag.Offset.X)
+	if floatFrag.Offset.LeftF64() != 400 {
+		t.Errorf("right float X: got %v, want 400", floatFrag.Offset.LeftF64())
 	}
 
 	// Parent auto height should include float (clear:both at end).
@@ -289,7 +289,7 @@ func TestBlockLayout_ClearBoth(t *testing.T) {
 
 	// Clear child should be pushed below the float (Y=100).
 	clearFrag := result.Fragment.Children[1]
-	if clearFrag.Offset.Y != 100 {
-		t.Errorf("clear child Y: got %v, want 100", clearFrag.Offset.Y)
+	if clearFrag.Offset.TopF64() != 100 {
+		t.Errorf("clear child Y: got %v, want 100", clearFrag.Offset.TopF64())
 	}
 }

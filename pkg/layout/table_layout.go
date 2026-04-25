@@ -786,9 +786,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 						InlineOffset: 0,
 						BlockOffset:  blockShift,
 					}, PhysicalSize{})
+					shift := geometry.PhysicalOffsetFromF64Round(physShift.X, physShift.Y)
 					for cci := range cellFrag.Children {
-						cellFrag.Children[cci].Offset.X += physShift.X
-						cellFrag.Children[cci].Offset.Y += physShift.Y
+						cellFrag.Children[cci].Offset = cellFrag.Children[cci].Offset.Add(shift)
 					}
 				}
 			}
@@ -979,9 +979,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					InlineOffset: 0,
 					BlockOffset:  blockShift,
 				}, PhysicalSize{})
+				shift := geometry.PhysicalOffsetFromF64Round(physShift.X, physShift.Y)
 				for cci := range cellFrag.Children {
-					cellFrag.Children[cci].Offset.X += physShift.X
-					cellFrag.Children[cci].Offset.Y += physShift.Y
+					cellFrag.Children[cci].Offset = cellFrag.Children[cci].Offset.Add(shift)
 				}
 			}
 		}

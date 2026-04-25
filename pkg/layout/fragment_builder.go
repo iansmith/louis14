@@ -275,8 +275,9 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	physChildren := make([]ChildLink, len(b.children))
 	for i, child := range b.children {
 		childPhysSize := child.fragment.Size
+		physOff := conv.ToPhysicalOffset(child.offset, childPhysSize)
 		physChildren[i] = ChildLink{
-			Offset:   conv.ToPhysicalOffset(child.offset, childPhysSize),
+			Offset:   geometry.PhysicalOffsetFromF64Round(physOff.X, physOff.Y),
 			Fragment: child.fragment,
 		}
 	}

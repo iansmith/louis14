@@ -23,8 +23,8 @@ func TestBoxFragmentBuilder_HTB_LTR(t *testing.T) {
 		t.Fatalf("children: got %d, want 1", len(result.Fragment.Children))
 	}
 	child := result.Fragment.Children[0]
-	if child.Offset.X != 100 || child.Offset.Y != 50 {
-		t.Errorf("child offset: got (%v,%v), want (100,50)", child.Offset.X, child.Offset.Y)
+	if child.Offset.LeftF64() != 100 || child.Offset.TopF64() != 50 {
+		t.Errorf("child offset: got (%v,%v), want (100,50)", child.Offset.LeftF64(), child.Offset.TopF64())
 	}
 }
 
@@ -51,8 +51,8 @@ func TestBoxFragmentBuilder_VRL_LTR(t *testing.T) {
 	// VRL+LTR offset: x = outerW - block - innerW = 800 - 30 - 100 = 670
 	//                  y = inline = 20
 	child := result.Fragment.Children[0]
-	if child.Offset.X != 670 || child.Offset.Y != 20 {
-		t.Errorf("child offset: got (%v,%v), want (670,20)", child.Offset.X, child.Offset.Y)
+	if child.Offset.LeftF64() != 670 || child.Offset.TopF64() != 20 {
+		t.Errorf("child offset: got (%v,%v), want (670,20)", child.Offset.LeftF64(), child.Offset.TopF64())
 	}
 }
 
@@ -70,8 +70,8 @@ func TestBoxFragmentBuilder_VLR_LTR(t *testing.T) {
 
 	// VLR+LTR offset: x = block = 30, y = inline = 20
 	child := result.Fragment.Children[0]
-	if child.Offset.X != 30 || child.Offset.Y != 20 {
-		t.Errorf("child offset: got (%v,%v), want (30,20)", child.Offset.X, child.Offset.Y)
+	if child.Offset.LeftF64() != 30 || child.Offset.TopF64() != 20 {
+		t.Errorf("child offset: got (%v,%v), want (30,20)", child.Offset.LeftF64(), child.Offset.TopF64())
 	}
 }
 
@@ -91,8 +91,8 @@ func TestBoxFragmentBuilder_HTB_RTL(t *testing.T) {
 	// HTB+RTL offset: x = outerW - inline - innerW = 800 - 100 - 200 = 500
 	//                 y = block = 50
 	child := result.Fragment.Children[0]
-	if child.Offset.X != 500 || child.Offset.Y != 50 {
-		t.Errorf("child offset: got (%v,%v), want (500,50)", child.Offset.X, child.Offset.Y)
+	if child.Offset.LeftF64() != 500 || child.Offset.TopF64() != 50 {
+		t.Errorf("child offset: got (%v,%v), want (500,50)", child.Offset.LeftF64(), child.Offset.TopF64())
 	}
 }
 

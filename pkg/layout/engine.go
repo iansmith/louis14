@@ -419,8 +419,8 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 
 	// Convert children. Child offsets are relative to the content area.
 	for _, childLink := range frag.Children {
-		childAbsX := contentX + childLink.Offset.X
-		childAbsY := contentY + childLink.Offset.Y
+		childAbsX := contentX + childLink.Offset.LeftF64()
+		childAbsY := contentY + childLink.Offset.TopF64()
 		childBox := fragmentToBox(childLink.Fragment, box, childAbsX, childAbsY)
 		box.Children = append(box.Children, childBox)
 	}

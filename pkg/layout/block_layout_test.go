@@ -117,16 +117,16 @@ func TestBlockLayout_NestedBlocks(t *testing.T) {
 	}
 
 	c1 := result.Fragment.Children[0]
-	if c1.Offset.Y != 0 {
-		t.Errorf("child1 Y: got %v, want 0", c1.Offset.Y)
+	if c1.Offset.TopF64() != 0 {
+		t.Errorf("child1 Y: got %v, want 0", c1.Offset.TopF64())
 	}
 	if c1.Fragment.Size.Height != 100 {
 		t.Errorf("child1 height: got %v, want 100", c1.Fragment.Size.Height)
 	}
 
 	c2 := result.Fragment.Children[1]
-	if c2.Offset.Y != 100 {
-		t.Errorf("child2 Y: got %v, want 100", c2.Offset.Y)
+	if c2.Offset.TopF64() != 100 {
+		t.Errorf("child2 Y: got %v, want 100", c2.Offset.TopF64())
 	}
 	if c2.Fragment.Size.Height != 150 {
 		t.Errorf("child2 height: got %v, want 150", c2.Fragment.Size.Height)
@@ -166,8 +166,8 @@ func TestBlockLayout_MarginCollapsing(t *testing.T) {
 	}
 
 	c2 := result.Fragment.Children[1]
-	if c2.Offset.Y != 130 {
-		t.Errorf("child2 Y: got %v, want 130", c2.Offset.Y)
+	if c2.Offset.TopF64() != 130 {
+		t.Errorf("child2 Y: got %v, want 130", c2.Offset.TopF64())
 	}
 }
 
@@ -349,11 +349,11 @@ func TestBlockLayout_ChildWithMargins(t *testing.T) {
 
 	c := result.Fragment.Children[0]
 
-	if c.Offset.X != 20 {
-		t.Errorf("child X: got %v, want 20", c.Offset.X)
+	if c.Offset.LeftF64() != 20 {
+		t.Errorf("child X: got %v, want 20", c.Offset.LeftF64())
 	}
-	if c.Offset.Y != 10 {
-		t.Errorf("child Y: got %v, want 10", c.Offset.Y)
+	if c.Offset.TopF64() != 10 {
+		t.Errorf("child Y: got %v, want 10", c.Offset.TopF64())
 	}
 }
 

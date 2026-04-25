@@ -195,7 +195,7 @@ type PhysicalFragment struct {
 
 // ChildLink is a positioned child within a parent fragment.
 type ChildLink struct {
-	Offset   PhysicalOffset
+	Offset   geometry.PhysicalOffset
 	Fragment *PhysicalFragment
 }
 
