@@ -499,23 +499,41 @@ func FontHeightFromFont(fontSize float64, fontPath string) float64 {
 	return float64(m.Height) / 64.0
 }
 
-// ShapeAdvances shapes text with HarfBuzz and returns the cumulative advance,
-// in pixels, through each byte offset. The returned slice has length
-// len(text)+1; index i holds the pixel X at which text[i:] begins within the
-// shaped run. Index 0 is always 0; the final index equals the advance returned
-// by MeasureText.
+// ShapeAdvances shapes text with HarfBuzz and returns the cumulative advance
+// through each byte offset as a Blink-parity ShapeCumulative pair (Start/End,
+// floor/ceil snapped per shape_result.h SnappedStart/EndPositionForOffset).
+// The Start and End slices each have length len(text)+1; index i holds the
+// snapped position at which text[i:] begins within the shaped run. Index 0
+// is always Zero; the final index equals the snapped MeasureText advance.
+//
+// Use ShapeCumulative.SnappedWidth(s, e) for the pair-of-positions read
+// pattern that mirrors Blink's CachedWidth(start, end). Summing per-byte
+// widths instead would accumulate up to N raw quanta over N clusters; the
+// pair-of-positions form caps the rounding-drift error at 2 raw quanta total.
 //
 // This is used to recover per-item context-aware widths when multiple inline
 // items share a shaping context (same font/style) — measure the concatenation
 // once via this function, then slice by item byte-range to get each item's
 // advance in context of its neighbors (including any cross-item kerning).
 //
-// Returns nil and false on any shaping failure, so callers can fall back to
-// standalone measurement. Clusters that don't map 1:1 to byte offsets (complex
-// shaping, reordered glyphs, ligatures) are handled best-effort by attributing
-// each glyph's advance to its cluster byte offset; offsets between cluster
-// boundaries receive the most recent cluster's cumulative X.
-func ShapeAdvances(textStr string, fontSize float64, fontPath string) ([]float64, bool) {
+// Returns the zero ShapeCumulative and false on any shaping failure, so
+// callers can fall back to standalone measurement. Clusters that don't map
+// 1:1 to byte offsets (complex shaping, reordered glyphs, ligatures) are
+// handled best-effort by attributing each glyph's advance to its cluster
+// byte offset; offsets between cluster boundaries receive the most recent
+// cluster's cumulative X.
+func ShapeAdvances(textStr string, fontSize float64, fontPath string) (ShapeCumulative, bool) {
+	cum, ok := shapeAdvancesFloat(textStr, fontSize, fontPath)
+	if !ok {
+		return ShapeCumulative{}, false
+	}
+	return shapeAdvancePairSnap(cum), true
+}
+
+// shapeAdvancesFloat computes the per-byte cumulative-position float64 slice
+// before snapping. Internal helper: the public ShapeAdvances wraps this with
+// the FLOOR/CEIL snap pair at the boundary.
+func shapeAdvancesFloat(textStr string, fontSize float64, fontPath string) ([]float64, bool) {
 	if textStr == "" {
 		return []float64{0}, true
 	}
@@ -563,11 +581,12 @@ func ShapeAdvances(textStr string, fontSize float64, fontPath string) ([]float64
 
 // ShapeAdvancesMixed shapes a text string composed of multiple bidi-direction
 // runs and returns a per-byte cumulative advance map indexed by LOGICAL byte
-// position. For each direction run, the corresponding sub-string is shaped
-// with the right HarfBuzz direction (LTR auto-detect or explicit RTL); per-byte
-// cumulative advances are derived from glyphs sorted by cluster ascending so
-// the returned cum[] is monotonically non-decreasing in byte index, regardless
-// of internal RTL cluster ordering.
+// position, packaged as a Blink-parity ShapeCumulative pair (Start/End,
+// floor/ceil snapped). For each direction run, the corresponding sub-string is
+// shaped with the right HarfBuzz direction (LTR auto-detect or explicit RTL);
+// per-byte cumulative advances are derived from glyphs sorted by cluster
+// ascending so the returned slices are monotonically non-decreasing in byte
+// index, regardless of internal RTL cluster ordering.
 //
 // Mirrors Blink's HarfBuzzShaper which runs once over the whole inline text
 // run (segmenting by direction internally) and lets per-item layout slice
@@ -578,13 +597,24 @@ func ShapeAdvances(textStr string, fontSize float64, fontPath string) ([]float64
 // bidi-embed/override-006 tests hit.
 //
 // Empty `runs` is treated as a single LTR run over the whole text (degenerate
-// case equivalent to ShapeAdvances). Returns nil/false on any shaping failure.
-func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, fontPath string) ([]float64, bool) {
+// case equivalent to ShapeAdvances). Returns the zero ShapeCumulative and
+// false on any shaping failure.
+func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, fontPath string) (ShapeCumulative, bool) {
+	cum, ok := shapeAdvancesMixedFloat(textStr, runs, fontSize, fontPath)
+	if !ok {
+		return ShapeCumulative{}, false
+	}
+	return shapeAdvancePairSnap(cum), true
+}
+
+// shapeAdvancesMixedFloat computes the per-byte cumulative-position float64
+// slice for the bidi-mixed case before snapping.
+func shapeAdvancesMixedFloat(textStr string, runs []DirectionRun, fontSize float64, fontPath string) ([]float64, bool) {
 	if textStr == "" {
 		return []float64{0}, true
 	}
 	if len(runs) == 0 {
-		return ShapeAdvances(textStr, fontSize, fontPath)
+		return shapeAdvancesFloat(textStr, fontSize, fontPath)
 	}
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {

@@ -32,7 +32,7 @@ Current state (2026-04-25):
 - spanner-fragmentation 12/13 (unchanged)
 - css-writing-modes **781** / 781 (+2 from F1 closing at commit `41b674ef` + mazzy `d6b27049`/`cde2c29`, 2026-04-25)
 
-**Phase 13 progress (2026-04-25):** 13a (`3897b43e`) + 13b (`20f25053`) earlier today. **13c + 13d this session**: 13c.1/13c.2/13c.3 (`6e689d8e`/`4dc4ac0b`/`912c03fa`); 13d.1/13d.2/13d.3/13d.4a/13d.4b (`7d64570a`/`c6211fb8`/`d1687adc`/`3e7d598c`/`7db1f2fd`). Every `PhysicalFragment` coordinate field plus every plan-named `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision field is now LayoutUnit-backed. **13e CLOSED** at 13e.6 (`ff45432a`); every percentage-resolution call site flows through `layoutunit.ResolvePercent`. **13f.1 landed** (`c5c9b67c`): `shapeWidthSnap`/`shapeAdvancePairSnap` helpers in new `pkg/text/shape_snap.go`, mirroring Blink's `ShapeResult::SnappedWidth` (CEIL) and `SnappedStart/EndPositionForOffset` (FLOOR/CEIL pair). **13f.2 landed** (this commit): `pkg/text.MeasureText` and `MeasureTextVerticalFromFont` return `LayoutUnit` via Blink-parity CEIL snap; 33 active louis14 consumer sites bridge with `.Float64()`. Legacy wrappers (`MeasureTextWithStyle`/`WithWeight`/`Default`/`Vertical`) keep float64 signatures with internal bridge — louis13's ~46 sites untouched. 13f.4 closed as "skip" per `findings.md` 13f research. All six gate invariants held at every checkpoint commit: CSS2 99/99, css-flexbox 626/629, css-position 91/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13.
+**Phase 13 progress (2026-04-25):** 13a (`3897b43e`) + 13b (`20f25053`) earlier today. **13c + 13d**: 13c.1/13c.2/13c.3 (`6e689d8e`/`4dc4ac0b`/`912c03fa`); 13d.1/13d.2/13d.3/13d.4a/13d.4b (`7d64570a`/`c6211fb8`/`d1687adc`/`3e7d598c`/`7db1f2fd`). Every `PhysicalFragment` coordinate field plus every plan-named `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision field is now LayoutUnit-backed. **13e CLOSED** at 13e.6 (`ff45432a`); every percentage-resolution call site flows through `layoutunit.ResolvePercent`. **13f CLOSED** at 13f.3 (this commit): 13f.1 (`c5c9b67c`) added `shapeWidthSnap`/`shapeAdvancePairSnap` snap helpers + `ShapeCumulative` type in new `pkg/text/shape_snap.go`; 13f.2 (`76ef4cb4`) promoted `pkg/text.MeasureText` and `MeasureTextVerticalFromFont` return types to `LayoutUnit` (CEIL snap, Blink `ShapeResult::SnappedWidth`); 13f.3 promoted `ShapeAdvances`/`ShapeAdvancesMixed` to return `text.ShapeCumulative` (the FLOOR/CEIL Start/End pair, Blink `SnappedStart/EndPositionForOffset`); the single louis14 consumer at `pkg/layout/line_breaker.go` migrated from `cum[end] - cum[start]` to `cum.SnappedWidth(start, end).Float64()`. 13f.4 closed as "skip" per `findings.md` 13f research. All six gate invariants held at every checkpoint commit: CSS2 99/99, css-flexbox 626/629, css-position 91/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13.
 
 ### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b + 13c + 13d done)
 
@@ -402,6 +402,58 @@ Distribution: `pkg/layout/engine.go` 1 site (`computeChWidths`); `pkg/layout/lin
 - spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
 
 Files: `pkg/text/measure.go` (+30/-15: signatures + internal bridge for the four legacy wrappers + import of `layoutunit`), `pkg/layout/engine.go` (+2/-1 at one site), `pkg/layout/line_breaker.go` (+~64/-32 across 32 sites — uniform 2-line bridge replacing each `var, _ = text.MeasureText...(...)`), `task_plan.md` + `progress.md`.
+
+#### Phase 13f.3: ShapeAdvances/Mixed return ShapeCumulative — DONE 2026-04-25 (Phase 13f CLOSED)
+
+Promoted the bidi-mixed text-shaping API to the Blink-parity floor/ceil-snapped pair:
+
+```go
+// Before:
+func ShapeAdvances(textStr string, fontSize float64, fontPath string) ([]float64, bool)
+func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, fontPath string) ([]float64, bool)
+
+// After:
+func ShapeAdvances(textStr string, fontSize float64, fontPath string) (ShapeCumulative, bool)
+func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, fontPath string) (ShapeCumulative, bool)
+
+type ShapeCumulative struct {
+    Start []layoutunit.LayoutUnit  // FromFloat64Floor(P(i)) — Blink SnappedStartPositionForOffset
+    End   []layoutunit.LayoutUnit  // FromFloat64Ceil (P(i)) — Blink SnappedEndPositionForOffset
+}
+
+func (c ShapeCumulative) SnappedWidth(s, e int) layoutunit.LayoutUnit {
+    return c.End[e].Sub(c.Start[s])  // Blink ShapeResult::CachedWidth(start, end)
+}
+```
+
+**Internal computation preserved.** The existing `[]float64` cumulative-position computation (HarfBuzz int32 XAdvance / 64.0; per-cluster prefix sum across direction runs; forward-fill for non-cluster offsets) is preserved verbatim, renamed to private `shapeAdvancesFloat` / `shapeAdvancesMixedFloat`. The public functions wrap these and apply `shapeAdvancePairSnap` once at the boundary — the pattern Blink uses for `ShapeResult::Snapped{Start,End}PositionForOffset` (compute float, snap once at the API).
+
+**Single consumer migrated.** Only `pkg/layout/line_breaker.go:1574` consumes the cumulative slice. The existing pattern was *already* pair-of-positions shaped (`segmentWidth := cum[rng[1]] - cum[rng[0]]`), so the migration is a one-line change to the Blink `CachedWidth` analog:
+
+```go
+// Before:
+segmentWidth := cum[rng[1]] - cum[rng[0]]
+// After (pair-of-positions snapped width via Blink CachedWidth analog):
+segmentWidth := cum.SnappedWidth(rng[0], rng[1]).Float64()
+```
+
+The `.Float64()` bridge keeps the surrounding `letterSpacing` / `wordSpacing` pad (still float64) untouched — those are post-shape additions whose LayoutUnit promotion is a 13e′ ripple.
+
+**Tests updated for the ShapeCumulative return type.** `TestShapeAdvancePairSnap` switched from the prior two-slice `(start, end)` helper signature to the bundled `ShapeCumulative` form (the helper is now a private adapter that returns `ShapeCumulative` rather than two slices). All five sub-tests (empty, HarfBuzz hot path, sub-quantum residue, monotonicity, constant-bound) pass against the new shape. Added `SnappedWidth` exercise in the constant-bound sub-test.
+
+**Risk profile.** Lowest of the three 13f sub-steps. Single consumer site, identical pair-of-positions semantics on both sides of the migration, bit-exact for HarfBuzz hot path (exact-1/64-px values where Floor==Ceil). The pair snap is `FromFloat64Floor(v) → FromFloat64Ceil(v)` is a constant-bound widening (≤ 2 raw quanta, ~0.031 px), so any test that depended on the old unsnapped `cum[end] - cum[start]` would see at most a 0.031-px shift in segmentWidth — within the WPT fuzzy-tolerance band the test authors built in. None did.
+
+**Gate-sweep (six invariants at 13f.3 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (629 - 3 fails)
+- css-position 91/104 ✓ (104 - 13 fails)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (455 - 276 fails)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+**Phase 13f is now CLOSED.** Every text-shaping public API in `pkg/text` returns LayoutUnit (`MeasureText*`) or `ShapeCumulative` (`ShapeAdvances*`) at the boundary; the snap discipline mirrors Blink's `shape_result.h` exactly. Queued next: **13e′** (return-type promotion of `ResolveInlineSize`/`ResolveBlockSize`/`ResolveMin*`/`ResolveMax*` from `float64` → `LayoutUnit`, ~50-site ripple — the inverse-direction migration that closes the float boundary at the *exit* of length-resolution functions); then **13g** (paint-time `SnapSizeToPixel`, the most likely clear-001 closer) and **13h** (verification + cleanup).
+
+Files: `pkg/text/shape_snap.go` (+30/-3: added `ShapeCumulative` type + `SnappedWidth` method; helper now returns `ShapeCumulative`), `pkg/text/shape_snap_test.go` (+8/-8: tests rewritten against the bundled return), `pkg/text/measure.go` (+25/-7: `ShapeAdvances`/`ShapeAdvancesMixed` wrap private float helpers + snap), `pkg/layout/line_breaker.go` (+3/-1 at one site), `task_plan.md` + `progress.md`.
 
 ---
 

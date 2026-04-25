@@ -1571,7 +1571,9 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 			r := &line.Results[idx]
 			rng := itemRanges[k]
 			content := combined.String()[rng[0]:rng[1]]
-			segmentWidth := cum[rng[1]] - cum[rng[0]]
+			// Pair-of-positions snapped width: End[e] - Start[s], the
+			// Blink ShapeResult::CachedWidth(start, end) analog.
+			segmentWidth := cum.SnappedWidth(rng[0], rng[1]).Float64()
 
 			if letterSpacing != 0 {
 				rc := runeLen(content)
