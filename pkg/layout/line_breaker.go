@@ -1188,8 +1188,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		// Propagate percentage resolution block-size from parent so that
 		// percentage-height replaced elements (e.g., img { height: 100% })
 		// can resolve against their containing block's definite height.
-		if lb.space.PercentageResolutionSize.BlockSize > 0 {
-			csBuilder.SetPercentageResolutionSize(lb.space.PercentageResolutionSize)
+		if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+			csBuilder.SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
 		}
 		childSpace := csBuilder.Build()
 		childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, childSpace)
@@ -1207,8 +1207,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		// Propagate the percentage resolution block-size from the parent's space
 		// so that percentage-height children can resolve.
 		availBlock := Indefinite
-		if lb.space.PercentageResolutionSize.BlockSize > 0 {
-			availBlock = lb.space.PercentageResolutionSize.BlockSize
+		if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+			availBlock = lb.space.PercentageResolutionSize.BlockSize.Float64()
 		} else if lb.space.AvailableSize.BlockSize.Float64() >= 0 {
 			availBlock = lb.space.AvailableSize.BlockSize.Float64()
 		}
@@ -1231,8 +1231,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 				BlockSize:  availBlock,
 			}).
 			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
-		if lb.space.PercentageResolutionSize.BlockSize > 0 {
-			csb.SetPercentageResolutionSize(lb.space.PercentageResolutionSize)
+		if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+			csb.SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
 		}
 		childSpace := csb.
 			Build()

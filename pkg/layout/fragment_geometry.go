@@ -284,7 +284,7 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 		result, calcOK := css.EvalCalcWithPercent(
 			val[5:len(val)-1], // strip "calc(" and ")"
 			style.GetFontSize(),
-			space.PercentageResolutionSize.InlineSize,
+			space.PercentageResolutionSize.InlineSize.Float64(),
 		)
 		if calcOK {
 			return applyBoxSizingInline(style, geom, result), true
@@ -298,7 +298,7 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 
 	// Check for percentage.
 	if pct, ok := style.GetPercentage(prop); ok {
-		result := space.PercentageResolutionSize.InlineSize * pct / 100
+		result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
 		return applyBoxSizingInline(style, geom, result), true
 	}
 
@@ -319,7 +319,7 @@ func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 		return applyBoxSizingInline(style, geom, v)
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
-		result := space.PercentageResolutionSize.InlineSize * pct / 100
+		result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
 		return applyBoxSizingInline(style, geom, result)
 	}
 	return 0
@@ -343,7 +343,7 @@ func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 		return applyBoxSizingInline(style, geom, v), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
-		result := space.PercentageResolutionSize.InlineSize * pct / 100
+		result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
 		return applyBoxSizingInline(style, geom, result), true
 	}
 	return 0, false
@@ -362,7 +362,7 @@ func ResolveMinBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 		return applyBoxSizingBlock(style, geom, v)
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
-		result := space.PercentageResolutionSize.BlockSize * pct / 100
+		result := space.PercentageResolutionSize.BlockSize.Float64() * pct / 100
 		return applyBoxSizingBlock(style, geom, result)
 	}
 	return 0
@@ -386,7 +386,7 @@ func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 		return applyBoxSizingBlock(style, geom, v), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
-		result := space.PercentageResolutionSize.BlockSize * pct / 100
+		result := space.PercentageResolutionSize.BlockSize.Float64() * pct / 100
 		return applyBoxSizingBlock(style, geom, result), true
 	}
 	return 0, false
@@ -413,7 +413,7 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 		result, calcOK := css.EvalCalcWithPercent(
 			val[5:len(val)-1], // strip "calc(" and ")"
 			style.GetFontSize(),
-			space.PercentageResolutionSize.BlockSize,
+			space.PercentageResolutionSize.BlockSize.Float64(),
 		)
 		if calcOK {
 			return applyBoxSizingBlock(style, geom, result), true
@@ -426,7 +426,7 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 
 	if pct, ok := style.GetPercentage(prop); ok {
 		if !space.IsBlockSizeIndefinite() {
-			result := space.PercentageResolutionSize.BlockSize * pct / 100
+			result := space.PercentageResolutionSize.BlockSize.Float64() * pct / 100
 			return applyBoxSizingBlock(style, geom, result), true
 		}
 		// Percentage against indefinite → auto.

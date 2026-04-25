@@ -279,8 +279,8 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm)
 		if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
 			blockForPct = bs
-		} else if space.PercentageResolutionSize.BlockSize > 0 {
-			blockForPct = space.PercentageResolutionSize.BlockSize
+		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+			blockForPct = space.PercentageResolutionSize.BlockSize.Float64()
 		}
 	}
 
@@ -770,10 +770,10 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		nodeGeom := ComputeFragmentGeometry(nodeStyle, parentWDM)
 		if bs, ok := ResolveBlockSize(nodeStyle, parentWDM, space, nodeGeom); ok {
 			nodeBlockSize = bs
-		} else if space.PercentageResolutionSize.BlockSize > 0 {
+		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
 			// Parent provided a definite block percentage resolution size
 			// (e.g., from a flex item's explicit cross-size). Propagate it.
-			nodeBlockSize = space.PercentageResolutionSize.BlockSize
+			nodeBlockSize = space.PercentageResolutionSize.BlockSize.Float64()
 		}
 	}
 

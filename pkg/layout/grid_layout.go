@@ -166,7 +166,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 		childSpace := ConstraintSpace{
 			AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: Indefinite}),
-			PercentageResolutionSize:       LogicalSize{InlineSize: itemInline, BlockSize: Indefinite},
+			PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: Indefinite}),
 			PercentageResolutionInlineSize: itemInline,
 			IsFixedInlineSize:              true,
 			WritingDirection:               wdm,
@@ -253,7 +253,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			childSpace := ConstraintSpace{
 				AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}),
-				PercentageResolutionSize:       LogicalSize{InlineSize: itemInline, BlockSize: availBlock},
+				PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}),
 				PercentageResolutionInlineSize: itemInline,
 				IsFixedInlineSize:              true,
 				IsFixedBlockSize:               selfAlign == "stretch" || selfAlign == "normal",

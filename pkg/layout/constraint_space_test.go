@@ -87,7 +87,7 @@ func TestConstraintSpaceBuilder_OrthogonalPercentage(t *testing.T) {
 
 	// VRL parent (inline=height, block=width) with HTB child (orthogonal).
 	// Parent's inline (500) → child's block, parent's block (300) → child's inline.
-	if cs.PercentageResolutionSize.InlineSize != 300 || cs.PercentageResolutionSize.BlockSize != 500 {
+	if cs.PercentageResolutionSize.InlineSize.Float64() != 300 || cs.PercentageResolutionSize.BlockSize.Float64() != 500 {
 		t.Errorf("pct: got %v, want inline=300 block=500", cs.PercentageResolutionSize)
 	}
 }

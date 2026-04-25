@@ -345,7 +345,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// resolution size. This mirrors what block_layout.go does for block children
 	// at lines 40-48 + 374-376.
 	geomForPct := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
-	pctBlockSize := bla.space.PercentageResolutionSize.BlockSize
+	pctBlockSize := bla.space.PercentageResolutionSize.BlockSize.Float64()
 	if geomForPct.BorderBoxSize.BlockSize != Indefinite {
 		ownContentBlock := geomForPct.BorderBoxSize.BlockSize - geomForPct.BlockBorderPadding()
 		if ownContentBlock < 0 {
@@ -380,7 +380,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 
 	lineSpace := ConstraintSpace{
 		AvailableSize:                oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
-		PercentageResolutionSize:     LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize},
+		PercentageResolutionSize:     oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}),
 		WritingDirection:             wdm,
 		ExclusionSpace:               exclusionSpace,
 		OrthogonalFallbackInlineSize: bla.space.OrthogonalFallbackInlineSize,

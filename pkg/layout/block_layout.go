@@ -40,8 +40,8 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 		return explicitBlockSize
 	}
 	if bla.node != nil && bla.node.isAnonymous {
-		if bla.space.PercentageResolutionSize.BlockSize > 0 {
-			return bla.space.PercentageResolutionSize.BlockSize
+		if bla.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
+			return bla.space.PercentageResolutionSize.BlockSize.Float64()
 		}
 	}
 	return explicitBlockSize // 0 if auto and not an anonymous passthrough
@@ -1504,11 +1504,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// but we use PercentageResolutionSize instead so that anonymous
 		// auto-height wraps (e.g. block-in-inline splits) do not collapse the
 		// block-axis CB to zero for their descendants.
-		cbInline := bla.space.PercentageResolutionSize.InlineSize
+		cbInline := bla.space.PercentageResolutionSize.InlineSize.Float64()
 		if cbInline == Indefinite {
 			cbInline = 0
 		}
-		cbBlock := bla.space.PercentageResolutionSize.BlockSize
+		cbBlock := bla.space.PercentageResolutionSize.BlockSize.Float64()
 		if cbBlock == Indefinite {
 			cbBlock = 0
 		}

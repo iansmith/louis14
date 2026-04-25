@@ -18,7 +18,7 @@ type ConstraintSpace struct {
 
 	// PercentageResolutionSize is the size used for resolving percentage lengths.
 	// Typically the containing block's content size in the child's writing mode.
-	PercentageResolutionSize LogicalSize
+	PercentageResolutionSize geometry.LogicalSize
 
 	// WritingDirection is the child's writing direction mode.
 	WritingDirection WritingDirectionMode
@@ -288,12 +288,12 @@ func (b *ConstraintSpaceBuilder) SetAvailableSize(size LogicalSize) *ConstraintS
 // The size is in the PARENT's logical coordinates.
 func (b *ConstraintSpaceBuilder) SetPercentageResolutionSize(size LogicalSize) *ConstraintSpaceBuilder {
 	if b.parallel {
-		b.space.PercentageResolutionSize = size
+		b.space.PercentageResolutionSize = oldLogicalToGeom(size)
 	} else {
-		b.space.PercentageResolutionSize = LogicalSize{
+		b.space.PercentageResolutionSize = oldLogicalToGeom(LogicalSize{
 			InlineSize: size.BlockSize,
 			BlockSize:  size.InlineSize,
-		}
+		})
 	}
 	return b
 }
