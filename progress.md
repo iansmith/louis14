@@ -32,11 +32,11 @@ Current state (2026-04-25):
 - spanner-fragmentation 12/13 (unchanged)
 - css-writing-modes **781** / 781 (+2 from F1 closing at commit `41b674ef` + mazzy `d6b27049`/`cde2c29`, 2026-04-25)
 
-**Phase 13 progress (2026-04-25):** 13a (commit `3897b43e`, foundational `LayoutUnit` scalar) + 13b (commit `20f25053`, composite geometry types + `WritingModeConverter`) landed earlier today. **13c (fragment offsets/sizes) landed in three checkpoint commits this session**: 13c.1 `RelativeOffset` (`6e689d8e`) → 13c.2 `Children[].Offset` (`4dc4ac0b`) → 13c.3 `Size` (`912c03fa`). Every `PhysicalFragment` coordinate field is now on `geometry.PhysicalSize/PhysicalOffset` (LayoutUnit-backed). All six gate invariants held at every checkpoint: CSS2 99/99, css-flexbox 626/629, css-position 92/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13. 13d (ConstraintSpace + LayoutResult) is next.
+**Phase 13 progress (2026-04-25):** 13a (`3897b43e`, foundational `LayoutUnit` scalar) + 13b (`20f25053`, composite geometry types + `WritingModeConverter`) landed earlier today. **13c (fragment offsets/sizes) and 13d (ConstraintSpace+ExclusionSpace precision fields) both landed this session**: 13c.1 RelativeOffset (`6e689d8e`) → 13c.2 Children[].Offset (`4dc4ac0b`) → 13c.3 Size (`912c03fa`); then 13d.1 ConsumedBlockSize (`7d64570a`) → 13d.2 ClearanceOffset (`c6211fb8`) → 13d.3 Bfc offsets (`d1687adc`) → 13d.4a AvailableSize (`3e7d598c`) → 13d.4b PercentageResolutionSize (`7db1f2fd`). Every `PhysicalFragment` coordinate field plus every plan-named `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision field is now LayoutUnit-backed. All six gate invariants held at every of the eight checkpoint commits: CSS2 99/99, css-flexbox 626/629, css-position 92/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13. 13e (length/percentage resolution) is next.
 
-### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b + 13c done)
+### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b + 13c + 13d done)
 
-13a (`3897b43e`), 13b (`20f25053`), and 13c (`6e689d8e` / `4dc4ac0b` / `912c03fa`) landed. 13d–13h queued. See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown, `findings.md` "Phase 13: LayoutUnit research" for the Blink-parity reference, and the per-sub-phase landing notes below.
+13a (`3897b43e`), 13b (`20f25053`), 13c (`6e689d8e` / `4dc4ac0b` / `912c03fa`), and 13d (`7d64570a` / `c6211fb8` / `d1687adc` / `3e7d598c` / `7db1f2fd`) landed. 13e–13h queued. See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown, `findings.md` "Phase 13: LayoutUnit research" for the Blink-parity reference, and the per-sub-phase landing notes below.
 
 **Driver:** `clear-001.xht` is the labeled "deferred pending Blink LayoutUnit trace" residual. Re-examined via pixel-probe today: the diff is a 1-px y-offset at the blue/orange boundary (our render: blue=96 tall, orange=96 tall; ref expects blue=97 tall, orange=95 tall, total height matches at 192 px). `1in = 96 CSS px` is integer-clean and a faithful LayoutUnit port produces 96 either way — so clear-001 may NOT close from LayoutUnit arithmetic alone. The most likely closure path is Phase 13g's paint-time `SnapSizeToPixel` analog (sub-pixel-edge / thin-line preservation), not 13a-f's arithmetic discipline. The plan stands on its own merits (foundational correctness, bit-exact reproducibility for paint-invalidation hashing, eliminate the `pkg/layout` ~580-`float64`-references precision-discipline gap), regardless of clear-001's specific cause; re-examine clear-001 after 13g.
 
@@ -136,6 +136,34 @@ Largest single migration of Phase 13. Every `PhysicalFragment` coordinate field 
 **Old types still alive.** `pkg/layout/{logical,physical,writing_mode,writing_mode_converter}.go` still load-bearing for non-fragment surface — `LogicalSize/Offset/Edges`, `WritingMode`, `WritingDirectionMode`, `NewConverter`, `ToPhysicalSize/Offset`, `ToLogicalSize/Offset`, `PhysicalEdges`, `PhysicalRect`, plus the float64 `pkg/layout.PhysicalOffset/PhysicalSize` which are now used as transient bridge types between the new `geometry.*` fragment fields and the legacy converter API. Deletion is deferred until later sub-phases migrate those consumers.
 
 **Files touched in pkg/layout/ across 13c.1–13c.3:** layout_result.go, fragment_builder.go (+test), engine.go, block_layout.go (+test), table_layout.go, multicol_layout.go, grid_layout.go, out_of_flow_layout.go, flex_layout.go, inline_layout.go (+test), inline_containing_block.go, positioned_root.go, exclusion_space_test.go, physical.go (bridge helpers).
+
+#### Phase 13d: ConstraintSpace + ExclusionSpace precision fields — DONE 2026-04-25
+
+Migrates the plan-named precision-discipline fields at the layout-input boundary from `float64` to `LayoutUnit`. Five sub-step commits, each gate-swept; all six invariants held at every step.
+
+**13d.1 — `BlockBreakToken.ConsumedBlockSize` (commit `7d64570a`).** ~24 access sites. Field type swap; reads use `.Float64()`, writes wrap through `layoutunit.FromFloat64Round`, accumulations (`+=` on float64) become `.Add()` on LayoutUnit, zero comparisons use `.IsZero()`. Touches block_layout, multicol_layout, inline_layout. 4 files / 25 insertions / 21 deletions.
+
+**13d.2 — `ExclusionSpace.ClearanceOffset` (commit `c6211fb8`).** ~13 sites. Method signature: param + return float64 → LayoutUnit. Internals stay float64 (the exclusion storage migrates with the broader ExclusionSpace surface in a later phase). Each call site wraps input through `FromFloat64Round` and consumes the result via `.Float64()`. Touches block_layout (3 sites), inline_layout (3 sites), exclusion_space + test (5 sites). 4 files / 29 insertions / 25 deletions.
+
+**13d.3 — `Bfc` offset fields (commit `d1687adc`).** Surface intentionally small: only block_layout reads/writes these. `BfcBlockOffset/BfcInlineOffset/BfcContainerInlineSize` field type swap + their three setter param types. Setter call sites wrap input through `FromFloat64Round`; readers use `.Float64()` / `.IsZero()`. The bfcBlockOrigin/bfcInlineOrigin local accumulators stay float64 (they thread through the still-float64 exclusion-space and inline-layout surfaces). 2 files / 15 insertions / 13 deletions.
+
+**13d.4a — `ConstraintSpace.AvailableSize` (commit `3e7d598c`).** Largest 13d sub-step. ~140 sites. Migration discipline matches 13c bridge-helper pattern — `SetAvailableSize` keeps its `pkg/layout.LogicalSize` signature and converts internally via `oldLogicalToGeom`, so the ~80 SetAvailableSize call sites don't change. Reader sites use `.Float64()`. Whole-Size value passes wrap through `geomLogicalToOld`. Direct ConstraintSpace literal construction (in line_breaker, inline_layout, grid_layout, tests) wraps the LogicalSize literal through `oldLogicalToGeom` at the field assignment. New bridge helpers added in `physical.go`: `geomLogicalToOld`/`oldLogicalToGeom` (parallel to the 13c `geomSizeToOld`/`oldSizeToGeom` pair). `IsBlockSizeIndefinite` reads `.Float64()` and compares to the Indefinite sentinel — round-trips because `FromFloat64Round(-1)` produces the LayoutUnit indefinite sentinel and `.Float64()` reverses cleanly. 14 files / 82 insertions / 63 deletions.
+
+**13d.4b — `ConstraintSpace.PercentageResolutionSize` (commit `7db1f2fd`).** Same pattern as 13d.4a; smaller surface (~23 reads). 8 files / 31 insertions / 31 deletions.
+
+**Discipline checkpoints (per-step gate sweep — all six invariants held at every commit):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓
+- css-position 92/104 ✓
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓
+- spanner-fragmentation 12/13 ✓
+
+**Out of scope (deferred):**
+- `LayoutResult` residual `float64` fields (`IntrinsicBlockSize`, `Baseline`, `LastBaseline`, `MinSpaceShortage`) were not part of 13d's plan-text scope (they are baseline/intrinsic-relative, not constraint-input precision-edge values).
+- Legacy `pkg/layout.LogicalSize`/`LogicalOffset`/`LogicalEdges` types remain load-bearing for layout-internal logical-side accumulators that haven't crossed the constraint-input boundary; those migrate when 13e/13f propagate LayoutUnit through length resolution and the text-shaping boundary.
+
+**Files touched in pkg/layout/ across 13d.1–13d.4b:** break_token.go, exclusion_space.go (+test), constraint_space.go (+test), physical.go (bridge helpers), block_layout.go, flex_layout.go, fragment_builder.go, fragment_geometry.go, grid_layout.go, inline_layout.go (+test), line_breaker.go, min_max_sizing.go, multicol_layout.go, out_of_flow_layout.go, positioned_root.go, replaced_layout.go, table_layout.go, absolute_utils.go.
 
 ---
 
