@@ -18,15 +18,44 @@ All writing-modes category findings — 787 tests, bidi root-causes, orthogonal 
 
 Paired with the "ACTIVE FOLLOW-UP BATCH" block at the top of `task_plan.md`. Drop research notes per target as we investigate. Keep entries short until a concrete root cause surfaces — no speculative paragraphs.
 
-### F1. wm `bidi-embed-006` + `bidi-override-006` — **RECLASSIFIED 2026-04-24 — not a regression, deeper bidi fix**
-- **Status:** Blink research landed; scope reclassified from "regression bisect" to "deeper bidi layout fix." Deferred for now.
-- **What I actually found (2026-04-24):**
-  - Verified via `git worktree` at `9913a9e4` that these tests ALSO failed there with the identical 1598 px diff. They were never passing. Tracking's "wm 781/781" claim was inaccurate; actual baseline at 5f is **757/781**. HEAD is 779/781 — *net +22 since 5f*, not a regression.
-  - Instrumented `injectBidiControlChars` + `StripBidiControls` + bidi-level computation. Control-char injection IS happening for `unicode-bidi: embed`/`bidi-override` spans. Bidi levels for the TEST case (line 2) come out correctly: `[0 1 0 0 0 0 3 3 3 3 3 2 0 0 0 1]` — Hebrew+neutrals inside the LRE span resolve to the expected level-3 RTL run (matches UAX#9 §N1 / §N2 rule for neutrals between two R-class runs).
-  - Diff-region analysis of the output images: test and ref differ at 6 horizontal border Y-positions of the 2 wrapper boxes, suggesting the `.test` box renders ~11 px shorter than the `.ref` box, with the gap accumulating (29 px by bottom of wrapper 2). This is a *content-height* difference in the `.test` wrapper (span-embed case) vs the `.ref` wrapper (literal-LRO case).
-  - Stripped text content in both cases is near-identical (one leading space difference on line 2). Line-wrap width is not an obvious trigger. The likely culprit is a secondary layout effect from the extra `OpenTag`/`CloseTag` `InlineItem`s (5-items vs 1-item) interacting with line-box construction or whitespace collapsing at item boundaries — or, more plausibly, bidi-mirror-glyph substitution of `>` → `<` at odd levels not happening in our paint path (our rendered `>` at level 3 stays as `>`, producing a different width in the chosen serif fallback vs the ref's literal `<`).
-- **Scope stance:** not urgent — failing tests have been failing for a long time and are only 2 of 781. Re-open as a dedicated bidi-parity phase when we're ready to audit line-box construction + bidi-mirror-glyph substitution against the Blink reference below. Do NOT try to knock off as a 1-commit fix.
-- **Next (when revisited):** (1) confirm mirror-glyph substitution path — search for `ubidi_getMirror` / `CharMirror` equivalents in our `pkg/text/shape` and compare against Blink's `u_charMirror` call at paint time. (2) audit line-box construction's handling of multi-item runs under bidi vs single-item runs — whitespace collapse at `OpenTag`/`CloseTag` boundaries may measure differently. (3) compare rendered image pixel-by-pixel for the inner text line alone (strip out the orange borders to isolate the text-width diff).
+### F1. wm `bidi-embed-006` + `bidi-override-006` — **RE-DIAGNOSED 2026-04-24, ACTIVE**
+
+#### Corrected root cause (2026-04-24, supersedes earlier "11 px shorter" diagnosis)
+
+Box-tree dump (via standalone Go runner over both files):
+
+| | TEST html (`.test` wrapper, span-based) | REF html (`.ref` wrapper, literal LRO) |
+|---|---|---|
+| Wrapper | 252 × **62.8** at y=48.9 | 252 × **62.8** at y=48.9 |
+| Line 1 inner | 5 fragments: `א`(14.4) + ` > `(25.5) + `b > c`(48.2) + ` > `(25.5) + `ד`(11.5) = **125.1** | 1 fragment: `א > b > c > ד` = **125.2** |
+| Line 2 inner | 5 fragments: `א`(14.4) + ` > `(25.5) + `ג < ב`(45.0) + ` > `(25.5) + `ד`(11.5) = **121.9** | 1 fragment: `א > ג < ב > ד` = **122.0** |
+
+Wrapper geometry is **identical** (62.8 px tall both sides). The previous "test renders ~11 px shorter" diagnosis was wrong. The 1598-px diff is **sub-pixel glyph drift inside `.test`** caused by per-fragment HarfBuzz calls vs the single-fragment shaping the reference uses.
+
+Mirror-glyph substitution actually works in our pipeline today — line 2's span text in `.test` already shows as `"ג < ב"` (visually reordered with `>` mirrored to `<`). This works because our `pkg/text/measure.go` calls `getLayout().MeasureText(...)` with no `Direction` param, so HarfBuzz's `GuessSegmentProperties` picks RTL when Hebrew is present and triggers the OpenType `rtlm` feature. So the previously-suspected "missing mirror substitution" is **not** the F1 gap.
+
+The actual gap: `canMergeShapingContext` (`pkg/layout/line_breaker.go:1510-1551`) refuses to merge text items across bidi-level boundaries (line 1516) and refuses to merge any odd-level item with neighbors (line 1525). Result: a logical text run like `א > ב > ג > ד` split across span boundaries becomes 5 separate `MeasureText`/`ShapeAdvances` calls. Each call rounds its own per-glyph cumulative advance to 1/64-px (HarfBuzz fixed-point), but cross-call kerning is lost and per-glyph positions drift versus a single-call shaping. Across many glyphs at slightly different sub-pixel positions, anti-aliasing differs → 1598 px of mismatched pixels.
+
+#### Why Blink doesn't have this
+
+Blink's `HarfBuzzShaper::Shape` runs once over the **entire inline text run** (`harfbuzz_shaper.cc` Shape entry). Direction segmentation happens internally (Blink walks bidi runs via `InlineNode::SegmentBidiRuns` and dispatches each level run to HarfBuzz with the right `HB_DIRECTION_*`). Per-item advances are sliced from the unified shape result — items never re-shape. Multi-fragment items therefore produce identical glyph positions to single-fragment items.
+
+#### Plan (Option A — Blink-parity unified shape pass)
+
+Sub-tasks tracked in task_plan.md F1 row:
+- **F1a — `pkg/text/measure.go`:** add `ShapeAdvancesMixed(text string, runs []DirectionRun, fontSize, fontPath)` returning a per-byte cumulative advance map over the original logical-byte positions. Internally calls `textshape.ShapeText` once per direction-run with the right `Direction`, assembling the unified `cum[]` (handling RTL clusters' descending byte order).
+- **F1b — `pkg/layout/line_breaker.go`:** drop the bidi-level refusals in `canMergeShapingContext` (lines 1516, 1525). When measuring a contiguous run of text items that share the same font/style but differ in bidi level, slice each item's `InlineSize` from the new mixed shape result.
+- **F1c — paint-side consistency check:** verify glyph paint reads from the same unified shaping (or at least produces the same fractional positions). Adjust if it diverges from layout-side measurement.
+
+#### Out of scope for this F1 landing (still parked for future bidi-parity work)
+
+The existing Blink-parity research below remains valid but isn't blocking the 2 target tests:
+- `isolate-override` double-push ordering audit (FSI outer, LRO/RLO inner — verify our injector matches).
+- Block-level path emitting controls for `embed`/`isolate` (Blink delegates to `SetParagraph` paragraph-level only).
+- OOF re-injection second `SetParagraph` pass (`inline_node.cc:1375-1405`).
+- `base_direction` nullopt iff `UnicodeBidi::kPlaintext` (exact condition).
+
+Open these as additional F1.x sub-tasks if a future test demands them.
 
 **Blink-parity reference (fetched 2026-04-24 against `refs/heads/main`).**
 

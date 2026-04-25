@@ -24,11 +24,24 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 - spanner-fragmentation 12/13
 - css-writing-modes 779/781 (F1 target is to restore 781/781)
 
-### F1. wm bidi tests — RECLASSIFIED + DEFERRED 2026-04-24
+### F1. wm bidi tests — ACTIVE, RE-DIAGNOSED 2026-04-24
 
-Investigation showed these 2 tests were *never passing*, not a regression. Verified via `git worktree` at `9913a9e4` (claimed phase-5f landing): same 1598 px diff, and wm at that commit was **757/781**, not 781/781 as tracking claimed. HEAD at 779/781 is actually *+22 since 5f*.
+The earlier "never passing, deferred" stance still holds for the regression-history claim (verified at `9913a9e4`: same 1598 px diff, wm at that commit was 757/781). But the *cause* diagnosis has been corrected.
 
-Instrumentation of `injectBidiControlChars` + `StripBidiControls` + bidi-level computation showed control-char injection and UAX#9 level resolution are correct for the TEST case (Hebrew chars inside LRE span resolve to level 3 as expected). Rendered `.test` wrapper is ~11 px shorter per line than the `.ref` wrapper, with 29 px accumulated gap by wrapper 2's bottom. Likely culprits are bidi-mirror-glyph substitution (`>` → `<` at odd levels) and/or multi-item line-box boundary behavior, not a missing control-char injection. Deferred pending a dedicated bidi-parity phase. See findings §F1 for the full diagnosis + Blink-parity reference.
+**Stale (wrong):** `.test` renders 11 px shorter per line than `.ref`; suspected mirror-glyph substitution missing.
+
+**Corrected (2026-04-24, via box-tree dump of both files):** wrapper geometry is **identical** between `.test` and `.ref` — both 252×62.8 at the same y. Mirror substitution actually works today (line 2's span renders as `"ג < ב"`, the visually-reordered + `>`-mirrored form), because `MeasureText` calls HarfBuzz with no `Direction` so `GuessSegmentProperties` picks RTL on Hebrew and triggers the `rtlm` OpenType feature.
+
+Real gap: `canMergeShapingContext` (`pkg/layout/line_breaker.go:1516, 1525`) refuses to merge text items across bidi-level boundaries and refuses to merge any odd-level item with neighbors. Logical run `א > ב > ג > ד` split by a span thus becomes **5 independent HarfBuzz shape calls** (vs `.ref`'s single call). Cross-fragment kerning is lost, sub-pixel residue drifts ~0.1 px per boundary, anti-aliasing differs across many glyphs → 1598 px diff.
+
+Blink path: `HarfBuzzShaper::Shape` runs once over the entire inline text run; bidi-segmented internally, with per-item advances sliced from the unified shape result. Items never re-shape.
+
+**Plan (Option A — Blink-parity unified shape pass).** Tracked as F1a/F1b/F1c in task_plan.md.
+- F1a: new `ShapeAdvancesMixed(text, []DirectionRun, fontSize, fontPath)` in `pkg/text` returning a per-byte cumulative advance map over original logical positions; internally one `ShapeText` per direction-run with explicit `Direction` set.
+- F1b: drop the bidi-level refusals in `canMergeShapingContext`; route multi-bidi-level text-item runs through the new API and slice per-item `InlineSize`.
+- F1c: verify glyph paint reads consistent positions; adjust if it diverges from the unified-measure result.
+
+See findings §F1 for the full diagnosis + Blink-parity reference + out-of-scope-for-now bidi-parity items.
 ### F2. Phase 12c nested-multicol leaf paint-slicing — PARTIAL 2026-04-24
 
 First of two root causes fixed. New field `PhysicalFragment.ClipBlockAxisOnly` + `Box.ClipBlockAxisOnly`, threaded via `engine.go`. Multicol column fragmentainers now request block-axis-only clipping (inline overflow allowed, block overflow still clipped) — matches Blink's "painter has no per-column clip" model without sacrificing our engine's existing reliance on clip for block-axis monolith handling. Driver `multicol-nested-010.html`: 4500 → 3500 px diff (visual progress; top 60 rows now fully green, previously 25×60 green + 25×40 red in col 2).
