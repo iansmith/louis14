@@ -24,6 +24,24 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 - spanner-fragmentation 12/13
 - css-writing-modes 779/781 (F1 target is to restore 781/781)
 
+### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
+
+`pkg/html/tokenizer.go` aborted parsing with `tokenizer error: expected '>' but reached EOF` whenever input ended mid-tag (DOCTYPE without `>`, end tag like `</html` without `>`, start tag attribute loop hitting EOF, unterminated quoted attribute value). HTML5 §13.2.5.7-8/.32/.34/.38/.39 classify all of these as **recoverable** parse errors — emit what the tokenizer has built and let the tree-builder close any still-open elements at EOF. Real browsers (and Blink's `HTMLTokenizer`) accept these inputs.
+
+Four EOF branches updated to recover instead of erroring:
+- DOCTYPE EOF (`<!DOCTYPE …` at EOF): emit no token + EOF.
+- End tag EOF (`</foo` at EOF): emit `TokenEndTag{TagName: foo}` with the partial name.
+- Start tag attribute-loop EOF (`<foo a=b` at EOF): emit `TokenStartTag` with attributes parsed so far.
+- Unterminated quoted attribute (`<foo bar="baz` at EOF): return the partial value; outer loop's EOF branch then emits the partial start tag.
+
+**Test impact:** `position-change.html` (the WPT `css-position` test that ends with `</html` — missing the `>` — and was previously listed as a deferred residual under G-SINGLETONS) now PASSES at 0 diff. The reftest's actual content is well-formed; only the trailing tag was malformed.
+
+**Gate sweep:** css-position **91/104 → 92/104** (+1). All other invariants unchanged: CSS2 99/99, css-flexbox 626/629, css-multicol 179/455, spanner-fragmentation 12/13, css-writing-modes 781/781.
+
+The deferred-failures table in `task_plan.md` is now exactly aligned with the live failure count: 12 entries, 12 actual `--- FAIL` lines, Summary "12 failed". The off-by-one classification quirk (parser-crash vs pixel-diff fail) is gone.
+
+---
+
 ### F1. wm bidi tests — DONE 2026-04-25
 
 `bidi-embed-006` and `bidi-override-006` PASS at 0 diff. css-writing-modes **779/781 → 781/781**. F1 closed. Net wm gain in this landing: +2.

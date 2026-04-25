@@ -52,17 +52,16 @@ Companion scratch blocks live at the top of `findings.md` (research notes per ta
 4. Run only the target + ≤2 adjacent tests during feature work; full category only at completion.
 5. Gate sweep (all 5 invariants) before each commit.
 
-**Invariants to hold on each landing:** CSS2 99/99, css-flexbox 626/629, css-position 91/104, spanner-fragmentation 12/13, **css-writing-modes 781/781** (raised from 779/781 by F1 closing 2026-04-25), css-multicol ≥179/455.
+**Invariants to hold on each landing:** CSS2 99/99, css-flexbox 626/629, **css-position 92/104** (raised from 91/104 by HTML tokenizer EOF-recovery fix 2026-04-25), spanner-fragmentation 12/13, **css-writing-modes 781/781** (raised from 779/781 by F1 closing 2026-04-25), css-multicol ≥179/455.
 
 ---
 
-## css-position Goal (prior category, 91/104 — effectively complete)
-All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-23, verified): **91 passing, 13 failing**. The 13 failures are all pre-existing residuals — none caused by Phase 12:
+## css-position Goal (prior category, 92/104 — effectively complete)
+All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised via `TestWPTCSS3Reftests/css-position`. Baseline (2026-04-21): **50 passing, 54 failing, 5 no-run**. Current (2026-04-25): **92 passing, 12 failing**. The 12 failures are all pre-existing residuals — none caused by Phase 12. (`position-change.html` was the 13th deferred residual until 2026-04-25 when the HTML tokenizer was fixed to handle EOF-in-tag per HTML5 §13.2.5.7-8 instead of aborting parse — see progress.md.)
 
 | Test | Pixels | Group | Notes |
 |------|--------|-------|-------|
 | `clear-001.xht` | 96 (0.0%) | G-SINGLETONS | deferred pending Blink LayoutUnit trace |
-| `position-change.html` | crash | G-SINGLETONS | HTML parser bug |
 | `containing-block-change-scrollframe.html` | 50000 (10.4%) | G-SCROLL | scroll-based CB change |
 | `position-absolute-semi-replaced-stretch-button.html` | 15885 (3.3%) | G-SEMI-REPLACED | abspos stretch on button |
 | `position-absolute-semi-replaced-stretch-input.html` | 25509 (5.3%) | G-SEMI-REPLACED | abspos stretch on input |
@@ -72,7 +71,7 @@ All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised v
 | `position-relative-table-thead-left/top-absolute-child` (×2) | 5000 each | G-ABS-IN-TABLE | abspos child of thead |
 | `position-relative-table-tr-left/top-absolute-child` (×2) | 5000 each | G-ABS-IN-TABLE | abspos child of tr |
 
-**Note:** The tracking file previously claimed "95 passing" — this was incorrect. The actual count has been 91/104 since Phase 9 completion (verified 2026-04-23). The 8 G-ABS-IN-TABLE and 3 G-SEMI-REPLACED tests were never fixed; they were inadvertently omitted from the residuals list.
+**Note:** The tracking file previously claimed "95 passing" — this was incorrect. The actual count was 91/104 since Phase 9 completion, then 92/104 after the HTML tokenizer EOF-recovery fix (2026-04-25). The 8 G-ABS-IN-TABLE and 3 G-SEMI-REPLACED tests were never fixed; they were inadvertently omitted from the residuals list.
 
 Invariants (must stay green in every Phase 12 landing too). Post-12d re-baseline: `pkg/resource/renderer.go` modifications (commits `15095a58` + `f001c6a5` + earlier uncommitted) shifted historical counts. Phase 12 work is verified additive vs these post-`renderer.go` numbers; pre-shift historical numbers shown for context only.
 - css-writing-modes **410/781** (historical 781/781). Last verified 2026-04-24 post-12g.
