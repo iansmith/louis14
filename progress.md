@@ -165,6 +165,36 @@ Migrates the plan-named precision-discipline fields at the layout-input boundary
 
 **Files touched in pkg/layout/ across 13d.1–13d.4b:** break_token.go, exclusion_space.go (+test), constraint_space.go (+test), physical.go (bridge helpers), block_layout.go, flex_layout.go, fragment_builder.go, fragment_geometry.go, grid_layout.go, inline_layout.go (+test), line_breaker.go, min_max_sizing.go, multicol_layout.go, out_of_flow_layout.go, positioned_root.go, replaced_layout.go, table_layout.go, absolute_utils.go.
 
+#### Phase 13e.1: FromFloat64Trunc + ResolvePercent helpers — DONE 2026-04-25
+
+Pure additive sub-step. Two new functions in `pkg/geometry/layoutunit/layoutunit.go`:
+
+```go
+func FromFloat64Trunc(v float64) LayoutUnit
+func ResolvePercent(basis LayoutUnit, percent float64) LayoutUnit
+```
+
+`FromFloat64Trunc` mirrors Blink's IMPLICIT `FixedPoint(float)` constructor (`layout_unit.h:100`), which truncates the raw quantum toward zero — distinct from the existing `FromFloat64Round/Ceil/Floor`. `ResolvePercent` is the single chokepoint for percentage-of-basis resolution, mirroring `length_functions.cc:MinimumValueForLengthInternal` kPercent:
+
+```cpp
+case Length::kPercent:
+  return LayoutUnit(static_cast<float>(maximum_value * length.Percent() / 100.0f));
+```
+
+**Blink-parity correction (the load-bearing finding of 13e.1).** The earlier `findings.md` note (Phase 13 §"Pitfalls Blink hit during NG migration", item 1) paraphrased the kPercent case as `LayoutUnit::FromFloatRound(length.Pixels() * basis.Float() * 0.01f)` — that was **wrong**. Verified 2026-04-25 against `refs/heads/main` `platform/geometry/length_functions.cc`: Blink uses the IMPLICIT truncating ctor, NOT `FromFloatRound`, and NOT `MulDiv`. The numeric example in that note (50% of 101 → raw 3232 = 50.5 px) still holds — at exact-half values Trunc and Round agree — but the boundary is mischaracterized. Truncation is what we mirror in `ResolvePercent`. The findings.md note is updated in the same change set.
+
+**Tests** (`layoutunit_test.go`, two new functions):
+- `TestFromFloat64Trunc` — 9 cases incl. positive truncation (0.498 → raw 31, NOT 32 from rounding), negative truncate-toward-zero (-0.498 → raw -31, NOT -32 from floor), sub-quantum (0.01 → raw 0, NOT 1 from ceil), saturation in both directions.
+- `TestResolvePercent` — 8 named cases (50% of 101 → raw 3232; 33% of 100 → raw 2112; 100% of 96 → raw 6144; 0% of MaxValue → 0; 50% of -100 → raw -3200; truncate-toward-zero on -101 × 0.5%; 50% of indefinite (-1) → raw -32) plus saturation (MaxValue × 200%, MinValue × 200%), sibling-determinism check (two calls with same inputs are bit-identical — the headline 13e invariant), and Trunc-vs-Round divergence guard (0.498% of 100 must give raw 31; if it gives 32, the helper is using FromFloat64Round and the discipline is broken).
+
+**Where it lives.** `pkg/geometry/layoutunit/`. Considered `pkg/layout/` to keep the helper near consumers, but the helper is pure scalar arithmetic over `LayoutUnit + float64` — no `Style` / `ConstraintSpace` dependencies — so the layoutunit package is the right home. Dependency arrow stays correct: `pkg/layout` imports `pkg/geometry/layoutunit`, never the reverse.
+
+**Gate-sweep.** Pure additive, no existing callers; six invariants held by construction. Nothing to verify on the WPT side at 13e.1.
+
+**Open at end of 13e.1 (consumed by 13e.2–13e.6).**
+- 11 known call sites compute `basis.Float64() * pct / 100` and need to route through `ResolvePercent`. Inventoried: inline_layout text-indent (1), flex_layout row-gap + column-gap (2), flex_layout flex-basis (2), fragment_geometry Min/Max{Inline,Block}Size (4), fragment_geometry ResolveInlineSize/BlockSize (2). The `calc(...%...)` paths via `css.EvalCalcWithPercent` are already centralized and stay as-is.
+- Return-type promotion (`ResolveInlineSize/BlockSize` etc. returning `LayoutUnit` instead of `float64`) is deferred to a separate phase (13e′ if it surfaces) — that ripples through ~50 layout sites and is its own work.
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

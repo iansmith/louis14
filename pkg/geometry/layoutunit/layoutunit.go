@@ -95,6 +95,37 @@ func FromFloat64Floor(v float64) LayoutUnit {
 	return clamp64(int64(math.Floor(v * FixedPointDenominator)))
 }
 
+// FromFloat64Trunc converts a float64 to LayoutUnit by truncating the raw
+// quantum toward zero. Mirrors Blink's IMPLICIT FixedPoint(float)
+// constructor (layout_unit.h:100):
+//
+//	constexpr explicit FixedPoint(float v)
+//	    : value_(ClampRawValue(v * kFixedPointDenominator)) {}  // truncates
+//
+// Distinct from FromFloat64Round/Ceil/Floor: this is the exit boundary
+// used by length_functions.cc MinimumValueForLengthInternal kPercent —
+// see ResolvePercent below.
+func FromFloat64Trunc(v float64) LayoutUnit {
+	return clamp64(int64(v * FixedPointDenominator))
+}
+
+// ResolvePercent computes percent% of basis as a LayoutUnit. The single
+// chokepoint for percentage-of-basis resolution; two siblings with the
+// same percent on the same basis produce bit-identical LayoutUnits.
+//
+// Mirrors Blink's MinimumValueForLengthInternal kPercent case
+// (platform/geometry/length_functions.cc):
+//
+//	case Length::kPercent:
+//	  return LayoutUnit(static_cast<float>(
+//	      maximum_value * length.Percent() / 100.0f));
+//
+// The LayoutUnit(float) constructor TRUNCATES — Blink does not use
+// FromFloatRound or MulDiv at this site. We mirror that exactly.
+func ResolvePercent(basis LayoutUnit, percent float64) LayoutUnit {
+	return FromFloat64Trunc(basis.Float64() * percent / 100.0)
+}
+
 // Raw returns the underlying 26.6 fixed-point value.
 func (a LayoutUnit) Raw() int32 { return a.raw }
 

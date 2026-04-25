@@ -2006,7 +2006,14 @@ The "preserve thin lines" branch (`>4` raw → `±1`) is what keeps a 0.5 px bor
 
 ### Pitfalls Blink hit during NG migration
 
-1. **Percentage-resolution disagreement between siblings.** Two children both compute `width: 50%` of a 101px parent; one path computes via `Length::Pixels(50.5f)` then `FromFloatRound` (= raw 3232 = 50.5 px), the other path via intermediate `int` ((101*50)/100 = 50). Sibling alignment off by 0.5 px. **Fix: every percentage resolution goes through one site** (`MinimumValueForLength(Length, LayoutUnit basis)` → `LayoutUnit::FromFloatRound(length.Pixels() * basis.Float() * 0.01f)`). Single rounding mode at every call site. **For louis14 this is Phase 13e.**
+1. **Percentage-resolution disagreement between siblings.** Two children both compute `width: 50%` of a 101px parent; one path computes via `Length::Pixels(50.5f)` and the truncating LayoutUnit(float) ctor (= raw 3232 = 50.5 px), the other path via intermediate `int` ((101*50)/100 = 50). Sibling alignment off by 0.5 px. **Fix: every percentage resolution goes through one site** — Blink's actual kPercent path in `platform/geometry/length_functions.cc:MinimumValueForLengthInternal`:
+
+   ```cpp
+   case Length::kPercent:
+     return LayoutUnit(static_cast<float>(maximum_value * length.Percent() / 100.0f));
+   ```
+
+   **Verified against `refs/heads/main` 2026-04-25.** The implicit `LayoutUnit(float)` ctor truncates the raw quantum toward zero — Blink does NOT use `FromFloatRound`, and does NOT use `MulDiv` here. (Earlier paraphrases of this note that wrote `FromFloatRound(length.Pixels() * basis.Float() * 0.01f)` were incorrect; the example outcome — raw 3232 for 50% of 101 — still holds because at exact-half values Trunc and Round agree, but the rounding mode is wrong.) Single truncating chokepoint at every call site. **For louis14 this is Phase 13e** — `pkg/geometry/layoutunit.ResolvePercent(basis, percent)` is the single mirror of this site, landed in 13e.1 (2026-04-25).
 2. **Float-typed cached intrinsic widths feeding LayoutUnit consumers.** `min-content`/`max-content` cached as float caused 1-px wobble in `auto`-sized tables. Cache changed to `MinMaxSizes { LayoutUnit min_size, max_size }`.
 3. **Transforms.** Geometry round-tripping through `gfx::Transform` must come back via `EnclosingRect` (floor/ceil), never `round` both ways — otherwise a hit-test rect of "exactly the visible box" can shrink under transformation and fail to hit-test its own edge.
 
@@ -2093,3 +2100,24 @@ See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased br
 **Test impact: zero behavior change across all five sub-steps.** Every gate invariant held at every commit. No clear-001 movement. The pre-existing TestBlockLayout_FloatLeft unit test failure remains pre-existing.
 
 **Open question for 13e.** ConstraintSpace now stores `geometry.LogicalSize` for AvailableSize/PercentageResolutionSize, but `pkg/layout/length` still resolves CSS lengths to float64. Every consumer that does `x := space.AvailableSize.InlineSize.Float64()` then computes a percentage as `pct * x / 100` is doing float arithmetic, not LayoutUnit arithmetic. 13e closes this loop by making `Length.Resolve(basis LayoutUnit) LayoutUnit` the single rounding-mode-explicit boundary for all percentage resolution — eliminating the "two siblings of the same percentage compute different LayoutUnits" class of drift. The bridge accessors that 13d added are intentionally float64-flavored on both sides; 13e will start replacing them with LayoutUnit-native arithmetic at the consumer site.
+
+### Phase 13e.1 landing notes (2026-04-25)
+
+13e.1 is the additive boundary helper: two new functions in `pkg/geometry/layoutunit/layoutunit.go` (`FromFloat64Trunc`, `ResolvePercent`) plus their unit tests. No layout call sites converted yet (13e.2–13e.6 will route the 11 inventoried percent-of-basis sites through `ResolvePercent`).
+
+**The Blink-parity finding.** Verified 2026-04-25 against `refs/heads/main` `third_party/blink/renderer/platform/geometry/length_functions.cc:MinimumValueForLengthInternal` that the kPercent case is:
+
+```cpp
+case Length::kPercent:
+  return LayoutUnit(static_cast<float>(maximum_value * length.Percent() / 100.0f));
+```
+
+— the implicit `LayoutUnit(float)` ctor (`layout_unit.h:100`) truncates the raw quantum toward zero. Blink does NOT use `FromFloatRound`, and does NOT use `MulDiv`, at this site. The §"Pitfalls Blink hit during NG migration" item 1 above paraphrased the boundary as `FromFloatRound`; that was wrong and is corrected in the same change set. The numeric example (50% of 101 → raw 3232) still holds — at exact-half raw quanta Trunc and Round agree — but the rounding mode would have differed at non-half quanta (e.g. 0.498% of 100 gives raw 31 under Trunc vs 32 under Round). Mirroring the wrong rounding mode would have re-introduced the sibling-drift class of bug at a different sub-pixel layer instead of closing it.
+
+**Why a new constructor (not just a helper).** `FromFloat64Trunc` belongs alongside `FromFloat64Round/Ceil/Floor` as a primitive — it's the entry point Blink uses at the `Length::kPercent` boundary, the `gfx::SizeF/PointF` boundary, and any other site where the float value is "expected to be a layout-truthful pixel count, with sub-1/64-px noise discarded." Exposing it lets any future percent-or-related boundary callsite name the rounding mode explicitly rather than defaulting to Round. The helper `ResolvePercent` is just the obvious composition over it.
+
+**Where it lives.** `pkg/geometry/layoutunit/`. The candidate locations were `pkg/layout` (close to consumers) or `pkg/geometry/layoutunit` (close to the LayoutUnit primitives). `ResolvePercent` is pure scalar arithmetic — `LayoutUnit + float64 → LayoutUnit` with no `Style`, `ConstraintSpace`, or `Length` dependencies — so the layoutunit package is the right home. Dependency arrow stays correct: `pkg/layout` already imports `pkg/geometry/layoutunit`, never the reverse, and the helper is reusable from anywhere.
+
+**Tests cover the headline invariants.** `TestResolvePercent` includes a sibling-determinism check (two `ResolvePercent` calls with identical inputs must produce bit-identical LayoutUnits — the load-bearing 13e contract) and a Trunc-vs-Round divergence guard with an explicit error message ("If you got 32 the helper is using FromFloat64Round, not Trunc"). The truncation discipline is tested at sub-quantum (0.01 → 0), at the half-raw boundary (0.498 → 31, distinct from Round's 32), at the negative-toward-zero (-0.498 → -31, distinct from Floor's -32), and at saturation in both directions.
+
+**Deferred to 13e′ (NOT in 13e scope).** Promoting `ResolveInlineSize/ResolveBlockSize/ResolveMin{Inline,Block}Size/ResolveMax{Inline,Block}Size` return types from `float64` to `LayoutUnit` would ripple through ~50 sites in `pkg/layout/` and is its own phase. 13e.2–13e.6 keep the existing return types and call `.Float64()` on the helper's result at the consumer's API boundary; the canonical-helper invariant ("two siblings agree bit-exactly") holds because float64 round-trips LayoutUnit losslessly across the LayoutUnit range.

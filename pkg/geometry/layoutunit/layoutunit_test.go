@@ -323,6 +323,105 @@ func TestIsZero(t *testing.T) {
 	}
 }
 
+func TestFromFloat64Trunc(t *testing.T) {
+	// Truncate-toward-zero on the raw quantum. Diverges from
+	// FromFloat64Round/Ceil/Floor at sub-quantum boundaries.
+	cases := []struct {
+		v       float64
+		wantRaw int32
+	}{
+		{0.0, 0},
+		{1.0, 64},
+		{-1.0, -64},
+		{0.5, 32},        // 0.5 * 64 = 32 (exact)
+		{50.5, 50.5 * 64}, // 3232 raw
+		// 0.498 px → raw 0.498*64 = 31.872 → trunc=31 (Round would give 32).
+		{0.498, 31},
+		// Negative truncates toward zero, not toward -infinity.
+		// -0.498 px → raw -31.872 → trunc=-31 (Floor would give -32).
+		{-0.498, -31},
+		// Sub-raw value truncates to 0.
+		{0.01, 0},  // 0.01 * 64 = 0.64 → trunc=0 (Ceil would give 1)
+		{-0.01, 0}, // -0.01 * 64 = -0.64 → trunc=0 (Floor would give -1)
+	}
+	for _, c := range cases {
+		if got := FromFloat64Trunc(c.v).Raw(); got != c.wantRaw {
+			t.Errorf("FromFloat64Trunc(%v).Raw() = %d, want %d", c.v, got, c.wantRaw)
+		}
+	}
+
+	// Saturation.
+	if r := FromFloat64Trunc(1e30).Raw(); r != math.MaxInt32 {
+		t.Errorf("FromFloat64Trunc(1e30) should saturate, got raw %d", r)
+	}
+	if r := FromFloat64Trunc(-1e30).Raw(); r != math.MinInt32 {
+		t.Errorf("FromFloat64Trunc(-1e30) should saturate, got raw %d", r)
+	}
+}
+
+func TestResolvePercent(t *testing.T) {
+	// Blink-parity: LayoutUnit(static_cast<float>(basis * pct / 100.0f))
+	// where the LayoutUnit(float) ctor truncates toward zero.
+	cases := []struct {
+		name    string
+		basis   LayoutUnit
+		percent float64
+		wantRaw int32
+	}{
+		// 50% of 101 → 50.5 px (raw 3232) — the canonical "two siblings of
+		// the same percentage must agree" case from findings.md §Phase 13.
+		{"50% of 101", New(101), 50, 3232},
+		// 33% of 100 → 33.0 px exactly (raw 2112). Truncated, NOT 33.0625.
+		{"33% of 100", New(100), 33, 33 * 64},
+		// 100% of basis is identity for integer basis.
+		{"100% of 96", New(96), 100, 96 * 64},
+		// 0% of anything is 0.
+		{"0% of MaxValue", MaxValue, 0, 0},
+		// Negative basis: -50% of -100 = -(-50) = 50? No — -100 * -50 / 100 = 50.
+		// But the sign of percent is normally non-negative; here we test the
+		// negative-basis path that arises for negative margins / overflow.
+		{"50% of -100", New(-100), 50, -50 * 64},
+		// Negative-basis truncation toward zero (not toward -infinity):
+		// -101 px * 0.5 / 100 = -0.505 → raw -32.32 → trunc=-32.
+		// Floor would give -33; this case distinguishes Trunc from Floor.
+		{"truncate toward zero on negative", New(-101), 0.5, -32},
+		// Indefinite basis (raw -64 = -1 px) — caller is responsible for
+		// gating, but the helper itself just propagates math: -1 * 50 / 100 = -0.5
+		// → raw -32. Document this behavior so callers don't get surprises.
+		{"50% of indefinite (-1)", IndefiniteSize, 50, -32},
+	}
+	for _, c := range cases {
+		if got := ResolvePercent(c.basis, c.percent).Raw(); got != c.wantRaw {
+			t.Errorf("%s: ResolvePercent(%v, %v).Raw() = %d, want %d",
+				c.name, c.basis.Float64(), c.percent, got, c.wantRaw)
+		}
+	}
+
+	// Saturation: positive overflow.
+	if r := ResolvePercent(MaxValue, 200).Raw(); r != math.MaxInt32 {
+		t.Errorf("ResolvePercent(MaxValue, 200) should saturate +, got %d", r)
+	}
+	// Saturation: negative overflow.
+	if r := ResolvePercent(MinValue, 200).Raw(); r != math.MinInt32 {
+		t.Errorf("ResolvePercent(MinValue, 200) should saturate -, got %d", r)
+	}
+
+	// Sibling determinism: two calls with the same inputs produce
+	// bit-identical LayoutUnits. This is the headline invariant for 13e.
+	a := ResolvePercent(New(101), 50)
+	b := ResolvePercent(New(101), 50)
+	if a != b {
+		t.Errorf("sibling determinism violated: %v != %v", a, b)
+	}
+
+	// Trunc vs Round divergence. ResolvePercent must use Trunc.
+	// 0.498% of 100 = 0.498 → raw 0.498*64 = 31.872 → trunc=31, round=32.
+	if got := ResolvePercent(New(100), 0.498).Raw(); got != 31 {
+		t.Errorf("ResolvePercent(100, 0.498).Raw() = %d, want 31 (truncated). "+
+			"If you got 32 the helper is using FromFloat64Round, not Trunc.", got)
+	}
+}
+
 func TestComparisons(t *testing.T) {
 	a := New(3)
 	b := New(5)
