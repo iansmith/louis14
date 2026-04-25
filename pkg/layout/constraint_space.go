@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/geometry/layoutunit"
+import (
+	"louis14/pkg/geometry"
+	"louis14/pkg/geometry/layoutunit"
+)
 
 // ConstraintSpace is the immutable input from parent to child during layout.
 // It carries all constraints in the CHILD's writing mode — the parent handles
@@ -11,7 +14,7 @@ type ConstraintSpace struct {
 	// AvailableSize is the space available for the child's margin box,
 	// in the child's logical coordinates.
 	// InlineSize is always definite. BlockSize may be Indefinite.
-	AvailableSize LogicalSize
+	AvailableSize geometry.LogicalSize
 
 	// PercentageResolutionSize is the size used for resolving percentage lengths.
 	// Typically the containing block's content size in the child's writing mode.
@@ -210,7 +213,7 @@ const Indefinite float64 = -1
 
 // IsBlockSizeIndefinite returns true if the block-size is unconstrained.
 func (cs ConstraintSpace) IsBlockSizeIndefinite() bool {
-	return cs.AvailableSize.BlockSize < 0
+	return cs.AvailableSize.BlockSize.Float64() < 0
 }
 
 // RemainingFragmentainerBlockSize returns how much block-size is available
@@ -263,19 +266,20 @@ func NewConstraintSpaceBuilder(parentWDM, childWDM WritingDirectionMode, isNewFC
 // inline/block when the child is orthogonal.
 func (b *ConstraintSpaceBuilder) SetAvailableSize(size LogicalSize) *ConstraintSpaceBuilder {
 	if b.parallel {
-		b.space.AvailableSize = size
+		b.space.AvailableSize = oldLogicalToGeom(size)
 	} else {
 		// Orthogonal: parent's inline becomes child's block, and vice versa.
-		b.space.AvailableSize = LogicalSize{
+		swapped := LogicalSize{
 			InlineSize: size.BlockSize,
 			BlockSize:  size.InlineSize,
 		}
 		// If parent's block-size was indefinite, the child's inline-size
 		// becomes indefinite. Fall back to the ICB size per §10.3.2.
-		if b.space.AvailableSize.InlineSize == Indefinite &&
+		if swapped.InlineSize == Indefinite &&
 			b.space.OrthogonalFallbackInlineSize > 0 {
-			b.space.AvailableSize.InlineSize = b.space.OrthogonalFallbackInlineSize
+			swapped.InlineSize = b.space.OrthogonalFallbackInlineSize
 		}
+		b.space.AvailableSize = oldLogicalToGeom(swapped)
 	}
 	return b
 }

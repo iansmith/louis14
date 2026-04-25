@@ -474,7 +474,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		csb := NewConstraintSpaceBuilder(wdm, childWDM, false).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 			SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-			SetAvailableSize(space.AvailableSize).
+			SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
 		childSpace := csb.Build()
 
@@ -513,7 +513,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
 				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{
-					InlineSize: space.AvailableSize.InlineSize,
+					InlineSize: space.AvailableSize.InlineSize.Float64(),
 					BlockSize:  crossContent,
 				}).
 				SetPercentageResolutionSize(LogicalSize{
@@ -822,7 +822,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 				SetOrthogonalFallbackInlineSize(
 					orthogonalFallbackSize(childWDM, ctx)).
 				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-				SetAvailableSize(space.AvailableSize).
+				SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
 			if nodeBlockSize != Indefinite {
 				csBuilder.SetPercentageResolutionSize(LogicalSize{
@@ -832,7 +832,7 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 				// Set available block-size to make IsBlockSizeIndefinite() return false
 				// so percentage heights resolve.
 				csBuilder.SetAvailableSize(LogicalSize{
-					InlineSize: space.AvailableSize.InlineSize,
+					InlineSize: space.AvailableSize.InlineSize.Float64(),
 					BlockSize:  nodeBlockSize,
 				})
 			}
@@ -971,7 +971,7 @@ func measureOrthogonalChild(
 		SetOrthogonalFallbackInlineSize(
 			orthogonalFallbackSize(childWDM, ctx)).
 		SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
-		SetAvailableSize(space.AvailableSize).
+		SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 

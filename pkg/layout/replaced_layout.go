@@ -38,7 +38,7 @@ func ComputeReplacedIntrinsicInlineSize(ctx *LayoutContext, node *LayoutInputNod
 	explicitBlock, hasExplicitBlock := ResolveBlockSize(style, wdm, space, geom)
 
 	if space.IsFixedInlineSize {
-		explicitInline = space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		explicitInline = space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if explicitInline < 0 {
 			explicitInline = 0
 		}
@@ -120,7 +120,7 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 
 	// Handle fixed inline-size from parent (e.g. flex).
 	if space.IsFixedInlineSize {
-		explicitInline = space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		explicitInline = space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if explicitInline < 0 {
 			explicitInline = 0
 		}
@@ -128,7 +128,7 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 	}
 	// Handle fixed block-size from parent (e.g. flex).
 	if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite {
-		explicitBlock = space.AvailableSize.BlockSize - geom.BlockBorderPadding()
+		explicitBlock = space.AvailableSize.BlockSize.Float64() - geom.BlockBorderPadding()
 		if explicitBlock < 0 {
 			explicitBlock = 0
 		}
@@ -305,7 +305,7 @@ func (rla *ReplacedLayoutAlgorithm) Layout() *LayoutResult {
 	// Set box data for the renderer (margins, borders, padding).
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(rla.style, wdm, rla.space.AvailableSize.InlineSize), wdm)
+	physMargin := ToPhysicalEdges(ResolveMargins(rla.style, wdm, rla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:  physMargin,
 		Border:  physBorder,

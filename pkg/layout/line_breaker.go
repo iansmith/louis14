@@ -140,7 +140,7 @@ func NewLineBreaker(
 	fonts text.FontConfig,
 	mode LineBreakerMode,
 ) *LineBreaker {
-	availableWidth := space.AvailableSize.InlineSize
+	availableWidth := space.AvailableSize.InlineSize.Float64()
 	if mode == LineBreakerMaxContent {
 		availableWidth = 1e9 // effectively unlimited
 	}
@@ -1183,7 +1183,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 				orthogonalFallbackSize(childWDM, lb.ctx)).
 			SetOrthogonalFallbackBlockSize(
 				lb.space.OrthogonalFallbackBlockSize).
-			SetAvailableSize(lb.space.AvailableSize).
+			SetAvailableSize(geomLogicalToOld(lb.space.AvailableSize)).
 			SetPercentageResolutionInlineSize(lb.space.PercentageResolutionInlineSize)
 		// Propagate percentage resolution block-size from parent so that
 		// percentage-height replaced elements (e.g., img { height: 100% })
@@ -1209,8 +1209,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 		availBlock := Indefinite
 		if lb.space.PercentageResolutionSize.BlockSize > 0 {
 			availBlock = lb.space.PercentageResolutionSize.BlockSize
-		} else if lb.space.AvailableSize.BlockSize >= 0 {
-			availBlock = lb.space.AvailableSize.BlockSize
+		} else if lb.space.AvailableSize.BlockSize.Float64() >= 0 {
+			availBlock = lb.space.AvailableSize.BlockSize.Float64()
 		}
 		// §10.3.2: For an atomic-inline orthogonal root, the available block-size
 		// that becomes the child's (axis-swapped) inline-size must come from the

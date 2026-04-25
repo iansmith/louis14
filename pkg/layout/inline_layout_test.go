@@ -37,7 +37,7 @@ func inlineLayoutForTest(
 	// Phase 2: Create line breaker.
 	fonts := text.DefaultFontConfig()
 	lineSpace := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
+		AvailableSize:    oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}),
 		WritingDirection: wdm,
 	}
 	lb := NewLineBreaker(itemsData, ctx, lineSpace, fonts, LineBreakerContent)
@@ -415,7 +415,7 @@ func TestInlineLayout_LineBreaker(t *testing.T) {
 	ctx := testContext()
 
 	space := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: 800, BlockSize: Indefinite},
+		AvailableSize:    oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: Indefinite}),
 		WritingDirection: wdm,
 	}
 	lb := NewLineBreaker(data, ctx, space, fonts, LineBreakerContent)

@@ -1251,7 +1251,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Set box data for the renderer.
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize), wdm)
+	physMargin := ToPhysicalEdges(ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:  physMargin,
 		Border:  physBorder,

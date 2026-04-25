@@ -474,10 +474,10 @@ func CalculateInitialFragmentGeometry(
 
 	if space.IsFixedInlineSize {
 		// Parent (e.g. flex) predetermined the size. AvailableSize is border-box.
-		borderBoxInline = space.AvailableSize.InlineSize
+		borderBoxInline = space.AvailableSize.InlineSize.Float64()
 	} else if IsIntrinsicKeyword(inlineVal) {
 		minMax := ComputeMinMaxSizes(ctx, node, space)
-		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
 		}
@@ -489,7 +489,7 @@ func CalculateInitialFragmentGeometry(
 		// minus inline margins. Constrained by min/max inline-size.
 		margins := ResolveMargins(style, wdm, pctBase)
 		minMax := ComputeMinMaxSizes(ctx, node, space)
-		available := space.AvailableSize.InlineSize - margins.InlineStart - margins.InlineEnd - geom.InlineBorderPadding()
+		available := space.AvailableSize.InlineSize.Float64() - margins.InlineStart - margins.InlineEnd - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
 		}
@@ -499,7 +499,7 @@ func CalculateInitialFragmentGeometry(
 		// Shrink-to-fit: floats, abs-pos, inline-block, or orthogonal
 		// positioned/float elements.
 		minMax := ComputeMinMaxSizes(ctx, node, space)
-		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
 		}
@@ -507,7 +507,7 @@ func CalculateInitialFragmentGeometry(
 		inlineSizeIsAuto = true
 	} else if space.IsInsideFlexibleBox && !space.IsFixedInlineSize {
 		minMax := ComputeMinMaxSizes(ctx, node, space)
-		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
 		}
@@ -515,7 +515,7 @@ func CalculateInitialFragmentGeometry(
 		inlineSizeIsAuto = true
 	} else {
 		// Auto inline-size: fill available space.
-		borderBoxInline = space.AvailableSize.InlineSize
+		borderBoxInline = space.AvailableSize.InlineSize.Float64()
 		inlineSizeIsAuto = true
 	}
 
@@ -533,7 +533,7 @@ func CalculateInitialFragmentGeometry(
 	}
 	if maxInlineVal, ok := style.Get(maxInlineProp); ok && IsIntrinsicKeyword(maxInlineVal) {
 		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
-		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
 		}
@@ -555,7 +555,7 @@ func CalculateInitialFragmentGeometry(
 	minInline := ResolveMinInlineSize(style, wdm, space, geom)
 	if minInlineVal, ok := style.Get(minInlineProp); ok && IsIntrinsicKeyword(minInlineVal) {
 		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
-		available := space.AvailableSize.InlineSize - geom.InlineBorderPadding()
+		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
 		}
@@ -595,7 +595,7 @@ func CalculateInitialFragmentGeometry(
 		// flex-resolved size.
 		//
 		// Mirrors Blink's handling of ConstraintSpace::IsBlockSizeOverride.
-		borderBoxBlock = space.AvailableSize.BlockSize
+		borderBoxBlock = space.AvailableSize.BlockSize.Float64()
 	} else if explicitBlock, ok := ResolveBlockSize(style, wdm, space, geom); ok {
 		// CSS Tables: browsers (Blink, WebKit, Gecko) treat table/inline-table
 		// height as border-box — the specified height already includes borders.
@@ -628,7 +628,7 @@ func CalculateInitialFragmentGeometry(
 			}
 		}
 		if useFixed {
-			borderBoxBlock = space.AvailableSize.BlockSize
+			borderBoxBlock = space.AvailableSize.BlockSize.Float64()
 		}
 	}
 

@@ -385,7 +385,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		builder.SetLayoutNode(mla.node)
 		physBorder := ToPhysicalEdges(geom.Border, wdm)
 		physPadding := ToPhysicalEdges(geom.Padding, wdm)
-		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize), wdm)
+		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
 			Margin:  physMargin,
 			Border:  physBorder,
@@ -518,7 +518,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				builder.SetLayoutNode(mla.node)
 				// Only emit margin; suppress border+padding so nothing is painted.
 				// The resumed fragment will draw full borders.
-				physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize), wdm)
+				physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 				builder.SetBoxData(&PhysicalBoxData{Margin: physMargin})
 				result = builder.Build()
 				result.BreakToken = &BlockBreakToken{
@@ -670,7 +670,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			// Apply spanner margin-block-end (may be negative). Skip when resuming
 			// a content-overflow spanner — its margin was already consumed in OC1.
 			if !didContentOverflowResume && spanner.Style() != nil {
-				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize)
+				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
 				blockCursor += spannerMargins.BlockEnd
 			}
 		}
@@ -804,7 +804,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	})
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize), wdm)
+	physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:  physMargin,
 		Border:  physBorder,

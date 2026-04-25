@@ -1776,7 +1776,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(fla.style, wdm, fla.space.AvailableSize.InlineSize), wdm)
+	physMargin := ToPhysicalEdges(ResolveMargins(fla.style, wdm, fla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:  physMargin,
 		Border:  physBorder,
@@ -1828,8 +1828,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS position:relative — "start wins over end" in logical coordinates.
 	// Sticky is scroll-time, not layout-time; leave RelativeOffset zero here.
 	if fla.style != nil && fla.style.GetPosition() == css.PositionRelative {
-		cbWidth := fla.space.AvailableSize.InlineSize
-		cbHeight := fla.space.AvailableSize.BlockSize
+		cbWidth := fla.space.AvailableSize.InlineSize.Float64()
+		cbHeight := fla.space.AvailableSize.BlockSize.Float64()
 		if cbHeight == Indefinite {
 			cbHeight = 0
 		}
@@ -2581,7 +2581,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 		// ignores the item's explicit CSS inline-size.
 		parentBlockSize := Indefinite
 		if parentWDM.IsOrthogonalTo(childWDM) {
-			parentBlockSize = fla.space.AvailableSize.BlockSize
+			parentBlockSize = fla.space.AvailableSize.BlockSize.Float64()
 		}
 		space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
@@ -2645,7 +2645,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	}
 	parentBlockSize := Indefinite
 	if parentWDM.IsOrthogonalTo(childWDM) {
-		parentBlockSize = fla.space.AvailableSize.BlockSize
+		parentBlockSize = fla.space.AvailableSize.BlockSize.Float64()
 	}
 	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
@@ -2778,7 +2778,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	// set the child's available inline-size via axis swapping.
 	parentBlockSize := Indefinite
 	if parentWDM.IsOrthogonalTo(childWDM) {
-		parentBlockSize = fla.space.AvailableSize.BlockSize
+		parentBlockSize = fla.space.AvailableSize.BlockSize.Float64()
 	}
 	// CSS Flexbox §9.8: If a single-line flex container has a definite cross
 	// size, the automatic preferred outer cross size of any stretched flex items
@@ -2912,7 +2912,7 @@ func (fla *FlexLayoutAlgorithm) resolveIntrinsicMaxMain(
 	if mainIsItemInline {
 		childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
-			SetAvailableSize(space.AvailableSize).
+			SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 			SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 			Build()
 		mm := ComputeMinMaxSizes(fla.ctx, child, childSpace)
@@ -2924,7 +2924,7 @@ func (fla *FlexLayoutAlgorithm) resolveIntrinsicMaxMain(
 		}
 	} else {
 		// Block-axis intrinsic keyword: lay out the item to determine its content block-size.
-		containerInlineSize := space.AvailableSize.InlineSize
+		containerInlineSize := space.AvailableSize.InlineSize.Float64()
 		minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 			SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
@@ -4144,7 +4144,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			} else if mainIsItemInline {
 				childSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
 					SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
-					SetAvailableSize(space.AvailableSize).
+					SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
 					SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 					Build()
 				mm := ComputeMinMaxSizes(fla.ctx, child, childSpace)
@@ -4155,7 +4155,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 					return mm.MaxContent
 				}
 			} else {
-				containerInlineSize := space.AvailableSize.InlineSize
+				containerInlineSize := space.AvailableSize.InlineSize.Float64()
 				minBlockSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 					SetAvailableSize(LogicalSize{InlineSize: containerInlineSize, BlockSize: Indefinite}).
 					SetPercentageResolutionSize(LogicalSize{InlineSize: containerInlineSize}).
@@ -4238,7 +4238,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		// max-content inline size (shrink-to-fit width). For column flex items
 		// without explicit inline-size, compute the shrink-to-fit width first
 		// so that percentage padding on descendants resolves correctly.
-		containerInlineSize := space.AvailableSize.InlineSize
+		containerInlineSize := space.AvailableSize.InlineSize.Float64()
 		// Only use shrink-to-fit for items that won't stretch to the container
 		// cross-size. Stretch items use the full container width, so their
 		// content suggestion should be computed at that width.

@@ -12,7 +12,7 @@ func TestConstraintSpaceBuilder_ParallelFlow(t *testing.T) {
 		Build()
 
 	// Parallel flow: sizes pass through unchanged.
-	if cs.AvailableSize.InlineSize != 800 || cs.AvailableSize.BlockSize != 600 {
+	if cs.AvailableSize.InlineSize.Float64() != 800 || cs.AvailableSize.BlockSize.Float64() != 600 {
 		t.Errorf("available: got %v, want inline=800 block=600", cs.AvailableSize)
 	}
 	if cs.IsOrthogonalWritingModeRoot {
@@ -33,7 +33,7 @@ func TestConstraintSpaceBuilder_OrthogonalFlow(t *testing.T) {
 
 	// Orthogonal: parent's inline (800) becomes child's block,
 	// parent's block (600) becomes child's inline.
-	if cs.AvailableSize.InlineSize != 600 || cs.AvailableSize.BlockSize != 800 {
+	if cs.AvailableSize.InlineSize.Float64() != 600 || cs.AvailableSize.BlockSize.Float64() != 800 {
 		t.Errorf("available: got %v, want inline=600 block=800", cs.AvailableSize)
 	}
 	if !cs.IsOrthogonalWritingModeRoot {
@@ -62,14 +62,14 @@ func TestConstraintSpaceBuilder_NewBFC_ClearsExclusions(t *testing.T) {
 
 func TestConstraintSpace_IndefiniteBlockSize(t *testing.T) {
 	cs := ConstraintSpace{
-		AvailableSize: LogicalSize{InlineSize: 800, BlockSize: Indefinite},
+		AvailableSize: oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: Indefinite}),
 	}
 	if !cs.IsBlockSizeIndefinite() {
 		t.Error("should be indefinite")
 	}
 
 	cs2 := ConstraintSpace{
-		AvailableSize: LogicalSize{InlineSize: 800, BlockSize: 600},
+		AvailableSize: oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: 600}),
 	}
 	if cs2.IsBlockSizeIndefinite() {
 		t.Error("should not be indefinite")

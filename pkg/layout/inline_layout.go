@@ -20,7 +20,7 @@ func countLinesForWidth(
 	fonts text.FontConfig,
 ) int {
 	space := ConstraintSpace{
-		AvailableSize:    LogicalSize{InlineSize: width, BlockSize: Indefinite},
+		AvailableSize:    oldLogicalToGeom(LogicalSize{InlineSize: width, BlockSize: Indefinite}),
 		WritingDirection: wdm,
 	}
 	lb := NewLineBreaker(itemsData, ctx, space, fonts, LineBreakerContent)
@@ -357,8 +357,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	lineAvailBlock := Indefinite
 	if pctBlockSize > 0 {
 		lineAvailBlock = pctBlockSize
-	} else if bla.space.AvailableSize.BlockSize >= 0 {
-		lineAvailBlock = bla.space.AvailableSize.BlockSize
+	} else if bla.space.AvailableSize.BlockSize.Float64() >= 0 {
+		lineAvailBlock = bla.space.AvailableSize.BlockSize.Float64()
 	}
 
 	// §10.3.2: Pre-resolve the available block-size that orthogonal
@@ -379,7 +379,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		lineAvailBlock, hasExplicitBlock, explicitBlockSize)
 
 	lineSpace := ConstraintSpace{
-		AvailableSize:                LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock},
+		AvailableSize:                oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
 		PercentageResolutionSize:     LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize},
 		WritingDirection:             wdm,
 		ExclusionSpace:               exclusionSpace,
@@ -937,7 +937,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		}
 		// Compute containing block physical size for inline relative positioning.
 		// Percentages for top/bottom resolve against CB height, left/right against width.
-		cbBlockSize := bla.space.AvailableSize.BlockSize
+		cbBlockSize := bla.space.AvailableSize.BlockSize.Float64()
 		if cbBlockSize == Indefinite {
 			cbBlockSize = 0
 		}

@@ -22,6 +22,21 @@ func oldSizeToGeom(s PhysicalSize) geometry.PhysicalSize {
 	return geometry.PhysicalSizeFromF64Round(s.Width, s.Height)
 }
 
+// geomLogicalToOld bridges geometry.LogicalSize to pkg/layout.LogicalSize.
+// Used during the Phase 13d migration to feed legacy float64-based logical-side
+// algorithms (margin resolvers, fragment-builder LogicalSize accumulators)
+// from the new LayoutUnit-backed ConstraintSpace fields. Goes away as those
+// consumers migrate.
+func geomLogicalToOld(s geometry.LogicalSize) LogicalSize {
+	return LogicalSize{InlineSize: s.InlineF64(), BlockSize: s.BlockF64()}
+}
+
+// oldLogicalToGeom bridges pkg/layout.LogicalSize to geometry.LogicalSize via
+// FromFloat64Round on each axis. Same migration purpose as geomLogicalToOld.
+func oldLogicalToGeom(s LogicalSize) geometry.LogicalSize {
+	return geometry.LogicalSizeFromF64Round(s.InlineSize, s.BlockSize)
+}
+
 // PhysicalOffset represents an (x, y) position in physical screen coordinates,
 // measured from the top-left corner.
 type PhysicalOffset struct {

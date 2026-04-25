@@ -1101,7 +1101,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm) // already zeroed for border-collapse
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(tla.style, wdm, tla.space.AvailableSize.InlineSize), wdm)
+	physMargin := ToPhysicalEdges(ResolveMargins(tla.style, wdm, tla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:  physMargin,
 		Border:  physBorder,

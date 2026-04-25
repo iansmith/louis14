@@ -165,7 +165,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
 
 		childSpace := ConstraintSpace{
-			AvailableSize:                  LogicalSize{InlineSize: itemInline, BlockSize: Indefinite},
+			AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: Indefinite}),
 			PercentageResolutionSize:       LogicalSize{InlineSize: itemInline, BlockSize: Indefinite},
 			PercentageResolutionInlineSize: itemInline,
 			IsFixedInlineSize:              true,
@@ -252,7 +252,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 				availBlock = 0
 			}
 			childSpace := ConstraintSpace{
-				AvailableSize:                  LogicalSize{InlineSize: itemInline, BlockSize: availBlock},
+				AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}),
 				PercentageResolutionSize:       LogicalSize{InlineSize: itemInline, BlockSize: availBlock},
 				PercentageResolutionInlineSize: itemInline,
 				IsFixedInlineSize:              true,
@@ -342,7 +342,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
-	physMargin := ToPhysicalEdges(ResolveMargins(gla.style, wdm, gla.space.AvailableSize.InlineSize), wdm)
+	physMargin := ToPhysicalEdges(ResolveMargins(gla.style, wdm, gla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:  physMargin,
 		Border:  physBorder,
@@ -396,8 +396,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	// CSS position:relative offset. Sticky is scroll-time, not layout-time.
 	if gla.style != nil && gla.style.GetPosition() == css.PositionRelative {
-		cbWidth := gla.space.AvailableSize.InlineSize
-		cbHeight := gla.space.AvailableSize.BlockSize
+		cbWidth := gla.space.AvailableSize.InlineSize.Float64()
+		cbHeight := gla.space.AvailableSize.BlockSize.Float64()
 		if cbHeight == Indefinite {
 			cbHeight = 0
 		}
