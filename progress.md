@@ -118,7 +118,36 @@ Results:
 Gate: css-multicol **168 → 176 (+8 net; cumulative +22 from pre-F3 baseline of 154)**. wm 779/781, CSS2 99/99, flex 626/629, position 91/105, spanner-fragmentation 12/13 all unchanged.
 
 **F2 phase 2 check:** `multicol-nested-010` diff unchanged at 3500 px. The fix did NOT unlock F2 phase 2 — nested leaf-fragmentation is genuinely a separate bug from inline-text-break-token forwarding. F2 phase 2 stays deferred.
-### F5. Phase 12h.3 list-item-003 trailing text — PENDING
+### F5. Phase 12h.3 list-item-003 trailing inline-after-spanner — DONE 2026-04-24
+
+**Single guarded if-block in `MulticolLayoutAlgorithm.layoutLine` per-column loop.** Research (findings §F5) had pointed at `InlineBreakToken` forwarding via `next_column_token` as the suspected fix path; on inspection, our forwarding chain was already correct post-F4 — the spanner break token already carried `ChildBreakTokens[0]={Node: anon-block, IsBreakBefore: true}` for the trailing inline content, and `block_layout`'s resume path correctly found the anon-block at `resumeChildIdx`. The bug was elsewhere.
+
+**Root cause.** `resolveColumnAutoBlockSize` returned a too-small balance estimate for the post-spanner row. For test container `display:list-item; columns:3` with content `[div h:150, spanner h:50, "← Marker here"]`, the post-spanner row contains only the trailing 16-px inline line. Estimate: `ceil(16 / 3) = 6`. Stretch loop didn't fire because:
+
+- Per-column inner loop: col 0 places the line at `blockOffset=0` in a 6-px fragmentainer. Inline layout's `blockOffset > 0` guard lets the first line through monolithically (correct — Blink does the same). Block layout's overflow path then fires (`blockCursor=16 > fragEnd=6`) and emits `outToken.HasSeenAllChildren=true` (no next sibling), `MinSpaceShortage=10`.
+- Col 1: resumes with `HasSeenAllChildren=true`, places nothing, returns `BreakToken=nil`.
+- Outer acceptance check: `!hasViolatingBreak && colBreakToken==nil && actualColumnCount<=numCols` → all true → ACCEPT. Stretch loop never enters.
+- Column fragment is 6 tall (`IsFixedBlockSize` from `createConstraintSpaceForColumn`). `ClipBlockAxisOnly=true` (F2 workaround) clips the 16-px line at 6 — text visibly cut off.
+
+**Fix.** Add a "terminal shortage in a continuation row" check: when `lineOffset > 0` (post-spanner / row-wrap continuation) AND `result.MinSpaceShortage > 0` AND `result.BreakToken.HasSeenAllChildren==true` AND `len(BreakToken.ChildBreakTokens)==0`, set `hasViolatingBreak=true` so the stretch loop fires. Stretch grows `colBlockSize` 6 → 16, retry fits the line, column fragment is 16 tall, no clip. Container block-size becomes 116 (50 spanner row + 50 spanner + 16 trailing) and the trailing text is fully visible at the correct y.
+
+**Why `lineOffset > 0`.** Without that guard, the same condition triggers on first-row "all siblings stacked overflow" — e.g. `multicol-rule-nested-balancing-001/002` where outer-block(200) + inner-article(200) overflow col 0 (col=200 from balance estimate). Both test (column-fill default = balance) and ref (column-fill:auto) currently render the same clipped shape (only outer-block visible), so the test passes by both sides matching. Forcing stretch in that scenario diverges the test render from the ref (test gets balanced layout, ref still clipped) — net regression. The continuation-row guard scopes the fix to the post-spanner / post-row-wrap case where the `HasSeenAllChildren` overflow truly means "monolithic content was placed at offset 0 and nothing else is coming."
+
+**Driver results 2026-04-24:**
+- `multicol-list-item-003.html` PASS at 0 diff (was 372 px / 0.1 % — the diff was the bottom 8 px of "← Marker here" cut off below the column).
+- `multicol-list-item-004.html` PASS at 0 diff (spillover — same trailing-inline-in-list-item-after-spanner shape).
+- `multicol-list-item-005.html` PASS at 0 diff (spillover).
+- No regressions across full css-multicol section (179 PASS, was 176; +3 net).
+
+**Gate (2026-04-24):**
+- css-multicol: **176 → 179 (+3 net; cumulative +25 from pre-F3 baseline of 154)**.
+- CSS2 99/99, css-flexbox 626/629, css-position 91/105, spanner-fragmentation 12/13, css-writing-modes 779/781 — all unchanged.
+
+**Code:** `pkg/layout/multicol_layout.go` — single ~10-line if-block added in the per-column inner loop.
+
+**Open follow-ups around the same area (deferred):**
+- F2 phase 2 (`multicol-nested-010` nested leaf-fragmentation, 3500 px). The current F5 fix's `lineOffset > 0` guard is itself a hint that ClipBlockAxisOnly + acceptance shape are entangled in our engine the way they aren't in Blink (Blink doesn't clip column fragmentainers; F2 clip workaround forced us to emit shortage-driving stretch where Blink would emit visible ink-overflow). Properly fragmenting leaves across nested multicol rows (Blink-parity) would let ClipBlockAxisOnly be removed and the F5 stretch trigger could simplify.
+- 4 margin-family regressions still pending from F4 (`multicol-inherit-001`, `multicol-margin-001`, `multicol-margin-child-001`, `multicol-nested-margin-001`). Same break-before-child-when-overflowing root cause — separate phase.
 
 ---
 
