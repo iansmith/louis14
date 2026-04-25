@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/geometry/layoutunit"
+
 // ConstraintSpace is the immutable input from parent to child during layout.
 // It carries all constraints in the CHILD's writing mode — the parent handles
 // the conversion when constructing it.
@@ -43,19 +45,19 @@ type ConstraintSpace struct {
 	// BFC origin. Non-BFC children use this to translate local block offsets
 	// to BFC-relative coordinates when querying the ExclusionSpace.
 	// Mirrors Blink's BfcOffset concept.
-	BfcBlockOffset float64
+	BfcBlockOffset layoutunit.LayoutUnit
 
 	// BfcInlineOffset is this child's content-area inline-start position
 	// relative to the BFC origin. Non-BFC children use this to translate
 	// float exclusion inline offsets to local coordinates when computing
 	// line box positions. Per CSS 2.1 §9.5, non-BFC block boxes flow as
 	// if floats don't exist, but their line boxes shorten around floats.
-	BfcInlineOffset float64
+	BfcInlineOffset layoutunit.LayoutUnit
 
 	// BfcContainerInlineSize is the BFC container's content inline-size.
 	// Used by non-BFC children to correctly query the ExclusionSpace
 	// with the BFC's inline-size rather than the child's own inline-size.
-	BfcContainerInlineSize float64
+	BfcContainerInlineSize layoutunit.LayoutUnit
 
 	// IsInsideFlexibleBox is true when this child is a direct flex item.
 	// Used by §4.5 to compute the automatic minimum size (min-content instead of 0
@@ -329,7 +331,7 @@ func (b *ConstraintSpaceBuilder) SetExclusionSpace(es *ExclusionSpace) *Constrai
 
 // SetBfcBlockOffset sets the child's block-start position relative to the
 // BFC origin. Used by non-BFC children to correctly query the ExclusionSpace.
-func (b *ConstraintSpaceBuilder) SetBfcBlockOffset(v float64) *ConstraintSpaceBuilder {
+func (b *ConstraintSpaceBuilder) SetBfcBlockOffset(v layoutunit.LayoutUnit) *ConstraintSpaceBuilder {
 	b.space.BfcBlockOffset = v
 	return b
 }
@@ -337,14 +339,14 @@ func (b *ConstraintSpaceBuilder) SetBfcBlockOffset(v float64) *ConstraintSpaceBu
 // SetBfcInlineOffset sets the child's content-area inline-start position
 // relative to the BFC origin. Used by non-BFC children for float-line
 // interaction in the inline layout.
-func (b *ConstraintSpaceBuilder) SetBfcInlineOffset(v float64) *ConstraintSpaceBuilder {
+func (b *ConstraintSpaceBuilder) SetBfcInlineOffset(v layoutunit.LayoutUnit) *ConstraintSpaceBuilder {
 	b.space.BfcInlineOffset = v
 	return b
 }
 
 // SetBfcContainerInlineSize sets the BFC container's content inline-size.
 // Used by non-BFC children to correctly query the ExclusionSpace.
-func (b *ConstraintSpaceBuilder) SetBfcContainerInlineSize(v float64) *ConstraintSpaceBuilder {
+func (b *ConstraintSpaceBuilder) SetBfcContainerInlineSize(v layoutunit.LayoutUnit) *ConstraintSpaceBuilder {
 	b.space.BfcContainerInlineSize = v
 	return b
 }

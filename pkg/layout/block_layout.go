@@ -135,7 +135,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// when passing the exclusion space to children.
 	bfcBlockOrigin := 0.0
 	if !bla.space.IsNewFormattingContext {
-		bfcBlockOrigin = bla.space.BfcBlockOffset + geom.Border.BlockStart + geom.Padding.BlockStart
+		bfcBlockOrigin = bla.space.BfcBlockOffset.Float64() + geom.Border.BlockStart + geom.Padding.BlockStart
 	}
 
 	// BFC inline origin: the inline offset of this element's content box
@@ -144,9 +144,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	bfcInlineOrigin := 0.0
 	bfcContainerInlineSize := contentInlineSize
 	if !bla.space.IsNewFormattingContext {
-		bfcInlineOrigin = bla.space.BfcInlineOffset + geom.Border.InlineStart + geom.Padding.InlineStart
-		if bla.space.BfcContainerInlineSize > 0 {
-			bfcContainerInlineSize = bla.space.BfcContainerInlineSize
+		bfcInlineOrigin = bla.space.BfcInlineOffset.Float64() + geom.Border.InlineStart + geom.Padding.InlineStart
+		if !bla.space.BfcContainerInlineSize.IsZero() {
+			bfcContainerInlineSize = bla.space.BfcContainerInlineSize.Float64()
 		}
 	}
 
@@ -546,12 +546,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// The child's tentative BFC offset = parent's BFC origin +
 				// child's local position (blockCursor + pending margin).
 				tentativeChildBfcOff := bfcBlockOrigin + blockCursor + prevMarginStrut.Resolve() + childMargins.BlockStart
-				csBuilder.SetBfcBlockOffset(tentativeChildBfcOff)
+				csBuilder.SetBfcBlockOffset(layoutunit.FromFloat64Round(tentativeChildBfcOff))
 				// The child's BFC inline offset = parent's BFC inline origin +
 				// child's inline position. Per CSS 2.1 §9.5, non-BFC blocks
 				// position as if floats don't exist, so use margin only.
-				csBuilder.SetBfcInlineOffset(bfcInlineOrigin + childMargins.InlineStart)
-				csBuilder.SetBfcContainerInlineSize(bfcContainerInlineSize)
+				csBuilder.SetBfcInlineOffset(layoutunit.FromFloat64Round(bfcInlineOrigin + childMargins.InlineStart))
+				csBuilder.SetBfcContainerInlineSize(layoutunit.FromFloat64Round(bfcContainerInlineSize))
 			}
 
 			// Propagate fragmentation context to children.
