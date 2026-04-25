@@ -32,7 +32,7 @@ Current state (2026-04-25):
 - spanner-fragmentation 12/13 (unchanged)
 - css-writing-modes **781** / 781 (+2 from F1 closing at commit `41b674ef` + mazzy `d6b27049`/`cde2c29`, 2026-04-25)
 
-**Phase 13 progress (2026-04-25):** 13a (`3897b43e`, foundational `LayoutUnit` scalar) + 13b (`20f25053`, composite geometry types + `WritingModeConverter`) landed earlier today. **13c (fragment offsets/sizes) and 13d (ConstraintSpace+ExclusionSpace precision fields) both landed this session**: 13c.1 RelativeOffset (`6e689d8e`) → 13c.2 Children[].Offset (`4dc4ac0b`) → 13c.3 Size (`912c03fa`); then 13d.1 ConsumedBlockSize (`7d64570a`) → 13d.2 ClearanceOffset (`c6211fb8`) → 13d.3 Bfc offsets (`d1687adc`) → 13d.4a AvailableSize (`3e7d598c`) → 13d.4b PercentageResolutionSize (`7db1f2fd`). Every `PhysicalFragment` coordinate field plus every plan-named `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision field is now LayoutUnit-backed. **13e CLOSED** at 13e.6 (`ff45432a`); every percentage-resolution call site flows through `layoutunit.ResolvePercent`. **13f.1 landed** (this commit): text-shaping snap helpers `shapeWidthSnap`/`shapeAdvancePairSnap` in new `pkg/text/shape_snap.go`, mirroring Blink's `ShapeResult::SnappedWidth` (CEIL) and `SnappedStart/EndPositionForOffset` (FLOOR/CEIL pair). Additive: no public API changes, no callers yet — 13f.2 (MeasureText* return type) and 13f.3 (ShapeAdvances* return type) consume the helpers next. All six gate invariants held at every checkpoint commit: CSS2 99/99, css-flexbox 626/629, css-position 91/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13.
+**Phase 13 progress (2026-04-25):** 13a (`3897b43e`) + 13b (`20f25053`) earlier today. **13c + 13d this session**: 13c.1/13c.2/13c.3 (`6e689d8e`/`4dc4ac0b`/`912c03fa`); 13d.1/13d.2/13d.3/13d.4a/13d.4b (`7d64570a`/`c6211fb8`/`d1687adc`/`3e7d598c`/`7db1f2fd`). Every `PhysicalFragment` coordinate field plus every plan-named `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision field is now LayoutUnit-backed. **13e CLOSED** at 13e.6 (`ff45432a`); every percentage-resolution call site flows through `layoutunit.ResolvePercent`. **13f.1 landed** (`c5c9b67c`): `shapeWidthSnap`/`shapeAdvancePairSnap` helpers in new `pkg/text/shape_snap.go`, mirroring Blink's `ShapeResult::SnappedWidth` (CEIL) and `SnappedStart/EndPositionForOffset` (FLOOR/CEIL pair). **13f.2 landed** (this commit): `pkg/text.MeasureText` and `MeasureTextVerticalFromFont` return `LayoutUnit` via Blink-parity CEIL snap; 33 active louis14 consumer sites bridge with `.Float64()`. Legacy wrappers (`MeasureTextWithStyle`/`WithWeight`/`Default`/`Vertical`) keep float64 signatures with internal bridge — louis13's ~46 sites untouched. 13f.4 closed as "skip" per `findings.md` 13f research. All six gate invariants held at every checkpoint commit: CSS2 99/99, css-flexbox 626/629, css-position 91/104, css-writing-modes 781/781, css-multicol 179/455, spanner-fragmentation 12/13.
 
 ### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b + 13c + 13d done)
 
@@ -367,6 +367,41 @@ No public API changes yet — `MeasureText*` and `ShapeAdvances*` still return `
 - spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
 
 Files: `pkg/text/shape_snap.go` (+58, new), `pkg/text/shape_snap_test.go` (+108, new), `pkg/geometry/layoutunit/layoutunit_test.go` (+33), `findings.md` (+101 — Phase 13f research notes), `task_plan.md` (Phase 13 sub-phases 13f row + status lines), `progress.md` (this section).
+
+#### Phase 13f.2: MeasureText + MeasureTextVerticalFromFont return LayoutUnit — DONE 2026-04-25
+
+Promoted the two actively-used members of the `pkg/text` measurement family from `(float64, float64)` to `(layoutunit.LayoutUnit, layoutunit.LayoutUnit)`:
+
+- `MeasureText(text, fontSize, fontPath) (width, height layoutunit.LayoutUnit)` — applies `shapeWidthSnap` (= `FromFloat64Ceil`) to the HarfBuzz `int32 XAdvance / 64.0` advance and CEIL-snaps the font-metric height. Mirrors Blink `ShapeResult::SnappedWidth` (`shape_result.h`: `LayoutUnit::FromFloatCeil(width_)`).
+- `MeasureTextVerticalFromFont(text, fontSize, fontPath) (inlineAdvance, blockAdvance layoutunit.LayoutUnit)` — same CEIL discipline on both axes for vertical writing modes.
+
+The four legacy wrappers (`MeasureTextDefault`, `MeasureTextWithWeight`, `MeasureTextWithStyle`, `MeasureTextVertical`) **keep their float64 signatures**. `MeasureTextWithStyle`/`WithWeight`/`Default` now route through `MeasureText` internally and unwrap via `.Float64()`; `MeasureTextVertical` is unused. This keeps the snap discipline applied internally while leaving louis13's ~46 `MeasureTextWithStyle` call sites untouched (see "louis13 surface area" below). Bit-exact identity for the current code paths because (a) HarfBuzz advances are exact 1/64-px (`int32/64.0` lands on a LayoutUnit raw quantum, so CEIL is lossless); (b) heights pass through `math.Round(...)` to integer floats, which CEIL-snap exactly.
+
+**Active louis14 consumers (33 sites, all bridged with `.Float64()`).** The two-line bridge idiom mirrors the 13c/13d/13e ".Float64() at consumer" pattern:
+
+```go
+// Before:
+w, _ = text.MeasureText(visible, fontSize, fontPath)
+// After:
+mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+w = mtLU.Float64()
+```
+
+Distribution: `pkg/layout/engine.go` 1 site (`computeChWidths`); `pkg/layout/line_breaker.go` 32 sites across `measureTextContent`, `lineBreakWord`, `tryAutoHyphenation`, `breakTextAtCharacter`, `finishLine` whitespace trim (leading + trailing), `measureTextWithTabs`. Letter/word-spacing pad is applied post-bridge in float64 (still float — `segmentWidth += letterSpacing * float64(rc-1)`); 13e′ will eventually promote those accumulators.
+
+**louis13 surface area unchanged.** louis13 has ~46 callers of `MeasureTextWithStyle`, ~11 of `MeasureTextWithWeight`. Because those wrapper signatures stay `(float64, float64)`, **zero louis13 sites change** in 13f.2. The internal snap discipline still applies (the wrapper calls the LU-returning `MeasureText` and unwraps); behavior is bit-identical for the integer/quantum-aligned values these functions produce.
+
+**Risk profile.** wm 781/781 was the canary. The migration changes *where* the float→LayoutUnit snap happens, not *what* the snap value is — at HarfBuzz cluster boundaries (the dominant case) Floor and Ceil agree, so the round-trip `LU.Float64()` produces bit-identical floats. Six invariants confirmed unchanged.
+
+**Gate-sweep (six invariants at 13f.2 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (629 - 3 fails)
+- css-position 91/104 ✓ (104 - 13 fails)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (455 - 276 fails)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+Files: `pkg/text/measure.go` (+30/-15: signatures + internal bridge for the four legacy wrappers + import of `layoutunit`), `pkg/layout/engine.go` (+2/-1 at one site), `pkg/layout/line_breaker.go` (+~64/-32 across 32 sites — uniform 2-line bridge replacing each `var, _ = text.MeasureText...(...)`), `task_plan.md` + `progress.md`.
 
 ---
 

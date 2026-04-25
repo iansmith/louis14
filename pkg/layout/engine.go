@@ -530,7 +530,8 @@ func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
 		key := fontKey{path: fontPath, fontSize: fontSize}
 		ch, ok := cache[key]
 		if !ok {
-			ch, _ = text.MeasureText("0", fontSize, fontPath)
+			chLU, _ := text.MeasureText("0", fontSize, fontPath)
+			ch = chLU.Float64()
 			cache[key] = ch
 		}
 		style.ChWidth = ch

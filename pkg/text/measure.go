@@ -11,6 +11,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"louis14/pkg/geometry/layoutunit"
+
 	"mazarin/textshape"
 )
 
@@ -380,34 +382,56 @@ func measureWidth(text string, fontSize float64, fontPath string) float64 {
 	return w
 }
 
-// MeasureText measures the width and height of text with the given font.
-func MeasureText(text string, fontSize float64, fontPath string) (width, height float64) {
+// MeasureText measures the width and height of text with the given font and
+// returns them as LayoutUnit values, snapped at this boundary using CEIL —
+// the Blink ShapeResult::SnappedWidth analog (shape_result.h:
+// `LayoutUnit::FromFloatCeil(width_)`). CEIL is the conservative direction
+// for line-fit decisions: over-reporting is safe, under-reporting overflows
+// the line box.
+//
+// Internal float64 accumulation is preserved (`measureWidth` keeps the
+// HarfBuzz int32 26.6 / 64.0 path); the snap happens once at the public API
+// boundary via `shapeWidthSnap` (= `layoutunit.FromFloat64Ceil`). Callers
+// holding a float64 accumulator bridge with `.Float64()` (round-trips
+// losslessly for exact-1/64-px values, which is what HarfBuzz produces, and
+// for the math.Round-produced integer height).
+func MeasureText(text string, fontSize float64, fontPath string) (width, height layoutunit.LayoutUnit) {
 	w := measureWidth(text, fontSize, fontPath)
+	width = shapeWidthSnap(w)
 	m := openFont(fontPath, fontSize)
 	if m.FontID >= 0 && m.Height > 0 {
-		return w, math.Round(float64(m.Height) / 64.0)
+		height = layoutunit.FromFloat64Ceil(math.Round(float64(m.Height) / 64.0))
+	} else {
+		height = layoutunit.FromFloat64Ceil(math.Round(fontSize * 1.2))
 	}
-	return w, math.Round(fontSize * 1.2)
+	return
 }
 
-// MeasureTextDefault measures text using the default font.
+// MeasureTextDefault measures text using the default font. Float64 wrapper
+// over MeasureText for legacy callers (louis13/); the snap discipline is
+// preserved internally.
 func MeasureTextDefault(text string, fontSize float64) (width, height float64) {
-	return MeasureText(text, fontSize, DefaultFontPath)
+	w, h := MeasureText(text, fontSize, DefaultFontPath)
+	return w.Float64(), h.Float64()
 }
 
 // MeasureTextWithWeight measures text using the specified font weight.
+// Float64 wrapper over MeasureText.
 func MeasureTextWithWeight(text string, fontSize float64, bold bool) (width, height float64) {
 	fontPath := DefaultFontPath
 	if bold {
 		fontPath = BoldFontPath
 	}
-	return MeasureText(text, fontSize, fontPath)
+	w, h := MeasureText(text, fontSize, fontPath)
+	return w.Float64(), h.Float64()
 }
 
-// MeasureTextWithStyle measures text with the full style combination.
+// MeasureTextWithStyle measures text with the full style combination. Float64
+// wrapper over MeasureText.
 func MeasureTextWithStyle(text string, fontSize float64, bold, italic, mono, ahem bool) (width, height float64) {
 	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	return MeasureText(text, fontSize, fontPath)
+	w, h := MeasureText(text, fontSize, fontPath)
+	return w.Float64(), h.Float64()
 }
 
 // MeasureTextVertical returns the inline advance of text in a vertical writing
@@ -646,14 +670,16 @@ func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, f
 
 // MeasureTextVerticalFromFont returns the inline advance of text in a vertical
 // writing mode using the given font path. Each upright glyph advances by fontSize.
-func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance float64) {
+// Returns LayoutUnit values snapped via CEIL at this boundary — same Blink-
+// parity ShapeResult::SnappedWidth discipline as MeasureText.
+func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string) (inlineAdvance, blockAdvance layoutunit.LayoutUnit) {
 	runeCount := utf8.RuneCountInString(text)
-	inlineAdvance = float64(runeCount) * fontSize
+	inlineAdvance = layoutunit.FromFloat64Ceil(float64(runeCount) * fontSize)
 	m := openFont(fontPath, fontSize)
 	if m.FontID >= 0 && m.Height > 0 {
-		blockAdvance = math.Round(float64(m.Height) / 64.0)
+		blockAdvance = layoutunit.FromFloat64Ceil(math.Round(float64(m.Height) / 64.0))
 	} else {
-		blockAdvance = math.Round(fontSize * 1.2)
+		blockAdvance = layoutunit.FromFloat64Ceil(math.Round(fontSize * 1.2))
 	}
 	return
 }

@@ -229,9 +229,11 @@ func measureTextContent(content string, fontSize float64, fontPath string, lette
 	}
 	var w float64
 	if isVertical {
-		w, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+		mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+		w = mtLU.Float64()
 	} else {
-		w, _ = text.MeasureText(visible, fontSize, fontPath)
+		mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+		w = mtLU.Float64()
 	}
 	if letterSpacing != 0 {
 		rc := runeLen(visible)
@@ -304,9 +306,11 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 		fullWidth = measureTextContent(content, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
 	} else {
 		if isVertical {
-			fullWidth, _ = text.MeasureTextVerticalFromFont(content, fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont(content, fontSize, fontPath)
+			fullWidth = mtLU.Float64()
 		} else {
-			fullWidth, _ = text.MeasureText(content, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(content, fontSize, fontPath)
+			fullWidth = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
 			runeCount := runeLen(content)
@@ -347,9 +351,11 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 				strippedWidth = measureTextContent(stripped, fontSize, fontPath, letterSpacing, wordSpacing, isVertical)
 			} else {
 				if isVertical {
-					strippedWidth, _ = text.MeasureTextVerticalFromFont(stripped, fontSize, fontPath)
+					mtLU, _ := text.MeasureTextVerticalFromFont(stripped, fontSize, fontPath)
+					strippedWidth = mtLU.Float64()
 				} else {
-					strippedWidth, _ = text.MeasureText(stripped, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(stripped, fontSize, fontPath)
+					strippedWidth = mtLU.Float64()
 				}
 				if letterSpacing != 0 {
 					rc := runeLen(stripped)
@@ -457,9 +463,11 @@ func (lb *LineBreaker) breakTextAtWord(
 		}
 		var w float64
 		if isVertical {
-			w, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+			w = mtLU.Float64()
 		} else {
-			w, _ = text.MeasureText(visible, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+			w = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
 			rc := runeLen(visible)
@@ -478,9 +486,11 @@ func (lb *LineBreaker) breakTextAtWord(
 	hasSoftHyphen := strings.Contains(content, "\u00AD")
 	if hasSoftHyphen && hyphens != "none" {
 		if isVertical {
-			hyphenWidth, _ = text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
+			hyphenWidth = mtLU.Float64()
 		} else {
-			hyphenWidth, _ = text.MeasureText("-", fontSize, fontPath)
+			mtLU, _ := text.MeasureText("-", fontSize, fontPath)
+			hyphenWidth = mtLU.Float64()
 		}
 	}
 
@@ -652,9 +662,11 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 		visible := strings.ReplaceAll(segment, "\u00AD", "")
 		var segWidth float64
 		if isVertical {
-			segWidth, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+			segWidth = mtLU.Float64()
 		} else {
-			segWidth, _ = text.MeasureText(visible, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+			segWidth = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
 			rc := runeLen(visible)
@@ -695,9 +707,11 @@ func (lb *LineBreaker) breakTextAtSoftHyphen(
 				visible := strings.ReplaceAll(segment, "\u00AD", "")
 				var segWidth float64
 				if isVertical {
-					segWidth, _ = text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+					mtLU, _ := text.MeasureTextVerticalFromFont(visible, fontSize, fontPath)
+					segWidth = mtLU.Float64()
 				} else {
-					segWidth, _ = text.MeasureText(visible, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(visible, fontSize, fontPath)
+					segWidth = mtLU.Float64()
 				}
 				if letterSpacing != 0 {
 					rc := runeLen(visible)
@@ -801,9 +815,11 @@ func (lb *LineBreaker) tryAutoHyphenation(
 	// Measure the visible hyphen.
 	var hyphenWidth float64
 	if isVertical {
-		hyphenWidth, _ = text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
+		mtLU, _ := text.MeasureTextVerticalFromFont("-", fontSize, fontPath)
+		hyphenWidth = mtLU.Float64()
 	} else {
-		hyphenWidth, _ = text.MeasureText("-", fontSize, fontPath)
+		mtLU, _ := text.MeasureText("-", fontSize, fontPath)
+		hyphenWidth = mtLU.Float64()
 	}
 
 	// Split into words and try to hyphenate the word that doesn't fit.
@@ -819,9 +835,11 @@ func (lb *LineBreaker) tryAutoHyphenation(
 	for i, word := range words {
 		var w float64
 		if isVertical {
-			w, _ = text.MeasureTextVerticalFromFont(word, fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont(word, fontSize, fontPath)
+			w = mtLU.Float64()
 		} else {
-			w, _ = text.MeasureText(word, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(word, fontSize, fontPath)
+			w = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
 			rc := runeLen(word)
@@ -867,9 +885,11 @@ func (lb *LineBreaker) tryAutoHyphenation(
 		prefix := string(runes[:runeOff])
 		var prefixWidth float64
 		if isVertical {
-			prefixWidth, _ = text.MeasureTextVerticalFromFont(prefix, fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont(prefix, fontSize, fontPath)
+			prefixWidth = mtLU.Float64()
 		} else {
-			prefixWidth, _ = text.MeasureText(prefix, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(prefix, fontSize, fontPath)
+			prefixWidth = mtLU.Float64()
 		}
 		if letterSpacing != 0 {
 			rc := utf8.RuneCountInString(prefix)
@@ -1019,9 +1039,11 @@ func (lb *LineBreaker) breakTextAtCharacter(
 		charStr := string(r)
 		var charWidth float64
 		if isVertical {
-			charWidth, _ = text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
+			charWidth = mtLU.Float64()
 		} else {
-			charWidth, _ = text.MeasureText(charStr, fontSize, fontPath)
+			mtLU, _ := text.MeasureText(charStr, fontSize, fontPath)
+			charWidth = mtLU.Float64()
 		}
 		// Add letter-spacing between characters (not before the first).
 		if letterSpacing != 0 && fitted > 0 {
@@ -1048,9 +1070,11 @@ func (lb *LineBreaker) breakTextAtCharacter(
 			r, size := utf8.DecodeRuneInString(content)
 			charStr := string(r)
 			if isVertical {
-				usedWidth, _ = text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
+				mtLU, _ := text.MeasureTextVerticalFromFont(charStr, fontSize, fontPath)
+				usedWidth = mtLU.Float64()
 			} else {
-				usedWidth, _ = text.MeasureText(charStr, fontSize, fontPath)
+				mtLU, _ := text.MeasureText(charStr, fontSize, fontPath)
+				usedWidth = mtLU.Float64()
 			}
 			fitted = 1
 			byteOffset = size
@@ -1317,9 +1341,11 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 				fontPath := resolveFontPath(r.Item.Style, lb.fonts)
 				var newWidth float64
 				if isVertical {
-					newWidth, _ = text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
+					mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
+					newWidth = mtLU.Float64()
 				} else {
-					newWidth, _ = text.MeasureText(trimmed, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath)
+					newWidth = mtLU.Float64()
 				}
 				line.Width -= (r.InlineSize - newWidth)
 				r.InlineSize = newWidth
@@ -1355,9 +1381,11 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 				fontPath := resolveFontPath(r.Item.Style, lb.fonts)
 				var newWidth float64
 				if isVertical {
-					newWidth, _ = text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
+					mtLU, _ := text.MeasureTextVerticalFromFont(trimmed, fontSize, fontPath)
+					newWidth = mtLU.Float64()
 				} else {
-					newWidth, _ = text.MeasureText(trimmed, fontSize, fontPath)
+					mtLU, _ := text.MeasureText(trimmed, fontSize, fontPath)
+					newWidth = mtLU.Float64()
 				}
 				line.Width -= (r.InlineSize - newWidth)
 				r.InlineSize = newWidth
@@ -1746,9 +1774,11 @@ func (lb *LineBreaker) measureTextWithTabs(
 		// tab-size is a character count: interval = N × advance-of-space.
 		var spaceW float64
 		if isVertical {
-			spaceW, _ = text.MeasureTextVerticalFromFont(" ", fontSize, fontPath)
+			mtLU, _ := text.MeasureTextVerticalFromFont(" ", fontSize, fontPath)
+			spaceW = mtLU.Float64()
 		} else {
-			spaceW, _ = text.MeasureText(" ", fontSize, fontPath)
+			mtLU, _ := text.MeasureText(" ", fontSize, fontPath)
+			spaceW = mtLU.Float64()
 		}
 		if spaceW <= 0 {
 			spaceW = fontSize
@@ -1767,9 +1797,11 @@ func (lb *LineBreaker) measureTextWithTabs(
 		if len(seg) > 0 {
 			var segW float64
 			if isVertical {
-				segW, _ = text.MeasureTextVerticalFromFont(seg, fontSize, fontPath)
+				mtLU, _ := text.MeasureTextVerticalFromFont(seg, fontSize, fontPath)
+				segW = mtLU.Float64()
 			} else {
-				segW, _ = text.MeasureText(seg, fontSize, fontPath)
+				mtLU, _ := text.MeasureText(seg, fontSize, fontPath)
+				segW = mtLU.Float64()
 			}
 			if letterSpacing != 0 {
 				rc := runeLen(seg)
