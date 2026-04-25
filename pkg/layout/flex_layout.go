@@ -667,7 +667,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	hasWrapBoundary := hasDefiniteMain
 	if !isRow && !hasDefiniteMain && wrapMode != "nowrap" {
 		if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
-			wrapMainSize = maxBlock
+			wrapMainSize = maxBlock.Float64()
 			hasWrapBoundary = true
 		}
 	}
@@ -785,12 +785,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 						// logicalRatio = inline/block → block = inline/ratio.
 						crossContent = mainContent / logicalRatio
 						// Clamp by min/max block (cross) size.
-						minCross := ResolveMinBlockSize(item.style, item.wdm, cs, item.geom)
+						minCross := ResolveMinBlockSize(item.style, item.wdm, cs, item.geom).Float64()
 						if crossContent < minCross {
 							crossContent = minCross
 						}
-						if maxCross, hasMax := ResolveMaxBlockSize(item.style, item.wdm, cs, item.geom); hasMax && crossContent > maxCross {
-							crossContent = maxCross
+						if maxCrossLU, hasMax := ResolveMaxBlockSize(item.style, item.wdm, cs, item.geom); hasMax && crossContent > maxCrossLU.Float64() {
+							crossContent = maxCrossLU.Float64()
 						}
 					} else {
 						// Main = block axis → cross = inline axis.
@@ -1004,11 +1004,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// Apply min/max cross constraints.
 	if isRow {
 		// cross = block
-		minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
+		minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom).Float64()
 		if containerCrossSize < minBlock {
 			containerCrossSize = minBlock
 		}
-		if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+		if maxBlockLU, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+			maxBlock := maxBlockLU.Float64()
 			if containerCrossSize > maxBlock {
 				containerCrossSize = maxBlock
 			}
@@ -1085,12 +1086,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		// main axis = block axis and the container has min-height/max-height).
 		// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
 		if !isRow {
-			if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+			if maxBlockLU, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+				maxBlock := maxBlockLU.Float64()
 				if containerMainSize > maxBlock {
 					containerMainSize = maxBlock
 				}
 			}
-			minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
+			minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom).Float64()
 			if containerMainSize < minBlock {
 				containerMainSize = minBlock
 			}
@@ -1575,12 +1577,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Apply min/max block constraints.
 	// CSS 2.1 §10.7: Apply max first, then min. This ensures min wins when min > max.
-	if maxBlock, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+	if maxBlockLU, hasMax := ResolveMaxBlockSize(fla.style, wdm, fla.space, geom); hasMax {
+		maxBlock := maxBlockLU.Float64()
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}
 	}
-	minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom)
+	minBlock := ResolveMinBlockSize(fla.style, wdm, fla.space, geom).Float64()
 	if finalBlockSize < minBlock {
 		finalBlockSize = minBlock
 	}
@@ -2074,7 +2077,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 			}
 		} else {
 			if max, ok := ResolveMaxBlockSize(childStyle, childWDM, itemSizingSpace, childGeom); ok {
-				maxMainSize = max
+				maxMainSize = max.Float64()
 			}
 		}
 		// Handle intrinsic keywords for max main size (e.g., max-height: min-content).
@@ -2254,11 +2257,12 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				// Clamp cross-size by min/max constraints before transferring.
 				if hasItemCross {
 					if mainIsItemInline {
-						minCross := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom)
+						minCross := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom).Float64()
 						if itemCrossContent < minCross {
 							itemCrossContent = minCross
 						}
-						if maxCross, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+						if maxCrossLU, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+							maxCross := maxCrossLU.Float64()
 							if itemCrossContent > maxCross {
 								itemCrossContent = maxCross
 							}
@@ -2340,12 +2344,12 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
 					itemCrossContent = explicit.Float64()
 					// Clamp by min/max block size.
-					minBlock := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					minBlock := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom).Float64()
 					if itemCrossContent < minBlock {
 						itemCrossContent = minBlock
 					}
-					if maxBlock, hasMax := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); hasMax && itemCrossContent > maxBlock {
-						itemCrossContent = maxBlock
+					if maxBlockLU, hasMax := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); hasMax && itemCrossContent > maxBlockLU.Float64() {
+						itemCrossContent = maxBlockLU.Float64()
 					}
 					hasItemCross = true
 				}
@@ -2732,14 +2736,15 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 			Build()
 		if mainIsItemInline {
 			// Main=inline, cross=block. Apply block min/max only.
-			minBlock := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom)
+			minBlock := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom).Float64()
 			if blockSize < minBlock {
 				blockSize = minBlock
 				if logicalRatio > 0 {
 					inlineSize = blockSize * logicalRatio
 				}
 			}
-			if maxBlock, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+			if maxBlockLU, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+				maxBlock := maxBlockLU.Float64()
 				if blockSize > maxBlock {
 					blockSize = maxBlock
 					if logicalRatio > 0 {
@@ -2971,7 +2976,8 @@ func (fla *FlexLayoutAlgorithm) clampMainSizeWithMin(
 			}
 		}
 	} else {
-		if max, ok := ResolveMaxBlockSize(style, childWDM, space, childGeom); ok {
+		if maxLU, ok := ResolveMaxBlockSize(style, childWDM, space, childGeom); ok {
+			max := maxLU.Float64()
 			if result > max {
 				result = max
 			}
@@ -4182,7 +4188,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			if mainIsItemInline {
 				return ResolveMinInlineSize(style, childWDM, space, childGeom).Float64()
 			}
-			return ResolveMinBlockSize(style, childWDM, space, childGeom)
+			return ResolveMinBlockSize(style, childWDM, space, childGeom).Float64()
 		}
 	}
 
@@ -4370,7 +4376,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			if crossContentSize < 0 {
 				if mainIsItemInline {
 					// Cross = block; check min-block-size (min-height).
-					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom).Float64()
 					if minCross > 0 {
 						crossContentSize = minCross
 					}
@@ -4389,11 +4395,12 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			if crossContentSize >= 0 {
 				if mainIsItemInline {
 					// Cross = block.
-					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom).Float64()
 					if crossContentSize < minCross {
 						crossContentSize = minCross
 					}
-					if maxCross, ok := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); ok {
+					if maxCrossLU, ok := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); ok {
+						maxCross := maxCrossLU.Float64()
 						if crossContentSize > maxCross {
 							crossContentSize = maxCross
 						}
@@ -4466,7 +4473,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			// Also check min-cross-size as a fallback for non-replaced elements.
 			if crossContentSize < 0 {
 				if mainIsItemInline {
-					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom).Float64()
 					if minCross > 0 {
 						crossContentSize = minCross
 					}
@@ -4480,11 +4487,12 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			// Clamp crossContentSize by cross-axis min/max constraints.
 			if crossContentSize >= 0 {
 				if mainIsItemInline {
-					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom)
+					minCross := ResolveMinBlockSize(style, childWDM, itemSpace, childGeom).Float64()
 					if crossContentSize < minCross {
 						crossContentSize = minCross
 					}
-					if maxCross, ok := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); ok {
+					if maxCrossLU, ok := ResolveMaxBlockSize(style, childWDM, itemSpace, childGeom); ok {
+						maxCross := maxCrossLU.Float64()
 						if crossContentSize > maxCross {
 							crossContentSize = maxCross
 						}
@@ -4572,7 +4580,8 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 				}
 			}
 		} else {
-			if maxMain, hasMax := ResolveMaxBlockSize(style, childWDM, maxSpace, childGeom); hasMax {
+			if maxMainLU, hasMax := ResolveMaxBlockSize(style, childWDM, maxSpace, childGeom); hasMax {
+				maxMain := maxMainLU.Float64()
 				if autoMin > maxMain {
 					autoMin = maxMain
 				}
@@ -4676,11 +4685,12 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			}
 			// Clamp to item's own min/max cross size (content-box).
 			if crossIsItemInline {
-				minBlock := ResolveMinBlockSize(item.style, item.wdm, fla.space, item.geom)
+				minBlock := ResolveMinBlockSize(item.style, item.wdm, fla.space, item.geom).Float64()
 				if stretchContent < minBlock {
 					stretchContent = minBlock
 				}
-				if maxBlock, hasMax := ResolveMaxBlockSize(item.style, item.wdm, fla.space, item.geom); hasMax {
+				if maxBlockLU, hasMax := ResolveMaxBlockSize(item.style, item.wdm, fla.space, item.geom); hasMax {
+					maxBlock := maxBlockLU.Float64()
 					if stretchContent > maxBlock {
 						stretchContent = maxBlock
 					}

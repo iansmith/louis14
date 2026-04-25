@@ -373,30 +373,36 @@ func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 }
 
 // ResolveMinBlockSize resolves min-height/min-width as min-block-size.
-func ResolveMinBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) float64 {
+//
+// Returns LayoutUnit at the boundary (Phase 13e′.3) — see ResolveInlineSize
+// for the FromFloat64Round rounding-mode rationale.
+func ResolveMinBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) layoutunit.LayoutUnit {
 	if style == nil {
-		return 0
+		return layoutunit.LayoutUnit{}
 	}
 	prop := "min-height"
 	if wdm.IsVertical() {
 		prop = "min-width"
 	}
 	if v, ok := style.GetLength(prop); ok {
-		return applyBoxSizingBlock(style, geom, v)
+		return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, v))
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
 		result := layoutunit.ResolvePercent(
 			space.PercentageResolutionSize.BlockSize, pct).Float64()
-		return applyBoxSizingBlock(style, geom, result)
+		return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result))
 	}
-	return 0
+	return layoutunit.LayoutUnit{}
 }
 
 // ResolveMaxBlockSize resolves max-height/max-width as max-block-size.
 // Returns (value, true) if set; (0, false) if "none" or not specified.
-func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (float64, bool) {
+//
+// Returns LayoutUnit at the boundary (Phase 13e′.3) — see ResolveInlineSize
+// for the FromFloat64Round rounding-mode rationale.
+func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (layoutunit.LayoutUnit, bool) {
 	if style == nil {
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 	prop := "max-height"
 	if wdm.IsVertical() {
@@ -404,17 +410,17 @@ func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 	}
 	val, ok := style.Get(prop)
 	if !ok || val == "none" || val == "" {
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 	if v, ok := style.GetLength(prop); ok {
-		return applyBoxSizingBlock(style, geom, v), true
+		return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, v)), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
 		result := layoutunit.ResolvePercent(
 			space.PercentageResolutionSize.BlockSize, pct).Float64()
-		return applyBoxSizingBlock(style, geom, result), true
+		return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result)), true
 	}
-	return 0, false
+	return layoutunit.LayoutUnit{}, false
 }
 
 // ResolveBlockSize resolves the element's block-size from CSS.
@@ -725,12 +731,13 @@ func CalculateInitialFragmentGeometry(
 		if contentBlock < 0 {
 			contentBlock = 0
 		}
-		if maxBlock, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
+		if maxBlockLU, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
+			maxBlock := maxBlockLU.Float64()
 			if contentBlock > maxBlock {
 				contentBlock = maxBlock
 			}
 		}
-		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
+		minBlock := ResolveMinBlockSize(style, wdm, space, geom).Float64()
 		if contentBlock < minBlock {
 			contentBlock = minBlock
 		}

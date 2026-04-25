@@ -324,11 +324,12 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Apply min/max block constraints.
-	minBlock := ResolveMinBlockSize(gla.style, wdm, gla.space, geom)
+	minBlock := ResolveMinBlockSize(gla.style, wdm, gla.space, geom).Float64()
 	if finalBlockSize < minBlock {
 		finalBlockSize = minBlock
 	}
-	if maxBlock, hasMax := ResolveMaxBlockSize(gla.style, wdm, gla.space, geom); hasMax {
+	if maxBlockLU, hasMax := ResolveMaxBlockSize(gla.style, wdm, gla.space, geom); hasMax {
+		maxBlock := maxBlockLU.Float64()
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}

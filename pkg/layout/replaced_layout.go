@@ -189,8 +189,9 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 	maxInlineLU, hasMaxInline := ResolveMaxInlineSize(style, wdm, space, geom)
 	maxInline := maxInlineLU.Float64()
-	minBlock := ResolveMinBlockSize(style, wdm, space, geom)
-	maxBlock, hasMaxBlock := ResolveMaxBlockSize(style, wdm, space, geom)
+	minBlock := ResolveMinBlockSize(style, wdm, space, geom).Float64()
+	maxBlockLU, hasMaxBlock := ResolveMaxBlockSize(style, wdm, space, geom)
+	maxBlock := maxBlockLU.Float64()
 
 	// Clamp inline, re-derive block if needed.
 	if inlineSize < minInline {

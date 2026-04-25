@@ -534,6 +534,61 @@ The remaining ~5 sites use `_` for the LayoutUnit return (just the bool is consu
 
 Files: `pkg/layout/fragment_geometry.go` (+18/-13: 2 function signatures + 6 return-statement wraps × 2 functions + 2 self-reference bridges + doc-comment), `pkg/layout/replaced_layout.go` (+5/-3), `pkg/layout/min_max_sizing.go` (+15/-8), `pkg/layout/flex_layout.go` (+17/-11 at 11 sites), `task_plan.md` + `progress.md`.
 
+#### Phase 13e′.3: ResolveMinBlockSize + ResolveMaxBlockSize → LayoutUnit — DONE 2026-04-25 (Phase 13e′ CLOSED)
+
+Promoted the block-axis min/max resolvers in `pkg/layout/fragment_geometry.go`:
+
+```go
+// Before:
+func ResolveMinBlockSize(...) float64
+func ResolveMaxBlockSize(...) (float64, bool)
+
+// After (Phase 13e′.3):
+func ResolveMinBlockSize(...) layoutunit.LayoutUnit
+func ResolveMaxBlockSize(...) (layoutunit.LayoutUnit, bool)
+```
+
+Same idiom as 13e′.1 + 13e′.2: internal `applyBoxSizingBlock` helper stays float64; the boundary uses `layoutunit.FromFloat64Round(...)`. All branches (GetLength, GetPercentage-not-indefinite) use the same wrapper.
+
+**Consumer fan-out: 25+ active call sites bridged.** Same pattern as 13e′.2: `minBlock := Resolve*BlockSize(...).Float64()` for bare assignment; `if maxBlockLU, hasMax := Resolve*BlockSize(...); hasMax { maxBlock := maxBlockLU.Float64(); ... }` for the `(value, bool)` form; inline `.Float64()` at single-comparison sites.
+
+**Files touched:**
+- `pkg/layout/fragment_geometry.go` — 2 producers + 2 self-references in `CalculateInitialFragmentGeometry`
+- `pkg/layout/block_layout.go` — 4 sites (final block-size clamp, scroller propagation, isScroller branch)
+- `pkg/layout/replaced_layout.go` — 2 sites (ComputeReplacedSize)
+- `pkg/layout/min_max_sizing.go` — 2 sites (aspect-ratio min/max-block transfer)
+- `pkg/layout/grid_layout.go` — 2 sites (final block constraints)
+- `pkg/layout/multicol_layout.go` — 1 site (effectiveMaxBlockSize)
+- `pkg/layout/flex_layout.go` — 14 sites (cross-size clamp, container min/max-block, item flex-basis transferred-suggestion paths × multiple algorithms)
+
+The remaining ~5 sites use `_` for the LayoutUnit return (just the bool is consumed) and need no bridge.
+
+**Gate-sweep (six invariants at 13e′.3 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (629 - 3 fails)
+- css-position 91/104 ✓ (104 - 13 fails)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (455 - 276 fails)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+**Phase 13e′ is now CLOSED.** Every length-resolution public API in `pkg/layout/fragment_geometry.go` returns `LayoutUnit` at the boundary. The migration is complete:
+
+```go
+// Phase 13e′ end-state (matches Blink length_utils.h):
+func ResolveInlineSize(...) (layoutunit.LayoutUnit, bool)
+func ResolveBlockSize (...) (layoutunit.LayoutUnit, bool)
+func ResolveMinInlineSize(...) layoutunit.LayoutUnit
+func ResolveMaxInlineSize(...) (layoutunit.LayoutUnit, bool)
+func ResolveMinBlockSize (...) layoutunit.LayoutUnit
+func ResolveMaxBlockSize (...) (layoutunit.LayoutUnit, bool)
+```
+
+The float boundary at length-resolution EXIT is closed (Phase 13e closed the ENTRY at `ResolvePercent`). All ~90 consumer sites across `pkg/layout/{block,flex,grid,multicol,replaced,min_max_sizing,fragment_geometry,table}_layout.go` use `.Float64()` bridges to keep their existing `float64` accumulators untouched. Promoting consumer accumulators to LayoutUnit is queued as a separate sweep (folded into 13g/13h or 13e′.4 if needed). Queued next: **13g** (paint-time `SnapSizeToPixel`, the most likely clear-001 closer) and **13h** (verification + cleanup, retro doc).
+
+**Risk profile.** Low. Same FromFloat64Round idiom as 13e′.1 + 13e′.2, no rollback. The Trunc → Round lesson from 13e′.1 carried cleanly through both follow-up sub-steps.
+
+Files: `pkg/layout/fragment_geometry.go` (+18/-13: 2 function signatures + 6 return-statement wraps × 2 functions + 2 self-reference bridges + doc-comment), `pkg/layout/block_layout.go` (+8/-5), `pkg/layout/replaced_layout.go` (+3/-2), `pkg/layout/min_max_sizing.go` (+4/-2), `pkg/layout/grid_layout.go` (+3/-2), `pkg/layout/multicol_layout.go` (+1/-1), `pkg/layout/flex_layout.go` (+30/-22 at 14 sites), `task_plan.md` + `progress.md`.
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

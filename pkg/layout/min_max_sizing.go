@@ -153,7 +153,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		}
 
 		// Check for min-block-size (min-height) transferring to min-inline-size.
-		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
+		minBlock := ResolveMinBlockSize(style, wdm, space, geom).Float64()
 		if minBlock > 0 {
 			minInlineFromRatio := transferBlockToInline(minBlock, geom.BlockBorderPadding())
 			if isBorderBox {
@@ -172,7 +172,8 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		}
 
 		// Check for max-block-size (max-height) transferring to max-inline-size.
-		if maxBlock, hasMax := ResolveMaxBlockSize(style, wdm, space, geom); hasMax {
+		if maxBlockLU, hasMax := ResolveMaxBlockSize(style, wdm, space, geom); hasMax {
+			maxBlock := maxBlockLU.Float64()
 			maxInlineFromRatio := transferBlockToInline(maxBlock, geom.BlockBorderPadding())
 			if isBorderBox {
 				maxInlineFromRatio = (maxBlock + geom.BlockBorderPadding()) * ar.Width / ar.Height - bp

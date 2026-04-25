@@ -248,7 +248,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	effectiveMaxBlockSize := Indefinite
 	if !hasExplicitBlock {
 		if maxBS, ok := ResolveMaxBlockSize(mla.style, wdm, mla.space, geom); ok {
-			effectiveMaxBlockSize = maxBS
+			effectiveMaxBlockSize = maxBS.Float64()
 		}
 	}
 

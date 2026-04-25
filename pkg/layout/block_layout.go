@@ -1205,12 +1205,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Apply min/max block-size constraints per CSS 2.1 §10.7.
 	// Order matters: max-height is applied first (step 2), then min-height (step 3).
 	// When min-height > max-height, min-height wins because step 3 overrides step 2.
-	minBlock := ResolveMinBlockSize(bla.style, wdm, bla.space, geom)
+	minBlock := ResolveMinBlockSize(bla.style, wdm, bla.space, geom).Float64()
 	// The root element must fill at least the ICB block-size (ForcedMinBlockSize).
 	if bla.space.ForcedMinBlockSize > minBlock {
 		minBlock = bla.space.ForcedMinBlockSize
 	}
-	if maxBlock, hasMax := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); hasMax {
+	if maxBlockLU, hasMax := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); hasMax {
+		maxBlock := maxBlockLU.Float64()
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}
@@ -2091,8 +2092,9 @@ func computeOrthogonalAvailableBlock(
 	explicitBlockSize float64,
 ) float64 {
 	icb := icbBlockSize(wdm, ctx)
-	minBlock := ResolveMinBlockSize(style, wdm, space, geom)
-	maxBlock, hasMax := ResolveMaxBlockSize(style, wdm, space, geom)
+	minBlock := ResolveMinBlockSize(style, wdm, space, geom).Float64()
+	maxBlockLU, hasMax := ResolveMaxBlockSize(style, wdm, space, geom)
+	maxBlock := maxBlockLU.Float64()
 	isScroller := style.GetOverflowX() != css.OverflowVisible || style.GetOverflowY() != css.OverflowVisible
 
 	if hasExplicitBlock {
@@ -2181,8 +2183,9 @@ func computeOrthogonalFallbackBlockForChildren(
 	if isScroller {
 		// This element is a scroller. Compute its effective block-size
 		// constraint and propagate it to descendants.
-		minBlock := ResolveMinBlockSize(style, wdm, space, geom)
-		maxBlock, hasMax := ResolveMaxBlockSize(style, wdm, space, geom)
+		minBlock := ResolveMinBlockSize(style, wdm, space, geom).Float64()
+		maxBlockLU, hasMax := ResolveMaxBlockSize(style, wdm, space, geom)
+		maxBlock := maxBlockLU.Float64()
 		icb := icbBlockSize(wdm, ctx)
 
 		var result float64
