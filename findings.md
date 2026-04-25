@@ -1,8 +1,9 @@
 # Findings & Decisions — css-position (complete) → css-multicol (active)
 
-> **Two categories tracked in this file.**
-> - Lines 1–773: css-position (phases 1–9, 91/104 at commit time / 89/104 post-`renderer.go` shift; pre-existing residuals deferred, baseline corrected from 95 to 91 on 2026-04-23).
-> - Lines 776+: css-multicol (Phase 12, research landed 2026-04-21; phases 12a–12g landed 2026-04-22 through 2026-04-24, reaching 133/458; 12h is the remaining phase — rule paint via `GapGeometry` + baseline propagation + `UnpositionedListMarker`).
+> **Three categories tracked in this file.**
+> - Lines 1–773: css-position (phases 1–9, 92/104 post HTML-tokenizer EOF-recovery fix 2026-04-25; pre-existing residuals deferred, baseline corrected from 95 to 91 on 2026-04-23).
+> - css-multicol (Phase 12, research landed 2026-04-21; phases 12a–12g landed 2026-04-22 through 2026-04-24; F2/F3/F4/F5 follow-ups landed 2026-04-24/25 reaching **179/455**; 12h partially landed via Ahem font loader + rule-paint fixes).
+> - **Phase 13: LayoutUnit precision discipline** (2026-04-25). 13a/13b/13c/13d landed in 10 commits: foundational LayoutUnit scalar + composite geometry + `WritingModeConverter`, all `PhysicalFragment` coordinate fields migrated, all `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision fields migrated. 13e–13h queued. Research and per-sub-phase landing notes in the "Phase 13" sections below.
 
 ## Rules pointer
 Do not restate project rules here. They live in:

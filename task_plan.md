@@ -3,7 +3,7 @@
 ## Current focus (2026-04-25)
 **Phases 13a + 13b + 13c + 13d landed 2026-04-25.** Foundational LayoutUnit scalar (`pkg/geometry/layoutunit`, 13a) and composite geometry types + WM conversions (`pkg/geometry`, 13b) earlier today; **all `PhysicalFragment` coordinate fields migrated to the new types in 13c** via three sub-step commits (13c.1 RelativeOffset `6e689d8e`, 13c.2 Children[].Offset `4dc4ac0b`, 13c.3 Size `912c03fa`); **all `ConstraintSpace` precision-discipline fields migrated in 13d** via five sub-step commits (13d.1 ConsumedBlockSize `7d64570a`, 13d.2 ClearanceOffset `c6211fb8`, 13d.3 Bfc offsets `d1687adc`, 13d.4a AvailableSize `3e7d598c`, 13d.4b PercentageResolutionSize `7db1f2fd`). Every commit gate-swept; all six invariants held at every checkpoint (CSS2 99/99, flex 626/629, position 92/104, wm 781/781, multicol 179/455, spanner-frag 12/13). 13e (length/percentage resolution) is next. See "Phase 13 sub-phases" table and `progress.md` "Phase 13a/13b/13c/13d" sections for landing details.
 
-**Phase 12 (css-multicol)** remains the active layout-feature track at 179/455. Most active follow-up targets done: F1 (wm 781/781), F5 (multicol +3 list-item tests), HTML tokenizer EOF-recovery (css-position 92/104). F2/F3/F4 remain PARTIAL with documented residuals. **Phase 13 (LayoutUnit precision discipline)** is now in active execution: 13a DONE; 13b–13h queued.
+**Phase 12 (css-multicol)** remains the active layout-feature track at 179/455. Most active follow-up targets done: F1 (wm 781/781), F5 (multicol +3 list-item tests), HTML tokenizer EOF-recovery (css-position 92/104). F2/F3/F4 remain PARTIAL with documented residuals. **Phase 13 (LayoutUnit precision discipline)** is in active execution: 13a + 13b + 13c + 13d DONE; 13e–13h queued.
 
 css-position is at **92/104** post HTML-tokenizer EOF-recovery fix (2026-04-25); the 12 remaining failures are pre-existing residuals across G-SINGLETONS / G-SCROLL / G-SEMI-REPLACED / G-ABS-IN-TABLE classes — see "css-position Goal" below.
 
@@ -29,7 +29,7 @@ css-position is at **92/104** post HTML-tokenizer EOF-recovery fix (2026-04-25);
 
 Five highest-value targets from the deferred list, picked after Phase 12h step 4 landed (css-multicol 154/458). This is a **scratch planning block**: as each target lands, move its completed summary into its real phase section below and strike the entry here. When all five resolve or get reclassified, delete this block.
 
-**Status as of 2026-04-25:** F1 DONE, F5 DONE, F2/F3/F4 PARTIAL (residuals captured in their respective rows). Plus two follow-on landings outside the original five: HTML-tokenizer EOF-recovery (closed `position-change.html`, +1 css-position) and Phase 13 LayoutUnit plan (no code yet). Block stays open until F2/F3/F4 reach DONE or get reclassified into their own phases.
+**Status as of 2026-04-25:** F1 DONE, F5 DONE, F2/F3/F4 PARTIAL (residuals captured in their respective rows). Plus three follow-on landings outside the original five: HTML-tokenizer EOF-recovery (closed `position-change.html`, +1 css-position); **Phase 13 LayoutUnit precision discipline** with 13a/13b/13c/13d landed in 10 commits today (foundational types + composites + all `PhysicalFragment` coordinate fields + all `ConstraintSpace`/`BlockBreakToken`/`ExclusionSpace` precision fields are LayoutUnit-backed; 13e–13h queued); F1d cleanup pass landed via earlier mazzy registration work. Block stays open until F2/F3/F4 reach DONE or get reclassified into their own phases.
 
 Companion scratch blocks live at the top of `findings.md` (research notes per target) and `progress.md` (landing/partial summaries per target).
 
@@ -128,14 +128,14 @@ All 104 tests under `pkg/visualtest/testdata/wpt-css3/css-position/` exercised v
 
 **Note:** The tracking file previously claimed "95 passing" — this was incorrect. The actual count was 91/104 since Phase 9 completion, then 92/104 after the HTML tokenizer EOF-recovery fix (2026-04-25). The 8 G-ABS-IN-TABLE and 3 G-SEMI-REPLACED tests were never fixed; they were inadvertently omitted from the residuals list.
 
-Invariants (must stay green in every Phase 12 landing too). Post-12d re-baseline: `pkg/resource/renderer.go` modifications (commits `15095a58` + `f001c6a5` + earlier uncommitted) shifted historical counts. Phase 12 work is verified additive vs these post-`renderer.go` numbers; pre-shift historical numbers shown for context only.
-- css-writing-modes **410/781** (historical 781/781). Last verified 2026-04-24 post-12g.
-- CSS2 **96/99** (historical 99/99). Last verified 2026-04-24 post-12g.
-- css-flexbox **≥621/629** (historical ≥626/629 with 3 pre-existing residuals tracked in Phase 11).
-- css-transforms 172/381 watch (not invariant; post Phase 9 stack-floats refactor, +10 vs baseline).
-- css-position **≥92/104** (raised 2026-04-25 by HTML tokenizer EOF-recovery fix; was 91/104 since Phase 9). Remaining 12 residuals pre-existing, out-of-scope for Phase 12.
+Invariants (must stay green on every landing). Last verified 2026-04-25 across the eight Phase 13c/13d sub-step commits, all green:
+- css-writing-modes **781/781**. Restored to full pass at F1 close (2026-04-25, commit `41b674ef` plus mazzy `d6b27049`/`cde2c29`); the earlier 12d-era 410/781 dip from `pkg/resource/renderer.go` modifications has cleared.
+- CSS2 **99/99**. Restored from 12d-era 96/99.
+- css-flexbox **≥626/629** (3 pre-existing residuals tracked in Phase 11).
+- css-transforms 172/381 watch (not an invariant; post Phase 9 stack-floats refactor, +10 vs baseline).
+- css-position **≥92/104** (raised 2026-04-25 by HTML tokenizer EOF-recovery fix; was 91/104 since Phase 9). 12 residuals remain pre-existing, out-of-scope for Phase 12 / Phase 13.
 - spanner-fragmentation **12/13** watch (005 pre-existing residual since 12b).
-- css-multicol (active target) **133/458** — gains +39 from the 12 entry baseline of 94; post-12g.
+- css-multicol (active target) **179/455** — gains +25 cumulative across F2/F3/F4/F5 from the 12-entry baseline (154 post-12g).
 
 ## Rules & Discipline
 Authoritative sources (re-read at session start):
