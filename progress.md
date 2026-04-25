@@ -44,6 +44,30 @@ Plan-only entry. No code yet. See `task_plan.md` "Phase 13: LayoutUnit precision
 
 **Acceptance:** all invariants held; zero `float64` fields in geometry structs under `pkg/layout/`; greppable invariant that all float→LayoutUnit conversions go through a `From*` constructor with explicit rounding mode.
 
+#### Phase 13a: foundational LayoutUnit types — DONE 2026-04-25
+
+New package `pkg/geometry/layoutunit` (260 lines):
+- Type `LayoutUnit{raw int32}` — 26.6 fixed-point; 1 CSS px = 64 raw units. Mirrors Blink's `FixedPoint<6, int32_t>`.
+- Constants: `FractionalBits=6`, `FixedPointDenominator=64`, `IntMax=33554431`, `Epsilon=1/64`.
+- Sentinels: `Zero`, `IndefiniteSize` (raw=-64, matching Blink's `kIndefiniteSize=-1 px`), `MaxValue`, `MinValue`.
+- Constructors: `New(int)`, `FromRaw(int64)`, `FromFloat64Round/Ceil/Floor` (explicit rounding at every float entry — Go has no implicit conversion, but exposing only explicit-rounding constructors enforces the discipline at every call site).
+- Accessors: `Raw()`, `Float64()`, `ToInt()`, `Round()` (round-half-away-from-zero matching Blink's `(value + denom/2) >> bits` for non-negative, `-((-value + denom/2) >> bits)` for negative), `Floor()`/`Ceil()` (arithmetic-shift-based, matching Blink), `Fraction()`.
+- Arithmetic: `Add/Sub` (saturating via int64 widen + clamp), `Mul` (int64 widen, divide by denom via arithmetic shift, saturate), `MulInt`, `Div` (zero-divisor saturates), `DivInt`, `MulDiv` (int64 widening to avoid intermediate saturation — for percentage resolution).
+- Helpers: `Abs()` (saturates `MinValue.Abs()` at `MaxValue` since `-MinInt32` doesn't fit), `IsIndefinite()`, `IsZero()`, `Less/LessEqual`, package-level `Min/Max`. `LayoutUnit` is a comparable struct so `==` works directly.
+
+Tests `layoutunit_test.go` (16 functions, all pass): constants, `New` saturation, `FromFloat64Round/Ceil/Floor` (including half-quantum disambiguation, saturation, round-trip), `Round/Floor/Ceil` for both signs (verifies Blink-parity round-half-away-from-zero), `Fraction` sign-preservation, `Abs` `MinInt32` saturation, `Add/Sub` saturation at int32 limits, `Mul` precision (incl. `0.5 * 0.5 = 0.25 → raw 16`), `MulInt`, `Div` zero-divisor saturation, `DivInt`, `MulDiv` int64-widening (verifies `(MaxInt32/2 * 4)/2` does not lose data via intermediate overflow), `IsIndefinite`, `IsZero`, comparison ops + struct equality.
+
+**Gate sweep (all six invariants held by construction — no existing code touched):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓
+- css-position 92/104 ✓ (12 known residuals; runner classifies one extra as "failed" per its own counting)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓
+- spanner-fragmentation 12/13 ✓
+
+**Files added:** `pkg/geometry/layoutunit/layoutunit.go` (package), `pkg/geometry/layoutunit/layoutunit_test.go` (16 tests).
+**Files touched in pkg/layout/:** none. No callers in this commit. 13b will introduce composite geometry types; 13c will be the first sub-phase that migrates an existing layout-side `float64` field.
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
