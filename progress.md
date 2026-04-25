@@ -221,6 +221,34 @@ textIndent = layoutunit.ResolvePercent(
 
 Files: `pkg/layout/inline_layout.go` (+2/-1).
 
+#### Phase 13e.3: flex row-gap + column-gap → ResolvePercent — DONE 2026-04-25
+
+Two call sites in `pkg/layout/flex_layout.go:3993,4000`:
+
+```go
+// Before:
+rowGap = contentBlockSize * pct / 100         // gated on hasDefiniteBlock
+colGap = contentInlineSize * pct / 100
+
+// After:
+rowGap = layoutunit.ResolvePercent(
+    layoutunit.FromFloat64Round(contentBlockSize), pct).Float64()
+colGap = layoutunit.ResolvePercent(
+    layoutunit.FromFloat64Round(contentInlineSize), pct).Float64()
+```
+
+Same bridge pattern as 13e.2: float64 in, LayoutUnit at the helper, `.Float64()` out. The `hasDefiniteBlock` gate on row-gap is preserved as-is (CSS Align Level 3 §8.1: indefinite block-size → percentage row-gap resolves to 0). New import in `flex_layout.go`: `louis14/pkg/geometry/layoutunit`.
+
+**Gate-sweep (six invariants at 13e.3 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (same 3 residuals: auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004)
+- css-position 91/104 ✓ (13 pre-existing)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓
+- spanner-fragmentation 12/13 ✓
+
+Files: `pkg/layout/flex_layout.go` (+5/-2 incl. import).
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

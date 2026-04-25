@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 const flexDebug = false
@@ -3990,14 +3991,16 @@ func (fla *FlexLayoutAlgorithm) resolveGaps(wdm WritingDirectionMode, isRow bool
 		rowGap = v
 	} else if pct, ok := fla.style.GetPercentage("row-gap"); ok {
 		if hasDefiniteBlock {
-			rowGap = contentBlockSize * pct / 100
+			rowGap = layoutunit.ResolvePercent(
+				layoutunit.FromFloat64Round(contentBlockSize), pct).Float64()
 		}
 		// else: indefinite block-size → percentage row-gap resolves to 0
 	}
 	if v, ok := fla.style.GetLength("column-gap"); ok {
 		colGap = v
 	} else if pct, ok := fla.style.GetPercentage("column-gap"); ok {
-		colGap = contentInlineSize * pct / 100
+		colGap = layoutunit.ResolvePercent(
+			layoutunit.FromFloat64Round(contentInlineSize), pct).Float64()
 	}
 	// gap shorthand may have been resolved to row-gap/column-gap already.
 	if isRow {
