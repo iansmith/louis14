@@ -6,12 +6,23 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
 	"mazarin/textshape"
 )
+
+// DirectionRun describes a contiguous byte range within a text string that
+// must be shaped with a specific HarfBuzz direction. Used by
+// ShapeAdvancesMixed to handle multi-bidi-level inline runs as a single
+// shaping pass.
+type DirectionRun struct {
+	Start int  // inclusive byte offset in the input text
+	End   int  // exclusive byte offset
+	RTL   bool // false=LTR/auto-detect, true=RTL
+}
 
 // measureCache caches text advance widths keyed on "text\x00fontSize\x00fontPath".
 var measureCache sync.Map
@@ -493,6 +504,113 @@ func ShapeAdvances(textStr string, fontSize float64, fontPath string) ([]float64
 	// Offsets that fall inside a multi-byte cluster or between ligature parts
 	// inherit the cluster-start position, which is the correct approximation
 	// for byte ranges that don't land on a cluster boundary.
+	last := 0.0
+	for i, v := range cum {
+		if v < 0 {
+			cum[i] = last
+		} else {
+			last = v
+		}
+	}
+	return cum, true
+}
+
+// ShapeAdvancesMixed shapes a text string composed of multiple bidi-direction
+// runs and returns a per-byte cumulative advance map indexed by LOGICAL byte
+// position. For each direction run, the corresponding sub-string is shaped
+// with the right HarfBuzz direction (LTR auto-detect or explicit RTL); per-byte
+// cumulative advances are derived from glyphs sorted by cluster ascending so
+// the returned cum[] is monotonically non-decreasing in byte index, regardless
+// of internal RTL cluster ordering.
+//
+// Mirrors Blink's HarfBuzzShaper which runs once over the whole inline text
+// run (segmenting by direction internally) and lets per-item layout slice
+// advances from the unified shape result. Compared to calling ShapeAdvances
+// independently per item, this avoids dropping cross-item kerning within a
+// same-direction segment AND keeps sub-pixel residue consistent across
+// bidi-level boundaries — the F1 root cause the css-writing-modes
+// bidi-embed/override-006 tests hit.
+//
+// Empty `runs` is treated as a single LTR run over the whole text (degenerate
+// case equivalent to ShapeAdvances). Returns nil/false on any shaping failure.
+func ShapeAdvancesMixed(textStr string, runs []DirectionRun, fontSize float64, fontPath string) ([]float64, bool) {
+	if textStr == "" {
+		return []float64{0}, true
+	}
+	if len(runs) == 0 {
+		return ShapeAdvances(textStr, fontSize, fontPath)
+	}
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return nil, false
+	}
+
+	cum := make([]float64, len(textStr)+1)
+	for i := range cum {
+		cum[i] = -1
+	}
+	cum[0] = 0
+
+	base := 0.0
+	layout := getLayout()
+
+	for _, r := range runs {
+		if r.Start < 0 || r.End > len(textStr) || r.Start >= r.End {
+			continue
+		}
+		subText := textStr[r.Start:r.End]
+
+		params := textshape.ShapingParams{
+			Text:   subText,
+			FontID: m.FontID,
+		}
+		if r.RTL {
+			params.Direction = textshape.RTL
+		}
+
+		result, err := layout.ShapeText(params)
+		if err != nil {
+			return nil, false
+		}
+
+		// Accumulate (cluster, advance) pairs and sort by cluster ascending so
+		// we can produce a logical-order prefix sum. For RTL output, glyphs are
+		// emitted in descending cluster order; the sort restores logical order.
+		type clusterEntry struct {
+			cluster int
+			advance int32
+		}
+		entries := make([]clusterEntry, 0, len(result.Glyphs))
+		var totalAdvance int32
+		for _, g := range result.Glyphs {
+			c := int(g.Cluster)
+			if c < 0 || c > len(subText) {
+				continue
+			}
+			entries = append(entries, clusterEntry{c, g.XAdvance})
+			totalAdvance += g.XAdvance
+		}
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].cluster < entries[j].cluster })
+
+		var prefixAdv int32
+		for _, e := range entries {
+			absByte := r.Start + e.cluster
+			if absByte >= 0 && absByte <= len(textStr) && cum[absByte] < 0 {
+				cum[absByte] = base + float64(prefixAdv)/64.0
+			}
+			prefixAdv += e.advance
+		}
+		// Always set cum[r.End] to the run's right edge.
+		if r.End <= len(textStr) {
+			cum[r.End] = base + float64(totalAdvance)/64.0
+		}
+		base += float64(totalAdvance) / 64.0
+	}
+
+	// Forward-fill any unset entries with the last known cumulative value.
+	// Bytes between cluster boundaries (e.g. inside a ligature, or between
+	// adjacent direction runs we already covered) inherit the previous
+	// cluster-start position, matching ShapeAdvances' approximation.
 	last := 0.0
 	for i, v := range cum {
 		if v < 0 {

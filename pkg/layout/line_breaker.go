@@ -1465,15 +1465,34 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 
 		var combined strings.Builder
 		itemRanges := make([][2]int, len(textIndices))
+		itemRTL := make([]bool, len(textIndices))
 		for k, idx := range textIndices {
 			r := &line.Results[idx]
 			content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
 			start := combined.Len()
 			combined.WriteString(content)
 			itemRanges[k] = [2]int{start, combined.Len()}
+			itemRTL[k] = r.Item.BidiLevel%2 == 1
 		}
 
-		cum, ok := text.ShapeAdvances(combined.String(), fontSize, fontPath)
+		// Build direction runs: collapse consecutive same-direction items into
+		// one run so HarfBuzz can apply intra-run kerning across item boundaries.
+		// Mirrors Blink's HarfBuzzShaper which segments by direction internally
+		// and shapes each segment as a single buffer.
+		var runs []text.DirectionRun
+		for k := 0; k < len(itemRanges); k++ {
+			runStartK := k
+			for k+1 < len(itemRanges) && itemRTL[k+1] == itemRTL[runStartK] {
+				k++
+			}
+			runs = append(runs, text.DirectionRun{
+				Start: itemRanges[runStartK][0],
+				End:   itemRanges[k][1],
+				RTL:   itemRTL[runStartK],
+			})
+		}
+
+		cum, ok := text.ShapeAdvancesMixed(combined.String(), runs, fontSize, fontPath)
 		if !ok {
 			i = runEnd
 			continue
@@ -1505,26 +1524,12 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 
 // canMergeShapingContext reports whether two inline items share the same
 // HarfBuzz shaping context and can therefore be measured together as one
-// run. Font-feature-settings is not compared because MeasureText does not
-// apply features today; if that changes, this check must be tightened.
+// run. Items at different bidi levels CAN merge — the merged run is shaped
+// once via ShapeAdvancesMixed, which segments by direction internally and
+// returns a logical-byte-indexed cumulative advance map. Font-feature-
+// settings is not compared because MeasureText does not apply features
+// today; if that changes, this check must be tightened.
 func canMergeShapingContext(a, b *InlineItem) bool {
-	// Bidi-split items must not be merged across bidi-level boundaries.
-	// Shaping a concatenation of different-direction runs scrambles the
-	// per-cluster x-advance mapping used by ShapeAdvances — HarfBuzz's
-	// script-specific handling (e.g. Hebrew) breaks the assumption that
-	// glyph order matches byte order within the combined string.
-	if a.BidiLevel != b.BidiLevel {
-		return false
-	}
-	// Skip cross-span kerning for RTL (odd bidi level) runs. ShapeAdvances
-	// currently shapes LTR only; HarfBuzz with RTL direction emits clusters
-	// in descending order, which the cum[] LTR cluster-ascending assumption
-	// cannot interpret. Measuring RTL items standalone is correct — kerning
-	// between adjacent RTL spans is skipped, which is acceptable for scripts
-	// without contextual shaping (e.g. Hebrew) and avoids scrambled widths.
-	if a.BidiLevel%2 != 0 {
-		return false
-	}
 	if a.Style == nil || b.Style == nil {
 		return a.Style == b.Style
 	}
