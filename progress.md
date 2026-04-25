@@ -279,6 +279,38 @@ Same bridge pattern as 13e.2/13e.3: float64 in, LayoutUnit at the helper, `.Floa
 
 Files: `pkg/layout/flex_layout.go` (+4/-2; no new import).
 
+#### Phase 13e.5: fragment_geometry Min/Max{Inline,Block}Size → ResolvePercent — DONE 2026-04-25
+
+Four call sites in `pkg/layout/fragment_geometry.go`:
+- `ResolveMinInlineSize` (line 322): `space.PercentageResolutionSize.InlineSize.Float64() * pct / 100`
+- `ResolveMaxInlineSize` (line 346): same shape, returns `(value, true)`
+- `ResolveMinBlockSize` (line 365): block-axis variant, gated on `!space.IsBlockSizeIndefinite()`
+- `ResolveMaxBlockSize` (line 388): same as above, returns `(value, true)`
+
+```go
+// Before:
+result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
+// After:
+result := layoutunit.ResolvePercent(
+    space.PercentageResolutionSize.InlineSize, pct).Float64()
+```
+
+**Bridge-pattern shape change vs 13e.2/13e.3/13e.4.** This is the first 13e site where the basis is **already a `LayoutUnit`** — `space.PercentageResolutionSize` is a `geometry.LogicalSize` (LayoutUnit-backed since 13d.4b, commit `7db1f2fd`). So we **drop the `.Float64()` from the basis** and pass the LayoutUnit directly to `ResolvePercent`; no `FromFloat64Round` round-trip is needed at the entry. The exit `.Float64()` stays (callers still consume `float64`; the return-type promotion is deferred to 13e′). Net: cleaner than 13e.2–13e.4 because one float boundary disappears entirely.
+
+**Gates preserved.** The `!space.IsBlockSizeIndefinite()` predicate on the block-axis sites stays exactly as-is (CSS Sizing Level 3 §6: percentage min/max-block-size resolves to its initial value when the containing block's block-size is indefinite). The `applyBoxSizing{Inline,Block}` post-adjust on each return path is unchanged. The `style.Get(prop) == "none"` short-circuits in `ResolveMaxInlineSize` / `ResolveMaxBlockSize` are unchanged.
+
+New import in `fragment_geometry.go`: `louis14/pkg/geometry/layoutunit` (file previously had a single-line `import "louis14/pkg/css"`, now a paren block).
+
+**Gate-sweep (six invariants at 13e.5 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (same 3 residuals: auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004)
+- css-position 91/104 ✓ (13 pre-existing)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (276 failures = 455 − 179)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+Files: `pkg/layout/fragment_geometry.go` (+12/-4 incl. import).
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

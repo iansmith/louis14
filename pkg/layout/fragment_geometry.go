@@ -1,6 +1,9 @@
 package layout
 
-import "louis14/pkg/css"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
+)
 
 // FragmentGeometry holds the resolved box model edges for an element.
 // Computed once before the layout algorithm runs.
@@ -319,7 +322,8 @@ func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 		return applyBoxSizingInline(style, geom, v)
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
-		result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
+		result := layoutunit.ResolvePercent(
+			space.PercentageResolutionSize.InlineSize, pct).Float64()
 		return applyBoxSizingInline(style, geom, result)
 	}
 	return 0
@@ -343,7 +347,8 @@ func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 		return applyBoxSizingInline(style, geom, v), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
-		result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
+		result := layoutunit.ResolvePercent(
+			space.PercentageResolutionSize.InlineSize, pct).Float64()
 		return applyBoxSizingInline(style, geom, result), true
 	}
 	return 0, false
@@ -362,7 +367,8 @@ func ResolveMinBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 		return applyBoxSizingBlock(style, geom, v)
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
-		result := space.PercentageResolutionSize.BlockSize.Float64() * pct / 100
+		result := layoutunit.ResolvePercent(
+			space.PercentageResolutionSize.BlockSize, pct).Float64()
 		return applyBoxSizingBlock(style, geom, result)
 	}
 	return 0
@@ -386,7 +392,8 @@ func ResolveMaxBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 		return applyBoxSizingBlock(style, geom, v), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
-		result := space.PercentageResolutionSize.BlockSize.Float64() * pct / 100
+		result := layoutunit.ResolvePercent(
+			space.PercentageResolutionSize.BlockSize, pct).Float64()
 		return applyBoxSizingBlock(style, geom, result), true
 	}
 	return 0, false
