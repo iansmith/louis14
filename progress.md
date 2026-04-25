@@ -249,6 +249,36 @@ Same bridge pattern as 13e.2: float64 in, LayoutUnit at the helper, `.Float64()`
 
 Files: `pkg/layout/flex_layout.go` (+5/-2 incl. import).
 
+#### Phase 13e.4: flex-basis percentage → ResolvePercent — DONE 2026-04-25
+
+Two call sites in `pkg/layout/flex_layout.go:2421,2457`:
+
+```go
+// Before (inline-axis flex-basis, isRow):
+result := contentInlineSize * pct / 100
+
+// Before (block-axis flex-basis, gated on hasDefiniteMain):
+result := containerMainSize * pct / 100
+
+// After (both):
+result := layoutunit.ResolvePercent(
+    layoutunit.FromFloat64Round(<basis>), pct).Float64()
+```
+
+Same bridge pattern as 13e.2/13e.3: float64 in, LayoutUnit at the helper, `.Float64()` out. The `hasDefiniteMain` gate on the block-axis site is preserved (CSS Flexbox §7.2: indefinite container main-size → percentage flex-basis resolves as content). The post-percentage `border-box` adjustment (`result -= childGeom.{Inline,Block}BorderPadding()` clamped at 0) stays exactly as-is at both sites — only the percentage step routes through `ResolvePercent`. The `calc(...%...)` paths at the same call sites still flow through `css.EvalCalcWithPercent` per the 13e plan (no re-routing in 13e). The `layoutunit` import was already present from 13e.3; no new import.
+
+**Risk note (carried from sub-step prompt).** Flex sizing is the most sensitive 13e site because flex-basis drives main-axis distribution; sibling drift compounds across items. The flex 626/629 invariant held — exact 3 expected residuals (auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004), no new failures.
+
+**Gate-sweep (six invariants at 13e.4 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (same 3 residuals)
+- css-position 91/104 ✓ (13 pre-existing)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (276 failures = 455 − 179)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+Files: `pkg/layout/flex_layout.go` (+4/-2; no new import).
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

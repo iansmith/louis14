@@ -2418,7 +2418,8 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			return result
 		}
 		if pct, ok := style.GetPercentage("flex-basis"); ok {
-			result := contentInlineSize * pct / 100
+			result := layoutunit.ResolvePercent(
+				layoutunit.FromFloat64Round(contentInlineSize), pct).Float64()
 			if style.GetBoxSizing() == "border-box" {
 				result -= childGeom.InlineBorderPadding()
 				if result < 0 {
@@ -2454,7 +2455,8 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		}
 		if pct, ok := style.GetPercentage("flex-basis"); ok {
 			if hasDefiniteMain {
-				result := containerMainSize * pct / 100
+				result := layoutunit.ResolvePercent(
+					layoutunit.FromFloat64Round(containerMainSize), pct).Float64()
 				if style.GetBoxSizing() == "border-box" {
 					result -= childGeom.BlockBorderPadding()
 					if result < 0 {
