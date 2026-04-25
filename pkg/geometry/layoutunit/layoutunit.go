@@ -268,6 +268,59 @@ func Max(a, b LayoutUnit) LayoutUnit {
 	return b
 }
 
+// SnapSizeToPixel snaps a sub-pixel size to integer pixels, accounting for
+// the sub-pixel position of the paint origin. Returns the snapped size in
+// CSS pixels (not raw units).
+//
+// Mirrors Blink's third_party/blink/renderer/platform/geometry/layout_unit.h
+// SnapSizeToPixel verbatim:
+//
+//	int SnapSizeToPixel(LayoutUnit size, LayoutUnit location) {
+//	  LayoutUnit fraction = location.Fraction();
+//	  int result = (fraction + size).Round() - fraction.Round();
+//	  if (result == 0 && (size.RawValue() > 4 || size.RawValue() < -4))
+//	    return size > 0 ? 1 : -1;
+//	  return result;
+//	}
+//
+// The edge-difference form (Round(loc.Fraction()+size) - Round(loc.Fraction()))
+// makes the snapped width depend on the sub-pixel position of the paint
+// origin. Adjacent boxes that share a snap-aligned edge in unsnapped space
+// still share a snap-aligned edge after snapping (no overlap, no gap). For
+// an integer-aligned origin (fraction == 0) the formula collapses to
+// size.Round() — the common case is unaffected.
+//
+// The "preserve thin lines" clause forces ±1 px when the edge-difference
+// rounds to 0 but the original size was at least 5 raw units (= 5/64 px,
+// ≈ 0.078 px). Below that threshold the line is intentionally allowed to
+// disappear (sub-quantum noise from accumulator drift). Above it the user
+// has asked for a real, if very thin, line — `border-width: 0.5px` is 32
+// raw, well above the threshold — and the snap must preserve it.
+func SnapSizeToPixel(size, location LayoutUnit) int32 {
+	fraction := location.Fraction()
+	result := fraction.Add(size).Round() - fraction.Round()
+	if result == 0 && (size.raw > 4 || size.raw < -4) {
+		if size.raw > 0 {
+			return 1
+		}
+		return -1
+	}
+	return result
+}
+
+// SnapSizeToPixelAllowingZero is the no-thin-line-clause companion to
+// SnapSizeToPixel. Same edge-difference math, but a snapped size of 0
+// is returned as 0. Use this where 0 is a legitimate snapped result
+// (e.g., empty-rect detection in clip/intersect paths, where 0 means
+// "actually empty"). Use SnapSizeToPixel for paint sizes that should
+// preserve user intent (border widths, outline thickness).
+//
+// Mirrors Blink's SnapSizeToPixelAllowingZero in layout_unit.h.
+func SnapSizeToPixelAllowingZero(size, location LayoutUnit) int32 {
+	fraction := location.Fraction()
+	return fraction.Add(size).Round() - fraction.Round()
+}
+
 // clamp64 saturates an int64 raw value to int32 range and wraps it in a
 // LayoutUnit. The single saturation site for all arithmetic.
 func clamp64(v int64) LayoutUnit {

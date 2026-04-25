@@ -2342,3 +2342,108 @@ if explicit, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 **Risk profile.** Medium. The migration is *bit-exact for the percentage path* by construction (the value already round-trips through `ResolvePercent → .Float64() → FromFloat64Round → .Float64()` and lands on the same 1/64 quantum). The only path that introduces a NEW snap is the `style.GetLength(...)` exit (CSS-parsed length values), which can be sub-1/64 dirty when a length is computed from `em` at non-power-of-2 font sizes (e.g. `8.2 * 50 = 409.99999...` per the IEEE 754 discovery above). Round-to-nearest of those values restores the user-declared value exactly. If any of the six invariants regresses at a checkpoint, ROLL BACK and re-examine before continuing (per CLAUDE.md rule 1 — no bandaid forward); the 13e′.1 round-trip discovery cost one rollback cycle and was resolved by switching from Trunc to Round at the boundary.
 
 **Out of scope for 13e′.** (1) Promoting `applyBoxSizingInline` / `applyBoxSizingBlock` to `LayoutUnit` — these are private helpers; the float→LayoutUnit snap at the producer's return suffices to close the public boundary. (2) Promoting consumer-side accumulators (`borderBoxInline`, `contentInline`, …) to `LayoutUnit` — that's a separate sweep (queue as 13e′.4 or fold into 13g/13h). (3) Promoting `MinMaxSizes` (`MinContent` / `MaxContent` `float64` fields) — these are intrinsic-content sizes, computed elsewhere; on the 13g/13h migration list. (4) `pkg/css/length` internal `Length.value float32` — Blink keeps the same; not in 13e′ scope (per the original Phase 13 plan, "Out of scope for Phase 13").
+
+### Phase 13g research: paint-time pixel snap (2026-04-25)
+
+**Goal of 13g.** Port Blink's `SnapSizeToPixel(size, location)` primitive to `pkg/render` (or expose it from `pkg/geometry/layoutunit`, where it belongs by parity with `layout_unit.h`), then route the existing border/background-edge `math.Round` sites through it. Two payoffs: (a) the "preserve thin lines" rule closes the class of "0.5 px border vanishes" bugs that the current ad-hoc rounding hits when the box origin lands on a sub-pixel; (b) inner border edges (currently bypassing `pixelSnap` and just calling `math.Round`) get the same floor-in/ceil-out edge discipline as outer edges, eliminating the "outer-edge snapped, inner-edge ad-hoc → rounded width 0" failure mode. Phase 13g is the most likely closer for `clear-001` per `task_plan.md` Phase 13 row.
+
+**The Blink primitive.** Verified 2026-04-25 against `refs/heads/main` `third_party/blink/renderer/platform/geometry/layout_unit.h`:
+
+```cpp
+inline int SnapSizeToPixel(LayoutUnit size, LayoutUnit location) {
+  LayoutUnit fraction = location.Fraction();
+  int result = (fraction + size).Round() - fraction.Round();
+  if (result == 0 && (size.RawValue() > 4 || size.RawValue() < -4)) [[unlikely]] {
+    return size > 0 ? 1 : -1;
+  }
+  return result;
+}
+
+inline int SnapSizeToPixelAllowingZero(LayoutUnit size, LayoutUnit location) {
+  LayoutUnit fraction = location.Fraction();
+  return (fraction + size).Round() - fraction.Round();
+}
+```
+
+Three load-bearing observations:
+
+1. **Edge-difference, not direct round.** The snapped width is `Round(fraction + size) - Round(fraction)`, NOT `Round(size)`. This makes the snapped width depend on the sub-pixel position of the *paint origin*, so adjacent boxes that share a snap-aligned edge in unsnapped space still share a snap-aligned edge after snapping (no overlap, no gap). For an integer-aligned origin (`fraction == 0`), the formula collapses to `Round(size)` — the common case is unaffected.
+2. **Thin-lines clause `>4 raw / <-4 raw`.** When the edge-difference rounds to 0 but the original `size` was at least 5 raw units (= 5/64 px ≈ 0.078 px), force ±1 px instead of 0. Below the 5-raw threshold the line is intentionally allowed to disappear (sub-quantum noise from accumulator drift, not user intent). Above it the user has asked for a real, if very thin, line — `border-width: 0.5px` is 32 raw, well above the threshold — and the snap must preserve it. This is the rule that closes "0.5px border vanishes when the box origin lands on a half-pixel."
+3. **`SnapSizeToPixelAllowingZero` companion.** Same edge-difference math, no thin-line clause. Used where 0 is a legitimate snapped result (e.g., empty-rect detection in clip/intersect paths, where we WANT 0 to mean "actually empty"). The two functions are not interchangeable; pick `SnapSizeToPixel` for paint sizes that should preserve user intent, `SnapSizeToPixelAllowingZero` for geometry queries.
+
+**Round/Fraction semantics it depends on.** Blink's `LayoutUnit::Round()` is round-half-away-from-zero on the 1/64 raw quantum; `Fraction()` returns the sub-pixel remainder with the *sign of the receiver* (`raw % 64`, which in C++ keeps the dividend sign). louis14's `pkg/geometry/layoutunit/layoutunit.go:146-176` already mirrors both exactly: `Round()` is half-away-from-zero (verified by code inspection — explicit branch on sign), and `Fraction()` is `raw % FixedPointDenominator` with the same sign convention. **No new arithmetic primitives needed for 13g.1.**
+
+**The canonical call pattern (call sites).** `SnapSizeToPixel` itself is not called directly from the painters in Blink. The painters call higher-level wrappers; the primitive lives in `core/layout/geometry/physical_rect.h` (verified 2026-04-25):
+
+```cpp
+int PixelSnappedWidth() const {
+  return SnapSizeToPixel(size.width, offset.left);
+}
+int PixelSnappedHeight() const {
+  return SnapSizeToPixel(size.height, offset.top);
+}
+```
+
+So the **location convention is "the rect's own offset"** — width snaps against `offset.left`, height snaps against `offset.top`. Each axis is snapped independently using its own origin. There is no two-dimensional snap; W and H are always orthogonal one-dimensional snaps. (The free function `ToEnclosingRect(const PhysicalRect&)` uses a different discipline — `ToFlooredPoint(r.offset)` for the top-left, `ToCeiledPoint(r.MaxXMaxYCorner())` for the bottom-right — for the case where the caller wants a strict outward enclosure rather than a snapped width.)
+
+The `PhysicalRect::PixelSnapped{Width,Height}` pair is what `box_painter_base.cc` and `box_border_painter.cc` ultimately reach via `PixelSnappedContouredBorder` / `ToPixelSnappedRect` / `border_rect.PixelSnapped*`. Searching `box_painter_base.cc` and `box_border_painter.cc` directly returns no `SnapSizeToPixel` hits — only the wrappers — which is the correct factoring: the painters reason in rects, the primitive operates on (size, location) scalar pairs.
+
+**louis14's existing approach and where it falls short.** `pkg/render/render.go:1520-1530` defines:
+
+```go
+func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
+    sx := math.Round(x)
+    sy := math.Round(y)
+    sw := math.Round(x+w) - sx
+    sh := math.Round(y+h) - sy
+    return sx, sy, sw, sh
+}
+```
+
+This *is* the edge-difference idiom (`Round(loc+size) - Round(loc)`), so for the integer/half-integer case it produces the same result as `SnapSizeToPixel`. **What it does NOT do:**
+
+1. **No thin-line clause.** When `bw.Top = 0.5px` and `y = 0.5px` (sub-pixel origin), `Round(0.5+0.5) - Round(0.5) = 1 - 1 = 0` — the border collapses to zero height. Blink's `SnapSizeToPixel` would catch this: 32 raw > 4 raw, force +1. **This is the load-bearing miss for clear-001-class bugs.**
+2. **Float64 precision, not 1/64-quantized.** `pixelSnap` rounds float64 directly. `math.Round(0.49999999)` and `math.Round(0.5)` differ; LayoutUnit's `Round()` operates on a snap-to-1/64 raw value, so equivalent computations land on the same quantum *before* rounding. This is the same root cause as the 13e′.1 IEEE 754 discovery (`8.2 * 50 = 409.99999...`); the fix in 13g is the same shape — promote the float to LayoutUnit at the boundary via `FromFloat64Round`, then operate.
+3. **Inner border edges bypass `pixelSnap` entirely.** `pkg/render/render.go:2672-2675`:
+
+   ```go
+   x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+   outerLeft, outerTop := x, y
+   outerRight, outerBottom := x+w, y+h
+   innerLeft := math.Round(x + bw.Left)
+   innerTop := math.Round(y + bw.Top)
+   innerRight := math.Round(x + w - bw.Right)
+   innerBottom := math.Round(y + h - bw.Bottom)
+   ```
+
+   Outer corners use the snapped (`x`, `y`, `x+w`, `y+h`) — already integer-pixel. Inner corners do `math.Round(x + bw.Left)`, etc. — ad-hoc round of a single float, no edge-difference, no thin-line clause. When `bw.Left = 0.5` and the snapped `x = 0`, `innerLeft = math.Round(0.5) = 1` (Go's `math.Round` is half-away-from-zero, so 0.5 → 1 always); but the border *width* is `innerLeft - outerLeft = 1 - 0 = 1` — fine. When `bw.Left = 0.4` and snapped `x = 0`, `innerLeft = math.Round(0.4) = 0`, border width = 0 — collapses, no thin-line preservation. The 6 raw < 4 raw threshold? 0.4 px = 25.6 raw, well above 4, so Blink would force +1. **This is the most likely 0.5/0.4 px border failure site in louis14.**
+
+**Ad-hoc Round inventory in `pkg/render/`.** `grep -rn 'math\.Round\|\.Round(' pkg/render/ | grep -v _test.go` returns ~120 matches. By cluster:
+
+| Cluster | Sites | Risk for 13g | Migration order |
+|---|---|---|---|
+| Border edge inner corners (`drawBorder`-style) | render.go:2672-2675, 2779 (similar block), 2940 (similar block), 4209 (similar block) | **High — clear-001 class.** Direct cause of "border vanishes" with sub-pixel origins. | **13g.2 first** |
+| `pixelSnap` helper itself | render.go:1525-1528 | Medium — should route through `SnapSizeToPixel` so callers inherit the thin-line rule + LayoutUnit determinism. | 13g.3 |
+| Image dst rect (`drawImage`-style) | render.go:1958-1961, 2042-2043, 2067, 2083, 2087-2088, 2381-2387, 2408-2589 (many) | Low — image painting; thin-line clause does not apply (images aren't "lines"); leave alone or use `AllowingZero` variant. | 13g.4+ (defer) |
+| Background origin/clip rects | render.go:1868-1881, 1903-1929, 2306-2314, 2906-2908 | Low-medium — same shape as border, but background fill is one solid color so a 0-px clip is rarely visible. | 13g.4+ |
+| Shadow / blur / gradient | render.go:1112-1114, 4062-4069, 4333-4338, 4480-4488; gradient.go:367-399 | Low — gaussian-blur radius rounding has its own discipline; not paint-edge work. | Out of scope for 13g (defer to 13h or leave). |
+| Font metrics (`fontSize`, `smallSize`, `radius`) | render.go:208, 717, 793, 3764 | Out of scope — these are not paint-edge math. | Skip. |
+| Text glyph baseline `math.Round(y)` | render.go:3523 | Out of scope — text-shaping snap is closed in 13f. | Skip. |
+
+**Sub-step staging plan.**
+
+- **13g.1 — Helper + tests, additive.** Add `func SnapSizeToPixel(size, location LayoutUnit) int32` and `func SnapSizeToPixelAllowingZero(size, location LayoutUnit) int32` to `pkg/geometry/layoutunit/layoutunit.go`. Mirror the C++ verbatim including the `>4 raw || <-4 raw` thin-line clause. Unit tests cover: integer-aligned origin (collapses to `size.Round()`), half-pixel origin (verifies edge-difference symmetry: two adjacent boxes' summed widths == Round(total)), thin-line preservation (size = 32 raw at fraction = 32 raw → result clause fires, returns 1), `AllowingZero` lets the same case return 0, sign symmetry (negative size + negative location), zero-size (returns 0 in both), tiny sub-threshold size (raw = 4 returns 0 in both). No callers, no behavioral change. Gate-sweep all six invariants.
+- **13g.2 — Migrate inner border-edge corners.** At `pkg/render/render.go:2672-2675` (and the parallel sites at :2779, :2940, :4209 — verify they're actually the same shape before touching), replace the four `math.Round(...)` lines with calls to `SnapSizeToPixel`. The conversion at the boundary is `loc := layoutunit.FromFloat64Round(box.X); bw := layoutunit.FromFloat64Round(border_width); innerLeft := loc.Float64() + float64(SnapSizeToPixel(bw, loc))`. This ports the thin-line rule to the border-edge sites that are currently failing it. Re-run clear-001 specifically: if it closes, the 13g hypothesis is confirmed; if not, capture the new diff (it should be smaller) and write it up under "13g.2 verification" before proceeding.
+- **13g.3 — Migrate `pixelSnap` itself.** Re-implement `func pixelSnap(x, y, w, h float64)` to: convert each arg via `FromFloat64Round`, use `SnapSizeToPixel(w, x)` and `SnapSizeToPixel(h, y)` for the snapped width/height, return float64 again at the boundary so all callers continue working. Every existing `pixelSnap` caller (render.go:1246, 1274, 1460, 1666, 1671, 1677, 2297, 2669, 2779, 2940, 4209, 4352) inherits the thin-line rule and 1/64-quantum determinism for free. Gate-sweep.
+- **13g.4+ — Background origin/clip clusters.** One cluster per commit, only if invariants hold and clear-001 is closed. Image and shadow clusters stay deferred to 13h or out-of-scope.
+
+**Risk profile.** Medium. Pixel snap changes by definition shift painted pixels; every existing pass that currently relies on the *current* rounding behavior is at risk. If any of the six invariants regresses at a checkpoint, ROLL BACK and re-design — the 13e′.1 Trunc → Round rollback cycle is the playbook. Per CLAUDE.md rule 1, do NOT bandaid forward.
+
+**Six invariants at 13e′.3 HEAD (must hold at every 13g.x commit).** CSS2 99/99 · css-flexbox 626/629 · css-position 91/104 (target 92 if clear-001 closes) · css-writing-modes 781/781 · css-multicol 179/455 · spanner-fragmentation 12/13.
+
+**Out of scope for 13g.** (1) Image painting `math.Round` sites — different snap discipline (image samplers want `AllowingZero` semantics; not on the clear-001 critical path). (2) Shadow / blur radius rounding — not paint-edge work; gaussian sigma → radius conversion has its own discipline. (3) Text glyph baseline `math.Round(y)` — Phase 13f closed text-shaping snap; consumer-side baseline snap is a separate question. (4) Promoting `box.X`/`box.Y`/`box.Width`/`box.Height` themselves to `LayoutUnit` — that's a layout↔render boundary refactor (queued for 13h or as a follow-up sweep); 13g converts at the call site only. (5) Mazzy / textshape rasterization snapping — explicitly out of louis14 scope per the user's 13g brief.
+
+**Files cited (Chromium tree, refs/heads/main verified 2026-04-25).**
+- `third_party/blink/renderer/platform/geometry/layout_unit.h` — `SnapSizeToPixel`, `SnapSizeToPixelAllowingZero`, `LayoutUnit::Round()`, `LayoutUnit::Fraction()`.
+- `third_party/blink/renderer/core/layout/geometry/physical_rect.h` — `PixelSnappedWidth`, `PixelSnappedHeight`, the canonical `(size.width, offset.left)` / `(size.height, offset.top)` pair convention; `ToEnclosingRect` for the floor-in/ceil-out alternative.
+- `third_party/blink/renderer/core/paint/{box_painter_base,box_border_painter}.cc` — searched for `SnapSizeToPixel` directly; no hits. The painters consume the snapped rect via `PixelSnappedContouredBorder` / `ToPixelSnappedRect` / `border_rect.PixelSnapped*`; the primitive is one indirection deeper. Confirms the right place to introduce louis14's helper is `pkg/geometry/layoutunit` (matches Blink's file placement), with paint-side wrappers added per cluster as 13g.2+ migrate.

@@ -479,3 +479,134 @@ func TestComparisons(t *testing.T) {
 		t.Error("LayoutUnit struct equality should work via ==")
 	}
 }
+
+func TestSnapSizeToPixel(t *testing.T) {
+	// Helper: build a LayoutUnit from a raw 1/64 value.
+	raw := func(r int32) LayoutUnit { return LayoutUnit{raw: r} }
+
+	tests := []struct {
+		name     string
+		size     LayoutUnit
+		location LayoutUnit
+		want     int32
+	}{
+		// Integer-aligned origin: collapses to size.Round().
+		{"int origin, int size", New(10), New(0), 10},
+		{"int origin, int size, nonzero loc", New(10), New(5), 10},
+		{"int origin, half-px size up", FromFloat64Round(10.5), New(0), 11},
+		{"int origin, half-px size down", FromFloat64Round(10.4), New(0), 10},
+		{"int origin, sub-quantum size", raw(2), New(0), 0},
+
+		// Half-pixel origin: edge-difference matters.
+		// loc=0.5, size=10 → Round(0.5+10) - Round(0.5) = 11 - 1 = 10.
+		// (Round-half-away-from-zero: 0.5 → 1, 10.5 → 11.)
+		{"half-px origin, int size", New(10), FromFloat64Round(0.5), 10},
+		// loc=0.5, size=0.5 → Round(1.0) - Round(0.5) = 1 - 1 = 0
+		// → thin-line clause fires: size.raw = 32 > 4, return 1.
+		{"half-px origin, half-px size — THIN LINE", FromFloat64Round(0.5), FromFloat64Round(0.5), 1},
+		// loc=0.5, size=0.4 → Round(0.9) - Round(0.5) = 1 - 1 = 0
+		// → thin-line clause: size.raw = 26 > 4, return 1.
+		{"half-px origin, 0.4px size — THIN LINE", FromFloat64Round(0.4), FromFloat64Round(0.5), 1},
+		// loc=0.0, size=0.4 → Round(0.4) - Round(0.0) = 0 - 0 = 0
+		// → thin-line clause: size.raw = 26 > 4, return 1.
+		{"int origin, 0.4px size — THIN LINE", FromFloat64Round(0.4), New(0), 1},
+
+		// Sub-threshold sizes: clause does NOT fire (raw <= 4).
+		// raw=4 → 4/64 = 0.0625 px.
+		{"raw=4 sub-threshold, int origin", raw(4), New(0), 0},
+		{"raw=4 sub-threshold, half-px origin", raw(4), FromFloat64Round(0.5), 0},
+		// raw=5 → 5/64 ≈ 0.078 px, just above the >4 threshold. The clause
+		// triggers whenever the snap collapses to 0 AND size.raw > 4, so
+		// even at integer origin the line is preserved at 1 px.
+		{"raw=5 above-threshold, int origin — THIN LINE", raw(5), New(0), 1},
+		{"raw=5 above-threshold, half-px origin — THIN LINE", raw(5), FromFloat64Round(0.5), 1},
+
+		// Negative size + negative location: sign symmetry.
+		{"neg origin, neg 0.4px size — THIN LINE", FromFloat64Round(-0.4), FromFloat64Round(-0.5), -1},
+		{"neg origin, int neg size", New(-10), FromFloat64Round(-0.5), -10},
+
+		// Zero size: returns 0 (clause requires size.raw > 4 or < -4, both false).
+		{"zero size, int origin", Zero, New(0), 0},
+		{"zero size, half-px origin", Zero, FromFloat64Round(0.5), 0},
+
+		// Edge-difference symmetry: see TestSnapSizeToPixelEdgeAdjacency below
+		// for the cross-partition property; the cases here verify the per-call
+		// arithmetic for the partition (size 5 at loc 0.5) split at mid 2.5.
+		{"adjacency A: size 2.5 at loc 0.5", FromFloat64Round(2.5), FromFloat64Round(0.5), 2},
+		{"adjacency B: size 2.5 at loc 3.0", FromFloat64Round(2.5), New(3), 3},
+		{"adjacency total: size 5.0 at loc 0.5", New(5), FromFloat64Round(0.5), 5},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SnapSizeToPixel(tc.size, tc.location)
+			if got != tc.want {
+				t.Errorf("SnapSizeToPixel(size=%v raw=%d, loc=%v raw=%d) = %d, want %d",
+					tc.size.Float64(), tc.size.raw, tc.location.Float64(), tc.location.raw,
+					got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSnapSizeToPixelAllowingZero(t *testing.T) {
+	// AllowingZero: same edge-difference math, but the thin-line clause is
+	// suppressed — a snapped size of 0 stays 0.
+	tests := []struct {
+		name     string
+		size     LayoutUnit
+		location LayoutUnit
+		want     int32
+	}{
+		// Cases that would trigger the thin-line clause in SnapSizeToPixel
+		// must return 0 here.
+		{"half-px origin, half-px size — ZERO, no clause", FromFloat64Round(0.5), FromFloat64Round(0.5), 0},
+		{"half-px origin, 0.4px size — ZERO, no clause", FromFloat64Round(0.4), FromFloat64Round(0.5), 0},
+		{"int origin, 0.4px size — ZERO, no clause", FromFloat64Round(0.4), New(0), 0},
+		{"neg origin, neg 0.4px size — ZERO, no clause", FromFloat64Round(-0.4), FromFloat64Round(-0.5), 0},
+
+		// Sub-threshold cases that already returned 0 in SnapSizeToPixel.
+		{"raw=4 sub-threshold, half-px origin", LayoutUnit{raw: 4}, FromFloat64Round(0.5), 0},
+		{"zero size, half-px origin", Zero, FromFloat64Round(0.5), 0},
+
+		// Cases where the snapped size is non-zero must match SnapSizeToPixel exactly.
+		{"int origin, int size", New(10), New(0), 10},
+		{"half-px origin, int size", New(10), FromFloat64Round(0.5), 10},
+		{"int origin, half-px size up", FromFloat64Round(10.5), New(0), 11},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SnapSizeToPixelAllowingZero(tc.size, tc.location)
+			if got != tc.want {
+				t.Errorf("SnapSizeToPixelAllowingZero(size=%v raw=%d, loc=%v raw=%d) = %d, want %d",
+					tc.size.Float64(), tc.size.raw, tc.location.Float64(), tc.location.raw,
+					got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSnapSizeToPixelEdgeAdjacency(t *testing.T) {
+	// Property: for any partition of a total span [0, T] at point M, the sum
+	// of the two snapped sub-spans equals the snapped total. This is the
+	// load-bearing invariant — adjacent boxes must not overlap or gap after
+	// snapping. Uses AllowingZero so the partition arithmetic isn't perturbed
+	// by the thin-line clause.
+	cases := []struct {
+		total, mid float64
+	}{
+		{10.0, 3.5}, {10.0, 5.5}, {10.0, 0.5},
+		{7.25, 3.125}, {7.25, 5.125},
+		{1.5, 0.5}, {1.5, 1.0},
+		{2.5, 1.25}, {2.5, 0.75},
+	}
+	for _, c := range cases {
+		// Box A spans [0, mid]; Box B spans [mid, total].
+		a := SnapSizeToPixelAllowingZero(FromFloat64Round(c.mid), Zero)
+		b := SnapSizeToPixelAllowingZero(FromFloat64Round(c.total-c.mid), FromFloat64Round(c.mid))
+		total := SnapSizeToPixelAllowingZero(FromFloat64Round(c.total), Zero)
+		if a+b != total {
+			t.Errorf("adjacency violated for total=%v mid=%v: A=%d + B=%d = %d, want total=%d",
+				c.total, c.mid, a, b, a+b, total)
+		}
+	}
+}

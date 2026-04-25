@@ -591,6 +591,47 @@ Files: `pkg/layout/fragment_geometry.go` (+18/-13: 2 function signatures + 6 ret
 
 ---
 
+#### Phase 13g.1: SnapSizeToPixel + SnapSizeToPixelAllowingZero helpers — DONE 2026-04-25
+
+Additive Blink-parity port of paint-time pixel-snap primitives to `pkg/geometry/layoutunit/layoutunit.go`. No callers; gate-sweep held by construction (matches 13a / 13e.1 / 13f.1 additive-helper precedent — pure new exports, zero behavior change in any downstream package).
+
+```go
+// New (Phase 13g.1) — verbatim port of layout_unit.h:
+func SnapSizeToPixel(size, location LayoutUnit) int32 {
+    fraction := location.Fraction()
+    result := fraction.Add(size).Round() - fraction.Round()
+    if result == 0 && (size.raw > 4 || size.raw < -4) {
+        if size.raw > 0 {
+            return 1
+        }
+        return -1
+    }
+    return result
+}
+func SnapSizeToPixelAllowingZero(size, location LayoutUnit) int32 { /* same edge-difference, no clause */ }
+```
+
+**Placement decision.** The 13g brief said "port `SnapSizeToPixel` to `pkg/render`," but research (see `findings.md` "Phase 13g research") established that Blink keeps the primitive in `third_party/blink/renderer/platform/geometry/layout_unit.h` and the painters never call it directly — they reach it via `PhysicalRect::PixelSnappedWidth/Height` rect-wrappers. Followed Blink's factoring: helper lives in `pkg/geometry/layoutunit` (the Blink mirror); paint-side wrappers will be added per-cluster as 13g.2+ migrate. User confirmed the deviation: "it is better [to] follow blink's lead on file placement and such." Saved as a feedback memory for future Blink-port decisions.
+
+**Why these two functions are NOT interchangeable.** `SnapSizeToPixel` includes the "preserve thin lines" clause: when the edge-difference snap collapses to 0 but `size.raw` is at least 5 raw (≈ 0.078 px), force ±1 px. Used for paint sizes that should preserve user intent (border widths, outline thickness — `border-width: 0.5px` is 32 raw, well above the threshold; the clause prevents collapse). `SnapSizeToPixelAllowingZero` is the no-clause companion for empty-rect detection / clip-intersect paths where 0 must mean "actually empty" — calling `SnapSizeToPixel` there would silently inflate a true zero into a 1-px artifact. Pick by intent at the call site.
+
+**Why the louis14 LayoutUnit primitives match Blink exactly.** Verified during research that `pkg/geometry/layoutunit/layoutunit.go:146-176` already mirrors `LayoutUnit::Round()` (round-half-away-from-zero on the 1/64 raw quantum, explicit sign-branch implementation) and `LayoutUnit::Fraction()` (`raw % FixedPointDenominator` with sign-of-receiver semantics). No new arithmetic primitives needed for 13g.1 — `Fraction().Add(size).Round() - Fraction.Round()` works directly with the existing API.
+
+**Test coverage (24 new sub-tests across 3 functions in `layoutunit_test.go`).**
+- `TestSnapSizeToPixel` (18 sub-tests) — integer-aligned origin (collapses to `size.Round()`); half-px origin edge-difference; thin-line clause firing at half-px origin (size 0.5 px and 0.4 px); thin-line clause firing at integer origin too (size raw=5, the >4 threshold edge); sub-threshold non-firing (raw=4); negative size + negative location sign symmetry; zero size always 0; partition arithmetic (size 5 at loc 0.5 = 5 ✓).
+- `TestSnapSizeToPixelAllowingZero` (9 sub-tests) — every case that fires the thin-line clause in `SnapSizeToPixel` returns 0 here; non-zero cases match `SnapSizeToPixel` exactly.
+- `TestSnapSizeToPixelEdgeAdjacency` (property test, 9 partitions) — for any (total, mid) pair, `Snap(mid, 0) + Snap(total-mid, mid) == Snap(total, 0)` using `AllowingZero`. This is the load-bearing invariant: adjacent paint boxes must not overlap or gap after snapping.
+
+**One discovery during test authoring.** First draft expected `(size=raw(5), loc=int)` to return 0 (assumed clause needed sub-pixel origin). Wrong: the clause condition is `result == 0 && (size.raw > 4 || size.raw < -4)`, with no condition on origin — at integer origin with size raw=5, `Round(5/64) - 0 = 0` triggers the clause and returns 1. Fixed the expectation; the implementation was already correct per Blink. Updated test name to "raw=5 above-threshold, int origin — THIN LINE" to capture the behavior.
+
+**Gate-sweep (six invariants at 13g.1 HEAD — held by construction, no callers touched).** CSS2 99/99 · css-flexbox 626/629 · css-position 91/104 · css-writing-modes 781/781 · css-multicol 179/455 · spanner-fragmentation 12/13.
+
+**Risk profile.** Low. Pure additive new exports in `pkg/geometry/layoutunit`. No downstream package imports `SnapSizeToPixel` yet; first caller lands in 13g.2 (border-edge inner corners at `pkg/render/render.go:2672-2675`).
+
+Files: `pkg/geometry/layoutunit/layoutunit.go` (+58 — 2 new functions + comprehensive doc-comments citing `layout_unit.h` verbatim), `pkg/geometry/layoutunit/layoutunit_test.go` (+125 — 3 test functions / 24 sub-tests covering integer/half-px/negative/zero/sub-threshold/adjacency-property), `findings.md` (+~110 — Phase 13g research section: Blink primitive verbatim with three load-bearing observations, location-convention from `physical_rect.h`, why `box_painter_base.cc`/`box_border_painter.cc` don't call it directly, louis14 `pixelSnap` shortfall analysis, ad-hoc Round inventory across `pkg/render/`, sub-step staging plan), `task_plan.md` (top summary + 13g row + queued line), `progress.md` (this section), `~/.claude/.../memory/feedback_blink_file_placement.md` + `MEMORY.md` (new feedback memory: mirror Blink file placement when porting primitives).
+
+---
+
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
 
 `pkg/html/tokenizer.go` aborted parsing with `tokenizer error: expected '>' but reached EOF` whenever input ended mid-tag (DOCTYPE without `>`, end tag like `</html` without `>`, start tag attribute loop hitting EOF, unterminated quoted attribute value). HTML5 §13.2.5.7-8/.32/.34/.38/.39 classify all of these as **recoverable** parse errors — emit what the tokenizer has built and let the tree-builder close any still-open elements at EOF. Real browsers (and Blink's `HTMLTokenizer`) accept these inputs.
