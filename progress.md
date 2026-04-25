@@ -68,6 +68,51 @@ Tests `layoutunit_test.go` (16 functions, all pass): constants, `New` saturation
 **Files added:** `pkg/geometry/layoutunit/layoutunit.go` (package), `pkg/geometry/layoutunit/layoutunit_test.go` (16 tests).
 **Files touched in pkg/layout/:** none. No callers in this commit. 13b will introduce composite geometry types; 13c will be the first sub-phase that migrates an existing layout-side `float64` field.
 
+#### Phase 13b: composite geometry types + WM conversions — DONE 2026-04-25
+
+New parent package `pkg/geometry` on top of `pkg/geometry/layoutunit`. Mirrors Blink's split: `platform/geometry/layout_unit.h` (the scalar) → `core/layout/geometry/{logical_offset,logical_size,physical_offset,physical_size,physical_rect,writing_mode_converter}.{h,cc}` (the composites + conversions).
+
+**Types (`logical.go`, `physical.go`):**
+- `LogicalOffset{InlineOffset, BlockOffset LayoutUnit}` + `LogicalSize{InlineSize, BlockSize}` + `LogicalRect{Offset, Size}`.
+- `PhysicalOffset{Left, Top}` + `PhysicalSize{Width, Height}` + `PhysicalRect{Offset, Size}`.
+- Each: `NewX(int...)` constructor, `XFromF64Round/Ceil/Floor(...)` explicit-rounding entry from float, `*F64()` lossless exit accessors. Comparable structs so `==` works; `Add/Sub` componentwise on offsets.
+- `LogicalRect.InlineEnd/BlockEnd`, `PhysicalRect.Right/Bottom` derive end-edges via `Add`.
+
+**Writing-mode enums (`writing_mode.go`):**
+- `WritingMode` uint8: HorizontalTB, VerticalRL, VerticalLR, SidewaysRL, SidewaysLR. Numeric ordering mirrors `pkg/layout/writing_mode.go` so a future migration of `pkg/layout` is mechanical.
+- `Direction` uint8: LTR, RTL.
+- `WritingDirectionMode{WM, Dir}` with predicates: `IsHorizontal/IsVertical/IsFlippedBlocks/IsLTR/IsRTL`.
+
+**Converter (`converter.go`):**
+- `WritingModeConverter{WDM, OuterSize}` + `NewWritingModeConverter(wdm, outer)`. Holds the container's outer size; the inner size is supplied at conversion time per-call.
+- `LogicalSizeFromPhysical(size, wm)` / `PhysicalSizeFromLogical(size, wm)` — direction-independent (htb identity, all vertical modes swap width/height).
+- `(c) ToPhysicalOffset(LogicalOffset, inner) PhysicalOffset` — Blink-parity port of `writing_mode_converter.cc` `SlowToPhysical` for all 5 writing modes × 2 directions:
+  - htb-ltr identity (fast path); htb-rtl uses `outerW − inline − innerW` for x.
+  - vrl/srl LTR: `x = outerW − block − innerW`, `y = inline`. RTL also flips `y = outerH − inline − innerH`.
+  - vlr LTR: `x = block`, `y = inline`. RTL flips y.
+  - slr LTR: `x = block`, `y = outerH − inline − innerH`. RTL: `y = inline`.
+- `(c) ToLogicalOffset(PhysicalOffset, inner) LogicalOffset` — inverse.
+- `(c) ToPhysicalRect(LogicalRect) PhysicalRect` / `ToLogicalRect(PhysicalRect) LogicalRect` — uses the rect's own size as the inner size for the offset conversion.
+
+**Tests (`converter_test.go`, 11 functions, all pass):**
+- `TestToPhysicalOffset_AllWMDir` — 10-row matrix (5 WMs × 2 dirs) verifying hand-traced physical offsets for `lo=(10, 20)`, `outer=(200, 100)`, `inner=(40, 30)`. Each case derives the expected (x, y) from the formulas above.
+- `TestToLogicalOffset_RoundTrip` — for every (WM, Dir), `ToLogical(ToPhysical(lo)) == lo`. Verifies the two functions are exact inverses.
+- `TestSizeConversions` — htb identity; vertical swaps; size round-trip across all 4 vertical WMs.
+- `TestToPhysicalRect` — vertical-rl-LTR rect conversion verifies size swap (block → physical width) plus offset conversion using post-swap inner size.
+- `TestSubPixelOffsetSurvivesConversion` — sub-pixel logical offset (10.5, 20.25) round-trips via vrl-RTL with bit-exact equality (no float associativity drift).
+- Constructors / F64 accessors / Ceil-Floor entry / Rect end-edge accessors / Offset Add/Sub / WDM predicates.
+
+**Gate sweep (all six invariants held by construction):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓
+- css-position 92/104 ✓
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓
+- spanner-fragmentation 12/13 ✓
+
+**Files added:** `pkg/geometry/geometry.go` (package doc + `LayoutUnit` re-export), `pkg/geometry/writing_mode.go`, `pkg/geometry/logical.go`, `pkg/geometry/physical.go`, `pkg/geometry/converter.go`, `pkg/geometry/converter_test.go`.
+**Files touched in pkg/layout/:** none. 13c is the first sub-phase that migrates an existing layout-side `float64` field — fragment offsets/sizes (largest single migration).
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
