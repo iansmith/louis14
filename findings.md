@@ -18,38 +18,57 @@ All writing-modes category findings — 787 tests, bidi root-causes, orthogonal 
 
 Paired with the "ACTIVE FOLLOW-UP BATCH" block at the top of `task_plan.md`. Drop research notes per target as we investigate. Keep entries short until a concrete root cause surfaces — no speculative paragraphs.
 
-### F1. wm `bidi-embed-006` + `bidi-override-006` — **RE-DIAGNOSED 2026-04-24, ACTIVE**
+### F1. wm `bidi-embed-006` + `bidi-override-006` — **RE-DIAGNOSED TWICE 2026-04-24, ACTIVE**
 
-#### Corrected root cause (2026-04-24, supersedes earlier "11 px shorter" diagnosis)
+This entry has been corrected twice. The earlier "11 px shorter" diagnosis was wrong; the second-pass "sub-pixel kerning drift from per-fragment shaping" diagnosis was *also* wrong (or at best, downstream of the real bug). The actual root cause was uncovered by debug-printing layout-time `openFont` for `ezra_silregular` and discovering it returns -1.
 
-Box-tree dump (via standalone Go runner over both files):
+#### Real root cause (2026-04-24): @font-face fonts aren't registered with the layout-time text provider
 
-| | TEST html (`.test` wrapper, span-based) | REF html (`.ref` wrapper, literal LRO) |
+The two F1 tests use `@font-face { font-family: 'ezra_silregular'; src: url('/fonts/sileot-webfont.woff'); }`. Our visualtest harness (`pkg/visualtest/helpers.go:149-164`) registers the face with a `text.FontRegistry` that maps family→cached path. `Renderer.SetFonts` later wires this registry into the renderer's `DrawContext.TextLayout`. **But layout runs before render**, and our shared `getLayout()` lazy-init has no knowledge of `ezra_silregular`. Trace:
+
+1. `pkg/layout/inline_layout.go` → `line_breaker.handleText` → `text.MeasureText` (`measure.go:312-348`).
+2. `measureWidth` calls `openFont(fontPath, fontSize)` (`measure.go:120-139`).
+3. `openFont` does `FontPathToFamilyVariant("/var/folders/.../ezra_silregular-Regular.ttf")` → `("ezra_silregular", VariantRegular)`, then `getLayout().OpenFont(...)`. Shared `TextLayout` doesn't know that family — returns error → `FontMetrics{FontID: -1}`.
+4. `measureWidth` falls back to `math.Round(float64(len(text)) * fontSize * 0.6)`.
+5. `measure_caches` the fallback width keyed on `(text, size, path)`.
+
+Debug print (now removed) confirmed all three: `[ShapeAdvancesMixed] openFont failed: .../ezra_silregular-Regular.ttf sz=24` for every multi-fragment shape attempt during the F1 reftest run.
+
+#### Why this produces a 1598-px diff specifically
+
+For `bidi-embed-006.html` line 2, measured per-fragment with the byte-count fallback:
+
+| | `.test` (5 items, multi-fragment) | `.ref` (1 item, wrapped to 2 lines) |
 |---|---|---|
-| Wrapper | 252 × **62.8** at y=48.9 | 252 × **62.8** at y=48.9 |
-| Line 1 inner | 5 fragments: `א`(14.4) + ` > `(25.5) + `b > c`(48.2) + ` > `(25.5) + `ד`(11.5) = **125.1** | 1 fragment: `א > b > c > ד` = **125.2** |
-| Line 2 inner | 5 fragments: `א`(14.4) + ` > `(25.5) + `ג < ב`(45.0) + ` > `(25.5) + `ד`(11.5) = **121.9** | 1 fragment: `א > ג < ב > ד` = **122.0** |
+| Items | `א`(29) + ` > `(43) + `ב > ג`(101) + ` > `(43) + `ד`(29) — fits on 1 line at sum **245** | `א > ג < ב >`(202) on line 2a; `ד`(29) on line 2b |
+| Total wrap height | 1 line | 2 lines |
 
-Wrapper geometry is **identical** (62.8 px tall both sides). The previous "test renders ~11 px shorter" diagnosis was wrong. The 1598-px diff is **sub-pixel glyph drift inside `.test`** caused by per-fragment HarfBuzz calls vs the single-fragment shaping the reference uses.
+`.test`'s 5 small items each fit at the cumulative position the line-breaker is at, even though they sum to 245 px > 240 px content-width. `.ref`'s single 18-byte item is too wide for one line, so the line-breaker word-wraps it into prefix `+` suffix. Different wrap geometry → different y-positions for the second wrapper → 1598 px of border-pixel mismatch.
 
-Mirror-glyph substitution actually works in our pipeline today — line 2's span text in `.test` already shows as `"ג < ב"` (visually reordered with `>` mirrored to `<`). This works because our `pkg/text/measure.go` calls `getLayout().MeasureText(...)` with no `Direction` param, so HarfBuzz's `GuessSegmentProperties` picks RTL when Hebrew is present and triggers the OpenType `rtlm` feature. So the previously-suspected "missing mirror substitution" is **not** the F1 gap.
+This is exactly the deferred limitation captured during Phase 12h Step 1:
 
-The actual gap: `canMergeShapingContext` (`pkg/layout/line_breaker.go:1510-1551`) refuses to merge text items across bidi-level boundaries (line 1516) and refuses to merge any odd-level item with neighbors (line 1525). Result: a logical text run like `א > ב > ג > ד` split across span boundaries becomes 5 separate `MeasureText`/`ShapeAdvances` calls. Each call rounds its own per-glyph cumulative advance to 1/64-px (HarfBuzz fixed-point), but cross-call kerning is lost and per-glyph positions drift versus a single-call shaping. Across many glyphs at slightly different sub-pixel positions, anti-aliasing differs → 1598 px of mismatched pixels.
+> Bespoke @font-face families with names not in fonts.csv still fail the same way — the cached path gets reverse-derived to a family the provider can't resolve. The real fix for those is an `DirectGlyphProvider.RegisterFile(family, variant, absPath)` hook that louis14 calls from `Renderer.SetFonts` after processing @font-face rules. **Deferred** — not needed by any visible failing test; all WPT Ahem consumers hit the built-in path now.
 
-#### Why Blink doesn't have this
+F1 *is* the visible failing test that demands it.
 
-Blink's `HarfBuzzShaper::Shape` runs once over the **entire inline text run** (`harfbuzz_shaper.cc` Shape entry). Direction segmentation happens internally (Blink walks bidi runs via `InlineNode::SegmentBidiRuns` and dispatches each level run to HarfBuzz with the right `HB_DIRECTION_*`). Per-item advances are sliced from the unified shape result — items never re-shape. Multi-fragment items therefore produce identical glyph positions to single-fragment items.
+#### Mirror-glyph and unified-shape are not the F1 bug
 
-#### Plan (Option A — Blink-parity unified shape pass)
+Two earlier hypotheses, both falsified once HarfBuzz was actually invoked:
 
-Sub-tasks tracked in task_plan.md F1 row:
-- **F1a — `pkg/text/measure.go`:** add `ShapeAdvancesMixed(text string, runs []DirectionRun, fontSize, fontPath)` returning a per-byte cumulative advance map over the original logical-byte positions. Internally calls `textshape.ShapeText` once per direction-run with the right `Direction`, assembling the unified `cum[]` (handling RTL clusters' descending byte order).
-- **F1b — `pkg/layout/line_breaker.go`:** drop the bidi-level refusals in `canMergeShapingContext` (lines 1516, 1525). When measuring a contiguous run of text items that share the same font/style but differ in bidi level, slice each item's `InlineSize` from the new mixed shape result.
-- **F1c — paint-side consistency check:** verify glyph paint reads from the same unified shaping (or at least produces the same fractional positions). Adjust if it diverges from layout-side measurement.
+- **Mirror-glyph substitution:** when a standalone Go runner uses `text.DefaultFontConfig()` (Liberation Serif fallback for `serif`, no @font-face), the box-tree dump shows `.test`'s span text rendered as `"ג < ב"` already (visually reordered, `>` mirrored to `<`). HarfBuzz auto-detect picks RTL on Hebrew runs and triggers the OpenType `rtlm` feature without us setting `Direction` explicitly. So mirror substitution works in our pipeline today.
+- **Sub-pixel kerning drift from per-fragment shaping:** with Liberation Serif (proper shaping), `.test`'s 5 fragments sum to 125.1 px and `.ref`'s single fragment is 125.2 px — a 0.1 px diff that *does* exist but is dwarfed by the 1598-px wrap-driven diff. Once @font-face works, this 0.1 px diff may or may not show up; if it does, the F1a/F1b unified-shape work below addresses it.
+
+#### Plan
+
+- **F1d (the actual F1 closer):** plumb `DirectGlyphProvider.RegisterFile(family, variant, absPath)` through the text layout, and call it from BOTH the renderer (post-`SetFonts`, already documented as the intended hook) AND the layout engine before `Layout()` runs (so layout-time `openFont` sees the @font-face family). Touches `mazarin/textshape` (DirectGlyphProvider), `pkg/text` (FontRegistry → provider sync), `pkg/layout/engine.go` (or wherever the engine learns about FontConfig.Registry), and `pkg/visualtest/helpers.go` (call order). This generalizes — fixes F1, unblocks future webfont tests in any category.
+
+- **F1a / F1b (Blink-parity infrastructure, already implemented):** new `text.ShapeAdvancesMixed(text, []DirectionRun, fontSize, fontPath)` that segments by direction internally and returns a logical-byte-indexed cumulative advance; `canMergeShapingContext` no longer refuses bidi-level boundaries or odd-level items. Currently a no-op for F1 because shaping fails upstream at `openFont`. Useful long-term — once F1d lands, the sub-pixel kerning concern resurfaces and F1a/F1b is the right shape. Land alongside F1d as separate scoped commits.
+
+- **F1c (paint-side consistency):** verify glyph paint reads from the same unified shape result; only investigate after F1d lands and we can see real glyphs.
 
 #### Out of scope for this F1 landing (still parked for future bidi-parity work)
 
-The existing Blink-parity research below remains valid but isn't blocking the 2 target tests:
+The Blink-parity research below remains valid but isn't blocking the 2 target tests:
 - `isolate-override` double-push ordering audit (FSI outer, LRO/RLO inner — verify our injector matches).
 - Block-level path emitting controls for `embed`/`isolate` (Blink delegates to `SetParagraph` paragraph-level only).
 - OOF re-injection second `SetParagraph` pass (`inline_node.cc:1375-1405`).

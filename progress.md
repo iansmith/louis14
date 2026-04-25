@@ -24,22 +24,28 @@ Baseline at batch start (2026-04-24, post-Phase 12h step 4, commit `356a8b19`):
 - spanner-fragmentation 12/13
 - css-writing-modes 779/781 (F1 target is to restore 781/781)
 
-### F1. wm bidi tests — ACTIVE, RE-DIAGNOSED 2026-04-24
+### F1. wm bidi tests — ACTIVE, RE-DIAGNOSED TWICE 2026-04-24
 
-The earlier "never passing, deferred" stance still holds for the regression-history claim (verified at `9913a9e4`: same 1598 px diff, wm at that commit was 757/781). But the *cause* diagnosis has been corrected.
+The "never passing, deferred" stance still holds for the regression-history claim (verified at `9913a9e4`: same 1598 px diff, wm at that commit was 757/781). The *cause* diagnosis has now been corrected twice.
 
 **Stale (wrong):** `.test` renders 11 px shorter per line than `.ref`; suspected mirror-glyph substitution missing.
 
-**Corrected (2026-04-24, via box-tree dump of both files):** wrapper geometry is **identical** between `.test` and `.ref` — both 252×62.8 at the same y. Mirror substitution actually works today (line 2's span renders as `"ג < ב"`, the visually-reordered + `>`-mirrored form), because `MeasureText` calls HarfBuzz with no `Direction` so `GuessSegmentProperties` picks RTL on Hebrew and triggers the `rtlm` OpenType feature.
+**Second-pass diagnosis (also wrong, or at best downstream):** sub-pixel kerning drift from per-fragment HarfBuzz shaping. Implemented Option A (F1a `ShapeAdvancesMixed` + F1b relaxed `canMergeShapingContext`) — code clean, no regressions, **F1 tests still 1598 px**, exactly unchanged.
 
-Real gap: `canMergeShapingContext` (`pkg/layout/line_breaker.go:1516, 1525`) refuses to merge text items across bidi-level boundaries and refuses to merge any odd-level item with neighbors. Logical run `א > ב > ג > ד` split by a span thus becomes **5 independent HarfBuzz shape calls** (vs `.ref`'s single call). Cross-fragment kerning is lost, sub-pixel residue drifts ~0.1 px per boundary, anti-aliasing differs across many glyphs → 1598 px diff.
+**Real diagnosis (2026-04-24, via debug print of `openFont`):** the @font-face font `ezra_silregular` returns `FontID: -1` from `getLayout().OpenFont()` at layout time. The shared `text.TextLayout` is set by `Renderer.NewRenderer` (which runs AFTER layout); the lazy-init layout in use during `engine.Layout()` knows nothing about the visualtest's `text.FontRegistry`. Layout-pass `measureWidth` therefore falls back to `math.Round(len(text) × fontSize × 0.6)` for every Hebrew item.
 
-Blink path: `HarfBuzzShaper::Shape` runs once over the entire inline text run; bidi-segmented internally, with per-item advances sliced from the unified shape result. Items never re-shape.
+Result: `.test` line 2 measures its 5 items as `29+43+101+43+29=245` and squeezes onto one line (overflow tolerance), while `.ref`'s single 18-byte item is too wide for one line and word-wraps into prefix(202) + suffix(29) across two lines. Different wrap geometry → second wrapper at different y → 1598 px of border mismatch.
 
-**Plan (Option A — Blink-parity unified shape pass).** Tracked as F1a/F1b/F1c in task_plan.md.
-- F1a: new `ShapeAdvancesMixed(text, []DirectionRun, fontSize, fontPath)` in `pkg/text` returning a per-byte cumulative advance map over original logical positions; internally one `ShapeText` per direction-run with explicit `Direction` set.
-- F1b: drop the bidi-level refusals in `canMergeShapingContext`; route multi-bidi-level text-item runs through the new API and slice per-item `InlineSize`.
-- F1c: verify glyph paint reads consistent positions; adjust if it diverges from the unified-measure result.
+This is the deferred Phase 12h Step 1 limitation captured verbatim in `findings.md`:
+
+> The real fix is a `DirectGlyphProvider.RegisterFile(family, variant, absPath)` hook that louis14 calls from `Renderer.SetFonts` after processing @font-face rules. **Deferred** — not needed by any visible failing test...
+
+F1 is the visible test that demands it.
+
+**Plan revised:**
+- **F1d (the actual closer):** plumb `DirectGlyphProvider.RegisterFile` through `mazarin/textshape`; call it from BOTH renderer (post-`SetFonts`) AND layout engine before `Layout()`. Touches `mazarin/textshape`, `pkg/text` (FontRegistry → provider sync), `pkg/layout/engine.go`, possibly `pkg/visualtest/helpers.go`. Generalizes — fixes F1, unblocks every future webfont test.
+- **F1a/F1b (already implemented):** Blink-parity unified shape pass. Currently no-op for F1 (shape calls fail upstream at `openFont`), but the right Blink-parity shape and likely needed once F1d lets HarfBuzz actually fire — sub-pixel cross-fragment kerning may still cause a residual diff. Land as separate scoped commits.
+- **F1c (paint-side consistency):** investigate after F1d lands.
 
 See findings §F1 for the full diagnosis + Blink-parity reference + out-of-scope-for-now bidi-parity items.
 ### F2. Phase 12c nested-multicol leaf paint-slicing — PARTIAL 2026-04-24
