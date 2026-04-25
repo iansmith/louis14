@@ -218,7 +218,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			mla.space.HasBlockFragmentation &&
 			mla.space.FragmentainerBlockSize != Indefinite &&
 			!mla.space.IsInitialColumnBalancingPass {
-			mla.remainingContentBlockSize -= mla.space.BreakToken.ConsumedBlockSize
+			mla.remainingContentBlockSize -= mla.space.BreakToken.ConsumedBlockSize.Float64()
 			if mla.remainingContentBlockSize < 0 {
 				mla.remainingContentBlockSize = 0
 			}
@@ -331,7 +331,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		if len(bt.ChildBreakTokens) > 1 && bt.ChildBreakTokens[1] != nil {
 			partialToken := bt.ChildBreakTokens[1]
-			spannerConsumed = partialToken.ConsumedBlockSize
+			spannerConsumed = partialToken.ConsumedBlockSize.Float64()
 			hasSpannerResume = true
 			if len(partialToken.ChildBreakTokens) > 0 {
 				spannerContentBreakToken = partialToken.ChildBreakTokens[0]
@@ -647,7 +647,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					// spanner token so the resumed outer column gets both resume points.
 					clipToken := &BlockBreakToken{
 						Node:              spanner,
-						ConsumedBlockSize: available,
+						ConsumedBlockSize: layoutunit.FromFloat64Round(available),
 					}
 					pendingPartialSpannerToken.ChildBreakTokens = append(
 						pendingPartialSpannerToken.ChildBreakTokens, clipToken)
@@ -657,7 +657,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				// outer column can place only the remaining portion.
 				partialSpannerToken := &BlockBreakToken{
 					Node:              spanner,
-					ConsumedBlockSize: available,
+					ConsumedBlockSize: layoutunit.FromFloat64Round(available),
 				}
 				return buildOuterBreakResult(beforeSpannerToken, partialSpannerToken)
 			}
@@ -682,7 +682,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				// A subsequent spanner was clipped in OC1; resume the remaining
 				// portion now that the content-overflow spanner is fully placed.
 				hasSpannerResume = true
-				spannerConsumed = nextSpannerClipToken.ConsumedBlockSize
+				spannerConsumed = nextSpannerClipToken.ConsumedBlockSize.Float64()
 				nextColToken = remainingToken
 				nextSpannerClipToken = nil
 				didContentOverflowResume = false

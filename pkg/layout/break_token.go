@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/geometry/layoutunit"
+
 // BlockBreakToken captures the state needed to resume layout in the next
 // fragmentainer. Mirrors Blink's BlockBreakToken
 // (third_party/blink/renderer/core/layout/block_break_token.h).
@@ -9,7 +11,7 @@ type BlockBreakToken struct {
 
 	// ConsumedBlockSize is how much of this node's block-size has been
 	// consumed by previous fragments. The next fragment starts here.
-	ConsumedBlockSize float64
+	ConsumedBlockSize layoutunit.LayoutUnit
 
 	// SequenceNumber is which fragment this is (0-indexed).
 	SequenceNumber int

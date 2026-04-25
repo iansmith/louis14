@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 // BlockLayoutAlgorithm implements the block formatting context layout.
@@ -237,7 +238,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// column overflow, build a partial fragment and return early with the
 		// inline break token. Mirrors the block-children fragmentation path.
 		if inlineBreakToken != nil {
-			shortage := (blockCursor + inlineBreakToken.ConsumedBlockSize) - bla.space.FragmentainerBlockSize
+			shortage := (blockCursor + inlineBreakToken.ConsumedBlockSize.Float64()) - bla.space.FragmentainerBlockSize
 			if shortage < 0 {
 				shortage = 0
 			}
@@ -362,14 +363,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if childIdx+1 < len(children) {
 					spannerBreakToken = &BlockBreakToken{
 						Node:             bla.node,
-						ConsumedBlockSize: blockCursor,
+						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
 						ChildBreakTokens: []*BlockBreakToken{{
 							Node:          children[childIdx+1],
 							IsBreakBefore: true,
 						}},
 					}
 					if incomingBreakToken != nil {
-						spannerBreakToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						spannerBreakToken.ConsumedBlockSize = spannerBreakToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
 						spannerBreakToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
 					}
 				}
@@ -710,10 +711,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// was column/page).
 					outToken := &BlockBreakToken{
 						Node:              bla.node,
-						ConsumedBlockSize: blockCursor,
+						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
 					}
 					if incomingBreakToken != nil {
-						outToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
 						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
 					}
 					outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
@@ -900,11 +901,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 					outToken := &BlockBreakToken{
 						Node:              bla.node,
-						ConsumedBlockSize: blockCursor,
+						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
 						SequenceNumber:    0,
 					}
 					if incomingBreakToken != nil {
-						outToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
 						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
 					}
 
@@ -953,11 +954,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							// leaf from the same position every row, never terminating.
 							totalConsumed := childConsumed
 							if resumeChildBreakToken != nil && childIdx == resumeChildIdx {
-								totalConsumed += resumeChildBreakToken.ConsumedBlockSize
+								totalConsumed += resumeChildBreakToken.ConsumedBlockSize.Float64()
 							}
 							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
 								Node:              child,
-								ConsumedBlockSize: totalConsumed,
+								ConsumedBlockSize: layoutunit.FromFloat64Round(totalConsumed),
 							})
 						} else {
 							// Non-column context (e.g. spanner content in outer fragmentainer):
@@ -1091,10 +1092,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				if fragSize != Indefinite && childResult.HasForcedBreak {
 					outToken := &BlockBreakToken{
 						Node:              bla.node,
-						ConsumedBlockSize: blockCursor,
+						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
 					}
 					if incomingBreakToken != nil {
-						outToken.ConsumedBlockSize += incomingBreakToken.ConsumedBlockSize
+						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
 						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
 					}
 					if childResult.BreakToken != nil {
@@ -1192,9 +1193,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// The CSS height belonged to the first fragment; this resumed fragment shows
 			// whatever content was placed (its children, which may overflow the CSS height).
 			finalBlockSize = intrinsicBlockSize
-		} else if incomingBreakToken != nil && incomingBreakToken.ConsumedBlockSize > 0 && intrinsicBlockSize == 0 {
+		} else if incomingBreakToken != nil && !incomingBreakToken.ConsumedBlockSize.IsZero() && intrinsicBlockSize == 0 {
 			// Resumed leaf block: show remaining declared height (CSS height - consumed).
-			remaining := explicitBlockSize - incomingBreakToken.ConsumedBlockSize
+			remaining := explicitBlockSize - incomingBreakToken.ConsumedBlockSize.Float64()
 			if remaining >= 0 && remaining < finalBlockSize {
 				finalBlockSize = remaining
 			}

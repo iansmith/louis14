@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 	"louis14/pkg/text"
 	"strings"
@@ -965,13 +966,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// line must have been placed, mirroring Blink's RequiresContent guard).
 				inlineBreakToken = &BlockBreakToken{
 					Node:                 bla.node,
-					ConsumedBlockSize:    blockOffset + bla.space.FragmentainerOffset,
+					ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset + bla.space.FragmentainerOffset),
 					InlineItemStartIndex: lineStartIdx,
 					InlineTextOffset:     lineStartTextOffset,
 					SequenceNumber:       0,
 				}
 				if bla.space.BreakToken != nil {
-					inlineBreakToken.ConsumedBlockSize += bla.space.BreakToken.ConsumedBlockSize
+					inlineBreakToken.ConsumedBlockSize = inlineBreakToken.ConsumedBlockSize.Add(bla.space.BreakToken.ConsumedBlockSize)
 					inlineBreakToken.SequenceNumber = bla.space.BreakToken.SequenceNumber + 1
 				}
 				break
