@@ -311,6 +311,38 @@ New import in `fragment_geometry.go`: `louis14/pkg/geometry/layoutunit` (file pr
 
 Files: `pkg/layout/fragment_geometry.go` (+12/-4 incl. import).
 
+#### Phase 13e.6: fragment_geometry ResolveInlineSize / ResolveBlockSize → ResolvePercent — DONE 2026-04-25 (Phase 13e CLOSED)
+
+Two call sites in `pkg/layout/fragment_geometry.go`, the highest-fan-out 13e sites — `ResolveInlineSize` / `ResolveBlockSize` are called from ~every layout algorithm (block, flex, grid, table, multicol, replaced, out-of-flow, etc.):
+- `ResolveInlineSize` (line 304): `space.PercentageResolutionSize.InlineSize.Float64() * pct / 100`
+- `ResolveBlockSize` (line 436, gated on `!space.IsBlockSizeIndefinite()`): block-axis variant
+
+```go
+// Before:
+result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
+// After:
+result := layoutunit.ResolvePercent(
+    space.PercentageResolutionSize.InlineSize, pct).Float64()
+```
+
+**Identical bridge shape to 13e.5.** `space.PercentageResolutionSize` is already a `geometry.LogicalSize` (LayoutUnit-backed since 13d.4b, commit `7db1f2fd`), so the basis is passed directly to `ResolvePercent` — no `FromFloat64Round` round-trip at the entry. The exit `.Float64()` stays until the deferred 13e′ return-type promotion. Net: same one-float-boundary-removed simplification as 13e.5, no new import (`layoutunit` already in the import block from 13e.5).
+
+**Gates preserved verbatim.** The `!space.IsBlockSizeIndefinite()` predicate on `ResolveBlockSize` stays (CSS Sizing Level 3 §6.1: percentages against indefinite block-sizes resolve to auto — the indefinite branch returns `(0, false)`). The `applyBoxSizing{Inline,Block}` post-adjust on each return path is unchanged. The `style.Get(prop) == "auto" / ""` short-circuits in both functions are unchanged. The `calc(...%...)` paths (lines 286–295 and 419–428) flow through `css.EvalCalcWithPercent` and are out of scope per the 13e plan.
+
+**Risk profile.** Despite the high fan-out, the bridge pattern is identical to the 4-site 13e.5 and the basis-LayoutUnit invariant is the same — no surprises. Single-commit landing as planned.
+
+**Gate-sweep (six invariants at 13e.6 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (same 3 residuals: auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004)
+- css-position 91/104 ✓ (13 pre-existing)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (276 failures = 455 − 179)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+Files: `pkg/layout/fragment_geometry.go` (+6/-4).
+
+**Phase 13e is now CLOSED.** Every percentage-resolution call site in the layout pipeline flows through `layoutunit.ResolvePercent`. Queued next: **13e′** (return-type promotion of `ResolveInlineSize` / `ResolveBlockSize` / `ResolveMin*` / `ResolveMax*` from `float64` → `LayoutUnit`, ~50-site ripple across callers — the inverse-direction migration that closes the float boundary at the exit of these functions), then **13f** (text-shaping boundary), **13g** (paint-time pixel snap), **13h** (verification + cleanup).
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

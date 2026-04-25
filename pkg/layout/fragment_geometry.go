@@ -301,7 +301,8 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 
 	// Check for percentage.
 	if pct, ok := style.GetPercentage(prop); ok {
-		result := space.PercentageResolutionSize.InlineSize.Float64() * pct / 100
+		result := layoutunit.ResolvePercent(
+			space.PercentageResolutionSize.InlineSize, pct).Float64()
 		return applyBoxSizingInline(style, geom, result), true
 	}
 
@@ -433,7 +434,8 @@ func ResolveBlockSize(style *css.Style, wdm WritingDirectionMode, space Constrai
 
 	if pct, ok := style.GetPercentage(prop); ok {
 		if !space.IsBlockSizeIndefinite() {
-			result := space.PercentageResolutionSize.BlockSize.Float64() * pct / 100
+			result := layoutunit.ResolvePercent(
+				space.PercentageResolutionSize.BlockSize, pct).Float64()
 			return applyBoxSizingBlock(style, geom, result), true
 		}
 		// Percentage against indefinite → auto.
