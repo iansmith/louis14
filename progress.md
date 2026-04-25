@@ -32,9 +32,11 @@ Current state (2026-04-25):
 - spanner-fragmentation 12/13 (unchanged)
 - css-writing-modes **781** / 781 (+2 from F1 closing at commit `41b674ef` + mazzy `d6b27049`/`cde2c29`, 2026-04-25)
 
-### Phase 13: LayoutUnit precision discipline — PLAN 2026-04-25
+**Phase 13 progress (2026-04-25):** 13a (commit `3897b43e`, foundational `LayoutUnit` scalar) + 13b (commit `20f25053`, composite geometry types + `WritingModeConverter`) landed. Pure new code, 27 unit tests across `pkg/geometry/layoutunit` and `pkg/geometry`, no callers in `pkg/layout` yet. All six gate invariants held by construction — verified post-13b. 13c (fragment offsets/sizes, marked Medium-High risk) is next; it will be the first commit that migrates an existing `pkg/layout` `float64` field.
 
-Plan-only entry. No code yet. See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown and `findings.md` "Phase 13: LayoutUnit research" for the full Blink-parity reference.
+### Phase 13: LayoutUnit precision discipline — PARTIAL 2026-04-25 (13a + 13b done)
+
+13a (commit `3897b43e`) and 13b (commit `20f25053`) landed. 13c–13h queued. See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased breakdown, `findings.md` "Phase 13: LayoutUnit research" for the Blink-parity reference, and the per-sub-phase landing notes below.
 
 **Driver:** `clear-001.xht` is the labeled "deferred pending Blink LayoutUnit trace" residual. Re-examined via pixel-probe today: the diff is a 1-px y-offset at the blue/orange boundary (our render: blue=96 tall, orange=96 tall; ref expects blue=97 tall, orange=95 tall, total height matches at 192 px). `1in = 96 CSS px` is integer-clean and a faithful LayoutUnit port produces 96 either way — so clear-001 may NOT close from LayoutUnit arithmetic alone. The most likely closure path is Phase 13g's paint-time `SnapSizeToPixel` analog (sub-pixel-edge / thin-line preservation), not 13a-f's arithmetic discipline. The plan stands on its own merits (foundational correctness, bit-exact reproducibility for paint-invalidation hashing, eliminate the `pkg/layout` ~580-`float64`-references precision-discipline gap), regardless of clear-001's specific cause; re-examine clear-001 after 13g.
 

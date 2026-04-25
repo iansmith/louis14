@@ -2041,3 +2041,18 @@ See `task_plan.md` "Phase 13: LayoutUnit precision discipline" for the phased br
 - `third_party/blink/renderer/platform/fonts/shaping/shape_result.h:131,159-162` — `SnappedWidth/SnappedStart/EndPositionForOffset` boundary.
 - `third_party/blink/renderer/platform/fonts/shaping/shape_result.cc` — `TextRunLayoutUnit::FromFloatRound` for shaper-internal accumulation.
 - `third_party/blink/renderer/core/layout/inline/line_breaker.cc` — uses `shape_result->SnappedWidth()` to enter LayoutUnit.
+
+### Phase 13a + 13b landing notes (2026-04-25)
+
+**13a (commit `3897b43e`).** Pure port of `FixedPoint<6, int32_t>` into `pkg/geometry/layoutunit`. No design surprises; the public surface is exactly what the plan called for. Two Go-specific choices worth recording:
+
+1. **No implicit float entry.** Blink relies on C++ explicit-ctor discipline. Go has no implicit numeric conversion, so we simply don't expose a `LayoutUnit(float64)` ctor at all — only `FromFloat64Round/Ceil/Floor`. Every float-side caller must pick a rounding mode. Greppable invariant: a callsite that wants to fall through into LayoutUnit at a float boundary cannot do so by accident.
+2. **`Round()` for negatives uses the abs-then-shift form.** Blink uses `-((-(value − 32)) >> 6)` for negatives. Go's `int64(-int32(MinInt32))` is the same overflow trap; we promote the raw to `int64` first and rely on int64 negation being safe across the int32 range. Tests cover `-0.5 → -1`, `-1.5 → -2`, etc., directly verifying round-half-away-from-zero in both directions.
+
+**13b (commit `20f25053`).** New `pkg/geometry` parent package on top of the scalar `pkg/geometry/layoutunit`. Mirrors Blink's `platform/geometry` (scalar) ↔ `core/layout/geometry` (composites + WM converter) split. Three design notes:
+
+1. **`WritingDirectionMode` duplicated, not imported.** `pkg/layout/writing_mode.go` already defines `WritingMode`/`Direction`/`WritingDirectionMode`. Importing `pkg/layout` from `pkg/geometry` would invert the dependency we want for 13c+ (`pkg/layout` should depend on `pkg/geometry`, not vice versa). Solution: define a parallel set of enums in `pkg/geometry/writing_mode.go` with **exactly the same numeric ordering** (HorizontalTB=0, VerticalRL=1, VerticalLR=2, SidewaysRL=3, SidewaysLR=4; LTR=0, RTL=1). When 13c migrates `pkg/layout`, the swap is mechanical (`type-alias` or `find-and-replace`).
+2. **`LayoutUnit` re-exported as type alias.** `pkg/geometry/geometry.go` does `type LayoutUnit = layoutunit.LayoutUnit`. External callers can `import "pkg/geometry"` and use `geometry.LayoutUnit{...}` plus `geometry.LogicalOffset{...}` from one import. Internally `pkg/geometry` still imports `layoutunit` for the scalar constructors; the alias is purely for ergonomics.
+3. **`SlowToPhysical` ported verbatim from louis14's existing float64 `pkg/layout/writing_mode_converter.go`, not from Blink directly.** That file already contained the correct switch-on-WM logic with the same outer/inner subtraction formula. Re-deriving from Blink would have produced the same code; reusing the louis14 form preserves the exact case ordering (and the `WritingModeSidewaysRL` falls into the `WritingModeVerticalRL` branch via shared `case`-fall-through, mirroring Blink's identical layout behavior for these two modes). 10-row test matrix is hand-traced against the formulas, not against `pkg/layout` (so the new package stands on its own).
+
+**No callers in `pkg/layout/` after 13b.** All six gate invariants held by construction. 13c is the first sub-phase that migrates an existing layout-side `float64` field — fragment offsets/sizes, marked Medium-High risk in the plan, will land behind a feature flag for rollback.

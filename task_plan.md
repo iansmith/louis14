@@ -62,7 +62,7 @@ Companion scratch blocks live at the top of `findings.md` (research notes per ta
 
 ---
 
-## Phase 13: LayoutUnit precision discipline (PLAN ONLY, 2026-04-25)
+## Phase 13: LayoutUnit precision discipline (13a + 13b LANDED, 2026-04-25)
 
 **Goal.** Port Blink's `LayoutUnit` precision discipline to louis14. Today every geometry value in `pkg/layout/` is `float64`; ~580 `float64` references across 43 files. Blink uses `int32` fixed-point with 6 fractional bits (1/64 px = `Epsilon`), saturating arithmetic, and explicit rounding-mode entry/exit at every float boundary (text shaping, transforms, length resolution).
 
@@ -72,7 +72,7 @@ Companion scratch blocks live at the top of `findings.md` (research notes per ta
 2. **Bit-exact reproducibility is foundational** (CLAUDE.md rule 1). Float arithmetic associativity failures cause sibling drift that hasn't surfaced as a category but will once we tighten other categories — pagination, scroll anchoring, paint invalidation hashing.
 3. **Sub-pixel snapping at paint** (Blink's `SnapSizeToPixel`) is the right architectural shape for "0.5px border at 0.5px origin draws as 1px" cases that are currently ad-hoc in our painter.
 
-**Approach.** Mirror Blink. New `pkg/geometry/layoutunit` package with `LayoutUnit{raw int32}` and the methods/coordinate types from Blink's `platform/geometry/`. Migrate consumers in dependency order — foundational types first, fragments next, constraint-space and length resolution after. The text-shaping boundary stays in `float64` internally (HarfBuzz output) and crosses into `LayoutUnit` via `FromFloatCeil` / `FromFloatRound` at well-defined call sites.
+**Approach.** Mirror Blink's two-layer split: `pkg/geometry/layoutunit` holds the scalar `LayoutUnit{raw int32}` (analogue of `platform/geometry/layout_unit.h`); `pkg/geometry` holds the composites — `LogicalOffset/Size/Rect`, `PhysicalOffset/Size/Rect`, `WritingMode/Direction/WritingDirectionMode`, `WritingModeConverter` (analogue of `core/layout/geometry/`). Both packages landed (13a + 13b). Migrate consumers in dependency order — fragments next (13c), constraint-space + length resolution after (13d/e). The text-shaping boundary stays in `float64` internally (HarfBuzz output) and crosses into `LayoutUnit` via `FromFloatCeil` / `FromFloatRound` at well-defined call sites (13f).
 
 See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity reference (`platform/geometry/layout_unit.h`, `core/layout/geometry/`, `ShapeResult::SnappedWidth`, `PhysicalRect::EnclosingRect`, `SnapSizeToPixel`, the 6-fractional-bit rationale, the saturating-arithmetic guards, and the migration pitfalls Blink hit during NG).
 
