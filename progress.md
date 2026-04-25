@@ -496,6 +496,44 @@ The remaining sites use `_` for the LayoutUnit return (just the bool is consumed
 
 Files: `pkg/layout/fragment_geometry.go` (+25/-13: function signatures + 3 return-statement wraps × 2 functions + self-reference bridges + doc-comment), `pkg/layout/block_layout.go` (+1/-1), `pkg/layout/replaced_layout.go` (+8/-4), `pkg/layout/min_max_sizing.go` (+10/-7), `pkg/layout/flex_layout.go` (+26/-26 at 26 sites), `findings.md` (+58 — Phase 13e′ research + rounding-mode discovery), `task_plan.md` + `progress.md`.
 
+#### Phase 13e′.2: ResolveMinInlineSize + ResolveMaxInlineSize → LayoutUnit — DONE 2026-04-25
+
+Promoted the inline-axis min/max resolvers in `pkg/layout/fragment_geometry.go`:
+
+```go
+// Before:
+func ResolveMinInlineSize(...) float64
+func ResolveMaxInlineSize(...) (float64, bool)
+
+// After (Phase 13e′.2):
+func ResolveMinInlineSize(...) layoutunit.LayoutUnit
+func ResolveMaxInlineSize(...) (layoutunit.LayoutUnit, bool)
+```
+
+Same idiom as 13e′.1: internal `applyBoxSizingInline` helper stays float64; the boundary uses `layoutunit.FromFloat64Round(...)` (same rounding-mode rationale — Round absorbs IEEE 754 noise from em-times-fontSize products like `8.2 * 50 = 409.99999...`). All branches (GetLength, GetPercentage) use the same wrapper.
+
+**Consumer fan-out: 25 active call sites bridged.** Pattern is uniform: `minInline := ResolveMinInlineSize(...).Float64()` for the bare-assignment form; `if maxInlineLU, hasMax := ResolveMaxInlineSize(...); hasMax { maxInline := maxInlineLU.Float64(); ... }` for the `(value, bool)` form. A few sites use the inline-comparison form `... hasMax && itemCrossContent > maxInlineLU.Float64()` where the LayoutUnit is consumed exactly twice within a short body.
+
+**Files touched:**
+- `pkg/layout/fragment_geometry.go` — 2 producers + 2 self-references in `CalculateInitialFragmentGeometry`
+- `pkg/layout/replaced_layout.go` — 4 sites (intrinsic inline-size, ComputeReplacedSize)
+- `pkg/layout/min_max_sizing.go` — 8 sites (table fast path, explicit-inline fast path, intrinsic min/max apply, flex-basis hypothetical main)
+- `pkg/layout/flex_layout.go` — 11 sites (cross-size clamping for axis-cross-inline cases, max-main-size cap, flex-basis path, stretch clamp)
+
+The remaining ~5 sites use `_` for the LayoutUnit return (just the bool is consumed) and need no bridge.
+
+**Gate-sweep (six invariants at 13e′.2 HEAD):**
+- CSS2 99/99 ✓
+- css-flexbox 626/629 ✓ (629 - 3 fails)
+- css-position 91/104 ✓ (104 - 13 fails)
+- css-writing-modes 781/781 ✓
+- css-multicol 179/455 ✓ (455 - 276 fails)
+- spanner-fragmentation 12/13 ✓ (1 residual: spanner-fragmentation-005)
+
+**Risk profile.** Low. Bit-exact for clean values (the dominant case); the FromFloat64Round boundary absorbs any IEEE 754 residue from em-times-fontSize products. No rollback required — the rounding-mode lesson from 13e′.1 carried over directly.
+
+Files: `pkg/layout/fragment_geometry.go` (+18/-13: 2 function signatures + 6 return-statement wraps × 2 functions + 2 self-reference bridges + doc-comment), `pkg/layout/replaced_layout.go` (+5/-3), `pkg/layout/min_max_sizing.go` (+15/-8), `pkg/layout/flex_layout.go` (+17/-11 at 11 sites), `task_plan.md` + `progress.md`.
+
 ---
 
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25

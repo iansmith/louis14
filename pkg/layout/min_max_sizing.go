@@ -35,14 +35,15 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 			MinContent: minResult.MinContent,
 			MaxContent: kTableMaxInlineSize,
 		}
-		minInline := ResolveMinInlineSize(style, wdm, space, geom)
+		minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 		if result.MinContent < minInline {
 			result.MinContent = minInline
 		}
 		if result.MaxContent < minInline {
 			result.MaxContent = minInline
 		}
-		if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+		if maxInlineLU, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+			maxInline := maxInlineLU.Float64()
 			if result.MinContent > maxInline {
 				result.MinContent = maxInline
 			}
@@ -65,14 +66,15 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
 			// Apply min/max inline-size constraints (all content-box).
-			minInline := ResolveMinInlineSize(style, wdm, space, geom)
+			minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 			if result.MinContent < minInline {
 				result.MinContent = minInline
 			}
 			if result.MaxContent < minInline {
 				result.MaxContent = minInline
 			}
-			if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+			if maxInlineLU, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+				maxInline := maxInlineLU.Float64()
 				if result.MinContent > maxInline {
 					result.MinContent = maxInline
 				}
@@ -188,14 +190,15 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	}
 
 	// Apply min/max inline-size constraints (all content-box).
-	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 	if result.MinContent < minInline {
 		result.MinContent = minInline
 	}
 	if result.MaxContent < minInline {
 		result.MaxContent = minInline
 	}
-	if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+	if maxInlineLU, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+		maxInline := maxInlineLU.Float64()
 		if result.MinContent > maxInline {
 			result.MinContent = maxInline
 		}
@@ -360,14 +363,15 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	}
 
 	// Apply min/max inline-size constraints (but NOT explicit inline-size).
-	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 	if result.MinContent < minInline {
 		result.MinContent = minInline
 	}
 	if result.MaxContent < minInline {
 		result.MaxContent = minInline
 	}
-	if maxInline, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+	if maxInlineLU, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+		maxInline := maxInlineLU.Float64()
 		if result.MinContent > maxInline {
 			result.MinContent = maxInline
 		}
@@ -606,12 +610,13 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 					flexShrink := childStyle.GetFlexShrink()
 
 					// Hypothetical main size = flex base size clamped by min/max main.
-					minMain := ResolveMinInlineSize(childStyle, childWDM, childSpace, childGeom2)
+					minMain := ResolveMinInlineSize(childStyle, childWDM, childSpace, childGeom2).Float64()
 					hyp := flexBasis
 					if hyp < minMain {
 						hyp = minMain
 					}
-					if maxMain, ok := ResolveMaxInlineSize(childStyle, childWDM, childSpace, childGeom2); ok {
+					if maxMainLU, ok := ResolveMaxInlineSize(childStyle, childWDM, childSpace, childGeom2); ok {
+						maxMain := maxMainLU.Float64()
 						if hyp > maxMain {
 							hyp = maxMain
 						}

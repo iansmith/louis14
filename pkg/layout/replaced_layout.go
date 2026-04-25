@@ -70,11 +70,12 @@ func ComputeReplacedIntrinsicInlineSize(ctx *LayoutContext, node *LayoutInputNod
 	}
 
 	// Apply only inline-axis min/max constraints (not block-axis).
-	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 	if inlineSize < minInline {
 		inlineSize = minInline
 	}
-	maxInline, hasMaxInline := ResolveMaxInlineSize(style, wdm, space, geom)
+	maxInlineLU, hasMaxInline := ResolveMaxInlineSize(style, wdm, space, geom)
+	maxInline := maxInlineLU.Float64()
 	if hasMaxInline && inlineSize > maxInline {
 		inlineSize = maxInline
 	}
@@ -185,8 +186,9 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 	}
 
 	// Apply min/max constraints (CSS 2.1 §10.4) with aspect ratio preservation.
-	minInline := ResolveMinInlineSize(style, wdm, space, geom)
-	maxInline, hasMaxInline := ResolveMaxInlineSize(style, wdm, space, geom)
+	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
+	maxInlineLU, hasMaxInline := ResolveMaxInlineSize(style, wdm, space, geom)
+	maxInline := maxInlineLU.Float64()
 	minBlock := ResolveMinBlockSize(style, wdm, space, geom)
 	maxBlock, hasMaxBlock := ResolveMaxBlockSize(style, wdm, space, geom)
 

@@ -322,30 +322,36 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 
 // ResolveMinInlineSize resolves min-width/min-height as min-inline-size.
 // Returns 0 if not set (CSS 2.1 §10.4: min-width defaults to 0).
-func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) float64 {
+//
+// Returns LayoutUnit at the boundary (Phase 13e′.2) — see ResolveInlineSize
+// for the FromFloat64Round rounding-mode rationale.
+func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) layoutunit.LayoutUnit {
 	if style == nil {
-		return 0
+		return layoutunit.LayoutUnit{}
 	}
 	prop := "min-width"
 	if wdm.IsVertical() {
 		prop = "min-height"
 	}
 	if v, ok := style.GetLength(prop); ok {
-		return applyBoxSizingInline(style, geom, v)
+		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, v))
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
 		result := layoutunit.ResolvePercent(
 			space.PercentageResolutionSize.InlineSize, pct).Float64()
-		return applyBoxSizingInline(style, geom, result)
+		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result))
 	}
-	return 0
+	return layoutunit.LayoutUnit{}
 }
 
 // ResolveMaxInlineSize resolves max-width/max-height as max-inline-size.
 // Returns (value, true) if set; (0, false) if "none" or not specified.
-func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (float64, bool) {
+//
+// Returns LayoutUnit at the boundary (Phase 13e′.2) — see ResolveInlineSize
+// for the FromFloat64Round rounding-mode rationale.
+func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry) (layoutunit.LayoutUnit, bool) {
 	if style == nil {
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 	prop := "max-width"
 	if wdm.IsVertical() {
@@ -353,17 +359,17 @@ func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 	}
 	val, ok := style.Get(prop)
 	if !ok || val == "none" || val == "" {
-		return 0, false
+		return layoutunit.LayoutUnit{}, false
 	}
 	if v, ok := style.GetLength(prop); ok {
-		return applyBoxSizingInline(style, geom, v), true
+		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, v)), true
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
 		result := layoutunit.ResolvePercent(
 			space.PercentageResolutionSize.InlineSize, pct).Float64()
-		return applyBoxSizingInline(style, geom, result), true
+		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result)), true
 	}
-	return 0, false
+	return layoutunit.LayoutUnit{}, false
 }
 
 // ResolveMinBlockSize resolves min-height/min-width as min-block-size.
@@ -565,8 +571,9 @@ func CalculateInitialFragmentGeometry(
 			contentInline = maxInline
 		}
 	} else if maxInline, ok := ResolveMaxInlineSize(style, wdm, space, geom); ok {
-		if contentInline > maxInline {
-			contentInline = maxInline
+		mi := maxInline.Float64()
+		if contentInline > mi {
+			contentInline = mi
 		}
 	}
 
@@ -575,7 +582,7 @@ func CalculateInitialFragmentGeometry(
 	if wdm.IsVertical() {
 		minInlineProp = "min-height"
 	}
-	minInline := ResolveMinInlineSize(style, wdm, space, geom)
+	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 	if minInlineVal, ok := style.Get(minInlineProp); ok && IsIntrinsicKeyword(minInlineVal) {
 		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
 		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
