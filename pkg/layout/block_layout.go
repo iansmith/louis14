@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 )
 
 // BlockLayoutAlgorithm implements the block formatting context layout.
@@ -1540,7 +1541,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 //   - inline direction is inverted (bottom-to-top for LTR)
 //   - left/right are block (left = block-start, always wins)
 //   - top/bottom are inline (LTR→bottom wins, RTL→top wins)
-func computeRelativeOffset(offset css.PositionOffset, wdm WritingDirectionMode) PhysicalOffset {
+func computeRelativeOffset(offset css.PositionOffset, wdm WritingDirectionMode) geometry.PhysicalOffset {
 	var dx, dy float64
 
 	switch wdm.WM {
@@ -1639,7 +1640,7 @@ func computeRelativeOffset(offset css.PositionOffset, wdm WritingDirectionMode) 
 		}
 	}
 
-	return PhysicalOffset{X: dx, Y: dy}
+	return geometry.PhysicalOffsetFromF64Round(dx, dy)
 }
 
 // inheritPropagatedOOF adjusts and adopts OOF candidates from a child result.
@@ -1704,8 +1705,12 @@ func PropagateOOFCandidates(
 	// hypothetical-box algorithm. Mirrors Blink's
 	// OutOfFlowLayoutPart::PropagateOOFPositionedInfo accumulating the
 	// container's relative offset into the descendant's static position.
+	relOffPhys := PhysicalOffset{
+		X: childResult.Fragment.RelativeOffset.LeftF64(),
+		Y: childResult.Fragment.RelativeOffset.TopF64(),
+	}
 	relOffsetLog := NewConverter(parentWDM, PhysicalSize{}).
-		ToLogicalOffset(childResult.Fragment.RelativeOffset, PhysicalSize{})
+		ToLogicalOffset(relOffPhys, PhysicalSize{})
 
 	blockAdj := childBlockOff + parentLogicalBP.BlockStart + relOffsetLog.BlockOffset
 	inlineAdj := childInlineOff + parentLogicalBP.InlineStart + relOffsetLog.InlineOffset

@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -162,7 +163,7 @@ type PhysicalFragment struct {
 	// Computed during layout, applied at paint time (not baked into
 	// fragment tree positions). Zero for non-relative elements.
 	// Mirrors Blink's approach where relative offsets are paint properties.
-	RelativeOffset PhysicalOffset
+	RelativeOffset geometry.PhysicalOffset
 
 	// ClipContentToBorderBox forces the renderer to clip this fragment's
 	// children to its border-box, independent of the CSS `overflow`

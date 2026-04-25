@@ -406,9 +406,9 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 
 	// CSS 2.1 §9.4.3: Apply position:relative offset from the fragment.
 	// The offset was computed during layout and stored on the fragment.
-	if frag.RelativeOffset.X != 0 || frag.RelativeOffset.Y != 0 {
-		box.X += frag.RelativeOffset.X
-		box.Y += frag.RelativeOffset.Y
+	if !frag.RelativeOffset.Left.IsZero() || !frag.RelativeOffset.Top.IsZero() {
+		box.X += frag.RelativeOffset.LeftF64()
+		box.Y += frag.RelativeOffset.TopF64()
 		absX = box.X
 		absY = box.Y
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 )
 
 // TableLayoutAlgorithm implements CSS 2.1 §17 table layout.
@@ -850,7 +851,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// here so the default AddChild auto-compute (which would use
 		// the table's available block-size) is skipped. Mirrors
 		// Blink's table_section_layout path for position:relative rows.
-		if row.style != nil && row.style.GetPosition() == css.PositionRelative && rowResult.Fragment.RelativeOffset == (PhysicalOffset{}) {
+		if row.style != nil && row.style.GetPosition() == css.PositionRelative && rowResult.Fragment.RelativeOffset == (geometry.PhysicalOffset{}) {
 			groupSpecBlock := 0.0
 			if row.groupStyle != nil {
 				prop := "height"

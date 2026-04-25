@@ -2,6 +2,7 @@ package layout
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
 
@@ -223,7 +224,7 @@ func (b *BoxFragmentBuilder) SetChildAvailableSize(size LogicalSize) {
 // not baked into layout fragments. Scroll-time wiring is deferred until
 // scroll-based sticky tests arrive.
 func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset LogicalOffset) {
-	if fragment != nil && fragment.Style != nil && fragment.RelativeOffset == (PhysicalOffset{}) && b.hasChildAvailableSize {
+	if fragment != nil && fragment.Style != nil && fragment.RelativeOffset == (geometry.PhysicalOffset{}) && b.hasChildAvailableSize {
 		pos := fragment.Style.GetPosition()
 		if pos == css.PositionRelative {
 			cbBlock := b.childAvailableSize.BlockSize
