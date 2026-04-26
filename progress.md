@@ -769,6 +769,77 @@ All numbers identical to the pre-13g.3 baseline — the migration is bit-exact f
 
 Files: `pkg/render/render.go` (+8/-2: 4 `math.Round` size lines replaced with 6 LayoutUnit conversion lines + 2 `SnapSizeToPixel` calls; doc-comment expanded to cite `physical_rect.h:224`), `findings.md` ("Phase 13g.3 research" subsection: Blink mirror verbatim, instrumentation results, two findings, clear-001 hypothesis falsified), `task_plan.md` (top summary + 13g row update), `progress.md` (this section). Instrumentation-only files (not committed): `pkg/visualtest/debug_phase13g_test.go` and a `LOUIS14_SNAP_DEBUG=1`-gated print block in `pixelSnap` were used during verification then removed.
 
+#### Phase 13g.4: background-origin switch block migration — DONE 2026-04-26
+
+**Goal.** Replace the 12 `math.Round` edge-difference lines in the `background-origin` switch block at `pkg/render/render.go:1875-1889` with three `pixelSnap` calls, one per case (border-box / content-box / padding-box), mirroring the structure already used by `backgroundClipRectForClip`.
+
+**Before (Phase 13g.4):**
+
+```go
+switch bg.Origin {
+case css.BackgroundOriginBorderBox:
+    originX = math.Round(posBox.X)
+    originY = math.Round(posBox.Y)
+    originW = math.Round(posBox.X+posBox.Width) - originX
+    originH = math.Round(posBox.Y+posBox.Height) - originY
+case css.BackgroundOriginContentBox:
+    originX = math.Round(posBox.X + posBox.Border.Left + posBox.Padding.Left)
+    originY = math.Round(posBox.Y + posBox.Border.Top + posBox.Padding.Top)
+    originW = math.Round(posBox.X+posBox.Width-posBox.Border.Right-posBox.Padding.Right) - originX
+    originH = math.Round(posBox.Y+posBox.Height-posBox.Border.Bottom-posBox.Padding.Bottom) - originY
+default: // padding-box (default)
+    originX = math.Round(posBox.X + posBox.Border.Left)
+    originY = math.Round(posBox.Y + posBox.Border.Top)
+    originW = math.Round(posBox.X+posBox.Width-posBox.Border.Right) - originX
+    originH = math.Round(posBox.Y+posBox.Height-posBox.Border.Bottom) - originY
+}
+```
+
+**After (Phase 13g.4):**
+
+```go
+switch bg.Origin {
+case css.BackgroundOriginBorderBox:
+    originX, originY, originW, originH = pixelSnap(
+        posBox.X, posBox.Y, posBox.Width, posBox.Height)
+case css.BackgroundOriginContentBox:
+    originX, originY, originW, originH = pixelSnap(
+        posBox.X+posBox.Border.Left+posBox.Padding.Left,
+        posBox.Y+posBox.Border.Top+posBox.Padding.Top,
+        posBox.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
+        posBox.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
+default: // padding-box
+    originX, originY, originW, originH = pixelSnap(
+        posBox.X+posBox.Border.Left,
+        posBox.Y+posBox.Border.Top,
+        posBox.Width-posBox.Border.Left-posBox.Border.Right,
+        posBox.Height-posBox.Border.Top-posBox.Border.Bottom)
+}
+```
+
+The `originW < 0` / `originH < 0` clamp at :1892-1897 is kept unchanged.
+
+**Blink research result.** `BackgroundImageGeometry::AdjustPositioningArea()` in `background_image_geometry.cc` applies `ToPixelSnappedRect(snapped_positioning_area)` to snap the background positioning area — the same SnapSizeToPixel discipline as louis14's `pixelSnap`. Confirmed for all three background-origin cases: the difference between cases is which outsets are subtracted before snapping, not the snapping discipline. `ToEnclosingRect` is NOT used. Instrumentation skipped — Blink discipline matches exactly, and the migration is bit-exact for integer-px layouts (all WPT gate-sweep tests).
+
+**Other math.Round sites classified.** Lines 1911-1937 (Cover/Contain scaling + explicit bgSize resolution) are image-dimension arithmetic — AllowingZero territory, not paint-edge positioning. Lines 1966-1969 (clip bounds → int) and 1973-1974 (tile origin → int) convert to integer for the paint loop — a separate int-conversion concern, out of 13g.4 scope.
+
+**Gate-sweep results (all six invariants).**
+
+| section | result | vs baseline |
+|---|---|---|
+| CSS2 | 99/99 | ✓ |
+| flex | 626/629 | ✓ |
+| position | 92/105 | ✓ |
+| wm | 781/781 | ✓ |
+| multicol | 179/455 | ✓ |
+| spanner-frag | 12/13 | ✓ |
+
+All bit-exact — background-origin is a positioning area, not a user-specified paint-edge size; for integer-px layouts (dominant case in WPT) the replacement is identical to the old `math.Round` code.
+
+**Risk profile.** Low → delivered. No invariant moved.
+
+Files: `pkg/render/render.go` (+9/-12: 12 `math.Round` edge-difference lines replaced with 9 `pixelSnap` call lines, 3 cases × 3 lines each), `findings.md` ("Phase 13g.4 research" subsection: Blink research, scope classification table, migration shape table), `task_plan.md` (top summary + 13g row update), `progress.md` (this section).
+
 ---
 
 #### Detour: mazarin/textshape font-slot lifetime fix — DONE 2026-04-26 (mazzy `d0105bd`)

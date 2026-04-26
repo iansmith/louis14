@@ -1873,20 +1873,20 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	} else {
 		switch bg.Origin {
 		case css.BackgroundOriginBorderBox:
-			originX = math.Round(posBox.X)
-			originY = math.Round(posBox.Y)
-			originW = math.Round(posBox.X+posBox.Width) - originX
-			originH = math.Round(posBox.Y+posBox.Height) - originY
+			originX, originY, originW, originH = pixelSnap(
+				posBox.X, posBox.Y, posBox.Width, posBox.Height)
 		case css.BackgroundOriginContentBox:
-			originX = math.Round(posBox.X + posBox.Border.Left + posBox.Padding.Left)
-			originY = math.Round(posBox.Y + posBox.Border.Top + posBox.Padding.Top)
-			originW = math.Round(posBox.X+posBox.Width-posBox.Border.Right-posBox.Padding.Right) - originX
-			originH = math.Round(posBox.Y+posBox.Height-posBox.Border.Bottom-posBox.Padding.Bottom) - originY
-		default: // padding-box (default)
-			originX = math.Round(posBox.X + posBox.Border.Left)
-			originY = math.Round(posBox.Y + posBox.Border.Top)
-			originW = math.Round(posBox.X+posBox.Width-posBox.Border.Right) - originX
-			originH = math.Round(posBox.Y+posBox.Height-posBox.Border.Bottom) - originY
+			originX, originY, originW, originH = pixelSnap(
+				posBox.X+posBox.Border.Left+posBox.Padding.Left,
+				posBox.Y+posBox.Border.Top+posBox.Padding.Top,
+				posBox.Width-posBox.Border.Left-posBox.Border.Right-posBox.Padding.Left-posBox.Padding.Right,
+				posBox.Height-posBox.Border.Top-posBox.Border.Bottom-posBox.Padding.Top-posBox.Padding.Bottom)
+		default: // padding-box
+			originX, originY, originW, originH = pixelSnap(
+				posBox.X+posBox.Border.Left,
+				posBox.Y+posBox.Border.Top,
+				posBox.Width-posBox.Border.Left-posBox.Border.Right,
+				posBox.Height-posBox.Border.Top-posBox.Border.Bottom)
 		}
 	}
 	if originW < 0 {

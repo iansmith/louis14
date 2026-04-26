@@ -2514,3 +2514,42 @@ The clear-001 reference hard-codes blue=97px, orange=95px (sum 192) — implying
 **Migration is bit-exact for the gate-sweep tests.** All non-thin-line cases produce identical OLD and NEW outputs. The cases that change behavior (sub-pixel-size box at sub-pixel origin, where the thin-line clause fires) don't appear in the gate-sweep tests — they're the pixel-snapping `rel="mismatch"` tests skipped by the runner. Six-invariant gate sweep should hold by construction, mirroring the 13g.2 outcome.
 
 **Risk profile.** Medium. The migration touches 13 callers across border, background, clip, image, shadow paint paths. Bit-exact behavior is guaranteed for integer-size boxes (the dominant case in real layouts); only sub-quantum thin-line cases change. If any invariant regresses, ROLL BACK and re-design (CLAUDE.md rule 1). 13g.3 is one commit, no sub-step staging needed.
+
+### Phase 13g.4 research (2026-04-26)
+
+**Goal of 13g.4.** Replace the 12 `math.Round` edge-difference lines in the `background-origin` switch block at `pkg/render/render.go:1875-1889` with three `pixelSnap` calls, one per case (border-box / content-box / padding-box), mirroring `backgroundClipRectForClip`'s existing structure.
+
+**Blink discipline verified — `ToPixelSnappedRect` (SnapSizeToPixel).** Blink's `BackgroundImageGeometry::AdjustPositioningArea()` in `background_image_geometry.cc` applies `ToPixelSnappedRect(snapped_positioning_area)` to snap the background positioning area (background-origin rect) after computing the outsets for each case:
+
+```cpp
+snapped_positioning_area =
+    PhysicalRect(ToPixelSnappedRect(snapped_positioning_area));
+```
+
+`ToPixelSnappedRect` chains through `PixelSnappedOffset()` (= `ToRoundedPoint(offset)`) and `PixelSnappedWidth/Height()` (= `SnapSizeToPixel(size.axis, offset.axis)`), exactly the same discipline as louis14's `pixelSnap` helper (which mirrors `ToPixelSnappedRect`). This confirms the proposed replacement is the correct Blink-mirror — NOT `ToEnclosingRect` (which is a different discipline used for scrolling/dirty-rect computations only). All three background-origin cases (border-box, padding-box, content-box) receive the same `ToPixelSnappedRect` treatment; the difference between cases is which outsets are subtracted before snapping, not the snapping discipline itself.
+
+**Other math.Round sites in drawBackgroundImageLayer (:1832-2030) — scope classification.**
+
+| lines | expression | category | in 13g.4 scope? |
+|---|---|---|---|
+| 1876-1889 | `math.Round(posBox.X/Y+…)` × 12 | paint-edge positioning (origin rect) | **YES — migration target** |
+| 1911-1912 | `math.Round(imgW/H * scale)` | image-dimension scaling (Cover/Contain) | No — image discipline |
+| 1922-1937 | `math.Round(bgSize.Width/Height)`, `math.Round(originW * pct / 100)`, `math.Round(imgH * newW / imgW)`, `math.Round(imgW * newH / imgH)` | image-dimension scaling (explicit size) | No — image discipline |
+| 1966-1969 | `int(math.Round(box.X/Y+…))` × 4 | clip bounds (background-clip box → int paint loop) | No — separate clip discipline; int conversion is correct; out of 13g.4 scope |
+| 1973-1974 | `int(math.Round(startX/Y))` | tile origin (int snap for pixel loop) | No — tile iteration arithmetic; out of scope |
+
+Lines 1911-1937 are image-dimension scaling (aspect-ratio and cover/contain math). These round to integer pixel sizes for the image raster call — `AllowingZero` territory, not the paint-edge positioning discipline. Lines 1966-1969 and 1973-1974 convert float coordinates to integer pixel coordinates for the paint loop; they use `int(math.Round(…))` rather than float64 edge-difference, and are a separate concern from the background-origin rect. None of these are 13g.4 targets.
+
+**Migration shape.** Three `pixelSnap` calls using unsnapped (x, y, w, h) per case:
+
+| case | unsnapped x | unsnapped y | unsnapped w | unsnapped h |
+|---|---|---|---|---|
+| border-box | `posBox.X` | `posBox.Y` | `posBox.Width` | `posBox.Height` |
+| content-box | `posBox.X + Border.Left + Padding.Left` | `posBox.Y + Border.Top + Padding.Top` | `posBox.Width - Border.Left - Border.Right - Padding.Left - Padding.Right` | `posBox.Height - Border.Top - Border.Bottom - Padding.Top - Padding.Bottom` |
+| padding-box | `posBox.X + Border.Left` | `posBox.Y + Border.Top` | `posBox.Width - Border.Left - Border.Right` | `posBox.Height - Border.Top - Border.Bottom` |
+
+The `originW < 0` / `originH < 0` clamp at :1892-1897 is kept unchanged.
+
+**Instrumentation skipped.** Blink research confirms the snapping discipline is identical to what `pixelSnap` already implements. For integer-px layouts (all WPT gate-sweep tests), the replacement is bit-exact. Only sub-quantum-size boxes change behavior — background-origin is a positioning area, not a user-specified paint-edge size, so the change is unambiguously correct.
+
+**Risk profile.** Low. Background origin is a positioning area, not a paint-edge size the user specified. For integer-px layouts (dominant case in WPT tests), replacement is bit-exact. Only sub-quantum backgrounds change. Roll back if any gate-sweep invariant regresses.
