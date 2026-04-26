@@ -152,11 +152,21 @@ See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity 
 
 **Outcome.** `multicol-nested-010` passes at 0 px diff. Gate: CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol **188** /455 (+2) · spanner-frag 12/13. All other invariants held.
 
-### Phase 14c — clear-001 (DEFERRED, root-cause-first)
+### Phase 14c — clear-001 (DEFERRED, root-cause-first; updated 2026-04-26)
 
-**Problem.** 96/480000 pixels (0.0%) — blue square paints 96 rows (expected 97), orange paints 96 rows (expected 95). Root cause TBD: either the blue float's paint rect uses `ToPixelSnappedRect` instead of `ToEnclosingRect`, or the float layout position differs between louis14 and Blink. See `findings.md` "Phase 14c research" for both hypotheses.
+**Problem.** 96/480000 pixels (0.02%) — blue square paints 96 rows (louis14) vs 97 rows (Chrome ref); orange paints 96 rows (louis14) vs 95 rows (ref). 1-row vertical shift at the blue/orange boundary.
 
-**Pre-condition.** Must confirm root cause before touching any code. Debug step: add a single `fmt.Println` (remove before commit) to log the blue float's BFC offset in clear-001, then compare with a Chrome DevTools computed layout dump.
+**Hypothesis B FALSIFIED (2026-04-26 Blink-source trace).** Blink's float paint uses `ToPixelSnappedRect`, identical to non-float boxes. `FloatPaintInfo()` (`box_fragment_painter.cc:367`) only changes the paint phase; no rounding flag. The float painter cannot produce a 97-tall rect from a 96-tall layout box via `ToPixelSnappedRect`. See `findings.md` "Phase 14c research addendum" for the citation chain.
+
+**Surviving hypothesis: layout-side divergence.** The float's actual layout border-box height in Chrome must be ≥ 96.5 (so `SnapSizeToPixel` rounds up to 97), OR the float top y in Chrome differs in a way that — combined with a fractional layout-box height — changes the snap. Louis14 currently produces y=48.9375, h=96.0 → 96 rows. The unverified `<p>` height in louis14 (40.9375 incl. margins for a single line of default-font text) is implausible and warrants audit independent of clear-001.
+
+**Pre-condition.** Must confirm root cause before touching any code. Required steps in order:
+  1. Add `fmt.Println` (remove before commit) at the float `pixelSnap` site in `pkg/render/render.go` to log {origin, size, snapped output} for blue float + orange block in clear-001.
+  2. Open `clear-001.xht` in Chrome → DevTools → grab `getBoundingClientRect().height` and `.top` for #div2 (blue float) and #div3 (orange).
+  3. Compare. If Chrome height ≥ 96.5 → layout-side divergence (audit `<p>` height resolver, line-box leading, height: 1in conversion). If Chrome height = 96.0 → paint-offset / DisplayItem accumulation (fetch `fragment_data.h`, `paint_state.h`).
+  4. Only after step 3 narrows to a single Blink call site, propose the louis14 mirror fix.
+
+**Hard rules.** 0.02% diff test (96 px). Float/clear/paint code is high-regression-risk. Do NOT code without (a) confirmed Chrome `.height`/`.top` values from DevTools AND (b) one identified Blink call site that explains the divergence. Phase 14c stays DEFERRED until step 3 lands a definitive answer in findings.md.
 
 ### Discipline (Phase 14 rules)
 1. Read Blink source BEFORE writing code for each sub-phase (CLAUDE.md §2).

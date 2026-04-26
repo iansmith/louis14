@@ -2731,3 +2731,34 @@ When `ColumnLayoutAlgorithm` receives a leaf block whose declared size exceeds t
 
 **Outcome.** `multicol-nested-010` passes at 0 px diff. Gate sweep: CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 186 → **188 (+2)** · spanner-frag 12/13 (all held; +2 multicol — `multicol-nested-010` plus likely one cascade win).
 
+
+---
+
+### Phase 14c research addendum (2026-04-26): Blink float paint snap discipline
+
+**Hypothesis B FALSIFIED.** Direct Blink-source trace confirms float paint uses `ToPixelSnappedRect`, identical to non-float boxes. Cited evidence:
+
+- `box_fragment_painter.cc:367-372` — `FloatPaintInfo()` ONLY changes `PaintPhase::kFloat → PaintPhase::kForeground`. No rounding flag, no rect transformation.
+- `box_fragment_painter.cc:1130-1132` (inline floats) and `:1162-1165` (block floats) — both invoke `FloatPaintInfo` and dispatch into the same `BoxFragmentPainter::Paint → PaintInternal` path used by non-floats.
+- `box_fragment_painter.cc:1303-1308` — `paint_rect.offset = paint_offset; paint_rect.size = box_fragment_.Size();` (no float branch).
+- `box_fragment_painter.cc:1580` — `gfx::Rect snapped_paint_rect = ToPixelSnappedRect(paint_rect);` (the only snap call on this path).
+- `box_painter_base.cc:1262-1272` — `gfx::Rect background_rect = ToPixelSnappedRect(scrolled_paint_rect); ... context.FillRect(background_rect, info.color, ...)` (the actual color FillRect; the only place the bg is drawn).
+- `paint_info.h:75-200` — no `IsFloat()` predicate, no `kFloat`-conditional rounding flag in `PaintFlags`.
+- `physical_rect.h:218-230` — definitions: `ToEnclosingRect` is `floor(offset), ceil(maxCorner)`; `ToPixelSnappedRect` is `(round(offset), SnapSizeToPixel(size, offset))`. Numerical difference for clear-001's float (offset.top=48.9375, size.height=96): `ToEnclosingRect`→97, `ToPixelSnappedRect`→96.
+
+**Implication for clear-001.** The 96-vs-97 diff CANNOT come from a float-vs-non-float painter rounding divergence in Blink. Therefore the divergence is either layout-side (the float's actual `paint_rect.offset.top` differs between Chrome and louis14 — most likely upstream `<p>` height / line-box metrics) or paint-offset accumulation (a `ScopedPaintState` / `FragmentData` chain pre-rounds the offset before it reaches the painter). The painter itself is innocent.
+
+**Key arithmetic check.** For ANY 96-px CSS float at ANY y, `ToPixelSnappedRect` produces a 96-tall rect (because `SnapSizeToPixel(96, y) = round(y+96) - round(y) = 96` for all y where the fractional parts of y and y+96 are equal — which they always are since 96 is integer). To produce a 97-tall rect via `ToPixelSnappedRect`, the box `size.height` itself must be ≥ 96.5 (so the rounding deltas produce 97). I.e., for Chrome to render clear-001's float as 97 rows, the float's LAYOUT height must be > 96.0 px (e.g., 96.5 from a sub-pixel layout rounding), NOT just the y-offset that's fractional.
+
+**Revised hypothesis A.** The float's layout border-box height in Chrome is ≥ 96.5 (probably exactly something like 96.5 or 96.5+ε), even though CSS declares `height: 1in = 96px`. Likely sources: (a) percentage/em rounding in the height resolver applies a different snap; (b) line-box leading / strut adds to the float's layout extent in ways CSS doesn't show; (c) Chrome stores the float's box at a position whose `MaxY = round(48.9375 + 96)` yields a value 1 unit higher than louis14's. The `<p>` height in Chrome is also a key unknown: louis14's `48.9375 = 8 + 40.9375` implies a `<p>` margin-box of `40.9375`px (which is implausible for a single line of default-font text — likely 8 + 16(margin-top) + line-height + 16(margin-bottom)), so even louis14's `<p>` metrics deserve audit.
+
+**Revised hypothesis C — paint-offset accumulation.** In Blink, `paint_rect.offset = paint_offset` at `box_fragment_painter.cc:1304` is fed by a `ScopedPaintState` chain, which itself can carry pre-rounded offsets if a containing block has a fractional position. If Chrome rounds the BFC origin / containing-block offset somewhere in the FragmentData chain BEFORE `paint_offset` reaches the float painter, the y delivered to `ToPixelSnappedRect` could be 48.5 (not 48.9375), and `SnapSizeToPixel(96, 48.5)` = `round(144.5)-round(48.5)` = `145-49=96` (banker's: 144-48=96; round-half-up: 145-49=96 — STILL 96). So this hypothesis only changes the result if combined with hypothesis A's larger box height.
+
+**Required next steps before any code (in order):**
+1. Add a `fmt.Println` (remove before commit) to `pkg/render/render.go`'s float-paint site (the `pixelSnap` call for the float box) to log exact inputs (origin x/y, size w/h) and outputs (snapped x/y/w/h) for the blue float in clear-001. Also log the orange clear block's inputs/outputs. Run only `clear-001.xht`.
+2. Open `clear-001.xht` in Chrome, use DevTools → Computed → "Show all" to read the blue float's `clientHeight`, `offsetHeight`, and `getBoundingClientRect().height` and `.top`. Capture the exact float top y and height as Chrome sees them post-layout.
+3. Compare: if Chrome's float `getBoundingClientRect().height` is exactly 96 (matching louis14), the divergence is downstream of layout — investigate paint-offset accumulation / DisplayItem visual-rect via a third Blink fetch (`fragment_data.h`, `paint_state.h`). If Chrome's float `.height` is ≥ 96.5 (or 97), the divergence is in layout — investigate where Chrome's height resolver adds the extra fraction (likely somewhere in `length_utils.cc` for `1in → px` conversion under fractional position context).
+4. Only after the comparison narrows the cause to a SINGLE specific Blink call site, propose a louis14 mirror fix.
+
+**Hard rules.** This is a 0.0% diff test (96 px / 480000 = 0.02%). The risk of a regression in float/clear/paint code is HIGH. Do NOT propose any fix without (a) a confirmed Chrome float height value from DevTools and (b) a single identified Blink call site that explains the difference. Phase 14c stays DEFERRED until step 3 produces a clear answer.
+
