@@ -2662,7 +2662,7 @@ The `!IsInitialColumnBalancingPass` guard prevents false-positives during the un
 
 **Staging.** Single commit: Part 1 (inline_layout.go) and Part 2 (block_layout.go) together. Part 2 cannot be tested independently since Part 1 is the producer of the zero-height IFC break token.
 
-**Expected outcome.** All 4 F4 regressions close; gate sweep (CSS2 99/99, flex 626/629, position 92/105, wm 781/781, multicol 179/455, spanner-frag 12/13) unchanged or improved.
+**Implementation outcome (commit `87d06be5`, 2026-04-26).** The plan required a third fix not anticipated in research: `collapseThrough` in `block_layout.go` (line ~657). The anonymous block wrapping the IFC returns size=0 + BreakToken, satisfying all old collapseThrough conditions (size=0, no children, no border/padding, not new FC). The `continue` at line 677 discarded the break token before the overflow check at line 895 was ever reached. Fix: add `childResult.BreakToken == nil` to collapseThrough. After that fix, the existing `blockCursor == fragEnd && childHasBreak` overflow path handles the typical case (first child exactly fills column). The new `else if` at line ~1088 handles the less-common case where `blockCursor < fragEnd`. All 4 tests passed at 0 diff. Gate: multicol 179 → 186 (+7); all other invariants held.
 
 ---
 

@@ -116,7 +116,7 @@ See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity 
 
 ## Phase 14: fragmentation fixes (14a IFC guard, 14b nested leaf-frag, 14c clear-001)
 
-**Entry state (2026-04-26):** css-multicol 179/455, gate CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · spanner-frag 12/13. Phase 13 CLOSED. Three open fragmentation bugs documented in `findings.md` "Phase 14{a,b,c} research". Attack order: 14a first (closes 4 F4 regressions, highest confidence), 14b second (nested leaf-frag), 14c last (requires root-cause confirmation before coding).
+**Entry state (2026-04-26):** css-multicol 179/455, gate CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · spanner-frag 12/13. Phase 13 CLOSED. **Post-14a state (2026-04-26):** css-multicol 186/455, same gate. 14b (nested leaf-frag) is next; 14c (clear-001) deferred until root cause confirmed.
 
 ### Phase 14 sub-phases
 
@@ -128,30 +128,15 @@ See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity 
 
 ### Phase 14a — IFC guard + empty-child overflow (DONE — commit `87d06be5`, 2026-04-26)
 
-**Problem.** `inline_layout.go:963` guard `blockOffset > 0` prevents IFC from breaking before its first line even when `FragmentainerOffset > 0` (prior sibling occupies part of the fragmentainer). This caused 4 margin-family regressions in Phase F4. When fixed (Part 1), the IFC produces an empty fragment (height=0) + break token, but `block_layout.go:895` doesn't detect this as overflow because `blockCursor` didn't advance (Part 2).
+**Three-part fix landed:**
 
-**Part 1 — `inline_layout.go:963`:** change guard:
-```go
-// Before:
-if blockOffset+lineHeight > fragEnd && blockOffset > 0 {
-// After:
-if blockOffset+lineHeight > fragEnd && bla.space.FragmentainerOffset+blockOffset > 0 {
-```
-Mirrors Blink's `refuse_break_before = (space_left >= fragmentainer_block_size)` = "refuse only when fragmentainer_block_offset ≤ 0". See `findings.md` "Phase 14a research" for the full Blink reference.
+**Part 1 — `inline_layout.go:963`:** Changed `blockOffset > 0` to `bla.space.FragmentainerOffset+blockOffset > 0`. Mirrors Blink's `refuse_break_before = (space_left >= fragmentainer_block_size)`.
 
-**Part 2 — `block_layout.go`:** after the existing overflow check at line 895, add:
-```go
-if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
-    !bla.space.IsInitialColumnBalancingPass {
-    // IFC produced empty fragment + break token → fragmentainer is full.
-    // Emit outer break token carrying the child's break token.
-    ...
-}
-```
+**Part 2 — `block_layout.go` collapseThrough:** Added `childResult.BreakToken == nil` to the `collapseThrough` condition (line ~657). Key discovery during implementation: a 0-height anonymous-block-wrapping-IFC fragment with a break token satisfied ALL the old collapseThrough conditions (size=0, no children, no border/padding, not new FC), causing `continue` at line 677 and discarding the break token before the overflow check was ever reached.
 
-**Driver tests.** `multicol-margin-001.html`, `multicol-inherit-001.html`, `multicol-margin-child-001.html`, `multicol-nested-margin-001.html`. Run all four + gate sweep before commit.
+**Part 3 — `block_layout.go` else-if:** Added `fragSize != Indefinite && childHasBreak && childBlockSize == 0 && !IsInitialColumnBalancingPass` after the existing overflow check (line ~1088) for cases where `blockCursor < fragEnd` when the IFC breaks before its first line.
 
-**Staging.** Single commit: both parts together (Part 2 is only exercised when Part 1 generates the zero-height IFC break token).
+**Outcome:** All 4 F4 regressions closed. multicol 179 → 186 (+7). Gate: CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 186/455 · spanner-frag 12/13.
 
 ### Phase 14b — Nested multicol leaf-frag (QUEUED, needs research first)
 
