@@ -51,6 +51,12 @@ type BlockBreakToken struct {
 	// to correctly resume when a break occurred mid-text-item (a single text
 	// item may span multiple lines if it contains multiple words).
 	InlineTextOffset int
+
+	// HasUnpositionedListMarker signals that the list-item's ::marker was not
+	// placed during layout and should be seeded again when this break token is
+	// resumed in the next fragment. Mirrors Blink's
+	// BlockBreakToken::has_unpositioned_list_marker_.
+	HasUnpositionedListMarker bool
 }
 
 // HasBreakToken returns true if there is more content to lay out.

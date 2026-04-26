@@ -125,3 +125,34 @@ func (n *LayoutInputNode) TextContent() string {
 	}
 	return ""
 }
+
+// IsListItem returns true when this node establishes a list-item formatting
+// context (display:list-item). Mirrors Blink's BlockNode::IsListItem().
+func (n *LayoutInputNode) IsListItem() bool {
+	return n.style != nil && n.style.GetDisplay() == css.DisplayListItem
+}
+
+// ListMarkerBlockNodeIfListItem returns a LayoutInputNode for the ::marker
+// pseudo-element if this is a list-item, or nil otherwise.
+//
+// In Blink, ListMarkerBlockNodeIfListItem returns a BlockNode wrapping the
+// ::marker LayoutBox. In Louis14, markers are currently drawn at paint time
+// (pkg/render/render.go drawListMarker); there is no layout-time marker node.
+// Returning nil here makes the UnpositionedListMarker protocol a no-op, which
+// is the correct behaviour for the Track C +0 port: the paint-time path
+// remains the sole marker-drawing path until a future cleanup phase decides
+// which wins. Mirrors Blink cla.cc:240 constructor guard.
+func (n *LayoutInputNode) ListMarkerBlockNodeIfListItem() *LayoutInputNode {
+	return nil
+}
+
+// ListMarkerOccupiesWholeLine returns true when list-style-position:inside
+// causes the marker to occupy the first line of content (inside marker).
+// Mirrors Blink's BlockNode::ListMarkerOccupiesWholeLine().
+// Always false for outside markers (the common case).
+func (n *LayoutInputNode) ListMarkerOccupiesWholeLine() bool {
+	if n.style == nil {
+		return false
+	}
+	return n.style.GetListStylePosition() == "inside"
+}

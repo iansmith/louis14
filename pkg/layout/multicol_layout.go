@@ -186,6 +186,21 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(mla.node)
 
+	// Callsite 1: seed the unpositioned list marker from the node + break token.
+	// Mirrors Blink cla.cc:240–253 (constructor body).
+	// ListMarkerBlockNodeIfListItem returns nil until the layout-time marker
+	// path is enabled — this makes the protocol a no-op in the current engine.
+	if markerNode := mla.node.ListMarkerBlockNodeIfListItem(); markerNode != nil {
+		if !markerNode.ListMarkerOccupiesWholeLine() {
+			incoming := mla.space.BreakToken
+			if incoming == nil || incoming.HasUnpositionedListMarker {
+				builder.SetUnpositionedListMarker(&UnpositionedListMarker{
+					MarkerNode: markerNode,
+				})
+			}
+		}
+	}
+
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if contentInlineSize < 0 {
 		contentInlineSize = 0
@@ -442,6 +457,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		result.BreakToken = &BlockBreakToken{
 			Node:             mla.node,
 			ChildBreakTokens: childTokens,
+		}
+		// Forward unplaced marker to the break token so the resumed fragment
+		// re-seeds it. Mirrors Blink's FinishFragmentation marker plumbing.
+		if builder.GetUnpositionedListMarker().IsValid() {
+			result.BreakToken.HasUnpositionedListMarker = true
 		}
 		if len(builder.outOfFlowCandidates) > 0 {
 			result.PropagatedOOFCandidates = builder.outOfFlowCandidates
@@ -704,11 +724,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				InlineOffset: 0,
 				BlockOffset:  blockCursor,
 			})
-			// Callsite 2: propagate baseline from spanner child.
+			// Callsite 2 (Track B): propagate baseline from spanner child.
 			// Mirrors Blink cla.cc:1496–1497 PropagateBaselineFromChild call
 			// immediately after AddResult in LayoutSpanner.
 			if spanResult != nil {
 				mla.propagateBaselineFromChild(spanResult, builder, blockCursor)
+			}
+			// Callsite 4 (Track C): attempt marker placement on spanner.
+			// Mirrors Blink cla.cc:1498 AttemptToPositionListMarker call
+			// adjacent to PropagateBaselineFromChild in LayoutSpanner.
+			if spanFrag != nil && spanResult != nil {
+				mla.attemptToPositionListMarker(spanFrag, spanResult, builder, blockCursor)
 			}
 			blockCursor += spanHeight
 			// Apply spanner margin-block-end (may be negative). Skip when resuming
@@ -855,6 +881,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		Padding: physPadding,
 	})
 	builder.SetIntrinsicBlockSize(blockCursor)
+
+	// Callsite 2: place any unclaimed list marker before building.
+	// Mirrors Blink cla.cc:383 PositionAnyUnclaimedListMarker() call.
+	mla.positionAnyUnclaimedListMarker(builder, &blockCursor)
 
 	result := builder.Build()
 	result.PropagatedOOFCandidates = propagatedOOF
@@ -1124,12 +1154,20 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	maxColHeight = 0.0
 	columnsPlaced = 0
 	seenOOF := map[*LayoutInputNode]bool{}
+	isFirstCol := true
 	for _, col := range finalColumns {
 		builder.AddChild(col.fragment, col.offset)
-		// Callsite 1: propagate baseline from each column child.
+		// Callsite 1 (Track B): propagate baseline from each column child.
 		// Mirrors Blink cla.cc:1336 PropagateBaselineFromChild loop.
 		if col.result != nil {
 			mla.propagateBaselineFromChild(col.result, builder, col.offset.BlockOffset)
+		}
+		// Callsite 3 (Track C): attempt marker placement on first column only.
+		// Mirrors Blink cla.cc:1302: "Only the first column in a line may attempt
+		// to place any unpositioned list-item."
+		if isFirstCol && col.result != nil {
+			mla.attemptToPositionListMarker(col.fragment, col.result, builder, col.offset.BlockOffset)
+			isFirstCol = false
 		}
 		h := NewLogicalFragment(wdm, col.fragment).BlockSize()
 		if h > maxColHeight {
@@ -1436,6 +1474,46 @@ func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
 	}
 
 	builder.SetUseLastBaselineForInlineBaseline()
+}
+
+// attemptToPositionListMarker tries to align and place any pending list-item
+// marker against the given child fragment.
+//
+// Mirrors Blink's ColumnLayoutAlgorithm::AttemptToPositionListMarker
+// (cla.cc:1299–1311 for first-column, cla.cc:1492–1502 for spanner).
+//
+// The marker is placed only when the child has a baseline to align to.
+// After placement, the builder's unpositioned marker is cleared.
+func (mla *MulticolLayoutAlgorithm) attemptToPositionListMarker(
+	child *PhysicalFragment, childResult *LayoutResult,
+	builder *BoxFragmentBuilder, blockOffset float64) {
+
+	marker := builder.GetUnpositionedListMarker()
+	if !marker.IsValid() {
+		return
+	}
+	baseline, ok := marker.ContentAlignmentBaseline(child, childResult)
+	if !ok {
+		return
+	}
+	marker.AddToBox(child, childResult, baseline, blockOffset, builder)
+	builder.ClearUnpositionedListMarker()
+}
+
+// positionAnyUnclaimedListMarker places the marker at the container origin
+// when no column or spanner provided a baseline to align against.
+//
+// Mirrors Blink's ColumnLayoutAlgorithm::PositionAnyUnclaimedListMarker
+// (cla.cc:383). Called before builder.Build() at the end of Layout().
+func (mla *MulticolLayoutAlgorithm) positionAnyUnclaimedListMarker(
+	builder *BoxFragmentBuilder, intrinsicBlockSize *float64) {
+
+	marker := builder.GetUnpositionedListMarker()
+	if !marker.IsValid() {
+		return
+	}
+	marker.AddToBoxWithoutLineBoxes(builder, intrinsicBlockSize)
+	builder.ClearUnpositionedListMarker()
 }
 
 // groupInlineChildrenForMulticol wraps consecutive inline-level and text

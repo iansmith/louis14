@@ -43,6 +43,11 @@ type BoxFragmentBuilder struct {
 	baseline    float64
 	hasBaseline bool
 
+	// unpositionedListMarker is the list-item marker awaiting placement by
+	// AttemptToPositionListMarker or PositionAnyUnclaimedListMarker.
+	// Mirrors Blink's FragmentBuilder::unpositioned_list_marker_.
+	unpositionedListMarker *UnpositionedListMarker
+
 	// firstBaseline is the first baseline position across all column/spanner
 	// children, updated via SetFirstBaseline during PropagateBaselineFromChild.
 	// Mirrors Blink's BoxFragmentBuilder::first_baseline_ (std::optional).
@@ -165,6 +170,24 @@ func (b *BoxFragmentBuilder) SetLastBaseline(v float64) {
 // BoxFragmentBuilder::SetUseLastBaselineForInlineBaseline().
 func (b *BoxFragmentBuilder) SetUseLastBaselineForInlineBaseline() {
 	b.useLastBaselineForInlineBaseline = true
+}
+
+// SetUnpositionedListMarker records a list-item marker awaiting placement.
+// Mirrors Blink's FragmentBuilder::SetUnpositionedListMarker.
+func (b *BoxFragmentBuilder) SetUnpositionedListMarker(m *UnpositionedListMarker) {
+	b.unpositionedListMarker = m
+}
+
+// GetUnpositionedListMarker returns the current unplaced marker, or nil.
+// Mirrors Blink's FragmentBuilder::GetUnpositionedListMarker.
+func (b *BoxFragmentBuilder) GetUnpositionedListMarker() *UnpositionedListMarker {
+	return b.unpositionedListMarker
+}
+
+// ClearUnpositionedListMarker removes the stored marker after it has been placed.
+// Mirrors Blink's FragmentBuilder::ClearUnpositionedListMarker.
+func (b *BoxFragmentBuilder) ClearUnpositionedListMarker() {
+	b.unpositionedListMarker = nil
 }
 
 // SetExclusionSpace sets the updated float exclusion state.
@@ -335,6 +358,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		HasFirstBaseline:                 b.hasFirstBaseline,
 		LastBaseline:                     b.lastBaseline,
 		UseLastBaselineForInlineBaseline: b.useLastBaselineForInlineBaseline,
+		UnpositionedListMarker:           b.unpositionedListMarker,
 		EndMarginStrut:                   b.endMarginStrut,
 		ExclusionSpace:                   b.exclusionSpace,
 		BreakAppeal:                      BreakAppealPerfect,

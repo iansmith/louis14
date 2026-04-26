@@ -51,6 +51,12 @@ type LayoutResult struct {
 	// to indicate the last-baseline should be preferred for inline alignment.
 	UseLastBaselineForInlineBaseline bool
 
+	// UnpositionedListMarker is a list-item marker that was not placed during
+	// layout. Mirrors Blink's LayoutResult carrying the unpositioned marker so
+	// the parent algorithm can set HasUnpositionedListMarker on the outgoing
+	// BlockBreakToken.
+	UnpositionedListMarker *UnpositionedListMarker
+
 	// EndMarginStrut is the margin strut at the block-end of this fragment,
 	// for margin collapsing propagation to the next sibling or parent.
 	EndMarginStrut MarginStrut
