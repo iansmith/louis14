@@ -2600,3 +2600,111 @@ The `originW < 0` / `originH < 0` clamp at :1892-1897 is kept unchanged.
 **Architectural lesson.** Blink's rule: painters never call `SnapSizeToPixel` directly — they go via rect-wrappers (`PhysicalRect::PixelSnappedWidth`, `PixelSnappedHeight`). louis14's `pixelSnap(x,y,w,h)` is that wrapper, and routing all three paint-edge clusters through it was the right shape. Future paint-time snap work should add `pixelSnap` call sites rather than inlining `SnapSizeToPixel` directly into painters.
 
 **Risk profile.** Low. Background origin is a positioning area, not a paint-edge size the user specified. For integer-px layouts (dominant case in WPT tests), replacement is bit-exact. Only sub-quantum backgrounds change. Roll back if any gate-sweep invariant regresses.
+
+---
+
+### Phase 14a research (2026-04-26): IFC fragmentation guard — break-before-child overflow
+
+**Target tests.** The four F4 regressions introduced by the Phase F4 commit (`617332ae`): `multicol-inherit-001`, `multicol-margin-001`, `multicol-margin-child-001`, `multicol-nested-margin-001`. All four share a common shape: a margin-family block precedes an inline (IFC) child; the margin-family block fills the first column partially, then the IFC child should break before its first line but instead overflows into the next column's space.
+
+**Root cause: `inline_layout.go:963` guard too conservative.**
+
+The fragmentation check reads:
+```go
+if blockOffset+lineHeight > fragEnd && blockOffset > 0 {
+    // emit break token
+}
+```
+
+The guard `blockOffset > 0` was intended to mean "at least one line has been placed" — never emit an empty column. But it's the wrong predicate. An empty COLUMN is when the FRAGMENTAINER is empty (FragmentainerOffset=0 AND blockOffset=0). If FragmentainerOffset > 0 (a prior sibling already occupies part of the fragmentainer), it's perfectly correct to break before the IFC's first line even when `blockOffset=0`.
+
+**Blink reference.** In `inline_layout_algorithm.cc`, Blink's analogous guard is:
+```cpp
+// Don't break at the first line of a block if the fragmentainer hasn't received
+// any content yet. Matches RequiresContent in MovePastBreakpoint.
+bool refuse_break_before = (space_left >= fragmentainer_block_size);
+// where space_left = fragmentainer_block_size - fragmentainer_block_offset
+// → refuses only when fragmentainer_block_offset ≤ 0 (fragmentainer empty)
+```
+
+`refuse_break_before` is `false` when `fragmentainer_block_offset > 0`, meaning Blink correctly breaks before the first IFC line when prior content has been placed. Louis14's `blockOffset > 0` is the wrong variable — `blockOffset` is the IFC-local line count, not the fragmentainer fill level.
+
+**Part 1 fix — `inline_layout.go:963`:**
+```go
+// Before:
+if blockOffset+lineHeight > fragEnd && blockOffset > 0 {
+// After:
+if blockOffset+lineHeight > fragEnd && bla.space.FragmentainerOffset+blockOffset > 0 {
+```
+
+`bla.space.FragmentainerOffset` is set by the parent `block_layout.go` at line 561 to `parentFragOffset + blockCursor + prevMarginStrut.Resolve()` — exactly the "how much of the fragmentainer is already filled" quantity. Adding `blockOffset` (IFC-local line accumulation) gives the total fragmentainer content before this line.
+
+**Part 2 fix — `block_layout.go` overflow detection for empty-IFC fragments.**
+
+When Part 1 causes the IFC to break before its first line, the IFC produces height=0 + a break token. Back in the outer `block_layout.go` loop, `blockCursor` stays at the value BEFORE the IFC child (e.g., 42px). The overflow check at line 895:
+```go
+if fragSize != Indefinite && (blockCursor > fragEnd || (blockCursor == fragEnd && childHasBreak)) {
+```
+doesn't fire: `42 > 50` is false and `42 == 50` is false. The outer block continues to the next sibling, discarding the IFC break token.
+
+Fix: detect "child broke before making any progress in a fragmented context" and treat it as overflow:
+```go
+// After the existing overflow check, add:
+if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
+    !bla.space.IsInitialColumnBalancingPass {
+    // Child emitted break token but made zero progress; the fragmentainer is full.
+    // Build the outer break token carrying the child's break token.
+    ...
+}
+```
+
+The `!IsInitialColumnBalancingPass` guard prevents false-positives during the unconstrained measurement pass. The child's break token is carried in `outToken.ChildBreakTokens` using the same structure as the existing overflow path.
+
+**Staging.** Single commit: Part 1 (inline_layout.go) and Part 2 (block_layout.go) together. Part 2 cannot be tested independently since Part 1 is the producer of the zero-height IFC break token.
+
+**Expected outcome.** All 4 F4 regressions close; gate sweep (CSS2 99/99, flex 626/629, position 92/105, wm 781/781, multicol 179/455, spanner-frag 12/13) unchanged or improved.
+
+---
+
+### Phase 14b research (2026-04-26): nested multicol leaf-frag
+
+**Target test.** `multicol-nested-010.html` — currently at ~3500px diff (0.7%). After the F2.1 `ClipBlockAxisOnly` fix, the remaining issue is documented in findings §F2: "our inner-multicol fragments the leaf across both inner sub-cols; Blink places it only in sub-col 1's continuation."
+
+**Verified-correct paths.** Break token threading through nested multicol (`multicol_layout.go`) matches Blink's `cla.cc` model as verified in Phase 12c research. The Phase F4 fix to inline break-token resume (`blockOffset=0 OR textOff>0`) also applies here. The `ClipBlockAxisOnly` paint-level fix (F2.1) is correct.
+
+**Remaining bug — leaf spans sub-cols 1 and 2 instead of sub-col 1 only.**
+
+In `multicol-nested-010`, a leaf block (e.g., a paragraph) whose height exceeds one inner sub-column must be placed only in the CONTINUATION of the inner sub-column within the same OUTER column, not spread across inner sub-cols 1 and 2. Blink's behavior (from `column_layout_algorithm.cc`) is:
+
+When `ColumnLayoutAlgorithm` receives a leaf block whose declared size exceeds the column block-size AND there is a `FragmentainerOffset` already set (meaning we're resuming at a break), Blink places it in the current column continuation only. The outer column boundary limits how many inner sub-columns are populated within one outer-column layout pass.
+
+**Investigation needed before Phase 14b implementation.** The exact point where louis14 diverges must be confirmed by reading:
+1. `multicol_layout.go` `layoutLine` loop — where inner column layout passes are initiated
+2. How the inner `ColBlockSize` interacts with the outer `FragmentainerBlockSize` to limit inner fragmentation
+3. Whether `block_layout.go`'s leaf-fragmentation path (lines 947-985) correctly accumulates `ConsumedBlockSize` for multi-inner-column leaf fragments and stops at the outer fragmentainer boundary
+
+**Blink reference sites.** `column_layout_algorithm.cc:1080–1130` (column loop termination conditions), `block_layout_algorithm.cc:2440–2500` (leaf block overflow handling with `fragmentainer_block_size` vs outer `remaining_fragmentainer_block_size`). Fetch and read before implementing Phase 14b.
+
+**Staging.** Single commit once root cause is confirmed. Gate sweep required; the fix is in a hot path (every inner multicol column pass).
+
+---
+
+### Phase 14c research (2026-04-26): clear-001 clearance calculation
+
+**Target test.** `css-position/clear-001.xht` — 96/480000 pixels diff (0.0%). Reference hard-codes blue height=97px, orange height=95px (`clear-001-ref.xht` lines 7–8). Test renders blue `float:left; height:1in` + orange `clear:left; height:1in`. Both have `1in = 96px CSS`.
+
+**Measured layout in louis14.** Blue float at absolute y=48.9375, h=96. Orange block at y=144.9375, h=96. The 48.9375 = 8px body margin + paragraph height (fractional due to font metrics). `SnapSizeToPixel(96, 48.9375) = round(96.9375) - round(0.9375) = 97 - 1 = 96`. Louis14 paints blue as 96 rows starting at row 49.
+
+**Reference renders blue as 97px.** This can only result from `ToEnclosingRect`-style painting: `floor(48.9375)=48`, `ceil(48.9375+96)=ceil(144.9375)=145`, `size=97`. Reference also renders orange as 95px — consistent with: orange starts at row 145 (cleared to float bottom ceil), height 95 = container clips at row 240 (`145+95=240`, the total container height).
+
+**Paint hypothesis status — inconclusive.** Prior research (Phase 13g.3) falsified via `box_fragment_painter.cc` that `FloatPaintInfo()` changes the paint phase but routes float decoration painting through the same `PaintBoxDecorationBackground → ToPixelSnappedRect` path as other boxes. However, `ToPixelSnappedRect` applied to (48.9375, 96) gives (49, 96), not (48, 97). The reference is only explainable via `ToEnclosingRect` or via a DIFFERENT float y-position in Blink's layout.
+
+**Two hypotheses for Phase 14c investigation.**
+
+*Hypothesis A — Float position differs.* The `<p>` element's height is computed differently in louis14 vs Blink due to font metric rounding, giving a different fractional offset for the blue float. If Blink computes `p` height as an integer (e.g., 17px instead of 16.9375px), then #div1 starts at y=49 (integer), blue starts at y=49, SnapSizeToPixel(96, 49)=96, paint at row 49, size=96 → rows 49-144=96 rows. Still 96, not 97.
+
+*Hypothesis B — Float paint uses ToEnclosingRect in the actual Blink build.* The `box_fragment_painter.cc` analysis may have been incomplete: the physical rect passed to `PaintBoxDecorationBackground` might itself be pre-rounded via `ToEnclosingRect` at the DisplayItem visual-rect accumulation layer. Blink uses `ToEnclosingRect` for `MapToVisualRectInAncestorSpace` and display-item bounds computation, and the painter may receive an already-expanded physical rect.
+
+**Investigation plan for Phase 14c.** Fetch and read `blink/renderer/core/paint/box_painter_base.cc` (~lines 200–300) to see what physical rect is passed to `PaintBoxDecorationBackground` for float boxes specifically, and whether a display-item's `VisualRect()` vs `BackgroundRect()` enters the call. Additionally, add a debug log to louis14 to print the exact float BFC offset and compare with a Blink dev-tools layout output on the same test. Do NOT code a fix until the root cause is confirmed — this is a 0.0% diff test (96 pixels out of 480000).
+
+**Do not implement Phase 14c until root cause is confirmed.** The risk of introducing regressions in the clearance/float path is high. Phase 14c is lower priority than 14a and 14b.

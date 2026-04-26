@@ -1,4 +1,4 @@
-# Task Plan: css-position (Phases 0–11) → css-multicol (Phase 12) → LayoutUnit precision (Phase 13)
+# Task Plan: css-position (Phases 0–11) → css-multicol (Phase 12) → LayoutUnit precision (Phase 13) → fragmentation fixes (Phase 14)
 
 ## Current focus (2026-04-26)
 **Phases 13a + 13b + 13c + 13d + 13e (CLOSED) + 13e′ (CLOSED) + 13f (CLOSED) + 13g.1 (helper additive) landed 2026-04-25; 13g.2 (border-edge inner-corner migration) + 13g.3 (pixelSnap helper migration) + 13g.4 (background-origin switch block migration) landed 2026-04-26.** Phase 13e closed at 13e.6 (entry-side migration via `ResolvePercent`); **Phase 13e′ closed at 13e′.3** (exit-side return-type promotion: 13e′.1 `ResolveInlineSize`+`ResolveBlockSize`, 13e′.2 `ResolveMinInlineSize`+`ResolveMaxInlineSize`, 13e′.3 `ResolveMinBlockSize`+`ResolveMaxBlockSize`); **Phase 13f closed at 13f.3** (13f.1 snap helpers + 13f.2 MeasureText* return-type promotion + 13f.3 ShapeAdvances*/Mixed return-type promotion to ShapeCumulative; 13f.4 closed as "skip"). **Phase 13g.1 (commit `776ae6d5`) added the additive `SnapSizeToPixel` + `SnapSizeToPixelAllowingZero` helpers to `pkg/geometry/layoutunit`** mirroring `third_party/blink/renderer/platform/geometry/layout_unit.h` verbatim, including the >4-raw thin-line clause. **Phase 13g.2 (commit `050cf822`) migrated the `drawBorders` inner-corner snap at `pkg/render/render.go:2672-2675`** — 4 ad-hoc `math.Round(x + bw.Left)` lines replaced with `outerEdge ± SnapSizeToPixel(bw, unsnapped_origin)`. **Phase 13g.3 migrated the `pixelSnap(x, y, w, h)` helper at `pkg/render/render.go:1525-1531`** to compute snap width/height via `SnapSizeToPixel(luW, luX)` / `SnapSizeToPixel(luH, luY)` (origin still `math.Round`, mirroring Blink's `PhysicalRect::ToPixelSnappedRect = (PixelSnappedOffset, PixelSnappedSize)` discipline at `physical_rect.h:224`). Propagates the >4-raw thin-line clause and 1/64-quantum determinism to all 13 callers (border, background, clip, image, shadow paint paths). Side-by-side instrumentation confirmed: 0.5×0.5px box at 0.5px origin, OLD `pixelSnap` returns w=0/h=0 (vanishes), NEW returns w=1/h=1 (preserved); all integer-px sizes are bit-exact OLD vs NEW (the dominant case in real layouts). **clear-001 NOT closed by 13g.3 — instrumentation showed every clear-001 `pixelSnap` call produces identical OLD and NEW outputs**; the brief's hypothesis that pixelSnap closes clear-001 is wrong. clear-001's 1-px-row-offset diff (96/480000 pixels = 0.0%) likely needs a separate clear/float painter discipline (Blink may use `ToEnclosingRect` floor-offset / ceil-far-edge for floats, NOT `ToPixelSnappedRect`); deferred. **Rounding-mode discovery (during 13e′.1):** first attempt used `FromFloat64Trunc` to mirror Blink's `LayoutUnit(float)` ctor; regressed css-multicol 179 → 172 because louis14's float64 `Length.value` storage (vs Blink's float32) makes `8.2 * 50.0` land at IEEE 754 `409.99999...`, which Trunc snapped DOWN to 409.984 and shifted column-rule positions by 1 px. Fix: switch to `FromFloat64Round` — round-half-away-from-zero absorbs the IEEE 754 noise while preserving bit-exact round-trip for 1/64-clean inputs. **Six-invariant gate sweep at 13g.3 HEAD (atop mazzy `b375951` = d0105bd's textshape fix): CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 179/455 · spanner-frag 12/13.** All numbers identical to the pre-13g.3 baseline — the migration is bit-exact for every WPT test in the gate sweep (the thin-line cases that change behavior are all sub-quantum `rel="mismatch"` tests skipped by the runner). **Phase 13g.4 (2026-04-26):** replaced the 12 `math.Round` edge-difference lines in the background-origin switch block at `render.go:1875-1889` with three `pixelSnap` calls (border-box / content-box / padding-box cases). Blink research confirmed `BackgroundImageGeometry::AdjustPositioningArea()` applies `ToPixelSnappedRect` to the positioning area — same SnapSizeToPixel discipline as louis14's `pixelSnap`. All six gate invariants held (bit-exact for integer-px layouts, the dominant case in WPT). **Phase 13h DONE 2026-04-26 (verification + cleanup + retro doc): gate sweep confirmed 13g.4 baseline held (CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 179/455 · spanner-frag 12/13); math.Round audit clean (one new follow-up: `drawColumnRules` content-area origin at render.go:2931-2933, paint-edge positioning, not migrated); retrospective in findings.md. Phase 13 CLOSED.** Separately: clear-001 closure via float-paint enclosing-rect discipline. See `findings.md` "Phase 13e′ research" for the Blink-parity reference and the rounding-mode-discovery rollback notes, "Phase 13g research" for the SnapSizeToPixel port + ad-hoc Round inventory + 13g.2/13g.3 verification subsections, and `progress.md` "Phase 13g.{1,2,3}" + "Detour: mazarin/textshape font-slot lifetime fix" for landing details.
@@ -111,6 +111,71 @@ See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity 
 - `pkg/css` length parsing stays `float32` for the `Length.value` field — Blink does the same. The migration changes `Resolve()`'s return type, not internal storage.
 - Transforms (`pkg/render` matrix operations) stay `float64`. Conversion at the boundary uses an `EnclosingRect`-style "floor offset / ceil far-edges" rule. A full transform-precision audit is its own future phase.
 - Mazzy-side `mazarin/textshape` changes (e.g. an `InlineLayoutUnit` 16-bit-fractional shaper-internal accumulator) are deferred. Phase 13 does the louis14 side; if shaper precision shows up as a residual we revisit then.
+
+---
+
+## Phase 14: fragmentation fixes (14a IFC guard, 14b nested leaf-frag, 14c clear-001)
+
+**Entry state (2026-04-26):** css-multicol 179/455, gate CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · spanner-frag 12/13. Phase 13 CLOSED. Three open fragmentation bugs documented in `findings.md` "Phase 14{a,b,c} research". Attack order: 14a first (closes 4 F4 regressions, highest confidence), 14b second (nested leaf-frag), 14c last (requires root-cause confirmation before coding).
+
+### Phase 14 sub-phases
+
+| Sub-phase | Scope | Files | Goal | Risk |
+|---|---|---|---|---|
+| 14a | IFC fragmentation guard + empty-child overflow trigger | `pkg/layout/inline_layout.go:963`, `pkg/layout/block_layout.go:895` | Close 4 F4 regressions (`multicol-inherit-001`, `-margin-001`, `-margin-child-001`, `-nested-margin-001`); fix break-before-first-IFC-line when fragmentainer has prior content | Medium — hot path |
+| 14b | Nested multicol leaf-frag: leaf spans sub-cols 1+2 instead of sub-col 1 only | `pkg/layout/multicol_layout.go`, `pkg/layout/block_layout.go` leaf path | Close `multicol-nested-010` cluster (~3500px → 0); requires Blink research first | High — complex fragmentation path |
+| 14c | clear-001 float/clear 1px discrepancy | `pkg/layout/block_layout.go` float placement or `pkg/render` float paint | Close `clear-001.xht` (96/480000 pixels, 0.0%) | Low priority — needs root-cause confirmation before any code |
+
+### Phase 14a — IFC guard + empty-child overflow (QUEUED)
+
+**Problem.** `inline_layout.go:963` guard `blockOffset > 0` prevents IFC from breaking before its first line even when `FragmentainerOffset > 0` (prior sibling occupies part of the fragmentainer). This caused 4 margin-family regressions in Phase F4. When fixed (Part 1), the IFC produces an empty fragment (height=0) + break token, but `block_layout.go:895` doesn't detect this as overflow because `blockCursor` didn't advance (Part 2).
+
+**Part 1 — `inline_layout.go:963`:** change guard:
+```go
+// Before:
+if blockOffset+lineHeight > fragEnd && blockOffset > 0 {
+// After:
+if blockOffset+lineHeight > fragEnd && bla.space.FragmentainerOffset+blockOffset > 0 {
+```
+Mirrors Blink's `refuse_break_before = (space_left >= fragmentainer_block_size)` = "refuse only when fragmentainer_block_offset ≤ 0". See `findings.md` "Phase 14a research" for the full Blink reference.
+
+**Part 2 — `block_layout.go`:** after the existing overflow check at line 895, add:
+```go
+if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
+    !bla.space.IsInitialColumnBalancingPass {
+    // IFC produced empty fragment + break token → fragmentainer is full.
+    // Emit outer break token carrying the child's break token.
+    ...
+}
+```
+
+**Driver tests.** `multicol-margin-001.html`, `multicol-inherit-001.html`, `multicol-margin-child-001.html`, `multicol-nested-margin-001.html`. Run all four + gate sweep before commit.
+
+**Staging.** Single commit: both parts together (Part 2 is only exercised when Part 1 generates the zero-height IFC break token).
+
+### Phase 14b — Nested multicol leaf-frag (QUEUED, needs research first)
+
+**Problem.** Inner multicol distributes a leaf block across both inner sub-col 1 and sub-col 2 within the same outer column pass. Blink places the overflow portion only in sub-col 1's continuation within the same outer column.
+
+**Required Blink research (do before any coding):**
+1. Fetch `blink/renderer/core/layout/column_layout_algorithm.cc` lines 1080–1130 (column loop termination) and `block_layout_algorithm.cc` lines 2440–2500 (leaf overflow with outer fragmentainer limit).
+2. Record findings in `findings.md` "Phase 14b research addendum".
+3. Identify the exact louis14 call site that diverges.
+
+**Driver test.** `multicol-nested-010.html` (currently ~3500px diff).
+
+### Phase 14c — clear-001 (DEFERRED, root-cause-first)
+
+**Problem.** 96/480000 pixels (0.0%) — blue square paints 96 rows (expected 97), orange paints 96 rows (expected 95). Root cause TBD: either the blue float's paint rect uses `ToPixelSnappedRect` instead of `ToEnclosingRect`, or the float layout position differs between louis14 and Blink. See `findings.md` "Phase 14c research" for both hypotheses.
+
+**Pre-condition.** Must confirm root cause before touching any code. Debug step: add a single `fmt.Println` (remove before commit) to log the blue float's BFC offset in clear-001, then compare with a Chrome DevTools computed layout dump.
+
+### Discipline (Phase 14 rules)
+1. Read Blink source BEFORE writing code for each sub-phase (CLAUDE.md §2).
+2. Run only the 1–4 driver tests for the sub-phase, NOT the full suite (CLAUDE.md §4).
+3. Gate sweep (all six invariants) before each commit.
+4. Single commit per sub-phase; Part 1 + Part 2 of 14a are ONE commit (they're co-dependent).
+5. If gate sweep regresses: STOP, ROLLBACK, re-read Blink before re-attempting.
 
 ---
 
