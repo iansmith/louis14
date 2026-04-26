@@ -2552,4 +2552,51 @@ The `originW < 0` / `originH < 0` clamp at :1892-1897 is kept unchanged.
 
 **Instrumentation skipped.** Blink research confirms the snapping discipline is identical to what `pixelSnap` already implements. For integer-px layouts (all WPT gate-sweep tests), the replacement is bit-exact. Only sub-quantum-size boxes change behavior — background-origin is a positioning area, not a user-specified paint-edge size, so the change is unambiguously correct.
 
+---
+
+### Phase 13h audit (2026-04-26)
+
+**Scope.** Confirm the Phase 13g research inventory of `math.Round` sites in `pkg/render/render.go` is still accurate after 13g.2/13g.3/13g.4, and that no new in-scope paint-edge positioning sites appeared during those migrations.
+
+**Command run:** `grep -n "math\.Round" pkg/render/render.go`
+
+**Classification of all remaining sites:**
+
+| lines | expression (abbreviated) | category | in-scope for paint-edge? |
+|---|---|---|---|
+| 186 | `int(math.Round(fx0/fy0/fx1/fy1))` | clip-box int conversion (clip-stack intersection → image bounds) | No |
+| 209 | `int32(math.Round(fontSize))` | font-size int conversion | No |
+| 718, 794 | `int(math.Round(sigma))` | shadow/blur radius | No — shadow/blur/gradient |
+| 1113-1115 | `int(math.Round(f.ShadowOffsetX/Y/Blur/2))` | shadow offset + blur | No — shadow/blur/gradient |
+| 1529-1530 | `sx := math.Round(x)`, `sy := math.Round(y)` | `pixelSnap` origin (Blink `ToRoundedPoint`, intentionally preserved in 13g.3) | N/A — correct by design |
+| 1911-1937 | `math.Round(imgW * scale)` etc. | image-dimension scaling (Cover/Contain + explicit bgSize) | No — image discipline |
+| 1966-1969 | `int(math.Round(box.X/Y+…))` × 4 | clip bounds → int for paint loop | No — clip-box int conversion |
+| 1973-1974 | `int(math.Round(startX/Y))` | tile origin → int | No — tile-origin int conversion |
+| 2046-2051, 2075, 2091, 2095-2096 | image content rect + dst placement | image-dst-rect | No — image discipline |
+| 2127-2130 | `int(math.Round(layer.CSSClipRect[…]))` | CSS clip rect → int | No — clip-box int conversion |
+| 2314-2322 | `int(math.Round(slice.Top/Right/Bottom/Left * …))` | border-image slice values | No — border-image slice |
+| 2389-2537 | tile/repeat loop coords (many) | image-dst-rect / tile-origin int conversion | No — image discipline |
+| **2931-2933** | `contentX := math.Round(box.X + Border.Left + Padding.Left)` etc. | **paint-edge positioning** (column-rule content-area rect) | **NEW — not in 13g inventory; flagged as follow-up** |
+| 3421-3427 | list marker image coords | image-dst-rect | No — image discipline |
+| 3548 | `y = math.Round(y)` (drawTextStr baseline) | text glyph baseline (13f closed text snap) | No — out of scope |
+| 3630 | `int(math.Round(box.X/Y))` (DrawImage rotated) | image-dst-rect | No — image discipline |
+| 3789 | `math.Round(layer.FontSize * smallCapsScale)` | font-size | No |
+| 4087, 4093-4094, 4358-4363, 4505-4513 | blur radius + DrawImage placement | shadow/blur/gradient | No — out of scope |
+
+**Verdict: audit clean except for one new-inventory site.** Every remaining site falls into a named category from the Phase 13g research inventory. One site was not in the original inventory:
+
+**New site: `drawColumnRules` content-area origin (render.go:2931-2933).** `contentX/Y/H` are computed via `math.Round(box.X + border.Left + padding.Left)` / `math.Round(box.Y + border.Top + padding.Top)` / difference — the same "add box-geometry offsets, round the result" shape as the background-origin switch block that 13g.4 migrated. The likely migration would replace with `pixelSnap(box.X + border.Left + padding.Left, box.Y + border.Top + padding.Top, 0, h)` for origin + a `SnapSizeToPixel`-based height. **Not migrated in 13h — flagged as follow-up.** Risk is low: column-rule position rounding errors are visible only when the box origin is sub-pixel, which is rare in WPT multicol tests.
+
+---
+
+### Phase 13g retrospective (2026-04-26)
+
+**What was migrated (13g.1–13g.4).** Phase 13g ported Blink's `SnapSizeToPixel(size, location)` primitive from `platform/geometry/layout_unit.h` to `pkg/geometry/layoutunit/layoutunit.go` (13g.1), then routed three clusters of ad-hoc `math.Round` paint-edge calls through it: the `drawBorders` inner-corner formula at `render.go:2672-2675` (13g.2), the `pixelSnap(x,y,w,h)` helper at `render.go:1525-1531` which serves 13 callers across border/background/clip/image/shadow paint paths (13g.3), and the 12-line background-origin switch block at `render.go:1875-1889` (13g.4). 18 `math.Round` paint-edge lines eliminated across four commits; all six gate invariants bit-exact at every checkpoint.
+
+**What the thin-line clause preserves.** Blink's `>4 raw / <-4 raw` guard forces ±1px when a size snaps to 0 but the raw LayoutUnit value exceeds ±1/16 px. In 13g.2 instrumentation: borders of 0.1px and 0.25px (previously vanished via `math.Round(0.1) = 0`) now render as 1px; 0.5px borders lose an asymmetry bug where left/top were 1px but right/bottom were 0px due to `Round(792-0.5) = 792`. In 13g.3 instrumentation: a 0.5×0.5px box at 0.5px origin, OLD `pixelSnap` returns w=0/h=0, NEW returns w=1/h=1. For integer-px sizes (the dominant WPT case) all migrations are bit-exact.
+
+**What remains (open follow-ups).** (a) `clear-001.xht` is still open: the 1-row y-offset at the float/clear boundary requires a `ToEnclosingRect` (floor-offset / ceil-far-edge) discipline for float paint, confirmed not addressable by `ToPixelSnappedRect` (13g.3 instrumentation showed bit-exact OLD/NEW for every clear-001 `pixelSnap` call — see findings.md §"Phase 13g.3 research" Finding 2). (b) `drawColumnRules` content-area origin at `render.go:2931-2933` — new paint-edge site found in 13h audit, not in 13g scope. (c) `AllowingZero` image-dimension sites and shadow/blur sites — out of 13g scope by design: image samplers tolerate 0px sizes; blur sigma has its own radius-conversion discipline. (d) Consumer-side accumulator promotion (the `.Float64()` bridges in `flex_layout.go`, `block_layout.go`, etc.) — queued as a follow-up sweep.
+
+**Architectural lesson.** Blink's rule: painters never call `SnapSizeToPixel` directly — they go via rect-wrappers (`PhysicalRect::PixelSnappedWidth`, `PixelSnappedHeight`). louis14's `pixelSnap(x,y,w,h)` is that wrapper, and routing all three paint-edge clusters through it was the right shape. Future paint-time snap work should add `pixelSnap` call sites rather than inlining `SnapSizeToPixel` directly into painters.
+
 **Risk profile.** Low. Background origin is a positioning area, not a paint-edge size the user specified. For integer-px layouts (dominant case in WPT tests), replacement is bit-exact. Only sub-quantum backgrounds change. Roll back if any gate-sweep invariant regresses.

@@ -884,6 +884,33 @@ Files: `~/mazzy/mazarin/textshape/rasterize.go` (+58/-7), `~/mazzy/mazarin/texts
 
 ---
 
+#### Phase 13h: verification + cleanup + retrospective — DONE 2026-04-26
+
+Three deliverables per the 13h brief: gate sweep, math.Round audit, retrospective doc. Doc-only commit (no code changes).
+
+**Deliverable 1: six-invariant gate sweep.**
+
+Pre-check: mazzy HEAD b375951 — `isTemporary bool` present at `mazarin/textshape/rasterize.go:138` ✓.
+
+| section | result | vs 13g.4 baseline | status |
+|---|---|---|---|
+| CSS2 | 99/99 | ✓ match | ✅ |
+| css-flexbox | 626/629 | ✓ match | ✅ |
+| css-position | 92/105 | ✓ match | ✅ |
+| css-writing-modes | 781/781 | ✓ match | ✅ |
+| css-multicol | 179/455 | ✓ match | ✅ |
+| spanner-fragmentation | 12/13 | ✓ match | ✅ |
+
+All six match the 13g.4 baseline exactly. No regressions introduced by any 13g sub-phase.
+
+**Deliverable 2: math.Round audit.** See findings.md "Phase 13h audit" for the full classification table. All remaining sites fall into named inventory categories (shadow/blur/gradient, image-dimension scaling, clip-box int conversion, tile-origin int conversion, border-image slice, text-baseline, font-size). One site not in the original 13g inventory was found: `drawColumnRules` content-area origin at `render.go:2931-2933` — paint-edge positioning pattern, flagged as follow-up, not migrated.
+
+**Deliverable 3: Phase 13g retrospective.** See findings.md "Phase 13g retrospective" for the arc summary (13g.1–13g.4): what was migrated, the thin-line clause, open follow-ups, and the architectural lesson.
+
+Files: `findings.md` (+~120 — "Phase 13h audit" + "Phase 13g retrospective" subsections), `task_plan.md` (top summary: 13h DONE + Phase 13 row closed), `progress.md` (this section).
+
+---
+
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
 
 `pkg/html/tokenizer.go` aborted parsing with `tokenizer error: expected '>' but reached EOF` whenever input ended mid-tag (DOCTYPE without `>`, end tag like `</html` without `>`, start tag attribute loop hitting EOF, unterminated quoted attribute value). HTML5 §13.2.5.7-8/.32/.34/.38/.39 classify all of these as **recoverable** parse errors — emit what the tokenizer has built and let the tree-builder close any still-open elements at EOF. Real browsers (and Blink's `HTMLTokenizer`) accept these inputs.
