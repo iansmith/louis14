@@ -632,6 +632,48 @@ Files: `pkg/geometry/layoutunit/layoutunit.go` (+58 — 2 new functions + compre
 
 ---
 
+#### Detour: mazarin/textshape font-slot lifetime fix — DONE 2026-04-26 (mazzy `d0105bd`)
+
+The Phase 13g.2 gate sweep at louis14 HEAD (`776ae6d5` = `f41f5c4d` render-side OpenTemporaryFont landing + `776ae6d5` 13g.1) panicked in `mazarin/textshape.parseSTypoMetrics` after ~89 fonts opened — `unexpected fault address`, slice into Munmap'd memory. Pre-existing regression from `f41f5c4d` (NOT from any 13g work). Verified by stash + checkout: HEAD~ render.go + 13g.1 → CSS2 99/99 PASS; HEAD render.go + 13g.1 → SIGSEGV in `visudet/height-applies-to-010a.xht`.
+
+**Two coordinated bugs in mazarin/textshape `DirectGlyphProvider`:**
+
+1. **Slot collision with OpenFont.** `OpenTemporaryFont`'s permanent-first short-circuit returned the existing fontID for slots that had been allocated by `OpenFont`. `CloseTemporaryFont` on that fontID nilled the slot, leaving long-lived `OpenFont` callers (louis14's `pkg/text.fontIDCache`) holding fontIDs to nil entries. Subsequent shaping silently produced empty glyphs — visible as 13 pixel-diff failures across CSS2 reftests touching text (letter-spacing-007, text-align-center, height-applies-to-010a, height-computed-001, height-percentage-003a, z-index-{001,004,005}, overflow-hidden-{001,002}, absolute-non-replaced-height-{002,003}, anonymous-boxes-inheritance-001).
+
+2. **Shared mmap region.** `OpenFont`'s `findExistingFont` path reuses a sibling slot's `fontData []byte` by slice copy when the same `(family, variant)` is opened at a different size — both slots reference the same mmap region. `CloseTemporaryFont` Munmap'd the region unconditionally, dangling the sibling. `parseSTypoMetrics` then segfaulted on the next read after roughly 89 fonts opened (slot allocation order varies).
+
+**Fix (mazzy commit `d0105bd`, three coordinated changes):**
+
+- New `directFont.isTemporary` bit tracks whether the slot was allocated via `OpenTemporaryFont` (and not subsequently upgraded by an `OpenFont` caller).
+- `OpenFont`'s cache-hit branch UPGRADES the slot to permanent (`isTemporary=false`). `OpenFont` semantically promises a stable fontID, so a cache hit on a temporary slot must promote it. `OpenTemporaryFont`'s cache-hit branch leaves the existing state intact.
+- `CloseTemporaryFont` is a no-op for permanent slots. For temporary slots, `Munmap` is conditional on the `fontData` base address (`&slice[0]`) not appearing in any other live slot — covers the cross-size sharing path.
+
+**Three regression tests** in `mazarin/textshape/temp_font_lifetime_test.go`:
+- `TestCloseTemporaryFontPreservesPermanentSlot` — same-key permanent then temporary; close must not nil the permanent.
+- `TestCloseTemporaryFontPreservesSharedFontData` — cross-size sharing; close on the temp must not Munmap the permanent's region.
+- `TestOpenFontUpgradesTemporaryToPermanent` — temp first, then `OpenFont` on same key; close on the original tempID must be a no-op.
+
+**Six-invariant gate sweep at louis14 HEAD `776ae6d5` + mazzy `d0105bd`** (verbatim re-run, 2026-04-26):
+
+| Section | Result | Invariant | Status |
+|---|---|---|---|
+| CSS2 | 99/99 | 99/99 | ✅ |
+| css-flexbox | 626/629 | 626/629 | ✅ |
+| css-position | **92/105** | ≥91/104 (target 92) | ✅ exceeds target |
+| css-writing-modes | 781/781 | 781/781 | ✅ |
+| css-multicol | 179/455 | 179/455 | ✅ |
+| spanner-fragmentation | 12/13 | 12/13 | ✅ |
+
+(css-position grew from 104 → 105 between the 13e′.3 brief and this re-sweep — one new test landed in the WPT pull. We hit the ≥91 floor and the 92 target either way.)
+
+**Why this isn't a louis14-side commit.** The fix is entirely in `mazarin/textshape`. louis14 picks it up via the `replace mazarin/textshape => ../mazzy/mazarin/textshape` directive in `go.mod` — no louis14 source change required. Tracked here so the detour appears in the timeline.
+
+**Risk profile.** Low. The fix preserves the existing close-discipline for the genuinely-temporary fast path (font opened only by render, never by layout) and preserves data sharing for the sized-variant fast path. Only the bug paths change: permanent slot survival, shared-mmap survival.
+
+Files: `~/mazzy/mazarin/textshape/rasterize.go` (+58/-7), `~/mazzy/mazarin/textshape/temp_font_lifetime_test.go` (+131 — 3 regression tests). louis14 tracking files: `progress.md` (this section), `task_plan.md` (top summary line).
+
+---
+
 ### HTML tokenizer EOF-in-tag recovery — DONE 2026-04-25
 
 `pkg/html/tokenizer.go` aborted parsing with `tokenizer error: expected '>' but reached EOF` whenever input ended mid-tag (DOCTYPE without `>`, end tag like `</html` without `>`, start tag attribute loop hitting EOF, unterminated quoted attribute value). HTML5 §13.2.5.7-8/.32/.34/.38/.39 classify all of these as **recoverable** parse errors — emit what the tokenizer has built and let the tree-builder close any still-open elements at EOF. Real browsers (and Blink's `HTMLTokenizer`) accept these inputs.
