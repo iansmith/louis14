@@ -1882,6 +1882,516 @@ The three named drivers (`multicol-rule-large-001`, `-stacking-001`, `-nested-ba
 
 These three tests are **deferred**, not closed. Each needs a dedicated driver once its underlying layout fault is addressed. The relevant phases when we pick them up: step-2-large / stacking → Phase 12b inline-in-multicol; step-2-nested-balancing → nested `column-fill:auto` height resolution.
 
+## Phase 12h.6 Blink-parity port — research (2026-04-26)
+
+**Why this section exists.** Phase 12h's kickoff survey (2026-04-24) deferred three Blink-parity abstractions (`GapGeometry`, `PropagateBaselineFromChild`, `UnpositionedListMarker`) under the rationale "they don't close visible tests on their own." The user is now electing to **port them anyway** for foundational correctness (CLAUDE.md §1, §2). Because the port will be executed by a Sonnet worker — which is less capable than this research run and **must not re-derive Blink** — every type signature, callsite, and invariant we need is captured below verbatim from the Chromium tree at `chromium.googlesource.com/chromium/src/+/refs/heads/main/`. This section is **load-bearing**: do not start coding without reading it end-to-end.
+
+### Authoritative source files (Chromium main, fetched 2026-04-26)
+
+| Blink path | Role |
+|---|---|
+| `core/layout/gap/gap_geometry.h` | The `GapGeometry` GC'd struct: container type, main/cross gaps, content offsets, gap sizes |
+| `core/layout/gap/gap_geometry.cc` | `SetMainGaps`, `SetCrossGaps`, the `IsMultiColSpanner(...)` flag, intersection list generation |
+| `core/layout/gap/main_gap.h` | `MainGap` (offset + spanner-type tag + cross-gap range) |
+| `core/layout/gap/cross_gap.h` | `CrossGap` (LogicalOffset + edge-intersection state) |
+| `core/paint/gap_decorations_painter.h` | The painter that consumes `GapGeometry` and draws rules |
+| `core/paint/gap_decorations_painter.cc` | Painter Paint() flow: per-direction style data, intersection-pair walk, BoxBorderPainter draw |
+| `core/layout/column_layout_algorithm.h` | Algorithm declarations: `cross_gaps_`, `main_gaps_`, `columns_per_row_`, `unpositioned_list_marker_` |
+| `core/layout/column_layout_algorithm.cc` | Build site (lines 420–485), `PropagateBaselineFromChild` (1655–1677), four marker callsites (250–264, 383, 1302, 1498) |
+| `core/layout/list/unpositioned_list_marker.h` | `UnpositionedListMarker` value type |
+| `core/layout/list/unpositioned_list_marker.cc` | `AddToBox`, `AddToBoxWithoutLineBoxes`, `ContentAlignmentBaseline`, `Layout`, `InlineOffset` |
+| `core/layout/box_fragment_builder.h` | `SetGapGeometry`/`SetFirstBaseline`/`SetLastBaseline`/`SetUseLastBaselineForInlineBaseline`; `Set/Get/ClearUnpositionedListMarker` are inherited from `FragmentBuilder` |
+
+### A. `GapGeometry` struct (Blink → Go translation map)
+
+**Blink** (`gap_geometry.h`):
+```cpp
+class CORE_EXPORT GapGeometry : public GarbageCollected<GapGeometry> {
+ public:
+  enum ContainerType { kGrid, kFlex, kMultiColumn };
+  explicit GapGeometry(ContainerType container_type);
+ private:
+  LayoutUnit inline_gap_size_;        // multicol: column_gap_size_
+  LayoutUnit block_gap_size_;         // multicol: row_gap_size_
+  ContainerType container_type_;
+  MainGaps main_gaps_;                // = Vector<MainGap>
+  CrossGaps cross_gaps_;              // = Vector<CrossGap>
+  std::optional<Vector<LayoutUnit>> flex_cross_gap_sizes_;  // flex-only — IGNORE
+  LayoutUnit content_inline_start_;
+  LayoutUnit content_inline_end_;
+  LayoutUnit content_block_start_;
+  LayoutUnit content_block_end_;
+  GridTrackSizingDirection main_direction_ = kForRows;     // multicol: ALWAYS kForRows
+  mutable wtf_size_t main_gap_running_index_ = kNotFound;  // flex-only — IGNORE
+  mutable HashSet<wtf_size_t> multicol_spanner_adjacent_intersections_;
+};
+```
+
+**Required Go translation** (target file: `pkg/layout/gap_geometry.go` — new file, mirroring Blink's `core/layout/gap/` placement per the "Mirror Blink file placement" memory):
+```go
+// GapGeometry mirrors Blink's GapGeometry. For Phase 12h.6 only kMultiColumn
+// is implemented; kGrid and kFlex tags exist as placeholders.
+type GapContainerType int
+const (
+    GapContainerGrid GapContainerType = iota
+    GapContainerFlex
+    GapContainerMulticol
+)
+
+type GapDirection int
+const (
+    GapForColumns GapDirection = iota  // cross direction in multicol
+    GapForRows                         // main direction in multicol
+)
+
+type GapGeometry struct {
+    ContainerType        GapContainerType
+    InlineGapSize        float64    // multicol: column_gap_size_
+    BlockGapSize         float64    // multicol: row_gap_size_
+    MainGaps             []MainGap
+    CrossGaps            []CrossGap
+    ContentInlineStart   float64
+    ContentInlineEnd     float64
+    ContentBlockStart    float64
+    ContentBlockEnd      float64
+    MainDirection        GapDirection  // multicol: always GapForRows
+    // SpannerAdjacentIntersections caches the set of cross-gap-intersection
+    // indices that abut a spanner (populated lazily by the painter; mirrors
+    // Blink's mutable HashSet<wtf_size_t>).
+    SpannerAdjacentIntersections map[int]struct{}
+}
+```
+
+**`MainGap`** (Blink `main_gap.h`):
+```cpp
+enum class SpannerMainGapType { kStart, kEnd, kNone };
+class CORE_EXPORT MainGap {
+  LayoutUnit gap_offset_;                     // mid-gap block offset
+  CrossGapRange range_of_cross_gaps_before_;  // optional [start,end] index range
+  CrossGapRange range_of_cross_gaps_after_;
+  std::optional<GapSegmentStateRanges> gap_segment_state_ranges_;
+  bool has_blocked_range_ = false;
+  SpannerMainGapType spanner_main_gap_type_ = SpannerMainGapType::kNone;
+};
+```
+
+**Go translation:**
+```go
+type SpannerMainGapType int
+const (
+    SpannerGapNone SpannerMainGapType = iota
+    SpannerGapStart
+    SpannerGapEnd
+)
+
+type MainGap struct {
+    GapOffset       float64               // mid-gap block offset
+    CrossGapsBefore *CrossGapRange        // nil = absent
+    CrossGapsAfter  *CrossGapRange
+    SpannerType     SpannerMainGapType    // kNone for normal row gaps
+}
+
+type CrossGapRange struct {
+    StartIndex int
+    EndIndex   int
+}
+
+func (m *MainGap) IsStartSpanner() bool { return m.SpannerType == SpannerGapStart }
+func (m *MainGap) IsEndSpanner() bool   { return m.SpannerType == SpannerGapEnd }
+func (m *MainGap) IsSpanner() bool      { return m.SpannerType != SpannerGapNone }
+```
+
+**`CrossGap`** (Blink `cross_gap.h`):
+```cpp
+class CORE_EXPORT CrossGap {
+  enum EdgeIntersectionState : uint8_t { kNone=0, kStart=1, kEnd=2, kBoth=3 };
+  LogicalOffset gap_logical_offset_;       // mid-gap (inline_offset, block_offset)
+  EdgeIntersectionState edge_state_;
+  std::optional<GapSegmentStateRanges> gap_segment_state_ranges_;
+};
+```
+
+**Go translation:**
+```go
+type EdgeIntersectionState int
+const (
+    EdgeNone EdgeIntersectionState = iota
+    EdgeStart
+    EdgeEnd
+    EdgeBoth
+)
+
+type CrossGap struct {
+    GapInlineOffset float64  // logical inline offset of mid-gap
+    GapBlockOffset  float64  // logical block offset of mid-gap
+    EdgeState       EdgeIntersectionState
+}
+```
+
+### B. Build site in the multicol algorithm (Blink cla.cc:420–485)
+
+Verbatim Blink (with the clauses we mirror flagged inline):
+
+```cpp
+if (RuntimeEnabledFeatures::CSSGapDecorationEnabled() &&
+    Style().HasGapRule() && (!cross_gaps_.empty() || !main_gaps_.empty()) &&
+    first_column_offset_.has_value()) {
+  auto* gap_geometry = MakeGarbageCollected<GapGeometry>(GapGeometry::kMultiColumn);
+
+  // Pad cross_gaps_ out to declared column-count even when fewer columns ran.
+  for (wtf_size_t i = max_columns_in_row_; i < Style().ColumnCount(); ++i) {
+    LayoutUnit inline_offset;
+    if (!cross_gaps_.empty()) {
+      inline_offset = cross_gaps_.back().GetGapOffset().inline_offset +
+                      column_gap_size_ / 2 + ColumnInlineSize() + column_gap_size_;
+    }
+    AddCrossGap(inline_offset);
+  }
+
+  LayoutUnit content_inline_end = container_builder_.FragmentInlineSize() -
+                                  BorderScrollbarPadding().inline_end;
+  if (!cross_gaps_.empty()) {
+    content_inline_end = std::max(content_inline_end,
+                                  cross_gaps_.back().GetGapOffset().inline_offset);
+    if (columns_per_row_.has_value()) {
+      UpdateCrossGapSegmentStates();   // mutates cross_gaps_ to flag spanner-blocked segments
+    }
+    gap_geometry->SetCrossGaps(std::move(cross_gaps_));
+    gap_geometry->SetInlineGapSize(column_gap_size_);
+  }
+
+  LayoutUnit content_block_end = container_builder_.FragmentBlockSize() -
+                                 container_builder_.ApplicableBorders().block_end -
+                                 container_builder_.ApplicableScrollbar().block_end -
+                                 container_builder_.ApplicablePadding().block_end;
+  if (!main_gaps_.empty()) {
+    content_block_end = std::max(content_block_end, main_gaps_.back().GetGapOffset());
+    gap_geometry->SetMainGaps(std::move(main_gaps_));
+    gap_geometry->SetBlockGapSize(row_gap_size_);
+  }
+  gap_geometry->SetContentInlineOffsets(first_column_offset_->inline_offset, content_inline_end);
+  gap_geometry->SetContentBlockOffsets(first_column_offset_->block_offset, content_block_end);
+  gap_geometry->SetMainDirection(kForRows);
+
+  container_builder_.SetGapGeometry(gap_geometry);
+}
+```
+
+**Helpers driven by per-column / per-spanner events** (cla.cc:1640–1763):
+```cpp
+void ColumnLayoutAlgorithm::AddMainGap(LayoutUnit block_offset, SpannerMainGapType gap_type) {
+  if (gap_type == SpannerMainGapType::kNone) {
+    block_offset += row_gap_size_ / 2;     // shift to mid-gap for normal row gaps
+  }
+  main_gaps_.emplace_back(block_offset, gap_type);
+}
+void ColumnLayoutAlgorithm::AddCrossGap(LayoutUnit column_inline_start_offset) {
+  LayoutUnit gap_center = column_inline_start_offset - (column_gap_size_ / 2);
+  cross_gaps_.emplace_back(LogicalOffset(gap_center, first_column_offset_->block_offset));
+}
+void ColumnLayoutAlgorithm::AddNumberOfColumnsForCurrentRow(wtf_size_t cols_in_row) {
+  if (!columns_per_row_.has_value()) columns_per_row_ = Vector<wtf_size_t>();
+  columns_per_row_->push_back(cols_in_row);    // kNotFound for spanners
+  FinalizeMainGapSegmentStateForCurrentRow(cols_in_row);
+}
+```
+
+**Spanner main-gap flagging** in `LayoutSpanner` (cla.cc:1490–1510):
+```cpp
+container_builder_.AddResult(*result, offset);
+PropagateBaselineFromChild(spanner_fragment, offset.block_offset);
+AttemptToPositionListMarker(spanner_fragment, block_offset);
+*margin_strut = MarginStrut();
+margin_strut->Append(margins.block_end, /* is_quirky */ false);
+
+if (RuntimeEnabledFeatures::CSSGapDecorationEnabled() && Style().HasGapRule()) {
+  if (main_gaps_.empty() || !main_gaps_.back().IsStartSpannerMainGap()) {
+    AddMainGap(intrinsic_block_size_, SpannerMainGapType::kStart);
+    AddNumberOfColumnsForCurrentRow(kNotFound);     // spanner row marker
+  }
+}
+intrinsic_block_size_ = offset.block_offset + logical_fragment.BlockSize();
+```
+
+**`UpdateCrossGapSegmentStates`** (cla.cc:1714) — mutates `cross_gaps_` in place before move:
+```cpp
+void ColumnLayoutAlgorithm::UpdateCrossGapSegmentStates() {
+  for (wtf_size_t cross_gap_index = 0; cross_gap_index < cross_gaps_.size(); ++cross_gap_index) {
+    CrossGap& cross_gap = cross_gaps_[cross_gap_index];
+    for (wtf_size_t cols_in_row_index = 0; cols_in_row_index < columns_per_row_->size(); ++cols_in_row_index) {
+      wtf_size_t cols_in_row = (*columns_per_row_)[cols_in_row_index];
+      wtf_size_t segment_start = cols_in_row_index;
+      wtf_size_t segment_end   = cols_in_row_index + 1;
+
+      if (cols_in_row != kNotFound && cross_gap_index + 1 < cols_in_row) continue;
+
+      bool is_outside_specified =
+          cross_gap_index + 1 >= Style().ColumnCount() && !Style().HasAutoColumnCount();
+
+      GapSegmentState state;
+      if (cols_in_row == kNotFound && !is_outside_specified) {
+        state = GapSegmentState(GapSegmentState::kBlocked);  // spanner row -- skip drawing
+      } else if (cross_gap_index + 1 == cols_in_row) {
+        state = GapSegmentState(GapSegmentState::kEmptyAfter);
+      } else {
+        state = GapSegmentState();  // kNone
+      }
+      cross_gap.AddGapSegmentStateRange(GapSegmentStateRange(segment_start, segment_end, state));
+    }
+  }
+}
+```
+
+### C. `GapDecorationsPainter` (Blink `core/paint/gap_decorations_painter.{h,cc}`)
+
+```cpp
+class GapDecorationsPainter {
+  STACK_ALLOCATED();
+ public:
+  explicit GapDecorationsPainter(const PhysicalBoxFragment& box_fragment) : box_fragment_(box_fragment) {}
+  void Paint(GridTrackSizingDirection track_direction,
+             const PaintInfo& paint_info,
+             const PhysicalRect& paint_rect,
+             const GapGeometry& gap_geometry);
+ private:
+  const PhysicalBoxFragment& box_fragment_;
+};
+```
+
+**Paint flow (compacted)**:
+1. Read `ComputedStyle& style = box_fragment_.Style()`.
+2. Per-direction style: `is_column_gap = (track_direction == kForColumns)`. Pull `style.ColumnRuleColor()`/`.RowRuleColor()`, `.ColumnRuleStyle()`/`.RowRuleStyle()`, `.ColumnRuleWidth()`/`.RowRuleWidth()`. (For multicol Phase 12h.6: cross direction = `kForColumns` = column-rule; we ignore row-rule.)
+3. Pick gap count: `is_main = gap_geometry.IsMainDirection(track_direction)`. **For multicol `kForRows` is main, `kForColumns` is cross.** — for column-rule painting we iterate **cross_gaps_**.
+4. **For each gap** (i.e., each cross_gap, one per inter-column position):
+   - Skip if `gap_geometry.IsMultiColSpanner(gap_index, track_direction)` — the spanner-flag short-circuit.
+   - Resolve color (via `style.VisitedDependentGapColor`), border-style, thickness.
+   - `center = gap_geometry.GetGapCenterOffset(track_direction, gap_index)` — for cross gap it's the inline center of the gap; for main gap it's the block center.
+   - `gap_geometry.GenerateIntersectionListForGap(track_direction, gap_index, intersections)` — produces the segments where the rule should and shouldn't draw.
+   - Walk intersection pairs; for each `(start, end)` segment:
+     - Build a `LogicalRect`: primary axis `[center − thickness/2, thickness]`, secondary axis spans `[intersections[start].GetOffset(), intersections[end].GetOffset()]` minus per-edge insets.
+     - Convert to physical, offset by `paint_rect.offset`.
+     - Call `BoxBorderPainter::DrawBoxSide(...)`.
+
+**For Go translation** — we don't have BoxBorderPainter; we already have `drawColumnRules` in `pkg/render/render.go:2917`. The port replaces that function's ad-hoc loop with a `GapGeometry`-driven walk. Use the existing rule-style switch (line 2940) and `r.drawDoubleRule`/`drawSingleRule` helpers; only the iteration source changes.
+
+### D. `PropagateBaselineFromChild` (Blink cla.cc:1655–1677)
+
+Definition:
+```cpp
+void ColumnLayoutAlgorithm::PropagateBaselineFromChild(
+    const PhysicalBoxFragment& child, LayoutUnit block_offset) {
+  LogicalBoxFragment fragment(GetConstraintSpace().GetWritingDirection(), child);
+
+  if (auto first_baseline = fragment.FirstBaseline()) {
+    LayoutUnit baseline = std::min(
+        block_offset + *first_baseline,
+        container_builder_.FirstBaseline().value_or(LayoutUnit::Max()));
+    container_builder_.SetFirstBaseline(baseline);
+  }
+
+  if (auto last_baseline = fragment.LastBaseline()) {
+    LayoutUnit baseline = std::max(
+        block_offset + *last_baseline,
+        container_builder_.LastBaseline().value_or(LayoutUnit::Min()));
+    container_builder_.SetLastBaseline(baseline);
+  }
+  container_builder_.SetUseLastBaselineForInlineBaseline();
+}
+```
+
+**Semantics:** `min` for first-baseline (earliest wins across columns/spanners), `max` for last-baseline (latest wins). `SetUseLastBaselineForInlineBaseline()` is **always** called — do not gate it.
+
+**Two callsites:**
+
+1. **Column commit** (cla.cc:1336, in `LayoutLine`'s commit-each-column loop):
+   ```cpp
+   for (const auto& result_with_offset : new_columns) {
+     const PhysicalBoxFragment& column = result_with_offset.Fragment();
+     container_builder_.AddChild(column, result_with_offset.offset);
+     PropagateBaselineFromChild(column, result_with_offset.offset.block_offset);
+   }
+   ```
+2. **Spanner commit** (cla.cc:1496, in `LayoutSpanner` after `AddResult`):
+   ```cpp
+   container_builder_.AddResult(*result, offset);
+   PropagateBaselineFromChild(spanner_fragment, offset.block_offset);
+   AttemptToPositionListMarker(spanner_fragment, block_offset);
+   ```
+
+### E. `UnpositionedListMarker` (Blink `core/layout/list/unpositioned_list_marker.{h,cc}`)
+
+**Header (full type):**
+```cpp
+class CORE_EXPORT UnpositionedListMarker final {
+  DISALLOW_NEW();
+ public:
+  UnpositionedListMarker() : marker_layout_object_(nullptr) {}
+  explicit UnpositionedListMarker(LayoutOutsideListMarker*);
+  explicit UnpositionedListMarker(const BlockNode&);
+  explicit operator bool() const { return marker_layout_object_ != nullptr; }
+
+  std::optional<LayoutUnit> ContentAlignmentBaseline(
+      const ConstraintSpace&, FontBaseline, const PhysicalFragment& content) const;
+  void AddToBox(const ConstraintSpace&, FontBaseline,
+                const PhysicalFragment& content, const BoxStrut&,
+                const LayoutResult& marker_layout_result, LayoutUnit content_baseline,
+                LayoutUnit* block_offset, BoxFragmentBuilder*) const;
+  void AddToBoxWithoutLineBoxes(const ConstraintSpace&, FontBaseline,
+                                const LayoutResult& marker_layout_result,
+                                BoxFragmentBuilder*, LayoutUnit* intrinsic_block_size) const;
+  LayoutUnit InlineOffset(LayoutUnit marker_inline_size) const;
+  const LayoutResult* Layout(const ConstraintSpace&, const ComputedStyle&, FontBaseline) const;
+ private:
+  Member<LayoutOutsideListMarker> marker_layout_object_;
+};
+```
+
+**`ContentAlignmentBaseline`:**
+```cpp
+std::optional<LayoutUnit> UnpositionedListMarker::ContentAlignmentBaseline(
+    const ConstraintSpace& space, FontBaseline, const PhysicalFragment& content) const {
+  if (content.IsLineBox()) {
+    const auto& line_box = To<PhysicalLineBoxFragment>(content);
+    if (line_box.IsEmptyLineBox() && line_box.GetBreakToken()) return std::nullopt;
+    return line_box.Metrics().ascent;
+  }
+  return LogicalBoxFragment(space.GetWritingDirection(),
+                            To<PhysicalBoxFragment>(content)).FirstBaseline();
+}
+```
+For a column (block) fragment: returns `FirstBaseline()` if any.
+
+**`AddToBox`** (the happy path — content has a baseline to align to):
+```cpp
+LogicalOffset marker_offset(InlineOffset(marker_inline_size), *block_offset);
+FontHeight marker_metrics = marker_fragment.BaselineMetrics(LineBoxStrut(), baseline_type);
+LayoutUnit baseline_adjust = content_baseline - marker_metrics.ascent;
+if (baseline_adjust >= 0) {
+  marker_offset.block_offset += baseline_adjust;
+} else {
+  *block_offset -= baseline_adjust;       // marker pushes content down
+}
+```
+
+**`AddToBoxWithoutLineBoxes`** (fallback — list-item with no line boxes; marker drawn at content-box origin):
+```cpp
+LogicalOffset offset(InlineOffset(marker_size.inline_size), LayoutUnit());
+container_builder->AddResult(marker_layout_result, offset);
+if (container_builder->BfcBlockOffset()) {
+  *intrinsic_block_size = std::max(marker_size.block_size, *intrinsic_block_size);
+  container_builder->SetIntrinsicBlockSize(*intrinsic_block_size);
+}
+```
+
+**`PositionAnyUnclaimedListMarker` and `AttemptToPositionListMarker`** live on `ColumnLayoutAlgorithm`, not on `UnpositionedListMarker`:
+```cpp
+void ColumnLayoutAlgorithm::PositionAnyUnclaimedListMarker() {
+  if (!Node().IsListItem()) return;
+  const auto marker = container_builder_.GetUnpositionedListMarker();
+  if (!marker) return;
+  FontBaseline baseline_type = Style().GetFontBaseline();
+  const LayoutResult* layout_result = marker.Layout(GetConstraintSpace(), Style(), baseline_type);
+  marker.AddToBoxWithoutLineBoxes(GetConstraintSpace(), baseline_type,
+                                  *layout_result, &container_builder_, &intrinsic_block_size_);
+  container_builder_.ClearUnpositionedListMarker();
+}
+
+void ColumnLayoutAlgorithm::AttemptToPositionListMarker(
+    const PhysicalBoxFragment& child_fragment, LayoutUnit block_offset) {
+  const auto marker = container_builder_.GetUnpositionedListMarker();
+  if (!marker) return;
+  FontBaseline baseline_type = Style().GetFontBaseline();
+  auto baseline = marker.ContentAlignmentBaseline(GetConstraintSpace(), baseline_type, child_fragment);
+  if (!baseline) return;
+  const LayoutResult* layout_result = marker.Layout(GetConstraintSpace(), container_builder_.Style(), baseline_type);
+  marker.AddToBox(GetConstraintSpace(), baseline_type, child_fragment,
+                  BorderScrollbarPadding(), *layout_result, *baseline,
+                  &block_offset, &container_builder_);
+  container_builder_.ClearUnpositionedListMarker();
+}
+```
+
+**Four callsites in `column_layout_algorithm.cc`:**
+
+1. **Constructor (cla.cc:240–253) — pull from node + thread through break token:**
+   ```cpp
+   ColumnLayoutAlgorithm::ColumnLayoutAlgorithm(const LayoutAlgorithmParams& params)
+       : LayoutAlgorithm(params) {
+     if (const BlockNode marker_node = Node().ListMarkerBlockNodeIfListItem()) {
+       if (!marker_node.ListMarkerOccupiesWholeLine() &&
+           (!GetBreakToken() || GetBreakToken()->HasUnpositionedListMarker())) {
+         container_builder_.SetUnpositionedListMarker(UnpositionedListMarker(marker_node));
+       }
+     }
+     container_builder_.SetInitialTextBoxTrim();
+   }
+   ```
+2. **`PositionAnyUnclaimedListMarker()` invocation (cla.cc:383)** at the very top of the post-LayoutChildren section in `Layout()`:
+   ```cpp
+   PositionAnyUnclaimedListMarker();
+   if (InvolvedInBlockFragmentation(container_builder_)) [[unlikely]] { FinishFragmentation(...); }
+   ```
+3. **First-column commit in `LayoutLine` (cla.cc:1302):**
+   ```cpp
+   const auto& first_column = To<PhysicalBoxFragment>(new_columns[0].Fragment());
+   // Only the first column in a line may attempt to place any unpositioned list-item.
+   AttemptToPositionListMarker(first_column, line_offset);
+   ```
+4. **Spanner commit in `LayoutSpanner` (cla.cc:1498) — adjacent to the baseline call:**
+   ```cpp
+   container_builder_.AddResult(*result, offset);
+   PropagateBaselineFromChild(spanner_fragment, offset.block_offset);
+   AttemptToPositionListMarker(spanner_fragment, block_offset);
+   ```
+
+**Invariants to mirror exactly:**
+- Constructor seeds the marker only when `Node().IsListItem()` AND `!ListMarkerOccupiesWholeLine()` AND (no incoming break token OR incoming token's `HasUnpositionedListMarker() == true`).
+- **Only `new_columns[0]`** (first column of the line) attempts placement — never columns 1, 2, 3.
+- Spanner commit attempts placement after baseline propagation.
+- End-of-Layout fallback: `PositionAnyUnclaimedListMarker()` places at the container content-box origin via `AddToBoxWithoutLineBoxes`.
+- Both `AttemptToPositionListMarker` and `PositionAnyUnclaimedListMarker` call `ClearUnpositionedListMarker()` after placing, so subsequent calls are no-ops.
+
+### F. Builder fields (`BoxFragmentBuilder` extensions for Phase 12h.6)
+
+| Blink method | Blink field | Louis14 target | Status today |
+|---|---|---|---|
+| `SetGapGeometry(const GapGeometry*)` | `gap_geometry_` | New: `pkg/layout/fragment_builder.go` | ABSENT — add |
+| `SetFirstBaseline(LayoutUnit)` | `first_baseline_` (`std::optional`) | New on builder | ABSENT — add (sibling to existing `SetLastBaseline` at line 132) |
+| `SetLastBaseline(LayoutUnit)` | `last_baseline_` | `SetLastBaseline` exists at fragment_builder.go:131 | DONE |
+| `SetUseLastBaselineForInlineBaseline()` | `use_last_baseline_for_inline_baseline_` (bool) | New on builder | ABSENT — add |
+| `SetUnpositionedListMarker` / `GetUnpositionedListMarker` / `ClearUnpositionedListMarker` | `unpositioned_list_marker_` (default-null) | New on builder | ABSENT — add |
+
+The marker field also rides on `LayoutResult` and `BlockBreakToken` so it can survive across fragmentation. For Phase 12h.6 we mirror this on `LayoutResult.UnpositionedListMarker` (new) and `BlockBreakToken.HasUnpositionedListMarker` (new). On resume, the algorithm constructor reads the break token.
+
+### G. Surprises and pitfalls (read before coding)
+
+1. **`UpdateCrossGapSegmentStates` lives on the algorithm**, not on `GapGeometry`. It mutates `cross_gaps_` in place; `std::move` happens after. Mirror this as a method on `MulticolLayoutAlgorithm`, not on `GapGeometry`.
+2. **Cross-gap padding** (the `for i = max_columns_in_row_; i < Style().ColumnCount()` loop) preserves rule positions for "missing" columns when layout produced fewer than declared.
+3. **`multicol_spanner_adjacent_intersections_` is a `mutable` HashSet** populated lazily at paint time. Pre-computing it eagerly is acceptable as long as the painter consumes the same set.
+4. **`AddMainGap(SpannerMainGapType::kStart)` is gated** by `main_gaps_.empty() || !main_gaps_.back().IsStartSpannerMainGap()` — don't double-add. There is no matching `kEnd` call in the spanner site we fetched; the next normal `AddMainGap(...)` (at the next row gap) implicitly closes the spanner range. Confirm by grep before relying on it.
+5. **`SetUseLastBaselineForInlineBaseline()` is unconditional.** Don't gate it on either baseline being found.
+6. **`AttemptToPositionListMarker` uses `container_builder_.Style()`** for the marker layout call but `Style()` (algorithm) inside `PositionAnyUnclaimedListMarker`. Mirror exactly — they happen to be the same object here but the source distinguishes.
+7. **Marker on break token.** Constructor checks `GetBreakToken() && GetBreakToken()->HasUnpositionedListMarker()` — if a list-item multicol fragmented and the marker is still unplaced, the resume builds a fresh `UnpositionedListMarker` from the same node. This requires plumbing on `BlockBreakToken` (new bool field) AND on the builder finalize (forward unplaced marker to outgoing token).
+8. **The `kForRows` invariant** for multicol means `cross_gaps_` is the column-rule iteration and `main_gaps_` is the row-rule iteration. Get the direction wrong and rules paint perpendicular to where they should.
+9. **`first_column_offset_` is `std::optional`** — Blink `CHECK`s it has a value before reading at the build site. Mirror via `first_column_offset_set bool` flag in Go (or `*float64`).
+10. **GC vs values.** Blink's `GapGeometry` is GC'd because it survives onto the `PhysicalBoxFragment`. In Go we just store it as a `*GapGeometry` field on `PhysicalBoxFragment` (or pass it through the LayoutResult).
+
+### H. Driver test selection
+
+Per the kickoff survey, no single failing test gates the entire port. For Phase 12h.6 verification we use **two drivers** that exercise distinct code paths and **must continue to PASS**:
+
+- **`multicol-list-item-001.xht`** (currently PASS) — exercises constructor + first-column-of-line marker placement. If our new `UnpositionedListMarker` regresses this, we know.
+- **`multicol-rule-solid-000.xht`** (currently PASS post-12h step 4) — exercises GapGeometry.cross_gaps + InlineGapSize. If our new `GapGeometry`-driven painter regresses it, we know.
+- **Optionally** `multicol-rule-stacking-001.xht` — known layout-blocked but worth eyeballing the diff for "did the new painter at least not make it worse."
+
+Phase 12h.6 is foundational correctness work; **+0 net tests is an acceptable outcome**. Regressions on the gate are not acceptable.
+
+### I. References to Chromium source
+
+All code quoted above is BSD-licensed Chromium source. Authoritative tree:
+`https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/renderer/core/`
+Targeted directories: `layout/gap/`, `layout/list/`, `layout/`, `paint/`. Use `?format=TEXT` for raw, fall back to `https://raw.githubusercontent.com/chromium/chromium/main/...` if gitiles refuses.
+
 ## Phase 13: LayoutUnit research (2026-04-25)
 
 Driver: `clear-001.xht` is the labeled "deferred pending Blink LayoutUnit trace" residual. Re-examination 2026-04-25 (see "clear-001 diagnosis" below) shows the diff is unlikely to be LayoutUnit arithmetic per se, but the migration is foundational regardless and probably closes clear-001 at the paint-time pixel-snap step (Phase 13g).

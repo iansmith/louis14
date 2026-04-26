@@ -730,10 +730,130 @@ Reference: findings.md §9a. Blink source: `core/layout/column_layout_algorithm.
 2. [~] **Root-cause high-diff rule-paint failures.** `multicol-rule-large-001` (7.8%), `multicol-rule-stacking-001` (3.7%), `multicol-rule-nested-balancing-003` (7.6%). **RECLASSIFIED 2026-04-24 — layout-blocked, not paint.** Debug instrumentation of `drawColumnRules` showed: `stacking-001` sets `Box.RenderedColumnCount=2` on a `column-count:4` container (layout only places content in 2 cols); `large-001` same — only col 0 gets the inline Ahem text (diff rose 7.8 → 13.1 % after step 1 exposed the lime glyphs); `nested-balancing-003` painter gets correct `contentH` (outer 250, inner fragments 200) — the 7.6 % is driven by how we render the *reference* HTML's `column-fill:auto`+`height:200` inner articles (our layout sizes them 250 and 400). Each needs a dedicated driver under a different phase (inline-in-balanced-multicol for the first two, nested `column-fill:auto` height resolution for the third). Deferred; see `findings.md` "Phase 12h step 2 reclassified".
 3. [ ] **`multicol-list-item-003` dropped trailing text.** Inline text after a `column-span:all` spanner disappears in our render. Marker position is already correct; this is `block_layout` / IIM work (post-spanner inline flow), not marker-protocol work. Likely closes just -003 but touches Phase 12b territory.
 4. [x] **Tiny-diff cluster sweep.** **DONE 2026-04-24** — root cause was `pkg/css/style.go` `GetColumnRuleWidth` hard-coding em base to 16 px via `ParseLength` (every other length getter on the Style struct uses `parseLengthFullWithCh` with `s.GetFontSize()`). One-line fix routes rule-width through the same helper. Net **css-multicol 135 → 154 PASS (+19)** — the 9 named `-{solid,ridge,groove,outset,inset,dashed,dotted,double,color}-000` tests plus ~10 additional -rule-* and adjacent tests whose font-size-scaled rule widths previously clipped. Gate invariants all held. Details in `progress.md` / `findings.md` "Phase 12h step 4".
-5. [ ] **Deferred (keep for future phase, not abandoned):**
-  - `GapGeometry{kMultiColumn}` + `GapDecorationsPainter` structural port (cla.cc:424–481) — revisit when a test demands cross_gaps / columns_per_row / spanner-adjacency flagging (`UpdateCrossGapSegmentStates`).
-  - `PropagateBaselineFromChild` on column + spanner commits (cla.cc:1336, 1496) — revisit when a multicol-inside-flex/grid test needs the outer's baseline to track the inner.
-  - `UnpositionedListMarker` four-callsite protocol (cla.cc:250, 1302, 1498, 383) — revisit when a test exercises marker protocol beyond what our current path already handles (001/002 PASS; 003's bug is elsewhere).
+5. [→] **Deferred items now ACTIVATED as Phase 12h.6 (planned 2026-04-26).** See "Phase 12h.6 — Blink-parity port of deferred abstractions" subsection below.
+
+### Phase 12h.6 — Blink-parity port of deferred abstractions (planned 2026-04-26)
+
+**Why now.** The kickoff survey (2026-04-24) showed the deferred abstractions don't directly close visible tests, and the user accepts that — this is foundational-correctness work (CLAUDE.md §1, §2) that brings the multicol algorithm into structural parity with Blink. Without it, future column-rule + spanner + list-item bugs will keep re-discovering the same divergences.
+
+**Authoritative reference.** `findings.md` "Phase 12h.6 Blink-parity port — research (2026-04-26)" — all type signatures, code snippets, and invariants. **READ THAT SECTION END-TO-END before writing any code.** It is load-bearing.
+
+**Gate baseline at planning time** (commit `732ae3fc`): CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 188/455 · spanner-frag 12/13.
+
+**Expected gain.** Per the survey: ~0 visible tests close on their own. **+0 is acceptable.** Gate regressions are not.
+
+**Three tracks; STRICT serial order.** Each track lands as its own commit; gate sweep runs at the end of each track; no track starts until the prior track's gate sweep is green.
+
+#### Track B — `PropagateBaselineFromChild` (smallest; do first)
+
+**Reference:** findings.md §D ("PropagateBaselineFromChild").
+
+**Files to touch:**
+- `pkg/layout/fragment_builder.go` — add `firstBaseline float64` + `hasFirstBaseline bool` field (sibling to existing `lastBaseline` at line 47); add `SetFirstBaseline(v float64)` (sibling to existing `SetLastBaseline` at line 132); add `useLastBaselineForInlineBaseline bool` field + `SetUseLastBaselineForInlineBaseline()` setter; thread both into `Build()` (line ~300) onto the result.
+- `pkg/layout/layout_result.go` — verify `Baseline`/`HasBaseline`/`LastBaseline` fields support the new flow; add `UseLastBaselineForInlineBaseline bool` if needed.
+- `pkg/layout/multicol_layout.go` — add method `PropagateBaselineFromChild(child *PhysicalBoxFragment, blockOffset float64)` mirroring Blink cla.cc:1655–1677.
+- `pkg/layout/multicol_layout.go` — call `PropagateBaselineFromChild` after each column commit in `layoutLine` (currently at multicol_layout.go:1041 where `colBreakToken = result.BreakToken`).
+- `pkg/layout/multicol_layout.go` — call `PropagateBaselineFromChild` after each spanner commit (currently in `Layout()` around line 610 where the spanner result is obtained).
+
+**Driver tests (run BOTH; both currently PASS):**
+- `multicol-list-item-001.xht` — list-items inside multicol; ensures baseline propagation doesn't change list-item rendering.
+- `multicol-rule-solid-000.xht` — sanity that nothing else broke.
+
+**Gate sweep at commit:**
+```
+GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/... \
+  -run 'TestWPTReftests/(css21|css-flexbox|css-position|css-writing-modes|css-multicol|spanner-fragmentation)' -v
+```
+All six invariants must hold. STOP if any move.
+
+**Commit message format:** `Phase 12h.6 Track B: PropagateBaselineFromChild on column + spanner commits`.
+
+#### Track C — `UnpositionedListMarker` protocol (4 callsites)
+
+**Reference:** findings.md §E ("UnpositionedListMarker") + §F (builder fields).
+
+**Files to touch:**
+- `pkg/layout/unpositioned_list_marker.go` (NEW; mirrors Blink `core/layout/list/unpositioned_list_marker.{h,cc}`) — port the type with: `MarkerNode *LayoutInputNode`, methods `IsValid()`, `ContentAlignmentBaseline(content *PhysicalBoxFragment) (float64, bool)`, `AddToBox(...)`, `AddToBoxWithoutLineBoxes(...)`, `InlineOffset(markerInlineSize float64) float64`, `Layout(space *ConstraintSpace, parentStyle *css.Style) *LayoutResult`.
+- `pkg/layout/fragment_builder.go` — add `unpositionedListMarker *UnpositionedListMarker` field, `SetUnpositionedListMarker`, `GetUnpositionedListMarker`, `ClearUnpositionedListMarker`. Forward to result and break token at `Build()`.
+- `pkg/layout/layout_result.go` — add `UnpositionedListMarker *UnpositionedListMarker` (carries unplaced marker out for the outer algorithm).
+- `pkg/layout/break_token.go` (or wherever `BlockBreakToken` lives) — add `HasUnpositionedListMarker bool`.
+- `pkg/layout/multicol_layout.go` — add method `AttemptToPositionListMarker(child *PhysicalBoxFragment, blockOffset float64)` and `PositionAnyUnclaimedListMarker()`. Mirror Blink cla.cc helper definitions verbatim (findings.md §E).
+- `pkg/layout/multicol_layout.go` — wire **four callsites**:
+  1. **Constructor** (`NewMulticolLayoutAlgorithm` or top of `Layout()` at line ~183): pull marker via `node.ListMarkerBlockNodeIfListItem()` if `mla.node.IsListItem() && !markerOccupiesWholeLine && (breakToken == nil || breakToken.HasUnpositionedListMarker)`. Stash on `builder.SetUnpositionedListMarker(...)`.
+  2. **First-column-of-line commit** (`layoutLine`, multicol_layout.go:~1041 — the per-column commit loop). After `new_columns[0]` is added to the builder, call `mla.AttemptToPositionListMarker(firstColumnFragment, lineOffset)`. **Only the first column.**
+  3. **Spanner commit** (`Layout()` around line 610, after `AddResult` and after the new Track B `PropagateBaselineFromChild` call): `mla.AttemptToPositionListMarker(spannerFragment, blockOffset)`.
+  4. **End-of-Layout fallback** (`Layout()` around line 855, BEFORE `builder.Build()`): `mla.PositionAnyUnclaimedListMarker()`.
+
+**Helpers needed elsewhere:**
+- `ListMarkerBlockNodeIfListItem()` on `LayoutInputNode` — returns the marker child node if `display:list-item`, else nil. Search for existing list-item infrastructure first (findings.md §3 says marker is currently drawn at paint time; the layout-tree builder at `pkg/layout/layout_tree_builder.go:96-105` already computes marker style — that's the hook).
+- `ListMarkerOccupiesWholeLine()` — true for `list-style-position: inside` cases. May not exist yet; default to `false` for outside markers if absent.
+
+**Driver tests:**
+- `multicol-list-item-001.xht` (currently PASS — must stay PASS; this is the structural test for callsites 1+3).
+- `multicol-list-item-002.html` (currently PASS — must stay PASS).
+- `multicol-list-item-006/007/008.html` (AA-only fails today; should not regress).
+
+**Gate sweep + commit:** same as Track B. Commit message: `Phase 12h.6 Track C: UnpositionedListMarker 4-callsite protocol`.
+
+**WARNING.** This track touches list-item paint indirectly. The current ad-hoc paint-time path (`pkg/render/render.go:3392`) draws markers from `PaintLayer.IsListItem`/`MarkerStyle`/etc. Track C **does not delete that path** — it adds the layout-time protocol. The two paths must coexist until a separate cleanup phase decides which wins. If a test regresses because both paths fire, gate the new layout-time placement on a node-level flag (e.g., `node.IsMulticolWithMarker()`) to keep the new code's blast radius narrow.
+
+#### Track A — `GapGeometry` + `GapDecorationsPainter` (biggest; do last)
+
+**Reference:** findings.md §A, §B, §C, §G.
+
+**Files to touch (NEW):**
+- `pkg/layout/gap_geometry.go` (NEW; mirrors Blink `core/layout/gap/gap_geometry.{h,cc}`) — types: `GapContainerType`, `GapDirection`, `GapGeometry`, `MainGap`, `CrossGap`, `CrossGapRange`, `SpannerMainGapType`, `EdgeIntersectionState`. Methods: `SetMainGaps`, `SetCrossGaps`, `SetInlineGapSize`, `SetBlockGapSize`, `SetContentInlineOffsets`, `SetContentBlockOffsets`, `SetMainDirection`, `IsMainDirection(GapDirection) bool`, `IsMultiColSpanner(gapIndex int, direction GapDirection) bool`, `GetGapCenterOffset(direction GapDirection, gapIndex int) float64`, `GenerateIntersectionListForGap(...) []Intersection`.
+
+**Files to touch (MODIFY):**
+- `pkg/layout/multicol_layout.go` — add private fields on `MulticolLayoutAlgorithm`:
+  - `crossGaps []CrossGap`
+  - `mainGaps []MainGap`
+  - `columnsPerRow []int` (use `-1` as sentinel for spanner; mirrors Blink's `kNotFound`)
+  - `firstColumnOffsetSet bool` + `firstColumnOffset LogicalOffset`
+  - `columnGapSize float64`, `rowGapSize float64`, `maxColumnsInRow int`
+- `pkg/layout/multicol_layout.go` — add helpers (mirror findings.md §B verbatim):
+  - `(mla *MulticolLayoutAlgorithm) AddMainGap(blockOffset float64, gapType SpannerMainGapType)`
+  - `(mla *MulticolLayoutAlgorithm) AddCrossGap(columnInlineStartOffset float64)`
+  - `(mla *MulticolLayoutAlgorithm) AddNumberOfColumnsForCurrentRow(colsInRow int)` — `-1` for spanner
+  - `(mla *MulticolLayoutAlgorithm) UpdateCrossGapSegmentStates()` — mutates `crossGaps` in place
+- `pkg/layout/multicol_layout.go` — wire calls during the layout loop:
+  - In `layoutLine` per-column placement loop: after each column except the last, `mla.AddCrossGap(columnInlineStart)`.
+  - At end of each row: `mla.AddNumberOfColumnsForCurrentRow(colsPlaced)`.
+  - In spanner commit (after Track B + C calls): if `len(mla.mainGaps) == 0 || !mla.mainGaps[len(mla.mainGaps)-1].IsStartSpanner()`: `mla.AddMainGap(intrinsicBlockSize, SpannerGapStart)` and `mla.AddNumberOfColumnsForCurrentRow(-1)`.
+  - At top of next row after a spanner: `mla.AddMainGap(rowStartOffset, SpannerGapNone)` (closes the spanner range).
+- `pkg/layout/multicol_layout.go` — at end of `Layout()` (around line 835, BEFORE `builder.Build()`), build the `*GapGeometry` per findings.md §B verbatim. Pad cross_gaps to declared column-count, call `UpdateCrossGapSegmentStates`, attach via `builder.SetGapGeometry(gg)`.
+- `pkg/layout/fragment_builder.go` — add `gapGeometry *GapGeometry` field + `SetGapGeometry` setter. Forward to `PhysicalBoxFragment` in `Build()`.
+- `pkg/layout/types.go` (or wherever `PhysicalBoxFragment` lives) — add `GapGeometry *GapGeometry` field.
+- `pkg/render/paint_layer.go` — add `GapGeometry *GapGeometry` field on `PaintLayer`; populate from `box.Fragment.GapGeometry` in the multicol layer construction (around line 644 where `IsMulticol = true`).
+- `pkg/render/render.go` — **rewrite** `drawColumnRules` (currently at line 2917) to consume `layer.GapGeometry`:
+  - If `layer.GapGeometry == nil`, fall back to the current ad-hoc loop (back-compat for non-multicol or pre-12h.6 fragments).
+  - Otherwise iterate `gg.CrossGaps` (column rules are the cross direction in multicol):
+    - Skip if `gg.IsMultiColSpanner(idx, GapForColumns)` returns true.
+    - Use `gg.InlineGapSize`, `gg.ContentBlockStart`, `gg.ContentBlockEnd` to size each rule rect.
+    - Reuse the existing per-style switch (line 2940) for solid/dashed/dotted/double drawing.
+- For now, **only port the cross-direction (column-rule) path**. The main-direction (row-rule) path is for `gap-rule-row` which louis14 doesn't yet support. Leave a TODO with a Blink reference.
+
+**Driver tests:**
+- `multicol-rule-solid-000.xht` — currently PASS at 0 diff after Phase 12h step 4. Must stay PASS.
+- `multicol-rule-percent-001.xht` — currently PASS. Must stay PASS.
+- `multicol-rule-001.xht` — currently FAILS at 3.3% (Ahem font loader unrelated); diff should not increase.
+
+**Gate sweep + commit:** same as Tracks B and C. Commit message: `Phase 12h.6 Track A: GapGeometry + GapDecorationsPainter port`.
+
+**STOP conditions:**
+- If gate moves ANY direction (positive or negative) outside the multicol gate by more than ±0 in the first two tracks: STOP, report. Multicol gate may move ±2 across the three tracks (acceptable noise from rule-painter rewrite).
+- If a previously-passing rule test starts failing: STOP, do not paper over with painter-side conditionals — root-cause it. The new painter must produce identical pixels to the old one for the cases the old one handled correctly (this is a refactor, not a feature addition for the column-rule case).
+
+**Discipline reminders (from CLAUDE.md):**
+- Run only the named driver tests during exploration; full gate sweep ONLY at commit time (CLAUDE.md §4).
+- Mirror Blink type names, method names, and call order. No louis14-original abstractions (CLAUDE.md §2).
+- File placement mirrors Blink (memory `feedback_blink_file_placement`): `gap_geometry.go` lives in `pkg/layout/`, `unpositioned_list_marker.go` lives in `pkg/layout/`, painter changes stay in `pkg/render/`.
+
+**Done definition:**
+- All three tracks landed as separate commits.
+- All six gate invariants held at the end (CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol within ±2 of 188/455 · spanner-frag 12/13).
+- Update `progress.md` with Phase 12h.6 entry citing the three commit hashes.
+- Move the deferred `[→]` bullet at the top of step 5 to `[x]` and link to the three commits.
 
 - [x] Driver tests (updated): task #7 Ahem loader (step 1); `multicol-rule-solid-000.xht` for step 4 (PASS at 0 diff post-fix). Step 2 drivers confirmed layout-blocked (see above); step 3 driver `multicol-list-item-003.html` pending.
 - [x] **Gate (post-step-4, 2026-04-24):** CSS2 99/99, css-flexbox 626/629, css-position 91/105, spanner-fragmentation 12/13 all held. css-multicol **135 → 154 PASS (+19, exceeding the 145-150 ambition)**. css-writing-modes 779/781 — 2 pre-existing `bidi-embed-006/override-006` fails confirmed via `git stash` to predate this fix; tracking files had incorrectly asserted 781/781 from phase-5f. Filed as a separate pre-existing regression.
