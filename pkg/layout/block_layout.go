@@ -655,6 +655,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childBlockSize := childLogical.BlockSize()
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			collapseThrough := childBlockSize == 0 &&
+				childResult.BreakToken == nil &&
 				len(childResult.Fragment.Children) == 0 &&
 				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
 				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&
@@ -1083,6 +1084,45 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 					result.BreakToken = outToken
 					result.MinSpaceShortage = shortage
+					result.PropagatedTopMargin = propagatedTopMargin
+					return result
+				} else if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
+					!bla.space.IsInitialColumnBalancingPass {
+					// IFC broke before making any forward progress (zero-height fragment +
+					// break token). The fragmentainer is full from the parent's perspective
+					// even though blockCursor did not advance.
+					outToken := &BlockBreakToken{
+						Node:              bla.node,
+						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
+						SequenceNumber:    0,
+					}
+					if incomingBreakToken != nil {
+						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
+						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
+					}
+					outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, childResult.BreakToken)
+					intrinsicBlock := blockCursor
+					if !hasExplicitBlock {
+						borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
+						builder.SetSize(LogicalSize{
+							InlineSize: geom.BorderBoxSize.InlineSize,
+							BlockSize:  borderBoxBlock,
+						})
+					} else {
+						builder.SetSize(geom.BorderBoxSize)
+					}
+					builder.SetIntrinsicBlockSize(intrinsicBlock)
+					builder.SetNode(bla.node.DOMNode)
+					builder.SetStyle(bla.style)
+					builder.SetLayoutNode(bla.node)
+					builder.SetBoxData(&PhysicalBoxData{
+						Border:  ToPhysicalEdges(geom.Border, wdm),
+						Padding: ToPhysicalEdges(geom.Padding, wdm),
+					})
+					builder.SetEndMarginStrut(prevMarginStrut)
+					builder.SetExclusionSpace(exclusionSpace)
+					result := builder.Build()
+					result.BreakToken = outToken
 					result.PropagatedTopMargin = propagatedTopMargin
 					return result
 				}

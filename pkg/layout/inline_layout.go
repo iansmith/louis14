@@ -960,7 +960,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			bla.space.FragmentainerBlockSize != Indefinite &&
 			!bla.space.IsInitialColumnBalancingPass {
 			fragEnd := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-			if blockOffset+lineHeight > fragEnd && blockOffset > 0 {
+			if blockOffset+lineHeight > fragEnd && bla.space.FragmentainerOffset+blockOffset > 0 {
 				// This line overflows. Stop here and signal the parent to create a
 				// break token so the next column resumes from this line.
 				// blockOffset > 0 guard: never emit an empty column (at least one
