@@ -703,6 +703,74 @@ Files: `pkg/render/render.go` (+18/-4: 4 ad-hoc `math.Round` lines replaced with
 
 ---
 
+#### Phase 13g.3: pixelSnap helper migration — DONE 2026-04-26
+
+Migrated the `pixelSnap(x, y, w, h float64)` helper at `pkg/render/render.go:1525-1531` to compute snap width/height via `layoutunit.SnapSizeToPixel`. The origin (sx, sy) still uses `math.Round`, mirroring Blink's `PhysicalRect::ToPixelSnappedRect = (PixelSnappedOffset, PixelSnappedSize)` where `PixelSnappedOffset = ToRoundedPoint(offset)` and each axis of the size is snapped independently against its own unsnapped origin (W vs offset.left, H vs offset.top — `physical_rect.h:134/164/168/171/224`).
+
+```go
+// Before (Phase 13g.3):
+func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
+    sx := math.Round(x)
+    sy := math.Round(y)
+    sw := math.Round(x+w) - sx
+    sh := math.Round(y+h) - sy
+    return sx, sy, sw, sh
+}
+
+// After (Phase 13g.3):
+func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
+    sx := math.Round(x)
+    sy := math.Round(y)
+    luX := layoutunit.FromFloat64Round(x)
+    luY := layoutunit.FromFloat64Round(y)
+    luW := layoutunit.FromFloat64Round(w)
+    luH := layoutunit.FromFloat64Round(h)
+    sw := float64(layoutunit.SnapSizeToPixel(luW, luX))
+    sh := float64(layoutunit.SnapSizeToPixel(luH, luY))
+    return sx, sy, sw, sh
+}
+```
+
+**13 callers inherit the migration.** `render.go:1247, 1275, 1461, 1525 (defn), 1667, 1672, 1678, 2298, 2670, 2797, 2958, 4227, 4370` — float/clear paint, clip-path rect, scroll/css clip rect, background fill, border outer edge, rounded-border outer edge, outline rect, outset shadow rect. Each now passes through `SnapSizeToPixel` for its size, picking up the >4-raw thin-line clause and the 1/64-quantum determinism for free. Float64-in / float64-out at the boundary so call-site signatures are unchanged.
+
+**Side-by-side instrumentation verification** — gated by `LOUIS14_SNAP_DEBUG=1`, removed before commit. A throwaway `pkg/visualtest/debug_phase13g_test.go` rendered four cases (sub-pixel margin, thin-line, clear-001 itself, sub-pixel float) with a print block in `pixelSnap` that compared OLD (`math.Round` edge-difference) and NEW (`SnapSizeToPixel`) outputs:
+
+| case | sample call | OLD sw,sh | NEW sw,sh | DIFF |
+|---|---|---|---|---|
+| subpixel margin (0.5px) | x=0 y=50.90625 w=50.5 h=50.296875 | 51,50 | 51,50 | match |
+| subpixel margin (0.5px) | x=0 y=101.703125 w=50.5 h=50.5 | 51,50 | 51,50 | match |
+| **thin-line (0.5px-square at 0.5px origin)** | **x=0.5 y=0.5 w=0.5 h=0.5** | **0,0 (vanishes)** | **1,1 (preserved)** | ***DIFF*** |
+| clear-001 blue square | x=8 y=48.9375 w=96 h=96 | 96,96 | 96,96 | match |
+| clear-001 orange square | x=8 y=144.9375 w=96 h=96 | 96,96 | 96,96 | match |
+| subpixel float (0.5px) | x=0 y=50.5 w=50.5 h=50.5 | 51,50 | 51,50 | match |
+
+Two findings:
+
+1. **Thin-line preservation extends to all 13 callers.** A 0.5×0.5px box at sub-pixel origin previously vanished — `Round(1.0) − Round(0.5) = 0` — and the NEW snap returns 1×1 because the `>4 raw / <-4 raw` clause forces +1 when the edge-difference collapses to 0 but `size.raw = 32 > 4`. Same correctness gain as 13g.2 but propagated to background fill, float/clear paint, clip rect, image rect, outline rect, and shadow rect.
+
+2. **clear-001 NOT closed by 13g.3 — hypothesis falsified.** Every `pixelSnap` call in the clear-001 paint trace produced IDENTICAL OLD and NEW outputs. Both 96×96 blue/orange squares have integer-px sizes against fraction-0.9375 origins; for an integer `size`, `(fraction + size).Round() − fraction.Round()` always collapses back to `size.Round() − fraction.Round()`, which is what `math.Round(loc + size) − math.Round(loc)` already gave. The thin-line clause never fires on integer sizes. The CONTINUE-13g3.md hypothesis ("the diff is from sub-pixel positioning the pixelSnap helper handles") is wrong.
+
+   The clear-001 reference hard-codes `.blue { height: 97px }` / `.orange { height: 95px }` (sum 192). For both blue and orange to render as 97/95 with the boundary shifted by 1 row, Blink must use a different discipline for floats — likely `ToEnclosingRect` (`physical_rect.h:213-223`: floor-offset, ceil-far-edge), which would give blue 48..145 = 97 px and orange 145..240 = 95 px. **clear-001 closure deferred to a separate float-paint sub-phase**, not part of 13g.
+
+**Six-invariant gate sweep at 13g.3 HEAD** (verbatim re-run, 2026-04-26):
+
+| Section | Result | Invariant | Status |
+|---|---|---|---|
+| CSS2 | 99/99 | 99/99 | ✅ |
+| css-flexbox | 626/629 | 626/629 | ✅ |
+| css-position | 92/105 | ≥92/105 | ✅ |
+| css-writing-modes | 781/781 | 781/781 | ✅ |
+| css-multicol | 179/455 | 179/455 | ✅ |
+| spanner-fragmentation | 12/13 | 12/13 | ✅ |
+
+All numbers identical to the pre-13g.3 baseline — the migration is bit-exact for every WPT test in the gate sweep. The cases that change behavior (sub-quantum-size box at sub-pixel origin) are all `rel="mismatch"` skip-list tests; verified via instrumentation that they now produce visible content. clear-001 specifically: 96/480000 pixels (0.0%, max diff 255) — exactly the 1-row × 96-px boundary line, identical to the pre-13g.3 diff (bit-exact).
+
+**Risk profile.** Medium → Low (delivered). Highest-fan-out 13g target — 13 callers across border/background/clip/image/shadow paint paths — but bit-exact for integer-px sizes (the dominant case). No invariant moved; the only behavioral change is the thin-line preservation for sub-quantum sizes.
+
+Files: `pkg/render/render.go` (+8/-2: 4 `math.Round` size lines replaced with 6 LayoutUnit conversion lines + 2 `SnapSizeToPixel` calls; doc-comment expanded to cite `physical_rect.h:224`), `findings.md` ("Phase 13g.3 research" subsection: Blink mirror verbatim, instrumentation results, two findings, clear-001 hypothesis falsified), `task_plan.md` (top summary + 13g row update), `progress.md` (this section). Instrumentation-only files (not committed): `pkg/visualtest/debug_phase13g_test.go` and a `LOUIS14_SNAP_DEBUG=1`-gated print block in `pixelSnap` were used during verification then removed.
+
+---
+
 #### Detour: mazarin/textshape font-slot lifetime fix — DONE 2026-04-26 (mazzy `d0105bd`)
 
 The Phase 13g.2 gate sweep at louis14 HEAD (`776ae6d5` = `f41f5c4d` render-side OpenTemporaryFont landing + `776ae6d5` 13g.1) panicked in `mazarin/textshape.parseSTypoMetrics` after ~89 fonts opened — `unexpected fault address`, slice into Munmap'd memory. Pre-existing regression from `f41f5c4d` (NOT from any 13g work). Verified by stash + checkout: HEAD~ render.go + 13g.1 → CSS2 99/99 PASS; HEAD render.go + 13g.1 → SIGSEGV in `visudet/height-applies-to-010a.xht`.

@@ -1519,14 +1519,21 @@ func isPureInlineForPaint(layer *PaintLayer) bool {
 }
 
 // pixelSnap rounds a box's position and size to integer pixel boundaries.
-// Width/height are computed by rounding the far edges to prevent cumulative
-// rounding errors. This matches Blink's approach of snapping coordinates
-// before painting to avoid sub-pixel boundary artifacts.
+// Mirrors Blink's PhysicalRect::ToPixelSnappedRect (physical_rect.h:224):
+// origin via ToRoundedPoint, size via SnapSizeToPixel(size, unsnapped_origin)
+// — each axis snapped independently against its own unsnapped origin.
+// SnapSizeToPixel applies the >4-raw thin-line clause, so a sub-quantum size
+// at a sub-pixel origin no longer collapses to 0; the 1/64 LayoutUnit quantum
+// also pins float64 IEEE-754 noise to the nearest raw step before rounding.
 func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 	sx := math.Round(x)
 	sy := math.Round(y)
-	sw := math.Round(x+w) - sx
-	sh := math.Round(y+h) - sy
+	luX := layoutunit.FromFloat64Round(x)
+	luY := layoutunit.FromFloat64Round(y)
+	luW := layoutunit.FromFloat64Round(w)
+	luH := layoutunit.FromFloat64Round(h)
+	sw := float64(layoutunit.SnapSizeToPixel(luW, luX))
+	sh := float64(layoutunit.SnapSizeToPixel(luH, luY))
 	return sx, sy, sw, sh
 }
 

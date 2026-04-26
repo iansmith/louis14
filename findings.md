@@ -2461,3 +2461,56 @@ Side-by-side instrumentation — gated by `LOUIS14_SNAP_DEBUG=1`, removed before
 **Finding 4: clear-001 status remains PARTIAL after 13g.2.** clear-001 has NO borders, so the diff comes from float/clear sub-pixel positioning, not border-edge snap. The `pixelSnap(x,y,w,h)` helper at `render.go:1525-1528` is on the float/clear paint path; routing IT through `SnapSizeToPixel` (Phase 13g.3) is the next likely closer for clear-001.
 
 **Migration is bit-exact for the gate-sweep tests.** Six-invariant gate sweep at 13g.2 HEAD (atop mazzy `d0105bd` font lifetime fix): CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 179/455 · spanner-fragmentation 12/13. Numbers identical to the pre-13g.2 baseline — every WPT test in the gate sweep is unaffected. The cases that change behavior (thin borders) are all `rel="mismatch"` skip-list tests; verified via the throwaway instrumentation that they now produce visible borders.
+
+### Phase 13g.3 research (2026-04-26)
+
+**Goal of 13g.3.** Replace `pixelSnap(x, y, w, h float64)` at `pkg/render/render.go:1525-1531` with a routing through `layoutunit.SnapSizeToPixel`. Origin (sx, sy) stays as `math.Round` — that's `ToRoundedPoint(offset)` in Blink terms; the size computation gets the `SnapSizeToPixel(size, unsnapped_origin)` treatment. Propagates the thin-line clause and 1/64-quantum determinism to all 13 callers (border, background, clip, image, shadow paint paths). Float64 in / float64 out at the boundary so callers are unchanged.
+
+**Blink mirror — verified verbatim 2026-04-26 against `refs/heads/main` `third_party/blink/renderer/core/layout/geometry/physical_rect.h`:**
+
+```cpp
+// physical_rect.h:134
+gfx::Point PixelSnappedOffset() const { return ToRoundedPoint(offset); }
+// physical_rect.h:164-166
+int PixelSnappedWidth() const { return SnapSizeToPixel(size.width, offset.left); }
+// physical_rect.h:168-170
+int PixelSnappedHeight() const { return SnapSizeToPixel(size.height, offset.top); }
+// physical_rect.h:171-173
+gfx::Size PixelSnappedSize() const { return {PixelSnappedWidth(), PixelSnappedHeight()}; }
+// physical_rect.h:224-226 (free fn)
+inline gfx::Rect ToPixelSnappedRect(const PhysicalRect& r) {
+  return {r.PixelSnappedOffset(), r.PixelSnappedSize()};
+}
+// physical_rect.h:213-223 (free fn — alternative discipline, NOT what pixelSnap mirrors)
+inline gfx::Rect ToEnclosingRect(const PhysicalRect& r) {
+  gfx::Point location = ToFlooredPoint(r.offset);
+  gfx::Point max_point = ToCeiledPoint(r.MaxXMaxYCorner());
+  return gfx::Rect(location.x(), location.y(),
+                   max_point.x() - location.x(), max_point.y() - location.y());
+}
+```
+
+This confirms the brief's design: `pixelSnap` should mirror `ToPixelSnappedRect` — round the origin and `SnapSizeToPixel` each axis against its OWN unsnapped origin (W vs offset.left, H vs offset.top). The Blink primitive operates on LayoutUnit-quantized values (1/64 px raw), so louis14 must convert at the boundary via `FromFloat64Round`. `ToEnclosingRect` is an alternative discipline (floor offset → ceil far edge) that produces strictly outward-snapped rects — NOT what `pixelSnap` mirrors. The painters reaching `ToPixelSnappedRect` include the float / clear paint path, the background paint, the clip path, and image paint; the painters reaching `ToEnclosingRect` are scrolling-overflow / dirty-region computations, which louis14 doesn't currently exercise.
+
+**Side-by-side instrumentation results.** A throwaway `pkg/visualtest/debug_phase13g_test.go` test rendered four cases with a `LOUIS14_SNAP_DEBUG=1`-gated print block in `pixelSnap` that compared OLD (`math.Round` edge-difference) and NEW (`SnapSizeToPixel(luW, luX)`, `SnapSizeToPixel(luH, luY)`) outputs for every painted box. Instrumentation removed before commit.
+
+| case | sample call | OLD sw,sh | NEW sw,sh | DIFF |
+|---|---|---|---|---|
+| subpixel margin (0.5px) | x=0 y=50.90625 w=50.5 h=50.296875 | 51,50 | 51,50 | match |
+| subpixel margin (0.5px) | x=0 y=101.703125 w=50.5 h=50.5 | 51,50 | 51,50 | match |
+| **thin-line (0.5px-square at 0.5px origin)** | **x=0.5 y=0.5 w=0.5 h=0.5** | **0,0 (vanishes)** | **1,1 (preserved)** | ***DIFF*** |
+| clear-001 blue square | x=8 y=48.9375 w=96 h=96 | 96,96 | 96,96 | match |
+| clear-001 orange square | x=8 y=144.9375 w=96 h=96 | 96,96 | 96,96 | match |
+| subpixel float (0.5px) | x=0 y=50.5 w=50.5 h=50.5 | 51,50 | 51,50 | match |
+
+Two findings:
+
+**Finding 1: Thin-line preservation extends to all 13 callers.** A 0.5×0.5px box at sub-pixel origin previously vanished entirely — `Round(1.0) - Round(0.5) = 0` — and the NEW snap returns 1×1 because the `>4 raw / <-4 raw` clause forces +1 when the edge-difference collapses to 0 but `size.raw = 32 > 4`. This is the same correctness gain as 13g.2 but propagated to background fill, float/clear paint, clip rect, and image rect — wherever a box's geometry passes through `pixelSnap`.
+
+**Finding 2: clear-001 will NOT close from 13g.3.** Every `pixelSnap` call in the clear-001 paint trace produced IDENTICAL OLD and NEW outputs. The blue and orange 96×96 squares both have integer-px sizes against fraction-0.9375 origins; for an integer `size`, `(fraction + size).Round() - fraction.Round()` always collapses back to `size.Round() - 0` regardless of the fraction's value (because adding an integer doesn't shift the fractional part). The thin-line clause never fires on integer-px sizes, so 13g.3 is BIT-EXACT for clear-001. **The CONTINUE-13g3.md hypothesis ("the diff is from sub-pixel positioning the pixelSnap helper handles") is wrong.**
+
+The clear-001 reference hard-codes blue=97px, orange=95px (sum 192) — implying Blink paints the boundary at row 146 (blue 49..145 inclusive, orange 146..240 inclusive), while louis14 paints it at row 145 (blue 49..144, orange 145..240). This 1-px disagreement is NOT explained by `SnapSizeToPixel(96, 48.9375) = 96` (which is what both Blink's `PixelSnappedRect` discipline and our 13g.3 NEW snap produce). The likely cause is that **Blink's float-clearance painter uses a different discipline for adjacent floats — possibly `ToEnclosingRect` (floor-offset / ceil-far-edge), which would give blue 48..145=97 and orange 145..240=95 with the boundary aligned to the ceiled blue edge**. This is a separate clear-001 closure path beyond 13g.3; deferred to 13g.4+ or a clear-specific paint sub-phase.
+
+**Migration is bit-exact for the gate-sweep tests.** All non-thin-line cases produce identical OLD and NEW outputs. The cases that change behavior (sub-pixel-size box at sub-pixel origin, where the thin-line clause fires) don't appear in the gate-sweep tests — they're the pixel-snapping `rel="mismatch"` tests skipped by the runner. Six-invariant gate sweep should hold by construction, mirroring the 13g.2 outcome.
+
+**Risk profile.** Medium. The migration touches 13 callers across border, background, clip, image, shadow paint paths. Bit-exact behavior is guaranteed for integer-size boxes (the dominant case in real layouts); only sub-quantum thin-line cases change. If any invariant regresses, ROLL BACK and re-design (CLAUDE.md rule 1). 13g.3 is one commit, no sub-step staging needed.
