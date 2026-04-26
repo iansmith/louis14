@@ -576,6 +576,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// Compute the spanner's full block size, accounting for mid-spanner resumption.
 		var spanFrag *PhysicalFragment
 		var spanHeight float64
+		var spanResult *LayoutResult // for PropagateBaselineFromChild (Track B)
 
 		var didContentOverflowResume bool
 		if hasSpannerResume {
@@ -591,6 +592,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				if resumeResult != nil && resumeResult.Fragment != nil {
 					spanFrag = resumeResult.Fragment
 					spanHeight = NewLogicalFragment(wdm, resumeResult.Fragment).BlockSize()
+					spanResult = resumeResult
 				}
 				didContentOverflowResume = true
 			} else {
@@ -613,6 +615,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 						frag.Size.Width = layoutunit.FromFloat64Round(spanHeight)
 					}
 					spanFrag = frag
+					spanResult = fullResult
 				}
 				spannerConsumed = 0
 			}
@@ -631,6 +634,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			if fullResult != nil && fullResult.Fragment != nil {
 				spanFrag = fullResult.Fragment
 				spanHeight = NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
+				spanResult = fullResult
 				// Content overflow: spanner box fits physically but its children
 				// overflow the outer fragmentainer boundary. Store the pending
 				// break info and continue placing subsequent content in this
@@ -700,6 +704,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				InlineOffset: 0,
 				BlockOffset:  blockCursor,
 			})
+			// Callsite 2: propagate baseline from spanner child.
+			// Mirrors Blink cla.cc:1496–1497 PropagateBaselineFromChild call
+			// immediately after AddResult in LayoutSpanner.
+			if spanResult != nil {
+				mla.propagateBaselineFromChild(spanResult, builder, blockCursor)
+			}
 			blockCursor += spanHeight
 			// Apply spanner margin-block-end (may be negative). Skip when resuming
 			// a content-overflow spanner — its margin was already consumed in OC1.
@@ -924,6 +934,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		offset         LogicalOffset
 		intrinsicBlock float64
 		propagatedOOF  []OutOfFlowCandidate
+		result         *LayoutResult // for PropagateBaselineFromChild
 	}
 	var finalColBreakToken *BlockBreakToken
 	var lastInnerResult *LayoutResult
@@ -935,6 +946,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			offset         LogicalOffset
 			intrinsicBlock float64
 			propagatedOOF  []OutOfFlowCandidate
+			result         *LayoutResult // for PropagateBaselineFromChild
 		}
 		minSpaceShortage := math.MaxFloat64
 		hasShortage := false
@@ -984,11 +996,13 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 				offset         LogicalOffset
 				intrinsicBlock float64
 				propagatedOOF  []OutOfFlowCandidate
+				result         *LayoutResult
 			}{
 				fragment:       colFrag,
 				offset:         LogicalOffset{InlineOffset: inlineOffset, BlockOffset: lineOffset},
 				intrinsicBlock: result.IntrinsicBlockSize,
 				propagatedOOF:  result.PropagatedOOFCandidates,
+				result:         result,
 			})
 
 			// Spanner detected: break out immediately (Blink cla.cc:1048).
@@ -1112,6 +1126,11 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	seenOOF := map[*LayoutInputNode]bool{}
 	for _, col := range finalColumns {
 		builder.AddChild(col.fragment, col.offset)
+		// Callsite 1: propagate baseline from each column child.
+		// Mirrors Blink cla.cc:1336 PropagateBaselineFromChild loop.
+		if col.result != nil {
+			mla.propagateBaselineFromChild(col.result, builder, col.offset.BlockOffset)
+		}
 		h := NewLogicalFragment(wdm, col.fragment).BlockSize()
 		if h > maxColHeight {
 			maxColHeight = h
@@ -1386,6 +1405,37 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	}
 
 	return b.Build()
+}
+
+// PropagateBaselineFromChild propagates baseline values from a column or
+// spanner child result to the multicol container builder.
+//
+// Mirrors Blink's ColumnLayoutAlgorithm::PropagateBaselineFromChild
+// (cla.cc:1655–1677). Called at two sites:
+//   1. After each column is committed in layoutLine.
+//   2. After the spanner is committed in the spanner-placement block of Layout.
+//
+// min semantics for first baseline: the earliest column wins.
+// max semantics for last baseline: the latest column wins.
+// SetUseLastBaselineForInlineBaseline is called unconditionally (Blink invariant).
+func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
+	result *LayoutResult, builder *BoxFragmentBuilder, blockOffset float64) {
+
+	if result.HasBaseline {
+		cur, has := builder.FirstBaseline()
+		if !has {
+			cur = math.MaxFloat64
+		}
+		bl := math.Min(blockOffset+result.Baseline, cur)
+		builder.SetFirstBaseline(bl)
+	}
+
+	if result.LastBaseline > 0 {
+		bl := math.Max(blockOffset+result.LastBaseline, builder.lastBaseline)
+		builder.SetLastBaseline(bl)
+	}
+
+	builder.SetUseLastBaselineForInlineBaseline()
 }
 
 // groupInlineChildrenForMulticol wraps consecutive inline-level and text

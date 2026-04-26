@@ -34,10 +34,22 @@ type LayoutResult struct {
 	// baseline was found and the parent should synthesize one.
 	HasBaseline bool
 
+	// FirstBaseline is the propagated first baseline for multicol containers,
+	// computed by PropagateBaselineFromChild across all column and spanner
+	// children. Mirrors Blink's LayoutResult::FirstBaseline (BoxFragmentBuilder
+	// first_baseline_ field). HasFirstBaseline guards the zero value.
+	FirstBaseline    float64
+	HasFirstBaseline bool
+
 	// LastBaseline is the last baseline position in the block direction,
 	// relative to the fragment's block-start edge. Used for inline-block
 	// alignment per CSS 2.1 §10.8.1 (baseline of the last line box).
 	LastBaseline float64
+
+	// UseLastBaselineForInlineBaseline mirrors Blink's
+	// use_last_baseline_for_inline_baseline_ — set by PropagateBaselineFromChild
+	// to indicate the last-baseline should be preferred for inline alignment.
+	UseLastBaselineForInlineBaseline bool
 
 	// EndMarginStrut is the margin strut at the block-end of this fragment,
 	// for margin collapsing propagation to the next sibling or parent.

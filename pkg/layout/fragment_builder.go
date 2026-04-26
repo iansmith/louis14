@@ -43,8 +43,20 @@ type BoxFragmentBuilder struct {
 	baseline    float64
 	hasBaseline bool
 
+	// firstBaseline is the first baseline position across all column/spanner
+	// children, updated via SetFirstBaseline during PropagateBaselineFromChild.
+	// Mirrors Blink's BoxFragmentBuilder::first_baseline_ (std::optional).
+	firstBaseline    float64
+	hasFirstBaseline bool
+
 	// lastBaseline position (last baseline, for inline-block alignment).
 	lastBaseline float64
+
+	// useLastBaselineForInlineBaseline mirrors Blink's
+	// BoxFragmentBuilder::use_last_baseline_for_inline_baseline_. Set
+	// unconditionally by PropagateBaselineFromChild after any column or spanner
+	// child is processed.
+	useLastBaselineForInlineBaseline bool
 
 	// exclusionSpace after layout.
 	exclusionSpace *ExclusionSpace
@@ -128,9 +140,31 @@ func (b *BoxFragmentBuilder) SetBaseline(v float64) {
 	b.hasBaseline = true
 }
 
+// SetFirstBaseline sets the first baseline, keeping the minimum value across
+// multiple calls (earlier column wins). Mirrors Blink's
+// BoxFragmentBuilder::SetFirstBaseline used by PropagateBaselineFromChild.
+func (b *BoxFragmentBuilder) SetFirstBaseline(v float64) {
+	b.firstBaseline = v
+	b.hasFirstBaseline = true
+}
+
+// FirstBaseline returns the current first-baseline value and whether it has
+// been set. Used by PropagateBaselineFromChild to apply min semantics.
+func (b *BoxFragmentBuilder) FirstBaseline() (float64, bool) {
+	return b.firstBaseline, b.hasFirstBaseline
+}
+
 // SetLastBaseline sets the last baseline position.
 func (b *BoxFragmentBuilder) SetLastBaseline(v float64) {
 	b.lastBaseline = v
+}
+
+// SetUseLastBaselineForInlineBaseline records that this builder's last baseline
+// should be used for inline-baseline alignment, as opposed to the first.
+// Called unconditionally by PropagateBaselineFromChild. Mirrors Blink's
+// BoxFragmentBuilder::SetUseLastBaselineForInlineBaseline().
+func (b *BoxFragmentBuilder) SetUseLastBaselineForInlineBaseline() {
+	b.useLastBaselineForInlineBaseline = true
 }
 
 // SetExclusionSpace sets the updated float exclusion state.
@@ -293,14 +327,17 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 
 	result := &LayoutResult{
-		Fragment:           fragment,
-		IntrinsicBlockSize: b.intrinsicBlockSize,
-		Baseline:           b.baseline,
-		HasBaseline:        b.hasBaseline,
-		LastBaseline:       b.lastBaseline,
-		EndMarginStrut:     b.endMarginStrut,
-		ExclusionSpace:     b.exclusionSpace,
-		BreakAppeal:        BreakAppealPerfect,
+		Fragment:                         fragment,
+		IntrinsicBlockSize:               b.intrinsicBlockSize,
+		Baseline:                         b.baseline,
+		HasBaseline:                      b.hasBaseline,
+		FirstBaseline:                    b.firstBaseline,
+		HasFirstBaseline:                 b.hasFirstBaseline,
+		LastBaseline:                     b.lastBaseline,
+		UseLastBaselineForInlineBaseline: b.useLastBaselineForInlineBaseline,
+		EndMarginStrut:                   b.endMarginStrut,
+		ExclusionSpace:                   b.exclusionSpace,
+		BreakAppeal:                      BreakAppealPerfect,
 	}
 	if b.hasMinimalSpaceShortage {
 		result.MinSpaceShortage = b.minimalSpaceShortage
