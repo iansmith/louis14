@@ -2795,3 +2795,42 @@ Louis14 paints blue at integer y=49, h=96 → rows 49–144 = 96 rows (one row s
 
 **Status: Phase 14c DEFERRED — root cause identified as `<p>` line-box height (~1.5px short vs Chrome), traced to font-metric resolution. No fix attempt until a targeted Blink call site is confirmed AND risk is evaluated separately.**
 
+### Phase 14c deep investigation (2026-04-26): why no paint algorithm yields 97/95
+
+**Blink call site identified.** The `USE_TYPO_METRICS` flag (OS/2 `fsSelection` bit 0x80) is the key. HarfBuzz (`hb_ot_font_get_font_h_extents()`) and go-text (`os.FsSelection & useTypoMetrics != 0`) both respect this flag. Louis14's `parseSTypoMetrics` in `mazarin/textshape/rasterize.go` ignores the flag: it returns sTypo values whenever `sTypoAscender != 0`, regardless of whether the font set `USE_TYPO_METRICS`.
+
+**Liberation Serif font analysis (UPM=2048, USE_TYPO_METRICS=False):**
+- OS/2 sTypo: asc=1420, desc=-442, gap=307 → Height_raw=1084.5, int32=1084, **16.9375px** (current louis14)
+- hhea: asc=1825, desc=-443, gap=87 → Height_raw=1177.5, int32=1177, **18.390625px** (Blink/HarfBuzz would use this)
+
+**If USE_TYPO_METRICS fix applied** (Liberation Serif → hhea):
+- `<p>` line-box height: 16.9375 → 18.390625px
+- Float Y: 48.9375 → **50.390625px**
+
+**SnapSizeToPixel analysis** (Louis14's paint, mirrors Blink `SnapSizeToPixel`):
+- y=50.390625, fraction=0.390625, h=96: `Round(96.390625) - Round(0.390625) = 96 - 0 = 96`
+- Blue snap_y=50, snap_h=96 → **96 rows** (still fails)
+
+**EnclosingIntRect analysis** (software rasterizer path):
+- Blue y=50.390625: `floor=50, ceil(146.390625)=147` → **97 rows** ✓
+- Orange y=146.390625: `floor=146, ceil(242.390625)=243` → **97 rows** ✗ (reference needs 95)
+
+**Orange=95 is physically impossible** from EnclosingIntRect applied to a 96px-height element. No consistent standard paint algorithm produces 97 blue AND 95 orange simultaneously. Exhaustive table:
+
+| Configuration | Blue | Orange | Match ref? |
+|---|---|---|---|
+| sTypo + SnapSizeToPixel (current) | 96 | 96 | No |
+| hhea + SnapSizeToPixel | 96 | 96 | No |
+| hhea + EnclosingIntRect (both) | 97 | 97 | No |
+| Any scheme, orange layout y=146.390625, h=96 | 95-97 | 95-97 | Cannot get 97+95 simultaneously |
+
+**Reference generation conditions (macOS Chrome):** Chrome BCR shows float y=50.5 (not 50.390625), which means Chrome on macOS uses a different font (likely Times New Roman via CoreText) with line-box height = 18.5px → float Y = 50.5. The 97/95 split requires exactly y=50.5 AND the specific asymmetric rounding that Chrome uses for the float vs clear element. Louis14 cannot replicate macOS CoreText font metrics without switching to a CoreText-based rendering path.
+
+**USE_TYPO_METRICS gate risk:** Fixing the flag universally would harm most LM fonts (USE_TYPO_METRICS=False, sTypo=19.19px, hhea=22-23px — a 3-4px jump) and Liberation Mono (sTypo=12.81px → hhea=18.13px). Only Liberation Serif has a small and correct-direction change (1.45px). Blanket fix would likely regress the CSS2 and flex gates due to LM Sans usage.
+
+**Conclusion: Phase 14c PERMANENTLY DEFERRED.** The test depends on:
+1. macOS CoreText's specific font metrics for Times New Roman (giving exactly 18.5px line-box height)
+2. An asymmetric paint algorithm in Chrome that gives 97 for blue but 95 for orange (analytically unexplained)
+
+A targeted fix for Liberation Serif alone (hardcode hhea fallback for Lib fonts) does not fix clear-001 because even with y=50.390625 and EnclosingIntRect, orange still produces 97 rows. This test is unfixable without either matching Chrome's exact macOS font metrics OR reverse-engineering the specific conditions under which the reference was generated.
+

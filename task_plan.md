@@ -152,7 +152,7 @@ See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity 
 
 **Outcome.** `multicol-nested-010` passes at 0 px diff. Gate: CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol **188** /455 (+2) · spanner-frag 12/13. All other invariants held.
 
-### Phase 14c — clear-001 (DEFERRED, root-cause-first; updated 2026-04-26)
+### Phase 14c — clear-001 (PERMANENTLY DEFERRED; updated 2026-04-26)
 
 **Problem.** 96/480000 pixels (0.02%) — blue square paints 96 rows (louis14) vs 97 rows (Chrome ref); orange paints 96 rows (louis14) vs 95 rows (ref). 1-row vertical shift at the blue/orange boundary.
 
@@ -166,7 +166,7 @@ See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity 
   3. Compare. If Chrome height ≥ 96.5 → layout-side divergence (audit `<p>` height resolver, line-box leading, height: 1in conversion). If Chrome height = 96.0 → paint-offset / DisplayItem accumulation (fetch `fragment_data.h`, `paint_state.h`).
   4. Only after step 3 narrows to a single Blink call site, propose the louis14 mirror fix.
 
-**Hard rules.** 0.02% diff test (96 px). Float/clear/paint code is high-regression-risk. Do NOT code without (a) confirmed Chrome `.height`/`.top` values from DevTools AND (b) one identified Blink call site that explains the divergence. Phase 14c stays DEFERRED until step 3 lands a definitive answer in findings.md.
+**PERMANENTLY DEFERRED (2026-04-26).** Root cause fully traced (see findings.md "Phase 14c deep investigation"): orange=95 rows is physically impossible to achieve with any consistent standard paint algorithm applied to a 96px element. The reference was generated with macOS Chrome's CoreText font metrics (Times New Roman giving 18.5px line-box height) plus an analytically unexplained paint asymmetry for the clear element. No targeted fix exists. Requires either matching macOS CoreText metrics or reverse-engineering the reference generation conditions.
 
 ### Discipline (Phase 14 rules)
 1. Read Blink source BEFORE writing code for each sub-phase (CLAUDE.md §2).
