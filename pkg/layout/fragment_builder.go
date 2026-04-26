@@ -43,6 +43,11 @@ type BoxFragmentBuilder struct {
 	baseline    float64
 	hasBaseline bool
 
+	// gapGeometry carries the column-rule/row-rule gap descriptors for multicol
+	// containers. Set by SetGapGeometry; forwarded to PhysicalFragment in Build().
+	// Mirrors Blink's BoxFragmentBuilder::gap_geometry_ / SetGapGeometry.
+	gapGeometry *GapGeometry
+
 	// unpositionedListMarker is the list-item marker awaiting placement by
 	// AttemptToPositionListMarker or PositionAnyUnclaimedListMarker.
 	// Mirrors Blink's FragmentBuilder::unpositioned_list_marker_.
@@ -170,6 +175,12 @@ func (b *BoxFragmentBuilder) SetLastBaseline(v float64) {
 // BoxFragmentBuilder::SetUseLastBaselineForInlineBaseline().
 func (b *BoxFragmentBuilder) SetUseLastBaselineForInlineBaseline() {
 	b.useLastBaselineForInlineBaseline = true
+}
+
+// SetGapGeometry attaches the column-rule geometry descriptor to this builder.
+// Mirrors Blink's BoxFragmentBuilder::SetGapGeometry.
+func (b *BoxFragmentBuilder) SetGapGeometry(gg *GapGeometry) {
+	b.gapGeometry = gg
 }
 
 // SetUnpositionedListMarker records a list-item marker awaiting placement.
@@ -347,6 +358,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		Node:             b.node,
 		Style:            b.style,
 		LayoutNode:       b.layoutNode,
+		GapGeometry:      b.gapGeometry,
 	}
 
 	result := &LayoutResult{

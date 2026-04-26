@@ -42,6 +42,35 @@ type MulticolLayoutAlgorithm struct {
 	// row_gap_ in column_layout_algorithm.cc used by
 	// RemainingRowHeightAtOffset / row-wrap loop (cla.cc:789–836).
 	rowGapSize float64
+
+	// --- Track A: GapGeometry state (Phase 12h.6) ---
+	// Mirrors Blink's ColumnLayoutAlgorithm private fields for gap decoration.
+
+	// crossGaps accumulates one entry per inter-column gap (column-rule position).
+	// Populated by addCrossGap during the per-column layout loop.
+	crossGaps []CrossGap
+
+	// mainGaps accumulates one entry per inter-row gap or spanner boundary.
+	// Populated by addMainGap during spanner commit and (future) row-wrap.
+	mainGaps []MainGap
+
+	// columnsPerRow records the number of columns placed in each row, with
+	// -1 used as a sentinel (kNotFound) for spanner "rows".
+	// Mirrors Blink's optional<Vector<wtf_size_t>> columns_per_row_.
+	columnsPerRow    []int
+	hasColumnsPerRow bool
+
+	// firstColumnOffset is the logical offset of the first column placed,
+	// recorded once. Mirrors Blink's optional<LogicalOffset> first_column_offset_.
+	firstColumnOffset    LogicalOffset
+	firstColumnOffsetSet bool
+
+	// columnGapSize is the resolved column-gap (same value as `gap` in Layout).
+	columnGapSize float64
+
+	// maxColumnsInRow is the maximum number of columns placed in any single row
+	// (used when padding cross_gaps_ to the declared column-count).
+	maxColumnsInRow int
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -210,6 +239,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	colCount := mla.style.GetColumnCount()
 	colWidth := mla.style.GetColumnWidth()
 	gap := mla.style.GetColumnGapMulticol()
+	mla.columnGapSize = gap
 	numCols, usedColWidth := resolveColumnCount(contentInlineSize, colCount, colWidth, gap)
 
 	// Container explicit block-size (from CSS height).
@@ -720,6 +750,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				return buildOuterBreakResult(beforeSpannerToken, partialSpannerToken)
 			}
 
+			// GapGeometry (Track A): mark spanner gap start before AddChild.
+			// Mirrors Blink cla.cc:1427 AddMainGap(SpannerGapStart).
+			mla.addMainGap(blockCursor, SpannerGapStart)
+			mla.addNumberOfColumnsForCurrentRow(-1)
 			builder.AddChild(spanFrag, LogicalOffset{
 				InlineOffset: 0,
 				BlockOffset:  blockCursor,
@@ -743,6 +777,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
 				blockCursor += spannerMargins.BlockEnd
 			}
+			// GapGeometry (Track A): mark spanner gap end after full advance.
+			// Mirrors Blink cla.cc:1470 AddMainGap(SpannerGapEnd).
+			mla.addMainGap(blockCursor, SpannerGapEnd)
 		}
 
 		// After a content-overflow resume, the spanner's overflow children are
@@ -885,6 +922,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Callsite 2: place any unclaimed list marker before building.
 	// Mirrors Blink cla.cc:383 PositionAnyUnclaimedListMarker() call.
 	mla.positionAnyUnclaimedListMarker(builder, &blockCursor)
+
+	// GapGeometry (Track A): build and attach gap geometry before Build().
+	// Mirrors Blink cla.cc:420–485.
+	mla.buildGapGeometry(builder, contentInlineSize, finalBlockSize, geom)
 
 	result := builder.Build()
 	result.PropagatedOOFCandidates = propagatedOOF
@@ -1196,6 +1237,29 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			builder.AddOutOfFlowCandidate(cand)
 		}
 	}
+	// GapGeometry (Track A): record first column offset and cross gaps.
+	// Mirrors Blink cla.cc:1650–1665 AddCrossGap / AddNumberOfColumnsForCurrentRow.
+	hasSpannerDetector := lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil
+	if len(finalColumns) > 0 && !mla.firstColumnOffsetSet {
+		mla.firstColumnOffset = finalColumns[0].offset
+		mla.firstColumnOffsetSet = true
+	}
+	// The last finalColumn is the spanner-detector (empty) when a spanner was hit;
+	// exclude it from cross gaps and from the per-row column count.
+	crossGapEnd := len(finalColumns)
+	if hasSpannerDetector && crossGapEnd > 0 {
+		crossGapEnd--
+	}
+	for i := 1; i < crossGapEnd; i++ {
+		mla.addCrossGap(finalColumns[i].offset.InlineOffset)
+	}
+	if crossGapEnd > 0 {
+		mla.addNumberOfColumnsForCurrentRow(crossGapEnd)
+		if crossGapEnd > mla.maxColumnsInRow {
+			mla.maxColumnsInRow = crossGapEnd
+		}
+	}
+
 	// Cap row advance to colBlockSize when finite: columns placed with
 	// fragmentation don't advance the cursor beyond the column height.
 	if colBlockSize != Indefinite && maxColHeight > colBlockSize {
@@ -1474,6 +1538,146 @@ func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
 	}
 
 	builder.SetUseLastBaselineForInlineBaseline()
+}
+
+// --- Track A: GapGeometry helpers (Phase 12h.6) ---
+// These mirror Blink's cla.cc:1640–1763.
+
+// addMainGap records a row-axis gap or spanner boundary in mainGaps.
+// For normal row gaps (SpannerGapNone) the block offset is shifted to mid-gap.
+// Mirrors Blink's ColumnLayoutAlgorithm::AddMainGap (cla.cc:1640).
+func (mla *MulticolLayoutAlgorithm) addMainGap(blockOffset float64, gapType SpannerMainGapType) {
+	if gapType == SpannerGapNone {
+		blockOffset += mla.rowGapSize / 2
+	}
+	mla.mainGaps = append(mla.mainGaps, MainGap{GapOffset: blockOffset, SpannerType: gapType})
+}
+
+// addCrossGap records an inter-column gap position in crossGaps.
+// columnInlineStartOffset is the inline start of the column AFTER the gap.
+// Mirrors Blink's ColumnLayoutAlgorithm::AddCrossGap (cla.cc:1650).
+func (mla *MulticolLayoutAlgorithm) addCrossGap(columnInlineStartOffset float64) {
+	gapCenter := columnInlineStartOffset - (mla.columnGapSize / 2)
+	blockStart := 0.0
+	if mla.firstColumnOffsetSet {
+		blockStart = mla.firstColumnOffset.BlockOffset
+	}
+	mla.crossGaps = append(mla.crossGaps, CrossGap{
+		GapInlineOffset: gapCenter,
+		GapBlockOffset:  blockStart,
+	})
+}
+
+// addNumberOfColumnsForCurrentRow records how many columns were placed in the
+// current row (or -1 for a spanner row).
+// Mirrors Blink's ColumnLayoutAlgorithm::AddNumberOfColumnsForCurrentRow (cla.cc:1659).
+func (mla *MulticolLayoutAlgorithm) addNumberOfColumnsForCurrentRow(colsInRow int) {
+	mla.columnsPerRow = append(mla.columnsPerRow, colsInRow)
+	mla.hasColumnsPerRow = true
+}
+
+// updateCrossGapSegmentStates mutates crossGaps in place to flag segments
+// that are blocked by a spanner (cols_in_row == -1 sentinel).
+// Mirrors Blink's ColumnLayoutAlgorithm::UpdateCrossGapSegmentStates (cla.cc:1714).
+func (mla *MulticolLayoutAlgorithm) updateCrossGapSegmentStates() {
+	if !mla.hasColumnsPerRow {
+		return
+	}
+	colCount := mla.style.GetColumnCount()
+	hasAutoColCount := colCount == 0
+
+	for crossIdx := range mla.crossGaps {
+		for _, colsInRow := range mla.columnsPerRow {
+			if colsInRow != -1 && crossIdx+1 < colsInRow {
+				continue
+			}
+			isOutsideSpecified := !hasAutoColCount && crossIdx+1 >= colCount
+			if colsInRow == -1 && !isOutsideSpecified {
+				// Spanner row: block this cross-gap segment.
+				if mla.crossGaps[crossIdx].EdgeState == EdgeNone {
+					mla.crossGaps[crossIdx].EdgeState = EdgeStart
+				} else {
+					mla.crossGaps[crossIdx].EdgeState = EdgeBoth
+				}
+			}
+		}
+	}
+}
+
+// buildGapGeometry constructs a *GapGeometry from the accumulated gap state
+// and attaches it to the builder. Mirrors Blink cla.cc:420–485.
+// Called at the end of Layout() before builder.Build().
+func (mla *MulticolLayoutAlgorithm) buildGapGeometry(
+	builder *BoxFragmentBuilder,
+	contentInlineSize float64,
+	finalBlockSize float64,
+	geom FragmentGeometry,
+) {
+	if len(mla.crossGaps) == 0 && len(mla.mainGaps) == 0 {
+		return
+	}
+	if !mla.firstColumnOffsetSet {
+		return
+	}
+	if !mla.style.HasColumnRule() {
+		return
+	}
+
+	gg := &GapGeometry{
+		ContainerType: GapContainerMulticol,
+		MainDirection: GapForRows,
+	}
+
+	// Pad cross_gaps_ to the declared column count when layout produced fewer.
+	// Mirrors Blink cla.cc:1722-1735.
+	declaredColCount := mla.style.GetColumnCount()
+	if declaredColCount > 0 {
+		for i := mla.maxColumnsInRow; i < declaredColCount; i++ {
+			var inlineOffset float64
+			if len(mla.crossGaps) > 0 {
+				last := mla.crossGaps[len(mla.crossGaps)-1]
+				// Each successive gap is one column-width + gap to the right.
+				colWidth := 0.0
+				if mla.style.GetColumnWidth() > 0 {
+					colWidth = mla.style.GetColumnWidth()
+				}
+				inlineOffset = last.GapInlineOffset + mla.columnGapSize/2 + colWidth + mla.columnGapSize
+			}
+			mla.addCrossGap(inlineOffset)
+		}
+	}
+
+	// Build content inline extents.
+	contentInlineEnd := contentInlineSize + geom.InlineBorderPadding() - geom.Border.InlineEnd - geom.Padding.InlineEnd
+	if len(mla.crossGaps) > 0 {
+		last := mla.crossGaps[len(mla.crossGaps)-1]
+		if last.GapInlineOffset > contentInlineEnd {
+			contentInlineEnd = last.GapInlineOffset
+		}
+		if mla.hasColumnsPerRow {
+			mla.updateCrossGapSegmentStates()
+		}
+		gg.CrossGaps = mla.crossGaps
+		gg.InlineGapSize = mla.columnGapSize
+	}
+
+	// Build content block extents.
+	contentBlockEnd := finalBlockSize + geom.BlockBorderPadding() - geom.Border.BlockEnd - geom.Padding.BlockEnd
+	if len(mla.mainGaps) > 0 {
+		last := mla.mainGaps[len(mla.mainGaps)-1]
+		if last.GapOffset > contentBlockEnd {
+			contentBlockEnd = last.GapOffset
+		}
+		gg.MainGaps = mla.mainGaps
+		gg.BlockGapSize = mla.rowGapSize
+	}
+
+	gg.ContentInlineStart = mla.firstColumnOffset.InlineOffset
+	gg.ContentInlineEnd = contentInlineEnd
+	gg.ContentBlockStart = mla.firstColumnOffset.BlockOffset
+	gg.ContentBlockEnd = contentBlockEnd
+
+	builder.SetGapGeometry(gg)
 }
 
 // attemptToPositionListMarker tries to align and place any pending list-item

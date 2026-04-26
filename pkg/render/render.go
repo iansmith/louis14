@@ -2914,29 +2914,24 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 
 // drawColumnRules draws vertical rules between multicol columns.
 // Rules are centered in the gap between adjacent columns.
+// When layer.GapGeometry is set (Phase 12h.6), CrossGaps drive the positions
+// and spanner-adjacent gaps are skipped. Otherwise falls back to the ad-hoc loop.
 func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	box := layer.Box
 	ruleWidth := layer.ColumnRuleWidth
-	colWidth := layer.ColumnWidth
-	gap := layer.ColumnGap
-	numCols := layer.ColumnCount
 
-	if numCols < 2 || colWidth <= 0 {
+	if ruleWidth <= 0 {
 		return
 	}
 
 	r.setColor(layer.ColumnRuleColor)
 
-	// Content area start (inside border and padding).
+	// Content area start (inside border and padding) — shared by both paths.
 	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
 	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
 	contentH := math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - contentY
 
-	// Draw a rule between each pair of adjacent columns.
-	for i := 1; i < numCols; i++ {
-		// Center of gap between column i-1 and column i.
-		ruleX := contentX + float64(i)*(colWidth+gap) - gap/2
-
+	drawRule := func(ruleX float64) {
 		switch layer.ColumnRuleStyle {
 		case "solid":
 			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
@@ -2952,10 +2947,35 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 			r.dc.DrawRectangle(ruleX+ruleWidth/2-thirdW, contentY, thirdW, contentH)
 			r.dc.Fill()
 		default:
-			// For other styles (ridge, groove, inset, outset), fallback to solid.
 			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
 			r.dc.Fill()
 		}
+	}
+
+	if gg := layer.GapGeometry; gg != nil && len(gg.CrossGaps) > 0 {
+		// GapGeometry path: use layout-computed cross gap positions.
+		// CrossGap.GapInlineOffset is content-box relative (logical inline);
+		// for HTB writing mode that equals physical X offset from content origin.
+		for i, cg := range gg.CrossGaps {
+			if gg.IsMultiColSpanner(i, layout.GapForColumns) {
+				continue // spanner-adjacent gap: no rule
+			}
+			ruleX := contentX + math.Round(cg.GapInlineOffset)
+			drawRule(ruleX)
+		}
+		return
+	}
+
+	// Ad-hoc fallback: draw numCols-1 rules evenly spaced.
+	colWidth := layer.ColumnWidth
+	gap := layer.ColumnGap
+	numCols := layer.ColumnCount
+	if numCols < 2 || colWidth <= 0 {
+		return
+	}
+	for i := 1; i < numCols; i++ {
+		ruleX := contentX + float64(i)*(colWidth+gap) - gap/2
+		drawRule(ruleX)
 	}
 }
 

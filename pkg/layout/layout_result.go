@@ -220,6 +220,12 @@ type PhysicalFragment struct {
 	// fragments. Used by the column-rule painter to honor the spec rule that
 	// rules are only drawn between columns that both have content.
 	RenderedColumnCount int
+
+	// GapGeometry carries column-rule / row-rule geometry for multicol
+	// containers. Nil for non-multicol fragments or when no gap rules apply.
+	// Consumed by drawColumnRules in pkg/render/render.go.
+	// Mirrors Blink's PhysicalBoxFragment::gap_geometry_ field.
+	GapGeometry *GapGeometry
 }
 
 // ChildLink is a positioned child within a parent fragment.

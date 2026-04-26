@@ -2317,6 +2317,13 @@ func (s *Style) GetColumnRuleStyle() string {
 	return "none"
 }
 
+// HasColumnRule returns true when column-rule-style is set to a visible value.
+// Mirrors Blink's ComputedStyle::HasColumnRule().
+func (s *Style) HasColumnRule() bool {
+	rs := s.GetColumnRuleStyle()
+	return rs != "" && rs != "none"
+}
+
 // GetColumnRuleColor returns the column-rule-color as a Color
 func (s *Style) GetColumnRuleColor() Color {
 	if v, ok := s.Get("column-rule-color"); ok {

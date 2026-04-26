@@ -211,6 +211,10 @@ type PaintLayer struct {
 	ColumnRuleWidth float64 // rule width in px
 	ColumnRuleStyle string  // none, solid, dashed, dotted, etc.
 	ColumnRuleColor css.Color
+
+	// GapGeometry carries column-rule geometry for multicol containers.
+	// Nil when no column rules are active or for non-multicol layers.
+	GapGeometry *layout.GapGeometry
 }
 
 // BuildPaintTree constructs a PaintLayer tree from a layout Box tree.
@@ -662,6 +666,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// non-multicol or pre-12e fallback (paint all CSS-count rules).
 		if box.RenderedColumnCount > 0 && box.RenderedColumnCount < colCount {
 			layer.ColumnCount = box.RenderedColumnCount
+		}
+		// GapGeometry: forwarded from layout when column rules are active.
+		if box.GapGeometry != nil {
+			layer.GapGeometry = box.GapGeometry
 		}
 	}
 

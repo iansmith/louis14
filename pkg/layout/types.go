@@ -84,6 +84,11 @@ type Box struct {
 	// honors the spec rule that rules are only drawn between columns that both
 	// have content (CSS Multicol L1 §5: column-rule). Zero for non-multicol.
 	RenderedColumnCount int
+
+	// GapGeometry carries the column-rule / row-rule geometry for multicol
+	// containers, forwarded from PhysicalFragment.GapGeometry at paint time.
+	// Nil for non-multicol fragments or when no gap rules apply.
+	GapGeometry *GapGeometry
 }
 
 // CreatesStackingContext returns true if this box establishes a new
