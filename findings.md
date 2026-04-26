@@ -2762,3 +2762,36 @@ When `ColumnLayoutAlgorithm` receives a leaf block whose declared size exceeds t
 
 **Hard rules.** This is a 0.0% diff test (96 px / 480000 = 0.02%). The risk of a regression in float/clear/paint code is HIGH. Do NOT propose any fix without (a) a confirmed Chrome float height value from DevTools and (b) a single identified Blink call site that explains the difference. Phase 14c stays DEFERRED until step 3 produces a clear answer.
 
+### Phase 14c empirical measurement (2026-04-26)
+
+**Louis14 pixelSnap debug output (clear-001.xht):**
+- `#div2` (blue float): pre-snap `(8, 48.9375, 96, 96)` → post-snap `(8, 49, 96, 96)`
+- `#div3` (orange clear): pre-snap `(8, 144.9375, 96, 96)` → post-snap `(8, 145, 96, 96)`
+
+**Chrome DevTools — getBoundingClientRect() on clear-001.xht opened via file://:**
+- `#div2` BCR: `{x:8, y:50.5, width:96, height:96, top:50.5, bottom:146.5}`; `offsetTop=51, offsetHeight=96`
+- `#div3` BCR: `{x:8, y:146.5, width:96, height:96, top:146.5, bottom:242.5}`; `offsetTop=147, offsetHeight=96`
+
+**Reference file (clear-001-ref.xht):** hard-codes `.blue { height:97px }` and `.orange { height:95px }` to match Chrome's visual output.
+
+**Decision: height = 96.0 in both renderers — float height is correct in louis14.**
+
+Chrome height=96 maps to the "paint-offset" branch of the CONTINUE decision tree. However the empirical Y positions reveal a layout-side divergence UPSTREAM of the float:
+
+- Chrome blue Y=50.5, louis14 blue Y=48.9375 → **delta = 1.5625px**
+- Both orange blocks are exactly 96px below their respective blue tops → the delta is entirely in what precedes the float, not in the float or clear geometry themselves.
+- `<p>` effective height (float Y minus 8px body margin): Chrome = **42.5px**, louis14 = **40.9375px**, delta = **1.5625px**.
+
+**Pixel rendering analysis (reconciles BCR with reference 97/95 split):**
+
+Chrome paints the blue float with its fractional BCR (top=50.5, bottom=146.5). Using Blink's
+enclosing-rect rounding: floor(50.5)=50, floor(146.5)+1=147 → 97 pixel rows painted. Orange starts at BCR top=146.5; the clear boundary clips the top to ceil(146.5)=147 and the bottom to floor(242.5)=242 → 95 rows. This exactly reproduces the 97/95 split in the reference file.
+
+Louis14 paints blue at integer y=49, h=96 → rows 49–144 = 96 rows (one row short of Chrome). The 1-row shift is a direct consequence of the 1.5625px Y offset.
+
+**Root cause: `<p>` line-box height divergence.** Louis14 computes the paragraph line-box height as approximately **16.9375px** (40.9375 − 16 − 8 = 16.9375 if margin-collapse, or 8.9375 if no collapse). Chrome computes it as approximately **18.5px** (42.5 − 16 − 8 = 18.5). The 1.5–1.6px delta is a font-metric/line-height calculation difference.
+
+**STOP condition triggered.** The CONTINUE file states: *"If the empirical step confirms divergence is in a high-risk area (e.g., font-metric resolution that affects every text layout), STOP and report; do not attempt a fix that reaches across the codebase."* Line-box height is computed for every text layout pass — a fix here would be high-risk and broad in scope.
+
+**Status: Phase 14c DEFERRED — root cause identified as `<p>` line-box height (~1.5px short vs Chrome), traced to font-metric resolution. No fix attempt until a targeted Blink call site is confirmed AND risk is evaluated separately.**
+
