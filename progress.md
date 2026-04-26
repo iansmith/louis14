@@ -632,6 +632,77 @@ Files: `pkg/geometry/layoutunit/layoutunit.go` (+58 — 2 new functions + compre
 
 ---
 
+#### Phase 13g.2: drawBorders inner-corner migration — DONE 2026-04-26
+
+Migrated the ad-hoc `math.Round(snapped_outer + bw)` inner-corner formula at `pkg/render/render.go:2672-2675` (`drawBorders`) to Blink-parity `outerEdge ± SnapSizeToPixel(bw, unsnapped_origin)`. Four lines replaced; `pkg/render/render.go` is the only file touched.
+
+```go
+// Before (Phase 13g.2):
+innerLeft := math.Round(x + bw.Left)
+innerTop := math.Round(y + bw.Top)
+innerRight := math.Round(x + w - bw.Right)
+innerBottom := math.Round(y + h - bw.Bottom)
+
+// After (Phase 13g.2):
+luBoxX := layoutunit.FromFloat64Round(box.X)
+luBoxY := layoutunit.FromFloat64Round(box.Y)
+luBoxXW := layoutunit.FromFloat64Round(box.X + box.Width)
+luBoxYH := layoutunit.FromFloat64Round(box.Y + box.Height)
+luBwL := layoutunit.FromFloat64Round(bw.Left)
+luBwT := layoutunit.FromFloat64Round(bw.Top)
+luBwR := layoutunit.FromFloat64Round(bw.Right)
+luBwB := layoutunit.FromFloat64Round(bw.Bottom)
+innerLeft   := outerLeft   + float64(layoutunit.SnapSizeToPixel(luBwL, luBoxX))
+innerTop    := outerTop    + float64(layoutunit.SnapSizeToPixel(luBwT, luBoxY))
+innerRight  := outerRight  - float64(layoutunit.SnapSizeToPixel(luBwR, luBoxXW.Sub(luBwR)))
+innerBottom := outerBottom - float64(layoutunit.SnapSizeToPixel(luBwB, luBoxYH.Sub(luBwB)))
+```
+
+**Location-argument convention** (mirrors `physical_rect.h:PixelSnappedWidth/Height` from Blink):
+- For `inner{Left,Top}`: location is the unsnapped box origin (`box.X` / `box.Y`).
+- For `inner{Right,Bottom}`: location is `unsnapped outer right/bottom − bw`, which is where the right/bottom border *thickness* begins.
+
+**Parallel-sites scope correction.** Phase 13g research surfaced four sites that all call `pixelSnap(box.X, box.Y, box.Width, box.Height)`: render.go:2669 `drawBorders` (THIS migration), :2779 `drawRoundedBorders`, :2940 `drawOutline`, :4209 `drawOutsetBoxShadows`. Reading them confirmed only :2669 has the inner-corner `math.Round(x + bw.Left)` shape — `drawRoundedBorders` uses midline-radius geometry, `drawOutline` expands outward by `outline-offset`, `drawOutsetBoxShadows` works on a shadow rect. None of the parallel sites are 13g.2 targets.
+
+**Side-by-side instrumentation verification.** A throwaway `pkg/visualtest/debug_phase13g_test.go` test rendered 7 WPT files (border-width-small-values-001-{a,b,c,d,e}.html, border-width-pixel-snapping-001-a.html, border-005.xht) with a `LOUIS14_SNAP_DEBUG=1`-gated `if` block in `drawBorders` that printed both the OLD (`math.Round`) and NEW (`SnapSizeToPixel`) inner-edge values. Findings (instrumentation removed before commit):
+
+| border | old thickness | NEW thickness | migration-changed |
+|---|---|---|---|
+| 0.1px | L0 T0 R0 B0 (vanishes) | L1 T1 R1 B1 (preserved) | **true** |
+| 0.25px | L0 T0 R0 B0 (vanishes) | L1 T1 R1 B1 (preserved) | **true** |
+| 0.5px | L1 T1 **R0 B0** (asymmetric!) | L1 T1 R1 B1 (symmetric) | **true** |
+| 0.7px | L1 T1 R1 B1 | L1 T1 R1 B1 | false |
+| 0.9px | L1 T1 R1 B1 | L1 T1 R1 B1 | false |
+| 1.9px | L2 T2 R2 B2 | L2 T2 R2 B2 | false |
+| 96px (1in) | L96 T96 R96 B96 | L96 T96 R96 B96 | false |
+
+Two findings:
+1. **Thin-line preservation works.** 0.1px and 0.25px borders previously vanished entirely (Round(0.1) = 0, Round(0.25) = 0); the `>4 raw / <-4 raw` clause in SnapSizeToPixel now forces ±1px when the snap collapses to 0 but the user asked for a real (if thin) line. Closes the class of "border-width: 0.x vanishes" failures.
+2. **Asymmetric 0.5px border bug fixed.** The OLD code rendered uniform `border: 0.5px` boxes with left/top thickness=1 but right/bottom thickness=0 — `Round(0.5) = 1` (round-half-away-from-zero) on the left, but `Round(792 - 0.5) = Round(791.5) = 792` on the right (also round-away-from-zero), so right thickness = 792 - 792 = 0. The Blink-parity `SnapSizeToPixel(0.5, location_of_right_edge)` yields a clean 1px on both sides. Latent bug, surfaced by the migration; would have caused user-visible border asymmetry in any test with a 0.5px symmetric border.
+
+For non-thin borders (≥0.7px), OLD and NEW agree pixel-for-pixel — the migration is a no-op for the common case.
+
+**Six-invariant gate sweep at 13g.2 HEAD** (verbatim re-run, 2026-04-26):
+
+| Section | Result | Invariant | Status |
+|---|---|---|---|
+| CSS2 | 99/99 | 99/99 | ✅ |
+| css-flexbox | 626/629 | 626/629 | ✅ |
+| css-position | 92/105 | ≥91/104 (target 92) | ✅ |
+| css-writing-modes | 781/781 | 781/781 | ✅ |
+| css-multicol | 179/455 | 179/455 | ✅ |
+| spanner-fragmentation | 12/13 | 12/13 | ✅ |
+
+All numbers identical to the pre-13g.2 baseline (post-mazarin-fix) — the migration is bit-exact for every WPT test in the gate sweep. The "thin border" cases that change behavior are all `rel="mismatch"` tests skipped by the runner, so they don't appear in the invariant counts. Verified via instrumentation that they now produce visible borders.
+
+**clear-001 status: still PARTIAL after 13g.2.** clear-001 has NO borders — its diff comes from float/clear sub-pixel positioning, not border-edge snap. The next likely closer is 13g.3 (route the existing `pixelSnap(x,y,w,h)` helper through `SnapSizeToPixel`, which would propagate the thin-line preservation to all 13 callers — the `pixelSnap` helper is on the float/clear paint path).
+
+**Risk profile.** Low (delivered). The migration is bit-exact for normal borders (≥0.7px); only thin borders change behavior, and they change in the correct direction (vanished borders become visible). No gate invariant moved.
+
+Files: `pkg/render/render.go` (+18/-4: 4 ad-hoc `math.Round` lines replaced with 12-line LayoutUnit conversion + SnapSizeToPixel block + new doc-comment citing `physical_rect.h`), `task_plan.md` (top summary + 13g row update), `progress.md` (this section). Instrumentation-only files (not committed): `pkg/visualtest/debug_phase13g_test.go` and a `LOUIS14_SNAP_DEBUG=1`-gated print block in `drawBorders` were used during verification then removed.
+
+---
+
 #### Detour: mazarin/textshape font-slot lifetime fix — DONE 2026-04-26 (mazzy `d0105bd`)
 
 The Phase 13g.2 gate sweep at louis14 HEAD (`776ae6d5` = `f41f5c4d` render-side OpenTemporaryFont landing + `776ae6d5` 13g.1) panicked in `mazarin/textshape.parseSTypoMetrics` after ~89 fonts opened — `unexpected fault address`, slice into Munmap'd memory. Pre-existing regression from `f41f5c4d` (NOT from any 13g work). Verified by stash + checkout: HEAD~ render.go + 13g.1 → CSS2 99/99 PASS; HEAD render.go + 13g.1 → SIGSEGV in `visudet/height-applies-to-010a.xht`.

@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/images"
 	"louis14/pkg/layout"
 	"louis14/pkg/text"
@@ -2669,10 +2670,27 @@ func (r *Renderer) drawBorders(layer *PaintLayer) {
 	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
 	outerLeft, outerTop := x, y
 	outerRight, outerBottom := x+w, y+h
-	innerLeft := math.Round(x + bw.Left)
-	innerTop := math.Round(y + bw.Top)
-	innerRight := math.Round(x + w - bw.Right)
-	innerBottom := math.Round(y + h - bw.Bottom)
+
+	// Border thickness is snapped via SnapSizeToPixel against the unsnapped
+	// origin of each side: left/top use the unsnapped box origin; right/bottom
+	// use (unsnapped outer right/bottom - bw), which is where the right/bottom
+	// border thickness begins. The thin-line clause inside SnapSizeToPixel
+	// preserves sub-pixel borders (border-width: 0.1px–0.5px) that ad-hoc
+	// math.Round of the snapped outer + bw would collapse to 0. Mirrors
+	// Blink's PhysicalRect::PixelSnappedWidth/Height pattern from
+	// core/layout/geometry/physical_rect.h.
+	luBoxX := layoutunit.FromFloat64Round(box.X)
+	luBoxY := layoutunit.FromFloat64Round(box.Y)
+	luBoxXW := layoutunit.FromFloat64Round(box.X + box.Width)
+	luBoxYH := layoutunit.FromFloat64Round(box.Y + box.Height)
+	luBwL := layoutunit.FromFloat64Round(bw.Left)
+	luBwT := layoutunit.FromFloat64Round(bw.Top)
+	luBwR := layoutunit.FromFloat64Round(bw.Right)
+	luBwB := layoutunit.FromFloat64Round(bw.Bottom)
+	innerLeft := outerLeft + float64(layoutunit.SnapSizeToPixel(luBwL, luBoxX))
+	innerTop := outerTop + float64(layoutunit.SnapSizeToPixel(luBwT, luBoxY))
+	innerRight := outerRight - float64(layoutunit.SnapSizeToPixel(luBwR, luBoxXW.Sub(luBwR)))
+	innerBottom := outerBottom - float64(layoutunit.SnapSizeToPixel(luBwB, luBoxYH.Sub(luBwB)))
 
 	// Top border (index 0).
 	if bw.Top > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
