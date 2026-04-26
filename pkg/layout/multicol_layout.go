@@ -303,6 +303,40 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		!mla.space.IsInitialColumnBalancingPass
 	outerAvailable := mla.space.FragmentainerBlockSize - mla.space.FragmentainerOffset
 
+	// Phase 14b: defer entire multicol when its required column block-size
+	// can't fit in the remaining outer fragmentainer. Under column-fill:auto
+	// + explicit height, the inner column block-size is the explicit height;
+	// if that exceeds the outer remaining space, fragmenting in place would
+	// produce sub-columns much smaller than intended (and leak content into
+	// the outer overflow area — see multicol-nested-010). Returning a 0-height
+	// fragment with BlockSizeForFragmentation=explicitBlockSize makes the
+	// parent's BreakBeforeChildIfNeeded push the entire multicol to the next
+	// outer fragmentainer, where it has full space to lay out at its declared
+	// height. Mirrors Blink's BlockSizeForFragmentation hook for nested
+	// fragmentation. Only fires when starting fresh (no incoming BreakToken),
+	// not balanced, has explicit height, and there is container separation
+	// (the parent's break-before would be meaningful).
+	if hasOuterFrag && hasExplicitBlock && mla.space.BreakToken == nil &&
+		columnFill == "auto" && outerAvailable < explicitBlockSize {
+		builder.SetSize(LogicalSize{
+			InlineSize: contentInlineSize + geom.InlineBorderPadding(),
+			BlockSize:  0,
+		})
+		builder.SetIntrinsicBlockSize(0)
+		builder.SetLayoutNode(mla.node)
+		physBorder := ToPhysicalEdges(geom.Border, wdm)
+		physPadding := ToPhysicalEdges(geom.Padding, wdm)
+		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
+		builder.SetBoxData(&PhysicalBoxData{
+			Margin:  physMargin,
+			Border:  physBorder,
+			Padding: physPadding,
+		})
+		result := builder.Build()
+		result.BlockSizeForFragmentation = explicitBlockSize + geom.BlockBorderPadding()
+		return result
+	}
+
 	// Reconstruct the MulticolPartWalker resumption state from an incoming break
 	// token. The break token encodes:
 	//   ChildBreakTokens[0]: the nextColToken to pass to layoutLine so it

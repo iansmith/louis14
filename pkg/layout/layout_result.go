@@ -70,6 +70,17 @@ type LayoutResult struct {
 	// Used by column balancing to determine how much to stretch.
 	MinSpaceShortage float64
 
+	// BlockSizeForFragmentation is the size the parent should use when
+	// deciding whether to break before this child in a fragmentation
+	// context, IF this value is > 0. Defaults to 0 (use the fragment's
+	// own block-size). Mirrors Blink's LayoutResult::BlockSizeForFragmentation
+	// — a multicol container with column-fill:auto + explicit height that
+	// can't fit its required column block-size in the remaining outer
+	// fragmentainer space sets this to its declared height, signaling the
+	// parent's BreakBeforeChildIfNeeded to push the entire multicol to the
+	// next outer fragmentainer instead of producing a clipped fragment.
+	BlockSizeForFragmentation float64
+
 	// HasForcedBreak is true if this layout emitted a forced column/page break
 	// (break-before:column, break-after:column, etc.). Mirrors Blink's
 	// LayoutResult::HasForcedBreak() used by ColumnLayoutAlgorithm to count

@@ -2708,3 +2708,26 @@ When `ColumnLayoutAlgorithm` receives a leaf block whose declared size exceeds t
 **Investigation plan for Phase 14c.** Fetch and read `blink/renderer/core/paint/box_painter_base.cc` (~lines 200–300) to see what physical rect is passed to `PaintBoxDecorationBackground` for float boxes specifically, and whether a display-item's `VisualRect()` vs `BackgroundRect()` enters the call. Additionally, add a debug log to louis14 to print the exact float BFC offset and compare with a Blink dev-tools layout output on the same test. Do NOT code a fix until the root cause is confirmed — this is a 0.0% diff test (96 pixels out of 480000).
 
 **Do not implement Phase 14c until root cause is confirmed.** The risk of introducing regressions in the clearance/float path is high. Phase 14c is lower priority than 14a and 14b.
+
+---
+
+### Phase 14b implementation outcome (2026-04-26): nested multicol leaf-frag
+
+**Driver test.** `multicol-nested-010.html` — 3500/480000 px diff (0.7%) → **0 px diff (PASS)**.
+
+**Root cause** (different from initial research hypothesis). Prior Blink-research focused on the inner per-column loop terminating after sub-col 1 vs sub-col 2; the actual divergence is one level higher. In `multicol-nested-010` the outer column has 100px of green-div + remaining 20px before the column boundary, but the inner multicol declares `height:100px` with `column-fill:auto`. Chrome breaks BEFORE the entire inner multicol in outer col 1 (deferring it to outer col 2 where it has full 120px outer space) — it does NOT fragment the inner multicol into 20px sub-columns. Verified by analyzing the test image vs reference: TEST=RED at x=58..107, y=109..148 (inner multicol bg uncovered by leaf in outer col 2 — which would only happen if leaf's consumedBlockSize > 0 going into outer col 2) AND TEST=GREEN at x=8..82, y=149..168 (inner multicol's leaf fragments leaking into outer col 1's overflow area — would not exist if Chrome had broken before).
+
+**Blink mechanism.** Blink's `BlockLayoutAlgorithm::MovePastBreakpoint` uses `BlockSizeForFragmentation(layout_result)` (NOT the fragment's actual block size) for the "block_size > space_left → break before" decision (`fragmentation_utils.cc:1063+`). For a multicol container with `column-fill:auto` + explicit height that can't fit its required column block-size in the remaining outer fragmentainer space, the layout result's `BlockSizeForFragmentation()` returns the FULL declared height (100px), triggering break-before in the outer block layout.
+
+**Fix** (3 sites, single commit):
+
+**1. `layout_result.go` — add `BlockSizeForFragmentation float64` field.** Default 0 (use Fragment.BlockSize). When > 0, parent fragmentation logic uses this instead. Mirrors Blink's `LayoutResult::BlockSizeForFragmentation()`.
+
+**2. `multicol_layout.go` `Layout()` — early defer at line ~319.** When `hasOuterFrag && hasExplicitBlock && mla.space.BreakToken == nil && columnFill == "auto" && outerAvailable < explicitBlockSize`, return a 0-height fragment with `BlockSizeForFragmentation = explicitBlockSize + geom.BlockBorderPadding()`. The fragment is intentionally 0-height because if the parent does NOT break-before (e.g. no container separation), the multicol simply collapses through; if the parent DOES break-before, the fragment is discarded anyway.
+
+**3. `fragmentation_utils.go` `BreakBeforeChildIfNeeded` — check the hint.** After the existing forced-break / appeal-inside checks but BEFORE the `break-inside:avoid` check, add: if `hasContainerSeparation && fragmentainerBlockSize != Indefinite && layoutResult.BlockSizeForFragmentation > 0 && BSF > spaceLeft && !refuseBreakBefore`, return `BreakStatusBrokeBefore`.
+
+**4. `block_layout.go` `collapseThrough` guard at line ~657 — don't collapse a deferred multicol.** The deferred multicol's result has size=0 + no break token + no border/padding + no children, satisfying ALL existing collapseThrough conditions. Without this guard, the `continue` at line ~688 would skip `BreakBeforeChildIfNeeded` entirely and the defer hint would be lost. Fix: add `childResult.BlockSizeForFragmentation == 0` to the collapseThrough conditions.
+
+**Outcome.** `multicol-nested-010` passes at 0 px diff. Gate sweep: CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 186 → **188 (+2)** · spanner-frag 12/13 (all held; +2 multicol — `multicol-nested-010` plus likely one cascade win).
+

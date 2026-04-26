@@ -233,6 +233,32 @@ func BreakBeforeChildIfNeeded(
 		}
 	}
 
+	// Phase 14b: child signaled "I need more block-size than my fragment shows"
+	// via LayoutResult.BlockSizeForFragmentation. Set today only by inner multicol
+	// containers with column-fill:auto + explicit height that can't fit their
+	// declared column block-size in the remaining outer fragmentainer space.
+	// When that hint exceeds the actual remaining space and we have container
+	// separation, push the child to the next outer fragmentainer instead of
+	// placing a clipped fragment whose contents would leak into the outer
+	// overflow area. Mirrors Blink's MovePastBreakpoint, which uses
+	// BlockSizeForFragmentation (not the fragment's own size) for the
+	// "block_size > space_left → break before" decision.
+	if hasContainerSeparation && fragmentainerBlockSize != Indefinite &&
+		layoutResult != nil && layoutResult.BlockSizeForFragmentation > 0 {
+		spaceLeft := fragmentainerBlockSize - fragmentainerBlockOffset
+		refuseBreakBefore := spaceLeft >= fragmentainerBlockSize
+		if layoutResult.BlockSizeForFragmentation > spaceLeft && !refuseBreakBefore {
+			appealBefore := CalculateBreakAppealBefore(
+				space,
+				CalculateBreakBetweenValue(child, builder),
+				hasContainerSeparation,
+				false,
+			)
+			builder.SetBreakAppeal(appealBefore)
+			return BreakStatusBrokeBefore, false
+		}
+	}
+
 	// break-inside:avoid-column on the child: if the child overflows the
 	// fragmentainer AND we have container separation (so a break before it is
 	// a real boundary), break before to push the whole child to the next

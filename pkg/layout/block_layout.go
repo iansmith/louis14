@@ -656,6 +656,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
 			collapseThrough := childBlockSize == 0 &&
 				childResult.BreakToken == nil &&
+				childResult.BlockSizeForFragmentation == 0 &&
 				len(childResult.Fragment.Children) == 0 &&
 				childGeom.Border.BlockStart == 0 && childGeom.Border.BlockEnd == 0 &&
 				childGeom.Padding.BlockStart == 0 && childGeom.Padding.BlockEnd == 0 &&

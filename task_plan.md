@@ -138,16 +138,19 @@ See `findings.md` "Phase 13: LayoutUnit research" for the detailed Blink-parity 
 
 **Outcome:** All 4 F4 regressions closed. multicol 179 → 186 (+7). Gate: CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol 186/455 · spanner-frag 12/13.
 
-### Phase 14b — Nested multicol leaf-frag (QUEUED, needs research first)
+### Phase 14b — Nested multicol leaf-frag (DONE, 2026-04-26)
 
-**Problem.** Inner multicol distributes a leaf block across both inner sub-col 1 and sub-col 2 within the same outer column pass. Blink places the overflow portion only in sub-col 1's continuation within the same outer column.
+**Problem.** `multicol-nested-010.html` failed with 3500/480000 px diff (0.7%). The inner multicol with `column-fill:auto` + `height:100px` was being fragmented into 20px sub-columns when placed in an outer column with only 20px remaining — leaking content into the outer's overflow area AND leaving the inner multicol's red bg uncovered in the next outer column.
 
-**Required Blink research (do before any coding):**
-1. Fetch `blink/renderer/core/layout/column_layout_algorithm.cc` lines 1080–1130 (column loop termination) and `block_layout_algorithm.cc` lines 2440–2500 (leaf overflow with outer fragmentainer limit).
-2. Record findings in `findings.md` "Phase 14b research addendum".
-3. Identify the exact louis14 call site that diverges.
+**Root cause** (different from initial Blink-research hypothesis). The bug isn't in the inner per-column loop — it's that the inner multicol shouldn't be placed in outer col 1 at all. Chrome breaks BEFORE the entire inner multicol, deferring it to outer col 2 where it has full outer space to lay out at its declared height.
 
-**Driver test.** `multicol-nested-010.html` (currently ~3500px diff).
+**Fix** (commit hash filled at commit time). 3 sites, single commit:
+1. `layout_result.go`: add `BlockSizeForFragmentation float64` field (mirrors Blink's `LayoutResult::BlockSizeForFragmentation()`).
+2. `multicol_layout.go` `Layout()` line ~319: when nested with `column-fill:auto` + explicit height + insufficient outer space + fresh layout, return a 0-height fragment with `BlockSizeForFragmentation = explicitBlockSize + BP` to signal "I need this much space — please break before me."
+3. `fragmentation_utils.go` `BreakBeforeChildIfNeeded`: when child sets `BlockSizeForFragmentation > spaceLeft` and there's container separation, return `BreakStatusBrokeBefore`.
+4. `block_layout.go` line ~657: extend `collapseThrough` guard with `childResult.BlockSizeForFragmentation == 0` so the deferred multicol's 0-height fragment doesn't get silently collapsed before `BreakBeforeChildIfNeeded` runs.
+
+**Outcome.** `multicol-nested-010` passes at 0 px diff. Gate: CSS2 99/99 · flex 626/629 · position 92/105 · wm 781/781 · multicol **188** /455 (+2) · spanner-frag 12/13. All other invariants held.
 
 ### Phase 14c — clear-001 (DEFERRED, root-cause-first)
 
