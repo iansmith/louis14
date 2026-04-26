@@ -35,7 +35,27 @@ func NewBlockLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Co
 // through so percent CB-block resolution (CSS 2.1 §9.4.3 relative-offset,
 // height:% etc.) reaches the real containing block. Mirrors Blink's
 // PercentageResolutionBlockSize propagation for anonymous auto-height blocks.
+// Mirrors Blink's ConstraintSpace::PercentageResolutionBlockSize() separation
+// from AvailableSize: when an anonymous block's height was imposed by a parent
+// algorithm (IsBlockSizeOverride, e.g. multicol column fragmentainer), the
+// dedicated PercentageResolutionSize carries the containing block's CSS height,
+// NOT the fragmentainer height.
 func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bool, explicitBlockSize float64) float64 {
+	// For anonymous blocks whose height comes from IsBlockSizeOverride (the
+	// multicol column fragmentainer case), the override height is the column
+	// height — not the CSS containing-block height for percentage resolution.
+	// Use the dedicated PercentageResolutionSize.BlockSize which carries the
+	// multicol container's explicit height.
+	// We do NOT apply this to named (non-anonymous) elements: flex items and
+	// other real elements that get IsBlockSizeOverride already have their CSS
+	// height correctly expressed as the override, so explicitBlockSize is right.
+	if bla.space.IsBlockSizeOverride && bla.node != nil && bla.node.isAnonymous {
+		pctRes := bla.space.PercentageResolutionSize.BlockSize.Float64()
+		if pctRes >= 0 {
+			return pctRes
+		}
+		return Indefinite
+	}
 	if hasExplicitBlock {
 		return explicitBlockSize
 	}

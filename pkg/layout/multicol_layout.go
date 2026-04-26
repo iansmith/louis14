@@ -25,6 +25,15 @@ type MulticolLayoutAlgorithm struct {
 	style *css.Style
 	space ConstraintSpace
 
+	// containerPercentResolutionBlockSize is the multicol container's explicit
+	// content-box block-size for use as the percentage-resolution base for
+	// percentage-height children (CSS Multicol §6, Blink
+	// ColumnLayoutAlgorithm::CreateConstraintSpaceForFragmentainer:
+	// container_builder_.ExplicitBlockSize().value_or(kIndefiniteSize)).
+	// Set in Layout() once, reused by createConstraintSpaceForColumn and
+	// layoutSpanner. Indefinite when the multicol has auto block-size.
+	containerPercentResolutionBlockSize float64
+
 	// Phase 12f row-wrap state. Populated in Layout() before the walker loop.
 	// remainingContentBlockSize is Blink's remaining_content_block_size_
 	// (cla.cc:313): the content-box block size minus any size consumed from an
@@ -250,6 +259,14 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		if explicitBlockSize < 0 {
 			explicitBlockSize = 0
 		}
+	}
+
+	// Percentage-resolution base for percentage-height children: the multicol
+	// container's explicit content-box block-size, or Indefinite when auto.
+	// Mirrors Blink's container_builder_.ExplicitBlockSize().value_or(kIndefiniteSize).
+	mla.containerPercentResolutionBlockSize = Indefinite
+	if hasExplicitBlock {
+		mla.containerPercentResolutionBlockSize = explicitBlockSize
 	}
 
 	// Phase 12f: remaining_content_block_size_ (Blink cla.cc:313). The content
@@ -989,7 +1006,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		colBlockSize = mla.remainingRowHeightAtOffset(lineOffset)
 		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 	case balanceColumns:
-		colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken)
+		colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize)
 		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 	case hasExplicitBlock:
 		colBlockSize = mla.constrainColumnBlockSize(explicitBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
@@ -1031,7 +1048,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 		// Inner per-column loop.
 		for col := 0; col < numCols || colBlockSize == Indefinite; col++ {
-			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, colBreakToken, balanceColumns, true)
+			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns, true)
 			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
 			if result == nil || result.Fragment == nil {
 				break
@@ -1142,7 +1159,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		if !balanceColumns {
 			if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
 				balanceColumns = true
-				colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken)
+				colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize)
 				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
 				continue
 			}
@@ -1302,14 +1319,20 @@ func (mla *MulticolLayoutAlgorithm) layoutSpanner(
 	contentInlineSize float64,
 	wdm WritingDirectionMode,
 ) *LayoutResult {
+	// AvailableSize.BlockSize is set to the container's explicit height (when
+	// defined) so that percentage-height spanners (e.g. height:50%) can resolve
+	// via !IsBlockSizeIndefinite() in ResolveBlockSize. Auto-height spanners are
+	// not constrained: they still grow to their content size because hasExplicitBlock
+	// is determined by the spanner's own CSS, not by AvailableSize.
+	spannerAvailBlock := mla.containerPercentResolutionBlockSize // Indefinite when auto
 	spannerSpace := NewConstraintSpaceBuilder(wdm, wdm, true).
 		SetAvailableSize(LogicalSize{
 			InlineSize: contentInlineSize,
-			BlockSize:  Indefinite,
+			BlockSize:  spannerAvailBlock,
 		}).
 		SetPercentageResolutionSize(LogicalSize{
 			InlineSize: contentInlineSize,
-			BlockSize:  0,
+			BlockSize:  mla.containerPercentResolutionBlockSize,
 		}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
 		Build()
@@ -1336,7 +1359,7 @@ func (mla *MulticolLayoutAlgorithm) layoutSpannerInFrag(
 		}).
 		SetPercentageResolutionSize(LogicalSize{
 			InlineSize: contentInlineSize,
-			BlockSize:  0,
+			BlockSize:  mla.containerPercentResolutionBlockSize,
 		}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
 		SetHasBlockFragmentation(true).
@@ -1363,19 +1386,50 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	numCols int,
 	gap float64,
 	nextColToken *BlockBreakToken,
+	containerPercentResolutionBlockSize float64,
 ) float64 {
-	b := NewConstraintSpaceBuilder(wdm, wdm, true).
-		SetAvailableSize(LogicalSize{
+	// When the multicol container has an explicit height, use it as the
+	// available block-size for the measurement pass so that percentage-height
+	// children (e.g. height:50%) can resolve against the container height.
+	// Without this, AvailableSize=Indefinite causes ResolveBlockSize to return
+	// auto for all percentage heights, making the balance estimate too small.
+	// IsBlockSizeOverride+IsFixedBlockSize activates the CalculateInitialFragmentGeometry
+	// override branch so the anonymous content block gets hasExplicitBlock=true,
+	// making childAvailableBlock definite and enabling !IsBlockSizeIndefinite().
+	// IsContentSuggestionLayout is skipped in this case since IsBlockSizeOverride
+	// must take effect (IsContentSuggestionLayout is checked first in the
+	// geometry function and would suppress the override).
+	// FragmentainerBlockSize stays Indefinite so no actual fragmentation occurs
+	// during measurement — we only want content heights, not column splits.
+	measureAvailBlock := Indefinite
+	hasExplicitContainerHeight := containerPercentResolutionBlockSize >= 0
+	b := NewConstraintSpaceBuilder(wdm, wdm, true)
+	if hasExplicitContainerHeight {
+		measureAvailBlock = containerPercentResolutionBlockSize
+		b = b.SetAvailableSize(LogicalSize{
+			InlineSize: colWidth,
+			BlockSize:  measureAvailBlock,
+		}).
+			SetPercentageResolutionSize(LogicalSize{
+				InlineSize: colWidth,
+				BlockSize:  containerPercentResolutionBlockSize,
+			}).
+			SetPercentageResolutionInlineSize(colWidth).
+			SetIsFixedBlockSize(true).
+			SetIsBlockSizeOverride(true)
+	} else {
+		b = b.SetAvailableSize(LogicalSize{
 			InlineSize: colWidth,
 			BlockSize:  Indefinite,
 		}).
-		SetPercentageResolutionSize(LogicalSize{
-			InlineSize: colWidth,
-			BlockSize:  0,
-		}).
-		SetPercentageResolutionInlineSize(colWidth).
-		SetIsContentSuggestionLayout(true).
-		SetIsInitialColumnBalancingPass(true).
+			SetPercentageResolutionSize(LogicalSize{
+				InlineSize: colWidth,
+				BlockSize:  containerPercentResolutionBlockSize,
+			}).
+			SetPercentageResolutionInlineSize(colWidth).
+			SetIsContentSuggestionLayout(true)
+	}
+	b = b.SetIsInitialColumnBalancingPass(true).
 		SetHasBlockFragmentation(true).
 		SetFragmentainerBlockSize(Indefinite).
 		SetBlockFragmentationType(FragmentColumn)
@@ -1455,6 +1509,7 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 	wdm WritingDirectionMode,
 	colWidth float64,
 	colBlockSize float64,
+	containerPercentResolutionBlockSize float64,
 	breakToken *BlockBreakToken,
 	balanceColumns bool,
 	fixedBlockSize bool,
@@ -1479,7 +1534,7 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		}).
 		SetPercentageResolutionSize(LogicalSize{
 			InlineSize: colWidth,
-			BlockSize:  availBlock,
+			BlockSize:  containerPercentResolutionBlockSize,
 		}).
 		SetPercentageResolutionInlineSize(colWidth).
 		SetHasBlockFragmentation(true).
