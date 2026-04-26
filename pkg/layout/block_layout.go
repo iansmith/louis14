@@ -373,10 +373,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// with column-span:all must be laid out by the multicol algorithm at
 			// full container width, not as column content. Return early so multicol
 			// can extract + lay out the spanner, then resume from after it.
-			// Mirrors Blink's BlockLayoutAlgorithm detecting child.IsColumnSpanAll().
+			// Mirrors Blink's BlockLayoutAlgorithm detecting child.IsColumnSpanAll()
+			// which calls IsValidColumnSpannerInTree() → IsSelfValidColumnSpanner()
+			// + DoesAncestryAllowColumnSpanner() (layout_box.cc:2956-3030).
 			if bla.space.HasBlockFragmentation &&
 				bla.space.BlockFragmentationType == FragmentColumn &&
-				childStyle.GetColumnSpan() == "all" {
+				childStyle.GetColumnSpan() == "all" &&
+				isSelfValidColumnSpanner(childStyle) &&
+				!bla.space.ColumnSpannerDescendantsBlocked &&
+				!shouldPreventColumnSpannerDescendants(bla.node) {
 
 				// Break token resumes AFTER the spanner on the next LayoutLine call.
 				var spannerBreakToken *BlockBreakToken
@@ -584,6 +589,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					SetBlockFragmentationType(bla.space.BlockFragmentationType).
 					SetIsInitialColumnBalancingPass(bla.space.IsInitialColumnBalancingPass).
 					SetIsInsideBalancedColumns(bla.space.IsInsideBalancedColumns)
+
+				// Propagate the "spanner descendants blocked" flag: set it when
+				// any ancestor already blocks, or when the current block itself
+				// would block — so descendants at any depth see the flag.
+				// Mirrors Blink's ShouldPreventColumnSpannerDescendants walk in
+				// DoesAncestryAllowColumnSpanner (layout_box.cc:2987-3001).
+				if bla.space.ColumnSpannerDescendantsBlocked ||
+					shouldPreventColumnSpannerDescendants(bla.node) {
+					csBuilder.SetColumnSpannerDescendantsBlocked(true)
+				}
 
 				// Pass child break token if resuming this specific child.
 				if childIdx == resumeChildIdx && resumeChildBreakToken != nil {
@@ -2086,6 +2101,74 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		return true
 	}
 
+	return false
+}
+
+// isSelfValidColumnSpanner returns true when an element with column-span:all
+// is a valid spanner candidate based on its own properties.
+// Mirrors Blink's LayoutBox::IsSelfValidColumnSpanner (layout_box.cc:2968).
+func isSelfValidColumnSpanner(style *css.Style) bool {
+	if style == nil {
+		return false
+	}
+	d := style.GetDisplay()
+	// Inline and inline-level boxes cannot span columns.
+	switch d {
+	case css.DisplayInline, css.DisplayInlineBlock, css.DisplayInlineFlex,
+		css.DisplayInlineGrid, css.DisplayInlineTable:
+		return false
+	}
+	// Floats cannot span columns.
+	if style.GetFloat() != css.FloatNone {
+		return false
+	}
+	// Out-of-flow positioned elements cannot span columns.
+	pos := style.GetPosition()
+	if pos == css.PositionAbsolute || pos == css.PositionFixed {
+		return false
+	}
+	return true
+}
+
+// shouldPreventColumnSpannerDescendants returns true when a block node
+// prevents its descendants from being column spanners.
+// Mirrors Blink's LayoutBlockFlow::ShouldPreventColumnSpannerDescendants
+// (layout_box.cc:3003). Called with the direct parent block of the candidate.
+func shouldPreventColumnSpannerDescendants(node *LayoutInputNode) bool {
+	if node == nil {
+		return false
+	}
+	style := node.Style()
+	if style == nil {
+		return false
+	}
+	// Condition 1: the node is itself a column-span:all spanner — nested
+	// spanners in the same multicol context are not allowed.
+	if style.GetColumnSpan() == "all" {
+		return true
+	}
+	// Condition 2: non-block-flow elements (table internals).
+	// CSS table display types that are not the table box itself.
+	d := style.GetDisplay()
+	switch d {
+	case css.DisplayTableCell, css.DisplayTableCaption,
+		css.DisplayTableRow, css.DisplayTableHeaderGroup,
+		css.DisplayTableFooterGroup, css.DisplayTableRowGroup:
+		return true
+	}
+	// Condition 4: elements creating a new block formatting context.
+	if createsFormattingContext(style, node) {
+		return true
+	}
+	// Condition 5: elements that can contain fixed-position objects
+	// (transforms, will-change:transform, filter). Mirrors Blink's
+	// CanContainFixedPositionObjects check in ShouldPreventColumnSpannerDescendants.
+	if len(style.GetTransforms()) > 0 || len(style.GetFilter()) > 0 {
+		return true
+	}
+	if v, ok := style.Get("will-change"); ok && v == "transform" {
+		return true
+	}
 	return false
 }
 

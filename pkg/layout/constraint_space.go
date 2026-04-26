@@ -168,6 +168,14 @@ type ConstraintSpace struct {
 	// Mirrors Blink's ConstraintSpace::IsInsideBalancedColumns().
 	IsInsideBalancedColumns bool
 
+	// ColumnSpannerDescendantsBlocked is true when some ancestor between this
+	// element and the multicol container would prevent column-span:all from
+	// being valid. Mirrors Blink's ShouldPreventColumnSpannerDescendants()
+	// check propagated via constraint space so we don't need parent pointers.
+	// Set by BlockLayoutAlgorithm when the current block creates a new BFC,
+	// is a non-block-flow element, or has a transform.
+	ColumnSpannerDescendantsBlocked bool
+
 	// MinBreakAppeal is the lowest break appeal that is acceptable in this
 	// fragmentation context. Read by CalculateBreakAppealBefore +
 	// IsBreakableAtStartOfResumedContainer; defaults to LastResort (any break
@@ -466,6 +474,13 @@ func (b *ConstraintSpaceBuilder) SetIsInitialColumnBalancingPass(v bool) *Constr
 // context. Used for nested multicol shortage propagation.
 func (b *ConstraintSpaceBuilder) SetIsInsideBalancedColumns(v bool) *ConstraintSpaceBuilder {
 	b.space.IsInsideBalancedColumns = v
+	return b
+}
+
+// SetColumnSpannerDescendantsBlocked marks that column-span:all on any
+// descendant should be ignored because some ancestor prevents it.
+func (b *ConstraintSpaceBuilder) SetColumnSpannerDescendantsBlocked(v bool) *ConstraintSpaceBuilder {
+	b.space.ColumnSpannerDescendantsBlocked = v
 	return b
 }
 
