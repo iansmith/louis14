@@ -797,6 +797,27 @@ After 16.d.1+16.d.2+16.d.3, the per-column `ClipBlockAxisOnly` is no longer load
 
 **Risk surface for 16.d.2/16.d.3.** Touches the initial balancing pass shape. Phase 17 (forced-break balance, `ContentRuns`/`DistributeImplicitBreaks`) also rewrites this area. To avoid double-rewrite, 16.d.2 carrier infra can land first (cheap, zero-impact on balance loop), and the consumer site can be adjusted for whichever phase lands first.
 
+### Phase 16.c.2 retry attempt #2 — REVERTED (2026-04-27, after 16.d.1)
+
+Second attempt at deleting `ClipBlockAxisOnly` setter (`multicol_layout.go:1281-1286`) + paint branch (`paint_layer.go:274-296`). With Phase 16.d.1's per-fragment clamping in place (commits `a6446061` + `c40b4b56`), the 13 driver tests pass at 0 diff with the clip in tree. The retry hypothesis was that the clip is now redundant.
+
+**Two variants tested:**
+1. **Clip removed, IsInsideColumnSpanner gate kept.** Multicol 192 → 195 (+3). Spanner-fragmentation 11 → 9 (-2). Driver-tests: 10/13 PASS, 3 FAIL (`spanner-fragmentation-004` 1.0%, `spanner-fragmentation-006` 0.3%, `nested-floated-multicol-with-monolithic-child` 0.2%).
+2. **Clip removed, IsInsideColumnSpanner gate also removed.** Multicol 192 → 196 (+4). Spanner-fragmentation 11 → 10 (-1). Driver-tests: 11/13 PASS, 2 FAIL (`spanner-fragmentation-006` 0.2%, `nested-floated-multicol-with-monolithic-child` 0.2%). Removing the gate let `spanner-fragmentation-004` recover by allowing leaf descendants to self-fragment, which the spanner-resume mechanism handles correctly for that pattern.
+
+**Per CLAUDE.md** ("ALL tests must pass; 0.5% is failure just like 28%"), neither variant is acceptable. Reverted via `git checkout HEAD -- pkg/layout/multicol_layout.go pkg/render/paint_layer.go pkg/layout/block_layout.go`.
+
+**Diagnosis.** The remaining failing tests share a pattern: a column-spanner whose CHILDREN extend visually past the multicol container's box (e.g., spanner-fragmentation-006: `<div column-span:all; height:10px><div height:10; green><div height:360></div><div height:30; green></div></div>` — 400h of content in a 10h box). Without the clip, the 360h transparent overflow renders past the multicol because:
+
+- *Inside spanner with self-fragmentation enabled* (gate removed): the leaf's break-token chain `{Node:leaf, ConsumedBlockSize:N}` is delivered to the spanner-resume mechanism in `multicol_layout.go:663-676` via `spannerContentBreakToken`. For `spanner-fragmentation-001/004` this works (the spanner-resume properly resumes the leaf at consumed=N in the next outer column). For `-006` it produces a small visual artifact because of the more complex spanner-with-multiple-overflow-children pattern.
+- *nested-floated-multicol-with-monolithic-child*: the contained `contain:size; height:100` block is NOT a leaf (has a 90h green child) so 16.d.1's clamp doesn't fire; without the clip, its overflow renders past the multicol.
+
+**Path forward (Phase 16.e queued).** Two routes:
+1. Extend 16.d.1 to handle non-leaf blocks too (drop the `len(children) == 0` gate) — but earlier testing showed this caused infinite row-wrap loops on `column-height-006` due to break-token misalignment in the children-loop overflow path. Would need to also fix the parent-side overflow path to coordinate with self-fragmentation.
+2. Implement Blink-specific spanner-content slicing — read `column_layout_algorithm.cc::LayoutSpanner` more carefully, especially `BreakBeforeChildIfNeeded` for spanner children + how the break-token chain is structured. Mirror the exact mechanism.
+
+Until 16.e lands, `ClipBlockAxisOnly` stays in tree as a load-bearing workaround for spanner content overflow + size-contained block overflow.
+
 ### Phase 16.d.1 retrospective (2026-04-27, commits `a6446061` + `c40b4b56`, +25 multicol / +4 spanner-fragmentation)
 
 **Shipped.** `LayoutResult.DidBreakSelf bool` carrier and FinishFragmentation-equivalent clamp in `block_layout.go` after the min/max constraints (between line 1372 and the `builder.SetSize` call). When the gate fires, the fragment is sized to `space_left = FragmentainerBlockSize - FragmentainerOffset - geom.BlockBorderPadding()`, `didBreakSelf=true`, and after `result := builder.Build()` a continuation `BlockBreakToken{Node, ConsumedBlockSize=prev+finalBlockSize, SequenceNumber=prev+1}` is attached.
