@@ -1,6 +1,10 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-27 — Phase 16.d.1 DONE, queue → Phase 16.d.2/3 → 16.c.2 retry → Phase 17)
+## Current focus (2026-04-27 — Phase 16.d.1 fully DONE incl. spanner-frag-006, queue → Phase 16.c.2 retry → Phase 16.d.2/3 (if needed) → Phase 17)
+
+**Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commit `c40b4b56`). All 13 driver tests now PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
+
+**Next:** Phase 16.c.2 retry — remove `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`paint_layer.go`). With per-fragment clamping in place, the per-column clip is no longer load-bearing for the 13 driver tests. Expected: net-positive (vs the original 16.c.2 attempt which net-regressed 8). If 16.c.2 retry uncovers new failures requiring `TallestUnbreakableBlockSize` (e.g., for break-inside:avoid in nested multicol), do 16.d.2/16.d.3 then re-attempt 16.c.2.
 
 css-multicol is the active layout-feature track at **191/455 committed**. Recent commits: Phase 15 partial (`4875da5b`, +2: test 001), Phase 16.a BFC filtering (`d42e3cf2`, +2: tests -002, -004), Phase 16.b BSFF row-advance (`a375cb45`, +3 targets but −25 net to gate), Phase 16.c.1 column regrowth port (`2aa01920`, gate-neutral), **Phase 16.d.1 per-fragment block-size clamp (`a6446061`, +24 multicol / +3 spanner-fragmentation)**.
 
@@ -11,16 +15,16 @@ Phase 16.c.2 was attempted before 16.d and rolled back — removing `ClipBlockAx
 2. **Phase 16.b** — DONE (`a375cb45`, +3 targets / −25 net). BSFF row-advance + spanner WDM/leaf/margin polish; `multicol-span-all-006, -007, -008` PASS at 0 diff. Kept narrowed `ClipBlockAxisOnly`; the regression cluster turned out to have a deeper root cause (see 16.c.2 retro).
 3. **Phase 16.c.1** — DONE (`2aa01920`, gate-neutral). Column regrowth port from `column_layout_algorithm.cc:1099-1124` with `BreakToken == nil && BSFF > fragH` carrier gate. Verified `multicol-nested-010` PASS, multicol gate unchanged. Setup for future 16.c.2.
 4. **Phase 16.c.2** — ROLLED BACK 2026-04-27. Removing `ClipBlockAxisOnly` exposes louis14's lack of monolithic-content fragmentation in `column-wrap:wrap` and `break-inside:avoid` paths (13 newly-broken tests). Re-attempt after Phase 16.d.2/16.d.3 (if needed).
-5. **Phase 16.d.1** — DONE (`a6446061`, **+24 multicol / +3 spanner-fragmentation**). Per-fragment block-size clamp + `LayoutResult.DidBreakSelf` carrier in `block_layout.go`. True-leaf gate (no DOM children, no column-span:all, hasExplicitBlock, !IsBlockSizeOverride, FragmentainerBlockSize > 0, !IsInitialColumnBalancingPass). 12/13 driver tests PASS without the clip; spanner-fragmentation-006 has 0.1% residual diff (deferred).
+5. **Phase 16.d.1** — DONE (`a6446061` + `c40b4b56`, **+25 multicol / +4 spanner-fragmentation**). Per-fragment block-size clamp + `LayoutResult.DidBreakSelf` carrier in `block_layout.go`, plus `ConstraintSpace.IsInsideColumnSpanner` flag set by `MulticolLayoutAlgorithm.layoutSpanner` / `layoutSpannerInFrag` and propagated through child constraint spaces. True-leaf gate (no DOM children, no column-span:all, hasExplicitBlock, !IsBlockSizeOverride, !IsInsideColumnSpanner, FragmentainerBlockSize > 0, !IsInitialColumnBalancingPass). All 13 driver tests PASS at 0 diff without the clip.
 6. **Phase 16.d.2/3** (QUEUED) — `LayoutResult.TallestUnbreakableBlockSize` carrier + `IsInitialColumnBalancingPass` setter in `BreakBeforeChildIfNeeded` for `break-inside:avoid` children, plus tallestUnbreakable floor in `constrainColumnBlockSize`. Mirrors Blink cla.cc:1879-1948. Currently `multicol-nested-030/031` already PASS via 16.d.1 + the existing clip; 16.d.2/3 may be redundant for them but should be verified.
 7. **Phase 16.c.2 retry** — Remove `ClipBlockAxisOnly` setter + paint-side branch. Should be safe now that fragments are properly sized at layout time.
 8. **Phase 17** — Forced-break balance (T2, ~5 tests, MEDIUM). Rewrites `resolveColumnAutoBlockSize` (`multicol_layout.go:1396`) with Blink-parity `ContentRun`/`ContentRuns`/`DistributeImplicitBreaks` measure-pass loop. Brief: `findings.md` § Phase 17.
 9. **Phase 18** — Nested multicol break-token forwarding (T3, ~15 tests, HARD). Adds `MulticolBreakTokenData` carrier on `BlockBreakToken`. Brief: `findings.md` § Phase 18.
 10. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
 
-**Gate invariants (committed at HEAD `a6446061`):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **191/455** · spanner-fragmentation 10/13.
+**Gate invariants (committed at HEAD `c40b4b56`):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **192/455** · spanner-fragmentation 11/13.
 
-**Gate invariants (target after 16.d.2/3 → 16.c.2 retry):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **195+/455** · spanner-fragmentation 11+/13.
+**Gate invariants (target after 16.c.2 retry):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **195+/455** · spanner-fragmentation 12+/13.
 
 ---
 

@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-27 — post-Phase-16.d.1 commit `a6446061`)
+## Current gate (2026-04-27 — post-Phase-16.d.1 commit `c40b4b56`)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,8 +16,8 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **191/455** | **+24 from Phase 16.d.1** (per-fragment block-size clamp + DidBreakSelf carrier) — 167 → 191. Per-fragment clamp lets monolithic content fragment naturally at column boundaries; the per-column ClipBlockAxisOnly is no longer load-bearing for the 12 driver tests but stays in tree until Phase 16.c.2 retry. |
-| spanner-fragmentation | **10/13** | **+3 from Phase 16.d.1** (7 → 10): spanner-fragmentation-001/004 now pass via leaf self-fragmentation. spanner-fragmentation-006 has 0.1% residual diff (250px) — deferred. |
+| css-multicol | **192/455** | **+25 from Phase 16.d.1** (per-fragment block-size clamp + DidBreakSelf carrier + IsInsideColumnSpanner gate) — 167 → 192. Per-fragment clamp lets monolithic content fragment naturally at column boundaries; spanner descendants are gated out so the existing pendingContentOverflow mechanism keeps working. The per-column ClipBlockAxisOnly is no longer load-bearing for any of the 13 driver tests but stays in tree until Phase 16.c.2 retry. |
+| spanner-fragmentation | **11/13** | **+4 from Phase 16.d.1** (7 → 11): spanner-fragmentation-001/004/006 now pass. -006 specifically required the IsInsideColumnSpanner gate (Blink: spanners are monolithic for placement). |
 
 ---
 
@@ -174,13 +174,13 @@ Removed `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`
 
 Research-only commit reads five Blink files (`box_fragment_painter.cc`, `block_break_token.h`, `box_fragment_builder.cc/h`, `fragmentation_utils.cc`, `column_layout_algorithm.cc`) to resolve Hypothesis A (painter clip) vs B (multi-fragment slicing). **B is correct.** The brief's proposed mechanism (`MonolithicOverflow` on `BlockBreakToken`) is wrong: that carrier is print-only in Blink (gated by `IsPaginated()`), not the multicol mechanism. The actual mechanism is **regular CSS block fragmentation via `DidBreakSelf` + `BlockBreakToken.ConsumedBlockSize`**, plus `TallestUnbreakableBlockSize` for `break-inside:avoid` content. Revised three-sub-fix plan in `findings.md` § "Phase 16.d Blink research". Gate unchanged.
 
-### Phase 16.d.1 — DONE (commit `a6446061`, +24 multicol / +3 spanner-fragmentation)
+### Phase 16.d.1 — DONE (commits `a6446061` + `c40b4b56`, +25 multicol / +4 spanner-fragmentation)
 
 Per-fragment block-size clamp + DidBreakSelf carrier in BlockLayoutAlgorithm. Mirrors Blink's FinishFragmentation `else if (space_left != kIndefiniteSize && desired_block_size > space_left && space.HasBlockFragmentation())` branch (fragmentation_utils.cc:542-657). When a true leaf block's desired border-box exceeds the fragmentainer's remaining space inside an active block-fragmentation context, the fragment is sized to space_left, `LayoutResult.DidBreakSelf` is set, and a continuation `BlockBreakToken` with updated `ConsumedBlockSize` is emitted — even if no inner child broke. The next fragmentainer resumes the block via the new break-token.
 
-Gated to true leaf blocks: `!IsBlockSizeOverride && hasExplicitBlock && HasBlockFragmentation && FragmentainerBlockSize > 0 && !IsInitialColumnBalancingPass && len(children) == 0 && !column-span:all`. Non-leaves keep parent-driven fragmentation (interleaving caused break-token misalignment + infinite row-wrap loops on column-wrap:wrap + spanner siblings — e.g., `column-height-006`). Spanners keep their MulticolLayoutAlgorithm resume mechanism (pendingPartialSpannerToken / spannerConsumed).
+Gated to true leaf blocks: `!IsBlockSizeOverride && !IsInsideColumnSpanner && hasExplicitBlock && HasBlockFragmentation && FragmentainerBlockSize > 0 && !IsInitialColumnBalancingPass && len(children) == 0 && !column-span:all`. Non-leaves keep parent-driven fragmentation (interleaving caused break-token misalignment + infinite row-wrap loops on column-wrap:wrap + spanner siblings — e.g., `column-height-006`). Spanners themselves and their descendants keep their MulticolLayoutAlgorithm resume mechanism (`pendingContentOverflow` + `spannerContentBreakToken`); the `IsInsideColumnSpanner` flag is set in `layoutSpanner` / `layoutSpannerInFrag` and propagated through child constraint spaces in `block_layout.go`. Driver: spanner-fragmentation-006 — without this gate the spanner's 360h leaf self-fragmented and the spanner's content incorrectly fragmented across all 4 outer columns instead of overflowing once monolithically (Blink reference: `column_layout_algorithm.cc::LayoutSpanner` — spanners are monolithic for placement).
 
-Driver-test recoveries (12/13 PASS without the clip): column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line. Residual: spanner-fragmentation-006 at 0.1% (250px) — deferred. Other gates unchanged: CSS2 99/99, flex 626/629, position 92/105, wm 781/781.
+Driver-test recoveries (13/13 PASS at 0 diff without relying on the clip): column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004/006, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line. Other gates unchanged: CSS2 99/99, flex 626/629, position 92/105, wm 781/781.
 
 ## Phase 16.c-19 plan (research complete, briefs in findings.md)
 
