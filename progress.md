@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-26)
+## Current gate (2026-04-27 — post-Phase-16.b commit `a375cb45`)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,8 +16,8 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **188/455 committed · 190/455 uncommitted (Phase 15 partial)** | active target; 265 failing |
-| spanner-fragmentation | **12/13** | 005 pre-existing |
+| css-multicol | **167/455** | down from 192; Phase 16.b traded 25-test regression for `-006, -007, -008` (+3). Phase 16.c QUEUED for recovery. |
+| spanner-fragmentation | **7/13** | down from 12/13 (Phase 16.b regression cluster); 16.c target |
 
 ---
 
@@ -144,18 +144,39 @@ New field: `containerPercentResolutionBlockSize float64` on `MulticolLayoutAlgor
 
 ---
 
-## Phase 16-19 plan (research complete 2026-04-26, briefs in findings.md)
+## Phase 16 — split into 16.a (DONE), 16.b (DONE), 16.c (QUEUED)
 
-Detailed Blink-parity analysis for the next four phases now lives in `findings.md` § "Phase 16+ Blink research briefs". Each brief includes Blink source citations (file:line), our current code state, implementation plan, test driver order, and tractability rating.
+### Phase 16.a — DONE (commit `d42e3cf2`, +2)
+
+Blink-parity `IsValidColumnSpannerInTree` predicate chain. New helpers `isSelfValidColumnSpanner` (candidate-side display/float/oof check) + `shouldPreventColumnSpannerDescendants` (ancestor-side BFC/table-internal/transform check) in `block_layout.go:2185-2248`. `ConstraintSpace.ColumnSpannerDescendantsBlocked` flag propagates to child spaces (mirrors Blink's containing-block walk). Spanner detection gate at `block_layout.go:379-384`. Tests `multicol-span-all-002, -004` PASS. Gate: 190 → 192/455.
+
+### Phase 16.b — DONE (commit `a375cb45`, +3 targets / −25 net)
+
+BSFF row-advance + spanner polish. `block_layout.go`: populated `BlockSizeForFragmentation` at 4 BLA return sites; added nested ColumnSpannerPath propagation so a grandchild spanner detected by an inner BLA bubbles up. `multicol_layout.go`: `spannerLeafNode` traversal, spanner WDM (RTL parity), spanner margin-block-start/end, `maxColHeight` uses BSFF, row-advance cap conditioned on `!hasSpannerDetector`, narrowed `ClipBlockAxisOnly`, cross-gap loop only adds gaps between adjacent populated columns. Tests `multicol-span-all-006, -007, -008` PASS at 0 diff. `column-height-001` continues PASS.
+
+**Trade-off:** kept `ClipBlockAxisOnly` (just narrowed). Phase 16.c's Blink research showed Blink has no per-column paint clip at all (`box_fragment_painter.cc:1080-1114`); any predicate diverges from Blink. The narrowed predicate hit ~25 regressions across `column-height-003/004`, `multicol-list-item-003/004/005`, `multicol-fill-balance-005/018/024`, `spanner-fragmentation-{000,002,008,010,012}`, `multicol-nested-{015,026,028}`, `change-fragmentainer-size-{001,002,003}`. Multicol gate 192 → 167; spanner-fragmentation 12/13 → 7/13.
+
+### Phase 16.c — QUEUED (regression recovery)
+
+Two-step plan to recover the Phase 16.b regression cluster by mirroring Blink's actual containment story:
+
+1. **Port column regrowth from `column_layout_algorithm.cc:1099-1124`** — when an inner column's BSFF exceeds outer fragmentainer space (in nested fragmentation), set `minimumColumnBlockSize` and tail-recurse into `LayoutLine`. Layout-time regrowth is the entirety of nested-multicol containment in Blink; verify `multicol-nested-010` PASSES before step 2.
+2. **Remove `ClipBlockAxisOnly` entirely** — `multicol_layout.go:1218-1232` plus the paint-side branch at `paint_layer.go:279-296`. Field cleanup (`PhysicalFragment.ClipBlockAxisOnly`, `Box.ClipBlockAxisOnly`, `engine.go:332`) is optional follow-up.
+
+Full Blink quotes (`box_fragment_painter.cc`, `layout_box.cc`, `column_layout_algorithm.cc`) and risk surface in `findings.md` § "Phase 16.c brief (post-a375cb45)". Gate target: 167 → 192+/455.
+
+## Phase 16.c-19 plan (research complete, briefs in findings.md)
+
+Detailed Blink-parity analysis lives in `findings.md`. Each brief includes Blink source citations (file:line), our current code state, implementation plan, test driver order, and tractability rating.
 
 | Phase | Target | Tests | Tract. | Brief location |
 |---|---|---|---|---|
-| 16 | Spanner BFC filtering | ~6 | Easy | `findings.md` § Phase 16 brief |
+| 16.c | Column regrowth + remove ClipBlockAxisOnly | ~25 (recovery) | Med-Hi | `findings.md` § Phase 16.c brief |
 | 17 | Forced-break balance (Blink ContentRuns/DistributeImplicitBreaks) | ~5 | Med | `findings.md` § Phase 17 brief |
 | 18 | Nested multicol MulticolBreakTokenData row-carry | ~15 | Hard | `findings.md` § Phase 18 brief |
 | 19 | span-all-children-height 002-013 (7 sub-clusters) | 12 | Mixed | `findings.md` § Phase 19 brief |
 
-Total addressable: ~38 tests across Phases 16-19.
+Total addressable after 16.c (recovery): ~32 tests across Phases 17-19, on top of the ~25 recovered by 16.c itself.
 
 ---
 
