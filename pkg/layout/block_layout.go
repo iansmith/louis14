@@ -423,6 +423,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				result.BreakToken = spannerBreakToken
 				result.ColumnSpannerPath = &ColumnSpannerPath{Box: child}
 				result.PropagatedTopMargin = propagatedTopMargin
+				if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
+					result.BlockSizeForFragmentation = intrinsicBlock
+				}
 				return result
 			}
 
@@ -660,6 +663,72 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						childResult = layoutElement(bla.ctx, child, childSpace)
 					}
 				}
+			}
+
+			// Propagate nested ColumnSpannerPath: if a descendant of `child`
+			// returned column-span:all, wrap the path and return early so the
+			// multicol algorithm can extract the spanner at full container width.
+			// Mirrors Blink's BlockLayoutAlgorithm setting SetColumnSpannerPath
+			// on container_builder_ when child layout_result has a non-nil
+			// GetColumnSpannerPath() (block_layout_algorithm.cc).
+			if bla.space.HasBlockFragmentation &&
+				bla.space.BlockFragmentationType == FragmentColumn &&
+				childResult.ColumnSpannerPath != nil {
+
+				// Build a break token so multicol can resume after the spanner:
+				// if the child still has content (its own break token) carry that;
+				// otherwise point to the next sibling.
+				var resumeToken *BlockBreakToken
+				if childResult.BreakToken != nil {
+					resumeToken = childResult.BreakToken
+				} else if childIdx+1 < len(children) {
+					resumeToken = &BlockBreakToken{
+						Node:          children[childIdx+1],
+						IsBreakBefore: true,
+					}
+				}
+				var outToken *BlockBreakToken
+				if resumeToken != nil {
+					outToken = &BlockBreakToken{
+						Node:             bla.node,
+						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
+					}
+					if incomingBreakToken != nil {
+						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
+						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
+					}
+					outToken.ChildBreakTokens = []*BlockBreakToken{resumeToken}
+				}
+				intrinsicBlock := blockCursor
+				builder.SetIntrinsicBlockSize(intrinsicBlock)
+				builder.SetNode(bla.node.DOMNode)
+				builder.SetStyle(bla.style)
+				builder.SetLayoutNode(bla.node)
+				if !hasExplicitBlock {
+					builder.SetSize(LogicalSize{
+						InlineSize: geom.BorderBoxSize.InlineSize,
+						BlockSize:  intrinsicBlock + geom.BlockBorderPadding(),
+					})
+				} else {
+					builder.SetSize(geom.BorderBoxSize)
+				}
+				builder.SetBoxData(&PhysicalBoxData{
+					Border:  ToPhysicalEdges(geom.Border, wdm),
+					Padding: ToPhysicalEdges(geom.Padding, wdm),
+				})
+				builder.SetEndMarginStrut(prevMarginStrut)
+				builder.SetExclusionSpace(exclusionSpace)
+				result := builder.Build()
+				result.BreakToken = outToken
+				result.ColumnSpannerPath = &ColumnSpannerPath{
+					Box:   child,
+					Child: childResult.ColumnSpannerPath,
+				}
+				result.PropagatedTopMargin = propagatedTopMargin
+				if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
+					result.BlockSizeForFragmentation = intrinsicBlock
+				}
+				return result
 			}
 
 			// CSS 2.1 §9.5: Floats from non-BFC children escape to the
@@ -1121,6 +1190,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					result.BreakToken = outToken
 					result.MinSpaceShortage = shortage
 					result.PropagatedTopMargin = propagatedTopMargin
+					if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
+						result.BlockSizeForFragmentation = intrinsicBlock
+					}
 					return result
 				} else if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
 					!bla.space.IsInitialColumnBalancingPass {
@@ -1160,6 +1232,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					result := builder.Build()
 					result.BreakToken = outToken
 					result.PropagatedTopMargin = propagatedTopMargin
+					if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
+						result.BlockSizeForFragmentation = intrinsicBlock
+					}
 					return result
 				}
 
