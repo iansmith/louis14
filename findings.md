@@ -600,6 +600,30 @@ Once 16.c.1 lands and `multicol-nested-010` is recovered:
 
 ---
 
+### Phase 16.c.2 attempt — what we learned (2026-04-27)
+
+16.c.1 (regrowth port) landed cleanly as `2aa01920`. 16.c.2 (clip removal) was attempted in the same session and rolled back per the brief's "STOP, ROLLBACK" discipline. The attempt is documented here so future work doesn't re-tread the same path.
+
+**Result of removing `ClipBlockAxisOnly` setter + paint-side branch.** Multicol gate 167 → 159 (net −8). Spanner-fragmentation unchanged at 7/13. `multicol-nested-010` PASSES (regrowth fires correctly). The Phase 16.b regression cluster (`column-height-003/004`, `multicol-list-item-003/004/005`, `multicol-fill-balance-005/018/024`, `spanner-fragmentation-{000,002,008,010,012}`, `multicol-nested-{015,026,028}`, `change-fragmentainer-size-{001,002,003}`) **did not recover** — those tests are unaffected by the clip and stay failing.
+
+**Tests newly broken by clip removal (13).**
+- Column-wrap monolithic content: `column-height-001`, `column-height-010`, `column-height-017`, `column-height-026`, `column-height-027`. Pattern: `columns:N; column-height:H; column-wrap:wrap` with a single child taller than H. Baseline relies on the per-column block-axis clip to make 4 column-fragments-of-the-same-monolithic-block render as a 100×100 tiled square.
+- `break-inside:avoid` in nested multicol: `multicol-nested-030`, `multicol-nested-031`. Same pattern — the clip masks an unbreakable block placed at full size in one column.
+- Spanner-fragmentation: `spanner-fragmentation-001`, `-004`, `-006`. Post-spanner column heights expose overflow without the clip.
+- Misc nested-multicol monolithic: `multicol-rule-nested-balancing-004`, `nested-floated-multicol-with-monolithic-child`, `nested-past-fragmentation-line`.
+
+**Tests newly recovered by clip removal (5).** `increase-prev-sibling-height`, `inline-block-and-column-span-all`, `multicol-fill-balance-032`, `multicol-nested-029`, `multicol-zero-height-002`. Each had an inline/balance interaction the clip was actively breaking.
+
+**Blink-divergence diagnosis.** The brief's hypothesis ("removing the clip recovers the 16.b cluster, because Blink has no per-column clip") is half-right. Blink does have no per-column clip, but the 16.b cluster's failure mode in louis14 has nothing to do with painting — it's something in the BSFF row-advance / spanner placement / break-token discipline upstream of paint. Phase 16.b's narrowed `shouldClip := col.result == nil || BSFF == 0 || !hasAutoColumnHeight()` predicate was a coincidental side-effect, not a paint regression.
+
+The newly-broken cluster reveals the deeper gap. In Blink, `column-wrap:wrap` + monolithic content does **not** place the same monolithic block in every column-fragment — it fragments the block at column boundaries (even when `break-inside` would prefer not to), so each column-fragment shows a different 50px slice. Louis14's column-wrap path places the full monolithic block at offset 0 in every column-fragment and depends on the per-column clip to cap visible extent at `colBlockSize`. Until that fragmentation gap is closed, the clip is load-bearing.
+
+**Concrete next-step: Phase 16.d (TBD) — port Blink's monolithic-content fragmentation for column-wrap.** Search Blink for how `block_layout_algorithm.cc` decides to split a monolithic child at the column boundary when `is_block_fragmentation_context_root_` and the inner `BlockFragmentationType == FragmentColumn`. Likely involves `tallest_unbreakable_block_size_` plumbing into `ContentRun` measurements + a per-column-fragment offset on the unbreakable block (similar to how percentage-positioned children get re-anchored per fragment in `box_fragment_painter.cc`'s `ScopedDisplayItemFragment`). Once monolithic content fragments correctly, retry 16.c.2.
+
+**Do not retry 16.c.2 in isolation.** The recovery list is too small (5) to justify the regression list (13), and the brief's "no new predicate" rule means the only path forward is the upstream fragmentation fix.
+
+---
+
 ### Phase 17 brief — Forced-break balance (target T2, ~5 tests)
 
 **Failing tests.** `multicol-fill-balance-040` family (`-038, -039, -040, -041`) plus subset of `-029..-036`. Pattern: N forced `break-before:column` children inside `columns: K`. Expected: column-count expands to N+1 when N ≥ K, with each forced break getting its own column at content-determined height.

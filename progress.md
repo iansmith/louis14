@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-27 — post-Phase-16.b commit `a375cb45`)
+## Current gate (2026-04-27 — post-Phase-16.c.1 commit `2aa01920`)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,8 +16,8 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **167/455** | down from 192; Phase 16.b traded 25-test regression for `-006, -007, -008` (+3). Phase 16.c QUEUED for recovery. |
-| spanner-fragmentation | **7/13** | down from 12/13 (Phase 16.b regression cluster); 16.c target |
+| css-multicol | **167/455** | unchanged from post-16.b. Phase 16.c.1 (column regrowth port) is gate-neutral. **16.c.2 (clip removal) attempted and rolled back** — does not recover the 16.b regression cluster and net-regresses 8 tests; root cause is deeper than ClipBlockAxisOnly. See Phase 16.c.1 entry below + findings.md § "Phase 16.c.2 attempt — what we learned". |
+| spanner-fragmentation | **7/13** | unchanged from post-16.b; recovery deferred to Phase 16.d (TBD). |
 
 ---
 
@@ -156,14 +156,19 @@ BSFF row-advance + spanner polish. `block_layout.go`: populated `BlockSizeForFra
 
 **Trade-off:** kept `ClipBlockAxisOnly` (just narrowed). Phase 16.c's Blink research showed Blink has no per-column paint clip at all (`box_fragment_painter.cc:1080-1114`); any predicate diverges from Blink. The narrowed predicate hit ~25 regressions across `column-height-003/004`, `multicol-list-item-003/004/005`, `multicol-fill-balance-005/018/024`, `spanner-fragmentation-{000,002,008,010,012}`, `multicol-nested-{015,026,028}`, `change-fragmentainer-size-{001,002,003}`. Multicol gate 192 → 167; spanner-fragmentation 12/13 → 7/13.
 
-### Phase 16.c — QUEUED (regression recovery)
+### Phase 16.c.1 — DONE (commit `2aa01920`, gate-neutral)
 
-Two-step plan to recover the Phase 16.b regression cluster by mirroring Blink's actual containment story:
+Ported Blink's column-regrowth pattern (`column_layout_algorithm.cc:1099-1124`) into `layoutLine`. New `minimumColumnBlockSize` parameter threads through `constrainColumnBlockSize` as a floor (applied after upper clamps so it overrides outer-fragmentainer space when content needs the room — Blink-parity via `available_outer_space = std::max(minimum_column_block_size, FragmentainerSpaceLeftForChildren() - line_offset)`). After the inner column loop, when nested in a column fragmentainer and any column shows true monolithic overflow (`BreakToken == nil && BSFF > fragH`), tail-recurse with the floor raised. Verified `multicol-nested-010` passes; gate identical to baseline.
 
-1. **Port column regrowth from `column_layout_algorithm.cc:1099-1124`** — when an inner column's BSFF exceeds outer fragmentainer space (in nested fragmentation), set `minimumColumnBlockSize` and tail-recurse into `LayoutLine`. Layout-time regrowth is the entirety of nested-multicol containment in Blink; verify `multicol-nested-010` PASSES before step 2.
-2. **Remove `ClipBlockAxisOnly` entirely** — `multicol_layout.go:1218-1232` plus the paint-side branch at `paint_layer.go:279-296`. Field cleanup (`PhysicalFragment.ClipBlockAxisOnly`, `Box.ClipBlockAxisOnly`, `engine.go:332`) is optional follow-up.
+The `BreakToken == nil` gate excludes content that fragmented at column boundary (e.g. `multicol-nested-030/031` with `break-inside:avoid` violated): there's no monolithic overflow, BSFF just measures trailing content, and forcing regrowth would collapse 4×50h column-fragments into one 400h oversized column.
 
-Full Blink quotes (`box_fragment_painter.cc`, `layout_box.cc`, `column_layout_algorithm.cc`) and risk surface in `findings.md` § "Phase 16.c brief (post-a375cb45)". Gate target: 167 → 192+/455.
+### Phase 16.c.2 — ATTEMPTED, ROLLED BACK (2026-04-27)
+
+Removed `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`paint_layer.go`). Result: net **−8 multicol** (167 → 159), spanner-frag unchanged. Per the brief's "STOP, ROLLBACK, do NOT chase the regression with a new predicate" guidance, reverted both files.
+
+**Why it failed:** the Phase 16.b regression cluster (column-height-003/004, multicol-list-item-003/004/005, multicol-fill-balance-005/018/024, spanner-fragmentation-{000,002,008,010,012}, multicol-nested-{015,026,028}, change-fragmentainer-size-{001,002,003}) was unaffected by clip removal — its root cause is deeper than `ClipBlockAxisOnly`. Meanwhile clip removal newly broke 13 tests (column-height-001/010/017/026/027 — column-wrap:wrap monolithic content; multicol-nested-030/031 — break-inside:avoid; spanner-fragmentation-001/004/006; nested-floated-multicol-with-monolithic-child; nested-past-fragmentation-line; multicol-rule-nested-balancing-004) and recovered only 5 (increase-prev-sibling-height, inline-block-and-column-span-all, multicol-fill-balance-032, multicol-nested-029, multicol-zero-height-002).
+
+**Blink-divergence signal:** in Blink, the newly-broken cluster passes without a per-column clip because Blink's layout properly fragments monolithic content at column boundaries. Louis14's `column-wrap:wrap`/`break-inside:avoid` paths place the full block in a single column and rely on the clip to hide overflow. Until that fragmentation gap is closed, the clip stays as a workaround. See `findings.md` § "Phase 16.c.2 attempt — what we learned" for the full diff and pointer to Phase 16.d brief.
 
 ## Phase 16.c-19 plan (research complete, briefs in findings.md)
 

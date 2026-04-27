@@ -1,22 +1,26 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-27 — Phase 16.c queued, regression recovery)
+## Current focus (2026-04-27 — Phase 16.c.1 DONE, 16.c.2 deferred to Phase 16.d, queue → Phase 17)
 
-css-multicol is the active layout-feature track at **167/455 committed** (gate 2026-04-27 post-Phase-16.b). Phase 16.b shipped at commit `a375cb45` with the BSFF row-advance fix (closing `-006, -007, -008` at 0 diff) but introduced ~25 regressions because `ClipBlockAxisOnly` was kept (just narrowed) — a workaround that has no Blink analog. Recent commits: Phase 15 partial (`4875da5b`, +2: test 001), Phase 16.a BFC filtering (`d42e3cf2`, +2: tests -002, -004), Phase 16.b BSFF row-advance (`a375cb45`, +3 targets but −25 net to gate).
+css-multicol is the active layout-feature track at **167/455 committed**. Recent commits: Phase 15 partial (`4875da5b`, +2: test 001), Phase 16.a BFC filtering (`d42e3cf2`, +2: tests -002, -004), Phase 16.b BSFF row-advance (`a375cb45`, +3 targets but −25 net to gate), **Phase 16.c.1 column regrowth port (`2aa01920`, gate-neutral)**.
 
-**Phase 16.c is the active sub-phase** — port Blink's column-regrowth (`column_layout_algorithm.cc:1099-1124`) to handle nested-multicol overflow at layout time, then **remove `ClipBlockAxisOnly` entirely** (Blink does not clip per-column; see `box_fragment_painter.cc:1080-1114`). Targets the regression cluster from 16.b: `column-height-003/004`, `multicol-list-item-003/004/005`, `multicol-fill-balance-005/018/024`, `spanner-fragmentation-{000,002,008,010,012}`, `multicol-nested-{015,026,028}`, `change-fragmentainer-size-{001,002,003}`. Detailed plan + Blink quotes in `findings.md` § "Phase 16.c brief (post-a375cb45)" — read **before coding**.
+**Phase 16.c.2 was attempted in the same session and rolled back** — removing `ClipBlockAxisOnly` net-regresses 8 tests (5 recovered, 13 newly broken) AND does not recover the 16.b regression cluster. Per the brief's "STOP, ROLLBACK, do NOT chase the regression with a new predicate" guidance, the clip stays as a workaround until upstream monolithic-content fragmentation is fixed. Full diagnostic in `findings.md` § "Phase 16.c.2 attempt — what we learned" and `progress.md` § Phase 16.c.2.
 
-**Phase ordering (revised 2026-04-27):**
+**Phase 17 is now the active sub-phase** (Forced-break balance, T2, ~5 tests). The 16.b regression cluster recovery is rebriefed as **Phase 16.d (TBD)** — port Blink's per-column-fragment splitting of monolithic content for `column-wrap:wrap`/`break-inside:avoid`, which is the upstream prerequisite for both 16.c.2 (clip removal) and 16.b cluster recovery.
+
+**Phase ordering (revised 2026-04-27, post-16.c.1 commit):**
 1. **Phase 16.a** — DONE (`d42e3cf2`, +2). Spanner BFC filtering: `IsValidColumnSpannerInTree` parity. Tests `-002, -004` PASS.
-2. **Phase 16.b** — DONE (`a375cb45`, +3 targets / −25 net). BSFF row-advance + spanner WDM/leaf/margin polish; `multicol-span-all-006, -007, -008` PASS at 0 diff. Trade-off: kept `ClipBlockAxisOnly` (narrowed predicate) which doesn't match Blink and hit the regression cluster recovered by 16.c.
-3. **Phase 16.c** — QUEUED. Port column regrowth from `column_layout_algorithm.cc:1099-1124` to `LayoutLine`, then remove `ClipBlockAxisOnly` entirely. Two-step plan; verify `multicol-nested-010` passes after step 1 BEFORE doing step 2. Gate target: 167 → 192+ (recover 16.b regression net).
-4. **Phase 17** — Forced-break balance (T2, ~5 tests, MEDIUM). Rewrites `resolveColumnAutoBlockSize` (`multicol_layout.go:1396`) with Blink-parity `ContentRun`/`ContentRuns`/`DistributeImplicitBreaks` measure-pass loop. Brief: `findings.md` § Phase 17.
-5. **Phase 18** — Nested multicol break-token forwarding (T3, ~15 tests, HARD). Adds `MulticolBreakTokenData` carrier on `BlockBreakToken`. Brief: `findings.md` § Phase 18.
-6. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
+2. **Phase 16.b** — DONE (`a375cb45`, +3 targets / −25 net). BSFF row-advance + spanner WDM/leaf/margin polish; `multicol-span-all-006, -007, -008` PASS at 0 diff. Kept narrowed `ClipBlockAxisOnly`; the regression cluster turned out to have a deeper root cause (see 16.c.2 retro).
+3. **Phase 16.c.1** — DONE (`2aa01920`, gate-neutral). Column regrowth port from `column_layout_algorithm.cc:1099-1124` with `BreakToken == nil && BSFF > fragH` carrier gate. Verified `multicol-nested-010` PASS, multicol gate unchanged. Setup for future 16.c.2.
+4. **Phase 16.c.2** — ROLLED BACK 2026-04-27. Removing `ClipBlockAxisOnly` exposes louis14's lack of monolithic-content fragmentation in `column-wrap:wrap` and `break-inside:avoid` paths (13 newly-broken tests). Re-attempt only after Phase 16.d.
+5. **Phase 17** — Forced-break balance (T2, ~5 tests, MEDIUM) — **NEXT**. Rewrites `resolveColumnAutoBlockSize` (`multicol_layout.go:1396`) with Blink-parity `ContentRun`/`ContentRuns`/`DistributeImplicitBreaks` measure-pass loop. Brief: `findings.md` § Phase 17.
+6. **Phase 18** — Nested multicol break-token forwarding (T3, ~15 tests, HARD). Adds `MulticolBreakTokenData` carrier on `BlockBreakToken`. Brief: `findings.md` § Phase 18.
+7. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
+8. **Phase 16.d** (TBD, prerequisite for re-attempting 16.c.2) — port Blink's per-column-fragment splitting of monolithic content. Until done, `ClipBlockAxisOnly` stays as a load-bearing workaround.
 
-**Gate invariants (committed at HEAD `a375cb45`):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **167/455** · spanner-fragmentation 7/13.
+**Gate invariants (committed at HEAD `2aa01920`):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **167/455** · spanner-fragmentation 7/13.
 
-**Gate invariants (target after 16.c):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **192+/455** · spanner-fragmentation 12/13.
+**Gate invariants (target after 16.d → 16.c.2):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **180+/455** · spanner-fragmentation 10+/13.
 
 ---
 
@@ -125,39 +129,31 @@ Investigation paused to update tracking files. Resume with test 002 root cause.
 
 **Why the regressions:** `ClipBlockAxisOnly` was kept (just narrowed). Phase 16.c's Blink research (`box_fragment_painter.cc:1080-1114`) confirms Blink has no per-column paint clip at all; any predicate diverges from Blink and lights up cases where a non-spanner column legitimately overflows colBlockSize.
 
-### Phase 16.c — QUEUED (regression recovery via Blink-parity column regrowth)
+### Phase 16.c.1 — DONE (commit `2aa01920`, gate-neutral)
 
-**Targets.** Recover the regression cluster above (~25 multicol tests + 5 spanner-fragmentation). Drivers: `multicol-nested-010` (load-bearing risk — see step 1), then `column-height-003`, `spanner-fragmentation-000`, `multicol-list-item-003`, `multicol-fill-balance-005`, `multicol-nested-015`.
+Ported `column_layout_algorithm.cc:1099-1124` regrowth into `layoutLine`: new `minimumColumnBlockSize` parameter, threaded through `constrainColumnBlockSize` as a floor applied after upper clamps (Blink-parity via `available_outer_space = std::max(minimum, FragmentainerSpaceLeftForChildren() - line_offset)`). After the inner column loop, when nested in a column fragmentainer and any column shows true monolithic overflow (`BreakToken == nil && BSFF > fragH`), tail-recurse with the floor raised. The `BreakToken == nil` gate was the carrier-specific refinement: BSFF in louis14 includes trailing fragmented content, so without that gate the regrowth fired on `multicol-nested-030/031` (break-inside:avoid violated, content fragmented across 4 cols) and collapsed them into a single oversized column. With the gate, regrowth is correctly silent on those tests.
 
-**Blink reference (full quotes in `findings.md` § Phase 16.c brief).**
-- `box_fragment_painter.cc:1080-1114` — fragmentainer paint dispatch has zero clip recorder.
-- `layout_box.cc:4002-4016` — `ComputeOverflowClipAxes` has no multicol special case; multicol containers default to `overflow:visible` and don't clip.
-- `column_layout_algorithm.cc:1099-1124` — when an inner column's `BlockEndScrollableOverflow()` exceeds the outer fragmentainer's remaining space, Blink sets `minimum_column_block_size = block_end_overflow` and tail-recurses into `LayoutLine`. Layout-time regrowth is the entirety of nested-multicol containment.
-- `column_layout_algorithm.cc:1936-1968` (`ConstrainColumnBlockSize`) — "the only thing we need to worry about here is to not overflow the multicol container."
+Verified: `multicol-nested-010` PASS, multicol gate 167/455 unchanged from baseline. The commit is a setup commit for future 16.c.2 (clip removal) — currently nothing exercises the regrowth path because `ClipBlockAxisOnly` continues to satisfy nested-multicol containment.
 
-**Two-step plan (full detail in `findings.md` § Phase 16.c brief):**
+### Phase 16.c.2 — ATTEMPTED, ROLLED BACK (2026-04-27)
 
-| Sub-phase | Change | Site | Risk |
-|---|---|---|---|
-| **16.c.1** | Port Blink column regrowth: in `LayoutLine`, when nested fragmentation context + `lineOffset + max(BSFF) > FragmentainerSpaceLeftForChildren()` + `max(BSFF) > columnSize.BlockSize`, set `minimumColumnBlockSize` and tail-recurse into `LayoutLine`. New optional `minimumColumnBlockSize` parameter on `LayoutLine`; `ConstrainColumnBlockSize` uses it as a lower bound. Try `BlockSizeForFragmentation` as the carrier first; only add `LayoutResult.BlockEndScrollableOverflow` if a specific test requires it. | `multicol_layout.go` | Medium-high; recursion shape is load-bearing. **Verify `multicol-nested-010` PASSES before doing 16.c.2.** |
-| **16.c.2** | Remove `ClipBlockAxisOnly = true` at `multicol_layout.go:1218-1232` (the `shouldClip` block). Remove the paint-side `blockAxisOnlyClip` branch at `paint_layer.go:279-296`. Optional cleanup commit later: remove `ClipBlockAxisOnly` field from `PhysicalFragment`, `Box`, and the `engine.go:332` propagation. | `multicol_layout.go`, `paint_layer.go` | Low if 16.c.1 passes `multicol-nested-010`. Mechanical otherwise. |
+Removed `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`paint_layer.go`). Result: net **−8 multicol** (167 → 159), spanner-fragmentation unchanged at 7/13. **Reverted both files** per the brief's "STOP, ROLLBACK, do NOT chase the regression with a new predicate" guidance.
 
-**Anti-patterns (DO NOT):**
-- Don't keep `ClipBlockAxisOnly` with yet-another predicate. Blink has no fragmentainer-level clip; any predicate is a hack.
-- Don't add a new `LayoutResult` field unless `BlockSizeForFragmentation` is verifiably insufficient.
-- Don't port the regrowth without the recursion. `ConstrainColumnBlockSize` clamps; `LayoutLine` recurses. Both are needed.
-- Don't run the full WPT sweep during sub-phase iteration. Per CLAUDE.md, only the 1-4 driver tests; gate-sweep before commit.
+| Effect | Tests | Notes |
+|---|---|---|
+| 16.b cluster recovered | **0** | column-height-003/004, multicol-list-item-003/004/005, multicol-fill-balance-005/018/024, spanner-fragmentation-{000,002,008,010,012}, multicol-nested-{015,026,028}, change-fragmentainer-size-{001,002,003} all stay failing — root cause is upstream of the paint clip. |
+| Newly broken (clip was load-bearing) | **13** | `column-height-001/010/017/026/027` (column-wrap:wrap monolithic), `multicol-nested-030/031` (break-inside:avoid), `spanner-fragmentation-001/004/006`, `multicol-rule-nested-balancing-004`, `nested-floated-multicol-with-monolithic-child`, `nested-past-fragmentation-line`. |
+| Recovered (clip was actively breaking) | **5** | `increase-prev-sibling-height`, `inline-block-and-column-span-all`, `multicol-fill-balance-032`, `multicol-nested-029`, `multicol-zero-height-002`. |
 
-**Test order.**
-1. After 16.c.1: run `multicol-nested-010` only. Expected: PASS.
-2. After 16.c.1: also run `-005, -006, -007, -008` and `column-height-001` (Phase 16.b drivers). Expected: still PASS.
-3. After 16.c.2: run regression cluster (one driver per category). Expected: most return to PASS.
-4. Full multicol gate sweep before commit. Expected: ≥192/455.
-5. If `multicol-nested-010` fails after 16.c.1: do NOT proceed to 16.c.2. Re-investigate the regrowth carrier.
+**Diagnosis.** The brief assumed that removing `ClipBlockAxisOnly` would recover the 16.b cluster because Blink has no per-column clip. The first half is right (Blink has no clip — verified via `box_fragment_painter.cc:1080-1114`, `layout_box.cc:4002-4016`). The second half is wrong: the 16.b cluster's failure mode is unrelated to paint. The newly-broken cluster reveals where the clip is actually load-bearing — `column-wrap:wrap` and `break-inside:avoid` paths place a monolithic block at full size in every column-fragment and rely on the per-column clip to cap visible extent at `colBlockSize`. Blink fragments such a block at column boundaries instead, so each column-fragment shows a different slice.
 
-**Gate target.** 167 → 192+/455 (recover 16.b regression net). Spanner-fragmentation 7/13 → 12/13. Best case: 195+/455 because the three 16.b targets stay passing on top of the recovered baseline.
+**See `findings.md` § "Phase 16.c.2 attempt — what we learned"** for the complete retrospective and pointer to Phase 16.d.
 
-**Tractability.** Medium-high. The regrowth port is small (~50 lines) but touches `LayoutLine`'s recursion shape. The `ClipBlockAxisOnly` removal is mechanical once regrowth is in.
+### Phase 16.d — PROPOSED (prerequisite for re-attempting 16.c.2)
+
+Port Blink's per-column-fragment splitting of monolithic content. Search Blink for how `block_layout_algorithm.cc` decides to split a monolithic child at the column boundary when `is_block_fragmentation_context_root_` and the inner `BlockFragmentationType == FragmentColumn`. Likely involves `tallest_unbreakable_block_size_` plumbing into `ContentRun` measurements + a per-column-fragment offset on the unbreakable block. Tractability: high; brief TBD.
+
+Once Phase 16.d lands, retry 16.c.2 — it should then be net-positive (the 13 newly-broken tests recover via proper fragmentation, and the 5 already-recovered tests stay recovered).
 
 ---
 
@@ -334,5 +330,5 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualte
 GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualtest/ \
   -run 'TestWPTCSS3Reftests/css-position'       # expect 92/105
 GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualtest/ \
-  -run 'TestWPTCSS3Reftests/css-multicol'       # active target: 167/455 at HEAD; 192+/455 after 16.c
+  -run 'TestWPTCSS3Reftests/css-multicol'       # current: 167/455 at HEAD `2aa01920` (post-16.c.1)
 ```
