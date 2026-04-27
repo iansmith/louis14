@@ -566,6 +566,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			balanceColumns, hasExplicitBlock, explicitBlockSize,
 			effectiveMaxBlockSize,
 			blockCursor, nextColToken, builder,
+			Indefinite,
 		)
 		blockCursor += rowBlockAdvance
 		totalColumnsRendered += columnsPlaced
@@ -992,6 +993,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	lineOffset float64,
 	nextColToken *BlockBreakToken,
 	builder *BoxFragmentBuilder,
+	minimumColumnBlockSize float64,
 ) (rowBlockAdvance float64, columnsPlaced int, spannerPath *ColumnSpannerPath, remainingToken *BlockBreakToken) {
 
 	// Outer remaining space: cap column height so columns don't exceed what
@@ -1021,16 +1023,20 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	switch {
 	case !mla.hasAutoColumnHeight():
 		colBlockSize = mla.remainingRowHeightAtOffset(lineOffset)
-		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
 	case balanceColumns:
 		colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize)
-		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+		colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
 	case hasExplicitBlock:
-		colBlockSize = mla.constrainColumnBlockSize(explicitBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+		colBlockSize = mla.constrainColumnBlockSize(explicitBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
 	case maxBlockSize != Indefinite:
-		colBlockSize = mla.constrainColumnBlockSize(maxBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+		colBlockSize = mla.constrainColumnBlockSize(maxBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
 	default:
-		colBlockSize = Indefinite
+		if minimumColumnBlockSize != Indefinite {
+			colBlockSize = mla.constrainColumnBlockSize(minimumColumnBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
+		} else {
+			colBlockSize = Indefinite
+		}
 	}
 
 	var maxColHeight float64
@@ -1161,7 +1167,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			if lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil {
 				balanceColumns = true
 				colBlockSize = mla.resolveColumnAutoBlockSize(contentNode, wdm, usedColWidth, numCols, gap, nextColToken, mla.containerPercentResolutionBlockSize)
-				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+				colBlockSize = mla.constrainColumnBlockSize(colBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
 				continue
 			}
 			break
@@ -1189,7 +1195,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 		// Stretch column height by the minimum shortage and retry.
 		newColBlockSize := colBlockSize + minSpaceShortage
-		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset)
+		newColBlockSize = mla.constrainColumnBlockSize(newColBlockSize, hasExplicitBlock, explicitBlockSize, maxBlockSize, outerRemaining, lineOffset, minimumColumnBlockSize)
 		if newColBlockSize <= colBlockSize {
 			// Nested balancing: we can't stretch any further in this inner
 			// multicol. Report the minimum shortage upward so the outer
@@ -1204,6 +1210,54 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			break
 		}
 		colBlockSize = newColBlockSize
+	}
+
+	// Phase 16.c.1: column regrowth (Blink cla.cc:1099-1124).
+	//
+	// When the multicol container is itself a child of an outer column
+	// fragmentainer (nested multicol) and one of our columns produced more
+	// block-axis content than fits in the outer fragmentainer, re-run
+	// LayoutLine with the columns forced taller so they encompass the
+	// overflow. Without this, a tall inner column gets visually clipped to
+	// the outer fragmentainer's space — the role Phase 12h F2 partial
+	// (ClipBlockAxisOnly) was filling, which has no Blink analog.
+	//
+	// Carrier: BlockSizeForFragmentation (set by Phase 16.b.1) — the
+	// "block-axis space the column's content actually consumed including
+	// monolithic overflow", which corresponds to Blink's
+	// LogicalBoxFragment(...).BlockEndScrollableOverflow() in this context.
+	if minimumColumnBlockSize == Indefinite &&
+		mla.space.HasBlockFragmentation &&
+		mla.space.BlockFragmentationType == FragmentColumn &&
+		colBlockSize != Indefinite {
+		// Only fire regrowth when true monolithic overflow exists in some
+		// column — BSFF exceeds the column's fragment block size AND the
+		// column did not break (BreakToken == nil). When content broke at
+		// the column boundary, BSFF includes the trailing content that
+		// fragmented into later columns — that is NOT monolithic overflow
+		// and must not trigger regrowth (otherwise tests like
+		// multicol-nested-030/031, where break-inside:avoid is violated
+		// and content fragments into multiple columns, would be forced
+		// into a single oversized column).
+		var maxOverflow float64
+		for _, col := range finalColumns {
+			if col.result == nil || col.fragment == nil || col.result.BreakToken != nil {
+				continue
+			}
+			fragH := NewLogicalFragment(wdm, col.fragment).BlockSize()
+			if col.result.BlockSizeForFragmentation > fragH &&
+				col.result.BlockSizeForFragmentation > maxOverflow {
+				maxOverflow = col.result.BlockSizeForFragmentation
+			}
+		}
+		if maxOverflow > outerRemaining && maxOverflow > colBlockSize {
+			return mla.layoutLine(
+				contentNode, wdm, usedColWidth, numCols, gap,
+				balanceColumns, hasExplicitBlock, explicitBlockSize,
+				maxBlockSize, lineOffset, nextColToken, builder,
+				maxOverflow,
+			)
+		}
 	}
 
 	// Commit final columns to the parent builder.
@@ -1489,9 +1543,16 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 // container's explicit height (if any), max-height (if set), the outer
 // fragmentainer's remaining space, the row-height at this offset (Phase 12f),
 // and ensures it is non-negative. Mirrors Blink's ConstrainColumnBlockSize()
-// (cla.cc:2017 — clamp by RemainingRowHeightAtOffset(line_offset)).
+// (cla.cc:1936-1968 — clamp by RemainingRowHeightAtOffset(line_offset)).
 // maxBlockSize == Indefinite means the container has no max-height constraint.
 // outerRemaining > 0 means columns cannot exceed this outer limit.
+//
+// minimumColumnBlockSize is a floor applied LAST (Blink: "Don't make the
+// column smaller than what we should."). Used by the column-regrowth path
+// (cla.cc:1099-1124) so a re-run of LayoutLine forces columns tall enough to
+// encompass overflow detected on the previous pass — the floor overrides
+// upper bounds so columns can legitimately exceed outerRemaining /
+// max-height when content needs the room. Indefinite => no floor.
 func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 	size float64,
 	hasExplicitBlock bool,
@@ -1499,6 +1560,7 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 	maxBlockSize float64,
 	outerRemaining float64,
 	lineOffset float64,
+	minimumColumnBlockSize float64,
 ) float64 {
 	if size < 0 {
 		size = 0
@@ -1516,6 +1578,9 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(
 		if rem := mla.remainingRowHeightAtOffset(lineOffset); size > rem {
 			size = rem
 		}
+	}
+	if minimumColumnBlockSize != Indefinite && size < minimumColumnBlockSize {
+		size = minimumColumnBlockSize
 	}
 	return size
 }
