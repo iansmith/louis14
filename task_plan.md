@@ -1,10 +1,12 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-27 — Phase 16.d.1 fully DONE incl. spanner-frag-006, queue → Phase 16.c.2 retry → Phase 16.d.2/3 (if needed) → Phase 17)
+## Current focus (2026-04-27 — Phase 16.c.2 retry IN PROGRESS, then Phase 16.d.2/3 (if needed) → Phase 17)
 
-**Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commit `c40b4b56`). All 13 driver tests now PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
+**Active task:** Phase 16.c.2 retry. Remove `ClipBlockAxisOnly` setter in `multicol_layout.go` (around line 1281-1286, the per-column clip block) + paint-side branch in `paint_layer.go` (around line 279). With Phase 16.d.1's per-fragment clamping (commits `a6446061` + `c40b4b56`), the 13 driver tests no longer rely on the clip; all PASS at 0 diff via real fragmentation. Expected net-positive vs the original 16.c.2 attempt (which net-regressed 8 because the clip was load-bearing for those 13 tests).
 
-**Next:** Phase 16.c.2 retry — remove `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`paint_layer.go`). With per-fragment clamping in place, the per-column clip is no longer load-bearing for the 13 driver tests. Expected: net-positive (vs the original 16.c.2 attempt which net-regressed 8). If 16.c.2 retry uncovers new failures requiring `TallestUnbreakableBlockSize` (e.g., for break-inside:avoid in nested multicol), do 16.d.2/16.d.3 then re-attempt 16.c.2.
+**Verification plan:** After deletion, re-run (a) the 13 driver tests, (b) the 5 tests originally recovered by the 16.c.2 attempt (`increase-prev-sibling-height`, `inline-block-and-column-span-all`, `multicol-fill-balance-032`, `multicol-nested-029`, `multicol-zero-height-002`), (c) the multicol gate sweep, and (d) the four other gate invariants. If 16.c.2 retry uncovers new failures requiring `TallestUnbreakableBlockSize` (e.g., for break-inside:avoid in nested multicol), drop in Phase 16.d.2/16.d.3 and re-attempt.
+
+**Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commits `a6446061` + `c40b4b56` + docs `50de102c` + `68b74171`). All 13 driver tests PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
 
 css-multicol is the active layout-feature track at **191/455 committed**. Recent commits: Phase 15 partial (`4875da5b`, +2: test 001), Phase 16.a BFC filtering (`d42e3cf2`, +2: tests -002, -004), Phase 16.b BSFF row-advance (`a375cb45`, +3 targets but −25 net to gate), Phase 16.c.1 column regrowth port (`2aa01920`, gate-neutral), **Phase 16.d.1 per-fragment block-size clamp (`a6446061`, +24 multicol / +3 spanner-fragmentation)**.
 
