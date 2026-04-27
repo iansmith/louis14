@@ -105,6 +105,17 @@ type LayoutResult struct {
 	// forced breaks and decide when no soft-break opportunities remain.
 	HasForcedBreak bool
 
+	// DidBreakSelf is true when the block clamped its own border-box to fit
+	// the fragmentainer's remaining space and emitted a continuation
+	// BreakToken so the next fragmentainer resumes the same block. Mirrors
+	// Blink's BoxFragmentBuilder::SetDidBreakSelf (fragmentation_utils.cc
+	// FinishFragmentation): when a block's desired size exceeds space_left
+	// inside a fragmentation context, the fragment is sized to space_left,
+	// DidBreakSelf is set, and a BlockBreakToken with updated
+	// ConsumedBlockSize is emitted — even if no inner child broke. The block
+	// itself needs to be resumed.
+	DidBreakSelf bool
+
 	// BreakAppeal scores how appealing the break that produced this result
 	// is. The multicol stretch loop demotes acceptance when any column's
 	// result has a non-Perfect appeal (cla.cc:1019 / cla.cc:1034). Default

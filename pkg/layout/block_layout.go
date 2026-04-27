@@ -1371,6 +1371,53 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		finalBlockSize = minBlock
 	}
 
+	// Phase 16.d.1 — per-fragment block-size clamp + DidBreakSelf carrier.
+	//
+	// Mirrors Blink's FinishFragmentation (fragmentation_utils.cc:542-657):
+	// when a leaf block's desired border-box size exceeds the fragmentainer's
+	// remaining space and we're inside a block-fragmentation context, clamp
+	// the fragment to space_left and set DidBreakSelf so a continuation
+	// BlockBreakToken is emitted below. The next fragmentainer resumes the
+	// same block via incomingBreakToken.ConsumedBlockSize.
+	//
+	// Gated to TRUE LEAF BLOCKS only:
+	//   - !IsBlockSizeOverride: the multicol's column-fragmentainer
+	//     authoritatively sets the size; the child shouldn't second-guess.
+	//   - hasExplicitBlock: only when CSS declared a finite block-size.
+	//   - HasBlockFragmentation + finite FragmentainerBlockSize: must be in
+	//     an active fragmentation context.
+	//   - !IsInitialColumnBalancingPass: measurement pass MUST NOT emit
+	//     break-tokens (would corrupt the balance estimate).
+	//   - Leaf only (no DOM children): non-leaf blocks have parent-driven
+	//     fragmentation in their children loop; introducing self-break
+	//     interleaved with that logic causes break-token misalignment
+	//     (column-wrap:wrap + spanner siblings → infinite row-wrap loop).
+	//   - Not column-span:all: spanners use their own resume mechanism in
+	//     MulticolLayoutAlgorithm (pendingPartialSpannerToken /
+	//     spannerConsumed clip-resume).
+	var didBreakSelf bool
+	if bla.space.HasBlockFragmentation && !bla.space.IsBlockSizeOverride &&
+		bla.space.FragmentainerBlockSize != Indefinite &&
+		bla.space.FragmentainerBlockSize > 0 && hasExplicitBlock &&
+		!bla.space.IsInitialColumnBalancingPass &&
+		bla.node != nil && len(bla.node.Children()) == 0 {
+		isColumnSpanner := bla.style != nil && bla.style.GetColumnSpan() == "all"
+		if !isColumnSpanner {
+			spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
+			if spaceLeft < 0 {
+				spaceLeft = 0
+			}
+			contentSpaceLeft := spaceLeft - geom.BlockBorderPadding()
+			if contentSpaceLeft < 0 {
+				contentSpaceLeft = 0
+			}
+			if finalBlockSize > contentSpaceLeft {
+				finalBlockSize = contentSpaceLeft
+				didBreakSelf = true
+			}
+		}
+	}
+
 	// Set the fragment size.
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
@@ -1627,6 +1674,27 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	result := builder.Build()
+
+	// Phase 16.d.1 — emit continuation BlockBreakToken when this block
+	// clamped its own border-box at the fragmentainer boundary. Mirrors
+	// Blink's BoxFragmentBuilder::SetDidBreakSelf path: even if no inner
+	// child broke, the BLOCK ITSELF needs to be resumed in the next
+	// fragmentainer with ConsumedBlockSize updated to reflect the portion
+	// placed so far (previously consumed + this fragment's content size).
+	if didBreakSelf {
+		prevConsumed := 0.0
+		seqNum := 0
+		if incomingBreakToken != nil {
+			prevConsumed = incomingBreakToken.ConsumedBlockSize.Float64()
+			seqNum = incomingBreakToken.SequenceNumber + 1
+		}
+		result.BreakToken = &BlockBreakToken{
+			Node:              bla.node,
+			ConsumedBlockSize: layoutunit.FromFloat64Round(prevConsumed + finalBlockSize),
+			SequenceNumber:    seqNum,
+		}
+		result.DidBreakSelf = true
+	}
 
 	// Attach propagated OOF candidates for the parent to resolve.
 	if len(propagatedOOF) > 0 {
