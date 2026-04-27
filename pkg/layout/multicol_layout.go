@@ -1419,6 +1419,7 @@ func (mla *MulticolLayoutAlgorithm) layoutSpanner(
 			BlockSize:  mla.containerPercentResolutionBlockSize,
 		}).
 		SetPercentageResolutionInlineSize(contentInlineSize).
+		SetIsInsideColumnSpanner(true).
 		Build()
 	return layoutElement(mla.ctx, spanner, spannerSpace)
 }
@@ -1450,7 +1451,8 @@ func (mla *MulticolLayoutAlgorithm) layoutSpannerInFrag(
 		SetHasBlockFragmentation(true).
 		SetFragmentainerBlockSize(fragBS).
 		SetFragmentainerOffset(fragOff).
-		SetBlockFragmentationType(FragmentColumn)
+		SetBlockFragmentationType(FragmentColumn).
+		SetIsInsideColumnSpanner(true)
 	if breakToken != nil {
 		b = b.SetBreakToken(breakToken)
 	}

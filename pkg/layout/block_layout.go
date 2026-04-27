@@ -603,6 +603,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					csBuilder.SetColumnSpannerDescendantsBlocked(true)
 				}
 
+				// Propagate "inside column-spanner" so the Phase 16.d.1 clamp
+				// stays disabled on every spanner descendant, not just the
+				// spanner itself. Driver: spanner-fragmentation-006 — without
+				// this propagation the spanner's grand-leaf descendants (e.g.
+				// the 360h leaf inside spanner 1) self-fragment and confuse
+				// the existing pendingContentOverflow resume mechanism.
+				if bla.space.IsInsideColumnSpanner {
+					csBuilder.SetIsInsideColumnSpanner(true)
+				}
+
 				// Pass child break token if resuming this specific child.
 				if childIdx == resumeChildIdx && resumeChildBreakToken != nil {
 					csBuilder.SetBreakToken(resumeChildBreakToken)
@@ -1397,6 +1407,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	//     spannerConsumed clip-resume).
 	var didBreakSelf bool
 	if bla.space.HasBlockFragmentation && !bla.space.IsBlockSizeOverride &&
+		!bla.space.IsInsideColumnSpanner &&
 		bla.space.FragmentainerBlockSize != Indefinite &&
 		bla.space.FragmentainerBlockSize > 0 && hasExplicitBlock &&
 		!bla.space.IsInitialColumnBalancingPass &&

@@ -176,6 +176,20 @@ type ConstraintSpace struct {
 	// is a non-block-flow element, or has a transform.
 	ColumnSpannerDescendantsBlocked bool
 
+	// IsInsideColumnSpanner is true when this space (or any ancestor space)
+	// is the spanner-layout space built by MulticolLayoutAlgorithm's
+	// layoutSpannerInFrag / layoutSpanner. Spanners are placed monolithically
+	// in the multicol flow (Blink: ColumnLayoutAlgorithm::LayoutSpanner —
+	// the spanner breaks BEFORE as a unit, never mid-content; its overflow
+	// content is handled by the existing pendingContentOverflow mechanism
+	// in MulticolLayoutAlgorithm). The Phase 16.d.1 per-fragment block-size
+	// clamp must be skipped on spanner descendants — otherwise the leaf's
+	// self-fragmentation produces a break-token chain that the spanner
+	// resume mechanism in multicol_layout.go (line 663-676 / 724) doesn't
+	// understand, causing spanner content to incorrectly fragment across
+	// outer columns instead of overflowing once monolithically.
+	IsInsideColumnSpanner bool
+
 	// MinBreakAppeal is the lowest break appeal that is acceptable in this
 	// fragmentation context. Read by CalculateBreakAppealBefore +
 	// IsBreakableAtStartOfResumedContainer; defaults to LastResort (any break
@@ -481,6 +495,14 @@ func (b *ConstraintSpaceBuilder) SetIsInsideBalancedColumns(v bool) *ConstraintS
 // descendant should be ignored because some ancestor prevents it.
 func (b *ConstraintSpaceBuilder) SetColumnSpannerDescendantsBlocked(v bool) *ConstraintSpaceBuilder {
 	b.space.ColumnSpannerDescendantsBlocked = v
+	return b
+}
+
+// SetIsInsideColumnSpanner marks that this space is inside a column-spanner
+// layout. Phase 16.d.1 per-fragment block-size clamp must be skipped on
+// spanner descendants — see ConstraintSpace.IsInsideColumnSpanner doc.
+func (b *ConstraintSpaceBuilder) SetIsInsideColumnSpanner(v bool) *ConstraintSpaceBuilder {
+	b.space.IsInsideColumnSpanner = v
 	return b
 }
 
