@@ -797,6 +797,24 @@ After 16.d.1+16.d.2+16.d.3, the per-column `ClipBlockAxisOnly` is no longer load
 
 **Risk surface for 16.d.2/16.d.3.** Touches the initial balancing pass shape. Phase 17 (forced-break balance, `ContentRuns`/`DistributeImplicitBreaks`) also rewrites this area. To avoid double-rewrite, 16.d.2 carrier infra can land first (cheap, zero-impact on balance loop), and the consumer site can be adjusted for whichever phase lands first.
 
+### Phase 16.d.1 retrospective (2026-04-27, commit `a6446061`, +24 multicol / +3 spanner-fragmentation)
+
+**Shipped.** `LayoutResult.DidBreakSelf bool` carrier and FinishFragmentation-equivalent clamp in `block_layout.go` after the min/max constraints (between line 1372 and the `builder.SetSize` call). When the gate fires, the fragment is sized to `space_left = FragmentainerBlockSize - FragmentainerOffset - geom.BlockBorderPadding()`, `didBreakSelf=true`, and after `result := builder.Build()` a continuation `BlockBreakToken{Node, ConsumedBlockSize=prev+finalBlockSize, SequenceNumber=prev+1}` is attached.
+
+**Gate refinement (vs the brief's bare-minimum gate).** Five gates were essential to avoid regressions:
+
+1. `!IsBlockSizeOverride` — the multicol's column-fragmentainer's direct anon child has its size authoritatively fixed; clamping it again would double-clamp.
+2. `hasExplicitBlock` — auto-height blocks have their content drive the size; clamping makes no sense.
+3. `FragmentainerBlockSize > 0` — louis14 sometimes propagates `HasBlockFragmentation=true` with `FragmentainerBlockSize=0` (e.g., `column-fill:auto + auto column-height + Indefinite colBlockSize` in `multicol_layout.go:1038`). With `space_left=0`, every block was clamped to 0, making green content invisible (driver: `nested-floated-multicol-with-monolithic-child` at 1.9% diff before this gate).
+4. `!IsInitialColumnBalancingPass` — the measure pass would corrupt the balance estimate.
+5. **Leaf only (no DOM children, not column-span:all)** — the dominant gate. Without this, `column-height-006` (`column-wrap:wrap` + 4 spanners + leaf siblings inside a `<div>` parent) hit an infinite row-wrap loop because non-leaf parents have their own parent-side fragmentation logic at `block_layout.go:1001-1196` (the children-loop overflow path). Interleaving self-fragmentation with that logic produced break-token chains that never advanced past the spanner siblings; the row-wrap loop kept re-laying out the same row. Spanners similarly have their own resume mechanism (`pendingPartialSpannerToken` / `spannerConsumed` in `multicol_layout.go:721-728`) — the brief's `MonolithicOverflow` was a different abstraction than what the existing spanner code expects.
+
+**12/13 driver tests recovered.** `column-height-001/010/017/026/027`, `multicol-nested-030/031`, `spanner-fragmentation-001/004`, `multicol-rule-nested-balancing-004`, `nested-floated-multicol-with-monolithic-child`, `nested-past-fragmentation-line` all PASS. `spanner-fragmentation-006` has 0.1% (250px) residual — the test has spanners with children larger than the spanner's explicit height (e.g. `<div column-span:all; height:10px><div height:360px></div></div>`); the inner 360h leaf self-clamps but the spanner's parent doesn't propagate the BSFF correctly. Likely fixable by setting BSFF on `result` when DidBreakSelf, but deferred to follow-up.
+
+**16.b regression cluster — partially recovered.** With +24 multicol and +3 spanner-fragmentation, several of the 16.b regression cluster tests likely recovered (gate sweep moved 167 → 191, well past the 13 driver-test ceiling). A spot-check would map which specific tests recovered; the cluster as documented in `findings.md` § 16.c.2 attempt may be partially closed.
+
+**16.c.2 retry path.** With per-fragment clamping in place, the per-column `ClipBlockAxisOnly` is no longer load-bearing for the 12 driver tests. 16.c.2 retry (delete the clip + paint-side branch) should now be net-positive. Sequence: verify 16.d.2/16.d.3 are not strictly required for any clip-removal-broken test (multicol-nested-030/031 already PASS via 16.d.1 alone), then attempt 16.c.2 again.
+
 ---
 
 ### Phase 17 brief — Forced-break balance (target T2, ~5 tests)

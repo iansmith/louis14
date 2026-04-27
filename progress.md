@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-27 — post-Phase-16.c.1 commit `2aa01920`)
+## Current gate (2026-04-27 — post-Phase-16.d.1 commit `a6446061`)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,8 +16,8 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **167/455** | unchanged from post-16.b. Phase 16.c.1 (column regrowth port) is gate-neutral. **16.c.2 (clip removal) attempted and rolled back** — does not recover the 16.b regression cluster and net-regresses 8 tests; root cause is deeper than ClipBlockAxisOnly. See Phase 16.c.1 entry below + findings.md § "Phase 16.c.2 attempt — what we learned". |
-| spanner-fragmentation | **7/13** | unchanged from post-16.b; recovery deferred to Phase 16.d (TBD). |
+| css-multicol | **191/455** | **+24 from Phase 16.d.1** (per-fragment block-size clamp + DidBreakSelf carrier) — 167 → 191. Per-fragment clamp lets monolithic content fragment naturally at column boundaries; the per-column ClipBlockAxisOnly is no longer load-bearing for the 12 driver tests but stays in tree until Phase 16.c.2 retry. |
+| spanner-fragmentation | **10/13** | **+3 from Phase 16.d.1** (7 → 10): spanner-fragmentation-001/004 now pass via leaf self-fragmentation. spanner-fragmentation-006 has 0.1% residual diff (250px) — deferred. |
 
 ---
 
@@ -173,6 +173,14 @@ Removed `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`
 ### Phase 16.d research (DONE 2026-04-27, docs-only)
 
 Research-only commit reads five Blink files (`box_fragment_painter.cc`, `block_break_token.h`, `box_fragment_builder.cc/h`, `fragmentation_utils.cc`, `column_layout_algorithm.cc`) to resolve Hypothesis A (painter clip) vs B (multi-fragment slicing). **B is correct.** The brief's proposed mechanism (`MonolithicOverflow` on `BlockBreakToken`) is wrong: that carrier is print-only in Blink (gated by `IsPaginated()`), not the multicol mechanism. The actual mechanism is **regular CSS block fragmentation via `DidBreakSelf` + `BlockBreakToken.ConsumedBlockSize`**, plus `TallestUnbreakableBlockSize` for `break-inside:avoid` content. Revised three-sub-fix plan in `findings.md` § "Phase 16.d Blink research". Gate unchanged.
+
+### Phase 16.d.1 — DONE (commit `a6446061`, +24 multicol / +3 spanner-fragmentation)
+
+Per-fragment block-size clamp + DidBreakSelf carrier in BlockLayoutAlgorithm. Mirrors Blink's FinishFragmentation `else if (space_left != kIndefiniteSize && desired_block_size > space_left && space.HasBlockFragmentation())` branch (fragmentation_utils.cc:542-657). When a true leaf block's desired border-box exceeds the fragmentainer's remaining space inside an active block-fragmentation context, the fragment is sized to space_left, `LayoutResult.DidBreakSelf` is set, and a continuation `BlockBreakToken` with updated `ConsumedBlockSize` is emitted — even if no inner child broke. The next fragmentainer resumes the block via the new break-token.
+
+Gated to true leaf blocks: `!IsBlockSizeOverride && hasExplicitBlock && HasBlockFragmentation && FragmentainerBlockSize > 0 && !IsInitialColumnBalancingPass && len(children) == 0 && !column-span:all`. Non-leaves keep parent-driven fragmentation (interleaving caused break-token misalignment + infinite row-wrap loops on column-wrap:wrap + spanner siblings — e.g., `column-height-006`). Spanners keep their MulticolLayoutAlgorithm resume mechanism (pendingPartialSpannerToken / spannerConsumed).
+
+Driver-test recoveries (12/13 PASS without the clip): column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line. Residual: spanner-fragmentation-006 at 0.1% (250px) — deferred. Other gates unchanged: CSS2 99/99, flex 626/629, position 92/105, wm 781/781.
 
 ## Phase 16.c-19 plan (research complete, briefs in findings.md)
 
