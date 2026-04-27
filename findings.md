@@ -830,7 +830,18 @@ Both routes are needed eventually — Blink does both. **Option 2 chosen first**
 - **16.e.5** Verify all 13 driver tests + 5 originally-recovered tests + multicol gate.
 - **16.c.2 retry #3** Delete `ClipBlockAxisOnly` setter + paint branch. Should now be net-positive cleanly.
 
-Until 16.e lands, `ClipBlockAxisOnly` stays in tree as a load-bearing workaround for spanner content overflow + size-contained block overflow.
+**Attempted 2026-04-27 (minimal-port path) — reverted.** Tried just unwrapping `pendingPartialSpannerToken` (= `fullResult.BreakToken` directly, no `{Node:spanner, ChildBreakTokens:[fullResult.BreakToken]}` wrapper) and adjusting the resume read site to skip `spannerConsumed` when `ChildBreakTokens` is non-empty. Build clean. spanner-fragmentation-006 went from 0% (pass at HEAD with gate kept) to 1.4% — outer cols 2-4 went all-RED instead of green. Trace logic suggested HEAD and unwrap should give identical `spannerContentBreakToken`, so the failure is in some other interaction (possibly outer multicol's outgoing break-token chain construction, or a place that mutates `pendingPartialSpannerToken` after creation — `multicol_layout.go:762-770` appends a `clipToken` to `ChildBreakTokens` in the combined-clip case, and with unwrap this would mutate the spanner's actual break-token rather than the wrapper). The wrapper turns out to also act as a defensive-copy boundary.
+
+**Current understanding.** Louis14's positional `ChildBreakTokens[0..2]` encoding plus the wrapper around `pendingPartialSpannerToken` is more entangled with the surrounding code than expected. Several invariants depend on the wrapper being a separate token that can be mutated/extended (clipToken append, ConsumedBlockSize semantics distinction). A proper port to Blink's flat walker model requires touching:
+
+1. The 3-slot positional read site at `multicol_layout.go:428-447`.
+2. The `pendingPartialSpannerToken` build site at `multicol_layout.go:721-728`.
+3. The combined-clip mutation at `multicol_layout.go:762-770`.
+4. The `nextSpannerClipToken` chain at `multicol_layout.go:823-832`.
+5. The `buildOuterBreakResult` outgoing-token construction at `multicol_layout.go:480-512`.
+6. The `BlockBreakToken` shape itself (whether to keep positional or move to a flat-with-Node-dispatch list).
+
+This is a Phase 18-equivalent refactor. **Recommend deferring 16.e until either** (a) we have a longer session block to do it carefully end-to-end, or (b) Phase 17 / 19 / other targets give easier wins first and we come back to 16.e armed with more spanner-test understanding. Until 16.e lands, `ClipBlockAxisOnly` stays in tree as a load-bearing workaround.
 
 ### Phase 16.d.1 retrospective (2026-04-27, commits `a6446061` + `c40b4b56`, +25 multicol / +4 spanner-fragmentation)
 
