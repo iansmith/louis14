@@ -170,6 +170,10 @@ Removed `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`
 
 **Blink-divergence signal:** in Blink, the newly-broken cluster passes without a per-column clip because Blink's layout properly fragments monolithic content at column boundaries. Louis14's `column-wrap:wrap`/`break-inside:avoid` paths place the full block in a single column and rely on the clip to hide overflow. Until that fragmentation gap is closed, the clip stays as a workaround. See `findings.md` § "Phase 16.c.2 attempt — what we learned" for the full diff and pointer to Phase 16.d brief.
 
+### Phase 16.d research (DONE 2026-04-27, docs-only)
+
+Research-only commit reads five Blink files (`box_fragment_painter.cc`, `block_break_token.h`, `box_fragment_builder.cc/h`, `fragmentation_utils.cc`, `column_layout_algorithm.cc`) to resolve Hypothesis A (painter clip) vs B (multi-fragment slicing). **B is correct.** The brief's proposed mechanism (`MonolithicOverflow` on `BlockBreakToken`) is wrong: that carrier is print-only in Blink (gated by `IsPaginated()`), not the multicol mechanism. The actual mechanism is **regular CSS block fragmentation via `DidBreakSelf` + `BlockBreakToken.ConsumedBlockSize`**, plus `TallestUnbreakableBlockSize` for `break-inside:avoid` content. Revised three-sub-fix plan in `findings.md` § "Phase 16.d Blink research". Gate unchanged.
+
 ## Phase 16.c-19 plan (research complete, briefs in findings.md)
 
 Detailed Blink-parity analysis lives in `findings.md`. Each brief includes Blink source citations (file:line), our current code state, implementation plan, test driver order, and tractability rating.

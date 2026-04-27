@@ -16,7 +16,7 @@ css-multicol is the active layout-feature track at **167/455 committed**. Recent
 5. **Phase 17** — Forced-break balance (T2, ~5 tests, MEDIUM) — **NEXT**. Rewrites `resolveColumnAutoBlockSize` (`multicol_layout.go:1396`) with Blink-parity `ContentRun`/`ContentRuns`/`DistributeImplicitBreaks` measure-pass loop. Brief: `findings.md` § Phase 17.
 6. **Phase 18** — Nested multicol break-token forwarding (T3, ~15 tests, HARD). Adds `MulticolBreakTokenData` carrier on `BlockBreakToken`. Brief: `findings.md` § Phase 18.
 7. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
-8. **Phase 16.d** (TBD, prerequisite for re-attempting 16.c.2) — port Blink's per-column-fragment splitting of monolithic content. Until done, `ClipBlockAxisOnly` stays as a load-bearing workaround.
+8. **Phase 16.d** (research DONE 2026-04-27, code QUEUED, prerequisite for re-attempting 16.c.2) — three sub-fixes: (16.d.1) per-fragment block-size clamp + DidBreakSelf carrier in block_layout.go; (16.d.2) LayoutResult.TallestUnbreakableBlockSize + IsInitialColumnBalancingPass setter; (16.d.3) tallestUnbreakable floor in constrainColumnBlockSize. Brief: `findings.md` § "Phase 16.d Blink research". Until done, `ClipBlockAxisOnly` stays as a load-bearing workaround.
 
 **Gate invariants (committed at HEAD `2aa01920`):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **167/455** · spanner-fragmentation 7/13.
 
@@ -149,11 +149,16 @@ Removed `ClipBlockAxisOnly` setter (`multicol_layout.go`) + paint-side branch (`
 
 **See `findings.md` § "Phase 16.c.2 attempt — what we learned"** for the complete retrospective and pointer to Phase 16.d.
 
-### Phase 16.d — PROPOSED (prerequisite for re-attempting 16.c.2)
+### Phase 16.d — PROPOSED (prerequisite for re-attempting 16.c.2; research DONE 2026-04-27)
 
-Port Blink's per-column-fragment splitting of monolithic content. Search Blink for how `block_layout_algorithm.cc` decides to split a monolithic child at the column boundary when `is_block_fragmentation_context_root_` and the inner `BlockFragmentationType == FragmentColumn`. Likely involves `tallest_unbreakable_block_size_` plumbing into `ContentRun` measurements + a per-column-fragment offset on the unbreakable block. Tractability: high; brief TBD.
+Research commit (research-only) reads `box_fragment_painter.cc:1080-1114`, `block_break_token.h:96-106`, `box_fragment_builder.cc:519-569`, `fragmentation_utils.cc:510-1113`, `column_layout_algorithm.cc:1879-1948`. Resolves Hypothesis A (paint-clip) vs B (multi-fragment slicing) — **B is correct**, but the brief's proposed mechanism (`MonolithicOverflow` carrier) is wrong. `MonolithicOverflow` in Blink is **strictly print-only** (gated by `IsPaginated()`) and would not fire on any multicol test. The actual mechanism is **regular CSS block fragmentation via `DidBreakSelf` + `BlockBreakToken.ConsumedBlockSize`**, plus `TallestUnbreakableBlockSize` for `break-inside:avoid` content.
 
-Once Phase 16.d lands, retry 16.c.2 — it should then be net-positive (the 13 newly-broken tests recover via proper fragmentation, and the 5 already-recovered tests stay recovered).
+Three independent sub-fixes (revised plan in `findings.md` § "Phase 16.d Blink research"):
+- **16.d.1** — Per-fragment block-size clamp in `block_layout.go` final-size computation. Add `LayoutResult.DidBreakSelf bool`. When `space.HasBlockFragmentation && finalBlockSize > spaceLeft`, clamp to spaceLeft and emit a continuation `BlockBreakToken` with updated `ConsumedBlockSize`. Mirrors Blink `FinishFragmentation` (fragmentation_utils.cc:636-657). Should recover most of the 13 driver tests (5 column-height + 3 spanner-fragmentation + several misc, all of which use ordinary blocks, not `break-inside:avoid`).
+- **16.d.2** — `LayoutResult.TallestUnbreakableBlockSize float64` + `IsInitialColumnBalancingPass` setter in `fragmentation_utils.go.BreakBeforeChildIfNeeded` for `break-inside:avoid` children + builder propagation. Required for `multicol-nested-030/031` only.
+- **16.d.3** — Floor `constrainColumnBlockSize` by `tallestUnbreakableBlockSize` (sibling to Phase 16.c.1's `minimumColumnBlockSize` floor). Mirrors `cla.cc:1942-1948`.
+
+Once 16.d.1+16.d.2+16.d.3 land, retry 16.c.2 (clip removal) — it should then be net-positive (every fragment sized to its fragmentainer at layout time, the per-column clip is redundant).
 
 ---
 

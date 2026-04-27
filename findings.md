@@ -624,6 +624,181 @@ The newly-broken cluster reveals the deeper gap. In Blink, `column-wrap:wrap` + 
 
 ---
 
+### Phase 16.d Blink research (2026-04-27) — slicing vs clipping resolved
+
+Research-only commit. The CONTINUE-16d.md brief proposed porting Blink's `MonolithicOverflow` carrier (on `BlockBreakToken`) plus `TallestUnbreakableBlockSize` (on `LayoutResult`) to handle the 13 driver tests broken when 16.c.2 removed `ClipBlockAxisOnly`. Reading the actual Blink sources resolves the brief's open question (Hypothesis A reserve+paint-clip vs B multi-fragment slicing) and reveals that **Hypothesis B is correct, but the proposed mechanism in the brief is wrong**: `MonolithicOverflow` is print-only in Blink (gated by `IsPaginated()`), not the multicol mechanism. The actual gap in louis14 is **per-fragment block-size clamping** when a regular block resumes from an incoming `BlockBreakToken` inside a column fragmentainer. This re-shapes the implementation plan.
+
+**File 1: `third_party/blink/renderer/core/paint/box_fragment_painter.cc:1080-1114` — `PaintBlockChild` fragmentainer branch.** Verbatim:
+
+```cpp
+const auto& box_child_fragment = To<PhysicalBoxFragment>(child_fragment);
+if (box_child_fragment.CanTraverse()) {
+  if (box_child_fragment.IsFragmentainerBox()) {
+    // It's normally FragmentData that provides us with the paint offset.
+    // FragmentData is (at least currently) associated with a LayoutObject.
+    // If we have no LayoutObject, we have no FragmentData, so we need to
+    // calculate the offset on our own (which is very simple, anyway).
+    // Bypass Paint() and jump directly to PaintObject(), to skip the code
+    // that assumes that we have a LayoutObject (and FragmentData).
+    PhysicalOffset child_offset = paint_offset + child.offset;
+
+    // This is a fragmentainer, and when a node inside a fragmentation context
+    // paints multiple block fragments, we need to distinguish between them
+    // somehow, for paint caching to work. Therefore, establish a display item
+    // scope here.
+    unsigned identifier = FragmentainerUniqueIdentifier(box_child_fragment);
+    ScopedDisplayItemFragment scope(paint_info.context, identifier);
+    BoxFragmentPainter(box_child_fragment)
+        .PaintObject(paint_info, child_offset);
+    return;
+  }
+```
+
+`ScopedDisplayItemFragment` is a paint-cache identifier scope, not a clip recorder, scroll-translation, or paint-offset adjustment. **There is no painter-side per-fragmentainer clip and no painter-side slicing.** Hypothesis A from the brief is fully refuted.
+
+**File 2: `third_party/blink/renderer/core/layout/block_break_token.h:96-106` — `MonolithicOverflow` is print-only.** Verbatim:
+
+```cpp
+// The amount of monolithic fragmentainer overflow.
+//
+// Fragmentainer overflow occurs when there is monolithic content, and when
+// printing, we record it here, in order to steer clear of it on subsequent
+// pages.
+//
+// This value is only used (and set) when printing.
+LayoutUnit MonolithicOverflow() const {
+  DCHECK(!is_repeated_actual_break_);
+  return monolithic_overflow_;
+}
+```
+
+The propagation site in `box_fragment_builder.cc:519-552` confirms it: `MonolithicOverflow` is gated by `GetConstraintSpace().IsPaginated()` and `Node().IsPaginatedRoot()`. It is **strictly the print-time mechanism for laying out tall replaced/monolithic content across pages**, not the multicol mechanism. Reserving space in subsequent column fragmentainers via `ReserveSpaceForMonolithicOverflow` is a no-op for multicol because `IsPaginated()` is false. Porting this carrier as the brief proposed would not fire on any of the 13 driver tests.
+
+**File 3: `third_party/blink/renderer/core/layout/fragmentation_utils.cc` — the multicol mechanism is `TallestUnbreakableBlockSize`.** Three sites:
+
+(a) Setter — `BreakBeforeChildIfNeeded` lines 1105-1113:
+```cpp
+if (space.IsInitialColumnBalancingPass() && builder &&
+    ShouldAvoidBreakInside(space, layout_result)) {
+  // If this is the initial column balancing pass, attempt to make the column
+  // block-size at least as large as the tallest piece of monolithic content
+  // and/or block with break-inside:avoid.
+  LayoutUnit block_size = CalculateUnbreakableBlockSize(
+      space, layout_result, fragmentainer_block_offset);
+  builder->PropagateTallestUnbreakableBlockSize(block_size);
+}
+```
+
+(b) Border/padding contribution — `SetupFragmentation` lines 510-514:
+```cpp
+if (space.IsInitialColumnBalancingPass()) {
+  const BoxStrut& unbreakable = builder->BorderScrollbarPadding();
+  builder->PropagateTallestUnbreakableBlockSize(unbreakable.block_start);
+  builder->PropagateTallestUnbreakableBlockSize(unbreakable.block_end);
+}
+```
+
+(c) Builder propagation — `box_fragment_builder.cc:566-569`:
+```cpp
+if (GetConstraintSpace().IsInitialColumnBalancingPass()) {
+  PropagateTallestUnbreakableBlockSize(
+      child_layout_result.TallestUnbreakableBlockSize());
+}
+```
+
+**File 4: `third_party/blink/renderer/core/layout/column_layout_algorithm.cc:1879-1948` — consumer.**
+
+```cpp
+tallest_unbreakable_block_size_ = std::max(
+    tallest_unbreakable_block_size_, result->TallestUnbreakableBlockSize());
+// ... (loop) ...
+if (GetConstraintSpace().IsInitialColumnBalancingPass()) {
+  // Nested column balancing. Our outer fragmentation context is in its
+  // initial balancing pass, so it also wants to know the largest unbreakable
+  // block-size.
+  container_builder_.PropagateTallestUnbreakableBlockSize(
+      tallest_unbreakable_block_size_);
+}
+// ...
+if (tallest_unbreakable_block_size_ >=
+    content_runs.TallestContentBlockSize()) {
+  return ConstrainColumnBlockSize(tallest_unbreakable_block_size_,
+                                  line_offset, available_outer_space);
+}
+```
+
+`ConstrainColumnBlockSize` (cla.cc:1938-1948) then floors:
+```cpp
+// Avoid becoming shorter than the tallest piece of unbreakable content.
+size = std::max(size, tallest_unbreakable_block_size_);
+
+if (is_constrained_by_outer_fragmentation_context_) {
+  // Don't become too tall to fit in the outer fragmentation context.
+  size = std::min(size, available_outer_space.ClampNegativeToZero());
+}
+```
+
+**File 5: `fragmentation_utils.cc:542-657` — `FinishFragmentation` clamps overflowing fragments.** Verbatim:
+
+```cpp
+} else if (space_left != kIndefiniteSize && desired_block_size > space_left &&
+           space.HasBlockFragmentation()) {
+  // We're taller than what we have room for. We don't want to use more than
+  // |space_left|, but if the intrinsic block-size is larger than that, it
+  // means that there's something unbreakable (monolithic) inside (or we'd
+  // already have broken inside). We'll allow this to overflow the
+  // fragmentainer.
+  DCHECK_GE(desired_intrinsic_block_size, trailing_border_padding);
+  DCHECK_GE(desired_block_size, trailing_border_padding);
+
+  LayoutUnit modified_intrinsic_block_size = std::max(
+      space_left, desired_intrinsic_block_size - subtractable_border_padding);
+  builder->SetIntrinsicBlockSize(modified_intrinsic_block_size);
+  final_block_size =
+      std::min(desired_block_size - subtractable_border_padding,
+               modified_intrinsic_block_size);
+
+  // We'll only need to break inside if we need more space after any
+  // unbreakable content that we may have forcefully fitted here.
+  if (final_block_size < desired_block_size)
+    builder->SetDidBreakSelf();
+}
+```
+
+This is the **regular CSS block fragmentation** clamp: when a block's full size exceeds the column-fragmentainer's `space_left`, the fragment is clamped to `min(desired_block_size, modified_intrinsic_block_size)` and `DidBreakSelf` is set so the next fragmentainer gets a continuation break-token. There is no special "monolithic content" branch — same code handles everything.
+
+**Resolution of Hypothesis A vs B.** Hypothesis B is correct: each column fragmentainer holds a separate `PhysicalBoxFragment` of the original block, sized to fit the column. The mechanism is **regular block fragmentation via `DidBreakSelf` + outgoing `BlockBreakToken` with updated `ConsumedBlockSize`**, not a print-time `MonolithicOverflow` carrier and not a paint-time clip. For `column-height-001` (a `height:200px` div with no `break-inside:avoid` in `column-wrap:wrap; column-height:50px` columns), the chain is: column 1 lays out the block, `desired_block_size=200 > space_left=50`, FinishFragmentation clamps fragment to 50, sets `DidBreakSelf`, emits break-token with `ConsumedBlockSize=50`. Column 2 resumes from break-token, `previously_consumed_block_size=50`, lays out the same block with `space_left=50`, fragment clamped to 50 again, break-token `ConsumedBlockSize=100`. Repeats four times across the 2×2 column-wrap row grid. Each fragment naturally has its own block-size = column height; nothing overflows; the painter has nothing to clip.
+
+**The louis14 gap.** `block_layout.go:1338-1353` already reads `incomingBreakToken.ConsumedBlockSize` and computes `remaining = explicitBlockSize - consumed`, but **does NOT clamp to the fragmentainer's `space_left`**. The resumed fragment is sized `remaining` (e.g. 150 for the second slot of a 200-tall block in 50-tall columns), which still overflows. There is no `DidBreakSelf` equivalent producing a follow-on `BlockBreakToken` for the remaining 100px after that 50px slot. So louis14 produces:
+- Column 1: fragment of size 200 placed at offset 0 in a 50-tall column, the per-column clip in paint masks the bottom 150.
+- Column 2 (post-Phase-12f row-wrap): the wrap path resumes the multicol child, but each per-column fragment of the resumed flow again gets sized by `remaining` rather than clamped to fragmentainer-space — and the inner block's contribution within each column is still sized by its full declared height minus consumed, not by the column.
+
+That's why `ClipBlockAxisOnly` was load-bearing for the 13 driver tests: it hides the over-sized fragment block-size that should have been clamped to fragmentainer space at layout time.
+
+**Revised Phase 16.d implementation plan (replaces CONTINUE-16d.md outline).** Three independent fixes, in order of test-impact:
+
+1. **16.d.1 — Per-fragment block-size clamp + DidBreakSelf carrier.** Add `LayoutResult.DidBreakSelf bool` (Blink: `BoxFragmentBuilder::SetDidBreakSelf` → fragment flag). In `block_layout.go` final-size computation (`block_layout.go:1338-1353` cluster), when `space.HasBlockFragmentation && finalBlockSize > space_left`, clamp `finalBlockSize = space_left` and set `DidBreakSelf`. Emit a continuation `BlockBreakToken` with `ConsumedBlockSize = previouslyConsumed + finalBlockSize` even if no inner child broke (the BLOCK ITSELF needs to be resumed). This is the equivalent of FinishFragmentation's `else if (space_left != kIndefiniteSize && desired_block_size > space_left && space.HasBlockFragmentation())` branch. **This single fix should recover most of the 5 column-height-* and 3 spanner-fragmentation-* drivers**, because once each column-fragment is sized to its column, the per-column clip is redundant.
+
+2. **16.d.2 — `LayoutResult.TallestUnbreakableBlockSize` carrier + `IsInitialColumnBalancingPass` path.** Add `LayoutResult.TallestUnbreakableBlockSize float64` (default 0). Setter: in `BreakBeforeChildIfNeeded` (louis14: `pkg/layout/fragmentation_utils.go`), when `space.IsInitialColumnBalancingPass && shouldAvoidBreakInside(layoutResult)`, compute `unbreakableBlockSize = layoutResult.IntrinsicBlockSize` (or the equivalent of Blink's `CalculateUnbreakableBlockSize`) and propagate via `builder.PropagateTallestUnbreakableBlockSize(...)`. Builder-side: `PropagateTallestUnbreakableBlockSize` takes max. Border/padding contributions in `SetupFragmentation` equivalent. Threading: `BoxFragmentBuilder.tallestUnbreakableBlockSize` field → `LayoutResult.TallestUnbreakableBlockSize`. **Required for `multicol-nested-030/031`** (`break-inside:avoid; height:400px` in nested multicol). Without this carrier, the inner multicol's column-block-size doesn't grow to encompass the unbreakable block.
+
+3. **16.d.3 — Floor `constrainColumnBlockSize` by `tallestUnbreakableBlockSize`.** Mirror `cla.cc:1942-1948`: `size = std::max(size, tallest_unbreakable_block_size_); if outerFrag { size = std::min(size, availableOuterSpace) }`. Threaded as a sibling of the existing `minimumColumnBlockSize` (Phase 16.c.1's regrowth carrier). The two are independent: 16.c.1 is post-loop tail-recursion, 16.d.3 is pre-loop initial-balance estimate. Both feed the same constrain function. **Required for `multicol-nested-030/031` to size their inner-multicol columns correctly.**
+
+After 16.d.1+16.d.2+16.d.3, the per-column `ClipBlockAxisOnly` is no longer load-bearing — every fragment is sized to its fragmentainer at layout time. Then 16.c.2 retry deletes the clip (mechanical).
+
+**Why the brief's plan was wrong.** The brief assumed `MonolithicOverflow` was the multicol slicing mechanism. It isn't — it's print-only in Blink, and porting it would not have fired on any of the 13 driver tests. The brief also conflated "monolithic" content (true `break-inside:avoid` or replaced) with "regular block content larger than the column" (`column-height-001`'s `<div style="height:200px;">`). Only 2 of the 13 driver tests use `break-inside:avoid` (multicol-nested-030/031); the rest are regular fragmentation. The dominant fix is 16.d.1 (per-fragment block-size clamp); 16.d.2/16.d.3 (TallestUnbreakable) are a smaller, narrower fix for the break-inside:avoid pair.
+
+**Driver-test prioritization.**
+- `column-height-001` is the simplest: regular block, column-wrap:wrap. 16.d.1 alone should fix it.
+- `multicol-nested-030/031` needs 16.d.2+16.d.3 too.
+- `spanner-fragmentation-001/004/006`: regular block, column-fill:auto, post-spanner column heights — likely 16.d.1.
+- `multicol-rule-nested-balancing-004`, `nested-floated-multicol-with-monolithic-child`, `nested-past-fragmentation-line`: investigate per-test once 16.d.1 lands.
+
+**Risk surface for 16.d.1.** The block-size clamp changes the contract for every block layout result — a fragment is now allowed to be smaller than `finalBlockSize` declared. Any caller that consumes `result.PhysicalFragment.BlockSize` and assumes "this is the full declared height" will break. Audit: `multicol_layout.go` consumers, `block_layout.go` parent-side consumers, paint-side height readers. Likely sites: `BSFF` propagation (Phase 14b adds BSFF-from-children), border/padding inclusion logic, column-balance estimation. The Phase 14b BSFF "what content needs" semantic is unaffected — BSFF is set BEFORE the clamp, so it still represents intended-size for parent's BLA decisions; only the actual fragment block-size shrinks.
+
+**Risk surface for 16.d.2/16.d.3.** Touches the initial balancing pass shape. Phase 17 (forced-break balance, `ContentRuns`/`DistributeImplicitBreaks`) also rewrites this area. To avoid double-rewrite, 16.d.2 carrier infra can land first (cheap, zero-impact on balance loop), and the consumer site can be adjusted for whichever phase lands first.
+
+---
+
 ### Phase 17 brief — Forced-break balance (target T2, ~5 tests)
 
 **Failing tests.** `multicol-fill-balance-040` family (`-038, -039, -040, -041`) plus subset of `-029..-036`. Pattern: N forced `break-before:column` children inside `columns: K`. Expected: column-count expands to N+1 when N ≥ K, with each forced break getting its own column at content-determined height.
