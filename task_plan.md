@@ -1,32 +1,30 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — Phase 17 DONE; v1 SUPERSEDED; v2 Step 0 + B0 DONE; B1 next)
+## Current focus (2026-04-28 — v2 B0+B1+B2+B3 DONE; HARD EXIT B3 at 10/13; operator decision required)
 
 **v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". Operational continuation: `CONTINUE-18.md`. v1 brief preserved but marked SUPERSEDED in findings.md.
 
 **Worktree progress on `phase-16e-18-walker-carrier`:**
 
-1. **Cmt 1 (`43ec8c66`):** schema + walker scaffold. 13/13.
-2. **Cmt 2 (`a8ea3adb`):** walker READ + positional WRITE. 11/13.
-3. **Cmt 3 v1 ATTEMPT REVERTED.** Diff preserved in `git stash@{0}` for B5 reuse.
-4. **Step 0 + B0 DONE (`fdb9343a`):** Step 0 diagnostic confirmed contentNode pointer instability as the walker-dispatch root cause. B0 fix = cache contentNode on `mla.node.contentNodeCache` (1 field + 5 lines). **13 drivers: 13/13 at 0 diff.** Both pre-existing -001 (0.8%) and -006 (1.4%) regressions cleared. Full data: findings.md error log entry "v2 Step 0 diagnostic + B0 cache fix".
+1. Cmt 1 (`43ec8c66`): schema + walker scaffold. 13/13.
+2. Cmt 2 (`a8ea3adb`): walker READ + positional WRITE. 11/13.
+3. Cmt 3 v1 attempt REVERTED. Diff preserved in `git stash@{0}` for B5.
+4. B0 (`fdb9343a`): contentNode pointer cache fix. 11/13 → 13/13.
+5. B1 (`8e2aa078`): TallestUnbreakable scaffold. 13/13.
+6. B2 (`f513f338`): wired carrier (BreakBeforeChildIfNeeded + BLA child loop + multicol consumer). Skipped monolithic detection + SetupFragmentation border/padding. 13/13.
+7. B3 (`f97e4ac0`): mechanical `ClipBlockAxisOnly` removal. **10/13 — HARD EXIT.** 3 residuals: `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (2.1% — regressed from Spike A's 1.0%), `spanner-fragmentation-006` (0.2%).
 
 **v2 sequence (status):**
 
 | # | Status |
 |---|---|
-| Step 0 | DONE |
-| B0 (cache fix) | DONE on worktree `fdb9343a` |
-| **B1 (NEXT)** | TallestUnbreakable field on LayoutResult + builder method |
-| B2 | Wire propagation (BreakBeforeChildIfNeeded + SetupFragmentation + child-result + populate at multicol_layout.go:1601) |
-| B3 | Mechanical `ClipBlockAxisOnly` removal |
-| B4 | Re-verify walker READ |
-| B5 | Walker WRITE flat (apply Cmt 3 stash + B3 reconciliation) |
-| B6 | Phase 18 `ConsumedRowBlockSize` carrier WRITE site |
-| B7 | Drop `IsInsideColumnSpanner` clamp gate |
-| B8 | Sweep + worktree merge |
+| ~~Step 0 / B0 / B1 / B2 / B3~~ | DONE |
+| **B2.5 / pause / accept (operator decision)** | TBD |
+| B4 / B5 / B6 / B7 / B8 | TBD post-decision |
 
-**Note:** column-height-008 hangs at clean baseline regardless of cache fix (10m timeout). Pre-existing issue, not caused by B0. Track separately; relevant for B8 sweep planning.
+Per v2 brief, do NOT proceed past hard exit B3 without operator decision. Four options in `CONTINUE-18.md` § "Hard exit B3 — next-step options". Recommended: extend B2 with monolithic detection (after tracing -004's regression). The 3 residuals all involve monolithic content (`contain:size` block, spanners with content > declared height). Blink's `ShouldAvoidBreakInside` checks `IsMonolithic()` ∨ `IsAvoidBreakValue(...)`; louis14 only has the second clause.
+
+**Note:** column-height-008 hangs at clean baseline regardless of cache fix (10m timeout). Pre-existing issue.
 
 **Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commits `a6446061` + `c40b4b56` + docs `50de102c` + `68b74171` + `65ae87df`). All 13 driver tests PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
 

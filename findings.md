@@ -1896,6 +1896,44 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 - **Root cause:** louis14's `ClipBlockAxisOnly` workaround (Phase 12h F2 partial) creates a "clip-only mid-spanner" code path at `multicol_layout.go:786-790` (Commit 2 numbers). When a spanner clips at the outer fragmentainer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content (e.g., spanner_3 / trailing block in `-001`'s 3-spanner+block test). The OLD (pre-Commit-2) 3-slot encoding solved this via slot[0] = `beforeSpannerToken = {Node: contentNode, ChildBreakTokens: [{Node: spanner, IsBreakBefore: true}]}` — a column-content driver that on resume drove BLA via layoutLine to re-discover post-spanner content via spannerPath returns. The walker model elides this driver by design.
 - **Status:** Reverted. Worktree restored to `a8ea3adb`. Commit 3 attempt diff preserved in worktree `git stash@{0}`. Brief corrected (see notice at top of "Phase 16.e + 18 BUNDLED BRIEF" section). DO NOT retry Commit 3 without re-confirming sequencing with operator.
 
+**2026-04-28 — v2 B1 + B2 + B3 LANDED on worktree (`8e2aa078`, `f513f338`, `f97e4ac0`); HARD EXIT B3 at 10/13.**
+
+- **B1 (`8e2aa078`):** TallestUnbreakableBlockSize field on LayoutResult + PropagateTallestUnbreakableBlockSize method on BoxFragmentBuilder + Build()-site population. No callers; behavior unchanged. 13/13 drivers PASS.
+- **B2 (`f513f338`):** wired carrier propagation at three sites:
+  - `fragmentation_utils.go`: ShouldAvoidBreakInside + CalculateUnbreakableBlockSize helpers; BreakBeforeChildIfNeeded propagates the child's contribution during initial column-balancing pass when child has break-inside:avoid (mirrors Blink fragmentation_utils.cc:1105-1113).
+  - `block_layout.go`: BLA child loop propagates child's accumulated tallest unbreakable up to the current builder during initial column-balancing pass (mirrors box_fragment_builder.cc:566-569).
+  - `multicol_layout.go:resolveColumnAutoBlockSize`: max'd across measure-pass iterations; floored against the resolved column block-size at the final clamp (mirrors cla.cc:1879-1948).
+  - **Skipped:** SetupFragmentation border/padding contribution (fragmentation_utils.cc:510-514) and outer-multicol forwarding. Brief said "add if B3 exposes a regression."
+  - **Skipped:** monolithic detection in ShouldAvoidBreakInside. louis14 lacks IsMonolithic flag on PhysicalFragment; ShouldAvoidBreakInside currently only checks style break-inside. v2 brief flagged this as a gap.
+  - 13/13 drivers PASS at 0 diff.
+- **B3 (`f97e4ac0`):** mechanical ClipBlockAxisOnly removal — setter, paint branch, struct fields (Box.ClipBlockAxisOnly, PhysicalFragment.ClipBlockAxisOnly), engine.go propagation. Mirrors Blink's no-per-column-paint-clip.
+
+**B3 driver result: 10/13.** Below the v2 brief's 11/13 hard-exit threshold. Three residuals all involve monolithic-shape content the carrier doesn't yet detect:
+
+| Test | Status | Diff | Pattern |
+|---|---|---|---|
+| `nested-floated-multicol-with-monolithic-child` | FAIL | 0.2% | float with `contain:size` 100h box containing 90h green; contain:size is per-spec monolithic but louis14 doesn't tag it |
+| `spanner-fragmentation-004` | FAIL | 2.1% | 50h spanner declared height with 200h of children; children's 150h overflow exposed without clip; spanners are implicitly monolithic for column-balance but louis14 doesn't propagate this |
+| `spanner-fragmentation-006` | FAIL | 0.2% | similar to -004; closer to passing but residual remains |
+
+`-004` actually regressed vs Spike A's 1.0% (now 2.1%). B2's carrier wiring may be misfiring on this test specifically; needs trace if option (1) below is taken.
+
+**Why the hard exit:** v2 brief explicitly anticipated this signal — `ShouldAvoidBreakInside` currently checks only the style-level `break-inside:avoid` property, but Blink's version also checks `result.GetPhysicalFragment().IsMonolithic()`. The 3 residuals all need the monolithic clause. v2 brief: "If B3 exposes a test where monolithic detection is required, extend PhysicalFragment + ShouldAvoidBreakInside then."
+
+**Next-step options (operator decision required):**
+
+1. **Add monolithic detection (B2.5).** Extend PhysicalFragment with `IsMonolithic bool` flag (or use existing IsInsideColumnSpanner-like heuristics + replaced-element detection). Update `ShouldAvoidBreakInside` to also return true for monolithic fragments. Spanners should propagate their content height as TallestUnbreakable when they're "implicit monolithic" (declared height < content height). Estimated 30-50 lines.
+
+2. **Add SetupFragmentation border/padding contribution.** v2 brief skipped this site — unlikely to close these tests but quick to verify (~10 lines).
+
+3. **Accept 10/13 as floor; proceed to B5.** Document the 3 residuals as deferred; B5 walker WRITE flat under 10/13 baseline; potentially close residuals at B7 (drop IsInsideColumnSpanner gate — might let spanner children self-fragment via 16.d.1's clamp).
+
+4. **Revert B3.** Keeps clip in tree as the workaround; pause the bundled phase. Means the walker port (B5) can't proceed cleanly because clip-only-mid-spanner code path still exists.
+
+Worktree state: `f97e4ac0` (B3). 4-category invariants intact (1499/6720, 16 known-fails). DO NOT proceed past hard exit B3 without operator decision.
+
+---
+
 **2026-04-28 — v2 Step 0 diagnostic + B0 cache fix (LANDED on worktree `fdb9343a`).**
 
 - **Diagnostic question:** Why does walker WRITE-flat × no-clip break column-height-026/027 + multicol-nested-030/031 (Spike B's 4 walker-flat-specific regressions)?

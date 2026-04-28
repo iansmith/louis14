@@ -44,9 +44,18 @@ WRITE-site flattening (all 6 brief sites + a self-derived `flushWalker` mirrorin
 
 **v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". v1 brief preserved but marked SUPERSEDED. Sequence: Step 0 diagnostic → B0 cache fix → B1+B2 carrier port → B3 clip removal → B4 re-verify → B5 walker WRITE flat → B6 Phase 18 carrier WRITE → B7 drop 16.d.1 gate → B8 sweep + merge.
 
-**Step 0 + B0 DONE 2026-04-28 (worktree `fdb9343a`).** Diagnostic identified the root cause as contentNode pointer instability in walker dispatch. `MulticolLayoutAlgorithm.Layout()` allocated a fresh `contentNode` each call; the walker's `child.Node == multicolContainer` identity check failed on resume, mis-dispatching every column-content resume as a spanner. Fix = cache contentNode on `mla.node` (1 field + 5 lines). **Driver result: 11/13 → 13/13 at 0 diff.** Both pre-existing -001 (0.8%) and -006 (1.4%) regressions clear. Full Step 0 matrix and diagnostic detail in findings.md error log entry "v2 Step 0 diagnostic + B0 cache fix".
+**Step 0 + B0 + B1 + B2 + B3 DONE 2026-04-28; HARD EXIT B3 at 10/13.**
 
-**Next: B1.** `TallestUnbreakableBlockSize` field on `LayoutResult` + builder method (no propagation wiring yet — that's B2). Operational continuation: `CONTINUE-18.md`. Hooks already TODO'd at multicol_layout.go:1576+1601.
+- **Step 0 + B0 (`fdb9343a`):** contentNode pointer cache fix. 11/13 → 13/13.
+- **B1 (`8e2aa078`):** TallestUnbreakable field + builder method scaffold. 13/13.
+- **B2 (`f513f338`):** wired carrier propagation in BreakBeforeChildIfNeeded + BLA child loop + multicol consumer. 13/13. **Skipped: monolithic detection in ShouldAvoidBreakInside** (louis14 lacks IsMonolithic flag) and SetupFragmentation border/padding.
+- **B3 (`f97e4ac0`):** mechanical clip removal — setter, paint branch, fields, propagation. **10/13** — below v2 brief's 11/13 hard-exit threshold. 3 residuals: `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (2.1%, regressed from Spike A's 1.0% — needs trace), `spanner-fragmentation-006` (0.2%).
+
+All 3 residuals involve monolithic content (`contain:size` block, spanners with content > declared height). B2's carrier doesn't yet detect these; only the style-level `break-inside:avoid` clause is implemented. Blink's also checks `IsMonolithic()`.
+
+**HARD EXIT — operator decision required.** Four options in `CONTINUE-18.md` § "Hard exit B3 — next-step options". Recommended: extend B2 with monolithic detection (B2.5), trace -004's regression first.
+
+DO NOT proceed past B3 to B5 without operator decision. v2 brief explicitly mandates STOP at this signal; piling predicates risks compounding wrongness through subsequent commits.
 
 ---
 
