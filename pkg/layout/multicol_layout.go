@@ -291,10 +291,18 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			}
 		}
 	}
-	// Phase 12f: MulticolBreakTokenData row phase carry across outer
-	// fragmentainers (cla.cc:2087). Default 0 on fresh layout; wired from the
-	// break token when 12f.6 lands.
+	// MulticolBreakTokenData row phase carry across outer fragmentainers.
+	// Mirrors Blink's OffsetInCurrentRow read site (cla.cc:2122-2139)
+	// which adds GetBreakToken()->TokenData()->consumed_row_block_size to
+	// the line offset before the modulo against row_stride. Phase 16.e+18
+	// step 1 (scaffold): the carrier field exists on BlockBreakToken
+	// (`MulticolData *MulticolBreakTokenData`); the WRITE site lands in
+	// step 4. Until then MulticolData is always nil and behavior is
+	// unchanged.
 	mla.consumedRowBlockSize = 0
+	if mla.space.BreakToken != nil && mla.space.BreakToken.MulticolData != nil {
+		mla.consumedRowBlockSize = mla.space.BreakToken.MulticolData.ConsumedRowBlockSize
+	}
 
 	// F3 (2026-04-24): row-gap between column rows when column-wrap:wrap.
 	// Resolve once per layout; `normal` computes to 1em. Matches Blink's
