@@ -241,6 +241,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			childLogical: childLogical,
 			fragment:     childResult.Fragment,
 		}
+		// Phase 20 P20.6 (float extension): floats with break-inside:avoid
+		// (or otherwise monolithic) within an IFC contribute their block-size
+		// as TallestUnbreakable during the multicol initial column-balancing
+		// pass. Mirrors Blink fragmentation_utils.cc:1105-1113 — any
+		// ShouldAvoidBreakInside child propagates its block-extent so the
+		// multicol's column auto-block-size grows to fit. Without this,
+		// a float with break-inside:avoid larger than the natural column
+		// estimate gets cropped by P20.5's container OverflowClip.
+		if bla.space.IsInitialColumnBalancingPass &&
+			childResult != nil &&
+			ShouldAvoidBreakInside(bla.space, childResult) {
+			builder.PropagateTallestUnbreakableBlockSize(childLogical.BlockSize() + childMargins.BlockSum())
+		}
 	}
 
 	// placeFloat positions a single pending float at the given BFC block
