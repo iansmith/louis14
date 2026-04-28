@@ -84,6 +84,25 @@ type Box struct {
 	// containers, forwarded from PhysicalFragment.GapGeometry at paint time.
 	// Nil for non-multicol fragments or when no gap rules apply.
 	GapGeometry *GapGeometry
+
+	// IsColumnBox marks this Box as a multicol column fragmentainer
+	// (forwarded from PhysicalFragment.BoxType == BoxTypeColumn).
+	// Mirrors Blink PhysicalFragment::IsColumnBox. Read by the
+	// column-rule painter (P20.4) to derive rule extents from the
+	// actual placed column fragments rather than from the multicol
+	// container's full content area, and reserved for future paint-
+	// time fragmentainer behaviour. Default false on all other boxes.
+	IsColumnBox bool
+
+	// IsMulticolContainer marks this Box as a multicol container
+	// (forwarded from PhysicalFragment.IsMulticolContainer). Mirrors
+	// the structural condition that makes Blink's
+	// LayoutBox::HasNonVisibleOverflow() return true for multicol —
+	// the fragmentation context establishes an overflow clip even
+	// with computed `overflow: visible`. Consumed by the paint layer
+	// (P20.5) to apply a padding-box overflow clip mirroring Blink's
+	// default OverflowClipRect for non-scroll containers.
+	IsMulticolContainer bool
 }
 
 // CreatesStackingContext returns true if this box establishes a new

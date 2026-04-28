@@ -241,6 +241,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			childLogical: childLogical,
 			fragment:     childResult.Fragment,
 		}
+		// Phase 20 P20.6 (float extension): floats with break-inside:avoid
+		// (or otherwise monolithic) within an IFC contribute their block-size
+		// as TallestUnbreakable during the multicol initial column-balancing
+		// pass. Mirrors Blink fragmentation_utils.cc:1105-1113 — any
+		// ShouldAvoidBreakInside child propagates its block-extent so the
+		// multicol's column auto-block-size grows to fit. Without this,
+		// a float with break-inside:avoid larger than the natural column
+		// estimate gets cropped by P20.5's container OverflowClip.
+		if bla.space.IsInitialColumnBalancingPass &&
+			childResult != nil &&
+			ShouldAvoidBreakInside(bla.space, childResult) {
+			builder.PropagateTallestUnbreakableBlockSize(childLogical.BlockSize() + childMargins.BlockSum())
+		}
 	}
 
 	// placeFloat positions a single pending float at the given BFC block
@@ -1012,6 +1025,44 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				IsFixedPosition: d.isFixed,
 				InlineContainer: d.inlineContainer,
 			})
+		}
+
+		// Phase 20 P20.6: during the multicol initial column-balancing
+		// pass, propagate each atomic inline's block-extent as a
+		// TallestUnbreakable contribution. Atomic inlines (display:
+		// inline-block, inline-flex, inline-grid, inline-table, replaced
+		// inline elements) cannot break across fragmentainer boundaries —
+		// they are implicitly monolithic for column-balancing. Without
+		// this propagation, the multicol's column auto-block-size doesn't
+		// account for the atomic inline's height; combined with the
+		// multicol container OverflowClip (P20.5), this leaves columns
+		// too short to contain the atomic inline and clips legitimate
+		// content (e.g. inline-block-and-column-span-all). Mirrors Blink
+		// fragmentation_utils.cc:1105-1113 PropagateTallestUnbreakableBlockSize
+		// for ShouldAvoidBreakInside children — atomic inlines hit this
+		// path in Blink via line-box inclusion of monolithic content.
+		if bla.space.IsInitialColumnBalancingPass {
+			lineHasAtomicInline := false
+			for _, r := range line.Results {
+				if r.Item != nil && r.Item.Type == InlineItemAtomicInline &&
+					r.LayoutResult != nil && r.LayoutResult.Fragment != nil {
+					lineHasAtomicInline = true
+					break
+				}
+			}
+			if lineHasAtomicInline {
+				// Propagate just the line's block-extent (without
+				// blockOffset). During the initial column-balancing pass
+				// the BLA isn't placed inside a fragmentainer yet — the
+				// fragmentainer block-offset is 0 for these candidates.
+				// What matters as a TallestUnbreakable floor is the
+				// individual line's height (the unbreakable unit), not
+				// the cumulative offset of the line within the IFC.
+				// Mirrors Blink's per-child PropagateTallestUnbreakableBlockSize
+				// in the initial balancing pass, where each child contributes
+				// its own block-extent independently.
+				builder.PropagateTallestUnbreakableBlockSize(lineHeight)
+			}
 		}
 
 		blockOffset += lineHeight
