@@ -23,6 +23,13 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 **Phase 16.e + 18 BUNDLED — MulticolPartWalker port + MulticolBreakTokenData carrier.** WORKTREE WORK. Continuation: `CONTINUE-18.md`. Multi-commit refactor (6 commits) on `phase-16e-18-walker-carrier` branch. Bundled brief written 2026-04-28: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)" supersedes the earlier sketch. Authoritative Blink references captured (`multicol_break_token_data.h` verbatim; `MulticolPartWalker` is now inline at top of `column_layout_algorithm.cc:41-223`; carrier write/read sites at cla.cc:822-833 / 2122-2139). 12 entangled louis14 sites mapped with current line numbers. Gate target after bundle: multicol 196 → 211+/455 (+15 from Phase 18 nested cluster), spanner-frag 11 → 12/13. Phase 16.c.2 retry #3 (mechanical clip removal) queued AFTER this lands.
 
+**Commits 1+2 DONE on worktree (2026-04-28):**
+
+- **Commit 1 (`43ec8c66`)** — schema + walker scaffold. `pkg/layout/multicol_part_walker.go` added (`MulticolPartWalker`, `MulticolPartWalkerEntry`, `MulticolBreakTokenBuilder`); `MulticolData *MulticolBreakTokenData` field on `BlockBreakToken`; READ at `multicol_layout.go:294-297` plumbed (still nil → behavior unchanged). 13/13 drivers PASS.
+- **Commit 2 (`a8ea3adb`)** — READ site switched to walker dispatch. The 3-slot positional parser + pure-nested-resume promotion at `multicol_layout.go:415-432` is replaced with `walker := NewMulticolPartWalker(...)`. Main loop at `multicol_layout.go:512-849` rewritten as Blink-style two-branch dispatch (cla.cc:605-714): column-content branch (row-advance guard → layoutLine → walker.Next → row-wrap continue via `walker.AddNextColumnBreakToken` / nested-multicol-break / spanner discovery via `walker.MoveToSpanner` / done) and spanner branch (resume state derived from `entry.BreakToken` → break-before / outer-frag clip / fresh layout vs content-overflow vs clip resume / pre-commit row snap / margins / GapGeometry / forced break-after via `walker.Current()` peek). **11/13 drivers PASS** — `spanner-fragmentation-001` (0.8% diff) and `-006` (1.4% diff) regress per brief expectation, root-caused to `walker.MoveToSpanner` clobbering pending walker entries when the still-positional WRITE side emits `[col_token, partial_spanner, col_rows]`. Both restore at Commit 3.
+
+**Next: Commit 3 (WRITE-site flat tokens, regressions restore).** Detailed site-by-site rewrite plan in `CONTINUE-18.md`. Hard exit #1: if Commit 3 doesn't restore 13/13, walker WRITE-site mapping is wrong — re-read Blink cla.cc:605-714 + 1397-1522, do NOT pile predicates.
+
 ---
 
 ## Completed phases (brief entries)

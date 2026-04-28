@@ -1,8 +1,14 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — Phase 17 DONE; bundled 16.e+18 prep COMPLETE; ready to start worktree implementation)
+## Current focus (2026-04-28 — Phase 17 DONE; bundled 16.e+18 Commits 1+2 DONE on worktree; Commit 3 next)
 
-**Bundled brief written 2026-04-28.** `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)" is the authoritative implementation plan, superseding the earlier sketch. Includes: authoritative Blink references (verbatim `multicol_break_token_data.h`, `MulticolPartWalker` defined inline at `column_layout_algorithm.cc:41-223` in current Blink main, write/read sites cla.cc:822-833 / 2122-2139), 12 entangled louis14 sites with current line numbers, target shape for `BlockBreakToken` + `MulticolPartWalker` types, 6-commit decomposition with verification gates, hard exit conditions, risks, and explicit non-goals. **Next action: open worktree branch `phase-16e-18-walker-carrier` and execute Commit 1 (schema + walker scaffold).**
+**Bundled brief written 2026-04-28.** `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)" is the authoritative implementation plan, superseding the earlier sketch. Includes: authoritative Blink references (verbatim `multicol_break_token_data.h`, `MulticolPartWalker` defined inline at `column_layout_algorithm.cc:41-223` in current Blink main, write/read sites cla.cc:822-833 / 2122-2139), 12 entangled louis14 sites with current line numbers, target shape for `BlockBreakToken` + `MulticolPartWalker` types, 6-commit decomposition with verification gates, hard exit conditions, risks, and explicit non-goals.
+
+**Worktree progress on `phase-16e-18-walker-carrier`:**
+
+1. **Commit 1 DONE (`43ec8c66`):** schema + walker scaffold. `pkg/layout/multicol_part_walker.go` (walker + builder); `MulticolBreakTokenData` field on `BlockBreakToken`; READ at `multicol_layout.go:294-297`. 13/13 drivers PASS.
+2. **Commit 2 DONE (`a8ea3adb`):** READ site switched to walker dispatch. Loop at `multicol_layout.go:512-849` rewritten as Blink-style two-branch dispatch (cla.cc:605-714). **11/13 drivers** — `spanner-fragmentation-001` (0.8% diff) and `-006` (1.4% diff) regress per brief expectation; both restore at Commit 3 when WRITE side flattens.
+3. **Commit 3 NEXT** (WRITE-site flat tokens, regressions restore). Five sites listed in `CONTINUE-18.md`. Hard exit #1: regressions must restore at Commit 3, else walker WRITE-site mapping is wrong — re-read Blink cla.cc:605-714 + 1397-1522, no predicate-piling.
 
 **Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commits `a6446061` + `c40b4b56` + docs `50de102c` + `68b74171` + `65ae87df`). All 13 driver tests PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
 
