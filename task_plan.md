@@ -1,6 +1,6 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — v2 B0→B5 DONE; PAUSED at 10/13 for operator review)
+## Current focus (2026-04-28 — v2 B0→B5 + Path X DONE; PAUSED at 10/13 drivers, 199/455 multicol)
 
 **v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". Operational continuation: `CONTINUE-18.md`. v1 brief preserved but marked SUPERSEDED in findings.md.
 
@@ -16,6 +16,7 @@
 8. B2.5 (`da5730b8`): monolithic detection (IsMonolithic flag + sources + extended ShouldAvoidBreakInside / CalculateUnbreakableBlockSize). 10/13 — infrastructure correct, upstream gaps unaddressed.
 9. B2.6 (`3b3b4208`): SetupFragmentation border/padding contribution. 10/13 — none of the residuals have meaningful borders.
 10. B5 (`33afa6fa`): walker WRITE flat (Cmt 3 stash applied + auto-merged). 10/13 — `-004` improved 2.1% → 1.0%, walker port mechanically beneficial.
+11. Path X (`2d6822b3`): nested-balancing TallestUnbreakable propagation. Mirrors Blink cla.cc:1706-1712. **+2 multicol gate** (197→199): `multicol-span-all-list-item-001/002`. 10/13 drivers unchanged.
 
 **Three residuals at PAUSE:** `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (1.0%), `spanner-fragmentation-006` (0.3%). Upstream-architectural gaps (measure-pass spanner handling, balanceColumns scope for floats) — not walker / clip / carrier bugs.
 

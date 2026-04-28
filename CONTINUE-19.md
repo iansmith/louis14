@@ -1,4 +1,4 @@
-# CONTINUE: Phase 16.e + 18 v2 — B2.5 + B2.6 + B5 DONE; PAUSE for review
+# CONTINUE: Phase 16.e + 18 v2 — Path X DONE; +2 multicol gate; PAUSED at 10/13 drivers
 
 Operational continuation for the post-hard-exit-B3 plan. After v2 hit hard exit B3 at 10/13 (3 residuals all involving monolithic content), the operator approved options 1+2+3 in sequence with a pause before option 4 (revert B3). All three landed; operator-mandated pause now in effect.
 
@@ -105,6 +105,73 @@ Both paths are upstream-architectural rather than walker-related. Neither is in 
 ### Alternative: accept 10/13 and proceed
 
 If the operator accepts 10/13 as the post-B3 floor, B6 (Phase 18 ConsumedRowBlockSize carrier WRITE site) is the natural next step. Targets `multicol-nested-011` and the multicol-nested 012-032 cluster + multicol-fill-balance-003/-026. Multicol gate target post-B6: 196 → 211+ (+15 from Phase 18 cluster). The 3 residuals stay deferred.
+
+## Path X — DONE on `2d6822b3`
+
+Operator approved fixing upstream architectural gaps. Path X implemented; Path Y as I framed it doesn't actually apply.
+
+### Path X: nested-balancing TallestUnbreakable propagation
+
+Researched Blink's `column_layout_algorithm.cc:1535-1734` (`ResolveColumnAutoBlockSizeInternal`). Key Blink reference (cla.cc:1706-1712):
+
+```cpp
+if (GetConstraintSpace().IsInitialColumnBalancingPass()) {
+  // Nested column balancing. Our outer fragmentation context is in its
+  // initial balancing pass, so it also wants to know the largest
+  // unbreakable block-size.
+  container_builder_.PropagateTallestUnbreakableBlockSize(
+      tallest_unbreakable_block_size_);
+}
+```
+
+Implementation:
+- `MulticolLayoutAlgorithm.lastMeasuredTallestUnbreakable` field carries the accumulator across the `resolveColumnAutoBlockSize` → `MLA.Layout` boundary.
+- `resolveColumnAutoBlockSize` stores the value before returning.
+- `MLA.Layout`'s exit max()s onto `result.TallestUnbreakableBlockSize` when `mla.space.IsInitialColumnBalancingPass`.
+
+**Multicol gate: 197 → 199 (+2).** Tests gained: `multicol-span-all-list-item-001/002` (both nested-multicol with break-inside:avoid where outer balances). 13 drivers: 10/13 unchanged. 4-category invariants intact. No regressions.
+
+### Path X attempt 1 (reverted): spanner layout during measure pass
+
+Earlier tried also laying out the spanner inside `resolveColumnAutoBlockSize` when `spannerPath` was detected, contributing its `IntrinsicBlockSize` to `tallestUnbreakable`. Conceptually targeted -004 / -006.
+
+Reverted because the extra layout call regressed `spanner-fragmentation-000/002/010` — side effects on the spanner's resume state that the main layout pass relies on. Caused net -1 multicol gate vs +2 with the narrowed Path X.
+
+The spanner-content-overflow residuals on -004 / -006 need a different mechanism, probably at the spanner-placement layer rather than the measure-pass layer. Possibly during `LayoutSpanner`: when the spanner has explicit height < content height, propagate up through a different carrier, or place subsequent siblings past content rather than past box. Out of scope for v2 bundled — separate phase.
+
+### Path Y reframed (NOT what I originally proposed)
+
+Originally framed as "widen `balanceColumns` for floats" — wrong diagnosis. Visual inspection of `nested-floated`'s 0.2% diff: the float's `margin-top:10` isn't being honored — float starts at y=0 instead of y=10. So the contain:size 100h box overlaps the absolute green strip rather than appearing below it, leaving y=90..100 transparent (= red showing through).
+
+This is a float-margin-collapse bug specific to floats inside multicol. Not a `balanceColumns` issue. Not a `TallestUnbreakable` issue. Different fix scope entirely; tracked separately as a non-v2 issue.
+
+## Status: PAUSED for review
+
+Worktree at `2d6822b3` (Path X). Three residuals remain on the 13 drivers:
+
+| Test | Diff | Diagnosed cause |
+|---|---|---|
+| `nested-floated-multicol-with-monolithic-child` | 0.2% | Float `margin-top:10` not honored inside multicol — separate float-margin issue |
+| `spanner-fragmentation-004` | 1.0% | Spanner content-overflow visual issue at placement layer — different mechanism needed |
+| `spanner-fragmentation-006` | 0.3% | Same family as -004 |
+
+None close cleanly within v2's scope. Each needs targeted work in a different layer. Operator decision: continue with B6 (Phase 18 carrier — targets +15 gate) accepting the 3 residuals, or detour to fix one of the three issues first.
+
+### After Path X — where we are
+
+| Worktree commit | Step | Multicol gate | 13 drivers |
+|---|---|---|---|
+| `2d6822b3` | Path X (outer propagation) | **199** | 10/13 |
+| `33afa6fa` | B5 walker WRITE flat | 197 | 10/13 |
+| `3b3b4208` | B2.6 SetupFragmentation contribution | 197 | 10/13 |
+| `da5730b8` | B2.5 monolithic detection | 197 | 10/13 |
+| `f97e4ac0` | B3 clip removal | 196 | 10/13 |
+| `f513f338` | B2 wire carrier | 196 | 13/13 |
+| `8e2aa078` | B1 carrier scaffold | 196 | 13/13 |
+| `fdb9343a` | B0 contentNode cache | 196 | 13/13 |
+| Mainline pre-merge | (gate as-is) | **196** | 11/13 |
+
+Worktree gate is +3 vs mainline; drivers are 10/13 vs mainline 11/13. Net trade: -1 driver test, +3 multicol gate. Plus structural improvements (clip removed, carrier in place, walker WRITE flat).
 
 ## Operational reminders
 

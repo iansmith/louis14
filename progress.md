@@ -44,7 +44,15 @@ WRITE-site flattening (all 6 brief sites + a self-derived `flushWalker` mirrorin
 
 **v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". v1 brief preserved but marked SUPERSEDED. Sequence: Step 0 diagnostic → B0 cache fix → B1+B2 carrier port → B3 clip removal → B4 re-verify → B5 walker WRITE flat → B6 Phase 18 carrier WRITE → B7 drop 16.d.1 gate → B8 sweep + merge.
 
-**v2 B0 → B5 LANDED 2026-04-28; operator-mandated PAUSE at 10/13.**
+**v2 B0 → B5 + Path X LANDED 2026-04-28; PAUSED at 10/13 drivers, 199/455 multicol gate.**
+
+Path X (`2d6822b3`): nested-balancing TallestUnbreakable propagation — mirrors Blink cla.cc:1706-1712. When MLA itself is in initial-balancing-pass (nested column balancing), forwards the accumulated `tallestUnbreakable` to its outer container via `result.TallestUnbreakableBlockSize`. **+2 multicol gate (197→199):** `multicol-span-all-list-item-001/002`. 13 drivers unchanged.
+
+Initial Path X attempt also measured the spanner during the measure pass (would have addressed -004/-006). REVERTED — caused regressions on `spanner-fragmentation-000/002/010` (extra layout call had side effects on spanner resume state). The spanner-content-overflow residuals need a different mechanism at the spanner-placement layer, not the measure-pass layer.
+
+Path Y as originally framed (widen balanceColumns) was the wrong diagnosis. Visual inspection shows nested-floated's 0.2% is a float `margin-top:10` not-honored bug inside multicol — separate float-margin issue, not balanceColumns scope.
+
+
 
 Worktree commits in order:
 - `fdb9343a` B0 contentNode pointer cache (11→13/13).

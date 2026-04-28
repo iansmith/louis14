@@ -1896,6 +1896,36 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 - **Root cause:** louis14's `ClipBlockAxisOnly` workaround (Phase 12h F2 partial) creates a "clip-only mid-spanner" code path at `multicol_layout.go:786-790` (Commit 2 numbers). When a spanner clips at the outer fragmentainer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content (e.g., spanner_3 / trailing block in `-001`'s 3-spanner+block test). The OLD (pre-Commit-2) 3-slot encoding solved this via slot[0] = `beforeSpannerToken = {Node: contentNode, ChildBreakTokens: [{Node: spanner, IsBreakBefore: true}]}` — a column-content driver that on resume drove BLA via layoutLine to re-discover post-spanner content via spannerPath returns. The walker model elides this driver by design.
 - **Status:** Reverted. Worktree restored to `a8ea3adb`. Commit 3 attempt diff preserved in worktree `git stash@{0}`. Brief corrected (see notice at top of "Phase 16.e + 18 BUNDLED BRIEF" section). DO NOT retry Commit 3 without re-confirming sequencing with operator.
 
+**2026-04-28 — v2 Path X (nested-balancing TallestUnbreakable propagation) LANDED on worktree (`2d6822b3`); +2 multicol gate (199/455).**
+
+After PAUSE for review at 10/13, operator approved fixing upstream architectural gaps. Researched Blink column_layout_algorithm.cc:1535-1734 (`ResolveColumnAutoBlockSizeInternal`). Verbatim Blink for the outer-propagation hook (cla.cc:1706-1712):
+
+```cpp
+if (GetConstraintSpace().IsInitialColumnBalancingPass()) {
+  // Nested column balancing. Our outer fragmentation context is in its
+  // initial balancing pass, so it also wants to know the largest unbreakable
+  // block-size.
+  container_builder_.PropagateTallestUnbreakableBlockSize(
+      tallest_unbreakable_block_size_);
+}
+```
+
+Implementation in louis14:
+- `MulticolLayoutAlgorithm.lastMeasuredTallestUnbreakable` field carries the accumulator across the `resolveColumnAutoBlockSize` → `MLA.Layout` boundary.
+- `MLA.Layout` exit forwards via `result.TallestUnbreakableBlockSize` when `mla.space.IsInitialColumnBalancingPass`.
+
+**Gate: 197 → 199 (+2).** Two new passes: `multicol-span-all-list-item-001/002` — both have nested multicol with break-inside:avoid where the outer balances. Path X's outer propagation makes the outer's columns grow to fit the inner's unbreakable.
+
+13 drivers: 10/13 (unchanged). Three residuals stay at the same diffs.
+
+**Initial Path X also tried laying out the spanner during measure pass** to contribute its content height to `tallestUnbreakable` — would have helped -004 / -006 conceptually. **Reverted** because it caused regressions on `spanner-fragmentation-000/002/010` (the extra layout call had side effects on the spanner's resume state that the main layout pass relied on). The spanner-content-overflow residuals on -004/-006 need a different mechanism, possibly at the spanner-placement layer rather than the measure-pass layer.
+
+**`nested-floated` 0.2% diagnosis (different gap from what the v2 brief assumed):** Visual inspection shows the float's `margin-top:10` isn't being honored — float starts at y=0 instead of y=10. NOT a balanceColumns scope or TallestUnbreakable issue; it's a float-margin-collapse bug specific to floats inside multicol. Different fix scope; tracked separately, not part of v2 bundled.
+
+**Status:** PAUSED for re-review. Path X contribution is mechanically Blink-parity correct and gate-positive. The 3 residuals remain (0.2%, 1.0%, 0.3%) but each has a distinct upstream cause that needs targeted work, not v2-bundle work.
+
+---
+
 **2026-04-28 — v2 B2.5 + B2.6 + B5 LANDED on worktree (`da5730b8`, `3b3b4208`, `33afa6fa`); operator-mandated PAUSE for review at 10/13.**
 
 After hard-exit B3, operator approved options 1+2+3 in sequence. All three landed; driver count stayed at 10/13 throughout but `-004` improved meaningfully under B5 (2.1% → 1.0%).
