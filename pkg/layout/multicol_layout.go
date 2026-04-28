@@ -456,6 +456,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// column_layout_algorithm.cc.
 	var outBuilder MulticolBreakTokenBuilder
 
+	// outgoingMulticolData carries Phase 18 row-phase info on the outgoing
+	// outer BlockBreakToken when this multicol breaks mid-row across an outer
+	// fragmentainer. Picked up by buildOuterBreakResult below. Mirrors Blink
+	// cla.cc:822-833 setting MulticolBreakTokenData on the container builder
+	// before ToBoxFragment.
+	var outgoingMulticolData *MulticolBreakTokenData
+
 	// pendingContentOverflow is set when a spanner's box fit in this outer
 	// column but its children overflowed the fragmentainer boundary. We
 	// continue placing subsequent content (other spanners, column rows)
@@ -495,6 +502,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		result.BreakToken = &BlockBreakToken{
 			Node:             mla.node,
 			ChildBreakTokens: outBuilder.Children(),
+			MulticolData:     outgoingMulticolData,
 		}
 		// Forward unplaced marker to the break token so the resumed fragment
 		// re-seeds it. Mirrors Blink's FinishFragmentation marker plumbing.
@@ -580,6 +588,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
+			rowStart := blockCursor
 			rowBlockAdvance, columnsPlaced, spannerPath, remainingToken := mla.layoutLine(
 				contentNode, wdm, usedColWidth, numCols, gap,
 				balanceColumns, hasExplicitBlock, explicitBlockSize,
@@ -593,6 +602,25 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			walker.Next()
 
 			if spannerPath == nil {
+				// Phase 18 WRITE site (Blink cla.cc:822-833). When the first
+				// row of a column-run is truncated by the outer fragmentainer
+				// (rowHeight > outerAvailable - rowStart) and column content is
+				// still pending, defer to outer with a ConsumedRowBlockSize
+				// carrier so the next outer fragment continues the same row at
+				// the right phase. Without this, the next outer fragment would
+				// start at row offset 0 and re-paint the already-consumed slice.
+				if remainingToken != nil && isFirstRow && hasOuterFrag &&
+					mla.shouldWrapColumns() && mla.hasRowHeight() {
+					painted := outerAvailable - rowStart
+					if mla.rowHeight() > painted && painted > 0 {
+						outgoingMulticolData = &MulticolBreakTokenData{
+							ConsumedRowBlockSize: painted,
+						}
+						outBuilder.AddBreakToken(remainingToken)
+						flushWalker()
+						return buildOuterBreakResult()
+					}
+				}
 				// Phase 12f (Blink cla.cc:835): row-wrap — when wrap is in
 				// effect and a column row exited with content still pending,
 				// continue the same column-run by starting another row below
