@@ -441,14 +441,21 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// the WRITE side.
 	walker := NewMulticolPartWalker(contentNode, mla.space.BreakToken)
 
-	// Content-overflow pending state: a spanner's box fit in this outer column
-	// but its children overflowed the fragmentainer boundary. We continue
-	// placing subsequent content (other spanners, column rows) before generating
-	// the outer break result at the end of the loop.
+	// outBuilder accumulates outgoing child break tokens in document order
+	// for this multicol's outgoing BlockBreakToken. Mirrors Blink's
+	// container_builder_.AddBreakToken / AddBreakBeforeChild calls in
+	// column_layout_algorithm.cc.
+	var outBuilder MulticolBreakTokenBuilder
+
+	// pendingContentOverflow is set when a spanner's box fit in this outer
+	// column but its children overflowed the fragmentainer boundary. We
+	// continue placing subsequent content (other spanners, column rows)
+	// before generating the outer break result at the end of the loop. The
+	// spanner's content-resume token has already been pushed to outBuilder
+	// at the point this flag is set; this flag merely signals that the
+	// post-loop handler must emit a break result rather than completing
+	// the multicol normally.
 	var pendingContentOverflow bool
-	var pendingBeforeSpannerToken *BlockBreakToken
-	var pendingPartialSpannerToken *BlockBreakToken
-	var pendingColRowsBreakToken *BlockBreakToken
 
 	// hasForcedBreakAfter is set when a spanner's break-after:column fires
 	// and there is no content after the spanner to resume — the break propagates
@@ -456,14 +463,11 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	var hasForcedBreakAfter bool
 
 	// buildOuterBreakResult finalises the in-progress builder and returns a
-	// layout result with a BreakToken that captures the MulticolPartWalker state
-	// needed to resume in the next outer column.
-	//   prevNextColToken: the nextColToken used to call layoutLine in this
-	//     iteration — when passed back to layoutLine it will re-detect the
-	//     same spanner without replaying the pre-spanner column rows.
-	//   partialSpannerToken: non-nil if we broke mid-spanner; records how
-	//     much of the spanner was placed (ConsumedBlockSize).
-	buildOuterBreakResult := func(prevNextColToken, partialSpannerToken *BlockBreakToken) *LayoutResult {
+	// layout result with a BreakToken whose ChildBreakTokens are the
+	// document-order flat entries accumulated in outBuilder. Mirrors
+	// Blink's container_builder_.ToBoxFragment after the LayoutChildren
+	// loop in column_layout_algorithm.cc:605-714.
+	buildOuterBreakResult := func() *LayoutResult {
 		builder.SetSize(LogicalSize{
 			InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 			BlockSize:  blockCursor + geom.BlockBorderPadding(),
@@ -479,22 +483,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			Padding: physPadding,
 		})
 		result := builder.Build()
-		// Token-slot layout (mirrors the parser at the top of Layout):
-		//   [0] nextColToken (pre-spanner column rows)
-		//   [1] partialSpannerToken (mid-spanner resume state)
-		//   [2] pendingColRowsBreakToken (post-spanner column rows resume)
-		// Keep the slots fixed so [2] is never misread as [1] — if a col-rows
-		// resume exists without a partial spanner, a nil placeholder fills
-		// slot [1].
-		childTokens := []*BlockBreakToken{prevNextColToken, partialSpannerToken, pendingColRowsBreakToken}
-		// Trim trailing nil slots to keep the break-token minimal. Keep [0]
-		// at minimum so the parser can still pick up nextColToken.
-		for len(childTokens) > 1 && childTokens[len(childTokens)-1] == nil {
-			childTokens = childTokens[:len(childTokens)-1]
-		}
 		result.BreakToken = &BlockBreakToken{
 			Node:             mla.node,
-			ChildBreakTokens: childTokens,
+			ChildBreakTokens: outBuilder.Children(),
 		}
 		// Forward unplaced marker to the break token so the resumed fragment
 		// re-seeds it. Mirrors Blink's FinishFragmentation marker plumbing.
@@ -508,6 +499,27 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			result.Fragment.RenderedColumnCount = totalColumnsRendered
 		}
 		return result
+	}
+
+	// flushWalker pushes any remaining walker entries to outBuilder so they
+	// survive into the next outer fragmentainer. Mirrors Blink's cleanup
+	// loop at column_layout_algorithm.cc:733-738 which runs after the main
+	// LayoutChildren loop exits and forwards unfinished entries via
+	// container_builder_.AddBreakToken / AddBreakBeforeChild. Called at
+	// every site that returns a break result mid-loop, so the post-spanner
+	// column-content driver token (set by walker.MoveToSpanner before the
+	// spanner branch ran) and any further parent-token entries propagate
+	// to the next outer column.
+	flushWalker := func() {
+		for !walker.IsFinished() {
+			e := walker.Current()
+			if e.BreakToken != nil {
+				outBuilder.AddBreakToken(e.BreakToken)
+			} else if e.DescendantNode != nil {
+				outBuilder.AddBreakBeforeChild(e.DescendantNode, false)
+			}
+			walker.Next()
+		}
 	}
 
 	// MulticolPartWalker dispatch loop: iterate parts (column content, spanners)
@@ -548,8 +560,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					// stop now and let the outer context resume any remaining
 					// content in the next outer column.
 					if nextColToken != nil {
-						pendingColRowsBreakToken = nextColToken
-						return buildOuterBreakResult(nil, nil)
+						// walker.Current() still points to this column-
+						// content entry (we never called walker.Next).
+						// flushWalker pushes it (and any remaining
+						// parent-token entries) in document order.
+						flushWalker()
+						return buildOuterBreakResult()
 					}
 					break
 				}
@@ -586,8 +602,9 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				// fragmentation context can resume this multicol in its next
 				// outer column.
 				if remainingToken != nil && hasOuterFrag {
-					pendingColRowsBreakToken = remainingToken
-					return buildOuterBreakResult(nil, nil)
+					outBuilder.AddBreakToken(remainingToken)
+					flushWalker()
+					return buildOuterBreakResult()
 				}
 				break // all column content done (no outer fragmentation)
 			}
@@ -612,44 +629,33 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// === Spanner branch (Blink cla.cc:656-684 LayoutSpanner). ===
 		spanner := entry.DescendantNode
 
-		// Derive resume state from entry.BreakToken. In commit 2, this still
-		// peeks the inner ChildBreakTokens (positional encoding) — commit 3
-		// flattens the WRITE side so each piece is a separate walker entry
-		// (clipToken / contentOverflowToken become standalone entries instead
-		// of nested children of the partial spanner token).
+		// Derive resume state from entry.BreakToken. With the WRITE side
+		// flattened in Commit 3, each piece is a standalone flat walker
+		// entry (no nested ChildBreakTokens layering for clip vs content-
+		// overflow on the same spanner). entry.BreakToken IS the spanner's
+		// break token directly:
+		//   ConsumedBlockSize > 0 (and no children)         → clip-resume
+		//   ChildBreakTokens non-empty (and Consumed == 0)  → content-overflow
+		//                                                     resume; pass the
+		//                                                     entry's break
+		//                                                     token straight
+		//                                                     to layoutSpanner-
+		//                                                     InFrag so it
+		//                                                     resumes from the
+		//                                                     spanner's own
+		//                                                     children.
+		// Combined-clip cases (one spanner content-overflow followed by a
+		// later spanner clipping) surface as TWO consecutive walker entries
+		// in document order — no [0]/[1] index peek required.
 		var spannerConsumed float64
 		hasSpannerResume := false
 		var spannerContentBreakToken *BlockBreakToken
-		var nextSpannerClipToken *BlockBreakToken
 		if entry.BreakToken != nil {
 			hasSpannerResume = true
 			spannerConsumed = entry.BreakToken.ConsumedBlockSize.Float64()
 			if len(entry.BreakToken.ChildBreakTokens) > 0 {
-				spannerContentBreakToken = entry.BreakToken.ChildBreakTokens[0]
+				spannerContentBreakToken = entry.BreakToken
 			}
-			if len(entry.BreakToken.ChildBreakTokens) > 1 {
-				nextSpannerClipToken = entry.BreakToken.ChildBreakTokens[1]
-			}
-		}
-		// nextSpannerClipToken is referenced for completeness — in commit 2 it
-		// rides as nested child[1] of the partial spanner token; commit 3
-		// turns it into a separate walker entry. The "after content-overflow
-		// resume" continuation (lines below) reads it.
-		_ = nextSpannerClipToken
-
-		// Construct beforeSpannerToken using the leaf spanner node. The OLD
-		// 3-slot path used spannerPath.Box (path-top) for IsBreakBefore;
-		// commit 2's walker only carries the leaf via MoveToSpanner /
-		// parent-token entry. For single-level spanners (path.Box == leaf),
-		// this is identical. For nested spanner paths (path.Box differs), the
-		// leaf-vs-path-top difference is one of the regression vectors that
-		// commit 3 + future plumbing through the walker will address.
-		beforeSpannerToken := &BlockBreakToken{
-			Node: contentNode,
-			ChildBreakTokens: []*BlockBreakToken{{
-				Node:          spanner,
-				IsBreakBefore: true,
-			}},
 		}
 
 		// Forced break-before:column on spanner: propagate to the parent
@@ -673,11 +679,23 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				builder.SetBoxData(&PhysicalBoxData{Margin: physMargin})
 				result = builder.Build()
 				result.BreakToken = &BlockBreakToken{
-					Node:             mla.node,
-					ChildBreakTokens: []*BlockBreakToken{beforeSpannerToken},
+					Node: mla.node,
+					ChildBreakTokens: []*BlockBreakToken{{
+						Node:          spanner,
+						IsBreakBefore: true,
+						IsForcedBreak: true,
+					}},
 				}
 			} else {
-				result = buildOuterBreakResult(beforeSpannerToken, nil)
+				// Advance the walker past this spanner entry so the
+				// outgoing break token doesn't re-break-before it; then
+				// emit a synthetic break-before-spanner and flush any
+				// remaining walker entries (e.g., MoveToSpanner-stored
+				// post-spanner column-content).
+				walker.Next()
+				outBuilder.AddBreakBeforeChild(spanner, true)
+				flushWalker()
+				result = buildOuterBreakResult()
 			}
 			result.HasForcedBreak = true
 			return result
@@ -686,7 +704,10 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// Outer fragmentation: no room for any of this spanner — break
 		// before this spanner.
 		if hasOuterFrag && blockCursor >= outerAvailable {
-			return buildOuterBreakResult(beforeSpannerToken, nil)
+			walker.Next()
+			outBuilder.AddBreakBeforeChild(spanner, false)
+			flushWalker()
+			return buildOuterBreakResult()
 		}
 
 		// Compute the spanner's full block size, accounting for mid-spanner
@@ -745,17 +766,21 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				spanHeight = NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
 				spanResult = fullResult
 				// Content overflow: spanner box fits physically but its
-				// children overflow the outer fragmentainer boundary. Store
-				// the pending break info and continue placing subsequent
-				// content in this outer column before generating the outer
-				// break result.
+				// children overflow the outer fragmentainer boundary. Push
+				// the spanner's OWN block-layout break token directly to
+				// outBuilder (Node is already the spanner; ChildBreakTokens
+				// are the spanner's content-resume children;
+				// HasSeenAllChildren / SequenceNumber / ConsumedBlockSize
+				// are preserved for BLA's resume bookkeeping). Mirrors
+				// Blink's container_builder_.AddBreakToken(child_token)
+				// which forwards the spanner's break token directly without
+				// a wrapper. Continue placing subsequent content in this
+				// outer column before generating the outer break result;
+				// the post-loop pendingContentOverflow handler emits the
+				// final result.
 				if hasOuterFrag && fullResult.BreakToken != nil && blockCursor+spanHeight <= outerAvailable {
 					pendingContentOverflow = true
-					pendingBeforeSpannerToken = beforeSpannerToken
-					pendingPartialSpannerToken = &BlockBreakToken{
-						Node:             spanner,
-						ChildBreakTokens: []*BlockBreakToken{fullResult.BreakToken},
-					}
+					outBuilder.AddBreakToken(fullResult.BreakToken)
 				}
 			}
 		}
@@ -781,23 +806,32 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					BlockOffset:  blockCursor,
 				})
 				blockCursor += available
+				// Advance the walker past this spanner entry; the clip
+				// token below replaces it for the next outer column.
+				walker.Next()
 				if pendingContentOverflow {
-					// Combined content-overflow + clip: encode both in the
-					// pending spanner token so the resumed outer column gets
-					// both resume points.
-					clipToken := &BlockBreakToken{
+					// Combined content-overflow + clip: a previous spanner's
+					// content-overflow entry is already in outBuilder; push
+					// THIS spanner's clip token as a separate flat entry so
+					// the resumed outer column walks both in document order.
+					outBuilder.AddBreakToken(&BlockBreakToken{
 						Node:              spanner,
 						ConsumedBlockSize: layoutunit.FromFloat64Round(available),
-					}
-					pendingPartialSpannerToken.ChildBreakTokens = append(
-						pendingPartialSpannerToken.ChildBreakTokens, clipToken)
+					})
+					// Fall through to post-loop pendingContentOverflow
+					// handler, which calls flushWalker before emitting.
 					break
 				}
-				partialSpannerToken := &BlockBreakToken{
+				outBuilder.AddBreakToken(&BlockBreakToken{
 					Node:              spanner,
 					ConsumedBlockSize: layoutunit.FromFloat64Round(available),
-				}
-				return buildOuterBreakResult(beforeSpannerToken, partialSpannerToken)
+				})
+				// Flush any remaining walker entries (e.g., MoveToSpanner-
+				// stored post-spanner column-content driver) so the next
+				// outer column resumes with both the clipped spanner and
+				// the un-enumerated post-spanner content.
+				flushWalker()
+				return buildOuterBreakResult()
 			}
 
 			// Apply spanner margin-block-start. Skip when resuming a
@@ -839,13 +873,15 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			mla.space.BreakToken == nil && !hasSpannerResume &&
 			spanner.Style() != nil && spanner.Style().GetBreakAfter() == "column" {
 			if !walker.IsFinished() {
-				postEntry := walker.Current()
-				if postEntry.BreakToken != nil {
-					// Content follows the spanner — emit break, resume there.
-					result := buildOuterBreakResult(postEntry.BreakToken, nil)
-					result.HasForcedBreak = true
-					return result
-				}
+				// walker.Next was already called above; current is the
+				// post-spanner walker entry (column-content from
+				// MoveToSpanner-stored next_column_token, or further
+				// parent-token entries). Flush them all so the next outer
+				// column resumes correctly.
+				flushWalker()
+				result := buildOuterBreakResult()
+				result.HasForcedBreak = true
+				return result
 			}
 			// Nothing follows — propagate break-after to the parent context.
 			hasForcedBreakAfter = true
@@ -862,9 +898,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// a break token so the outer multicol resumes the spanner's content in the
 	// next outer column. This is checked after the loop so that all content for
 	// this outer column (spanners, column rows following the overflowing spanner)
-	// is placed before the break is recorded.
+	// is placed before the break is recorded. The spanner's content-resume
+	// token (and any combined-clip clip token) is already in outBuilder; we
+	// only need to flush any leftover walker entries (e.g., MoveToSpanner-
+	// stored post-spanner column-content driver) and finalize.
 	if pendingContentOverflow {
-		return buildOuterBreakResult(pendingBeforeSpannerToken, pendingPartialSpannerToken)
+		flushWalker()
+		return buildOuterBreakResult()
 	}
 
 	// Phase 12f (Blink cla.cc:342): intrinsic block-size top-off. When column-
