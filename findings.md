@@ -1890,6 +1890,17 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 
 *(Add entries as failures are diagnosed — format: date, symptom, root cause, fix or status)*
 
+**2026-04-28 — B7 (drop `IsInsideColumnSpanner` clamp gate) ATTEMPTED + REVERTED (no commit).**
+
+- **Symptom:** Per the v2 brief's B7 step, removed `!bla.space.IsInsideColumnSpanner` from the 16.d.1 leaf-clamp gate (`block_layout.go`), removed constraint-space propagation in the children loop, and removed the setters in `MulticolLayoutAlgorithm.layoutSpanner` / `layoutSpannerInFrag`. Also removed the now-dead field + setter on `ConstraintSpace` / `ConstraintSpaceBuilder`. Build clean.
+- **Verification:** `spanner-fragmentation-005` (was PASS, now FAIL) and `spanner-fragmentation-006` (was PASS at 0 in driver subset, now FAIL at 0.1%) regressed. 13 driver invariants 13/13 → 12/13 (-006). Multicol gate 205 → 203 (-2). Both regressions confirmed against the restored baseline.
+- **Root cause:** the 16.d.1 `IsInsideColumnSpanner` guard is still load-bearing post-walker-port. Without the guard, spanner-descendant leaves self-fragment via the per-fragment clamp, producing break-token chains that `MulticolLayoutAlgorithm`'s spanner resume mechanism (`pendingPartialSpannerToken` / `spannerConsumed` / `pendingContentOverflow`) doesn't consume. Spanner content fragments across outer columns instead of overflowing once monolithically — exactly the failure mode the original docstring described. The walker port (Phase 16.e) replaced the 3-slot positional encoding with flat document-order entries, but that didn't change the spanner resume mechanism's break-token expectations, so removing the clamp guard exposes the same bug as before.
+- **Status:** REVERTED to baseline. No commit on mainline. Documenting here so a future attempt doesn't re-tread.
+- **What B7 would actually need:** either (a) extend the spanner resume mechanism to consume self-fragmented break-token chains from descendants of partially-laid-out spanners, or (b) a narrower gate that allows the leaf clamp to fire only when the resulting break-token can be cleanly absorbed (e.g. only on leaves whose nearest column-spanner ancestor itself doesn't span the outer fragmentainer). Option (b) is hand-wavy; option (a) is the real port. Either is larger than "drop a field" — re-scope B7 from "cleanup post-walker" to "spanner-resume break-chain absorption" before retrying.
+- **Phase 16.d.1 docstring at `block_layout.go:1467-1469`** correctly states the constraint and remains accurate ("spanners use their own resume mechanism in MulticolLayoutAlgorithm — `pendingPartialSpannerToken` / `spannerConsumed` clip-resume"). Do not delete that line on a future B7 retry without first finishing the spanner-resume work.
+
+---
+
 **2026-04-28 — B6 (Phase 18 ConsumedRowBlockSize carrier WRITE site) LANDED parity-correct but gate-neutral (`b251c8db`).**
 
 - **Symptom:** B6 implemented exactly per the v2 brief's pseudo-code at `findings.md` line 1422-1433 (mirror Blink cla.cc:822-833 verbatim). 13 drivers held at 13/13. Multicol gate stayed at 205/455 — brief expected +12 to +15. Targeted sweep of `multicol-nested-011..032` + `multicol-fill-balance-003/-026` showed the same pass/fail pattern as pre-B6.

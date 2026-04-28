@@ -15,15 +15,15 @@ Mainline `fix/flexbox-fast` @ `b251c8db`. Phase 16.e+18 v2 + multicol border-box
 
 ## Next options (operator pick one)
 
-### B7 — drop `IsInsideColumnSpanner` clamp gate (next per operator order)
-
-Removes Phase 16.d.1's spanner-descendant gate. Should be straightforward post-walker-port. **Discuss** (no hard exit) if `spanner-fragmentation-006` regresses → Phase 16.d.1 gate is still load-bearing; revert and document.
-
-### Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026
+### Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026 (recommended next)
 
 The brief's named B6 target tests need a different fix from the row-phase carrier. Likely the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken — when an inner multicol breaks across an outer column boundary, the resume in the next outer column needs to start at the right offset. Read `multicol-nested-011` PNG diff to characterise the failure pattern, then trace the inner multicol's resume path (incoming BlockBreakToken → MLA.Layout → blockCursor seeding).
 
 This is the path back to the +12 to +15 gate move that B6's brief mistakenly attributed to the row-phase carrier.
+
+### ~~B7 — drop `IsInsideColumnSpanner` clamp gate~~ (ATTEMPTED + REVERTED 2026-04-28)
+
+Regressed `spanner-fragmentation-005` + `-006` (drivers 13/13 → 12/13; gate 205 → 203). The 16.d.1 guard is still load-bearing post-walker-port. See findings.md error-log for diagnosis. Future retry would need to first extend the spanner-resume break-chain absorption (`pendingPartialSpannerToken` / `spannerConsumed` / `pendingContentOverflow`) to consume self-fragmented descendant chains — that's a real port, not the cleanup the brief implied.
 
 ### Reclaim multicol border-box clip regressions
 

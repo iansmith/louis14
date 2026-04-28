@@ -52,7 +52,7 @@ Tracking files (preserved for archaeology):
 - `CONTINUE-18.md` + `CONTINUE-19.md` — historical operational continuations.
 
 **Queued (not in active progress):**
-- B7 (drop `IsInsideColumnSpanner` clamp gate) — depends on B6 not regressing -006 (B6 landed; -006 holds).
+- ~~B7 (drop `IsInsideColumnSpanner` clamp gate)~~ — **ATTEMPTED + REVERTED 2026-04-28** (no commit). Regressed `spanner-fragmentation-005` + `-006` (drivers 13/13 → 12/13; gate 205 → 203). The 16.d.1 guard is still load-bearing; the walker port alone wasn't sufficient. See findings.md error-log for full diagnosis. Future retry needs to extend spanner-resume break-chain absorption first.
 - **Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026** (NEW). B6 was a no-op for these because they don't use column-wrap / non-auto column-height. These need a different fix — likely the standard `ConsumedBlockSize` on the inner multicol's outgoing BlockBreakToken when it breaks across an outer column boundary. Read multicol-nested-011 PNG diff first to characterise the failure pattern, then trace the inner multicol's resume path.
 - Investigate narrower clip-gate to reclaim the 6 regressions (e.g., `inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%).
 - Option 1 (Finish FinishFragmentation port).
