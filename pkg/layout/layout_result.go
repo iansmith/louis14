@@ -172,6 +172,38 @@ const (
 	FragmentText
 )
 
+// BoxType distinguishes the structural role of a box fragment within
+// the fragment tree. Mirrors Blink's PhysicalFragment::BoxType
+// (physical_fragment.h). louis14 currently only models the subset
+// needed for multicol fragmentation; additional values (kPageArea,
+// kAtomicInline, etc.) can be added when pagination / replaced-inline
+// work lands.
+type BoxType int
+
+const (
+	// BoxTypeNormal is the default for ordinary block / inline-block
+	// boxes. Mirrors Blink's kNormalBox.
+	BoxTypeNormal BoxType = iota
+	// BoxTypeColumn marks a fragmentainer fragment produced by
+	// MulticolLayoutAlgorithm for one column of a multicol container.
+	// Mirrors Blink's kColumnBox.
+	BoxTypeColumn
+)
+
+// IsColumnBox reports whether this fragment is a multicol column
+// fragmentainer. Mirrors Blink PhysicalFragment::IsColumnBox.
+func (f *PhysicalFragment) IsColumnBox() bool {
+	return f != nil && f.Type == FragmentBox && f.BoxType == BoxTypeColumn
+}
+
+// IsFragmentainerBox reports whether this fragment is a fragmentainer
+// (currently only a multicol column box; pagination would extend this
+// to kPageArea). Mirrors Blink PhysicalFragment::IsFragmentainerBox /
+// IsFragmentainerBoxType.
+func (f *PhysicalFragment) IsFragmentainerBox() bool {
+	return f.IsColumnBox()
+}
+
 // PhysicalFragment is an immutable positioned box in physical coordinates.
 // This is the output of layout — the fragment tree that the renderer walks.
 //
@@ -207,6 +239,13 @@ type PhysicalFragment struct {
 
 	// Type distinguishes box, line-box, and text fragments.
 	Type FragmentType
+
+	// BoxType distinguishes the structural role of box fragments
+	// (BoxTypeNormal, BoxTypeColumn). Only meaningful when Type ==
+	// FragmentBox; ignored on line-box / text fragments. Default
+	// (BoxTypeNormal) preserves prior behaviour. Mirrors Blink
+	// PhysicalFragment::box_type_.
+	BoxType BoxType
 
 	// TextContent holds the rendered text for text fragments.
 	TextContent string
