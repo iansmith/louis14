@@ -1896,6 +1896,24 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 - **Root cause:** louis14's `ClipBlockAxisOnly` workaround (Phase 12h F2 partial) creates a "clip-only mid-spanner" code path at `multicol_layout.go:786-790` (Commit 2 numbers). When a spanner clips at the outer fragmentainer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content (e.g., spanner_3 / trailing block in `-001`'s 3-spanner+block test). The OLD (pre-Commit-2) 3-slot encoding solved this via slot[0] = `beforeSpannerToken = {Node: contentNode, ChildBreakTokens: [{Node: spanner, IsBreakBefore: true}]}` — a column-content driver that on resume drove BLA via layoutLine to re-discover post-spanner content via spannerPath returns. The walker model elides this driver by design.
 - **Status:** Reverted. Worktree restored to `a8ea3adb`. Commit 3 attempt diff preserved in worktree `git stash@{0}`. Brief corrected (see notice at top of "Phase 16.e + 18 BUNDLED BRIEF" section). DO NOT retry Commit 3 without re-confirming sequencing with operator.
 
+**2026-04-28 — v2 B2.5 + B2.6 + B5 LANDED on worktree (`da5730b8`, `3b3b4208`, `33afa6fa`); operator-mandated PAUSE for review at 10/13.**
+
+After hard-exit B3, operator approved options 1+2+3 in sequence. All three landed; driver count stayed at 10/13 throughout but `-004` improved meaningfully under B5 (2.1% → 1.0%).
+
+- **B2.5 (`da5730b8`):** `IsMonolithic` flag on `PhysicalFragment` + extended `ShouldAvoidBreakInside` + extended `CalculateUnbreakableBlockSize`. Sources: `style.HasSizeContainment()` (CSS Containment 2 §2.6) and spanners with `IntrinsicBlockSize > fragment.BlockSize()`. Pre-step trace ruled out a B2 wiring bug on `-004` — its 2.1% diff under B0+clip-OFF (no B1/B2) confirmed B2 isn't actively wrong; the regression is the cache fix exposing -004's true non-clip layout. Detection verified to fire (via temp trace prints; subsequently removed). 10/13 unchanged: residuals are upstream of the carrier (measure-pass spanner handling + balanceColumns scope).
+- **B2.6 (`3b3b4208`):** SetupFragmentation border/padding contribution at BLA Layout entry. Mirrors Blink fragmentation_utils.cc:510-514. 10/13 unchanged — none of the 3 residuals have meaningful borders. Hook wired for completeness.
+- **B5 (`33afa6fa`):** walker WRITE flat — applied v1 Cmt 3 stash. Auto-merged cleanly with B3 + B2.5 + B2.6 (git's three-way merge dropped the stash's clip-only-mid-spanner edits since B3 deleted that block). Walker WRITE replaces 3-slot positional encoding with flat document-order via `MulticolBreakTokenBuilder`. **`-004` improved 2.1% → 1.0%** under B5 — the walker port is mechanically beneficial. `-006` slightly worsened 0.2% → 0.3% (sub-pixel). Stash is consumed.
+
+**Diagnosed residual gaps (full text in B2.5 commit message):**
+
+(a) `-004` / `-006`: `resolveColumnAutoBlockSize` measure pass exits at `spannerPath` BEFORE laying out the spanner. Spanner's `IsMonolithic` doesn't propagate via the measure-pass child loop. Blink's measure pass DOES lay out spanners. Closing requires extending the louis14 measure pass — a structural change.
+
+(b) `nested-floated`: float's `column-fill:auto` + non-fragmented float context bypasses `IsInitialColumnBalancingPass` entirely. Carrier never fires for the float's `contain:size` child. Closing requires widening `balanceColumns` scope or a non-balancing-pass carrier path.
+
+**Status:** PAUSED for operator review. Two upstream paths (X/Y in `CONTINUE-19.md`) or accepting 10/13 + proceeding to B6 (Phase 18 carrier) are the candidate next moves.
+
+---
+
 **2026-04-28 — v2 B1 + B2 + B3 LANDED on worktree (`8e2aa078`, `f513f338`, `f97e4ac0`); HARD EXIT B3 at 10/13.**
 
 - **B1 (`8e2aa078`):** TallestUnbreakableBlockSize field on LayoutResult + PropagateTallestUnbreakableBlockSize method on BoxFragmentBuilder + Build()-site population. No callers; behavior unchanged. 13/13 drivers PASS.

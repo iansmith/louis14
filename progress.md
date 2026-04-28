@@ -44,18 +44,26 @@ WRITE-site flattening (all 6 brief sites + a self-derived `flushWalker` mirrorin
 
 **v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". v1 brief preserved but marked SUPERSEDED. Sequence: Step 0 diagnostic → B0 cache fix → B1+B2 carrier port → B3 clip removal → B4 re-verify → B5 walker WRITE flat → B6 Phase 18 carrier WRITE → B7 drop 16.d.1 gate → B8 sweep + merge.
 
-**Step 0 + B0 + B1 + B2 + B3 DONE 2026-04-28; HARD EXIT B3 at 10/13.**
+**v2 B0 → B5 LANDED 2026-04-28; operator-mandated PAUSE at 10/13.**
 
-- **Step 0 + B0 (`fdb9343a`):** contentNode pointer cache fix. 11/13 → 13/13.
-- **B1 (`8e2aa078`):** TallestUnbreakable field + builder method scaffold. 13/13.
-- **B2 (`f513f338`):** wired carrier propagation in BreakBeforeChildIfNeeded + BLA child loop + multicol consumer. 13/13. **Skipped: monolithic detection in ShouldAvoidBreakInside** (louis14 lacks IsMonolithic flag) and SetupFragmentation border/padding.
-- **B3 (`f97e4ac0`):** mechanical clip removal — setter, paint branch, fields, propagation. **10/13** — below v2 brief's 11/13 hard-exit threshold. 3 residuals: `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (2.1%, regressed from Spike A's 1.0% — needs trace), `spanner-fragmentation-006` (0.2%).
+Worktree commits in order:
+- `fdb9343a` B0 contentNode pointer cache (11→13/13).
+- `8e2aa078` B1 TallestUnbreakable scaffold (13/13).
+- `f513f338` B2 wire carrier (13/13).
+- `f97e4ac0` B3 mechanical clip removal (10/13 — hard exit).
+- `da5730b8` B2.5 monolithic detection (10/13 — infrastructure correct, upstream gaps).
+- `3b3b4208` B2.6 SetupFragmentation border/padding (10/13 — none of residuals have borders).
+- `33afa6fa` B5 walker WRITE flat (10/13 — `-004` improved 2.1%→1.0%; walker port mechanically beneficial).
 
-All 3 residuals involve monolithic content (`contain:size` block, spanners with content > declared height). B2's carrier doesn't yet detect these; only the style-level `break-inside:avoid` clause is implemented. Blink's also checks `IsMonolithic()`.
+**Three residuals at PAUSE:** `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (1.0%), `spanner-fragmentation-006` (0.3%). Diagnosed as upstream-architectural gaps:
+- `-004` / `-006`: louis14's measure pass exits at `spannerPath` without laying out the spanner; spanner's `IsMonolithic` doesn't propagate via the measure-pass child loop. Blink's measure pass lays out spanners.
+- `nested-floated`: float's `column-fill:auto` + non-fragmented context bypasses `IsInitialColumnBalancingPass` entirely.
 
-**HARD EXIT — operator decision required.** Four options in `CONTINUE-18.md` § "Hard exit B3 — next-step options". Recommended: extend B2 with monolithic detection (B2.5), trace -004's regression first.
+Two candidate paths to close residuals (Path X: extend measure pass to layout spanners, ~30-50 lines; Path Y: widen `balanceColumns` for float multicols, ~10-20 lines). Both upstream-architectural, beyond v2 brief scope. Alternative: accept 10/13 + proceed to B6 (Phase 18 carrier WRITE site, targets +15 multicol gate).
 
-DO NOT proceed past B3 to B5 without operator decision. v2 brief explicitly mandates STOP at this signal; piling predicates risks compounding wrongness through subsequent commits.
+**Operator decision required.** Full diagnosis + paths in `CONTINUE-19.md` § "PAUSE for review (current state)" and findings.md error log entry "v2 B2.5 + B2.6 + B5 LANDED ...".
+
+DO NOT proceed past B5 to B6/B7 without re-engaging.
 
 ---
 

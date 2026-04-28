@@ -1,6 +1,21 @@
-# CONTINUE: Phase 16.e + 18 v2 — B2.5 → SetupFragmentation → B5
+# CONTINUE: Phase 16.e + 18 v2 — B2.5 + B2.6 + B5 DONE; PAUSE for review
 
-Operational continuation for the post-hard-exit-B3 plan. After v2 hit hard exit B3 at 10/13 (3 residuals all involving monolithic content), the operator approved options 1+2+3 in sequence with a pause before option 4 (revert B3). This file is the implementation outline; it should be kept current as each step lands.
+Operational continuation for the post-hard-exit-B3 plan. After v2 hit hard exit B3 at 10/13 (3 residuals all involving monolithic content), the operator approved options 1+2+3 in sequence with a pause before option 4 (revert B3). All three landed; operator-mandated pause now in effect.
+
+## Result
+
+Driver count stayed at **10/13** across all three steps. Residuals are unchanged in count but evolved in diff:
+
+| Test | B3 baseline | B2.5 | B2.6 | B5 (current) |
+|---|---|---|---|---|
+| `nested-floated-multicol-with-monolithic-child` | 0.2% FAIL | 0.2% FAIL | 0.2% FAIL | 0.2% FAIL |
+| `spanner-fragmentation-004` | 2.1% FAIL | 2.1% FAIL | 2.1% FAIL | **1.0% FAIL** |
+| `spanner-fragmentation-006` | 0.2% FAIL | 0.2% FAIL | 0.2% FAIL | 0.3% FAIL |
+| (other 10) | PASS | PASS | PASS | PASS |
+
+`-004` improved meaningfully under B5 (walker WRITE flat). The walker port is mechanically beneficial; it just doesn't close the residual fully. `-006` slightly worsened (sub-pixel) under B5 — same residual, slight rendering shift.
+
+4-category invariants intact at every step: CSS2 99/99 + flex 626/629 + pos 92/105 + wm 781/781 = 1499/6720 (16 known-fails matching pre-existing gate).
 
 ## Tracking files
 
@@ -21,81 +36,75 @@ Operational continuation for the post-hard-exit-B3 plan. After v2 hit hard exit 
 - **Driver result post-B3:** 10/13. Residuals: `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (2.1% — regressed from Spike A's 1.0%), `spanner-fragmentation-006` (0.2%).
 - **Mainline gate:** unchanged until v2 B8 merge. CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781 · multicol 196/455 · spanner-frag 11/13.
 
-## The three steps
+## The three steps (all DONE)
 
-### Step 1: B2.5 — monolithic detection (with `-004` trace pre-step)
+### Step 1: B2.5 — monolithic detection — DONE on `da5730b8`
 
-**Pre-step (diagnostic, no commit): trace `-004`'s regression.** Spike A (Cmt 2 + clip OFF, no carrier) had `-004` at 1.0%. B3 (clip OFF + B0+B1+B2 carrier) has it at 2.1%. The test uses `column-fill:auto` + explicit height — should NOT trigger `IsInitialColumnBalancingPass`, so B2's carrier should be a no-op. Yet the diff worsened.
+**Pre-step trace finding (no commit, in detached HEAD at fdb9343a):** ran `-004` under "B0 cache fix + clip OFF, no B1/B2" — got **2.1% FAIL**, identical to B3's diff. Confirmed B2's wiring is NOT actively wrong on `-004`. The regression vs Spike A (1.0%) traces to the cache fix (B0) exposing -004's true non-clip layout that the broken walker dispatch was coincidentally masking. Real residual; proceed to monolithic detection.
 
-Hypotheses to falsify:
-- B2's BLA child loop unconditionally propagates `childResult.TallestUnbreakableBlockSize` even when result is 0 — but should be no-op since 0 is filtered. Verify by tracing.
-- B2's `ShouldAvoidBreakInside` check fires on a child that doesn't have break-inside:avoid, but the child has some other style that resolves to "avoid" we didn't expect. Verify with style trace.
-- The change is unrelated to B2 — maybe B0's cache fix or something else slightly perturbs `-004`'s layout in a way the clip used to mask. Verify by running Cmt 2 + B0 + clip OFF (no B1/B2) and checking `-004`.
+**Implemented:**
+- `PhysicalFragment.IsMonolithic` bool field (layout_result.go).
+- `BoxFragmentBuilder.SetIsMonolithic` accessor + Build()-site population (fragment_builder.go).
+- BLA Layout entry: `SetIsMonolithic(true)` when `style.HasSizeContainment()` (block_layout.go).
+- MLA `layoutSpanner` / `layoutSpannerInFrag`: `markSpannerMonolithicIfOverflowed` post-layout helper sets fragment.IsMonolithic when `IntrinsicBlockSize > fragment.BlockSize()` (multicol_layout.go).
+- `ShouldAvoidBreakInside` extended with `Fragment.IsMonolithic` short-circuit (fragmentation_utils.go).
+- `CalculateUnbreakableBlockSize` extended: when monolithic and intrinsic > fragment block-size, use intrinsic (fragmentation_utils.go).
 
-If the pre-step shows B2 isn't actively wrong on `-004` (it's a residual gap, not a bug), proceed to monolithic detection. If B2 IS actively wrong, fix the bug first.
+**Detection verified to fire** via temporary trace prints (subsequently removed). For `-006`: intrinsic=370 vs frag=10 → monolithic. For `nested-floated`: contain:size on div → monolithic.
 
-**Then: monolithic detection.**
+**But driver count stayed 10/13.** Diagnosis (full text in B2.5 commit message `da5730b8`):
 
-Files:
-- `pkg/layout/layout_result.go` — add `IsMonolithic bool` field on `PhysicalFragment` next to `ClipContentToBorderBox`.
-- `pkg/layout/box_fragment_builder.go` (= fragment_builder.go) — add `SetIsMonolithic(bool)` accessor; populate on `Build()`.
-- Population sites:
-  - `block_layout.go` — set when `style.GetContain()` ∈ {"size", "strict"} for `nested-floated`'s contain:size box.
-  - `multicol_layout.go:layoutSpanner` / `layoutSpannerInFrag` — set when the spanner's measured content height exceeds its declared/clamped height (implicit monolithic for column-balance) for `-004` / `-006`.
-  - (Defer replaced-element detection — img/video/canvas — until a test exercises it.)
-- `pkg/layout/fragmentation_utils.go` — extend `ShouldAvoidBreakInside`:
-  ```go
-  func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) bool {
-      if layoutResult == nil || layoutResult.Fragment == nil {
-          return false
-      }
-      if layoutResult.Fragment.IsMonolithic {
-          return true
-      }
-      breakInside := "auto"
-      if s := layoutResult.Fragment.Style; s != nil {
-          breakInside = s.GetBreakInside()
-      }
-      return IsAvoidBreakValue(space, breakInside)
-  }
-  ```
-  Mirrors Blink: `result.GetPhysicalFragment().IsMonolithic() || IsAvoidBreakValue(space, ResolvedBreakInside(result))`.
+(a) `-004` / `-006` (spanners): louis14's `resolveColumnAutoBlockSize` measure pass exits at `spannerPath` BEFORE laying out the spanner. The spanner fragment never enters BLA's child loop, so its `IsMonolithic` doesn't propagate via the parent-side `TallestUnbreakable` hook. Blink's measure pass DOES lay out spanners; closing this requires extending `resolveColumnAutoBlockSize` to layout the spanner when spannerPath is detected — a structural change beyond v2 brief's scope.
 
-Verification: build clean. 13 drivers PASS at 0 diff (target: closes the 3 residuals). 4-category invariants intact.
+(b) `nested-floated`: float has `columns:1; column-fill:auto`. Float's `balanceColumns` is false (column-fill:auto + non-fragmented context bypasses both the explicit-balance check and the implicit "outer-fragmentation-without-known-block-size" check). Without `IsInitialColumnBalancingPass`, the carrier propagation never fires for the float's contain:size child. Closing requires either widening `balanceColumns` for floats or a non-balancing-pass carrier path.
 
-Hard exit: if any of the 3 residuals stays at fail, document which carrier hop is still missing. If a previously-passing test regresses, monolithic detection fires too eagerly — narrow the population sites.
+The B2.5 infrastructure is correct; the residual gaps are upstream of the carrier (measure-pass spanner handling + balanceColumns scope).
 
-### Step 2: SetupFragmentation border/padding contribution
+### Step 2: SetupFragmentation border/padding contribution — DONE on `3b3b4208`
 
-Mirror Blink fragmentation_utils.cc:510-514. Find the equivalent setup site in louis14 (likely `block_layout.go` near BLA's Layout entry, where the constraint space is decoded).
+Added BLA Layout-entry hook propagating `geom.Border.BlockStart + geom.Padding.BlockStart` and `geom.Border.BlockEnd + geom.Padding.BlockEnd` as unbreakable floors during initial column-balancing pass. Mirrors Blink fragmentation_utils.cc:510-514.
 
-```go
-if bla.space.IsInitialColumnBalancingPass {
-    // Border + padding block-start and block-end are themselves "unbreakable" —
-    // the column box must be at least as tall as those edges.
-    builder.PropagateTallestUnbreakableBlockSize(borderPadding.BlockStart)
-    builder.PropagateTallestUnbreakableBlockSize(borderPadding.BlockEnd)
-}
-```
+Driver result: 10/13 — UNCHANGED. As predicted in the brief, none of the 3 residual tests have meaningful borders on the affected nodes. Hook wired for completeness; future bordered-multicol tests will pick it up automatically.
 
-Likely doesn't help the 3 residuals (none have meaningful borders on the affected nodes), but ~10 lines to verify.
+### Step 3: B5 — walker WRITE flat — DONE on `33afa6fa`
 
-Verification: build clean. 13 drivers PASS at 0 diff. No regressions vs Step 1 baseline. Drop with no behavioral change confirms the brief's prediction.
+Applied the v1 Cmt 3 attempt (preserved as `git stash@{0}` since hard-exit 2026-04-28). Stash auto-merged cleanly with B3 + B2.5 + B2.6 — git's three-way merge dropped the stash's modifications to the clip-only mid-spanner block (deleted by B3) automatically.
 
-### Step 3: Proceed to B5 — walker WRITE flat
+Walker WRITE flat replaces the 3-slot positional outgoing break-token encoding with a flat document-order list. `buildOuterBreakResult` is parameterless and consumes a `MulticolBreakTokenBuilder` accumulator; spanner content-overflow emits the spanner's break token directly (no wrapper); break-before-spanner uses `outBuilder.AddBreakBeforeChild`; `flushWalker` mirrors Blink's cla.cc:733-738 cleanup loop.
 
-Apply the Cmt 3 v1 stash with reconciliation:
-1. `git stash apply stash@{0}` will conflict in `multicol_layout.go` because B3 deleted the clip-only mid-spanner block (lines 786-790 in pre-B3) that the stash modified.
-2. Reconcile: drop the stash's `walker.Next()` + clip-token push at the clip-only site (the entire block is gone post-B3). The `pendingContentOverflow` combined-clip handling also simplifies (no second clip can occur with no clip path).
-3. Remaining stash content applies cleanly: `buildOuterBreakResult` rewrite, content-overflow flat emission, `AddBreakBeforeChild` substitutions, `flushWalker` cleanup, post-loop pendingContentOverflow handler.
+Driver result: 10/13 — same count, but `-004` IMPROVED 2.1% → 1.0% (the walker port's flat token shape + flushWalker behave better on this test under no clip). `-006` slightly worsened sub-pixel 0.2% → 0.3%. nested-floated unchanged.
 
-Verification: 13 drivers at the post-Step-2 baseline (target 13/13; minimum: the post-B3 floor). 4-category invariants intact. Build clean.
+The improvement on `-004` confirms the walker port is mechanically correct and contributes positively. Cmt 3 stash is consumed; can be dropped from `git stash list`.
 
-Hard exit: drivers regress below post-Step-2 baseline → walker WRITE flat exposes a bug B0+B2+B2.5+SetupFragmentation didn't catch. STOP, diagnose, do NOT pile predicates.
-
-## After Step 3 — pause for review
+## PAUSE for review (current state)
 
 Per operator: "after you finish with number three we should see where we are." Do NOT proceed to B6 (Phase 18 carrier) or B7 (drop IsInsideColumnSpanner gate) without re-engaging.
+
+### What's landed (worktree commits)
+
+| Commit | Step | Result |
+|---|---|---|
+| `33afa6fa` | B5 walker WRITE flat | 10/13 (-004 1.0%, -006 0.3%, nested-floated 0.2%) |
+| `3b3b4208` | B2.6 SetupFragmentation border/padding | 10/13 (no change) |
+| `da5730b8` | B2.5 monolithic detection | 10/13 (no change; infrastructure correct, upstream gaps) |
+| `f97e4ac0` | B3 clip removal | 10/13 (HARD EXIT) |
+| `f513f338` | B2 wire TallestUnbreakable | 13/13 |
+| `8e2aa078` | B1 TallestUnbreakable scaffold | 13/13 |
+| `fdb9343a` | B0 contentNode pointer cache | 13/13 |
+| `a8ea3adb` | Cmt 2 walker READ | 11/13 |
+| `43ec8c66` | Cmt 1 schema + scaffold | 13/13 |
+
+### Two clearly-defined paths to close the residuals
+
+**Path X: extend the measure pass to layout spanners.** Closes `-004` / `-006`. Structural change to `resolveColumnAutoBlockSize` — when `spannerPath` is detected during the measure pass, layout the spanner via `layoutSpanner` and propagate its TallestUnbreakable contribution. Estimated 30-50 lines + careful trace.
+
+**Path Y: widen `balanceColumns` for non-fragmented float multicols.** Closes `nested-floated`. Smaller change to the `balanceColumns` decision in `multicol_layout.go` Layout entry — also balance when the multicol is laid out inside a float without outer fragmentation. Estimated 10-20 lines + check it doesn't regress fixed-height float multicols elsewhere.
+
+Both paths are upstream-architectural rather than walker-related. Neither is in the v2 brief's stated scope; both would be follow-on commits (B2.7? B2.8?) before B6+.
+
+### Alternative: accept 10/13 and proceed
+
+If the operator accepts 10/13 as the post-B3 floor, B6 (Phase 18 ConsumedRowBlockSize carrier WRITE site) is the natural next step. Targets `multicol-nested-011` and the multicol-nested 012-032 cluster + multicol-fill-balance-003/-026. Multicol gate target post-B6: 196 → 211+ (+15 from Phase 18 cluster). The 3 residuals stay deferred.
 
 ## Operational reminders
 

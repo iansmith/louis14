@@ -1,6 +1,6 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — v2 B0+B1+B2+B3 DONE; HARD EXIT B3 at 10/13; operator decision required)
+## Current focus (2026-04-28 — v2 B0→B5 DONE; PAUSED at 10/13 for operator review)
 
 **v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". Operational continuation: `CONTINUE-18.md`. v1 brief preserved but marked SUPERSEDED in findings.md.
 
@@ -12,17 +12,22 @@
 4. B0 (`fdb9343a`): contentNode pointer cache fix. 11/13 → 13/13.
 5. B1 (`8e2aa078`): TallestUnbreakable scaffold. 13/13.
 6. B2 (`f513f338`): wired carrier (BreakBeforeChildIfNeeded + BLA child loop + multicol consumer). Skipped monolithic detection + SetupFragmentation border/padding. 13/13.
-7. B3 (`f97e4ac0`): mechanical `ClipBlockAxisOnly` removal. **10/13 — HARD EXIT.** 3 residuals: `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (2.1% — regressed from Spike A's 1.0%), `spanner-fragmentation-006` (0.2%).
+7. B3 (`f97e4ac0`): mechanical `ClipBlockAxisOnly` removal. 10/13 — HARD EXIT.
+8. B2.5 (`da5730b8`): monolithic detection (IsMonolithic flag + sources + extended ShouldAvoidBreakInside / CalculateUnbreakableBlockSize). 10/13 — infrastructure correct, upstream gaps unaddressed.
+9. B2.6 (`3b3b4208`): SetupFragmentation border/padding contribution. 10/13 — none of the residuals have meaningful borders.
+10. B5 (`33afa6fa`): walker WRITE flat (Cmt 3 stash applied + auto-merged). 10/13 — `-004` improved 2.1% → 1.0%, walker port mechanically beneficial.
+
+**Three residuals at PAUSE:** `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (1.0%), `spanner-fragmentation-006` (0.3%). Upstream-architectural gaps (measure-pass spanner handling, balanceColumns scope for floats) — not walker / clip / carrier bugs.
 
 **v2 sequence (status):**
 
 | # | Status |
 |---|---|
-| ~~Step 0 / B0 / B1 / B2 / B3~~ | DONE |
-| **B2.5 / pause / accept (operator decision)** | TBD |
-| B4 / B5 / B6 / B7 / B8 | TBD post-decision |
+| ~~Step 0 / B0 / B1 / B2 / B3 / B2.5 / B2.6 / B5~~ | DONE |
+| **PAUSE — operator decision required** | TBD |
+| B6 / B7 / B8 | TBD post-decision |
 
-Per v2 brief, do NOT proceed past hard exit B3 without operator decision. Four options in `CONTINUE-18.md` § "Hard exit B3 — next-step options". Recommended: extend B2 with monolithic detection (after tracing -004's regression). The 3 residuals all involve monolithic content (`contain:size` block, spanners with content > declared height). Blink's `ShouldAvoidBreakInside` checks `IsMonolithic()` ∨ `IsAvoidBreakValue(...)`; louis14 only has the second clause.
+Two candidate paths to close residuals + alternative "accept 10/13 + proceed to B6" — full text in `CONTINUE-19.md` § "PAUSE for review (current state)".
 
 **Note:** column-height-008 hangs at clean baseline regardless of cache fix (10m timeout). Pre-existing issue.
 
