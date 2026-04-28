@@ -84,6 +84,15 @@ type MulticolLayoutAlgorithm struct {
 	// usedColWidth is the computed per-column inline-size (resolved once in
 	// Layout, stored for use by drawColumnRules when padding cross_gaps_).
 	usedColWidth float64
+
+	// lastMeasuredTallestUnbreakable carries the tallest unbreakable
+	// block-size accumulated during resolveColumnAutoBlockSize's measure
+	// pass, so MLA.Layout can forward it to its outer container_builder
+	// when this multicol is itself inside an initial column-balancing
+	// pass (nested column balancing). Mirrors Blink's
+	// container_builder_.PropagateTallestUnbreakableBlockSize call at
+	// column_layout_algorithm.cc:1706-1712. v2 Path X port.
+	lastMeasuredTallestUnbreakable float64
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -1005,6 +1014,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if result.Fragment != nil {
 		result.Fragment.RenderedColumnCount = totalColumnsRendered
 	}
+	// v2 Path X (Blink cla.cc:1706-1712): nested column balancing — when
+	// our outer fragmentation context is in its initial balancing pass,
+	// forward the accumulated tallest-unbreakable so the outer's column
+	// auto-block-size is at least that tall. Without this, an outer
+	// multicol balancing an inner multicol that contains a monolithic
+	// descendant won't grow its columns to fit.
+	if mla.space.IsInitialColumnBalancingPass && mla.lastMeasuredTallestUnbreakable > 0 {
+		result.TallestUnbreakableBlockSize = max(
+			result.TallestUnbreakableBlockSize,
+			mla.lastMeasuredTallestUnbreakable)
+	}
 	return result
 }
 
@@ -1685,8 +1705,19 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		}
 
 		if result.ColumnSpannerPath != nil {
-			// Spanner detected during measure pass. The Blink recursion case
-			// (forced_break_count && !knew_about_spanner) is deferred; just break.
+			// Spanner detected during measure pass. Mirrors Blink
+			// cla.cc:1697 — break out and let the main layout pass place
+			// the spanner. The Blink recursion case (cla.cc:1690-1696,
+			// forced_break_count && !knew_about_spanner) is deferred —
+			// lower priority.
+			//
+			// Earlier attempt: also measured the spanner's content here
+			// to contribute to tallestUnbreakable. Reverted — caused
+			// regressions on spanner-fragmentation-000/002/010 (the extra
+			// layout call had side effects on the spanner's resume state).
+			// The spanner-content-overflow residuals (-004/-006) need a
+			// different mechanism, possibly at the spanner-placement
+			// layer rather than the measure-pass layer.
 			break
 		}
 
@@ -1705,6 +1736,10 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		}
 		breakToken = result.BreakToken
 	}
+
+	// v2 Path X (Blink cla.cc:1706-1712): record the accumulated unbreakable
+	// for outer-balancing forwarding. Read by MLA.Layout's exit path.
+	mla.lastMeasuredTallestUnbreakable = tallestUnbreakable
 
 	if len(runs) == 0 {
 		return 0
