@@ -1041,25 +1041,35 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	if result.Fragment != nil {
 		result.Fragment.RenderedColumnCount = totalColumnsRendered
-		// Clip the multicol container's children to its border-box when the
-		// multicol has a non-zero declared block-size. After v2 B3 removed
-		// the per-column ClipBlockAxisOnly workaround, content that doesn't
-		// fragment cleanly (spanners with content > declared height, floats
-		// with monolithic children, etc.) paints visibly past the multicol's
-		// declared box. Blink keeps overflow contained within the multicol
-		// box via a different fragmentation path that louis14 doesn't yet
-		// have; this multicol-level border-box clip matches the visual
-		// outcome without re-introducing the per-column clip.
+		// Phase 20 P20.5: tag the multicol container so the paint layer
+		// can apply Blink's structural overflow clip. Mirrors the
+		// HasNonVisibleOverflow()=true condition that Blink's
+		// LayoutBox sets for any multicol fragmentation context — the
+		// paint-property tree then installs an OverflowClip at
+		// LayoutBox::OverflowClipRect, which for a non-scroll
+		// container is border-box contracted by border outsets, i.e.
+		// the padding-box (verified against blink/renderer/core/
+		// layout/layout_box.cc::OverflowClipRect).
 		//
-		// Gated on `finalBlockSize > 0` so zero-height multicol containers
-		// (multicol-zero-height-002 — content is explicitly expected to
-		// overflow visibly) don't get clipped. Without the gate, content
-		// in zero-height multicols disappears entirely. Unlike the deleted
-		// per-column ClipBlockAxisOnly, this clips only the multicol
-		// container itself, not each column — so it doesn't conflict with
-		// the walker model.
+		// Replaces the 3389efe7 broad ClipContentToBorderBox flag.
+		// The structural change is twofold:
+		//   1. Rect choice: padding-box (P20.5 painter) instead of
+		//      border-box (3389efe7).
+		//   2. Layered model: multicol clip is no longer a special
+		//      flag piggybacked on table-cell semantics; multicol
+		//      and CSS Tables 3 §5.4.1 cell clipping live on
+		//      separate flags with separate rect choices.
+		//
+		// Gate retained at finalBlockSize > 0 so zero-height multicol
+		// containers (multicol-zero-height-002 — content is explicitly
+		// expected to overflow visibly) don't get clipped. Closing
+		// remaining content-overflow regressions (inline-block-and-
+		// column-span-all etc.) is the job of P20.6 (TallestUnbreakable
+		// for atomic inlines), which makes the multicol grow to its
+		// real content extent so the clip stops cutting legitimate
+		// content.
 		if finalBlockSize > 0 {
-			result.Fragment.ClipContentToBorderBox = true
+			result.Fragment.IsMulticolContainer = true
 		}
 	}
 	// v2 Path X (Blink cla.cc:1706-1712): nested column balancing — when

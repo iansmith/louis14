@@ -271,6 +271,19 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
+	// Phase 20 P20.5: multicol containers always clip their fragmentation
+	// context. Mirrors Blink's HasNonVisibleOverflow()=true condition for
+	// LayoutBox multicol — the paint-property tree installs an OverflowClip
+	// at LayoutBox::OverflowClipRect, which for a non-scroll container is
+	// border-box contracted by border outsets (i.e. padding-box). Layout
+	// sets Box.IsMulticolContainer; here we promote it into a two-axis
+	// clip with the padding-box rect (the existing default branch when
+	// !forceBorderBoxClip already produces the padding-box).
+	if box.IsMulticolContainer {
+		clipX = true
+		clipY = true
+	}
+
 	// Phase 16.e+18 v2 B3: ClipBlockAxisOnly paint branch removed.
 	// Blink has no per-column paint clip (box_fragment_painter.cc:
 	// 1080-1114 — fragmentainer branch sets up a paint-cache scope but
