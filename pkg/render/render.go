@@ -2912,10 +2912,41 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 	}
 }
 
+// columnExtentRange returns the absolute Y range covered by all
+// IsColumnBox children of box. Used by drawColumnRules to bound rule
+// block-extent to the column fragmentainers' actual placements rather
+// than the multicol container's full content area. Mirrors Blink
+// BoxFragmentPainter::PaintColumnRules's per-column rule_block_start /
+// rule_block_end derivation (box_fragment_painter.cc ~1876).
+func columnExtentRange(box *layout.Box) (top, bottom float64, ok bool) {
+	for _, child := range box.Children {
+		if child == nil || !child.IsColumnBox {
+			continue
+		}
+		cy := child.Y
+		cb := child.Y + child.Height
+		if !ok {
+			top = cy
+			bottom = cb
+			ok = true
+			continue
+		}
+		if cy < top {
+			top = cy
+		}
+		if cb > bottom {
+			bottom = cb
+		}
+	}
+	return
+}
+
 // drawColumnRules draws vertical rules between multicol columns.
 // Rules are centered in the gap between adjacent columns.
 // When layer.GapGeometry is set (Phase 12h.6), CrossGaps drive the positions
 // and spanner-adjacent gaps are skipped. Otherwise falls back to the ad-hoc loop.
+// Phase 20 P20.4: rule block-extent is derived from the placed column
+// fragmentainers (Box.IsColumnBox children) when available, mirroring Blink.
 func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	box := layer.Box
 	ruleWidth := layer.ColumnRuleWidth
@@ -2930,6 +2961,33 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	contentX := math.Round(box.X + box.Border.Left + box.Padding.Left)
 	contentY := math.Round(box.Y + box.Border.Top + box.Padding.Top)
 	contentH := math.Round(box.Y+box.Height-box.Border.Bottom-box.Padding.Bottom) - contentY
+
+	// Phase 20 P20.4: derive the rule's block extent from the actual column
+	// fragmentainers rather than the multicol's full content area. Mirrors
+	// Blink BoxFragmentPainter::PaintColumnRules (box_fragment_painter.cc
+	// ~line 1876), which computes rule_block_start/end from adjacent column-
+	// fragment offsets/sizes, not from the container box. With the multicol
+	// container's broad ClipContentToBorderBox workaround (3389efe7) about to
+	// be removed in P20.5, deriving rule extent from column boxes prevents
+	// rules from drawing past the columns into the multicol's stretched-or-
+	// padded area (flex-stretched parent, column-fill:auto with shorter
+	// columns, etc.). Box.IsColumnBox is forwarded from
+	// PhysicalFragment.BoxType == BoxTypeColumn (P20.1-P20.3).
+	//
+	// Note: this is the simple "union of column extents" form. Blink's
+	// algorithm tracks per-row extents and stretches the last row to the
+	// container's content_block_end (a known TODO in Blink to remove). For
+	// louis14 the union matches the column box bounds — the typical case is
+	// a single row of columns; multi-row cases (with spanners) already skip
+	// spanner-adjacent gaps via gg.IsMultiColSpanner.
+	colsTopY, colsBottomY, hasCols := columnExtentRange(box)
+	if hasCols {
+		contentY = math.Round(colsTopY)
+		contentH = math.Round(colsBottomY) - contentY
+		if contentH < 0 {
+			contentH = 0
+		}
+	}
 
 	drawRule := func(ruleX float64) {
 		switch layer.ColumnRuleStyle {
