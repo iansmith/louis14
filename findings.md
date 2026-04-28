@@ -843,6 +843,57 @@ Both routes are needed eventually — Blink does both. **Option 2 chosen first**
 
 This is a Phase 18-equivalent refactor. **Recommend deferring 16.e until either** (a) we have a longer session block to do it carefully end-to-end, or (b) Phase 17 / 19 / other targets give easier wins first and we come back to 16.e armed with more spanner-test understanding. Until 16.e lands, `ClipBlockAxisOnly` stays in tree as a load-bearing workaround.
 
+### Phase 16.e re-sequenced — bundled with Phase 18 (2026-04-27)
+
+**Decision (Opus review of CONTINUE-16e.md).** The CONTINUE-16e.md plan to do the spanner walker port immediately on mainline was reviewed and re-sequenced. Rationale:
+
+1. **The minimal-port reversion above** showed the 6 sites are interlocked in non-obvious ways (the wrapper acts as a defensive-copy boundary; `spannerConsumed` semantics distinguish from spanner-content cursor in places not visible from grep). A 6-site coordinated rewrite carries real risk of finding 7th and 8th invariants the same way.
+2. **The CONTINUE's "acceptable temporary regressions"** policy committed broken intermediate states to `fix/flexbox-fast` (steps 3-4 of its outline expected commit-3 to break spanner-frag and commit-4 to restore). Multi-commit refactors with broken intermediate states belong in a worktree.
+3. **Phase 18 needs the same break-token-shape change.** Phase 18's `MulticolBreakTokenData` carrier (this section's brief above) requires either a polymorphic `data_` field or a typed nullable pointer on `BlockBreakToken`. Doing 16.e first WITHOUT the carrier means re-touching the same 6 sites again to thread it through the new walker. Bundling 16.e + 18 is one carrier-and-walker port instead of two passes through the same code.
+4. **Phase 17 is well-scoped, low-risk, and ~5 tests** — a clean intermediate win on mainline that doesn't touch the spanner code. See findings.md § Phase 17 brief: single function rewrite at `multicol_layout.go:1382-1455` with full Blink algorithm already documented.
+5. **Marginal multicol-gate gain from 16.e+16.c.2 alone is ~+4 tests** (192 → 196). Phase 17 alone is +5; bundled 16.e+18 is ~+15-20 (Phase 18's nested-multicol cluster is the bigger gate-mover). Sequencing Phase 17 first delivers a faster intermediate win without blocking the bundled work.
+
+**Re-sequenced order.**
+
+1. **Phase 17** (active, mainline) — Forced-break balance. ~5 tests. Continuation: `CONTINUE-17.md`.
+2. **Phase 16.e + 18 bundled** (worktree) — port `MulticolPartWalker` + add `MulticolBreakTokenData` carrier as one foundational change. ~15-20 tests. Bundled brief below.
+3. **Phase 16.c.2 retry #3** (mainline, mechanical) — delete `ClipBlockAxisOnly` end-to-end. ~3-4 tests.
+4. **Option 1** (worktree) — finish FinishFragmentation port (drop leaf-only gate; delete or shrink parent-side overflow path).
+
+**Bundled 16.e + 18 brief (sketch — flesh out before starting).**
+
+The walker port and the carrier port collapse into one design exercise. The break-token shape becomes:
+
+```go
+type BlockBreakToken struct {
+    // ...existing fields...
+    ChildBreakTokens []*BlockBreakToken  // FLAT, document-order; dispatch by Node
+    MulticolData     *MulticolBreakTokenData  // typed nullable pointer (Phase 18)
+}
+
+type MulticolBreakTokenData struct {
+    ConsumedRowBlockSize layoutunit.LayoutUnit
+}
+```
+
+Walker iterates `ChildBreakTokens` in document order; dispatch on `child.Node`:
+- `child.Node == mla.node` → column-rows segment (resume `LayoutLine`).
+- `child.Node.IsColumnSpanAll()` → spanner (resume `layoutSpanner` with `child` as input break-token, including any nested `ChildBreakTokens` for spanner-content overflow).
+- `child.Node.IsOutOfFlowPositioned()` → OOF candidate (existing OOF aggregation).
+
+The combined-clip case (current `multicol_layout.go:762-770`) sets `ConsumedBlockSize` directly on the spanner's own outgoing token instead of appending a wrapped `clipToken`. The next-spanner-clip-chain case (current `:823-832`) becomes its own flat entry in document order, no nesting. The outer's `buildOuterBreakResult` emits `ChildBreakTokens` flat with `MulticolData` attached when the row-overflow condition fires (Blink cla.cc:1374).
+
+**Recommended commit decomposition (in worktree branch, e.g. `phase-16e-18-walker`):**
+
+1. `Phase 16.e+18 step 1: introduce MulticolBreakTokenData carrier + walker scaffold` — schema change + walker type, no behavior change. Build clean. Mainline-mergeable.
+2. `Phase 16.e+18 step 2: switch read site to walker dispatch` — remove positional read at `multicol_layout.go:428-447`; walker drives resume. Expect spanner-fragmentation regressions.
+3. `Phase 16.e+18 step 3: switch write site to flat ChildBreakTokens` — rewrite `buildOuterBreakResult` (`:480-512`) to emit flat list; drop `pendingPartialSpannerToken` wrap (`:721-728`); collapse combined-clip mutation (`:762-770`) and next-spanner-clip-chain (`:823-832`). Step 2's regressions should restore.
+4. `Phase 16.e+18 step 4: wire MulticolBreakTokenData write site` — Phase 18's nested-multicol row-carry (Blink cla.cc:1374). Read site at `multicol_layout.go:289-292` already plumbed.
+5. `Phase 16.e+18 step 5: drop IsInsideColumnSpanner gate` — remove gate in `block_layout.go:1410-1415` + propagation at `:611-614` + `ConstraintSpace.IsInsideColumnSpanner` field/setter. Verify spanner-frag-006 and the `multicol-nested-011..032` cluster.
+6. `Phase 16.e+18 step 6: gate sweep` — full multicol + spanner-frag + invariants. Worktree branch should pass before merging back to mainline.
+
+**Hard exit conditions during the bundled work.** If step 5 regresses spanner-fragmentation-006 even with the walker in place, the walker-restructures-outer-tokens-but-not-inner-spanner-tokens hypothesis is wrong and the spanner-resume mechanism needs additional changes. STOP, diagnose, do not chase with predicates. If `multicol-nested-010` (Phase 16.c.1 regrowth) regresses at any step, the row-carry write or the walker's column-rows dispatch is wrong.
+
 ### Phase 16.d.1 retrospective (2026-04-27, commits `a6446061` + `c40b4b56`, +25 multicol / +4 spanner-fragmentation)
 
 **Shipped.** `LayoutResult.DidBreakSelf bool` carrier and FinishFragmentation-equivalent clamp in `block_layout.go` after the min/max constraints (between line 1372 and the `builder.SetSize` call). When the gate fires, the fragment is sized to `space_left = FragmentainerBlockSize - FragmentainerOffset - geom.BlockBorderPadding()`, `didBreakSelf=true`, and after `result := builder.Build()` a continuation `BlockBreakToken{Node, ConsumedBlockSize=prev+finalBlockSize, SequenceNumber=prev+1}` is attached.
@@ -865,7 +916,7 @@ Final 13/13 PASS at 0 diff: `column-height-001/010/017/026/027`, `multicol-neste
 
 ---
 
-### Phase 17 brief — Forced-break balance (target T2, ~5 tests)
+### Phase 17 brief — Forced-break balance (DONE 2026-04-27, +4 multicol: 192→196)
 
 **Failing tests.** `multicol-fill-balance-040` family (`-038, -039, -040, -041`) plus subset of `-029..-036`. Pattern: N forced `break-before:column` children inside `columns: K`. Expected: column-count expands to N+1 when N ≥ K, with each forced break getting its own column at content-determined height.
 

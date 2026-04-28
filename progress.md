@@ -19,6 +19,12 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-multicol | **192/455** | **+25 from Phase 16.d.1** (per-fragment block-size clamp + DidBreakSelf carrier + IsInsideColumnSpanner gate) — 167 → 192. Per-fragment clamp lets monolithic content fragment naturally at column boundaries; spanner descendants are gated out so the existing pendingContentOverflow mechanism keeps working. The per-column ClipBlockAxisOnly is no longer load-bearing for any of the 13 driver tests but stays in tree until Phase 16.c.2 retry. |
 | spanner-fragmentation | **11/13** | **+4 from Phase 16.d.1** (7 → 11): spanner-fragmentation-001/004/006 now pass. -006 specifically required the IsInsideColumnSpanner gate (Blink: spanners are monolithic for placement). |
 
+## Active phase
+
+**Phase 17 — Forced-break balance** (continuation: `CONTINUE-17.md`). Single-function rewrite of `resolveColumnAutoBlockSize` (`pkg/layout/multicol_layout.go:1469-1542`) to mirror Blink's `ResolveColumnAutoBlockSizeInternal` measure-pass loop with `ContentRun`/`ContentRuns`/`DistributeImplicitBreaks`. Mainline. Target: +5 tests (`multicol-fill-balance-038/039/040/041` + `-029..-036` subset). Gate target: multicol 192 → 197+/455.
+
+**Re-sequencing 2026-04-27.** The original CONTINUE-16e.md plan to do the spanner walker port immediately on mainline was reviewed and re-sequenced. Phase 16.e is now bundled with Phase 18 (shared break-token-shape change) and queued as worktree work after Phase 17 lands. Then Phase 16.c.2 retry #3 (mechanical clip removal). See `findings.md` § "Phase 16.e re-sequenced — bundled with Phase 18" for rationale and the bundled brief.
+
 ---
 
 ## Completed phases (brief entries)
@@ -185,6 +191,10 @@ Per-fragment block-size clamp + DidBreakSelf carrier in BlockLayoutAlgorithm. Mi
 Gated to true leaf blocks: `!IsBlockSizeOverride && !IsInsideColumnSpanner && hasExplicitBlock && HasBlockFragmentation && FragmentainerBlockSize > 0 && !IsInitialColumnBalancingPass && len(children) == 0 && !column-span:all`. Non-leaves keep parent-driven fragmentation (interleaving caused break-token misalignment + infinite row-wrap loops on column-wrap:wrap + spanner siblings — e.g., `column-height-006`). Spanners themselves and their descendants keep their MulticolLayoutAlgorithm resume mechanism (`pendingContentOverflow` + `spannerContentBreakToken`); the `IsInsideColumnSpanner` flag is set in `layoutSpanner` / `layoutSpannerInFrag` and propagated through child constraint spaces in `block_layout.go`. Driver: spanner-fragmentation-006 — without this gate the spanner's 360h leaf self-fragmented and the spanner's content incorrectly fragmented across all 4 outer columns instead of overflowing once monolithically (Blink reference: `column_layout_algorithm.cc::LayoutSpanner` — spanners are monolithic for placement).
 
 Driver-test recoveries (13/13 PASS at 0 diff without relying on the clip): column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004/006, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line. Other gates unchanged: CSS2 99/99, flex 626/629, position 92/105, wm 781/781.
+
+### Phase 17 — DONE (multicol 192 → 196, +4)
+
+Blink-parity ContentRuns measure-pass for forced-break column balancing. Rewrote `resolveColumnAutoBlockSize` in `multicol_layout.go` with a do-while loop that records one `contentRun` per forced-break segment, then calls `distributeImplicitBreaks` to compute the balanced column height. Four supporting changes: (1) `fragmentation_utils.go`: moved `IsInitialColumnBalancingPass` early-return to AFTER forced-break check, so forced breaks fire during the measure pass; (2) `block_layout.go` Change 2: enabled `HasForcedBreak` propagation during measure pass; (3) Change 3: CSS Fragmentation §3.4.2 fragment extension — extends non-last fragments to fill the column, gated on `IsInsideBalancedColumns && hasAutoColumnHeight()` to prevent extension in explicit `column-height` contexts; (4) Change 4: propagates `HasForcedBreak` through the overflow path. Critical fix: `colBSize = max(fragBSize, BlockSizeForFragmentation, IntrinsicBlockSize)` in the measure loop ensures IsBlockSizeOverride-forced fragments report the correct content height. Tests gained: `multicol-fill-balance-040/041`, `multicol-nested-column-rule-003`, `spanner-in-child-after-parallel-flow-004`. Gate: CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781 · multicol **196/455** · spanner-frag 11/13.
 
 ## Phase 16.c-19 plan (research complete, briefs in findings.md)
 

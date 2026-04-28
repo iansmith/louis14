@@ -841,7 +841,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 					intrinsicBlock := blockCursor
 					if !hasExplicitBlock {
-						borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
+						// CSS Fragmentation §3.4.2: a non-last fragment's background
+						// extends to the fragmentainer boundary — but only when content
+						// was actually placed (intrinsicBlock > 0). If nothing was placed
+						// before the break (e.g. break-inside:avoid on the first child),
+						// extending an empty fragment would confuse the balance loop.
+						extendedBlock := intrinsicBlock
+						if intrinsicBlock > 0 && bla.space.FragmentainerBlockSize != Indefinite &&
+							bla.space.IsInsideBalancedColumns {
+							remaining := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset - intrinsicBlock
+							if remaining > 0 {
+								extendedBlock += remaining
+							}
+						}
+						borderBoxBlock := extendedBlock + geom.BlockBorderPadding()
 						builder.SetSize(LogicalSize{
 							InlineSize: geom.BorderBoxSize.InlineSize,
 							BlockSize:  borderBoxBlock,
@@ -1203,6 +1216,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
 						result.BlockSizeForFragmentation = intrinsicBlock
 					}
+					if childResult != nil && childResult.HasForcedBreak {
+						result.HasForcedBreak = true
+					}
 					return result
 				} else if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
 					!bla.space.IsInitialColumnBalancingPass {
@@ -1250,7 +1266,9 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 				// Forced column break propagated from a child (break-before/after:column).
 				// Fires even when blockCursor < fragEnd (column isn't full yet).
-				if fragSize != Indefinite && childResult.HasForcedBreak {
+				// Also fires during IsInitialColumnBalancingPass (fragSize=Indefinite) so the
+				// ContentRuns measure loop records one run per forced-break segment.
+				if (fragSize != Indefinite || bla.space.IsInitialColumnBalancingPass) && childResult.HasForcedBreak {
 					outToken := &BlockBreakToken{
 						Node:              bla.node,
 						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),

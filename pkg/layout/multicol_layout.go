@@ -1071,7 +1071,11 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 		// Inner per-column loop.
 		for col := 0; col < numCols || colBlockSize == Indefinite; col++ {
-			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns, true)
+			// IsInsideBalancedColumns is true only when the balance algorithm
+			// actually determined the column height (not when column-height is
+			// explicit). Prevents fragment background extension (Change 3) from
+			// firing in explicit column-height contexts (CSS multicol-2).
+			colSpace := mla.createConstraintSpaceForColumn(wdm, usedColWidth, colBlockSize, mla.containerPercentResolutionBlockSize, colBreakToken, balanceColumns && mla.hasAutoColumnHeight(), true)
 			result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, colSpace).Layout()
 			if result == nil || result.Fragment == nil {
 				break
@@ -1466,6 +1470,52 @@ func (mla *MulticolLayoutAlgorithm) layoutSpannerInFrag(
 // nextColToken, if non-nil, is threaded into the measurement space so the
 // unconstrained pass starts from the right position in the content stream
 // (e.g., after a spanner in a multi-row layout).
+// contentRun mirrors Blink's ContentRun struct (column_layout_algorithm.cc).
+// Each run represents the content height between two forced column breaks.
+type contentRun struct {
+	contentBlockSize      float64
+	implicitBreaksAssumed int
+}
+
+func (r contentRun) columnBlockSize() float64 {
+	return math.Ceil(r.contentBlockSize / float64(r.implicitBreaksAssumed+1))
+}
+
+// distributeImplicitBreaks bumps implicitBreaksAssumed on the tallest run
+// until len(runs)+Σimplicit >= target. Mirrors Blink's
+// ContentRuns::DistributeImplicitBreaks (column_layout_algorithm.cc).
+func distributeImplicitBreaks(runs []contentRun, target int) {
+	for columnsFound := len(runs); columnsFound < target; columnsFound++ {
+		idx := 0
+		for i := 1; i < len(runs); i++ {
+			if runs[i].columnBlockSize() > runs[idx].columnBlockSize() {
+				idx = i
+			}
+		}
+		runs[idx].implicitBreaksAssumed++
+	}
+}
+
+func tallestColumnBlockSize(runs []contentRun) float64 {
+	tallest := 0.0
+	for _, r := range runs {
+		if c := r.columnBlockSize(); c > tallest {
+			tallest = c
+		}
+	}
+	return tallest
+}
+
+func tallestContentBlockSize(runs []contentRun) float64 {
+	tallest := 0.0
+	for _, r := range runs {
+		if r.contentBlockSize > tallest {
+			tallest = r.contentBlockSize
+		}
+	}
+	return tallest
+}
+
 func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	contentNode *LayoutInputNode,
 	wdm WritingDirectionMode,
@@ -1488,53 +1538,117 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	// geometry function and would suppress the override).
 	// FragmentainerBlockSize stays Indefinite so no actual fragmentation occurs
 	// during measurement — we only want content heights, not column splits.
-	measureAvailBlock := Indefinite
 	hasExplicitContainerHeight := containerPercentResolutionBlockSize >= 0
-	b := NewConstraintSpaceBuilder(wdm, wdm, true)
-	if hasExplicitContainerHeight {
-		measureAvailBlock = containerPercentResolutionBlockSize
-		b = b.SetAvailableSize(LogicalSize{
-			InlineSize: colWidth,
-			BlockSize:  measureAvailBlock,
-		}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: colWidth,
-				BlockSize:  containerPercentResolutionBlockSize,
-			}).
-			SetPercentageResolutionInlineSize(colWidth).
-			SetIsFixedBlockSize(true).
-			SetIsBlockSizeOverride(true)
-	} else {
-		b = b.SetAvailableSize(LogicalSize{
-			InlineSize: colWidth,
-			BlockSize:  Indefinite,
-		}).
-			SetPercentageResolutionSize(LogicalSize{
-				InlineSize: colWidth,
-				BlockSize:  containerPercentResolutionBlockSize,
-			}).
-			SetPercentageResolutionInlineSize(colWidth).
-			SetIsContentSuggestionLayout(true)
-	}
-	b = b.SetIsInitialColumnBalancingPass(true).
-		SetHasBlockFragmentation(true).
-		SetFragmentainerBlockSize(Indefinite).
-		SetBlockFragmentationType(FragmentColumn)
 
-	if nextColToken != nil {
-		b = b.SetBreakToken(nextColToken)
+	// buildSpace constructs a ConstraintSpace for one measure-pass iteration.
+	// Called once per loop iteration with the current break-token.
+	buildSpace := func(breakToken *BlockBreakToken) ConstraintSpace {
+		measureAvailBlock := Indefinite
+		b := NewConstraintSpaceBuilder(wdm, wdm, true)
+		if hasExplicitContainerHeight {
+			measureAvailBlock = containerPercentResolutionBlockSize
+			b = b.SetAvailableSize(LogicalSize{
+				InlineSize: colWidth,
+				BlockSize:  measureAvailBlock,
+			}).
+				SetPercentageResolutionSize(LogicalSize{
+					InlineSize: colWidth,
+					BlockSize:  containerPercentResolutionBlockSize,
+				}).
+				SetPercentageResolutionInlineSize(colWidth).
+				SetIsFixedBlockSize(true).
+				SetIsBlockSizeOverride(true)
+		} else {
+			b = b.SetAvailableSize(LogicalSize{
+				InlineSize: colWidth,
+				BlockSize:  Indefinite,
+			}).
+				SetPercentageResolutionSize(LogicalSize{
+					InlineSize: colWidth,
+					BlockSize:  containerPercentResolutionBlockSize,
+				}).
+				SetPercentageResolutionInlineSize(colWidth).
+				SetIsContentSuggestionLayout(true)
+		}
+		b = b.SetIsInitialColumnBalancingPass(true).
+			SetHasBlockFragmentation(true).
+			SetFragmentainerBlockSize(Indefinite).
+			SetBlockFragmentationType(FragmentColumn)
+		if breakToken != nil {
+			b = b.SetBreakToken(breakToken)
+		}
+		return b.Build()
 	}
 
-	result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, b.Build()).Layout()
-	if result == nil {
+	// Measure-pass loop: mirrors Blink's ResolveColumnAutoBlockSizeInternal
+	// (column_layout_algorithm.cc:1734-1934). Each iteration measures one
+	// "tall strip" with no soft breaks allowed, advancing through the content
+	// via break-tokens. One contentRun is recorded per inter-forced-break segment.
+	var runs []contentRun
+	breakToken := nextColToken
+	forcedBreaks := 0
+	considerAllColumns := false // becomes true once forcedBreaks >= numCols (mirrors ColumnsOverflowInInlineDirection)
+	var tallestUnbreakable float64 // TODO(Phase 16.d.2/3): wire TallestUnbreakableBlockSize carrier
+
+	const maxIterations = 1000 // safety valve against non-advancing break-token bugs
+	for i := 0; i < maxIterations; i++ {
+		result := NewBlockLayoutAlgorithm(mla.ctx, contentNode, buildSpace(breakToken)).Layout()
+		if result == nil {
+			break
+		}
+
+		if forcedBreaks < numCols || considerAllColumns {
+			colBSize := result.BlockSizeForFragmentation
+			if result.Fragment != nil {
+				if fragBSize := NewLogicalFragment(wdm, result.Fragment).BlockSize(); fragBSize > colBSize {
+					colBSize = fragBSize
+				}
+			}
+			// When the fragment is forced to a fixed size (IsBlockSizeOverride),
+			// fragment.BlockSize underestimates the actual content; use
+			// IntrinsicBlockSize as the true content height for balance estimation.
+			if result.IntrinsicBlockSize > colBSize {
+				colBSize = result.IntrinsicBlockSize
+			}
+			runs = append(runs, contentRun{contentBlockSize: colBSize})
+		}
+
+		// TODO(Phase 16.d.2/3): tallestUnbreakable = max(tallestUnbreakable, result.TallestUnbreakableBlockSize)
+
+		if result.ColumnSpannerPath != nil {
+			// Spanner detected during measure pass. The Blink recursion case
+			// (forced_break_count && !knew_about_spanner) is deferred; just break.
+			break
+		}
+
+		if result.HasForcedBreak {
+			forcedBreaks++
+			// When forced breaks reach or exceed the column count, extra segments
+			// will overflow inline (column count expands). Switch to considerAllColumns
+			// so subsequent runs — which may be the tallest — are still recorded.
+			// Mirrors Blink's ColumnsOverflowInInlineDirection(false) guard.
+			if forcedBreaks >= numCols {
+				considerAllColumns = true
+			}
+		}
+		if result.BreakToken == nil {
+			break
+		}
+		breakToken = result.BreakToken
+	}
+
+	if len(runs) == 0 {
 		return 0
 	}
-	totalHeight := result.IntrinsicBlockSize
-	if totalHeight <= 0 {
-		return 0
+
+	// Phase 16.d.2/3 will populate tallestUnbreakable; until then this is a no-op.
+	if tallestUnbreakable >= tallestContentBlockSize(runs) {
+		return tallestUnbreakable
 	}
 
-	estimate := math.Ceil(totalHeight / float64(numCols))
+	distributeImplicitBreaks(runs, numCols)
+
+	estimate := tallestColumnBlockSize(runs)
 	if estimate < 1 {
 		estimate = 1
 	}

@@ -206,22 +206,23 @@ func BreakBeforeChildIfNeeded(
 	if !space.HasBlockFragmentation {
 		return BreakStatusContinue, false
 	}
-	// Initial column balancing pass: content must flow continuously so that
-	// total intrinsic block-size is measured. Blink's full equivalent
-	// (`ContentRuns::DistributeImplicitBreaks`) tracks runs between forced
-	// breaks to compute a smarter estimate; we approximate with
-	// total_height / numCols and let the outer stretch loop grow as needed.
-	if space.IsInitialColumnBalancingPass {
-		return BreakStatusContinue, false
-	}
-
 	// Forced break-before / break-after takes precedence over fit-based logic.
+	// This must run even during IsInitialColumnBalancingPass so the ContentRuns
+	// measure loop (Phase 17) gets one continuation token per forced-break segment.
+	// Soft breaks are gated on definite fragmentainerBlockSize below, so they
+	// won't fire when FragmentainerBlockSize=Indefinite (as set in the measure pass).
 	if hasContainerSeparation {
 		breakBetween := CalculateBreakBetweenValue(child, builder)
 		if IsForcedBreakValue(space, breakBetween) {
 			builder.SetBreakAppeal(BreakAppealPerfect)
 			return BreakStatusBrokeBefore, true
 		}
+	}
+
+	// Soft-break logic requires a definite fragmentainer size; during the initial
+	// column balancing pass FragmentainerBlockSize=Indefinite so nothing below fires.
+	if space.IsInitialColumnBalancingPass {
+		return BreakStatusContinue, false
 	}
 
 	// Compute appeal-inside + propagate any break-inside:avoid violation up
