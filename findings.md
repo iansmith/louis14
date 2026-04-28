@@ -1896,6 +1896,29 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 - **Root cause:** louis14's `ClipBlockAxisOnly` workaround (Phase 12h F2 partial) creates a "clip-only mid-spanner" code path at `multicol_layout.go:786-790` (Commit 2 numbers). When a spanner clips at the outer fragmentainer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content (e.g., spanner_3 / trailing block in `-001`'s 3-spanner+block test). The OLD (pre-Commit-2) 3-slot encoding solved this via slot[0] = `beforeSpannerToken = {Node: contentNode, ChildBreakTokens: [{Node: spanner, IsBreakBefore: true}]}` — a column-content driver that on resume drove BLA via layoutLine to re-discover post-spanner content via spannerPath returns. The walker model elides this driver by design.
 - **Status:** Reverted. Worktree restored to `a8ea3adb`. Commit 3 attempt diff preserved in worktree `git stash@{0}`. Brief corrected (see notice at top of "Phase 16.e + 18 BUNDLED BRIEF" section). DO NOT retry Commit 3 without re-confirming sequencing with operator.
 
+**2026-04-28 — v2 Step 0 diagnostic + B0 cache fix (LANDED on worktree `fdb9343a`).**
+
+- **Diagnostic question:** Why does walker WRITE-flat × no-clip break column-height-026/027 + multicol-nested-030/031 (Spike B's 4 walker-flat-specific regressions)?
+- **Method:** Instrumented MulticolLayoutAlgorithm.Layout to log incoming/outgoing break-token shape. Ran column-height-026 under Cmt 2 baseline (passes), Spike A (passes), Spike B (fails 1.0%). Compared traces.
+- **Smoking gun:** Walker dispatches by `child.Node == multicolContainer` pointer equality. `MulticolLayoutAlgorithm.Layout()` allocates a fresh `contentNode := &LayoutInputNode{...}` on every call. Outer column 1's inner-multicol Layout emits a break token whose `outBT[0].Node` points to the col-1 contentNode. Outer column 2's inner-multicol Layout builds the walker with a fresh col-2 contentNode (different pointer). The walker's identity check fails, falls through to spanner branch, mis-dispatches every column-content resume as a spanner.
+- **Fix:** Cache contentNode on `mla.node` (analogous to `groupedChildrenCache`). 1 struct field + 5 lines of cache logic.
+- **Result on the 13 drivers (verified all matrix corners):**
+
+  | Config | Cache OFF | Cache ON |
+  |---|---|---|
+  | Cmt 2 + clip ON (baseline) | 11/13 | **13/13** |
+  | Cmt 2 + clip OFF (Spike A) | 9/13 | 10/13 |
+  | Cmt 3 + clip ON | 11/13 | **13/13** |
+  | Cmt 3 + clip OFF (Spike B) | 5/13 | 10/13 |
+
+  Cache fix alone closes -001 (0.8% → 0) and -006 (1.4% → 0) at clip-on baseline. Walker dispatch is now correct for both positional and flat WRITE encodings. The 3 residuals at clip-off (-004, -006, nested-floated) correlate with clip handling, not WRITE model — they're the genuine 16.d.2/3 carrier work.
+- **Why v1 didn't catch this earlier:** Cmt 2's positional WRITE puts the col-rows resume at slot[2] with slot[0]=nil. Walker iter 1 sees child[0]=nil → empty entry → column-content with nextColToken=nil → `layoutLine` runs **fresh**. The 400h block re-lays-out from zero in outer col 2, producing visually identical content to col 1 — coincidentally matching the reference. Cmt 2 was always semantically broken (post-Cmt-1); just visually masked by the fresh-layout coincidence. Cmt 3's flat WRITE puts the col-rows resume at slot[0], surfacing the pointer mismatch on the first walker iteration. The diagnostic shows v1's "Cmt 3 fixes Cmt 2's regressions" premise was wrong — the regressions trace to a pre-Cmt-1 latent bug that Cmt 2 introduced, not to walker WRITE shape.
+- **column-height-008 follow-up:** Hangs at clean baseline `a8ea3adb` (10m timeout, default Go test) regardless of cache fix. Pre-existing issue; not addressed here. Document for separate triage.
+- **Status:** B0 landed on worktree `fdb9343a`. Worktree at 13/13 drivers, multicol gate ≥ Cmt 2 baseline (verification deferred until non-hanging tests can be measured cleanly), 4-category invariants intact.
+- **Implication for v2 sequencing:** B0 is complete. The original v2 B1+B2 (TallestUnbreakable carrier) targets the 3 clip-off residuals (-004, -006, nested-floated). B3 (clip removal) is now genuinely mechanical given B0+B1+B2. v2 sequence holds.
+
+---
+
 **2026-04-28 — Path A spike (operator-requested empirical test).**
 
 - **Question:** Is 16.c.2 retry #3 (`ClipBlockAxisOnly` removal) actually mechanical post-16.d.1, as the brief claims?

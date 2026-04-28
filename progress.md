@@ -42,18 +42,11 @@ WRITE-site flattening (all 6 brief sites + a self-derived `flushWalker` mirrorin
 | Spike A (Cmt 2 + clip OFF) | **9/13** | + -004 1.0%, nested-floated 0.2% NEW fail |
 | Spike B (Cmt 3 + clip OFF) | **5/13** | + column-height-026/027 + multicol-nested-030/031 NEW fail (walker-flat × no-clip regressions) |
 
-**v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". v1 brief preserved but marked SUPERSEDED. Eight commits (Step 0 diagnostic + B1-B8) instead of v1's six. Sequence:
+**v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". v1 brief preserved but marked SUPERSEDED. Sequence: Step 0 diagnostic → B0 cache fix → B1+B2 carrier port → B3 clip removal → B4 re-verify → B5 walker WRITE flat → B6 Phase 18 carrier WRITE → B7 drop 16.d.1 gate → B8 sweep + merge.
 
-- **Step 0 (mandatory diagnostic, no code):** trace `column-height-026` break-token chain Cmt 2 vs Spike B to identify the walker-flat × no-clip divergence. Hard exit if not localized.
-- **B1+B2:** port `TallestUnbreakableBlockSize` carrier (Phase 16.d.2/3 — already TODO'd at multicol_layout.go:1601). Mirrors Blink fragmentation_utils.cc:1105-1113 + 510-514, box_fragment_builder.cc:566-569, cla.cc:1879-1948.
-- **B3:** mechanical `ClipBlockAxisOnly` removal — only after B2 closes the upstream gap.
-- **B4:** re-verify walker READ (Cmt 2 already landed `a8ea3adb`).
-- **B5:** walker WRITE flat (apply `git stash@{0}` from worktree with Step 0 adjustments + B3 reconciliation).
-- **B6:** Phase 18 `ConsumedRowBlockSize` carrier WRITE site.
-- **B7:** drop `IsInsideColumnSpanner` clamp gate.
-- **B8:** full gate sweep + worktree merge.
+**Step 0 + B0 DONE 2026-04-28 (worktree `fdb9343a`).** Diagnostic identified the root cause as contentNode pointer instability in walker dispatch. `MulticolLayoutAlgorithm.Layout()` allocated a fresh `contentNode` each call; the walker's `child.Node == multicolContainer` identity check failed on resume, mis-dispatching every column-content resume as a spanner. Fix = cache contentNode on `mla.node` (1 field + 5 lines). **Driver result: 11/13 → 13/13 at 0 diff.** Both pre-existing -001 (0.8%) and -006 (1.4%) regressions clear. Full Step 0 matrix and diagnostic detail in findings.md error log entry "v2 Step 0 diagnostic + B0 cache fix".
 
-**Next: Step 0.** Operational continuation in `CONTINUE-18.md`. DO NOT skip Step 0 to start B1 — v1 failed precisely because the brief proceeded without empirical grounding.
+**Next: B1.** `TallestUnbreakableBlockSize` field on `LayoutResult` + builder method (no propagation wiring yet — that's B2). Operational continuation: `CONTINUE-18.md`. Hooks already TODO'd at multicol_layout.go:1576+1601.
 
 ---
 

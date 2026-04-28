@@ -1,29 +1,32 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — Phase 17 DONE; bundled 16.e+18 v1 SUPERSEDED; v2 brief written; Step 0 next)
+## Current focus (2026-04-28 — Phase 17 DONE; v1 SUPERSEDED; v2 Step 0 + B0 DONE; B1 next)
 
 **v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". Operational continuation: `CONTINUE-18.md`. v1 brief preserved but marked SUPERSEDED in findings.md.
 
-**Why v2:** v1 was empirically refuted by the 2026-04-28 Path A spike. v1 assumed walker WRITE flat alone restores 13/13 and that clip removal could trail as a "mechanical" cleanup. Spike showed neither holds: (i) clip removal alone is not mechanical (Spike A: 9/13, regresses -004 + nested-floated); (ii) walker WRITE flat × no-clip introduces independent regressions on column-height-026/027 + multicol-nested-030/031 (Spike B: 5/13). v2 reorders to address louis14's clip-dependent paths via the upstream Blink mechanism (Phase 16.d.2/3 `TallestUnbreakableBlockSize` carrier) BEFORE the walker port.
-
 **Worktree progress on `phase-16e-18-walker-carrier`:**
 
-1. **Commit 1 DONE (`43ec8c66`):** schema + walker scaffold. 13/13 drivers PASS.
-2. **Commit 2 DONE (`a8ea3adb`):** walker READ + positional WRITE. 11/13 drivers (-001, -006 regress per v1 expectation; v2 expects these to clear post-B3 + B5 once clip is gone and walker WRITE flattens).
-3. **Cmt 3 ATTEMPT (v1) REVERTED 2026-04-28.** Diff preserved in worktree `git stash@{0}` for B5 reuse with reconciliation.
+1. **Cmt 1 (`43ec8c66`):** schema + walker scaffold. 13/13.
+2. **Cmt 2 (`a8ea3adb`):** walker READ + positional WRITE. 11/13.
+3. **Cmt 3 v1 ATTEMPT REVERTED.** Diff preserved in `git stash@{0}` for B5 reuse.
+4. **Step 0 + B0 DONE (`fdb9343a`):** Step 0 diagnostic confirmed contentNode pointer instability as the walker-dispatch root cause. B0 fix = cache contentNode on `mla.node.contentNodeCache` (1 field + 5 lines). **13 drivers: 13/13 at 0 diff.** Both pre-existing -001 (0.8%) and -006 (1.4%) regressions cleared. Full data: findings.md error log entry "v2 Step 0 diagnostic + B0 cache fix".
 
-**v2 sequence (full detail in `CONTINUE-18.md` and `findings.md` § BUNDLED BRIEF v2):**
+**v2 sequence (status):**
 
-- **Step 0 (NEXT):** mandatory diagnostic — trace `column-height-026` break-token chain Cmt 2 vs Spike B. No code commit. Hard exit if divergence not localized.
-- **B1+B2:** port `TallestUnbreakableBlockSize` carrier (Phase 16.d.2/3, hooks already TODO'd at multicol_layout.go:1576 + :1601).
-- **B3:** mechanical `ClipBlockAxisOnly` removal (Phase 16.c.2 retry #3 inlined into bundle).
-- **B4:** re-verify walker READ.
-- **B5:** walker WRITE flat (apply Cmt 3 stash + Step 0 adjustments + B3 reconciliation).
-- **B6:** Phase 18 `ConsumedRowBlockSize` carrier WRITE site.
-- **B7:** drop `IsInsideColumnSpanner` clamp gate.
-- **B8:** gate sweep + worktree merge.
+| # | Status |
+|---|---|
+| Step 0 | DONE |
+| B0 (cache fix) | DONE on worktree `fdb9343a` |
+| **B1 (NEXT)** | TallestUnbreakable field on LayoutResult + builder method |
+| B2 | Wire propagation (BreakBeforeChildIfNeeded + SetupFragmentation + child-result + populate at multicol_layout.go:1601) |
+| B3 | Mechanical `ClipBlockAxisOnly` removal |
+| B4 | Re-verify walker READ |
+| B5 | Walker WRITE flat (apply Cmt 3 stash + B3 reconciliation) |
+| B6 | Phase 18 `ConsumedRowBlockSize` carrier WRITE site |
+| B7 | Drop `IsInsideColumnSpanner` clamp gate |
+| B8 | Sweep + worktree merge |
 
-**DO NOT proceed past Step 0 without engaging operator.** v1 failed precisely because the brief proceeded without empirical grounding; Step 0 is the v2 safeguard.
+**Note:** column-height-008 hangs at clean baseline regardless of cache fix (10m timeout). Pre-existing issue, not caused by B0. Track separately; relevant for B8 sweep planning.
 
 **Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commits `a6446061` + `c40b4b56` + docs `50de102c` + `68b74171` + `65ae87df`). All 13 driver tests PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
 

@@ -1,69 +1,69 @@
-# CONTINUE: Phase 16.e + 18 bundled v2 — Step 0 diagnostic next
+# CONTINUE: Phase 16.e + 18 bundled v2 — Step 0 + B0 done; B1 next
 
 ## Authoritative brief
 
 **v2 brief (Option A — clip-removal-first):** `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". Read the entire v2 section before any code change. v1 brief is preserved in findings.md but marked SUPERSEDED — do not implement against v1.
 
-## State (2026-04-28)
+## State (2026-04-28, post-Step-0 + B0)
 
 **Worktree:** `/Users/iansmith/louis14-phase-16e-18`, branch `phase-16e-18-walker-carrier`. Clean.
-- HEAD: `a8ea3adb` (Cmt 2 — walker READ + positional WRITE).
-- Stash `stash@{0}`: Cmt 3 attempt (walker WRITE flat). Will be reused at B5 with reconciliation.
-- Driver baseline: 11/13 (-001 0.8%, -006 1.4%).
+- HEAD: `fdb9343a` (B0 — contentNode pointer cache fix; Step 0 finding).
+- Previous commits: `a8ea3adb` (Cmt 2 — walker READ + positional WRITE), `43ec8c66` (Cmt 1 — schema + scaffold).
+- Stash `stash@{0}`: Cmt 3 attempt (walker WRITE flat). Reused at B5 with reconciliation.
+- Driver result with B0: **13/13 at 0 diff** (Cmt 2 + cache fix). The -001/-006 regressions Cmt 2 introduced are clear of cache.
 
-**Mainline:** `fix/flexbox-fast` @ `443ec747`.
-- Tracking commits: `66e819e3` (Cmts 1+2 done) · `d798c1a4` (Cmt 3 hard-exit) · `443ec747` (Path A spike).
-- Gate (unchanged): CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781 · multicol 196/455 · spanner-frag 11/13.
+**Mainline:** `fix/flexbox-fast`. Gate unchanged until worktree merges: CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781 · multicol 196/455 · spanner-frag 11/13.
 
 ## v2 sequence
 
-| # | Scope | Verification target |
+| # | Scope | Status |
 |---|---|---|
-| **Step 0** | DIAGNOSTIC: trace `column-height-026` break-token chain at Cmt 2 vs Spike B | concrete hypothesis about walker-flat × no-clip divergence |
-| B1 | `TallestUnbreakableBlockSize` field on `LayoutResult` + `PropagateTallestUnbreakableBlockSize` on builder | 13/13 drivers, gate unchanged |
-| B2 | Wire `TallestUnbreakable` propagation: `BreakBeforeChildIfNeeded` + `SetupFragmentation` + child-result propagation; populate `tallestUnbreakable` at multicol_layout.go:1601 | 13/13 drivers, gate ≥ 196 |
-| B3 | Mechanical `ClipBlockAxisOnly` removal (setter + paint branch + struct fields + propagation) | ≥ 11/13 drivers (target 13/13 if B2 closes carrier gaps) |
+| ~~Step 0~~ | DIAGNOSTIC: trace `column-height-026` break-token chain at Cmt 2 vs Spike B | **DONE.** Hypothesis confirmed — contentNode pointer instability in walker dispatch. See findings.md error log entry "v2 Step 0 diagnostic + B0 cache fix". |
+| ~~B0~~ | contentNode pointer cache (1 field + 5 lines) | **DONE** on worktree `fdb9343a`. 11/13 → 13/13 at Cmt 2 baseline. |
+| **B1 (NEXT)** | `TallestUnbreakableBlockSize` field on `LayoutResult` + `PropagateTallestUnbreakableBlockSize` on builder | 13/13 drivers, gate unchanged |
+| B2 | Wire propagation: `BreakBeforeChildIfNeeded` + `SetupFragmentation` + child-result propagation; populate `tallestUnbreakable` at multicol_layout.go:1601 | 13/13 drivers, gate ≥ 196 |
+| B3 | Mechanical `ClipBlockAxisOnly` removal (setter + paint branch + struct fields + propagation) | 13/13 drivers (B0 + B2 should close all clip-dependent paths) |
 | B4 | Re-verify walker READ (Cmt 2 already landed) | post-B3 baseline holds |
-| B5 | Walker WRITE flat (Cmt 3 stash + Step 0 adjustments + B3 reconciliation) | 13/13 at 0 diff |
+| B5 | Walker WRITE flat (Cmt 3 stash + B3 reconciliation) | 13/13 at 0 diff |
 | B6 | Phase 18 `ConsumedRowBlockSize` carrier WRITE site | 13/13 + multicol gate 196 → 211+ |
 | B7 | Drop `IsInsideColumnSpanner` clamp gate | 13/13, spanner-frag-006 holds |
 | B8 | Full gate sweep + merge worktree → `fix/flexbox-fast` | gate target met |
 
-## Next concrete action: Step 0
+## Step 0 result (DONE 2026-04-28)
 
-Step 0 is a DIAGNOSTIC, not a code commit. It runs in the worktree without committing. The output is a paragraph in findings.md (or a new note file) describing the break-token-shape divergence between Spike A (clip OFF, passing column-height-026) and Spike B (clip OFF + walker WRITE flat, failing column-height-026).
+**Hypothesis confirmed and B0 fix landed.** The divergence between Spike A (passing column-height-026) and Spike B (failing 1.0%) traced to a single root cause: `MulticolPartWalker` dispatches by `child.Node == multicolContainer` pointer equality, but `MulticolLayoutAlgorithm.Layout()` allocates a fresh `contentNode := &LayoutInputNode{...}` on every call. Outer column 1's inner-multicol Layout emits a break token whose `outBT[0].Node` points to col-1's contentNode; outer column 2's inner-multicol Layout builds the walker with col-2's contentNode (different pointer). The walker's identity check fails, falls through to the spanner branch, and mis-dispatches every column-content resume as a spanner. The clip-OFF path makes this fault visible (Spike B 5/13); the clip path masked it (Cmt 2 baseline 11/13 with -001 / -006 still showing through).
 
-### Concrete steps
+Spike A passed because Cmt 2's positional WRITE puts col-rows resume at slot[2] with slot[0]=nil. Walker iter 1 sees child[0]=nil → empty entry → column-content with nextColToken=nil → `layoutLine` runs FRESH, re-laying out the 400h block from zero. Outer col 2 visually duplicates outer col 1's content — coincidentally matching the reference. Cmt 2 was always semantically broken (post-Cmt-1); just visually masked by the fresh-layout coincidence on this specific test.
 
-1. **Reproduce Spike B locally.** Worktree at `a8ea3adb`. Apply `git stash@{0}` (Cmt 3 attempt). Comment out `ClipBlockAxisOnly` setter at `multicol_layout.go:~1313` (line shifts post-stash). Run `column-height-026`; confirm 1.0% diff fail.
+Cache fix: 1 struct field on `LayoutInputNode` + 5 lines of cache logic in `MulticolLayoutAlgorithm.Layout`. **13 driver tests: 11/13 → 13/13.** Both -001 (0.8%) and -006 (1.4%) close at 0 diff. Walker dispatch now correct under both positional WRITE (Cmt 2) and flat WRITE (Cmt 3).
 
-2. **Add break-token tracing.** In `multicol_layout.go`, instrument:
-   - At `Layout` entry: log `mla.space.BreakToken` shape (children, ConsumedBlockSize, HasSeenAllChildren, IsInsideColumnSpanner-ness).
-   - At each `outBuilder.AddBreakToken` / `AddBreakBeforeChild`: log what's being pushed.
-   - At `buildOuterBreakResult`: log final outgoing break token shape.
-   - At BLA's per-fragment clamp (`block_layout.go:1426-1448`): log the clamp inputs (constraint space FragmentainerBlockSize, FragmentainerOffset, BreakToken.ConsumedBlockSize) + decision.
+Cache fix is **B0** — landed on worktree `fdb9343a`.
 
-3. **Run `column-height-026` under three configs and capture trace logs:**
-   - (a) Cmt 2 baseline (clip ON, walker READ, positional WRITE) — passing.
-   - (b) Spike A (Cmt 2 + clip OFF) — passing.
-   - (c) Spike B (Cmt 3 + clip OFF) — failing 1.0%.
+Full Step 0 matrix recorded in findings.md error log entry "v2 Step 0 diagnostic + B0 cache fix" (2026-04-28):
 
-4. **Diff the traces.** Identify where (b) and (c) diverge. Likely loci:
-   - `BlockBreakToken` field stripped by walker WRITE flat that 16.d.1 reads (HasSeenAllChildren, SequenceNumber, IsCausedByColumnSpanner).
-   - Child-token order divergence (positional vs flat affects which child 16.d.1 inspects).
-   - `flushWalker` pushes a column-content driver token whose ConsumedBlockSize accumulates wrong on resume.
+| Config | Cache OFF | Cache ON |
+|---|---|---|
+| Cmt 2 + clip ON (baseline) | 11/13 | **13/13** |
+| Cmt 2 + clip OFF (Spike A) | 9/13 | 10/13 |
+| Cmt 3 + clip ON | 11/13 | **13/13** |
+| Cmt 3 + clip OFF (Spike B) | 5/13 | 10/13 |
 
-5. **Document the hypothesis** — a paragraph in `findings.md` § "Step 0 diagnostic — column-height-026 trace" (new section). Include trace excerpts, the divergence locus, and how B5 should adjust the stash to fix it.
+Three residuals at clip-OFF (-004, -006, nested-floated) correlate with clip handling, not WRITE model — these are the genuine 16.d.2/3 carrier work. v2 B1+B2 target them.
 
-6. **Revert all instrumentation** — leave the worktree at `a8ea3adb` clean. Stash any partial diagnostics in `git stash` if needed.
+`column-height-008` hangs at clean baseline `a8ea3adb` regardless of cache fix (10m timeout). Pre-existing; not caused by cache. Track separately.
 
-### Step 0 hard exit
+## Next concrete action: B1
 
-If after ~2 hours the divergence is not localized to a few break-token fields or a clear order issue (i.e., (b) and (c) differ in many places throughout the layout pass), STOP. v2 doesn't proceed without Step 0's hypothesis. Re-engage operator to decide whether to do Option B (walker-with-clip-shim) or pause the bundled phase.
+`TallestUnbreakableBlockSize` field on `LayoutResult` + `PropagateTallestUnbreakableBlockSize` on `BoxFragmentBuilder`. NOT yet wired (B2 does that).
 
-### Why Step 0 first
+Files:
+- `pkg/layout/layout_result.go` — add `TallestUnbreakableBlockSize float64` field.
+- `pkg/layout/box_fragment_builder.go` — add `PropagateTallestUnbreakableBlockSize(LayoutUnit)` method.
+- `pkg/layout/multicol_layout.go:1576+1601` — TODOs already in place. Don't populate yet (B2 wires propagation).
 
-v1 didn't ground its premise empirically — it assumed the WRITE flatten alone restores 13/13. Spike B refuted that. v2 mandates the diagnostic so B5's walker WRITE flat is targeted, not a re-attempt of v1 Cmt 3 with fingers crossed.
+Verification: build clean. 13 drivers PASS at 0 diff. Multicol gate ≥ 196.
+
+Hard exit: any of 13 drivers regresses → field/method definition is incompatible with existing code. STOP and diagnose.
 
 ## Tracking files
 
