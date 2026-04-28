@@ -1268,21 +1268,15 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	seenOOF := map[*LayoutInputNode]bool{}
 	isFirstCol := true
 	for _, col := range finalColumns {
-		// ClipBlockAxisOnly: skip the per-column block-axis clip when the column
-		// reports monolithic content overflow (BSFF > 0) AND column-height is auto.
-		// Pre-spanner columns hit this path: the row advance uses BSFF (Phase 16.b.2)
-		// and the spanner is placed below full content; clipping to colBlockSize
-		// would hide that content. Explicit column-height (BSFF reflects the full
-		// 200px content in a 50px column) MUST clip to colBlockSize regardless.
-		shouldClip := col.result == nil ||
-			col.result.BlockSizeForFragmentation == 0 ||
-			!mla.hasAutoColumnHeight()
-		if colBlockSize != Indefinite && shouldClip {
-			skipBlockClip := colBlockSize == 0 && !mla.hasAutoColumnHeight()
-			if !skipBlockClip {
-				col.fragment.ClipBlockAxisOnly = true
-			}
-		}
+		// Phase 16.e+18 v2 B3: ClipBlockAxisOnly setter removed. Phase 12h F2
+		// partial added it as a workaround for monolithic content overflow in
+		// nested-multicol scenarios, before 16.d.1's per-fragment clamp + B0's
+		// contentNode pointer cache + B2's TallestUnbreakableBlockSize carrier
+		// closed the upstream gap. Blink has no per-column paint clip
+		// (third_party/blink/renderer/core/paint/box_fragment_painter.cc:1080-
+		// 1114; see findings.md § "Phase 16.d Blink research"). The field is
+		// also removed by this commit; engine.go propagation + paint_layer.go
+		// branch are removed in lockstep.
 		builder.AddChild(col.fragment, col.offset)
 		// Callsite 1 (Track B): propagate baseline from each column child.
 		// Mirrors Blink cla.cc:1336 PropagateBaselineFromChild loop.

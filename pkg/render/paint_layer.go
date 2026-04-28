@@ -271,29 +271,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
-	// Multicol column fragmentainer: block-axis clip only, so a child
-	// wider than the column's inline extent (e.g. width:200 % in a
-	// narrow sub-column) paints through adjacent columns. See the
-	// PhysicalFragment.ClipBlockAxisOnly doc comment and findings.md
-	// "F2 Blink reference".
-	blockAxisOnlyClip := box.ClipBlockAxisOnly
-	if blockAxisOnlyClip {
-		blockAxisIsY := true
-		if box.Style != nil {
-			if wm, ok := box.Style.Get("writing-mode"); ok {
-				if wm == "vertical-rl" || wm == "vertical-lr" || wm == "sideways-rl" || wm == "sideways-lr" {
-					blockAxisIsY = false
-				}
-			}
-		}
-		if blockAxisIsY {
-			clipY = true
-			clipX = false
-		} else {
-			clipX = true
-			clipY = false
-		}
-	}
+	// Phase 16.e+18 v2 B3: ClipBlockAxisOnly paint branch removed.
+	// Blink has no per-column paint clip (box_fragment_painter.cc:
+	// 1080-1114 — fragmentainer branch sets up a paint-cache scope but
+	// no clip recorder). The Phase 12h F2 partial workaround that set
+	// this flag is gone; layout-time floors (16.d.1 per-fragment clamp,
+	// 16.d.2/3 TallestUnbreakable carrier) prevent the visual overflow
+	// the clip used to mask. See findings.md § "Phase 16.d Blink
+	// research" + "v2 Step 0 diagnostic".
 
 	if clipX || clipY {
 		layer.HasClip = true

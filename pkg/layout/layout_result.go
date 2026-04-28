@@ -229,18 +229,6 @@ type PhysicalFragment struct {
 	// normal overflow semantics apply.
 	ClipContentToBorderBox bool
 
-	// ClipBlockAxisOnly clips this fragment's children only in the block
-	// axis — children may overflow the inline extent. Set on multicol
-	// column fragmentainers so that (a) a leaf taller than the column
-	// fragment is clipped (preventing paint past column-fill:auto
-	// boundaries) but (b) a child wider than the column (e.g. width:200%
-	// in a narrow column) paints through adjacent columns, matching
-	// Blink's BoxFragmentPainter::PaintBlockChild fragmentainer branch
-	// which applies no per-column clip at paint time (visual inline
-	// overflow is a layout property of the flow thread, not a paint
-	// property of each column). See findings.md "F2 Blink reference".
-	ClipBlockAxisOnly bool
-
 	// RenderedColumnCount is the number of column fragments actually placed
 	// in this multicol fragment (column-fill:auto may render fewer columns
 	// than column-count when content fits in a subset). Zero for non-multicol
