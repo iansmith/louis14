@@ -1890,6 +1890,38 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 
 *(Add entries as failures are diagnosed — format: date, symptom, root cause, fix or status)*
 
+**2026-04-28 — `ConsumedBlockSize`-chain investigation: Phase 14b defer-gate is non-monotonic; fix needs deeper resume-chain work (no commit).**
+
+Investigation context: B6 (Phase 18 row-phase carrier) was a no-op for `multicol-nested-011..032` + `multicol-fill-balance-003/-026` because they all use `column-fill:auto` with default `column-wrap:auto` and auto `column-height` (so `shouldWrapColumns()` is false, gating the carrier WRITE site off). Per the B6 follow-up plan, investigated the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken instead.
+
+**Visual diagnosis of `multicol-nested-011`:** test image is the full 100x100 area painted RED (inner multicol places no green at all). Expected: 100x100 fully green.
+
+**Setup:** outer `columns:2, fill:auto, gap:0, height:50` (2 cols of 50w × 50h). Inner `columns:2, fill:auto, gap:0, height:100` (explicit 100h, larger than any outer column). Content is a `contain:size, width:400%, height:100, background:green` block.
+
+**Root cause — Phase 14b is futile for this test class.** The Phase 14b defer (`multicol_layout.go:413-432`) returns a 0-height inner-multicol fragment with `BlockSizeForFragmentation=explicitBlockSize`, asking the parent's `BreakBeforeChildIfNeeded` to push the entire inner multicol to the next outer fragmentainer. This works when the next outer fragmentainer has more space (e.g. `multicol-nested-010`: outer column-height 120 ≥ inner 100). For `-011`, every outer column is 50px and inner needs 100px — defer pushes to col-2, which also has 50, defers again, then col-3 (column-fill:auto extends), still 50, defers. The defer never produces any content.
+
+**Attempted fix:** added `mla.space.FragmentainerBlockSize >= explicitBlockSize` to the Phase 14b gate so the defer only fires when the next fresh column would actually fit the inner. Build clean.
+
+**Result:** non-monotonic shift, gate-neutral overall (205/455 unchanged).
+- `multicol-nested-011`: 2.1% → 1.6% (improved). Test image now shows green in inner-col-1 (top-left 25x50) but no content in inner-col-2 or outer-col-2.
+- `multicol-nested-032`: 2.1% → 3.1% (worsened). Test image shows a vertical green strip x=0..25 down to y=400, then red.
+- All 13 drivers held (including -010 which depends on Phase 14b's defer working when it's helpful).
+
+**Fix reverted** (no commit).
+
+**Real diagnosis: the resume chain across outer columns is broken regardless of the defer-vs-fragment decision.** Pre-fix: defer infinite, no content. Post-fix: fragment-in-place produces inner-col-1's content but the inner multicol's continuation in the next outer column (or in inner-col-2 of the same outer column) doesn't paint correctly. Both paths bottom out at "the inner multicol's outgoing BlockBreakToken doesn't drive a correct resume."
+
+**What's actually needed.** Trace the inner multicol's outgoing `BlockBreakToken` from outer-col-1 through the outer multicol's child loop into the constraint space built for outer-col-2. Verify:
+1. The inner multicol's outgoing token has `ConsumedBlockSize` equal to the block-extent it actually painted in outer-col-1.
+2. The outer multicol threads this token correctly through its `colBreakToken` plumbing (~`multicol_layout.go:1069-1156`) when entering outer-col-2.
+3. The resumed inner multicol's `MLA.Layout` reads `mla.space.BreakToken.ConsumedBlockSize` and uses it to seed `blockCursor` (or equivalent) so it picks up where it left off.
+
+The most likely break is step 1 or step 3 — louis14 may not be setting `ConsumedBlockSize` on the inner multicol's outgoing fragment, or may not be honoring it on resume. Read `multicol-nested-011` PNG diff post-revert to confirm the failure shape, then add a targeted log at `multicol_layout.go:294-302` (READ site for `remainingContentBlockSize`'s outer-frag subtraction — which uses `BreakToken.ConsumedBlockSize`) to see what the inner multicol receives on resume.
+
+**Status:** investigation paused with reverted fix attempt and clear next-step recipe documented above. Tracked as task #8.
+
+---
+
 **2026-04-28 — B7 (drop `IsInsideColumnSpanner` clamp gate) ATTEMPTED + REVERTED (no commit).**
 
 - **Symptom:** Per the v2 brief's B7 step, removed `!bla.space.IsInsideColumnSpanner` from the 16.d.1 leaf-clamp gate (`block_layout.go`), removed constraint-space propagation in the children loop, and removed the setters in `MulticolLayoutAlgorithm.layoutSpanner` / `layoutSpannerInFrag`. Also removed the now-dead field + setter on `ConstraintSpace` / `ConstraintSpaceBuilder`. Build clean.

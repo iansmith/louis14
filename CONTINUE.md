@@ -15,9 +15,16 @@ Mainline `fix/flexbox-fast` @ `b251c8db`. Phase 16.e+18 v2 + multicol border-box
 
 ## Next options (operator pick one)
 
-### Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026 (recommended next)
+### Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026 (in progress)
 
-The brief's named B6 target tests need a different fix from the row-phase carrier. Likely the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken — when an inner multicol breaks across an outer column boundary, the resume in the next outer column needs to start at the right offset. Read `multicol-nested-011` PNG diff to characterise the failure pattern, then trace the inner multicol's resume path (incoming BlockBreakToken → MLA.Layout → blockCursor seeding).
+**First pass (2026-04-28) reverted; see findings.md error-log for full diagnosis.** Quick recap:
+
+- Visual: `multicol-nested-011` test image is fully RED — inner multicol places no content. Setup has outer `column-height:50`, inner `height:100`; every outer column is too small for the inner.
+- Phase 14b's defer is futile for this class (every outer column has the same shortcoming, defer loops forever).
+- Tried gating Phase 14b on `FragmentainerBlockSize >= explicitBlockSize` so it only defers when the next fresh column would fit. Result: non-monotonic — `-011` improved 2.1%→1.6%, `-032` worsened 2.1%→3.1%, gate-neutral overall.
+- Real bug: the inner multicol's outgoing `BlockBreakToken` doesn't drive a correct resume in the next outer column. The defer-vs-fragment decision is downstream of that.
+
+**Next-step recipe:** trace the inner multicol's outgoing `BlockBreakToken.ConsumedBlockSize` through the outer multicol's `colBreakToken` plumbing (~`multicol_layout.go:1069-1156`) into the resumed inner's `MLA.Layout` (`:294-302`, where `remainingContentBlockSize` subtracts `BreakToken.ConsumedBlockSize`). Verify each hop. The most likely break is step 1 (inner not setting `ConsumedBlockSize` on its outgoing fragment) or step 3 (resumed inner not seeding `blockCursor` from it).
 
 This is the path back to the +12 to +15 gate move that B6's brief mistakenly attributed to the row-phase carrier.
 
