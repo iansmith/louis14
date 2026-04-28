@@ -73,6 +73,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	geom := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
+	// Phase 16.e+18 v2 B2.5: tag size-contained boxes as monolithic.
+	// CSS Containment 2 §2.6: a contain:size box has no intrinsic size
+	// from its descendants, so for fragmentation purposes the entire
+	// box is monolithic — its block-size is fixed and content does not
+	// fragment across column / page boundaries. Consumed by
+	// fragmentation_utils.ShouldAvoidBreakInside to drive
+	// TallestUnbreakableBlockSize propagation during the initial
+	// column-balancing pass. Mirrors Blink's PhysicalFragment::IsMonolithic
+	// + ShouldAvoidBreakInside check.
+	if bla.style != nil && bla.style.HasSizeContainment() {
+		builder.SetIsMonolithic(true)
+	}
 
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if contentInlineSize < 0 {

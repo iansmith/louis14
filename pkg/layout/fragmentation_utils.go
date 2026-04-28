@@ -24,16 +24,25 @@ package layout
 // or because its style says break-inside:avoid (or avoid-column / avoid-page,
 // matching the current fragmentation context).
 //
-// Mirrors Blink's ShouldAvoidBreakInside (fragmentation_utils.h). Phase
-// 16.d.2/3 (v2 B2) port: louis14 doesn't yet have an IsMonolithic flag on
-// PhysicalFragment (replaced elements aren't tagged as such; spanner
-// descendants are gated via ConstraintSpace.IsInsideColumnSpanner from
-// Phase 16.d.1, which is a different mechanism). For now we only check
-// the style-level break-inside property; extend to monolithic fragments
-// when the v2 B3 clip-removal exposes a test that needs it.
+// Mirrors Blink's ShouldAvoidBreakInside (fragmentation_utils.h):
+//
+//	return result.GetPhysicalFragment().IsMonolithic() ||
+//	       IsAvoidBreakValue(space, ResolvedBreakInside(result));
+//
+// The IsMonolithic clause was added in v2 B2.5. PhysicalFragment.IsMonolithic
+// is set by:
+//   - block_layout.go BLA Layout entry when style.HasSizeContainment()
+//     (CSS Containment 2 §2.6).
+//   - multicol_layout.go layoutSpanner / layoutSpannerInFrag when the
+//     spanner's measured intrinsic block-size exceeds its declared box
+//     (implicit monolithic for column-balance).
+//   - (Future) replaced elements (img, video, canvas, iframe).
 func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) bool {
 	if layoutResult == nil || layoutResult.Fragment == nil {
 		return false
+	}
+	if layoutResult.Fragment.IsMonolithic {
+		return true
 	}
 	breakInside := "auto"
 	if s := layoutResult.Fragment.Style; s != nil {
@@ -55,6 +64,13 @@ func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) b
 //     extend to cover both the offset and the child, so the floor is
 //     `fragmentainerOffset + childBlockSize`.
 //
+// v2 B2.5 extension: when the fragment is monolithic AND its declared
+// block-size is shorter than the natural content height (IntrinsicBlockSize
+// > fragment block-size), use `fragmentainerOffset + IntrinsicBlockSize`
+// instead. Captures the spanner-with-content-overflow case where the
+// spanner's box stays at declared height but its content paints past it;
+// the column needs to grow to accommodate the visible content area.
+//
 // Used at the BreakBeforeChildIfNeeded propagation site
 // (fragmentation_utils.cc:1105-1113).
 func CalculateUnbreakableBlockSize(
@@ -72,6 +88,10 @@ func CalculateUnbreakableBlockSize(
 		return 0
 	}
 	blockSize := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment).BlockSize()
+	// v2 B2.5: monolithic + intrinsic > fragment block-size → use intrinsic.
+	if layoutResult.Fragment.IsMonolithic && layoutResult.IntrinsicBlockSize > blockSize {
+		blockSize = layoutResult.IntrinsicBlockSize
+	}
 	return fragmentainerBlockOffset + blockSize
 }
 

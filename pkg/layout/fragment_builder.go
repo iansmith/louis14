@@ -102,6 +102,13 @@ type BoxFragmentBuilder struct {
 	tallestUnbreakableBlockSize    float64
 	hasTallestUnbreakableBlockSize bool
 
+	// isMonolithic marks the produced fragment as unbreakable for column-
+	// fragmentation purposes — its block-size is fixed and its content does
+	// not fragment across column or page boundaries. Read into
+	// PhysicalFragment.IsMonolithic at Build(). Phase 16.e+18 v2 B2.5.
+	// Mirrors Blink's PhysicalFragment::IsMonolithic.
+	isMonolithic bool
+
 	// previousBreakAfter is the break-after value of the most recently added
 	// in-flow child. JoinedBreakBetweenValue joins it with the next child's
 	// break-before to compute the effective break-between. Mirrors Blink's
@@ -211,6 +218,15 @@ func (b *BoxFragmentBuilder) GetUnpositionedListMarker() *UnpositionedListMarker
 // Mirrors Blink's FragmentBuilder::ClearUnpositionedListMarker.
 func (b *BoxFragmentBuilder) ClearUnpositionedListMarker() {
 	b.unpositionedListMarker = nil
+}
+
+// SetIsMonolithic marks the produced fragment as unbreakable for column-
+// fragmentation purposes. Mirrors Blink's PhysicalFragment::IsMonolithic.
+// Phase 16.e+18 v2 B2.5: set when style.HasSizeContainment() (CSS
+// Containment 2 §2.6) or when a spanner's content overflows its declared
+// height (implicit monolithic for column-balance).
+func (b *BoxFragmentBuilder) SetIsMonolithic(v bool) {
+	b.isMonolithic = v
 }
 
 // SetExclusionSpace sets the updated float exclusion state.
@@ -409,6 +425,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		Style:            b.style,
 		LayoutNode:       b.layoutNode,
 		GapGeometry:      b.gapGeometry,
+		IsMonolithic:     b.isMonolithic,
 	}
 
 	result := &LayoutResult{

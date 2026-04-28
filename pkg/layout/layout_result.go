@@ -229,6 +229,29 @@ type PhysicalFragment struct {
 	// normal overflow semantics apply.
 	ClipContentToBorderBox bool
 
+	// IsMonolithic marks this fragment as unbreakable for column-layout
+	// purposes — its block-size is fixed and its content does not
+	// fragment across column or page boundaries. Mirrors Blink's
+	// PhysicalFragment::IsMonolithic (consumed by ShouldAvoidBreakInside
+	// in fragmentation_utils.h alongside the style-level
+	// break-inside:avoid check).
+	//
+	// Phase 16.e+18 v2 B2.5 sources:
+	//   - `contain: size` (CSS Containment 2 §2.6: a size-contained box
+	//     has no intrinsic size from its descendants, so they're treated
+	//     as monolithic for fragmentation).
+	//   - Spanners whose explicit declared height is less than their
+	//     measured content height (implicit monolithic at the column-
+	//     balancing level — the spanner's box won't grow to fit content,
+	//     but the column box must accommodate the content so the
+	//     overflow doesn't visually cross column boundaries).
+	//   - (Future) replaced elements (img, video, canvas, iframe).
+	//
+	// Currently consumed only by `ShouldAvoidBreakInside`
+	// (fragmentation_utils.go) for `TallestUnbreakableBlockSize`
+	// propagation during the initial column-balancing pass.
+	IsMonolithic bool
+
 	// RenderedColumnCount is the number of column fragments actually placed
 	// in this multicol fragment (column-fill:auto may render fewer columns
 	// than column-count when content fits in a subset). Zero for non-multicol
