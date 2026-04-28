@@ -1281,6 +1281,10 @@ The existing `offsetInCurrentRow` (line 195) consumes the field — no change ne
 
 ## Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)
 
+**⚠️ BRIEF CORRECTION 2026-04-28 (post-Commit-3 attempt):** The brief's premise — that WRITE-side flattening alone (Commit 3) restores 13/13 driver invariants — is **wrong**. A faithful Commit 3 implementation (all 6 brief sites + Blink-style `flushWalker` cleanup loop mirroring cla.cc:733-738) was executed and produced the **same 11/13 result** as Commit 2. Root cause: louis14's `ClipBlockAxisOnly` workaround creates a "clip-only mid-spanner" code path where the previous outer column's loop exits BEFORE enumerating post-spanner content; the OLD 3-slot encoding's slot[0] = `beforeSpannerToken` (column-content driver) re-discovered post-spanner content via layoutLine on resume, but the walker model elides this driver by design. The walker port and the clip removal are not independently committable — they MUST be done together, or post-spanner content is invisible after a clip.
+
+Path forward: see `CONTINUE-18.md` § "What this means for the bundled phase" (recommended Path A: inline Phase 16.c.2 retry #3 mechanical clip removal BEFORE Commit 3). The Commit 3 attempt diff is preserved in worktree `git stash@{0}`. Re-confirm sequencing with operator before another implementation attempt.
+
 **This is the authoritative brief.** Supersedes the earlier "Phase 16.e re-sequenced — bundled with Phase 18" sketch (lines ~846-895) which was annotated as "sketch — flesh out before starting." That sketch is preserved above for historical context but the implementation plan, file:line citations, and verification gates below are the binding ones.
 
 ### Strategic framing
@@ -1654,3 +1658,9 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 ## Error Log
 
 *(Add entries as failures are diagnosed — format: date, symptom, root cause, fix or status)*
+
+**2026-04-28 — Phase 16.e+18 Commit 3 hit hard-exit #1.**
+
+- **Symptom:** Faithful WRITE-side flattening (all 6 brief sites + `flushWalker` cleanup mirroring Blink cla.cc:733-738) produced the same 11/13 driver result as Commit 2. `spanner-fragmentation-001` unchanged at 0.8% diff; `-006` marginally improved 1.4%→1.0% but still failing.
+- **Root cause:** louis14's `ClipBlockAxisOnly` workaround (Phase 12h F2 partial) creates a "clip-only mid-spanner" code path at `multicol_layout.go:786-790` (Commit 2 numbers). When a spanner clips at the outer fragmentainer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content (e.g., spanner_3 / trailing block in `-001`'s 3-spanner+block test). The OLD (pre-Commit-2) 3-slot encoding solved this via slot[0] = `beforeSpannerToken = {Node: contentNode, ChildBreakTokens: [{Node: spanner, IsBreakBefore: true}]}` — a column-content driver that on resume drove BLA via layoutLine to re-discover post-spanner content via spannerPath returns. The walker model elides this driver by design (the brief explicitly says "the spanner's resume info IS the partialSpannerToken directly"). With the driver gone AND the clip path retained, post-spanner content is invisible after a clip on resume. Blink doesn't have this gap because Blink emits break-before-spanner instead of clipping.
+- **Status:** Reverted. Worktree restored to `a8ea3adb`. Commit 3 attempt diff preserved in worktree `git stash@{0}`. Brief corrected (see notice at top of "Phase 16.e + 18 BUNDLED BRIEF" section). Path forward documented in `CONTINUE-18.md` (recommended Path A: inline 16.c.2 retry #3 clip removal BEFORE Commit 3). DO NOT retry Commit 3 without re-confirming sequencing with operator.
