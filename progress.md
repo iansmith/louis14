@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-28 — post-B6 Phase 18 carrier WRITE site)
+## Current gate (2026-04-28 — post-Phase-20 multicol overflow clip Blink port)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,15 +16,42 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **205/455** | B6 landed (`b251c8db`) parity-correct but gate-neutral; see Active phase note. Earlier: +9 net from v2 merge + multicol border-box clip (196 → 205). |
+| css-multicol | **211/455** | Phase 20 landed: 205 → 211 (+6, hits brief's minimum target). Replaces the broad `ClipContentToBorderBox` workaround with Blink-aligned `IsMulticolContainer` flag + paint-side padding-box overflow clip + atomic-inline / float TallestUnbreakable propagation. |
 | driver invariants | **13/13** | The 13 named driver tests (column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004/006, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line). |
-| spanner-fragmentation cluster | **12/13** | -008 fails at 0.2% (pre-existing; outside the 13-driver subset). Earlier "13/13 cluster" claim was stale — it referred to the driver subset, not the full cluster. |
+| spanner-fragmentation cluster | **12/13** | -008 fails at 0.2% (pre-existing; outside the 13-driver subset). |
 
 ## Active phase
 
-**B6 (Phase 18 `ConsumedRowBlockSize` carrier WRITE site) LANDED 2026-04-28 (`b251c8db`).** Parity-correct mirror of Blink cla.cc:822-833. Closure-scoped `outgoingMulticolData *MulticolBreakTokenData` near `outBuilder`; `buildOuterBreakResult` attaches it; WRITE site fires at the post-`layoutLine` wrap branch when `remainingToken != nil && isFirstRow && hasOuterFrag && shouldWrapColumns && hasRowHeight && rowHeight > outerAvailable - rowStart`.
+**Phase 20 — Multicol overflow clip Blink-aligned port LANDED 2026-04-28 (worktree `phase-20-overflow-clip`, merged via `--no-ff`).** Seven commits P20.1–P20.7. Multicol gate 205 → 211 (+6, hits the brief's +6 minimum target). All 13 driver invariants 13/13 at 0 diff; all 9 prior-clip-wins held; six new reclaims:
 
-Gate-neutral: 13/13 drivers held; multicol gate 205/455 unchanged; 4-cat invariants unchanged. The brief's "+12 to +15" target (multicol-nested-011..032 + multicol-fill-balance-003/-026) was mismatched — those tests use `column-fill:auto` with default `column-wrap:auto` and auto `column-height`, so `shouldWrapColumns()` returns false and the WRITE-site guard never fires. Those tests need a different fix (likely the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken). Tracked as separate follow-up below.
+- `multicol-fill-balance-032` — float with `break-inside:avoid` (P20.7).
+- `multicol-fill-balance-034/035/036` — same float-mechanism reclaims (P20.7 bonus).
+- `multicol-span-all-margin-nested-001` — spanner-margin clip rect (P20.5).
+- `inline-block-and-column-span-all` — atomic-inline TallestUnbreakable (P20.6).
+
+What landed:
+
+- **P20.1 `BoxType` enum on `PhysicalFragment`** (`d40ae0e0`) — `BoxTypeNormal` / `BoxTypeColumn` + `IsColumnBox()` / `IsFragmentainerBox()` helpers. Mirrors Blink `PhysicalFragment::BoxType`.
+- **P20.2 MLA tags column fragments `BoxTypeColumn`** (`266730e5`) — at the per-column `NewBlockLayoutAlgorithm` site in `layoutLine`. Mirrors `column_layout_algorithm.cc:1620`.
+- **P20.3 Painter recognises `IsColumnBox`** (`6a6927a8`) — propagated through `fragmentToBox` to `Box.IsColumnBox`. No per-column clip emitted (matches Blink). Documents that louis14's lack of paint cache makes the display-item-fragment-scope a no-op.
+- **P20.4 `drawColumnRules` uses column-fragmentainer extents** (`8a501eb2`) — derives rule block-extent from `IsColumnBox` children rather than multicol's full content area. Mirrors Blink `BoxFragmentPainter::PaintColumnRules` ~box_fragment_painter.cc:1876.
+- **P20.5 `IsMulticolContainer` flag + padding-box clip** (`bf72374a`) — replaces `3389efe7`'s broad `ClipContentToBorderBox` repurposing. New flag set in MLA at Layout exit; paint side promotes to two-axis clip with padding-box rect. Verified against Blink `LayoutBox::OverflowClipRect` (border-box contracted by border outsets = padding-box for non-scroll containers). `ClipContentToBorderBox` retains its CSS Tables 3 §5.4.1 cell-collapse semantics only.
+- **P20.6 atomic-inline TallestUnbreakable** (`bd4b5241`) — in `layoutInlineChildren`, for each line with an atomic inline (`InlineItemAtomicInline`) during the multicol initial column-balancing pass, `builder.PropagateTallestUnbreakableBlockSize(lineHeight)`. Closes `inline-block-and-column-span-all`.
+- **P20.7 float+break-inside:avoid TallestUnbreakable** (`5b8fd21e`) — extends P20.6 to floats inside an IFC: when a pending float's result satisfies `ShouldAvoidBreakInside`, propagate its block-extent (margins included). Closes `multicol-fill-balance-032/034/035/036`.
+
+Brief diverges:
+
+- The brief assumed Blink multicol always has `HasNonVisibleOverflow()=true`. That's wrong — verified against `LayoutBox::UpdateFromStyle` (layout_box.cc ~947): Blink only clips when `!IsOverflowVisibleAlongBothAxes() || ShouldApplyPaintContainment()`. P20.5's clip is currently unconditional (mirrors louis14's prior `3389efe7` workaround posture), which differs from Blink and causes 3 stuck tests:
+  - `multicol-gap-large-001` (0.3%) — content expected to overflow visibly past multicol's right edge.
+  - `increase-prev-sibling-height` (80 px) — glyph ascenders cut by clip.
+  - `multicol-nested-029` (85 px) — same in nested multicol with `line-height:0.8`.
+- Gating P20.5's clip on `overflow != visible` would close these but regress the 9 prior-clip-wins (which depend on the clip masking layout bugs in nested-multicol resume / spanner overflow). Pre-requisite work: `ConsumedBlockSize` chain (still tracked) + spanner-overflow placement.
+- The brief's "6-test reclaim list" had outdated diff numbers — `increase-prev-sibling-height` (~0%) and `multicol-nested-029` (~0%) were actually 80–85 px sub-pixel diffs in the proper baseline (the broken-fonts artifact made them appear to pass). They remain at the same diffs post-Phase-20.
+
+Tracking files (preserved for archaeology):
+- `findings.md` § "Phase 20 BRIEF" + Error-Log entries — authoritative design + landing notes.
+- `CONTINUE-20.md` — marked HISTORICAL.
+- `CONTINUE-18.md`, `CONTINUE-19.md` — historical.
 
 **Phase 16.e + 18 v2 (Option A) MERGED 2026-04-28** + **multicol border-box clip residual fix (`3389efe7`)** = full v2 closure plus all 3 driver residuals closed.
 
@@ -52,10 +79,9 @@ Tracking files (preserved for archaeology):
 - `CONTINUE-18.md` + `CONTINUE-19.md` — historical operational continuations.
 
 **Queued (not in active progress):**
+- **Phase 20 follow-up — gate `IsMulticolContainer` clip on user-set overflow** (NEW). P20.5's clip is unconditional but Blink's is conditional on `overflow != visible` (verified at layout_box.cc ~947). Closing the 3 remaining stuck tests (`multicol-gap-large-001`, `increase-prev-sibling-height`, `multicol-nested-029`) requires gating the clip on user-set overflow, which would regress the 9 prior-clip-wins until the underlying layout bugs (nested-multicol resume / spanner-overflow placement) are fixed.
+- **Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026** (in progress). B6 was a no-op for these because they don't use column-wrap / non-auto column-height. First-pass Phase-14b gate-tweak attempted 2026-04-28 was non-monotonic, reverted. Real bug is the resume chain across outer columns. Recipe in findings.md error-log. **This is also the prerequisite for Phase 20 follow-up.**
 - ~~B7 (drop `IsInsideColumnSpanner` clamp gate)~~ — **ATTEMPTED + REVERTED 2026-04-28** (no commit). Regressed `spanner-fragmentation-005` + `-006` (drivers 13/13 → 12/13; gate 205 → 203). The 16.d.1 guard is still load-bearing; the walker port alone wasn't sufficient. See findings.md error-log for full diagnosis. Future retry needs to extend spanner-resume break-chain absorption first.
-- **Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026** (NEW). B6 was a no-op for these because they don't use column-wrap / non-auto column-height. First-pass Phase-14b gate-tweak attempted 2026-04-28 was non-monotonic, reverted. Real bug is the resume chain across outer columns. Recipe in findings.md error-log.
-- **Phase 20 — Multicol overflow clip Blink port** (NEW, recommended next major work). Replaces the ad-hoc `ClipContentToBorderBox`-on-multicol mechanism (3389efe7) with a Blink-aligned port: `BoxType` enum on `PhysicalFragment` + paint-property-tree-style OverflowClip on multicol container + column-rule painter using `kColumnBox` child extents. Eliminates the broad-clip workaround. Worktree work, ~6 commits. Brief in findings.md § "Phase 20 BRIEF". Continuation prompt in `CONTINUE-20.md`.
-- Investigate narrower clip-gate to reclaim the 6 regressions (e.g., `inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%).
 - Option 1 (Finish FinishFragmentation port).
 - Phase 19 (span-all-children-height 002-013).
 

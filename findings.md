@@ -1890,6 +1890,43 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 
 *(Add entries as failures are diagnosed — format: date, symptom, root cause, fix or status)*
 
+## Phase 20 LANDED — Multicol overflow clip Blink-aligned port (2026-04-28)
+
+Worktree `phase-20-overflow-clip` merged via `--no-ff`. Seven commits P20.1–P20.7. Multicol gate **205 → 211/455 (+6, hits brief's +6 minimum target)**. 13 driver invariants 13/13 at 0 diff; all 9 prior-clip-wins held; six new reclaims:
+
+- `multicol-fill-balance-032` — float with `break-inside:avoid` (P20.7).
+- `multicol-fill-balance-034/035/036` — same float-mechanism reclaims (P20.7 bonus).
+- `multicol-span-all-margin-nested-001` — closed at P20.5 (rect / flag rework).
+- `inline-block-and-column-span-all` — atomic-inline TallestUnbreakable (P20.6).
+
+Per-step:
+
+- **P20.1 (`d40ae0e0`)** — `BoxType` enum on `PhysicalFragment`: `BoxTypeNormal` / `BoxTypeColumn` + `IsColumnBox()` / `IsFragmentainerBox()` helpers. Mirrors Blink `physical_fragment.h`. Default value preserves all prior behavior.
+- **P20.2 (`266730e5`)** — MLA tags column fragments `BoxTypeColumn` at the per-column `NewBlockLayoutAlgorithm` site in `layoutLine`. Mirrors Blink `column_layout_algorithm.cc:1620`.
+- **P20.3 (`6a6927a8`)** — Painter recognises IsColumnBox via fragment→Box bridge (`engine.go::fragmentToBox`); no per-column paint clip emitted, matching Blink. Documents that louis14's lack of paint cache makes the display-item-fragment-scope a no-op.
+- **P20.4 (`8a501eb2`)** — `drawColumnRules` derives rule block-extent from `IsColumnBox` children rather than multicol's full content area. Mirrors Blink `BoxFragmentPainter::PaintColumnRules` ~box_fragment_painter.cc:1876. Simple union of column extents (Blink's per-row stretch-on-last-row is a flagged TODO and was skipped).
+- **P20.5 (`bf72374a`)** — `IsMulticolContainer` flag on PhysicalFragment + Box; paint side promotes to two-axis clip with padding-box rect via the existing else-branch. Verified against Blink `LayoutBox::OverflowClipRect` (border-box contracted by border outsets = padding-box for non-scroll-container, non-overflow-clip-margin). Replaces the `3389efe7` repurposing of `ClipContentToBorderBox`; that flag now retains its CSS Tables 3 §5.4.1 cell-collapse semantics only.
+- **P20.6 (`bd4b5241`)** — In `layoutInlineChildren`, for each line containing an atomic inline (`InlineItemAtomicInline`) during the multicol initial column-balancing pass, `builder.PropagateTallestUnbreakableBlockSize(lineHeight)`. Pass `lineHeight` (not `blockOffset+lineHeight`) — during initial balancing the BLA isn't placed inside a fragmentainer, so the fragmentainer block-offset is 0 for these candidates. Closes `inline-block-and-column-span-all`.
+- **P20.7 (`5b8fd21e`)** — Extends P20.6 to floats inside an IFC: in the IFC's pre-pass that pre-lays-out floats, when in the multicol initial column-balancing pass and the float satisfies `ShouldAvoidBreakInside`, propagate its block-extent (margins included). Closes `multicol-fill-balance-032/034/035/036`.
+
+Diverges from the Phase 20 brief (which were therefore worth verifying):
+
+1. **Brief was wrong on Blink's overflow-clip condition.** Brief: "Multicol always reports `HasNonVisibleOverflow()=true` because it's a fragmentation context." Verified against `LayoutBox::UpdateFromStyle` (`layout_box.cc` ~947): `should_clip_overflow = (!StyleRef().IsOverflowVisibleAlongBothAxes() || ShouldApplyPaintContainment()) && RespectsCSSOverflow();`. Blink only clips when `overflow` is non-visible on at least one axis (or paint containment). P20.5's clip is currently unconditional (mirrors louis14's prior `3389efe7` workaround posture); this is structurally coarser than Blink and causes 3 stuck tests (`multicol-gap-large-001` 0.3%, `increase-prev-sibling-height` 80 px, `multicol-nested-029` 85 px). Gating P20.5's clip on `overflow != visible` would close them but regress the 9 prior-clip-wins (which depend on the clip masking layout bugs in nested-multicol resume / spanner-overflow placement). Tracked as Phase 20 follow-up.
+2. **Brief's "OverflowClipRect rect choice" guess (content-box) was wrong.** Verified directly against `LayoutBox::OverflowClipRect`: `clip_rect = PhysicalBorderBoxRect(); clip_rect.Contract(BorderOutsets());` — that's padding-box (border-box minus border outsets), not content-box. P20.5 implements padding-box.
+3. **Brief's "6-test reclaim list" had outdated diff numbers.** `increase-prev-sibling-height` (~0%) and `multicol-nested-029` (~0%) were actually 80–85 px sub-pixel diffs in the proper baseline. The "~0%" value was an artifact of broken-fonts (the worktree was missing the gitignored `fonts/` directory; tests rendered with fallback fonts that matched the ref's fallback rendering). With the correct fonts, those tests were already failing pre-Phase-20. They remain at the same diffs post-Phase-20 (root cause shared with stuck #1 above).
+4. **P20.6 implementation detail:** initial draft passed `blockOffset + lineHeight`, which over-floored the column block-size for IFCs with multiple lines (e.g. `balance-orphans-widows-000` with 8 spans on 8 lines — propagated 200 instead of 40 = max line height). Correct form is just `lineHeight` per line; cumulative offset isn't needed during initial balancing pass. Caught and fixed before commit.
+
+Stuck tests that the brief expected to close but didn't:
+
+- `multicol-fill-balance-032` (1.4%) — closed by P20.7 (was on the reclaim list; P20.7 is the float extension of P20.6).
+- `multicol-gap-large-001` (0.3%) — needs Phase 20 follow-up (conditional clip).
+- `increase-prev-sibling-height` (80 px) — needs Phase 20 follow-up (conditional clip).
+- `multicol-nested-029` (85 px) — needs Phase 20 follow-up (conditional clip).
+
+Net effect: structural Blink port, eliminated the gate-tweaking churn that produced multiple non-monotonic attempts in 2026-04-28. Future multicol-overflow issues become layout bugs (the right level to fix them at) rather than clip-workaround tweaks.
+
+---
+
 ## Phase 20 BRIEF — Multicol overflow clip: proper Blink port (BoxType + container OverflowClip)
 
 **Drafted 2026-04-28 from focused Blink research. Replaces the ad-hoc `ClipContentToBorderBox`-on-multicol mechanism (`3389efe7`) with a Blink-aligned port.**

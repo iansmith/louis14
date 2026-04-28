@@ -1,5 +1,14 @@
 # CONTINUE-20: Multicol overflow clip — Blink-aligned port
 
+**STATUS: HISTORICAL — Phase 20 landed 2026-04-28 (worktree
+`phase-20-overflow-clip`, merged via `--no-ff`). Multicol gate
+205 → 211/455 (+6, hits the brief's minimum target). 13 driver
+invariants 13/13 at 0 diff; all 9 prior-clip-wins held; six
+new reclaims. See `progress.md` § "Phase 20 LANDED" for the
+landed summary, `findings.md` § "Phase 20 LANDED" for the
+implementation notes including diverges from the brief, and the
+P20.1–P20.7 commit messages for per-step verification.**
+
 Self-contained continuation prompt for the Phase 20 port. Drop into a fresh
 session and proceed.
 
