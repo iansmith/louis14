@@ -85,6 +85,26 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if bla.style != nil && bla.style.HasSizeContainment() {
 		builder.SetIsMonolithic(true)
 	}
+	// Phase 16.e+18 v2 B2.6 (SetupFragmentation contribution): during the
+	// initial column-balancing pass, propagate the container's own border-
+	// block-start and border-block-end as unbreakable floors. Mirrors Blink's
+	// SetupFragmentation hook (fragmentation_utils.cc:510-514):
+	//
+	//   if (space.IsInitialColumnBalancingPass()) {
+	//     const BoxStrut& unbreakable = builder->BorderScrollbarPadding();
+	//     builder->PropagateTallestUnbreakableBlockSize(unbreakable.block_start);
+	//     builder->PropagateTallestUnbreakableBlockSize(unbreakable.block_end);
+	//   }
+	//
+	// The column box must be at least as tall as either edge; the max()
+	// semantics inside PropagateTallestUnbreakableBlockSize keeps the
+	// tallest of all propagated values.
+	if bla.space.IsInitialColumnBalancingPass {
+		blockStart := geom.Border.BlockStart + geom.Padding.BlockStart
+		blockEnd := geom.Border.BlockEnd + geom.Padding.BlockEnd
+		builder.PropagateTallestUnbreakableBlockSize(blockStart)
+		builder.PropagateTallestUnbreakableBlockSize(blockEnd)
+	}
 
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if contentInlineSize < 0 {
