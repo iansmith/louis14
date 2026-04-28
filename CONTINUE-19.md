@@ -1,3 +1,11 @@
+# CONTINUE: Phase 16.e + 18 v2 — MERGED 2026-04-28 (historical)
+
+**This file is HISTORICAL.** The bundled phase merged into `fix/flexbox-fast` on 2026-04-28 via `--no-ff`. The worktree is removed; the branch is deleted. Final state: multicol gate 199/455 (+3), 13 drivers 10/13 (-1 net), 4-category invariants unchanged. See `progress.md` § "Active phase" and `task_plan.md` § "Current focus" for next-step queue.
+
+The content below is the operational continuation as it stood at PAUSE post-Path-X — preserved for archaeology.
+
+---
+
 # CONTINUE: Phase 16.e + 18 v2 — Path X DONE; +2 multicol gate; PAUSED at 10/13 drivers
 
 Operational continuation for the post-hard-exit-B3 plan. After v2 hit hard exit B3 at 10/13 (3 residuals all involving monolithic content), the operator approved options 1+2+3 in sequence with a pause before option 4 (revert B3). All three landed; operator-mandated pause now in effect.

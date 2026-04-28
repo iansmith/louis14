@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-27 — post-Phase-16.d.1 commit `c40b4b56`)
+## Current gate (2026-04-28 — post-Phase-16.e+18-v2 merge)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,62 +16,37 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **192/455** | **+25 from Phase 16.d.1** (per-fragment block-size clamp + DidBreakSelf carrier + IsInsideColumnSpanner gate) — 167 → 192. Per-fragment clamp lets monolithic content fragment naturally at column boundaries; spanner descendants are gated out so the existing pendingContentOverflow mechanism keeps working. The per-column ClipBlockAxisOnly is no longer load-bearing for any of the 13 driver tests but stays in tree until Phase 16.c.2 retry. |
-| spanner-fragmentation | **11/13** | **+4 from Phase 16.d.1** (7 → 11): spanner-fragmentation-001/004/006 now pass. -006 specifically required the IsInsideColumnSpanner gate (Blink: spanners are monolithic for placement). |
+| css-multicol | **199/455** | **+3 net from Phase 16.e+18 v2 merge** (196 → 199). Worktree branch `phase-16e-18-walker-carrier` merged via `--no-ff`. Walker port (READ + WRITE flat), `ClipBlockAxisOnly` removed, `TallestUnbreakableBlockSize` carrier wired, `IsMonolithic` flag added, `contentNode` pointer cache. Gains: `multicol-span-all-list-item-001/002` (Path X nested-balancing). |
+| spanner-fragmentation | **10/13** | -1 net vs pre-merge. Three residuals: `spanner-fragmentation-004` (1.0%) and `-006` (0.3%) need spanner-placement-layer mechanism for content-overflow; `nested-floated-multicol-with-monolithic-child` (0.2%) needs float-margin-collapse fix inside multicol. Each has distinct upstream cause beyond v2 scope. |
 
 ## Active phase
 
-**Phase 16.e + 18 BUNDLED — MulticolPartWalker port + MulticolBreakTokenData carrier.** WORKTREE WORK. Continuation: `CONTINUE-18.md`. Multi-commit refactor (6 commits) on `phase-16e-18-walker-carrier` branch. Bundled brief written 2026-04-28: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)" supersedes the earlier sketch. Authoritative Blink references captured (`multicol_break_token_data.h` verbatim; `MulticolPartWalker` is now inline at top of `column_layout_algorithm.cc:41-223`; carrier write/read sites at cla.cc:822-833 / 2122-2139). 12 entangled louis14 sites mapped with current line numbers. Gate target after bundle: multicol 196 → 211+/455 (+15 from Phase 18 nested cluster), spanner-frag 11 → 12/13. Phase 16.c.2 retry #3 (mechanical clip removal) queued AFTER this lands.
+**Phase 16.e + 18 v2 (Option A) MERGED 2026-04-28.** Worktree branch `phase-16e-18-walker-carrier` merged into `fix/flexbox-fast` via `--no-ff` (10 commits + merge commit). Worktree removed. Branch deleted.
 
-**Commits 1+2 DONE on worktree (2026-04-28):**
+Net effect: multicol gate 196 → **199/455** (+3); 13 driver invariants 11/13 → **10/13** (-1); 4-category invariants unchanged.
 
-- **Commit 1 (`43ec8c66`)** — schema + walker scaffold. `pkg/layout/multicol_part_walker.go` added (`MulticolPartWalker`, `MulticolPartWalkerEntry`, `MulticolBreakTokenBuilder`); `MulticolData *MulticolBreakTokenData` field on `BlockBreakToken`; READ at `multicol_layout.go:294-297` plumbed (still nil → behavior unchanged). 13/13 drivers PASS.
-- **Commit 2 (`a8ea3adb`)** — READ site switched to walker dispatch. The 3-slot positional parser + pure-nested-resume promotion at `multicol_layout.go:415-432` is replaced with `walker := NewMulticolPartWalker(...)`. Main loop at `multicol_layout.go:512-849` rewritten as Blink-style two-branch dispatch (cla.cc:605-714). **11/13 drivers PASS** — `spanner-fragmentation-001` (0.8% diff) and `-006` (1.4% diff) regress per brief expectation.
+What landed:
+- **Walker port** (`MulticolPartWalker` mirrors Blink `column_layout_algorithm.cc:41-223`) — flat document-order break-token encoding dispatched by Node identity. Replaces the 3-slot positional encoding.
+- **`ClipBlockAxisOnly` removed** — Phase 12h F2 partial workaround retired. Blink has no per-column paint clip (box_fragment_painter.cc:1080-1114).
+- **`TallestUnbreakableBlockSize` carrier** wired through `BreakBeforeChildIfNeeded` + BLA child loop + multicol consumer + outer-balancing forwarding. Mirrors Blink fragmentation_utils.cc:1105-1113 + 510-514, box_fragment_builder.cc:566-569, cla.cc:1879-1948 + 1706-1712.
+- **`PhysicalFragment.IsMonolithic`** flag (sources: `contain:size`, spanners with content > declared height).
+- **`contentNode` pointer cache** — fixes a latent walker-dispatch bug where outer-column-2 resume mis-dispatched column-content as spanners (Step-0 diagnostic).
 
-**Commit 3 ATTEMPTED + HIT HARD-EXIT #1 (2026-04-28):**
+Tracking files (preserved for archaeology):
+- `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)" — authoritative design.
+- `findings.md` § Error Log 2026-04-28 entries — full chronological record (Cmt 3 hard-exit, Path A spike, v2 redesign, Step 0/B0, B1+B2+B3, B2.5+B2.6+B5, Path X).
+- `CONTINUE-18.md` (v1 hard-exit), `CONTINUE-19.md` (v2 operational continuation through Path X) — historical.
 
-WRITE-site flattening (all 6 brief sites + a self-derived `flushWalker` mirroring Blink cla.cc:733-738 cleanup loop) executed faithfully. Build clean. Driver result: **same 11/13** — `-001` unchanged at 0.8% diff, `-006` improved 1.4%→1.0% but still failing. Both fail invariantly under WRITE-side flattening alone. Per hard-exit #1 ("walker WRITE-site mapping wrong; re-read Blink, do NOT pile predicates"), the attempt was reverted; worktree is back at `a8ea3adb` (Commit 2). The Commit 3 diff is preserved in `git stash@{0}` on the worktree for archaeology.
+Three residuals on the 13 drivers, each with distinct upstream cause beyond v2 scope:
+- `nested-floated-multicol-with-monolithic-child` (0.2%) — float `margin-top:10` not honored inside multicol; float-margin-collapse issue.
+- `spanner-fragmentation-004` (1.0%) — spanner-placement-layer mechanism for content-overflow needed.
+- `spanner-fragmentation-006` (0.3%) — same family as -004.
 
-**Root cause of the brief's incompleteness** (full analysis in `CONTINUE-18.md`): louis14's `ClipBlockAxisOnly` workaround creates a "clip-only mid-spanner" code path that the walker model cannot encode in pure flat form. When a spanner clips at the outer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content. The OLD 3-slot encoding's slot[0] = `beforeSpannerToken` drove BLA to re-discover post-spanner content via `layoutLine`. The walker elides this driver by design.
-
-**Path A spike (2026-04-28, operator-requested) refuted v1's "mechanical 16.c.2 retry #3" framing:**
-
-| Configuration | PASS | Notes |
-|---|---|---|
-| Cmt 2 baseline (clip ON, walker READ only) | **11/13** | -001 0.8%, -006 1.4% fail |
-| Spike A (Cmt 2 + clip OFF) | **9/13** | + -004 1.0%, nested-floated 0.2% NEW fail |
-| Spike B (Cmt 3 + clip OFF) | **5/13** | + column-height-026/027 + multicol-nested-030/031 NEW fail (walker-flat × no-clip regressions) |
-
-**v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". v1 brief preserved but marked SUPERSEDED. Sequence: Step 0 diagnostic → B0 cache fix → B1+B2 carrier port → B3 clip removal → B4 re-verify → B5 walker WRITE flat → B6 Phase 18 carrier WRITE → B7 drop 16.d.1 gate → B8 sweep + merge.
-
-**v2 B0 → B5 + Path X LANDED 2026-04-28; PAUSED at 10/13 drivers, 199/455 multicol gate.**
-
-Path X (`2d6822b3`): nested-balancing TallestUnbreakable propagation — mirrors Blink cla.cc:1706-1712. When MLA itself is in initial-balancing-pass (nested column balancing), forwards the accumulated `tallestUnbreakable` to its outer container via `result.TallestUnbreakableBlockSize`. **+2 multicol gate (197→199):** `multicol-span-all-list-item-001/002`. 13 drivers unchanged.
-
-Initial Path X attempt also measured the spanner during the measure pass (would have addressed -004/-006). REVERTED — caused regressions on `spanner-fragmentation-000/002/010` (extra layout call had side effects on spanner resume state). The spanner-content-overflow residuals need a different mechanism at the spanner-placement layer, not the measure-pass layer.
-
-Path Y as originally framed (widen balanceColumns) was the wrong diagnosis. Visual inspection shows nested-floated's 0.2% is a float `margin-top:10` not-honored bug inside multicol — separate float-margin issue, not balanceColumns scope.
-
-
-
-Worktree commits in order:
-- `fdb9343a` B0 contentNode pointer cache (11→13/13).
-- `8e2aa078` B1 TallestUnbreakable scaffold (13/13).
-- `f513f338` B2 wire carrier (13/13).
-- `f97e4ac0` B3 mechanical clip removal (10/13 — hard exit).
-- `da5730b8` B2.5 monolithic detection (10/13 — infrastructure correct, upstream gaps).
-- `3b3b4208` B2.6 SetupFragmentation border/padding (10/13 — none of residuals have borders).
-- `33afa6fa` B5 walker WRITE flat (10/13 — `-004` improved 2.1%→1.0%; walker port mechanically beneficial).
-
-**Three residuals at PAUSE:** `nested-floated-multicol-with-monolithic-child` (0.2%), `spanner-fragmentation-004` (1.0%), `spanner-fragmentation-006` (0.3%). Diagnosed as upstream-architectural gaps:
-- `-004` / `-006`: louis14's measure pass exits at `spannerPath` without laying out the spanner; spanner's `IsMonolithic` doesn't propagate via the measure-pass child loop. Blink's measure pass lays out spanners.
-- `nested-floated`: float's `column-fill:auto` + non-fragmented context bypasses `IsInitialColumnBalancingPass` entirely.
-
-Two candidate paths to close residuals (Path X: extend measure pass to layout spanners, ~30-50 lines; Path Y: widen `balanceColumns` for float multicols, ~10-20 lines). Both upstream-architectural, beyond v2 brief scope. Alternative: accept 10/13 + proceed to B6 (Phase 18 carrier WRITE site, targets +15 multicol gate).
-
-**Operator decision required.** Full diagnosis + paths in `CONTINUE-19.md` § "PAUSE for review (current state)" and findings.md error log entry "v2 B2.5 + B2.6 + B5 LANDED ...".
-
-DO NOT proceed past B5 to B6/B7 without re-engaging.
+**Queued (not in active progress):**
+- B6 (Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site) — multicol-nested-011 + cluster + multicol-fill-balance-003/-026; targets +15 gate.
+- B7 (drop `IsInsideColumnSpanner` clamp gate) — depends on B6 not regressing -006.
+- Spanner-placement-layer mechanism for content-overflow (closes -004/-006).
+- Float-margin-collapse fix inside multicol (closes nested-floated).
 
 ---
 

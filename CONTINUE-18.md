@@ -1,3 +1,11 @@
+# CONTINUE: Phase 16.e + 18 bundled — MERGED 2026-04-28 (historical)
+
+**This file is HISTORICAL.** Superseded by `CONTINUE-19.md` (also historical) and the merge into `fix/flexbox-fast` on 2026-04-28. See `progress.md` § "Active phase" and `task_plan.md` § "Current focus" for current state.
+
+The content below is preserved for archaeology — captured the v1 hard-exit signal and the operational continuation through B3.
+
+---
+
 # CONTINUE: Phase 16.e + 18 bundled v2 — B1+B2+B3 done; HARD EXIT B3 at 10/13
 
 ## Authoritative brief
