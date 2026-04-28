@@ -1279,6 +1279,378 @@ The existing `offsetInCurrentRow` (line 195) consumes the field — no change ne
 
 ---
 
+## Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)
+
+**This is the authoritative brief.** Supersedes the earlier "Phase 16.e re-sequenced — bundled with Phase 18" sketch (lines ~846-895) which was annotated as "sketch — flesh out before starting." That sketch is preserved above for historical context but the implementation plan, file:line citations, and verification gates below are the binding ones.
+
+### Strategic framing
+
+We are doing TWO Blink-parity ports as one bundled change because they share a break-token-shape mutation:
+
+- **Phase 16.e**: port Blink's `MulticolPartWalker` model. Replaces louis14's positional `ChildBreakTokens[0..2]` slot encoding (`nextColToken / partialSpannerToken / colRowsResumeToken`) with a flat document-order list dispatched by `Node` identity. Unlocks spanner-content fragmentation correctness so the workaround clip (`ClipBlockAxisOnly`) can be dropped (Phase 16.c.2 retry #3 becomes mechanical).
+- **Phase 18**: add Blink's `MulticolBreakTokenData` carrier on `BlockBreakToken`. Stores `consumed_row_block_size` so a row that overflows an outer fragmentainer can resume mid-stride in the next outer fragmentainer. Read site already plumbed (`multicol_layout.go:204-217` `offsetInCurrentRow` reads `mla.consumedRowBlockSize`); only the carrier-on-token + the write site are missing.
+
+Bundled because the carrier needs to be a field on `BlockBreakToken`, and the walker port rewrites every site that constructs/reads `BlockBreakToken` for multicol. Doing them sequentially means re-touching 6 entangled sites twice. Bundling is one carrier-and-walker port.
+
+### Authoritative Blink references (fetched 2026-04-28)
+
+`third_party/blink/renderer/core/layout/multicol_break_token_data.h` (verbatim, current Blink main):
+
+```cpp
+struct MulticolBreakTokenData final : BreakTokenAlgorithmData {
+  explicit MulticolBreakTokenData(LayoutUnit consumed_row_block_size)
+      : BreakTokenAlgorithmData(kMulticolData),
+        consumed_row_block_size(consumed_row_block_size) {}
+  LayoutUnit consumed_row_block_size;
+};
+template <>
+struct DowncastTraits<MulticolBreakTokenData> {
+  static bool AllowFrom(const BreakTokenAlgorithmData& token_data) {
+    return token_data.IsMulticolType();
+  }
+};
+```
+
+`third_party/blink/renderer/core/layout/break_token_algorithm_data.h` (verbatim):
+
+```cpp
+struct BreakTokenAlgorithmData : public GarbageCollected<BreakTokenAlgorithmData> {
+  enum DataType {
+    kFieldsetData, kFlexData, kGridData, kTableData, kTableRowData, kMulticolData,
+  };
+  DataType Type() const { return static_cast<DataType>(type); }
+  explicit BreakTokenAlgorithmData(DataType type) : type(type) {}
+  bool IsMulticolType() const { return Type() == kMulticolData; }
+  unsigned type : 3;
+};
+```
+
+`MulticolPartWalker` is now defined inline at the top of `column_layout_algorithm.cc` (lines 41-223 of current Blink main; the cited `multicol_part_walker.cc/h` files no longer exist as separate files):
+
+```cpp
+class MulticolPartWalker {
+ public:
+  struct Entry {
+    const BlockBreakToken* break_token = nullptr;  // null at start
+    BlockNode descendant_node = nullptr;            // spanner OR fragmented OOF, null for column content
+  };
+  MulticolPartWalker(BlockNode multicol_container, const BlockBreakToken* break_token);
+  Entry Current() const;
+  bool IsFinished() const;
+  void Next();
+  void MoveToSpanner(BlockNode spanner, const BlockBreakToken* next_column_token);
+  void AddNextColumnBreakToken(const BlockBreakToken& next_column_token);
+  void UpdateNextColumnBreakToken(const FragmentBuilder::ChildrenVector& children);
+ private:
+  void MoveToNext();
+  void UpdateCurrent();
+  Entry current_;
+  BlockNode descendant_node_ = nullptr;
+  BlockNode multicol_container_;
+  const BlockBreakToken* parent_break_token_;
+  const BlockBreakToken* next_column_token_ = nullptr;
+  wtf_size_t child_token_idx_;
+  bool is_finished_ = false;
+};
+```
+
+Iteration semantics (from `UpdateCurrent` at cla.cc:157-193 + `MoveToNext` at cla.cc:195-223):
+
+1. Walk `parent_break_token_->ChildBreakTokens()` by `child_token_idx_`. Each entry's `InputNode()` discriminates:
+   - `InputNode() == multicol_container_` → column-content resume (Entry has `break_token` set, `descendant_node` null).
+   - `InputNode().IsColumnSpanAll()` → spanner resume (Entry has both set; `descendant_node` is the spanner).
+   - `InputNode().IsOutOfFlowPositioned()` → fragmented OOF (gated on `RuntimeEnabledFeatures::FragmentedOofInCbEnabled()`; we ignore for now).
+2. After incoming child tokens exhausted: optional `descendant_node_` (a spanner moved-to via `MoveToSpanner` after a fresh discovery via `result->GetColumnSpannerPath()`).
+3. After that: optional `next_column_token_` (the trailing column-content resume token from the most recent LayoutLine result).
+4. `is_finished_ = true` when all three are exhausted.
+
+The driver loop in `LayoutChildren` (cla.cc:605-714):
+
+```cpp
+MulticolPartWalker walker(Node(), GetBreakToken());
+while (!walker.IsFinished()) {
+  auto entry = walker.Current();
+  if (!entry.descendant_node) {
+    // Column content (or initial state). LayoutLine through LayoutFragmentationContext.
+    const LayoutResult* result = LayoutFragmentationContext(entry.break_token, &margin_strut);
+    walker.Next();
+    const auto* next_column_token = To<BlockBreakToken>(result->GetPhysicalFragment().GetBreakToken());
+    if (const auto* path = result->GetColumnSpannerPath()) {
+      walker.MoveToSpanner(GetSpannerFromPath(path), next_column_token);
+      continue;
+    }
+    if (next_column_token) walker.AddNextColumnBreakToken(*next_column_token);
+    break;
+  }
+  if (entry.descendant_node.IsColumnSpanAll()) {
+    BreakStatus s = LayoutSpanner(entry.descendant_node, entry.break_token, &margin_strut);
+    walker.Next();
+    if (s == BreakStatus::kBrokeBefore || container_builder_.HasInflowChildBreakInside()) break;
+  }
+}
+// Cleanup: any unfinished walker entries get pushed forward as outgoing break tokens.
+for (; !walker.IsFinished(); walker.Next()) {
+  auto entry = walker.Current();
+  if (entry.break_token) container_builder_.AddBreakToken(entry.break_token);
+  else if (entry.descendant_node) container_builder_.AddBreakBeforeChild(entry.descendant_node, ...);
+}
+```
+
+The carrier write site (cla.cc:822-833, inside `LayoutFragmentationContext`'s do-while):
+
+```cpp
+if (ShouldWrapColumns() && HasRowHeight() && is_first_row &&
+    GetConstraintSpace().HasKnownFragmentainerBlockSize()) {
+  LayoutUnit overflow = RemainingRowHeightAtOffset(line_offset) -
+                        (FragmentainerSpaceLeftForChildren() - line_offset);
+  if (overflow > LayoutUnit()) {
+    container_builder_.SetBreakTokenData(
+        MakeGarbageCollected<MulticolBreakTokenData>(RowHeight() - overflow));
+  }
+}
+```
+
+The carrier read site (cla.cc:2122-2139, `OffsetInCurrentRow`):
+
+```cpp
+LayoutUnit ColumnLayoutAlgorithm::OffsetInCurrentRow(LayoutUnit line_offset) const {
+  LayoutUnit row_stride = RowHeight() + row_gap_size_;
+  if (row_stride == LayoutUnit()) return LayoutUnit();
+  if (GetBreakToken()) {
+    if (const auto* data = DynamicTo<MulticolBreakTokenData>(GetBreakToken()->TokenData())) {
+      line_offset += data->consumed_row_block_size;
+    }
+  }
+  return CurrentContentBlockOffset(line_offset) % row_stride;
+}
+```
+
+### Louis14 entangled sites — current line numbers (post-Phase 17, file 2109 lines)
+
+| # | Site | File:line | What it does today | What changes |
+|---|---|---|---|---|
+| 1 | **3-slot positional read parser** | `pkg/layout/multicol_layout.go:419-447` | Extracts `nextColToken / partialSpannerToken / colRowsResumeToken` from `ChildBreakTokens[0/1/2]`; further extracts `spannerContentBreakToken` and `nextSpannerClipToken` from slot[1].ChildBreakTokens[0/1] | Replace with `Walker` constructor that records the parent break token + initial `child_token_idx_=0`. The `hasSpannerResume` / `spannerConsumed` / `spannerContentBreakToken` / `nextSpannerClipToken` locals are derived from walker entries on demand. |
+| 2 | **Pure-nested-resume promotion** | `pkg/layout/multicol_layout.go:449-456` | Promotes `colRowsResumeToken` to `nextColToken` when no spanner state | Becomes redundant: in the flat list, the FIRST entry is whatever needs to resume next, regardless of whether a spanner intervened. |
+| 3 | **Spanner content-overflow build site** | `pkg/layout/multicol_layout.go:721-728` | Wraps `fullResult.BreakToken` as `{Node:spanner, ChildBreakTokens:[fullResult.BreakToken]}` | Emit a single `BlockBreakToken{Node: spanner, ChildBreakTokens: fullResult.BreakToken.ChildBreakTokens, ConsumedBlockSize: 0}` (no wrapping). The spanner-content break info is the spanner's *own* token's children, not a wrapper. |
+| 4 | **Combined-clip mutation** | `pkg/layout/multicol_layout.go:765-770` | `pendingPartialSpannerToken.ChildBreakTokens = append(..., clipToken)` — appends a clip-resume sibling to the content-overflow token | The minimal-port reversion (findings.md § "Attempted 2026-04-27") proved this site is the defensive-copy boundary that the wrapper provides. Replacement: emit the clipToken as a SEPARATE walker entry (separate flat ChildBreakTokens entry), not nested. |
+| 5 | **Mid-spanner partial-token return** | `pkg/layout/multicol_layout.go:775-779` | `partialSpannerToken := &BlockBreakToken{Node: spanner, ConsumedBlockSize: available}` for clip-only return | Same shape but pushed into the walker's outgoing `child_break_tokens` flat list as the spanner-row entry. |
+| 6 | **Next-spanner-clip-chain consumption** | `pkg/layout/multicol_layout.go:822-832` | After OC2 places content-overflow spanner, reads `nextSpannerClipToken` (slot [1][1]) and sets `hasSpannerResume=true` to engage clip-resume on the *next* spanner | In the flat model, `nextSpannerClipToken` is just the next walker entry whose `Node.IsColumnSpanAll()`. Walker.Next() advances naturally. |
+| 7 | **`buildOuterBreakResult` outgoing-token construction** | `pkg/layout/multicol_layout.go:480-525` | Emits `[nextColToken, partialSpannerToken, pendingColRowsBreakToken]` 3-slot vector with trailing-nil trim | Emit flat document-order list. Use a `Walker.PushOutgoing(token)` accumulator + `Walker.PushSpannerBreakBefore(node)` to mirror Blink's `AddBreakToken` / `AddBreakBeforeChild`. |
+| 8 | **`BlockBreakToken` shape** | `pkg/layout/break_token.go:8-60` | Flat record; `ChildBreakTokens []*BlockBreakToken` is positional for multicol callers, document-order for everyone else | Add `MulticolData *MulticolBreakTokenData`. Document `ChildBreakTokens` as flat document-order for ALL callers; multicol callers stop using slot indices. |
+| 9 | **Carrier read site (Phase 18)** | `pkg/layout/multicol_layout.go:294-297` | Hardcoded `mla.consumedRowBlockSize = 0` with TODO comment | Read from `mla.space.BreakToken.MulticolData.ConsumedRowBlockSize` when non-nil. Existing `offsetInCurrentRow` (`:191-204`) already consumes the field. |
+| 10 | **Carrier write site (Phase 18, NEW)** | NEW callsite in `MulticolLayoutAlgorithm.Layout` after a layoutLine call that returned a `remainingToken` | Currently absent | Mirror Blink cla.cc:822-833: when `shouldWrapColumns && hasRowHeight && isFirstRow && hasOuterFrag && (rowHeight - (outerAvailable - blockCursor)) > 0`, attach `MulticolData{ConsumedRowBlockSize: paintedAmount}` to the outgoing break token via the build helper. `paintedAmount = rowHeight - overflow = outerAvailable - blockCursor`. |
+| 11 | **`IsInsideColumnSpanner` clamp gate** | `pkg/layout/block_layout.go:1426-1448` (Phase 16.d.1 clamp); `block_layout.go:606-614` (constraint-space propagation); `pkg/layout/constraint_space.go:171-191, 494-505` (field+setters); `pkg/layout/multicol_layout.go:1426, 1459` (setters in `layoutSpanner`/`layoutSpannerInFrag`) | Disables 16.d.1 self-fragmentation clamp on spanner descendants because the spanner-resume mechanism doesn't handle leaf-self-fragmentation chains | Step 5 of the bundled work removes this gate (and the supporting field). With the walker model, the spanner's own break-token's `ChildBreakTokens` carry self-fragmented leaf descendants naturally; the gate becomes redundant. |
+| 12 | **`ClipBlockAxisOnly` setter + paint branch** | `pkg/layout/multicol_layout.go:1281-1290`; `pkg/render/paint_layer.go:274-296`; `pkg/layout/engine.go:332`; `PhysicalFragment.ClipBlockAxisOnly`; `Box.ClipBlockAxisOnly` | Per-column block-axis clip workaround for spanner-content overflow + nested-monolithic patterns | NOT removed in this phase. Phase 16.c.2 retry #3 is queued AFTER the bundled work lands and verifies the walker handles all clipping cases. Mechanical removal commit. |
+
+### Target shape
+
+`pkg/layout/break_token.go` becomes:
+
+```go
+// MulticolBreakTokenData mirrors Blink's MulticolBreakTokenData
+// (multicol_break_token_data.h). Carries algorithm-specific resume state for
+// MulticolLayoutAlgorithm; nil for tokens emitted by other algorithms.
+type MulticolBreakTokenData struct {
+    // ConsumedRowBlockSize is the portion of the current column-row block
+    // size that was painted in earlier outer fragmentainers. Mirrors Blink's
+    // consumed_row_block_size. Used by MulticolLayoutAlgorithm.offsetInCurrentRow
+    // to add row progress before the modulo-against-row_stride.
+    ConsumedRowBlockSize float64
+}
+
+type BlockBreakToken struct {
+    Node *LayoutInputNode
+    ConsumedBlockSize layoutunit.LayoutUnit
+    SequenceNumber int
+    // ChildBreakTokens is flat document-order. Each entry's Node identifies its
+    // role to multicol callers via Walker dispatch:
+    //   Node == multicol container's content node → column-content resume.
+    //   Node.IsColumnSpanAll() (style.GetColumnSpan() == "all") → spanner.
+    //   Position-fixed/absolute → fragmented OOF (not yet handled).
+    // Non-multicol callers continue treating ChildBreakTokens as
+    // direct-child resume tokens by node identity.
+    ChildBreakTokens []*BlockBreakToken
+    IsBreakBefore bool
+    IsForcedBreak bool
+    IsCausedByColumnSpanner bool
+    HasSeenAllChildren bool
+    MonolithicOverflow float64
+    InlineItemStartIndex int
+    InlineTextOffset int
+    HasUnpositionedListMarker bool
+    // MulticolData carries MulticolLayoutAlgorithm-specific resume state.
+    // Nil for tokens emitted by other algorithms. Mirrors Blink's
+    // BlockBreakToken::data_ + MulticolBreakTokenData (multicol_break_token_data.h).
+    MulticolData *MulticolBreakTokenData
+}
+```
+
+Walker (placed in new file `pkg/layout/multicol_part_walker.go`, mirroring Blink's source location even though Blink now defines it inline — louis14 keeps it as a separate file because Go file boundaries are per-package and the multicol algorithm file is already 2109 lines):
+
+```go
+// MulticolPartWalker mirrors Blink's MulticolPartWalker
+// (column_layout_algorithm.cc:41-223). Iterates the parts of a multicol
+// container that need separate layout: regular column content, column
+// spanners, and (eventually) fragmented OOF positioned descendants whose
+// containing block is the multicol container.
+type MulticolPartWalker struct {
+    multicolContainer *LayoutInputNode  // the anonymous content node
+    parentBreakToken  *BlockBreakToken  // incoming break token (may be nil)
+    nextColumnToken   *BlockBreakToken  // trailing column-content (set by AddNextColumnBreakToken)
+    descendantNode    *LayoutInputNode  // discovered spanner (set by MoveToSpanner)
+    childTokenIdx     int               // index into parentBreakToken.ChildBreakTokens
+    current           MulticolPartWalkerEntry
+    isFinished        bool
+}
+
+type MulticolPartWalkerEntry struct {
+    BreakToken     *BlockBreakToken  // resume token; nil at very start
+    DescendantNode *LayoutInputNode  // spanner OR fragmented OOF; nil for column content
+}
+
+func NewMulticolPartWalker(container *LayoutInputNode, parentToken *BlockBreakToken) *MulticolPartWalker { ... }
+func (w *MulticolPartWalker) Current() MulticolPartWalkerEntry { ... }
+func (w *MulticolPartWalker) IsFinished() bool { ... }
+func (w *MulticolPartWalker) Next() { ... }
+func (w *MulticolPartWalker) MoveToSpanner(spanner *LayoutInputNode, nextColumnToken *BlockBreakToken) { ... }
+func (w *MulticolPartWalker) AddNextColumnBreakToken(token *BlockBreakToken) { ... }
+// updateCurrent + moveToNext — internal, mirror Blink's UpdateCurrent/MoveToNext.
+```
+
+Outgoing-token accumulator (replaces `buildOuterBreakResult`'s positional emission):
+
+```go
+// MulticolBreakTokenBuilder accumulates outgoing child break tokens in
+// document order. Mirrors Blink's container_builder_.AddBreakToken /
+// AddBreakBeforeChild calls.
+type MulticolBreakTokenBuilder struct {
+    children []*BlockBreakToken
+}
+
+func (b *MulticolBreakTokenBuilder) AddBreakToken(t *BlockBreakToken) { ... }
+func (b *MulticolBreakTokenBuilder) AddBreakBeforeChild(node *LayoutInputNode, isForced bool) { ... }
+func (b *MulticolBreakTokenBuilder) Children() []*BlockBreakToken { ... }
+```
+
+### Implementation plan — worktree commit decomposition
+
+**Branch:** `phase-16e-18-walker-carrier` (in worktree under `~/louis14-worktrees/phase-16e-18`).
+
+**Commit 1 — schema + walker scaffold (build clean, behavior unchanged).**
+
+Changes:
+- `pkg/layout/break_token.go`: add `MulticolData *MulticolBreakTokenData` field + `MulticolBreakTokenData` struct. Document `ChildBreakTokens` as flat document-order.
+- `pkg/layout/multicol_part_walker.go` (new): walker type + `MulticolBreakTokenBuilder` type. NOT yet wired into `multicol_layout.go`.
+- `pkg/layout/multicol_layout.go:294-297`: read `mla.space.BreakToken.MulticolData.ConsumedRowBlockSize` when non-nil. Field is always nil at this point so behavior is unchanged.
+
+Verification:
+- Build: `GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go build ./...`
+- 13 driver tests must PASS at 0 diff.
+- Multicol gate sweep should be unchanged at 196/455.
+
+**Commit 2 — switch READ site to walker dispatch (expect spanner-fragmentation regressions).**
+
+Changes:
+- `pkg/layout/multicol_layout.go:419-456`: replace 3-slot positional parser + pure-nested-resume promotion with `walker := NewMulticolPartWalker(contentNode, mla.space.BreakToken)`.
+- The main loop body (currently lines 535-864) consumes `walker.Current()` and calls `walker.Next()` instead of consuming positional locals.
+- `nextColToken / hasSpannerResume / spannerConsumed / spannerContentBreakToken / nextSpannerClipToken / colRowsResumeToken` locals are derived from walker entries on demand, not persisted across iterations.
+
+Expected regressions: spanner-fragmentation cluster, multicol-nested-* cluster (because the WRITE site still emits positional 3-slot tokens — read-side reinterprets them as a flat list and gets the wrong dispatch).
+
+This step's `git commit` body should explicitly note "EXPECTED to regress; restored in Commit 3."
+
+**Commit 3 — switch WRITE site to flat ChildBreakTokens (regressions restore).**
+
+Changes:
+- `pkg/layout/multicol_layout.go:480-525` (`buildOuterBreakResult`): rewrite to emit `MulticolBreakTokenBuilder.Children()` flat document-order.
+- `pkg/layout/multicol_layout.go:721-728` (spanner content-overflow): emit `walker.PushOutgoing({Node: spanner, ChildBreakTokens: fullResult.BreakToken.ChildBreakTokens, ConsumedBlockSize: 0})` — no wrapper.
+- `pkg/layout/multicol_layout.go:765-770` (combined-clip): emit clip and content-overflow as separate walker entries; do NOT mutate the content-overflow token.
+- `pkg/layout/multicol_layout.go:775-779` (clip-only): push as a flat entry.
+- `pkg/layout/multicol_layout.go:822-832` (next-spanner-clip-chain): walker handles automatically.
+
+Verification:
+- 13 driver tests must PASS at 0 diff.
+- spanner-fragmentation cluster must hold at 11/13 minimum (target: improve to 12/13 if walker fixes -006 properly).
+- Multicol gate sweep must hold at 196/455 minimum.
+
+**Commit 4 — wire MulticolBreakTokenData WRITE site (Phase 18).**
+
+Changes:
+- `pkg/layout/multicol_layout.go`: in the row-advance failure branch (after a `layoutLine` returns a `remainingToken` but the next row won't fit in the outer fragmentainer), before returning the outer break result, attach `MulticolData{ConsumedRowBlockSize: paintedAmount}`. Mirror Blink cla.cc:822-833 logic literally.
+- `pkg/layout/multicol_layout.go` Phase 14b defer: revisit the `columnFill == "auto"` gate at `:386-405` to also handle `column-fill: balance` cases that should now go through row-carry instead of the entire-defer path.
+
+Verification:
+- 13 driver tests must PASS at 0 diff.
+- multicol-nested-011 must close (single-overflow case — primary target).
+- multicol-nested-012..032 sweep + multicol-fill-balance-003/-026.
+- Multicol gate target after this commit: 196 → 211+ (+15 from Phase 18 cluster).
+
+**Commit 5 — drop `IsInsideColumnSpanner` clamp gate.**
+
+Changes:
+- `pkg/layout/block_layout.go:1426-1448`: remove `!bla.space.IsInsideColumnSpanner` from the Phase 16.d.1 clamp gate. Spanner descendants self-fragment normally now.
+- `pkg/layout/block_layout.go:606-614`: remove constraint-space propagation.
+- `pkg/layout/multicol_layout.go:1426, 1459`: remove `SetIsInsideColumnSpanner(true)` calls.
+- `pkg/layout/constraint_space.go:171-191, 494-505`: remove the field + setter.
+
+Verification:
+- 13 driver tests must PASS at 0 diff (especially spanner-fragmentation-006 — without the gate, the leaf 360h descendant self-fragments via 16.d.1 + the walker correctly forwards the leaf break token in the flat list).
+- spanner-fragmentation cluster: target 12/13 (+1 from -006 cleanly handled, or stay at 11/13 if -006 still needs the gate; that's the hard exit signal).
+- Multicol gate must be net-positive vs Commit 4.
+
+**Commit 6 — full gate sweep + worktree merge.**
+
+Changes:
+- None — verification commit.
+
+Verification:
+- Full multicol/spanner-fragmentation/css2/flex/position/wm gate sweep.
+- Required gate: CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781 · multicol ≥ 211/455 · spanner-frag ≥ 11/13.
+- If green: merge worktree branch back to `fix/flexbox-fast` via fast-forward or single squash commit (preserve the 6 commit history if possible — they document the staged port for future archaeology).
+- If red: STOP and diagnose; do not merge.
+
+### Test invariants (13 must hold at 0 diff at every commit)
+
+`column-height-001/010/017/026/027`, `multicol-nested-030/031`, `spanner-fragmentation-001/004/006`, `multicol-rule-nested-balancing-004`, `nested-floated-multicol-with-monolithic-child`, `nested-past-fragmentation-line`.
+
+Run after each commit:
+
+```
+GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCSS3Reftests/css-multicol/(column-height-001|column-height-010|column-height-017|column-height-026|column-height-027|multicol-nested-030|multicol-nested-031|spanner-fragmentation-001|spanner-fragmentation-004|spanner-fragmentation-006|multicol-rule-nested-balancing-004|nested-floated-multicol-with-monolithic-child|nested-past-fragmentation-line)"
+```
+
+Plus the four other category invariants — these are usually unaffected by multicol changes, so a single sweep at Commit 1 + Commit 6 is enough:
+
+```
+GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCSS3Reftests/(css2|css-flexbox|css-position|css-writing-modes)"
+```
+
+### Hard exit conditions (STOP, DO NOT chase with predicates)
+
+1. Commit 3 doesn't restore the spanner-fragmentation regressions from Commit 2 → walker write-site mapping is wrong; re-read Blink cla.cc:605-714 + 1397-1522 and diagnose. Don't pile predicates on top.
+2. Commit 5 regresses spanner-fragmentation-006 → walker doesn't forward leaf-self-fragmentation chains correctly through the spanner's own break token. STOP. The original 16.d.1 gate is still load-bearing; revert Commit 5 and document the residual.
+3. Commit 4 regresses `multicol-nested-010` (Phase 16.c.1 column regrowth driver) → row-carry write site is firing in the wrong condition or the walker's column-rows dispatch is wrong. Diagnose by tracing `consumed_row_block_size` against expected geometry.
+4. Multicol gate drops below 196 at any commit other than Commit 2 → unexpected; STOP and diagnose before continuing.
+
+### Risks + open questions
+
+1. **Walker behavior on `nextColumnToken_` after spanner discovery.** In Blink, `MoveToSpanner` resets `parent_break_token_=nullptr` and stores `next_column_token_` separately. This means the walker sees: `[spanner_node, nextColumnToken]` — spanner first, then column-content resume. Louis14 must mirror this exactly; getting the order wrong loses the post-spanner column-content resume.
+2. **`UpdateNextColumnBreakToken` (cla.cc:143-155).** Updates the `next_column_token_` after column content has been laid out so the resume point reflects the latest fragment's break token. Louis14 doesn't have an equivalent because we currently re-derive the resume from `remainingToken` — porting the walker should preserve this semantics through the existing `nextColToken` re-assignments at `multicol_layout.go:580, 828, 859`.
+3. **`HasInflowChildBreakInside` predicate.** Blink uses it to short-circuit the loop after a spanner caused a break. Louis14 doesn't expose this directly; our equivalent is `mla.space.BreakToken == nil && hasOuterFrag && remainingToken != nil`. Verify the equivalent fires in the same conditions during Commit 3.
+4. **Phase 14b defer interaction.** The current `columnFill == "auto" && outerAvailable < explicitBlockSize` defer at `multicol_layout.go:386-405` returns early before the walker even constructs. It should keep working unchanged because it's a fast path BEFORE the walker engages. Confirm no regression on multicol-nested-009 (which depends on this).
+5. **Pointer identity for spanner break tokens.** Blink uses `child_break_token != next_column_token_` (cla.cc:153) to detect that the column content has progressed. Go pointer comparison works the same way; ensure walker's `next_column_token_` is set to the actual outgoing token from `result->GetPhysicalFragment().GetBreakToken()`, not a copy.
+6. **`MulticolData` propagation through outer-multicol per-column threading.** When the inner multicol emits `MulticolData{ConsumedRowBlockSize}` on its outgoing break token, the outer multicol's per-column break-token plumbing (`colBreakToken` at `multicol_layout.go:1069-1156`) must preserve `MulticolData` when threading the inner's `BlockBreakToken` forward. Since `MulticolData` is a field on the existing struct, the chain passes through unchanged — but verify with a unit test or trace before relying on it.
+
+### What we are explicitly NOT doing in this bundle
+
+- Phase 16.c.2 retry #3 (mechanical `ClipBlockAxisOnly` removal). Queued for AFTER bundled work lands. It's a separate mainline commit because the bundled work itself doesn't remove the clip — only verifies the walker handles all clipping cases so the clip becomes redundant.
+- Option 1 (Finish FinishFragmentation port: drop the leaf-only gate in 16.d.1; delete or shrink the parent-side overflow path in `block_layout.go:1001-1196`). Larger separate worktree phase.
+- Phase 19 (span-all-children-height 002-013, 7 sub-clusters). Independent; queue for after.
+- Generalizing `MulticolBreakTokenData *X` to a polymorphic `BreakTokenAlgorithmData` interface. We have ONE algorithm carrying break-token data; generalize when grid/flex/table need it.
+- Fragmented OOF-in-CB (Blink's `RuntimeEnabledFeatures::FragmentedOofInCbEnabled()`). The walker's OOF entry handling is gated on this flag in Blink (still being rolled out). Louis14 ignores OOF walker entries for now — the OOF layout part runs independently after column layout.
+
+---
+
 ## Error Log
 
 *(Add entries as failures are diagnosed — format: date, symptom, root cause, fix or status)*

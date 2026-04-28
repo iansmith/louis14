@@ -1,6 +1,8 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-27 — RE-SEQUENCED: Phase 17 active, then bundled 16.e+18, then 16.c.2 retry #3)
+## Current focus (2026-04-28 — Phase 17 DONE; bundled 16.e+18 prep COMPLETE; ready to start worktree implementation)
+
+**Bundled brief written 2026-04-28.** `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)" is the authoritative implementation plan, superseding the earlier sketch. Includes: authoritative Blink references (verbatim `multicol_break_token_data.h`, `MulticolPartWalker` defined inline at `column_layout_algorithm.cc:41-223` in current Blink main, write/read sites cla.cc:822-833 / 2122-2139), 12 entangled louis14 sites with current line numbers, target shape for `BlockBreakToken` + `MulticolPartWalker` types, 6-commit decomposition with verification gates, hard exit conditions, risks, and explicit non-goals. **Next action: open worktree branch `phase-16e-18-walker-carrier` and execute Commit 1 (schema + walker scaffold).**
 
 **Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commits `a6446061` + `c40b4b56` + docs `50de102c` + `68b74171` + `65ae87df`). All 13 driver tests PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
 

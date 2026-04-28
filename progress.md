@@ -21,9 +21,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ## Active phase
 
-**Phase 17 — Forced-break balance** (continuation: `CONTINUE-17.md`). Single-function rewrite of `resolveColumnAutoBlockSize` (`pkg/layout/multicol_layout.go:1469-1542`) to mirror Blink's `ResolveColumnAutoBlockSizeInternal` measure-pass loop with `ContentRun`/`ContentRuns`/`DistributeImplicitBreaks`. Mainline. Target: +5 tests (`multicol-fill-balance-038/039/040/041` + `-029..-036` subset). Gate target: multicol 192 → 197+/455.
-
-**Re-sequencing 2026-04-27.** The original CONTINUE-16e.md plan to do the spanner walker port immediately on mainline was reviewed and re-sequenced. Phase 16.e is now bundled with Phase 18 (shared break-token-shape change) and queued as worktree work after Phase 17 lands. Then Phase 16.c.2 retry #3 (mechanical clip removal). See `findings.md` § "Phase 16.e re-sequenced — bundled with Phase 18" for rationale and the bundled brief.
+**Phase 16.e + 18 BUNDLED — MulticolPartWalker port + MulticolBreakTokenData carrier.** WORKTREE WORK. Continuation: `CONTINUE-18.md`. Multi-commit refactor (6 commits) on `phase-16e-18-walker-carrier` branch. Bundled brief written 2026-04-28: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)" supersedes the earlier sketch. Authoritative Blink references captured (`multicol_break_token_data.h` verbatim; `MulticolPartWalker` is now inline at top of `column_layout_algorithm.cc:41-223`; carrier write/read sites at cla.cc:822-833 / 2122-2139). 12 entangled louis14 sites mapped with current line numbers. Gate target after bundle: multicol 196 → 211+/455 (+15 from Phase 18 nested cluster), spanner-frag 11 → 12/13. Phase 16.c.2 retry #3 (mechanical clip removal) queued AFTER this lands.
 
 ---
 
