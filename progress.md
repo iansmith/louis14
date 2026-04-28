@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-28 — post-Phase-16.e+18-v2 merge)
+## Current gate (2026-04-28 — post-multicol-border-box-clip residual fix)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,37 +16,42 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **199/455** | **+3 net from Phase 16.e+18 v2 merge** (196 → 199). Worktree branch `phase-16e-18-walker-carrier` merged via `--no-ff`. Walker port (READ + WRITE flat), `ClipBlockAxisOnly` removed, `TallestUnbreakableBlockSize` carrier wired, `IsMonolithic` flag added, `contentNode` pointer cache. Gains: `multicol-span-all-list-item-001/002` (Path X nested-balancing). |
-| spanner-fragmentation | **10/13** | -1 net vs pre-merge. Three residuals: `spanner-fragmentation-004` (1.0%) and `-006` (0.3%) need spanner-placement-layer mechanism for content-overflow; `nested-floated-multicol-with-monolithic-child` (0.2%) needs float-margin-collapse fix inside multicol. Each has distinct upstream cause beyond v2 scope. |
+| css-multicol | **205/455** | **+9 net from Phase 16.e+18 v2 merge + multicol border-box clip** (196 → 205). Walker port + `ClipBlockAxisOnly` removed + `TallestUnbreakableBlockSize` carrier + `IsMonolithic` flag + contentNode pointer cache (v2 bundle). Plus multicol container clips to border-box when block-size > 0 (`3389efe7`) — closes all 3 driver residuals from v2. |
+| spanner-fragmentation | **13/13** | All driver invariants pass. Multicol border-box clip closes -004, -006, and the related nested-floated. |
 
 ## Active phase
 
-**Phase 16.e + 18 v2 (Option A) MERGED 2026-04-28.** Worktree branch `phase-16e-18-walker-carrier` merged into `fix/flexbox-fast` via `--no-ff` (10 commits + merge commit). Worktree removed. Branch deleted.
+**Phase 16.e + 18 v2 (Option A) MERGED 2026-04-28** + **multicol border-box clip residual fix (`3389efe7`)** = full v2 closure plus all 3 driver residuals closed.
 
-Net effect: multicol gate 196 → **199/455** (+3); 13 driver invariants 11/13 → **10/13** (-1); 4-category invariants unchanged.
+Net effect from baseline: multicol gate 196 → **205/455** (+9); 13 driver invariants 11/13 → **13/13** (all passing); 4-category invariants unchanged.
 
 What landed:
+
+**Phase 16.e+18 v2 bundle (merge commit `00c0d197`):**
 - **Walker port** (`MulticolPartWalker` mirrors Blink `column_layout_algorithm.cc:41-223`) — flat document-order break-token encoding dispatched by Node identity. Replaces the 3-slot positional encoding.
 - **`ClipBlockAxisOnly` removed** — Phase 12h F2 partial workaround retired. Blink has no per-column paint clip (box_fragment_painter.cc:1080-1114).
 - **`TallestUnbreakableBlockSize` carrier** wired through `BreakBeforeChildIfNeeded` + BLA child loop + multicol consumer + outer-balancing forwarding. Mirrors Blink fragmentation_utils.cc:1105-1113 + 510-514, box_fragment_builder.cc:566-569, cla.cc:1879-1948 + 1706-1712.
 - **`PhysicalFragment.IsMonolithic`** flag (sources: `contain:size`, spanners with content > declared height).
 - **`contentNode` pointer cache** — fixes a latent walker-dispatch bug where outer-column-2 resume mis-dispatched column-content as spanners (Step-0 diagnostic).
 
-Tracking files (preserved for archaeology):
-- `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)" — authoritative design.
-- `findings.md` § Error Log 2026-04-28 entries — full chronological record (Cmt 3 hard-exit, Path A spike, v2 redesign, Step 0/B0, B1+B2+B3, B2.5+B2.6+B5, Path X).
-- `CONTINUE-18.md` (v1 hard-exit), `CONTINUE-19.md` (v2 operational continuation through Path X) — historical.
+**Multicol border-box clip residual fix (`3389efe7`):**
+- Multicol container's children clip to border-box when `finalBlockSize > 0`. Reuses existing `PhysicalFragment.ClipContentToBorderBox` flag from CSS Tables 3 §5.4.1.
+- Closes all 3 v2 residuals (`spanner-fragmentation-004` 1.0%, `-006` 0.3%, `nested-floated-multicol-with-monolithic-child` 0.2%).
+- Diagnosis: all 3 were paint-overflow-past-multicol issues (not float-margin or spanner-placement). The earlier diagnoses were wrong; box-tree inspection showed correct geometry — the issue was content painting visibly past the multicol's declared box.
+- Trade-off (operator-approved): 6 minor regressions (4 ≤ 0.3%, 2 = 1.4-1.5%). Net +12 -6 = +6 vs pre-clip Path X (199 → 205).
+- Unlike the deleted per-column `ClipBlockAxisOnly`, this clips only the multicol container itself, not each column — so the walker model stays clean.
 
-Three residuals on the 13 drivers, each with distinct upstream cause beyond v2 scope:
-- `nested-floated-multicol-with-monolithic-child` (0.2%) — float `margin-top:10` not honored inside multicol; float-margin-collapse issue.
-- `spanner-fragmentation-004` (1.0%) — spanner-placement-layer mechanism for content-overflow needed.
-- `spanner-fragmentation-006` (0.3%) — same family as -004.
+Tracking files (preserved for archaeology):
+- `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)" — authoritative design for v2.
+- `findings.md` § Error Log 2026-04-28 entries — full chronological record.
+- `CONTINUE-18.md` + `CONTINUE-19.md` — historical operational continuations.
 
 **Queued (not in active progress):**
-- B6 (Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site) — multicol-nested-011 + cluster + multicol-fill-balance-003/-026; targets +15 gate.
+- B6 (Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site) — multicol-nested-011 + cluster + multicol-fill-balance-003/-026; targets +12 to +15 gate.
 - B7 (drop `IsInsideColumnSpanner` clamp gate) — depends on B6 not regressing -006.
-- Spanner-placement-layer mechanism for content-overflow (closes -004/-006).
-- Float-margin-collapse fix inside multicol (closes nested-floated).
+- Investigate narrower clip-gate to reclaim the 6 regressions (e.g., `inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%).
+- Option 1 (Finish FinishFragmentation port).
+- Phase 19 (span-all-children-height 002-013).
 
 ---
 

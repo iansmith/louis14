@@ -1,22 +1,22 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — Phase 16.e+18 v2 MERGED into mainline; gate 199/455)
+## Current focus (2026-04-28 — v2 + multicol border-box clip fix DONE; gate 205/455, 13/13 drivers)
 
-**Phase 16.e+18 v2 (Option A — clip-removal-first) merged 2026-04-28** via `--no-ff` from `phase-16e-18-walker-carrier`. Worktree removed; branch deleted. 10 commits + merge commit on `fix/flexbox-fast`.
+**Phase 16.e+18 v2 + multicol border-box clip residual fix DONE 2026-04-28.** v2 bundle merged via `--no-ff` from `phase-16e-18-walker-carrier`; worktree removed, branch deleted. Plus follow-up commit `3389efe7` closes all 3 v2 residuals.
 
-Net effect: **multicol gate 196 → 199/455 (+3)**, **13 drivers 11/13 → 10/13 (-1)**, 4-category invariants unchanged.
+Net effect: **multicol gate 196 → 205/455 (+9)**, **13 drivers 11/13 → 13/13 (all passing)**, 4-category invariants unchanged.
 
-What landed (architectural):
+What landed (architectural, from v2 bundle):
 - Walker port (`MulticolPartWalker` mirrors Blink cla.cc:41-223) — flat document-order break-token encoding by Node identity. Replaces 3-slot positional encoding.
 - `ClipBlockAxisOnly` workaround removed (Phase 12h F2 partial retired).
 - `TallestUnbreakableBlockSize` carrier (Phase 16.d.2/3 in v2 brief; mirrors Blink fragmentation_utils.cc + box_fragment_builder.cc + cla.cc:1879-1948 + 1706-1712).
 - `PhysicalFragment.IsMonolithic` flag (sources: `contain:size` + spanners with content > declared height).
 - `contentNode` pointer cache (fixes a latent walker-dispatch bug).
 
-Three residuals on the 13 drivers, each with distinct upstream cause beyond v2 scope:
-- `nested-floated-multicol-with-monolithic-child` (0.2%): float `margin-top:10` not honored inside multicol — float-margin-collapse bug.
-- `spanner-fragmentation-004` (1.0%): spanner content-overflow needs spanner-placement-layer mechanism.
-- `spanner-fragmentation-006` (0.3%): same family as -004.
+What landed (residual fix, commit `3389efe7`):
+- Multicol container's children clip to border-box when `finalBlockSize > 0`. Reuses `ClipContentToBorderBox` flag.
+- All 3 driver residuals closed (the earlier float-margin / spanner-placement diagnoses were wrong — all 3 were paint-overflow-past-multicol).
+- Trade-off: 6 minor regressions (operator-approved); net +6 multicol gate (199 → 205).
 
 **Note:** `column-height-008` hangs at clean baseline (10m timeout). Pre-existing issue, not caused by v2.
 
@@ -34,10 +34,9 @@ Three residuals on the 13 drivers, each with distinct upstream cause beyond v2 s
 
 **Then queued (in order):**
 
-- **B6 — Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site** (queued). Mirrors Blink cla.cc:822-833. Targets multicol-nested-011 (single-overflow case) + multicol-nested-012..032 + multicol-fill-balance-003/-026. Multicol gate target: 199 → 211+ (+12 to +15). Read site already plumbed (multicol_layout.go); only the WRITE site is missing.
+- **B6 — Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site** (queued). Mirrors Blink cla.cc:822-833. Targets multicol-nested-011 (single-overflow case) + multicol-nested-012..032 + multicol-fill-balance-003/-026. Multicol gate target: 205 → 217+ (+12 to +15). Read site already plumbed (multicol_layout.go); only the WRITE site is missing.
 - **B7 — drop `IsInsideColumnSpanner` clamp gate** (queued). Removes the Phase 16.d.1 self-fragmentation guard for spanner descendants. Hard exit if spanner-fragmentation-006 regresses.
-- **Spanner content-overflow placement-layer fix** (queued, closes -004 / -006 residuals). Different mechanism than the carrier; needs targeted work in the spanner-placement layer (LayoutSpanner / pendingContentOverflow), not the measure-pass layer.
-- **Float-margin-collapse inside multicol** (queued, closes nested-floated residual). Float `margin-top` not honored when the float is inside a multicol's column.
+- **Reclaim border-box-clip regressions** (queued). 6 tests regressed under the multicol border-box clip (`inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%, others smaller). Investigate a narrower clip-gate so these don't get clipped (e.g., only clip when there are spanners present, or only when content actually overflowed the box).
 - **Option 1 — Finish FinishFragmentation port** (drop the `len(children) == 0` leaf-only gate in 16.d.1 + delete or shrink the parent-side children-loop overflow path in `block_layout.go:1001-1196` to the cases Blink handles there — IFC breaks, forced breaks). Larger structural change. The merged walker port should clean up the prior break-token misalignment that blocked this earlier.
 - **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: findings.md § Phase 19.
 
@@ -58,9 +57,9 @@ Phase 16.c.2 was attempted twice and rolled back both times. v1 brief framed ret
 10. **Option 1 — Finish FinishFragmentation port** (QUEUED). Drop the leaf-only gate in 16.d.1 + delete/shrink the parent-side overflow path in `block_layout.go:1001-1196`. Worktree.
 11. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
 
-**Gate invariants (post-Phase-16.e+18-v2 merge):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **199/455** · spanner-fragmentation 10/13.
+**Gate invariants (post-residual-fix):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **205/455** · spanner-fragmentation **13/13**.
 
-**Gate target after B6:** multicol **211+/455** (+12 to +15 from Phase 18 cluster). Spanner-fragmentation: 10/13 baseline; -004/-006 closure depends on spanner-content-overflow work, not B6.
+**Gate target after B6:** multicol **217+/455** (+12 to +15 from Phase 18 cluster). Spanner-fragmentation already at 13/13 driver baseline.
 
 ---
 

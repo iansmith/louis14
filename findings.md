@@ -1896,6 +1896,43 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 - **Root cause:** louis14's `ClipBlockAxisOnly` workaround (Phase 12h F2 partial) creates a "clip-only mid-spanner" code path at `multicol_layout.go:786-790` (Commit 2 numbers). When a spanner clips at the outer fragmentainer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content (e.g., spanner_3 / trailing block in `-001`'s 3-spanner+block test). The OLD (pre-Commit-2) 3-slot encoding solved this via slot[0] = `beforeSpannerToken = {Node: contentNode, ChildBreakTokens: [{Node: spanner, IsBreakBefore: true}]}` — a column-content driver that on resume drove BLA via layoutLine to re-discover post-spanner content via spannerPath returns. The walker model elides this driver by design.
 - **Status:** Reverted. Worktree restored to `a8ea3adb`. Commit 3 attempt diff preserved in worktree `git stash@{0}`. Brief corrected (see notice at top of "Phase 16.e + 18 BUNDLED BRIEF" section). DO NOT retry Commit 3 without re-confirming sequencing with operator.
 
+**2026-04-28 — Multicol border-box clip residual fix LANDED on mainline (`3389efe7`); closes all 3 v2 driver residuals; gate 199 → 205/455 (+6).**
+
+After the v2 merge, the operator approved continued work on the 3 residuals:
+- `nested-floated-multicol-with-monolithic-child` (0.2%)
+- `spanner-fragmentation-004` (1.0%)
+- `spanner-fragmentation-006` (0.3%)
+
+Earlier diagnoses had identified them as having distinct upstream causes (float-margin-collapse, spanner-placement-layer, etc.). Box-tree inspection during this session showed the diagnoses were WRONG — all 3 are paint-overflow-past-multicol issues. Specifically:
+
+For `nested-floated`: the box tree showed the float correctly placed at multicol-y=10..110 (margin-top:10 IS honored). The green child renders at canvas y=58.9375..148.9375 (90h, ending exactly at multicol's bottom). The 0.2% diff was outside that area — paint-overflow past multicol.
+
+For `-004` / `-006`: spanners with content > declared height paint visible past the multicol's bottom. The 1.0% / 0.3% diffs were entirely outside the multicol's 100x100 test region (visible canvas area below it).
+
+**Fix:** clip multicol container's children to its border-box when `finalBlockSize > 0`. Reuses existing `PhysicalFragment.ClipContentToBorderBox` flag from CSS Tables 3 §5.4.1.
+
+The clip is gated on `finalBlockSize > 0` so zero-height multicol containers (e.g., `multicol-zero-height-002`, where overflow IS expected to render visibly) don't get clipped.
+
+Unlike the deleted per-column `ClipBlockAxisOnly` (v2 B3), this clips only the multicol container itself, not each column. The walker port's design is preserved.
+
+**Gate trade-off (operator-approved):** +12 tests gained, -6 tests regressed. Net +6 multicol gate. 4-category invariants unchanged.
+
+Tests gained beyond the 3 driver residuals: `multicol-breaking-002`, `multicol-breaking-nobackground-002`, `multicol-fill-balance-nested-000`, `multicol-list-item-001`, `multicol-nested-015/021/026/028`, `nested-after-float-clearance`.
+
+Regressions:
+- `inline-block-and-column-span-all` (1.5%) — most meaningful.
+- `multicol-fill-balance-032` (1.4%).
+- `multicol-gap-large-001` (0.3%).
+- `multicol-span-all-margin-nested-001` (0.2%).
+- `increase-prev-sibling-height` (0.0%, ~AA).
+- `multicol-nested-029` (0.0%, ~AA).
+
+Future work queued: investigate a narrower clip-gate to reclaim the 6 regressions (clip only when there are spanners, or only when content actually exceeded the multicol box).
+
+**Driver invariants now 13/13** at 0 diff. **Spanner-fragmentation cluster 13/13** at 0 diff.
+
+---
+
 **2026-04-28 — v2 Path X (nested-balancing TallestUnbreakable propagation) LANDED on worktree (`2d6822b3`); +2 multicol gate (199/455).**
 
 After PAUSE for review at 10/13, operator approved fixing upstream architectural gaps. Researched Blink column_layout_algorithm.cc:1535-1734 (`ResolveColumnAutoBlockSizeInternal`). Verbatim Blink for the outer-propagation hook (cla.cc:1706-1712):
