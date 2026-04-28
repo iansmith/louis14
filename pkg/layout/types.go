@@ -74,11 +74,6 @@ type Box struct {
 	// Used by CSS Tables 3 §5.4.1 rowspan-over-collapsed-row clipping.
 	ClipContentToBorderBox bool
 
-	// ClipBlockAxisOnly clips children only in the block axis — inline
-	// overflow is allowed. Set on multicol column fragmentainers; see
-	// the matching PhysicalFragment field comment in layout_result.go.
-	ClipBlockAxisOnly bool
-
 	// RenderedColumnCount is the number of column fragments actually placed
 	// inside a multicol container. Used at paint time so column-rule painting
 	// honors the spec rule that rules are only drawn between columns that both

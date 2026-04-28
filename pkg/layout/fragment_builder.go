@@ -90,6 +90,25 @@ type BoxFragmentBuilder struct {
 	minimalSpaceShortage    float64
 	hasMinimalSpaceShortage bool
 
+	// tallestUnbreakableBlockSize tracks the largest unbreakable block-size
+	// observed (or propagated up from a child) during the initial column-
+	// balancing pass. Read into LayoutResult.TallestUnbreakableBlockSize at
+	// Build(). Only meaningful when space.IsInitialColumnBalancingPass.
+	// Mirrors Blink's BoxFragmentBuilder::tallest_unbreakable_block_size_
+	// + PropagateTallestUnbreakableBlockSize (box_fragment_builder.cc:566-569).
+	// Phase 16.d.2/3 (v2 B1+B2): field + accessor in B1; propagation
+	// callsites in fragmentation_utils.go + consumer at multicol_layout.go:1601
+	// in B2.
+	tallestUnbreakableBlockSize    float64
+	hasTallestUnbreakableBlockSize bool
+
+	// isMonolithic marks the produced fragment as unbreakable for column-
+	// fragmentation purposes — its block-size is fixed and its content does
+	// not fragment across column or page boundaries. Read into
+	// PhysicalFragment.IsMonolithic at Build(). Phase 16.e+18 v2 B2.5.
+	// Mirrors Blink's PhysicalFragment::IsMonolithic.
+	isMonolithic bool
+
 	// previousBreakAfter is the break-after value of the most recently added
 	// in-flow child. JoinedBreakBetweenValue joins it with the next child's
 	// break-before to compute the effective break-between. Mirrors Blink's
@@ -201,6 +220,15 @@ func (b *BoxFragmentBuilder) ClearUnpositionedListMarker() {
 	b.unpositionedListMarker = nil
 }
 
+// SetIsMonolithic marks the produced fragment as unbreakable for column-
+// fragmentation purposes. Mirrors Blink's PhysicalFragment::IsMonolithic.
+// Phase 16.e+18 v2 B2.5: set when style.HasSizeContainment() (CSS
+// Containment 2 §2.6) or when a spanner's content overflows its declared
+// height (implicit monolithic for column-balance).
+func (b *BoxFragmentBuilder) SetIsMonolithic(v bool) {
+	b.isMonolithic = v
+}
+
 // SetExclusionSpace sets the updated float exclusion state.
 func (b *BoxFragmentBuilder) SetExclusionSpace(es *ExclusionSpace) {
 	b.exclusionSpace = es
@@ -238,6 +266,44 @@ func (b *BoxFragmentBuilder) PropagateSpaceShortage(shortage float64) {
 		b.minimalSpaceShortage = shortage
 		b.hasMinimalSpaceShortage = true
 	}
+}
+
+// PropagateTallestUnbreakableBlockSize records an unbreakable block-size
+// observed during the initial column-balancing pass and keeps the maximum
+// across multiple calls. Used by the column-layout algorithm to floor the
+// auto column block-size at the tallest piece of monolithic content or
+// break-inside:avoid block in any descendant — so columns are tall enough
+// to hold the largest unbreakable child without visual overflow.
+//
+// Mirrors Blink's BoxFragmentBuilder::PropagateTallestUnbreakableBlockSize
+// (box_fragment_builder.cc:566-569). Callers (in v2 B2): the fragmentation
+// hook in BreakBeforeChildIfNeeded for break-inside:avoid children
+// (fragmentation_utils.cc:1105-1113), the SetupFragmentation border/padding
+// contribution (fragmentation_utils.cc:510-514), and the parent-side
+// child-result propagation (box_fragment_builder.cc:566-569).
+//
+// Negative or zero values are ignored to keep callsites loose; only the
+// non-trivial floors are kept. Mirrors Blink's std::max idiom.
+func (b *BoxFragmentBuilder) PropagateTallestUnbreakableBlockSize(blockSize float64) {
+	if blockSize <= 0 {
+		return
+	}
+	if !b.hasTallestUnbreakableBlockSize || blockSize > b.tallestUnbreakableBlockSize {
+		b.tallestUnbreakableBlockSize = blockSize
+		b.hasTallestUnbreakableBlockSize = true
+	}
+}
+
+// TallestUnbreakableBlockSize returns the current accumulated unbreakable
+// block-size (or 0 if none has been propagated). Used by callers that
+// need to forward the value to an outer fragmentation context (e.g.,
+// nested multicol propagating its own tallest unbreakable up to the
+// outer multicol's initial balancing pass; mirrors cla.cc:1879-1948).
+func (b *BoxFragmentBuilder) TallestUnbreakableBlockSize() float64 {
+	if !b.hasTallestUnbreakableBlockSize {
+		return 0
+	}
+	return b.tallestUnbreakableBlockSize
 }
 
 // SetPreviousBreakAfter records the break-after value of the most recently
@@ -359,6 +425,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		Style:            b.style,
 		LayoutNode:       b.layoutNode,
 		GapGeometry:      b.gapGeometry,
+		IsMonolithic:     b.isMonolithic,
 	}
 
 	result := &LayoutResult{
@@ -377,6 +444,9 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 	if b.hasMinimalSpaceShortage {
 		result.MinSpaceShortage = b.minimalSpaceShortage
+	}
+	if b.hasTallestUnbreakableBlockSize {
+		result.TallestUnbreakableBlockSize = b.tallestUnbreakableBlockSize
 	}
 	if b.hasBreakAppeal {
 		result.BreakAppeal = b.breakAppeal

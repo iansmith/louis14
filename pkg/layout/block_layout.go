@@ -73,6 +73,38 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	geom := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
+	// Phase 16.e+18 v2 B2.5: tag size-contained boxes as monolithic.
+	// CSS Containment 2 §2.6: a contain:size box has no intrinsic size
+	// from its descendants, so for fragmentation purposes the entire
+	// box is monolithic — its block-size is fixed and content does not
+	// fragment across column / page boundaries. Consumed by
+	// fragmentation_utils.ShouldAvoidBreakInside to drive
+	// TallestUnbreakableBlockSize propagation during the initial
+	// column-balancing pass. Mirrors Blink's PhysicalFragment::IsMonolithic
+	// + ShouldAvoidBreakInside check.
+	if bla.style != nil && bla.style.HasSizeContainment() {
+		builder.SetIsMonolithic(true)
+	}
+	// Phase 16.e+18 v2 B2.6 (SetupFragmentation contribution): during the
+	// initial column-balancing pass, propagate the container's own border-
+	// block-start and border-block-end as unbreakable floors. Mirrors Blink's
+	// SetupFragmentation hook (fragmentation_utils.cc:510-514):
+	//
+	//   if (space.IsInitialColumnBalancingPass()) {
+	//     const BoxStrut& unbreakable = builder->BorderScrollbarPadding();
+	//     builder->PropagateTallestUnbreakableBlockSize(unbreakable.block_start);
+	//     builder->PropagateTallestUnbreakableBlockSize(unbreakable.block_end);
+	//   }
+	//
+	// The column box must be at least as tall as either edge; the max()
+	// semantics inside PropagateTallestUnbreakableBlockSize keeps the
+	// tallest of all propagated values.
+	if bla.space.IsInitialColumnBalancingPass {
+		blockStart := geom.Border.BlockStart + geom.Padding.BlockStart
+		blockEnd := geom.Border.BlockEnd + geom.Padding.BlockEnd
+		builder.PropagateTallestUnbreakableBlockSize(blockStart)
+		builder.PropagateTallestUnbreakableBlockSize(blockEnd)
+	}
 
 	contentInlineSize := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if contentInlineSize < 0 {
@@ -623,6 +655,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
+
+			// Phase 16.d.2/3 (v2 B2): propagate child's accumulated tallest
+			// unbreakable block-size during the initial column-balancing pass,
+			// regardless of whether the child itself avoids breaks. The child's
+			// own break-inside:avoid contribution is added separately inside
+			// BreakBeforeChildIfNeeded (fragmentation_utils.go); this site
+			// handles the carrier propagation up the layout tree (deeper
+			// descendants whose floors were already aggregated into the
+			// child's result). Mirrors Blink box_fragment_builder.cc:566-569.
+			if bla.space.IsInitialColumnBalancingPass && childResult != nil {
+				builder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
+			}
 
 			// CSS 2.1 §9.5 Rule 5 / §10.3.3: A new BFC must not overlap
 			// float margin boxes. If the child doesn't fit alongside

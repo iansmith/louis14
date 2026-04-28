@@ -19,6 +19,82 @@ package layout
 //     directly off the child's style at the call site, which is correct for
 //     non-resumed children (the only case 12d's drivers exercise).
 
+// ShouldAvoidBreakInside returns true if the layout result should not be
+// broken across fragmentainers — either because its fragment is monolithic
+// or because its style says break-inside:avoid (or avoid-column / avoid-page,
+// matching the current fragmentation context).
+//
+// Mirrors Blink's ShouldAvoidBreakInside (fragmentation_utils.h):
+//
+//	return result.GetPhysicalFragment().IsMonolithic() ||
+//	       IsAvoidBreakValue(space, ResolvedBreakInside(result));
+//
+// The IsMonolithic clause was added in v2 B2.5. PhysicalFragment.IsMonolithic
+// is set by:
+//   - block_layout.go BLA Layout entry when style.HasSizeContainment()
+//     (CSS Containment 2 §2.6).
+//   - multicol_layout.go layoutSpanner / layoutSpannerInFrag when the
+//     spanner's measured intrinsic block-size exceeds its declared box
+//     (implicit monolithic for column-balance).
+//   - (Future) replaced elements (img, video, canvas, iframe).
+func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) bool {
+	if layoutResult == nil || layoutResult.Fragment == nil {
+		return false
+	}
+	if layoutResult.Fragment.IsMonolithic {
+		return true
+	}
+	breakInside := "auto"
+	if s := layoutResult.Fragment.Style; s != nil {
+		breakInside = s.GetBreakInside()
+	}
+	return IsAvoidBreakValue(space, breakInside)
+}
+
+// CalculateUnbreakableBlockSize returns the block-size that this layout
+// result contributes as an unbreakable floor for column-balancing.
+//
+// Mirrors Blink's CalculateUnbreakableBlockSize (fragmentation_utils.cc):
+//   - If the child has already-propagated unbreakable contribution from
+//     its own descendants, return that directly (the deeper floor was
+//     measured at the child's coordinate space and doesn't need
+//     re-offsetting at the parent level).
+//   - Otherwise, the child's contribution is its fragment's block-size
+//     plus its position within the fragmentainer. The column box must
+//     extend to cover both the offset and the child, so the floor is
+//     `fragmentainerOffset + childBlockSize`.
+//
+// v2 B2.5 extension: when the fragment is monolithic AND its declared
+// block-size is shorter than the natural content height (IntrinsicBlockSize
+// > fragment block-size), use `fragmentainerOffset + IntrinsicBlockSize`
+// instead. Captures the spanner-with-content-overflow case where the
+// spanner's box stays at declared height but its content paints past it;
+// the column needs to grow to accommodate the visible content area.
+//
+// Used at the BreakBeforeChildIfNeeded propagation site
+// (fragmentation_utils.cc:1105-1113).
+func CalculateUnbreakableBlockSize(
+	space ConstraintSpace,
+	layoutResult *LayoutResult,
+	fragmentainerBlockOffset float64,
+) float64 {
+	if layoutResult == nil {
+		return 0
+	}
+	if layoutResult.TallestUnbreakableBlockSize > 0 {
+		return layoutResult.TallestUnbreakableBlockSize
+	}
+	if layoutResult.Fragment == nil {
+		return 0
+	}
+	blockSize := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment).BlockSize()
+	// v2 B2.5: monolithic + intrinsic > fragment block-size → use intrinsic.
+	if layoutResult.Fragment.IsMonolithic && layoutResult.IntrinsicBlockSize > blockSize {
+		blockSize = layoutResult.IntrinsicBlockSize
+	}
+	return fragmentainerBlockOffset + blockSize
+}
+
 // CalculateBreakBetweenValue returns the effective break-between value for the
 // boundary BEFORE this child, joining the parent's previous-break-after (set
 // when the previous in-flow child was added) with the child's break-before.
@@ -217,6 +293,15 @@ func BreakBeforeChildIfNeeded(
 			builder.SetBreakAppeal(BreakAppealPerfect)
 			return BreakStatusBrokeBefore, true
 		}
+	}
+
+	// Phase 16.d.2/3 (v2 B2): during initial column-balancing pass, propagate
+	// unbreakable block-size up to the column algorithm so it can floor the
+	// auto column block-size. Mirrors Blink's BreakBeforeChildIfNeeded
+	// (fragmentation_utils.cc:1105-1113).
+	if space.IsInitialColumnBalancingPass && ShouldAvoidBreakInside(space, layoutResult) {
+		blockSize := CalculateUnbreakableBlockSize(space, layoutResult, fragmentainerBlockOffset)
+		builder.PropagateTallestUnbreakableBlockSize(blockSize)
 	}
 
 	// Soft-break logic requires a definite fragmentainer size; during the initial

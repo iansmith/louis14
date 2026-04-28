@@ -2,6 +2,25 @@ package layout
 
 import "louis14/pkg/geometry/layoutunit"
 
+// MulticolBreakTokenData mirrors Blink's MulticolBreakTokenData
+// (third_party/blink/renderer/core/layout/multicol_break_token_data.h).
+// Carries algorithm-specific resume state for tokens emitted by
+// MulticolLayoutAlgorithm; nil for tokens emitted by other algorithms.
+//
+// Currently a typed nullable pointer rather than a polymorphic
+// BreakTokenAlgorithmData interface — louis14 has only one algorithm
+// carrying break-token data. Generalize when grid/flex/table need it.
+type MulticolBreakTokenData struct {
+	// ConsumedRowBlockSize is the portion of the current column-row block
+	// size that was painted in earlier outer fragmentainers. Mirrors
+	// Blink's MulticolBreakTokenData::consumed_row_block_size. Used by
+	// MulticolLayoutAlgorithm.offsetInCurrentRow to add row progress
+	// before the modulo against row_stride, so a row that overflows an
+	// outer fragmentainer can resume mid-stride in the next outer
+	// fragmentainer.
+	ConsumedRowBlockSize float64
+}
+
 // BlockBreakToken captures the state needed to resume layout in the next
 // fragmentainer. Mirrors Blink's BlockBreakToken
 // (third_party/blink/renderer/core/layout/block_break_token.h).
@@ -16,8 +35,14 @@ type BlockBreakToken struct {
 	// SequenceNumber is which fragment this is (0-indexed).
 	SequenceNumber int
 
-	// ChildBreakTokens contains break tokens for children that need
-	// to resume. Children completed before the break are omitted.
+	// ChildBreakTokens contains break tokens for children that need to
+	// resume. Children completed before the break are omitted.
+	//
+	// For tokens emitted by MulticolLayoutAlgorithm this list is flat
+	// document-order; each entry's Node identifies its role to the
+	// MulticolPartWalker (column-content vs spanner vs OOF). Other
+	// callers continue treating it as a list of direct-child resume
+	// tokens dispatched by Node identity.
 	ChildBreakTokens []*BlockBreakToken
 
 	// IsBreakBefore means the node hasn't started yet — it should
@@ -57,6 +82,12 @@ type BlockBreakToken struct {
 	// resumed in the next fragment. Mirrors Blink's
 	// BlockBreakToken::has_unpositioned_list_marker_.
 	HasUnpositionedListMarker bool
+
+	// MulticolData carries MulticolLayoutAlgorithm-specific resume state.
+	// Nil for tokens emitted by other algorithms. Mirrors Blink's
+	// BlockBreakToken::data_ + MulticolBreakTokenData
+	// (multicol_break_token_data.h).
+	MulticolData *MulticolBreakTokenData
 }
 
 // HasBreakToken returns true if there is more content to lay out.
