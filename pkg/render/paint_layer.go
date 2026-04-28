@@ -279,6 +279,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// 16.d.2/3 TallestUnbreakable carrier) prevent the visual overflow
 	// the clip used to mask. See findings.md § "Phase 16.d Blink
 	// research" + "v2 Step 0 diagnostic".
+	//
+	// Phase 20 P20.3: column fragments now carry box.IsColumnBox
+	// (forwarded from PhysicalFragment.BoxType == BoxTypeColumn).
+	// Per Blink box_fragment_painter.cc::PaintBlockChild, the
+	// fragmentainer branch only establishes a display-item-fragment
+	// identity scope (paint cache identity across multiple fragments
+	// of the same LayoutObject) — no clip is emitted. louis14 has no
+	// paint-cache mechanism today, so IsColumnBox is currently
+	// consumed only by drawColumnRules (P20.4) for rule extents; no
+	// per-column clip is set here, matching Blink.
 
 	if clipX || clipY {
 		layer.HasClip = true
