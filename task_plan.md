@@ -1,15 +1,29 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — Phase 17 DONE; bundled 16.e+18 Commits 1+2 DONE; Commit 3 ATTEMPTED + HIT HARD-EXIT #1)
+## Current focus (2026-04-28 — Phase 17 DONE; bundled 16.e+18 v1 SUPERSEDED; v2 brief written; Step 0 next)
 
-**Bundled brief written 2026-04-28.** `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF (prep complete 2026-04-28)" was the authoritative implementation plan. **The brief's design is now known to be incomplete** — Commit 3 attempt below proves WRITE-side flattening alone cannot restore 13/13 without also removing `ClipBlockAxisOnly`. Brief needs correction before another implementation attempt.
+**v2 brief written 2026-04-28 (Option A — clip-removal-first).** Authoritative: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". Operational continuation: `CONTINUE-18.md`. v1 brief preserved but marked SUPERSEDED in findings.md.
+
+**Why v2:** v1 was empirically refuted by the 2026-04-28 Path A spike. v1 assumed walker WRITE flat alone restores 13/13 and that clip removal could trail as a "mechanical" cleanup. Spike showed neither holds: (i) clip removal alone is not mechanical (Spike A: 9/13, regresses -004 + nested-floated); (ii) walker WRITE flat × no-clip introduces independent regressions on column-height-026/027 + multicol-nested-030/031 (Spike B: 5/13). v2 reorders to address louis14's clip-dependent paths via the upstream Blink mechanism (Phase 16.d.2/3 `TallestUnbreakableBlockSize` carrier) BEFORE the walker port.
 
 **Worktree progress on `phase-16e-18-walker-carrier`:**
 
 1. **Commit 1 DONE (`43ec8c66`):** schema + walker scaffold. 13/13 drivers PASS.
-2. **Commit 2 DONE (`a8ea3adb`):** READ site switched to walker dispatch. **11/13 drivers** — `spanner-fragmentation-001` (0.8% diff) and `-006` (1.4% diff) regress.
-3. **Commit 3 ATTEMPTED 2026-04-28 → HARD-EXIT #1.** Faithful WRITE-side flattening + Blink-style `flushWalker` cleanup loop (cla.cc:733-738) executed; build clean; driver result **same 11/13** (`-001` unchanged 0.8%, `-006` improved 1.4%→1.0%). Per brief's hard-exit #1, attempt was reverted; worktree restored to `a8ea3adb`. Commit 3 diff preserved in worktree `git stash@{0}`.
-4. **Path A spike 2026-04-28 (operator-requested) refuted the brief's "mechanical" framing for 16.c.2 retry #3.** Spike A (Commit 2 + clip OFF): 9/13 — clip removal ALONE regresses 2 tests vs Commit 2. Spike B (Commit 3 + clip OFF): 5/13 — walker WRITE-flat introduces 4 INDEPENDENT regressions on `column-height-026/027` + `multicol-nested-030/031` even without the clip. These tests rely on 16.d.1's per-fragment clamp, which the flat encoding apparently breaks via break-token shape divergence. Mechanism trace required before any retry. Full data: `CONTINUE-18.md` § "Path A spike result" + findings.md error log entry 2026-04-28 (#2). **The bundled brief (6-commit decomposition, "regressions restore", "mechanical 16.c.2 retry #3") is empirically refuted; redesign required, NOT another implementation attempt.** DO NOT proceed without re-confirming sequencing with operator.
+2. **Commit 2 DONE (`a8ea3adb`):** walker READ + positional WRITE. 11/13 drivers (-001, -006 regress per v1 expectation; v2 expects these to clear post-B3 + B5 once clip is gone and walker WRITE flattens).
+3. **Cmt 3 ATTEMPT (v1) REVERTED 2026-04-28.** Diff preserved in worktree `git stash@{0}` for B5 reuse with reconciliation.
+
+**v2 sequence (full detail in `CONTINUE-18.md` and `findings.md` § BUNDLED BRIEF v2):**
+
+- **Step 0 (NEXT):** mandatory diagnostic — trace `column-height-026` break-token chain Cmt 2 vs Spike B. No code commit. Hard exit if divergence not localized.
+- **B1+B2:** port `TallestUnbreakableBlockSize` carrier (Phase 16.d.2/3, hooks already TODO'd at multicol_layout.go:1576 + :1601).
+- **B3:** mechanical `ClipBlockAxisOnly` removal (Phase 16.c.2 retry #3 inlined into bundle).
+- **B4:** re-verify walker READ.
+- **B5:** walker WRITE flat (apply Cmt 3 stash + Step 0 adjustments + B3 reconciliation).
+- **B6:** Phase 18 `ConsumedRowBlockSize` carrier WRITE site.
+- **B7:** drop `IsInsideColumnSpanner` clamp gate.
+- **B8:** gate sweep + worktree merge.
+
+**DO NOT proceed past Step 0 without engaging operator.** v1 failed precisely because the brief proceeded without empirical grounding; Step 0 is the v2 safeguard.
 
 **Just completed:** Phase 16.d.1 + spanner-frag-006 fix (commits `a6446061` + `c40b4b56` + docs `50de102c` + `68b74171` + `65ae87df`). All 13 driver tests PASS at 0 diff. Multicol gate 167 → 192 (+25), spanner-fragmentation 7 → 11 (+4).
 
@@ -25,31 +39,29 @@
 
 **Then queued (in order):**
 
-- **Phase 16.e + 18 bundled** (port Blink's `MulticolPartWalker` AND add `MulticolBreakTokenData` carrier as one foundational change). High-risk, multi-commit; **DO IN A WORKTREE**. Bundled because they share the same break-token-shape change: 16.e flattens the positional encoding, 18 adds the polymorphic data field — one carrier-and-walker port instead of two passes. Bundled brief: findings.md § "Phase 16.e + 18 bundled brief" (to write before starting). Estimated +15-20 tests (15 from 18 + 4 from clip removal once walker lands).
-- **Phase 16.c.2 retry #3** (mechanical) — delete `ClipBlockAxisOnly` setter (`multicol_layout.go:1271-1286`) + paint branch (`paint_layer.go:274-296`) + `PhysicalFragment.ClipBlockAxisOnly` field + `Box.ClipBlockAxisOnly` + `engine.go:332` propagation. Should be net-positive cleanly once the bundled walker+carrier port lands.
-- **Option 1 — Finish FinishFragmentation port** (drop the `len(children) == 0` leaf-only gate in 16.d.1 + delete or shrink the parent-side children-loop overflow path in `block_layout.go:1001-1196` to the cases Blink handles there — IFC breaks, forced breaks). Larger structural change. Earlier failed because of break-token misalignment between self-fragmentation and parent-side overflow on `column-height-006`; the bundled walker port should clean this up.
+- **Phase 16.e + 18 bundled v2 (Option A — clip-removal-first)** — IN PROGRESS, in worktree, Step 0 next. v2 supersedes v1; folds in Phase 16.c.2 retry #3 as B3 (no longer trailing). Phase 16.d.2/3 `TallestUnbreakableBlockSize` carrier port at B1+B2 is also folded in. Brief: findings.md § "Phase 16.e + 18 BUNDLED BRIEF v2 (Option A — clip-removal-first, redesigned 2026-04-28)". Continuation: `CONTINUE-18.md`.
+- **Option 1 — Finish FinishFragmentation port** (drop the `len(children) == 0` leaf-only gate in 16.d.1 + delete or shrink the parent-side children-loop overflow path in `block_layout.go:1001-1196` to the cases Blink handles there — IFC breaks, forced breaks). Larger structural change. Earlier failed because of break-token misalignment between self-fragmentation and parent-side overflow on `column-height-006`; the bundled walker port (v2 B5) should clean this up.
 - **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: findings.md § Phase 19.
 
 css-multicol is the active layout-feature track at **192/455 committed**. Recent commits: Phase 15 partial (`4875da5b`, +2: test 001), Phase 16.a BFC filtering (`d42e3cf2`, +2: tests -002, -004), Phase 16.b BSFF row-advance (`a375cb45`, +3 targets but −25 net to gate), Phase 16.c.1 column regrowth port (`2aa01920`, gate-neutral), **Phase 16.d.1 per-fragment block-size clamp (`a6446061` + `c40b4b56`, +25 multicol / +4 spanner-fragmentation)**.
 
-Phase 16.c.2 was attempted twice and rolled back both times. The clip stays in tree until the bundled walker+carrier port lands and makes its removal mechanical.
+Phase 16.c.2 was attempted twice and rolled back both times. v1 brief framed retry #3 as a mechanical post-bundle commit; v2 brief (Option A) inlines clip removal as B3 of the bundle, AFTER B1+B2 port `TallestUnbreakable` to close the upstream gap that 16.d.1 partially addressed. The 2026-04-28 Path A spike showed retry #3 is NOT mechanical without B2's carrier work (Spike A: 9/13).
 
 **Phase ordering (revised 2026-04-27, post-CONTINUE-16e review):**
 1. **Phase 16.a** — DONE (`d42e3cf2`, +2). Spanner BFC filtering: `IsValidColumnSpannerInTree` parity. Tests `-002, -004` PASS.
 2. **Phase 16.b** — DONE (`a375cb45`, +3 targets / −25 net). BSFF row-advance + spanner WDM/leaf/margin polish; `multicol-span-all-006, -007, -008` PASS at 0 diff. Kept narrowed `ClipBlockAxisOnly`; the regression cluster turned out to have a deeper root cause (see 16.c.2 retro).
 3. **Phase 16.c.1** — DONE (`2aa01920`, gate-neutral). Column regrowth port from `column_layout_algorithm.cc:1099-1124` with `BreakToken == nil && BSFF > fragH` carrier gate. Verified `multicol-nested-010` PASS, multicol gate unchanged. Setup for future 16.c.2.
-4. **Phase 16.c.2** — ROLLED BACK 2026-04-27 (twice). Removing `ClipBlockAxisOnly` exposes spanner-content-overflow patterns that need the bundled walker+carrier port. Will retry as **Phase 16.c.2 retry #3** (mechanical) after the bundled port lands.
+4. **Phase 16.c.2** — ROLLED BACK 2026-04-27 (twice). The 2026-04-28 Path A spike confirmed: clip removal alone (Spike A) regresses -004 + nested-floated, requiring `TallestUnbreakable` carrier (Phase 16.d.2/3) to close the upstream gap. Inlined as **v2 B3** in the bundled phase, AFTER B1+B2 carrier port. No longer "queued mechanical retry" — it's part of the bundle.
 5. **Phase 16.d.1** — DONE (`a6446061` + `c40b4b56`, **+25 multicol / +4 spanner-fragmentation**). Per-fragment block-size clamp + `LayoutResult.DidBreakSelf` carrier in `block_layout.go`, plus `ConstraintSpace.IsInsideColumnSpanner` flag set by `MulticolLayoutAlgorithm.layoutSpanner` / `layoutSpannerInFrag` and propagated through child constraint spaces. True-leaf gate (no DOM children, no column-span:all, hasExplicitBlock, !IsBlockSizeOverride, !IsInsideColumnSpanner, FragmentainerBlockSize > 0, !IsInitialColumnBalancingPass). All 13 driver tests PASS at 0 diff without the clip.
-6. **Phase 16.d.2/3** (QUEUED) — `LayoutResult.TallestUnbreakableBlockSize` carrier + `IsInitialColumnBalancingPass` setter in `BreakBeforeChildIfNeeded` for `break-inside:avoid` children, plus tallestUnbreakable floor in `constrainColumnBlockSize`. Mirrors Blink cla.cc:1879-1948. Currently `multicol-nested-030/031` already PASS via 16.d.1 + the existing clip; 16.d.2/3 may be redundant for them but should be verified.
-7. **Phase 17** — **DONE (+4 multicol, 192→196).** Forced-break balance. `resolveColumnAutoBlockSize` replaced with ContentRuns measure-pass loop; Change 3 fragment extension gated on `IsInsideBalancedColumns && hasAutoColumnHeight()`; Change 2 forced-break-during-measure; Change 4 HasForcedBreak overflow-path. Tests gained: `multicol-fill-balance-040/041`, `multicol-nested-column-rule-003`, `spanner-in-child-after-parallel-flow-004`. Gate target was 197; achieved 196 (float/break-inside:avoid tests 032-039 need separate phase).
-8. **Phase 16.e + 18 bundled** (QUEUED, worktree). Walker port (flat `ChildBreakTokens` dispatched by `Node`) + `MulticolBreakTokenData` carrier (polymorphic data field). One foundational change instead of two; T3 + clip-removal cluster (~15-20 tests). Brief: findings.md § "Phase 16.e + 18 bundled brief" (to be written before start).
-9. **Phase 16.c.2 retry #3** (QUEUED, mechanical) — delete `ClipBlockAxisOnly` everywhere. ~3-4 tests. Mainline.
-10. **Option 1 — Finish FinishFragmentation port** (QUEUED). Drop the leaf-only gate in 16.d.1 + delete/shrink the parent-side overflow path in `block_layout.go:1001-1196`. Worktree.
-11. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
+6. **Phase 16.d.2/3** — FOLDED INTO v2 B1+B2. `LayoutResult.TallestUnbreakableBlockSize` carrier + `BreakBeforeChildIfNeeded` propagation for `ShouldAvoidBreakInside` children + `SetupFragmentation` border/padding contribution + box_fragment_builder child-result propagation. Mirrors Blink fragmentation_utils.cc:1105-1113 + 510-514, box_fragment_builder.cc:566-569, cla.cc:1879-1948. Hooks already TODO'd at multicol_layout.go:1576+1601. Originally "may be redundant"; the 2026-04-28 spike confirmed it's load-bearing for `-004` and `nested-floated` (and possibly more) once the clip is removed.
+7. **Phase 17** — **DONE (+4 multicol, 192→196).** Forced-break balance. `resolveColumnAutoBlockSize` replaced with ContentRuns measure-pass loop; Change 3 fragment extension gated on `IsInsideBalancedColumns && hasAutoColumnHeight()`; Change 2 forced-break-during-measure; Change 4 HasForcedBreak overflow-path.
+8. **Phase 16.e + 18 bundled v2** (IN PROGRESS, worktree). v2 = Step 0 diagnostic + B1+B2 (16.d.2/3 carrier) + B3 (clip removal, was 16.c.2 retry #3) + B4 (re-verify) + B5 (walker WRITE flat) + B6 (Phase 18 carrier WRITE) + B7 (drop 16.d.1 gate) + B8 (sweep + merge). Brief: findings.md § "Phase 16.e + 18 BUNDLED BRIEF v2 ...". Continuation: `CONTINUE-18.md`. Cmts 1+2 already landed (`43ec8c66`, `a8ea3adb`).
+9. **Option 1 — Finish FinishFragmentation port** (QUEUED). Drop the leaf-only gate in 16.d.1 + delete/shrink the parent-side overflow path in `block_layout.go:1001-1196`. Worktree.
+10. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
 
 **Gate invariants (Phase 17 complete):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **196/455** · spanner-fragmentation 11/13.
 
-**Gate target after bundled 16.e+18 + 16.c.2 retry #3:** multicol **215+/455** (+18-23). Spanner-fragmentation **12+/13**.
+**Gate target after v2 B8:** multicol **211+/455** (+15 from Phase 18 cluster). Spanner-fragmentation **12+/13**.
 
 ---
 
