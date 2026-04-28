@@ -32,9 +32,29 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 WRITE-site flattening (all 6 brief sites + a self-derived `flushWalker` mirroring Blink cla.cc:733-738 cleanup loop) executed faithfully. Build clean. Driver result: **same 11/13** — `-001` unchanged at 0.8% diff, `-006` improved 1.4%→1.0% but still failing. Both fail invariantly under WRITE-side flattening alone. Per hard-exit #1 ("walker WRITE-site mapping wrong; re-read Blink, do NOT pile predicates"), the attempt was reverted; worktree is back at `a8ea3adb` (Commit 2). The Commit 3 diff is preserved in `git stash@{0}` on the worktree for archaeology.
 
-**Root cause of the brief's incompleteness** (full analysis in `CONTINUE-18.md`): louis14's `ClipBlockAxisOnly` workaround creates a "clip-only mid-spanner" code path that the walker model cannot encode in pure flat form. When a spanner clips at the outer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content (e.g., spanner_3 / trailing block in `-001`). The OLD 3-slot encoding's slot[0] = `beforeSpannerToken` (a column-content driver wrapping `{Node: spanner, IsBreakBefore: true}`) drove BLA to re-discover post-spanner content on resume via `layoutLine`. The walker port elides this driver by design — but in the absence of that driver AND without the clip removal, post-spanner content is invisible to the resumed outer column. Blink doesn't have this gap because Blink emits break-before-spanner instead of clipping.
+**Root cause of the brief's incompleteness** (full analysis in `CONTINUE-18.md`): louis14's `ClipBlockAxisOnly` workaround creates a "clip-only mid-spanner" code path that the walker model cannot encode in pure flat form. When a spanner clips at the outer boundary, the previous outer column's loop exits BEFORE enumerating post-spanner content. The OLD 3-slot encoding's slot[0] = `beforeSpannerToken` drove BLA to re-discover post-spanner content via `layoutLine`. The walker elides this driver by design.
 
-**Next: re-sequence required.** Two candidate paths in `CONTINUE-18.md`. Path A (recommended): inline Phase 16.c.2 retry #3 (mechanical `ClipBlockAxisOnly` removal) BEFORE Commit 3, eliminating the clip-only mid-spanner code path entirely. Path B (rejected as concept-incoherent): emit both clip + column-content driver token; re-introduces the re-detect step the walker is designed to eliminate. **DO NOT proceed without re-confirming with operator** — the bundled brief itself needs correction before another implementation attempt.
+**Path A spike (2026-04-28, operator-requested):** Tested the assumption that 16.c.2 retry #3 (clip removal) is mechanical post-16.d.1. Three configurations on the 13 drivers:
+
+| Configuration | PASS count | Notes |
+|---|---|---|
+| Commit 2 baseline (clip ON, walker READ only) | **11/13** | Drivers `-001` 0.8% + `-006` 1.4% fail |
+| Spike A: Commit 2 + clip OFF | **9/13** | Above + `-004` 1.0% + `nested-floated` 0.2% NEW fail |
+| Spike B: Commit 3 + clip OFF | **5/13** | Spike A + `column-height-026/027` + `multicol-nested-030/031` NEW fail (4 walker-flat regressions independent of clip) |
+
+**The spike refutes the brief's "mechanical 16.c.2 retry #3" framing.**
+
+1. 16.d.1 closed the upstream gap for 9 of 13 drivers — far better than 16.c.2 attempt 2's all-13-broken state, but progress.md's claim "no longer load-bearing for ANY of the 13" is half-true (true for 9, false for 4).
+2. Path A alone lands at 9/13 — −2 from Commit 2's 11/13 (regresses `-004` and `nested-floated`).
+3. The walker WRITE-flat has an INDEPENDENT regression vector: 4 currently-passing tests (`column-height-026/027`, `multicol-nested-030/031`) break under Commit 3 even with the clip removed. These tests rely on 16.d.1's per-fragment clamp, which apparently inspects break-token shape in a way the flat encoding diverges from positional. **This is not a clip issue and not addressable by reordering.**
+
+**Next: brief redesign required, NOT another implementation attempt.** Three findings to fold into a corrected brief (full text in `CONTINUE-18.md` § "Revised recommendation"):
+
+(a) Trace `column-height-026` break-token chain under Commit 2 vs Spike B to identify where 16.d.1's clamp diverges under flat encoding. Without this, no port lands 13/13.
+(b) Path A residual is 2 tests (`-004`, `nested-floated`) — likely needs Phase 16.d.2/3 (`TallestUnbreakableBlockSize` carrier, queued at task_plan.md:42) or a narrower clip predicate.
+(c) Re-evaluate Path B (walker + clip retained + column-content driver): given the walker WRITE-flat needs 4 fixes anyway, Path B may be a smaller perturbation than redesigning the walker.
+
+**DO NOT proceed without re-confirming with operator** — the bundled brief, progress.md's untested claim, and the recommended sequencing all need updates before another implementation attempt.
 
 ---
 

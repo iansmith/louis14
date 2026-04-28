@@ -52,11 +52,50 @@ louis14's `ClipBlockAxisOnly` workaround (queued for removal in Phase 16.c.2 ret
 
 ## What this means for the bundled phase
 
-**Commit 3's premise — that WRITE-side flattening alone restores 13/13 — is wrong.** Two paths forward, neither is "pile predicates":
+**Commit 3's premise — that WRITE-side flattening alone restores 13/13 — is wrong.**
 
-**Path A (recommended): Reorder the bundled phase.** Move Phase 16.c.2 retry #3 (mechanical `ClipBlockAxisOnly` removal) **inline with Commit 3**, not after Commit 6. Without the clip workaround, the clip-only mid-spanner site disappears, and break-before-spanner becomes the only spanner-overflow path — which is what the walker model is designed for. Risk: removing the clip currently regresses some tests; previously rolled back twice (Phase 16.c.2 attempts 1, 2).
+### Path A spike result (2026-04-28) — Path A is NOT mechanical
 
-**Path B: Walker-with-clip-shim.** Keep `ClipBlockAxisOnly` but emit a column-content driver token alongside the clip token in the flat encoding (e.g., `[clipToken_for_spanner, {Node: contentNode, ChildBreakTokens: [{Node: spanner, IsBreakBefore: true}]}]`). On resume, the walker dispatches the clip first, then the column-content driver re-enters layoutLine which re-detects the spanner via spannerPath — but the spanner is already-clip-placed, so we'd need a "skip already-placed spanner" mechanism. **This re-introduces the re-detect step the walker port was supposed to eliminate.** Concept-incoherent; reject.
+Operator-requested empirical test: in worktree at Commit 2 baseline (`a8ea3adb`), comment out the `ClipBlockAxisOnly` setter at `multicol_layout.go:1273` and run the 13 drivers. Spike B added the Commit 3 attempt diff on top.
+
+| Test | Cmt 2 baseline | Spike A: Cmt 2 + clip OFF | Spike B: Cmt 3 + clip OFF |
+|---|---|---|---|
+| column-height-001/010/017 | PASS×3 | PASS×3 | PASS×3 |
+| column-height-026 | PASS | PASS | **FAIL 1.0%** |
+| column-height-027 | PASS | PASS | **FAIL 0.5%** |
+| multicol-nested-030 | PASS | PASS | **FAIL 1.0%** |
+| multicol-nested-031 | PASS | PASS | **FAIL 1.0%** |
+| multicol-rule-nested-balancing-004 | PASS | PASS | PASS |
+| nested-past-fragmentation-line | PASS | PASS | PASS |
+| nested-floated-multicol-with-monolithic-child | PASS | **FAIL 0.2%** | **FAIL 0.2%** |
+| spanner-fragmentation-001 | FAIL 0.8% | FAIL 0.8% | FAIL 0.8% |
+| spanner-fragmentation-004 | PASS | **FAIL 1.0%** | **FAIL 1.0%** |
+| spanner-fragmentation-006 | FAIL 1.4% | FAIL 1.5% | FAIL 1.4% |
+| **PASS COUNT** | **11/13** | **9/13** | **5/13** |
+
+**What the spike tells us:**
+
+1. **16.d.1 partially closed the upstream gap.** All 5 `column-height-001..017` and `multicol-rule-nested-balancing-004` + `nested-past-fragmentation-line` are clip-independent now. That's a big improvement vs the 2026-04-27 16.c.2 attempt 2 (which broke ALL 13 drivers). Progress.md's claim "no longer load-bearing for any of the 13 driver tests" is half-true — true for 9/13, false for the other 4.
+
+2. **Path A is NOT mechanical.** Removing the clip alone breaks 2 NEW tests (`spanner-fragmentation-004`, `nested-floated-multicol-with-monolithic-child`) and slightly worsens `-006`. Path A would land at 9/13 baseline, still −2 from Commit 2's 11/13.
+
+3. **The walker port has an INDEPENDENT regression vector.** Commit 3 on top of clip removal regresses 4 ADDITIONAL tests (`column-height-026/027`, `multicol-nested-030/031`) that pass under both Commit 2 baseline AND Spike A. These tests went through 16.d.1's per-fragment clamp path, which apparently relies on break-token shape that the walker WRITE-flat changes — possibly the per-fragment clamp inspects the resumed break token chain, and flat encoding hands it different state than positional. This is not a clip issue; it's a walker port bug.
+
+### Revised recommendation
+
+**The bundled phase as currently designed cannot reach 13/13 without a deeper redesign.** Three findings to fold into a corrected brief:
+
+(a) The walker WRITE-flat encoding interacts with 16.d.1's per-fragment clamp in a way that breaks 4 currently-passing tests. Spike B identified the cluster (`column-height-026/027` + `multicol-nested-030/031`) but not the mechanism. **First debugging step before any retry: trace the break-token chain on `column-height-026` under Commit 2 vs Spike B and identify where 16.d.1's clamp diverges.** Without this, no port (Path A or otherwise) lands at 13/13.
+
+(b) After that mechanism is understood and fixed, Path A's residual cost is 2 tests (`spanner-fragmentation-004`, `nested-floated-multicol-with-monolithic-child`) — these likely need either Phase 16.d.2/3 (`TallestUnbreakableBlockSize` carrier, queued at task_plan.md:42) or a narrower clip predicate. Either way, 16.c.2 retry #3 is NOT the mechanical removal commit the brief described.
+
+(c) **Path B (walker-with-clip-shim) — re-evaluate, don't reject outright.** I called it concept-incoherent earlier because it re-introduces the re-detect step. But the spike shows the walker port itself isn't yielding the predicted simplification benefits — there are at least 4 walker-flat-specific regressions to fix anyway. If those fixes inevitably re-introduce some BLA-driven post-spanner content discovery, Path B's "emit clip + column-content driver" is a smaller perturbation than redesigning the walker. Worth a serious look before committing to (a)+(b).
+
+### What NOT to do
+
+- Do **not** retry Commit 3 by piling predicates on the spanner branch. The spike shows the regression vector is upstream of the spanner branch — it's break-token shape divergence with 16.d.1's clamp.
+- Do **not** treat 16.c.2 retry #3 as "mechanical." It's not. Update the brief and any continuation note that uses that framing.
+- Do **not** assume `progress.md` line 19 ("ClipBlockAxisOnly is no longer load-bearing for any of the 13 driver tests") was a comprehensive claim. It was tested only with the clip in tree. Spike A is the actual test.
 
 ## Operational state
 
