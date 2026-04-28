@@ -347,7 +347,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Without this, mixed inline+block content (e.g. spans + h4 + text) would
 	// have each span processed as a separate block child, preventing them from
 	// forming a shared IFC. Mirrors CSS 2.1 §9.2.1.1 anonymous block generation.
-	anonStyle := css.NewAnonymousBlockStyle(mla.style)
 	// Use cached grouped children so that anonymous block wrappers have the
 	// same pointer identity across multiple Layout() calls on the same node.
 	// Break tokens store node pointers for resume; without this cache a fresh
@@ -356,11 +355,22 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if mla.node.groupedChildrenCache == nil {
 		mla.node.groupedChildrenCache = groupInlineChildrenForMulticol(mla.node.Children(), mla.style)
 	}
-	contentNode := &LayoutInputNode{
-		style:       anonStyle,
-		children:    mla.node.groupedChildrenCache,
-		isAnonymous: true,
+	// Phase 16.e+18 v2 B0 (contentNode pointer stability — Step 0 finding):
+	// MulticolPartWalker dispatches by `child.Node == multicolContainer`
+	// pointer equality. Allocating a fresh anonymous wrapper on each
+	// Layout() call breaks resume from outer-column 2 onward — every
+	// column-content child token references the previous outer column's
+	// pointer, and the walker mis-dispatches it as a spanner. Caching
+	// contentNode on mla.node mirrors the LayoutObject pointer stability
+	// Blink's column-box assumes.
+	if mla.node.contentNodeCache == nil {
+		mla.node.contentNodeCache = &LayoutInputNode{
+			style:       css.NewAnonymousBlockStyle(mla.style),
+			children:    mla.node.groupedChildrenCache,
+			isAnonymous: true,
+		}
 	}
+	contentNode := mla.node.contentNodeCache
 
 	blockCursor := 0.0
 	// Total column fragments placed across all column rows (excludes spanners).

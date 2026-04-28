@@ -69,6 +69,18 @@ type LayoutInputNode struct {
 	// creates fresh anonymous wrappers, causing break-token node-pointer
 	// comparisons to fail when resuming a column in a later outer column.
 	groupedChildrenCache []*LayoutInputNode
+
+	// contentNodeCache caches the anonymous wrapper that
+	// MulticolLayoutAlgorithm constructs around the multicol's children.
+	// Stable across Layout() calls so the MulticolPartWalker's
+	// child.Node == multicolContainer dispatch survives outer-fragmentainer
+	// resumes. Without this cache, each Layout() call allocates a fresh anon
+	// wrapper; outer column 1 emits break tokens referencing the col-1
+	// pointer, but outer column 2 builds the walker with the col-2 pointer,
+	// and the equality check fails — every column-content resume then
+	// mis-dispatches as a spanner. Mirrors the LayoutObject pointer
+	// stability that Blink's column-box assumes.
+	contentNodeCache *LayoutInputNode
 }
 
 // Style returns the computed style for this node.
