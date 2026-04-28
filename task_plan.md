@@ -1,6 +1,8 @@
 # Task Plan: css-multicol (active) → fragmentation fixes
 
-## Current focus (2026-04-28 — v2 + multicol border-box clip fix DONE; gate 205/455, 13/13 drivers)
+## Current focus (2026-04-28 — B6 LANDED parity-correct but gate-neutral; gate 205/455, 13/13 drivers)
+
+**B6 (Phase 18 `ConsumedRowBlockSize` carrier WRITE site) DONE 2026-04-28 (`b251c8db`).** Mirrors Blink cla.cc:822-833. 13 drivers held at 13/13; multicol gate unchanged (205/455). The brief's "+12 to +15 tests" expectation was mismatched: target tests (`multicol-nested-011..032`, `multicol-fill-balance-003/-026`) all use `column-fill:auto` + default `column-wrap:auto` + auto `column-height`, so `shouldWrapColumns()` is false and the carrier WRITE-site guard never fires. Those tests need a different fix — likely the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken. Tracked as a new follow-up below.
 
 **Phase 16.e+18 v2 + multicol border-box clip residual fix DONE 2026-04-28.** v2 bundle merged via `--no-ff` from `phase-16e-18-walker-carrier`; worktree removed, branch deleted. Plus follow-up commit `3389efe7` closes all 3 v2 residuals.
 
@@ -34,8 +36,9 @@ What landed (residual fix, commit `3389efe7`):
 
 **Then queued (in order):**
 
-- **B6 — Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site** (queued). Mirrors Blink cla.cc:822-833. Targets multicol-nested-011 (single-overflow case) + multicol-nested-012..032 + multicol-fill-balance-003/-026. Multicol gate target: 205 → 217+ (+12 to +15). Read site already plumbed (multicol_layout.go); only the WRITE site is missing.
-- **B7 — drop `IsInsideColumnSpanner` clamp gate** (queued). Removes the Phase 16.d.1 self-fragmentation guard for spanner descendants. Hard exit if spanner-fragmentation-006 regresses.
+- **B6 — Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site** — **DONE (`b251c8db`, gate-neutral).** Mirrors Blink cla.cc:822-833 verbatim. WRITE-site guard `shouldWrapColumns && hasRowHeight && isFirstRow && hasOuterFrag && rowHeight > outerAvailable - rowStart` never fires for the brief's named target tests because they all use `column-fill:auto` with default `column-wrap:auto` and auto `column-height`. Code-correct scaffold for any future column-wrap:wrap test; expected gate move did not materialise.
+- **Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026** (NEW follow-up). The brief's named B6 target tests need a different fix from the row-phase carrier. Likely the standard `ConsumedBlockSize` on the inner multicol's outgoing BlockBreakToken — when an inner multicol breaks across an outer column boundary, the resume in the next outer column needs to start at the right offset. Read `multicol-nested-011` PNG diff to characterise the failure pattern, then trace the inner multicol's resume path (incoming BlockBreakToken → MLA.Layout → blockCursor seeding).
+- **B7 — drop `IsInsideColumnSpanner` clamp gate** (queued, next). Removes the Phase 16.d.1 self-fragmentation guard for spanner descendants. Discuss if spanner-fragmentation-006 regresses (no longer a "hard exit" — operator preference).
 - **Reclaim border-box-clip regressions** (queued). 6 tests regressed under the multicol border-box clip (`inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%, others smaller). Investigate a narrower clip-gate so these don't get clipped (e.g., only clip when there are spanners present, or only when content actually overflowed the box).
 - **Option 1 — Finish FinishFragmentation port** (drop the `len(children) == 0` leaf-only gate in 16.d.1 + delete or shrink the parent-side children-loop overflow path in `block_layout.go:1001-1196` to the cases Blink handles there — IFC breaks, forced breaks). Larger structural change. The merged walker port should clean up the prior break-token misalignment that blocked this earlier.
 - **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: findings.md § Phase 19.
@@ -58,9 +61,9 @@ Phase 16.c.2 was attempted twice and rolled back both times. v1 brief framed ret
 11. **Option 1 — Finish FinishFragmentation port** (QUEUED). Drop the leaf-only gate in 16.d.1 + delete/shrink the parent-side overflow path in `block_layout.go:1001-1196`. Worktree.
 12. **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: `findings.md` § Phase 19.
 
-**Gate invariants (post-residual-fix):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **205/455** · spanner-fragmentation **13/13**.
+**Gate invariants (post-B6):** CSS2 99/99 · flex 626/629 · css-position 92/105 · wm 781/781 · multicol **205/455** · 13 driver invariants **13/13** · spanner-fragmentation cluster **12/13** (-008 0.2%, pre-existing; outside the 13-driver subset).
 
-**Gate target after B6:** multicol **217+/455** (+12 to +15 from Phase 18 cluster). Spanner-fragmentation already at 13/13 driver baseline.
+**Gate target after B7:** unchanged from B6 unless `IsInsideColumnSpanner` removal frees a few additional cases. The follow-up `ConsumedBlockSize`-chain investigation is the path back to the +12 to +15 gate move that B6's brief mistakenly attributed to the row-phase carrier.
 
 ---
 

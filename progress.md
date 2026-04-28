@@ -8,7 +8,7 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 
 ---
 
-## Current gate (2026-04-28 — post-multicol-border-box-clip residual fix)
+## Current gate (2026-04-28 — post-B6 Phase 18 carrier WRITE site)
 
 | Category | Count | Notes |
 |---|---|---|
@@ -16,10 +16,15 @@ All writing-modes progress archived to `docs/progress-wm.md`. Do not copy wm con
 | css-flexbox | **626/629** | 3 pre-existing residuals |
 | css-position | **92/105** | 13 pre-existing residuals; no active work |
 | css-writing-modes | **781/781** | complete |
-| css-multicol | **205/455** | **+9 net from Phase 16.e+18 v2 merge + multicol border-box clip** (196 → 205). Walker port + `ClipBlockAxisOnly` removed + `TallestUnbreakableBlockSize` carrier + `IsMonolithic` flag + contentNode pointer cache (v2 bundle). Plus multicol container clips to border-box when block-size > 0 (`3389efe7`) — closes all 3 driver residuals from v2. |
-| spanner-fragmentation | **13/13** | All driver invariants pass. Multicol border-box clip closes -004, -006, and the related nested-floated. |
+| css-multicol | **205/455** | B6 landed (`b251c8db`) parity-correct but gate-neutral; see Active phase note. Earlier: +9 net from v2 merge + multicol border-box clip (196 → 205). |
+| driver invariants | **13/13** | The 13 named driver tests (column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004/006, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line). |
+| spanner-fragmentation cluster | **12/13** | -008 fails at 0.2% (pre-existing; outside the 13-driver subset). Earlier "13/13 cluster" claim was stale — it referred to the driver subset, not the full cluster. |
 
 ## Active phase
+
+**B6 (Phase 18 `ConsumedRowBlockSize` carrier WRITE site) LANDED 2026-04-28 (`b251c8db`).** Parity-correct mirror of Blink cla.cc:822-833. Closure-scoped `outgoingMulticolData *MulticolBreakTokenData` near `outBuilder`; `buildOuterBreakResult` attaches it; WRITE site fires at the post-`layoutLine` wrap branch when `remainingToken != nil && isFirstRow && hasOuterFrag && shouldWrapColumns && hasRowHeight && rowHeight > outerAvailable - rowStart`.
+
+Gate-neutral: 13/13 drivers held; multicol gate 205/455 unchanged; 4-cat invariants unchanged. The brief's "+12 to +15" target (multicol-nested-011..032 + multicol-fill-balance-003/-026) was mismatched — those tests use `column-fill:auto` with default `column-wrap:auto` and auto `column-height`, so `shouldWrapColumns()` returns false and the WRITE-site guard never fires. Those tests need a different fix (likely the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken). Tracked as separate follow-up below.
 
 **Phase 16.e + 18 v2 (Option A) MERGED 2026-04-28** + **multicol border-box clip residual fix (`3389efe7`)** = full v2 closure plus all 3 driver residuals closed.
 
@@ -47,8 +52,8 @@ Tracking files (preserved for archaeology):
 - `CONTINUE-18.md` + `CONTINUE-19.md` — historical operational continuations.
 
 **Queued (not in active progress):**
-- B6 (Phase 18 `MulticolBreakTokenData.ConsumedRowBlockSize` carrier WRITE site) — multicol-nested-011 + cluster + multicol-fill-balance-003/-026; targets +12 to +15 gate.
-- B7 (drop `IsInsideColumnSpanner` clamp gate) — depends on B6 not regressing -006.
+- B7 (drop `IsInsideColumnSpanner` clamp gate) — depends on B6 not regressing -006 (B6 landed; -006 holds).
+- **Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026** (NEW). B6 was a no-op for these because they don't use column-wrap / non-auto column-height. These need a different fix — likely the standard `ConsumedBlockSize` on the inner multicol's outgoing BlockBreakToken when it breaks across an outer column boundary. Read multicol-nested-011 PNG diff first to characterise the failure pattern, then trace the inner multicol's resume path.
 - Investigate narrower clip-gate to reclaim the 6 regressions (e.g., `inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%).
 - Option 1 (Finish FinishFragmentation port).
 - Phase 19 (span-all-children-height 002-013).

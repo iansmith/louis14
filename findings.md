@@ -1890,6 +1890,16 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 
 *(Add entries as failures are diagnosed — format: date, symptom, root cause, fix or status)*
 
+**2026-04-28 — B6 (Phase 18 ConsumedRowBlockSize carrier WRITE site) LANDED parity-correct but gate-neutral (`b251c8db`).**
+
+- **Symptom:** B6 implemented exactly per the v2 brief's pseudo-code at `findings.md` line 1422-1433 (mirror Blink cla.cc:822-833 verbatim). 13 drivers held at 13/13. Multicol gate stayed at 205/455 — brief expected +12 to +15. Targeted sweep of `multicol-nested-011..032` + `multicol-fill-balance-003/-026` showed the same pass/fail pattern as pre-B6.
+- **Root cause:** the WRITE-site guard `shouldWrapColumns && hasRowHeight && isFirstRow && hasOuterFrag` requires column-wrap:wrap (or non-auto column-height which makes shouldWrapColumns true via the auto fallthrough). The named target tests all use `column-fill:auto` with default `column-wrap:auto` AND auto `column-height` — so `shouldWrapColumns()` returns false and the carrier WRITE-site never fires for them. The READ-site path through `offsetInCurrentRow` → `remainingRowHeightAtOffset` is only consulted by `layoutLine` when `!hasAutoColumnHeight()` (line 1100) or by the row-advance check when `shouldWrapColumns()` (line 559). Neither applies to the brief's targets. The brief conflated the row-phase carrier with general "ConsumedBlockSize chain" issues for nested multicol resume.
+- **Status:** committed (`b251c8db`) as a parity-correct scaffold — code is ready for any future column-wrap:wrap test that breaks mid-row across an outer fragmentainer. Brief's gate target was wrong; closing those tests requires a different fix.
+- **Follow-up tracked:** investigate the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken for `multicol-nested-011..032` + `multicol-fill-balance-003/-026`. When an inner multicol breaks across an outer column boundary, the resume in the next outer column should start at the right offset; the failures suggest the chain is mis-seeded somewhere. Read `multicol-nested-011` PNG diff first to characterise the pattern, then trace incoming BlockBreakToken → `MLA.Layout` → `blockCursor` seeding.
+- **CONTINUE.md correction:** earlier "Spanner-fragmentation: 13/13 at 0 diff" line referred only to the 13-driver subset (which includes spanner-fragmentation-001/004/006). Full spanner-fragmentation cluster is 12/13 — `-008` fails at 0.2%, pre-existing.
+
+---
+
 **2026-04-28 — Phase 16.e+18 Commit 3 hit hard-exit #1.**
 
 - **Symptom:** Faithful WRITE-side flattening (all 6 brief sites + `flushWalker` cleanup mirroring Blink cla.cc:733-738) produced the same 11/13 driver result as Commit 2. `spanner-fragmentation-001` unchanged at 0.8% diff; `-006` marginally improved 1.4%→1.0% but still failing.

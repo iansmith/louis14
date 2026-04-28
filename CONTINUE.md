@@ -4,28 +4,26 @@ Active operational continuation. Concise pointer for the next session.
 
 ## Where we are
 
-Mainline `fix/flexbox-fast` @ `b85d2d77`. Phase 16.e+18 v2 + multicol border-box clip residual fix both landed.
+Mainline `fix/flexbox-fast` @ `b251c8db`. Phase 16.e+18 v2 + multicol border-box clip residual fix + **B6 Phase 18 carrier WRITE site** landed.
 
-- Multicol gate: **205/455** (+9 vs pre-v2 196).
+- Multicol gate: **205/455** (B6 was gate-neutral; see note below).
 - 13 driver invariants: **13/13** at 0 diff.
-- Spanner-fragmentation: **13/13** at 0 diff.
+- Spanner-fragmentation cluster: **12/13** (-008 fails at 0.2%, pre-existing; outside the 13-driver subset). Earlier "13/13 cluster" claim was stale.
 - 4-category invariants: CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781 (1499/6720, 16 known-fails).
+
+**B6 outcome (2026-04-28, `b251c8db`):** parity-correct mirror of Blink cla.cc:822-833 but gate-neutral. WRITE-site guard `shouldWrapColumns && hasRowHeight && isFirstRow && hasOuterFrag && rowHeight > outerAvailable - rowStart` never fires for the brief's named targets (multicol-nested-011..032 + multicol-fill-balance-003/-026) because they use `column-fill:auto` with default `column-wrap:auto` and auto `column-height`, so `shouldWrapColumns()` is false. Brief's "+12 to +15" expectation was mismatched to mechanism.
 
 ## Next options (operator pick one)
 
-### B6 — Phase 18 `ConsumedRowBlockSize` carrier WRITE site (recommended next)
+### B7 — drop `IsInsideColumnSpanner` clamp gate (next per operator order)
 
-Mirrors Blink `column_layout_algorithm.cc:822-833`. Read site already plumbed at `multicol_layout.go:294-306`; the WRITE site is the only piece missing. Targets multicol-nested-011 + multicol-nested-012..032 + multicol-fill-balance-003/-026. **Multicol gate target: 205 → 217+ (+12 to +15).**
+Removes Phase 16.d.1's spanner-descendant gate. Should be straightforward post-walker-port. **Discuss** (no hard exit) if `spanner-fragmentation-006` regresses → Phase 16.d.1 gate is still load-bearing; revert and document.
 
-Brief: `findings.md` § "Phase 16.e + 18 BUNDLED BRIEF v2" (the v2 bundle merged but B6 was deferred). Implementation pattern: at the row-advance failure branch in `MulticolLayoutAlgorithm.Layout`, when `shouldWrapColumns && hasRowHeight && isFirstRow && hasOuterFrag`, attach `MulticolData{ConsumedRowBlockSize: paintedAmount}` to the outgoing break token.
+### Investigate `ConsumedBlockSize` chain for multicol-nested-011..032 + multicol-fill-balance-003/-026
 
-**Hard exit:** `multicol-nested-010` regresses → row-carry fires in wrong condition.
+The brief's named B6 target tests need a different fix from the row-phase carrier. Likely the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken — when an inner multicol breaks across an outer column boundary, the resume in the next outer column needs to start at the right offset. Read `multicol-nested-011` PNG diff to characterise the failure pattern, then trace the inner multicol's resume path (incoming BlockBreakToken → MLA.Layout → blockCursor seeding).
 
-### B7 — drop `IsInsideColumnSpanner` clamp gate
-
-Removes Phase 16.d.1's spanner-descendant gate. Should be straightforward post-walker-port. **Hard exit:** `spanner-fragmentation-006` regresses → Phase 16.d.1 gate is still load-bearing; revert.
-
-Sequence with B6: B6 first (independent). B7 after B6 lands (separate verification).
+This is the path back to the +12 to +15 gate move that B6's brief mistakenly attributed to the row-phase carrier.
 
 ### Reclaim multicol border-box clip regressions
 
