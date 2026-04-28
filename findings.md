@@ -1890,6 +1890,126 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test ./pkg/visualtest/ -run "TestWPTCS
 
 *(Add entries as failures are diagnosed — format: date, symptom, root cause, fix or status)*
 
+## Phase 20 BRIEF — Multicol overflow clip: proper Blink port (BoxType + container OverflowClip)
+
+**Drafted 2026-04-28 from focused Blink research. Replaces the ad-hoc `ClipContentToBorderBox`-on-multicol mechanism (`3389efe7`) with a Blink-aligned port.**
+
+### Why this brief exists
+
+The 3389efe7 commit added `result.Fragment.ClipContentToBorderBox = true` on every multicol fragment with `finalBlockSize > 0`. Conceptually correct (Blink also clips at the multicol container) but the implementation has two structural issues:
+
+1. **Wrong gate.** `finalBlockSize > 0` is too broad: it also fires on auto-height balanced multicols whose `finalBlockSize` ends up *smaller than the content needs* (e.g. `inline-block-and-column-span-all`, `multicol-fill-balance-032`, `multicol-gap-large-001`). The clip then truncates legitimate content. Six tests regressed under this commit; trying to narrow the gate (`hasExplicitBlock` etc.) shifts the cost rather than removing it.
+
+2. **No `BoxType` infrastructure.** louis14's `PhysicalFragment` has no equivalent of Blink's `PhysicalFragment::BoxType` enum (`kNormalBox`, `kColumnBox`, `kPageArea`). This blocks paint-time decisions that should be driven by fragment role (e.g. column-rule extent, paint-cache fragment identity, fragmentainer detection). The `ClipBlockAxisOnly` workaround that v2 B3 removed (Phase 12h F2 partial) was a layout-time flag that conflicted with the walker port; the proper Blink mechanism is paint-time, driven by `BoxType`.
+
+### Verbatim Blink mechanism (research 2026-04-28)
+
+**Counter-intuitive headline finding:** Blink does **NOT** clip per column. Multicol clipping comes from the **paint-property tree at exactly two places**:
+
+1. The multicol container carries an `OverflowClip` paint-property node (via `paint_property_tree_builder.cc::UpdateOverflowClip`) whenever it has `HasNonVisibleOverflow()`. Multicol always reports `HasNonVisibleOverflow()=true` because it's a fragmentation context.
+2. Column fragmentainers (`kColumnBox`) get a `ScopedDisplayItemFragment` (display-item identity scope, for paint caching across multiple fragments of the same `LayoutObject`) but **no per-column clip rect**.
+
+Spanner content is an ordinary non-fragmentainer child of the multicol container — same story: bounded by the container's clip.
+
+`PhysicalFragment::BoxType` enum (`physical_fragment.h`):
+
+```cpp
+enum BoxType {
+  kNormalBox, kInlineBox, kColumnBox, kPageContainer, kPageBorderBox,
+  kPageMargin, kPageArea, kAtomicInline, kFloating, kOutOfFlowPositioned,
+  kBlockFlowRoot, kRenderedLegend,
+  ...
+};
+static bool IsFragmentainerBoxType(BoxType type) {
+  return type == BoxType::kColumnBox || type == BoxType::kPageArea;
+}
+bool IsFragmentainerBox() const { return IsBox() && IsFragmentainerBoxType(GetBoxType()); }
+bool IsColumnBox() const { return IsBox() && GetBoxType() == BoxType::kColumnBox; }
+```
+
+Note: **there is no `kColumnSpanAll` BoxType.** Spanners are `kNormalBox` or `kBlockFlowRoot`; `IsColumnSpanAll()` consults the `LayoutBox` flag.
+
+Set on column fragments at `column_layout_algorithm.cc:1620` (and balance path ~2045):
+```cpp
+BlockLayoutAlgorithm child_algorithm(params);
+child_algorithm.SetBoxType(PhysicalFragment::kColumnBox);
+result = child_algorithm.Layout();
+```
+
+`PaintBlockChild` (`box_fragment_painter.cc:~1480`):
+```cpp
+if (box_child_fragment.IsFragmentainerBox()) {
+  PhysicalOffset child_offset = paint_offset + child.offset;
+  unsigned identifier = FragmentainerUniqueIdentifier(box_child_fragment);
+  ScopedDisplayItemFragment scope(paint_info.context, identifier);
+  BoxFragmentPainter(box_child_fragment).PaintObject(paint_info, child_offset);
+  return;
+}
+```
+**No clip is constructed here.** Display-item-fragment scope only.
+
+Column rules (`PaintColumnRules` ~`box_fragment_painter.cc:1876`): rule rects are derived from **adjacent `IsColumnBox()` child fragment offsets/sizes**, not from multicol container insets. Rules paint under the multicol container's display item and therefore inherit its OverflowClip.
+
+`IsMonolithic()` is a **fragmentation** concept ("don't break across fragmentainers"), not a paint-clip flag. Tracking the multicol-overflow bug through `IsMonolithic` is the wrong axis.
+
+**Open question (research couldn't pull this cleanly):** does Blink's multicol container OverflowClip use **content-box** or **padding-box**? Best guess from related code: padding box if scroll-container, content box otherwise (subject to `overflow-clip-margin`). Confirm against `LayoutBox::OverflowClipRect` before finalising the rect.
+
+### Recipe to port to louis14
+
+**Step 1 — `BoxType` enum on `PhysicalFragment`.** Add an enum field `BoxType` with at least `kNormalBox`, `kColumnBox`. Default `kNormalBox`. Add `IsColumnBox() bool` and `IsFragmentainerBox() bool` (returns `BoxType==kColumnBox`; can extend to include page area later if pagination is added). This is foundational — many other paint-time decisions can use it.
+
+**Step 2 — Set `kColumnBox` on column fragments in MLA.** In `multicol_layout.go::layoutLine`, when each per-column `BlockLayoutAlgorithm.Layout()` produces a column fragment, set the result's BoxType to `kColumnBox` before committing to the multicol's children list. Mirror Blink `column_layout_algorithm.cc:1620`.
+
+**Step 3 — Painter recognises `kColumnBox`.** In `paint_layer.go` (or the renderer's child-walk), when descending into a `kColumnBox` child, establish a display-item-fragment identity scope (paint caching across multiple fragments of the same node). Do **not** emit a paint clip here. The current code at `paint_layer.go:274-304` already has no per-column clip — verify it stays that way.
+
+**Step 4 — Multicol container clip via paint-property OverflowClip.** Replace `ClipContentToBorderBox = true` (always-on flag) with a paint-property-tree-style OverflowClip computed at the multicol container's paint-properties step. Concretely:
+
+- In layout: don't set `ClipContentToBorderBox` on multicol fragments. Instead, mark the multicol's own box (in `layout/types.go` Box equivalent) with a flag like `IsMulticolContainer = true` (or detect via Style().GetColumnCount() > 1 / column-width set).
+- In paint: when the painter reaches a multicol container layer, compute the overflow clip rect from the multicol's content-box (Blink default for non-scroll-container OverflowClip). Push this clip on the layer before walking children. All column fragments, spanners, monolithic content, and column rules will inherit it — exactly matching Blink.
+- The clip rect should track the multicol's *actual final* block-extent (after balance / explicit-height resolution / TallestUnbreakable growth), not a fixed border-box.
+
+**Step 5 — Column-rule painter uses `kColumnBox` extents.** Currently `drawColumnRules` (`render.go:2919`) uses `contentH = box.Height - border - padding` — the multicol's full content area. Mirror Blink's `PaintColumnRules` instead: iterate child fragments, use only `IsColumnBox()` children's offsets/sizes to derive rule positions and the rule's block extent. This fixes the `flexbox_columns-flexitems-2` paint-overflow without needing to clip.
+
+**Step 6 — Fold in TallestUnbreakable for atomic inlines.** A separate but adjacent fix: louis14's auto-height balance grows columns for `ShouldAvoidBreakInside` children (Phase 16.d.2/3 carrier). Atomic-inline content (`display:inline-block`) is implicitly monolithic in Blink — it can't break across columns — but louis14 may not be propagating its height into TallestUnbreakable. Without this, auto-balanced multicol containing atomic-inline content under-grows, and the OverflowClip then truncates legitimate content. This was the root cause of `inline-block-and-column-span-all` failing under the broad clip. Verify by tracing TallestUnbreakable contribution from the inline-block layout result.
+
+### Test expectations
+
+**Maintain (must not regress):**
+- 13 driver invariants @ 13/13 (column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004/006, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line).
+- 4-cat invariants 1499/6720, 16 known-fails.
+
+**Reclaim (currently regressed under 3389efe7's broad clip):**
+- inline-block-and-column-span-all (1.5%) — relies on Step 6 (TallestUnbreakable for atomic inlines).
+- multicol-fill-balance-032 (1.4%) — float with break-inside:avoid; depends on multicol's column extent reflecting the float's monolithic block-size.
+- multicol-gap-large-001 (0.3%) — text content; should pass once the OverflowClip rect tracks actual content extent.
+- multicol-span-all-margin-nested-001 (0.2%) — spanner margin handling; depends on spanner placement geometry, may need separate work.
+- increase-prev-sibling-height (~0%) — should pass once OverflowClip uses content box.
+- multicol-nested-029 (~0%) — should pass once nested multicol's clip box is correct.
+
+**Test-and-discuss (Step 4's clip rect choice — content-box vs padding-box):**
+- The current `ClipContentToBorderBox` uses border-box. Blink uses content-box (or padding-box for scroll containers). Confirm against `LayoutBox::OverflowClipRect` before changing — wrong rect choice could regress the 9 prior wins (multicol-breaking-002, multicol-fill-balance-nested-000, multicol-list-item-001, multicol-nested-015/021/026/028, nested-after-float-clearance, nested-after-float-clearance, multicol-breaking-nobackground-002).
+
+### Implementation sequencing
+
+Recommend a **worktree** for this — it's a multi-commit foundational change touching layout types + painter + render path. Sequence:
+
+1. **Commit P20.1** — `BoxType` enum on `PhysicalFragment`; default `kNormalBox`. No behaviour change. Build clean. 13 drivers hold.
+2. **Commit P20.2** — Set `kColumnBox` in MLA. Painter still ignores BoxType. No behaviour change. Build clean. Drivers hold.
+3. **Commit P20.3** — Painter recognises `kColumnBox`: display-item-fragment scope (paint caching). No clip change. Drivers hold.
+4. **Commit P20.4** — Column-rule painter uses `kColumnBox` extents instead of multicol full-content extent. Verify the flex test (`flexbox_columns-flexitems-2`) reclaims. Drivers hold; multicol gate may move +1.
+5. **Commit P20.5** — Multicol container OverflowClip via paint-property-tree-equivalent path; remove `ClipContentToBorderBox` from multicol layout. Verify the 6 regressions reclaim AND the 9 prior wins hold. Multicol gate target: 205 → 211+ (+6 from reclaiming the regressions, retaining the 9 wins).
+6. **Commit P20.6** — TallestUnbreakable for atomic inlines (separate but in-scope). Verify `inline-block-and-column-span-all` closes at 0 diff. Multicol gate +1.
+
+Total expected: gate +6 to +9 multicol; eliminates the broad-clip workaround; aligns with Blink mechanism; no four-cat invariant regressions.
+
+### Hard exits + discussion points
+
+- If a driver invariant regresses at any commit: STOP and discuss. The driver set is the integrity check.
+- If the OverflowClip rect choice (content vs padding) regresses any of the 9 prior-clip-wins: discuss; might need overflow-clip-margin equivalent.
+- If TallestUnbreakable for atomic inlines doesn't close `inline-block-and-column-span-all`: a deeper layout bug exists; investigate before assuming P20.6 is wrong.
+
+---
+
 **2026-04-28 — `ConsumedBlockSize`-chain investigation: Phase 14b defer-gate is non-monotonic; fix needs deeper resume-chain work (no commit).**
 
 Investigation context: B6 (Phase 18 row-phase carrier) was a no-op for `multicol-nested-011..032` + `multicol-fill-balance-003/-026` because they all use `column-fill:auto` with default `column-wrap:auto` and auto `column-height` (so `shouldWrapColumns()` is false, gating the carrier WRITE site off). Per the B6 follow-up plan, investigated the standard `ConsumedBlockSize` chain on the inner multicol's outgoing BlockBreakToken instead.

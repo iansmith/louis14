@@ -41,7 +41,16 @@ What landed (residual fix, commit `3389efe7`):
 - ~~**B7 — drop `IsInsideColumnSpanner` clamp gate**~~ — **ATTEMPTED + REVERTED 2026-04-28** (no commit). Regressed `spanner-fragmentation-005` (NEW fail) + `-006` (NEW fail at 0.1%). Drivers 13/13 → 12/13; gate 205 → 203. The 16.d.1 guard is still load-bearing — the walker port (Phase 16.e) didn't change the spanner resume mechanism's break-token expectations, so removing the clamp guard exposes the original failure mode (spanner descendants self-fragment, producing break-token chains the resume mechanism doesn't consume). See findings.md error-log for diagnosis.
 
   **A real B7 retry needs to first extend `pendingPartialSpannerToken` / `spannerConsumed` / `pendingContentOverflow` to absorb descendant break-chains — that's a port, not a cleanup.** Re-scope the retry as "spanner-resume break-chain absorption" (substantial work, comparable in size to v2 B5 walker WRITE-flat) before touching the clamp gate again. Until that port lands, the `IsInsideColumnSpanner` guard remains the correct mechanism and should not be removed.
-- **Reclaim border-box-clip regressions** (queued). 6 tests regressed under the multicol border-box clip (`inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%, others smaller). Investigate a narrower clip-gate so these don't get clipped (e.g., only clip when there are spanners present, or only when content actually overflowed the box).
+- ~~**Reclaim border-box-clip regressions** (narrower-gate approach)~~ — **REPLACED by Phase 20** below. Investigation 2026-04-28 found two non-monotonic gate variations (`hasExplicitBlock`, `hasExplicitBlock || IsFixedBlockSize`) — both gain some tests + lose others. Root cause: the broad clip is masking layout/paint bugs that gate-tweaking can't fix. Blink research found the fundamental mechanism is paint-property-tree OverflowClip on the multicol container, with `BoxType=kColumnBox` driving painter decisions. See findings.md error-log + Phase 20 brief.
+
+- **Phase 20 — Multicol overflow clip Blink port** (NEW, recommended next major work). Replace ad-hoc `ClipContentToBorderBox`-on-multicol with a proper Blink-aligned port:
+  1. `BoxType` enum on `PhysicalFragment` (kNormalBox, kColumnBox).
+  2. Set kColumnBox on column fragments in MLA.layoutLine.
+  3. Painter recognises kColumnBox (display-item-fragment scope, no clip).
+  4. Column-rule painter uses kColumnBox child extents instead of multicol full-content extent (closes flex-flexitems-2 paint overflow).
+  5. Multicol container OverflowClip via paint-property-tree-equivalent path; remove ClipContentToBorderBox from multicol layout (closes 6 regressions, retains 9 wins).
+  6. TallestUnbreakable for atomic inlines (closes inline-block-and-column-span-all).
+  Worktree work, ~6 commits. Multicol gate target: 205 → 211+ (+6 to +9). Brief in findings.md § "Phase 20 BRIEF". Continuation prompt in `CONTINUE-20.md`.
 - **Option 1 — Finish FinishFragmentation port** (drop the `len(children) == 0` leaf-only gate in 16.d.1 + delete or shrink the parent-side children-loop overflow path in `block_layout.go:1001-1196` to the cases Blink handles there — IFC breaks, forced breaks). Larger structural change. The merged walker port should clean up the prior break-token misalignment that blocked this earlier.
 - **Phase 19** — span-all-children-height 002-013 (T4, 12 tests, MIXED). 7 sub-clusters. Brief: findings.md § Phase 19.
 

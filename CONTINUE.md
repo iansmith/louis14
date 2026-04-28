@@ -32,14 +32,9 @@ This is the path back to the +12 to +15 gate move that B6's brief mistakenly att
 
 Regressed `spanner-fragmentation-005` + `-006` (drivers 13/13 → 12/13; gate 205 → 203). The 16.d.1 guard is still load-bearing post-walker-port. See findings.md error-log for diagnosis. Future retry would need to first extend the spanner-resume break-chain absorption (`pendingPartialSpannerToken` / `spannerConsumed` / `pendingContentOverflow`) to consume self-fragmented descendant chains — that's a real port, not the cleanup the brief implied.
 
-### Reclaim multicol border-box clip regressions
+### ~~Reclaim multicol border-box clip regressions~~ → REPLACED by **Phase 20** (recommended next)
 
-Six tests regressed under `3389efe7` (multicol border-box clip): two meaningful (`inline-block-and-column-span-all` 1.5%, `multicol-fill-balance-032` 1.4%), four ≤ 0.3%. Investigate a narrower clip-gate. Candidates:
-- Clip only when there's at least one spanner in the multicol.
-- Clip only when content's block-extent exceeds the box (`blockCursor > finalBlockSize` proxy).
-- Clip only when an `IsMonolithic` child was placed.
-
-Read the regression PNGs first (`output/reftests/inline-block-and-column-span-all_*.png`) to understand the failure pattern before touching the gate.
+The narrow-gate approach was investigated 2026-04-28 and found non-monotonic — gate-tweaking can't fix the regressions cleanly. Blink research traced the fundamental mechanism (paint-property-tree OverflowClip + `BoxType=kColumnBox`) and revealed louis14's `ClipContentToBorderBox` flag is conceptually right but the implementation is too crude. **Phase 20 is the proper fix.** Brief in `findings.md` § "Phase 20 BRIEF". Continuation prompt in `CONTINUE-20.md`. Worktree work, ~6 commits. Gate target: 205 → 211+.
 
 ### Option 1 — Finish FinishFragmentation port (larger)
 
@@ -54,6 +49,7 @@ Drop the leaf-only gate in 16.d.1 + delete or shrink the parent-side children-lo
 - `progress.md` — current gate + Active phase narrative.
 - `task_plan.md` — phase ordering + queued work.
 - `findings.md` — authoritative briefs + chronological error log.
+- **`CONTINUE-20.md` — active continuation prompt for Phase 20 (multicol overflow clip Blink-aligned port). Use this for the next multicol push.**
 - `CONTINUE-18.md`, `CONTINUE-19.md` — historical (v1 hard-exit, v2 operational continuation). Marked HISTORICAL at top.
 
 ## Rules pointer
