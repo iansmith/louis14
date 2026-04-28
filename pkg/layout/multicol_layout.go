@@ -1583,7 +1583,12 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	breakToken := nextColToken
 	forcedBreaks := 0
 	considerAllColumns := false // becomes true once forcedBreaks >= numCols (mirrors ColumnsOverflowInInlineDirection)
-	var tallestUnbreakable float64 // TODO(Phase 16.d.2/3): wire TallestUnbreakableBlockSize carrier
+	// Phase 16.d.2/3 (v2 B2) accumulator: max unbreakable block-size observed
+	// across all measure-pass iterations. Floors the column block-size at line
+	// 1639 below so columns are at least as tall as the tallest break-inside:
+	// avoid (or eventually monolithic) descendant. Mirrors Blink's
+	// tallest_unbreakable_block_size_ in column_layout_algorithm.cc:1879-1948.
+	var tallestUnbreakable float64
 
 	const maxIterations = 1000 // safety valve against non-advancing break-token bugs
 	for i := 0; i < maxIterations; i++ {
@@ -1608,7 +1613,14 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 			runs = append(runs, contentRun{contentBlockSize: colBSize})
 		}
 
-		// TODO(Phase 16.d.2/3): tallestUnbreakable = max(tallestUnbreakable, result.TallestUnbreakableBlockSize)
+		// Phase 16.d.2/3 (v2 B2): accumulate the carrier from each measure-
+		// pass iteration. result.TallestUnbreakableBlockSize is populated by
+		// BLA's child loop + BreakBeforeChildIfNeeded propagation when any
+		// descendant has break-inside:avoid (or is monolithic, once that's
+		// detectable). Mirrors Blink cla.cc:1879-1948.
+		if result.TallestUnbreakableBlockSize > tallestUnbreakable {
+			tallestUnbreakable = result.TallestUnbreakableBlockSize
+		}
 
 		if result.ColumnSpannerPath != nil {
 			// Spanner detected during measure pass. The Blink recursion case
@@ -1636,7 +1648,11 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		return 0
 	}
 
-	// Phase 16.d.2/3 will populate tallestUnbreakable; until then this is a no-op.
+	// Phase 16.d.2/3 (v2 B2): floor the resolved column block-size at the
+	// tallest unbreakable descendant. When the tallest unbreakable already
+	// exceeds the natural per-run estimate, return it directly — no point
+	// distributing implicit breaks below this floor. Mirrors Blink's
+	// ResolveColumnAutoBlockSizeInternal final clamp.
 	if tallestUnbreakable >= tallestContentBlockSize(runs) {
 		return tallestUnbreakable
 	}

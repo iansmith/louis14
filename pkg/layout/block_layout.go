@@ -624,6 +624,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Recursively lay out the child.
 			childResult := layoutElement(bla.ctx, child, childSpace)
 
+			// Phase 16.d.2/3 (v2 B2): propagate child's accumulated tallest
+			// unbreakable block-size during the initial column-balancing pass,
+			// regardless of whether the child itself avoids breaks. The child's
+			// own break-inside:avoid contribution is added separately inside
+			// BreakBeforeChildIfNeeded (fragmentation_utils.go); this site
+			// handles the carrier propagation up the layout tree (deeper
+			// descendants whose floors were already aggregated into the
+			// child's result). Mirrors Blink box_fragment_builder.cc:566-569.
+			if bla.space.IsInitialColumnBalancingPass && childResult != nil {
+				builder.PropagateTallestUnbreakableBlockSize(childResult.TallestUnbreakableBlockSize)
+			}
+
 			// CSS 2.1 §9.5 Rule 5 / §10.3.3: A new BFC must not overlap
 			// float margin boxes. If the child doesn't fit alongside
 			// floats at the current block position, push it below them.

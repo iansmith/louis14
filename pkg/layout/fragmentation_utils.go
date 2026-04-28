@@ -19,6 +19,62 @@ package layout
 //     directly off the child's style at the call site, which is correct for
 //     non-resumed children (the only case 12d's drivers exercise).
 
+// ShouldAvoidBreakInside returns true if the layout result should not be
+// broken across fragmentainers — either because its fragment is monolithic
+// or because its style says break-inside:avoid (or avoid-column / avoid-page,
+// matching the current fragmentation context).
+//
+// Mirrors Blink's ShouldAvoidBreakInside (fragmentation_utils.h). Phase
+// 16.d.2/3 (v2 B2) port: louis14 doesn't yet have an IsMonolithic flag on
+// PhysicalFragment (replaced elements aren't tagged as such; spanner
+// descendants are gated via ConstraintSpace.IsInsideColumnSpanner from
+// Phase 16.d.1, which is a different mechanism). For now we only check
+// the style-level break-inside property; extend to monolithic fragments
+// when the v2 B3 clip-removal exposes a test that needs it.
+func ShouldAvoidBreakInside(space ConstraintSpace, layoutResult *LayoutResult) bool {
+	if layoutResult == nil || layoutResult.Fragment == nil {
+		return false
+	}
+	breakInside := "auto"
+	if s := layoutResult.Fragment.Style; s != nil {
+		breakInside = s.GetBreakInside()
+	}
+	return IsAvoidBreakValue(space, breakInside)
+}
+
+// CalculateUnbreakableBlockSize returns the block-size that this layout
+// result contributes as an unbreakable floor for column-balancing.
+//
+// Mirrors Blink's CalculateUnbreakableBlockSize (fragmentation_utils.cc):
+//   - If the child has already-propagated unbreakable contribution from
+//     its own descendants, return that directly (the deeper floor was
+//     measured at the child's coordinate space and doesn't need
+//     re-offsetting at the parent level).
+//   - Otherwise, the child's contribution is its fragment's block-size
+//     plus its position within the fragmentainer. The column box must
+//     extend to cover both the offset and the child, so the floor is
+//     `fragmentainerOffset + childBlockSize`.
+//
+// Used at the BreakBeforeChildIfNeeded propagation site
+// (fragmentation_utils.cc:1105-1113).
+func CalculateUnbreakableBlockSize(
+	space ConstraintSpace,
+	layoutResult *LayoutResult,
+	fragmentainerBlockOffset float64,
+) float64 {
+	if layoutResult == nil {
+		return 0
+	}
+	if layoutResult.TallestUnbreakableBlockSize > 0 {
+		return layoutResult.TallestUnbreakableBlockSize
+	}
+	if layoutResult.Fragment == nil {
+		return 0
+	}
+	blockSize := NewLogicalFragment(space.WritingDirection, layoutResult.Fragment).BlockSize()
+	return fragmentainerBlockOffset + blockSize
+}
+
 // CalculateBreakBetweenValue returns the effective break-between value for the
 // boundary BEFORE this child, joining the parent's previous-break-after (set
 // when the previous in-flow child was added) with the child's break-before.
@@ -217,6 +273,15 @@ func BreakBeforeChildIfNeeded(
 			builder.SetBreakAppeal(BreakAppealPerfect)
 			return BreakStatusBrokeBefore, true
 		}
+	}
+
+	// Phase 16.d.2/3 (v2 B2): during initial column-balancing pass, propagate
+	// unbreakable block-size up to the column algorithm so it can floor the
+	// auto column block-size. Mirrors Blink's BreakBeforeChildIfNeeded
+	// (fragmentation_utils.cc:1105-1113).
+	if space.IsInitialColumnBalancingPass && ShouldAvoidBreakInside(space, layoutResult) {
+		blockSize := CalculateUnbreakableBlockSize(space, layoutResult, fragmentainerBlockOffset)
+		builder.PropagateTallestUnbreakableBlockSize(blockSize)
 	}
 
 	// Soft-break logic requires a definite fragmentainer size; during the initial
