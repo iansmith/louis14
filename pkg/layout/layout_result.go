@@ -116,6 +116,22 @@ type LayoutResult struct {
 	// itself needs to be resumed.
 	DidBreakSelf bool
 
+	// TallestUnbreakableBlockSize is the maximum unbreakable block-size
+	// observed during this layout pass — the tallest piece of monolithic
+	// content or block with break-inside:avoid that this result placed (or
+	// transitively contains via PropagateTallestUnbreakableBlockSize). The
+	// outer multicol's initial column-balancing pass uses it as a floor when
+	// determining the auto column block-size: columns must be at least as
+	// tall as the tallest unbreakable child so that monolithic content
+	// doesn't overflow visually. Mirrors Blink's
+	// LayoutResult::tallest_unbreakable_block_size_ + the consumer in
+	// ColumnLayoutAlgorithm at column_layout_algorithm.cc:1879-1948. Only
+	// populated during space.IsInitialColumnBalancingPass; ignored
+	// otherwise. Phase 16.d.2/3 (v2 B1+B2): the field lands in B1 as a
+	// scaffold; B2 wires the propagation hooks in fragmentation_utils.go +
+	// box_fragment_builder.go and the consumer at multicol_layout.go:1601.
+	TallestUnbreakableBlockSize float64
+
 	// BreakAppeal scores how appealing the break that produced this result
 	// is. The multicol stretch loop demotes acceptance when any column's
 	// result has a non-Perfect appeal (cla.cc:1019 / cla.cc:1034). Default
