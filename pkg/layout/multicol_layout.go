@@ -1185,6 +1185,11 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			}
 
 			colFrag := result.Fragment
+			// Tag the column fragmentainer so the painter (P20.3) and
+			// column-rule painter (P20.4) can recognise it. Mirrors
+			// Blink column_layout_algorithm.cc:1620 SetBoxType(kColumnBox)
+			// on the per-column BlockLayoutAlgorithm.
+			colFrag.BoxType = BoxTypeColumn
 			colHeight := NewLogicalFragment(wdm, colFrag).BlockSize()
 			// Blink does not set any per-column paint clip (BoxFragmentPainter::PaintBlockChild
 			// fragmentainer branch). Phase 12h F2 partial added ClipBlockAxisOnly here to handle
