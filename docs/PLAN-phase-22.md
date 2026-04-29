@@ -1,8 +1,8 @@
 # Phase 22 — Nested-multicol resume `ConsumedBlockSize` chain (detailed plan)
 
-Status: PLANNED · 2026-04-29
+Status: IN PROGRESS · 2026-04-29 (Cmt-1 landed; Class A + B work pending)
 Hard-blocker for: Phase 21 (deletion of unconditional multicol clip)
-Worktree: yes (3–6 commits expected)
+Worktree: yes (multicol-phase-22; Cmt-1 committed 2a822b9d)
 
 ## 0. One-line summary
 
@@ -438,3 +438,90 @@ Per CLAUDE.md §1 ("solve the category completely"): the WRITE-site fix is the c
 3. **`outgoingMulticolData` interaction with `ConsumedBlockSize`.** The Phase 18 row-phase carrier and the standard chain are independent fields on the same struct; they should compose cleanly. Confirm by inspecting the only test that exercises both: column-wrap:wrap with nested multicol (none exist in the named cluster, but verify the 13 drivers' column-height-* tests still pass).
 
 Resolve each of these during the Cmt-1 verification, not before — they are conditional contingencies, not blockers.
+
+## 13. Actual findings (2026-04-29) — HARD EXIT after Cmt-1
+
+### 13.1 Cmt-1 result
+
+Cmt-1 was committed as `2a822b9d` on `multicol-phase-22`. Pre/post-flight:
+
+| | Pre | Post |
+|---|---|---|
+| 13 drivers | 13/13 | 13/13 (no regression) |
+| 9 prior-clip-wins | 9/9 | 9/9 (no regression) |
+| Phase 22 cluster | 8/22 | 8/22 (**zero tests closed**) |
+
+Cluster baseline was 8/22, not 7/22 as predicted — `-029` also passes (it was the Phase 21 stuck
+test; appears it self-healed or was already passing).
+
+Hard exit fired: cluster gain = 0, below the +9 threshold. The plan's prediction that wiring
+`ConsumedBlockSize` in `buildOuterBreakResult` would close ~14 tests was incorrect. Two distinct bug
+classes explain why.
+
+### 13.2 Class A — explicit-height inner multicols (`-011`, `-032`)
+
+Phase 14b at `multicol_layout.go:413-414` fires when `outerAvailable < explicitBlockSize`. But when
+`mla.space.FragmentainerOffset == 0` (fresh outer column, full space available),
+`BreakBeforeChildIfNeeded` refuses to emit a break-before token (`refuseBreakBefore` is true when
+`spaceLeft >= fragmentainerBlockSize`). The result: the inner multicol returns a 0-height fragment
+with no break token and is placed in EVERY outer column without laying out any content.
+`buildOuterBreakResult` is never called, so Cmt-1 has no effect.
+
+Root cause: Phase 14b's comment says "defer to the next outer fragmentainer where it has full space",
+but at `FragmentainerOffset=0` there IS no earlier partial column to defer from — the current
+column IS the fresh one.
+
+**Fix:** narrow the Phase 14b guard to only fire when there is a partial outer column to defer from:
+
+```go
+// old
+if hasOuterFrag && hasExplicitBlock && mla.space.BreakToken == nil &&
+    columnFill == "auto" && outerAvailable < explicitBlockSize {
+
+// new
+if hasOuterFrag && hasExplicitBlock && mla.space.BreakToken == nil &&
+    columnFill == "auto" && outerAvailable < explicitBlockSize &&
+    mla.space.FragmentainerOffset > 0 {
+```
+
+With this fix, explicit-height inner multicols at `FragmentainerOffset=0` proceed into the walker
+loop, fragment in place, and emit `buildOuterBreakResult()` with Cmt-1's correct `ConsumedBlockSize`.
+The defer still fires correctly when the inner starts mid-column.
+
+**Tests expected to close:** `-011`, `-032`. Verify `-010` (the test that motivated Phase 14b) does
+not regress.
+
+### 13.3 Class B — auto-height inner multicols (12 tests)
+
+The `ConsumedBlockSize` READ site at `multicol_layout.go:293-301` is gated on `hasExplicitBlock`:
+
+```go
+if hasExplicitBlock {   // ← auto-height skips this block entirely
+    mla.remainingContentBlockSize = explicitBlockSize
+    if mla.space.BreakToken != nil && ... {
+        mla.remainingContentBlockSize -= mla.space.BreakToken.ConsumedBlockSize.Float64()
+    }
+}
+```
+
+For auto-height inner multicols, `ConsumedBlockSize` is never consulted. The `ConsumedBlockSize`
+chain is irrelevant to their resume path. These tests fail for a different, as-yet-unknown reason.
+
+**Tests affected:** `-013, -014, -016, -017, -018, -019, -020, -022, -023, -024, -027,
+fill-balance-026`.
+
+**`fill-balance-026`** has no outer fragmentation context at all (5-column outer with no explicit
+height), so Phase 22's chain is irrelevant. Needs completely separate investigation.
+
+**Next step:** trace `multicol-nested-013` with debug output to understand the actual vs expected
+layout. Study the Blink reference for what this test exercises.
+
+### 13.4 Revised implementation sequence
+
+1. **Cmt-A (Class A fix)** — add `&& mla.space.FragmentainerOffset > 0` to Phase 14b guard at
+   line 413. Targeted test set: `-010` (must not regress), `-011`, `-032` (expected to close), plus
+   full cluster + 13 drivers + 9 prior-clip-wins.
+2. **Investigation** — trace `multicol-nested-013` to identify Class B root cause. Study Blink's
+   corresponding tests. Only then decide on Cmt-B.
+3. **Cmt-B (Class B fix)** — implement once root cause is understood.
+4. Full multicol sweep + 4-cat sweep + merge to master.
