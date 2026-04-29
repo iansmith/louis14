@@ -499,10 +499,18 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			Padding: physPadding,
 		})
 		result := builder.Build()
+		prevConsumed := layoutunit.LayoutUnit{}
+		seqNum := 0
+		if mla.space.BreakToken != nil {
+			prevConsumed = mla.space.BreakToken.ConsumedBlockSize
+			seqNum = mla.space.BreakToken.SequenceNumber + 1
+		}
 		result.BreakToken = &BlockBreakToken{
-			Node:             mla.node,
-			ChildBreakTokens: outBuilder.Children(),
-			MulticolData:     outgoingMulticolData,
+			Node:              mla.node,
+			ChildBreakTokens:  outBuilder.Children(),
+			MulticolData:      outgoingMulticolData,
+			ConsumedBlockSize: prevConsumed.Add(layoutunit.FromFloat64Round(blockCursor)),
+			SequenceNumber:    seqNum,
 		}
 		// Forward unplaced marker to the break token so the resumed fragment
 		// re-seeds it. Mirrors Blink's FinishFragmentation marker plumbing.
