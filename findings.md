@@ -228,14 +228,14 @@ The `-032` regression comes from the OOF path: an inner positioned multicol with
 - `AddMulticolWithPendingOOFs`: idempotent (first-write-wins, per `fragment_builder.cc:651`).
 
 **Sequencing.**
-1. **Cmt-1 (scaffolding):** new file `pkg/layout/oof_fragmentation.go` with the verified types; field additions on `BoxFragmentBuilder`, `BlockBreakToken` (`OofStartOffset LogicalOffset`), `PhysicalFragment` (`FragmentedOofData *FragmentedOofData`), `OutOfFlowCandidate` (the two new fields above). No behavior change.
-2. **Cmt-2 (collection wiring):** `AddOutOfFlowFragmentainerDescendant`, `PropagateOOFFragmentainerDescendants` on builder + BLA call sites; `AddMulticolWithPendingOOFs` from inner multicol's `Layout()` per `column_layout_algorithm.cc:391-414`.
+1. **Cmt-1 (scaffolding) — DONE 2026-04-30 (`4540a8f0`).** New file `pkg/layout/oof_fragmentation.go` with the verified types; field additions on `BoxFragmentBuilder`, `BlockBreakToken` (`OofStartOffset LogicalOffset`), `PhysicalFragment` (`FragmentedOofData *FragmentedOofData`), `OutOfFlowCandidate` (`BreakToken *BlockBreakToken`, `RequiresContentBeforeBreaking bool`). Build clean; gate-neutral (drivers 13/13, prior-clip-wins 9/9, `-033` 0%, `-032` 2.1% baseline).
+2. **Cmt-2 (collection wiring) — NEXT.** `AddOutOfFlowFragmentainerDescendant`, `PropagateOOFFragmentainerDescendants` on builder + BLA call sites; `AddMulticolWithPendingOOFs` from inner multicol's `Layout()` per `column_layout_algorithm.cc:391-414`. Continuation prompt: `docs/PROMPT-phase-25-cmt-2.md`.
 3. **Cmt-3 (OOF layout pipeline):** `OutOfFlowLayoutPart.Run` → `HandleFragmentation` → `HandleMulticolsWithPendingOOFs` → `LayoutOOFsInMulticol` (side-builder pattern). Plus `LayoutFragmentainerDescendants`, `ComputeStartFragmentIndexAndRelativeOffset`.
 4. **Cmt-4 (re-apply Cmt-B):** post-loop break guard from `docs/PLAN-phase-22.md` §14.2. Verify `-011` and `-032` close.
 
 **Verification gate.** 13 drivers 13/13 · 9 prior-clip-wins 9/9 · `-011`/`-032` close · spanner-fragmentation ≥12/13 · 4-cat invariants intact.
 
-**Worktree.** `phase-25-oof-fragmentation` from master. Currently at `043410b6` (architectural-decision docstring on `LayoutInputNode`). Cmt-1 scaffolding pending.
+**Worktree.** `phase-25-oof-fragmentation` from master. Currently at `4540a8f0` (Cmt-1 scaffolding). Cmt-2 next.
 
 **Estimated commits.** 5–10.
 

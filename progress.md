@@ -31,7 +31,7 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 - **Phase 22** — `ConsumedBlockSize` chain. **Cmt-1 landed on master 2026-04-30** (`75182bd6`); multicol gate 211 → 212 (+1 `broken-column-rule-1`). Cmt-A rejected (-033 regression). Cluster-closure work moved to Phase 25. Detail: `docs/PLAN-phase-22.md` §14.9.
 - **Phase 23** — Finish FinishFragmentation port. Brief: `findings.md` § Phase 23.
 - **Phase 24** — span-all-children-height cluster. Brief: `findings.md` § Phase 24.
-- **Phase 25** — Fragmentation-aware OOF positioning (Blink-aligned port). **Worktree open** at `043410b6` (architecture decision: deliberate two-tier collapse vs Blink's three-tier model). Brief: `findings.md` § Phase 25.
+- **Phase 25** — Fragmentation-aware OOF positioning (Blink-aligned port). **Worktree open** at `4540a8f0` (Cmt-1 scaffolding done — types + fields, no behavior change; gate-neutral). Cmt-2 (collection wiring) next, prompt at `docs/PROMPT-phase-25-cmt-2.md`. Brief: `findings.md` § Phase 25.
 
 ### Completed phases (one-line summary)
 
