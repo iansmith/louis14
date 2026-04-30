@@ -838,7 +838,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// Margins collapse through: append block-end margin and continue
 				// without resolving or advancing the cursor.
 				// Pick up any propagated OOF candidates before continuing.
-				if len(childResult.PropagatedOOFCandidates) > 0 {
+				if len(childResult.PropagatedOOFCandidates) > 0 ||
+					(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
 					approxBlock := blockCursor + prevMarginStrut.Resolve()
 					bla.inheritPropagatedOOF(childResult, childStyle, wdm,
 						childInlineOffset, approxBlock, builder)
@@ -995,8 +996,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 // Inherit propagated OOF candidates from child.
 			// Non-positioned children propagate their abspos descendants
 			// upward for resolution by the containing block (this element
-			// or a higher ancestor).
-			if len(childResult.PropagatedOOFCandidates) > 0 {
+			// or a higher ancestor). Phase 25 Cmt-3: also fire when the
+			// child carries FragmentedOofData (an OOF whose CB was promoted
+			// inside it, deferred for outer-fragmentation-root drain).
+			if len(childResult.PropagatedOOFCandidates) > 0 ||
+				(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
 				bla.inheritPropagatedOOF(childResult, childStyle, wdm,
 					childInlineOffset, actualChildBlockOff, builder)
 			}

@@ -1092,6 +1092,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Mirrors Blink cla.cc:420–485.
 	mla.buildGapGeometry(builder, contentInlineSize, finalBlockSize, geom)
 
+	// Phase 25 Cmt-3: drain pending fragmentainer descendants and
+	// MulticolsWithPendingOOFs at the outermost fragmentation context root.
+	// Mirrors Blink's `OutOfFlowLayoutPart::HandleFragmentation` invoked by
+	// `OutOfFlowLayoutPart::Run` (out_of_flow_layout_part.cc:589-695).
+	// No-op when this builder is not the root or has no pending entries.
+	mla.HandleOofFragmentation(builder)
+
 	result := builder.Build()
 	result.PropagatedOOFCandidates = propagatedOOF
 	if hasForcedBreakAfter {
