@@ -237,6 +237,16 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(mla.node)
 
+	// Phase 25 Cmt-3: an outer (non-nested) multicol IS the block-fragmentation
+	// context root. The flag gates `OutOfFlowLayoutPart.HandleFragmentation`'s
+	// drain pass. When this multicol is itself nested in another fragmentation
+	// context (`mla.space.HasBlockFragmentation`), an ANCESTOR multicol is the
+	// root; this builder must not drain. Mirrors Blink's
+	// `column_layout_algorithm.cc:391-414` / `out_of_flow_layout_part.cc:692`.
+	if !mla.space.HasBlockFragmentation {
+		builder.SetIsBlockFragmentationContextRoot()
+	}
+
 	// Callsite 1: seed the unpositioned list marker from the node + break token.
 	// Mirrors Blink cla.cc:240–253 (constructor body).
 	// ListMarkerBlockNodeIfListItem returns nil until the layout-time marker
@@ -1024,6 +1034,25 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 					absoluteCandidates = append(absoluteCandidates, cand)
 				}
 			}
+			// Phase 25 Cmt-3: when this positioned multicol is itself nested
+			// inside another fragmentation context, abspos descendants whose
+			// CB is this multicol must wait for the outer drain. Promote them
+			// to fragmentainer descendants. Mirrors Blink's
+			// `out_of_flow_layout_part.cc:1158-1170`. After promotion,
+			// nestedDeferredOOFs becomes true (via HasOutOfFlowFragmentainerDescendants)
+			// so the AddMulticolWithPendingOOFs registration below also fires.
+			if mla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+				for _, cand := range absoluteCandidates {
+					builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
+						Candidate: cand,
+					})
+				}
+				absoluteCandidates = nil
+				if !nestedDeferredOOFs && builder.HasOutOfFlowFragmentainerDescendants() {
+					builder.AddMulticolWithPendingOOFs(mla.node, &MulticolWithPendingOOFs{})
+					nestedDeferredOOFs = true
+				}
+			}
 			if len(absoluteCandidates) > 0 {
 				oofPart := &OutOfFlowLayoutPart{
 					ctx:                 mla.ctx,
@@ -1474,6 +1503,22 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			cand.StaticPosition.Offset.InlineOffset += col.offset.InlineOffset
 			cand.StaticPosition.Offset.BlockOffset += col.offset.BlockOffset
 			builder.AddOutOfFlowCandidate(cand)
+		}
+		// Phase 25 Cmt-3: forward any deferred OOF fragmentainer descendants
+		// the column carries on its content fragment (an abspos in the column
+		// flow whose CB is fragmented — promoted to a fragmentainer descendant
+		// at the CB's BLA). The column's offset within the multicol becomes
+		// the parent-side translation for ContainingBlock.Offset accumulation.
+		// StaticPosition is preserved CB-relative (see PropagateOOFFragmentainerDescendants).
+		if col.fragment != nil && col.fragment.FragmentedOofData != nil {
+			builder.PropagateOOFFragmentainerDescendants(
+				col.fragment,
+				col.offset,
+				LogicalOffset{},
+				layoutunit.LayoutUnit{},
+				nil,
+				nil,
+			)
 		}
 	}
 	// GapGeometry (Track A): record first column offset and cross gaps.

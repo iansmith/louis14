@@ -1722,6 +1722,32 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					absoluteCandidates = append(absoluteCandidates, cand)
 				}
 			}
+			// Phase 25 Cmt-3: when this CB is itself inside a block-fragmentation
+			// context (a column flow, paged context, etc.), abspos descendants
+			// can't be resolved here — their layout must wait until we reach the
+			// outer fragmentation root, which will lay them out per fragmentainer
+			// (per column). Promote each absolute candidate to a fragmentainer
+			// descendant so the descendant payload bubbles up via
+			// FragmentedOofData. Mirrors Blink's
+			// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
+			// `out_of_flow_layout_part.cc:1158-1170` (the
+			// `should_add_outer_fragmentainer_children_` branch). The static
+			// position is already in this CB's content-box coords (it accumulated
+			// upward via PropagateOOFCandidates); preserve as-is. The CB's
+			// outgoing fragment isn't yet built, so leave Fragment=nil — the
+			// parent's PropagateOOFFragmentainerDescendants will fill it in.
+			if bla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+				for _, cand := range absoluteCandidates {
+					builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
+						Candidate: cand,
+						ContainingBlock: LogicalOofContainingBlock{
+							// Fragment: nil — assigned by parent's propagator.
+							// Offset: zero — CB origin within its own content-box.
+						},
+					})
+				}
+				absoluteCandidates = nil
+			}
 			if len(absoluteCandidates) > 0 {
 				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
 				// CB size = padding-box = content + padding (borders excluded).

@@ -440,20 +440,26 @@ func (b *BoxFragmentBuilder) SetIsBlockFragmentationContextRoot() {
 
 // PropagateOOFFragmentainerDescendants walks any deferred OOF fragmentainer
 // descendants stashed on `childFragment` (via FragmentedOofData) and appends
-// them to this builder's own deferred list, baking in `offset` and
-// `relativeOffset` so the static positions are expressed in this builder's
-// content-box. Pending-multicol entries are forwarded as well so the outer
-// fragmentation root sees both the OOFs and the multicols that need
-// revisiting. Mirrors Blink's
+// them to this builder's own deferred list. Mirrors Blink's
 // `FragmentBuilder::PropagateOOFFragmentainerDescendants`
-// (fragment_builder.h:373-380; fragment_builder.cc:589-603).
+// (fragment_builder.cc:926-1100).
 //
-// `cbAdjustment` is added to the descendant CB's block offset (used when a
-// fragmented CB resumes at a different block position in a subsequent outer
-// fragmentainer; for Cmt-2 callers pass zero). `containingBlock` and
-// `fixedposCB`, when non-nil, supply defaults for descendants that haven't
-// recorded a CB yet. Cmt-2 callers pass nil — defaults are filled at the
-// deferral site (Cmt-3).
+// Coordinate semantics (Blink-aligned, source-verified at fb.cc:945-986):
+//   - The descendant's StaticPosition stays in CONTAINING-BLOCK content-box
+//     coordinates throughout the walk. Do NOT shift by parent offsets — the
+//     position was captured at the deferral site relative to its CB and the
+//     drain pipeline expects it to remain so.
+//   - The descendant's `ContainingBlock.Offset` is the offset from the CB's
+//     fragment to the propagating fragment (this builder's fragment). It DOES
+//     accumulate `offset + relativeOffset` at each propagation step, plus
+//     `cbAdjustment` (the block-offset adjustment when a CB resumes in a
+//     later outer fragmentainer).
+//   - When a descendant's `ContainingBlock.Fragment` is nil, this means the
+//     descendant was promoted at THIS child's level (the child IS the CB).
+//     Assign `childFragment` as the CB. Mirrors fb.cc:952-954.
+//
+// Pending-multicol entries are forwarded as well so the outer fragmentation
+// root sees both the OOFs and the multicols that need revisiting.
 func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 	childFragment *PhysicalFragment,
 	offset LogicalOffset,
@@ -472,18 +478,24 @@ func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
 		totalBlock := offset.BlockOffset + relativeOffset.BlockOffset
 		cbAdjBlock := cbAdjustment.Float64()
 		for _, d := range data.OofPositionedFragmentainerDescendants {
-			d.Candidate.StaticPosition.Offset.InlineOffset += totalInline
-			d.Candidate.StaticPosition.Offset.BlockOffset += totalBlock
-			d.ContainingBlock.Offset.InlineOffset += totalInline
-			d.ContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
-			d.FixedposContainingBlock.Offset.InlineOffset += totalInline
-			d.FixedposContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
-			if d.ContainingBlock.Fragment == nil && containingBlock != nil {
-				d.ContainingBlock = *containingBlock
+			// CB fragment fallback: when missing, the propagating child IS the
+			// CB (descendant was promoted at child's level).
+			if d.ContainingBlock.Fragment == nil {
+				if containingBlock != nil && containingBlock.Fragment != nil {
+					d.ContainingBlock = *containingBlock
+				} else {
+					d.ContainingBlock.Fragment = childFragment
+				}
 			}
 			if d.FixedposContainingBlock.Fragment == nil && fixedposCB != nil {
 				d.FixedposContainingBlock = *fixedposCB
 			}
+			// StaticPosition stays CB-relative — do NOT shift by parent offsets.
+			// Only the CB offsets accumulate.
+			d.ContainingBlock.Offset.InlineOffset += totalInline
+			d.ContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
+			d.FixedposContainingBlock.Offset.InlineOffset += totalInline
+			d.FixedposContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
 			b.oofPositionedFragmentainerDescendants = append(b.oofPositionedFragmentainerDescendants, d)
 		}
 	}
