@@ -36,9 +36,9 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 - **B6 (Phase 18 ConsumedRowBlockSize WRITE-site)** — Landed `b251c8db`, gate-neutral; brief target was wrong, see archive.
 - **Phase 20** — Multicol overflow clip Blink-aligned port. BoxType enum + IsMulticolContainer flag + atomic-inline + float-break-inside:avoid TallestUnbreakable propagation. Multicol 205 → 211 (+6, hits brief target). 13 drivers 13/13. Six reclaims (multicol-fill-balance-032/034/035/036, multicol-span-all-margin-nested-001, inline-block-and-column-span-all). All 9 prior-clip-wins held. Three brief diverges documented (Blink's clip is conditional not unconditional; rect is padding-box not content-box; reclaim diff numbers were fonts-artifact stale). Worktree commits P20.1–P20.7 + tracking updates.
 
-## Active phases (21–24)
+## Active phases (21–25)
 
-The four phases below are the planned work going forward. Each is sized to one focused effort. Phases 21–22 are linked: Phase 22 fixes the layout bug that blocks Phase 21's clip-condition fix.
+The five phases below are the planned work going forward. Each is sized to one focused effort. Phases 21 and 25 are linked: Phase 25 (fragmentation-aware OOF positioning) fixes the layout bug that blocks Phase 21's clip-condition fix. Phase 22 partially landed 2026-04-29 (gate-neutral foundations Cmt-1 + Cmt-A); the closure work it scoped was deeper than the brief assumed and was reassigned to Phase 25.
 
 ---
 
@@ -70,7 +70,7 @@ Blink only sets `HasNonVisibleOverflow()=true` when the user-set `overflow` is n
 - `spanner-fragmentation-004/006`: walker-port residual where descendants of a partially-laid-out spanner over-paint past the multicol's box.
 - `nested-after-float-clearance`: column-fill:auto + 4 narrow cols + 200h float. Distribution under-resolves; clip masks the over-paint.
 
-**Sequencing.** Phase 22 must land first (closes the nested-multicol resume bug). Spanner-overflow placement is a separate item not in scope here — for now, Phase 21 may need to keep the clip on the spanner-fragmentation cluster via some narrower predicate, or accept those regressions and chase them in a follow-up.
+**Sequencing.** Phase 25 must land first (the nested-multicol resume bug actually requires fragmentation-aware OOF positioning, not just the `ConsumedBlockSize` chain that Phase 22's foundations wired). Spanner-overflow placement is a separate item not in scope here — for now, Phase 21 may need to keep the clip on the spanner-fragmentation cluster via some narrower predicate, or accept those regressions and chase them in a follow-up.
 
 **Implementation sketch.** In `pkg/render/paint_layer.go`, change the P20.5 site:
 
@@ -94,61 +94,39 @@ if box.IsMulticolContainer && (clipX || clipY || s.HasPaintContainment()) {
 
 **Verification gate.**
 - 13 driver invariants 13/13 at 0 diff.
-- 9 prior-clip-wins still pass (assuming Phase 22 + spanner-overflow placement landed).
+- 9 prior-clip-wins still pass (assuming Phase 25 + spanner-overflow placement landed).
 - Three stuck tests close at 0 diff.
 - Multicol gate: 211 → 214+ (+3 minimum, possibly more if other tests reclaim).
 - 4-cat invariants unchanged.
 
 **Hard exits.**
 - Driver invariant regression → pause and discuss.
-- Any of the 9 prior-clip-wins regress → Phase 22 / spanner-overflow placement isn't done; reorder.
+- Any of the 9 prior-clip-wins regress → Phase 25 / spanner-overflow placement isn't done; reorder.
 
 **Files touched.** `pkg/render/paint_layer.go` (single site). May also want a small docstring update in `pkg/layout/multicol_layout.go` where `IsMulticolContainer` is set.
 
-**Estimated commits.** 1, mainline (low risk after Phase 22).
+**Estimated commits.** 1, mainline (low risk after Phase 25).
 
 ---
 
-### Phase 22 — Nested-multicol resume `ConsumedBlockSize` chain
+### Phase 22 — Nested-multicol resume `ConsumedBlockSize` chain (PARTIALLY LANDED 2026-04-29)
 
-**Goal.** Fix the nested-multicol cross-outer-column resume so an inner multicol that spills past its outer column resumes correctly in the next outer column. Closes the `multicol-nested-011..032` cluster + `multicol-fill-balance-003/-026` (~12–15 tests).
+**Status.** Two foundation commits landed on `multicol-phase-22`, both Blink-aligned and gate-neutral. The cluster-closure target was NOT met — root-cause investigation (see `docs/PLAN-phase-22.md` §13–§14) showed the actual fix needs fragmentation-aware OOF positioning, reassigned to Phase 25.
 
-**Why this exists.** B6 (Phase 18 `ConsumedRowBlockSize` WRITE site) was a parity-correct port of Blink `cla.cc:822-833` but was gate-neutral because its WRITE-site guard requires `shouldWrapColumns && hasRowHeight && isFirstRow && hasOuterFrag` and `column-wrap` is `auto` for these tests. The brief misattributed the gate move to the row-phase carrier. The actual mechanism is the standard `BlockBreakToken.ConsumedBlockSize` chain on the inner multicol's outgoing fragment — when the inner produces a fragment that consumed `N` block-extent in outer-col-1, the resumed inner in outer-col-2 must seed its `blockCursor` from `BreakToken.ConsumedBlockSize = N` so it starts where it left off.
+- Cmt-1 (`2a822b9d`) — wires `ConsumedBlockSize = previously_consumed + final_block_size` on `buildOuterBreakResult`'s outgoing `BlockBreakToken`. Fixes the silent zero in the only token-emitter that omitted this field. Mirrors Blink's `FinishFragmentation` primary clause.
+- Cmt-A (`3c17b1da`) — narrows Phase 14b defer-gate (`multicol_layout.go:413`) to `mla.space.FragmentainerOffset > 0`. Fresh inner multicols now proceed into the walker loop instead of being deferred indefinitely. Mirrors Blink's "no defer in fresh column" intent.
 
-**Visual diagnosis (multicol-nested-011).** Test image is fully RED — inner multicol places no content. Setup: outer `column-height:50`, inner `height:100`. Every outer column has 50 of remaining space; inner needs 100. Phase 14b's defer says "push to next outer column", but every outer column shares the same shortcoming, so the defer loops forever and no content lands.
+Multicol gate held at 211. 13 drivers 13/13. 9 prior-clip-wins 9/9. `-010` (the test that motivated Phase 14b) still passes. Both commits are foundation-laying — they enable Phase 25 to wire the OOF pipeline correctly.
 
-**First-pass attempt (2026-04-28, REVERTED).** Tried gating Phase 14b's defer on `mla.space.FragmentainerBlockSize >= explicitBlockSize` so it only defers when the next column would actually fit. Result was non-monotonic — `-011` improved 2.1% → 1.6%, `-032` worsened 2.1% → 3.1%. Real bug is the resume chain, not the defer.
+**Why the closures didn't land.** With Cmt-1 + Cmt-A, the inner multicol enters the walker loop and could in principle emit a correct break token. But there's still a missing post-loop check: when the inner exits "all content placed" while the outer fragmentainer is exhausted and explicit block-size remains, no break is emitted. A candidate Cmt-B (post-loop guard using `mla.remainingContentBlockSize`) was tried in worktree: improved `-011` from 1.6% → 1.0% but regressed `-032` from 3.1% → 4.2%. Reverted.
 
-**Three-step recipe.** Trace the outgoing-token chain through three hops:
+The `-032` regression comes from the OOF path: an inner positioned multicol with an abspos descendant currently positions OOF only on the complete path (`multicol_layout.go:1012-1023` calls `OutOfFlowLayoutPart.LayoutCandidates(...)` with `containingBlockSize.BlockSize = finalBlockSize`). The break path doesn't have a fragmentation-aware OOF analogue; making the inner break shifts the OOF responsibility upward to a containing block that isn't actually the OOF's CB. Closing the OOF gap requires Blink's full pattern (deferred descendants on builder, `LayoutOOFsInMulticol` at the fragmentation-context root, stitched-coord static positions, per-fragmentainer dispatcher). That is Phase 25.
 
-1. **Inner multicol Layout exit (`multicol_layout.go`).** Verify the outgoing `BlockBreakToken` on the inner multicol's fragment has `ConsumedBlockSize` equal to the block-extent it actually painted in the current outer column. Site: where `result.BreakToken` is built before the multicol returns. Most likely break.
-2. **Outer multicol child loop (`multicol_layout.go:1069-1156`).** When the outer wraps to a new column, its child-loop must thread the inner's outgoing token through `colBreakToken` plumbing into the constraint space for the resumed inner.
-3. **Resumed inner Layout entry (`multicol_layout.go:294-302`).** The `remainingContentBlockSize` calculation must subtract `BreakToken.ConsumedBlockSize` to seed `blockCursor` (or equivalent) so the inner picks up where it left off.
+**Files touched.** `pkg/layout/multicol_layout.go` (9 lines added across two commits).
 
-The most likely failures are step 1 (inner not setting `ConsumedBlockSize` on the outgoing fragment) or step 3 (resumed inner not honoring it).
+**Worktree.** `multicol-phase-22` (kept open for Phase 25 reference; do not rebase onto master before Phase 25 lands).
 
-**Verification approach.**
-1. Read `multicol-nested-011` PNG-diff to confirm post-fix the visual matches: ~50 of green in outer-col-1 area, then continuation in outer-col-2.
-2. Add a temporary trace at the outgoing-token site to confirm `ConsumedBlockSize` matches painted extent.
-3. Sweep the named target tests (`multicol-nested-011..032`, `multicol-fill-balance-003/-026`) for gate movement.
-
-**Verification gate.**
-- 13 driver invariants 13/13 at 0 diff.
-- `multicol-nested-011..032` cluster: + many tests (target 12+).
-- `multicol-fill-balance-003`, `multicol-fill-balance-026`: target close.
-- Spanner-fragmentation cluster ≥ 12/13.
-- 4-cat invariants unchanged.
-- Multicol gate: 211 → 220+ (+9 to +15).
-
-**Hard exits.**
-- Driver invariant regression → pause and discuss.
-- Spanner-fragmentation cluster drops below 12/13 → pause.
-
-**Files touched.** `pkg/layout/multicol_layout.go` primarily. May also need `pkg/layout/break_token.go` if `ConsumedBlockSize` plumbing is incomplete.
-
-**Worktree.** Yes (multi-commit refactor of resume chain).
-
-**Estimated commits.** 3–6.
+**Reference.** Full Cmt-B attempt log + Blink OOF research + Phase 25 design in `docs/PLAN-phase-22.md` §14.
 
 ---
 
@@ -218,6 +196,62 @@ The most likely failures are step 1 (inner not setting `ConsumedBlockSize` on th
 **Worktree.** Yes (multi-cluster feature work).
 
 **Estimated commits.** 8–12 (one per sub-cluster + connective tissue).
+
+---
+
+### Phase 25 — Fragmentation-aware OOF positioning (Blink-aligned port) — NEW 2026-04-29
+
+**Goal.** Port Blink's nested-multicol OOF pipeline so abspos/fixed descendants whose containing block is itself fragmented across a multicol's outer fragmentainers are positioned correctly. Closes `multicol-nested-011, -032`, the OOF portion of `fill-balance-026`, and unblocks Phase 21 (which currently depends on this resume bug being fixed).
+
+**Why this exists.** Phase 22's foundation commits (Cmt-1 + Cmt-A) wired `ConsumedBlockSize` on the inner multicol's outgoing `BlockBreakToken` and narrowed the Phase 14b defer-gate, both Blink-aligned. The remaining cluster failures — including the candidate Cmt-B that improved `-011` 1.6% → 1.0% but regressed `-032` 3.1% → 4.2% — trace to a missing fragmentation-aware OOF path. Louis14's `OutOfFlowLayoutPart` is one-shot; `BlockBreakToken` has no slot for OOF carry; `PhysicalBoxFragment` has no `FragmentedOofData` analogue. The break path bubbles raw `outOfFlowCandidates` to the wrong containing block. The full design (Blink reference, file/line citations, field/method inventory, sequencing) is in `docs/PLAN-phase-22.md` §14.5–§14.10.
+
+**Blink reference.** All paths rooted at `third_party/blink/renderer/core/layout/`.
+
+- `column_layout_algorithm.cc:393-403` — inner multicol DEFERS when nested via `container_builder_.AddMulticolWithPendingOOFs(Node())`. It does NOT call `OutOfFlowLayoutPart::Run()` itself.
+- `out_of_flow_layout_part.cc:691-695` — `HandleFragmentation()` is a no-op unless at a fragmentation-context root.
+- `out_of_flow_layout_part.cc:1296-1529` — `LayoutOOFsInMulticol` walks every physical fragment of the inner multicol, clones fragmentainers into a side builder, gathers OOFs, runs `LayoutFragmentainerDescendants`, and grafts new fragmentainers back via `GetMutableForOofFragmentation` (line 1497).
+- `out_of_flow_layout_part.cc:2416-2438` and `:2591-2596` — stitched-coord ⇄ local conversion via `previously_consumed_block_size = container_break_token->ConsumedBlockSize()`.
+- `out_of_flow_layout_part.cc:3143-3210` — `ComputeStartFragmentIndexAndRelativeOffset` picks the target fragmentainer.
+- `out_of_flow_layout_part.cc:1531-1709` — `LayoutFragmentainerDescendants` per-fragmentainer dispatcher with `fragmentainer_consumed_block_size_` running prefix-sum (line 1689).
+- `oof_positioned_node.h:266-408` — `PhysicalOofNodeForFragmentation`, `LogicalOofNodeForFragmentation`, `FragmentedOofData::oof_positioned_fragmentainer_descendants` + `multicols_with_pending_oofs`.
+- `block_break_token.h:113-137, 212-237` — `OofBlockStartOffset()` / `OofInlineStartOffset()` on the OOF child's break token; `MutableForOofFragmentation` for late-patching.
+
+**What needs to be added in louis14.**
+
+- **`BoxFragmentBuilder`:** `OofPositionedFragmentainerDescendants` slice, `MulticolsWithPendingOOFs` map, `AddOutOfFlowFragmentainerDescendant`, `PropagateOOFFragmentainerDescendants`, `AddMulticolWithPendingOOFs`, `Has*` / `Swap*` accessors, `IsBlockFragmentationContextRoot()` predicate.
+- **`BlockBreakToken`:** `OofStartOffset LogicalOffset` field on the OOF child's token, plus a mutator path equivalent to Blink's `MutableForOofFragmentation::SetBlockStartOffset/SetInlineStartOffset`.
+- **`PhysicalBoxFragment`:** `FragmentedOofData` payload (or equivalent) carrying the two collections; a "mutable for OOF fragmentation" handle.
+- **`OutOfFlowLayoutPart`:** `Run()` that delegates to `HandleFragmentation()` at a fragmentation root; `HandleFragmentation()` drains both collections; `HandleMulticolsWithPendingOOFs()` + `LayoutOOFsInMulticol(multicolNode, info)` (the side-builder patching path — single most important missing piece for `-032`); `LayoutFragmentainerDescendants`; `ComputeStartFragmentIndexAndRelativeOffset`; `LayoutOOFsInFragmentainer` + `AddOOFToFragmentainer`; running `fragmentainerConsumedBlockSize` counter.
+
+**Sequencing.**
+
+1. Land Phase 22's Cmt-1 + Cmt-A to master (gate-neutral foundations).
+2. Branch a new `phase-25-oof-fragmentation` worktree from master.
+3. Build the data structures bottom-up: `BlockBreakToken.OofStartOffset` → `PhysicalBoxFragment` payload → `BoxFragmentBuilder` accessors → `IsBlockFragmentationContextRoot` predicate.
+4. Wire collection: `AddOutOfFlowFragmentainerDescendant`, `PropagateOOFFragmentainerDescendants` from BLA, `AddMulticolWithPendingOOFs` from inner multicol's `Layout()`.
+5. Wire layout: `OutOfFlowLayoutPart.Run` + `HandleFragmentation` + `HandleMulticolsWithPendingOOFs` + `LayoutOOFsInMulticol` + `LayoutFragmentainerDescendants`.
+6. Re-apply Cmt-B (post-loop break guard on `mla.remainingContentBlockSize`) once the OOF pipeline is in place. Verify `-011` and `-032` close together. Then sweep the broader cluster for incidental closures.
+
+**Verification gate.**
+
+- 13 driver invariants 13/13 at 0 diff (incl. `column-height-010`, `multicol-nested-030/031`, spanner-fragmentation-001/004/006).
+- 9 prior-clip-wins 9/9.
+- `multicol-nested-011, -032` close at 0 diff.
+- `fill-balance-026` close (or document residual).
+- Spanner-fragmentation cluster ≥ 12/13.
+- 4-cat invariants unchanged.
+
+**Hard exits.**
+
+- Any driver invariant regresses → STOP, revert, investigate.
+- `-032` improves but `-011` regresses (or vice versa) → the post-loop break guard interaction is wrong; the Cmt-B placement decision (before vs after top-off) needs re-examination against Blink.
+- Spanner-fragmentation drops below 12/13 → the `FragmentedOofData` propagation is interfering with combined-clip / content-overflow tokens; investigate the order of `PropagateOOFFragmentainerDescendants` vs `outBuilder` plumbing.
+
+**Files touched.** `pkg/layout/break_token.go`, `pkg/layout/fragment_builder.go`, `pkg/layout/physical_fragment.go`, `pkg/layout/out_of_flow_layout.go`, `pkg/layout/multicol_layout.go`, `pkg/layout/block_layout.go`. Possibly new file `pkg/layout/oof_fragmentation.go` for the side-builder helpers.
+
+**Worktree.** Yes — `phase-25-oof-fragmentation`. Do NOT reuse `multicol-phase-22` (keep that branch as a Cmt-B reference until Phase 25 lands).
+
+**Estimated commits.** 5–10. Likely staged: data-structure scaffolding (2–3), collection wiring (1–2), `LayoutOOFsInMulticol` + `LayoutFragmentainerDescendants` (2–3), Cmt-B re-apply + cluster sweep (1–2).
 
 ---
 

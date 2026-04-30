@@ -25,12 +25,13 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 
 ## Phase status
 
-### Active queue (Phase 21–24)
+### Active queue (Phase 21–25)
 
-- **Phase 21** — Conditional `IsMulticolContainer` clip. Hard-blocked by Phase 22 + spanner-overflow placement. Target gate: 211 → 214+. Brief: `findings.md` § Phase 21.
-- **Phase 22** — Nested-multicol resume `ConsumedBlockSize` chain. Target gate: 211 → 220+ (+9 to +15). Worktree. Brief: `findings.md` § Phase 22.
+- **Phase 21** — Conditional `IsMulticolContainer` clip. Hard-blocked by Phase 25 (was Phase 22; revised after Phase 22 close-out — see below). Target gate: 211 → 214+. Brief: `findings.md` § Phase 21.
+- **Phase 22** — Nested-multicol resume `ConsumedBlockSize` chain. **PARTIALLY LANDED 2026-04-29**, gate-neutral. Cmt-1 (`2a822b9d`) wires `ConsumedBlockSize` on inner multicol's outgoing BreakToken; Cmt-A (`3c17b1da`) narrows Phase 14b defer-gate to `FragmentainerOffset > 0`. Both Blink-aligned, no regressions. The cluster-closure target (`-011..-032`, `fill-balance-026`) was NOT met — root-cause investigation revealed the actual fix needs fragmentation-aware OOF positioning (see Phase 25). Multicol gate held at 211. Detail: `docs/PLAN-phase-22.md` §14.
 - **Phase 23** — Finish FinishFragmentation port. Independent. Worktree. Target: stable or +N. Brief: `findings.md` § Phase 23.
 - **Phase 24** — span-all-children-height cluster (002–013). Worktree. Target: 211 → 220+. Brief: `findings.md` § Phase 24, sub-cluster detail in archive.
+- **Phase 25** — Fragmentation-aware OOF positioning (Blink-aligned port). NEW, added 2026-04-29 after Phase 22 close-out. Multi-thousand-line port of Blink's `MulticolWithPendingOOFs` / `LayoutOOFsInMulticol` pipeline. Closes `multicol-nested-011, -032`, `fill-balance-026` (OOF portion), and unblocks Phase 21. Brief: `findings.md` § Phase 25; full design: `docs/PLAN-phase-22.md` §14.5–§14.10.
 
 ### Completed phases (one-line summary)
 
@@ -61,4 +62,6 @@ See `findings.md` § "Open residuals". Highlights:
 
 (Format: date · symptom · root cause · fix or status. Recent entries; Phase 12–20 entries archived.)
 
-No new entries since Phase 20 LANDED. Full Phase 20 LANDED notes in `docs/findings-multicol-archive.md` § "Phase 20 LANDED".
+**2026-04-29 · Phase 22 hard exit · Cmt-1 zero cluster gain · two distinct bug classes** — Cmt-1 (`2a822b9d`) wired `ConsumedBlockSize` on the inner multicol's outgoing BreakToken (Blink-aligned, gate-neutral) but closed zero of the predicted ~14 cluster tests. Two root causes uncovered: Class A (`-011`, `-032`) — Phase 14b defer fired at `FragmentainerOffset=0`, deferring fresh inner multicols indefinitely; Cmt-A (`3c17b1da`) narrowed the gate, also gate-neutral. Class B (12 auto-height tests) — the `ConsumedBlockSize` READ site is gated on `hasExplicitBlock` so auto-height inner multicols never consult it; root cause unknown. See `docs/PLAN-phase-22.md` §13.
+
+**2026-04-29 · Phase 22 Cmt-B post-loop break guard · regressed `-032` · OOF-on-fragmentation gap** — After Cmt-A landed gate-neutral (no closures), traced `-011`/`-032` to a missing post-walker-loop check: the inner multicol exits "complete" even when the outer fragmentainer is exhausted with explicit content remaining, so no BreakToken is emitted and the outer reruns the inner from scratch in col-2. Cmt-B candidate added that guard with `mla.remainingContentBlockSize` (correct for fresh + resumed). `-011` improved 1.6% → 1.0%; `-032` regressed 3.1% → 4.2%. Cause of regression: `-032` has an abspos child relative to a `position:relative` inner block, and the break path bypasses the complete-path `OutOfFlowLayoutPart.LayoutCandidates(...)` call (`multicol_layout.go:999-1027`), bubbling raw OOF candidates upward to the wrong containing block. Cmt-B reverted. Closing `-011`/`-032` requires the full fragmentation-aware OOF port that Blink uses (`MulticolWithPendingOOFs` / `LayoutOOFsInMulticol`); promoted to **Phase 25**. See `docs/PLAN-phase-22.md` §14 for the Blink reference, the field/method inventory, and the Phase 22 close-out plan.
