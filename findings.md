@@ -109,22 +109,23 @@ if box.IsMulticolContainer && (clipX || clipY || s.HasPaintContainment()) {
 
 ---
 
-### Phase 22 — Nested-multicol resume `ConsumedBlockSize` chain (PARTIALLY LANDED 2026-04-29)
+### Phase 22 — Nested-multicol resume `ConsumedBlockSize` chain (LANDING Cmt-1 only, 2026-04-30)
 
-**Status.** Two foundation commits landed on `multicol-phase-22`, both Blink-aligned and gate-neutral. The cluster-closure target was NOT met — root-cause investigation (see `docs/PLAN-phase-22.md` §13–§14) showed the actual fix needs fragmentation-aware OOF positioning, reassigned to Phase 25.
+**Status.** Cmt-1 (`2a822b9d`) landing as the sole Phase 22 deliverable. Cmt-A was attempted (committed as `3c17b1da` on the worktree) but rejected: full-suite verification revealed it introduces a 0.1% (400 px) regression on `multicol-nested-033` — Blink-alignment claim was weak and the regression confirms Phase 14b's defer at `FragmentainerOffset==0` was load-bearing in ways the original Cmt-A rationale didn't account for.
 
-- Cmt-1 (`2a822b9d`) — wires `ConsumedBlockSize = previously_consumed + final_block_size` on `buildOuterBreakResult`'s outgoing `BlockBreakToken`. Fixes the silent zero in the only token-emitter that omitted this field. Mirrors Blink's `FinishFragmentation` primary clause.
-- Cmt-A (`3c17b1da`) — narrows Phase 14b defer-gate (`multicol_layout.go:413`) to `mla.space.FragmentainerOffset > 0`. Fresh inner multicols now proceed into the walker loop instead of being deferred indefinitely. Mirrors Blink's "no defer in fresh column" intent.
+- **Cmt-1 (LANDING, `2a822b9d`)** — wires `ConsumedBlockSize = previously_consumed + final_block_size` on `buildOuterBreakResult`'s outgoing `BlockBreakToken`. Fixes the silent zero in the only token-emitter that omitted this field. Mirrors Blink's `FinishFragmentation` primary clause. Phase 25 will read this field directly when translating stitched-coord OOF static positions.
 
-Multicol gate held at 211. 13 drivers 13/13. 9 prior-clip-wins 9/9. `-010` (the test that motivated Phase 14b) still passes. Both commits are foundation-laying — they enable Phase 25 to wire the OOF pipeline correctly.
+  Gate impact (full sweep, 2026-04-30): multicol gate **211 → 212** (+1 reclaim of `multicol-breaking/broken-column-rule-1.html`). 13 drivers 13/13. 9 prior-clip-wins 9/9. Spanner-fragmentation 12/13. 4-cat invariants (CSS2 99/99, css-flexbox 626/629, css-position 92/105, css-writing-modes 781/781) intact.
 
-**Why the closures didn't land.** With Cmt-1 + Cmt-A, the inner multicol enters the walker loop and could in principle emit a correct break token. But there's still a missing post-loop check: when the inner exits "all content placed" while the outer fragmentainer is exhausted and explicit block-size remains, no break is emitted. A candidate Cmt-B (post-loop guard using `mla.remainingContentBlockSize`) was tried in worktree: improved `-011` from 1.6% → 1.0% but regressed `-032` from 3.1% → 4.2%. Reverted.
+- **Cmt-A (REJECTED, `3c17b1da`)** — narrowed Phase 14b defer-gate to `FragmentainerOffset > 0`. Bisect: Cmt-1 alone passes `-033` at 0% diff; Cmt-1 + Cmt-A fails `-033` at 0.1% (400 px). The cluster-closure target (`-011`/`-032`) was not met by Cmt-A in any case — the actual fix needs fragmentation-aware OOF positioning (Phase 25). Cmt-A stays on the worktree branch as a documented exploration; Phase 25 will re-derive the right Phase 14b shape from scratch.
+
+**Why the closures didn't land.** With Cmt-1 + Cmt-A applied (during the worktree exploration), the inner multicol enters the walker loop and could in principle emit a correct break token. But there's still a missing post-loop check: when the inner exits "all content placed" while the outer fragmentainer is exhausted and explicit block-size remains, no break is emitted. A candidate Cmt-B (post-loop guard using `mla.remainingContentBlockSize`) was tried in worktree on top of Cmt-1+Cmt-A: improved `-011` from 1.6% → 1.0% but regressed `-032` from 3.1% → 4.2%. Reverted. Cmt-A itself was later also rejected after the full-suite sweep showed the `-033` regression.
 
 The `-032` regression comes from the OOF path: an inner positioned multicol with an abspos descendant currently positions OOF only on the complete path (`multicol_layout.go:1012-1023` calls `OutOfFlowLayoutPart.LayoutCandidates(...)` with `containingBlockSize.BlockSize = finalBlockSize`). The break path doesn't have a fragmentation-aware OOF analogue; making the inner break shifts the OOF responsibility upward to a containing block that isn't actually the OOF's CB. Closing the OOF gap requires Blink's full pattern (deferred descendants on builder, `LayoutOOFsInMulticol` at the fragmentation-context root, stitched-coord static positions, per-fragmentainer dispatcher). That is Phase 25.
 
-**Files touched.** `pkg/layout/multicol_layout.go` (9 lines added across two commits).
+**Files touched.** `pkg/layout/multicol_layout.go` (Cmt-1 only: 11 insertions, 3 deletions in `buildOuterBreakResult`).
 
-**Worktree.** `multicol-phase-22` (kept open for Phase 25 reference; do not rebase onto master before Phase 25 lands).
+**Worktree.** `multicol-phase-22` (kept open with Cmt-1 + Cmt-A; only Cmt-1 is being merged forward — see Phase 22 commit shape in `docs/PLAN-phase-22.md` §14.9).
 
 **Reference.** Full Cmt-B attempt log + Blink OOF research + Phase 25 design in `docs/PLAN-phase-22.md` §14.
 

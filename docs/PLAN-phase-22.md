@@ -1,8 +1,8 @@
 # Phase 22 — Nested-multicol resume `ConsumedBlockSize` chain (detailed plan)
 
-Status: IN PROGRESS · 2026-04-29 (Cmt-1, Cmt-A landed; Cmt-B blocked on OOF-fragmentation port)
-Hard-blocker for: Phase 21 (deletion of unconditional multicol clip)
-Worktree: yes (multicol-phase-22; Cmt-1 = 2a822b9d, Cmt-A = 3c17b1da; Cmt-B attempted + reverted)
+Status: LANDING (Cmt-1 only) · 2026-04-30 — Cmt-A rejected due to -033 regression; Cmt-B blocked on Phase 25 (OOF-fragmentation port)
+Hard-blocker for: Phase 21 (now blocked on Phase 25, not Phase 22)
+Worktree: yes (multicol-phase-22; Cmt-1 = 2a822b9d landing; Cmt-A = 3c17b1da REJECTED; Cmt-B attempted + reverted)
 
 ## 0. One-line summary
 
@@ -743,11 +743,31 @@ diff, not 0%. The remaining 5,000 px are unaccounted for. Two hypotheses, in ord
 
 Either way, `-011` is not landable in Phase 22 without further investigation.
 
-### 14.9 Phase 22 close-out plan
+### 14.9 Phase 22 close-out plan (revised 2026-04-30 after full sweep)
 
 **Land:**
-- Cmt-1 (`2a822b9d`) — `ConsumedBlockSize` write-side wiring. Blink-aligned. Gate-neutral.
-- Cmt-A (`3c17b1da`) — Phase 14b defer-gate narrowing. Blink-aligned. Gate-neutral.
+- Cmt-1 (`2a822b9d`) — `ConsumedBlockSize` write-side wiring. Blink-aligned. Gate-neutral with one
+  unexpected reclaim: `multicol-breaking/broken-column-rule-1.html`. Multicol gate 211 → 212.
+
+**Do NOT land:**
+- Cmt-A (`3c17b1da`) — Phase 14b defer-gate narrowing. **Introduces a regression on
+  `multicol-nested-033`** (passed 0% on main, fails 0.1% / 400 px with Cmt-A applied). Bisect
+  confirmed: Cmt-1 alone passes -033; Cmt-1 + Cmt-A fails -033.
+
+  **Why Cmt-A is being rejected** (despite the original §13.2 rationale that it narrows a misfiring
+  defer-gate): the change is *not* foundational for Phase 25, and its Blink-alignment claim was
+  weak. Cmt-1's `ConsumedBlockSize` wiring is something Phase 25 will read directly when translating
+  stitched-coord static positions, but Phase 14b's defer-gate is a louis14-specific mechanism (added
+  for `multicol-nested-010`) and Phase 25 will re-derive its shape under
+  `IsBlockFragmentationContextRoot` + `MulticolWithPendingOOFs` — possibly removing or replacing
+  Phase 14b entirely. The -033 regression is evidence that "narrow Phase 14b at FragmentainerOffset
+  > 0" is not the right move; the defer at FragmentainerOffset==0 was carrying load that the
+  current code doesn't otherwise provide.
+
+  **Disposition:** Cmt-A stays on the worktree branch `multicol-phase-22` as a documented
+  exploration. Phase 25 should treat it as one input to consider, not a pre-landed prerequisite.
+
+**Defer to Phase 22.5 / Phase 25:**
 
 **Defer to Phase 22.5 / Phase 25:**
 - `-011` — needs Cmt-B *plus* an investigation into the residual 1.0% diff. Don't apply Cmt-B in
@@ -757,28 +777,29 @@ Either way, `-011` is not landable in Phase 22 without further investigation.
 - `-013, -014, -016, -017, -018, -019, -020, -022, -023, -024, -027` (Class B auto-height) — still
   unidentified root cause. Investigation deferred to Phase 22.5.
 
-**Phase 22 commit shape (revised):** the §10 draft message claimed "Closes the multicol-nested-011..032
-cluster + multicol-fill-balance-026: 14 tests". That's no longer accurate. The actual landable shape
-is two gate-neutral, foundation-laying commits that prepare for future work. Updated draft:
+**Phase 22 commit shape (revised 2026-04-30):** the §10 draft claimed "Closes the
+multicol-nested-011..032 cluster + multicol-fill-balance-026: 14 tests". That's no longer accurate.
+The actual landable shape is one gate-neutral commit (Cmt-1) that prepares the `ConsumedBlockSize`
+chain for Phase 25. Updated draft:
 
-> P22: Wire ConsumedBlockSize on inner multicol's outgoing BreakToken, narrow Phase 14b defer-gate
+> P22: Wire ConsumedBlockSize on inner multicol's outgoing BreakToken
 >
-> Cmt-1 (2a822b9d): MulticolLayoutAlgorithm's outgoing BlockBreakToken in buildOuterBreakResult was
-> the only token-emitter in the codebase that did not populate ConsumedBlockSize. Mirrors Blink's
+> MulticolLayoutAlgorithm's outgoing BlockBreakToken in buildOuterBreakResult was the only
+> token-emitter in the codebase that did not populate ConsumedBlockSize. Mirrors Blink's
 > FinishFragmentation primary clause: ConsumedBlockSize = previously_consumed + final_block_size.
 >
-> Cmt-A (3c17b1da): Phase 14b defer-gate fired at FragmentainerOffset=0, deferring fresh inner
-> multicols indefinitely. Narrowed to FragmentainerOffset > 0 (Blink's "no defer in fresh column"
-> intent).
+> Gate-neutral with one unexpected reclaim: multicol-breaking/broken-column-rule-1.html.
+> Multicol gate: 211 → 212 (+1).
 >
-> Both commits are gate-neutral foundations. They do not close any tests on their own; they enable
-> a future Phase 25 to port Blink's fragmentation-aware OOF positioning (the actual fix for
-> multicol-nested-011/032 and the auto-height Class B cluster — see PLAN-phase-22 §14).
+> 13 drivers 13/13 hold. 9 prior-clip-wins 9/9 hold. Spanner-fragmentation 12/13 hold.
+> 4-cat invariants (CSS2 99/99, css-flexbox 626/629, css-position 92/105, css-writing-modes 781/781)
+> intact.
 >
-> Multicol gate: 211 → 211 (held). 13 drivers 13/13 hold. Spanner-fragmentation 12/13 hold.
-> 4-cat invariants intact.
+> Does NOT unblock Phase 21 — that requires the OOF-fragmentation port (Phase 25). This commit is
+> a foundation that Phase 25 reads directly when translating stitched-coord OOF static positions.
 >
-> Does NOT unblock Phase 21 yet — that requires the OOF-fragmentation port to land first.
+> Cmt-A (Phase 14b defer-gate narrowing) was attempted on the worktree (3c17b1da) and rejected:
+> introduces a 0.1% (400 px) regression on multicol-nested-033. See PLAN-phase-22 §14.
 
 ### 14.10 Phase 25 brief
 
