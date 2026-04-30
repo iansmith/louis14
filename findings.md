@@ -11,7 +11,7 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 - **CSS Position work** — closed 2026-04-21 at 92/105; commit refs in archive.
 - **Other archives in `docs/`** — `plan-CSS2-*`, `plan-wm*`, `PROMPT-*`, etc.
 
-## Current state (2026-04-29 — post Phase 20)
+## Current state (2026-04-30 — post Phase 22 Cmt-1)
 
 | Suite             | Passing | Notes |
 |-------------------|---------|-------|
@@ -19,7 +19,7 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 | css-flexbox       | 626/629 | three pre-existing residuals (auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004) |
 | css-position      | 92/105  | thirteen pre-existing residuals; no active work |
 | css-writing-modes | 781/781 | closed |
-| css-multicol      | 211/455 | active; Phase 20 closed structural overflow-clip rework |
+| css-multicol (master) | 212/455 | Phase 22 Cmt-1 landing (`75182bd6`) closed `broken-column-rule-1`. Phase 25 Cmt-3 worktree gate-neutral pending Cmt-4 (`-011`/`-032` closure). |
 | 13 driver invariants | 13/13 | column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004/006, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line |
 | spanner-fragmentation cluster | 12/13 | -008 fails 0.2%; pre-existing |
 
