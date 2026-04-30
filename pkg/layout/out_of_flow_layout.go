@@ -50,6 +50,23 @@ type OutOfFlowCandidate struct {
 	//
 	// Mirrors Blink's NGOutOfFlowPositionedNode::inline_container.
 	InlineContainer *html.Node
+
+	// BreakToken is the resume-from break token for this OOF, populated
+	// when the OOF spans multiple fragmentainers (e.g. an abspos taller
+	// than a column). At resume time it carries OofStartOffset (set on a
+	// previous fragment's break token) so the OOF picks up where it left
+	// off. Phase 25 — mirrors Blink's `OofPositionedNode::break_token_`
+	// (oof_positioned_node.h:171-235; persisted on the base of every
+	// derived OOF descendant type).
+	BreakToken *BlockBreakToken
+
+	// RequiresContentBeforeBreaking signals that this OOF cannot be
+	// pushed past the next fragmentainer break before any content has
+	// been placed in the current one. Consumed by break-decision code
+	// in the fragmentation utilities. Phase 25 — mirrors Blink's
+	// `OofPositionedNode::RequiresContentBeforeBreaking()`
+	// (oof_positioned_node.h:212-214).
+	RequiresContentBeforeBreaking bool
 }
 
 // OutOfFlowLayoutPart handles layout of absolutely and fixed positioned

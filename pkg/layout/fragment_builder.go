@@ -74,6 +74,35 @@ type BoxFragmentBuilder struct {
 	// outOfFlowCandidates collects abs-pos/fixed children for deferred layout.
 	outOfFlowCandidates []OutOfFlowCandidate
 
+	// oofPositionedFragmentainerDescendants accumulates deferred OOFs whose
+	// CB is itself fragmented across a multicol's outer fragmentainers.
+	// Drained at the fragmentation-context root (the outermost multicol).
+	// Distinct from outOfFlowCandidates which targets non-fragmented CBs.
+	// Phase 25 scaffolding — wiring in subsequent commits. Mirrors Blink's
+	// `FragmentBuilder::oof_positioned_fragmentainer_descendants_`
+	// (fragment_builder.h:254-260; in Blink this lives on the parent class
+	// of BoxFragmentBuilder).
+	oofPositionedFragmentainerDescendants []LogicalOofNodeForFragmentation
+
+	// multicolsWithPendingOOFs records inner-multicol nodes nested in this
+	// builder that themselves have deferred OOF fragmentainer descendants.
+	// Drained at the fragmentation root via
+	// `OutOfFlowLayoutPart.HandleMulticolsWithPendingOOFs`. Phase 25
+	// scaffolding — wiring in subsequent commits. Mirrors Blink's
+	// `FragmentBuilder::multicols_with_pending_oofs_` (fragment_builder.h:51-55).
+	// Keyed by *LayoutInputNode (louis14's persistent layout-tree identity;
+	// where Blink keys by *LayoutBox — see pkg/layout/layout_input_node.go).
+	multicolsWithPendingOOFs map[*LayoutInputNode]*MulticolWithPendingOOFs
+
+	// isBlockFragmentationContextRoot marks this builder as the outermost
+	// multicol (or paginated root) — the only place
+	// `OutOfFlowLayoutPart.HandleFragmentation` actually drains the
+	// descendants list. Phase 25 scaffolding — gate-setter wiring in a
+	// subsequent commit. Mirrors Blink's
+	// `FragmentBuilder::IsBlockFragmentationContextRoot()`
+	// (fragment_builder.h:415-423).
+	isBlockFragmentationContextRoot bool
+
 	// childAvailableSize is the content-box size of this fragment — the
 	// containing block for children's position:relative/sticky percentage
 	// resolution. Mirrors Blink's FragmentBuilder::child_available_size_.

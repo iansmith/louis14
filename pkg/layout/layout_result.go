@@ -316,6 +316,15 @@ type PhysicalFragment struct {
 	// Consumed by drawColumnRules in pkg/render/render.go.
 	// Mirrors Blink's PhysicalBoxFragment::gap_geometry_ field.
 	GapGeometry *GapGeometry
+
+	// FragmentedOofData carries OOF-fragmentation state when this fragment
+	// is a multicol container or other fragmentation-context root. Nil for
+	// non-multicol fragments. Drained by `OutOfFlowLayoutPart` at the
+	// outermost fragmentation root (a future Phase 25 commit). Phase 25
+	// scaffolding — population in a subsequent commit. Mirrors Blink's
+	// `PhysicalFragment::OofData` carried via `FragmentedOofData`
+	// (oof_positioned_node.h:366-408).
+	FragmentedOofData *FragmentedOofData
 }
 
 // ChildLink is a positioned child within a parent fragment.

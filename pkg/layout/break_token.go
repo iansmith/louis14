@@ -88,6 +88,18 @@ type BlockBreakToken struct {
 	// BlockBreakToken::data_ + MulticolBreakTokenData
 	// (multicol_break_token_data.h).
 	MulticolData *MulticolBreakTokenData
+
+	// OofStartOffset is the resume position of an OOF child that spans
+	// multiple fragmentainers (e.g. an abspos taller than a column).
+	// Carried on the OOF child's OWN BlockBreakToken (not the CB's). Zero
+	// value (0,0) is the "no resume offset set" state; for non-OOF tokens
+	// the field is unused. Phase 25 — mirrors Blink's
+	// `BlockBreakToken::oof_start_offset_` (block_break_token.h:259-268)
+	// with accessors `OofBlockStartOffset()` / `OofInlineStartOffset()`.
+	// Blink mutates this via a `MutableForOofFragmentation` friend; in Go
+	// we just write the field directly since BlockBreakToken is not
+	// interned.
+	OofStartOffset LogicalOffset
 }
 
 // HasBreakToken returns true if there is more content to lay out.
