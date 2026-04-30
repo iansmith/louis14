@@ -229,13 +229,13 @@ The `-032` regression comes from the OOF path: an inner positioned multicol with
 
 **Sequencing.**
 1. **Cmt-1 (scaffolding) — DONE 2026-04-30 (`4540a8f0`).** New file `pkg/layout/oof_fragmentation.go` with the verified types; field additions on `BoxFragmentBuilder`, `BlockBreakToken` (`OofStartOffset LogicalOffset`), `PhysicalFragment` (`FragmentedOofData *FragmentedOofData`), `OutOfFlowCandidate` (`BreakToken *BlockBreakToken`, `RequiresContentBeforeBreaking bool`). Build clean; gate-neutral (drivers 13/13, prior-clip-wins 9/9, `-033` 0%, `-032` 2.1% baseline).
-2. **Cmt-2 (collection wiring) — NEXT.** `AddOutOfFlowFragmentainerDescendant`, `PropagateOOFFragmentainerDescendants` on builder + BLA call sites; `AddMulticolWithPendingOOFs` from inner multicol's `Layout()` per `column_layout_algorithm.cc:391-414`. Continuation prompt: `docs/PROMPT-phase-25-cmt-2.md`.
-3. **Cmt-3 (OOF layout pipeline):** `OutOfFlowLayoutPart.Run` → `HandleFragmentation` → `HandleMulticolsWithPendingOOFs` → `LayoutOOFsInMulticol` (side-builder pattern). Plus `LayoutFragmentainerDescendants`, `ComputeStartFragmentIndexAndRelativeOffset`.
+2. **Cmt-2 (collection wiring) — DONE 2026-04-30 (`3b6b0e5d`).** `BoxFragmentBuilder` accessors (`AddOutOfFlowFragmentainerDescendant`, `AddMulticolWithPendingOOFs` idempotent + lazy-init, `Has*`/`Swap*`, `IsBlockFragmentationContextRoot` getter+setter). `Build()` emits `FragmentedOofData` on the outgoing fragment when the deferred lists are non-empty. `PropagateOOFFragmentainerDescendants` on builder; BLA's `PropagateOOFCandidates` walks `childFragment.FragmentedOofData` and forwards descendants + pending-multicol entries upward. Inner multicol's `Layout()` registers itself in the pending-multicols map and skips the complete-path `LayoutCandidates` when nested + has deferred descendants. Behaviorally inert: `HasOutOfFlowFragmentainerDescendants()` never fires until Cmt-3 lands the OOF-promotion logic that populates the list. Verification: 13 drivers 13/13, `-033` 0%, `-032` 2.1% (unchanged), 9 prior-clip-wins 9/9.
+3. **Cmt-3 (OOF layout pipeline) — NEXT.** `OutOfFlowLayoutPart.Run` → `HandleFragmentation` → `HandleMulticolsWithPendingOOFs` → `LayoutOOFsInMulticol` (side-builder pattern). Plus `LayoutFragmentainerDescendants`, `ComputeStartFragmentIndexAndRelativeOffset`. Also lands the OOF-promotion that converts regular `outOfFlowCandidates` into `LogicalOofNodeForFragmentation` entries (the work Cmt-2's wiring is dormant for). Continuation prompt: `docs/PROMPT-phase-25-cmt-3.md`.
 4. **Cmt-4 (re-apply Cmt-B):** post-loop break guard from `docs/PLAN-phase-22.md` §14.2. Verify `-011` and `-032` close.
 
 **Verification gate.** 13 drivers 13/13 · 9 prior-clip-wins 9/9 · `-011`/`-032` close · spanner-fragmentation ≥12/13 · 4-cat invariants intact.
 
-**Worktree.** `phase-25-oof-fragmentation` from master. Currently at `4540a8f0` (Cmt-1 scaffolding). Cmt-2 next.
+**Worktree.** `phase-25-oof-fragmentation` from master. Currently at `3b6b0e5d` (Cmt-2 collection wiring, behaviorally inert). Cmt-3 next.
 
 **Estimated commits.** 5–10.
 
