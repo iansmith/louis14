@@ -990,11 +990,32 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		finalBlockSize = effectiveMaxBlockSize
 	}
 
-	// Handle out-of-flow candidates.
+	// Phase 25 Cmt-2: when a nested multicol finishes with deferred OOF
+	// fragmentainer descendants, register a pending-multicol entry on its
+	// outgoing fragment so the outer fragmentation root knows to revisit
+	// this multicol via HandleMulticolsWithPendingOOFs. The descendants
+	// themselves stay on builder.oofPositionedFragmentainerDescendants and
+	// are emitted via FragmentedOofData at Build() time. Mirrors Blink's
+	// column_layout_algorithm.cc:391-414 (`InvolvedInBlockFragmentation`
+	// branch).
+	//
+	// Cmt-2 is behaviorally inert: HasOutOfFlowFragmentainerDescendants()
+	// never returns true until Cmt-3 lands the OOF-promotion logic in
+	// OutOfFlowLayoutPart.HandleFragmentation. MulticolOffset is left zero
+	// here; PropagateOOFFragmentainerDescendants accumulates the offset
+	// incrementally as the entry walks up through ancestor BLAs.
+	nestedDeferredOOFs := mla.space.HasBlockFragmentation && builder.HasOutOfFlowFragmentainerDescendants()
+	if nestedDeferredOOFs {
+		builder.AddMulticolWithPendingOOFs(mla.node, &MulticolWithPendingOOFs{})
+	}
+
+	// Handle out-of-flow candidates. When nestedDeferredOOFs is set the
+	// complete-path LayoutCandidates is skipped — the outer fragmentation
+	// root resolves them per fragmentainer in Cmt-3.
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := mla.style != nil && mla.style.GetPosition() != css.PositionStatic
-		if isPositioned {
+		if isPositioned && !nestedDeferredOOFs {
 			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
 			for _, cand := range builder.outOfFlowCandidates {
 				if cand.IsFixedPosition {

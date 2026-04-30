@@ -2047,6 +2047,25 @@ func PropagateOOFCandidates(
 		adj.StaticPosition.Offset.InlineOffset += inlineAdj
 		builder.AddOutOfFlowCandidate(adj)
 	}
+
+	// Phase 25 Cmt-2: also forward any OOF fragmentainer descendants the
+	// child carries on its outgoing fragment (an inner multicol that
+	// deferred its abspos descendants to the outer fragmentation root).
+	// blockAdj/inlineAdj already include the child's offset, border-padding,
+	// and relative offset — pass them as the combined translation. CB
+	// defaults are nil here; descendants entered with their CB resolved at
+	// the deferral site, and the drain pipeline (Cmt-3) supplies defaults
+	// for any that didn't.
+	if childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil {
+		builder.PropagateOOFFragmentainerDescendants(
+			childResult.Fragment,
+			LogicalOffset{InlineOffset: inlineAdj, BlockOffset: blockAdj},
+			LogicalOffset{},
+			layoutunit.LayoutUnit{},
+			nil,
+			nil,
+		)
+	}
 }
 
 // layoutFloat handles layout and positioning of a float child within the
