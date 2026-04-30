@@ -617,105 +617,9 @@ Louis14 has **no** infrastructure for fragmentation-aware OOF positioning. `OutO
 a one-shot post-layout step (see `pkg/layout/out_of_flow_layout.go`), `BlockBreakToken` has no slot
 for OOF carry, and `PhysicalBoxFragment` has no `FragmentedOofData` analogue.
 
-### 14.5 Blink reference — nested-multicol OOF pattern (research 2026-04-29)
+### 14.5 Blink reference + concrete louis14 mapping
 
-Source files cited from `third_party/blink/renderer/core/layout/` (Blink `main`, fetched 2026-04-29).
-
-**Inner multicol DEFERS, does not run `OutOfFlowLayoutPart::Run()` itself when nested.**
-`column_layout_algorithm.cc:393-403`:
-
-```cpp
-if (InvolvedInBlockFragmentation(container_builder_)) [[unlikely]] {
-  FinishFragmentation(&container_builder_);
-  if (container_builder_.HasOutOfFlowFragmentainerDescendants()) {
-    container_builder_.AddMulticolWithPendingOOFs(Node());
-  }
-  ...
-}
-```
-
-**Outer multicol drains pending OOFs at the fragmentation root.**
-`out_of_flow_layout_part.cc:691-695` gates `HandleFragmentation()` on
-`IsBlockFragmentationContextRoot()`. The root then loops:
-
-1. `HandleMulticolsWithPendingOOFs(container_builder_)` (line 736) — for each pending inner multicol,
-   walks every physical fragment of the inner (`out_of_flow_layout_part.cc:1335`:
-   `for (auto& multicol_fragment : multicol.GetLayoutBox()->PhysicalFragments())`), clones its
-   fragmentainers into a side-builder, gathers all OOF descendants from each fragment's
-   `FragmentedOofData::oof_positioned_fragmentainer_descendants`, and runs
-   `LayoutFragmentainerDescendants` against the outer's fragmentainer flow. New fragmentainers it
-   creates are merged back into the last inner-multicol fragment via `GetMutableForOofFragmentation`
-   (line 1497).
-2. `SwapOutOfFlowFragmentainerDescendants` + `LayoutFragmentainerDescendants` (lines 738, 746) for
-   plain (non-multicol-deferred) descendants.
-
-**Static positions are stored in stitched (whole-CB) coordinate space.**
-`out_of_flow_layout_part.cc:2416-2438`:
-
-```cpp
-LogicalStaticPosition static_position = node_info.static_position;
-static_position.offset += node_info.containing_block.Offset() - container_rect.offset;
-LayoutUnit previously_consumed_block_size;
-const BlockBreakToken* container_break_token = container_builder_->PreviousBreakToken();
-if (container_break_token && RuntimeEnabledFeatures::FragmentedOofInCbEnabled()) {
-  previously_consumed_block_size = container_break_token->ConsumedBlockSize();
-}
-static_position.offset.block_offset += previously_consumed_block_size;
-```
-
-Stitched-space → fragmentainer-local conversion at `:2591-2596`:
-`offset.block_offset -= previously_consumed_block_size`.
-
-**Picking the target fragmentainer.** `ComputeStartFragmentIndexAndRelativeOffset`
-(`out_of_flow_layout_part.cc:3143-3210`) walks outer fragmentainers accumulating
-`used_block_size` until `target_block_offset < current_max_block_size`, then sets `*start_index` and
-rebases the offset.
-
-**Per-fragmentainer dispatch.** `LayoutFragmentainerDescendants`
-(`out_of_flow_layout_part.cc:1531-1709`) bins OOFs into `descendants_to_layout[start_index]` and
-walks the table calling `LayoutOOFsInFragmentainer(...)`. Maintains
-`fragmentainer_consumed_block_size_` as a running prefix-sum (line 1689).
-
-**Carrier on the fragment, not on the break token.** `oof_positioned_node.h:366-408`:
-`FragmentedOofData` (a `PhysicalFragment::OofData` subclass) holds
-`oof_positioned_fragmentainer_descendants` (a `HeapVector<PhysicalOofNodeForFragmentation>`) and
-`multicols_with_pending_oofs` (a `HeapHashMap<LayoutBox*, MulticolWithPendingOofs*>`). The OOF
-*child*'s own `BlockBreakToken` carries `oof_start_offset_` (`block_break_token.h:113-137`) for
-when an OOF spans multiple fragmentainers.
-
-### 14.6 Concrete fields/methods louis14 needs for the OOF-fragmentation port
-
-Mapped from the Blink writeup onto our types:
-
-**On `BoxFragmentBuilder`:**
-- `OofPositionedFragmentainerDescendants []LogicalOofNodeForFragmentation` — deferred list.
-- `MulticolsWithPendingOOFs map[*LayoutInputNode]*MulticolWithPendingOOFs` — inner-multicol map.
-- `AddOutOfFlowFragmentainerDescendant(node, cbFragment, staticPos, ...)`.
-- `PropagateOOFFragmentainerDescendants(childFragment, childOffset, ...)`.
-- `AddMulticolWithPendingOOFs(node)`.
-- `HasOutOfFlowFragmentainerDescendants()`, `HasMulticolsWithPendingOOFs()`,
-  `SwapOutOfFlowFragmentainerDescendants()`, `SwapMulticolsWithPendingOOFs()`.
-- `IsBlockFragmentationContextRoot()` predicate.
-
-**On `BlockBreakToken`:**
-- Existing `ConsumedBlockSize` already used for stitched ⇄ local CB-fragment conversion.
-- Add `OofStartOffset LogicalOffset` (carried on the OOF child's break token, not the CB's).
-- A mutator path equivalent to `MutableForOofFragmentation::SetBlockStartOffset/SetInlineStartOffset`.
-
-**On `PhysicalBoxFragment`:**
-- A `FragmentedOofData` payload (or equivalent) with the two collections above.
-- A "mutable for OOF fragmentation" handle for late-patching fragmentainers + overflow.
-
-**On `OutOfFlowLayoutPart`:**
-- `Run()` — at fragmentation-context root, calls `HandleFragmentation()` then `LayoutCandidates()`.
-- `HandleFragmentation()` — drains both collections.
-- `HandleMulticolsWithPendingOOFs()` + `LayoutOOFsInMulticol(multicolNode, info)` — the side-builder
-  patching path. **This is the single most important missing piece for `multicol-nested-032`.**
-- `LayoutFragmentainerDescendants(descendants, fragmentainerProgression, ...)`.
-- `ComputeStartFragmentIndexAndRelativeOffset(writingMode, blockEstimate, ...)` — stitched → local.
-- `LayoutOOFsInFragmentainer(...)`, `AddOOFToFragmentainer(...)` — per-fragmentainer layout +
-  insertion (the latter is what `LayoutCandidates` currently is).
-- `fragmentainerConsumedBlockSize` running counter.
+Both moved to `findings.md` § Phase 25 (the canonical Phase 25 brief). Verified against direct Blink source-fetch on 2026-04-30 — corrections from that pass (e.g., `LogicalOofContainingBlock.ClippedContainerBlockOffset`, `MulticolWithPendingOOFs.FixedposContainingBlock` as full struct not bare offset, `OutOfFlowCandidate` needs `*BlockBreakToken` + `RequiresContentBeforeBreaking bool`) are reflected in that brief.
 
 ### 14.7 Implication: `-032` is out of scope for Phase 22
 
@@ -768,14 +672,10 @@ Either way, `-011` is not landable in Phase 22 without further investigation.
   exploration. Phase 25 should treat it as one input to consider, not a pre-landed prerequisite.
 
 **Defer to Phase 22.5 / Phase 25:**
-
-**Defer to Phase 22.5 / Phase 25:**
-- `-011` — needs Cmt-B *plus* an investigation into the residual 1.0% diff. Don't apply Cmt-B in
-  isolation.
-- `-032` — needs the full OOF-fragmentation port (Phase 25).
-- `fill-balance-026` — needs separate investigation (no outer fragmentation context at all per §13.3).
-- `-013, -014, -016, -017, -018, -019, -020, -022, -023, -024, -027` (Class B auto-height) — still
-  unidentified root cause. Investigation deferred to Phase 22.5.
+- `-011`: Cmt-B + a residual-diff investigation (1.0%, hypotheses in §14.8). Don't apply Cmt-B in isolation.
+- `-032`: full OOF-fragmentation port (Phase 25).
+- `fill-balance-026`: separate investigation (no outer fragmentation context, per §13.3).
+- `-013..-027` (Class B auto-height, 11 tests): root cause unknown. Phase 22.5.
 
 **Phase 22 commit shape (revised 2026-04-30):** the §10 draft claimed "Closes the
 multicol-nested-011..032 cluster + multicol-fill-balance-026: 14 tests". That's no longer accurate.
@@ -803,20 +703,4 @@ chain for Phase 25. Updated draft:
 
 ### 14.10 Phase 25 brief
 
-Working title: **"Fragmentation-aware OOF positioning (Blink-aligned port)"**.
-
-(Phase 23 and Phase 24 are already named in `findings.md` for separate work — Phase 23 is the
-"Finish FinishFragmentation port" cleanup, Phase 24 is the span-all-children-height cluster. The
-OOF-fragmentation port is the next free slot, hence Phase 25.)
-
-Scope: implement the data structures and layout pass listed in §14.6. Touches builder, break token,
-physical-fragment, OutOfFlowLayoutPart, multicol_layout, block_layout. Estimated 5–10 commits.
-
-Gate target: close `multicol-nested-011, -032`, `fill-balance-026` (OOF-related portion), and
-unblock Phase 21. Class-B auto-height cluster (`-013..-027`) needs its own investigation; do not
-predict closures.
-
-Sequencing: do **not** start Phase 25 in the same worktree as Phase 22. Land Phase 22's two
-foundation commits to master first, then branch a new `phase-25-oof-fragmentation` worktree. Phase
-25 will likely break tests during incremental implementation; isolating it from the gate-neutral
-Phase 22 baseline prevents conflation.
+Canonical brief: `findings.md` § Phase 25 (verified design, sequencing, architecture decisions). Worktree `phase-25-oof-fragmentation` from master; currently at `043410b6` (LayoutInputNode docstring clarifying the deliberate two-tier collapse vs Blink's three-tier model). Cmt-1 scaffolding pending.
