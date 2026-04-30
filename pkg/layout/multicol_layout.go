@@ -1070,6 +1070,21 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// Phase 25 Cmt-4 (was Phase 22 Cmt-B): outer fragmentainer exhausted
+	// but explicit content block-size remains. Mirrors Blink's
+	// post-LayoutChildren remaining_content_block_size_ break check
+	// (column_layout_algorithm.cc). Placed after the OOF promotion +
+	// pending-multicol registration above so the outgoing break fragment
+	// carries the FragmentedOofData (descendants + pending-multicol entry)
+	// the outer drain consumes — Cmt-3's pipeline. Without this guard the
+	// inner exits "complete" with no BreakToken when content was clamped
+	// to outerAvailable, and the outer reruns it from scratch in the next
+	// column.
+	if hasOuterFrag && hasExplicitBlock && blockCursor >= outerAvailable &&
+		blockCursor < mla.remainingContentBlockSize {
+		return buildOuterBreakResult()
+	}
+
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
