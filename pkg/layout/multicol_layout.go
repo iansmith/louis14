@@ -420,8 +420,21 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// fragmentation. Only fires when starting fresh (no incoming BreakToken),
 	// not balanced, has explicit height, and there is container separation
 	// (the parent's break-before would be meaningful).
+	//
+	// Cmt-5e: also gated on FragmentainerOffset > 0. When the inner-mc starts
+	// at the OUTER fragmentainer's origin (FragmentainerOffset == 0), the
+	// outer column has already supplied a clean fresh starting offset — the
+	// inner-mc should fragment in place rather than be deferred. Without this
+	// narrowing, an inner-mc fresh in outer col-1 with declared > available
+	// would be deferred to col-2 (where it's still fresh and would defer
+	// again, infinitely). Mirrors Blink's behavior for fragmenting nested
+	// multicols where the OUTER context provides the fragmentation boundaries.
+	// Closure flip for `multicol-nested-011/032/033` cluster (combined with
+	// Cmt-5b's chain semantics; visual closure of `-011` further requires
+	// Phase 21 clip ungating).
 	if hasOuterFrag && hasExplicitBlock && mla.space.BreakToken == nil &&
-		columnFill == "auto" && outerAvailable < explicitBlockSize {
+		columnFill == "auto" && outerAvailable < explicitBlockSize &&
+		mla.space.FragmentainerOffset > 0 {
 		builder.SetSize(LogicalSize{
 			InlineSize: contentInlineSize + geom.InlineBorderPadding(),
 			BlockSize:  0,
