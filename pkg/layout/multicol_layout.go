@@ -522,6 +522,17 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			ConsumedBlockSize: prevConsumed.Add(layoutunit.FromFloat64Round(blockCursor)),
 			SequenceNumber:    seqNum,
 		}
+		// Cmt-5b: when all in-flow column content has been consumed but the
+		// multicol's declared block-size is not yet satisfied (blockCursor <
+		// remainingContentBlockSize), outBuilder is empty — no child resume
+		// tokens are needed. Set HasSeenAllChildren so the resumed walker
+		// (NewMulticolPartWalker) exits immediately without re-running content.
+		// Mirrors Blink's BlockBreakToken::has_seen_all_children_ semantics:
+		// the resumed fragment is an empty completion fragment covering the
+		// remaining declared height without re-placing any in-flow descendants.
+		if outBuilder.IsEmpty() {
+			result.BreakToken.HasSeenAllChildren = true
+		}
 		// Forward unplaced marker to the break token so the resumed fragment
 		// re-seeds it. Mirrors Blink's FinishFragmentation marker plumbing.
 		if builder.GetUnpositionedListMarker().IsValid() {
