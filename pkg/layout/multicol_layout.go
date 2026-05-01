@@ -1257,6 +1257,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		actualColumnCount := 0
 		forcedBreakCount := 0
 		hasViolatingBreak := false
+		rowHasDeferredOOFs := false
 
 		// Reset break token to the incoming token at the start of each iteration.
 		colBreakToken := nextColToken
@@ -1351,7 +1352,25 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 
 			colBreakToken = result.BreakToken
 			lastInnerResult = result
+			// Phase 25 Cmt-5c: track whether any column saw deferred OOF
+			// descendants this row, so we keep emitting empty trailing
+			// columns the outer drain needs as fragmentainers. Mirrors the
+			// flat `limited_multicol_container_builder.Children()` behavior
+			// (out_of_flow_layout_part.cc:1320-1373) — all inner column
+			// fragmentainers must exist regardless of in-flow content,
+			// otherwise OOF pieces past the last content-bearing column are
+			// dropped (multicol-nested-032's GREEN-RED-GREEN-RED stripes).
+			if result.Fragment != nil && result.Fragment.FragmentedOofData != nil {
+				rowHasDeferredOOFs = true
+			}
 			if colBreakToken == nil {
+				if mla.space.HasBlockFragmentation && rowHasDeferredOOFs {
+					inlineOffset += usedColWidth + gap
+					if col+1 >= numCols {
+						break
+					}
+					continue
+				}
 				break // all content fit
 			}
 			inlineOffset += usedColWidth + gap
