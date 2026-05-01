@@ -74,15 +74,25 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
 	// Phase 16.e+18 v2 B2.5: tag size-contained boxes as monolithic.
-	// CSS Containment 2 §2.6: a contain:size box has no intrinsic size
-	// from its descendants, so for fragmentation purposes the entire
-	// box is monolithic — its block-size is fixed and content does not
-	// fragment across column / page boundaries. Consumed by
-	// fragmentation_utils.ShouldAvoidBreakInside to drive
-	// TallestUnbreakableBlockSize propagation during the initial
-	// column-balancing pass. Mirrors Blink's PhysicalFragment::IsMonolithic
-	// + ShouldAvoidBreakInside check.
-	if bla.style != nil && bla.style.HasSizeContainment() {
+	// CSS Containment 2 §2.6: a contain:size box suppresses intrinsic-size
+	// contribution from its descendants, but it does NOT make the box
+	// monolithic for fragmentation purposes — a contain:size block with an
+	// explicit height fragments normally. Per Blink's
+	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc), IsMonolithic
+	// is driven by IsBlockFragmentationForcedOff (overflow:scroll/clip, replaced
+	// content, etc.) — not by contain:size alone.
+	//
+	// Exception: a contain:size FLOAT is treated as monolithic. CSS floats are
+	// intrinsically unbreakable in the column-balancing pass (the float's full
+	// height must contribute to TallestUnbreakableBlockSize so the balance
+	// estimate sizes the column tall enough to hold the float without splitting
+	// it). Mirrors Blink's multicol-fill-balance-034/035/036 expected behavior
+	// where a "monolithic float in inline/block formatting context" with
+	// contain:size must be kept in one column.
+	//
+	// Cmt-5a: narrowed from unconditional to float-only for contain:size.
+	if bla.style != nil && bla.style.HasSizeContainment() &&
+		bla.style.GetFloat() != css.FloatNone {
 		builder.SetIsMonolithic(true)
 	}
 	// Phase 16.e+18 v2 B2.6 (SetupFragmentation contribution): during the
@@ -838,7 +848,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// Margins collapse through: append block-end margin and continue
 				// without resolving or advancing the cursor.
 				// Pick up any propagated OOF candidates before continuing.
-				if len(childResult.PropagatedOOFCandidates) > 0 {
+				if len(childResult.PropagatedOOFCandidates) > 0 ||
+					(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
 					approxBlock := blockCursor + prevMarginStrut.Resolve()
 					bla.inheritPropagatedOOF(childResult, childStyle, wdm,
 						childInlineOffset, approxBlock, builder)
@@ -995,8 +1006,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 // Inherit propagated OOF candidates from child.
 			// Non-positioned children propagate their abspos descendants
 			// upward for resolution by the containing block (this element
-			// or a higher ancestor).
-			if len(childResult.PropagatedOOFCandidates) > 0 {
+			// or a higher ancestor). Phase 25 Cmt-3: also fire when the
+			// child carries FragmentedOofData (an OOF whose CB was promoted
+			// inside it, deferred for outer-fragmentation-root drain).
+			if len(childResult.PropagatedOOFCandidates) > 0 ||
+				(childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil) {
 				bla.inheritPropagatedOOF(childResult, childStyle, wdm,
 					childInlineOffset, actualChildBlockOff, builder)
 			}
@@ -1722,6 +1736,32 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					absoluteCandidates = append(absoluteCandidates, cand)
 				}
 			}
+			// Phase 25 Cmt-3: when this CB is itself inside a block-fragmentation
+			// context (a column flow, paged context, etc.), abspos descendants
+			// can't be resolved here — their layout must wait until we reach the
+			// outer fragmentation root, which will lay them out per fragmentainer
+			// (per column). Promote each absolute candidate to a fragmentainer
+			// descendant so the descendant payload bubbles up via
+			// FragmentedOofData. Mirrors Blink's
+			// `OutOfFlowLayoutPart::LayoutCandidates` promotion at
+			// `out_of_flow_layout_part.cc:1158-1170` (the
+			// `should_add_outer_fragmentainer_children_` branch). The static
+			// position is already in this CB's content-box coords (it accumulated
+			// upward via PropagateOOFCandidates); preserve as-is. The CB's
+			// outgoing fragment isn't yet built, so leave Fragment=nil — the
+			// parent's PropagateOOFFragmentainerDescendants will fill it in.
+			if bla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
+				for _, cand := range absoluteCandidates {
+					builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
+						Candidate: cand,
+						ContainingBlock: LogicalOofContainingBlock{
+							// Fragment: nil — assigned by parent's propagator.
+							// Offset: zero — CB origin within its own content-box.
+						},
+					})
+				}
+				absoluteCandidates = nil
+			}
 			if len(absoluteCandidates) > 0 {
 				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
 				// CB size = padding-box = content + padding (borders excluded).
@@ -2046,6 +2086,25 @@ func PropagateOOFCandidates(
 		adj.StaticPosition.Offset.BlockOffset += blockAdj
 		adj.StaticPosition.Offset.InlineOffset += inlineAdj
 		builder.AddOutOfFlowCandidate(adj)
+	}
+
+	// Phase 25 Cmt-2: also forward any OOF fragmentainer descendants the
+	// child carries on its outgoing fragment (an inner multicol that
+	// deferred its abspos descendants to the outer fragmentation root).
+	// blockAdj/inlineAdj already include the child's offset, border-padding,
+	// and relative offset — pass them as the combined translation. CB
+	// defaults are nil here; descendants entered with their CB resolved at
+	// the deferral site, and the drain pipeline (Cmt-3) supplies defaults
+	// for any that didn't.
+	if childResult.Fragment != nil && childResult.Fragment.FragmentedOofData != nil {
+		builder.PropagateOOFFragmentainerDescendants(
+			childResult.Fragment,
+			LogicalOffset{InlineOffset: inlineAdj, BlockOffset: blockAdj},
+			LogicalOffset{},
+			layoutunit.LayoutUnit{},
+			nil,
+			nil,
+		)
 	}
 }
 

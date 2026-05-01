@@ -5,12 +5,30 @@ import (
 	"louis14/pkg/html"
 )
 
-// LayoutInputNode is the layout tree node, wrapping a DOM node or an
-// anonymous box. Layout algorithms operate on these, never on *html.Node
-// directly. The layout tree is built from the DOM by LayoutTreeBuilder
-// before layout begins.
+// LayoutInputNode is louis14's single layout-tree node type. It wraps a
+// DOM node or an anonymous box; layout algorithms operate on these, never
+// on *html.Node directly. The layout tree is built from the DOM by
+// LayoutTreeBuilder before layout begins.
 //
-// Mirrors Blink's LayoutInputNode / LayoutObject.
+// Architecture note — deliberate two-tier collapse vs Blink's three-tier
+// model. Blink splits this role across LayoutInputNode (input-side cursor),
+// LayoutObject (abstract base of the layout tree), and LayoutBox (concrete
+// persistent box with caches and a fragment list). The split exists for
+// C++ value-vs-pointer ergonomics, Oilpan GC integration, and a deep
+// inheritance hierarchy — none of which apply in Go, where pointer
+// semantics + GC + interfaces collapse the model into one tier without
+// loss of expressiveness.
+//
+// Consequences for the rest of the codebase:
+//   - *LayoutInputNode pointers are persistent across Layout() calls and
+//     serve as the stable identity that Blink uses *LayoutBox for. The
+//     groupedChildrenCache and contentNodeCache fields exist specifically
+//     to preserve that stability inside the multicol algorithm.
+//   - Where Blink keys maps by *LayoutBox (e.g., FragmentedOofData's
+//     multicols-with-pending-OOFs map, OrthogonalLayoutCache), louis14
+//     keys them by *LayoutInputNode. Same identity, one fewer indirection.
+//   - The downstream paint-tree type is Box (types.go); the Box pointer
+//     on this struct is the layout-tree → paint-tree link.
 type LayoutInputNode struct {
 	// DOMNode is the underlying DOM node, or nil for anonymous boxes.
 	DOMNode *html.Node

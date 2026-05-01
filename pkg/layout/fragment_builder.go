@@ -3,6 +3,7 @@ package layout
 import (
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
 )
 
@@ -73,6 +74,35 @@ type BoxFragmentBuilder struct {
 
 	// outOfFlowCandidates collects abs-pos/fixed children for deferred layout.
 	outOfFlowCandidates []OutOfFlowCandidate
+
+	// oofPositionedFragmentainerDescendants accumulates deferred OOFs whose
+	// CB is itself fragmented across a multicol's outer fragmentainers.
+	// Drained at the fragmentation-context root (the outermost multicol).
+	// Distinct from outOfFlowCandidates which targets non-fragmented CBs.
+	// Phase 25 scaffolding — wiring in subsequent commits. Mirrors Blink's
+	// `FragmentBuilder::oof_positioned_fragmentainer_descendants_`
+	// (fragment_builder.h:254-260; in Blink this lives on the parent class
+	// of BoxFragmentBuilder).
+	oofPositionedFragmentainerDescendants []LogicalOofNodeForFragmentation
+
+	// multicolsWithPendingOOFs records inner-multicol nodes nested in this
+	// builder that themselves have deferred OOF fragmentainer descendants.
+	// Drained at the fragmentation root via
+	// `OutOfFlowLayoutPart.HandleMulticolsWithPendingOOFs`. Phase 25
+	// scaffolding — wiring in subsequent commits. Mirrors Blink's
+	// `FragmentBuilder::multicols_with_pending_oofs_` (fragment_builder.h:51-55).
+	// Keyed by *LayoutInputNode (louis14's persistent layout-tree identity;
+	// where Blink keys by *LayoutBox — see pkg/layout/layout_input_node.go).
+	multicolsWithPendingOOFs map[*LayoutInputNode]*MulticolWithPendingOOFs
+
+	// isBlockFragmentationContextRoot marks this builder as the outermost
+	// multicol (or paginated root) — the only place
+	// `OutOfFlowLayoutPart.HandleFragmentation` actually drains the
+	// descendants list. Phase 25 scaffolding — gate-setter wiring in a
+	// subsequent commit. Mirrors Blink's
+	// `FragmentBuilder::IsBlockFragmentationContextRoot()`
+	// (fragment_builder.h:415-423).
+	isBlockFragmentationContextRoot bool
 
 	// childAvailableSize is the content-box size of this fragment — the
 	// containing block for children's position:relative/sticky percentage
@@ -334,6 +364,152 @@ func (b *BoxFragmentBuilder) AddOutOfFlowCandidate(c OutOfFlowCandidate) {
 	b.outOfFlowCandidates = append(b.outOfFlowCandidates, c)
 }
 
+// AddOutOfFlowFragmentainerDescendant appends an OOF whose CB is itself
+// fragmented across a multicol's outer fragmentainers. Drained at the
+// fragmentation-context root by `OutOfFlowLayoutPart.HandleFragmentation`.
+// Mirrors Blink's `FragmentBuilder::AddOutOfFlowFragmentainerDescendant`
+// (fragment_builder.h:373-380; fragment_builder.cc:589-603 for the
+// propagating variant).
+func (b *BoxFragmentBuilder) AddOutOfFlowFragmentainerDescendant(d LogicalOofNodeForFragmentation) {
+	b.oofPositionedFragmentainerDescendants = append(b.oofPositionedFragmentainerDescendants, d)
+}
+
+// AddMulticolWithPendingOOFs records an inner-multicol descendant whose own
+// OOF fragmentainer descendants haven't been laid out yet. The outer
+// fragmentation root drains the entry in
+// `OutOfFlowLayoutPart.HandleMulticolsWithPendingOOFs`.
+//
+// Idempotent: first-write-wins. Mirrors Blink's
+// `FragmentBuilder::AddMulticolWithPendingOOFs` early-return on duplicate-key
+// insert (fragment_builder.cc:651-652). Lazy-initializes the map on first call.
+func (b *BoxFragmentBuilder) AddMulticolWithPendingOOFs(node *LayoutInputNode, info *MulticolWithPendingOOFs) {
+	if b.multicolsWithPendingOOFs == nil {
+		b.multicolsWithPendingOOFs = make(map[*LayoutInputNode]*MulticolWithPendingOOFs)
+	}
+	if _, exists := b.multicolsWithPendingOOFs[node]; exists {
+		return
+	}
+	b.multicolsWithPendingOOFs[node] = info
+}
+
+// HasOutOfFlowFragmentainerDescendants reports whether any deferred OOFs are
+// queued. Mirrors Blink's `FragmentBuilder::HasOutOfFlowFragmentainerDescendants`.
+func (b *BoxFragmentBuilder) HasOutOfFlowFragmentainerDescendants() bool {
+	return len(b.oofPositionedFragmentainerDescendants) > 0
+}
+
+// HasMulticolsWithPendingOOFs reports whether any inner-multicol entries are
+// pending drain. Mirrors Blink's
+// `FragmentBuilder::HasMulticolsWithPendingOOFs`.
+func (b *BoxFragmentBuilder) HasMulticolsWithPendingOOFs() bool {
+	return len(b.multicolsWithPendingOOFs) > 0
+}
+
+// SwapOutOfFlowFragmentainerDescendants exchanges the builder's deferred-OOF
+// list with the caller's `out` slice. Caller ends up holding what the builder
+// had; builder's slice becomes whatever the caller passed in (typically a nil
+// slice that resets the builder). Mirrors Blink's
+// `FragmentBuilder::SwapOutOfFlowFragmentainerDescendants`.
+func (b *BoxFragmentBuilder) SwapOutOfFlowFragmentainerDescendants(out *[]LogicalOofNodeForFragmentation) {
+	*out, b.oofPositionedFragmentainerDescendants = b.oofPositionedFragmentainerDescendants, *out
+}
+
+// SwapMulticolsWithPendingOOFs exchanges the builder's pending-multicol map
+// with the caller's `out` map. Caller ends up holding what the builder had;
+// builder's map becomes whatever the caller passed in. Mirrors Blink's
+// `FragmentBuilder::SwapMulticolsWithPendingOOFs`.
+func (b *BoxFragmentBuilder) SwapMulticolsWithPendingOOFs(out *map[*LayoutInputNode]*MulticolWithPendingOOFs) {
+	*out, b.multicolsWithPendingOOFs = b.multicolsWithPendingOOFs, *out
+}
+
+// IsBlockFragmentationContextRoot reports whether this builder is the
+// outermost fragmentation root (the only place
+// `OutOfFlowLayoutPart.HandleFragmentation` actually drains the descendants
+// list). Mirrors Blink's `FragmentBuilder::IsBlockFragmentationContextRoot`
+// (fragment_builder.h:415-423).
+func (b *BoxFragmentBuilder) IsBlockFragmentationContextRoot() bool {
+	return b.isBlockFragmentationContextRoot
+}
+
+// SetIsBlockFragmentationContextRoot marks this builder as the outermost
+// fragmentation root. Mirrors Blink's
+// `FragmentBuilder::SetIsBlockFragmentationContextRoot`.
+func (b *BoxFragmentBuilder) SetIsBlockFragmentationContextRoot() {
+	b.isBlockFragmentationContextRoot = true
+}
+
+// PropagateOOFFragmentainerDescendants walks any deferred OOF fragmentainer
+// descendants stashed on `childFragment` (via FragmentedOofData) and appends
+// them to this builder's own deferred list. Mirrors Blink's
+// `FragmentBuilder::PropagateOOFFragmentainerDescendants`
+// (fragment_builder.cc:926-1100).
+//
+// Coordinate semantics (Blink-aligned, source-verified at fb.cc:945-986):
+//   - The descendant's StaticPosition stays in CONTAINING-BLOCK content-box
+//     coordinates throughout the walk. Do NOT shift by parent offsets — the
+//     position was captured at the deferral site relative to its CB and the
+//     drain pipeline expects it to remain so.
+//   - The descendant's `ContainingBlock.Offset` is the offset from the CB's
+//     fragment to the propagating fragment (this builder's fragment). It DOES
+//     accumulate `offset + relativeOffset` at each propagation step, plus
+//     `cbAdjustment` (the block-offset adjustment when a CB resumes in a
+//     later outer fragmentainer).
+//   - When a descendant's `ContainingBlock.Fragment` is nil, this means the
+//     descendant was promoted at THIS child's level (the child IS the CB).
+//     Assign `childFragment` as the CB. Mirrors fb.cc:952-954.
+//
+// Pending-multicol entries are forwarded as well so the outer fragmentation
+// root sees both the OOFs and the multicols that need revisiting.
+func (b *BoxFragmentBuilder) PropagateOOFFragmentainerDescendants(
+	childFragment *PhysicalFragment,
+	offset LogicalOffset,
+	relativeOffset LogicalOffset,
+	cbAdjustment layoutunit.LayoutUnit,
+	containingBlock *LogicalOofContainingBlock,
+	fixedposCB *LogicalOofContainingBlock,
+) {
+	if childFragment == nil || childFragment.FragmentedOofData == nil {
+		return
+	}
+	data := childFragment.FragmentedOofData
+
+	if len(data.OofPositionedFragmentainerDescendants) > 0 {
+		totalInline := offset.InlineOffset + relativeOffset.InlineOffset
+		totalBlock := offset.BlockOffset + relativeOffset.BlockOffset
+		cbAdjBlock := cbAdjustment.Float64()
+		for _, d := range data.OofPositionedFragmentainerDescendants {
+			// CB fragment fallback: when missing, the propagating child IS the
+			// CB (descendant was promoted at child's level).
+			if d.ContainingBlock.Fragment == nil {
+				if containingBlock != nil && containingBlock.Fragment != nil {
+					d.ContainingBlock = *containingBlock
+				} else {
+					d.ContainingBlock.Fragment = childFragment
+				}
+			}
+			if d.FixedposContainingBlock.Fragment == nil && fixedposCB != nil {
+				d.FixedposContainingBlock = *fixedposCB
+			}
+			// StaticPosition stays CB-relative — do NOT shift by parent offsets.
+			// Only the CB offsets accumulate.
+			d.ContainingBlock.Offset.InlineOffset += totalInline
+			d.ContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
+			d.FixedposContainingBlock.Offset.InlineOffset += totalInline
+			d.FixedposContainingBlock.Offset.BlockOffset += totalBlock + cbAdjBlock
+			b.oofPositionedFragmentainerDescendants = append(b.oofPositionedFragmentainerDescendants, d)
+		}
+	}
+
+	for node, info := range data.MulticolsWithPendingOOFs {
+		// Translate the inner multicol's offset into this builder's frame so
+		// the outer drain site can position OOFs against the right column flow.
+		propagated := *info
+		propagated.MulticolOffset.InlineOffset += offset.InlineOffset + relativeOffset.InlineOffset
+		propagated.MulticolOffset.BlockOffset += offset.BlockOffset + relativeOffset.BlockOffset
+		b.AddMulticolWithPendingOOFs(node, &propagated)
+	}
+}
+
 // SetChildAvailableSize records the content-box size that serves as the
 // containing block for children's position:relative/sticky percentage
 // resolution. Layout algorithms call this once before adding children.
@@ -426,6 +602,18 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		LayoutNode:       b.layoutNode,
 		GapGeometry:      b.gapGeometry,
 		IsMonolithic:     b.isMonolithic,
+	}
+
+	// Phase 25 Cmt-2: stash any deferred OOF fragmentainer descendants and
+	// pending-multicol entries on the outgoing fragment so ancestors can
+	// continue propagating them to the outer fragmentation root. Mirrors
+	// Blink's PhysicalFragment::OofData carried via FragmentedOofData
+	// (oof_positioned_node.h:366-408).
+	if len(b.oofPositionedFragmentainerDescendants) > 0 || len(b.multicolsWithPendingOOFs) > 0 {
+		fragment.FragmentedOofData = &FragmentedOofData{
+			OofPositionedFragmentainerDescendants: b.oofPositionedFragmentainerDescendants,
+			MulticolsWithPendingOOFs:              b.multicolsWithPendingOOFs,
+		}
 	}
 
 	result := &LayoutResult{
