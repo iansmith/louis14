@@ -74,15 +74,25 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
 	// Phase 16.e+18 v2 B2.5: tag size-contained boxes as monolithic.
-	// CSS Containment 2 §2.6: a contain:size box has no intrinsic size
-	// from its descendants, so for fragmentation purposes the entire
-	// box is monolithic — its block-size is fixed and content does not
-	// fragment across column / page boundaries. Consumed by
-	// fragmentation_utils.ShouldAvoidBreakInside to drive
-	// TallestUnbreakableBlockSize propagation during the initial
-	// column-balancing pass. Mirrors Blink's PhysicalFragment::IsMonolithic
-	// + ShouldAvoidBreakInside check.
-	if bla.style != nil && bla.style.HasSizeContainment() {
+	// CSS Containment 2 §2.6: a contain:size box suppresses intrinsic-size
+	// contribution from its descendants, but it does NOT make the box
+	// monolithic for fragmentation purposes — a contain:size block with an
+	// explicit height fragments normally. Per Blink's
+	// SetupFragmentBuilderForFragmentation (fragmentation_utils.cc), IsMonolithic
+	// is driven by IsBlockFragmentationForcedOff (overflow:scroll/clip, replaced
+	// content, etc.) — not by contain:size alone.
+	//
+	// Exception: a contain:size FLOAT is treated as monolithic. CSS floats are
+	// intrinsically unbreakable in the column-balancing pass (the float's full
+	// height must contribute to TallestUnbreakableBlockSize so the balance
+	// estimate sizes the column tall enough to hold the float without splitting
+	// it). Mirrors Blink's multicol-fill-balance-034/035/036 expected behavior
+	// where a "monolithic float in inline/block formatting context" with
+	// contain:size must be kept in one column.
+	//
+	// Cmt-5a: narrowed from unconditional to float-only for contain:size.
+	if bla.style != nil && bla.style.HasSizeContainment() &&
+		bla.style.GetFloat() != css.FloatNone {
 		builder.SetIsMonolithic(true)
 	}
 	// Phase 16.e+18 v2 B2.6 (SetupFragmentation contribution): during the
