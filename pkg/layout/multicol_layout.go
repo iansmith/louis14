@@ -522,6 +522,26 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			ConsumedBlockSize: prevConsumed.Add(layoutunit.FromFloat64Round(blockCursor)),
 			SequenceNumber:    seqNum,
 		}
+		// Cmt-5b: when outBuilder is empty AND there are no deferred OOF
+		// fragmentainer descendants, the inner-mc's main loop has exhausted
+		// all in-flow children with no continuation needed, but Cmt-4's
+		// post-loop guard fired because declared block-size is not yet
+		// satisfied. The emitted BlockBreakToken must signal that all
+		// children are seen — otherwise NewMulticolPartWalker on resume
+		// finds parent token with no BreakToken entry but
+		// HasSeenAllChildren=false and starts iterating in-flow children
+		// from scratch, re-painting content already placed (the
+		// `multicol-nested-011` symptom under Cmt-A). Gated on the OOF
+		// flag so OOF-deferred resume paths in nested OOF tests
+		// (e.g. `multicol-nested-032`) are not short-circuited; OOF
+		// descendants are placed via `FragmentedOofData` propagation,
+		// not the in-flow walker, but their resume timing still depends
+		// on HasSeenAllChildren=false. Mirrors Blink's
+		// `BlockBreakToken::has_seen_all_children_` semantics
+		// (`block_break_token.h:120-160`).
+		if outBuilder.IsEmpty() && !builder.HasOutOfFlowFragmentainerDescendants() {
+			result.BreakToken.HasSeenAllChildren = true
+		}
 		// Forward unplaced marker to the break token so the resumed fragment
 		// re-seeds it. Mirrors Blink's FinishFragmentation marker plumbing.
 		if builder.GetUnpositionedListMarker().IsValid() {
