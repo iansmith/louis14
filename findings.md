@@ -270,6 +270,7 @@ The `-032` regression comes from the OOF path: an inner positioned multicol with
 | `column-height-024` class | DEFERRED | Needs live-Blink build trace. |
 | Anchor positioning | OUT OF SCOPE | No WPT tests exercise it. |
 | StickyPositionScrollingConstraints | DEFERRED | Scroll-time wiring deferred until scroll tests appear. |
+| HTML email rendering investigation | TRACKED (not top priority) | Real marketing/transactional HTML emails render badly even ignoring image fetch. Likely-impact areas: tables (deeply nested + colspan/rowspan), `<img>` sizing + `data:`/`cid:` sources, `background-image`, inline-CSS edge cases, quirks-mode HTML parsing, font loading. Multicol is NOT email-relevant. Triage gate: get a sample failing email + diagnose visually before scoping. Park decision for Phase 25: land Cmt-5a/b if the agent succeeds, defer Cmt-5e + Phase 21 indefinitely. |
 | `drawColumnRules` content-area `math.Round` | DEFERRED | Not migrated to `SnapSizeToPixel`. |
 
 ## Key data structures (reference)
