@@ -11,7 +11,7 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 - **CSS Position work** — closed 2026-04-21 at 92/105; commit refs in archive.
 - **Other archives in `docs/`** — `plan-CSS2-*`, `plan-wm*`, `PROMPT-*`, etc.
 
-## Current state (2026-04-30 — post Phase 22 Cmt-1)
+## Current state (2026-05-01 — post Phase 25 Cmt-5b+5a)
 
 | Suite             | Passing | Notes |
 |-------------------|---------|-------|
@@ -19,8 +19,10 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 | css-flexbox       | 626/629 | three pre-existing residuals (auto-margins-001, content-height-with-scrollbars, flexbox-align-self-vert-004) |
 | css-position      | 92/105  | thirteen pre-existing residuals; no active work |
 | css-writing-modes | 781/781 | closed |
-| css-multicol (master) | 212/455 | Phase 22 Cmt-1 (`75182bd6`) closed `broken-column-rule-1`. Phase 25 PARKED 2026-05-01 at Cmt-5d (`e8f25761` on `phase-25-oof-fragmentation`); gate-neutral. Cmt-5a/b/e deferred — see § Phase 25. |
+| css-multicol (master) | 212/455 | Phase 22 Cmt-1 (`75182bd6`) closed `broken-column-rule-1`. Phase 25 PARKED 2026-05-01 at Cmt-5d (`e8f25761` on `phase-25-oof-fragmentation`); gate-neutral. Cmt-5a/b/e deferred — see § Phase 25. Cmt-5b+5a landed 2026-05-01 on `phase-25-cmt-5ab-retry` (+2 gate; not yet merged to master). |
+| css-multicol (phase-25-cmt-5ab-retry) | 214/455 | Cmt-5b (`57bb8967`) + Cmt-5a (`1ca0904d`) on top of Cmt-5d. Drivers 14/15 (multicol-nested-032 pre-existing). Prior-clip-wins 9/9. Cmt-5e still deferred. |
 | 13 driver invariants | 13/13 | column-height-001/010/017/026/027, multicol-nested-030/031, spanner-fragmentation-001/004/006, multicol-rule-nested-balancing-004, nested-floated-multicol-with-monolithic-child, nested-past-fragmentation-line |
+| 14 driver invariants (phase-25-cmt-5ab-retry) | 14/15 | Same set + multicol-nested-032/033 (032 is pre-existing failure at 2.1%); all others pass |
 | spanner-fragmentation cluster | 12/13 | -008 fails 0.2%; pre-existing |
 
 ## Phase summary (one line per phase; full detail in archive)
@@ -200,7 +202,7 @@ The `-032` regression comes from the OOF path: an inner positioned multicol with
 
 ---
 
-### Phase 25 — Fragmentation-aware OOF positioning (Blink-aligned port) — PARKED 2026-05-01 at Cmt-5d
+### Phase 25 — Fragmentation-aware OOF positioning (Blink-aligned port) — Cmt-5b+5a LANDED 2026-05-01; Cmt-5e DEFERRED
 
 **Goal.** Port Blink's nested-multicol OOF pipeline. Closes `multicol-nested-011, -032`, OOF portion of `fill-balance-026`. Unblocks Phase 21.
 
@@ -239,17 +241,17 @@ The `-032` regression comes from the OOF path: an inner positioned multicol with
 5. **Cmt-5 (four-step closure plan) — IN PROGRESS.** Continuation prompt: `docs/PROMPT-phase-25-cmt-5.md` (rewritten 2026-04-30 from a four-agent Blink + local-code investigation). The original "narrow Phase 14b" Cmt-5 plan was wrong — narrowing alone leaves four distinct upstream bugs unfixed. Sequence:
    - **Cmt-5c — DONE 2026-04-30 (`7dc344b4`).** Inner per-column loop in `multicol_layout.go:1355` was breaking early at `colBreakToken == nil` when in-flow content fit in fewer than `numCols` columns. For nested multicols whose row had deferred OOF descendants, this dropped the empty trailing inner-column fragmentainers — Cmt-3's drain needs them as slicing targets. Added a `rowHasDeferredOOFs` sticky flag (set when any per-column result carries `FragmentedOofData`); when in fragmentation context, the loop continues emitting empty trailing columns. Mirrors Blink's flat `limited_multicol_container_builder.Children()` enumeration (oof_part.cc:1320-1373). Validation: gate-neutral on Cmt-4 HEAD (Phase 14b firing); under Cmt-A locally `-032` closes from 5000 px to 0/0.
    - **Cmt-5d — DONE 2026-04-30 (`e8f25761`).** `GetColumnGapMulticol()` did not handle bare percentage values (only resolved via calc/min/max). `column-gap:30%` on a 50px-wide multicol fell through to `1em` default (16px) instead of resolving to 15px. Added `GetColumnGapMulticolWithBase(percentBase float64)` that resolves bare percentages against the supplied base; `multicol_layout.go:273` now passes `contentInlineSize`. Validation: gate-neutral on Cmt-4 HEAD; under Cmt-A locally `-033` closes from 200 px to 0/0; full multicol gate 212/455 unchanged.
-   - **Cmt-5a (`contain:size` IsMonolithic deviation) — ATTEMPTED + REVERTED 2026-05-01.** A Sonnet sub-agent landed the Blink-aligned scoping (auto-height + floats stay monolithic; contain:size + explicit-height + non-float fragments normally) — but it regressed the full multicol gate from 212/455 to 177/455 (-35 tests). The change is correct per Blink; the regression came from removing a deviation that was MASKING break-token chaining bugs in cross-multicol fragmentation paths. Removing the mask exposed those bugs. The 35 regressions are NOT tractable without the real Cmt-5b (BlockBreakToken child-chaining for in-flow descendants), which the agent did not implement. Both 5a and an unrelated 5b attempt were force-reverted along with the throwaway worktree branch.
-   - **Cmt-5b (BlockBreakToken child-chaining) — DEFERRED.** Inner multicol's outgoing break token must thread `ChildBreakTokens` for unfinished in-flow descendants (with `consumed_block_size` set) so the resumed inner continues placing them. `multicol_layout.go::buildOuterBreakResult`. Required to land Cmt-5a without regressing the 35 tests above. Estimated medium effort — port Blink's `column_layout_algorithm.cc` `LayoutChildren` → `ToBoxFragment` break-token assembly (cla.cc:605-714 + cla.cc:733-738 cleanup loop). The Sonnet agent mistook this for `flushWalker()` cleanup of spanner walker entries, which is a real but unrelated fix.
-   - **Cmt-5e (Phase 14b narrowing — the actual Cmt-A) — DEFERRED.** ONLY after a–d land. With the upstream bugs fixed, narrowing Phase 14b to `FragmentainerOffset > 0` should close `-011`/`-032`/`-033` to 0/0 while preserving `-010`. Phase 14b stays as a louis14-only short-circuit; full removal would require porting Blink's tallest_unbreakable + minimum_column_block_size retry mechanisms — both ALREADY exist in louis14 (`fragment_builder.go:301-336`, `multicol_layout.go:1417-1462`), but they don't fire on these tests because the gap isn't monolithic-overflow shaped.
+   - **Cmt-5a (`contain:size` IsMonolithic deviation) — DONE 2026-05-01 (`1ca0904d` on `phase-25-cmt-5ab-retry`).** First attempt by a Sonnet sub-agent was ATTEMPTED + REVERTED (regressed 212→177/455) because it landed without Cmt-5b. This second attempt landed WITH Cmt-5b (see below). Narrowed from unconditional to float-only: `contain:size` non-float blocks with explicit height now fragment normally (Blink-correct per `fragmentation_utils.cc::SetupFragmentBuilderForFragmentation`). `contain:size` floats retain `IsMonolithic=true` for balance-pass correctness (multicol-fill-balance-034/035/036). Gate: 214/455 post-5a+5b (up from 212 baseline). Cite: `block_layout.go:94-97`.
+   - **Cmt-5b (BlockBreakToken child-chaining) — DONE 2026-05-01 (`57bb8967` on `phase-25-cmt-5ab-retry`).** When an inner multicol (column-fill:auto, explicit block-size) places all in-flow column content within the first outer fragmentainer, `layoutLine` returns `remainingToken=nil` and Cmt-4's post-loop guard fires with an empty `outBuilder`. The emitted `BlockBreakToken` previously had `HasSeenAllChildren=false` and empty `ChildBreakTokens`, causing `NewMulticolPartWalker` to re-run all in-flow column content from scratch on resume. Fix: when `outBuilder.IsEmpty()` in `buildOuterBreakResult`, set `HasSeenAllChildren=true` — the resumed walker immediately sets `isFinished=true` and produces a clean empty-completion fragment covering the remaining declared height. Mirrors Blink's `BlockBreakToken::has_seen_all_children_` semantics (`block_break_token.h:120-160`). Cite: `multicol_layout.go:533-535`.
+   - **Cmt-5e (Phase 14b narrowing — the actual Cmt-A) — DEFERRED.** ONLY after 5a+5b merge to master and Cmt-5e is re-validated. With the upstream bugs fixed, narrowing Phase 14b to `FragmentainerOffset > 0` should close `-011`/`-032`/`-033` to 0/0 while preserving `-010`. Phase 14b stays as a louis14-only short-circuit; full removal would require porting Blink's tallest_unbreakable + minimum_column_block_size retry mechanisms — both ALREADY exist in louis14 (`fragment_builder.go:301-336`, `multicol_layout.go:1417-1462`), but they don't fire on these tests because the gap isn't monolithic-overflow shaped.
 
-**Park decision (2026-05-01).** Phase 25 paused at Cmt-5d so engineering attention can pivot to HTML email rendering (see § Open residuals). What's landed (Cmt-1–5d) is gate-neutral and self-contained; the remaining work (5a/b/e) is well-scoped and resumeable but non-trivial. The Sonnet agent attempt at 5a/b was abandoned because 5a-correct-alone exposes the masked break-token chaining bugs and 5b was misidentified by the agent as `flushWalker` instead of `ChildBreakTokens` threading. Resuming Phase 25 will require both 5a + a proper 5b to land together, then 5e to flip closures live.
+**Status (2026-05-01).** Cmt-5b+5a landed on `phase-25-cmt-5ab-retry` (commits `57bb8967` + `1ca0904d`). Gate 212→214/455 (+2). Not yet merged to master. Cmt-5e remains deferred. `phase-25-cmt-5ab-retry` is at `/Users/iansmith/louis14-p25-cmt5ab` (worktree still live).
 
-**Verification gate (when resumed).** 13 drivers 13/13 · 9 prior-clip-wins 9/9 · `-011`/`-032` close · spanner-fragmentation ≥12/13 · 4-cat invariants intact.
+**Verification gate (for Cmt-5e).** 14/15 drivers (032 pre-existing) · 9 prior-clip-wins 9/9 · `-011`/`-032`/`-033` close under Cmt-A · spanner-fragmentation ≥12/13 · 4-cat invariants intact.
 
-**Worktree.** `phase-25-oof-fragmentation` from master. Currently at `e8f25761` (Cmt-5d, gate-neutral; full multicol 212/455). The throwaway `phase-25-cmt-5ab` branch + `/Users/iansmith/louis14-p25-cmt5ab` worktree from the agent attempt have been removed (commits unreachable, eligible for GC).
+**Worktree.** `phase-25-cmt-5ab-retry` from `e8f25761` (Cmt-5d). At `/Users/iansmith/louis14-p25-cmt5ab`. Currently at `1ca0904d` (Cmt-5a on top of Cmt-5b on top of Cmt-5d).
 
-**Estimated commits remaining (when resumed).** 3–5 (5a + real 5b + 5e + possibly Cmt-6 residuals).
+**Estimated commits remaining.** 1–2 (Cmt-5e + possibly Cmt-6 residuals).
 
 ---
 
