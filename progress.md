@@ -25,12 +25,13 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 
 ## Phase status
 
-### Active queue (Phase 21–24)
+### Active queue (Phase 21–25)
 
-- **Phase 21** — Conditional `IsMulticolContainer` clip. Hard-blocked by Phase 22 + spanner-overflow placement. Target gate: 211 → 214+. Brief: `findings.md` § Phase 21.
-- **Phase 22** — Nested-multicol resume `ConsumedBlockSize` chain. Target gate: 211 → 220+ (+9 to +15). Worktree. Brief: `findings.md` § Phase 22.
-- **Phase 23** — Finish FinishFragmentation port. Independent. Worktree. Target: stable or +N. Brief: `findings.md` § Phase 23.
-- **Phase 24** — span-all-children-height cluster (002–013). Worktree. Target: 211 → 220+. Brief: `findings.md` § Phase 24, sub-cluster detail in archive.
+- **Phase 21** — Conditional clip. Blocked by Phase 25. Brief: `findings.md` § Phase 21.
+- **Phase 22** — `ConsumedBlockSize` chain. **Cmt-1 landed on master 2026-04-30** (`75182bd6`); multicol gate 211 → 212 (+1 `broken-column-rule-1`). Cmt-A rejected (-033 regression). Cluster-closure work moved to Phase 25. Detail: `docs/PLAN-phase-22.md` §14.9.
+- **Phase 23** — Finish FinishFragmentation port. Brief: `findings.md` § Phase 23.
+- **Phase 24** — span-all-children-height cluster. Brief: `findings.md` § Phase 24.
+- **Phase 25** — Fragmentation-aware OOF positioning (Blink-aligned port). **Worktree open** at `7ed644d7` (Cmt-1 scaffolding + Cmt-2 collection wiring + Cmt-3a promotion/propagation foundation + Cmt-3b drain pipeline done — full OOF descendant chain wired end-to-end, gate-neutral; `-032` 2.1% unchanged because Phase 14b deferral keeps the inner multicol from fragmenting across outer columns until Cmt-4 lands). Cmt-4 (re-apply Phase 22 Cmt-B post-loop break guard) next, prompt at `docs/PROMPT-phase-25-cmt-4.md`. Brief: `findings.md` § Phase 25.
 
 ### Completed phases (one-line summary)
 
@@ -61,4 +62,14 @@ See `findings.md` § "Open residuals". Highlights:
 
 (Format: date · symptom · root cause · fix or status. Recent entries; Phase 12–20 entries archived.)
 
-No new entries since Phase 20 LANDED. Full Phase 20 LANDED notes in `docs/findings-multicol-archive.md` § "Phase 20 LANDED".
+**2026-04-29 · Phase 22 hard exit · Cmt-1 zero cluster gain** — Cmt-1 wired `ConsumedBlockSize` correctly but closed zero of the predicted ~14 cluster tests. Two bug classes diagnosed: Class A (-011/-032, Phase 14b defer at FragOffset=0) and Class B (12 auto-height tests, `ConsumedBlockSize` READ gated on `hasExplicitBlock`). See `docs/PLAN-phase-22.md` §13.
+
+**2026-04-29 · Phase 22 Cmt-B post-loop break guard · regressed -032 · OOF-on-fragmentation gap** — Cmt-B candidate (post-loop guard on `mla.remainingContentBlockSize`) improved -011 1.6%→1.0% but regressed -032 3.1%→4.2%. Cause: -032's abspos child needs the complete-path `OutOfFlowLayoutPart.LayoutCandidates` (`multicol_layout.go:999-1027`); break path bubbles raw OOF candidates to wrong CB. Cmt-B reverted. Cluster work promoted to Phase 25 (full fragmentation-aware OOF port). See `docs/PLAN-phase-22.md` §14.
+
+**2026-04-30 · Phase 22 close-out · Cmt-A rejected · fonts trap diagnosed** — Full-suite verification (skipped during Cmt-A's targeted run) revealed Cmt-A introduces a 0.1% regression on -033. Bisect: Cmt-1 alone clean at +1 reclaim (`broken-column-rule-1`); Cmt-1+Cmt-A fails -033. Per CLAUDE.md §3, blocks merge. Cmt-1 only landed on master (`75182bd6`). Phase 14b narrowing was speculative (no Blink-line citation); Phase 25 will re-derive. Hygiene fix: untracked `fonts/Ahem.ttf` (was the only tracked font; rest are gitignored — caused 391 false writing-modes failures in the worktree).
+
+**2026-04-30 · Phase 25 architecture decision · two-tier collapse vs Blink's three-tier model** — Verification of the OOF-port type design surfaced the question of whether louis14 needs Blink's `LayoutInputNode`/`LayoutObject`/`LayoutBox` split. Investigation confirmed louis14 deliberately collapses these into a single `LayoutInputNode` (Go semantics make the split unnecessary; pointer stability already serves the persistent-identity role). Documented in `pkg/layout/layout_input_node.go` (commit `043410b6` on `phase-25-oof-fragmentation`). Phase 25 OOF maps will use `*LayoutInputNode` keys, matching `OrthogonalLayoutCache` and `seenOOF` precedent.
+
+**2026-04-30 · Phase 25 Cmt-3 deviation · promotion in BLA, not just multicol** — `PROMPT-phase-25-cmt-3.md` scoped OOF promotion to multicol's complete-path only ("not in BLA"). On implementation, `-032`'s CB is `#abscb` (a position:relative block inside the inner multicol), not the multicol container — the prompt's narrow rule wouldn't fire for `-032`. Verified Blink (`out_of_flow_layout_part.cc:1158-1170` — `should_add_outer_fragmentainer_children_` branch) promotes at every CB whose layout is involved in block fragmentation, not just multicol. Cmt-3a (`8a9226ef`) places promotion in BLA's `isPositioned` branch as well, mirroring Blink. Drivers + prior-clip-wins + `-033` all gate-neutral.
+
+**2026-04-30 · Phase 25 Cmt-3 propagation gap · BLA inheritPropagatedOOF gated only on regular candidates** — During Cmt-3b drain integration, traced that abscb's BLA promoted the abspos correctly but the descendant never reached the outer drain. Root cause: `block_layout.go` invoked `inheritPropagatedOOF` only when `len(childResult.PropagatedOOFCandidates) > 0`. After Cmt-3a's promotion, child fragments carry the OOF payload via `FragmentedOofData` instead of as raw candidates — propagation never fired. Fixed at the two call sites (collapse-through path and main path) to also fire when `childResult.Fragment.FragmentedOofData != nil`. Drain confirmed firing end-to-end; `-032` improved 2.1%→1.6% in a Phase-14b-disabled experiment, then reverted to 2.1% under normal Phase 14b (until Cmt-4 unblocks).

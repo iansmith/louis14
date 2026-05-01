@@ -6,18 +6,20 @@ Project rules live in `/Users/iansmith/louis14/CLAUDE.md` and auto-memory at `/U
 
 ## Tracking files
 
-- `findings.md` — active phase briefs (Phase 21–24) + open residuals + key data-structure pointers + recent error log.
+- `findings.md` — active phase briefs (Phase 21–25) + open residuals + key data-structure pointers + recent error log.
 - `docs/findings-multicol-archive.md` — historical detail for Phase 12–20 (sub-phase landings, retired briefs, Blink citations, pre-Phase-21 error-log entries, full ColumnLayoutAlgorithm pseudocode).
 - `progress.md` — current gate + per-phase landing notes.
 - `CONTINUE.md` — concise next-session pointer.
 
-## Current focus (2026-04-29)
+## Current focus (2026-04-30)
 
-Mainline `master` post-Phase-20. Multicol gate **211/455**. 13 driver invariants 13/13. 4-cat invariants: CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781.
+Mainline `master` post-Phase-22 Cmt-1. Multicol gate **212/455**. 13 driver invariants 13/13. 4-cat invariants: CSS2 99/99 · flex 626/629 · pos 92/105 · wm 781/781.
 
-The next four phases are sized to one focused effort each. Phases 21–22 are linked: Phase 22 must land before Phase 21 can complete without regressing the 9 prior-clip-wins.
+Phase 25 worktree open at `7ed644d7` (Cmt-3b drain pipeline). Cmt-4 next.
 
-## Phases 21–24
+The active phases are sized to one focused effort each. Phases 21–22–25 are linked: Phase 25's OOF-fragmentation port unblocks Phase 22 Cmt-B (now Phase 25 Cmt-4), which unblocks Phase 21.
+
+## Phases 21–25
 
 ### Phase 21 — Conditional `IsMulticolContainer` clip
 
@@ -41,7 +43,21 @@ Drop the `len(children) == 0` leaf-only gate in 16.d.1 + delete or shrink the pa
 
 Twelve tests across seven sub-clusters that exercise percentage-height descendants of multicol containers. Phase 15 closed `-001`; Phase 24 picks up the remaining 12. Each sub-cluster has its own failure shape; the original Phase 19 brief (in the archive) categorises them.
 
-**Target multicol gate: 211 → 220+ (depends on Phase 22 overlap).** Worktree, 8–12 commits. Full brief: `findings.md` § Phase 24 (sub-cluster detail in `docs/findings-multicol-archive.md` § Phase 19 brief).
+**Target multicol gate: 212 → 220+ (depends on Phase 25 overlap).** Worktree, 8–12 commits. Full brief: `findings.md` § Phase 24 (sub-cluster detail in `docs/findings-multicol-archive.md` § Phase 19 brief).
+
+### Phase 25 — Fragmentation-aware OOF positioning (Blink-aligned port)
+
+Port Blink's nested-multicol OOF pipeline. Closes `multicol-nested-{011,032}` + OOF portion of `fill-balance-026`; unblocks Phase 21.
+
+**Sequencing.**
+- **Cmt-1** (DONE `4540a8f0`): scaffold types — `LogicalOofContainingBlock`, `LogicalOofInlineContainer`, `LogicalOofNodeForFragmentation`, `MulticolWithPendingOOFs`, `FragmentedOofData`. Field additions on `BoxFragmentBuilder`, `BlockBreakToken`, `PhysicalFragment`, `OutOfFlowCandidate`.
+- **Cmt-2** (DONE `3b6b0e5d`): builder accessors + propagation hooks + inner-multicol pending-multicol registration. Behaviorally inert.
+- **Cmt-3a** (DONE `8a9226ef`): promotion at OOF resolution sites (BLA + multicol when `HasBlockFragmentation`). Multicol forwards `FragmentedOofData` from per-column BLAs. Fix `PropagateOOFFragmentainerDescendants` coordinate semantics. Outermost multicol calls `SetIsBlockFragmentationContextRoot()`.
+- **Cmt-3b** (DONE `7ed644d7`): drain pipeline (`HandleOofFragmentation` + helpers). Plus BLA propagation-trigger fix (now fires when child carries `FragmentedOofData`, not only on regular candidates).
+- **Cmt-4** (NEXT): re-apply Phase 22 Cmt-B post-loop break guard. Prompt: `docs/PROMPT-phase-25-cmt-4.md`. Closure target: `-011` and `-032` at 0%.
+- **Cmt-5+** (TBD): IMCB / inset-based OOF sizing for descendants whose CSS doesn't have explicit width/height; Blink-style side-builder fragment-rebuild for OOFs with interior content; vertical writing modes for the drain offset arithmetic.
+
+**Target multicol gate: 212 → 215+ (Cmt-4) and beyond as ripple captures.** Worktree `phase-25-oof-fragmentation` at `7ed644d7`. Full brief: `findings.md` § Phase 25.
 
 ## Per-phase discipline (CLAUDE.md recap)
 
@@ -70,7 +86,7 @@ GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualte
 GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualtest/ \
   -run 'TestWPTCSS3Reftests/css-writing-modes'          # expect 781/781
 GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualtest/ \
-  -run 'TestWPTCSS3Reftests/css-multicol'               # 211/455 (post Phase 20)
+  -run 'TestWPTCSS3Reftests/css-multicol'               # 212/455 (post Phase 22 Cmt-1)
 
 # 13 driver invariants
 GOTOOLCHAIN=go1.26.2 GOFLAGS="-mod=mod" /opt/homebrew/bin/go test ./pkg/visualtest/ \
