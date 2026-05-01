@@ -4905,12 +4905,30 @@ func (s *Style) GetColumnWrap() string {
 	return "auto"
 }
 
-// GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em)
+// GetColumnGapMulticol returns the column-gap for multicol layout (default: 1em).
+// Percentage values are NOT resolved here (no percent base) — callers that have
+// a percent base should use GetColumnGapMulticolWithBase.
 func (s *Style) GetColumnGapMulticol() float64 {
+	return s.GetColumnGapMulticolWithBase(0)
+}
+
+// GetColumnGapMulticolWithBase returns the column-gap with percentage values
+// resolved against `percentBase` (the multicol container's content-box
+// inline-size, per CSS Multicol L1 §2.3 "Percentages [for column-gap] are
+// relative to the dimension of the box."). When percentBase is 0, percentages
+// fall through to the 1em default — preserves the no-base call sites'
+// behavior.
+func (s *Style) GetColumnGapMulticolWithBase(percentBase float64) float64 {
 	if val, ok := s.Get("column-gap"); ok {
 		val = strings.TrimSpace(val)
 		if val == "normal" {
 			return s.GetFontSize()
+		}
+		if strings.HasSuffix(val, "%") && percentBase > 0 {
+			numStr := strings.TrimSuffix(val, "%")
+			if num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64); err == nil {
+				return num * percentBase / 100.0
+			}
 		}
 		if w, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
 			return w

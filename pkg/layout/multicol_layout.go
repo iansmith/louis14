@@ -270,7 +270,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Resolve column parameters.
 	colCount := mla.style.GetColumnCount()
 	colWidth := mla.style.GetColumnWidth()
-	gap := mla.style.GetColumnGapMulticol()
+	gap := mla.style.GetColumnGapMulticolWithBase(contentInlineSize)
 	mla.columnGapSize = gap
 	numCols, usedColWidth := resolveColumnCount(contentInlineSize, colCount, colWidth, gap)
 	mla.usedColWidth = usedColWidth
