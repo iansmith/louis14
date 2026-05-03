@@ -1021,7 +1021,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 
 	// Final block size.
 	finalBlockSize := blockCursor
-	if hasExplicitBlock && finalBlockSize < explicitBlockSize {
+	if hasExplicitBlock && finalBlockSize < explicitBlockSize && !hasOuterFrag {
 		finalBlockSize = explicitBlockSize
 	}
 	// Phase 12e: max-height caps the multicol's content block-size when no
@@ -2235,7 +2235,7 @@ func (mla *MulticolLayoutAlgorithm) buildGapGeometry(
 	// get correct positions instead of falling back to CSS column-width: auto (0).
 	declaredColCount := mla.style.GetColumnCount()
 	if declaredColCount > 0 && len(mla.crossGaps) > 0 {
-		for i := mla.maxColumnsInRow; i < declaredColCount; i++ {
+		for i := mla.maxColumnsInRow; i < declaredColCount && len(mla.mainGaps) > 0; i++ {
 			last := mla.crossGaps[len(mla.crossGaps)-1]
 			// Stride = usedColWidth + columnGapSize.
 			inlineOffset := last.GapInlineOffset + mla.columnGapSize/2 + mla.usedColWidth + mla.columnGapSize
