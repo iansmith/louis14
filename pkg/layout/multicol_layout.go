@@ -1024,6 +1024,27 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock && finalBlockSize < explicitBlockSize && !hasOuterFrag {
 		finalBlockSize = explicitBlockSize
 	}
+	// Phase 25 Cmt-8: when a nested multicol finishes with blockCursor <
+	// remainingContentBlockSize (all in-flow content placed but CSS declared
+	// height not yet satisfied), absorb the remaining height into this
+	// fragment's block-size up to the outer fragmentainer limit. This
+	// produces structural fragments that fill the outer column with the
+	// inner's background, matching Blink's ComputeBlockSizeForFragment
+	// expansion + FinishFragmentation reduction to fragmentainer space.
+	if hasExplicitBlock && hasOuterFrag && blockCursor < mla.remainingContentBlockSize {
+		maxCapacity := outerAvailable - geom.BlockBorderPadding()
+		if maxCapacity < 0 {
+			maxCapacity = 0
+		}
+		want := mla.remainingContentBlockSize
+		if want > maxCapacity {
+			want = maxCapacity
+		}
+		if finalBlockSize < want {
+			finalBlockSize = want
+		}
+	}
+
 	// Phase 12e: max-height caps the multicol's content block-size when no
 	// explicit height is set. fragment_geometry already applies max-height to
 	// BorderBoxSize when the block-size is definite, so this only affects the
@@ -2100,8 +2121,8 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 //
 // Mirrors Blink's ColumnLayoutAlgorithm::PropagateBaselineFromChild
 // (cla.cc:1655–1677). Called at two sites:
-//   1. After each column is committed in layoutLine.
-//   2. After the spanner is committed in the spanner-placement block of Layout.
+//  1. After each column is committed in layoutLine.
+//  2. After the spanner is committed in the spanner-placement block of Layout.
 //
 // min semantics for first baseline: the earliest column wins.
 // max semantics for last baseline: the latest column wins.
