@@ -1225,13 +1225,13 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) {
 // CSS 2.1 Appendix E order using the pre-sorted PaintLayer lists.
 //
 // The walk is split into phases (mirrors Blink's PaintLayerPainter):
-//  1. Self decorations — bg, borders, shadows, outline, list marker.
-//  2. NegativeZ z-children (step 2).
-//  3. PhaseBackground across non-self-painting descendants (step 3).
-//  4. PhaseFloat across non-self-painting descendants (step 4).
-//  5. Self foreground — text + image.
-//  6. PhaseForeground across non-self-painting descendants (step 5).
-//  7. AutoZero + PositiveZ z-children (steps 6-7).
+//   1. Self decorations — bg, borders, shadows, outline, list marker.
+//   2. NegativeZ z-children (step 2).
+//   3. PhaseBackground across non-self-painting descendants (step 3).
+//   4. PhaseFloat across non-self-painting descendants (step 4).
+//   5. Self foreground — text + image.
+//   6. PhaseForeground across non-self-painting descendants (step 5).
+//   7. AutoZero + PositiveZ z-children (steps 6-7).
 //
 // Descendant painting is split into phases so floats (step 4) can paint
 // above earlier siblings' block backgrounds but below later siblings'
@@ -2848,9 +2848,9 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 	innerRadii := outerRadii.Inset(bw.Top, bw.Right, bw.Bottom, bw.Left)
 
 	type borderSide struct {
-		width                      float64
-		style                      css.BorderStyle
-		color                      css.Color
+		width float64
+		style css.BorderStyle
+		color css.Color
 		clipX, clipY, clipW, clipH float64
 	}
 
@@ -3010,7 +3010,7 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 		}
 	}
 
-	if gg := layer.GapGeometry; gg != nil {
+	if gg := layer.GapGeometry; gg != nil && len(gg.CrossGaps) > 0 {
 		// GapGeometry path: use layout-computed cross gap positions.
 		// CrossGap.GapInlineOffset is content-box relative (logical inline);
 		// for HTB writing mode that equals physical X offset from content origin.
@@ -3024,8 +3024,7 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 		return
 	}
 
-	// Ad-hoc fallback: only reached when GapGeometry is nil (pre-12h.6
-	// code paths). Draw numCols-1 rules evenly spaced.
+	// Ad-hoc fallback: draw numCols-1 rules evenly spaced.
 	colWidth := layer.ColumnWidth
 	gap := layer.ColumnGap
 	numCols := layer.ColumnCount
@@ -3333,7 +3332,7 @@ func applyCounterStyle(value int, cs css.CounterStyleRule, allStyles map[string]
 			return fallbackCounter(value, cs.Fallback, allStyles)
 		}
 		n := len(cs.Symbols)
-		idx := ((value-1)%n + n) % n
+		idx := ((value - 1) % n + n) % n
 		return cs.Prefix + cs.Symbols[idx] + cs.Suffix
 
 	case "numeric":
@@ -3385,7 +3384,7 @@ func applyCounterStyle(value int, cs css.CounterStyleRule, allStyles map[string]
 			return fallbackCounter(value, cs.Fallback, allStyles)
 		}
 		n := len(cs.Symbols)
-		idx := ((value-1)%n + n) % n
+		idx := ((value - 1) % n + n) % n
 		count := ((value - 1) / n) + 1
 		sym := cs.Symbols[idx]
 		result := strings.Repeat(sym, count)
