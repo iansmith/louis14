@@ -2231,12 +2231,6 @@ func (mla *MulticolLayoutAlgorithm) buildGapGeometry(
 	finalBlockSize float64,
 	geom FragmentGeometry,
 ) {
-	if len(mla.crossGaps) == 0 && len(mla.mainGaps) == 0 {
-		return
-	}
-	if !mla.firstColumnOffsetSet {
-		return
-	}
 	if !mla.style.HasColumnRule() {
 		return
 	}
@@ -2246,53 +2240,58 @@ func (mla *MulticolLayoutAlgorithm) buildGapGeometry(
 		MainDirection: GapForRows,
 	}
 
-	// Pad cross_gaps_ to the declared column count when layout produced fewer.
-	// Mirrors Blink cla.cc:1722-1735.
-	// Only pad when there is at least one actual cross gap: padding extends
-	// existing gaps rightward. If there are no actual cross gaps (all rows had
-	// only one content column, so no inter-column boundaries), padding would
-	// invent gap positions in empty space and paint spurious column rules.
-	// Use usedColWidth (computed column width) as stride so auto-width columns
-	// get correct positions instead of falling back to CSS column-width: auto (0).
-	declaredColCount := mla.style.GetColumnCount()
-	if declaredColCount > 0 && len(mla.crossGaps) > 0 {
-		for i := mla.maxColumnsInRow; i < declaredColCount && len(mla.mainGaps) > 0; i++ {
+	// Only build gap content when columns were actually laid out.
+	// Structural fragments (Cmt-8) have no columns; they carry an empty
+	// GapGeometry so the painter knows there are no rules to draw.
+	if mla.firstColumnOffsetSet {
+		// Pad cross_gaps_ to the declared column count when layout produced fewer.
+		// Mirrors Blink cla.cc:1722-1735.
+		// Only pad when there is at least one actual cross gap: padding extends
+		// existing gaps rightward. If there are no actual cross gaps (all rows had
+		// only one content column, so no inter-column boundaries), padding would
+		// invent gap positions in empty space and paint spurious column rules.
+		// Use usedColWidth (computed column width) as stride so auto-width columns
+		// get correct positions instead of falling back to CSS column-width: auto (0).
+		declaredColCount := mla.style.GetColumnCount()
+		if declaredColCount > 0 && len(mla.crossGaps) > 0 {
+			for i := mla.maxColumnsInRow; i < declaredColCount && len(mla.mainGaps) > 0; i++ {
+				last := mla.crossGaps[len(mla.crossGaps)-1]
+				// Stride = usedColWidth + columnGapSize.
+				inlineOffset := last.GapInlineOffset + mla.columnGapSize/2 + mla.usedColWidth + mla.columnGapSize
+				mla.addCrossGap(inlineOffset)
+			}
+		}
+
+		// Build content inline extents.
+		contentInlineEnd := contentInlineSize + geom.InlineBorderPadding() - geom.Border.InlineEnd - geom.Padding.InlineEnd
+		if len(mla.crossGaps) > 0 {
 			last := mla.crossGaps[len(mla.crossGaps)-1]
-			// Stride = usedColWidth + columnGapSize.
-			inlineOffset := last.GapInlineOffset + mla.columnGapSize/2 + mla.usedColWidth + mla.columnGapSize
-			mla.addCrossGap(inlineOffset)
+			if last.GapInlineOffset > contentInlineEnd {
+				contentInlineEnd = last.GapInlineOffset
+			}
+			if mla.hasColumnsPerRow {
+				mla.updateCrossGapSegmentStates()
+			}
+			gg.CrossGaps = mla.crossGaps
+			gg.InlineGapSize = mla.columnGapSize
 		}
-	}
 
-	// Build content inline extents.
-	contentInlineEnd := contentInlineSize + geom.InlineBorderPadding() - geom.Border.InlineEnd - geom.Padding.InlineEnd
-	if len(mla.crossGaps) > 0 {
-		last := mla.crossGaps[len(mla.crossGaps)-1]
-		if last.GapInlineOffset > contentInlineEnd {
-			contentInlineEnd = last.GapInlineOffset
+		// Build content block extents.
+		contentBlockEnd := finalBlockSize + geom.BlockBorderPadding() - geom.Border.BlockEnd - geom.Padding.BlockEnd
+		if len(mla.mainGaps) > 0 {
+			last := mla.mainGaps[len(mla.mainGaps)-1]
+			if last.GapOffset > contentBlockEnd {
+				contentBlockEnd = last.GapOffset
+			}
+			gg.MainGaps = mla.mainGaps
+			gg.BlockGapSize = mla.rowGapSize
 		}
-		if mla.hasColumnsPerRow {
-			mla.updateCrossGapSegmentStates()
-		}
-		gg.CrossGaps = mla.crossGaps
-		gg.InlineGapSize = mla.columnGapSize
-	}
 
-	// Build content block extents.
-	contentBlockEnd := finalBlockSize + geom.BlockBorderPadding() - geom.Border.BlockEnd - geom.Padding.BlockEnd
-	if len(mla.mainGaps) > 0 {
-		last := mla.mainGaps[len(mla.mainGaps)-1]
-		if last.GapOffset > contentBlockEnd {
-			contentBlockEnd = last.GapOffset
-		}
-		gg.MainGaps = mla.mainGaps
-		gg.BlockGapSize = mla.rowGapSize
+		gg.ContentInlineStart = mla.firstColumnOffset.InlineOffset
+		gg.ContentInlineEnd = contentInlineEnd
+		gg.ContentBlockStart = mla.firstColumnOffset.BlockOffset
+		gg.ContentBlockEnd = contentBlockEnd
 	}
-
-	gg.ContentInlineStart = mla.firstColumnOffset.InlineOffset
-	gg.ContentInlineEnd = contentInlineEnd
-	gg.ContentBlockStart = mla.firstColumnOffset.BlockOffset
-	gg.ContentBlockEnd = contentBlockEnd
 
 	builder.SetGapGeometry(gg)
 }
