@@ -441,8 +441,16 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		})
 		builder.SetIntrinsicBlockSize(0)
 		builder.SetLayoutNode(mla.node)
-		physBorder := ToPhysicalEdges(geom.Border, wdm)
-		physPadding := ToPhysicalEdges(geom.Padding, wdm)
+		border := geom.Border
+		padding := geom.Padding
+		if !builder.HasClonedBoxDecorations() {
+			// FragmentainerOffset > 0 with no break token: first
+			// layout in a non-first fragmentainer. No explicit
+			// continuation tracking; keep borders (zero-height
+			// fragment anyway).
+		}
+		physBorder := ToPhysicalEdges(border, wdm)
+		physPadding := ToPhysicalEdges(padding, wdm)
 		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
 			Margin:  physMargin,
@@ -507,14 +515,29 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	// Blink's container_builder_.ToBoxFragment after the LayoutChildren
 	// loop in column_layout_algorithm.cc:605-714.
 	buildOuterBreakResult := func() *LayoutResult {
+		didBreakSelf := true // Content exceeded outer fragmentainer.
+		effBP := EffectiveBlockBorderPadding(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, didBreakSelf)
 		builder.SetSize(LogicalSize{
 			InlineSize: contentInlineSize + geom.InlineBorderPadding(),
-			BlockSize:  blockCursor + geom.BlockBorderPadding(),
+			BlockSize:  blockCursor + effBP,
 		})
 		builder.SetIntrinsicBlockSize(blockCursor)
 		builder.SetLayoutNode(mla.node)
-		physBorder := ToPhysicalEdges(geom.Border, wdm)
-		physPadding := ToPhysicalEdges(geom.Padding, wdm)
+		border := geom.Border
+		padding := geom.Padding
+		if !builder.HasClonedBoxDecorations() {
+			isContinuation := mla.space.BreakToken != nil && !mla.space.BreakToken.ConsumedBlockSize.IsZero()
+			if isContinuation {
+				border.BlockStart = 0
+				padding.BlockStart = 0
+			}
+			if didBreakSelf {
+				border.BlockEnd = 0
+				padding.BlockEnd = 0
+			}
+		}
+		physBorder := ToPhysicalEdges(border, wdm)
+		physPadding := ToPhysicalEdges(padding, wdm)
 		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
 			Margin:  physMargin,
@@ -645,7 +668,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				balanceColumns, hasExplicitBlock, explicitBlockSize,
 				effectiveMaxBlockSize,
 				blockCursor, nextColToken, builder,
-				Indefinite,
+				Indefinite, geom.BlockBorderPadding(),
 			)
 			blockCursor += rowBlockAdvance
 			totalColumnsRendered += columnsPlaced
@@ -1139,12 +1162,27 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		return buildOuterBreakResult()
 	}
 
+	didBreakSelf := false // Main path: all remaining content fits.
+	effBP := EffectiveBlockBorderPadding(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, didBreakSelf)
 	builder.SetSize(LogicalSize{
 		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
-		BlockSize:  finalBlockSize + geom.BlockBorderPadding(),
+		BlockSize:  finalBlockSize + effBP,
 	})
-	physBorder := ToPhysicalEdges(geom.Border, wdm)
-	physPadding := ToPhysicalEdges(geom.Padding, wdm)
+	border := geom.Border
+	padding := geom.Padding
+	if !builder.HasClonedBoxDecorations() {
+		isContinuation := mla.space.BreakToken != nil && !mla.space.BreakToken.ConsumedBlockSize.IsZero()
+		if isContinuation {
+			border.BlockStart = 0
+			padding.BlockStart = 0
+		}
+		if didBreakSelf {
+			border.BlockEnd = 0
+			padding.BlockEnd = 0
+		}
+	}
+	physBorder := ToPhysicalEdges(border, wdm)
+	physPadding := ToPhysicalEdges(padding, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 	builder.SetBoxData(&PhysicalBoxData{
 		Margin:  physMargin,
@@ -1241,6 +1279,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	nextColToken *BlockBreakToken,
 	builder *BoxFragmentBuilder,
 	minimumColumnBlockSize float64,
+	multicolBlockBorderPadding float64,
 ) (rowBlockAdvance float64, columnsPlaced int, spannerPath *ColumnSpannerPath, remainingToken *BlockBreakToken) {
 
 	// Outer remaining space: cap column height so columns don't exceed what
@@ -1250,7 +1289,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 	if mla.space.HasBlockFragmentation &&
 		mla.space.FragmentainerBlockSize != Indefinite &&
 		!mla.space.IsInitialColumnBalancingPass {
-		rem := mla.space.FragmentainerBlockSize - mla.space.FragmentainerOffset - lineOffset
+		rem := mla.space.FragmentainerBlockSize - mla.space.FragmentainerOffset - lineOffset - multicolBlockBorderPadding
 		if rem > 0 {
 			outerRemaining = rem
 		}
@@ -1531,6 +1570,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 				balanceColumns, hasExplicitBlock, explicitBlockSize,
 				maxBlockSize, lineOffset, nextColToken, builder,
 				maxOverflow,
+				multicolBlockBorderPadding,
 			)
 		}
 	}
