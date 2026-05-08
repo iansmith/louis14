@@ -1207,6 +1207,32 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	mla.HandleOofFragmentation(builder)
 
 	result := builder.Build()
+
+	// Phase 25 Cmt-9: emit a break token when content fits in the current
+	// outer fragmentainer but explicit content block-size remains
+	// (finalBlockSize < remainingContentBlockSize). The barrier above only
+	// triggers when blockCursor >= outerAvailable; after Cmt-8 absorption,
+	// content may still fit yet leave explicit height unsatiated. Without
+	// this token the outer multicol sees no continuation and drops trailing
+	// columns. Mirrors Blink's post-LayoutChildren
+	// remaining_content_block_size_ break check
+	// (column_layout_algorithm.cc).
+	if hasOuterFrag && hasExplicitBlock && finalBlockSize > 0 &&
+		finalBlockSize < mla.remainingContentBlockSize {
+		prevConsumed := layoutunit.LayoutUnit{}
+		seqNum := 0
+		if mla.space.BreakToken != nil {
+			prevConsumed = mla.space.BreakToken.ConsumedBlockSize
+			seqNum = mla.space.BreakToken.SequenceNumber + 1
+		}
+		result.BreakToken = &BlockBreakToken{
+			Node:               mla.node,
+			ConsumedBlockSize:  prevConsumed.Add(layoutunit.FromFloat64Round(finalBlockSize)),
+			SequenceNumber:     seqNum,
+			HasSeenAllChildren: true,
+		}
+	}
+
 	result.PropagatedOOFCandidates = propagatedOOF
 	if hasForcedBreakAfter {
 		result.HasForcedBreak = true
