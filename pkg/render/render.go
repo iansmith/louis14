@@ -2989,6 +2989,22 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 		}
 	}
 
+	// Blink stretches the last row's column rules to the container's
+	// content-box block end (box_fragment_painter.cc ~line 1876). For
+	// single-row multicols (no spanner main-gaps), extend the rule
+	// block-end from the column extent to the content-box bottom so the
+	// rules fill the full column height, matching the reference for tests
+	// where balanced columns are shorter than the container height.
+	// Mirrors Blink behavior noted as "a known TODO in Blink to remove"
+	// in box_fragment_painter.cc — Blink's per-row painter stretches the
+	// last row, which is the only row when there are no spanners.
+	if hasCols {
+		cbBottom := math.Round(box.Y + box.Height - box.Border.Bottom - box.Padding.Bottom)
+		if gg := layer.GapGeometry; gg != nil && len(gg.MainGaps) == 0 && cbBottom > contentY+contentH {
+			contentH = cbBottom - contentY
+		}
+	}
+
 	drawRule := func(ruleX float64) {
 		switch layer.ColumnRuleStyle {
 		case "solid":
