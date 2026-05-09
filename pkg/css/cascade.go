@@ -594,6 +594,15 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		finalStyle.Set("display", "inline")
 	}
 
+	// CSS Pseudo 4 §3.1: ::marker pseudo-elements default to
+	// unicode-bidi: isolate, which separates the marker from the
+	// list item content in the bidi algorithm.
+	if pseudoElement == "marker" {
+		if _, ok := finalStyle.Get("unicode-bidi"); !ok {
+			finalStyle.Set("unicode-bidi", "isolate")
+		}
+	}
+
 	// Store viewport dimensions for viewport unit resolution
 	finalStyle.ViewportWidth = viewportWidth
 	finalStyle.ViewportHeight = viewportHeight
