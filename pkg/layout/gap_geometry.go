@@ -57,6 +57,16 @@ type GapGeometry struct {
 	ContentBlockStart  float64
 	ContentBlockEnd    float64
 
+	// LastRowCrossGapStart is the index of the first CrossGap in the last row.
+	// The painter stretches column rules for gaps at indices >= this value.
+	// Mirrors Blink's !items_until_last_row gate in PaintColumnRules.
+	LastRowCrossGapStart int
+
+	// ScrollbarBlockEnd is the block-end classic-scrollbar reservation.
+	// Subtracted from content-box bottom when stretching last-row column rules.
+	// Mirrors Blink's scrollbars.block_end subtraction in PaintColumnRules.
+	ScrollbarBlockEnd float64
+
 	// MainDirection is always GapForRows for multicol.
 	MainDirection GapDirection
 

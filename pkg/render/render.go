@@ -2990,38 +2990,41 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	}
 
 	// Blink stretches the last row's column rules to the container's
-	// content-box block end (box_fragment_painter.cc ~line 1876). For
-	// single-row multicols (no spanner main-gaps), extend the rule
-	// block-end from the column extent to the content-box bottom so the
-	// rules fill the full column height, matching the reference for tests
-	// where balanced columns are shorter than the container height.
-	// Mirrors Blink behavior noted as "a known TODO in Blink to remove"
-	// in box_fragment_painter.cc — Blink's per-row painter stretches the
-	// last row, which is the only row when there are no spanners.
+	// content-box block end (box_fragment_painter.cc ~line 1876).
+	// Per-row detection mirrors Blink's !items_until_last_row gate:
+	// only cross gaps at indices >= LastRowCrossGapStart belong to the
+	// last row and get stretched. The content-box bottom accounts for
+	// the scrollbar block-end reservation (matches Blink's subtraction
+	// of scrollbars.block_end from ContentRect().BlockEndOffset()).
+	// Mirrors Blink behavior noted as "a known TODO in Blink to remove".
+	stretchedH := contentH
 	if hasCols {
 		cbBottom := math.Round(box.Y + box.Height - box.Border.Bottom - box.Padding.Bottom)
-		if gg := layer.GapGeometry; gg != nil && len(gg.MainGaps) == 0 && cbBottom > contentY+contentH {
-			contentH = cbBottom - contentY
+		if gg := layer.GapGeometry; gg != nil {
+			cbBottom -= gg.ScrollbarBlockEnd
+			if cbBottom > contentY+contentH {
+				stretchedH = cbBottom - contentY
+			}
 		}
 	}
 
-	drawRule := func(ruleX float64) {
+	drawRule := func(ruleX float64, ruleH float64) {
 		switch layer.ColumnRuleStyle {
 		case "solid":
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, ruleH)
 			r.dc.Fill()
 		case "dashed":
-			r.drawDashedLine(ruleX, contentY, ruleX, contentY+contentH, ruleWidth)
+			r.drawDashedLine(ruleX, contentY, ruleX, contentY+ruleH, ruleWidth)
 		case "dotted":
-			r.drawDottedLine(ruleX, contentY, ruleX, contentY+contentH, ruleWidth)
+			r.drawDottedLine(ruleX, contentY, ruleX, contentY+ruleH, ruleWidth)
 		case "double":
 			thirdW := ruleWidth / 3
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, thirdW, contentH)
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, thirdW, ruleH)
 			r.dc.Fill()
-			r.dc.DrawRectangle(ruleX+ruleWidth/2-thirdW, contentY, thirdW, contentH)
+			r.dc.DrawRectangle(ruleX+ruleWidth/2-thirdW, contentY, thirdW, ruleH)
 			r.dc.Fill()
 		default:
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, ruleH)
 			r.dc.Fill()
 		}
 	}
@@ -3035,7 +3038,11 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 				continue // spanner-adjacent gap: no rule
 			}
 			ruleX := contentX + math.Round(cg.GapInlineOffset)
-			drawRule(ruleX)
+			ruleH := contentH
+			if i >= gg.LastRowCrossGapStart {
+				ruleH = stretchedH
+			}
+			drawRule(ruleX, ruleH)
 		}
 		return
 	}
@@ -3050,7 +3057,7 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	}
 	for i := 1; i < numCols; i++ {
 		ruleX := contentX + float64(i)*(colWidth+gap) - gap/2
-		drawRule(ruleX)
+		drawRule(ruleX, contentH)
 	}
 }
 
@@ -3337,7 +3344,10 @@ func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 				return applyCounterStyle(index, cs, r.counterStyles)
 			}
 		}
-		return fmt.Sprintf("%d.", index)
+		// Return custom string list-style-type values as-is.
+		// These are CSS <string> values from e.g. list-style-type: "\2022".
+		// Per CSS Lists §3, a <string> value is used as the marker text.
+		return string(lst)
 	}
 }
 
@@ -3586,24 +3596,22 @@ func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fon
 // drawListMarkerInside draws the marker inline at the start of the content area.
 // Per CSS Lists §4.2, the marker is placed as if it were an inline element at
 // the beginning of the first line box of the list item.
+//
+// For string-based inside markers (from ::marker { content: } or
+// list-style-type: <string>), the marker text has already been injected into
+// the inline layout pipeline by injectInsideMarker. In that case the marker is
+// rendered as part of the inline content with proper bidi isolation, and we
+// skip paint-time drawing here to avoid double rendering.
 func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
+	// For inside markers with custom string content, the marker text was
+	// injected into the inline layout. Skip paint-time drawing.
+	if layer.MarkerContent != "" {
+		return
+	}
+
 	// For inside position, the marker is drawn at the content-left edge.
 	// Vertically: approximately at the midpoint of the first line.
 	my := box.Y + box.Border.Top + fontSize*0.55
-
-	// If ::marker has custom content, draw it as text at content start.
-	if layer.MarkerContent != "" {
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			numX := contentLeft
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(layer.MarkerContent, fid, numX, numY)
-		}
-		return
-	}
 
 	switch layer.ListStyleType {
 	case css.ListStyleTypeDisc:

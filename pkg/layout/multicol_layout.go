@@ -2357,6 +2357,20 @@ func (mla *MulticolLayoutAlgorithm) buildGapGeometry(
 		gg.ContentInlineEnd = contentInlineEnd
 		gg.ContentBlockStart = mla.firstColumnOffset.BlockOffset
 		gg.ContentBlockEnd = contentBlockEnd
+
+		// Compute LastRowCrossGapStart: index of the first CrossGap in
+		// the last row. Mirrors Blink's !items_until_last_row gate in
+		// PaintColumnRules: only the last row's column rules stretch to
+		// the content-box bottom.
+		if len(mla.columnsPerRow) > 1 {
+			for _, cols := range mla.columnsPerRow[:len(mla.columnsPerRow)-1] {
+				if cols > 0 {
+					gg.LastRowCrossGapStart += cols - 1
+				}
+			}
+		}
+		// Scrollbar block-end for PaintColumnRules stretch alignment.
+		gg.ScrollbarBlockEnd = geom.Scrollbar.BlockEnd
 	}
 
 	builder.SetGapGeometry(gg)
