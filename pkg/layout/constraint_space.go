@@ -88,7 +88,6 @@ type ConstraintSpace struct {
 	// be ignored — only content determines the block-size.
 	IsContentSuggestionLayout bool
 
-
 	// OrthogonalFallbackInlineSize is the ICB size used when an orthogonal
 	// child would otherwise get Indefinite as its available inline-size.
 	// Per CSS Writing Modes §10.3.2, when the parent's block-size is indefinite,
@@ -224,7 +223,7 @@ type ConstraintSpace struct {
 type FragmentationType int
 
 const (
-	FragmentNone   FragmentationType = iota
+	FragmentNone FragmentationType = iota
 	FragmentColumn
 	FragmentPage
 )
@@ -408,7 +407,6 @@ func (b *ConstraintSpaceBuilder) SetIsContentSuggestionLayout(v bool) *Constrain
 	b.space.IsContentSuggestionLayout = v
 	return b
 }
-
 
 // SetOrthogonalFallbackInlineSize sets the ICB fallback for orthogonal children.
 // This must be called BEFORE SetAvailableSize, as the fallback is applied during

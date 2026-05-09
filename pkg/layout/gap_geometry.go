@@ -14,8 +14,8 @@ package layout
 type GapContainerType int
 
 const (
-	GapContainerGrid    GapContainerType = iota
-	GapContainerFlex    GapContainerType = iota
+	GapContainerGrid     GapContainerType = iota
+	GapContainerFlex     GapContainerType = iota
 	GapContainerMulticol GapContainerType = iota
 )
 

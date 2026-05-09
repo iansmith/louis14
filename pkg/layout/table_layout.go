@@ -673,8 +673,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	firstRowHeight := 0.0
-	firstRowBaseline := 0.0  // max cell baseline in first VISIBLE row
-	lastRowBaseline := 0.0   // max cell baseline in last VISIBLE row
+	firstRowBaseline := 0.0   // max cell baseline in first VISIBLE row
+	lastRowBaseline := 0.0    // max cell baseline in last VISIBLE row
 	lastRowBlockOffset := 0.0 // block offset of last VISIBLE row
 	emittedRows := 0          // count of visible (non-collapsed) rows emitted
 	for rowIdx, row := range rows {
@@ -1345,7 +1345,6 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 	rows = append(rows, footerRows...)
 	return rows, captions, colWidths, colStyleSpecs
 }
-
 
 // buildRow extracts cells from a table-row element. After tree-build
 // normalization (LayoutTreeBuilder.wrapAnonymousTableBoxes), every row
@@ -2477,11 +2476,11 @@ type rowspanCellInfo struct {
 //   - rows:      the row vector to mutate in place.
 //   - rowIdx:    the rowspan cell's originating row index.
 //   - rowSpan:   the rowspan attribute (already clamped by
-//                assignColumnIndices's slot grid; we re-clamp defensively
-//                so this helper is safe to call directly).
+//     assignColumnIndices's slot grid; we re-clamp defensively
+//     so this helper is safe to call directly).
 //   - cellBlock: the cell's intrinsic block-size (the value that would
-//                otherwise have been folded into the originating row's
-//                intrinsic max in the rowSpan == 1 path).
+//     otherwise have been folded into the originating row's
+//     intrinsic max in the rowSpan == 1 path).
 //   - rowSpacing: CSS 2.1 §17.6.1 border-spacing in the block axis.
 //
 // Distribution rules (matches Blink):
@@ -2805,4 +2804,3 @@ func distributeTableBlockSizeToRows(
 		}
 	}
 }
-

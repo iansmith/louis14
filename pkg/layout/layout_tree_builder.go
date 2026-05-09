@@ -14,12 +14,12 @@ import (
 //
 // Mirrors Blink's LayoutTreeBuilderForNG.
 type LayoutTreeBuilder struct {
-	styles          map[*html.Node]*css.Style
-	stylesheets     []*css.Stylesheet
-	viewportWidth   float64
-	viewportHeight  float64
-	counters        map[string][]int // CSS counter stacks (name → stack of values)
-	quoteDepth      int              // nesting depth for open-quote/close-quote
+	styles         map[*html.Node]*css.Style
+	stylesheets    []*css.Stylesheet
+	viewportWidth  float64
+	viewportHeight float64
+	counters       map[string][]int // CSS counter stacks (name → stack of values)
+	quoteDepth     int              // nesting depth for open-quote/close-quote
 }
 
 // BuildLayoutTree creates the layout tree rooted at the given DOM node.

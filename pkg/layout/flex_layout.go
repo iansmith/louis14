@@ -61,11 +61,12 @@ func NewFlexLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Con
 // All flexItem dimension helpers use this flag directly to choose inline vs block.
 //
 // Examples:
-//   HTB container, row, HTB item → mainIsHoriz=true, itemInlineIsHoriz=true  → mainIsItemInline=true
-//   HTB container, row, VRL item → mainIsHoriz=true, itemInlineIsHoriz=false → mainIsItemInline=false
-//   HTB container, col, HTB item → mainIsHoriz=false, itemInlineIsHoriz=true → mainIsItemInline=false
-//   VRL container, row, HTB item → mainIsHoriz=false, itemInlineIsHoriz=true → mainIsItemInline=false
-//   VRL container, row, VRL item → mainIsHoriz=false, itemInlineIsHoriz=false→ mainIsItemInline=true
+//
+//	HTB container, row, HTB item → mainIsHoriz=true, itemInlineIsHoriz=true  → mainIsItemInline=true
+//	HTB container, row, VRL item → mainIsHoriz=true, itemInlineIsHoriz=false → mainIsItemInline=false
+//	HTB container, col, HTB item → mainIsHoriz=false, itemInlineIsHoriz=true → mainIsItemInline=false
+//	VRL container, row, HTB item → mainIsHoriz=false, itemInlineIsHoriz=true → mainIsItemInline=false
+//	VRL container, row, VRL item → mainIsHoriz=false, itemInlineIsHoriz=false→ mainIsItemInline=true
 func computeMainIsItemInline(containerWDM WritingDirectionMode, itemWDM WritingDirectionMode, isRow bool) bool {
 	mainIsHorizontal := !containerWDM.IsVertical() == isRow
 	itemInlineIsHorizontal := !itemWDM.IsVertical()
@@ -166,15 +167,15 @@ type flexItem struct {
 	flexBasis        float64 // resolved flex-basis (content-box in main axis)
 	hypothetical     float64 // hypothetical main size (clamped flex-basis)
 	resolvedMain     float64 // final main size after flex grow/shrink
-	crossSize     float64 // final cross size (border-box)
-	mainOffset    float64 // position along main axis (content-box offset within container)
-	crossOffset   float64 // position along cross axis (margin-box start within container)
-	fragment      *PhysicalFragment
-	flexGrow      float64
-	flexShrink    float64
-	frozen        bool
-	order         int
-	isRow         bool // true if main axis = inline axis
+	crossSize        float64 // final cross size (border-box)
+	mainOffset       float64 // position along main axis (content-box offset within container)
+	crossOffset      float64 // position along cross axis (margin-box start within container)
+	fragment         *PhysicalFragment
+	flexGrow         float64
+	flexShrink       float64
+	frozen           bool
+	order            int
+	isRow            bool // true if main axis = inline axis
 
 	// §9.7 freeze bounds (CSS min/max, content-box).
 	minMain float64 // effective min main size (§4.5 for auto, or CSS min-width/height)
@@ -1805,8 +1806,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
 				// CB size = padding-box = content + padding (borders excluded).
 				oofPart := &OutOfFlowLayoutPart{
-					ctx:                 fla.ctx,
-					containingBlockWDM:  wdm,
+					ctx:                fla.ctx,
+					containingBlockWDM: wdm,
 					containingBlockSize: LogicalSize{
 						InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
 						BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
@@ -2065,7 +2066,6 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		hyp := fla.clampMainSizeWithMin(flexBasis, minMainSize, childStyle, childWDM, childGeom,
 			itemSizingSpace, isRow)
 
-
 		// Compute CSS max main size for §9.7 freeze loop.
 		// Must dispatch to the correct axis function based on mainIsItemInline,
 		// since for orthogonal items the flex main axis may be the item's block axis.
@@ -2100,25 +2100,25 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		mainAS, mainAE, crossAS, crossAE := getItemAutoMargins(childStyle, wdm, isRow)
 
 		item := &flexItem{
-			node:           child,
-			style:          childStyle,
-			wdm:            childWDM,
-			geom:           childGeom,
-			margins:        childMargins,
+			node:             child,
+			style:            childStyle,
+			wdm:              childWDM,
+			geom:             childGeom,
+			margins:          childMargins,
 			mainIsItemInline: itemMainIsInline,
-			flexBasis:      flexBasis,
-			hypothetical:   hyp,
-			flexGrow:       flexGrow,
-			flexShrink:     flexShrink,
-			order:          order,
-			isRow:          isRow,
-			minMain:        minMainSize,
-			maxMain:        maxMainSize,
-			mainAutoStart:  mainAS,
-			mainAutoEnd:    mainAE,
-			crossAutoStart: crossAS,
-			crossAutoEnd:   crossAE,
-			collapsed:      childStyle.GetVisibility() == "collapse",
+			flexBasis:        flexBasis,
+			hypothetical:     hyp,
+			flexGrow:         flexGrow,
+			flexShrink:       flexShrink,
+			order:            order,
+			isRow:            isRow,
+			minMain:          minMainSize,
+			maxMain:          maxMainSize,
+			mainAutoStart:    mainAS,
+			mainAutoEnd:      mainAE,
+			crossAutoStart:   crossAS,
+			crossAutoEnd:     crossAE,
+			collapsed:        childStyle.GetVisibility() == "collapse",
 		}
 		items = append(items, item)
 	}

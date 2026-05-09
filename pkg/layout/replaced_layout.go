@@ -122,7 +122,6 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, style *css.S
 	explicitInline := explicitInlineLU.Float64()
 	explicitBlock := explicitBlockLU.Float64()
 
-
 	// Handle fixed inline-size from parent (e.g. flex).
 	if space.IsFixedInlineSize {
 		explicitInline = space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()

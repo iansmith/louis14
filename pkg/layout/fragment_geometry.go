@@ -62,6 +62,36 @@ func (fg FragmentGeometry) BlockScrollbarSum() float64 {
 	return fg.Scrollbar.BlockStart + fg.Scrollbar.BlockEnd
 }
 
+// EffectiveBlockBorderPadding returns the effective block-direction border +
+// scrollbar + padding sum that should contribute to this fragment's geometric
+// block-size, accounting for box-decoration-break and fragment position.
+//
+// In clone mode every fragment behaves as an independent decorated box — all
+// borders appear on every fragment regardless of position.
+//
+// In slice mode (default) borders belong to the whole element — block-start
+// appears only on the first fragment, block-end only on the last.
+//
+// Mirrors Blink's FinishFragmentation sides bitmask via
+// ShouldIncludeBlockEndBorderPadding / ShouldCloneBlockStartBorderPadding.
+func EffectiveBlockBorderPadding(geom FragmentGeometry, hasClonedBoxDecorations bool, breakToken *BlockBreakToken, isBreaking bool) float64 {
+	if hasClonedBoxDecorations {
+		return geom.BlockBorderPadding()
+	}
+	border := geom.Border
+	padding := geom.Padding
+	isContinuation := breakToken != nil && !breakToken.ConsumedBlockSize.IsZero()
+	if isContinuation {
+		border.BlockStart = 0
+		padding.BlockStart = 0
+	}
+	if isBreaking {
+		border.BlockEnd = 0
+		padding.BlockEnd = 0
+	}
+	return border.BlockStart + border.BlockEnd + padding.BlockStart + padding.BlockEnd
+}
+
 // ComputeFragmentGeometry resolves border and padding from a CSS style
 // into logical edges for the given writing direction.
 // An optional percentageBase (containing block inline-size) can be passed

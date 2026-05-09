@@ -75,11 +75,11 @@ type OutOfFlowCandidate struct {
 //
 // Ported from Blink's OutOfFlowLayoutPart.
 type OutOfFlowLayoutPart struct {
-	ctx                 *LayoutContext
-	containingBlockWDM  WritingDirectionMode
-	containingBlockSize    LogicalSize    // padding-box of the containing block (CSS spec §10.3.7)
-	containingBlockPadding LogicalEdges   // CB's padding, used to adjust child offsets to content-box-relative
-	geom                FragmentGeometry
+	ctx                    *LayoutContext
+	containingBlockWDM     WritingDirectionMode
+	containingBlockSize    LogicalSize  // padding-box of the containing block (CSS spec §10.3.7)
+	containingBlockPadding LogicalEdges // CB's padding, used to adjust child offsets to content-box-relative
+	geom                   FragmentGeometry
 
 	// resolvesFixed controls whether fixed-position descendants discovered
 	// while laying out OOF children are absorbed by this CB (true) or
