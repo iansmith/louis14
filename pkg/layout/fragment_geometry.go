@@ -175,8 +175,10 @@ func classicScrollbarWidth(style *css.Style) float64 {
 	switch style.GetScrollbarWidth() {
 	case "thin":
 		return 10
-	default: // "auto", "none", and any unknown value
+	case "none":
 		return 0
+	default: // "auto" and any unknown value
+		return 17 // classic scrollbar width per CSS Overflow §3.3
 	}
 }
 
