@@ -26,7 +26,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 
 	// Default styles for <a> (anchor/link) elements
 	if node.TagName == "a" {
-		style.Set("color", "#0645ad")           // Standard link blue
+		style.Set("color", "#0645ad") // Standard link blue
 		style.Set("text-decoration", "underline")
 	}
 
@@ -179,6 +179,14 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	case "rb":
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "ruby-base")
+		}
+	case "rtc":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "ruby-text-container")
+		}
+	case "rbc":
+		if _, ok := style.Get("display"); !ok {
+			style.Set("display", "ruby-base-container")
 		}
 	}
 
@@ -691,7 +699,7 @@ var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
 	"font-feature-settings": true,
-	"line-height": true, "text-align": true, "text-decoration": true,
+	"line-height":           true, "text-align": true, "text-decoration": true,
 	"text-transform": true, "text-indent": true, "white-space": true,
 	"visibility": true, "list-style-type": true, "list-style-position": true, "list-style-image": true,
 	"direction": true, "letter-spacing": true, "word-spacing": true,
@@ -1000,9 +1008,12 @@ func resolveLogicalSizeProperties(style *Style) {
 // the element's computed writing-mode. Must be called after inheritance.
 //
 // Mapping for horizontal-tb (default):
-//   inline-start=left, inline-end=right, block-start=top, block-end=bottom
+//
+//	inline-start=left, inline-end=right, block-start=top, block-end=bottom
+//
 // For vertical-rl / vertical-lr:
-//   inline-start=top, inline-end=bottom, block-start=right(rl)/left(lr), block-end=left(rl)/right(lr)
+//
+//	inline-start=top, inline-end=bottom, block-start=right(rl)/left(lr), block-end=left(rl)/right(lr)
 func resolveLogicalBoxProperties(style *Style) {
 	wm, _ := style.Get("writing-mode")
 	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||

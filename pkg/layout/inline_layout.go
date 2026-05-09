@@ -67,7 +67,9 @@ func isInlineLevelDisplay(d css.DisplayType) bool {
 		css.DisplayInlineTable,
 		css.DisplayRuby,
 		css.DisplayRubyText,
-		css.DisplayRubyBase:
+		css.DisplayRubyBase,
+		css.DisplayRubyTextContainer,
+		css.DisplayRubyBaseContainer:
 		return true
 	}
 	return false
@@ -105,7 +107,8 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		}
 		display := style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock &&
-			display != css.DisplayInlineFlex && display != css.DisplayInlineTable {
+			display != css.DisplayInlineFlex && display != css.DisplayInlineTable &&
+			display != css.DisplayRubyTextContainer && display != css.DisplayRubyBaseContainer {
 			return false // Block-level child found.
 		}
 		hasContent = true

@@ -234,6 +234,19 @@ func collectInlinesRecursive(
 			}
 		}
 
+		// Ruby internal containers (rtc, rbc) are transparent wrappers
+		// that group ruby text or ruby base elements. They recurse into
+		// children for inline content processing but DO NOT create
+		// OpenTag/CloseTag items themselves. If unicode-bidi is set
+		// (e.g. via dir attribute), bidi control chars are injected
+		// to isolate the container content.
+		if display == css.DisplayRubyTextContainer || display == css.DisplayRubyBaseContainer {
+			injectBidiControlChars(childStyle, text, true /* isOpen */)
+			collectInlinesRecursive(child, data, text, false)
+			injectBidiControlChars(childStyle, text, false /* isOpen */)
+			continue
+		}
+
 		// Inline element (span, em, a, etc.) — emit open/close tags.
 
 		// CSS Writing Modes §2.2: Inject Unicode bidi control characters

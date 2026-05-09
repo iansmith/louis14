@@ -10,10 +10,10 @@ import (
 )
 
 type Style struct {
-	Properties      map[string]string
-	ViewportWidth   float64 // Viewport width in pixels (for vw/vmin/vmax units)
-	ViewportHeight  float64 // Viewport height in pixels (for vh/vmin/vmax units)
-	ChWidth         float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
+	Properties     map[string]string
+	ViewportWidth  float64 // Viewport width in pixels (for vw/vmin/vmax units)
+	ViewportHeight float64 // Viewport height in pixels (for vh/vmin/vmax units)
+	ChWidth        float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
 }
 
 func NewStyle() *Style {
@@ -851,14 +851,14 @@ func tokenizeCalc(expr string) []string {
 
 // BoxEdge represents the four sides of a box (top, right, bottom, left)
 type BoxEdge struct {
-	Top       float64
-	Right     float64
-	Bottom    float64
-	Left      float64
-	AutoTop   bool // True if margin-top: auto
-	AutoRight bool // True if margin-right: auto
+	Top        float64
+	Right      float64
+	Bottom     float64
+	Left       float64
+	AutoTop    bool // True if margin-top: auto
+	AutoRight  bool // True if margin-right: auto
 	AutoBottom bool // True if margin-bottom: auto
-	AutoLeft  bool // True if margin-left: auto
+	AutoLeft   bool // True if margin-left: auto
 }
 
 // GetMargin returns the margin values for all four sides
@@ -1565,10 +1565,10 @@ func (s *Style) GetPosition() PositionType {
 
 // GetPositionOffset returns the offset values for positioned elements
 type PositionOffset struct {
-	Top    float64
-	Right  float64
-	Bottom float64
-	Left   float64
+	Top       float64
+	Right     float64
+	Bottom    float64
+	Left      float64
 	HasTop    bool
 	HasRight  bool
 	HasBottom bool
@@ -2519,7 +2519,8 @@ func splitShorthandParts(value string) []string {
 
 // expandBoxProperty expands margin/padding shorthand
 // Supports: "10px" (all), "10px 20px" (vertical horizontal),
-//           "10px 20px 30px" (top h bottom), "10px 20px 30px 40px" (t r b l)
+//
+//	"10px 20px 30px" (top h bottom), "10px 20px 30px 40px" (t r b l)
 func expandBoxProperty(style *Style, prefix, value string) {
 	parts := splitShorthandParts(value)
 
@@ -3466,36 +3467,36 @@ func ParseColor(colorStr string) (Color, bool) {
 
 	// Try named colors
 	namedColors := map[string]Color{
-		"red":     {255, 0, 0, 1.0},
-		"green":   {0, 128, 0, 1.0},
-		"blue":    {0, 0, 255, 1.0},
-		"yellow":  {255, 255, 0, 1.0},
-		"cyan":    {0, 255, 255, 1.0},
-		"aqua":    {0, 255, 255, 1.0},
-		"magenta": {255, 0, 255, 1.0},
-		"fuchsia": {255, 0, 255, 1.0},
-		"white":   {255, 255, 255, 1.0},
-		"black":   {0, 0, 0, 1.0},
-		"gray":    {128, 128, 128, 1.0},
-		"grey":    {128, 128, 128, 1.0},
-		"orange":  {255, 165, 0, 1.0},
-		"purple":  {128, 0, 128, 1.0},
-		"pink":    {255, 192, 203, 1.0},
-		"brown":   {165, 42, 42, 1.0},
-		"lime":    {0, 255, 0, 1.0},
-		"navy":    {0, 0, 128, 1.0},
-		"teal":    {0, 128, 128, 1.0},
-		"silver":  {192, 192, 192, 1.0},
-		"maroon":  {128, 0, 0, 1.0},
-		"olive":      {128, 128, 0, 1.0},
-		"lightblue":  {173, 216, 230, 1.0},
-		"lightgreen": {144, 238, 144, 1.0},
-		"lightgray":  {211, 211, 211, 1.0},
-		"lightgrey":  {211, 211, 211, 1.0},
-		"lightyellow": {255, 255, 224, 1.0},
-		"lightcoral":  {240, 128, 128, 1.0},
-		"lightcyan":   {224, 255, 255, 1.0},
-		"lightpink":   {255, 182, 193, 1.0},
+		"red":            {255, 0, 0, 1.0},
+		"green":          {0, 128, 0, 1.0},
+		"blue":           {0, 0, 255, 1.0},
+		"yellow":         {255, 255, 0, 1.0},
+		"cyan":           {0, 255, 255, 1.0},
+		"aqua":           {0, 255, 255, 1.0},
+		"magenta":        {255, 0, 255, 1.0},
+		"fuchsia":        {255, 0, 255, 1.0},
+		"white":          {255, 255, 255, 1.0},
+		"black":          {0, 0, 0, 1.0},
+		"gray":           {128, 128, 128, 1.0},
+		"grey":           {128, 128, 128, 1.0},
+		"orange":         {255, 165, 0, 1.0},
+		"purple":         {128, 0, 128, 1.0},
+		"pink":           {255, 192, 203, 1.0},
+		"brown":          {165, 42, 42, 1.0},
+		"lime":           {0, 255, 0, 1.0},
+		"navy":           {0, 0, 128, 1.0},
+		"teal":           {0, 128, 128, 1.0},
+		"silver":         {192, 192, 192, 1.0},
+		"maroon":         {128, 0, 0, 1.0},
+		"olive":          {128, 128, 0, 1.0},
+		"lightblue":      {173, 216, 230, 1.0},
+		"lightgreen":     {144, 238, 144, 1.0},
+		"lightgray":      {211, 211, 211, 1.0},
+		"lightgrey":      {211, 211, 211, 1.0},
+		"lightyellow":    {255, 255, 224, 1.0},
+		"lightcoral":     {240, 128, 128, 1.0},
+		"lightcyan":      {224, 255, 255, 1.0},
+		"lightpink":      {255, 182, 193, 1.0},
 		"turquoise":      {64, 224, 208, 1.0},
 		"coral":          {255, 127, 80, 1.0},
 		"violet":         {238, 130, 238, 1.0},
@@ -4313,7 +4314,7 @@ func parseBoxShadowValue(s string) *BoxShadow {
 
 	shadow := &BoxShadow{
 		Color:           Color{0, 0, 0, 1.0}, // Placeholder; resolved to currentcolor later
-		UseCurrentColor: true,                 // Default per CSS spec
+		UseCurrentColor: true,                // Default per CSS spec
 	}
 
 	// Pre-scan: extract 'inset' and color from either end, leaving only
@@ -4431,28 +4432,30 @@ func isColor(s string) bool {
 type DisplayType string
 
 const (
-	DisplayBlock           DisplayType = "block"
-	DisplayInline          DisplayType = "inline"
-	DisplayInlineBlock     DisplayType = "inline-block"
-	DisplayNone            DisplayType = "none"
-	DisplayTable           DisplayType = "table"
-	DisplayTableRow        DisplayType = "table-row"
-	DisplayTableCell       DisplayType = "table-cell"
-	DisplayTableHeaderGroup DisplayType = "table-header-group"
-	DisplayTableRowGroup   DisplayType = "table-row-group"
-	DisplayTableFooterGroup DisplayType = "table-footer-group"
-	DisplayListItem        DisplayType = "list-item" // Phase 23
-	DisplayFlex            DisplayType = "flex"
-	DisplayInlineFlex      DisplayType = "inline-flex"
-	DisplayGrid            DisplayType = "grid"
-	DisplayInlineGrid      DisplayType = "inline-grid"
-	DisplayContents        DisplayType = "contents"
-	DisplayTableCaption    DisplayType = "table-caption"
-	DisplayFlowRoot        DisplayType = "flow-root"
-	DisplayRuby            DisplayType = "ruby"
-	DisplayRubyText        DisplayType = "ruby-text"
-	DisplayRubyBase        DisplayType = "ruby-base"
-	DisplayInlineTable     DisplayType = "inline-table"
+	DisplayBlock             DisplayType = "block"
+	DisplayInline            DisplayType = "inline"
+	DisplayInlineBlock       DisplayType = "inline-block"
+	DisplayNone              DisplayType = "none"
+	DisplayTable             DisplayType = "table"
+	DisplayTableRow          DisplayType = "table-row"
+	DisplayTableCell         DisplayType = "table-cell"
+	DisplayTableHeaderGroup  DisplayType = "table-header-group"
+	DisplayTableRowGroup     DisplayType = "table-row-group"
+	DisplayTableFooterGroup  DisplayType = "table-footer-group"
+	DisplayListItem          DisplayType = "list-item" // Phase 23
+	DisplayFlex              DisplayType = "flex"
+	DisplayInlineFlex        DisplayType = "inline-flex"
+	DisplayGrid              DisplayType = "grid"
+	DisplayInlineGrid        DisplayType = "inline-grid"
+	DisplayContents          DisplayType = "contents"
+	DisplayTableCaption      DisplayType = "table-caption"
+	DisplayFlowRoot          DisplayType = "flow-root"
+	DisplayRuby              DisplayType = "ruby"
+	DisplayRubyText          DisplayType = "ruby-text"
+	DisplayRubyBase          DisplayType = "ruby-base"
+	DisplayRubyTextContainer DisplayType = "ruby-text-container"
+	DisplayRubyBaseContainer DisplayType = "ruby-base-container"
+	DisplayInlineTable       DisplayType = "inline-table"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0).
@@ -4529,6 +4532,10 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayRubyText
 		case "ruby-base":
 			return DisplayRubyBase
+		case "ruby-text-container":
+			return DisplayRubyTextContainer
+		case "ruby-base-container":
+			return DisplayRubyBaseContainer
 		case "inline-table":
 			return DisplayInlineTable
 		}
@@ -5074,7 +5081,7 @@ func (s *Style) IsSafeJustifyContent() bool {
 type AlignItems string
 
 const (
-	AlignItemsNormal       AlignItems = "normal"  // initial value; resolves to stretch in flex context
+	AlignItemsNormal       AlignItems = "normal" // initial value; resolves to stretch in flex context
 	AlignItemsFlexStart    AlignItems = "flex-start"
 	AlignItemsFlexEnd      AlignItems = "flex-end"
 	AlignItemsCenter       AlignItems = "center"
@@ -5127,7 +5134,7 @@ func (s *Style) IsSafeAlignItems() bool {
 type AlignContent string
 
 const (
-	AlignContentNormal       AlignContent = "normal"  // initial value; resolves to stretch in flex context
+	AlignContentNormal       AlignContent = "normal" // initial value; resolves to stretch in flex context
 	AlignContentFlexStart    AlignContent = "flex-start"
 	AlignContentFlexEnd      AlignContent = "flex-end"
 	AlignContentCenter       AlignContent = "center"
@@ -5250,8 +5257,8 @@ func (s *Style) GetFlexBasis() float64 {
 type AlignSelf string
 
 const (
-	AlignSelfAuto         AlignSelf = "auto"    // initial value — use container's align-items
-	AlignSelfNormal       AlignSelf = "normal"  // like auto for flex items
+	AlignSelfAuto         AlignSelf = "auto"   // initial value — use container's align-items
+	AlignSelfNormal       AlignSelf = "normal" // like auto for flex items
 	AlignSelfFlexStart    AlignSelf = "flex-start"
 	AlignSelfFlexEnd      AlignSelf = "flex-end"
 	AlignSelfCenter       AlignSelf = "center"
@@ -5338,7 +5345,7 @@ func (s *Style) GetContent() (string, bool) {
 		if len(content) >= 2 {
 			// Remove single or double quotes
 			if (content[0] == '"' && content[len(content)-1] == '"') ||
-			   (content[0] == '\'' && content[len(content)-1] == '\'') {
+				(content[0] == '\'' && content[len(content)-1] == '\'') {
 				content = content[1 : len(content)-1]
 			}
 		}
@@ -5481,23 +5488,23 @@ func ParseContentValues(raw string) []ContentValue {
 
 // GridTrack represents a single grid track (column or row)
 type GridTrack struct {
-	Size           float64     // Size in pixels (0 for auto)
-	Auto           bool        // true if track is auto-sized
-	Fr             float64     // fractional unit value (0 if not fr)
-	Percent        float64     // percentage value (e.g., 75 for "75%")
-	IsMinMax       bool        // true if this is a minmax() track
-	MinSize        float64     // minimum size (px) for minmax()
-	MaxFr          float64     // maximum as fr value for minmax()
-	MaxSize        float64     // maximum as fixed size (px) for minmax()
-	MaxAuto        bool        // true if max is "auto" for minmax()
-	MinContent     bool        // true if value is "min-content"
-	MaxContent     bool        // true if value is "max-content"
-	IsFitContent   bool        // true if this is a fit-content() track
-	FitContentMax  float64     // argument to fit-content() in pixels
-	AutoFill       bool        // true if this is a repeat(auto-fill, ...) sentinel
-	AutoFit        bool        // true if this is a repeat(auto-fit, ...) sentinel
-	AutoTemplate   []GridTrack // template tracks for auto-fill/auto-fit
-	IsSubgrid      bool        // true if this represents a "subgrid" keyword
+	Size          float64     // Size in pixels (0 for auto)
+	Auto          bool        // true if track is auto-sized
+	Fr            float64     // fractional unit value (0 if not fr)
+	Percent       float64     // percentage value (e.g., 75 for "75%")
+	IsMinMax      bool        // true if this is a minmax() track
+	MinSize       float64     // minimum size (px) for minmax()
+	MaxFr         float64     // maximum as fr value for minmax()
+	MaxSize       float64     // maximum as fixed size (px) for minmax()
+	MaxAuto       bool        // true if max is "auto" for minmax()
+	MinContent    bool        // true if value is "min-content"
+	MaxContent    bool        // true if value is "max-content"
+	IsFitContent  bool        // true if this is a fit-content() track
+	FitContentMax float64     // argument to fit-content() in pixels
+	AutoFill      bool        // true if this is a repeat(auto-fill, ...) sentinel
+	AutoFit       bool        // true if this is a repeat(auto-fit, ...) sentinel
+	AutoTemplate  []GridTrack // template tracks for auto-fill/auto-fit
+	IsSubgrid     bool        // true if this represents a "subgrid" keyword
 }
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
@@ -5891,25 +5898,25 @@ func (s *Style) GetGridGap() (rowGap, columnGap float64) {
 	if gap, ok := s.GetLength("grid-gap"); ok {
 		return gap, gap
 	}
-	
+
 	// Try gap (newer syntax)
 	if gap, ok := s.GetLength("gap"); ok {
 		return gap, gap
 	}
-	
+
 	// Try individual properties
 	rowGap, _ = s.GetLength("row-gap")
 	columnGap, _ = s.GetLength("column-gap")
-	
+
 	return rowGap, columnGap
 }
 
 // GridPlacement represents grid-column or grid-row placement
 type GridPlacement struct {
-	Start   int  // Starting line (1-indexed), 0 if auto
-	End     int  // Ending line (1-indexed, exclusive), 0 if auto
-	IsSpan  bool // true if this is a span-only placement (no explicit start)
-	SpanCount int // number of tracks to span (used when IsSpan=true or end is "span N")
+	Start     int  // Starting line (1-indexed), 0 if auto
+	End       int  // Ending line (1-indexed, exclusive), 0 if auto
+	IsSpan    bool // true if this is a span-only placement (no explicit start)
+	SpanCount int  // number of tracks to span (used when IsSpan=true or end is "span N")
 }
 
 // GetGridColumn parses grid-column property (e.g., "1 / 3" or "1 / span 2")
@@ -6262,7 +6269,7 @@ func (s *Style) GetTransforms() []Transform {
 // parseTransforms parses transform functions (e.g., "translate(10px, 20px) rotate(45deg)")
 func parseTransforms(val string) []Transform {
 	transforms := make([]Transform, 0)
-	
+
 	// Simple parser for transform functions
 	i := 0
 	for i < len(val) {
@@ -6273,7 +6280,7 @@ func parseTransforms(val string) []Transform {
 		if i >= len(val) {
 			break
 		}
-		
+
 		// Find function name
 		start := i
 		for i < len(val) && val[i] != '(' {
@@ -6282,10 +6289,10 @@ func parseTransforms(val string) []Transform {
 		if i >= len(val) {
 			break
 		}
-		
+
 		funcName := val[start:i]
 		i++ // Skip '('
-		
+
 		// Find function arguments
 		argStart := i
 		depth := 1
@@ -6297,16 +6304,16 @@ func parseTransforms(val string) []Transform {
 			}
 			i++
 		}
-		
+
 		args := val[argStart : i-1]
-		
+
 		// Parse the transform
 		transform := parseTransformFunction(funcName, args)
 		if transform != nil {
 			transforms = append(transforms, *transform)
 		}
 	}
-	
+
 	return transforms
 }
 
@@ -6314,7 +6321,7 @@ func parseTransforms(val string) []Transform {
 func parseTransformFunction(name, args string) *Transform {
 	name = strings.TrimSpace(name)
 	args = strings.TrimSpace(args)
-	
+
 	switch name {
 	case "translate":
 		// translate(x, y) or translate(x)
@@ -6344,13 +6351,13 @@ func parseTransformFunction(name, args string) *Transform {
 		if v, isPct, ok := parseTransformValue(args); ok {
 			return &Transform{Type: "translate", Values: []float64{0, v}, IsPercent: []bool{false, isPct}}
 		}
-		
+
 	case "rotate":
 		// rotate(45deg)
 		if val := parseAngle(args); val != nil {
 			return &Transform{Type: "rotate", Values: []float64{*val}}
 		}
-		
+
 	case "scale":
 		// scale(x, y) or scale(x)
 		parts := strings.Split(args, ",")
@@ -6366,12 +6373,12 @@ func parseTransformFunction(name, args string) *Transform {
 		if len(values) >= 2 {
 			return &Transform{Type: "scale", Values: values[:2]}
 		}
-		
+
 	case "scaleX":
 		if val, err := strconv.ParseFloat(args, 64); err == nil {
 			return &Transform{Type: "scale", Values: []float64{val, 1}}
 		}
-		
+
 	case "scaleY":
 		if val, err := strconv.ParseFloat(args, 64); err == nil {
 			return &Transform{Type: "scale", Values: []float64{1, val}}
@@ -6447,7 +6454,7 @@ func parseTransformValue(val string) (float64, bool, bool) {
 // parseAngle parses an angle value (deg, rad, turn)
 func parseAngle(val string) *float64 {
 	val = strings.TrimSpace(val)
-	
+
 	// Degrees
 	if strings.HasSuffix(val, "deg") {
 		degStr := strings.TrimSuffix(val, "deg")
@@ -6455,7 +6462,7 @@ func parseAngle(val string) *float64 {
 			return &deg
 		}
 	}
-	
+
 	// Radians
 	if strings.HasSuffix(val, "rad") {
 		radStr := strings.TrimSuffix(val, "rad")
@@ -6464,7 +6471,7 @@ func parseAngle(val string) *float64 {
 			return &deg
 		}
 	}
-	
+
 	// Turns
 	if strings.HasSuffix(val, "turn") {
 		turnStr := strings.TrimSuffix(val, "turn")
@@ -6473,7 +6480,7 @@ func parseAngle(val string) *float64 {
 			return &deg
 		}
 	}
-	
+
 	return nil
 }
 
@@ -6488,14 +6495,14 @@ func (s *Style) GetTransformOrigin() TransformOrigin {
 	if val, ok := s.Get("transform-origin"); ok {
 		parts := strings.Fields(val)
 		origin := TransformOrigin{X: 0.5, Y: 0.5} // Default center center
-		
+
 		if len(parts) >= 1 {
 			origin.X = parseOriginValue(parts[0])
 		}
 		if len(parts) >= 2 {
 			origin.Y = parseOriginValue(parts[1])
 		}
-		
+
 		return origin
 	}
 	return TransformOrigin{X: 0.5, Y: 0.5} // Default center center
@@ -6504,7 +6511,7 @@ func (s *Style) GetTransformOrigin() TransformOrigin {
 // parseOriginValue parses a single origin value (left/center/right/top/bottom or percentage)
 func parseOriginValue(val string) float64 {
 	val = strings.TrimSpace(val)
-	
+
 	switch val {
 	case "left", "top":
 		return 0.0
@@ -6513,7 +6520,7 @@ func parseOriginValue(val string) float64 {
 	case "right", "bottom":
 		return 1.0
 	}
-	
+
 	// Try percentage
 	if strings.HasSuffix(val, "%") {
 		percentStr := strings.TrimSuffix(val, "%")
@@ -6521,13 +6528,13 @@ func parseOriginValue(val string) float64 {
 			return percent / 100.0
 		}
 	}
-	
+
 	// Try pixels (convert to 0-1 range... but we don't know element size here)
 	// For now, just use as-is
 	if length, ok := ParseLength(val); ok {
 		return length / 100.0 // Rough approximation
 	}
-	
+
 	return 0.5 // Default to center
 }
 
@@ -6778,11 +6785,11 @@ func extractImageSetFirstURL(val string) (string, bool) {
 type FillLayer struct {
 	Next *FillLayer // next layer toward bottom; nil = bottommost
 
-	Image    string             // url() value, empty = none
-	Gradient string             // raw gradient string, empty = none
-	Repeat   BackgroundRepeatType
-	Position BackgroundPosition
-	Size     BackgroundSize
+	Image      string // url() value, empty = none
+	Gradient   string // raw gradient string, empty = none
+	Repeat     BackgroundRepeatType
+	Position   BackgroundPosition
+	Size       BackgroundSize
 	Origin     BackgroundOriginType
 	Clip       BackgroundClipType
 	Attachment BackgroundAttachmentType
@@ -7505,21 +7512,21 @@ func isGradient(val string) bool {
 type ListStyleType string
 
 const (
-	ListStyleTypeDisc             ListStyleType = "disc"
-	ListStyleTypeCircle           ListStyleType = "circle"
-	ListStyleTypeSquare           ListStyleType = "square"
-	ListStyleTypeDecimal          ListStyleType = "decimal"
-	ListStyleTypeNone             ListStyleType = "none"
+	ListStyleTypeDisc               ListStyleType = "disc"
+	ListStyleTypeCircle             ListStyleType = "circle"
+	ListStyleTypeSquare             ListStyleType = "square"
+	ListStyleTypeDecimal            ListStyleType = "decimal"
+	ListStyleTypeNone               ListStyleType = "none"
 	ListStyleTypeDecimalLeadingZero ListStyleType = "decimal-leading-zero"
-	ListStyleTypeLowerAlpha       ListStyleType = "lower-alpha"
-	ListStyleTypeUpperAlpha       ListStyleType = "upper-alpha"
-	ListStyleTypeLowerLatin       ListStyleType = "lower-latin"
-	ListStyleTypeUpperLatin       ListStyleType = "upper-latin"
-	ListStyleTypeLowerRoman       ListStyleType = "lower-roman"
-	ListStyleTypeUpperRoman       ListStyleType = "upper-roman"
-	ListStyleTypeLowerGreek       ListStyleType = "lower-greek"
-	ListStyleTypeDisclosureOpen   ListStyleType = "disclosure-open"
-	ListStyleTypeDisclosureClosed ListStyleType = "disclosure-closed"
+	ListStyleTypeLowerAlpha         ListStyleType = "lower-alpha"
+	ListStyleTypeUpperAlpha         ListStyleType = "upper-alpha"
+	ListStyleTypeLowerLatin         ListStyleType = "lower-latin"
+	ListStyleTypeUpperLatin         ListStyleType = "upper-latin"
+	ListStyleTypeLowerRoman         ListStyleType = "lower-roman"
+	ListStyleTypeUpperRoman         ListStyleType = "upper-roman"
+	ListStyleTypeLowerGreek         ListStyleType = "lower-greek"
+	ListStyleTypeDisclosureOpen     ListStyleType = "disclosure-open"
+	ListStyleTypeDisclosureClosed   ListStyleType = "disclosure-closed"
 )
 
 // GetListStyleType returns the list-style-type value (default: disc)
@@ -7594,9 +7601,9 @@ const (
 // in the Pct variants and the corresponding px field is set to -1.
 type ClipPath struct {
 	Type   ClipPathType
-	Radius float64 // circle radius in px (-1 = default closest-side or use RadiusPct)
-	Rx, Ry float64 // ellipse radii in px (-1 = default or use RxPct/RyPct)
-	Cx, Cy float64 // center position in px (-1 = default center or use CxPct/CyPct)
+	Radius float64   // circle radius in px (-1 = default closest-side or use RadiusPct)
+	Rx, Ry float64   // ellipse radii in px (-1 = default or use RxPct/RyPct)
+	Cx, Cy float64   // center position in px (-1 = default center or use CxPct/CyPct)
 	Points []float64 // polygon points [x1, y1, x2, y2, ...] in px or pct (see PointsPct)
 
 	// Percentage flags — when true, the corresponding value is a percentage (0-100).
@@ -8068,7 +8075,7 @@ func (s *Style) GetMixBlendMode() MixBlendMode {
 type TextOverflowType int
 
 const (
-	TextOverflowClip     TextOverflowType = iota
+	TextOverflowClip TextOverflowType = iota
 	TextOverflowEllipsis
 )
 
@@ -8635,7 +8642,6 @@ func (s *Style) GetScrollbarWidth() string {
 	}
 	return v
 }
-
 
 // ApplyHTMLDirAttribute maps the HTML dir attribute to CSS direction and
 // unicode-bidi properties. Per the HTML specification, dir="rtl" implies
