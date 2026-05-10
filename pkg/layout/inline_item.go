@@ -616,3 +616,86 @@ func isReplacedElement(node *html.Node) bool {
 	}
 	return false
 }
+
+// isBuiltinListStyleType returns true for the predefined list-style-type values.
+func isBuiltinListStyleType(lst css.ListStyleType) bool {
+	switch lst {
+	case css.ListStyleTypeDisc, css.ListStyleTypeCircle, css.ListStyleTypeSquare,
+		css.ListStyleTypeDecimal, css.ListStyleTypeNone,
+		css.ListStyleTypeDecimalLeadingZero,
+		css.ListStyleTypeLowerAlpha, css.ListStyleTypeUpperAlpha,
+		css.ListStyleTypeLowerLatin, css.ListStyleTypeUpperLatin,
+		css.ListStyleTypeLowerRoman, css.ListStyleTypeUpperRoman,
+		css.ListStyleTypeLowerGreek,
+		css.ListStyleTypeDisclosureOpen, css.ListStyleTypeDisclosureClosed:
+		return true
+	}
+	return false
+}
+
+// injectInsideMarker injects list-style-position: inside marker content into
+// the inline items pipeline. The marker text is prepended to TextContent with
+// appropriate bidi control characters (LRI/PDI for the default ::marker
+// unicode-bidi: isolate), and an InlineItemText is prepended to Items so that
+// the marker participates in bidi resolution, line breaking, and visual ordering.
+//
+// The marker is only injected when the content is a simple string (from
+// ::marker { content: } or list-style-type: <string>). Counter-based markers
+// (decimal, alpha, etc.) continue to use the paint-time fallback path.
+func injectInsideMarker(data *InlineItemsData, node *LayoutInputNode, parentStyle *css.Style) {
+	// Determine marker content.
+	markerContent := node.MarkerContent
+	if markerContent == "" {
+		return
+	}
+
+	// Determine the marker's effective style for bidi control injection.
+	// CSS Pseudo-4 §3: ::marker has unicode-bidi: isolate by default.
+	// If MarkerStyle is nil (no ::marker rules), use parent style with isolate.
+	markerStyle := node.MarkerStyle
+	if markerStyle == nil {
+		// No ::marker rules; create a style with the default unicode-bidi: isolate.
+		// This covers list-style-type: <string> without an explicit ::marker rule.
+		markerStyle = parentStyle.Clone()
+		markerStyle.Set("unicode-bidi", "isolate")
+	}
+
+	// Build the prefix: opening bidi control chars + marker text + closing bidi control chars.
+	var prefixBuf strings.Builder
+	injectBidiControlChars(markerStyle, &prefixBuf, true)
+	markerTextStart := prefixBuf.Len()
+	prefixBuf.WriteString(markerContent)
+	markerTextEnd := prefixBuf.Len()
+	injectBidiControlChars(markerStyle, &prefixBuf, false)
+	prefix := prefixBuf.String()
+
+	if len(prefix) == 0 {
+		return
+	}
+
+	// Shift all existing item offsets by the prefix length.
+	for _, item := range data.Items {
+		item.StartOffset += len(prefix)
+		item.EndOffset += len(prefix)
+	}
+
+	// Prepend prefix to TextContent.
+	data.TextContent = prefix + data.TextContent
+
+	// If we injected bidi controls, shift RuneLevels and ParagraphLevels too.
+	// (These may not yet be populated — that happens in ResolveBidiLevels later.)
+	// The bidi levels will be computed correctly on the full text including the
+	// marker because ResolveBidiLevels processes the entire TextContent.
+
+	// Create the marker InlineItemText.
+	markerItem := &InlineItem{
+		Type:        InlineItemText,
+		StartOffset: markerTextStart,
+		EndOffset:   markerTextEnd,
+		Node:        node.DOMNode,
+		Style:       markerStyle,
+	}
+
+	// Prepend the marker item.
+	data.Items = append([]*InlineItem{markerItem}, data.Items...)
+}

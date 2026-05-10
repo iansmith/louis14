@@ -570,6 +570,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 				}
 			}
 		}
+
+		// Propagate ::marker content from the layout box to the paint layer.
+		layer.MarkerContent = box.MarkerContent
 	}
 
 	// CSS Transforms (individual properties + shorthand).

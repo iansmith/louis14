@@ -26,7 +26,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 
 	// Default styles for <a> (anchor/link) elements
 	if node.TagName == "a" {
-		style.Set("color", "#0645ad")           // Standard link blue
+		style.Set("color", "#0645ad") // Standard link blue
 		style.Set("text-decoration", "underline")
 	}
 
@@ -494,12 +494,24 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	// Inherit inheritable properties from parent element
 	if len(parentStyles) > 0 && parentStyles[0] != nil {
+		parent := parentStyles[0]
 		inheritableProps := []string{"font-size", "font-family", "font-weight", "font-style",
 			"color", "line-height", "text-align", "white-space", "visibility",
 			"letter-spacing", "word-spacing", "text-indent", "text-transform"}
 		for _, prop := range inheritableProps {
-			if val, ok := parentStyles[0].Get(prop); ok {
+			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)
+			}
+		}
+		// CSS Custom Properties for Cascading Variables §3: Custom properties
+		// inherit by default. Pseudo-elements inherit custom properties from
+		// their originating element so that var() references in the pseudo-
+		// element's declarations resolve correctly.
+		for prop, val := range parent.Properties {
+			if strings.HasPrefix(prop, "--") {
+				if _, ok := finalStyle.Get(prop); !ok {
+					finalStyle.Set(prop, val)
+				}
 			}
 		}
 	}
@@ -691,7 +703,7 @@ var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
 	"font-feature-settings": true,
-	"line-height": true, "text-align": true, "text-decoration": true,
+	"line-height":           true, "text-align": true, "text-decoration": true,
 	"text-transform": true, "text-indent": true, "white-space": true,
 	"visibility": true, "list-style-type": true, "list-style-position": true, "list-style-image": true,
 	"direction": true, "letter-spacing": true, "word-spacing": true,
@@ -1000,9 +1012,12 @@ func resolveLogicalSizeProperties(style *Style) {
 // the element's computed writing-mode. Must be called after inheritance.
 //
 // Mapping for horizontal-tb (default):
-//   inline-start=left, inline-end=right, block-start=top, block-end=bottom
+//
+//	inline-start=left, inline-end=right, block-start=top, block-end=bottom
+//
 // For vertical-rl / vertical-lr:
-//   inline-start=top, inline-end=bottom, block-start=right(rl)/left(lr), block-end=left(rl)/right(lr)
+//
+//	inline-start=top, inline-end=bottom, block-start=right(rl)/left(lr), block-end=left(rl)/right(lr)
 func resolveLogicalBoxProperties(style *Style) {
 	wm, _ := style.Get("writing-mode")
 	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||

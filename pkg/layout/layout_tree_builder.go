@@ -101,7 +101,28 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 				node, "marker", b.stylesheets,
 				b.viewportWidth, b.viewportHeight, style,
 			)
+			// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
+			if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
+				clone := markerStyle.Clone()
+				clone.Set("unicode-bidi", "isolate")
+				markerStyle = clone
+			}
 			lin.MarkerStyle = markerStyle
+			// Extract content from ::marker { content: } for layout-time use.
+			if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
+				lin.MarkerContent = b.resolveContentText(cv)
+			}
+		}
+		// For list-style-type: <string> without ::marker rules, use the string
+		// as marker content when list-style-position: inside.
+		if lin.MarkerContent == "" && style.GetListStylePosition() == "inside" {
+			lst := style.GetListStyleType()
+			if lst != "" {
+				s := string(lst)
+				if !isBuiltinListStyleType(lst) {
+					lin.MarkerContent = s
+				}
+			}
 		}
 	}
 
