@@ -89,13 +89,9 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		return lin
 	}
 
-	// CSS 2.1 §12.5: Process counter-reset and counter-increment
-	// before content evaluation. Counter-increment must be processed
-	// for list items so the list-item counter is properly incremented
-	// (per CSS Lists §3 default UA style for <li>).
+	// CSS 2.1 §12.5: Process counter-reset before content evaluation.
 	if style != nil {
 		b.processCounterReset(style)
-		b.processCounterIncrement(style)
 	}
 
 	// CSS Pseudo-4 §4.2: Compute ::marker style for list items,
@@ -669,17 +665,12 @@ func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue) s
 	return buf.String()
 }
 
-// getListItemCounterValue returns the counter value for a list item.
-// It checks b.counters["list-item"] first; if the counter is not set,
-// it falls back to counting preceding list-item sibling elements in the
-// DOM tree (mirroring the paint-time computeListItemIndex approach).
+// getListItemCounterValue returns the counter value for a list item by
+// counting preceding list-item sibling elements in the DOM tree. Mirrors
+// the paint-time computeListItemIndex approach. Does NOT use the CSS
+// counter stack (b.counters) — that stack is managed independently for
+// counter() values in content and must not be modified by marker resolution.
 func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
-	if b.counters != nil {
-		if stack, ok := b.counters["list-item"]; ok && len(stack) > 0 {
-			return stack[len(stack)-1]
-		}
-	}
-	// Fallback: count preceding list-item siblings.
 	if node == nil || node.Parent == nil {
 		return 1
 	}
@@ -694,7 +685,6 @@ func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
 		if sibling == node {
 			break
 		}
-		// Check if sibling has display:list-item from the computed styles.
 		if s := b.styles[sibling]; s != nil && s.GetDisplay() == css.DisplayListItem {
 			idx++
 		}
@@ -811,8 +801,8 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 }
 
 // resolveListStyleType converts a built-in list-style-type value to its
-// string representation, using the counter value from b.counters["list-item"]
-// (with a DOM-tree fallback).
+// string representation with appropriate suffix, matching the paint-time
+// formatListMarker output.
 func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *html.Node) string {
 	if lst == css.ListStyleTypeNone {
 		return ""
@@ -829,19 +819,19 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 	case css.ListStyleTypeSquare:
 		return "▪" // black small square
 	case css.ListStyleTypeDecimal:
-		return strconv.Itoa(value)
+		return strconv.Itoa(value) + "."
 	case css.ListStyleTypeDecimalLeadingZero:
-		return fmt.Sprintf("%02d", value)
+		return fmt.Sprintf("%02d.", value)
 	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
-		return css.ToAlpha(value)
+		return css.ToAlpha(value) + "."
 	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
-		return strings.ToUpper(css.ToAlpha(value))
+		return strings.ToUpper(css.ToAlpha(value)) + "."
 	case css.ListStyleTypeLowerRoman:
-		return strings.ToLower(css.ToRoman(value))
+		return strings.ToLower(css.ToRoman(value)) + "."
 	case css.ListStyleTypeUpperRoman:
-		return css.ToRoman(value)
+		return css.ToRoman(value) + "."
 	case css.ListStyleTypeLowerGreek:
-		return css.ToGreek(value)
+		return css.ToGreek(value) + "."
 	case css.ListStyleTypeDisclosureOpen:
 		return "▶" // ▶ right-pointing triangle
 	case css.ListStyleTypeDisclosureClosed:
