@@ -136,10 +136,17 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		return 0, exclusionSpace, 0, 0, nil
 	}
 
-	// Phase 1a: (removed) ::marker pseudo-element for inside markers is now
-	// handled as a proper layout node child of the list item — the marker
-	// text flows through the normal inline pipeline via the ::marker inline
-	// element child created in LayoutTreeBuilder.createMarkerPseudoElement.
+	// Phase 1a: Inject list-style-position: inside marker content.
+	// CSS Pseudo-4 §4.2: When list-style-position is inside, the marker
+	// is placed as an inline-level element at the beginning of the first
+	// line box. Inject it here so the marker text participates in bidi
+	// resolution, line breaking, and L2 reordering alongside the rest of
+	// the inline content. The ::marker pseudo-element has the UA default
+	// unicode-bidi: isolate (CSS Pseudo-4 §3), which injects LRI/PDI
+	// control chars around the marker text to isolate it from the content.
+	if bla.node.IsListItem() && bla.style != nil && bla.style.GetListStylePosition() == "inside" {
+		injectInsideMarker(itemsData, bla.node, bla.style)
+	}
 
 	// Phase 1b: Block-level bidi control injection.
 	// CSS Writing Modes §2.2: When a block container has unicode-bidi set
