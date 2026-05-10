@@ -3267,53 +3267,6 @@ func capitalizeWords(s string) string {
 	return b.String()
 }
 
-// toRoman converts a positive integer to a Roman numeral string.
-// Uses subtractive notation (e.g., 4=IV, 9=IX).
-func toRoman(n int) string {
-	if n <= 0 || n > 3999 {
-		return fmt.Sprintf("%d", n)
-	}
-	vals := []int{1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1}
-	syms := []string{"M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"}
-	var b strings.Builder
-	for i, v := range vals {
-		for n >= v {
-			b.WriteString(syms[i])
-			n -= v
-		}
-	}
-	return b.String()
-}
-
-// toAlpha converts a positive integer to alphabetic notation (a=1, b=2, ..., z=26, aa=27, ...).
-func toAlpha(n int) string {
-	if n <= 0 {
-		return fmt.Sprintf("%d", n)
-	}
-	var b strings.Builder
-	for n > 0 {
-		n-- // make 0-indexed
-		b.WriteByte(byte('a' + n%26))
-		n /= 26
-	}
-	// Reverse
-	s := []byte(b.String())
-	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
-		s[i], s[j] = s[j], s[i]
-	}
-	return string(s)
-}
-
-// toGreek converts a positive integer to lower Greek letters (α=1, β=2, ...).
-func toGreek(n int) string {
-	// CSS counter-styles: lower-greek uses the 24-letter Greek alphabet
-	greek := []rune{'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π', 'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω'}
-	if n <= 0 || n > len(greek) {
-		return fmt.Sprintf("%d", n)
-	}
-	return string(greek[n-1])
-}
-
 // formatListMarker returns the marker text for a given list-style-type and index.
 // Custom @counter-style rules are checked first when the list-style-type
 // doesn't match a built-in type.
@@ -3324,15 +3277,15 @@ func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 	case css.ListStyleTypeDecimalLeadingZero:
 		return fmt.Sprintf("%02d.", index)
 	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
-		return toAlpha(index) + "."
+		return css.ToAlpha(index) + "."
 	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
-		return strings.ToUpper(toAlpha(index)) + "."
+		return strings.ToUpper(css.ToAlpha(index)) + "."
 	case css.ListStyleTypeLowerRoman:
-		return strings.ToLower(toRoman(index)) + "."
+		return strings.ToLower(css.ToRoman(index)) + "."
 	case css.ListStyleTypeUpperRoman:
-		return toRoman(index) + "."
+		return css.ToRoman(index) + "."
 	case css.ListStyleTypeLowerGreek:
-		return toGreek(index) + "."
+		return css.ToGreek(index) + "."
 	case css.ListStyleTypeDisclosureOpen:
 		return "\u25BE" // ▾ downward-pointing triangle
 	case css.ListStyleTypeDisclosureClosed:
@@ -3477,13 +3430,13 @@ func fallbackCounter(value int, fallback string, allStyles map[string]css.Counte
 		case "decimal":
 			return fmt.Sprintf("%d.", value)
 		case "lower-alpha", "lower-latin":
-			return toAlpha(value) + "."
+			return css.ToAlpha(value) + "."
 		case "upper-alpha", "upper-latin":
-			return strings.ToUpper(toAlpha(value)) + "."
+			return strings.ToUpper(css.ToAlpha(value)) + "."
 		case "lower-roman":
-			return strings.ToLower(toRoman(value)) + "."
+			return strings.ToLower(css.ToRoman(value)) + "."
 		case "upper-roman":
-			return toRoman(value) + "."
+			return css.ToRoman(value) + "."
 		}
 	}
 	return fmt.Sprintf("%d.", value)
