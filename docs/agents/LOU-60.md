@@ -18,13 +18,13 @@ Do these BEFORE running any tests:
    Then verify: `GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go mod tidy`
 
 ## Go Toolchain
-```
+```bash
 GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go
 ```
 
 ## Test Commands
 Bidi tests are spread across `css-writing-modes` and `css-pseudo`:
-```
+```bash
 # Run all bidi tests at once:
 GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test -count=1 ./pkg/visualtest/ -run 'TestWPTCSS3Reftests/css-writing-modes/bidi' -timeout 60s
 
@@ -33,7 +33,7 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test -count=1 ./pkg/visualtest/ -run '
 ```
 
 ## Build Command
-```
+```bash
 GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go build ./pkg/layout/
 ```
 

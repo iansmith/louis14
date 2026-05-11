@@ -13,7 +13,7 @@ require (
 
 replace github.com/fogleman/gg v1.3.0 => ./third_party/gg
 
-replace mazarin/textshape => /Users/iansmith/mazzy/mazarin/textshape
+replace mazarin/textshape => ../mazzy/mazarin/textshape
 
 require (
 	github.com/dlclark/regexp2 v1.11.4 // indirect

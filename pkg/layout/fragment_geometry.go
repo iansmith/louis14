@@ -168,9 +168,10 @@ func reservesClassicScrollbar(overflow css.OverflowType) bool {
 }
 
 // classicScrollbarWidth returns the per-edge width of the classic scrollbar.
-// Mac WPT reftests run with overlay scrollbars (non-space-taking), so the
-// default ("auto") returns 0. Only explicit scrollbar-width:thin uses 10px;
-// scrollbar-width:none keeps 0.
+// Per CSS Scrollbars Styling Module Level 1, scrollbar-width: auto uses the
+// platform-default classic scrollbar width (17 px). thin uses 10 px; none
+// uses 0. This is an intentional shift from overlay (0 px) to classic scrollbar
+// sizing for the "auto" case.
 func classicScrollbarWidth(style *css.Style) float64 {
 	switch style.GetScrollbarWidth() {
 	case "thin":
@@ -178,7 +179,7 @@ func classicScrollbarWidth(style *css.Style) float64 {
 	case "none":
 		return 0
 	default: // "auto" and any unknown value
-		return 17 // classic scrollbar width per CSS Overflow §3.3
+		return 17
 	}
 }
 

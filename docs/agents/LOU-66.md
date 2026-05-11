@@ -18,19 +18,19 @@ Do these BEFORE running any tests:
    Then verify: `GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go mod tidy`
 
 ## Go Toolchain
-```
+```bash
 GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go
 ```
 
 ## Test Commands
 Orthogonal sizing tests are in `css-writing-modes`. Start with the VLR group:
-```
+```bash
 # VLR orthogonal sizing (001, 003, 009, 013, 015, 021):
 GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go test -count=1 ./pkg/visualtest/ -run 'TestWPTCSS3Reftests/css-writing-modes/abs-pos-non-replaced-vlr' -timeout 60s
 ```
 
 ## Build Command
-```
+```bash
 GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go build ./pkg/layout/
 ```
 

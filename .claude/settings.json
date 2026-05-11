@@ -23,9 +23,7 @@
         "Bash(tail:*)",
         "Bash(sort:*)",
         "Bash(echo:*)",
-        "Bash(mkdir:*)",
-        "Bash(rm:*)",
-        "Bash(cp:*)"
+        "Bash(mkdir:*)"
       ]
     }
   }

@@ -441,21 +441,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		})
 		builder.SetIntrinsicBlockSize(0)
 		builder.SetLayoutNode(mla.node)
-		border := geom.Border
-		padding := geom.Padding
-		if !builder.HasClonedBoxDecorations() {
-			// FragmentainerOffset > 0 with no break token: first
-			// layout in a non-first fragmentainer. No explicit
-			// continuation tracking; keep borders (zero-height
-			// fragment anyway).
-		}
-		physBorder := ToPhysicalEdges(border, wdm)
-		physPadding := ToPhysicalEdges(padding, wdm)
+		// Zero-height defer fragment: omit border/padding to
+		// prevent top-border paint leaking into the skipped
+		// fragment. Only margin is needed for outer layout.
 		physMargin := ToPhysicalEdges(ResolveMargins(mla.style, wdm, mla.space.AvailableSize.InlineSize.Float64()), wdm)
 		builder.SetBoxData(&PhysicalBoxData{
-			Margin:  physMargin,
-			Border:  physBorder,
-			Padding: physPadding,
+			Margin: physMargin,
 		})
 		result := builder.Build()
 		result.BlockSizeForFragmentation = explicitBlockSize + geom.BlockBorderPadding()
@@ -668,7 +659,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				balanceColumns, hasExplicitBlock, explicitBlockSize,
 				effectiveMaxBlockSize,
 				blockCursor, nextColToken, builder,
-				Indefinite, geom.BlockBorderPadding(),
+				Indefinite, EffectiveBlockBorderPadding(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, false),
 			)
 			blockCursor += rowBlockAdvance
 			totalColumnsRendered += columnsPlaced

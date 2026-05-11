@@ -3546,53 +3546,10 @@ func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fon
 	}
 }
 
-// drawListMarkerInside draws the marker inline at the start of the content area.
-// Per CSS Lists §4.2, the marker is placed as if it were an inline element at
-// the beginning of the first line box of the list item.
-//
-// For string-based inside markers (from ::marker { content: } or
-// list-style-type: <string>), the marker text has already been injected into
-// the inline layout pipeline by injectInsideMarker. In that case the marker is
-// rendered as part of the inline content with proper bidi isolation, and we
-// skip paint-time drawing here to avoid double rendering.
+// drawListMarkerInside is a no-op. Inside markers are now laid out as synthetic
+// inline ::marker children in the layout tree, so they render as part of normal
+// inline content. Paint-time drawing here would double-render.
 func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
-	// For inside markers with custom string content, the marker text was
-	// injected into the inline layout. Skip paint-time drawing.
-	if layer.MarkerContent != "" {
-		return
-	}
-
-	// For inside position, the marker is drawn at the content-left edge.
-	// Vertically: approximately at the midpoint of the first line.
-	my := box.Y + box.Border.Top + fontSize*0.55
-
-	switch layer.ListStyleType {
-	case css.ListStyleTypeDisc:
-		// Draw at the start of content, vertically centered on first line.
-		mx := contentLeft + markerSize/2
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.Fill()
-	case css.ListStyleTypeCircle:
-		mx := contentLeft + markerSize/2
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.SetLineWidth(1)
-		r.dc.Stroke()
-	case css.ListStyleTypeSquare:
-		r.dc.DrawRectangle(contentLeft, my-markerSize/2, markerSize, markerSize)
-		r.dc.Fill()
-	default:
-		// All text-based markers: decimal, alpha, roman, greek, disclosure, etc.
-		numStr := r.formatListMarker(layer.ListStyleType, layer.ListItemIndex)
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			numX := contentLeft
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(numStr, fid, numX, numY)
-		}
-	}
 }
 
 // drawTextStr draws a text string, applying OpenType features if present on the layer.
