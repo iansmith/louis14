@@ -88,10 +88,10 @@ func getCanvasIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 // getInlineSVGIntrinsicInfo returns intrinsic sizing info for an inline <svg>
 // element based on its width/height/viewBox attributes. Matches Blink's
 // behavior and svgIntrinsicInfo for SVG images:
-// - Explicit width + height → intrinsic dimensions (aspect ratio derived).
-// - viewBox only → aspect ratio from viewBox; no intrinsic dimensions
-//   (ComputeReplacedSize applies the CSS default 300x150 subject to ratio).
-// - One explicit dimension + viewBox → derive the other via aspect ratio.
+//   - Explicit width + height → intrinsic dimensions (aspect ratio derived).
+//   - viewBox only → aspect ratio from viewBox; no intrinsic dimensions
+//     (ComputeReplacedSize applies the CSS default 300x150 subject to ratio).
+//   - One explicit dimension + viewBox → derive the other via aspect ratio.
 func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 	if node == nil || node.DOMNode == nil {
 		return IntrinsicSizingInfo{}

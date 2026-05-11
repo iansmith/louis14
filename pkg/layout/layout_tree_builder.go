@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -14,12 +15,12 @@ import (
 //
 // Mirrors Blink's LayoutTreeBuilderForNG.
 type LayoutTreeBuilder struct {
-	styles          map[*html.Node]*css.Style
-	stylesheets     []*css.Stylesheet
-	viewportWidth   float64
-	viewportHeight  float64
-	counters        map[string][]int // CSS counter stacks (name → stack of values)
-	quoteDepth      int              // nesting depth for open-quote/close-quote
+	styles         map[*html.Node]*css.Style
+	stylesheets    []*css.Stylesheet
+	viewportWidth  float64
+	viewportHeight float64
+	counters       map[string][]int // CSS counter stacks (name → stack of values)
+	quoteDepth     int              // nesting depth for open-quote/close-quote
 }
 
 // BuildLayoutTree creates the layout tree rooted at the given DOM node.
@@ -101,12 +102,43 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 				node, "marker", b.stylesheets,
 				b.viewportWidth, b.viewportHeight, style,
 			)
+			// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
+			if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
+				clone := markerStyle.Clone()
+				clone.Set("unicode-bidi", "isolate")
+				markerStyle = clone
+			}
 			lin.MarkerStyle = markerStyle
+			// Extract content from ::marker { content: } for layout-time use.
+			if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
+				lin.MarkerContent = b.resolveContentText(cv, node)
+			}
+		}
+		// For list-style-type: <string> without ::marker rules, use the string
+		// as marker content when list-style-position: inside.
+		if lin.MarkerContent == "" && style.GetListStylePosition() == "inside" {
+			lst := style.GetListStyleType()
+			if lst != "" {
+				s := string(lst)
+				if !isBuiltinListStyleType(lst) {
+					lin.MarkerContent = s
+				}
+			}
 		}
 	}
 
 	// Build layout children, filtering out display:none and non-layout nodes.
 	var rawChildren []*LayoutInputNode
+
+	// CSS Pseudo-4 §4.2: Insert ::marker pseudo-element as first child
+	// of display:list-item elements when list-style-position is inside.
+	// The marker comes before ::before per CSS Pseudo-4 pseudo-element
+	// ordering (marker, before, children, after).
+	if style != nil && style.GetDisplay() == css.DisplayListItem {
+		if markerNode := b.createMarkerPseudoElement(node, style); markerNode != nil {
+			rawChildren = append(rawChildren, markerNode)
+		}
+	}
 
 	// CSS 2.1 §12.1: Generate ::before pseudo-element.
 	if beforeNode := b.createPseudoElement(node, style, "before"); beforeNode != nil {
@@ -614,7 +646,8 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 
 // resolveContentText resolves CSS content values (text, counters) to a plain string.
 // Used for ::marker content resolution during layout tree building.
-func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue) string {
+// node is the list-item DOM node, used for DOM-based list-item counter resolution.
+func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node) string {
 	var buf strings.Builder
 	for _, cv := range contentVals {
 		switch cv.Type {
@@ -622,15 +655,217 @@ func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue) s
 			buf.WriteString(cv.Value)
 		case "counter":
 			val := b.getCounterValue(cv.Value)
+			if val == 0 && cv.Value == "list-item" {
+				val = b.getListItemCounterValue(node)
+			}
 			buf.WriteString(strconv.Itoa(val))
 		case "counters":
-			// counters(name, separator) — resolve to the counter value.
-			// cv.Value is the counter name, cv.Separator is the join string.
 			val := b.getCounterValue(cv.Value)
+			if val == 0 && cv.Value == "list-item" {
+				val = b.getListItemCounterValue(node)
+			}
 			buf.WriteString(strconv.Itoa(val))
 		}
 	}
 	return buf.String()
+}
+
+// getListItemCounterValue returns the counter value for a list item by
+// counting preceding list-item sibling elements in the DOM tree. Mirrors
+// the paint-time computeListItemIndex approach. Does NOT use the CSS
+// counter stack (b.counters) — that stack is managed independently for
+// counter() values in content and must not be modified by marker resolution.
+func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
+	if node == nil || node.Parent == nil {
+		return 1
+	}
+	start := 1
+	if val, ok := node.Parent.GetAttribute("start"); ok {
+		if n, err := strconv.Atoi(val); err == nil {
+			start = n
+		}
+	}
+	idx := start
+	for _, sibling := range node.Parent.Children {
+		if sibling == node {
+			break
+		}
+		if s := b.styles[sibling]; s != nil && s.GetDisplay() == css.DisplayListItem {
+			idx++
+		}
+	}
+	return idx
+}
+
+// createMarkerPseudoElement creates a LayoutInputNode for a ::marker
+// pseudo-element when the element is display:list-item with
+// list-style-position: inside. Returns nil if no marker should be generated.
+//
+// Mirrors Blink's LayoutInsideListMarker creation in LayoutObject::CreateObject
+// and MarkerText resolution in ListMarker::MarkerText.
+func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *css.Style) *LayoutInputNode {
+	if node == nil || style == nil {
+		return nil
+	}
+
+	// Guard: only for display:list-item with list-style-position: inside.
+	if style.GetDisplay() != css.DisplayListItem {
+		return nil
+	}
+	if style.GetListStylePosition() != "inside" {
+		return nil
+	}
+
+	// Step 1: Resolve marker content.
+	var markerContent string
+	var markerStyle *css.Style
+	hasMarkerStyle := false
+	hasContentProperty := false
+
+	if len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
+		// Case 2a: ::marker rules exist — compute ::marker style and extract content.
+		markerStyle = css.ComputePseudoElementStyle(
+			node, "marker", b.stylesheets,
+			b.viewportWidth, b.viewportHeight, style,
+		)
+		hasMarkerStyle = true
+
+		// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
+		if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
+			clone := markerStyle.Clone()
+			clone.Set("unicode-bidi", "isolate")
+			markerStyle = clone
+		}
+
+		// Extract content from ::marker { content: } and resolve to a string.
+		if cv, ok := markerStyle.GetContentValues(); ok {
+			hasContentProperty = true
+			if len(cv) > 0 {
+				markerContent = b.resolveContentText(cv, node)
+			}
+		}
+	}
+
+	// Case 2b: If no ::marker content resolved, fall back to list-style-type.
+	// Skip fallback when ::marker explicitly set the content property (e.g. content:none).
+	if markerContent == "" && !hasContentProperty {
+		lst := style.GetListStyleType()
+		if lst == css.ListStyleTypeNone {
+			return nil
+		}
+		if lst != "" {
+			if isBuiltinListStyleType(lst) {
+				markerContent = b.resolveListStyleType(lst, node)
+			} else {
+				// Custom <string> value (e.g., list-style-type: "§").
+				s := string(lst)
+				// Strip surrounding quotes if present.
+				if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
+					s = s[1 : len(s)-1]
+				}
+				markerContent = s
+			}
+		}
+	}
+
+	// If no content was resolved, no marker to generate.
+	if markerContent == "" {
+		return nil
+	}
+
+	// Step 2: Compute the effective marker style.
+	if !hasMarkerStyle {
+		// No ::marker rules; create a default marker style inheriting from
+		// parent with unicode-bidi: isolate (CSS Pseudo-4 §3) and display: inline.
+		markerStyle = style.Clone()
+		markerStyle.Set("unicode-bidi", "isolate")
+		markerStyle.Set("display", "inline")
+	}
+
+	// Step 3: Create a synthetic ::marker DOM node.
+	markerNode := &html.Node{
+		Type:    html.ElementNode,
+		TagName: "::marker",
+		Parent:  node,
+	}
+
+	// Store the marker style in the styles map.
+	b.styles[markerNode] = markerStyle
+
+	// Step 4: Create a text node child with the resolved marker content.
+	textNode := &html.Node{
+		Type:   html.TextNode,
+		Text:   markerContent,
+		Parent: markerNode,
+	}
+
+	// Step 5: Return the LayoutInputNode with the marker and its text child.
+	return &LayoutInputNode{
+		DOMNode: markerNode,
+		style:   markerStyle,
+		children: []*LayoutInputNode{{
+			DOMNode: textNode,
+			style:   markerStyle,
+		}},
+	}
+}
+
+// resolveListStyleType converts a built-in list-style-type value to its
+// string representation with appropriate suffix, matching the paint-time
+// formatListMarker output.
+func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *html.Node) string {
+	if lst == css.ListStyleTypeNone {
+		return ""
+	}
+
+	// Get the counter value (1-based).
+	value := b.getListItemCounterValue(node)
+
+	switch lst {
+	case css.ListStyleTypeDisc:
+		return "•" // bullet
+	case css.ListStyleTypeCircle:
+		return "◦" // white bullet
+	case css.ListStyleTypeSquare:
+		return "▪" // black small square
+	case css.ListStyleTypeDecimal:
+		return strconv.Itoa(value) + "."
+	case css.ListStyleTypeDecimalLeadingZero:
+		return fmt.Sprintf("%02d.", value)
+	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
+		return css.ToAlpha(value) + "."
+	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
+		return strings.ToUpper(css.ToAlpha(value)) + "."
+	case css.ListStyleTypeLowerRoman:
+		return strings.ToLower(css.ToRoman(value)) + "."
+	case css.ListStyleTypeUpperRoman:
+		return css.ToRoman(value) + "."
+	case css.ListStyleTypeLowerGreek:
+		return css.ToGreek(value) + "."
+	case css.ListStyleTypeDisclosureOpen:
+		return "▼" // ▼ down-pointing triangle (details expanded)
+	case css.ListStyleTypeDisclosureClosed:
+		return "▶" // ▶ right-pointing triangle (details collapsed)
+	default:
+		return ""
+	}
+}
+
+// isBuiltinListStyleType returns true for the predefined list-style-type values.
+// (Moved from inline_item.go — kept here for use by createMarkerPseudoElement.)
+func isBuiltinListStyleType(lst css.ListStyleType) bool {
+	switch lst {
+	case css.ListStyleTypeDisc, css.ListStyleTypeCircle, css.ListStyleTypeSquare,
+		css.ListStyleTypeDecimal, css.ListStyleTypeNone,
+		css.ListStyleTypeDecimalLeadingZero,
+		css.ListStyleTypeLowerAlpha, css.ListStyleTypeUpperAlpha,
+		css.ListStyleTypeLowerLatin, css.ListStyleTypeUpperLatin,
+		css.ListStyleTypeLowerRoman, css.ListStyleTypeUpperRoman,
+		css.ListStyleTypeLowerGreek,
+		css.ListStyleTypeDisclosureOpen, css.ListStyleTypeDisclosureClosed:
+		return true
+	}
+	return false
 }
 
 // isBlockContainer returns true for display types that are block containers

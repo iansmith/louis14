@@ -139,6 +139,14 @@ type BoxFragmentBuilder struct {
 	// Mirrors Blink's PhysicalFragment::IsMonolithic.
 	isMonolithic bool
 
+	// hasClonedBoxDecorations is set when the element has
+	// box-decoration-break:clone. When true, each fragment behaves as
+	// an independent decorated box — block-start AND block-end borders
+	// appear on every fragment. Mirrors Blink's
+	// BoxFragmentBuilder::clone_box_start_decorations_ /
+	// clone_box_end_decorations_.
+	hasClonedBoxDecorations bool
+
 	// previousBreakAfter is the break-after value of the most recently added
 	// in-flow child. JoinedBreakBetweenValue joins it with the next child's
 	// break-before to compute the effective break-between. Mirrors Blink's
@@ -259,6 +267,22 @@ func (b *BoxFragmentBuilder) SetIsMonolithic(v bool) {
 	b.isMonolithic = v
 }
 
+// SetHasClonedBoxDecorations marks this fragment as having cloned box
+// decorations (box-decoration-break:clone). When true, each fragment
+// behaves as an independent decorated box — block-start and block-end
+// borders appear on every fragment. Mirrors Blink's
+// SetupFragmentBuilderForFragmentation setting clone_box_start_decorations_
+// and clone_box_end_decorations_.
+func (b *BoxFragmentBuilder) SetHasClonedBoxDecorations(v bool) {
+	b.hasClonedBoxDecorations = v
+}
+
+// HasClonedBoxDecorations reports whether this fragment has cloned box
+// decorations (box-decoration-break:clone).
+func (b *BoxFragmentBuilder) HasClonedBoxDecorations() bool {
+	return b.hasClonedBoxDecorations
+}
+
 // SetExclusionSpace sets the updated float exclusion state.
 func (b *BoxFragmentBuilder) SetExclusionSpace(es *ExclusionSpace) {
 	b.exclusionSpace = es
@@ -276,10 +300,14 @@ func (b *BoxFragmentBuilder) SetStyle(style *css.Style) {
 
 // SetLayoutNode sets both the DOM node and style from a LayoutInputNode,
 // and stores the LayoutInputNode itself for fragment→LayoutInputNode bridging.
+// Also sets HasClonedBoxDecorations when the element has box-decoration-break:clone.
 func (b *BoxFragmentBuilder) SetLayoutNode(lin *LayoutInputNode) {
 	b.node = lin.DOMNode
 	b.style = lin.Style()
 	b.layoutNode = lin
+	if s := lin.Style(); s != nil && s.GetBoxDecorationBreak() == css.BoxDecorationBreakClone {
+		b.hasClonedBoxDecorations = true
+	}
 }
 
 // AddOutOfFlowCandidate records an absolutely/fixed positioned child

@@ -5,10 +5,25 @@
       "allow": [
         "Read(/tmp/**)",
         "Edit(/tmp/**)",
-        "Write(/tmp/**)"
+        "Write(/tmp/**)",
+        "WebSearch",
+        "WebFetch",
+        "mcp__linear-server__get_issue",
+        "mcp__linear-server__save_comment",
+        "mcp__go-edit__edit",
+        "Bash(GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go:*)",
+        "Bash(git:*)",
+        "Bash(find:*)",
+        "Bash(grep:*)",
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(wc:*)",
+        "Bash(file:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(sort:*)",
+        "Bash(echo:*)",
+        "Bash(mkdir:*)"
       ]
     }
   }
-
-
-  

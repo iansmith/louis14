@@ -539,4 +539,3 @@ func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
 		style.ChWidth = ch
 	}
 }
-

@@ -137,7 +137,7 @@ func TestIMCB_BothSpecified(t *testing.T) {
 		30, true,
 		true,
 		0, BiasStart,
-		BiasEqual,       // alignment
+		BiasEqual, // alignment
 		BiasStart, // default
 		BiasStart, false,
 		BiasStart, false,

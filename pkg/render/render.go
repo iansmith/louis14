@@ -1225,13 +1225,13 @@ func (r *Renderer) applyTransforms(layer *PaintLayer) {
 // CSS 2.1 Appendix E order using the pre-sorted PaintLayer lists.
 //
 // The walk is split into phases (mirrors Blink's PaintLayerPainter):
-//   1. Self decorations — bg, borders, shadows, outline, list marker.
-//   2. NegativeZ z-children (step 2).
-//   3. PhaseBackground across non-self-painting descendants (step 3).
-//   4. PhaseFloat across non-self-painting descendants (step 4).
-//   5. Self foreground — text + image.
-//   6. PhaseForeground across non-self-painting descendants (step 5).
-//   7. AutoZero + PositiveZ z-children (steps 6-7).
+//  1. Self decorations — bg, borders, shadows, outline, list marker.
+//  2. NegativeZ z-children (step 2).
+//  3. PhaseBackground across non-self-painting descendants (step 3).
+//  4. PhaseFloat across non-self-painting descendants (step 4).
+//  5. Self foreground — text + image.
+//  6. PhaseForeground across non-self-painting descendants (step 5).
+//  7. AutoZero + PositiveZ z-children (steps 6-7).
 //
 // Descendant painting is split into phases so floats (step 4) can paint
 // above earlier siblings' block backgrounds but below later siblings'
@@ -2848,9 +2848,9 @@ func (r *Renderer) drawRoundedBorders(layer *PaintLayer) {
 	innerRadii := outerRadii.Inset(bw.Top, bw.Right, bw.Bottom, bw.Left)
 
 	type borderSide struct {
-		width float64
-		style css.BorderStyle
-		color css.Color
+		width                      float64
+		style                      css.BorderStyle
+		color                      css.Color
 		clipX, clipY, clipW, clipH float64
 	}
 
@@ -2989,28 +2989,47 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 		}
 	}
 
-	drawRule := func(ruleX float64) {
+	// Blink stretches the last row's column rules to the container's
+	// content-box block end (box_fragment_painter.cc ~line 1876).
+	// Per-row detection mirrors Blink's !items_until_last_row gate:
+	// only cross gaps at indices >= LastRowCrossGapStart belong to the
+	// last row and get stretched. The content-box bottom accounts for
+	// the scrollbar block-end reservation (matches Blink's subtraction
+	// of scrollbars.block_end from ContentRect().BlockEndOffset()).
+	// Mirrors Blink behavior noted as "a known TODO in Blink to remove".
+	stretchedH := contentH
+	if hasCols {
+		cbBottom := math.Round(box.Y + box.Height - box.Border.Bottom - box.Padding.Bottom)
+		if gg := layer.GapGeometry; gg != nil {
+			cbBottom -= gg.ScrollbarBlockEnd
+			if cbBottom > contentY+contentH {
+				stretchedH = cbBottom - contentY
+			}
+		}
+	}
+
+	drawRule := func(ruleX float64, ruleH float64) {
 		switch layer.ColumnRuleStyle {
 		case "solid":
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, ruleH)
 			r.dc.Fill()
 		case "dashed":
-			r.drawDashedLine(ruleX, contentY, ruleX, contentY+contentH, ruleWidth)
+			r.drawDashedLine(ruleX, contentY, ruleX, contentY+ruleH, ruleWidth)
 		case "dotted":
-			r.drawDottedLine(ruleX, contentY, ruleX, contentY+contentH, ruleWidth)
+			r.drawDottedLine(ruleX, contentY, ruleX, contentY+ruleH, ruleWidth)
 		case "double":
 			thirdW := ruleWidth / 3
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, thirdW, contentH)
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, thirdW, ruleH)
 			r.dc.Fill()
-			r.dc.DrawRectangle(ruleX+ruleWidth/2-thirdW, contentY, thirdW, contentH)
+			r.dc.DrawRectangle(ruleX+ruleWidth/2-thirdW, contentY, thirdW, ruleH)
 			r.dc.Fill()
 		default:
-			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, contentH)
+			r.dc.DrawRectangle(ruleX-ruleWidth/2, contentY, ruleWidth, ruleH)
 			r.dc.Fill()
 		}
 	}
 
-	if gg := layer.GapGeometry; gg != nil && len(gg.CrossGaps) > 0 {
+	if gg := layer.GapGeometry; gg != nil {
 		// GapGeometry path: use layout-computed cross gap positions.
 		// CrossGap.GapInlineOffset is content-box relative (logical inline);
 		// for HTB writing mode that equals physical X offset from content origin.
@@ -3019,12 +3038,17 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 				continue // spanner-adjacent gap: no rule
 			}
 			ruleX := contentX + math.Round(cg.GapInlineOffset)
-			drawRule(ruleX)
+			ruleH := contentH
+			if i >= gg.LastRowCrossGapStart {
+				ruleH = stretchedH
+			}
+			drawRule(ruleX, ruleH)
 		}
 		return
 	}
 
-	// Ad-hoc fallback: draw numCols-1 rules evenly spaced.
+	// Ad-hoc fallback: only reached when GapGeometry is nil (pre-12h.6
+	// code paths). Draw numCols-1 rules evenly spaced.
 	colWidth := layer.ColumnWidth
 	gap := layer.ColumnGap
 	numCols := layer.ColumnCount
@@ -3033,7 +3057,7 @@ func (r *Renderer) drawColumnRules(layer *PaintLayer) {
 	}
 	for i := 1; i < numCols; i++ {
 		ruleX := contentX + float64(i)*(colWidth+gap) - gap/2
-		drawRule(ruleX)
+		drawRule(ruleX, contentH)
 	}
 }
 
@@ -3243,53 +3267,6 @@ func capitalizeWords(s string) string {
 	return b.String()
 }
 
-// toRoman converts a positive integer to a Roman numeral string.
-// Uses subtractive notation (e.g., 4=IV, 9=IX).
-func toRoman(n int) string {
-	if n <= 0 || n > 3999 {
-		return fmt.Sprintf("%d", n)
-	}
-	vals := []int{1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1}
-	syms := []string{"M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"}
-	var b strings.Builder
-	for i, v := range vals {
-		for n >= v {
-			b.WriteString(syms[i])
-			n -= v
-		}
-	}
-	return b.String()
-}
-
-// toAlpha converts a positive integer to alphabetic notation (a=1, b=2, ..., z=26, aa=27, ...).
-func toAlpha(n int) string {
-	if n <= 0 {
-		return fmt.Sprintf("%d", n)
-	}
-	var b strings.Builder
-	for n > 0 {
-		n-- // make 0-indexed
-		b.WriteByte(byte('a' + n%26))
-		n /= 26
-	}
-	// Reverse
-	s := []byte(b.String())
-	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
-		s[i], s[j] = s[j], s[i]
-	}
-	return string(s)
-}
-
-// toGreek converts a positive integer to lower Greek letters (α=1, β=2, ...).
-func toGreek(n int) string {
-	// CSS counter-styles: lower-greek uses the 24-letter Greek alphabet
-	greek := []rune{'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π', 'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω'}
-	if n <= 0 || n > len(greek) {
-		return fmt.Sprintf("%d", n)
-	}
-	return string(greek[n-1])
-}
-
 // formatListMarker returns the marker text for a given list-style-type and index.
 // Custom @counter-style rules are checked first when the list-style-type
 // doesn't match a built-in type.
@@ -3300,15 +3277,15 @@ func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 	case css.ListStyleTypeDecimalLeadingZero:
 		return fmt.Sprintf("%02d.", index)
 	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
-		return toAlpha(index) + "."
+		return css.ToAlpha(index) + "."
 	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
-		return strings.ToUpper(toAlpha(index)) + "."
+		return strings.ToUpper(css.ToAlpha(index)) + "."
 	case css.ListStyleTypeLowerRoman:
-		return strings.ToLower(toRoman(index)) + "."
+		return strings.ToLower(css.ToRoman(index)) + "."
 	case css.ListStyleTypeUpperRoman:
-		return toRoman(index) + "."
+		return css.ToRoman(index) + "."
 	case css.ListStyleTypeLowerGreek:
-		return toGreek(index) + "."
+		return css.ToGreek(index) + "."
 	case css.ListStyleTypeDisclosureOpen:
 		return "\u25BE" // ▾ downward-pointing triangle
 	case css.ListStyleTypeDisclosureClosed:
@@ -3320,7 +3297,10 @@ func (r *Renderer) formatListMarker(lst css.ListStyleType, index int) string {
 				return applyCounterStyle(index, cs, r.counterStyles)
 			}
 		}
-		return fmt.Sprintf("%d.", index)
+		// Return custom string list-style-type values as-is.
+		// These are CSS <string> values from e.g. list-style-type: "\2022".
+		// Per CSS Lists §3, a <string> value is used as the marker text.
+		return string(lst)
 	}
 }
 
@@ -3332,7 +3312,7 @@ func applyCounterStyle(value int, cs css.CounterStyleRule, allStyles map[string]
 			return fallbackCounter(value, cs.Fallback, allStyles)
 		}
 		n := len(cs.Symbols)
-		idx := ((value - 1) % n + n) % n
+		idx := ((value-1)%n + n) % n
 		return cs.Prefix + cs.Symbols[idx] + cs.Suffix
 
 	case "numeric":
@@ -3384,7 +3364,7 @@ func applyCounterStyle(value int, cs css.CounterStyleRule, allStyles map[string]
 			return fallbackCounter(value, cs.Fallback, allStyles)
 		}
 		n := len(cs.Symbols)
-		idx := ((value - 1) % n + n) % n
+		idx := ((value-1)%n + n) % n
 		count := ((value - 1) / n) + 1
 		sym := cs.Symbols[idx]
 		result := strings.Repeat(sym, count)
@@ -3450,13 +3430,13 @@ func fallbackCounter(value int, fallback string, allStyles map[string]css.Counte
 		case "decimal":
 			return fmt.Sprintf("%d.", value)
 		case "lower-alpha", "lower-latin":
-			return toAlpha(value) + "."
+			return css.ToAlpha(value) + "."
 		case "upper-alpha", "upper-latin":
-			return strings.ToUpper(toAlpha(value)) + "."
+			return strings.ToUpper(css.ToAlpha(value)) + "."
 		case "lower-roman":
-			return strings.ToLower(toRoman(value)) + "."
+			return strings.ToLower(css.ToRoman(value)) + "."
 		case "upper-roman":
-			return toRoman(value) + "."
+			return css.ToRoman(value) + "."
 		}
 	}
 	return fmt.Sprintf("%d.", value)
@@ -3566,55 +3546,10 @@ func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fon
 	}
 }
 
-// drawListMarkerInside draws the marker inline at the start of the content area.
-// Per CSS Lists §4.2, the marker is placed as if it were an inline element at
-// the beginning of the first line box of the list item.
+// drawListMarkerInside is a no-op. Inside markers are now laid out as synthetic
+// inline ::marker children in the layout tree, so they render as part of normal
+// inline content. Paint-time drawing here would double-render.
 func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
-	// For inside position, the marker is drawn at the content-left edge.
-	// Vertically: approximately at the midpoint of the first line.
-	my := box.Y + box.Border.Top + fontSize*0.55
-
-	// If ::marker has custom content, draw it as text at content start.
-	if layer.MarkerContent != "" {
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			numX := contentLeft
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(layer.MarkerContent, fid, numX, numY)
-		}
-		return
-	}
-
-	switch layer.ListStyleType {
-	case css.ListStyleTypeDisc:
-		// Draw at the start of content, vertically centered on first line.
-		mx := contentLeft + markerSize/2
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.Fill()
-	case css.ListStyleTypeCircle:
-		mx := contentLeft + markerSize/2
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.SetLineWidth(1)
-		r.dc.Stroke()
-	case css.ListStyleTypeSquare:
-		r.dc.DrawRectangle(contentLeft, my-markerSize/2, markerSize, markerSize)
-		r.dc.Fill()
-	default:
-		// All text-based markers: decimal, alpha, roman, greek, disclosure, etc.
-		numStr := r.formatListMarker(layer.ListStyleType, layer.ListItemIndex)
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			numX := contentLeft
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(numStr, fid, numX, numY)
-		}
-	}
 }
 
 // drawTextStr draws a text string, applying OpenType features if present on the layer.

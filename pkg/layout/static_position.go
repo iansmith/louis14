@@ -23,7 +23,7 @@ const (
 //
 // Mirrors Blink's LogicalStaticPosition (static_position.h).
 type LogicalStaticPosition struct {
-	Offset    LogicalOffset
+	Offset     LogicalOffset
 	InlineEdge StaticPositionEdge
 	BlockEdge  StaticPositionEdge
 }
@@ -42,7 +42,7 @@ type PhysicalStaticPosition struct {
 type PhysicalStaticEdge int
 
 const (
-	PhysicalEdgeLeft   PhysicalStaticEdge = iota
+	PhysicalEdgeLeft PhysicalStaticEdge = iota
 	PhysicalEdgeRight
 	PhysicalEdgeTop
 	PhysicalEdgeBottom

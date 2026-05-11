@@ -136,7 +136,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		return 0, exclusionSpace, 0, 0, nil
 	}
 
-	// Phase 1a: Block-level bidi control injection.
+	// Phase 1a: (removed) ::marker pseudo-element for inside markers is now
+	// handled as a proper layout node child of the list item — the marker
+	// text flows through the normal inline pipeline via the ::marker inline
+	// element child created in LayoutTreeBuilder.createMarkerPseudoElement.
+
+	// Phase 1b: Block-level bidi control injection.
 	// CSS Writing Modes §2.2: When a block container has unicode-bidi set
 	// to embed, isolate, bidi-override, isolate-override, or plaintext,
 	// the corresponding Unicode bidi control characters must be injected

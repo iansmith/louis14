@@ -28,15 +28,15 @@ func NewGridLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Con
 
 // gridItem represents a grid item with its placement info and layout result.
 type gridItem struct {
-	node      *LayoutInputNode
-	style     *css.Style
-	colStart  int // 0-indexed column start
-	colEnd    int // 0-indexed column end (exclusive)
-	rowStart  int // 0-indexed row start
-	rowEnd    int // 0-indexed row end (exclusive)
-	result    *LayoutResult
-	wdm       WritingDirectionMode
-	margins   LogicalEdges
+	node     *LayoutInputNode
+	style    *css.Style
+	colStart int // 0-indexed column start
+	colEnd   int // 0-indexed column end (exclusive)
+	rowStart int // 0-indexed row start
+	rowEnd   int // 0-indexed row end (exclusive)
+	result   *LayoutResult
+	wdm      WritingDirectionMode
+	margins  LogicalEdges
 }
 
 // Layout performs CSS Grid layout.

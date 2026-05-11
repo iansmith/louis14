@@ -187,9 +187,9 @@ func TestBuildPaintTree_PositionNormalization(t *testing.T) {
 
 func TestBuildPaintTree_ClipRect(t *testing.T) {
 	root := &layout.Box{
-		Style:  styleWithOverflow("hidden"),
-		X:      10, Y: 20,
-		Width:  100, Height: 80,
+		Style: styleWithOverflow("hidden"),
+		X:     10, Y: 20,
+		Width: 100, Height: 80,
 		Border: css.BoxEdge{Top: 2, Right: 3, Bottom: 2, Left: 3},
 	}
 

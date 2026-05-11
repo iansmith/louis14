@@ -143,7 +143,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 			if isBorderBox {
 				// blockSize from ResolveBlockSize with border-box already had BP subtracted.
 				// Add it back for the ratio, then subtract inline BP.
-				inlineFromRatio = (blockSize + geom.BlockBorderPadding()) * ar.Width / ar.Height - bp
+				inlineFromRatio = (blockSize+geom.BlockBorderPadding())*ar.Width/ar.Height - bp
 				if inlineFromRatio < 0 {
 					inlineFromRatio = 0
 				}
@@ -158,7 +158,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 			minInlineFromRatio := transferBlockToInline(minBlock, geom.BlockBorderPadding())
 			if isBorderBox {
 				// minBlock from ResolveMinBlockSize with border-box already had BP subtracted.
-				minInlineFromRatio = (minBlock + geom.BlockBorderPadding()) * ar.Width / ar.Height - bp
+				minInlineFromRatio = (minBlock+geom.BlockBorderPadding())*ar.Width/ar.Height - bp
 				if minInlineFromRatio < 0 {
 					minInlineFromRatio = 0
 				}
@@ -176,7 +176,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 			maxBlock := maxBlockLU.Float64()
 			maxInlineFromRatio := transferBlockToInline(maxBlock, geom.BlockBorderPadding())
 			if isBorderBox {
-				maxInlineFromRatio = (maxBlock + geom.BlockBorderPadding()) * ar.Width / ar.Height - bp
+				maxInlineFromRatio = (maxBlock+geom.BlockBorderPadding())*ar.Width/ar.Height - bp
 				if maxInlineFromRatio < 0 {
 					maxInlineFromRatio = 0
 				}

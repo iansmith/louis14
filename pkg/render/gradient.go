@@ -26,7 +26,7 @@ type gradientStop struct {
 	a         float64 // 0-1
 	pos       float64 // position along gradient line in pixels (after resolution)
 	posIsSet  bool
-	isPercent bool    // true if pos is a percentage (0-100) needing lineLen resolution
+	isPercent bool // true if pos is a percentage (0-100) needing lineLen resolution
 }
 
 // parseLinearGradient parses a linear-gradient(...) value.
@@ -462,8 +462,8 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 		cy := y + h/2
 		for py := y0; py < y1; py++ {
 			for px := x0; px < x1; px++ {
-				projX := float64(px)+0.5 - cx
-				projY := float64(py)+0.5 - cy
+				projX := float64(px) + 0.5 - cx
+				projY := float64(py) + 0.5 - cy
 				pos := projX*dx + projY*dy + lineLen/2
 				c := interpolateGradientColor(stops, wrapPos(pos))
 				if c.A == 0 {

@@ -79,10 +79,10 @@ type PaintLayer struct {
 	Opacity float64 // 0.0..1.0; 1.0 = fully opaque
 
 	// Image (for <img> replaced elements):
-	ImageSrc        string         // src attribute value; empty if not an img element
-	ObjectFit       css.ObjectFit  // fill, contain, cover, none, scale-down
-	ObjectPosition  [2]float64     // x%, y% in range [0,1]; default (0.5, 0.5)
-	ImageRendering  string         // auto, pixelated, crisp-edges, -webkit-optimize-contrast
+	ImageSrc       string        // src attribute value; empty if not an img element
+	ObjectFit      css.ObjectFit // fill, contain, cover, none, scale-down
+	ObjectPosition [2]float64    // x%, y% in range [0,1]; default (0.5, 0.5)
+	ImageRendering string        // auto, pixelated, crisp-edges, -webkit-optimize-contrast
 
 	// Background:
 	BackgroundColor  css.Color              // A==0 means no background
@@ -95,42 +95,42 @@ type PaintLayer struct {
 	BorderRadius css.EllipticalRadii // TopLeft, TopRight, BottomRight, BottomLeft (elliptical)
 
 	// Border image (9-slice): replaces regular border drawing when source is set.
-	BorderImageSource string             // URL or gradient; empty = none
+	BorderImageSource string               // URL or gradient; empty = none
 	BorderImageSlice  css.BorderImageSlice // 4 slice values + fill flag
-	BorderImageWidth  [4]float64         // top, right, bottom, left (px)
-	BorderImageRepeat [2]string          // [horizontal, vertical]: stretch/repeat/round/space
+	BorderImageWidth  [4]float64           // top, right, bottom, left (px)
+	BorderImageRepeat [2]string            // [horizontal, vertical]: stretch/repeat/round/space
 
 	// Box shadows (outset and inset):
 	BoxShadows []css.BoxShadow
 
 	// Outline (doesn't affect layout, drawn outside border-box):
-	OutlineStyle  string  // none, solid, dashed, dotted, double
+	OutlineStyle  string // none, solid, dashed, dotted, double
 	OutlineWidth  float64
 	OutlineColor  css.Color
 	OutlineOffset float64
 
 	// Text:
-	TextColor     css.Color
-	FontSize      float64
-	FontBold      bool
-	FontItalic    bool
-	FontMono      bool
-	FontAhem       bool
-	FontFamily     string
-	LetterSpacing  float64
-	WordSpacing      float64
-	TabSize          float64 // tab-size value (character count or px)
-	TabSizeIsLength  bool    // true = px length, false = character count
-	IsVerticalText bool
-	IsSidewaysLR   bool
-	IsSidewaysRL   bool
+	TextColor       css.Color
+	FontSize        float64
+	FontBold        bool
+	FontItalic      bool
+	FontMono        bool
+	FontAhem        bool
+	FontFamily      string
+	LetterSpacing   float64
+	WordSpacing     float64
+	TabSize         float64 // tab-size value (character count or px)
+	TabSizeIsLength bool    // true = px length, false = character count
+	IsVerticalText  bool
+	IsSidewaysLR    bool
+	IsSidewaysRL    bool
 
 	// Text decoration (underline, overline, line-through):
 	TextDecoration          css.TextDecoration
-	TextDecorationColor     css.Color  // defaults to TextColor (currentColor)
-	TextDecorationThickness float64    // defaults to ~1px
-	TextDecorationStyle     string     // solid, double, dotted, dashed, wavy
-	TextUnderlineOffset     float64    // additional offset for underline (px); 0 = auto/default
+	TextDecorationColor     css.Color // defaults to TextColor (currentColor)
+	TextDecorationThickness float64   // defaults to ~1px
+	TextDecorationStyle     string    // solid, double, dotted, dashed, wavy
+	TextUnderlineOffset     float64   // additional offset for underline (px); 0 = auto/default
 
 	// Text shadows:
 	TextShadows []css.TextShadow
@@ -143,9 +143,9 @@ type PaintLayer struct {
 	FontFeatures []textshape.FontFeature
 
 	// Text emphasis marks (small marks above/below each character):
-	TextEmphasisMark     string    // resolved mark character ("●", "•", etc.); "" = none
-	TextEmphasisColor    css.Color // defaults to currentColor
-	TextEmphasisOver     bool      // true = over (above), false = under (below)
+	TextEmphasisMark  string    // resolved mark character ("●", "•", etc.); "" = none
+	TextEmphasisColor css.Color // defaults to currentColor
+	TextEmphasisOver  bool      // true = over (above), false = under (below)
 
 	// CSS text-transform (uppercase, lowercase, capitalize):
 	TextTransform css.TextTransform
@@ -156,14 +156,14 @@ type PaintLayer struct {
 	// List markers:
 	IsListItem              bool
 	ListStyleType           css.ListStyleType
-	ListStyleImage          string // URL from list-style-image (empty or "none" means no image)
-	ListStylePositionInside bool   // true = inside, false = outside (default)
-	ListItemIndex           int    // 1-based ordinal for ordered lists
-	MarkerContent   string    // custom content from ::marker { content: "..." }
-	MarkerColor     css.Color // color override from ::marker rules
-	HasMarkerColor  bool      // true if ::marker specifies a color
-	MarkerFontSize  float64   // font-size override from ::marker rules
-	HasMarkerFont   bool      // true if ::marker specifies font-size
+	ListStyleImage          string    // URL from list-style-image (empty or "none" means no image)
+	ListStylePositionInside bool      // true = inside, false = outside (default)
+	ListItemIndex           int       // 1-based ordinal for ordered lists
+	MarkerContent           string    // custom content from ::marker { content: "..." }
+	MarkerColor             css.Color // color override from ::marker rules
+	HasMarkerColor          bool      // true if ::marker specifies a color
+	MarkerFontSize          float64   // font-size override from ::marker rules
+	HasMarkerFont           bool      // true if ::marker specifies font-size
 
 	// CSS Transforms:
 	Transforms      []css.Transform
@@ -570,6 +570,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 				}
 			}
 		}
+
+		// Propagate ::marker content from the layout box to the paint layer.
+		layer.MarkerContent = box.MarkerContent
 	}
 
 	// CSS Transforms (individual properties + shorthand).
@@ -1129,5 +1132,3 @@ func (layer *PaintLayer) sortZLists() {
 		child.sortZLists()
 	}
 }
-
-

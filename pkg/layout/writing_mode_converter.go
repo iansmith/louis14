@@ -239,8 +239,8 @@ func ToLogicalEdges(edges PhysicalEdges, wdm WritingDirectionMode) LogicalEdges 
 //
 // Mirrors Blink's PhysicalToLogical conversion of inset properties.
 type LogicalInsets struct {
-	InlineStart, InlineEnd float64
-	BlockStart, BlockEnd   float64
+	InlineStart, InlineEnd       float64
+	BlockStart, BlockEnd         float64
 	HasInlineStart, HasInlineEnd bool
 	HasBlockStart, HasBlockEnd   bool
 }

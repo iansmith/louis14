@@ -80,8 +80,8 @@ type LogicalAlignment struct {
 // same shape. We keep LogicalOofInsets as a distinct name to stay aligned
 // with Blink's API surface; at call sites we convert with AsOofInsets().
 type LogicalOofInsets struct {
-	InlineStart, InlineEnd float64
-	BlockStart, BlockEnd   float64
+	InlineStart, InlineEnd       float64
+	BlockStart, BlockEnd         float64
 	HasInlineStart, HasInlineEnd bool
 	HasBlockStart, HasBlockEnd   bool
 }
@@ -177,12 +177,13 @@ type LogicalOofDimensions struct {
 // (align-*). Affects how kLeft/kRight map (Blink handles these per axis).
 //
 // Returns:
-//   bias                           — primary InsetBias for this axis.
-//   hasDefaultAlignmentOverflow    — true if align is non-normal; set on
-//                                    InsetModifiedContainingBlock for later
-//                                    use by ComputeInsets.
-//   defaultInsetBias, hasDefault   — fallback bias for non-normal alignment.
-//   safeInsetBias, hasSafe         — fallback bias when align has `safe`.
+//
+//	bias                           — primary InsetBias for this axis.
+//	hasDefaultAlignmentOverflow    — true if align is non-normal; set on
+//	                                 InsetModifiedContainingBlock for later
+//	                                 use by ComputeInsets.
+//	defaultInsetBias, hasDefault   — fallback bias for non-normal alignment.
+//	safeInsetBias, hasSafe         — fallback bias when align has `safe`.
 func GetAlignmentInsetBias(
 	a AlignmentData,
 	containerWDM WritingDirectionMode,
@@ -273,24 +274,26 @@ func axesOppose(container, self WritingDirectionMode, isJustifyAxis bool) bool {
 // (absolute_utils.cc:128).
 //
 // Inputs:
-//   availableSize           — the CB's size on this axis.
-//   insetStart/hasStart,
-//   insetEnd/hasEnd         — resolved insets; auto if !has*.
-//   isStaticAlignmentParallel — whether the align-self axis is this axis.
-//                              Affects which safe-bias fallback is chosen.
-//   staticPositionOffset    — the static-position offset on this axis.
-//   staticPositionInsetBias — derived from StaticPositionEdge (Start/Center/End
-//                              → BiasStart/BiasEqual/BiasEnd).
-//   alignmentInsetBias,
-//   defaultInsetBias,
-//   safeInsetBias/hasSafe,
-//   altSafeInsetBias/hasAlt — outputs of GetAlignmentInsetBias on the two axes.
+//
+//	availableSize           — the CB's size on this axis.
+//	insetStart/hasStart,
+//	insetEnd/hasEnd         — resolved insets; auto if !has*.
+//	isStaticAlignmentParallel — whether the align-self axis is this axis.
+//	                           Affects which safe-bias fallback is chosen.
+//	staticPositionOffset    — the static-position offset on this axis.
+//	staticPositionInsetBias — derived from StaticPositionEdge (Start/Center/End
+//	                           → BiasStart/BiasEqual/BiasEnd).
+//	alignmentInsetBias,
+//	defaultInsetBias,
+//	safeInsetBias/hasSafe,
+//	altSafeInsetBias/hasAlt — outputs of GetAlignmentInsetBias on the two axes.
 //
 // Outputs:
-//   imcbStart, imcbEnd    — resolved IMCB offsets (auto → 0).
-//   biasOut               — the effective InsetBias used for Resize later.
-//   safeOut/hasSafeOut,
-//   defaultOut/hasDefOut  — passthrough biases for ComputeInsets.
+//
+//	imcbStart, imcbEnd    — resolved IMCB offsets (auto → 0).
+//	biasOut               — the effective InsetBias used for Resize later.
+//	safeOut/hasSafeOut,
+//	defaultOut/hasDefOut  — passthrough biases for ComputeInsets.
 func ComputeUnclampedIMCBInOneAxis(
 	availableSize float64,
 	insetStart float64, hasStart bool,
@@ -504,16 +507,17 @@ func BiasFromStaticEdge(e StaticPositionEdge) InsetBias {
 // (one of: hasAutoInset is true; margin was not auto; margin box exceeds IMCB).
 //
 // Parameters:
-//   imcbSize            — the IMCB's size on this axis.
-//   marginStartLen,
-//   marginEndLen        — used margin values (already resolved from % etc.).
-//   marginStartIsAuto,
-//   marginEndIsAuto     — the original margin specifications.
-//   boxSize             — the child's border-box size on this axis.
-//   hasAutoInset        — whether either inset on this axis was auto.
-//   isStartDominant     — for the overconstrained case: which side wins.
-//                         CSS 2.1 §10.3.7 picks the direction-start side in
-//                         LTR for inline axis; block axis is always start.
+//
+//	imcbSize            — the IMCB's size on this axis.
+//	marginStartLen,
+//	marginEndLen        — used margin values (already resolved from % etc.).
+//	marginStartIsAuto,
+//	marginEndIsAuto     — the original margin specifications.
+//	boxSize             — the child's border-box size on this axis.
+//	hasAutoInset        — whether either inset on this axis was auto.
+//	isStartDominant     — for the overconstrained case: which side wins.
+//	                      CSS 2.1 §10.3.7 picks the direction-start side in
+//	                      LTR for inline axis; block axis is always start.
 func ComputeMargins(
 	imcbSize float64,
 	marginStartLen, marginEndLen float64,
