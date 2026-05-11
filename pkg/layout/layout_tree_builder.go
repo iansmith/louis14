@@ -111,7 +111,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			lin.MarkerStyle = markerStyle
 			// Extract content from ::marker { content: } for layout-time use.
 			if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
-				lin.MarkerContent = b.resolveContentText(cv)
+				lin.MarkerContent = b.resolveContentText(cv, node)
 			}
 		}
 		// For list-style-type: <string> without ::marker rules, use the string
@@ -646,7 +646,8 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 
 // resolveContentText resolves CSS content values (text, counters) to a plain string.
 // Used for ::marker content resolution during layout tree building.
-func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue) string {
+// node is the list-item DOM node, used for DOM-based list-item counter resolution.
+func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node) string {
 	var buf strings.Builder
 	for _, cv := range contentVals {
 		switch cv.Type {
@@ -654,11 +655,15 @@ func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue) s
 			buf.WriteString(cv.Value)
 		case "counter":
 			val := b.getCounterValue(cv.Value)
+			if val == 0 && cv.Value == "list-item" {
+				val = b.getListItemCounterValue(node)
+			}
 			buf.WriteString(strconv.Itoa(val))
 		case "counters":
-			// counters(name, separator) — resolve to the counter value.
-			// cv.Value is the counter name, cv.Separator is the join string.
 			val := b.getCounterValue(cv.Value)
+			if val == 0 && cv.Value == "list-item" {
+				val = b.getListItemCounterValue(node)
+			}
 			buf.WriteString(strconv.Itoa(val))
 		}
 	}
@@ -715,6 +720,7 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	var markerContent string
 	var markerStyle *css.Style
 	hasMarkerStyle := false
+	hasContentProperty := false
 
 	if len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
 		// Case 2a: ::marker rules exist — compute ::marker style and extract content.
@@ -732,13 +738,17 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		}
 
 		// Extract content from ::marker { content: } and resolve to a string.
-		if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
-			markerContent = b.resolveContentText(cv)
+		if cv, ok := markerStyle.GetContentValues(); ok {
+			hasContentProperty = true
+			if len(cv) > 0 {
+				markerContent = b.resolveContentText(cv, node)
+			}
 		}
 	}
 
 	// Case 2b: If no ::marker content resolved, fall back to list-style-type.
-	if markerContent == "" {
+	// Skip fallback when ::marker explicitly set the content property (e.g. content:none).
+	if markerContent == "" && !hasContentProperty {
 		lst := style.GetListStyleType()
 		if lst == css.ListStyleTypeNone {
 			return nil
@@ -833,9 +843,9 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 	case css.ListStyleTypeLowerGreek:
 		return css.ToGreek(value) + "."
 	case css.ListStyleTypeDisclosureOpen:
-		return "▶" // ▶ right-pointing triangle
+		return "▼" // ▼ down-pointing triangle (details expanded)
 	case css.ListStyleTypeDisclosureClosed:
-		return "▼" // ▼ down-pointing triangle
+		return "▶" // ▶ right-pointing triangle (details collapsed)
 	default:
 		return ""
 	}
