@@ -1156,10 +1156,38 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 								ConsumedBlockSize: layoutunit.FromFloat64Round(totalConsumed),
 							})
 						} else {
-							// Non-column context (e.g. spanner content in outer fragmentainer):
-							// treat leaf as monolithic — place it in full (overflow:visible)
-							// and resume at the next sibling rather than splitting mid-block.
-							if childIdx+1 < len(children) {
+							// Non-column context (e.g. spanner content in outer
+							// fragmentainer). Two sub-cases:
+							//
+							//  a) Parent's content-box is already satisfied
+							//     (declared block-size exists and the leaf was
+							//     placed past it): parallel flow. The parent's
+							//     break-token carries IsAtBlockEnd=true and the
+							//     leaf emits a continuation with IsInParallelFlow
+							//     =true. Mirrors Blink's parallel-flow signaling
+							//     (block_break_token.h:~287, fragmentation_utils
+							//     .cc:875,891).
+							//
+							//  b) Parent's content-box is NOT yet satisfied (auto
+							//     block-size, or content hasn't reached the
+							//     declared bottom). Fall back to legacy monolithic-
+							//     leaf behavior: place the leaf in full and resume
+							//     at the next sibling. Step 6 cleanup candidate
+							//     once leaf self-fragmentation is uniformly wired.
+							parentBoxSatisfied := hasExplicitBlock &&
+								actualChildBlockOff+childBlockSize > explicitBlockSize
+							if parentBoxSatisfied {
+								outToken.IsAtBlockEnd = true
+								totalConsumed := childConsumed
+								if resumeChildBreakToken != nil && childIdx == resumeChildIdx {
+									totalConsumed += resumeChildBreakToken.ConsumedBlockSize.Float64()
+								}
+								outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
+									Node:              child,
+									ConsumedBlockSize: layoutunit.FromFloat64Round(totalConsumed),
+									IsInParallelFlow:  true,
+								})
+							} else if childIdx+1 < len(children) {
 								nextChild := children[childIdx+1]
 								outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
 									Node:          nextChild,
