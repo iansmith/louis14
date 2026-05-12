@@ -1608,6 +1608,21 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		finalBlockSize = minBlock
 	}
 
+	// Step 3.5.B — parent zero-clamp on resume after IsAtBlockEnd.
+	//
+	// Mirrors Blink's `fragmentation_utils.cc:599-600` (`is_past_end`
+	// path): when the PREVIOUS fragment of this block was marked
+	// at-block-end (step 3.5.A on the outgoing token), the box's
+	// visible bounds were completed there. The resumed fragment is a
+	// phantom zero-block-size container that exists only to carry
+	// parallel-flow children's continuations via incoming
+	// ChildBreakTokens. Applied AFTER min/max so it survives any
+	// min-block-size re-inflation — past-end fragments are stitching
+	// nodes, not CSS-constrained boxes.
+	if incomingBreakToken != nil && incomingBreakToken.IsAtBlockEnd {
+		finalBlockSize = 0
+	}
+
 	// Phase 16.d.1 — per-fragment block-size clamp + DidBreakSelf carrier.
 	//
 	// Mirrors Blink's FinishFragmentation (fragmentation_utils.cc:542-657):
