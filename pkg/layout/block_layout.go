@@ -1640,26 +1640,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	//     an active fragmentation context.
 	//   - !IsInitialColumnBalancingPass: measurement pass MUST NOT emit
 	//     break-tokens (would corrupt the balance estimate).
-	//   - Leaf (no DOM children) OR a column-span:all spanner: non-leaf
-	//     non-spanner blocks have parent-driven fragmentation in their
-	//     children loop; introducing self-break interleaved with that
-	//     logic causes break-token misalignment (column-wrap:wrap +
-	//     spanner siblings → infinite row-wrap loop). Spanners with
-	//     children are the exception: Blink's FinishFragmentation clamps
-	//     them too, which is required for spanner-fragmentation-006.
-	//   - Not IsInsideColumnSpanner OR isColumnSpanner: descendants of a
-	//     spanner are parent-driven by the spanner's BLA — they must not
-	//     self-clamp. The spanner itself, however, sees
-	//     IsInsideColumnSpanner=true (it's set on its own space by
-	//     layoutSpannerInFrag) AND has isColumnSpanner=true; the gate
-	//     admits it via the isColumnSpanner clause. LOU-111.
-	isColumnSpanner := bla.style != nil && bla.style.GetColumnSpan() == "all"
+	//
+	// LOU-111 step 7: removed the `(len(Children)==0 || isColumnSpanner)`
+	// gate (Fabrication C). Blink's FinishFragmentation applies uniformly
+	// to every node with HasBlockFragmentation, and the earlier
+	// break-token-misalignment concerns this gate guarded against are
+	// resolved by step 3.5.B's parent zero-clamp on resume.
 	var didBreakSelf bool
 	if bla.space.HasBlockFragmentation && !bla.space.IsBlockSizeOverride &&
 		bla.space.FragmentainerBlockSize != Indefinite &&
 		bla.space.FragmentainerBlockSize > 0 && hasExplicitBlock &&
-		!bla.space.IsInitialColumnBalancingPass &&
-		bla.node != nil && (len(bla.node.Children()) == 0 || isColumnSpanner) {
+		!bla.space.IsInitialColumnBalancingPass {
 		spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
 		if spaceLeft < 0 {
 			spaceLeft = 0
