@@ -1152,6 +1152,21 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		blockCursor < mla.remainingContentBlockSize {
 		return buildOuterBreakResult()
 	}
+	// Phase 25 Cmt-4b: when balanced columns converged below outerAvailable
+	// but Cmt-8 absorption expanded finalBlockSize to fill the outer column,
+	// a structural continuation fragment is still required to satisfy
+	// remaining explicit CSS block-size. Only fires when blockCursor > 0
+	// (actual in-flow content was placed), NOT for pure structural fragments
+	// that Cmt-8 already delivered (blockCursor == 0). Mirrors the Blink
+	// break check but accounting for the Cmt-8 post-hoc absorption.
+	if balanceColumns && hasOuterFrag && hasExplicitBlock && blockCursor > 0 && blockCursor < outerAvailable &&
+		blockCursor < mla.remainingContentBlockSize && finalBlockSize > blockCursor &&
+		finalBlockSize >= outerAvailable {
+		if finalBlockSize > blockCursor {
+			blockCursor = finalBlockSize
+		}
+		return buildOuterBreakResult()
+	}
 
 	didBreakSelf := false // Main path: all remaining content fits.
 	effBP := EffectiveBlockBorderPadding(geom, builder.HasClonedBoxDecorations(), mla.space.BreakToken, didBreakSelf)
