@@ -1115,6 +1115,42 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
 					}
 
+					// Step 3.5.A — uniform IsAtBlockEnd emitter (parallel-flow
+					// signaling). Mirrors Blink's FinishFragmentation at
+					// `fragmentation_utils.cc:744-755`: when a child broke but
+					// the PARENT's own box fits inside the fragmentainer
+					// (`desired_block_size <= space_left`), the parent itself
+					// is at-block-end and the carried child continuation runs
+					// in a parallel flow.
+					//
+					// `desired_block_size` here is the parent's declared
+					// box-content extent for the current fragment (`explicit
+					// - prevConsumed`); `space_left` is the remaining outer
+					// fragmentainer space. When parent box overflows
+					// (`desired > space_left`) the parent needs to self-break,
+					// so IsAtBlockEnd is NOT set — see test 006 spanner-3.
+					//
+					// The outer multicol's reader-side cursor gate (step 3.5.C)
+					// consumes this flag to keep parallel-flow children in the
+					// same fragmentainer instead of resuming in the parent's
+					// next continuation.
+					if childResult.BreakToken != nil && hasExplicitBlock {
+						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
+						if spaceLeft < 0 {
+							spaceLeft = 0
+						}
+						desiredBlockSize := explicitBlockSize
+						if incomingBreakToken != nil {
+							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
+							if desiredBlockSize < 0 {
+								desiredBlockSize = 0
+							}
+						}
+						if desiredBlockSize <= spaceLeft {
+							outToken.IsAtBlockEnd = true
+						}
+					}
+
 					// If the child itself broke, include its break token.
 					if childResult.BreakToken != nil {
 						outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, childResult.BreakToken)
