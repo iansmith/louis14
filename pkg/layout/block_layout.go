@@ -1284,7 +1284,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// Blink avoids this structurally via BreakBeforeChildIfNeeded
 					// firing before placement; louis14 places-then-detects, so
 					// the equivalent invariant is restored at the emit path.
-					builder.DropChildrenAtOrPastBlockOffset(fragEnd)
+					//
+					// Gated on fragSize > 0 to skip the balance-estimate path
+					// (fragSize == 0, !IsBlockSizeOverride — see the IsBreakBefore-
+					// for-current branch above). In that path the placed child
+					// must stay in the fragment so the column block-size can
+					// grow on the next balance iteration; dropping it strands
+					// the content
+					// (regressed nested-floated-multicol-with-monolithic-child
+					// during LOU-110 development).
+					if fragSize > 0 {
+						builder.DropChildrenAtOrPastBlockOffset(fragEnd)
+					}
 					result := builder.Build()
 					if worstAppeal < BreakAppealPerfect {
 						result.BreakAppeal = worstAppeal
