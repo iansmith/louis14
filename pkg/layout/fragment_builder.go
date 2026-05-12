@@ -389,29 +389,49 @@ func (b *BoxFragmentBuilder) TallestUnbreakableBlockSize() float64 {
 	return b.tallestUnbreakableBlockSize
 }
 
-// PropagateChildBlockSizeForFragmentation max-merges a child's effective
-// block-size-for-fragmentation extent (measured in this builder's logical
-// coordinate space) into the builder's running BSFF. Mirrors Blink's
+// PropagateChildBlockSizeForFragmentation max-merges a child's content
+// overflow extent into this builder's running BSFF. Mirrors Blink's
 // max-merge in BoxFragmentBuilder::PropagateChildData
-// (box_fragment_builder.cc:977-982).
+// (box_fragment_builder.cc:977-982), with one louis14-specific tweak:
+// propagation fires only when the child's effective BSFF exceeds its
+// physical extent (child fragment block-size + ConsumedBlockSize). For
+// children that fully fit inside their own box (the common case), the
+// builder's BSFF is NOT advanced — this keeps the field's louis14
+// semantics as a true "monolithic / parallel-flow overflow indicator",
+// which downstream consumers (e.g. multicol_layout.go:1631-1633's
+// per-column row-advance) compare directly against fragment block-size.
 //
-// The "effective" child BSFF is max of the child's
+// Without the gate, normal in-flow stacking (e.g. successive spanners,
+// nested multicol content that fragments naturally across columns)
+// would inflate parent BSFF and trigger row-advance / regrowth paths
+// that should only fire for true overflow.
+//
+// The "effective" child BSFF is the max of the child's
 // LayoutResult.BlockSizeForFragmentation and the child fragment's own
-// block-size plus any ConsumedBlockSize carried on the child's outgoing
-// break-token (a continuing child's block-size in this fragmentainer is
-// only part of its total extent). Mirrors Blink's free function
-// fragmentation_utils.cc::BlockSizeForFragmentation(const LayoutResult&,
-// WritingDirection).
+// block-size plus any ConsumedBlockSize on its outgoing break-token —
+// mirrors Blink's free function
+// fragmentation_utils.cc::BlockSizeForFragmentation.
 //
-// No-op if the child is nil or carries no fragment. Negative inputs are
-// also no-ops; only positive contributions raise the floor.
+// No-op if the child is nil, carries no fragment, or shows no overflow.
 func (b *BoxFragmentBuilder) PropagateChildBlockSizeForFragmentation(
 	child *LayoutResult, offset LogicalOffset,
 ) {
 	if child == nil || child.Fragment == nil {
 		return
 	}
-	childBSFF := blockSizeForFragmentationOfChild(b.wdm, child)
+	physicalExtent := NewLogicalFragment(b.wdm, child.Fragment).BlockSize()
+	if child.BreakToken != nil {
+		physicalExtent += child.BreakToken.ConsumedBlockSize.Float64()
+	}
+	childBSFF := physicalExtent
+	if child.BlockSizeForFragmentation > childBSFF {
+		childBSFF = child.BlockSizeForFragmentation
+	}
+	// Gate: child must indicate true overflow past its own physical
+	// extent for the propagation to fire.
+	if childBSFF <= physicalExtent {
+		return
+	}
 	blockEnd := offset.BlockOffset + childBSFF
 	if blockEnd <= 0 {
 		return

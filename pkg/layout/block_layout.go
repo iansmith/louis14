@@ -995,19 +995,30 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				propagatedTopMargin = prevMarginStrut
 				actualChildBlockOff = 0
 				// Position child at offset 0 (margin moves outside parent).
-				builder.AddChild(childResult.Fragment, LogicalOffset{
+				childOffset := LogicalOffset{
 					InlineOffset: childInlineOffset,
 					BlockOffset:  0,
-				})
+				}
+				builder.AddChild(childResult.Fragment, childOffset)
+				// LOU-111 step 4: propagate child's overflow extent into
+				// the parent's BSFF so parallel-flow / monolithic overflow
+				// reaches outer fragmentation contexts. Gated inside the
+				// propagator to fire only when the child shows true
+				// overflow past its physical extent (see fragment_builder
+				// .go docs); harmless for normal stacking.
+				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = childBlockSize
 			} else {
 				// Step 6: Normal margin resolution.
 				collapsedMargin := prevMarginStrut.Resolve()
 				actualChildBlockOff = blockCursor + collapsedMargin
-				builder.AddChild(childResult.Fragment, LogicalOffset{
+				childOffset := LogicalOffset{
 					InlineOffset: childInlineOffset,
 					BlockOffset:  actualChildBlockOff,
-				})
+				}
+				builder.AddChild(childResult.Fragment, childOffset)
+				// LOU-111 step 4: propagate child's overflow. See note above.
+				builder.PropagateChildBlockSizeForFragmentation(childResult, childOffset)
 				blockCursor = actualChildBlockOff + childBlockSize
 			}
 

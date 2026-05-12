@@ -944,11 +944,22 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			mla.addMainGap(blockCursor, SpannerGapStart)
 			mla.addNumberOfColumnsForCurrentRow(-1)
-			builder.AddChild(spanFrag, LogicalOffset{
+			spannerOffset := LogicalOffset{
 				InlineOffset: 0,
 				BlockOffset:  blockCursor,
-			})
+			}
+			builder.AddChild(spanFrag, spannerOffset)
+			// LOU-111 step 4: propagate the spanner's BSFF into this
+			// multicol's running BSFF so an outer multicol slicing this
+			// multicol's fragments sees the true content-overflow extent
+			// (analog of column_layout_algorithm.cc:977-982 +
+			// fragmentation_utils.cc BlockSizeForFragmentation helper).
+			// Without this, a spanner whose content overflows past its
+			// declared box reports only its box-size up the chain, and
+			// the outer multicol's per-column row-advance picks the wrong
+			// slice height.
 			if spanResult != nil {
+				builder.PropagateChildBlockSizeForFragmentation(spanResult, spannerOffset)
 				mla.propagateBaselineFromChild(spanResult, builder, blockCursor)
 			}
 			if spanFrag != nil && spanResult != nil {
@@ -1611,6 +1622,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// also removed by this commit; engine.go propagation + paint_layer.go
 		// branch are removed in lockstep.
 		builder.AddChild(col.fragment, col.offset)
+		// LOU-111 step 4: propagate the column's BSFF so this multicol's
+		// own outgoing BSFF reflects the maximum column-row content extent
+		// (including any monolithic / parallel-flow overflow inside the
+		// column body). An OUTER multicol slicing this multicol's
+		// fragments reads the inner BSFF at lines 1631-1632 below to size
+		// its column rows correctly. Mirrors Blink's
+		// BoxFragmentBuilder::PropagateChildData max-merge
+		// (box_fragment_builder.cc:977-982).
+		if col.result != nil {
+			builder.PropagateChildBlockSizeForFragmentation(col.result, col.offset)
+		}
 		// Callsite 1 (Track B): propagate baseline from each column child.
 		// Mirrors Blink cla.cc:1336 PropagateBaselineFromChild loop.
 		if col.result != nil {

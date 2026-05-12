@@ -139,36 +139,19 @@ func TestBSFFPropagation_NilChild(t *testing.T) {
 	}
 }
 
-func TestBSFFPropagation_FragmentSize(t *testing.T) {
+func TestBSFFPropagation_NonOverflowingChildIsNoOp(t *testing.T) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	builder := NewBoxFragmentBuilder(wdm)
 
-	// Child at block-offset 30, fragment block-size 100 → BSFF = 130.
+	// Child that fits inside its own box (no explicit BSFF override,
+	// no continuing break-token) does NOT advance the builder's BSFF —
+	// preserves louis14's overflow-indicator semantics. See
+	// PropagateChildBlockSizeForFragmentation doc.
 	child := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 100)}}
 	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 30})
 
-	v, ok := builder.BlockSizeForFragmentation()
-	if !ok || v != 130 {
-		t.Errorf("BSFF: got (%v,%v), want (130,true)", v, ok)
-	}
-}
-
-func TestBSFFPropagation_MaxMerge(t *testing.T) {
-	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
-	builder := NewBoxFragmentBuilder(wdm)
-
-	// Smaller contribution first, then a larger one — both block-end
-	// values are max-merged; lower extents do not lower the floor.
-	small := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 40)}}
-	large := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 80)}}
-
-	builder.PropagateChildBlockSizeForFragmentation(small, LogicalOffset{BlockOffset: 20}) // → 60
-	builder.PropagateChildBlockSizeForFragmentation(large, LogicalOffset{BlockOffset: 50}) // → 130
-	builder.PropagateChildBlockSizeForFragmentation(small, LogicalOffset{BlockOffset: 10}) // → 50 (no-op)
-
-	v, _ := builder.BlockSizeForFragmentation()
-	if v != 130 {
-		t.Errorf("BSFF: got %v, want 130", v)
+	if _, ok := builder.BlockSizeForFragmentation(); ok {
+		t.Error("non-overflowing child should not set BSFF")
 	}
 }
 
@@ -176,8 +159,9 @@ func TestBSFFPropagation_ExplicitChildBSFFWins(t *testing.T) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	builder := NewBoxFragmentBuilder(wdm)
 
-	// Child fragment is 50 tall but reports BSFF=200 (overflow). Effective
-	// child contribution should be 200, so parent BSFF = offset + 200.
+	// Child fragment is 50 tall but reports BSFF=200 (true overflow,
+	// e.g. a spanner with parallel-flow children). Effective child
+	// contribution = 200, so parent BSFF = offset + 200.
 	child := &LayoutResult{
 		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 50)},
 		BlockSizeForFragmentation: 200,
@@ -190,22 +174,69 @@ func TestBSFFPropagation_ExplicitChildBSFFWins(t *testing.T) {
 	}
 }
 
-func TestBSFFPropagation_ConsumedBlockSize(t *testing.T) {
+func TestBSFFPropagation_MaxMergeOverOverflow(t *testing.T) {
 	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
 	builder := NewBoxFragmentBuilder(wdm)
 
-	// Child fragment is 60 tall in this fragmentainer but was already
-	// 40 tall in a prior fragment (ConsumedBlockSize=40). The effective
-	// child contribution is 60+40=100, so parent BSFF = 20 + 100 = 120.
+	// Two overflowing children — only block-ends are max-merged; smaller
+	// extents do not lower the floor. Non-overflowing children (no BSFF
+	// override) are ignored entirely.
+	small := &LayoutResult{
+		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 40)},
+		BlockSizeForFragmentation: 60,
+	}
+	large := &LayoutResult{
+		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 80)},
+		BlockSizeForFragmentation: 100,
+	}
+	noOverflow := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 40)}}
+
+	builder.PropagateChildBlockSizeForFragmentation(small, LogicalOffset{BlockOffset: 20})     // → 80
+	builder.PropagateChildBlockSizeForFragmentation(large, LogicalOffset{BlockOffset: 50})     // → 150
+	builder.PropagateChildBlockSizeForFragmentation(small, LogicalOffset{BlockOffset: 10})     // → 70 (no-op)
+	builder.PropagateChildBlockSizeForFragmentation(noOverflow, LogicalOffset{BlockOffset: 0}) // (no-op, gated out)
+
+	v, _ := builder.BlockSizeForFragmentation()
+	if v != 150 {
+		t.Errorf("BSFF: got %v, want 150", v)
+	}
+}
+
+func TestBSFFPropagation_ConsumedBlockSizeFloorsPhysicalExtent(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// Child fragment is 60 tall in this fragmentainer; was already 40
+	// tall in a prior fragment (ConsumedBlockSize=40). Physical extent
+	// = 60+40=100. The child's explicit BSFF=140 indicates overflow
+	// beyond the physical extent (parallel-flow descendant), so it
+	// propagates as 140 (not 100), placed at offset 20 → BSFF=160.
 	child := &LayoutResult{
-		Fragment:   &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 60)},
-		BreakToken: &BlockBreakToken{ConsumedBlockSize: layoutunit.FromFloat64Round(40)},
+		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 60)},
+		BreakToken:                &BlockBreakToken{ConsumedBlockSize: layoutunit.FromFloat64Round(40)},
+		BlockSizeForFragmentation: 140,
 	}
 	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 20})
 
 	v, _ := builder.BlockSizeForFragmentation()
-	if v != 120 {
-		t.Errorf("BSFF (with consumed): got %v, want 120", v)
+	if v != 160 {
+		t.Errorf("BSFF: got %v, want 160", v)
+	}
+}
+
+func TestBSFFPropagation_BSFFAtOrBelowPhysicalExtentIsNoOp(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// BSFF equal to physical extent does not indicate overflow.
+	child := &LayoutResult{
+		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 100)},
+		BlockSizeForFragmentation: 100,
+	}
+	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 0})
+
+	if _, ok := builder.BlockSizeForFragmentation(); ok {
+		t.Error("BSFF == physical extent should not propagate")
 	}
 }
 
@@ -214,7 +245,10 @@ func TestBSFFPropagation_FlowsThroughBuild(t *testing.T) {
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetSize(LogicalSize{InlineSize: 200, BlockSize: 100})
 
-	child := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 150)}}
+	child := &LayoutResult{
+		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 80)},
+		BlockSizeForFragmentation: 150,
+	}
 	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 10})
 
 	result := builder.Build()
@@ -228,13 +262,31 @@ func TestBSFFPropagation_VerticalRL(t *testing.T) {
 	builder := NewBoxFragmentBuilder(wdm)
 
 	// VRL: block-axis = horizontal (width). PhysicalFragment is 100w x 50h
-	// → block-size in VRL = width = 100.
-	child := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(100, 50)}}
+	// → block-size in VRL = width = 100. Explicit BSFF=180 indicates
+	// overflow past the 100 physical extent.
+	child := &LayoutResult{
+		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(100, 50)},
+		BlockSizeForFragmentation: 180,
+	}
 	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 20})
 
 	v, _ := builder.BlockSizeForFragmentation()
-	if v != 120 {
-		t.Errorf("BSFF (VRL): got %v, want 120", v)
+	if v != 200 {
+		t.Errorf("BSFF (VRL): got %v, want 200", v)
+	}
+}
+
+func TestBSFFPropagation_SetterBypassesGate(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// SetBlockSizeForFragmentation is the unconditional setter for
+	// callsites that want to inject a floor directly (e.g. a multicol
+	// container's outer-hint BSFF). It bypasses the overflow gate.
+	builder.SetBlockSizeForFragmentation(220)
+	v, ok := builder.BlockSizeForFragmentation()
+	if !ok || v != 220 {
+		t.Errorf("BSFF: got (%v,%v), want (220,true)", v, ok)
 	}
 }
 
