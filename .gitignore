@@ -18,6 +18,7 @@ test-output.txt
 
 # Claude Code
 .claude/
+.project-prefix
 
 # planning-with-files skill (session-local working memory)
 task_plan.md
