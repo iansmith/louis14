@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"louis14/pkg/geometry"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 func TestBoxFragmentBuilder_HTB_LTR(t *testing.T) {
@@ -120,6 +121,120 @@ func TestMarginStrut(t *testing.T) {
 	}
 	if ms.IsEmpty() {
 		t.Error("should not be empty after appending")
+	}
+}
+
+func TestBSFFPropagation_NilChild(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	builder.PropagateChildBlockSizeForFragmentation(nil, LogicalOffset{BlockOffset: 50})
+	if _, ok := builder.BlockSizeForFragmentation(); ok {
+		t.Error("nil child should not set BSFF")
+	}
+
+	builder.PropagateChildBlockSizeForFragmentation(&LayoutResult{}, LogicalOffset{BlockOffset: 50})
+	if _, ok := builder.BlockSizeForFragmentation(); ok {
+		t.Error("child with nil Fragment should not set BSFF")
+	}
+}
+
+func TestBSFFPropagation_FragmentSize(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// Child at block-offset 30, fragment block-size 100 → BSFF = 130.
+	child := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 100)}}
+	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 30})
+
+	v, ok := builder.BlockSizeForFragmentation()
+	if !ok || v != 130 {
+		t.Errorf("BSFF: got (%v,%v), want (130,true)", v, ok)
+	}
+}
+
+func TestBSFFPropagation_MaxMerge(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// Smaller contribution first, then a larger one — both block-end
+	// values are max-merged; lower extents do not lower the floor.
+	small := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 40)}}
+	large := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 80)}}
+
+	builder.PropagateChildBlockSizeForFragmentation(small, LogicalOffset{BlockOffset: 20}) // → 60
+	builder.PropagateChildBlockSizeForFragmentation(large, LogicalOffset{BlockOffset: 50}) // → 130
+	builder.PropagateChildBlockSizeForFragmentation(small, LogicalOffset{BlockOffset: 10}) // → 50 (no-op)
+
+	v, _ := builder.BlockSizeForFragmentation()
+	if v != 130 {
+		t.Errorf("BSFF: got %v, want 130", v)
+	}
+}
+
+func TestBSFFPropagation_ExplicitChildBSFFWins(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// Child fragment is 50 tall but reports BSFF=200 (overflow). Effective
+	// child contribution should be 200, so parent BSFF = offset + 200.
+	child := &LayoutResult{
+		Fragment:                  &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 50)},
+		BlockSizeForFragmentation: 200,
+	}
+	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 10})
+
+	v, _ := builder.BlockSizeForFragmentation()
+	if v != 210 {
+		t.Errorf("BSFF (explicit override): got %v, want 210", v)
+	}
+}
+
+func TestBSFFPropagation_ConsumedBlockSize(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// Child fragment is 60 tall in this fragmentainer but was already
+	// 40 tall in a prior fragment (ConsumedBlockSize=40). The effective
+	// child contribution is 60+40=100, so parent BSFF = 20 + 100 = 120.
+	child := &LayoutResult{
+		Fragment:   &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 60)},
+		BreakToken: &BlockBreakToken{ConsumedBlockSize: layoutunit.FromFloat64Round(40)},
+	}
+	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 20})
+
+	v, _ := builder.BlockSizeForFragmentation()
+	if v != 120 {
+		t.Errorf("BSFF (with consumed): got %v, want 120", v)
+	}
+}
+
+func TestBSFFPropagation_FlowsThroughBuild(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeHorizontalTB, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+	builder.SetSize(LogicalSize{InlineSize: 200, BlockSize: 100})
+
+	child := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(50, 150)}}
+	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 10})
+
+	result := builder.Build()
+	if result.BlockSizeForFragmentation != 160 {
+		t.Errorf("result.BSFF: got %v, want 160", result.BlockSizeForFragmentation)
+	}
+}
+
+func TestBSFFPropagation_VerticalRL(t *testing.T) {
+	wdm := WritingDirectionMode{WritingModeVerticalRL, DirectionLTR}
+	builder := NewBoxFragmentBuilder(wdm)
+
+	// VRL: block-axis = horizontal (width). PhysicalFragment is 100w x 50h
+	// → block-size in VRL = width = 100.
+	child := &LayoutResult{Fragment: &PhysicalFragment{Size: geometry.NewPhysicalSize(100, 50)}}
+	builder.PropagateChildBlockSizeForFragmentation(child, LogicalOffset{BlockOffset: 20})
+
+	v, _ := builder.BlockSizeForFragmentation()
+	if v != 120 {
+		t.Errorf("BSFF (VRL): got %v, want 120", v)
 	}
 }
 
