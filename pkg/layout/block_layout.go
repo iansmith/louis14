@@ -179,7 +179,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		bla.style, wdm, bla.space, geom, bla.ctx,
 		childAvailableBlock, hasExplicitBlock, explicitBlockSize)
 
-
 	// Float exclusion tracking.
 	// Inherit exclusion space from parent, or start fresh for new BFCs.
 	exclusionSpace := bla.space.ExclusionSpace
@@ -241,8 +240,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var firstChildBaseline float64    // Baseline of the first in-flow block child (for propagation).
 	var firstChildBlockOffset float64 // Block offset of the first in-flow block child.
 	hasFirstChildBaseline := false
-	var lastChildBaseline float64     // Baseline of the last in-flow block child.
-	var lastChildBlockOffset float64  // Block offset of the last in-flow block child.
+	var lastChildBaseline float64    // Baseline of the last in-flow block child.
+	var lastChildBlockOffset float64 // Block offset of the last in-flow block child.
 	hasLastChildBaseline := false
 
 	// Iframe/object with a document source: lay out the nested document
@@ -300,9 +299,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// column overflow, build a partial fragment and return early with the
 		// inline break token. Mirrors the block-children fragmentation path.
 		if inlineBreakToken != nil {
-			shortage := (blockCursor + inlineBreakToken.ConsumedBlockSize.Float64()) - bla.space.FragmentainerBlockSize
-			if shortage < 0 {
-				shortage = 0
+			// Use the per-break-point inline shortage when set (Blink-aligned),
+			// otherwise fall back to per-fragment consumed (not cumulative).
+			shortage := inlineBreakToken.InlineShortage
+			if shortage <= 0 {
+				consumedInFragment := inlineBreakToken.ConsumedBlockSize.Float64()
+				if incomingBreakToken != nil {
+					consumedInFragment -= incomingBreakToken.ConsumedBlockSize.Float64()
+				}
+				shortage = consumedInFragment - (bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset)
+				if shortage < 0 {
+					shortage = 0
+				}
 			}
 			if hasExplicitBlock {
 				builder.SetSize(geom.BorderBoxSize)
@@ -429,7 +437,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				var spannerBreakToken *BlockBreakToken
 				if childIdx+1 < len(children) {
 					spannerBreakToken = &BlockBreakToken{
-						Node:             bla.node,
+						Node:              bla.node,
 						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
 						ChildBreakTokens: []*BlockBreakToken{{
 							Node:          children[childIdx+1],
@@ -754,7 +762,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				var outToken *BlockBreakToken
 				if resumeToken != nil {
 					outToken = &BlockBreakToken{
-						Node:             bla.node,
+						Node:              bla.node,
 						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
 					}
 					if incomingBreakToken != nil {
@@ -1003,7 +1011,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				blockCursor = actualChildBlockOff + childBlockSize
 			}
 
-// Inherit propagated OOF candidates from child.
+			// Inherit propagated OOF candidates from child.
 			// Non-positioned children propagate their abspos descendants
 			// upward for resolution by the containing block (this element
 			// or a higher ancestor). Phase 25 Cmt-3: also fire when the
@@ -1248,7 +1256,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// but we're deferring a later sibling to the next
 					// fragmentainer. The violation is join(current.break-after,
 					// next.break-before).
-					deferredNextSibling := childIdx + 1 < len(children)
+					deferredNextSibling := childIdx+1 < len(children)
 					if !isInsideCurrent && !isBreakBeforeCurrent && deferredNextSibling {
 						nextChild := children[childIdx+1]
 						var curAfter, nextBefore string
@@ -1697,8 +1705,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				icbBlock = bla.ctx.ViewportWidth
 			}
 			oofPart := &OutOfFlowLayoutPart{
-				ctx:                    bla.ctx,
-				containingBlockWDM:     wdm,
+				ctx:                bla.ctx,
+				containingBlockWDM: wdm,
 				// ICB is the viewport: no border or padding, so padding-box == content-box.
 				containingBlockSize:    LogicalSize{InlineSize: icbInline, BlockSize: icbBlock},
 				containingBlockPadding: LogicalEdges{},
@@ -1714,15 +1722,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
 			// CB size = padding-box = content + padding (borders excluded).
 			oofPart := &OutOfFlowLayoutPart{
-				ctx:                 bla.ctx,
-				containingBlockWDM:  wdm,
+				ctx:                bla.ctx,
+				containingBlockWDM: wdm,
 				containingBlockSize: LogicalSize{
 					InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
 					BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
 				},
 				containingBlockPadding: geom.Padding,
-				geom:                geom,
-				resolvesFixed:       true,
+				geom:                   geom,
+				resolvesFixed:          true,
 			}
 			oofPart.LayoutCandidates(regularCandidates, builder)
 		} else if isPositioned {
@@ -1753,7 +1761,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			if bla.space.HasBlockFragmentation && len(absoluteCandidates) > 0 {
 				for _, cand := range absoluteCandidates {
 					builder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
-						Candidate: cand,
+						Candidate:       cand,
 						ContainingBlock: LogicalOofContainingBlock{
 							// Fragment: nil — assigned by parent's propagator.
 							// Offset: zero — CB origin within its own content-box.
@@ -1766,14 +1774,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// Per CSS 2.1 §10.3.7 / Blink's GetContainingBlockInfo():
 				// CB size = padding-box = content + padding (borders excluded).
 				oofPart := &OutOfFlowLayoutPart{
-					ctx:                 bla.ctx,
-					containingBlockWDM:  wdm,
+					ctx:                bla.ctx,
+					containingBlockWDM: wdm,
 					containingBlockSize: LogicalSize{
 						InlineSize: contentInlineSize + geom.Padding.InlineStart + geom.Padding.InlineEnd,
 						BlockSize:  finalBlockSize + geom.Padding.BlockStart + geom.Padding.BlockEnd,
 					},
 					containingBlockPadding: geom.Padding,
-					geom:                geom,
+					geom:                   geom,
 				}
 				if extra := oofPart.LayoutCandidates(absoluteCandidates, builder); len(extra) > 0 {
 					fixedCandidates = append(fixedCandidates, extra...)
@@ -2629,4 +2637,3 @@ func computeOrthogonalFallbackBlockForChildren(
 	// Not a scroller: inherit the ancestor's fallback unchanged.
 	return space.OrthogonalFallbackBlockSize
 }
-

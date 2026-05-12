@@ -62,14 +62,16 @@ func TestConstraintSpaceBuilder_NewBFC_ClearsExclusions(t *testing.T) {
 
 func TestConstraintSpace_IndefiniteBlockSize(t *testing.T) {
 	cs := ConstraintSpace{
-		AvailableSize: oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: Indefinite}),
+		AvailableSize:            oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: Indefinite}),
+		PercentageResolutionSize: oldLogicalToGeom(LogicalSize{BlockSize: Indefinite}),
 	}
 	if !cs.IsBlockSizeIndefinite() {
 		t.Error("should be indefinite")
 	}
 
 	cs2 := ConstraintSpace{
-		AvailableSize: oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: 600}),
+		AvailableSize:            oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: 600}),
+		PercentageResolutionSize: oldLogicalToGeom(LogicalSize{InlineSize: 800, BlockSize: 600}),
 	}
 	if cs2.IsBlockSizeIndefinite() {
 		t.Error("should not be indefinite")

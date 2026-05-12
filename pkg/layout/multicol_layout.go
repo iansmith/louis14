@@ -1909,10 +1909,9 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	// buildSpace constructs a ConstraintSpace for one measure-pass iteration.
 	// Called once per loop iteration with the current break-token.
 	buildSpace := func(breakToken *BlockBreakToken) ConstraintSpace {
-		measureAvailBlock := Indefinite
 		b := NewConstraintSpaceBuilder(wdm, wdm, true)
 		if hasExplicitContainerHeight {
-			measureAvailBlock = containerPercentResolutionBlockSize
+			measureAvailBlock := containerPercentResolutionBlockSize
 			b = b.SetAvailableSize(LogicalSize{
 				InlineSize: colWidth,
 				BlockSize:  measureAvailBlock,
@@ -1969,17 +1968,17 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		}
 
 		if forcedBreaks < numCols || considerAllColumns {
-			colBSize := result.BlockSizeForFragmentation
-			if result.Fragment != nil {
-				if fragBSize := NewLogicalFragment(wdm, result.Fragment).BlockSize(); fragBSize > colBSize {
-					colBSize = fragBSize
+			// Use intrinsic content height as the authoritative measure.
+			// IsBlockSizeOverride artificially inflates fragment block-size
+			// to CSS height; IntrinsicBlockSize reflects true content.
+			colBSize := result.IntrinsicBlockSize
+			if colBSize <= 0 {
+				colBSize = result.BlockSizeForFragmentation
+				if result.Fragment != nil {
+					if fragBSize := NewLogicalFragment(wdm, result.Fragment).BlockSize(); fragBSize > colBSize {
+						colBSize = fragBSize
+					}
 				}
-			}
-			// When the fragment is forced to a fixed size (IsBlockSizeOverride),
-			// fragment.BlockSize underestimates the actual content; use
-			// IntrinsicBlockSize as the true content height for balance estimation.
-			if result.IntrinsicBlockSize > colBSize {
-				colBSize = result.IntrinsicBlockSize
 			}
 			runs = append(runs, contentRun{contentBlockSize: colBSize})
 		}

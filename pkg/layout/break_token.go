@@ -77,6 +77,13 @@ type BlockBreakToken struct {
 	// item may span multiple lines if it contains multiple words).
 	InlineTextOffset int
 
+	// InlineShortage is the minimum additional block-size this fragmentainer
+	// would need to fit the overflowing inline line. Set only when
+	// InlineItemStartIndex is non-trivial. Computed as (blockOffset +
+	// overflowingLineHeight) - fragEnd, matching Blink's per-break-point
+	// MinSpaceShortage.
+	InlineShortage float64
+
 	// HasUnpositionedListMarker signals that the list-item's ::marker was not
 	// placed during layout and should be seeded again when this break token is
 	// resumed in the next fragment. Mirrors Blink's
