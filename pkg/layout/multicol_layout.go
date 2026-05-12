@@ -1782,13 +1782,6 @@ func (mla *MulticolLayoutAlgorithm) layoutSpanner(
 // CalculateUnbreakableBlockSize that prefers IntrinsicBlockSize over
 // fragment block-size when IsMonolithic is set on a spanner-shaped
 // fragment.
-//
-// LOU-111 step 1: also stash IntrinsicBlockSize on
-// LayoutResult.BlockSizeForFragmentation so the multicol algorithm can
-// aggregate (spannerOffset + BSFF) into the multicol's own BSFF — making
-// spanner content-overflow visible to the OUTER column-flow so it
-// fragments across outer columns instead of painting past the multicol
-// container. Mirrors Blink's per-child overflow propagation.
 func (mla *MulticolLayoutAlgorithm) markSpannerMonolithicIfOverflowed(result *LayoutResult, wdm WritingDirectionMode) {
 	if result == nil || result.Fragment == nil {
 		return
@@ -1796,7 +1789,6 @@ func (mla *MulticolLayoutAlgorithm) markSpannerMonolithicIfOverflowed(result *La
 	fragBlock := NewLogicalFragment(wdm, result.Fragment).BlockSize()
 	if result.IntrinsicBlockSize > fragBlock {
 		result.Fragment.IsMonolithic = true
-		result.BlockSizeForFragmentation = result.IntrinsicBlockSize
 	}
 }
 
