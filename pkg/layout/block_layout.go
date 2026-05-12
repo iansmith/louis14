@@ -1272,6 +1272,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 							worstAppeal = BreakAppealViolatingBreakAvoid
 						}
 					}
+					// LOU-110: any child placed at or past the fragmentainer
+					// boundary is already deferred to the next fragmentainer
+					// via outToken.ChildBreakTokens (the IsBreakBefore tokens
+					// emitted above for the current child, or the next-sibling
+					// break-before in the leaf cases). Drop those entries from
+					// this fragment so paint doesn't render them twice — once
+					// here past the boundary (visible after P21 clip removal)
+					// and once in the next fragmentainer at offset 0.
+					//
+					// Blink avoids this structurally via BreakBeforeChildIfNeeded
+					// firing before placement; louis14 places-then-detects, so
+					// the equivalent invariant is restored at the emit path.
+					builder.DropChildrenAtOrPastBlockOffset(fragEnd)
 					result := builder.Build()
 					if worstAppeal < BreakAppealPerfect {
 						result.BreakAppeal = worstAppeal

@@ -583,6 +583,28 @@ func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset Logical
 	})
 }
 
+// DropChildrenAtOrPastBlockOffset removes accumulated child entries whose
+// logical block-offset is at or past the given offset. Used by the BLA
+// overflow handler to drop children that were placed at or past the
+// fragmentainer boundary; those children are deferred to the next
+// fragmentainer via the outgoing break token and must not also appear in
+// this partial fragment (otherwise paint would render them twice — once
+// here past the boundary and once in the next fragmentainer at offset 0).
+//
+// Blink avoids this case structurally: BreakBeforeChildIfNeeded fires
+// before placement, so a child that doesn't fit is never added to the
+// fragment in the first place. Louis14's BLA places-then-detects-overflow,
+// so the equivalent invariant has to be restored after the fact.
+func (b *BoxFragmentBuilder) DropChildrenAtOrPastBlockOffset(blockOffset float64) {
+	filtered := b.children[:0]
+	for _, ch := range b.children {
+		if ch.offset.BlockOffset < blockOffset {
+			filtered = append(filtered, ch)
+		}
+	}
+	b.children = filtered
+}
+
 // Build converts all logical coordinates to physical and returns the
 // immutable PhysicalFragment and LayoutResult.
 //
