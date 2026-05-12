@@ -93,20 +93,6 @@ type MulticolLayoutAlgorithm struct {
 	// container_builder_.PropagateTallestUnbreakableBlockSize call at
 	// column_layout_algorithm.cc:1706-1712. v2 Path X port.
 	lastMeasuredTallestUnbreakable float64
-
-	// maxSpannerBSFFContribution accumulates `spannerOffset +
-	// spanResult.BlockSizeForFragmentation` across all spanners placed
-	// during this multicol layout, so that the multicol's final
-	// LayoutResult can advertise a BlockSizeForFragmentation that
-	// includes spanner content-overflow. Without this, the outer
-	// column-flow only fragments the cursor-advance height (sum of
-	// spanner resolved CSS heights) and overflowing spanner content
-	// paints past the multicol container instead of being column-flowed
-	// into outer columns. LOU-111 step 2. Mirrors Blink's per-child
-	// overflow propagation pattern (the outer fragment-tree absorbs the
-	// spanner's overflow via fragment-tree propagation; we surface the
-	// same information through BSFF).
-	maxSpannerBSFFContribution float64
 }
 
 // NewMulticolLayoutAlgorithm creates a multicol layout algorithm.
@@ -967,19 +953,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			if spanFrag != nil && spanResult != nil {
 				mla.attemptToPositionListMarker(spanFrag, spanResult, builder, blockCursor)
-			}
-			// LOU-111 step 2: aggregate this spanner's BSFF contribution.
-			// spanResult.BlockSizeForFragmentation is non-zero only when the
-			// spanner's content exceeds its declared height (set in step 1's
-			// markSpannerMonolithicIfOverflowed). The bottom-edge of the
-			// spanner's content in inner-multicol coords is
-			// `blockCursor + spanResult.BlockSizeForFragmentation` (blockCursor
-			// is still at the spanner's top here — advance happens below).
-			if spanResult != nil && spanResult.BlockSizeForFragmentation > 0 {
-				contribution := blockCursor + spanResult.BlockSizeForFragmentation
-				if contribution > mla.maxSpannerBSFFContribution {
-					mla.maxSpannerBSFFContribution = contribution
-				}
 			}
 			blockCursor += spanHeight
 			if !didContentOverflowResume && spanner.Style() != nil {
