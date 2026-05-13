@@ -869,47 +869,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				mla.offsetInCurrentRow(blockCursor) > 0 {
 				blockCursor += mla.offsetToNextRow(blockCursor)
 			}
-			// Outer fragmentation: spanner doesn't fit — clip and break.
-			if hasOuterFrag && blockCursor+spanHeight > outerAvailable {
-				available := outerAvailable - blockCursor
-				if wdm.IsHorizontal() {
-					spanFrag.Size.Height = layoutunit.FromFloat64Round(available)
-				} else {
-					spanFrag.Size.Width = layoutunit.FromFloat64Round(available)
-				}
-				builder.AddChild(spanFrag, LogicalOffset{
-					InlineOffset: 0,
-					BlockOffset:  blockCursor,
-				})
-				blockCursor += available
-				// Advance the walker past this spanner entry; the clip
-				// token below replaces it for the next outer column.
-				walker.Next()
-				if pendingContentOverflow {
-					// Combined content-overflow + clip: a previous spanner's
-					// content-overflow entry is already in outBuilder; push
-					// THIS spanner's clip token as a separate flat entry so
-					// the resumed outer column walks both in document order.
-					outBuilder.AddBreakToken(&BlockBreakToken{
-						Node:              spanner,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(available),
-					})
-					// Fall through to post-loop pendingContentOverflow
-					// handler, which calls flushWalker before emitting.
-					break
-				}
-				outBuilder.AddBreakToken(&BlockBreakToken{
-					Node:              spanner,
-					ConsumedBlockSize: layoutunit.FromFloat64Round(available),
-				})
-				// Flush any remaining walker entries (e.g., MoveToSpanner-
-				// stored post-spanner column-content driver) so the next
-				// outer column resumes with both the clipped spanner and
-				// the un-enumerated post-spanner content.
-				flushWalker()
-				return buildOuterBreakResult()
-			}
-
 			// Apply spanner margin-block-start. Skip when resuming a
 			// content-overflow spanner — margins were consumed in OC1.
 			if !didContentOverflowResume && spanner.Style() != nil {
