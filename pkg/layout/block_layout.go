@@ -1601,27 +1601,42 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		!hasExplicitBlock &&
 		geom.Border.BlockEnd == 0 && geom.Padding.BlockEnd == 0
 
-	if bla.space.IsNewFormattingContext && !prevMarginStrut.IsEmpty() {
-		// BFC roots: trailing margins don't propagate out, and they
-		// extend the auto height (CSS 2.1 §10.6.7).
-		blockCursor += prevMarginStrut.Resolve()
-		prevMarginStrut = MarginStrut{} // consumed
-	} else if !canPropagateBottom && !prevMarginStrut.IsEmpty() {
-		if !hasExplicitBlock {
-			// Auto block-size with block-end border/padding: the last child's
-			// margin is trapped inside the parent and extends the auto height
-			// (CSS 2.1 §10.6.3). The margin does not propagate out.
+	// Gate A (option-b step 6.4.a, plan §3.3.3): trailing-margin
+	// propagation is suppressed on the broken path. Pre-restructure,
+	// the frag-overflow / forced-break early-returns bypassed this
+	// block; post-restructure, `pendingShouldBreakInside` flags the
+	// broken path and the natural-path margin propagation must not
+	// extend the broken fragment by trailing margin. Currently
+	// dormant: the only setter of `pendingShouldBreakInside` is the
+	// 6.2 forced-break path, which returns before reaching here.
+	// 6.4.c activates the gate when frag-overflow flows through the
+	// natural post-loop.
+	if !pendingShouldBreakInside {
+		if bla.space.IsNewFormattingContext && !prevMarginStrut.IsEmpty() {
+			// BFC roots: trailing margins don't propagate out, and they
+			// extend the auto height (CSS 2.1 §10.6.7).
 			blockCursor += prevMarginStrut.Resolve()
+			prevMarginStrut = MarginStrut{} // consumed
+		} else if !canPropagateBottom && !prevMarginStrut.IsEmpty() {
+			if !hasExplicitBlock {
+				// Auto block-size with block-end border/padding: the last child's
+				// margin is trapped inside the parent and extends the auto height
+				// (CSS 2.1 §10.6.3). The margin does not propagate out.
+				blockCursor += prevMarginStrut.Resolve()
+			}
+			// Explicit block-size: margin doesn't propagate and doesn't extend
+			// height (the height is already fixed).
+			prevMarginStrut = MarginStrut{}
 		}
-		// Explicit block-size: margin doesn't propagate and doesn't extend
-		// height (the height is already fixed).
-		prevMarginStrut = MarginStrut{}
 	}
 
+	// Gate B (option-b step 6.4.a, plan §3.3.3): float-clearance
+	// extension for auto block-size is suppressed on the broken path.
+	// Same rationale as Gate A. Currently dormant.
 	// CSS 2.1 §10.6.7: For elements that own floats (BFC roots or elements
 	// that contain their own floats), auto block-size extends to clear them.
 	// Elements that only inherit floats from a parent BFC do not extend.
-	if !hasExplicitBlock && hasOwnFloats {
+	if !pendingShouldBreakInside && !hasExplicitBlock && hasOwnFloats {
 		bfcCursor := bfcBlockOrigin + blockCursor
 		clearedBlockBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcCursor), wdm).Float64()
 		clearedBlock := clearedBlockBfc - bfcBlockOrigin
