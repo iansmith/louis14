@@ -228,6 +228,47 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// Pending outgoing-break state, populated by the children fragmentation
+	// loop when overflow / IFC zero-progress / forced-break is detected and
+	// consumed by the post-loop FinishFragmentation analogue (option-b
+	// step6_option_b_plan.md §3.2). Mirrors Blink's container_builder_
+	// break fields (HasInflowChildBreakInside, ShouldBreakInside,
+	// ChildBreakTokens, AtBlockEnd, MinSpaceShortage, BreakAppeal,
+	// HasForcedBreak). Unused until sub-steps 6.2 / 6.3 / 6.4 wire them in.
+	var (
+		pendingHasInflowChildBreakInside bool
+		pendingShouldBreakInside         bool
+		pendingIsAtBlockEnd              bool
+		pendingChildBreakTokens          []*BlockBreakToken
+		pendingHasSeenAllChildren        bool
+		pendingMinSpaceShortage          float64
+		pendingBreakAppeal               BreakAppeal
+		pendingHasForcedBreak            bool
+		pendingDropAtBlockOffset         float64
+		pendingDropAtBlockOffsetEnabled  bool
+		pendingIntrinsicAtBreak          float64
+		pendingHaveIntrinsicAtBreak      bool
+		pendingForceBoxBlockSize         float64
+		pendingExplicitDidBreakSelf      bool
+	)
+	pendingDropAtBlockOffset = -1
+	pendingForceBoxBlockSize = -1
+	pendingBreakAppeal = BreakAppealPerfect
+	_ = pendingHasInflowChildBreakInside
+	_ = pendingShouldBreakInside
+	_ = pendingIsAtBlockEnd
+	_ = pendingChildBreakTokens
+	_ = pendingHasSeenAllChildren
+	_ = pendingMinSpaceShortage
+	_ = pendingBreakAppeal
+	_ = pendingHasForcedBreak
+	_ = pendingDropAtBlockOffset
+	_ = pendingDropAtBlockOffsetEnabled
+	_ = pendingIntrinsicAtBreak
+	_ = pendingHaveIntrinsicAtBreak
+	_ = pendingForceBoxBlockSize
+	_ = pendingExplicitDidBreakSelf
+
 	// CSS 2.1 §8.3.1: Parent-child top margin collapsing.
 	// When a block has no block-start border/padding and isn't a new BFC,
 	// the first child's margin propagates upward.
