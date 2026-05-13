@@ -248,11 +248,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		pendingDropAtBlockOffsetEnabled  bool
 		pendingIntrinsicAtBreak          float64
 		pendingHaveIntrinsicAtBreak      bool
-		pendingForceBoxBlockSize         float64
-		pendingExplicitDidBreakSelf      bool
 	)
 	pendingDropAtBlockOffset = -1
-	pendingForceBoxBlockSize = -1
 	pendingBreakAppeal = BreakAppealPerfect
 	_ = pendingHasInflowChildBreakInside
 	_ = pendingShouldBreakInside
@@ -266,8 +263,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	_ = pendingDropAtBlockOffsetEnabled
 	_ = pendingIntrinsicAtBreak
 	_ = pendingHaveIntrinsicAtBreak
-	_ = pendingForceBoxBlockSize
-	_ = pendingExplicitDidBreakSelf
 
 	// CSS 2.1 §8.3.1: Parent-child top margin collapsing.
 	// When a block has no block-start border/padding and isn't a new BFC,
@@ -1274,31 +1269,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 						}
 					}
 
-					// Fab D (kept verbatim — record-only; 6.5.C deletes
-					// the body). LOU-111: column-span:all + explicit-block
-					// clamp to remaining outer fragmentainer space.
-					isColumnSpanner := bla.style != nil && bla.style.GetColumnSpan() == "all"
-					if hasExplicitBlock && isColumnSpanner &&
-						bla.space.FragmentainerBlockSize != Indefinite {
-						boxBlockSize := geom.BorderBoxSize.BlockSize
-						if incomingBreakToken != nil {
-							boxBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
-							if boxBlockSize < 0 {
-								boxBlockSize = 0
-							}
-						}
-						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
-						if spaceLeft < 0 {
-							spaceLeft = 0
-						}
-						if boxBlockSize > spaceLeft {
-							pendingForceBoxBlockSize = spaceLeft
-							pendingExplicitDidBreakSelf = true
-						} else {
-							pendingForceBoxBlockSize = boxBlockSize
-						}
-					}
-
 					// Phase 12g BreakAppeal demotion. Verbatim from
 					// pre-6.4.b lines 1367-1427, swapping `worstAppeal`
 					// for `pendingBreakAppeal` (initialized to
@@ -1615,25 +1585,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		}
 		if finalBlockSize > contentSpaceLeft {
 			finalBlockSize = contentSpaceLeft
-			didBreakSelf = true
-		}
-	}
-
-	// Option-b step 6.4.c: Fab D override (kept until 6.5.C deletes
-	// it). When the frag-overflow record-phase captured a column-spanner
-	// box-clamp (pendingForceBoxBlockSize >= 0 + pendingExplicitDidBreakSelf),
-	// override finalBlockSize so the fragment border-box equals the
-	// pending value, preserving pre-6.4.c output byte-for-byte. For
-	// non-pathological cases this converges with Phase 16.d.1's clamp
-	// above (analyzed in plan §3.6 R11) — the override exists to handle
-	// the few cases where Fab D's gate (no !IsBlockSizeOverride / no
-	// fragSize>0 requirement) catches a path Phase 16.d.1 misses.
-	if pendingShouldBreakInside && pendingForceBoxBlockSize >= 0 {
-		finalBlockSize = pendingForceBoxBlockSize - geom.BlockBorderPadding()
-		if finalBlockSize < 0 {
-			finalBlockSize = 0
-		}
-		if pendingExplicitDidBreakSelf {
 			didBreakSelf = true
 		}
 	}
