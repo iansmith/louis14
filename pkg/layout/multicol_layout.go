@@ -814,7 +814,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		var spanFrag *PhysicalFragment
 		var spanHeight float64
 		var spanResult *LayoutResult // for PropagateBaselineFromChild (Track B)
-		var didContentOverflowResume bool
 		// LOU-111 step 6.6.A — unified spanner dispatch.
 		//
 		// Pre-6.6.A this branch was three-way:
@@ -857,10 +856,6 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				outBuilder.AddBreakToken(fullResult.BreakToken)
 			}
 		}
-		// Resumed spanners suppress margins (consumed in the original outer
-		// column where the spanner started).
-		didContentOverflowResume = hasSpannerResume
-
 		if spanFrag != nil {
 			// Blink cla.cc:1427-1459 (pre-commit row snap). Snap blockCursor
 			// to the next row-stride boundary if we're past the start of the
@@ -870,8 +865,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				blockCursor += mla.offsetToNextRow(blockCursor)
 			}
 			// Apply spanner margin-block-start. Skip when resuming a
-			// content-overflow spanner — margins were consumed in OC1.
-			if !didContentOverflowResume && spanner.Style() != nil {
+			// spanner — margins were consumed in the original outer column.
+			if !hasSpannerResume && spanner.Style() != nil {
 				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
 				blockCursor += spannerMargins.BlockStart
 			}
@@ -899,7 +894,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				mla.attemptToPositionListMarker(spanFrag, spanResult, builder, blockCursor)
 			}
 			blockCursor += spanHeight
-			if !didContentOverflowResume && spanner.Style() != nil {
+			if !hasSpannerResume && spanner.Style() != nil {
 				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
 				blockCursor += spannerMargins.BlockEnd
 			}
@@ -915,8 +910,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// Forced break-after:column on spanner: propagate to the parent
 		// column context. Only on fresh layout (not resumed) so the break
 		// fires once.
-		if hasOuterFrag && spanFrag != nil && !didContentOverflowResume &&
-			mla.space.BreakToken == nil && !hasSpannerResume &&
+		if hasOuterFrag && spanFrag != nil && !hasSpannerResume &&
+			mla.space.BreakToken == nil &&
 			spanner.Style() != nil && spanner.Style().GetBreakAfter() == "column" {
 			if !walker.IsFinished() {
 				// walker.Next was already called above; current is the
