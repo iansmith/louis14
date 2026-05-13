@@ -1511,7 +1511,25 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
-		if incomingBreakToken != nil && !bla.space.IsBlockSizeOverride && intrinsicBlockSize > 0 {
+		// LOU-111 step 6.5.B — Blink S0 alignment for resumed column-spanners.
+		// Mirrors fragmentation_utils.cc:551-557: when the spanner is resumed
+		// in a subsequent outer fragmentainer, the declared CSS height
+		// represents the WHOLE spanner box, not per-fragment. Subtract
+		// previously consumed to get the per-fragment desired extent.
+		//
+		// This ports Fab D's `boxBlockSize -= ConsumedBlockSize` arithmetic
+		// (block_layout.go:1284-1288) into the natural post-loop, so that
+		// 6.5.C can delete Fab D without regressing spanner-fragmentation-006.
+		// Non-spanner resumed blocks keep the existing intrinsic-as-fragment-
+		// size / explicit-remaining branches below — those approximate the
+		// per-fragment box extent for non-column contexts.
+		isColumnSpanner := bla.style != nil && bla.style.GetColumnSpan() == "all"
+		if isColumnSpanner && incomingBreakToken != nil {
+			finalBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
+			if finalBlockSize < 0 {
+				finalBlockSize = 0
+			}
+		} else if incomingBreakToken != nil && !bla.space.IsBlockSizeOverride && intrinsicBlockSize > 0 {
 			// Resumed non-column block (e.g. spanner content in outer fragmentainer):
 			// use the actual content placed in this fragment, not the CSS explicit height.
 			// The CSS height belonged to the first fragment; this resumed fragment shows
