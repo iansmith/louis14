@@ -1518,55 +1518,78 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// Fires even when blockCursor < fragEnd (column isn't full yet).
 				// Also fires during IsInitialColumnBalancingPass (fragSize=Indefinite) so the
 				// ContentRuns measure loop records one run per forced-break segment.
+				//
+				// Option-b step 6.2: record pending state and break out of the
+				// children loop. The post-loop forced-break reader (added in
+				// this same step, immediately after the loop close) constructs
+				// the outgoing LayoutResult from the pending state — a verbatim
+				// move of the original inline body. Step 6.4 will subsume this
+				// reader into the unified FinishFragmentation analogue.
 				if (fragSize != Indefinite || bla.space.IsInitialColumnBalancingPass) && childResult.HasForcedBreak {
-					outToken := &BlockBreakToken{
-						Node:              bla.node,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
-					}
-					if incomingBreakToken != nil {
-						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
-						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
-					}
+					pendingShouldBreakInside = true
+					pendingHasInflowChildBreakInside = true
+					pendingHasForcedBreak = true
+					pendingIntrinsicAtBreak = blockCursor
+					pendingHaveIntrinsicAtBreak = true
 					if childResult.BreakToken != nil {
-						outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, childResult.BreakToken)
-					} else {
-						if childIdx+1 < len(children) {
-							outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, &BlockBreakToken{
-								Node:          children[childIdx+1],
-								IsBreakBefore: true,
-							})
-						} else {
-							outToken.HasSeenAllChildren = true
-						}
-					}
-					intrinsicBlock := blockCursor
-					if !hasExplicitBlock {
-						borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
-						builder.SetSize(LogicalSize{
-							InlineSize: geom.BorderBoxSize.InlineSize,
-							BlockSize:  borderBoxBlock,
+						pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
+					} else if childIdx+1 < len(children) {
+						pendingChildBreakTokens = append(pendingChildBreakTokens, &BlockBreakToken{
+							Node:          children[childIdx+1],
+							IsBreakBefore: true,
 						})
 					} else {
-						builder.SetSize(geom.BorderBoxSize)
+						pendingHasSeenAllChildren = true
 					}
-					builder.SetIntrinsicBlockSize(intrinsicBlock)
-					builder.SetNode(bla.node.DOMNode)
-					builder.SetStyle(bla.style)
-					builder.SetLayoutNode(bla.node)
-					builder.SetBoxData(&PhysicalBoxData{
-						Border:  ToPhysicalEdges(geom.Border, wdm),
-						Padding: ToPhysicalEdges(geom.Padding, wdm),
-					})
-					builder.SetEndMarginStrut(prevMarginStrut)
-					builder.SetExclusionSpace(exclusionSpace)
-					result := builder.Build()
-					result.BreakToken = outToken
-					result.HasForcedBreak = true
-					result.PropagatedTopMargin = propagatedTopMargin
-					return result
+					break
 				}
 			}
 		}
+	}
+
+	// Option-b step 6.2: post-loop forced-break reader. Verbatim move of
+	// the original in-loop forced-break early-return body (pre-6.2 lines
+	// 1521-1567), now reading the captured pending-* state. Constructs the
+	// outgoing LayoutResult, attaches the break token + HasForcedBreak,
+	// returns. Step 6.4 subsumes this into the unified FinishFragmentation
+	// analogue that handles frag-overflow + IFC zero-progress alongside
+	// the forced-break case.
+	if pendingShouldBreakInside && pendingHasForcedBreak {
+		intrinsicBlock := pendingIntrinsicAtBreak
+		if !hasExplicitBlock {
+			borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
+			builder.SetSize(LogicalSize{
+				InlineSize: geom.BorderBoxSize.InlineSize,
+				BlockSize:  borderBoxBlock,
+			})
+		} else {
+			builder.SetSize(geom.BorderBoxSize)
+		}
+		builder.SetIntrinsicBlockSize(intrinsicBlock)
+		builder.SetNode(bla.node.DOMNode)
+		builder.SetStyle(bla.style)
+		builder.SetLayoutNode(bla.node)
+		builder.SetBoxData(&PhysicalBoxData{
+			Border:  ToPhysicalEdges(geom.Border, wdm),
+			Padding: ToPhysicalEdges(geom.Padding, wdm),
+		})
+		builder.SetEndMarginStrut(prevMarginStrut)
+		builder.SetExclusionSpace(exclusionSpace)
+		result := builder.Build()
+		outToken := &BlockBreakToken{
+			Node:               bla.node,
+			ConsumedBlockSize:  layoutunit.FromFloat64Round(intrinsicBlock),
+			ChildBreakTokens:   pendingChildBreakTokens,
+			HasSeenAllChildren: pendingHasSeenAllChildren,
+		}
+		if incomingBreakToken != nil {
+			outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
+			outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
+		}
+		result.BreakToken = outToken
+		result.HasForcedBreak = true
+		result.PropagatedTopMargin = propagatedTopMargin
+		return result
 	}
 
 	// CSS 2.1 §8.3.1: The bottom margin of an in-flow block box with a
