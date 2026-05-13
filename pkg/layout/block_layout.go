@@ -1947,6 +1947,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			childBreakTokens = result.BreakToken.ChildBreakTokens
 			hasSeenAllChildren = result.BreakToken.HasSeenAllChildren
 		}
+		// Option-b step 6.5.A — Site B setter (plan §1.9 / §3.3 row 4).
+		// Blink's FinishFragmentation at fragmentation_utils.cc:735-739:
+		// when the previous fragment was already at block-end
+		// (`is_past_end`), carry IsAtBlockEnd forward onto the outgoing
+		// token. louis14's step 3.5.B at the natural-path zero-clamp
+		// covers the size half ("at-end → final=0"); 6.5.A adds the
+		// missing tag half.
+		if incomingBreakToken != nil && incomingBreakToken.IsAtBlockEnd {
+			isAtBlockEnd = true
+		}
 		result.BreakToken = &BlockBreakToken{
 			Node:               bla.node,
 			ConsumedBlockSize:  layoutunit.FromFloat64Round(prevConsumed + consumed),
