@@ -1367,46 +1367,45 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					break
 				} else if fragSize != Indefinite && childHasBreak && childBlockSize == 0 &&
 					!bla.space.IsInitialColumnBalancingPass {
-					// IFC broke before making any forward progress (zero-height fragment +
-					// break token). The fragmentainer is full from the parent's perspective
-					// even though blockCursor did not advance.
-					outToken := &BlockBreakToken{
-						Node:              bla.node,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(blockCursor),
-						SequenceNumber:    0,
+					// IFC broke before making any forward progress (zero-height
+					// fragment + break token). The fragmentainer is full from
+					// the parent's perspective even though blockCursor did not
+					// advance.
+					//
+					// Option-b step 6.3 (plan §3.4 + step6_3_ifc_zero_progress.md):
+					// structurally a subset of 6.4 — only the
+					// `childResult.BreakToken != nil` dispatch branch fires, no
+					// Fab D, no DropChildren, no BreakAppeal demotion, no
+					// MinSpaceShortage, no HasForcedBreak. The unified §3.6
+					// post-loop reader handles the build + outToken + return.
+					//
+					// Step 3.5.A IsAtBlockEnd predicate applies uniformly per
+					// the audit's analysis of Blink Site C (frag_utils.cc:755):
+					// when the parent's own box fits but the child broke, the
+					// parent is at-block-end and the carried child runs in
+					// parallel flow.
+					pendingShouldBreakInside = true
+					pendingHasInflowChildBreakInside = true
+					pendingIntrinsicAtBreak = blockCursor
+					pendingHaveIntrinsicAtBreak = true
+					if hasExplicitBlock {
+						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
+						if spaceLeft < 0 {
+							spaceLeft = 0
+						}
+						desiredBlockSize := explicitBlockSize
+						if incomingBreakToken != nil {
+							desiredBlockSize -= incomingBreakToken.ConsumedBlockSize.Float64()
+							if desiredBlockSize < 0 {
+								desiredBlockSize = 0
+							}
+						}
+						if desiredBlockSize <= spaceLeft {
+							pendingIsAtBlockEnd = true
+						}
 					}
-					if incomingBreakToken != nil {
-						outToken.ConsumedBlockSize = outToken.ConsumedBlockSize.Add(incomingBreakToken.ConsumedBlockSize)
-						outToken.SequenceNumber = incomingBreakToken.SequenceNumber + 1
-					}
-					outToken.ChildBreakTokens = append(outToken.ChildBreakTokens, childResult.BreakToken)
-					intrinsicBlock := blockCursor
-					if !hasExplicitBlock {
-						borderBoxBlock := intrinsicBlock + geom.BlockBorderPadding()
-						builder.SetSize(LogicalSize{
-							InlineSize: geom.BorderBoxSize.InlineSize,
-							BlockSize:  borderBoxBlock,
-						})
-					} else {
-						builder.SetSize(geom.BorderBoxSize)
-					}
-					builder.SetIntrinsicBlockSize(intrinsicBlock)
-					builder.SetNode(bla.node.DOMNode)
-					builder.SetStyle(bla.style)
-					builder.SetLayoutNode(bla.node)
-					builder.SetBoxData(&PhysicalBoxData{
-						Border:  ToPhysicalEdges(geom.Border, wdm),
-						Padding: ToPhysicalEdges(geom.Padding, wdm),
-					})
-					builder.SetEndMarginStrut(prevMarginStrut)
-					builder.SetExclusionSpace(exclusionSpace)
-					result := builder.Build()
-					result.BreakToken = outToken
-					result.PropagatedTopMargin = propagatedTopMargin
-					if intrinsicBlock > NewLogicalFragment(wdm, result.Fragment).BlockSize() {
-						result.BlockSizeForFragmentation = intrinsicBlock
-					}
-					return result
+					pendingChildBreakTokens = append(pendingChildBreakTokens, childResult.BreakToken)
+					break
 				}
 
 				// Forced column break propagated from a child (break-before/after:column).
