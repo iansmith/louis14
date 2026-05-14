@@ -793,18 +793,33 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		return
 	}
-	region := image.Rect(bx, by, bx+bw, by+bh)
+	borderBox := image.Rect(bx, by, bx+bw, by+bh)
 
-	// Snapshot the backdrop image: the canvas content under the border box.
-	backdrop := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	// A blur on the backdrop samples pixels outside the element's border
+	// box, so the captured region is inflated by the blur extent — otherwise
+	// the blur sees transparent black off the edges and darkens the result.
+	// The filtered output is clipped back to the border box afterwards.
+	// Filter Effects 2 treats the backdrop root image as effectively
+	// unbounded; capturing a margin around the box approximates that.
+	pad := 0
+	for _, f := range layer.BackdropFilters {
+		if f.Name == "blur" {
+			pad = max(pad, int(math.Ceil(f.Value*3))+2)
+		}
+	}
+	region := image.Rect(bx-pad, by-pad, bx+bw+pad, by+bh+pad)
+	rw, rh := region.Dx(), region.Dy()
+
+	// Snapshot the backdrop image: the canvas content under the region.
+	backdrop := image.NewRGBA(image.Rect(0, 0, rw, rh))
 	targetBounds := r.target.Bounds()
-	for y := 0; y < bh; y++ {
-		dy := by + y
+	for y := 0; y < rh; y++ {
+		dy := region.Min.Y + y
 		if dy < targetBounds.Min.Y || dy >= targetBounds.Max.Y {
 			continue
 		}
-		for x := 0; x < bw; x++ {
-			dx := bx + x
+		for x := 0; x < rw; x++ {
+			dx := region.Min.X + x
 			if dx < targetBounds.Min.X || dx >= targetBounds.Max.X {
 				continue
 			}
@@ -818,10 +833,9 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	}
 
 	// Run the filter graph over the backdrop image. backdrop-filter uses the
-	// same filter-function list as filter; the filter region is the element's
-	// border box (backdrop-filter clips to the element, unlike filter).
+	// same filter-function list as filter.
 	builder := &FilterEffectBuilder{
-		ReferenceBox: region,
+		ReferenceBox: borderBox,
 		CurrentColor: layer.TextColor,
 	}
 	filter := builder.BuildFilterEffect(layer.BackdropFilters)
@@ -847,7 +861,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 		r.dc.DrawRectangle(bxf, byf, bwf, bhf)
 	}
 	r.dc.Clip()
-	r.dc.DrawImage(out, bx, by)
+	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
 	r.dc.Pop()
 }
 
