@@ -156,6 +156,27 @@ func parseKeyframeOffset(sel string) (float64, bool) {
 	return 0, false
 }
 
+// nonAnimatableProps lists properties CSS does not permit animating; a
+// @keyframes declaration for one of these is ignored when resolving keyframe
+// values (Blink: these carry `is_animatable: false` in css_properties.json5).
+// Most CSS properties ARE animatable — this is the small denylist of the
+// clearly-non-animatable longhands that realistically appear in @keyframes.
+var nonAnimatableProps = map[string]bool{
+	"contain":              true,
+	"content":              true,
+	"direction":            true,
+	"unicode-bidi":         true,
+	"writing-mode":         true,
+	"text-orientation":     true,
+	"text-combine-upright": true,
+	"will-change":          true,
+	"all":                  true,
+	"counter-reset":        true,
+	"counter-increment":    true,
+	"counter-set":          true,
+	"quotes":               true,
+}
+
 // ResolveKeyframeStyle selects the keyframe value(s) for each animated property
 // at the given transformed iteration progress, returning property -> value.
 //
@@ -194,6 +215,11 @@ func ResolveKeyframeStyle(eff *KeyframeEffect, simpleProgress float64, base *Sty
 	}
 
 	for prop := range eff.Properties {
+		// CSS Animations §3 / Web Animations: a @keyframes declaration for a
+		// non-animatable property (e.g. `contain`) is ignored.
+		if nonAnimatableProps[prop] {
+			continue
+		}
 		// Build the per-property keyframe list: offset -> value, using the base
 		// (underlying) value for any keyframe (including synthesized
 		// boundaries) that does not declare this property.
