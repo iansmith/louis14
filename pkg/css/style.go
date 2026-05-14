@@ -4448,17 +4448,23 @@ const (
 	DisplayTableRowGroup    DisplayType = "table-row-group"
 	DisplayTableFooterGroup DisplayType = "table-footer-group"
 	DisplayListItem         DisplayType = "list-item" // Phase 23
-	DisplayFlex             DisplayType = "flex"
-	DisplayInlineFlex       DisplayType = "inline-flex"
-	DisplayGrid             DisplayType = "grid"
-	DisplayInlineGrid       DisplayType = "inline-grid"
-	DisplayContents         DisplayType = "contents"
-	DisplayTableCaption     DisplayType = "table-caption"
-	DisplayFlowRoot         DisplayType = "flow-root"
-	DisplayRuby             DisplayType = "ruby"
-	DisplayRubyText         DisplayType = "ruby-text"
-	DisplayRubyBase         DisplayType = "ruby-base"
-	DisplayInlineTable      DisplayType = "inline-table"
+	// DisplayInlineListItem is an inline-level box with the list-item inner
+	// display type — CSS Display L3 `display: inline list-item` (and the
+	// `inline flow-root list-item` variant). Mirrors Blink EDisplay::
+	// kInlineListItem. It is inline-level (flows in an IFC, shrink-to-fits)
+	// and IsListItemDisplay() is true so it gets its own ::marker box.
+	DisplayInlineListItem DisplayType = "inline-list-item"
+	DisplayFlex           DisplayType = "flex"
+	DisplayInlineFlex     DisplayType = "inline-flex"
+	DisplayGrid           DisplayType = "grid"
+	DisplayInlineGrid     DisplayType = "inline-grid"
+	DisplayContents       DisplayType = "contents"
+	DisplayTableCaption   DisplayType = "table-caption"
+	DisplayFlowRoot       DisplayType = "flow-root"
+	DisplayRuby           DisplayType = "ruby"
+	DisplayRubyText       DisplayType = "ruby-text"
+	DisplayRubyBase       DisplayType = "ruby-base"
+	DisplayInlineTable    DisplayType = "inline-table"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0).
@@ -4490,6 +4496,40 @@ func (s *Style) GetBoxSizing() string {
 // GetDisplay returns the display value (default: block)
 func (s *Style) GetDisplay() DisplayType {
 	if display, ok := s.Get("display"); ok {
+		// CSS Display L3 §2.1: the multi-value `display` syntax. Normalize the
+		// two-/three-keyword forms to a single DisplayType before the
+		// single-keyword switch. Only the list-item combinations are needed by
+		// the engine today; `inline flow` / `block flow` etc. collapse to their
+		// single-keyword equivalents. Mirrors Blink's EDisplay parsing
+		// (css_parsing_utils ConsumeDisplay → EDisplay::kInlineListItem etc.).
+		if strings.ContainsRune(display, ' ') {
+			fields := strings.Fields(display)
+			hasListItem := false
+			outer := "" // "inline" or "block" (default block)
+			for _, f := range fields {
+				switch f {
+				case "list-item":
+					hasListItem = true
+				case "inline":
+					outer = "inline"
+				case "block":
+					outer = "block"
+					// "flow" / "flow-root" inner display types do not change
+					// the list-item box model here; ignored for normalization.
+				}
+			}
+			if hasListItem {
+				if outer == "inline" {
+					return DisplayInlineListItem
+				}
+				return DisplayListItem
+			}
+			// Non-list-item multi-value forms fall through to the
+			// single-keyword switch using the first recognized keyword.
+			if outer == "inline" {
+				return DisplayInline
+			}
+		}
 		switch display {
 		case "inline":
 			return DisplayInline
@@ -4511,6 +4551,8 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayTableFooterGroup
 		case "list-item":
 			return DisplayListItem
+		case "inline-list-item":
+			return DisplayInlineListItem
 		case "flex":
 			return DisplayFlex
 		case "inline-flex":
@@ -4540,6 +4582,16 @@ func (s *Style) GetDisplay() DisplayType {
 		}
 	}
 	return DisplayBlock
+}
+
+// IsListItemDisplay reports whether the computed display establishes a
+// list-item — `display: list-item` (block-level) or `display: inline
+// list-item` (inline-level). Mirrors Blink's ComputedStyle::IsDisplayListItem
+// (EDisplay::kListItem || kInlineListItem). The ::marker box is generated
+// whenever this is true, regardless of the box's inline/block level.
+func (s *Style) IsListItemDisplay() bool {
+	d := s.GetDisplay()
+	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
 // GetLineClamp returns the -webkit-line-clamp value (0 = no clamping)

@@ -2499,7 +2499,14 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 	switch display {
 	case css.DisplayNone:
 		return emptyResult(space.WritingDirection)
-	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem, css.DisplayInlineBlock:
+	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem,
+		css.DisplayInlineBlock, css.DisplayInlineListItem:
+		// DisplayInlineListItem (CSS Display L3 `display: inline list-item`) is
+		// laid out by the block algorithm — it is an inline-level box that
+		// internally is a list-item block-flow (the LayoutInlineListItem
+		// analogue), shrink-to-fit sized and establishing its own FC, so the
+		// UnpositionedListMarker carry/claim runs inside it just like a
+		// block-level list item.
 		if isMulticolContainer(style) {
 			return NewMulticolLayoutAlgorithm(ctx, node, space).Layout()
 		}
@@ -2565,9 +2572,11 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		return true
 	}
 
-	// Inline-block creates a BFC.
+	// Inline-block creates a BFC. So does an inline-level list item
+	// (`display: inline list-item` — the LayoutInlineListItem analogue, which
+	// is an atomic inline establishing its own formatting context).
 	d := style.GetDisplay()
-	if d == css.DisplayInlineBlock {
+	if d == css.DisplayInlineBlock || d == css.DisplayInlineListItem {
 		return true
 	}
 
@@ -2738,7 +2747,8 @@ func needsShrinkToFit(style *css.Style) bool {
 		return false
 	}
 	d := style.GetDisplay()
-	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex || d == css.DisplayInlineTable {
+	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex ||
+		d == css.DisplayInlineTable || d == css.DisplayInlineListItem {
 		return true
 	}
 	if style.GetFloat() != css.FloatNone {

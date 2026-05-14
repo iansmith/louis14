@@ -177,11 +177,14 @@ func collectInlinesRecursive(
 			continue
 		}
 
-		// Block-level or atomic inline elements (inline-block, replaced, inline-table).
+		// Block-level or atomic inline elements (inline-block, replaced,
+		// inline-table, inline list-item). `display: inline list-item` is an
+		// atomic inline that internally is a list-item block-flow (Blink
+		// LayoutInlineListItem).
 		if display == css.DisplayBlock || display == css.DisplayFlex ||
 			display == css.DisplayTable || display == css.DisplayGrid ||
 			display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
-			display == css.DisplayInlineTable {
+			display == css.DisplayInlineTable || display == css.DisplayInlineListItem {
 			// Atomic inline — represented as U+FFFC.
 			offset := text.Len()
 			text.WriteRune('\uFFFC')

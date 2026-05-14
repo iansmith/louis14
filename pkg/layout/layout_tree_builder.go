@@ -109,7 +109,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	//                UnpositionedListMarker protocol owns its placement
 	//                (Phase 4 — block_layout.go claims it against the
 	//                content's first baseline).
-	if style != nil && style.GetDisplay() == css.DisplayListItem {
+	if style != nil && style.IsListItemDisplay() {
 		if markerNode := b.createMarkerPseudoElement(node, style); markerNode != nil {
 			lin.markerNode = markerNode
 			if !markerNode.MarkerIsOutside {
@@ -627,7 +627,7 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	// rule does NOT match it (the pseudo's tag is "::before"/"::after", not
 	// "li") while a global `::marker` rule does — which is precisely what
 	// css-lists/nested-marker asserts.
-	if display == css.DisplayListItem {
+	if pseudoStyle.IsListItemDisplay() {
 		if markerNode := b.createMarkerPseudoElement(pseudoNode, pseudoStyle); markerNode != nil {
 			lin.markerNode = markerNode
 			if !markerNode.MarkerIsOutside {
@@ -685,7 +685,7 @@ func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
 		if sibling == node {
 			break
 		}
-		if s := b.styles[sibling]; s != nil && s.GetDisplay() == css.DisplayListItem {
+		if s := b.styles[sibling]; s != nil && s.IsListItemDisplay() {
 			idx++
 		}
 	}
@@ -729,7 +729,7 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	if node == nil || style == nil {
 		return nil
 	}
-	if style.GetDisplay() != css.DisplayListItem {
+	if !style.IsListItemDisplay() {
 		return nil
 	}
 
@@ -921,7 +921,7 @@ func (s markerTextSourceLegacy) CounterStyleText(style *css.Style, value int, wi
 func isBlockContainer(d css.DisplayType) bool {
 	switch d {
 	case css.DisplayBlock, css.DisplayListItem, css.DisplayFlowRoot,
-		css.DisplayInlineBlock,
+		css.DisplayInlineBlock, css.DisplayInlineListItem,
 		css.DisplayTableCell, css.DisplayTableCaption:
 		return true
 	}
