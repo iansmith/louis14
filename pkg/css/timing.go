@@ -352,9 +352,17 @@ func computeTransformedProgress(phase AnimationPhase, directedProgress float64, 
 // ResolvedTiming is the result of evaluating a Timing at a given local time: it
 // carries everything ResolveKeyframeStyle needs to pick keyframes.
 type ResolvedTiming struct {
-	Phase            AnimationPhase
-	InEffect         bool    // fill-mode gate: is the animation visible at this phase?
-	Progress         float64 // transformed iteration progress in [0,1]
+	Phase    AnimationPhase
+	InEffect bool // fill-mode gate: is the animation visible at this phase?
+	// SimpleProgress is the directed simple-iteration progress in [0,1] BEFORE
+	// the timing function is applied. CSS Animations selects keyframes by this
+	// value and applies each keyframe segment's own easing within the segment
+	// (animation-timing-function becomes the default per-keyframe easing).
+	SimpleProgress float64
+	// Progress is the transformed iteration progress (timing function applied
+	// to the whole directed progress) — the Web Animations single-pair model.
+	// Kept for reference / WAAPI use; CSS keyframe selection uses SimpleProgress.
+	Progress         float64
 	CurrentIteration float64
 	Forwards         bool // current direction is forwards
 }
@@ -379,6 +387,7 @@ func (t Timing) Resolve(localTime float64) ResolvedTiming {
 	return ResolvedTiming{
 		Phase:            phase,
 		InEffect:         true,
+		SimpleProgress:   directed,
 		Progress:         transformed,
 		CurrentIteration: currentIter,
 		Forwards:         forwards,
