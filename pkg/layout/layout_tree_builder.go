@@ -106,31 +106,14 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	//                ordering: marker, before, children, after).
 	//   - outside -> the marker node is stored on lin.markerNode and reached
 	//                through ListMarkerBlockNodeIfListItem; the carry/claim
-	//                protocol owns its placement (Phase 4). Until then the
-	//                paint-time path in render.go still draws outside markers.
+	//                UnpositionedListMarker protocol owns its placement
+	//                (Phase 4 — block_layout.go claims it against the
+	//                content's first baseline).
 	if style != nil && style.GetDisplay() == css.DisplayListItem {
 		if markerNode := b.createMarkerPseudoElement(node, style); markerNode != nil {
 			lin.markerNode = markerNode
 			if !markerNode.MarkerIsOutside {
 				rawChildren = append(rawChildren, markerNode)
-			}
-			// Phase 2 keeps the paint-time OUTSIDE marker path intact (Phase 4
-			// deletes it). Mirror onto the list item exactly the legacy inputs
-			// it expects: MarkerStyle whenever a ::marker style was cascaded
-			// from author rules, and MarkerContent only when the text came
-			// from `::marker { content }` (the old GetContentValues path) or
-			// from a <string> inside marker. A normal-counter outside marker
-			// must leave MarkerContent empty so drawListMarkerOutside still
-			// uses its symbol/formatListMarker branch unchanged.
-			if len(b.stylesheets) > 0 &&
-				css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
-				lin.MarkerStyle = markerNode.style
-			}
-			if markerNode.markerContentIsGenerated {
-				lin.MarkerContent = markerNode.MarkerContent
-			} else if !markerNode.MarkerIsOutside &&
-				markerNode.MarkerCategory == CategoryStaticString {
-				lin.MarkerContent = markerNode.MarkerContent
 			}
 		}
 	}
@@ -636,6 +619,23 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		style:    pseudoStyle,
 		children: children,
 	}
+
+	// CSS Pseudo-4 §4 / Blink LayoutObject::CreateObject: a ::before / ::after
+	// pseudo-element whose display is list-item is itself a list item and gets
+	// its own ::marker box — exactly like a real list-item element. The marker
+	// is reached through the synthetic pseudoNode, so an author `li::marker`
+	// rule does NOT match it (the pseudo's tag is "::before"/"::after", not
+	// "li") while a global `::marker` rule does — which is precisely what
+	// css-lists/nested-marker asserts.
+	if display == css.DisplayListItem {
+		if markerNode := b.createMarkerPseudoElement(pseudoNode, pseudoStyle); markerNode != nil {
+			lin.markerNode = markerNode
+			if !markerNode.MarkerIsOutside {
+				lin.children = append([]*LayoutInputNode{markerNode}, lin.children...)
+			}
+		}
+	}
+
 	return lin
 }
 
@@ -776,6 +776,18 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	if !markerIsOutside {
 		mStart, mEnd := InlineMarginsForInside(markerStyle, style, cat)
 		applyMarkerInlineMargins(markerStyle, mStart.Float64(), mEnd.Float64())
+	} else {
+		// CSS Pseudo-4 / Blink LayoutObject::CreateObject: an OUTSIDE marker is
+		// a LayoutOutsideListMarker — a block-flow box that lives as a box-tree
+		// sibling of the list item's content and is positioned by the carry/
+		// claim protocol (Phase 4, unpositioned_list_marker.go). Modelled here
+		// as display:inline-block so layoutElement routes it through
+		// NewBlockLayoutAlgorithm with shrink-to-fit inline sizing and a fresh
+		// formatting context — the LayoutBlockFlow-equivalent. Its
+		// InlineMarginsForOutside offset is applied by the claimant at
+		// placement time (UnpositionedListMarker.InlineOffset), not as a style
+		// margin here.
+		markerStyle.Set("display", "inline-block")
 	}
 
 	// Synthetic ::marker DOM node + its text-node child.

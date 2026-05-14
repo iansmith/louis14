@@ -711,6 +711,21 @@ func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset Logical
 	})
 }
 
+// ShiftChildBlockOffset adds delta to the block offset of the most recently
+// added child link whose fragment pointer matches. Used by the list-item
+// block layout to push content down when an OUTSIDE marker's ascent is taller
+// than the content's (Blink's UnpositionedListMarker::AddToBox content-push
+// branch: *block_offset -= baseline_adjust). The content child has already
+// been added to the builder, so it is re-offset in place.
+func (b *BoxFragmentBuilder) ShiftChildBlockOffset(fragment *PhysicalFragment, delta float64) {
+	for i := len(b.children) - 1; i >= 0; i-- {
+		if b.children[i].fragment == fragment {
+			b.children[i].offset.BlockOffset += delta
+			return
+		}
+	}
+}
+
 // DropChildrenAtOrPastBlockOffset removes accumulated child entries whose
 // logical block-offset is at or past the given offset. Used by the BLA
 // overflow handler to drop children that were placed at or past the

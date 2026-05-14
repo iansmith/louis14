@@ -257,6 +257,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			if incoming == nil || incoming.HasUnpositionedListMarker {
 				builder.SetUnpositionedListMarker(&UnpositionedListMarker{
 					MarkerNode: markerNode,
+					Item:       mla.node,
 				})
 			}
 		}
@@ -2336,7 +2337,14 @@ func (mla *MulticolLayoutAlgorithm) attemptToPositionListMarker(
 	if !ok {
 		return
 	}
-	marker.AddToBox(child, childResult, baseline, blockOffset, builder)
+	// Lay the marker box out for size + first-line baseline, then align it
+	// against the column/spanner child's content baseline. Mirrors Blink's
+	// ColumnLayoutAlgorithm reusing list_marker.Layout's result in AddToBox.
+	markerResult := marker.Layout(mla.ctx, mla.space)
+	if markerResult == nil {
+		return
+	}
+	marker.AddToBox(mla.ctx, markerResult, baseline, blockOffset, builder)
 	builder.ClearUnpositionedListMarker()
 }
 
@@ -2352,7 +2360,11 @@ func (mla *MulticolLayoutAlgorithm) positionAnyUnclaimedListMarker(
 	if !marker.IsValid() {
 		return
 	}
-	marker.AddToBoxWithoutLineBoxes(builder, intrinsicBlockSize)
+	markerResult := marker.Layout(mla.ctx, mla.space)
+	if markerResult == nil {
+		return
+	}
+	marker.AddToBoxWithoutLineBoxes(mla.ctx, markerResult, builder, intrinsicBlockSize)
 	builder.ClearUnpositionedListMarker()
 }
 
