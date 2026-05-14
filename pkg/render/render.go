@@ -667,6 +667,15 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	rbh := int(math.Ceil(box.Y+box.Height)) - rby
 	referenceBox := image.Rect(rbx, rby, rbx+rbw, rby+rbh)
 
+	// SourceGraphic extent: the element subtree's paint bounds, which can
+	// extend beyond the border box (positioned/overflowing descendants).
+	// Blink's filter SourceGraphic is the recorded layer contents including
+	// overflow; for drop-shadow especially the shadow is cast from the whole
+	// painted shape, so the source buffer must cover it. drop-shadow-clipped
+	// proves this: a descendant offset out of the border box still casts a
+	// shadow.
+	sourceExtent := referenceBox.Union(subtreeBorderBoxBounds(box))
+
 	// Build the filter graph. The builder computes the filter region by
 	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
 	builder := &FilterEffectBuilder{
@@ -682,6 +691,10 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		return
 	}
 
+	// The filter region is the graph's forward-mapped bounds over the actual
+	// source extent (not just the border box) so the offscreen buffer covers
+	// every pixel the filter draws.
+	filter.FilterRegion = filter.MapRect(sourceExtent)
 	region := filter.FilterRegion
 	bx, by := region.Min.X, region.Min.Y
 	bw, bh := region.Dx(), region.Dy()
@@ -711,6 +724,29 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		return
 	}
 	r.dc.DrawImage(out, bx, by)
+}
+
+// subtreeBorderBoxBounds returns the union of the border boxes of box and all
+// its descendants, in absolute device pixels. It is the conservative paint
+// extent the filter SourceGraphic must cover so that descendants painted
+// outside the element's own border box (relative/absolute positioned, or
+// simply overflowing) still feed the filter graph.
+func subtreeBorderBoxBounds(box *layout.Box) image.Rectangle {
+	if box == nil {
+		return image.Rectangle{}
+	}
+	x0 := int(math.Floor(box.X))
+	y0 := int(math.Floor(box.Y))
+	x1 := int(math.Ceil(box.X + box.Width))
+	y1 := int(math.Ceil(box.Y + box.Height))
+	bounds := image.Rect(x0, y0, x1, y1)
+	for _, child := range box.Children {
+		cb := subtreeBorderBoxBounds(child)
+		if !cb.Empty() {
+			bounds = bounds.Union(cb)
+		}
+	}
+	return bounds
 }
 
 // paintLayerContentWithEffects paints a layer's content applying its transform
