@@ -457,6 +457,12 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	finalStyle.ViewportWidth = viewportWidth
 	finalStyle.ViewportHeight = viewportHeight
 
+	// Sample any paused CSS animation at its deterministic playhead. WPT
+	// animation reftests pause the animation at a fixed point; the static
+	// renderer must reflect the interpolated computed value, not the t=0
+	// state. Mirrors Blink's KeyframeEffect interpolation for the paused case.
+	applyAnimationSampling(finalStyle, stylesheets)
+
 	return finalStyle
 }
 

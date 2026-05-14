@@ -653,44 +653,71 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 }
 
 // paintLayerWithFilter renders the entire layer subtree into an offscreen
-// buffer, applies CSS filter effects, and composites the result back.
+// buffer sized to the filter region, runs the FilterEffect graph over it, and
+// composites the result back. Mirrors Blink's FilterPainter: the element
+// subtree is recorded into a source buffer, fed to the filter graph as
+// SourceGraphic, and the graph output replayed.
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	box := layer.Box
 
-	// Determine buffer bounds. For blur filters, we need extra padding.
-	blurExtend := 0.0
-	for _, f := range layer.Filters {
-		if f.Name == "blur" {
-			sigma := f.Value / 2
-			blurExtend = math.Max(blurExtend, math.Ceil(sigma*3))
-		}
+	// Reference box: the element's border box in absolute device pixels.
+	rbx := int(math.Floor(box.X))
+	rby := int(math.Floor(box.Y))
+	rbw := int(math.Ceil(box.X+box.Width)) - rbx
+	rbh := int(math.Ceil(box.Y+box.Height)) - rby
+	referenceBox := image.Rect(rbx, rby, rbx+rbw, rby+rbh)
+
+	// Build the filter graph. The builder computes the filter region by
+	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
+	builder := &FilterEffectBuilder{
+		ReferenceBox: referenceBox,
+		CurrentColor: layer.TextColor,
 	}
-
-	// Buffer covers the element's border-box plus blur extension.
-	bx := int(math.Floor(box.X - blurExtend))
-	by := int(math.Floor(box.Y - blurExtend))
-	bw := int(math.Ceil(box.Width + 2*blurExtend))
-	bh := int(math.Ceil(box.Height + 2*blurExtend))
-
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
-		// Fallback: render without filters to avoid OOM.
-		r.paintLayerContent(layer)
+	filter := builder.BuildFilterEffect(layer.Filters)
+	if filter == nil {
+		// No supported CSS filter functions (e.g. only url() references,
+		// not yet handled) — paint without filtering rather than dropping
+		// the element.
+		r.paintLayerContentWithEffects(layer)
 		return
 	}
 
-	// Save original state and render into offscreen buffer.
+	region := filter.FilterRegion
+	bx, by := region.Min.X, region.Min.Y
+	bw, bh := region.Dx(), region.Dy()
+	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
+		// Fallback: render without filters to avoid OOM.
+		r.paintLayerContentWithEffects(layer)
+		return
+	}
+
+	// Render the layer subtree into the source buffer (filter-region sized).
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	origDC := r.dc
 	origTarget := r.target
-
-	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	childDC := origDC.NewChildContext(buf)
 	r.dc = childDC
 	r.target = buf
-
-	// Offset so painting coordinates map to buffer-local coordinates.
 	r.dc.Translate(float64(-bx), float64(-by))
+	r.paintLayerContentWithEffects(layer)
+	r.dc = origDC
+	r.target = origTarget
 
-	// Paint the layer content (including transforms, opacity, children).
+	// Run the FilterEffect graph and composite the output back at the
+	// filter region origin.
+	filter.SetSourceImage(buf)
+	out := filter.Apply()
+	if out == nil {
+		return
+	}
+	r.dc.DrawImage(out, bx, by)
+}
+
+// paintLayerContentWithEffects paints a layer's content applying its transform
+// and opacity, used inside an offscreen buffer (the filter source). It mirrors
+// the transform/opacity handling in paintLayer so a filtered element still
+// honours its own transform and opacity.
+func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 	if layer.HasTransform {
 		r.dc.Push()
 		r.applyTransforms(layer)
@@ -705,45 +732,6 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	if layer.HasTransform {
 		r.dc.Pop()
 	}
-
-	// Restore original DC.
-	r.dc = origDC
-	r.target = origTarget
-
-	// Apply filter operations to the buffer.
-	for _, f := range layer.Filters {
-		switch f.Name {
-		case "blur":
-			sigma := f.Value / 2
-			radius := int(math.Round(sigma))
-			if radius > 0 {
-				boxBlur(buf, radius)
-				boxBlur(buf, radius)
-				boxBlur(buf, radius)
-			}
-		case "grayscale":
-			applyGrayscale(buf, clampFilter01(f.Value))
-		case "brightness":
-			applyBrightness(buf, f.Value)
-		case "contrast":
-			applyContrast(buf, f.Value)
-		case "opacity":
-			applyFilterOpacity(buf, clampFilter01(f.Value))
-		case "saturate":
-			applySaturate(buf, f.Value)
-		case "sepia":
-			applySepia(buf, clampFilter01(f.Value))
-		case "invert":
-			applyInvert(buf, clampFilter01(f.Value))
-		case "hue-rotate":
-			applyHueRotate(buf, f.Value)
-		case "drop-shadow":
-			applyDropShadow(buf, f)
-		}
-	}
-
-	// Composite filtered buffer back to main canvas.
-	r.dc.DrawImage(buf, bx, by)
 }
 
 // applyBackdropFilter captures the rectangular region of the canvas behind
