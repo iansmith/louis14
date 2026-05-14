@@ -289,15 +289,22 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 			if len(stack) == 0 {
 				continue
 			}
-			top := stack[len(stack)-1]
-			// Fixed descendants are only contained by a filtered inline, not
-			// by a merely position:relative one.
-			if item.Style != nil && item.Style.GetPosition() == css.PositionFixed {
-				if !top.containsFixed {
+			// Fixed descendants are only contained by a filtered inline, not by
+			// a merely position:relative one. Walk the stack from the top to
+			// the innermost entry that satisfies the requirement — an inner
+			// non-CB-for-fixed inline (e.g. position:relative) can sit above an
+			// outer filtered inline that IS a valid CB for fixed.
+			isFixed := item.Style != nil && item.Style.GetPosition() == css.PositionFixed
+			idx := len(stack) - 1
+			if isFixed {
+				for idx >= 0 && !stack[idx].containsFixed {
+					idx--
+				}
+				if idx < 0 {
 					continue
 				}
 			}
-			out[item] = top.node
+			out[item] = stack[idx].node
 		}
 	}
 	return out

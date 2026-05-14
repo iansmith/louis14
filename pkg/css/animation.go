@@ -375,7 +375,11 @@ func resolveAnimations(style *Style, keyframesMaps []map[string][]KeyframeRule) 
 			continue
 		}
 		var frames []KeyframeRule
-		for _, m := range keyframesMaps {
+		// CSS Animations §3: duplicate @keyframes names resolve to the LAST
+		// declaration in document order. keyframesMaps is in stylesheet order,
+		// so walk it in reverse and take the first (= last-declared) match.
+		for j := len(keyframesMaps) - 1; j >= 0; j-- {
+			m := keyframesMaps[j]
 			if m == nil {
 				continue
 			}
@@ -443,7 +447,17 @@ func ApplyAnimations(style *Style, keyframesMaps []map[string][]KeyframeRule, im
 			if importantProps != nil && importantProps[prop] {
 				continue
 			}
-			expandShorthand(style, prop, val)
+			// expandShorthand may expand `prop` into longhands; an animated
+			// shorthand must not overwrite a longhand protected by !important.
+			// Expand into a scratch style, then copy only the unprotected keys.
+			tmp := NewStyle()
+			expandShorthand(tmp, prop, val)
+			for lp, lv := range tmp.Properties {
+				if importantProps != nil && importantProps[lp] {
+					continue
+				}
+				style.Set(lp, lv)
+			}
 		}
 	}
 }

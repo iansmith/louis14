@@ -2001,6 +2001,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			HasSeenAllChildren: hasSeenAllChildren,
 			IsAtBlockEnd:       isAtBlockEnd,
 		}
+		// Carry the unpositioned outside ::marker into the break token: a
+		// continuation that resumes before any baseline-bearing child claims
+		// the marker must re-seed it (Blink BlockBreakToken::
+		// has_unpositioned_list_marker_).
+		if builder.GetUnpositionedListMarker().IsValid() {
+			result.BreakToken.HasUnpositionedListMarker = true
+		}
 		if didBreakSelf {
 			result.DidBreakSelf = true
 		}
@@ -2607,10 +2614,12 @@ func isSelfValidColumnSpanner(style *css.Style) bool {
 		return false
 	}
 	d := style.GetDisplay()
-	// Inline and inline-level boxes cannot span columns.
+	// Inline and inline-level boxes cannot span columns. `inline list-item`
+	// (DisplayInlineListItem) is inline-level too — it is laid out by the block
+	// algorithm internally, but column-span:all is not valid on it.
 	switch d {
 	case css.DisplayInline, css.DisplayInlineBlock, css.DisplayInlineFlex,
-		css.DisplayInlineGrid, css.DisplayInlineTable:
+		css.DisplayInlineGrid, css.DisplayInlineTable, css.DisplayInlineListItem:
 		return false
 	}
 	// Floats cannot span columns.

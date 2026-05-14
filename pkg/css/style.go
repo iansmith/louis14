@@ -2107,7 +2107,26 @@ func expandShorthand(style *Style, property, value string) {
 		// so would let the cascade re-expand it and race a same-rule
 		// animation-* longhand declaration (declaration order is lost once a
 		// rule's declarations are a map).
-		expandAnimationShorthand(style, value)
+		//
+		// Two value kinds must NOT be tokenized as a shorthand list:
+		//   - a CSS-wide keyword applies to every animation-* longhand;
+		//   - an unresolved var() can't be decomposed (doing so would freeze
+		//     the non-name longhands to defaults before var() resolution).
+		switch trimmed := strings.ToLower(strings.TrimSpace(value)); trimmed {
+		case "inherit", "initial", "unset", "revert", "revert-layer":
+			for _, lh := range []string{"animation-name", "animation-duration",
+				"animation-timing-function", "animation-delay",
+				"animation-iteration-count", "animation-direction",
+				"animation-fill-mode", "animation-play-state"} {
+				style.Set(lh, trimmed)
+			}
+		default:
+			if strings.Contains(value, "var(") {
+				style.Set("animation", value)
+			} else {
+				expandAnimationShorthand(style, value)
+			}
+		}
 	case "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
 		"transition-behavior":
 		style.Set(property, value)
@@ -4502,20 +4521,22 @@ func (s *Style) GetDisplay() DisplayType {
 		// the engine today; `inline flow` / `block flow` etc. collapse to their
 		// single-keyword equivalents. Mirrors Blink's EDisplay parsing
 		// (css_parsing_utils ConsumeDisplay → EDisplay::kInlineListItem etc.).
-		if strings.ContainsRune(display, ' ') {
-			fields := strings.Fields(display)
+		// CSS Display L3 §2.1: the multi-value `display` syntax. Split on ANY
+		// whitespace (space/tab/newline — strings.Fields handles all) and map
+		// the supported two-keyword forms to a single DisplayType before the
+		// single-keyword switch.
+		if fields := strings.Fields(display); len(fields) > 1 {
 			hasListItem := false
-			outer := "" // "inline" or "block" (default block)
+			outer := "block" // default outer display
+			inner := ""
 			for _, f := range fields {
 				switch f {
 				case "list-item":
 					hasListItem = true
-				case "inline":
-					outer = "inline"
-				case "block":
-					outer = "block"
-					// "flow" / "flow-root" inner display types do not change
-					// the list-item box model here; ignored for normalization.
+				case "inline", "block":
+					outer = f
+				case "flow", "flow-root", "flex", "grid", "table", "ruby":
+					inner = f
 				}
 			}
 			if hasListItem {
@@ -4524,8 +4545,21 @@ func (s *Style) GetDisplay() DisplayType {
 				}
 				return DisplayListItem
 			}
-			// Non-list-item multi-value forms fall through to the
-			// single-keyword switch using the first recognized keyword.
+			switch outer + " " + inner {
+			case "inline flex":
+				return DisplayInlineFlex
+			case "inline grid":
+				return DisplayInlineGrid
+			case "inline table":
+				return DisplayInlineTable
+			case "inline flow-root":
+				return DisplayInlineBlock
+			case "block flow-root":
+				return DisplayFlowRoot
+			}
+			// Remaining forms collapse to the outer type: `inline flow` →
+			// inline; `block flow` and unrecognized inners → block (via the
+			// single-keyword switch / default below).
 			if outer == "inline" {
 				return DisplayInline
 			}

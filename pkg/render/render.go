@@ -733,6 +733,11 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	filter.SetSourceImage(buf)
 	out := filter.Apply()
 	if out == nil {
+		// Match the two earlier failure paths (filter == nil, oversize buffer):
+		// fall back to unfiltered paint so the element still renders rather
+		// than vanishing into an invisible hole. r.dc/r.target were already
+		// restored above.
+		r.paintLayerContentWithEffects(layer)
 		return
 	}
 	r.dc.DrawImage(out, bx, by)
