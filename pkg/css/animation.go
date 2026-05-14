@@ -225,8 +225,10 @@ func applyAnimationSampling(s *Style, stylesheets []*Stylesheet) {
 	}
 
 	// Easing applies between the surrounding keyframes; the reftests use
-	// linear, so apply the global timing only for linear/ease here.
+	// linear. Both filter and backdrop-filter accept the same value syntax
+	// and interpolate identically.
 	applyAnimatedProperty(s, "filter", frames, progress, spec.timing)
+	applyAnimatedProperty(s, "backdrop-filter", frames, progress, spec.timing)
 }
 
 // applyAnimatedProperty finds the keyframe interval surrounding progress for
@@ -294,7 +296,7 @@ func applyAnimatedProperty(s *Style, prop string, frames []KeyframeRule, progres
 	// Local fraction between the two stops, eased.
 	frac := (progress - lower.offset) / (upper.offset - lower.offset)
 	frac = applyEasing(frac, timing)
-	if prop == "filter" {
+	if prop == "filter" || prop == "backdrop-filter" {
 		if interp, ok := interpolateFilterValue(lower.value, upper.value, frac); ok {
 			s.Set(prop, interp)
 			return
