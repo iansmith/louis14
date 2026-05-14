@@ -567,11 +567,20 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// Track which properties have been set with !important
 	importantProps := make(map[string]bool)
 
+	// CSS Pseudo-4 §4.4: a ::marker rule only accepts the marker-allowed
+	// property subset. Filter author declarations as they are applied (the
+	// inherited values copied in above are not author declarations and are
+	// left alone — the restriction is on what a ::marker rule can specify).
+	isMarker := pseudoElement == "marker"
+
 	// Apply rules in order (normal declarations first)
 	for _, rule := range allRules {
 		for property, value := range rule.Declarations {
 			// Skip if already set by an important rule
 			if importantProps[property] {
+				continue
+			}
+			if isMarker && !markerAllowedProperty(property) {
 				continue
 			}
 			finalStyle.Set(property, value)
@@ -585,10 +594,23 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 		for property, value := range rule.Declarations {
 			if rule.Important[property] {
+				if isMarker && !markerAllowedProperty(property) {
+					continue
+				}
 				finalStyle.Set(property, value)
 				importantProps[property] = true
 			}
 		}
+	}
+
+	// CSS Pseudo-4 §4.4: the ::marker pseudo-element only accepts the
+	// marker-allowed property subset, and the UA stylesheet sets specific
+	// defaults. Apply the filter to the cascaded author declarations, then
+	// layer the UA defaults underneath any author value. Done before the
+	// generic display:inline default so the ::marker UA display still wins
+	// only if the author did not set it.
+	if pseudoElement == "marker" {
+		applyMarkerCascade(finalStyle)
 	}
 
 	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless
@@ -603,6 +625,56 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	finalStyle.ViewportHeight = viewportHeight
 
 	return finalStyle
+}
+
+// markerAllowedProperty reports whether a property may be specified on a
+// ::marker pseudo-element. CSS Pseudo-4 §4.4: the ::marker rule only accepts
+// color, direction, the font-* longhands/shorthand, content,
+// text-combine-upright, unicode-bidi, white-space, the *-spacing properties,
+// line-height, text-shadow, text-transform, and the animation-*/transition-*
+// properties. Custom properties (--*) and the internal viewport tracking
+// keys are always allowed (custom props inherit; var() must resolve).
+func markerAllowedProperty(name string) bool {
+	if strings.HasPrefix(name, "--") {
+		return true
+	}
+	if strings.HasPrefix(name, "font-") ||
+		strings.HasPrefix(name, "animation-") ||
+		strings.HasPrefix(name, "transition-") {
+		return true
+	}
+	switch name {
+	case "color", "direction", "font", "content",
+		"text-combine-upright", "unicode-bidi", "white-space",
+		"letter-spacing", "word-spacing", "line-height",
+		"text-shadow", "text-transform", "animation", "transition",
+		"display":
+		// `display` is kept because Blink's ::marker box still has a display
+		// type (inside markers are inline-level, outside markers are
+		// block-flow); it is part of the box model, not an author-facing
+		// marker property, but the cascade must carry it.
+		return true
+	}
+	return false
+}
+
+// applyMarkerCascade layers the UA ::marker defaults underneath any surviving
+// author value of an already-cascaded ::marker style. Mirrors Blink's UA
+// ::marker rule: unicode-bidi: isolate; text-transform: none; white-space:
+// pre; font-variant-numeric: tabular-nums. The marker-allowed property filter
+// is applied during rule application in ComputePseudoElementStyle, not here.
+func applyMarkerCascade(style *Style) {
+	uaDefaults := [...][2]string{
+		{"unicode-bidi", "isolate"},
+		{"text-transform", "none"},
+		{"white-space", "pre"},
+		{"font-variant-numeric", "tabular-nums"},
+	}
+	for _, kv := range uaDefaults {
+		if _, ok := style.Get(kv[0]); !ok {
+			style.Set(kv[0], kv[1])
+		}
+	}
 }
 
 // HasFirstLetterRules returns true if any stylesheet rules with ::first-letter

@@ -94,49 +94,44 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		b.processCounterReset(style)
 	}
 
-	// CSS Pseudo-4 §4.2: Compute ::marker style for list items,
-	// but only if there are actual ::marker rules matching.
-	if style != nil && style.GetDisplay() == css.DisplayListItem && len(b.stylesheets) > 0 {
-		if css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
-			markerStyle := css.ComputePseudoElementStyle(
-				node, "marker", b.stylesheets,
-				b.viewportWidth, b.viewportHeight, style,
-			)
-			// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
-			if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
-				clone := markerStyle.Clone()
-				clone.Set("unicode-bidi", "isolate")
-				markerStyle = clone
-			}
-			lin.MarkerStyle = markerStyle
-			// Extract content from ::marker { content: } for layout-time use.
-			if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
-				lin.MarkerContent = b.resolveContentText(cv, node)
-			}
-		}
-		// For list-style-type: <string> without ::marker rules, use the string
-		// as marker content when list-style-position: inside.
-		if lin.MarkerContent == "" && style.GetListStylePosition() == "inside" {
-			lst := style.GetListStyleType()
-			if lst != "" {
-				s := string(lst)
-				if !isBuiltinListStyleType(lst) {
-					lin.MarkerContent = s
-				}
-			}
-		}
-	}
-
 	// Build layout children, filtering out display:none and non-layout nodes.
 	var rawChildren []*LayoutInputNode
 
-	// CSS Pseudo-4 §4.2: Insert ::marker pseudo-element as first child
-	// of display:list-item elements when list-style-position is inside.
-	// The marker comes before ::before per CSS Pseudo-4 pseudo-element
-	// ordering (marker, before, children, after).
+	// CSS Pseudo-4 §4: generate the ::marker pseudo-element for a list item.
+	// Mirrors Blink LayoutObject::CreateObject (layout_object.cc:395-403): the
+	// marker is ALWAYS a real pseudo-element box — inside and outside differ
+	// only in placement, not in whether a box exists.
+	//   - inside  -> the marker node is prepended as the first in-flow inline
+	//                child, before ::before (CSS Pseudo-4 pseudo-element
+	//                ordering: marker, before, children, after).
+	//   - outside -> the marker node is stored on lin.markerNode and reached
+	//                through ListMarkerBlockNodeIfListItem; the carry/claim
+	//                protocol owns its placement (Phase 4). Until then the
+	//                paint-time path in render.go still draws outside markers.
 	if style != nil && style.GetDisplay() == css.DisplayListItem {
 		if markerNode := b.createMarkerPseudoElement(node, style); markerNode != nil {
-			rawChildren = append(rawChildren, markerNode)
+			lin.markerNode = markerNode
+			if !markerNode.MarkerIsOutside {
+				rawChildren = append(rawChildren, markerNode)
+			}
+			// Phase 2 keeps the paint-time OUTSIDE marker path intact (Phase 4
+			// deletes it). Mirror onto the list item exactly the legacy inputs
+			// it expects: MarkerStyle whenever a ::marker style was cascaded
+			// from author rules, and MarkerContent only when the text came
+			// from `::marker { content }` (the old GetContentValues path) or
+			// from a <string> inside marker. A normal-counter outside marker
+			// must leave MarkerContent empty so drawListMarkerOutside still
+			// uses its symbol/formatListMarker branch unchanged.
+			if len(b.stylesheets) > 0 &&
+				css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
+				lin.MarkerStyle = markerNode.style
+			}
+			if markerNode.markerContentIsGenerated {
+				lin.MarkerContent = markerNode.MarkerContent
+			} else if !markerNode.MarkerIsOutside &&
+				markerNode.MarkerCategory == CategoryStaticString {
+				lin.MarkerContent = markerNode.MarkerContent
+			}
 		}
 	}
 
@@ -697,166 +692,121 @@ func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
 	return idx
 }
 
-// createMarkerPseudoElement creates a LayoutInputNode for a ::marker
-// pseudo-element when the element is display:list-item with
-// list-style-position: inside. Returns nil if no marker should be generated.
+// resolveMarkerStyle builds the cascaded ::marker pseudo-element style for a
+// list item. It is the single owner of ::marker style construction.
 //
-// Mirrors Blink's LayoutInsideListMarker creation in LayoutObject::CreateObject
-// and MarkerText resolution in ListMarker::MarkerText.
+// Cascade (CSS Pseudo-4 §4.4):
+//  1. Start from the UA ::marker defaults + inherited values + author
+//     ::marker rules, filtered to the marker-allowed property subset — all
+//     produced by css.ComputePseudoElementStyle("marker", ...).
+//  2. When there are no author ::marker rules at all, synthesize the same
+//     style by cloning the originating item's style and layering the UA
+//     ::marker defaults, so an inside marker still inherits font/color.
+//
+// list-style-position is read off the ORIGINATING item, never off the
+// ::marker.
+func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, itemStyle *css.Style) *css.Style {
+	if len(b.stylesheets) > 0 &&
+		css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
+		// ComputePseudoElementStyle applies the marker-allowed property filter
+		// and the UA ::marker defaults (cascade.go applyMarkerCascade).
+		return css.ComputePseudoElementStyle(
+			node, "marker", b.stylesheets,
+			b.viewportWidth, b.viewportHeight, itemStyle,
+		)
+	}
+	// No author ::marker rules: synthesize from the item's style + UA defaults.
+	markerStyle := itemStyle.Clone()
+	markerStyle.Set("display", "inline")
+	markerStyle.Set("unicode-bidi", "isolate")
+	markerStyle.Set("text-transform", "none")
+	markerStyle.Set("white-space", "pre")
+	markerStyle.Set("font-variant-numeric", "tabular-nums")
+	return markerStyle
+}
+
+// createMarkerPseudoElement creates a LayoutInputNode for the ::marker
+// pseudo-element of a display:list-item element, for BOTH inside and outside
+// list-style-position. Returns nil if no marker should be generated.
+//
+// Mirrors Blink LayoutObject::CreateObject (layout_object.cc:395-403): the
+// ::marker is always a real pseudo-element box; inside vs outside differ only
+// in placement (LayoutInsideListMarker vs LayoutOutsideListMarker), not in
+// whether a box exists. Marker text resolution mirrors ListMarker::MarkerText:
+// an author-specified `::marker { content }` is generated content, otherwise
+// the text comes from ListMarker.MarkerTextWithSuffix via MarkerTextSource.
 func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *css.Style) *LayoutInputNode {
 	if node == nil || style == nil {
 		return nil
 	}
-
-	// Guard: only for display:list-item with list-style-position: inside.
 	if style.GetDisplay() != css.DisplayListItem {
 		return nil
 	}
-	if style.GetListStylePosition() != "inside" {
-		return nil
-	}
 
-	// Step 1: Resolve marker content.
+	markerStyle := b.resolveMarkerStyle(node, style)
+
+	// Marker content. Mirrors ListMarker::UpdateMarkerContentIfNeeded: an
+	// author-specified `::marker { content }` is generated content; otherwise
+	// the marker text is the resolved list-style-type representation.
 	var markerContent string
-	var markerStyle *css.Style
-	hasMarkerStyle := false
 	hasContentProperty := false
-
-	if len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
-		// Case 2a: ::marker rules exist — compute ::marker style and extract content.
-		markerStyle = css.ComputePseudoElementStyle(
-			node, "marker", b.stylesheets,
-			b.viewportWidth, b.viewportHeight, style,
-		)
-		hasMarkerStyle = true
-
-		// CSS Pseudo-4 §3: UA default for ::marker is unicode-bidi: isolate.
-		if _, hasBidi := markerStyle.Get("unicode-bidi"); !hasBidi {
-			clone := markerStyle.Clone()
-			clone.Set("unicode-bidi", "isolate")
-			markerStyle = clone
-		}
-
-		// Extract content from ::marker { content: } and resolve to a string.
-		if cv, ok := markerStyle.GetContentValues(); ok {
-			hasContentProperty = true
-			if len(cv) > 0 {
-				markerContent = b.resolveContentText(cv, node)
-			}
+	if cv, ok := markerStyle.GetContentValues(); ok {
+		hasContentProperty = true
+		if len(cv) > 0 {
+			markerContent = b.resolveContentText(cv, node)
 		}
 	}
 
-	// Case 2b: If no ::marker content resolved, fall back to list-style-type.
-	// Skip fallback when ::marker explicitly set the content property (e.g. content:none).
-	if markerContent == "" && !hasContentProperty {
-		lst := style.GetListStyleType()
-		if lst == css.ListStyleTypeNone {
-			return nil
-		}
-		if lst != "" {
-			if isBuiltinListStyleType(lst) {
-				markerContent = b.resolveListStyleType(lst, node)
-			} else {
-				// Custom <string> value (e.g., list-style-type: "§").
-				s := string(lst)
-				// Strip surrounding quotes if present.
-				if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
-					s = s[1 : len(s)-1]
-				}
-				markerContent = s
-			}
-		}
+	cat := GetListStyleCategory(style)
+	textType := MarkerNotText
+	if !hasContentProperty {
+		// ListMarker.MarkerTextWithSuffix (Phase 1) — the counter/symbol/string
+		// text source, reachable only through the MarkerTextSource adapter.
+		src := markerTextSourceLegacy{b: b}
+		lin := &LayoutInputNode{DOMNode: node, style: style}
+		markerContent, textType = ListMarker{}.MarkerTextWithSuffix(lin, src)
 	}
 
-	// If no content was resolved, no marker to generate.
+	// No content -> no marker box (e.g. list-style-type:none, or
+	// content:none on the ::marker).
 	if markerContent == "" {
 		return nil
 	}
 
-	// Step 2: Compute the effective marker style.
-	if !hasMarkerStyle {
-		// No ::marker rules; create a default marker style inheriting from
-		// parent with unicode-bidi: isolate (CSS Pseudo-4 §3) and display: inline.
-		markerStyle = style.Clone()
-		markerStyle.Set("unicode-bidi", "isolate")
-		markerStyle.Set("display", "inline")
-	}
-
-	// Step 3: Create a synthetic ::marker DOM node.
-	markerNode := &html.Node{
+	// Synthetic ::marker DOM node + its text-node child.
+	markerDOMNode := &html.Node{
 		Type:    html.ElementNode,
 		TagName: "::marker",
 		Parent:  node,
 	}
-
-	// Store the marker style in the styles map.
-	b.styles[markerNode] = markerStyle
-
-	// Step 4: Create a text node child with the resolved marker content.
-	textNode := &html.Node{
+	b.styles[markerDOMNode] = markerStyle
+	textDOMNode := &html.Node{
 		Type:   html.TextNode,
 		Text:   markerContent,
-		Parent: markerNode,
+		Parent: markerDOMNode,
 	}
 
-	// Step 5: Return the LayoutInputNode with the marker and its text child.
 	return &LayoutInputNode{
-		DOMNode: markerNode,
-		style:   markerStyle,
+		DOMNode:                  markerDOMNode,
+		style:                    markerStyle,
+		isMarkerNode:             true,
+		MarkerCategory:           cat,
+		MarkerIsOutside:          style.GetListStylePosition() != "inside",
+		MarkerTextTyp:            textType,
+		MarkerContent:            markerContent,
+		markerContentIsGenerated: hasContentProperty,
 		children: []*LayoutInputNode{{
-			DOMNode: textNode,
+			DOMNode: textDOMNode,
 			style:   markerStyle,
 		}},
 	}
 }
 
-// resolveListStyleType converts a built-in list-style-type value to its
-// string representation with appropriate suffix, matching the paint-time
-// formatListMarker output.
-func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *html.Node) string {
-	if lst == css.ListStyleTypeNone {
-		return ""
-	}
-
-	// Get the counter value (1-based).
-	value := b.getListItemCounterValue(node)
-
-	switch lst {
-	case css.ListStyleTypeDisc:
-		return "•" // bullet
-	case css.ListStyleTypeCircle:
-		return "◦" // white bullet
-	case css.ListStyleTypeSquare:
-		return "▪" // black small square
-	case css.ListStyleTypeDecimal:
-		return strconv.Itoa(value) + "."
-	case css.ListStyleTypeDecimalLeadingZero:
-		return fmt.Sprintf("%02d.", value)
-	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
-		return css.ToAlpha(value) + "."
-	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
-		return strings.ToUpper(css.ToAlpha(value)) + "."
-	case css.ListStyleTypeLowerRoman:
-		return strings.ToLower(css.ToRoman(value)) + "."
-	case css.ListStyleTypeUpperRoman:
-		return css.ToRoman(value) + "."
-	case css.ListStyleTypeLowerGreek:
-		return css.ToGreek(value) + "."
-	case css.ListStyleTypeDisclosureOpen:
-		return "▼" // ▼ down-pointing triangle (details expanded)
-	case css.ListStyleTypeDisclosureClosed:
-		return "▶" // ▶ right-pointing triangle (details collapsed)
-	default:
-		return ""
-	}
-}
-
 // formatCounterStyleValue formats an explicit counter value through a built-in
-// list-style-type, with or without the prefix/suffix. It is the value-driven
-// twin of resolveListStyleType (which derives the value from the DOM); both
-// share the same per-type representation so the marker-box path and the legacy
-// paint path agree. Symbol markers (disc/circle/square/disclosure-*) ignore
-// value and return their glyph.
+// list-style-type, with or without the prefix/suffix. It is the per-type
+// counter-style representation consumed by markerTextSourceLegacy; the
+// CounterStyle path in docs/plan-css-lists.md B5 replaces it. Symbol markers
+// (disc/circle/square/disclosure-*) ignore value and return their glyph.
 func formatCounterStyleValue(lst css.ListStyleType, value int, withSuffix bool) string {
 	suffix := ""
 	if withSuffix {
@@ -922,23 +872,6 @@ func (s markerTextSourceLegacy) CounterStyleText(style *css.Style, value int, wi
 		return ""
 	}
 	return formatCounterStyleValue(style.GetListStyleType(), value, withPrefixSuffix)
-}
-
-// isBuiltinListStyleType returns true for the predefined list-style-type values.
-// (Moved from inline_item.go — kept here for use by createMarkerPseudoElement.)
-func isBuiltinListStyleType(lst css.ListStyleType) bool {
-	switch lst {
-	case css.ListStyleTypeDisc, css.ListStyleTypeCircle, css.ListStyleTypeSquare,
-		css.ListStyleTypeDecimal, css.ListStyleTypeNone,
-		css.ListStyleTypeDecimalLeadingZero,
-		css.ListStyleTypeLowerAlpha, css.ListStyleTypeUpperAlpha,
-		css.ListStyleTypeLowerLatin, css.ListStyleTypeUpperLatin,
-		css.ListStyleTypeLowerRoman, css.ListStyleTypeUpperRoman,
-		css.ListStyleTypeLowerGreek,
-		css.ListStyleTypeDisclosureOpen, css.ListStyleTypeDisclosureClosed:
-		return true
-	}
-	return false
 }
 
 // isBlockContainer returns true for display types that are block containers

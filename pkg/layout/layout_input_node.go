@@ -72,6 +72,45 @@ type LayoutInputNode struct {
 	// Set during layout tree building when counter() values can be resolved.
 	MarkerContent string
 
+	// markerNode is the ::marker pseudo-element LayoutInputNode for a
+	// list-item node. Set during layout tree building by
+	// createMarkerPseudoElement for BOTH inside and outside markers; mirrors
+	// Blink's pseudo-element child reached via
+	// LayoutListItem::Marker()/PseudoElementLayoutObject(kPseudoIdMarker).
+	// For an inside marker the same node is also prepended into the list
+	// item's inline children; for an outside marker it is reachable only
+	// through ListMarkerBlockNodeIfListItem (the carry/claim protocol owns
+	// its placement). Nil when no marker is generated.
+	markerNode *LayoutInputNode
+
+	// MarkerCategory is the ListStyleCategory of this ::marker node's
+	// originating list item (CategoryNone for image markers). Meaningful only
+	// on a marker node. Mirrors the category dispatch in Blink ListMarker.
+	MarkerCategory ListStyleCategory
+
+	// MarkerIsOutside is true when this ::marker node's originating list item
+	// has list-style-position: outside (the default). Read off the
+	// originating item, never off the ::marker (CSS Pseudo-4 §4.4).
+	// Meaningful only on a marker node.
+	MarkerIsOutside bool
+
+	// MarkerTextTyp is the MarkerTextType of this ::marker node's resolved
+	// text (MarkerNotText for image / content:none markers). Meaningful only
+	// on a marker node. Mirrors Blink ListMarker::marker_text_type_.
+	MarkerTextTyp MarkerTextType
+
+	// isMarkerNode is true for the synthetic ::marker pseudo-element node.
+	// Lets the ::first-letter walk and inline collection identify and skip
+	// the marker box (docs/plan-css-pseudo.md Phases 3-4).
+	isMarkerNode bool
+
+	// markerContentIsGenerated is true when this ::marker node's text came
+	// from an author-specified `::marker { content }` (generated content)
+	// rather than from the resolved list-style-type. Meaningful only on a
+	// marker node. Used during Phase 2/3/4 transition to feed the legacy
+	// paint path with exactly its historical inputs.
+	markerContentIsGenerated bool
+
 	// FirstLineStyle is the computed ::first-line pseudo-element style.
 	// Set during layout tree building for block containers with matching
 	// ::first-line rules. Applied to inline items on the first formatted line.
@@ -162,18 +201,43 @@ func (n *LayoutInputNode) IsListItem() bool {
 	return n.style != nil && n.style.GetDisplay() == css.DisplayListItem
 }
 
-// ListMarkerBlockNodeIfListItem returns a LayoutInputNode for the ::marker
-// pseudo-element if this is a list-item, or nil otherwise.
+// ListMarkerBlockNodeIfListItem returns the ::marker pseudo-element
+// LayoutInputNode for an OUTSIDE marker on a list-item node, or nil otherwise.
 //
-// In Blink, ListMarkerBlockNodeIfListItem returns a BlockNode wrapping the
-// ::marker LayoutBox. In Louis14, markers are currently drawn at paint time
-// (pkg/render/render.go drawListMarker); there is no layout-time marker node.
-// Returning nil here makes the UnpositionedListMarker protocol a no-op, which
-// is the correct behaviour for the Track C +0 port: the paint-time path
-// remains the sole marker-drawing path until a future cleanup phase decides
-// which wins. Mirrors Blink cla.cc:240 constructor guard.
+// Mirrors Blink's BlockNode::ListMarkerBlockNodeIfListItem, which returns the
+// LayoutOutsideListMarker so the block layout algorithm can carry it as an
+// UnpositionedListMarker and claim it against the content baseline.
+//
+// Only OUTSIDE markers are returned here: an inside marker flows through the
+// inline path as the first in-flow inline item (Phase 3) and is not subject
+// to the carry/claim protocol — exactly the LayoutInsideListMarker vs
+// LayoutOutsideListMarker split. Returns nil for inside markers and for
+// non-list-items.
 func (n *LayoutInputNode) ListMarkerBlockNodeIfListItem() *LayoutInputNode {
-	return nil
+	if n == nil || n.markerNode == nil {
+		return nil
+	}
+	if !n.markerNode.MarkerIsOutside {
+		return nil
+	}
+	return n.markerNode
+}
+
+// MarkerNode returns the ::marker pseudo-element LayoutInputNode for a
+// list-item node (inside or outside), or nil. Mirrors Blink
+// LayoutListItem::Marker().
+func (n *LayoutInputNode) MarkerNode() *LayoutInputNode {
+	if n == nil {
+		return nil
+	}
+	return n.markerNode
+}
+
+// IsMarkerNode reports whether this node is the synthetic ::marker
+// pseudo-element. Used by the ::first-letter walk and inline collection to
+// identify and skip the marker box.
+func (n *LayoutInputNode) IsMarkerNode() bool {
+	return n != nil && n.isMarkerNode
 }
 
 // ListMarkerOccupiesWholeLine returns true when list-style-position:inside
