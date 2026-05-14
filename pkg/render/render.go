@@ -1539,26 +1539,47 @@ func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 
 // applyClipPath builds the clip-path shape and calls Clip().
 // Caller must have already called Push(); will Pop() to restore.
+//
+// The reference box for a <basic-shape> clip-path is the border box
+// (CSS Masking L1 default geometry-box). It is pixel-snapped the same
+// way backgroundClipRectForClip snaps the border box for background
+// painting, so a clip-path shape lands on the same pixel grid as the
+// element's background and borders.
 func (r *Renderer) applyClipPath(layer *PaintLayer) {
 	box := layer.Box
-	cp := layer.ClipPath.ResolveClipPath(box.Width, box.Height)
+	// Pixel-snapped border box — the clip-path reference box.
+	bx, by, bw, bh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	cp := layer.ClipPath.ResolveClipPath(bw, bh)
 
 	switch cp.Type {
 	case css.ClipPathCircle:
-		r.dc.DrawCircle(box.X+cp.Cx, box.Y+cp.Cy, cp.Radius)
+		// A circle is an ellipse with rx == ry. Build it as a rounded
+		// rectangle whose bounding box is the circle's bounding box and
+		// whose four corner radii all equal the circle radius. This is
+		// the exact same path construction used for a border-radius
+		// circle (buildRoundedRectPathOnDC), so a clip-path: circle()
+		// rasterizes pixel-identically to the border-radius circle these
+		// tests are reftested against.
+		cx, cy := bx+cp.Cx, by+cp.Cy
+		rad := cp.Radius
+		radii := css.EllipticalRadii{
+			{Rx: rad, Ry: rad}, {Rx: rad, Ry: rad},
+			{Rx: rad, Ry: rad}, {Rx: rad, Ry: rad},
+		}
+		buildRoundedRectPathOnDC(r.dc, cx-rad, cy-rad, 2*rad, 2*rad, radii)
 
 	case css.ClipPathEllipse:
-		cx, cy := box.X+cp.Cx, box.Y+cp.Cy
+		// An ellipse is a rounded rectangle whose bounding box is the
+		// ellipse's bounding box and whose four corner radii all equal
+		// (rx, ry) — identical construction to a border-*-radius: rx ry
+		// ellipse, so it rasterizes pixel-identically to the reference.
+		cx, cy := bx+cp.Cx, by+cp.Cy
 		rx, ry := cp.Rx, cp.Ry
-		// Approximate ellipse with 4 cubic Bezier curves.
-		// kappa = 4*(sqrt(2)-1)/3 ≈ 0.5522847498
-		k := 0.5522847498
-		r.dc.MoveTo(cx+rx, cy)
-		r.dc.CubicTo(cx+rx, cy+ry*k, cx+rx*k, cy+ry, cx, cy+ry)
-		r.dc.CubicTo(cx-rx*k, cy+ry, cx-rx, cy+ry*k, cx-rx, cy)
-		r.dc.CubicTo(cx-rx, cy-ry*k, cx-rx*k, cy-ry, cx, cy-ry)
-		r.dc.CubicTo(cx+rx*k, cy-ry, cx+rx, cy-ry*k, cx+rx, cy)
-		r.dc.ClosePath()
+		radii := css.EllipticalRadii{
+			{Rx: rx, Ry: ry}, {Rx: rx, Ry: ry},
+			{Rx: rx, Ry: ry}, {Rx: rx, Ry: ry},
+		}
+		buildRoundedRectPathOnDC(r.dc, cx-rx, cy-ry, 2*rx, 2*ry, radii)
 
 	case css.ClipPathPolygon:
 		pts := cp.Points
@@ -1566,8 +1587,8 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 			return // Need at least 2 points
 		}
 		for i := 0; i < len(pts)-1; i += 2 {
-			px := box.X + pts[i]
-			py := box.Y + pts[i+1]
+			px := bx + pts[i]
+			py := by + pts[i+1]
 			if i == 0 {
 				r.dc.MoveTo(px, py)
 			} else {
