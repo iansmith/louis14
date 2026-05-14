@@ -7911,7 +7911,7 @@ func (cp *ClipPath) ResolveClipPath(boxWidth, boxHeight float64) *ClipPath {
 
 // FilterFunction represents a single CSS filter function
 type FilterFunction struct {
-	Name  string  // "opacity", "contrast", "grayscale", "blur", "drop-shadow", etc.
+	Name  string  // "opacity", "contrast", "grayscale", "blur", "drop-shadow", "url", etc.
 	Value float64 // The function argument (0-1 for opacity, 0-N for contrast, etc.)
 
 	// drop-shadow specific fields.
@@ -7919,6 +7919,14 @@ type FilterFunction struct {
 	ShadowOffsetY float64
 	ShadowBlur    float64
 	ShadowColor   Color
+	// ShadowUseCurrentColor is true when the drop-shadow color is omitted or
+	// the literal "currentcolor"; the painter resolves it from the element's
+	// computed color. Mirrors CSS Filter Effects: drop-shadow's color
+	// defaults to currentColor, not black.
+	ShadowUseCurrentColor bool
+
+	// URL is set for a url(#id) reference filter (Name == "url").
+	URL string
 }
 
 // GetFilter parses the filter property and returns filter functions
@@ -7927,6 +7935,13 @@ func (s *Style) GetFilter() []FilterFunction {
 	if !ok || val == "none" {
 		return nil
 	}
+	return parseFilterList(val)
+}
+
+// parseFilterList parses a CSS <filter-value-list> — a whitespace-separated
+// list of filter functions and/or url() references. Shared by GetFilter and
+// GetBackdropFilter.
+func parseFilterList(val string) []FilterFunction {
 	var filters []FilterFunction
 	val = strings.TrimSpace(val)
 	for len(val) > 0 {
@@ -7935,54 +7950,98 @@ func (s *Style) GetFilter() []FilterFunction {
 		if parenIdx < 0 {
 			break
 		}
-		name := strings.TrimSpace(val[:parenIdx])
+		name := strings.ToLower(strings.TrimSpace(val[:parenIdx]))
 		// Find matching close paren (handles nested parens like rgb() in drop-shadow).
 		closeIdx := findMatchingParen(val[parenIdx:])
 		if closeIdx < 0 {
 			break
 		}
 		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
-		if name == "drop-shadow" {
-			// drop-shadow(offsetX offsetY [blur] [color])
+		switch name {
+		case "url":
+			// url(#id) reference filter. Strip optional quotes.
+			u := strings.TrimSpace(arg)
+			u = strings.Trim(u, "\"'")
+			filters = append(filters, FilterFunction{Name: "url", URL: u})
+		case "drop-shadow":
+			filters = append(filters, parseDropShadowFunction(arg))
+		case "blur":
+			// blur() takes an optional <length>; default 0.
+			filters = append(filters, FilterFunction{Name: name, Value: parseLengthValue(arg)})
+		case "hue-rotate":
+			// hue-rotate takes an optional <angle>; default 0.
 			ff := FilterFunction{Name: name}
-			parts := splitFilterArgs(arg)
-			if len(parts) >= 2 {
-				ff.ShadowOffsetX = parseLengthValue(parts[0])
-				ff.ShadowOffsetY = parseLengthValue(parts[1])
-			}
-			if len(parts) >= 3 {
-				// Could be blur or color.
-				if v := parseLengthValue(parts[2]); v > 0 || strings.HasSuffix(strings.TrimSpace(parts[2]), "px") {
-					ff.ShadowBlur = v
-					if len(parts) >= 4 {
-						if c, ok := ParseColor(strings.Join(parts[3:], " ")); ok {
-							ff.ShadowColor = c
-						}
-					}
-				} else {
-					if c, ok := ParseColor(strings.Join(parts[2:], " ")); ok {
-						ff.ShadowColor = c
-					}
-				}
+			if a := parseAngle(arg); a != nil {
+				ff.Value = *a
 			}
 			filters = append(filters, ff)
-		} else {
-			var value float64
-			if pct, ok := ParsePercentage(arg); ok {
-				value = pct / 100.0
-			} else if name == "hue-rotate" {
-				// hue-rotate takes an angle value (deg, rad, turn)
-				if a := parseAngle(arg); a != nil {
-					value = *a
+		default:
+			// grayscale/sepia/saturate/invert/opacity/brightness/contrast:
+			// optional <number> or <percentage>. Per Filter Effects 1 the
+			// argument may be omitted: brightness/contrast/opacity/saturate
+			// default to 1, grayscale/sepia/invert also default to 1.
+			value := 1.0
+			if arg != "" {
+				if pct, ok := ParsePercentage(arg); ok {
+					value = pct / 100.0
+				} else if f, err := strconv.ParseFloat(strings.TrimSpace(arg), 64); err == nil {
+					value = f
 				}
-			} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
-				value = f
 			}
 			filters = append(filters, FilterFunction{Name: name, Value: value})
 		}
 		val = val[parenIdx+closeIdx+1:]
 	}
 	return filters
+}
+
+// parseDropShadowFunction parses a drop-shadow() argument:
+// [<color>?] <offset-x> <offset-y> <blur-radius>? [<color>?]. Per spec the
+// color defaults to currentColor.
+func parseDropShadowFunction(arg string) FilterFunction {
+	ff := FilterFunction{Name: "drop-shadow", ShadowUseCurrentColor: true}
+	parts := splitFilterArgs(arg)
+	// A leading or trailing token may be a color. Identify color tokens by
+	// attempting to parse them; lengths fail ParseColor.
+	isColorTok := func(tok string) bool {
+		t := strings.TrimSpace(tok)
+		if strings.EqualFold(t, "currentcolor") {
+			return true
+		}
+		_, ok := ParseColor(t)
+		return ok
+	}
+	// Pull off a leading color.
+	if len(parts) > 0 && isColorTok(parts[0]) {
+		if !strings.EqualFold(strings.TrimSpace(parts[0]), "currentcolor") {
+			if c, ok := ParseColor(strings.TrimSpace(parts[0])); ok {
+				ff.ShadowColor = c
+				ff.ShadowUseCurrentColor = false
+			}
+		}
+		parts = parts[1:]
+	}
+	// Pull off a trailing color. rgb()/rgba()/hsl() come through splitFilterArgs
+	// as a single token, so a trailing color is the last token only.
+	if len(parts) > 2 && isColorTok(parts[len(parts)-1]) {
+		last := strings.TrimSpace(parts[len(parts)-1])
+		if !strings.EqualFold(last, "currentcolor") {
+			if c, ok := ParseColor(last); ok {
+				ff.ShadowColor = c
+				ff.ShadowUseCurrentColor = false
+			}
+		}
+		parts = parts[:len(parts)-1]
+	}
+	// Remaining: offset-x offset-y [blur].
+	if len(parts) >= 2 {
+		ff.ShadowOffsetX = parseLengthValue(parts[0])
+		ff.ShadowOffsetY = parseLengthValue(parts[1])
+	}
+	if len(parts) >= 3 {
+		ff.ShadowBlur = parseLengthValue(parts[2])
+	}
+	return ff
 }
 
 // findMatchingParen finds the matching closing paren for an opening paren at s[0].
@@ -8288,31 +8347,8 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 	if !ok || val == "none" || val == "" {
 		return nil
 	}
-	// Reuse the same filter parsing logic as GetFilter
-	var filters []FilterFunction
-	val = strings.TrimSpace(val)
-	for len(val) > 0 {
-		val = strings.TrimSpace(val)
-		parenIdx := strings.Index(val, "(")
-		if parenIdx < 0 {
-			break
-		}
-		name := strings.TrimSpace(val[:parenIdx])
-		closeIdx := strings.Index(val[parenIdx:], ")")
-		if closeIdx < 0 {
-			break
-		}
-		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
-		var value float64
-		if pct, ok := ParsePercentage(arg); ok {
-			value = pct / 100.0
-		} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
-			value = f
-		}
-		filters = append(filters, FilterFunction{Name: name, Value: value})
-		val = val[parenIdx+closeIdx+1:]
-	}
-	return filters
+	// backdrop-filter accepts the same <filter-value-list> as filter.
+	return parseFilterList(val)
 }
 
 // GetBorderImageSource returns the border-image-source value.

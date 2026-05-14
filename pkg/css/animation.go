@@ -167,7 +167,10 @@ func parseKeyframeOffset(sel string) (float64, bool) {
 //     is that value regardless of the segment fraction;
 //   - frozen exactly on a keyframe offset: progress lands on k_i, value = k_i;
 //   - a two-color from/to interpolation at a fractional progress
-//     (animation-important-002): handled by interpolateValue for colors.
+//     (animation-important-002): handled by interpolateValue for colors;
+//   - a filter-list from/to interpolation at a fractional progress
+//     (css-filters-animation-* / css-backdrop-filters-animation-*): handled
+//     by interpolateValue for the filter / backdrop-filter properties.
 //
 // progress is the SIMPLE iteration progress (used for keyframe bracketing);
 // segmentEasingProgress is the TRANSFORMED progress from the timing pipeline
@@ -272,11 +275,17 @@ func ResolveKeyframeStyle(eff *KeyframeEffect, simpleProgress float64, base *Sty
 func (k Keyframe) offsetOrSelf() float64 { return k.Offset }
 
 // interpolateValue interpolates between two CSS values at fraction t in [0,1].
-// Only the value types actually needed by the in-scope css-animations tests are
-// supported: <color> (animation-important-002). For value types where
-// interpolation is not implemented, the endpoint is returned discretely
-// (t < 1 -> from, t >= 1 -> to) — this is correct for every in-scope test,
-// which is either from==to (constant) or frozen exactly on a keyframe offset.
+// The value types supported are those the in-scope reftests exercise:
+//   - <color> (animation-important-002): interpolated in sRGB;
+//   - <filter-value-list> for the filter / backdrop-filter properties
+//     (css-filters-animation-* / css-backdrop-filters-animation-*):
+//     interpolated component-wise per CSS Filter Effects §interpolation,
+//     with a `none` endpoint promoted to the identity-filter list.
+//
+// For value types where interpolation is not implemented, the endpoint is
+// returned discretely (t < 1 -> from, t >= 1 -> to) — this is correct for
+// every other in-scope test, which is either from==to (constant) or frozen
+// exactly on a keyframe offset.
 func interpolateValue(prop, from, to string, t float64) string {
 	if from == to {
 		return from
@@ -286,6 +295,16 @@ func interpolateValue(prop, from, to string, t float64) string {
 	}
 	if t >= 1 {
 		return to
+	}
+	// Filter-list interpolation for the filter / backdrop-filter properties.
+	// Per CSS Filter Effects, the two filter-value-lists interpolate
+	// component-wise (a `none` endpoint becomes the identity-filter list
+	// matching the other side). This routes filter-effects' animated-filter
+	// reftests through the single canonical animation path.
+	if prop == "filter" || prop == "backdrop-filter" {
+		if interp, ok := interpolateFilterValue(from, to, t); ok {
+			return interp
+		}
 	}
 	// Color interpolation (background-color, color, border colors, etc.).
 	if isColorProperty(prop) {
@@ -441,3 +460,118 @@ func collectKeyframesMaps(stylesheets []*Stylesheet) []map[string][]KeyframeRule
 	}
 	return maps
 }
+
+// --- CSS Filter Effects: filter-list interpolation -------------------------
+//
+// The filter / backdrop-filter properties animate as a <filter-value-list>.
+// Per CSS Filter Effects §interpolation (and Blink's FilterInterpolationType):
+//   - two lists with the same filter functions in the same order interpolate
+//     component-wise;
+//   - if one endpoint is `none`, it is treated as the list of identity filter
+//     functions matching the other endpoint (blur(0), brightness(1), ...), so
+//     a `none` <-> list animation still interpolates smoothly.
+// Mismatched-length / mismatched-function lists are not smoothly
+// interpolable; interpolateFilterValue reports !ok and interpolateValue falls
+// back to the discrete endpoint.
+
+// interpolateFilterValue interpolates between two CSS filter-value-list
+// strings at fraction frac. Returns (value, true) on success.
+func interpolateFilterValue(from, to string, frac float64) (string, bool) {
+	a := parseFilterList(normalizeFilterNone(from))
+	b := parseFilterList(normalizeFilterNone(to))
+	fromNone := strings.TrimSpace(strings.ToLower(from)) == "none"
+	toNone := strings.TrimSpace(strings.ToLower(to)) == "none"
+
+	// If one side is `none`, synthesize an identity list matching the other.
+	if fromNone && !toNone {
+		a = identityFilterList(b)
+	}
+	if toNone && !fromNone {
+		b = identityFilterList(a)
+	}
+	if len(a) != len(b) || len(a) == 0 {
+		return "", false
+	}
+	var out []string
+	for i := range a {
+		if a[i].Name != b[i].Name {
+			return "", false
+		}
+		s, ok := interpolateFilterFunction(a[i], b[i], frac)
+		if !ok {
+			return "", false
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, " "), true
+}
+
+// normalizeFilterNone keeps `none` as-is; parseFilterList returns an empty
+// list for it, which the caller replaces with an identity list.
+func normalizeFilterNone(v string) string {
+	if strings.TrimSpace(strings.ToLower(v)) == "none" {
+		return ""
+	}
+	return v
+}
+
+// identityFilterList returns, for each function in ref, the identity
+// FilterFunction of the same kind (the value `none` interpolates against).
+func identityFilterList(ref []FilterFunction) []FilterFunction {
+	out := make([]FilterFunction, len(ref))
+	for i, f := range ref {
+		id := FilterFunction{Name: f.Name}
+		switch f.Name {
+		case "blur":
+			id.Value = 0
+		case "hue-rotate":
+			id.Value = 0
+		case "drop-shadow":
+			id.ShadowOffsetX = 0
+			id.ShadowOffsetY = 0
+			id.ShadowBlur = 0
+			id.ShadowColor = Color{0, 0, 0, 0}
+			id.ShadowUseCurrentColor = f.ShadowUseCurrentColor
+		default:
+			// The "no-op" value for each function: grayscale/sepia/invert
+			// have identity 0; brightness/contrast/saturate/opacity have
+			// identity 1. `none` interpolates against these.
+			switch f.Name {
+			case "brightness", "contrast", "saturate", "opacity":
+				id.Value = 1
+			default:
+				id.Value = 0
+			}
+		}
+		out[i] = id
+	}
+	return out
+}
+
+// interpolateFilterFunction interpolates one filter function between a and b.
+func interpolateFilterFunction(a, b FilterFunction, t float64) (string, bool) {
+	lerp := func(x, y float64) float64 { return x + (y-x)*t }
+	switch a.Name {
+	case "blur":
+		return "blur(" + formatPx(lerp(a.Value, b.Value)) + ")", true
+	case "hue-rotate":
+		return "hue-rotate(" + formatNum(lerp(a.Value, b.Value)) + "deg)", true
+	case "grayscale", "sepia", "invert", "opacity", "brightness", "contrast", "saturate":
+		return a.Name + "(" + formatNum(lerp(a.Value, b.Value)) + ")", true
+	case "drop-shadow":
+		dx := lerp(a.ShadowOffsetX, b.ShadowOffsetX)
+		dy := lerp(a.ShadowOffsetY, b.ShadowOffsetY)
+		bl := lerp(a.ShadowBlur, b.ShadowBlur)
+		cr := uint8(lerp(float64(a.ShadowColor.R), float64(b.ShadowColor.R)))
+		cg := uint8(lerp(float64(a.ShadowColor.G), float64(b.ShadowColor.G)))
+		cb := uint8(lerp(float64(a.ShadowColor.B), float64(b.ShadowColor.B)))
+		ca := lerp(a.ShadowColor.A, b.ShadowColor.A)
+		return "drop-shadow(" + formatPx(dx) + " " + formatPx(dy) + " " + formatPx(bl) +
+			" rgba(" + formatNum(float64(cr)) + "," + formatNum(float64(cg)) + "," +
+			formatNum(float64(cb)) + "," + formatNum(ca) + "))", true
+	}
+	return "", false
+}
+
+func formatPx(v float64) string  { return formatNum(v) + "px" }
+func formatNum(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }

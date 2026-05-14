@@ -665,44 +665,107 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 }
 
 // paintLayerWithFilter renders the entire layer subtree into an offscreen
-// buffer, applies CSS filter effects, and composites the result back.
+// buffer sized to the filter region, runs the FilterEffect graph over it, and
+// composites the result back. Mirrors Blink's FilterPainter: the element
+// subtree is recorded into a source buffer, fed to the filter graph as
+// SourceGraphic, and the graph output replayed.
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	box := layer.Box
 
-	// Determine buffer bounds. For blur filters, we need extra padding.
-	blurExtend := 0.0
-	for _, f := range layer.Filters {
-		if f.Name == "blur" {
-			sigma := f.Value / 2
-			blurExtend = math.Max(blurExtend, math.Ceil(sigma*3))
-		}
+	// Reference box: the element's border box in absolute device pixels.
+	rbx := int(math.Floor(box.X))
+	rby := int(math.Floor(box.Y))
+	rbw := int(math.Ceil(box.X+box.Width)) - rbx
+	rbh := int(math.Ceil(box.Y+box.Height)) - rby
+	referenceBox := image.Rect(rbx, rby, rbx+rbw, rby+rbh)
+
+	// SourceGraphic extent: the element subtree's paint bounds, which can
+	// extend beyond the border box (positioned/overflowing descendants).
+	// Blink's filter SourceGraphic is the recorded layer contents including
+	// overflow; for drop-shadow especially the shadow is cast from the whole
+	// painted shape, so the source buffer must cover it. drop-shadow-clipped
+	// proves this: a descendant offset out of the border box still casts a
+	// shadow.
+	sourceExtent := referenceBox.Union(subtreeBorderBoxBounds(box))
+
+	// Build the filter graph. The builder computes the filter region by
+	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
+	builder := &FilterEffectBuilder{
+		ReferenceBox: referenceBox,
+		CurrentColor: layer.TextColor,
 	}
-
-	// Buffer covers the element's border-box plus blur extension.
-	bx := int(math.Floor(box.X - blurExtend))
-	by := int(math.Floor(box.Y - blurExtend))
-	bw := int(math.Ceil(box.Width + 2*blurExtend))
-	bh := int(math.Ceil(box.Height + 2*blurExtend))
-
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
-		// Fallback: render without filters to avoid OOM.
-		r.paintLayerContent(layer)
+	filter := builder.BuildFilterEffect(layer.Filters)
+	if filter == nil {
+		// No supported CSS filter functions (e.g. only url() references,
+		// not yet handled) — paint without filtering rather than dropping
+		// the element.
+		r.paintLayerContentWithEffects(layer)
 		return
 	}
 
-	// Save original state and render into offscreen buffer.
+	// The filter region is the graph's forward-mapped bounds over the actual
+	// source extent (not just the border box) so the offscreen buffer covers
+	// every pixel the filter draws.
+	filter.FilterRegion = filter.MapRect(sourceExtent)
+	region := filter.FilterRegion
+	bx, by := region.Min.X, region.Min.Y
+	bw, bh := region.Dx(), region.Dy()
+	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
+		// Fallback: render without filters to avoid OOM.
+		r.paintLayerContentWithEffects(layer)
+		return
+	}
+
+	// Render the layer subtree into the source buffer (filter-region sized).
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	origDC := r.dc
 	origTarget := r.target
-
-	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	childDC := origDC.NewChildContext(buf)
 	r.dc = childDC
 	r.target = buf
-
-	// Offset so painting coordinates map to buffer-local coordinates.
 	r.dc.Translate(float64(-bx), float64(-by))
+	r.paintLayerContentWithEffects(layer)
+	r.dc = origDC
+	r.target = origTarget
 
-	// Paint the layer content (including transforms, opacity, children).
+	// Run the FilterEffect graph and composite the output back at the
+	// filter region origin.
+	filter.SetSourceImage(buf)
+	out := filter.Apply()
+	if out == nil {
+		return
+	}
+	r.dc.DrawImage(out, bx, by)
+}
+
+// subtreeBorderBoxBounds returns the union of the border boxes of box and all
+// its descendants, in absolute device pixels. It is the conservative paint
+// extent the filter SourceGraphic must cover so that descendants painted
+// outside the element's own border box (relative/absolute positioned, or
+// simply overflowing) still feed the filter graph.
+func subtreeBorderBoxBounds(box *layout.Box) image.Rectangle {
+	if box == nil {
+		return image.Rectangle{}
+	}
+	x0 := int(math.Floor(box.X))
+	y0 := int(math.Floor(box.Y))
+	x1 := int(math.Ceil(box.X + box.Width))
+	y1 := int(math.Ceil(box.Y + box.Height))
+	bounds := image.Rect(x0, y0, x1, y1)
+	for _, child := range box.Children {
+		cb := subtreeBorderBoxBounds(child)
+		if !cb.Empty() {
+			bounds = bounds.Union(cb)
+		}
+	}
+	return bounds
+}
+
+// paintLayerContentWithEffects paints a layer's content applying its transform
+// and opacity, used inside an offscreen buffer (the filter source). It mirrors
+// the transform/opacity handling in paintLayer so a filtered element still
+// honours its own transform and opacity.
+func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 	if layer.HasTransform {
 		r.dc.Push()
 		r.applyTransforms(layer)
@@ -717,75 +780,58 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	if layer.HasTransform {
 		r.dc.Pop()
 	}
-
-	// Restore original DC.
-	r.dc = origDC
-	r.target = origTarget
-
-	// Apply filter operations to the buffer.
-	for _, f := range layer.Filters {
-		switch f.Name {
-		case "blur":
-			sigma := f.Value / 2
-			radius := int(math.Round(sigma))
-			if radius > 0 {
-				boxBlur(buf, radius)
-				boxBlur(buf, radius)
-				boxBlur(buf, radius)
-			}
-		case "grayscale":
-			applyGrayscale(buf, clampFilter01(f.Value))
-		case "brightness":
-			applyBrightness(buf, f.Value)
-		case "contrast":
-			applyContrast(buf, f.Value)
-		case "opacity":
-			applyFilterOpacity(buf, clampFilter01(f.Value))
-		case "saturate":
-			applySaturate(buf, f.Value)
-		case "sepia":
-			applySepia(buf, clampFilter01(f.Value))
-		case "invert":
-			applyInvert(buf, clampFilter01(f.Value))
-		case "hue-rotate":
-			applyHueRotate(buf, f.Value)
-		case "drop-shadow":
-			applyDropShadow(buf, f)
-		}
-	}
-
-	// Composite filtered buffer back to main canvas.
-	r.dc.DrawImage(buf, bx, by)
 }
 
-// applyBackdropFilter captures the rectangular region of the canvas behind
-// the element's border-box, applies the backdrop-filter pipeline to it,
-// and draws the filtered backdrop back. The element then paints on top.
-// Per CSS Filter Effects Module Level 2, backdrop-filter operates on the
-// "backdrop image" — the rendered content behind the element.
+// applyBackdropFilter implements CSS Filter Effects 2 backdrop-filter: it
+// snapshots the backdrop image (everything painted behind the element's
+// border box), runs the filter graph over it, clips the result to the
+// element's border box including border-radius, and draws it back. The
+// element then paints its own decorations and content on top.
+//
+// applyBackdropFilter is invoked from paintLayerContent before
+// paintSelfDecorations, so r.target already holds the backdrop content. This
+// matches the Filter Effects 2 algorithm's "backdrop root image" for the
+// common case; isolation: isolate does not form a backdrop root, which is
+// consistent here because r.target is the shared canvas.
 func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	box := layer.Box
 
-	// Determine the element's border-box region.
+	// Element's border-box region in absolute device pixels.
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
 	bw := int(math.Ceil(box.X+box.Width)) - bx
 	bh := int(math.Ceil(box.Y+box.Height)) - by
 
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		return
 	}
+	borderBox := image.Rect(bx, by, bx+bw, by+bh)
 
-	// Capture the current canvas content behind this element's border-box.
-	backdrop := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	// A blur on the backdrop samples pixels outside the element's border
+	// box, so the captured region is inflated by the blur extent — otherwise
+	// the blur sees transparent black off the edges and darkens the result.
+	// The filtered output is clipped back to the border box afterwards.
+	// Filter Effects 2 treats the backdrop root image as effectively
+	// unbounded; capturing a margin around the box approximates that.
+	pad := 0
+	for _, f := range layer.BackdropFilters {
+		if f.Name == "blur" {
+			pad = max(pad, int(math.Ceil(f.Value*3))+2)
+		}
+	}
+	region := image.Rect(bx-pad, by-pad, bx+bw+pad, by+bh+pad)
+	rw, rh := region.Dx(), region.Dy()
+
+	// Snapshot the backdrop image: the canvas content under the region.
+	backdrop := image.NewRGBA(image.Rect(0, 0, rw, rh))
 	targetBounds := r.target.Bounds()
-	for y := 0; y < bh; y++ {
-		dy := by + y
+	for y := 0; y < rh; y++ {
+		dy := region.Min.Y + y
 		if dy < targetBounds.Min.Y || dy >= targetBounds.Max.Y {
 			continue
 		}
-		for x := 0; x < bw; x++ {
-			dx := bx + x
+		for x := 0; x < rw; x++ {
+			dx := region.Min.X + x
 			if dx < targetBounds.Min.X || dx >= targetBounds.Max.X {
 				continue
 			}
@@ -798,40 +844,37 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 		}
 	}
 
-	// Apply the same filter pipeline used for regular CSS filter.
-	for _, f := range layer.BackdropFilters {
-		switch f.Name {
-		case "blur":
-			sigma := f.Value / 2
-			radius := int(math.Round(sigma))
-			if radius > 0 {
-				boxBlur(backdrop, radius)
-				boxBlur(backdrop, radius)
-				boxBlur(backdrop, radius)
-			}
-		case "grayscale":
-			applyGrayscale(backdrop, clampFilter01(f.Value))
-		case "brightness":
-			applyBrightness(backdrop, f.Value)
-		case "contrast":
-			applyContrast(backdrop, f.Value)
-		case "opacity":
-			applyFilterOpacity(backdrop, clampFilter01(f.Value))
-		case "saturate":
-			applySaturate(backdrop, f.Value)
-		case "sepia":
-			applySepia(backdrop, clampFilter01(f.Value))
-		case "invert":
-			applyInvert(backdrop, clampFilter01(f.Value))
-		case "hue-rotate":
-			applyHueRotate(backdrop, f.Value)
-		case "drop-shadow":
-			applyDropShadow(backdrop, f)
-		}
+	// Run the filter graph over the backdrop image. backdrop-filter uses the
+	// same filter-function list as filter.
+	builder := &FilterEffectBuilder{
+		ReferenceBox: borderBox,
+		CurrentColor: layer.TextColor,
+	}
+	filter := builder.BuildFilterEffect(layer.BackdropFilters)
+	if filter == nil {
+		return
+	}
+	filter.FilterRegion = region
+	filter.SetSourceImage(backdrop)
+	out := filter.Apply()
+	if out == nil {
+		return
 	}
 
-	// Draw the filtered backdrop back to the canvas at the element's position.
-	r.dc.DrawImage(backdrop, bx, by)
+	// Clip the filtered backdrop to the element's border box, honouring
+	// border-radius, then draw it back. The clip is the reason a
+	// backdrop-filter element with rounded corners does not tint outside
+	// its rounded shape.
+	r.dc.Push()
+	bxf, byf, bwf, bhf := float64(bx), float64(by), float64(bw), float64(bh)
+	if hasBorderRadius(layer) {
+		r.buildRoundedRectPath(bxf, byf, bwf, bhf, layer.BorderRadius)
+	} else {
+		r.dc.DrawRectangle(bxf, byf, bwf, bhf)
+	}
+	r.dc.Clip()
+	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
+	r.dc.Pop()
 }
 
 // paintLayerWithBlend renders the entire layer subtree into an offscreen
@@ -983,204 +1026,6 @@ func clampByte(v float64) uint8 {
 		return 255
 	}
 	return uint8(v)
-}
-
-// applyGrayscale applies a grayscale filter to an RGBA image.
-// amount=1 is fully grayscale, amount=0 is no change.
-func applyGrayscale(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		lum := 0.2126*r + 0.7152*g + 0.0722*b
-		pix[i] = clampByte(r*(1-amount) + lum*amount)
-		pix[i+1] = clampByte(g*(1-amount) + lum*amount)
-		pix[i+2] = clampByte(b*(1-amount) + lum*amount)
-	}
-}
-
-// applyBrightness multiplies RGB channels by factor.
-// factor=1 is no change, factor=0 is black, factor=2 is double brightness.
-func applyBrightness(img *image.RGBA, factor float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		pix[i] = clampByte(float64(pix[i]) * factor)
-		pix[i+1] = clampByte(float64(pix[i+1]) * factor)
-		pix[i+2] = clampByte(float64(pix[i+2]) * factor)
-	}
-}
-
-// applyContrast adjusts contrast around the midpoint (127.5).
-// factor=1 is no change, factor=0 is flat gray, factor>1 increases contrast.
-func applyContrast(img *image.RGBA, factor float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		pix[i] = clampByte((float64(pix[i])/255-0.5)*factor*255 + 127.5)
-		pix[i+1] = clampByte((float64(pix[i+1])/255-0.5)*factor*255 + 127.5)
-		pix[i+2] = clampByte((float64(pix[i+2])/255-0.5)*factor*255 + 127.5)
-	}
-}
-
-// applyFilterOpacity multiplies the alpha channel by amount.
-func applyFilterOpacity(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		pix[i+3] = clampByte(float64(pix[i+3]) * amount)
-	}
-}
-
-// applySaturate adjusts color saturation.
-// factor=1 is no change, factor=0 is grayscale, factor>1 is over-saturated.
-func applySaturate(img *image.RGBA, factor float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		lum := 0.2126*r + 0.7152*g + 0.0722*b
-		pix[i] = clampByte(lum + (r-lum)*factor)
-		pix[i+1] = clampByte(lum + (g-lum)*factor)
-		pix[i+2] = clampByte(lum + (b-lum)*factor)
-	}
-}
-
-// applySepia applies a sepia tone filter.
-// amount=1 is full sepia, amount=0 is no change.
-func applySepia(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		// Standard sepia matrix coefficients.
-		sr := 0.393*r + 0.769*g + 0.189*b
-		sg := 0.349*r + 0.686*g + 0.168*b
-		sb := 0.272*r + 0.534*g + 0.131*b
-		pix[i] = clampByte(r*(1-amount) + sr*amount)
-		pix[i+1] = clampByte(g*(1-amount) + sg*amount)
-		pix[i+2] = clampByte(b*(1-amount) + sb*amount)
-	}
-}
-
-// applyInvert inverts RGB channels by the given amount.
-// amount=1 is full inversion, amount=0 is no change.
-func applyInvert(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		pix[i] = clampByte(r*(1-amount) + (255-r)*amount)
-		pix[i+1] = clampByte(g*(1-amount) + (255-g)*amount)
-		pix[i+2] = clampByte(b*(1-amount) + (255-b)*amount)
-	}
-}
-
-// applyHueRotate rotates the hue of all pixels by the given angle in degrees.
-func applyHueRotate(img *image.RGBA, degrees float64) {
-	// CSS filter hue-rotate uses the rotation matrix from the spec.
-	// https://www.w3.org/TR/filter-effects-1/#funcdef-filter-hue-rotate
-	rad := degrees * math.Pi / 180
-	cosA := math.Cos(rad)
-	sinA := math.Sin(rad)
-
-	// Rotation matrix coefficients from the spec.
-	m00 := 0.213 + cosA*0.787 - sinA*0.213
-	m01 := 0.715 - cosA*0.715 - sinA*0.715
-	m02 := 0.072 - cosA*0.072 + sinA*0.928
-	m10 := 0.213 - cosA*0.213 + sinA*0.143
-	m11 := 0.715 + cosA*0.285 + sinA*0.140
-	m12 := 0.072 - cosA*0.072 - sinA*0.283
-	m20 := 0.213 - cosA*0.213 - sinA*0.787
-	m21 := 0.715 - cosA*0.715 + sinA*0.715
-	m22 := 0.072 + cosA*0.928 + sinA*0.072
-
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		pix[i] = clampByte(m00*r + m01*g + m02*b)
-		pix[i+1] = clampByte(m10*r + m11*g + m12*b)
-		pix[i+2] = clampByte(m20*r + m21*g + m22*b)
-	}
-}
-
-// applyDropShadow creates a shadow of the element's alpha shape.
-func applyDropShadow(img *image.RGBA, f css.FilterFunction) {
-	bounds := img.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	ox := int(math.Round(f.ShadowOffsetX))
-	oy := int(math.Round(f.ShadowOffsetY))
-	blurR := int(math.Round(f.ShadowBlur / 2))
-
-	// Shadow color defaults to black if not specified.
-	sr, sg, sb := uint8(0), uint8(0), uint8(0)
-	if f.ShadowColor.R > 0 || f.ShadowColor.G > 0 || f.ShadowColor.B > 0 || f.ShadowColor.A > 0 {
-		sr = uint8(f.ShadowColor.R)
-		sg = uint8(f.ShadowColor.G)
-		sb = uint8(f.ShadowColor.B)
-	}
-
-	// Create shadow image from alpha channel.
-	shadow := image.NewRGBA(bounds)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			srcX := x - ox
-			srcY := y - oy
-			if srcX >= 0 && srcX < w && srcY >= 0 && srcY < h {
-				si := srcY*img.Stride + srcX*4
-				a := img.Pix[si+3]
-				if a > 0 {
-					di := y*shadow.Stride + x*4
-					shadow.Pix[di] = sr
-					shadow.Pix[di+1] = sg
-					shadow.Pix[di+2] = sb
-					shadow.Pix[di+3] = a
-				}
-			}
-		}
-	}
-
-	// Blur the shadow.
-	if blurR > 0 {
-		boxBlur(shadow, blurR)
-		boxBlur(shadow, blurR)
-		boxBlur(shadow, blurR)
-	}
-
-	// Composite: shadow behind original content.
-	// Draw shadow first, then overlay original on top.
-	result := image.NewRGBA(bounds)
-	copy(result.Pix, shadow.Pix)
-	// Porter-Duff src-over compositing.
-	for i := 0; i < len(img.Pix); i += 4 {
-		sa := float64(img.Pix[i+3]) / 255
-		if sa == 0 {
-			continue
-		}
-		da := float64(result.Pix[i+3]) / 255
-		outA := sa + da*(1-sa)
-		if outA > 0 {
-			result.Pix[i] = clampByte((float64(img.Pix[i])*sa + float64(result.Pix[i])*da*(1-sa)) / outA)
-			result.Pix[i+1] = clampByte((float64(img.Pix[i+1])*sa + float64(result.Pix[i+1])*da*(1-sa)) / outA)
-			result.Pix[i+2] = clampByte((float64(img.Pix[i+2])*sa + float64(result.Pix[i+2])*da*(1-sa)) / outA)
-			result.Pix[i+3] = clampByte(outA * 255)
-		}
-	}
-	copy(img.Pix, result.Pix)
 }
 
 // applyTransforms applies the CSS transform list to the draw context.
