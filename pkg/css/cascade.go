@@ -453,6 +453,13 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		}
 	}
 
+	// CSS Animations §4: apply in-effect @keyframes values. The animation
+	// cascade origin sits below author !important (CSS Cascade §6.3), so
+	// ApplyAnimations skips any property in importantProps. animation-name and
+	// the other animation-* longhands have already been resolved (via rule
+	// declarations / inline style) into finalStyle by this point.
+	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+
 	// Store viewport dimensions for viewport unit resolution (vw, vh, vmin, vmax)
 	finalStyle.ViewportWidth = viewportWidth
 	finalStyle.ViewportHeight = viewportHeight
@@ -485,6 +492,27 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 		}
 	}
 	return stylesheets
+}
+
+// resolvePseudoInheritKeyword resolves any property whose value is the literal
+// `inherit` keyword against the originating element's computed style (the
+// pseudo-element's "parent"). Properties the parent does not have are dropped
+// so they fall back to their initial value.
+func resolvePseudoInheritKeyword(finalStyle *Style, parentStyles []*Style) {
+	if len(parentStyles) == 0 || parentStyles[0] == nil {
+		return
+	}
+	parent := parentStyles[0]
+	for property, value := range finalStyle.Properties {
+		if strings.TrimSpace(value) != "inherit" {
+			continue
+		}
+		if parentVal, ok := parent.Get(property); ok {
+			finalStyle.Set(property, parentVal)
+		} else {
+			delete(finalStyle.Properties, property)
+		}
+	}
 }
 
 // Phase 11: ComputePseudoElementStyle computes the style for a pseudo-element
@@ -583,7 +611,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			if isMarker && !markerAllowedProperty(property) {
 				continue
 			}
-			finalStyle.Set(property, value)
+			expandShorthand(finalStyle, property, value)
 		}
 	}
 
@@ -597,7 +625,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				if isMarker && !markerAllowedProperty(property) {
 					continue
 				}
-				finalStyle.Set(property, value)
+				expandShorthand(finalStyle, property, value)
 				importantProps[property] = true
 			}
 		}
@@ -611,6 +639,43 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// only if the author did not set it.
 	if pseudoElement == "marker" {
 		applyMarkerCascade(finalStyle)
+	}
+
+	// CSS Cascade §7.3: the `inherit` keyword resolves to the parent's computed
+	// value. For pseudo-elements the "parent" is the originating element. This
+	// must run before ApplyAnimations so that e.g. `animation-delay: inherit`
+	// is a real time value when the keyframe pass reads it.
+	resolvePseudoInheritKeyword(finalStyle, parentStyles)
+
+	// CSS Animations §4: apply in-effect @keyframes values to the
+	// pseudo-element's computed style (same cascade position as for elements).
+	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+
+	// An animated declaration may itself be the `inherit` keyword (e.g.
+	// @keyframes kf { from,to { font-size: inherit } }) — resolve again so the
+	// animation's `inherit` is computed against the originating element.
+	resolvePseudoInheritKeyword(finalStyle, parentStyles)
+
+	// CSS 2.1 §15.7: resolve a font-relative font-size (em / %) on the
+	// pseudo-element against the originating element's computed font-size. For
+	// regular elements ApplyInheritedProperties does this; pseudo-elements
+	// take their inherited font-size from the originating element. This must
+	// run after ApplyAnimations so an animated `font-size: 1em` is resolved
+	// too (e.g. inheritance-pseudo-element.html).
+	if len(parentStyles) > 0 && parentStyles[0] != nil {
+		if fsVal, has := finalStyle.Get("font-size"); has {
+			trimmed := strings.TrimSpace(fsVal)
+			parentFS := parentStyles[0].GetFontSize()
+			if strings.HasSuffix(trimmed, "%") {
+				if pct, ok := ParsePercentage(trimmed); ok {
+					finalStyle.Set("font-size", fmt.Sprintf("%.6gpx", pct/100.0*parentFS))
+				}
+			} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
+				if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
+					finalStyle.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
+				}
+			}
+		}
 	}
 
 	// CSS 2.1 §12.1: Pseudo-elements default to display:inline unless

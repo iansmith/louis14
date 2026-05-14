@@ -251,8 +251,26 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 			}
 		}
 		return true // Element doesn't match any → passes :not()
-	case pc == "hover", pc == "focus", pc == "active", pc == "visited":
+	case pc == "hover", pc == "focus", pc == "active":
 		// Dynamic pseudo-classes never match in a static renderer
+		return false
+	case pc == "visited":
+		// :visited reflects browsing history, which a static renderer has no
+		// general model for — so an arbitrary link is treated as unvisited.
+		// But a hyperlink with an *empty* href is defined to resolve to the
+		// current document's own URL, which is unconditionally in history
+		// whenever that document is being rendered. So `<a href="">` always
+		// matches :visited; this is exact, not a heuristic. A fragment href
+		// ("#name") resolves to current-URL-plus-fragment — a distinct URL
+		// that a reftest run did not navigate to — so it stays unvisited.
+		switch node.TagName {
+		case "a", "area", "link":
+			href, ok := node.GetAttribute("href")
+			if !ok {
+				return false
+			}
+			return strings.TrimSpace(href) == ""
+		}
 		return false
 	case pc == "focus-visible", pc == "focus-within":
 		// Focus pseudo-classes: no focus state in static renderer

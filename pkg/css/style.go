@@ -2101,8 +2101,13 @@ func expandShorthand(style *Style, property, value string) {
 		// Store transition value as-is; static renderer ignores it
 		style.Set("transition", value)
 	case "animation":
-		// Store animation value as-is; static renderer shows initial (t=0) state
-		style.Set("animation", value)
+		// CSS Animations §4: decompose the `animation` shorthand into its 8
+		// longhands so the keyframe-application pass (pkg/css/animation.go) can
+		// read them. The raw `animation` key is intentionally NOT stored: doing
+		// so would let the cascade re-expand it and race a same-rule
+		// animation-* longhand declaration (declaration order is lost once a
+		// rule's declarations are a map).
+		expandAnimationShorthand(style, value)
 	case "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
 		"transition-behavior":
 		style.Set(property, value)
@@ -8972,4 +8977,227 @@ func ResolveLogicalPropertiesInTree(node *html.Node, styles map[*html.Node]*Styl
 	for _, child := range node.Children {
 		ResolveLogicalPropertiesInTree(child, styles)
 	}
+}
+
+// splitTopLevelCommas splits s on commas that are not nested inside parentheses
+// or quotes. Used for comma-separated CSS list values (animation, transition).
+func splitTopLevelCommas(s string) []string {
+	var parts []string
+	depth := 0
+	inQ := byte(0)
+	start := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inQ != 0:
+			if c == inQ {
+				inQ = 0
+			}
+		case c == '"' || c == '\'':
+			inQ = c
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+		case c == ',' && depth == 0:
+			parts = append(parts, strings.TrimSpace(s[start:i]))
+			start = i + 1
+		}
+	}
+	parts = append(parts, strings.TrimSpace(s[start:]))
+	return parts
+}
+
+// splitTopLevelFields splits s on whitespace runs that are not nested inside
+// parentheses or quotes (so "steps(2, end)" stays one token).
+func splitTopLevelFields(s string) []string {
+	var fields []string
+	depth := 0
+	inQ := byte(0)
+	start := -1
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isSpace := c == ' ' || c == '\t' || c == '\n' || c == '\r'
+		switch {
+		case inQ != 0:
+			if c == inQ {
+				inQ = 0
+			}
+		case c == '"' || c == '\'':
+			inQ = c
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && inQ == 0 && isSpace {
+			if start >= 0 {
+				fields = append(fields, s[start:i])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, s[start:])
+	}
+	return fields
+}
+
+// isAnimationTimingFunctionToken reports whether a token in the `animation`
+// shorthand is an <easing-function>.
+func isAnimationTimingFunctionToken(tok string) bool {
+	t := strings.ToLower(tok)
+	switch t {
+	case "linear", "ease", "ease-in", "ease-out", "ease-in-out",
+		"step-start", "step-end":
+		return true
+	}
+	return strings.HasPrefix(t, "steps(") || strings.HasPrefix(t, "cubic-bezier(") ||
+		strings.HasPrefix(t, "linear(")
+}
+
+// isAnimationDirectionToken reports whether a token is an <animation-direction>.
+func isAnimationDirectionToken(tok string) bool {
+	switch strings.ToLower(tok) {
+	case "normal", "reverse", "alternate", "alternate-reverse":
+		return true
+	}
+	return false
+}
+
+// isAnimationFillModeToken reports whether a token is an <animation-fill-mode>.
+func isAnimationFillModeToken(tok string) bool {
+	switch strings.ToLower(tok) {
+	case "none", "forwards", "backwards", "both":
+		return true
+	}
+	return false
+}
+
+// isAnimationPlayStateToken reports whether a token is an <animation-play-state>.
+func isAnimationPlayStateToken(tok string) bool {
+	switch strings.ToLower(tok) {
+	case "running", "paused":
+		return true
+	}
+	return false
+}
+
+// isTimeToken reports whether a token is a CSS <time> value.
+func isTimeToken(tok string) bool {
+	t := strings.ToLower(tok)
+	if strings.HasSuffix(t, "ms") {
+		_, err := strconv.ParseFloat(t[:len(t)-2], 64)
+		return err == nil
+	}
+	if strings.HasSuffix(t, "s") {
+		_, err := strconv.ParseFloat(t[:len(t)-1], 64)
+		return err == nil
+	}
+	return false
+}
+
+// expandAnimationShorthand decomposes the `animation` shorthand into its 8
+// longhands per CSS Animations §4 (the <single-animation># grammar). Each
+// comma-separated <single-animation> contributes one entry to each longhand
+// list; omitted components reset to their initial value. The first <time> in a
+// <single-animation> is the duration, the second is the delay.
+func expandAnimationShorthand(style *Style, value string) {
+	items := splitTopLevelCommas(value)
+	var names, durations, timingFns, delays, iterCounts, directions, fillModes, playStates []string
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		// Per-animation initial values (CSS Animations §4 / §3.x).
+		name := "none"
+		duration := "0s"
+		timingFn := "ease"
+		delay := "0s"
+		iterCount := "1"
+		direction := "normal"
+		fillMode := "none"
+		playState := "running"
+
+		sawDuration := false
+		sawTiming := false
+		sawIterCount := false
+		sawDirection := false
+		sawFillMode := false
+		sawPlayState := false
+		sawName := false
+
+		for _, tok := range splitTopLevelFields(item) {
+			switch {
+			case isTimeToken(tok):
+				if !sawDuration {
+					duration = tok
+					sawDuration = true
+				} else {
+					delay = tok
+				}
+			case isAnimationTimingFunctionToken(tok):
+				if !sawTiming {
+					timingFn = tok
+					sawTiming = true
+				}
+			case isAnimationDirectionToken(tok) && !sawDirection:
+				// "normal" is also a fill-mode-adjacent keyword but direction
+				// owns it; fill-mode "none" is distinct. Order: direction first.
+				direction = tok
+				sawDirection = true
+			case isAnimationFillModeToken(tok) && !sawFillMode &&
+				!(strings.EqualFold(tok, "none") && !sawName):
+				// "none" is ambiguous: it is both a fill-mode and the
+				// keyframes-name "none". Treat a lone "none" as the name (the
+				// common case: `animation: anim` vs `animation: none`); only a
+				// "none" appearing after the name is the fill-mode.
+				fillMode = tok
+				sawFillMode = true
+			case isAnimationPlayStateToken(tok) && !sawPlayState:
+				playState = tok
+				sawPlayState = true
+			case isNumberToken(tok) && !sawIterCount:
+				iterCount = tok
+				sawIterCount = true
+			case strings.EqualFold(tok, "infinite") && !sawIterCount:
+				iterCount = "infinite"
+				sawIterCount = true
+			default:
+				// <keyframes-name> (or "none" meaning no animation).
+				if !sawName {
+					name = tok
+					sawName = true
+				}
+			}
+		}
+		names = append(names, name)
+		durations = append(durations, duration)
+		timingFns = append(timingFns, timingFn)
+		delays = append(delays, delay)
+		iterCounts = append(iterCounts, iterCount)
+		directions = append(directions, direction)
+		fillModes = append(fillModes, fillMode)
+		playStates = append(playStates, playState)
+	}
+	style.Set("animation-name", strings.Join(names, ", "))
+	style.Set("animation-duration", strings.Join(durations, ", "))
+	style.Set("animation-timing-function", strings.Join(timingFns, ", "))
+	style.Set("animation-delay", strings.Join(delays, ", "))
+	style.Set("animation-iteration-count", strings.Join(iterCounts, ", "))
+	style.Set("animation-direction", strings.Join(directions, ", "))
+	style.Set("animation-fill-mode", strings.Join(fillModes, ", "))
+	style.Set("animation-play-state", strings.Join(playStates, ", "))
+}
+
+// isNumberToken reports whether tok is a plain number (no unit).
+func isNumberToken(tok string) bool {
+	_, err := strconv.ParseFloat(strings.TrimSpace(tok), 64)
+	return err == nil
 }
