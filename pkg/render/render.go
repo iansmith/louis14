@@ -556,12 +556,16 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 
 	// Step 2: Generate the mask image.
 	maskVal := layer.MaskImage
-	useLuminance := false // default for url() images: alpha mode
+	// Default mask-mode is match-source: for a mask-image of type <image>
+	// (a CSS gradient or a raster image) the alpha values of the mask
+	// layer image are used as the mask values — NOT luminance. Luminance
+	// mode is the default only for an SVG <mask> element reference.
+	// (CSS Masking Level 1 §6.4.)
+	useLuminance := false
 	var maskImg *image.RGBA
 
 	if isGradientValue(maskVal) {
-		// Gradient masks use luminance mode per match-source default.
-		useLuminance = true
+		// Gradient mask: <image> type → match-source resolves to alpha mode.
 		maskImg = image.NewRGBA(image.Rect(0, 0, bw, bh))
 
 		// Create a temporary renderer to draw the gradient into the mask buffer.
@@ -571,7 +575,15 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 			fonts:        r.fonts,
 			imageFetcher: r.imageFetcher,
 		}
-		maskR.drawLinearGradient(maskVal, 0, 0, float64(bw), float64(bh))
+		// The mask layer image is positioned over the element's border box
+		// (default mask-origin), so the gradient must be drawn at the
+		// element's box geometry within the offscreen buffer — the element
+		// origin maps to (box.X-bx, box.Y-by) and the gradient spans the
+		// border box's exact width/height. Drawing it over the padded
+		// buffer extent instead would shift the gradient line and the
+		// per-row colour banding off the element's own paint geometry.
+		maskR.drawLinearGradient(maskVal,
+			box.X-float64(bx), box.Y-float64(by), box.Width, box.Height)
 	} else if strings.HasPrefix(maskVal, "url(") {
 		// Image mask: load the image and use its alpha channel.
 		src := maskVal
