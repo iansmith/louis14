@@ -695,34 +695,24 @@ func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
 // resolveMarkerStyle builds the cascaded ::marker pseudo-element style for a
 // list item. It is the single owner of ::marker style construction.
 //
-// Cascade (CSS Pseudo-4 §4.4):
-//  1. Start from the UA ::marker defaults + inherited values + author
-//     ::marker rules, filtered to the marker-allowed property subset — all
-//     produced by css.ComputePseudoElementStyle("marker", ...).
-//  2. When there are no author ::marker rules at all, synthesize the same
-//     style by cloning the originating item's style and layering the UA
-//     ::marker defaults, so an inside marker still inherits font/color.
+// css.ComputePseudoElementStyle("marker", ...) produces an inherited-only
+// style (font/color/text-* inherited from the originating item) plus any
+// author ::marker rules filtered to the marker-allowed property subset, plus
+// the UA ::marker defaults (cascade.go applyMarkerCascade: unicode-bidi:
+// isolate, text-transform: none, white-space: pre, font-variant-numeric:
+// tabular-nums). It is called unconditionally — with no matching ::marker
+// rules it still yields the inherited + UA-default style. Crucially this is
+// NOT a clone of the list item's style: the marker box must not pick up the
+// list item's margin / padding / border / background / width — it is an
+// anonymous box, mirroring Blink's CreateAnonymousStyleWithDisplay.
 //
 // list-style-position is read off the ORIGINATING item, never off the
-// ::marker.
+// ::marker (CSS Pseudo-4 §4.4).
 func (b *LayoutTreeBuilder) resolveMarkerStyle(node *html.Node, itemStyle *css.Style) *css.Style {
-	if len(b.stylesheets) > 0 &&
-		css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
-		// ComputePseudoElementStyle applies the marker-allowed property filter
-		// and the UA ::marker defaults (cascade.go applyMarkerCascade).
-		return css.ComputePseudoElementStyle(
-			node, "marker", b.stylesheets,
-			b.viewportWidth, b.viewportHeight, itemStyle,
-		)
-	}
-	// No author ::marker rules: synthesize from the item's style + UA defaults.
-	markerStyle := itemStyle.Clone()
-	markerStyle.Set("display", "inline")
-	markerStyle.Set("unicode-bidi", "isolate")
-	markerStyle.Set("text-transform", "none")
-	markerStyle.Set("white-space", "pre")
-	markerStyle.Set("font-variant-numeric", "tabular-nums")
-	return markerStyle
+	return css.ComputePseudoElementStyle(
+		node, "marker", b.stylesheets,
+		b.viewportWidth, b.viewportHeight, itemStyle,
+	)
 }
 
 // createMarkerPseudoElement creates a LayoutInputNode for the ::marker
@@ -773,6 +763,21 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		return nil
 	}
 
+	markerIsOutside := style.GetListStylePosition() != "inside"
+
+	// CSS Pseudo-4 / Blink ListMarker::InlineMarginsForInside: an INSIDE
+	// marker flows as an ordinary inline-level box; the marker-to-content gap
+	// is the InlineMarginsForInside margin pair (symbol {-1,1em}, disclosure
+	// {0,0.4em}, image {0,7px}, otherwise {0,0}) applied as the marker box's
+	// inline margins — not a paint-time magic number. Resolved to physical
+	// margins here against the marker's direction; vertical writing modes are
+	// Phase 5. Outside markers get InlineMarginsForOutside via the carry/claim
+	// protocol (Phase 4), not here.
+	if !markerIsOutside {
+		mStart, mEnd := InlineMarginsForInside(markerStyle, style, cat)
+		applyMarkerInlineMargins(markerStyle, mStart.Float64(), mEnd.Float64())
+	}
+
 	// Synthetic ::marker DOM node + its text-node child.
 	markerDOMNode := &html.Node{
 		Type:    html.ElementNode,
@@ -791,7 +796,7 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 		style:                    markerStyle,
 		isMarkerNode:             true,
 		MarkerCategory:           cat,
-		MarkerIsOutside:          style.GetListStylePosition() != "inside",
+		MarkerIsOutside:          markerIsOutside,
 		MarkerTextTyp:            textType,
 		MarkerContent:            markerContent,
 		markerContentIsGenerated: hasContentProperty,
@@ -800,6 +805,24 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 			style:   markerStyle,
 		}},
 	}
+}
+
+// applyMarkerInlineMargins writes a logical (inline-start, inline-end) margin
+// pair onto a marker style as physical margin-left / margin-right, honoring
+// the style's direction. Vertical writing modes are handled in Phase 5; here
+// the marker is horizontal so the inline axis is the horizontal axis.
+func applyMarkerInlineMargins(markerStyle *css.Style, inlineStart, inlineEnd float64) {
+	leftVal, rightVal := inlineStart, inlineEnd
+	if markerStyle.GetDirection() == css.DirectionRTL {
+		leftVal, rightVal = inlineEnd, inlineStart
+	}
+	markerStyle.Set("margin-left", formatPx(leftVal))
+	markerStyle.Set("margin-right", formatPx(rightVal))
+}
+
+// formatPx renders a length in CSS px notation, e.g. -1 -> "-1px".
+func formatPx(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64) + "px"
 }
 
 // formatCounterStyleValue formats an explicit counter value through a built-in

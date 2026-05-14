@@ -3491,9 +3491,11 @@ func (r *Renderer) drawListMarker(layer *PaintLayer) {
 		// Fall through to list-style-type if image fails to load.
 	}
 
-	if layer.ListStylePositionInside {
-		r.drawListMarkerInside(layer, box, fontSize, markerSize, contentLeft)
-	} else {
+	// Inside markers are real inline-level ::marker boxes in the layout tree
+	// (marker-foundation Phase 3) and paint through the normal inline pipeline;
+	// only the outside marker still uses the paint-time path (deleted in
+	// Phase 4).
+	if !layer.ListStylePositionInside {
 		r.drawListMarkerOutside(layer, box, fontSize, markerSize, contentLeft)
 	}
 }
@@ -3544,12 +3546,6 @@ func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fon
 			r.dc.DrawText(numStr, fid, numX, numY)
 		}
 	}
-}
-
-// drawListMarkerInside is a no-op. Inside markers are now laid out as synthetic
-// inline ::marker children in the layout tree, so they render as part of normal
-// inline content. Paint-time drawing here would double-render.
-func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
 }
 
 // drawTextStr draws a text string, applying OpenType features if present on the layer.
