@@ -20,6 +20,9 @@ test-output.txt
 .claude/
 .project-prefix
 
+# Local working copy of mazarin/textshape (cross-repo change staging)
+.local-mazarin/
+
 # planning-with-files skill (session-local working memory)
 task_plan.md
 findings.md

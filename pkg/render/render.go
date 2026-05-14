@@ -556,12 +556,16 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 
 	// Step 2: Generate the mask image.
 	maskVal := layer.MaskImage
-	useLuminance := false // default for url() images: alpha mode
+	// Default mask-mode is match-source: for a mask-image of type <image>
+	// (a CSS gradient or a raster image) the alpha values of the mask
+	// layer image are used as the mask values — NOT luminance. Luminance
+	// mode is the default only for an SVG <mask> element reference.
+	// (CSS Masking Level 1 §6.4.)
+	useLuminance := false
 	var maskImg *image.RGBA
 
 	if isGradientValue(maskVal) {
-		// Gradient masks use luminance mode per match-source default.
-		useLuminance = true
+		// Gradient mask: <image> type → match-source resolves to alpha mode.
 		maskImg = image.NewRGBA(image.Rect(0, 0, bw, bh))
 
 		// Create a temporary renderer to draw the gradient into the mask buffer.
@@ -571,7 +575,15 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 			fonts:        r.fonts,
 			imageFetcher: r.imageFetcher,
 		}
-		maskR.drawLinearGradient(maskVal, 0, 0, float64(bw), float64(bh))
+		// The mask layer image is positioned over the element's border box
+		// (default mask-origin), so the gradient must be drawn at the
+		// element's box geometry within the offscreen buffer — the element
+		// origin maps to (box.X-bx, box.Y-by) and the gradient spans the
+		// border box's exact width/height. Drawing it over the padded
+		// buffer extent instead would shift the gradient line and the
+		// per-row colour banding off the element's own paint geometry.
+		maskR.drawLinearGradient(maskVal,
+			box.X-float64(bx), box.Y-float64(by), box.Width, box.Height)
 	} else if strings.HasPrefix(maskVal, "url(") {
 		// Image mask: load the image and use its alpha channel.
 		src := maskVal
@@ -1539,26 +1551,47 @@ func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 
 // applyClipPath builds the clip-path shape and calls Clip().
 // Caller must have already called Push(); will Pop() to restore.
+//
+// The reference box for a <basic-shape> clip-path is the border box
+// (CSS Masking L1 default geometry-box). It is pixel-snapped the same
+// way backgroundClipRectForClip snaps the border box for background
+// painting, so a clip-path shape lands on the same pixel grid as the
+// element's background and borders.
 func (r *Renderer) applyClipPath(layer *PaintLayer) {
 	box := layer.Box
-	cp := layer.ClipPath.ResolveClipPath(box.Width, box.Height)
+	// Pixel-snapped border box — the clip-path reference box.
+	bx, by, bw, bh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	cp := layer.ClipPath.ResolveClipPath(bw, bh)
 
 	switch cp.Type {
 	case css.ClipPathCircle:
-		r.dc.DrawCircle(box.X+cp.Cx, box.Y+cp.Cy, cp.Radius)
+		// A circle is an ellipse with rx == ry. Build it as a rounded
+		// rectangle whose bounding box is the circle's bounding box and
+		// whose four corner radii all equal the circle radius. This is
+		// the exact same path construction used for a border-radius
+		// circle (buildRoundedRectPathOnDC), so a clip-path: circle()
+		// rasterizes pixel-identically to the border-radius circle these
+		// tests are reftested against.
+		cx, cy := bx+cp.Cx, by+cp.Cy
+		rad := cp.Radius
+		radii := css.EllipticalRadii{
+			{Rx: rad, Ry: rad}, {Rx: rad, Ry: rad},
+			{Rx: rad, Ry: rad}, {Rx: rad, Ry: rad},
+		}
+		buildRoundedRectPathOnDC(r.dc, cx-rad, cy-rad, 2*rad, 2*rad, radii)
 
 	case css.ClipPathEllipse:
-		cx, cy := box.X+cp.Cx, box.Y+cp.Cy
+		// An ellipse is a rounded rectangle whose bounding box is the
+		// ellipse's bounding box and whose four corner radii all equal
+		// (rx, ry) — identical construction to a border-*-radius: rx ry
+		// ellipse, so it rasterizes pixel-identically to the reference.
+		cx, cy := bx+cp.Cx, by+cp.Cy
 		rx, ry := cp.Rx, cp.Ry
-		// Approximate ellipse with 4 cubic Bezier curves.
-		// kappa = 4*(sqrt(2)-1)/3 ≈ 0.5522847498
-		k := 0.5522847498
-		r.dc.MoveTo(cx+rx, cy)
-		r.dc.CubicTo(cx+rx, cy+ry*k, cx+rx*k, cy+ry, cx, cy+ry)
-		r.dc.CubicTo(cx-rx*k, cy+ry, cx-rx, cy+ry*k, cx-rx, cy)
-		r.dc.CubicTo(cx-rx, cy-ry*k, cx-rx*k, cy-ry, cx, cy-ry)
-		r.dc.CubicTo(cx+rx*k, cy-ry, cx+rx, cy-ry*k, cx+rx, cy)
-		r.dc.ClosePath()
+		radii := css.EllipticalRadii{
+			{Rx: rx, Ry: ry}, {Rx: rx, Ry: ry},
+			{Rx: rx, Ry: ry}, {Rx: rx, Ry: ry},
+		}
+		buildRoundedRectPathOnDC(r.dc, cx-rx, cy-ry, 2*rx, 2*ry, radii)
 
 	case css.ClipPathPolygon:
 		pts := cp.Points
@@ -1566,8 +1599,8 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 			return // Need at least 2 points
 		}
 		for i := 0; i < len(pts)-1; i += 2 {
-			px := box.X + pts[i]
-			py := box.Y + pts[i+1]
+			px := bx + pts[i]
+			py := by + pts[i+1]
 			if i == 0 {
 				r.dc.MoveTo(px, py)
 			} else {

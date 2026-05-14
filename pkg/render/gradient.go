@@ -1,6 +1,7 @@
 package render
 
 import (
+	"image"
 	"image/color"
 	"math"
 	"strconv"
@@ -436,7 +437,7 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 				continue
 			}
 			for px := x0; px < x1; px++ {
-				r.target.SetRGBA(px, py, c)
+				blendGradientPixel(r.target, px, py, c)
 			}
 		}
 	} else if math.Abs(dy) < 1e-6 {
@@ -453,7 +454,7 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 				continue
 			}
 			for py := y0; py < y1; py++ {
-				r.target.SetRGBA(px, py, c)
+				blendGradientPixel(r.target, px, py, c)
 			}
 		}
 	} else {
@@ -469,8 +470,38 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 				if c.A == 0 {
 					continue
 				}
-				r.target.SetRGBA(px, py, c)
+				blendGradientPixel(r.target, px, py, c)
 			}
 		}
 	}
+}
+
+// blendGradientPixel composites a gradient color stop (which carries
+// straight, non-premultiplied alpha as produced by interpolateGradientColor)
+// onto an image.RGBA pixel using Porter-Duff source-over.
+//
+// interpolateGradientColor interpolates and returns straight-alpha colors,
+// but image.RGBA stores premultiplied alpha — so a semi-transparent stop
+// must be premultiplied and composited over whatever was painted behind
+// the gradient layer (e.g. the element's background-color), not written
+// raw. For a fully opaque stop (A == 255) this is exactly a replace, so
+// opaque gradients are unaffected.
+func blendGradientPixel(img *image.RGBA, px, py int, c color.RGBA) {
+	if c.A == 255 {
+		img.SetRGBA(px, py, c)
+		return
+	}
+	sa := uint32(c.A)
+	// Premultiply the source.
+	sr := uint32(c.R) * sa / 255
+	sg := uint32(c.G) * sa / 255
+	sb := uint32(c.B) * sa / 255
+	inv := uint32(255) - sa
+	d := img.RGBAAt(px, py)
+	img.SetRGBA(px, py, color.RGBA{
+		R: uint8(sr + uint32(d.R)*inv/255),
+		G: uint8(sg + uint32(d.G)*inv/255),
+		B: uint8(sb + uint32(d.B)*inv/255),
+		A: uint8(sa + uint32(d.A)*inv/255),
+	})
 }
