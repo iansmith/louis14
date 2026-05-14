@@ -820,16 +820,23 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 }
 
 // applyMarkerInlineMargins writes a logical (inline-start, inline-end) margin
-// pair onto a marker style as physical margin-left / margin-right, honoring
-// the style's direction. Vertical writing modes are handled in Phase 5; here
-// the marker is horizontal so the inline axis is the horizontal axis.
+// pair onto a marker style as physical margin-* properties, mapped through the
+// marker's writing-mode + direction. The marker-allowed-property filter (CSS
+// Pseudo-4 §4.4) drops margin-* longhands during the cascade, so the logical
+// margins from ListMarker::InlineMarginsForInside have to be resolved to
+// physical margins directly here, after the cascade. Mirrors Blink applying
+// the inside-marker margins on the logical inline axis (Phase 5: writing-mode
+// correct by construction — the inline axis is vertical for vertical-* modes).
 func applyMarkerInlineMargins(markerStyle *css.Style, inlineStart, inlineEnd float64) {
-	leftVal, rightVal := inlineStart, inlineEnd
-	if markerStyle.GetDirection() == css.DirectionRTL {
-		leftVal, rightVal = inlineEnd, inlineStart
-	}
-	markerStyle.Set("margin-left", formatPx(leftVal))
-	markerStyle.Set("margin-right", formatPx(rightVal))
+	wdm := NewWritingDirectionMode(markerStyle)
+	phys := ToPhysicalEdges(LogicalEdges{
+		InlineStart: inlineStart,
+		InlineEnd:   inlineEnd,
+	}, wdm)
+	markerStyle.Set("margin-left", formatPx(phys.Left))
+	markerStyle.Set("margin-right", formatPx(phys.Right))
+	markerStyle.Set("margin-top", formatPx(phys.Top))
+	markerStyle.Set("margin-bottom", formatPx(phys.Bottom))
 }
 
 // formatPx renders a length in CSS px notation, e.g. -1 -> "-1px".
