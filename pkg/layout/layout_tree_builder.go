@@ -106,31 +106,14 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	//                ordering: marker, before, children, after).
 	//   - outside -> the marker node is stored on lin.markerNode and reached
 	//                through ListMarkerBlockNodeIfListItem; the carry/claim
-	//                protocol owns its placement (Phase 4). Until then the
-	//                paint-time path in render.go still draws outside markers.
-	if style != nil && style.GetDisplay() == css.DisplayListItem {
+	//                UnpositionedListMarker protocol owns its placement
+	//                (Phase 4 — block_layout.go claims it against the
+	//                content's first baseline).
+	if style != nil && style.IsListItemDisplay() {
 		if markerNode := b.createMarkerPseudoElement(node, style); markerNode != nil {
 			lin.markerNode = markerNode
 			if !markerNode.MarkerIsOutside {
 				rawChildren = append(rawChildren, markerNode)
-			}
-			// Phase 2 keeps the paint-time OUTSIDE marker path intact (Phase 4
-			// deletes it). Mirror onto the list item exactly the legacy inputs
-			// it expects: MarkerStyle whenever a ::marker style was cascaded
-			// from author rules, and MarkerContent only when the text came
-			// from `::marker { content }` (the old GetContentValues path) or
-			// from a <string> inside marker. A normal-counter outside marker
-			// must leave MarkerContent empty so drawListMarkerOutside still
-			// uses its symbol/formatListMarker branch unchanged.
-			if len(b.stylesheets) > 0 &&
-				css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
-				lin.MarkerStyle = markerNode.style
-			}
-			if markerNode.markerContentIsGenerated {
-				lin.MarkerContent = markerNode.MarkerContent
-			} else if !markerNode.MarkerIsOutside &&
-				markerNode.MarkerCategory == CategoryStaticString {
-				lin.MarkerContent = markerNode.MarkerContent
 			}
 		}
 	}
@@ -636,6 +619,23 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		style:    pseudoStyle,
 		children: children,
 	}
+
+	// CSS Pseudo-4 §4 / Blink LayoutObject::CreateObject: a ::before / ::after
+	// pseudo-element whose display is list-item is itself a list item and gets
+	// its own ::marker box — exactly like a real list-item element. The marker
+	// is reached through the synthetic pseudoNode, so an author `li::marker`
+	// rule does NOT match it (the pseudo's tag is "::before"/"::after", not
+	// "li") while a global `::marker` rule does — which is precisely what
+	// css-lists/nested-marker asserts.
+	if pseudoStyle.IsListItemDisplay() {
+		if markerNode := b.createMarkerPseudoElement(pseudoNode, pseudoStyle); markerNode != nil {
+			lin.markerNode = markerNode
+			if !markerNode.MarkerIsOutside {
+				lin.children = append([]*LayoutInputNode{markerNode}, lin.children...)
+			}
+		}
+	}
+
 	return lin
 }
 
@@ -685,7 +685,7 @@ func (b *LayoutTreeBuilder) getListItemCounterValue(node *html.Node) int {
 		if sibling == node {
 			break
 		}
-		if s := b.styles[sibling]; s != nil && s.GetDisplay() == css.DisplayListItem {
+		if s := b.styles[sibling]; s != nil && s.IsListItemDisplay() {
 			idx++
 		}
 	}
@@ -729,7 +729,7 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	if node == nil || style == nil {
 		return nil
 	}
-	if style.GetDisplay() != css.DisplayListItem {
+	if !style.IsListItemDisplay() {
 		return nil
 	}
 
@@ -776,6 +776,18 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	if !markerIsOutside {
 		mStart, mEnd := InlineMarginsForInside(markerStyle, style, cat)
 		applyMarkerInlineMargins(markerStyle, mStart.Float64(), mEnd.Float64())
+	} else {
+		// CSS Pseudo-4 / Blink LayoutObject::CreateObject: an OUTSIDE marker is
+		// a LayoutOutsideListMarker — a block-flow box that lives as a box-tree
+		// sibling of the list item's content and is positioned by the carry/
+		// claim protocol (Phase 4, unpositioned_list_marker.go). Modelled here
+		// as display:inline-block so layoutElement routes it through
+		// NewBlockLayoutAlgorithm with shrink-to-fit inline sizing and a fresh
+		// formatting context — the LayoutBlockFlow-equivalent. Its
+		// InlineMarginsForOutside offset is applied by the claimant at
+		// placement time (UnpositionedListMarker.InlineOffset), not as a style
+		// margin here.
+		markerStyle.Set("display", "inline-block")
 	}
 
 	// Synthetic ::marker DOM node + its text-node child.
@@ -808,16 +820,23 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 }
 
 // applyMarkerInlineMargins writes a logical (inline-start, inline-end) margin
-// pair onto a marker style as physical margin-left / margin-right, honoring
-// the style's direction. Vertical writing modes are handled in Phase 5; here
-// the marker is horizontal so the inline axis is the horizontal axis.
+// pair onto a marker style as physical margin-* properties, mapped through the
+// marker's writing-mode + direction. The marker-allowed-property filter (CSS
+// Pseudo-4 §4.4) drops margin-* longhands during the cascade, so the logical
+// margins from ListMarker::InlineMarginsForInside have to be resolved to
+// physical margins directly here, after the cascade. Mirrors Blink applying
+// the inside-marker margins on the logical inline axis (Phase 5: writing-mode
+// correct by construction — the inline axis is vertical for vertical-* modes).
 func applyMarkerInlineMargins(markerStyle *css.Style, inlineStart, inlineEnd float64) {
-	leftVal, rightVal := inlineStart, inlineEnd
-	if markerStyle.GetDirection() == css.DirectionRTL {
-		leftVal, rightVal = inlineEnd, inlineStart
-	}
-	markerStyle.Set("margin-left", formatPx(leftVal))
-	markerStyle.Set("margin-right", formatPx(rightVal))
+	wdm := NewWritingDirectionMode(markerStyle)
+	phys := ToPhysicalEdges(LogicalEdges{
+		InlineStart: inlineStart,
+		InlineEnd:   inlineEnd,
+	}, wdm)
+	markerStyle.Set("margin-left", formatPx(phys.Left))
+	markerStyle.Set("margin-right", formatPx(phys.Right))
+	markerStyle.Set("margin-top", formatPx(phys.Top))
+	markerStyle.Set("margin-bottom", formatPx(phys.Bottom))
 }
 
 // formatPx renders a length in CSS px notation, e.g. -1 -> "-1px".
@@ -902,7 +921,7 @@ func (s markerTextSourceLegacy) CounterStyleText(style *css.Style, value int, wi
 func isBlockContainer(d css.DisplayType) bool {
 	switch d {
 	case css.DisplayBlock, css.DisplayListItem, css.DisplayFlowRoot,
-		css.DisplayInlineBlock,
+		css.DisplayInlineBlock, css.DisplayInlineListItem,
 		css.DisplayTableCell, css.DisplayTableCaption:
 		return true
 	}

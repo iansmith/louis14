@@ -1210,9 +1210,11 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 		r.drawOutline(layer)
 	}
 
-	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "" || layer.ListStyleImage != "") {
-		r.drawListMarker(layer)
-	}
+	// List markers are real laid-out ::marker boxes in the fragment tree
+	// (marker-foundation Phases 3-4): inside markers flow through the inline
+	// pipeline, outside markers are placed by the UnpositionedListMarker
+	// carry/claim protocol. They paint as ordinary box fragments — there is no
+	// paint-time marker hack any more.
 }
 
 // paintSelfForeground paints a layer's own text and replaced-element
@@ -3320,111 +3322,13 @@ func fallbackCounter(value int, fallback string, allStyles map[string]css.Counte
 	return fmt.Sprintf("%d.", value)
 }
 
-// drawListMarker paints the list-item marker (bullet or number).
-// For list-style-position:outside (default), the marker is drawn to the left
-// of the content box, inside the padding area created by the UA stylesheet.
-// For list-style-position:inside, the marker is drawn inline at the start of
-// the first line of the list item's content area.
-func (r *Renderer) drawListMarker(layer *PaintLayer) {
-	box := layer.Box
-	fontSize := layer.FontSize
-	if layer.HasMarkerFont {
-		fontSize = layer.MarkerFontSize
-	}
-	markerSize := fontSize * 0.35
-
-	// Position: to the left of the content box, vertically centered on first line.
-	contentLeft := box.X + box.Border.Left + box.Padding.Left
-
-	// Apply ::marker color if specified, else use text color.
-	if layer.HasMarkerColor {
-		r.setColor(layer.MarkerColor)
-	} else {
-		r.setColor(layer.TextColor)
-	}
-
-	// If list-style-image is set, try to load and draw it.
-	if layer.ListStyleImage != "" && r.imageFetcher != nil {
-		if img, err := images.LoadImageWithFetcher(layer.ListStyleImage, r.imageFetcher); err == nil {
-			imgW := img.Bounds().Dx()
-			imgH := img.Bounds().Dy()
-			if imgW > 0 && imgH > 0 {
-				maxSize := fontSize
-				scale := 1.0
-				if float64(imgW) > maxSize || float64(imgH) > maxSize {
-					scale = math.Min(maxSize/float64(imgW), maxSize/float64(imgH))
-				}
-				dw := int(math.Round(float64(imgW) * scale))
-				dh := int(math.Round(float64(imgH) * scale))
-				if dw > 0 && dh > 0 {
-					scaled := scaleImageNearest(img, imgW, imgH, dw, dh)
-					imgMy := box.Y + box.Border.Top + fontSize*0.55
-					ix := int(math.Round(contentLeft-box.Padding.Left/2)) - dw/2
-					iy := int(math.Round(imgMy)) - dh/2
-					r.dc.DrawImage(scaled, ix, iy)
-					return
-				}
-			}
-		}
-		// Fall through to list-style-type if image fails to load.
-	}
-
-	// Inside markers are real inline-level ::marker boxes in the layout tree
-	// (marker-foundation Phase 3) and paint through the normal inline pipeline;
-	// only the outside marker still uses the paint-time path (deleted in
-	// Phase 4).
-	if !layer.ListStylePositionInside {
-		r.drawListMarkerOutside(layer, box, fontSize, markerSize, contentLeft)
-	}
-}
-
-// drawListMarkerOutside draws the marker in the padding area (default outside position).
-func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
-	mx := contentLeft - box.Padding.Left/2
-	my := box.Y + box.Border.Top + fontSize*0.55
-
-	// If ::marker has custom content, draw it as text.
-	if layer.MarkerContent != "" {
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			tw := r.dc.MeasureText(layer.MarkerContent, fid)
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			numX := contentLeft - tw - markerSize*0.5
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(layer.MarkerContent, fid, numX, numY)
-		}
-		return
-	}
-
-	switch layer.ListStyleType {
-	case css.ListStyleTypeDisc:
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.Fill()
-	case css.ListStyleTypeCircle:
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.SetLineWidth(1)
-		r.dc.Stroke()
-	case css.ListStyleTypeSquare:
-		r.dc.DrawRectangle(mx-markerSize/2, my-markerSize/2, markerSize, markerSize)
-		r.dc.Fill()
-	default:
-		// All text-based markers: decimal, alpha, roman, greek, disclosure, etc.
-		numStr := r.formatListMarker(layer.ListStyleType, layer.ListItemIndex)
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			tw := r.dc.MeasureText(numStr, fid)
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			// Right-align marker text to the left of content.
-			numX := contentLeft - tw - markerSize*0.5
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(numStr, fid, numX, numY)
-		}
-	}
-}
+// List markers are real laid-out ::marker boxes (marker-foundation Phases
+// 3-4): inside markers flow through the inline pipeline, outside markers are
+// placed by the UnpositionedListMarker carry/claim protocol. Both paint as
+// ordinary box fragments — the paint-time drawListMarker / drawListMarkerOutside
+// hack has been retired. formatListMarker / applyCounterStyle / fallbackCounter
+// below remain only as the @counter-style data path (docs/plan-css-lists.md
+// B5 replaces them with the CounterStyle subsystem).
 
 // drawTextStr draws a text string, applying OpenType features if present on the layer.
 // The baseline Y is pixel-snapped; X is passed through fractionally so the

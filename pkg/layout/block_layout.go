@@ -73,6 +73,26 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	geom := CalculateInitialFragmentGeometry(bla.ctx, bla.node, bla.style, wdm, bla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(bla.node)
+
+	// CSS Lists §3 / Blink BlockLayoutAlgorithm constructor (bla.cc:319-327):
+	// if this is a list item with an OUTSIDE marker, seed the
+	// UnpositionedListMarker on the builder. The marker is laid out and placed
+	// by the carry/claim protocol — claimed against the content's first
+	// baseline once the first in-flow child with a baseline is known
+	// (positionOrPropagateListMarker), or top-aligned when the list item
+	// produced no line boxes (positionListMarkerWithoutLineBoxes). Skipped for
+	// inside markers (ListMarkerOccupiesWholeLine) — those flow through the
+	// inline path as ordinary inline-level boxes.
+	if markerNode := bla.node.ListMarkerBlockNodeIfListItem(); markerNode != nil &&
+		!markerNode.ListMarkerOccupiesWholeLine() {
+		incoming := bla.space.BreakToken
+		if incoming == nil || incoming.HasUnpositionedListMarker {
+			builder.SetUnpositionedListMarker(&UnpositionedListMarker{
+				MarkerNode: markerNode,
+				Item:       bla.node,
+			})
+		}
+	}
 	// Phase 16.e+18 v2 B2.5: tag size-contained boxes as monolithic.
 	// CSS Containment 2 §2.6: a contain:size box suppresses intrinsic-size
 	// contribution from its descendants, but it does NOT make the box
@@ -330,6 +350,23 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
 		hasLastChildBaseline = lastBaselineOff > 0
 		firstNonEmptyChild = false // inline content is "content"
+
+		// CSS Lists §3 / Blink PositionOrPropagateListMarker: a list item with
+		// inline content places its OUTSIDE marker against the first line box's
+		// baseline. The first line box sits at content-relative block offset 0
+		// and its baseline is firstLineAscent. The marker fragment is added as
+		// a content-relative child of the list-item builder, with a negative
+		// inline offset (InlineMarginsForOutside) placing it left of the
+		// content-box start.
+		if firstLineAscent > 0 {
+			marker := builder.GetUnpositionedListMarker()
+			if marker.IsValid() {
+				if markerResult := marker.Layout(bla.ctx, bla.space); markerResult != nil {
+					marker.AddToBox(bla.ctx, markerResult, firstLineAscent, 0, builder)
+					builder.ClearUnpositionedListMarker()
+				}
+			}
+		}
 
 		// Inline fragmentation: if the inline layout stopped mid-content due to
 		// column overflow, build a partial fragment and return early with the
@@ -1104,6 +1141,27 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				hasFirstChildBaseline = true
 			}
 
+			// CSS Lists §3 / Blink PositionOrPropagateListMarker: claim a
+			// pending OUTSIDE marker against this block child's first baseline.
+			// The marker is added as a content-relative child of the list-item
+			// builder; if the marker's ascent is taller than the content's,
+			// the content child is pushed down by contentPush instead (the
+			// child fragment is re-offset inside positionOrPropagateListMarker).
+			if !isOrthogonal {
+				if contentPush := bla.positionOrPropagateListMarker(
+					builder, childResult.Fragment, childResult, actualChildBlockOff,
+				); contentPush > 0 {
+					blockCursor += contentPush
+					if hasFirstChildBaseline && firstChildBlockOffset == actualChildBlockOff {
+						firstChildBlockOffset += contentPush
+					}
+					if hasLastChildBaseline && lastChildBlockOffset == actualChildBlockOff {
+						lastChildBlockOffset += contentPush
+					}
+					actualChildBlockOff += contentPush
+				}
+			}
+
 			// Track the last in-flow block child's baseline for
 			// CSS 2.1 §10.8.1 inline-block baseline propagation.
 			// Only a genuine last-baseline (from a line box, propagated up
@@ -1478,6 +1536,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if bla.style != nil && bla.style.HasSizeContainment() && !hasExplicitBlock {
 		intrinsicBlockSize = 0
 	}
+
+	// CSS Lists §3 / Blink PositionListMarkerWithoutLineBoxes: if a list item
+	// produced no line boxes / no child with a baseline, its still-pending
+	// OUTSIDE marker is top-aligned at block offset 0 and contributes its
+	// block-size to the list item's intrinsic block size. This MUST run before
+	// builder.SetIntrinsicBlockSize / SetSize so the bump propagates (Blink
+	// runs it from FinishLayout, before the builder is finalized).
+	bla.positionListMarkerWithoutLineBoxes(builder, &intrinsicBlockSize)
+
 	finalBlockSize := intrinsicBlockSize
 	if hasExplicitBlock {
 		finalBlockSize = explicitBlockSize
@@ -2432,7 +2499,14 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 	switch display {
 	case css.DisplayNone:
 		return emptyResult(space.WritingDirection)
-	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem, css.DisplayInlineBlock:
+	case css.DisplayBlock, css.DisplayFlowRoot, css.DisplayListItem,
+		css.DisplayInlineBlock, css.DisplayInlineListItem:
+		// DisplayInlineListItem (CSS Display L3 `display: inline list-item`) is
+		// laid out by the block algorithm — it is an inline-level box that
+		// internally is a list-item block-flow (the LayoutInlineListItem
+		// analogue), shrink-to-fit sized and establishing its own FC, so the
+		// UnpositionedListMarker carry/claim runs inside it just like a
+		// block-level list item.
 		if isMulticolContainer(style) {
 			return NewMulticolLayoutAlgorithm(ctx, node, space).Layout()
 		}
@@ -2498,9 +2572,11 @@ func createsFormattingContext(style *css.Style, nodes ...*LayoutInputNode) bool 
 		return true
 	}
 
-	// Inline-block creates a BFC.
+	// Inline-block creates a BFC. So does an inline-level list item
+	// (`display: inline list-item` — the LayoutInlineListItem analogue, which
+	// is an atomic inline establishing its own formatting context).
 	d := style.GetDisplay()
-	if d == css.DisplayInlineBlock {
+	if d == css.DisplayInlineBlock || d == css.DisplayInlineListItem {
 		return true
 	}
 
@@ -2595,12 +2671,84 @@ func shouldPreventColumnSpannerDescendants(node *LayoutInputNode) bool {
 // use shrink-to-fit sizing (CSS 2.1 §10.3.5). This applies to inline-block,
 // floating, and absolutely positioned elements — NOT to regular block-level
 // elements even if they establish a new formatting context.
+// positionOrPropagateListMarker tries to claim a pending UnpositionedListMarker
+// against a content child that has a baseline. Mirrors Blink's
+// BlockLayoutAlgorithm::PositionOrPropagateListMarker
+// (block_layout_algorithm.cc:3872-3924).
+//
+// contentBaseline is the content child's first baseline in the list item's
+// CONTENT-box coordinates (childBlockOffset + childResult.Baseline);
+// childBlockOffset is the child's block offset within the content box.
+// Returns the amount the content child must be pushed down (>= 0, usually 0
+// when the marker's font is no taller than the content's).
+//
+// If the child has no baseline the marker stays unpositioned for the next
+// child (Blink: re-Set the marker on the builder and return).
+func (bla *BlockLayoutAlgorithm) positionOrPropagateListMarker(
+	builder *BoxFragmentBuilder, child *PhysicalFragment, childResult *LayoutResult,
+	childBlockOffset float64) float64 {
+	marker := builder.GetUnpositionedListMarker()
+	if !marker.IsValid() {
+		return 0
+	}
+	baseline, ok := marker.ContentAlignmentBaseline(child, childResult)
+	if !ok {
+		// No baseline on this child — keep the marker unpositioned and try the
+		// next child (Blink leaves it set on the builder).
+		return 0
+	}
+	markerResult := marker.Layout(bla.ctx, bla.space)
+	if markerResult == nil {
+		return 0
+	}
+	// baseline is the child fragment's first baseline RELATIVE TO THE CHILD
+	// FRAGMENT (Blink's ContentAlignmentBaseline returns the line box ascent /
+	// FirstBaseline, both fragment-relative). childBlockOffset is the child's
+	// block offset within the list item's content box. AddToBox places the
+	// marker at childBlockOffset + (baseline - markerAscent).
+	contentPush := marker.AddToBox(bla.ctx, markerResult,
+		baseline, childBlockOffset, builder)
+	if contentPush > 0 {
+		// The marker's ascent is taller than the content's: Blink pushes the
+		// content child down (*block_offset -= baseline_adjust). The content
+		// child was already added to the builder, so re-offset it in place;
+		// the marker was added at childBlockOffset (its block offset is correct
+		// relative to the content's pre-push position, which is also where the
+		// content's baseline now sits after the push).
+		builder.ShiftChildBlockOffset(child, contentPush)
+	}
+	builder.ClearUnpositionedListMarker()
+	return contentPush
+}
+
+// positionListMarkerWithoutLineBoxes places a still-pending marker when the
+// list item produced no line boxes / no child with a baseline. The marker is
+// top-aligned at block offset 0 and contributes to the intrinsic block size.
+// Mirrors Blink's BlockLayoutAlgorithm::PositionListMarkerWithoutLineBoxes
+// (block_layout_algorithm.cc:3926-3954). intrinsicBlockSize is updated in
+// place — this MUST run before builder.SetIntrinsicBlockSize / SetSize so the
+// marker's block-size contribution propagates.
+func (bla *BlockLayoutAlgorithm) positionListMarkerWithoutLineBoxes(
+	builder *BoxFragmentBuilder, intrinsicBlockSize *float64) {
+	marker := builder.GetUnpositionedListMarker()
+	if !marker.IsValid() {
+		return
+	}
+	markerResult := marker.Layout(bla.ctx, bla.space)
+	if markerResult == nil {
+		return
+	}
+	marker.AddToBoxWithoutLineBoxes(bla.ctx, markerResult, builder, intrinsicBlockSize)
+	builder.ClearUnpositionedListMarker()
+}
+
 func needsShrinkToFit(style *css.Style) bool {
 	if style == nil {
 		return false
 	}
 	d := style.GetDisplay()
-	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex || d == css.DisplayInlineTable {
+	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex ||
+		d == css.DisplayInlineTable || d == css.DisplayInlineListItem {
 		return true
 	}
 	if style.GetFloat() != css.FloatNone {

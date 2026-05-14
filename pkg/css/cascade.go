@@ -525,7 +525,17 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		parent := parentStyles[0]
 		inheritableProps := []string{"font-size", "font-family", "font-weight", "font-style",
 			"color", "line-height", "text-align", "white-space", "visibility",
-			"letter-spacing", "word-spacing", "text-indent", "text-transform"}
+			"letter-spacing", "word-spacing", "text-indent", "text-transform",
+			// CSS Lists §2: the list-style properties are inherited. A
+			// ::before / ::after pseudo-element with display:list-item is
+			// itself a list item and must pick up the originating subtree's
+			// list-style-type / -position / -image for its own ::marker box.
+			"list-style-type", "list-style-position", "list-style-image",
+			// CSS Writing Modes §2-3: writing-mode and direction are inherited.
+			// A pseudo-element (notably a ::marker laid out as a real box) must
+			// inherit them so its inline/block axes match the originating
+			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
+			"writing-mode", "direction"}
 		for _, prop := range inheritableProps {
 			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)

@@ -195,10 +195,12 @@ func (n *LayoutInputNode) TextContent() string {
 	return ""
 }
 
-// IsListItem returns true when this node establishes a list-item formatting
-// context (display:list-item). Mirrors Blink's BlockNode::IsListItem().
+// IsListItem returns true when this node establishes a list item — either
+// `display: list-item` (block-level) or `display: inline list-item`
+// (inline-level). Mirrors Blink's BlockNode::IsListItem() /
+// ComputedStyle::IsDisplayListItem().
 func (n *LayoutInputNode) IsListItem() bool {
-	return n.style != nil && n.style.GetDisplay() == css.DisplayListItem
+	return n.style != nil && n.style.IsListItemDisplay()
 }
 
 // ListMarkerBlockNodeIfListItem returns the ::marker pseudo-element
