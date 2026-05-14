@@ -851,6 +851,79 @@ func (b *LayoutTreeBuilder) resolveListStyleType(lst css.ListStyleType, node *ht
 	}
 }
 
+// formatCounterStyleValue formats an explicit counter value through a built-in
+// list-style-type, with or without the prefix/suffix. It is the value-driven
+// twin of resolveListStyleType (which derives the value from the DOM); both
+// share the same per-type representation so the marker-box path and the legacy
+// paint path agree. Symbol markers (disc/circle/square/disclosure-*) ignore
+// value and return their glyph.
+func formatCounterStyleValue(lst css.ListStyleType, value int, withSuffix bool) string {
+	suffix := ""
+	if withSuffix {
+		suffix = "."
+	}
+	switch lst {
+	case css.ListStyleTypeDisc:
+		return "•"
+	case css.ListStyleTypeCircle:
+		return "◦"
+	case css.ListStyleTypeSquare:
+		return "▪"
+	case css.ListStyleTypeDisclosureOpen:
+		return "▼"
+	case css.ListStyleTypeDisclosureClosed:
+		return "▶"
+	case css.ListStyleTypeDecimal:
+		return strconv.Itoa(value) + suffix
+	case css.ListStyleTypeDecimalLeadingZero:
+		if withSuffix {
+			return fmt.Sprintf("%02d.", value)
+		}
+		return fmt.Sprintf("%02d", value)
+	case css.ListStyleTypeLowerAlpha, css.ListStyleTypeLowerLatin:
+		return css.ToAlpha(value) + suffix
+	case css.ListStyleTypeUpperAlpha, css.ListStyleTypeUpperLatin:
+		return strings.ToUpper(css.ToAlpha(value)) + suffix
+	case css.ListStyleTypeLowerRoman:
+		return strings.ToLower(css.ToRoman(value)) + suffix
+	case css.ListStyleTypeUpperRoman:
+		return css.ToRoman(value) + suffix
+	case css.ListStyleTypeLowerGreek:
+		return css.ToGreek(value) + suffix
+	default:
+		return ""
+	}
+}
+
+// markerTextSourceLegacy is the Phase-1 concrete MarkerTextSource. It is the
+// ONLY code path that may reach the DOM-sibling ordinal hack
+// (getListItemCounterValue) and the built-in counter-style formatter; the
+// ListMarker box model reaches them solely through this interface.
+// docs/plan-css-lists.md B1-B5 replaces this implementation with the
+// CountersAttachmentContext + CounterStyle path without touching list_marker.go
+// or the marker box model.
+type markerTextSourceLegacy struct {
+	b *LayoutTreeBuilder
+}
+
+// OrdinalValue returns the list-item counter value via the existing DOM-sibling
+// counting hack. Blink: counter(list-item) through the attachment context.
+func (s markerTextSourceLegacy) OrdinalValue(item *LayoutInputNode) int {
+	if s.b == nil || item == nil {
+		return 1
+	}
+	return s.b.getListItemCounterValue(item.DOMNode)
+}
+
+// CounterStyleText formats an ordinal through the originating item's
+// list-style-type. Blink: CounterStyle::GenerateRepresentation[WithPrefixAndSuffix].
+func (s markerTextSourceLegacy) CounterStyleText(style *css.Style, value int, withPrefixSuffix bool) string {
+	if style == nil {
+		return ""
+	}
+	return formatCounterStyleValue(style.GetListStyleType(), value, withPrefixSuffix)
+}
+
 // isBuiltinListStyleType returns true for the predefined list-style-type values.
 // (Moved from inline_item.go — kept here for use by createMarkerPseudoElement.)
 func isBuiltinListStyleType(lst css.ListStyleType) bool {
