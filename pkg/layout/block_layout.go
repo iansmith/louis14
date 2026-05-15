@@ -2501,6 +2501,18 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		return emptyResult(space.WritingDirection)
 	}
 
+	// Inline <svg> routes through SVGRootAlgorithm before the display
+	// switch. The algorithm delegates outer sizing to BlockLayoutAlgorithm
+	// (byte-identical to pre-Phase-1 behavior) and additionally builds the
+	// SVG layout subtree (viewBox / preserveAspectRatio /
+	// localToBorderBoxTransform / SVGNode children) into node.SVGRoot.
+	// Mirrors Blink's LayoutSVGRoot : LayoutReplaced — the <svg> remains a
+	// CSS replaced-element box to its HTML parent and an SVG root to its
+	// children. See pkg/layout/svg_root_algorithm.go.
+	if IsInlineSVG(node) {
+		return NewSVGRootAlgorithm(ctx, node, space).Layout()
+	}
+
 	display := style.GetDisplay()
 
 	switch display {
