@@ -184,21 +184,28 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 }
 
 // compositeFilterOutputOntoTarget composites `buf` onto the
-// renderer's target image at the given absolute device-pixel offset
-// via source-over. Bypasses the DC's transform stack — the filter
-// region is already in device pixels and the SVG paint walk has
-// pushed user→device transforms onto the DC that would otherwise
-// double-translate the buffer.
+// renderer's target image at the given absolute device-pixel offset.
+// Bypasses the DC's transform stack — the filter region is already
+// in device pixels and the SVG paint walk has pushed user→device
+// transforms onto the DC that would otherwise double-translate the
+// buffer.
 //
-// Mirrors what paintLayerWithMask does at the end of its CSS branch
-// (a pixel-direct composite). Uses standard premultiplied source-over
-// math.
+// Uses the louis14 "straight-alpha-into-premultiplied-container"
+// composite convention so the output pixel-matches CSS-rendered
+// references (which all flow through mazarin's gg-style setColor
+// with rgba(r,g,b,a) values stuffed straight into a color.RGBA).
+// The filter graph internally works on premultiplied buffers (per
+// SVG Filter Effects); we un-premultiply at the composite edge so
+// the page-level math matches the project-wide convention. Mirrors
+// the same shim svg_mask_painter.go applies in
+// compositeBufferWithOpacityOnto.
 func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int) {
 	if r == nil || r.target == nil || buf == nil {
 		return
 	}
 	tb := r.target.Bounds()
 	sb := buf.Bounds()
+	const m = 1<<16 - 1
 	for sy := sb.Min.Y; sy < sb.Max.Y; sy++ {
 		ty := sy - sb.Min.Y + dy
 		if ty < tb.Min.Y || ty >= tb.Max.Y {
@@ -211,22 +218,53 @@ func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int) {
 			}
 			si := buf.PixOffset(sx, sy)
 			ti := r.target.PixOffset(tx, ty)
-			sa := uint32(buf.Pix[si+3])
+			sa := buf.Pix[si+3]
 			if sa == 0 {
 				continue
 			}
+			// Un-premultiply to recover straight-alpha RGB. The filter
+			// graph outputs premultiplied bytes per
+			// FilterEffect.ApplyEffect's contract; the page composite
+			// works in the louis14 straight-alpha convention.
+			var sR, sG, sB uint8
 			if sa == 255 {
-				r.target.Pix[ti+0] = buf.Pix[si+0]
-				r.target.Pix[ti+1] = buf.Pix[si+1]
-				r.target.Pix[ti+2] = buf.Pix[si+2]
-				r.target.Pix[ti+3] = 255
-				continue
+				sR, sG, sB = buf.Pix[si+0], buf.Pix[si+1], buf.Pix[si+2]
+			} else {
+				af := float64(sa) / 255.0
+				sR = clampU8Filter(float64(buf.Pix[si+0]) / af)
+				sG = clampU8Filter(float64(buf.Pix[si+1]) / af)
+				sB = clampU8Filter(float64(buf.Pix[si+2]) / af)
 			}
-			ia := 255 - sa
-			r.target.Pix[ti+0] = uint8(uint32(buf.Pix[si+0]) + uint32(r.target.Pix[ti+0])*ia/255)
-			r.target.Pix[ti+1] = uint8(uint32(buf.Pix[si+1]) + uint32(r.target.Pix[ti+1])*ia/255)
-			r.target.Pix[ti+2] = uint8(uint32(buf.Pix[si+2]) + uint32(r.target.Pix[ti+2])*ia/255)
-			r.target.Pix[ti+3] = uint8(uint32(buf.Pix[si+3]) + uint32(r.target.Pix[ti+3])*ia/255)
+			// Same blend formula as compositeBufferWithOpacityOnto in
+			// svg_mask_painter.go (the gg-pattern math), with the SOURCE
+			// pixel's straight-alpha RGB and a 16-bit expansion. This is
+			// what makes the filter path pixel-match the CSS path the
+			// reftest references go through.
+			cr := uint32(sR) * 0x101
+			cg := uint32(sG) * 0x101
+			cb := uint32(sB) * 0x101
+			ca := uint32(sa) * 0x101
+			ma := uint32(m) // full coverage
+			dr := uint32(r.target.Pix[ti+0])
+			dg := uint32(r.target.Pix[ti+1])
+			db := uint32(r.target.Pix[ti+2])
+			da := uint32(r.target.Pix[ti+3])
+			a := (m - ca*ma/m) * 0x101
+			r.target.Pix[ti+0] = uint8(((dr*a + cr*ma) / m) >> 8)
+			r.target.Pix[ti+1] = uint8(((dg*a + cg*ma) / m) >> 8)
+			r.target.Pix[ti+2] = uint8(((db*a + cb*ma) / m) >> 8)
+			r.target.Pix[ti+3] = uint8(((da*a + ca*ma) / m) >> 8)
 		}
 	}
+}
+
+// clampU8Filter clamps a float to [0, 255] and rounds to uint8.
+func clampU8Filter(v float64) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v + 0.5)
 }

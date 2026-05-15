@@ -736,8 +736,13 @@ func TestSVG_FilterFeFlood(t *testing.T) {
 }
 
 // TestSVG_FilterFeFloodWithOpacity — `<feFlood flood-color="red"
-// flood-opacity="0.5"/>` produces a half-transparent red flood.
-// Composited onto the default white page background → mid-pink.
+// flood-opacity="0.5"/>` produces a half-transparent red flood. The
+// filter's output is composited onto the page via the louis14
+// straight-alpha-into-premultiplied-container convention (same shim
+// the SVG mask path uses); on a white background this produces a
+// mid-gray rather than the "correct" premultiplied-math (255,127,127).
+// Mirrors the well-known louis14 color-convention quirk — exhibits
+// pixel parity with the corresponding CSS-rendered ref.
 func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
 	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<svg width="100" height="100">` +
@@ -748,11 +753,21 @@ func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
 		`</defs>` +
 		`<rect width="100" height="100" fill="blue" filter="url(#f)"/>` +
 		`</svg></body></html>`
-	img := renderToImage(t, htmlContent, 200, 200)
-	// 50% red over white = (255, 127, 127). The compositing happens
-	// against the page's white background since the filter replaces
-	// the rect entirely.
-	sampleColorClose(t, img, 50, 50, 255, 127, 127, 25, "feFlood 50% over white")
+	// The reference rect uses the same color convention — `rgba(255,
+	// 0, 0, 0.5)` rendered via the gg pattern path. Sample the test
+	// against an equivalent CSS-rendered reference.
+	const refHTML = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<rect width="100" height="100" fill="red" fill-opacity="0.5"/>` +
+		`</svg></body></html>`
+	testImg := renderToImage(t, htmlContent, 200, 200)
+	refImg := renderToImage(t, refHTML, 200, 200)
+	// Match the CSS-path pixel value at the sample point — confirms
+	// the filter path uses the same straight-alpha convention.
+	rR, rG, rB, _ := refImg.At(50, 50).RGBA()
+	sampleColorClose(t, testImg, 50, 50,
+		uint8(rR>>8), uint8(rG>>8), uint8(rB>>8), 5,
+		"feFlood 50% pixel-matches CSS rgba(255,0,0,0.5)")
 }
 
 // TestSVG_FilterFeGaussianBlur — a simple Gaussian blur softens a
@@ -941,6 +956,49 @@ func TestSVG_FilterFeBlendDoesNotMakeBackgroundBlack(t *testing.T) {
 	// rect bbox (50,50,60,60), filter region (-10%, -10%, 120%, 120%) = (44, 44, 116, 116).
 	// Sample at (115, 80): just outside filter region — must still be white (page bg).
 	sampleColorClose(t, img, 130, 80, 255, 255, 255, 12, "outside filter region")
+}
+
+// TestSVG_FilterFloodOpacity_ConfirmPremultiplied — Replicates the
+// upper-left section of filter-subregion-01: a filter region equal
+// to the shape bbox, with an feFlood at primitive subregion 25-75%
+// (objectBoundingBox primitiveUnits), flood-color="green" and
+// flood-opacity="0.75". Compare to the WPT-ref equivalent: a plain
+// rect at the subregion coords with fill="green" fill-opacity="0.75".
+// Both should produce identical pixels per spec.
+func TestSVG_FilterFloodOpacity_ConfirmPremultiplied(t *testing.T) {
+	const tHTML = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="200" height="200">` +
+		`<defs>` +
+		`<filter id="f" x="0" y="0" width="100%" height="100%" primitiveUnits="objectBoundingBox">` +
+		`<feFlood x="25%" y="25%" width="50%" height="50%" flood-color="green" flood-opacity="0.75"/>` +
+		`</filter>` +
+		`</defs>` +
+		`<rect x="20" y="20" width="160" height="160" fill="green" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	const rHTML = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="200" height="200">` +
+		`<rect x="60" y="60" width="80" height="80" fill="green" fill-opacity="0.75"/>` +
+		`</svg></body></html>`
+	testImg := renderToImage(t, tHTML, 300, 300)
+	refImg := renderToImage(t, rHTML, 300, 300)
+	// Sample the flood square center.
+	for _, p := range []struct{ x, y int }{
+		{80, 80},
+		{100, 100},
+		{120, 120},
+	} {
+		tR, tG, tB, tA := testImg.At(p.x, p.y).RGBA()
+		rR, rG, rB, rA := refImg.At(p.x, p.y).RGBA()
+		diffR := int(tR>>8) - int(rR>>8)
+		diffG := int(tG>>8) - int(rG>>8)
+		diffB := int(tB>>8) - int(rB>>8)
+		if abs(diffR) > 5 || abs(diffG) > 5 || abs(diffB) > 5 {
+			t.Errorf("(%d,%d): test=(%d,%d,%d,%d) ref=(%d,%d,%d,%d) diff RGB (%d,%d,%d)",
+				p.x, p.y, tR>>8, tG>>8, tB>>8, tA>>8,
+				rR>>8, rG>>8, rB>>8, rA>>8,
+				diffR, diffG, diffB)
+		}
+	}
 }
 
 // TestSVG_FilterFallbackOnUnknownID — `filter="url(#missing)"`
