@@ -326,6 +326,12 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// the page can then resolve against this single registry. See
 	// svgResources comment on the Renderer type.
 	r.svgResources = collectSVGResources(boxes)
+	// Phase 6: detect reference cycles. Cycle-flagged resources
+	// (a self-referential `<mask>`, two masks pointing at each other,
+	// etc.) are treated as `none` at paint time so the painters don't
+	// infinite-loop. Mirrors Blink's SVGResourcesCycleSolver pass that
+	// runs after the registry is built and before any paint dispatch.
+	svg.SolveResourceCycles(r.svgResources)
 	r.paintCanvasBackground(boxes)
 
 	// Paint via PaintLayer tree (CSS 2.1 Appendix E stacking order).
@@ -682,9 +688,9 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	// reference page (which uses rgba(c, a) and goes through plain
 	// CSS-color rendering), the SVG-mask code path must apply
 	// opacity post-mask via the SAME per-channel multiplication.
-	if id, ok := parseURLFragment(maskVal); ok {
+	if id, ok := css.ParseURLReference(maskVal); ok {
 		if registry := r.lookupSVGResources(); registry != nil {
-			if masker, ok := registry.LookupMasker(id); ok && masker != nil {
+			if masker, ok := registry.LookupMasker(id); ok && masker != nil && masker.CycleState() != svg.SVGCycleHasCycle {
 				// Repaint the layer WITHOUT opacity, into a fresh
 				// buffer. We re-create `buf` because the existing
 				// one above had opacity baked in via PushGroup.

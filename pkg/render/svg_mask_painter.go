@@ -3,7 +3,6 @@ package render
 import (
 	"image"
 	"math"
-	"strings"
 
 	"louis14/pkg/geometry"
 	"louis14/pkg/layout/svg"
@@ -28,50 +27,11 @@ import (
 // `url(#fragment)` and the fragment resolves to an SVGResourceMasker,
 // take the SVG branch.
 
-// parseURLFragment returns the bare `id` from a `url(#id)` value,
-// stripping the leading `#`. Returns ("", false) when the value is
-// not a url() of a fragment reference. Mirrors the parsing in the
-// CSS Image Values L4 §3.1 `<url>` grammar.
-//
-// Accepts:
-//
-//	url(#id)
-//	url("#id")
-//	url('#id')
-//	url(path#id)        — strips the path part
-//	url(#id), url(#id2) — extracts only the FIRST fragment
-//
-// The shorthand `mask: url(#m)` / `mask-image: url(#m)` resolves
-// against the document fragment id space (SVG 2 §3.1).
-func parseURLFragment(val string) (string, bool) {
-	val = strings.TrimSpace(val)
-	// Handle comma-separated lists by taking the first.
-	if i := strings.Index(val, ","); i >= 0 {
-		val = strings.TrimSpace(val[:i])
-	}
-	if !strings.HasPrefix(val, "url(") {
-		return "", false
-	}
-	if !strings.HasSuffix(val, ")") {
-		return "", false
-	}
-	inner := val[4 : len(val)-1]
-	inner = strings.TrimSpace(inner)
-	inner = strings.Trim(inner, `"'`)
-	if inner == "" {
-		return "", false
-	}
-	// Only fragment-bearing URLs resolve via the SVG registry.
-	idx := strings.Index(inner, "#")
-	if idx < 0 {
-		return "", false
-	}
-	id := inner[idx+1:]
-	if id == "" {
-		return "", false
-	}
-	return id, true
-}
+// Phase 6: URL fragment parsing moved to css.ParseURLReference. All
+// callsites in this package now consume that shared helper so `mask`,
+// `mask-image`, `clip-path`, `filter`, and `fill`/`stroke` paint
+// server references parse uniformly. Mirrors Blink's
+// `CSSURIValue::FragmentIdentifier`.
 
 // rasterizeSVGMask rasterizes the `<mask>`'s children into an
 // *image.RGBA at the device-pixel resolution of `refBox` (the

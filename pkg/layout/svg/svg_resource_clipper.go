@@ -57,10 +57,23 @@ type SVGResourceClipper struct {
 	// elementStyle is the clipper element's resolved style. Carries
 	// the `clip-rule` property for the unioned-children fill rule.
 	elementStyle *css.Style
+
+	// cycleState carries the cycle-detection state machine; flipped
+	// by the SVGResourcesCycleSolver DFS once per paint frame.
+	cycleState SVGCycleState
 }
 
 // ID implements the SVG resource interface (registry lookup key).
 func (c *SVGResourceClipper) ID() string { return c.ResourceID }
+
+// Kind implements SVGResource — Phase 6.
+func (c *SVGResourceClipper) Kind() SVGResourceKind { return SVGResourceKindClipper }
+
+// CycleState implements SVGResource — Phase 6.
+func (c *SVGResourceClipper) CycleState() SVGCycleState { return c.cycleState }
+
+// SetCycleState implements SVGResource — Phase 6.
+func (c *SVGResourceClipper) SetCycleState(s SVGCycleState) { c.cycleState = s }
 
 // ObjectBoundingBox returns an empty bbox — clipper resource elements
 // don't contribute to the SVG tree's paint bounds. Mirrors Blink's

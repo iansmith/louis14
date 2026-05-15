@@ -1,136 +1,157 @@
 package svg
 
-// SVGResourceRegistry is a simple `id` → resource lookup attached to
-// an SVGRoot. Mirrors Blink's per-document SVGResourceRegistry
-// (core/svg/svg_resource.{h,cc}) but scoped to a single outer SVG
-// subtree — louis14's resource scope is the outermost `<svg>`, which
-// matches the way `url(#…)` references resolve against the same
-// document fragment.
+// SVGResourceRegistry is the `id` → resource map for `url(#…)`
+// references. Mirrors Blink's per-document SVGTreeScopeResources
+// (core/svg/svg_resource.{h,cc}, core/svg/svg_tree_scope_resources.{h,cc}).
 //
-// Phase 5 widens this to carry clip-paths and masks alongside paint
-// servers. The registry keeps separate per-kind maps because the
-// resolution paths are different: paint servers feed the paint-server
-// shader pipeline (svg_paint_server.go), clippers feed the clip path
-// pipeline (svg_clip_painter.go), and maskers feed the mask painter
-// (svg_mask_painter.go). Phase 6 will promote this to a single
-// `SVGResource` umbrella interface with cycle detection across all
-// resource kinds (mirrors Blink's LayoutSVGResourceContainer).
+// Phase 6 unifies the per-kind maps used in Phases 4-5 into a single
+// `id`-keyed map of `SVGResource` (the umbrella interface). The single
+// namespace matches the SVG 2 §3.1 rule that all resource elements
+// share the document's fragment id space — a `<linearGradient id="x">`
+// and a `<clipPath id="x">` cannot coexist (first-wins per registration
+// order, which the registry preserves through pre-order document walk).
+//
+// Per-kind lookup helpers (LookupAsPaintServer, LookupClipper,
+// LookupMasker) wrap the umbrella Lookup with a type assertion so
+// callsites don't have to switch on the concrete type. Each helper
+// returns (zero, false) for an unknown id OR for an id resolved to the
+// wrong resource kind (matches Blink's SVGTreeScopeResources::ResourceForId
+// which returns nullptr for a wrong-typed cast).
 type SVGResourceRegistry struct {
-	paintServers map[string]SVGResourcePaintServer
-	clippers     map[string]*SVGResourceClipper
-	maskers      map[string]*SVGResourceMasker
+	resources map[string]SVGResource
 }
 
-// NewSVGResourceRegistry builds an empty registry. Returned by-value
-// so callers can store it inline on SVGRoot without allocating an
-// extra heap object.
+// NewSVGResourceRegistry builds an empty registry.
 func NewSVGResourceRegistry() *SVGResourceRegistry {
 	return &SVGResourceRegistry{
-		paintServers: make(map[string]SVGResourcePaintServer),
-		clippers:     make(map[string]*SVGResourceClipper),
-		maskers:      make(map[string]*SVGResourceMasker),
+		resources: make(map[string]SVGResource),
 	}
 }
 
-// RegisterPaintServer attaches a paint-server resource by ID. An
-// empty ID is silently rejected (the spec requires an `id` attribute
-// for `url(#…)` reachability per SVG 2 §3.1). Duplicate IDs follow
-// the spec's "first wins" rule: subsequent registrations with the
-// same ID are ignored. Mirrors how Blink's SVGTreeScopeResources
-// rejects re-registration without raising an error.
+// Register attaches a resource by ID. Empty ID is silently rejected
+// (per SVG 2 §3.1 an id is required for `url(#…)` reachability).
+// Duplicate IDs follow first-wins (Blink's SVGTreeScopeResources rejects
+// re-registration without raising an error — matches our behavior).
+func (r *SVGResourceRegistry) Register(res SVGResource) {
+	if r == nil || res == nil {
+		return
+	}
+	id := res.ID()
+	if id == "" {
+		return
+	}
+	if _, exists := r.resources[id]; exists {
+		return
+	}
+	r.resources[id] = res
+}
+
+// RegisterPaintServer attaches a paint-server resource (gradient or
+// pattern) by ID. Thin compatibility wrapper kept so Phase 4/5 callsites
+// in svg_root.go don't need to drop their typed signatures.
 func (r *SVGResourceRegistry) RegisterPaintServer(server SVGResourcePaintServer) {
-	if r == nil || server == nil {
+	if server == nil {
 		return
 	}
-	id := server.ID()
-	if id == "" {
-		return
-	}
-	if _, exists := r.paintServers[id]; exists {
-		return
-	}
-	r.paintServers[id] = server
+	r.Register(server)
 }
 
-// RegisterClipper attaches a `<clipPath>` resource by ID. Same id
-// rules as RegisterPaintServer (empty id rejected, first-write wins).
-// `<clipPath>` and paint-server IDs share the same `url(#id)`
-// namespace per SVG 2 §3.1 — but louis14 keys them by resolution
-// path, so a `<linearGradient id="x">` and `<clipPath id="x">` can
-// coexist (Blink's behavior is to refuse the second registration with
-// the same id; if a real reftest exercises that pathology we'll add
-// a cross-kind dedup. For Phase 5 the per-kind isolation is fine.)
+// RegisterClipper attaches a `<clipPath>` resource by ID.
 func (r *SVGResourceRegistry) RegisterClipper(c *SVGResourceClipper) {
-	if r == nil || c == nil {
+	if c == nil {
 		return
 	}
-	id := c.ID()
-	if id == "" {
-		return
-	}
-	if _, exists := r.clippers[id]; exists {
-		return
-	}
-	r.clippers[id] = c
+	r.Register(c)
 }
 
 // RegisterMasker attaches a `<mask>` resource by ID.
 func (r *SVGResourceRegistry) RegisterMasker(m *SVGResourceMasker) {
-	if r == nil || m == nil {
+	if m == nil {
 		return
 	}
-	id := m.ID()
-	if id == "" {
-		return
-	}
-	if _, exists := r.maskers[id]; exists {
-		return
-	}
-	r.maskers[id] = m
+	r.Register(m)
 }
 
-// Lookup returns the paint-server resource registered under `id`.
-// Returns (nil, false) for an unknown id. The id is matched case-
-// sensitively, matching the SVG/HTML id-attribute model.
-func (r *SVGResourceRegistry) Lookup(id string) (SVGResourcePaintServer, bool) {
+// Lookup returns the resource registered under `id`. Returns (nil,
+// false) for an unknown id. The id is matched case-sensitively per the
+// HTML/SVG id-attribute model. Callers that want a kind-typed result
+// use the per-kind Lookup* wrappers below.
+func (r *SVGResourceRegistry) Lookup(id string) (SVGResource, bool) {
 	if r == nil {
 		return nil, false
 	}
-	s, ok := r.paintServers[id]
-	return s, ok
+	res, ok := r.resources[id]
+	return res, ok
+}
+
+// LookupAsPaintServer returns the paint-server resource (gradient or
+// pattern) registered under `id`. Returns (nil, false) for an unknown
+// id, or for an id registered as a non-paint-server kind (e.g. a
+// `<clipPath id="x">` reached by `fill: url(#x)`).
+func (r *SVGResourceRegistry) LookupAsPaintServer(id string) (SVGResourcePaintServer, bool) {
+	res, ok := r.Lookup(id)
+	if !ok {
+		return nil, false
+	}
+	if ps, ok := res.(SVGResourcePaintServer); ok {
+		return ps, true
+	}
+	return nil, false
 }
 
 // LookupClipper returns the `<clipPath>` resource registered under
-// `id`. Returns (nil, false) for an unknown id.
+// `id`. Returns (nil, false) when the id is unknown or registered as
+// a different kind.
 func (r *SVGResourceRegistry) LookupClipper(id string) (*SVGResourceClipper, bool) {
-	if r == nil {
+	res, ok := r.Lookup(id)
+	if !ok {
 		return nil, false
 	}
-	c, ok := r.clippers[id]
-	return c, ok
+	c, ok := res.(*SVGResourceClipper)
+	if !ok {
+		return nil, false
+	}
+	return c, true
 }
 
 // LookupMasker returns the `<mask>` resource registered under `id`.
+// Returns (nil, false) when the id is unknown or registered as a
+// different kind.
 func (r *SVGResourceRegistry) LookupMasker(id string) (*SVGResourceMasker, bool) {
-	if r == nil {
+	res, ok := r.Lookup(id)
+	if !ok {
 		return nil, false
 	}
-	m, ok := r.maskers[id]
-	return m, ok
+	m, ok := res.(*SVGResourceMasker)
+	if !ok {
+		return nil, false
+	}
+	return m, true
+}
+
+// ForEach invokes `fn` for each registered resource in map-iteration
+// order (unspecified). Used by the renderer to merge per-SVGRoot
+// registries into a single page-wide registry and by the cycle solver.
+func (r *SVGResourceRegistry) ForEach(fn func(SVGResource)) {
+	if r == nil || fn == nil {
+		return
+	}
+	for _, res := range r.resources {
+		fn(res)
+	}
 }
 
 // ForEachPaintServer invokes `fn` for each registered paint server.
-// Used by the renderer to merge per-SVGRoot registries into a single
-// page-wide registry (collectSVGResources in pkg/render). Iteration
-// order is map-iteration order (unspecified) — callers that need a
-// stable order must sort externally. Phase 5 only uses this for
-// merging; the merge target's first-wins rule is order-insensitive.
+// Retained for Phase 4/5 callsites; new code should use ForEach +
+// type assertion, or LookupAsPaintServer at the resolution site.
 func (r *SVGResourceRegistry) ForEachPaintServer(fn func(SVGResourcePaintServer)) {
 	if r == nil || fn == nil {
 		return
 	}
-	for _, s := range r.paintServers {
-		fn(s)
+	for _, res := range r.resources {
+		if ps, ok := res.(SVGResourcePaintServer); ok {
+			fn(ps)
+		}
 	}
 }
 
@@ -139,8 +160,10 @@ func (r *SVGResourceRegistry) ForEachClipper(fn func(*SVGResourceClipper)) {
 	if r == nil || fn == nil {
 		return
 	}
-	for _, c := range r.clippers {
-		fn(c)
+	for _, res := range r.resources {
+		if c, ok := res.(*SVGResourceClipper); ok {
+			fn(c)
+		}
 	}
 }
 
@@ -149,7 +172,18 @@ func (r *SVGResourceRegistry) ForEachMasker(fn func(*SVGResourceMasker)) {
 	if r == nil || fn == nil {
 		return
 	}
-	for _, m := range r.maskers {
-		fn(m)
+	for _, res := range r.resources {
+		if m, ok := res.(*SVGResourceMasker); ok {
+			fn(m)
+		}
 	}
+}
+
+// Count returns the number of registered resources. Used by the
+// cycle-solver tests to verify registration counts.
+func (r *SVGResourceRegistry) Count() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.resources)
 }

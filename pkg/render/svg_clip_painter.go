@@ -64,6 +64,12 @@ func (r *Renderer) applySVGClipPath(target geometry.RectF, clipPathReferenceID s
 		r.dc.Clip()
 		return true
 	}
+	// Phase 6: a clipper that participates in a reference cycle is
+	// treated as `none` — no clipping is applied. Mirrors Blink's
+	// LayoutSVGResourceContainer::FindCycle outcome.
+	if clipper.CycleState() == svg.SVGCycleHasCycle {
+		return false
+	}
 	if path, ok := clipper.AsPath(target); ok {
 		// Shape-based fast path: replay the path on the DC and clip.
 		buildSVGPathOnDC(r.dc, &path)
@@ -201,6 +207,10 @@ func (r *Renderer) applySVGClipPathOnSVGShape(pctx *svgPaintContext, refBoxUser 
 		pctx.dc.DrawRectangle(0, 0, 0, 0)
 		pctx.dc.Clip()
 		return true
+	}
+	// Phase 6: drop the reference for cycle-flagged clippers.
+	if clipper.CycleState() == svg.SVGCycleHasCycle {
+		return false
 	}
 	if path, ok := clipper.AsPath(refBoxUser); ok {
 		buildSVGPathOnDC(pctx.dc, &path)

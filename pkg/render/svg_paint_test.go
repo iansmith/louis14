@@ -625,3 +625,87 @@ func TestSVG_MaskAlpha(t *testing.T) {
 	// 255*0.5 = 127; b = 0*0.5 + 255*0.5 = 127.
 	sampleColorClose(t, img, 50, 50, 255, 127, 127, 14, "alpha mask (50,50)")
 }
+
+// TestSVG_CyclicMaskReference — Phase 6 cycle detection. A `<mask>`
+// whose subtree references itself (mask="url(#m1)") must NOT cause the
+// painter to recurse forever. The cycle-flagged mask is treated as
+// `none`, so the referencing red rect paints as if unmasked.
+func TestSVG_CyclicMaskReference(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<mask id="m1" maskContentUnits="userSpaceOnUse">` +
+		`<rect width="100" height="100" fill="white" mask="url(#m1)"/>` +
+		`</mask>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" mask="url(#m1)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Cycle → mask dropped → red rect paints unmasked. Center is red.
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "self-cyclic mask (50,50)")
+}
+
+// TestSVG_MutualMaskCycle — Phase 6 cycle detection. Two masks each
+// reference the other through their subtree's `mask` attribute; both
+// must be flagged HasCycle and treated as `none`. The referencing red
+// rect paints unmasked.
+func TestSVG_MutualMaskCycle(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<mask id="ma" maskContentUnits="userSpaceOnUse">` +
+		`<rect width="100" height="100" fill="white" mask="url(#mb)"/>` +
+		`</mask>` +
+		`<mask id="mb" maskContentUnits="userSpaceOnUse">` +
+		`<rect width="100" height="100" fill="white" mask="url(#ma)"/>` +
+		`</mask>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" mask="url(#ma)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "mutual mask cycle (50,50)")
+}
+
+// TestSVG_CyclicClipPath — Phase 6 cycle detection. A `<clipPath>`
+// whose child carries `clip-path="url(#c1)"` self-references; the
+// painter must not infinite-loop. The cycle-flagged clipper is
+// treated as `none` (no clipping applied), so the referencing rect
+// paints fully.
+func TestSVG_CyclicClipPath(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<clipPath id="c1" clipPathUnits="userSpaceOnUse">` +
+		`<rect width="100" height="100" clip-path="url(#c1)"/>` +
+		`</clipPath>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" clip-path="url(#c1)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Cycle → no clipping → red rect paints fully.
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "self-cyclic clip-path (50,50)")
+}
+
+// TestSVG_ResourceLookupAfterRegistryMerge — sanity check that the
+// Phase 6 umbrella-registry refactor still resolves a `<linearGradient>`
+// declared in the same inline `<svg>` and referenced by a sibling shape
+// via `fill="url(#g)"`. Verifies the single-map registry's
+// LookupAsPaintServer path is wired correctly.
+func TestSVG_ResourceLookupAfterRegistryMerge(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="g" gradientUnits="objectBoundingBox" x1="0" y1="0" x2="1" y2="0">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#g)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Left edge ≈ black, right edge ≈ white (same expectation as the
+	// pre-Phase-6 LinearGradientObjectBBox test, just routed through
+	// the umbrella Lookup).
+	sampleColorClose(t, img, 5, 50, 0, 0, 0, 18, "gradient left (5,50)")
+	sampleColorClose(t, img, 95, 50, 255, 255, 255, 18, "gradient right (95,50)")
+}

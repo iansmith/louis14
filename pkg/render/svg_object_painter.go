@@ -212,9 +212,14 @@ func (op *svgObjectPainter) resolvePaint(paint css.SVGPaint, opacity float64, is
 		// if supplied (SVG 2 `url(#id) color` syntax), else apply the
 		// "treat as none" rule.
 		if op.resources != nil {
-			if server, ok := op.resources.Lookup(paint.ServerID); ok {
-				if shader, built := buildPaintShader(server, op.refBox, op.lengthCtx, opacity); built {
-					return svgPaintResolution{mode: svgPaintShader, shader: shader}
+			if server, ok := op.resources.LookupAsPaintServer(paint.ServerID); ok {
+				// Phase 6: a paint server in a reference cycle is
+				// treated as `none`; fall through to the fallback
+				// color (if any) or skip the draw.
+				if server.CycleState() != svg.SVGCycleHasCycle {
+					if shader, built := buildPaintShader(server, op.refBox, op.lengthCtx, opacity, op.resources); built {
+						return svgPaintResolution{mode: svgPaintShader, shader: shader}
+					}
 				}
 			}
 		}

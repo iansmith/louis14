@@ -116,7 +116,7 @@ func (s *patternShader) SampleAt(userX, userY float64) css.Color {
 //
 // Empty / zero tile returns (nil, false) so the caller treats it as
 // "no paint" per SVG 1.1 §13.3 ("a zero-sized tile produces no paint").
-func buildPatternShader(p *svg.SVGPattern, referenceBox geometry.RectF, lengthCtx svg.SVGLengthContext, opacity float64) (paintShader, bool) {
+func buildPatternShader(p *svg.SVGPattern, referenceBox geometry.RectF, lengthCtx svg.SVGLengthContext, opacity float64, resources *svg.SVGResourceRegistry) (paintShader, bool) {
 	if p == nil {
 		return nil, false
 	}
@@ -178,7 +178,7 @@ func buildPatternShader(p *svg.SVGPattern, referenceBox geometry.RectF, lengthCt
 		// Build a temporary renderer sharing the host renderer's
 		// fonts/imageFetcher. No SVG-tree resolution beyond the
 		// tile is needed.
-		renderTileContent(p, tile, pxW, pxH, tileUserW, tileUserH, referenceBox)
+		renderTileContent(p, tile, pxW, pxH, tileUserW, tileUserH, referenceBox, resources)
 	}
 
 	// Compose patternTransform: in objectBBox mode the transform
@@ -228,7 +228,7 @@ func buildPatternShader(p *svg.SVGPattern, referenceBox geometry.RectF, lengthCt
 // (the children's percentages resolve against a synthetic
 // LengthContext sized to the bbox). The Phase 4 hand-check test only
 // exercises the userSpaceOnUse-style child shapes.
-func renderTileContent(p *svg.SVGPattern, tile *image.RGBA, pxW, pxH int, tileUserW, tileUserH float64, referenceBox geometry.RectF) {
+func renderTileContent(p *svg.SVGPattern, tile *image.RGBA, pxW, pxH int, tileUserW, tileUserH float64, referenceBox geometry.RectF, resources *svg.SVGResourceRegistry) {
 	// Start with a transparent tile (the default for image.RGBA).
 	// Then paint each child as a standalone svg.SVGRoot, scaled so
 	// (0,0)..(tileUserW, tileUserH) in user space → (0,0)..(pxW, pxH)
@@ -266,8 +266,11 @@ func renderTileContent(p *svg.SVGPattern, tile *image.RGBA, pxW, pxH int, tileUs
 		viewport:         geometry.NewRectF(0, 0, ctxSize.Width, ctxSize.Height),
 		CurrentTransform: geometry.Identity(),
 		DeviceFromUser:   deviceFromUser,
-		Resources:        nil, // nested resource references inside patterns not supported in Phase 4
-		Renderer:         tileR,
+		// Phase 6: thread the umbrella registry so nested url(#…)
+		// references inside `<pattern>` children resolve (gradients,
+		// clippers, masks, other patterns).
+		Resources: resources,
+		Renderer:  tileR,
 	}
 	_ = pctx
 	_ = referenceBox
