@@ -196,7 +196,7 @@ func TestSVGLengthContext_Empty(t *testing.T) {
 // TestBuildSVGRoot_NoViewBox: an <svg> without viewBox should produce an
 // identity local-to-border-box transform.
 func TestBuildSVGRoot_NoViewBox(t *testing.T) {
-	root := BuildSVGRoot(&fakeAdapter{tag: "svg"}, geometry.SizeF{Width: 200, Height: 100})
+	root := BuildSVGRoot(&fakeAdapter{tag: "svg"}, geometry.SizeF{Width: 200, Height: 100}, nil)
 	if !root.LocalToBorderBoxTransform.IsIdentity() {
 		t.Errorf("no-viewBox root transform = %+v, want identity", root.LocalToBorderBoxTransform)
 	}
@@ -211,6 +211,7 @@ func TestBuildSVGRoot_WithViewBox(t *testing.T) {
 	root := BuildSVGRoot(
 		&fakeAdapter{tag: "svg", attrs: map[string]string{"viewbox": "0 0 100 100"}},
 		geometry.SizeF{Width: 200, Height: 200},
+		nil,
 	)
 	if !root.ViewBox.Valid {
 		t.Fatal("ViewBox.Valid = false, want true")
@@ -222,13 +223,14 @@ func TestBuildSVGRoot_WithViewBox(t *testing.T) {
 	}
 }
 
-// TestBuildSVGRoot_StubChildren: every nested element becomes an
-// SVGContainer stub. Phase 1: no shapes, no transforms, no paint.
-func TestBuildSVGRoot_StubChildren(t *testing.T) {
+// TestBuildSVGRoot_TreeStructure: Phase 2 routes the seven shape tags
+// to SVGShape and keeps SVGContainer as the recursive fallback for
+// other tags (e.g. <g>, until Phase 3).
+func TestBuildSVGRoot_TreeStructure(t *testing.T) {
 	rect := &fakeAdapter{tag: "rect"}
 	g := &fakeAdapter{tag: "g", children: []*fakeAdapter{rect}}
 	svgElt := &fakeAdapter{tag: "svg", children: []*fakeAdapter{g}}
-	root := BuildSVGRoot(svgElt, geometry.SizeF{Width: 100, Height: 100})
+	root := BuildSVGRoot(svgElt, geometry.SizeF{Width: 100, Height: 100}, nil)
 	if len(root.Children) != 1 {
 		t.Fatalf("root.Children len = %d, want 1", len(root.Children))
 	}
@@ -242,19 +244,21 @@ func TestBuildSVGRoot_StubChildren(t *testing.T) {
 	if len(gNode.Children) != 1 {
 		t.Fatalf("g.Children len = %d, want 1", len(gNode.Children))
 	}
-	rNode, ok := gNode.Children[0].(*SVGContainer)
+	// Phase 2: <rect> is an SVGShape now, not a stub container.
+	rNode, ok := gNode.Children[0].(*SVGShape)
 	if !ok {
-		t.Fatalf("rect node type = %T, want *SVGContainer (Phase 1 stub)", gNode.Children[0])
+		t.Fatalf("rect node type = %T, want *SVGShape (Phase 2 shape)", gNode.Children[0])
 	}
 	if rNode.TagName != "rect" {
-		t.Errorf("rect container TagName = %q, want %q", rNode.TagName, "rect")
+		t.Errorf("rect shape TagName = %q, want %q", rNode.TagName, "rect")
 	}
-	// UpdateSVGLayout walks all stubs without panicking.
+	// UpdateSVGLayout walks the subtree without panicking.
 	res := root.UpdateSVGLayout(SVGLayoutInfo{ForceLayout: true})
 	if res.BoundsChanged || res.HasViewportDependence {
-		t.Errorf("Phase 1 stubs reported non-empty result: %+v", res)
+		t.Errorf("Phase 2 layout reported non-empty result: %+v", res)
 	}
-	// Paint is a no-op; just make sure it doesn't crash.
+	// Paint on the root is a no-op; the renderer drives shape paint via
+	// pkg/render/svg_root_painter.go. Make sure root.Paint doesn't crash.
 	root.Paint(&SVGPaintContext{})
 }
 

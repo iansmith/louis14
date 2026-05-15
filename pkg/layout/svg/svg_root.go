@@ -1,6 +1,9 @@
 package svg
 
-import "louis14/pkg/geometry"
+import (
+	"louis14/pkg/css"
+	"louis14/pkg/geometry"
+)
 
 // ElementAdapter is the abstract DOM-element view consumed by the SVG
 // tree builder. It exists so pkg/layout/svg avoids importing pkg/layout
@@ -107,15 +110,26 @@ func (r *SVGRoot) Paint(ctx *SVGPaintContext) {
 	// Phase 1: no-op. SVG content still renders blank.
 }
 
+// StyleResolver maps an SVG ElementAdapter to the element's resolved
+// computed style. Supplied by the caller (pkg/layout's tree builder
+// has the per-DOM-node styles map populated by css.ComputeStyle). May
+// return nil for elements that didn't get cascade attention — the
+// painter falls back to SVG property defaults in that case.
+type StyleResolver func(ElementAdapter) *css.Style
+
 // BuildSVGRoot constructs an SVGRoot from an <svg> ElementAdapter and the
 // physical content-box size of its CSS box. Performs the viewBox /
 // preserveAspectRatio parse and computes the local-to-border-box
 // transform. The SVG subtree is built by BuildSVGTree.
 //
-// Phase 1 dispatch in BuildSVGTree recognizes only <svg> at the root; for
-// every nested element it produces an SVGContainer stub. Phase 2 adds
-// shapes, Phase 3 adds <g>/nested-<svg> with transforms.
-func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF) *SVGRoot {
+// The styleResolver callback is invoked for every element built into
+// the subtree; the resolved *css.Style is attached to the SVGShape /
+// SVGContainer for the painter to read at paint time. nil is
+// tolerated (e.g. for tests that only exercise geometry); SVG
+// default values then apply.
+//
+// Phase 2 adds shape dispatch; Phase 3 will add <g>/nested-<svg>.
+func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, styleResolver StyleResolver) *SVGRoot {
 	if svgElement == nil {
 		return &SVGRoot{
 			ContainerSize:             containerSize,
@@ -160,7 +174,7 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF) *SVGR
 	// Build the SVG layout subtree from the <svg>'s children.
 	lengthCtx := NewSVGLengthContext(containerSize)
 	for _, child := range svgElement.SVGChildren() {
-		node := BuildSVGTree(child, lengthCtx)
+		node := BuildSVGTree(child, lengthCtx, styleResolver)
 		if node != nil {
 			root.Children = append(root.Children, node)
 		}
@@ -170,24 +184,37 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF) *SVGR
 }
 
 // BuildSVGTree dispatches an ElementAdapter to the right SVGNode
-// constructor based on its tag name. Phase 1: recognizes only <svg> at
-// the root (handled by BuildSVGRoot, never by recursion through here);
-// every nested element produces an SVGContainer stub.
+// constructor based on its tag name. Phase 2 recognizes the seven
+// shape tags (<rect>, <circle>, <ellipse>, <line>, <polyline>,
+// <polygon>, <path>) and routes them to SVGShape. All other tags fall
+// through to SVGContainer, the recursive structural shell from
+// Phase 1 — Phase 3 promotes <g> to SVGTransformableContainer and
+// nested <svg> to SVGViewportContainer; Phase 6 routes
+// <mask>/<clipPath>/<filter>/<linearGradient>/<radialGradient>/<pattern>
+// to resource containers.
 //
-// Phase 2 wires the seven shape tags (<rect>, <circle>, <ellipse>,
-// <line>, <polyline>, <polygon>, <path>). Phase 3 routes <g> through an
-// SVGTransformableContainer and nested <svg> through an
-// SVGViewportContainer. Phase 6 routes <mask>/<clipPath>/<filter>/
-// <linearGradient>/<radialGradient>/<pattern> through resource
-// containers.
-func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext) SVGNode {
+// Mirrors the dispatch in Blink's LayoutTreeBuilder for SVG element
+// kinds (core/layout/svg/svg_resources.cc and the per-element
+// CreateLayoutObject impl on SVGGeometryElement subclasses).
+func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver StyleResolver) SVGNode {
 	if elt == nil {
 		return nil
 	}
 	tag := elt.TagName()
+	switch tag {
+	case "rect", "circle", "ellipse", "line", "polyline", "polygon", "path":
+		// Shape leaves do not have SVG-element children (text content
+		// inside a <rect> is ignored per SVG 1.1 §5.6). Skip the
+		// recursive child walk.
+		shape := NewSVGShape(elt, lengthCtx)
+		if shape != nil && styleResolver != nil {
+			shape.Style = styleResolver(elt)
+		}
+		return shape
+	}
 	container := NewSVGContainer(tag)
 	for _, child := range elt.SVGChildren() {
-		if c := BuildSVGTree(child, lengthCtx); c != nil {
+		if c := BuildSVGTree(child, lengthCtx, styleResolver); c != nil {
 			container.AppendChild(c)
 		}
 	}

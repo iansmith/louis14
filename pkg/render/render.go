@@ -1224,10 +1224,18 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 
 // paintSelfForeground paints a layer's own text and replaced-element
 // image — the content that paints at CSS 2.1 Appendix E step 5
-// (inline foreground), after step-4 floats.
+// (inline foreground), after step-4 floats. Inline <svg> is a
+// replaced element whose content is the SVG subtree; it routes
+// through paintSVGRoot in the same slot as <img>'s drawImage.
+// Mirrors Blink's ReplacedPainter::PaintReplacedContent dispatch on
+// LayoutSVGRoot.
 func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
 	if layer.Box != nil && layer.Box.Text != "" {
 		r.drawText(layer)
+	}
+	if isInlineSVGLayer(layer) {
+		r.paintSVGRoot(layer)
+		return
 	}
 	if layer.ImageSrc != "" {
 		r.drawImage(layer)

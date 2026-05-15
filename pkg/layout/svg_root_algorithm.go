@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 	"louis14/pkg/layout/svg"
@@ -72,8 +73,21 @@ func (sra *SVGRootAlgorithm) Layout() *LayoutResult {
 	}
 	containerSize := geometry.SizeF{Width: contentW, Height: contentH}
 
-	// Step 3: build the SVG root + subtree.
-	root := svg.BuildSVGRoot(newSVGElementAdapter(sra.node.DOMNode), containerSize)
+	// Step 3: build the SVG root + subtree. The style resolver gives
+	// each SVGShape its computed style by looking up the cascade map
+	// supplied on LayoutContext (LayoutEngine.Layout populates this
+	// with the same per-node styles ApplyStylesToDocument produced).
+	styles := sra.ctx.ComputedStyles
+	styleResolver := func(elt svg.ElementAdapter) *css.Style {
+		if styles == nil {
+			return nil
+		}
+		if adapter, ok := elt.(svgElementAdapter); ok && adapter.node != nil {
+			return styles[adapter.node]
+		}
+		return nil
+	}
+	root := svg.BuildSVGRoot(newSVGElementAdapter(sra.node.DOMNode), containerSize, styleResolver)
 
 	// Step 4: run the SVG layout pass. Phase 1: this is a recursive
 	// no-op (every node returns an empty SVGLayoutResult), but wiring
