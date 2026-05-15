@@ -42,7 +42,7 @@ type paintShader interface {
 // userSpaceOnUse percent resolution. `opacity` is the multiplicative
 // alpha to fold into the sampled color (fill-opacity * opacity for the
 // fill path; stroke-opacity * opacity for the stroke path).
-func buildPaintShader(server svg.SVGResourcePaintServer, referenceBox geometry.RectF, lengthCtx svg.SVGLengthContext, opacity float64) (paintShader, bool) {
+func buildPaintShader(server svg.SVGResourcePaintServer, referenceBox geometry.RectF, lengthCtx svg.SVGLengthContext, opacity float64, resources *svg.SVGResourceRegistry) (paintShader, bool) {
 	if server == nil {
 		return nil, false
 	}
@@ -52,7 +52,9 @@ func buildPaintShader(server svg.SVGResourcePaintServer, referenceBox geometry.R
 	case *svg.SVGRadialGradient:
 		return buildRadialGradientShader(g, referenceBox, lengthCtx, opacity)
 	case *svg.SVGPattern:
-		return buildPatternShader(g, referenceBox, lengthCtx, opacity)
+		// Phase 6: thread the umbrella registry into the pattern's
+		// content rendering so url(#…) refs INSIDE a pattern resolve.
+		return buildPatternShader(g, referenceBox, lengthCtx, opacity, resources)
 	}
 	return nil, false
 }

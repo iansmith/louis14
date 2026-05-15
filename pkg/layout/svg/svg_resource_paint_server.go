@@ -83,15 +83,14 @@ type SVGGradientStop struct {
 // and the render package free of Phase 6-style "registry callback" hooks.
 //
 // Phase 4: registry lookup is by ID + concrete type assertion at the
-// render-side painter; Phase 6 will formalize the registry with cycle
-// detection (LayoutSVGResourceContainer::FindCycle in Blink).
+// render-side painter; Phase 6 formalizes the registry with cycle
+// detection (LayoutSVGResourceContainer::FindCycle in Blink) — paint
+// servers now also satisfy the umbrella `SVGResource` so the registry
+// can store them alongside clippers / maskers / (Phase 7) filters in a
+// single id-namespace.
 type SVGResourcePaintServer interface {
 	SVGNode
-	// ID returns the resource element's `id` attribute, used by the
-	// `url(#id)` paint reference. Returns the empty string for an
-	// unidentified element (which the registry rejects — only IDs
-	// matter for `url(#…)` resolution per SVG 2 §3.1).
-	ID() string
+	SVGResource
 }
 
 // gradientCommon holds the geometry-mode and spread settings shared by
@@ -125,7 +124,21 @@ type gradientCommon struct {
 	// unused by the painter but kept for parity with the Blink
 	// abstraction (which carries ComputedStyle on every LayoutObject).
 	elementStyle *css.Style
+
+	// cycleState carries the cycle-detection state machine for the
+	// containing resource. Initialized to SVGCycleNeedCheck (zero value).
+	// Phase 6: the resource registry's cycle solver flips this through
+	// the {NeedCheck, PerformingCheck, HasCycle, NoCycle} states once
+	// per paint frame.
+	cycleState SVGCycleState
 }
+
+// CycleState implements SVGResource: returns the gradient's
+// cycle-detection state. Phase 6 — see svg_resource.go.
+func (g *gradientCommon) CycleState() SVGCycleState { return g.cycleState }
+
+// SetCycleState implements SVGResource.
+func (g *gradientCommon) SetCycleState(s SVGCycleState) { g.cycleState = s }
 
 // SVGLinearGradient is the layout node for a `<linearGradient>` resource
 // element. Mirrors Blink's LayoutSVGResourceLinearGradient
@@ -181,6 +194,9 @@ func (g *SVGLinearGradient) UpdateSVGLayout(info SVGLayoutInfo) SVGLayoutResult 
 // no-op everywhere; render-side dispatches directly).
 func (g *SVGLinearGradient) Paint(ctx *SVGPaintContext) {}
 
+// Kind implements SVGResource — Phase 6.
+func (g *SVGLinearGradient) Kind() SVGResourceKind { return SVGResourceKindLinearGradient }
+
 // SVGRadialGradient is the layout node for a `<radialGradient>` resource
 // element. Mirrors Blink's LayoutSVGResourceRadialGradient
 // (core/layout/svg/layout_svg_resource_radial_gradient.{h,cc}).
@@ -214,6 +230,9 @@ func (g *SVGRadialGradient) ObjectBoundingBox() geometry.RectF             { ret
 func (g *SVGRadialGradient) LocalTransform() geometry.AffineTransform      { return geometry.Identity() }
 func (g *SVGRadialGradient) UpdateSVGLayout(SVGLayoutInfo) SVGLayoutResult { return SVGLayoutResult{} }
 func (g *SVGRadialGradient) Paint(*SVGPaintContext)                        {}
+
+// Kind implements SVGResource — Phase 6.
+func (g *SVGRadialGradient) Kind() SVGResourceKind { return SVGResourceKindRadialGradient }
 
 // SVGPattern is the layout node for a `<pattern>` resource element.
 // Mirrors Blink's LayoutSVGResourcePattern
@@ -257,6 +276,10 @@ type SVGPattern struct {
 	ResourceID string
 
 	elementStyle *css.Style
+
+	// cycleState carries the cycle-detection state machine; flipped
+	// by the SVGResourcesCycleSolver DFS once per paint frame.
+	cycleState SVGCycleState
 }
 
 func (p *SVGPattern) ID() string                                    { return p.ResourceID }
@@ -264,6 +287,15 @@ func (p *SVGPattern) ObjectBoundingBox() geometry.RectF             { return geo
 func (p *SVGPattern) LocalTransform() geometry.AffineTransform      { return geometry.Identity() }
 func (p *SVGPattern) UpdateSVGLayout(SVGLayoutInfo) SVGLayoutResult { return SVGLayoutResult{} }
 func (p *SVGPattern) Paint(*SVGPaintContext)                        {}
+
+// Kind implements SVGResource — Phase 6.
+func (p *SVGPattern) Kind() SVGResourceKind { return SVGResourceKindPattern }
+
+// CycleState implements SVGResource — Phase 6.
+func (p *SVGPattern) CycleState() SVGCycleState { return p.cycleState }
+
+// SetCycleState implements SVGResource — Phase 6.
+func (p *SVGPattern) SetCycleState(s SVGCycleState) { p.cycleState = s }
 
 // SVGGradientLength stores a single positional attribute on a gradient
 // or pattern resource element. Holds both the raw attribute string and

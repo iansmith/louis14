@@ -257,6 +257,71 @@ func (s *Style) chScale() float64 {
 	}
 }
 
+// ParseURLReference extracts the fragment id from a CSS `url(#id)`
+// value. Accepts the full CSS Image Values L4 §3.1 `<url>` grammar:
+//
+//	url(#id)
+//	url("#id")
+//	url('#id')
+//	url( #id )           — whitespace around the inner expression
+//	url(path#id)         — path part is stripped
+//	url(#id), url(#id2)  — extracts only the FIRST fragment from a list
+//	url(#id-with-hyphens-and_underscores.dots)
+//
+// Returns (id, true) on success. Returns ("", false) for:
+//
+//	"" / "none" / non-`url()` syntax
+//	`url()` (empty inner)
+//	`url(http://...)` (no `#` fragment, non-empty path → URL without fragment)
+//	`url(#)` (empty fragment)
+//
+// This is the shared helper for `mask`/`mask-image`, `clip-path`,
+// `filter`, and `fill`/`stroke` paint server resolution — replaces the
+// per-callsite parsers that scattered across the SVG-foundation phases.
+// Mirrors Blink's `CSSURIValue::FragmentIdentifier` + its consumers
+// (core/css/css_uri_value.cc, core/style/style_image.cc).
+func ParseURLReference(val string) (string, bool) {
+	val = strings.TrimSpace(val)
+	// Take the first item of a comma-separated list. CSS Masking 1
+	// allows `mask-image: url(#a), url(#b)` — the SVG fast-path
+	// currently uses only the first reference (matches mask-opacity-1d).
+	if i := strings.Index(val, ","); i >= 0 {
+		val = strings.TrimSpace(val[:i])
+	}
+	if !strings.HasPrefix(val, "url(") {
+		return "", false
+	}
+	if !strings.HasSuffix(val, ")") {
+		return "", false
+	}
+	inner := val[4 : len(val)-1]
+	inner = strings.TrimSpace(inner)
+	// Strip surrounding quotes (CSS allows both forms).
+	if len(inner) >= 2 {
+		first := inner[0]
+		last := inner[len(inner)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			inner = inner[1 : len(inner)-1]
+		}
+	}
+	if inner == "" {
+		return "", false
+	}
+	// Extract the fragment portion after `#`. The path part (if any)
+	// is dropped — louis14's resolution is in-document only, matching
+	// Blink's TreeScope-scoped lookup behavior.
+	idx := strings.Index(inner, "#")
+	if idx < 0 {
+		// No fragment → not a same-document SVG resource reference.
+		return "", false
+	}
+	id := inner[idx+1:]
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
 // ParsePercentage parses a percentage value (e.g., "140%") and returns the number (e.g., 140).
 func ParsePercentage(val string) (float64, bool) {
 	val = strings.TrimSpace(val)

@@ -88,10 +88,23 @@ type SVGResourceMasker struct {
 
 	// elementStyle is the mask element's resolved style.
 	elementStyle *css.Style
+
+	// cycleState carries the cycle-detection state machine; flipped
+	// by the SVGResourcesCycleSolver DFS once per paint frame.
+	cycleState SVGCycleState
 }
 
 // ID implements the SVG resource interface (registry lookup key).
 func (m *SVGResourceMasker) ID() string { return m.ResourceID }
+
+// Kind implements SVGResource — Phase 6.
+func (m *SVGResourceMasker) Kind() SVGResourceKind { return SVGResourceKindMasker }
+
+// CycleState implements SVGResource — Phase 6.
+func (m *SVGResourceMasker) CycleState() SVGCycleState { return m.cycleState }
+
+// SetCycleState implements SVGResource — Phase 6.
+func (m *SVGResourceMasker) SetCycleState(s SVGCycleState) { m.cycleState = s }
 
 // ObjectBoundingBox returns an empty bbox.
 func (m *SVGResourceMasker) ObjectBoundingBox() geometry.RectF { return geometry.RectF{} }

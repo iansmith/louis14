@@ -128,9 +128,9 @@ func (sp *svgShapePainter) paint() {
 	// carries a mask.
 	if style != nil {
 		if maskVal := style.GetMaskImage(); maskVal != "" && maskVal != "none" {
-			if id, ok := parseURLFragment(maskVal); ok {
+			if id, ok := css.ParseURLReference(maskVal); ok {
 				if sp.ctx.Resources != nil {
-					if masker, found := sp.ctx.Resources.LookupMasker(id); found && masker != nil {
+					if masker, found := sp.ctx.Resources.LookupMasker(id); found && masker != nil && masker.CycleState() != svg.SVGCycleHasCycle {
 						sp.paintWithSVGMask(masker, op, willFill, willStroke)
 						return
 					}
