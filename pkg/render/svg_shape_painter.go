@@ -42,6 +42,12 @@ func (sp *svgShapePainter) paint() {
 	// property defaults inside the object painter.
 	style := sp.shape.Style
 	op := newSVGObjectPainter(dc, style)
+	// Phase 4: wire the paint context's resource registry +
+	// shape-relative reference box for `url(#id)` paint resolution.
+	// The reference box is the shape's user-space fillBoundingBox
+	// — passed by value through withResources so the object painter
+	// can map objectBoundingBox-units gradient coords onto it.
+	op.withResources(sp.ctx.Resources, sp.shape.FillBoundingBox, svg.NewSVGLengthContext(sp.ctx.viewport.Size))
 
 	// SVG 1.1 §11.3.3 (visibility): visibility:hidden on a shape
 	// inhibits paint but its children still hit-test. There are no
@@ -79,29 +85,75 @@ func (sp *svgShapePainter) paint() {
 		return
 	}
 
+	// Determine the fill rule for the shader path. The DC-level
+	// fill rule is also set by applyFill below; we read style here
+	// for the shader-path fillPathWithShader signature.
+	evenOdd := false
+	if style != nil && style.GetFillRule() == css.SVGFillRuleEvenOdd {
+		evenOdd = true
+	}
+
 	// Fill pass.
 	if willFill {
-		if op.applyFill() {
+		fillRes := op.applyFill()
+		switch fillRes.mode {
+		case svgPaintSolid:
 			if willStroke {
 				dc.FillPreserve()
 			} else {
 				dc.Fill()
 			}
-		} else if willStroke {
-			// Drop the prepared fill state but keep the path for the
-			// stroke pass.
-			dc.ClearPath()
-			if !buildPathOnDC(dc, &sp.shape.Path) {
-				return
+		case svgPaintShader:
+			// Paint-server fill: rasterize the path into a coverage
+			// buffer and composite the shader's per-pixel paint over
+			// the target. The path is currently sitting on dc; we
+			// leave the path intact for any subsequent stroke pass
+			// (the dc.Fill path is the one that consumes it). For
+			// the shader path, fillPathWithShader builds its own
+			// child-DC path replay against the coverage buffer, so
+			// dc's path is undisturbed — but we still must clear it
+			// if no stroke follows so a later draw doesn't reuse it.
+			sp.ctx.Renderer.fillPathWithShader(sp.ctx, &sp.shape.Path, fillRes.shader, evenOdd)
+			if willStroke {
+				// Re-build the path for the stroke pass (dc.Fill
+				// wasn't called, but dc.FillPreserve also wasn't —
+				// the path remains. Still, since we're not 100%
+				// sure of state across child DC creation, rebuild
+				// defensively.)
+				dc.ClearPath()
+				if !buildPathOnDC(dc, &sp.shape.Path) {
+					return
+				}
+			} else {
+				dc.ClearPath()
+			}
+		case svgPaintSkip:
+			if willStroke {
+				// Drop the prepared fill state but keep the path
+				// for the stroke pass.
+				dc.ClearPath()
+				if !buildPathOnDC(dc, &sp.shape.Path) {
+					return
+				}
 			}
 		}
 	}
 
 	// Stroke pass.
 	if willStroke {
-		if op.applyStroke() {
+		strokeRes := op.applyStroke()
+		switch strokeRes.mode {
+		case svgPaintSolid:
 			dc.Stroke()
-		} else {
+		case svgPaintShader:
+			// Paint-server stroke: stroke-as-fill via the DC's
+			// stroke geometry, but coloured per-pixel by the shader.
+			// We invoke a thin helper that rasterizes the stroke
+			// path into the coverage buffer (using dc.Stroke against
+			// a sentinel color) before compositing the shader over.
+			sp.ctx.Renderer.strokePathWithShader(sp.ctx, &sp.shape.Path, strokeRes.shader, style)
+			dc.ClearPath()
+		case svgPaintSkip:
 			dc.ClearPath()
 		}
 	}

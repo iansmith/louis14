@@ -2,6 +2,8 @@ package render
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
+	"louis14/pkg/layout/svg"
 
 	"mazarin/textshape"
 )
@@ -18,86 +20,123 @@ import (
 // each Apply* call and pushes the result onto dc. This matches Blink's
 // "paint server applies on each draw" model and avoids cache-staleness
 // bugs when style changes between phases.
+//
+// Phase 4 adds Resources/ReferenceBox/LengthContext — paint-server
+// resolution needs the registry + the shape's bbox to evaluate
+// objectBoundingBox-units geometry, plus a length context for
+// userSpaceOnUse percent resolution. nil Resources falls back to
+// "treat all `url(#…)` paints as unresolvable" — Phase 1-3 callers
+// still work via the SVGPaintServer Fallback branch.
 type svgObjectPainter struct {
-	dc    textshape.DrawContext
-	style *css.Style
+	dc        textshape.DrawContext
+	style     *css.Style
+	resources *svg.SVGResourceRegistry
+	refBox    geometry.RectF
+	lengthCtx svg.SVGLengthContext
 }
 
 // newSVGObjectPainter binds an object painter to a DrawContext and a
 // resolved computed style. style may be nil (in which case every
 // accessor returns its SVG default — see pkg/css/svg_style.go).
+//
+// `resources` / `refBox` / `lengthCtx` are needed for Phase 4
+// paint-server resolution; pre-Phase-4 callers can pass nil/zero
+// values and the painter degrades to "no paint server resolution" —
+// `url(#…)` fills then fall back to their `Fallback` color (if any)
+// or skip the draw (SVG 2 §13.1 invalid-paint rule).
 func newSVGObjectPainter(dc textshape.DrawContext, style *css.Style) *svgObjectPainter {
 	return &svgObjectPainter{dc: dc, style: style}
 }
 
+// withResources extends the object painter with paint-server context.
+// Called by the shape painter just before applyFill/applyStroke once
+// the shape's reference bbox is known.
+func (op *svgObjectPainter) withResources(resources *svg.SVGResourceRegistry, refBox geometry.RectF, lengthCtx svg.SVGLengthContext) *svgObjectPainter {
+	op.resources = resources
+	op.refBox = refBox
+	op.lengthCtx = lengthCtx
+	return op
+}
+
+// svgPaintMode enumerates how a single fill/stroke pass should
+// rasterize. Phase 4 expands the binary "draw or skip" of Phase 2 to
+// also cover paint-server fills.
+type svgPaintMode int
+
+const (
+	// svgPaintSkip means the caller should not run the fill/stroke
+	// pass for this style — either the paint is `none`, the alpha
+	// resolved to 0, or the paint-server reference couldn't be
+	// resolved and no fallback was supplied.
+	svgPaintSkip svgPaintMode = iota
+	// svgPaintSolid means the DrawContext has been configured with
+	// a solid color and the caller should run dc.Fill()/dc.Stroke().
+	svgPaintSolid
+	// svgPaintShader means the caller should NOT call dc.Fill()/
+	// dc.Stroke(); instead it should call the renderer's
+	// fillPathWithShader / strokePathWithShader path with the
+	// returned shader. The DC color is left untouched.
+	svgPaintShader
+)
+
+// svgPaintResolution is the result of resolving a fill/stroke style
+// into a concrete draw plan. Mirrors what Blink's
+// SVGObjectPainter::PreparePaint returns to the SVGShapePainter:
+// either a configured PaintFlags with a solid color, or a PaintFlags
+// holding a Skia shader produced by the paint server's ApplyShader.
+type svgPaintResolution struct {
+	mode   svgPaintMode
+	shader paintShader
+}
+
 // applyFill pushes the fill color (or transparent if `fill: none`)
-// and the fill-rule onto the DrawContext, returning true if the
-// caller should subsequently call dc.Fill(). Returns false when the
-// fill should be skipped entirely (Kind == None, or zero-alpha after
-// fill-opacity * opacity).
+// and the fill-rule onto the DrawContext, returning a resolution that
+// tells the caller whether to call dc.Fill() (solid path), invoke the
+// paint-server shader pipeline (shader path), or skip.
 //
-// Phase 2 paint-server resolution: Kind == Server defers to the
-// optional fallback paint if present (matching SVG 1.1 §11.3's
-// "if the resource cannot be found" branch); otherwise the SVG 2 §13.1
-// "treat as if `fill: none` was specified" rule applies — return
-// false. Phase 4 will plumb in the actual gradient/pattern.
-func (op *svgObjectPainter) applyFill() bool {
+// Phase 4 paint-server resolution: Kind == Server looks up the server
+// in op.resources. On hit, builds the shader (gradient/pattern) and
+// returns svgPaintShader. On miss, falls back to paint.Fallback if
+// supplied, else applies the SVG 2 §13.1 "treat as none" rule
+// (svgPaintSkip).
+func (op *svgObjectPainter) applyFill() svgPaintResolution {
 	if op.style == nil {
 		// Default: opaque black, fill-rule nonzero.
 		setDCColor(op.dc, css.Color{A: 1.0})
 		op.dc.SetFillRule(textshape.FillRuleWinding)
-		return true
+		return svgPaintResolution{mode: svgPaintSolid}
 	}
 	paint := op.style.GetFill()
-	c, ok := op.resolvePaintColor(paint)
-	if !ok {
-		return false
-	}
-	// fill-opacity multiplies through.
-	c.A *= op.style.GetFillOpacity()
-	if c.A <= 0 {
-		return false
-	}
-	setDCColor(op.dc, c)
+	opacity := op.style.GetFillOpacity()
+	// fill-rule applies regardless of which paint we end up using.
 	switch op.style.GetFillRule() {
 	case css.SVGFillRuleEvenOdd:
 		op.dc.SetFillRule(textshape.FillRuleEvenOdd)
 	default:
 		op.dc.SetFillRule(textshape.FillRuleWinding)
 	}
-	return true
+	return op.resolvePaint(paint, opacity, true)
 }
 
-// applyStroke pushes stroke color, stroke-width, stroke-linecap,
-// stroke-linejoin, stroke-dasharray, stroke-dashoffset onto dc and
-// returns true if a Stroke() should follow. Returns false when the
-// stroke should be skipped entirely (paint is none / zero alpha /
-// stroke-width <= 0).
-//
-// stroke-miterlimit is parsed and validated but mazarin currently
-// exposes only round/bevel line joins (no miter), so miterlimit has
-// no rendering effect in Phase 2. The miter→bevel fallback applies
-// whenever stroke-linejoin: miter is requested — this is a known
-// fidelity gap documented at the call site; no Phase 2 reftest
-// exercises miter-vs-bevel, so it does not affect this phase's gate.
-func (op *svgObjectPainter) applyStroke() bool {
+// applyStroke pushes stroke geometry parameters (stroke-width,
+// stroke-linecap, stroke-linejoin, stroke-dasharray, stroke-dashoffset)
+// onto dc and returns a resolution describing the paint to apply. If
+// the resolution mode is svgPaintShader the caller is expected to
+// route the stroke through fillPathWithShader (yes, fill — the
+// stroke-as-fill conversion is the standard technique: convert the
+// stroke geometry into a filled outline path, then fill that with the
+// shader). For Phase 4 we approximate this by stroking with a
+// sentinel color into a coverage buffer; the path/stroke-width
+// geometry already lives on the DC.
+func (op *svgObjectPainter) applyStroke() svgPaintResolution {
 	if op.style == nil {
-		return false // SVG default for unset is `stroke: none`.
+		return svgPaintResolution{mode: svgPaintSkip} // SVG default for unset is `stroke: none`.
 	}
 	paint := op.style.GetStroke()
-	c, ok := op.resolvePaintColor(paint)
-	if !ok {
-		return false
-	}
-	c.A *= op.style.GetStrokeOpacity()
-	if c.A <= 0 {
-		return false
-	}
 	w := op.style.GetStrokeWidth()
 	if w <= 0 {
-		return false
+		return svgPaintResolution{mode: svgPaintSkip}
 	}
-	setDCColor(op.dc, c)
 	op.dc.SetLineWidth(w)
 
 	switch op.style.GetStrokeLinecap() {
@@ -141,14 +180,57 @@ func (op *svgObjectPainter) applyStroke() bool {
 	// will follow up if a reftest in scope exercises a non-zero
 	// dashoffset.
 	_ = op.style.GetStrokeDashOffset()
-	return true
+
+	opacity := op.style.GetStrokeOpacity()
+	return op.resolvePaint(paint, opacity, false)
 }
 
-// resolvePaintColor reduces a css.SVGPaint to a concrete color (with
-// the success bool false meaning "no paint — skip the draw").
-// `url(#…)` references are not yet resolvable (no paint-server
-// registry); they fall through to their explicit fallback if one was
-// declared, otherwise return false per the SVG 2 invalid-paint rule.
+// resolvePaint reduces a parsed css.SVGPaint to an svgPaintResolution.
+// `opacity` is the per-property opacity (fill-opacity or
+// stroke-opacity) that multiplies into the final alpha. `isFill`
+// distinguishes the fill from the stroke pass for any future
+// fill-specific resolution decisions; currently both follow the same
+// SVG-2 invalid-paint rule.
+func (op *svgObjectPainter) resolvePaint(paint css.SVGPaint, opacity float64, isFill bool) svgPaintResolution {
+	switch paint.Kind {
+	case css.SVGPaintNone:
+		return svgPaintResolution{mode: svgPaintSkip}
+	case css.SVGPaintColor:
+		c := paint.Color
+		if c.A <= 0 && (c.R|c.G|c.B) == 0 {
+			return svgPaintResolution{mode: svgPaintSkip}
+		}
+		c.A *= opacity
+		if c.A <= 0 {
+			return svgPaintResolution{mode: svgPaintSkip}
+		}
+		setDCColor(op.dc, c)
+		return svgPaintResolution{mode: svgPaintSolid}
+	case css.SVGPaintServer:
+		// Phase 4: look up the server in the registry. On hit, build
+		// the per-pixel shader. On miss, fall back to paint.Fallback
+		// if supplied (SVG 2 `url(#id) color` syntax), else apply the
+		// "treat as none" rule.
+		if op.resources != nil {
+			if server, ok := op.resources.Lookup(paint.ServerID); ok {
+				if shader, built := buildPaintShader(server, op.refBox, op.lengthCtx, opacity); built {
+					return svgPaintResolution{mode: svgPaintShader, shader: shader}
+				}
+			}
+		}
+		if paint.Fallback != nil {
+			return op.resolvePaint(*paint.Fallback, opacity, isFill)
+		}
+		return svgPaintResolution{mode: svgPaintSkip}
+	}
+	return svgPaintResolution{mode: svgPaintSkip}
+}
+
+// resolvePaintColor is retained for places that still want the
+// solid-color reduction. Phase 4 paint-server resolution lives in
+// resolvePaint instead; this thin wrapper preserves the Phase 2-era
+// caller surface (currently none — all callers now go through
+// applyFill/applyStroke).
 func (op *svgObjectPainter) resolvePaintColor(paint css.SVGPaint) (css.Color, bool) {
 	switch paint.Kind {
 	case css.SVGPaintNone:
@@ -156,10 +238,6 @@ func (op *svgObjectPainter) resolvePaintColor(paint css.SVGPaint) (css.Color, bo
 	case css.SVGPaintColor:
 		c := paint.Color
 		if c.A <= 0 && (c.R|c.G|c.B) == 0 {
-			// A completely zero color (e.g. invalid value parsed to
-			// transparent black) is treated as a real transparent
-			// black draw — but for fill that means "draw nothing
-			// visible". Return false so we don't waste a fill.
 			return c, false
 		}
 		return c, true
