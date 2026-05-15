@@ -43,6 +43,7 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 		originY: originY,
 		viewport: geometry.NewRectF(0, 0,
 			root.ContainerSize.Width, root.ContainerSize.Height),
+		CurrentTransform: geometry.Identity(),
 	}
 
 	// Push a scope so the translation + viewBox transform pop cleanly.
@@ -69,10 +70,9 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 }
 
 // paintSVGNode dispatches a single SVGNode to its appropriate
-// painter. Phase 2 handles SVGShape directly and recurses through
-// SVGContainer (the Phase-1 stub used for any unknown element).
-// Phase 3 adds SVGTransformableContainer (push transform) and
-// SVGViewportContainer (push transform + viewport clip).
+// painter. Phase 3 supports SVGShape, SVGContainer (with transform
+// scope), and SVGViewportContainer (with transform scope + viewport
+// clip).
 func paintSVGNode(ctx *svgPaintContext, node svg.SVGNode) {
 	if node == nil {
 		return
@@ -82,16 +82,14 @@ func paintSVGNode(ctx *svgPaintContext, node svg.SVGNode) {
 		sp := &svgShapePainter{ctx: ctx, shape: n}
 		sp.paint()
 	case *svg.SVGContainer:
-		// Plain structural recurse — no transform, no clip (the
-		// Phase-1 fallback path). Phase 3 promotes <g>/nested-<svg>
-		// here.
-		for _, child := range n.Children {
-			paintSVGNode(ctx, child)
-		}
+		paintSVGContainer(ctx, n)
+	case *svg.SVGViewportContainer:
+		paintSVGViewportContainer(ctx, n)
 	default:
-		// Unknown SVGNode kind — currently impossible (BuildSVGTree
-		// only ever produces SVGShape or SVGContainer), but the
-		// switch will receive new kinds in Phase 3+.
+		// Unknown SVGNode kind — Phase 6 (resource elements) and
+		// later phases add cases here. The default keeps the painter
+		// crash-free if a new SVGNode kind appears before its
+		// dispatch lands.
 		_ = n
 	}
 }

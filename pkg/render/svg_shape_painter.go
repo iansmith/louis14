@@ -2,6 +2,7 @@ package render
 
 import (
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/layout/svg"
 
 	"mazarin/textshape"
@@ -45,10 +46,22 @@ func (sp *svgShapePainter) paint() {
 	// SVG 1.1 §11.3.3 (visibility): visibility:hidden on a shape
 	// inhibits paint but its children still hit-test. There are no
 	// shape children in Phase 2, so a hidden shape is a no-op.
-	if style != nil {
-		if v, ok := style.Get("visibility"); ok && (v == "hidden" || v == "collapse") {
-			return
-		}
+	if !svgIsVisible(style) {
+		return
+	}
+
+	// CSS `transform` on an SVG shape (SVG 2 §7.5). Shapes don't
+	// have an SVG `transform` attribute (only containers do per SVG
+	// 1.1 §7.6), so the effective shape-level transform is just
+	// whatever CSS supplies. The same scope guard used by
+	// paintSVGContainer wraps the path build + fill + stroke so
+	// rasterization happens in the transformed coordinate space.
+	// Mirrors Blink's SVGShapePainter applying
+	// LocalSVGTransform via a ScopedSVGTransformState.
+	cssT := svg.ParseCSSTransformForSVG(style)
+	if !cssT.IsIdentity() {
+		guard := pushScopedSVGTransform(sp.ctx, cssT, geometry.RectF{})
+		defer guard.Close()
 	}
 
 	willFill := op.style != nil && op.style.GetFill().Kind != css.SVGPaintNone
