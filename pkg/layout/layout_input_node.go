@@ -120,6 +120,18 @@ type LayoutInputNode struct {
 	// paint ordering when out-of-flow children propagate to ancestor boxes.
 	DOMIndex int
 
+	// SVGRoot is non-nil for an inline <svg> element after layout. It owns
+	// the SVG coordinate system (viewBox / preserveAspectRatio /
+	// localToBorderBoxTransform) and the SVG layout subtree below the
+	// <svg> box. Set by SVGRootAlgorithm.Layout(). Mirrors how Blink
+	// painters reach the SVG root via LayoutSVGRoot from the layout box
+	// (To<LayoutSVGRoot>(layout_box_)) — louis14's collapsed layout-tree
+	// model puts that pointer on the LayoutInputNode that produces the
+	// <svg> box. Typed as `any` here to avoid an import cycle
+	// (pkg/layout/svg imports pkg/geometry; pkg/layout imports
+	// pkg/layout/svg). Callers in pkg/render cast to *svg.SVGRoot.
+	SVGRoot any
+
 	// groupedChildrenCache caches the result of groupInlineChildrenForMulticol
 	// so that repeated Layout() calls on the same multicol node return the same
 	// anonymous block pointer identities. Without this cache, each invocation
