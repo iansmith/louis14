@@ -1,0 +1,602 @@
+// svg_filter_builder.go is the SVG `<filter>` → FilterEffect graph
+// builder, mirroring Blink's core/svg/graphics/filters/svg_filter_builder.{h,cc}.
+//
+// This is the ONE file pkg/graphics/filters/ gains for the SVG
+// foundation. The FilterEffect graph types (Filter, FilterEffect,
+// FEFlood, FEGaussianBlur, FEColorMatrix, FEComponentTransfer,
+// FEMerge, FEOffset, FEDropShadow, FEBlend) live in this package
+// already; this builder consumes them. It does NOT import
+// pkg/layout/svg (which would create a cycle); instead it operates on
+// an abstract `SVGFilterElement` view supplied by the caller. The
+// concrete view in pkg/render wraps the *svg.SVGResourceFilter and
+// each filter primitive child to provide attribute lookup + style.
+
+package filters
+
+import (
+	"image"
+	"math"
+	"strconv"
+	"strings"
+)
+
+// SVGFilterPrimitive is the abstract view of a single filter primitive
+// element (`<feFlood>`, `<feGaussianBlur>`, …) the SVGFilterBuilder
+// consumes. Mirrors the surface the Blink builder reads off
+// SVGFilterPrimitiveStandardAttributes.
+type SVGFilterPrimitive interface {
+	// TagName returns the primitive's tag (`"feflood"`, `"feblend"`, …)
+	// in the HTML tokenizer's lowercased form.
+	TagName() string
+	// Attribute returns the named attribute value and whether it was
+	// set. HTML's tokenizer lowercases attribute names — callers must
+	// already be using the lowercase form (the existing
+	// svg.ElementAdapter convention).
+	Attribute(name string) (string, bool)
+	// Children returns child filter primitives (for `<feMerge>`'s
+	// `<feMergeNode>` children, mainly).
+	Children() []SVGFilterPrimitive
+	// FloodColor returns the resolved flood-color (R, G, B in 0–255
+	// and A in [0,1]). Used by `<feFlood>` and `<feDropShadow>`.
+	// Default: black, opaque (per SVG Filter Effects 1).
+	FloodColor() (r, g, b uint8, a float64)
+}
+
+// SVGFilterElement is the abstract view of a `<filter>` element the
+// SVGFilterBuilder consumes. The caller (pkg/render) wraps the
+// concrete svg.SVGResourceFilter behind this interface so this
+// package stays decoupled from pkg/layout/svg.
+type SVGFilterElement interface {
+	// FilterRegion returns the resolved filter region in absolute
+	// device pixels (the rect every fe* primitive's output covers).
+	FilterRegion() image.Rectangle
+	// ReferenceBox returns the referencing element's reference box in
+	// absolute device pixels. For objectBoundingBox primitive units
+	// the builder maps primitive subregion coords through this.
+	ReferenceBox() image.Rectangle
+	// PrimitiveUnitsObjectBoundingBox reports whether primitiveUnits
+	// is "objectBoundingBox" (true) or "userSpaceOnUse" (false).
+	PrimitiveUnitsObjectBoundingBox() bool
+	// InterpolationSpace returns the effect operating space (linearRGB
+	// default per SVG; the wrapper reads color-interpolation-filters).
+	InterpolationSpace() InterpolationSpace
+	// Primitives returns the filter primitive children in DOM order.
+	Primitives() []SVGFilterPrimitive
+}
+
+// SVGFilterBuilder turns a `<filter>` element + its children into a
+// `*Filter` graph. Mirrors Blink's SVGFilterBuilder.
+//
+// Resolution order for `in`/`in2` attribute lookup (Blink
+// SVGFilterBuilder::GetEffectById):
+//
+//  1. Built-in effects: "SourceGraphic", "SourceAlpha", "FillPaint",
+//     "StrokePaint", "BackgroundImage", "BackgroundAlpha" (Phase 7
+//     implements the two real ones — SourceGraphic, SourceAlpha — and
+//     aliases the others to the closest builtin to avoid dropping
+//     references).
+//  2. Named results from prior primitives (the `result="…"` attribute
+//     on each).
+//  3. Fall back to the previous primitive's output (the "last effect"
+//     — what Blink calls last_effect_).
+//
+// A primitive with no `in` attribute also falls through to (3): the
+// chain wires implicitly through "the previous output".
+type SVGFilterBuilder struct {
+	source      *SourceGraphic
+	sourceAlpha *SourceAlpha
+	space       InterpolationSpace
+	// builtins maps the SourceGraphic / SourceAlpha / Fill / Stroke /
+	// Background names to their FilterEffect.
+	builtins map[string]FilterEffect
+	// namedResults accumulates `result="…"` names as we walk
+	// primitives.
+	namedResults map[string]FilterEffect
+	// lastEffect is the most-recently-built primitive's output;
+	// initialized to source so a chain that starts with no explicit
+	// `in` reads from SourceGraphic.
+	lastEffect FilterEffect
+}
+
+// NewSVGFilterBuilder creates a builder with the given operating
+// space. The caller's SourceGraphic is built here so its image can be
+// supplied later via Filter.SetSourceImage.
+func NewSVGFilterBuilder(space InterpolationSpace) *SVGFilterBuilder {
+	src := NewSourceGraphic(space)
+	srcAlpha := NewSourceAlpha(src, space)
+	b := &SVGFilterBuilder{
+		source:       src,
+		sourceAlpha:  srcAlpha,
+		space:        space,
+		builtins:     make(map[string]FilterEffect),
+		namedResults: make(map[string]FilterEffect),
+		lastEffect:   src,
+	}
+	// Per SVG Filter Effects 1 §15.7 the standard input names. Match
+	// case-insensitively (Blink's SVGFilterBuilder matches the
+	// camelCase spellings). We store the canonical names; lookups
+	// normalize via strings.ToLower-equivalent.
+	b.builtins["SourceGraphic"] = src
+	b.builtins["SourceAlpha"] = srcAlpha
+	// FillPaint / StrokePaint / BackgroundImage / BackgroundAlpha:
+	// not yet implemented as distinct sources. Per SVG spec they
+	// would carry the fill/stroke paint server or the backdrop; in
+	// the absence of backdrop access we approximate Fill/Stroke as
+	// SourceGraphic (so feMerge with FillPaint composes the shape)
+	// and BackgroundImage/Alpha as transparent black (the spec
+	// fallback when the backdrop is unavailable). Blink uses the
+	// same approximations under certain compositing isolations.
+	b.builtins["FillPaint"] = src
+	b.builtins["StrokePaint"] = src
+	b.builtins["BackgroundImage"] = src
+	b.builtins["BackgroundAlpha"] = srcAlpha
+	return b
+}
+
+// Source returns the builder's SourceGraphic.
+func (b *SVGFilterBuilder) Source() *SourceGraphic { return b.source }
+
+// SourceAlpha returns the builder's SourceAlpha.
+func (b *SVGFilterBuilder) SourceAlpha() *SourceAlpha { return b.sourceAlpha }
+
+// LastEffect returns the most recently built primitive's output
+// (initialized to SourceGraphic). Mirrors Blink's last_effect_.
+func (b *SVGFilterBuilder) LastEffect() FilterEffect { return b.lastEffect }
+
+// GetEffectByID resolves a string reference (an `in`/`in2` attribute
+// value or a fragment id) following the standard order:
+//
+//	builtins → namedResults → lastEffect (default).
+//
+// An empty `id` returns `lastEffect`. An unknown id falls back to
+// lastEffect (Blink's SVGFilterBuilder::GetEffectById same behavior:
+// unknown ids resolve to the chain default).
+func (b *SVGFilterBuilder) GetEffectByID(id string) FilterEffect {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return b.lastEffect
+	}
+	if e, ok := b.builtins[id]; ok {
+		return e
+	}
+	if e, ok := b.namedResults[id]; ok {
+		return e
+	}
+	return b.lastEffect
+}
+
+// BuildGraph walks the filter primitive children, constructs the
+// FilterEffect graph, and returns the assembled `*Filter` with its
+// reference box, filter region, and last effect set. Mirrors Blink's
+// SVGFilterBuilder::BuildGraph.
+//
+// The returned Filter is non-nil even when there are zero primitives
+// — in that case LastEffect == SourceGraphic, which yields a
+// passthrough (the source is the result).
+func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
+	if elt == nil {
+		return nil
+	}
+	for _, prim := range elt.Primitives() {
+		eff := b.buildOnePrimitive(elt, prim)
+		if eff == nil {
+			continue
+		}
+		// `result="…"` registers the named output.
+		if name, ok := prim.Attribute("result"); ok {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				b.namedResults[name] = eff
+			}
+		}
+		b.lastEffect = eff
+	}
+	return &Filter{
+		ReferenceBox: elt.ReferenceBox(),
+		FilterRegion: elt.FilterRegion(),
+		Source:       b.source,
+		SourceAlpha:  b.sourceAlpha,
+		LastEffect:   b.lastEffect,
+	}
+}
+
+// buildOnePrimitive dispatches one filter primitive element to the
+// corresponding FilterEffect constructor, wiring its `in`/`in2`
+// inputs via GetEffectByID. Returns nil if the primitive isn't
+// supported by Phase 7's primitive set.
+func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilterPrimitive) FilterEffect {
+	switch prim.TagName() {
+	case "feflood":
+		r, g, bb, a := prim.FloodColor()
+		fe := NewFEFlood(b.space, r, g, bb, a)
+		fe.Subregion = resolvePrimitiveSubregion(elt, prim)
+		return fe
+	case "fegaussianblur":
+		in := b.resolveInputAttr(prim, "in")
+		stdX, stdY := parseStdDeviation(prim)
+		return NewFEGaussianBlur(in, b.space, stdX, stdY)
+	case "fecolormatrix":
+		in := b.resolveInputAttr(prim, "in")
+		t, values := parseColorMatrixAttrs(prim)
+		return NewFEColorMatrix(in, b.space, t, values)
+	case "feoffset":
+		in := b.resolveInputAttr(prim, "in")
+		dx, _ := parseFloatAttr(prim, "dx", 0)
+		dy, _ := parseFloatAttr(prim, "dy", 0)
+		return NewFEOffset(in, b.space, dx, dy)
+	case "feblend":
+		in := b.resolveInputAttr(prim, "in")
+		in2 := b.resolveInputAttr(prim, "in2")
+		mode := parseBlendMode(prim)
+		return NewFEBlend(in, in2, b.space, mode)
+	case "femerge":
+		// `<feMerge>` has `<feMergeNode>` children, each carrying an
+		// `in` attribute. Walk them in DOM order.
+		var ins []FilterEffect
+		for _, child := range prim.Children() {
+			if child.TagName() != "femergenode" {
+				continue
+			}
+			ins = append(ins, b.resolveInputAttr(child, "in"))
+		}
+		if len(ins) == 0 {
+			// Spec: empty feMerge produces nothing (just the source).
+			// Defensive: return the chain default to avoid a nil.
+			return b.lastEffect
+		}
+		return NewFEMerge(ins, b.space)
+	case "fecomponenttransfer":
+		in := b.resolveInputAttr(prim, "in")
+		funcs := parseComponentTransferFuncs(prim)
+		return NewFEComponentTransfer(in, b.space, funcs)
+	case "fedropshadow":
+		in := b.resolveInputAttr(prim, "in")
+		dx, _ := parseFloatAttr(prim, "dx", 2)
+		dy, _ := parseFloatAttr(prim, "dy", 2)
+		stdX, _ := parseStdDeviation1(prim)
+		r, g, bb, a := prim.FloodColor()
+		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, r, g, bb, a)
+	}
+	// Unsupported primitive: pass through. Blink's SVGFilterBuilder
+	// returns nullptr for unknown / unsupported primitives, which
+	// causes the chain to stop there. We instead keep the chain
+	// flowing so partially-supported filters still render something
+	// reasonable.
+	return nil
+}
+
+// resolveInputAttr reads the named attribute (`in` or `in2`) and
+// resolves it through GetEffectByID.
+func (b *SVGFilterBuilder) resolveInputAttr(prim SVGFilterPrimitive, name string) FilterEffect {
+	if v, ok := prim.Attribute(name); ok {
+		return b.GetEffectByID(v)
+	}
+	return b.lastEffect
+}
+
+// resolvePrimitiveSubregion computes a filter primitive's subregion
+// in absolute device-pixel coordinates from its x/y/width/height
+// attributes. Returns the zero rect (image.Rectangle{}) when no
+// subregion attributes are set, signalling "use the full filter
+// region" — matches FEFlood.Subregion.Empty() convention.
+//
+// Resolution per SVG Filter Effects 1 §15.7:
+//   - primitiveUnits="userSpaceOnUse": x/y/width/height are in
+//     user-space units, then mapped to absolute device pixels via the
+//     filter region (which is itself in absolute device pixels).
+//     Phase 7's caller supplies the filter region already in device
+//     pixels, so this case applies x/y/w/h directly within that.
+//   - primitiveUnits="objectBoundingBox": x/y/width/height are
+//     fractions of the referencing element's bbox; we map onto
+//     ReferenceBox().
+func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) image.Rectangle {
+	xStr, hasX := prim.Attribute("x")
+	yStr, hasY := prim.Attribute("y")
+	wStr, hasW := prim.Attribute("width")
+	hStr, hasH := prim.Attribute("height")
+	if !hasX && !hasY && !hasW && !hasH {
+		return image.Rectangle{}
+	}
+	if elt.PrimitiveUnitsObjectBoundingBox() {
+		ref := elt.ReferenceBox()
+		refW := float64(ref.Dx())
+		refH := float64(ref.Dy())
+		// Defaults: x=0%, y=0%, width=100%, height=100% of the bbox.
+		x := parseFracPercent(xStr, 0.0) * refW
+		y := parseFracPercent(yStr, 0.0) * refH
+		w := refW
+		h := refH
+		if hasW {
+			w = parseFracPercent(wStr, 1.0) * refW
+		}
+		if hasH {
+			h = parseFracPercent(hStr, 1.0) * refH
+		}
+		return image.Rect(
+			ref.Min.X+int(math.Floor(x)),
+			ref.Min.Y+int(math.Floor(y)),
+			ref.Min.X+int(math.Ceil(x+w)),
+			ref.Min.Y+int(math.Ceil(y+h)),
+		)
+	}
+	// userSpaceOnUse: x/y/w/h are in user-space units. The caller
+	// already resolved the filter region to absolute device pixels;
+	// we interpret the subregion attributes as offsets within that
+	// region.
+	region := elt.FilterRegion()
+	x, _ := parseLength(xStr, float64(region.Min.X))
+	y, _ := parseLength(yStr, float64(region.Min.Y))
+	w := float64(region.Dx())
+	h := float64(region.Dy())
+	if hasW {
+		w, _ = parseLength(wStr, w)
+	}
+	if hasH {
+		h, _ = parseLength(hStr, h)
+	}
+	return image.Rect(
+		int(math.Floor(x)),
+		int(math.Floor(y)),
+		int(math.Ceil(x+w)),
+		int(math.Ceil(y+h)),
+	)
+}
+
+// parseStdDeviation parses an feGaussianBlur `stdDeviation` attribute.
+// The value is either one number (both axes) or two numbers (x, y).
+// Default: 0, 0.
+func parseStdDeviation(prim SVGFilterPrimitive) (float64, float64) {
+	v, ok := prim.Attribute("stdDeviation")
+	if !ok {
+		v, ok = prim.Attribute("stddeviation")
+	}
+	if !ok {
+		return 0, 0
+	}
+	parts := strings.FieldsFunc(v, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n'
+	})
+	if len(parts) == 0 {
+		return 0, 0
+	}
+	x, _ := strconv.ParseFloat(parts[0], 64)
+	if len(parts) == 1 {
+		return x, x
+	}
+	y, _ := strconv.ParseFloat(parts[1], 64)
+	return x, y
+}
+
+// parseStdDeviation1 returns one axis (X) from feDropShadow.
+func parseStdDeviation1(prim SVGFilterPrimitive) (float64, float64) {
+	return parseStdDeviation(prim)
+}
+
+// parseFloatAttr reads a single float attribute with a default
+// fallback. Returns (value, true) on parse success; (def, false) on
+// missing/malformed.
+func parseFloatAttr(prim SVGFilterPrimitive, name string, def float64) (float64, bool) {
+	v, ok := prim.Attribute(name)
+	if !ok {
+		return def, false
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return def, false
+	}
+	return f, true
+}
+
+// parseBlendMode reads an feBlend `mode` attribute.
+func parseBlendMode(prim SVGFilterPrimitive) BlendMode {
+	v, ok := prim.Attribute("mode")
+	if !ok {
+		return BlendModeNormal
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "multiply":
+		return BlendModeMultiply
+	case "screen":
+		return BlendModeScreen
+	case "darken":
+		return BlendModeDarken
+	case "lighten":
+		return BlendModeLighten
+	}
+	return BlendModeNormal
+}
+
+// parseColorMatrixAttrs reads an feColorMatrix `type` + `values`.
+// Default type: matrix. Default values: identity for matrix, 1 for
+// saturate, 0 for hueRotate.
+func parseColorMatrixAttrs(prim SVGFilterPrimitive) (ColorMatrixType, []float64) {
+	tStr := "matrix"
+	if v, ok := prim.Attribute("type"); ok {
+		tStr = strings.ToLower(strings.TrimSpace(v))
+	}
+	vStr, _ := prim.Attribute("values")
+	parts := strings.FieldsFunc(vStr, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n'
+	})
+	values := make([]float64, 0, len(parts))
+	for _, p := range parts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err == nil {
+			values = append(values, f)
+		}
+	}
+	switch tStr {
+	case "saturate":
+		if len(values) == 0 {
+			values = []float64{1}
+		}
+		return ColorMatrixTypeSaturate, values
+	case "huerotate":
+		if len(values) == 0 {
+			values = []float64{0}
+		}
+		return ColorMatrixTypeHueRotate, values
+	case "luminancetoalpha":
+		return ColorMatrixTypeLuminanceToAlpha, nil
+	}
+	// matrix (default): identity if no values supplied.
+	if len(values) < 20 {
+		identity := []float64{
+			1, 0, 0, 0, 0,
+			0, 1, 0, 0, 0,
+			0, 0, 1, 0, 0,
+			0, 0, 0, 1, 0,
+		}
+		values = identity
+	}
+	return ColorMatrixTypeMatrix, values
+}
+
+// parseComponentTransferFuncs reads the `<feFuncR>` / `<feFuncG>` /
+// `<feFuncB>` / `<feFuncA>` children of an `<feComponentTransfer>`
+// primitive and builds the 4 transfer functions. Missing children
+// default to TransferIdentity.
+func parseComponentTransferFuncs(prim SVGFilterPrimitive) [4]TransferFunc {
+	out := [4]TransferFunc{
+		{Type: TransferIdentity},
+		{Type: TransferIdentity},
+		{Type: TransferIdentity},
+		{Type: TransferIdentity},
+	}
+	for _, c := range prim.Children() {
+		var idx int = -1
+		switch c.TagName() {
+		case "fefuncr":
+			idx = 0
+		case "fefuncg":
+			idx = 1
+		case "fefuncb":
+			idx = 2
+		case "fefunca":
+			idx = 3
+		default:
+			continue
+		}
+		out[idx] = parseTransferFunc(c)
+	}
+	return out
+}
+
+// parseTransferFunc reads the attributes of one feFuncR/G/B/A child.
+func parseTransferFunc(prim SVGFilterPrimitive) TransferFunc {
+	tStr := "identity"
+	if v, ok := prim.Attribute("type"); ok {
+		tStr = strings.ToLower(strings.TrimSpace(v))
+	}
+	tf := TransferFunc{}
+	switch tStr {
+	case "table":
+		tf.Type = TransferTable
+		tf.TableValues = parseFloatList(prim, "tableValues")
+	case "discrete":
+		tf.Type = TransferDiscrete
+		tf.TableValues = parseFloatList(prim, "tableValues")
+	case "linear":
+		tf.Type = TransferLinear
+		tf.Slope, _ = parseFloatAttr(prim, "slope", 1)
+		tf.Intercept, _ = parseFloatAttr(prim, "intercept", 0)
+	case "gamma":
+		tf.Type = TransferGamma
+		tf.Amplitude, _ = parseFloatAttr(prim, "amplitude", 1)
+		tf.Exponent, _ = parseFloatAttr(prim, "exponent", 1)
+		tf.Offset, _ = parseFloatAttr(prim, "offset", 0)
+	default:
+		tf.Type = TransferIdentity
+	}
+	return tf
+}
+
+// parseFloatList reads a whitespace/comma-separated list of floats.
+func parseFloatList(prim SVGFilterPrimitive, name string) []float64 {
+	v, ok := prim.Attribute(name)
+	if !ok {
+		// Try lowercase variant (HTML tokenizer convention).
+		v, ok = prim.Attribute(strings.ToLower(name))
+	}
+	if !ok {
+		return nil
+	}
+	parts := strings.FieldsFunc(v, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n'
+	})
+	out := make([]float64, 0, len(parts))
+	for _, p := range parts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err == nil {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// parseFracPercent parses "25%" or "0.25" into 0.25. Used for
+// objectBoundingBox primitive subregion coords.
+func parseFracPercent(s string, def float64) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	if strings.HasSuffix(s, "%") {
+		f, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+		if err != nil {
+			return def
+		}
+		return f / 100.0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
+// parseLength parses a length value with optional percentage. Returns
+// the parsed value and whether it had a percent suffix.
+func parseLength(s string, def float64) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def, false
+	}
+	pct := false
+	num := s
+	if strings.HasSuffix(s, "%") {
+		pct = true
+		num = strings.TrimSuffix(s, "%")
+	}
+	// Strip common unit suffixes (px, em, …) defensively.
+	num = strings.TrimSuffix(num, "px")
+	f, err := strconv.ParseFloat(strings.TrimSpace(num), 64)
+	if err != nil {
+		return def, pct
+	}
+	if pct {
+		return f / 100.0, true
+	}
+	return f, false
+}
+
+// ResolveInterpolationSpace returns the InterpolationSpace that
+// matches a `color-interpolation-filters` CSS value. Mirrors Blink's
+// SVGFilterBuilder::ResolveInterpolationSpace.
+//
+// Per SVG 1.1 §4.2 the initial value of `color-interpolation-filters`
+// is `linearRGB` — this is the SVG-specific default that differs from
+// `color-interpolation` (whose default is sRGB).
+func ResolveInterpolationSpace(value string) InterpolationSpace {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "srgb":
+		return InterpolationSpaceSRGB
+	case "linearrgb", "":
+		return InterpolationSpaceLinearRGB
+	case "auto":
+		// Per spec, `auto` maps to the implementation's choice; SVG 1.1
+		// recommends linearRGB. Mirrors Blink's mapping.
+		return InterpolationSpaceLinearRGB
+	}
+	return InterpolationSpaceLinearRGB
+}

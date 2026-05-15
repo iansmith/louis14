@@ -234,6 +234,13 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		m := NewSVGResourceMasker(elt, lengthCtx, styleResolver)
 		resources.RegisterMasker(m)
 		return nil
+	case "filter":
+		// HTML tokenizer lowercases SVG element names — `<filter>`
+		// arrives here as "filter". Phase 7 routes it through
+		// NewSVGResourceFilter and into the registry.
+		f := NewSVGResourceFilter(elt, lengthCtx, styleResolver)
+		resources.RegisterFilter(f)
+		return nil
 	case "defs":
 		// `<defs>` is a non-rendering grouping element (SVG 2 §5.5);
 		// its purpose is to declare resource elements. Recurse to

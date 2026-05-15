@@ -151,6 +151,16 @@ func outgoingReferences(res SVGResource) []string {
 		// implemented in louis14 (Phase 4 only resolves a gradient's
 		// own stops), so no outgoing references to walk.
 		return nil
+	case *SVGResourceFilter:
+		// Filter's own style may carry `filter:` (chained filters via
+		// the CSS-style `filter` property, equivalent to Blink's
+		// FilterChain). The filter primitive children's `in`/`in2`
+		// attributes are NOT url() references (they point at builtins
+		// like SourceGraphic or at named-result strings); they don't
+		// create cross-resource edges. Phase 7 walks the filter
+		// element's own style refs only.
+		refs = appendStyleRefs(refs, r.elementStyle)
+		return refs
 	}
 	return refs
 }

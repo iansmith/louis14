@@ -551,6 +551,9 @@ func mergeSVGRegistries(dst, src *svg.SVGResourceRegistry) {
 	src.ForEachMasker(func(m *svg.SVGResourceMasker) {
 		dst.RegisterMasker(m)
 	})
+	src.ForEachFilter(func(f *svg.SVGResourceFilter) {
+		dst.RegisterFilter(f)
+	})
 }
 
 // paintLayer paints a PaintLayer and its descendants using the pre-built
