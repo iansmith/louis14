@@ -69,6 +69,16 @@ type SVGRoot struct {
 	// 1: SVGContainer stubs for everything that isn't <svg> itself).
 	Children []SVGNode
 
+	// Resources is the registry of `url(#id)`-referenceable elements
+	// (gradients, patterns; clip/mask in Phase 5) anywhere in the
+	// outermost SVG's subtree. Built during BuildSVGRoot by scanning
+	// for `<linearGradient>`/`<radialGradient>`/`<pattern>` elements
+	// (and Phase 5 will add `<clipPath>`/`<mask>`). Nested `<svg>`
+	// elements share the OUTERMOST SVG's registry — `url(#id)` is a
+	// document-fragment reference (SVG 2 §3.1), not a scope-local one.
+	// Mirrors Blink's per-TreeScope SVGTreeScopeResources scoping.
+	Resources *SVGResourceRegistry
+
 	// bbox accumulated by UpdateSVGLayout. Phase 1: always empty.
 	bbox geometry.RectF
 }
@@ -141,6 +151,7 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 	root := &SVGRoot{
 		ContainerSize:       containerSize,
 		PreserveAspectRatio: DefaultPreserveAspectRatio(),
+		Resources:           NewSVGResourceRegistry(),
 	}
 
 	// Parse viewBox. The HTML tokenizer lowercases attribute names, so
@@ -171,16 +182,98 @@ func BuildSVGRoot(svgElement ElementAdapter, containerSize geometry.SizeF, style
 		root.ViewBox, viewport, root.PreserveAspectRatio,
 	)
 
-	// Build the SVG layout subtree from the <svg>'s children.
+	// Build the SVG layout subtree from the <svg>'s children. Paint
+	// servers (and Phase 5's clipPath/mask) discovered during the walk
+	// are routed into root.Resources instead of the visible Children
+	// list — they live in the resource registry rather than the paint
+	// tree (mirrors Blink's LayoutSVGHiddenContainer routing).
 	lengthCtx := NewSVGLengthContext(containerSize)
 	for _, child := range svgElement.SVGChildren() {
-		node := BuildSVGTree(child, lengthCtx, styleResolver)
+		node := buildSVGTreeWithResources(child, lengthCtx, styleResolver, root.Resources)
 		if node != nil {
 			root.Children = append(root.Children, node)
 		}
 	}
 
 	return root
+}
+
+// buildSVGTreeWithResources is the resource-aware variant of
+// BuildSVGTree. It registers gradient/pattern resource elements into
+// the supplied registry and returns nil for them (so they don't end up
+// in the paint tree). Other elements recurse as in BuildSVGTree but
+// always go through this entry point so resource elements buried deep
+// inside `<g>`/`<defs>`/nested-`<svg>` are still discovered.
+func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver StyleResolver, resources *SVGResourceRegistry) SVGNode {
+	if elt == nil {
+		return nil
+	}
+	tag := elt.TagName()
+	switch tag {
+	case "lineargradient":
+		// HTML tokenizer lowercases SVG element names — `<linearGradient>`
+		// arrives here as "lineargradient". Same for radialgradient.
+		g := NewSVGLinearGradient(elt, styleResolver)
+		resources.RegisterPaintServer(g)
+		return nil
+	case "radialgradient":
+		g := NewSVGRadialGradient(elt, styleResolver)
+		resources.RegisterPaintServer(g)
+		return nil
+	case "pattern":
+		p := NewSVGPattern(elt, lengthCtx, styleResolver)
+		resources.RegisterPaintServer(p)
+		return nil
+	case "defs":
+		// `<defs>` is a non-rendering grouping element (SVG 2 §5.5);
+		// its purpose is to declare resource elements. Recurse to
+		// register any paint servers inside, but do not produce a
+		// visible node.
+		for _, child := range elt.SVGChildren() {
+			_ = buildSVGTreeWithResources(child, lengthCtx, styleResolver, resources)
+		}
+		return nil
+	}
+	// Delegate the rest to the original dispatch. For container kinds
+	// we recurse with the resource-aware variant so a paint server
+	// declared inside a `<g>` is still registered. SVGShape leaves
+	// don't recurse (they have no SVG-element children).
+	switch tag {
+	case "rect", "circle", "ellipse", "line", "polyline", "polygon", "path":
+		shape := NewSVGShape(elt, lengthCtx)
+		if shape != nil && styleResolver != nil {
+			shape.Style = styleResolver(elt)
+		}
+		return shape
+	case "svg":
+		vc := NewSVGViewportContainer(elt, lengthCtx)
+		if vc == nil {
+			return nil
+		}
+		if styleResolver != nil {
+			vc.Style = styleResolver(elt)
+		}
+		childCtx := vc.ChildLengthContext()
+		for _, child := range elt.SVGChildren() {
+			if c := buildSVGTreeWithResources(child, childCtx, styleResolver, resources); c != nil {
+				vc.AppendChild(c)
+			}
+		}
+		return vc
+	}
+	container := NewSVGContainer(tag)
+	if styleResolver != nil {
+		container.Style = styleResolver(elt)
+	}
+	if v, ok := elt.Attribute("transform"); ok {
+		container.SetSVGTransform(ParseSVGTransform(v))
+	}
+	for _, child := range elt.SVGChildren() {
+		if c := buildSVGTreeWithResources(child, lengthCtx, styleResolver, resources); c != nil {
+			container.AppendChild(c)
+		}
+	}
+	return container
 }
 
 // BuildSVGTree dispatches an ElementAdapter to the right SVGNode

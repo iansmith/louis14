@@ -37,6 +37,15 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	originX := box.X + box.Border.Left + box.Padding.Left
 	originY := box.Y + box.Border.Top + box.Padding.Top
 
+	// DeviceFromUser at the root paint scope is the composed
+	// translate(originX, originY) · LocalToBorderBoxTransform: maps a
+	// point in the outermost SVG's user-space coords into device
+	// (page-pixel) coords. Each scopedSVGTransformState composes its
+	// own transform on top as the paint walk descends. Paint servers
+	// use this when fill is `url(#…)` to know the device rect they
+	// need to iterate.
+	deviceFromUser := geometry.Translate(originX, originY).Compose(root.LocalToBorderBoxTransform)
+
 	pctx := &svgPaintContext{
 		dc:      r.dc,
 		originX: originX,
@@ -44,6 +53,9 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 		viewport: geometry.NewRectF(0, 0,
 			root.ContainerSize.Width, root.ContainerSize.Height),
 		CurrentTransform: geometry.Identity(),
+		DeviceFromUser:   deviceFromUser,
+		Resources:        root.Resources,
+		Renderer:         r,
 	}
 
 	// Push a scope so the translation + viewBox transform pop cleanly.

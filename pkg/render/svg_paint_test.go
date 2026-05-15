@@ -182,3 +182,290 @@ func TestSVG_CombinedTransforms(t *testing.T) {
 			rO>>8, gO>>8, bO>>8)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4 — paint server (gradient / pattern) hand-check tests
+// ---------------------------------------------------------------------------
+//
+// These tests are the Phase 4 gate. They each render a small piece of
+// SVG containing a `<linearGradient>`, `<radialGradient>`, or
+// `<pattern>` resource element referenced via `fill="url(#…)"`, and
+// sample pixels at specific user-space locations to verify the paint
+// server resolves correctly and pixel-aligns with the expected ramp.
+//
+// Tolerance: each per-channel expected value carries a ±2 cushion to
+// absorb rounding noise from the sub-pixel rasterizer and the
+// straight-alpha ↔ premultiplied-alpha round trip the gradient stop
+// interpolation performs.
+
+// sampleColorClose reports whether the pixel at (x, y) in img matches
+// the given expected RGBA (8-bit) within the given per-channel
+// tolerance. Helper for the gradient hand-checks below.
+func sampleColorClose(t *testing.T, img *image.RGBA, x, y int, wantR, wantG, wantB uint8, tol int, where string) {
+	t.Helper()
+	r, g, b, a := img.At(x, y).RGBA()
+	gotR := int(r >> 8)
+	gotG := int(g >> 8)
+	gotB := int(b >> 8)
+	if abs(gotR-int(wantR)) > tol || abs(gotG-int(wantG)) > tol || abs(gotB-int(wantB)) > tol {
+		t.Errorf("%s at (%d,%d): got RGBA=(%d,%d,%d,%d), want approx (%d,%d,%d) ±%d",
+			where, x, y, gotR, gotG, gotB, a>>8, wantR, wantG, wantB, tol)
+	}
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// TestSVG_LinearGradientObjectBBox: the most basic linear gradient,
+// black→white across a 100×100 rect with default `gradientUnits=
+// objectBoundingBox` and default endpoints x1=0,y1=0,x2=1,y2=0
+// (horizontal). Verifies left edge ≈ black, right edge ≈ white,
+// midpoint ≈ mid-gray.
+func TestSVG_LinearGradientObjectBBox(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="lg">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#lg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Left edge: black.
+	sampleColorClose(t, img, 2, 50, 5, 5, 5, 8, "left edge")
+	// Right edge: white.
+	sampleColorClose(t, img, 97, 50, 250, 250, 250, 8, "right edge")
+	// Midpoint: mid-gray (~127).
+	sampleColorClose(t, img, 50, 50, 127, 127, 127, 8, "midpoint")
+}
+
+// TestSVG_LinearGradientUserSpaceOnUse: explicit gradient endpoints in
+// user-space coords, gradientUnits=userSpaceOnUse. The endpoints define
+// a horizontal ramp from (10, 0) → (90, 0) — same visual effect as the
+// objectBBox case at this rect's geometry, but the resolution path
+// goes through the user-space length code.
+func TestSVG_LinearGradientUserSpaceOnUse(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="lg" x1="10" y1="0" x2="90" y2="0" gradientUnits="userSpaceOnUse">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect x="10" y="10" width="80" height="80" fill="url(#lg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// At user-space x=10 (just inside the gradient start): black.
+	sampleColorClose(t, img, 12, 50, 5, 5, 5, 12, "left start")
+	// At user-space x=90 (just inside the gradient end): white.
+	sampleColorClose(t, img, 88, 50, 250, 250, 250, 12, "right end")
+	// At user-space x=50 (midpoint): mid-gray.
+	sampleColorClose(t, img, 50, 50, 127, 127, 127, 12, "midpoint")
+}
+
+// TestSVG_LinearGradientWithTransform: a gradientTransform="rotate(90)"
+// rotates the gradient line by 90°, turning the default horizontal
+// (left→right) ramp into a vertical (top→bottom) ramp. Sample at the
+// top/bottom edges and the center.
+func TestSVG_LinearGradientWithTransform(t *testing.T) {
+	// rotate(90) maps (1,0) → (0,1). Applied AFTER the objectBBox
+	// mapping (translate(0,0) ∘ scale(100,100)), the line direction
+	// becomes (0, 100) in user space — vertical ramp.
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="lg" gradientTransform="rotate(90 0.5 0.5)">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#lg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Top edge: black.
+	sampleColorClose(t, img, 50, 2, 5, 5, 5, 12, "top edge")
+	// Bottom edge: white.
+	sampleColorClose(t, img, 50, 97, 250, 250, 250, 12, "bottom edge")
+	// Center: mid-gray.
+	sampleColorClose(t, img, 50, 50, 127, 127, 127, 12, "center")
+}
+
+// TestSVG_RadialGradient: default objectBBox radial gradient with
+// center at (0.5, 0.5), r=0.5. Black at center, white at the edge of
+// the enclosing circle.
+func TestSVG_RadialGradient(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<radialGradient id="rg">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</radialGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#rg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Center: black.
+	sampleColorClose(t, img, 50, 50, 5, 5, 5, 8, "center")
+	// Edge (distance ~r from center, along x axis): white.
+	sampleColorClose(t, img, 98, 50, 250, 250, 250, 12, "right edge")
+}
+
+// TestSVG_GradientFallbackColor: a `fill="url(#missing) red"` paints
+// red because the referenced gradient doesn't exist (SVG 2
+// fallback-color syntax). This exercises the paint-server-not-found
+// branch in resolvePaint.
+func TestSVG_GradientFallbackColor(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="50" height="50">` +
+		`<rect width="50" height="50" fill="url(#missing) red"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Sample the rect center — should be opaque red.
+	sampleColorClose(t, img, 25, 25, 255, 0, 0, 8, "fallback red")
+}
+
+// TestSVG_GradientNoneIfNotFound: a `fill="url(#missing)"` with no
+// fallback paints nothing — the page background (white from the
+// renderer's clear) shows through. SVG 2 §13.1 "treat as if `fill: none`
+// was specified" branch.
+func TestSVG_GradientNoneIfNotFound(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="50" height="50">` +
+		`<rect width="50" height="50" fill="url(#missing)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Sample the rect center — should be the canvas background
+	// (white). Tolerance is wider here because the canvas is a clear
+	// 255/255/255/255 RGBA, with no anti-aliasing concerns.
+	sampleColorClose(t, img, 25, 25, 255, 255, 255, 4, "no paint")
+}
+
+// TestSVG_GradientStopOpacity: a stop with stop-opacity=0.5 produces
+// a semi-transparent ramp at that offset. With a white canvas
+// underneath, the midpoint of a red→red 50%-opacity ramp should be
+// approximately rgb(255, 127, 127) (red blended with white at 50%
+// coverage).
+func TestSVG_GradientStopOpacity(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="lg">` +
+		`<stop offset="0" stop-color="red" stop-opacity="1"/>` +
+		`<stop offset="1" stop-color="red" stop-opacity="0"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#lg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Left edge: fully opaque red.
+	sampleColorClose(t, img, 2, 50, 255, 0, 0, 8, "left opaque red")
+	// Midpoint: ~50% red over white background → (255, 127, 127).
+	sampleColorClose(t, img, 50, 50, 255, 127, 127, 12, "midpoint")
+	// Right edge: fully transparent → background (white).
+	sampleColorClose(t, img, 97, 50, 255, 255, 255, 8, "right transparent")
+}
+
+// TestSVG_SpreadMethodPad: spreadMethod=pad (the default) clamps the
+// gradient at its endpoints. With a gradient line covering only the
+// middle half of the rect (x1=25%, x2=75%) the left third stays at the
+// first stop's color and the right third at the last stop's color.
+func TestSVG_SpreadMethodPad(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="lg" x1="0.25" x2="0.75" spreadMethod="pad">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#lg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Left edge: still black (clamped at first stop).
+	sampleColorClose(t, img, 5, 50, 5, 5, 5, 8, "left pad clamp")
+	// Right edge: white (clamped at last stop).
+	sampleColorClose(t, img, 95, 50, 250, 250, 250, 8, "right pad clamp")
+	// Midpoint of gradient line: mid-gray.
+	sampleColorClose(t, img, 50, 50, 127, 127, 127, 12, "gradient midpoint")
+}
+
+// TestSVG_SpreadMethodReflect: outside the [0,1] range the gradient
+// mirrors. With a gradient covering only the first 50% of the rect,
+// reflect mirrors the second 50% so the rightmost edge shows the
+// FIRST stop's color (the reflection brings t back to ~0).
+func TestSVG_SpreadMethodReflect(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="lg" x1="0" x2="0.5" spreadMethod="reflect">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#lg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Far right edge: t=2 → reflects to t=0 → first-stop color (black).
+	sampleColorClose(t, img, 97, 50, 5, 5, 5, 12, "right reflect to black")
+	// At 50% (gradient end): white.
+	sampleColorClose(t, img, 48, 50, 250, 250, 250, 12, "gradient end white")
+	// At 75% (reflection midpoint): mid-gray.
+	sampleColorClose(t, img, 75, 50, 127, 127, 127, 18, "reflect midpoint")
+}
+
+// TestSVG_SpreadMethodRepeat: outside the [0,1] range the gradient
+// tiles. With a gradient covering the first 50%, repeat makes the
+// second 50% an identical copy: t=0.75 wraps to t=0.5 → still
+// midway → mid-gray. The far right edge wraps to t=1 → white.
+func TestSVG_SpreadMethodRepeat(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<linearGradient id="lg" x1="0" x2="0.5" spreadMethod="repeat">` +
+		`<stop offset="0" stop-color="black"/>` +
+		`<stop offset="1" stop-color="white"/>` +
+		`</linearGradient>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#lg)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// At x=25 (t=0.5 → mid-gray).
+	sampleColorClose(t, img, 25, 50, 127, 127, 127, 12, "tile-1 midpoint")
+	// At x=75 (t=1.5 → mod 1 = 0.5 → mid-gray again).
+	sampleColorClose(t, img, 75, 50, 127, 127, 127, 12, "tile-2 midpoint")
+	// At x=2 (t≈0.04 → near black).
+	sampleColorClose(t, img, 2, 50, 10, 10, 10, 12, "tile-1 start")
+	// At x=52 (t≈1.04 → mod 1 ≈ 0.04 → near black again — seam).
+	sampleColorClose(t, img, 52, 50, 10, 10, 10, 18, "tile-2 start")
+}
+
+// TestSVG_Pattern: a simple 10×10 pattern containing a 10×10 black
+// rectangle, applied to a 100×100 white-background rect. The pattern
+// uses patternUnits=userSpaceOnUse so coordinates are in user units.
+// Sample any point inside the 100×100 rect — should be black (the
+// entire tile is filled, so every tile pixel is black).
+func TestSVG_Pattern(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<pattern id="p" x="0" y="0" width="10" height="10" patternUnits="userSpaceOnUse">` +
+		`<rect width="10" height="10" fill="black"/>` +
+		`</pattern>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="url(#p)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Sample a few points — all should be black because every tile
+	// pixel is black.
+	sampleColorClose(t, img, 5, 5, 5, 5, 5, 12, "tile (0,0)")
+	sampleColorClose(t, img, 15, 25, 5, 5, 5, 12, "tile (10,20)")
+	sampleColorClose(t, img, 95, 95, 5, 5, 5, 12, "tile (90,90)")
+}

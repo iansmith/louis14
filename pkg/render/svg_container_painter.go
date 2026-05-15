@@ -27,6 +27,7 @@ type scopedSVGTransformState struct {
 	prevClip  geometry.RectF
 	pctx      *svgPaintContext
 	prevXfrm  geometry.AffineTransform
+	prevDev   geometry.AffineTransform
 	hadActive bool
 }
 
@@ -46,6 +47,7 @@ func pushScopedSVGTransform(pctx *svgPaintContext, transform geometry.AffineTran
 		dc:       pctx.dc,
 		pctx:     pctx,
 		prevXfrm: pctx.CurrentTransform,
+		prevDev:  pctx.DeviceFromUser,
 	}
 	s.dc.Push()
 	s.pushed = true
@@ -61,6 +63,7 @@ func pushScopedSVGTransform(pctx *svgPaintContext, transform geometry.AffineTran
 	// prevXfrm · transform. Mirrors how Blink updates
 	// SVGPaintContext's current_transform during recursion.
 	s.pctx.CurrentTransform = s.prevXfrm.Compose(transform)
+	s.pctx.DeviceFromUser = s.prevDev.Compose(transform)
 	s.hadActive = true
 
 	if !extraClip.IsEmpty() {
@@ -91,6 +94,7 @@ func (s *scopedSVGTransformState) Close() {
 	}
 	if s.hadActive {
 		s.pctx.CurrentTransform = s.prevXfrm
+		s.pctx.DeviceFromUser = s.prevDev
 		s.hadActive = false
 	}
 	_ = s.hadClip

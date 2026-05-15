@@ -5,6 +5,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/layout/svg"
 
 	"mazarin/textshape"
 )
@@ -42,6 +43,37 @@ type svgPaintContext struct {
 	// forward-compat with paint server / mask coordinate computations
 	// (Phase 4+).
 	CurrentTransform geometry.AffineTransform
+
+	// DeviceFromUser maps a point in the current node's local
+	// user-space coordinate system to the destination image's device
+	// pixel coordinate system. Equal to the composed transform stack
+	// the DrawContext has pushed:
+	//
+	//   translate(originX, originY) · root.LocalToBorderBoxTransform ·
+	//     CurrentTransform
+	//
+	// Paint servers need this to map a shape's reference bbox (which
+	// is in user-space) into the device-pixel rect they need to
+	// iterate. SVG 2 §13.4: gradient/pattern coordinates are
+	// evaluated in the shape's user-space coordinate system, then the
+	// resulting paint is rasterized at the device-pixel level —
+	// equivalent to inverting this transform per-pixel.
+	DeviceFromUser geometry.AffineTransform
+
+	// Resources is the outermost SVGRoot's resource registry, used by
+	// paint servers to resolve `url(#id)` references. nil before Phase
+	// 4 (and harmless in Phase 1-3 because no painter dereferences it).
+	Resources *svg.SVGResourceRegistry
+
+	// Renderer is the host Renderer used by paint-server fills to
+	// composite onto the same *image.RGBA the rest of the renderer
+	// writes to. The DC doesn't expose pattern fills, so paint
+	// servers rasterize the shape's path through a child DC into a
+	// coverage buffer, then composite the per-pixel paint color
+	// against that coverage onto Renderer.target. Mirrors how the
+	// existing CSS gradient code (gradient.go) reaches the target
+	// image directly.
+	Renderer *Renderer
 }
 
 // setDCColor sets the draw context's color from a css.Color,
