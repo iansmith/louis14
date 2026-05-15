@@ -30,6 +30,18 @@ type svgPaintContext struct {
 	originX  float64
 	originY  float64
 	viewport geometry.RectF
+
+	// CurrentTransform is the accumulated affine transform from the
+	// SVG root down to the current paint scope (NOT including the
+	// outer SVG-root viewBox→viewport transform, which is applied
+	// directly to the DrawContext at SVGRootPainter entry and lives
+	// outside the painter's transform-stack abstraction). Each
+	// scopedSVGTransformState updates this on push and restores it on
+	// Close, mirroring SVGPaintContext::PushTransform /
+	// PopTransform's bookkeeping in Blink. Phase 3 maintains this for
+	// forward-compat with paint server / mask coordinate computations
+	// (Phase 4+).
+	CurrentTransform geometry.AffineTransform
 }
 
 // setDCColor sets the draw context's color from a css.Color,

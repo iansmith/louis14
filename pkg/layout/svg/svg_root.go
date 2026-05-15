@@ -211,8 +211,41 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 			shape.Style = styleResolver(elt)
 		}
 		return shape
+	case "svg":
+		// Nested <svg>: establishes a new viewport + viewBox + length
+		// context for its descendants. Mirrors Blink's
+		// LayoutSVGViewportContainer.
+		vc := NewSVGViewportContainer(elt, lengthCtx)
+		if vc == nil {
+			return nil
+		}
+		if styleResolver != nil {
+			vc.Style = styleResolver(elt)
+		}
+		childCtx := vc.ChildLengthContext()
+		for _, child := range elt.SVGChildren() {
+			if c := BuildSVGTree(child, childCtx, styleResolver); c != nil {
+				vc.AppendChild(c)
+			}
+		}
+		return vc
 	}
+	// Default: a plain SVG container (covers <g>, and falls back to
+	// the structural shell for any tag we don't yet recognize). The
+	// `transform` attribute is parsed unconditionally — only `<g>`
+	// (and a handful of other transformable elements) accept it per
+	// SVG 1.1 §7.6, but parsing it on unrecognized tags is harmless
+	// (the value is the identity if absent) and keeps the dispatch
+	// flat. Mirrors how Blink's LayoutSVGTransformableContainer reads
+	// the attribute via SVGTransformList::Parse without filtering by
+	// element type.
 	container := NewSVGContainer(tag)
+	if styleResolver != nil {
+		container.Style = styleResolver(elt)
+	}
+	if v, ok := elt.Attribute("transform"); ok {
+		container.SetSVGTransform(ParseSVGTransform(v))
+	}
 	for _, child := range elt.SVGChildren() {
 		if c := BuildSVGTree(child, lengthCtx, styleResolver); c != nil {
 			container.AppendChild(c)

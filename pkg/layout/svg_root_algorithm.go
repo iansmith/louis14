@@ -100,10 +100,28 @@ func (sra *SVGRootAlgorithm) Layout() *LayoutResult {
 	return result
 }
 
-// IsInlineSVG reports whether a layout node is an inline <svg> element
-// — the trigger for SVGRootAlgorithm dispatch in layoutElement.
+// IsInlineSVG reports whether a layout node is an outermost inline
+// <svg> element — the trigger for SVGRootAlgorithm dispatch in
+// layoutElement. Nested <svg> elements (an <svg> with an SVG ancestor)
+// are NOT outermost — they live inside the parent SVG's subtree as
+// SVGViewportContainers and must not become their own SVGRoot or CSS
+// replaced-element box. Mirrors Blink's
+// LayoutSVGRoot::IsLayoutSVGRootForSVGElement check, which only flags
+// the root <svg> as a CSS box; nested <svg>'s LayoutObject is a
+// LayoutSVGViewportContainer.
 func IsInlineSVG(node *LayoutInputNode) bool {
-	return node != nil && node.DOMNode != nil && node.DOMNode.TagName == "svg"
+	if node == nil || node.DOMNode == nil || node.DOMNode.TagName != "svg" {
+		return false
+	}
+	// Walk up the DOM looking for an SVG ancestor. If we find one,
+	// this <svg> is nested and is handled by the outer SVG's
+	// SVGViewportContainer path.
+	for p := node.DOMNode.Parent; p != nil; p = p.Parent {
+		if p.TagName == "svg" {
+			return false
+		}
+	}
+	return true
 }
 
 // svgElementAdapter implements svg.ElementAdapter over an html.Node,
