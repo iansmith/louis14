@@ -1679,6 +1679,69 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 			}
 		}
 	}
+
+	// SVG presentation attributes per SVG 1.1 §6.4 / SVG 2 §6.4. For
+	// every SVG element these attribute spellings are equivalent to
+	// the matching CSS property — they participate in the cascade as
+	// non-specific author-level declarations (specificity 0), which
+	// is exactly the slot applyPresentationalAttributes fills: it
+	// runs before any stylesheet rule, so a later CSS rule with any
+	// non-zero specificity wins.
+	//
+	// Mirrors Blink's per-element CollectPresentationAttribute
+	// implementations in core/svg/svg_*_element.cc — every shape /
+	// container / text element opts every paint and stroke property
+	// in. Reading them here for all element types is a small
+	// over-trigger (non-SVG elements never reach an SVG painter), but
+	// it keeps the wiring in one place and matches the way Blink
+	// treats these attributes as plain CSS property maps once
+	// CollectPresentationAttribute has fired.
+	applySVGPresentationalAttributes(node, style)
+}
+
+// applySVGPresentationalAttributes maps SVG presentation attributes
+// to their CSS-property equivalents. Per SVG 1.1 §6.4, these have
+// specificity 0 — so they apply only when no stylesheet rule sets
+// the same property. The function is called from
+// applyPresentationalAttributes before stylesheet matching, so the
+// cascade's normal "later origin wins" rule handles the precedence
+// correctly.
+func applySVGPresentationalAttributes(node *html.Node, style *Style) {
+	// Map of attribute name → CSS property name. SVG attribute names
+	// are camelCase / lowercase per the HTML tokenizer; we match
+	// against the lowercased forms only since HTML tokenizes them
+	// that way. Mirrors the property list from
+	// core/svg/svg_animated_paint_properties.cc + the per-element
+	// CollectPresentationAttribute calls.
+	svgPresentationAttrs := []string{
+		"fill",
+		"fill-opacity",
+		"fill-rule",
+		"stroke",
+		"stroke-opacity",
+		"stroke-width",
+		"stroke-linecap",
+		"stroke-linejoin",
+		"stroke-miterlimit",
+		"stroke-dasharray",
+		"stroke-dashoffset",
+		"opacity",
+		"color",
+		"clip-rule",
+		"stop-color",
+		"stop-opacity",
+	}
+	for _, attr := range svgPresentationAttrs {
+		if val, ok := node.GetAttribute(attr); ok {
+			// Only set if no value yet — preserves the user-agent
+			// stylesheet default in cases where both UA and the
+			// attribute would otherwise tie. Author CSS later in
+			// the cascade overrides this freely.
+			if _, exists := style.Get(attr); !exists {
+				style.Set(attr, val)
+			}
+		}
+	}
 }
 
 // fontSizeFromHTMLSize converts HTML <font size="N"> to CSS font-size.
