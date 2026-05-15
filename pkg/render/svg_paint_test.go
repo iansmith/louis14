@@ -469,3 +469,159 @@ func TestSVG_Pattern(t *testing.T) {
 	sampleColorClose(t, img, 15, 25, 5, 5, 5, 12, "tile (10,20)")
 	sampleColorClose(t, img, 95, 95, 5, 5, 5, 12, "tile (90,90)")
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 — <clipPath> + <mask> hand-check tests
+// ---------------------------------------------------------------------------
+//
+// These exercise the SVG clip / mask resource pipeline added in Phase 5:
+//   - SVGResourceClipper.AsPath fast path (shape-based clippers).
+//   - clipPathUnits userSpaceOnUse + objectBoundingBox.
+//   - SVGResourceMasker.Rasterize with mask-type luminance / alpha.
+//
+// Each test renders a minimal SVG/HTML snippet and samples pixels
+// inside / outside the clip or mask region. Tolerances allow for
+// edge-anti-aliasing rounding noise.
+
+// TestSVG_ClipPathShapeRect — `<clipPath><rect/></clipPath>` on a
+// 100×100 red rect. The clip's child rect at (20,20,60,60) restricts
+// the visible region to that inner sub-rect; pixels inside the clip
+// stay red, pixels outside are clipped away (canvas white).
+func TestSVG_ClipPathShapeRect(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<clipPath id="c">` +
+		`<rect x="20" y="20" width="60" height="60"/>` +
+		`</clipPath>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Inside the clip — visible red.
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "clip interior (50,50)")
+	// Outside the clip rect (top-left corner of element, outside clip).
+	sampleColorClose(t, img, 10, 10, 255, 255, 255, 8, "outside clip (10,10)")
+	// Outside the clip rect (bottom-right corner).
+	sampleColorClose(t, img, 90, 90, 255, 255, 255, 8, "outside clip (90,90)")
+}
+
+// TestSVG_ClipPathCircle — `<clipPath><circle/></clipPath>` on a
+// 100×100 red rect. Inside the circle stays red; outside is clipped.
+func TestSVG_ClipPathCircle(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<clipPath id="c">` +
+		`<circle cx="50" cy="50" r="30"/>` +
+		`</clipPath>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Center — inside the circle.
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "circle center (50,50)")
+	// Just inside the bottom of the circle (radius 30, sample at y=79).
+	sampleColorClose(t, img, 50, 78, 255, 0, 0, 30, "circle near edge (50,78)")
+	// Just outside the top of the circle (radius 30 → top at y=20;
+	// sample at y=15).
+	sampleColorClose(t, img, 50, 15, 255, 255, 255, 8, "outside top (50,15)")
+	// Corner — well outside.
+	sampleColorClose(t, img, 5, 5, 255, 255, 255, 8, "corner (5,5)")
+}
+
+// TestSVG_ClipPathUserSpaceOnUse — explicit `clipPathUnits=userSpaceOnUse`
+// produces the same result as the default (which is userSpaceOnUse).
+// This is a sanity check that the units attribute is parsed without
+// breaking the default path.
+func TestSVG_ClipPathUserSpaceOnUse(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<clipPath id="c" clipPathUnits="userSpaceOnUse">` +
+		`<rect x="20" y="20" width="60" height="60"/>` +
+		`</clipPath>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "clip interior (50,50)")
+	sampleColorClose(t, img, 10, 10, 255, 255, 255, 8, "outside clip (10,10)")
+}
+
+// TestSVG_ClipPathObjectBBox — `clipPathUnits=objectBoundingBox`
+// makes the child rect coords fractions of the referencing element's
+// bbox. Children `<rect x="0.25" y="0.25" width="0.5" height="0.5"/>`
+// over a 100×100 element produces a clip at user-coords (25..75,
+// 25..75) — same final geometry as the userSpaceOnUse case at
+// (25,25,50,50).
+func TestSVG_ClipPathObjectBBox(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<clipPath id="c" clipPathUnits="objectBoundingBox">` +
+		`<rect x="0.25" y="0.25" width="0.5" height="0.5"/>` +
+		`</clipPath>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" clip-path="url(#c)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 8, "bbox clip center (50,50)")
+	sampleColorClose(t, img, 10, 50, 255, 255, 255, 8, "bbox clip left-of (10,50)")
+	sampleColorClose(t, img, 90, 50, 255, 255, 255, 8, "bbox clip right-of (90,50)")
+}
+
+// TestSVG_MaskLuminance — `<mask><rect fill="white"/></mask>` on a
+// red rect. White luminance = full mask alpha = element shows
+// unmodified. Sample the center: red.
+func TestSVG_MaskLuminance(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<mask id="m" maskContentUnits="userSpaceOnUse">` +
+		`<rect width="100" height="100" fill="white"/>` +
+		`</mask>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" mask="url(#m)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "white mask (50,50)")
+}
+
+// TestSVG_MaskLuminanceBlack — `<mask><rect fill="black"/></mask>` on
+// a red rect. Black luminance = 0 mask alpha = element fully masked.
+// Sample the center: canvas white (since the red is gated out).
+func TestSVG_MaskLuminanceBlack(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<mask id="m" maskContentUnits="userSpaceOnUse">` +
+		`<rect width="100" height="100" fill="black"/>` +
+		`</mask>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" mask="url(#m)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	sampleColorClose(t, img, 50, 50, 255, 255, 255, 8, "black mask (50,50)")
+}
+
+// TestSVG_MaskAlpha — `mask-type=alpha` uses the rendered mask
+// subtree's alpha as the mask value. A half-transparent white inside
+// the mask should pass through the red rect at 50% alpha:
+// rgba(255*0.5, 0, 0, 0.5) over white = (128+127, 127, 127) ≈
+// (255, 127, 127).
+func TestSVG_MaskAlpha(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<mask id="m" mask-type="alpha" maskContentUnits="userSpaceOnUse">` +
+		`<rect width="100" height="100" fill="white" fill-opacity="0.5"/>` +
+		`</mask>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" mask="url(#m)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// 50% red over white: r = 255*0.5 + 255*0.5 = 255; g = 0*0.5 +
+	// 255*0.5 = 127; b = 0*0.5 + 255*0.5 = 127.
+	sampleColorClose(t, img, 50, 50, 255, 127, 127, 14, "alpha mask (50,50)")
+}
