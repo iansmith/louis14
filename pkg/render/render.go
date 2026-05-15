@@ -862,9 +862,12 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 
 	// Build the filter graph. The builder computes the filter region by
 	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
+	// Phase 7: SVG `<filter>` resource registry is supplied so
+	// `filter: url(#id)` references resolve via BuildReferenceFilter.
 	builder := &FilterEffectBuilder{
 		ReferenceBox: referenceBox,
 		CurrentColor: layer.TextColor,
+		Resources:    r.lookupSVGResources(),
 	}
 	filter := builder.BuildFilterEffect(layer.Filters)
 	if filter == nil {

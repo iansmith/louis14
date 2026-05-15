@@ -182,6 +182,17 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		if eff == nil {
 			continue
 		}
+		// Apply the primitive subregion clip if x/y/width/height are
+		// set. For FEFlood we already pushed Subregion into the effect
+		// itself (the flood uses it as the fill rect, not just a
+		// clip), so don't double-wrap. For all other primitives the
+		// subregion is a generic post-evaluation clip per SVG Filter
+		// Effects 1 §15.7 "Filter primitive subregion".
+		if prim.TagName() != "feflood" {
+			if sub := resolvePrimitiveSubregion(elt, prim); !sub.Empty() {
+				eff = NewSubregionClippedEffect(eff, sub)
+			}
+		}
 		// `result="…"` registers the named output.
 		if name, ok := prim.Attribute("result"); ok {
 			name = strings.TrimSpace(name)

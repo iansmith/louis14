@@ -709,3 +709,253 @@ func TestSVG_ResourceLookupAfterRegistryMerge(t *testing.T) {
 	sampleColorClose(t, img, 5, 50, 0, 0, 0, 18, "gradient left (5,50)")
 	sampleColorClose(t, img, 95, 50, 255, 255, 255, 18, "gradient right (95,50)")
 }
+
+// TestSVG_FilterFeFlood — Phase 7 gate: a `<feFlood flood-color="green"/>`
+// inside a filter overrides the rect's red fill with green pixels in
+// the filter region. Mirrors the spec-canonical scenario:
+//
+//	<filter id="f"><feFlood flood-color="green"/></filter>
+//	<rect fill="red" filter="url(#f)"/>
+//
+// Sample interior should be green, with no red surviving the filter.
+func TestSVG_FilterFeFlood(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<filter id="f" x="0" y="0" width="1" height="1">` +
+		`<feFlood flood-color="green"/>` +
+		`</filter>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Center should be green (0,128,0 = CSS "green"), not red.
+	sampleColorClose(t, img, 50, 50, 0, 128, 0, 12, "feFlood center")
+	// Corner inside filter region should also be green.
+	sampleColorClose(t, img, 10, 10, 0, 128, 0, 12, "feFlood corner")
+}
+
+// TestSVG_FilterFeFloodWithOpacity — `<feFlood flood-color="red"
+// flood-opacity="0.5"/>` produces a half-transparent red flood.
+// Composited onto the default white page background → mid-pink.
+func TestSVG_FilterFeFloodWithOpacity(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<filter id="f" x="0" y="0" width="1" height="1">` +
+		`<feFlood flood-color="red" flood-opacity="0.5"/>` +
+		`</filter>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="blue" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// 50% red over white = (255, 127, 127). The compositing happens
+	// against the page's white background since the filter replaces
+	// the rect entirely.
+	sampleColorClose(t, img, 50, 50, 255, 127, 127, 25, "feFlood 50% over white")
+}
+
+// TestSVG_FilterFeGaussianBlur — a simple Gaussian blur softens a
+// sharp-edged shape. Interior pixels stay near saturated; edge pixels
+// fall to a mid-value.
+func TestSVG_FilterFeGaussianBlur(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="200" height="200">` +
+		`<defs>` +
+		`<filter id="b">` +
+		`<feGaussianBlur stdDeviation="4"/>` +
+		`</filter>` +
+		`</defs>` +
+		`<rect x="50" y="50" width="100" height="100" fill="red" filter="url(#b)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 300, 300)
+	// Center of the rect: should be approximately solid red after
+	// blurring (the interior pixels' neighbourhoods are all red).
+	sampleColorClose(t, img, 100, 100, 255, 0, 0, 60, "blur interior")
+	// A pixel just outside the original edge: should be neither
+	// fully red nor fully white — the blur halo. The page background
+	// is white, so a fully-saturated red blur would composite to
+	// pure (255, 0, 0) and a no-filter pass would leave pure
+	// (255, 255, 255). A halo lands somewhere in between, so the
+	// GREEN channel is the right discriminator: pure red → G=0,
+	// pure white → G=255, partial halo → G mid-range.
+	_, gE, _, _ := img.At(155, 100).RGBA()
+	gotE := int(gE >> 8)
+	if gotE < 20 || gotE > 240 {
+		t.Errorf("blur edge halo at (155,100): green=%d, expected mid range (blur halo present)", gotE)
+	}
+}
+
+// TestSVG_FilterCycleReference — two filters that reference each
+// other form a cycle; the cycle solver flags both as having a cycle,
+// and the painter treats `filter: url(#f1)` as `none`. Confirms no
+// infinite loop and that the rect renders unfiltered.
+//
+// This test arranges the cycle via two filter elements whose own
+// styles contain `filter: url(#other)` — the only style-level edge
+// outgoingReferences currently walks for filters.
+func TestSVG_FilterCycleReference(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<defs>` +
+		`<filter id="f1" style="filter:url(#f2)"><feFlood flood-color="green"/></filter>` +
+		`<filter id="f2" style="filter:url(#f1)"><feFlood flood-color="blue"/></filter>` +
+		`</defs>` +
+		`<rect width="100" height="100" fill="red" filter="url(#f1)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Cycle → filter treated as none → the rect renders as plain red.
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "cycle fallback (red)")
+}
+
+// TestSVG_FilterPositioningWithP — Same as Simple but with a `<p>`
+// element before the SVG, matching the structure of the
+// svg-feflood-001 reftest. This reproduces the layout shift seen in
+// the WPT gate.
+func TestSVG_FilterPositioningWithP(t *testing.T) {
+	const tHTML = `<!DOCTYPE html><html><head><style>svg{width:500px;height:500px}</style></head><body>` +
+		`<p>X</p>` +
+		`<svg>` +
+		`<defs><filter id="f" x="0" y="0" width="1" height="1"><feFlood flood-color="black"/></filter></defs>` +
+		`<rect width="300" height="300" fill="red" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	const rHTML = `<!DOCTYPE html><html><head><style>svg{width:500px;height:500px}</style></head><body>` +
+		`<p>X</p>` +
+		`<svg>` +
+		`<rect width="300" height="300" fill="black"/>` +
+		`</svg></body></html>`
+	testImg := renderToImage(t, tHTML, 800, 600)
+	refImg := renderToImage(t, rHTML, 800, 600)
+	// Sample at several rect positions. Both should produce black.
+	for _, p := range []struct{ x, y int }{
+		{50, 50},
+		{100, 100},
+		{200, 200},
+		{250, 100},
+	} {
+		tR, tG, tB, _ := testImg.At(p.x, p.y).RGBA()
+		rR, rG, rB, _ := refImg.At(p.x, p.y).RGBA()
+		if (tR>>8 != rR>>8) || (tG>>8 != rG>>8) || (tB>>8 != rB>>8) {
+			t.Errorf("(%d,%d): test=(%d,%d,%d) ref=(%d,%d,%d)",
+				p.x, p.y, tR>>8, tG>>8, tB>>8, rR>>8, rG>>8, rB>>8)
+		}
+	}
+}
+
+// TestSVG_FilterPositioningSimple — Compare a filter-applied rect at
+// (50,50,100,100) with the same rect with no filter. They should
+// land at the same x,y.
+func TestSVG_FilterPositioningSimple(t *testing.T) {
+	const tHTML = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="200" height="200">` +
+		`<defs><filter id="f" x="0" y="0" width="1" height="1"><feFlood flood-color="green"/></filter></defs>` +
+		`<rect x="50" y="50" width="100" height="100" fill="red" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	const rHTML = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="200" height="200">` +
+		`<rect x="50" y="50" width="100" height="100" fill="green"/>` +
+		`</svg></body></html>`
+	testImg := renderToImage(t, tHTML, 300, 300)
+	refImg := renderToImage(t, rHTML, 300, 300)
+	// Sample at the rect corners and center.
+	for _, p := range []struct{ x, y int }{
+		{60, 60},
+		{100, 100},
+		{140, 140},
+	} {
+		tR, tG, tB, _ := testImg.At(p.x, p.y).RGBA()
+		rR, rG, rB, _ := refImg.At(p.x, p.y).RGBA()
+		if (tR>>8 != rR>>8) || (tG>>8 != rG>>8) || (tB>>8 != rB>>8) {
+			t.Errorf("(%d,%d): test=(%d,%d,%d) ref=(%d,%d,%d)",
+				p.x, p.y, tR>>8, tG>>8, tB>>8, rR>>8, rG>>8, rB>>8)
+		}
+	}
+}
+
+// TestSVG_FilterPositioningParity — A `<rect>` with filter applied
+// should render at the same position as a plain `<rect>` of the same
+// geometry (no filter). This is the parity check for the
+// svg-feflood-001 WPT reftest, which compares a filtered red rect
+// against a plain black rect at the same position. Sample the corners.
+func TestSVG_FilterPositioningParity(t *testing.T) {
+	const testHTML = `<!DOCTYPE html><html><head><style>svg{width:500px;height:500px}</style></head><body>` +
+		`<p>x</p>` +
+		`<svg>` +
+		`<defs>` +
+		`<filter id="f" x="0" y="0" width="1" height="1">` +
+		`<feFlood flood-color="black"/>` +
+		`</filter>` +
+		`</defs>` +
+		`<rect width="300" height="300" fill="red" filter="url(#f)"/>` +
+		`</svg></body></html>`
+	const refHTML = `<!DOCTYPE html><html><head><style>svg{width:500px;height:500px}</style></head><body>` +
+		`<p>x</p>` +
+		`<svg>` +
+		`<rect width="300" height="300" fill="black"/>` +
+		`</svg></body></html>`
+	testImg := renderToImage(t, testHTML, 800, 600)
+	refImg := renderToImage(t, refHTML, 800, 600)
+
+	// Sample at a few interior points and compare. The test must
+	// produce black where the ref produces black, and vice versa.
+	for _, p := range []struct{ x, y int }{
+		{50, 50},
+		{100, 100},
+		{200, 200},
+		{250, 250},
+		{350, 350},
+		{50, 350},
+		{350, 50},
+	} {
+		tR, tG, tB, _ := testImg.At(p.x, p.y).RGBA()
+		rR, rG, rB, _ := refImg.At(p.x, p.y).RGBA()
+		if (tR>>8 != rR>>8) || (tG>>8 != rG>>8) || (tB>>8 != rB>>8) {
+			t.Errorf("(%d,%d): test=(%d,%d,%d) ref=(%d,%d,%d)",
+				p.x, p.y, tR>>8, tG>>8, tB>>8, rR>>8, rG>>8, rB>>8)
+		}
+	}
+}
+
+// TestSVG_FilterFeBlendDoesNotMakeBackgroundBlack — Phase 7 reproduces
+// the filter-subregion-01 scenario in miniature: a rect with a feBlend
+// filter applied. The page area OUTSIDE the rect (where the source
+// buffer is transparent) should NOT become black; the white page
+// background should remain. Regression guard for the composite-back
+// path.
+func TestSVG_FilterFeBlendDoesNotMakeBackgroundBlack(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="200" height="200">` +
+		`<defs>` +
+		`<filter id="b">` +
+		`<feBlend in2="SourceGraphic" mode="multiply"/>` +
+		`</filter>` +
+		`</defs>` +
+		`<rect x="50" y="50" width="60" height="60" fill="green" filter="url(#b)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 300, 300)
+	// Inside the rect: should be green-ish.
+	sampleColorClose(t, img, 80, 80, 0, 60, 0, 50, "feBlend interior (green)")
+	// OUTSIDE the rect's bbox (well outside any reasonable filter region): white.
+	sampleColorClose(t, img, 180, 180, 255, 255, 255, 12, "page background (outside SVG content)")
+	// Just outside the rect but POSSIBLY inside the filter region (-10% to 120% of rect bbox):
+	// rect bbox (50,50,60,60), filter region (-10%, -10%, 120%, 120%) = (44, 44, 116, 116).
+	// Sample at (115, 80): just outside filter region — must still be white (page bg).
+	sampleColorClose(t, img, 130, 80, 255, 255, 255, 12, "outside filter region")
+}
+
+// TestSVG_FilterFallbackOnUnknownID — `filter="url(#missing)"`
+// references a non-existent filter. Per SVG 1.1 §6.4, an
+// unresolvable filter reference treats the element's `filter`
+// property as `none` — the element renders unfiltered. Mirrors
+// Blink's SVGResources::FindFilter returning nullptr → no filter
+// applied (LayoutObject::PaintWithFilter falls through to normal
+// paint).
+func TestSVG_FilterFallbackOnUnknownID(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="100" height="100">` +
+		`<rect width="100" height="100" fill="red" filter="url(#missing)"/>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Unknown filter → rect renders as plain red.
+	sampleColorClose(t, img, 50, 50, 255, 0, 0, 12, "unknown filter fallback (red)")
+}
