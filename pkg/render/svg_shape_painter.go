@@ -36,6 +36,27 @@ func (sp *svgShapePainter) paint() {
 	if sp.shape == nil {
 		return
 	}
+
+	// SVG-level filter: url(#id). Per CSS Masking 1 §3.7 rendering
+	// order is filter → clip → mask → composite. We dispatch the
+	// filter path BEFORE the rest of the paint so the shape's
+	// rasterization happens into an offscreen buffer the filter
+	// graph consumes. If the filter resolves to an SVGResourceFilter
+	// in the registry, paintWithSVGFilter routes through it;
+	// otherwise we fall through to the regular paint path.
+	if style := sp.shape.Style; style != nil {
+		if filterVal, ok := style.Get("filter"); ok && filterVal != "" && filterVal != "none" {
+			if id, ok := css.ParseURLReference(filterVal); ok {
+				if sp.ctx.Resources != nil {
+					if filter, found := sp.ctx.Resources.LookupAsFilter(id); found && filter != nil && filter.CycleState() != svg.SVGCycleHasCycle {
+						sp.paintWithSVGFilter(filter)
+						return
+					}
+				}
+			}
+		}
+	}
+
 	dc := sp.ctx.dc
 
 	// The SVG layout pass attaches *css.Style to each SVGShape via

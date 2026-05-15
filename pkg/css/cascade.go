@@ -1733,6 +1733,14 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 		"mask-type",
 		"stop-color",
 		"stop-opacity",
+		// Phase 7: filter on SVG shapes / containers + flood-color /
+		// flood-opacity / color-interpolation-filters on the filter
+		// primitive `<feFlood>` (and equivalents). These are SVG
+		// presentation attributes per SVG Filter Effects 1 §6.4.
+		"filter",
+		"flood-color",
+		"flood-opacity",
+		"color-interpolation-filters",
 	}
 	for _, attr := range svgPresentationAttrs {
 		if val, ok := node.GetAttribute(attr); ok {

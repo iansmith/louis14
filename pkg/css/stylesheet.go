@@ -12,11 +12,11 @@ import (
 
 // Selector represents a CSS selector which may be compound (multiple parts with combinators)
 type Selector struct {
-	Raw           string             // Original selector string
-	Parts         []SelectorPart     // Parts of a compound selector
-	Combinators   []CombinatorType   // Combinators between parts (len = len(Parts)-1)
-	Specificity   int                // Specificity score for cascade
-	PseudoElement string             // Phase 11: Pseudo-element (::before, ::after)
+	Raw           string           // Original selector string
+	Parts         []SelectorPart   // Parts of a compound selector
+	Combinators   []CombinatorType // Combinators between parts (len = len(Parts)-1)
+	Specificity   int              // Specificity score for cascade
+	PseudoElement string           // Phase 11: Pseudo-element (::before, ::after)
 
 	// Legacy fields for backward compatibility with simple selectors
 	Type  SelectorType // Deprecated: use Parts instead
@@ -43,10 +43,10 @@ type AttributeSelector struct {
 type CombinatorType int
 
 const (
-	DescendantCombinator CombinatorType = iota // space: .parent .child
-	ChildCombinator                            // >: .parent > .child
-	AdjacentSiblingCombinator                  // +: .box + .box
-	GeneralSiblingCombinator                   // ~: .box ~ .box
+	DescendantCombinator      CombinatorType = iota // space: .parent .child
+	ChildCombinator                                 // >: .parent > .child
+	AdjacentSiblingCombinator                       // +: .box + .box
+	GeneralSiblingCombinator                        // ~: .box ~ .box
 )
 
 // Legacy: keep for backward compatibility with simple selectors
@@ -70,14 +70,14 @@ type Rule struct {
 
 // Phase 22: MediaQuery represents a @media rule condition
 type MediaQuery struct {
-	MediaType  string            // "screen", "print", "all", etc.
-	Conditions []MediaCondition  // min-width, max-width, etc.
+	MediaType  string           // "screen", "print", "all", etc.
+	Conditions []MediaCondition // min-width, max-width, etc.
 }
 
 // Phase 22: MediaCondition represents a single media query condition
 type MediaCondition struct {
-	Feature string  // "min-width", "max-width", "orientation", etc.
-	Value   string  // "768px", "landscape", etc.
+	Feature string // "min-width", "max-width", "orientation", etc.
+	Value   string // "768px", "landscape", etc.
 }
 
 // ContainerQuery represents a @container rule condition
@@ -1139,7 +1139,7 @@ func isSupportedPropertyValue(property, value string) bool {
 			"table-caption": true, "table-row-group": true,
 			"table-header-group": true, "table-footer-group": true,
 			"table-column": true, "table-column-group": true,
-			"list-item": true,
+			"list-item":   true,
 			"-webkit-box": true, "-webkit-inline-box": true,
 			"-webkit-flex": true, "-webkit-inline-flex": true,
 		}
@@ -2345,4 +2345,3 @@ func parseFontFaceSrc(src string) (string, string) {
 	}
 	return "", ""
 }
-

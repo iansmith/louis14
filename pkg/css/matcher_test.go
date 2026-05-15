@@ -219,8 +219,8 @@ func TestParseAndMatch_PipeEquals(t *testing.T) {
 	}
 
 	node := &html.Node{
-		Type:    html.ElementNode,
-		TagName: "div",
+		Type:       html.ElementNode,
+		TagName:    "div",
 		Attributes: map[string]string{"lang": "en-US"},
 	}
 	matches := FindMatchingRules(node, stylesheet, 800, 600)
@@ -229,8 +229,8 @@ func TestParseAndMatch_PipeEquals(t *testing.T) {
 	}
 
 	node2 := &html.Node{
-		Type:    html.ElementNode,
-		TagName: "div",
+		Type:       html.ElementNode,
+		TagName:    "div",
 		Attributes: map[string]string{"lang": "fr"},
 	}
 	matches2 := FindMatchingRules(node2, stylesheet, 800, 600)

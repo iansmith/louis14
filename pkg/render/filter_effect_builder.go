@@ -4,7 +4,9 @@ import (
 	"image"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/graphics/filters"
+	"louis14/pkg/layout/svg"
 )
 
 // FilterEffectBuilder turns a CSS filter-function list into a filters.Filter
@@ -20,13 +22,34 @@ type FilterEffectBuilder struct {
 	ReferenceBox image.Rectangle
 	// CurrentColor resolves currentColor for drop-shadow.
 	CurrentColor css.Color
+	// Resources, when non-nil, supplies the SVG resource registry so
+	// `filter: url(#id)` references can resolve to an
+	// SVGResourceFilter. Phase 7 wires this up from the renderer's
+	// per-frame registry.
+	Resources *svg.SVGResourceRegistry
+	// ResolveStyle resolves a filter-primitive element's computed
+	// style (for `flood-color`/`flood-opacity` and
+	// `color-interpolation-filters`). May be nil — the builder then
+	// falls back to raw attribute lookup.
+	ResolveStyle func(svg.ElementAdapter) *css.Style
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
 // Returns nil when the list is empty or contains only unsupported entries.
+//
+// A list that contains a single `url(#id)` reference resolving to an
+// SVG `<filter>` element is dispatched to BuildReferenceFilter and
+// returned as the standalone reference-filter graph. A mixed list of
+// url() and CSS functions is currently approximated by skipping the
+// url() entries and applying only the CSS functions (matches Blink's
+// behavior pre-FilterChain merge).
 func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filters.Filter {
 	if len(ops) == 0 {
 		return nil
+	}
+	// SVG reference filter fast path: a single url() entry.
+	if len(ops) == 1 && ops[0].Name == "url" {
+		return b.BuildReferenceFilter(ops[0].URL)
 	}
 	const space = filters.InterpolationSpaceSRGB
 	src := filters.NewSourceGraphic(space)
@@ -34,14 +57,21 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 
 	var prev filters.FilterEffect = src
 	for _, op := range ops {
+		if op.Name == "url" {
+			// Mixed list with a url() reference: skip the reference
+			// entry. Phase 7 doesn't chain SVG filters into CSS
+			// shorthand lists — that would require turning the SVG
+			// filter into a sub-graph node, which Blink's
+			// FilterChain does but we defer.
+			continue
+		}
 		next := buildOneEffect(op, prev, src, srcAlpha, space, b.CurrentColor)
 		if next != nil {
 			prev = next
 		}
 	}
 	if prev == src {
-		// No effect was produced (e.g. only url() references, handled
-		// elsewhere) — nothing to apply.
+		// No effect was produced — nothing to apply.
 		return nil
 	}
 
@@ -56,6 +86,70 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	}
 	f.FilterRegion = f.MapRect(b.ReferenceBox)
 	return f
+}
+
+// BuildReferenceFilter resolves a `filter: url(#id)` reference
+// against the SVG resource registry and builds the corresponding
+// FilterEffect graph via SVGFilterBuilder. Returns nil when:
+//   - the id is empty,
+//   - no registry is available,
+//   - the id doesn't resolve to an SVGResourceFilter,
+//   - the resolved filter is flagged as part of a reference cycle (per
+//     the Phase 6 cycle solver) — Blink's "cycle = drop reference"
+//     rule (LayoutSVGResourceContainer::FindCycle).
+//
+// Mirrors Blink's FilterEffectBuilder::BuildReferenceFilter +
+// SVGFilterBuilder::BuildGraph dispatch.
+func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
+	if id == "" || b.Resources == nil {
+		return nil
+	}
+	filter, ok := b.Resources.LookupAsFilter(id)
+	if !ok || filter == nil {
+		return nil
+	}
+	if filter.CycleState() == svg.SVGCycleHasCycle {
+		return nil
+	}
+
+	// Resolve the SVG operating space from
+	// color-interpolation-filters on the filter element. Default is
+	// linearRGB per SVG 1.1 §4.2.
+	space := filters.InterpolationSpaceLinearRGB
+	if st := filter.Style(); st != nil {
+		if v, ok := st.Get("color-interpolation-filters"); ok {
+			space = filters.ResolveInterpolationSpace(v)
+		}
+	}
+
+	// Resolve the filter region from filterUnits + the reference box.
+	// Both inputs are in absolute device pixels. The
+	// SVGResourceFilter.ResourceBoundingBox operates on float rects
+	// so wrap b.ReferenceBox into a geometry.RectF, run resolution,
+	// and convert back.
+	refBoxF := geometry.NewRectF(
+		float64(b.ReferenceBox.Min.X),
+		float64(b.ReferenceBox.Min.Y),
+		float64(b.ReferenceBox.Dx()),
+		float64(b.ReferenceBox.Dy()),
+	)
+	regionF := filter.ResourceBoundingBox(refBoxF, svg.NewSVGLengthContext(refBoxF.Size))
+	region := image.Rect(
+		int(regionF.X()),
+		int(regionF.Y()),
+		int(regionF.X()+regionF.Width()),
+		int(regionF.Y()+regionF.Height()),
+	)
+
+	adapter := &svgFilterElementAdapter{
+		filter:       filter,
+		filterRegion: region,
+		referenceBox: b.ReferenceBox,
+		space:        space,
+		resolveStyle: b.ResolveStyle,
+	}
+	builder := filters.NewSVGFilterBuilder(space)
+	return builder.BuildGraph(adapter)
 }
 
 // buildOneEffect maps a single CSS filter function to its fe* equivalent,

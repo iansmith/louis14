@@ -72,6 +72,14 @@ func (r *SVGResourceRegistry) RegisterMasker(m *SVGResourceMasker) {
 	r.Register(m)
 }
 
+// RegisterFilter attaches a `<filter>` resource by ID.
+func (r *SVGResourceRegistry) RegisterFilter(f *SVGResourceFilter) {
+	if f == nil {
+		return
+	}
+	r.Register(f)
+}
+
 // Lookup returns the resource registered under `id`. Returns (nil,
 // false) for an unknown id. The id is matched case-sensitively per the
 // HTML/SVG id-attribute model. Callers that want a kind-typed result
@@ -129,6 +137,21 @@ func (r *SVGResourceRegistry) LookupMasker(id string) (*SVGResourceMasker, bool)
 	return m, true
 }
 
+// LookupAsFilter returns the `<filter>` resource registered under
+// `id`. Returns (nil, false) when the id is unknown or registered as
+// a different kind.
+func (r *SVGResourceRegistry) LookupAsFilter(id string) (*SVGResourceFilter, bool) {
+	res, ok := r.Lookup(id)
+	if !ok {
+		return nil, false
+	}
+	f, ok := res.(*SVGResourceFilter)
+	if !ok {
+		return nil, false
+	}
+	return f, true
+}
+
 // ForEach invokes `fn` for each registered resource in map-iteration
 // order (unspecified). Used by the renderer to merge per-SVGRoot
 // registries into a single page-wide registry and by the cycle solver.
@@ -175,6 +198,18 @@ func (r *SVGResourceRegistry) ForEachMasker(fn func(*SVGResourceMasker)) {
 	for _, res := range r.resources {
 		if m, ok := res.(*SVGResourceMasker); ok {
 			fn(m)
+		}
+	}
+}
+
+// ForEachFilter invokes `fn` for each registered `<filter>`.
+func (r *SVGResourceRegistry) ForEachFilter(fn func(*SVGResourceFilter)) {
+	if r == nil || fn == nil {
+		return
+	}
+	for _, res := range r.resources {
+		if f, ok := res.(*SVGResourceFilter); ok {
+			fn(f)
 		}
 	}
 }
