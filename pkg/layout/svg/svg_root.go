@@ -224,6 +224,16 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 		p := NewSVGPattern(elt, lengthCtx, styleResolver)
 		resources.RegisterPaintServer(p)
 		return nil
+	case "clippath":
+		// HTML tokenizer lowercases SVG element names —
+		// `<clipPath>` arrives here as "clippath".
+		c := NewSVGResourceClipper(elt, lengthCtx, styleResolver)
+		resources.RegisterClipper(c)
+		return nil
+	case "mask":
+		m := NewSVGResourceMasker(elt, lengthCtx, styleResolver)
+		resources.RegisterMasker(m)
+		return nil
 	case "defs":
 		// `<defs>` is a non-rendering grouping element (SVG 2 §5.5);
 		// its purpose is to declare resource elements. Recurse to

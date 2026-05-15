@@ -13,9 +13,11 @@ import (
 	"unicode"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/images"
 	"louis14/pkg/layout"
+	"louis14/pkg/layout/svg"
 	"louis14/pkg/text"
 	"mazarin/textshape"
 )
@@ -33,6 +35,20 @@ type Renderer struct {
 	fonts        text.FontConfig
 	imageFetcher images.ImageFetcher
 	scrollY      float64
+
+	// svgResources aggregates the SVG resource registries from every
+	// inline `<svg>` in the current paint frame. Populated by Render
+	// (and RenderEmbedded) just before the paint walk by
+	// collectSVGResources, which walks the layout-box tree gathering
+	// every SVGRoot.Resources. Read by paint-time `url(#id)` resolvers
+	// for `mask-image: url(#id)` and `clip-path: url(#id)` on non-SVG
+	// elements — the document fragment id space is shared across the
+	// page per SVG 2 §3.1, so an inline `<svg height="0">` declaring a
+	// `<mask id="m">` is reachable from any CSS box's `mask-image:
+	// url(#m)`. Mirrors Blink's per-Document SVGTreeScopeResources
+	// (core/svg/svg_resource.h) — louis14 aggregates per-render-frame
+	// because we don't have a Document-lifetime renderer.
+	svgResources *svg.SVGResourceRegistry
 
 	// Font ID cache: (path, size) → fontID
 	fontCache   map[fontCacheKey]int32
@@ -304,6 +320,12 @@ func (r *Renderer) fillCanvasScoped() {
 // paintBoxes performs the per-box paint pass shared by [Render] and
 // [RenderEmbedded]. The canvas-background fill is the caller's responsibility.
 func (r *Renderer) paintBoxes(boxes []*layout.Box) {
+	// Build the renderer-wide SVG resource registry by walking every
+	// box subtree for inline `<svg>` SVGRoots and merging their
+	// per-root registries. `url(#id)` references on any element on
+	// the page can then resolve against this single registry. See
+	// svgResources comment on the Renderer type.
+	r.svgResources = collectSVGResources(boxes)
 	r.paintCanvasBackground(boxes)
 
 	// Paint via PaintLayer tree (CSS 2.1 Appendix E stacking order).
@@ -450,6 +472,81 @@ func clampColor(rv, g, b, a float64) color.RGBA {
 	return color.RGBA{R: clamp(rv), G: clamp(g), B: clamp(b), A: clamp(a)}
 }
 
+// lookupSVGResources returns the renderer-wide aggregated SVG
+// resource registry. Built by collectSVGResources at the top of every
+// Render/RenderEmbedded call. Returns nil when there are no inline
+// SVGs on the page — callers must guard against nil before Lookup*.
+func (r *Renderer) lookupSVGResources() *svg.SVGResourceRegistry {
+	if r == nil {
+		return nil
+	}
+	return r.svgResources
+}
+
+// collectSVGResources walks `boxes` and every descendant box,
+// gathering each inline `<svg>` element's SVGRoot.Resources into a
+// single merged registry that the renderer exposes to `url(#id)`
+// resolvers. Mirrors how Blink's SVGTreeScopeResources is a per-
+// Document namespace — louis14 builds it per render frame because we
+// don't yet have a Document-lifetime renderer (the layout pass owns
+// the SVGRoot lifetime; the renderer is recreated per paint).
+//
+// Conflicts (same id registered by two different SVGs) follow the
+// first-wins rule from each per-root RegisterXxx; the renderer
+// preserves that ordering by walking boxes in pre-order, which
+// matches document order for HTML.
+func collectSVGResources(boxes []*layout.Box) *svg.SVGResourceRegistry {
+	merged := svg.NewSVGResourceRegistry()
+	for _, b := range boxes {
+		mergeSVGResourcesFromBox(b, merged)
+	}
+	return merged
+}
+
+// mergeSVGResourcesFromBox is the recursive worker for
+// collectSVGResources: pre-order walk that copies each SVGRoot's
+// per-root registry contents into `dst`.
+func mergeSVGResourcesFromBox(box *layout.Box, dst *svg.SVGResourceRegistry) {
+	if box == nil {
+		return
+	}
+	if box.LayoutNode != nil {
+		if root, ok := box.LayoutNode.SVGRoot.(*svg.SVGRoot); ok && root != nil && root.Resources != nil {
+			mergeSVGRegistries(dst, root.Resources)
+		}
+	}
+	for _, child := range box.Children {
+		mergeSVGResourcesFromBox(child, dst)
+	}
+}
+
+// mergeSVGRegistries copies `src`'s contents into `dst` using the
+// public RegisterXxx methods so the first-wins rule is preserved.
+// Phase 5 needs this because each SVGRoot has its own per-root
+// registry — gradient/pattern paint servers and Phase 5's clippers/
+// maskers — and the renderer needs a single namespace across all
+// SVGs on the page.
+//
+// Implementation detail: the per-root maps are unexported, so this
+// helper relies on the per-root registry exposing iteration via the
+// kind-specific Lookup paths. To avoid widening the API surface
+// beyond what Phase 5 needs, we add a per-kind drain helper on the
+// registry. See svg_resource_registry.go.
+func mergeSVGRegistries(dst, src *svg.SVGResourceRegistry) {
+	if dst == nil || src == nil {
+		return
+	}
+	src.ForEachPaintServer(func(s svg.SVGResourcePaintServer) {
+		dst.RegisterPaintServer(s)
+	})
+	src.ForEachClipper(func(c *svg.SVGResourceClipper) {
+		dst.RegisterClipper(c)
+	})
+	src.ForEachMasker(func(m *svg.SVGResourceMasker) {
+		dst.RegisterMasker(m)
+	})
+}
+
 // paintLayer paints a PaintLayer and its descendants using the pre-built
 // stacking order. All paint decisions use pre-computed fields — no Style access.
 func (r *Renderer) paintLayer(layer *PaintLayer) {
@@ -563,6 +660,72 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 	// (CSS Masking Level 1 §6.4.)
 	useLuminance := false
 	var maskImg *image.RGBA
+
+	// SVG fast path: if mask-image is `url(#id)` and the id resolves to
+	// an SVG `<mask>` element in the renderer-wide SVG resource
+	// registry, rasterize that mask's children into an alpha buffer and
+	// apply with kDstIn directly. Mirrors Blink's
+	// SVGMaskPainter::PaintSVGMaskForCSS dispatch (when the mask
+	// reference resolves to an SVGMaskElement, take the SVG path; else
+	// fall through to the CSS Images-3 image-or-gradient path). This
+	// also implements the css-masking Phase 3 promise the foundation
+	// claims (SVG `<mask>` resolution: mask-opacity-1d gate).
+	//
+	// Note: per CSS Masking 1 §3.7 the rendering order is filter →
+	// mask → opacity → composite. The buffer already had opacity
+	// applied above (via PushGroup/PopGroupWithAlpha). We undo that
+	// by repainting without opacity below if an SVG mask is in play,
+	// because mazarin's PushGroup/PopGroupWithAlpha applies opacity
+	// using PRE-multiplied alpha math that produces a slightly
+	// different pixel value than the per-channel-times-alpha math the
+	// plain CSS-color rendering uses. To match the reftest's
+	// reference page (which uses rgba(c, a) and goes through plain
+	// CSS-color rendering), the SVG-mask code path must apply
+	// opacity post-mask via the SAME per-channel multiplication.
+	if id, ok := parseURLFragment(maskVal); ok {
+		if registry := r.lookupSVGResources(); registry != nil {
+			if masker, ok := registry.LookupMasker(id); ok && masker != nil {
+				// Repaint the layer WITHOUT opacity, into a fresh
+				// buffer. We re-create `buf` because the existing
+				// one above had opacity baked in via PushGroup.
+				freshBuf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+				freshDC := origDC.NewChildContext(freshBuf)
+				saveDC := r.dc
+				saveTarget := r.target
+				r.dc = freshDC
+				r.target = freshBuf
+				r.dc.Translate(float64(-bx), float64(-by))
+				if layer.HasTransform {
+					r.dc.Push()
+					r.applyTransforms(layer)
+				}
+				r.paintLayerContent(layer)
+				if layer.HasTransform {
+					r.dc.Pop()
+				}
+				r.dc = saveDC
+				r.target = saveTarget
+
+				refBox := geometry.NewRectF(box.X, box.Y, box.Width, box.Height)
+				maskBuf := r.rasterizeSVGMask(masker, refBox, bw, bh, bx, by)
+				if maskBuf != nil {
+					applySVGMaskToBuffer(freshBuf, maskBuf, masker.MaskType)
+					// Composite freshBuf onto the page canvas using
+					// the same source-over math the existing CSS
+					// color-fill path produces, then apply opacity
+					// using the SAME compositor as a constant alpha
+					// modulation. This is what makes the test render
+					// pixel-identical to the rgba() ref render that
+					// the WPT reftest matches against (CSS Masking 1
+					// §3.7 rendering order: filter → mask → opacity →
+					// composite, with the louis14 canvas composite
+					// math matched to mazarin's gg backend).
+					compositeBufferWithOpacityOnto(r.target, freshBuf, bx, by, layer.Opacity)
+					return
+				}
+			}
+		}
+	}
 
 	if isGradientValue(maskVal) {
 		// Gradient mask: <image> type → match-source resolves to alpha mode.
@@ -1421,6 +1584,17 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 	box := layer.Box
 	// Pixel-snapped border box — the clip-path reference box.
 	bx, by, bw, bh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+
+	// Reference variant: resolve `url(#id)` against the renderer-wide
+	// SVG resource registry and install the resolved clip directly.
+	// Mirrors Blink's ClipPathClipper::ApplyReferenceClipPath dispatch
+	// (core/paint/clip_path_clipper.cc).
+	if layer.ClipPath.Type == css.ClipPathReference {
+		target := geometry.NewRectF(bx, by, bw, bh)
+		r.applySVGClipPath(target, layer.ClipPath.ReferenceID)
+		return
+	}
+
 	cp := layer.ClipPath.ResolveClipPath(bw, bh)
 
 	switch cp.Type {

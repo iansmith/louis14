@@ -1728,6 +1728,9 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 		"opacity",
 		"color",
 		"clip-rule",
+		"clip-path",
+		"mask",
+		"mask-type",
 		"stop-color",
 		"stop-opacity",
 	}

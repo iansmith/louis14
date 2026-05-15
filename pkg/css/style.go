@@ -7679,6 +7679,11 @@ const (
 	ClipPathCircle  ClipPathType = "circle"
 	ClipPathEllipse ClipPathType = "ellipse"
 	ClipPathPolygon ClipPathType = "polygon"
+	// ClipPathReference is the `url(#id)` variant. Carries a
+	// document-fragment id resolved at paint time against the SVG
+	// resource registry. Mirrors Blink's ReferenceClipPathOperation
+	// (core/style/clip_path_operation.h).
+	ClipPathReference ClipPathType = "url"
 )
 
 // ClipPath represents a parsed clip-path value.
@@ -7698,6 +7703,12 @@ type ClipPath struct {
 	CxPct     float64 // center x as percentage (-1 = not set)
 	CyPct     float64 // center y as percentage (-1 = not set)
 	PointsPct []bool  // per-coordinate: true = percentage, false = px
+
+	// ReferenceID is the fragment id of a `url(#id)` clip-path
+	// reference (without the leading `#`). Populated only when Type
+	// is ClipPathReference. Resolved by the SVG resource registry at
+	// paint time. Mirrors Blink's ReferenceClipPathOperation::url().
+	ReferenceID string
 }
 
 // GetClipPath parses the clip-path property
@@ -7717,7 +7728,48 @@ func (s *Style) GetClipPath() *ClipPath {
 	if strings.HasPrefix(val, "polygon(") {
 		return parseClipPathPolygon(val)
 	}
+	if strings.HasPrefix(val, "url(") {
+		return parseClipPathReference(val)
+	}
 	return nil
+}
+
+// parseClipPathReference parses the `url(#id)` clip-path variant.
+// Returns a ClipPath with Type=ClipPathReference and the fragment id
+// stripped of the leading `#`. Non-fragment URLs (`url(file.svg#id)`)
+// are accepted but only the fragment portion is kept — louis14's
+// document fragment resolution is in-document only (same as Blink's
+// LookupSVGElementById which scans the current TreeScope).
+//
+// Returns nil when the value isn't a parseable url() or carries no id.
+func parseClipPathReference(val string) *ClipPath {
+	if !strings.HasPrefix(val, "url(") || !strings.HasSuffix(val, ")") {
+		return nil
+	}
+	inner := val[4 : len(val)-1]
+	inner = strings.TrimSpace(inner)
+	// Strip surrounding quotes (the CSS grammar allows both forms).
+	inner = strings.Trim(inner, `"'`)
+	if inner == "" {
+		return nil
+	}
+	// Extract the fragment after the `#`. If absent, treat the whole
+	// value as the id — being lenient covers `url(myMask)` which
+	// authors sometimes write (Blink ignores it as a malformed URL,
+	// but accepting it matches what the existing mask-image parser
+	// implicitly does for the same syntax).
+	id := inner
+	if i := strings.Index(inner, "#"); i >= 0 {
+		id = inner[i+1:]
+	}
+	if id == "" {
+		return nil
+	}
+	return &ClipPath{
+		Type:        ClipPathReference,
+		ReferenceID: id,
+		RadiusPct:   -1, RxPct: -1, RyPct: -1, CxPct: -1, CyPct: -1,
+	}
 }
 
 // ClipRect represents a parsed CSS clip: rect(top, right, bottom, left) value.
@@ -8394,13 +8446,29 @@ func (s *Style) GetAspectRatio() AspectRatio {
 	return AspectRatio{}
 }
 
-// GetMaskImage returns the mask-image property value
+// GetMaskImage returns the mask-image property value.
+//
+// Resolution order (matches CSS Masking 1 §6.2 + the SVG `mask`
+// presentation attribute):
+//
+//  1. `mask-image` longhand
+//  2. `-webkit-mask-image` vendor longhand
+//  3. `mask` shorthand (covers the SVG presentation attribute case:
+//     `<rect mask="url(#m)"/>` cascades into `mask: url(#m)`, which
+//     the CSS Masking shorthand expands to `mask-image: url(#m)`).
+//     We treat the raw shorthand value as the image source — Phase 5
+//     doesn't yet parse the full shorthand grammar, but the SVG
+//     reftests in scope only ever use the `url(#…)` form, which is
+//     a valid single-image mask-image value.
 func (s *Style) GetMaskImage() string {
 	if val, ok := s.Get("mask-image"); ok {
 		return val
 	}
 	// Also check -webkit-mask-image
 	if val, ok := s.Get("-webkit-mask-image"); ok {
+		return val
+	}
+	if val, ok := s.Get("mask"); ok && val != "" && val != "none" {
 		return val
 	}
 	return "none"
