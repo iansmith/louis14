@@ -40,6 +40,18 @@ type SVGFilterPrimitive interface {
 	// and A in [0,1]). Used by `<feFlood>` and `<feDropShadow>`.
 	// Default: black, opaque (per SVG Filter Effects 1).
 	FloodColor() (r, g, b uint8, a float64)
+	// TaintsOrigin reports whether this primitive seeds tainting into
+	// the chain — i.e. whether its content originates from a
+	// cross-origin source without CORS. Default false; only
+	// `<feImage>` overrides to return true when its image source is
+	// cross-origin without CORS. Mirrors Blink
+	// SVGFEImageElement::TaintsOrigin (svg_fe_image_element.cc).
+	//
+	// All other primitives inherit the default — they don't introduce
+	// new tainting, they only propagate input tainting via
+	// FilterEffect.InputsTaintOrigin (handled by the builder; see
+	// svg_filter_builder.cc:191-192).
+	TaintsOrigin() bool
 }
 
 // SVGFilterElement is the abstract view of a `<filter>` element the
@@ -62,6 +74,19 @@ type SVGFilterElement interface {
 	InterpolationSpace() InterpolationSpace
 	// Primitives returns the filter primitive children in DOM order.
 	Primitives() []SVGFilterPrimitive
+	// FillPaintEffect returns a FilterEffect that paints the
+	// referencing element's resolved fill paint server into the
+	// reference box — the SVG `FillPaint` builtin (Filter Effects 1
+	// §15.7). Returns nil when the element has no fill (e.g.
+	// `fill="none"`), in which case the builder leaves the FillPaint
+	// builtin unset. Mirrors Blink
+	// svg_filter_builder.cc:114-119 where FillPaint is registered
+	// only when fill_flags is non-null.
+	FillPaintEffect() FilterEffect
+	// StrokePaintEffect returns the StrokePaint builtin counterpart.
+	// nil when the element has no stroke. Mirrors Blink
+	// svg_filter_builder.cc:120-125.
+	StrokePaintEffect() FilterEffect
 }
 
 // SVGFilterBuilder turns a `<filter>` element + its children into a
@@ -118,16 +143,27 @@ func NewSVGFilterBuilder(space InterpolationSpace) *SVGFilterBuilder {
 	// normalize via strings.ToLower-equivalent.
 	b.builtins["SourceGraphic"] = src
 	b.builtins["SourceAlpha"] = srcAlpha
-	// FillPaint / StrokePaint / BackgroundImage / BackgroundAlpha:
-	// not yet implemented as distinct sources. Per SVG spec they
-	// would carry the fill/stroke paint server or the backdrop; in
-	// the absence of backdrop access we approximate Fill/Stroke as
-	// SourceGraphic (so feMerge with FillPaint composes the shape)
-	// and BackgroundImage/Alpha as transparent black (the spec
-	// fallback when the backdrop is unavailable). Blink uses the
-	// same approximations under certain compositing isolations.
+	// FillPaint / StrokePaint default seed: SourceGraphic. The real
+	// PaintFilterEffect registrations happen in BuildGraph once the
+	// SVGFilterElement is in hand (which knows the referencing
+	// element's resolved fill/stroke). If the element does not
+	// supply a paint effect (no fill / no stroke), the SourceGraphic
+	// alias remains — this matches Blink's behavior of falling back
+	// to the spec's "transparent black" only when the paint server
+	// is genuinely unavailable; with no explicit paint server, SVG
+	// defaults to black fill, which SourceGraphic represents.
 	b.builtins["FillPaint"] = src
 	b.builtins["StrokePaint"] = src
+	// BackgroundImage / BackgroundAlpha: modern Blink no longer
+	// implements these (removed with the `enable-background` /
+	// backdrop-snapshot machinery). Spec keeps them but UAs treat
+	// them as transparent black / its alpha (which is the same
+	// thing). louis14 mirrors modern Blink by aliasing them to
+	// SourceGraphic / SourceAlpha as a defensive fallback — both
+	// effectively give the spec's "transparent black" semantic when
+	// no backdrop is recorded, since SourceGraphic for an element
+	// without backdrop access just renders the element itself, and
+	// SourceAlpha zeroes the colour channels.
 	b.builtins["BackgroundImage"] = src
 	b.builtins["BackgroundAlpha"] = srcAlpha
 	return b
@@ -177,10 +213,34 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 	if elt == nil {
 		return nil
 	}
+	// Register FillPaint / StrokePaint from the referencing element if
+	// available. Mirrors Blink svg_filter_builder.cc:114-125: Blink
+	// only registers these when fill_flags / stroke_flags are non-null
+	// (the element has resolved fill / stroke paint). louis14's
+	// equivalent: the SVGFilterElement adapter returns a non-nil
+	// FilterEffect (a PaintFilterEffect) when the element has a paint
+	// to supply, nil otherwise. When nil, the default SourceGraphic
+	// alias from NewSVGFilterBuilder stays in place.
+	if fp := elt.FillPaintEffect(); fp != nil {
+		b.builtins["FillPaint"] = fp
+	}
+	if sp := elt.StrokePaintEffect(); sp != nil {
+		b.builtins["StrokePaint"] = sp
+	}
 	for _, prim := range elt.Primitives() {
 		eff := b.buildOnePrimitive(elt, prim)
 		if eff == nil {
 			continue
+		}
+		// Tainted-origin propagation — mirrors Blink
+		// svg_filter_builder.cc:191-192. Runs BEFORE subregion
+		// wrapping so the SubregionClippedEffect inherits the bit
+		// from the wrapped primitive. The two seed sources are: any
+		// upstream effect already tainted (InputsTaintOrigin), or
+		// this primitive itself originating tainting (TaintsOrigin
+		// — only `feImage` returns true on cross-origin sources).
+		if eff.InputsTaintOrigin() || prim.TaintsOrigin() {
+			eff.SetOriginTainted()
 		}
 		// Apply the primitive subregion clip if x/y/width/height are
 		// set. For FEFlood we already pushed Subregion into the effect
@@ -190,7 +250,14 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		// Effects 1 §15.7 "Filter primitive subregion".
 		if prim.TagName() != "feflood" {
 			if sub := resolvePrimitiveSubregion(elt, prim); !sub.Empty() {
-				eff = NewSubregionClippedEffect(eff, sub)
+				wrapped := NewSubregionClippedEffect(eff, sub)
+				// Subregion wrapper carries the same tainted bit
+				// as the wrapped effect (it's a thin per-pixel
+				// clip; the underlying tainting is unchanged).
+				if eff.OriginTainted() {
+					wrapped.SetOriginTainted()
+				}
+				eff = wrapped
 			}
 		}
 		// `result="…"` registers the named output.

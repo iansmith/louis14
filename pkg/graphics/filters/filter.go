@@ -63,6 +63,16 @@ func (f *Filter) evaluate(e FilterEffect, memo map[FilterEffect]*image.RGBA) *im
 		inputs[i] = depImg
 	}
 	out := e.ApplyEffect(inputs, f.FilterRegion)
+	// Tainted-filter-primitive fallback (Filter Effects 1
+	// §"tainted filter primitives"): a tainted primitive's output MUST
+	// be replaced with transparent black. Done graph-side so every
+	// primitive automatically respects the bit and we don't repeat the
+	// check in every FE*.ApplyEffect. Mirrors Blink's
+	// FilterEffect::OriginTainted check that gates whether the
+	// produced cc::PaintFilter is allowed to surface its content.
+	if e.OriginTainted() {
+		out = newRGBA(f.FilterRegion)
+	}
 	memo[e] = out
 	return out
 }
