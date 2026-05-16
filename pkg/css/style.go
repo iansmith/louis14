@@ -3196,6 +3196,19 @@ func parseColorFloat01(s string, maxValue float64) float64 {
 	return v / maxValue
 }
 
+// parseRGBByte parses one R/G/B component of an rgb()/rgba() functional
+// notation. Accepts integer/number form (0-255) or percent form (0%-100%) per
+// CSS Color Level 4 §"rgb()". Returns the byte value and a validity flag
+// (false if out of range). Mirrors Blink's CSSPropertyParserHelpers handling
+// where percent and number forms produce the same final byte after rounding.
+func parseRGBByte(s string) (uint8, bool) {
+	v := parseColorFloat01(s, 255.0)
+	if v < 0 || v > 1 {
+		return 0, false
+	}
+	return uint8(math.Round(v * 255)), true
+}
+
 // parseSpaceSeparatedRGB parses CSS4 space-separated rgb/rgba syntax:
 // "R G B" or "R G B / A" where values can be numbers (0-255) or percentages.
 func parseSpaceSeparatedRGB(inner string) (Color, bool) {
@@ -3338,23 +3351,21 @@ func ParseColor(colorStr string) (Color, bool) {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgb("), ")")
 		parts := strings.Split(values, ",")
 		if len(parts) == 3 {
-			var r, g, b int
-			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
-			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
-			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
-				return Color{uint8(r), uint8(g), uint8(b), 1.0}, true
+			r, rOK := parseRGBByte(parts[0])
+			g, gOK := parseRGBByte(parts[1])
+			b, bOK := parseRGBByte(parts[2])
+			if rOK && gOK && bOK {
+				return Color{r, g, b, 1.0}, true
 			}
 		} else if len(parts) == 4 {
 			// CSS Color Level 4: rgb() with 4 arguments (alpha)
-			var r, g, b int
+			r, rOK := parseRGBByte(parts[0])
+			g, gOK := parseRGBByte(parts[1])
+			b, bOK := parseRGBByte(parts[2])
 			var a float64
-			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
-			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
 			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
-			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
-				return Color{uint8(r), uint8(g), uint8(b), a}, true
+			if rOK && gOK && bOK {
+				return Color{r, g, b, a}, true
 			}
 		} else if len(parts) == 1 {
 			// CSS Color Level 4: space-separated syntax: rgb(R G B) or rgb(R G B / A)
@@ -3369,14 +3380,13 @@ func ParseColor(colorStr string) (Color, bool) {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgba("), ")")
 		parts := strings.Split(values, ",")
 		if len(parts) == 4 {
-			var r, g, b int
+			r, rOK := parseRGBByte(parts[0])
+			g, gOK := parseRGBByte(parts[1])
+			b, bOK := parseRGBByte(parts[2])
 			var a float64
-			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
-			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
 			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
-			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
-				return Color{uint8(r), uint8(g), uint8(b), a}, true
+			if rOK && gOK && bOK {
+				return Color{r, g, b, a}, true
 			}
 		} else if len(parts) == 1 {
 			// CSS4 space-separated: rgba(R G B / A)
