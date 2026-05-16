@@ -334,6 +334,18 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		stdX, _ := parseStdDeviation1(prim)
 		r, g, bb, a := prim.FloodColor()
 		return NewFEDropShadow(in, b.sourceAlpha, b.space, dx, dy, stdX, r, g, bb, a)
+	case "fedisplacementmap":
+		// Per SVG Filter Effects 1 §feDisplacementMap. `in` defaults to
+		// the chain default (handled by resolveInputAttr). `in2` has no
+		// implicit fallback in the spec; in this implementation it
+		// also falls through to `lastEffect` when missing, but the FE
+		// itself defends against a nil in2 by reusing in1.
+		in1 := b.resolveInputAttr(prim, "in")
+		in2 := b.resolveInputAttr(prim, "in2")
+		xChan := parseChannelSelector(prim, "xChannelSelector")
+		yChan := parseChannelSelector(prim, "yChannelSelector")
+		scale, _ := parseFloatAttr(prim, "scale", 0)
+		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, scale)
 	}
 	// Unsupported primitive: pass through. Blink's SVGFilterBuilder
 	// returns nullptr for unknown / unsupported primitives, which
@@ -463,6 +475,36 @@ func parseFloatAttr(prim SVGFilterPrimitive, name string, def float64) (float64,
 		return def, false
 	}
 	return f, true
+}
+
+// parseChannelSelector reads an feDisplacementMap `xChannelSelector` or
+// `yChannelSelector` attribute. Per SVG Filter Effects 1
+// §feDisplacementMap, the default is `A` when the attribute is missing
+// or unrecognized. Mirrors Blink
+// SVGFEDisplacementMapElement::ParseChannelSelector.
+//
+// HTML's tokenizer lowercases attribute names, so we also try the
+// lowercase form — same convention as `parseStdDeviation`.
+func parseChannelSelector(prim SVGFilterPrimitive, name string) ChannelSelector {
+	v, ok := prim.Attribute(name)
+	if !ok {
+		v, ok = prim.Attribute(strings.ToLower(name))
+	}
+	if !ok {
+		return ChannelA
+	}
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "R":
+		return ChannelR
+	case "G":
+		return ChannelG
+	case "B":
+		return ChannelB
+	case "A":
+		return ChannelA
+	}
+	// Unrecognized value → SVG default A.
+	return ChannelA
 }
 
 // parseBlendMode reads an feBlend `mode` attribute.
