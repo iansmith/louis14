@@ -48,6 +48,23 @@ func (a *svgFilterElementAdapter) InterpolationSpace() filters.InterpolationSpac
 	return a.space
 }
 
+// FillPaintEffect implements filters.SVGFilterElement. Returns the
+// referencing element's resolved fill paint as a PaintFilterEffect, or
+// nil when the element has no fill (`fill="none"` or no fill at all).
+//
+// Phase 1 ships the interface point but always returns nil — no
+// bucket-J test exercises FillPaint directly, so the adapter does not
+// yet plumb the referencing element's resolved fill from the layout
+// tree. Phase 8 wires the actual resolution. Until then,
+// SVGFilterBuilder falls back to the default SourceGraphic alias for
+// the FillPaint builtin.
+func (a *svgFilterElementAdapter) FillPaintEffect() filters.FilterEffect { return nil }
+
+// StrokePaintEffect implements filters.SVGFilterElement. Counterpart
+// to FillPaintEffect for the element's stroke paint. Phase 1 returns
+// nil for the same reason FillPaintEffect does — see its doc.
+func (a *svgFilterElementAdapter) StrokePaintEffect() filters.FilterEffect { return nil }
+
 // Primitives implements filters.SVGFilterElement. Wraps each filter
 // primitive ElementAdapter in an svgFilterPrimitiveAdapter so the
 // builder can read its attributes through the
