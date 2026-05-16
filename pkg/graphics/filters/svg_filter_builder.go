@@ -40,6 +40,18 @@ type SVGFilterPrimitive interface {
 	// and A in [0,1]). Used by `<feFlood>` and `<feDropShadow>`.
 	// Default: black, opaque (per SVG Filter Effects 1).
 	FloodColor() (r, g, b uint8, a float64)
+	// TaintsOrigin reports whether this primitive seeds tainting into
+	// the chain — i.e. whether its content originates from a
+	// cross-origin source without CORS. Default false; only
+	// `<feImage>` overrides to return true when its image source is
+	// cross-origin without CORS. Mirrors Blink
+	// SVGFEImageElement::TaintsOrigin (svg_fe_image_element.cc).
+	//
+	// All other primitives inherit the default — they don't introduce
+	// new tainting, they only propagate input tainting via
+	// FilterEffect.InputsTaintOrigin (handled by the builder; see
+	// svg_filter_builder.cc:191-192).
+	TaintsOrigin() bool
 }
 
 // SVGFilterElement is the abstract view of a `<filter>` element the
@@ -182,6 +194,16 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		if eff == nil {
 			continue
 		}
+		// Tainted-origin propagation — mirrors Blink
+		// svg_filter_builder.cc:191-192. Runs BEFORE subregion
+		// wrapping so the SubregionClippedEffect inherits the bit
+		// from the wrapped primitive. The two seed sources are: any
+		// upstream effect already tainted (InputsTaintOrigin), or
+		// this primitive itself originating tainting (TaintsOrigin
+		// — only `feImage` returns true on cross-origin sources).
+		if eff.InputsTaintOrigin() || prim.TaintsOrigin() {
+			eff.SetOriginTainted()
+		}
 		// Apply the primitive subregion clip if x/y/width/height are
 		// set. For FEFlood we already pushed Subregion into the effect
 		// itself (the flood uses it as the fill rect, not just a
@@ -190,7 +212,14 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 		// Effects 1 §15.7 "Filter primitive subregion".
 		if prim.TagName() != "feflood" {
 			if sub := resolvePrimitiveSubregion(elt, prim); !sub.Empty() {
-				eff = NewSubregionClippedEffect(eff, sub)
+				wrapped := NewSubregionClippedEffect(eff, sub)
+				// Subregion wrapper carries the same tainted bit
+				// as the wrapped effect (it's a thin per-pixel
+				// clip; the underlying tainting is unchanged).
+				if eff.OriginTainted() {
+					wrapped.SetOriginTainted()
+				}
+				eff = wrapped
 			}
 		}
 		// `result="…"` registers the named output.

@@ -106,6 +106,15 @@ func (p *svgFilterPrimitiveAdapter) Children() []filters.SVGFilterPrimitive {
 	return out
 }
 
+// TaintsOrigin implements filters.SVGFilterPrimitive. Phase 1 wires
+// the interface point; only `<feImage>` overrides to return true on
+// cross-origin sources without CORS (Phase 4 wires that). All other
+// primitives — including this default adapter — return false. Mirrors
+// Blink: `SVGFEImageElement::TaintsOrigin()` is the only
+// origin-tainting override; the base `SVGFilterPrimitiveStandardAttributes`
+// returns false.
+func (p *svgFilterPrimitiveAdapter) TaintsOrigin() bool { return false }
+
 // FloodColor implements filters.SVGFilterPrimitive. Reads
 // flood-color (default black) and flood-opacity (default 1) from the
 // primitive's resolved style if available, falling back to raw
