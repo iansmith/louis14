@@ -55,22 +55,62 @@ func TestResourceBoundingBox_UserSpaceOnUseExplicitNonZero(t *testing.T) {
 	}
 }
 
-// TestResourceBoundingBox_UserSpaceOnUseMissingXYUsesDefaults
-// confirms that when x/y are missing the spec-default -10% projection
-// off target is preserved (no anchor shift — the default already
-// lives in target's coord space).
-func TestResourceBoundingBox_UserSpaceOnUseMissingXYUsesDefaults(t *testing.T) {
+// TestResourceBoundingBox_UserSpaceOnUseMissingXYUsesViewportPercentBase
+// captures the LOU-129 Bug 1 root cause: in userSpaceOnUse mode the
+// spec-default -10%/-10%/120%/120% percentages must resolve against
+// the SVG VIEWPORT (lengthCtx's viewport), NOT against the target's
+// own bounding box. Mirrors Blink's
+// LayoutSVGResourceContainer::ResolveRectangle
+// (third_party/blink/renderer/core/layout/svg/layout_svg_resource_container.cc:99-146)
+// which in the userSpaceOnUse branch uses
+// `viewport_resolver.ResolveViewport()` (the SVG viewport) for percent
+// resolution, while the objectBoundingBox branch uses the reference box.
+//
+// Failing case: tainting-fedropshadow-001.html has a 100×100 rect inside
+// an <svg> with no width/height (default viewport 300×150). The filter
+// has filterUnits="userSpaceOnUse" with no explicit x/y/w/h. Per Blink
+// the filter region is then (-30, -15, 360, 180) — wide enough to hold
+// the chain's intermediate shadow at (100..200, 0..100). Before this
+// fix the region was (-10, -10, 110, 110), clipping the shadow at x=110
+// and corrupting the downstream feOffset + feDisplacementMap output.
+func TestResourceBoundingBox_UserSpaceOnUseMissingXYUsesViewportPercentBase(t *testing.T) {
 	f := &SVGResourceFilter{
 		FilterUnits: SVGUnitUserSpaceOnUse,
 		// X, Y, Width, Height all HasValue=false → use defaults.
 	}
+	// 100×100 rect at user-space (0, 0) → device (8, 8) (body margin).
+	// SVG viewport is 300×150 (the default for an <svg> with no
+	// width/height in HTML).
 	target := geometry.NewRectF(8, 8, 100, 100)
 	userOrigin := geometry.PointF{X: 8, Y: 8}
+	viewport := geometry.SizeF{Width: 300, Height: 150}
+	got := f.ResourceBoundingBox(target, userOrigin, NewSVGLengthContext(viewport))
+	// Per Blink: x = userOrigin.X + (-0.10)*300 = -22
+	//           y = userOrigin.Y + (-0.10)*150 = -7
+	//           w = 1.20*300 = 360
+	//           h = 1.20*150 = 180
+	const eps = 1e-9
+	if absDiff(got.X(), -22) > eps ||
+		absDiff(got.Y(), -7) > eps ||
+		absDiff(got.Width(), 360) > eps ||
+		absDiff(got.Height(), 180) > eps {
+		t.Errorf("ResourceBoundingBox = %v, want approx (-22, -7, 360, 180)", got)
+	}
+}
+
+// TestResourceBoundingBox_UserSpaceOnUseMissingXYBackwardsCompat retains
+// the original behaviour when caller passes the target size AS the
+// viewport (the pre-fix shape). Confirms the layout-level fix is purely
+// driven by the lengthCtx the caller supplies.
+func TestResourceBoundingBox_UserSpaceOnUseMissingXYBackwardsCompat(t *testing.T) {
+	f := &SVGResourceFilter{
+		FilterUnits: SVGUnitUserSpaceOnUse,
+	}
+	target := geometry.NewRectF(8, 8, 100, 100)
+	userOrigin := geometry.PointF{X: 8, Y: 8}
+	// When the caller passes target.Size as viewport the math reproduces
+	// the pre-fix behavior: x=8+(-10), y=8+(-10), w=120, h=120.
 	got := f.ResourceBoundingBox(target, userOrigin, NewSVGLengthContext(target.Size))
-	// Defaults: x=-10%, y=-10%, w=120%, h=120% of target.
-	// target.X()=8, target.Y()=8, target.Width()=target.Height()=100.
-	// x = 8 + (-0.10)*100 = -2; y = -2; w = 120; h = 120.
-	// (Account for float-multiply precision noise with 1e-9 tolerance.)
 	const eps = 1e-9
 	if absDiff(got.X(), -2) > eps ||
 		absDiff(got.Y(), -2) > eps ||

@@ -316,3 +316,80 @@ func TestSvgFilterPrimitiveAdapter_InlineStyleTaints(t *testing.T) {
 		})
 	}
 }
+
+// TestSvgFilterPrimitiveAdapter_DropShadowCurrentColorTaints captures
+// the LOU-129 Bug 1 second root cause: `<feDropShadow>` with
+// `flood-color="currentcolor"` must mark the primitive tainted just
+// like `<feFlood>` does. Per Blink
+// SVGFEDropShadowElement::TaintsOrigin
+// (third_party/blink/renderer/core/svg/svg_fe_drop_shadow_element.cc)
+// which checks style->FloodColor().DependsOnCurrentColor().
+//
+// Without this, tainting-fedropshadow-002.html (currentcolor
+// flood-color) leaks the colour through the downstream
+// feDisplacementMap — its in2 is the offset-shifted shadow buffer,
+// which would have been pass-through suppressed if the tainted bit
+// had propagated.
+//
+// Pre-fix: TaintsOrigin() only switches on feflood — feDropShadow
+// case returns false → reftest fails 7500 px.
+// Post-fix: feDropShadow case mirrors feFlood; reftest at 0 px.
+func TestSvgFilterPrimitiveAdapter_DropShadowCurrentColorTaints(t *testing.T) {
+	cases := []struct {
+		name       string
+		tag        string
+		attrs      map[string]string
+		wantTaints bool
+	}{
+		{
+			name:       "feDropShadow flood-color=currentcolor lowercase",
+			tag:        "fedropshadow",
+			attrs:      map[string]string{"flood-color": "currentcolor"},
+			wantTaints: true,
+		},
+		{
+			name:       "feDropShadow flood-color=CurrentColor mixed case",
+			tag:        "fedropshadow",
+			attrs:      map[string]string{"flood-color": "CurrentColor"},
+			wantTaints: true,
+		},
+		{
+			// Direct mirror of tainting-fedropshadow-002.html:
+			//   <feDropShadow flood-color="currentcolor" style="color: rgb(...)" .../>
+			name: "feDropShadow inline style flood-color currentcolor",
+			tag:  "fedropshadow",
+			attrs: map[string]string{
+				"style": "flood-color: currentcolor",
+			},
+			wantTaints: true,
+		},
+		{
+			name:       "feDropShadow flood-color=rgb does NOT taint",
+			tag:        "fedropshadow",
+			attrs:      map[string]string{"flood-color": "rgb(0, 100, 50)"},
+			wantTaints: false,
+		},
+		{
+			name:       "feDropShadow with no flood-color (default black) does NOT taint",
+			tag:        "fedropshadow",
+			attrs:      nil,
+			wantTaints: false,
+		},
+		{
+			name:       "feDropShadow with named color (red) does NOT taint",
+			tag:        "fedropshadow",
+			attrs:      map[string]string{"flood-color": "red"},
+			wantTaints: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			elt := &fakeFilterPrimAdapter{tag: tc.tag, attrs: tc.attrs}
+			adapter := &svgFilterPrimitiveAdapter{elt: elt}
+			got := adapter.TaintsOrigin()
+			if got != tc.wantTaints {
+				t.Errorf("TaintsOrigin() = %v; want %v", got, tc.wantTaints)
+			}
+		})
+	}
+}
