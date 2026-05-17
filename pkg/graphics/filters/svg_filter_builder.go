@@ -99,6 +99,16 @@ type SVGFilterElement interface {
 	// absolute device pixels. For objectBoundingBox primitive units
 	// the builder maps primitive subregion coords through this.
 	ReferenceBox() image.Rectangle
+	// UserSpaceOrigin returns the SVG element's user-space (0, 0)
+	// point in absolute device pixels. The userSpaceOnUse coordinate
+	// space for filter primitive subregion attributes anchors here —
+	// NOT at FilterRegion().Min, which can include the filter
+	// region's default 10% expansion. Mirrors Blink's behavior of
+	// resolving primitive x/y in user-space coordinates and then
+	// mapping through the same SVG→device transform the element
+	// itself uses (see Blink
+	// core/svg/svg_fe_primitive_standard_attributes.cc).
+	UserSpaceOrigin() image.Point
 	// PrimitiveUnitsObjectBoundingBox reports whether primitiveUnits
 	// is "objectBoundingBox" (true) or "userSpaceOnUse" (false).
 	PrimitiveUnitsObjectBoundingBox() bool
@@ -467,13 +477,32 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 			ref.Min.Y+int(math.Ceil(y+h)),
 		)
 	}
-	// userSpaceOnUse: x/y/w/h are in user-space units. The caller
-	// already resolved the filter region to absolute device pixels;
-	// we interpret the subregion attributes as offsets within that
-	// region.
+	// userSpaceOnUse: x/y/w/h are in user-space units. Per SVG Filter
+	// Effects 1 §15.4 they're interpreted in the SVG element's
+	// user-coordinate system, whose (0, 0) maps to UserSpaceOrigin in
+	// absolute device coords. NOT region.Min — the default filter
+	// region expands 10% beyond the element bounds, so its origin can
+	// be outside the user-space origin (typically by 10% of the
+	// reference-box width/height, in the negative direction). When
+	// x/y attrs are missing they default to "the full filter region",
+	// which is exactly what region.Min represents — but when supplied
+	// as raw lengths they are user-space coords and must be shifted
+	// by UserSpaceOrigin.
 	region := elt.FilterRegion()
-	x, _ := parseLength(xStr, float64(region.Min.X))
-	y, _ := parseLength(yStr, float64(region.Min.Y))
+	userOrigin := elt.UserSpaceOrigin()
+	var x, y float64
+	if hasX {
+		xv, _ := parseLength(xStr, 0)
+		x = float64(userOrigin.X) + xv
+	} else {
+		x = float64(region.Min.X)
+	}
+	if hasY {
+		yv, _ := parseLength(yStr, 0)
+		y = float64(userOrigin.Y) + yv
+	} else {
+		y = float64(region.Min.Y)
+	}
 	w := float64(region.Dx())
 	h := float64(region.Dy())
 	if hasW {

@@ -133,7 +133,13 @@ func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
 		float64(b.ReferenceBox.Dx()),
 		float64(b.ReferenceBox.Dy()),
 	)
-	regionF := filter.ResourceBoundingBox(refBoxF, svg.NewSVGLengthContext(refBoxF.Size))
+	// CSS `filter: url(...)` has no SVG transform stack — the
+	// "user-space origin" equivalent for this path is the reference
+	// box origin (where the filtered element lives in absolute device
+	// coords). Used by ResourceBoundingBox to anchor explicit
+	// userSpaceOnUse x/y values.
+	userOriginF := geometry.PointF{X: refBoxF.X(), Y: refBoxF.Y()}
+	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
 	region := image.Rect(
 		int(regionF.X()),
 		int(regionF.Y()),
@@ -141,12 +147,19 @@ func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
 		int(regionF.Y()+regionF.Height()),
 	)
 
+	// userSpaceOrigin for the CSS `filter: url(...)` path is the
+	// reference box origin: this path has no SVG transform stack
+	// because the FilterEffectBuilder is constructed with
+	// b.ReferenceBox already in absolute device coords. The CSS
+	// filter reference operates on the element's reference box, so
+	// its "user-space origin" equivalent is the reference box origin.
 	adapter := &svgFilterElementAdapter{
-		filter:       filter,
-		filterRegion: region,
-		referenceBox: b.ReferenceBox,
-		space:        space,
-		resolveStyle: b.ResolveStyle,
+		filter:          filter,
+		filterRegion:    region,
+		referenceBox:    b.ReferenceBox,
+		userSpaceOrigin: b.ReferenceBox.Min,
+		space:           space,
+		resolveStyle:    b.ResolveStyle,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	return builder.BuildGraph(adapter)

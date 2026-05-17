@@ -74,7 +74,12 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 		float64(referenceBox.Dx()),
 		float64(referenceBox.Dy()),
 	)
-	regionF := filter.ResourceBoundingBox(refBoxF, svg.NewSVGLengthContext(refBoxF.Size))
+	// SVG element's user-space origin in device coords — needed by
+	// ResourceBoundingBox to shift explicit userSpaceOnUse x/y values
+	// from user space into target's (device) coord space, per SVG
+	// Filter Effects 1 §6.5.
+	userOriginF := sp.ctx.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
+	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
 	region := image.Rect(
 		int(math.Floor(regionF.X())),
 		int(math.Floor(regionF.Y())),
@@ -180,11 +185,20 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	}
 
 	// Build the FilterEffect graph for this filter element.
+	//
+	// userSpaceOrigin is the SVG element's user-space (0, 0) in
+	// absolute device coords (computed above for ResourceBoundingBox).
+	// The userSpaceOnUse subregion anchor for `<feFoo x="..." y="...">`
+	// primitives is computed against this, NOT against region.Min
+	// (which can include the default 10% filter-region expansion).
+	// Per SVG Filter Effects 1 §15.4 primitive subregion attributes
+	// in userSpaceOnUse mode are user-coordinate-system lengths.
 	adapter := &svgFilterElementAdapter{
-		filter:       filter,
-		filterRegion: region,
-		referenceBox: referenceBox,
-		space:        space,
+		filter:          filter,
+		filterRegion:    region,
+		referenceBox:    referenceBox,
+		userSpaceOrigin: image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
+		space:           space,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	graph := builder.BuildGraph(adapter)
