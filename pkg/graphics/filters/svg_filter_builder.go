@@ -511,26 +511,38 @@ func resolvePrimitiveSubregion(elt SVGFilterElement, prim SVGFilterPrimitive) im
 	// by UserSpaceOrigin.
 	region := elt.FilterRegion()
 	userOrigin := elt.UserSpaceOrigin()
+	regionW := float64(region.Dx())
+	regionH := float64(region.Dy())
+	// Per SVG Filter Effects 1 §3.2: percentages on filter primitive
+	// subregion attrs resolve against the filter region dimensions
+	// (width for x/width attrs, height for y/height attrs). Mirrors
+	// Blink's SVGFilterPrimitiveStandardAttributes which constructs an
+	// SVGLengthContext sized to the filter region.
+	resolvePctLen := func(s string, base float64) float64 {
+		v, isPct := parseLength(s, 0)
+		if isPct {
+			return v * base
+		}
+		return v
+	}
 	var x, y float64
 	if hasX {
-		xv, _ := parseLength(xStr, 0)
-		x = float64(userOrigin.X) + xv
+		x = float64(userOrigin.X) + resolvePctLen(xStr, regionW)
 	} else {
 		x = float64(region.Min.X)
 	}
 	if hasY {
-		yv, _ := parseLength(yStr, 0)
-		y = float64(userOrigin.Y) + yv
+		y = float64(userOrigin.Y) + resolvePctLen(yStr, regionH)
 	} else {
 		y = float64(region.Min.Y)
 	}
-	w := float64(region.Dx())
-	h := float64(region.Dy())
+	w := regionW
+	h := regionH
 	if hasW {
-		w, _ = parseLength(wStr, w)
+		w = resolvePctLen(wStr, regionW)
 	}
 	if hasH {
-		h, _ = parseLength(hStr, h)
+		h = resolvePctLen(hStr, regionH)
 	}
 	return image.Rect(
 		int(math.Floor(x)),

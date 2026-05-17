@@ -109,6 +109,64 @@ func TestResolvePrimitiveSubregion_UserSpaceOnUseNonOrigin(t *testing.T) {
 	}
 }
 
+// TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth covers the
+// `<feDropShadow width="100%">` failure shape. Per SVG Filter Effects 1
+// §3.2, percentages on filter primitive subregion attrs resolve against
+// the filter region dimensions (Blink mirrors this via an
+// SVGLengthContext sized to the filter region). Before the fix,
+// parseLength returned 1.0 for "100%" and the resolver ignored its
+// pct-suffix signal — collapsing the primitive to a 1-pixel wide rect.
+func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentWidth(t *testing.T) {
+	elt := &mockSVGFilterElement{
+		region:          image.Rect(-10, -10, 110, 110),
+		refBox:          image.Rect(0, 0, 100, 100),
+		userSpaceOrigin: image.Point{X: 0, Y: 0},
+	}
+	prim := &mockSVGFilterPrimitive{
+		tag:   "fedropshadow",
+		attrs: map[string]string{"width": "100%"},
+	}
+	got := resolvePrimitiveSubregion(elt, prim)
+	// width="100%" → 100% × region.Dx() (120) = 120.
+	// x is unspecified → x defaults to region.Min.X = -10.
+	// y/height are unspecified → default to full region (-10..110).
+	want := image.Rect(-10, -10, 110, 110)
+	if got != want {
+		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
+	}
+}
+
+// TestResolvePrimitiveSubregion_UserSpaceOnUsePercentAllAxes covers
+// percentage values on every axis simultaneously — verifies x/y % bases
+// use width/height respectively (not transposed) and that x/y still get
+// offset by UserSpaceOrigin.
+func TestResolvePrimitiveSubregion_UserSpaceOnUsePercentAllAxes(t *testing.T) {
+	elt := &mockSVGFilterElement{
+		region:          image.Rect(8, 8, 208, 208),
+		refBox:          image.Rect(8, 8, 208, 208),
+		userSpaceOrigin: image.Point{X: 8, Y: 8},
+	}
+	prim := &mockSVGFilterPrimitive{
+		tag: "fegaussianblur",
+		attrs: map[string]string{
+			"x":      "25%",
+			"y":      "50%",
+			"width":  "50%",
+			"height": "25%",
+		},
+	}
+	// regionW = 200, regionH = 200.
+	// x = userOrigin.X (8) + 25% × 200 = 8 + 50 = 58.
+	// y = userOrigin.Y (8) + 50% × 200 = 8 + 100 = 108.
+	// w = 50% × 200 = 100.
+	// h = 25% × 200 = 50.
+	got := resolvePrimitiveSubregion(elt, prim)
+	want := image.Rect(58, 108, 158, 158)
+	if got != want {
+		t.Errorf("resolvePrimitiveSubregion = %v, want %v", got, want)
+	}
+}
+
 // TestResolvePrimitiveSubregion_UserSpaceOnUseExplicitOffset checks
 // non-zero x/y values: they add to the user-space origin, not the
 // filter-region origin.
