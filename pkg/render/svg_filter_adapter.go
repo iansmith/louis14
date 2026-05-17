@@ -171,7 +171,17 @@ func (p *svgFilterPrimitiveAdapter) TaintsOrigin() bool {
 }
 
 // readColorAttr fetches a colour-valued attribute (flood-color,
-// lighting-color, …) from style if available, else from raw attribute.
+// lighting-color, …) following the CSS cascade precedence:
+//
+//  1. Resolved computed style (when a style resolver is wired). In
+//     production this is currently nil — FilterEffectBuilder.ResolveStyle
+//     is declared but not wired (see render.go) — so we fall through.
+//  2. Inline `style` HTML attribute on the primitive. This is the
+//     bridge for JS-driven mutations (`element.style.floodColor = ...`)
+//     and for hand-authored `style="flood-color: ..."`. Per CSS the
+//     inline style cascades above the presentation attribute.
+//  3. Presentation attribute (e.g. `flood-color="..."`).
+//
 // Returns the lowercased+trimmed value or "" when unset. Used by
 // TaintsOrigin to detect the `currentcolor` keyword case-insensitively.
 func (p *svgFilterPrimitiveAdapter) readColorAttr(name string) string {
@@ -184,11 +194,53 @@ func (p *svgFilterPrimitiveAdapter) readColorAttr(name string) string {
 		}
 	}
 	if v == "" {
+		if sv, ok := readInlineStyleProperty(p.elt, name); ok {
+			v = sv
+		}
+	}
+	if v == "" {
 		if av, ok := p.elt.Attribute(name); ok {
 			v = av
 		}
 	}
 	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// readInlineStyleProperty extracts a CSS declaration value from the
+// element's `style` HTML attribute. Returns ("", false) when the
+// attribute is unset or the property is not present.
+//
+// This is a minimal CSS declaration-list parser: declarations are
+// split on `;`, each `<name>:<value>` pair is matched
+// case-insensitively on the property name. Whitespace around the
+// name and value is trimmed. Values containing semicolons (none of
+// our colour properties produce that) are not supported — they would
+// be split incorrectly, but flood-color / lighting-color / opacity
+// values never include `;`.
+//
+// Mirrors what the CSS cascade does for the `style` attribute in
+// real browsers, scoped down to the lookup we need here.
+func readInlineStyleProperty(elt svg.ElementAdapter, name string) (string, bool) {
+	if elt == nil {
+		return "", false
+	}
+	raw, ok := elt.Attribute("style")
+	if !ok || raw == "" {
+		return "", false
+	}
+	for _, decl := range strings.Split(raw, ";") {
+		colon := strings.IndexByte(decl, ':')
+		if colon < 0 {
+			continue
+		}
+		prop := strings.TrimSpace(decl[:colon])
+		if !strings.EqualFold(prop, name) {
+			continue
+		}
+		val := strings.TrimSpace(decl[colon+1:])
+		return val, true
+	}
+	return "", false
 }
 
 // FloodColor implements filters.SVGFilterPrimitive. Reads
