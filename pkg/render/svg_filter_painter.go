@@ -109,9 +109,27 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	// the same primitives as the mask painter. This avoids recursing
 	// into paintShape — the filter dispatch already consumed the
 	// `filter:` decision and we want only fill+stroke here.
+	//
+	// childCtx.DeviceFromUser maps a user-space point to a pixel in
+	// the source buffer (not the page). tmpR.dc carries
+	// Translate(-region.Min.X, -region.Min.Y) on top of the SVG-root
+	// DeviceFromUser so paint ends up at the right buffer pixel;
+	// childCtx.DeviceFromUser must include the same extra translate
+	// or fillPathWithShader (svg_paint_server.go:75) will compute its
+	// per-pixel write positions from the SVG-root DeviceFromUser alone
+	// and land the shader output at page-coord pixel positions inside
+	// the source buffer — wrong by region.Min, so the filter graph
+	// then samples a misplaced source. Visible as a ~3-px shift on the
+	// bucket-J tainting tests, because region.Min is rounded down by
+	// 1 ulp (float precision on the spec's -10% expansion of an int-
+	// pixel reference box) and the source rect's blend with the
+	// underlying un-filtered rect leaves a slim mismatched strip.
 	childCtx := *sp.ctx
 	childCtx.dc = tmpR.dc
 	childCtx.Renderer = tmpR
+	childCtx.DeviceFromUser = geometry.Translate(
+		float64(-region.Min.X), float64(-region.Min.Y),
+	).Compose(sp.ctx.DeviceFromUser)
 	childOp := newSVGObjectPainter(tmpR.dc, style).withResources(
 		sp.ctx.Resources, sp.shape.FillBoundingBox,
 		svg.NewSVGLengthContext(sp.ctx.viewport.Size),
