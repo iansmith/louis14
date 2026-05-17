@@ -25,10 +25,11 @@ func TestLOU129_DumpDropShadowChain(t *testing.T) {
 	os.MkdirAll(outDir, 0755)
 
 	refBox := image.Rect(0, 0, 100, 100)
-	// Current code yields filterRegion = (-10,-10)-(110,110) for a 100x100
-	// reference box (default x=-10%,y=-10%,w=120%,h=120% in userSpaceOnUse
-	// using filter region's own base in louis14).
-	region := image.Rect(-10, -10, 110, 110)
+	// Per Blink ResolveRectangle, in userSpaceOnUse mode the default
+	// -10%/-10%/120%/120% resolve against the SVG VIEWPORT (default 300x150).
+	// So filter region = (-30, -15) origin, 360x180 size.
+	region := image.Rect(-30, -15, 330, 165)
+	_ = refBox
 
 	fmt.Printf("reference box: %v\n", refBox)
 	fmt.Printf("filter region: %v size=%dx%d\n", region, region.Dx(), region.Dy())
@@ -39,11 +40,16 @@ func TestLOU129_DumpDropShadowChain(t *testing.T) {
 	srcAlpha := NewSourceAlpha(src, space)
 
 	// Build SourceGraphic image: red→green gradient rect 100x100 at (0,0)
-	// (in absolute coords) → buffer pixels (10..110, 10..110).
+	// (in absolute coords) → buffer pixels (region.Min translated).
 	srcImg := image.NewRGBA(image.Rect(0, 0, region.Dx(), region.Dy()))
-	for y := 10; y < 110; y++ {
-		for x := 10; x < 110; x++ {
-			rectX := x - 10
+	// Convert abs (0,0)..(100,100) into buffer coords:
+	bx0 := 0 - region.Min.X
+	by0 := 0 - region.Min.Y
+	bx1 := 100 - region.Min.X
+	by1 := 100 - region.Min.Y
+	for y := by0; y < by1; y++ {
+		for x := bx0; x < bx1; x++ {
+			rectX := x - bx0
 			var r, g, b uint8
 			if rectX < 50 {
 				r, g, b = 255, 0, 0
@@ -74,13 +80,13 @@ func TestLOU129_DumpDropShadowChain(t *testing.T) {
 	// width=120, 100% of regionW=120 → primitive subregion = (-10,-10,110,-10+120=110).
 	// But the brief expects shadow at (100..200, 0..100) — let's see what we get.
 	dropShadow := NewFEDropShadow(flood, srcAlpha, space, 100, 0, 0, 0, 255, 128, 1.0)
-	// Apply primitive subregion clip with current resolution semantics:
-	// regionW = 120 (the filter region width), so 100% = 120.
-	// xDefault → region.Min.X = -10
-	// yDefault → region.Min.Y = -10
-	// hDefault → regionH = 120
+	// Apply primitive subregion clip per spec userSpaceOnUse:
+	// width="100%" → 100% of viewport width = 300 (per Blink ResolveRectangle).
+	// xDefault → region.Min.X = -30
+	// yDefault → region.Min.Y = -15
+	// hDefault → regionH = 180
 	dropShadowClipped := NewSubregionClippedEffect(dropShadow,
-		image.Rect(-10, -10, -10+120, -10+120))
+		image.Rect(-30, -15, -30+300, -15+180))
 
 	// 3. feOffset dx=-100 dy=0
 	offset := NewFEOffset(dropShadowClipped, space, -100, 0)
