@@ -350,6 +350,27 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		in2 := b.resolveInputAttr(prim, "in2")
 		mode := parseBlendMode(prim)
 		return NewFEBlend(in, in2, b.space, mode)
+	case "fecomposite":
+		// Per SVG Filter Effects 1 §feComposite. `in`/`in2` resolve
+		// via the standard chain; operator defaults to "over"; k1-k4
+		// default to 0 (the spec value) and are only consulted for
+		// `operator="arithmetic"`. Mirrors Blink
+		// svg_fe_composite_element.cc and FEComposite ctor.
+		in1 := b.resolveInputAttr(prim, "in")
+		in2 := b.resolveInputAttr(prim, "in2")
+		op := parseCompositeOperator(prim)
+		k1, _ := parseFloatAttr(prim, "k1", 0)
+		k2, _ := parseFloatAttr(prim, "k2", 0)
+		k3, _ := parseFloatAttr(prim, "k3", 0)
+		k4, _ := parseFloatAttr(prim, "k4", 0)
+		return NewFEComposite(in1, in2, b.space, op, k1, k2, k3, k4)
+	case "fetile":
+		// Per SVG Filter Effects 1 §feTile. Single input via `in`;
+		// tile source rect is derived from the input's primitive
+		// subregion at evaluation time. Mirrors
+		// svg_fe_tile_element.cc and fe_tile.cc.
+		in := b.resolveInputAttr(prim, "in")
+		return NewFETile(in, b.space)
 	case "femerge":
 		// `<feMerge>` has `<feMergeNode>` children, each carrying an
 		// `in` attribute. Walk them in DOM order.
@@ -592,6 +613,38 @@ func parseChannelSelector(prim SVGFilterPrimitive, name string) ChannelSelector 
 	}
 	// Unrecognized value → SVG default A.
 	return ChannelA
+}
+
+// parseCompositeOperator reads the feComposite `operator` attribute.
+// Default per SVG Filter Effects 1 §feComposite: "over". Unknown values
+// fall back to the default — mirrors Blink's SVGEnumerationMap behaviour
+// where the parser rejects unknown enums and the property retains its
+// initial value.
+//
+// "lighter" is the SVG-1.1 / Filter-Effects-1 enum slot used by Skia's
+// kPlus blend mode. The spec lists it but it has no native primitive
+// behaviour in louis14's software path; we fall back to "over" for it
+// pending a real implementation. None of the bucket-J tests exercise it.
+func parseCompositeOperator(prim SVGFilterPrimitive) CompositeOperator {
+	v, ok := prim.Attribute("operator")
+	if !ok {
+		return CompositeOver
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "over":
+		return CompositeOver
+	case "in":
+		return CompositeIn
+	case "out":
+		return CompositeOut
+	case "atop":
+		return CompositeAtop
+	case "xor":
+		return CompositeXor
+	case "arithmetic":
+		return CompositeArithmetic
+	}
+	return CompositeOver
 }
 
 // parseBlendMode reads an feBlend `mode` attribute.
