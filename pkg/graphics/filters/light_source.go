@@ -66,14 +66,36 @@ func NewDistantLightSource(azimuthDeg, elevationDeg float64) *DistantLightSource
 // Direction implements LightSource. Returns the constant precomputed
 // unit vector + visibility=1. Per Blink distant_light_source.cc the
 // surface-point argument is ignored.
+//
+// Azimuth and elevation are normalized modulo 360° before the radian
+// conversion so that wrapped inputs (e.g. WPT azimuth-and-elevation
+// reftest uses azimuth=-45 vs the reference's 315, elevation=390 vs
+// 30) produce identical outputs. `math.Cos`/`math.Sin` are periodic
+// and produce mathematically-equivalent results for unwrapped inputs,
+// but the explicit normalization mirrors the spec convention and
+// guards against any future change that would care about the canonical
+// degree value (e.g. surfacing the angle for debug output).
 func (d *DistantLightSource) Direction(_, _, _ float64) (Lx, Ly, Lz, Visibility float64) {
-	az := d.AzimuthDeg * math.Pi / 180.0
-	el := d.ElevationDeg * math.Pi / 180.0
+	az := normalizeDeg360(d.AzimuthDeg) * math.Pi / 180.0
+	el := normalizeDeg360(d.ElevationDeg) * math.Pi / 180.0
 	Lx = math.Cos(az) * math.Cos(el)
 	Ly = math.Sin(az) * math.Cos(el)
 	Lz = math.Sin(el)
 	Visibility = 1.0
 	return
+}
+
+// normalizeDeg360 reduces an arbitrary angle in degrees to the
+// canonical [0, 360) range. Mirrors what Blink does in
+// distant_light_source.cc via the implicit periodicity of cosf/sinf —
+// expressed here as an explicit mod so the angle is canonical before
+// the trig call.
+func normalizeDeg360(deg float64) float64 {
+	d := math.Mod(deg, 360)
+	if d < 0 {
+		d += 360
+	}
+	return d
 }
 
 // PointLightSource mirrors Blink's PointLightSource
@@ -117,12 +139,22 @@ func (p *PointLightSource) Direction(x, y, z float64) (Lx, Ly, Lz, Visibility fl
 // the intensity falls off as cos(angle_to_cone_axis)^SpecularExponent.
 // Outside the LimitingConeAngle, visibility is 0.
 //
-// Phase 6 ships the position + cone-axis arithmetic so the Direction()
-// vector is correct for a `<feSpotLight>` test, but the visibility
-// factor always returns 1: the cone-narrowing math (LimitingConeAngle
-// hard cutoff + exponent falloff) is deferred to Phase 6.1. None of the
-// 4 in-scope bucket-J tests exercises a `<feSpotLight>` — the stub
-// keeps the type buildable so future work is incremental.
+// The cone math follows Skia's `$spotlight_scale` runtime shader
+// (src/sksl/sksl_rt_shader.sksl) which is what Blink delegates to. Let
+// L = surface→light unit direction (returned by Direction), and
+// coneAxis = unit vector from light position toward PointsAt. Define
+// `cosAngle = -dot(L, coneAxis) = dot(lightToSurface, coneAxis)` — the
+// cosine of the angle between the cone axis and the light-to-pixel
+// direction. Let `cosCutoff = cos(LimitingConeAngle in radians)`.
+//   - If `cosAngle < cosCutoff`: pixel is outside the cone → visibility 0.
+//   - Else: visibility = pow(cosAngle, SpecularExponent), with a small
+//     linear fade near the cone boundary (kConeAAThreshold = 0.016) to
+//     avoid aliasing at the rim. This mirrors the SkSL exactly.
+//
+// Cosine is even, so a negative `LimitingConeAngle` yields the same
+// cosCutoff as its positive counterpart — satisfying the WPT
+// `limiting-cone-angle.html` reftest invariant without any explicit
+// `abs()` call.
 type SpotLightSource struct {
 	// Position of the light.
 	X, Y, Z float64
@@ -154,16 +186,10 @@ func NewSpotLightSource(x, y, z, pointsAtX, pointsAtY, pointsAtZ, specularExpone
 }
 
 // Direction implements LightSource. Returns the unit vector from
-// (x, y, z) toward (X, Y, Z) — same as PointLightSource — and a
-// stubbed visibility of 1.
-//
-// TODO(LOU-129 follow-up Phase 6.1): implement the cone-narrowing
-// visibility factor (cos(theta)^SpecularExponent inside the cone, 0
-// outside LimitingConeAngle). Mirror Blink spot_light_source.cc's
-// GetColor / GetPaintingData. Until then this is functionally a point
-// light, which is sufficient for none of the in-scope bucket-J tests
-// but does not regress anything either (no bucket-J test uses
-// `<feSpotLight>`).
+// (x, y, z) toward (X, Y, Z) — same shape as PointLightSource — plus
+// the cone-narrowing visibility factor. The formula mirrors Skia's
+// `$spotlight_scale` (src/sksl/sksl_rt_shader.sksl); see the type
+// docstring for the math.
 func (s *SpotLightSource) Direction(x, y, z float64) (Lx, Ly, Lz, Visibility float64) {
 	dx := s.X - x
 	dy := s.Y - y
@@ -173,5 +199,56 @@ func (s *SpotLightSource) Direction(x, y, z float64) (Lx, Ly, Lz, Visibility flo
 		return 0, 0, 1, 1.0
 	}
 	inv := 1.0 / length
-	return dx * inv, dy * inv, dz * inv, 1.0
+	Lx = dx * inv
+	Ly = dy * inv
+	Lz = dz * inv
+
+	// Cone axis: unit vector from light position toward PointsAt.
+	axDx := s.PointsAtX - s.X
+	axDy := s.PointsAtY - s.Y
+	axDz := s.PointsAtZ - s.Z
+	axLen := math.Sqrt(axDx*axDx + axDy*axDy + axDz*axDz)
+	if axLen == 0 {
+		// Degenerate cone axis. Per Blink/Skia, a zero-length axis means
+		// the spotlight has no defined direction; emit full visibility
+		// rather than NaN. Mirrors $surface_to_light's defensive
+		// normalize-or-zero pattern.
+		return Lx, Ly, Lz, 1.0
+	}
+	axInv := 1.0 / axLen
+	cax := axDx * axInv
+	cay := axDy * axInv
+	caz := axDz * axInv
+
+	// cosAngle = dot(lightToSurface, coneAxis) = -dot(L, coneAxis).
+	// Equivalent to Skia's `-dot(surfaceToLight, lightDir)`.
+	cosAngle := -(Lx*cax + Ly*cay + Lz*caz)
+
+	// cosCutoff = cos(LimitingConeAngle°). Cosine is even, so a
+	// negative LimitingConeAngle produces the same cutoff as its
+	// positive counterpart (the WPT limiting-cone-angle.html
+	// invariant). Blink's fe_lighting.cc clamps LCA to 90 when the
+	// attribute is unset (0) or out of [-90, 90]; that clamp lives in
+	// the adapter so this primitive only sees a well-formed value.
+	cosCutoff := math.Cos(s.LimitingConeAngle * math.Pi / 180.0)
+
+	const coneAAThreshold = 0.016
+	const coneScale = 1.0 / coneAAThreshold
+
+	if cosAngle < cosCutoff {
+		Visibility = 0
+		return
+	}
+	// Inside the cone: scale = cosAngle^specularExponent, with a linear
+	// fade across the AA-threshold band at the rim. Matches Skia's
+	// `$spotlight_scale` exactly.
+	scale := math.Pow(cosAngle, s.SpecularExponent)
+	if cosAngle < cosCutoff+coneAAThreshold {
+		scale *= (cosAngle - cosCutoff) * coneScale
+	}
+	if scale < 0 {
+		scale = 0
+	}
+	Visibility = scale
+	return
 }
