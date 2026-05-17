@@ -24,7 +24,16 @@ type svgFilterElementAdapter struct {
 	filter       *svg.SVGResourceFilter
 	filterRegion image.Rectangle
 	referenceBox image.Rectangle
-	space        filters.InterpolationSpace
+	// userSpaceOrigin is the SVG element's user-space (0, 0) point
+	// mapped to absolute device pixels. The userSpaceOnUse subregion
+	// anchor for filter primitives uses this — NOT filterRegion.Min,
+	// which can include the default 10% filter-region expansion.
+	// Populated by callers (svg_filter_painter.go via the SVG paint
+	// context's DeviceFromUser transform; filter_effect_builder.go
+	// via the reference box origin for CSS filter: url(...) — no
+	// SVG transform exists in that path).
+	userSpaceOrigin image.Point
+	space           filters.InterpolationSpace
 	// resolveStyle is called for each filter-primitive ElementAdapter
 	// so the adapter can read presentational attributes (flood-color,
 	// flood-opacity) through the cascade. May be nil — in that case
@@ -37,6 +46,9 @@ func (a *svgFilterElementAdapter) FilterRegion() image.Rectangle { return a.filt
 
 // ReferenceBox implements filters.SVGFilterElement.
 func (a *svgFilterElementAdapter) ReferenceBox() image.Rectangle { return a.referenceBox }
+
+// UserSpaceOrigin implements filters.SVGFilterElement.
+func (a *svgFilterElementAdapter) UserSpaceOrigin() image.Point { return a.userSpaceOrigin }
 
 // PrimitiveUnitsObjectBoundingBox implements filters.SVGFilterElement.
 func (a *svgFilterElementAdapter) PrimitiveUnitsObjectBoundingBox() bool {
