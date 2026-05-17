@@ -175,12 +175,28 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	}
 	graph.SetSourceImage(srcBuf)
 	out := graph.Apply()
+
+	// SVG-viewport clip in target device-pixel space. SVG 2 §3.5 sets
+	// overflow:hidden on <svg> via the UA stylesheet, and the filter
+	// composite path bypasses the DC's clip (writes go straight to
+	// r.target.Pix), so we must apply the viewport rect explicitly to
+	// keep the default filter-region expansion (Filter Effects 1 §4.4:
+	// x=-10%, y=-10%, width=120%, height=120%) from leaking past the
+	// host SVG element. Mirrors the clip svg_root_painter.go installs
+	// on the DC before recursing into children.
+	viewportClip := image.Rect(
+		int(sp.ctx.originX),
+		int(sp.ctx.originY),
+		int(sp.ctx.originX+sp.ctx.viewport.Width()),
+		int(sp.ctx.originY+sp.ctx.viewport.Height()),
+	)
+
 	if out == nil {
 		// Filter produced nothing — draw unfiltered source as fallback.
-		compositeFilterOutputOntoTarget(sp.ctx.Renderer, srcBuf, region.Min.X, region.Min.Y)
+		compositeFilterOutputOntoTarget(sp.ctx.Renderer, srcBuf, region.Min.X, region.Min.Y, viewportClip)
 		return
 	}
-	compositeFilterOutputOntoTarget(sp.ctx.Renderer, out, region.Min.X, region.Min.Y)
+	compositeFilterOutputOntoTarget(sp.ctx.Renderer, out, region.Min.X, region.Min.Y, viewportClip)
 }
 
 // compositeFilterOutputOntoTarget composites `buf` onto the
@@ -189,6 +205,13 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 // in device pixels and the SVG paint walk has pushed user→device
 // transforms onto the DC that would otherwise double-translate the
 // buffer.
+//
+// clipRect constrains the write in target device-pixel space. The DC's
+// clip stack is also bypassed (writes go straight to r.target.Pix), so
+// callers must pass the active SVG-viewport rect to honour the SVG 2
+// §3.5 overflow:hidden default that would otherwise leak filter
+// overflow (the default 10% filter-region expansion in SVG Filter
+// Effects 1 §4.4) past the host element.
 //
 // Uses the louis14 "straight-alpha-into-premultiplied-container"
 // composite convention so the output pixel-matches CSS-rendered
@@ -199,21 +222,27 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 // the page-level math matches the project-wide convention. Mirrors
 // the same shim svg_mask_painter.go applies in
 // compositeBufferWithOpacityOnto.
-func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int) {
+func compositeFilterOutputOntoTarget(r *Renderer, buf *image.RGBA, dx, dy int, clipRect image.Rectangle) {
 	if r == nil || r.target == nil || buf == nil {
 		return
 	}
-	tb := r.target.Bounds()
+	// Pre-intersect target bounds with clipRect: any pixel outside
+	// `effective` is skipped. Empty intersection means there's nothing
+	// to write.
+	effective := r.target.Bounds().Intersect(clipRect)
+	if effective.Empty() {
+		return
+	}
 	sb := buf.Bounds()
 	const m = 1<<16 - 1
 	for sy := sb.Min.Y; sy < sb.Max.Y; sy++ {
 		ty := sy - sb.Min.Y + dy
-		if ty < tb.Min.Y || ty >= tb.Max.Y {
+		if ty < effective.Min.Y || ty >= effective.Max.Y {
 			continue
 		}
 		for sx := sb.Min.X; sx < sb.Max.X; sx++ {
 			tx := sx - sb.Min.X + dx
-			if tx < tb.Min.X || tx >= tb.Max.X {
+			if tx < effective.Min.X || tx >= effective.Max.X {
 				continue
 			}
 			si := buf.PixOffset(sx, sy)
