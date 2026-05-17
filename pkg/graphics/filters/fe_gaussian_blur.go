@@ -47,9 +47,18 @@ func boxSizesForStdDev(s float64) (d1, d2, d3 int) {
 
 // blurExtentForStdDev returns how many pixels a blur of stdDev s spreads its
 // input — the sum of the three box half-widths. Used for MapRect.
+//
+// A sigma of 0 (or negative) means no blur and therefore zero spread.
+// Mirrors Blink's FEGaussianBlur::MapRect (fe_gaussian_blur.cc), which
+// returns the input rect unchanged in that case.
 func blurExtentForStdDev(s float64) int {
+	if s <= 0 {
+		return 0
+	}
 	d1, d2, d3 := boxSizesForStdDev(s)
 	// Each box of diameter d spreads by d/2; total spread is the sum.
+	// The +2 padding accounts for the asymmetric biasing of even-diameter
+	// passes (see boxBlurAxis) and the half-pixel rasterization edge.
 	return d1/2 + d2/2 + d3/2 + 2
 }
 
