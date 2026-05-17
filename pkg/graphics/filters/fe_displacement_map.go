@@ -123,13 +123,30 @@ func channelByteOffset(c ChannelSelector) int {
 
 // ApplyEffect produces the displaced source. Both inputs are sized to
 // `region` (every effect in the graph produces a region-sized buffer);
-// the map is sampled at integer (x, y) and the source is sampled
-// bilinearly at (x + dx, y + dy). Per the spec, out-of-bounds source
-// samples return (0, 0, 0, 0).
+// the map is sampled at integer (x, y) and the source is sampled with
+// nearest-neighbour at (x + dx, y + dy). Per the spec, out-of-bounds
+// source samples return (0, 0, 0, 0).
+//
+// **Why nearest-neighbour:** Skia's runtime shader for DisplacementMap
+// (src/effects/imagefilters/SkDisplacementMapImageFilter.cpp:43)
+// pins the colour input to `SkSamplingOptions{SkFilterMode::kNearest}`
+// — the historical Skia behaviour Blink wires through to. Firefox does
+// the same (gfx/2d/FilterNodeSoftware.cpp:2672-2686 uses an integer
+// cast + `ColorAtPoint`). The spec leaves sampling undefined but flags
+// `Issue(113): Implementations do not match specification.` Mirroring
+// Blink+Firefox (both nearest) avoids the half-pixel-blend bug that
+// bilinear sampling produces at exact-integer source coordinates
+// (captured by TestFEDisplacementMap_IntegerBoundaryNoBleed).
+//
+// Coordinate convention: Skia's fragment shader sees the output pixel
+// centre at `(x+0.5, y+0.5)` and samples `colorMap` at
+// `coord + displ`. For nearest-neighbour, that's pixel
+// `floor((x+0.5+dx, y+0.5+dy))` = `(x + round(dx-ε), y + round(dy-ε))`
+// for integer-anchored dx, dy. We mirror this convention exactly.
 //
 // The displacement-map sample is un-premultiplied before reading the
-// chosen channel byte, mirroring Skia's `SkDisplacementMapEffect`
-// (which always un-premultiplies before sampling).
+// chosen channel byte, mirroring Skia's shader (`unpremul()` in
+// `sk_displacement` at src/sksl/sksl_rt_shader.sksl).
 func (e *FEDisplacementMap) ApplyEffect(inputs []*image.RGBA, region image.Rectangle) *image.RGBA {
 	source := firstInput(inputs, region)
 	var mapImg *image.RGBA
@@ -211,75 +228,31 @@ func (e *FEDisplacementMap) ApplyEffect(inputs []*image.RGBA, region image.Recta
 			dx := (float64(xByte)/255.0 - 0.5) * scale
 			dy := (float64(yByte)/255.0 - 0.5) * scale
 
-			// Sample source at (x + dx, y + dy) with bilinear
-			// interpolation. Out-of-bounds returns transparent black.
-			sxF := float64(x) + dx
-			syF := float64(y) + dy
-			r, g, bl, a := bilinearSampleRGBA(source, sxF, syF, srcW, srcH, srcStride)
-
+			// Sample source at (x + dx, y + dy) with nearest-neighbour.
+			// Skia's shader sees pixel centres at (x+0.5, y+0.5) and
+			// reads colorMap at coord+displ; with nearest, the chosen
+			// pixel is floor(x+0.5+dx). Integer dx → exact one-pixel
+			// read with no neighbour bleed (TestFEDisplacementMap_-
+			// IntegerBoundaryNoBleed). Out-of-bounds → transparent
+			// black (Skia's SkTileMode::kDecal, line 32 in
+			// SkDisplacementMapImageFilter.cpp).
+			sx := int(math.Floor(float64(x) + 0.5 + dx))
+			sy := int(math.Floor(float64(y) + 0.5 + dy))
 			outI := outRow + x*4
-			out.Pix[outI+0] = r
-			out.Pix[outI+1] = g
-			out.Pix[outI+2] = bl
-			out.Pix[outI+3] = a
+			if sx < 0 || sx >= srcW || sy < 0 || sy >= srcH {
+				// transparent black (out.Pix zeroed by newRGBA, but be explicit)
+				out.Pix[outI+0] = 0
+				out.Pix[outI+1] = 0
+				out.Pix[outI+2] = 0
+				out.Pix[outI+3] = 0
+				continue
+			}
+			si := sy*srcStride + sx*4
+			out.Pix[outI+0] = source.Pix[si+0]
+			out.Pix[outI+1] = source.Pix[si+1]
+			out.Pix[outI+2] = source.Pix[si+2]
+			out.Pix[outI+3] = source.Pix[si+3]
 		}
 	}
 	return out
-}
-
-// bilinearSampleRGBA reads a sub-pixel sample from a premultiplied
-// image.RGBA at (sxF, syF) with bilinear interpolation and the
-// "transparent black outside" tile mode (Skia's `SkTileMode::kDecal`).
-// Operates on premultiplied bytes — bilinear interpolation of
-// premultiplied alpha is the only correct way to handle edge pixels
-// against transparency (un-premultiplied bilinear produces colour
-// fringing). Mirrors Skia's default sampling for image filters.
-func bilinearSampleRGBA(img *image.RGBA, sxF, syF float64, w, h, stride int) (uint8, uint8, uint8, uint8) {
-	// Pixel-centre convention: a sample at integer (i, j) targets the
-	// centre of pixel [i, j]. Bilinear uses sxF - 0.5 / syF - 0.5 so
-	// that an integer displacement falls cleanly on one pixel.
-	fx := sxF - 0.5
-	fy := syF - 0.5
-	x0 := int(math.Floor(fx))
-	y0 := int(math.Floor(fy))
-	x1 := x0 + 1
-	y1 := y0 + 1
-	tx := fx - float64(x0)
-	ty := fy - float64(y0)
-
-	// readPx returns the premultiplied bytes at (x, y), or
-	// (0, 0, 0, 0) when out of bounds (decal tile mode).
-	readPx := func(x, y int) (float64, float64, float64, float64) {
-		if x < 0 || y < 0 || x >= w || y >= h {
-			return 0, 0, 0, 0
-		}
-		i := y*stride + x*4
-		return float64(img.Pix[i+0]), float64(img.Pix[i+1]), float64(img.Pix[i+2]), float64(img.Pix[i+3])
-	}
-
-	r00, g00, b00, a00 := readPx(x0, y0)
-	r10, g10, b10, a10 := readPx(x1, y0)
-	r01, g01, b01, a01 := readPx(x0, y1)
-	r11, g11, b11, a11 := readPx(x1, y1)
-
-	w00 := (1 - tx) * (1 - ty)
-	w10 := tx * (1 - ty)
-	w01 := (1 - tx) * ty
-	w11 := tx * ty
-
-	r := r00*w00 + r10*w10 + r01*w01 + r11*w11
-	g := g00*w00 + g10*w10 + g01*w01 + g11*w11
-	b := b00*w00 + b10*w10 + b01*w01 + b11*w11
-	a := a00*w00 + a10*w10 + a01*w01 + a11*w11
-
-	clamp := func(v float64) uint8 {
-		if v < 0 {
-			return 0
-		}
-		if v > 255 {
-			return 255
-		}
-		return uint8(v + 0.5)
-	}
-	return clamp(r), clamp(g), clamp(b), clamp(a)
 }
