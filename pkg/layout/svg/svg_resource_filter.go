@@ -126,7 +126,14 @@ func (f *SVGResourceFilter) Style() *css.Style { return f.elementStyle }
 //
 // `lengthCtx` is the length context active in the filter's declaration
 // scope — used for percent resolution in userSpaceOnUse mode.
-func (f *SVGResourceFilter) ResourceBoundingBox(target geometry.RectF, lengthCtx SVGLengthContext) geometry.RectF {
+//
+// `userSpaceOrigin` is the SVG element's user-space (0, 0) in the
+// same coordinate space as `target`. When `userSpaceOnUse` x/y are
+// explicitly supplied as user-space lengths, the resolved value is
+// shifted by userSpaceOrigin so the returned rect lives in target's
+// coord space — matches the SVGFilterElement.UserSpaceOrigin contract
+// used by primitive-subregion resolution.
+func (f *SVGResourceFilter) ResourceBoundingBox(target geometry.RectF, userSpaceOrigin geometry.PointF, lengthCtx SVGLengthContext) geometry.RectF {
 	// Defaults per SVG Filter Effects 1 §6.5.
 	defX := -0.10
 	defY := -0.10
@@ -150,11 +157,14 @@ func (f *SVGResourceFilter) ResourceBoundingBox(target geometry.RectF, lengthCtx
 		y := target.Y() + defY*target.Height()
 		w := defW * target.Width()
 		h := defH * target.Height()
+		// When x/y are explicitly supplied they're user-space coords;
+		// shift by userSpaceOrigin so the result stays in target's
+		// coord space. Width/height are dimensions (no anchor shift).
 		if f.X.HasValue {
-			x = f.X.ResolveAgainst(SVGUnitUserSpaceOnUse, LengthModeWidth, lengthCtx, x)
+			x = userSpaceOrigin.X + f.X.ResolveAgainst(SVGUnitUserSpaceOnUse, LengthModeWidth, lengthCtx, 0)
 		}
 		if f.Y.HasValue {
-			y = f.Y.ResolveAgainst(SVGUnitUserSpaceOnUse, LengthModeHeight, lengthCtx, y)
+			y = userSpaceOrigin.Y + f.Y.ResolveAgainst(SVGUnitUserSpaceOnUse, LengthModeHeight, lengthCtx, 0)
 		}
 		if f.Width.HasValue {
 			w = f.Width.ResolveAgainst(SVGUnitUserSpaceOnUse, LengthModeWidth, lengthCtx, w)
