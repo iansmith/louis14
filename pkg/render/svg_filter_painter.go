@@ -79,7 +79,13 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	// from user space into target's (device) coord space, per SVG
 	// Filter Effects 1 §6.5.
 	userOriginF := sp.ctx.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
-	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
+	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
+	// userSpaceOnUse percent base is the SVG VIEWPORT (mapped to device
+	// pixels), NOT the reference box. The SVG viewport in user-space is
+	// sp.ctx.viewport; mapping it through DeviceFromUser gives the
+	// device-pixel size to use as percent base.
+	viewportDeviceSize := sp.ctx.DeviceFromUser.MapRect(sp.ctx.viewport).Size
+	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
 	region := image.Rect(
 		int(math.Floor(regionF.X())),
 		int(math.Floor(regionF.Y())),

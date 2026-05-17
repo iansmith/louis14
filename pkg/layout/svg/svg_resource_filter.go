@@ -153,13 +153,24 @@ func (f *SVGResourceFilter) ResourceBoundingBox(target geometry.RectF, userSpace
 			h*target.Height(),
 		)
 	case SVGUnitUserSpaceOnUse:
-		x := target.X() + defX*target.Width()
-		y := target.Y() + defY*target.Height()
-		w := defW * target.Width()
-		h := defH * target.Height()
-		// When x/y are explicitly supplied they're user-space coords;
-		// shift by userSpaceOrigin so the result stays in target's
-		// coord space. Width/height are dimensions (no anchor shift).
+		// Per Blink's LayoutSVGResourceContainer::ResolveRectangle
+		// (third_party/blink/renderer/core/layout/svg/layout_svg_resource_container.cc:99-146):
+		// in userSpaceOnUse mode percent values resolve against the SVG
+		// VIEWPORT, NOT the reference box. The reference box is only
+		// used in the objectBoundingBox branch. Defaults -10%/-10%/120%/120%
+		// are themselves percent values so they also resolve against the
+		// viewport. Result is in user-space — we shift by userSpaceOrigin
+		// to land in target's (device) coord space, mirroring the same
+		// shift the explicit-value path applies.
+		vw, vh := lengthCtx.ViewportSize().Width, lengthCtx.ViewportSize().Height
+		x := userSpaceOrigin.X + defX*vw
+		y := userSpaceOrigin.Y + defY*vh
+		w := defW * vw
+		h := defH * vh
+		// When x/y/w/h are explicitly supplied, ResolveAgainst already
+		// uses the viewport (via lengthCtx) for percent resolution.
+		// x/y get shifted by userSpaceOrigin so the result stays in
+		// target's coord space; w/h are dimensions (no anchor shift).
 		if f.X.HasValue {
 			x = userSpaceOrigin.X + f.X.ResolveAgainst(SVGUnitUserSpaceOnUse, LengthModeWidth, lengthCtx, 0)
 		}

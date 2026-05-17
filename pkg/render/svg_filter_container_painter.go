@@ -57,7 +57,12 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 		float64(referenceBox.Dy()),
 	)
 	userOriginF := pctx.DeviceFromUser.MapPoint(geometry.PointF{X: 0, Y: 0})
-	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
+	// Per Blink's LayoutSVGResourceContainer::ResolveRectangle the
+	// userSpaceOnUse percent base is the SVG VIEWPORT, NOT the reference
+	// box. Map the user-space viewport to device pixels via
+	// DeviceFromUser. (Mirrors the same fix in svg_filter_painter.go.)
+	viewportDeviceSize := pctx.DeviceFromUser.MapRect(pctx.viewport).Size
+	regionF := filter.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(viewportDeviceSize))
 	region := image.Rect(
 		int(math.Floor(regionF.X())),
 		int(math.Floor(regionF.Y())),

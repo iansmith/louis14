@@ -150,6 +150,15 @@ func (p *svgFilterPrimitiveAdapter) Children() []filters.SVGFilterPrimitive {
 //     the displacement (returning in1 unchanged) so the tainted colour
 //     value is never read in a way that affects observable pixels.
 //
+//   - `<feDropShadow flood-color="currentcolor">`: per Blink
+//     SVGFEDropShadowElement::TaintsOrigin
+//     (third_party/blink/renderer/core/svg/svg_fe_drop_shadow_element.cc),
+//     which checks style->FloodColor().DependsOnCurrentColor(). Same
+//     reasoning as feFlood — flood-color reads CSS `color` which can
+//     be set by `:visited`. Without this, tainting-fedropshadow-002.html
+//     (currentcolor flood-color) leaks the colour through the displaced
+//     output.
+//
 //   - `<feDiffuseLighting lighting-color="currentcolor">` /
 //     `<feSpecularLighting lighting-color="currentcolor">`: same
 //     reasoning as feFlood — lighting-color reads CSS `color` which
@@ -173,7 +182,8 @@ func (p *svgFilterPrimitiveAdapter) TaintsOrigin() bool {
 	}
 	tag := p.elt.TagName()
 	switch {
-	case strings.EqualFold(tag, "feflood"):
+	case strings.EqualFold(tag, "feflood"),
+		strings.EqualFold(tag, "fedropshadow"):
 		return p.readColorAttr("flood-color") == "currentcolor"
 	case strings.EqualFold(tag, "fediffuselighting"),
 		strings.EqualFold(tag, "fespecularlighting"):
