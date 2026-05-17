@@ -117,6 +117,17 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 		// which already happened at layout time).
 		return
 	}
+
+	// SVG-level filter: url(#id) on the container. Per CSS Masking 1
+	// §3.7 / SVG 2 §11.6 the filter applies to the container's
+	// children as a group — the same routing the shape painter does
+	// for filtered shapes. paintSVGContainerWithFilter handles the
+	// transform stack itself, so when it returns true the normal
+	// transform-push + child-paint loop below is skipped.
+	if trySVGContainerFilterDispatch(pctx, c) {
+		return
+	}
+
 	// Effective transform = cssTransform ∘ svgTransform. SVG 2 §7.5:
 	// CSS `transform` is applied AFTER the SVG `transform`
 	// attribute. With the SVGRoot painter pushing transforms onto a

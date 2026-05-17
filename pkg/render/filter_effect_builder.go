@@ -104,6 +104,15 @@ func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
 	if id == "" || b.Resources == nil {
 		return nil
 	}
+	// FilterFunction.URL carries the inner CSS `url(...)` content with
+	// the leading `#` fragment marker still attached (and possibly a
+	// path prefix, though CSS filter rarely uses that form). The
+	// SVGResourceRegistry stores resources by bare id, so route
+	// through css.ParseURLReference to extract the fragment — matches
+	// the SVG shape painter's lookup path (svg_shape_painter.go).
+	if parsed, ok := css.ParseURLReference("url(" + id + ")"); ok {
+		id = parsed
+	}
 	filter, ok := b.Resources.LookupAsFilter(id)
 	if !ok || filter == nil {
 		return nil
