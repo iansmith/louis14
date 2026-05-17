@@ -148,6 +148,22 @@ func channelByteOffset(c ChannelSelector) int {
 // chosen channel byte, mirroring Skia's shader (`unpremul()` in
 // `sk_displacement` at src/sksl/sksl_rt_shader.sksl).
 func (e *FEDisplacementMap) ApplyEffect(inputs []*image.RGBA, region image.Rectangle) *image.RGBA {
+	// Per Filter Effects 1 §"feDisplacementMap restrictions": when in2
+	// (the displacement map) is origin-tainted, feDisplacementMap acts
+	// as a pass-through and returns in1 (the source) unchanged. Reading
+	// displacement values from a tainted source would leak data via the
+	// displaced output's measurable pixel positions (e.g. :visited link
+	// state via currentcolor flood, or cross-origin pixels via feImage).
+	// Mirrors Blink fe_displacement_map.cc::CreateImageFilter early
+	// return:
+	//   if (InputEffect(1)->OriginTainted()) return color;
+	// The check is on the EFFECT (which carries the OriginTainted bit
+	// propagated by SVGFilterBuilder.BuildGraph); the return uses the
+	// already-evaluated in1 buffer at inputs[0].
+	if deps := e.InputEffects(); len(deps) >= 2 && deps[1] != nil && deps[1].OriginTainted() {
+		return firstInput(inputs, region)
+	}
+
 	source := firstInput(inputs, region)
 	var mapImg *image.RGBA
 	if len(inputs) > 1 && inputs[1] != nil {

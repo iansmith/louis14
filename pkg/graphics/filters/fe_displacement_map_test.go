@@ -73,6 +73,96 @@ func TestFEDisplacementMap_ShiftRight(t *testing.T) {
 	}
 }
 
+// TestFEDisplacementMap_TaintedIn2_PassThrough asserts the Blink-correct
+// behaviour for feDisplacementMap when its in2 (the displacement map)
+// is origin-tainted: the primitive becomes a pass-through and returns
+// in1 (the source) unchanged. This is the privacy-preserving early
+// return mandated by Filter Effects 1 §"feDisplacementMap restrictions"
+// and mirrored in Blink fe_displacement_map.cc::CreateImageFilter:
+//
+//	if (InputEffect(1)->OriginTainted()) return color;  // input1 unchanged
+//
+// Reading displacement values from a tainted source would leak data
+// via the displaced output's measurable pixel positions (e.g. :visited
+// link state via currentcolor flood).
+//
+// Setup: source = red[0..49] / green[50..99]; in2 = a tainted flood with
+// G=255 B=128 that, IF READ, would shift the source by (+50, ~0).
+// Asserting the output is pixel-identical to the source proves the
+// pass-through fired (otherwise output(10, 50) would be green instead
+// of red).
+func TestFEDisplacementMap_TaintedIn2_PassThrough(t *testing.T) {
+	region := image.Rect(0, 0, 100, 100)
+	src := image.NewRGBA(region)
+	for y := 0; y < 100; y++ {
+		for x := 0; x < 100; x++ {
+			i := y*src.Stride + x*4
+			if x < 50 {
+				src.Pix[i+0] = 255 // pure RED on left half
+				src.Pix[i+3] = 255
+			} else {
+				src.Pix[i+1] = 128 // green on right half
+				src.Pix[i+3] = 255
+			}
+		}
+	}
+
+	// Construct in2 as a FilterEffect that carries the OriginTainted bit.
+	// FEFlood is the canonical real-world source (currentcolor flood); we
+	// build one and mark it tainted directly, mirroring what the
+	// SVGFilterBuilder propagation would do in production.
+	in2 := NewFEFlood(InterpolationSpaceSRGB, 0, 255, 128, 1.0)
+	in2.SetOriginTainted()
+	if !in2.OriginTainted() {
+		t.Fatal("setup: in2 must report OriginTainted() == true")
+	}
+
+	// in1 supplies the source pixels; it is NOT tainted.
+	in1 := NewSourceGraphic(InterpolationSpaceSRGB)
+	in1.image = src
+
+	fe := NewFEDisplacementMap(in1, in2, InterpolationSpaceSRGB, ChannelG, ChannelB, 100)
+
+	// Provide an in2 raw buffer matching the FEFlood values. The
+	// ApplyEffect's tainting check is on the EFFECT (FilterEffect.OriginTainted),
+	// but the raw buffers are still passed in case the implementation
+	// inspects them; supplying the realistic buffer means a regression
+	// (forgetting the early-return) would visibly shift the source.
+	mp := image.NewRGBA(region)
+	for y := 0; y < 100; y++ {
+		for x := 0; x < 100; x++ {
+			i := y*mp.Stride + x*4
+			mp.Pix[i+0] = 0
+			mp.Pix[i+1] = 255
+			mp.Pix[i+2] = 128
+			mp.Pix[i+3] = 255
+		}
+	}
+
+	out := fe.ApplyEffect([]*image.RGBA{src, mp}, region)
+	if out == nil {
+		t.Fatal("ApplyEffect returned nil")
+	}
+
+	// Output must equal the source pixel-for-pixel — pass-through.
+	// Sample several diagnostic points; the most discriminating is
+	// output(10, 50): pre-fix that runs displacement and reads
+	// source(60, 50.196) which is GREEN; post-fix the pass-through
+	// returns source(10, 50) which is RED.
+	at := func(img *image.RGBA, x, y int) (uint8, uint8, uint8, uint8) {
+		i := y*img.Stride + x*4
+		return img.Pix[i+0], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3]
+	}
+	for _, pt := range [][2]int{{10, 50}, {49, 50}, {50, 50}, {99, 50}, {0, 0}, {99, 99}} {
+		sr, sg, sb, sa := at(src, pt[0], pt[1])
+		or, og, ob, oa := at(out, pt[0], pt[1])
+		if or != sr || og != sg || ob != sb || oa != sa {
+			t.Errorf("pass-through failed at (%d, %d): source=(%d,%d,%d,%d) output=(%d,%d,%d,%d)",
+				pt[0], pt[1], sr, sg, sb, sa, or, og, ob, oa)
+		}
+	}
+}
+
 // TestFEDisplacementMap_IntegerBoundaryNoBleed asserts that when the
 // displacement formula produces an exact-integer source coordinate
 // landing on a colour boundary in the source, the output samples the

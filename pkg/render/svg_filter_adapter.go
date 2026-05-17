@@ -123,14 +123,53 @@ func (p *svgFilterPrimitiveAdapter) Children() []filters.SVGFilterPrimitive {
 	return out
 }
 
-// TaintsOrigin implements filters.SVGFilterPrimitive. Phase 1 wires
-// the interface point; only `<feImage>` overrides to return true on
-// cross-origin sources without CORS (Phase 4 wires that). All other
-// primitives — including this default adapter — return false. Mirrors
-// Blink: `SVGFEImageElement::TaintsOrigin()` is the only
-// origin-tainting override; the base `SVGFilterPrimitiveStandardAttributes`
-// returns false.
-func (p *svgFilterPrimitiveAdapter) TaintsOrigin() bool { return false }
+// TaintsOrigin implements filters.SVGFilterPrimitive. Reports whether
+// this primitive originates origin-tainting (the bit then propagates
+// through the filter graph via SVGFilterBuilder.BuildGraph, and the
+// only consumer is feDisplacementMap which becomes a pass-through —
+// see FEDisplacementMap.ApplyEffect).
+//
+// Tainting sources currently recognised:
+//
+//   - `<feFlood flood-color="currentcolor">`: reads the element's CSS
+//     `color` property, which can be set by `:visited` link styling — a
+//     known browser-history fingerprinting side channel. Marking the
+//     primitive tainted causes a downstream feDisplacementMap to skip
+//     the displacement (returning in1 unchanged) so the tainted colour
+//     value is never read in a way that affects observable pixels.
+//
+//   - `<feImage>` with cross-origin href without CORS: handled by a
+//     separate adapter override when feImage lands (Phase 4.2, out of
+//     scope for this phase).
+//
+// Comparison is case-insensitive on both the tag name and the
+// `currentcolor` keyword (CSS keywords are ASCII case-insensitive).
+// Style lookup is preferred over raw attribute since the cascade may
+// have overridden the attribute; raw attribute is the fallback when
+// no style resolver is wired (e.g. unit tests).
+func (p *svgFilterPrimitiveAdapter) TaintsOrigin() bool {
+	if p.elt == nil {
+		return false
+	}
+	if !strings.EqualFold(p.elt.TagName(), "feflood") {
+		return false
+	}
+	// flood-color from style first, then raw attribute.
+	var v string
+	if p.resolveStyle != nil {
+		if s := p.resolveStyle(p.elt); s != nil {
+			if sv, ok := s.Get("flood-color"); ok {
+				v = sv
+			}
+		}
+	}
+	if v == "" {
+		if av, ok := p.elt.Attribute("flood-color"); ok {
+			v = av
+		}
+	}
+	return strings.EqualFold(strings.TrimSpace(v), "currentcolor")
+}
 
 // FloodColor implements filters.SVGFilterPrimitive. Reads
 // flood-color (default black) and flood-opacity (default 1) from the
