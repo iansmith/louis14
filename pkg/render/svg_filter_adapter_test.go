@@ -128,3 +128,78 @@ func TestSvgFilterPrimitiveAdapter_TaintsOriginNilElement(t *testing.T) {
 		t.Error("TaintsOrigin() on nil element should be false")
 	}
 }
+
+// TestSvgFilterPrimitiveAdapter_LightingCurrentColorTaints asserts
+// that `<feDiffuseLighting>` / `<feSpecularLighting>` with
+// `lighting-color="currentcolor"` mark the primitive tainted. Mirrors
+// the same `:visited`-fingerprinting concern that drove the feFlood
+// currentcolor taint (since lighting-color resolves through the CSS
+// cascade the same way flood-color does). Spec rule per Filter
+// Effects 1 §"tainted filter primitives" + Blink
+// SVGFEDiffuseLightingElement::TaintsOrigin /
+// SVGFESpecularLightingElement::TaintsOrigin.
+//
+// Pre-implementation: TaintsOrigin() only checks feFlood — both
+// lighting-color cases return false → test fails. Post-implementation
+// the switch handles the lighting tags as well.
+func TestSvgFilterPrimitiveAdapter_LightingCurrentColorTaints(t *testing.T) {
+	cases := []struct {
+		name       string
+		tag        string
+		attrs      map[string]string
+		wantTaints bool
+	}{
+		{
+			name:       "fediffuselighting currentcolor",
+			tag:        "fediffuselighting",
+			attrs:      map[string]string{"lighting-color": "currentcolor"},
+			wantTaints: true,
+		},
+		{
+			name:       "fediffuselighting CurrentColor mixed case",
+			tag:        "fediffuselighting",
+			attrs:      map[string]string{"lighting-color": "CurrentColor"},
+			wantTaints: true,
+		},
+		{
+			name:       "fediffuselighting with red lighting-color",
+			tag:        "fediffuselighting",
+			attrs:      map[string]string{"lighting-color": "red"},
+			wantTaints: false,
+		},
+		{
+			name:       "fediffuselighting with no lighting-color (default white)",
+			tag:        "fediffuselighting",
+			attrs:      nil,
+			wantTaints: false,
+		},
+		{
+			name:       "fespecularlighting currentcolor",
+			tag:        "fespecularlighting",
+			attrs:      map[string]string{"lighting-color": "currentcolor"},
+			wantTaints: true,
+		},
+		{
+			name:       "fespecularlighting with rgb",
+			tag:        "fespecularlighting",
+			attrs:      map[string]string{"lighting-color": "rgb(0, 100, 50)"},
+			wantTaints: false,
+		},
+		{
+			name:       "feflood with lighting-color attr is irrelevant",
+			tag:        "feflood",
+			attrs:      map[string]string{"lighting-color": "currentcolor"},
+			wantTaints: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			elt := &fakeFilterPrimAdapter{tag: tc.tag, attrs: tc.attrs}
+			adapter := &svgFilterPrimitiveAdapter{elt: elt}
+			got := adapter.TaintsOrigin()
+			if got != tc.wantTaints {
+				t.Errorf("TaintsOrigin() = %v; want %v", got, tc.wantTaints)
+			}
+		})
+	}
+}

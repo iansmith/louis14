@@ -24,6 +24,14 @@ import (
 // element (`<feFlood>`, `<feGaussianBlur>`, …) the SVGFilterBuilder
 // consumes. Mirrors the surface the Blink builder reads off
 // SVGFilterPrimitiveStandardAttributes.
+//
+// The lighting-specific methods (LightingColor, SurfaceScale,
+// DiffuseConstant, SpecularConstant, SpecularExponent,
+// KernelUnitLength, LightSource) are only meaningful for
+// `<feDiffuseLighting>` / `<feSpecularLighting>`. Other primitive
+// types may return whatever defaults their adapter prefers — the
+// builder only reads them inside the `fediffuselighting` /
+// `fespecularlighting` cases.
 type SVGFilterPrimitive interface {
 	// TagName returns the primitive's tag (`"feflood"`, `"feblend"`, …)
 	// in the HTML tokenizer's lowercased form.
@@ -52,6 +60,31 @@ type SVGFilterPrimitive interface {
 	// FilterEffect.InputsTaintOrigin (handled by the builder; see
 	// svg_filter_builder.cc:191-192).
 	TaintsOrigin() bool
+
+	// LightingColor returns the resolved lighting-color (R, G, B in
+	// 0–255 and A in [0,1]) for `<feDiffuseLighting>` /
+	// `<feSpecularLighting>`. Default: white opaque (1, 1, 1, 1) per
+	// SVG Filter Effects 1.
+	LightingColor() (r, g, b uint8, a float64)
+	// SurfaceScale returns the `surfaceScale` attribute (default 1).
+	SurfaceScale() float64
+	// DiffuseConstant returns the `diffuseConstant` attribute on
+	// `<feDiffuseLighting>` (default 1).
+	DiffuseConstant() float64
+	// SpecularConstant returns the `specularConstant` attribute on
+	// `<feSpecularLighting>` (default 1).
+	SpecularConstant() float64
+	// SpecularExponent returns the `specularExponent` attribute on
+	// `<feSpecularLighting>` (default 1).
+	SpecularExponent() float64
+	// KernelUnitLength returns the `kernelUnitLength` attribute as
+	// (X, Y) (default 1, 1).
+	KernelUnitLength() (x, y float64)
+	// LightSource returns the resolved light source from the first
+	// `<feDistantLight>` / `<fePointLight>` / `<feSpotLight>` child,
+	// or nil when no light-source child is present (the lighting
+	// primitive then produces transparent black per spec).
+	LightSource() LightSource
 }
 
 // SVGFilterElement is the abstract view of a `<filter>` element the
@@ -346,6 +379,31 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		yChan := parseChannelSelector(prim, "yChannelSelector")
 		scale, _ := parseFloatAttr(prim, "scale", 0)
 		return NewFEDisplacementMap(in1, in2, b.space, xChan, yChan, scale)
+	case "fediffuselighting":
+		// Per SVG Filter Effects 1 §feDiffuseLighting. The primitive
+		// reads its alpha-bump input (default chain), computes the
+		// Sobel surface normal per pixel, and dots it with the
+		// LightSource direction to produce the Lambert output. The
+		// light source is the first matching child element.
+		in := b.resolveInputAttr(prim, "in")
+		r, g, bb, a := prim.LightingColor()
+		surfaceScale := prim.SurfaceScale()
+		diffuseConstant := prim.DiffuseConstant()
+		kULx, kULy := prim.KernelUnitLength()
+		return NewFEDiffuseLighting(in, b.space, r, g, bb, a,
+			surfaceScale, diffuseConstant, kULx, kULy, prim.LightSource())
+	case "fespecularlighting":
+		// Per SVG Filter Effects 1 §feSpecularLighting. Same setup as
+		// diffuse but with the Phong specular BRDF (halfway vector +
+		// exponent). Output alpha = max(R, G, B) per spec.
+		in := b.resolveInputAttr(prim, "in")
+		r, g, bb, a := prim.LightingColor()
+		surfaceScale := prim.SurfaceScale()
+		specularConstant := prim.SpecularConstant()
+		specularExponent := prim.SpecularExponent()
+		kULx, kULy := prim.KernelUnitLength()
+		return NewFESpecularLighting(in, b.space, r, g, bb, a,
+			surfaceScale, specularConstant, specularExponent, kULx, kULy, prim.LightSource())
 	}
 	// Unsupported primitive: pass through. Blink's SVGFilterBuilder
 	// returns nullptr for unknown / unsupported primitives, which
