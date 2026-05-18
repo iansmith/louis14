@@ -19,12 +19,23 @@ type LayoutTreeBuilder struct {
 	stylesheets    []*css.Stylesheet
 	viewportWidth  float64
 	viewportHeight float64
-	counters       map[string][]int // CSS counter stacks (name → stack of values)
-	quoteDepth     int              // nesting depth for open-quote/close-quote
+
+	// counterCtx is the Blink-faithful CountersAttachmentContext used
+	// to resolve counter() / counters() in content and ::marker text.
+	// One context is threaded through the single pre-order traversal
+	// in buildNode, with EnterObject called after style resolution and
+	// LeaveObject after recursing into children. See
+	// pkg/css/counters_attachment_context.go.
+	counterCtx *css.CountersAttachmentContext
+
+	quoteDepth int // nesting depth for open-quote/close-quote
 }
 
 // BuildLayoutTree creates the layout tree rooted at the given DOM node.
 func (b *LayoutTreeBuilder) BuildLayoutTree(root *html.Node) *LayoutInputNode {
+	if b.counterCtx == nil {
+		b.counterCtx = css.NewCountersAttachmentContext()
+	}
 	tree := b.buildNode(root)
 	b.normalizeTableSubtrees(tree)
 	assignDOMIndices(tree)
@@ -89,9 +100,16 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 		return lin
 	}
 
-	// CSS 2.1 §12.5: Process counter-reset before content evaluation.
+	// CSS Lists 3 §counter-properties: enter the counter scope for
+	// this element. EnterObject resolves the element's counter-reset
+	// and counter-increment directives via the Blink-faithful
+	// CountersAttachmentContext (see pkg/css/counters_attachment_context.go).
+	// Pre-order traversal: must run BEFORE recursing into children so
+	// the children see this element's counter directives in scope.
+	// LeaveObject is invoked after children are built (below).
 	if style != nil {
-		b.processCounterReset(style)
+		b.counterCtx.EnterObject(node, style)
+		defer b.counterCtx.LeaveObject(node, style)
 	}
 
 	// CSS Pseudo-4 §4.2: Compute ::marker style for list items,
@@ -110,8 +128,15 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			}
 			lin.MarkerStyle = markerStyle
 			// Extract content from ::marker { content: } for layout-time use.
+			// This path is the "outside" marker — list-style-position
+			// defaults to outside and we cache content here for the
+			// paint-time renderer (Phase 6 will move outside markers to
+			// real boxes). Counter lookups use `node` as the origin
+			// because this path does NOT push a separate counter scope
+			// for ::marker; that scope only exists when we actually
+			// emit a marker box via createMarkerPseudoElement.
 			if cv, ok := markerStyle.GetContentValues(); ok && len(cv) > 0 {
-				lin.MarkerContent = b.resolveContentText(cv, node)
+				lin.MarkerContent = b.resolveContentText(cv, node, node)
 			}
 		}
 		// For list-style-type: <string> without ::marker rules, use the string
@@ -531,8 +556,15 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 		return nil
 	}
 
-	// CSS 2.1 §12.5: Process counter-increment on pseudo-elements.
-	b.processCounterIncrement(pseudoStyle)
+	// CSS Lists 3: pseudo-elements participate in the counter scope.
+	// We enter the pseudo's scope before resolving its content so any
+	// counter() / counters() reads see the pseudo's own
+	// counter-reset / counter-increment directives, and we leave the
+	// scope afterward so resets on the pseudo don't leak to siblings.
+	// We need to push EnterObject on a synthetic node that is the
+	// SAME node we'll attach to the layout tree (so RemoveStaleCounters
+	// can compare ancestry correctly via Parent links). The pseudoNode
+	// is allocated below — defer the call until after pseudoNode exists.
 
 	// CSS 2.1 §9.7: Blockify floated pseudo-elements.
 	// When float is set, display is forced to block.
@@ -553,6 +585,14 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 
 	// Store the pseudo style in the styles map so it's accessible.
 	b.styles[pseudoNode] = pseudoStyle
+
+	// Enter the pseudo-element's counter scope. The pseudo is treated
+	// as a child of `node` in document order, so its counter-reset /
+	// counter-increment apply to its own ::before / content reads and
+	// then drop out of scope when we leave below. We pair this with
+	// LeaveObject before returning the LayoutInputNode.
+	b.counterCtx.EnterObject(pseudoNode, pseudoStyle)
+	defer b.counterCtx.LeaveObject(pseudoNode, pseudoStyle)
 
 	// Build child nodes from content values.
 	// Collect quote strings from parent style.
@@ -608,8 +648,18 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 				style:   imgStyle,
 			})
 		case "counter":
-			val := b.getCounterValue(cv.Value)
-			pendingText.WriteString(strconv.Itoa(val))
+			// counter(name [, style]): innermost in-scope value.
+			// Phase 1 always renders as decimal; Phase 5 will route
+			// cv.Style through CounterStyle.
+			vals := b.counterCtx.GetCounterValues(pseudoNode, cv.Value, true)
+			pendingText.WriteString(formatCounterValues(vals, "", cv.Style))
+		case "counters":
+			// counters(name, sep [, style]): outermost..innermost
+			// values joined by sep. If the counter is not in scope,
+			// CSS Lists §counter-functions specifies the result is
+			// an empty string — we emit nothing.
+			vals := b.counterCtx.GetCounterValues(pseudoNode, cv.Value, false)
+			pendingText.WriteString(formatCounterValues(vals, cv.Separator, cv.Style))
 		case "attr":
 			if node.Attributes != nil {
 				if attrVal, ok := node.Attributes[cv.Value]; ok {
@@ -644,30 +694,95 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 	return lin
 }
 
-// resolveContentText resolves CSS content values (text, counters) to a plain string.
-// Used for ::marker content resolution during layout tree building.
-// node is the list-item DOM node, used for DOM-based list-item counter resolution.
-func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node) string {
+// resolveContentText resolves CSS content values (text, counter, counters)
+// to a plain string. Used for ::marker content resolution during layout
+// tree building. `node` is the marker-bearing element (used to look up
+// the list-item DOM-sibling fallback until Phase 3 makes list-item a
+// real counter). `markerNode` is the pseudo-element node currently in
+// scope for counter lookups (so the marker reads its own scope, not the
+// real element's).
+func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, node *html.Node, markerNode *html.Node) string {
 	var buf strings.Builder
+	if markerNode == nil {
+		markerNode = node
+	}
 	for _, cv := range contentVals {
 		switch cv.Type {
 		case "text":
 			buf.WriteString(cv.Value)
 		case "counter":
-			val := b.getCounterValue(cv.Value)
-			if val == 0 && cv.Value == "list-item" {
-				val = b.getListItemCounterValue(node)
+			vals := b.counterCtx.GetCounterValues(markerNode, cv.Value, true)
+			// Phase 3 will plumb list-item into the counter context.
+			// Until then, fall back to DOM-sibling counting when the
+			// list-item counter isn't otherwise resolved.
+			if len(vals) == 0 && cv.Value == "list-item" {
+				vals = []int{b.getListItemCounterValue(node)}
 			}
-			buf.WriteString(strconv.Itoa(val))
+			buf.WriteString(formatCounterValues(vals, "", cv.Style))
 		case "counters":
-			val := b.getCounterValue(cv.Value)
-			if val == 0 && cv.Value == "list-item" {
-				val = b.getListItemCounterValue(node)
+			vals := b.counterCtx.GetCounterValues(markerNode, cv.Value, false)
+			if len(vals) == 0 && cv.Value == "list-item" {
+				vals = []int{b.getListItemCounterValue(node)}
 			}
-			buf.WriteString(strconv.Itoa(val))
+			buf.WriteString(formatCounterValues(vals, cv.Separator, cv.Style))
 		}
 	}
 	return buf.String()
+}
+
+// formatCounterValues renders a slice of counter values (outermost-first
+// for counters(), single-entry for counter()) using the given separator
+// and CSS counter style. Phase 1 implements decimal and
+// decimal-leading-zero only — those are the styles exercised by the B1
+// test bucket. Phase 5 will route through CounterStyle for the full
+// predefined / @counter-style set.
+func formatCounterValues(values []int, sep, style string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if sep == "" && len(values) > 1 {
+		// counter() with the inner counter that returned multiple
+		// (shouldn't happen — onlyLast=true returns at most one), but
+		// guard anyway.
+		values = values[len(values)-1:]
+	}
+	var b strings.Builder
+	for i, v := range values {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(formatCounterValue(v, style))
+	}
+	return b.String()
+}
+
+// formatCounterValue renders a single counter integer according to the
+// CSS counter style identifier. Unknown styles fall through to decimal,
+// matching CSS Lists 3 §counter-style-fallback (the predefined style
+// table is delivered in Phase 5).
+func formatCounterValue(v int, style string) string {
+	switch strings.ToLower(strings.TrimSpace(style)) {
+	case "decimal-leading-zero":
+		if v >= 0 && v < 10 {
+			return "0" + strconv.Itoa(v)
+		}
+		if v <= -1 && v > -10 {
+			return "-0" + strconv.Itoa(-v)
+		}
+		return strconv.Itoa(v)
+	case "lower-alpha", "lower-latin":
+		return css.ToAlpha(v)
+	case "upper-alpha", "upper-latin":
+		return strings.ToUpper(css.ToAlpha(v))
+	case "lower-roman":
+		return strings.ToLower(css.ToRoman(v))
+	case "upper-roman":
+		return css.ToRoman(v)
+	case "lower-greek":
+		return css.ToGreek(v)
+	default:
+		return strconv.Itoa(v)
+	}
 }
 
 // getListItemCounterValue returns the counter value for a list item by
@@ -721,6 +836,7 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	var markerStyle *css.Style
 	hasMarkerStyle := false
 	hasContentProperty := false
+	var markerContentValues []css.ContentValue
 
 	if len(b.stylesheets) > 0 && css.HasPseudoElementRules(node, "marker", b.stylesheets, b.viewportWidth, b.viewportHeight) {
 		// Case 2a: ::marker rules exist — compute ::marker style and extract content.
@@ -737,13 +853,46 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 			markerStyle = clone
 		}
 
-		// Extract content from ::marker { content: } and resolve to a string.
+		// Capture the content values; the actual resolution happens
+		// after we've entered the marker's counter scope below so
+		// counter() reads use the right origin node.
 		if cv, ok := markerStyle.GetContentValues(); ok {
 			hasContentProperty = true
-			if len(cv) > 0 {
-				markerContent = b.resolveContentText(cv, node)
-			}
+			markerContentValues = cv
 		}
+	}
+
+	// Step 2: Compute the effective marker style if no ::marker rules.
+	if !hasMarkerStyle {
+		// No ::marker rules; create a default marker style inheriting from
+		// parent with unicode-bidi: isolate (CSS Pseudo-4 §3) and display: inline.
+		markerStyle = style.Clone()
+		markerStyle.Set("unicode-bidi", "isolate")
+		markerStyle.Set("display", "inline")
+	}
+
+	// Step 3: Create a synthetic ::marker DOM node so we can use it as
+	// the origin for the counter scope.
+	markerNode := &html.Node{
+		Type:    html.ElementNode,
+		TagName: "::marker",
+		Parent:  node,
+	}
+
+	// Store the marker style in the styles map.
+	b.styles[markerNode] = markerStyle
+
+	// Enter the marker's counter scope before resolving its content.
+	// Per CSS Pseudo-4 pseudo-element ordering the ::marker comes
+	// before ::before, before children, before ::after — and Blink
+	// runs EnterObject for the marker as part of that traversal. We
+	// pair this with LeaveObject before returning.
+	b.counterCtx.EnterObject(markerNode, markerStyle)
+	defer b.counterCtx.LeaveObject(markerNode, markerStyle)
+
+	// Now that the marker's counter scope is live, resolve content.
+	if len(markerContentValues) > 0 {
+		markerContent = b.resolveContentText(markerContentValues, node, markerNode)
 	}
 
 	// Case 2b: If no ::marker content resolved, fall back to list-style-type.
@@ -772,25 +921,6 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	if markerContent == "" {
 		return nil
 	}
-
-	// Step 2: Compute the effective marker style.
-	if !hasMarkerStyle {
-		// No ::marker rules; create a default marker style inheriting from
-		// parent with unicode-bidi: isolate (CSS Pseudo-4 §3) and display: inline.
-		markerStyle = style.Clone()
-		markerStyle.Set("unicode-bidi", "isolate")
-		markerStyle.Set("display", "inline")
-	}
-
-	// Step 3: Create a synthetic ::marker DOM node.
-	markerNode := &html.Node{
-		Type:    html.ElementNode,
-		TagName: "::marker",
-		Parent:  node,
-	}
-
-	// Store the marker style in the styles map.
-	b.styles[markerNode] = markerStyle
 
 	// Step 4: Create a text node child with the resolved marker content.
 	textNode := &html.Node{
@@ -1195,78 +1325,11 @@ func (b *LayoutTreeBuilder) splitFirstLetter(
 	return children
 }
 
-// processCounterReset handles the counter-reset CSS property.
-// CSS 2.1 §12.5.1: counter-reset creates or resets one or more counters.
-func (b *LayoutTreeBuilder) processCounterReset(style *css.Style) {
-	val, ok := style.Get("counter-reset")
-	if !ok || val == "none" || val == "" {
-		return
-	}
-	if b.counters == nil {
-		b.counters = make(map[string][]int)
-	}
-	parts := strings.Fields(val)
-	for i := 0; i < len(parts); i++ {
-		name := parts[i]
-		if name == "none" {
-			continue
-		}
-		value := 0
-		if i+1 < len(parts) {
-			if v, err := strconv.Atoi(parts[i+1]); err == nil {
-				value = v
-				i++
-			}
-		}
-		// Push a new counter scope.
-		b.counters[name] = append(b.counters[name], value)
-	}
-}
-
-// processCounterIncrement handles the counter-increment CSS property.
-// CSS 2.1 §12.5.2: counter-increment increments an existing counter.
-func (b *LayoutTreeBuilder) processCounterIncrement(style *css.Style) {
-	val, ok := style.Get("counter-increment")
-	if !ok || val == "none" || val == "" {
-		return
-	}
-	if b.counters == nil {
-		b.counters = make(map[string][]int)
-	}
-	parts := strings.Fields(val)
-	for i := 0; i < len(parts); i++ {
-		name := parts[i]
-		if name == "none" {
-			continue
-		}
-		increment := 1
-		if i+1 < len(parts) {
-			if v, err := strconv.Atoi(parts[i+1]); err == nil {
-				increment = v
-				i++
-			}
-		}
-		stack := b.counters[name]
-		if len(stack) == 0 {
-			// Auto-instantiate counter at the root scope.
-			b.counters[name] = []int{increment}
-		} else {
-			stack[len(stack)-1] += increment
-		}
-	}
-}
-
-// getCounterValue returns the current value of a named counter.
-func (b *LayoutTreeBuilder) getCounterValue(name string) int {
-	if b.counters == nil {
-		return 0
-	}
-	stack := b.counters[name]
-	if len(stack) == 0 {
-		return 0
-	}
-	return stack[len(stack)-1]
-}
+// (Phase 1, LOU-css-lists): the ad-hoc counter-reset / counter-increment
+// stack handling (processCounterReset / processCounterIncrement /
+// getCounterValue / b.counters) has been replaced by the Blink-faithful
+// css.CountersAttachmentContext threaded through buildNode. See
+// pkg/css/counters_attachment_context.go.
 
 // parseQuotes parses the CSS quotes property value into a list of quote strings.
 // Format: "open1" "close1" "open2" "close2" ...
