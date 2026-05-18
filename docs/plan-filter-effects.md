@@ -265,9 +265,7 @@ SVG `<filter>` element host. From this plan's perspective:
 **Gate metric.** ≥36/39 buckets C+D at 0% diff (remaining 3 are `url()`-dependent → Phase 6+); no regression in compositing / css-will-change.
 
 ### Phase 6: SVG `<filter>` element model + reference filters on HTML (bucket H) — **~25 tests, large sub-project**
-**Status (2026-05-16):** **Element-model layer REPLACED by LOU-128**; this phase
-collapses to the `FilterRegion` resolution + external/`data:`-URL fetching that
-LOU-128 deliberately did *not* take on.
+**Status (2026-05-18):** **Element-model layer REPLACED by LOU-128; FilterRegion + external-URL fetch CLOSED by LOU-130 (master `03f014a5`).** Residual per-test failures carved into separate tickets (see below).
 
 **Goal (residue).** Make `filter: url(#id)` on HTML elements produce correct output
 for the full bucket-H test set: resolve the filter region (`filterUnits`,
@@ -286,17 +284,26 @@ that produce output even when the source graphic is empty.
   `ParseURLReference`.
 - `pkg/css/cascade.go::applyPresentationalAttributes` — SVG presentation attrs.
 
-**Residual work for this phase:**
-- `filters.FilterRegion` resolution (`objectBoundingBox` vs `userSpaceOnUse`,
-  `-10%/120%` defaults, `1em`/`calc()` units) — needed by `filter-region-units-001`,
-  `filter-region-calc-001`.
-- External / `data:` URL SVG fetching — needed by `blur-text`, `filter-external-*`,
-  `svg-external-filter-resource`.
-- `FillPaint`/`StrokePaint`/`BackgroundImage` SVG filter builtins — currently aliased
-  to `SourceGraphic`/`SourceAlpha` by LOU-128. Proper implementations belong here.
-- `empty-element-with-filter*` — verify that the graph output is honoured even when
-  the source graphic is empty (the infrastructure passes it through; verify the
-  paint walk emits the buffer).
+**Residual work for this phase — landed under LOU-130:**
+
+- `filters.FilterRegion` resolution — **VERIFIED CORRECT** by LOU-130 Phase 1 falsification tests (master `aaeb5ade`). `pkg/layout/svg/svg_resource_filter.go::ResourceBoundingBox` already implements the `-10%/120%` defaults end-to-end in both `objectBoundingBox` and `userSpaceOnUse` modes; explicit attrs correctly override. 3 unit tests committed as regression coverage.
+- External / `data:` URL SVG fetching — **LANDED** by LOU-130 Phase 2 (master `03f014a5`). New `std/net` helpers + `pkg/layout/svg/svg_document_fetcher.go::SVGDocumentFetcher` mirror Blink's `ExternalSVGResourceDocumentContent::Load`. Closes `filter-external-002-test` (8.3%→0) and `svg-external-filter-resource` (2.1%→0).
+
+**Citations re-pinned 2026-05-18 to chromium-main SHA `bf955d02bf0b0c67868b2e62359c0af199af9acc`:**
+- `core/svg/svg_filter_element.cc:47-75` — ctor defaults (`kPercentMinus10`/`kPercent120`).
+- `core/svg/svg_filter_element.h:44-55` — element accessors.
+- `core/svg/svg_length.h:57,61` — `kPercentMinus10`/`kPercent120` constants.
+- `core/layout/svg/layout_svg_resource_filter.cc:44-48` — `ResourceBoundingBox` + `ResolveRectangle`.
+- `core/svg/svg_resource.cc:227-283` — `ExternalSVGResourceDocumentContent::Load` (line 235: `ScriptForbiddenScope` (N/A); 256-257: cross-origin CORS attr; 272: `SVGResourceDocumentContent::Fetch`).
+
+**Remaining Phase-6-area failures (carved into separate tickets):**
+
+- `svg-empty-container-with-filter-content-added` (2.1%): JS shim missing `waitForAtLeastOneFrame` — [LOU-133](https://linear.app/mazarin/issue/LOU-133/).
+- `svg-empty-hidden-foreignobject-with-filter-001` (2.1%): no `<foreignObject>` support + filter painters bail on empty userBBox — [LOU-134](https://linear.app/mazarin/issue/LOU-134/).
+- `svg-multiple-filter-functions` (2.1%): mixed `url(...)+CSS-shorthand` filter list — `filter_effect_builder.go` explicitly skips `url()` in mixed lists (deferred FilterChain merge) — [LOU-135](https://linear.app/mazarin/issue/LOU-135/).
+- `blur-text` (13.2%): inline elements with `filter:` don't promote to paint layer; `BuildReferenceFilter` never invoked — [LOU-136](https://linear.app/mazarin/issue/LOU-136/).
+- `svg-relative-urls-001` (2.1% post-Phase-2; was 4.3%): JS shim missing `iframe.contentDocument` + cross-document `appendChild` — [LOU-137](https://linear.app/mazarin/issue/LOU-137/).
+- `FillPaint`/`StrokePaint` filter builtins still aliased to `SourceGraphic`/`SourceAlpha` from LOU-128 — not surfaced by any current bucket-H/J failure; leave the alias until a test exercises it.
 
 **Gate metric.** ≥22/25 bucket H at 0% diff; FilterEffect graph proven on real `fe*` chains.
 
