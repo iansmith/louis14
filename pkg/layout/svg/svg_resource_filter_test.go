@@ -127,3 +127,79 @@ func absDiff(a, b float64) float64 {
 	}
 	return d
 }
+
+// TestResourceBoundingBox_PercentDefaults_ObjectBoundingBox is the LOU-130
+// Phase 1 falsification test: with filterUnits=objectBoundingBox and no
+// explicit x/y/w/h on the `<filter>` element, the SVG Filter Effects 1
+// §6.5 defaults must produce a filter region of (-10, -10, 120, 120) over
+// a 100x100 target box. Per Blink's
+// LayoutSVGResourceFilter::ResourceBoundingBox + ResolveRectangle
+// (objectBoundingBox branch) the result is target + (-10%, -10%, 120%, 120%)
+// scaled by target dimensions.
+func TestResourceBoundingBox_PercentDefaults_ObjectBoundingBox(t *testing.T) {
+	f := &SVGResourceFilter{
+		FilterUnits: SVGUnitObjectBoundingBox,
+		// X, Y, Width, Height all HasValue=false → use defaults.
+	}
+	target := geometry.NewRectF(0, 0, 100, 100)
+	userOrigin := geometry.PointF{X: 0, Y: 0}
+	got := f.ResourceBoundingBox(target, userOrigin, NewSVGLengthContext(target.Size))
+	const eps = 1e-9
+	if absDiff(got.X(), -10) > eps ||
+		absDiff(got.Y(), -10) > eps ||
+		absDiff(got.Width(), 120) > eps ||
+		absDiff(got.Height(), 120) > eps {
+		t.Errorf("ResourceBoundingBox = %v, want (-10, -10, 120, 120)", got)
+	}
+}
+
+// TestResourceBoundingBox_PercentDefaults_UserSpaceOnUse is the userSpace
+// counterpart to the above. With filterUnits=userSpaceOnUse and no
+// explicit x/y/w/h, the -10%/-10%/120%/120% defaults must resolve against
+// the SVG viewport (per Blink's ResolveRectangle userSpaceOnUse branch).
+// Here the viewport is 100x100 so the resolved region is (-10, -10, 120, 120)
+// in user-space, then shifted by userSpaceOrigin (here (0, 0)).
+func TestResourceBoundingBox_PercentDefaults_UserSpaceOnUse(t *testing.T) {
+	f := &SVGResourceFilter{
+		FilterUnits: SVGUnitUserSpaceOnUse,
+		// X, Y, Width, Height all HasValue=false → use defaults.
+	}
+	target := geometry.NewRectF(0, 0, 100, 100)
+	userOrigin := geometry.PointF{X: 0, Y: 0}
+	viewport := geometry.SizeF{Width: 100, Height: 100}
+	got := f.ResourceBoundingBox(target, userOrigin, NewSVGLengthContext(viewport))
+	const eps = 1e-9
+	if absDiff(got.X(), -10) > eps ||
+		absDiff(got.Y(), -10) > eps ||
+		absDiff(got.Width(), 120) > eps ||
+		absDiff(got.Height(), 120) > eps {
+		t.Errorf("ResourceBoundingBox = %v, want (-10, -10, 120, 120)", got)
+	}
+}
+
+// TestResourceBoundingBox_ExplicitOverridesDefault asserts that when the
+// `<filter>` carries explicit x/y/w/h percent attrs the spec defaults are
+// NOT applied — the explicit values fully drive resolution. Mirrors
+// Blink's ResolveRectangle, which calls value resolution per axis and
+// only falls back to the SVG-spec default when the SVGLength field is
+// the spec sentinel.
+func TestResourceBoundingBox_ExplicitOverridesDefault(t *testing.T) {
+	f := &SVGResourceFilter{
+		FilterUnits: SVGUnitObjectBoundingBox,
+		X:           SVGGradientLength{Value: -0.05, IsPercent: true, HasValue: true, Raw: "-5%"},
+		Y:           SVGGradientLength{Value: -0.05, IsPercent: true, HasValue: true, Raw: "-5%"},
+		Width:       SVGGradientLength{Value: 1.10, IsPercent: true, HasValue: true, Raw: "110%"},
+		Height:      SVGGradientLength{Value: 1.10, IsPercent: true, HasValue: true, Raw: "110%"},
+	}
+	target := geometry.NewRectF(0, 0, 100, 100)
+	userOrigin := geometry.PointF{X: 0, Y: 0}
+	got := f.ResourceBoundingBox(target, userOrigin, NewSVGLengthContext(target.Size))
+	const eps = 1e-9
+	// Explicit -5%/-5%/110%/110% over a 100x100 target → (-5, -5, 110, 110).
+	if absDiff(got.X(), -5) > eps ||
+		absDiff(got.Y(), -5) > eps ||
+		absDiff(got.Width(), 110) > eps ||
+		absDiff(got.Height(), 110) > eps {
+		t.Errorf("ResourceBoundingBox = %v, want (-5, -5, 110, 110); defaults must not override explicit attrs", got)
+	}
+}
