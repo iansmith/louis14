@@ -298,7 +298,7 @@ that produce output even when the source graphic is empty.
 
 **Remaining Phase-6-area failures (carved into separate tickets):**
 
-- `svg-empty-container-with-filter-content-added` (2.1%): JS shim missing `waitForAtLeastOneFrame` — [LOU-133](https://linear.app/mazarin/issue/LOU-133/).
+- ~~`svg-empty-container-with-filter-content-added` (2.1%): JS shim missing `waitForAtLeastOneFrame`~~ — **CLOSED** by [LOU-133](https://linear.app/mazarin/issue/LOU-133/) (master `a6d3805e`). Added `waitForAtLeastOneFrame` + `takeScreenshot` WPT prelude + `document.createElementNS` in `pkg/js/`. Test PASS @ 0% diff.
 - `svg-empty-hidden-foreignobject-with-filter-001` (2.1%): no `<foreignObject>` support + filter painters bail on empty userBBox — [LOU-134](https://linear.app/mazarin/issue/LOU-134/).
 - `svg-multiple-filter-functions` (2.1%): mixed `url(...)+CSS-shorthand` filter list — `filter_effect_builder.go` explicitly skips `url()` in mixed lists (deferred FilterChain merge) — [LOU-135](https://linear.app/mazarin/issue/LOU-135/).
 - `blur-text` (13.2%): inline elements with `filter:` don't promote to paint layer; `BuildReferenceFilter` never invoked — [LOU-136](https://linear.app/mazarin/issue/LOU-136/).
