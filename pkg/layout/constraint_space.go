@@ -233,8 +233,12 @@ const (
 const Indefinite float64 = -1
 
 // IsBlockSizeIndefinite returns true if the block-size is unconstrained.
+// Mirrors Blink's ConstraintSpace::IsBlockSizeIndefinite() which checks
+// PercentageResolutionSize.BlockSize, not AvailableSize.BlockSize.
+// These are separate concepts: AvailableSize governs layout space,
+// PercentageResolutionSize governs percentage-based child resolution.
 func (cs ConstraintSpace) IsBlockSizeIndefinite() bool {
-	return cs.AvailableSize.BlockSize.Float64() < 0
+	return cs.PercentageResolutionSize.BlockSize.Float64() < 0
 }
 
 // RemainingFragmentainerBlockSize returns how much block-size is available
@@ -276,6 +280,13 @@ func NewConstraintSpaceBuilder(parentWDM, childWDM WritingDirectionMode, isNewFC
 	b.space.WritingDirection = childWDM
 	b.space.IsNewFormattingContext = isNewFC
 	b.space.IsOrthogonalWritingModeRoot = !b.parallel
+	// PercentageResolutionSize.BlockSize defaults to Indefinite so that
+	// IsBlockSizeIndefinite() returns true until a definite percentage
+	// resolution basis is explicitly configured. Mirrors Blink's
+	// ConstraintSpaceBuilder default.
+	b.space.PercentageResolutionSize = geometry.LogicalSize{
+		BlockSize: layoutunit.IndefiniteSize,
+	}
 	// Default to "not inside a table section". Table layout calls
 	// SetTableSectionIndex explicitly when threading sizing data.
 	b.space.TableSectionIndex = -1

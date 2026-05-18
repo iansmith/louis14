@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"louis14/pkg/css"
+	"louis14/pkg/html"
 	"louis14/pkg/images"
 	"louis14/pkg/text"
 )
@@ -126,6 +128,17 @@ type LayoutContext struct {
 	// during min/max sizing to avoid redundant layouts and detect cycles.
 	// Keyed by LayoutInputNode pointer. Mirrors Blink's NGLayoutCacheStatus.
 	OrthogonalLayoutCache map[*LayoutInputNode]*orthogonalCacheEntry
+
+	// ComputedStyles is the per-DOM-node style map produced by
+	// css.ApplyStylesToDocument and stored on LayoutEngine. SVG
+	// descendants of an inline <svg> are not LayoutInputNodes (they
+	// live under the SVGRoot subtree, not under the CSS box tree),
+	// so the SVGRootAlgorithm needs this map to attach computed
+	// style to each SVGShape at build time. Populated by
+	// LayoutEngine.Layout before laying out the document root.
+	// Nil-tolerant: SVG descendants without a style entry fall back
+	// to SVG property defaults.
+	ComputedStyles map[*html.Node]*css.Style
 }
 
 // orthogonalCacheEntry stores a cached layout result or a "computing" sentinel.

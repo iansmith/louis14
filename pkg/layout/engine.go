@@ -84,6 +84,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 		ImageFetcher:    le.imageFetcher,
 		DocumentFetcher: le.documentFetcher,
 		FontConfig:      fontConfig,
+		ComputedStyles:  computedStyles,
 	}
 
 	// Phase 3: Find the root element (skip document-level wrapper nodes).

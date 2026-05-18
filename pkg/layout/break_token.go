@@ -61,6 +61,27 @@ type BlockBreakToken struct {
 	// (some may still be breaking).
 	HasSeenAllChildren bool
 
+	// IsAtBlockEnd means layout was past the block-end border edge of the
+	// node when it fragmented — i.e. the node's own box finished, but
+	// something is overflowing it, establishing a parallel flow.
+	// Subsequent content may be placed into the same fragmentainer as a
+	// fragment whose break-token carries this flag, as long as it fits.
+	// Mirrors Blink's BlockBreakToken::IsAtBlockEnd
+	// (block_break_token.h:~287). Set by FinishFragmentation when the
+	// parent's box is satisfied but a child still has content to lay out
+	// (fragmentation_utils.cc:875, 891).
+	//
+	// See https://www.w3.org/TR/css-break-3/#parallel-flows.
+	IsAtBlockEnd bool
+
+	// IsInParallelFlow means this break-token belongs to a child whose
+	// parent's break-token has IsAtBlockEnd=true. A parallel-flow child
+	// resumes in the same fragmentainer as the parent's final fragment
+	// rather than at child-local block-offset 0 in a fresh parent
+	// continuation. Mirrors Blink's BlockBreakToken parallel-flow
+	// signaling (block_break_token.h:~287).
+	IsInParallelFlow bool
+
 	// MonolithicOverflow tracks how much a monolithic (unbreakable) element
 	// overflowed the fragmentainer.
 	MonolithicOverflow float64
@@ -76,6 +97,13 @@ type BlockBreakToken struct {
 	// to correctly resume when a break occurred mid-text-item (a single text
 	// item may span multiple lines if it contains multiple words).
 	InlineTextOffset int
+
+	// InlineShortage is the minimum additional block-size this fragmentainer
+	// would need to fit the overflowing inline line. Set only when
+	// InlineItemStartIndex is non-trivial. Computed as (blockOffset +
+	// overflowingLineHeight) - fragEnd, matching Blink's per-break-point
+	// MinSpaceShortage.
+	InlineShortage float64
 
 	// HasUnpositionedListMarker signals that the list-item's ::marker was not
 	// placed during layout and should be seeded again when this break token is

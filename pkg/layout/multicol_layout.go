@@ -257,6 +257,7 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			if incoming == nil || incoming.HasUnpositionedListMarker {
 				builder.SetUnpositionedListMarker(&UnpositionedListMarker{
 					MarkerNode: markerNode,
+					Item:       mla.node,
 				})
 			}
 		}
@@ -749,16 +750,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// Combined-clip cases (one spanner content-overflow followed by a
 		// later spanner clipping) surface as TWO consecutive walker entries
 		// in document order — no [0]/[1] index peek required.
-		var spannerConsumed float64
-		hasSpannerResume := false
-		var spannerContentBreakToken *BlockBreakToken
-		if entry.BreakToken != nil {
-			hasSpannerResume = true
-			spannerConsumed = entry.BreakToken.ConsumedBlockSize.Float64()
-			if len(entry.BreakToken.ChildBreakTokens) > 0 {
-				spannerContentBreakToken = entry.BreakToken
-			}
-		}
+		// LOU-111 step 6.6.A: after the unified resume routing below
+		// forwards entry.BreakToken straight into layoutSpannerInFrag,
+		// the per-case decoding (spannerConsumed / spannerContentBreakToken)
+		// is no longer needed at the multicol level — the spanner's BLA
+		// reads incomingBreakToken.ConsumedBlockSize and ChildBreakTokens
+		// itself and resumes accordingly.
+		hasSpannerResume := entry.BreakToken != nil
 
 		// Forced break-before:column on spanner: propagate to the parent
 		// column context. Only on fresh layout (not resumed) so the break
@@ -817,76 +815,48 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		var spanFrag *PhysicalFragment
 		var spanHeight float64
 		var spanResult *LayoutResult // for PropagateBaselineFromChild (Track B)
-		var didContentOverflowResume bool
-		if hasSpannerResume {
-			if spannerContentBreakToken != nil {
-				// Content-overflow resume: the spanner's box was fully placed
-				// in the previous outer column but its children overflowed.
-				// Re-layout the spanner from the child break point in the new
-				// outer column.
-				fragOff := mla.space.FragmentainerOffset + blockCursor
-				resumeResult := mla.layoutSpannerInFrag(spanner, contentInlineSize, wdm,
-					mla.space.FragmentainerBlockSize, fragOff, spannerContentBreakToken)
-				if resumeResult != nil && resumeResult.Fragment != nil {
-					spanFrag = resumeResult.Fragment
-					spanHeight = NewLogicalFragment(wdm, resumeResult.Fragment).BlockSize()
-					spanResult = resumeResult
-				}
-				didContentOverflowResume = true
-			} else {
-				// Clip resume: the spanner was visually truncated in the
-				// previous outer column. Layout at full size and take the
-				// remaining portion.
-				fullResult := mla.layoutSpanner(spanner, contentInlineSize, wdm)
-				if fullResult != nil && fullResult.Fragment != nil {
-					fullHeight := NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
-					spanHeight = fullHeight - spannerConsumed
-					if spanHeight < 0 {
-						spanHeight = 0
-					}
-					frag := fullResult.Fragment
-					if wdm.IsHorizontal() {
-						frag.Size.Height = layoutunit.FromFloat64Round(spanHeight)
-					} else {
-						frag.Size.Width = layoutunit.FromFloat64Round(spanHeight)
-					}
-					spanFrag = frag
-					spanResult = fullResult
-				}
-			}
+		// LOU-111 step 6.6.A — unified spanner dispatch.
+		//
+		// Pre-6.6.A this branch was three-way:
+		//   - hasSpannerResume && spannerContentBreakToken != nil (:822-835):
+		//     content-overflow resume via layoutSpannerInFrag with the
+		//     entry's break token.
+		//   - hasSpannerResume && spannerContentBreakToken == nil
+		//     (:836-855): Fab A clip-resume via layoutSpanner (NON-fragmented)
+		//     + geometric clip of the resulting fragment.
+		//   - !hasSpannerResume (:857-887): fresh layout via
+		//     layoutSpannerInFrag (or layoutSpanner if no outer fragmentation).
+		//
+		// After LOU-111 step 6.5, the spanner's BLA emits a uniform
+		// LayoutResult.BreakToken carrying ConsumedBlockSize +
+		// optionally ChildBreakTokens for every resume case (S5/S6 in the
+		// audit's case table). Forwarding entry.BreakToken straight into
+		// layoutSpannerInFrag handles both clip-resume and content-overflow-
+		// resume uniformly — the BLA's prev_consumed math and Phase 16.d.1
+		// clamp produce a correctly-sized fragment. The geometric clip
+		// post-mutation that Fab A used to do is no longer needed; the
+		// Fab A clip body at :899-936 is also redundant and goes in 6.6.B.
+		var fullResult *LayoutResult
+		if hasOuterFrag || hasSpannerResume {
+			fragOff := mla.space.FragmentainerOffset + blockCursor
+			fullResult = mla.layoutSpannerInFrag(spanner, contentInlineSize, wdm,
+				mla.space.FragmentainerBlockSize, fragOff, entry.BreakToken)
 		} else {
-			var fullResult *LayoutResult
-			if hasOuterFrag {
-				fragOff := mla.space.FragmentainerOffset + blockCursor
-				fullResult = mla.layoutSpannerInFrag(spanner, contentInlineSize, wdm,
-					mla.space.FragmentainerBlockSize, fragOff, nil)
-			} else {
-				fullResult = mla.layoutSpanner(spanner, contentInlineSize, wdm)
-			}
-			if fullResult != nil && fullResult.Fragment != nil {
-				spanFrag = fullResult.Fragment
-				spanHeight = NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
-				spanResult = fullResult
-				// Content overflow: spanner box fits physically but its
-				// children overflow the outer fragmentainer boundary. Push
-				// the spanner's OWN block-layout break token directly to
-				// outBuilder (Node is already the spanner; ChildBreakTokens
-				// are the spanner's content-resume children;
-				// HasSeenAllChildren / SequenceNumber / ConsumedBlockSize
-				// are preserved for BLA's resume bookkeeping). Mirrors
-				// Blink's container_builder_.AddBreakToken(child_token)
-				// which forwards the spanner's break token directly without
-				// a wrapper. Continue placing subsequent content in this
-				// outer column before generating the outer break result;
-				// the post-loop pendingContentOverflow handler emits the
-				// final result.
-				if hasOuterFrag && fullResult.BreakToken != nil && blockCursor+spanHeight <= outerAvailable {
-					pendingContentOverflow = true
-					outBuilder.AddBreakToken(fullResult.BreakToken)
-				}
+			fullResult = mla.layoutSpanner(spanner, contentInlineSize, wdm)
+		}
+		if fullResult != nil && fullResult.Fragment != nil {
+			spanFrag = fullResult.Fragment
+			spanHeight = NewLogicalFragment(wdm, fullResult.Fragment).BlockSize()
+			spanResult = fullResult
+			// Spanner emitted a break-token (box clamp / content-overflow /
+			// continuation): push it straight to outBuilder so the next
+			// outer fragmentainer resumes the spanner. Mirrors Blink's
+			// container_builder_.AddBreakToken(child_token).
+			if hasOuterFrag && fullResult.BreakToken != nil && blockCursor+spanHeight <= outerAvailable {
+				pendingContentOverflow = true
+				outBuilder.AddBreakToken(fullResult.BreakToken)
 			}
 		}
-
 		if spanFrag != nil {
 			// Blink cla.cc:1427-1459 (pre-commit row snap). Snap blockCursor
 			// to the next row-stride boundary if we're past the start of the
@@ -895,67 +865,37 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 				mla.offsetInCurrentRow(blockCursor) > 0 {
 				blockCursor += mla.offsetToNextRow(blockCursor)
 			}
-			// Outer fragmentation: spanner doesn't fit — clip and break.
-			if hasOuterFrag && blockCursor+spanHeight > outerAvailable {
-				available := outerAvailable - blockCursor
-				if wdm.IsHorizontal() {
-					spanFrag.Size.Height = layoutunit.FromFloat64Round(available)
-				} else {
-					spanFrag.Size.Width = layoutunit.FromFloat64Round(available)
-				}
-				builder.AddChild(spanFrag, LogicalOffset{
-					InlineOffset: 0,
-					BlockOffset:  blockCursor,
-				})
-				blockCursor += available
-				// Advance the walker past this spanner entry; the clip
-				// token below replaces it for the next outer column.
-				walker.Next()
-				if pendingContentOverflow {
-					// Combined content-overflow + clip: a previous spanner's
-					// content-overflow entry is already in outBuilder; push
-					// THIS spanner's clip token as a separate flat entry so
-					// the resumed outer column walks both in document order.
-					outBuilder.AddBreakToken(&BlockBreakToken{
-						Node:              spanner,
-						ConsumedBlockSize: layoutunit.FromFloat64Round(available),
-					})
-					// Fall through to post-loop pendingContentOverflow
-					// handler, which calls flushWalker before emitting.
-					break
-				}
-				outBuilder.AddBreakToken(&BlockBreakToken{
-					Node:              spanner,
-					ConsumedBlockSize: layoutunit.FromFloat64Round(available),
-				})
-				// Flush any remaining walker entries (e.g., MoveToSpanner-
-				// stored post-spanner column-content driver) so the next
-				// outer column resumes with both the clipped spanner and
-				// the un-enumerated post-spanner content.
-				flushWalker()
-				return buildOuterBreakResult()
-			}
-
 			// Apply spanner margin-block-start. Skip when resuming a
-			// content-overflow spanner — margins were consumed in OC1.
-			if !didContentOverflowResume && spanner.Style() != nil {
+			// spanner — margins were consumed in the original outer column.
+			if !hasSpannerResume && spanner.Style() != nil {
 				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
 				blockCursor += spannerMargins.BlockStart
 			}
 			mla.addMainGap(blockCursor, SpannerGapStart)
 			mla.addNumberOfColumnsForCurrentRow(-1)
-			builder.AddChild(spanFrag, LogicalOffset{
+			spannerOffset := LogicalOffset{
 				InlineOffset: 0,
 				BlockOffset:  blockCursor,
-			})
+			}
+			builder.AddChild(spanFrag, spannerOffset)
+			// LOU-111 step 4: propagate the spanner's BSFF into this
+			// multicol's running BSFF so an outer multicol slicing this
+			// multicol's fragments sees the true content-overflow extent
+			// (analog of column_layout_algorithm.cc:977-982 +
+			// fragmentation_utils.cc BlockSizeForFragmentation helper).
+			// Without this, a spanner whose content overflows past its
+			// declared box reports only its box-size up the chain, and
+			// the outer multicol's per-column row-advance picks the wrong
+			// slice height.
 			if spanResult != nil {
+				builder.PropagateChildBlockSizeForFragmentation(spanResult, spannerOffset)
 				mla.propagateBaselineFromChild(spanResult, builder, blockCursor)
 			}
 			if spanFrag != nil && spanResult != nil {
 				mla.attemptToPositionListMarker(spanFrag, spanResult, builder, blockCursor)
 			}
 			blockCursor += spanHeight
-			if !didContentOverflowResume && spanner.Style() != nil {
+			if !hasSpannerResume && spanner.Style() != nil {
 				spannerMargins := ResolveMargins(spanner.Style(), wdm, mla.space.AvailableSize.InlineSize.Float64())
 				blockCursor += spannerMargins.BlockEnd
 			}
@@ -971,8 +911,8 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 		// Forced break-after:column on spanner: propagate to the parent
 		// column context. Only on fresh layout (not resumed) so the break
 		// fires once.
-		if hasOuterFrag && spanFrag != nil && !didContentOverflowResume &&
-			mla.space.BreakToken == nil && !hasSpannerResume &&
+		if hasOuterFrag && spanFrag != nil && !hasSpannerResume &&
+			mla.space.BreakToken == nil &&
 			spanner.Style() != nil && spanner.Style().GetBreakAfter() == "column" {
 			if !walker.IsFinished() {
 				// walker.Next was already called above; current is the
@@ -1626,6 +1566,17 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// also removed by this commit; engine.go propagation + paint_layer.go
 		// branch are removed in lockstep.
 		builder.AddChild(col.fragment, col.offset)
+		// LOU-111 step 4: propagate the column's BSFF so this multicol's
+		// own outgoing BSFF reflects the maximum column-row content extent
+		// (including any monolithic / parallel-flow overflow inside the
+		// column body). An OUTER multicol slicing this multicol's
+		// fragments reads the inner BSFF at lines 1631-1632 below to size
+		// its column rows correctly. Mirrors Blink's
+		// BoxFragmentBuilder::PropagateChildData max-merge
+		// (box_fragment_builder.cc:977-982).
+		if col.result != nil {
+			builder.PropagateChildBlockSizeForFragmentation(col.result, col.offset)
+		}
 		// Callsite 1 (Track B): propagate baseline from each column child.
 		// Mirrors Blink cla.cc:1336 PropagateBaselineFromChild loop.
 		if col.result != nil {
@@ -1924,10 +1875,9 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 	// buildSpace constructs a ConstraintSpace for one measure-pass iteration.
 	// Called once per loop iteration with the current break-token.
 	buildSpace := func(breakToken *BlockBreakToken) ConstraintSpace {
-		measureAvailBlock := Indefinite
 		b := NewConstraintSpaceBuilder(wdm, wdm, true)
 		if hasExplicitContainerHeight {
-			measureAvailBlock = containerPercentResolutionBlockSize
+			measureAvailBlock := containerPercentResolutionBlockSize
 			b = b.SetAvailableSize(LogicalSize{
 				InlineSize: colWidth,
 				BlockSize:  measureAvailBlock,
@@ -1984,17 +1934,17 @@ func (mla *MulticolLayoutAlgorithm) resolveColumnAutoBlockSize(
 		}
 
 		if forcedBreaks < numCols || considerAllColumns {
-			colBSize := result.BlockSizeForFragmentation
-			if result.Fragment != nil {
-				if fragBSize := NewLogicalFragment(wdm, result.Fragment).BlockSize(); fragBSize > colBSize {
-					colBSize = fragBSize
+			// Use intrinsic content height as the authoritative measure.
+			// IsBlockSizeOverride artificially inflates fragment block-size
+			// to CSS height; IntrinsicBlockSize reflects true content.
+			colBSize := result.IntrinsicBlockSize
+			if colBSize <= 0 {
+				colBSize = result.BlockSizeForFragmentation
+				if result.Fragment != nil {
+					if fragBSize := NewLogicalFragment(wdm, result.Fragment).BlockSize(); fragBSize > colBSize {
+						colBSize = fragBSize
+					}
 				}
-			}
-			// When the fragment is forced to a fixed size (IsBlockSizeOverride),
-			// fragment.BlockSize underestimates the actual content; use
-			// IntrinsicBlockSize as the true content height for balance estimation.
-			if result.IntrinsicBlockSize > colBSize {
-				colBSize = result.IntrinsicBlockSize
 			}
 			runs = append(runs, contentRun{contentBlockSize: colBSize})
 		}
@@ -2402,7 +2352,14 @@ func (mla *MulticolLayoutAlgorithm) attemptToPositionListMarker(
 	if !ok {
 		return
 	}
-	marker.AddToBox(child, childResult, baseline, blockOffset, builder)
+	// Lay the marker box out for size + first-line baseline, then align it
+	// against the column/spanner child's content baseline. Mirrors Blink's
+	// ColumnLayoutAlgorithm reusing list_marker.Layout's result in AddToBox.
+	markerResult := marker.Layout(mla.ctx, mla.space)
+	if markerResult == nil {
+		return
+	}
+	marker.AddToBox(mla.ctx, markerResult, baseline, blockOffset, builder)
 	builder.ClearUnpositionedListMarker()
 }
 
@@ -2418,7 +2375,11 @@ func (mla *MulticolLayoutAlgorithm) positionAnyUnclaimedListMarker(
 	if !marker.IsValid() {
 		return
 	}
-	marker.AddToBoxWithoutLineBoxes(builder, intrinsicBlockSize)
+	markerResult := marker.Layout(mla.ctx, mla.space)
+	if markerResult == nil {
+		return
+	}
+	marker.AddToBoxWithoutLineBoxes(mla.ctx, markerResult, builder, intrinsicBlockSize)
 	builder.ClearUnpositionedListMarker()
 }
 

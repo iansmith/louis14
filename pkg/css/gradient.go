@@ -31,12 +31,12 @@ type Gradient struct {
 	Repeating  bool    // true for repeating-linear/radial-gradient
 	FromAngle  float64 // conic-gradient: starting angle in degrees
 	// Radial-specific fields:
-	Shape   string  // "circle" or "ellipse"
-	Size    string  // "farthest-corner", "closest-side", etc. or ""
-	RadiusX float64 // explicit radius in px, 0 if using size keyword
-	RadiusY float64 // explicit Y radius for ellipse, 0 if circle
-	CenterX float64 // center X as fraction (0-1), default 0.5
-	CenterY float64 // center Y as fraction (0-1), default 0.5
+	Shape     string  // "circle" or "ellipse"
+	Size      string  // "farthest-corner", "closest-side", etc. or ""
+	RadiusX   float64 // explicit radius in px, 0 if using size keyword
+	RadiusY   float64 // explicit Y radius for ellipse, 0 if circle
+	CenterX   float64 // center X as fraction (0-1), default 0.5
+	CenterY   float64 // center Y as fraction (0-1), default 0.5
 	CenterXPx float64 // center X in px (if specified as px), -1 if not
 	CenterYPx float64 // center Y in px (if specified as px), -1 if not
 }

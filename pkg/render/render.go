@@ -13,9 +13,11 @@ import (
 	"unicode"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/images"
 	"louis14/pkg/layout"
+	"louis14/pkg/layout/svg"
 	"louis14/pkg/text"
 	"mazarin/textshape"
 )
@@ -33,6 +35,20 @@ type Renderer struct {
 	fonts        text.FontConfig
 	imageFetcher images.ImageFetcher
 	scrollY      float64
+
+	// svgResources aggregates the SVG resource registries from every
+	// inline `<svg>` in the current paint frame. Populated by Render
+	// (and RenderEmbedded) just before the paint walk by
+	// collectSVGResources, which walks the layout-box tree gathering
+	// every SVGRoot.Resources. Read by paint-time `url(#id)` resolvers
+	// for `mask-image: url(#id)` and `clip-path: url(#id)` on non-SVG
+	// elements — the document fragment id space is shared across the
+	// page per SVG 2 §3.1, so an inline `<svg height="0">` declaring a
+	// `<mask id="m">` is reachable from any CSS box's `mask-image:
+	// url(#m)`. Mirrors Blink's per-Document SVGTreeScopeResources
+	// (core/svg/svg_resource.h) — louis14 aggregates per-render-frame
+	// because we don't have a Document-lifetime renderer.
+	svgResources *svg.SVGResourceRegistry
 
 	// Font ID cache: (path, size) → fontID
 	fontCache   map[fontCacheKey]int32
@@ -304,6 +320,18 @@ func (r *Renderer) fillCanvasScoped() {
 // paintBoxes performs the per-box paint pass shared by [Render] and
 // [RenderEmbedded]. The canvas-background fill is the caller's responsibility.
 func (r *Renderer) paintBoxes(boxes []*layout.Box) {
+	// Build the renderer-wide SVG resource registry by walking every
+	// box subtree for inline `<svg>` SVGRoots and merging their
+	// per-root registries. `url(#id)` references on any element on
+	// the page can then resolve against this single registry. See
+	// svgResources comment on the Renderer type.
+	r.svgResources = collectSVGResources(boxes)
+	// Phase 6: detect reference cycles. Cycle-flagged resources
+	// (a self-referential `<mask>`, two masks pointing at each other,
+	// etc.) are treated as `none` at paint time so the painters don't
+	// infinite-loop. Mirrors Blink's SVGResourcesCycleSolver pass that
+	// runs after the registry is built and before any paint dispatch.
+	svg.SolveResourceCycles(r.svgResources)
 	r.paintCanvasBackground(boxes)
 
 	// Paint via PaintLayer tree (CSS 2.1 Appendix E stacking order).
@@ -450,6 +478,84 @@ func clampColor(rv, g, b, a float64) color.RGBA {
 	return color.RGBA{R: clamp(rv), G: clamp(g), B: clamp(b), A: clamp(a)}
 }
 
+// lookupSVGResources returns the renderer-wide aggregated SVG
+// resource registry. Built by collectSVGResources at the top of every
+// Render/RenderEmbedded call. Returns nil when there are no inline
+// SVGs on the page — callers must guard against nil before Lookup*.
+func (r *Renderer) lookupSVGResources() *svg.SVGResourceRegistry {
+	if r == nil {
+		return nil
+	}
+	return r.svgResources
+}
+
+// collectSVGResources walks `boxes` and every descendant box,
+// gathering each inline `<svg>` element's SVGRoot.Resources into a
+// single merged registry that the renderer exposes to `url(#id)`
+// resolvers. Mirrors how Blink's SVGTreeScopeResources is a per-
+// Document namespace — louis14 builds it per render frame because we
+// don't yet have a Document-lifetime renderer (the layout pass owns
+// the SVGRoot lifetime; the renderer is recreated per paint).
+//
+// Conflicts (same id registered by two different SVGs) follow the
+// first-wins rule from each per-root RegisterXxx; the renderer
+// preserves that ordering by walking boxes in pre-order, which
+// matches document order for HTML.
+func collectSVGResources(boxes []*layout.Box) *svg.SVGResourceRegistry {
+	merged := svg.NewSVGResourceRegistry()
+	for _, b := range boxes {
+		mergeSVGResourcesFromBox(b, merged)
+	}
+	return merged
+}
+
+// mergeSVGResourcesFromBox is the recursive worker for
+// collectSVGResources: pre-order walk that copies each SVGRoot's
+// per-root registry contents into `dst`.
+func mergeSVGResourcesFromBox(box *layout.Box, dst *svg.SVGResourceRegistry) {
+	if box == nil {
+		return
+	}
+	if box.LayoutNode != nil {
+		if root, ok := box.LayoutNode.SVGRoot.(*svg.SVGRoot); ok && root != nil && root.Resources != nil {
+			mergeSVGRegistries(dst, root.Resources)
+		}
+	}
+	for _, child := range box.Children {
+		mergeSVGResourcesFromBox(child, dst)
+	}
+}
+
+// mergeSVGRegistries copies `src`'s contents into `dst` using the
+// public RegisterXxx methods so the first-wins rule is preserved.
+// Phase 5 needs this because each SVGRoot has its own per-root
+// registry — gradient/pattern paint servers and Phase 5's clippers/
+// maskers — and the renderer needs a single namespace across all
+// SVGs on the page.
+//
+// Implementation detail: the per-root maps are unexported, so this
+// helper relies on the per-root registry exposing iteration via the
+// kind-specific Lookup paths. To avoid widening the API surface
+// beyond what Phase 5 needs, we add a per-kind drain helper on the
+// registry. See svg_resource_registry.go.
+func mergeSVGRegistries(dst, src *svg.SVGResourceRegistry) {
+	if dst == nil || src == nil {
+		return
+	}
+	src.ForEachPaintServer(func(s svg.SVGResourcePaintServer) {
+		dst.RegisterPaintServer(s)
+	})
+	src.ForEachClipper(func(c *svg.SVGResourceClipper) {
+		dst.RegisterClipper(c)
+	})
+	src.ForEachMasker(func(m *svg.SVGResourceMasker) {
+		dst.RegisterMasker(m)
+	})
+	src.ForEachFilter(func(f *svg.SVGResourceFilter) {
+		dst.RegisterFilter(f)
+	})
+}
+
 // paintLayer paints a PaintLayer and its descendants using the pre-built
 // stacking order. All paint decisions use pre-computed fields — no Style access.
 func (r *Renderer) paintLayer(layer *PaintLayer) {
@@ -556,12 +662,82 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 
 	// Step 2: Generate the mask image.
 	maskVal := layer.MaskImage
-	useLuminance := false // default for url() images: alpha mode
+	// Default mask-mode is match-source: for a mask-image of type <image>
+	// (a CSS gradient or a raster image) the alpha values of the mask
+	// layer image are used as the mask values — NOT luminance. Luminance
+	// mode is the default only for an SVG <mask> element reference.
+	// (CSS Masking Level 1 §6.4.)
+	useLuminance := false
 	var maskImg *image.RGBA
 
+	// SVG fast path: if mask-image is `url(#id)` and the id resolves to
+	// an SVG `<mask>` element in the renderer-wide SVG resource
+	// registry, rasterize that mask's children into an alpha buffer and
+	// apply with kDstIn directly. Mirrors Blink's
+	// SVGMaskPainter::PaintSVGMaskForCSS dispatch (when the mask
+	// reference resolves to an SVGMaskElement, take the SVG path; else
+	// fall through to the CSS Images-3 image-or-gradient path). This
+	// also implements the css-masking Phase 3 promise the foundation
+	// claims (SVG `<mask>` resolution: mask-opacity-1d gate).
+	//
+	// Note: per CSS Masking 1 §3.7 the rendering order is filter →
+	// mask → opacity → composite. The buffer already had opacity
+	// applied above (via PushGroup/PopGroupWithAlpha). We undo that
+	// by repainting without opacity below if an SVG mask is in play,
+	// because mazarin's PushGroup/PopGroupWithAlpha applies opacity
+	// using PRE-multiplied alpha math that produces a slightly
+	// different pixel value than the per-channel-times-alpha math the
+	// plain CSS-color rendering uses. To match the reftest's
+	// reference page (which uses rgba(c, a) and goes through plain
+	// CSS-color rendering), the SVG-mask code path must apply
+	// opacity post-mask via the SAME per-channel multiplication.
+	if id, ok := css.ParseURLReference(maskVal); ok {
+		if registry := r.lookupSVGResources(); registry != nil {
+			if masker, ok := registry.LookupMasker(id); ok && masker != nil && masker.CycleState() != svg.SVGCycleHasCycle {
+				// Repaint the layer WITHOUT opacity, into a fresh
+				// buffer. We re-create `buf` because the existing
+				// one above had opacity baked in via PushGroup.
+				freshBuf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+				freshDC := origDC.NewChildContext(freshBuf)
+				saveDC := r.dc
+				saveTarget := r.target
+				r.dc = freshDC
+				r.target = freshBuf
+				r.dc.Translate(float64(-bx), float64(-by))
+				if layer.HasTransform {
+					r.dc.Push()
+					r.applyTransforms(layer)
+				}
+				r.paintLayerContent(layer)
+				if layer.HasTransform {
+					r.dc.Pop()
+				}
+				r.dc = saveDC
+				r.target = saveTarget
+
+				refBox := geometry.NewRectF(box.X, box.Y, box.Width, box.Height)
+				maskBuf := r.rasterizeSVGMask(masker, refBox, bw, bh, bx, by)
+				if maskBuf != nil {
+					applySVGMaskToBuffer(freshBuf, maskBuf, masker.MaskType)
+					// Composite freshBuf onto the page canvas using
+					// the same source-over math the existing CSS
+					// color-fill path produces, then apply opacity
+					// using the SAME compositor as a constant alpha
+					// modulation. This is what makes the test render
+					// pixel-identical to the rgba() ref render that
+					// the WPT reftest matches against (CSS Masking 1
+					// §3.7 rendering order: filter → mask → opacity →
+					// composite, with the louis14 canvas composite
+					// math matched to mazarin's gg backend).
+					compositeBufferWithOpacityOnto(r.target, freshBuf, bx, by, layer.Opacity)
+					return
+				}
+			}
+		}
+	}
+
 	if isGradientValue(maskVal) {
-		// Gradient masks use luminance mode per match-source default.
-		useLuminance = true
+		// Gradient mask: <image> type → match-source resolves to alpha mode.
 		maskImg = image.NewRGBA(image.Rect(0, 0, bw, bh))
 
 		// Create a temporary renderer to draw the gradient into the mask buffer.
@@ -571,7 +747,15 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 			fonts:        r.fonts,
 			imageFetcher: r.imageFetcher,
 		}
-		maskR.drawLinearGradient(maskVal, 0, 0, float64(bw), float64(bh))
+		// The mask layer image is positioned over the element's border box
+		// (default mask-origin), so the gradient must be drawn at the
+		// element's box geometry within the offscreen buffer — the element
+		// origin maps to (box.X-bx, box.Y-by) and the gradient spans the
+		// border box's exact width/height. Drawing it over the padded
+		// buffer extent instead would shift the gradient line and the
+		// per-row colour banding off the element's own paint geometry.
+		maskR.drawLinearGradient(maskVal,
+			box.X-float64(bx), box.Y-float64(by), box.Width, box.Height)
 	} else if strings.HasPrefix(maskVal, "url(") {
 		// Image mask: load the image and use its alpha channel.
 		src := maskVal
@@ -653,44 +837,115 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 }
 
 // paintLayerWithFilter renders the entire layer subtree into an offscreen
-// buffer, applies CSS filter effects, and composites the result back.
+// buffer sized to the filter region, runs the FilterEffect graph over it, and
+// composites the result back. Mirrors Blink's FilterPainter: the element
+// subtree is recorded into a source buffer, fed to the filter graph as
+// SourceGraphic, and the graph output replayed.
 func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	box := layer.Box
 
-	// Determine buffer bounds. For blur filters, we need extra padding.
-	blurExtend := 0.0
-	for _, f := range layer.Filters {
-		if f.Name == "blur" {
-			sigma := f.Value / 2
-			blurExtend = math.Max(blurExtend, math.Ceil(sigma*3))
-		}
+	// Reference box: the element's border box in absolute device pixels.
+	rbx := int(math.Floor(box.X))
+	rby := int(math.Floor(box.Y))
+	rbw := int(math.Ceil(box.X+box.Width)) - rbx
+	rbh := int(math.Ceil(box.Y+box.Height)) - rby
+	referenceBox := image.Rect(rbx, rby, rbx+rbw, rby+rbh)
+
+	// SourceGraphic extent: the element subtree's paint bounds, which can
+	// extend beyond the border box (positioned/overflowing descendants).
+	// Blink's filter SourceGraphic is the recorded layer contents including
+	// overflow; for drop-shadow especially the shadow is cast from the whole
+	// painted shape, so the source buffer must cover it. drop-shadow-clipped
+	// proves this: a descendant offset out of the border box still casts a
+	// shadow.
+	sourceExtent := referenceBox.Union(subtreeBorderBoxBounds(box))
+
+	// Build the filter graph. The builder computes the filter region by
+	// walking the graph's MapRect chain (blur/drop-shadow inflate it).
+	// Phase 7: SVG `<filter>` resource registry is supplied so
+	// `filter: url(#id)` references resolve via BuildReferenceFilter.
+	builder := &FilterEffectBuilder{
+		ReferenceBox: referenceBox,
+		CurrentColor: layer.TextColor,
+		Resources:    r.lookupSVGResources(),
 	}
-
-	// Buffer covers the element's border-box plus blur extension.
-	bx := int(math.Floor(box.X - blurExtend))
-	by := int(math.Floor(box.Y - blurExtend))
-	bw := int(math.Ceil(box.Width + 2*blurExtend))
-	bh := int(math.Ceil(box.Height + 2*blurExtend))
-
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
-		// Fallback: render without filters to avoid OOM.
-		r.paintLayerContent(layer)
+	filter := builder.BuildFilterEffect(layer.Filters)
+	if filter == nil {
+		// No supported CSS filter functions (e.g. only url() references,
+		// not yet handled) — paint without filtering rather than dropping
+		// the element.
+		r.paintLayerContentWithEffects(layer)
 		return
 	}
 
-	// Save original state and render into offscreen buffer.
+	// The filter region is the graph's forward-mapped bounds over the actual
+	// source extent (not just the border box) so the offscreen buffer covers
+	// every pixel the filter draws.
+	filter.FilterRegion = filter.MapRect(sourceExtent)
+	region := filter.FilterRegion
+	bx, by := region.Min.X, region.Min.Y
+	bw, bh := region.Dx(), region.Dy()
+	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
+		// Fallback: render without filters to avoid OOM.
+		r.paintLayerContentWithEffects(layer)
+		return
+	}
+
+	// Render the layer subtree into the source buffer (filter-region sized).
+	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	origDC := r.dc
 	origTarget := r.target
-
-	buf := image.NewRGBA(image.Rect(0, 0, bw, bh))
 	childDC := origDC.NewChildContext(buf)
 	r.dc = childDC
 	r.target = buf
-
-	// Offset so painting coordinates map to buffer-local coordinates.
 	r.dc.Translate(float64(-bx), float64(-by))
+	r.paintLayerContentWithEffects(layer)
+	r.dc = origDC
+	r.target = origTarget
 
-	// Paint the layer content (including transforms, opacity, children).
+	// Run the FilterEffect graph and composite the output back at the
+	// filter region origin.
+	filter.SetSourceImage(buf)
+	out := filter.Apply()
+	if out == nil {
+		// Match the two earlier failure paths (filter == nil, oversize buffer):
+		// fall back to unfiltered paint so the element still renders rather
+		// than vanishing into an invisible hole. r.dc/r.target were already
+		// restored above.
+		r.paintLayerContentWithEffects(layer)
+		return
+	}
+	r.dc.DrawImage(out, bx, by)
+}
+
+// subtreeBorderBoxBounds returns the union of the border boxes of box and all
+// its descendants, in absolute device pixels. It is the conservative paint
+// extent the filter SourceGraphic must cover so that descendants painted
+// outside the element's own border box (relative/absolute positioned, or
+// simply overflowing) still feed the filter graph.
+func subtreeBorderBoxBounds(box *layout.Box) image.Rectangle {
+	if box == nil {
+		return image.Rectangle{}
+	}
+	x0 := int(math.Floor(box.X))
+	y0 := int(math.Floor(box.Y))
+	x1 := int(math.Ceil(box.X + box.Width))
+	y1 := int(math.Ceil(box.Y + box.Height))
+	bounds := image.Rect(x0, y0, x1, y1)
+	for _, child := range box.Children {
+		cb := subtreeBorderBoxBounds(child)
+		if !cb.Empty() {
+			bounds = bounds.Union(cb)
+		}
+	}
+	return bounds
+}
+
+// paintLayerContentWithEffects paints a layer's content applying its transform
+// and opacity, used inside an offscreen buffer (the filter source). It mirrors
+// the transform/opacity handling in paintLayer so a filtered element still
+// honours its own transform and opacity.
+func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 	if layer.HasTransform {
 		r.dc.Push()
 		r.applyTransforms(layer)
@@ -705,75 +960,58 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	if layer.HasTransform {
 		r.dc.Pop()
 	}
-
-	// Restore original DC.
-	r.dc = origDC
-	r.target = origTarget
-
-	// Apply filter operations to the buffer.
-	for _, f := range layer.Filters {
-		switch f.Name {
-		case "blur":
-			sigma := f.Value / 2
-			radius := int(math.Round(sigma))
-			if radius > 0 {
-				boxBlur(buf, radius)
-				boxBlur(buf, radius)
-				boxBlur(buf, radius)
-			}
-		case "grayscale":
-			applyGrayscale(buf, clampFilter01(f.Value))
-		case "brightness":
-			applyBrightness(buf, f.Value)
-		case "contrast":
-			applyContrast(buf, f.Value)
-		case "opacity":
-			applyFilterOpacity(buf, clampFilter01(f.Value))
-		case "saturate":
-			applySaturate(buf, f.Value)
-		case "sepia":
-			applySepia(buf, clampFilter01(f.Value))
-		case "invert":
-			applyInvert(buf, clampFilter01(f.Value))
-		case "hue-rotate":
-			applyHueRotate(buf, f.Value)
-		case "drop-shadow":
-			applyDropShadow(buf, f)
-		}
-	}
-
-	// Composite filtered buffer back to main canvas.
-	r.dc.DrawImage(buf, bx, by)
 }
 
-// applyBackdropFilter captures the rectangular region of the canvas behind
-// the element's border-box, applies the backdrop-filter pipeline to it,
-// and draws the filtered backdrop back. The element then paints on top.
-// Per CSS Filter Effects Module Level 2, backdrop-filter operates on the
-// "backdrop image" — the rendered content behind the element.
+// applyBackdropFilter implements CSS Filter Effects 2 backdrop-filter: it
+// snapshots the backdrop image (everything painted behind the element's
+// border box), runs the filter graph over it, clips the result to the
+// element's border box including border-radius, and draws it back. The
+// element then paints its own decorations and content on top.
+//
+// applyBackdropFilter is invoked from paintLayerContent before
+// paintSelfDecorations, so r.target already holds the backdrop content. This
+// matches the Filter Effects 2 algorithm's "backdrop root image" for the
+// common case; isolation: isolate does not form a backdrop root, which is
+// consistent here because r.target is the shared canvas.
 func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	box := layer.Box
 
-	// Determine the element's border-box region.
+	// Element's border-box region in absolute device pixels.
 	bx := int(math.Floor(box.X))
 	by := int(math.Floor(box.Y))
 	bw := int(math.Ceil(box.X+box.Width)) - bx
 	bh := int(math.Ceil(box.Y+box.Height)) - by
 
-	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
 		return
 	}
+	borderBox := image.Rect(bx, by, bx+bw, by+bh)
 
-	// Capture the current canvas content behind this element's border-box.
-	backdrop := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	// A blur on the backdrop samples pixels outside the element's border
+	// box, so the captured region is inflated by the blur extent — otherwise
+	// the blur sees transparent black off the edges and darkens the result.
+	// The filtered output is clipped back to the border box afterwards.
+	// Filter Effects 2 treats the backdrop root image as effectively
+	// unbounded; capturing a margin around the box approximates that.
+	pad := 0
+	for _, f := range layer.BackdropFilters {
+		if f.Name == "blur" {
+			pad = max(pad, int(math.Ceil(f.Value*3))+2)
+		}
+	}
+	region := image.Rect(bx-pad, by-pad, bx+bw+pad, by+bh+pad)
+	rw, rh := region.Dx(), region.Dy()
+
+	// Snapshot the backdrop image: the canvas content under the region.
+	backdrop := image.NewRGBA(image.Rect(0, 0, rw, rh))
 	targetBounds := r.target.Bounds()
-	for y := 0; y < bh; y++ {
-		dy := by + y
+	for y := 0; y < rh; y++ {
+		dy := region.Min.Y + y
 		if dy < targetBounds.Min.Y || dy >= targetBounds.Max.Y {
 			continue
 		}
-		for x := 0; x < bw; x++ {
-			dx := bx + x
+		for x := 0; x < rw; x++ {
+			dx := region.Min.X + x
 			if dx < targetBounds.Min.X || dx >= targetBounds.Max.X {
 				continue
 			}
@@ -786,40 +1024,37 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 		}
 	}
 
-	// Apply the same filter pipeline used for regular CSS filter.
-	for _, f := range layer.BackdropFilters {
-		switch f.Name {
-		case "blur":
-			sigma := f.Value / 2
-			radius := int(math.Round(sigma))
-			if radius > 0 {
-				boxBlur(backdrop, radius)
-				boxBlur(backdrop, radius)
-				boxBlur(backdrop, radius)
-			}
-		case "grayscale":
-			applyGrayscale(backdrop, clampFilter01(f.Value))
-		case "brightness":
-			applyBrightness(backdrop, f.Value)
-		case "contrast":
-			applyContrast(backdrop, f.Value)
-		case "opacity":
-			applyFilterOpacity(backdrop, clampFilter01(f.Value))
-		case "saturate":
-			applySaturate(backdrop, f.Value)
-		case "sepia":
-			applySepia(backdrop, clampFilter01(f.Value))
-		case "invert":
-			applyInvert(backdrop, clampFilter01(f.Value))
-		case "hue-rotate":
-			applyHueRotate(backdrop, f.Value)
-		case "drop-shadow":
-			applyDropShadow(backdrop, f)
-		}
+	// Run the filter graph over the backdrop image. backdrop-filter uses the
+	// same filter-function list as filter.
+	builder := &FilterEffectBuilder{
+		ReferenceBox: borderBox,
+		CurrentColor: layer.TextColor,
+	}
+	filter := builder.BuildFilterEffect(layer.BackdropFilters)
+	if filter == nil {
+		return
+	}
+	filter.FilterRegion = region
+	filter.SetSourceImage(backdrop)
+	out := filter.Apply()
+	if out == nil {
+		return
 	}
 
-	// Draw the filtered backdrop back to the canvas at the element's position.
-	r.dc.DrawImage(backdrop, bx, by)
+	// Clip the filtered backdrop to the element's border box, honouring
+	// border-radius, then draw it back. The clip is the reason a
+	// backdrop-filter element with rounded corners does not tint outside
+	// its rounded shape.
+	r.dc.Push()
+	bxf, byf, bwf, bhf := float64(bx), float64(by), float64(bw), float64(bh)
+	if hasBorderRadius(layer) {
+		r.buildRoundedRectPath(bxf, byf, bwf, bhf, layer.BorderRadius)
+	} else {
+		r.dc.DrawRectangle(bxf, byf, bwf, bhf)
+	}
+	r.dc.Clip()
+	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
+	r.dc.Pop()
 }
 
 // paintLayerWithBlend renders the entire layer subtree into an offscreen
@@ -971,204 +1206,6 @@ func clampByte(v float64) uint8 {
 		return 255
 	}
 	return uint8(v)
-}
-
-// applyGrayscale applies a grayscale filter to an RGBA image.
-// amount=1 is fully grayscale, amount=0 is no change.
-func applyGrayscale(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		lum := 0.2126*r + 0.7152*g + 0.0722*b
-		pix[i] = clampByte(r*(1-amount) + lum*amount)
-		pix[i+1] = clampByte(g*(1-amount) + lum*amount)
-		pix[i+2] = clampByte(b*(1-amount) + lum*amount)
-	}
-}
-
-// applyBrightness multiplies RGB channels by factor.
-// factor=1 is no change, factor=0 is black, factor=2 is double brightness.
-func applyBrightness(img *image.RGBA, factor float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		pix[i] = clampByte(float64(pix[i]) * factor)
-		pix[i+1] = clampByte(float64(pix[i+1]) * factor)
-		pix[i+2] = clampByte(float64(pix[i+2]) * factor)
-	}
-}
-
-// applyContrast adjusts contrast around the midpoint (127.5).
-// factor=1 is no change, factor=0 is flat gray, factor>1 increases contrast.
-func applyContrast(img *image.RGBA, factor float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		pix[i] = clampByte((float64(pix[i])/255-0.5)*factor*255 + 127.5)
-		pix[i+1] = clampByte((float64(pix[i+1])/255-0.5)*factor*255 + 127.5)
-		pix[i+2] = clampByte((float64(pix[i+2])/255-0.5)*factor*255 + 127.5)
-	}
-}
-
-// applyFilterOpacity multiplies the alpha channel by amount.
-func applyFilterOpacity(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		pix[i+3] = clampByte(float64(pix[i+3]) * amount)
-	}
-}
-
-// applySaturate adjusts color saturation.
-// factor=1 is no change, factor=0 is grayscale, factor>1 is over-saturated.
-func applySaturate(img *image.RGBA, factor float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		lum := 0.2126*r + 0.7152*g + 0.0722*b
-		pix[i] = clampByte(lum + (r-lum)*factor)
-		pix[i+1] = clampByte(lum + (g-lum)*factor)
-		pix[i+2] = clampByte(lum + (b-lum)*factor)
-	}
-}
-
-// applySepia applies a sepia tone filter.
-// amount=1 is full sepia, amount=0 is no change.
-func applySepia(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		// Standard sepia matrix coefficients.
-		sr := 0.393*r + 0.769*g + 0.189*b
-		sg := 0.349*r + 0.686*g + 0.168*b
-		sb := 0.272*r + 0.534*g + 0.131*b
-		pix[i] = clampByte(r*(1-amount) + sr*amount)
-		pix[i+1] = clampByte(g*(1-amount) + sg*amount)
-		pix[i+2] = clampByte(b*(1-amount) + sb*amount)
-	}
-}
-
-// applyInvert inverts RGB channels by the given amount.
-// amount=1 is full inversion, amount=0 is no change.
-func applyInvert(img *image.RGBA, amount float64) {
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		pix[i] = clampByte(r*(1-amount) + (255-r)*amount)
-		pix[i+1] = clampByte(g*(1-amount) + (255-g)*amount)
-		pix[i+2] = clampByte(b*(1-amount) + (255-b)*amount)
-	}
-}
-
-// applyHueRotate rotates the hue of all pixels by the given angle in degrees.
-func applyHueRotate(img *image.RGBA, degrees float64) {
-	// CSS filter hue-rotate uses the rotation matrix from the spec.
-	// https://www.w3.org/TR/filter-effects-1/#funcdef-filter-hue-rotate
-	rad := degrees * math.Pi / 180
-	cosA := math.Cos(rad)
-	sinA := math.Sin(rad)
-
-	// Rotation matrix coefficients from the spec.
-	m00 := 0.213 + cosA*0.787 - sinA*0.213
-	m01 := 0.715 - cosA*0.715 - sinA*0.715
-	m02 := 0.072 - cosA*0.072 + sinA*0.928
-	m10 := 0.213 - cosA*0.213 + sinA*0.143
-	m11 := 0.715 + cosA*0.285 + sinA*0.140
-	m12 := 0.072 - cosA*0.072 - sinA*0.283
-	m20 := 0.213 - cosA*0.213 - sinA*0.787
-	m21 := 0.715 - cosA*0.715 + sinA*0.715
-	m22 := 0.072 + cosA*0.928 + sinA*0.072
-
-	pix := img.Pix
-	for i := 0; i < len(pix); i += 4 {
-		if pix[i+3] == 0 {
-			continue
-		}
-		r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
-		pix[i] = clampByte(m00*r + m01*g + m02*b)
-		pix[i+1] = clampByte(m10*r + m11*g + m12*b)
-		pix[i+2] = clampByte(m20*r + m21*g + m22*b)
-	}
-}
-
-// applyDropShadow creates a shadow of the element's alpha shape.
-func applyDropShadow(img *image.RGBA, f css.FilterFunction) {
-	bounds := img.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	ox := int(math.Round(f.ShadowOffsetX))
-	oy := int(math.Round(f.ShadowOffsetY))
-	blurR := int(math.Round(f.ShadowBlur / 2))
-
-	// Shadow color defaults to black if not specified.
-	sr, sg, sb := uint8(0), uint8(0), uint8(0)
-	if f.ShadowColor.R > 0 || f.ShadowColor.G > 0 || f.ShadowColor.B > 0 || f.ShadowColor.A > 0 {
-		sr = uint8(f.ShadowColor.R)
-		sg = uint8(f.ShadowColor.G)
-		sb = uint8(f.ShadowColor.B)
-	}
-
-	// Create shadow image from alpha channel.
-	shadow := image.NewRGBA(bounds)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			srcX := x - ox
-			srcY := y - oy
-			if srcX >= 0 && srcX < w && srcY >= 0 && srcY < h {
-				si := srcY*img.Stride + srcX*4
-				a := img.Pix[si+3]
-				if a > 0 {
-					di := y*shadow.Stride + x*4
-					shadow.Pix[di] = sr
-					shadow.Pix[di+1] = sg
-					shadow.Pix[di+2] = sb
-					shadow.Pix[di+3] = a
-				}
-			}
-		}
-	}
-
-	// Blur the shadow.
-	if blurR > 0 {
-		boxBlur(shadow, blurR)
-		boxBlur(shadow, blurR)
-		boxBlur(shadow, blurR)
-	}
-
-	// Composite: shadow behind original content.
-	// Draw shadow first, then overlay original on top.
-	result := image.NewRGBA(bounds)
-	copy(result.Pix, shadow.Pix)
-	// Porter-Duff src-over compositing.
-	for i := 0; i < len(img.Pix); i += 4 {
-		sa := float64(img.Pix[i+3]) / 255
-		if sa == 0 {
-			continue
-		}
-		da := float64(result.Pix[i+3]) / 255
-		outA := sa + da*(1-sa)
-		if outA > 0 {
-			result.Pix[i] = clampByte((float64(img.Pix[i])*sa + float64(result.Pix[i])*da*(1-sa)) / outA)
-			result.Pix[i+1] = clampByte((float64(img.Pix[i+1])*sa + float64(result.Pix[i+1])*da*(1-sa)) / outA)
-			result.Pix[i+2] = clampByte((float64(img.Pix[i+2])*sa + float64(result.Pix[i+2])*da*(1-sa)) / outA)
-			result.Pix[i+3] = clampByte(outA * 255)
-		}
-	}
-	copy(img.Pix, result.Pix)
 }
 
 // applyTransforms applies the CSS transform list to the draw context.
@@ -1353,17 +1390,27 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 		r.drawOutline(layer)
 	}
 
-	if layer.IsListItem && (layer.ListStyleType != css.ListStyleTypeNone || layer.MarkerContent != "" || layer.ListStyleImage != "") {
-		r.drawListMarker(layer)
-	}
+	// List markers are real laid-out ::marker boxes in the fragment tree
+	// (marker-foundation Phases 3-4): inside markers flow through the inline
+	// pipeline, outside markers are placed by the UnpositionedListMarker
+	// carry/claim protocol. They paint as ordinary box fragments — there is no
+	// paint-time marker hack any more.
 }
 
 // paintSelfForeground paints a layer's own text and replaced-element
 // image — the content that paints at CSS 2.1 Appendix E step 5
-// (inline foreground), after step-4 floats.
+// (inline foreground), after step-4 floats. Inline <svg> is a
+// replaced element whose content is the SVG subtree; it routes
+// through paintSVGRoot in the same slot as <img>'s drawImage.
+// Mirrors Blink's ReplacedPainter::PaintReplacedContent dispatch on
+// LayoutSVGRoot.
 func (r *Renderer) paintSelfForeground(layer *PaintLayer) {
 	if layer.Box != nil && layer.Box.Text != "" {
 		r.drawText(layer)
+	}
+	if isInlineSVGLayer(layer) {
+		r.paintSVGRoot(layer)
+		return
 	}
 	if layer.ImageSrc != "" {
 		r.drawImage(layer)
@@ -1539,26 +1586,58 @@ func pixelSnap(x, y, w, h float64) (float64, float64, float64, float64) {
 
 // applyClipPath builds the clip-path shape and calls Clip().
 // Caller must have already called Push(); will Pop() to restore.
+//
+// The reference box for a <basic-shape> clip-path is the border box
+// (CSS Masking L1 default geometry-box). It is pixel-snapped the same
+// way backgroundClipRectForClip snaps the border box for background
+// painting, so a clip-path shape lands on the same pixel grid as the
+// element's background and borders.
 func (r *Renderer) applyClipPath(layer *PaintLayer) {
 	box := layer.Box
-	cp := layer.ClipPath.ResolveClipPath(box.Width, box.Height)
+	// Pixel-snapped border box — the clip-path reference box.
+	bx, by, bw, bh := pixelSnap(box.X, box.Y, box.Width, box.Height)
+
+	// Reference variant: resolve `url(#id)` against the renderer-wide
+	// SVG resource registry and install the resolved clip directly.
+	// Mirrors Blink's ClipPathClipper::ApplyReferenceClipPath dispatch
+	// (core/paint/clip_path_clipper.cc).
+	if layer.ClipPath.Type == css.ClipPathReference {
+		target := geometry.NewRectF(bx, by, bw, bh)
+		r.applySVGClipPath(target, layer.ClipPath.ReferenceID)
+		return
+	}
+
+	cp := layer.ClipPath.ResolveClipPath(bw, bh)
 
 	switch cp.Type {
 	case css.ClipPathCircle:
-		r.dc.DrawCircle(box.X+cp.Cx, box.Y+cp.Cy, cp.Radius)
+		// A circle is an ellipse with rx == ry. Build it as a rounded
+		// rectangle whose bounding box is the circle's bounding box and
+		// whose four corner radii all equal the circle radius. This is
+		// the exact same path construction used for a border-radius
+		// circle (buildRoundedRectPathOnDC), so a clip-path: circle()
+		// rasterizes pixel-identically to the border-radius circle these
+		// tests are reftested against.
+		cx, cy := bx+cp.Cx, by+cp.Cy
+		rad := cp.Radius
+		radii := css.EllipticalRadii{
+			{Rx: rad, Ry: rad}, {Rx: rad, Ry: rad},
+			{Rx: rad, Ry: rad}, {Rx: rad, Ry: rad},
+		}
+		buildRoundedRectPathOnDC(r.dc, cx-rad, cy-rad, 2*rad, 2*rad, radii)
 
 	case css.ClipPathEllipse:
-		cx, cy := box.X+cp.Cx, box.Y+cp.Cy
+		// An ellipse is a rounded rectangle whose bounding box is the
+		// ellipse's bounding box and whose four corner radii all equal
+		// (rx, ry) — identical construction to a border-*-radius: rx ry
+		// ellipse, so it rasterizes pixel-identically to the reference.
+		cx, cy := bx+cp.Cx, by+cp.Cy
 		rx, ry := cp.Rx, cp.Ry
-		// Approximate ellipse with 4 cubic Bezier curves.
-		// kappa = 4*(sqrt(2)-1)/3 ≈ 0.5522847498
-		k := 0.5522847498
-		r.dc.MoveTo(cx+rx, cy)
-		r.dc.CubicTo(cx+rx, cy+ry*k, cx+rx*k, cy+ry, cx, cy+ry)
-		r.dc.CubicTo(cx-rx*k, cy+ry, cx-rx, cy+ry*k, cx-rx, cy)
-		r.dc.CubicTo(cx-rx, cy-ry*k, cx-rx*k, cy-ry, cx, cy-ry)
-		r.dc.CubicTo(cx+rx*k, cy-ry, cx+rx, cy-ry*k, cx+rx, cy)
-		r.dc.ClosePath()
+		radii := css.EllipticalRadii{
+			{Rx: rx, Ry: ry}, {Rx: rx, Ry: ry},
+			{Rx: rx, Ry: ry}, {Rx: rx, Ry: ry},
+		}
+		buildRoundedRectPathOnDC(r.dc, cx-rx, cy-ry, 2*rx, 2*ry, radii)
 
 	case css.ClipPathPolygon:
 		pts := cp.Points
@@ -1566,8 +1645,8 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 			return // Need at least 2 points
 		}
 		for i := 0; i < len(pts)-1; i += 2 {
-			px := box.X + pts[i]
-			py := box.Y + pts[i+1]
+			px := bx + pts[i]
+			py := by + pts[i+1]
 			if i == 0 {
 				r.dc.MoveTo(px, py)
 			} else {
@@ -3442,115 +3521,13 @@ func fallbackCounter(value int, fallback string, allStyles map[string]css.Counte
 	return fmt.Sprintf("%d.", value)
 }
 
-// drawListMarker paints the list-item marker (bullet or number).
-// For list-style-position:outside (default), the marker is drawn to the left
-// of the content box, inside the padding area created by the UA stylesheet.
-// For list-style-position:inside, the marker is drawn inline at the start of
-// the first line of the list item's content area.
-func (r *Renderer) drawListMarker(layer *PaintLayer) {
-	box := layer.Box
-	fontSize := layer.FontSize
-	if layer.HasMarkerFont {
-		fontSize = layer.MarkerFontSize
-	}
-	markerSize := fontSize * 0.35
-
-	// Position: to the left of the content box, vertically centered on first line.
-	contentLeft := box.X + box.Border.Left + box.Padding.Left
-
-	// Apply ::marker color if specified, else use text color.
-	if layer.HasMarkerColor {
-		r.setColor(layer.MarkerColor)
-	} else {
-		r.setColor(layer.TextColor)
-	}
-
-	// If list-style-image is set, try to load and draw it.
-	if layer.ListStyleImage != "" && r.imageFetcher != nil {
-		if img, err := images.LoadImageWithFetcher(layer.ListStyleImage, r.imageFetcher); err == nil {
-			imgW := img.Bounds().Dx()
-			imgH := img.Bounds().Dy()
-			if imgW > 0 && imgH > 0 {
-				maxSize := fontSize
-				scale := 1.0
-				if float64(imgW) > maxSize || float64(imgH) > maxSize {
-					scale = math.Min(maxSize/float64(imgW), maxSize/float64(imgH))
-				}
-				dw := int(math.Round(float64(imgW) * scale))
-				dh := int(math.Round(float64(imgH) * scale))
-				if dw > 0 && dh > 0 {
-					scaled := scaleImageNearest(img, imgW, imgH, dw, dh)
-					imgMy := box.Y + box.Border.Top + fontSize*0.55
-					ix := int(math.Round(contentLeft-box.Padding.Left/2)) - dw/2
-					iy := int(math.Round(imgMy)) - dh/2
-					r.dc.DrawImage(scaled, ix, iy)
-					return
-				}
-			}
-		}
-		// Fall through to list-style-type if image fails to load.
-	}
-
-	if layer.ListStylePositionInside {
-		r.drawListMarkerInside(layer, box, fontSize, markerSize, contentLeft)
-	} else {
-		r.drawListMarkerOutside(layer, box, fontSize, markerSize, contentLeft)
-	}
-}
-
-// drawListMarkerOutside draws the marker in the padding area (default outside position).
-func (r *Renderer) drawListMarkerOutside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
-	mx := contentLeft - box.Padding.Left/2
-	my := box.Y + box.Border.Top + fontSize*0.55
-
-	// If ::marker has custom content, draw it as text.
-	if layer.MarkerContent != "" {
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			tw := r.dc.MeasureText(layer.MarkerContent, fid)
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			numX := contentLeft - tw - markerSize*0.5
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(layer.MarkerContent, fid, numX, numY)
-		}
-		return
-	}
-
-	switch layer.ListStyleType {
-	case css.ListStyleTypeDisc:
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.Fill()
-	case css.ListStyleTypeCircle:
-		r.dc.DrawCircle(mx, my, markerSize/2)
-		r.dc.SetLineWidth(1)
-		r.dc.Stroke()
-	case css.ListStyleTypeSquare:
-		r.dc.DrawRectangle(mx-markerSize/2, my-markerSize/2, markerSize, markerSize)
-		r.dc.Fill()
-	default:
-		// All text-based markers: decimal, alpha, roman, greek, disclosure, etc.
-		numStr := r.formatListMarker(layer.ListStyleType, layer.ListItemIndex)
-		fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
-		fid := r.openFont(fontPath, fontSize)
-		if fid >= 0 {
-			tw := r.dc.MeasureText(numStr, fid)
-			metrics := r.dc.GetFontMetrics(fid)
-			ascent := float64(metrics.Ascent) / 64.0
-			// Right-align marker text to the left of content.
-			numX := contentLeft - tw - markerSize*0.5
-			numY := box.Y + box.Border.Top + ascent
-			r.dc.DrawText(numStr, fid, numX, numY)
-		}
-	}
-}
-
-// drawListMarkerInside is a no-op. Inside markers are now laid out as synthetic
-// inline ::marker children in the layout tree, so they render as part of normal
-// inline content. Paint-time drawing here would double-render.
-func (r *Renderer) drawListMarkerInside(layer *PaintLayer, box *layout.Box, fontSize, markerSize, contentLeft float64) {
-}
+// List markers are real laid-out ::marker boxes (marker-foundation Phases
+// 3-4): inside markers flow through the inline pipeline, outside markers are
+// placed by the UnpositionedListMarker carry/claim protocol. Both paint as
+// ordinary box fragments — the paint-time drawListMarker / drawListMarkerOutside
+// hack has been retired. formatListMarker / applyCounterStyle / fallbackCounter
+// below remain only as the @counter-style data path (docs/plan-css-lists.md
+// B5 replaces them with the CounterStyle subsystem).
 
 // drawTextStr draws a text string, applying OpenType features if present on the layer.
 // The baseline Y is pixel-snapped; X is passed through fractionally so the
