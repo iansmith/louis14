@@ -30,34 +30,99 @@ func resolveURLInCSSMatch(match, uri, quote, baseDir string) string {
 	return "url(" + quote + resolved + quote + ")"
 }
 
-// ResolveRelativeURLsInCSS rewrites relative CSS url() references to be
-// relative to baseDir. Absolute URLs (data:, http://, https://, /) are left unchanged.
-func ResolveRelativeURLsInCSS(cssText, baseDir string) string {
-	if baseDir == "" || baseDir == "." {
-		return cssText
-	}
+// rewriteCSSURLs walks each url(...) reference in cssText across the three
+// quoting variants (double, single, none) and replaces each with the result
+// of fn(uri, quote). fn returns the new full match text (e.g. "url("+q+uri'+q+")").
+func rewriteCSSURLs(cssText string, fn func(match, uri, quote string) string) string {
 	cssText = cssURLDoubleQuote.ReplaceAllStringFunc(cssText, func(match string) string {
 		groups := cssURLDoubleQuote.FindStringSubmatch(match)
 		if groups == nil {
 			return match
 		}
-		return resolveURLInCSSMatch(match, groups[1], `"`, baseDir)
+		return fn(match, groups[1], `"`)
 	})
 	cssText = cssURLSingleQuote.ReplaceAllStringFunc(cssText, func(match string) string {
 		groups := cssURLSingleQuote.FindStringSubmatch(match)
 		if groups == nil {
 			return match
 		}
-		return resolveURLInCSSMatch(match, groups[1], `'`, baseDir)
+		return fn(match, groups[1], `'`)
 	})
 	cssText = cssURLNoQuote.ReplaceAllStringFunc(cssText, func(match string) string {
 		groups := cssURLNoQuote.FindStringSubmatch(match)
 		if groups == nil {
 			return match
 		}
-		return resolveURLInCSSMatch(match, groups[1], ``, baseDir)
+		return fn(match, groups[1], ``)
 	})
 	return cssText
+}
+
+// ResolveRelativeURLsInCSS rewrites relative CSS url() references to be
+// relative to baseDir. Absolute URLs (data:, http://, https://, /) are left unchanged.
+func ResolveRelativeURLsInCSS(cssText, baseDir string) string {
+	if baseDir == "" || baseDir == "." {
+		return cssText
+	}
+	return rewriteCSSURLs(cssText, func(match, uri, quote string) string {
+		return resolveURLInCSSMatch(match, uri, quote, baseDir)
+	})
+}
+
+// stripBaseURLsInCSS reverses ResolveRelativeURLsInCSS for a single baseDir.
+// Used by JS cross-document adoptNode to un-bake URLs that were pre-resolved
+// against the iframe document at parse time, so they re-resolve against the
+// outer document at paint time.
+func stripBaseURLsInCSS(cssText, baseDir string) string {
+	if baseDir == "" || baseDir == "." {
+		return cssText
+	}
+	prefix := baseDir + "/"
+	return rewriteCSSURLs(cssText, func(match, uri, quote string) string {
+		if !strings.HasPrefix(uri, prefix) {
+			return match
+		}
+		return "url(" + quote + strings.TrimPrefix(uri, prefix) + quote + ")"
+	})
+}
+
+// tagIframeBase recursively sets IframeBase on every ElementNode in the
+// subtree. TextNodes carry no style attribute so the marker is irrelevant
+// there. Called by layoutNestedDocument so JS cross-document moves can find
+// the pre-baked prefix to reverse.
+func tagIframeBase(n *html.Node, base string) {
+	if n == nil {
+		return
+	}
+	if n.Type == html.ElementNode {
+		n.IframeBase = base
+	}
+	for _, c := range n.Children {
+		tagIframeBase(c, base)
+	}
+}
+
+// AdoptNodeFromIframe walks n (the node being moved cross-document) and any
+// descendants, reversing the iframe-base URL pre-baking on each node's inline
+// style attribute and clearing IframeBase. Mirrors Blink's
+// Document::adoptNode: when a node is adopted into a new owner document, its
+// CSS URLs re-resolve against the new owner. louis14 stores the pre-baked
+// prefix on the node so we can strip it; clearing IframeBase makes subsequent
+// re-adoption a no-op.
+func AdoptNodeFromIframe(n *html.Node) {
+	if n == nil || n.IframeBase == "" {
+		return
+	}
+	// Fast-path: regex passes are pure overhead for the typical inline style
+	// (color/dimension/transform with no url() reference). A substring test
+	// avoids three regex scans per node when nothing needs rewriting.
+	if style, ok := n.Attributes["style"]; ok && strings.Contains(style, "url(") {
+		n.Attributes["style"] = stripBaseURLsInCSS(style, n.IframeBase)
+	}
+	n.IframeBase = ""
+	for _, c := range n.Children {
+		AdoptNodeFromIframe(c)
+	}
 }
 
 // ResolveRelativeURLsInHTML rewrites relative URL references in a complete

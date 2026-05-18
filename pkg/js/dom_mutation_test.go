@@ -51,6 +51,89 @@ func TestAppendChild(t *testing.T) {
 	}
 }
 
+func TestIframeContentDocumentCrossDocAppendChild(t *testing.T) {
+	// Mirrors the WPT pattern from svg-relative-urls-001.html:
+	//   var iframe = document.querySelector('iframe');
+	//   var div_from_iframe = iframe.contentDocument.querySelector('div');
+	//   iframe.remove();
+	//   document.body.appendChild(div_from_iframe);
+	// Verifies that contentDocument exposes the nested doc's querySelector,
+	// that iframe.remove() detaches the iframe, and that cross-doc appendChild
+	// adopts the node into the main document.
+	doc := parseHTML(t, `<html><body><iframe id="frame"></iframe></body></html>`)
+
+	// Build the nested document (what layout would normally produce when the
+	// iframe's src is fetched) AND tag every node with IframeBase + a pre-baked
+	// inline style URL, the way layoutNestedDocument does for real iframes.
+	nested, err := html.Parse(`<html><body><div id="inner" style="filter: url(support/support/hueRotate.svg#f)">moved</div></body></html>`)
+	if err != nil {
+		t.Fatalf("nested parse: %v", err)
+	}
+	var tag func(*html.Node)
+	tag = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			n.IframeBase = "support"
+		}
+		for _, c := range n.Children {
+			tag(c)
+		}
+	}
+	tag(nested.Root)
+
+	iframe := getElementById(doc.Root, "frame")
+	if iframe == nil {
+		t.Fatal("iframe not found in main doc")
+	}
+	iframe.NestedDocument = nested
+
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var iframe = document.querySelector('iframe');
+		if (!iframe) throw new Error("iframe not found");
+		var nestedDoc = iframe.contentDocument;
+		if (!nestedDoc) throw new Error("contentDocument is null");
+		var div = nestedDoc.querySelector('div');
+		if (!div) throw new Error("nested div not found via contentDocument.querySelector");
+		if (div.id !== "inner") throw new Error("wrong div id: " + div.id);
+		iframe.remove();
+		document.body.appendChild(div);
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Iframe should be detached
+	if iframe.Parent != nil {
+		t.Errorf("iframe still has parent %q after remove()", iframe.Parent.TagName)
+	}
+
+	// Inner div should now live under main body, not in the nested doc.
+	if movedFromNested := getElementById(nested.Root, "inner"); movedFromNested != nil {
+		t.Errorf("inner div still found in nested doc after appendChild")
+	}
+	body := findBodyNode(doc.Root)
+	if body == nil {
+		t.Fatal("main body not found")
+	}
+	movedDiv := getElementById(doc.Root, "inner")
+	if movedDiv == nil {
+		t.Fatal("inner div not found in main doc after appendChild")
+	}
+	if movedDiv.Parent != body {
+		t.Errorf("moved div parent = %v, want main body", movedDiv.Parent)
+	}
+	// adoptNode side-effect: the iframe-base prefix must be stripped from
+	// the inline style and IframeBase must be cleared, so the cascade
+	// re-resolves the URL against the outer document at paint time.
+	wantStyle := `filter: url(support/hueRotate.svg#f)`
+	if got := movedDiv.Attributes["style"]; got != wantStyle {
+		t.Errorf("moved div style:\n  got  = %q\n  want = %q", got, wantStyle)
+	}
+	if movedDiv.IframeBase != "" {
+		t.Errorf("moved div IframeBase not cleared: %q", movedDiv.IframeBase)
+	}
+}
+
 func TestAppendChildReparent(t *testing.T) {
 	doc := parseHTML(t, `<div id="a"><span id="child">text</span></div><div id="b"></div>`)
 	engine := New()

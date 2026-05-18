@@ -302,7 +302,7 @@ that produce output even when the source graphic is empty.
 - `svg-empty-hidden-foreignobject-with-filter-001` (2.1%): no `<foreignObject>` support + filter painters bail on empty userBBox — [LOU-134](https://linear.app/mazarin/issue/LOU-134/).
 - `svg-multiple-filter-functions` (2.1%): mixed `url(...)+CSS-shorthand` filter list — `filter_effect_builder.go` explicitly skips `url()` in mixed lists (deferred FilterChain merge) — [LOU-135](https://linear.app/mazarin/issue/LOU-135/).
 - `blur-text` (13.2%): inline elements with `filter:` don't promote to paint layer; `BuildReferenceFilter` never invoked — [LOU-136](https://linear.app/mazarin/issue/LOU-136/).
-- `svg-relative-urls-001` (2.1% post-Phase-2; was 4.3%): JS shim missing `iframe.contentDocument` + cross-document `appendChild` — [LOU-137](https://linear.app/mazarin/issue/LOU-137/).
+- ~~`svg-relative-urls-001` (2.1% post-Phase-2; was 4.3%): JS shim missing `iframe.contentDocument` + cross-document `appendChild`~~ — **CLOSED** by [LOU-137](https://linear.app/mazarin/issue/LOU-137/). Real blocker was URL pre-baking inside iframe content surviving the JS cross-doc move; fix mirrors Blink `Document::adoptNode` by tagging iframe descendants with `IframeBase` and reversing the URL pre-bake on cross-doc `appendChild`. Test PASS @ 0% diff; no regression on `svg-relative-urls-002` or `bidi-dynamic-iframe-001`.
 - `FillPaint`/`StrokePaint` filter builtins still aliased to `SourceGraphic`/`SourceAlpha` from LOU-128 — not surfaced by any current bucket-H/J failure; leave the alias until a test exercises it.
 
 **Gate metric.** ≥22/25 bucket H at 0% diff; FilterEffect graph proven on real `fe*` chains.

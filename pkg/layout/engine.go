@@ -202,13 +202,23 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	// background images and other sub-resources render correctly. The outer
 	// renderer uses the outer document's base path; by pre-resolving relative
 	// URLs against the nested doc's directory we ensure correctness.
+	iframeBase := ""
 	if base := path.Dir(nestedDocURI); base != "" && base != "." {
 		htmlContent = ResolveRelativeURLsInHTML(htmlContent, base)
+		iframeBase = base
 	}
 
 	doc, err := html.Parse(htmlContent)
 	if err != nil {
 		return nil
+	}
+
+	// Tag every node in the nested document with its iframe base directory.
+	// JS cross-document appendChild reads this to reverse the URL pre-baking
+	// when a node is adopted into the outer document (per Blink's
+	// Document::adoptNode semantics, mirrored by AdoptNodeFromIframe).
+	if iframeBase != "" {
+		tagIframeBase(doc.Root, iframeBase)
 	}
 
 	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)

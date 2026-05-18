@@ -2,6 +2,7 @@ package js
 
 import (
 	"louis14/pkg/html"
+	"louis14/pkg/layout"
 
 	"github.com/dop251/goja"
 )
@@ -19,6 +20,14 @@ func (e *elementAccessor) appendChildFn() func(call goja.FunctionCall) goja.Valu
 		// Remove from old parent if already in tree
 		if child.Parent != nil {
 			child.Parent.RemoveChild(child)
+		}
+		// Cross-document adoptNode: when a child carrying an iframe-base
+		// tag is appended into a node that doesn't have one (i.e. into the
+		// main document), reverse the iframe's URL pre-baking on the moved
+		// subtree so the inline-style URLs re-resolve against the new
+		// owner per Blink's Document::adoptNode.
+		if child.IframeBase != "" && e.node.IframeBase == "" {
+			layout.AdoptNodeFromIframe(child)
 		}
 		e.node.AddChild(child)
 		return e.ctx.elementProxy(child)
