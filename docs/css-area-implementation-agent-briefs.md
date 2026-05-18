@@ -409,12 +409,182 @@ After both agents return:
 5. If either flags DESIGN ESCALATION, stop and surface — let the user
    decide whether the plan needs a re-design pass.
 
-## Round 2 / Round 3 (to be drafted after Round 1 lands)
+---
 
-- Round 2: css-ruby Phase 1 (UA styles + display model + box-fixup).
-  Solo because of inline_layout.go / layout_tree_builder.go contention.
+## Round 1 retrospective (post-merge, 2026-05-18)
+
+Both Round 1 streams landed cleanly. Observations worth carrying forward:
+
+- **The `pkg/css/style.go` additive-only rule worked.** Both agents touched
+  the file; git auto-merged with no conflicts at the orchestrator-side
+  `--no-ff` step. Keep this rule in every future brief.
+- **css-lists Phase 1 surfaced 4 plan-bucketing errors in its B1 bucket**:
+  counter-004 / counters-004 need georgian counter style (Phase 5 work);
+  3 slot-order tests need Shadow DOM `<slot>` flattening (out of plan
+  scope entirely). The plan listed them under B1 but B1's work doesn't fix
+  them. Implementing agents should be empowered to surface this kind of
+  discrepancy as a SCOPE NOTE rather than try to expand scope.
+- **8 B4 accidental-pass collapses are now visible on master**
+  (foo-counter-reversed-007a/b/009a/b, li-value-reversed-007a/b/009a/b).
+  Foundationally correct — old code was broken-byte-identical on both
+  sides; new code is correct on one side. Phase 4 will resolve.
+
+---
+
+## Brief 2 — `plan-css-ruby.md` Phase 1
+
+Round 2: solo agent. Runs alone because of `inline_layout.go` /
+`layout_tree_builder.go` contention with later text-decor work.
+
+```
+You are an isolated worktree agent. Your task: implement Phase 1 of
+`docs/plan-css-ruby.md`: correct ruby UA styles, display model, and
+box-fixup.
+
+[INSERT THE FULL "HARD RULES" BLOCK FROM THIS DOC HERE]
+
+═══════════════════════════════════════════════════════════════
+PLAN-SPECIFIC SCOPE
+═══════════════════════════════════════════════════════════════
+
+Plan: $WT/docs/plan-css-ruby.md
+Phase: Phase 1 ONLY ("Correct ruby UA styles, display model, and
+box-fixup — FOUNDATIONAL").
+Baseline: 24 passing / 51 failing (75 run) per the plan.
+
+The plan was Blink-vetted on 2026-05-18 against Chromium main @
+4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Read the "Blink vetting log"
+section at the top of the plan — citations are SHA-pinned and accurate.
+
+Phase 1 is FOUNDATIONAL: no layout yet, just the box tree and display
+values must match Blink. It does NOT fix any css-ruby tests on its own,
+but unblocks all 51 failures by removing the modeling errors. The gate
+is "no regression in css-ruby below 24 passing, CSS2 99/99 unchanged,
+display computed values for ruby/rt/rb/rbc/rtc/rp match Blink."
+
+Key surface (see plan §Phase 1 for citations + line numbers):
+- `pkg/css/style.go:4453-4532` — keep `DisplayRuby` and
+  `DisplayRubyText`. **ADD `DisplayBlockRuby`** for the two-keyword
+  `display: block ruby` form. **DELETE `DisplayRubyBase`** and any
+  `ruby-base`/`ruby-base-container`/`ruby-text-container` parsing —
+  these are NOT real display values in modern Blink. Update
+  `ParseDisplay` for the two-keyword form per CSS Display L3.
+- `pkg/css/cascade.go:162-183` — rewrite the ruby UA block to mirror
+  Blink `html.css:1701-1720` exactly:
+  - `ruby` → `display:ruby`
+  - `rt` → `display:ruby-text` ONLY when parent is a ruby box
+    + `font-size:50%` (Blink uses 50%, not 0.5em — `ruby-rt-fontsize-001`
+    expects exactly half) + `text-align:start`
+  - `rp` → `display:none` UNCONDITIONALLY (Blink does this via a flat
+    element-only rule at `html.css:972-975`, not parent-scoped)
+  - `rb`, `rbc`, `rtc` → NO UA display override
+- `pkg/css/style.go` display-classification helpers (`IsInlineLevelDisplay`,
+  `isBlockContainer`, `isBlockLevel`): treat `DisplayRuby`/`DisplayRubyText`
+  as inline-level; `DisplayBlockRuby` as block-level.
+- `pkg/layout/layout_tree_builder.go` — NEW `normalizeRubySubtrees(node)`
+  invoked from `BuildLayoutTree`/`buildNode` analogous to
+  `normalizeTableSubtrees` (`:44-63`). Two responsibilities:
+  1. For `display: block ruby`: generate the two-box `LayoutRubyAsBlock`
+     structure (block-flow principal box + anonymous inline `display:ruby`
+     child holding the original children). Mirror `wrapAnonymousTableBoxes`
+     with a new `css.NewAnonymousInlineRubyStyle`.
+  2. Inlinification (§2.2): when a node's layout parent is `display:ruby`
+     or `display:ruby-text`, set each in-flow child's used display to its
+     `EquivalentInlineDisplay` (block→inline-block, table→inline-table,
+     etc) and force `float:none`. Recurse.
+- `pkg/layout/inline_layout.go:61-74` — `isInlineLevelDisplay` already
+  lists the ruby displays; drop `DisplayRubyBase`, keep the others.
+
+DO NOT touch (those are later phases):
+- Ruby-column inline-item model (Phase 2).
+- Intra-base white space (Phase 4).
+- ruby-align / ruby-overhang (Phase 5).
+- Autohiding (Phase 6).
+- Anything in `pkg/layout/inline_item.go`, `pkg/layout/line_breaker.go`,
+  `pkg/layout/fragment_builder.go` beyond what the items above strictly
+  require. Phase 2 owns those.
+
+`pkg/css/style.go` parallel-safety: same rule as Round 1 — additive
+where possible. The DELETION of `DisplayRubyBase` is the exception (it
+was a modeling error). Be careful that no other CSS-area work in flight
+uses it. The Round 1 agents (css-will-change, css-lists) did not.
+css-text-decor's Phase 5 will land later and explicitly does NOT depend
+on `DisplayRubyBase` per its vetting log.
+
+═══════════════════════════════════════════════════════════════
+MILESTONES
+═══════════════════════════════════════════════════════════════
+
+**M0 — Setup + Blink reads**
+- `pwd`, `git status`, `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`.
+- Symlink fonts (Hard Rule 4).
+- Read the entire plan doc (`docs/plan-css-ruby.md`).
+- WebFetch each Phase 1 Blink citation at the pinned SHA:
+  - `core/html/resources/html.css` lines 972-975 and 1701-1720
+  - `core/css/resolver/style_adjuster.cc` `EquivalentBlockDisplay` /
+    `EquivalentInlineDisplay`
+  - `core/layout/layout_object.cc` ~lines 430-435 (object creation gate
+    for ruby; verify exact line at the SHA)
+  - `core/layout/layout_ruby_as_block.{cc,h}` (the block-ruby wrapper)
+- Commit + push checklist as `$WT/.phase1-checklist.md`.
+  Title: `chore(css-ruby): Phase 1 reading checklist`.
+
+**M1 — Implement the box model changes**
+- `pkg/css/style.go`: add `DisplayBlockRuby`, delete `DisplayRubyBase`,
+  add two-keyword `display: block ruby` / `inline ruby` parse, update
+  classification helpers.
+- `pkg/css/cascade.go`: rewrite ruby UA block to mirror Blink exactly.
+- `pkg/layout/layout_tree_builder.go`: add `normalizeRubySubtrees` +
+  `inlinifyRubyChildren`. Invoke from `BuildLayoutTree`/`buildNode`.
+- `pkg/layout/inline_layout.go`: drop `DisplayRubyBase` from
+  `isInlineLevelDisplay`.
+- Add `css.NewAnonymousInlineRubyStyle(parent)` helper.
+- `gofmt -w pkg/css/... pkg/layout/...`.
+- `GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go build ./...` clean.
+- Commit + push. Title: `feat(css-ruby): UA styles + display model
+  + box-fixup (Phase 1)`.
+
+**M2 — Phase 1 gate**
+- Run 2-3 representative tests from currently-passing css-ruby (24
+  baseline) to confirm no regression. Pick names by filtering
+  `docs/reftest-survey-2026-05-14-raw.txt` for `PASS:
+  TestWPTCSS3Reftests/css-ruby/`. Use 2-3 names, not the whole set.
+- Run 1-2 CSS2 tests (any currently-passing) for regression sample.
+- Hand-verify in code that `ruby/rt/rb/rbc/rtc/rp` produce the correct
+  display values at parse + cascade (write a small unit test if
+  practical; otherwise reason from the cascade output for a 3-line
+  HTML fixture in your report).
+- Phase 1 does NOT fix any css-ruby tests on its own. Do NOT run the
+  whole css-ruby section.
+- Delete `.phase1-checklist.md`.
+- Commit + push. Title: `feat(css-ruby): Phase 1 gate — display
+  model verified, no regressions`.
+
+═══════════════════════════════════════════════════════════════
+REPORT
+═══════════════════════════════════════════════════════════════
+
+- Worktree path and branch name.
+- Pinned Blink SHA you referenced.
+- Files added / modified, with line counts.
+- Tests run (names) + pass/fail status. Note: Phase 1 does NOT add new
+  passes; the gate is "no regression."
+- Computed-display values for ruby/rt/rb/rbc/rtc/rp on a sample DOM
+  (either via a small unit test or reasoned-out from cascade.go).
+- **Any DESIGN ESCALATION** (Hard Rule 13).
+- **Any PARALLEL CONTENTION note** (Hard Rule 6 — particularly note if
+  the `DisplayRubyBase` deletion surfaces a caller in unexpected code).
+- **Any SCOPE NOTE** (Hard Rule 14).
+- Phase 1 commit SHA.
+
+State actual deltas, not predictions.
+```
+
+---
+
+## Round 3 (to be drafted after Round 2 lands)
+
 - Round 3: css-text-decor Phase 1 (decoration model). Solo and only
   after css-ruby's Phases 1-2 are merged.
 
-These will be appended as separate `## Brief N` sections in this doc
-when their predecessors finish.
+Will be appended as `## Brief 3` when its predecessor finishes.
