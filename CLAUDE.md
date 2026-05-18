@@ -30,7 +30,11 @@ work. Run only the specific tests associated with the feature being worked on �
 typically 1 to 4 tests. Broader test runs are expensive and should only happen when
 explicitly requested.
 
-## 5. Operational rules
+## 5. Pre-commit review
+Before every commit, run the `simplify` skill and address its findings. If the
+skill surfaces something ambiguous, ask the user rather than guessing.
+
+## 6. Operational rules
 - Never use `open` to display files from agents — it disrupts the user's screen.
 - Always commit and push before launching worktree agents — worktrees start from
   HEAD, not the working directory.
