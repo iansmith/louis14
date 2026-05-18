@@ -38,3 +38,5 @@ explicitly requested.
 - When running in a worktree (any directory that is NOT ~/louis14), commit ONLY to
   your worktree branch. Never commit directly to fix/* or master branches from a
   worktree.
+- Configuration settings mean that all "git push..." commands have to include
+  the branch name.
