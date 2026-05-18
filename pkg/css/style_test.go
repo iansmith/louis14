@@ -134,3 +134,185 @@ func TestParseInlineStyle_CombinedBoxModel(t *testing.T) {
 		t.Errorf("expected border width 1, got %+v", borderWidth)
 	}
 }
+
+// ----- will-change canonical value model tests --------------------------
+
+func TestGetWillChangeData_AutoReturnsNil(t *testing.T) {
+	s := NewStyle()
+	if wc := s.GetWillChangeData(); wc != nil {
+		t.Errorf("unset will-change should return nil, got %+v", wc)
+	}
+	s.Set("will-change", "auto")
+	if wc := s.GetWillChangeData(); wc != nil {
+		t.Errorf("will-change:auto should return nil, got %+v", wc)
+	}
+	s.Set("will-change", "")
+	if wc := s.GetWillChangeData(); wc != nil {
+		t.Errorf("empty will-change should return nil, got %+v", wc)
+	}
+}
+
+func TestGetWillChangeData_TransformSetsNarrowAndBroadHints(t *testing.T) {
+	s := NewStyle()
+	s.Set("will-change", "transform")
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		t.Fatal("will-change:transform should return non-nil WillChange")
+	}
+	if !wc.HasTransformProperty {
+		t.Error("transform should set HasTransformProperty (narrow)")
+	}
+	if !wc.HasAnyTransformProperty {
+		t.Error("transform should set HasAnyTransformProperty (broad)")
+	}
+	if !s.HasWillChangeProperty("transform") {
+		t.Error("HasWillChangeProperty(transform) should be true")
+	}
+}
+
+func TestGetWillChangeData_TranslateBroadOnly(t *testing.T) {
+	s := NewStyle()
+	s.Set("will-change", "translate")
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		t.Fatal("will-change:translate should return non-nil WillChange")
+	}
+	if wc.HasTransformProperty {
+		t.Error("translate must NOT set narrow HasTransformProperty")
+	}
+	if !wc.HasAnyTransformProperty {
+		t.Error("translate must set broad HasAnyTransformProperty")
+	}
+}
+
+func TestGetWillChangeData_MaskShorthandExpandsToMaskImage(t *testing.T) {
+	s := NewStyle()
+	s.Set("will-change", "mask")
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		t.Fatal("will-change:mask should return non-nil WillChange")
+	}
+	if wc.Longhands["mask"] {
+		t.Error("mask is a shorthand and must not appear in resolved longhand set")
+	}
+	if !wc.Longhands["mask-image"] {
+		t.Error("mask must expand to mask-image longhand")
+	}
+	if !wc.Longhands["-webkit-mask-box-image-source"] {
+		t.Error("mask must also expand to -webkit-mask-box-image-source per Blink's SC set")
+	}
+}
+
+func TestGetWillChangeData_WebkitPerspectiveAlias(t *testing.T) {
+	s := NewStyle()
+	s.Set("will-change", "-webkit-perspective")
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		t.Fatal("will-change:-webkit-perspective should return non-nil WillChange")
+	}
+	if wc.Longhands["-webkit-perspective"] {
+		t.Error("-webkit-perspective alias must be normalized away from resolved longhands")
+	}
+	if !wc.Longhands["perspective"] {
+		t.Error("-webkit-perspective must normalize to perspective longhand")
+	}
+	if !wc.HasAnyTransformProperty {
+		t.Error("perspective is in the broad transform set; HasAnyTransformProperty should be true")
+	}
+}
+
+func TestGetWillChangeData_MultiToken(t *testing.T) {
+	s := NewStyle()
+	s.Set("will-change", "transform, opacity")
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		t.Fatal("will-change:transform,opacity should return non-nil WillChange")
+	}
+	if !wc.Longhands["transform"] || !wc.Longhands["opacity"] {
+		t.Errorf("expected both transform and opacity longhands, got %v", wc.Longhands)
+	}
+	if !wc.HasTransformProperty || !wc.HasAnyTransformProperty {
+		t.Error("transform present in multi-token list must set both transform hints")
+	}
+	if len(wc.Values) != 2 || wc.Values[0] != "transform" || wc.Values[1] != "opacity" {
+		t.Errorf("Values should preserve source order, got %v", wc.Values)
+	}
+}
+
+func TestGetWillChangeData_ScrollPosition(t *testing.T) {
+	s := NewStyle()
+	s.Set("will-change", "scroll-position")
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		t.Fatal("will-change:scroll-position should return non-nil WillChange")
+	}
+	if !wc.HasScrollPosition {
+		t.Error("scroll-position must set HasScrollPosition flag")
+	}
+	if wc.Longhands["scroll-position"] {
+		t.Error("scroll-position is not a longhand and must not appear in Longhands set")
+	}
+	if !s.HasWillChangeScrollPosition() {
+		t.Error("HasWillChangeScrollPosition() accessor should return true")
+	}
+}
+
+func TestWillChangeCreatesStackingContext_BlinkCanonicalSet(t *testing.T) {
+	// Verbatim set from computed_style.cc:1319 @ SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	cases := []struct {
+		ident         string
+		allowsZIndex  bool
+		expectCreates bool
+	}{
+		{"opacity", false, true},
+		{"transform", false, true},
+		{"transform-style", false, true},
+		{"perspective", false, true},
+		{"translate", false, true},
+		{"rotate", false, true},
+		{"scale", false, true},
+		{"offset-path", false, true},
+		{"offset-position", false, true},
+		{"mask-image", false, true},
+		{"-webkit-mask-box-image-source", false, true},
+		{"clip-path", false, true},
+		{"-webkit-box-reflect", false, true},
+		{"filter", false, true},
+		{"backdrop-filter", false, true},
+		{"position", false, true},
+		{"mix-blend-mode", false, true},
+		{"isolation", false, true},
+		{"contain", false, true},
+		{"view-transition-name", false, true},
+		// z-index gated on AllowsZIndex flag.
+		{"z-index", false, false},
+		{"z-index", true, true},
+		// Negative case: an ident not in the SC set.
+		{"color", false, false},
+		// `auto` returns nil → no SC.
+		{"auto", true, false},
+	}
+	for _, c := range cases {
+		s := NewStyle()
+		s.Set("will-change", c.ident)
+		got := s.WillChangeCreatesStackingContext(c.allowsZIndex)
+		if got != c.expectCreates {
+			t.Errorf("WillChangeCreatesStackingContext(%q, allowsZIndex=%v) = %v, want %v",
+				c.ident, c.allowsZIndex, got, c.expectCreates)
+		}
+	}
+}
+
+func TestWillChangeCreatesStackingContext_MaskShorthandRoutes(t *testing.T) {
+	// `mask` is a shorthand; Blink's SC set contains `mask-image` and
+	// `-webkit-mask-box-image-source` but never `mask` itself. We must
+	// nevertheless return true for `will-change: mask` via shorthand
+	// expansion (this is the documented fix for
+	// will-change-stacking-context-mask-1).
+	s := NewStyle()
+	s.Set("will-change", "mask")
+	if !s.WillChangeCreatesStackingContext(false) {
+		t.Error("will-change:mask should create a stacking context via shorthand expansion to mask-image")
+	}
+}

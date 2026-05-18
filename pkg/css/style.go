@@ -8973,3 +8973,274 @@ func ResolveLogicalPropertiesInTree(node *html.Node, styles map[*html.Node]*Styl
 		ResolveLogicalPropertiesInTree(child, styles)
 	}
 }
+
+// ----- will-change canonical value model -------------------------------------
+//
+// The WillChange type mirrors Blink's StyleWillChangeData
+// (third_party/blink/renderer/core/style/style_will_change_data.h @ SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Side-effect predicates (containing-block, stacking-context, transform-related)
+// must all flow through this single resolved model; never re-parse the raw
+// will-change string at the call site. The Blink comment is load-bearing:
+// "The bitset only contains resolved longhand CSSPropertyID(s). No aliases."
+//
+// louis14 keys CSS by property *name* rather than enum id, so the bitset is
+// modeled as map[string]bool. Aliases and shorthand idents are normalized at
+// parse time so consumers can query by longhand name only.
+
+// WillChange is the resolved, parsed view of the `will-change` property.
+//
+// Field correspondence with Blink's StyleWillChangeData:
+//
+//	Values                   ↔ values                       (raw idents, source order)
+//	Longhands                ↔ resolved_longhand_ids        (resolved longhand names only)
+//	HasScrollPosition        ↔ has_scroll_position_value
+//	HasTransformProperty     ↔ has_transform_property       (narrow: only "transform")
+//	HasAnyTransformProperty  ↔ has_any_transform_property   (broad set)
+type WillChange struct {
+	// Values preserves the raw ident list in source order, lowercased and
+	// trimmed. Used for serialization parity with getComputedStyle().
+	Values []string
+	// Longhands is the set of resolved longhand property names named by
+	// `will-change` after alias normalization and shorthand expansion.
+	// No aliases. No shorthands. (Mirrors Blink's resolved_longhand_ids
+	// CSSBitset comment.) The empty-map case is distinct from a nil
+	// *WillChange — nil means `auto` / unset / empty, while an empty map
+	// (rare) means only `auto` or `scroll-position` tokens were present.
+	Longhands map[string]bool
+	// HasScrollPosition is true if `scroll-position` appeared. This is
+	// not a real longhand — Blink keeps it as a separate bool.
+	HasScrollPosition bool
+	// HasTransformProperty is the narrow hint: true iff the literal
+	// `transform` longhand was named. Mirrors Blink's
+	// HasWillChangeTransformProperty() — see computed_style.h:1287.
+	HasTransformProperty bool
+	// HasAnyTransformProperty is the broad hint: true iff any of
+	// `transform`, `translate`, `scale`, `rotate`, `perspective`,
+	// `offset-path`, `transform-style`, `offset-position` was named.
+	// This is what HasTransformRelatedProperty() folds in
+	// (computed_style.h:2266) and what ComputeIsFixedContainer reads
+	// via HasWillChangeAnyTransformProperty() at layout_object.cc:1888.
+	HasAnyTransformProperty bool
+}
+
+// willChangeBroadTransformSet is the set of resolved longhands that
+// contribute to the "any transform property" hint, mirroring Blink's
+// has_any_transform_property field. Source: the union enumerated in
+// HasPropertyThatCreatesStackingContext's transform-related members
+// (computed_style.cc:1319) intersected with the transform-related
+// properties tested in HasTransformRelatedProperty (computed_style.h:2266).
+var willChangeBroadTransformSet = map[string]bool{
+	"transform":       true,
+	"translate":       true,
+	"scale":           true,
+	"rotate":          true,
+	"perspective":     true,
+	"offset-path":     true,
+	"transform-style": true,
+	"offset-position": true,
+}
+
+// willChangeAliasMap normalizes vendor-prefixed will-change idents to their
+// unprefixed longhand. Mirrors Blink's CSS property alias resolution that
+// happens before resolved_longhand_ids is built.
+//
+// Only aliases known to appear in WPT css-will-change tests + Blink's
+// canonical SC set are listed.
+var willChangeAliasMap = map[string]string{
+	"-webkit-perspective": "perspective",
+	"-webkit-transform":   "transform",
+	"-webkit-filter":      "filter",
+	// `-webkit-mask-box-image-source` is the legacy alias for
+	// `mask-border-source`; Blink's SC set lists kWebkitMaskBoxImageSource
+	// as its OWN longhand, not a `mask-border-source` alias, so we keep it
+	// untouched here.
+}
+
+// willChangeShorthandExpansion maps shorthand idents to the set of
+// longhand idents they expand to FOR THE PURPOSES OF WILL-CHANGE
+// SIDE EFFECTS. This is not the full shorthand-to-longhand table — only
+// the longhands that influence will-change predicates (the rest are
+// inert side-effect-wise and can be dropped from the resolved set).
+//
+// Blink's general shorthand expander runs in the cascade and would
+// expand `mask` to mask-image, mask-mode, mask-position, mask-clip,
+// mask-origin, mask-size, mask-composite, and (depending on flags)
+// mask-repeat. Of those, only mask-image and -webkit-mask-box-image-source
+// appear in HasPropertyThatCreatesStackingContext (computed_style.cc:1319).
+// So `mask` expands here to {mask-image, -webkit-mask-box-image-source}.
+var willChangeShorthandExpansion = map[string][]string{
+	"mask": {"mask-image", "-webkit-mask-box-image-source"},
+}
+
+// willChangeStackingContextSet is the canonical set of resolved longhands
+// that, when named in `will-change`, cause the element to establish a
+// stacking context per CSS Will Change Level 1 §3. Mirrors Blink's
+// HasPropertyThatCreatesStackingContext at computed_style.cc:1319 verbatim:
+//
+//	kOpacity, kTransform, kTransformStyle, kPerspective, kTranslate,
+//	kRotate, kScale, kOffsetPath, kOffsetPosition, kMaskImage,
+//	kWebkitMaskBoxImageSource, kClipPath, kWebkitBoxReflect, kFilter,
+//	kBackdropFilter, kPosition, kMixBlendMode, kIsolation, kContain,
+//	kViewTransitionName,
+//	kZIndex (only if allows_z_index — gated separately in
+//	WillChangeCreatesStackingContext).
+var willChangeStackingContextSet = map[string]bool{
+	"opacity":                       true,
+	"transform":                     true,
+	"transform-style":               true,
+	"perspective":                   true,
+	"translate":                     true,
+	"rotate":                        true,
+	"scale":                         true,
+	"offset-path":                   true,
+	"offset-position":               true,
+	"mask-image":                    true,
+	"-webkit-mask-box-image-source": true,
+	"clip-path":                     true,
+	"-webkit-box-reflect":           true,
+	"filter":                        true,
+	"backdrop-filter":               true,
+	"position":                      true,
+	"mix-blend-mode":                true,
+	"isolation":                     true,
+	"contain":                       true,
+	"view-transition-name":          true,
+	// "z-index" is handled by the allowsZIndex gate in the predicate.
+}
+
+// GetWillChangeData parses the `will-change` property into the canonical
+// resolved value model. Returns nil for `auto`, unset, empty, or for any
+// declaration that contains only non-longhand-resolving tokens (none of
+// which currently exist in the spec — but be defensive).
+//
+// This is the single source of truth for will-change side-effect predicates.
+// Phases 2-5 route all consumers through it; the legacy GetWillChange()
+// []string accessor is left intact for callers that need raw idents.
+func (s *Style) GetWillChangeData() *WillChange {
+	val, ok := s.Get("will-change")
+	if !ok {
+		return nil
+	}
+	val = strings.TrimSpace(val)
+	if val == "" || val == "auto" {
+		return nil
+	}
+	parts := strings.Split(val, ",")
+	wc := &WillChange{
+		Values:    make([]string, 0, len(parts)),
+		Longhands: make(map[string]bool, len(parts)),
+	}
+	for _, p := range parts {
+		ident := strings.TrimSpace(strings.ToLower(p))
+		if ident == "" || ident == "auto" {
+			continue
+		}
+		wc.Values = append(wc.Values, ident)
+		// scroll-position is a special non-longhand keyword.
+		if ident == "scroll-position" {
+			wc.HasScrollPosition = true
+			continue
+		}
+		// Alias normalization (-webkit-* → unprefixed where applicable).
+		if canon, isAlias := willChangeAliasMap[ident]; isAlias {
+			ident = canon
+		}
+		// Shorthand expansion: replace the shorthand ident with its
+		// SC/CB-relevant longhand set.
+		if longs, isShorthand := willChangeShorthandExpansion[ident]; isShorthand {
+			for _, lh := range longs {
+				wc.Longhands[lh] = true
+			}
+			continue
+		}
+		// Otherwise treat as a longhand-or-unknown ident; record it.
+		// Unknown idents (e.g. `foo-bar`) are kept in the set so a future
+		// property expansion picks them up automatically — they won't
+		// match any predicate set, so they are inert.
+		wc.Longhands[ident] = true
+	}
+	// Cache predicate flags at parse time so consumers are O(1).
+	wc.HasTransformProperty = wc.Longhands["transform"]
+	for lh := range wc.Longhands {
+		if willChangeBroadTransformSet[lh] {
+			wc.HasAnyTransformProperty = true
+			break
+		}
+	}
+	// An entry that named only `auto` / `scroll-position` and nothing
+	// else still produces a non-nil *WillChange (Blink does too — the
+	// HasWillChangeScrollPosition() accessor depends on it). The nil
+	// case is reserved for the auto/unset/empty-value paths above.
+	return wc
+}
+
+// HasWillChangeProperty mirrors Blink's
+// ComputedStyle::HasWillChangeProperty(CSSPropertyID id)
+// (computed_style.h:1278). Returns true iff the named *resolved longhand*
+// property appears in the will-change ident list.
+//
+// `name` MUST be a longhand property name. Shorthand or alias inputs
+// return false (Blink DCHECKs this; we silently return false).
+func (s *Style) HasWillChangeProperty(name string) bool {
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		return false
+	}
+	return wc.Longhands[name]
+}
+
+// HasWillChangeScrollPosition mirrors
+// ComputedStyle::HasWillChangeScrollPosition() (computed_style.h:1284).
+func (s *Style) HasWillChangeScrollPosition() bool {
+	wc := s.GetWillChangeData()
+	return wc != nil && wc.HasScrollPosition
+}
+
+// HasWillChangeTransformProperty is the narrow hint: only the literal
+// `transform` longhand. Mirrors
+// ComputedStyle::HasWillChangeTransformProperty() (computed_style.h:1287).
+func (s *Style) HasWillChangeTransformProperty() bool {
+	wc := s.GetWillChangeData()
+	return wc != nil && wc.HasTransformProperty
+}
+
+// HasWillChangeAnyTransformProperty is the broad hint covering every
+// transform-related longhand (transform, translate, scale, rotate,
+// perspective, offset-path, transform-style, offset-position). Mirrors
+// ComputedStyle::HasWillChangeAnyTransformProperty()
+// (computed_style.h:1290), which folds into HasTransformRelatedProperty()
+// at computed_style.h:2266 and is consulted by ComputeIsFixedContainer
+// at layout_object.cc:1888.
+func (s *Style) HasWillChangeAnyTransformProperty() bool {
+	wc := s.GetWillChangeData()
+	return wc != nil && wc.HasAnyTransformProperty
+}
+
+// WillChangeCreatesStackingContext mirrors Blink's static helper
+// HasPropertyThatCreatesStackingContext(WillChange(), allows_z_index)
+// at computed_style.cc:1319, called from
+// CalculateIsStackingContextWithoutContainment at computed_style.cc:2927.
+//
+// The `allowsZIndex` parameter gates the kZIndex contribution per Blink:
+// only positioned-or-flex/grid items have AllowsZIndex set
+// (style_adjuster.cc:1240-1247), so a static-position non-flex/grid box
+// with `will-change: z-index` does NOT establish a stacking context.
+//
+// Returns false for `auto`/unset.
+func (s *Style) WillChangeCreatesStackingContext(allowsZIndex bool) bool {
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		return false
+	}
+	if allowsZIndex && wc.Longhands["z-index"] {
+		return true
+	}
+	for lh := range wc.Longhands {
+		if willChangeStackingContextSet[lh] {
+			return true
+		}
+	}
+	return false
+}
