@@ -7,6 +7,31 @@ Blink-grounded counter scope tree, a real `@counter-style`/`CounterStyle` text
 generator, and a layout-tree list-marker box. No point fixes — every phase
 fixes a whole CSS Lists subsystem.
 
+## Blink vetting log
+
+**Vetted against Chromium `main` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f** on 2026-05-18.
+
+### Citations verified
+- `core/css/counters_attachment_context.h` (`CountersAttachmentContext`, `CounterEntry`, `CounterStack`, `CounterInheritanceTable`, `enum class Type`) — ✓ unchanged
+- `core/css/counters_attachment_context.cc` (`ProcessCounter`, `CreateCounter`, `UpdateCounterValue`, `RemoveStaleCounters`, `RemoveCounterIfAncestorExists`, `EnterObject`, `LeaveObject`, `GetCounterValues`, `MaybeCreateListItemCounter`, `ElementGeneratesListItemCounter`, `CalculateInitialValueForReversed`) — ✓ unchanged
+- `core/css/counter_style.h/.cc` (`CounterStyle`, `CounterStyleSystem`, `GenerateRepresentation`, `GenerateRepresentationWithPrefixAndSuffix`, `RangeContains`, `ResolveExtends`, `ResolveFallback`, `IsPredefinedSymbolMarker`) — ✓ unchanged; default `suffix_ = ". "`, default `negative_prefix_ = "-"`.
+- `core/layout/list/list_marker.h/.cc` (`ListMarker`, `MarkerTextWithSuffix` / `MarkerTextWithoutSuffix` driven by `kWithPrefixSuffix` / `kWithoutPrefixSuffix`, `GetListStyleCategory` → `{kNone, kSymbol, kLanguage, kStaticString}`, `UpdateMarkerContentIfNeeded`, `WidthOfSymbol`, `InlineMarginsForOutside`, `InlineMarginsForInside`, `RelativeSymbolMarkerRect`, `GetCounterStyle`) — ✓ unchanged. `LayoutOutsideListMarker` / `LayoutInsideListMarker` both still present.
+- `core/layout/list/unpositioned_list_marker.h/.cc` (`UnpositionedListMarker`, `ContentAlignmentBaseline`, `AddToBox`, `AddToBoxWithoutLineBoxes`, `Layout`, `InlineOffset`) — ✓ unchanged.
+- `core/html/html_olist_element.h` (`HTMLOListElement::InitialCounter()` returns `int64_t`; `IsReversed()`) — ✓ unchanged.
+- `core/html/list_item_ordinal.h` (`ListItemOrdinal::Get`, `ExplicitValue`, `IsInReversedOrderedList`) — ✓ unchanged.
+
+### Citations updated
+- `list_marker.cc` (`OrdinalValue` / `ListItemForMarker`) → at this SHA the equivalent code path is `ListMarker::MarkerText` consuming `CountersAttachmentContext::GetCounterValues("list-item", only_last=true)`, with `ListMarker::ListItem(marker)` for the marker→list-item parent lookup. `OrdinalValueChanged` exists as a notification hook but not as a value getter. Plan Phase 3 reworded to reference the actual symbols.
+- `counters_attachment_context.cc` `ProcessCounter` precedence — plan Phase 2 wording ("set runs after reset and increment per spec ordering — encode the order in `EnterObject`") replaced. Actual Blink model: type stored as **bitmask** (`Type { kIncrementType = 1<<0, kResetType = 1<<1, kSetType = 1<<2 }`); `DetermineCounterTypeAndValue` combines bits; `ProcessCounter` early-exits to `CreateCounter` when the reset bit is set; otherwise `CalculateCounterValue` uses `IsSetOrReset(type) → return counter_value`, else `current + counter_value`. Net per-element precedence: reset > set > increment.
+
+### Citations broken / missing in current Blink
+- none.
+
+### Citations added
+- Phase 1 §types now notes `CounterInheritanceTable` is `HashMap<AtomicString, CounterStack*>` (pointer-to-stack) and that `enum class Type` is a **bitmask** (`1<<0`, `1<<1`, `1<<2`).
+- Phase 5 §predefined-symbols cites the cached flag form `IsPredefinedSymbolMarker() const { return is_predefined_symbol_marker_; }` (set via `SetIsPredefinedSymbolMarker()`), rather than name-time matching against `disc`/`circle`/`square`/`disclosure-open`/`disclosure-closed`.
+- Phase 5 §`CounterStyleSystem` notes the enum also contains `kSimpChineseInformal`, `kSimpChineseFormal`, `kTradChineseInformal`, `kTradChineseFormal`, `kKoreanHangulFormal`, `kKoreanHanjaInformal`, `kKoreanHanjaFormal`, `kLowerArmenian`, `kUpperArmenian`, `kEthiopicNumeric` between the listed common systems and `kUnresolvedExtends` — louis14 will need stubs for at least the enum members even if the algorithms are scoped to a later phase.
+
 ## Rules & Discipline (DO NOT DUPLICATE HERE)
 Re-read both before any planning or coding session:
 1. **`/Users/iansmith/louis14/CLAUDE.md`** — foundational correctness, study
@@ -138,10 +163,12 @@ nesting, sibling isolation, and `counters()` resolution.
 - `core/css/counters_attachment_context.h` — `CounterEntry{Member<const
   LayoutObject> layout_object; int value;}`; `CounterStack` =
   `HeapVector<Member<CounterEntry>>`; `CounterInheritanceTable` =
-  `HashMap<AtomicString, CounterStack>`; `enum Type {kIncrementType,
-  kResetType, kSetType}`; methods `EnterObject`, `LeaveObject`,
-  `GetCounterValues`, `ProcessCounter`, `CreateCounter`,
-  `UpdateCounterValue`, `RemoveStaleCounters`,
+  `HashMap<AtomicString, CounterStack*>` (pointer-to-stack);
+  `enum class Type { kIncrementType = 1<<0, kResetType = 1<<1, kSetType = 1<<2 }`
+  — used as a **bitmask** so a single element can carry multiple directive kinds for
+  the same counter name (see Phase 2 for the resolution model); methods
+  `EnterObject`, `LeaveObject`, `GetCounterValues`, `ProcessCounter`,
+  `CreateCounter`, `UpdateCounterValue`, `RemoveStaleCounters`,
   `RemoveCounterIfAncestorExists`, `ShallowClone`/`DeepClone`.
 - `counters_attachment_context.cc`:
   - `ProcessCounter` → `RemoveStaleCounters` first, then `CreateCounter`
@@ -219,15 +246,24 @@ baseline-passing list/counter tests).
 skip `display:none` subtrees correctly; saturate at int32 bounds.
 
 **Blink reference.**
-- `counters_attachment_context.cc` `ProcessCounter` handles `kSetType` the same
-  as increment except it *assigns* instead of *adds*; instantiation value for a
-  bare `counter-set: n` is 0.
+- `counters_attachment_context.cc` `ProcessCounter` resolves the type **bitmask**
+  built by `DetermineCounterTypeAndValue` (it ORs `kIncrementType`/`kResetType`/
+  `kSetType` together when a single element declares multiple kinds for the same
+  counter name). If `IsReset(counter_type)` is true it early-exits to
+  `CreateCounter` (so reset wins); otherwise `UpdateCounterValue` runs
+  `CalculateCounterValue(type, value, current)`, which is `counter_value` for
+  `IsSetOrReset(type)` and `current + counter_value` for plain increment. Net
+  per-element precedence is therefore **reset > set > increment** for the same
+  counter, rather than a sequential pass-ordered model. Instantiation value for a
+  bare `counter-set: n` is 0 (the `current` argument passed to
+  `CalculateCounterValue` when the stack is empty).
 - Counters are attached during *layout-tree* building, and `display:contents`
   elements **do** participate (they have no box but their `EnterObject`/
   `LeaveObject` still run — Blink walks the flat tree). `display:none` elements
   are not in the layout tree at all, so their counter directives never run.
 - Counter values are plain `int`; CSS Lists §overflow says counters saturate at
-  the `int32` range — Blink uses `base::ClampedNumeric`/`int`.
+  the `int32` range — Blink uses `base::ClampedNumeric`/`base::CheckAdd` (the
+  `CalculateCounterValue` add path is `base::CheckAdd(current, value).ValueOrDefault(current)`).
 
 **louis14 target files.**
 - `pkg/css/counters_attachment_context.go` — `ProcessCounter` `kSetType` branch;
@@ -237,9 +273,13 @@ skip `display:none` subtrees correctly; saturate at int32 bounds.
   `LeaveObject` and recurse into children (do not early-return); confirm
   `display:none` children are filtered *before* `EnterObject` so their
   directives are skipped.
-- `pkg/css/style.go` — parse the `counter-set` property (precedence vs
-  `counter-reset`/`-increment` on the same element: set runs after reset and
-  increment per spec ordering — encode the order in `EnterObject`).
+- `pkg/css/style.go` — parse the `counter-set` property. Precedence vs
+  `counter-reset`/`-increment` on the same element: store all three kinds for a
+  given counter name as a bitmask on the parsed `counterDirective`; resolve in
+  `ProcessCounter` exactly like Blink (reset bit ⇒ `CreateCounter`; else
+  set/reset assigns via `CalculateCounterValue` returning the directive value,
+  increment adds with int32 saturation). Do **not** thread three sequential
+  passes through `EnterObject`.
 
 **Tests fixed.** `counter-set-001`, `counter-set-002`,
 `counter-reset-increment-overflow-underflow`,
@@ -266,9 +306,13 @@ for list elements, seeded from `<ol start>`, `<li value>`, and reachable by
   item) and `HTMLOListElement::InitialCounter()` (reads `start`/`reversed`).
 - An `<li>` with no explicit `value` does an implicit `counter-increment:
   list-item 1`. An explicit `value` is an implicit `counter-set: list-item N`.
-- `list_marker.cc` `OrdinalValue` / `ListItemForMarker` reads the `list-item`
-  counter value out of the attachment context — marker text is just
-  `counter(list-item)` formatted by the item's `CounterStyle`.
+- `list_marker.cc` `ListMarker::MarkerText` calls
+  `CountersAttachmentContext::GetCounterValues("list-item", /*only_last=*/true)`
+  on the layout object for the list item (looked up via
+  `ListMarker::ListItem(marker)`), then formats the resulting `int` with the
+  item's `CounterStyle::GenerateRepresentationWithPrefixAndSuffix`. (Note:
+  `OrdinalValueChanged` exists as a notification hook but is not a value
+  getter — the actual read goes through the attachment context as above.)
 
 **louis14 target files.**
 - `pkg/css/counters_attachment_context.go` — add
@@ -340,22 +384,34 @@ category — split into sub-batches: 4a `counter-reset-reversed-*`,
 table.
 
 **Blink reference.**
-- `core/css/counter_style.h` — `class CounterStyle`; `enum CounterStyleSystem
-  {kCyclic, kFixed, kSymbolic, kAlphabetic, kNumeric, kAdditive, kHebrew,
-  ...predefined..., kUnresolvedExtends}`; fields `symbols_`,
-  `additive_weights_`, `prefix_`/`suffix_` (suffix default `". "`),
-  `negative_prefix_`/`negative_suffix_`, `pad_symbol_`/`pad_length_`,
-  `first_symbol_value_` (fixed, default 1), `range_`, `fallback_style_`,
-  `extended_style_`.
+- `core/css/counter_style.h` — `class CORE_EXPORT CounterStyle final : public
+  GarbageCollected<CounterStyle>`. `enum class CounterStyleSystem { kCyclic,
+  kFixed, kSymbolic, kAlphabetic, kNumeric, kAdditive, kHebrew,
+  kSimpChineseInformal, kSimpChineseFormal, kTradChineseInformal,
+  kTradChineseFormal, kKoreanHangulFormal, kKoreanHanjaInformal,
+  kKoreanHanjaFormal, kLowerArmenian, kUpperArmenian, kEthiopicNumeric,
+  kUnresolvedExtends }` — louis14 must declare the full set even if some
+  algorithms are stubbed early (decimal/alphabetic/roman/hebrew/greek cover most
+  css-lists tests; CJK/Armenian/Ethiopic can be `kUnresolvedExtends`-style stubs
+  until cross-cutting tests need them). Fields `symbols_`, `additive_weights_`,
+  `prefix_`/`suffix_` (default `". "`), `negative_prefix_` (default `"-"`)/
+  `negative_suffix_`, `pad_symbol_`/`pad_length_`, `first_symbol_value_`
+  (`wtf_size_t`, default 1), `range_` (`Vector<std::pair<int,int>>`),
+  `fallback_style_`/`extended_style_` (`Member<CounterStyle>`). The
+  `disc`/`circle`/`square`/`disclosure-open`/`disclosure-closed` predefined
+  styles are identified by a **cached flag**, not a name lookup:
+  `bool IsPredefinedSymbolMarker() const { return is_predefined_symbol_marker_; }`
+  set at registry-build time via `SetIsPredefinedSymbolMarker()`.
 - `counter_style.cc` — `GenerateRepresentation(int)` →
   `RangeContains` check (else `GenerateFallbackRepresentation` with cycle
-  detection) → `GenerateInitialRepresentation` (per-system algorithm) →
-  pad → negative sign. `GenerateRepresentationWithPrefixAndSuffix` wraps with
-  prefix/suffix. `ResolveExtends`/`ResolveFallback` link names.
+  detection via an `is_in_fallback_` re-entrancy flag) →
+  `GenerateInitialRepresentation` (per-system algorithm) → pad → negative sign.
+  `GenerateRepresentationWithPrefixAndSuffix` wraps with prefix/suffix.
+  `ResolveExtends`/`ResolveFallback` link names.
 - UA `@counter-style` table: `decimal`, `decimal-leading-zero`,
   `lower/upper-roman`, `lower/upper-alpha`/`-latin`, `lower-greek`,
   `disc`/`circle`/`square`/`disclosure-open`/`disclosure-closed` (the last five
-  flagged `IsPredefinedSymbolMarker`).
+  carry the `is_predefined_symbol_marker_` flag).
 
 **louis14 target files.**
 - New: `pkg/css/counter_style.go` — `CounterStyle` struct, `CounterStyleSystem`
