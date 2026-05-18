@@ -30,11 +30,12 @@ type fontCacheKey struct {
 
 // Renderer paints a tree of layout boxes onto an image.
 type Renderer struct {
-	dc           textshape.DrawContext
-	target       *image.RGBA
-	fonts        text.FontConfig
-	imageFetcher images.ImageFetcher
-	scrollY      float64
+	dc                 textshape.DrawContext
+	target             *image.RGBA
+	fonts              text.FontConfig
+	imageFetcher       images.ImageFetcher
+	externalSVGFetcher func(uri string) ([]byte, error)
+	scrollY            float64
 
 	// svgResources aggregates the SVG resource registries from every
 	// inline `<svg>` in the current paint frame. Populated by Render
@@ -153,6 +154,15 @@ func (r *Renderer) SetFonts(fonts text.FontConfig) {
 // SetImageFetcher sets the image fetcher for loading network images during painting.
 func (r *Renderer) SetImageFetcher(fetcher images.ImageFetcher) {
 	r.imageFetcher = fetcher
+}
+
+// SetExternalSVGFetcher installs a closure that resolves
+// `filter: url(doc#id)` references to external SVG document bytes
+// (data:, file://, http(s)://, or harness-resolved relative URLs).
+// Consumed by FilterEffectBuilder.BuildReferenceFilter's external
+// branch. LOU-130 Phase 2 wiring.
+func (r *Renderer) SetExternalSVGFetcher(fetcher func(uri string) ([]byte, error)) {
+	r.externalSVGFetcher = fetcher
 }
 
 // SetScrollY sets the vertical scroll offset.
@@ -865,9 +875,10 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 	// Phase 7: SVG `<filter>` resource registry is supplied so
 	// `filter: url(#id)` references resolve via BuildReferenceFilter.
 	builder := &FilterEffectBuilder{
-		ReferenceBox: referenceBox,
-		CurrentColor: layer.TextColor,
-		Resources:    r.lookupSVGResources(),
+		ReferenceBox:       referenceBox,
+		CurrentColor:       layer.TextColor,
+		Resources:          r.lookupSVGResources(),
+		ExternalSVGFetcher: r.externalSVGFetcher,
 	}
 	filter := builder.BuildFilterEffect(layer.Filters)
 	if filter == nil {
@@ -1027,8 +1038,10 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	// Run the filter graph over the backdrop image. backdrop-filter uses the
 	// same filter-function list as filter.
 	builder := &FilterEffectBuilder{
-		ReferenceBox: borderBox,
-		CurrentColor: layer.TextColor,
+		ReferenceBox:       borderBox,
+		CurrentColor:       layer.TextColor,
+		Resources:          r.lookupSVGResources(),
+		ExternalSVGFetcher: r.externalSVGFetcher,
 	}
 	filter := builder.BuildFilterEffect(layer.BackdropFilters)
 	if filter == nil {

@@ -1,0 +1,154 @@
+package render
+
+import (
+	"image"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestBuildReferenceFilter_ExternalSVG_DataURL feeds a data: URL
+// pointing at a one-effect inline SVG; asserts the resulting
+// *filters.Filter is non-nil and has both Source and LastEffect set
+// (the SVGFilterBuilder always populates them for a successful
+// build).
+func TestBuildReferenceFilter_ExternalSVG_DataURL(t *testing.T) {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f"><feFlood flood-color="green"/></filter></svg>`
+	dataURL := "data:image/svg+xml;utf8," + svg + "#f"
+
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 100, 100),
+		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+			// The fetcher receives docURL (no fragment).
+			return []byte(svg), nil
+		},
+	}
+	f := b.BuildReferenceFilter(dataURL)
+	if f == nil {
+		t.Fatal("BuildReferenceFilter returned nil for valid data URL")
+	}
+	if f.Source == nil || f.LastEffect == nil {
+		t.Errorf("Filter is missing builtins: Source=%v LastEffect=%v", f.Source, f.LastEffect)
+	}
+}
+
+// TestBuildReferenceFilter_ExternalSVG_FileURL writes a synthetic SVG
+// to a temp dir, references it via file://, and verifies the filter
+// builds.
+func TestBuildReferenceFilter_ExternalSVG_FileURL(t *testing.T) {
+	dir := t.TempDir()
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f"><feFlood flood-color="red"/></filter></svg>`
+	p := filepath.Join(dir, "x.svg")
+	if err := os.WriteFile(p, []byte(svg), 0644); err != nil {
+		t.Fatal(err)
+	}
+	uri := "file://" + p + "#f"
+
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+			// In the file:// case the docURL is file://path (no
+			// fragment), and the test harness reads it via os.ReadFile.
+			return os.ReadFile(p)
+		},
+	}
+	f := b.BuildReferenceFilter(uri)
+	if f == nil {
+		t.Fatal("BuildReferenceFilter returned nil for valid file URL")
+	}
+}
+
+// TestBuildReferenceFilter_ExternalSVG_FetcherError returns an error
+// from the fetcher; expect a nil filter (caller falls back to
+// unfiltered paint).
+func TestBuildReferenceFilter_ExternalSVG_FetcherError(t *testing.T) {
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+	f := b.BuildReferenceFilter("foo.svg#missing")
+	if f != nil {
+		t.Error("expected nil filter when external fetch fails")
+	}
+}
+
+// TestBuildReferenceFilter_ExternalSVG_BadID feeds valid SVG but
+// requests an id that doesn't exist; expect a nil filter.
+func TestBuildReferenceFilter_ExternalSVG_BadID(t *testing.T) {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="real"><feFlood/></filter></svg>`
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+			return []byte(svg), nil
+		},
+	}
+	f := b.BuildReferenceFilter("doc.svg#nope")
+	if f != nil {
+		t.Error("expected nil filter for missing fragment id")
+	}
+}
+
+// TestBuildReferenceFilter_ExternalSVG_NoFetcher: external URL with
+// no fetcher returns nil (null-filter fallback).
+func TestBuildReferenceFilter_ExternalSVG_NoFetcher(t *testing.T) {
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 50, 50),
+	}
+	if got := b.BuildReferenceFilter("doc.svg#f"); got != nil {
+		t.Error("expected nil filter when no ExternalSVGFetcher is configured")
+	}
+}
+
+// TestSplitFilterRef covers the small parser inside
+// filter_effect_builder.go.
+func TestSplitFilterRef(t *testing.T) {
+	cases := []struct {
+		in   string
+		doc  string
+		frag string
+	}{
+		{"#foo", "", "foo"},
+		{`"#foo"`, "", "foo"},
+		{"'#foo'", "", "foo"},
+		{"foo.svg#bar", "foo.svg", "bar"},
+		{"data:img/svg,...#bar", "data:img/svg,...", "bar"},
+		{"http://x/y#z", "http://x/y", "z"},
+		{"  #foo  ", "", "foo"},
+		{"", "", ""},
+		{"foo.svg", "foo.svg", ""},
+	}
+	for _, c := range cases {
+		d, f := splitFilterRef(c.in)
+		if d != c.doc || f != c.frag {
+			t.Errorf("splitFilterRef(%q) = (%q, %q), want (%q, %q)", c.in, d, f, c.doc, c.frag)
+		}
+	}
+}
+
+// TestParseSVGFilterURL covers the SVG-attribute parser in
+// svg_shape_painter.go.
+func TestParseSVGFilterURL(t *testing.T) {
+	cases := []struct {
+		in   string
+		doc  string
+		frag string
+		ok   bool
+	}{
+		{"url(#foo)", "", "foo", true},
+		{"url(foo.svg#bar)", "foo.svg", "bar", true},
+		{`url("foo.svg#bar")`, "foo.svg", "bar", true},
+		{"url( 'foo.svg#bar' )", "foo.svg", "bar", true},
+		{"url(foo.svg)", "foo.svg", "", true},
+		{"none", "", "", false},
+		{"", "", "", false},
+	}
+	for _, c := range cases {
+		d, f, ok := parseSVGFilterURL(c.in)
+		if d != c.doc || f != c.frag || ok != c.ok {
+			t.Errorf("parseSVGFilterURL(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				c.in, d, f, ok, c.doc, c.frag, c.ok)
+		}
+	}
+}

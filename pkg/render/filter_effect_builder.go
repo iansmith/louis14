@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -32,6 +33,13 @@ type FilterEffectBuilder struct {
 	// `color-interpolation-filters`). May be nil — the builder then
 	// falls back to raw attribute lookup.
 	ResolveStyle func(svg.ElementAdapter) *css.Style
+	// ExternalSVGFetcher resolves `filter: url(doc#id)` where doc is a
+	// data: / file:// / http(s):// URL pointing at an external SVG
+	// document. Returns the raw document bytes. May be nil — in that
+	// case external references fall back to a null filter (caller
+	// paints unfiltered, matching Blink's tainted-resource behavior
+	// per Filter Effects 1 §3.1). LOU-130 Phase 2 wiring.
+	ExternalSVGFetcher func(uri string) ([]byte, error)
 }
 
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
@@ -101,17 +109,33 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 // Mirrors Blink's FilterEffectBuilder::BuildReferenceFilter +
 // SVGFilterBuilder::BuildGraph dispatch.
 func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
-	if id == "" || b.Resources == nil {
+	if id == "" {
 		return nil
 	}
-	// FilterFunction.URL carries the inner CSS `url(...)` content with
-	// the leading `#` fragment marker still attached (and possibly a
-	// path prefix, though CSS filter rarely uses that form). The
-	// SVGResourceRegistry stores resources by bare id, so route
-	// through css.ParseURLReference to extract the fragment — matches
-	// the SVG shape painter's lookup path (svg_shape_painter.go).
-	if parsed, ok := css.ParseURLReference("url(" + id + ")"); ok {
-		id = parsed
+
+	// FilterFunction.URL is the raw inside-of-`url(...)` content. It may
+	// be one of:
+	//   - "#frag"               → same-document, look up frag in Resources
+	//   - "data:...,...#frag"   → external data URL
+	//   - "file:///path#frag"   → external file URL
+	//   - "http(s)://host/p#f"  → external network URL
+	//   - "path/file.svg#frag"  → relative external URL (test harness
+	//                              resolves against document base)
+	//
+	// Same-document fast path: leading `#` (after trim/quote strip).
+	docURL, fragID := splitFilterRef(id)
+	if docURL == "" {
+		return b.buildSameDocReferenceFilter(fragID)
+	}
+	return b.buildExternalReferenceFilter(docURL, fragID)
+}
+
+// buildSameDocReferenceFilter resolves a `filter: url(#id)` reference
+// against the in-page SVGResourceRegistry. The original (pre-LOU-130)
+// behavior for bare-fragment references.
+func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string) *filters.Filter {
+	if b.Resources == nil {
+		return nil
 	}
 	filter, ok := b.Resources.LookupAsFilter(id)
 	if !ok || filter == nil {
@@ -172,6 +196,113 @@ func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	return builder.BuildGraph(adapter)
+}
+
+// buildExternalReferenceFilter handles `filter: url(doc#id)` where doc
+// is a cross-document URL (data:, file://, http(s)://, or a relative
+// path resolved by the harness). Fetches the document via
+// ExternalSVGFetcher, parses it, finds `<filter id="fragID">`, and
+// builds the FilterEffect graph. Returns nil on any failure — Blink's
+// behavior for tainted/unreachable external filters is a null filter
+// (caller paints source unfiltered) per Filter Effects 1 §3.1.
+func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string) *filters.Filter {
+	if fragID == "" || b.ExternalSVGFetcher == nil {
+		return nil
+	}
+	data, err := b.ExternalSVGFetcher(docURL)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	root, err := svg.ParseExternalSVG(data)
+	if err != nil {
+		return nil
+	}
+	target, ok := svg.FindElementByID(root, fragID)
+	if !ok || target.TagName() != "filter" {
+		return nil
+	}
+
+	// Build the SVGResourceFilter from the external `<filter>` element.
+	// External documents don't share the host page's computed-style
+	// cascade, so styleResolver is nil — filter primitives fall back to
+	// raw attribute lookup, which is what the external-resource tests
+	// exercise (`flood-color="green"`, `type="hueRotate" values="..."`).
+	resource := svg.NewSVGResourceFilter(target, svg.NewSVGLengthContext(geometry.SizeF{
+		Width:  float64(b.ReferenceBox.Dx()),
+		Height: float64(b.ReferenceBox.Dy()),
+	}), nil)
+	if resource == nil {
+		return nil
+	}
+
+	// color-interpolation-filters defaults to linearRGB per SVG 1.1
+	// §4.2. For external filters we read it as an attribute (no
+	// cascade in the fetched document).
+	space := filters.InterpolationSpaceLinearRGB
+	if v, ok := target.Attribute("color-interpolation-filters"); ok {
+		space = filters.ResolveInterpolationSpace(v)
+	}
+
+	// Resolve the filter region — same logic as the same-doc path.
+	refBoxF := geometry.NewRectF(
+		float64(b.ReferenceBox.Min.X),
+		float64(b.ReferenceBox.Min.Y),
+		float64(b.ReferenceBox.Dx()),
+		float64(b.ReferenceBox.Dy()),
+	)
+	userOriginF := geometry.PointF{X: refBoxF.X(), Y: refBoxF.Y()}
+	regionF := resource.ResourceBoundingBox(refBoxF, userOriginF, svg.NewSVGLengthContext(refBoxF.Size))
+	region := image.Rect(
+		int(regionF.X()),
+		int(regionF.Y()),
+		int(regionF.X()+regionF.Width()),
+		int(regionF.Y()+regionF.Height()),
+	)
+
+	adapter := &svgFilterElementAdapter{
+		filter:          resource,
+		filterRegion:    region,
+		referenceBox:    b.ReferenceBox,
+		userSpaceOrigin: b.ReferenceBox.Min,
+		space:           space,
+		// No ResolveStyle for external documents — filter primitives
+		// read presentational attributes directly.
+		resolveStyle: nil,
+	}
+	builder := filters.NewSVGFilterBuilder(space)
+	return builder.BuildGraph(adapter)
+}
+
+// splitFilterRef parses a `filter: url(...)` inner value into its
+// document and fragment parts. Handles:
+//
+//	"#frag"               → ("", "frag")
+//	"foo.svg#frag"        → ("foo.svg", "frag")
+//	"data:...,...#frag"   → ("data:...,...", "frag")
+//	`"#frag"` / `'#frag'` → strips surrounding quotes
+//	" #frag "             → trims whitespace
+//	""                    → ("", "")
+//
+// Mirrors Blink's KURL fragment-identifier parsing for SVGResource
+// URLs (svg_resource.cc:151-176 @ bf955d02 — `ParseTargetReference`).
+func splitFilterRef(raw string) (docURL, fragID string) {
+	v := strings.TrimSpace(raw)
+	if len(v) >= 2 {
+		first, last := v[0], v[len(v)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			v = v[1 : len(v)-1]
+		}
+	}
+	if v == "" {
+		return "", ""
+	}
+	hashIdx := strings.IndexByte(v, '#')
+	if hashIdx < 0 {
+		// No fragment — for filter references, the fragment is required;
+		// caller will fail to find a `<filter>` element and return nil.
+		return v, ""
+	}
+	return v[:hashIdx], v[hashIdx+1:]
 }
 
 // buildOneEffect maps a single CSS filter function to its fe* equivalent,
