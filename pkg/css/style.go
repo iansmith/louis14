@@ -5321,8 +5321,17 @@ func (s *Style) GetOrder() int {
 
 // ContentValue represents a single value in the content property
 type ContentValue struct {
-	Type  string // "text", "url", "counter", "attr", "open-quote", "close-quote"
+	Type  string // "text", "url", "counter", "counters", "attr", "open-quote", "close-quote"
 	Value string // The actual value (text content, URL path, counter name, attr name)
+
+	// Separator is the join string for "counters" (counter list separator).
+	// For "counter" and the non-counter Types it is unused.
+	Separator string
+
+	// Style is the optional <counter-style> argument for "counter" or
+	// "counters". Empty means UA default ("decimal"). Phase 1 captures
+	// it but does not consume it; Phase 5 will resolve via CounterStyle.
+	Style string
 }
 
 // GetContent returns the content property value for pseudo-elements
@@ -5363,7 +5372,30 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 		return nil, false
 	}
 
-	return ParseContentValues(raw), true
+	values := ParseContentValues(raw)
+	// CSS Lists 3 §counter-functions: if any counter()/counters()
+	// name is a CSS-wide keyword (an invalid <custom-ident>), the
+	// entire content declaration is invalid and is treated as if
+	// `content: normal` were specified. Detect that here so the
+	// caller does not silently render the surrounding text.
+	for _, v := range values {
+		if (v.Type == "counter" || v.Type == "counters") && isCSSWideKeyword(v.Value) {
+			return nil, false
+		}
+	}
+	return values, true
+}
+
+// isCSSWideKeyword reports whether an identifier is one of the CSS-wide
+// keywords reserved against use as a <custom-ident> (CSS Values 4
+// §custom-idents). Counter names must be valid <custom-ident>s, so
+// `counter(inherit)` is a parse error.
+func isCSSWideKeyword(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "inherit", "initial", "unset", "revert", "revert-layer", "default", "none":
+		return true
+	}
+	return false
 }
 
 // ParseContentValues parses a CSS content value into individual parts
@@ -5403,11 +5435,12 @@ func ParseContentValues(raw string) []ContentValue {
 			continue
 		}
 
-		// Check for function-style values: counter(), url(), attr()
+		// Check for function-style values: counter(), counters(), url(), attr()
 		// First check if the raw string starts with a known function name followed by (
+		// (longer "counters" tested before "counter" so the prefix match wins).
 		funcIdx := -1
 		funcName := ""
-		for _, fn := range []string{"counter", "url", "attr", "counters"} {
+		for _, fn := range []string{"counters", "counter", "url", "attr"} {
 			if strings.HasPrefix(strings.ToLower(raw), fn+"(") {
 				funcIdx = len(fn)
 				funcName = fn
@@ -5437,7 +5470,24 @@ func ParseContentValues(raw string) []ContentValue {
 					values = append(values, ContentValue{Type: "url", Value: arg})
 				case "counter":
 					// counter(name) or counter(name, style)
-					values = append(values, ContentValue{Type: "counter", Value: arg})
+					name, _, style := splitCounterArgs(arg)
+					values = append(values, ContentValue{
+						Type:  "counter",
+						Value: name,
+						Style: style,
+					})
+				case "counters":
+					// counters(name, separator [, style])
+					name, sepAndStyle, _ := splitCounterArgs(arg)
+					// Re-split sepAndStyle by comma to separate the
+					// separator (quoted) from the optional style.
+					sep, style := splitCountersSepAndStyle(sepAndStyle)
+					values = append(values, ContentValue{
+						Type:      "counters",
+						Value:     name,
+						Separator: sep,
+						Style:     style,
+					})
 				case "attr":
 					values = append(values, ContentValue{Type: "attr", Value: arg})
 				}
@@ -5476,6 +5526,96 @@ func ParseContentValues(raw string) []ContentValue {
 	}
 
 	return values
+}
+
+// splitCounterArgs splits a counter()/counters() argument string at
+// its first top-level comma, returning (name, rest, style).
+//
+//	counter(c)              -> ("c", "", "")
+//	counter(c, decimal)     -> ("c", "", "decimal")
+//	counters(c, ".")        -> ("c", `"."`, "")
+//	counters(c, ".", lower-alpha) -> ("c", `"."`, "lower-alpha")
+//
+// For counter() (two parts) name and style. For counters() (two or
+// three parts) call splitCountersSepAndStyle on `rest` afterward.
+func splitCounterArgs(arg string) (name, rest, style string) {
+	// Find first top-level comma (respecting nested parens and quotes).
+	depth := 0
+	inQuote := byte(0)
+	first := -1
+	for i := 0; i < len(arg); i++ {
+		ch := arg[i]
+		if inQuote != 0 {
+			if ch == inQuote {
+				inQuote = 0
+			} else if ch == '\\' && i+1 < len(arg) {
+				i++
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inQuote = ch
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 && first < 0 {
+				first = i
+			}
+		}
+	}
+	if first < 0 {
+		return strings.TrimSpace(arg), "", ""
+	}
+	name = strings.TrimSpace(arg[:first])
+	tail := strings.TrimSpace(arg[first+1:])
+	return name, tail, tail
+}
+
+// splitCountersSepAndStyle splits the tail of a counters() argument
+// into the separator (quoted string, returned with quotes stripped)
+// and an optional style identifier. The tail is the substring after
+// the first top-level comma of counters(name, ...).
+//
+//	`"."` -> (".", "")
+//	`".", decimal` -> (".", "decimal")
+func splitCountersSepAndStyle(tail string) (sep, style string) {
+	tail = strings.TrimSpace(tail)
+	if tail == "" {
+		return "", ""
+	}
+	// The separator must be a quoted string; find its end.
+	if tail[0] != '"' && tail[0] != '\'' {
+		// Malformed — keep what we have as the separator literal.
+		// Try to split off a trailing style identifier.
+		if comma := strings.IndexByte(tail, ','); comma >= 0 {
+			return strings.TrimSpace(tail[:comma]), strings.TrimSpace(tail[comma+1:])
+		}
+		return tail, ""
+	}
+	quote := tail[0]
+	end := 1
+	for end < len(tail) && tail[end] != quote {
+		if tail[end] == '\\' && end+1 < len(tail) {
+			end += 2
+		} else {
+			end++
+		}
+	}
+	if end >= len(tail) {
+		// Unterminated quote — take the rest as the separator.
+		return tail[1:], ""
+	}
+	sep = tail[1:end]
+	rest := strings.TrimSpace(tail[end+1:])
+	if strings.HasPrefix(rest, ",") {
+		style = strings.TrimSpace(rest[1:])
+	}
+	return sep, style
 }
 
 // Phase 15: CSS Grid properties
