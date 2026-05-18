@@ -6,6 +6,88 @@ pixel diff via `TestWPTCSS3Reftests/css-will-change`. Baseline **17 passing / 30
 → close the 30 failures without regressing adjacent categories (css-position, css-flexbox,
 css-transforms, css-masking, css-contain, css-writing-modes, CSS2).
 
+## Blink vetting log
+
+**Vetted against Chromium `main` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f** on 2026-05-18.
+
+### Citations verified
+- `third_party/blink/renderer/core/style/style_will_change_data.h` (`StyleWillChangeData`,
+  fields `values`/`resolved_longhand_ids`/`has_scroll_position_value`/`has_transform_property`/
+  `has_any_transform_property`, plus the "The bitset only contains resolved longhand
+  CSSPropertyID(s). No aliases." comment) — ✓ unchanged
+- `third_party/blink/renderer/core/paint/paint_layer_stacking_node.h` (`PaintLayerStackingNode`,
+  z-sort methods `PosZOrderList`/`NegZOrderList`/`RebuildZOrderLists`) — ✓ unchanged
+
+### Citations updated
+- `computed_style.h` ~lines 2550-2595 (will-change accessors) → `computed_style.h` **lines 1278-1292**.
+  Method names also corrected: `HasWillChangeTransformHint` → `HasWillChangeTransformProperty`;
+  `HasWillChangeHintForAnyTransformProperty` → `HasWillChangeAnyTransformProperty` (only one name
+  exists at this SHA, not two aliases); `HasWillChangeScrollPositionHint` →
+  `HasWillChangeScrollPosition` (no "Hint" suffix).
+- `layout_object.cc` ~lines 1520-1580 (`ComputeIsFixedContainer` / `ComputeIsAbsoluteContainer`) →
+  `layout_object.cc` **lines 1852-1915** (ComputeIsFixedContainer at 1852, ComputeIsAbsoluteContainer
+  at 1905). Signature corrected: both take `const ComputedStyle& style` (reference), not pointer;
+  `ComputeIsAbsoluteContainer` parameter order is `(style, is_fixed_container)`, not
+  `(is_fixed_container, style)`.
+- `computed_style.h` ~2740 (`HasTransformRelatedProperty`) → `computed_style.h` **line 2266**.
+  Body corrected: `HasTransform() || Preserves3D() || HasPerspective() ||
+  HasWillChangeAnyTransformProperty()` — the will-change accessor is
+  `HasWillChangeAnyTransformProperty` (broad, covers `translate/scale/rotate/offset-path`), NOT
+  `HasWillChangeTransformProperty` (narrow, only the `transform` longhand).
+- `computed_style.cc` `CanContainAbsolutePositionObjects` / `CanContainFixedPositionObjects`
+  ("delegate to ComputeIs*Container") → these are **bitfield accessors on `LayoutObject`** declared
+  in `layout_object.h` (~lines 1337-1341), set to cached results of
+  `ComputeIsFixedContainer`/`ComputeIsAbsoluteContainer`. They do not "delegate" — they read a
+  cached bit. Operational impact on the plan is nil (we only cite the producer, not the cache), but
+  the file/class attribution is corrected.
+- `style_adjuster.cc` `AdjustComputedStyle` (~1240-1430) — file/range mostly right
+  (function starts at **line 1117**, the `SetForcesStackingContext`/`SetAllowsZIndex` block runs
+  **lines 1237-1262** + view-transition path at line 1386). However, the plan's claim that the
+  will-change → SC determination "consults the same `HasWillChangeProperty` accessor" in
+  `style_adjuster.cc` is **wrong** — `style_adjuster.cc` does not reference will-change at all
+  at this SHA. The actual will-change → SC determination lives in `computed_style.cc`
+  (see Citations added below).
+- Root exception in `ComputeIsFixedContainer` — plan claimed "early-returns for the
+  LayoutView / document element". Reality: `LayoutView` IS a fixed container at line 1874; the
+  "root exception" is narrower — only `HasNonInitialFilter` (line 1859) and
+  `HasNonInitialBackdropFilter` (line 1865) are gated by `!is_document_element`. The plan's
+  louis14 guidance ("gate the new will-change CB branches on `!isRoot`") is operationally
+  correct for the filter/backdrop-filter cases that drive `fixedpos-cb-003`/`-006`; the Blink
+  justification has been rewritten to match what the code actually does.
+- `LayoutObject::StyleDidChange` (Phase 5) — function exists in `layout_object.cc` at
+  **line 3251**. Description tightened: `StyleDidChange` consumes a `StyleDifference`; the
+  decision that a will-change mutation needs full layout is computed upstream in
+  `ComputedStyle::VisualInvalidationDiff` / `StyleDifference`, not in `StyleDidChange` itself.
+
+### Citations broken / missing in current Blink
+- `HasNonInitialOffsetPath()` (plan citation 3, sub-claim f) — **does not exist** as a function.
+  The offset-path will-change effect flows through `HasWillChangeAnyTransformProperty()` →
+  `HasTransformRelatedProperty()`, which `ComputeIsFixedContainer` consults at line 1888. Plan
+  text updated to remove the fabricated accessor and route through the real path.
+- `HasWillChangeOpacityHint` / `HasWillChangeFilterHint` / `HasWillChangeBackdropFilterHint` —
+  **do not exist** as standalone accessors at this SHA. The opacity/filter/backdrop-filter
+  will-change effects are folded into composite predicates: `HasNonInitialOpacity()`
+  (`computed_style.h:2196`), `HasNonInitialFilter()` (line 2183), `HasNonInitialBackdropFilter()`
+  (line 2189). Plan's Phase 1 enumeration trimmed to the real surface area.
+
+### Citations added
+- `computed_style.cc` **line 1319** — static helper
+  `HasPropertyThatCreatesStackingContext(const StyleWillChangeData*, bool allows_z_index)`. This
+  is the canonical enumeration of will-change idents that create a stacking context (cited by
+  Phase 1 and Phase 2). Verbatim set at this SHA:
+  `kOpacity, kTransform, kTransformStyle, kPerspective, kTranslate, kRotate, kScale, kOffsetPath,
+  kOffsetPosition, kMaskImage, kWebkitMaskBoxImageSource, kClipPath, kWebkitBoxReflect, kFilter,
+  kBackdropFilter, kPosition, kMixBlendMode, kIsolation, kContain, kViewTransitionName, kZIndex
+  (only if allows_z_index)`.
+- `computed_style.cc` **line 2927** — `ComputedStyle::CalculateIsStackingContextWithoutContainment`,
+  which calls `HasPropertyThatCreatesStackingContext(WillChange(), AllowsZIndex())` at line 2955.
+  This is the integration point — `AllowsZIndex` is set in `style_adjuster.cc` (positioned-or-flex/
+  grid-item gate at line 1240-1247) and feeds the SC determination here.
+- `computed_style.h` **line 2183** `HasNonInitialFilter()` and **line 2189**
+  `HasNonInitialBackdropFilter()` — these are the actual function names ComputeIsFixedContainer
+  calls at lines 1859/1865 (plan previously cited the broader `HasFilterInducingProperty()`
+  and `HasBackdropFilter()`, which are not what the CB function consults).
+
 ## Rules & Discipline (DO NOT DUPLICATE HERE)
 Re-read both before planning or coding — non-negotiable project rules:
 
@@ -36,7 +118,8 @@ fix is *not* to special-case `will-change` everywhere it is read today — it is
 canonical will-change value model and route the existing CB / stacking-context predicates
 through it, mirroring how Blink's `StyleWillChangeData` feeds `ComputedStyle::HasWillChangeProperty`
 which feeds `LayoutObject::ComputeIsFixedContainer` / `ComputeIsAbsoluteContainer` and the
-stacking-context determination in `StyleAdjuster`.
+stacking-context determination in `ComputedStyle::CalculateIsStackingContextWithoutContainment`
+(via the per-longhand enumeration in `HasPropertyThatCreatesStackingContext`).
 
 ## Baseline snapshot (2026-05-14)
 From `grep "FAIL: TestWPTCSS3Reftests/css-will-change/" docs/reftest-survey-2026-05-14-raw.txt`
@@ -118,8 +201,8 @@ consumer re-implements its own substring match against that slice:
 
 This duplication is exactly the anti-pattern Blink avoids: Blink resolves `will-change` **once**,
 at style-resolution time, into a `StyleWillChangeData` (see below), and every side-effect site
-queries `ComputedStyle::HasWillChangeProperty(CSSPropertyID)`. louis14 must do the same — one
-resolved model, queried by all predicates.
+queries `ComputedStyle::HasWillChangeProperty(CSSPropertyID)` (`computed_style.h:1278`).
+louis14 must do the same — one resolved model, queried by all predicates.
 
 ### Why Bucket A/B fail — `will-change` is absent from the OOF containing-block decision
 `block_layout.go:1748-1870` decides which element resolves an out-of-flow descendant:
@@ -141,10 +224,14 @@ will-change, and the `isTransformCB` keyword set is incomplete:
 - `will-change: backdrop-filter` (abspos-cb-003, fixedpos-cb-004/005) — `backdrop-filter` contains
   both; not in the set.
 - The **root-element exception** (fixedpos-cb-003/006): when the will-change element is the root
-  (`<html>`), it must *not* create a fixed-pos CB — Blink: `LayoutObject::ComputeIsFixedContainer`
-  early-returns for the `LayoutView`. louis14's `isRoot` branch (`block_layout.go:1772`) already
-  resolves everything against the viewport, so once we *don't* incorrectly add a CB branch for the
-  root, these pass. The fix must gate the new will-change CB branches on `!isRoot`.
+  (`<html>`), `will-change: filter` / `backdrop-filter` must *not* create a fixed-pos CB — Blink:
+  `LayoutObject::ComputeIsFixedContainer` (`layout_object.cc:1852`) gates the
+  `style.HasNonInitialFilter()` (line 1859) and `style.HasNonInitialBackdropFilter()` (line 1865)
+  checks on `!is_document_element`. (Note: `LayoutView` is itself returned as a fixed container at
+  line 1874 — the root "exception" is specifically the filter/backdrop-filter contribution, not a
+  blanket early-return.) louis14's `isRoot` branch (`block_layout.go:1772`) already resolves
+  everything against the viewport, so once we *don't* incorrectly add a CB branch for the root,
+  these pass. The fix must gate the new will-change CB branches on `!isRoot`.
 - **Inline** will-change CB (fixedpos-cb-002/005): `inline_containing_block.go:311
   inlineEstablishesContainingBlock` only checks `position != static` and `GetFilter()`. It must
   also honor `will-change` of a fixed-CB-inducing property, and `BuildPositionedInlineMap`
@@ -160,9 +247,11 @@ the keyword *is* listed yet the tests still fail — meaning the predicate resul
 the paint-layer z-sort for these shapes. Two sub-causes:
 1. **Shorthand vs longhand**: `mask` is a shorthand; the test `will-change: mask` must resolve to
    the `mask-image` (etc.) longhand. Blink stores only **resolved longhand** IDs in
-   `StyleWillChangeData::resolved_longhand_ids` ("The bitset only contains resolved longhand
-   CSSPropertyID(s). No aliases."). louis14 must expand `will-change` shorthands to longhands and
-   normalize aliases (`-webkit-perspective` → `perspective`).
+   `StyleWillChangeData::resolved_longhand_ids` (`style_will_change_data.h`: "The bitset only
+   contains resolved longhand CSSPropertyID(s). No aliases."). The SC enumeration at
+   `computed_style.cc:1319` `HasPropertyThatCreatesStackingContext` correspondingly lists
+   `kMaskImage` and `kWebkitMaskBoxImageSource` (never `kMask`). louis14 must expand `will-change`
+   shorthands to longhands and normalize aliases (`-webkit-perspective` → `perspective`).
 2. **Inline / flex-item / grid-item SC** (stacking-context-opacity-2, -z-index-2, -z-index-3):
    `paint_layer.go:958-1000` routes a *non-positioned* `Box` through `CreatesStackingContext()` and,
    if true, into `parentLayer.FlowChildren` + a new subtree — but the negative-z abspos child of an
@@ -194,58 +283,92 @@ change in the runner. Scope decision belongs in Phase 0.)
 - `const bool has_any_transform_property;` — `transform`/`translate`/`scale`/`rotate`/`perspective`/
   `offset-path`/… (the broader transform-related set).
 
-`ComputedStyle` accessors (`core/style/computed_style.h`, ~lines 2550-2595):
-- `bool HasWillChangeProperty(CSSPropertyID id) const` → `WillChange() &&
+`ComputedStyle` accessors (`core/style/computed_style.h`, **lines 1278-1292**):
+- `bool HasWillChangeProperty(CSSPropertyID id) const` (line 1278) → `WillChange() &&
   WillChange()->resolved_longhand_ids.Has(id)`.
-- `bool HasWillChangeTransformHint() const` → `WillChange()->has_transform_property`.
-- `bool HasWillChangeHintForAnyTransformProperty()` (a.k.a. `HasWillChangeAnyTransformProperty`) →
-  `WillChange()->has_any_transform_property`.
-- `HasWillChangeOpacityHint` / `HasWillChangeFilterHint` / `HasWillChangeBackdropFilterHint` /
-  `HasWillChangeScrollPositionHint` — analogous, used for compositing hints (NOT needed for
-  reftests, but the same model serves them).
+- `bool HasWillChangeScrollPosition() const` (line 1284) →
+  `WillChange()->has_scroll_position_value`.
+- `bool HasWillChangeTransformProperty() const` (line 1287) →
+  `WillChange()->has_transform_property`.
+- `bool HasWillChangeAnyTransformProperty() const` (line 1290) →
+  `WillChange()->has_any_transform_property`. (This is the broader hint covering
+  `transform`/`translate`/`scale`/`rotate`/`perspective`/`offset-path`/etc; the narrower
+  `HasWillChangeTransformProperty` covers only the literal `transform` longhand.)
+- Compositing-hint accessors for opacity/filter/backdrop-filter do NOT exist as standalone
+  methods at this SHA. The will-change contribution for those properties is folded into the
+  composite predicates `HasNonInitialOpacity()` (line 2196), `HasNonInitialFilter()` (line 2183),
+  and `HasNonInitialBackdropFilter()` (line 2189) — each of which `||`s the regular property
+  check with `HasWillChangeProperty(CSSPropertyID::k*)`.
 
 ### Containing-block side effect — `LayoutObject::ComputeIsFixedContainer` / `ComputeIsAbsoluteContainer`
-`third_party/blink/renderer/core/layout/layout_object.cc`, ~lines 1520-1580.
-`ComputeIsFixedContainer(const ComputedStyle* style)` returns true when:
-- `style->HasTransformRelatedProperty()` — and `HasTransformRelatedProperty()` itself
-  (`computed_style.h` ~2740) = `HasWillChangeTransformProperty() || has_transform_value ||
-  has_perspective_value`, i.e. it folds the will-change transform hint in directly; **or**
-- `style->GetPosition() != EPosition::kStatic || style->HasWillChangeProperty(CSSPropertyID::kPosition)`
-  — note for **fixed** this contributes only the non-static-position part that contains fixed; the
-  `kPosition` will-change hint participates in the *absolute* container check; **or**
-- `style->TransformStyle3D() == ETransformStyle3D::kPreserve3d` (and the will-change hint for it); **or**
-- `ShouldApplyPaintContainment(style) || ShouldApplyLayoutContainment(style)` — and these consult
-  `style->HasWillChangeProperty(CSSPropertyID::kContain)`; **or**
-- `style->HasFilterInducingProperty()` / `HasBackdropFilter()` — folding the will-change filter /
-  backdrop-filter hints; **or**
-- `style->HasNonInitialOffsetPath()` (and its will-change hint).
-- **Root exception**: the method early-returns for the `LayoutView` / document element — the root
-  never becomes a fixed/abspos *container* in the sense that re-parents descendants away from the
-  viewport.
+`third_party/blink/renderer/core/layout/layout_object.cc`, **lines 1852-1915**.
+`ComputeIsFixedContainer(const ComputedStyle& style)` (line 1852, reference-not-pointer) returns
+true when, in source order:
+- `IsViewTransitionRoot()` (line 1854).
+- **`!is_document_element && style.HasNonInitialFilter()`** (line 1859). `HasNonInitialFilter()` =
+  `HasFilter() || HasWillChangeProperty(CSSPropertyID::kFilter)` (`computed_style.h:2183`) —
+  folds the will-change filter hint in. The `!is_document_element` gate is the **root exception**
+  for filter.
+- **`!is_document_element && style.HasNonInitialBackdropFilter()`** (line 1865). Analogous to
+  filter (`computed_style.h:2189`).
+- `IsA<LayoutView>(this) || IsSVGForeignObject() || IsTextControl()` (line 1874) — `LayoutView`
+  IS unconditionally a fixed container. (The "root exception" is therefore narrower than a
+  blanket early-return: it only excludes the document element's filter/backdrop-filter
+  contribution, not all CB establishment for the root.)
+- Anonymous fieldset content (line 1880) — propagates from parent.
+- `style.HasTransformRelatedProperty() || style.TransformStyle3D() == ETransformStyle3D::kPreserve3d`
+  guarded by `IsBox()` (lines 1888-1892). `HasTransformRelatedProperty()` itself
+  (`computed_style.h:2266`) = `HasTransform() || Preserves3D() || HasPerspective() ||
+  HasWillChangeAnyTransformProperty()` — folds in the *broad* transform hint
+  (`translate`/`scale`/`rotate`/`offset-path` all included via `has_any_transform_property`).
+- `IsEligibleForPaintOrLayoutContainment() && (ShouldApplyPaintContainment(style) ||
+  ShouldApplyLayoutContainment(style) || style.HasWillChangeProperty(CSSPropertyID::kContain))`
+  (lines 1895-1899) — the `kContain` will-change hint is checked here explicitly.
 
-`ComputeIsAbsoluteContainer(bool is_fixed_container, const ComputedStyle* style)` =
-`is_fixed_container || style->GetPosition() != EPosition::kStatic ||
-style->HasWillChangeProperty(CSSPropertyID::kPosition) || containment || transform checks`.
-The key asymmetry: **`will-change: position` ⇒ absolute container only** (it does not flow into
-`is_fixed_container`), while every transform/contain/filter/offset-path hint ⇒ **both**.
+`ComputeIsAbsoluteContainer(const ComputedStyle& style, bool is_fixed_container)` (line 1905;
+note parameter order is `(style, is_fixed_container)`) =
+`is_fixed_container || (style.GetPosition() != EPosition::kStatic ||
+style.HasWillChangeProperty(CSSPropertyID::kPosition)) || (anonymous fieldset case)`.
+The key asymmetry: **`will-change: position` ⇒ absolute container only** (the `kPosition`
+will-change hint is not checked in `ComputeIsFixedContainer`), while every
+transform/contain/filter/backdrop-filter/offset-path hint ⇒ **both** (because it makes the
+element a fixed container, which `is_fixed_container` then propagates into abspos).
 
-`CanContainAbsolutePositionObjects()` / `CanContainFixedPositionObjects()`
-(`computed_style.cc`) delegate to `ComputeIsAbsoluteContainer` / `ComputeIsFixedContainer`.
+`CanContainAbsolutePositionObjects()` / `CanContainFixedPositionObjects()` are cached bitfield
+accessors on `LayoutObject` (declared in `layout_object.h` ~lines 1337-1341), populated by the
+layout pipeline from the results of `ComputeIsAbsoluteContainer` / `ComputeIsFixedContainer`.
 
-### Stacking-context side effect — `StyleAdjuster` + `ComputedStyle::IsStackingContext...`
-`third_party/blink/renderer/core/css/resolver/style_adjuster.cc` `AdjustComputedStyle`
-(~lines 1240-1430) sets `ForcesStackingContext` for the document element / top layer / view
-transitions, and `AllowsZIndex`. The general "would this property create a stacking context"
-determination consults the same `HasWillChangeProperty` accessor: per
-[CSS Will Change §3](https://drafts.csswg.org/css-will-change-1/#will-change), the will-change
-stacking set is exactly the set of properties that themselves create a stacking context:
-`opacity`, `transform` (+ `translate`/`scale`/`rotate`/`perspective`), `filter`, `backdrop-filter`,
-`clip-path`, `mask`/`mask-image`/`mask-border`, `mix-blend-mode != normal`, `isolation: isolate`,
-`contain: {layout,paint,strict,content}`, `offset-path`, `transform-style: preserve-3d`,
-`view-transition-name`, **`z-index` on a positioned-or-flex/grid element**, and **`position`**
-(because a non-static position + z-index creates one; `will-change: position` alone is treated by
-Blink as forcing the stacking context). `PaintLayerStackingNode` then z-sorts children of any
-`IsStackingContext()` layer.
+### Stacking-context side effect — `StyleAdjuster` flags + `ComputedStyle::CalculateIsStackingContextWithoutContainment`
+Stacking-context determination at this SHA splits across two files:
+
+1. `third_party/blink/renderer/core/css/resolver/style_adjuster.cc` `AdjustComputedStyle`
+   (begins **line 1117**, runs through ~line 1400; key SC block at **lines 1237-1262**) sets
+   `ForcesStackingContext` and `AllowsZIndex` flags on the builder. `AllowsZIndex(true)` +
+   `ForcesStackingContext(true)` fire for non-static-position / flex-grid-item / canvas-layout
+   cases (lines 1240-1247); `ForcesStackingContext(true)` also fires for document element / top
+   layer / view-transition-pseudo / SVG foreignObject / replaced normal-flow video / canvas with
+   draw elements (lines 1256-1262), and for view-transition scope (line 1386). This file does
+   **not** read `will-change` directly.
+
+2. `third_party/blink/renderer/core/style/computed_style.cc`
+   `ComputedStyle::CalculateIsStackingContextWithoutContainment` (**line 2927**) consumes the
+   two flags. At **line 2955** it calls the static helper
+   `HasPropertyThatCreatesStackingContext(WillChange(), AllowsZIndex())` (**defined at line
+   1319** of the same file). That helper iterates `will_change->resolved_longhand_ids` and
+   returns true for any of:
+
+   `kOpacity, kTransform, kTransformStyle, kPerspective, kTranslate, kRotate, kScale,
+   kOffsetPath, kOffsetPosition, kMaskImage, kWebkitMaskBoxImageSource, kClipPath,
+   kWebkitBoxReflect, kFilter, kBackdropFilter, kPosition, kMixBlendMode, kIsolation, kContain,
+   kViewTransitionName`, plus `kZIndex` *only if* `allows_z_index`.
+
+This is the canonical will-change → stacking-context set per
+[CSS Will Change §3](https://drafts.csswg.org/css-will-change-1/#will-change). Note that the
+bitset stores only longhands: `mask` (shorthand) is never present — `mask-image` and
+`-webkit-mask-box-image-source` (mask-border equivalent) carry the effect.
+
+`PaintLayerStackingNode` (`paint_layer_stacking_node.h`) then z-sorts children of any
+`IsStackingContext()` layer via `PosZOrderList()` / `NegZOrderList()` / `RebuildZOrderLists()`.
 
 ## louis14 target files
 - `pkg/css/style.go` — the new will-change value model: `WillChange` type + `GetWillChangeData()`,
@@ -280,8 +403,10 @@ Blink as forcing the stacking context). `PaintLayerStackingNode` then z-sorts ch
 delete the per-call-site keyword matching.
 - **Blink reference:** `style_will_change_data.h` (`StyleWillChangeData`: `resolved_longhand_ids`
   CSSBitset, `has_transform_property`, `has_any_transform_property`, `has_scroll_position_value`);
-  `computed_style.h` ~2550-2595 (`HasWillChangeProperty`, `HasWillChangeTransformHint`,
-  `HasWillChangeHintForAnyTransformProperty`).
+  `computed_style.h:1278-1292` (`HasWillChangeProperty`, `HasWillChangeScrollPosition`,
+  `HasWillChangeTransformProperty`, `HasWillChangeAnyTransformProperty`); the canonical
+  will-change-creates-SC enumeration at `computed_style.cc:1319`
+  (`HasPropertyThatCreatesStackingContext`).
 - **louis14 target:** `pkg/css/style.go` (new), reusing the shorthand→longhand expander.
 - **New types / API:**
   - `type WillChange struct` with: `Longhands map[string]bool` (resolved longhand property names —
@@ -294,13 +419,25 @@ delete the per-call-site keyword matching.
   - Predicate accessors on `*WillChange` (or `*Style`): `HasWillChangeProperty(name string) bool`,
     `WillChangeCreatesStackingContext() bool`, `WillChangeIsAbsPosCB() bool`,
     `WillChangeIsFixedPosCB() bool`. Each encodes the spec property set:
-    - **Stacking-context set:** `opacity, transform, translate, scale, rotate, perspective, filter,
-      backdrop-filter, clip-path, mask, mask-image, mask-border, mix-blend-mode, isolation, contain,
-      offset-path, transform-style, view-transition-name, z-index, position`.
-    - **Fixed-pos CB set:** `transform, translate, scale, rotate, perspective, filter,
-      backdrop-filter, contain, offset-path, transform-style`. (`will-change: position` is
-      **excluded** here.)
-    - **Abspos CB set:** the fixed-pos CB set **plus `position`**.
+    - **Stacking-context set** (mirroring `computed_style.cc:1319`
+      `HasPropertyThatCreatesStackingContext`): `opacity, transform, transform-style, perspective,
+      translate, rotate, scale, offset-path, offset-position, mask-image, mask-border (a.k.a.
+      -webkit-mask-box-image-source), clip-path, -webkit-box-reflect, filter, backdrop-filter,
+      position, mix-blend-mode, isolation, contain, view-transition-name, z-index (only on a
+      positioned-or-flex/grid element — gated by `AllowsZIndex`)`. Note: `mask` is a shorthand and
+      is NOT a member of the resolved-longhand set; it expands to `mask-image` (plus other mask-*
+      longhands, of which `mask-image` and `-webkit-mask-box-image-source` are the SC-inducing
+      ones in Blink).
+    - **Fixed-pos CB set** (mirroring the conditions in
+      `LayoutObject::ComputeIsFixedContainer`): `transform, translate, scale, rotate, perspective,
+      transform-style, offset-path` (the broad transform set folded via
+      `HasWillChangeAnyTransformProperty` → `HasTransformRelatedProperty`), `filter` (via
+      `HasNonInitialFilter`), `backdrop-filter` (via `HasNonInitialBackdropFilter`), `contain`
+      (via explicit `HasWillChangeProperty(kContain)` check at line 1898).
+      (`will-change: position` is **excluded** here.) For `filter` and `backdrop-filter` only,
+      the document element is excluded — see the root-exception note.
+    - **Abspos CB set:** the fixed-pos CB set **plus `position`** (`will-change: position`
+      contributes only to the abspos check in `ComputeIsAbsoluteContainer:1908-1910`).
 - **Approach:** keep `GetWillChange() []string` for now (cascade.go still uses it) but make it a
   thin wrapper or leave untouched; introduce `GetWillChangeData()` as the single source of truth
   for side effects. Memoize on the `Style` if `Style` caches computed sub-values elsewhere.
@@ -312,8 +449,11 @@ delete the per-call-site keyword matching.
 ### Phase 2: Stacking-context side effect (Bucket C, 15 tests)
 **Goal:** `will-change` of any stacking-context-inducing property makes the box a stacking context,
 for block, inline, flex-item, and grid-item boxes.
-- **Blink reference:** `style_adjuster.cc` `AdjustComputedStyle` (~1240-1430) + the spec
-  stacking set in [CSS Will Change §3]; `ComputedStyle::HasWillChangeProperty`.
+- **Blink reference:** `style_adjuster.cc` `AdjustComputedStyle` (begins line 1117; SC-flag block
+  lines 1237-1262) sets `ForcesStackingContext`/`AllowsZIndex`. The will-change → SC enumeration
+  itself lives in `computed_style.cc` `HasPropertyThatCreatesStackingContext` (line 1319), called
+  from `CalculateIsStackingContextWithoutContainment` (line 2927). Spec: [CSS Will Change §3];
+  underlying accessor `ComputedStyle::HasWillChangeProperty` (`computed_style.h:1278`).
 - **louis14 target:** `pkg/layout/types.go` `Box.CreatesStackingContext()` (`:114-197`);
   `pkg/render/paint_layer.go` (`:958-1000`).
 - **Approach:**
@@ -338,8 +478,12 @@ for block, inline, flex-item, and grid-item boxes.
 **Goal:** block-level `will-change` of a CB-inducing property generates the correct containing
 block — abspos-only for `position`, abspos+fixed for the transform/contain/filter/offset-path set —
 with the root-element exception.
-- **Blink reference:** `layout_object.cc` `ComputeIsFixedContainer` / `ComputeIsAbsoluteContainer`
-  (~1520-1580) and the `is_fixed_container` asymmetry; root early-return for `LayoutView`.
+- **Blink reference:** `layout_object.cc` `ComputeIsFixedContainer` (line 1852) /
+  `ComputeIsAbsoluteContainer` (line 1905) and the `is_fixed_container` asymmetry
+  (`kPosition` will-change contributes to abspos only); root exception is **narrow** — only the
+  `HasNonInitialFilter` (line 1859) and `HasNonInitialBackdropFilter` (line 1865) checks are
+  gated by `!is_document_element`. `LayoutView` itself is unconditionally a fixed container
+  (line 1874).
 - **louis14 target:** `pkg/layout/block_layout.go` OOF CB decision (`:1748-1870`);
   `isSelfValidColumnSpanner` (`:2588`).
 - **Approach:**
@@ -370,9 +514,9 @@ with the root-element exception.
 ### Phase 4: Containing-block side effect for inline-level will-change (Bucket B, inline cases)
 **Goal:** `will-change` on an *inline* element generates a containing block for fixed-pos
 descendants the same way `filter` on an inline already does.
-- **Blink reference:** same `ComputeIsFixedContainer` — Blink does not distinguish inline vs block
-  for the CB decision; it is a `LayoutObject`-level property. louis14 models inline CBs separately
-  via the positioned-inline stack.
+- **Blink reference:** same `ComputeIsFixedContainer` (`layout_object.cc:1852`) — Blink does not
+  distinguish inline vs block for the CB decision; it is a `LayoutObject`-level property.
+  louis14 models inline CBs separately via the positioned-inline stack.
 - **louis14 target:** `pkg/layout/inline_containing_block.go` — `inlineEstablishesContainingBlock`
   (`:311-319`) and `BuildPositionedInlineMap` (`:256-304`).
 - **Approach:**
@@ -389,8 +533,11 @@ descendants the same way `filter` on an inline already does.
 ### Phase 5: Dynamic will-change re-resolution (Bucket A, dynamic case)
 **Goal:** changing `will-change` via script (`element.style.willChange = "position"` after load)
 re-runs style → layout so the CB is re-resolved.
-- **Blink reference:** `LayoutObject::StyleDidChange` invalidates layout when CB-affecting
-  properties change; `will-change` is in that set.
+- **Blink reference:** `LayoutObject::StyleDidChange` (`layout_object.cc:3251`) consumes a
+  `StyleDifference` and calls `SetNeedsLayoutAndIntrinsicWidthsRecalc` when `diff.NeedsFullLayout()`
+  is true (line 3294). The decision that a will-change mutation needs full layout is computed
+  upstream in `ComputedStyle::VisualInvalidationDiff` / `StyleDifference`, which classifies
+  will-change changes affecting CB or stacking context as needs-full-layout.
 - **louis14 target:** the reftest runner's script-execution + relayout path (find via
   `reftest_runner_test.go` and the existing dynamic-restyle tests, e.g. how
   `css-position`/`css-contain` dynamic tests already relayout). If louis14 already relayouts after
