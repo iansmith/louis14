@@ -66,8 +66,9 @@ func isInlineLevelDisplay(d css.DisplayType) bool {
 		css.DisplayInlineGrid,
 		css.DisplayInlineTable,
 		css.DisplayRuby,
-		css.DisplayRubyText,
-		css.DisplayRubyBase:
+		css.DisplayRubyText:
+		// DisplayBlockRuby is block-level (its principal box is a
+		// LayoutBlockFlow); DisplayRubyBase no longer exists.
 		return true
 	}
 	return false

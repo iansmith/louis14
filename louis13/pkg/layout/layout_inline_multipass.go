@@ -3339,10 +3339,11 @@ func (le *LayoutEngine) CollectInlineItems(node *html.Node, state *InlineLayoutS
 			state.Items = append(state.Items, item)
 			return
 
-		case css.DisplayRuby, css.DisplayRubyBase:
+		case css.DisplayRuby:
 			// Ruby container: behave like inline — process all children.
 			// Base text and <rt> children are both collected; <rp> children
 			// have display:none so they are already skipped above.
+			// DisplayRubyBase removed in louis14 Phase 1 — modern Blink has no kRubyBase.
 			margin := style.GetMargin()
 			padding := style.GetPadding()
 			border := style.GetBorderWidth()

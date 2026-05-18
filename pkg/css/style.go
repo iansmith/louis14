@@ -4452,8 +4452,13 @@ const (
 	DisplayFlowRoot         DisplayType = "flow-root"
 	DisplayRuby             DisplayType = "ruby"
 	DisplayRubyText         DisplayType = "ruby-text"
-	DisplayRubyBase         DisplayType = "ruby-base"
-	DisplayInlineTable      DisplayType = "inline-table"
+	// DisplayBlockRuby is the block-level form of ruby (CSS Display L3
+	// two-keyword `display: block ruby`). Mirrors Blink's
+	// EDisplay::kBlockRuby. Blink generates a LayoutRubyAsBlock principal
+	// LayoutBlockFlow wrapping a single anonymous inline `display:ruby`
+	// box that holds all children (`layout_ruby_as_block.{h,cc}`).
+	DisplayBlockRuby   DisplayType = "block ruby"
+	DisplayInlineTable DisplayType = "inline-table"
 )
 
 // GetTextIndent returns the text-indent value in pixels (default: 0).
@@ -4482,10 +4487,27 @@ func (s *Style) GetBoxSizing() string {
 	return "content-box"
 }
 
-// GetDisplay returns the display value (default: block)
+// GetDisplay returns the display value (default: block).
+//
+// Supports CSS Display L3 two-keyword forms for ruby:
+//
+//	`display: ruby`           → DisplayRuby (inline-level)
+//	`display: block ruby`     → DisplayBlockRuby (block-level)
+//	`display: inline ruby`    → DisplayRuby (explicit inline outer)
+//
+// Mirrors Blink's CSSDisplayValue parsing
+// (third_party/blink/renderer/core/css/css_properties.json5:3416 — the
+// `display` keyword list contains only `ruby` and `ruby-text` among
+// ruby values; `block ruby` is the two-keyword L3 form).
+//
+// `ruby-base`, `ruby-base-container`, and `ruby-text-container` are not
+// real display values in modern Blink (no kRubyBase / kRubyBaseContainer
+// / kRubyTextContainer in EDisplay); they fall through to the default.
 func (s *Style) GetDisplay() DisplayType {
 	if display, ok := s.Get("display"); ok {
-		switch display {
+		// Normalize whitespace for two-keyword forms.
+		d := strings.Join(strings.Fields(display), " ")
+		switch d {
 		case "inline":
 			return DisplayInline
 		case "inline-block":
@@ -4524,17 +4546,68 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayFlex
 		case "-webkit-inline-box", "-webkit-inline-flex":
 			return DisplayInlineFlex
-		case "ruby":
+		case "ruby", "inline ruby":
 			return DisplayRuby
+		case "block ruby":
+			return DisplayBlockRuby
 		case "ruby-text":
 			return DisplayRubyText
-		case "ruby-base":
-			return DisplayRubyBase
 		case "inline-table":
 			return DisplayInlineTable
 		}
 	}
 	return DisplayBlock
+}
+
+// EquivalentInlineDisplay returns the inline-level display value that a
+// block-level display maps to when its formatting context demands an
+// inline child. Mirrors Blink's
+// `core/css/resolver/style_adjuster.cc:303-356` `EquivalentInlineDisplay`.
+//
+// Used during the CSS Ruby §2.2 `#anon-gen-inlinize` step: when the
+// layout parent is `display: ruby` or `display: ruby-text`, every
+// in-flow child has its used display set to this equivalent so the
+// child participates in the inline ruby line. Also used to convert
+// `block ruby` back to `ruby` when inlinified.
+func EquivalentInlineDisplay(d DisplayType) DisplayType {
+	switch d {
+	case DisplayBlock, DisplayFlowRoot, DisplayListItem:
+		return DisplayInlineBlock
+	case DisplayFlex:
+		return DisplayInlineFlex
+	case DisplayGrid:
+		return DisplayInlineGrid
+	case DisplayTable:
+		return DisplayInlineTable
+	case DisplayBlockRuby:
+		return DisplayRuby
+	}
+	return d
+}
+
+// EquivalentBlockDisplay returns the block-level display value that an
+// inline-level display maps to when its formatting context demands a
+// block child. Mirrors Blink's
+// `core/css/resolver/style_adjuster.cc:247-301` `EquivalentBlockDisplay`.
+//
+// Currently only the ruby cases are used by louis14 Phase 1: `kRuby`
+// becomes `kBlockRuby`, `kRubyText` becomes `kBlock`.
+func EquivalentBlockDisplay(d DisplayType) DisplayType {
+	switch d {
+	case DisplayInlineBlock, DisplayInline, DisplayFlowRoot:
+		return DisplayBlock
+	case DisplayInlineFlex:
+		return DisplayFlex
+	case DisplayInlineGrid:
+		return DisplayGrid
+	case DisplayInlineTable:
+		return DisplayTable
+	case DisplayRuby:
+		return DisplayBlockRuby
+	case DisplayRubyText:
+		return DisplayBlock
+	}
+	return d
 }
 
 // GetLineClamp returns the -webkit-line-clamp value (0 = no clamping)

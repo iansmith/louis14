@@ -38,6 +38,7 @@ func (b *LayoutTreeBuilder) BuildLayoutTree(root *html.Node) *LayoutInputNode {
 	}
 	tree := b.buildNode(root)
 	b.normalizeTableSubtrees(tree)
+	b.normalizeRubySubtrees(tree)
 	assignDOMIndices(tree)
 	return tree
 }
@@ -67,6 +68,127 @@ func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
 	}
 	for _, c := range node.children {
 		b.normalizeTableSubtrees(c)
+	}
+}
+
+// normalizeRubySubtrees walks the built layout tree and applies the
+// CSS Ruby §2.2 box-fixup rules that operate purely on the box tree.
+//
+// Two responsibilities:
+//  1. For `display: block ruby` elements, generate the
+//     `LayoutRubyAsBlock` two-box structure: the principal box stays
+//     block-level (its display is rewritten in place to `block`) and
+//     its original children move under a single anonymous child whose
+//     display is `ruby`. Mirrors Blink
+//     `core/layout/layout_ruby_as_block.{h,cc}` and the
+//     `EquivalentBlockDisplay` / `EquivalentInlineDisplay` pair at
+//     `core/css/resolver/style_adjuster.cc:247-356`.
+//  2. Inlinification (`#anon-gen-inlinize`): when a node's layout
+//     parent is a `display: ruby` or `display: ruby-text` box, set
+//     each in-flow child's used display to its
+//     `EquivalentInlineDisplay` and force `float: none`. Mirrors
+//     Blink `AdjustStyleForDisplay` at
+//     `core/css/resolver/style_adjuster.cc:788-805`. The rule is
+//     recursive (csswg-drafts #1341) — a block inside a block inside
+//     a ruby is still inlinified.
+func (b *LayoutTreeBuilder) normalizeRubySubtrees(node *LayoutInputNode) {
+	if node == nil {
+		return
+	}
+	if s := node.Style(); s != nil {
+		switch s.GetDisplay() {
+		case css.DisplayBlockRuby:
+			b.wrapBlockRubyAsTwoBox(node)
+			// The principal box's only child is now an anonymous
+			// inline `display:ruby` box; recurse into it so its
+			// in-flow children get inlinified.
+			for _, c := range node.children {
+				b.normalizeRubySubtrees(c)
+			}
+			return
+		case css.DisplayRuby, css.DisplayRubyText:
+			// Inlinify in-flow children, then recurse so descendants
+			// (which are themselves inside a ruby/ruby-text layout
+			// parent after inlinification) also get processed.
+			b.inlinifyRubyChildren(node)
+			for _, c := range node.children {
+				b.normalizeRubySubtrees(c)
+			}
+			return
+		}
+	}
+	for _, c := range node.children {
+		b.normalizeRubySubtrees(c)
+	}
+}
+
+// wrapBlockRubyAsTwoBox rewrites a `display: block ruby` node into
+// Blink's `LayoutRubyAsBlock` two-box model: the principal box keeps
+// the element identity but is now `display: block`, and the original
+// in-flow children move under a single new anonymous child whose
+// display is `ruby`. Border/padding/margin remain on the principal
+// block; the anonymous inline ruby inherits only inheritable
+// properties (text-align, font, etc.) via NewAnonymousInlineRubyStyle.
+func (b *LayoutTreeBuilder) wrapBlockRubyAsTwoBox(node *LayoutInputNode) {
+	if node == nil || node.style == nil {
+		return
+	}
+	// Rewrite the principal box's display to `block`. Cloning avoids
+	// mutating a Style that other layout-tree branches might share
+	// (e.g. when the same DOM element is referenced from a
+	// pseudo-element style cache).
+	principal := node.style.Clone()
+	principal.Set("display", "block")
+	node.style = principal
+
+	// Original children become the children of a single anonymous
+	// inline `display:ruby` box.
+	anon := &LayoutInputNode{
+		style:       css.NewAnonymousInlineRubyStyle(node.style),
+		children:    node.children,
+		isAnonymous: true,
+	}
+	node.children = []*LayoutInputNode{anon}
+}
+
+// inlinifyRubyChildren applies the CSS Ruby §2.2 `#anon-gen-inlinize`
+// rule to the direct children of a `display:ruby` or `display:ruby-text`
+// node: each in-flow child has its used display rewritten to its
+// EquivalentInlineDisplay and any float is dropped. OOF (absolute /
+// fixed) children are left alone per Blink
+// `style_adjuster.cc:788-805` (`!builder.HasOutOfFlowPosition()`).
+//
+// Recursion into descendants happens in normalizeRubySubtrees: after
+// inlinification, the child's layout parent in the recursive call is
+// the same ruby/ruby-text, so the rule fires again at each level.
+func (b *LayoutTreeBuilder) inlinifyRubyChildren(node *LayoutInputNode) {
+	if node == nil {
+		return
+	}
+	for _, child := range node.children {
+		if child == nil || child.style == nil {
+			continue
+		}
+		// OOF children are exempt from inlinification.
+		pos := child.style.GetPosition()
+		if pos == css.PositionAbsolute || pos == css.PositionFixed {
+			continue
+		}
+		d := child.style.GetDisplay()
+		eq := css.EquivalentInlineDisplay(d)
+		isFloated := child.style.GetFloat() != css.FloatNone
+		if eq == d && !isFloated {
+			continue
+		}
+		// Mutate via a clone so we don't disturb shared style cells.
+		clone := child.style.Clone()
+		if eq != d {
+			clone.Set("display", string(eq))
+		}
+		if isFloated {
+			clone.Set("float", "none")
+		}
+		child.style = clone
 	}
 }
 
@@ -369,7 +491,8 @@ func isBlockLevel(child *LayoutInputNode) bool {
 	d := s.GetDisplay()
 	switch d {
 	case css.DisplayBlock, css.DisplayFlex, css.DisplayTable,
-		css.DisplayListItem, css.DisplayFlowRoot, css.DisplayGrid:
+		css.DisplayListItem, css.DisplayFlowRoot, css.DisplayGrid,
+		css.DisplayBlockRuby:
 		return true
 	}
 	return false
