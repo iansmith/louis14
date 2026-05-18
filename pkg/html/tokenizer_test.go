@@ -30,6 +30,61 @@ func TestTokenizer_TagWithAttributes(t *testing.T) {
 	}
 }
 
+func TestTokenizer_AttributeValueDecodesCharacterReferences(t *testing.T) {
+	// HTML5 §13.2.5.38/.39 requires character references inside attribute
+	// values to be consumed and replaced with their character. Without
+	// this, an inline-style data URL written with `&quot;` in the source
+	// survives into the CSS parser and breaks the URL.
+	cases := []struct {
+		name string
+		in   string
+		attr string
+		want string
+	}{
+		{
+			"named entity in double-quoted value",
+			`<span style="filter: url(&quot;data:image/svg+xml;utf8,X&quot;);">`,
+			"style",
+			`filter: url("data:image/svg+xml;utf8,X");`,
+		},
+		{
+			"amp + lt + gt",
+			`<a title="a &amp; b &lt;c&gt;">`,
+			"title",
+			`a & b <c>`,
+		},
+		{
+			"numeric entity (decimal + hex)",
+			`<a title="&#34;&#x22;">`,
+			"title",
+			`""`,
+		},
+		{
+			"single-quoted value with &apos;",
+			`<a title='it&apos;s'>`,
+			"title",
+			`it's`,
+		},
+		{
+			"unquoted value with &amp;",
+			`<a href=foo&amp;bar>`,
+			"href",
+			`foo&bar`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			token, err := NewTokenizer(tc.in).NextToken()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := token.Attributes[tc.attr]; got != tc.want {
+				t.Errorf("%s attr:\n  got  = %q\n  want = %q", tc.attr, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTokenizer_CompleteSequence(t *testing.T) {
 	tokenizer := NewTokenizer("<div>Hello</div>")
 	token1, _ := tokenizer.NextToken()

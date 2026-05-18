@@ -1752,7 +1752,11 @@ func stripImportantSuffix(value string) (string, bool) {
 
 func ParseInlineStyle(styleAttr string) *Style {
 	style := NewStyle()
-	declarations := strings.Split(styleAttr, ";")
+	// Use the same paren/quote-aware splitter the stylesheet parser uses.
+	// A naive strings.Split(";") mangles values like
+	// `filter: url("data:image/svg+xml;utf8,...")` at the `;` inside the
+	// data-URL MIME prefix.
+	declarations := splitDeclarationParts(styleAttr)
 	for _, decl := range declarations {
 		decl = strings.TrimSpace(decl)
 		if decl == "" {

@@ -202,9 +202,14 @@ func (t *Tokenizer) readAttributeValue() (string, error) {
 			// state": EOF in tag is a parse error. Recover by emitting the
 			// attribute value built so far; the enclosing readTag loop will
 			// then hit its own EOF branch and emit the partial start tag.
-			return t.input[start:t.pos], nil
+			return gohtml.UnescapeString(t.input[start:t.pos]), nil
 		}
-		value := t.input[start:t.pos]
+		// HTML5 §13.2.5.38/.39: character references in quoted attribute
+		// values are consumed and replaced with their character. Without
+		// this, &quot; inside style="filter: url(&quot;data:...&quot;);"
+		// would survive into the CSS parser, breaking data-URL filter
+		// references on inline elements (blur-text reftest).
+		value := gohtml.UnescapeString(t.input[start:t.pos])
 		t.pos++
 		return value, nil
 	}
@@ -212,7 +217,7 @@ func (t *Tokenizer) readAttributeValue() (string, error) {
 	for t.pos < len(t.input) && !unicode.IsSpace(rune(t.input[t.pos])) && t.input[t.pos] != '>' {
 		t.pos++
 	}
-	return t.input[start:t.pos], nil
+	return gohtml.UnescapeString(t.input[start:t.pos]), nil
 }
 
 func (t *Tokenizer) readText() (Token, error) {

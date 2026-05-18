@@ -19,6 +19,40 @@ func TestParseInlineStyle_MultipleProperties(t *testing.T) {
 	}
 }
 
+func TestParseInlineStyle_DataURLContainingSemicolon(t *testing.T) {
+	// Mirrors the blur-text WPT reftest: a `filter: url("data:...")` with
+	// a `;` inside the data URL's MIME prefix must survive declaration
+	// splitting. Before splitInlineStyleDeclarations this was broken by
+	// a naive strings.Split(";") that mangled the data URL into two
+	// half-declarations.
+	style := ParseInlineStyle(`filter: url("data:image/svg+xml;utf8,<svg><filter id='b'/></svg>#b")`)
+	filters := style.GetFilter()
+	if len(filters) != 1 {
+		t.Fatalf("expected 1 filter function, got %d (%+v)", len(filters), filters)
+	}
+	if filters[0].Name != "url" {
+		t.Errorf("filter name = %q, want url", filters[0].Name)
+	}
+	wantURL := `data:image/svg+xml;utf8,<svg><filter id='b'/></svg>#b`
+	if filters[0].URL != wantURL {
+		t.Errorf("filter URL:\n  got  = %q\n  want = %q", filters[0].URL, wantURL)
+	}
+}
+
+func TestParseInlineStyle_SemicolonInsideQuotes(t *testing.T) {
+	// A quoted string containing `;` must not split the surrounding
+	// declaration (e.g. `content: "a;b"` is one decl).
+	style := ParseInlineStyle(`color: red; content: "a;b"; width: 10px`)
+	c, _ := style.Get("color")
+	w, _ := style.Get("width")
+	if c != "red" {
+		t.Errorf("color = %q, want red", c)
+	}
+	if w != "10px" {
+		t.Errorf("width = %q, want 10px", w)
+	}
+}
+
 func TestGetLength_PixelValue(t *testing.T) {
 	style := ParseInlineStyle("width: 100px")
 	width, ok := style.GetLength("width")
