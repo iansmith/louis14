@@ -14,6 +14,16 @@ type Style struct {
 	ViewportWidth  float64 // Viewport width in pixels (for vw/vmin/vmax units)
 	ViewportHeight float64 // Viewport height in pixels (for vh/vmin/vmax units)
 	ChWidth        float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
+
+	// AppliedTextDecorations is the accumulated text-decoration vector for this
+	// element. CSS Text Decor 3 §2: text-decoration is NOT inherited; instead,
+	// each box that establishes a text decoration appends an AppliedTextDecoration
+	// to its parent's vector. A child cannot remove an ancestor's entry.
+	// Mirrors Blink's `AppliedTextDecorationVector` on `ComputedStyle`
+	// (third_party/blink/renderer/core/style/applied_text_decoration.h:50 at
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Populated post-cascade by
+	// ResolveAppliedTextDecorations.
+	AppliedTextDecorations []AppliedTextDecoration
 }
 
 func NewStyle() *Style {
@@ -30,6 +40,10 @@ func (s *Style) Clone() *Style {
 	}
 	for k, v := range s.Properties {
 		dst.Properties[k] = v
+	}
+	if len(s.AppliedTextDecorations) > 0 {
+		dst.AppliedTextDecorations = make([]AppliedTextDecoration, len(s.AppliedTextDecorations))
+		copy(dst.AppliedTextDecorations, s.AppliedTextDecorations)
 	}
 	return dst
 }
@@ -1713,6 +1727,29 @@ func (s *Style) HasExplicitZIndex() bool {
 	return err == nil
 }
 
+// stripImportantSuffix returns (value-without-!important, true) if value has a
+// trailing "!important" token; otherwise returns (value, false). Used by
+// shorthand expanders so the parser can ignore the priority suffix in the
+// value-token stream. The actual cascade-priority bookkeeping is handled by
+// the per-rule importantProps tracking in cascade.go and by the rule parser's
+// Rule.Important map (cascade.go:466). For inline styles we currently treat
+// !important as best-effort: the suffix is stripped so the longhand value
+// parses correctly, but the priority is not yet tracked separately from the
+// inline ordering. This matches the pre-Phase-1 behavior for shorthand
+// properties (e.g. `text-decoration: underline !important`).
+func stripImportantSuffix(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if len(v) < len("!important") {
+		return value, false
+	}
+	// Case-insensitive trailing match.
+	tail := v[len(v)-len("!important"):]
+	if strings.EqualFold(tail, "!important") {
+		return strings.TrimSpace(v[:len(v)-len("!important")]), true
+	}
+	return value, false
+}
+
 func ParseInlineStyle(styleAttr string) *Style {
 	style := NewStyle()
 	declarations := strings.Split(styleAttr, ";")
@@ -1727,6 +1764,16 @@ func ParseInlineStyle(styleAttr string) *Style {
 		}
 		property := strings.TrimSpace(strings.ToLower(parts[0]))
 		value := strings.TrimSpace(parts[1])
+
+		// Strip the !important suffix before parsing. Inline-style priority is
+		// not tracked separately from inline-normal in cascade.go today (the
+		// note at cascade.go:494 acknowledges this), so the suffix must be
+		// removed from the value or it leaks into longhand parsers. Mirrors
+		// the rule-parser path at stylesheet.go:1917-1929 which has always
+		// stripped !important.
+		if stripped, _ := stripImportantSuffix(value); stripped != value {
+			value = stripped
+		}
 
 		// Phase 2: Expand shorthand properties
 		expandShorthand(style, property, value)
@@ -2262,6 +2309,13 @@ func expandShorthand(style *Style, property, value string) {
 				style.Set("border-image-repeat", strings.Join(parts[1:], " "))
 			}
 		}
+	case "text-decoration":
+		// CSS Text Decor 4 §2.6: text-decoration is a shorthand for:
+		//   text-decoration-line, text-decoration-style,
+		//   text-decoration-color, text-decoration-thickness.
+		// Each omitted component is reset to its initial value.
+		// Mirrors Blink at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		expandTextDecorationShorthand(style, value)
 	default:
 		// Regular property
 		style.Set(property, value)
@@ -2319,6 +2373,119 @@ func expandColumnRuleShorthand(style *Style, value string) {
 				style.Set("column-rule-color", part)
 			}
 		}
+	}
+}
+
+// expandTextDecorationShorthand expands the `text-decoration` shorthand into
+// its four longhands: text-decoration-line, text-decoration-style,
+// text-decoration-color, text-decoration-thickness.
+//
+// Per CSS Text Decor 4 §2.6
+// (https://drafts.csswg.org/css-text-decor-4/#text-decoration-property), each
+// omitted component is reset to its initial value:
+//   - line      → none
+//   - style     → solid
+//   - color     → currentcolor
+//   - thickness → auto
+//
+// Mirrors Blink's `ConsumeShorthandGreedily` logic for the text-decoration
+// shorthand at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func expandTextDecorationShorthand(style *Style, value string) {
+	// Initial values (reset before parsing).
+	style.Set("text-decoration-line", "none")
+	style.Set("text-decoration-style", "solid")
+	style.Set("text-decoration-color", "currentcolor")
+	style.Set("text-decoration-thickness", "auto")
+
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return
+	}
+
+	// Tokenize, but keep functional notations like rgb(...) / hsl(...) as
+	// single tokens. Walk paren depth.
+	var tokens []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(v); i++ {
+		ch := v[i]
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ' ', '\t', '\n':
+			if depth == 0 {
+				if i > start {
+					tokens = append(tokens, v[start:i])
+				}
+				start = i + 1
+			}
+		}
+	}
+	if start < len(v) {
+		tokens = append(tokens, v[start:])
+	}
+
+	// Collect line keywords (may be multiple: underline overline line-through blink).
+	// Single style keyword. Single color. Single thickness (auto|from-font|<length-percentage>).
+	var lineTokens []string
+	styleSet := false
+	colorSet := false
+	thicknessSet := false
+	for _, tok := range tokens {
+		lower := strings.ToLower(tok)
+		switch lower {
+		case "none":
+			// `none` is only a valid line keyword (and only standalone). Keep
+			// the initial "none" — no other line tokens allowed.
+			lineTokens = append(lineTokens, "none")
+			continue
+		case "underline", "overline", "line-through", "blink":
+			lineTokens = append(lineTokens, lower)
+			continue
+		case "solid", "double", "dotted", "dashed", "wavy":
+			if !styleSet {
+				style.Set("text-decoration-style", lower)
+				styleSet = true
+			}
+			continue
+		case "auto", "from-font":
+			if !thicknessSet {
+				style.Set("text-decoration-thickness", lower)
+				thicknessSet = true
+			}
+			continue
+		}
+		// Numeric / percentage / calc → thickness.
+		if !thicknessSet {
+			if _, ok := ParseLength(tok); ok {
+				style.Set("text-decoration-thickness", tok)
+				thicknessSet = true
+				continue
+			}
+			if strings.HasSuffix(tok, "%") {
+				if _, ok := ParsePercentage(tok); ok {
+					style.Set("text-decoration-thickness", tok)
+					thicknessSet = true
+					continue
+				}
+			}
+		}
+		// Color (named, hex, functional).
+		if !colorSet {
+			if _, ok := ParseColor(tok); ok {
+				style.Set("text-decoration-color", tok)
+				colorSet = true
+				continue
+			}
+		}
+	}
+
+	if len(lineTokens) > 0 {
+		style.Set("text-decoration-line", strings.Join(lineTokens, " "))
 	}
 }
 
@@ -9946,4 +10113,260 @@ func expandAnimationShorthand(style *Style, value string) {
 func isNumberToken(tok string) bool {
 	_, err := strconv.ParseFloat(strings.TrimSpace(tok), 64)
 	return err == nil
+}
+
+// =============================================================================
+// CSS Text Decoration 3 — AppliedTextDecoration model
+//
+// Mirrors Blink's `core/style/applied_text_decoration.{h,cc}` at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. The class fields lines_/style_/
+// color_/thickness_/underline_offset_ (h:43-47) are reproduced here as
+// AppliedTextDecoration.Lines/Style/Color (+HasColor)/Thickness/UnderlineOffset.
+// The vector typedef `AppliedTextDecorationVector` (h:50) maps to []AppliedTextDecoration.
+//
+// Per CSS Text Decor 3 §2 (https://www.w3.org/TR/css-text-decor-3/#line-decoration)
+// text-decoration is NOT inherited; instead, each box that establishes a text
+// decoration appends a new entry to the parent's accumulated vector. A child
+// cannot remove an ancestor's entry — `text-decoration-line: none` simply
+// contributes nothing.
+// =============================================================================
+
+// TextDecorationLine is a bitfield of the lines that an AppliedTextDecoration
+// contributes. Mirrors Blink's `TextDecorationLine` enum (kTextDecorationLineBits
+// in applied_text_decoration.h:43).
+type TextDecorationLine uint8
+
+const (
+	TextDecorationLineNone        TextDecorationLine = 0
+	TextDecorationLineUnderline   TextDecorationLine = 1 << 0
+	TextDecorationLineOverline    TextDecorationLine = 1 << 1
+	TextDecorationLineLineThrough TextDecorationLine = 1 << 2
+	// "blink" is a valid keyword in the syntax that has no visual effect; not
+	// represented in the bitfield because Blink produces no glyphs for it
+	// (computed value: keyword retained for serialization only; ignored here).
+)
+
+// Has reports whether the bitfield contains the given line bit.
+func (l TextDecorationLine) Has(bit TextDecorationLine) bool { return l&bit != 0 }
+
+// IsNone reports whether no lines are set.
+func (l TextDecorationLine) IsNone() bool { return l == TextDecorationLineNone }
+
+// TextDecorationThicknessKind enumerates the value-type of a
+// text-decoration-thickness. Mirrors the auto / from-font / <length-percentage>
+// branches in Blink's `TextDecorationThickness` value type.
+type TextDecorationThicknessKind uint8
+
+const (
+	TextDecorationThicknessAuto     TextDecorationThicknessKind = 0
+	TextDecorationThicknessFromFont TextDecorationThicknessKind = 1
+	TextDecorationThicknessLength   TextDecorationThicknessKind = 2
+)
+
+// TextDecorationThickness is the resolved thickness for one AppliedTextDecoration.
+// Kind=Length carries Value (pixels) when ValueIsPercent is false, or a percentage
+// (0..100) when ValueIsPercent is true. Mirrors Blink's `TextDecorationThickness`
+// value type (lines_/style_ siblings in applied_text_decoration.h:46).
+type TextDecorationThickness struct {
+	Kind           TextDecorationThicknessKind
+	Value          float64
+	ValueIsPercent bool
+}
+
+// AppliedTextDecoration is one decoration entry on the accumulated vector that
+// each element carries (see Style.AppliedTextDecorations). Mirrors Blink's
+// class of the same name at applied_text_decoration.h:18-48 (SHA pinned above).
+//
+// Fields are in 1:1 correspondence with Blink:
+//
+//	Lines           ↔ lines_ (bitfield)         applied_text_decoration.h:43
+//	Style           ↔ style_ ("solid"/"double"/"dotted"/"dashed"/"wavy")  :44
+//	Color           ↔ color_                    applied_text_decoration.h:45
+//	Thickness       ↔ thickness_                applied_text_decoration.h:46
+//	UnderlineOffset ↔ underline_offset_         applied_text_decoration.h:47
+//
+// HasColor=false means "currentcolor" — the painter substitutes the originating
+// element's color at paint time (Phase 4 boundary). Phase 1 stores this; the
+// painter will read it once Phase 4 wires decoration sources to text fragments.
+type AppliedTextDecoration struct {
+	Lines           TextDecorationLine
+	Style           string // solid | double | dotted | dashed | wavy
+	Color           Color  // valid only when HasColor
+	HasColor        bool   // false = currentcolor at the originating element
+	Thickness       TextDecorationThickness
+	UnderlineOffset float64 // resolved pixels (0 = auto/initial)
+}
+
+// GetAppliedTextDecorations returns the accumulated decoration vector for this
+// element (Phase 1: populated by ResolveAppliedTextDecorations during cascade).
+// Returns nil if there are no active decorations for this element.
+func (s *Style) GetAppliedTextDecorations() []AppliedTextDecoration {
+	return s.AppliedTextDecorations
+}
+
+// ParseTextDecorationLine parses the `text-decoration-line` value (a
+// space-separated list of underline/overline/line-through/blink/none). Returns
+// the bitfield. Invalid combinations (e.g. duplicate blink, unknown token) map
+// to None per CSS Text Decor §2.1. The "blink" keyword is accepted as valid
+// syntax but contributes no bit (it never paints).
+func ParseTextDecorationLine(value string) TextDecorationLine {
+	v := strings.TrimSpace(strings.ToLower(value))
+	if v == "" || v == "none" {
+		return TextDecorationLineNone
+	}
+	var result TextDecorationLine
+	seen := map[string]bool{}
+	for _, tok := range strings.Fields(v) {
+		if seen[tok] {
+			// Duplicate keyword → entire value invalid.
+			return TextDecorationLineNone
+		}
+		seen[tok] = true
+		switch tok {
+		case "underline":
+			result |= TextDecorationLineUnderline
+		case "overline":
+			result |= TextDecorationLineOverline
+		case "line-through":
+			result |= TextDecorationLineLineThrough
+		case "blink":
+			// Valid but contributes no bit.
+		case "none":
+			// "none" combined with any other token is invalid per spec.
+			return TextDecorationLineNone
+		default:
+			return TextDecorationLineNone
+		}
+	}
+	return result
+}
+
+// SerializeTextDecorationLine renders a TextDecorationLine bitfield back to
+// canonical CSS text. Used so the parsed longhand can round-trip through the
+// Style.Properties map (which is `map[string]string`).
+func SerializeTextDecorationLine(l TextDecorationLine) string {
+	if l == TextDecorationLineNone {
+		return "none"
+	}
+	parts := make([]string, 0, 3)
+	if l.Has(TextDecorationLineUnderline) {
+		parts = append(parts, "underline")
+	}
+	if l.Has(TextDecorationLineOverline) {
+		parts = append(parts, "overline")
+	}
+	if l.Has(TextDecorationLineLineThrough) {
+		parts = append(parts, "line-through")
+	}
+	return strings.Join(parts, " ")
+}
+
+// GetTextDecorationLine returns the parsed text-decoration-line longhand for
+// this element (default: none).
+func (s *Style) GetTextDecorationLine() TextDecorationLine {
+	if val, ok := s.Get("text-decoration-line"); ok {
+		return ParseTextDecorationLine(val)
+	}
+	return TextDecorationLineNone
+}
+
+// GetTextDecorationThicknessResolved returns the parsed thickness longhand as
+// a TextDecorationThickness value. Mirrors Blink's `TextDecorationThickness`
+// value computation. Unlike the legacy GetTextDecorationThickness which always
+// returns float64, this preserves the auto/from-font keywords and percentage
+// units that Phase 2 (TextDecorationInfo) needs.
+func (s *Style) GetTextDecorationThicknessResolved() TextDecorationThickness {
+	val, ok := s.Get("text-decoration-thickness")
+	if !ok {
+		return TextDecorationThickness{Kind: TextDecorationThicknessAuto}
+	}
+	v := strings.TrimSpace(strings.ToLower(val))
+	switch v {
+	case "", "auto":
+		return TextDecorationThickness{Kind: TextDecorationThicknessAuto}
+	case "from-font":
+		return TextDecorationThickness{Kind: TextDecorationThicknessFromFont}
+	}
+	// Percentage?
+	if strings.HasSuffix(v, "%") {
+		if pct, ok := ParsePercentage(v); ok {
+			return TextDecorationThickness{
+				Kind:           TextDecorationThicknessLength,
+				Value:          pct,
+				ValueIsPercent: true,
+			}
+		}
+	}
+	// Length.
+	if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+		return TextDecorationThickness{
+			Kind:  TextDecorationThicknessLength,
+			Value: l,
+		}
+	}
+	return TextDecorationThickness{Kind: TextDecorationThicknessAuto}
+}
+
+// computeOwnTextDecorationContribution returns the element's own contribution
+// to its AppliedTextDecorations vector — i.e. the `AppliedTextDecoration` that
+// would be *appended* to the parent's resolved vector, if any. Returns false
+// if `text-decoration-line` is none/empty (the element contributes nothing).
+//
+// Mirrors Blink's style-builder behavior described in the Phase 1 vetting log:
+// "When a box that 'establishes' a text decoration is encountered, the style
+// builder appends a new AppliedTextDecoration to the inherited vector."
+func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, bool) {
+	line := s.GetTextDecorationLine()
+	if line.IsNone() {
+		return AppliedTextDecoration{}, false
+	}
+	td := AppliedTextDecoration{
+		Lines:           line,
+		Style:           s.GetTextDecorationStyle(),
+		Thickness:       s.GetTextDecorationThicknessResolved(),
+		UnderlineOffset: s.GetTextUnderlineOffset(),
+	}
+	if c, ok := s.GetTextDecorationColor(); ok {
+		td.Color = c
+		td.HasColor = true
+	} else {
+		// `text-decoration-color: currentcolor` (the initial value) resolves
+		// to THIS element's `color` at the moment the contribution is
+		// recorded. Mirrors Blink's StyleBuilder, which freezes the resolved
+		// color onto the AppliedTextDecoration entry at append-time so a
+		// descendant cannot retroactively change the ancestor's stroke color.
+		td.Color = s.GetColor()
+		td.HasColor = true
+	}
+	return td, true
+}
+
+// ResolveAppliedTextDecorations populates s.AppliedTextDecorations by appending
+// this element's own contribution (if any) to the parent's resolved vector.
+// Mirrors Blink's `StyleBuilder` path where a box that establishes a text
+// decoration appends to the inherited vector
+// (applied_text_decoration.h:18-50, SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Phase 1 stores the accumulated vector verbatim. Phase 4 will wire boundary
+// resets (atomic inlines, block containers) — for Phase 1 the accumulator is
+// monotonic from parent → child, matching simple inline propagation.
+func (s *Style) ResolveAppliedTextDecorations(parent *Style) {
+	var inherited []AppliedTextDecoration
+	if parent != nil {
+		inherited = parent.AppliedTextDecorations
+	}
+	own, hasOwn := s.computeOwnTextDecorationContribution()
+	if !hasOwn {
+		// Element contributes nothing — vector is exactly the parent's.
+		if len(inherited) == 0 {
+			s.AppliedTextDecorations = nil
+		} else {
+			s.AppliedTextDecorations = append([]AppliedTextDecoration(nil), inherited...)
+		}
+		return
+	}
+	combined := make([]AppliedTextDecoration, 0, len(inherited)+1)
+	combined = append(combined, inherited...)
+	combined = append(combined, own)
+	s.AppliedTextDecorations = combined
 }

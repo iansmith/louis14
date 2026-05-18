@@ -27,7 +27,21 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	// Default styles for <a> (anchor/link) elements
 	if node.TagName == "a" {
 		style.Set("color", "#0645ad") // Standard link blue
-		style.Set("text-decoration", "underline")
+		// Expressed as the text-decoration-line longhand (not the legacy
+		// shorthand) so the AppliedTextDecoration model can append this
+		// element's own contribution without colliding with other longhands.
+		// Mirrors Blink UA stylesheet at
+		// third_party/blink/renderer/core/html/resources/html.css (SHA pinned).
+		style.Set("text-decoration-line", "underline")
+	}
+
+	// UA default decorations for <u>, <ins>: underline. <s>, <strike>, <del>:
+	// line-through. CSS Text Decor 3 §2.1 list of UA-default decorated elements.
+	switch node.TagName {
+	case "u", "ins":
+		style.Set("text-decoration-line", "underline")
+	case "s", "strike", "del":
+		style.Set("text-decoration-line", "line-through")
 	}
 
 	// Default margin for <body> element (CSS 2.1 §8.3.1).
@@ -885,7 +899,11 @@ var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
 	"font-feature-settings": true,
-	"line-height":           true, "text-align": true, "text-decoration": true,
+	// NOTE: text-decoration is intentionally NOT inherited (CSS Text Decor 3
+	// §2). Instead, ResolveAppliedTextDecorations accumulates an
+	// []AppliedTextDecoration vector from parent → child. See
+	// applied_text_decoration.h:18-50 (Blink SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	"line-height": true, "text-align": true,
 	"text-transform": true, "text-indent": true, "white-space": true,
 	"visibility": true, "list-style-type": true, "list-style-position": true, "list-style-image": true,
 	"direction": true, "letter-spacing": true, "word-spacing": true,
@@ -1395,6 +1413,16 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		resolveLogicalBoxProperties(style)
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		applyContainerQueryRules(node, stylesheets, styles, style)
+		// CSS Text Decor 3 §2: accumulate AppliedTextDecorations from parent.
+		// Must run AFTER longhand resolution so this element's contribution sees
+		// final text-decoration-line/style/color/thickness values. Mirrors
+		// Blink's StyleBuilder append-to-inherited-vector at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f (applied_text_decoration.h:18-50).
+		var parentStyle *Style
+		if node.Parent != nil {
+			parentStyle = styles[node.Parent]
+		}
+		style.ResolveAppliedTextDecorations(parentStyle)
 		styles[node] = style
 	}
 

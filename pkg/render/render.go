@@ -4087,8 +4087,18 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 
 // drawTextDecoration renders underline, overline, or line-through decoration
 // lines for non-vertical, non-sideways text.
+//
+// CSS Text Decor 3 §2: a text run paints every AppliedTextDecoration on its
+// accumulated vector (one per ancestor that established a decoration). Phase 1
+// iterates layer.AppliedTextDecorations directly; Phase 2 will replace the
+// ad-hoc lineY/thickness constants here with the Blink-vetted
+// TextDecorationInfo geometry. When the vector is empty, the legacy
+// single-decoration path below paints (used for anonymous synthetic boxes
+// without a cascade pass).
 func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
-	if layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "" {
+	// Fast path when there are no accumulated decorations and no legacy entry.
+	if len(layer.AppliedTextDecorations) == 0 &&
+		(layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "") {
 		return
 	}
 
@@ -4096,6 +4106,14 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	descent := float64(metrics.Descent) / 64.0
 	textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
 
+	if len(layer.AppliedTextDecorations) > 0 {
+		for _, td := range layer.AppliedTextDecorations {
+			r.drawOneAppliedTextDecoration(td, layer, box, ascent, descent, textWidth)
+		}
+		return
+	}
+
+	// Legacy fallback (anonymous boxes / synthetic styles).
 	r.setColor(layer.TextDecorationColor)
 	r.dc.SetLineWidth(layer.TextDecorationThickness)
 
@@ -4126,6 +4144,68 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		r.dc.MoveTo(box.X, lineY)
 		r.dc.LineTo(box.X+textWidth, lineY)
 		r.dc.Stroke()
+	}
+}
+
+// drawOneAppliedTextDecoration paints a single AppliedTextDecoration entry on a
+// text run. Used by drawTextDecoration to walk the layer's accumulated vector.
+// Phase 1 reuses the legacy ad-hoc Y / thickness constants; Phase 2 will swap
+// in the Blink-vetted TextDecorationInfo geometry. Per CSS Text Decor 3 §2 the
+// color was resolved at append-time so currentcolor is already substituted in
+// td.Color.
+func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, layer *PaintLayer, box *layout.Box, ascent, descent, textWidth float64) {
+	if td.Lines.IsNone() {
+		return
+	}
+	// Resolve thickness. Phase 2 will port ComputeThickness exactly
+	// (text_decoration_info.cc:681-706). Phase 1: auto/from-font → 1px;
+	// <length> in pixels; <percentage> against font-size.
+	thickness := 1.0
+	switch td.Thickness.Kind {
+	case css.TextDecorationThicknessAuto, css.TextDecorationThicknessFromFont:
+		thickness = 1.0
+	case css.TextDecorationThicknessLength:
+		if td.Thickness.ValueIsPercent {
+			// Phase 1: fall back to 1px when font-size is unknown here. The
+			// percent → font-size resolution lands in Phase 2 with the full
+			// font-metrics-aware TextDecorationInfo port.
+			thickness = td.Thickness.Value / 100.0
+		} else {
+			thickness = td.Thickness.Value
+		}
+		if thickness <= 0 {
+			thickness = 1.0
+		}
+	}
+
+	r.setColor(td.Color)
+	r.dc.SetLineWidth(thickness)
+
+	stroke := func(lineY float64) {
+		switch td.Style {
+		case "dashed":
+			r.drawDashedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+		case "dotted":
+			r.drawDottedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+		case "double":
+			r.drawDoubleLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+		case "wavy":
+			r.drawWavyLine(box.X, lineY, textWidth, thickness)
+		default: // "solid"
+			r.dc.MoveTo(box.X, lineY)
+			r.dc.LineTo(box.X+textWidth, lineY)
+			r.dc.Stroke()
+		}
+	}
+
+	if td.Lines.Has(css.TextDecorationLineUnderline) {
+		stroke(box.Y + ascent + math.Abs(descent)*0.25 + td.UnderlineOffset)
+	}
+	if td.Lines.Has(css.TextDecorationLineOverline) {
+		stroke(box.Y)
+	}
+	if td.Lines.Has(css.TextDecorationLineLineThrough) {
+		stroke(box.Y + ascent*0.65)
 	}
 }
 
