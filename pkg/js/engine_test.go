@@ -200,6 +200,40 @@ func TestChildren(t *testing.T) {
 	}
 }
 
+func TestWaitForAtLeastOneFrameResolvesAndRunsMutation(t *testing.T) {
+	// Mirrors the WPT pattern from
+	// svg-empty-container-with-filter-content-added.html: wait for one frame,
+	// then mutate the DOM. Because rAF runs synchronously and goja drains the
+	// promise job queue on RunString return, the .then callback must execute
+	// before Execute() returns — verified by reading the mutated DOM after.
+	doc := parseHTML(t, `<div id="target"></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		waitForAtLeastOneFrame().then(function() {
+			var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+			rect.setAttribute('fill', 'green');
+			document.getElementById('target').appendChild(rect);
+			takeScreenshot();
+		});
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	target := getElementById(doc.Root, "target")
+	if target == nil {
+		t.Fatal("target not found")
+	}
+	if len(target.Children) != 1 {
+		t.Fatalf("expected 1 child appended via rAF promise, got %d", len(target.Children))
+	}
+	if target.Children[0].TagName != "rect" {
+		t.Errorf("expected appended child tag=rect, got %q", target.Children[0].TagName)
+	}
+	if target.Children[0].Attributes["fill"] != "green" {
+		t.Errorf("expected fill=green, got %q", target.Children[0].Attributes["fill"])
+	}
+}
+
 func TestScriptError(t *testing.T) {
 	doc := parseHTML(t, `<p>text</p>`)
 	engine := New()

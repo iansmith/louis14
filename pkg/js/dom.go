@@ -82,6 +82,24 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 		}
 		return ctx.elementProxy(node)
 	})
+	// createElementNS(namespaceURI, qualifiedName). louis14's DOM doesn't
+	// track namespaces — element identity in the renderer is by lowercase
+	// tag name (matching the tokenizer). The namespace argument is accepted
+	// for compatibility with WPT tests that build SVG nodes via
+	// document.createElementNS('http://www.w3.org/2000/svg', 'rect').
+	docObj.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 2 {
+			panic(vm.NewTypeError("Failed to execute 'createElementNS' on 'Document': 2 arguments required"))
+		}
+		tag := strings.ToLower(call.Arguments[1].String())
+		node := &html.Node{
+			Type:       html.ElementNode,
+			TagName:    tag,
+			Attributes: make(map[string]string),
+			Children:   make([]*html.Node, 0),
+		}
+		return ctx.elementProxy(node)
+	})
 	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
 		text := ""
 		if len(call.Arguments) > 0 {

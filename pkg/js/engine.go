@@ -56,8 +56,39 @@ func New() *Engine {
 		return goja.Undefined()
 	})
 
+	// WPT reftest helpers. Tests load these via external
+	// <script src="/common/rendering-utils.js"> and
+	// <script src="/common/reftest-wait.js">, which the HTML parser does
+	// not fetch, so the globals must be supplied here. The prelude is
+	// compiled once at init (goja *Program is cross-runtime safe) and
+	// re-run into each fresh runtime — a sweep builds many Engines.
+	if _, err := vm.RunProgram(wptReftestPrelude); err != nil {
+		panic(fmt.Errorf("wpt reftest prelude: %w", err))
+	}
+
 	return e
 }
+
+// wptReftestPrelude is the compiled subset of WPT testharness globals that
+// reftests use directly. Faithful to upstream WPT (see
+// https://github.com/web-platform-tests/wpt/blob/master/common/rendering-utils.js
+// and /common/reftest-wait.js):
+//   - waitForAtLeastOneFrame returns a Promise that resolves after two
+//     requestAnimationFrame ticks. Our rAF runs synchronously, so the
+//     resolve fires in the same task and goja drains the .then job on
+//     RunProgram return.
+//   - takeScreenshot is a no-op: the visualtest harness captures after
+//     JS finishes regardless of when the test signals.
+var wptReftestPrelude = goja.MustCompile("wptReftestPrelude", `
+function waitForAtLeastOneFrame() {
+  return new Promise(function(resolve) {
+    requestAnimationFrame(function() {
+      requestAnimationFrame(resolve);
+    });
+  });
+}
+function takeScreenshot() {}
+`, false)
 
 // RegisterOnloadCallback stores an element-level onload callback.
 // Called from DOM bindings when JS does element.onload = fn.
