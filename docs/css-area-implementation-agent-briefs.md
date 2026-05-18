@@ -582,9 +582,172 @@ State actual deltas, not predictions.
 
 ---
 
-## Round 3 (to be drafted after Round 2 lands)
+---
 
-- Round 3: css-text-decor Phase 1 (decoration model). Solo and only
-  after css-ruby's Phases 1-2 are merged.
+## Round 2 retrospective (post-merge, 2026-05-18)
 
-Will be appended as `## Brief 3` when its predecessor finishes.
+css-ruby Phase 1 landed cleanly with three Phase-1 commits + unit tests.
+Observations:
+
+- The deletion of `DisplayRubyBase` (plan-authorized — it's not in modern
+  Blink) required two 1-line edits in `louis13/pkg/layout/*.go` to keep
+  the build clean. The agent flagged this as a SCOPE NOTE and kept the
+  edits minimal + behavior-preserving. Acceptable; the alternative (leave
+  the build broken) was worse than touching adjacent files.
+- The agent correctly mirrored Blink's `font-size: 50%` (not `0.5em`) per
+  the vetting log — this is the kind of detail that gets lost without
+  SHA-pinned citations.
+- `normalizeRubySubtrees` slotted into `BuildLayoutTree` analogously to
+  `normalizeTableSubtrees`. The "study Blink and mirror its file
+  placement" principle keeps producing tractable diffs.
+
+Dependency note: css-text-decor Phase 5 (ruby integration for emphasis)
+will eventually need css-ruby's Phase 2 (inline ruby-column model). But
+**css-text-decor Phase 1 (the AppliedTextDecoration model) does NOT depend
+on ruby** — it's the cascade fix + value model only. Round 3 can run in
+parallel with the LOU-128+LOU-129 landing merge.
+
+---
+
+## Brief 3 — `plan-css-text-decor.md` Phase 1
+
+Round 3. Runs in parallel with the LOU-128+LOU-129 landing merge agent
+(different files). Subsequent text-decor phases (2-4) are solo; Phase 5+
+gates on css-ruby Phase 2.
+
+```
+You are an isolated worktree agent. Your task: implement Phase 1 of
+`docs/plan-css-text-decor.md`: replace inherited text-decoration with
+the AppliedTextDecoration accumulating model.
+
+[INSERT THE FULL "HARD RULES" BLOCK FROM THIS DOC HERE]
+
+═══════════════════════════════════════════════════════════════
+PLAN-SPECIFIC SCOPE
+═══════════════════════════════════════════════════════════════
+
+Plan: $WT/docs/plan-css-text-decor.md
+Phase: Phase 1 ONLY ("Decoration model: stop inheriting, introduce
+AppliedTextDecoration").
+Baseline: 96 passing / 154 failing / 0 skipped (250 run) per the plan.
+
+The plan was Blink-vetted on 2026-05-18 against Chromium main @
+4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Read the "Blink vetting log"
+section at the top of the plan — citations are SHA-pinned and accurate.
+NOTE: the vetting log calibrates that `.cc` file line numbers in this
+plan drift ~250-530 lines from cited values; header line numbers are
+within ±5 lines. Phase 1 cites mostly headers (applied_text_decoration.h)
+so the citations should be close.
+
+Phase 1 is FOUNDATIONAL: it replaces the single inherited TextDecoration
+enum with an accumulating `[]AppliedTextDecoration` model. It targets
+~5 tests directly (text-decoration-line, text-decoration-line-011/012/013,
+text-decoration-color) but the bigger payoff is unblocking Phases 2-4
+(geometry, L4 knobs, decorating-box propagation) and Phase 6 (emphasis).
+
+Key new surface in `pkg/css/style.go` (additive — see Hard Rule 6):
+- Type `TextDecorationLine` (bitfield: `Underline | Overline | LineThrough`)
+- Type `TextDecorationThickness { Kind: Auto|FromFont|Length; Value Length }`
+- Type `AppliedTextDecoration { Lines TextDecorationLine; Style string;
+  Color Color; HasColor bool; Thickness TextDecorationThickness;
+  UnderlineOffset Length }` — mirrors Blink
+  `core/style/applied_text_decoration.h` (lines 18-48 at the pinned SHA;
+  fields lines_/style_/color_/thickness_/underline_offset_ per vetting
+  log).
+- Accessor `Style.GetAppliedTextDecorations() []AppliedTextDecoration`.
+
+Cascade fix in `pkg/css/cascade.go`:
+- DELETE `"text-decoration"` from `inheritableProperties` (cascade.go:843
+  per the plan — verify the current line number; it may have shifted).
+  This is the central Bucket A bug.
+- During cascade, compute each element's OWN contributed
+  AppliedTextDecoration from its `text-decoration-line/style/color/
+  thickness` longhands + `text-underline-offset`. Append it to the
+  parent's resolved vector to form this element's vector. The Phase 4
+  work wires the boundary logic into layout; for Phase 1, just store
+  the per-element contribution.
+- Expand the `text-decoration` shorthand into the four longhands.
+- Keep `<u>`/`<ins>`/`<a>` UA defaults at `cascade.go:30` (per the plan)
+  but EXPRESSED AS `text-decoration-line` — the underline becomes a
+  longhand contribution, not the legacy enum value.
+
+DO NOT touch (later phases):
+- TextDecorationInfo geometry — Phase 2.
+- L4 knobs (text-underline-position, from-font, text-decoration-inset) —
+  Phase 3.
+- Decorating-box propagation through inline tree — Phase 4.
+- Ruby layout — Phase 5 (and gates on css-ruby Phase 2).
+- Emphasis painting — Phase 6.
+- skip-ink / skip-spaces — Phase 7.
+
+`pkg/css/cascade.go` parallel-safety: this file has been touched by the
+css-ruby Phase 1 agent (already merged) to rewrite the ruby UA block. Do
+NOT touch the ruby UA block. The text-decoration changes are independent
+(cascade list at `inheritableProperties`, plus the shorthand expander
+for `text-decoration`). Stay strictly in your area.
+
+`pkg/css/style.go` parallel-safety: same additive-only rule as Round 1.
+You're running concurrently with a landing-merge agent that will be
+pulling in LOU-129's changes to style.go (additions of
+`splitTopLevelCommas` etc). Both yours and theirs are additive at the
+file tail. If your branch and theirs need to merge later, git will
+auto-merge cleanly as it did in Round 1.
+
+═══════════════════════════════════════════════════════════════
+MILESTONES
+═══════════════════════════════════════════════════════════════
+
+**M0 — Setup + Blink reads**
+- `pwd`, `git status`, `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`.
+- Symlink fonts.
+- Read the entire plan doc (`docs/plan-css-text-decor.md`).
+- WebFetch each Phase 1 Blink citation at the pinned SHA. Focus:
+  - `core/style/applied_text_decoration.h` (lines 18-50)
+  - `core/style/computed_style.cc` (style-builder behavior that appends
+    AppliedTextDecoration rather than inheriting — search for the
+    StyleAdjuster / RecalcStyle path)
+- Commit + push checklist as `$WT/.phase1-checklist.md`.
+  Title: `chore(css-text-decor): Phase 1 reading checklist`.
+
+**M1 — Implement the model + cascade fix**
+- Add the new types and accessors to `pkg/css/style.go` (additive).
+- Add the `text-decoration` shorthand expander.
+- Delete `"text-decoration"` from `inheritableProperties` in
+  `pkg/css/cascade.go`.
+- Wire the per-element AppliedTextDecoration computation + accumulation.
+- Re-express `<u>`/`<ins>`/`<a>` UA defaults as text-decoration-line
+  contributions.
+- `gofmt -w pkg/css/...`.
+- `GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go build ./...` clean.
+- Commit + push. Title: `feat(css-text-decor): AppliedTextDecoration
+  model + stop inheriting (Phase 1)`.
+
+**M2 — Phase 1 gate**
+- Run the 5 plan-cited Phase-1 tests at 0% diff:
+  - text-decoration-line.html
+  - text-decoration-line-011.xht
+  - text-decoration-line-012.xht
+  - text-decoration-line-013.xht
+  - text-decoration-color.html
+- Run a regression sample (2-3 currently-passing css-text-decor + 2
+  css-text + 2 CSS2 tests). NO regressions.
+- If any of the 5 Phase-1 tests don't reach 0%, diagnose and fix —
+  don't move on with diffs > 0.
+- Delete `.phase1-checklist.md`.
+- Commit + push. Title: `feat(css-text-decor): Phase 1 gate — 5 tests
+  at 0% diff`.
+
+═══════════════════════════════════════════════════════════════
+REPORT
+═══════════════════════════════════════════════════════════════
+
+- Worktree path and branch name.
+- Pinned Blink SHA.
+- Files added / modified, with line counts.
+- 5 Phase-1 test results (name + pass/fail + max diff).
+- Regression sample results.
+- Any DESIGN ESCALATION / PARALLEL CONTENTION / SCOPE NOTE.
+- Phase 1 commit SHA.
+
+State actual deltas, not predictions.
+```
