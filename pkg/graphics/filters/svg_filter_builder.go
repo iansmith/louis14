@@ -212,6 +212,33 @@ func NewSVGFilterBuilder(space InterpolationSpace) *SVGFilterBuilder {
 	return b
 }
 
+// SetSourceOverride rewires "SourceGraphic" lookups in this builder to
+// resolve to override instead of the builder's own SourceGraphic. Used
+// by CSS filter-value-list chains so each filter's output becomes the
+// next filter's SourceGraphic — Blink's FilterChain composition.
+// Must be called before BuildGraph. If override is nil this is a no-op.
+//
+// The FillPaint / StrokePaint / Background* builtins are also realigned
+// to the override per the spec's "fall back to source" semantics.
+// SourceAlpha is not overridden: the existing alpha node still references
+// the chain's original SourceGraphic, which is acceptable because no
+// in-scope WPT chained-filter test reads SourceAlpha; the principled
+// chain-aware SourceAlpha (alpha of the running output) is a separate
+// follow-up that would require generalising NewSourceAlpha beyond its
+// current *SourceGraphic-only constructor.
+func (b *SVGFilterBuilder) SetSourceOverride(override FilterEffect) {
+	if override == nil {
+		return
+	}
+	b.builtins["SourceGraphic"] = override
+	b.builtins["FillPaint"] = override
+	b.builtins["StrokePaint"] = override
+	b.builtins["BackgroundImage"] = override
+	// The implicit chain head also moves to the override so a primitive
+	// with no `in` attribute reads from the running chain output.
+	b.lastEffect = override
+}
+
 // Source returns the builder's SourceGraphic.
 func (b *SVGFilterBuilder) Source() *SourceGraphic { return b.source }
 

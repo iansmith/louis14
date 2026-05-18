@@ -45,17 +45,17 @@ type FilterEffectBuilder struct {
 // BuildFilterEffect builds a filters.Filter for a chained CSS filter list.
 // Returns nil when the list is empty or contains only unsupported entries.
 //
-// A list that contains a single `url(#id)` reference resolving to an
-// SVG `<filter>` element is dispatched to BuildReferenceFilter and
-// returned as the standalone reference-filter graph. A mixed list of
-// url() and CSS functions is currently approximated by skipping the
-// url() entries and applying only the CSS functions (matches Blink's
-// behavior pre-FilterChain merge).
+// A single `url(#id)` is dispatched to BuildReferenceFilter so the
+// reference filter's own region / interpolation space is preserved
+// (single-url tests rely on this). A mixed list walks the ops in order,
+// each `url()` becoming a sub-graph whose SourceGraphic is rewired to
+// the running chain output (Blink's FilterEffectBuilder::Build*
+// FilterChain composition); each shorthand entry is built with the
+// running output as its source.
 func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filters.Filter {
 	if len(ops) == 0 {
 		return nil
 	}
-	// SVG reference filter fast path: a single url() entry.
 	if len(ops) == 1 && ops[0].Name == "url" {
 		return b.BuildReferenceFilter(ops[0].URL)
 	}
@@ -66,11 +66,13 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	var prev filters.FilterEffect = src
 	for _, op := range ops {
 		if op.Name == "url" {
-			// Mixed list with a url() reference: skip the reference
-			// entry. Phase 7 doesn't chain SVG filters into CSS
-			// shorthand lists — that would require turning the SVG
-			// filter into a sub-graph node, which Blink's
-			// FilterChain does but we defer.
+			sub := b.buildReferenceFilterWithSource(op.URL, prev)
+			if sub != nil && sub.LastEffect != nil {
+				prev = sub.LastEffect
+			}
+			// An unresolvable url() (missing fragment, cycle, fetch
+			// fail) drops the entry per Filter Effects 1 §3.1 — the
+			// chain continues with the same `prev`.
 			continue
 		}
 		next := buildOneEffect(op, prev, src, srcAlpha, space, b.CurrentColor)
@@ -79,13 +81,9 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		}
 	}
 	if prev == src {
-		// No effect was produced — nothing to apply.
 		return nil
 	}
 
-	// CSS shorthand filters: the filter region is the reference box inflated
-	// by however far the graph spreads it (blur, drop-shadow). MapRect walks
-	// the chain to compute that.
 	f := &filters.Filter{
 		ReferenceBox: b.ReferenceBox,
 		Source:       src,
@@ -109,6 +107,15 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 // Mirrors Blink's FilterEffectBuilder::BuildReferenceFilter +
 // SVGFilterBuilder::BuildGraph dispatch.
 func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
+	return b.buildReferenceFilterWithSource(id, nil)
+}
+
+// buildReferenceFilterWithSource is BuildReferenceFilter with an optional
+// chain-source override: when prev is non-nil, "SourceGraphic" references
+// inside the resolved filter resolve to prev (the running output of an
+// outer CSS filter-value-list chain), mirroring Blink's
+// FilterEffectBuilder::Build* pattern of swapping SourceGraphic per stage.
+func (b *FilterEffectBuilder) buildReferenceFilterWithSource(id string, prev filters.FilterEffect) *filters.Filter {
 	if id == "" {
 		return nil
 	}
@@ -125,15 +132,17 @@ func (b *FilterEffectBuilder) BuildReferenceFilter(id string) *filters.Filter {
 	// Same-document fast path: leading `#` (after trim/quote strip).
 	docURL, fragID := splitFilterRef(id)
 	if docURL == "" {
-		return b.buildSameDocReferenceFilter(fragID)
+		return b.buildSameDocReferenceFilter(fragID, prev)
 	}
-	return b.buildExternalReferenceFilter(docURL, fragID)
+	return b.buildExternalReferenceFilter(docURL, fragID, prev)
 }
 
 // buildSameDocReferenceFilter resolves a `filter: url(#id)` reference
 // against the in-page SVGResourceRegistry. The original (pre-LOU-130)
-// behavior for bare-fragment references.
-func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string) *filters.Filter {
+// behavior for bare-fragment references. When chainSource is non-nil
+// the resolved filter's SourceGraphic references are rewired to
+// chainSource (CSS filter-value-list chain composition).
+func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string, chainSource filters.FilterEffect) *filters.Filter {
 	if b.Resources == nil {
 		return nil
 	}
@@ -195,6 +204,7 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string) *filters.Fi
 		resolveStyle:    b.ResolveStyle,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
+	builder.SetSourceOverride(chainSource)
 	return builder.BuildGraph(adapter)
 }
 
@@ -204,8 +214,10 @@ func (b *FilterEffectBuilder) buildSameDocReferenceFilter(id string) *filters.Fi
 // ExternalSVGFetcher, parses it, finds `<filter id="fragID">`, and
 // builds the FilterEffect graph. Returns nil on any failure — Blink's
 // behavior for tainted/unreachable external filters is a null filter
-// (caller paints source unfiltered) per Filter Effects 1 §3.1.
-func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string) *filters.Filter {
+// (caller paints source unfiltered) per Filter Effects 1 §3.1. When
+// chainSource is non-nil, SourceGraphic references inside the fetched
+// filter are rewired to it (CSS filter-value-list chain composition).
+func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string, chainSource filters.FilterEffect) *filters.Filter {
 	if fragID == "" || b.ExternalSVGFetcher == nil {
 		return nil
 	}
@@ -270,6 +282,7 @@ func (b *FilterEffectBuilder) buildExternalReferenceFilter(docURL, fragID string
 		resolveStyle: nil,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
+	builder.SetSourceOverride(chainSource)
 	return builder.BuildGraph(adapter)
 }
 

@@ -52,6 +52,13 @@ func (sp *svgShapePainter) paint() {
 				sp.paintWithSVGFilter(filter)
 				return
 			}
+			// Single-url misses (unknown id, cycle, etc.) AND the chain
+			// path (when it returns false) both fall through to the
+			// unfiltered paint below — preserves the long-standing
+			// `filter="url(#missing)"` fallback behavior.
+			if ops := style.GetFilter(); len(ops) > 0 && sp.paintWithFilterChain(ops) {
+				return
+			}
 		}
 	}
 

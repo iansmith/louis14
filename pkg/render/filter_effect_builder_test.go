@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"louis14/pkg/css"
 )
 
 // TestBuildReferenceFilter_ExternalSVG_DataURL feeds a data: URL
@@ -98,6 +100,74 @@ func TestBuildReferenceFilter_ExternalSVG_NoFetcher(t *testing.T) {
 	}
 	if got := b.BuildReferenceFilter("doc.svg#f"); got != nil {
 		t.Error("expected nil filter when no ExternalSVGFetcher is configured")
+	}
+}
+
+// TestBuildFilterEffect_MixedUrlAndShorthandChain mirrors the WPT
+// svg-multiple-filter-functions.html structure: a CSS filter-value-list
+// with two external-url() entries followed by a shorthand. Asserts that
+// BuildFilterEffect builds a single chain Filter (not nil, not the
+// shorthand-only fallback), with LastEffect anchored at the shorthand's
+// output and Source still pointing at the chain's original SourceGraphic
+// (so the renderer's SetSourceImage feeds the right buffer).
+func TestBuildFilterEffect_MixedUrlAndShorthandChain(t *testing.T) {
+	const fLeft = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f_left"><feFlood flood-color="red"/></filter></svg>`
+	const fRight = `<svg xmlns="http://www.w3.org/2000/svg"><filter id="f_right"><feFlood flood-color="blue"/></filter></svg>`
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 100, 100),
+		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+			switch uri {
+			case "left.svg":
+				return []byte(fLeft), nil
+			case "right.svg":
+				return []byte(fRight), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	}
+	ops := []css.FilterFunction{
+		{Name: "url", URL: "left.svg#f_left"},
+		{Name: "url", URL: "right.svg#f_right"},
+		{Name: "hue-rotate", Value: 90},
+	}
+	f := b.BuildFilterEffect(ops)
+	if f == nil {
+		t.Fatal("BuildFilterEffect returned nil for mixed chain")
+	}
+	if f.Source == nil {
+		t.Fatal("chain Filter.Source is nil — SetSourceImage would no-op")
+	}
+	if f.LastEffect == nil {
+		t.Fatal("chain Filter.LastEffect is nil")
+	}
+	// The chain's last effect must NOT be the chain's SourceGraphic —
+	// that would mean every chain entry produced nil and we fell through
+	// to a pass-through, which is the pre-LOU-135 wrong behavior.
+	if f.LastEffect == f.Source {
+		t.Errorf("LastEffect == Source: chain composition produced no effects")
+	}
+}
+
+// TestBuildFilterEffect_UnresolvableUrlInChainIsSkipped covers the
+// graceful-degradation rule: a url() that doesn't resolve is dropped
+// per Filter Effects 1 §3.1, but the rest of the chain still runs.
+func TestBuildFilterEffect_UnresolvableUrlInChainIsSkipped(t *testing.T) {
+	b := &FilterEffectBuilder{
+		ReferenceBox: image.Rect(0, 0, 50, 50),
+		ExternalSVGFetcher: func(uri string) ([]byte, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+	ops := []css.FilterFunction{
+		{Name: "url", URL: "missing.svg#x"},
+		{Name: "hue-rotate", Value: 90},
+	}
+	f := b.BuildFilterEffect(ops)
+	if f == nil {
+		t.Fatal("expected non-nil filter from chain with one usable shorthand entry")
+	}
+	if f.LastEffect == f.Source {
+		t.Errorf("LastEffect == Source: shorthand entry was skipped along with the failed url()")
 	}
 }
 

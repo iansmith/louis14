@@ -34,34 +34,10 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	}
 	style := sp.shape.Style
 
-	// Compute the shape's user-space bbox + map to device space for
-	// the reference box. The reference box is the shape's
-	// FillBoundingBox in user-space, mapped through the SVG paint
-	// context's DeviceFromUser transform.
-	userBBox := sp.shape.FillBoundingBox
-	if userBBox.IsEmpty() {
+	referenceBox, willFill, willStroke, ok := sp.shapeDeviceReferenceBox()
+	if !ok {
 		return
 	}
-	// Expand for stroke if present.
-	willFill := style == nil || style.GetFill().Kind != css.SVGPaintNone
-	willStroke := style != nil && style.GetStroke().Kind != css.SVGPaintNone
-	if willStroke && style != nil {
-		half := style.GetStrokeWidth() / 2
-		userBBox = geometry.NewRectF(
-			userBBox.X()-half, userBBox.Y()-half,
-			userBBox.Width()+2*half, userBBox.Height()+2*half,
-		)
-	}
-	deviceBBox := sp.ctx.DeviceFromUser.MapRect(userBBox)
-	if deviceBBox.IsEmpty() {
-		return
-	}
-	referenceBox := image.Rect(
-		int(math.Floor(deviceBBox.X())),
-		int(math.Floor(deviceBBox.Y())),
-		int(math.Ceil(deviceBBox.Right())),
-		int(math.Ceil(deviceBBox.Bottom())),
-	)
 
 	// Resolve the filter region against the device-space reference
 	// box. ResourceBoundingBox returns a user-space rect; with the
@@ -106,89 +82,10 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 		}
 	}
 
-	// Allocate the source buffer and a renderer targeting it. The
-	// buffer's pixel (0,0) corresponds to region.Min in device space.
-	srcBuf := image.NewRGBA(image.Rect(0, 0, bw, bh))
-	tmpR := NewRendererForImage(srcBuf)
-	tmpR.dc.Translate(float64(-region.Min.X), float64(-region.Min.Y))
-	t := sp.ctx.DeviceFromUser
-	if !t.IsIdentity() {
-		tmpR.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
-	}
-
-	// Render the shape's fill/stroke directly into the buffer using
-	// the same primitives as the mask painter. This avoids recursing
-	// into paintShape — the filter dispatch already consumed the
-	// `filter:` decision and we want only fill+stroke here.
-	//
-	// childCtx.DeviceFromUser maps a user-space point to a pixel in
-	// the source buffer (not the page). tmpR.dc carries
-	// Translate(-region.Min.X, -region.Min.Y) on top of the SVG-root
-	// DeviceFromUser so paint ends up at the right buffer pixel;
-	// childCtx.DeviceFromUser must include the same extra translate
-	// or fillPathWithShader (svg_paint_server.go:75) will compute its
-	// per-pixel write positions from the SVG-root DeviceFromUser alone
-	// and land the shader output at page-coord pixel positions inside
-	// the source buffer — wrong by region.Min, so the filter graph
-	// then samples a misplaced source. Visible as a ~3-px shift on the
-	// bucket-J tainting tests, because region.Min is rounded down by
-	// 1 ulp (float precision on the spec's -10% expansion of an int-
-	// pixel reference box) and the source rect's blend with the
-	// underlying un-filtered rect leaves a slim mismatched strip.
-	childCtx := *sp.ctx
-	childCtx.dc = tmpR.dc
-	childCtx.Renderer = tmpR
-	childCtx.DeviceFromUser = geometry.Translate(
-		float64(-region.Min.X), float64(-region.Min.Y),
-	).Compose(sp.ctx.DeviceFromUser)
-	childOp := newSVGObjectPainter(tmpR.dc, style).withResources(
-		sp.ctx.Resources, sp.shape.FillBoundingBox,
-		svg.NewSVGLengthContext(sp.ctx.viewport.Size),
-	)
-
-	evenOdd := style != nil && style.GetFillRule() == css.SVGFillRuleEvenOdd
-	if buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-		if willFill {
-			fillRes := childOp.applyFill()
-			switch fillRes.mode {
-			case svgPaintSolid:
-				if willStroke {
-					tmpR.dc.FillPreserve()
-				} else {
-					tmpR.dc.Fill()
-				}
-			case svgPaintShader:
-				tmpR.fillPathWithShader(&childCtx, &sp.shape.Path, fillRes.shader, evenOdd)
-				if willStroke {
-					tmpR.dc.ClearPath()
-					if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-						return
-					}
-				} else {
-					tmpR.dc.ClearPath()
-				}
-			case svgPaintSkip:
-				if willStroke {
-					tmpR.dc.ClearPath()
-					if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
-						return
-					}
-				}
-			}
-		}
-		if willStroke {
-			strokeRes := childOp.applyStroke()
-			switch strokeRes.mode {
-			case svgPaintSolid:
-				tmpR.dc.Stroke()
-			case svgPaintShader:
-				tmpR.strokePathWithShader(&childCtx, &sp.shape.Path, strokeRes.shader, style)
-				tmpR.dc.ClearPath()
-			case svgPaintSkip:
-				tmpR.dc.ClearPath()
-			}
-		}
-	}
+	// Render the shape's fill/stroke into a source buffer sized to the
+	// filter region. The shared helper centralises this for both the
+	// single-url and CSS-chain (FilterEffectBuilder) filter paths.
+	srcBuf := sp.renderShapeIntoFilterBuffer(region, bw, bh, willFill, willStroke, style)
 
 	// Build the FilterEffect graph for this filter element.
 	//
@@ -213,28 +110,11 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	}
 	graph.SetSourceImage(srcBuf)
 	out := graph.Apply()
-
-	// SVG-viewport clip in target device-pixel space. SVG 2 §3.5 sets
-	// overflow:hidden on <svg> via the UA stylesheet, and the filter
-	// composite path bypasses the DC's clip (writes go straight to
-	// r.target.Pix), so we must apply the viewport rect explicitly to
-	// keep the default filter-region expansion (Filter Effects 1 §4.4:
-	// x=-10%, y=-10%, width=120%, height=120%) from leaking past the
-	// host SVG element. Mirrors the clip svg_root_painter.go installs
-	// on the DC before recursing into children.
-	viewportClip := image.Rect(
-		int(sp.ctx.originX),
-		int(sp.ctx.originY),
-		int(sp.ctx.originX+sp.ctx.viewport.Width()),
-		int(sp.ctx.originY+sp.ctx.viewport.Height()),
-	)
-
-	if out == nil {
-		// Filter produced nothing — draw unfiltered source as fallback.
-		compositeFilterOutputOntoTarget(sp.ctx.Renderer, srcBuf, region.Min.X, region.Min.Y, viewportClip)
-		return
-	}
-	compositeFilterOutputOntoTarget(sp.ctx.Renderer, out, region.Min.X, region.Min.Y, viewportClip)
+	// Viewport clip is applied inside the composite helper: the composite
+	// path bypasses the DC's clip stack, and SVG 2 §3.5 requires the
+	// default 10% filter-region expansion to stay inside the host SVG
+	// element.
+	sp.compositeFilterResultOntoTarget(srcBuf, out, region)
 }
 
 // compositeFilterOutputOntoTarget composites `buf` onto the
@@ -334,4 +214,187 @@ func clampU8Filter(v float64) uint8 {
 		return 255
 	}
 	return uint8(v + 0.5)
+}
+
+// shapeDeviceReferenceBox computes the shape's stroke-inflated user-space
+// bbox, maps it through DeviceFromUser, and snaps it to an integer rect.
+// Returns the reference box, willFill, willStroke, and ok=false when the
+// shape has no paintable extent (empty user or device bbox). Shared by
+// both filter paint paths (single-url and chain).
+func (sp *svgShapePainter) shapeDeviceReferenceBox() (image.Rectangle, bool, bool, bool) {
+	style := sp.shape.Style
+	userBBox := sp.shape.FillBoundingBox
+	if userBBox.IsEmpty() {
+		return image.Rectangle{}, false, false, false
+	}
+	willFill := style == nil || style.GetFill().Kind != css.SVGPaintNone
+	willStroke := style != nil && style.GetStroke().Kind != css.SVGPaintNone
+	if willStroke {
+		half := style.GetStrokeWidth() / 2
+		userBBox = geometry.NewRectF(
+			userBBox.X()-half, userBBox.Y()-half,
+			userBBox.Width()+2*half, userBBox.Height()+2*half,
+		)
+	}
+	deviceBBox := sp.ctx.DeviceFromUser.MapRect(userBBox)
+	if deviceBBox.IsEmpty() {
+		return image.Rectangle{}, false, false, false
+	}
+	return image.Rect(
+		int(math.Floor(deviceBBox.X())),
+		int(math.Floor(deviceBBox.Y())),
+		int(math.Ceil(deviceBBox.Right())),
+		int(math.Ceil(deviceBBox.Bottom())),
+	), willFill, willStroke, true
+}
+
+// compositeFilterResultOntoTarget writes either the filter output (out)
+// or the unfiltered source (srcBuf, used when Apply returned nil) onto
+// the page DC's target, clipped to the SVG viewport. The viewport clip
+// must be applied explicitly because the composite path bypasses the
+// DC's transform/clip stack — see compositeFilterOutputOntoTarget.
+func (sp *svgShapePainter) compositeFilterResultOntoTarget(srcBuf, out *image.RGBA, region image.Rectangle) {
+	viewportClip := image.Rect(
+		int(sp.ctx.originX),
+		int(sp.ctx.originY),
+		int(sp.ctx.originX+sp.ctx.viewport.Width()),
+		int(sp.ctx.originY+sp.ctx.viewport.Height()),
+	)
+	buf := out
+	if buf == nil {
+		buf = srcBuf
+	}
+	compositeFilterOutputOntoTarget(sp.ctx.Renderer, buf, region.Min.X, region.Min.Y, viewportClip)
+}
+
+// renderShapeIntoFilterBuffer rasterises the shape's fill/stroke into an
+// RGBA buffer sized to the filter region. The buffer's pixel (0,0) maps to
+// region.Min in device space. Shared between paintWithSVGFilter (single
+// url() reference) and paintWithFilterChain (CSS filter-value-list with
+// multiple ops). See the inline comment in this function about the
+// childCtx.DeviceFromUser translate — that detail is load-bearing for
+// shader fills that compute per-pixel write positions independently of
+// the DC transform stack.
+func (sp *svgShapePainter) renderShapeIntoFilterBuffer(region image.Rectangle, bw, bh int, willFill, willStroke bool, style *css.Style) *image.RGBA {
+	srcBuf := image.NewRGBA(image.Rect(0, 0, bw, bh))
+	tmpR := NewRendererForImage(srcBuf)
+	tmpR.dc.Translate(float64(-region.Min.X), float64(-region.Min.Y))
+	t := sp.ctx.DeviceFromUser
+	if !t.IsIdentity() {
+		tmpR.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
+	}
+
+	// childCtx.DeviceFromUser maps a user-space point to a pixel in the
+	// source buffer (not the page). tmpR.dc carries
+	// Translate(-region.Min.X, -region.Min.Y) on top of the SVG-root
+	// DeviceFromUser so paint ends up at the right buffer pixel;
+	// childCtx.DeviceFromUser must include the same extra translate or
+	// fillPathWithShader (svg_paint_server.go:75) will compute its
+	// per-pixel write positions from the SVG-root DeviceFromUser alone
+	// and land the shader output at page-coord pixel positions inside
+	// the source buffer — wrong by region.Min, so the filter graph then
+	// samples a misplaced source. Visible as a ~3-px shift on the
+	// bucket-J tainting tests, because region.Min is rounded down by
+	// 1 ulp (float precision on the spec's -10% expansion of an int-pixel
+	// reference box) and the source rect's blend with the underlying
+	// un-filtered rect leaves a slim mismatched strip.
+	childCtx := *sp.ctx
+	childCtx.dc = tmpR.dc
+	childCtx.Renderer = tmpR
+	childCtx.DeviceFromUser = geometry.Translate(
+		float64(-region.Min.X), float64(-region.Min.Y),
+	).Compose(sp.ctx.DeviceFromUser)
+	childOp := newSVGObjectPainter(tmpR.dc, style).withResources(
+		sp.ctx.Resources, sp.shape.FillBoundingBox,
+		svg.NewSVGLengthContext(sp.ctx.viewport.Size),
+	)
+
+	evenOdd := style != nil && style.GetFillRule() == css.SVGFillRuleEvenOdd
+	if buildPathOnDC(tmpR.dc, &sp.shape.Path) {
+		if willFill {
+			fillRes := childOp.applyFill()
+			switch fillRes.mode {
+			case svgPaintSolid:
+				if willStroke {
+					tmpR.dc.FillPreserve()
+				} else {
+					tmpR.dc.Fill()
+				}
+			case svgPaintShader:
+				tmpR.fillPathWithShader(&childCtx, &sp.shape.Path, fillRes.shader, evenOdd)
+				if willStroke {
+					tmpR.dc.ClearPath()
+					if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
+						return srcBuf
+					}
+				} else {
+					tmpR.dc.ClearPath()
+				}
+			case svgPaintSkip:
+				if willStroke {
+					tmpR.dc.ClearPath()
+					if !buildPathOnDC(tmpR.dc, &sp.shape.Path) {
+						return srcBuf
+					}
+				}
+			}
+		}
+		if willStroke {
+			strokeRes := childOp.applyStroke()
+			switch strokeRes.mode {
+			case svgPaintSolid:
+				tmpR.dc.Stroke()
+			case svgPaintShader:
+				tmpR.strokePathWithShader(&childCtx, &sp.shape.Path, strokeRes.shader, style)
+				tmpR.dc.ClearPath()
+			case svgPaintSkip:
+				tmpR.dc.ClearPath()
+			}
+		}
+	}
+	return srcBuf
+}
+
+// paintWithFilterChain handles a CSS filter-value-list that isn't a single
+// url() reference — multiple url() entries, mixed url() + shorthand, or
+// shorthand-only on an SVG shape. The chain is built via
+// FilterEffectBuilder.BuildFilterEffect (which composes per-stage
+// SourceGraphic overrides per Blink's FilterChain).
+// Returns false when no graph is produced (e.g. every url() entry misses)
+// so the caller can fall through to unfiltered paint, matching the
+// long-standing single-url fallback behavior.
+func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
+	// Callers route a single url() through paintWithSVGFilter first
+	// because that path consults the `<filter>` element's own region
+	// attributes (filterUnits / x / y / w / h + the spec's -10%/+20%
+	// default expansion). The chain path here uses Filter.MapRect, which
+	// only unions effect-expanded reference-box rects — so a single-url
+	// routed through here would clip incorrectly. Guard against it.
+	if len(ops) == 1 && ops[0].Name == "url" {
+		return false
+	}
+	referenceBox, willFill, willStroke, ok := sp.shapeDeviceReferenceBox()
+	if !ok {
+		return false
+	}
+	builder := &FilterEffectBuilder{
+		ReferenceBox:       referenceBox,
+		Resources:          sp.ctx.Resources,
+		ExternalSVGFetcher: sp.ctx.Renderer.externalSVGFetcher,
+	}
+	graph := builder.BuildFilterEffect(ops)
+	if graph == nil {
+		return false
+	}
+	region := graph.FilterRegion
+	bw, bh := region.Dx(), region.Dy()
+	if bw <= 0 || bh <= 0 || bw > 4000 || bh > 4000 {
+		return false
+	}
+
+	srcBuf := sp.renderShapeIntoFilterBuffer(region, bw, bh, willFill, willStroke, sp.shape.Style)
+	graph.SetSourceImage(srcBuf)
+	out := graph.Apply()
+	sp.compositeFilterResultOntoTarget(srcBuf, out, region)
+	return true
 }
