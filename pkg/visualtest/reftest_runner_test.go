@@ -573,9 +573,9 @@ func TestListReftestResults(t *testing.T) {
 
 func TestParseFuzzy(t *testing.T) {
 	tests := []struct {
-		name    string
-		html    string
-		want    *wptFuzzy
+		name string
+		html string
+		want *wptFuzzy
 	}{
 		{
 			name: "shorthand format",

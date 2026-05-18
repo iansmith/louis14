@@ -14,6 +14,7 @@ import (
 	"louis14/pkg/layout"
 	"louis14/pkg/render"
 	"louis14/pkg/text"
+	stdnet "louis14/std/net"
 )
 
 // RenderHTMLToFile renders HTML content to a PNG file
@@ -34,6 +35,15 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 		wptRoot = filepath.Dir(basePath)
 	}
 
+	// loadedCSSDirs accumulates directories of externally-loaded
+	// stylesheets so the SVG-filter fetcher (LOU-130 Phase 2) can use
+	// them as fallback bases for relative `url(...)` references that
+	// originated inside an external CSS file. Chrome/Blink resolves
+	// such URLs against the stylesheet's URL; louis14 currently stores
+	// stylesheets as raw text with no source URL, so this targeted
+	// shim covers the WPT external-CSS test cases without yet rebuilding
+	// the full CSS-source-URL plumbing.
+	var loadedCSSDirs []string
 	if basePath != "" {
 		cssFetcher := func(uri string) (string, error) {
 			if strings.HasPrefix(uri, "data:") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
@@ -50,6 +60,7 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 			if err != nil {
 				return "", err
 			}
+			loadedCSSDirs = append(loadedCSSDirs, filepath.Dir(cssPath))
 			return string(data), nil
 		}
 		doc, err = html.ParseWithFetcher(htmlContent, cssFetcher)
@@ -114,6 +125,9 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	renderer.SetFonts(fontConfig)
 	if fetcher != nil {
 		renderer.SetImageFetcher(fetcher)
+	}
+	if basePath != "" {
+		renderer.SetExternalSVGFetcher(createExternalSVGFetcher(basePath, wptRoot, loadedCSSDirs))
 	}
 	if len(counterStyles) > 0 {
 		renderer.SetCounterStyles(counterStyles)
@@ -228,6 +242,63 @@ func createFileDocumentFetcher(basePath, wptRoot string) layout.DocumentFetcher 
 			content = ApplyWPTSubstitutions(content, docPath, wptRoot)
 		}
 		return content, nil
+	}
+}
+
+// createExternalSVGFetcher creates an ExternalSVGFetcher closure for
+// `filter: url(doc#id)` references. Handles three URL forms:
+//
+//   - data: URLs decode inline via stdnet.DecodeDataURL.
+//   - Absolute paths (`/foo/x.svg`) resolve relative to wptRoot.
+//   - Relative paths (`support/x.svg`) resolve against (in order):
+//     basePath, then any directories where this run's externally-loaded
+//     stylesheets live (cssDirs). The cssDirs fallback approximates
+//     Chrome's "resolve against the stylesheet URL" rule when a filter
+//     URL appears inside an externally-loaded `.css` file. Louis14
+//     doesn't yet track stylesheet source URLs through the cascade, so
+//     this targeted shim closes the gap for the WPT external-CSS
+//     filter case without yet rebuilding that plumbing.
+//
+// file:// URLs are accepted too (read via os.ReadFile after path
+// extraction) — louis14's external-filter test set uses relative paths,
+// but production callers may pass file:// directly.
+//
+// Network (http(s)://) URIs are rejected — tests don't hit the network.
+// LOU-130 Phase 2 wiring.
+func createExternalSVGFetcher(basePath, wptRoot string, cssDirs []string) func(uri string) ([]byte, error) {
+	return func(uri string) ([]byte, error) {
+		switch {
+		case stdnet.IsDataURL(uri):
+			body, _, err := stdnet.DecodeDataURL(uri)
+			return body, err
+		case stdnet.IsFileURL(uri):
+			p, err := stdnet.FileURLToPath(uri)
+			if err != nil {
+				return nil, err
+			}
+			return os.ReadFile(p)
+		case strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://"):
+			return nil, fmt.Errorf("unsupported URI scheme: %s", uri)
+		default:
+			if strings.HasPrefix(uri, "/") {
+				return os.ReadFile(filepath.Join(wptRoot, uri))
+			}
+			// Try the page's basePath first; fall back to each
+			// loaded-stylesheet directory in order. First successful
+			// read wins. Returns the LAST error if none succeed (so
+			// the caller sees a meaningful filesystem error rather
+			// than a synthetic "no candidates found").
+			candidates := append([]string{basePath}, cssDirs...)
+			var lastErr error
+			for _, base := range candidates {
+				data, err := os.ReadFile(filepath.Join(base, uri))
+				if err == nil {
+					return data, nil
+				}
+				lastErr = err
+			}
+			return nil, lastErr
+		}
 	}
 }
 

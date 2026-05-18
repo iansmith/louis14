@@ -3,6 +3,7 @@ package render
 import (
 	"image"
 	"math"
+	"strings"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -37,22 +38,19 @@ func (sp *svgShapePainter) paint() {
 		return
 	}
 
-	// SVG-level filter: url(#id). Per CSS Masking 1 §3.7 rendering
-	// order is filter → clip → mask → composite. We dispatch the
-	// filter path BEFORE the rest of the paint so the shape's
-	// rasterization happens into an offscreen buffer the filter
-	// graph consumes. If the filter resolves to an SVGResourceFilter
-	// in the registry, paintWithSVGFilter routes through it;
+	// SVG-level filter: url(#id) or url(doc#id). Per CSS Masking 1 §3.7
+	// rendering order is filter → clip → mask → composite. We dispatch
+	// the filter path BEFORE the rest of the paint so the shape's
+	// rasterization happens into an offscreen buffer the filter graph
+	// consumes. If the filter resolves to an SVGResourceFilter (either
+	// from the in-page registry, or — LOU-130 Phase 2 — by fetching an
+	// external SVG document), paintWithSVGFilter routes through it;
 	// otherwise we fall through to the regular paint path.
 	if style := sp.shape.Style; style != nil {
 		if filterVal, ok := style.Get("filter"); ok && filterVal != "" && filterVal != "none" {
-			if id, ok := css.ParseURLReference(filterVal); ok {
-				if sp.ctx.Resources != nil {
-					if filter, found := sp.ctx.Resources.LookupAsFilter(id); found && filter != nil && filter.CycleState() != svg.SVGCycleHasCycle {
-						sp.paintWithSVGFilter(filter)
-						return
-					}
-				}
+			if filter := sp.resolveSVGFilter(filterVal); filter != nil {
+				sp.paintWithSVGFilter(filter)
+				return
 			}
 		}
 	}
@@ -237,6 +235,81 @@ func (sp *svgShapePainter) paint() {
 			dc.ClearPath()
 		}
 	}
+}
+
+// resolveSVGFilter parses a shape's `filter` value and resolves it to
+// an SVGResourceFilter. Handles both same-document (`url(#id)`) and
+// external (`url(doc#id)`, where doc is data:/file://, relative path,
+// etc) references — the latter via the renderer's ExternalSVGFetcher
+// (LOU-130 Phase 2). Returns nil when:
+//   - the value isn't a `url(...)` reference,
+//   - the same-doc registry lookup misses,
+//   - the external fetch / parse / id-lookup fails,
+//   - the filter is part of a reference cycle.
+func (sp *svgShapePainter) resolveSVGFilter(filterVal string) *svg.SVGResourceFilter {
+	docURL, fragID, ok := parseSVGFilterURL(filterVal)
+	if !ok || fragID == "" {
+		return nil
+	}
+	if docURL == "" {
+		// Same-document fast path: registry lookup.
+		if sp.ctx.Resources == nil {
+			return nil
+		}
+		filter, found := sp.ctx.Resources.LookupAsFilter(fragID)
+		if !found || filter == nil || filter.CycleState() == svg.SVGCycleHasCycle {
+			return nil
+		}
+		return filter
+	}
+
+	// External: fetch + parse + build SVGResourceFilter on the fly.
+	// External documents don't share the host page's CSS cascade, so
+	// the styleResolver passed to NewSVGResourceFilter is nil — filter
+	// primitives read presentational attributes directly.
+	if sp.ctx.Renderer == nil || sp.ctx.Renderer.externalSVGFetcher == nil {
+		return nil
+	}
+	data, err := sp.ctx.Renderer.externalSVGFetcher(docURL)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	root, err := svg.ParseExternalSVG(data)
+	if err != nil {
+		return nil
+	}
+	target, ok := svg.FindElementByID(root, fragID)
+	if !ok || target.TagName() != "filter" {
+		return nil
+	}
+	return svg.NewSVGResourceFilter(target,
+		svg.NewSVGLengthContext(sp.ctx.viewport.Size), nil)
+}
+
+// parseSVGFilterURL is the SVG-attribute equivalent of the CSS-property
+// `splitFilterRef`. The input is the raw `filter="..."` value (e.g.
+// `url(support/x.svg#f)`). Returns docURL and fragID; ok=false if the
+// value isn't a recognized `url(...)` form.
+func parseSVGFilterURL(val string) (docURL, fragID string, ok bool) {
+	v := strings.TrimSpace(val)
+	// Case-insensitive `url(` prefix without allocating a lowered copy.
+	if len(v) < 4 || !strings.EqualFold(v[:4], "url(") {
+		return "", "", false
+	}
+	closeIdx := strings.LastIndexByte(v, ')')
+	if closeIdx <= 3 {
+		return "", "", false
+	}
+	inner := strings.TrimSpace(v[4:closeIdx])
+	if len(inner) >= 2 {
+		first := inner[0]
+		last := inner[len(inner)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			inner = inner[1 : len(inner)-1]
+		}
+	}
+	docURL, fragID = splitFilterRef(inner)
+	return docURL, fragID, true
 }
 
 // paintWithSVGMask redirects the shape's fill/stroke into an
