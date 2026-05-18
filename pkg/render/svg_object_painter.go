@@ -151,14 +151,9 @@ func (op *svgObjectPainter) applyStroke() svgPaintResolution {
 	switch op.style.GetStrokeLinejoin() {
 	case css.SVGLineJoinRound:
 		op.dc.SetLineJoin(textshape.LineJoinRound)
-	case css.SVGLineJoinBevel, css.SVGLineJoinMiter:
-		// Mazarin doesn't yet implement miter joins (only Round
-		// and Bevel are defined in mazarin/textshape.LineJoin).
-		// Per SVG 2 §13.4.5, a miter join with a sharp angle
-		// degrades to bevel when stroke-miterlimit is exceeded —
-		// the bevel fallback we use here is the limiting case of
-		// that rule for any angle. Documented as a fidelity gap
-		// at the type definition.
+	case css.SVGLineJoinMiter:
+		op.dc.SetLineJoin(textshape.LineJoinMiter)
+	case css.SVGLineJoinBevel:
 		op.dc.SetLineJoin(textshape.LineJoinBevel)
 	}
 
