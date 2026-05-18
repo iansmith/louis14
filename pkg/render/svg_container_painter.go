@@ -110,21 +110,20 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 	if c == nil {
 		return
 	}
+
+	// Per CSS Filter Effects 1 §7 a filter applies regardless of
+	// `visibility` on the filtered element — a flood-only filter on a
+	// visibility:hidden container still renders. Mirrors Blink's
+	// SVGFilterPainter dispatch order.
+	if trySVGContainerFilterDispatch(pctx, c) {
+		return
+	}
+
 	if !svgIsVisible(c.Style) {
 		// visibility: hidden inhibits paint of this element and its
 		// descendants (no painted output, but the subtree is still
 		// laid out — relevant for future hit-testing and bbox use,
 		// which already happened at layout time).
-		return
-	}
-
-	// SVG-level filter: url(#id) on the container. Per CSS Masking 1
-	// §3.7 / SVG 2 §11.6 the filter applies to the container's
-	// children as a group — the same routing the shape painter does
-	// for filtered shapes. paintSVGContainerWithFilter handles the
-	// transform stack itself, so when it returns true the normal
-	// transform-push + child-paint loop below is skipped.
-	if trySVGContainerFilterDispatch(pctx, c) {
 		return
 	}
 

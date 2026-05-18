@@ -718,6 +718,31 @@ func TestSVG_ResourceLookupAfterRegistryMerge(t *testing.T) {
 //	<rect fill="red" filter="url(#f)"/>
 //
 // Sample interior should be green, with no red surviving the filter.
+// TestSVG_FilterFloodOnEmptyHiddenForeignObject mirrors the WPT reftest
+// svg-empty-hidden-foreignobject-with-filter-001: a foreignObject with
+// zero size and visibility:hidden carries a flood filter that has its
+// own explicit userSpaceOnUse region. Per CSS Filter Effects 1 §7 the
+// filter applies regardless of the source bbox or visibility — the
+// flood output must render at the filter's region.
+func TestSVG_FilterFloodOnEmptyHiddenForeignObject(t *testing.T) {
+	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
+		`<svg width="200" height="200">` +
+		`<defs>` +
+		`<filter id="f" x="0" y="0" width="100" height="100" filterUnits="userSpaceOnUse">` +
+		`<feFlood flood-color="green" flood-opacity="1"/>` +
+		`</filter>` +
+		`</defs>` +
+		`<foreignObject style="visibility: hidden;" x="0" y="0" width="0" height="0" filter="url(#f)"></foreignObject>` +
+		`</svg></body></html>`
+	img := renderToImage(t, htmlContent, 200, 200)
+	// Filter region is (0, 0, 100, 100). Center of that region must be green.
+	sampleColorClose(t, img, 50, 50, 0, 128, 0, 12, "flood center")
+	sampleColorClose(t, img, 10, 10, 0, 128, 0, 12, "flood corner")
+	// Outside the filter region the canvas should be white (the SVG
+	// viewport background).
+	sampleColorClose(t, img, 150, 150, 255, 255, 255, 2, "outside flood region")
+}
+
 func TestSVG_FilterFeFlood(t *testing.T) {
 	const htmlContent = `<!DOCTYPE html><html><body style="margin:0">` +
 		`<svg width="100" height="100">` +

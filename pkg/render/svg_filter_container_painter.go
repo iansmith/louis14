@@ -29,20 +29,17 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 		return false
 	}
 
-	// Compute the container's user-space bbox (union of children's
-	// already-mapped bboxes). The SVGContainer.ObjectBoundingBox()
-	// folds in the container's own SVG `transform` attribute, so the
-	// returned rect is in the container's parent coord space — exactly
-	// the same coord space sp.ctx.DeviceFromUser maps from at the
-	// caller's scope (BEFORE we push the container's own transform).
+	// SVGContainer.ObjectBoundingBox() folds in the container's own SVG
+	// `transform`, so the returned rect is in the caller's coord space
+	// (before we push the container's own transform).
+	//
+	// Empty is allowed: a flood-only filter, or one with an explicit
+	// userSpaceOnUse region, produces output independent of the
+	// source-graphic extent (mirrors Blink SVGFilterPainter::PrepareEffect).
+	// The downstream `bw <= 0 || bh <= 0` guard on the resolved region is
+	// the authoritative "nothing to render" exit.
 	userBBox := c.ObjectBoundingBox()
-	if userBBox.IsEmpty() {
-		return false
-	}
 	deviceBBox := pctx.DeviceFromUser.MapRect(userBBox)
-	if deviceBBox.IsEmpty() {
-		return false
-	}
 	referenceBox := image.Rect(
 		int(math.Floor(deviceBBox.X())),
 		int(math.Floor(deviceBBox.Y())),
