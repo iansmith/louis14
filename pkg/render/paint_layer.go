@@ -132,6 +132,15 @@ type PaintLayer struct {
 	TextDecorationStyle     string    // solid, double, dotted, dashed, wavy
 	TextUnderlineOffset     float64   // additional offset for underline (px); 0 = auto/default
 
+	// AppliedTextDecorations is the accumulated CSS Text Decor 3 vector for
+	// this element (mirrors Blink's `AppliedTextDecorationVector` on
+	// ComputedStyle at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Each
+	// entry was contributed by an ancestor that established a decoration.
+	// Phase 1: populated directly from Style; Phase 4 will refine to use
+	// per-decorating-box origins. Painters iterate this vector; when non-nil
+	// it supersedes the legacy single-decoration fields above.
+	AppliedTextDecorations []css.AppliedTextDecoration
+
 	// Text shadows:
 	TextShadows []css.TextShadow
 
@@ -509,7 +518,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.IsSidewaysLR = box.IsSidewaysLR
 	layer.IsSidewaysRL = box.IsSidewaysRL
 
-	// Text decoration.
+	// Text decoration (CSS Text Decor 3 §2 — AppliedTextDecoration vector).
+	// The new accumulated vector supersedes the legacy single-enum fields when
+	// non-nil; Phase 2's geometry port will eventually retire them entirely.
+	layer.AppliedTextDecorations = s.GetAppliedTextDecorations()
+
+	// Legacy single-decoration fields. Kept for the (now-empty) fallback path
+	// in drawTextDecoration when the AppliedTextDecorations vector is absent
+	// (e.g. anonymous boxes synthesized without a cascade pass).
 	layer.TextDecoration = s.GetTextDecoration()
 	if decColor, ok := s.GetTextDecorationColor(); ok {
 		layer.TextDecorationColor = decColor
