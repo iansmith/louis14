@@ -6,6 +6,52 @@ diff via `TestWPTCSS3Reftests/css-text-decor`. Baseline **96 passing / 154 faili
 (250 run)** → close the 154 failures without regressing adjacent text/inline categories (css-text,
 css-inline, css-writing-modes, css-ruby, css-fonts, CSS2 text).
 
+## Blink vetting log
+
+**Vetted against Chromium `main` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f** on 2026-05-18.
+
+Calibration: cited line numbers in `text_decoration_info.cc` are uniformly ~250 lines low (file
+grew); `text_painter.cc` `SetEmphasisMark` is ~530 lines low. Cited line numbers in headers and in
+`applied_text_decoration.h` are within ±5 lines. Behavior descriptions match current Blink except
+where noted below. The one architectural delta is `LayoutRubyColumn` (renamed/restructured).
+
+### Citations verified
+- `core/style/applied_text_decoration.h` (`AppliedTextDecoration`, all five fields + vector typedef) — ✓ structure unchanged (line numbers shifted by 2-5 lines; see updated list).
+- `core/paint/text_decoration_info.h:169-176` (`TextDecorationInfo` constructor) — ✓ exact match.
+- `core/paint/text_decoration_info.cc` double-line gap = `resolved_thickness + 1.0f`; floor for line-through; same value for wavy — ✓ formulas unchanged.
+- `core/paint/text_decoration_info.cc` `ComputeLineThroughLineData` formula `2*FloatAscent/3 - thickness/2` — ✓ exact match.
+- `core/paint/text_decoration_info.cc` `OffsetFromDecoratingBox` body (`decorating_box_paint_offset - local_origin_.line_over`) — ✓ unchanged.
+- `core/paint/text_painter.cc` `SetEmphasisMark` formulas: over = `-Ascent() - EmphasisMarkDescent(mark)`, under = `Descent() + EmphasisMarkAscent(mark)` — ✓ unchanged.
+- `core/paint/inline_paint_context.h` — `DecoratingBoxList`, `PushDecoratingBox`, `PopDecoratingBox`, `SyncDecoratingBox` — ✓ all symbols present (note: `DecoratingBox` itself lives in `core/paint/decorating_box.h`).
+- `core/paint/text_decoration_painter.h` — `enum Phase { kOriginating, kSelection }`, `Begin`, `PaintExceptLineThrough`, `PaintOnlyLineThrough` — ✓ all present (line range corrected below).
+
+### Citations updated
+- `applied_text_decoration.h:52` (`AppliedTextDecorationVector` typedef) → `applied_text_decoration.h:50` (file is shorter than plan assumed).
+- `applied_text_decoration.h:20-56` (class span) → `applied_text_decoration.h:18-48`.
+- `applied_text_decoration.h:45` (`lines_`) → `:43`; `:46` (`style_`) → `:44`; `:47` (`color_`) → `:45`; `:48` (`thickness_`) → `:46`; `:49` (`underline_offset_`) → `:47`. (All -2 line shift, no behavior change.)
+- `text_decoration_info.cc:344-352` (`OffsetFromDecoratingBox`) → `:583-596`. Behavior unchanged.
+- `text_decoration_info.cc:354-370` (`ComputeUnderlineLineData` / `ComputeUnderlineOffset`) → `:607-625`. Note: `ComputeUnderlineOffset` is a method on the separate helper type `TextDecorationOffset` (called from line 619), NOT a method on `TextDecorationInfo`. Behavior unchanged.
+- `text_decoration_info.cc:373-390` (`ComputeOverlineLineData`) → `:627-646`. Now uses `decoration_offset.ComputeUnderlineOffsetForUnder(...)` with `FontVerticalPositionType::TextTop` (plan's "TextTop position" description still accurate).
+- `text_decoration_info.cc:393-400` (`ComputeLineThroughLineData`) → `:648-661`.
+- `text_decoration_info.cc:302-335` (double/wavy geometry) → `:549-604` (now lives in `ComputeLineData`; `double_offset_from_thickness = resolved_thickness + 1.0f` at line 551; wavy uses the same value; line-through floors).
+- `text_decoration_info.cc:417-432` (`ComputeThickness`) → `:681-706`. Plan's description is still mostly correct, but `ComputeThickness` now also handles spelling/grammar errors with platform-specific values (Android: 2.5x or 1x zoom depending on feature flag; Apple: 2x zoom; else 1x zoom) before the auto/from-font/length path.
+- `text_decoration_info.h:225-227` (`BaselineForInkSkip()`) → `:202`.
+- `text_painter.cc:539-567` (`SetEmphasisMark`) → `:1066-1091`. Behavior preserved; new ruby-aware branch behind `RuntimeEnabledFeatures::TextEmphasisWithRubyEnabled()` adjusts the offset by `text_item->AnnotationMetrics().ascent.Ceil()` / `.descent.Ceil()` when the text item has an over/under annotation.
+- `text_painter.cc:567-571` (`DrawEmphasisMarks` call) → `:563-566`.
+- `text_decoration_painter.h:64-81` (Phase enum + `Begin`/`PaintExceptLineThrough`/`PaintOnlyLineThrough`) → `:86-89`. The cited 64-81 range actually covers the class declaration + constructor.
+
+### Citations broken / missing in current Blink
+- **`LayoutRubyColumn` no longer exists at this SHA.** `core/layout/inline/layout_ruby_column.h` returns 404. Current ruby-layout headers are:
+  - `core/layout/layout_ruby_as_block.{cc,h}` — block-level ruby wrapper.
+  - `core/layout/inline/ruby_utils.{h,cc}` — `ParseRubyInInlineItems`, `GetOverhang`, `ApplyRubyAlign`, `UpdateRubyColumnInlinePositions`, `ComputeAnnotationOverflow`, types `RubyItemIndexes`, `AnnotationOverhang`, `AnnotationMetrics`, class `RubyBlockPositionCalculator` (with inner `RubyLine` / `AnnotationDepth`).
+  - `core/layout/inline/inline_item_result_ruby_column.h` — struct `InlineItemResultRubyColumn` (53 lines) carrying `base_line: LineInfo`, `annotation_line_list: HeapVector<LineInfo, 1>`, `position_list: Vector<RubyPosition, 1>`, `is_continuation`, `end_overhang`, `last_base_glyph_spacing`.
+  - Plan Phase 5 has been rewritten to cite these instead.
+- **Recommended plan action**: model louis14's ruby column on `InlineItemResultRubyColumn` (data) + the `ruby_utils.h` helper machinery (annotation overflow, overhang, block position). No architectural change to Phase 5's goal — the column = base + annotation pairing is exactly what Blink still does — only the type name.
+
+### Citations added
+- Phase 6 now references `text_item->AnnotationMetrics()` and the `TextEmphasisWithRubyEnabled` runtime flag inside `SetEmphasisMark` (the path that shares line-box ascent/descent budget with ruby).
+- Phase 5 now cites `core/layout/inline/inline_item_result_ruby_column.h`, `core/layout/inline/ruby_utils.h`, and `core/layout/layout_ruby_as_block.{cc,h}` in place of the missing `LayoutRubyColumn`.
+
 ## Rules & Discipline (DO NOT DUPLICATE HERE)
 Re-read both before planning or coding — non-negotiable project rules:
 
@@ -97,11 +143,11 @@ foundation; C builds on the same per-fragment paint plumbing plus a ruby/annotat
 ### Bucket A — there is no decoration *model*; `text-decoration` is wrongly inherited
 Blink does not inherit `text-decoration`. `ComputedStyle` holds an
 **`AppliedTextDecorationVector` = `GCedHeapVector<AppliedTextDecoration, 1>`**
-(`core/style/applied_text_decoration.h:52`). Each `AppliedTextDecoration` carries
-`lines_` (a bitfield of underline|overline|line-through, applied_text_decoration.h:45), `style_`
-(applied_text_decoration.h:46), `color_` (applied_text_decoration.h:47), `thickness_`
-(`TextDecorationThickness`, applied_text_decoration.h:48), and `underline_offset_` (a `Length`,
-applied_text_decoration.h:49). When a box that "establishes" a text decoration is encountered, the
+(`core/style/applied_text_decoration.h:50`). Each `AppliedTextDecoration` carries
+`lines_` (a bitfield of underline|overline|line-through, applied_text_decoration.h:43), `style_`
+(applied_text_decoration.h:44), `color_` (applied_text_decoration.h:45), `thickness_`
+(`TextDecorationThickness`, applied_text_decoration.h:46), and `underline_offset_` (a `Length`,
+applied_text_decoration.h:47). When a box that "establishes" a text decoration is encountered, the
 style builder *appends* a new `AppliedTextDecoration` to the inherited vector — decorations
 **accumulate** down the tree rather than being overwritten, and a child that sets
 `text-decoration-line: none` simply contributes nothing (it cannot erase an ancestor's entry).
@@ -109,7 +155,7 @@ Propagation stops at atomic inlines / block containers: those reset the vector
 (`core/paint/inline_paint_context.h` `DecoratingBoxList`, `PushDecoratingBox`/`PopDecoratingBox`,
 `SyncDecoratingBox`). At paint time the decorating box's content origin is reconciled with the
 target text origin via `TextDecorationInfo::OffsetFromDecoratingBox()`
-(`core/paint/text_decoration_info.cc:344-352`).
+(`core/paint/text_decoration_info.cc:583-596`).
 
 louis14 must mirror this: stop inheriting `text-decoration`, give `Style` an accumulating
 `[]AppliedTextDecoration`, and give each text `PaintLayer` the *list* of decorations in effect
@@ -118,22 +164,29 @@ louis14 must mirror this: stop inheriting `text-decoration`, give `Style` an acc
 ### Bucket B — no `TextDecorationInfo` geometry; thickness/position constants are guesses
 Blink centralizes all decoration geometry in **`TextDecorationInfo`**
 (`core/paint/text_decoration_info.{h,cc}`):
-- **`ComputeThickness()`** (text_decoration_info.cc:417-432): `auto` → `font-size / 10`;
-  `from-font` → font's `UnderlineThickness()` (fallback to auto); `<length>`/`<percentage>` →
-  `FloatValueForLength()` then rounded (percent resolves against font-size). louis14's
-  `GetTextDecorationThickness` hard-codes `auto`/`from-font` to `1` and never handles `%`.
-- **`ComputeUnderlineLineData()` / `ComputeUnderlineOffset()`** (text_decoration_info.cc:354-370):
-  resolves `text-underline-position` (`auto` → just under the alphabetic baseline using font
-  metrics; `from-font` → font's underline position; `under` → below the text-bottom / em-box
-  edge), then adds `text-underline-offset`, then adds `offset_from_decorating_box`. louis14 has
-  *no* `text-underline-position` property and a single ad-hoc `ascent + |descent|*0.25` constant.
-- **`ComputeOverlineLineData()`** (text_decoration_info.cc:373-390): `TextTop` position, with the
-  flipped-for-vertical case handled.
-- **`ComputeLineThroughLineData()`** (text_decoration_info.cc:393-400): centered at
+- **`ComputeThickness()`** (text_decoration_info.cc:681-706): for non-spelling/grammar lines,
+  `auto` → `font-size / 10`; `from-font` → font's `UnderlineThickness()` (fallback to auto);
+  `<length>`/`<percentage>` → `FloatValueForLength()` then rounded (percent resolves against
+  font-size). Spelling/grammar errors get a platform-specific value (Android: 2.5x or 1x zoom
+  depending on `kAndroidSpellcheckNativeUi`; Apple: 2x zoom; else 1x zoom) and don't go through the
+  auto/from-font/length path. louis14's `GetTextDecorationThickness` hard-codes `auto`/`from-font`
+  to `1` and never handles `%`.
+- **`ComputeUnderlineLineData()`** (text_decoration_info.cc:607-625) calls
+  `TextDecorationOffset::ComputeUnderlineOffset()` (line 619 — note this is a method on a separate
+  `TextDecorationOffset` helper type, not on `TextDecorationInfo`). It resolves
+  `text-underline-position` (`auto` → just under the alphabetic baseline using font metrics;
+  `from-font` → font's underline position; `under` → below the text-bottom / em-box edge), then
+  adds `text-underline-offset`, then adds `offset_from_decorating_box`. louis14 has *no*
+  `text-underline-position` property and a single ad-hoc `ascent + |descent|*0.25` constant.
+- **`ComputeOverlineLineData()`** (text_decoration_info.cc:627-646): `TextTop` position via
+  `TextDecorationOffset::ComputeUnderlineOffsetForUnder`, with the flipped-for-vertical case
+  switching to `TopOfEmHeight`.
+- **`ComputeLineThroughLineData()`** (text_decoration_info.cc:648-661): centered at
   `2/3 * ascent`, then `-= thickness/2` so it stays centered as thickness grows.
-- **double / wavy geometry** (text_decoration_info.cc:302-335): double-line gap is
-  `thickness + 1.0` for underline/overline (floored for line-through); wavy uses the same control
-  offsets. louis14's `drawDoubleLine`/`drawWavyLine` invent their own spacing.
+- **double / wavy geometry** (text_decoration_info.cc:549-604, inside `ComputeLineData`):
+  double-line gap is `resolved_thickness + 1.0` for underline/overline (floored for line-through);
+  wavy uses the same control offsets. louis14's `drawDoubleLine`/`drawWavyLine` invent their own
+  spacing.
 
 `text-decoration-inset` (CSS Text Decor L4) trims/offsets the decoration's start/end *along* the
 line; it is unsupported. It is a two-value `<length>{1,2}` that shrinks (or, negative, extends) the
@@ -143,23 +196,31 @@ inside the same geometry model.
 ### Bucket C — emphasis painting is close, but ruby layout is missing (and refs depend on it)
 Two independent problems, both required:
 1. **Emphasis mark placement** mirrors `TextPainter::SetEmphasisMark()`
-   (`core/paint/text_painter.cc:539-567`): for **over**,
+   (`core/paint/text_painter.cc:1066-1091`): for **over**,
    `offset = -Ascent() - font.EmphasisMarkDescent(mark)`; for **under**,
    `offset = Descent() + font.EmphasisMarkAscent(mark)`. The mark glyph is the resolved
    `text-emphasis-style` shape/string; position is `text-emphasis-position` (over/under +
    left/right; the left/right axis only matters in vertical writing modes). Crucially the marks
-   **expand the line box like ruby** — `text_item->HasOverAnnotation()/HasUnderAnnotation()` feed
-   the line-box ascent/descent. louis14's `drawTextEmphasis` uses `emphFontSize*0.25`/`*0.5`
-   guesses, never reserves line-box space (so `text-emphasis-line-height-*` all fail), and ignores
-   the left/right axis.
+   **expand the line box like ruby** — under `RuntimeEnabledFeatures::TextEmphasisWithRubyEnabled`,
+   `text_item->HasOverAnnotation()/HasUnderAnnotation()` are checked and the offset is adjusted by
+   `text_item->AnnotationMetrics().ascent/descent.Ceil()` to share line-box ascent/descent budget
+   with the ruby column. louis14's `drawTextEmphasis` uses `emphFontSize*0.25`/`*0.5` guesses,
+   never reserves line-box space (so `text-emphasis-line-height-*` all fail), and ignores the
+   left/right axis.
 2. **Ruby layout is absent.** Every emphasis *reference* is `<ruby>base<rt>mark</rt>…</ruby>`; with
    no ruby support louis14 stacks the `<rt>` content as ordinary inline boxes at the margin. The
    emphasis bucket cannot reach 0% until `<ruby>`/`<rt>`/`<rp>` lay out as a base line with an
    annotation line positioned over (or under) the base, and the annotation expands the line box.
-   This mirrors Blink's `LayoutRubyColumn` / ruby line-box-expansion machinery; the minimum needed
-   here is: pair `<rt>` with its base run, center the annotation over the base, reserve
-   ascent space on the line box for the annotation, and inherit `font-variant-east-asian` into
-   `<rt>` (the refs set `rt { font-variant-east-asian: inherit|normal }`).
+   This mirrors Blink's inline ruby-column machinery — `InlineItemResultRubyColumn`
+   (`core/layout/inline/inline_item_result_ruby_column.h`, fields `base_line: LineInfo` +
+   `annotation_line_list: HeapVector<LineInfo, 1>` + `position_list: Vector<RubyPosition, 1>` +
+   overhang/continuation bookkeeping), the helper free functions in
+   `core/layout/inline/ruby_utils.{h,cc}` (`ParseRubyInInlineItems`, `ApplyRubyAlign`,
+   `UpdateRubyColumnInlinePositions`, `ComputeAnnotationOverflow`, `RubyBlockPositionCalculator`),
+   and the `LayoutRubyAsBlock` block wrapper. The minimum needed here is: pair `<rt>` with its
+   base run, center the annotation over the base, reserve ascent space on the line box for the
+   annotation, and inherit `font-variant-east-asian` into `<rt>` (the refs set
+   `rt { font-variant-east-asian: inherit|normal }`).
 
 CJK glyph coverage: emphasis tests use `試験テスト`. Confirm a CJK fallback font is wired (memory
 note: worktrees only ship `Ahem.ttf` — symlink `fonts/` before any sweep). Several emphasis tests
@@ -181,8 +242,8 @@ Phase 7 mops up skip-ink/skip-spaces.
 `text-decoration-line` resets only its own longhands, `text-decoration` shorthand expands
 correctly, and decorations from multiple ancestors coexist.
 **Blink reference.** `core/style/applied_text_decoration.h` (class `AppliedTextDecoration`, fields
-`lines_`/`style_`/`color_`/`thickness_`/`underline_offset_`, lines 20-56; `AppliedTextDecorationVector`
-line 52); the style-builder behavior that *appends* rather than inherits; `TextDecorationLine`
+`lines_`/`style_`/`color_`/`thickness_`/`underline_offset_`, lines 18-48; `AppliedTextDecorationVector`
+line 50); the style-builder behavior that *appends* rather than inherits; `TextDecorationLine`
 bitfield enum.
 **louis14 targets.** `pkg/css/style.go` (new type + getters), `pkg/css/cascade.go` (remove from
 `inheritableProperties`, add accumulation step), `pkg/css/style.go` shorthand expansion for
@@ -207,10 +268,13 @@ the inherited-vs-reset flag). (c) Expand the `text-decoration` shorthand into th
 rect/path: resolved thickness, baseline-relative Y for underline/overline/line-through, and
 double/wavy stroke geometry — replacing the ad-hoc constants in `drawTextDecoration`.
 **Blink reference.** `core/paint/text_decoration_info.{h,cc}` — constructor
-(text_decoration_info.h:169-176), `ComputeThickness()` (cc:417-432), `ComputeUnderlineLineData()`
-/`ComputeUnderlineOffset()` (cc:354-370), `ComputeOverlineLineData()` (cc:373-390),
-`ComputeLineThroughLineData()` (cc:393-400), double/wavy geometry (cc:302-335),
-`DecorationGeometry`. `core/paint/decoration_line_painter.{h,cc}` for the stroke rasterization
+(text_decoration_info.h:169-176), `ComputeThickness()` (cc:681-706), `ComputeUnderlineLineData()`
+(cc:607-625; the per-position offset comes from `TextDecorationOffset::ComputeUnderlineOffset()`
+called at cc:619 — `TextDecorationOffset` is a separate helper type, not a method on
+`TextDecorationInfo`), `ComputeOverlineLineData()` (cc:627-646), `ComputeLineThroughLineData()`
+(cc:648-661), double/wavy geometry inside `ComputeLineData()` (cc:549-604; double offset is
+`resolved_thickness + 1.0f` at cc:551), `DecorationGeometry`.
+`core/paint/decoration_line_painter.{h,cc}` for the stroke rasterization
 (solid/dotted/dashed/double/wavy).
 **louis14 targets.** New `pkg/render/text_decoration_info.go` (mirror Blink's file), rewrite
 `pkg/render/render.go` `drawTextDecoration` (render.go:3987), `drawDoubleLine`/`drawWavyLine`
@@ -234,9 +298,11 @@ line builds a `decorationGeometry` and strokes it per `style`.
 **Goal.** Layer the remaining position/offset knobs onto the Phase-2 geometry: full
 `text-underline-position` (`auto|from-font|under|left|right`), `from-font` thickness/position read
 from the variable-font's underline metrics, and `text-decoration-inset`.
-**Blink reference.** `ComputeUnderlineOffset()` / `ComputeUnderlineOffsetForUnder()` and the
-`text-underline-position` resolution (text_decoration_info.cc:354-390); font underline-position
-metrics; `core/css/properties/longhands/` for `text-underline-position` parsing; CSS Text Decor L4
+**Blink reference.** `TextDecorationOffset::ComputeUnderlineOffset()` /
+`TextDecorationOffset::ComputeUnderlineOffsetForUnder()` (both invoked from
+text_decoration_info.cc:607-646 via `ComputeUnderlineLineData` and `ComputeOverlineLineData`) and
+the `text-underline-position` resolution; font underline-position metrics;
+`core/css/properties/longhands/` for `text-underline-position` parsing; CSS Text Decor L4
 § `text-decoration-skip-inset` / `text-decoration-inset` definition.
 **louis14 targets.** `pkg/css/style.go` (new `GetTextUnderlinePosition`,
 `GetTextDecorationInset`), `pkg/render/text_decoration_info.go` (consume them), font-metrics access
@@ -256,11 +322,12 @@ trim the decoration rect's inline-start/inline-end by the resolved lengths (nega
 **Goal.** A text run paints the decorations of *all* its decorating-box ancestors, positioned
 relative to each decorating box's content origin — and propagation stops at atomic inlines
 (`<svg>`, inline-block, replaced) and block boundaries.
-**Blink reference.** `core/paint/inline_paint_context.h` — `DecoratingBoxList`, `DecoratingBox`,
-`PushDecoratingBox`/`PushDecoratingBoxes`/`PopDecoratingBox`, `SyncDecoratingBox`;
-`TextDecorationInfo::OffsetFromDecoratingBox()` (text_decoration_info.cc:344-352);
-`TextDecorationPainter` Phase enum + `Begin`/`PaintExceptLineThrough`/`PaintOnlyLineThrough`
-(text_decoration_painter.h:64-81).
+**Blink reference.** `core/paint/inline_paint_context.h` — `DecoratingBoxList` (line 20),
+`PushDecoratingBox` (line 26), `PushDecoratingBoxAncestors`, `PushDecoratingBoxes`,
+`PopDecoratingBox` (line 31), `SyncDecoratingBox` (line 121); `DecoratingBox` itself lives in
+`core/paint/decorating_box.h`. `TextDecorationInfo::OffsetFromDecoratingBox()`
+(text_decoration_info.cc:583-596); `TextDecorationPainter` `enum Phase { kOriginating, kSelection }`
++ `Begin`/`PaintExceptLineThrough`/`PaintOnlyLineThrough` (text_decoration_painter.h:86-89).
 **louis14 targets.** `pkg/layout/inline_layout.go` (carry the active decorating-box list while
 walking inline items; reset at atomic-inline / block boundaries), `pkg/render/paint_layer.go:506-529`
 (populate the text layer's `[]AppliedTextDecoration` *and* per-decoration origin offset from the
@@ -283,10 +350,19 @@ the list is accumulated, not overridden.
 **Goal.** `<ruby>` lays out a base line with an annotation line positioned over (default) or under
 the base; the annotation is centered over its base run and **expands the line box**; `<rp>` is
 hidden when ruby is supported. This is the prerequisite for every emphasis *reference*.
-**Blink reference.** `core/layout/inline/` ruby handling — `LayoutRubyColumn` / ruby column
-pairing, ruby base vs. annotation line allocation, and the line-box ascent/descent expansion for
-annotations; `ruby-position` (`over`/`under`); the `rt { font-variant-east-asian: inherit }` UA
-interaction.
+**Blink reference.** `core/layout/inline/` ruby handling — `InlineItemResultRubyColumn`
+(`core/layout/inline/inline_item_result_ruby_column.h`, struct holding `base_line: LineInfo` +
+`annotation_line_list: HeapVector<LineInfo, 1>` + `position_list: Vector<RubyPosition, 1>` +
+overhang/continuation fields); the helper free functions and types in
+`core/layout/inline/ruby_utils.{h,cc}` (`ParseRubyInInlineItems`, `GetOverhang`,
+`CanApplyStartOverhang`, `CommitPendingEndOverhang`, `ApplyRubyAlign`,
+`UpdateRubyColumnInlinePositions`, `ComputeAnnotationOverflow`; types `RubyItemIndexes`,
+`AnnotationOverhang`, `AnnotationMetrics`; class `RubyBlockPositionCalculator`); the
+`LayoutRubyAsBlock` block wrapper (`core/layout/layout_ruby_as_block.{cc,h}`); base vs.
+annotation line allocation, and the line-box ascent/descent expansion for annotations;
+`ruby-position` (`over`/`under`); the `rt { font-variant-east-asian: inherit }` UA interaction.
+*(Note: an earlier `LayoutRubyColumn` block-level class has been removed; the column abstraction
+now lives on the inline side as `InlineItemResultRubyColumn`.)*
 **louis14 targets.** `pkg/layout/inline_layout.go` (ruby item grouping + annotation line),
 `pkg/layout/fragment_builder.go` (annotation fragment + line-box metric expansion — note the
 existing comment at fragment_builder.go:142 "louis14 omits the annotation-adjustment term"),
@@ -309,12 +385,14 @@ in the right place (visual check of 2–3 `_ref.png`); Phases 1–4 still green.
 **Goal.** Emphasis marks: correct glyph/shape/string from `text-emphasis-style`, correct
 over/under + left/right from `text-emphasis-position`, correct color from `text-emphasis-color`,
 **and** the marks expand the line box exactly like a ruby annotation (so `line-height` tests pass).
-**Blink reference.** `TextPainter::SetEmphasisMark()` (text_painter.cc:539-567 — over offset
-`-Ascent() - EmphasisMarkDescent(mark)`, under offset `Descent() + EmphasisMarkAscent(mark)`,
-with `HasOverAnnotation()/HasUnderAnnotation()` feeding line-box expansion);
-`graphics_context_.DrawEmphasisMarks()` (text_painter.cc:567-571); `Font::EmphasisMarkAscent`/
-`EmphasisMarkDescent`/`EmphasisMarkHeight`; `text-emphasis-style` shape→glyph mapping and
-`text-emphasis-position` resolution in `core/css/`.
+**Blink reference.** `TextPainter::SetEmphasisMark()` (text_painter.cc:1066-1091 — over offset
+`-Ascent() - EmphasisMarkDescent(mark)`, under offset `Descent() + EmphasisMarkAscent(mark)`;
+under `RuntimeEnabledFeatures::TextEmphasisWithRubyEnabled()`,
+`text_item->HasOverAnnotation()/HasUnderAnnotation()` causes the offset to be adjusted by
+`text_item->AnnotationMetrics().ascent/descent.Ceil()` so emphasis marks share line-box budget
+with the ruby annotation column); `graphics_context_.DrawEmphasisMarks()` invoked at
+text_painter.cc:563-566; `Font::EmphasisMarkAscent`/`EmphasisMarkDescent`/`EmphasisMarkHeight`;
+`text-emphasis-style` shape→glyph mapping and `text-emphasis-position` resolution in `core/css/`.
 **louis14 targets.** `pkg/render/render.go` `drawTextEmphasis` (render.go:3608) — rewrite to use
 emphasis-mark font-metric ascent/descent rather than `*0.25`/`*0.5` guesses; `pkg/render/paint_layer.go`
 (carry full position incl. left/right + per-side); `pkg/layout/inline_layout.go` /
@@ -336,7 +414,7 @@ modes.
 ### Phase 7 — skip-ink / skip-spaces
 **Goal.** `text-decoration-skip-ink` (interrupt the line where glyph ink crosses it) and
 `text-decoration-skip-spaces` (skip leading/trailing/all spaces).
-**Blink reference.** `TextDecorationInfo::BaselineForInkSkip()` (text_decoration_info.h:225-227)
+**Blink reference.** `TextDecorationInfo::BaselineForInkSkip()` (text_decoration_info.h:202)
 and the skip-ink dilation pass in `decoration_line_painter.cc`;
 `text-decoration-skip-spaces` longhand handling.
 **louis14 targets.** `pkg/render/text_decoration_info.go` + `drawTextDecoration` (ink-skip
@@ -369,14 +447,26 @@ css-writing-modes, css-ruby, css-fonts, CSS2.
   = `font-size/10`) are load-bearing and must match Blink exactly for 0% diff.
 
 ## Key Blink files this plan is grounded in
-- `core/style/applied_text_decoration.h` — `AppliedTextDecoration`, `AppliedTextDecorationVector`.
-- `core/paint/text_decoration_info.{h,cc}` — `TextDecorationInfo`: `ComputeThickness`,
-  `Compute{Underline,Overline,LineThrough}LineData`, `ComputeUnderlineOffset`,
-  `OffsetFromDecoratingBox`, `BaselineForInkSkip`, double/wavy geometry.
+- `core/style/applied_text_decoration.h` — `AppliedTextDecoration` (class lines 18-48),
+  `AppliedTextDecorationVector` (line 50).
+- `core/paint/text_decoration_info.{h,cc}` — `TextDecorationInfo`: `ComputeThickness` (cc:681-706),
+  `Compute{Underline,Overline,LineThrough}LineData` (cc:607-625, 627-646, 648-661),
+  `OffsetFromDecoratingBox` (cc:583-596), `BaselineForInkSkip` (h:202), double/wavy geometry inside
+  `ComputeLineData` (cc:549-604). The per-position offset helpers
+  `ComputeUnderlineOffset`/`ComputeUnderlineOffsetForUnder` live on the separate
+  `TextDecorationOffset` type.
 - `core/paint/text_decoration_painter.{h,cc}` — `TextDecorationPainter`: `Phase{kOriginating,
-  kSelection}`, `Begin`/`PaintExceptLineThrough`/`PaintOnlyLineThrough`.
+  kSelection}` (h:86), `Begin`/`PaintExceptLineThrough`/`PaintOnlyLineThrough` (h:87-89).
 - `core/paint/decoration_line_painter.{h,cc}` — solid/dotted/dashed/double/wavy stroke raster.
-- `core/paint/inline_paint_context.h` — `DecoratingBoxList`, decorating-box push/pop/sync.
+- `core/paint/inline_paint_context.h` — `DecoratingBoxList` (line 20), decorating-box push/pop/sync
+  (lines 26-31, 121); `DecoratingBox` itself in `core/paint/decorating_box.h`.
 - `core/paint/text_painter.cc` — paint order (shadow → decorations-except-line-through → text →
-  line-through → emphasis), `SetEmphasisMark` / `DrawEmphasisMarks`.
-- `core/layout/inline/` ruby column layout + line-box annotation expansion.
+  line-through → emphasis), `SetEmphasisMark` (lines 1066-1091) / `DrawEmphasisMarks` call (lines
+  563-566).
+- `core/layout/inline/inline_item_result_ruby_column.h` — `InlineItemResultRubyColumn` data struct
+  (53 lines): `base_line`, `annotation_line_list`, `position_list`, overhang/continuation.
+- `core/layout/inline/ruby_utils.{h,cc}` — `ParseRubyInInlineItems`, `GetOverhang`,
+  `CanApplyStartOverhang`, `CommitPendingEndOverhang`, `ApplyRubyAlign`,
+  `UpdateRubyColumnInlinePositions`, `ComputeAnnotationOverflow`; types `RubyItemIndexes`,
+  `AnnotationOverhang`, `AnnotationMetrics`; class `RubyBlockPositionCalculator`.
+- `core/layout/layout_ruby_as_block.{cc,h}` — block-level ruby wrapper.
