@@ -8,6 +8,69 @@ display enums but treated as plain inline boxes, so annotation text flows inline
 the base instead of being stacked *above* it. Close all 75 failures without regressing
 the CSS2 (99/99) or css-writing-modes suites.
 
+## Blink vetting log
+
+**Vetted against Chromium `main` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f** on 2026-05-18.
+
+### Citations verified
+- `core/html/resources/html.css:1701-1720` (ruby UA stylesheet block) — ✓ unchanged
+- `core/layout/layout_object.cc:430-435` (`CreateObject` ruby cases) — ✓ unchanged
+- `core/layout/layout_object.cc:522-529` (`IsInlineRuby`, `IsInlineRubyText`) — ✓ unchanged
+- `core/layout/layout_object.cc:1225-1228` (ruby-text fragment-item container) — ✓ unchanged (plan said `:1225-1227`; actual span 1225-1228)
+- `core/layout/layout_ruby_as_block.{h,cc}` (`LayoutRubyAsBlock` two-box model) — ✓ unchanged
+- `core/css/resolver/style_adjuster.cc:247` (`EquivalentBlockDisplay` start) — ✓ unchanged
+- `core/css/resolver/style_adjuster.cc:272-273` (`kRuby` → `kBlockRuby`) — ✓ unchanged
+- `core/css/resolver/style_adjuster.cc:294-295` (`kRubyText` → `kBlock`) — ✓ unchanged
+- `core/css/resolver/style_adjuster.cc:303` (`EquivalentInlineDisplay` start) — ✓ unchanged
+- `core/css/resolver/style_adjuster.cc:322-323` (`kBlockRuby` → `kRuby`) — ✓ unchanged
+- `core/css/resolver/style_adjuster.cc:788-805` (`AdjustStyleForDisplay` inlinify + float drop) — ✓ unchanged
+- `core/layout/inline/inline_items_builder.cc:74` (`kDisableForcedBreakInRubyColumn = true`) — ✓ unchanged
+- `core/layout/inline/inline_items_builder.cc:801,1068` (`is_text_combine_ || ruby_text_nesting_level_ > 0` forced-break→space) — ✓ unchanged (plan said `:800-801,:1069-1070`; off-by-≤1)
+- `core/layout/inline/inline_items_builder.cc:1556-1559,1583-1586,1628,1682-1690` (per-column bidi isolates LRI/RLI/PDI) — ✓ unchanged
+- `core/layout/inline/inline_items_builder.cc:1617-1628` (almost-empty trailing column removal at `</ruby>`) — ✓ unchanged (plan said `:1617-1626`; actual 1617-1628)
+- `core/layout/inline/inline_items_builder.cc:1682-1697` (new column reopened after `</rt>`) — ✓ unchanged (plan said `:1685-1691`; covers the core)
+- `core/layout/inline/ruby_utils.cc:147-176` (`ParseRubyInInlineItems`, recursion at 169-172) — ✓ unchanged
+- `core/layout/inline/ruby_utils.cc:178` (`AnnotationOverhang`/`GetOverhang` first overload) — ✓ unchanged
+- `core/layout/inline/ruby_utils.cc:334` (`CanApplyStartOverhang`) — ✓ unchanged
+- `core/layout/inline/ruby_utils.cc:390` (`CommitPendingEndOverhang`) — ✓ unchanged
+- `core/layout/inline/ruby_utils.cc:504-594` (`ApplyRubyAlign`, `#line-edge` doubling at 549-555) — ✓ unchanged
+- `core/layout/inline/ruby_utils.cc:595` (`ComputeAnnotationOverflow` / `AnnotationMetrics`) — ✓ unchanged
+- `core/layout/inline/ruby_utils.cc:720-748` (`UpdateRubyColumnInlinePositions`) — ✓ unchanged
+- `core/layout/inline/ruby_utils.cc:775-1037` (`RubyBlockPositionCalculator` impls) — ✓ unchanged
+- `core/layout/inline/ruby_utils.h:128-244` (`RubyBlockPositionCalculator` class + `RubyLevel`/`RubyLine`/`AnnotationDepth`) — ✓ unchanged (plan said `:130-244`; class starts at 128)
+- `core/layout/inline/line_breaker.cc:1059-1060` (`kCloseRubyColumn`/`kRubyLinePlaceholder` zero-width skip) — ✓ unchanged
+- `core/layout/inline/line_breaker.cc:1082-1093` (`kOpenRubyColumn` dispatch + placeholder-only skip) — ✓ unchanged
+- `core/layout/inline/line_breaker.cc:1190` (bidi controls produced by `kOpen/CloseRubyColumn` are ignorable) — ✓ unchanged
+- `core/layout/inline/line_breaker.cc:2561-2615` (trailing-collapsible-space recurses into `ancestor_ruby_columns`) — ✓ unchanged (plan said `:2561-2608`; the relevant block extends a few lines past)
+- `core/layout/inline/line_breaker.cc:3278-3449` (`HandleRuby(line_info, retry_size)`) — ✓ unchanged (plan said `:3278-3445`; function ends at 3449)
+- `core/layout/inline/line_breaker.cc:3372-3438` (proportional break + `RubyBreakTokenData`) — ✓ unchanged (plan said `:3370-3445`; close)
+- `core/layout/inline/inline_layout_algorithm.cc:381-389` (force text metrics on ruby line) — ✓ unchanged (plan said `:381-384`; the check+`EnsureTextMetrics` span is 383-389)
+- `core/layout/inline/inline_layout_algorithm.cc:396-418` (`HasRuby` → `UpdateRubyColumnInlinePositions` → `RubyBlockPositionCalculator.GroupLines.PlaceLines.AddLinesTo` → `SetAnnotationBlockStartAdjustment`) — ✓ unchanged
+- `core/layout/inline/inline_node.cc:1543-1544, 2209-2210` (intrinsic walk: `kOpen/CloseRubyColumn` cases + `IsRubyColumn() → ComputeFromMinSizeInternal(result.ruby_column->base_line)`) — ✓ unchanged (plan said `:2103-2210`; the `IsRubyColumn`/`base_line` recursion is at 2209-2210)
+- `core/css/css_properties.json5:3416` (`display` keyword list contains only `ruby, ruby-text` — no `ruby-base*`) — ✓ corroborates plan claim that `EDisplay` has no `kRubyBase`/`kRubyBaseContainer`/`kRubyTextContainer`
+- `core/css/css_properties.json5:7610-7618` (`ruby-align` keywords `space-around/start/center/space-between`, initial `space-around`, inherited) — ✓ matches plan Phase 5
+
+### Citations updated
+- Plan said `core/style/computed_style_constants.h` defines `EDisplay` (and `ERubyAlign`/`ERubyOverhang`/`RubyPosition`) → actually `EDisplay` and the ruby property enums are auto-generated into `core/style/computed_style_base_constants.h`, which `computed_style_constants.h` re-exports via `#include`. Plan now cites the base constants header where it matters; `computed_style_constants.h` references like `RubyPosition` at lines 511-516 are still valid.
+- Plan said `inline_items_builder.cc:1550-1595` for `EnterInline` → the function body actually starts at line 1510; lines 1550-1595 contain the ruby-specific code inside it. Plan now scopes the range to the ruby logic, not the whole function.
+- Plan said `inline_items_builder.cc:1668-1700` for `ExitInline` → the function actually starts at line 1608; lines 1677-1697 contain the post-`</rt>` close/reopen ruby logic. Plan now scopes the range correctly.
+
+### Citations broken / missing in current Blink
+- **`ruby-overhang` keyword set**: plan Phase 5 (line ~410) said keywords are `auto`/`none` per spec. Actual Blink @ 4883d11 (`css_properties.json5:7621-7630`) uses `auto`/`spaces` and gates the property behind the `CSSRubyOverhang` runtime flag. Recommended plan action: rename keyword set to `auto`/`spaces` (or accept both and map `none` → `auto` for spec compat); decide whether louis14 ships ruby-overhang enabled or behind a similar flag. This affects the `GetOverhang` port — `IsSpaceForRubyOverhang` exists in Blink and is consulted only when `RubyOverhang() == kSpaces`.
+- **`ruby-position` keyword set**: plan Phase 11 (line ~563) said keywords are `over`/`under`/`alternate`/`inter-character` with initial `alternate per spec but over for horizontal`. Actual Blink @ 4883d11 (`css_properties.json5:7642-7654`) implements only `over`/`under` with initial `over`. The spec values `alternate` and `inter-character` are NOT implemented. Recommended plan action: ship `over`/`under` only with initial `over`; treat unknown spec keywords as `over`. Note Blink also has a `-webkit-ruby-position` surrogate at 7632-7640.
+- **`rp` UA hiding** (plan-narrative, not a specific citation): plan repeatedly states that `rp` is hidden via `ruby > rp` / `rt > rp` rules ("only when inside a ruby"). Actual: `rp` is hidden by a flat element-only rule at `html.css:972-975` — `base, basefont, datalist, head, link, meta, noembed, noframes, param, rp, script, style, template, title { display: none; }`. `rp` is always `display:none` per UA, regardless of parent. Plan now reflects this.
+
+### Citations added
+- Phase 1 UA-rules block now cites `html.css:972-975` for the `rp` global hide rule alongside `html.css:1701-1720` for the ruby block.
+- Phase 5 ruby-overhang now cites `css_properties.json5:7621-7630` for the actual keyword set + runtime flag.
+- Phase 11 ruby-position now cites `css_properties.json5:7642-7654` for the actual implemented keyword set.
+
+### Cross-check note for css-text-decor agent
+- **`LayoutRubyColumn` does NOT exist** in Blink @ 4883d11 — no file `layout_ruby_column.{h,cc}` and no such class. The closest names in current Blink are:
+  - `LogicalRubyColumn` (a struct, not a `LayoutObject`),
+  - `InlineItemResult::RubyColumn` (declared in `core/layout/inline/inline_item_result_ruby_column.h`).
+- **`LayoutRubyRun` does NOT exist** either — that is the pre-2023 legacy name and has been removed. The plan-css-ruby document correctly identifies `LayoutRubyRun` as legacy (lines 42, 706) and does not cite `LayoutRubyColumn`. Any sibling plan that does cite either type as if it were a current Blink class needs to be corrected.
+
 ## Rules & Discipline (DO NOT DUPLICATE HERE)
 Authoritative sources — re-read both before planning or coding:
 1. **`/Users/iansmith/louis14/CLAUDE.md`** — foundational correctness, study Blink first,
@@ -47,15 +110,22 @@ annotation is laid out as its own sub-line positioned above/below the base sub-l
 Key files (all under `third_party/blink/renderer/core/layout/`, fetched from the Chromium
 main mirror on 2026-05-14):
 
-- **UA stylesheet** `core/html/resources/html.css:1701-1720` — the *entire* ruby UA
-  contract: `ruby { display: ruby }` and `ruby > rt { display: ruby-text; font-size: 50%;
+- **UA stylesheet** `core/html/resources/html.css:1701-1720` — the *ruby-specific* UA
+  block: `ruby { display: ruby }` and `ruby > rt { display: ruby-text; font-size: 50%;
   text-align: start }`. **`rb`, `rbc`, `rtc` get NO special UA display** — they are plain
-  inline boxes. `rp` is hidden by `ruby > rp` / `rt > rp` rules. This is the single most
-  important correction: louis14's `cascade.go` invents a `ruby-base` display and `rb`/
-  `rbc`/`rtc` displays that modern Blink does not have.
-- **`computed_style_constants.h`** — `EDisplay` has only `kRuby`, `kBlockRuby`,
-  `kRubyText`. There is **no `kRubyBase` / `kRubyBaseContainer` / `kRubyTextContainer`**.
-  rb/rbc/rtc resolve to `kInline` (or `kBlock` → inlinified, see below).
+  inline boxes. `rp` is hidden by the unrelated *element-only* rule at
+  `core/html/resources/html.css:972-975` —
+  `base, basefont, datalist, head, link, meta, noembed, noframes, param, rp, script,
+  style, template, title { display: none; }`. So `rp` is **always** `display:none` per
+  UA, regardless of parent (not via a `ruby > rp` / `rt > rp` selector). The single
+  most important correction is still that louis14's `cascade.go` invents a `ruby-base`
+  display and `rb`/`rbc`/`rtc` displays that modern Blink does not have.
+- **`computed_style_base_constants.h`** (auto-generated; re-exported via
+  `computed_style_constants.h`) — `EDisplay` has only `kRuby`, `kBlockRuby`, `kRubyText`.
+  There is **no `kRubyBase` / `kRubyBaseContainer` / `kRubyTextContainer`**. rb/rbc/rtc
+  resolve to `kInline` (or `kBlock` → inlinified, see below). Confirmed via
+  `core/css/css_properties.json5:3416` where the `display` keyword list contains only
+  `"ruby", "ruby-text"` among ruby values.
 - **`layout_object.cc:430-435`** `LayoutObject::CreateObject` — `kRuby` →
   `LayoutInline`, `kRubyText` → `LayoutInline`, `kBlockRuby` → `LayoutRubyAsBlock`.
   `:522-529` — `IsInlineRuby()` = `IsLayoutInline() && Display()==kRuby`;
@@ -74,17 +144,20 @@ main mirror on 2026-05-14):
     dropped to `float:none` (with a console message). This is the
     `#anon-gen-inlinize` rule — block-level boxes inside ruby become inline-level.
 - **`inline/inline_items_builder.cc`** — ruby box-fixup at item-collection time:
-  - `:1550-1595` `EnterInline` / `:1668-1700` `ExitInline`. On `IsInlineRuby()`:
-    emit `kOpenRubyColumn` (carrying an isolate bidi control) + `kRubyLinePlaceholder`.
-    On `IsInlineRubyText()`: emit `kRubyLinePlaceholder` markers around the `<rt>`
-    `kOpenTag`/`kCloseTag`. On `</ruby>` or `</rt>`: emit `kCloseRubyColumn`.
+  - `EnterInline` body starts at `:1510`; the ruby-specific code spans `:1550-1595`.
+    `ExitInline` body starts at `:1608`; the post-`</rt>` close/reopen ruby logic spans
+    `:1677-1697`. On `IsInlineRuby()`: emit `kOpenRubyColumn` (carrying an isolate bidi
+    control) + `kRubyLinePlaceholder`. On `IsInlineRubyText()`: emit
+    `kRubyLinePlaceholder` markers around the `<rt>` `kOpenTag`/`kCloseTag`. On
+    `</ruby>` or `</rt>`: emit `kCloseRubyColumn`.
   - Critically, **a new `kOpenRubyColumn ... kCloseRubyColumn` pair is started after
-    every `<rt>`'s `kCloseRubyColumn`** (`:1685-1691`) — that is how successive
+    every `<rt>`'s `kCloseRubyColumn`** (`:1682-1697`) — that is how successive
     base/annotation pairs ("ruby columns") are produced from a flat
     `<rb><rb><rt><rt>` child list: each `<rt>` closes the current column and opens the
     next. Almost-empty columns produced this way are removed at `</ruby>`
-    (`:1617-1626`). `kDisableForcedBreakInRubyColumn` (`:74`) replaces forced breaks
-    inside a column with spaces for now.
+    (`:1617-1628`). `kDisableForcedBreakInRubyColumn` (`:74`) replaces forced breaks
+    inside a column with spaces for now (the actual rewrites are at `:801` for `<br>` in
+    collapsed space and `:1068` for `\n` line feeds).
 - **`inline/ruby_utils.{h,cc}`** — the heart of ruby layout. Types & functions:
   - `RubyItemIndexes` + `ParseRubyInInlineItems(items, start)` (`ruby_utils.cc:147-176`)
     — given a `kOpenRubyColumn` index, returns `{column_start, base_end,
@@ -199,9 +272,12 @@ are inline boxes; `rb/rbc/rtc` are plain inline boxes; `rp` is `display:none` in
 supported ruby; `block ruby` produces the two-box principal/inline structure.
 
 **Blink reference.**
-- `core/html/resources/html.css:1701-1720` — exact UA rules. **Only** `ruby`→`ruby`,
-  `ruby > rt`→`ruby-text` (+`font-size:50%`,`text-align:start`), `ruby > rp` / `rt > rp`
-  →`none`. No display on `rb/rbc/rtc`.
+- `core/html/resources/html.css:1701-1720` — exact UA rules for ruby itself. **Only**
+  `ruby`→`ruby`, `ruby > rt`→`ruby-text` (+`font-size:50%`,`text-align:start`). No
+  display on `rb/rbc/rtc`. `rp` is hidden by the *separate* global rule at
+  `html.css:972-975` (`base, basefont, datalist, head, link, meta, noembed, noframes,
+  param, rp, script, style, template, title { display: none; }`) — not via a
+  parent-scoped `ruby > rp` selector.
 - `style_adjuster.cc` `EquivalentBlockDisplay/EquivalentInlineDisplay` `:247-356` —
   `ruby`↔`block ruby`, `ruby-text`→`block` under blockify.
 - `layout_object.cc:430-435` — object creation; `layout_ruby_as_block.cc` — block-ruby
@@ -217,9 +293,10 @@ supported ruby; `block ruby` produces the two-box principal/inline structure.
 - `pkg/css/cascade.go:162-183` — rewrite the ruby UA block to mirror `html.css`
   exactly: `ruby`→`display:ruby`; `rt`→`display:ruby-text` **only when its parent is a
   ruby box** (otherwise no UA display) + `font-size:50%` + `text-align:start`;
-  `rp`→`display:none` only when inside a ruby; **`rb/rbc/rtc` get NO display override**.
-  Move the `font-size: 0.5em` → `50%` (Blink uses `50%`; `ruby-rt-fontsize-001` expects
-  exactly half).
+  `rp`→`display:none` *unconditionally* (mirrors Blink's flat element-only rule at
+  `html.css:972-975`, not a parent-scoped rule); **`rb/rbc/rtc` get NO display
+  override**. Move the `font-size: 0.5em` → `50%` (Blink uses `50%`;
+  `ruby-rt-fontsize-001` expects exactly half).
 - `pkg/css/style.go` display-classification helpers — `IsInlineLevelDisplay`,
   `isBlockContainer`, `isBlockLevel` must treat `DisplayRuby`/`DisplayRubyText` as
   inline-level and `DisplayBlockRuby` as block-level.
@@ -257,9 +334,10 @@ baseline, the (50%-size) annotation centered above it, the line box tall enough 
 both. Flat `<rb><rb><rt><rt>` produces N successive base/annotation columns.
 
 **Blink reference.**
-- `inline_items_builder.cc:1550-1700` — emit `kOpenRubyColumn` / `kRubyLinePlaceholder` /
-  `kCloseRubyColumn` items; start a fresh column after each `<rt>`'s close; remove
-  almost-empty trailing columns at `</ruby>`.
+- `inline_items_builder.cc:1510-1697` — `EnterInline` (body starts 1510, ruby logic at
+  1550-1595) emits `kOpenRubyColumn` / `kRubyLinePlaceholder`; `ExitInline` (body
+  starts 1608, ruby logic at 1612-1697) starts a fresh column after each `<rt>`'s close
+  (`:1682-1697`) and removes almost-empty trailing columns at `</ruby>` (`:1617-1628`).
 - `ruby_utils.cc:147-176` `ParseRubyInInlineItems` — column parsing → `RubyItemIndexes`.
 - `line_breaker.cc:3278-3445` `HandleRuby` — build base + annotation sub-`LineInfo`s,
   `ruby_size = MaxLineWidth(...)`, emit one `RubyColumn` `InlineItemResult`.
@@ -400,15 +478,23 @@ ruby-intra-level-whitespace-003 (if not already), ruby-line-break-suppression-00
 content per `ruby-overhang` (`auto`/`none`).
 
 **Blink reference.**
-- `ruby_utils.cc:504-592` `ApplyRubyAlign` — full algorithm incl. `#line-edge` doubling.
+- `ruby_utils.cc:504-594` `ApplyRubyAlign` — full algorithm incl. `#line-edge` doubling
+  at `:549-555`.
 - `ruby_utils.cc:178-323` `GetOverhang`, `:334-502` `CanApplyStartOverhang` /
-  `CommitPendingEndOverhang`.
-- `computed_style_constants.h` `ERubyAlign` / `ERubyOverhang` enums.
+  `:390-502` `CommitPendingEndOverhang`. `IsSpaceForRubyOverhang` helper at `:26`.
+- `core/style/computed_style_base_constants.h` (auto-generated) `ERubyAlign` /
+  `ERubyOverhang` enums; CSS property metadata at `core/css/css_properties.json5:7610`
+  (`ruby-align`, keywords `space-around/start/center/space-between`, default
+  `space-around`) and `:7621` (`ruby-overhang`, keywords **`auto`/`spaces`**, default
+  `auto`, gated behind the `CSSRubyOverhang` runtime flag).
 
 **louis14 targets.**
 - `pkg/css/style.go` — add `RubyAlign` (`start`/`center`/`space-between`/`space-around`,
-  initial `space-around`) and `RubyOverhang` (`auto`/`none`, initial `auto`) properties +
-  parsing + inheritance (both inherited).
+  initial `space-around`) and `RubyOverhang` (**`auto`/`spaces`**, initial `auto` —
+  matching Blink, not the CSS Ruby L1 spec's `auto`/`none`) properties + parsing +
+  inheritance (both inherited). Decide whether to gate `ruby-overhang` behind a louis14
+  feature flag (Blink does via `CSSRubyOverhang`); the css-ruby reftests assume it is
+  enabled.
 - `pkg/layout/ruby_utils.go` — port `ApplyRubyAlign(availableLineSize, onStartEdge,
   onEndEdge, line)` and `GetOverhang` / `CanApplyStartOverhang` /
   `CommitPendingEndOverhang`.
@@ -558,10 +644,14 @@ recursion `:170-173`.
   (Phase 2) to the full `RubyLevel []int` path model: `GroupLines` buckets by level,
   `HandleRubyLine` recurses, `PlaceLines` stacks levels cumulatively away from the base
   baseline.
-- Add `RubyPosition` CSS property (`over`/`under`/`alternate`/`inter-character`, initial
-  `alternate` per spec but `over` for horizontal) to `pkg/css/style.go` — needed to pick
-  the sign of each level. `<rt>`/`<rtc>` `ruby-position` is taken from the *ruby* element
-  (`ruby-position` test confirms `ruby-position` on `<rt>` is ignored).
+- Add `RubyPosition` CSS property to `pkg/css/style.go` — keywords **`over`/`under`
+  only** with initial **`over`** (matching Blink @ 4883d11
+  `core/css/css_properties.json5:7642-7654`); the CSS Ruby L1 spec keywords `alternate`
+  and `inter-character` are NOT implemented in Blink. Treat any other inputs as `over`
+  for now. Blink also exposes a `-webkit-ruby-position` surrogate at
+  `css_properties.json5:7632-7640`. Needed to pick the sign of each level.
+  `<rt>`/`<rtc>` `ruby-position` is taken from the *ruby* element (`ruby-position` test
+  confirms `ruby-position` on `<rt>` is ignored).
 
 **New types.** `css.RubyPosition`; `ruby_utils.go`: `RubyLevel`, `RubyLine`,
 `AnnotationDepth`.
@@ -672,16 +762,17 @@ ruby-rt-fontsize-001 (if not earlier), ruby-no-transform.
 ## Key Blink files & classes the plan is grounded in
 | Blink file | Classes / functions | Used by phase |
 |---|---|---|
-| `core/html/resources/html.css:1701-1720` | ruby UA stylesheet | 1 |
+| `core/html/resources/html.css:1701-1720` (+ `:972-975` for the `rp` global hide) | ruby UA stylesheet | 1 |
 | `core/css/resolver/style_adjuster.cc:247-356, 756-846` | `EquivalentBlockDisplay`, `EquivalentInlineDisplay`, `AdjustStyleForDisplay` (blockify/inlinify) | 1, 9, 10 |
-| `core/layout/layout_object.cc:430-435, 522-529` | `CreateObject`, `IsInlineRuby`, `IsInlineRubyText` | 1 |
+| `core/layout/layout_object.cc:430-435, 522-529, 1225-1228` | `CreateObject`, `IsInlineRuby`, `IsInlineRubyText`, ruby-text fragment-item container | 1, 14 |
 | `core/layout/layout_ruby_as_block.{h,cc}` | `LayoutRubyAsBlock` two-box model | 1, 9 |
-| `core/layout/inline/inline_items_builder.cc:74, 1550-1700` | `kOpenRubyColumn`/`kCloseRubyColumn`/`kRubyLinePlaceholder` emission, column-after-`<rt>`, almost-empty-column removal, `kDisableForcedBreakInRubyColumn` | 2, 3, 4, 7, 12 |
-| `core/layout/inline/ruby_utils.{h,cc}` | `RubyItemIndexes`, `ParseRubyInInlineItems`, `AnnotationOverhang`, `GetOverhang`, `CanApplyStartOverhang`, `CommitPendingEndOverhang`, `ApplyRubyAlign`, `AnnotationMetrics`, `ComputeAnnotationOverflow`, `UpdateRubyColumnInlinePositions`, `RubyBlockPositionCalculator` (`RubyLevel`/`RubyLine`/`AnnotationDepth`/`GroupLines`/`PlaceLines`/`AddLinesTo`) | 2, 3, 5, 11, 13 |
-| `core/layout/inline/line_breaker.cc:1059-1093, 1190, 2561-2608, 3278-3445` | `HandleRuby`, ruby dispatch, column break tokens, intra-column trailing-space collapse | 2, 4, 7 |
-| `core/layout/inline/inline_layout_algorithm.cc:381-418` | ruby line metrics force, `UpdateRubyColumnInlinePositions` → `RubyBlockPositionCalculator` → `SetAnnotationBlockStartAdjustment` | 2, 13 |
-| `core/layout/inline/inline_node.cc:2103-2210` | ruby intrinsic sizing via `ruby_column->base_line` | 8 |
-| `core/style/computed_style_constants.h` | `EDisplay` (`kRuby`/`kBlockRuby`/`kRubyText` only), `ERubyAlign`, `ERubyOverhang`, `RubyPosition` | 1, 5, 11 |
+| `core/layout/inline/inline_items_builder.cc:74, 801, 1068, 1510-1697` | `kOpenRubyColumn`/`kCloseRubyColumn`/`kRubyLinePlaceholder` emission (`EnterInline` body 1510; ruby logic 1550-1595), column-after-`<rt>` (`ExitInline` body 1608; ruby logic 1612-1697 with column reopen at 1682-1697 and almost-empty-column removal at 1617-1628), `kDisableForcedBreakInRubyColumn` (`:74`; rewrites at `:801` and `:1068`) | 2, 3, 4, 7, 12 |
+| `core/layout/inline/ruby_utils.{h,cc}` | `RubyItemIndexes`, `ParseRubyInInlineItems`, `AnnotationOverhang`, `GetOverhang`, `CanApplyStartOverhang`, `CommitPendingEndOverhang`, `ApplyRubyAlign`, `AnnotationMetrics`, `ComputeAnnotationOverflow`, `UpdateRubyColumnInlinePositions`, `RubyBlockPositionCalculator` (`RubyLevel`/`RubyLine`/`AnnotationDepth`/`GroupLines`/`PlaceLines`/`AddLinesTo`); class declared at `ruby_utils.h:128-244` | 2, 3, 5, 11, 13 |
+| `core/layout/inline/line_breaker.cc:1059-1093, 1190, 2561-2615, 3278-3449` | `HandleRuby` (3278-3449), ruby dispatch (1082-1093), column break tokens, intra-column trailing-space collapse (recurses into `ancestor_ruby_columns`) | 2, 4, 7 |
+| `core/layout/inline/inline_layout_algorithm.cc:381-389, 396-418` | ruby line metrics force (381-389), `UpdateRubyColumnInlinePositions` → `RubyBlockPositionCalculator` → `SetAnnotationBlockStartAdjustment` (396-418) | 2, 13 |
+| `core/layout/inline/inline_node.cc:1543-1544, 2209-2210` | ruby intrinsic sizing: `kOpen/CloseRubyColumn` cases (`:1543-1544`); `IsRubyColumn() → ComputeFromMinSizeInternal(result.ruby_column->base_line)` (`:2209-2210` inside `ComputeFromMinSizeInternal` at `:2173`) | 8 |
+| `core/style/computed_style_base_constants.h` (auto-generated; re-exported via `computed_style_constants.h`) | `EDisplay` (`kRuby`/`kBlockRuby`/`kRubyText` only), `ERubyAlign`, `ERubyOverhang`, `RubyPosition` | 1, 5, 11 |
+| `core/css/css_properties.json5:3416, 7610-7654` | CSS property metadata: `display` keyword list (3416, ruby keys = `"ruby","ruby-text"`); `ruby-align` (7610), `ruby-overhang` (7621, keywords `auto/spaces`, runtime-flagged), `-webkit-ruby-position` (7632), `ruby-position` (7642, keywords `over/under` only, default `over`) | 1, 5, 11 |
 
 ## louis14 files touched (summary)
 | louis14 file | Phases |
