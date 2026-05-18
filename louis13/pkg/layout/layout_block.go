@@ -155,8 +155,8 @@ func (le *LayoutEngine) layoutNode(node *html.Node, x, y, availableWidth float64
 	// Ruby display types: normalize for layout purposes.
 	// display:ruby → treat as inline (the ruby element participates in inline flow)
 	// display:ruby-text → treat as inline-block (the <rt> annotation box)
-	// display:ruby-base → treat as inline
-	if display == css.DisplayRuby || display == css.DisplayRubyBase {
+	// DisplayRubyBase removed in louis14 Phase 1 — modern Blink has no kRubyBase.
+	if display == css.DisplayRuby {
 		display = css.DisplayInline
 	} else if display == css.DisplayRubyText {
 		display = css.DisplayInlineBlock

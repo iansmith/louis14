@@ -159,27 +159,61 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
-	// Ruby elements: display types per CSS Ruby spec
+	// Ruby UA stylesheet. Mirrors Blink html.css:1701-1720 exactly
+	// (vetted at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). In
+	// modern Blink only `ruby` and `rt` have ruby-specific UA display
+	// values; `rb`, `rbc`, and `rtc` receive NO display override and
+	// remain plain inline boxes (Blink's EDisplay has no kRubyBase /
+	// kRubyBaseContainer / kRubyTextContainer). `rp` is hidden by the
+	// separate flat element-only rule at html.css:972-975
+	// (base, basefont, datalist, head, link, meta, noembed, noframes,
+	// param, rp, script, style, template, title { display: none }),
+	// not by a parent-scoped `ruby > rp` selector — so rp is hidden
+	// regardless of parent.
+	//
+	// The rt UA rule has two layers in Blink: the unconditional `rt {
+	// line-height: normal; text-emphasis: none }` applies always, while
+	// `ruby > rt { display: ruby-text; font-size: 50%; text-align: start }`
+	// only applies when rt's parent is a ruby box.
 	switch node.TagName {
 	case "ruby":
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "ruby")
 		}
-	case "rt":
-		if _, ok := style.Get("display"); !ok {
-			style.Set("display", "ruby-text")
+		// html.css:1701-1704 — `ruby, rt { text-indent: 0 }`.
+		if _, ok := style.Get("text-indent"); !ok {
+			style.Set("text-indent", "0")
 		}
-		// rt text is typically rendered at half the font size
-		if _, ok := style.Get("font-size"); !ok {
-			style.Set("font-size", "0.5em")
+	case "rt":
+		// Unconditional rt rules.
+		if _, ok := style.Get("line-height"); !ok {
+			style.Set("line-height", "normal")
+		}
+		if _, ok := style.Get("text-indent"); !ok {
+			style.Set("text-indent", "0")
+		}
+		// `ruby > rt` rules — only when parent is a ruby element.
+		if node.Parent != nil && node.Parent.TagName == "ruby" {
+			if _, ok := style.Get("display"); !ok {
+				style.Set("display", "ruby-text")
+			}
+			if _, ok := style.Get("font-size"); !ok {
+				// Blink uses 50%, not 0.5em — ruby-rt-fontsize-001
+				// expects exactly half the parent's font-size after
+				// inheritance, which 50% guarantees and 0.5em does
+				// not (`em` resolves against the inherited size
+				// before this UA rule, but `%` does the same and is
+				// the spec-exact value Blink ships).
+				style.Set("font-size", "50%")
+			}
+			if _, ok := style.Get("text-align"); !ok {
+				style.Set("text-align", "start")
+			}
 		}
 	case "rp":
-		// rp (ruby parenthesis) is hidden when ruby is supported
+		// Hidden unconditionally per Blink html.css:972-975 (the flat
+		// element-only display:none rule). Not parent-scoped.
 		style.Set("display", "none")
-	case "rb":
-		if _, ok := style.Get("display"); !ok {
-			style.Set("display", "ruby-base")
-		}
 	}
 
 	// Default styles for form elements — rendered as simple boxes.
@@ -858,6 +892,33 @@ func NewAnonymousTableRowStyle(parent *Style) *Style {
 	s.ChWidth = parent.ChWidth
 	s.Set("display", "table-row")
 	// Copy all inheritable properties from the parent.
+	for prop := range inheritableProperties {
+		if val, ok := parent.Get(prop); ok {
+			s.Set(prop, val)
+		}
+	}
+	return s
+}
+
+// NewAnonymousInlineRubyStyle creates a style for the single anonymous
+// inline `display: ruby` box that wraps the children of a block-level
+// `display: block ruby` element (CSS Display L3 + Blink's
+// LayoutRubyAsBlock two-box model). The principal box is the
+// block-flow generated from the block-ruby element itself; this style
+// is for the inline-ruby child that actually carries the ruby column
+// items.
+//
+// Per Blink layout_ruby_as_block.cc, the inline ruby child inherits
+// all inheritable properties from the principal box; non-inheritable
+// box properties (margin/border/padding) live on the principal block
+// box, not on the inline ruby. Mirrors NewAnonymousBlockStyle but with
+// display:ruby.
+func NewAnonymousInlineRubyStyle(parent *Style) *Style {
+	s := NewStyle()
+	s.ViewportWidth = parent.ViewportWidth
+	s.ViewportHeight = parent.ViewportHeight
+	s.ChWidth = parent.ChWidth
+	s.Set("display", "ruby")
 	for prop := range inheritableProperties {
 		if val, ok := parent.Get(prop); ok {
 			s.Set(prop, val)
