@@ -5372,7 +5372,30 @@ func (s *Style) GetContentValues() ([]ContentValue, bool) {
 		return nil, false
 	}
 
-	return ParseContentValues(raw), true
+	values := ParseContentValues(raw)
+	// CSS Lists 3 §counter-functions: if any counter()/counters()
+	// name is a CSS-wide keyword (an invalid <custom-ident>), the
+	// entire content declaration is invalid and is treated as if
+	// `content: normal` were specified. Detect that here so the
+	// caller does not silently render the surrounding text.
+	for _, v := range values {
+		if (v.Type == "counter" || v.Type == "counters") && isCSSWideKeyword(v.Value) {
+			return nil, false
+		}
+	}
+	return values, true
+}
+
+// isCSSWideKeyword reports whether an identifier is one of the CSS-wide
+// keywords reserved against use as a <custom-ident> (CSS Values 4
+// §custom-idents). Counter names must be valid <custom-ident>s, so
+// `counter(inherit)` is a parse error.
+func isCSSWideKeyword(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "inherit", "initial", "unset", "revert", "revert-layer", "default", "none":
+		return true
+	}
+	return false
 }
 
 // ParseContentValues parses a CSS content value into individual parts

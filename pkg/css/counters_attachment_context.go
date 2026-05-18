@@ -61,9 +61,17 @@ func (t CounterType) IsSetOrReset() bool {
 // Origin is the originating DOM/pseudo node; nil entries serve as
 // style-containment boundaries (Phase 2+ feature, but the slot is
 // present so GetCounterValues can stop at them).
+//
+// EnterOrder is the monotonically increasing index at which Origin's
+// EnterObject was called. It is used by CreateCounter to identify
+// "previous siblings" in the layout tree (Blink walks layout-tree
+// siblings; in louis14 we approximate this by ordering siblings by
+// when EnterObject saw them, which is document order including
+// pseudo-elements).
 type CounterEntry struct {
-	Origin *html.Node
-	Value  int
+	Origin     *html.Node
+	Value      int
+	EnterOrder uint64
 }
 
 // counterStack is a stack of CounterEntry pointers, innermost last.
@@ -83,12 +91,31 @@ type CounterInheritanceTable map[string]*counterStack
 type CountersAttachmentContext struct {
 	table                 CounterInheritanceTable
 	rootIsDocumentElement bool
+
+	// enterCounter increments on each EnterObject call so we can
+	// stamp entries with a document-order index. CreateCounter uses
+	// it to detect previous siblings in the layout-tree sense
+	// (including pseudo-elements that are not in DOM Children).
+	enterCounter uint64
+
+	// enterOrder remembers the index at which each origin entered
+	// (for nodes still in scope). Removed on LeaveObject. Used by
+	// CreateCounter's "same-or-previous sibling" check.
+	enterOrder map[*html.Node]uint64
+
+	// displayContents records which entered nodes have
+	// `display: contents` so layoutParentOfOrigin can skip them when
+	// resolving ancestry (mirrors Blink LayoutTreeBuilderTraversal
+	// ::LayoutParent which transparently skips display:contents).
+	displayContents map[*html.Node]bool
 }
 
 // NewCountersAttachmentContext returns an empty context.
 func NewCountersAttachmentContext() *CountersAttachmentContext {
 	return &CountersAttachmentContext{
-		table: make(CounterInheritanceTable),
+		table:           make(CounterInheritanceTable),
+		enterOrder:      make(map[*html.Node]uint64),
+		displayContents: make(map[*html.Node]bool),
 	}
 }
 
@@ -124,9 +151,22 @@ type CounterDirective struct {
 // then call ProcessCounter once per name. Phase 1 reads counter-reset
 // and counter-increment; Phase 2 adds counter-set; Phase 3 adds the
 // list-item implicit increment.
+//
+// Stamps `node`'s entry order so CreateCounter can identify
+// previous-sibling relationships in layout-tree order.
 func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
 	if node == nil || style == nil {
 		return
+	}
+	c.enterCounter++
+	c.enterOrder[node] = c.enterCounter
+	// Record display:contents so ancestry lookups can skip this node
+	// (Blink LayoutTreeBuilderTraversal::LayoutParent). We read the
+	// computed `display` value rather than depending on
+	// DisplayType enum constants so this package stays free of
+	// LayoutType imports.
+	if disp, ok := style.Get("display"); ok && strings.EqualFold(strings.TrimSpace(disp), "contents") {
+		c.displayContents[node] = true
 	}
 	for _, d := range parseCounterDirectives(style) {
 		c.ProcessCounter(node, d)
@@ -137,7 +177,10 @@ func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
 // element reset, pop the entry if an ancestor entry of the same
 // counter is still in scope (RemoveCounterIfAncestorExists).
 // Increment-only / set-only entries are not pushed by this element so
-// they don't need popping here.
+// they don't need popping here. Releases the entry-order stamp last
+// — leaving the map entry around until siblings have entered would
+// only matter if a left node could appear later in document order,
+// which never happens in a pre-order traversal.
 func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 	if node == nil || style == nil {
 		return
@@ -147,6 +190,11 @@ func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 			c.RemoveCounterIfAncestorExists(node, d.Name)
 		}
 	}
+	// Keep enterOrder around: the enter-order map is consulted by
+	// CreateCounter for entries that may still be on the stack from
+	// nodes that have already exited their own subtree. Clearing on
+	// LeaveObject would lose that information. (Memory grows O(N)
+	// for the tree; acceptable for layout-tree builds.)
 }
 
 // ProcessCounter mirrors Blink ProcessCounter:
@@ -179,7 +227,12 @@ func (c *CountersAttachmentContext) ProcessCounter(node *html.Node, d CounterDir
 //	(two resets on the same element, or a reset following a sibling
 //	reset, do not stack — Blink: "Remove innermost counter with same
 //	or previous sibling originating element").
-//	Then push a new CounterEntry{origin, value}.
+//	Then push a new CounterEntry{origin, value, enterOrder}.
+//
+// "Previous sibling" in Blink is layout-tree sibling order, which
+// includes ::before/::marker/::after pseudo-elements between or
+// around real DOM children. Two siblings share the same parent and
+// the one with the smaller EnterObject stamp is earlier.
 func (c *CountersAttachmentContext) CreateCounter(node *html.Node, name string, value int) {
 	stack := c.table[name]
 	if stack == nil {
@@ -188,11 +241,15 @@ func (c *CountersAttachmentContext) CreateCounter(node *html.Node, name string, 
 	}
 	if n := len(*stack); n > 0 {
 		top := (*stack)[n-1]
-		if top != nil && isSameOrPreviousSibling(top.Origin, node) {
+		if top != nil && c.isSameOrPreviousLayoutSibling(top.Origin, top.EnterOrder, node) {
 			*stack = (*stack)[:n-1]
 		}
 	}
-	*stack = append(*stack, &CounterEntry{Origin: node, Value: value})
+	*stack = append(*stack, &CounterEntry{
+		Origin:     node,
+		Value:      value,
+		EnterOrder: c.enterCounter,
+	})
 }
 
 // UpdateCounterValue (increment / set) mirrors Blink UpdateCounterValue:
@@ -217,9 +274,14 @@ func (c *CountersAttachmentContext) UpdateCounterValue(node *html.Node, name str
 }
 
 // RemoveStaleCounters mirrors Blink RemoveStaleCounters: pop every
-// entry whose originating element's parent is not an ancestor of the
-// entering element (the entering element is not in the same subtree
-// as the entry's originator). Stops at a containment-boundary nil.
+// entry whose originating element's PARENT is not a strict ancestor
+// of the entering element. Stops at a containment-boundary nil.
+//
+// Blink's exact rule (counters_attachment_context.cc at the pinned
+// SHA): `if (!parent || IsAncestorOf(*parent, *element)) break;`
+// — i.e. a nil parent (root) keeps the entry, and a strict ancestor
+// relationship from parent_of_origin down to the entering element
+// keeps it too.
 func (c *CountersAttachmentContext) RemoveStaleCounters(node *html.Node, name string) {
 	stack := c.table[name]
 	if stack == nil {
@@ -230,11 +292,17 @@ func (c *CountersAttachmentContext) RemoveStaleCounters(node *html.Node, name st
 		if top == nil { // containment boundary
 			return
 		}
-		// Blink: counter is stale when the entering element is NOT a
-		// descendant of the originator's parent. We use a sibling-
-		// subtree definition: the originator's parent must be an
-		// ancestor of (or equal to) the entering element.
-		if isAncestorOrSelf(parentNode(top.Origin), node) {
+		parent := c.layoutParentOfOrigin(top.Origin)
+		if parent == nil {
+			// Root-level entry — counters at the document root are
+			// in scope for every element.
+			return
+		}
+		if isStrictAncestorOf(parent, node) || parent == node {
+			// Origin's parent is an ancestor of `node`, OR the
+			// entering node IS the origin's parent (entry was
+			// pushed by a child of the entering node — keep it
+			// while we're inside that child's parent's subtree).
 			return
 		}
 		*stack = (*stack)[:len(*stack)-1]
@@ -243,9 +311,23 @@ func (c *CountersAttachmentContext) RemoveStaleCounters(node *html.Node, name st
 
 // RemoveCounterIfAncestorExists mirrors Blink
 // RemoveCounterIfAncestorExists: in LeaveObject for reset counters,
-// if the previous stack entry is an ancestor of the entry being left,
-// drop the leaving entry (ancestor counters always win for
-// inheritance).
+// pop the leaving entry when an outer entry of the same counter
+// would "win" inheritance for following siblings/descendants.
+//
+// Two Blink conditions trigger the pop:
+//
+//  1. previous_element is an ancestor of `node`.
+//  2. previous_element's layout parent is an ancestor of `node` AND
+//     that parent is not the same as `node`'s layout parent — i.e.
+//     the previous entry was pushed by a "great-uncle" subtree that
+//     still encloses node's parent. This is what lets a sibling
+//     scope (e.g. `.scope` ancestor with a reset on its
+//     `::before`-only counter) pop the `::before` reset entry on
+//     LeaveObject so following real siblings still see the outer
+//     scope, not a now-stale ::before scope.
+//
+// (See `counters_attachment_context.cc` RemoveCounterIfAncestorExists
+// at the pinned SHA.)
 func (c *CountersAttachmentContext) RemoveCounterIfAncestorExists(node *html.Node, name string) {
 	stack := c.table[name]
 	if stack == nil || len(*stack) < 2 {
@@ -260,34 +342,51 @@ func (c *CountersAttachmentContext) RemoveCounterIfAncestorExists(node *html.Nod
 	if top.Origin != node {
 		return
 	}
-	if isAncestorOrSelf(prev.Origin, node) {
+	// Condition 1: previous entry's origin is an ancestor of node.
+	if isStrictAncestorOf(prev.Origin, node) {
 		*stack = (*stack)[:len(*stack)-1]
+		return
+	}
+	// Condition 2: previous entry's origin's LAYOUT parent is an
+	// ancestor of node AND that parent is not the same as node's
+	// LAYOUT parent (display:contents transparency applies on both
+	// sides — matches Blink's LayoutParentElement use here).
+	if prev.Origin != nil {
+		prevParent := c.layoutParentOfOrigin(prev.Origin)
+		nodeParent := c.layoutParentOfOrigin(node)
+		if prevParent != nil && isStrictAncestorOf(prevParent, node) && prevParent != nodeParent {
+			*stack = (*stack)[:len(*stack)-1]
+			return
+		}
 	}
 }
 
 // GetCounterValues mirrors Blink GetCounterValues. With onlyLast=true
 // it returns the innermost in-scope value (counter()). With
 // onlyLast=false it returns every in-scope value from outermost to
-// innermost (counters()). An out-of-scope (stale) counter returns
-// an empty slice — the caller treats that as "0" for counter() or
-// as no output for counters().
+// innermost (counters()).
+//
+// Blink calls RemoveStaleCounters first to drop entries that are not
+// in scope for `node`, then iterates the surviving stack in reverse.
+// We mirror that order so the no-staleness-check iteration in the
+// hot path matches Blink's logic exactly.
+//
+// An empty result is returned when the counter is not in scope at all
+// (Blink returns `{0}` in that case so `counter()` reads as 0; we
+// instead return an empty slice and let the caller format it as
+// 0 / "" per CSS Lists §counter-functions).
 func (c *CountersAttachmentContext) GetCounterValues(node *html.Node, name string, onlyLast bool) []int {
+	// Drop any entries that are not in scope for `node` first.
+	c.RemoveStaleCounters(node, name)
 	stack := c.table[name]
 	if stack == nil || len(*stack) == 0 {
 		return nil
 	}
-	// Walk the stack in reverse, dropping entries that are not in
-	// scope for the entering element (Blink: same staleness test as
-	// RemoveStaleCounters, but read-only).
 	var values []int
-	// Collected innermost-first; reverse before returning if !onlyLast.
 	for i := len(*stack) - 1; i >= 0; i-- {
 		entry := (*stack)[i]
 		if entry == nil { // containment boundary
 			break
-		}
-		if !isAncestorOrSelf(parentNode(entry.Origin), node) {
-			continue
 		}
 		values = append(values, entry.Value)
 		if onlyLast {
@@ -380,6 +479,14 @@ func parseCounterDirectives(style *Style) []CounterDirective {
 			a := track(p.name)
 			a.hasReset = true
 			a.resetValue = p.value
+			// Phase 4 will compute the initial value via
+			// CalculateInitialValueForReversed when this flag is
+			// set. Phase 1 still pushes a 0-valued reset so the
+			// counter exists in scope (which keeps tests that mix
+			// `counter-reset: reversed(foo)` with explicit
+			// `counter-increment` directives at least seeing a
+			// stable counter — Phase 4 will overlay the correct
+			// initial value).
 			if p.reversed {
 				a.reversed = true
 			}
@@ -526,9 +633,20 @@ func tokenizeCounterValue(raw string) []string {
 	return tokens
 }
 
-// parentNode returns the parent of a (possibly synthetic pseudo-element)
-// node. Synthetic ::before/::after/::marker nodes have Parent set to
-// their originating real element, so this works for them too.
+// parentNode returns the LAYOUT-tree parent of `n`, mirroring Blink's
+// LayoutTreeBuilderTraversal::LayoutParent. The layout-tree parent
+// skips DOM ancestors with `display: contents`, because those ancestors
+// produce no box and their counter directives flow through to the next
+// real box ancestor (Blink CSS Lists Phase 2 — louis14 will pick this
+// up here so the counter context behaves correctly even though Phase 1
+// in this codebase does not yet route `display:contents` through
+// EnterObject directly).
+//
+// Synthetic ::before/::after/::marker nodes have Parent set to their
+// originating real element, so they pass through this helper too.
+//
+// styleResolver is allowed to be nil — in which case display:contents
+// is not detected and the function degenerates to bare DOM parent.
 func parentNode(n *html.Node) *html.Node {
 	if n == nil {
 		return nil
@@ -536,11 +654,37 @@ func parentNode(n *html.Node) *html.Node {
 	return n.Parent
 }
 
+// layoutParent returns the layout-tree parent of `node` for the given
+// styles map: it walks up the DOM tree skipping nodes whose computed
+// style has `display: contents`. This is what RemoveStaleCounters /
+// RemoveCounterIfAncestorExists ancestry checks consult so that
+// display:contents ancestors do not break counter inheritance through
+// them (Blink LayoutParent semantics).
+func (c *CountersAttachmentContext) layoutParentOfOrigin(origin *html.Node) *html.Node {
+	if origin == nil {
+		return nil
+	}
+	parent := origin.Parent
+	for parent != nil && c.isDisplayContents(parent) {
+		parent = parent.Parent
+	}
+	return parent
+}
+
+// isDisplayContents reports whether `n` is a layout-tree-transparent
+// container, i.e. has `display: contents`. The context caches this via
+// its displayContents map populated from EnterObject's style lookup.
+func (c *CountersAttachmentContext) isDisplayContents(n *html.Node) bool {
+	if n == nil || c.displayContents == nil {
+		return false
+	}
+	return c.displayContents[n]
+}
+
 // isAncestorOrSelf reports whether ancestor is the entering node or
-// any ancestor of it via Parent links. Blink uses
-// LayoutTreeBuilderTraversal::ParentElement which behaves the same way
-// for layout-tree traversal; in louis14 the DOM parent chain matches
-// the layout-tree-building order, so the simple chain walk suffices.
+// any ancestor of it via Parent links. Used by RemoveStaleCounters
+// (where matching the entering node itself is acceptable — a node is
+// always in its own descendant set).
 func isAncestorOrSelf(ancestor, node *html.Node) bool {
 	if ancestor == nil {
 		// A nil origin parent (e.g. document-root entries) is treated
@@ -556,12 +700,34 @@ func isAncestorOrSelf(ancestor, node *html.Node) bool {
 	return false
 }
 
-// isSameOrPreviousSibling reports whether a is the same node as b OR a
-// previous sibling of b under the same parent. Used by CreateCounter
-// to collapse stacked resets on the same element or sibling chain
-// (Blink: "Remove innermost counter with same or previous sibling
-// originating element").
-func isSameOrPreviousSibling(a, b *html.Node) bool {
+// isStrictAncestorOf mirrors Blink IsAncestorOf — true only when
+// ancestor is a STRICT ancestor of node (not node itself). Used by
+// RemoveCounterIfAncestorExists, which must not treat a node as its
+// own ancestor.
+func isStrictAncestorOf(ancestor, node *html.Node) bool {
+	if ancestor == nil || node == nil {
+		return false
+	}
+	for cur := node.Parent; cur != nil; cur = cur.Parent {
+		if cur == ancestor {
+			return true
+		}
+	}
+	return false
+}
+
+// isSameOrPreviousLayoutSibling reports whether `a` is the same node
+// as `b` OR a previous LAYOUT-tree sibling of `b`. Layout-tree
+// siblings include synthetic pseudo-elements (::before, ::marker,
+// ::after) that are not in the DOM Children array but do share the
+// same Parent as real DOM children.
+//
+// The "previous" decision uses EnterObject stamps: if `aOrder < b`'s
+// current stamp, `a` was encountered earlier in the pre-order walk
+// and therefore is a previous sibling when they share a parent. We
+// receive `aOrder` directly because the caller already has it
+// (avoids a map lookup in the hot path).
+func (c *CountersAttachmentContext) isSameOrPreviousLayoutSibling(a *html.Node, aOrder uint64, b *html.Node) bool {
 	if a == nil || b == nil {
 		return false
 	}
@@ -571,6 +737,19 @@ func isSameOrPreviousSibling(a, b *html.Node) bool {
 	if a.Parent == nil || a.Parent != b.Parent {
 		return false
 	}
+	bOrder, ok := c.enterOrder[b]
+	if !ok {
+		// b hasn't been stamped yet — caller must call this only
+		// after EnterObject(b) ran. As a safety net, fall back to
+		// DOM-Children order.
+		return domChildrenOrder(a, b)
+	}
+	return aOrder < bOrder
+}
+
+// domChildrenOrder is a fallback for the rare case where `b` is not
+// yet stamped (should not happen during a normal pre-order walk).
+func domChildrenOrder(a, b *html.Node) bool {
 	for _, sib := range a.Parent.Children {
 		if sib == a {
 			return true
