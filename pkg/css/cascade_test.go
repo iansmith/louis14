@@ -271,3 +271,128 @@ func TestInheritKeyword_InlineStyle(t *testing.T) {
 		}
 	}
 }
+
+// TestComputeStyle_RubyUADisplays verifies the Phase 1 ruby UA stylesheet
+// mirrors Blink html.css exactly (vetted at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
+//
+//   - <ruby>            → display: ruby (inline-level)
+//   - <ruby><rt>        → display: ruby-text, font-size: 50%, text-align: start
+//   - <rt> outside ruby → no UA display (defaults to block)
+//   - <rb>, <rbc>, <rtc> → NO UA display override (plain inline boxes;
+//     EDisplay in modern Blink has no kRubyBase / kRubyBaseContainer /
+//     kRubyTextContainer).
+//   - <rp>              → display: none unconditionally (html.css:972-975
+//     flat element-only rule, not parent-scoped).
+//
+// rb is hidden in HTML because <span>/<em>/<strong>/etc. default to
+// display:inline; <rb>/<rbc>/<rtc> are not in louis14's inline tag list
+// either, so they fall through to the default `block` display. That
+// matches Blink (no UA rule for these tags).
+func TestComputeStyle_RubyUADisplays(t *testing.T) {
+	// Build a ruby tree by hand: <ruby><rb>base</rb><rt>anno</rt><rp>(</rp></ruby>
+	// plus a standalone <rt> outside any ruby, plus <rbc>/<rtc>.
+	ruby := &html.Node{Type: html.ElementNode, TagName: "ruby"}
+	rb := &html.Node{Type: html.ElementNode, TagName: "rb", Parent: ruby}
+	rt := &html.Node{Type: html.ElementNode, TagName: "rt", Parent: ruby}
+	rp := &html.Node{Type: html.ElementNode, TagName: "rp", Parent: ruby}
+	rbc := &html.Node{Type: html.ElementNode, TagName: "rbc", Parent: ruby}
+	rtc := &html.Node{Type: html.ElementNode, TagName: "rtc", Parent: ruby}
+	ruby.Children = []*html.Node{rb, rt, rp, rbc, rtc}
+
+	// Standalone <rt> outside a ruby parent.
+	body := &html.Node{Type: html.ElementNode, TagName: "body"}
+	rtBare := &html.Node{Type: html.ElementNode, TagName: "rt", Parent: body}
+	body.Children = []*html.Node{rtBare}
+
+	cases := []struct {
+		node      *html.Node
+		wantDisp  DisplayType
+		wantFontS string // "" = unset
+		wantTAlig string // "" = unset
+	}{
+		{ruby, DisplayRuby, "", ""},
+		{rt, DisplayRubyText, "50%", "start"},
+		{rp, DisplayNone, "", ""},
+		// rb / rbc / rtc must NOT receive a ruby-specific display.
+		// They have no tag-default inline entry either, so they fall
+		// through to GetDisplay's default of DisplayBlock.
+		{rb, DisplayBlock, "", ""},
+		{rbc, DisplayBlock, "", ""},
+		{rtc, DisplayBlock, "", ""},
+		// Standalone <rt> (parent is body, not ruby) gets no UA display
+		// (matches Blink: `ruby > rt` is parent-scoped); defaults to block.
+		{rtBare, DisplayBlock, "", ""},
+	}
+
+	for _, c := range cases {
+		style := ComputeStyle(c.node, nil, 800, 600)
+		gotDisp := style.GetDisplay()
+		if gotDisp != c.wantDisp {
+			t.Errorf("<%s>: display = %q, want %q", c.node.TagName, gotDisp, c.wantDisp)
+		}
+		gotFS, _ := style.Get("font-size")
+		if gotFS != c.wantFontS {
+			t.Errorf("<%s>: font-size = %q, want %q", c.node.TagName, gotFS, c.wantFontS)
+		}
+		gotTA, _ := style.Get("text-align")
+		if gotTA != c.wantTAlig {
+			t.Errorf("<%s>: text-align = %q, want %q", c.node.TagName, gotTA, c.wantTAlig)
+		}
+	}
+}
+
+// TestGetDisplay_TwoKeywordRuby verifies that GetDisplay accepts the
+// CSS Display L3 two-keyword forms `block ruby` and `inline ruby`,
+// and that `ruby-base` (deleted in Phase 1, since modern Blink has no
+// kRubyBase) is no longer recognized.
+func TestGetDisplay_TwoKeywordRuby(t *testing.T) {
+	cases := []struct {
+		input string
+		want  DisplayType
+	}{
+		{"ruby", DisplayRuby},
+		{"inline ruby", DisplayRuby},
+		{"block ruby", DisplayBlockRuby},
+		// Extra whitespace normalizes to the canonical form.
+		{"  block   ruby ", DisplayBlockRuby},
+		{"ruby-text", DisplayRubyText},
+		// ruby-base is no longer a recognized keyword — falls through
+		// to the default DisplayBlock.
+		{"ruby-base", DisplayBlock},
+	}
+	for _, c := range cases {
+		s := NewStyle()
+		s.Set("display", c.input)
+		if got := s.GetDisplay(); got != c.want {
+			t.Errorf("GetDisplay(%q) = %q, want %q", c.input, got, c.want)
+		}
+	}
+}
+
+// TestEquivalentInlineDisplay covers the Phase 1 inlinification mapping
+// used by normalizeRubySubtrees / inlinifyRubyChildren. Mirrors Blink
+// `core/css/resolver/style_adjuster.cc:303-356`.
+func TestEquivalentInlineDisplay(t *testing.T) {
+	cases := []struct {
+		in, want DisplayType
+	}{
+		{DisplayBlock, DisplayInlineBlock},
+		{DisplayFlowRoot, DisplayInlineBlock},
+		{DisplayListItem, DisplayInlineBlock},
+		{DisplayFlex, DisplayInlineFlex},
+		{DisplayGrid, DisplayInlineGrid},
+		{DisplayTable, DisplayInlineTable},
+		{DisplayBlockRuby, DisplayRuby},
+		// Already inline — identity.
+		{DisplayInline, DisplayInline},
+		{DisplayInlineBlock, DisplayInlineBlock},
+		{DisplayRuby, DisplayRuby},
+		{DisplayRubyText, DisplayRubyText},
+	}
+	for _, c := range cases {
+		if got := EquivalentInlineDisplay(c.in); got != c.want {
+			t.Errorf("EquivalentInlineDisplay(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
