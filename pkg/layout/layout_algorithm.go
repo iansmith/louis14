@@ -102,13 +102,40 @@ func tagIframeBase(n *html.Node, base string) {
 	}
 }
 
-// AdoptNodeFromIframe walks n (the node being moved cross-document) and any
-// descendants, reversing the iframe-base URL pre-baking on each node's inline
-// style attribute and clearing IframeBase. Mirrors Blink's
-// Document::adoptNode: when a node is adopted into a new owner document, its
-// CSS URLs re-resolve against the new owner. louis14 stores the pre-baked
-// prefix on the node so we can strip it; clearing IframeBase makes subsequent
-// re-adoption a no-op.
+// AdoptNodeFromIframe is a louis14-specific workaround for a louis14
+// shortcut: pkg/layout pre-bakes the iframe document's directory into
+// every relative `url(...)` reference inside inline-style attributes at
+// iframe parse time (ResolveRelativeURLsInHTML in this file). When JS
+// cross-document appendChild moves a node out of the iframe, those
+// pre-baked URLs would resolve against the wrong base in the new owner
+// document. This function walks the moved subtree, strips the recorded
+// iframe-base prefix from each inline-style url(...), and clears
+// IframeBase.
+//
+// This does NOT mirror Blink's Document::adoptNode
+// (`core/dom/document.cc:1721-1777` @ chromium-main
+// bf955d02bf0b0c67868b2e62359c0af199af9acc), which never touches CSS
+// URL state at all: Blink stores `url(...)` references on a CSSValue
+// (`CSSUrlData` at `core/css/css_url_data.h:57-150`, .cc:123-150 at the
+// same SHA) carrying the parse-time absolute URL resolved against the
+// parsing document's base, and adoption is a no-op on URLs. A faithful
+// mirror would require louis14 to capture parse-time base on each
+// CSSValue and never pre-bake into the inline-style string — out of
+// scope for this ticket's gate. The string-trim here recovers the same
+// observable behavior for the WPT gate test svg-relative-urls-001 and
+// for simple-prefix relative URLs in adjacent iframe tests.
+//
+// Known limitations of the string-trim approach:
+//   - Only inline `style=""` URLs are touched. Stylesheet (<style>) URLs
+//     aren't tracked here; moved DOM nodes don't take their <style> with
+//     them, so this is moot for cross-doc move.
+//   - URLs whose pre-baked form doesn't have IframeBase as a literal
+//     prefix (e.g. `url(../foo)` pre-baked to `url(foo)` by path.Join's
+//     normalisation) are left alone — they happen to remain observably
+//     correct against the outer base for the in-scope tests.
+//   - getComputedStyle after move returns the trimmed inline string;
+//     Blink returns the parse-time absolute URL. Not observable for any
+//     in-scope WPT reftest.
 func AdoptNodeFromIframe(n *html.Node) {
 	if n == nil || n.IframeBase == "" {
 		return

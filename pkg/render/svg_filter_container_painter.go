@@ -33,11 +33,15 @@ func paintSVGContainerWithFilter(pctx *svgPaintContext, c *svg.SVGContainer, fil
 	// `transform`, so the returned rect is in the caller's coord space
 	// (before we push the container's own transform).
 	//
-	// Empty is allowed: a flood-only filter, or one with an explicit
-	// userSpaceOnUse region, produces output independent of the
-	// source-graphic extent (mirrors Blink SVGFilterPainter::PrepareEffect).
-	// The downstream `bw <= 0 || bh <= 0` guard on the resolved region is
-	// the authoritative "nothing to render" exit.
+	// Empty bbox is allowed. Blink's SVG paint dispatch is paint-property
+	// based: `ScopedSVGPaintState::ApplyPaintPropertyState`
+	// (core/paint/scoped_svg_paint_state.cc:140-182 @ chromium-main
+	// bf955d02bf0b0c67868b2e62359c0af199af9acc) installs the filter
+	// effect node unconditionally when the element has a filter; the
+	// source bbox only affects objectBoundingBox-unit resolution inside
+	// the filter region computation, not dispatch. The downstream
+	// `bw <= 0 || bh <= 0` guard on the resolved region is the
+	// authoritative "nothing to render" exit here.
 	userBBox := c.ObjectBoundingBox()
 	deviceBBox := pctx.DeviceFromUser.MapRect(userBBox)
 	referenceBox := image.Rect(

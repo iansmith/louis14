@@ -18,12 +18,15 @@ type Node struct {
 	// retain the parsed sub-document. This allows JS to access iframe.contentDocument.
 	NestedDocument *Document
 
-	// IframeBase records the iframe-document directory when this node lives
-	// inside an iframe's nested doc. It mirrors the directory prefix that
-	// pkg/layout pre-bakes into relative `url(...)` references in inline
-	// styles. JS cross-document appendChild reverses that pre-baking (per
-	// Blink's Document::adoptNode semantics) so URLs re-resolve against the
-	// new owner document. Empty for nodes parsed in the main document.
+	// IframeBase records the iframe-document directory when this node
+	// lives inside an iframe's nested doc. It mirrors the directory
+	// prefix that pkg/layout pre-bakes into relative `url(...)`
+	// references in inline styles (a louis14 string-baking shortcut for
+	// URL resolution — Blink instead stores CSSValue-bound parse-time
+	// absolute URLs, see layout.AdoptNodeFromIframe for the divergence
+	// note). JS cross-document appendChild reads this to reverse the
+	// pre-baking when a node is adopted out of the iframe. Empty for
+	// nodes parsed in the main document.
 	IframeBase string
 }
 

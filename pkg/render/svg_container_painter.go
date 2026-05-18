@@ -111,10 +111,16 @@ func paintSVGContainer(pctx *svgPaintContext, c *svg.SVGContainer) {
 		return
 	}
 
-	// Per CSS Filter Effects 1 §7 a filter applies regardless of
-	// `visibility` on the filtered element — a flood-only filter on a
-	// visibility:hidden container still renders. Mirrors Blink's
-	// SVGFilterPainter dispatch order.
+	// Filter dispatch runs before the visibility check: a flood-only
+	// filter on a visibility:hidden container still renders. Blink
+	// installs the filter effect node in the paint-property tree
+	// unconditionally — `ScopedSVGPaintState::ComputePaintBehavior`
+	// (core/paint/scoped_svg_paint_state.cc:184-208 @ chromium-main
+	// bf955d02bf0b0c67868b2e62359c0af199af9acc) returns a non-empty
+	// behavior (kReferenceFilter) for an empty/hidden element that
+	// carries a filter reference. CSS Filter Effects 1 §7 does not
+	// normatively state this; it's implementation behavior the WPT
+	// reftest svg-empty-hidden-foreignobject-with-filter-001 asserts.
 	if trySVGContainerFilterDispatch(pctx, c) {
 		return
 	}

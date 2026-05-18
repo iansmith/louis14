@@ -212,20 +212,32 @@ func NewSVGFilterBuilder(space InterpolationSpace) *SVGFilterBuilder {
 	return b
 }
 
-// SetSourceOverride rewires "SourceGraphic" lookups in this builder to
-// resolve to override instead of the builder's own SourceGraphic. Used
-// by CSS filter-value-list chains so each filter's output becomes the
-// next filter's SourceGraphic — Blink's FilterChain composition.
-// Must be called before BuildGraph. If override is nil this is a no-op.
+// SetSourceOverride rewires "SourceGraphic" / FillPaint / StrokePaint /
+// BackgroundImage lookups (and the implicit chain head, `b.lastEffect`)
+// to `override`. Used by CSS filter-value-list chains so each filter's
+// output becomes the next filter's SourceGraphic.
 //
-// The FillPaint / StrokePaint / Background* builtins are also realigned
-// to the override per the spec's "fall back to source" semantics.
-// SourceAlpha is not overridden: the existing alpha node still references
-// the chain's original SourceGraphic, which is acceptable because no
-// in-scope WPT chained-filter test reads SourceAlpha; the principled
-// chain-aware SourceAlpha (alpha of the running output) is a separate
-// follow-up that would require generalising NewSourceAlpha beyond its
-// current *SourceGraphic-only constructor.
+// Blink does the same composition with a different shape: it passes the
+// previous-stage effect as the `source_graphic` argument to a fresh
+// SVGFilterBuilder constructor (`core/svg/graphics/filters/svg_filter_builder.cc:106-114`
+// @ chromium-main bf955d02bf0b0c67868b2e62359c0af199af9acc), driven from
+// `FilterEffectBuilder::BuildReferenceFilter`
+// (`core/paint/filter_effect_builder.cc:511-559, 539-557` at the same
+// SHA). louis14 uses in-place override because the builder is already
+// constructed before the chain knows what previous-stage effect to feed
+// in.
+//
+// One real divergence: SourceAlpha is NOT rewired here. Blink rebuilds
+// SourceAlpha from the override (`svg_filter_builder.cc:113-114` at the
+// same SHA: `MakeGarbageCollected<SourceAlpha>(source_graphic)`). louis14
+// can't do that because `NewSourceAlpha` takes `*SourceGraphic` rather
+// than `FilterEffect`. The gate WPT test svg-multiple-filter-functions
+// doesn't read SourceAlpha inside a chained sub-filter, so the gap is
+// observably benign there. Any future chained-filter test that
+// references SourceAlpha downstream would expose it — the fix is to
+// generalise NewSourceAlpha to accept FilterEffect, then rewire here.
+//
+// Must be called before BuildGraph. Nil override is a no-op.
 func (b *SVGFilterBuilder) SetSourceOverride(override FilterEffect) {
 	if override == nil {
 		return
