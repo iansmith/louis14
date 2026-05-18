@@ -6,9 +6,9 @@ import (
 
 func TestParseURLValue(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantURL  string
-		wantOK   bool
+		input   string
+		wantURL string
+		wantOK  bool
 	}{
 		{"url(image.png)", "image.png", true},
 		{"url('image.png')", "image.png", true},

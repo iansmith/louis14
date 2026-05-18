@@ -2,7 +2,6 @@ package render
 
 import (
 	"sort"
-	"strconv"
 	"strings"
 
 	"louis14/pkg/css"
@@ -153,17 +152,11 @@ type PaintLayer struct {
 	// CSS text-overflow (clip or ellipsis):
 	TextOverflow css.TextOverflowType
 
-	// List markers:
-	IsListItem              bool
-	ListStyleType           css.ListStyleType
-	ListStyleImage          string    // URL from list-style-image (empty or "none" means no image)
-	ListStylePositionInside bool      // true = inside, false = outside (default)
-	ListItemIndex           int       // 1-based ordinal for ordered lists
-	MarkerContent           string    // custom content from ::marker { content: "..." }
-	MarkerColor             css.Color // color override from ::marker rules
-	HasMarkerColor          bool      // true if ::marker specifies a color
-	MarkerFontSize          float64   // font-size override from ::marker rules
-	HasMarkerFont           bool      // true if ::marker specifies font-size
+	// List markers are real laid-out ::marker boxes in the fragment tree
+	// (marker-foundation Phases 3-4) — they paint as ordinary box fragments
+	// through the normal box/inline paint paths. The PaintLayer no longer
+	// carries marker-paint shortcut fields; the paint-time drawListMarker hack
+	// has been retired.
 
 	// CSS Transforms:
 	Transforms      []css.Transform
@@ -271,18 +264,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
-	// Phase 20 P20.5: multicol containers always clip their fragmentation
-	// context. Mirrors Blink's HasNonVisibleOverflow()=true condition for
-	// LayoutBox multicol — the paint-property tree installs an OverflowClip
-	// at LayoutBox::OverflowClipRect, which for a non-scroll container is
-	// border-box contracted by border outsets (i.e. padding-box). Layout
-	// sets Box.IsMulticolContainer; here we promote it into a two-axis
-	// clip with the padding-box rect (the existing default branch when
-	// !forceBorderBoxClip already produces the padding-box).
-	if box.IsMulticolContainer {
-		clipX = true
-		clipY = true
-	}
+	// No multicol-container clip special case. Blink's UpdateFromStyle
+	// computes HasNonVisibleOverflow purely from (!IsOverflowVisibleAlongBothAxes()
+	// || ShouldApplyPaintContainment()) && RespectsCSSOverflow(). There is no
+	// multicol-specific branch — the clip is a function of the CSS overflow
+	// property, not the formatting context type.
 
 	// Phase 16.e+18 v2 B3: ClipBlockAxisOnly paint branch removed.
 	// Blink has no per-column paint clip (box_fragment_painter.cc:
@@ -538,42 +524,9 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.TextTransform = s.GetTextTransform()
 	layer.TextOverflow = s.GetTextOverflow()
 
-	// List markers.
-	if s.GetDisplay() == css.DisplayListItem {
-		layer.IsListItem = true
-		layer.ListStyleType = s.GetListStyleType()
-		layer.ListStylePositionInside = s.GetListStylePosition() == "inside"
-		layer.ListItemIndex = computeListItemIndex(box)
-		if imgVal, ok := s.Get("list-style-image"); ok && imgVal != "none" {
-			if u, valid := css.ParseURLValue(imgVal); valid {
-				layer.ListStyleImage = u
-			}
-		}
-
-		// ::marker pseudo-element: apply styling overrides.
-		if ms := box.MarkerStyle; ms != nil {
-			// Check for color override — only if different from the element's text color.
-			if colorStr, ok := ms.Get("color"); ok {
-				if c, valid := css.ParseColor(colorStr); valid {
-					if c != layer.TextColor {
-						layer.MarkerColor = c
-						layer.HasMarkerColor = true
-					}
-				}
-			}
-			// Check for font-size override.
-			if _, ok := ms.Get("font-size"); ok {
-				mfs := ms.GetFontSize()
-				if mfs > 0 && mfs != layer.FontSize {
-					layer.MarkerFontSize = mfs
-					layer.HasMarkerFont = true
-				}
-			}
-		}
-
-		// Propagate ::marker content from the layout box to the paint layer.
-		layer.MarkerContent = box.MarkerContent
-	}
+	// List markers are real laid-out ::marker boxes (marker-foundation Phases
+	// 3-4) — no paint-layer marker setup is needed; the marker box fragment
+	// paints itself like any other box.
 
 	// CSS Transforms (individual properties + shorthand).
 	// Per CSS Transforms Level 2, the effective transform is:
@@ -713,42 +666,10 @@ func isCellNodeEmpty(node *html.Node) bool {
 	return true
 }
 
-// computeListItemIndex returns the 1-based ordinal for a list item,
-// respecting <ol start="N"> and counting preceding list-item siblings.
-// Only siblings with display:list-item are counted (not all element siblings),
-// which matches how the CSS list-item counter works.
-func computeListItemIndex(box *layout.Box) int {
-	if box.LayoutNode == nil || box.LayoutNode.DOMNode == nil {
-		return 1
-	}
-	node := box.LayoutNode.DOMNode
-	if node.Parent == nil {
-		return 1
-	}
-	// Check for <ol start="N">
-	start := 1
-	if val, ok := node.Parent.GetAttribute("start"); ok {
-		if n, err := strconv.Atoi(val); err == nil {
-			start = n
-		}
-	}
-	// Count preceding list-item siblings using the box tree, which gives
-	// access to computed styles. This correctly skips non-list-item elements
-	// (e.g., a <p> before a <div display:list-item>).
-	if box.Parent != nil {
-		idx := start
-		for _, sibling := range box.Parent.Children {
-			if sibling == box {
-				break
-			}
-			if sibling.Style != nil && sibling.Style.GetDisplay() == css.DisplayListItem {
-				idx++
-			}
-		}
-		return idx
-	}
-	return start
-}
+// The list-item ordinal is now resolved at layout-tree-build time by the
+// MarkerTextSource adapter (layout_tree_builder.go getListItemCounterValue),
+// feeding the real ::marker box's text — the paint-time computeListItemIndex
+// DOM-sibling hack has been retired (marker-foundation Phase 4).
 
 // domOrderedChildren returns the children of box in DOM tree order.
 //

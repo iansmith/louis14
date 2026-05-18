@@ -257,6 +257,71 @@ func (s *Style) chScale() float64 {
 	}
 }
 
+// ParseURLReference extracts the fragment id from a CSS `url(#id)`
+// value. Accepts the full CSS Image Values L4 §3.1 `<url>` grammar:
+//
+//	url(#id)
+//	url("#id")
+//	url('#id')
+//	url( #id )           — whitespace around the inner expression
+//	url(path#id)         — path part is stripped
+//	url(#id), url(#id2)  — extracts only the FIRST fragment from a list
+//	url(#id-with-hyphens-and_underscores.dots)
+//
+// Returns (id, true) on success. Returns ("", false) for:
+//
+//	"" / "none" / non-`url()` syntax
+//	`url()` (empty inner)
+//	`url(http://...)` (no `#` fragment, non-empty path → URL without fragment)
+//	`url(#)` (empty fragment)
+//
+// This is the shared helper for `mask`/`mask-image`, `clip-path`,
+// `filter`, and `fill`/`stroke` paint server resolution — replaces the
+// per-callsite parsers that scattered across the SVG-foundation phases.
+// Mirrors Blink's `CSSURIValue::FragmentIdentifier` + its consumers
+// (core/css/css_uri_value.cc, core/style/style_image.cc).
+func ParseURLReference(val string) (string, bool) {
+	val = strings.TrimSpace(val)
+	// Take the first item of a comma-separated list. CSS Masking 1
+	// allows `mask-image: url(#a), url(#b)` — the SVG fast-path
+	// currently uses only the first reference (matches mask-opacity-1d).
+	if i := strings.Index(val, ","); i >= 0 {
+		val = strings.TrimSpace(val[:i])
+	}
+	if !strings.HasPrefix(val, "url(") {
+		return "", false
+	}
+	if !strings.HasSuffix(val, ")") {
+		return "", false
+	}
+	inner := val[4 : len(val)-1]
+	inner = strings.TrimSpace(inner)
+	// Strip surrounding quotes (CSS allows both forms).
+	if len(inner) >= 2 {
+		first := inner[0]
+		last := inner[len(inner)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			inner = inner[1 : len(inner)-1]
+		}
+	}
+	if inner == "" {
+		return "", false
+	}
+	// Extract the fragment portion after `#`. The path part (if any)
+	// is dropped — louis14's resolution is in-document only, matching
+	// Blink's TreeScope-scoped lookup behavior.
+	idx := strings.Index(inner, "#")
+	if idx < 0 {
+		// No fragment → not a same-document SVG resource reference.
+		return "", false
+	}
+	id := inner[idx+1:]
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
 // ParsePercentage parses a percentage value (e.g., "140%") and returns the number (e.g., 140).
 func ParsePercentage(val string) (float64, bool) {
 	val = strings.TrimSpace(val)
@@ -2101,8 +2166,32 @@ func expandShorthand(style *Style, property, value string) {
 		// Store transition value as-is; static renderer ignores it
 		style.Set("transition", value)
 	case "animation":
-		// Store animation value as-is; static renderer shows initial (t=0) state
-		style.Set("animation", value)
+		// CSS Animations §4: decompose the `animation` shorthand into its 8
+		// longhands so the keyframe-application pass (pkg/css/animation.go) can
+		// read them. The raw `animation` key is intentionally NOT stored: doing
+		// so would let the cascade re-expand it and race a same-rule
+		// animation-* longhand declaration (declaration order is lost once a
+		// rule's declarations are a map).
+		//
+		// Two value kinds must NOT be tokenized as a shorthand list:
+		//   - a CSS-wide keyword applies to every animation-* longhand;
+		//   - an unresolved var() can't be decomposed (doing so would freeze
+		//     the non-name longhands to defaults before var() resolution).
+		switch trimmed := strings.ToLower(strings.TrimSpace(value)); trimmed {
+		case "inherit", "initial", "unset", "revert", "revert-layer":
+			for _, lh := range []string{"animation-name", "animation-duration",
+				"animation-timing-function", "animation-delay",
+				"animation-iteration-count", "animation-direction",
+				"animation-fill-mode", "animation-play-state"} {
+				style.Set(lh, trimmed)
+			}
+		default:
+			if strings.Contains(value, "var(") {
+				style.Set("animation", value)
+			} else {
+				expandAnimationShorthand(style, value)
+			}
+		}
 	case "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
 		"transition-behavior":
 		style.Set(property, value)
@@ -3107,6 +3196,19 @@ func parseColorFloat01(s string, maxValue float64) float64 {
 	return v / maxValue
 }
 
+// parseRGBByte parses one R/G/B component of an rgb()/rgba() functional
+// notation. Accepts integer/number form (0-255) or percent form (0%-100%) per
+// CSS Color Level 4 §"rgb()". Returns the byte value and a validity flag
+// (false if out of range). Mirrors Blink's CSSPropertyParserHelpers handling
+// where percent and number forms produce the same final byte after rounding.
+func parseRGBByte(s string) (uint8, bool) {
+	v := parseColorFloat01(s, 255.0)
+	if v < 0 || v > 1 {
+		return 0, false
+	}
+	return uint8(math.Round(v * 255)), true
+}
+
 // parseSpaceSeparatedRGB parses CSS4 space-separated rgb/rgba syntax:
 // "R G B" or "R G B / A" where values can be numbers (0-255) or percentages.
 func parseSpaceSeparatedRGB(inner string) (Color, bool) {
@@ -3249,23 +3351,21 @@ func ParseColor(colorStr string) (Color, bool) {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgb("), ")")
 		parts := strings.Split(values, ",")
 		if len(parts) == 3 {
-			var r, g, b int
-			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
-			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
-			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
-				return Color{uint8(r), uint8(g), uint8(b), 1.0}, true
+			r, rOK := parseRGBByte(parts[0])
+			g, gOK := parseRGBByte(parts[1])
+			b, bOK := parseRGBByte(parts[2])
+			if rOK && gOK && bOK {
+				return Color{r, g, b, 1.0}, true
 			}
 		} else if len(parts) == 4 {
 			// CSS Color Level 4: rgb() with 4 arguments (alpha)
-			var r, g, b int
+			r, rOK := parseRGBByte(parts[0])
+			g, gOK := parseRGBByte(parts[1])
+			b, bOK := parseRGBByte(parts[2])
 			var a float64
-			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
-			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
 			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
-			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
-				return Color{uint8(r), uint8(g), uint8(b), a}, true
+			if rOK && gOK && bOK {
+				return Color{r, g, b, a}, true
 			}
 		} else if len(parts) == 1 {
 			// CSS Color Level 4: space-separated syntax: rgb(R G B) or rgb(R G B / A)
@@ -3280,14 +3380,13 @@ func ParseColor(colorStr string) (Color, bool) {
 		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgba("), ")")
 		parts := strings.Split(values, ",")
 		if len(parts) == 4 {
-			var r, g, b int
+			r, rOK := parseRGBByte(parts[0])
+			g, gOK := parseRGBByte(parts[1])
+			b, bOK := parseRGBByte(parts[2])
 			var a float64
-			fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &r)
-			fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &g)
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &b)
 			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
-			if r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255 {
-				return Color{uint8(r), uint8(g), uint8(b), a}, true
+			if rOK && gOK && bOK {
+				return Color{r, g, b, a}, true
 			}
 		} else if len(parts) == 1 {
 			// CSS4 space-separated: rgba(R G B / A)
@@ -4443,15 +4542,21 @@ const (
 	DisplayTableRowGroup    DisplayType = "table-row-group"
 	DisplayTableFooterGroup DisplayType = "table-footer-group"
 	DisplayListItem         DisplayType = "list-item" // Phase 23
-	DisplayFlex             DisplayType = "flex"
-	DisplayInlineFlex       DisplayType = "inline-flex"
-	DisplayGrid             DisplayType = "grid"
-	DisplayInlineGrid       DisplayType = "inline-grid"
-	DisplayContents         DisplayType = "contents"
-	DisplayTableCaption     DisplayType = "table-caption"
-	DisplayFlowRoot         DisplayType = "flow-root"
-	DisplayRuby             DisplayType = "ruby"
-	DisplayRubyText         DisplayType = "ruby-text"
+	// DisplayInlineListItem is an inline-level box with the list-item inner
+	// display type — CSS Display L3 `display: inline list-item` (and the
+	// `inline flow-root list-item` variant). Mirrors Blink EDisplay::
+	// kInlineListItem. It is inline-level (flows in an IFC, shrink-to-fits)
+	// and IsListItemDisplay() is true so it gets its own ::marker box.
+	DisplayInlineListItem DisplayType = "inline-list-item"
+	DisplayFlex           DisplayType = "flex"
+	DisplayInlineFlex     DisplayType = "inline-flex"
+	DisplayGrid           DisplayType = "grid"
+	DisplayInlineGrid     DisplayType = "inline-grid"
+	DisplayContents       DisplayType = "contents"
+	DisplayTableCaption   DisplayType = "table-caption"
+	DisplayFlowRoot       DisplayType = "flow-root"
+	DisplayRuby           DisplayType = "ruby"
+	DisplayRubyText       DisplayType = "ruby-text"
 	// DisplayBlockRuby is the block-level form of ruby (CSS Display L3
 	// two-keyword `display: block ruby`). Mirrors Blink's
 	// EDisplay::kBlockRuby. Blink generates a LayoutRubyAsBlock principal
@@ -4505,9 +4610,55 @@ func (s *Style) GetBoxSizing() string {
 // / kRubyTextContainer in EDisplay); they fall through to the default.
 func (s *Style) GetDisplay() DisplayType {
 	if display, ok := s.Get("display"); ok {
-		// Normalize whitespace for two-keyword forms.
-		d := strings.Join(strings.Fields(display), " ")
-		switch d {
+		// CSS Display L3 §2.1: the multi-value `display` syntax. Split on ANY
+		// whitespace (space/tab/newline — strings.Fields handles all) and map
+		// the supported two-keyword forms to a single DisplayType before the
+		// single-keyword switch. Mirrors Blink's EDisplay parsing
+		// (css_parsing_utils ConsumeDisplay → EDisplay::kInlineListItem etc.).
+		if fields := strings.Fields(display); len(fields) > 1 {
+			hasListItem := false
+			outer := "block" // default outer display
+			inner := ""
+			for _, f := range fields {
+				switch f {
+				case "list-item":
+					hasListItem = true
+				case "inline", "block":
+					outer = f
+				case "flow", "flow-root", "flex", "grid", "table", "ruby":
+					inner = f
+				}
+			}
+			if hasListItem {
+				if outer == "inline" {
+					return DisplayInlineListItem
+				}
+				return DisplayListItem
+			}
+			switch outer + " " + inner {
+			case "inline flex":
+				return DisplayInlineFlex
+			case "inline grid":
+				return DisplayInlineGrid
+			case "inline table":
+				return DisplayInlineTable
+			case "inline flow-root":
+				return DisplayInlineBlock
+			case "block flow-root":
+				return DisplayFlowRoot
+			case "inline ruby":
+				return DisplayRuby
+			case "block ruby":
+				return DisplayBlockRuby
+			}
+			// Remaining forms collapse to the outer type: `inline flow` →
+			// inline; `block flow` and unrecognized inners → block (via the
+			// single-keyword switch / default below).
+			if outer == "inline" {
+				return DisplayInline
+			}
+		}
+		switch display {
 		case "inline":
 			return DisplayInline
 		case "inline-block":
@@ -4528,6 +4679,8 @@ func (s *Style) GetDisplay() DisplayType {
 			return DisplayTableFooterGroup
 		case "list-item":
 			return DisplayListItem
+		case "inline-list-item":
+			return DisplayInlineListItem
 		case "flex":
 			return DisplayFlex
 		case "inline-flex":
@@ -4608,6 +4761,16 @@ func EquivalentBlockDisplay(d DisplayType) DisplayType {
 		return DisplayBlock
 	}
 	return d
+}
+
+// IsListItemDisplay reports whether the computed display establishes a
+// list-item — `display: list-item` (block-level) or `display: inline
+// list-item` (inline-level). Mirrors Blink's ComputedStyle::IsDisplayListItem
+// (EDisplay::kListItem || kInlineListItem). The ::marker box is generated
+// whenever this is true, regardless of the box's inline/block level.
+func (s *Style) IsListItemDisplay() bool {
+	d := s.GetDisplay()
+	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
 // GetLineClamp returns the -webkit-line-clamp value (0 = no clamping)
@@ -7801,6 +7964,11 @@ const (
 	ClipPathCircle  ClipPathType = "circle"
 	ClipPathEllipse ClipPathType = "ellipse"
 	ClipPathPolygon ClipPathType = "polygon"
+	// ClipPathReference is the `url(#id)` variant. Carries a
+	// document-fragment id resolved at paint time against the SVG
+	// resource registry. Mirrors Blink's ReferenceClipPathOperation
+	// (core/style/clip_path_operation.h).
+	ClipPathReference ClipPathType = "url"
 )
 
 // ClipPath represents a parsed clip-path value.
@@ -7820,6 +7988,12 @@ type ClipPath struct {
 	CxPct     float64 // center x as percentage (-1 = not set)
 	CyPct     float64 // center y as percentage (-1 = not set)
 	PointsPct []bool  // per-coordinate: true = percentage, false = px
+
+	// ReferenceID is the fragment id of a `url(#id)` clip-path
+	// reference (without the leading `#`). Populated only when Type
+	// is ClipPathReference. Resolved by the SVG resource registry at
+	// paint time. Mirrors Blink's ReferenceClipPathOperation::url().
+	ReferenceID string
 }
 
 // GetClipPath parses the clip-path property
@@ -7839,7 +8013,48 @@ func (s *Style) GetClipPath() *ClipPath {
 	if strings.HasPrefix(val, "polygon(") {
 		return parseClipPathPolygon(val)
 	}
+	if strings.HasPrefix(val, "url(") {
+		return parseClipPathReference(val)
+	}
 	return nil
+}
+
+// parseClipPathReference parses the `url(#id)` clip-path variant.
+// Returns a ClipPath with Type=ClipPathReference and the fragment id
+// stripped of the leading `#`. Non-fragment URLs (`url(file.svg#id)`)
+// are accepted but only the fragment portion is kept — louis14's
+// document fragment resolution is in-document only (same as Blink's
+// LookupSVGElementById which scans the current TreeScope).
+//
+// Returns nil when the value isn't a parseable url() or carries no id.
+func parseClipPathReference(val string) *ClipPath {
+	if !strings.HasPrefix(val, "url(") || !strings.HasSuffix(val, ")") {
+		return nil
+	}
+	inner := val[4 : len(val)-1]
+	inner = strings.TrimSpace(inner)
+	// Strip surrounding quotes (the CSS grammar allows both forms).
+	inner = strings.Trim(inner, `"'`)
+	if inner == "" {
+		return nil
+	}
+	// Extract the fragment after the `#`. If absent, treat the whole
+	// value as the id — being lenient covers `url(myMask)` which
+	// authors sometimes write (Blink ignores it as a malformed URL,
+	// but accepting it matches what the existing mask-image parser
+	// implicitly does for the same syntax).
+	id := inner
+	if i := strings.Index(inner, "#"); i >= 0 {
+		id = inner[i+1:]
+	}
+	if id == "" {
+		return nil
+	}
+	return &ClipPath{
+		Type:        ClipPathReference,
+		ReferenceID: id,
+		RadiusPct:   -1, RxPct: -1, RyPct: -1, CxPct: -1, CyPct: -1,
+	}
 }
 
 // ClipRect represents a parsed CSS clip: rect(top, right, bottom, left) value.
@@ -8119,7 +8334,7 @@ func (cp *ClipPath) ResolveClipPath(boxWidth, boxHeight float64) *ClipPath {
 
 // FilterFunction represents a single CSS filter function
 type FilterFunction struct {
-	Name  string  // "opacity", "contrast", "grayscale", "blur", "drop-shadow", etc.
+	Name  string  // "opacity", "contrast", "grayscale", "blur", "drop-shadow", "url", etc.
 	Value float64 // The function argument (0-1 for opacity, 0-N for contrast, etc.)
 
 	// drop-shadow specific fields.
@@ -8127,6 +8342,14 @@ type FilterFunction struct {
 	ShadowOffsetY float64
 	ShadowBlur    float64
 	ShadowColor   Color
+	// ShadowUseCurrentColor is true when the drop-shadow color is omitted or
+	// the literal "currentcolor"; the painter resolves it from the element's
+	// computed color. Mirrors CSS Filter Effects: drop-shadow's color
+	// defaults to currentColor, not black.
+	ShadowUseCurrentColor bool
+
+	// URL is set for a url(#id) reference filter (Name == "url").
+	URL string
 }
 
 // GetFilter parses the filter property and returns filter functions
@@ -8135,6 +8358,13 @@ func (s *Style) GetFilter() []FilterFunction {
 	if !ok || val == "none" {
 		return nil
 	}
+	return parseFilterList(val)
+}
+
+// parseFilterList parses a CSS <filter-value-list> — a whitespace-separated
+// list of filter functions and/or url() references. Shared by GetFilter and
+// GetBackdropFilter.
+func parseFilterList(val string) []FilterFunction {
 	var filters []FilterFunction
 	val = strings.TrimSpace(val)
 	for len(val) > 0 {
@@ -8143,54 +8373,98 @@ func (s *Style) GetFilter() []FilterFunction {
 		if parenIdx < 0 {
 			break
 		}
-		name := strings.TrimSpace(val[:parenIdx])
+		name := strings.ToLower(strings.TrimSpace(val[:parenIdx]))
 		// Find matching close paren (handles nested parens like rgb() in drop-shadow).
 		closeIdx := findMatchingParen(val[parenIdx:])
 		if closeIdx < 0 {
 			break
 		}
 		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
-		if name == "drop-shadow" {
-			// drop-shadow(offsetX offsetY [blur] [color])
+		switch name {
+		case "url":
+			// url(#id) reference filter. Strip optional quotes.
+			u := strings.TrimSpace(arg)
+			u = strings.Trim(u, "\"'")
+			filters = append(filters, FilterFunction{Name: "url", URL: u})
+		case "drop-shadow":
+			filters = append(filters, parseDropShadowFunction(arg))
+		case "blur":
+			// blur() takes an optional <length>; default 0.
+			filters = append(filters, FilterFunction{Name: name, Value: parseLengthValue(arg)})
+		case "hue-rotate":
+			// hue-rotate takes an optional <angle>; default 0.
 			ff := FilterFunction{Name: name}
-			parts := splitFilterArgs(arg)
-			if len(parts) >= 2 {
-				ff.ShadowOffsetX = parseLengthValue(parts[0])
-				ff.ShadowOffsetY = parseLengthValue(parts[1])
-			}
-			if len(parts) >= 3 {
-				// Could be blur or color.
-				if v := parseLengthValue(parts[2]); v > 0 || strings.HasSuffix(strings.TrimSpace(parts[2]), "px") {
-					ff.ShadowBlur = v
-					if len(parts) >= 4 {
-						if c, ok := ParseColor(strings.Join(parts[3:], " ")); ok {
-							ff.ShadowColor = c
-						}
-					}
-				} else {
-					if c, ok := ParseColor(strings.Join(parts[2:], " ")); ok {
-						ff.ShadowColor = c
-					}
-				}
+			if a := parseAngle(arg); a != nil {
+				ff.Value = *a
 			}
 			filters = append(filters, ff)
-		} else {
-			var value float64
-			if pct, ok := ParsePercentage(arg); ok {
-				value = pct / 100.0
-			} else if name == "hue-rotate" {
-				// hue-rotate takes an angle value (deg, rad, turn)
-				if a := parseAngle(arg); a != nil {
-					value = *a
+		default:
+			// grayscale/sepia/saturate/invert/opacity/brightness/contrast:
+			// optional <number> or <percentage>. Per Filter Effects 1 the
+			// argument may be omitted: brightness/contrast/opacity/saturate
+			// default to 1, grayscale/sepia/invert also default to 1.
+			value := 1.0
+			if arg != "" {
+				if pct, ok := ParsePercentage(arg); ok {
+					value = pct / 100.0
+				} else if f, err := strconv.ParseFloat(strings.TrimSpace(arg), 64); err == nil {
+					value = f
 				}
-			} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
-				value = f
 			}
 			filters = append(filters, FilterFunction{Name: name, Value: value})
 		}
 		val = val[parenIdx+closeIdx+1:]
 	}
 	return filters
+}
+
+// parseDropShadowFunction parses a drop-shadow() argument:
+// [<color>?] <offset-x> <offset-y> <blur-radius>? [<color>?]. Per spec the
+// color defaults to currentColor.
+func parseDropShadowFunction(arg string) FilterFunction {
+	ff := FilterFunction{Name: "drop-shadow", ShadowUseCurrentColor: true}
+	parts := splitFilterArgs(arg)
+	// A leading or trailing token may be a color. Identify color tokens by
+	// attempting to parse them; lengths fail ParseColor.
+	isColorTok := func(tok string) bool {
+		t := strings.TrimSpace(tok)
+		if strings.EqualFold(t, "currentcolor") {
+			return true
+		}
+		_, ok := ParseColor(t)
+		return ok
+	}
+	// Pull off a leading color.
+	if len(parts) > 0 && isColorTok(parts[0]) {
+		if !strings.EqualFold(strings.TrimSpace(parts[0]), "currentcolor") {
+			if c, ok := ParseColor(strings.TrimSpace(parts[0])); ok {
+				ff.ShadowColor = c
+				ff.ShadowUseCurrentColor = false
+			}
+		}
+		parts = parts[1:]
+	}
+	// Pull off a trailing color. rgb()/rgba()/hsl() come through splitFilterArgs
+	// as a single token, so a trailing color is the last token only.
+	if len(parts) > 2 && isColorTok(parts[len(parts)-1]) {
+		last := strings.TrimSpace(parts[len(parts)-1])
+		if !strings.EqualFold(last, "currentcolor") {
+			if c, ok := ParseColor(last); ok {
+				ff.ShadowColor = c
+				ff.ShadowUseCurrentColor = false
+			}
+		}
+		parts = parts[:len(parts)-1]
+	}
+	// Remaining: offset-x offset-y [blur].
+	if len(parts) >= 2 {
+		ff.ShadowOffsetX = parseLengthValue(parts[0])
+		ff.ShadowOffsetY = parseLengthValue(parts[1])
+	}
+	if len(parts) >= 3 {
+		ff.ShadowBlur = parseLengthValue(parts[2])
+	}
+	return ff
 }
 
 // findMatchingParen finds the matching closing paren for an opening paren at s[0].
@@ -8457,13 +8731,29 @@ func (s *Style) GetAspectRatio() AspectRatio {
 	return AspectRatio{}
 }
 
-// GetMaskImage returns the mask-image property value
+// GetMaskImage returns the mask-image property value.
+//
+// Resolution order (matches CSS Masking 1 §6.2 + the SVG `mask`
+// presentation attribute):
+//
+//  1. `mask-image` longhand
+//  2. `-webkit-mask-image` vendor longhand
+//  3. `mask` shorthand (covers the SVG presentation attribute case:
+//     `<rect mask="url(#m)"/>` cascades into `mask: url(#m)`, which
+//     the CSS Masking shorthand expands to `mask-image: url(#m)`).
+//     We treat the raw shorthand value as the image source — Phase 5
+//     doesn't yet parse the full shorthand grammar, but the SVG
+//     reftests in scope only ever use the `url(#…)` form, which is
+//     a valid single-image mask-image value.
 func (s *Style) GetMaskImage() string {
 	if val, ok := s.Get("mask-image"); ok {
 		return val
 	}
 	// Also check -webkit-mask-image
 	if val, ok := s.Get("-webkit-mask-image"); ok {
+		return val
+	}
+	if val, ok := s.Get("mask"); ok && val != "" && val != "none" {
 		return val
 	}
 	return "none"
@@ -8496,31 +8786,8 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 	if !ok || val == "none" || val == "" {
 		return nil
 	}
-	// Reuse the same filter parsing logic as GetFilter
-	var filters []FilterFunction
-	val = strings.TrimSpace(val)
-	for len(val) > 0 {
-		val = strings.TrimSpace(val)
-		parenIdx := strings.Index(val, "(")
-		if parenIdx < 0 {
-			break
-		}
-		name := strings.TrimSpace(val[:parenIdx])
-		closeIdx := strings.Index(val[parenIdx:], ")")
-		if closeIdx < 0 {
-			break
-		}
-		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
-		var value float64
-		if pct, ok := ParsePercentage(arg); ok {
-			value = pct / 100.0
-		} else if f, err := strconv.ParseFloat(arg, 64); err == nil {
-			value = f
-		}
-		filters = append(filters, FilterFunction{Name: name, Value: value})
-		val = val[parenIdx+closeIdx+1:]
-	}
-	return filters
+	// backdrop-filter accepts the same <filter-value-list> as filter.
+	return parseFilterList(val)
 }
 
 // GetBorderImageSource returns the border-image-source value.
@@ -9456,4 +9723,227 @@ func (s *Style) WillChangeCreatesStackingContext(allowsZIndex bool) bool {
 		}
 	}
 	return false
+}
+
+// splitTopLevelCommas splits s on commas that are not nested inside parentheses
+// or quotes. Used for comma-separated CSS list values (animation, transition).
+func splitTopLevelCommas(s string) []string {
+	var parts []string
+	depth := 0
+	inQ := byte(0)
+	start := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inQ != 0:
+			if c == inQ {
+				inQ = 0
+			}
+		case c == '"' || c == '\'':
+			inQ = c
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+		case c == ',' && depth == 0:
+			parts = append(parts, strings.TrimSpace(s[start:i]))
+			start = i + 1
+		}
+	}
+	parts = append(parts, strings.TrimSpace(s[start:]))
+	return parts
+}
+
+// splitTopLevelFields splits s on whitespace runs that are not nested inside
+// parentheses or quotes (so "steps(2, end)" stays one token).
+func splitTopLevelFields(s string) []string {
+	var fields []string
+	depth := 0
+	inQ := byte(0)
+	start := -1
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isSpace := c == ' ' || c == '\t' || c == '\n' || c == '\r'
+		switch {
+		case inQ != 0:
+			if c == inQ {
+				inQ = 0
+			}
+		case c == '"' || c == '\'':
+			inQ = c
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && inQ == 0 && isSpace {
+			if start >= 0 {
+				fields = append(fields, s[start:i])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, s[start:])
+	}
+	return fields
+}
+
+// isAnimationTimingFunctionToken reports whether a token in the `animation`
+// shorthand is an <easing-function>.
+func isAnimationTimingFunctionToken(tok string) bool {
+	t := strings.ToLower(tok)
+	switch t {
+	case "linear", "ease", "ease-in", "ease-out", "ease-in-out",
+		"step-start", "step-end":
+		return true
+	}
+	return strings.HasPrefix(t, "steps(") || strings.HasPrefix(t, "cubic-bezier(") ||
+		strings.HasPrefix(t, "linear(")
+}
+
+// isAnimationDirectionToken reports whether a token is an <animation-direction>.
+func isAnimationDirectionToken(tok string) bool {
+	switch strings.ToLower(tok) {
+	case "normal", "reverse", "alternate", "alternate-reverse":
+		return true
+	}
+	return false
+}
+
+// isAnimationFillModeToken reports whether a token is an <animation-fill-mode>.
+func isAnimationFillModeToken(tok string) bool {
+	switch strings.ToLower(tok) {
+	case "none", "forwards", "backwards", "both":
+		return true
+	}
+	return false
+}
+
+// isAnimationPlayStateToken reports whether a token is an <animation-play-state>.
+func isAnimationPlayStateToken(tok string) bool {
+	switch strings.ToLower(tok) {
+	case "running", "paused":
+		return true
+	}
+	return false
+}
+
+// isTimeToken reports whether a token is a CSS <time> value.
+func isTimeToken(tok string) bool {
+	t := strings.ToLower(tok)
+	if strings.HasSuffix(t, "ms") {
+		_, err := strconv.ParseFloat(t[:len(t)-2], 64)
+		return err == nil
+	}
+	if strings.HasSuffix(t, "s") {
+		_, err := strconv.ParseFloat(t[:len(t)-1], 64)
+		return err == nil
+	}
+	return false
+}
+
+// expandAnimationShorthand decomposes the `animation` shorthand into its 8
+// longhands per CSS Animations §4 (the <single-animation># grammar). Each
+// comma-separated <single-animation> contributes one entry to each longhand
+// list; omitted components reset to their initial value. The first <time> in a
+// <single-animation> is the duration, the second is the delay.
+func expandAnimationShorthand(style *Style, value string) {
+	items := splitTopLevelCommas(value)
+	var names, durations, timingFns, delays, iterCounts, directions, fillModes, playStates []string
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		// Per-animation initial values (CSS Animations §4 / §3.x).
+		name := "none"
+		duration := "0s"
+		timingFn := "ease"
+		delay := "0s"
+		iterCount := "1"
+		direction := "normal"
+		fillMode := "none"
+		playState := "running"
+
+		sawDuration := false
+		sawTiming := false
+		sawIterCount := false
+		sawDirection := false
+		sawFillMode := false
+		sawPlayState := false
+		sawName := false
+
+		for _, tok := range splitTopLevelFields(item) {
+			switch {
+			case isTimeToken(tok):
+				if !sawDuration {
+					duration = tok
+					sawDuration = true
+				} else {
+					delay = tok
+				}
+			case isAnimationTimingFunctionToken(tok):
+				if !sawTiming {
+					timingFn = tok
+					sawTiming = true
+				}
+			case isAnimationDirectionToken(tok) && !sawDirection:
+				// "normal" is also a fill-mode-adjacent keyword but direction
+				// owns it; fill-mode "none" is distinct. Order: direction first.
+				direction = tok
+				sawDirection = true
+			case isAnimationFillModeToken(tok) && !sawFillMode &&
+				!(strings.EqualFold(tok, "none") && !sawName):
+				// "none" is ambiguous: it is both a fill-mode and the
+				// keyframes-name "none". Treat a lone "none" as the name (the
+				// common case: `animation: anim` vs `animation: none`); only a
+				// "none" appearing after the name is the fill-mode.
+				fillMode = tok
+				sawFillMode = true
+			case isAnimationPlayStateToken(tok) && !sawPlayState:
+				playState = tok
+				sawPlayState = true
+			case isNumberToken(tok) && !sawIterCount:
+				iterCount = tok
+				sawIterCount = true
+			case strings.EqualFold(tok, "infinite") && !sawIterCount:
+				iterCount = "infinite"
+				sawIterCount = true
+			default:
+				// <keyframes-name> (or "none" meaning no animation).
+				if !sawName {
+					name = tok
+					sawName = true
+				}
+			}
+		}
+		names = append(names, name)
+		durations = append(durations, duration)
+		timingFns = append(timingFns, timingFn)
+		delays = append(delays, delay)
+		iterCounts = append(iterCounts, iterCount)
+		directions = append(directions, direction)
+		fillModes = append(fillModes, fillMode)
+		playStates = append(playStates, playState)
+	}
+	style.Set("animation-name", strings.Join(names, ", "))
+	style.Set("animation-duration", strings.Join(durations, ", "))
+	style.Set("animation-timing-function", strings.Join(timingFns, ", "))
+	style.Set("animation-delay", strings.Join(delays, ", "))
+	style.Set("animation-iteration-count", strings.Join(iterCounts, ", "))
+	style.Set("animation-direction", strings.Join(directions, ", "))
+	style.Set("animation-fill-mode", strings.Join(fillModes, ", "))
+	style.Set("animation-play-state", strings.Join(playStates, ", "))
+}
+
+// isNumberToken reports whether tok is a plain number (no unit).
+func isNumberToken(tok string) bool {
+	_, err := strconv.ParseFloat(strings.TrimSpace(tok), 64)
+	return err == nil
 }

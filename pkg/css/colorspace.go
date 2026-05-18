@@ -244,8 +244,12 @@ func parseColorMix(val string) (Color, bool) {
 	// CSS Color 5: premultiplied alpha interpolation.
 	// Before interpolating, multiply color channels by alpha.
 	a1, a2 := color1.A, color2.A
-	r1 *= a1; g1 *= a1; b1 *= a1
-	r2 *= a2; g2 *= a2; b2 *= a2
+	r1 *= a1
+	g1 *= a1
+	b1 *= a1
+	r2 *= a2
+	g2 *= a2
+	b2 *= a2
 
 	var rf, gf, bf float64
 	switch colorspace {
@@ -372,7 +376,7 @@ func splitColorMixArgs(s string) []string {
 	start := 0
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
-		case '('  :
+		case '(':
 			depth++
 		case ')':
 			depth--

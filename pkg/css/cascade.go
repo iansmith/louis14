@@ -487,6 +487,13 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		}
 	}
 
+	// CSS Animations §4: apply in-effect @keyframes values. The animation
+	// cascade origin sits below author !important (CSS Cascade §6.3), so
+	// ApplyAnimations skips any property in importantProps. animation-name and
+	// the other animation-* longhands have already been resolved (via rule
+	// declarations / inline style) into finalStyle by this point.
+	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+
 	// Store viewport dimensions for viewport unit resolution (vw, vh, vmin, vmax)
 	finalStyle.ViewportWidth = viewportWidth
 	finalStyle.ViewportHeight = viewportHeight
@@ -521,6 +528,27 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 	return stylesheets
 }
 
+// resolvePseudoInheritKeyword resolves any property whose value is the literal
+// `inherit` keyword against the originating element's computed style (the
+// pseudo-element's "parent"). Properties the parent does not have are dropped
+// so they fall back to their initial value.
+func resolvePseudoInheritKeyword(finalStyle *Style, parentStyles []*Style) {
+	if len(parentStyles) == 0 || parentStyles[0] == nil {
+		return
+	}
+	parent := parentStyles[0]
+	for property, value := range finalStyle.Properties {
+		if strings.TrimSpace(value) != "inherit" {
+			continue
+		}
+		if parentVal, ok := parent.Get(property); ok {
+			finalStyle.Set(property, parentVal)
+		} else {
+			delete(finalStyle.Properties, property)
+		}
+	}
+}
+
 // Phase 11: ComputePseudoElementStyle computes the style for a pseudo-element
 // Phase 22: Added viewport dimensions for media query evaluation
 func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, parentStyles ...*Style) *Style {
@@ -531,7 +559,18 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		parent := parentStyles[0]
 		inheritableProps := []string{"font-size", "font-family", "font-weight", "font-style",
 			"color", "line-height", "text-align", "white-space", "visibility",
-			"letter-spacing", "word-spacing", "text-indent", "text-transform"}
+			"letter-spacing", "word-spacing", "text-indent", "text-transform",
+			// CSS Lists §2: the list-style properties are inherited. A
+			// ::before / ::after pseudo-element with display:list-item is
+			// itself a list item and must pick up the originating subtree's
+			// list-style-type / -position / -image for its own ::marker box.
+			"list-style-type", "list-style-position", "list-style-image",
+			// CSS Writing Modes §2-3: writing-mode, direction and
+			// text-orientation are inherited. A pseudo-element (notably a
+			// ::marker laid out as a real box) must inherit them so its
+			// inline/block axes and glyph orientation match the originating
+			// subtree (marker-foundation Phase 5: writing-mode-correct markers).
+			"writing-mode", "direction", "text-orientation"}
 		for _, prop := range inheritableProps {
 			if val, ok := parent.Get(prop); ok {
 				finalStyle.Set(prop, val)
@@ -601,6 +640,12 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// Track which properties have been set with !important
 	importantProps := make(map[string]bool)
 
+	// CSS Pseudo-4 §4.4: a ::marker rule only accepts the marker-allowed
+	// property subset. Filter author declarations as they are applied (the
+	// inherited values copied in above are not author declarations and are
+	// left alone — the restriction is on what a ::marker rule can specify).
+	isMarker := pseudoElement == "marker"
+
 	// Apply rules in order (normal declarations first)
 	for _, rule := range allRules {
 		for property, value := range rule.Declarations {
@@ -608,7 +653,10 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			if importantProps[property] {
 				continue
 			}
-			finalStyle.Set(property, value)
+			if isMarker && !markerAllowedProperty(property) {
+				continue
+			}
+			expandShorthand(finalStyle, property, value)
 		}
 	}
 
@@ -619,8 +667,58 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		}
 		for property, value := range rule.Declarations {
 			if rule.Important[property] {
-				finalStyle.Set(property, value)
+				if isMarker && !markerAllowedProperty(property) {
+					continue
+				}
+				expandShorthand(finalStyle, property, value)
 				importantProps[property] = true
+			}
+		}
+	}
+
+	// CSS Pseudo-4 §4.4: the ::marker pseudo-element only accepts the
+	// marker-allowed property subset, and the UA stylesheet sets specific
+	// defaults. Apply the filter to the cascaded author declarations, then
+	// layer the UA defaults underneath any author value. Done before the
+	// generic display:inline default so the ::marker UA display still wins
+	// only if the author did not set it.
+	if pseudoElement == "marker" {
+		applyMarkerCascade(finalStyle)
+	}
+
+	// CSS Cascade §7.3: the `inherit` keyword resolves to the parent's computed
+	// value. For pseudo-elements the "parent" is the originating element. This
+	// must run before ApplyAnimations so that e.g. `animation-delay: inherit`
+	// is a real time value when the keyframe pass reads it.
+	resolvePseudoInheritKeyword(finalStyle, parentStyles)
+
+	// CSS Animations §4: apply in-effect @keyframes values to the
+	// pseudo-element's computed style (same cascade position as for elements).
+	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+
+	// An animated declaration may itself be the `inherit` keyword (e.g.
+	// @keyframes kf { from,to { font-size: inherit } }) — resolve again so the
+	// animation's `inherit` is computed against the originating element.
+	resolvePseudoInheritKeyword(finalStyle, parentStyles)
+
+	// CSS 2.1 §15.7: resolve a font-relative font-size (em / %) on the
+	// pseudo-element against the originating element's computed font-size. For
+	// regular elements ApplyInheritedProperties does this; pseudo-elements
+	// take their inherited font-size from the originating element. This must
+	// run after ApplyAnimations so an animated `font-size: 1em` is resolved
+	// too (e.g. inheritance-pseudo-element.html).
+	if len(parentStyles) > 0 && parentStyles[0] != nil {
+		if fsVal, has := finalStyle.Get("font-size"); has {
+			trimmed := strings.TrimSpace(fsVal)
+			parentFS := parentStyles[0].GetFontSize()
+			if strings.HasSuffix(trimmed, "%") {
+				if pct, ok := ParsePercentage(trimmed); ok {
+					finalStyle.Set("font-size", fmt.Sprintf("%.6gpx", pct/100.0*parentFS))
+				}
+			} else if strings.HasSuffix(trimmed, "em") && !strings.HasSuffix(trimmed, "rem") {
+				if resolved, ok := ParseLengthWithFontSize(fsVal, parentFS); ok {
+					finalStyle.Set("font-size", fmt.Sprintf("%.6gpx", resolved))
+				}
 			}
 		}
 	}
@@ -637,6 +735,56 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	finalStyle.ViewportHeight = viewportHeight
 
 	return finalStyle
+}
+
+// markerAllowedProperty reports whether a property may be specified on a
+// ::marker pseudo-element. CSS Pseudo-4 §4.4: the ::marker rule only accepts
+// color, direction, the font-* longhands/shorthand, content,
+// text-combine-upright, unicode-bidi, white-space, the *-spacing properties,
+// line-height, text-shadow, text-transform, and the animation-*/transition-*
+// properties. Custom properties (--*) and the internal viewport tracking
+// keys are always allowed (custom props inherit; var() must resolve).
+func markerAllowedProperty(name string) bool {
+	if strings.HasPrefix(name, "--") {
+		return true
+	}
+	if strings.HasPrefix(name, "font-") ||
+		strings.HasPrefix(name, "animation-") ||
+		strings.HasPrefix(name, "transition-") {
+		return true
+	}
+	switch name {
+	case "color", "direction", "font", "content",
+		"text-combine-upright", "unicode-bidi", "white-space",
+		"letter-spacing", "word-spacing", "line-height",
+		"text-shadow", "text-transform", "animation", "transition":
+		// CSS Pseudo-4 §4.4: `display` is NOT marker-allowed — an author
+		// `::marker { display: ... }` rule must be rejected. The engine's own
+		// ::marker box display (inside = inline default, outside = inline-block)
+		// is stamped outside this author-property filter, in the layout tree
+		// builder (createMarkerPseudoElement).
+		return true
+	}
+	return false
+}
+
+// applyMarkerCascade layers the UA ::marker defaults underneath any surviving
+// author value of an already-cascaded ::marker style. Mirrors Blink's UA
+// ::marker rule: unicode-bidi: isolate; text-transform: none; white-space:
+// pre; font-variant-numeric: tabular-nums. The marker-allowed property filter
+// is applied during rule application in ComputePseudoElementStyle, not here.
+func applyMarkerCascade(style *Style) {
+	uaDefaults := [...][2]string{
+		{"unicode-bidi", "isolate"},
+		{"text-transform", "none"},
+		{"white-space", "pre"},
+		{"font-variant-numeric", "tabular-nums"},
+	}
+	for _, kv := range uaDefaults {
+		if _, ok := style.Get(kv[0]); !ok {
+			style.Set(kv[0], kv[1])
+		}
+	}
 }
 
 // HasFirstLetterRules returns true if any stylesheet rules with ::first-letter
@@ -1589,6 +1737,80 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 				style.Set("unicode-bidi", "isolate-override")
 			} else {
 				style.Set("unicode-bidi", "isolate")
+			}
+		}
+	}
+
+	// SVG presentation attributes per SVG 1.1 §6.4 / SVG 2 §6.4. For
+	// every SVG element these attribute spellings are equivalent to
+	// the matching CSS property — they participate in the cascade as
+	// non-specific author-level declarations (specificity 0), which
+	// is exactly the slot applyPresentationalAttributes fills: it
+	// runs before any stylesheet rule, so a later CSS rule with any
+	// non-zero specificity wins.
+	//
+	// Mirrors Blink's per-element CollectPresentationAttribute
+	// implementations in core/svg/svg_*_element.cc — every shape /
+	// container / text element opts every paint and stroke property
+	// in. Reading them here for all element types is a small
+	// over-trigger (non-SVG elements never reach an SVG painter), but
+	// it keeps the wiring in one place and matches the way Blink
+	// treats these attributes as plain CSS property maps once
+	// CollectPresentationAttribute has fired.
+	applySVGPresentationalAttributes(node, style)
+}
+
+// applySVGPresentationalAttributes maps SVG presentation attributes
+// to their CSS-property equivalents. Per SVG 1.1 §6.4, these have
+// specificity 0 — so they apply only when no stylesheet rule sets
+// the same property. The function is called from
+// applyPresentationalAttributes before stylesheet matching, so the
+// cascade's normal "later origin wins" rule handles the precedence
+// correctly.
+func applySVGPresentationalAttributes(node *html.Node, style *Style) {
+	// Map of attribute name → CSS property name. SVG attribute names
+	// are camelCase / lowercase per the HTML tokenizer; we match
+	// against the lowercased forms only since HTML tokenizes them
+	// that way. Mirrors the property list from
+	// core/svg/svg_animated_paint_properties.cc + the per-element
+	// CollectPresentationAttribute calls.
+	svgPresentationAttrs := []string{
+		"fill",
+		"fill-opacity",
+		"fill-rule",
+		"stroke",
+		"stroke-opacity",
+		"stroke-width",
+		"stroke-linecap",
+		"stroke-linejoin",
+		"stroke-miterlimit",
+		"stroke-dasharray",
+		"stroke-dashoffset",
+		"opacity",
+		"color",
+		"clip-rule",
+		"clip-path",
+		"mask",
+		"mask-type",
+		"stop-color",
+		"stop-opacity",
+		// Phase 7: filter on SVG shapes / containers + flood-color /
+		// flood-opacity / color-interpolation-filters on the filter
+		// primitive `<feFlood>` (and equivalents). These are SVG
+		// presentation attributes per SVG Filter Effects 1 §6.4.
+		"filter",
+		"flood-color",
+		"flood-opacity",
+		"color-interpolation-filters",
+	}
+	for _, attr := range svgPresentationAttrs {
+		if val, ok := node.GetAttribute(attr); ok {
+			// Only set if no value yet — preserves the user-agent
+			// stylesheet default in cases where both UA and the
+			// attribute would otherwise tie. Author CSS later in
+			// the cascade overrides this freely.
+			if _, exists := style.Get(attr); !exists {
+				style.Set(attr, val)
 			}
 		}
 	}

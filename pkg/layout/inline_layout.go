@@ -65,6 +65,7 @@ func isInlineLevelDisplay(d css.DisplayType) bool {
 		css.DisplayInlineFlex,
 		css.DisplayInlineGrid,
 		css.DisplayInlineTable,
+		css.DisplayInlineListItem,
 		css.DisplayRuby,
 		css.DisplayRubyText:
 		// DisplayBlockRuby is block-level (its principal box is a
@@ -106,7 +107,8 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		}
 		display := style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock &&
-			display != css.DisplayInlineFlex && display != css.DisplayInlineTable {
+			display != css.DisplayInlineFlex && display != css.DisplayInlineTable &&
+			display != css.DisplayInlineListItem {
 			return false // Block-level child found.
 		}
 		hasContent = true
@@ -984,11 +986,19 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 				// break token so the next column resumes from this line.
 				// blockOffset > 0 guard: never emit an empty column (at least one
 				// line must have been placed, mirroring Blink's RequiresContent guard).
+				// Per Blink: shortage is the minimum additional space needed
+				// to fit the overflowing line (per-break-point), not the
+				// cumulative overflow across all fragmentainers.
+				shortage := (blockOffset + lineHeight) - fragEnd
+				if shortage < 0 {
+					shortage = 0
+				}
 				inlineBreakToken = &BlockBreakToken{
 					Node:                 bla.node,
 					ConsumedBlockSize:    layoutunit.FromFloat64Round(blockOffset + bla.space.FragmentainerOffset),
 					InlineItemStartIndex: lineStartIdx,
 					InlineTextOffset:     lineStartTextOffset,
+					InlineShortage:       shortage,
 					SequenceNumber:       0,
 				}
 				if bla.space.BreakToken != nil {

@@ -120,6 +120,31 @@ type BoxFragmentBuilder struct {
 	minimalSpaceShortage    float64
 	hasMinimalSpaceShortage bool
 
+	// blockSizeForFragmentation tracks the running max-merged block-end
+	// of every child contribution in this builder's logical coordinate
+	// space — i.e., for each child propagated via
+	// PropagateChildBlockSizeForFragmentation, the maximum of
+	// `offset.BlockOffset + effectiveChildBSFF`. This is the parent's
+	// notion of how far its content actually extends (including any
+	// descendant overflow), which can exceed the parent's own
+	// block-size when children overflow past the parent's content box.
+	// Mirrors Blink's BoxFragmentBuilder::block_size_for_fragmentation_
+	// (box_fragment_builder.h) and its accumulation in PropagateChildData
+	// at box_fragment_builder.cc:977-982:
+	//
+	//	LayoutUnit block_end_in_container =
+	//	    offset.block_offset
+	//	    - child_layout_result.AnnotationBlockOffsetAdjustment()
+	//	    + BlockSizeForFragmentation(child_layout_result, writing_direction_);
+	//	block_size_for_fragmentation_ = std::max(
+	//	    block_size_for_fragmentation_, block_end_in_container);
+	//
+	// louis14 omits the annotation-adjustment term — no ruby/annotation
+	// layout exists yet. Read into LayoutResult.BlockSizeForFragmentation
+	// at Build() when hasBlockSizeForFragmentation is set.
+	blockSizeForFragmentation    float64
+	hasBlockSizeForFragmentation bool
+
 	// tallestUnbreakableBlockSize tracks the largest unbreakable block-size
 	// observed (or propagated up from a child) during the initial column-
 	// balancing pass. Read into LayoutResult.TallestUnbreakableBlockSize at
@@ -364,6 +389,109 @@ func (b *BoxFragmentBuilder) TallestUnbreakableBlockSize() float64 {
 	return b.tallestUnbreakableBlockSize
 }
 
+// PropagateChildBlockSizeForFragmentation max-merges a child's content
+// overflow extent into this builder's running BSFF. Mirrors Blink's
+// max-merge in BoxFragmentBuilder::PropagateChildData
+// (box_fragment_builder.cc:977-982), with one louis14-specific tweak:
+// propagation fires only when the child's effective BSFF exceeds its
+// physical extent (child fragment block-size + ConsumedBlockSize). For
+// children that fully fit inside their own box (the common case), the
+// builder's BSFF is NOT advanced — this keeps the field's louis14
+// semantics as a true "monolithic / parallel-flow overflow indicator",
+// which downstream consumers (e.g. multicol_layout.go:1631-1633's
+// per-column row-advance) compare directly against fragment block-size.
+//
+// Without the gate, normal in-flow stacking (e.g. successive spanners,
+// nested multicol content that fragments naturally across columns)
+// would inflate parent BSFF and trigger row-advance / regrowth paths
+// that should only fire for true overflow.
+//
+// The "effective" child BSFF is the max of the child's
+// LayoutResult.BlockSizeForFragmentation and the child fragment's own
+// block-size plus any ConsumedBlockSize on its outgoing break-token —
+// mirrors Blink's free function
+// fragmentation_utils.cc::BlockSizeForFragmentation.
+//
+// No-op if the child is nil, carries no fragment, or shows no overflow.
+func (b *BoxFragmentBuilder) PropagateChildBlockSizeForFragmentation(
+	child *LayoutResult, offset LogicalOffset,
+) {
+	if child == nil || child.Fragment == nil {
+		return
+	}
+	physicalExtent := NewLogicalFragment(b.wdm, child.Fragment).BlockSize()
+	if child.BreakToken != nil {
+		physicalExtent += child.BreakToken.ConsumedBlockSize.Float64()
+	}
+	childBSFF := physicalExtent
+	if child.BlockSizeForFragmentation > childBSFF {
+		childBSFF = child.BlockSizeForFragmentation
+	}
+	// Gate: child must indicate true overflow past its own physical
+	// extent for the propagation to fire.
+	if childBSFF <= physicalExtent {
+		return
+	}
+	blockEnd := offset.BlockOffset + childBSFF
+	if blockEnd <= 0 {
+		return
+	}
+	if !b.hasBlockSizeForFragmentation || blockEnd > b.blockSizeForFragmentation {
+		b.blockSizeForFragmentation = blockEnd
+		b.hasBlockSizeForFragmentation = true
+	}
+}
+
+// SetBlockSizeForFragmentation overwrites the builder's running BSFF with
+// the given value (clamped non-negative). Used by callsites that want to
+// inject an explicit floor — for example, a nested multicol whose own
+// outer-hint BSFF is the declared block-size of the container, not the
+// max-merge of its column children. Mirrors Blink's
+// BoxFragmentBuilder::SetBlockSizeForFragmentation (box_fragment_builder.h).
+func (b *BoxFragmentBuilder) SetBlockSizeForFragmentation(v float64) {
+	if v < 0 {
+		v = 0
+	}
+	b.blockSizeForFragmentation = v
+	b.hasBlockSizeForFragmentation = true
+}
+
+// BlockSizeForFragmentation returns the current accumulated BSFF and whether
+// it has been set. Read into LayoutResult.BlockSizeForFragmentation at
+// Build() — but callers that set the field directly on the result after
+// Build() returns will continue to override (those will be migrated as
+// step 3+4 wire in propagation callsites).
+func (b *BoxFragmentBuilder) BlockSizeForFragmentation() (float64, bool) {
+	return b.blockSizeForFragmentation, b.hasBlockSizeForFragmentation
+}
+
+// blockSizeForFragmentationOfChild returns the child's effective BSFF
+// contribution — the max of the child's explicit
+// LayoutResult.BlockSizeForFragmentation and the child fragment's own
+// logical block-size plus any ConsumedBlockSize carried on its outgoing
+// break-token.
+//
+// Mirrors Blink's free function in fragmentation_utils.cc:
+//
+//	LayoutUnit BlockSizeForFragmentation(const LayoutResult& result,
+//	                                     WritingDirection writing_direction);
+//
+// which is the canonical "what extent should a parent attribute to this
+// child for fragmentation purposes" computation.
+func blockSizeForFragmentationOfChild(wdm WritingDirectionMode, child *LayoutResult) float64 {
+	if child == nil || child.Fragment == nil {
+		return 0
+	}
+	bs := NewLogicalFragment(wdm, child.Fragment).BlockSize()
+	if child.BreakToken != nil {
+		bs += child.BreakToken.ConsumedBlockSize.Float64()
+	}
+	if child.BlockSizeForFragmentation > bs {
+		bs = child.BlockSizeForFragmentation
+	}
+	return bs
+}
+
 // SetPreviousBreakAfter records the break-after value of the most recently
 // added in-flow child. JoinedBreakBetweenValue uses it to compute the
 // effective break-between value when a subsequent child is added.
@@ -583,6 +711,43 @@ func (b *BoxFragmentBuilder) AddChild(fragment *PhysicalFragment, offset Logical
 	})
 }
 
+// ShiftChildBlockOffset adds delta to the block offset of the most recently
+// added child link whose fragment pointer matches. Used by the list-item
+// block layout to push content down when an OUTSIDE marker's ascent is taller
+// than the content's (Blink's UnpositionedListMarker::AddToBox content-push
+// branch: *block_offset -= baseline_adjust). The content child has already
+// been added to the builder, so it is re-offset in place.
+func (b *BoxFragmentBuilder) ShiftChildBlockOffset(fragment *PhysicalFragment, delta float64) {
+	for i := len(b.children) - 1; i >= 0; i-- {
+		if b.children[i].fragment == fragment {
+			b.children[i].offset.BlockOffset += delta
+			return
+		}
+	}
+}
+
+// DropChildrenAtOrPastBlockOffset removes accumulated child entries whose
+// logical block-offset is at or past the given offset. Used by the BLA
+// overflow handler to drop children that were placed at or past the
+// fragmentainer boundary; those children are deferred to the next
+// fragmentainer via the outgoing break token and must not also appear in
+// this partial fragment (otherwise paint would render them twice — once
+// here past the boundary and once in the next fragmentainer at offset 0).
+//
+// Blink avoids this case structurally: BreakBeforeChildIfNeeded fires
+// before placement, so a child that doesn't fit is never added to the
+// fragment in the first place. Louis14's BLA places-then-detects-overflow,
+// so the equivalent invariant has to be restored after the fact.
+func (b *BoxFragmentBuilder) DropChildrenAtOrPastBlockOffset(blockOffset float64) {
+	filtered := b.children[:0]
+	for _, ch := range b.children {
+		if ch.offset.BlockOffset < blockOffset {
+			filtered = append(filtered, ch)
+		}
+	}
+	b.children = filtered
+}
+
 // Build converts all logical coordinates to physical and returns the
 // immutable PhysicalFragment and LayoutResult.
 //
@@ -660,6 +825,9 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 	if b.hasMinimalSpaceShortage {
 		result.MinSpaceShortage = b.minimalSpaceShortage
+	}
+	if b.hasBlockSizeForFragmentation {
+		result.BlockSizeForFragmentation = b.blockSizeForFragmentation
 	}
 	if b.hasTallestUnbreakableBlockSize {
 		result.TallestUnbreakableBlockSize = b.tallestUnbreakableBlockSize

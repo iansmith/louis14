@@ -160,6 +160,16 @@ func (b *Box) CreatesStackingContext() bool {
 	if bm := b.Style.GetMixBlendMode(); bm != css.MixBlendModeNormal && bm != "" {
 		return true
 	}
+	// CSS Masking Level 1 §3.1: a computed clip-path other than 'none'
+	// creates a stacking context (and, in Blink, a PaintLayer).
+	if b.Style.GetClipPath() != nil {
+		return true
+	}
+	// CSS Masking Level 1 §6.1: a computed mask/mask-image other than 'none'
+	// creates a stacking context.
+	if mi := b.Style.GetMaskImage(); mi != "" && mi != "none" {
+		return true
+	}
 	// CSS Containment: layout and paint containment create a stacking context.
 	if b.Style.HasLayoutContainment() || b.Style.HasPaintContainment() {
 		return true

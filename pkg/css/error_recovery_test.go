@@ -309,9 +309,9 @@ func TestIsValidSelector(t *testing.T) {
 		{"}", false},
 		{";", false},
 		{"{", false},
-		{"[}", false},       // unbalanced
-		{"[attr", false},    // unclosed bracket
-		{"div { }", false},  // braces in selector
+		{"[}", false},      // unbalanced
+		{"[attr", false},   // unclosed bracket
+		{"div { }", false}, // braces in selector
 	}
 
 	for _, tt := range tests {

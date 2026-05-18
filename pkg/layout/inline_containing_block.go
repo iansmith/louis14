@@ -257,16 +257,30 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 	if len(items) == 0 {
 		return nil
 	}
-	var stack []*html.Node
+	// Each stack entry records the inline ancestor node and whether it also
+	// contains fixed-position descendants. A non-static inline contains only
+	// abs-pos; a filtered inline (filter != none) is a containing block for
+	// fixed too — Filter Effects 1 §"The filter property".
+	type inlineCB struct {
+		node          *html.Node
+		containsFixed bool
+	}
+	var stack []inlineCB
 	out := make(map[*InlineItem]*html.Node)
 	for _, item := range items {
 		switch item.Type {
 		case InlineItemOpenTag:
-			if item.Style != nil && item.Style.GetPosition() != css.PositionStatic && item.Node != nil {
-				stack = append(stack, item.Node)
+			if item.Style != nil && item.Node != nil {
+				if inlineEstablishesContainingBlock(item.Style) {
+					stack = append(stack, inlineCB{
+						node:          item.Node,
+						containsFixed: len(item.Style.GetFilter()) > 0,
+					})
+				}
 			}
 		case InlineItemCloseTag:
-			if item.Style != nil && item.Style.GetPosition() != css.PositionStatic && item.Node != nil {
+			if item.Style != nil && item.Node != nil &&
+				inlineEstablishesContainingBlock(item.Style) {
 				if len(stack) > 0 {
 					stack = stack[:len(stack)-1]
 				}
@@ -275,12 +289,38 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 			if len(stack) == 0 {
 				continue
 			}
-			// Skip fixed: its CB is the viewport, not the positioned inline.
-			if item.Style != nil && item.Style.GetPosition() == css.PositionFixed {
-				continue
+			// Fixed descendants are only contained by a filtered inline, not by
+			// a merely position:relative one. Walk the stack from the top to
+			// the innermost entry that satisfies the requirement — an inner
+			// non-CB-for-fixed inline (e.g. position:relative) can sit above an
+			// outer filtered inline that IS a valid CB for fixed.
+			isFixed := item.Style != nil && item.Style.GetPosition() == css.PositionFixed
+			idx := len(stack) - 1
+			if isFixed {
+				for idx >= 0 && !stack[idx].containsFixed {
+					idx--
+				}
+				if idx < 0 {
+					continue
+				}
 			}
-			out[item] = stack[len(stack)-1]
+			out[item] = stack[idx].node
 		}
 	}
 	return out
+}
+
+// inlineEstablishesContainingBlock reports whether an inline-level element
+// establishes a containing block for positioned descendants. A non-static
+// position does (CSS 2.1 §10.1.4); so does a filter (Filter Effects 1 §"The
+// filter property": "A value other than none ... results in the creation of
+// a containing block for absolute and fixed positioned descendants").
+func inlineEstablishesContainingBlock(style *css.Style) bool {
+	if style.GetPosition() != css.PositionStatic {
+		return true
+	}
+	if len(style.GetFilter()) > 0 {
+		return true
+	}
+	return false
 }
