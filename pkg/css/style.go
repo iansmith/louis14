@@ -4557,7 +4557,6 @@ const (
 	DisplayFlowRoot       DisplayType = "flow-root"
 	DisplayRuby           DisplayType = "ruby"
 	DisplayRubyText       DisplayType = "ruby-text"
-	DisplayRubyBase       DisplayType = "ruby-base"
 	// DisplayBlockRuby is the block-level form of ruby (CSS Display L3
 	// two-keyword `display: block ruby`). Mirrors Blink's
 	// EDisplay::kBlockRuby. Blink generates a LayoutRubyAsBlock principal
