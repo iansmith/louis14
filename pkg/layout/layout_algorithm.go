@@ -1,9 +1,6 @@
 package layout
 
 import (
-	"path"
-	"strings"
-
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -104,40 +101,33 @@ func (ctx *LayoutContext) SetOrthogonalResult(node *LayoutInputNode, result *Lay
 }
 
 // ReRootedDocumentFetcher returns a DocumentFetcher that resolves relative URIs
-// relative to nestedDocURI. Absolute URIs (starting with "/") are passed through.
-// This allows a nested document's sub-resources to be resolved correctly.
+// against nestedDocURI's directory. Absolute URIs (scheme-prefixed, root-
+// relative, data:) pass through unchanged because css.CompleteURL short-
+// circuits on them.
 func ReRootedDocumentFetcher(outer DocumentFetcher, nestedDocURI string) DocumentFetcher {
 	if outer == nil {
 		return nil
 	}
-	// Compute the directory portion of the nested doc URI.
-	// For "support/foo.html", base = "support/".
-	base := path.Dir(nestedDocURI)
+	base := css.URLDir(nestedDocURI)
 	if base == "." {
 		return outer
 	}
 	return func(uri string) (string, error) {
-		if strings.HasPrefix(uri, "/") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "data:") {
-			return outer(uri)
-		}
-		return outer(path.Join(base, uri))
+		return outer(css.CompleteURL(uri, base))
 	}
 }
 
 // ReRootedImageFetcher returns an ImageFetcher that resolves relative URIs
-// relative to nestedDocURI. Absolute URIs are passed through unchanged.
+// against nestedDocURI's directory. Absolute URIs pass through unchanged.
 func ReRootedImageFetcher(outer images.ImageFetcher, nestedDocURI string) images.ImageFetcher {
 	if outer == nil {
 		return nil
 	}
-	base := path.Dir(nestedDocURI)
+	base := css.URLDir(nestedDocURI)
 	if base == "." {
 		return outer
 	}
 	return func(uri string) ([]byte, error) {
-		if strings.HasPrefix(uri, "/") || strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "data:") {
-			return outer(uri)
-		}
-		return outer(path.Join(base, uri))
+		return outer(css.CompleteURL(uri, base))
 	}
 }

@@ -51,12 +51,12 @@ func (c *ParserContext) baseDir() string {
 }
 
 // CompleteURL mirrors `CSSParserContext::CompleteURL` at
-// core/css/parser/css_parser_context.cc:202 @ d4ecdfed8. Phase 1 preserves
-// the existing path.Join-based ResolveURL semantics; Phase 4 of LOU-138
-// swaps in net/url-based RFC 3986 composition so scheme-prefixed bases
-// survive intact.
+// core/css/parser/css_parser_context.cc:202 @ d4ecdfed8. Resolution
+// dispatches on the base form: filesystem-relative bases (WPT fixtures)
+// use path.Join; absolute bases (`https://...`, `/...`) use
+// net/url.ResolveReference per RFC 3986 § 5.2. See `pkg/css/url.go`.
 func (c *ParserContext) CompleteURL(raw string) string {
-	return ResolveURL(raw, c.baseDir())
+	return CompleteURL(raw, c.baseDir())
 }
 
 // CollectUrlData mirrors

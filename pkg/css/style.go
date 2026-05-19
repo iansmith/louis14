@@ -3,39 +3,11 @@ package css
 import (
 	"fmt"
 	"math"
-	"path"
 	"strconv"
 	"strings"
 
 	"louis14/pkg/html"
 )
-
-// ResolveURL applies louis14's parse-time resolution rule to a single
-// `url()` inner value, mirroring Blink's
-// `CSSParserContext::CompleteURL` over `document.BaseURL()`. Returns
-// the input unchanged when the URL is already absolute (scheme- or
-// root-rooted) or when baseDir is empty; otherwise joins baseDir with
-// the URL via path.Join so `../foo` normalises correctly. Sole entry
-// point for `url()` resolution: parse-time callers go through
-// `ParserContext.CompleteURL`, getter-time callers (cross-document
-// re-stamping per LOU-137 v2) call this directly with the owning
-// document's BaseDir.
-func ResolveURL(raw, baseDir string) string {
-	if baseDir == "" || baseDir == "." || isAbsoluteCSSURL(raw) {
-		return raw
-	}
-	return path.Join(baseDir, raw)
-}
-
-// isAbsoluteCSSURL reports whether raw is already an absolute URL form
-// that must not be base-joined.
-func isAbsoluteCSSURL(raw string) bool {
-	return strings.HasPrefix(raw, "/") ||
-		strings.HasPrefix(raw, "data:") ||
-		strings.HasPrefix(raw, "http://") ||
-		strings.HasPrefix(raw, "https://") ||
-		strings.HasPrefix(raw, "file://")
-}
 
 // URLData mirrors Blink's `CSSUrlData` (`core/css/css_url_data.h:57-150` @
 // chromium-main bf955d02bf0b0c67868b2e62359c0af199af9acc): a parsed

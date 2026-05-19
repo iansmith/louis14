@@ -2,12 +2,11 @@ package css
 
 import "testing"
 
-// TestParserContext_CompleteURL exercises the Phase 1 ParserContext URL
-// resolver. Phase 1 preserves the legacy ResolveURL semantics: absolute and
-// data: refs pass through, an empty BaseDir leaves the ref untouched, and
-// relative refs are joined via path.Join. Phase 4 of LOU-138 swaps the
-// implementation to net/url-based composition; these expectations stay
-// valid for filesystem-style bases used by the WPT fixtures.
+// TestParserContext_CompleteURL pins the ParserContext URL resolver
+// contract for filesystem-style bases (WPT fixtures): absolute and data:
+// refs pass through, an empty BaseDir leaves the ref untouched, and
+// relative refs are joined via path semantics. The absolute-base regime
+// (`https://example.com/...`) is covered by TestCompleteURL in url_test.go.
 func TestParserContext_CompleteURL(t *testing.T) {
 	cases := []struct {
 		name    string

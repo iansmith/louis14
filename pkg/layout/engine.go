@@ -1,8 +1,6 @@
 package layout
 
 import (
-	"path"
-
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -199,13 +197,12 @@ type NestedDocumentResult struct {
 // sub-resources of the nested document resolve correctly relative to its location.
 // Returns the root layout result, or nil if parsing/layout fails.
 func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64, nestedDocURI string) *NestedDocumentResult {
-	// Compute the nested document's BaseDir by joining the outer doc's
-	// BaseDir with the iframe src's directory. URLs inside the nested
-	// doc resolve against this base — relative to the outer renderer's
-	// basePath — so the outer renderer's single fetcher can serve sub-
+	// Compute the nested document's BaseDir from its fully-qualified URL
+	// (outer base + iframe src). URLs inside the nested doc resolve against
+	// this base, so the outer renderer's single fetcher can serve sub-
 	// resources for any depth of nesting. Mirrors how Blink threads the
 	// owner-document base through `CSSParserContext` for each parse pass.
-	nestedBaseDir := path.Join(ctx.BaseDir, path.Dir(nestedDocURI))
+	nestedBaseDir := css.URLDir(css.CompleteURL(nestedDocURI, ctx.BaseDir))
 	if nestedBaseDir == "." {
 		nestedBaseDir = ""
 	}
