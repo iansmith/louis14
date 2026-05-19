@@ -92,13 +92,16 @@ type ContainerCondition struct {
 	Value   string // "200px", etc.
 }
 
-// FontFaceRule represents a parsed @font-face rule.
+// FontFaceRule represents a parsed @font-face rule. Src is typed as
+// *CSSURIValue per LOU-138 phase 7.5 — mirrors Blink's `CSSURIValue`
+// wrapping of @font-face src tokens (core/css/css_uri_value.h @
+// d4ecdfed8). Nil when the rule had no parseable src.
 type FontFaceRule struct {
-	Family string // font-family (unquoted)
-	Src    string // URL from src: url(...)
-	Format string // "truetype", "opentype", "woff", "woff2", or ""
-	Weight string // font-weight value (e.g. "bold", "400", "700")
-	Style  string // font-style value (e.g. "italic", "normal")
+	Family string       // font-family (unquoted)
+	Src    *CSSURIValue // URL from src: url(...); nil if missing
+	Format string       // "truetype", "opentype", "woff", "woff2", or ""
+	Weight string       // font-weight value (e.g. "bold", "400", "700")
+	Style  string       // font-style value (e.g. "italic", "normal")
 }
 
 // KeyframeRule represents a single keyframe stop in a @keyframes rule.
@@ -2078,8 +2081,15 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 			// Strip quotes
 			ff.Family = strings.Trim(val, `"'`)
 		case "src":
-			// Parse url(...) format(...)
-			ff.Src, ff.Format = parseFontFaceSrc(val)
+			// Parse url(...) format(...). The url() inner has already
+			// been resolved by ctx.RewriteURLs at the top of
+			// ParseStylesheet, so both URLData fields hold the absolute
+			// form.
+			srcURL, fmtName := parseFontFaceSrc(val)
+			if srcURL != "" {
+				ff.Src = &CSSURIValue{Data: URLData{Relative: srcURL, Absolute: srcURL}}
+			}
+			ff.Format = fmtName
 		case "font-weight":
 			ff.Weight = val
 		case "font-style":
@@ -2087,7 +2097,7 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 		}
 	}
 
-	if ff.Family == "" || ff.Src == "" {
+	if ff.Family == "" || ff.Src == nil {
 		return nil
 	}
 	return ff

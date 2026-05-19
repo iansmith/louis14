@@ -237,7 +237,10 @@ func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
 	}
 
 	for _, face := range allFaces {
-		if _, err := registry.RegisterFontFace(face.Family, face.Src, face.Format, face.Weight, face.Style, fontFetcher); err != nil {
+		if face.Src == nil {
+			continue
+		}
+		if _, err := registry.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, fontFetcher); err != nil {
 			log.Printf("font-face: %v", err)
 		}
 	}

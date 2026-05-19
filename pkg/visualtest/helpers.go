@@ -158,7 +158,10 @@ func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontCon
 	}
 
 	for _, face := range allFaces {
-		if _, err := registry.RegisterFontFace(face.Family, face.Src, face.Format, face.Weight, face.Style, fontFetcher); err != nil {
+		if face.Src == nil {
+			continue
+		}
+		if _, err := registry.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, fontFetcher); err != nil {
 			log.Printf("font-face: %v", err)
 		}
 	}

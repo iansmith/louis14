@@ -133,10 +133,14 @@ func TestParseStylesheet_FontFaceSrcURL(t *testing.T) {
 		t.Fatalf("got %d FontFaces, want 1", len(ss.FontFaces))
 	}
 	// parseFontFaceSrc strips the url() wrapper, so the rewrite shows up as
-	// the resolved bare-string Src.
-	if ss.FontFaces[0].Src != "sub/foo.woff2" {
+	// the resolved Src.Data.Absolute (Phase 7.5 typed wrapper).
+	src := ss.FontFaces[0].Src
+	if src == nil {
+		t.Fatalf("font-face Src is nil; want wrapped %q", "sub/foo.woff2")
+	}
+	if src.Data.Absolute != "sub/foo.woff2" {
 		t.Errorf("font-face src = %q, want %q",
-			ss.FontFaces[0].Src, "sub/foo.woff2")
+			src.Data.Absolute, "sub/foo.woff2")
 	}
 }
 
