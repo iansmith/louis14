@@ -28,12 +28,17 @@ type Style struct {
 	ChWidth        float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
 
 	// BaseDir is the owning document's BaseDir, propagated by the cascade
-	// (see ApplyStylesToDocument). It feeds parse-time `url()` resolution
-	// for property accessors that produce URLData (GetFilter,
-	// GetBackdropFilter). Empty for top-level documents — URLs stay
-	// relative and the renderer's fetcher resolves them against its
-	// basePath. Non-empty for nested documents — relative URLs resolve
-	// against this directory at the moment the CSS value is parsed.
+	// (see ApplyStylesToDocument). Used by inline `style=""` parsing in
+	// cascade.go (via NewParserContext(s.BaseDir)) and as the cross-
+	// document re-stamp signal for the LOU-137 v2 adoptNode path
+	// (when a moved node lands in a new document, the next cascade pass
+	// re-stamps this field). Empty for top-level documents.
+	//
+	// Post-LOU-138 phase 7: getter-time `url()` resolution no longer
+	// reads this field — typed wrappers (CSSImageValue / CSSURIValue)
+	// store the parse-time-resolved absolute form and consumers read
+	// .Data.Absolute directly. Filter / backdrop-filter values likewise
+	// carry pre-resolved URLs in their URLData.
 	BaseDir string
 
 	// AppliedTextDecorations is the accumulated text-decoration vector for this
@@ -8560,28 +8565,26 @@ type FilterFunction struct {
 	URL URLData
 }
 
-// GetFilter parses the filter property and returns filter functions. Phase 2
-// of LOU-138 moves url() resolution into ParseStylesheet / ParseInlineStyle,
-// so the stored filter value already holds absolute URLs — re-resolving here
-// against s.BaseDir would double-prepend. Passing an empty baseDir keeps
-// parseFilterList idempotent; the field stays for the not-yet-migrated
-// cross-document-move path until Phase 7 wraps filter in CSSURIValue.
+// GetFilter parses the filter property and returns filter functions. The
+// stored value has already been resolved at CSS-parse time by
+// ParserContext.RewriteURLs (LOU-138 phase 2), so parseFilterList here
+// is purely tokenization — no URL resolution.
 func (s *Style) GetFilter() []FilterFunction {
 	val, ok := s.Get("filter")
 	if !ok || val == "none" {
 		return nil
 	}
-	return parseFilterList(val, "")
+	return parseFilterList(val)
 }
 
 // parseFilterList parses a CSS <filter-value-list> — a whitespace-separated
 // list of filter functions and/or url() references. Shared by GetFilter and
-// GetBackdropFilter. baseDir is the owning document's BaseDir; relative
-// url() references resolve against it at parse time, matching Blink's
-// `CSSUrlData` parse-time resolution
-// (`core/css/css_url_data.cc:82-95` @ chromium-main
+// GetBackdropFilter. url() inners come in pre-resolved (the stylesheet's
+// ParserContext.RewriteURLs ran at CSS-parse time) so both URLData fields
+// hold the absolute form. Matches Blink's `CSSUrlData` parse-time
+// resolution (`core/css/css_url_data.cc:82-95` @ chromium-main
 // bf955d02bf0b0c67868b2e62359c0af199af9acc).
-func parseFilterList(val string, baseDir string) []FilterFunction {
+func parseFilterList(val string) []FilterFunction {
 	var filters []FilterFunction
 	val = strings.TrimSpace(val)
 	for len(val) > 0 {
@@ -8603,7 +8606,7 @@ func parseFilterList(val string, baseDir string) []FilterFunction {
 			u = strings.Trim(u, "\"'")
 			filters = append(filters, FilterFunction{
 				Name: "url",
-				URL:  URLData{Relative: u, Absolute: ResolveURL(u, baseDir)},
+				URL:  URLData{Relative: u, Absolute: u},
 			})
 		case "drop-shadow":
 			filters = append(filters, parseDropShadowFunction(arg))
@@ -9008,7 +9011,7 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 		return nil
 	}
 	// backdrop-filter accepts the same <filter-value-list> as filter.
-	return parseFilterList(val, "")
+	return parseFilterList(val)
 }
 
 // GetBorderImageSource returns the border-image-source value.

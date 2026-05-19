@@ -521,8 +521,8 @@ func interpolateFilterValue(from, to string, frac float64) (string, bool) {
 	// — interp produces filter strings that already contain whatever URL
 	// form was in the keyframe value, so no further base-relative
 	// resolution is meaningful here.
-	a := parseFilterList(normalizeFilterNone(from), "")
-	b := parseFilterList(normalizeFilterNone(to), "")
+	a := parseFilterList(normalizeFilterNone(from))
+	b := parseFilterList(normalizeFilterNone(to))
 	fromNone := strings.TrimSpace(strings.ToLower(from)) == "none"
 	toNone := strings.TrimSpace(strings.ToLower(to)) == "none"
 
