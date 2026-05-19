@@ -397,6 +397,30 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 	return ParseLengthFull(val, fontSize, 0, 0)
 }
 
+// ParseLengthOrPercentageFontRelative parses a CSS value where percentages
+// resolve against the element's font-size (1em) — e.g. text-underline-offset,
+// text-decoration-thickness per CSS Text Decor L4. Returns the resolved
+// pixel value. Handles bare `%`, plain lengths, and `calc()` expressions
+// whose % terms also resolve against font-size.
+func ParseLengthOrPercentageFontRelative(val string, fontSize float64) (float64, bool) {
+	v := strings.TrimSpace(val)
+	if strings.HasSuffix(v, "%") && !strings.HasPrefix(v, "calc(") {
+		if pct, ok := ParsePercentage(v); ok {
+			return pct / 100.0 * fontSize, true
+		}
+		return 0, false
+	}
+	if strings.HasPrefix(v, "calc(") && strings.HasSuffix(v, ")") {
+		ctx := calcContext{
+			fontSize:    fontSize,
+			percentBase: fontSize,
+			chScale:     0.5,
+		}
+		return evalCalcFull(v[5:len(v)-1], ctx)
+	}
+	return ParseLengthWithFontSize(val, fontSize)
+}
+
 // splitCSSFunctionArgs splits comma-separated args respecting nested parens
 func splitCSSFunctionArgs(s string) []string {
 	var parts []string
@@ -4327,12 +4351,10 @@ func parseTextShadowLayer(s string, fontSize float64) *TextShadow {
 	return sh
 }
 
-// GetTextUnderlineOffset returns the text-underline-offset value in pixels (default: 0).
-//
-// Percentages resolve against the element's font-size (1em), per CSS Text
-// Decor L4 §"text-underline-offset". A bare `25%` does NOT round-trip through
-// ParseLengthFull (which only knows physical units inside calc()), so this
-// accessor handles `%` explicitly.
+// GetTextUnderlineOffset returns the text-underline-offset value in pixels.
+// Percentages and calc() % terms resolve against the element's font-size
+// (1em) per CSS Text Decor L4 §"text-underline-offset". Returns 0 for `auto`,
+// the initial value, or any unparseable input.
 func (s *Style) GetTextUnderlineOffset() float64 {
 	val, ok := s.Get("text-underline-offset")
 	if !ok {
@@ -4342,14 +4364,8 @@ func (s *Style) GetTextUnderlineOffset() float64 {
 	if v == "" || strings.EqualFold(v, "auto") {
 		return 0
 	}
-	if strings.HasSuffix(v, "%") {
-		if pct, ok := ParsePercentage(v); ok {
-			return pct / 100.0 * s.GetFontSize()
-		}
-		return 0
-	}
-	if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
-		return l
+	if px, ok := ParseLengthOrPercentageFontRelative(val, s.GetFontSize()); ok {
+		return px
 	}
 	return 0
 }
@@ -10371,8 +10387,8 @@ func (s *Style) GetTextDecorationThicknessResolved() TextDecorationThickness {
 			}
 		}
 	}
-	// Length.
-	if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+	// Length or calc() — calc() with % terms resolves against font-size here.
+	if l, ok := ParseLengthOrPercentageFontRelative(val, s.GetFontSize()); ok {
 		return TextDecorationThickness{
 			Kind:  TextDecorationThicknessLength,
 			Value: l,
