@@ -7357,8 +7357,8 @@ func extractImageSetFirstURL(val string) (string, bool) {
 type FillLayer struct {
 	Next *FillLayer // next layer toward bottom; nil = bottommost
 
-	Image      string // url() value, empty = none
-	Gradient   string // raw gradient string, empty = none
+	Image      *CSSImageValue // typed url() ref, nil = none (LOU-138 phase 7)
+	Gradient   string         // raw gradient string, empty = none
 	Repeat     BackgroundRepeatType
 	Position   BackgroundPosition
 	Size       BackgroundSize
@@ -7443,7 +7443,7 @@ func (fl *FillLayer) cullEmpty() *FillLayer {
 		return nil
 	}
 	fl.Next = fl.Next.cullEmpty()
-	if !fl.ImageSet && fl.Gradient == "" && fl.Image == "" {
+	if !fl.ImageSet && fl.Gradient == "" && fl.Image == nil {
 		return fl.Next
 	}
 	return fl
@@ -7988,11 +7988,15 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 				layer.Gradient = imgStr
 				layer.ImageSet = true
 			} else if url, ok := ParseURLValue(imgStr); ok {
-				layer.Image = url
+				// ctx.RewriteURLs has already resolved this URL against the
+				// stylesheet's BaseDir; both URLData fields hold the
+				// absolute form. CSSOM serialization will see absolute
+				// until Phase 7+ threads ctx into FillLayer parsing.
+				layer.Image = &CSSImageValue{Data: URLData{Relative: url, Absolute: url}}
 				layer.ImageSet = true
 			} else if strings.Contains(strings.ToLower(imgStr), "image-set(") {
 				if url, ok := extractImageSetFirstURL(imgStr); ok {
-					layer.Image = url
+					layer.Image = &CSSImageValue{Data: URLData{Relative: url, Absolute: url}}
 					layer.ImageSet = true
 				}
 			}

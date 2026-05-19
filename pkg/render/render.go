@@ -1902,7 +1902,7 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 		}
 
 		// Paint image.
-		if bg.Image != "" && r.imageFetcher != nil {
+		if bg.Image != nil && r.imageFetcher != nil {
 			if lHasRadius {
 				r.dc.Push()
 				r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
@@ -1923,7 +1923,7 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 // All arithmetic is integer-based to avoid fractional pixel misalignment.
 func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer) {
 	box := layer.Box
-	img, err := images.LoadImageWithFetcher(bg.Image, r.imageFetcher)
+	img, err := images.LoadImageWithFetcher(bg.Image.Data.Absolute, r.imageFetcher)
 	if err != nil {
 		return
 	}
