@@ -4327,12 +4327,29 @@ func parseTextShadowLayer(s string, fontSize float64) *TextShadow {
 	return sh
 }
 
-// GetTextUnderlineOffset returns the text-underline-offset value in pixels (default: 0)
+// GetTextUnderlineOffset returns the text-underline-offset value in pixels (default: 0).
+//
+// Percentages resolve against the element's font-size (1em), per CSS Text
+// Decor L4 §"text-underline-offset". A bare `25%` does NOT round-trip through
+// ParseLengthFull (which only knows physical units inside calc()), so this
+// accessor handles `%` explicitly.
 func (s *Style) GetTextUnderlineOffset() float64 {
-	if val, ok := s.Get("text-underline-offset"); ok {
-		if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
-			return l
+	val, ok := s.Get("text-underline-offset")
+	if !ok {
+		return 0
+	}
+	v := strings.TrimSpace(val)
+	if v == "" || strings.EqualFold(v, "auto") {
+		return 0
+	}
+	if strings.HasSuffix(v, "%") {
+		if pct, ok := ParsePercentage(v); ok {
+			return pct / 100.0 * s.GetFontSize()
 		}
+		return 0
+	}
+	if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+		return l
 	}
 	return 0
 }
