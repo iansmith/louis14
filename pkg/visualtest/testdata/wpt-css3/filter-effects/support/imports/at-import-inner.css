@@ -1,0 +1,9 @@
+/* inner.css lives at support/imports/. url(hueRotate.svg) must resolve
+   against support/imports/, finding support/imports/hueRotate.svg —
+   NOT support/hueRotate.svg (which also exists but isn't the right file). */
+.at-import-filtered {
+  width: 100px;
+  height: 100px;
+  background-color: red;
+  filter: url(hueRotate.svg#MyFilter);
+}

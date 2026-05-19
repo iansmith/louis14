@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<title>CSS Filter Effects: relative url() inside @import-ed stylesheet</title>
+<link rel="help" href="https://drafts.fxtf.org/filter-effects-1/#FilterProperty">
+<link rel="help" href="https://drafts.csswg.org/css-values-4/#relative-urls">
+<link rel="help" href="https://drafts.csswg.org/css-cascade-5/#at-import">
+<link rel="match" href="reference/at-import-relative-urls-001-ref.html">
+<meta name="assert" content="A url() inside an @import-ed stylesheet resolves against the imported sheet's own location, not the importing sheet's or the document's. outer.css lives at support/; inner.css at support/imports/; the SVG filter target sits next to inner.css.">
+<style>
+  body { margin: 0; }
+</style>
+<link rel="stylesheet" href="support/at-import-outer.css">
+<div class="at-import-filtered"></div>

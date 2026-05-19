@@ -48,9 +48,10 @@ func (p *Parser) Parse() (*Document, error) {
 					content := stripCDATA(p.tokenizer.ReadRawUntil("style"))
 					if strings.TrimSpace(content) != "" {
 						// Inline <style> block — BaseDir derives from doc.BaseDir
-						// at CSS parse time, so leave Href empty.
+						// at CSS parse time, so leave Href empty. @import (if
+						// any) resolves at CSS-parse time via pkg/css.
 						p.doc.Stylesheets = append(p.doc.Stylesheets, StylesheetSource{
-							Text: p.resolveImports(content),
+							Text: content,
 						})
 					}
 					continue
@@ -482,6 +483,8 @@ func (p *Parser) isBlockElement(tagName string) bool {
 }
 
 // loadLinkStylesheet loads CSS from a data URI href or via the CSS fetcher.
+// @import resolution is deferred to CSS-parse time (pkg/css/at_import.go)
+// so each imported sheet's URL identity survives into its own ParserContext.
 func (p *Parser) loadLinkStylesheet(href string) string {
 	href = strings.TrimSpace(href)
 	if strings.HasPrefix(href, "data:text/css,") {
@@ -490,122 +493,13 @@ func (p *Parser) loadLinkStylesheet(href string) string {
 		if err != nil {
 			return encoded
 		}
-		return p.resolveImports(decoded)
+		return decoded
 	}
-	// Try the CSS fetcher for network URLs
 	if p.cssFetcher != nil {
 		if css, err := p.cssFetcher(href); err == nil {
-			return p.resolveImports(css)
+			return css
 		}
 	}
-	return ""
-}
-
-// resolveImports processes @import rules in CSS text by fetching imported
-// stylesheets and prepending their content. Per CSS spec, @import rules must
-// appear before any other rules (except @charset).
-func (p *Parser) resolveImports(cssText string) string {
-	if p.cssFetcher == nil {
-		return cssText
-	}
-	if !strings.Contains(cssText, "@import") {
-		return cssText
-	}
-
-	var imported strings.Builder
-	var remaining strings.Builder
-	pastImports := false
-
-	lines := strings.Split(cssText, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "/*") {
-			if pastImports {
-				remaining.WriteString(line)
-				remaining.WriteByte('\n')
-			} else {
-				imported.WriteString(line)
-				imported.WriteByte('\n')
-			}
-			continue
-		}
-
-		if !pastImports && strings.HasPrefix(trimmed, "@import") {
-			// Parse the @import URL
-			if importURL := parseImportURL(trimmed); importURL != "" {
-				if css, err := p.cssFetcher(importURL); err == nil {
-					// Recursively resolve imports in the fetched CSS (max depth handled by fetcher timeouts)
-					resolved := p.resolveImports(css)
-					imported.WriteString(resolved)
-					imported.WriteByte('\n')
-				}
-			}
-			continue
-		}
-
-		// Any non-import rule means we're past the import section
-		pastImports = true
-		remaining.WriteString(line)
-		remaining.WriteByte('\n')
-	}
-
-	return imported.String() + remaining.String()
-}
-
-// parseImportURL extracts the URL from an @import rule.
-// Supports: @import url("foo.css"); @import url(foo.css); @import "foo.css";
-func parseImportURL(rule string) string {
-	// Remove trailing semicolon and whitespace
-	rule = strings.TrimSpace(rule)
-	rule = strings.TrimSuffix(rule, ";")
-	rule = strings.TrimSpace(rule)
-
-	// Remove @import prefix
-	rule = strings.TrimPrefix(rule, "@import")
-	rule = strings.TrimSpace(rule)
-
-	// Remove optional media queries (everything after the URL)
-	// For now, we import unconditionally
-
-	// Handle url(...) syntax
-	if strings.HasPrefix(rule, "url(") {
-		closeIdx := strings.Index(rule, ")")
-		if closeIdx == -1 {
-			return ""
-		}
-		inner := rule[4:closeIdx]
-		inner = strings.TrimSpace(inner)
-		// Remove quotes
-		if len(inner) >= 2 {
-			if (inner[0] == '"' && inner[len(inner)-1] == '"') ||
-				(inner[0] == '\'' && inner[len(inner)-1] == '\'') {
-				inner = inner[1 : len(inner)-1]
-			}
-		}
-		return inner
-	}
-
-	// Handle bare string syntax: @import "foo.css" or @import 'foo.css'
-	if len(rule) >= 2 {
-		if (rule[0] == '"' && rule[len(rule)-1] == '"') ||
-			(rule[0] == '\'' && rule[len(rule)-1] == '\'') {
-			return rule[1 : len(rule)-1]
-		}
-		// May have media query after the string: @import "foo.css" screen;
-		if rule[0] == '"' {
-			endQuote := strings.Index(rule[1:], "\"")
-			if endQuote >= 0 {
-				return rule[1 : endQuote+1]
-			}
-		}
-		if rule[0] == '\'' {
-			endQuote := strings.Index(rule[1:], "'")
-			if endQuote >= 0 {
-				return rule[1 : endQuote+1]
-			}
-		}
-	}
-
 	return ""
 }
 
@@ -615,11 +509,17 @@ func Parse(html string) (*Document, error) {
 }
 
 // ParseWithFetcher parses HTML and uses the provided fetcher to load external
-// stylesheets referenced by <link rel="stylesheet"> tags.
+// stylesheets referenced by <link rel="stylesheet"> tags. The same fetcher is
+// stamped onto the resulting Document.CSSResourceFetcher so the pkg/css layer
+// can resolve @import targets at CSS-parse time.
 func ParseWithFetcher(htmlContent string, cssFetcher CSSFetcher) (*Document, error) {
 	parser := NewParser(htmlContent)
 	parser.cssFetcher = cssFetcher
-	return parser.Parse()
+	doc, err := parser.Parse()
+	if doc != nil {
+		doc.CSSResourceFetcher = cssFetcher
+	}
+	return doc, err
 }
 
 // ParseFragment parses an HTML fragment string and returns detached child nodes.

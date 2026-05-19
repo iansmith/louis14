@@ -435,8 +435,19 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 				if cs.Name != "" {
 					stylesheet.CounterStyles = append(stylesheet.CounterStyles, cs)
 				}
+			} else if strings.HasPrefix(trimmed, "@import") {
+				// Fetch and parse the imported sheet with a fresh
+				// ParserContext rooted at the imported sheet's own URL
+				// dir, so url() refs inside resolve against that base
+				// (mirrors Blink's StyleRuleImport::NotifyFinished —
+				// core/css/style_rule_import.cc:77-82 @ d4ecdfed8).
+				// Rules + FontFaces + CounterStyles + Keyframes +
+				// LayerOrder fold into the importing stylesheet at the
+				// @import's position. No-op when ctx.Fetcher is nil
+				// (matches pre-Phase-6 silent-skip behavior).
+				resolveAtImport(ctx, trimmed, stylesheet)
 			}
-			// Unknown at-rules (@three-dee, @import, etc.) are silently skipped
+			// Unknown at-rules (@three-dee, …) are silently skipped.
 			continue
 		}
 
@@ -515,9 +526,11 @@ func splitRules(css string) []string {
 				break
 			}
 			if !isAfterCloseBrace {
-				// At-rule terminator — emit rule text if it's an @layer statement
+				// At-rule terminator (no body) — emit rule text for at-rules
+				// that don't carry a `{ … }` body but still need to reach the
+				// at-rule scanner: @layer (declaration form) and @import.
 				ruleText := strings.TrimSpace(css[start : i+1])
-				if strings.HasPrefix(ruleText, "@layer") {
+				if strings.HasPrefix(ruleText, "@layer") || strings.HasPrefix(ruleText, "@import") {
 					rules = append(rules, ruleText)
 				}
 				start = i + 1

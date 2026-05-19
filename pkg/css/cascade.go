@@ -567,11 +567,15 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 // doc, rebuilding it if Stylesheets has been mutated since the last call
 // (length or any source text/href differs, or doc.BaseDir changed).
 //
-// Each entry's ParserContext.BaseDir is derived per-source:
-//   - <style> block (Href empty): BaseDir = doc.BaseDir.
-//   - <link href="X">: BaseDir = url.URLDir(url.CompleteURL(X, doc.BaseDir))
-//     so url() refs inside the external sheet resolve against the sheet's
-//     own location, not the owning document's.
+// Each entry's ParserContext carries:
+//   - BaseDir, derived per-source:
+//       - <style> block (Href empty): BaseDir = doc.BaseDir.
+//       - <link href="X">: BaseDir = url.URLDir(url.CompleteURL(X, doc.BaseDir))
+//         so url() refs inside the external sheet resolve against the sheet's
+//         own location, not the owning document's.
+//   - Fetcher = doc.CSSResourceFetcher, so @import resolution
+//     (LOU-138 phase 6) loads imported sheets through the same fetcher
+//     the HTML parser used for <link rel=stylesheet> fetches.
 //
 // The wrappers parse lazily on first ParsedStylesheet() call, so this
 // function is cheap on the hot path — only the source-slice equality check
@@ -582,7 +586,9 @@ func getOrBuildStyleSheetContents(doc *html.Document) []*StyleSheetContents {
 	}
 	sheets := make([]*StyleSheetContents, len(doc.Stylesheets))
 	for i, source := range doc.Stylesheets {
-		sheets[i] = NewStyleSheetContents(source.Text, NewParserContext(sheetBaseDir(source, doc.BaseDir)))
+		ctx := NewParserContext(sheetBaseDir(source, doc.BaseDir))
+		ctx.Fetcher = doc.CSSResourceFetcher
+		sheets[i] = NewStyleSheetContents(source.Text, ctx)
 		sheets[i].Href = source.Href
 	}
 	doc.ParsedStylesheetsCache = sheets

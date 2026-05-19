@@ -76,6 +76,19 @@ type Document struct {
 	// Typed as any to keep pkg/html from importing pkg/css. The concrete
 	// type is []*css.StyleSheetContents.
 	ParsedStylesheetsCache any
+
+	// CSSResourceFetcher is the per-document fetcher used by pkg/css to
+	// resolve `@import` targets at CSS-parse time. Mirrors Blink's
+	// `Document::Fetcher()`, which `StyleRuleImport::NotifyFinished`
+	// consults to load imported sheets
+	// (third_party/blink/renderer/core/css/style_rule_import.cc:77-82 @
+	// chromium-main d4ecdfed88f962439247c2ad36b8fe47805b1520). Set by
+	// ParseWithFetcher; nil for parses that don't supply a fetcher
+	// (in which case @import silently no-ops, matching pre-LOU-138-phase-6
+	// behavior). Same shape as CSSFetcher; defined as a bare function
+	// type here to avoid forward references that would constrain field
+	// ordering.
+	CSSResourceFetcher func(uri string) (string, error)
 }
 
 func NewDocument() *Document {

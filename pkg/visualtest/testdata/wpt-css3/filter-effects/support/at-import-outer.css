@@ -1,0 +1,3 @@
+/* outer.css imports inner.css from a subdirectory. Inner.css's url(...)
+   refs must resolve against inner.css's own location, NOT outer.css's. */
+@import "imports/at-import-inner.css";
