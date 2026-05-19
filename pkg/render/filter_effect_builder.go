@@ -57,7 +57,7 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 		return nil
 	}
 	if len(ops) == 1 && ops[0].Name == "url" {
-		return b.BuildReferenceFilter(ops[0].URL)
+		return b.BuildReferenceFilter(ops[0].URL.Absolute)
 	}
 	const space = filters.InterpolationSpaceSRGB
 	src := filters.NewSourceGraphic(space)
@@ -66,7 +66,7 @@ func (b *FilterEffectBuilder) BuildFilterEffect(ops []css.FilterFunction) *filte
 	var prev filters.FilterEffect = src
 	for _, op := range ops {
 		if op.Name == "url" {
-			sub := b.buildReferenceFilterWithSource(op.URL, prev)
+			sub := b.buildReferenceFilterWithSource(op.URL.Absolute, prev)
 			if sub != nil && sub.LastEffect != nil {
 				prev = sub.LastEffect
 			}

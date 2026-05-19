@@ -17,17 +17,6 @@ type Node struct {
 	// NestedDocument is set on <iframe> and <object> nodes after layout to
 	// retain the parsed sub-document. This allows JS to access iframe.contentDocument.
 	NestedDocument *Document
-
-	// IframeBase records the iframe-document directory when this node
-	// lives inside an iframe's nested doc. It mirrors the directory
-	// prefix that pkg/layout pre-bakes into relative `url(...)`
-	// references in inline styles (a louis14 string-baking shortcut for
-	// URL resolution — Blink instead stores CSSValue-bound parse-time
-	// absolute URLs, see layout.AdoptNodeFromIframe for the divergence
-	// note). JS cross-document appendChild reads this to reverse the
-	// pre-baking when a node is adopted out of the iframe. Empty for
-	// nodes parsed in the main document.
-	IframeBase string
 }
 
 type NodeType int
@@ -42,6 +31,20 @@ type Document struct {
 	Stylesheets   []string // Phase 3: CSS from <style> tags
 	Scripts       []string // JavaScript from <script> tags
 	ViewportWidth int      // From <meta name="viewport" content="width=...">
+
+	// BaseDir is the document's base directory for resolving relative
+	// `url()` references inside CSS values, mirroring Blink's
+	// `Document::BaseURL()` (the value captured into a `CSSParserContext`
+	// at parse time, see `core/css/parser/css_parser_context.cc:76-78` @
+	// chromium-main bf955d02bf0b0c67868b2e62359c0af199af9acc). Empty for
+	// the top-level document (URLs resolve against the renderer's
+	// basePath). For nested documents (iframe/object content) the layout
+	// engine sets it to the path of the nested doc relative to the outer
+	// document's BaseDir, so a moved-out node's URLs naturally re-resolve
+	// against the outer base on the next cascade pass — louis14's
+	// re-cascade-per-layout-pass pipeline obviates the explicit
+	// `Element::DidMoveToNewDocument` hook Blink needs.
+	BaseDir string
 }
 
 func NewDocument() *Document {

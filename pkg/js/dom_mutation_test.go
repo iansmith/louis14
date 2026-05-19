@@ -60,25 +60,23 @@ func TestIframeContentDocumentCrossDocAppendChild(t *testing.T) {
 	// Verifies that contentDocument exposes the nested doc's querySelector,
 	// that iframe.remove() detaches the iframe, and that cross-doc appendChild
 	// adopts the node into the main document.
+	//
+	// Per LOU-137 v2: appendChild does NOT mutate the moved node's
+	// inline style. The cross-document URL re-resolution semantic
+	// (`Element::DidMoveToNewDocument` in Blink) is achieved by the
+	// next cascade pass — the moved node, now in the outer document,
+	// inherits the outer Document.BaseDir via Style.BaseDir, and
+	// parseFilterList resolves its `url()` against that base on the
+	// re-cascade. The DOM string stays verbatim.
 	doc := parseHTML(t, `<html><body><iframe id="frame"></iframe></body></html>`)
 
-	// Build the nested document (what layout would normally produce when the
-	// iframe's src is fetched) AND tag every node with IframeBase + a pre-baked
-	// inline style URL, the way layoutNestedDocument does for real iframes.
-	nested, err := html.Parse(`<html><body><div id="inner" style="filter: url(support/support/hueRotate.svg#f)">moved</div></body></html>`)
+	// Build the nested document the way layoutNestedDocument would: the
+	// inline style carries the ORIGINAL relative URL — no pre-baking.
+	nested, err := html.Parse(`<html><body><div id="inner" style="filter: url(support/hueRotate.svg#f)">moved</div></body></html>`)
 	if err != nil {
 		t.Fatalf("nested parse: %v", err)
 	}
-	var tag func(*html.Node)
-	tag = func(n *html.Node) {
-		if n.Type == html.ElementNode {
-			n.IframeBase = "support"
-		}
-		for _, c := range n.Children {
-			tag(c)
-		}
-	}
-	tag(nested.Root)
+	nested.BaseDir = "support"
 
 	iframe := getElementById(doc.Root, "frame")
 	if iframe == nil {
@@ -102,12 +100,10 @@ func TestIframeContentDocumentCrossDocAppendChild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Iframe should be detached
 	if iframe.Parent != nil {
 		t.Errorf("iframe still has parent %q after remove()", iframe.Parent.TagName)
 	}
 
-	// Inner div should now live under main body, not in the nested doc.
 	if movedFromNested := getElementById(nested.Root, "inner"); movedFromNested != nil {
 		t.Errorf("inner div still found in nested doc after appendChild")
 	}
@@ -122,15 +118,15 @@ func TestIframeContentDocumentCrossDocAppendChild(t *testing.T) {
 	if movedDiv.Parent != body {
 		t.Errorf("moved div parent = %v, want main body", movedDiv.Parent)
 	}
-	// adoptNode side-effect: the iframe-base prefix must be stripped from
-	// the inline style and IframeBase must be cleared, so the cascade
-	// re-resolves the URL against the outer document at paint time.
+	// The inline style is preserved verbatim across the move. The next
+	// cascade pass will see this string and parseFilterList will
+	// resolve it against the OUTER document's BaseDir (empty), leaving
+	// the URL relative for the renderer's fetcher to resolve against
+	// the outer basePath — which is exactly the post-move semantic
+	// Blink's DidMoveToNewDocument hook produces.
 	wantStyle := `filter: url(support/hueRotate.svg#f)`
 	if got := movedDiv.Attributes["style"]; got != wantStyle {
 		t.Errorf("moved div style:\n  got  = %q\n  want = %q", got, wantStyle)
-	}
-	if movedDiv.IframeBase != "" {
-		t.Errorf("moved div IframeBase not cleared: %q", movedDiv.IframeBase)
 	}
 }
 

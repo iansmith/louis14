@@ -517,8 +517,12 @@ func collectKeyframesMaps(stylesheets []*Stylesheet) []map[string][]KeyframeRule
 // interpolateFilterValue interpolates between two CSS filter-value-list
 // strings at fraction frac. Returns (value, true) on success.
 func interpolateFilterValue(from, to string, frac float64) (string, bool) {
-	a := parseFilterList(normalizeFilterNone(from))
-	b := parseFilterList(normalizeFilterNone(to))
+	// Animation interpolation doesn't carry the owning document's BaseDir
+	// — interp produces filter strings that already contain whatever URL
+	// form was in the keyframe value, so no further base-relative
+	// resolution is meaningful here.
+	a := parseFilterList(normalizeFilterNone(from), "")
+	b := parseFilterList(normalizeFilterNone(to), "")
 	fromNone := strings.TrimSpace(strings.ToLower(from)) == "none"
 	toNone := strings.TrimSpace(strings.ToLower(to)) == "none"
 

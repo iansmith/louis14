@@ -81,6 +81,7 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	ctx := &LayoutContext{
 		ViewportWidth:   le.viewport.width,
 		ViewportHeight:  le.viewport.height,
+		BaseDir:         doc.BaseDir,
 		ImageFetcher:    le.imageFetcher,
 		DocumentFetcher: le.documentFetcher,
 		FontConfig:      fontConfig,
@@ -198,28 +199,30 @@ type NestedDocumentResult struct {
 // sub-resources of the nested document resolve correctly relative to its location.
 // Returns the root layout result, or nil if parsing/layout fails.
 func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHeight float64, nestedDocURI string) *NestedDocumentResult {
-	// Resolve relative url() references in the embedded document's CSS so that
-	// background images and other sub-resources render correctly. The outer
-	// renderer uses the outer document's base path; by pre-resolving relative
-	// URLs against the nested doc's directory we ensure correctness.
-	iframeBase := ""
-	if base := path.Dir(nestedDocURI); base != "" && base != "." {
-		htmlContent = ResolveRelativeURLsInHTML(htmlContent, base)
-		iframeBase = base
+	// Compute the nested document's BaseDir by joining the outer doc's
+	// BaseDir with the iframe src's directory. URLs inside the nested
+	// doc resolve against this base — relative to the outer renderer's
+	// basePath — so the outer renderer's single fetcher can serve sub-
+	// resources for any depth of nesting. Mirrors how Blink threads the
+	// owner-document base through `CSSParserContext` for each parse pass.
+	nestedBaseDir := path.Join(ctx.BaseDir, path.Dir(nestedDocURI))
+	if nestedBaseDir == "." {
+		nestedBaseDir = ""
+	}
+	// Pre-resolve relative url() references inside <style> blocks so
+	// not-yet-migrated CSS-URL-bearing properties (background-image,
+	// mask-image, ...) still find their sub-resources. Inline-style
+	// URLs flow through parse-time resolution in pkg/css/style.go via
+	// Style.BaseDir — they no longer need string-baking.
+	if nestedBaseDir != "" {
+		htmlContent = ResolveRelativeURLsInHTML(htmlContent, nestedBaseDir)
 	}
 
 	doc, err := html.Parse(htmlContent)
 	if err != nil {
 		return nil
 	}
-
-	// Tag every node in the nested document with its iframe base directory.
-	// JS cross-document appendChild reads this to reverse the URL pre-baking
-	// when a node is adopted into the outer document (per Blink's
-	// Document::adoptNode semantics, mirrored by AdoptNodeFromIframe).
-	if iframeBase != "" {
-		tagIframeBase(doc.Root, iframeBase)
-	}
+	doc.BaseDir = nestedBaseDir
 
 	computedStyles := css.ApplyStylesToDocument(doc, vpWidth, vpHeight)
 	css.ResolveLogicalPropertiesInTree(doc.Root, computedStyles)
@@ -245,6 +248,7 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	nestedCtx := &LayoutContext{
 		ViewportWidth:   vpWidth,
 		ViewportHeight:  vpHeight,
+		BaseDir:         doc.BaseDir,
 		ImageFetcher:    ReRootedImageFetcher(ctx.ImageFetcher, nestedDocURI),
 		DocumentFetcher: ReRootedDocumentFetcher(ctx.DocumentFetcher, nestedDocURI),
 		FontConfig:      ctx.FontConfig,

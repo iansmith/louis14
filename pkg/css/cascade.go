@@ -526,6 +526,14 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	// Recursively apply styles to all nodes
 	applyStylesToNode(doc.Root, stylesheets, styles, viewportWidth, viewportHeight)
 
+	// Propagate the owning document's BaseDir onto every Style — see
+	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
+	if doc.BaseDir != "" {
+		for _, style := range styles {
+			style.BaseDir = doc.BaseDir
+		}
+	}
+
 	return styles
 }
 

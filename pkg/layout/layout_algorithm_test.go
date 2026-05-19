@@ -1,105 +1,48 @@
 package layout
 
 import (
+	"strings"
 	"testing"
-
-	"louis14/pkg/html"
 )
 
-func TestResolveRelativeURLsInCSS_StripBaseURLsInCSS_RoundTrip(t *testing.T) {
-	// Verify stripBaseURLsInCSS is the inverse of ResolveRelativeURLsInCSS
-	// for the three quoting variants and a relative URL. Absolute and
-	// data:/http: URLs are unaffected in either direction.
+func TestResolveRelativeURLsInCSS_BasicQuotingVariants(t *testing.T) {
+	// ResolveRelativeURLsInCSS rewrites relative url() references against
+	// the supplied base across the three quoting variants. Absolute URLs
+	// (`/`, `data:`, `http(s):`) are left untouched.
 	cases := []struct {
 		name string
 		raw  string
+		want string
 	}{
-		{"double-quote", `filter: url("support/foo.svg#x")`},
-		{"single-quote", `filter: url('support/foo.svg#x')`},
-		{"no-quote", `filter: url(support/foo.svg#x)`},
-		{"multiple", `background-image: url(a/x.png); filter: url("a/y.svg#f")`},
+		{"double-quote", `filter: url("foo.svg#x")`, `filter: url("support/foo.svg#x")`},
+		{"single-quote", `filter: url('foo.svg#x')`, `filter: url('support/foo.svg#x')`},
+		{"no-quote", `filter: url(foo.svg#x)`, `filter: url(support/foo.svg#x)`},
+		{"absolute-untouched", `background-image: url(/abs/path.png)`, `background-image: url(/abs/path.png)`},
+		{"data-untouched", `filter: url("data:image/svg+xml,...")`, `filter: url("data:image/svg+xml,...")`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rewritten := ResolveRelativeURLsInCSS(tc.raw, "support")
-			roundTrip := stripBaseURLsInCSS(rewritten, "support")
-			if roundTrip != tc.raw {
-				t.Errorf("roundtrip failed:\n  raw      = %q\n  rewritten= %q\n  back     = %q", tc.raw, rewritten, roundTrip)
+			got := ResolveRelativeURLsInCSS(tc.raw, "support")
+			if got != tc.want {
+				t.Errorf("got  = %q\nwant = %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestStripBaseURLsInCSS_AbsoluteUntouched(t *testing.T) {
-	// Absolute URLs are not pre-baked, so the strip pass must leave them alone.
-	for _, raw := range []string{
-		`background-image: url(/abs/path.png)`,
-		`filter: url("data:image/svg+xml,...")`,
-		`filter: url(http://example.com/x.svg)`,
-	} {
-		got := stripBaseURLsInCSS(raw, "support")
-		if got != raw {
-			t.Errorf("stripBaseURLsInCSS modified absolute URL\n  in  = %q\n  out = %q", raw, got)
-		}
+func TestResolveRelativeURLsInHTML_StyleAttributePassthrough(t *testing.T) {
+	// Per LOU-137 v2: inline `style=""` attribute URLs are NOT rewritten
+	// — they flow through parse-time resolution via Style.BaseDir.
+	// Only <style>...</style> blocks are still pre-baked.
+	in := `<div style="filter: url(foo.svg#x)"></div>` +
+		`<style>div { background-image: url(bar.png); }</style>`
+	got := ResolveRelativeURLsInHTML(in, "support")
+	wantStyleAttrUntouched := `<div style="filter: url(foo.svg#x)"></div>`
+	if !strings.Contains(got, wantStyleAttrUntouched) {
+		t.Errorf("inline style attribute was rewritten (must be left for parse-time resolution):\n  got = %q", got)
 	}
-}
-
-func TestAdoptNodeFromIframe_RestoresInlineStyleURLs(t *testing.T) {
-	// Construct the post-pre-bake state: a div whose inline style was
-	// rewritten by ResolveRelativeURLsInHTML against iframe base "support".
-	// AdoptNodeFromIframe should restore the original relative URL and
-	// clear IframeBase so further adopt calls are no-ops.
-	div := &html.Node{
-		Type:    html.ElementNode,
-		TagName: "div",
-		Attributes: map[string]string{
-			"style": `filter: url(support/support/hueRotate.svg#MyFilter); background-image: url(support/bg.png)`,
-		},
-		IframeBase: "support",
-	}
-	// Add a child with its own inline style + IframeBase to verify the
-	// recursive walk.
-	child := &html.Node{
-		Type:    html.ElementNode,
-		TagName: "img",
-		Attributes: map[string]string{
-			"style": `filter: url(support/support/blur.svg#b)`,
-		},
-		IframeBase: "support",
-	}
-	div.Children = []*html.Node{child}
-
-	AdoptNodeFromIframe(div)
-
-	wantDivStyle := `filter: url(support/hueRotate.svg#MyFilter); background-image: url(bg.png)`
-	if got := div.Attributes["style"]; got != wantDivStyle {
-		t.Errorf("div.style after adopt:\n  got  = %q\n  want = %q", got, wantDivStyle)
-	}
-	if div.IframeBase != "" {
-		t.Errorf("div.IframeBase not cleared: %q", div.IframeBase)
-	}
-	wantChildStyle := `filter: url(support/blur.svg#b)`
-	if got := child.Attributes["style"]; got != wantChildStyle {
-		t.Errorf("child.style after adopt:\n  got  = %q\n  want = %q", got, wantChildStyle)
-	}
-	if child.IframeBase != "" {
-		t.Errorf("child.IframeBase not cleared: %q", child.IframeBase)
-	}
-}
-
-func TestAdoptNodeFromIframe_NoOpWithoutIframeBase(t *testing.T) {
-	// A node with IframeBase = "" is treated as already-adopted; the walk
-	// must not modify anything.
-	n := &html.Node{
-		Type:    html.ElementNode,
-		TagName: "div",
-		Attributes: map[string]string{
-			"style": `filter: url(support/foo.svg#x)`,
-		},
-	}
-	orig := n.Attributes["style"]
-	AdoptNodeFromIframe(n)
-	if n.Attributes["style"] != orig {
-		t.Errorf("AdoptNodeFromIframe modified node without IframeBase: %q", n.Attributes["style"])
+	wantStyleBlockRewritten := `background-image: url(support/bar.png)`
+	if !strings.Contains(got, wantStyleBlockRewritten) {
+		t.Errorf("<style>-block URL was NOT rewritten:\n  got = %q\n  want substring %q", got, wantStyleBlockRewritten)
 	}
 }

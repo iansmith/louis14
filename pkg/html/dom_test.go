@@ -180,9 +180,9 @@ func TestSerializeOuter(t *testing.T) {
 
 func TestSerializeVoidElement(t *testing.T) {
 	n := &Node{
-		Type:       ElementNode,
-		TagName:    "div",
-		Children:   make([]*Node, 0),
+		Type:     ElementNode,
+		TagName:  "div",
+		Children: make([]*Node, 0),
 	}
 	br := &Node{Type: ElementNode, TagName: "br", Children: make([]*Node, 0)}
 	n.AddChild(br)

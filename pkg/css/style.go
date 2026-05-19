@@ -3,17 +3,64 @@ package css
 import (
 	"fmt"
 	"math"
+	"path"
 	"strconv"
 	"strings"
 
 	"louis14/pkg/html"
 )
 
+// ResolveURL applies louis14's parse-time resolution rule to a single
+// `url()` inner value, mirroring Blink's
+// `CSSParserContext::CompleteURL` over `document.BaseURL()`. Returns
+// the input unchanged when the URL is already absolute (scheme- or
+// root-rooted) or when baseDir is empty; otherwise joins baseDir with
+// the URL via path.Join so `../foo` normalises correctly. The single
+// source of truth for both inline-style (parseFilterList) and
+// <style>-block (pkg/layout's ResolveRelativeURLsInCSS) URL rewriting.
+func ResolveURL(raw, baseDir string) string {
+	if baseDir == "" || baseDir == "." || isAbsoluteCSSURL(raw) {
+		return raw
+	}
+	return path.Join(baseDir, raw)
+}
+
+// isAbsoluteCSSURL reports whether raw is already an absolute URL form
+// that must not be base-joined.
+func isAbsoluteCSSURL(raw string) bool {
+	return strings.HasPrefix(raw, "/") ||
+		strings.HasPrefix(raw, "data:") ||
+		strings.HasPrefix(raw, "http://") ||
+		strings.HasPrefix(raw, "https://") ||
+		strings.HasPrefix(raw, "file://")
+}
+
+// URLData mirrors Blink's `CSSUrlData` (`core/css/css_url_data.h:57-150` @
+// chromium-main bf955d02bf0b0c67868b2e62359c0af199af9acc): a parsed
+// `url(...)` reference carries both the relative form (as written in the
+// source) and the absolute form (resolved against the parsing
+// document's base URL at parse time). louis14 stores both so consumers
+// fetch by `Absolute` while `Relative` survives for serialization /
+// getComputedStyle / cross-document re-resolution on the next cascade pass.
+type URLData struct {
+	Relative string // The original `url()` inner value as written.
+	Absolute string // Resolved against the owning document's BaseDir.
+}
+
 type Style struct {
 	Properties     map[string]string
 	ViewportWidth  float64 // Viewport width in pixels (for vw/vmin/vmax units)
 	ViewportHeight float64 // Viewport height in pixels (for vh/vmin/vmax units)
 	ChWidth        float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
+
+	// BaseDir is the owning document's BaseDir, propagated by the cascade
+	// (see ApplyStylesToDocument). It feeds parse-time `url()` resolution
+	// for property accessors that produce URLData (GetFilter,
+	// GetBackdropFilter). Empty for top-level documents — URLs stay
+	// relative and the renderer's fetcher resolves them against its
+	// basePath. Non-empty for nested documents — relative URLs resolve
+	// against this directory at the moment the CSS value is parsed.
+	BaseDir string
 
 	// AppliedTextDecorations is the accumulated text-decoration vector for this
 	// element. CSS Text Decor 3 §2: text-decoration is NOT inherited; instead,
@@ -37,6 +84,7 @@ func (s *Style) Clone() *Style {
 		ViewportWidth:  s.ViewportWidth,
 		ViewportHeight: s.ViewportHeight,
 		ChWidth:        s.ChWidth,
+		BaseDir:        s.BaseDir,
 	}
 	for k, v := range s.Properties {
 		dst.Properties[k] = v
@@ -8520,7 +8568,9 @@ type FilterFunction struct {
 	ShadowUseCurrentColor bool
 
 	// URL is set for a url(#id) reference filter (Name == "url").
-	URL string
+	// URL.Absolute is the parse-time-resolved form consumers should fetch;
+	// URL.Relative preserves the original `url()` inner value.
+	URL URLData
 }
 
 // GetFilter parses the filter property and returns filter functions
@@ -8529,13 +8579,17 @@ func (s *Style) GetFilter() []FilterFunction {
 	if !ok || val == "none" {
 		return nil
 	}
-	return parseFilterList(val)
+	return parseFilterList(val, s.BaseDir)
 }
 
 // parseFilterList parses a CSS <filter-value-list> — a whitespace-separated
 // list of filter functions and/or url() references. Shared by GetFilter and
-// GetBackdropFilter.
-func parseFilterList(val string) []FilterFunction {
+// GetBackdropFilter. baseDir is the owning document's BaseDir; relative
+// url() references resolve against it at parse time, matching Blink's
+// `CSSUrlData` parse-time resolution
+// (`core/css/css_url_data.cc:82-95` @ chromium-main
+// bf955d02bf0b0c67868b2e62359c0af199af9acc).
+func parseFilterList(val string, baseDir string) []FilterFunction {
 	var filters []FilterFunction
 	val = strings.TrimSpace(val)
 	for len(val) > 0 {
@@ -8553,10 +8607,12 @@ func parseFilterList(val string) []FilterFunction {
 		arg := strings.TrimSpace(val[parenIdx+1 : parenIdx+closeIdx])
 		switch name {
 		case "url":
-			// url(#id) reference filter. Strip optional quotes.
 			u := strings.TrimSpace(arg)
 			u = strings.Trim(u, "\"'")
-			filters = append(filters, FilterFunction{Name: "url", URL: u})
+			filters = append(filters, FilterFunction{
+				Name: "url",
+				URL:  URLData{Relative: u, Absolute: ResolveURL(u, baseDir)},
+			})
 		case "drop-shadow":
 			filters = append(filters, parseDropShadowFunction(arg))
 		case "blur":
@@ -8958,7 +9014,7 @@ func (s *Style) GetBackdropFilter() []FilterFunction {
 		return nil
 	}
 	// backdrop-filter accepts the same <filter-value-list> as filter.
-	return parseFilterList(val)
+	return parseFilterList(val, s.BaseDir)
 }
 
 // GetBorderImageSource returns the border-image-source value.

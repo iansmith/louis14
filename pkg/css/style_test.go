@@ -34,8 +34,13 @@ func TestParseInlineStyle_DataURLContainingSemicolon(t *testing.T) {
 		t.Errorf("filter name = %q, want url", filters[0].Name)
 	}
 	wantURL := `data:image/svg+xml;utf8,<svg><filter id='b'/></svg>#b`
-	if filters[0].URL != wantURL {
-		t.Errorf("filter URL:\n  got  = %q\n  want = %q", filters[0].URL, wantURL)
+	// data: URLs are absolute and bypass parse-time base-relative
+	// resolution, so both URL forms equal the raw value.
+	if filters[0].URL.Absolute != wantURL {
+		t.Errorf("filter URL.Absolute:\n  got  = %q\n  want = %q", filters[0].URL.Absolute, wantURL)
+	}
+	if filters[0].URL.Relative != wantURL {
+		t.Errorf("filter URL.Relative:\n  got  = %q\n  want = %q", filters[0].URL.Relative, wantURL)
 	}
 }
 

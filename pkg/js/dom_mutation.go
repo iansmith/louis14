@@ -2,12 +2,15 @@ package js
 
 import (
 	"louis14/pkg/html"
-	"louis14/pkg/layout"
 
 	"github.com/dop251/goja"
 )
 
 // appendChildFn returns a JS function that implements node.appendChild(child).
+// Cross-document moves take no special action — the next cascade pass
+// re-parses the moved node's inline style against the new owner doc's
+// BaseDir, which is louis14's equivalent of Blink's
+// Element::DidMoveToNewDocument URL re-resolution hook.
 func (e *elementAccessor) appendChildFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
@@ -20,14 +23,6 @@ func (e *elementAccessor) appendChildFn() func(call goja.FunctionCall) goja.Valu
 		// Remove from old parent if already in tree
 		if child.Parent != nil {
 			child.Parent.RemoveChild(child)
-		}
-		// Cross-document adoptNode: when a child carrying an iframe-base
-		// tag is appended into a node that doesn't have one (i.e. into the
-		// main document), reverse the iframe's URL pre-baking on the moved
-		// subtree so the inline-style URLs re-resolve against the new
-		// owner per Blink's Document::adoptNode.
-		if child.IframeBase != "" && e.node.IframeBase == "" {
-			layout.AdoptNodeFromIframe(child)
 		}
 		e.node.AddChild(child)
 		return e.ctx.elementProxy(child)

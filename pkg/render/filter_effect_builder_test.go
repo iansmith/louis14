@@ -126,8 +126,8 @@ func TestBuildFilterEffect_MixedUrlAndShorthandChain(t *testing.T) {
 		},
 	}
 	ops := []css.FilterFunction{
-		{Name: "url", URL: "left.svg#f_left"},
-		{Name: "url", URL: "right.svg#f_right"},
+		{Name: "url", URL: css.URLData{Absolute: "left.svg#f_left"}},
+		{Name: "url", URL: css.URLData{Absolute: "right.svg#f_right"}},
 		{Name: "hue-rotate", Value: 90},
 	}
 	f := b.BuildFilterEffect(ops)
@@ -159,7 +159,7 @@ func TestBuildFilterEffect_UnresolvableUrlInChainIsSkipped(t *testing.T) {
 		},
 	}
 	ops := []css.FilterFunction{
-		{Name: "url", URL: "missing.svg#x"},
+		{Name: "url", URL: css.URLData{Absolute: "missing.svg#x"}},
 		{Name: "hue-rotate", Value: 90},
 	}
 	f := b.BuildFilterEffect(ops)

@@ -13,7 +13,7 @@ type CSSFetcher func(uri string) (string, error)
 type Parser struct {
 	tokenizer        *Tokenizer
 	doc              *Document
-	stack            []*Node // Phase 2: Stack for tracking nested elements
+	stack            []*Node    // Phase 2: Stack for tracking nested elements
 	cssFetcher       CSSFetcher // Optional fetcher for external stylesheets
 	fragmentMode     bool       // When true, <script>/<style> become DOM nodes
 	commentSeenInPre bool       // True when a comment has been seen inside a <pre> element

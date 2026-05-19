@@ -20,13 +20,16 @@ var cssURLSingleQuote = regexp.MustCompile(`(?i)url\(\s*'([^']+)'\s*\)`)
 // cssURLNoQuote matches url(...) without quotes (no parens/quotes inside).
 var cssURLNoQuote = regexp.MustCompile(`(?i)url\(\s*([^)"'\s][^)]*?)\s*\)`)
 
-// resolveURLInCSSMatch resolves a CSS url() match, prepending baseDir for relative URIs.
+// resolveURLInCSSMatch resolves a CSS url() match via css.ResolveURL —
+// the single source of truth shared with inline-style (parse-time)
+// resolution. The original `match` is returned unchanged when the URL
+// is already absolute, preserving whitespace inside the original
+// `url(...)` form.
 func resolveURLInCSSMatch(match, uri, quote, baseDir string) string {
-	if strings.HasPrefix(uri, "/") || strings.HasPrefix(uri, "http://") ||
-		strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "data:") {
+	resolved := css.ResolveURL(uri, baseDir)
+	if resolved == uri {
 		return match
 	}
-	resolved := path.Join(baseDir, uri)
 	return "url(" + quote + resolved + quote + ")"
 }
 
@@ -69,102 +72,30 @@ func ResolveRelativeURLsInCSS(cssText, baseDir string) string {
 	})
 }
 
-// stripBaseURLsInCSS reverses ResolveRelativeURLsInCSS for a single baseDir.
-// Used by JS cross-document adoptNode to un-bake URLs that were pre-resolved
-// against the iframe document at parse time, so they re-resolve against the
-// outer document at paint time.
-func stripBaseURLsInCSS(cssText, baseDir string) string {
-	if baseDir == "" || baseDir == "." {
-		return cssText
-	}
-	prefix := baseDir + "/"
-	return rewriteCSSURLs(cssText, func(match, uri, quote string) string {
-		if !strings.HasPrefix(uri, prefix) {
-			return match
-		}
-		return "url(" + quote + strings.TrimPrefix(uri, prefix) + quote + ")"
-	})
-}
-
-// tagIframeBase recursively sets IframeBase on every ElementNode in the
-// subtree. TextNodes carry no style attribute so the marker is irrelevant
-// there. Called by layoutNestedDocument so JS cross-document moves can find
-// the pre-baked prefix to reverse.
-func tagIframeBase(n *html.Node, base string) {
-	if n == nil {
-		return
-	}
-	if n.Type == html.ElementNode {
-		n.IframeBase = base
-	}
-	for _, c := range n.Children {
-		tagIframeBase(c, base)
-	}
-}
-
-// AdoptNodeFromIframe is a louis14-specific workaround for a louis14
-// shortcut: pkg/layout pre-bakes the iframe document's directory into
-// every relative `url(...)` reference inside inline-style attributes at
-// iframe parse time (ResolveRelativeURLsInHTML in this file). When JS
-// cross-document appendChild moves a node out of the iframe, those
-// pre-baked URLs would resolve against the wrong base in the new owner
-// document. This function walks the moved subtree, strips the recorded
-// iframe-base prefix from each inline-style url(...), and clears
-// IframeBase.
+// ResolveRelativeURLsInHTML rewrites relative URL references inside
+// <style> blocks of a complete HTML document string so that they are
+// rooted at baseDir. Used when loading nested documents (iframes) so
+// sub-resources (background images, mask images, …) consumed via raw
+// string values resolve against the nested doc's directory.
 //
-// This does NOT mirror Blink's Document::adoptNode
-// (`core/dom/document.cc:1721-1777` @ chromium-main
-// bf955d02bf0b0c67868b2e62359c0af199af9acc), which never touches CSS
-// URL state at all: Blink stores `url(...)` references on a CSSValue
-// (`CSSUrlData` at `core/css/css_url_data.h:57-150`, .cc:123-150 at the
-// same SHA) carrying the parse-time absolute URL resolved against the
-// parsing document's base, and adoption is a no-op on URLs. A faithful
-// mirror would require louis14 to capture parse-time base on each
-// CSSValue and never pre-bake into the inline-style string — out of
-// scope for this ticket's gate. The string-trim here recovers the same
-// observable behavior for the WPT gate test svg-relative-urls-001 and
-// for simple-prefix relative URLs in adjacent iframe tests.
+// Inline `style=""` attribute URLs are NOT rewritten here — those flow
+// through parse-time resolution in pkg/css's `parseFilterList` /
+// `Style.BaseDir` path, mirroring Blink's `CSSUrlData` parse-time-resolve
+// model (`core/css/css_url_data.cc:82-95` @ chromium-main
+// bf955d02bf0b0c67868b2e62359c0af199af9acc). Pre-baking would force the
+// cascade to double-resolve when an element moves cross-document.
 //
-// Known limitations of the string-trim approach:
-//   - Only inline `style=""` URLs are touched. Stylesheet (<style>) URLs
-//     aren't tracked here; moved DOM nodes don't take their <style> with
-//     them, so this is moot for cross-doc move.
-//   - URLs whose pre-baked form doesn't have IframeBase as a literal
-//     prefix (e.g. `url(../foo)` pre-baked to `url(foo)` by path.Join's
-//     normalisation) are left alone — they happen to remain observably
-//     correct against the outer base for the in-scope tests.
-//   - getComputedStyle after move returns the trimmed inline string;
-//     Blink returns the parse-time absolute URL. Not observable for any
-//     in-scope WPT reftest.
-func AdoptNodeFromIframe(n *html.Node) {
-	if n == nil || n.IframeBase == "" {
-		return
-	}
-	// Fast-path: regex passes are pure overhead for the typical inline style
-	// (color/dimension/transform with no url() reference). A substring test
-	// avoids three regex scans per node when nothing needs rewriting.
-	if style, ok := n.Attributes["style"]; ok && strings.Contains(style, "url(") {
-		n.Attributes["style"] = stripBaseURLsInCSS(style, n.IframeBase)
-	}
-	n.IframeBase = ""
-	for _, c := range n.Children {
-		AdoptNodeFromIframe(c)
-	}
-}
-
-// ResolveRelativeURLsInHTML rewrites relative URL references in a complete
-// HTML document string (inline styles and <style> blocks) so that they are
-// rooted at baseDir. This is used when loading nested documents (iframes)
-// so that sub-resources (background images, etc.) resolve correctly when
-// painted by the outer renderer.
+// Migrating the <style>-block path to parse-time resolution is deferred
+// — it requires threading BaseDir into the stylesheet parser proper.
+// Moved DOM nodes don't take their `<style>` with them, so the cross-
+// document-move correctness target the rest of this refactor addresses
+// isn't at risk from the deferred <style>-block path.
 func ResolveRelativeURLsInHTML(htmlContent, baseDir string) string {
 	if baseDir == "" || baseDir == "." {
 		return htmlContent
 	}
-	// Rewrite url() references in <style>...</style> blocks.
 	styleBlockPattern := regexp.MustCompile(`(?is)<style[^>]*>(.*?)</style>`)
-	htmlContent = styleBlockPattern.ReplaceAllStringFunc(htmlContent, func(block string) string {
-		// Find the content between <style> tags.
+	return styleBlockPattern.ReplaceAllStringFunc(htmlContent, func(block string) string {
 		inner := styleBlockPattern.FindStringSubmatch(block)
 		if inner == nil {
 			return block
@@ -172,17 +103,6 @@ func ResolveRelativeURLsInHTML(htmlContent, baseDir string) string {
 		rewritten := ResolveRelativeURLsInCSS(inner[1], baseDir)
 		return strings.Replace(block, inner[1], rewritten, 1)
 	})
-	// Rewrite url() references in style="" attributes.
-	styleAttrPattern := regexp.MustCompile(`(?i)style="([^"]*)"`)
-	htmlContent = styleAttrPattern.ReplaceAllStringFunc(htmlContent, func(attr string) string {
-		inner := styleAttrPattern.FindStringSubmatch(attr)
-		if inner == nil {
-			return attr
-		}
-		rewritten := ResolveRelativeURLsInCSS(inner[1], baseDir)
-		return `style="` + rewritten + `"`
-	})
-	return htmlContent
 }
 
 // LayoutAlgorithm is the interface for all formatting context algorithms.
@@ -205,6 +125,13 @@ type LayoutContext struct {
 	// Viewport dimensions for resolving viewport-relative units.
 	ViewportWidth  float64
 	ViewportHeight float64
+
+	// BaseDir is the owning document's BaseDir (the value propagated to
+	// each computed Style by ApplyStylesToDocument). Nested-document
+	// layout (layoutNestedDocument) joins it with the iframe's src
+	// directory so URLs inside the nested doc resolve against a
+	// fully-qualified-relative-to-outer base.
+	BaseDir string
 
 	// ImageFetcher for loading images during layout (intrinsic sizing).
 	ImageFetcher images.ImageFetcher
