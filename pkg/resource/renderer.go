@@ -218,10 +218,8 @@ func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
 
 	// Collect all @font-face rules
 	var allFaces []css.FontFaceRule
-	for _, cssText := range doc.Stylesheets {
-		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
-			allFaces = append(allFaces, stylesheet.FontFaces...)
-		}
+	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
+		allFaces = append(allFaces, stylesheet.FontFaces...)
 	}
 
 	if len(allFaces) == 0 {
@@ -352,10 +350,8 @@ func (r *Louis14Renderer) RenderWithDC(htmlContent string, dc textshape.DrawCont
 // collectCounterStyles extracts all @counter-style rules from a document's stylesheets.
 func collectCounterStyles(doc *html.Document) []css.CounterStyleRule {
 	var rules []css.CounterStyleRule
-	for _, cssText := range doc.Stylesheets {
-		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
-			rules = append(rules, stylesheet.CounterStyles...)
-		}
+	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
+		rules = append(rules, stylesheet.CounterStyles...)
 	}
 	return rules
 }

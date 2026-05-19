@@ -114,10 +114,8 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 
 	// Collect @counter-style rules from document stylesheets.
 	var counterStyles []css.CounterStyleRule
-	for _, cssText := range doc.Stylesheets {
-		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
-			counterStyles = append(counterStyles, stylesheet.CounterStyles...)
-		}
+	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
+		counterStyles = append(counterStyles, stylesheet.CounterStyles...)
 	}
 
 	// Render
@@ -151,10 +149,8 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 // updated FontConfig with a registry, or false if there are no web fonts.
 func buildFontConfig(doc *html.Document, basePath, wptRoot string) (text.FontConfig, bool) {
 	var allFaces []css.FontFaceRule
-	for _, cssText := range doc.Stylesheets {
-		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
-			allFaces = append(allFaces, stylesheet.FontFaces...)
-		}
+	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
+		allFaces = append(allFaces, stylesheet.FontFaces...)
 	}
 	if len(allFaces) == 0 {
 		return text.FontConfig{}, false

@@ -6,7 +6,7 @@ import "testing"
 
 func TestParseStylesheet_SingleRule(t *testing.T) {
 	css := `div { color: red; }`
-	stylesheet, err := ParseStylesheet(css)
+	stylesheet, err := ParseStylesheet(css, nil)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -36,7 +36,7 @@ func TestParseStylesheet_MultipleRules(t *testing.T) {
 		p { color: blue; }
 		span { color: green; }
 	`
-	stylesheet, err := ParseStylesheet(css)
+	stylesheet, err := ParseStylesheet(css, nil)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -116,7 +116,7 @@ func TestParseSelector_IDSelector(t *testing.T) {
 
 func TestParseStylesheet_ClassSelector(t *testing.T) {
 	css := `.highlight { background-color: yellow; }`
-	stylesheet, err := ParseStylesheet(css)
+	stylesheet, err := ParseStylesheet(css, nil)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -138,7 +138,7 @@ func TestParseStylesheet_ClassSelector(t *testing.T) {
 
 func TestParseStylesheet_IDSelector(t *testing.T) {
 	css := `#header { width: 100px; }`
-	stylesheet, err := ParseStylesheet(css)
+	stylesheet, err := ParseStylesheet(css, nil)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -160,7 +160,7 @@ func TestParseStylesheet_IDSelector(t *testing.T) {
 
 func TestParseStylesheet_MultipleProperties(t *testing.T) {
 	css := `div { color: red; width: 100px; height: 50px; }`
-	stylesheet, err := ParseStylesheet(css)
+	stylesheet, err := ParseStylesheet(css, nil)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

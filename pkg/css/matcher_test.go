@@ -70,7 +70,7 @@ func TestFindMatchingRules(t *testing.T) {
 		div { color: red; }
 		.highlight { background-color: yellow; }
 		#header { width: 100px; }
-	`)
+	`, nil)
 
 	// Create a div with class and id
 	node := &html.Node{
@@ -181,7 +181,7 @@ func TestMatchesAttributeSelector_HyphenMatch(t *testing.T) {
 
 func TestParseAndMatch_TildeEquals(t *testing.T) {
 	// End-to-end: parse a stylesheet with ~= and match against a node
-	stylesheet, err := ParseStylesheet(`[class~="bar"] { color: red; }`)
+	stylesheet, err := ParseStylesheet(`[class~="bar"] { color: red; }`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestParseAndMatch_TildeEquals(t *testing.T) {
 }
 
 func TestParseAndMatch_PipeEquals(t *testing.T) {
-	stylesheet, err := ParseStylesheet(`[lang|="en"] { color: red; }`)
+	stylesheet, err := ParseStylesheet(`[lang|="en"] { color: red; }`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestPseudoClass_ParsesWithoutError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stylesheet, err := ParseStylesheet(tt.css)
+			stylesheet, err := ParseStylesheet(tt.css, nil)
 			if err != nil {
 				t.Fatalf("ParseStylesheet returned error: %v", err)
 			}
@@ -288,7 +288,7 @@ func TestPseudoClass_NeverMatches(t *testing.T) {
 
 	for _, pc := range pseudoClasses {
 		t.Run(pc, func(t *testing.T) {
-			stylesheet, err := ParseStylesheet("a:" + pc + " { color: red; }")
+			stylesheet, err := ParseStylesheet("a:"+pc+" { color: red; }", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -314,7 +314,7 @@ func TestPseudoClass_NonHoverRulesStillMatch(t *testing.T) {
 	stylesheet, err := ParseStylesheet(`
 		a { color: blue; }
 		a:hover { color: red; }
-	`)
+	`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

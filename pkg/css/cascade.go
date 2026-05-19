@@ -433,9 +433,11 @@ func layerPriority(layerName string, layerOrder []string) int {
 	return len(layerOrder) - 1
 }
 
-// ComputeStyle computes the final style for a node by applying the cascade
-// Phase 22: Added viewport dimensions for media query evaluation
-func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) *Style {
+// ComputeStyle computes the final style for a node by applying the cascade.
+// ctx is the owning document's ParserContext — used to resolve url() tokens
+// inside the node's inline `style=""` attribute at parse time. Pass nil for
+// "no base URL" (test fixtures that don't exercise URL composition).
+func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -493,7 +495,7 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// Inline styles have highest specificity (specificity = 1000)
 	// Note: inline !important would override stylesheet !important, but we don't track that yet
 	if styleAttr, ok := node.GetAttribute("style"); ok {
-		inlineStyle := ParseInlineStyle(styleAttr)
+		inlineStyle := ParseInlineStyle(styleAttr, ctx)
 		for property, value := range inlineStyle.Properties {
 			if !importantProps[property] {
 				finalStyle.Set(property, value)
@@ -523,8 +525,13 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	// Parse all stylesheets
 	stylesheets := ParseDocumentStylesheets(doc)
 
+	// Build the document's ParserContext once — used to resolve inline
+	// `style=""` url() tokens at the same parse-time chokepoint that
+	// ParseStylesheet uses for embedded sheets.
+	ctx := NewParserContextFromDocument(doc)
+
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, viewportWidth, viewportHeight)
+	applyStylesToNode(doc.Root, stylesheets, styles, viewportWidth, viewportHeight, ctx)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -539,10 +546,13 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 
 // ParseDocumentStylesheets parses all stylesheets from a document.
 // Exported so the layout tree builder can use them for pseudo-element generation.
+// Each sheet parses against a ParserContext built from doc — Phase 2 uses the
+// document's BaseDir uniformly; Phase 5 of LOU-138 swaps in per-sheet contexts.
 func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
+	ctx := NewParserContextFromDocument(doc)
 	stylesheets := make([]*Stylesheet, 0)
 	for _, cssText := range doc.Stylesheets {
-		stylesheet, err := ParseStylesheet(cssText)
+		stylesheet, err := ParseStylesheet(cssText, ctx)
 		if err == nil {
 			stylesheets = append(stylesheets, stylesheet)
 		}
@@ -1405,9 +1415,9 @@ func resolveLogicalBoxProperties(style *Style) {
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64) {
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
+		style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		// CSS Writing Modes §2.1: If an inline box has a different writing-mode
@@ -1449,7 +1459,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 			if child.Type == html.ElementNode {
 				// First element child matches :root — compute its style to capture
 				// :root rules, then extract inheritable properties for doc.Root.
-				rootChildStyle := ComputeStyle(child, stylesheets, viewportWidth, viewportHeight)
+				rootChildStyle := ComputeStyle(child, stylesheets, viewportWidth, viewportHeight, ctx)
 				for prop := range inheritableProperties {
 					// CSS Writing Modes §7.1: writing-mode's initial value is horizontal-tb.
 					// Don't propagate from :root to synthetic doc root — otherwise every
@@ -1477,7 +1487,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx)
 	}
 }
 

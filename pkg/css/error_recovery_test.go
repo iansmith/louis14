@@ -45,7 +45,7 @@ func TestErrorRecovery_InvalidSelectors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ss, err := ParseStylesheet(tt.css)
+			ss, err := ParseStylesheet(tt.css, nil)
 			if err != nil {
 				t.Fatalf("ParseStylesheet returned error: %v", err)
 			}
@@ -87,7 +87,7 @@ func TestErrorRecovery_UnknownAtRules(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ss, err := ParseStylesheet(tt.css)
+			ss, err := ParseStylesheet(tt.css, nil)
 			if err != nil {
 				t.Fatalf("ParseStylesheet returned error: %v", err)
 			}
@@ -134,7 +134,7 @@ func TestErrorRecovery_InvalidDeclarations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ss, err := ParseStylesheet(tt.css)
+			ss, err := ParseStylesheet(tt.css, nil)
 			if err != nil {
 				t.Fatalf("ParseStylesheet returned error: %v", err)
 			}
@@ -183,7 +183,7 @@ func TestErrorRecovery_UnclosedBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ss, err := ParseStylesheet(tt.css)
+			ss, err := ParseStylesheet(tt.css, nil)
 			if err != nil {
 				t.Fatalf("ParseStylesheet returned error: %v", err)
 			}
@@ -218,7 +218,7 @@ func TestErrorRecovery_UnclosedStrings(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// The key test: this must not panic
-			ss, err := ParseStylesheet(tt.css)
+			ss, err := ParseStylesheet(tt.css, nil)
 			if err != nil {
 				t.Fatalf("ParseStylesheet returned error: %v", err)
 			}
@@ -259,7 +259,7 @@ func TestErrorRecovery_Acid2Patterns(t *testing.T) {
 		.mouth { border: 1px solid black; }
 	`
 
-	ss, err := ParseStylesheet(acid2CSS)
+	ss, err := ParseStylesheet(acid2CSS, nil)
 	if err != nil {
 		t.Fatalf("ParseStylesheet returned error: %v", err)
 	}

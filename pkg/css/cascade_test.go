@@ -6,7 +6,7 @@ import (
 )
 
 func TestComputeStyle_ElementSelector(t *testing.T) {
-	stylesheet, _ := ParseStylesheet(`div { color: red; }`)
+	stylesheet, _ := ParseStylesheet(`div { color: red; }`, nil)
 	stylesheets := []*Stylesheet{stylesheet}
 
 	node := &html.Node{
@@ -14,7 +14,7 @@ func TestComputeStyle_ElementSelector(t *testing.T) {
 		TagName: "div",
 	}
 
-	style := ComputeStyle(node, stylesheets, 800, 600)
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
 
 	if color, ok := style.Get("color"); !ok || color != "red" {
 		t.Errorf("expected color='red', got '%s'", color)
@@ -25,7 +25,7 @@ func TestComputeStyle_SpecificityOverride(t *testing.T) {
 	stylesheet, _ := ParseStylesheet(`
 		div { color: red; }
 		.highlight { color: blue; }
-	`)
+	`, nil)
 	stylesheets := []*Stylesheet{stylesheet}
 
 	node := &html.Node{
@@ -36,7 +36,7 @@ func TestComputeStyle_SpecificityOverride(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets, 800, 600)
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
 
 	// Class selector (.highlight) should override element selector (div)
 	if color, ok := style.Get("color"); !ok || color != "blue" {
@@ -49,7 +49,7 @@ func TestComputeStyle_IDHasHighestSpecificity(t *testing.T) {
 		div { color: red; }
 		.highlight { color: blue; }
 		#header { color: green; }
-	`)
+	`, nil)
 	stylesheets := []*Stylesheet{stylesheet}
 
 	node := &html.Node{
@@ -61,7 +61,7 @@ func TestComputeStyle_IDHasHighestSpecificity(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets, 800, 600)
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
 
 	// ID selector should override both class and element
 	if color, ok := style.Get("color"); !ok || color != "green" {
@@ -74,7 +74,7 @@ func TestComputeStyle_InlineStyleOverridesAll(t *testing.T) {
 		div { color: red; }
 		.highlight { color: blue; }
 		#header { color: green; }
-	`)
+	`, nil)
 	stylesheets := []*Stylesheet{stylesheet}
 
 	node := &html.Node{
@@ -87,7 +87,7 @@ func TestComputeStyle_InlineStyleOverridesAll(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets, 800, 600)
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
 
 	// Inline style should override everything
 	if color, ok := style.Get("color"); !ok || color != "purple" {
@@ -99,7 +99,7 @@ func TestComputeStyle_MultipleProperties(t *testing.T) {
 	stylesheet, _ := ParseStylesheet(`
 		div { color: red; width: 100px; }
 		.highlight { color: blue; height: 50px; }
-	`)
+	`, nil)
 	stylesheets := []*Stylesheet{stylesheet}
 
 	node := &html.Node{
@@ -110,7 +110,7 @@ func TestComputeStyle_MultipleProperties(t *testing.T) {
 		},
 	}
 
-	style := ComputeStyle(node, stylesheets, 800, 600)
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
 
 	// Should have color from .highlight (overrides div)
 	if color, ok := style.Get("color"); !ok || color != "blue" {
@@ -326,7 +326,7 @@ func TestComputeStyle_RubyUADisplays(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		style := ComputeStyle(c.node, nil, 800, 600)
+		style := ComputeStyle(c.node, nil, 800, 600, nil)
 		gotDisp := style.GetDisplay()
 		if gotDisp != c.wantDisp {
 			t.Errorf("<%s>: display = %q, want %q", c.node.TagName, gotDisp, c.wantDisp)

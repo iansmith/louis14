@@ -1997,7 +1997,7 @@ func (le *LayoutEngine) flattenContentsChildren(node *html.Node, computedStyles 
 				childStyle = le.syntheticStyles[child]
 			}
 			if childStyle == nil {
-				childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+				childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height, nil)
 				computedStyles[child] = childStyle
 			}
 			if childStyle.GetDisplay() == css.DisplayContents {
@@ -2142,7 +2142,7 @@ func (le *LayoutEngine) createFlexItemsProper(flexBox *Box, startX, startY, avai
 
 		childStyle := computedStyles[child]
 		if childStyle == nil {
-			childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+			childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height, nil)
 			computedStyles[child] = childStyle
 		}
 
@@ -3361,7 +3361,7 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 				}
 				childStyle := computedStyles[child]
 				if childStyle == nil {
-					childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+					childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height, nil)
 				}
 				if childStyle == nil {
 					continue
@@ -3392,7 +3392,7 @@ func (le *LayoutEngine) computeFlexItemAutoMinMain(node *html.Node, style *css.S
 			} else {
 				childStyle = computedStyles[child]
 				if childStyle == nil {
-					childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height)
+					childStyle = css.ComputeStyle(child, le.stylesheets, le.viewport.width, le.viewport.height, nil)
 				}
 				if childStyle == nil {
 					childStyle = style

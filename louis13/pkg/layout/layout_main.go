@@ -22,8 +22,9 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 
 	// Phase 11: Parse and store stylesheets for pseudo-element styling
 	le.stylesheets = make([]*css.Stylesheet, 0)
+	ctx := css.NewParserContextFromDocument(doc)
 	for _, cssText := range doc.Stylesheets {
-		if stylesheet, err := css.ParseStylesheet(cssText); err == nil {
+		if stylesheet, err := css.ParseStylesheet(cssText, ctx); err == nil {
 			le.stylesheets = append(le.stylesheets, stylesheet)
 		}
 	}

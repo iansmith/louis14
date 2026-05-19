@@ -1798,8 +1798,17 @@ func stripImportantSuffix(value string) (string, bool) {
 	return value, false
 }
 
-func ParseInlineStyle(styleAttr string) *Style {
+// ParseInlineStyle parses a `style=""` attribute's contents. ctx carries
+// the owning document's BaseDir; every url() token in the value is rewritten
+// to its absolute form against ctx before being stored in Style.Properties.
+// Pass nil for "no base URL" (test fixtures that don't exercise URL composition).
+func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 	style := NewStyle()
+	// Resolve every `url(...)` token against ctx.BaseDir up front — matches
+	// the Blink invariant that every url() consumed during parse goes
+	// through CSSParserContext::CompleteURL. See ParseStylesheet for the
+	// rationale on rewriting at the source-text level.
+	styleAttr = ctx.RewriteURLs(styleAttr)
 	// Use the same paren/quote-aware splitter the stylesheet parser uses.
 	// A naive strings.Split(";") mangles values like
 	// `filter: url("data:image/svg+xml;utf8,...")` at the `;` inside the
@@ -8573,13 +8582,18 @@ type FilterFunction struct {
 	URL URLData
 }
 
-// GetFilter parses the filter property and returns filter functions
+// GetFilter parses the filter property and returns filter functions. Phase 2
+// of LOU-138 moves url() resolution into ParseStylesheet / ParseInlineStyle,
+// so the stored filter value already holds absolute URLs — re-resolving here
+// against s.BaseDir would double-prepend. Passing an empty baseDir keeps
+// parseFilterList idempotent; the field stays for the not-yet-migrated
+// cross-document-move path until Phase 7 wraps filter in CSSURIValue.
 func (s *Style) GetFilter() []FilterFunction {
 	val, ok := s.Get("filter")
 	if !ok || val == "none" {
 		return nil
 	}
-	return parseFilterList(val, s.BaseDir)
+	return parseFilterList(val, "")
 }
 
 // parseFilterList parses a CSS <filter-value-list> — a whitespace-separated
@@ -9007,14 +9021,16 @@ func (s *Style) GetTabSize() (float64, bool) {
 	return 8, false // Default: 8 characters
 }
 
-// GetBackdropFilter parses the backdrop-filter property and returns filter functions.
+// GetBackdropFilter parses the backdrop-filter property and returns filter
+// functions. Phase 2 of LOU-138 makes the stored value already-absolute —
+// see GetFilter for the idempotency rationale.
 func (s *Style) GetBackdropFilter() []FilterFunction {
 	val, ok := s.Get("backdrop-filter")
 	if !ok || val == "none" || val == "" {
 		return nil
 	}
 	// backdrop-filter accepts the same <filter-value-list> as filter.
-	return parseFilterList(val, s.BaseDir)
+	return parseFilterList(val, "")
 }
 
 // GetBorderImageSource returns the border-image-source value.
@@ -9436,8 +9452,8 @@ func ApplyHTMLDirToTree(node *html.Node, styles map[*html.Node]*Style) {
 // ComputeStyleWithLogical wraps ComputeStyle and also applies HTML dir attribute
 // mapping and resolves logical properties. This should be used by layout code
 // that calls ComputeStyle for individual nodes after the initial cascade.
-func ComputeStyleWithLogical(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) *Style {
-	style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight)
+func ComputeStyleWithLogical(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
+	style := ComputeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx)
 	ApplyHTMLDirAttribute(node, style)
 	ResolveLogicalProperties(node, style)
 	return style

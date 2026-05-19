@@ -100,7 +100,7 @@ func (le *LayoutEngine) repositionFloatRightChildren(box *Box) {
 // getStyle returns the computed style for a node
 func (le *LayoutEngine) getStyle(node *html.Node) *css.Style {
 	if styleAttr, ok := node.GetAttribute("style"); ok {
-		return css.ParseInlineStyle(styleAttr)
+		return css.ParseInlineStyle(styleAttr, nil)
 	}
 	return css.NewStyle()
 }

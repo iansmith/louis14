@@ -3,7 +3,7 @@ package css
 import "testing"
 
 func TestParseInlineStyle_SingleProperty(t *testing.T) {
-	style := ParseInlineStyle("color: red")
+	style := ParseInlineStyle("color: red", nil)
 	value, ok := style.Get("color")
 	if !ok || value != "red" {
 		t.Error("expected color='red'")
@@ -11,7 +11,7 @@ func TestParseInlineStyle_SingleProperty(t *testing.T) {
 }
 
 func TestParseInlineStyle_MultipleProperties(t *testing.T) {
-	style := ParseInlineStyle("color: red; width: 100px")
+	style := ParseInlineStyle("color: red; width: 100px", nil)
 	color, _ := style.Get("color")
 	width, _ := style.Get("width")
 	if color != "red" || width != "100px" {
@@ -25,7 +25,7 @@ func TestParseInlineStyle_DataURLContainingSemicolon(t *testing.T) {
 	// splitting. Before splitInlineStyleDeclarations this was broken by
 	// a naive strings.Split(";") that mangled the data URL into two
 	// half-declarations.
-	style := ParseInlineStyle(`filter: url("data:image/svg+xml;utf8,<svg><filter id='b'/></svg>#b")`)
+	style := ParseInlineStyle(`filter: url("data:image/svg+xml;utf8,<svg><filter id='b'/></svg>#b")`, nil)
 	filters := style.GetFilter()
 	if len(filters) != 1 {
 		t.Fatalf("expected 1 filter function, got %d (%+v)", len(filters), filters)
@@ -47,7 +47,7 @@ func TestParseInlineStyle_DataURLContainingSemicolon(t *testing.T) {
 func TestParseInlineStyle_SemicolonInsideQuotes(t *testing.T) {
 	// A quoted string containing `;` must not split the surrounding
 	// declaration (e.g. `content: "a;b"` is one decl).
-	style := ParseInlineStyle(`color: red; content: "a;b"; width: 10px`)
+	style := ParseInlineStyle(`color: red; content: "a;b"; width: 10px`, nil)
 	c, _ := style.Get("color")
 	w, _ := style.Get("width")
 	if c != "red" {
@@ -59,7 +59,7 @@ func TestParseInlineStyle_SemicolonInsideQuotes(t *testing.T) {
 }
 
 func TestGetLength_PixelValue(t *testing.T) {
-	style := ParseInlineStyle("width: 100px")
+	style := ParseInlineStyle("width: 100px", nil)
 	width, ok := style.GetLength("width")
 	if !ok || width != 100.0 {
 		t.Errorf("expected width=100.0, got %f", width)
@@ -83,7 +83,7 @@ func TestParseColor_BasicColors(t *testing.T) {
 // Phase 2 tests: Box model properties
 
 func TestParseInlineStyle_MarginShorthand(t *testing.T) {
-	style := ParseInlineStyle("margin: 10px")
+	style := ParseInlineStyle("margin: 10px", nil)
 	margin := style.GetMargin()
 
 	if margin.Top != 10 || margin.Right != 10 || margin.Bottom != 10 || margin.Left != 10 {
@@ -92,7 +92,7 @@ func TestParseInlineStyle_MarginShorthand(t *testing.T) {
 }
 
 func TestParseInlineStyle_MarginTwoValues(t *testing.T) {
-	style := ParseInlineStyle("margin: 10px 20px")
+	style := ParseInlineStyle("margin: 10px 20px", nil)
 	margin := style.GetMargin()
 
 	if margin.Top != 10 || margin.Bottom != 10 {
@@ -104,7 +104,7 @@ func TestParseInlineStyle_MarginTwoValues(t *testing.T) {
 }
 
 func TestParseInlineStyle_MarginFourValues(t *testing.T) {
-	style := ParseInlineStyle("margin: 10px 20px 30px 40px")
+	style := ParseInlineStyle("margin: 10px 20px 30px 40px", nil)
 	margin := style.GetMargin()
 
 	if margin.Top != 10 || margin.Right != 20 || margin.Bottom != 30 || margin.Left != 40 {
@@ -113,7 +113,7 @@ func TestParseInlineStyle_MarginFourValues(t *testing.T) {
 }
 
 func TestParseInlineStyle_PaddingShorthand(t *testing.T) {
-	style := ParseInlineStyle("padding: 15px")
+	style := ParseInlineStyle("padding: 15px", nil)
 	padding := style.GetPadding()
 
 	if padding.Top != 15 || padding.Right != 15 || padding.Bottom != 15 || padding.Left != 15 {
@@ -122,7 +122,7 @@ func TestParseInlineStyle_PaddingShorthand(t *testing.T) {
 }
 
 func TestParseInlineStyle_BorderShorthand(t *testing.T) {
-	style := ParseInlineStyle("border: 2px solid black")
+	style := ParseInlineStyle("border: 2px solid black", nil)
 
 	borderWidth := style.GetBorderWidth()
 	if borderWidth.Top != 2 || borderWidth.Right != 2 {
@@ -141,7 +141,7 @@ func TestParseInlineStyle_BorderShorthand(t *testing.T) {
 }
 
 func TestParseInlineStyle_IndividualMargins(t *testing.T) {
-	style := ParseInlineStyle("margin-top: 5px; margin-left: 10px")
+	style := ParseInlineStyle("margin-top: 5px; margin-left: 10px", nil)
 	margin := style.GetMargin()
 
 	if margin.Top != 5 {
@@ -156,7 +156,7 @@ func TestParseInlineStyle_IndividualMargins(t *testing.T) {
 }
 
 func TestParseInlineStyle_CombinedBoxModel(t *testing.T) {
-	style := ParseInlineStyle("margin: 10px; padding: 20px; border: 1px solid red")
+	style := ParseInlineStyle("margin: 10px; padding: 20px; border: 1px solid red", nil)
 
 	margin := style.GetMargin()
 	if margin.Top != 10 {

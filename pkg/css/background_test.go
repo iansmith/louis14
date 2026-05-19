@@ -178,7 +178,7 @@ func TestExpandBackgroundShorthand_WithPosition(t *testing.T) {
 }
 
 func TestParseInlineStyle_BackgroundImage(t *testing.T) {
-	s := ParseInlineStyle("background-image: url(test.png)")
+	s := ParseInlineStyle("background-image: url(test.png)", nil)
 	url, ok := s.GetBackgroundImage()
 	if !ok || url != "test.png" {
 		t.Errorf("ParseInlineStyle background-image: got (%q, %v)", url, ok)

@@ -1,6 +1,11 @@
 package css
 
-import "louis14/pkg/html"
+import (
+	"regexp"
+	"strings"
+
+	"louis14/pkg/html"
+)
 
 // ParserContext mirrors Blink's `CSSParserContext`
 // (third_party/blink/renderer/core/css/parser/css_parser_context.h:153 @
@@ -11,6 +16,10 @@ import "louis14/pkg/html"
 // Future fields (intentionally deferred until a test demands them): Charset,
 // Referrer, IsOriginClean, IsAdRelated, Mode, Fetcher. Phase 6 of LOU-138
 // adds Fetcher when @import resolution moves into ParseStylesheet.
+//
+// Methods are nil-safe: a nil receiver is treated as an empty context
+// (BaseDir = ""). This lets tests pass nil for terseness without losing the
+// Blink chokepoint shape — production code always constructs a real context.
 type ParserContext struct {
 	// BaseDir mirrors `CSSParserContext::base_url_`. Empty for top-level
 	// documents (URLs stay relative; the renderer's fetcher resolves them
@@ -33,13 +42,21 @@ func NewParserContextFromDocument(doc *html.Document) *ParserContext {
 	return NewParserContext(doc.BaseDir)
 }
 
+// baseDir returns the context's BaseDir, treating a nil receiver as empty.
+func (c *ParserContext) baseDir() string {
+	if c == nil {
+		return ""
+	}
+	return c.BaseDir
+}
+
 // CompleteURL mirrors `CSSParserContext::CompleteURL` at
 // core/css/parser/css_parser_context.cc:202 @ d4ecdfed8. Phase 1 preserves
 // the existing path.Join-based ResolveURL semantics; Phase 4 of LOU-138
 // swaps in net/url-based RFC 3986 composition so scheme-prefixed bases
 // survive intact.
 func (c *ParserContext) CompleteURL(raw string) string {
-	return ResolveURL(raw, c.BaseDir)
+	return ResolveURL(raw, c.baseDir())
 }
 
 // CollectUrlData mirrors
@@ -49,4 +66,78 @@ func (c *ParserContext) CompleteURL(raw string) string {
 // Relative form, and the context-resolved form becomes Absolute.
 func (c *ParserContext) CollectUrlData(raw string) URLData {
 	return URLData{Relative: raw, Absolute: c.CompleteURL(raw)}
+}
+
+// cssURLDoubleQuote matches url("...") with double quotes.
+var cssURLDoubleQuote = regexp.MustCompile(`(?i)url\(\s*"([^"]+)"\s*\)`)
+
+// cssURLSingleQuote matches url('...') with single quotes.
+var cssURLSingleQuote = regexp.MustCompile(`(?i)url\(\s*'([^']+)'\s*\)`)
+
+// cssURLNoQuote matches url(...) without quotes (no parens/quotes inside).
+var cssURLNoQuote = regexp.MustCompile(`(?i)url\(\s*([^)"'\s][^)]*?)\s*\)`)
+
+// RewriteURLs rewrites every relative `url(...)` token in cssText to its
+// CompleteURL form against this context's BaseDir. Mirrors Blink's parse-time
+// rewrite — each url() token in a property value funnels through
+// CSSParserContext::CompleteURL before the resulting CSSUrlData is stored
+// (core/css/properties/css_parsing_utils.cc::CollectUrlData :1777 @
+// d4ecdfed8). louis14 applies the rewrite once at the source-text level so
+// every consumer of Stylesheet.Rules / Style.Properties sees absolute URLs;
+// the per-property typed-wrapper migration (Phase 7) moves the chokepoint
+// down to per-token CollectUrlData calls.
+//
+// Empty / "." BaseDir is a no-op — top-level documents leave URLs relative
+// for the renderer's fetcher. Already-absolute refs (scheme-prefixed, data:,
+// root-relative) pass through unchanged via ResolveURL's short-circuit.
+//
+// Lifted verbatim from `pkg/layout/layout_algorithm.go::ResolveRelativeURLsInCSS`
+// (deleted in Phase 3) so the regex+walker shape stays bit-identical across
+// the move. The HTML-preprocess copy at layout_algorithm.go:64 remains in
+// place during Phase 2 and is removed in Phase 3.
+func (c *ParserContext) RewriteURLs(cssText string) string {
+	baseDir := c.baseDir()
+	if baseDir == "" || baseDir == "." {
+		return cssText
+	}
+	// Most CSS rules contain no url() tokens; skip the three regex passes
+	// when the text trivially has none.
+	if !strings.Contains(cssText, "url(") && !strings.Contains(cssText, "URL(") {
+		return cssText
+	}
+	return rewriteCSSURLs(cssText, func(match, uri, quote string) string {
+		resolved := ResolveURL(uri, baseDir)
+		if resolved == uri {
+			return match
+		}
+		return "url(" + quote + resolved + quote + ")"
+	})
+}
+
+// rewriteCSSURLs walks each url(...) reference in cssText across the three
+// quoting variants (double, single, none) and replaces each with the result
+// of fn(match, uri, quote).
+func rewriteCSSURLs(cssText string, fn func(match, uri, quote string) string) string {
+	cssText = cssURLDoubleQuote.ReplaceAllStringFunc(cssText, func(match string) string {
+		groups := cssURLDoubleQuote.FindStringSubmatch(match)
+		if groups == nil {
+			return match
+		}
+		return fn(match, groups[1], `"`)
+	})
+	cssText = cssURLSingleQuote.ReplaceAllStringFunc(cssText, func(match string) string {
+		groups := cssURLSingleQuote.FindStringSubmatch(match)
+		if groups == nil {
+			return match
+		}
+		return fn(match, groups[1], `'`)
+	})
+	cssText = cssURLNoQuote.ReplaceAllStringFunc(cssText, func(match string) string {
+		groups := cssURLNoQuote.FindStringSubmatch(match)
+		if groups == nil {
+			return match
+		}
+		return fn(match, groups[1], ``)
+	})
+	return cssText
 }

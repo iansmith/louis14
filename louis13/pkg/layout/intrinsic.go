@@ -416,7 +416,7 @@ func (le *LayoutEngine) computeStylesForTreeWithParent(root *html.Node, parentSt
 		if node == nil {
 			return
 		}
-		style := css.ComputeStyle(node, le.stylesheets, le.viewport.width, le.viewport.height)
+		style := css.ComputeStyle(node, le.stylesheets, le.viewport.width, le.viewport.height, nil)
 		if inherited != nil {
 			css.ApplyInheritedFrom(style, inherited)
 		}

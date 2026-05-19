@@ -356,14 +356,26 @@ func separateDeclsAndNested(body string) (flatDecls, nestedParts string) {
 	return decls.String(), nested.String()
 }
 
-// ParseStylesheet parses CSS stylesheet content into rules
-func ParseStylesheet(css string) (*Stylesheet, error) {
+// ParseStylesheet parses CSS stylesheet content into rules. ctx carries
+// the parse-time base URL used to resolve `url()` references — mirrors
+// Blink's CSSParserContext threaded into every Consume* call. Pass nil for
+// "no base URL" (preserves today's relative-URL-as-stored behavior, used
+// by test fixtures that don't exercise URL composition).
+func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	stylesheet := &Stylesheet{
 		Rules: make([]Rule, 0),
 	}
 
 	// Strip comments before parsing
 	css = stripCSSComments(css)
+
+	// Resolve every `url(...)` token against ctx.BaseDir BEFORE any further
+	// processing. Equivalent to threading CollectUrlData through every
+	// property parser — at the source-text level, a single pass funnels all
+	// declarations (and at-rule descriptors like @font-face src) through the
+	// Blink chokepoint. Per-property typed wrappers (Phase 7) replace this
+	// with per-token CollectUrlData calls.
+	css = ctx.RewriteURLs(css)
 
 	// Expand CSS native nesting into flat rules before parsing
 	css = expandNesting(css, "")
