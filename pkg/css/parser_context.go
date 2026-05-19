@@ -90,11 +90,6 @@ var cssURLNoQuote = regexp.MustCompile(`(?i)url\(\s*([^)"'\s][^)]*?)\s*\)`)
 // Empty / "." BaseDir is a no-op — top-level documents leave URLs relative
 // for the renderer's fetcher. Already-absolute refs (scheme-prefixed, data:,
 // root-relative) pass through unchanged via ResolveURL's short-circuit.
-//
-// Lifted verbatim from `pkg/layout/layout_algorithm.go::ResolveRelativeURLsInCSS`
-// (deleted in Phase 3) so the regex+walker shape stays bit-identical across
-// the move. The HTML-preprocess copy at layout_algorithm.go:64 remains in
-// place during Phase 2 and is removed in Phase 3.
 func (c *ParserContext) RewriteURLs(cssText string) string {
 	baseDir := c.baseDir()
 	if baseDir == "" || baseDir == "." {

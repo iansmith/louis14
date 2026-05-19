@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<title>CSS Filter Effects: filter:url() inside an iframe-loaded &lt;style&gt; block</title>
+<link rel="help" href="https://drafts.fxtf.org/filter-effects-1/#FilterProperty">
+<link rel="help" href="https://drafts.csswg.org/css-values-4/#relative-urls">
+<link rel="match" href="reference/style-block-filter-iframe-001-ref.html">
+<meta name="assert" content="A relative url() inside an iframe-loaded document's <style> block resolves against the iframe's own BaseDir (parse-time once), not double-prepended via HTML preprocessing + parse-time rewriting.">
+<style>
+  body { margin: 0; }
+  iframe { border: none; width: 100px; height: 100px; }
+</style>
+<iframe src="support/iframe-style-block-filter-test.html"></iframe>

@@ -15,9 +15,11 @@ import (
 // `CSSParserContext::CompleteURL` over `document.BaseURL()`. Returns
 // the input unchanged when the URL is already absolute (scheme- or
 // root-rooted) or when baseDir is empty; otherwise joins baseDir with
-// the URL via path.Join so `../foo` normalises correctly. The single
-// source of truth for both inline-style (parseFilterList) and
-// <style>-block (pkg/layout's ResolveRelativeURLsInCSS) URL rewriting.
+// the URL via path.Join so `../foo` normalises correctly. Sole entry
+// point for `url()` resolution: parse-time callers go through
+// `ParserContext.CompleteURL`, getter-time callers (cross-document
+// re-stamping per LOU-137 v2) call this directly with the owning
+// document's BaseDir.
 func ResolveURL(raw, baseDir string) string {
 	if baseDir == "" || baseDir == "." || isAbsoluteCSSURL(raw) {
 		return raw

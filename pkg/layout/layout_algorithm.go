@@ -2,7 +2,6 @@ package layout
 
 import (
 	"path"
-	"regexp"
 	"strings"
 
 	"louis14/pkg/css"
@@ -10,100 +9,6 @@ import (
 	"louis14/pkg/images"
 	"louis14/pkg/text"
 )
-
-// cssURLDoubleQuote matches url("...") with double quotes.
-var cssURLDoubleQuote = regexp.MustCompile(`(?i)url\(\s*"([^"]+)"\s*\)`)
-
-// cssURLSingleQuote matches url('...') with single quotes.
-var cssURLSingleQuote = regexp.MustCompile(`(?i)url\(\s*'([^']+)'\s*\)`)
-
-// cssURLNoQuote matches url(...) without quotes (no parens/quotes inside).
-var cssURLNoQuote = regexp.MustCompile(`(?i)url\(\s*([^)"'\s][^)]*?)\s*\)`)
-
-// resolveURLInCSSMatch resolves a CSS url() match via css.ResolveURL —
-// the single source of truth shared with inline-style (parse-time)
-// resolution. The original `match` is returned unchanged when the URL
-// is already absolute, preserving whitespace inside the original
-// `url(...)` form.
-func resolveURLInCSSMatch(match, uri, quote, baseDir string) string {
-	resolved := css.ResolveURL(uri, baseDir)
-	if resolved == uri {
-		return match
-	}
-	return "url(" + quote + resolved + quote + ")"
-}
-
-// rewriteCSSURLs walks each url(...) reference in cssText across the three
-// quoting variants (double, single, none) and replaces each with the result
-// of fn(uri, quote). fn returns the new full match text (e.g. "url("+q+uri'+q+")").
-func rewriteCSSURLs(cssText string, fn func(match, uri, quote string) string) string {
-	cssText = cssURLDoubleQuote.ReplaceAllStringFunc(cssText, func(match string) string {
-		groups := cssURLDoubleQuote.FindStringSubmatch(match)
-		if groups == nil {
-			return match
-		}
-		return fn(match, groups[1], `"`)
-	})
-	cssText = cssURLSingleQuote.ReplaceAllStringFunc(cssText, func(match string) string {
-		groups := cssURLSingleQuote.FindStringSubmatch(match)
-		if groups == nil {
-			return match
-		}
-		return fn(match, groups[1], `'`)
-	})
-	cssText = cssURLNoQuote.ReplaceAllStringFunc(cssText, func(match string) string {
-		groups := cssURLNoQuote.FindStringSubmatch(match)
-		if groups == nil {
-			return match
-		}
-		return fn(match, groups[1], ``)
-	})
-	return cssText
-}
-
-// ResolveRelativeURLsInCSS rewrites relative CSS url() references to be
-// relative to baseDir. Absolute URLs (data:, http://, https://, /) are left unchanged.
-func ResolveRelativeURLsInCSS(cssText, baseDir string) string {
-	if baseDir == "" || baseDir == "." {
-		return cssText
-	}
-	return rewriteCSSURLs(cssText, func(match, uri, quote string) string {
-		return resolveURLInCSSMatch(match, uri, quote, baseDir)
-	})
-}
-
-// ResolveRelativeURLsInHTML rewrites relative URL references inside
-// <style> blocks of a complete HTML document string so that they are
-// rooted at baseDir. Used when loading nested documents (iframes) so
-// sub-resources (background images, mask images, …) consumed via raw
-// string values resolve against the nested doc's directory.
-//
-// Inline `style=""` attribute URLs are NOT rewritten here — those flow
-// through parse-time resolution in pkg/css's `parseFilterList` /
-// `Style.BaseDir` path, mirroring Blink's `CSSUrlData` parse-time-resolve
-// model (`core/css/css_url_data.cc:82-95` @ chromium-main
-// bf955d02bf0b0c67868b2e62359c0af199af9acc). Pre-baking would force the
-// cascade to double-resolve when an element moves cross-document.
-//
-// Migrating the <style>-block path to parse-time resolution is deferred
-// — it requires threading BaseDir into the stylesheet parser proper.
-// Moved DOM nodes don't take their `<style>` with them, so the cross-
-// document-move correctness target the rest of this refactor addresses
-// isn't at risk from the deferred <style>-block path.
-func ResolveRelativeURLsInHTML(htmlContent, baseDir string) string {
-	if baseDir == "" || baseDir == "." {
-		return htmlContent
-	}
-	styleBlockPattern := regexp.MustCompile(`(?is)<style[^>]*>(.*?)</style>`)
-	return styleBlockPattern.ReplaceAllStringFunc(htmlContent, func(block string) string {
-		inner := styleBlockPattern.FindStringSubmatch(block)
-		if inner == nil {
-			return block
-		}
-		rewritten := ResolveRelativeURLsInCSS(inner[1], baseDir)
-		return strings.Replace(block, inner[1], rewritten, 1)
-	})
-}
 
 // LayoutAlgorithm is the interface for all formatting context algorithms.
 // Each display type (block, flex, table, grid) implements this interface.

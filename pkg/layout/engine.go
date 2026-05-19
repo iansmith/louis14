@@ -209,14 +209,6 @@ func layoutNestedDocument(ctx *LayoutContext, htmlContent string, vpWidth, vpHei
 	if nestedBaseDir == "." {
 		nestedBaseDir = ""
 	}
-	// Pre-resolve relative url() references inside <style> blocks so
-	// not-yet-migrated CSS-URL-bearing properties (background-image,
-	// mask-image, ...) still find their sub-resources. Inline-style
-	// URLs flow through parse-time resolution in pkg/css/style.go via
-	// Style.BaseDir — they no longer need string-baking.
-	if nestedBaseDir != "" {
-		htmlContent = ResolveRelativeURLsInHTML(htmlContent, nestedBaseDir)
-	}
 
 	doc, err := html.Parse(htmlContent)
 	if err != nil {
