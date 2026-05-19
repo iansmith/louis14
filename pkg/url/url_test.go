@@ -1,4 +1,4 @@
-package css
+package url
 
 import "testing"
 
@@ -132,7 +132,7 @@ func TestURLDir(t *testing.T) {
 // TestURLDirRoundTrip verifies that URLDir followed by CompleteURL with a
 // relative ref reconstructs the original directory + new filename. This is
 // the central composition contract: fetcher code does
-// `css.CompleteURL(uri, css.URLDir(parentURI))`.
+// `CompleteURL(uri, URLDir(parentURI))`.
 func TestURLDirRoundTrip(t *testing.T) {
 	cases := []struct {
 		parentURI string
@@ -160,26 +160,5 @@ func TestURLDirRoundTrip(t *testing.T) {
 					tc.newFile, tc.parentURI, dir, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestResolveURL_BackCompat pins that the historical entry point still
-// delegates correctly. Same suite as TestCompleteURL but via ResolveURL.
-func TestResolveURL_BackCompat(t *testing.T) {
-	cases := []struct {
-		raw, base, want string
-	}{
-		{"foo.svg", "", "foo.svg"},
-		{"foo.svg", ".", "foo.svg"},
-		{"foo.svg", "support", "support/foo.svg"},
-		{"/abs/foo.svg", "support", "/abs/foo.svg"},
-		{"https://x.com/a.svg", "support", "https://x.com/a.svg"},
-	}
-	for _, tc := range cases {
-		got := ResolveURL(tc.raw, tc.base)
-		if got != tc.want {
-			t.Errorf("ResolveURL(%q, %q): got %q, want %q",
-				tc.raw, tc.base, got, tc.want)
-		}
 	}
 }
