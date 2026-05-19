@@ -236,8 +236,11 @@ func TestParser_StyleTag(t *testing.T) {
 		t.Fatalf("expected 1 stylesheet, got %d", len(doc.Stylesheets))
 	}
 
-	if doc.Stylesheets[0] != "div { color: red; }" {
-		t.Errorf("expected CSS 'div { color: red; }', got '%s'", doc.Stylesheets[0])
+	if doc.Stylesheets[0].Text != "div { color: red; }" {
+		t.Errorf("expected CSS 'div { color: red; }', got '%s'", doc.Stylesheets[0].Text)
+	}
+	if doc.Stylesheets[0].Href != "" {
+		t.Errorf("<style>-block Href should be empty, got %q", doc.Stylesheets[0].Href)
 	}
 }
 
@@ -258,11 +261,11 @@ func TestParser_MultipleStyleTags(t *testing.T) {
 	}
 
 	// Whitespace is preserved in stylesheet content
-	if doc.Stylesheets[0] != "div { color: red; }" {
-		t.Errorf("first stylesheet incorrect: '%s'", doc.Stylesheets[0])
+	if doc.Stylesheets[0].Text != "div { color: red; }" {
+		t.Errorf("first stylesheet incorrect: '%s'", doc.Stylesheets[0].Text)
 	}
 
-	if doc.Stylesheets[1] != "p { color: blue; }" {
-		t.Errorf("second stylesheet incorrect: '%s'", doc.Stylesheets[1])
+	if doc.Stylesheets[1].Text != "p { color: blue; }" {
+		t.Errorf("second stylesheet incorrect: '%s'", doc.Stylesheets[1].Text)
 	}
 }

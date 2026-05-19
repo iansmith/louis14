@@ -2,10 +2,12 @@ package css
 
 import (
 	"fmt"
-	"louis14/pkg/html"
 	"slices"
 	"sort"
 	"strings"
+
+	"louis14/pkg/html"
+	urlpkg "louis14/pkg/url"
 )
 
 // Phase 3: CSS Cascade - computing final styles for a node
@@ -563,29 +565,54 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 
 // getOrBuildStyleSheetContents returns the cached []*StyleSheetContents for
 // doc, rebuilding it if Stylesheets has been mutated since the last call
-// (length or any source text differs). The wrappers themselves parse lazily
-// on first ParsedStylesheet() call, so this function is cheap on the hot
-// path — it only touches the source-text slice for the equality check.
+// (length or any source text/href differs, or doc.BaseDir changed).
+//
+// Each entry's ParserContext.BaseDir is derived per-source:
+//   - <style> block (Href empty): BaseDir = doc.BaseDir.
+//   - <link href="X">: BaseDir = url.URLDir(url.CompleteURL(X, doc.BaseDir))
+//     so url() refs inside the external sheet resolve against the sheet's
+//     own location, not the owning document's.
+//
+// The wrappers parse lazily on first ParsedStylesheet() call, so this
+// function is cheap on the hot path — only the source-slice equality check
+// runs per call.
 func getOrBuildStyleSheetContents(doc *html.Document) []*StyleSheetContents {
-	if cached, ok := doc.ParsedStylesheetsCache.([]*StyleSheetContents); ok && styleSheetCacheMatches(cached, doc.Stylesheets) {
+	if cached, ok := doc.ParsedStylesheetsCache.([]*StyleSheetContents); ok && styleSheetCacheMatches(cached, doc.Stylesheets, doc.BaseDir) {
 		return cached
 	}
-	ctx := NewParserContextFromDocument(doc)
 	sheets := make([]*StyleSheetContents, len(doc.Stylesheets))
-	for i, cssText := range doc.Stylesheets {
-		sheets[i] = NewStyleSheetContents(cssText, ctx)
+	for i, source := range doc.Stylesheets {
+		sheets[i] = NewStyleSheetContents(source.Text, NewParserContext(sheetBaseDir(source, doc.BaseDir)))
+		sheets[i].Href = source.Href
 	}
 	doc.ParsedStylesheetsCache = sheets
 	return sheets
 }
 
+// sheetBaseDir computes the per-sheet ParserContext BaseDir for a single
+// source. Mirrors Blink's `CSSStyleSheet::BaseURL`
+// (third_party/blink/renderer/core/css/css_style_sheet.cc:519 @
+// chromium-main d4ecdfed88f962439247c2ad36b8fe47805b1520): external
+// sheets resolve url() refs against their own response URL, not the
+// owning document's.
+func sheetBaseDir(source html.StylesheetSource, docBaseDir string) string {
+	if source.Href == "" {
+		return docBaseDir
+	}
+	return urlpkg.URLDir(urlpkg.CompleteURL(source.Href, docBaseDir))
+}
+
 // styleSheetCacheMatches reports whether each cached StyleSheetContents
-// still wraps the source text at the same index in sources. Per-text
-// equality (not pointer/identity) so that an HTML re-parse that produces
-// the same text doesn't force a re-parse of the CSS.
-func styleSheetCacheMatches(cached []*StyleSheetContents, sources []string) bool {
-	return slices.EqualFunc(cached, sources, func(s *StyleSheetContents, src string) bool {
-		return s.Text == src
+// still wraps the same source (Text + Href) at the same index, and the
+// document's BaseDir hasn't shifted. Per-field equality (not pointer
+// identity) so that an HTML re-parse that produces the same sources
+// doesn't force a re-parse of the CSS.
+func styleSheetCacheMatches(cached []*StyleSheetContents, sources []html.StylesheetSource, docBaseDir string) bool {
+	return slices.EqualFunc(cached, sources, func(s *StyleSheetContents, src html.StylesheetSource) bool {
+		if s.Text != src.Text || s.Href != src.Href {
+			return false
+		}
+		return s.Context.baseDir() == sheetBaseDir(src, docBaseDir)
 	})
 }
 

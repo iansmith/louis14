@@ -11,12 +11,15 @@ import "sync"
 // registration, @counter-style collection, …) share one parse.
 //
 // Blink's version stores the parsed Rule vectors directly and exposes a
-// `ParseString()` mutator; louis14's louis14 keeps the parse lazy by
-// retaining the source text and invoking ParseStylesheet on first access.
-// Phase 5 of LOU-138 swaps `Document.Stylesheets []string` for
-// `[]*StyleSheetContents` and gives each entry its own `Context` (e.g. an
-// external `<link href="sub/main.css">` sheet's BaseDir = the sheet's URL
-// directory, not the document's).
+// `ParseString()` mutator; louis14 keeps the parse lazy by retaining the
+// source text and invoking ParseStylesheet on first access.
+//
+// Phase 5 of LOU-138 gave each entry its own `Context` whose BaseDir
+// matches the sheet's own location: <style> blocks inherit doc.BaseDir;
+// external `<link href="sub/main.css">` sheets get
+// `url.URLDir(url.CompleteURL(href, doc.BaseDir))`. Href is retained
+// for cache invalidation and to mirror Blink's
+// `CSSStyleSheet::ParserOwnerURL`.
 //
 // Blink's copy-on-write sharing flags (`IsUsedFromTextCache`,
 // `referenced_from_resource_`) are intentionally omitted: no test today
@@ -25,6 +28,7 @@ import "sync"
 type StyleSheetContents struct {
 	Text    string
 	Context *ParserContext
+	Href    string // empty for <style> blocks; the link's href for external sheets
 
 	once     sync.Once
 	parsed   *Stylesheet

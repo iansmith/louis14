@@ -26,11 +26,30 @@ const (
 	TextNode
 )
 
+// StylesheetSource is one CSS source attached to a Document: either an
+// inline `<style>` block (Href is empty) or an external `<link rel=
+// stylesheet>` (Href is the link's href attribute, used to derive the
+// per-sheet BaseDir at CSS parse time). Mirrors Blink's
+// `CSSStyleSheet::ParserOwnerURL` model where each sheet carries the
+// URL it was fetched from so url() refs inside resolve against the
+// sheet's own base, not the owning document's
+// (core/css/css_style_sheet.h @ chromium-main d4ecdfed8).
+//
+// Per-sheet BaseDir is NOT computed at HTML-parse time because
+// doc.BaseDir is set after parsing for iframe documents (see
+// layoutNestedDocument). The pkg/css cascade computes it via
+// `url.URLDir(url.CompleteURL(Href, doc.BaseDir))` when each
+// StyleSheetContents is built.
+type StylesheetSource struct {
+	Text string
+	Href string // empty for <style> blocks; the link's href for external sheets
+}
+
 type Document struct {
 	Root          *Node
-	Stylesheets   []string // Phase 3: CSS from <style> tags
-	Scripts       []string // JavaScript from <script> tags
-	ViewportWidth int      // From <meta name="viewport" content="width=...">
+	Stylesheets   []StylesheetSource // CSS from <style> tags + <link rel=stylesheet>
+	Scripts       []string           // JavaScript from <script> tags
+	ViewportWidth int                // From <meta name="viewport" content="width=...">
 
 	// BaseDir is the document's base directory for resolving relative
 	// `url()` references inside CSS values, mirroring Blink's
@@ -47,19 +66,15 @@ type Document struct {
 	BaseDir string
 
 	// ParsedStylesheetsCache holds the per-document parse cache populated
-	// lazily by css.ParseDocumentStylesheets. Each entry wraps a source
-	// text from Stylesheets together with the ParserContext used to parse
-	// it, so the 2-4 callers within a single layout pass (cascade, layout
+	// lazily by css.ParseDocumentStylesheets. Each entry wraps a
+	// StylesheetSource together with the ParserContext used to parse it,
+	// so the 2-4 callers within a single layout pass (cascade, layout
 	// tree builder for pseudo-elements, @font-face registration,
 	// @counter-style collection) share one parse instead of repeating the
 	// work.
 	//
 	// Typed as any to keep pkg/html from importing pkg/css. The concrete
 	// type is []*css.StyleSheetContents.
-	//
-	// TODO(LOU-138 phase 5): delete this field; Stylesheets itself becomes
-	// []*css.StyleSheetContents and folds the wrapper into the slice
-	// directly.
 	ParsedStylesheetsCache any
 }
 
@@ -70,7 +85,7 @@ func NewDocument() *Document {
 			TagName:  "document",
 			Children: make([]*Node, 0),
 		},
-		Stylesheets: make([]string, 0),
+		Stylesheets: make([]StylesheetSource, 0),
 		Scripts:     make([]string, 0),
 	}
 }

@@ -47,7 +47,11 @@ func (p *Parser) Parse() (*Document, error) {
 				if token.TagName == "style" {
 					content := stripCDATA(p.tokenizer.ReadRawUntil("style"))
 					if strings.TrimSpace(content) != "" {
-						p.doc.Stylesheets = append(p.doc.Stylesheets, p.resolveImports(content))
+						// Inline <style> block — BaseDir derives from doc.BaseDir
+						// at CSS parse time, so leave Href empty.
+						p.doc.Stylesheets = append(p.doc.Stylesheets, StylesheetSource{
+							Text: p.resolveImports(content),
+						})
 					}
 					continue
 				}
@@ -148,13 +152,22 @@ func (p *Parser) Parse() (*Document, error) {
 				}
 			}
 
-			// Handle <link rel="stylesheet"> with data URI href
+			// Handle <link rel="stylesheet">.
 			if token.TagName == "link" {
 				if rel, ok := token.Attributes["rel"]; ok {
 					if strings.Contains(rel, "stylesheet") {
 						if href, ok := token.Attributes["href"]; ok {
 							if css := p.loadLinkStylesheet(href); css != "" {
-								p.doc.Stylesheets = append(p.doc.Stylesheets, css)
+								// External sheet — capture the href so the
+								// CSS layer can derive per-sheet BaseDir
+								// against the (possibly later-set)
+								// doc.BaseDir, so url() refs inside resolve
+								// against the sheet's own location rather
+								// than the document's.
+								p.doc.Stylesheets = append(p.doc.Stylesheets, StylesheetSource{
+									Text: css,
+									Href: href,
+								})
 							}
 						}
 					}
