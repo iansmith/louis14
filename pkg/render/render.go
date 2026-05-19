@@ -2375,13 +2375,9 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 		return false
 	}
 
-	// Extract URL from url(...) wrapper if present.
-	src := layer.BorderImageSource
-	if strings.HasPrefix(src, "url(") {
-		src = strings.TrimPrefix(src, "url(")
-		src = strings.TrimSuffix(src, ")")
-		src = strings.Trim(src, "\"'")
-	}
+	// PaintLayer.BorderImageSource is *CSSImageValue post-LOU-138 phase 7.3;
+	// the url() inner was extracted by cascade-time wrapping in paint_layer.go.
+	src := layer.BorderImageSource.Data.Absolute
 
 	img, err := images.LoadImageWithFetcher(src, r.imageFetcher)
 	if err != nil {
@@ -2747,7 +2743,7 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 // drawBorders draws all four borders of the layer's box (pre-computed styles/colors).
 func (r *Renderer) drawBorders(layer *PaintLayer) {
 	// Border-image replaces regular border drawing when a source is set.
-	if layer.BorderImageSource != "" {
+	if layer.BorderImageSource != nil {
 		if r.drawBorderImage(layer) {
 			return // border-image painted successfully
 		}

@@ -94,7 +94,7 @@ type PaintLayer struct {
 	BorderRadius css.EllipticalRadii // TopLeft, TopRight, BottomRight, BottomLeft (elliptical)
 
 	// Border image (9-slice): replaces regular border drawing when source is set.
-	BorderImageSource string               // URL or gradient; empty = none
+	BorderImageSource *css.CSSImageValue   // url() value; nil = none (LOU-138 phase 7.3)
 	BorderImageSlice  css.BorderImageSlice // 4 slice values + fill flag
 	BorderImageWidth  [4]float64           // top, right, bottom, left (px)
 	BorderImageRepeat [2]string            // [horizontal, vertical]: stretch/repeat/round/space
@@ -453,13 +453,19 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.BorderRadius = s.GetBorderRadiiResolved(box.Width, box.Height).
 		ConstrainRadii(box.Width, box.Height)
 
-	// Border image (9-slice).
+	// Border image (9-slice). Only the url() form is supported in
+	// rendering today; gradient values still pass through Style but
+	// load-time path can't fetch them as images and they fall through
+	// to regular borders. Phase 7.3 of LOU-138 typed the url() form;
+	// gradient support would need a parallel typed field.
 	if biSrc := s.GetBorderImageSource(); biSrc != "" && biSrc != "none" {
-		layer.BorderImageSource = biSrc
-		layer.BorderImageSlice = s.GetBorderImageSlice()
-		bwArr := [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
-		layer.BorderImageWidth = s.GetBorderImageWidth(bwArr)
-		layer.BorderImageRepeat = s.GetBorderImageRepeat()
+		if url, ok := css.ParseURLValue(biSrc); ok {
+			layer.BorderImageSource = &css.CSSImageValue{Data: css.URLData{Relative: url, Absolute: url}}
+			layer.BorderImageSlice = s.GetBorderImageSlice()
+			bwArr := [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
+			layer.BorderImageWidth = s.GetBorderImageWidth(bwArr)
+			layer.BorderImageRepeat = s.GetBorderImageRepeat()
+		}
 	}
 
 	// Box shadows. Resolve currentcolor to the element's text color.
