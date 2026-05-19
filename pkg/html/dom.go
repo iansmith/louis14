@@ -45,6 +45,22 @@ type Document struct {
 	// re-cascade-per-layout-pass pipeline obviates the explicit
 	// `Element::DidMoveToNewDocument` hook Blink needs.
 	BaseDir string
+
+	// ParsedStylesheetsCache holds the per-document parse cache populated
+	// lazily by css.ParseDocumentStylesheets. Each entry wraps a source
+	// text from Stylesheets together with the ParserContext used to parse
+	// it, so the 2-4 callers within a single layout pass (cascade, layout
+	// tree builder for pseudo-elements, @font-face registration,
+	// @counter-style collection) share one parse instead of repeating the
+	// work.
+	//
+	// Typed as any to keep pkg/html from importing pkg/css. The concrete
+	// type is []*css.StyleSheetContents.
+	//
+	// TODO(LOU-138 phase 5): delete this field; Stylesheets itself becomes
+	// []*css.StyleSheetContents and folds the wrapper into the slice
+	// directly.
+	ParsedStylesheetsCache any
 }
 
 func NewDocument() *Document {

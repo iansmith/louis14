@@ -3,6 +3,7 @@ package css
 import (
 	"fmt"
 	"louis14/pkg/html"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -544,20 +545,48 @@ func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight flo
 	return styles
 }
 
-// ParseDocumentStylesheets parses all stylesheets from a document.
-// Exported so the layout tree builder can use them for pseudo-element generation.
-// Each sheet parses against a ParserContext built from doc — Phase 2 uses the
-// document's BaseDir uniformly; Phase 5 of LOU-138 swaps in per-sheet contexts.
+// ParseDocumentStylesheets parses all stylesheets from a document and
+// returns the cached parses. Per-document caching (StyleSheetContents)
+// lets the 4-6 callers within one layout pass share a single parse;
+// see StyleSheetContents for the Blink-aligned wrapper.
 func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
-	ctx := NewParserContextFromDocument(doc)
-	stylesheets := make([]*Stylesheet, 0)
-	for _, cssText := range doc.Stylesheets {
-		stylesheet, err := ParseStylesheet(cssText, ctx)
+	sheets := getOrBuildStyleSheetContents(doc)
+	out := make([]*Stylesheet, 0, len(sheets))
+	for _, sheet := range sheets {
+		parsed, err := sheet.ParsedStylesheet()
 		if err == nil {
-			stylesheets = append(stylesheets, stylesheet)
+			out = append(out, parsed)
 		}
 	}
-	return stylesheets
+	return out
+}
+
+// getOrBuildStyleSheetContents returns the cached []*StyleSheetContents for
+// doc, rebuilding it if Stylesheets has been mutated since the last call
+// (length or any source text differs). The wrappers themselves parse lazily
+// on first ParsedStylesheet() call, so this function is cheap on the hot
+// path — it only touches the source-text slice for the equality check.
+func getOrBuildStyleSheetContents(doc *html.Document) []*StyleSheetContents {
+	if cached, ok := doc.ParsedStylesheetsCache.([]*StyleSheetContents); ok && styleSheetCacheMatches(cached, doc.Stylesheets) {
+		return cached
+	}
+	ctx := NewParserContextFromDocument(doc)
+	sheets := make([]*StyleSheetContents, len(doc.Stylesheets))
+	for i, cssText := range doc.Stylesheets {
+		sheets[i] = NewStyleSheetContents(cssText, ctx)
+	}
+	doc.ParsedStylesheetsCache = sheets
+	return sheets
+}
+
+// styleSheetCacheMatches reports whether each cached StyleSheetContents
+// still wraps the source text at the same index in sources. Per-text
+// equality (not pointer/identity) so that an HTML re-parse that produces
+// the same text doesn't force a re-parse of the CSS.
+func styleSheetCacheMatches(cached []*StyleSheetContents, sources []string) bool {
+	return slices.EqualFunc(cached, sources, func(s *StyleSheetContents, src string) bool {
+		return s.Text == src
+	})
 }
 
 // resolvePseudoInheritKeyword resolves any property whose value is the literal
