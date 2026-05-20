@@ -52,3 +52,8 @@ skill surfaces something ambiguous, ask the user rather than guessing.
   worktree.
 - Configuration settings mean that all "git push..." commands have to include
   the branch name.
+- Never squash commits when merging a PR. Use `gh pr merge --merge` (creates a
+  merge commit and preserves the branch's individual commits) — `--squash`
+  collapses history and makes tracking what landed when too hard. This applies
+  to every `/ticket-merge` invocation and to any manual merge through the
+  GitHub UI.
