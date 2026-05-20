@@ -31,6 +31,12 @@ type onLineDecorator struct {
 	// False means the decorator's inline continues to a subsequent line —
 	// in which case no fragment on this line can be IsLastFragment.
 	closedOnLine bool
+	// isClone caches `style.GetBoxDecorationBreak() == BoxDecorationBreakClone`
+	// resolved once at push time. Under `clone`, every fragment is its own
+	// logical edge for inset trimming — the louis14 analogue of Blink's
+	// BoxDecorationData::SidesToInclude returning "all sides" on every
+	// fragment when box-decoration-break: clone is resolved.
+	isClone bool
 }
 
 // computeDecoratingBoxMetadataPerLine pre-computes per-text-fragment
@@ -93,6 +99,7 @@ func computeDecoratingBoxMetadataPerLine(
 		}
 		d := &onLineDecorator{
 			node:                   item.Node,
+			isClone:                item.Style.GetBoxDecorationBreak() == css.BoxDecorationBreakClone,
 			originX:                math.Inf(1),
 			endX:                   math.Inf(-1),
 			continuedFromPriorLine: true,
@@ -114,6 +121,7 @@ func computeDecoratingBoxMetadataPerLine(
 				!r.Item.Style.GetTextDecorationLine().IsNone() {
 				d := &onLineDecorator{
 					node:    r.Item.Node,
+					isClone: r.Item.Style.GetBoxDecorationBreak() == css.BoxDecorationBreakClone,
 					originX: math.Inf(1),
 					endX:    math.Inf(-1),
 				}
@@ -248,11 +256,13 @@ func computeDecoratingBoxMetadataPerLine(
 		// vec[N-K] ↔ outermost on-line contributor.
 		for i := range k {
 			d := inlineContribInnerFirst[i]
-			// Stamp only when the inline genuinely needs fragment-continuity
-			// treatment: it spans >1 fragment, OR it continues from a prior
-			// line (entered via enteringSpanStack with no IS edge), OR it
-			// continues to a subsequent line (didn't close on this line).
-			fragmented := d.firstIdx != d.lastIdx || d.continuedFromPriorLine || !d.closedOnLine
+			// Stamp when the inline needs fragment-continuity treatment:
+			// it spans >1 fragment, continues from a prior line, continues
+			// to a subsequent line, OR resolves to `box-decoration-break:
+			// clone` (where every fragment is its own logical edge — must
+			// always stamp, even for a single fragment on a single line,
+			// since clone semantics differ from the LOU-142 fallback path).
+			fragmented := d.firstIdx != d.lastIdx || d.continuedFromPriorLine || !d.closedOnLine || d.isClone
 			if !fragmented {
 				continue
 			}
@@ -260,8 +270,13 @@ func computeDecoratingBoxMetadataPerLine(
 			stamped[vecIdx].HasDecoratingBox = true
 			stamped[vecIdx].DecoratingBoxOffsetX = d.originX - fragX
 			stamped[vecIdx].DecoratingBoxWidth = d.endX - d.originX
-			stamped[vecIdx].IsFirstFragment = !d.continuedFromPriorLine && fragIdx == d.firstIdx
-			stamped[vecIdx].IsLastFragment = d.closedOnLine && fragIdx == d.lastIdx
+			if d.isClone {
+				stamped[vecIdx].IsFirstFragment = true
+				stamped[vecIdx].IsLastFragment = true
+			} else {
+				stamped[vecIdx].IsFirstFragment = !d.continuedFromPriorLine && fragIdx == d.firstIdx
+				stamped[vecIdx].IsLastFragment = d.closedOnLine && fragIdx == d.lastIdx
+			}
 			stampedAny = true
 		}
 
@@ -273,4 +288,3 @@ func computeDecoratingBoxMetadataPerLine(
 
 	return out
 }
-
