@@ -4172,22 +4172,30 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 
 	thickness := info.computeThickness(td)
 
+	// CSS Text Decor L4 text-decoration-inset trims the inline-start and
+	// inline-end edges of the decoration rect. Negative values extend it.
+	xStart := box.X + td.Inset.InlineStart
+	xEnd := box.X + textWidth - td.Inset.InlineEnd
+	if xEnd <= xStart {
+		return
+	}
+
 	r.setColor(td.Color)
 	r.dc.SetLineWidth(thickness)
 
 	stroke := func(lineY float64) {
 		switch td.Style {
 		case "dashed":
-			r.drawDashedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+			r.drawDashedLine(xStart, lineY, xEnd, lineY, thickness)
 		case "dotted":
-			r.drawDottedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+			r.drawDottedLine(xStart, lineY, xEnd, lineY, thickness)
 		case "double":
-			r.drawDoubleLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+			r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
 		case "wavy":
-			r.drawWavyLine(box.X, lineY, textWidth, thickness)
+			r.drawWavyLine(xStart, lineY, xEnd-xStart, thickness)
 		default: // "solid"
-			r.dc.MoveTo(box.X, lineY)
-			r.dc.LineTo(box.X+textWidth, lineY)
+			r.dc.MoveTo(xStart, lineY)
+			r.dc.LineTo(xEnd, lineY)
 			r.dc.Stroke()
 		}
 	}
