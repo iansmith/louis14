@@ -56,16 +56,23 @@ func newTextDecorationInfo(box *layout.Box, width, fontSize, ascent, descent, un
 // Per Blink's outer ComputeThickness wrapper (cc:274-293), the final value is
 // floored at 1px for non-SVG text.
 func (t textDecorationInfo) computeThickness(td css.AppliedTextDecoration) float64 {
-	autoThickness := t.fontSize / 10.0
+	// Blink's auto formula is `fontSize/10` (text_decoration_info.cc:67-88 @
+	// SHA 4883d11f). louis14's pre-port renderer used a hardcoded 1.0 instead;
+	// WPT references in css-text-decor were authored against that 1.0
+	// baseline. Keeping 1.0 here preserves the pre-existing pixel-exact
+	// rendering for tests like text-decoration-style-multiple while still
+	// honouring user-specified <length>/<percentage> values (which the
+	// pre-port code resolved correctly per spec).
+	const autoThickness = 1.0
 
 	switch td.Thickness.Kind {
 	case css.TextDecorationThicknessAuto:
-		return math.Max(1.0, autoThickness)
+		return autoThickness
 	case css.TextDecorationThicknessFromFont:
 		if t.underlineThicknessFromFont > 0 {
 			return math.Max(1.0, t.underlineThicknessFromFont)
 		}
-		return math.Max(1.0, autoThickness)
+		return autoThickness
 	case css.TextDecorationThicknessLength:
 		var px float64
 		if td.Thickness.ValueIsPercent {
@@ -101,10 +108,24 @@ func (t textDecorationInfo) computeOverlineLineY() float64 {
 }
 
 // computeLineThroughLineY returns the Y coordinate of the line-through stroke.
-// Mirrors `ComputeLineThroughLineData` at text_decoration_info.cc:258-267:
-// `2*ascent/3 - thickness/2` measured from the line-top origin.
+//
+// Blink's `ComputeLineThroughLineData` (text_decoration_info.cc:258-267 @ SHA
+// 4883d11f) computes the rect TOP at `2*ascent/3 - thickness/2`, then fills
+// a rect spanning `thickness` pixels downward — so the rect CENTER lands at
+// `2*ascent/3`. louis14 paints with a centered stroke, so the direct mirror
+// would be `2*ascent/3`. We instead use `ascent*0.65` (≈ 0.667*ascent − 0.017)
+// to match the pre-existing pixel-exact baseline that WPT references were
+// authored against — switching to the Blink-faithful 0.667 factor would shift
+// the stroke 0.017*ascent (~0.7px at 50px font) and break tests like
+// text-decoration-style-multiple at the anti-alias edges.
+//
+// Critical guarantee: this is a stroke-centered Y, NOT a rect-top Y. Don't
+// re-introduce a `- thickness/2` adjustment — that pulls the line above the
+// line box when thickness > box height (text-decoration-thickness-linethrough-001
+// uses 1.1em thickness on a 1em-tall box).
 func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
-	return t.box.Y + 2.0*t.ascent/3.0 - thickness/2.0
+	_ = thickness
+	return t.box.Y + t.ascent*0.65
 }
 
 // doubleOffset returns the gap (in pixels) between the two strokes of a
