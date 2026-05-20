@@ -15,6 +15,14 @@ does. Study their abstractions, algorithms, and types. Only then write code. Mir
 their type names, algorithm structure, and constraint-passing patterns. The louis14
 codebase is modeled on Blink's LayoutNG — keep it aligned.
 
+**This applies to planning as much as coding.** Any plan you produce for this
+project must begin with in-depth evaluation of how Blink handles the problem —
+read the relevant source files, identify the types and algorithms involved, and
+ground the plan in that reading. Cite Blink references with `file:line` AND a
+pinned commit SHA (bare line numbers drift). When a louis14 type maps to a Blink
+type, reuse the Blink name; don't invent parallel vocabulary. A plan written
+without a Blink survey is not an acceptable plan for this codebase.
+
 ## 3. All tests must pass
 Do not treat small pixel diffs as acceptable. ALL tests must pass at 0% diff. A
 0.5% diff is a failure just like 28%. Never dismiss failures as "font rendering"
