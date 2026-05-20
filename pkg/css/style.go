@@ -10301,8 +10301,14 @@ type AppliedTextDecoration struct {
 	// resolved per-fragment extent directly here because we don't carry a
 	// paint-time context object. HasDecoratingBox=false → painter falls back
 	// to fragment-local geometry (LOU-142 behavior).
-	HasDecoratingBox     bool    // false → DecoratingBoxOriginX/Width unset; painter uses fragment-local extent
-	DecoratingBoxOriginX float64 // absolute X of the originating inline's logical-start edge on this fragment's row
+	//
+	// DecoratingBoxOffsetX and DecoratingBoxWidth are coordinate-system-
+	// independent: the offset is expressed RELATIVE TO this text fragment's
+	// own start. The painter resolves the absolute logical-start as
+	// (box.X + DecoratingBoxOffsetX). This avoids the layout/paint axis
+	// translation that line-box-local coords would otherwise need.
+	HasDecoratingBox     bool    // false → DecoratingBoxOffsetX/Width unset; painter uses fragment-local extent
+	DecoratingBoxOffsetX float64 // signed offset from this fragment's start (box.X) to the decorating box's logical-start edge; ≤ 0 (decoration starts at or before this fragment)
 	DecoratingBoxWidth   float64 // total inline-content width across all fragments of this decorating box on this row
 	IsFirstFragment      bool    // source-order first fragment of the decorating box on this line (matches layout.Box.IsFirstFragment)
 	IsLastFragment       bool    // source-order last fragment of the decorating box on this line (matches layout.Box.IsLastFragment)

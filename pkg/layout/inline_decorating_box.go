@@ -210,29 +210,64 @@ func computeDecoratingBoxMetadataPerLine(
 
 		stamped := make([]css.AppliedTextDecoration, len(vec))
 		copy(stamped, vec)
+		// stampedAny tracks whether at least one entry actually needs the
+		// decorating-box path. When every entry collapses to a single non-
+		// continued fragment, the painter's LOU-142 fallback (paint-time
+		// textWidth) is the better source of truth — it avoids any sub-
+		// pixel drift between layout-time r.InlineSize and paint-time
+		// measureTextStr that would otherwise let the test and reference
+		// renders disagree even though both go through the same painter.
+		stampedAny := false
+
+		// externalIsFragmented is true when an external (block / above-IFC)
+		// contributor genuinely spans multiple text fragments on this line.
+		// For a single-fragment line, the external contributor's extent IS
+		// the only fragment's extent, so we leave it on the LOU-142 path.
+		externalIsFragmented := firstLineTextIdx != lastLineTextIdx
+
+		// fragX is this text fragment's line-local start; subtracting from
+		// the decorator's origin gives an offset that the painter can apply
+		// to box.X (in absolute paint coords) without knowing the line-box's
+		// absolute placement.
+		fragX := lf.x
 
 		k := len(inlineContribInnerFirst)
 		nEntries := len(vec)
 		// External (block / above-IFC) contributor entries [0..N-K-1].
-		for i := range nEntries - k {
-			stamped[i].HasDecoratingBox = true
-			stamped[i].DecoratingBoxOriginX = lineContentMinX
-			stamped[i].DecoratingBoxWidth = lineContentMaxX - lineContentMinX
-			stamped[i].IsFirstFragment = fragIdx == firstLineTextIdx
-			stamped[i].IsLastFragment = fragIdx == lastLineTextIdx
+		if externalIsFragmented {
+			for i := range nEntries - k {
+				stamped[i].HasDecoratingBox = true
+				stamped[i].DecoratingBoxOffsetX = lineContentMinX - fragX
+				stamped[i].DecoratingBoxWidth = lineContentMaxX - lineContentMinX
+				stamped[i].IsFirstFragment = fragIdx == firstLineTextIdx
+				stamped[i].IsLastFragment = fragIdx == lastLineTextIdx
+				stampedAny = true
+			}
 		}
 		// On-line inline-contributor entries. vec[N-1] ↔ innermost,
 		// vec[N-K] ↔ outermost on-line contributor.
 		for i := range k {
 			d := inlineContribInnerFirst[i]
+			// Stamp only when the inline genuinely needs fragment-continuity
+			// treatment: it spans >1 fragment, OR it continues from a prior
+			// line (entered via enteringSpanStack with no IS edge), OR it
+			// continues to a subsequent line (didn't close on this line).
+			fragmented := d.firstIdx != d.lastIdx || d.continuedFromPriorLine || !d.closedOnLine
+			if !fragmented {
+				continue
+			}
 			vecIdx := nEntries - 1 - i
 			stamped[vecIdx].HasDecoratingBox = true
-			stamped[vecIdx].DecoratingBoxOriginX = d.originX
+			stamped[vecIdx].DecoratingBoxOffsetX = d.originX - fragX
 			stamped[vecIdx].DecoratingBoxWidth = d.endX - d.originX
 			stamped[vecIdx].IsFirstFragment = !d.continuedFromPriorLine && fragIdx == d.firstIdx
 			stamped[vecIdx].IsLastFragment = d.closedOnLine && fragIdx == d.lastIdx
+			stampedAny = true
 		}
 
+		if !stampedAny {
+			continue
+		}
 		out[item] = stamped
 	}
 
