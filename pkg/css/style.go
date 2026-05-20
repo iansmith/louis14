@@ -10293,6 +10293,19 @@ type AppliedTextDecoration struct {
 	Thickness       TextDecorationThickness
 	UnderlineOffset float64 // resolved pixels (0 = auto/initial)
 	Inset           TextDecorationInset
+
+	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
+	// Blink's `InlinePaintContext::DecoratingBoxList` + `OffsetFromDecoratingBox`
+	// (core/paint/inline_paint_context.h:20-26, text_decoration_info.cc:583-596
+	// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). louis14 stores the
+	// resolved per-fragment extent directly here because we don't carry a
+	// paint-time context object. HasDecoratingBox=false → painter falls back
+	// to fragment-local geometry (LOU-142 behavior).
+	HasDecoratingBox     bool    // false → DecoratingBoxOriginX/Width unset; painter uses fragment-local extent
+	DecoratingBoxOriginX float64 // absolute X of the originating inline's logical-start edge on this fragment's row
+	DecoratingBoxWidth   float64 // total inline-content width across all fragments of this decorating box on this row
+	IsFirstFragment      bool    // source-order first fragment of the decorating box on this line (matches layout.Box.IsFirstFragment)
+	IsLastFragment       bool    // source-order last fragment of the decorating box on this line (matches layout.Box.IsLastFragment)
 }
 
 // GetAppliedTextDecorations returns the accumulated decoration vector for this
@@ -10457,6 +10470,10 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		Thickness:       s.GetTextDecorationThicknessResolved(),
 		UnderlineOffset: s.GetTextUnderlineOffset(),
 		Inset:           s.GetTextDecorationInset(),
+		// Cascade-time defaults assume a single, unfragmented inline. Layout
+		// (LOU-149 Item 2) overwrites these per fragment when it knows better.
+		IsFirstFragment: true,
+		IsLastFragment:  true,
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
 		td.Color = c
