@@ -404,19 +404,14 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 // whose % terms also resolve against font-size.
 func ParseLengthOrPercentageFontRelative(val string, fontSize float64) (float64, bool) {
 	v := strings.TrimSpace(val)
-	if strings.HasSuffix(v, "%") && !strings.HasPrefix(v, "calc(") {
+	if strings.HasSuffix(v, "%") {
 		if pct, ok := ParsePercentage(v); ok {
 			return pct / 100.0 * fontSize, true
 		}
 		return 0, false
 	}
 	if strings.HasPrefix(v, "calc(") && strings.HasSuffix(v, ")") {
-		ctx := calcContext{
-			fontSize:    fontSize,
-			percentBase: fontSize,
-			chScale:     0.5,
-		}
-		return evalCalcFull(v[5:len(v)-1], ctx)
+		return EvalCalcWithPercent(v[5:len(v)-1], fontSize, fontSize)
 	}
 	return ParseLengthWithFontSize(val, fontSize)
 }
@@ -10412,16 +10407,21 @@ func (s *Style) GetTextDecorationThicknessResolved() TextDecorationThickness {
 
 // GetTextDecorationInset returns the resolved text-decoration-inset value
 // for this element. Per CSS Text Decor L4 §"text-decoration-skip-inset-property"
-// the value is one or two `<length-percentage>`s — one value applies to both
-// inline edges, two values are inline-start and inline-end. Percent and calc()
-// resolve against the element's font-size. Negative values extend the
-// decoration beyond the text run.
+// the value is `auto` or one or two `<length-percentage>`s — one value applies
+// to both inline edges, two values are inline-start and inline-end. Percent
+// and calc() resolve against the element's font-size. Negative values extend
+// the decoration beyond the text run.
 func (s *Style) GetTextDecorationInset() TextDecorationInset {
 	val, ok := s.Get("text-decoration-inset")
 	if !ok {
 		return TextDecorationInset{}
 	}
-	parts := strings.Fields(strings.TrimSpace(val))
+	// splitShorthandParts is paren-aware; strings.Fields would mis-split a
+	// value like `calc(1em + 2px) 0` into four tokens.
+	parts := splitShorthandParts(val)
+	if len(parts) == 1 && strings.EqualFold(parts[0], "auto") {
+		return TextDecorationInset{}
+	}
 	fontSize := s.GetFontSize()
 	switch len(parts) {
 	case 1:
