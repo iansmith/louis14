@@ -4172,13 +4172,51 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 
 	thickness := info.computeThickness(td)
 
-	// CSS Text Decor L4 text-decoration-inset trims the inline-start and
-	// inline-end edges of the decoration rect. Negative values extend it.
-	xStart := box.X + td.Inset.InlineStart
-	xEnd := box.X + textWidth - td.Inset.InlineEnd
-	if xEnd <= xStart {
+	// LOU-149 Phase 4: when this fragment is part of a multi-fragment
+	// decorating box, layout has stamped the decorating-box extent + edge
+	// flags on td (see css.AppliedTextDecoration). The painter paints the
+	// SLICE of the logical decoration that falls within this fragment, with
+	// the inset trim applied only at the decorating box's actual logical
+	// edges. HasDecoratingBox=false → LOU-142 single-fragment fallback.
+	var logicalStart, logicalEnd float64
+	if td.HasDecoratingBox {
+		logicalStart = box.X + td.DecoratingBoxOffsetX
+		logicalEnd = logicalStart + td.DecoratingBoxWidth
+		if td.IsFirstFragment {
+			logicalStart += td.Inset.InlineStart
+		}
+		if td.IsLastFragment {
+			logicalEnd -= td.Inset.InlineEnd
+		}
+	} else {
+		logicalStart = box.X + td.Inset.InlineStart
+		logicalEnd = box.X + textWidth - td.Inset.InlineEnd
+	}
+	if logicalEnd <= logicalStart {
 		return
 	}
+
+	// Clamp at INTERIOR fragment boundaries only. The first fragment's left
+	// edge and the last fragment's right edge are the decorating box's OUTER
+	// edges where a negative text-decoration-inset (= extension) legitimately
+	// overflows the fragment. Clamp uses box.Width (layout-time) to match
+	// the layout-time DecoratingBoxOffsetX / Width values; clamping by paint-
+	// time textWidth would leak sub-pixel drift between adjacent fragments.
+	xStart := logicalStart
+	xEnd := logicalEnd
+	if td.HasDecoratingBox {
+		if !td.IsFirstFragment && box.X > xStart {
+			xStart = box.X
+		}
+		if !td.IsLastFragment && box.X+box.Width < xEnd {
+			xEnd = box.X + box.Width
+		}
+		if xEnd <= xStart {
+			return
+		}
+	}
+
+	phaseFromLogicalStart := xStart - logicalStart
 
 	r.setColor(td.Color)
 	r.dc.SetLineWidth(thickness)
@@ -4186,13 +4224,13 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	stroke := func(lineY float64) {
 		switch td.Style {
 		case "dashed":
-			r.drawDashedLine(xStart, lineY, xEnd, lineY, thickness)
+			r.drawDashedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
 		case "dotted":
-			r.drawDottedLine(xStart, lineY, xEnd, lineY, thickness)
+			r.drawDottedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
 		case "double":
 			r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
 		case "wavy":
-			r.drawWavyLine(xStart, lineY, xEnd-xStart, thickness)
+			r.drawWavyLinePhased(xStart, lineY, xEnd-xStart, thickness, phaseFromLogicalStart)
 		default: // "solid"
 			r.dc.MoveTo(xStart, lineY)
 			r.dc.LineTo(xEnd, lineY)
@@ -4209,6 +4247,130 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	if td.Lines.Has(css.TextDecorationLineLineThrough) {
 		stroke(info.computeLineThroughLineY(thickness))
 	}
+}
+
+// wrapIntoPeriod returns v's canonical representative in [0, period). math.Mod
+// returns same-signed values for negative inputs, so we normalize once here
+// rather than scatter sign fixes through the phased draw helpers below.
+func wrapIntoPeriod(v, period float64) float64 {
+	v = math.Mod(v, period)
+	if v < 0 {
+		v += period
+	}
+	return v
+}
+
+// drawDottedLinePhased, drawDashedLinePhased, and drawWavyLinePhased are the
+// LOU-149 Phase 4 phased variants of the existing line-style draw funcs.
+// phaseFromLogicalStart shifts the pattern's logical origin so that adjacent
+// fragments of one decorating box continue the same dot/dash/wave cycle
+// across the fragment boundary. With phaseFromLogicalStart=0 each one's
+// output matches its unphased counterpart byte-for-byte.
+
+func (r *Renderer) drawDottedLinePhased(x1, y1, x2, y2, width, phaseFromLogicalStart float64) {
+	dx := x2 - x1
+	dy := y2 - y1
+	length := math.Sqrt(dx*dx + dy*dy)
+	if length == 0 {
+		return
+	}
+
+	dotRadius := width / 2
+	spacing := width * 2
+	ux, uy := dx/length, dy/length
+
+	along := wrapIntoPeriod(dotRadius-phaseFromLogicalStart, spacing)
+	for along < length {
+		cx := x1 + ux*along
+		cy := y1 + uy*along
+		r.dc.DrawCircle(cx, cy, dotRadius)
+		r.dc.Fill()
+		along += spacing
+	}
+}
+
+func (r *Renderer) drawDashedLinePhased(x1, y1, x2, y2, width, phaseFromLogicalStart float64) {
+	dx := x2 - x1
+	dy := y2 - y1
+	length := math.Sqrt(dx*dx + dy*dy)
+	if length == 0 {
+		return
+	}
+
+	dashLen := width * 3
+	gapLen := width * 3
+	period := dashLen + gapLen
+	ux, uy := dx/length, dy/length
+	nx, ny := -uy, ux
+	hw := width / 2
+
+	// Start one period to the left of the slice so the loop's first
+	// iteration can paint a partial dash that bleeds in from x1.
+	along := wrapIntoPeriod(-phaseFromLogicalStart, period) - period
+	for along < length {
+		segStart := along
+		segEnd := along + dashLen
+		if segStart < 0 {
+			segStart = 0
+		}
+		if segEnd > length {
+			segEnd = length
+		}
+		if segEnd > segStart {
+			sx, sy := x1+ux*segStart, y1+uy*segStart
+			ex, ey := x1+ux*segEnd, y1+uy*segEnd
+			r.dc.MoveTo(sx+nx*hw, sy+ny*hw)
+			r.dc.LineTo(ex+nx*hw, ey+ny*hw)
+			r.dc.LineTo(ex-nx*hw, ey-ny*hw)
+			r.dc.LineTo(sx-nx*hw, sy-ny*hw)
+			r.dc.ClosePath()
+			r.dc.Fill()
+		}
+		along += period
+	}
+}
+
+func (r *Renderer) drawWavyLinePhased(x, y, width, thickness, phaseFromLogicalStart float64) {
+	if width <= 0 {
+		return
+	}
+	amplitude := thickness * 1.5
+	wavelength := thickness * 4
+	if wavelength < 4 {
+		wavelength = 4
+	}
+	halfWave := wavelength / 2
+
+	r.dc.SetLineWidth(thickness)
+
+	startPhase := wrapIntoPeriod(phaseFromLogicalStart, wavelength)
+	up := startPhase < halfWave
+	// First flip is at the next half-wave boundary in the cycle.
+	var nextFlip float64
+	if up {
+		nextFlip = halfWave - startPhase
+	} else {
+		nextFlip = wavelength - startPhase
+	}
+
+	r.dc.MoveTo(x, y)
+	cx := 0.0
+	for cx < width {
+		endX := cx + nextFlip
+		if endX > width {
+			endX = width
+		}
+		midX := (cx + endX) / 2
+		if up {
+			r.dc.QuadraticTo(x+midX, y-amplitude, x+endX, y)
+		} else {
+			r.dc.QuadraticTo(x+midX, y+amplitude, x+endX, y)
+		}
+		cx = endX
+		up = !up
+		nextFlip = halfWave
+	}
+	r.dc.Stroke()
 }
 
 // drawWavyLine draws a wavy (sinusoidal) decoration line using quadratic curves.

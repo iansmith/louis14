@@ -10293,6 +10293,25 @@ type AppliedTextDecoration struct {
 	Thickness       TextDecorationThickness
 	UnderlineOffset float64 // resolved pixels (0 = auto/initial)
 	Inset           TextDecorationInset
+
+	// Decorating-box fragment-continuity metadata (LOU-149 Phase 4). Mirrors
+	// Blink's `InlinePaintContext::DecoratingBoxList` + `OffsetFromDecoratingBox`
+	// (core/paint/inline_paint_context.h:20-26, text_decoration_info.cc:583-596
+	// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). louis14 stores the
+	// resolved per-fragment extent directly here because we don't carry a
+	// paint-time context object. HasDecoratingBox=false → painter falls back
+	// to fragment-local geometry (LOU-142 behavior).
+	//
+	// DecoratingBoxOffsetX and DecoratingBoxWidth are coordinate-system-
+	// independent: the offset is expressed RELATIVE TO this text fragment's
+	// own start. The painter resolves the absolute logical-start as
+	// (box.X + DecoratingBoxOffsetX). This avoids the layout/paint axis
+	// translation that line-box-local coords would otherwise need.
+	HasDecoratingBox     bool    // false → DecoratingBoxOffsetX/Width unset; painter uses fragment-local extent
+	DecoratingBoxOffsetX float64 // signed offset from this fragment's start (box.X) to the decorating box's logical-start edge; ≤ 0 (decoration starts at or before this fragment)
+	DecoratingBoxWidth   float64 // total inline-content width across all fragments of this decorating box on this row
+	IsFirstFragment      bool    // source-order first fragment of the decorating box on this line (matches layout.Box.IsFirstFragment)
+	IsLastFragment       bool    // source-order last fragment of the decorating box on this line (matches layout.Box.IsLastFragment)
 }
 
 // GetAppliedTextDecorations returns the accumulated decoration vector for this
@@ -10457,6 +10476,10 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		Thickness:       s.GetTextDecorationThicknessResolved(),
 		UnderlineOffset: s.GetTextUnderlineOffset(),
 		Inset:           s.GetTextDecorationInset(),
+		// Cascade-time defaults assume a single, unfragmented inline. Layout
+		// (LOU-149 Item 2) overwrites these per fragment when it knows better.
+		IsFirstFragment: true,
+		IsLastFragment:  true,
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
 		td.Color = c
