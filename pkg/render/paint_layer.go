@@ -513,7 +513,17 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// Text decoration (CSS Text Decor 3 §2 — AppliedTextDecoration vector).
 	// The new accumulated vector supersedes the legacy single-enum fields when
 	// non-nil; Phase 2's geometry port will eventually retire them entirely.
-	layer.AppliedTextDecorations = s.GetAppliedTextDecorations()
+	//
+	// LOU-149 Phase 4: a text fragment that participates in a multi-fragment
+	// decorating box carries its own stamped vector on the Box, with per-
+	// fragment DecoratingBoxOriginX/Width + IsFirstFragment/IsLastFragment
+	// flags. Prefer that when present; otherwise fall back to the cascade
+	// vector (LOU-142 single-fragment behavior).
+	if box.AppliedTextDecorations != nil {
+		layer.AppliedTextDecorations = box.AppliedTextDecorations
+	} else {
+		layer.AppliedTextDecorations = s.GetAppliedTextDecorations()
+	}
 
 	// Legacy single-decoration fields. Kept for the (now-empty) fallback path
 	// in drawTextDecoration when the AppliedTextDecorations vector is absent

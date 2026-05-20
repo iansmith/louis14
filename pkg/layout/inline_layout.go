@@ -1264,6 +1264,13 @@ func createLineBoxEx(
 		BlockSize:  lineHeight,
 	})
 
+	// LOU-149 Phase 4: pre-compute per-text-fragment decorating-box metadata
+	// for any decoration on this line. Returns nil when no fragment carries
+	// AppliedTextDecorations (the common case). Consumed by the text-fragment
+	// construction below; paint_layer reads Box.AppliedTextDecorations in
+	// preference to Style.GetAppliedTextDecorations() when non-nil.
+	decoratingBoxMetadata := computeDecoratingBoxMetadataPerLine(line, alignOffset, enteringSpanStack)
+
 	// Step 3a: Pre-pass — generate background/border fragments for inline spans.
 	// These are added FIRST so they paint behind content (CSS 2.1 Appendix E).
 	// Inline backgrounds may extend outside the line box (border/padding bleed).
@@ -1558,6 +1565,15 @@ func createLineBoxEx(
 				Node:             parentNode,
 				Style:            r.Item.Style,
 				WritingDirection: wdm,
+			}
+			// LOU-149 Phase 4: stamp per-fragment decorating-box metadata so
+			// the painter draws a continuous line across bidi-split, line-
+			// wrapped, and nested-inline fragments instead of restarting at
+			// each fragment boundary.
+			if decoratingBoxMetadata != nil {
+				if stamped, ok := decoratingBoxMetadata[r.Item]; ok {
+					textFrag.AppliedTextDecorations = stamped
+				}
 			}
 
 			// CSS 2.1 §9.4.3: Apply position:relative offset to inline-level

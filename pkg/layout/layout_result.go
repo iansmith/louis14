@@ -325,6 +325,16 @@ type PhysicalFragment struct {
 	// `PhysicalFragment::OofData` carried via `FragmentedOofData`
 	// (oof_positioned_node.h:366-408).
 	FragmentedOofData *FragmentedOofData
+
+	// AppliedTextDecorations is an optional per-fragment override of the
+	// style-carried decoration vector. Populated only for FragmentText runs
+	// that participate in a multi-fragment decorating box (LOU-149 Phase 4),
+	// so the painter can draw a continuous line across bidi-split, line-
+	// wrapped, or nested-inline fragments. When nil, paint_layer falls back
+	// to Style.GetAppliedTextDecorations() — preserving LOU-142 behavior for
+	// single-fragment inlines. Mirrors Blink's InlinePaintContext per-paint
+	// decoration list (inline_paint_context.h:20-26 @ SHA 4883d11f).
+	AppliedTextDecorations []css.AppliedTextDecoration
 }
 
 // ChildLink is a positioned child within a parent fragment.

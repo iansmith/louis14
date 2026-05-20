@@ -103,6 +103,13 @@ type Box struct {
 	// (P20.5) to apply a padding-box overflow clip mirroring Blink's
 	// default OverflowClipRect for non-scroll containers.
 	IsMulticolContainer bool
+
+	// AppliedTextDecorations is an optional per-fragment override of the
+	// style-carried decoration vector (LOU-149 Phase 4). Set only for text
+	// fragments that participate in a multi-fragment decorating box; the
+	// paint layer reads this in preference to Style.GetAppliedTextDecorations
+	// when non-nil. Forwarded from PhysicalFragment.AppliedTextDecorations.
+	AppliedTextDecorations []css.AppliedTextDecoration
 }
 
 // CreatesStackingContext returns true if this box establishes a new
