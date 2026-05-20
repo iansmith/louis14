@@ -4098,12 +4098,9 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 // lines for non-vertical, non-sideways text.
 //
 // CSS Text Decor 3 §2: a text run paints every AppliedTextDecoration on its
-// accumulated vector (one per ancestor that established a decoration). Phase 1
-// iterates layer.AppliedTextDecorations directly; Phase 2 will replace the
-// ad-hoc lineY/thickness constants here with the Blink-vetted
-// TextDecorationInfo geometry. When the vector is empty, the legacy
-// single-decoration path below paints (used for anonymous synthetic boxes
-// without a cascade pass).
+// accumulated vector (one per ancestor that established a decoration). When
+// the vector is empty, the legacy single-decoration fallback below paints —
+// used for anonymous boxes synthesized without a cascade pass.
 func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
 	// Fast path when there are no accumulated decorations and no legacy entry.
 	if len(layer.AppliedTextDecorations) == 0 &&
@@ -4116,8 +4113,12 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
 
 	if len(layer.AppliedTextDecorations) > 0 {
+		// TODO: pass the font's underline-thickness metric here once it's
+		// plumbed through textshape.FontMetrics; 0 makes from-font fall back
+		// to auto (which is correct, just lossy).
+		info := newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
 		for _, td := range layer.AppliedTextDecorations {
-			r.drawOneAppliedTextDecoration(td, layer, box, ascent, descent, textWidth)
+			r.drawOneAppliedTextDecoration(td, info, box, textWidth)
 		}
 		return
 	}
@@ -4157,34 +4158,26 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 }
 
 // drawOneAppliedTextDecoration paints a single AppliedTextDecoration entry on a
-// text run. Used by drawTextDecoration to walk the layer's accumulated vector.
-// Phase 1 reuses the legacy ad-hoc Y / thickness constants; Phase 2 will swap
-// in the Blink-vetted TextDecorationInfo geometry. Per CSS Text Decor 3 §2 the
-// color was resolved at append-time so currentcolor is already substituted in
-// td.Color.
-func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, layer *PaintLayer, box *layout.Box, ascent, descent, textWidth float64) {
+// text run. Geometry (resolved thickness + per-line Y) comes from the shared
+// textDecorationInfo built by drawTextDecoration. Mirrors one iteration of
+// Blink's `TextDecorationInfo` paint loop (core/paint/text_decoration_info.cc
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// td.Color is already resolved at cascade time per CSS Text Decor 3 §2 — no
+// currentcolor substitution needed here.
+func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth float64) {
 	if td.Lines.IsNone() {
 		return
 	}
-	// Resolve thickness. Phase 2 will port ComputeThickness exactly
-	// (text_decoration_info.cc:681-706). Phase 1: auto/from-font → 1px;
-	// <length> in pixels; <percentage> against font-size.
-	thickness := 1.0
-	switch td.Thickness.Kind {
-	case css.TextDecorationThicknessAuto, css.TextDecorationThicknessFromFont:
-		thickness = 1.0
-	case css.TextDecorationThicknessLength:
-		if td.Thickness.ValueIsPercent {
-			// Phase 1: fall back to 1px when font-size is unknown here. The
-			// percent → font-size resolution lands in Phase 2 with the full
-			// font-metrics-aware TextDecorationInfo port.
-			thickness = td.Thickness.Value / 100.0
-		} else {
-			thickness = td.Thickness.Value
-		}
-		if thickness <= 0 {
-			thickness = 1.0
-		}
+
+	thickness := info.computeThickness(td)
+
+	// CSS Text Decor L4 text-decoration-inset trims the inline-start and
+	// inline-end edges of the decoration rect. Negative values extend it.
+	xStart := box.X + td.Inset.InlineStart
+	xEnd := box.X + textWidth - td.Inset.InlineEnd
+	if xEnd <= xStart {
+		return
 	}
 
 	r.setColor(td.Color)
@@ -4193,28 +4186,28 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, la
 	stroke := func(lineY float64) {
 		switch td.Style {
 		case "dashed":
-			r.drawDashedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+			r.drawDashedLine(xStart, lineY, xEnd, lineY, thickness)
 		case "dotted":
-			r.drawDottedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+			r.drawDottedLine(xStart, lineY, xEnd, lineY, thickness)
 		case "double":
-			r.drawDoubleLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+			r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
 		case "wavy":
-			r.drawWavyLine(box.X, lineY, textWidth, thickness)
+			r.drawWavyLine(xStart, lineY, xEnd-xStart, thickness)
 		default: // "solid"
-			r.dc.MoveTo(box.X, lineY)
-			r.dc.LineTo(box.X+textWidth, lineY)
+			r.dc.MoveTo(xStart, lineY)
+			r.dc.LineTo(xEnd, lineY)
 			r.dc.Stroke()
 		}
 	}
 
 	if td.Lines.Has(css.TextDecorationLineUnderline) {
-		stroke(box.Y + ascent + math.Abs(descent)*0.25 + td.UnderlineOffset)
+		stroke(info.computeUnderlineLineY(td))
 	}
 	if td.Lines.Has(css.TextDecorationLineOverline) {
-		stroke(box.Y)
+		stroke(info.computeOverlineLineY())
 	}
 	if td.Lines.Has(css.TextDecorationLineLineThrough) {
-		stroke(box.Y + ascent*0.65)
+		stroke(info.computeLineThroughLineY(thickness))
 	}
 }
 

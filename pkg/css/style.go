@@ -397,6 +397,25 @@ func ParseLengthWithFontSize(val string, fontSize float64) (float64, bool) {
 	return ParseLengthFull(val, fontSize, 0, 0)
 }
 
+// ParseLengthOrPercentageFontRelative parses a CSS value where percentages
+// resolve against the element's font-size (1em) — e.g. text-underline-offset,
+// text-decoration-thickness per CSS Text Decor L4. Returns the resolved
+// pixel value. Handles bare `%`, plain lengths, and `calc()` expressions
+// whose % terms also resolve against font-size.
+func ParseLengthOrPercentageFontRelative(val string, fontSize float64) (float64, bool) {
+	v := strings.TrimSpace(val)
+	if strings.HasSuffix(v, "%") {
+		if pct, ok := ParsePercentage(v); ok {
+			return pct / 100.0 * fontSize, true
+		}
+		return 0, false
+	}
+	if strings.HasPrefix(v, "calc(") && strings.HasSuffix(v, ")") {
+		return EvalCalcWithPercent(v[5:len(v)-1], fontSize, fontSize)
+	}
+	return ParseLengthWithFontSize(val, fontSize)
+}
+
 // splitCSSFunctionArgs splits comma-separated args respecting nested parens
 func splitCSSFunctionArgs(s string) []string {
 	var parts []string
@@ -4327,12 +4346,21 @@ func parseTextShadowLayer(s string, fontSize float64) *TextShadow {
 	return sh
 }
 
-// GetTextUnderlineOffset returns the text-underline-offset value in pixels (default: 0)
+// GetTextUnderlineOffset returns the text-underline-offset value in pixels.
+// Percentages and calc() % terms resolve against the element's font-size
+// (1em) per CSS Text Decor L4 §"text-underline-offset". Returns 0 for `auto`,
+// the initial value, or any unparseable input.
 func (s *Style) GetTextUnderlineOffset() float64 {
-	if val, ok := s.Get("text-underline-offset"); ok {
-		if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
-			return l
-		}
+	val, ok := s.Get("text-underline-offset")
+	if !ok {
+		return 0
+	}
+	v := strings.TrimSpace(val)
+	if v == "" || strings.EqualFold(v, "auto") {
+		return 0
+	}
+	if px, ok := ParseLengthOrPercentageFontRelative(val, s.GetFontSize()); ok {
+		return px
 	}
 	return 0
 }
@@ -10230,11 +10258,23 @@ type TextDecorationThickness struct {
 	ValueIsPercent bool
 }
 
+// TextDecorationInset is the resolved text-decoration-inset value for an
+// AppliedTextDecoration. InlineStart and InlineEnd trim the inline-start and
+// inline-end edges of the decoration rect (positive = shrink the line;
+// negative = extend it beyond the text run). Mirrors the CSS Text Decor L4
+// `text-decoration-inset` longhand (Mozilla-authored WPT tests; Blink at the
+// pinned SHA has not shipped this property — semantics from the spec draft
+// and WPT reference files).
+type TextDecorationInset struct {
+	InlineStart float64 // pixels; 0 = no inset on the start side
+	InlineEnd   float64 // pixels; 0 = no inset on the end side
+}
+
 // AppliedTextDecoration is one decoration entry on the accumulated vector that
 // each element carries (see Style.AppliedTextDecorations). Mirrors Blink's
 // class of the same name at applied_text_decoration.h:18-48 (SHA pinned above).
 //
-// Fields are in 1:1 correspondence with Blink:
+// Fields in 1:1 correspondence with Blink:
 //
 //	Lines           ↔ lines_ (bitfield)         applied_text_decoration.h:43
 //	Style           ↔ style_ ("solid"/"double"/"dotted"/"dashed"/"wavy")  :44
@@ -10242,9 +10282,9 @@ type TextDecorationThickness struct {
 //	Thickness       ↔ thickness_                applied_text_decoration.h:46
 //	UnderlineOffset ↔ underline_offset_         applied_text_decoration.h:47
 //
-// HasColor=false means "currentcolor" — the painter substitutes the originating
-// element's color at paint time (Phase 4 boundary). Phase 1 stores this; the
-// painter will read it once Phase 4 wires decoration sources to text fragments.
+// Inset has no Blink counterpart (L4 not-yet-shipped); we carry it as a
+// louis14-native field. HasColor=false means "currentcolor" — the resolver
+// freezes the resolved color at append-time so a descendant cannot change it.
 type AppliedTextDecoration struct {
 	Lines           TextDecorationLine
 	Style           string // solid | double | dotted | dashed | wavy
@@ -10252,6 +10292,7 @@ type AppliedTextDecoration struct {
 	HasColor        bool   // false = currentcolor at the originating element
 	Thickness       TextDecorationThickness
 	UnderlineOffset float64 // resolved pixels (0 = auto/initial)
+	Inset           TextDecorationInset
 }
 
 // GetAppliedTextDecorations returns the accumulated decoration vector for this
@@ -10354,14 +10395,47 @@ func (s *Style) GetTextDecorationThicknessResolved() TextDecorationThickness {
 			}
 		}
 	}
-	// Length.
-	if l, ok := ParseLengthWithFontSize(val, s.GetFontSize()); ok {
+	// Length or calc() — calc() with % terms resolves against font-size here.
+	if l, ok := ParseLengthOrPercentageFontRelative(val, s.GetFontSize()); ok {
 		return TextDecorationThickness{
 			Kind:  TextDecorationThicknessLength,
 			Value: l,
 		}
 	}
 	return TextDecorationThickness{Kind: TextDecorationThicknessAuto}
+}
+
+// GetTextDecorationInset returns the resolved text-decoration-inset value
+// for this element. Per CSS Text Decor L4 §"text-decoration-skip-inset-property"
+// the value is `auto` or one or two `<length-percentage>`s — one value applies
+// to both inline edges, two values are inline-start and inline-end. Percent
+// and calc() resolve against the element's font-size. Negative values extend
+// the decoration beyond the text run.
+func (s *Style) GetTextDecorationInset() TextDecorationInset {
+	val, ok := s.Get("text-decoration-inset")
+	if !ok {
+		return TextDecorationInset{}
+	}
+	// splitShorthandParts is paren-aware; strings.Fields would mis-split a
+	// value like `calc(1em + 2px) 0` into four tokens.
+	parts := splitShorthandParts(val)
+	if len(parts) == 1 && strings.EqualFold(parts[0], "auto") {
+		return TextDecorationInset{}
+	}
+	fontSize := s.GetFontSize()
+	switch len(parts) {
+	case 1:
+		if px, ok := ParseLengthOrPercentageFontRelative(parts[0], fontSize); ok {
+			return TextDecorationInset{InlineStart: px, InlineEnd: px}
+		}
+	case 2:
+		start, ok1 := ParseLengthOrPercentageFontRelative(parts[0], fontSize)
+		end, ok2 := ParseLengthOrPercentageFontRelative(parts[1], fontSize)
+		if ok1 && ok2 {
+			return TextDecorationInset{InlineStart: start, InlineEnd: end}
+		}
+	}
+	return TextDecorationInset{}
 }
 
 // computeOwnTextDecorationContribution returns the element's own contribution
@@ -10382,6 +10456,7 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 		Style:           s.GetTextDecorationStyle(),
 		Thickness:       s.GetTextDecorationThicknessResolved(),
 		UnderlineOffset: s.GetTextUnderlineOffset(),
+		Inset:           s.GetTextDecorationInset(),
 	}
 	if c, ok := s.GetTextDecorationColor(); ok {
 		td.Color = c
