@@ -1105,7 +1105,30 @@ func NewAnonymousBlockStyle(parent *Style) *Style {
 			s.Set(prop, val)
 		}
 	}
+	s.inheritAppliedTextDecorationsFrom(parent)
 	return s
+}
+
+// inheritAppliedTextDecorationsFrom copies the parent's accumulated
+// text-decoration vector onto an anonymous box's style. text-decoration is
+// not a CSS-inheritable property — it propagates via the cascade's
+// decorating-box rule (CSS Text Decor 3 §2.1), which
+// ResolveAppliedTextDecorations applies only to DOM-tree nodes during the
+// cascade phase. Anonymous boxes (block-in-inline split, blockification,
+// table wrappers, ruby wrappers) are created post-cascade by the layout-tree
+// builder, so they never go through that resolver. Without this explicit
+// copy, descendant text inside an anonymous box would see an empty vector
+// and miss its splitting box's decoration — the LOU-151 bug observed on
+// `text-decoration-subelements-005`.
+//
+// Mirrors Blink's `StyleResolver::CreateAnonymousStyleWithDisplay` which
+// carries the `AppliedTextDecoration` vector through to anonymous wrappers
+// (Blink ref @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Companion to
+// the cascade-time method ResolveAppliedTextDecorations in style.go.
+func (s *Style) inheritAppliedTextDecorationsFrom(parent *Style) {
+	if len(parent.AppliedTextDecorations) > 0 {
+		s.AppliedTextDecorations = append([]AppliedTextDecoration(nil), parent.AppliedTextDecorations...)
+	}
 }
 
 // NewAnonymousTableCellStyle creates a style for an anonymous table-cell box
@@ -1124,6 +1147,7 @@ func NewAnonymousTableCellStyle(parent *Style) *Style {
 			s.Set(prop, val)
 		}
 	}
+	s.inheritAppliedTextDecorationsFrom(parent)
 	return s
 }
 
@@ -1143,6 +1167,7 @@ func NewAnonymousTableRowStyle(parent *Style) *Style {
 			s.Set(prop, val)
 		}
 	}
+	s.inheritAppliedTextDecorationsFrom(parent)
 	return s
 }
 
@@ -1170,6 +1195,7 @@ func NewAnonymousInlineRubyStyle(parent *Style) *Style {
 			s.Set(prop, val)
 		}
 	}
+	s.inheritAppliedTextDecorationsFrom(parent)
 	return s
 }
 
@@ -1189,6 +1215,7 @@ func NewAnonymousTableRowGroupStyle(parent *Style) *Style {
 			s.Set(prop, val)
 		}
 	}
+	s.inheritAppliedTextDecorationsFrom(parent)
 	return s
 }
 
