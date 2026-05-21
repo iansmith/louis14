@@ -98,6 +98,8 @@ GOTOOLCHAIN=go1.26.2 /opt/homebrew/bin/go <command>
 
 The louis14 codebase is modeled on Blink's LayoutNG. When starting work on a new area — coding **or** planning — the first step is to look at what Blink/Chromium does: types, algorithms, abstractions. Mirror their type names, algorithm structure, and constraint-passing patterns; don't invent parallel vocabulary for a concept Blink already names. A plan written without a Blink survey is not an acceptable plan for this codebase.
 
+**The Blink survey is per work item, not a one-time chapter at the top of the plan.** Every numbered work item — in `/ticket-plan` or any other plan doc — must independently cite the Blink type, algorithm, or file it mirrors, or explicitly note `no Blink analog: <reason>` if the item is genuinely louis14-specific. An upfront-only survey lets piecemeal items drift from Blink even when the plan's introduction looks aligned. For `/ticket-plan` specifically: Step 1c (the Explore investigation) gathers these citations, and Step 2b's work items surface them in the "Detailed steps" block — SHA-pinned per the citation discipline below.
+
 When porting a Blink primitive, place it in the louis14 package that mirrors Blink's *source location*, not wherever a phase brief literally says. E.g. `platform/geometry/layout_unit.h` → `pkg/geometry/layoutunit`; `core/layout/geometry/physical_rect.h` → `pkg/geometry`. Blink's factoring is load-bearing.
 
 ### Blink citation discipline
