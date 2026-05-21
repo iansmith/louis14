@@ -23,10 +23,14 @@ test-output.txt
 # Local working copy of mazarin/textshape (cross-repo change staging)
 .local-mazarin/
 
-# planning-with-files skill (session-local working memory)
-task_plan.md
-findings.md
-progress.md
+# Root-level markdown — personal notes, scratch work, ticket-local prompts.
+# Ticket-local files belong in ~/.claude/ticket-active/<TICKET>/; design docs
+# belong in design/. CLAUDE.md is the one tracked exception.
+/*.md
+!/CLAUDE.md
+
+# Personal scratch / drafts — design docs go to design/ (tracked).
+/docs/
 
 # IDE files
 .vscode/
