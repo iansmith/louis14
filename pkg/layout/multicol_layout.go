@@ -1102,9 +1102,12 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if balanceColumns && hasOuterFrag && hasExplicitBlock && blockCursor > 0 && blockCursor < outerAvailable &&
 		blockCursor < mla.remainingContentBlockSize && finalBlockSize > blockCursor &&
 		finalBlockSize >= outerAvailable {
-		if finalBlockSize > blockCursor {
-			blockCursor = finalBlockSize
-		}
+		blockCursor = finalBlockSize
+		// LOU-143: emit gap geometry so the column-rule painter stretches the
+		// last row's rules to the content-box block end. Without this, the
+		// painter takes its no-GapGeometry fallback and draws rules at the
+		// column-box extent only. Mirrors the non-break-path call below.
+		mla.buildGapGeometry(builder, contentInlineSize, finalBlockSize, geom)
 		return buildOuterBreakResult()
 	}
 
