@@ -536,6 +536,16 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			Border:  physBorder,
 			Padding: physPadding,
 		})
+		// LOU-143: emit gap geometry on every outer-break-result path so the
+		// column-rule painter has accurate cross-gap positions and last-row
+		// stretch info. Without this, broken-out fragments fall through to
+		// drawColumnRules's ad-hoc fallback (render.go L3138), which places
+		// (numCols-1) rules evenly without spanner skips or last-row stretch.
+		// Self-gated: no-op when !HasColumnRule, and emits empty geometry
+		// when no columns were placed (firstColumnOffsetSet=false), which
+		// the painter handles. Mirrors the post-loop call at the bottom of
+		// MulticolLayoutAlgorithm.Layout.
+		mla.buildGapGeometry(builder, contentInlineSize, blockCursor, geom)
 		result := builder.Build()
 		prevConsumed := layoutunit.LayoutUnit{}
 		seqNum := 0
@@ -1102,12 +1112,13 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 	if balanceColumns && hasOuterFrag && hasExplicitBlock && blockCursor > 0 && blockCursor < outerAvailable &&
 		blockCursor < mla.remainingContentBlockSize && finalBlockSize > blockCursor &&
 		finalBlockSize >= outerAvailable {
+		// LOU-143: expand blockCursor to finalBlockSize so the gap geometry
+		// emitted inside buildOuterBreakResult stretches the last row's
+		// column rules to the content-box block end (Cmt-8 absorption
+		// target). Without the expansion, gap geometry would compute its
+		// content extents at the pre-absorption cursor and the painter
+		// would draw rules short of the box's painted block-end.
 		blockCursor = finalBlockSize
-		// LOU-143: emit gap geometry so the column-rule painter stretches the
-		// last row's rules to the content-box block end. Without this, the
-		// painter takes its no-GapGeometry fallback and draws rules at the
-		// column-box extent only. Mirrors the non-break-path call below.
-		mla.buildGapGeometry(builder, contentInlineSize, finalBlockSize, geom)
 		return buildOuterBreakResult()
 	}
 
