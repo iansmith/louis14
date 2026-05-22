@@ -1244,6 +1244,20 @@ func createLineBoxEx(
 ) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
+
+	// CSS Ruby Phase 2: grow the line's ascent to contain ruby
+	// annotations (default `ruby-position: over` stacks them above
+	// the base baseline). Mirrors Blink
+	// `inline_layout_algorithm.cc:396-418` SetAnnotationBlockStartAdjustment
+	// @ 4883d11fef.
+	var rbpc RubyBlockPositionCalculator
+	if len(line.RubyColumns) > 0 {
+		rbpc.PlaceLines(line.RubyColumns, wdm, fonts, centralBaseline)
+		annoAsc, annoDesc := rbpc.AnnotationMetrics()
+		maxAscent += annoAsc
+		maxDescent += annoDesc
+	}
+
 	lineHeight := maxAscent + maxDescent
 	if lineHeight <= 0 {
 		// Empty line (forced break) — use default font metrics.
@@ -1607,6 +1621,30 @@ func createLineBoxEx(
 				BlockOffset:  blockPos,
 			})
 
+		case InlineItemOpenRubyColumn:
+			// CSS Ruby Phase 2: paint the base + annotation sub-line
+			// glyphs at the column's current inline position. The
+			// outer line's `maxAscent` already includes the
+			// annotation contribution (RubyBlockPositionCalculator
+			// adjusted it above in Step 1). See inline_layout_ruby.go.
+			if r.RubyColumn != nil {
+				baseAscent, _ := computeLineMetricsEx(r.RubyColumn.BaseLine, wdm, fonts, centralBaseline, nil)
+				annotationBlockTop := maxAscent - baseAscent - rbpc.annotationAscent
+				if annotationBlockTop < 0 {
+					annotationBlockTop = 0
+				}
+				emitRubyColumnFragments(
+					r.RubyColumn,
+					inlinePos,
+					maxAscent, // base baseline
+					annotationBlockTop,
+					itemsData.TextContent,
+					wdm, fonts, centralBaseline, sidewaysVLR,
+					lineBuilder,
+				)
+			}
+			inlinePos += r.InlineSize
+			continue
 		case InlineItemAtomicInline:
 			// Apply inline-start margin before the child. For RTL items
 			// (odd BidiLevel) that have been visually reversed by BIDI
