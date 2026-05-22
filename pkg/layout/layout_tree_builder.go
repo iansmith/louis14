@@ -777,10 +777,11 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 			vals := b.counterCtx.GetCounterValues(pseudoNode, cv.Value, true)
 			pendingText.WriteString(formatCounterValues(vals, "", cv.Style))
 		case "counters":
-			// counters(name, sep [, style]): outermost..innermost
-			// values joined by sep. If the counter is not in scope,
-			// CSS Lists §counter-functions specifies the result is
-			// an empty string — we emit nothing.
+			// counters(name, sep [, style]): outermost..innermost values
+			// joined by sep. If the counter is not in scope, CSS Lists 3
+			// §counter-functions resolves it as if `counter-reset: <name> 0`
+			// were set at the root, so GetCounterValues returns []int{0}
+			// (LOU-144). The result is "0" formatted via cv.Style.
 			vals := b.counterCtx.GetCounterValues(pseudoNode, cv.Value, false)
 			pendingText.WriteString(formatCounterValues(vals, cv.Separator, cv.Style))
 		case "attr":
@@ -834,18 +835,24 @@ func (b *LayoutTreeBuilder) resolveContentText(contentVals []css.ContentValue, n
 		case "text":
 			buf.WriteString(cv.Value)
 		case "counter":
-			vals := b.counterCtx.GetCounterValues(markerNode, cv.Value, true)
-			// Phase 3 will plumb list-item into the counter context.
-			// Until then, fall back to DOM-sibling counting when the
-			// list-item counter isn't otherwise resolved.
-			if len(vals) == 0 && cv.Value == "list-item" {
+			// Phase 3 TODO: plumb list-item into the counter context. Until
+			// then, list-item uses DOM-sibling counting (matches paint-time
+			// computeListItemIndex). Check first — GetCounterValues now
+			// returns []int{0} for any counter not in scope (LOU-144), which
+			// would otherwise mask the fallback.
+			var vals []int
+			if cv.Value == "list-item" {
 				vals = []int{b.getListItemCounterValue(node)}
+			} else {
+				vals = b.counterCtx.GetCounterValues(markerNode, cv.Value, true)
 			}
 			buf.WriteString(formatCounterValues(vals, "", cv.Style))
 		case "counters":
-			vals := b.counterCtx.GetCounterValues(markerNode, cv.Value, false)
-			if len(vals) == 0 && cv.Value == "list-item" {
+			var vals []int
+			if cv.Value == "list-item" {
 				vals = []int{b.getListItemCounterValue(node)}
+			} else {
+				vals = b.counterCtx.GetCounterValues(markerNode, cv.Value, false)
 			}
 			buf.WriteString(formatCounterValues(vals, cv.Separator, cv.Style))
 		}

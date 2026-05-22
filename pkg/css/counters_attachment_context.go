@@ -371,16 +371,19 @@ func (c *CountersAttachmentContext) RemoveCounterIfAncestorExists(node *html.Nod
 // We mirror that order so the no-staleness-check iteration in the
 // hot path matches Blink's logic exactly.
 //
-// An empty result is returned when the counter is not in scope at all
-// (Blink returns `{0}` in that case so `counter()` reads as 0; we
-// instead return an empty slice and let the caller format it as
-// 0 / "" per CSS Lists §counter-functions).
+// When the counter is not in scope at all, returns `[]int{0}` (LOU-144) —
+// mirrors Blink's `CountersAttachmentContext::GetCounterValues` at
+// `third_party/blink/renderer/core/css/counters_attachment_context.cc`
+// @ Chromium `main` `4883d11fef4a8713e32cd582ecef6dc5457c8c3f`, which
+// implements CSS Lists 3 §counter-functions: a counter() reference to a
+// never-declared counter is interpreted as if the counter had been
+// instantiated by `counter-reset: <name> 0` at the root.
 func (c *CountersAttachmentContext) GetCounterValues(node *html.Node, name string, onlyLast bool) []int {
 	// Drop any entries that are not in scope for `node` first.
 	c.RemoveStaleCounters(node, name)
 	stack := c.table[name]
 	if stack == nil || len(*stack) == 0 {
-		return nil
+		return []int{0}
 	}
 	var values []int
 	for i := len(*stack) - 1; i >= 0; i-- {
