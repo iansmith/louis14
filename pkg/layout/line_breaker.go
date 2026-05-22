@@ -224,6 +224,24 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 				TextStart: item.StartOffset,
 				TextEnd:   item.StartOffset,
 			})
+		case InlineItemOpenRubyColumn:
+			// CSS Ruby Phase 2: a ruby column is an atomic inline
+			// unit. handleRuby builds the base + annotation
+			// sub-LineInfos and emits a single InlineItemResult for
+			// the column; advances currentItemIndex to the matching
+			// CloseRubyColumn. Mirrors Blink
+			// `line_breaker.cc:1082-1093` dispatch + `:3278-3449`
+			// HandleRuby (@ 4883d11fef). See line_breaker_ruby.go.
+			if lb.handleRuby(item, line) {
+				lb.finishLine(line)
+				return true
+			}
+		case InlineItemCloseRubyColumn, InlineItemRubyLinePlaceholder:
+			// Zero-width markers. handleRuby consumes everything
+			// between open/close in the outer pass; in a
+			// sub-LineBreaker over a column sub-range they're
+			// end-of-range no-ops. Mirrors
+			// `line_breaker.cc:1059-1060`.
 		}
 
 		lb.currentItemIndex++

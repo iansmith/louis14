@@ -180,10 +180,7 @@ func collectInlinesRecursive(
 			// CSS Ruby §"forced breaks": `<br>` inside a `<rt>` (or
 			// any descendant) is rewritten to a space. Mirrors Blink's
 			// `kDisableForcedBreakInRubyColumn` gate at
-			// `core/layout/inline/inline_items_builder.cc:74,801` —
-			// the rewrite is at item-collection time, not at line-break
-			// time, so a sub-LineInfo built for the column doesn't see
-			// a forced break it would otherwise hard-stop on.
+			// `core/layout/inline/inline_items_builder.cc:74,801`.
 			if rubyForcedBreakSuppressed(rubyState) {
 				segStart := text.Len()
 				text.WriteRune(' ')

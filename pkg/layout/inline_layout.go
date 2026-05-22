@@ -108,7 +108,20 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		display := style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock &&
 			display != css.DisplayInlineFlex && display != css.DisplayInlineTable &&
-			display != css.DisplayInlineListItem {
+			display != css.DisplayInlineListItem &&
+			// css-ruby Phase 2 (LOU-155): `display: ruby` and
+			// `display: ruby-text` are inline-level — they're the
+			// inline ruby column root and annotation element
+			// respectively. Without these here, a block container
+			// whose only child is a `<ruby>` falls into the
+			// block-children layout path and each ruby internal
+			// (rb/rt) gets its own per-element block layout, which
+			// is wrong: ruby is a single inline atom that owns its
+			// own inline formatting context (mirrors Blink
+			// `isInlineLevelDisplay` + the inline-IFC entry in
+			// LayoutBlockFlow). Vetted against Chromium main @
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+			display != css.DisplayRuby && display != css.DisplayRubyText {
 			return false // Block-level child found.
 		}
 		hasContent = true
