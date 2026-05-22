@@ -39,7 +39,7 @@ func NewSVGRootAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Constr
 // LayoutInputNode.
 func (sra *SVGRootAlgorithm) Layout() *LayoutResult {
 	// Step 1: outer sizing via the standard block path. <svg> is a
-	// replaced element (isReplacedElement returns true); the block
+	// replaced element (IsReplacedElement returns true); the block
 	// algorithm's replaced-element branch already calls
 	// ComputeReplacedSize via getInlineSVGIntrinsicInfo. This gives us a
 	// LayoutResult with the correct CSS-box geometry, byte-identical to

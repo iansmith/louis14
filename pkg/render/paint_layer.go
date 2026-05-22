@@ -564,53 +564,67 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// Per CSS Transforms Level 2, the effective transform is:
 	//   translate * rotate * scale * transform
 	// i.e., individual properties are applied first, then the shorthand.
-
-	// Collect individual transform properties.
-	var individualTransforms []css.Transform
-	if tx, ty, txPct, tyPct, ok := s.GetIndividualTranslate(); ok {
-		if txPct {
-			tx = (tx / 100) * box.Width
+	//
+	// Per CSS Transforms Level 1 §3 "transformable element":
+	//   "A transformable element is an element in one of these
+	//    categories: all elements whose layout is governed by the CSS
+	//    box model except for non-replaced inline boxes, table-column
+	//    boxes, and table-column-group boxes, [+ certain SVG elements]."
+	// (https://www.w3.org/TR/css-transforms-1/#transformable-element)
+	//
+	// So transform / translate / rotate / scale all silently no-op on
+	// non-replaced inline-level boxes (`display: inline | ruby |
+	// ruby-text`) and on table column / column-group boxes. Mirrors
+	// Blink's gate in LayoutObject::HasTransformRelatedProperty()
+	// which returns false for non-atomic inlines.
+	if isTransformableBox(s, box.Node) {
+		// Collect individual transform properties.
+		var individualTransforms []css.Transform
+		if tx, ty, txPct, tyPct, ok := s.GetIndividualTranslate(); ok {
+			if txPct {
+				tx = (tx / 100) * box.Width
+			}
+			if tyPct {
+				ty = (ty / 100) * box.Height
+			}
+			individualTransforms = append(individualTransforms, css.Transform{Type: "translate", Values: []float64{tx, ty}})
 		}
-		if tyPct {
-			ty = (ty / 100) * box.Height
+		if deg, ok := s.GetIndividualRotate(); ok {
+			individualTransforms = append(individualTransforms, css.Transform{Type: "rotate", Values: []float64{deg}})
 		}
-		individualTransforms = append(individualTransforms, css.Transform{Type: "translate", Values: []float64{tx, ty}})
-	}
-	if deg, ok := s.GetIndividualRotate(); ok {
-		individualTransforms = append(individualTransforms, css.Transform{Type: "rotate", Values: []float64{deg}})
-	}
-	if sx, sy, ok := s.GetIndividualScale(); ok {
-		individualTransforms = append(individualTransforms, css.Transform{Type: "scale", Values: []float64{sx, sy}})
-	}
-
-	// Collect shorthand transforms.
-	transforms := s.GetTransforms()
-
-	if len(individualTransforms) > 0 || len(transforms) > 0 {
-		layer.HasTransform = true
-		origin := s.GetTransformOrigin()
-		// Resolve percentage origin to px relative to element's border box.
-		layer.TransformOrigin = [2]float64{
-			origin.X * box.Width,
-			origin.Y * box.Height,
+		if sx, sy, ok := s.GetIndividualScale(); ok {
+			individualTransforms = append(individualTransforms, css.Transform{Type: "scale", Values: []float64{sx, sy}})
 		}
-		// Resolve percentage translate values in shorthand transforms via the
-		// explicit IsPercent flag from the parser.
-		resolved := make([]css.Transform, len(transforms))
-		for i, t := range transforms {
-			resolved[i] = css.Transform{Type: t.Type, Values: make([]float64, len(t.Values))}
-			copy(resolved[i].Values, t.Values)
-			if t.Type == "translate" {
-				if len(resolved[i].Values) > 0 && len(t.IsPercent) > 0 && t.IsPercent[0] {
-					resolved[i].Values[0] = (resolved[i].Values[0] / 100) * box.Width
-				}
-				if len(resolved[i].Values) > 1 && len(t.IsPercent) > 1 && t.IsPercent[1] {
-					resolved[i].Values[1] = (resolved[i].Values[1] / 100) * box.Height
+
+		// Collect shorthand transforms.
+		transforms := s.GetTransforms()
+
+		if len(individualTransforms) > 0 || len(transforms) > 0 {
+			layer.HasTransform = true
+			origin := s.GetTransformOrigin()
+			// Resolve percentage origin to px relative to element's border box.
+			layer.TransformOrigin = [2]float64{
+				origin.X * box.Width,
+				origin.Y * box.Height,
+			}
+			// Resolve percentage translate values in shorthand transforms via the
+			// explicit IsPercent flag from the parser.
+			resolved := make([]css.Transform, len(transforms))
+			for i, t := range transforms {
+				resolved[i] = css.Transform{Type: t.Type, Values: make([]float64, len(t.Values))}
+				copy(resolved[i].Values, t.Values)
+				if t.Type == "translate" {
+					if len(resolved[i].Values) > 0 && len(t.IsPercent) > 0 && t.IsPercent[0] {
+						resolved[i].Values[0] = (resolved[i].Values[0] / 100) * box.Width
+					}
+					if len(resolved[i].Values) > 1 && len(t.IsPercent) > 1 && t.IsPercent[1] {
+						resolved[i].Values[1] = (resolved[i].Values[1] / 100) * box.Height
+					}
 				}
 			}
+			// Compose: individual properties first, then shorthand.
+			layer.Transforms = append(individualTransforms, resolved...)
 		}
-		// Compose: individual properties first, then shorthand.
-		layer.Transforms = append(individualTransforms, resolved...)
 	}
 
 	// CSS Filters.
@@ -683,6 +697,50 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 }
 
 // isCellNodeEmpty returns true if a table cell's DOM node has no visible content.
+// isTransformableBox reports whether the given box accepts CSS
+// transform / translate / rotate / scale per CSS Transforms Level 1
+// §3 "transformable element"
+// (https://www.w3.org/TR/css-transforms-1/#transformable-element):
+//
+//	"...all elements whose layout is governed by the CSS box model
+//	 except for non-replaced inline boxes, table-column boxes, and
+//	 table-column-group boxes..."
+//
+// Returns false for non-replaced inline-level boxes (`display:
+// inline`, `display: ruby`, `display: ruby-text`). Returns true for
+// everything else, including atomic inline-level boxes
+// (`inline-block`, `inline-flex`, `inline-grid`, `inline-table`,
+// `inline-list-item`) and replaced inline elements (img, video, etc.).
+//
+// louis14's GetDisplay() doesn't currently recognize
+// `display: table-column` / `display: table-column-group` as distinct
+// display values — they fall through to the default. Those would also
+// need to be gated here per the spec when louis14 grows native column
+// support.
+//
+// Mirrors Blink's LayoutObject::HasTransformRelatedProperty() gate
+// (which returns false for non-atomic, non-replaced inline boxes).
+// SVG elements are handled by their own paint paths (svg_*painter.go)
+// and don't reach this predicate.
+func isTransformableBox(s *css.Style, node *html.Node) bool {
+	if s == nil {
+		return true
+	}
+	switch s.GetDisplay() {
+	case css.DisplayInline, css.DisplayRuby, css.DisplayRubyText:
+		// Replaced inline elements (img, video, ...) are atomic
+		// inlines for layout purposes and DO accept transforms,
+		// even though their computed `display` may still resolve to
+		// `inline`. Per CSS Display 3 §2.2, replaced elements are
+		// "atomic inlines" by definition.
+		if node != nil && layout.IsReplacedElement(node) {
+			return true
+		}
+		return false
+	}
+	return true
+}
+
 // Per CSS 2.1 §17.6.1.1: whitespace-only text is not "visible content",
 // but &nbsp; (U+00A0) IS content, and any child element means not empty.
 func isCellNodeEmpty(node *html.Node) bool {

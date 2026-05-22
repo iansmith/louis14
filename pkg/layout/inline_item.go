@@ -242,7 +242,7 @@ func collectInlinesRecursive(
 		}
 
 		// Replaced elements (img, canvas, etc.) are atomic.
-		if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+		if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 			offset := text.Len()
 			text.WriteRune('\uFFFC')
 			data.Items = append(data.Items, &InlineItem{
@@ -731,9 +731,9 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 	data.TextContent = prefix + data.TextContent + suffix
 }
 
-// isReplacedElement returns true for elements that are replaced
+// IsReplacedElement returns true for elements that are replaced
 // (have intrinsic dimensions, laid out as atomic inlines).
-func isReplacedElement(node *html.Node) bool {
+func IsReplacedElement(node *html.Node) bool {
 	switch node.TagName {
 	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
 		"input", "textarea", "select", "button":

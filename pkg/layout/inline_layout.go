@@ -1691,7 +1691,7 @@ func createLineBoxEx(
 					if r.Item.Style != nil {
 						display = r.Item.Style.GetDisplay()
 					}
-					isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
+					isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
 					isInlineBlockLike := r.Item.Style != nil &&
 						(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 							display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
@@ -2049,7 +2049,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				if r.Item.Style != nil {
 					display = r.Item.Style.GetDisplay()
 				}
-				isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
+				isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
 				isInlineBlockLike := r.Item.Style != nil &&
 					(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 						display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&

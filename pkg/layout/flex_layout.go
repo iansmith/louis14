@@ -743,7 +743,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// enlarged the main-size due to cross min/max constraints transferring
 			// through the aspect ratio (e.g., min-height on a row flex img).
 			// Update resolvedMain to match the actual fragment.
-			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
 				var actualMain float64
 				if isRow {
 					actualMain = lf.InlineSize() - item.mainBorderPadding()
@@ -769,7 +769,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// the explicit height; overriding with the aspect ratio would be wrong
 			// (e.g., a 100x100 image with CSS width:10px height:20px should be 20px
 			// tall, not 10px from the 1:1 intrinsic ratio).
-			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) &&
+			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) &&
 				!fla.hasExplicitCrossSize(item.style, wdm, isRow) {
 				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
 				if info.HasAspectRatio && info.AspectRatio > 0 {
@@ -2199,7 +2199,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			// different proportion. Stretch prediction gives wrong results when the
 			// stretch cross-size differs from the intrinsic cross-size.
 			ar := style.GetAspectRatio()
-			if !ar.IsSet && child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+			if !ar.IsSet && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 				info := GetIntrinsicSizingInfo(fla.ctx, child)
 				if info.HasAspectRatio && info.AspectRatio > 0 {
 					ar = css.AspectRatio{IsSet: true, Width: info.AspectRatio, Height: 1}
@@ -2208,7 +2208,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 					}
 				}
 			}
-			isReplaced := child.DOMNode != nil && isReplacedElement(child.DOMNode)
+			isReplaced := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
 			if ar.IsSet {
 				var itemCrossContent float64
 				var hasItemCross bool
@@ -2323,7 +2323,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 		var hasAR bool
 		if ar := style.GetAspectRatio(); ar.IsSet {
 			arW, arH, hasAR = ar.Width, ar.Height, true
-		} else if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+		} else if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 			info := GetIntrinsicSizingInfo(fla.ctx, child)
 			if info.HasAspectRatio && info.AspectRatio > 0 {
 				if childWDM.IsVertical() {
@@ -2333,7 +2333,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				}
 			}
 		}
-		isReplacedB := child.DOMNode != nil && isReplacedElement(child.DOMNode)
+		isReplacedB := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
 		if hasAR {
 			// Determine the item's definite cross-size content value.
 			// Priority: 1) explicit CSS cross-size (clamped by min/max), 2) stretched container cross-size.
@@ -2517,7 +2517,7 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	// this correctly derives block-size from cross-size × AR when the item
 	// has an explicit CSS cross-size.
 	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
-	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+	if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
 		// Logical aspect ratio: inline/block.
 		var logicalRatio float64
@@ -2688,7 +2688,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	// main-axis min/max separately in the hypothetical/resolve steps.
 	// A full layout (below for non-replaced) applies ALL min/max
 	// constraints, which is incorrect for the flex base size (§9.2).
-	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+	if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
 		mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
 
@@ -4294,7 +4294,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 			Build()
 		result := layoutElement(fla.ctx, child, colMinSpace)
 		lf := NewLogicalFragment(childWDM, result.Fragment)
-		isReplaced := child.DOMNode != nil && isReplacedElement(child.DOMNode)
+		isReplaced := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
 		if isReplaced {
 			// Replaced elements (img, canvas, etc.): use the fragment's resolved
 			// block-size, since IntrinsicBlockSize is 0 for childless elements
@@ -4344,7 +4344,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// and a definite size in the cross axis, compute the main size from:
 	// cross-content-size * aspect-ratio.
 	transferredSuggestion := -1.0
-	if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+	if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 		info := GetIntrinsicSizingInfo(fla.ctx, child)
 		if info.HasAspectRatio && info.AspectRatio > 0 {
 			// Try to get a definite cross-size: first from explicit CSS, then from
@@ -4537,7 +4537,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	//   - Non-replaced: max(content, transferred), then cap by specified
 	// Per Blink's approach and the spec, "transferred" only applies when an
 	// aspect ratio is present and a definite cross-size is available.
-	isReplaced := child.DOMNode != nil && isReplacedElement(child.DOMNode)
+	isReplaced := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
 	if flexDebug {
 		tag := ""
 		if child.DOMNode != nil {
@@ -4660,7 +4660,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			// algorithm using the CSS default (300×150), and the transferred size
 			// suggestion used that definite size. Stretching would override both
 			// the cross-size and (via aspect ratio) the flex-resolved main-size.
-			if item.node.DOMNode != nil && isReplacedElement(item.node.DOMNode) {
+			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
 				info := GetIntrinsicSizingInfo(fla.ctx, item.node)
 				if info.HasAspectRatio && info.IntrinsicWidth == 0 && info.IntrinsicHeight == 0 {
 					continue
