@@ -66,6 +66,11 @@ type InlineItemResult struct {
 	// HasHyphen indicates the text was broken at a soft hyphen (U+00AD) or
 	// auto-hyphenation point and a visible "-" should be appended at the end.
 	HasHyphen bool
+	// RubyColumn is non-nil when this result is a ruby column produced
+	// by LineBreaker.handleRuby. Mirrors Blink's
+	// InlineItemResult::RubyColumn
+	// (`core/layout/inline/inline_item_result_ruby_column.h`).
+	RubyColumn *InlineItemResultRubyColumn
 }
 
 // LineInfo represents a complete line produced by the LineBreaker.
@@ -85,6 +90,21 @@ type LineInfo struct {
 	IsLastLine bool
 	// HasForcedBreak is true if the line ends with a forced break (BR, newline).
 	HasForcedBreak bool
+
+	// IsRubyBase is true if this LineInfo is the sub-line of a ruby
+	// column's base. Set by LineBreaker.CreateSubLineInfo when building
+	// the column payload in handleRuby. Mirrors Blink's
+	// LineInfo::SetIsRubyBase (line_info.h).
+	IsRubyBase bool
+	// IsRubyText is true if this LineInfo is the sub-line of a ruby
+	// column's annotation (`<rt>`). Set by LineBreaker.CreateSubLineInfo.
+	// Mirrors Blink's LineInfo::SetIsRubyText.
+	IsRubyText bool
+	// RubyColumns is the set of ruby columns on this (top-level) line —
+	// the InlineItemResultRubyColumn payloads emitted by handleRuby for
+	// this line, in order. Consumed by UpdateRubyColumnInlinePositions
+	// + RubyBlockPositionCalculator during inline layout.
+	RubyColumns []*InlineItemResultRubyColumn
 }
 
 // LineBreaker consumes an InlineItemsData and produces lines one at a time.

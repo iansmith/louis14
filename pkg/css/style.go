@@ -5008,6 +5008,28 @@ func (s *Style) IsListItemDisplay() bool {
 	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
+// IsInlineRuby reports whether the element should be treated as an
+// inline-level ruby box (i.e. `display: ruby`, equivalently `display:
+// inline ruby`). Mirrors Blink's LayoutObject::IsInlineRuby at
+// `core/layout/layout_object.cc:522-525` (`IsLayoutInline() &&
+// Display()==kRuby`), which `core/layout/inline/inline_items_builder.cc`
+// (`:1550-1595`) uses to gate ruby column item emission.
+// Vetted against Chromium main @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (s *Style) IsInlineRuby() bool {
+	return s.GetDisplay() == DisplayRuby
+}
+
+// IsInlineRubyText reports whether the element should be treated as an
+// inline-level ruby annotation box (`display: ruby-text`). Mirrors
+// Blink's LayoutObject::IsInlineRubyText at
+// `core/layout/layout_object.cc:527-529` (`IsLayoutInline() &&
+// Display()==kRubyText`); used alongside IsInlineRuby in the
+// inline-item-collection ruby box-fixup. Vetted against Chromium main
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (s *Style) IsInlineRubyText() bool {
+	return s.GetDisplay() == DisplayRubyText
+}
+
 // GetLineClamp returns the -webkit-line-clamp value (0 = no clamping)
 func (s *Style) GetLineClamp() int {
 	if val, ok := s.Get("-webkit-line-clamp"); ok {

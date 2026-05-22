@@ -30,6 +30,27 @@ const (
 	// static position is determined by its position in the inline sequence.
 	// Ported from Blink's InlineItem::kOutOfFlowPositioned.
 	InlineItemOutOfFlow
+
+	// InlineItemOpenRubyColumn marks the start of a ruby column. Emitted
+	// at item-collection time when entering a `display: ruby` element and
+	// (per CSS Ruby §2 box generation) reopened after every `</rt>` so
+	// successive base/annotation pairs ("ruby columns") fall out of a flat
+	// `<rb><rb><rt><rt>` child list. Ported from Blink's
+	// InlineItem::kOpenRubyColumn (`core/layout/inline/inline_items_builder.cc:1550-1595,1682-1697`,
+	// Chromium main @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	InlineItemOpenRubyColumn
+	// InlineItemCloseRubyColumn closes a ruby column. Emitted on `</rt>`
+	// (inside a ruby) and on `</ruby>`. Almost-empty trailing columns
+	// produced by the "reopen after </rt>" rule are stripped at `</ruby>`
+	// (`inline_items_builder.cc:1617-1628`). Ported from Blink's
+	// InlineItem::kCloseRubyColumn.
+	InlineItemCloseRubyColumn
+	// InlineItemRubyLinePlaceholder is a zero-width placeholder emitted
+	// inside a ruby column to mark the start of a base or annotation
+	// sub-line. The line breaker uses these to anchor sub-LineInfo
+	// construction. Ported from Blink's InlineItem::kRubyLinePlaceholder
+	// (`core/layout/inline/inline_items_builder.cc:1550-1595`).
+	InlineItemRubyLinePlaceholder
 )
 
 // InlineItem is a segment of inline content within a formatting context.
