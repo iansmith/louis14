@@ -1,5 +1,102 @@
 package layout
 
+import "louis14/pkg/text"
+
+// RubyBlockPositionCalculator stacks annotation sub-lines above/below
+// the base baseline of a ruby column on a line. Phase 2 supports the
+// single-level case only — at most one annotation per column, all
+// annotations on the "over" side (above the base). The full
+// multi-level RubyLevel path model (`[1,-1]`, `[-2]`, ...) is Phase 11.
+//
+// Mirrors Blink's `RubyBlockPositionCalculator` in
+// `core/layout/inline/ruby_utils.{h,cc}` (header `:128-244`, impls
+// `:775-1037` @ 4883d11fef).
+type RubyBlockPositionCalculator struct {
+	// annotationAscent is the maximum block-axis height contributed
+	// by any annotation sub-line on the line. Computed by PlaceLines;
+	// returned by AnnotationMetrics so the outer line's height grows
+	// to contain all annotations (mirrors
+	// inline_layout_algorithm.cc:396-418 SetAnnotationBlockStartAdjustment).
+	annotationAscent float64
+}
+
+// PlaceLines computes the block-axis offset of each annotation
+// sub-line relative to the base baseline, given the outer line's
+// font config and writing-direction context. Phase 2: all annotations
+// stack ABOVE the base (default `ruby-position: over`); the
+// per-annotation offset is the negative of the annotation's own
+// height (sub-line ascent + descent), so the annotation sits with
+// its baseline above the base baseline by its descent and its top
+// extends further by its ascent.
+//
+// The maximum annotation height across the line is recorded for
+// AnnotationMetrics so the outer line can grow its ascent
+// accordingly.
+//
+// Phase 11 will replace `columns` with a `RubyLevel` partition built
+// from Blink's GroupLines pre-pass; for Phase 2 we always treat the
+// whole line as one over-level group.
+func (rbpc *RubyBlockPositionCalculator) PlaceLines(
+	columns []*InlineItemResultRubyColumn,
+	wdm WritingDirectionMode,
+	fonts text.FontConfig,
+	centralBaseline bool,
+) {
+	var maxAnno float64
+	for _, col := range columns {
+		for _, anno := range col.AnnotationLines {
+			a, d := computeLineMetricsEx(anno, wdm, fonts, centralBaseline, nil)
+			if h := a + d; h > maxAnno {
+				maxAnno = h
+			}
+		}
+	}
+	rbpc.annotationAscent = maxAnno
+}
+
+// AnnotationMetrics returns the additional ascent (above the base
+// baseline) and descent (below) that the line box needs to contain
+// all annotations on the line. Phase 2 always returns the over-side
+// contribution as ascent and zero descent — `ruby-position: under`
+// support is Phase 11.
+//
+// Mirrors Blink's `AnnotationMetrics` accessor on
+// `RubyBlockPositionCalculator`.
+func (rbpc *RubyBlockPositionCalculator) AnnotationMetrics() (ascent, descent float64) {
+	return rbpc.annotationAscent, 0
+}
+
+// UpdateRubyColumnInlinePositions resolves each ruby column's
+// inline-axis position on the outer line (the position where the
+// base sub-line and annotation sub-lines will be laid out).
+//
+// Phase 2 keeps this simple: the inline position is the running sum
+// of preceding non-ruby-column results' InlineSize on the same line,
+// computed up front so M6's createLineBoxEx can pick up per-column
+// offsets without re-traversing. Returned slice is parallel to
+// line.RubyColumns.
+//
+// Mirrors Blink's `UpdateRubyColumnInlinePositions` at
+// `core/layout/inline/ruby_utils.cc:720-748` @ 4883d11fef. Phase 2's
+// version is a straight running-sum walk; Blink's version is the
+// same shape (the more elaborate overhang adjustments belong to
+// Phase 5's `ruby-align`/`ruby-overhang` work).
+func UpdateRubyColumnInlinePositions(line *LineInfo) []float64 {
+	if len(line.RubyColumns) == 0 {
+		return nil
+	}
+	positions := make([]float64, 0, len(line.RubyColumns))
+	var inlinePos float64
+	for i := range line.Results {
+		r := &line.Results[i]
+		if r.RubyColumn != nil {
+			positions = append(positions, inlinePos)
+		}
+		inlinePos += r.InlineSize
+	}
+	return positions
+}
+
 // RubyItemIndexes pinpoints the four item-stream landmarks of a ruby
 // column: the column-open, the base/annotation boundary, the start of
 // annotation content, and the column-close. The LineBreaker uses
