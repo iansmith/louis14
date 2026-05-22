@@ -117,7 +117,7 @@ func (r *Louis14Renderer) RenderAutoHeight(htmlContent string, width int) (*imag
 	fonts := r.registerWebFonts(doc)
 
 	// Collect @counter-style rules
-	counterStyles := collectCounterStyles(doc)
+	counterStyles := collectCounterStyles(doc, viewportWidth, viewportHeight)
 
 	// Create image at the measured height and render
 	target := image.NewRGBA(image.Rect(0, 0, width, int(contentHeight+0.5)))
@@ -274,7 +274,7 @@ func (r *Louis14Renderer) Render(htmlContent string, target *image.RGBA) error {
 	fonts := r.registerWebFonts(doc)
 
 	// Collect @counter-style rules
-	counterStyles := collectCounterStyles(doc)
+	counterStyles := collectCounterStyles(doc, viewportWidth, viewportHeight)
 
 	// Render onto target image
 	renderer := r.newRenderer(target)
@@ -332,7 +332,7 @@ func (r *Louis14Renderer) RenderWithDC(htmlContent string, dc textshape.DrawCont
 	boxes := layoutEngine.Layout(doc)
 
 	fonts := r.registerWebFonts(doc)
-	counterStyles := collectCounterStyles(doc)
+	counterStyles := collectCounterStyles(doc, viewportW, viewportH)
 
 	renderer := r.newRendererForDC(dc)
 	renderer.SetFonts(fonts)
@@ -350,11 +350,9 @@ func (r *Louis14Renderer) RenderWithDC(htmlContent string, dc textshape.DrawCont
 	return nil
 }
 
-// collectCounterStyles extracts all @counter-style rules from a document's stylesheets.
-func collectCounterStyles(doc *html.Document) []css.CounterStyleRule {
-	var rules []css.CounterStyleRule
-	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
-		rules = append(rules, stylesheet.CounterStyles...)
-	}
-	return rules
+// collectCounterStyles extracts all @counter-style rules from a
+// document's stylesheets, filtering out rules whose enclosing @media
+// query doesn't match the current viewport.
+func collectCounterStyles(doc *html.Document, viewportWidth, viewportHeight float64) []css.CounterStyleRule {
+	return css.FilterCounterStylesByMedia(css.ParseDocumentStylesheets(doc), viewportWidth, viewportHeight)
 }

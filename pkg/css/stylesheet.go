@@ -119,6 +119,7 @@ type CounterStyleRule struct {
 	Suffix          string           // Suffix appended after counter (default ". ")
 	Prefix          string           // Prefix prepended before counter
 	Fallback        string           // Fallback counter style name
+	MediaQuery      *MediaQuery      // Enclosing @media; nil if top-level
 }
 
 // AdditiveSymbol represents a single additive-symbols entry (value + symbol).
@@ -397,15 +398,17 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 		if strings.HasPrefix(trimmed, "@") {
 			// Phase 22: Handle @media; skip all other at-rules
 			if strings.HasPrefix(trimmed, "@media") {
-				mediaRules := parseMediaRule(ruleStr)
+				mediaRules, mediaCounters := parseMediaRule(ruleStr)
 				stylesheet.Rules = append(stylesheet.Rules, mediaRules...)
+				stylesheet.CounterStyles = append(stylesheet.CounterStyles, mediaCounters...)
 			} else if strings.HasPrefix(trimmed, "@font-face") {
 				if ff := parseFontFaceRule(trimmed); ff != nil {
 					stylesheet.FontFaces = append(stylesheet.FontFaces, *ff)
 				}
 			} else if strings.HasPrefix(trimmed, "@supports") {
-				supportsRules := parseSupportsRule(ruleStr)
+				supportsRules, supportsCounters := parseSupportsRule(ruleStr)
 				stylesheet.Rules = append(stylesheet.Rules, supportsRules...)
+				stylesheet.CounterStyles = append(stylesheet.CounterStyles, supportsCounters...)
 			} else if strings.HasPrefix(trimmed, "@container") {
 				containerRules := parseContainerRule(ruleStr)
 				stylesheet.Rules = append(stylesheet.Rules, containerRules...)
@@ -709,54 +712,83 @@ func parseRule(ruleStr string) (Rule, error) {
 	}, nil
 }
 
-// Phase 22: parseMediaRule parses a @media rule and returns its inner rules
-func parseMediaRule(ruleStr string) []Rule {
-	rules := make([]Rule, 0)
+// dispatchNestedAtRule handles a single inner rule inside another
+// at-rule's body, dispatching @media / @supports / @counter-style by
+// type. Returns handled=false when the inner rule is not a nested
+// at-rule we recognize — the caller is then responsible for treating it
+// as a selector block via parseRules. Mirrors the type-driven dispatch
+// in Blink's CSSParserImpl::ConsumeAtRule
+// (core/css/parser/css_parser_impl.cc @ Chromium main 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func dispatchNestedAtRule(innerRuleStr string) (rules []Rule, counterStyles []CounterStyleRule, handled bool) {
+	innerTrimmed := strings.TrimSpace(innerRuleStr)
+	switch {
+	case strings.HasPrefix(innerTrimmed, "@media"):
+		rules, counterStyles = parseMediaRule(innerRuleStr)
+		return rules, counterStyles, true
+	case strings.HasPrefix(innerTrimmed, "@supports"):
+		rules, counterStyles = parseSupportsRule(innerRuleStr)
+		return rules, counterStyles, true
+	case strings.HasPrefix(innerTrimmed, "@counter-style"):
+		cs := parseCounterStyleRule(innerRuleStr)
+		if cs.Name != "" {
+			counterStyles = []CounterStyleRule{cs}
+		}
+		return nil, counterStyles, true
+	}
+	return nil, nil, false
+}
 
-	// Find the opening brace
+// parseMediaRule parses an @media rule and returns its inner rules plus
+// any nested @counter-style rules tagged with the enclosing media query.
+func parseMediaRule(ruleStr string) ([]Rule, []CounterStyleRule) {
+	rules := make([]Rule, 0)
+	var counterStyles []CounterStyleRule
+
 	bracePos := strings.Index(ruleStr, "{")
 	if bracePos == -1 {
-		return rules
+		return rules, counterStyles
 	}
 
-	// Extract media query string: @media (conditions)
 	mediaStr := strings.TrimSpace(ruleStr[:bracePos])
 	mediaQuery := parseMediaQuery(mediaStr)
 
-	// Extract inner CSS (between outermost { and })
 	innerStart := bracePos + 1
 	innerEnd := strings.LastIndex(ruleStr, "}")
 	if innerEnd == -1 || innerEnd <= innerStart {
-		return rules
+		return rules, counterStyles
 	}
 
-	innerCSS := ruleStr[innerStart:innerEnd]
-
-	// Parse inner rules
-	innerRules := splitRules(innerCSS)
-
-	for _, innerRuleStr := range innerRules {
-		innerTrimmed := strings.TrimSpace(innerRuleStr)
-		// Handle nested @media inside @media (e.g. @media screen { @media (min-width:1120px) { ... } })
-		if strings.HasPrefix(innerTrimmed, "@media") {
-			nestedRules := parseMediaRule(innerRuleStr)
-			// Nested media queries override the outer media query (inner wins)
+	for _, innerRuleStr := range splitRules(ruleStr[innerStart:innerEnd]) {
+		if nestedRules, nestedCounters, handled := dispatchNestedAtRule(innerRuleStr); handled {
+			// Attach the outer media query to anything that landed
+			// without one (nested @media keeps its own; nested
+			// @supports inherits ours; nested @counter-style picks ours
+			// up here).
+			for i := range nestedRules {
+				if nestedRules[i].MediaQuery == nil {
+					nestedRules[i].MediaQuery = mediaQuery
+				}
+			}
+			for i := range nestedCounters {
+				if nestedCounters[i].MediaQuery == nil {
+					nestedCounters[i].MediaQuery = mediaQuery
+				}
+			}
 			rules = append(rules, nestedRules...)
+			counterStyles = append(counterStyles, nestedCounters...)
 			continue
 		}
-		// Use parseRules (plural) to handle comma-separated selector groups
 		parsedRules, err := parseRules(innerRuleStr)
 		if err != nil {
 			continue
 		}
-		// Attach media query to all resulting rules
 		for _, rule := range parsedRules {
 			rule.MediaQuery = mediaQuery
 			rules = append(rules, rule)
 		}
 	}
 
-	return rules
+	return rules, counterStyles
 }
 
 // parseContainerRule parses a @container rule and returns its inner rules
@@ -853,15 +885,17 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string) ([]Rule, []stri
 	innerRules := splitRules(innerCSS)
 	for _, innerRuleStr := range innerRules {
 		innerTrimmed := strings.TrimSpace(innerRuleStr)
-		// Handle nested @media inside @layer
+		// Counter styles nested inside @layer { @media | @supports }
+		// are dropped because CounterStyleRule has no LayerName field;
+		// threading layer membership through is a separate gap.
 		if strings.HasPrefix(innerTrimmed, "@media") {
-			mediaRules := parseMediaRule(innerRuleStr)
+			mediaRules, _ := parseMediaRule(innerRuleStr)
 			for i := range mediaRules {
 				mediaRules[i].LayerName = layerName
 			}
 			rules = append(rules, mediaRules...)
 		} else if strings.HasPrefix(innerTrimmed, "@supports") {
-			supportsRules := parseSupportsRule(innerRuleStr)
+			supportsRules, _ := parseSupportsRule(innerRuleStr)
 			for i := range supportsRules {
 				supportsRules[i].LayerName = layerName
 			}
@@ -1048,37 +1082,44 @@ func splitMediaConditions(s string) []string {
 	return parts
 }
 
-// parseSupportsRule parses an @supports rule and returns the inner rules if condition is met
-func parseSupportsRule(ruleStr string) []Rule {
+// parseSupportsRule parses an @supports rule and returns the inner
+// rules plus nested @counter-style rules when the condition is met.
+// @supports is evaluated at parse time, so emitted rules and counter
+// styles land as if they had been written at the outer scope; only
+// nested @media inside the block tags its outputs with a MediaQuery.
+func parseSupportsRule(ruleStr string) ([]Rule, []CounterStyleRule) {
 	ruleStr = strings.TrimSpace(ruleStr)
 	braceIdx := strings.Index(ruleStr, "{")
 	if braceIdx < 0 {
-		return nil
+		return nil, nil
 	}
 
 	conditionStr := strings.TrimSpace(ruleStr[len("@supports"):braceIdx])
 
-	// Find matching closing brace
 	innerEnd := strings.LastIndex(ruleStr, "}")
 	if innerEnd <= braceIdx {
-		return nil
+		return nil, nil
 	}
-	innerCSS := ruleStr[braceIdx+1 : innerEnd]
 
 	if !evaluateSupportsCondition(conditionStr) {
-		return nil
+		return nil, nil
 	}
 
-	innerRules := splitRules(innerCSS)
 	var rules []Rule
-	for _, inner := range innerRules {
+	var counterStyles []CounterStyleRule
+	for _, inner := range splitRules(ruleStr[braceIdx+1 : innerEnd]) {
+		if nestedRules, nestedCounters, handled := dispatchNestedAtRule(inner); handled {
+			rules = append(rules, nestedRules...)
+			counterStyles = append(counterStyles, nestedCounters...)
+			continue
+		}
 		parsedRules, err := parseRules(inner)
 		if err != nil {
 			continue
 		}
 		rules = append(rules, parsedRules...)
 	}
-	return rules
+	return rules, counterStyles
 }
 
 func evaluateSupportsCondition(condition string) bool {
@@ -1597,6 +1638,27 @@ func parseAttributeSelector(s string) AttributeSelector {
 		Operator: "",
 		Value:    "",
 	}
+}
+
+// FilterCounterStylesByMedia returns the @counter-style rules from the
+// supplied stylesheets whose enclosing @media query (if any) matches the
+// current viewport.
+//
+// Blink divergence: Blink consults media conditions per element during
+// style recalc (core/css/counter_style_map.{h,cc} @ Chromium main
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Louis14's static renderer
+// has a single viewport per render pass, so matching happens once at
+// viewport time. Container-query support would require revisiting this.
+func FilterCounterStylesByMedia(stylesheets []*Stylesheet, viewportWidth, viewportHeight float64) []CounterStyleRule {
+	var out []CounterStyleRule
+	for _, sheet := range stylesheets {
+		for _, cs := range sheet.CounterStyles {
+			if EvaluateMediaQuery(cs.MediaQuery, viewportWidth, viewportHeight) {
+				out = append(out, cs)
+			}
+		}
+	}
+	return out
 }
 
 // Phase 22: EvaluateMediaQuery checks if a media query matches the given viewport dimensions
