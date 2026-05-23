@@ -321,6 +321,16 @@ func collectInlinesRecursive(
 				rubyStyle: childStyle,
 				rubyNode:  child.DOMNode,
 			}
+			// Carry forced-break suppression depth from any enclosing
+			// `<rt>` into the nested ruby — descendants of `<rt>`
+			// continue to suppress `<br>`/`\n` regardless of how
+			// many ruby boundaries they cross. Without this carry, a
+			// `<ruby>` nested inside an outer `<rt>` resets the
+			// counter to 0 and forced breaks in its subtree fire
+			// when they shouldn't.
+			if rubyState != nil {
+				childRubyState.textNestingLevel = rubyState.textNestingLevel
+			}
 			childRubyState.currentColumnCheckpoint = openRubyColumn(
 				data, text, childStyle, child.DOMNode,
 			)

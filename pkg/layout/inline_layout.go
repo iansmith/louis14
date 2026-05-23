@@ -1250,12 +1250,27 @@ func createLineBoxEx(
 	// the base baseline). Mirrors Blink
 	// `inline_layout_algorithm.cc:396-418` SetAnnotationBlockStartAdjustment
 	// @ 4883d11fef.
+	//
+	// Recompute the surviving columns from line.Results rather than
+	// reading line.RubyColumns directly: float deferral can truncate
+	// line.Results (see `lineResultsTruncateAt` block earlier in
+	// layoutInlineChildren) without trimming line.RubyColumns, so
+	// any column that's been moved to the next line would otherwise
+	// still inflate maxAscent/maxDescent on this one.
 	var rbpc RubyBlockPositionCalculator
 	if len(line.RubyColumns) > 0 {
-		rbpc.PlaceLines(line.RubyColumns, wdm, fonts, centralBaseline)
-		annoAsc, annoDesc := rbpc.AnnotationMetrics()
-		maxAscent += annoAsc
-		maxDescent += annoDesc
+		var activeRubyColumns []*InlineItemResultRubyColumn
+		for i := range line.Results {
+			if line.Results[i].RubyColumn != nil {
+				activeRubyColumns = append(activeRubyColumns, line.Results[i].RubyColumn)
+			}
+		}
+		if len(activeRubyColumns) > 0 {
+			rbpc.PlaceLines(activeRubyColumns, wdm, fonts, centralBaseline)
+			annoAsc, annoDesc := rbpc.AnnotationMetrics()
+			maxAscent += annoAsc
+			maxDescent += annoDesc
+		}
 	}
 
 	lineHeight := maxAscent + maxDescent

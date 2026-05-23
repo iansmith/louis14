@@ -188,6 +188,12 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	line.HasForcedBreak = false
 	line.IsLastLine = false
 	line.BaseDirection = lb.space.WritingDirection.Dir
+	// CSS Ruby Phase 2: reset the ruby-specific fields too so a
+	// LineInfo reused across NextLine calls doesn't carry stale ruby
+	// columns or sub-line role flags from the previous line.
+	line.IsRubyBase = false
+	line.IsRubyText = false
+	line.RubyColumns = line.RubyColumns[:0]
 	lb.position = 0
 
 	// Process items until the line is full or we run out.
