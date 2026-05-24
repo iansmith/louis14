@@ -575,9 +575,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// So transform / translate / rotate / scale all silently no-op on
 	// non-replaced inline-level boxes (`display: inline | ruby |
 	// ruby-text`) and on table column / column-group boxes. Mirrors
-	// Blink's gate in LayoutObject::HasTransformRelatedProperty()
-	// which returns false for non-atomic inlines.
-	if isTransformableBox(s, box.Node) {
+	// Blink's gate in paint_property_tree_builder.cc:1310 (NeedsTransform,
+	// :1299-:1319) at SHA 4883d11fef — `if (!object.IsBox()) return false;`
+	// short-circuits transform consideration for non-atomic inlines.
+	if layout.IsTransformableBox(s, box.Node) {
 		// Collect individual transform properties.
 		var individualTransforms []css.Transform
 		if tx, ty, txPct, tyPct, ok := s.GetIndividualTranslate(); ok {
@@ -697,57 +698,6 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 }
 
 // isCellNodeEmpty returns true if a table cell's DOM node has no visible content.
-// isTransformableBox reports whether the given box accepts CSS
-// transform / translate / rotate / scale per CSS Transforms Level 1
-// §3 "transformable element"
-// (https://www.w3.org/TR/css-transforms-1/#transformable-element):
-//
-//	"...all elements whose layout is governed by the CSS box model
-//	 except for non-replaced inline boxes, table-column boxes, and
-//	 table-column-group boxes..."
-//
-// Returns false for non-replaced inline-level boxes (`display:
-// inline`, `display: ruby`, `display: ruby-text`). Returns true for
-// everything else, including atomic inline-level boxes
-// (`inline-block`, `inline-flex`, `inline-grid`, `inline-table`,
-// `inline-list-item`) and replaced inline elements (img, video, etc.).
-//
-// louis14's GetDisplay() doesn't currently recognize
-// `display: table-column` / `display: table-column-group` as distinct
-// display values — they fall through to the default. Those would also
-// need to be gated here per the spec when louis14 grows native column
-// support.
-//
-// Mirrors Blink's LayoutObject::HasTransformRelatedProperty() gate
-// (which returns false for non-atomic, non-replaced inline boxes).
-// SVG elements are handled by their own paint paths (svg_*painter.go)
-// and don't reach this predicate.
-func isTransformableBox(s *css.Style, node *html.Node) bool {
-	if s == nil {
-		return true
-	}
-	switch s.GetDisplay() {
-	case css.DisplayInline, css.DisplayRuby, css.DisplayRubyText:
-		// Replaced inline elements (img, video, ...) are atomic
-		// inlines for layout purposes and DO accept transforms,
-		// even though their computed `display` may still resolve to
-		// `inline`. Per CSS Display 3 §2.2, replaced elements are
-		// "atomic inlines" by definition.
-		//
-		// The `node != nil` guard is louis14's caller-side analog
-		// to Blink's "LayoutObject is never null" type-system
-		// invariant — see layout.IsReplacedElement's docstring.
-		// Anonymous inline boxes (Node==nil, no DOM element) fall
-		// through to `return false`, matching Blink's outcome for
-		// LayoutInline (IsBox()==false in NeedsTransform).
-		if node != nil && layout.IsReplacedElement(node) {
-			return true
-		}
-		return false
-	}
-	return true
-}
-
 // Per CSS 2.1 §17.6.1.1: whitespace-only text is not "visible content",
 // but &nbsp; (U+00A0) IS content, and any child element means not empty.
 func isCellNodeEmpty(node *html.Node) bool {

@@ -12,9 +12,9 @@ import (
 // inline-level boxes (display: inline | ruby | ruby-text) MUST NOT create
 // a stacking context purely because of a transform / translate / rotate /
 // scale property, because the transform itself paints as a no-op on those
-// elements (see pkg/render/paint_layer.go::isTransformableBox). Without the
-// gate, the element is spuriously hoisted into a z-list and reorders paint
-// even though its transform is ignored.
+// elements (see layout.IsTransformableBox in pkg/layout/inline_item.go).
+// Without the gate, the element is spuriously hoisted into a z-list and
+// reorders paint even though its transform is ignored.
 //
 // Blink alignment: at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
 // paint_property_tree_builder.cc:1310 (in NeedsTransform, lines 1299-1319)
@@ -24,12 +24,13 @@ import (
 // paint-property-tree creation and never establish a stacking context for
 // them.
 //
-// The cited reference in the source comment of paint_layer.go
-// (computed_style.cc:1319 HasPropertyThatCreatesStackingContext) is
-// MISLEADING at the pinned SHA — that function returns true for
-// kTransform/kTranslate/kRotate/kScale unconditionally. The actual gate
-// is at paint-tree-build time via IsBox(). The comment will be corrected
-// as part of the fix.
+// (An earlier version of louis14 cited computed_style.cc:1319
+// HasPropertyThatCreatesStackingContext as the Blink gate. That was
+// incorrect at the pinned SHA — that function returns true for
+// kTransform/kTranslate/kRotate/kScale unconditionally. The corrected
+// citation is the paint-tree-build IsBox() short-circuit above; the
+// previously-misleading comment was removed when the gate fix landed
+// in pkg/layout/types.go.)
 
 // makeBox builds a Box with the given style and node, defaulting Position
 // to css.PositionStatic so tests that combine z-index with non-positioned
@@ -169,7 +170,7 @@ func TestCreatesStackingContext_BlockWithScale_SC(t *testing.T) {
 // fix's per-branch correctness is regression-guarded across the matrix.
 // (Atomic-inline variants beyond inline-block — inline-flex, inline-grid,
 // inline-list-item — and `display: block ruby` are NOT covered; they
-// fall through isTransformableBox's switch default to `return true`,
+// fall through IsTransformableBox's switch default to `return true`,
 // same as inline-block.)
 //
 // CSS Transforms L1 §3 enumerates the non-transformable element set as
@@ -179,8 +180,8 @@ func TestCreatesStackingContext_BlockWithScale_SC(t *testing.T) {
 // are inline-level (Blink models them via LayoutInline). Louis14
 // recognizes display: inline | ruby | ruby-text directly; display:
 // table-column / table-column-group are not yet recognized by
-// GetDisplay() (see the gap note at paint_layer.go:715-719) and so
-// don't appear here.
+// GetDisplay() (see the gap note inside layout.IsTransformableBox
+// in pkg/layout/inline_item.go) and so don't appear here.
 //
 // At SHA 4883d11fef Blink's `paint_property_tree_builder.cc:1310`
 // (NeedsTransform, :1299-:1319) implements the same gate via

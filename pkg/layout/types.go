@@ -143,17 +143,40 @@ func (b *Box) CreatesStackingContext() bool {
 	// CSS Transforms: elements with a transform create a stacking context.
 	// Per CSS Transforms Level 2 §3, individual transform properties
 	// (translate, rotate, scale) also create a stacking context.
-	if transforms := b.Style.GetTransforms(); len(transforms) > 0 {
-		return true
-	}
-	if _, _, _, _, ok := b.Style.GetIndividualTranslate(); ok {
-		return true
-	}
-	if _, ok := b.Style.GetIndividualRotate(); ok {
-		return true
-	}
-	if _, _, ok := b.Style.GetIndividualScale(); ok {
-		return true
+	//
+	// Gated on IsTransformableBox per CSS Transforms Level 1 §3
+	// ("transformable element"): non-replaced inline-level boxes
+	// (`display: inline | ruby | ruby-text`) silently no-op on transform
+	// at paint time, so they MUST NOT create a stacking context either
+	// — otherwise the element gets spuriously hoisted into a z-list and
+	// reorders paint even though its transform is ignored.
+	//
+	// Mirrors the `!object.IsBox()` short-circuit of Blink's
+	// NeedsTransform at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f —
+	// paint_property_tree_builder.cc:1310 (function spans :1299-:1319).
+	// Non-atomic inline LayoutObjects (LayoutInline) are not boxes;
+	// transforms never reach paint-property-tree creation for them.
+	// (NeedsTransform has other branches — backface-visibility:hidden,
+	// transform animations, preserve-3d — that louis14's stacking-
+	// context decision doesn't yet model; separate gap.) An earlier
+	// version of louis14 cited computed_style.cc:1319
+	// HasPropertyThatCreatesStackingContext as the Blink gate; that was
+	// incorrect at the pinned SHA — that function returns true for
+	// kTransform/kTranslate/kRotate/kScale unconditionally and is not a
+	// transformability check.
+	if IsTransformableBox(b.Style, b.Node) {
+		if transforms := b.Style.GetTransforms(); len(transforms) > 0 {
+			return true
+		}
+		if _, _, _, _, ok := b.Style.GetIndividualTranslate(); ok {
+			return true
+		}
+		if _, ok := b.Style.GetIndividualRotate(); ok {
+			return true
+		}
+		if _, _, ok := b.Style.GetIndividualScale(); ok {
+			return true
+		}
 	}
 	// CSS Filters: elements with a filter create a stacking context.
 	if filters := b.Style.GetFilter(); len(filters) > 0 {
