@@ -145,11 +145,13 @@ func TestParseRubyInInlineItems_UnclosedColumn(t *testing.T) {
 // (placeholder immediately before the column close) would not count.
 //
 // Blink alignment check (SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
-// ruby_utils.cc initialises RubyItemIndexes with `annotation_start =
-// kNotFound`, then assigns it only when an annotation kOpenTag is
-// encountered. "Has annotation" in Blink is `annotation_start != kNotFound`
-// — i.e. it tests whether the annotation EXISTS at all, NOT whether the
-// annotation has CONTENT. Adopting CodeRabbit's tightening would silently
+// ruby_utils.cc:151 (inside ParseRubyInInlineItems, lines 147-176)
+// initialises RubyItemIndexes with `annotation_start = kNotFound`, then
+// assigns it at line 169 only when an annotation kOpenTag is encountered
+// (`item.Type() == InlineItem::kOpenTag && item.GetLayoutObject()->IsInlineRubyText()`
+// at lines 164-165). "Has annotation" in Blink is `annotation_start !=
+// kNotFound` — i.e. it tests whether the annotation EXISTS at all, NOT
+// whether the annotation has CONTENT. Adopting CodeRabbit's tightening would silently
 // diverge from Blink semantics: a future emitter shape with an
 // adjacent-placeholder degenerate case would be classified differently
 // in louis14 than in Blink.

@@ -17,11 +17,12 @@ import (
 // even though its transform is ignored.
 //
 // Blink alignment: at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
-// paint_property_tree_builder.cc::NeedsTransform short-circuits on
-// `if (!object.IsBox()) return false;` BEFORE consulting any transform
-// properties. Non-atomic inline LayoutObjects (the LayoutInline class) are
-// not boxes, so transforms never reach paint-property-tree creation and
-// never establish a stacking context for them.
+// paint_property_tree_builder.cc:1310 (in NeedsTransform, lines 1299-1319)
+// short-circuits on `if (!object.IsBox()) return false;` BEFORE consulting
+// any transform properties. Non-atomic inline LayoutObjects (the
+// LayoutInline class) are not boxes, so transforms never reach
+// paint-property-tree creation and never establish a stacking context for
+// them.
 //
 // The cited reference in the source comment of paint_layer.go
 // (computed_style.cc:1319 HasPropertyThatCreatesStackingContext) is
@@ -30,19 +31,14 @@ import (
 // is at paint-tree-build time via IsBox(). The comment will be corrected
 // as part of the fix.
 
-// styleWith builds a Style with the given properties already set.
-// Pairs come as (key, value, key, value, ...).
-func styleWith(props ...string) *css.Style {
-	s := css.NewStyle()
-	for i := 0; i+1 < len(props); i += 2 {
-		s.Properties[props[i]] = props[i+1]
-	}
-	return s
-}
-
-// boxWith builds a Box with the given style and optional node.
-func boxWith(s *css.Style, node *html.Node) *Box {
-	return &Box{Style: s, Node: node}
+// makeBox builds a Box with the given style and node, defaulting Position
+// to css.PositionStatic so tests that combine z-index with non-positioned
+// styles don't spuriously fall into the explicit-z-index stacking-context
+// branch at types.go:126 (which tests `b.Position != css.PositionStatic`
+// — the zero value "" is not equal to "static"). Mirrors the makeNode /
+// makeStyle helper vocabulary in this package's test suite.
+func makeBox(s *css.Style, node *html.Node) *Box {
+	return &Box{Style: s, Node: node, Position: css.PositionStatic}
 }
 
 // === Item 1 RED tests — non-transformable + transform => no SC ===
@@ -51,7 +47,7 @@ func TestCreatesStackingContext_InlineWithTransform_NoSC(t *testing.T) {
 	// display: inline + transform: translate(10px,0) — transform is a no-op
 	// per CSS Transforms L1 §3 (non-replaced inline is not a transformable
 	// element). MUST NOT create a stacking context.
-	b := boxWith(styleWith("display", "inline", "transform", "translate(10px, 0)"), makeNode("span"))
+	b := makeBox(makeStyle("display", "inline", "transform", "translate(10px, 0)"), makeNode("span"))
 	if b.CreatesStackingContext() {
 		t.Error("display:inline with transform must NOT create a stacking context (transform is a no-op on non-replaced inlines)")
 	}
@@ -60,7 +56,7 @@ func TestCreatesStackingContext_InlineWithTransform_NoSC(t *testing.T) {
 func TestCreatesStackingContext_RubyWithTransform_NoSC(t *testing.T) {
 	// display: ruby + transform — same gate (ruby is a non-transformable
 	// element per CSS Transforms L1 §3 enumeration).
-	b := boxWith(styleWith("display", "ruby", "transform", "translate(10px, 0)"), makeNode("ruby"))
+	b := makeBox(makeStyle("display", "ruby", "transform", "translate(10px, 0)"), makeNode("ruby"))
 	if b.CreatesStackingContext() {
 		t.Error("display:ruby with transform must NOT create a stacking context")
 	}
@@ -68,7 +64,7 @@ func TestCreatesStackingContext_RubyWithTransform_NoSC(t *testing.T) {
 
 func TestCreatesStackingContext_RubyTextWithTransform_NoSC(t *testing.T) {
 	// display: ruby-text + transform — same gate.
-	b := boxWith(styleWith("display", "ruby-text", "transform", "translate(10px, 0)"), makeNode("rt"))
+	b := makeBox(makeStyle("display", "ruby-text", "transform", "translate(10px, 0)"), makeNode("rt"))
 	if b.CreatesStackingContext() {
 		t.Error("display:ruby-text with transform must NOT create a stacking context")
 	}
@@ -77,21 +73,21 @@ func TestCreatesStackingContext_RubyTextWithTransform_NoSC(t *testing.T) {
 func TestCreatesStackingContext_InlineWithTranslate_NoSC(t *testing.T) {
 	// Individual transform property `translate` should be gated identically
 	// to the shorthand `transform`.
-	b := boxWith(styleWith("display", "inline", "translate", "10px 0"), makeNode("span"))
+	b := makeBox(makeStyle("display", "inline", "translate", "10px 0"), makeNode("span"))
 	if b.CreatesStackingContext() {
 		t.Error("display:inline with translate must NOT create a stacking context")
 	}
 }
 
 func TestCreatesStackingContext_InlineWithRotate_NoSC(t *testing.T) {
-	b := boxWith(styleWith("display", "inline", "rotate", "45deg"), makeNode("span"))
+	b := makeBox(makeStyle("display", "inline", "rotate", "45deg"), makeNode("span"))
 	if b.CreatesStackingContext() {
 		t.Error("display:inline with rotate must NOT create a stacking context")
 	}
 }
 
 func TestCreatesStackingContext_InlineWithScale_NoSC(t *testing.T) {
-	b := boxWith(styleWith("display", "inline", "scale", "1.5"), makeNode("span"))
+	b := makeBox(makeStyle("display", "inline", "scale", "1.5"), makeNode("span"))
 	if b.CreatesStackingContext() {
 		t.Error("display:inline with scale must NOT create a stacking context")
 	}
@@ -103,7 +99,7 @@ func TestCreatesStackingContext_ReplacedInlineWithTransform_SC(t *testing.T) {
 	// Replaced inline elements (img, video, ...) are atomic inlines per
 	// CSS Display 3 §2.2 — they DO accept transforms and MUST create a
 	// stacking context, even though their computed display is `inline`.
-	b := boxWith(styleWith("display", "inline", "transform", "translate(10px, 0)"), makeNode("img"))
+	b := makeBox(makeStyle("display", "inline", "transform", "translate(10px, 0)"), makeNode("img"))
 	if !b.CreatesStackingContext() {
 		t.Error("replaced inline (img) with transform MUST create a stacking context (atomic inline)")
 	}
@@ -112,7 +108,7 @@ func TestCreatesStackingContext_ReplacedInlineWithTransform_SC(t *testing.T) {
 func TestCreatesStackingContext_BlockWithTransform_SC(t *testing.T) {
 	// display: block is always transformable — must continue to create
 	// a stacking context. Regression guard against a too-aggressive gate.
-	b := boxWith(styleWith("display", "block", "transform", "translate(10px, 0)"), makeNode("div"))
+	b := makeBox(makeStyle("display", "block", "transform", "translate(10px, 0)"), makeNode("div"))
 	if !b.CreatesStackingContext() {
 		t.Error("display:block with transform MUST create a stacking context")
 	}
@@ -120,7 +116,7 @@ func TestCreatesStackingContext_BlockWithTransform_SC(t *testing.T) {
 
 func TestCreatesStackingContext_InlineBlockWithTransform_SC(t *testing.T) {
 	// display: inline-block is atomic — transformable.
-	b := boxWith(styleWith("display", "inline-block", "transform", "translate(10px, 0)"), makeNode("span"))
+	b := makeBox(makeStyle("display", "inline-block", "transform", "translate(10px, 0)"), makeNode("span"))
 	if !b.CreatesStackingContext() {
 		t.Error("display:inline-block with transform MUST create a stacking context")
 	}
@@ -130,8 +126,29 @@ func TestCreatesStackingContext_BlockWithTranslate_SC(t *testing.T) {
 	// Individual translate on a block must still create a stacking
 	// context — guards against the gate misreading the individual
 	// property branches.
-	b := boxWith(styleWith("display", "block", "translate", "10px 0"), makeNode("div"))
+	b := makeBox(makeStyle("display", "block", "translate", "10px 0"), makeNode("div"))
 	if !b.CreatesStackingContext() {
 		t.Error("display:block with translate MUST create a stacking context")
+	}
+}
+
+func TestCreatesStackingContext_BlockWithRotate_SC(t *testing.T) {
+	// Individual rotate on a block must still create a stacking context.
+	// Pairs with _InlineWithRotate_NoSC: the IsTransformableBox gate
+	// covers all four transform-related branches (transform, translate,
+	// rotate, scale) — over-gating on any single branch would silently
+	// regress production rendering of `<div style='rotate:...'>`.
+	b := makeBox(makeStyle("display", "block", "rotate", "45deg"), makeNode("div"))
+	if !b.CreatesStackingContext() {
+		t.Error("display:block with rotate MUST create a stacking context")
+	}
+}
+
+func TestCreatesStackingContext_BlockWithScale_SC(t *testing.T) {
+	// Individual scale on a block must still create a stacking context.
+	// Pairs with _InlineWithScale_NoSC. Same rationale as _BlockWithRotate_SC.
+	b := makeBox(makeStyle("display", "block", "scale", "1.5"), makeNode("div"))
+	if !b.CreatesStackingContext() {
+		t.Error("display:block with scale MUST create a stacking context")
 	}
 }
