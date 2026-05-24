@@ -3,10 +3,17 @@
 <head>
   <title>CSS Test Reference: rt font-size is half</title>
   <style>
+    /* Same ruby column stacking as the test, but with the annotation's
+       font-size given explicitly as 8px. The test sets font-size: 50%
+       on the rt via the UA stylesheet (`ruby > rt { font-size: 50% }`,
+       Blink html.css:1701-1720); the reference encodes the resolved
+       8px directly. If the test and reference match pixel-for-pixel,
+       the 50% computation against the parent's 16px is correct. */
     body { margin: 0; padding: 10px; font-size: 16px; font-family: Ahem; }
+    rt { font-size: 8px; }
   </style>
 </head>
 <body>
-A<span style="display:inline-block;font-size:0.5em">B</span>
+<ruby>A<rt>B</rt></ruby>
 </body>
 </html>

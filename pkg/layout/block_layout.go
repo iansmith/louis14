@@ -157,7 +157,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
 	// CSS Containment: size containment overrides intrinsic sizing — treat as 0.
 	hasSizeContain := bla.style != nil && bla.style.HasSizeContainment()
-	if !hasSizeContain && bla.node.DOMNode != nil && isReplacedElement(bla.node.DOMNode) {
+	if !hasSizeContain && bla.node.DOMNode != nil && IsReplacedElement(bla.node.DOMNode) {
 		// Check if inline-size is explicitly set. ResolveInlineSize returns false
 		// for auto/unset, which is when we should use the intrinsic inline-size.
 		_, explicitInlineOK := ResolveInlineSize(bla.style, wdm, bla.space, geom)

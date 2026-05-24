@@ -30,6 +30,27 @@ const (
 	// static position is determined by its position in the inline sequence.
 	// Ported from Blink's InlineItem::kOutOfFlowPositioned.
 	InlineItemOutOfFlow
+
+	// InlineItemOpenRubyColumn marks the start of a ruby column. Emitted
+	// at item-collection time when entering a `display: ruby` element and
+	// (per CSS Ruby §2 box generation) reopened after every `</rt>` so
+	// successive base/annotation pairs ("ruby columns") fall out of a flat
+	// `<rb><rb><rt><rt>` child list. Ported from Blink's
+	// InlineItem::kOpenRubyColumn (`core/layout/inline/inline_items_builder.cc:1550-1595,1682-1697`,
+	// Chromium main @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	InlineItemOpenRubyColumn
+	// InlineItemCloseRubyColumn closes a ruby column. Emitted on `</rt>`
+	// (inside a ruby) and on `</ruby>`. Almost-empty trailing columns
+	// produced by the "reopen after </rt>" rule are stripped at `</ruby>`
+	// (`inline_items_builder.cc:1617-1628`). Ported from Blink's
+	// InlineItem::kCloseRubyColumn.
+	InlineItemCloseRubyColumn
+	// InlineItemRubyLinePlaceholder is a zero-width placeholder emitted
+	// inside a ruby column to mark the start of a base or annotation
+	// sub-line. The line breaker uses these to anchor sub-LineInfo
+	// construction. Ported from Blink's InlineItem::kRubyLinePlaceholder
+	// (`core/layout/inline/inline_items_builder.cc:1550-1595`).
+	InlineItemRubyLinePlaceholder
 )
 
 // InlineItem is a segment of inline content within a formatting context.
@@ -99,21 +120,26 @@ type InlineItemsData struct {
 func CollectInlines(node *LayoutInputNode) *InlineItemsData {
 	data := &InlineItemsData{}
 	var b strings.Builder
-	collectInlinesRecursive(node, data, &b, true)
+	collectInlinesRecursive(node, data, &b, true, nil)
 	data.TextContent = b.String()
 	return data
 }
 
 // collectInlinesRecursive walks the layout tree depth-first, appending items.
+// rubyState is non-nil when this call is recursing inside a `<ruby>`
+// element; collectInlinesRecursive consults it to suppress forced
+// breaks inside `<rt>` and to handle the per-`<rt>` column close/reopen.
+// See ruby_inline_items.go.
 func collectInlinesRecursive(
 	node *LayoutInputNode,
 	data *InlineItemsData,
 	text *strings.Builder,
 	isRoot bool,
+	rubyState *rubyCollectState,
 ) {
 	for _, child := range node.Children() {
 		if child.IsText() {
-			collectTextNode(child.DOMNode, node.Style(), data, text)
+			collectTextNode(child.DOMNode, node.Style(), data, text, rubyState)
 			continue
 		}
 
@@ -151,6 +177,22 @@ func collectInlinesRecursive(
 		// <br> into an atomic inline-block. Mirror that here by classifying
 		// <br> as a control break before the float/atomic branches.
 		if child.DOMNode != nil && child.DOMNode.TagName == "br" {
+			// CSS Ruby §"forced breaks": `<br>` inside a `<rt>` (or
+			// any descendant) is rewritten to a space. Mirrors Blink's
+			// `kDisableForcedBreakInRubyColumn` gate at
+			// `core/layout/inline/inline_items_builder.cc:74,801`.
+			if rubyForcedBreakSuppressed(rubyState) {
+				segStart := text.Len()
+				text.WriteRune(' ')
+				data.Items = append(data.Items, &InlineItem{
+					Type:        InlineItemText,
+					StartOffset: segStart,
+					EndOffset:   text.Len(),
+					Node:        child.DOMNode,
+					Style:       childStyle,
+				})
+				continue
+			}
 			brOffset := text.Len()
 			text.WriteRune('\n')
 			data.Items = append(data.Items, &InlineItem{
@@ -200,7 +242,7 @@ func collectInlinesRecursive(
 		}
 
 		// Replaced elements (img, canvas, etc.) are atomic.
-		if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+		if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 			offset := text.Len()
 			text.WriteRune('\uFFFC')
 			data.Items = append(data.Items, &InlineItem{
@@ -246,6 +288,17 @@ func collectInlinesRecursive(
 		// (run by ResolveBidiLevels) handles embedding/isolation correctly.
 		injectBidiControlChars(childStyle, text, true /* isOpen */)
 
+		// CSS Ruby — when entering a `<rt>` inside an enclosing
+		// `<ruby>`, emit an annotation sub-line placeholder BEFORE the
+		// `<rt>`'s OpenTag so ParseRubyInInlineItems can use it as the
+		// boundary between the column's base content and the
+		// annotation. Mirrors Blink
+		// `core/layout/inline/inline_items_builder.cc:1550-1595`
+		// (`IsInlineRubyText()` branch, @ 4883d11fef).
+		if rubyState != nil && childStyle.IsInlineRubyText() {
+			emitRubyAnnotationPlaceholder(data, text, childStyle, child.DOMNode)
+		}
+
 		openOffset := text.Len()
 		data.Items = append(data.Items, &InlineItem{
 			Type:            InlineItemOpenTag,
@@ -257,8 +310,42 @@ func collectInlinesRecursive(
 			IsLastFragment:  child.IsLastFragment(),
 		})
 
-		// Recurse into children.
-		collectInlinesRecursive(child, data, text, false)
+		// CSS Ruby — `<rb>`/`<rbc>`/`<rtc>` are plain inlines per
+		// Phase 1's UA stylesheet and stay transparent here;
+		// ParseRubyInInlineItems treats their OpenTag/CloseTag pairs
+		// as non-column-boundary items.
+		var childRubyState *rubyCollectState
+		switch {
+		case childStyle.IsInlineRuby():
+			childRubyState = &rubyCollectState{
+				rubyStyle: childStyle,
+				rubyNode:  child.DOMNode,
+			}
+			// Carry forced-break suppression depth from any enclosing
+			// `<rt>` into the nested ruby — descendants of `<rt>`
+			// continue to suppress `<br>`/`\n` regardless of how
+			// many ruby boundaries they cross. Without this carry, a
+			// `<ruby>` nested inside an outer `<rt>` resets the
+			// counter to 0 and forced breaks in its subtree fire
+			// when they shouldn't.
+			if rubyState != nil {
+				childRubyState.textNestingLevel = rubyState.textNestingLevel
+			}
+			childRubyState.currentColumnCheckpoint = openRubyColumn(
+				data, text, childStyle, child.DOMNode,
+			)
+		case rubyState != nil && childStyle.IsInlineRubyText():
+			rubyState.textNestingLevel++
+			childRubyState = rubyState
+		default:
+			childRubyState = rubyState
+		}
+
+		collectInlinesRecursive(child, data, text, false, childRubyState)
+
+		if rubyState != nil && childStyle.IsInlineRubyText() {
+			rubyState.textNestingLevel--
+		}
 
 		closeOffset := text.Len()
 		data.Items = append(data.Items, &InlineItem{
@@ -270,6 +357,27 @@ func collectInlinesRecursive(
 			IsFirstFragment: child.IsFirstFragment(),
 			IsLastFragment:  child.IsLastFragment(),
 		})
+
+		// CloseTag emits before the column close so the `<rt>`/`<ruby>`
+		// CloseTag belongs to the closing column (mirrors Blink
+		// `inline_items_builder.cc:1617-1628,1682-1697`, @ 4883d11fef).
+		switch {
+		case childStyle.IsInlineRuby():
+			closeOrStripRubyColumn(
+				data, text,
+				childRubyState.currentColumnCheckpoint,
+				childStyle, child.DOMNode,
+			)
+		case rubyState != nil && childStyle.IsInlineRubyText():
+			closeOrStripRubyColumn(
+				data, text,
+				rubyState.currentColumnCheckpoint,
+				rubyState.rubyStyle, rubyState.rubyNode,
+			)
+			rubyState.currentColumnCheckpoint = openRubyColumn(
+				data, text, rubyState.rubyStyle, rubyState.rubyNode,
+			)
+		}
 
 		// Inject closing bidi control characters.
 		injectBidiControlChars(childStyle, text, false /* isOpen */)
@@ -298,15 +406,34 @@ func isAllVerticalScript(content string) bool {
 
 // collectTextNode adds a text node's content to the inline items,
 // performing CSS white-space collapsing.
+// rubyState is non-nil when this text node is inside a `<ruby>`;
+// preserved `\n` forced breaks are rewritten to spaces while inside a
+// `<rt>` (rubyForcedBreakSuppressed).
 func collectTextNode(
 	node *html.Node,
 	parentStyle *css.Style,
 	data *InlineItemsData,
 	text *strings.Builder,
+	rubyState *rubyCollectState,
 ) {
 	content := node.Text
 	if len(content) == 0 {
 		return
+	}
+
+	// CSS Ruby — forced breaks inside `<rt>` (or any descendant) are
+	// rewritten to spaces at item-collection time so the existing
+	// whitespace-handling branches below never emit InlineItemControl
+	// for these newlines. Mirrors Blink
+	// `core/layout/inline/inline_items_builder.cc:74,1068`
+	// (`kDisableForcedBreakInRubyColumn` gate, @ 4883d11fef). The
+	// RawText override (for `white-space: pre`/`pre-wrap`) is applied
+	// at its use site below.
+	suppressRubyBreaks := rubyForcedBreakSuppressed(rubyState) &&
+		strings.ContainsAny(content, "\n\r")
+	if suppressRubyBreaks {
+		content = strings.ReplaceAll(content, "\n", " ")
+		content = strings.ReplaceAll(content, "\r", " ")
 	}
 
 	// CSS Writing Modes §5.1 interop: for scripts natively written vertically
@@ -343,6 +470,11 @@ func collectTextNode(
 		preservedContent := content
 		if node.RawText != "" {
 			preservedContent = node.RawText
+			if rubyForcedBreakSuppressed(rubyState) &&
+				strings.ContainsAny(preservedContent, "\n\r") {
+				preservedContent = strings.ReplaceAll(preservedContent, "\n", " ")
+				preservedContent = strings.ReplaceAll(preservedContent, "\r", " ")
+			}
 		}
 		// CSS 2.1 §16.6: newlines in preserved-whitespace content cause forced
 		// line breaks. Split on '\n' and emit InlineItemControl for each break,
@@ -609,9 +741,9 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 	data.TextContent = prefix + data.TextContent + suffix
 }
 
-// isReplacedElement returns true for elements that are replaced
+// IsReplacedElement returns true for elements that are replaced
 // (have intrinsic dimensions, laid out as atomic inlines).
-func isReplacedElement(node *html.Node) bool {
+func IsReplacedElement(node *html.Node) bool {
 	switch node.TagName {
 	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
 		"input", "textarea", "select", "button":

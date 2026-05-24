@@ -108,7 +108,20 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		display := style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock &&
 			display != css.DisplayInlineFlex && display != css.DisplayInlineTable &&
-			display != css.DisplayInlineListItem {
+			display != css.DisplayInlineListItem &&
+			// css-ruby Phase 2 (LOU-155): `display: ruby` and
+			// `display: ruby-text` are inline-level — they're the
+			// inline ruby column root and annotation element
+			// respectively. Without these here, a block container
+			// whose only child is a `<ruby>` falls into the
+			// block-children layout path and each ruby internal
+			// (rb/rt) gets its own per-element block layout, which
+			// is wrong: ruby is a single inline atom that owns its
+			// own inline formatting context (mirrors Blink
+			// `isInlineLevelDisplay` + the inline-IFC entry in
+			// LayoutBlockFlow). Vetted against Chromium main @
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+			display != css.DisplayRuby && display != css.DisplayRubyText {
 			return false // Block-level child found.
 		}
 		hasContent = true
@@ -1231,6 +1244,35 @@ func createLineBoxEx(
 ) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
+
+	// CSS Ruby Phase 2: grow the line's ascent to contain ruby
+	// annotations (default `ruby-position: over` stacks them above
+	// the base baseline). Mirrors Blink
+	// `inline_layout_algorithm.cc:396-418` SetAnnotationBlockStartAdjustment
+	// @ 4883d11fef.
+	//
+	// Recompute the surviving columns from line.Results rather than
+	// reading line.RubyColumns directly: float deferral can truncate
+	// line.Results (see `lineResultsTruncateAt` block earlier in
+	// layoutInlineChildren) without trimming line.RubyColumns, so
+	// any column that's been moved to the next line would otherwise
+	// still inflate maxAscent/maxDescent on this one.
+	var rbpc RubyBlockPositionCalculator
+	if len(line.RubyColumns) > 0 {
+		var activeRubyColumns []*InlineItemResultRubyColumn
+		for i := range line.Results {
+			if line.Results[i].RubyColumn != nil {
+				activeRubyColumns = append(activeRubyColumns, line.Results[i].RubyColumn)
+			}
+		}
+		if len(activeRubyColumns) > 0 {
+			rbpc.PlaceLines(activeRubyColumns, wdm, fonts, centralBaseline)
+			annoAsc, annoDesc := rbpc.AnnotationMetrics()
+			maxAscent += annoAsc
+			maxDescent += annoDesc
+		}
+	}
+
 	lineHeight := maxAscent + maxDescent
 	if lineHeight <= 0 {
 		// Empty line (forced break) — use default font metrics.
@@ -1594,6 +1636,30 @@ func createLineBoxEx(
 				BlockOffset:  blockPos,
 			})
 
+		case InlineItemOpenRubyColumn:
+			// CSS Ruby Phase 2: paint the base + annotation sub-line
+			// glyphs at the column's current inline position. The
+			// outer line's `maxAscent` already includes the
+			// annotation contribution (RubyBlockPositionCalculator
+			// adjusted it above in Step 1). See inline_layout_ruby.go.
+			if r.RubyColumn != nil {
+				baseAscent, _ := computeLineMetricsEx(r.RubyColumn.BaseLine, wdm, fonts, centralBaseline, nil)
+				annotationBlockTop := maxAscent - baseAscent - rbpc.annotationAscent
+				if annotationBlockTop < 0 {
+					annotationBlockTop = 0
+				}
+				emitRubyColumnFragments(
+					r.RubyColumn,
+					inlinePos,
+					maxAscent, // base baseline
+					annotationBlockTop,
+					itemsData.TextContent,
+					wdm, fonts, centralBaseline, sidewaysVLR,
+					lineBuilder,
+				)
+			}
+			inlinePos += r.InlineSize
+			continue
 		case InlineItemAtomicInline:
 			// Apply inline-start margin before the child. For RTL items
 			// (odd BidiLevel) that have been visually reversed by BIDI
@@ -1640,7 +1706,7 @@ func createLineBoxEx(
 					if r.Item.Style != nil {
 						display = r.Item.Style.GetDisplay()
 					}
-					isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
+					isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
 					isInlineBlockLike := r.Item.Style != nil &&
 						(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 							display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&
@@ -1998,7 +2064,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				if r.Item.Style != nil {
 					display = r.Item.Style.GetDisplay()
 				}
-				isReplaced := r.Item.Node != nil && isReplacedElement(r.Item.Node)
+				isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
 				isInlineBlockLike := r.Item.Style != nil &&
 					(display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
 						display == css.DisplayFlex || display == css.DisplayTable || display == css.DisplayInlineTable) &&

@@ -239,7 +239,7 @@ func (p *OutOfFlowLayoutPart) layoutCandidatesOnce(
 		// never by stretch-fit to the IMCB. Mirrors Blink's abs-replaced
 		// dispatch in absolute_utils.cc.
 		stretchable := !isNonStretchableDisplay(childStyle)
-		if child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+		if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 			stretchable = false
 		}
 

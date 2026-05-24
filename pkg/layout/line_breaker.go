@@ -66,6 +66,11 @@ type InlineItemResult struct {
 	// HasHyphen indicates the text was broken at a soft hyphen (U+00AD) or
 	// auto-hyphenation point and a visible "-" should be appended at the end.
 	HasHyphen bool
+	// RubyColumn is non-nil when this result is a ruby column produced
+	// by LineBreaker.handleRuby. Mirrors Blink's
+	// InlineItemResult::RubyColumn
+	// (`core/layout/inline/inline_item_result_ruby_column.h`).
+	RubyColumn *InlineItemResultRubyColumn
 }
 
 // LineInfo represents a complete line produced by the LineBreaker.
@@ -85,6 +90,21 @@ type LineInfo struct {
 	IsLastLine bool
 	// HasForcedBreak is true if the line ends with a forced break (BR, newline).
 	HasForcedBreak bool
+
+	// IsRubyBase is true if this LineInfo is the sub-line of a ruby
+	// column's base. Set by LineBreaker.CreateSubLineInfo when building
+	// the column payload in handleRuby. Mirrors Blink's
+	// LineInfo::SetIsRubyBase (line_info.h).
+	IsRubyBase bool
+	// IsRubyText is true if this LineInfo is the sub-line of a ruby
+	// column's annotation (`<rt>`). Set by LineBreaker.CreateSubLineInfo.
+	// Mirrors Blink's LineInfo::SetIsRubyText.
+	IsRubyText bool
+	// RubyColumns is the set of ruby columns on this (top-level) line —
+	// the InlineItemResultRubyColumn payloads emitted by handleRuby for
+	// this line, in order. Consumed by UpdateRubyColumnInlinePositions
+	// + RubyBlockPositionCalculator during inline layout.
+	RubyColumns []*InlineItemResultRubyColumn
 }
 
 // LineBreaker consumes an InlineItemsData and produces lines one at a time.
@@ -168,6 +188,12 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 	line.HasForcedBreak = false
 	line.IsLastLine = false
 	line.BaseDirection = lb.space.WritingDirection.Dir
+	// CSS Ruby Phase 2: reset the ruby-specific fields too so a
+	// LineInfo reused across NextLine calls doesn't carry stale ruby
+	// columns or sub-line role flags from the previous line.
+	line.IsRubyBase = false
+	line.IsRubyText = false
+	line.RubyColumns = line.RubyColumns[:0]
 	lb.position = 0
 
 	// Process items until the line is full or we run out.
@@ -204,6 +230,24 @@ func (lb *LineBreaker) NextLine(line *LineInfo) bool {
 				TextStart: item.StartOffset,
 				TextEnd:   item.StartOffset,
 			})
+		case InlineItemOpenRubyColumn:
+			// CSS Ruby Phase 2: a ruby column is an atomic inline
+			// unit. handleRuby builds the base + annotation
+			// sub-LineInfos and emits a single InlineItemResult for
+			// the column; advances currentItemIndex to the matching
+			// CloseRubyColumn. Mirrors Blink
+			// `line_breaker.cc:1082-1093` dispatch + `:3278-3449`
+			// HandleRuby (@ 4883d11fef). See line_breaker_ruby.go.
+			if lb.handleRuby(item, line) {
+				lb.finishLine(line)
+				return true
+			}
+		case InlineItemCloseRubyColumn, InlineItemRubyLinePlaceholder:
+			// Zero-width markers. handleRuby consumes everything
+			// between open/close in the outer pass; in a
+			// sub-LineBreaker over a column sub-range they're
+			// end-of-range no-ops. Mirrors
+			// `line_breaker.cc:1059-1060`.
 		}
 
 		lb.currentItemIndex++

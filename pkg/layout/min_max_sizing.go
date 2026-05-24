@@ -60,7 +60,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// percentage block-size resolves to a definite value and an aspect ratio
 	// transfers it to the inline dimension. ComputeReplacedSize handles
 	// this correctly, so replaced elements always go through that path below.
-	isReplaced := node.DOMNode != nil && isReplacedElement(node.DOMNode)
+	isReplaced := node.DOMNode != nil && IsReplacedElement(node.DOMNode)
 	if !isReplaced {
 		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 			explicitInline := explicitInlineLU.Float64()
@@ -95,7 +95,7 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// Replaced elements (img, canvas, etc.): compute intrinsic inline-size without
 	// block-axis min/max constraints transferring through aspect ratio.
 	// CSS Sizing 3 §5.1: intrinsic sizes are based on content, not block constraints.
-	if node.DOMNode != nil && isReplacedElement(node.DOMNode) {
+	if node.DOMNode != nil && IsReplacedElement(node.DOMNode) {
 		inlineSize := ComputeReplacedIntrinsicInlineSize(ctx, node, style, space)
 		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
 	}
@@ -348,7 +348,7 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	geom := ComputeFragmentGeometry(style, wdm)
 
 	// Replaced elements use ComputeReplacedSize for content-based sizing.
-	if node.DOMNode != nil && isReplacedElement(node.DOMNode) {
+	if node.DOMNode != nil && IsReplacedElement(node.DOMNode) {
 		inlineSize, _ := ComputeReplacedSize(ctx, node, style, space)
 		return MinMaxSizes{MinContent: inlineSize, MaxContent: inlineSize}
 	}
@@ -541,7 +541,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			hasAR := ar.IsSet && ar.Width > 0 && ar.Height > 0
 
 			// Also check replaced elements for intrinsic aspect ratio.
-			if !hasAR && child.DOMNode != nil && isReplacedElement(child.DOMNode) {
+			if !hasAR && child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
 				info := GetIntrinsicSizingInfo(ctx, child)
 				if info.HasAspectRatio && info.AspectRatio > 0 {
 					hasAR = true
