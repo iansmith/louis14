@@ -152,3 +152,77 @@ func TestCreatesStackingContext_BlockWithScale_SC(t *testing.T) {
 		t.Error("display:block with scale MUST create a stacking context")
 	}
 }
+
+// === Item 1 matrix fill — display × individual-property cells not covered above ===
+//
+// CreatesStackingContext (types.go:146-157) consults 4 independent
+// transform-related branches: GetTransforms (shorthand) and
+// GetIndividual{Translate,Rotate,Scale}. The eventual fix wraps all four
+// in one IsTransformableBox gate, so a copy-paste bug in any single
+// branch could silently regress one display × property combination.
+//
+// The explicit tests above cover inline×{transform,translate,rotate,scale}
+// (NoSC) and block×{transform,translate,rotate,scale} (SC) — the two
+// per-property columns. They also cover ruby/ruby-text/inline-block/
+// replaced-inline × {transform} (the per-display row). This table fills
+// the remaining 12 cells across those six displays, so the production
+// fix's per-branch correctness is regression-guarded across the matrix.
+// (Atomic-inline variants beyond inline-block — inline-flex, inline-grid,
+// inline-list-item — and `display: block ruby` are NOT covered; they
+// fall through isTransformableBox's switch default to `return true`,
+// same as inline-block.)
+//
+// CSS Transforms L1 §3 enumerates the non-transformable element set as
+// "non-replaced inline boxes, table-column boxes, table-column-group
+// boxes." Ruby and ruby-text aren't named separately by the spec — they
+// fall under "non-replaced inline boxes" because their generated boxes
+// are inline-level (Blink models them via LayoutInline). Louis14
+// recognizes display: inline | ruby | ruby-text directly; display:
+// table-column / table-column-group are not yet recognized by
+// GetDisplay() (see the gap note at paint_layer.go:715-719) and so
+// don't appear here.
+//
+// At SHA 4883d11fef Blink's `paint_property_tree_builder.cc:1310`
+// (NeedsTransform, :1299-:1319) implements the same gate via
+// `if (!object.IsBox()) return false;` — non-atomic inline
+// LayoutObjects (LayoutInline) are not boxes, so transforms never reach
+// paint-property-tree creation for them. Replaced inlines (LayoutReplaced
+// — img/video/...) and atomic inlines (inline-block/inline-flex/...)
+// ARE boxes and ARE transformable.
+
+func TestCreatesStackingContext_TransformMatrix(t *testing.T) {
+	cases := []struct {
+		name    string
+		display string
+		prop    string
+		value   string
+		tag     string
+		wantSC  bool
+	}{
+		// Non-transformable display × individual property → no SC.
+		{"ruby_translate", "ruby", "translate", "10px 0", "ruby", false},
+		{"ruby_rotate", "ruby", "rotate", "45deg", "ruby", false},
+		{"ruby_scale", "ruby", "scale", "1.5", "ruby", false},
+		{"rubytext_translate", "ruby-text", "translate", "10px 0", "rt", false},
+		{"rubytext_rotate", "ruby-text", "rotate", "45deg", "rt", false},
+		{"rubytext_scale", "ruby-text", "scale", "1.5", "rt", false},
+		// Transformable display × individual property → SC.
+		{"inlineblock_translate", "inline-block", "translate", "10px 0", "span", true},
+		{"inlineblock_rotate", "inline-block", "rotate", "45deg", "span", true},
+		{"inlineblock_scale", "inline-block", "scale", "1.5", "span", true},
+		// Replaced inline (img) keeps computed display:inline but is an
+		// atomic inline per CSS Display 3 §2.2 — transformable.
+		{"img_translate", "inline", "translate", "10px 0", "img", true},
+		{"img_rotate", "inline", "rotate", "45deg", "img", true},
+		{"img_scale", "inline", "scale", "1.5", "img", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := makeBox(makeStyle("display", c.display, c.prop, c.value), makeNode(c.tag))
+			if got := b.CreatesStackingContext(); got != c.wantSC {
+				t.Errorf("display=%s %s=%s tag=%s: CreatesStackingContext()=%v, want %v",
+					c.display, c.prop, c.value, c.tag, got, c.wantSC)
+			}
+		})
+	}
+}
