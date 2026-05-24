@@ -743,6 +743,24 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 
 // IsReplacedElement returns true for elements that are replaced
 // (have intrinsic dimensions, laid out as atomic inlines).
+//
+// Callers MUST guard with `node != nil` before invoking. This function
+// dereferences `node.TagName` without a nil check by design: it encodes
+// the louis14 analog of Blink's "LayoutObject is never null" invariant.
+// Blink dispatches `LayoutObject::IsReplaced()` on a real LayoutObject
+// so the nil case is unreachable in its type system; louis14 uses
+// *html.Node, which IS nilable for anonymous boxes (no DOM element),
+// so callers carry the same guarantee explicitly. Every production
+// caller follows the pattern `node != nil && IsReplacedElement(node)`
+// — see e.g. pkg/layout/inline_layout.go, flex_layout.go,
+// block_layout.go, out_of_flow_layout.go, inline_item.go itself
+// (including IsTransformableBox below), and
+// pkg/render/paint_layer.go's transform-collection branch.
+//
+// Do NOT "fix" the lack of a nil case by adding `if node == nil {
+// return false }` here — that would diverge from both Blink's shape
+// (which has no such guard because it doesn't need one) and the
+// established louis14 caller-side convention.
 func IsReplacedElement(node *html.Node) bool {
 	switch node.TagName {
 	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
@@ -750,4 +768,63 @@ func IsReplacedElement(node *html.Node) bool {
 		return true
 	}
 	return false
+}
+
+// IsTransformableBox reports whether the given box accepts CSS
+// transform / translate / rotate / scale per CSS Transforms Level 1
+// §3 "transformable element"
+// (https://www.w3.org/TR/css-transforms-1/#transformable-element):
+//
+//	"...all elements whose layout is governed by the CSS box model
+//	 except for non-replaced inline boxes, table-column boxes, and
+//	 table-column-group boxes..."
+//
+// Returns false for non-replaced inline-level boxes (`display: inline`,
+// `display: ruby`, `display: ruby-text`). Returns true for everything
+// else, including atomic inline-level boxes (`inline-block`,
+// `inline-flex`, `inline-grid`, `inline-table`, `inline-list-item`) and
+// replaced inline elements (img, video, etc. — atomic inlines per
+// CSS Display 3 §2.2 even though their computed `display` may still
+// resolve to `inline`). Ruby and ruby-text fall under "non-replaced
+// inline boxes" because they generate inline-level boxes (Blink models
+// them via LayoutInline).
+//
+// louis14's GetDisplay() doesn't currently recognize `display:
+// table-column` / `display: table-column-group` as distinct display
+// values — they fall through to the default. Those would also need
+// to be gated here per the spec when louis14 grows native column
+// support.
+//
+// Mirrors the `!object.IsBox()` short-circuit of Blink's `NeedsTransform`
+// at
+// third_party/blink/renderer/core/paint/paint_property_tree_builder.cc:1310
+// (function spans :1299-:1319) at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// This is ONE of NeedsTransform's five branches — backface-visibility:hidden,
+// transform animations, and preserve-3d also create paint-property
+// transform nodes in Blink, and louis14 doesn't yet model those
+// pathways into stacking-context creation (separate gap, not in
+// LOU-156's scope). An earlier version of louis14 cited
+// `LayoutObject::HasTransformRelatedProperty()` as the gate; that
+// was incorrect at the pinned SHA — that method is a style-flag
+// query, not a transformability gate. SVG elements are handled by
+// their own paint paths (svg_*painter.go) and don't reach this
+// predicate.
+//
+// The `node != nil` guard mirrors louis14's caller-side analog to
+// Blink's "LayoutObject is never null" type-system invariant — see
+// IsReplacedElement above. Anonymous inline boxes (Node==nil, no DOM
+// element) fall through to `return false`, matching Blink's outcome
+// for LayoutInline.
+func IsTransformableBox(s *css.Style, node *html.Node) bool {
+	if s == nil {
+		return true
+	}
+	switch s.GetDisplay() {
+	case css.DisplayInline, css.DisplayRuby, css.DisplayRubyText:
+		if node != nil && IsReplacedElement(node) {
+			return true
+		}
+		return false
+	}
+	return true
 }

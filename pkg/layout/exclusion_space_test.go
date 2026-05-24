@@ -187,7 +187,14 @@ func TestExclusionSpace_Immutable(t *testing.T) {
 	}
 }
 
-func TestBlockLayout_FloatLeft(t *testing.T) {
+// TestBlockLayout_BFCChildAvoidsFloat verifies CSS 2.1 §9.5: a block-level
+// child that establishes a new block formatting context (here via
+// `display: flow-root`) is positioned beside a preceding left float, not
+// underneath it. A plain in-flow block (no new BFC) would flow as if the
+// float didn't exist; only line boxes inside it shorten. Mirrors Blink's
+// BlockLayoutAlgorithm::LayoutNewFormattingContext path, where the new-FC
+// child consults the parent's ExclusionSpace for an inline-offset shift.
+func TestBlockLayout_BFCChildAvoidsFloat(t *testing.T) {
 	floatChild := makeNode("div")
 	blockChild := makeNode("div")
 	parent := makeNode("div", floatChild, blockChild)
@@ -195,7 +202,7 @@ func TestBlockLayout_FloatLeft(t *testing.T) {
 	styles := map[*html.Node]*css.Style{
 		parent:     makeStyle("width", "600px", "display", "block"),
 		floatChild: makeStyle("width", "200px", "height", "100px", "float", "left", "display", "block"),
-		blockChild: makeStyle("height", "50px", "display", "block"),
+		blockChild: makeStyle("height", "50px", "display", "flow-root"),
 	}
 
 	ctx := testContext()
@@ -223,14 +230,14 @@ func TestBlockLayout_FloatLeft(t *testing.T) {
 			floatFrag.Offset.LeftF64(), floatFrag.Offset.TopF64())
 	}
 
-	// Block child should be shifted right by float (inline offset = 200).
+	// BFC child should be shifted right by the float's width (inline offset = 200).
 	blockFrag := result.Fragment.Children[1]
 	if blockFrag.Offset.LeftF64() != 200 {
-		t.Errorf("block inline offset: got %v, want 200", blockFrag.Offset.LeftF64())
+		t.Errorf("BFC child inline offset: got %v, want 200", blockFrag.Offset.LeftF64())
 	}
-	// Block should be at Y=0 (floats don't push in-flow content down).
+	// BFC child should be at Y=0 (it fits alongside the float; no need to clear).
 	if blockFrag.Offset.TopF64() != 0 {
-		t.Errorf("block Y: got %v, want 0", blockFrag.Offset.TopF64())
+		t.Errorf("BFC child Y: got %v, want 0", blockFrag.Offset.TopF64())
 	}
 }
 

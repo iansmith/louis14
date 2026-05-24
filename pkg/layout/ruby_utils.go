@@ -125,11 +125,39 @@ type RubyItemIndexes struct {
 	ColumnEnd int
 }
 
-// HasAnnotation reports whether the column has an annotation
-// sub-line — i.e. one or more items between the annotation
-// placeholder and the column close. A bare `<ruby>X</ruby>` with no
-// `<rt>` parses with AnnotationStart == ColumnEnd, leaving the
-// annotation sub-LineInfo empty in handleRuby.
+// HasAnnotation reports whether the column has an annotation sub-line.
+//
+// Sentinel encoding: `AnnotationStart == ColumnEnd` is the "no annotation"
+// sentinel; when an annotation exists, `AnnotationStart` is set to the
+// index of the annotation placeholder and is strictly less than
+// `ColumnEnd`. A bare `<ruby>X</ruby>` with no `<rt>` parses with
+// AnnotationStart == ColumnEnd, leaving the annotation sub-LineInfo
+// empty in handleRuby.
+//
+// Mirrors Blink's sentinel-encoding pattern for
+// RubyItemIndexes.annotation_start at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Blink initialises the
+// field to `kNotFound` at core/layout/inline/ruby_utils.cc:151
+// (`RubyItemIndexes indexes = {start_item_index, kNotFound,
+// kNotFound, kNotFound};` inside ParseRubyInInlineItems at
+// :147-:176) and assigns it only when an annotation kOpenTag is
+// encountered at :169 inside the `IsInlineRubyText()` branch. Blink's
+// RubyItemIndexes has no `HasAnnotation` accessor; the equivalent
+// "no annotation" test is the type check `Items()[base_end_index]->
+// Type() == InlineItem::kCloseRubyColumn` at core/layout/inline/
+// line_breaker.cc:3292 (pinned SHA). Blink uses `kNotFound` as the
+// sentinel; louis14 uses `ColumnEnd`; both encode "placeholder was
+// not emitted".
+//
+// IMPORTANT: this predicate tests whether the annotation EXISTS
+// (placeholder emitted), NOT whether the annotation has CONTENT.
+// A degenerate `[Open, BasePH, AnnoPH, Close]` shape — annotation
+// placeholder immediately before the column close — returns true
+// (the annotation exists; it just has zero content). Do NOT tighten
+// to `AnnotationStart+1 < ColumnEnd` — that would silently diverge
+// from Blink's `annotation_start != kNotFound` semantics. See
+// ruby_utils_test.go::TestHasAnnotation_AdjacentPlaceholderBeforeClose_HasAnnotationTrue
+// for the invariant lock.
 func (r RubyItemIndexes) HasAnnotation() bool {
 	return r.AnnotationStart < r.ColumnEnd
 }
