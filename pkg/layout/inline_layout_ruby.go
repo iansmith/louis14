@@ -152,8 +152,25 @@ func emitSubLineTextFragments(
 			// TODO Phase 5: emit span backgrounds for OpenTag/CloseTag
 			// inside ruby bases (e.g. `<rb style="background: red">`).
 		default:
-			// Atomic inlines, floats, OOFs inside ruby columns are
-			// Phase 13 territory; skip for Phase 2 with zero advance.
+			// Fallback for item types this sub-line emitter doesn't
+			// yet handle. The dominant case is a nested
+			// `InlineItemOpenRubyColumn` (a `<ruby>` inside another
+			// ruby's base or annotation sub-line) — full nested-ruby
+			// rendering is Phase 11 of `docs/plan-css-ruby.md`
+			// (multi-level RubyLevel/RubyLine stacking; Blink
+			// `ruby_utils.{h,cc}` + `ParseRubyInInlineItems`
+			// recursion `:170-173` @ 4883d11fef). Atomic inlines,
+			// floats, and OOFs inside ruby columns land in Phase 13.
+			//
+			// Until those phases land, the result-level metrics are
+			// already counted into the column's InlineSize by
+			// LineBreaker.handleRuby, so we MUST advance inlinePos by
+			// r.InlineSize to keep subsequent fragments at their
+			// correct positions on the sub-line. We just don't emit a
+			// fragment for the inner content — so the inner glyphs
+			// are silently dropped (the visual symptom Phase 11
+			// fixes; was LOU-156 item 2, split out to its own child
+			// ticket).
 			inlinePos += r.InlineSize
 		}
 	}
