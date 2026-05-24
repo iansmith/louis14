@@ -743,6 +743,23 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 
 // IsReplacedElement returns true for elements that are replaced
 // (have intrinsic dimensions, laid out as atomic inlines).
+//
+// Callers MUST guard with `node != nil` before invoking. This function
+// dereferences `node.TagName` without a nil check by design: it encodes
+// the louis14 analog of Blink's "LayoutObject is never null" invariant.
+// Blink dispatches `LayoutObject::IsReplaced()` on a real LayoutObject
+// so the nil case is unreachable in its type system; louis14 uses
+// *html.Node, which IS nilable for anonymous boxes (no DOM element),
+// so callers carry the same guarantee explicitly. Every production
+// caller follows the pattern `node != nil && IsReplacedElement(node)`
+// — see e.g. pkg/layout/inline_layout.go, flex_layout.go,
+// block_layout.go, out_of_flow_layout.go, inline_item.go itself, and
+// pkg/render/paint_layer.go::isTransformableBox.
+//
+// Do NOT "fix" the lack of a nil case by adding `if node == nil {
+// return false }` here — that would diverge from both Blink's shape
+// (which has no such guard because it doesn't need one) and the
+// established louis14 caller-side convention.
 func IsReplacedElement(node *html.Node) bool {
 	switch node.TagName {
 	case "img", "video", "canvas", "svg", "iframe", "embed", "object",

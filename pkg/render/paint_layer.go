@@ -733,6 +733,13 @@ func isTransformableBox(s *css.Style, node *html.Node) bool {
 		// even though their computed `display` may still resolve to
 		// `inline`. Per CSS Display 3 §2.2, replaced elements are
 		// "atomic inlines" by definition.
+		//
+		// The `node != nil` guard is louis14's caller-side analog
+		// to Blink's "LayoutObject is never null" type-system
+		// invariant — see layout.IsReplacedElement's docstring.
+		// Anonymous inline boxes (Node==nil, no DOM element) fall
+		// through to `return false`, matching Blink's outcome for
+		// LayoutInline (IsBox()==false in NeedsTransform).
 		if node != nil && layout.IsReplacedElement(node) {
 			return true
 		}
