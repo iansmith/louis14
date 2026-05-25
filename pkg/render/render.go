@@ -3672,7 +3672,35 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	// advance in the block-progression (vertical) direction. For Ahem
 	// (1em × 1em squares) and other upright text, each character cell
 	// is fontSize tall and the glyph is centered horizontally.
+	//
+	// Note: louis14's current layout sets IsSidewaysRL=true even for
+	// text-orientation: mixed (see pkg/layout/engine.go:359), so vertical
+	// CJK text actually routes through the sideways branch above, not
+	// here. This branch is reached only by true upright vertical text
+	// (rare in current louis14 — may become live as upright support lands).
 	if layer.IsVerticalText {
+		// Pre-open the emphasis font / measure mark, if any. The mark is
+		// drawn next to each character; for vertical writing modes, the
+		// kOver line-logical side maps to "right of column" (vertical-rl,
+		// vertical-lr) and kUnder to "left of column". Mirrors Blink's
+		// per-axis interpretation of `emphasis_mark_offset_` under the
+		// writing-mode transform (text_painter.cc @ 4883d11f).
+		var emphFontID int32 = -1
+		var emphAscent, emphDescent, markW float64
+		if layer.TextEmphasisMark != "" {
+			emphFontSize := layer.FontSize * 0.5
+			if emphFontSize < 4 {
+				emphFontSize = 4
+			}
+			emphFontID = r.openFont(fontPath, emphFontSize)
+			if emphFontID >= 0 {
+				em := r.dc.GetFontMetrics(emphFontID)
+				emphAscent = float64(em.Ascent) / 64.0
+				emphDescent = float64(em.Descent) / 64.0
+				markW = r.dc.MeasureText(layer.TextEmphasisMark, emphFontID)
+			}
+		}
+
 		y := box.Y
 		for _, ch := range text {
 			charStr := string(ch)
@@ -3682,6 +3710,27 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				xOffset = 0
 			}
 			r.drawTextStr(charStr, fontID, box.X+xOffset, y+ascent, layer.FontFeatures)
+
+			if emphFontID >= 0 && !unicode.IsSpace(ch) {
+				// Emphasis mark for this character. Center the mark glyph
+				// vertically on the character's em-box center; offset the
+				// mark center horizontally just past the column edge on the
+				// kOver (right) or kUnder (left) side.
+				charCenterY := y + layer.FontSize/2
+				markBaselineY := charCenterY + (emphAscent-emphDescent)/2
+				var markX float64
+				if layer.TextEmphasisOver {
+					// kOver = right of column.
+					markX = box.X + box.Width + emphDescent - markW/2
+				} else {
+					// kUnder = left of column.
+					markX = box.X - emphAscent - markW/2
+				}
+				r.setColor(layer.TextEmphasisColor)
+				r.dc.DrawText(layer.TextEmphasisMark, emphFontID, markX, markBaselineY)
+				r.setColor(layer.TextColor)
+			}
+
 			y += layer.FontSize
 			if layer.LetterSpacing != 0 {
 				y += layer.LetterSpacing
