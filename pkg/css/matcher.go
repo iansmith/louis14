@@ -370,9 +370,56 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		return isFormElement(node) && hasAttribute(node, "disabled")
 	case pc == "checked":
 		return isCheckableElement(node) && hasAttribute(node, "checked")
+	case strings.HasPrefix(pc, "dir(") && strings.HasSuffix(pc, ")"):
+		// :dir(ltr) / :dir(rtl) matches if the element's directionality
+		// matches the argument. Per Selectors 4 §15, directionality follows
+		// the HTML "directionality of an element" algorithm.
+		//
+		// Scope: handles the static cases — explicit `dir=ltr`/`dir=rtl`
+		// attributes, inheritance from ancestor, and default LTR. The
+		// `dir=auto` case (which would require first-strong-Unicode
+		// detection over text content) is treated as "no explicit
+		// directionality on this element" and falls through to ancestor
+		// inheritance / default LTR. Any value other than ltr/rtl on the
+		// pseudo-class argument never matches (per the spec).
+		arg := strings.ToLower(strings.TrimSpace(pc[len("dir(") : len(pc)-1]))
+		switch arg {
+		case "ltr":
+			return elementDirectionality(node) == DirectionLTR
+		case "rtl":
+			return elementDirectionality(node) == DirectionRTL
+		default:
+			return false
+		}
 	default:
 		return false
 	}
+}
+
+// elementDirectionality returns the element's directionality per the HTML
+// "directionality of an element" algorithm, restricted to the static cases:
+// explicit `dir=ltr`/`dir=rtl` attribute, otherwise inherit from parent
+// element, otherwise default to LTR. The `dir=auto` case (first-strong-Unicode
+// over text content) is not implemented here and is treated as no explicit
+// directionality, deferring to ancestor inheritance.
+func elementDirectionality(node *html.Node) Direction {
+	for n := node; n != nil; n = n.Parent {
+		if n.Type != html.ElementNode {
+			continue
+		}
+		dirAttr, ok := n.GetAttribute("dir")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(dirAttr)) {
+		case "ltr":
+			return DirectionLTR
+		case "rtl":
+			return DirectionRTL
+		}
+		// "auto" or invalid values: fall through to inherit from ancestor.
+	}
+	return DirectionLTR
 }
 
 // isNthChild returns true if the node is the nth element child (1-based).
