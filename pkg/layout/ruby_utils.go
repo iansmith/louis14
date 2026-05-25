@@ -2,6 +2,56 @@ package layout
 
 import "louis14/pkg/text"
 
+// baseFontAscentFromSubLine returns the maximum natural font ascent across
+// all text items in a sub-line, EXCLUDING the line-height half-leading.
+//
+// Sister to `computeLineMetricsEx` in `inline_layout.go`: same first four
+// arg positions, drops the strut `parentStyle` because the strut doesn't
+// apply to ruby sub-lines.
+//
+// Mirrors Blink's `ComputeLogicalLineEmHeight(base_line_items,
+// BaseIndexList())` used at `core/layout/inline/ruby_utils.cc:981 @
+// 574216cbb0c2b86a39c1d41ad85b2891a050b44c` — the base-font reference
+// against which ruby annotation block-axis position is measured.
+//
+// Unlike `computeLineMetricsEx`, this does NOT include line-height
+// leading. That distinction is load-bearing for ruby annotation Y under
+// tall line-heights: the annotation sits adjacent to the base text's
+// natural glyph cell, NOT adjacent to the line-height-inflated bbox.
+// Using sub-line ascent (with leading) here would compound with the
+// pre-LOU-161 `+= annoAsc` line-growth pattern to pin annotations at
+// line-box top. See LOU-161 findings.md "Ruby annotation Y-positioning
+// bug" section.
+func baseFontAscentFromSubLine(
+	line *LineInfo,
+	wdm WritingDirectionMode,
+	fonts text.FontConfig,
+	centralBaseline bool,
+) float64 {
+	if line == nil {
+		return 0
+	}
+	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
+	var maxAscent float64
+	for _, r := range line.Results {
+		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
+			continue
+		}
+		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+		var asc float64
+		if centralBaseline {
+			asc = fontSize / 2
+		} else {
+			fontPath := resolveFontPath(r.Item.Style, fonts)
+			asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+		}
+		if asc > maxAscent {
+			maxAscent = asc
+		}
+	}
+	return maxAscent
+}
+
 // RubyBlockPositionCalculator stacks annotation sub-lines above/below
 // the base baseline of a ruby column on a line. Phase 2 supports the
 // single-level case only — at most one annotation per column, all
