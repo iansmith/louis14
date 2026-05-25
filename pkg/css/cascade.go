@@ -569,10 +569,10 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 //
 // Each entry's ParserContext carries:
 //   - BaseDir, derived per-source:
-//       - <style> block (Href empty): BaseDir = doc.BaseDir.
-//       - <link href="X">: BaseDir = url.URLDir(url.CompleteURL(X, doc.BaseDir))
-//         so url() refs inside the external sheet resolve against the sheet's
-//         own location, not the owning document's.
+//   - <style> block (Href empty): BaseDir = doc.BaseDir.
+//   - <link href="X">: BaseDir = url.URLDir(url.CompleteURL(X, doc.BaseDir))
+//     so url() refs inside the external sheet resolve against the sheet's
+//     own location, not the owning document's.
 //   - Fetcher = doc.CSSResourceFetcher, so @import resolution
 //     (LOU-138 phase 6) loads imported sheets through the same fetcher
 //     the HTML parser used for <link rel=stylesheet> fetches.
@@ -688,8 +688,9 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	for _, stylesheet := range stylesheets {
 		for _, rule := range stylesheet.Rules {
-			// Phase 22: Check media query
-			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+			// Phase 22: Check media query (Kleene 3-valued — apply only when
+			// the result is definitely true; Unknown does not apply).
+			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
 				continue
 			}
 
@@ -889,7 +890,7 @@ func HasFirstLetterRules(node *html.Node, stylesheets []*Stylesheet, viewportWid
 			if rule.Selector.PseudoElement != "first-letter" {
 				continue
 			}
-			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
 				continue
 			}
 			if MatchesSelector(node, rule.Selector) {
@@ -908,7 +909,7 @@ func HasFirstLineRules(node *html.Node, stylesheets []*Stylesheet, viewportWidth
 			if rule.Selector.PseudoElement != "first-line" {
 				continue
 			}
-			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
 				continue
 			}
 			if MatchesSelector(node, rule.Selector) {
@@ -931,7 +932,7 @@ func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []
 					continue
 				}
 			}
-			if !EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) {
+			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
 				continue
 			}
 			if pseudo == pseudoElement {
