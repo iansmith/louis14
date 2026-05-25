@@ -309,6 +309,22 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			if childStyle.GetDisplay() == css.DisplayNone {
 				continue
 			}
+			// CSS Display 3 §3.2 `display: contents`: the element generates
+			// no box; its children participate in layout as if they were
+			// direct children of its parent. Inherited properties on the
+			// contents element still propagate to children — that already
+			// happened during the style cascade (children's computed styles
+			// were resolved with the contents element as DOM parent). Here
+			// we simply expand the contents element's own children into the
+			// current layout-child list, recursing through nested contents.
+			// Out of scope (per W2.6 plan): ::before/::after on contents,
+			// ::first-letter / ::first-line, form controls, shadow DOM.
+			// Mirrors Blink's LayoutObjectIsNeeded() returning false for
+			// display:contents (third_party/blink/renderer/core/dom/element.cc).
+			if childStyle.GetDisplay() == css.DisplayContents {
+				rawChildren = append(rawChildren, b.expandContentsChildren(child)...)
+				continue
+			}
 			rawChildren = append(rawChildren, b.buildNode(child))
 
 		default:
@@ -338,6 +354,58 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	lin.children = b.maybeWrapAnonymousBlocks(rawChildren, style)
 
 	return lin
+}
+
+// expandContentsChildren returns the layout-tree children produced by a
+// `display: contents` element. Per CSS Display 3 §3.2 the contents element
+// itself generates no box; its DOM children participate in layout as if
+// they were direct children of the contents element's parent.
+//
+// Inherited properties on the contents element still propagate: text
+// children use the contents element's computed style as their style
+// source (just as they would if a box existed for it), and element
+// children already had their computed styles resolved against the
+// contents element as their DOM parent during the cascade — so
+// `b.buildNode(elementChild)` produces the right computed style without
+// any extra plumbing.
+//
+// Nested `display: contents` elements expand recursively. Display:none
+// children are filtered out, matching the main buildNode loop.
+//
+// Mirrors Blink's behavior in `LayoutTreeBuilderForElement` where a
+// display:contents element is not given a LayoutObject; its children
+// are attached to the grandparent. See
+// third_party/blink/renderer/core/dom/layout_tree_builder.cc and
+// third_party/blink/renderer/core/dom/element.cc::LayoutObjectIsNeeded.
+func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*LayoutInputNode {
+	contentsStyle := b.styles[contents]
+	var out []*LayoutInputNode
+	for _, child := range contents.Children {
+		switch child.Type {
+		case html.TextNode:
+			out = append(out, &LayoutInputNode{
+				DOMNode: child,
+				style:   contentsStyle, // text inherits contents element's style
+			})
+		case html.ElementNode:
+			childStyle := b.styles[child]
+			if childStyle == nil {
+				continue
+			}
+			if childStyle.GetDisplay() == css.DisplayNone {
+				continue
+			}
+			if childStyle.GetDisplay() == css.DisplayContents {
+				out = append(out, b.expandContentsChildren(child)...)
+				continue
+			}
+			out = append(out, b.buildNode(child))
+		default:
+			// Skip comment nodes, doctype, etc.
+			continue
+		}
+	}
+	return out
 }
 
 // isProperTableChild reports whether a child is a proper table child per

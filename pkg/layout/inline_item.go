@@ -139,7 +139,19 @@ func collectInlinesRecursive(
 ) {
 	for _, child := range node.Children() {
 		if child.IsText() {
-			collectTextNode(child.DOMNode, node.Style(), data, text, rubyState)
+			// Use the text child's own style if set — for ordinary text
+			// children this equals node.Style(), but text children pulled
+			// up out of a `display: contents` element carry the contents
+			// element's style here so inherited text properties (color,
+			// font, line-height, white-space) still apply per CSS Display
+			// 3 §3.2 — even when the immediate layout-parent (`node`) has
+			// a different value (e.g. an enclosing `.red` span around a
+			// contents div with `color: black`).
+			textStyle := child.Style()
+			if textStyle == nil {
+				textStyle = node.Style()
+			}
+			collectTextNode(child.DOMNode, textStyle, data, text, rubyState)
 			continue
 		}
 
