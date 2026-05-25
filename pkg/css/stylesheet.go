@@ -1968,6 +1968,23 @@ func parseDeclarations(declStr string) DeclarationResult {
 			}
 		}
 
+		// The `all` shorthand cannot be expanded at parse time because its
+		// resolution depends on cascade-time context (the property snapshot for
+		// `revert`, inheritance for `inherit`, and the per-element set of
+		// declared longhands that must be reset). Store it verbatim so the
+		// cascade-time expandShorthand call applies it after every other
+		// declaration in the rule. Mirrors Blink's all.cc which never participates
+		// in StyleBuilder expansion the way other shorthands do; it's handled by
+		// the cascade's CSSProperty(kAll)::ApplyValue at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		if property == "all" {
+			result.Declarations["all"] = value
+			if isImportant {
+				result.Important["all"] = true
+			}
+			continue
+		}
+
 		// Expand shorthand properties (reuse from Phase 2)
 		style := NewStyle()
 		expandShorthand(style, property, value)
@@ -2019,10 +2036,18 @@ func isColorProperty(prop string) bool {
 	return false
 }
 
-// isValidColorValue checks if a value is a valid CSS color (parsed color, currentcolor, or inherit)
+// isValidColorValue checks if a value is a valid CSS color (parsed color,
+// currentcolor, or one of the CSS-wide keywords accepted on every property).
 func isValidColorValue(value string) bool {
 	lower := strings.ToLower(strings.TrimSpace(value))
-	if lower == "currentcolor" || lower == "inherit" {
+	if lower == "currentcolor" {
+		return true
+	}
+	// CSS Cascade 4 §6.1: every CSS property accepts the five CSS-wide
+	// keywords. They reach the longhand value verbatim and are resolved at
+	// cascade time by resolveCSSWideKeywords / resolveInheritValues.
+	if lower == "inherit" || lower == "initial" || lower == "unset" ||
+		lower == "revert" || lower == "revert-layer" {
 		return true
 	}
 	// var() references are resolved later — always valid at parse time

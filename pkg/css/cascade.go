@@ -449,6 +449,13 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// Map HTML presentational attributes to CSS (lower priority than stylesheets)
 	applyPresentationalAttributes(node, finalStyle)
 
+	// CSS Cascade 3 §8 (`all` shorthand) + CSS Cascade 4 §6.1.2 (`revert`):
+	// `revert` rolls the cascade back to the previous origin's cascaded value.
+	// Capture the UA + presentational-attribute baseline now so post-cascade
+	// resolveAllRevertValues can replay it for any longhand whose author-origin
+	// declaration ended up as the `revert` sentinel.
+	revertSnap := snapshotForAllRevert(finalStyle)
+
 	// Collect all matching rules from all stylesheets
 	allRules := make([]Rule, 0)
 
@@ -471,25 +478,70 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// Track which properties have been set with !important
 	importantProps := make(map[string]bool)
 
-	// Apply rules in order (lower specificity first, higher specificity overwrites)
+	// Apply rules in order (lower specificity first, higher specificity overwrites).
+	// Within a rule, the `all` shorthand must be applied BEFORE every other
+	// declaration so subsequent longhands in the same rule (e.g. `all: unset;
+	// color: green;`) override the reset. Per CSS Cascade 3 §8, this matches
+	// the typical author idiom and Blink's StyleBuilder ordering where `all`
+	// is processed before sibling longhand declarations in the same block.
+	//
+	// CSS Selectors 4 §17.2: declarations from a rule whose selector contains
+	// `:visited` are filtered to the visitedAllowedProperties subset before
+	// being applied. The non-color longhands a `:visited` rule names (or that
+	// `all` would expand to) silently drop, preserving user-browsing-history
+	// privacy. Mirrors Blink's StyleResolverState IsVisitedDependentProperty
+	// gating at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// CSS Cascade 5 §6.1.3 (`revert-layer`): track the state of finalStyle at
+	// the boundary between cascade layers so a `revert-layer` declaration can
+	// roll back to the previous layer's value. We snapshot just before
+	// crossing into a new layer (i.e. when the next rule has a different
+	// effective layer priority than the previous rule).
+	layerSnap := snapshotForAllRevert(finalStyle)
+	currentLayerPriority := -1
 	for _, rule := range allRules {
+		rulePriority := layerPriority(rule.LayerName, layerOrder)
+		if rulePriority != currentLayerPriority {
+			layerSnap = snapshotForAllRevert(finalStyle)
+			currentLayerPriority = rulePriority
+		}
+		visitedOnly := selectorMatchesVisited(rule.Selector)
+		if allVal, hasAll := rule.Declarations["all"]; hasAll {
+			if !importantProps["all"] {
+				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
+			}
+		}
 		for property, value := range rule.Declarations {
+			if property == "all" {
+				continue
+			}
 			// Skip if already set by an important rule
 			if importantProps[property] {
 				continue
 			}
-			expandShorthand(finalStyle, property, value)
+			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 		}
 	}
 
-	// Apply !important declarations (second pass)
+	// Apply !important declarations (second pass). `all` runs before other
+	// !important longhands in the same rule for the same source-order reason.
 	for _, rule := range allRules {
 		if rule.Important == nil {
 			continue
 		}
+		visitedOnly := selectorMatchesVisited(rule.Selector)
+		if rule.Important["all"] {
+			if allVal, hasAll := rule.Declarations["all"]; hasAll {
+				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
+				importantProps["all"] = true
+			}
+		}
 		for property, value := range rule.Declarations {
+			if property == "all" {
+				continue
+			}
 			if rule.Important[property] {
-				expandShorthand(finalStyle, property, value)
+				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 				importantProps[property] = true
 			}
 		}
@@ -505,6 +557,23 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			}
 		}
 	}
+
+	// CSS Cascade 4 §6.1.2 / §6.1.3 / Cascade 5 §6.1.3: resolve the CSS-wide
+	// keywords that may reach the cascaded value as literal strings —
+	// `initial`, `unset`, `revert`, and `revert-layer`. These appear either
+	// as longhand-level declarations (e.g. `color: unset`) or as the sentinel
+	// placed by the `all` shorthand. `inherit` is resolved later in
+	// resolveInheritValues once the parent style is available.
+	//
+	// `revert` replays the UA + presentational-attribute snapshot taken
+	// before author rules ran. `revert-layer` replays the most-recent
+	// prior-layer snapshot taken during the layer iteration above. `unset`
+	// behaves as `inherit` for inheritable properties (handled in
+	// resolveInheritValues) or as `initial` otherwise. `initial` deletes
+	// the property so the getter fallback returns the initial value, with
+	// the exception of properties in nonDefaultInitialValues whose getter
+	// default differs from spec.
+	resolveCSSWideKeywords(finalStyle, revertSnap, layerSnap)
 
 	// CSS Animations §4: apply in-effect @keyframes values. The animation
 	// cascade origin sits below author !important (CSS Cascade §6.3), so
@@ -740,9 +809,37 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// left alone — the restriction is on what a ::marker rule can specify).
 	isMarker := pseudoElement == "marker"
 
-	// Apply rules in order (normal declarations first)
+	// Capture the pre-author baseline for `revert` resolution (mirrors
+	// ComputeStyle). For pseudo-elements there's no UA + presentational pass
+	// — the inheritance-only initialisation above is the closest analog —
+	// so this snapshot is the inherited-only baseline. `revert-layer` uses
+	// per-layer snapshots captured during iteration.
+	pseudoOriginSnap := snapshotForAllRevert(finalStyle)
+	pseudoLayerSnap := snapshotForAllRevert(finalStyle)
+	currentLayerPriority := -1
+
+	// Apply rules in order (normal declarations first). Within a rule, `all`
+	// runs before sibling longhand declarations so author idiom
+	// `all: unset; color: green;` lets color win — see ComputeStyle for the
+	// same ordering rationale. The visited-link filter applies here too,
+	// though :visited pseudo-elements are unusual (typically pseudo-elements
+	// don't combine with :visited in practice).
 	for _, rule := range allRules {
+		rulePriority := layerPriority(rule.LayerName, layerOrder2)
+		if rulePriority != currentLayerPriority {
+			pseudoLayerSnap = snapshotForAllRevert(finalStyle)
+			currentLayerPriority = rulePriority
+		}
+		visitedOnly := selectorMatchesVisited(rule.Selector)
+		if allVal, hasAll := rule.Declarations["all"]; hasAll {
+			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) {
+				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
+			}
+		}
 		for property, value := range rule.Declarations {
+			if property == "all" {
+				continue
+			}
 			// Skip if already set by an important rule
 			if importantProps[property] {
 				continue
@@ -750,7 +847,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			if isMarker && !markerAllowedProperty(property) {
 				continue
 			}
-			expandShorthand(finalStyle, property, value)
+			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 		}
 	}
 
@@ -759,12 +856,24 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		if rule.Important == nil {
 			continue
 		}
+		visitedOnly := selectorMatchesVisited(rule.Selector)
+		if rule.Important["all"] {
+			if allVal, hasAll := rule.Declarations["all"]; hasAll {
+				if !(isMarker && !markerAllowedProperty("all")) {
+					applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
+					importantProps["all"] = true
+				}
+			}
+		}
 		for property, value := range rule.Declarations {
+			if property == "all" {
+				continue
+			}
 			if rule.Important[property] {
 				if isMarker && !markerAllowedProperty(property) {
 					continue
 				}
-				expandShorthand(finalStyle, property, value)
+				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 				importantProps[property] = true
 			}
 		}
@@ -779,6 +888,12 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	if pseudoElement == "marker" {
 		applyMarkerCascade(finalStyle)
 	}
+
+	// Resolve longhand-level CSS-wide keywords for the pseudo-element style.
+	// Same rationale as ComputeStyle: must happen before resolvePseudoInheritKeyword
+	// (which is `inherit`-specific) so that `unset` first rewrites itself to
+	// `inherit` for inheritable properties before that pass runs.
+	resolveCSSWideKeywords(finalStyle, pseudoOriginSnap, pseudoLayerSnap)
 
 	// CSS Cascade §7.3: the `inherit` keyword resolves to the parent's computed
 	// value. For pseudo-elements the "parent" is the originating element. This
