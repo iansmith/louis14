@@ -357,3 +357,68 @@ func TestPseudoClass_Specificity(t *testing.T) {
 		t.Errorf("expected specificity 11 for 'a:hover', got %d", sel.Specificity)
 	}
 }
+
+// TestDirPseudoClass covers :dir(ltr)/:dir(rtl) for the static cases
+// (explicit dir=ltr/rtl, inheritance, invalid values, default LTR).
+// Dynamic dir-attribute changes and dir=auto first-strong-Unicode detection
+// are out of scope for this matcher.
+func TestDirPseudoClass(t *testing.T) {
+	mkDiv := func(parent *html.Node, dir string) *html.Node {
+		n := &html.Node{Type: html.ElementNode, TagName: "div"}
+		if dir != "" {
+			n.Attributes = map[string]string{"dir": dir}
+		}
+		if parent != nil {
+			n.Parent = parent
+			parent.Children = append(parent.Children, n)
+		}
+		return n
+	}
+
+	// Root <html dir="rtl">
+	root := mkDiv(nil, "rtl")
+	root.TagName = "html"
+
+	// <div dir="ltr"> (under html dir=rtl): directionality ltr
+	ltrDiv := mkDiv(root, "ltr")
+
+	// <div> (under <html dir="rtl">) — inherits rtl
+	inheritDiv := mkDiv(root, "")
+
+	// <div dir="foopy"> — invalid value, inherits from parent (rtl)
+	invalidDiv := mkDiv(root, "foopy")
+
+	// <div dir="auto"> — out-of-scope first-strong; falls through to inherit rtl
+	autoDiv := mkDiv(root, "auto")
+
+	// Orphan element with no dir, no parent → default ltr
+	orphan := &html.Node{Type: html.ElementNode, TagName: "div"}
+
+	cases := []struct {
+		name     string
+		node     *html.Node
+		ltrMatch bool
+		rtlMatch bool
+	}{
+		{"explicit-rtl-root", root, false, true},
+		{"explicit-ltr-child-of-rtl", ltrDiv, true, false},
+		{"inherit-from-rtl-parent", inheritDiv, false, true},
+		{"invalid-dir-inherits-rtl", invalidDiv, false, true},
+		{"auto-inherits-rtl", autoDiv, false, true},
+		{"orphan-default-ltr", orphan, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesPseudoClass(tc.node, "dir(ltr)"); got != tc.ltrMatch {
+				t.Errorf(":dir(ltr) match = %v, want %v", got, tc.ltrMatch)
+			}
+			if got := matchesPseudoClass(tc.node, "dir(rtl)"); got != tc.rtlMatch {
+				t.Errorf(":dir(rtl) match = %v, want %v", got, tc.rtlMatch)
+			}
+			// Unknown argument never matches.
+			if matchesPseudoClass(tc.node, "dir(foopy)") {
+				t.Errorf(":dir(foopy) should never match")
+			}
+		})
+	}
+}
