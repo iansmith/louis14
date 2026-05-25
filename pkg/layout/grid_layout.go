@@ -324,12 +324,13 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Apply min/max block constraints.
-	minBlock := ResolveMinBlockSize(gla.style, wdm, gla.space, geom).Float64()
+	// Intrinsic keywords (min-content / max-content / fit-content) resolve
+	// against intrinsicBlockSize — the natural content height (total row size).
+	minBlock := ResolveMinBlockSizeWithIntrinsic(gla.style, wdm, gla.space, geom, intrinsicBlockSize)
 	if finalBlockSize < minBlock {
 		finalBlockSize = minBlock
 	}
-	if maxBlockLU, hasMax := ResolveMaxBlockSize(gla.style, wdm, gla.space, geom); hasMax {
-		maxBlock := maxBlockLU.Float64()
+	if maxBlock, hasMax := ResolveMaxBlockSizeWithIntrinsic(gla.style, wdm, gla.space, geom, intrinsicBlockSize); hasMax {
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}
