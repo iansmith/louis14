@@ -2742,8 +2742,9 @@ func (r *Renderer) drawText(box *layout.Box) {
 	}
 afterDecoration:
 
-	// Phase 18: Draw text-emphasis marks above/below each character
-	emphasisMark := box.Style.GetTextEmphasisMark()
+	// Phase 18: Draw text-emphasis marks above/below each character.
+	// louis13 is horizontal-only, so pass isHorizontal=true unconditionally.
+	emphasisMark := box.Style.GetTextEmphasisMark(true)
 	if emphasisMark != "" {
 		emphasisColor := box.Style.GetTextEmphasisColor()
 		emphasisPosition := box.Style.GetTextEmphasisPosition()

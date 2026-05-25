@@ -3627,6 +3627,17 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		}
 
 		r.dc.DrawImage(rot, int(math.Round(box.X)), int(math.Round(box.Y)))
+
+		// Per-character emphasis marks: each mark renders as its own small
+		// rotated off-screen buffer at the annotation-equivalent screen
+		// position. Mirrors louis14's ruby annotation paint structure
+		// (`pkg/layout/inline_layout_ruby.go:60-83`) so emphasis pixels snap
+		// to the same per-fragment math.Round anchors as ruby annotation
+		// pixels — the structural fix for the sub-pixel drift identified in
+		// LOU-162's first attempt (see ticket-active/LOU-162/findings.md).
+		if layer.TextEmphasisMark != "" {
+			r.drawSidewaysEmphasisMarks(layer, text, box, fontID, ascent, ta, lh)
+		}
 		return
 	}
 
@@ -3780,6 +3791,164 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 
 	// Restore original text color.
 	r.setColor(layer.TextColor)
+}
+
+// drawSidewaysEmphasisMarks renders text-emphasis marks for a sideways
+// (vertical-rl + text-orientation: sideways / sideways-rl / sideways-lr)
+// text run as per-character mini-fragments. Each mark is drawn into its
+// own small off-screen RGBA, rotated CW/CCW to match the parent's writing
+// mode, and blitted at the annotation-equivalent screen position with
+// `int(math.Round(...))` snapping — mirroring louis14's ruby annotation
+// paint path (`pkg/layout/inline_layout_ruby.go:60-83 @ b555e690`).
+//
+// Why per-fragment rather than drawing into the parent's off-screen
+// buffer: ruby annotations apply `math.Round` at each fragment's blit;
+// the parent text applies `math.Round` once at its own box position. The
+// two snap anchors differ by up to ~1 sub-pixel each, which produces the
+// 1-2 px per-glyph drift observed in LOU-162's first attempt. Snapping
+// per fragment here aligns emphasis pixels with where ruby pixels would
+// snap.
+//
+// ta and lh are the parent's off-screen horizontal-frame dimensions
+// (text-advance and line-height); used to compute the rotation mapping.
+func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, ta, lh int) {
+	mark := layer.TextEmphasisMark
+	emphFontSize := layer.FontSize * 0.5
+	if emphFontSize < 4 {
+		emphFontSize = 4
+	}
+	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+	emphFontID := r.openFont(fontPath, emphFontSize)
+	if emphFontID < 0 {
+		return
+	}
+	emphMetrics := r.dc.GetFontMetrics(emphFontID)
+	emphAscent := float64(emphMetrics.Ascent) / 64.0
+	emphDescent := float64(emphMetrics.Descent) / 64.0
+	markW := r.dc.MeasureText(mark, emphFontID)
+
+	// Compute the annotation fragment's TOP edge and BASELINE in the parent's
+	// off-screen HORIZONTAL frame (the "logical" frame where the base text was
+	// rendered as horizontal). Mirrors louis14's ruby annotation positioning at
+	// `pkg/layout/inline_layout_ruby.go:77-78 @ b555e690`:
+	//
+	//   annoBaseline = annotationBlockTop + math.Round(annoEmAscent)
+	//
+	// The `math.Round` on the ascent is load-bearing: it is the same per-fragment
+	// integer-snap that LOU-161's ruby annotation paint produces, so emphasis
+	// pixels snap to the SAME positions as ruby annotation pixels.
+	//
+	// The annotation's TOP edge (annotationBlockTop) follows Blink at
+	// `third_party/blink/renderer/core/paint/text_painter.cc:519-528 @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f`:
+	//
+	//   kOver:  annotationBlockTop = -(emphAscent + emphDescent)
+	//           — the strip just above the inline-box top.
+	//   kUnder: annotationBlockTop = base_baseline + baseDescent
+	//                              = ascent + baseDescent
+	//           — the strip just below the inline-box bottom.
+	// (baseAscent/baseDescent were used by the Blink-formula path; the
+	// final formula matches ruby's annotation layout directly via
+	// `screenX = box.X + lh` / `box.X - annotH` and does not need the
+	// Blink offset values here. Keep the metrics fetched in case the
+	// kUnder under-line allotment formula needs them later.)
+	_ = fontID
+	_ = ascent
+
+	// The annotation-fragment's WIDTH (advance dimension in horizontal frame,
+	// = HEIGHT in screen after sideways rotation) is markW. Its HEIGHT (block
+	// dimension in horizontal frame, = WIDTH in screen after rotation) covers
+	// the typo ascent + descent of the emphasis font.
+	annotW := int(math.Ceil(markW)) + 1 // small safety margin against int rounding
+	// Match ruby's annotation line-height = annotation-font-size: ceil(ascent+descent)
+	// with no safety margin. Adding margin shifts the rotated glyph 1 px left in
+	// screen X (the rotation maps the buffer's bottom edge to dest x=0).
+	annotH := int(math.Ceil(emphAscent + emphDescent))
+
+	if annotW <= 0 || annotH <= 0 {
+		return
+	}
+
+	// Iterate characters and emit one mini-fragment per non-whitespace char.
+	x := 0.0
+	for _, ch := range text {
+		charStr := string(ch)
+		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
+
+		if !unicode.IsSpace(ch) {
+			// Annotation's inline origin (in off-screen horizontal frame),
+			// centered over the character — mirrors
+			// `pkg/layout/inline_layout_ruby.go:64-65 @ b555e690`
+			//   `annoOffset += (column.InlineSize - anno.Width) / 2`.
+			annotInline := x + (charW-markW)/2
+
+			// Build the mini off-screen buffer for THIS mark.
+			markSrc := image.NewRGBA(image.Rect(0, 0, annotW, annotH))
+			markDC := r.dc.NewChildContext(markSrc)
+			emphColor := layer.TextEmphasisColor
+			markDC.SetColor(color.RGBA{R: emphColor.R, G: emphColor.G, B: emphColor.B, A: uint8(emphColor.A * 255)})
+			// Draw the mark glyph at baseline = emphAscent.
+			markDC.DrawText(mark, emphFontID, 0, emphAscent)
+
+			// Rotate the mini buffer the same way the parent text was rotated.
+			markRot := image.NewRGBA(image.Rect(0, 0, annotH, annotW))
+			for yy := 0; yy < annotH; yy++ {
+				for xx := 0; xx < annotW; xx++ {
+					c := markSrc.RGBAAt(xx, yy)
+					if c.A == 0 {
+						continue
+					}
+					if layer.IsSidewaysRL {
+						// 90° CW: src (x,y) → dest (annotH-1-y, x)
+						markRot.SetRGBA(annotH-1-yy, xx, c)
+					} else {
+						// 90° CCW: src (x,y) → dest (y, annotW-1-x)
+						markRot.SetRGBA(yy, annotW-1-xx, c)
+					}
+				}
+			}
+
+			// Map the annotation's (annotInline, annotTop) in the parent's
+			// horizontal frame to a screen position. The parent's blit was
+			// at (box.X, box.Y) for the rotated (lh × ta) buffer; for our
+			// mini-buffer:
+			//
+			//   sideways-rl (CW): (xH, yH) in horizontal → (lh-1-yH, xH) in rotated.
+			//                     The mini-buffer's top-left after rotation
+			//                     corresponds to (xH=annotInline, yH=annotTop+annotH-1)
+			//                     in the horizontal frame; in screen that's
+			//                     (box.X + lh-1-(annotTop+annotH-1), box.Y + annotInline).
+			//   sideways-lr (CCW): mirror image.
+			//
+			// We blit the rotated MINI buffer's (0,0) at the screen position
+			// where the mini buffer's top-left lands.
+			var screenX, screenY float64
+			// Determine which physical side the annotation paints on.
+			// In vertical-rl/sideways-rl, kOver (TextEmphasisOver=true) = right of column;
+			// in sideways-lr the resolver has already flipped so kOver = left of column.
+			// Combined predicate: paint on the right edge when XNOR of IsSidewaysRL and Over.
+			rightSide := layer.IsSidewaysRL == layer.TextEmphasisOver
+			if rightSide {
+				screenX = box.X + float64(lh) // top-left of annotation = right edge of base column
+			} else {
+				screenX = box.X - float64(annotH) // top-left of annotation = left of base column by buffer width
+			}
+			if layer.IsSidewaysRL {
+				screenY = box.Y + annotInline
+			} else {
+				screenY = box.Y + float64(ta) - annotInline - float64(annotW)
+			}
+			r.dc.DrawImage(markRot, int(math.Round(screenX)), int(math.Round(screenY)))
+		}
+
+		x += charW
+		if layer.LetterSpacing != 0 {
+			x += layer.LetterSpacing
+		}
+		if ch == ' ' && layer.WordSpacing != 0 {
+			x += layer.WordSpacing
+		}
+	}
 }
 
 // smallCapsScale is the ratio of the small-caps glyph size to the normal size.

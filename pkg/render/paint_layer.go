@@ -546,10 +546,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 
 	// Text emphasis marks.
-	if mark := s.GetTextEmphasisMark(); mark != "" {
+	isHorizontal := !box.IsVerticalText && !box.IsSidewaysRL && !box.IsSidewaysLR
+	if mark := s.GetTextEmphasisMark(isHorizontal); mark != "" {
 		layer.TextEmphasisMark = mark
 		layer.TextEmphasisColor = s.GetTextEmphasisColor()
-		isHorizontal := !box.IsVerticalText && !box.IsSidewaysRL && !box.IsSidewaysLR
 		layer.TextEmphasisOver = s.GetTextEmphasisLineLogicalOver(isHorizontal, box.IsSidewaysLR)
 	}
 

@@ -9330,7 +9330,16 @@ func (s *Style) GetTextEmphasisLineLogicalOver(isHorizontal, isSidewaysLR bool) 
 
 // GetTextEmphasisMark returns the actual character to use as emphasis mark.
 // Returns "" if no emphasis should be drawn.
-func (s *Style) GetTextEmphasisMark() string {
+//
+// `isHorizontal` selects the writing-mode-dependent default mark for bare
+// `filled`/`open` values. Per CSS Text Decor §3.4.4 and Blink's
+// `ComputedStyle::TextEmphasisMarkString()` at Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: `filled` (with no shape) is
+// "filled circle" (U+25CF) in horizontal writing modes and "filled sesame"
+// (U+FE45) in vertical writing modes; `open` mirrors with U+25CB / U+FE46.
+// Explicit shape keywords (e.g. `filled dot`, `open triangle`) override the
+// writing-mode default.
+func (s *Style) GetTextEmphasisMark(isHorizontal bool) string {
 	style := s.GetTextEmphasisStyle()
 	if style == "none" || style == "" {
 		return ""
@@ -9359,13 +9368,22 @@ func (s *Style) GetTextEmphasisMark() string {
 	} else if strings.Contains(style, "circle") {
 		shape = "circle"
 	}
-	// If only "filled" or "open" (no shape specified), default to circle
+	// If only "filled" or "open" (no shape specified), default to circle for
+	// horizontal writing modes and sesame for vertical writing modes.
 	if style == "filled" {
 		filled = true
-		shape = "circle"
+		if isHorizontal {
+			shape = "circle"
+		} else {
+			shape = "sesame"
+		}
 	} else if style == "open" {
 		filled = false
-		shape = "circle"
+		if isHorizontal {
+			shape = "circle"
+		} else {
+			shape = "sesame"
+		}
 	}
 
 	switch shape {
