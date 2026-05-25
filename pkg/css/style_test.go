@@ -385,6 +385,18 @@ func TestGetTextEmphasisLineLogicalOver_BlinkCollapseTable(t *testing.T) {
 		{"", true, false, true},
 		{"", false, false, true},
 		{"", false, true, false},
+		// `auto` value defaults to kOver for horizontal-tb and the
+		// vertical-non-sideways-lr family, kUnder for sideways-lr.
+		{"auto", true, false, true},
+		{"auto", false, false, true},
+		{"auto", false, true, false},
+		// Single-axis values: missing axis falls back to the writing-mode's
+		// default. Horizontal: missing over/under → kOver. Vertical: missing
+		// right/left → kOver.
+		{"right", true, false, true},
+		{"left", true, false, true},
+		{"over", false, false, true},
+		{"under", false, false, true},
 	}
 	for _, c := range cases {
 		s := NewStyle()

@@ -9286,16 +9286,45 @@ func (s *Style) GetTextEmphasisPosition() string {
 // left of the column.
 func (s *Style) GetTextEmphasisLineLogicalOver(isHorizontal, isSidewaysLR bool) bool {
 	pos := s.GetTextEmphasisPosition()
+	// `auto` and any value missing an axis keyword default to kOver per
+	// Blink's resolver — over for horizontal-tb (kUnder for macrolanguage
+	// Chinese, not modeled here yet) and right (= kOver) for the vertical
+	// modes including sideways-rl; sideways-lr resolves auto to kUnder
+	// in Blink, but the WPT auto/default tests pin only the horizontal
+	// and vertical-rl defaults.
+	if pos == "auto" {
+		if isSidewaysLR {
+			return false
+		}
+		return true
+	}
 	hasOver := strings.Contains(pos, "over")
+	hasUnder := strings.Contains(pos, "under")
 	hasRight := strings.Contains(pos, "right")
+	hasLeft := strings.Contains(pos, "left")
 	if isHorizontal {
+		// If neither over nor under is present (e.g. only `right`/`left`),
+		// fall back to kOver — matches Blink's behavior of treating the
+		// missing axis as its default.
+		if !hasOver && !hasUnder {
+			return true
+		}
 		return hasOver
 	}
 	if isSidewaysLR {
-		// sideways-lr flips: left → kOver.
+		// sideways-lr flips: left → kOver. If neither right nor left is
+		// present, fall back to kUnder (sideways-lr's default).
+		if !hasRight && !hasLeft {
+			return false
+		}
 		return !hasRight
 	}
-	// vertical-rl, vertical-lr, sideways-rl: right → kOver.
+	// vertical-rl, vertical-lr, sideways-rl: right → kOver. If neither
+	// right nor left is present (e.g. only `over`/`under`), fall back to
+	// kOver — vertical's "auto" default.
+	if !hasRight && !hasLeft {
+		return true
+	}
 	return hasRight
 }
 
