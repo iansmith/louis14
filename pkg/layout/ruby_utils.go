@@ -52,6 +52,67 @@ func baseFontAscentFromSubLine(
 	return maxAscent
 }
 
+// annotationEmHeightFromSubLine returns the maximum font typo ascent and
+// descent across all text items in a ruby annotation sub-line, EXCLUDING
+// CSS line-height half-leading and EXCLUDING the integer rounding that
+// `computeLineMetricsEx` applies via `alignmentAscentFromFont`.
+//
+// Mirrors Blink's `ComputeEmHeight(line_item)` at
+// `core/layout/inline/ruby_utils.cc:78-126 @
+// 574216cbb0c2b86a39c1d41ad85b2891a050b44c` — the em-height-only
+// metric Blink uses to size annotation sub-line contributions and to
+// position the annotation baseline relative to the line's block origin.
+//
+// Why this is distinct from `computeLineMetricsEx`:
+//  1. No half-leading. computeLineMetricsEx adds `(lineHt − (asc+desc))/2`
+//     to both ascent and descent for `line-height: normal`. Blink's
+//     annotation positioning uses font em-height only; the leading is
+//     a property of the OUTER line's block metrics.
+//  2. No integer rounding. computeLineMetricsEx → alignmentAscentFromFont
+//     → FontAscentFromFont applies `math.Round`. Blink's annotation
+//     positioning uses sub-pixel `FixedAscent`/`FixedDescent`; the
+//     rounding to integer ascent (`int_ascent_` via `lroundf`) happens
+//     once at PAINT time. Layout uses the sub-pixel value.
+//
+// Both differences contribute to the LOU-161 emphasis/annotation
+// alignment gap; see findings.md "Subpixel rounding investigation".
+func annotationEmHeightFromSubLine(
+	line *LineInfo,
+	wdm WritingDirectionMode,
+	fonts text.FontConfig,
+	centralBaseline bool,
+) (ascent, descent float64) {
+	if line == nil {
+		return 0, 0
+	}
+	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
+	for _, r := range line.Results {
+		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
+			continue
+		}
+		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+		var a, d float64
+		if centralBaseline {
+			a = fontSize / 2
+			d = fontSize / 2
+		} else {
+			fontPath := resolveFontPath(r.Item.Style, fonts)
+			a = text.FontTypoAscentFromFont(fontSize, fontPath)
+			d = text.FontTypoDescentFromFont(fontSize, fontPath)
+			if sidewaysVLR {
+				a, d = d, a
+			}
+		}
+		if a > ascent {
+			ascent = a
+		}
+		if d > descent {
+			descent = d
+		}
+	}
+	return ascent, descent
+}
+
 // RubyBlockPositionCalculator stacks annotation sub-lines above/below
 // the base baseline of a ruby column on a line. Phase 2 supports the
 // single-level case only — at most one annotation per column, all
@@ -95,7 +156,7 @@ func (rbpc *RubyBlockPositionCalculator) PlaceLines(
 	var maxAnno float64
 	for _, col := range columns {
 		for _, anno := range col.AnnotationLines {
-			a, d := computeLineMetricsEx(anno, wdm, fonts, centralBaseline, nil)
+			a, d := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline)
 			if h := a + d; h > maxAnno {
 				maxAnno = h
 			}

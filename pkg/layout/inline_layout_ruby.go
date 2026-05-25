@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"math"
 	"strings"
 
 	"louis14/pkg/text"
@@ -63,8 +64,18 @@ func emitRubyColumnFragments(
 		if anno.Width < column.InlineSize {
 			annoOffset += (column.InlineSize - anno.Width) / 2
 		}
-		annoAscent, _ := computeLineMetricsEx(anno, wdm, fonts, centralBaseline, nil)
-		annoBaseline := annotationBlockTop + annoAscent
+		// Mirror Blink's annotation positioning: layout works in sub-pixel
+		// font typo metrics, paint snaps to integer ascent (`int_ascent_`
+		// via `lroundf` at `text_fragment_painter.cc:517-522 @
+		// 574216cbb0c2b86a39c1d41ad85b2891a050b44c`). emitSubLineTextFragments
+		// subtracts the per-item rounded ascent from blockBaseline to get
+		// blockPos; pre-correcting annoBaseline with `math.Round(annoEmAscent)`
+		// makes that subtraction cancel cleanly so the painted baseline
+		// lands at `lineBoxTop + annotationBlockTop + ascent_unrounded` —
+		// the same place the renderer paints any other text fragment, and
+		// the place emphasis-mark Y is computed relative to.
+		annoEmAscent, _ := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline)
+		annoBaseline := annotationBlockTop + math.Round(annoEmAscent)
 		emitSubLineTextFragments(
 			anno, annoOffset, annoBaseline,
 			textContent, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,

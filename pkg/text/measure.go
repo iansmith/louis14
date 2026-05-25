@@ -487,6 +487,36 @@ func FontDescentFromFont(fontSize float64, fontPath string) float64 {
 	return math.Round(float64(m.Descent) / 64.0)
 }
 
+// FontTypoAscentFromFont returns the unrounded font typo ascent in pixels.
+// Mirrors Blink's float-precision ascent (`FontMetrics::FloatAscent()` /
+// `FixedAscent()` at
+// `third_party/blink/renderer/platform/fonts/font_metrics.h:117-133 @
+// 574216cbb0c2b86a39c1d41ad85b2891a050b44c`) used by sub-pixel-precise
+// layout paths such as `ComputeEmHeight` in
+// `core/layout/inline/ruby_utils.cc:78-126`. Unlike `FontAscentFromFont`,
+// this does NOT apply `math.Round` — for use where downstream layout
+// math needs to agree with the renderer's unrounded `GetFontMetrics`
+// path (e.g. ruby annotation positioning, where layout-vs-render
+// rounding mismatch surfaces as a visible 1px gap; see LOU-161
+// findings.md).
+func FontTypoAscentFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return fontSize * 0.8
+	}
+	return float64(m.Ascent) / 64.0
+}
+
+// FontTypoDescentFromFont returns the unrounded font typo descent in pixels.
+// See FontTypoAscentFromFont for the rationale.
+func FontTypoDescentFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return fontSize * 0.2
+	}
+	return float64(m.Descent) / 64.0
+}
+
 // FontHeightFromFont returns the font's recommended line height in pixels for
 // CSS line-height: normal. Returns the unrounded m.Height so line-height:normal
 // matches the font's intrinsic spacing exactly; integer rounding is applied at
