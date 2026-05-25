@@ -80,6 +80,97 @@ func TestParseColor_BasicColors(t *testing.T) {
 	}
 }
 
+// TestParseColor_CSSColor4_Modern asserts the CSS Color 4 rgb()/hsl()
+// grammar variants exercised by the WPT background-color-{rgb,hsl}-*
+// reftests: comma-less syntax, slash-separated alpha, percentage alpha,
+// CSS comments as separators, and <angle> units (deg/rad/grad/turn) on
+// hsl()'s hue component.
+//
+// CSS Color 4 §5.1 (rgb), §5.2 (hsl). Mirrors Blink's
+// css_property_parser_helpers.cc ConsumeColor() / ParseRgbParameters /
+// ParseHslParameters at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func TestParseColor_CSSColor4_Modern(t *testing.T) {
+	type expectedColor struct {
+		r, g, b uint8
+		a       float64
+	}
+	tests := []struct {
+		input string
+		want  expectedColor
+	}{
+		// --- rgb() / rgba(): legacy comma form ----------------------------
+		{"rgb(10, 175, 10)", expectedColor{10, 175, 10, 1.0}},
+		{"rgba(10, 175, 10, 0.4)", expectedColor{10, 175, 10, 0.4}},
+		// Percentage alpha in legacy comma form (was broken: %-suffix was
+		// fed to Sscanf and divided by nothing).
+		{"rgb(10, 175, 10, 40%)", expectedColor{10, 175, 10, 0.4}},
+		{"rgba(10, 175, 10, 40%)", expectedColor{10, 175, 10, 0.4}},
+
+		// --- rgb() modern: space-separated, slash alpha -------------------
+		{"rgb(10 175 10 / 60%)", expectedColor{10, 175, 10, 0.6}},
+		{"rgb(10.0 175.0 10.0 / 0.8)", expectedColor{10, 175, 10, 0.8}},
+
+		// --- rgb() with CSS comments as separators ------------------------
+		{"rgb(10/* x */175/* y */10/100%)", expectedColor{10, 175, 10, 1.0}},
+		{"rgb(10,/* x */150,/* y */50)", expectedColor{10, 150, 50, 1.0}},
+
+		// --- hsl() / hsla(): legacy comma form ----------------------------
+		// Hue 120 → green; s=75%, l=50% → (32, 223, 32).
+		{"hsl(120, 75%, 50%)", expectedColor{32, 223, 32, 1.0}},
+		{"hsla(120, 75%, 50%, 0.4)", expectedColor{32, 223, 32, 0.4}},
+		// Percentage alpha in legacy hsl comma form.
+		{"hsla(120, 75%, 50%, 40%)", expectedColor{32, 223, 32, 0.4}},
+
+		// --- hsl() modern: space-separated, slash alpha -------------------
+		{"hsl(120 75% 50%)", expectedColor{32, 223, 32, 1.0}},
+		{"hsl(120 75% 50% / 60%)", expectedColor{32, 223, 32, 0.6}},
+		{"hsla(120 75% 50% / 0.6)", expectedColor{32, 223, 32, 0.6}},
+
+		// --- hsl() with CSS comments as separators ------------------------
+		{"hsl(120/* x */75%/* y */50%)", expectedColor{32, 223, 32, 1.0}},
+		{"hsl(120/* x */75%/* y */50%/1.0)", expectedColor{32, 223, 32, 1.0}},
+		{"hsla(120,/* x */75%,/* y */50%,100%)", expectedColor{32, 223, 32, 1.0}},
+
+		// --- hsl() <angle> hue: deg/rad/grad/turn -------------------------
+		// 120deg = 120; 133.33333333grad = 120; 2.0943951024rad = 120;
+		// 0.3333333333turn = 120. All collapse to the same H=120 color.
+		{"hsla(120deg, 75%, 50%, 0.4)", expectedColor{32, 223, 32, 0.4}},
+		{"hsla(133.33333333grad, 75%, 50%, 0.4)", expectedColor{32, 223, 32, 0.4}},
+		{"hsla(2.0943951024rad, 75%, 50%, 0.4)", expectedColor{32, 223, 32, 0.4}},
+		{"hsla(0.3333333333turn, 75%, 50%, 0.4)", expectedColor{32, 223, 32, 0.4}},
+		// Out-of-range hues (per §5.2 spec, hue is normalized mod 360).
+		// 600deg = 240 → blue.
+		{"hsl(600deg, 75%, 50%)", expectedColor{32, 32, 223, 1.0}},
+	}
+	for _, tc := range tests {
+		got, ok := ParseColor(tc.input)
+		if !ok {
+			t.Errorf("ParseColor(%q): parse failed", tc.input)
+			continue
+		}
+		want := Color{tc.want.r, tc.want.g, tc.want.b, tc.want.a}
+		// Allow 1 byte of rounding tolerance on RGB and tiny epsilon on alpha.
+		if absU8(got.R, want.R) > 1 || absU8(got.G, want.G) > 1 || absU8(got.B, want.B) > 1 ||
+			absF(got.A, want.A) > 0.005 {
+			t.Errorf("ParseColor(%q):\n  got  = %+v\n  want = %+v", tc.input, got, want)
+		}
+	}
+}
+
+func absU8(a, b uint8) int {
+	if a > b {
+		return int(a - b)
+	}
+	return int(b - a)
+}
+
+func absF(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
 // Phase 2 tests: Box model properties
 
 func TestParseInlineStyle_MarginShorthand(t *testing.T) {

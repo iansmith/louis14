@@ -140,6 +140,10 @@ type Stylesheet struct {
 // while preserving string literals (comments inside strings are not stripped).
 // <!-- ... --> is the "HTML comment" syntax historically used in <style> tags to hide
 // CSS from ancient browsers; CSS parsers treat them as CDO/CDC tokens (whitespace-like).
+//
+// Each comment is replaced with a single space so that adjacent tokens
+// don't fuse together — e.g. `rgb(10/* x */175)` becomes `rgb(10 175)`,
+// matching CSS Syntax §4 where comments act as token-stream whitespace.
 func stripCSSComments(css string) string {
 	var b strings.Builder
 	b.Grow(len(css))
@@ -165,7 +169,9 @@ func stripCSSComments(css string) string {
 			continue
 		}
 		if i+1 < len(css) && css[i] == '/' && css[i+1] == '*' {
-			// Skip until */
+			// Skip until */, replacing the comment with a single space so
+			// adjacent tokens stay separated (CSS Syntax §4).
+			b.WriteByte(' ')
 			i += 2
 			for i < len(css) {
 				if i+1 < len(css) && css[i] == '*' && css[i+1] == '/' {
@@ -176,7 +182,9 @@ func stripCSSComments(css string) string {
 			}
 			// If we reached end of input, the comment was unterminated — just stop
 		} else if i+3 < len(css) && css[i] == '<' && css[i+1] == '!' && css[i+2] == '-' && css[i+3] == '-' {
-			// CSS CDO token: skip <!-- ... --> (HTML comment in CSS)
+			// CSS CDO token: skip <!-- ... --> (HTML comment in CSS).
+			// Mirror /*...*/ behavior — emit a single space.
+			b.WriteByte(' ')
 			i += 4
 			for i < len(css) {
 				if i+2 < len(css) && css[i] == '-' && css[i+1] == '-' && css[i+2] == '>' {

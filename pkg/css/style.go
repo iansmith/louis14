@@ -3388,23 +3388,31 @@ type Color struct {
 // parseSpaceSeparatedColorArgs parses space-separated color function arguments
 // with optional slash for alpha: "L C H" or "L C H / alpha"
 // Returns the parts before the slash and the alpha value (default 1.0).
+//
+// CSS comments (`/* ... */`) inside the argument string are stripped before
+// tokenization so that `rgb(10/* c */175/* c */10/100%)` parses identically
+// to `rgb(10 175 10 / 100%)`.
 func parseSpaceSeparatedColorArgs(inner string) (parts []string, alpha float64) {
 	alpha = 1.0
+	inner = stripCSSComments(inner)
 	// Handle the slash separator for alpha
 	if idx := strings.Index(inner, "/"); idx >= 0 {
-		alphaPart := strings.TrimSpace(inner[idx+1:])
-		var a float64
-		n, _ := fmt.Sscanf(alphaPart, "%f", &a)
-		if n == 1 {
-			if strings.HasSuffix(strings.TrimSpace(alphaPart), "%") {
-				a /= 100.0
-			}
-			alpha = a
-		}
+		alpha = parseAlpha(inner[idx+1:])
 		inner = inner[:idx]
 	}
 	parts = strings.Fields(inner)
 	return
+}
+
+// parseAlpha parses a CSS alpha component, which may be a <number> in
+// [0,1] or a <percentage> in [0%, 100%] per CSS Color 4 §1.4. Returns
+// 1.0 on parse failure (caller treats this as the default).
+func parseAlpha(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 1.0
+	}
+	return parseColorFloat01(s, 1.0)
 }
 
 // parseColorFloat01 parses a color component value as a fraction in [0,1].
@@ -3478,13 +3486,20 @@ func parseLabComponent(s string, maxVal float64) float64 {
 }
 
 // parseHueDegrees parses a hue value in degrees.
-// Accepts plain numbers (degrees), "Ndeg", "Nrad", "Nturn".
+// Accepts plain numbers (degrees), "Ndeg", "Ngrad", "Nrad", "Nturn"
+// per CSS Values 4 §6.1 <angle>. The "grad" check must precede "rad"
+// because HasSuffix("Xgrad", "rad") is also true.
 func parseHueDegrees(s string) float64 {
 	s = strings.TrimSpace(s)
 	if strings.HasSuffix(s, "deg") {
 		var v float64
 		fmt.Sscanf(strings.TrimSuffix(s, "deg"), "%f", &v)
 		return v
+	}
+	if strings.HasSuffix(s, "grad") {
+		var v float64
+		fmt.Sscanf(strings.TrimSuffix(s, "grad"), "%f", &v)
+		return v * 360.0 / 400.0
 	}
 	if strings.HasSuffix(s, "rad") {
 		var v float64
@@ -3499,6 +3514,79 @@ func parseHueDegrees(s string) float64 {
 	var v float64
 	fmt.Sscanf(s, "%f", &v)
 	return v
+}
+
+// parseHSLArgs parses the inner argument string of an hsl()/hsla()
+// function (CSS comments already stripped by caller). Accepts both the
+// legacy comma-separated form `H, S%, L%[, A]` and the modern
+// space-separated form `H S% L%[ / A]`. Returns (hue in degrees,
+// saturation 0..1, lightness 0..1, alpha 0..1).
+//
+// Modern form is detected by the absence of a comma at depth-0 in the
+// inner string — comments have already been stripped, so this is safe.
+func parseHSLArgs(inner string) (h, s, l, a float64, ok bool) {
+	a = 1.0
+	var hStr, sStr, lStr string
+	if strings.Contains(inner, ",") {
+		parts := strings.Split(inner, ",")
+		if len(parts) < 3 {
+			return
+		}
+		hStr = strings.TrimSpace(parts[0])
+		sStr = strings.TrimSpace(parts[1])
+		lStr = strings.TrimSpace(parts[2])
+		if len(parts) >= 4 {
+			a = parseAlpha(parts[3])
+		}
+	} else {
+		var parts []string
+		parts, a = parseSpaceSeparatedColorArgs(inner)
+		if len(parts) < 3 {
+			return
+		}
+		hStr = parts[0]
+		sStr = parts[1]
+		lStr = parts[2]
+	}
+	h = parseHueDegrees(hStr)
+	s = parseColorFloat01(sStr, 100.0)
+	l = parseColorFloat01(lStr, 100.0)
+	ok = true
+	return
+}
+
+// hslToColor converts HSL components (hue in degrees, s/l in [0,1],
+// alpha in [0,1]) to an sRGB Color. Mirrors CSS Color 4 §5.2's reference
+// HSL → RGB algorithm and Blink's `HSLToRGB` in color.cc.
+func hslToColor(h, s, l, a float64) Color {
+	c := (1 - math.Abs(2*l-1)) * s
+	h = math.Mod(h, 360)
+	if h < 0 {
+		h += 360
+	}
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	m := l - c/2
+	var r1, g1, b1 float64
+	switch {
+	case h < 60:
+		r1, g1, b1 = c, x, 0
+	case h < 120:
+		r1, g1, b1 = x, c, 0
+	case h < 180:
+		r1, g1, b1 = 0, c, x
+	case h < 240:
+		r1, g1, b1 = 0, x, c
+	case h < 300:
+		r1, g1, b1 = x, 0, c
+	default:
+		r1, g1, b1 = c, 0, x
+	}
+	return Color{
+		R: uint8(math.Round((r1 + m) * 255)),
+		G: uint8(math.Round((g1 + m) * 255)),
+		B: uint8(math.Round((b1 + m) * 255)),
+		A: a,
+	}
 }
 
 // parseColorFunction parses a CSS color() function and returns RGBA uint8 components.
@@ -3572,9 +3660,19 @@ func ParseColor(colorStr string) (Color, bool) {
 		return Color{0, 0, 0, 0.0}, true
 	}
 
-	// Handle rgb() format (comma-separated and CSS4 space-separated)
-	if strings.HasPrefix(colorStr, "rgb(") && strings.HasSuffix(colorStr, ")") {
-		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgb("), ")")
+	// Handle rgb() / rgba() format. CSS Color 4 §5.1 unifies the two —
+	// both accept legacy comma form and modern slash-alpha form, and
+	// `rgb()` may carry alpha.
+	if (strings.HasPrefix(colorStr, "rgb(") || strings.HasPrefix(colorStr, "rgba(")) && strings.HasSuffix(colorStr, ")") {
+		var values string
+		if strings.HasPrefix(colorStr, "rgba(") {
+			values = strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgba("), ")")
+		} else {
+			values = strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgb("), ")")
+		}
+		// Strip comments before splitting so `rgb(10,/* x */175,/* y */10)`
+		// is treated as `rgb(10, 175, 10)`.
+		values = stripCSSComments(values)
 		parts := strings.Split(values, ",")
 		if len(parts) == 3 {
 			r, rOK := parseRGBByte(parts[0])
@@ -3584,45 +3682,24 @@ func ParseColor(colorStr string) (Color, bool) {
 				return Color{r, g, b, 1.0}, true
 			}
 		} else if len(parts) == 4 {
-			// CSS Color Level 4: rgb() with 4 arguments (alpha)
+			// Legacy comma form with alpha (Color 4 §5.1 allows `rgb()`
+			// to carry alpha; `rgba()` is an alias).
 			r, rOK := parseRGBByte(parts[0])
 			g, gOK := parseRGBByte(parts[1])
 			b, bOK := parseRGBByte(parts[2])
-			var a float64
-			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
+			a := parseAlpha(parts[3])
 			if rOK && gOK && bOK {
 				return Color{r, g, b, a}, true
 			}
 		} else if len(parts) == 1 {
-			// CSS Color Level 4: space-separated syntax: rgb(R G B) or rgb(R G B / A)
+			// Modern space-separated form: rgb(R G B) or rgb(R G B / A).
 			if c, ok := parseSpaceSeparatedRGB(values); ok {
 				return c, true
 			}
 		}
 	}
 
-	// Handle rgba() format
-	if strings.HasPrefix(colorStr, "rgba(") && strings.HasSuffix(colorStr, ")") {
-		values := strings.TrimSuffix(strings.TrimPrefix(colorStr, "rgba("), ")")
-		parts := strings.Split(values, ",")
-		if len(parts) == 4 {
-			r, rOK := parseRGBByte(parts[0])
-			g, gOK := parseRGBByte(parts[1])
-			b, bOK := parseRGBByte(parts[2])
-			var a float64
-			fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
-			if rOK && gOK && bOK {
-				return Color{r, g, b, a}, true
-			}
-		} else if len(parts) == 1 {
-			// CSS4 space-separated: rgba(R G B / A)
-			if c, ok := parseSpaceSeparatedRGB(values); ok {
-				return c, true
-			}
-		}
-	}
-
-	// Handle hsl()/hsla() format
+	// Handle hsl()/hsla() format — CSS Color 4 §5.2.
 	if (strings.HasPrefix(colorStr, "hsl(") || strings.HasPrefix(colorStr, "hsla(")) && strings.HasSuffix(colorStr, ")") {
 		inner := colorStr
 		if strings.HasPrefix(inner, "hsla(") {
@@ -3630,50 +3707,11 @@ func ParseColor(colorStr string) (Color, bool) {
 		} else {
 			inner = strings.TrimSuffix(strings.TrimPrefix(inner, "hsl("), ")")
 		}
-		parts := strings.Split(inner, ",")
-		if len(parts) >= 3 {
-			var h float64
-			fmt.Sscanf(strings.TrimSpace(parts[0]), "%f", &h)
-			sStr := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(parts[1]), "%"))
-			lStr := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(parts[2]), "%"))
-			var s, l float64
-			fmt.Sscanf(sStr, "%f", &s)
-			fmt.Sscanf(lStr, "%f", &l)
-			s /= 100.0
-			l /= 100.0
-			a := 1.0
-			if len(parts) == 4 {
-				fmt.Sscanf(strings.TrimSpace(parts[3]), "%f", &a)
-			}
-			// HSL to RGB conversion
-			c := (1 - math.Abs(2*l-1)) * s
-			h = math.Mod(h, 360)
-			if h < 0 {
-				h += 360
-			}
-			x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
-			m := l - c/2
-			var r1, g1, b1 float64
-			switch {
-			case h < 60:
-				r1, g1, b1 = c, x, 0
-			case h < 120:
-				r1, g1, b1 = x, c, 0
-			case h < 180:
-				r1, g1, b1 = 0, c, x
-			case h < 240:
-				r1, g1, b1 = 0, x, c
-			case h < 300:
-				r1, g1, b1 = x, 0, c
-			default:
-				r1, g1, b1 = c, 0, x
-			}
-			return Color{
-				R: uint8(math.Round((r1 + m) * 255)),
-				G: uint8(math.Round((g1 + m) * 255)),
-				B: uint8(math.Round((b1 + m) * 255)),
-				A: a,
-			}, true
+		// Strip comments before form-detection so comments-as-separators
+		// don't break the comma/space distinction.
+		inner = stripCSSComments(inner)
+		if h, sat, l, a, ok := parseHSLArgs(inner); ok {
+			return hslToColor(h, sat, l, a), true
 		}
 	}
 
