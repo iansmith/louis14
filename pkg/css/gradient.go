@@ -70,11 +70,19 @@ func ParseLinearGradient(value string) (*Gradient, bool) {
 
 	startIdx := 0
 
-	// Check if first part is a direction
+	// Check if first part is a direction. "to <side>" or an <angle> value.
+	// Reject invalid angle unit spellings (CSS Values 3 §6.2: only deg/grad/rad/turn).
 	firstPart := strings.TrimSpace(parts[0])
-	if strings.HasPrefix(firstPart, "to ") || strings.HasSuffix(firstPart, "deg") {
+	if strings.HasPrefix(firstPart, "to ") {
 		grad.Direction = firstPart
 		startIdx = 1
+	} else if _, ok := parseAngleValue(firstPart); ok {
+		grad.Direction = firstPart
+		startIdx = 1
+	} else if isAngleLike(firstPart) {
+		// Looks like an angle (number followed by letters) but uses an
+		// invalid unit spelling — the entire gradient is invalid.
+		return nil, false
 	} else {
 		// Default direction is "to bottom"
 		grad.Direction = "to bottom"
@@ -664,31 +672,97 @@ func ParseConicGradient(value string) (*Gradient, bool) {
 	return grad, true
 }
 
-func parseAngleDeg(s string) float64 {
+// parseAngleValue parses a CSS <angle> token strictly.
+// Only the four units defined by CSS Values 3 §6.2 are accepted:
+// deg, grad, rad, turn. Returns the angle in degrees and true on success;
+// returns (0, false) for any other unit spelling or for a bare number.
+// (A bare 0 with no unit is a valid <length>/<angle> only in specific contexts;
+// gradient directions and conic stops require a typed <angle>.)
+//
+// Blink reference: third_party/blink/renderer/core/css/css_primitive_value_units.json5
+// (Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — angle units are the
+// closed set {deg, grad, rad, turn}; anything else fails dimension-token
+// classification and rejects the declaration.
+func parseAngleValue(s string) (degrees float64, ok bool) {
 	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "deg") {
-		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "deg"), 64)
-		if err == nil {
-			return v
+	// CSS Values 3 §3.5: unit identifiers are ASCII case-insensitive. Split
+	// the numeric prefix from the unit suffix on letter boundary, then
+	// match against the canonical lowercase unit set — this is strict
+	// (rejects "90degree", "1.57radian", etc.) and case-insensitive
+	// (accepts "90DeG", "0.25TURN").
+	end := numericPrefixEnd(s)
+	if end == 0 || end == len(s) {
+		return 0, false
+	}
+	num, err := strconv.ParseFloat(s[:end], 64)
+	if err != nil {
+		return 0, false
+	}
+	switch strings.ToLower(s[end:]) {
+	case "deg":
+		return num, true
+	case "grad":
+		return num * 360.0 / 400.0, true
+	case "rad":
+		return num * 180 / math.Pi, true
+	case "turn":
+		return num * 360, true
+	}
+	return 0, false
+}
+
+// numericPrefixEnd returns the index of the first character in s that is
+// not part of a CSS numeric token (optional sign, digits, decimal point,
+// optional scientific exponent). Used by unit parsing to cleanly split the
+// numeric prefix from the unit suffix without HasSuffix collisions and
+// without false-matching the 'e' in "em" as an exponent.
+func numericPrefixEnd(s string) int {
+	end := 0
+	if end < len(s) && (s[end] == '+' || s[end] == '-') {
+		end++
+	}
+	sawDigit := false
+	for end < len(s) {
+		c := s[end]
+		if c >= '0' && c <= '9' {
+			sawDigit = true
+			end++
+		} else if c == '.' {
+			end++
+		} else {
+			break
 		}
 	}
-	if strings.HasSuffix(s, "turn") {
-		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "turn"), 64)
-		if err == nil {
-			return v * 360
+	// Optional exponent: eN, e+N, e-N. Only consume if a digit follows;
+	// otherwise the 'e' belongs to the unit (e.g. "1em").
+	if end < len(s) && (s[end] == 'e' || s[end] == 'E') {
+		expStart := end
+		end++
+		if end < len(s) && (s[end] == '+' || s[end] == '-') {
+			end++
+		}
+		expDigits := false
+		for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+			expDigits = true
+			end++
+		}
+		if !expDigits {
+			end = expStart
 		}
 	}
-	if strings.HasSuffix(s, "rad") {
-		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "rad"), 64)
-		if err == nil {
-			return v * 180 / math.Pi
-		}
+	if !sawDigit {
+		return 0
 	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err == nil {
-		return v
-	}
-	return 0
+	return end
+}
+
+// parseAngleDeg is the legacy permissive variant used in gradient direction
+// parsing. It returns 0 instead of an ok flag for backward compatibility
+// at call sites that don't yet propagate parse failure. New code should
+// prefer parseAngleValue.
+func parseAngleDeg(s string) float64 {
+	v, _ := parseAngleValue(s)
+	return v
 }
 
 func parseConicColorStop(stop string) (ColorStop, bool) {
@@ -703,24 +777,39 @@ func parseConicColorStop(stop string) (ColorStop, bool) {
 	cs := ColorStop{Color: color, Offset: -1}
 	if len(fields) >= 2 {
 		pos := fields[1]
-		if strings.HasSuffix(pos, "deg") {
-			v, err := strconv.ParseFloat(strings.TrimSuffix(pos, "deg"), 64)
-			if err == nil {
-				cs.Offset = v / 360.0
-			}
-		} else if strings.HasSuffix(pos, "%") {
+		if strings.HasSuffix(pos, "%") {
 			v, err := strconv.ParseFloat(strings.TrimSuffix(pos, "%"), 64)
 			if err == nil {
 				cs.Offset = v / 100.0
 			}
-		} else if strings.HasSuffix(pos, "turn") {
-			v, err := strconv.ParseFloat(strings.TrimSuffix(pos, "turn"), 64)
-			if err == nil {
-				cs.Offset = v
-			}
+		} else if deg, ok := parseAngleValue(pos); ok {
+			cs.Offset = deg / 360.0
 		}
 	}
 	return cs, true
+}
+
+// isAngleLike reports whether s syntactically looks like a CSS dimension
+// token (number followed by an alpha unit identifier), regardless of
+// whether the unit spelling is a recognized angle unit. Used to
+// distinguish "first gradient part is a dimension with an invalid unit
+// spelling" (reject the whole gradient) from "first part is a color
+// keyword" (treat as a color stop). Examples: "90degree" → true,
+// "100gradian" → true, "red" → false, "to right" → false.
+func isAngleLike(s string) bool {
+	s = strings.TrimSpace(s)
+	end := numericPrefixEnd(s)
+	if end == 0 || end == len(s) {
+		return false
+	}
+	// Remainder must be all letters (the unit identifier).
+	for i := end; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return false
+		}
+	}
+	return true
 }
 
 // ExtendRepeatingStops extends color stops for repeating gradients to fill 0-1 range
