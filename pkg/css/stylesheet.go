@@ -68,13 +68,45 @@ type Rule struct {
 	LayerName      string            // @layer name (empty = unlayered)
 }
 
-// Phase 22: MediaQuery represents a @media rule condition
+// MediaQueryResult mirrors Blink's KleeneValue
+// (third_party/blink/renderer/core/css/kleene_value.h @ 4883d11f). A media
+// query evaluates to one of three states: true, false, or unknown.
+// Per CSS Media Queries 4 §3.1, an unknown result does NOT apply (treated
+// like false at the rule-activation level), but `not unknown` stays
+// unknown — distinct from `not false → true`.
+type MediaQueryResult int
+
+const (
+	MediaQueryFalse   MediaQueryResult = iota // Definitely does not match.
+	MediaQueryTrue                            // Definitely matches.
+	MediaQueryUnknown                         // Unknown feature / parse failure — does not apply.
+)
+
+// MediaQueryRestrictor mirrors Blink's MediaQuery::RestrictorType
+// (third_party/blink/renderer/core/css/media_query.h @ 4883d11f).
+type MediaQueryRestrictor int
+
+const (
+	MediaRestrictorNone MediaQueryRestrictor = iota
+	MediaRestrictorNot
+	MediaRestrictorOnly
+)
+
+// Phase 22: MediaQuery represents a @media rule condition.
+// MediaType holds the bare type identifier exactly as parsed (e.g. "screen",
+// "print", "all", or an unknown identifier like "unknown"). Negation and
+// "only" handling are kept separate in Restrictor — do NOT pre-collapse a
+// negated query into a different type, because that loses the 3-valued
+// semantics needed for unknown features. Empty MediaType means no type was
+// given (e.g. `@media (min-width: 500px)` or `@media not (unknown)`).
 type MediaQuery struct {
-	MediaType  string           // "screen", "print", "all", etc.
-	Conditions []MediaCondition // min-width, max-width, etc.
+	Restrictor MediaQueryRestrictor // "not" / "only" / none
+	MediaType  string               // "screen", "print", "all", "" (no type given), or an unknown ident
+	Conditions []MediaCondition     // parenthesized media features
 }
 
-// Phase 22: MediaCondition represents a single media query condition
+// Phase 22: MediaCondition represents a single parenthesized media feature
+// expression like `(min-width: 768px)` or `(unknown)`.
 type MediaCondition struct {
 	Feature string // "min-width", "max-width", "orientation", etc.
 	Value   string // "768px", "landscape", etc.
@@ -291,14 +323,38 @@ func expandNesting(css string, parentSelector string) string {
 }
 
 // resolveNestedSelector resolves a nested selector relative to the parent.
-// If the nested selector contains '&', substitute it with the parent.
-// Otherwise, implicitly prepend the parent with a descendant combinator.
+// Per CSS Nesting (https://drafts.csswg.org/css-nesting/#nest-selector), when
+// `&` is substituted with the parent selector, the substitution is wrapped in
+// an implicit `:is(...)`. This makes the substitution behave like a single
+// compound regardless of how many comma branches the parent has, and exposes
+// the "contextually invalid" rule when the parent contains pseudo-elements
+// (since :is() cannot contain pseudo-elements per Selectors 4).
+//
+// When the nested selector has no `&`, the parent is implicitly prepended with
+// a descendant combinator. The same :is() wrapping applies, so that nesting
+// inside a comma-separated parent like ".a, .b" produces ":is(.a, .b) .child"
+// rather than ".a, .b .child" (which would distribute incorrectly).
 func resolveNestedSelector(parent, nested string) string {
+	wrappedParent := wrapParentInIs(parent)
 	if strings.Contains(nested, "&") {
-		return strings.ReplaceAll(nested, "&", parent)
+		return strings.ReplaceAll(nested, "&", wrappedParent)
 	}
-	// Implicit: ".child" inside ".parent" becomes ".parent .child"
-	return parent + " " + nested
+	// Implicit: ".child" inside ".parent" becomes ":is(.parent) .child"
+	return wrappedParent + " " + nested
+}
+
+// wrapParentInIs wraps a parent selector in :is(...) for nesting substitution.
+// Single simple selectors that already are bare functional pseudo-classes
+// (e.g. ":is(.foo)") or that are unambiguous as compounds (single .class, #id,
+// element) could in principle skip the wrap, but the spec is explicit that the
+// wrap is unconditional — and is required for the contextually-invalid rule to
+// fire when the parent contains pseudo-elements.
+func wrapParentInIs(parent string) string {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return parent
+	}
+	return ":is(" + parent + ")"
 }
 
 // separateDeclsAndNested splits a CSS rule body into:
@@ -933,50 +989,47 @@ func parseContainerQuery(queryStr string) *ContainerQuery {
 	return cq
 }
 
-// Phase 22: parseMediaQuery parses a media query string like "@media screen and (min-width: 768px)"
+// Phase 22: parseMediaQuery parses a media query string like
+// "@media screen and (min-width: 768px)". Mirrors
+// third_party/blink/renderer/core/css/parser/media_query_parser.cc @ 4883d11f
+// in that the restrictor ("not" / "only") is kept separate from the media
+// type identifier. Unrecognized identifiers are preserved verbatim — they
+// are NOT silently rewritten to "all" or "none". The negation is applied at
+// evaluation time via applyMediaRestrictor() so that unknown features
+// remain unknown (Kleene 3-valued logic).
 func parseMediaQuery(mediaStr string) *MediaQuery {
 	// Remove @media prefix
 	mediaStr = strings.TrimPrefix(mediaStr, "@media")
 	mediaStr = strings.TrimSpace(mediaStr)
 
 	mq := &MediaQuery{
-		MediaType:  "all",
+		Restrictor: MediaRestrictorNone,
 		Conditions: make([]MediaCondition, 0),
 	}
 
 	// Handle "not" and "only" modifiers
-	// "not screen" means negate the entire type match
-	// "only screen" is equivalent to "screen" (older syntax to hide from legacy parsers)
-	negate := false
 	if strings.HasPrefix(mediaStr, "not ") {
-		negate = true
+		mq.Restrictor = MediaRestrictorNot
 		mediaStr = strings.TrimSpace(mediaStr[4:])
 	} else if strings.HasPrefix(mediaStr, "only ") {
+		mq.Restrictor = MediaRestrictorOnly
 		mediaStr = strings.TrimSpace(mediaStr[5:])
 	}
 
-	// Check for media type (screen, print, all, etc.)
-	if strings.HasPrefix(mediaStr, "screen") && (len(mediaStr) == 6 || mediaStr[6] == ' ' || mediaStr[6] == ',') {
-		mq.MediaType = "screen"
-		mediaStr = strings.TrimSpace(mediaStr[6:])
-	} else if strings.HasPrefix(mediaStr, "print") && (len(mediaStr) == 5 || mediaStr[5] == ' ' || mediaStr[5] == ',') {
-		mq.MediaType = "print"
-		mediaStr = strings.TrimSpace(mediaStr[5:])
-	} else if strings.HasPrefix(mediaStr, "all") && (len(mediaStr) == 3 || mediaStr[3] == ' ' || mediaStr[3] == ',') {
-		mq.MediaType = "all"
-		mediaStr = strings.TrimSpace(mediaStr[3:])
-	}
-
-	// Apply negation: negate the media type by setting it to an impossible value
-	if negate {
-		switch mq.MediaType {
-		case "screen":
-			mq.MediaType = "print" // not screen = print (won't match screen renderer)
-		case "print":
-			mq.MediaType = "screen" // not print = screen (matches)
-		case "all":
-			mq.MediaType = "none" // not all = never match
+	// If the remaining string starts with an identifier (not a "("), parse it
+	// as the media type identifier. The identifier is preserved as-is so the
+	// evaluator can recognize unknown types and apply 3-valued logic.
+	if mediaStr != "" && mediaStr[0] != '(' {
+		end := 0
+		for end < len(mediaStr) {
+			ch := mediaStr[end]
+			if ch == ' ' || ch == ',' || ch == '\t' || ch == '\n' {
+				break
+			}
+			end++
 		}
+		mq.MediaType = strings.ToLower(mediaStr[:end])
+		mediaStr = strings.TrimSpace(mediaStr[end:])
 	}
 
 	// Remove leading "and" keyword
@@ -1209,6 +1262,59 @@ func isSupportedCSSProperty(property string) bool {
 	return supported[property]
 }
 
+// findTopLevelPseudoElement returns the byte index of the first occurrence of
+// token in s that is NOT inside parentheses or brackets, or -1 if none exists.
+// For the ":before" (single-colon) tokens, the preceding character must not be
+// ':' (which would make it a "::before" already matched on a prior pass) or an
+// identifier character (avoids matching ":beforexyz" by chance).
+func findTopLevelPseudoElement(s, token string) int {
+	depth := 0
+	inString := byte(0)
+	tlen := len(token)
+	singleColon := strings.HasPrefix(token, ":") && !strings.HasPrefix(token, "::")
+	for i := 0; i+tlen <= len(s); i++ {
+		ch := s[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inString = ch
+			continue
+		case '(', '[':
+			depth++
+			continue
+		case ')', ']':
+			depth--
+			continue
+		}
+		if depth != 0 {
+			continue
+		}
+		if s[i:i+tlen] != token {
+			continue
+		}
+		// For single-colon legacy form, guard against matching ":beforexyz"
+		// or matching the ":before" tail of "::before". The double-colon form
+		// is matched first by the caller's ordered list, so by the time we
+		// look for ":before" any "::before" has already been extracted.
+		if singleColon {
+			if i > 0 && s[i-1] == ':' {
+				continue
+			}
+		}
+		return i
+	}
+	return -1
+}
+
 // Phase 17: parseSelector parses a complex CSS selector
 func parseSelector(selectorStr string) Selector {
 	selectorStr = strings.TrimSpace(selectorStr)
@@ -1220,81 +1326,42 @@ func parseSelector(selectorStr string) Selector {
 	// Phase 11: Check for pseudo-element (::before/::after or CSS 2.1 :before/:after)
 	// If there's a space before the pseudo-element (e.g., ".foo :after"), it applies to
 	// descendants only, not the element matched by the selector itself.
+	//
+	// Pseudo-element tokens nested inside functional pseudo-classes (e.g.,
+	// :is(*, ::before)) MUST NOT be extracted here — they belong to the
+	// inner selector list and are handled by the :is() matcher's contextual
+	// invalidation logic. Use a paren-depth-aware scan rather than
+	// strings.Contains so we only extract top-level pseudo-elements.
 	pseudoElement := ""
 	pseudoElementForDescendants := false
-	if strings.Contains(selectorStr, "::before") {
-		pseudoElement = "before"
-		// Check if space before pseudo-element
-		idx := strings.Index(selectorStr, "::before")
+	// Ordered so longer/double-colon variants are tried first (e.g. "::before"
+	// matched before ":before", "::first-letter" before ":first-letter").
+	pseudoElementTokens := []struct {
+		token string
+		name  string
+	}{
+		{"::before", "before"},
+		{"::after", "after"},
+		{"::first-letter", "first-letter"},
+		{"::first-line", "first-line"},
+		{"::marker", "marker"},
+		{":before", "before"},
+		{":after", "after"},
+		{":first-letter", "first-letter"},
+		{":first-line", "first-line"},
+	}
+	for _, pe := range pseudoElementTokens {
+		idx := findTopLevelPseudoElement(selectorStr, pe.token)
+		if idx < 0 {
+			continue
+		}
+		pseudoElement = pe.name
 		if idx > 0 && selectorStr[idx-1] == ' ' {
 			pseudoElementForDescendants = true
 		}
-		selectorStr = strings.Replace(selectorStr, "::before", "", 1)
+		selectorStr = selectorStr[:idx] + selectorStr[idx+len(pe.token):]
 		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, "::after") {
-		pseudoElement = "after"
-		idx := strings.Index(selectorStr, "::after")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, "::after", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, ":before") {
-		pseudoElement = "before"
-		idx := strings.Index(selectorStr, ":before")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, ":before", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, ":after") {
-		pseudoElement = "after"
-		idx := strings.Index(selectorStr, ":after")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, ":after", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, "::first-letter") {
-		pseudoElement = "first-letter"
-		idx := strings.Index(selectorStr, "::first-letter")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, "::first-letter", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, ":first-letter") {
-		pseudoElement = "first-letter"
-		idx := strings.Index(selectorStr, ":first-letter")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, ":first-letter", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, "::first-line") {
-		pseudoElement = "first-line"
-		idx := strings.Index(selectorStr, "::first-line")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, "::first-line", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, ":first-line") {
-		pseudoElement = "first-line"
-		idx := strings.Index(selectorStr, ":first-line")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, ":first-line", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
-	} else if strings.Contains(selectorStr, "::marker") {
-		pseudoElement = "marker"
-		idx := strings.Index(selectorStr, "::marker")
-		if idx > 0 && selectorStr[idx-1] == ' ' {
-			pseudoElementForDescendants = true
-		}
-		selectorStr = strings.Replace(selectorStr, "::marker", "", 1)
-		selectorStr = strings.TrimSpace(selectorStr)
+		break
 	}
 	// If pseudo-element is for descendants only, clear it from direct matching
 	// but record it somehow (we'll use a convention: if PseudoElement starts with "descendant:",
@@ -1599,159 +1666,223 @@ func parseAttributeSelector(s string) AttributeSelector {
 	}
 }
 
-// Phase 22: EvaluateMediaQuery checks if a media query matches the given viewport dimensions
-func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) bool {
+// Phase 22: EvaluateMediaQuery returns the 3-valued result of evaluating a
+// media query for the given viewport. Mirrors Blink's
+// MediaQueryEvaluator::Eval() in
+// third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f.
+//
+// Per CSS Media Queries 4, media TYPES are 2-valued (a known type matches
+// or fails; an unknown type fails), but media FEATURES are 3-valued: an
+// unknown feature evaluates to Unknown. The `not` restrictor uses Kleene
+// logic — `not unknown == unknown` — so unknown queries do not become
+// true under negation. Callers must explicitly check
+// `result == MediaQueryTrue` to decide whether a rule applies; an Unknown
+// or False result both mean "do not apply".
+func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) MediaQueryResult {
 	if mq == nil {
 		// No media query = always matches
-		return true
+		return MediaQueryTrue
 	}
 
-	// Check media type
+	// Type-level match (Blink's MediaTypeMatch): empty string and "all"
+	// always match; otherwise we accept "screen" because we render to a
+	// screen-style raster. Unknown types fail at this gate — they are not
+	// 3-valued; they're just false.
+	typeResult := MediaQueryFalse
 	switch mq.MediaType {
-	case "all", "screen", "":
-		// matches — we render for screen
-	case "print":
-		return false // Print media: never match in screen renderer
-	default:
-		return false // Unknown media types: don't match
+	case "", "all", "screen":
+		typeResult = MediaQueryTrue
+	}
+	if typeResult == MediaQueryFalse {
+		return applyMediaRestrictor(mq.Restrictor, MediaQueryFalse)
 	}
 
-	// Check all conditions
+	// Combine all feature conditions with AND, using Kleene logic.
+	// AND-identity is True; True∧X = X; False short-circuits to False;
+	// Unknown ∧ True = Unknown; Unknown ∧ Unknown = Unknown.
+	exprResult := MediaQueryTrue
 	for _, cond := range mq.Conditions {
-		if !evaluateMediaCondition(cond, viewportWidth, viewportHeight) {
-			return false
+		condResult := evaluateMediaCondition(cond, viewportWidth, viewportHeight)
+		exprResult = mediaAnd(exprResult, condResult)
+		if exprResult == MediaQueryFalse {
+			break // false absorbs in AND
 		}
 	}
 
-	return true
+	return applyMediaRestrictor(mq.Restrictor, exprResult)
 }
 
-// Phase 22: evaluateMediaCondition checks if a single media condition matches
-func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight float64) bool {
+// applyMediaRestrictor mirrors Blink's ApplyRestrictor() in
+// third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f.
+// The "not" restrictor swaps True↔False but leaves Unknown unchanged.
+// "only" is parsed for compatibility with older user agents but has no
+// effect on evaluation.
+func applyMediaRestrictor(r MediaQueryRestrictor, v MediaQueryResult) MediaQueryResult {
+	if r != MediaRestrictorNot {
+		return v
+	}
+	switch v {
+	case MediaQueryTrue:
+		return MediaQueryFalse
+	case MediaQueryFalse:
+		return MediaQueryTrue
+	}
+	return MediaQueryUnknown
+}
+
+// mediaAnd is Kleene AND: F∧X=F, T∧X=X, U∧U=U, U∧T=U, U∧F=F.
+func mediaAnd(a, b MediaQueryResult) MediaQueryResult {
+	if a == MediaQueryFalse || b == MediaQueryFalse {
+		return MediaQueryFalse
+	}
+	if a == MediaQueryUnknown || b == MediaQueryUnknown {
+		return MediaQueryUnknown
+	}
+	return MediaQueryTrue
+}
+
+// Phase 22: evaluateMediaCondition evaluates a single parenthesized media
+// feature expression. Returns Kleene 3-valued: True/False for recognized
+// features, Unknown for any feature name the renderer doesn't model.
+// Mirrors Blink's per-feature Eval*() dispatch in
+// third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f,
+// which returns KleeneValue::kUnknown for features that the evaluator does
+// not implement.
+func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight float64) MediaQueryResult {
 	feature := strings.TrimSpace(strings.ToLower(cond.Feature))
 	value := strings.TrimSpace(strings.ToLower(cond.Value))
+
+	boolToResult := func(b bool) MediaQueryResult {
+		if b {
+			return MediaQueryTrue
+		}
+		return MediaQueryFalse
+	}
 
 	// Handle non-numeric media features
 	switch feature {
 	case "prefers-color-scheme":
 		// We render static PNGs in light mode
-		return value == "light"
+		return boolToResult(value == "light")
 	case "prefers-reduced-motion":
 		// Static renderer — no motion, default is no-preference
-		return value == "no-preference"
+		return boolToResult(value == "no-preference")
 	case "prefers-reduced-transparency":
-		return value == "no-preference" || value == ""
+		return boolToResult(value == "no-preference" || value == "")
 	case "prefers-contrast":
-		return value == "no-preference" || value == ""
+		return boolToResult(value == "no-preference" || value == "")
 
 	// Forced colors — no forced colors in desktop static renderer
 	case "forced-colors":
-		return value == "none"
+		return boolToResult(value == "none")
 	case "inverted-colors":
-		return value == "none"
+		return boolToResult(value == "none")
 
 	// Interaction media features — desktop defaults (fine pointer/mouse, hover capable)
 	case "pointer":
 		// Desktop has a fine pointer (mouse); coarse = touch = false; none = false
-		return value == "fine" || value == ""
+		return boolToResult(value == "fine" || value == "")
 	case "any-pointer":
 		// Desktop has fine pointer; also accept "none" as secondary device
-		return value == "fine" || value == ""
+		return boolToResult(value == "fine" || value == "")
 	case "hover":
 		// Desktop supports hover
-		return value == "hover" || value == ""
+		return boolToResult(value == "hover" || value == "")
 	case "any-hover":
 		// Desktop supports hover
-		return value == "hover" || value == ""
+		return boolToResult(value == "hover" || value == "")
 
 	// Orientation — based on viewport aspect ratio (800×600 = landscape)
 	case "orientation":
 		if viewportWidth >= viewportHeight {
-			return value == "landscape"
+			return boolToResult(value == "landscape")
 		}
-		return value == "portrait"
+		return boolToResult(value == "portrait")
 
 	// Display mode — we render as a standard browser
 	case "display-mode":
-		return value == "browser" || value == ""
+		return boolToResult(value == "browser" || value == "")
 
 	// Scripting — we don't execute JS but claim "none" so sites don't show JS-only fallback
 	case "scripting":
-		return value == "none" || value == ""
+		return boolToResult(value == "none" || value == "")
 
 	// Color media features
 	case "color":
 		// boolean feature: true if it has color (our renderer supports color)
 		// value is empty for boolean test, or a number for min-color etc.
-		return true
+		return MediaQueryTrue
 	case "color-index":
 		// We don't use an indexed color palette
-		return value == "0" || value == ""
+		return boolToResult(value == "0" || value == "")
 	case "monochrome":
 		// We are not monochrome
-		return value == "0" || value == ""
+		return boolToResult(value == "0" || value == "")
 
 	// Resolution — always match for static renderer
 	case "resolution", "min-resolution", "max-resolution":
-		return true
+		return MediaQueryTrue
 
 	// Legacy device dimension features — approximate as viewport
 	case "device-width", "device-height",
 		"min-device-width", "min-device-height",
 		"max-device-width", "max-device-height":
-		return true
+		return MediaQueryTrue
 
 	// color-gamut — report srgb support
 	case "color-gamut":
-		return value == "srgb" || value == ""
+		return boolToResult(value == "srgb" || value == "")
 
 	// dynamic-range — report standard
 	case "dynamic-range":
-		return value == "standard" || value == ""
+		return boolToResult(value == "standard" || value == "")
 
 	// video-dynamic-range
 	case "video-dynamic-range":
-		return value == "standard" || value == ""
+		return boolToResult(value == "standard" || value == "")
 
 	// overflow-block, overflow-inline
 	case "overflow-block":
-		return value == "scroll" || value == "optional-paged" || value == ""
+		return boolToResult(value == "scroll" || value == "optional-paged" || value == "")
 	case "overflow-inline":
-		return value == "scroll" || value == ""
+		return boolToResult(value == "scroll" || value == "")
 
 	// update — we render to a static image (none update)
 	case "update":
-		return value == "none" || value == ""
+		return boolToResult(value == "none" || value == "")
 
 	// grid — not a grid device (bitmap display)
 	case "grid":
-		return value == "0" || value == ""
+		return boolToResult(value == "0" || value == "")
+
+	case "min-width", "max-width", "min-height", "max-height", "width", "height":
+		numVal, unit := parseMediaLength(cond.Value)
+		if unit != "px" {
+			// Unparseable dimension — treat as Unknown so 3-valued logic
+			// preserves the "don't apply" semantics without flipping under `not`.
+			return MediaQueryUnknown
+		}
+		switch feature {
+		case "min-width":
+			return boolToResult(viewportWidth >= numVal)
+		case "max-width":
+			return boolToResult(viewportWidth <= numVal)
+		case "min-height":
+			return boolToResult(viewportHeight >= numVal)
+		case "max-height":
+			return boolToResult(viewportHeight <= numVal)
+		case "width":
+			return boolToResult(viewportWidth == numVal)
+		case "height":
+			return boolToResult(viewportHeight == numVal)
+		}
 	}
 
-	// Parse the value to get numeric value and unit for dimension features
-	numVal, unit := parseMediaLength(cond.Value)
-
-	// For simplicity, we only support px units
-	if unit != "px" {
-		return true // Unknown units = assume match
-	}
-
-	switch feature {
-	case "min-width":
-		return viewportWidth >= numVal
-	case "max-width":
-		return viewportWidth <= numVal
-	case "min-height":
-		return viewportHeight >= numVal
-	case "max-height":
-		return viewportHeight <= numVal
-	case "width":
-		return viewportWidth == numVal
-	case "height":
-		return viewportHeight == numVal
-	default:
-		return false // Unknown feature = don't match
-	}
+	// Unknown feature (e.g. `(unknown)` in at-media-002). Per CSS Media
+	// Queries 4 §3.1, this is the 3-valued Unknown state, distinct from
+	// False — important so that `not (unknown)` stays Unknown rather than
+	// flipping to True.
+	return MediaQueryUnknown
 }
 
 // Phase 22: parseMediaLength parses a length value and returns value and unit
