@@ -1817,22 +1817,27 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// CSS Containment: layout and paint containment establish a containing
 		// block for absolutely positioned descendants (same as positioned elements).
 		isContainmentCB := bla.style != nil && (bla.style.HasLayoutContainment() || bla.style.HasPaintContainment())
-		// CSS Transforms §2.1 / Will Change §2.2: transform, perspective, or
-		// will-change naming them creates a containing block for all positioned
-		// descendants (including fixed).
+		// CSS Transforms §2.1 / Will Change §2.2: transform, perspective,
+		// filter, and any will-change of a CB-establishing property create a
+		// containing block for all positioned descendants (including fixed).
 		isTransformCB := false
 		if bla.style != nil && !isContainmentCB {
 			if transforms := bla.style.GetTransforms(); len(transforms) > 0 {
 				isTransformCB = true
 			} else if filters := bla.style.GetFilter(); len(filters) > 0 {
 				isTransformCB = true
-			} else {
-				for _, prop := range bla.style.GetWillChange() {
-					if prop == "transform" || prop == "perspective" || prop == "filter" {
-						isTransformCB = true
-						break
-					}
-				}
+			} else if bla.style.WillChangeEstablishesContainingBlock(true) {
+				isTransformCB = true
+			}
+		}
+		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
+		// CB triggers) establishes a CB for abs-pos descendants but NOT fixed
+		// — mirrors position:relative semantics. Handled separately from
+		// isTransformCB because fixed candidates must still propagate.
+		isWillChangeAbsposCB := false
+		if bla.style != nil && !isContainmentCB && !isTransformCB && !isPositioned {
+			if bla.style.WillChangeEstablishesContainingBlock(false) {
+				isWillChangeAbsposCB = true
 			}
 		}
 		isRoot := bla.space.IsRootElement
@@ -1877,9 +1882,11 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				resolvesFixed:          true,
 			}
 			oofPart.LayoutCandidates(regularCandidates, builder)
-		} else if isPositioned {
-			// Positioned element: resolve absolute candidates here, but
-			// propagate fixed candidates upward toward the ICB.
+		} else if isPositioned || isWillChangeAbsposCB {
+			// Positioned element OR will-change:position-like CB: resolve
+			// absolute candidates here, but propagate fixed candidates
+			// upward toward the ICB. (Will Change §2.2: abspos-only CB
+			// triggers mimic position:relative — fixed still escapes.)
 			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
 			for _, cand := range regularCandidates {
 				if cand.IsFixedPosition {
