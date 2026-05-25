@@ -9266,6 +9266,39 @@ func (s *Style) GetTextEmphasisPosition() string {
 	return v
 }
 
+// GetTextEmphasisLineLogicalOver resolves the text-emphasis-position keyword
+// combination through the writing mode and returns true when the mark paints
+// on the kOver line-logical side, false for kUnder.
+//
+// Mirrors Blink's ComputedStyle::GetTextEmphasisLineLogicalSide()
+// (third_party/blink/renderer/core/style/computed_style.cc @ Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Per CSS Text Decor §3.4 the
+// position keywords resolve as:
+//
+//   - horizontal writing modes:       over → kOver, under → kUnder
+//   - vertical-rl / vertical-lr /
+//     sideways-rl:                    right → kOver, left → kUnder
+//   - sideways-lr:                    left  → kOver, right → kUnder
+//
+// kOver means "above the inline progression line" — in horizontal-tb that is
+// physically above the text; in vertical-rl/-lr/sideways-rl it is physically
+// to the right of the text column; in sideways-lr it is physically to the
+// left of the column.
+func (s *Style) GetTextEmphasisLineLogicalOver(isHorizontal, isSidewaysLR bool) bool {
+	pos := s.GetTextEmphasisPosition()
+	hasOver := strings.Contains(pos, "over")
+	hasRight := strings.Contains(pos, "right")
+	if isHorizontal {
+		return hasOver
+	}
+	if isSidewaysLR {
+		// sideways-lr flips: left → kOver.
+		return !hasRight
+	}
+	// vertical-rl, vertical-lr, sideways-rl: right → kOver.
+	return hasRight
+}
+
 // GetTextEmphasisMark returns the actual character to use as emphasis mark.
 // Returns "" if no emphasis should be drawn.
 func (s *Style) GetTextEmphasisMark() string {

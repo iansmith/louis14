@@ -549,8 +549,8 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if mark := s.GetTextEmphasisMark(); mark != "" {
 		layer.TextEmphasisMark = mark
 		layer.TextEmphasisColor = s.GetTextEmphasisColor()
-		pos := s.GetTextEmphasisPosition()
-		layer.TextEmphasisOver = !strings.Contains(pos, "under")
+		isHorizontal := !box.IsVerticalText && !box.IsSidewaysRL && !box.IsSidewaysLR
+		layer.TextEmphasisOver = s.GetTextEmphasisLineLogicalOver(isHorizontal, box.IsSidewaysLR)
 	}
 
 	layer.TextTransform = s.GetTextTransform()
