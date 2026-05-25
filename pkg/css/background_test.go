@@ -184,3 +184,68 @@ func TestParseInlineStyle_BackgroundImage(t *testing.T) {
 		t.Errorf("ParseInlineStyle background-image: got (%q, %v)", url, ok)
 	}
 }
+
+// TestParseLinearGradient_RejectsInvalidAngleUnitSpellings locks in that the
+// gradient parser refuses non-canonical angle unit spellings (CSS Values 3
+// §6.2: only deg / grad / rad / turn are valid). Regression guard for
+// angle-units-001.html.
+func TestParseLinearGradient_RejectsInvalidAngleUnitSpellings(t *testing.T) {
+	invalid := []string{
+		"linear-gradient(90degree, red, red)",
+		"linear-gradient(100gradian, red, red)",
+		"linear-gradient(1.57radian, red, red)",
+		"linear-gradient(0.25turns, red, red)",
+	}
+	for _, val := range invalid {
+		if _, ok := ParseLinearGradient(val); ok {
+			t.Errorf("ParseLinearGradient(%q) = ok; want rejected", val)
+		}
+	}
+}
+
+// TestParseLinearGradient_AcceptsCanonicalAngleUnits locks in that the four
+// canonical angle unit spellings parse as gradient directions, case-
+// insensitively (CSS Values 3 §3.5).
+func TestParseLinearGradient_AcceptsCanonicalAngleUnits(t *testing.T) {
+	valid := []string{
+		"linear-gradient(90deg, red, red)",
+		"linear-gradient(90DeG, red, red)",
+		"linear-gradient(100grad, red, red)",
+		"linear-gradient(1.57rad, red, red)",
+		"linear-gradient(0.25turn, red, red)",
+		"linear-gradient(0.25TURN, red, red)",
+	}
+	for _, val := range valid {
+		if _, ok := ParseLinearGradient(val); !ok {
+			t.Errorf("ParseLinearGradient(%q) = !ok; want accepted", val)
+		}
+	}
+}
+
+// TestParseStylesheet_InvalidGradientDoesNotOverwriteValid is the cascade-
+// gate regression guard for angle-units-001.html. An invalid
+// background-image declaration must NOT overwrite an earlier valid one —
+// the parser must drop the declaration before it enters the cascade.
+func TestParseStylesheet_InvalidGradientDoesNotOverwriteValid(t *testing.T) {
+	css := `div {
+		background-image: linear-gradient(green, green);
+		background-image: linear-gradient(90degree, red, red);
+		background-image: linear-gradient(100gradian, red, red);
+		background-image: linear-gradient(1.57radian, red, red);
+		background-image: linear-gradient(0.25turns, red, red);
+	}`
+	ss, err := ParseStylesheet(css, nil)
+	if err != nil {
+		t.Fatalf("ParseStylesheet error: %v", err)
+	}
+	if len(ss.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(ss.Rules))
+	}
+	got, ok := ss.Rules[0].Declarations["background-image"]
+	if !ok {
+		t.Fatalf("background-image not in declarations")
+	}
+	if got != "linear-gradient(green, green)" {
+		t.Errorf("background-image: got %q, want %q", got, "linear-gradient(green, green)")
+	}
+}

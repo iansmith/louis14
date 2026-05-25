@@ -1968,6 +1968,17 @@ func parseDeclarations(declStr string) DeclarationResult {
 			}
 		}
 
+		// Validate image property values (e.g. background-image) before
+		// they enter the cascade. A failed-to-parse declaration must NOT
+		// overwrite an earlier valid one — this mirrors Blink's
+		// CSSPropertyParser::ParseValue gate, where parse failure causes
+		// the declaration to be discarded before reaching the property set.
+		if isImageProperty(property) {
+			if !isValidImageValue(value) {
+				continue
+			}
+		}
+
 		// Expand shorthand properties (reuse from Phase 2)
 		style := NewStyle()
 		expandShorthand(style, property, value)
@@ -1976,6 +1987,11 @@ func parseDeclarations(declStr string) DeclarationResult {
 		for k, v := range style.Properties {
 			if isColorProperty(k) {
 				if !isValidColorValue(v) {
+					continue
+				}
+			}
+			if isImageProperty(k) {
+				if !isValidImageValue(v) {
 					continue
 				}
 			}
@@ -2031,6 +2047,86 @@ func isValidColorValue(value string) bool {
 	}
 	_, ok := ParseColor(value)
 	return ok
+}
+
+// isImageProperty returns true for CSS properties that expect <image> values.
+// Used by the declaration parser to reject invalid image values (e.g. a
+// gradient with an invalid angle unit spelling like "90degree") before they
+// can poison the cascade by overwriting an earlier valid declaration.
+//
+// Blink reference: properties whose grammar is <image> in
+// third_party/blink/renderer/core/css_properties.json5
+// (Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func isImageProperty(prop string) bool {
+	switch prop {
+	case "background-image":
+		return true
+	}
+	return false
+}
+
+// isValidImageValue reports whether value is a valid CSS <image> (or
+// comma-separated list of <image>s, as used for multi-layer backgrounds).
+// Each layer must be one of: "none", a url(...), a gradient function, an
+// image-set()/-webkit-image-set(), or a global keyword (inherit/initial/
+// unset/revert). var() references defer validation.
+func isValidImageValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	// var() references are resolved later — always valid at parse time.
+	if strings.Contains(trimmed, "var(") {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	switch lower {
+	case "none", "inherit", "initial", "unset", "revert", "revert-layer":
+		return true
+	}
+	// Multi-layer values: every comma-separated layer must be a valid <image>.
+	for _, layer := range splitCommaSeparated(trimmed) {
+		if !isValidSingleImageLayer(strings.TrimSpace(layer)) {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidSingleImageLayer validates one layer of a (possibly multi-layer)
+// <image> value. See isValidImageValue for the layer grammar.
+func isValidSingleImageLayer(layer string) bool {
+	if layer == "" {
+		return false
+	}
+	lower := strings.ToLower(layer)
+	switch lower {
+	case "none":
+		return true
+	}
+	// url(...) is always accepted at parse time (resource resolution
+	// happens later; an unresolved URL still constitutes a valid <image>
+	// per the CSS Images spec).
+	if strings.HasPrefix(lower, "url(") {
+		return true
+	}
+	// image-set() / -webkit-image-set() — accept the wrapper; inner
+	// candidate validation is not required for cascade gating.
+	if strings.HasPrefix(lower, "image-set(") || strings.HasPrefix(lower, "-webkit-image-set(") {
+		return true
+	}
+	// Gradient functions — defer to the gradient parser, which already
+	// rejects invalid spellings (e.g. "90degree" for angles).
+	if strings.HasPrefix(lower, "linear-gradient(") ||
+		strings.HasPrefix(lower, "radial-gradient(") ||
+		strings.HasPrefix(lower, "conic-gradient(") ||
+		strings.HasPrefix(lower, "repeating-linear-gradient(") ||
+		strings.HasPrefix(lower, "repeating-radial-gradient(") ||
+		strings.HasPrefix(lower, "repeating-conic-gradient(") {
+		_, ok := GetGradient(layer)
+		return ok
+	}
+	return false
 }
 
 // isInvalidBareNumber returns true if value is a non-zero number with no unit
