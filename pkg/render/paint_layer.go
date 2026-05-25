@@ -384,9 +384,17 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// include background-color, but CSS backgrounds are painted on element boxes,
 	// not on individual text runs within them. Skip background for text runs
 	// to avoid painting the inherited background outside the element's area.
+	//
+	// `background-color: currentcolor` resolves to the element's computed
+	// `color` value per CSS Color 4 §4.4. ParseColor doesn't recognize
+	// `currentcolor` as a color literal, so we resolve it here against the
+	// same Style.GetColor() that other color-property accessors use
+	// (e.g. GetColumnRuleColor in pkg/css/style.go).
 	if box.Text == "" {
 		if bg, ok := s.Get("background-color"); ok {
-			if c, ok := css.ParseColor(bg); ok {
+			if strings.EqualFold(strings.TrimSpace(bg), "currentcolor") {
+				layer.BackgroundColor = s.GetColor()
+			} else if c, ok := css.ParseColor(bg); ok {
 				layer.BackgroundColor = c
 			}
 		}
