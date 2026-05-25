@@ -3869,7 +3869,53 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 		return
 	}
 
-	// Iterate characters and emit one mini-fragment per non-whitespace char.
+	// Build the mini off-screen buffer ONCE per run. Glyph, font, color, and
+	// rotation orientation are loop-invariant — every character gets the same
+	// rotated mark, just blitted at a different position. Pre-rotating avoids
+	// per-character `image.NewRGBA` + a nested pixel loop in the paint hot path.
+	markSrc := image.NewRGBA(image.Rect(0, 0, annotW, annotH))
+	markDC := r.dc.NewChildContext(markSrc)
+	emphColor := layer.TextEmphasisColor
+	markDC.SetColor(color.RGBA{R: emphColor.R, G: emphColor.G, B: emphColor.B, A: uint8(emphColor.A * 255)})
+	markDC.DrawText(mark, emphFontID, 0, emphAscent)
+
+	markRot := image.NewRGBA(image.Rect(0, 0, annotH, annotW))
+	for yy := 0; yy < annotH; yy++ {
+		for xx := 0; xx < annotW; xx++ {
+			c := markSrc.RGBAAt(xx, yy)
+			if c.A == 0 {
+				continue
+			}
+			if layer.IsSidewaysRL {
+				// 90° CW: src (x,y) → dest (annotH-1-y, x)
+				markRot.SetRGBA(annotH-1-yy, xx, c)
+			} else {
+				// 90° CCW: src (x,y) → dest (y, annotW-1-x)
+				markRot.SetRGBA(yy, annotW-1-xx, c)
+			}
+		}
+	}
+
+	// Determine which physical side the annotation paints on, and pre-compute
+	// the loop-invariant screen X. In vertical-rl/sideways-rl, kOver
+	// (TextEmphasisOver=true) = right of column; in sideways-lr the resolver
+	// has already flipped so kOver = left of column. Combined predicate:
+	// paint on the right edge when XNOR of IsSidewaysRL and Over.
+	rightSide := layer.IsSidewaysRL == layer.TextEmphasisOver
+	var screenX float64
+	if rightSide {
+		screenX = box.X + float64(lh) // top-left of annotation = right edge of base column
+	} else {
+		screenX = box.X - float64(annotH) // top-left of annotation = left of base column by buffer width
+	}
+	screenXi := int(math.Round(screenX))
+
+	// Iterate characters and blit the (pre-rotated) mark at each non-whitespace
+	// character's annotation-equivalent screen position. The sideways base text
+	// at `:3605-3608` is drawn as a single `DrawText` call without per-character
+	// LetterSpacing / WordSpacing adjustments, so the emphasis advance here is
+	// the bare measured char width — applying spacing here would drift the marks
+	// off the rendered glyphs (caught by CodeRabbit on the LOU-162 PR).
 	x := 0.0
 	for _, ch := range text {
 		charStr := string(ch)
@@ -3881,73 +3927,16 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 			// `pkg/layout/inline_layout_ruby.go:64-65 @ b555e690`
 			//   `annoOffset += (column.InlineSize - anno.Width) / 2`.
 			annotInline := x + (charW-markW)/2
-
-			// Build the mini off-screen buffer for THIS mark.
-			markSrc := image.NewRGBA(image.Rect(0, 0, annotW, annotH))
-			markDC := r.dc.NewChildContext(markSrc)
-			emphColor := layer.TextEmphasisColor
-			markDC.SetColor(color.RGBA{R: emphColor.R, G: emphColor.G, B: emphColor.B, A: uint8(emphColor.A * 255)})
-			// Draw the mark glyph at baseline = emphAscent.
-			markDC.DrawText(mark, emphFontID, 0, emphAscent)
-
-			// Rotate the mini buffer the same way the parent text was rotated.
-			markRot := image.NewRGBA(image.Rect(0, 0, annotH, annotW))
-			for yy := 0; yy < annotH; yy++ {
-				for xx := 0; xx < annotW; xx++ {
-					c := markSrc.RGBAAt(xx, yy)
-					if c.A == 0 {
-						continue
-					}
-					if layer.IsSidewaysRL {
-						// 90° CW: src (x,y) → dest (annotH-1-y, x)
-						markRot.SetRGBA(annotH-1-yy, xx, c)
-					} else {
-						// 90° CCW: src (x,y) → dest (y, annotW-1-x)
-						markRot.SetRGBA(yy, annotW-1-xx, c)
-					}
-				}
-			}
-
-			// Map the annotation's (annotInline, annotTop) in the parent's
-			// horizontal frame to a screen position. The parent's blit was
-			// at (box.X, box.Y) for the rotated (lh × ta) buffer; for our
-			// mini-buffer:
-			//
-			//   sideways-rl (CW): (xH, yH) in horizontal → (lh-1-yH, xH) in rotated.
-			//                     The mini-buffer's top-left after rotation
-			//                     corresponds to (xH=annotInline, yH=annotTop+annotH-1)
-			//                     in the horizontal frame; in screen that's
-			//                     (box.X + lh-1-(annotTop+annotH-1), box.Y + annotInline).
-			//   sideways-lr (CCW): mirror image.
-			//
-			// We blit the rotated MINI buffer's (0,0) at the screen position
-			// where the mini buffer's top-left lands.
-			var screenX, screenY float64
-			// Determine which physical side the annotation paints on.
-			// In vertical-rl/sideways-rl, kOver (TextEmphasisOver=true) = right of column;
-			// in sideways-lr the resolver has already flipped so kOver = left of column.
-			// Combined predicate: paint on the right edge when XNOR of IsSidewaysRL and Over.
-			rightSide := layer.IsSidewaysRL == layer.TextEmphasisOver
-			if rightSide {
-				screenX = box.X + float64(lh) // top-left of annotation = right edge of base column
-			} else {
-				screenX = box.X - float64(annotH) // top-left of annotation = left of base column by buffer width
-			}
+			var screenY float64
 			if layer.IsSidewaysRL {
 				screenY = box.Y + annotInline
 			} else {
 				screenY = box.Y + float64(ta) - annotInline - float64(annotW)
 			}
-			r.dc.DrawImage(markRot, int(math.Round(screenX)), int(math.Round(screenY)))
+			r.dc.DrawImage(markRot, screenXi, int(math.Round(screenY)))
 		}
 
 		x += charW
-		if layer.LetterSpacing != 0 {
-			x += layer.LetterSpacing
-		}
-		if ch == ' ' && layer.WordSpacing != 0 {
-			x += layer.WordSpacing
-		}
 	}
 }
 
