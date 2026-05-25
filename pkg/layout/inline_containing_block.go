@@ -273,8 +273,9 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 			if item.Style != nil && item.Node != nil {
 				if inlineEstablishesContainingBlock(item.Style) {
 					stack = append(stack, inlineCB{
-						node:          item.Node,
-						containsFixed: len(item.Style.GetFilter()) > 0,
+						node: item.Node,
+						containsFixed: len(item.Style.GetFilter()) > 0 ||
+							item.Style.WillChangeEstablishesInlineContainingBlock(),
 					})
 				}
 			}
@@ -314,12 +315,20 @@ func BuildPositionedInlineMap(items []*InlineItem) map[*InlineItem]*html.Node {
 // establishes a containing block for positioned descendants. A non-static
 // position does (CSS 2.1 §10.1.4); so does a filter (Filter Effects 1 §"The
 // filter property": "A value other than none ... results in the creation of
-// a containing block for absolute and fixed positioned descendants").
+// a containing block for absolute and fixed positioned descendants"). CSS
+// Will Change §2.2 extends this to `will-change` of any CB-establishing
+// property that actually applies to inlines (filter family, clip-path,
+// mask-image) — the transform family is excluded because inlines aren't
+// transformable elements (CSS Transforms §3); see
+// WPT will-change-transform-inline.html.
 func inlineEstablishesContainingBlock(style *css.Style) bool {
 	if style.GetPosition() != css.PositionStatic {
 		return true
 	}
 	if len(style.GetFilter()) > 0 {
+		return true
+	}
+	if style.WillChangeEstablishesInlineContainingBlock() {
 		return true
 	}
 	return false

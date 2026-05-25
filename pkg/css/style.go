@@ -10476,6 +10476,114 @@ func (s *Style) WillChangeCreatesStackingContext(allowsZIndex bool) bool {
 	return false
 }
 
+// willChangeFixedContainingBlockSet is the canonical set of resolved
+// longhands that, when named in `will-change`, cause the element to
+// establish a containing block for FIXED-positioned descendants per CSS
+// Will Change Level 1 §2.2. These are the properties that — when applied
+// non-initially — would themselves create a CB for fixed descendants
+// (transform-family + filters + clip-path + mask-image + contain). Mirrors
+// the union of Blink's ComputeIsFixedContainer at layout_object.cc:~2150
+// and ComputeIsAbsoluteContainer at ~2190 (the abs set is a superset —
+// see willChangeAbsContainingBlockSet below).
+//
+// `position` is intentionally excluded: `will-change: position` mimics
+// position: relative, which establishes a CB for abs-pos but NOT fixed.
+var willChangeFixedContainingBlockSet = map[string]bool{
+	"transform":                     true,
+	"perspective":                   true,
+	"translate":                     true,
+	"rotate":                        true,
+	"scale":                         true,
+	"offset-path":                   true,
+	"offset-position":               true,
+	"transform-style":               true,
+	"filter":                        true,
+	"backdrop-filter":               true,
+	"clip-path":                     true,
+	"mask-image":                    true,
+	"-webkit-mask-box-image-source": true,
+	"contain":                       true,
+	"view-transition-name":          true,
+}
+
+// willChangeAbsContainingBlockSet adds `position` to the fixed set: any
+// property that would establish a CB for fixed descendants also does so
+// for abs-pos descendants (fixed ⊂ absolute), AND `position` itself
+// (mimicking position:relative) does so for abs-pos only.
+var willChangeAbsContainingBlockSet = func() map[string]bool {
+	m := make(map[string]bool, len(willChangeFixedContainingBlockSet)+1)
+	for k, v := range willChangeFixedContainingBlockSet {
+		m[k] = v
+	}
+	m["position"] = true
+	return m
+}()
+
+// WillChangeEstablishesContainingBlock reports whether the element's
+// `will-change` value causes it to establish a containing block for
+// positioned descendants per CSS Will Change Level 1 §2.2. The
+// `forFixedPos` flag selects between the absolute-pos and fixed-pos
+// containing-block sets — `position` only establishes a CB for abs-pos
+// (matching position:relative semantics), while transform/filter/etc.
+// establish CBs for both. Mirrors Blink's ComputeIsAbsoluteContainer and
+// ComputeIsFixedContainer at layout_object.cc:~2150-2190.
+//
+// Returns false for `auto`/unset.
+func (s *Style) WillChangeEstablishesContainingBlock(forFixedPos bool) bool {
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		return false
+	}
+	set := willChangeAbsContainingBlockSet
+	if forFixedPos {
+		set = willChangeFixedContainingBlockSet
+	}
+	for lh := range wc.Longhands {
+		if set[lh] {
+			return true
+		}
+	}
+	return false
+}
+
+// willChangeInlineApplicableSet is the subset of CB-establishing properties
+// whose effect actually applies to a non-replaced inline box. Inlines are
+// not "transformable elements" per CSS Transforms §3, so the transform
+// family (transform, perspective, translate, rotate, scale, offset-path,
+// offset-position, transform-style) never establishes a CB on an inline
+// even via will-change — see WPT will-change-transform-inline.html.
+// `contain` does not apply to inlines either. `view-transition-name` and
+// `position` likewise don't make an inline a CB on their own.
+//
+// Filter, backdrop-filter, clip-path, and mask-image DO apply to inlines.
+var willChangeInlineApplicableSet = map[string]bool{
+	"filter":                        true,
+	"backdrop-filter":               true,
+	"clip-path":                     true,
+	"mask-image":                    true,
+	"-webkit-mask-box-image-source": true,
+}
+
+// WillChangeEstablishesInlineContainingBlock is the inline-only variant of
+// WillChangeEstablishesContainingBlock: it filters out properties that
+// don't apply to inline boxes (transform-family, contain, etc.) before
+// reporting CB establishment. Use this when the element is a non-replaced
+// inline. The transform-family/contain exclusion mirrors WPT's
+// will-change-transform-inline.html assertion that
+// `will-change: transform` on a `<span>` does NOT create a CB.
+func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
+	wc := s.GetWillChangeData()
+	if wc == nil {
+		return false
+	}
+	for lh := range wc.Longhands {
+		if willChangeInlineApplicableSet[lh] {
+			return true
+		}
+	}
+	return false
+}
+
 // splitTopLevelCommas splits s on commas that are not nested inside parentheses
 // or quotes. Used for comma-separated CSS list values (animation, transition).
 func splitTopLevelCommas(s string) []string {

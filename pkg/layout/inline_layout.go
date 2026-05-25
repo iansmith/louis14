@@ -1370,12 +1370,15 @@ func createLineBoxEx(
 		var spanStack []spanEntry
 		emit := func(span spanEntry, endPos float64) {
 			// Emit a fragment when there is something to paint OR when the span
-			// is positioned. Positioned inlines (relative/sticky) need a
-			// fragment per line so descendant abspos children can derive their
-			// inline containing block from the union of these rects (CSS 2.1
-			// §10.1.4 / CSS Position 3 §def-cb). The fragment is also where
-			// RelativeOffset is anchored for paint-time sticky/relative shifts.
-			if !(hasVisibleInlinePaint(span.style) || span.style.GetPosition() != css.PositionStatic) {
+			// establishes a containing block for positioned descendants.
+			// Positioned inlines (relative/sticky), filtered inlines, and
+			// inlines with will-change of a CB-establishing property all need
+			// a fragment per line so descendant abspos children can derive
+			// their inline containing block from the union of these rects
+			// (CSS 2.1 §10.1.4 / CSS Position 3 §def-cb). The fragment is
+			// also where RelativeOffset is anchored for paint-time sticky/
+			// relative shifts.
+			if !(hasVisibleInlinePaint(span.style) || inlineEstablishesContainingBlock(span.style)) {
 				return
 			}
 			geom := ComputeFragmentGeometry(span.style, wdm)

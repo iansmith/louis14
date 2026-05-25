@@ -1793,7 +1793,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	var propagatedOOF []OutOfFlowCandidate
 	if len(builder.outOfFlowCandidates) > 0 {
 		isPositioned := fla.style != nil && fla.style.GetPosition() != css.PositionStatic
-		if isPositioned {
+		// CSS Will Change §2.2: `will-change: position` (and other abspos-only
+		// CB triggers) makes this flex container a CB for abs-pos descendants
+		// but not for fixed. Mirrors block_layout's isWillChangeAbsposCB.
+		isWillChangeAbsposCB := false
+		if fla.style != nil && !isPositioned {
+			if fla.style.WillChangeEstablishesContainingBlock(false) {
+				isWillChangeAbsposCB = true
+			}
+		}
+		if isPositioned || isWillChangeAbsposCB {
 			var absoluteCandidates, fixedCandidates []OutOfFlowCandidate
 			for _, cand := range builder.outOfFlowCandidates {
 				if cand.IsFixedPosition {
