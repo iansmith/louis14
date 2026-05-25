@@ -155,7 +155,17 @@ func collectInlinesRecursive(
 			continue
 		}
 
-		if !child.IsElement() {
+		// Anonymous inline boxes (no DOMNode) are accepted alongside real
+		// element nodes. The only anonymous inline currently produced is the
+		// `display:ruby` wrapper that `wrapBlockRubyAsTwoBox` generates as
+		// the sole child of a `display:block ruby` principal box (mirrors
+		// Blink's `LayoutRubyAsBlock` which creates an anonymous LayoutInline
+		// with `display:ruby` as the IFC child — see
+		// `core/layout/layout_ruby_as_block.cc` at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). That anonymous box must
+		// still emit the open/close ruby column items so the line breaker
+		// runs handleRuby on it just as it would on a real `<ruby>` element.
+		if !child.IsElement() && !child.IsAnonymous() {
 			continue
 		}
 
