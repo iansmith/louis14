@@ -422,3 +422,44 @@ func TestDirPseudoClass(t *testing.T) {
 		})
 	}
 }
+
+// TestMatchesIsWithPseudoElement guards the contextually-invalid rule from
+// CSS Selectors 4 + CSS Nesting: an :is() or :where() that contains a pseudo-
+// element argument must not match real elements. This is what makes the WPT
+// contextually-invalid-selectors-{001,002,003} tests pass — without it the
+// nested rule `*, ::before { & * { color: red } }` expands to
+// `:is(*, ::before) *` and would wrongly paint <div>'s color red.
+func TestMatchesIsWithPseudoElement(t *testing.T) {
+	node := &html.Node{Type: html.ElementNode, TagName: "div"}
+
+	// Sanity: :is() with only normal selectors still matches.
+	if !matchesPseudoClass(node, "is(div, span)") {
+		t.Error(":is(div, span) should match <div>")
+	}
+	if !matchesPseudoClass(node, "where(div, span)") {
+		t.Error(":where(div, span) should match <div>")
+	}
+
+	// Pseudo-element inside :is() makes the whole :is() contextually invalid
+	// for element matching, even if another branch (the * universal) would
+	// otherwise match.
+	if matchesPseudoClass(node, "is(*, ::before)") {
+		t.Error(":is(*, ::before) must not match a real element (contextually invalid)")
+	}
+	if matchesPseudoClass(node, "where(*, ::before)") {
+		t.Error(":where(*, ::before) must not match a real element (contextually invalid)")
+	}
+
+	// Legacy single-colon pseudo-element forms also trigger invalidation.
+	if matchesPseudoClass(node, "is(div, :before)") {
+		t.Error(":is(div, :before) must not match (legacy pseudo-element form)")
+	}
+
+	// Pseudo-element nested deeper inside a paren scope (e.g. a :not() arg)
+	// is NOT a top-level pseudo-element of the :is() argument, so the :is()
+	// is still valid. This keeps the paren-aware scanner consistent with the
+	// selector parser's findTopLevelPseudoElement.
+	if !matchesPseudoClass(node, "is(:not(span))") {
+		t.Error(":is(:not(span)) should match <div> (no top-level pseudo-element)")
+	}
+}
