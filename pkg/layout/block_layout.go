@@ -1584,13 +1584,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// Apply min/max block-size constraints per CSS 2.1 §10.7.
 	// Order matters: max-height is applied first (step 2), then min-height (step 3).
 	// When min-height > max-height, min-height wins because step 3 overrides step 2.
-	minBlock := ResolveMinBlockSize(bla.style, wdm, bla.space, geom).Float64()
+	// Intrinsic keywords (min-content / max-content / fit-content) resolve
+	// against intrinsicBlockSize — the natural content height we just computed.
+	minBlock := ResolveMinBlockSizeWithIntrinsic(bla.style, wdm, bla.space, geom, intrinsicBlockSize)
 	// The root element must fill at least the ICB block-size (ForcedMinBlockSize).
 	if bla.space.ForcedMinBlockSize > minBlock {
 		minBlock = bla.space.ForcedMinBlockSize
 	}
-	if maxBlockLU, hasMax := ResolveMaxBlockSize(bla.style, wdm, bla.space, geom); hasMax {
-		maxBlock := maxBlockLU.Float64()
+	if maxBlock, hasMax := ResolveMaxBlockSizeWithIntrinsic(bla.style, wdm, bla.space, geom, intrinsicBlockSize); hasMax {
 		if finalBlockSize > maxBlock {
 			finalBlockSize = maxBlock
 		}

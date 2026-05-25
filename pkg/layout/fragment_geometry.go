@@ -223,6 +223,85 @@ func ResolveIntrinsicInlineSize(keyword string, minMax MinMaxSizes, available fl
 	return 0
 }
 
+// ResolveIntrinsicBlockSize resolves an intrinsic sizing keyword for block-size
+// given the element's intrinsic (content) block-size. On the block axis,
+// min-content / max-content / fit-content all collapse to the content-derived
+// block-size — there is no inline wrapping/breaking to differentiate them.
+// Returns the content-box block-size.
+//
+// Mirrors Blink's ComputeMinMaxSizes block-axis treatment: the keyword resolves
+// against the natural block-axis content size (what auto block-size produces).
+func ResolveIntrinsicBlockSize(keyword string, intrinsicBlockSize float64) float64 {
+	switch keyword {
+	case "min-content", "-webkit-min-content", "-moz-min-content",
+		"max-content", "-webkit-max-content", "-moz-max-content",
+		"fit-content", "-moz-fit-content", "-webkit-fill-available":
+		return intrinsicBlockSize
+	}
+	return 0
+}
+
+// minBlockProperty returns the CSS property name controlling min-block-size
+// for the given writing mode.
+func minBlockProperty(wdm WritingDirectionMode) string {
+	if wdm.IsVertical() {
+		return "min-width"
+	}
+	return "min-height"
+}
+
+// maxBlockProperty returns the CSS property name controlling max-block-size
+// for the given writing mode.
+func maxBlockProperty(wdm WritingDirectionMode) string {
+	if wdm.IsVertical() {
+		return "max-width"
+	}
+	return "max-height"
+}
+
+// ResolveMinBlockSizeWithIntrinsic resolves min-block-size including the
+// intrinsic sizing keywords (min-content / max-content / fit-content), which
+// the length-only ResolveMinBlockSize cannot handle. intrinsicBlockSize is the
+// element's natural block-axis content size (content-box). Returns the
+// content-box min-block-size as a float64 — callers already work in float64
+// from this point on (post-layout sizing).
+//
+// Intrinsic keywords resolve directly to the content's intrinsic block-size
+// regardless of box-sizing: the keyword measures actual content, not a
+// user-declared length that needs border-box conversion.
+func ResolveMinBlockSizeWithIntrinsic(
+	style *css.Style, wdm WritingDirectionMode, space ConstraintSpace,
+	geom FragmentGeometry, intrinsicBlockSize float64,
+) float64 {
+	if style == nil {
+		return 0
+	}
+	if v, ok := style.Get(minBlockProperty(wdm)); ok && IsIntrinsicKeyword(v) {
+		return ResolveIntrinsicBlockSize(v, intrinsicBlockSize)
+	}
+	return ResolveMinBlockSize(style, wdm, space, geom).Float64()
+}
+
+// ResolveMaxBlockSizeWithIntrinsic resolves max-block-size including the
+// intrinsic sizing keywords. Returns (content-box value, true) when the
+// property is set; (0, false) when unset / "none". See
+// ResolveMinBlockSizeWithIntrinsic for box-sizing rationale.
+func ResolveMaxBlockSizeWithIntrinsic(
+	style *css.Style, wdm WritingDirectionMode, space ConstraintSpace,
+	geom FragmentGeometry, intrinsicBlockSize float64,
+) (float64, bool) {
+	if style == nil {
+		return 0, false
+	}
+	if v, ok := style.Get(maxBlockProperty(wdm)); ok && IsIntrinsicKeyword(v) {
+		return ResolveIntrinsicBlockSize(v, intrinsicBlockSize), true
+	}
+	if maxLU, ok := ResolveMaxBlockSize(style, wdm, space, geom); ok {
+		return maxLU.Float64(), true
+	}
+	return 0, false
+}
+
 // MinMaxSizes holds the intrinsic min-content and max-content inline sizes
 // for a layout node. Used for shrink-to-fit width computation.
 //
@@ -523,8 +602,10 @@ func CalculateInitialFragmentGeometry(
 	pctBase := space.PercentageResolutionInlineSize
 	geom := ComputeFragmentGeometry(style, wdm, pctBase)
 
-	// Lazy cache for ComputeMinMaxSizes — computed at most once per element.
-	var minMaxCache *MinMaxSizes
+	// Lazy cache for content-based MinMaxSizes — used by min/max-inline-size
+	// intrinsic keyword resolution (which must bypass the explicit-inline-size
+	// short-circuit) and computed at most once per element.
+	var contentMinMaxCache *MinMaxSizes
 
 	// --- Resolve inline-size (produces border-box) ---
 	var borderBoxInline float64
@@ -600,7 +681,12 @@ func CalculateInitialFragmentGeometry(
 		maxInlineProp = "max-height"
 	}
 	if maxInlineVal, ok := style.Get(maxInlineProp); ok && IsIntrinsicKeyword(maxInlineVal) {
-		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
+		// Intrinsic keyword min/max constraints must see the element's
+		// CONTENT intrinsic sizes (its children's contributions), not the
+		// element's clamped explicit inline-size. ComputeMinMaxSizes's fast
+		// path returns explicitInline for both min/max when width is set,
+		// which would defeat the constraint.
+		minMax := computeContentMinMaxOnce(ctx, node, space, &contentMinMaxCache)
 		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
@@ -623,7 +709,12 @@ func CalculateInitialFragmentGeometry(
 	}
 	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 	if minInlineVal, ok := style.Get(minInlineProp); ok && IsIntrinsicKeyword(minInlineVal) {
-		minMax := computeMinMaxOnce(ctx, node, space, &minMaxCache)
+		// Intrinsic keyword min/max constraints must see the element's
+		// CONTENT intrinsic sizes (its children's contributions), not the
+		// element's clamped explicit inline-size. ComputeMinMaxSizes's fast
+		// path returns explicitInline for both min/max when width is set,
+		// which would defeat the constraint.
+		minMax := computeContentMinMaxOnce(ctx, node, space, &contentMinMaxCache)
 		available := space.AvailableSize.InlineSize.Float64() - geom.InlineBorderPadding()
 		if available < 0 {
 			available = 0
@@ -781,12 +872,17 @@ func CalculateInitialFragmentGeometry(
 	return geom
 }
 
-// computeMinMaxOnce lazily computes MinMaxSizes, caching the result.
-func computeMinMaxOnce(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace, cache **MinMaxSizes) MinMaxSizes {
+// computeContentMinMaxOnce lazily computes content-based MinMaxSizes (bypassing
+// the explicit-inline-size short-circuit), caching the result. Used by min/max
+// inline-size intrinsic-keyword resolution, which must see the element's
+// children's intrinsic sizes — the standard ComputeMinMaxSizes fast-path would
+// clamp both ends to the element's own explicit inline-size and the constraint
+// would have no effect.
+func computeContentMinMaxOnce(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace, cache **MinMaxSizes) MinMaxSizes {
 	if *cache != nil {
 		return **cache
 	}
-	mm := ComputeMinMaxSizes(ctx, node, space)
+	mm := computeContentMinMaxSizes(ctx, node, space)
 	*cache = &mm
 	return mm
 }
