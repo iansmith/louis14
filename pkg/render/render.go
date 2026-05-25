@@ -3593,26 +3593,8 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			return
 		}
 
-		// Reserve buffer padding for emphasis marks. The kOver mark paints
-		// above the inline-box top in the off-screen horizontal frame; the
-		// 90° rotation below maps that "above" into screen-X to the right
-		// (sideways-rl) or left (sideways-lr). Without padding the over-mark
-		// would be clipped against the buffer's top edge. Use ~one emphasis-
-		// font em-box on each side (over and under) as a conservative reserve.
-		padOver := 0
-		if layer.TextEmphasisMark != "" {
-			emphFontSize := layer.FontSize * 0.5
-			if emphFontSize < 4 {
-				emphFontSize = 4
-			}
-			padOver = int(math.Ceil(emphFontSize))
-		}
-		bufLH := lh + padOver
-
-		// Draw horizontal text into an off-screen buffer. Base text is
-		// shifted down by padOver so the kOver emphasis above it stays
-		// inside the buffer.
-		src := image.NewRGBA(image.Rect(0, 0, ta, bufLH))
+		// Draw horizontal text into an off-screen buffer.
+		src := image.NewRGBA(image.Rect(0, 0, ta, lh))
 		childDC := r.dc.NewChildContext(src)
 		childDC.SetColor(color.RGBA{
 			R: layer.TextColor.R,
@@ -3620,33 +3602,23 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			B: layer.TextColor.B,
 			A: uint8(layer.TextColor.A * 255),
 		})
-		textY := float64(padOver) + ascent
 		if len(layer.FontFeatures) > 0 {
-			childDC.DrawTextWithFeatures(text, fontID, 0, textY, layer.FontFeatures)
+			childDC.DrawTextWithFeatures(text, fontID, 0, ascent, layer.FontFeatures)
 		} else {
-			childDC.DrawText(text, fontID, 0, textY)
+			childDC.DrawText(text, fontID, 0, ascent)
 		}
 
-		// Draw emphasis marks into the same off-screen buffer so the 90°
-		// pixel rotation below picks them up alongside the base text.
-		// Mirrors Blink, which paints emphasis in the text's local frame
-		// (text_painter.cc @ 4883d11f) and lets the writing-mode transform
-		// elsewhere in the pipeline produce physical placement.
-		if layer.TextEmphasisMark != "" {
-			r.drawTextEmphasis(childDC, layer, text, 0, float64(padOver), fontID, ascent)
-		}
-
-		// Rotate pixels 90° into destination (bufLH × ta) buffer.
-		rot := image.NewRGBA(image.Rect(0, 0, bufLH, ta))
-		for y := 0; y < bufLH; y++ {
+		// Rotate pixels 90° into destination (lh × ta) buffer.
+		rot := image.NewRGBA(image.Rect(0, 0, lh, ta))
+		for y := 0; y < lh; y++ {
 			for x := 0; x < ta; x++ {
 				c := src.RGBAAt(x, y)
 				if c.A == 0 {
 					continue
 				}
 				if layer.IsSidewaysRL {
-					// 90° CW: (x,y) → (bufLH-1-y, x)
-					rot.SetRGBA(bufLH-1-y, x, c)
+					// 90° CW: (x,y) → (lh-1-y, x)
+					rot.SetRGBA(lh-1-y, x, c)
 				} else {
 					// 90° CCW: (x,y) → (y, ta-1-x)
 					rot.SetRGBA(y, ta-1-x, c)
@@ -3654,16 +3626,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			}
 		}
 
-		// Blit. The padOver pixels added to the buffer height map to extra
-		// horizontal pixels in the destination — on the right for sideways-rl
-		// (CW), on the left for sideways-lr (CCW). Shift the blit origin
-		// left by padOver for sideways-lr so the base text lands at its
-		// original screen position; sideways-rl needs no shift.
-		blitX := int(math.Round(box.X))
-		if layer.IsSidewaysLR {
-			blitX -= padOver
-		}
-		r.dc.DrawImage(rot, blitX, int(math.Round(box.Y)))
+		r.dc.DrawImage(rot, int(math.Round(box.X)), int(math.Round(box.Y)))
 		return
 	}
 
@@ -3747,23 +3710,14 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 
 	// Draw text emphasis marks (small marks above/below each character).
 	if layer.TextEmphasisMark != "" {
-		r.drawTextEmphasis(r.dc, layer, text, box.X, box.Y, fontID, ascent)
+		r.drawTextEmphasis(layer, text, box, fontID, ascent)
 	}
 }
 
 // drawTextEmphasis renders text emphasis marks (e.g., dots, circles, sesame)
-// on the kOver or kUnder line-logical side of each character. The mark is
-// drawn at ~50% of the text font size, centered along the inline axis over
-// each glyph.
-//
-// dc is the target DrawContext (typically r.dc, but the sideways/vertical
-// writing-mode branches of drawText pass an off-screen child context so the
-// rotation transform that wraps the whole text paint applies to the marks
-// too — mirroring Blink, which applies emphasis_mark_offset_ in the text's
-// local frame and lets the writing-mode transform handle physical placement).
-//
-// originX, originY are the inline-box origin in dc's coordinate system.
-func (r *Renderer) drawTextEmphasis(dc textshape.DrawContext, layer *PaintLayer, text string, originX, originY float64, fontID int32, ascent float64) {
+// above or below each character. The mark is drawn at ~50% of the text font
+// size, centered horizontally over each glyph.
+func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
 	mark := layer.TextEmphasisMark
 	emphFontSize := layer.FontSize * 0.5
 	if emphFontSize < 4 {
@@ -3777,35 +3731,34 @@ func (r *Renderer) drawTextEmphasis(dc textshape.DrawContext, layer *PaintLayer,
 		return
 	}
 
-	emphColor := layer.TextEmphasisColor
-	dc.SetColor(color.RGBA{R: emphColor.R, G: emphColor.G, B: emphColor.B, A: uint8(emphColor.A * 255)})
+	r.setColor(layer.TextEmphasisColor)
 
-	emphMetrics := dc.GetFontMetrics(emphFontID)
+	emphMetrics := r.dc.GetFontMetrics(emphFontID)
 	emphAscent := float64(emphMetrics.Ascent) / 64.0
 	emphDescent := float64(emphMetrics.Descent) / 64.0
-	markW := dc.MeasureText(mark, emphFontID)
+	markW := r.dc.MeasureText(mark, emphFontID)
 
-	// Compute the inline-perpendicular position of the emphasis mark.
+	// Compute vertical position of the emphasis mark.
 	// Mirrors Blink at `third_party/blink/renderer/core/paint/text_painter.cc:519-528
 	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f`:
 	//
-	//   kOver:  mark baseline = baseline - baseAscent - emphDescent = originY - emphDescent
-	//   kUnder: mark baseline = baseline + baseDescent + emphAscent
+	//   over:  mark baseline = baseline - baseAscent - emphDescent = box.Y - emphDescent
+	//   under: mark baseline = baseline + baseDescent + emphAscent
 	//
-	// originY is the inline-box top, originY + ascent is the baseline, and
+	// box.Y is the inline-box top, box.Y + ascent is the baseline, and
 	// DrawText draws with the baseline at the y argument — so we set
 	// emphY = (mark baseline) - emphAscent.
-	baseMetrics := dc.GetFontMetrics(fontID)
+	baseMetrics := r.dc.GetFontMetrics(fontID)
 	baseDescent := float64(baseMetrics.Descent) / 64.0
 	var emphY float64
 	if layer.TextEmphasisOver {
-		emphY = originY - emphDescent - emphAscent
+		emphY = box.Y - emphDescent - emphAscent
 	} else {
-		emphY = originY + ascent + baseDescent
+		emphY = box.Y + ascent + baseDescent
 	}
 
-	// Iterate over each character and draw the mark centered along the inline axis.
-	x := originX
+	// Iterate over each character and draw the mark centered above/below it.
+	x := box.X
 	for _, ch := range text {
 		charStr := string(ch)
 		charW := r.measureTextStr(charStr, fontID, layer.FontFeatures)
@@ -3813,7 +3766,7 @@ func (r *Renderer) drawTextEmphasis(dc textshape.DrawContext, layer *PaintLayer,
 		// Skip whitespace characters — no emphasis marks on spaces.
 		if !unicode.IsSpace(ch) {
 			markX := x + (charW-markW)/2
-			dc.DrawText(mark, emphFontID, markX, emphY+emphAscent)
+			r.dc.DrawText(mark, emphFontID, markX, emphY+emphAscent)
 		}
 
 		x += charW
@@ -3825,9 +3778,8 @@ func (r *Renderer) drawTextEmphasis(dc textshape.DrawContext, layer *PaintLayer,
 		}
 	}
 
-	// Restore original text color on the target DC.
-	textColor := layer.TextColor
-	dc.SetColor(color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: uint8(textColor.A * 255)})
+	// Restore original text color.
+	r.setColor(layer.TextColor)
 }
 
 // smallCapsScale is the ratio of the small-caps glyph size to the normal size.
