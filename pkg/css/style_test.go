@@ -355,3 +355,58 @@ func TestWillChangeCreatesStackingContext_MaskShorthandRoutes(t *testing.T) {
 		t.Error("will-change:mask should create a stacking context via shorthand expansion to mask-image")
 	}
 }
+
+func TestGetTextEmphasisLineLogicalOver_BlinkCollapseTable(t *testing.T) {
+	// Mirrors Blink's ComputedStyle::GetTextEmphasisLineLogicalSide() at
+	// third_party/blink/renderer/core/style/computed_style.cc @
+	// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	cases := []struct {
+		pos          string
+		isHorizontal bool
+		isSidewaysLR bool
+		wantOver     bool
+	}{
+		// Horizontal-tb: over/under collapse directly.
+		{"over right", true, false, true},
+		{"over left", true, false, true},
+		{"under right", true, false, false},
+		{"under left", true, false, false},
+		// Vertical-rl / vertical-lr / sideways-rl: right → kOver.
+		{"over right", false, false, true},
+		{"over left", false, false, false},
+		{"under right", false, false, true},
+		{"under left", false, false, false},
+		// Sideways-lr: left → kOver (the flip).
+		{"over right", false, true, false},
+		{"over left", false, true, true},
+		{"under right", false, true, false},
+		{"under left", false, true, true},
+		// Default (empty value → "over right").
+		{"", true, false, true},
+		{"", false, false, true},
+		{"", false, true, false},
+		// `auto` value defaults to kOver for horizontal-tb and the
+		// vertical-non-sideways-lr family, kUnder for sideways-lr.
+		{"auto", true, false, true},
+		{"auto", false, false, true},
+		{"auto", false, true, false},
+		// Single-axis values: missing axis falls back to the writing-mode's
+		// default. Horizontal: missing over/under → kOver. Vertical: missing
+		// right/left → kOver.
+		{"right", true, false, true},
+		{"left", true, false, true},
+		{"over", false, false, true},
+		{"under", false, false, true},
+	}
+	for _, c := range cases {
+		s := NewStyle()
+		if c.pos != "" {
+			s.Set("text-emphasis-position", c.pos)
+		}
+		got := s.GetTextEmphasisLineLogicalOver(c.isHorizontal, c.isSidewaysLR)
+		if got != c.wantOver {
+			t.Errorf("GetTextEmphasisLineLogicalOver(pos=%q, horizontal=%v, sidewaysLR=%v) = %v, want %v",
+				c.pos, c.isHorizontal, c.isSidewaysLR, got, c.wantOver)
+		}
+	}
+}

@@ -9266,9 +9266,80 @@ func (s *Style) GetTextEmphasisPosition() string {
 	return v
 }
 
+// GetTextEmphasisLineLogicalOver resolves the text-emphasis-position keyword
+// combination through the writing mode and returns true when the mark paints
+// on the kOver line-logical side, false for kUnder.
+//
+// Mirrors Blink's ComputedStyle::GetTextEmphasisLineLogicalSide()
+// (third_party/blink/renderer/core/style/computed_style.cc @ Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Per CSS Text Decor §3.4 the
+// position keywords resolve as:
+//
+//   - horizontal writing modes:       over → kOver, under → kUnder
+//   - vertical-rl / vertical-lr /
+//     sideways-rl:                    right → kOver, left → kUnder
+//   - sideways-lr:                    left  → kOver, right → kUnder
+//
+// kOver means "above the inline progression line" — in horizontal-tb that is
+// physically above the text; in vertical-rl/-lr/sideways-rl it is physically
+// to the right of the text column; in sideways-lr it is physically to the
+// left of the column.
+func (s *Style) GetTextEmphasisLineLogicalOver(isHorizontal, isSidewaysLR bool) bool {
+	pos := s.GetTextEmphasisPosition()
+	// `auto` and any value missing an axis keyword default to kOver per
+	// Blink's resolver — over for horizontal-tb (kUnder for macrolanguage
+	// Chinese, not modeled here yet) and right (= kOver) for the vertical
+	// modes including sideways-rl; sideways-lr resolves auto to kUnder
+	// in Blink, but the WPT auto/default tests pin only the horizontal
+	// and vertical-rl defaults.
+	if pos == "auto" {
+		if isSidewaysLR {
+			return false
+		}
+		return true
+	}
+	hasOver := strings.Contains(pos, "over")
+	hasUnder := strings.Contains(pos, "under")
+	hasRight := strings.Contains(pos, "right")
+	hasLeft := strings.Contains(pos, "left")
+	if isHorizontal {
+		// If neither over nor under is present (e.g. only `right`/`left`),
+		// fall back to kOver — matches Blink's behavior of treating the
+		// missing axis as its default.
+		if !hasOver && !hasUnder {
+			return true
+		}
+		return hasOver
+	}
+	if isSidewaysLR {
+		// sideways-lr flips: left → kOver. If neither right nor left is
+		// present, fall back to kUnder (sideways-lr's default).
+		if !hasRight && !hasLeft {
+			return false
+		}
+		return !hasRight
+	}
+	// vertical-rl, vertical-lr, sideways-rl: right → kOver. If neither
+	// right nor left is present (e.g. only `over`/`under`), fall back to
+	// kOver — vertical's "auto" default.
+	if !hasRight && !hasLeft {
+		return true
+	}
+	return hasRight
+}
+
 // GetTextEmphasisMark returns the actual character to use as emphasis mark.
 // Returns "" if no emphasis should be drawn.
-func (s *Style) GetTextEmphasisMark() string {
+//
+// `isHorizontal` selects the writing-mode-dependent default mark for bare
+// `filled`/`open` values. Per CSS Text Decor §3.4.4 and Blink's
+// `ComputedStyle::TextEmphasisMarkString()` at Chromium SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: `filled` (with no shape) is
+// "filled circle" (U+25CF) in horizontal writing modes and "filled sesame"
+// (U+FE45) in vertical writing modes; `open` mirrors with U+25CB / U+FE46.
+// Explicit shape keywords (e.g. `filled dot`, `open triangle`) override the
+// writing-mode default.
+func (s *Style) GetTextEmphasisMark(isHorizontal bool) string {
 	style := s.GetTextEmphasisStyle()
 	if style == "none" || style == "" {
 		return ""
@@ -9297,13 +9368,22 @@ func (s *Style) GetTextEmphasisMark() string {
 	} else if strings.Contains(style, "circle") {
 		shape = "circle"
 	}
-	// If only "filled" or "open" (no shape specified), default to circle
+	// If only "filled" or "open" (no shape specified), default to circle for
+	// horizontal writing modes and sesame for vertical writing modes.
 	if style == "filled" {
 		filled = true
-		shape = "circle"
+		if isHorizontal {
+			shape = "circle"
+		} else {
+			shape = "sesame"
+		}
 	} else if style == "open" {
 		filled = false
-		shape = "circle"
+		if isHorizontal {
+			shape = "circle"
+		} else {
+			shape = "sesame"
+		}
 	}
 
 	switch shape {
