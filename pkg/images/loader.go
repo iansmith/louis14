@@ -214,8 +214,14 @@ func preprocessSVGPercentages(data []byte) []byte {
 		}
 	}
 
-	if baseW <= 0 || baseH <= 0 {
-		return data
+	// CSS 2.1 §10.3.2 default replaced-element size when intrinsic dimensions
+	// are missing: 300×150. Use those defaults so single-dimension SVGs (e.g.
+	// `<svg width="100">`) can still resolve percentage attributes on children.
+	if baseW <= 0 {
+		baseW = 300
+	}
+	if baseH <= 0 {
+		baseH = 150
 	}
 
 	// Replace percentage width/height with resolved coordinate-space values.
@@ -238,10 +244,111 @@ func preprocessSVGPercentages(data []byte) []byte {
 	return []byte(prefix + body)
 }
 
+// svgRootStyleRE captures the value of a `style` attribute on the root <svg>.
+var svgRootStyleRE = regexp.MustCompile(`(?s)\bstyle\s*=\s*["']([^"']*)["']`)
+
+// svgBackgroundDeclRE matches a `background` or `background-color` declaration
+// in a style attribute, capturing the color value (everything up to ; or end).
+var svgBackgroundDeclRE = regexp.MustCompile(`(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)`)
+
+// preprocessSVGBackground inserts a full-bleed <rect> at the start of the SVG
+// body when the root <svg> has a CSS `background`/`background-color`
+// declaration in its style attribute. oksvg honors fill on <rect>, but ignores
+// CSS background on the root, which leaves WPT fixtures like
+//
+//	<svg style="background: green" width="100" height="100">…</svg>
+//
+// rasterizing as transparent. Inserting a coloured rect inside the SVG matches
+// the visual effect browsers produce for the same markup.
+func preprocessSVGBackground(data []byte) []byte {
+	s := string(data)
+
+	rootMatch := svgOpenTagRE.FindStringSubmatch(s)
+	if rootMatch == nil {
+		return data
+	}
+	rootAttrs := rootMatch[1]
+
+	styleMatch := svgRootStyleRE.FindStringSubmatch(rootAttrs)
+	if styleMatch == nil {
+		return data
+	}
+	bgMatch := svgBackgroundDeclRE.FindStringSubmatch(styleMatch[1])
+	if bgMatch == nil {
+		return data
+	}
+	color := strings.TrimSpace(bgMatch[1])
+	if color == "" || color == "none" || color == "transparent" {
+		return data
+	}
+
+	rootTagEnd := strings.Index(s, ">") + 1
+	prefix := s[:rootTagEnd]
+	body := s[rootTagEnd:]
+
+	rect := `<rect x="0" y="0" width="100%" height="100%" fill="` + color + `"/>`
+	return []byte(prefix + rect + body)
+}
+
+// svgViewBoxAttrRE detects the presence of a viewBox attribute on the root.
+var svgViewBoxAttrRE = regexp.MustCompile(`\bviewBox\s*=`)
+
+// preprocessSVGViewBox synthesizes a viewBox on the root <svg> when one is
+// absent. oksvg needs a non-zero viewBox to render geometry — without it,
+// `<svg width="100" height="100">` rasterizes empty even with explicit shapes.
+// The synthesized viewBox uses the root width/height (or CSS defaults 300×150)
+// so the SVG coordinate space matches its intrinsic dimensions.
+func preprocessSVGViewBox(data []byte) []byte {
+	s := string(data)
+	rootMatch := svgOpenTagRE.FindStringSubmatch(s)
+	if rootMatch == nil {
+		return data
+	}
+	rootAttrs := rootMatch[1]
+	if svgViewBoxAttrRE.MatchString(rootAttrs) {
+		return data
+	}
+
+	var w, h float64
+	for _, m := range svgAttrDimRE.FindAllStringSubmatch(rootAttrs, -1) {
+		val, _ := strconv.ParseFloat(m[2], 64)
+		if m[1] == "width" {
+			w = val
+		} else if m[1] == "height" {
+			h = val
+		}
+	}
+	if w <= 0 {
+		w = 300
+	}
+	if h <= 0 {
+		h = 150
+	}
+
+	rootTagEnd := strings.Index(s, ">")
+	if rootTagEnd <= 0 {
+		return data
+	}
+	return []byte(s[:rootTagEnd] + fmt.Sprintf(` viewBox="0 0 %g %g"`, w, h) + s[rootTagEnd:])
+}
+
 // rasterizeSVG renders SVG data to an image.RGBA using oksvg.
 // If w/h are 0, the SVG's explicit width/height attributes are used when present;
 // otherwise the viewBox dimensions are used.
 func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
+	// oksvg doesn't paint the root <svg> element's CSS `background` declaration
+	// (e.g. <svg style="background: green">). Per SVG 1.1 §2.5, the SVG
+	// background acts like the canvas color. To honor it, inject a full-bleed
+	// <rect> filling the SVG with the background color as the first child.
+	// Inject BEFORE percentage resolution so the rect's width="100%"/height="100%"
+	// get resolved alongside any other percentage shape attributes.
+	data = preprocessSVGBackground(data)
+
+	// Without a viewBox, oksvg's coordinate space is undefined and rendered
+	// shapes vanish. Synthesize one from the root width/height (or CSS defaults
+	// 300×150) so percentage-based and absolute shapes both rasterize.
+	data = preprocessSVGViewBox(data)
+
 	// oksvg doesn't handle percentage width/height on shapes (e.g. width="100%").
 	// Resolve them to absolute values before parsing.
 	data = preprocessSVGPercentages(data)
@@ -284,6 +391,13 @@ func rasterizeSVG(data []byte, w, h int) (image.Image, error) {
 			} else if explH > 0 && icon.ViewBox.W > 0 && icon.ViewBox.H > 0 {
 				h = int(explH)
 				w = int(explH*icon.ViewBox.W/icon.ViewBox.H + 0.5)
+			} else if explW > 0 {
+				// Width only, no viewBox/height: pair with CSS 2.1 §10.3.2's
+				// default intrinsic height (150) so the buffer matches what
+				// the layout engine produces for the same case.
+				w, h = int(explW), 150
+			} else if explH > 0 {
+				w, h = 300, int(explH)
 			}
 		}
 	}
