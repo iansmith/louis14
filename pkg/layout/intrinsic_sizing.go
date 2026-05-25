@@ -150,6 +150,14 @@ func getInlineSVGIntrinsicInfo(node *LayoutInputNode) IntrinsicSizingInfo {
 	case hasExplH && hasViewBox:
 		info.IntrinsicHeight = explH
 		info.IntrinsicWidth = explH * info.AspectRatio
+	case hasExplW:
+		// Width only, no viewBox: intrinsic width is set, intrinsic height
+		// remains unknown so the CSS 2.1 §10.3.2 default (150) supplies it.
+		info.IntrinsicWidth = explW
+	case hasExplH:
+		// Height only, no viewBox: intrinsic height is set, intrinsic width
+		// falls back to the CSS 2.1 default (300) downstream.
+		info.IntrinsicHeight = explH
 	default:
 		// No explicit dimensions. Aspect ratio (if any) from viewBox is
 		// preserved; intrinsic dimensions remain 0 so ComputeReplacedSize
@@ -257,6 +265,17 @@ func svgIntrinsicInfo(svg images.SVGSizingInfo) IntrinsicSizingInfo {
 	case svg.HasExplicitHeight && info.HasAspectRatio:
 		info.IntrinsicHeight = svg.ExplicitHeight
 		info.IntrinsicWidth = svg.ExplicitHeight * info.AspectRatio
+
+	case svg.HasExplicitWidth:
+		// Width only, no viewBox: intrinsic width is set, intrinsic height
+		// remains unknown so CSS 2.1 §10.3.2's "no intrinsic height" fallback
+		// (default 150) supplies the missing dimension.
+		info.IntrinsicWidth = svg.ExplicitWidth
+
+	case svg.HasExplicitHeight:
+		// Height only, no viewBox: intrinsic height is set, intrinsic width
+		// falls back to the CSS 2.1 default (300) downstream.
+		info.IntrinsicHeight = svg.ExplicitHeight
 
 	default:
 		// No explicit dimensions. Per CSS 2.1 §10.3.2, the replaced element
