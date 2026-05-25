@@ -319,31 +319,21 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 	case pc == "link":
 		return node.TagName == "a"
 	case strings.HasPrefix(pc, "is("):
-		// :is() matches if ANY selector in the comma-separated list matches
+		// :is() matches if ANY selector in the comma-separated list matches.
+		// Per CSS Selectors 4 §3.7, pseudo-elements are not allowed inside
+		// :is(); a branch containing one is invalid. Per CSS Nesting spec,
+		// when nesting expansion produces an :is() that contains a pseudo-
+		// element argument, the resulting selector is contextually invalid
+		// for element matching. We apply the same rule to authored :is()
+		// containing a pseudo-element (matches Blink behavior for tests like
+		// `:is(*, ::before) *`).
 		arg := pc[len("is(") : len(pc)-1]
-		selectors := splitSelectorGroup(strings.TrimSpace(arg))
-		for _, sel := range selectors {
-			innerSel := ParseSelector(strings.TrimSpace(sel))
-			if len(innerSel.Parts) > 0 {
-				if matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
-					return true
-				}
-			}
-		}
-		return false
+		return matchesIsLike(node, arg)
 	case strings.HasPrefix(pc, "where("):
-		// :where() is identical to :is() but with zero specificity
+		// :where() is identical to :is() but with zero specificity. Same
+		// contextual-invalidation rule applies for pseudo-element arguments.
 		arg := pc[len("where(") : len(pc)-1]
-		selectors := splitSelectorGroup(strings.TrimSpace(arg))
-		for _, sel := range selectors {
-			innerSel := ParseSelector(strings.TrimSpace(sel))
-			if len(innerSel.Parts) > 0 {
-				if matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
-					return true
-				}
-			}
-		}
-		return false
+		return matchesIsLike(node, arg)
 	case strings.HasPrefix(pc, "has("):
 		arg := pc[len("has(") : len(pc)-1]
 		return matchesHas(node, strings.TrimSpace(arg))
@@ -551,6 +541,55 @@ func parseInt(s string) (int, bool) {
 		n = -n
 	}
 	return n, true
+}
+
+// matchesIsLike implements the matching logic shared by :is() and :where().
+// Per CSS Selectors 4, pseudo-elements are disallowed inside :is()/:where();
+// per CSS Nesting, an :is() that contains a pseudo-element argument makes the
+// resulting selector contextually invalid for element matching. We implement
+// the strict reading: if ANY argument contains a pseudo-element token (::xxx
+// or legacy :before/:after/:first-letter/:first-line), the whole :is()/:where()
+// fails to match elements. This matches Blink behavior on the WPT
+// contextually-invalid-selectors-* tests.
+func matchesIsLike(node *html.Node, arg string) bool {
+	selectors := splitSelectorGroup(strings.TrimSpace(arg))
+	if containsPseudoElementArg(selectors) {
+		return false
+	}
+	for _, sel := range selectors {
+		innerSel := ParseSelector(strings.TrimSpace(sel))
+		if len(innerSel.Parts) > 0 {
+			if matchesSelectorPart(node, innerSel.Parts[len(innerSel.Parts)-1]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsPseudoElementArg returns true if any selector in the list contains a
+// pseudo-element token at top level (not nested inside a functional pseudo-
+// class). Pseudo-elements: ::before, ::after, ::first-letter, ::first-line,
+// ::marker, and the legacy single-colon forms (:before, :after, :first-letter,
+// :first-line). The parser's findTopLevelPseudoElement helper does the same
+// paren-aware scan used during selector parsing.
+func containsPseudoElementArg(selectors []string) bool {
+	tokens := []string{
+		"::before", "::after", "::first-letter", "::first-line", "::marker",
+		":before", ":after", ":first-letter", ":first-line",
+	}
+	for _, sel := range selectors {
+		sel = strings.TrimSpace(sel)
+		if sel == "" {
+			continue
+		}
+		for _, tok := range tokens {
+			if findTopLevelPseudoElement(sel, tok) >= 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // matchesHas implements the :has() pseudo-class
