@@ -3735,17 +3735,26 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 
 	emphMetrics := r.dc.GetFontMetrics(emphFontID)
 	emphAscent := float64(emphMetrics.Ascent) / 64.0
+	emphDescent := float64(emphMetrics.Descent) / 64.0
 	markW := r.dc.MeasureText(mark, emphFontID)
 
 	// Compute vertical position of the emphasis mark.
+	// Mirrors Blink at `third_party/blink/renderer/core/paint/text_painter.cc:519-528
+	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f`:
+	//
+	//   over:  mark baseline = baseline - baseAscent - emphDescent = box.Y - emphDescent
+	//   under: mark baseline = baseline + baseDescent + emphAscent
+	//
+	// box.Y is the inline-box top, box.Y + ascent is the baseline, and
+	// DrawText draws with the baseline at the y argument — so we set
+	// emphY = (mark baseline) - emphAscent.
+	baseMetrics := r.dc.GetFontMetrics(fontID)
+	baseDescent := float64(baseMetrics.Descent) / 64.0
 	var emphY float64
 	if layer.TextEmphasisOver {
-		// Place mark above the text: top of the box, with mark baseline
-		// positioned so the mark sits above the text ascent line.
-		emphY = box.Y - emphFontSize*0.25 // small gap above text top
+		emphY = box.Y - emphDescent - emphAscent
 	} else {
-		// Place mark below the text baseline.
-		emphY = box.Y + ascent + emphFontSize*0.5
+		emphY = box.Y + ascent + baseDescent
 	}
 
 	// Iterate over each character and draw the mark centered above/below it.

@@ -1267,9 +1267,37 @@ func createLineBoxEx(
 		}
 		if len(activeRubyColumns) > 0 {
 			rbpc.PlaceLines(activeRubyColumns, wdm, fonts, centralBaseline)
-			annoAsc, annoDesc := rbpc.AnnotationMetrics()
-			maxAscent += annoAsc
-			maxDescent += annoDesc
+			// AnnotationMetrics returns (ascent, 0): the descent half is
+			// a Phase 11 stub (`ruby-position: under` not yet supported)
+			// and intentionally ignored here.
+			annoAsc, _ := rbpc.AnnotationMetrics()
+
+			// Mirror Blink's `ComputeAnnotationOverflow` at
+			// `core/layout/inline/ruby_utils.cc:705-826 @
+			// 574216cbb0c2b86a39c1d41ad85b2891a050b44c`: the annotation
+			// occupies existing half-leading first; the line grows only
+			// by the amount the annotation overflows the line-box ascent.
+			// Under tall line-heights, the annotation fits inside the
+			// natural leading and the line does not grow at all.
+			//
+			// Concretely: needed = max base-font-ascent across columns +
+			// annotation height; if needed > current maxAscent, grow by
+			// the deficit. The pre-LOU-161 pattern was unconditional
+			// `maxAscent += annoAsc`, which over-inflated under tall
+			// line-heights — the Bug A half of the ruby-annotation-Y
+			// diagnosis. Per-line max (not per-column) is intentional
+			// here: maxAscent is a line-wide quantity. The per-column
+			// equivalent at the paint site below is distinct and must
+			// stay distinct — see the note there.
+			var baseFontAsc float64
+			for _, col := range activeRubyColumns {
+				if a := baseFontAscentFromSubLine(col.BaseLine, wdm, fonts, centralBaseline); a > baseFontAsc {
+					baseFontAsc = a
+				}
+			}
+			if needed := baseFontAsc + annoAsc; needed > maxAscent {
+				maxAscent = needed
+			}
 		}
 	}
 
@@ -1643,8 +1671,23 @@ func createLineBoxEx(
 			// annotation contribution (RubyBlockPositionCalculator
 			// adjusted it above in Step 1). See inline_layout_ruby.go.
 			if r.RubyColumn != nil {
-				baseAscent, _ := computeLineMetricsEx(r.RubyColumn.BaseLine, wdm, fonts, centralBaseline, nil)
-				annotationBlockTop := maxAscent - baseAscent - rbpc.annotationAscent
+				// Mirror Blink at `core/layout/inline/ruby_utils.cc:981 @
+				// 574216cbb0c2b86a39c1d41ad85b2891a050b44c` —
+				// annotation Y is measured from the base **font** ascent
+				// (no line-height leading), not the base sub-line ascent.
+				// Using sub-line ascent (the Bug B half of the LOU-161
+				// diagnosis) pins annotations at line-box top under tall
+				// line-heights because the half-leading double-counts
+				// with maxAscent's growth.
+				//
+				// Per-column (not per-line) base-font ascent: distinct
+				// from the max-across-columns computation in Step 1
+				// above. Step 1 wants the line-wide max because
+				// `maxAscent` is line-wide; this step wants the
+				// individual column's font ascent because each column
+				// places its own annotation. Don't dedupe.
+				baseFontAsc := baseFontAscentFromSubLine(r.RubyColumn.BaseLine, wdm, fonts, centralBaseline)
+				annotationBlockTop := maxAscent - baseFontAsc - rbpc.annotationAscent
 				if annotationBlockTop < 0 {
 					annotationBlockTop = 0
 				}
