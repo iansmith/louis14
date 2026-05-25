@@ -2375,9 +2375,368 @@ func expandShorthand(style *Style, property, value string) {
 		// Each omitted component is reset to its initial value.
 		// Mirrors Blink at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		expandTextDecorationShorthand(style, value)
+	case "all":
+		// CSS Cascade 3 §8 / CSS Cascade 4 §6.3: the `all` shorthand resets
+		// every longhand CSS property to the supplied CSS-wide keyword, with
+		// three exclusions: `direction`, `unicode-bidi`, and custom properties
+		// (--*). Mirrors Blink's all.cc expansion at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates the longhand
+		// table via CSSPropertyIDIterator with these same exclusions.
+		expandAllShorthand(style, value)
 	default:
 		// Regular property
 		style.Set(property, value)
+	}
+}
+
+// expandAllShorthand implements the `all` CSS shorthand per CSS Cascade 3 §8
+// and CSS Cascade 4 §6.3. The shorthand expands to every longhand CSS property
+// except `direction`, `unicode-bidi`, and custom properties (--*). Accepted
+// values are the CSS-wide keywords: initial, inherit, unset, revert,
+// revert-layer.
+//
+// Implementation strategy per keyword:
+//   - initial: delete each longhand from the style map so the property's
+//     getter fallback returns its initial value.
+//   - inherit: store the literal "inherit" string for each longhand so the
+//     post-cascade resolveInheritValues pass copies the parent's value.
+//   - unset: behaves as `inherit` for inherited properties, as `initial`
+//     otherwise. The inherited set is louis14's existing inheritableProperties
+//     map (the source-of-truth for inheritability used by ApplyInheritedProperties).
+//   - revert / revert-layer: store the literal "revert" string. ComputeStyle
+//     takes a UA+presentational-attribute snapshot before stylesheet rules run;
+//     a post-cascade pass restores those snapshot values for any property whose
+//     final value is "revert" (and deletes the property otherwise). This gives
+//     `revert` its spec semantics of rolling back to the prior cascade origin,
+//     which for author-origin declarations is the UA result.
+//
+// Mirrors Blink's properties/shorthands/all.cc at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates CSSPropertyIDIterator
+// over every longhand and skips kDirection, kUnicodeBidi, and custom properties.
+func expandAllShorthand(style *Style, value string) {
+	keyword := strings.ToLower(strings.TrimSpace(value))
+	switch keyword {
+	case "initial", "inherit", "unset", "revert", "revert-layer":
+		// valid CSS-wide keywords — fall through to expansion below.
+	default:
+		// Per spec, the `all` shorthand only accepts CSS-wide keywords; any
+		// other value (including var()) is invalid and the declaration is
+		// dropped. Mirrors Blink's CSSPropertyParser::ParseSingleValue check.
+		return
+	}
+	for _, prop := range cssLonghandProperties {
+		// Exclusions per CSS Cascade 3 §8:
+		//   - direction, unicode-bidi (their initial values are based on
+		//     the document language and unicode-bidi context, not on CSS).
+		//   - custom properties (--*) — filtered structurally elsewhere
+		//     since the longhand list never contains them.
+		if prop == "direction" || prop == "unicode-bidi" {
+			continue
+		}
+		switch keyword {
+		case "initial":
+			if init, ok := nonDefaultInitialValues[prop]; ok {
+				// Some longhands have a CSS-spec initial value that differs
+				// from louis14's getter fallback (e.g. `display` initial is
+				// `inline` per CSS Display §2, but GetDisplay returns
+				// DisplayBlock when the property is absent). Setting the
+				// canonical initial keeps `all: initial` spec-conformant
+				// rather than relying on the absence-of-property fallback.
+				style.Set(prop, init)
+			} else {
+				delete(style.Properties, prop)
+			}
+		case "inherit":
+			style.Set(prop, "inherit")
+		case "unset":
+			if inheritableProperties[prop] {
+				style.Set(prop, "inherit")
+			} else if init, ok := nonDefaultInitialValues[prop]; ok {
+				style.Set(prop, init)
+			} else {
+				delete(style.Properties, prop)
+			}
+		case "revert", "revert-layer":
+			// resolveAllRevertValues (run post-cascade in ComputeStyle) will
+			// replace this sentinel with the UA-snapshot value if there was
+			// one, or delete the property otherwise.
+			style.Set(prop, "revert")
+		}
+	}
+}
+
+// nonDefaultInitialValues maps CSS longhand properties whose spec-defined
+// initial value differs from louis14's getter fallback. For these properties,
+// `all: initial` (and `all: unset` on non-inherited) must set the canonical
+// initial value explicitly rather than relying on the absence-of-property
+// fallback — otherwise the rendering diverges from spec.
+//
+// Properties not listed here use the spec initial as their getter fallback,
+// so deleting them from the style map produces spec-conformant behavior.
+var nonDefaultInitialValues = map[string]string{
+	// CSS Display §2: the initial value of `display` is `inline`. louis14's
+	// GetDisplay returns DisplayBlock when the property is absent (a defensive
+	// choice for elements with no UA rule), so `all: initial` must store
+	// `inline` explicitly to override it.
+	"display": "inline",
+}
+
+// applyDeclarationWithVisitedFilter expands `property: value` into `style`,
+// but if `visitedOnly` is true (the rule's selector contains `:visited`),
+// only the visitedAllowedProperties subset of resulting longhands is kept.
+// Used by ComputeStyle to gate every declaration from a `:visited`-matched
+// rule per CSS Selectors 4 §17.2, including the longhands a `:visited`-scoped
+// `all` shorthand would otherwise touch.
+//
+// Implementation: when visitedOnly is true, expand into a fresh temp style,
+// then copy only the visited-allowed longhands to the destination.
+//
+// For revert tracking, the temp style needs the same revert-snapshot machinery
+// as the real style — but since `all: revert` from a :visited rule only
+// affects visited-allowed properties, we copy only those over. The revert
+// sentinel survives in the destination and is resolved by the post-cascade
+// resolveCSSWideKeywords pass against the snapshot already captured for the
+// destination style.
+func applyDeclarationWithVisitedFilter(style *Style, property, value string, visitedOnly bool) {
+	if !visitedOnly {
+		expandShorthand(style, property, value)
+		return
+	}
+	// Fast path: a single-longhand declaration whose property is not in the
+	// visited-allowed set is dropped entirely without invoking the expander.
+	if property != "all" && !shorthandProducesVisitedLonghand(property) {
+		if !visitedAllowedProperties[property] {
+			return
+		}
+	}
+	tmp := &Style{Properties: make(map[string]string)}
+	expandShorthand(tmp, property, value)
+	for k, v := range tmp.Properties {
+		if visitedAllowedProperties[k] {
+			style.Set(k, v)
+		}
+	}
+}
+
+// shorthandProducesVisitedLonghand returns true for shorthand property names
+// whose expansion can touch one or more visited-allowed longhands. Used by
+// applyDeclarationWithVisitedFilter to decide whether the temp-style detour
+// is worth taking. `all` is always included; the others cover the shorthands
+// louis14 expands that resolve to a color-eligible longhand.
+func shorthandProducesVisitedLonghand(property string) bool {
+	switch property {
+	case "all", "background", "border", "border-color",
+		"border-top", "border-right", "border-bottom", "border-left",
+		"outline", "text-decoration", "text-emphasis":
+		return true
+	}
+	return false
+}
+
+// visitedAllowedProperties is the CSS Selectors 4 §17.2 subset of properties
+// whose declared value from a `:visited`-matched rule may affect the rendered
+// visited link. Mirrors Blink's StyleResolverState `IsVisitedDependentProperty`
+// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Declarations outside this
+// set (including non-color longhands reset by `all`) are dropped from
+// `:visited` rules to preserve user-browsing-history privacy.
+var visitedAllowedProperties = map[string]bool{
+	"color":                  true,
+	"background-color":       true,
+	"border-top-color":       true,
+	"border-right-color":     true,
+	"border-bottom-color":    true,
+	"border-left-color":      true,
+	"outline-color":          true,
+	"column-rule-color":      true,
+	"text-decoration-color":  true,
+	"text-emphasis-color":    true,
+	"caret-color":            true,
+	"fill":                   true,
+	"stroke":                 true,
+}
+
+// selectorMatchesVisited reports whether any part of the given selector
+// contains the `:visited` pseudo-class — i.e. whether the rule's declarations
+// must be filtered to the visited-allowed subset before being applied.
+func selectorMatchesVisited(sel Selector) bool {
+	for _, part := range sel.Parts {
+		for _, pc := range part.PseudoClasses {
+			if pc == "visited" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// cssLonghandProperties is the canonical list of CSS longhand properties the
+// louis14 engine knows about. Sourced from the union of every style.Get / Set
+// call site in the engine — i.e. every property a reader or writer references.
+// Shorthand spellings (border, margin, padding, font, background, etc.) are
+// deliberately excluded; the `all` shorthand expands to longhands only, matching
+// Blink's all.cc which iterates CSSPropertyIDIterator over longhands.
+//
+// When adding support for a new CSS property, append its longhand name(s) here
+// so `all: initial` resets it correctly. This is the one place that enumerates
+// "every CSS property" — there is no other registry.
+var cssLonghandProperties = []string{
+	// Box model
+	"display", "position", "float", "clear", "visibility",
+	"top", "right", "bottom", "left",
+	"width", "min-width", "max-width", "height", "min-height", "max-height",
+	"margin-top", "margin-right", "margin-bottom", "margin-left",
+	"padding-top", "padding-right", "padding-bottom", "padding-left",
+	"box-sizing", "overflow", "overflow-x", "overflow-y",
+	"aspect-ratio",
+	// Border
+	"border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+	"border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+	"border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+	"border-top-left-radius", "border-top-right-radius",
+	"border-bottom-left-radius", "border-bottom-right-radius",
+	"border-image-source", "border-image-slice", "border-image-width",
+	"border-image-outset", "border-image-repeat",
+	"border-collapse", "border-spacing",
+	// Outline
+	"outline-width", "outline-style", "outline-color", "outline-offset",
+	// Background
+	"background-color", "background-image", "background-repeat",
+	"background-position", "background-size", "background-attachment",
+	"background-clip", "background-origin",
+	// Color & opacity
+	"color", "opacity",
+	// Font
+	"font-family", "font-size", "font-weight", "font-style", "font-variant",
+	"font-feature-settings", "font-optical-sizing", "font-size-adjust",
+	"font-synthesis", "font-variant-caps", "font-variant-ligatures",
+	"font-variant-numeric",
+	// Text
+	"line-height", "text-align", "text-align-last", "text-indent",
+	"text-transform", "text-decoration-line", "text-decoration-style",
+	"text-decoration-color", "text-decoration-thickness",
+	"text-decoration-inset", "text-underline-offset", "text-overflow",
+	"text-shadow", "text-wrap", "text-emphasis-color",
+	"text-emphasis-style", "text-emphasis-position",
+	"letter-spacing", "word-spacing", "white-space",
+	"word-break", "overflow-wrap", "word-wrap", "hyphens",
+	"tab-size", "vertical-align",
+	// Writing modes
+	"writing-mode", "text-orientation",
+	// Lists
+	"list-style-type", "list-style-position", "list-style-image",
+	// Tables
+	"caption-side", "empty-cells", "table-layout",
+	// Flex
+	"flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis",
+	"align-items", "align-content", "align-self",
+	"justify-content", "justify-items", "justify-self",
+	"order", "row-gap", "column-gap",
+	// Grid
+	"grid-template-columns", "grid-template-rows", "grid-template-areas",
+	"grid-auto-columns", "grid-auto-rows", "grid-auto-flow",
+	"grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
+	// Multi-column
+	"column-count", "column-width", "column-fill",
+	"column-rule-width", "column-rule-style", "column-rule-color",
+	"column-span",
+	// Transform / animation
+	"transform", "transform-origin", "translate", "rotate", "scale",
+	"transition", "animation-name", "animation-duration",
+	"animation-timing-function", "animation-delay", "animation-iteration-count",
+	"animation-direction", "animation-fill-mode", "animation-play-state",
+	// Effects
+	"box-shadow", "filter", "backdrop-filter", "mix-blend-mode", "isolation",
+	"clip", "clip-path", "mask-image",
+	// SVG paint
+	"fill", "fill-rule", "stroke", "stroke-dasharray", "stroke-dashoffset",
+	"stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-width",
+	"flood-color", "flood-opacity", "stop-color", "stop-opacity",
+	"lighting-color",
+	// Misc
+	"content", "counter-increment", "counter-reset", "quotes",
+	"cursor", "z-index", "will-change", "contain",
+	"break-before", "break-after", "break-inside",
+	"image-rendering", "object-fit", "object-position",
+	"scrollbar-color", "scrollbar-gutter", "scrollbar-width",
+	"box-decoration-break", "initial-letter",
+	// Vendor-prefixed longhands louis14 reads
+	"-webkit-box-align", "-webkit-box-direction", "-webkit-box-orient",
+	"-webkit-box-decoration-break", "-webkit-line-clamp", "-webkit-mask-image",
+}
+
+// allShorthandRevertSnapshot captures the cascade origin baseline against
+// which `all: revert` and `all: revert-layer` resolve. ComputeStyle calls
+// snapshotForAllRevert after the UA + presentational-attribute pass (i.e.
+// after every value the spec considers "below the author origin") to record
+// the pre-author state. resolveAllRevertValues then replays each "revert"
+// sentinel against that snapshot.
+type allShorthandRevertSnapshot map[string]string
+
+func snapshotForAllRevert(s *Style) allShorthandRevertSnapshot {
+	snap := make(allShorthandRevertSnapshot, len(s.Properties))
+	for k, v := range s.Properties {
+		snap[k] = v
+	}
+	return snap
+}
+
+// resolveCSSWideKeywords handles the longhand-level CSS-wide keywords that
+// expandShorthand stores verbatim — `initial`, `unset`, `revert`, and
+// `revert-layer`. `inherit` is resolved separately in resolveInheritValues
+// since it needs the parent style.
+//
+// Per CSS Cascade 4 §6.1:
+//   - `initial`: replace with the spec initial value. For louis14, the getter
+//     fallback returns the initial value for most properties, so delete the
+//     entry; for properties listed in nonDefaultInitialValues, store the
+//     canonical initial explicitly.
+//   - `unset`: behaves as `inherit` for inheritable properties, `initial`
+//     otherwise. We rewrite to `inherit` and let resolveInheritValues finish
+//     the work, mirroring Blink's CSSUnsetValue handling that defers to
+//     either inherit or initial based on the property metadata.
+//   - `revert`: roll back to the prior cascade origin (UA + presentational
+//     attributes — every value below the author origin). `originSnap` carries
+//     that baseline.
+//   - `revert-layer`: roll back the current cascade layer's contribution.
+//     `layerSnap` carries the most-recent-prior-layer snapshot the layer
+//     iterator captured during author-origin application. When no prior
+//     layer existed, falls back to `originSnap` so the property reverts to
+//     UA (which matches Chrome's behavior for layerless `revert-layer`).
+//
+// Mirrors Blink's CSSRevertValue / CSSRevertLayerValue handling at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSnapshot) {
+	for prop, val := range s.Properties {
+		switch val {
+		case "initial":
+			if init, ok := nonDefaultInitialValues[prop]; ok {
+				s.Set(prop, init)
+			} else {
+				delete(s.Properties, prop)
+			}
+		case "unset":
+			if inheritableProperties[prop] {
+				s.Set(prop, "inherit")
+			} else if init, ok := nonDefaultInitialValues[prop]; ok {
+				s.Set(prop, init)
+			} else {
+				delete(s.Properties, prop)
+			}
+		case "revert":
+			if snapVal, ok := originSnap[prop]; ok {
+				s.Set(prop, snapVal)
+			} else {
+				delete(s.Properties, prop)
+			}
+		case "revert-layer":
+			if snapVal, ok := layerSnap[prop]; ok {
+				s.Set(prop, snapVal)
+			} else if snapVal, ok := originSnap[prop]; ok {
+				s.Set(prop, snapVal)
+			} else {
+				delete(s.Properties, prop)
+			}
+		}
 	}
 }
 
