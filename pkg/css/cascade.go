@@ -1108,6 +1108,11 @@ var inheritableProperties = map[string]bool{
 	// CSS Text 3 inherited properties:
 	"word-break": true, "overflow-wrap": true, "hyphens": true,
 	"line-break": true, "tab-size": true,
+	// CSS Text Decor 4: skip-spaces is inherited (unlike the other
+	// text-decoration-* longhands which accumulate via
+	// AppliedTextDecorations). See
+	// https://drafts.csswg.org/css-text-decor-4/#text-decoration-skip-spaces-property
+	"text-decoration-skip-spaces": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
