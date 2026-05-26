@@ -765,47 +765,59 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// This check uses NewLogicalFragment(parentWDM, ...) which
 			// correctly maps the child's dimensions to the parent's frame,
 			// so it works for both same-mode and orthogonal children.
-			if isChildNewFC && (floatStartOff > 0 || floatEndOff > 0) {
+			//
+			// The overlap query uses the BFC's full block extent (margin box)
+			// so that floats further down the block axis are caught — a
+			// zero-extent query at the BFC's top can miss floats whose block
+			// range overlaps the BFC but starts below it. Mirrors Blink's
+			// ExclusionSpace::FindLayoutOpportunity, which uses the full
+			// availability_block_size (cf. exclusion_space.cc).
+			if isChildNewFC {
 				childLogicalTmp := NewLogicalFragment(wdm, childResult.Fragment)
-				neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
-				availableInline := childAvailableInline - floatStartOff - floatEndOff
-				if neededInline > availableInline {
-					// Child doesn't fit — find the earliest block position
-					// where the BFC fits alongside remaining floats.
-					bfcBlockSize := childLogicalTmp.BlockSize() + childMargins.BlockSum()
-					newBlockBfc := exclusionSpace.FindFloatPosition(
-						css.FloatLeft, neededInline, bfcBlockSize,
-						childAvailableInline, floatCheckBlock)
-					newBlock := newBlockBfc - bfcBlockOrigin
-					if newBlock > blockCursor {
-						blockCursor = newBlock
-						prevMarginStrut = MarginStrut{}
-						// Recompute float offsets at the new position.
-						floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(bfcBlockOrigin+blockCursor, 0, childAvailableInline)
-						childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
-						if childInlineForSpace < 0 {
-							childInlineForSpace = 0
+				bfcBlockExtent := childLogicalTmp.BlockSize() + childMargins.BlockSum()
+				extentStartOff, extentEndOff := exclusionSpace.FindAvailableInlineSize(
+					floatCheckBlock, bfcBlockExtent, childAvailableInline)
+				if extentStartOff > 0 || extentEndOff > 0 {
+					neededInline := childLogicalTmp.InlineSize() + childMargins.InlineSum()
+					availableInline := childAvailableInline - extentStartOff - extentEndOff
+					if neededInline > availableInline {
+						// Child doesn't fit — find the earliest block position
+						// where the BFC fits alongside remaining floats.
+						newBlockBfc := exclusionSpace.FindFloatPosition(
+							css.FloatLeft, neededInline, bfcBlockExtent,
+							childAvailableInline, floatCheckBlock)
+						newBlock := newBlockBfc - bfcBlockOrigin
+						if newBlock > blockCursor {
+							blockCursor = newBlock
+							prevMarginStrut = MarginStrut{}
+							hasClearance = true
+							// Recompute float offsets at the new position.
+							floatStartOff, floatEndOff = exclusionSpace.FindAvailableInlineSize(bfcBlockOrigin+blockCursor, 0, childAvailableInline)
+							childInlineForSpace = childAvailableInline - childMargins.InlineSum() - floatStartOff - floatEndOff
+							if childInlineForSpace < 0 {
+								childInlineForSpace = 0
+							}
+							// Re-layout with the new available size.
+							csBuilder2 := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
+								SetOrthogonalFallbackInlineSize(
+									orthogonalFallbackSize(childWDM, bla.ctx)).
+								SetOrthogonalFallbackBlockSize(
+									computeOrthogonalFallbackBlockForChildren(
+										bla.style, wdm, bla.space, geom, bla.ctx,
+										hasExplicitBlock, explicitBlockSize)).
+								SetAvailableSize(LogicalSize{
+									InlineSize: childInlineForSpace,
+									BlockSize:  blockForChild,
+								}).
+								SetPercentageResolutionSize(LogicalSize{
+									InlineSize: contentInlineSize,
+									BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
+								}).
+								SetPercentageResolutionInlineSize(contentInlineSize).
+								SetExclusionSpace(exclusionSpace)
+							childSpace = csBuilder2.Build()
+							childResult = layoutElement(bla.ctx, child, childSpace)
 						}
-						// Re-layout with the new available size.
-						csBuilder2 := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
-							SetOrthogonalFallbackInlineSize(
-								orthogonalFallbackSize(childWDM, bla.ctx)).
-							SetOrthogonalFallbackBlockSize(
-								computeOrthogonalFallbackBlockForChildren(
-									bla.style, wdm, bla.space, geom, bla.ctx,
-									hasExplicitBlock, explicitBlockSize)).
-							SetAvailableSize(LogicalSize{
-								InlineSize: childInlineForSpace,
-								BlockSize:  blockForChild,
-							}).
-							SetPercentageResolutionSize(LogicalSize{
-								InlineSize: contentInlineSize,
-								BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
-							}).
-							SetPercentageResolutionInlineSize(contentInlineSize).
-							SetExclusionSpace(exclusionSpace)
-						childSpace = csBuilder2.Build()
-						childResult = layoutElement(bla.ctx, child, childSpace)
 					}
 				}
 			}
