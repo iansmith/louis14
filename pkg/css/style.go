@@ -2574,6 +2574,16 @@ func expandShorthand(style *Style, property, value string) {
 		// Each omitted component is reset to its initial value.
 		// Mirrors Blink at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		expandTextDecorationShorthand(style, value)
+	case "font-synthesis":
+		// CSS Fonts 4 §6.5: font-synthesis is a shorthand for:
+		//   font-synthesis-weight, font-synthesis-style,
+		//   font-synthesis-small-caps, font-synthesis-position.
+		// Grammar: none | [ weight || style || small-caps || position ].
+		// Any longhand not listed in the value is set to `none`; `none`
+		// alone sets all four to `none`. Mirrors Blink's
+		// `font_synthesis.cc::ParseShorthand` at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		expandFontSynthesisShorthand(style, value)
 	case "all":
 		// CSS Cascade 3 §8 / CSS Cascade 4 §6.3: the `all` shorthand resets
 		// every longhand CSS property to the supplied CSS-wide keyword, with
@@ -2816,7 +2826,9 @@ var cssLonghandProperties = []string{
 	// Font
 	"font-family", "font-size", "font-weight", "font-style", "font-variant",
 	"font-feature-settings", "font-optical-sizing", "font-size-adjust",
-	"font-synthesis", "font-variant-caps", "font-variant-ligatures",
+	"font-synthesis-weight", "font-synthesis-style",
+	"font-synthesis-small-caps", "font-synthesis-position",
+	"font-variant-caps", "font-variant-ligatures",
 	"font-variant-numeric",
 	// Text
 	"line-height", "text-align", "text-align-last", "text-indent",
@@ -3170,6 +3182,47 @@ func expandTextDecorationShorthand(style *Style, value string) {
 
 	if len(lineTokens) > 0 {
 		style.Set("text-decoration-line", strings.Join(lineTokens, " "))
+	}
+}
+
+// expandFontSynthesisShorthand expands the `font-synthesis` shorthand into
+// its four longhands: font-synthesis-weight, font-synthesis-style,
+// font-synthesis-small-caps, font-synthesis-position.
+//
+// Per CSS Fonts 4 §6.5
+// (https://drafts.csswg.org/css-fonts-4/#font-synthesis), the grammar is:
+//
+//	none | [ weight || style || small-caps || position ]
+//
+// Each keyword present in the value sets the corresponding longhand to
+// `auto`; each omitted keyword (and every longhand when the value is `none`)
+// is set to `none`. The four longhands' initial value is `auto`, but a value
+// like `font-synthesis: weight` must explicitly *reset* the others to `none`.
+// Mirrors Blink's font_synthesis.cc::ParseShorthand at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func expandFontSynthesisShorthand(style *Style, value string) {
+	v := strings.TrimSpace(strings.ToLower(value))
+	// `none` → all four longhands set to `none`.
+	// Any other value: walk the token list; explicitly listed keywords
+	// become `auto`, the rest stay `none`.
+	style.Set("font-synthesis-weight", "none")
+	style.Set("font-synthesis-style", "none")
+	style.Set("font-synthesis-small-caps", "none")
+	style.Set("font-synthesis-position", "none")
+	if v == "" || v == "none" {
+		return
+	}
+	for _, tok := range strings.Fields(v) {
+		switch tok {
+		case "weight":
+			style.Set("font-synthesis-weight", "auto")
+		case "style":
+			style.Set("font-synthesis-style", "auto")
+		case "small-caps":
+			style.Set("font-synthesis-small-caps", "auto")
+		case "position":
+			style.Set("font-synthesis-position", "auto")
+		}
 	}
 }
 
@@ -4976,29 +5029,38 @@ func (s *Style) GetFontKerning() FontKerning {
 	}
 }
 
-// GetFontSynthesis returns the font-synthesis value as a struct indicating
-// which synthesis types are allowed.
-// Default allows weight and style synthesis (but not small-caps).
-func (s *Style) GetFontSynthesis() struct{ Weight, Style, SmallCaps bool } {
-	v, _ := s.Get("font-synthesis")
-	v = strings.TrimSpace(strings.ToLower(v))
-	if v == "" || v == "weight style small-caps" || v == "weight style" {
-		return struct{ Weight, Style, SmallCaps bool }{true, true, false}
+// FontSynthesis enumerates which synthesis types the UA is permitted to apply.
+// Each field is `true` when the corresponding longhand resolves to `auto`
+// (UA may synthesize) and `false` when it resolves to `none` (UA must not
+// synthesize that aspect). The shape mirrors Blink's `FontDescription`
+// `Synthesis*` flag accessors at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type FontSynthesis struct {
+	Weight    bool
+	Style     bool
+	SmallCaps bool
+	Position  bool
+}
+
+// GetFontSynthesis returns which font-synthesis aspects the UA may apply, per
+// CSS Fonts 4 §6.6 (each longhand is `auto` | `none`, initial `auto`).
+// Reads the four longhands populated by `expandFontSynthesisShorthand`;
+// falls back to the initial value `auto` for any longhand not set on this
+// style (which happens for the root element when no font-synthesis rule
+// applied — inheritance brings the resolved value down to children).
+func (s *Style) GetFontSynthesis() FontSynthesis {
+	read := func(prop string) bool {
+		v, ok := s.Get(prop)
+		if !ok {
+			return true // initial: auto → allowed
+		}
+		return strings.TrimSpace(strings.ToLower(v)) != "none"
 	}
-	if v == "none" {
-		return struct{ Weight, Style, SmallCaps bool }{false, false, false}
+	return FontSynthesis{
+		Weight:    read("font-synthesis-weight"),
+		Style:     read("font-synthesis-style"),
+		SmallCaps: read("font-synthesis-small-caps"),
+		Position:  read("font-synthesis-position"),
 	}
-	result := struct{ Weight, Style, SmallCaps bool }{}
-	if strings.Contains(v, "weight") {
-		result.Weight = true
-	}
-	if strings.Contains(v, "style") {
-		result.Style = true
-	}
-	if strings.Contains(v, "small-caps") {
-		result.SmallCaps = true
-	}
-	return result
 }
 
 // GetFontSizeAdjust returns the font-size-adjust value, or -1 if "none" or unset.

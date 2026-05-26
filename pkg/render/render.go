@@ -3974,7 +3974,10 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		text = applyTextTransform(text, layer.TextTransform)
 	}
 
-	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		layer.FontFamily, layer.FontBold, layer.FontItalic,
+		layer.FontMono, layer.FontAhem,
+		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
 	fontID := r.openFont(fontPath, layer.FontSize)
 	if fontID < 0 {
 		return
@@ -4082,7 +4085,12 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 	// CSS font-variant-caps: small-caps / all-small-caps — synthesize small
 	// capitals by drawing lowercase (or all) letters as uppercase glyphs at a
 	// reduced font size (~70% of normal).  The baseline stays aligned.
-	if layer.FontVariantCaps == "small-caps" || layer.FontVariantCaps == "all-small-caps" {
+	// CSS Fonts 4 §6.6: font-synthesis-small-caps: none forbids the UA from
+	// synthesizing small-caps glyphs; if the active face doesn't have a real
+	// small-caps variant, we must render the lowercase letters as-is.
+	// Mirrors Blink's gate at font_description.cc::SynthesisAllowedSmallCaps
+	// (SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if (layer.FontVariantCaps == "small-caps" || layer.FontVariantCaps == "all-small-caps") && layer.FontSynthesisSmallCaps {
 		r.drawTextSmallCaps(layer, text, box, fontPath, fontID, ascent)
 	} else if strings.Contains(text, "\t") {
 		// CSS Text 3 §4.2: tab characters advance to the next tab stop.
@@ -4140,7 +4148,10 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	}
 
 	// Open a font for the emphasis mark at half size.
-	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		layer.FontFamily, layer.FontBold, layer.FontItalic,
+		layer.FontMono, layer.FontAhem,
+		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
 	emphFontID := r.openFont(fontPath, emphFontSize)
 	if emphFontID < 0 {
 		return
@@ -4221,7 +4232,10 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 	if emphFontSize < 4 {
 		emphFontSize = 4
 	}
-	fontPath := r.fonts.FontPathForFamily(layer.FontFamily, layer.FontBold, layer.FontItalic, layer.FontMono, layer.FontAhem)
+	fontPath := r.fonts.FontPathForFamilyWithSynthesis(
+		layer.FontFamily, layer.FontBold, layer.FontItalic,
+		layer.FontMono, layer.FontAhem,
+		layer.FontSynthesisWeight, layer.FontSynthesisStyle)
 	emphFontID := r.openFont(fontPath, emphFontSize)
 	if emphFontID < 0 {
 		return

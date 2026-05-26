@@ -532,7 +532,8 @@ func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
 		italic := style.GetFontStyle() == css.FontStyleItalic
 		mono := style.IsMonospaceFamily()
 		ahem := style.IsAhemFamily()
-		fontPath := fc.FontPathForFamily(family, bold, italic, mono, ahem)
+		synth := style.GetFontSynthesis()
+		fontPath := fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
 
 		key := fontKey{path: fontPath, fontSize: fontSize}
 		ch, ok := cache[key]

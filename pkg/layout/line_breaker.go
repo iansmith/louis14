@@ -1792,7 +1792,8 @@ func resolveFontPath(style *css.Style, fonts text.FontConfig) string {
 	mono := style.IsMonospaceFamily()
 	ahem := style.IsAhemFamily()
 	family, _ := style.Get("font-family")
-	return fonts.FontPathForFamily(family, bold, italic, mono, ahem)
+	synth := style.GetFontSynthesis()
+	return fonts.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
 }
 
 // measureTextWithTabs computes the inline size of text containing tab characters.

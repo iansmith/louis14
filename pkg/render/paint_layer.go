@@ -124,6 +124,15 @@ type PaintLayer struct {
 	FontMono        bool
 	FontAhem        bool
 	FontFamily      string
+	// font-synthesis-* gates (CSS Fonts 4 §6.6). When false, the font
+	// fallback path must not pick a bold/italic variant of a different
+	// physical family to "synthesize" the requested weight/style. See
+	// text.FontConfig.FontPathForFamilyWithSynthesis. FontSynthesisSmallCaps
+	// gates render.drawTextSmallCaps: when false, font-variant-caps:
+	// small-caps must not be synthesized by scaling lowercase glyphs.
+	FontSynthesisWeight    bool
+	FontSynthesisStyle     bool
+	FontSynthesisSmallCaps bool
 	LetterSpacing   float64
 	WordSpacing     float64
 	TabSize         float64 // tab-size value (character count or px)
@@ -580,6 +589,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.FontItalic = s.GetFontStyle() == css.FontStyleItalic
 	layer.FontMono = s.IsMonospaceFamily()
 	layer.FontAhem = s.IsAhemFamily()
+	synth := s.GetFontSynthesis()
+	layer.FontSynthesisWeight = synth.Weight
+	layer.FontSynthesisStyle = synth.Style
+	layer.FontSynthesisSmallCaps = synth.SmallCaps
 	if family, ok := s.Get("font-family"); ok {
 		layer.FontFamily = family
 	}
