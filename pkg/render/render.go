@@ -353,12 +353,18 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 		// background is promoted to the canvas and body's layer also gets
 		// PaintsCanvasBackground=true so its background-image uses the ICB
 		// as the positioning area (CSS Backgrounds §7.2).
-		if r.hasBackground(box) {
-			layer.PaintsCanvasBackground = true
-		} else {
-			// Root has no background — promote body's layer.
-			// Body is a flow child of the root layer in most cases.
-			r.promoteBodyCanvasBackground(layer)
+		//
+		// CSS Containment 1/2 §3: containment on the root suppresses all
+		// canvas-background propagation (see paintCanvasBackground for the
+		// matching guard on the direct fill path).
+		if canPropagateBackground(box) {
+			if r.hasBackground(box) {
+				layer.PaintsCanvasBackground = true
+			} else {
+				// Root has no background — promote body's layer.
+				// Body is a flow child of the root layer in most cases.
+				r.promoteBodyCanvasBackground(layer)
+			}
 		}
 		r.paintLayer(layer)
 	}
@@ -368,39 +374,41 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 // and sets PaintsCanvasBackground=true on body's layer, per CSS 2.1 §14.2.
 // CSS Backgrounds Level 3 §2.11.2: the positioning area for the promoted
 // body background is the root element's padding box.
+//
+// CSS Containment 1/2 §3: if the body has any `contain` value other than
+// `none`, its background does not propagate — `canPropagateBackground` short
+// circuits the layer promotion.
 func (r *Renderer) promoteBodyCanvasBackground(rootLayer *PaintLayer) {
 	rootBox := rootLayer.Box
-	// Search FlowChildren first (most common case).
-	for _, childLayer := range rootLayer.FlowChildren {
-		if childLayer.Box != nil && childLayer.Box.Node != nil &&
-			childLayer.Box.Node.TagName == "body" {
+	tryPromote := func(childLayer *PaintLayer) bool {
+		if childLayer.Box == nil || childLayer.Box.Node == nil ||
+			childLayer.Box.Node.TagName != "body" {
+			return false
+		}
+		if canPropagateBackground(childLayer.Box) {
 			childLayer.PaintsCanvasBackground = true
 			childLayer.CanvasBackgroundRootBox = rootBox
+		}
+		return true
+	}
+	for _, childLayer := range rootLayer.FlowChildren {
+		if tryPromote(childLayer) {
 			return
 		}
 	}
 	// Body could be in AutoZero if it establishes a stacking context.
 	for _, childLayer := range rootLayer.AutoZero {
-		if childLayer.Box != nil && childLayer.Box.Node != nil &&
-			childLayer.Box.Node.TagName == "body" {
-			childLayer.PaintsCanvasBackground = true
-			childLayer.CanvasBackgroundRootBox = rootBox
+		if tryPromote(childLayer) {
 			return
 		}
 	}
 	for _, childLayer := range rootLayer.NegativeZ {
-		if childLayer.Box != nil && childLayer.Box.Node != nil &&
-			childLayer.Box.Node.TagName == "body" {
-			childLayer.PaintsCanvasBackground = true
-			childLayer.CanvasBackgroundRootBox = rootBox
+		if tryPromote(childLayer) {
 			return
 		}
 	}
 	for _, childLayer := range rootLayer.PositiveZ {
-		if childLayer.Box != nil && childLayer.Box.Node != nil &&
-			childLayer.Box.Node.TagName == "body" {
-			childLayer.PaintsCanvasBackground = true
-			childLayer.CanvasBackgroundRootBox = rootBox
+		if tryPromote(childLayer) {
 			return
 		}
 	}
@@ -408,27 +416,50 @@ func (r *Renderer) promoteBodyCanvasBackground(rootLayer *PaintLayer) {
 
 // paintCanvasBackground implements CSS 2.1 §14.2 canvas background propagation.
 // If the root element has a background, use it. Otherwise, propagate from body.
+//
+// CSS Containment Level 1/2 §3 (https://drafts.csswg.org/css-contain-1/#contain-property):
+// when an element has any form of containment (layout, paint, size, or style),
+// it establishes an independent containment context and its background MUST NOT
+// propagate to the canvas. If the root (html) is contained, body propagation is
+// also suppressed — containment on the root disables the canvas-propagation
+// machinery entirely for its subtree. Mirrors Blink's `ViewPainter::PaintRootGroup`
+// guard at chromium @ 4883d11fef.
 func (r *Renderer) paintCanvasBackground(boxes []*layout.Box) {
 	if len(boxes) == 0 {
 		return
 	}
 	root := boxes[0]
 
-	// Check if the root element has a background.
-	if r.hasBackground(root) {
-		r.fillCanvasWithBackground(root)
-		return
-	}
-
-	// Root has no background — look for body element among its children.
-	for _, child := range root.Children {
-		if child.Node != nil && child.Node.TagName == "body" {
-			if r.hasBackground(child) {
-				r.fillCanvasWithBackground(child)
-			}
+	// Containment on the root suppresses all canvas-background propagation
+	// for the document (both root's own background and body's).
+	if canPropagateBackground(root) {
+		// Check if the root element has a background.
+		if r.hasBackground(root) {
+			r.fillCanvasWithBackground(root)
 			return
 		}
+
+		// Root has no background — look for body element among its children.
+		for _, child := range root.Children {
+			if child.Node != nil && child.Node.TagName == "body" {
+				if canPropagateBackground(child) && r.hasBackground(child) {
+					r.fillCanvasWithBackground(child)
+				}
+				return
+			}
+		}
 	}
+}
+
+// canPropagateBackground reports whether the given box's background is
+// eligible for promotion to the canvas. Per CSS Containment 1/2 §3, any
+// `contain` value other than `none` (layout, paint, size, style, or any
+// combination) suppresses background propagation.
+func canPropagateBackground(box *layout.Box) bool {
+	if box == nil || box.Style == nil {
+		return true
+	}
+	return !box.Style.HasAnyContainment()
 }
 
 // hasBackground returns true if a box has a visible background
