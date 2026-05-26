@@ -555,9 +555,26 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 
 // splitRules splits CSS into individual rules, with robust error recovery
 // for unclosed blocks, strings, and mismatched braces.
+//
+// Brace tracking is paren-aware: per CSS Syntax §5.4 a `{`-token inside a
+// `(`-block (e.g. inside an at-rule prelude's parenthesised condition) is a
+// simple-block component value, not the start of the at-rule body. This
+// matters for @supports conditions like `unknown(!@#% { ... })` where the
+// brace pair is part of the condition's <general-enclosed> content. Mirrors
+// Blink's tokenizer, which never opens a top-level qualified-rule body while
+// inside an open `(`. See third_party/blink/renderer/core/css/parser/
+// css_tokenizer.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// `[` / `]` are deliberately NOT tracked here. They appear in attribute
+// selectors at the top of qualified rules and never legitimately wrap
+// brace pairs in real-world CSS; treating them as scope-changers would
+// destroy the parser's ability to recover from malformed selectors like
+// `[} { ... }` (Acid2 line 32; covered by
+// TestErrorRecovery_InvalidSelectors).
 func splitRules(css string) []string {
 	rules := make([]string, 0)
 	depth := 0
+	parenDepth := 0
 	start := 0
 	inString := byte(0) // 0 = not in string, '"' or '\'' = in that string
 
@@ -582,6 +599,23 @@ func splitRules(css string) []string {
 
 		if ch == '"' || ch == '\'' {
 			inString = ch
+			continue
+		}
+
+		// Track paren depth so braces inside an at-rule prelude's
+		// parenthesised condition don't get mistaken for the rule body.
+		if ch == '(' {
+			parenDepth++
+			continue
+		}
+		if ch == ')' && parenDepth > 0 {
+			parenDepth--
+			continue
+		}
+
+		if parenDepth > 0 {
+			// Inside a (...) block, `{`/`}`/`;` are component-value tokens,
+			// not rule delimiters. Skip rule-boundary logic.
 			continue
 		}
 
@@ -808,8 +842,9 @@ func parseRule(ruleStr string) (Rule, error) {
 func parseMediaRule(ruleStr string) []Rule {
 	rules := make([]Rule, 0)
 
-	// Find the opening brace
-	bracePos := strings.Index(ruleStr, "{")
+	// Find the opening brace, skipping braces that appear inside the prelude's
+	// parens (e.g. media-query value with a `<general-enclosed>` token).
+	bracePos := indexTopLevelBrace(ruleStr)
 	if bracePos == -1 {
 		return rules
 	}
@@ -883,8 +918,8 @@ func parseMediaRule(ruleStr string) []Rule {
 func parseContainerRule(ruleStr string) []Rule {
 	rules := make([]Rule, 0)
 
-	// Find the opening brace
-	bracePos := strings.Index(ruleStr, "{")
+	// Find the opening brace, skipping braces inside the prelude's parens.
+	bracePos := indexTopLevelBrace(ruleStr)
 	if bracePos == -1 {
 		return rules
 	}
@@ -1232,7 +1267,13 @@ func splitMediaConditions(s string) []string {
 // parseSupportsRule parses an @supports rule and returns the inner rules if condition is met
 func parseSupportsRule(ruleStr string) []Rule {
 	ruleStr = strings.TrimSpace(ruleStr)
-	braceIdx := strings.Index(ruleStr, "{")
+	// Locate the body's opening `{`. The first literal `{` in the rule string
+	// is NOT necessarily the body — an @supports condition may contain a
+	// `<general-enclosed>` whose body has braces (`unknown(!@#% { ... })`).
+	// Skip braces inside any `(`/`[` block; mirrors Blink's
+	// CSSParserImpl::ConsumeAtRule prelude/block split at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	braceIdx := indexTopLevelBrace(ruleStr)
 	if braceIdx < 0 {
 		return nil
 	}
@@ -1463,19 +1504,63 @@ func consumeGeneralEnclosedFunction(s string) (string, bool) {
 	return after, true
 }
 
+// indexTopLevelBrace returns the byte index of the first `{` in s that lies
+// outside any `(` block and outside string literals, or -1 if none. Used to
+// split an at-rule's prelude from its body without being fooled by braces
+// that appear as component-value tokens inside the prelude's parens (e.g.
+// `@supports not unknown(!@#% { ... })`). `[` / `]` are not tracked — see
+// splitRules' comment for rationale.
+func indexTopLevelBrace(s string) int {
+	parenDepth := 0
+	inString := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '{':
+			if parenDepth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // consumeSupportsDecl reports whether inner is a valid <declaration> for
 // @supports purposes. Returns (resultBool, parsedOK).
 //
 //   - parsedOK is false if the content doesn't even tokenize as a declaration
-//     (no colon, empty property, trailing semicolon, etc.). The caller then
-//     treats the wrapping parens as <general-enclosed>.
+//     (no colon, empty property, trailing semicolon, unbalanced brackets,
+//     top-level `:` token in value, etc.). The caller then treats the wrapping
+//     parens as <general-enclosed>.
 //   - resultBool is true if the declaration is "supported" (known property OR
 //     a custom property `--*`, with a non-empty value that parses to at least
 //     one valid longhand). False for unknown properties.
 //
 // Per CSS Syntax §5.4.6: a declaration is `<ident-token> S* : S* <component-
-// value>+ ['!' <important>]`. A trailing semicolon means the input contains
-// MORE than one declaration — invalid as a single <supports-decl>.
+// value>+ ['!' <important>]`. The <component-value>+ value cannot contain a
+// top-level <colon-token>, top-level <semicolon-token>, top-level `{`/`}`, or
+// unmatched `(`/`[`/`)`/`]` — those break the production. A trailing semicolon
+// means the input contains MORE than one declaration — invalid as a single
+// <supports-decl>. Mirrors Blink's
+// CSSParserImpl::ConsumeDeclaration at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	inner = strings.TrimSpace(inner)
 	if inner == "" {
@@ -1494,9 +1579,29 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	if !isValidPropertyIdent(property) {
 		return false, false
 	}
-	// A trailing semicolon means the input is multiple declarations chained,
-	// not a single <declaration>. Per at-supports-039 this must be invalid.
-	if strings.HasSuffix(value, ";") {
+
+	// Strip optional `!important` priority flag from the value tail before the
+	// value-syntax check. Per CSS Syntax §5.4.6 the only legal priority is
+	// `important` — `!bogus` is a parse error that invalidates the entire
+	// declaration (and therefore the @supports condition). Mirrors Blink's
+	// CSSParserImpl::ConsumeDeclarationValue priority handling at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Required by at-supports-044
+	// (`(--foo: whatever !bogus)` must evaluate false).
+	if bang := lastTopLevelBang(value); bang >= 0 {
+		flag := strings.TrimSpace(value[bang+1:])
+		if !strings.EqualFold(flag, "important") {
+			return false, false
+		}
+		bare := strings.TrimSpace(value[:bang])
+		if bare == "" {
+			return false, false
+		}
+		value = bare
+	}
+
+	// Validate the value is a syntactically well-formed <declaration-value>:
+	// no top-level `;`, `:`, `{`, `}`, and all `(`/`[` paired.
+	if !isValidDeclarationValue(value) {
 		return false, false
 	}
 
@@ -1508,19 +1613,94 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 		return true, true
 	}
 
-	// Strip optional `!important` (or any `!<ident>` flag) from the value to
-	// validate the property:value pair itself. The spec considers the
-	// declaration supported iff the UA recognizes it; `!important` is part of
-	// the declaration's outer syntax but doesn't affect supports semantics.
-	if bang := strings.Index(value, "!"); bang >= 0 {
-		bare := strings.TrimSpace(value[:bang])
-		if bare == "" {
-			return false, false
-		}
-		value = bare
-	}
-
 	return isSupportedDeclaration(property, value), true
+}
+
+// lastTopLevelBang returns the index of the last `!` token at the top level
+// (not inside parens, brackets, or string literals) of s, or -1 if none.
+func lastTopLevelBang(s string) int {
+	depth := 0
+	inString := byte(0)
+	last := -1
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case '!':
+			if depth == 0 {
+				last = i
+			}
+		}
+	}
+	return last
+}
+
+// isValidDeclarationValue reports whether s is a well-formed CSS
+// <declaration-value> — that is, a sequence of component-values with no
+// top-level <colon-token>, <semicolon-token>, `{`, or `}`, and with every
+// `(` and `[` matched. Mirrors Blink's
+// CSSParserTokenStream::ConsumeDeclarationValue acceptance criteria at
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func isValidDeclarationValue(s string) bool {
+	parenDepth := 0
+	bracketDepth := 0
+	inString := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth == 0 {
+				return false
+			}
+			parenDepth--
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth == 0 {
+				return false
+			}
+			bracketDepth--
+		case ':', ';', '{', '}':
+			if parenDepth == 0 && bracketDepth == 0 {
+				return false
+			}
+		}
+	}
+	if inString != 0 || parenDepth != 0 || bracketDepth != 0 {
+		return false
+	}
+	return true
 }
 
 // isSupportedDeclaration reports whether the given property:value pair is

@@ -71,10 +71,33 @@ func TestSupportsCondition(t *testing.T) {
 		{"custom property", "(--foo: whatever)", true},
 		{"not custom property", "(not (--foo: whatever))", false},
 
-		// at-supports-034/035 — operator outside parens is invalid syntax.
-		// These need per-property value grammar enforcement (e.g. margin's
-		// value parser would reject `0 or padding: 0`). Tracked but out of
-		// scope for W8.19's bring-up. Reftest is the source of truth.
+		// at-supports-034/035/036/037 — value tokens that break
+		// <declaration-value>: top-level `:` or `or`/`and` keywords inside an
+		// unparenthesised value list invalidate the declaration entirely.
+		// Mirrors CSS Syntax §5.4.6: a <declaration-value> rejects top-level
+		// <colon-token>, <semicolon-token>, `{`, `}` and unmatched brackets.
+		{"top-level colon in value (or)", "(margin: 0 or padding: 0)", false},
+		{"top-level colon in value (and)", "(margin: 0 and padding: 0)", false},
+
+		// at-supports-026 — unmatched `]` in value
+		{"unmatched right bracket in value", "(margin: 0])", false},
+
+		// at-supports-044 — only `!important` is a valid priority flag;
+		// anything else (`!bogus`, `!unrelated`, ...) invalidates the
+		// declaration outright.
+		{"custom prop !important supported", "(--foo: whatever !important)", true},
+		{"custom prop !bogus invalid", "(--foo: whatever !bogus)", false},
+
+		// at-supports-046 — bare and wrapped `not <general-enclosed>` forms.
+		// `unknown()` is a function-token whose body tokenises but whose name
+		// the UA doesn't recognise → false (kUnsupported in Blink terms).
+		{"bare not unknown function", "not unknown()", true},
+		{"bare unknown function false", "unknown()", false},
+		// Brace pairs inside an unknown function's body must NOT escape the
+		// enclosing rule's body — the condition remains general-enclosed
+		// (false) and `not(...)` flips it.
+		{"function body with braces wrapped",
+			"(not (unknown(!@#% { ... } more() @stuff [ ])))", true},
 
 		// Bare `not` outside parens — required by spec
 		{"bare not unknown", "not (foo: bar)", true},
