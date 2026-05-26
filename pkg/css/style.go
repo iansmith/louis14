@@ -2540,19 +2540,19 @@ func shorthandProducesVisitedLonghand(property string) bool {
 // set (including non-color longhands reset by `all`) are dropped from
 // `:visited` rules to preserve user-browsing-history privacy.
 var visitedAllowedProperties = map[string]bool{
-	"color":                  true,
-	"background-color":       true,
-	"border-top-color":       true,
-	"border-right-color":     true,
-	"border-bottom-color":    true,
-	"border-left-color":      true,
-	"outline-color":          true,
-	"column-rule-color":      true,
-	"text-decoration-color":  true,
-	"text-emphasis-color":    true,
-	"caret-color":            true,
-	"fill":                   true,
-	"stroke":                 true,
+	"color":                 true,
+	"background-color":      true,
+	"border-top-color":      true,
+	"border-right-color":    true,
+	"border-bottom-color":   true,
+	"border-left-color":     true,
+	"outline-color":         true,
+	"column-rule-color":     true,
+	"text-decoration-color": true,
+	"text-emphasis-color":   true,
+	"caret-color":           true,
+	"fill":                  true,
+	"stroke":                true,
 }
 
 // selectorMatchesVisited reports whether any part of the given selector
@@ -4961,6 +4961,84 @@ func (s *Style) getRawOverflowY() OverflowType {
 		}
 	}
 	return s.GetOverflow()
+}
+
+// OverflowClipMarginBox identifies the visual reference box used by the
+// overflow-clip-margin property (CSS Overflow 3 §3.2). The clip rectangle
+// is the named box edge, expanded outward by Length.
+type OverflowClipMarginBox string
+
+const (
+	// OverflowClipMarginContentBox: clip edge starts at the content box.
+	OverflowClipMarginContentBox OverflowClipMarginBox = "content-box"
+	// OverflowClipMarginPaddingBox: clip edge starts at the padding box (default).
+	OverflowClipMarginPaddingBox OverflowClipMarginBox = "padding-box"
+	// OverflowClipMarginBorderBox: clip edge starts at the border box.
+	OverflowClipMarginBorderBox OverflowClipMarginBox = "border-box"
+)
+
+// OverflowClipMargin holds the parsed value of `overflow-clip-margin`.
+// Per CSS Overflow 3, the grammar is:
+//
+//	<visual-box> || <length [0,∞]>
+//
+// Default visual box is `padding-box`; default length is 0.
+type OverflowClipMargin struct {
+	Box    OverflowClipMarginBox
+	Length float64
+}
+
+// GetOverflowClipMargin parses the `overflow-clip-margin` property.
+// Returns the (visual-box, length) pair plus a `ok` flag indicating whether
+// the property was set (and parsed successfully). When ok is false the
+// caller should treat the value as the spec default (padding-box, 0).
+//
+// Grammar: <visual-box> || <length [0,∞]>; visual-box ∈ {content-box,
+// padding-box, border-box}. Per the spec, negative lengths are invalid.
+func (s *Style) GetOverflowClipMargin() (OverflowClipMargin, bool) {
+	v, ok := s.Get("overflow-clip-margin")
+	if !ok {
+		return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
+	}
+	result := OverflowClipMargin{Box: OverflowClipMarginPaddingBox}
+	sawLength := false
+	sawBox := false
+	for _, tok := range strings.Fields(v) {
+		switch tok {
+		case "content-box":
+			if sawBox {
+				return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
+			}
+			result.Box = OverflowClipMarginContentBox
+			sawBox = true
+		case "padding-box":
+			if sawBox {
+				return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
+			}
+			result.Box = OverflowClipMarginPaddingBox
+			sawBox = true
+		case "border-box":
+			if sawBox {
+				return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
+			}
+			result.Box = OverflowClipMarginBorderBox
+			sawBox = true
+		default:
+			if sawLength {
+				return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
+			}
+			length, parsed := parseLengthFullWithCh(tok, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())
+			if !parsed || length < 0 {
+				return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
+			}
+			result.Length = length
+			sawLength = true
+		}
+	}
+	if !sawBox && !sawLength {
+		return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
+	}
+	return result, true
 }
 
 // GetVisibility returns the visibility value (default: "visible")

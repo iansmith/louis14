@@ -1325,7 +1325,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		ox, oy, ow, oh := pixelSnap(layer.ClipRect[0], layer.ClipRect[1],
 			layer.ClipRect[2], layer.ClipRect[3])
 		if hasBorderRadius(layer) {
-			r.buildRoundedRectPath(ox, oy, ow, oh, layer.BorderRadius)
+			r.buildRoundedRectPath(ox, oy, ow, oh, overflowClipRadii(layer))
 		} else {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
 		}
@@ -1521,7 +1521,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 		ox, oy, ow, oh := pixelSnap(child.ClipRect[0], child.ClipRect[1],
 			child.ClipRect[2], child.ClipRect[3])
 		if hasBorderRadius(child) {
-			r.buildRoundedRectPath(ox, oy, ow, oh, child.BorderRadius)
+			r.buildRoundedRectPath(ox, oy, ow, oh, overflowClipRadii(child))
 		} else {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
 		}
@@ -1678,6 +1678,58 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 // hasBorderRadius returns true if any corner radius is non-zero.
 func hasBorderRadius(layer *PaintLayer) bool {
 	return !layer.BorderRadius.IsZero()
+}
+
+// overflowClipRadii returns the elliptical radii to use when drawing the
+// overflow clip path for `layer`. CSS Overflow 4 §3.2 specifies that the
+// overflow clip edge "is shaped in the corners exactly the same way as an
+// outer box-shadow with a spread radius of the same cumulative offset
+// from the box's border edge", referring to the CSS Backgrounds 3 §5.4
+// shadow shape formula.
+//
+// For positive (outward) offsets, the border-box border-radius is outset
+// via the cubic shadow-shape formula. For negative offsets (clip edge
+// inside the border-box, e.g. overflow-clip-margin: content-box with no
+// length), the radius shrinks linearly via `Inset` (matches the inner
+// rounded rectangle used elsewhere for border-clipping). When no
+// clip-margin is active the border-box radii are returned unchanged.
+func overflowClipRadii(layer *PaintLayer) css.EllipticalRadii {
+	if !layer.HasClipMargin {
+		return layer.BorderRadius
+	}
+	top, right, bottom, left := layer.ClipMargin[0], layer.ClipMargin[1], layer.ClipMargin[2], layer.ClipMargin[3]
+	// Cumulative offsets can be positive (outward) or negative (inward) on
+	// a per-side basis. The shadow-shape outset formula expects positive
+	// outward spreads; for inward sides we shrink via the inner-radius
+	// formula (Inset) by the absolute value.
+	radii := layer.BorderRadius
+	if top < 0 || right < 0 || bottom < 0 || left < 0 {
+		insTop := 0.0
+		insRight := 0.0
+		insBottom := 0.0
+		insLeft := 0.0
+		if top < 0 {
+			insTop = -top
+			top = 0
+		}
+		if right < 0 {
+			insRight = -right
+			right = 0
+		}
+		if bottom < 0 {
+			insBottom = -bottom
+			bottom = 0
+		}
+		if left < 0 {
+			insLeft = -left
+			left = 0
+		}
+		radii = radii.Inset(insTop, insRight, insBottom, insLeft)
+	}
+	if top == 0 && right == 0 && bottom == 0 && left == 0 {
+		return radii
+	}
+	return radii.OutsetForBoxShadow(top, right, bottom, left)
 }
 
 // buildRoundedRectPath traces a rounded rectangle path using CubicTo for
@@ -4593,16 +4645,16 @@ func (r *Renderer) SavePNG(filename string) error {
 	return png.Encode(f, r.target)
 }
 
-// hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto
+// hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto/clip
 // on either axis, or paint containment (which also clips and contains positioned descendants).
 func hasOverflowClipping(box *layout.Box) bool {
 	if box.Style == nil {
 		return false
 	}
-	ox := box.Style.GetOverflowX()
-	oy := box.Style.GetOverflowY()
-	if ox == css.OverflowHidden || ox == css.OverflowScroll || ox == css.OverflowAuto ||
-		oy == css.OverflowHidden || oy == css.OverflowScroll || oy == css.OverflowAuto {
+	clipping := func(o css.OverflowType) bool {
+		return o == css.OverflowHidden || o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowClip
+	}
+	if clipping(box.Style.GetOverflowX()) || clipping(box.Style.GetOverflowY()) {
 		return true
 	}
 	// CSS Containment: paint containment clips content and contains descendants.

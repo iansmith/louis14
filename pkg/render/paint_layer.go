@@ -67,6 +67,13 @@ type PaintLayer struct {
 	ClipY    bool       // true if Y axis is clipped (overflow-y != visible)
 	ClipRect [4]float64 // x, y, w, h of padding box
 
+	// Overflow-clip-margin outward expansion per side (CSS Overflow 3 §3.2),
+	// indexed [Top, Right, Bottom, Left]. Combines the visual-box selection
+	// (offset from padding-box to content/padding/border-box edge) with the
+	// optional <length> grow. Zero when overflow-clip-margin is not applied.
+	HasClipMargin bool
+	ClipMargin    [4]float64
+
 	// CSS clip: rect() (purely physical, per CSS Writing Modes §7.6):
 	HasCSSClip  bool
 	CSSClipRect [4]float64 // x, y, w, h of clip region
@@ -258,8 +265,11 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	overflowX := s.GetOverflowX()
 	overflowY := s.GetOverflowY()
 	hasPaintContain := s.HasPaintContainment()
-	clipX := overflowX == css.OverflowHidden || overflowX == css.OverflowScroll || overflowX == css.OverflowAuto || hasPaintContain
-	clipY := overflowY == css.OverflowHidden || overflowY == css.OverflowScroll || overflowY == css.OverflowAuto || hasPaintContain
+	isClippedAxis := func(o css.OverflowType) bool {
+		return o == css.OverflowHidden || o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowClip
+	}
+	clipX := isClippedAxis(overflowX) || hasPaintContain
+	clipY := isClippedAxis(overflowY) || hasPaintContain
 
 	// CSS Tables 3 §5.4.1: rowspan cells whose span overlaps a
 	// visibility:collapse row must clip content to their border-box,
@@ -304,14 +314,67 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.ClipX = clipX
 		layer.ClipY = clipY
 
+		// CSS Overflow 3 §3.2: overflow-clip-margin applies only when the
+		// box is clipped via `overflow: clip` (on at least one axis) or via
+		// paint containment, AND the box is NOT a scroll container (i.e.
+		// no axis is scroll/auto/hidden). Blink's LayoutBox::OverflowClipRect
+		// honors overflow_clip_margin only on the non-scroll clip path.
+		isScrollContainer := overflowX == css.OverflowScroll || overflowX == css.OverflowAuto || overflowX == css.OverflowHidden ||
+			overflowY == css.OverflowScroll || overflowY == css.OverflowAuto || overflowY == css.OverflowHidden
+		applyMargin := false
+		marginBox := css.OverflowClipMarginPaddingBox
+		var marginLength float64
+		if !isScrollContainer && (overflowX == css.OverflowClip || overflowY == css.OverflowClip || hasPaintContain) {
+			if m, ok := s.GetOverflowClipMargin(); ok {
+				applyMargin = true
+				marginBox = m.Box
+				marginLength = m.Length
+			}
+		}
+
 		var padX, padY, clipW, clipH float64
-		if forceBorderBoxClip {
-			// Border-box clip: include border region.
+		// Per-side outward offset from the border-edge to the clip edge
+		// (positive = outward). Used both to size the clip rect and to
+		// outset border-radii via the CSS Backgrounds 3 §5.4 shadow shape
+		// cubic formula (CSS Overflow 4 §3.2). When the chosen box is
+		// inside the border-edge (content-box / padding-box, no length)
+		// the offset is negative; the radii are then computed for a rect
+		// strictly inside the border-box, which `OutsetForBoxShadow`'s
+		// adjustment formula already handles by clamping.
+		var edgeTop, edgeRight, edgeBottom, edgeLeft float64
+		switch {
+		case forceBorderBoxClip:
+			// CSS Tables 3 §5.4.1 forces a border-box clip irrespective of
+			// the overflow property; no overflow-clip-margin involvement.
 			padX = box.X
 			padY = box.Y
 			clipW = box.Width
 			clipH = box.Height
-		} else {
+		case applyMargin:
+			switch marginBox {
+			case css.OverflowClipMarginContentBox:
+				edgeTop = -box.Border.Top - box.Padding.Top
+				edgeRight = -box.Border.Right - box.Padding.Right
+				edgeBottom = -box.Border.Bottom - box.Padding.Bottom
+				edgeLeft = -box.Border.Left - box.Padding.Left
+			case css.OverflowClipMarginPaddingBox:
+				edgeTop = -box.Border.Top
+				edgeRight = -box.Border.Right
+				edgeBottom = -box.Border.Bottom
+				edgeLeft = -box.Border.Left
+			case css.OverflowClipMarginBorderBox:
+				// All edge offsets stay 0 — the clip edge is the
+				// border-edge itself.
+			}
+			edgeTop += marginLength
+			edgeRight += marginLength
+			edgeBottom += marginLength
+			edgeLeft += marginLength
+			padX = box.X - edgeLeft
+			padY = box.Y - edgeTop
+			clipW = box.Width + edgeLeft + edgeRight
+			clipH = box.Height + edgeTop + edgeBottom
+		default:
 			// Overflow clip defaults to the padding box.
 			padX = box.X + box.Border.Left
 			padY = box.Y + box.Border.Top
@@ -338,6 +401,13 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 
 		layer.ClipRect = [4]float64{padX, padY, clipW, clipH}
+		// Stash the per-side outward border-edge offsets so the renderer
+		// can outset border-radii via the shadow-shape formula. Only
+		// non-zero positive offsets trigger the outset path; negative
+		// offsets (clip edge inside the border-box, e.g. content-box clip
+		// margin with no length) are handled separately if needed.
+		layer.ClipMargin = [4]float64{edgeTop, edgeRight, edgeBottom, edgeLeft}
+		layer.HasClipMargin = applyMargin && (edgeTop != 0 || edgeRight != 0 || edgeBottom != 0 || edgeLeft != 0)
 	}
 
 	// CSS clip: rect() — applies to absolutely positioned elements (CSS 2.1 §11.1.2).
