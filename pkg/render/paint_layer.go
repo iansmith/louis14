@@ -682,12 +682,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 		if len(individualTransforms) > 0 || len(transforms) > 0 {
 			layer.HasTransform = true
-			origin := s.GetTransformOrigin()
-			// Resolve percentage origin to px relative to element's border box.
-			layer.TransformOrigin = [2]float64{
-				origin.X * box.Width,
-				origin.Y * box.Height,
-			}
+			// ResolveTransformOriginPx handles length, percent, and calc()
+			// (including calc-with-percent) relative to the border box.
+			ox, oy := s.ResolveTransformOriginPx(box.Width, box.Height)
+			layer.TransformOrigin = [2]float64{ox, oy}
 			// Resolve percentage translate values in shorthand transforms via the
 			// explicit IsPercent flag from the parser.
 			resolved := make([]css.Transform, len(transforms))

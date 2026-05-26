@@ -925,6 +925,12 @@ type calcContext struct {
 	viewportWidth  float64
 	viewportHeight float64
 	chScale        float64
+	// percentResolvesToZero, when true, causes percent tokens to resolve to 0
+	// instead of failing the parse. Mirrors Blink's intrinsic-sizing behavior
+	// where text-indent's percentage is treated as 0 (third_party/blink/
+	// renderer/core/layout/inline/inline_node.cc — InlineNode::ComputeMinMaxSizes
+	// uses LayoutUnit() for HasPercent text-indent).
+	percentResolvesToZero bool
 }
 
 // evalCalcExpr evaluates a CSS calc() expression with proper operator precedence.
@@ -958,6 +964,19 @@ func EvalCalcWithPercent(expr string, fontSize, percentBase float64) (float64, b
 		fontSize:    fontSize,
 		percentBase: percentBase,
 		chScale:     0.5,
+	})
+}
+
+// EvalCalcIntrinsic evaluates a calc() expression in an intrinsic-sizing
+// context: percent terms resolve to 0 instead of failing the parse. The
+// length, em, and viewport-unit components contribute normally. Mirrors
+// Blink's treatment of percent text-indent in InlineNode::ComputeMinMaxSizes.
+func EvalCalcIntrinsic(expr string, fontSize float64) (float64, bool) {
+	return evalCalcFull(expr, calcContext{
+		fontSize:              fontSize,
+		percentBase:           0,
+		percentResolvesToZero: true,
+		chScale:               0.5,
 	})
 }
 
@@ -1031,8 +1050,10 @@ func parseCalcAtom(tokens []string, pos int, ctx calcContext) (calcResult, bool)
 		result.pos++ // consume ")"
 		return result, true
 	}
-	// Handle percentage values: resolve against percentBase
-	if strings.HasSuffix(token, "%") && ctx.percentBase > 0 {
+	// Handle percentage values: resolve against percentBase. With
+	// percentResolvesToZero, percent terms evaluate to 0 (used in intrinsic
+	// sizing where there is no containing block to resolve against).
+	if strings.HasSuffix(token, "%") && (ctx.percentBase > 0 || ctx.percentResolvesToZero) {
 		numStr := strings.TrimSuffix(token, "%")
 		if num, err := strconv.ParseFloat(numStr, 64); err == nil {
 			return calcResult{value: num * ctx.percentBase / 100, pos: pos + 1}, true
@@ -1146,6 +1167,7 @@ func (s *Style) GetMargin() BoxEdge {
 }
 
 // resolveMarginEdge resolves a single margin property, handling percentage values.
+// Per CSS 2.1 §8.3, margin values CAN be negative — no clamp to zero.
 func (s *Style) resolveMarginEdge(prop string, containingWidth float64) float64 {
 	if val, ok := s.Get(prop); ok {
 		if val == "auto" {
@@ -1155,6 +1177,16 @@ func (s *Style) resolveMarginEdge(prop string, containingWidth float64) float64 
 		if strings.HasSuffix(trimmed, "%") {
 			if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
 				return pct / 100.0 * containingWidth
+			}
+		}
+		// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
+		// Mirrors padding's resolvePaddingEdge but without the negative-clamp,
+		// since margins are allowed to be negative.
+		if IsCalcWithPercent(trimmed) {
+			if v, ok := EvalCalcWithPercent(
+				trimmed[5:len(trimmed)-1], s.GetFontSize(), containingWidth,
+			); ok {
+				return v
 			}
 		}
 	}
@@ -1610,7 +1642,9 @@ func (s *Style) parseBorderRadiusFirstWithRef(property string, refLen float64) f
 	if !ok {
 		return 0
 	}
-	parts := strings.Fields(val)
+	// splitShorthandParts is paren-aware; strings.Fields would mis-split
+	// `calc(10px + 5%) 0` into `["calc(10px", "+", "5%)", "0"]`.
+	parts := splitShorthandParts(val)
 
 	// Two-value syntax: "25px 0" or "50px -25px" — check both components.
 	if len(parts) == 2 {
@@ -1641,11 +1675,27 @@ func (s *Style) parseBorderRadiusFirstWithRef(property string, refLen float64) f
 	return 0
 }
 
-// parseBorderRadiusComponent parses a single border-radius component (length or percentage).
+// parseBorderRadiusComponent parses a single border-radius component (length, percentage, or calc()).
 // Returns a negative value for invalid/negative inputs so callers can detect it.
+// For calc() with %, percent terms resolve against refLen (the relevant box
+// dimension — width for Rx, height for Ry).
 func parseBorderRadiusComponent(val string, fontSize, vw, vh, chScale, refLen float64) float64 {
+	val = strings.TrimSpace(val)
 	if pct, ok := ParsePercentage(val); ok {
 		return pct / 100 * refLen
+	}
+	// CSS Values §10.2: calc() with percent resolves against refLen.
+	if IsCalcWithPercent(val) {
+		ctx := calcContext{
+			fontSize:       fontSize,
+			percentBase:    refLen,
+			viewportWidth:  vw,
+			viewportHeight: vh,
+			chScale:        chScale,
+		}
+		if r, ok := evalCalcFull(val[5:len(val)-1], ctx); ok {
+			return r
+		}
 	}
 	if r, ok := parseLengthFullWithCh(val, fontSize, vw, vh, chScale); ok {
 		return r
@@ -1702,8 +1752,8 @@ func (s *Style) parseBorderRadiusElliptical(property string) EllipticalRadius {
 	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
 		return EllipticalRadius{r, r}
 	}
-	// Two-value syntax: "75px 50px"
-	parts := strings.Fields(val)
+	// Two-value syntax: "75px 50px" or "calc(...) calc(...)" (paren-aware).
+	parts := splitShorthandParts(val)
 	var result EllipticalRadius
 	if len(parts) >= 1 {
 		if r, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
@@ -1765,7 +1815,8 @@ func (s *Style) parseBorderRadiusEllipticalResolved(property string, boxWidth, b
 	if !ok {
 		return EllipticalRadius{}
 	}
-	parts := strings.Fields(val)
+	// Paren-aware split: `calc(10px + 5%) calc(...)` would be mis-split by strings.Fields.
+	parts := splitShorthandParts(val)
 
 	fs := s.GetFontSize()
 	vw, vh, ch := s.ViewportWidth, s.ViewportHeight, s.chScale()
@@ -3273,13 +3324,14 @@ func expandBorderRadiusProperty(style *Style, value string) {
 
 	// Handle elliptical radii (slash syntax): "10px 20px / 5px 15px"
 	// First set = horizontal radii (Rx), second set = vertical radii (Ry).
+	// splitOnSlashOutsideParens / splitShorthandParts respect parentheses so
+	// `calc(...)` tokens with embedded spaces and `/` are preserved.
 	var hParts, vParts []string
-	if strings.Contains(value, "/") {
-		halves := strings.SplitN(value, "/", 2)
-		hParts = strings.Fields(strings.TrimSpace(halves[0]))
-		vParts = strings.Fields(strings.TrimSpace(halves[1]))
+	if hHalf, vHalf, hasSlash := splitOnSlashOutsideParens(value); hasSlash {
+		hParts = splitShorthandParts(strings.TrimSpace(hHalf))
+		vParts = splitShorthandParts(strings.TrimSpace(vHalf))
 	} else {
-		hParts = strings.Fields(value)
+		hParts = splitShorthandParts(value)
 		vParts = nil // no vertical set = same as horizontal
 	}
 
@@ -3329,6 +3381,28 @@ func expandFourValues(parts []string) [4]string {
 	default:
 		return [4]string{}
 	}
+}
+
+// splitOnSlashOutsideParens splits a CSS shorthand at the first `/` that is
+// not inside parentheses. Used by border-radius (and other shorthands where
+// `/` separates two value sets) so that `calc(... / ...)` is not mis-split.
+// Returns (left, right, true) when a top-level slash is found; otherwise
+// returns ("", "", false).
+func splitOnSlashOutsideParens(value string) (string, string, bool) {
+	depth := 0
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '/':
+			if depth == 0 {
+				return value[:i], value[i+1:], true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // splitShorthandParts splits a CSS shorthand value by whitespace, respecting parentheses.
@@ -5467,6 +5541,62 @@ func (s *Style) GetTextIndent() (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// ResolveTextIndent resolves text-indent against the containing block's
+// inline-size. Handles length (`5em`), percentage (`50%`), and calc() with
+// percent (`calc(50% - 3px)`). Returns 0 for unset/auto/invalid values.
+// Mirrors Blink's resolution at use time
+// (third_party/blink/renderer/core/css/properties/longhands/text_indent.cc).
+func (s *Style) ResolveTextIndent(containingWidth float64) float64 {
+	val, ok := s.Get("text-indent")
+	if !ok {
+		return 0
+	}
+	trimmed := strings.TrimSpace(val)
+	if strings.HasSuffix(trimmed, "%") {
+		if pct, err := strconv.ParseFloat(strings.TrimSuffix(trimmed, "%"), 64); err == nil {
+			return pct / 100.0 * containingWidth
+		}
+	}
+	// CSS Values §10.2: calc() with percent. Resolve against containingWidth.
+	if IsCalcWithPercent(trimmed) {
+		if v, ok := EvalCalcWithPercent(
+			trimmed[5:len(trimmed)-1], s.GetFontSize(), containingWidth,
+		); ok {
+			return v
+		}
+	}
+	if length, ok := s.GetLength("text-indent"); ok {
+		return length
+	}
+	return 0
+}
+
+// ResolveTextIndentIntrinsic resolves text-indent for intrinsic-sizing
+// (min/max-content) contexts. Percent terms (bare or inside calc()) resolve
+// to 0 since the containing block's inline-size is unknown. Mirrors Blink's
+// InlineNode::ComputeMinMaxSizes which treats HasPercent text-indent as
+// LayoutUnit() (= 0) and adds the non-percent calc() contribution.
+func (s *Style) ResolveTextIndentIntrinsic() float64 {
+	val, ok := s.Get("text-indent")
+	if !ok {
+		return 0
+	}
+	trimmed := strings.TrimSpace(val)
+	if strings.HasSuffix(trimmed, "%") {
+		return 0 // bare percent → 0 for intrinsic
+	}
+	if IsCalcWithPercent(trimmed) {
+		if v, ok := EvalCalcIntrinsic(trimmed[5:len(trimmed)-1], s.GetFontSize()); ok {
+			return v
+		}
+		return 0
+	}
+	if length, ok := s.GetLength("text-indent"); ok {
+		return length
+	}
+	return 0
 }
 
 // GetBoxSizing returns the box-sizing value (default: content-box)
@@ -7749,7 +7879,8 @@ type TransformOrigin struct {
 // GetTransformOrigin parses transform-origin (default: center center = 50% 50%)
 func (s *Style) GetTransformOrigin() TransformOrigin {
 	if val, ok := s.Get("transform-origin"); ok {
-		parts := strings.Fields(val)
+		// Paren-aware split so `calc(50% - 3px)` survives as one token.
+		parts := splitShorthandParts(val)
 		origin := TransformOrigin{X: 0.5, Y: 0.5} // Default center center
 
 		if len(parts) >= 1 {
@@ -7764,7 +7895,109 @@ func (s *Style) GetTransformOrigin() TransformOrigin {
 	return TransformOrigin{X: 0.5, Y: 0.5} // Default center center
 }
 
+// ResolveTransformOriginPx returns transform-origin resolved to absolute
+// pixel offsets within the element's border box, given the box dimensions.
+// Supports length, percent, calc() (including calc-with-percent), and the
+// `left/center/right/top/bottom` keywords. Returns (originX, originY) in
+// pixels, relative to the box's top-left corner. Defaults to center center.
+// Mirrors Blink's TransformOrigin::ResolveAxisFromConvert with width/height.
+//
+// Per CSS Transforms 1 §6: with two keyword tokens, order is interchangeable —
+// `top left` is equivalent to `left top`. Length/percent components must
+// appear in (x, y) order.
+func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) {
+	val, ok := s.Get("transform-origin")
+	if !ok {
+		return 0.5 * boxW, 0.5 * boxH
+	}
+	parts := splitShorthandParts(val)
+	fs := s.GetFontSize()
+	vw, vh, ch := s.ViewportWidth, s.ViewportHeight, s.chScale()
+	x := 0.5 * boxW
+	y := 0.5 * boxH
+	if len(parts) == 1 {
+		// Single value: y-keyword applies to vertical axis (x defaults to center);
+		// anything else applies to horizontal axis (y defaults to center).
+		if isVerticalKeyword(parts[0]) {
+			y = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, boxH)
+		} else {
+			x = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, boxW)
+		}
+		return x, y
+	}
+	if len(parts) >= 2 {
+		// Two values: swap if the first is a vertical keyword AND the second
+		// is a horizontal keyword (e.g. `top left` → treat as `left top`).
+		first, second := parts[0], parts[1]
+		if isVerticalKeyword(first) && isHorizontalKeyword(second) {
+			first, second = second, first
+		}
+		x = resolveOriginAxisKeywordOrLength(first, fs, vw, vh, ch, boxW)
+		y = resolveOriginAxisKeywordOrLength(second, fs, vw, vh, ch, boxH)
+	}
+	return x, y
+}
+
+// isHorizontalKeyword reports whether val names an x-axis position keyword.
+func isHorizontalKeyword(val string) bool {
+	switch strings.TrimSpace(val) {
+	case "left", "right":
+		return true
+	}
+	return false
+}
+
+// isVerticalKeyword reports whether val names a y-axis position keyword.
+func isVerticalKeyword(val string) bool {
+	switch strings.TrimSpace(val) {
+	case "top", "bottom":
+		return true
+	}
+	return false
+}
+
+// resolveOriginAxisKeywordOrLength resolves a single transform-origin
+// component to absolute pixels along the given axis. boxLen is the box's
+// extent in this axis. Accepts left/top (= 0), right/bottom (= boxLen),
+// center (= 0.5*boxLen), percent, length, and calc() (including calc with %).
+func resolveOriginAxisKeywordOrLength(val string, fontSize, vw, vh, chScale, boxLen float64) float64 {
+	val = strings.TrimSpace(val)
+	switch val {
+	case "left", "top":
+		return 0
+	case "center":
+		return 0.5 * boxLen
+	case "right", "bottom":
+		return boxLen
+	}
+	// Percentage
+	if strings.HasSuffix(val, "%") {
+		if percent, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64); err == nil {
+			return percent / 100.0 * boxLen
+		}
+	}
+	// CSS Values §10.2: calc() with percent resolves against the axis extent.
+	if IsCalcWithPercent(val) {
+		ctx := calcContext{
+			fontSize:       fontSize,
+			percentBase:    boxLen,
+			viewportWidth:  vw,
+			viewportHeight: vh,
+			chScale:        chScale,
+		}
+		if r, ok := evalCalcFull(val[5:len(val)-1], ctx); ok {
+			return r
+		}
+	}
+	// Plain length / calc() without percent.
+	if length, ok := parseLengthFullWithCh(val, fontSize, vw, vh, chScale); ok {
+		return length
+	}
+	return 0.5 * boxLen // Default to center on parse failure
+}
+
 // parseOriginValue parses a single origin value (left/center/right/top/bottom or percentage)
+// Returns a 0-1 fraction. Use ResolveTransformOriginPx for calc/length-aware resolution.
 func parseOriginValue(val string) float64 {
 	val = strings.TrimSpace(val)
 
