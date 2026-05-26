@@ -321,7 +321,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 
 	// CSS 2.1 §12.1: Generate ::before pseudo-element.
 	if beforeNode := b.createPseudoElement(node, style, "before"); beforeNode != nil {
-		rawChildren = append(rawChildren, beforeNode)
+		rawChildren = append(rawChildren, unboxPseudoIfContents(beforeNode)...)
 	}
 
 	for _, child := range node.Children {
@@ -375,7 +375,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 
 	// CSS 2.1 §12.1: Generate ::after pseudo-element.
 	if afterNode := b.createPseudoElement(node, style, "after"); afterNode != nil {
-		rawChildren = append(rawChildren, afterNode)
+		rawChildren = append(rawChildren, unboxPseudoIfContents(afterNode)...)
 	}
 
 	// CSS 2.1 §9.2.1.1: If an inline element contains a block-level box,
@@ -464,6 +464,27 @@ func (b *LayoutTreeBuilder) propagateFirstLineToFirstInFlowBlock(parent *LayoutI
 	}
 }
 
+// unboxPseudoIfContents implements CSS Display 3 §3 for pseudo-elements:
+// if a generated ::before / ::after pseudo has computed `display: contents`,
+// its own box is suppressed and its content participates in layout as if
+// directly attached to the originating element's effective parent. The
+// children have already been resolved against the pseudo's style by
+// createPseudoElement, so we can simply expose them.
+//
+// Tested by display-contents-before-after-002.html (the pseudo has
+// `display: contents; border: 100px solid red`; the border must NOT be
+// rendered) and display-contents-before-after-003.html (flex item
+// membership of the pseudo's text content).
+func unboxPseudoIfContents(pseudo *LayoutInputNode) []*LayoutInputNode {
+	if pseudo == nil {
+		return nil
+	}
+	if pseudo.style != nil && pseudo.style.GetDisplay() == css.DisplayContents {
+		return pseudo.children
+	}
+	return []*LayoutInputNode{pseudo}
+}
+
 // displayContentsBehavesAsNone reports whether an HTML element with
 // `display: contents` should be treated as `display: none` instead of
 // unboxing. Per CSS Display 3 §3.1 "Effect on the box tree" + the
@@ -546,7 +567,7 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 	// element. The pseudo-element belongs to the contents element and lives
 	// at the contents element's slot in the effective box tree.
 	if beforeNode := b.createPseudoElement(contents, contentsStyle, "before"); beforeNode != nil {
-		out = append(out, beforeNode)
+		out = append(out, unboxPseudoIfContents(beforeNode)...)
 	}
 
 	for _, child := range contents.Children {
@@ -583,7 +604,7 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 
 	// CSS 2.1 §12.1: generate ::after for the contents element.
 	if afterNode := b.createPseudoElement(contents, contentsStyle, "after"); afterNode != nil {
-		out = append(out, afterNode)
+		out = append(out, unboxPseudoIfContents(afterNode)...)
 	}
 
 	return out
