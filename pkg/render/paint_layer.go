@@ -735,7 +735,20 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.BlendMode = s.GetMixBlendMode()
 
 	// Column rules for multicol containers.
-	if s.GetColumnCount() > 0 || s.GetColumnWidth() > 0 {
+	// Guards:
+	//   - !IsColumnBox: per-column fragmentainers are tagged BoxTypeColumn
+	//     and should never paint rules. Mirrors Blink, where PaintColumnRules
+	//     is dispatched only from the multicol container's BoxFragmentPainter
+	//     (box_fragment_painter.cc PaintColumnRules call site), never from
+	//     kColumnBox fragmentainers.
+	//   - Text == "": text fragments inherit Style from their parent element
+	//     (inline_layout.go:1639 r.Item.Style), which for direct text
+	//     children of a multicol container carries column-count > 0; without
+	//     this guard each text run would paint its parent's rules at the
+	//     text-run box origin, producing phantom rules inside columns
+	//     (multicol-rule-solid-000.xht and siblings).
+	if !box.IsColumnBox && box.Text == "" &&
+		(s.GetColumnCount() > 0 || s.GetColumnWidth() > 0) {
 		layer.IsMulticol = true
 		layer.ColumnRuleWidth = s.GetColumnRuleWidth()
 		layer.ColumnRuleStyle = s.GetColumnRuleStyle()
