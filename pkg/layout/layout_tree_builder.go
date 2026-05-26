@@ -1160,9 +1160,13 @@ func (b *LayoutTreeBuilder) createMarkerPseudoElement(node *html.Node, style *cs
 	}
 
 	// Step 5: Return the LayoutInputNode with the marker and its text child.
+	// isMarkerNode lets the ::first-letter walk (and other consumers) skip
+	// this generated subtree per CSS Pseudo-4 §3.3 — the originating
+	// list-item's own marker is not part of first-letter consideration.
 	return &LayoutInputNode{
-		DOMNode: markerNode,
-		style:   markerStyle,
+		DOMNode:      markerNode,
+		style:        markerStyle,
+		isMarkerNode: true,
 		children: []*LayoutInputNode{{
 			DOMNode: textNode,
 			style:   markerStyle,
@@ -1450,6 +1454,22 @@ func (b *LayoutTreeBuilder) computeFirstLineStyle(lin *LayoutInputNode, node *ht
 	}
 }
 
+// isFirstLetterContainer returns true for display types whose first
+// formatted line can host a ::first-letter pseudo-element. Per CSS
+// Pseudo-4 §3.3 this is "block container" plus the inline-level
+// formatting-context-establishing variants (inline-block, inline
+// list-item / inline flow-root list-item) — Blink's
+// FirstLetterPseudoElement::FirstLetterTextLayoutObject treats these
+// identically because each starts its own first-line. Narrower than
+// isBlockContainer (which also gates anonymous block generation), so we
+// keep it local to the first-letter machinery.
+func isFirstLetterContainer(d css.DisplayType) bool {
+	if isBlockContainer(d) {
+		return true
+	}
+	return d == css.DisplayInlineListItem
+}
+
 // applyFirstLetterSplit implements CSS 2.1 §12.2 ::first-letter pseudo-element.
 // If a block container has matching ::first-letter rules, the first letter of
 // the first inline text is wrapped in a synthetic inline span with that style.
@@ -1459,7 +1479,7 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 	if node == nil || node.Type != html.ElementNode {
 		return children
 	}
-	if parentStyle == nil || !isBlockContainer(parentStyle.GetDisplay()) {
+	if parentStyle == nil || !isFirstLetterContainer(parentStyle.GetDisplay()) {
 		return children
 	}
 	if len(b.stylesheets) == 0 {
@@ -1588,68 +1608,172 @@ func firstLetterLength(text string) (skipped, length int) {
 
 // splitFirstLetter walks children to find the first text character and wraps
 // it in a synthetic inline span with the first-letter style.
+//
+// Mirrors Blink's FirstLetterPseudoElement::FirstLetterTextLayoutObject at
+// Chromium 4883d11fef. The walker:
+//
+//   - Skips ::marker generated content per CSS Pseudo-4 §3.3 — the
+//     originating element's own marker AND any descendant element's
+//     marker are excluded from first-letter consideration.
+//   - Skips out-of-flow (abs/fixed) and floated siblings (they are not
+//     part of the first formatted line of this block).
+//   - Stops at element children that establish a new formatting context
+//     (inline-block, inline flow-root list-item, flex, grid, table-cell,
+//     etc.) — the originating block's first-letter neither descends into
+//     them nor continues past them.
+//   - Recursively descends into all other element children, block- AND
+//     inline-level, including empty-inline chains and nested block
+//     list-items.
+//
+// When the letter is found inside a descendant, the wrap is applied to
+// that descendant's child list (mutated in place) — not pulled out to the
+// originating block. That matches the spec: the first-letter pseudo styles
+// the letter at its lowest containing inline.
+//
+// Returns the (possibly modified) `children` slice for the originating block.
 func (b *LayoutTreeBuilder) splitFirstLetter(
 	children []*LayoutInputNode, parentNode *html.Node, flStyle *css.Style,
 ) []*LayoutInputNode {
+	newChildren, _ := b.walkFirstLetter(children, parentNode, flStyle)
+	return newChildren
+}
+
+// walkFirstLetter implements the recursive tree walk. Returns the
+// (possibly modified) children slice plus a bool indicating whether the
+// first-letter wrap was applied somewhere in the subtree rooted at these
+// children. Once `applied` flips to true, the walk short-circuits.
+//
+// The walk is pre-order over the layout subtree, mirroring Blink's
+// FirstLetterPseudoElement::FirstLetterTextLayoutObject which uses
+// NextInPreOrder. Block-level descendants are NOT skipped — the first
+// letter may sit arbitrarily deep, possibly inside nested block list-items
+// (see css-pseudo first-letter-exclude-block-child-marker, where the
+// originating `<li>`'s first letter is the 'i' inside its block `<span>`
+// list-item child, after that span's own ::marker is skipped).
+func (b *LayoutTreeBuilder) walkFirstLetter(
+	children []*LayoutInputNode, parentNode *html.Node, flStyle *css.Style,
+) (newChildren []*LayoutInputNode, applied bool) {
 	for i, child := range children {
-		if !child.IsText() {
+		// Skip ::marker generated content per CSS Pseudo-4 §3.3 — the
+		// originating element's own marker AND any descendant element's
+		// marker are excluded from first-letter consideration.
+		if child.IsMarkerNode() {
 			continue
 		}
-		text := child.TextContent()
-		idx, letterLen := firstLetterLength(text)
-		if letterLen == 0 {
+		// Skip out-of-flow (abs/fixed) and floated children — they don't
+		// participate in the parent block's first formatted line.
+		if isOutOfFlowOrFloat(child) {
 			continue
 		}
-		letterEnd := idx + letterLen
-
-		letter := text[idx:letterEnd]
-		rest := text[letterEnd:]
-
-		// Create a synthetic DOM node and LayoutInputNode for the first letter.
-		letterDOMNode := &html.Node{Type: html.TextNode, Text: letter}
-		letterDOMNode.Parent = parentNode
-		flSpanDOM := &html.Node{Type: html.ElementNode, TagName: "::first-letter"}
-		flSpanDOM.Parent = parentNode
-		b.styles[flSpanDOM] = flStyle
-
-		flSpan := &LayoutInputNode{
-			DOMNode: flSpanDOM,
-			style:   flStyle,
-			children: []*LayoutInputNode{{
-				DOMNode: letterDOMNode,
-				style:   flStyle,
-			}},
+		// Stop at element children that establish a new formatting context
+		// (inline-block, inline flow-root list-item, flex, grid,
+		// table-cell, etc.). Such atomic inline-level boxes occupy the
+		// first-letter slot: their content is its own first formatted
+		// line, and the originating block's first-letter does NOT
+		// descend into them OR continue past them. CSS Pseudo-4 §3.3 /
+		// Blink FirstLetterTextLayoutObject — see WPT
+		// first-letter-exclude-inline-child-marker groups 3–6 where
+		// `<ibi>` / `<ibo>` (display: inline flow-root list-item) block
+		// the `<li>`'s ::first-letter from reaching either the inner
+		// "item" text or the following "after" text.
+		//
+		// Text children share the parent's style, so the IsElement()
+		// guard is essential: an `<ibi>` parent's text child would
+		// otherwise look like a flow-root child of itself and be
+		// skipped, defeating ibi::first-letter on its own content.
+		if child.IsElement() && child.Style() != nil && child.Style().EstablishesNewFormattingContext() {
+			return children, true // consume the slot without wrapping
 		}
 
-		// Build the result: children before, [leading-ws if any, flSpan, rest-text, ...children after]
-		var result []*LayoutInputNode
-		result = append(result, children[:i]...)
-
-		// Add leading whitespace as a separate text node if needed.
-		if idx > 0 {
-			wsDOMNode := &html.Node{Type: html.TextNode, Text: text[:idx]}
-			wsDOMNode.Parent = parentNode
-			result = append(result, &LayoutInputNode{
-				DOMNode: wsDOMNode,
-				style:   child.style,
-			})
+		if child.IsText() {
+			text := child.TextContent()
+			idx, letterLen := firstLetterLength(text)
+			if letterLen == 0 {
+				continue
+			}
+			result := b.wrapFirstLetterInChildren(children, i, child, text, idx, letterLen, parentNode, flStyle)
+			return result, true
 		}
 
-		result = append(result, flSpan)
-
-		if rest != "" {
-			restDOMNode := &html.Node{Type: html.TextNode, Text: rest}
-			restDOMNode.Parent = parentNode
-			result = append(result, &LayoutInputNode{
-				DOMNode: restDOMNode,
-				style:   child.style,
-			})
+		// Element or anonymous container — recurse into its children
+		// (block-level OR inline-level). If the wrap is applied, the
+		// child's children slice has been replaced in place; we return
+		// the parent slice unchanged.
+		if child.IsElement() || child.IsAnonymous() {
+			grandchildren, didApply := b.walkFirstLetter(child.children, b.firstLetterHostNode(child, parentNode), flStyle)
+			if didApply {
+				child.children = grandchildren
+				return children, true
+			}
 		}
-
-		result = append(result, children[i+1:]...)
-		return result
 	}
-	return children
+	return children, false
+}
+
+// firstLetterHostNode returns the DOM node that should host the synthetic
+// ::first-letter wrapper when the letter is found at this point in the
+// walk. For element nodes it is the element itself; for anonymous nodes
+// we fall back to the original parent so the synthetic node still has a
+// stable parent pointer.
+func (b *LayoutTreeBuilder) firstLetterHostNode(child *LayoutInputNode, fallback *html.Node) *html.Node {
+	if child != nil && child.DOMNode != nil && child.DOMNode.Type == html.ElementNode {
+		return child.DOMNode
+	}
+	return fallback
+}
+
+// wrapFirstLetterInChildren replaces the text child at index i with the
+// leading-whitespace prefix (if any), the synthetic ::first-letter span,
+// and the trailing text. Returns the new children slice.
+func (b *LayoutTreeBuilder) wrapFirstLetterInChildren(
+	children []*LayoutInputNode, i int, child *LayoutInputNode,
+	text string, idx, letterLen int,
+	parentNode *html.Node, flStyle *css.Style,
+) []*LayoutInputNode {
+	letterEnd := idx + letterLen
+	letter := text[idx:letterEnd]
+	rest := text[letterEnd:]
+
+	letterDOMNode := &html.Node{Type: html.TextNode, Text: letter}
+	letterDOMNode.Parent = parentNode
+	flSpanDOM := &html.Node{Type: html.ElementNode, TagName: "::first-letter"}
+	flSpanDOM.Parent = parentNode
+	b.styles[flSpanDOM] = flStyle
+
+	flSpan := &LayoutInputNode{
+		DOMNode: flSpanDOM,
+		style:   flStyle,
+		children: []*LayoutInputNode{{
+			DOMNode: letterDOMNode,
+			style:   flStyle,
+		}},
+	}
+
+	result := make([]*LayoutInputNode, 0, len(children)+2)
+	result = append(result, children[:i]...)
+
+	if idx > 0 {
+		wsDOMNode := &html.Node{Type: html.TextNode, Text: text[:idx]}
+		wsDOMNode.Parent = parentNode
+		result = append(result, &LayoutInputNode{
+			DOMNode: wsDOMNode,
+			style:   child.style,
+		})
+	}
+
+	result = append(result, flSpan)
+
+	if rest != "" {
+		restDOMNode := &html.Node{Type: html.TextNode, Text: rest}
+		restDOMNode.Parent = parentNode
+		result = append(result, &LayoutInputNode{
+			DOMNode: restDOMNode,
+			style:   child.style,
+		})
+	}
+
+	result = append(result, children[i+1:]...)
+	return result
 }
 
 // (Phase 1, LOU-css-lists): the ad-hoc counter-reset / counter-increment
