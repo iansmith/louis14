@@ -79,6 +79,31 @@ type Renderer struct {
 	// instead of calling dc.Clear() which blanks the entire host DC.
 	// Set by RenderEmbedded; cleared on entry to Render.
 	embeddedViewport struct{ W, H float64 }
+
+	// transformDepth counts the active stack of layer transforms (including
+	// `will-change: transform`) wrapping the current paint operation. Per
+	// CSS Transforms 1 §6, when this counter is > 0, `background-attachment:
+	// fixed` on a non-canvas layer degrades to `scroll` (the element is no
+	// longer fixed to the viewport). Mirrors Blink's
+	// FixedBackgroundPaintsInLocalCoordinates check in
+	// background_image_geometry.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	transformDepth int
+
+	// canvasBgPaintedLayer, when non-nil, marks the PaintLayer whose canvas
+	// background was painted out-of-transform by paintLayerCanvasBackground.
+	// drawBackground compares against this pointer to skip the in-transform
+	// repaint that would otherwise rotate/scale the canvas bg with the
+	// layer's own transform. Reset to nil after the layer's paint completes.
+	canvasBgPaintedLayer *PaintLayer
+
+	// canvasBgPaintedDescendants tracks canvas-bg layers whose bg was
+	// painted out-of-transform by an ancestor's paintLayerCanvasBackground
+	// (typically body promoted to root's canvas, where root has the
+	// transform and body is a non-SC FlowChild visited by
+	// paintDescendantPhase). drawBackground consults this set to skip the
+	// in-transform repaint on the body layer during the standard paint
+	// walk. Cleared when the owning paintLayer call finishes.
+	canvasBgPaintedDescendants map[*PaintLayer]struct{}
 }
 
 // clipRect represents an active clip rectangle.
@@ -361,6 +386,15 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 			if r.hasBackground(box) {
 				layer.PaintsCanvasBackground = true
 			} else {
+				// Body box may be absent from the box tree when an empty
+				// body collapses through margins (CSS 2.1 §8.3.1). Per
+				// CSS Backgrounds 3 §2.11.2 / Blink's
+				// BackgroundTransfersToView, the body's bg still
+				// propagates to the canvas regardless of whether body
+				// produced a fragment. Synthesize a minimal body
+				// PaintLayer attached to the root layer so the standard
+				// promotion path can paint body's bg on the canvas.
+				ensureBodyPaintLayerForPropagation(layer)
 				// Root has no background — promote body's layer.
 				// Body is a flow child of the root layer in most cases.
 				r.promoteBodyCanvasBackground(layer)
@@ -368,6 +402,130 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 		}
 		r.paintLayer(layer)
 	}
+}
+
+// ensureBodyPaintLayerForPropagation synthesizes a body PaintLayer + Box
+// when body has no fragment in the box tree but its style has a
+// propagating background. Per CSS Backgrounds 3 §2.11.2, body's bg
+// propagates to the canvas regardless of whether body produced a layout
+// fragment; mirrors Blink's BackgroundTransfersToView contract
+// (layout_box_model_object.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f),
+// which paints the propagated bg from the View, not from body's box.
+//
+// The synthetic body box is sized to the root's padding box (the
+// background positioning area per §2.11.2) and inserted as a FlowChild
+// so promoteBodyCanvasBackground can mark it PaintsCanvasBackground=true.
+// We leave body's style intact; the standard drawBackground path consumes
+// it and paints the canvas-extent bg via the PaintsCanvasBackground flag.
+func ensureBodyPaintLayerForPropagation(rootLayer *PaintLayer) {
+	if rootLayer == nil || rootLayer.Box == nil {
+		return
+	}
+	rootBox := rootLayer.Box
+
+	// Find body's style via the LayoutInputNode children. This walks the
+	// layout-input tree, which retains body's style regardless of whether
+	// body produced a fragment (collapse-through drops the fragment but
+	// not the layout-input node).
+	if rootBox.LayoutNode == nil {
+		return
+	}
+	for _, kid := range rootBox.LayoutNode.Children() {
+		if kid == nil {
+			continue
+		}
+		dom := kid.DOMNode
+		if dom == nil || dom.TagName != "body" {
+			continue
+		}
+		bodyStyle := kid.Style()
+		if bodyStyle == nil {
+			return
+		}
+
+		// Skip if body's bg doesn't propagate. canPropagateBackground (style
+		// containment) and bg-presence are both checked here so we don't
+		// allocate a synthetic box for a body that wouldn't paint anyway.
+		if bodyStyle.HasAnyContainment() {
+			return
+		}
+		if !hasStyleBackground(bodyStyle) {
+			return
+		}
+
+		// Check whether the root layer already has body in FlowChildren
+		// (or any z-list). If so, the standard path handles it.
+		if findBodyLayer(rootLayer) != nil {
+			return
+		}
+
+		// Synthesize a body Box that aligns with the root's padding box
+		// (CSS Backgrounds 3 §2.11.2: the positioning area for the
+		// promoted body background is the root element's padding box).
+		bodyBox := &layout.Box{
+			Node:       dom,
+			Style:      bodyStyle,
+			X:          rootBox.X + rootBox.Border.Left,
+			Y:          rootBox.Y + rootBox.Border.Top,
+			Width:      rootBox.Width - rootBox.Border.Left - rootBox.Border.Right,
+			Height:     rootBox.Height - rootBox.Border.Top - rootBox.Border.Bottom,
+			Parent:     rootBox,
+			LayoutNode: kid,
+		}
+		bodyLayer := newPaintLayer(bodyBox)
+		rootLayer.FlowChildren = append(rootLayer.FlowChildren, bodyLayer)
+		return
+	}
+}
+
+// findBodyLayer returns the PaintLayer for the body element if one
+// already exists among rootLayer's children. Returns nil otherwise.
+func findBodyLayer(rootLayer *PaintLayer) *PaintLayer {
+	isBody := func(l *PaintLayer) bool {
+		return l != nil && l.Box != nil && l.Box.Node != nil && l.Box.Node.TagName == "body"
+	}
+	for _, child := range rootLayer.FlowChildren {
+		if isBody(child) {
+			return child
+		}
+	}
+	for _, child := range rootLayer.AutoZero {
+		if isBody(child) {
+			return child
+		}
+	}
+	for _, child := range rootLayer.NegativeZ {
+		if isBody(child) {
+			return child
+		}
+	}
+	for _, child := range rootLayer.PositiveZ {
+		if isBody(child) {
+			return child
+		}
+	}
+	return nil
+}
+
+// hasStyleBackground returns true if a style has a visible background
+// color or image. Counterpart of (*Renderer).hasBackground that operates
+// directly on a *css.Style without requiring a Box.
+func hasStyleBackground(s *css.Style) bool {
+	if s == nil {
+		return false
+	}
+	if bgStr, ok := s.Get("background-color"); ok && bgStr != "" && bgStr != "transparent" {
+		if bgColor, ok := css.ParseColor(bgStr); ok && bgColor.A > 0 {
+			return true
+		}
+	}
+	if _, ok := s.GetBackgroundImage(); ok {
+		return true
+	}
+	if val, ok := s.Get("background-image"); ok && isGradientValue(val) {
+		return true
+	}
+	return false
 }
 
 // promoteBodyCanvasBackground searches the root layer's children for body
@@ -630,10 +788,24 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS Transforms 1 §6 / CSS Backgrounds 3 §3.13: the canvas background
+	// (root or propagated body bg) is owned by the root canvas, NOT the
+	// layer that supplies it. A `transform` on the body or root element must
+	// NOT transform the canvas bg. Paint the canvas bg BEFORE pushing the
+	// layer transform; drawBackground will short-circuit on the layer it
+	// already painted so we don't double-paint inside the transformed dc.
+	// Mirrors Blink's ViewPainter::PaintRootGroup which paints the canvas
+	// bg before the root element's transform-property scope at
+	// view_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	r.paintLayerCanvasBackground(layer)
+
 	// Apply CSS transform if present (wraps around opacity handling).
 	if layer.HasTransform {
 		r.dc.Push()
 		r.applyTransforms(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
 	}
 
 	if layer.Opacity < 1.0 {
@@ -645,8 +817,109 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		r.paintLayerContent(layer)
 	}
 
+	if layer.HasTransformPaint {
+		r.transformDepth--
+	}
 	if layer.HasTransform {
 		r.dc.Pop()
+	}
+	if r.canvasBgPaintedLayer == layer {
+		r.canvasBgPaintedLayer = nil
+	}
+}
+
+// paintLayerCanvasBackground paints the canvas-propagated background (color
+// + image + gradient) outside the layer's transform context. Per CSS
+// Transforms 1 §6 and Backgrounds 3 §3.13, the canvas background belongs to
+// the root canvas in viewport coordinates and must not be transformed with
+// the body/root element. After painting, drawBackground will skip this
+// layer's bg so it isn't redrawn (and transformed) inside paintLayerContent.
+//
+// When `layer` is the root and the propagated body is one of its
+// descendant layers (the common case — body PaintsCanvasBackground=true
+// after promotion), we also paint body's bg here, before the root's
+// transform is applied. This is required because in louis14's paint walk
+// non-SC descendants of root are visited via paintDescendantPhase
+// INSIDE the root's transform scope, so a body that doesn't establish
+// its own transform/SC would otherwise have its propagated bg rotated
+// with the root.
+func (r *Renderer) paintLayerCanvasBackground(layer *PaintLayer) {
+	if layer == nil {
+		return
+	}
+	if layer.PaintsCanvasBackground {
+		// Mark before painting so drawBackground (called from paintSelfDecorations
+		// nested below paintLayerContent) skips the in-transform repaint.
+		r.drawBackground(layer)
+		r.canvasBgPaintedLayer = layer
+	}
+	// Hoist any descendant canvas-bg layer's paint out of this layer's
+	// transform — but only when this layer (or an ancestor) actually has
+	// a transform paint context. Without a transform, the descendant's
+	// canvas-bg paint happens in the normal stacking order inside
+	// paintLayerContent (CSS 2.1 Appendix E step 1: canvas-bg first, then
+	// NegativeZ, etc.), and the hoist would only move the bg paint
+	// EARLIER — covering NegativeZ children that would otherwise be
+	// painted ON TOP of the canvas bg. The transform-gated path is what
+	// fixes tests 002/006/007 (body has propagated bg, ancestor has
+	// transform); the no-transform path stays out of stacking order.
+	if layer.HasTransformPaint || r.transformDepth > 0 {
+		r.paintDescendantCanvasBackground(layer)
+	}
+}
+
+// paintDescendantCanvasBackground walks layer's direct children for a
+// canvas-bg-propagating descendant (typically body when html has no own
+// bg) and paints it out-of-transform. Idempotent — already-painted
+// layers are skipped via canvasBgPaintedDescendants tracking.
+//
+// Only called when the ancestor has a transform paint context, since
+// without a transform the descendant's bg should paint in the standard
+// stacking order (where NegativeZ paints over canvas-bg).
+func (r *Renderer) paintDescendantCanvasBackground(layer *PaintLayer) {
+	if layer == nil {
+		return
+	}
+	visit := func(child *PaintLayer) {
+		if child == nil || !child.PaintsCanvasBackground {
+			return
+		}
+		if r.canvasBgPaintedLayer == child {
+			return
+		}
+		// Skip layers whose bg paint would be a no-op — avoids inserting
+		// the layer into canvasBgPaintedDescendants for a non-visible bg
+		// (which would silently suppress the descendant's no-op redraw
+		// without any benefit).
+		if child.Box == nil || child.Box.Style == nil {
+			return
+		}
+		if !hasStyleBackground(child.Box.Style) {
+			return
+		}
+		r.drawBackground(child)
+		// Don't set r.canvasBgPaintedLayer here — we want drawBackground
+		// to also skip the in-transform repaint when paintDescendantPhase
+		// eventually reaches this child. Use the descendant-tracking flag
+		// instead so the suppression covers both the SC paintLayer path
+		// (which clears canvasBgPaintedLayer on exit) and the paintSelf
+		// Decorations path reached through paintDescendantPhase.
+		r.canvasBgPaintedDescendants[child] = struct{}{}
+	}
+	if r.canvasBgPaintedDescendants == nil {
+		r.canvasBgPaintedDescendants = make(map[*PaintLayer]struct{})
+	}
+	for _, child := range layer.FlowChildren {
+		visit(child)
+	}
+	for _, child := range layer.AutoZero {
+		visit(child)
+	}
+	for _, child := range layer.NegativeZ {
+		visit(child)
+	}
+	for _, child := range layer.PositiveZ {
+		visit(child)
 	}
 }
 
@@ -687,12 +960,18 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 		r.dc.Push()
 		r.applyTransforms(layer)
 	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
 	if layer.Opacity < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
 		r.dc.PopGroupWithAlpha(layer.Opacity)
 	} else {
 		r.paintLayerContent(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth--
 	}
 	if layer.HasTransform {
 		r.dc.Pop()
@@ -750,7 +1029,13 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 					r.dc.Push()
 					r.applyTransforms(layer)
 				}
+				if layer.HasTransformPaint {
+					r.transformDepth++
+				}
 				r.paintLayerContent(layer)
+				if layer.HasTransformPaint {
+					r.transformDepth--
+				}
 				if layer.HasTransform {
 					r.dc.Pop()
 				}
@@ -993,12 +1278,18 @@ func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 		r.dc.Push()
 		r.applyTransforms(layer)
 	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
 	if layer.Opacity < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
 		r.dc.PopGroupWithAlpha(layer.Opacity)
 	} else {
 		r.paintLayerContent(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth--
 	}
 	if layer.HasTransform {
 		r.dc.Pop()
@@ -1131,12 +1422,18 @@ func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
 		r.dc.Push()
 		r.applyTransforms(layer)
 	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
 	if layer.Opacity < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
 		r.dc.PopGroupWithAlpha(layer.Opacity)
 	} else {
 		r.paintLayerContent(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth--
 	}
 	if layer.HasTransform {
 		r.dc.Pop()
@@ -1944,7 +2241,29 @@ func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
 // drawBackground paints the layer's background color and image layers (pre-computed).
 // Layers are painted bottom-to-top (Blink's IterateFillLayersInReverseOrder).
 // Background-color is painted only with the bottommost layer.
+//
+// Canvas-bg short circuit: when paintLayerCanvasBackground has already
+// painted this layer's bg outside the layer's transform (per CSS Transforms
+// 1 §6), skip the in-transform repaint so the bg isn't rotated/scaled with
+// the body/root element.
 func (r *Renderer) drawBackground(layer *PaintLayer) {
+	if layer.PaintsCanvasBackground {
+		if r.canvasBgPaintedLayer == layer {
+			// paintLayerCanvasBackground already painted this layer's bg
+			// outside the transform. The in-transform repaint would
+			// rotate/scale the canvas bg with the body/root element —
+			// skip it.
+			return
+		}
+		if _, ok := r.canvasBgPaintedDescendants[layer]; ok {
+			// Ancestor's paintLayerCanvasBackground already painted this
+			// descendant canvas-bg layer out-of-transform; skip the in-
+			// transform repaint reached via paintDescendantPhase. Remove
+			// the entry so the set stays bounded.
+			delete(r.canvasBgPaintedDescendants, layer)
+			return
+		}
+	}
 	sx, sy, sw, sh := r.backgroundClipRect(layer)
 	radii := backgroundClipRadii(layer)
 	hasRadius := !radii.IsZero()
@@ -2021,9 +2340,13 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 				}
 			} else {
 				// For fixed attachment, draw the gradient over the viewport
-				// but clip to the element's background-clip area.
+				// but clip to the element's background-clip area. Per CSS
+				// Transforms 1 §6, a non-canvas layer with any ancestor
+				// transform paint context degrades fixed to scroll.
 				gradX, gradY, gradW, gradH := lx, ly, lw, lh
-				if bg.Attachment == css.BackgroundAttachmentFixed {
+				gradFixed := bg.Attachment == css.BackgroundAttachmentFixed &&
+					(layer.PaintsCanvasBackground || r.transformDepth == 0)
+				if gradFixed {
 					bounds := r.target.Bounds()
 					gradX = float64(bounds.Min.X)
 					gradY = float64(bounds.Min.Y)
@@ -2098,7 +2421,16 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	//   were specified on the body element" — but since it's promoted to
 	//   the root, the positioning area is the root's, not body's)
 	// - Any element with attachment:fixed → positioning area = viewport
+	//
+	// CSS Transforms 1 §6 fallback: for a non-canvas layer, when the layer
+	// itself or any of its ancestors has a transform paint context, the
+	// `fixed` value is treated as `scroll` (positioning area = element's
+	// own box). The transformDepth counter includes the current layer's
+	// transform (paintLayer increments BEFORE calling paintLayerContent).
 	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
+	if isFixed && !layer.PaintsCanvasBackground && r.transformDepth > 0 {
+		isFixed = false
+	}
 	// For promoted body backgrounds, use the root element's box for positioning.
 	posBox := box
 	if layer.CanvasBackgroundRootBox != nil {
@@ -2399,7 +2731,12 @@ func tilePositions(repeat css.BackgroundRepeatType, originStart, originLen, tile
 func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 	box := layer.Box
 
+	// Per CSS Transforms 1 §6, a non-canvas layer with any ancestor
+	// transform paint context degrades `fixed` to `scroll`.
 	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
+	if isFixed && !layer.PaintsCanvasBackground && r.transformDepth > 0 {
+		isFixed = false
+	}
 	posBox := box
 	if layer.CanvasBackgroundRootBox != nil {
 		posBox = layer.CanvasBackgroundRootBox
