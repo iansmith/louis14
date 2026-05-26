@@ -2789,6 +2789,7 @@ func needsShrinkToFit(style *css.Style) bool {
 	}
 	d := style.GetDisplay()
 	if d == css.DisplayInlineBlock || d == css.DisplayInlineFlex ||
+		d == css.DisplayInlineGrid ||
 		d == css.DisplayInlineTable || d == css.DisplayInlineListItem {
 		return true
 	}

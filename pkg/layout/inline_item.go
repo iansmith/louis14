@@ -244,10 +244,14 @@ func collectInlinesRecursive(
 		// Block-level or atomic inline elements (inline-block, replaced,
 		// inline-table, inline list-item). `display: inline list-item` is an
 		// atomic inline that internally is a list-item block-flow (Blink
-		// LayoutInlineListItem).
+		// LayoutInlineListItem). `inline-grid` (and `grid` when it appears as
+		// an inline-formatting-context child) is also atomic per CSS Display 3
+		// §2.2 — its principal box is a grid container that participates in
+		// the line box as a single replaced-like inline.
 		if display == css.DisplayBlock || display == css.DisplayFlex ||
 			display == css.DisplayTable || display == css.DisplayGrid ||
 			display == css.DisplayInlineBlock || display == css.DisplayInlineFlex ||
+			display == css.DisplayInlineGrid ||
 			display == css.DisplayInlineTable || display == css.DisplayInlineListItem {
 			// Atomic inline — represented as U+FFFC.
 			offset := text.Len()

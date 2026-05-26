@@ -107,6 +107,9 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
 		// Flex containers: use flex-specific min/max computation.
 		result = measureFlexMinMax(node, ctx, space)
+	} else if display == css.DisplayGrid || display == css.DisplayInlineGrid {
+		// Grid containers: track-template sum plus item contributions.
+		result = measureGridMinMax(node, ctx, space)
 	} else if hasOnlyInlineChildren(node) {
 		// Inline formatting context: measure via line breaker.
 		result = measureInlineMinMax(node, ctx, space)
@@ -701,6 +704,156 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	}
 	// Column: inline = cross direction → max of items' inline sizes.
 	return MinMaxSizes{MinContent: maxMin, MaxContent: maxMax}
+}
+
+// measureGridMinMax computes the min/max-content inline-size contributions
+// for a grid container. Mirrors Blink's
+// GridLayoutAlgorithm::ComputeMinMaxSizes
+// (third_party/blink/renderer/core/layout/grid/grid_layout_algorithm.cc) at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: the contribution is the sum of the
+// inline-axis track sizes plus inter-track gaps.
+//
+// For each track template entry on the inline axis:
+//   - Fixed length → its size.
+//   - <percentage> → 0 for min-content; treated as 0 for max-content as well
+//     (Blink only resolves percentages once an outer size is known).
+//   - <flex> (fr) → 0 (fr distributes only when a definite size exists).
+//   - auto / min-content / max-content → the maximum corresponding intrinsic
+//     contribution among items placed in that track.
+//
+// Items without explicit placement count toward the implicit-track count using
+// the same auto-flow row/column count the layout algorithm derives. For the
+// narrow scope of LOU baseline-synthesis work we treat the explicit track count
+// as authoritative; implicit-track contributions degrade gracefully because the
+// auto-placement assigns leftover items into existing tracks.
+func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space ConstraintSpace) MinMaxSizes {
+	style := node.Style()
+	if style == nil {
+		return MinMaxSizes{}
+	}
+	wdm := space.WritingDirection
+
+	// Inline-axis tracks: grid-template-columns when the container is in a
+	// horizontal-writing-mode (parent's inline = container's inline); for a
+	// vertical container the column tracks still run in the container's inline
+	// axis, so the columns template is correct in both modes (Blink uses the
+	// container's writing mode for "columns are inline-axis tracks").
+	cols, _ := style.GetGridTemplateColumnsWithNames()
+	_, colGap := style.GetGridGap()
+
+	// Gather items so auto/intrinsic tracks can be resolved from item sizes.
+	items := node.Children()
+	hasItem := false
+	for _, c := range items {
+		if c.IsText() {
+			continue
+		}
+		if cs := c.Style(); cs != nil && cs.GetDisplay() != css.DisplayNone {
+			hasItem = true
+			break
+		}
+	}
+
+	// Per-item min/max contributions sized once and reused for every
+	// auto/intrinsic track that the item may occupy.
+	type itemContrib struct{ min, max float64 }
+	itemSizes := make([]itemContrib, 0, len(items))
+	if hasItem {
+		for _, c := range items {
+			if c.IsText() {
+				continue
+			}
+			cs := c.Style()
+			if cs == nil || cs.GetDisplay() == css.DisplayNone {
+				continue
+			}
+			childWDM := NewWritingDirectionMode(cs)
+			childGeom := ComputeFragmentGeometry(cs, childWDM)
+			childBP := childGeom.InlineBorderPadding()
+			margins := ResolveMargins(cs, childWDM, 0)
+			childSpace := NewConstraintSpaceBuilder(wdm, childWDM, false).
+				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
+				SetOrthogonalFallbackBlockSize(space.OrthogonalFallbackBlockSize).
+				SetAvailableSize(geomLogicalToOld(space.AvailableSize)).
+				SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
+				Build()
+			mm := ComputeMinMaxSizes(ctx, c, childSpace)
+			itemSizes = append(itemSizes, itemContrib{
+				min: mm.MinContent + childBP + margins.InlineSum(),
+				max: mm.MaxContent + childBP + margins.InlineSum(),
+			})
+		}
+	}
+
+	// Helper to fold all items' max into a single auto-track contribution
+	// (max-content). The min-content side uses min.
+	maxAutoMin, maxAutoMax := 0.0, 0.0
+	for _, it := range itemSizes {
+		if it.min > maxAutoMin {
+			maxAutoMin = it.min
+		}
+		if it.max > maxAutoMax {
+			maxAutoMax = it.max
+		}
+	}
+
+	var minSum, maxSum float64
+	trackCount := 0
+	for _, t := range cols {
+		if t.AutoFill || t.AutoFit {
+			// repeat(auto-fill/auto-fit, <track>): contribute one nominal
+			// instance using the inner template. For nested templates we
+			// approximate with the inner-template's first track.
+			if len(t.AutoTemplate) > 0 {
+				t = t.AutoTemplate[0]
+			} else {
+				continue
+			}
+		}
+		switch {
+		case t.Size > 0:
+			minSum += t.Size
+			maxSum += t.Size
+		case t.IsMinMax:
+			// minmax(min, max): min contributes MinSize, max contributes MaxSize
+			// (or the corresponding intrinsic when MaxAuto).
+			minSum += t.MinSize
+			if t.MaxAuto {
+				maxSum += maxAutoMax
+			} else if t.MaxSize > 0 {
+				maxSum += t.MaxSize
+			} else {
+				maxSum += t.MinSize
+			}
+		case t.IsFitContent:
+			// fit-content(<size>): clamps to FitContentMax.
+			minSum += 0
+			if t.FitContentMax > 0 && maxAutoMax > t.FitContentMax {
+				maxSum += t.FitContentMax
+			} else {
+				maxSum += maxAutoMax
+			}
+		case t.MinContent:
+			minSum += maxAutoMin
+			maxSum += maxAutoMin
+		case t.MaxContent, t.Auto:
+			minSum += maxAutoMin
+			maxSum += maxAutoMax
+		case t.Fr > 0:
+			// fr tracks contribute 0 to intrinsic sizes.
+		case t.Percent > 0:
+			// Percentages resolve to 0 when no outer size is known.
+		}
+		trackCount++
+	}
+
+	if trackCount > 1 && colGap > 0 {
+		gaps := colGap * float64(trackCount-1)
+		minSum += gaps
+		maxSum += gaps
+	}
+
+	return MinMaxSizes{MinContent: minSum, MaxContent: maxSum}
 }
 
 // resolveFlexBasisForIntrinsic resolves a flex item's flex-basis to a definite
