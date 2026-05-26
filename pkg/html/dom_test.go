@@ -222,3 +222,35 @@ func TestSerializeAttributes(t *testing.T) {
 		t.Errorf("SerializeOuter() = %q, want %q", got, want)
 	}
 }
+
+func TestIsReplacedElementTag(t *testing.T) {
+	cases := []struct {
+		tag  string
+		want bool
+	}{
+		// Replaced (CSS Display 3 §2.2 atomic inlines regardless of computed display).
+		{"img", true},
+		{"video", true},
+		{"canvas", true},
+		{"svg", true},
+		{"iframe", true},
+		{"embed", true},
+		{"object", true},
+		{"input", true},
+		{"textarea", true},
+		{"select", true},
+		{"button", true},
+		// Non-replaced layout-controlled elements.
+		{"div", false},
+		{"span", false},
+		{"p", false},
+		{"a", false},
+		{"table", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsReplacedElementTag(c.tag); got != c.want {
+			t.Errorf("IsReplacedElementTag(%q) = %v, want %v", c.tag, got, c.want)
+		}
+	}
+}

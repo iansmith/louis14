@@ -654,6 +654,17 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		e.node.Attributes["class"] = val.String()
 		return true
+	case "classList":
+		// DOMTokenList is `[SameObject, PutForwards=value]` (DOM §7.1):
+		// `element.classList = "x y"` forwards to
+		// `element.classList.value = "x y"`. We update the class attribute
+		// directly with the string form rather than walking through the
+		// proxy, matching the spec contract for PutForwards.
+		if e.node.Attributes == nil {
+			e.node.Attributes = make(map[string]string)
+		}
+		e.node.Attributes["class"] = val.String()
+		return true
 	case "id":
 		if e.node.Attributes == nil {
 			e.node.Attributes = make(map[string]string)

@@ -493,3 +493,102 @@ func TestComputeStyle_RevertLayer_ChainedAcrossLayers(t *testing.T) {
 		t.Errorf("expected background-color=green (chained revert-layer), got %q", bg)
 	}
 }
+
+// TestAppliedTextDecorations_PropagationBoundaries exercises the CSS
+// Text Decor 4 §1.3 propagation boundary rules wired into
+// ResolveAppliedTextDecorations: atomic inlines, replaced elements,
+// out-of-flow descendants reset the inherited vector; display:contents
+// passes the vector through but contributes nothing of its own.
+func TestAppliedTextDecorations_PropagationBoundaries(t *testing.T) {
+	cases := []struct {
+		name     string
+		html     string
+		findTag  string  // first element matching this tag receives the assertion
+		findAttr string  // optional class= attribute filter on the matched element
+		wantLen  int     // expected len(AppliedTextDecorations) on that element
+	}{
+		{
+			name:    "plain inline span inherits parent decoration",
+			html:    `<style>.outer{text-decoration:underline}</style><div class="outer"><span class="t">hi</span></div>`,
+			findTag: "span",
+			wantLen: 1,
+		},
+		{
+			name:    "atomic inline-block resets parent decoration",
+			html:    `<style>.outer{text-decoration:underline}.t{display:inline-block}</style><div class="outer"><span class="t">hi</span></div>`,
+			findTag: "span",
+			wantLen: 0,
+		},
+		{
+			name:    "replaced svg resets parent decoration",
+			html:    `<style>.outer{text-decoration:underline}</style><span class="outer"><svg></svg></span>`,
+			findTag: "svg",
+			wantLen: 0,
+		},
+		{
+			name:    "absolute-positioned descendant resets parent decoration",
+			html:    `<style>.outer{text-decoration:underline}.t{position:absolute}</style><div class="outer"><div class="t">hi</div></div>`,
+			findTag: "div",
+			findAttr: "t",
+			wantLen: 0,
+		},
+		{
+			name:    "float descendant resets parent decoration",
+			html:    `<style>.outer{text-decoration:underline}.t{float:left}</style><div class="outer"><div class="t">hi</div></div>`,
+			findTag: "div",
+			findAttr: "t",
+			wantLen: 0,
+		},
+		{
+			name:    "display:contents skips own contribution, passes parent through",
+			// Parent overline; contents-span declares underline but contributes nothing;
+			// inner span inherits only overline.
+			html:    `<style>p{text-decoration:overline}.c{text-decoration:underline;display:contents}</style><p><span class="c"><span class="t">hi</span></span></p>`,
+			findTag: "span",
+			findAttr: "t",
+			wantLen: 1,
+		},
+		{
+			name:    "nested block-level decorations DO accumulate (in-flow, not atomic)",
+			html:    `<style>.outer{text-decoration:underline}.inner{text-decoration:overline}</style><div class="outer"><div class="inner">hi</div></div>`,
+			findTag: "div",
+			findAttr: "inner",
+			wantLen: 2,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc, _ := html.Parse(c.html)
+			styles := ApplyStylesToDocument(doc, 800, 600)
+
+			var match *html.Node
+			var walk func(n *html.Node)
+			walk = func(n *html.Node) {
+				if match != nil {
+					return
+				}
+				if n.Type == html.ElementNode && n.TagName == c.findTag {
+					if c.findAttr == "" || n.Attributes["class"] == c.findAttr {
+						match = n
+						return
+					}
+				}
+				for _, child := range n.Children {
+					walk(child)
+				}
+			}
+			walk(doc.Root)
+			if match == nil {
+				t.Fatalf("element %q (class=%q) not found in DOM", c.findTag, c.findAttr)
+			}
+			style := styles[match]
+			if style == nil {
+				t.Fatalf("no style computed for %q (class=%q)", c.findTag, c.findAttr)
+			}
+			got := len(style.GetAppliedTextDecorations())
+			if got != c.wantLen {
+				t.Errorf("AppliedTextDecorations length: got %d, want %d", got, c.wantLen)
+			}
+		})
+	}
+}

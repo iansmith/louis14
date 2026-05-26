@@ -323,3 +323,24 @@ func isVoidElement(tag string) bool {
 	}
 	return false
 }
+
+// IsReplacedElementTag reports whether the given HTML tag name names a
+// replaced element — one with intrinsic dimensions whose rendering is
+// not directly controlled by CSS. Replaced elements are laid out as
+// atomic inlines (CSS Display 3 §2.2) regardless of computed
+// `display`, and they act as boundaries for several propagating
+// effects (e.g. CSS Text Decor 4 §1.3 text-decoration propagation,
+// which does NOT cross into an atomic-inline subtree).
+//
+// Single source of truth for the louis14 codebase: callers in
+// pkg/layout (IsReplacedElement) and pkg/css (text-decoration cascade
+// boundary) both reach for this list. Add a tag to this switch and
+// every replaced-element behavior site picks it up.
+func IsReplacedElementTag(tag string) bool {
+	switch tag {
+	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
+		"input", "textarea", "select", "button":
+		return true
+	}
+	return false
+}

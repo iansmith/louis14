@@ -784,12 +784,7 @@ func injectBlockBidiControls(style *css.Style, data *InlineItemsData) {
 // (which has no such guard because it doesn't need one) and the
 // established louis14 caller-side convention.
 func IsReplacedElement(node *html.Node) bool {
-	switch node.TagName {
-	case "img", "video", "canvas", "svg", "iframe", "embed", "object",
-		"input", "textarea", "select", "button":
-		return true
-	}
-	return false
+	return html.IsReplacedElementTag(node.TagName)
 }
 
 // IsTransformableBox reports whether the given box accepts CSS

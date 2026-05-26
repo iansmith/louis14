@@ -1820,7 +1820,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		if node.Parent != nil {
 			parentStyle = styles[node.Parent]
 		}
-		style.ResolveAppliedTextDecorations(parentStyle)
+		style.ResolveAppliedTextDecorations(parentStyle, node)
 		styles[node] = style
 	}
 
