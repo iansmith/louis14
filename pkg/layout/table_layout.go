@@ -664,6 +664,49 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			InlineSize: totalInlineForRows,
 			BlockSize:  sectionBlockSize,
 		})
+
+		// Section is a positioned CB (sectionBuilder is only created for
+		// position:relative/sticky groups, see the row loop below).
+		// Resolve absolute OOF candidates that bubbled out of non-positioned
+		// rows against the section's content box; propagate fixed (and any
+		// extras) to the table. Mirrors Blink's
+		// NGOutOfFlowLayoutPart::Run at the end of
+		// TableSectionLayoutAlgorithm for positioned sections.
+		if len(sectionBuilder.outOfFlowCandidates) > 0 {
+			var absoluteSecOOFs, fixedSecOOFs []OutOfFlowCandidate
+			for _, c := range sectionBuilder.outOfFlowCandidates {
+				if c.IsFixedPosition {
+					fixedSecOOFs = append(fixedSecOOFs, c)
+				} else {
+					absoluteSecOOFs = append(absoluteSecOOFs, c)
+				}
+			}
+			sectionBuilder.outOfFlowCandidates = nil
+			if len(absoluteSecOOFs) > 0 {
+				secGeom := FragmentGeometry{}
+				if lastGroupNode != nil && lastGroupNode.Style() != nil {
+					secGeom = ComputeFragmentGeometry(lastGroupNode.Style(), wdm)
+				}
+				oofPart := &OutOfFlowLayoutPart{
+					ctx:                    tla.ctx,
+					containingBlockWDM:     wdm,
+					containingBlockSize:    LogicalSize{InlineSize: totalInlineForRows, BlockSize: sectionBlockSize},
+					containingBlockPadding: secGeom.Padding,
+					geom:                   secGeom,
+				}
+				if extra := oofPart.LayoutCandidates(absoluteSecOOFs, sectionBuilder); len(extra) > 0 {
+					fixedSecOOFs = append(fixedSecOOFs, extra...)
+				}
+			}
+			// Bubble remaining (fixed, plus any extras) to the table.
+			// Section block-origin within table content-box is
+			// sectionStartBlock; inline-origin is 0.
+			for _, c := range fixedSecOOFs {
+				c.StaticPosition.Offset.BlockOffset += sectionStartBlock
+				builder.AddOutOfFlowCandidate(c)
+			}
+		}
+
 		sectionResult := sectionBuilder.Build()
 		builder.AddChild(sectionResult.Fragment, LogicalOffset{
 			InlineOffset: 0,
@@ -740,6 +783,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		rowBuilder := NewBoxFragmentBuilder(wdm)
 		rowBuilder.SetLayoutNode(row.node)
 
+		// Cell-OOF candidates accumulated in ROW-content-box coordinates
+		// for the cells of this row. They are routed to the row, section,
+		// or table CB after the cell loop based on which ancestor (if any)
+		// is positioned. Mirrors Blink's per-section OOF collection in
+		// TableSectionLayoutAlgorithm before the row's
+		// NGOutOfFlowLayoutPart::Run.
+		var rowOOFs []OutOfFlowCandidate
+
 		for _, cl := range measured[rowIdx].cells {
 			if cl.cell.rowSpan > 1 {
 				// Defer rowspan cells: they are NOT children of any
@@ -798,18 +849,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				BlockOffset:  cl.cellBlockOffset,
 			})
 
-			// Collect OOF candidates from cell directly into the table builder.
-			// blockOffset here is the row's FINAL block-offset (single-pass),
-			// so OOF static positions reference the row's final location.
+			// Collect cell-OOF candidates in row-content-box coords.
+			// Inline axis: cell.inlineOffset is already row-relative.
+			// Block axis: cl.cellBlockOffset is row-relative (the row's
+			// origin is the row fragment's block-start). The cell's own
+			// border+padding shifts the OOF static position into the
+			// cell's content-box, then the row-relative cell offset
+			// shifts it into the row's content-box. This matches the
+			// table-coords math previously here (lines 805-811), minus
+			// the `blockOffset` table-origin term.
 			if len(cl.result.PropagatedOOFCandidates) > 0 && cl.cell.style != nil {
 				cellGeom := ComputeFragmentGeometry(cl.cell.style, wdm)
 				inlineAdj := cl.inlineOffset + cellGeom.Border.InlineStart + cellGeom.Padding.InlineStart
-				blockAdj := blockOffset + cellGeom.Border.BlockStart + cellGeom.Padding.BlockStart
+				blockAdj := cl.cellBlockOffset + cellGeom.Border.BlockStart + cellGeom.Padding.BlockStart
 				for _, cand := range cl.result.PropagatedOOFCandidates {
 					adj := cand
 					adj.StaticPosition.Offset.InlineOffset += inlineAdj
 					adj.StaticPosition.Offset.BlockOffset += blockAdj
-					builder.AddOutOfFlowCandidate(adj)
+					rowOOFs = append(rowOOFs, adj)
 				}
 			}
 		}
@@ -840,6 +897,64 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				Border:  rowPhysBorder,
 				Padding: physPadding,
 			})
+		}
+
+		// Route cell OOFs to their containing block. A position:relative
+		// or position:sticky row establishes a CB for absolute descendants
+		// (CSS 2.1 §10.1, §9.4.3); otherwise the OOFs bubble to a positioned
+		// section or to the table for the table-level OOF pass to resolve.
+		// Mirrors Blink's NGOutOfFlowLayoutPart::Run invoked at the end of
+		// TableRowLayoutAlgorithm / TableSectionLayoutAlgorithm when the row
+		// or section is the CB. Restricted to relative/sticky to mirror the
+		// existing positioned-row handling (line ~868 for RelativeOffset and
+		// line ~718 for section-builder creation).
+		rowPos := css.PositionStatic
+		if row.style != nil {
+			rowPos = row.style.GetPosition()
+		}
+		rowIsPositioned := rowPos == css.PositionRelative || rowPos == css.PositionSticky
+		bubbleOOFs := rowOOFs
+		if rowIsPositioned && len(rowOOFs) > 0 {
+			// Split candidates: absolute resolves here (row CB); fixed
+			// bubbles toward the ICB regardless of intervening CBs.
+			var absoluteRowOOFs, fixedRowOOFs []OutOfFlowCandidate
+			for _, c := range rowOOFs {
+				if c.IsFixedPosition {
+					fixedRowOOFs = append(fixedRowOOFs, c)
+				} else {
+					absoluteRowOOFs = append(absoluteRowOOFs, c)
+				}
+			}
+			if len(absoluteRowOOFs) > 0 {
+				// Row CB: padding-box. Row's geometry has been applied
+				// to rowBuilder via SetBoxData above; CB inline/block
+				// size includes row padding.
+				rowGeom := ComputeFragmentGeometry(row.style, wdm)
+				oofPart := &OutOfFlowLayoutPart{
+					ctx:                    tla.ctx,
+					containingBlockWDM:     wdm,
+					containingBlockSize:    LogicalSize{InlineSize: totalInline, BlockSize: rowHeight},
+					containingBlockPadding: rowGeom.Padding,
+					geom:                   rowGeom,
+				}
+				if extra := oofPart.LayoutCandidates(absoluteRowOOFs, rowBuilder); len(extra) > 0 {
+					fixedRowOOFs = append(fixedRowOOFs, extra...)
+				}
+			}
+			bubbleOOFs = fixedRowOOFs
+		}
+		// Bubble remaining OOFs to enclosing CB (section if open, else
+		// table). Translate row-content-box coords to the enclosing
+		// content-box coords: row inline origin == enclosing inline origin,
+		// so only the block axis shifts.
+		for _, c := range bubbleOOFs {
+			if sectionBuilder != nil {
+				c.StaticPosition.Offset.BlockOffset += blockOffset - sectionStartBlock
+				sectionBuilder.AddOutOfFlowCandidate(c)
+			} else {
+				c.StaticPosition.Offset.BlockOffset += blockOffset
+				builder.AddOutOfFlowCandidate(c)
+			}
 		}
 
 		rowResult := rowBuilder.Build()
