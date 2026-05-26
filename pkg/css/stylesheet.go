@@ -483,50 +483,7 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	for _, ruleStr := range rules {
 		trimmed := strings.TrimSpace(ruleStr)
 		if strings.HasPrefix(trimmed, "@") {
-			// Phase 22: Handle @media; skip all other at-rules
-			if strings.HasPrefix(trimmed, "@media") {
-				mediaRules := parseMediaRule(ruleStr)
-				stylesheet.Rules = append(stylesheet.Rules, mediaRules...)
-			} else if strings.HasPrefix(trimmed, "@font-face") {
-				if ff := parseFontFaceRule(trimmed); ff != nil {
-					stylesheet.FontFaces = append(stylesheet.FontFaces, *ff)
-				}
-			} else if strings.HasPrefix(trimmed, "@supports") {
-				supportsRules := parseSupportsRule(ruleStr)
-				stylesheet.Rules = append(stylesheet.Rules, supportsRules...)
-			} else if strings.HasPrefix(trimmed, "@container") {
-				containerRules := parseContainerRule(ruleStr)
-				stylesheet.Rules = append(stylesheet.Rules, containerRules...)
-			} else if strings.HasPrefix(trimmed, "@layer") {
-				layerRules, layerNames := parseLayerRule(ruleStr, stylesheet.LayerOrder)
-				for _, name := range layerNames {
-					found := false
-					for _, existing := range stylesheet.LayerOrder {
-						if existing == name {
-							found = true
-							break
-						}
-					}
-					if !found {
-						stylesheet.LayerOrder = append(stylesheet.LayerOrder, name)
-					}
-				}
-				stylesheet.Rules = append(stylesheet.Rules, layerRules...)
-			} else if strings.HasPrefix(trimmed, "@keyframes") || strings.HasPrefix(trimmed, "@-webkit-keyframes") {
-				// Parse and store keyframes; static renderer uses initial state only
-				name, frames := parseKeyframesRule(ruleStr)
-				if name != "" {
-					if stylesheet.Keyframes == nil {
-						stylesheet.Keyframes = make(map[string][]KeyframeRule)
-					}
-					stylesheet.Keyframes[name] = frames
-				}
-			} else if strings.HasPrefix(trimmed, "@counter-style") {
-				cs := parseCounterStyleRule(ruleStr)
-				if cs.Name != "" {
-					stylesheet.CounterStyles = append(stylesheet.CounterStyles, cs)
-				}
-			} else if strings.HasPrefix(trimmed, "@import") {
+			if strings.HasPrefix(trimmed, "@import") {
 				// Fetch and parse the imported sheet with a fresh
 				// ParserContext rooted at the imported sheet's own URL
 				// dir, so url() refs inside resolve against that base
@@ -537,8 +494,15 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 				// @import's position. No-op when ctx.Fetcher is nil
 				// (matches pre-Phase-6 silent-skip behavior).
 				resolveAtImport(ctx, trimmed, stylesheet)
+				continue
 			}
-			// Unknown at-rules (@three-dee, …) are silently skipped.
+			// All other at-rules dispatch through the shared registry
+			// helper so @font-face / @keyframes / @counter-style nested
+			// inside @media / @supports bodies register identically to
+			// top-level (CSS Conditional 3 §2.5; mirrors Blink's
+			// CSSParserImpl::ConsumeAtRule recursion at
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+			stylesheet.Rules = append(stylesheet.Rules, dispatchAtRuleIntoStylesheet(ruleStr, stylesheet)...)
 			continue
 		}
 
@@ -551,6 +515,92 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	}
 
 	return stylesheet, nil
+}
+
+// dispatchAtRuleIntoStylesheet routes a single at-rule string (everything
+// from the leading `@` to its terminating `}` or `;`) to the appropriate
+// stylesheet registry, returning any style-rule output the at-rule produces.
+//
+// This is the central recursion point for CSS Conditional 3 §2.5: @media /
+// @supports / @layer / @container bodies may contain any at-rule legal at
+// the top level — @font-face, @keyframes, @counter-style, and other nested
+// conditional rules. Mirrors Blink's `CSSParserImpl::ConsumeAtRule`
+// dispatching uniformly regardless of nesting depth at
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// At-rules that only register side-state on the stylesheet (@font-face,
+// @keyframes, @counter-style) mutate ss directly and return nil; conditional
+// rules that produce style rules return them so the caller can attach
+// LayerName / MediaQuery / @supports gating as appropriate. @import is NOT
+// handled here — it has its own ParserContext threading at the top-level
+// callsite.
+func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
+	trimmed := strings.TrimSpace(ruleStr)
+	switch {
+	case strings.HasPrefix(trimmed, "@media"):
+		return parseMediaRule(ruleStr, ss)
+	case strings.HasPrefix(trimmed, "@supports"):
+		return parseSupportsRule(ruleStr, ss)
+	case strings.HasPrefix(trimmed, "@container"):
+		return parseContainerRule(ruleStr)
+	case strings.HasPrefix(trimmed, "@layer"):
+		var existing []string
+		if ss != nil {
+			existing = ss.LayerOrder
+		}
+		layerRules, layerNames := parseLayerRule(ruleStr, existing, ss)
+		if ss != nil {
+			for _, name := range layerNames {
+				found := false
+				for _, e := range ss.LayerOrder {
+					if e == name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					ss.LayerOrder = append(ss.LayerOrder, name)
+				}
+			}
+		}
+		return layerRules
+	case strings.HasPrefix(trimmed, "@font-face"):
+		// ss == nil indicates the at-rule is inside a statically-false
+		// conditional body — discard per CSS Conditional 3 §2.5.
+		if ss == nil {
+			return nil
+		}
+		if ff := parseFontFaceRule(trimmed); ff != nil {
+			ss.FontFaces = append(ss.FontFaces, *ff)
+		}
+		return nil
+	case strings.HasPrefix(trimmed, "@keyframes"), strings.HasPrefix(trimmed, "@-webkit-keyframes"):
+		if ss == nil {
+			return nil
+		}
+		name, frames := parseKeyframesRule(ruleStr)
+		if name != "" {
+			if ss.Keyframes == nil {
+				ss.Keyframes = make(map[string][]KeyframeRule)
+			}
+			ss.Keyframes[name] = frames
+		}
+		return nil
+	case strings.HasPrefix(trimmed, "@counter-style"):
+		if ss == nil {
+			return nil
+		}
+		cs := parseCounterStyleRule(ruleStr)
+		if cs.Name != "" {
+			ss.CounterStyles = append(ss.CounterStyles, cs)
+		}
+		return nil
+	}
+	// Unknown at-rules (@charset inside conditional body, @three-dee, @unknown,
+	// @namespace nested where invalid per CSS Namespaces, …) are silently
+	// dropped. Their `{ ... }` body or `; ` terminator was already consumed by
+	// splitRules so we don't need to do anything else here.
+	return nil
 }
 
 // splitRules splits CSS into individual rules, with robust error recovery
@@ -839,7 +889,14 @@ func parseRule(ruleStr string) (Rule, error) {
 // multiple copies — if any branch evaluates True the rule applies. Mirrors
 // Blink's StyleRuleMedia carrying a MediaQuerySet of multiple MediaQueries
 // at third_party/blink/renderer/core/css/style_rule_media.h @ 4883d11f.
-func parseMediaRule(ruleStr string) []Rule {
+//
+// Nested at-rules in the body (@font-face / @keyframes / @counter-style /
+// @container / @supports / @media) are routed via
+// `dispatchAtRuleIntoStylesheet`; @font-face / @keyframes / @counter-style
+// register on ss directly when the @media's media query evaluates true. ss
+// may be nil; with no sink, only nested style rules and nested conditional
+// rules are returned (matching pre-refactor behaviour).
+func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 	rules := make([]Rule, 0)
 
 	// Find the opening brace, skipping braces that appear inside the prelude's
@@ -869,29 +926,49 @@ func parseMediaRule(ruleStr string) []Rule {
 
 	innerCSS := ruleStr[innerStart:innerEnd]
 
+	// Whether the @media's prelude is statically known to be false at parse
+	// time (e.g. `not all`, or `not screen` when we're rendering as screen).
+	// If any branch is potentially-true we keep ss live so nested
+	// @font-face / @keyframes / @counter-style register. CSS Conditional 3
+	// §2.5: "rules within a false condition rule must be discarded" — so a
+	// `@media not all { @font-face { ... } }` block must NOT install the
+	// font. Required by at-media-content-002/003/004 and the matching
+	// at-supports tests.
+	mediaSinkLive := ss
+	if ss != nil && !anyMediaQueryStaticallyTruthy(mediaQueries) {
+		mediaSinkLive = nil
+	}
+
 	// Parse inner rules
 	innerRules := splitRules(innerCSS)
 
 	for _, innerRuleStr := range innerRules {
 		innerTrimmed := strings.TrimSpace(innerRuleStr)
-		// Handle nested @media inside @media (e.g. @media screen { @media (min-width:1120px) { ... } })
-		if strings.HasPrefix(innerTrimmed, "@media") {
-			nestedRules := parseMediaRule(innerRuleStr)
-			// Nested media queries override the outer media query (inner wins)
-			rules = append(rules, nestedRules...)
-			continue
-		}
-		// Handle @supports nested inside @media — required by at-supports-002.
-		// The @media constraint propagates onto every rule the @supports
-		// expansion produces, mirroring Blink's StyleRuleMedia containing
-		// StyleRuleSupports.
-		if strings.HasPrefix(innerTrimmed, "@supports") {
-			supportsRules := parseSupportsRule(innerRuleStr)
-			for _, mq := range mediaQueries {
-				for _, sr := range supportsRules {
-					sr.MediaQuery = mq
-					rules = append(rules, sr)
+		if strings.HasPrefix(innerTrimmed, "@") {
+			// Nested at-rule. @media-inside-@media reuses the outer's
+			// mediaSinkLive (so an outer false-media disables nested
+			// font/keyframe registration), but the returned style rules
+			// carry the nested @media's own MediaQuery — they're not
+			// double-gated by the outer one. This mirrors Blink, which
+			// builds a StyleRuleMedia chain where each level evaluates
+			// independently at apply time but side-effect registration
+			// happens during parsing under the outer-condition mask.
+			switch {
+			case strings.HasPrefix(innerTrimmed, "@media"):
+				rules = append(rules, parseMediaRule(innerRuleStr, mediaSinkLive)...)
+			case strings.HasPrefix(innerTrimmed, "@supports"):
+				supportsRules := parseSupportsRule(innerRuleStr, mediaSinkLive)
+				for _, mq := range mediaQueries {
+					for _, sr := range supportsRules {
+						sr.MediaQuery = mq
+						rules = append(rules, sr)
+					}
 				}
+			default:
+				// @font-face / @keyframes / @counter-style / @container /
+				// @layer — dispatch into the (possibly-nil) live sink so
+				// false-media blocks discard the registration.
+				rules = append(rules, dispatchAtRuleIntoStylesheet(innerRuleStr, mediaSinkLive)...)
 			}
 			continue
 		}
@@ -912,6 +989,71 @@ func parseMediaRule(ruleStr string) []Rule {
 	}
 
 	return rules
+}
+
+// anyMediaQueryStaticallyTruthy reports whether at least one query in the
+// comma-separated media-query-list could possibly evaluate to true under any
+// representative viewport. Used at parse time to decide whether nested
+// side-effect at-rules (@font-face / @keyframes / @counter-style) should
+// register on the stylesheet — a `@media not all { ... }` body is statically
+// false and its registrations must be discarded per CSS Conditional 3 §2.5.
+//
+// Static knowledge:
+//   - Unknown media-type (e.g. `tty`, `aural`) → always false; `not tty` →
+//     always true.
+//   - `not all` → always false; bare `all` → always true.
+//   - `screen` is what louis14 renders as, so `screen` → true,
+//     `not screen` → false.
+//
+// For any query that includes media-feature conditions whose truth depends
+// on viewport (`(min-width: 768px)`, `(prefers-color-scheme: dark)`, …) we
+// conservatively return true here so the side-effect at-rule registers; the
+// rule's own viewport-time evaluation still gates style-rule application.
+// Mirrors Blink's MediaQueryEvaluator pre-pass at parse time in
+// CSSParserImpl::ConsumeMediaRule (third_party/blink/renderer/core/css/
+// parser/css_parser_impl.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func anyMediaQueryStaticallyTruthy(list []*MediaQuery) bool {
+	if len(list) == 0 {
+		return true
+	}
+	for _, mq := range list {
+		if mq == nil {
+			return true
+		}
+		// Type-level static truth: `all` / `screen` / empty match; other
+		// known types (`print`, `tty`, …) don't match a screen renderer.
+		typeMatches := false
+		switch mq.MediaType {
+		case "", "all", "screen":
+			typeMatches = true
+		}
+		// `not` flips the type-level result. `only` doesn't change it.
+		switch mq.Restrictor {
+		case MediaRestrictorNot:
+			if typeMatches && len(mq.Conditions) == 0 {
+				// `not all`, `not screen` — statically false.
+				continue
+			}
+			if !typeMatches {
+				// `not print` on a screen renderer — statically true.
+				return true
+			}
+			// `not screen and (min-width: 800px)` — feature-dependent;
+			// conservatively treat as potentially-true so the body's
+			// side-effect at-rules register. Apply-time evaluation still
+			// gates style rules.
+			return true
+		default:
+			if !typeMatches {
+				continue
+			}
+			// `all`, `screen`, or `screen and (...)`. Type matches; if
+			// feature-list is empty, definitely true; otherwise potentially
+			// true (depends on viewport).
+			return true
+		}
+	}
+	return false
 }
 
 // parseContainerRule parses a @container rule and returns its inner rules
@@ -960,7 +1102,10 @@ func parseContainerRule(ruleStr string) []Rule {
 //
 // Returns (rules, layerNames) where layerNames are declared/used layer names.
 // existingLayerOrder is used to assign LayerName to rules when a block form is used.
-func parseLayerRule(ruleStr string, existingLayerOrder []string) ([]Rule, []string) {
+// ss is the stylesheet sink for nested at-rules that register side-state
+// (@font-face / @keyframes / @counter-style). May be nil; with no sink those
+// nested registrations are dropped, matching pre-refactor behaviour.
+func parseLayerRule(ruleStr string, existingLayerOrder []string, ss *Stylesheet) ([]Rule, []string) {
 	trimmed := strings.TrimSpace(ruleStr)
 	rules := make([]Rule, 0)
 	layerNames := make([]string, 0)
@@ -1019,29 +1164,33 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string) ([]Rule, []stri
 	innerRules := splitRules(innerCSS)
 	for _, innerRuleStr := range innerRules {
 		innerTrimmed := strings.TrimSpace(innerRuleStr)
-		// Handle nested @media inside @layer
-		if strings.HasPrefix(innerTrimmed, "@media") {
-			mediaRules := parseMediaRule(innerRuleStr)
-			for i := range mediaRules {
-				mediaRules[i].LayerName = layerName
+		if strings.HasPrefix(innerTrimmed, "@") {
+			// Nested at-rule. @media / @supports / @container produce style
+			// rules that we stamp with the current LayerName; @font-face /
+			// @keyframes / @counter-style mutate ss in place.
+			var nested []Rule
+			switch {
+			case strings.HasPrefix(innerTrimmed, "@media"):
+				nested = parseMediaRule(innerRuleStr, ss)
+			case strings.HasPrefix(innerTrimmed, "@supports"):
+				nested = parseSupportsRule(innerRuleStr, ss)
+			default:
+				nested = dispatchAtRuleIntoStylesheet(innerRuleStr, ss)
 			}
-			rules = append(rules, mediaRules...)
-		} else if strings.HasPrefix(innerTrimmed, "@supports") {
-			supportsRules := parseSupportsRule(innerRuleStr)
-			for i := range supportsRules {
-				supportsRules[i].LayerName = layerName
+			for i := range nested {
+				nested[i].LayerName = layerName
 			}
-			rules = append(rules, supportsRules...)
-		} else {
-			parsed, err := parseRules(innerRuleStr)
-			if err != nil {
-				continue
-			}
-			for i := range parsed {
-				parsed[i].LayerName = layerName
-			}
-			rules = append(rules, parsed...)
+			rules = append(rules, nested...)
+			continue
 		}
+		parsed, err := parseRules(innerRuleStr)
+		if err != nil {
+			continue
+		}
+		for i := range parsed {
+			parsed[i].LayerName = layerName
+		}
+		rules = append(rules, parsed...)
 	}
 
 	// Record this layer name. Synthetic anonymous names are also recorded
@@ -1264,8 +1413,19 @@ func splitMediaConditions(s string) []string {
 	return parts
 }
 
-// parseSupportsRule parses an @supports rule and returns the inner rules if condition is met
-func parseSupportsRule(ruleStr string) []Rule {
+// parseSupportsRule parses an @supports rule and returns the inner rules if
+// the condition is met. Nested at-rules (@font-face / @keyframes /
+// @counter-style / @media / @layer / @container) are routed through
+// `dispatchAtRuleIntoStylesheet`, mutating ss when they register side-state.
+// Mirrors Blink's StyleRuleSupports body containing arbitrary nested at-rules
+// per CSS Conditional 3 §2.5, at
+// third_party/blink/renderer/core/css/css_supports_rule.cc @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// ss may be nil when called from a context that doesn't have a stylesheet yet
+// (e.g. unit tests); in that case nested non-conditional at-rules are silently
+// dropped — matching the pre-refactor behavior.
+func parseSupportsRule(ruleStr string, ss *Stylesheet) []Rule {
 	ruleStr = strings.TrimSpace(ruleStr)
 	// Locate the body's opening `{`. The first literal `{` in the rule string
 	// is NOT necessarily the body — an @supports condition may contain a
@@ -1291,19 +1451,41 @@ func parseSupportsRule(ruleStr string) []Rule {
 		return nil
 	}
 
+	return parseConditionalBody(innerCSS, ss)
+}
+
+// parseConditionalBody walks the body of a conditional at-rule (@supports /
+// @media / @layer / @container — anything whose `{ ... }` is a RuleList per
+// CSS Conditional 3 §2.5) and dispatches each inner rule. At-rules go through
+// `dispatchAtRuleIntoStylesheet` so @font-face / @keyframes / @counter-style
+// nested in a conditional body register on ss exactly as they would at the
+// top level. Style rules are accumulated and returned for the caller to gate
+// further (e.g. attaching MediaQuery / LayerName).
+//
+// `ss` may be nil. With a nil stylesheet, nested at-rules that register
+// side-state silently drop — the same behaviour as the pre-refactor parser.
+func parseConditionalBody(innerCSS string, ss *Stylesheet) []Rule {
 	innerRules := splitRules(innerCSS)
 	var rules []Rule
 	for _, inner := range innerRules {
 		innerTrimmed := strings.TrimSpace(inner)
-		// Handle @media nested inside @supports — required by at-supports-003.
-		// Mirrors Blink's StyleRuleSupports containing StyleRuleMedia.
-		if strings.HasPrefix(innerTrimmed, "@media") {
-			rules = append(rules, parseMediaRule(inner)...)
-			continue
-		}
-		// Handle nested @supports inside @supports.
-		if strings.HasPrefix(innerTrimmed, "@supports") {
-			rules = append(rules, parseSupportsRule(inner)...)
+		if strings.HasPrefix(innerTrimmed, "@") {
+			if ss == nil {
+				// Nested at-rules require a stylesheet sink to register
+				// side-state on; without one, fall back to the conditional
+				// dispatcher only (so nested @media / @supports / @layer /
+				// @container still produce style rules).
+				switch {
+				case strings.HasPrefix(innerTrimmed, "@media"):
+					rules = append(rules, parseMediaRule(inner, nil)...)
+				case strings.HasPrefix(innerTrimmed, "@supports"):
+					rules = append(rules, parseSupportsRule(inner, nil)...)
+				case strings.HasPrefix(innerTrimmed, "@container"):
+					rules = append(rules, parseContainerRule(inner)...)
+				}
+				continue
+			}
+			rules = append(rules, dispatchAtRuleIntoStylesheet(inner, ss)...)
 			continue
 		}
 		parsedRules, err := parseRules(inner)
