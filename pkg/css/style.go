@@ -5958,6 +5958,31 @@ func (s *Style) IsListItemDisplay() bool {
 	return d == DisplayListItem || d == DisplayInlineListItem
 }
 
+// IsAtomicInlineDisplay reports whether the computed display generates
+// an atomic inline-level box (CSS Display 3 §2.2): a single,
+// indivisible inline-level box that establishes its own formatting
+// context and is opaque to outer inline-axis effects. Used by the
+// text-decoration propagation gate (CSS Text Decor 4 §1.3) — an atomic
+// inline does NOT inherit decorations propagated by an outer inline
+// or block decorator.
+//
+// Mirrors Blink's `EDisplay::IsAtomicInlineLevel` family — currently the
+// inline equivalents of block/flex/grid/table plus the inline list-item
+// variant (`inline list-item`). Replaced elements (img, video, svg,
+// canvas, iframe, embed, object, button, input, textarea, select) ALSO
+// generate atomic inlines per CSS Display 3, regardless of their
+// computed `display`; that branch is the caller's responsibility (see
+// IsReplacedElement in pkg/layout/inline_item.go — both checks must be
+// combined where the propagation gate runs).
+func (s *Style) IsAtomicInlineDisplay() bool {
+	switch s.GetDisplay() {
+	case DisplayInlineBlock, DisplayInlineFlex, DisplayInlineGrid,
+		DisplayInlineTable, DisplayInlineListItem:
+		return true
+	}
+	return false
+}
+
 // IsInlineRuby reports whether the element should be treated as an
 // inline-level ruby box (i.e. `display: ruby`, equivalently `display:
 // inline ruby`). Mirrors Blink's LayoutObject::IsInlineRuby at
@@ -11959,17 +11984,67 @@ func (s *Style) computeOwnTextDecorationContribution() (AppliedTextDecoration, b
 // decoration appends to the inherited vector
 // (applied_text_decoration.h:18-50, SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
-// Phase 1 stores the accumulated vector verbatim. Phase 4 will wire boundary
-// resets (atomic inlines, block containers) — for Phase 1 the accumulator is
-// monotonic from parent → child, matching simple inline propagation.
-func (s *Style) ResolveAppliedTextDecorations(parent *Style) {
+// The `node` argument is the DOM element this style belongs to (may be nil for
+// pseudo-elements / synthetic root). It is consulted only for tag-based
+// classification of replaced elements via html.IsReplacedElementTag, which is
+// the single source of truth for the replaced-tag list.
+//
+// CSS Text Decor 4 §1.3 propagation boundaries (the "Phase 4 wiring" the
+// original Phase 1 comment promised):
+//
+//   - Atomic inline-level boxes (CSS Display 3 §2.2: inline-block,
+//     inline-flex, inline-grid, inline-table, inline list-item, AND every
+//     replaced element regardless of computed display) form a new
+//     formatting context that an ancestor's propagating decoration does
+//     NOT cross into. Inherited vector is reset to empty before the
+//     element's own contribution is appended.
+//
+//   - Out-of-flow descendants (float, position:absolute/fixed) leave the
+//     in-flow box tree; the ancestor decoration doesn't follow them.
+//     Inherited vector is reset to empty.
+//
+//   - display:contents elements generate NO box (the element disappears
+//     from the box tree). Per spec they neither inherit propagating
+//     decorations as a normal style nor contribute one to descendants —
+//     the decoration on a `display:contents` element is a no-op for
+//     line-decoration painting. We keep the parent's vector intact (so
+//     descendants' inheritance via their own ResolveAppliedTextDecorations
+//     call sees the grandparent's accumulation) and skip own contribution.
+//
+// Note: nested block-level descendants (e.g. a block inside an underlined
+// block) DO continue to accumulate; that case has no boundary because the
+// inner block is still in-flow and not atomic — verified by
+// text-decoration-propagation-04 (a passing test that exercises three
+// levels of block nesting with overlapping decorations).
+func (s *Style) ResolveAppliedTextDecorations(parent *Style, node *html.Node) {
 	var inherited []AppliedTextDecoration
 	if parent != nil {
 		inherited = parent.AppliedTextDecorations
 	}
+
+	// display:contents: keep inherited as-is, skip own contribution.
+	// The element has no box, so it neither establishes a propagating
+	// decoration nor breaks an ancestor's propagation.
+	if s.GetDisplay() == DisplayContents {
+		if len(inherited) == 0 {
+			s.AppliedTextDecorations = nil
+		} else {
+			s.AppliedTextDecorations = append([]AppliedTextDecoration(nil), inherited...)
+		}
+		return
+	}
+
+	// Propagation boundaries: an atomic inline, replaced, or out-of-flow
+	// descendant gets a fresh empty inherited vector. Its own contribution
+	// (if any) still applies — atomic inlines can themselves establish a
+	// decoration that propagates inside their own formatting context.
+	if isPropagationBoundary(s, node) {
+		inherited = nil
+	}
+
 	own, hasOwn := s.computeOwnTextDecorationContribution()
 	if !hasOwn {
-		// Element contributes nothing — vector is exactly the parent's.
+		// Element contributes nothing — vector is exactly the (post-reset) parent's.
 		if len(inherited) == 0 {
 			s.AppliedTextDecorations = nil
 		} else {
@@ -11981,4 +12056,32 @@ func (s *Style) ResolveAppliedTextDecorations(parent *Style) {
 	combined = append(combined, inherited...)
 	combined = append(combined, own)
 	s.AppliedTextDecorations = combined
+}
+
+// isPropagationBoundary reports whether the element with style s and DOM
+// node node forms a boundary that an ancestor's text-decoration does not
+// cross (CSS Text Decor 4 §1.3). The boundary set is:
+//
+//   - atomic inline-level boxes (style.IsAtomicInlineDisplay)
+//   - replaced elements (html.IsReplacedElementTag) — atomic inline-level
+//     per CSS Display 3 §2.2 even when their computed display says inline
+//   - out-of-flow boxes (float != none, position: absolute|fixed)
+//
+// display:contents is handled separately by ResolveAppliedTextDecorations
+// (it is NOT a boundary — it keeps the parent vector intact).
+func isPropagationBoundary(s *Style, node *html.Node) bool {
+	if s.IsAtomicInlineDisplay() {
+		return true
+	}
+	if node != nil && html.IsReplacedElementTag(node.TagName) {
+		return true
+	}
+	switch s.GetPosition() {
+	case PositionAbsolute, PositionFixed:
+		return true
+	}
+	if s.GetFloat() != FloatNone {
+		return true
+	}
+	return false
 }
