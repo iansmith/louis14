@@ -1325,7 +1325,7 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 		ox, oy, ow, oh := pixelSnap(layer.ClipRect[0], layer.ClipRect[1],
 			layer.ClipRect[2], layer.ClipRect[3])
 		if hasBorderRadius(layer) {
-			r.buildRoundedRectPath(ox, oy, ow, oh, layer.BorderRadius)
+			r.buildRoundedRectPath(ox, oy, ow, oh, overflowClipRadii(layer))
 		} else {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
 		}
@@ -1521,7 +1521,7 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 		ox, oy, ow, oh := pixelSnap(child.ClipRect[0], child.ClipRect[1],
 			child.ClipRect[2], child.ClipRect[3])
 		if hasBorderRadius(child) {
-			r.buildRoundedRectPath(ox, oy, ow, oh, child.BorderRadius)
+			r.buildRoundedRectPath(ox, oy, ow, oh, overflowClipRadii(child))
 		} else {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
 		}
@@ -1678,6 +1678,22 @@ func (r *Renderer) applyClipPath(layer *PaintLayer) {
 // hasBorderRadius returns true if any corner radius is non-zero.
 func hasBorderRadius(layer *PaintLayer) bool {
 	return !layer.BorderRadius.IsZero()
+}
+
+// overflowClipRadii returns the elliptical radii to use when drawing the
+// overflow clip path for `layer`. When `overflow-clip-margin` shifts the
+// clip edge outward from the padding-box, the corners outset via the same
+// cubic-shadow-shape formula used by `box-shadow` (CSS Backgrounds 3
+// §3.2 "Shadow Shape"), per CSS Overflow 4 §3.2's reference to that
+// formula. When no clip-margin is active the border-box radii are
+// returned unchanged.
+func overflowClipRadii(layer *PaintLayer) css.EllipticalRadii {
+	if !layer.HasClipMargin {
+		return layer.BorderRadius
+	}
+	// ClipMargin = [Top, Right, Bottom, Left]; positive grows outward.
+	top, right, bottom, left := layer.ClipMargin[0], layer.ClipMargin[1], layer.ClipMargin[2], layer.ClipMargin[3]
+	return layer.BorderRadius.OutsetForBoxShadow(top, right, bottom, left)
 }
 
 // buildRoundedRectPath traces a rounded rectangle path using CubicTo for
@@ -4584,16 +4600,16 @@ func (r *Renderer) SavePNG(filename string) error {
 	return png.Encode(f, r.target)
 }
 
-// hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto
+// hasOverflowClipping returns true if the box has overflow:hidden/scroll/auto/clip
 // on either axis, or paint containment (which also clips and contains positioned descendants).
 func hasOverflowClipping(box *layout.Box) bool {
 	if box.Style == nil {
 		return false
 	}
-	ox := box.Style.GetOverflowX()
-	oy := box.Style.GetOverflowY()
-	if ox == css.OverflowHidden || ox == css.OverflowScroll || ox == css.OverflowAuto ||
-		oy == css.OverflowHidden || oy == css.OverflowScroll || oy == css.OverflowAuto {
+	clipping := func(o css.OverflowType) bool {
+		return o == css.OverflowHidden || o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowClip
+	}
+	if clipping(box.Style.GetOverflowX()) || clipping(box.Style.GetOverflowY()) {
 		return true
 	}
 	// CSS Containment: paint containment clips content and contains descendants.
