@@ -321,6 +321,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	fonts := bla.ctx.FontConfig
 
 	// CSS 2.1 §16.6: white-space: nowrap / pre prevent soft wrapping.
+	// CSS Text 4 §3.4: text-wrap: nowrap is equivalent in line-break behavior.
 	// Use unlimited available width so the line breaker produces a single line
 	// that may overflow the container (overflow:hidden will clip it).
 	lineAvailableWidth := contentInlineSize
@@ -330,6 +331,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
 			noWrap = true
 		}
+		if !noWrap && bla.style.GetTextWrap() == "nowrap" {
+			noWrap = true
+		}
 	}
 	// Also check inline items: if any text item's style has nowrap, apply.
 	if !noWrap {
@@ -337,6 +341,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			if item.Type == InlineItemText && item.Style != nil {
 				ws := item.Style.GetWhiteSpace()
 				if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
+					noWrap = true
+				}
+				if !noWrap && item.Style.GetTextWrap() == "nowrap" {
 					noWrap = true
 				}
 				break
