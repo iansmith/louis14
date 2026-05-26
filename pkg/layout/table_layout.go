@@ -2043,7 +2043,18 @@ func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
 		info.width = 0
 	} else if wv, ok := s.Get(widthProp); ok {
 		if v, ok := css.ParseLengthWithFontSize(wv, s.GetFontSize()); ok {
-			info.width = v
+			// Per CSS Tables 3 + Blink's collapsed-border model
+			// (table_borders.h BorderWidth → LayoutUnit(int
+			// BorderTopWidth()) at Chromium SHA
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), collapsed-border
+			// widths are taken as integer-floored pixels. Floor here so
+			// the conflict resolver and downstream cell sizing both use
+			// the same value regardless of which source (cell, row,
+			// group, col, table) contributed it. Required by WPT
+			// subpixel-collapsed-borders-003: cell border-box width
+			// must match for cell-wins-tiebreaker (5px) and
+			// table-wins-by-width (5.95→5px) scenarios.
+			info.width = math.Floor(v)
 		}
 	}
 
