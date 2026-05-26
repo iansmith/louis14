@@ -157,11 +157,21 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("white-space", "pre")
 	}
 
-	// Default inline display for inline HTML elements
+	// Default inline display for inline HTML elements.
+	//
+	// `first-letter` / `first-line` are not real HTML elements but WPT
+	// reference pages routinely use them as inline stand-ins for the
+	// `::first-letter` / `::first-line` pseudo-elements (e.g. css-pseudo
+	// `first-letter-skip-empty-span-ref.html`). Per HTML living spec
+	// §15.3.1 unknown elements default to `display: inline`; louis14's
+	// `GetDisplay()` default is `block`, so without an explicit entry
+	// these refs render the synthetic letter on its own line and fail to
+	// match the (correctly inline) test side.
 	switch node.TagName {
 	case "span", "em", "strong", "b", "i", "u", "s", "a", "abbr", "cite",
 		"code", "dfn", "kbd", "mark", "q", "samp", "small", "sub", "sup",
-		"var", "time", "label", "br", "wbr", "img", "object":
+		"var", "time", "label", "br", "wbr", "img", "object",
+		"first-letter", "first-line":
 		if _, ok := style.Get("display"); !ok {
 			style.Set("display", "inline")
 		}

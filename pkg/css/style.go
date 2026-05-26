@@ -5983,6 +5983,39 @@ func (s *Style) IsAtomicInlineDisplay() bool {
 	return false
 }
 
+// EstablishesNewFormattingContext reports whether the computed display
+// makes this element establish a new (block or inline) formatting context
+// that contains its descendants. Used by callers that need to know
+// whether they should descend across the box boundary — for instance,
+// the ::first-letter walk treats a flow-root child as opaque because its
+// content belongs to a separate first formatted line.
+//
+// Detects flow-root via the multi-keyword `display` syntax — `inline
+// flow-root list-item` collapses to DisplayInlineListItem in
+// GetDisplay() (the list-item check wins), losing the flow-root bit, so
+// we read the raw property here. Mirrors Blink's
+// LayoutObject::CreatesNewFormattingContext for the relevant display
+// keywords.
+func (s *Style) EstablishesNewFormattingContext() bool {
+	switch s.GetDisplay() {
+	case DisplayFlowRoot, DisplayInlineBlock, DisplayTableCell,
+		DisplayTableCaption, DisplayFlex, DisplayInlineFlex,
+		DisplayGrid, DisplayInlineGrid:
+		return true
+	}
+	// Inspect the raw display string for the `flow-root` inner keyword
+	// combined with other outers (notably `inline flow-root list-item`,
+	// which GetDisplay() folds into DisplayInlineListItem).
+	if raw, ok := s.Get("display"); ok {
+		for _, f := range strings.Fields(raw) {
+			if f == "flow-root" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // IsInlineRuby reports whether the element should be treated as an
 // inline-level ruby box (i.e. `display: ruby`, equivalently `display:
 // inline ruby`). Mirrors Blink's LayoutObject::IsInlineRuby at
