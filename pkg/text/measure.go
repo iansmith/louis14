@@ -638,6 +638,32 @@ func FontHeightFromFont(fontSize float64, fontPath string) float64 {
 	return float64(m.Height) / 64.0
 }
 
+// FontXHeightFromFont returns the font's x-height in pixels at the given size,
+// sourced from the OS/2 sxHeight metric exposed by [textshape.FontMetrics].
+// Mirrors Blink's `FontMetrics::XHeight()` used by the CSS ex unit in
+// third_party/blink/renderer/platform/fonts/font_metrics.h at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Returns 0 when the font is
+// unavailable or reports a zero x-height; callers fall back to a 0.5em
+// heuristic.
+func FontXHeightFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return 0
+	}
+	return float64(m.XHeight) / 64.0
+}
+
+// FontCapHeightFromFont returns the font's cap-height in pixels at the given
+// size, sourced from the OS/2 sCapHeight metric. Mirrors Blink's
+// `FontMetrics::CapHeight()`. Returns 0 when unavailable.
+func FontCapHeightFromFont(fontSize float64, fontPath string) float64 {
+	m := openFont(fontPath, fontSize)
+	if m.FontID < 0 {
+		return 0
+	}
+	return float64(m.CapHeight) / 64.0
+}
+
 // ShapeAdvances shapes text with HarfBuzz and returns the cumulative advance
 // through each byte offset as a Blink-parity ShapeCumulative pair (Start/End,
 // floor/ceil snapped per shape_result.h SnappedStart/EndPositionForOffset).

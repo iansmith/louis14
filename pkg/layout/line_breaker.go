@@ -1783,16 +1783,21 @@ func runeLen(s string) int {
 }
 
 // fontPropsFromStyle extracts font rendering properties from a CSS style.
+// Returns the *used* font-size (post-`font-size-adjust`) so the text shaper
+// rasterizes glyphs at the visually-adjusted size per CSS Fonts 5 §1.7.
+// Box geometry (em margins, line-height) stays on the specified size — only
+// the glyph rendering scales.
 func fontPropsFromStyle(style *css.Style) (fontSize float64, bold, italic, mono, ahem bool) {
 	if style == nil {
 		return 16, false, false, false, false
 	}
-	fontSize = style.GetFontSize()
-	// GetFontSize already returns 16.0 when font-size is not set.
+	fontSize = style.GetUsedFontSize()
+	// GetUsedFontSize already returns 16.0 when font-size is not set.
 	// Only clamp NEGATIVE values (invalid) — do NOT clamp 0, which means the
 	// author explicitly set font-size:0 (e.g. to collapse whitespace between
-	// inline-block items).  Clamping 0→16 would make space characters visible
-	// even when the author intended zero-width spaces.
+	// inline-block items) or font-size-adjust:0 (CSS Fonts 5 §1.7).
+	// Clamping 0→16 would make space characters visible even when the author
+	// intended zero-width spaces.
 	if fontSize < 0 {
 		fontSize = 16
 	}
