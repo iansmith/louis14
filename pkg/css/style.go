@@ -2720,20 +2720,42 @@ func expandAllShorthand(style *Style, value string) {
 	}
 }
 
-// nonDefaultInitialValues maps CSS longhand properties whose spec-defined
-// initial value differs from louis14's getter fallback. For these properties,
-// `all: initial` (and `all: unset` on non-inherited) must set the canonical
-// initial value explicitly rather than relying on the absence-of-property
-// fallback — otherwise the rendering diverges from spec.
+// nonDefaultInitialValues maps CSS longhand properties whose `initial` /
+// `unset` resolution must store the canonical initial value explicitly,
+// rather than deleting the property and relying on the getter fallback.
 //
-// Properties not listed here use the spec initial as their getter fallback,
-// so deleting them from the style map produces spec-conformant behavior.
+// Two reasons a property needs an entry here:
+//
+//  1. The getter's absence-of-property fallback differs from the spec
+//     initial (e.g. GetDisplay returns DisplayBlock when absent, but the
+//     CSS Display §2 initial is `inline`).
+//
+//  2. The property is INHERITABLE. For inheritable properties, the
+//     post-cascade ApplyInheritedProperties pass copies the parent's value
+//     into any absent slot — which would clobber an `initial`-induced
+//     deletion. Storing the explicit initial value makes the slot present,
+//     so the inherit-when-absent pass leaves it alone. Mirrors Blink's
+//     StyleResolver writing CSSInitialValue into the ComputedStyleBuilder
+//     rather than leaving the property unset (Blink SHA
+//     4883d11fef4a8713e32cd582ecef6dc5457c8c3f, style_cascade.cc).
+//
+// Properties NOT listed here are non-inheritable AND have spec-conformant
+// getter fallbacks, so deletion is the correct resolution.
 var nonDefaultInitialValues = map[string]string{
 	// CSS Display §2: the initial value of `display` is `inline`. louis14's
 	// GetDisplay returns DisplayBlock when the property is absent (a defensive
 	// choice for elements with no UA rule), so `all: initial` must store
 	// `inline` explicitly to override it.
 	"display": "inline",
+	// CSS Color 4 §3.2: initial value of `color` is `canvastext`
+	// (historically black on most platforms). `color` IS inherited, so
+	// without an explicit entry here ApplyInheritedProperties would re-fill
+	// the deleted slot with the parent's color — breaking the contract
+	// "`color: initial` resets to the initial value, NOT the inherited".
+	// Required by text-decoration-subelements-003 where
+	// `sup.unhide { color: initial; }` must render black against a
+	// `color: transparent` parent.
+	"color": "canvastext",
 }
 
 // applyDeclarationWithVisitedFilter expands `property: value` into `style`,

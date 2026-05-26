@@ -293,13 +293,31 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		}
 	}
 
-	// Min-content: break at every opportunity.
+	// CSS 2.1 §16.6 / CSS Text 4 §3.4: when the inline container suppresses
+	// soft wrapping (`white-space: nowrap | pre`, `text-wrap: nowrap`), the
+	// run has NO soft wrap opportunities — so its min-content equals its
+	// max-content. Mirrors the same nowrap-detection InlineLayoutAlgorithm
+	// applies before invoking the line breaker for real layout (see
+	// inline_layout.go's `lineAvailableWidth = 1e9` path). Without this
+	// override, min mode greedily breaks at every word boundary, yielding
+	// "longest single word" as min-content for nowrap text — wrong per spec
+	// (a nowrap run is one unbreakable unit) and visible on
+	// text-decoration-subelements-002, where the abspos+overflow:hidden ref
+	// shrink-wraps to longest-word width instead of full text width.
+	//
+	// Detection mirrors InlineLayoutAlgorithm.Layout's check: container
+	// style first, then the first inline text item's style as fallback.
+	minAvailable := 0.0
+	if nodeIsNoWrap(node, itemsData) {
+		minAvailable = 1e9
+	}
+
 	minAvailBlock := Indefinite
 	if blockForPct != Indefinite {
 		minAvailBlock = blockForPct
 	}
 	minBuilder := NewConstraintSpaceBuilder(wdm, wdm, false).
-		SetAvailableSize(LogicalSize{InlineSize: 0, BlockSize: minAvailBlock}).
+		SetAvailableSize(LogicalSize{InlineSize: minAvailable, BlockSize: minAvailBlock}).
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize)
 	if blockForPct != Indefinite {
 		minBuilder.SetPercentageResolutionSize(LogicalSize{
@@ -1207,4 +1225,45 @@ func measureOrthogonalChild(
 	contrib := childLogical.InlineSize() + childMargins.InlineSum()
 
 	return contrib, contrib
+}
+
+// nodeIsNoWrap reports whether an inline-formatting-context node's content
+// should be treated as un-soft-wrappable. Checks the container's style for
+// `white-space: nowrap | pre` or `text-wrap: nowrap`, then falls back to
+// the first inline text item's style — mirroring the same heuristic
+// InlineLayoutAlgorithm.Layout uses to decide between
+// `lineAvailableWidth = contentInlineSize` vs `1e9`.
+//
+// Used by measureInlineMinMax so the intrinsic min-content for nowrap text
+// equals its max-content (CSS Sizing 3 §3.1: a run with no soft wrap
+// opportunities has min-content = max-content). Without this, min mode
+// would greedily break at every word boundary, producing "longest single
+// word" as min-content — a wrong measurement that distorts shrink-to-fit
+// for nowrap abspos/inline-block boxes.
+func nodeIsNoWrap(node *LayoutInputNode, itemsData *InlineItemsData) bool {
+	if style := node.Style(); style != nil {
+		ws := style.GetWhiteSpace()
+		if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
+			return true
+		}
+		if style.GetTextWrap() == "nowrap" {
+			return true
+		}
+	}
+	if itemsData == nil {
+		return false
+	}
+	for _, item := range itemsData.Items {
+		if item.Type == InlineItemText && item.Style != nil {
+			ws := item.Style.GetWhiteSpace()
+			if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
+				return true
+			}
+			if item.Style.GetTextWrap() == "nowrap" {
+				return true
+			}
+			return false
+		}
+	}
+	return false
 }
