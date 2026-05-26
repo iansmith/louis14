@@ -143,6 +143,18 @@ func TestSupportsCondition(t *testing.T) {
 		{"font-tech(xyzzy)", "font-tech(xyzzy)", false},
 		{"font-tech()", "font-tech()", false},
 		{"font-tech(\"features-opentype\")", "font-tech(\"features-opentype\")", false},
+
+		// at-supports-018 — function-call tokens in the value must name a
+		// known CSS function. `compute(...)` is not a CSS function → value
+		// invalid → declaration false → outer `not(...)` flips to true.
+		{"unknown function in width value", "(width:compute( 2px + 2px ))", false},
+		{"not unknown function in width value",
+			"(not (width:compute( 2px + 2px )))", true},
+		// Known length-context functions still work.
+		{"calc in width value", "(width: calc(2px + 2px))", true},
+		{"var in width value", "(width: var(--w))", true},
+		{"clamp in length value",
+			"(margin: clamp(1px, 2vw, 4px))", true},
 	}
 
 	for _, tc := range cases {

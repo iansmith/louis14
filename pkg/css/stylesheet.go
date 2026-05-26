@@ -2087,12 +2087,126 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	// Custom properties (`--foo`) are always supported per CSS Variables 1
 	// §2.1: "Custom properties are not subject to the same restrictions as
 	// ordinary CSS properties." Blink mirrors this: any --* with a non-empty
-	// value succeeds in CSSSupportsParser.
+	// value succeeds in CSSSupportsParser. (No function-name check inside —
+	// `var(--anything)` etc. are the whole point of custom properties.)
 	if strings.HasPrefix(property, "--") {
 		return true, true
 	}
 
+	// Per CSS Conditional 3 §6.4 the supports test is "true iff the UA
+	// recognises the property:value pair." Any function-call token in the
+	// value must name a known CSS function — `compute(...)`, `unknown(...)`
+	// etc. should make `(width: compute(...))` evaluate false. Required by
+	// at-supports-018 (`(not (width:compute(2px+2px)))` must be true).
+	if !valueFunctionsAreKnown(value) {
+		return false, true
+	}
+
 	return isSupportedDeclaration(property, value), true
+}
+
+// valueFunctionsAreKnown returns true iff every function-call token in value
+// uses an ident that names a CSS function the UA recognises. An unrecognised
+// function (`compute(...)`, `xyzzy(...)`, ...) invalidates the declaration
+// even if the rest of the value looks well-formed. Mirrors Blink's behavior:
+// CSSPropertyParser dispatches function-tokens by name and returns nullptr
+// for unknown ones, which propagates to declaration failure.
+func valueFunctionsAreKnown(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isExtra := c == '-' || c == '_'
+		if !isAlpha && !isExtra {
+			continue
+		}
+		// Read ident.
+		j := i
+		for j < len(value) {
+			cc := value[j]
+			ok := (cc >= 'a' && cc <= 'z') || (cc >= 'A' && cc <= 'Z') ||
+				(cc >= '0' && cc <= '9') || cc == '-' || cc == '_'
+			if !ok {
+				break
+			}
+			j++
+		}
+		// Is it followed by `(` (no whitespace per CSS Syntax function-token)?
+		if j < len(value) && value[j] == '(' {
+			name := strings.ToLower(value[i:j])
+			if !isKnownCSSValueFunction(name) {
+				return false
+			}
+		}
+		i = j - 1
+	}
+	return true
+}
+
+// isKnownCSSValueFunction reports whether name is a CSS function-token the UA
+// recognises as a value-context function. List sourced from CSS Values 4,
+// CSS Color 4, CSS Images 4, CSS Transforms, CSS Filters, CSS Variables.
+func isKnownCSSValueFunction(name string) bool {
+	switch name {
+	// Math
+	case "calc", "min", "max", "clamp", "round", "mod", "rem",
+		"sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+		"pow", "sqrt", "hypot", "log", "exp", "abs", "sign":
+		return true
+	// Variables / env / attr
+	case "var", "env", "attr":
+		return true
+	// Colors
+	case "rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch",
+		"oklab", "oklch", "color", "color-mix", "color-contrast",
+		"device-cmyk", "light-dark":
+		return true
+	// Images / gradients
+	case "url", "src", "image", "image-set",
+		"linear-gradient", "radial-gradient", "conic-gradient",
+		"repeating-linear-gradient", "repeating-radial-gradient",
+		"repeating-conic-gradient",
+		"cross-fade", "element", "paint":
+		return true
+	// Transforms
+	case "matrix", "matrix3d", "translate", "translatex", "translatey", "translatez", "translate3d",
+		"scale", "scalex", "scaley", "scalez", "scale3d",
+		"rotate", "rotatex", "rotatey", "rotatez", "rotate3d",
+		"skew", "skewx", "skewy",
+		"perspective":
+		return true
+	// Filters
+	case "blur", "brightness", "contrast", "drop-shadow",
+		"grayscale", "hue-rotate", "invert", "opacity",
+		"saturate", "sepia":
+		return true
+	// Shapes / paths
+	case "circle", "ellipse", "inset", "polygon", "path", "rect", "xywh", "shape":
+		return true
+	// Counters / quotes / content
+	case "counter", "counters", "content",
+		"target-counter", "target-counters", "target-text",
+		"leader", "running":
+		return true
+	// Grid
+	case "repeat", "minmax", "fit-content":
+		return true
+	// CSS Custom Highlight / Anchor positioning
+	case "anchor", "anchor-size":
+		return true
+	// CSS Transitions
+	case "cubic-bezier", "steps":
+		return true
+	// Cascade tokens
+	case "supports", "format", "local":
+		return true
+	// View transitions / scroll
+	case "view-timeline", "scroll":
+		return true
+	// Logical / fallback
+	case "fallback", "symbols":
+		return true
+	}
+	return false
 }
 
 // lastTopLevelBang returns the index of the last `!` token at the top level
