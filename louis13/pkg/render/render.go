@@ -3036,11 +3036,22 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 	posX := pos.ResolveX(posOriginW, imgW)
 	posY := pos.ResolveY(posOriginH, imgH)
 
-	switch repeat {
-	case css.BackgroundRepeatNoRepeat:
+	// louis13 supports only the legacy single-value repeat shorthand
+	// (repeat / no-repeat / repeat-x / repeat-y). The CSS Backgrounds 3
+	// per-axis values (space, round) are implemented in louis14's renderer;
+	// here they collapse to plain repeat so the legacy path keeps building.
+	repeatX := repeat.X == css.BackgroundRepeatRepeat ||
+		repeat.X == css.BackgroundRepeatSpace ||
+		repeat.X == css.BackgroundRepeatRound
+	repeatY := repeat.Y == css.BackgroundRepeatRepeat ||
+		repeat.Y == css.BackgroundRepeatSpace ||
+		repeat.Y == css.BackgroundRepeatRound
+
+	switch {
+	case !repeatX && !repeatY:
 		drawClipped(int(posOriginX+posX), int(posOriginY+posY))
 
-	case css.BackgroundRepeatRepeatX:
+	case repeatX && !repeatY:
 		startX := posX
 		for startX > 0 {
 			startX -= imgW
@@ -3050,7 +3061,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 			drawClipped(int(posOriginX+x), int(posOriginY+posY))
 		}
 
-	case css.BackgroundRepeatRepeatY:
+	case !repeatX && repeatY:
 		startY := posY
 		for startY > 0 {
 			startY -= imgH
@@ -3060,7 +3071,7 @@ func (r *Renderer) drawBackgroundImage(box *layout.Box) {
 			drawClipped(int(posOriginX+posX), int(posOriginY+y))
 		}
 
-	default: // repeat
+	default: // repeat on both axes
 		startX := posX
 		for startX > 0 {
 			startX -= imgW
