@@ -71,6 +71,28 @@ type InlineItemResult struct {
 	// InlineItemResult::RubyColumn
 	// (`core/layout/inline/inline_item_result_ruby_column.h`).
 	RubyColumn *InlineItemResultRubyColumn
+	// Style is a per-line style override. When non-nil, it replaces
+	// Item.Style for THIS line only (the underlying InlineItem is shared
+	// across lines and must not be mutated). Set by applyFirstLineStyles
+	// for items that land on the first formatted line, so that the same
+	// InlineItem appearing on a later line still uses its original style.
+	// Mirrors Blink's FirstLineStyleIterator
+	// (`core/css/first_line_style_iterator.cc`) which yields a per-fragment
+	// style without mutating the source LayoutObject style.
+	Style *css.Style
+}
+
+// EffectiveStyle returns the style that applies to this result. The per-line
+// Style override (set by ::first-line application) wins over Item.Style; this
+// preserves the shared InlineItem's original style for use on other lines.
+func (r *InlineItemResult) EffectiveStyle() *css.Style {
+	if r.Style != nil {
+		return r.Style
+	}
+	if r.Item != nil {
+		return r.Item.Style
+	}
+	return nil
 }
 
 // LineInfo represents a complete line produced by the LineBreaker.

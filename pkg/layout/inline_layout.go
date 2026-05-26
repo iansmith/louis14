@@ -738,7 +738,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// that color, text-decoration, background, etc. take effect. Font
 		// properties that affect line breaking are not yet handled (would need
 		// two-pass layout).
-		if isFirstLine && bla.node.FirstLineStyle != nil {
+		isFirstLineForBox := isFirstLine && bla.node.FirstLineStyle != nil
+		if isFirstLineForBox {
 			applyFirstLineStyles(&line, bla.node.FirstLineStyle)
 		}
 
@@ -985,8 +986,20 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			InlineSize: contentInlineSize,
 			BlockSize:  cbBlockSize,
 		}, wdm.WM)
+		// CSS Pseudo 4 §3.2.1: when this is the first formatted line and the
+		// block has ::first-line rules, the line's strut (computeLineMetricsEx
+		// parentStyle) must use the block's style with first-line font/line-
+		// height overrides merged in. Mirrors Blink's
+		// InlineLayoutAlgorithm::CreateLine using FirstLineStyle for the root
+		// inline-box metrics.
+		strutStyle := bla.style
+		var firstLineBgStyle *css.Style
+		if isFirstLineForBox {
+			strutStyle = mergeFirstLineStyle(bla.style, bla.node.FirstLineStyle)
+			firstLineBgStyle = bla.node.FirstLineStyle
+		}
 		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, bla.style, openInlineStack,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, strutStyle, openInlineStack, firstLineBgStyle,
 		)
 		openInlineStack = residualStack
 
@@ -1109,7 +1122,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 }
 
 // firstLineAllowedProperties lists the CSS properties that ::first-line is
-// allowed to override (CSS Pseudo-Elements Level 4 §3).
+// allowed to override. Per CSS Pseudo-Elements Level 4 §3.2.1 the spec
+// allow-list covers font/color/background/decoration/spacing/transform/
+// vertical-align. Blink (and Firefox) additionally honor `opacity` on
+// ::first-line — see `core/style/computed_style.cc::ApplyFirstLineStyle`
+// @ 4883d11fef and the WPT test css-pseudo/first-line-opacity-001.html
+// which depends on it.
 var firstLineAllowedProperties = []string{
 	// Font properties
 	"font-family", "font-size", "font-style", "font-weight",
@@ -1127,11 +1145,47 @@ var firstLineAllowedProperties = []string{
 	"text-transform",
 	// Vertical align (for inline)
 	"vertical-align",
+	// Blink/Firefox extension: opacity on ::first-line. CSS Pseudo 4 omits
+	// it from the allow-list, but every shipping engine honors it.
+	"opacity",
 }
 
-// applyFirstLineStyles merges ::first-line pseudo-element styles into the
-// items on the given line. Only the allowed subset of properties is applied.
-// Each item's Style is cloned before modification to avoid mutating shared styles.
+// mergeFirstLineStyle returns base with the allowed ::first-line properties
+// from firstLine merged in. Returns base unchanged when firstLine is nil or
+// declares no allowed properties. Mirrors Blink's
+// ComputedStyle::ApplyFirstLineStyle but only for properties in the spec
+// allow-list — anything outside (margin, padding, etc.) stays at base.
+func mergeFirstLineStyle(base, firstLine *css.Style) *css.Style {
+	if base == nil || firstLine == nil {
+		return base
+	}
+	hasOverride := false
+	for _, prop := range firstLineAllowedProperties {
+		if val, ok := firstLine.Properties[prop]; ok && val != "" {
+			hasOverride = true
+			_ = val
+			break
+		}
+	}
+	if !hasOverride {
+		return base
+	}
+	merged := base.Clone()
+	for _, prop := range firstLineAllowedProperties {
+		if val, ok := firstLine.Properties[prop]; ok && val != "" {
+			merged.Properties[prop] = val
+		}
+	}
+	return merged
+}
+
+// applyFirstLineStyles stores ::first-line pseudo-element overrides as a
+// per-result Style on each item on the given line. Only the allowed subset of
+// properties is applied. The underlying InlineItem is shared across lines and
+// MUST NOT be mutated — the same InlineItem appearing on a later line keeps
+// its original style. Mirrors Blink's FirstLineStyleIterator
+// (`core/css/first_line_style_iterator.cc`), which yields a per-fragment
+// first-line style without mutating the LayoutObject's stored style.
 func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style) {
 	if firstLineStyle == nil {
 		return
@@ -1148,21 +1202,21 @@ func applyFirstLineStyles(line *LineInfo, firstLineStyle *css.Style) {
 		return
 	}
 
-	// Apply overrides to each item on the line that has a style.
+	// Apply overrides to each item on the line that has a style. Write into
+	// the per-result Style override field; never mutate r.Item.Style itself.
 	for i := range line.Results {
 		r := &line.Results[i]
-		if r.Item.Style == nil {
+		if r.Item == nil || r.Item.Style == nil {
 			continue
 		}
 		// Only apply to text items and open/close tags (inline spans).
 		switch r.Item.Type {
 		case InlineItemText, InlineItemOpenTag, InlineItemCloseTag:
-			// Clone the style to avoid mutating shared state.
 			cloned := r.Item.Style.Clone()
 			for prop, val := range overrides {
 				cloned.Properties[prop] = val
 			}
-			r.Item.Style = cloned
+			r.Style = cloned
 		}
 	}
 }
@@ -1219,7 +1273,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil)
+	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil)
 	return frag, h, a
 }
 
@@ -1246,6 +1300,7 @@ func createLineBoxEx(
 	cbPhysicalSize PhysicalSize,
 	parentStyle *css.Style,
 	enteringSpanStack []*InlineItem,
+	firstLineStyle *css.Style,
 ) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
@@ -1345,6 +1400,31 @@ func createLineBoxEx(
 	// construction below; paint_layer reads Box.AppliedTextDecorations in
 	// preference to Style.GetAppliedTextDecorations() when non-nil.
 	decoratingBoxMetadata := computeDecoratingBoxMetadataPerLine(line, alignOffset, enteringSpanStack)
+
+	// CSS Pseudo 4 §3.2: ::first-line background paints behind the first
+	// formatted line. Emit BEFORE inline span backgrounds and text fragments
+	// so it lands at the bottom of the line's paint stack. Mirrors Blink's
+	// `PaintFirstLineBackground` (`core/paint/box_painter.cc` @ 4883d11fef)
+	// which paints the line-box-wide (originating block's content area width)
+	// background in the BackgroundPhase. Engines diverge on extent — Blink/
+	// WebKit paint line-box-wide, Firefox paints line-content-wide; louis14
+	// follows Blink so `<p>` ::first-line bg matches `<p>` element bg for
+	// one-line content, which is what users tend to expect.
+	if firstLineStyle != nil && hasVisibleInlinePaint(firstLineStyle) {
+		bgFrag := &PhysicalFragment{
+			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+				InlineSize: availableInline,
+				BlockSize:  lineHeight,
+			}, wdm.WM)),
+			Type:             FragmentBox,
+			Style:            firstLineStyle,
+			WritingDirection: wdm,
+		}
+		lineBuilder.AddChild(bgFrag, LogicalOffset{
+			InlineOffset: 0,
+			BlockOffset:  0,
+		})
+	}
 
 	// Step 3a: Pre-pass — generate background/border fragments for inline spans.
 	// These are added FIRST so they paint behind content (CSS 2.1 Appendix E).
@@ -1478,26 +1558,32 @@ func createLineBoxEx(
 		}
 
 		trackPos := alignOffset
-		for _, r := range line.Results {
+		for i := range line.Results {
+			r := &line.Results[i]
+			// CSS Pseudo 4 §3.2: ::first-line style overrides apply to
+			// inline spans (and their backgrounds) on the first line; use
+			// the per-result effective style so background-color/border on
+			// open/close-tag fragments reflect the first-line override.
+			effStyle := r.EffectiveStyle()
 			switch r.Item.Type {
 			case InlineItemOpenTag:
-				if r.Item.Style != nil {
+				if effStyle != nil {
 					parentCum := 0.0
 					if n := len(spanStack); n > 0 {
 						parentCum = spanStack[n-1].cumulativeVAOffs
 					}
 					spanStack = append(spanStack, spanEntry{
 						item:             r.Item,
-						style:            r.Item.Style,
+						style:            effStyle,
 						node:             r.Item.Node,
 						borderStart:      trackPos + r.Margins.InlineStart,
 						isFirstFragment:  r.Item.IsFirstFragment,
 						isLastFragment:   r.Item.IsLastFragment,
-						cumulativeVAOffs: parentCum + r.Item.Style.GetVerticalAlignOffset(),
+						cumulativeVAOffs: parentCum + effStyle.GetVerticalAlignOffset(),
 					})
 				}
 			case InlineItemCloseTag:
-				if len(spanStack) > 0 && r.Item.Style != nil {
+				if len(spanStack) > 0 && effStyle != nil {
 					span := spanStack[len(spanStack)-1]
 					spanStack = spanStack[:len(spanStack)-1]
 					// The closing fragment carries inline-end border/padding
@@ -1587,24 +1673,30 @@ func createLineBoxEx(
 		return
 	}
 	inlinePos := alignOffset
-	for _, r := range line.Results {
+	for i := range line.Results {
+		r := &line.Results[i]
+		// CSS Pseudo 4 §3.2: ::first-line style overrides apply to font/
+		// color/vertical-align on this line; consult EffectiveStyle() so a
+		// shared InlineItem also appearing on later lines still uses its
+		// original style there.
+		rStyle := r.EffectiveStyle()
 		switch r.Item.Type {
 		case InlineItemOpenTag:
-			if r.Item.Style != nil {
-				va := r.Item.Style.GetVerticalAlign()
+			if rStyle != nil {
+				va := rStyle.GetVerticalAlign()
 				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
-					a, d := inlineBoxAsDesc(r.Item.Style)
+					a, d := inlineBoxAsDesc(rStyle)
 					vaStack = append(vaStack, vaFrame{vAlign: va, rootAsc: a, rootDesc: d})
 				}
 				// Push the span's length offset onto the cumulative stack so
 				// descendant text/atomic-inline fragments inherit the shift.
-				off := r.Item.Style.GetVerticalAlignOffset()
+				off := rStyle.GetVerticalAlignOffset()
 				vaLengthStack = append(vaLengthStack, off)
 				vaLengthOffset += off
 			}
 		case InlineItemCloseTag:
-			if r.Item.Style != nil {
-				va := r.Item.Style.GetVerticalAlign()
+			if rStyle != nil {
+				va := rStyle.GetVerticalAlign()
 				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
 					if n := len(vaStack); n > 0 {
 						vaStack = vaStack[:n-1]
@@ -1630,14 +1722,14 @@ func createLineBoxEx(
 				content += "-"
 			}
 
-			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
 			var ascent float64
 			if centralBaseline {
 				// CSS Writing Modes 3 §4.3: in vertical modes with central
 				// baseline, use fontSize / 2.
 				ascent = fontSize / 2
 			} else {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
+				fontPath := resolveFontPath(rStyle, fonts)
 				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
 
@@ -1658,11 +1750,11 @@ func createLineBoxEx(
 				f := vaStack[n-1]
 				effectiveVA = f.vAlign
 				rootAsc, rootDesc = f.rootAsc, f.rootDesc
-			} else if r.Item.Style != nil {
-				va := r.Item.Style.GetVerticalAlign()
+			} else if rStyle != nil {
+				va := rStyle.GetVerticalAlign()
 				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
 					effectiveVA = va
-					rootAsc, rootDesc = inlineBoxAsDesc(r.Item.Style)
+					rootAsc, rootDesc = inlineBoxAsDesc(rStyle)
 				}
 			}
 			switch effectiveVA {
@@ -1697,7 +1789,7 @@ func createLineBoxEx(
 				TextContent:      content,
 				BidiLevel:        r.Item.BidiLevel,
 				Node:             parentNode,
-				Style:            r.Item.Style,
+				Style:            rStyle,
 				WritingDirection: wdm,
 			}
 			// LOU-149 Phase 4: stamp per-fragment decorating-box metadata so
@@ -1715,10 +1807,10 @@ func createLineBoxEx(
 			// (display:inline), not a block container. Block containers handle their
 			// own position:relative offset in block layout — applying it here would
 			// double-offset the text.
-			if r.Item.Style != nil && r.Item.Style.GetDisplay() == css.DisplayInline {
-				pos := r.Item.Style.GetPosition()
+			if rStyle != nil && rStyle.GetDisplay() == css.DisplayInline {
+				pos := rStyle.GetPosition()
 				if pos == css.PositionRelative {
-					offset := r.Item.Style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
+					offset := rStyle.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
 					textFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
 				}
 			}
@@ -2015,11 +2107,18 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 	// children of top/bottom-aligned inline boxes are also excluded.
 	var topBottomDepth int
 
-	for _, r := range line.Results {
+	for i := range line.Results {
+		r := &line.Results[i]
+		// CSS Pseudo 4 §3.2.1: font-size and line-height are first-line
+		// allowed; use the per-result effective style so first-line items
+		// contribute the overridden metrics (e.g. larger font_size grows
+		// the line's ascent/descent), and shared InlineItems on later lines
+		// stay at their original metrics.
+		rStyle := r.EffectiveStyle()
 		switch r.Item.Type {
 		case InlineItemCloseTag:
-			if r.Item.Style != nil {
-				va := r.Item.Style.GetVerticalAlign()
+			if rStyle != nil {
+				va := rStyle.GetVerticalAlign()
 				if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
 					topBottomDepth--
 				}
@@ -2029,30 +2128,30 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// Empty inline boxes (e.g. <span></span>) have no InlineItemText but
 			// still establish a strut: their font's ascent/descent determine the
 			// minimum line box height per CSS 2.1 §10.8.
-			if r.Item.Style == nil {
+			if rStyle == nil {
 				continue
 			}
-			va := r.Item.Style.GetVerticalAlign()
+			va := rStyle.GetVerticalAlign()
 			if va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
 				topBottomDepth++
 			}
-			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
 			var ascent, descent float64
 			if centralBaseline {
 				// CSS Writing Modes 3 §4.3: central baseline = fontSize / 2.
 				ascent = fontSize / 2
 				descent = fontSize / 2
 			} else {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
+				fontPath := resolveFontPath(rStyle, fonts)
 				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
 				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
-			lineHt := r.Item.Style.GetLineHeight()
-			if r.Item.Style.IsLineHeightNormal() && !centralBaseline {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
+			lineHt := rStyle.GetLineHeight()
+			if rStyle.IsLineHeightNormal() && !centralBaseline {
+				fontPath := resolveFontPath(rStyle, fonts)
 				lineHt = text.FontHeightFromFont(fontSize, fontPath)
 			}
 			halfLeading := (lineHt - (ascent + descent)) / 2
@@ -2080,28 +2179,28 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// Check if this text is inside a vertical-align: top/bottom subtree,
 			// or if its own style specifies top/bottom alignment.
 			isInTopBottom := topBottomDepth > 0
-			if !isInTopBottom && r.Item.Style != nil {
-				va := r.Item.Style.GetVerticalAlign()
+			if !isInTopBottom && rStyle != nil {
+				va := rStyle.GetVerticalAlign()
 				isInTopBottom = va == css.VerticalAlignTop || va == css.VerticalAlignBottom
 			}
-			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
 			var ascent, descent float64
 			if centralBaseline {
 				// CSS Writing Modes 3 §4.3: central baseline = fontSize / 2.
 				ascent = fontSize / 2
 				descent = fontSize / 2
 			} else {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
+				fontPath := resolveFontPath(rStyle, fonts)
 				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
 				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
-			if r.Item.Style != nil {
-				lineHt := r.Item.Style.GetLineHeight()
-				if r.Item.Style.IsLineHeightNormal() && !centralBaseline {
-					fontPath := resolveFontPath(r.Item.Style, fonts)
+			if rStyle != nil {
+				lineHt := rStyle.GetLineHeight()
+				if rStyle.IsLineHeightNormal() && !centralBaseline {
+					fontPath := resolveFontPath(rStyle, fonts)
 					lineHt = text.FontHeightFromFont(fontSize, fontPath)
 				}
 				halfLeading := (lineHt - (ascent + descent)) / 2
@@ -2128,22 +2227,22 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// Must mirror the InlineItemText path exactly so that a control-only
 			// line (blank line between two \n in <pre>) has the same ascent/descent
 			// that a text-bearing line would have with the same font.
-			if r.Item.Style == nil {
+			if rStyle == nil {
 				continue
 			}
-			fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
 			var ascent, descent float64
 			if centralBaseline {
 				ascent = fontSize / 2
 				descent = fontSize / 2
 			} else {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
+				fontPath := resolveFontPath(rStyle, fonts)
 				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
 				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
 			}
-			lineHt := r.Item.Style.GetLineHeight()
-			if r.Item.Style.IsLineHeightNormal() && !centralBaseline {
-				fontPath := resolveFontPath(r.Item.Style, fonts)
+			lineHt := rStyle.GetLineHeight()
+			if rStyle.IsLineHeightNormal() && !centralBaseline {
+				fontPath := resolveFontPath(rStyle, fonts)
 				lineHt = text.FontHeightFromFont(fontSize, fontPath)
 			}
 			halfLeading := (lineHt - (ascent + descent)) / 2
