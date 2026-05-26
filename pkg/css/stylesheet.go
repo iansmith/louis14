@@ -2009,7 +2009,12 @@ func unescapeCSS(s string) string {
 			// Parse hex value
 			hexStr := s[hexStart:i]
 			codePoint, _ := strconv.ParseInt(hexStr, 16, 32)
-			if codePoint > 0 && codePoint <= 0x10FFFF {
+			// CSS Syntax §4.3.8 "Consume an escaped code point": if the number
+			// is zero, a surrogate (0xD800-0xDFFF), or greater than the maximum
+			// allowed code point (0x10FFFF), return U+FFFD REPLACEMENT CHARACTER.
+			if codePoint == 0 || (codePoint >= 0xD800 && codePoint <= 0xDFFF) || codePoint > 0x10FFFF {
+				result.WriteRune('�')
+			} else {
 				result.WriteRune(rune(codePoint))
 			}
 			// Consume one trailing whitespace if present
@@ -2059,15 +2064,18 @@ func parseDeclarations(declStr string) DeclarationResult {
 			continue
 		}
 
-		property := strings.TrimSpace(part[:colonPos])
-		value := strings.TrimSpace(part[colonPos+1:])
+		rawProperty := strings.TrimSpace(part[:colonPos])
+		rawValue := strings.TrimSpace(part[colonPos+1:])
 
 		// Unescape CSS escape sequences in both property and value
-		property = unescapeCSS(property)
+		property := unescapeCSS(rawProperty)
 		// IMPORTANT: Don't unescape the quotes property value here, as it needs special handling
 		// in parseQuotes (layout.go) to preserve the quote string structure
+		var value string
 		if property != "quotes" {
-			value = unescapeCSS(value)
+			value = unescapeCSS(rawValue)
+		} else {
+			value = rawValue
 		}
 
 		// Skip declarations with empty property or value
@@ -2081,7 +2089,12 @@ func parseDeclarations(declStr string) DeclarationResult {
 			continue
 		}
 
-		// Handle !important: strip it if valid, reject if malformed
+		// Handle !important: strip it if valid, reject if malformed.
+		// Apply the same strip to rawValue so downstream custom-property
+		// validation doesn't see the priority suffix as a top-level `!`
+		// token. `rawValue` differs from `value` only in unescaped sequences
+		// (escapes can't appear inside the !important suffix), so the same
+		// suffix-locator works for both.
 		isImportant := false
 		if strings.Contains(value, "!") {
 			bangIdx := strings.Index(value, "!")
@@ -2093,6 +2106,42 @@ func parseDeclarations(declStr string) DeclarationResult {
 				// Invalid use of ! (e.g., "red ! error") — reject entire declaration
 				continue
 			}
+		}
+		if rawBangIdx := strings.LastIndex(rawValue, "!"); rawBangIdx >= 0 {
+			afterRawBang := strings.TrimSpace(rawValue[rawBangIdx+1:])
+			if strings.EqualFold(afterRawBang, "important") {
+				rawValue = strings.TrimSpace(rawValue[:rawBangIdx])
+			}
+		}
+
+		// CSS Custom Properties §2 / §3: validate the custom-property name and
+		// declared value. An invalid declaration is discarded entirely and must
+		// NOT overwrite an earlier valid one — mirrors Blink's
+		// CSSPropertyParser::ParseCustomPropertyDeclaration at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. We mirror the
+		// isImageProperty / isValidImageValue gate pattern above so the
+		// rejection path stays uniform across property categories.
+		//
+		// Name validation runs against the RAW (pre-unescape) form because
+		// CSS escape sequences extend the set of code points an ident-token
+		// can name to anything — `\27 d` legitimately names `'d`, which after
+		// unescape would otherwise look like a name with an invalid `'` in
+		// it. The escape-aware validator inspects the source tokens directly.
+		if strings.HasPrefix(rawProperty, "--") {
+			if !isValidCustomPropertyName(rawProperty) || !isValidCustomPropertyValue(rawValue) {
+				continue
+			}
+		}
+
+		// CSS Variables §3: a var() reference's first argument must itself be a
+		// valid custom-property name. A malformed name (e.g. `var(--, fallback)`
+		// where `--` is not a legal name) makes the entire declaration invalid
+		// regardless of which property it's on. Reject before the value can
+		// overwrite an earlier valid declaration. Use the RAW (pre-unescape)
+		// form so escape sequences inside the name (e.g. `var(--foo\27 d, …)`)
+		// validate against the source tokens, not the unescaped string.
+		if strings.Contains(rawValue, "var(") && hasInvalidVarReference(rawValue) {
+			continue
 		}
 
 		// CSS 2.1: Reject bare non-zero numbers for length properties (must have units)
@@ -2300,6 +2349,375 @@ func isInvalidBareNumber(value string) bool {
 		return false // not a bare number
 	}
 	return num != 0 // zero without units is valid
+}
+
+// isValidCustomPropertyName reports whether name is a syntactically valid
+// CSS custom-property name per CSS Custom Properties §2.
+//
+// A custom property name starts with two U+002D HYPHEN-MINUS characters,
+// followed by a non-empty <ident-token>-style sequence. The bare string "--"
+// is NOT a valid name (Blink CSS-Variables tests treat it as an invalid
+// declaration; mirrored by Chromium CSSPropertyParser at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// The input is the RAW pre-unescape form. We accept ident code points
+// (letters, digits, hyphen, underscore, non-ASCII) directly, and treat
+// `\<hex...>` or `\<single-non-newline>` as a valid escape that consumes
+// one ident position regardless of the unescaped value (CSS Syntax §4.2 /
+// §4.3.8 — escape sequences extend the ident grammar to any code point).
+func isValidCustomPropertyName(name string) bool {
+	if !strings.HasPrefix(name, "--") {
+		return false
+	}
+	rest := name[2:]
+	if rest == "" {
+		return false
+	}
+	i := 0
+	for i < len(rest) {
+		c := rest[i]
+		if c == '\\' && i+1 < len(rest) {
+			// CSS escape sequence: \<hex>{1,6} (optional trailing whitespace)
+			// or \<any-non-newline>. Either form contributes one ident
+			// position to the name.
+			j := i + 1
+			hexEnd := j
+			for hexEnd < len(rest) && hexEnd-j < 6 && isHexDigit(rest[hexEnd]) {
+				hexEnd++
+			}
+			if hexEnd > j {
+				i = hexEnd
+				// One whitespace after a hex escape is consumed by the
+				// tokenizer (CSS Syntax §4.3.8 step 2).
+				if i < len(rest) && (rest[i] == ' ' || rest[i] == '\t' || rest[i] == '\n' || rest[i] == '\r' || rest[i] == '\f') {
+					i++
+				}
+			} else {
+				// Single-char escape — must not be a newline.
+				next := rest[j]
+				if next == '\n' || next == '\r' || next == '\f' {
+					return false
+				}
+				i = j + 1
+			}
+			continue
+		}
+		if c == '-' || c == '_' || (c >= '0' && c <= '9') ||
+			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			c >= 0x80 {
+			i++
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// hasInvalidVarReference reports whether value contains any var() function
+// call whose custom-property-name argument (the substring before the first
+// top-level comma inside the var() parens) is not a valid custom-property
+// name per isValidCustomPropertyName.
+//
+// Per CSS Variables §3 the var() notation's first argument MUST be a valid
+// <custom-property-name>; otherwise the var() reference is a parse error and
+// the entire declaration containing it is invalid. Mirrors Blink's
+// CSSVariableParser::ConsumeVariableReference at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which fails fast on a malformed
+// name token before the rest of the value is considered.
+func hasInvalidVarReference(value string) bool {
+	inString := byte(0)
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(value) {
+				i++
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = ch
+			continue
+		}
+		if ch == '(' && isVarFunctionAt(value, i) {
+			end := matchClosingParen(value, i)
+			if end < 0 {
+				// Unmatched var() paren — value is invalid regardless.
+				return true
+			}
+			inner := value[i+1 : end]
+			name := inner
+			if commaIdx := findTopLevelComma(inner); commaIdx >= 0 {
+				name = inner[:commaIdx]
+			}
+			name = strings.TrimSpace(name)
+			if !isValidCustomPropertyName(name) {
+				return true
+			}
+			// Recurse into the fallback to catch nested var() with bad names.
+			if commaIdx := findTopLevelComma(inner); commaIdx >= 0 {
+				fallback := strings.TrimSpace(inner[commaIdx+1:])
+				if fallback != "" && hasInvalidVarReference(fallback) {
+					return true
+				}
+			}
+			i = end
+		}
+	}
+	return false
+}
+
+// isValidCustomPropertyValue reports whether value is a syntactically valid
+// CSS custom-property declared value per CSS Custom Properties §3.
+//
+// The token stream must not contain:
+//   - unmatched <)-token>, <]-token>, or <}-token>
+//   - <bad-string-token> (unterminated string)
+//   - top-level <semicolon-token> (handled upstream by splitDeclarationParts,
+//     re-checked here for safety)
+//   - top-level <delim-token> with value "!" outside !important (the parse
+//     loop strips !important first, so any remaining "!" outside string/paren
+//     scope at top level is banned)
+//
+// The rule is applied recursively to each var() fallback (the part after the
+// first comma): a fallback is itself a declaration value, so a top-level
+// <semicolon-token> inside it is also banned. This matches Chromium's
+// CSSVariableParser behavior at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// — see test variable-declaration-12.html which encodes
+// `--a: var(--b,;)` as invalid because the fallback's `;` is top-level.
+//
+// Returns true for the empty string; an empty value is rejected upstream
+// (parseDeclarations skips empty values before this is called).
+func isValidCustomPropertyValue(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	return isValidDeclarationValueTokens(value, true)
+}
+
+// isValidDeclarationValueTokens walks a CSS token stream and checks the
+// custom-property declaration-value rules (matched brackets, no top-level
+// `;`, no top-level bare `!`, recursive check of var() fallbacks). When
+// topLevel is true the outer top-level checks apply; when false (recursing
+// into a var() fallback) the same rules apply to that fallback.
+func isValidDeclarationValueTokens(s string, topLevel bool) bool {
+	inString := byte(0)
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(s) {
+				i += 2
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			if ch == '\n' {
+				// Unescaped newline inside a string = <bad-string-token>.
+				return false
+			}
+			i++
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inString = ch
+			i++
+		case '(':
+			// If the function name preceding `(` is `var` (case-insensitive),
+			// validate the fallback recursively against the same rules.
+			if isVarFunctionAt(s, i) {
+				end := matchClosingParen(s, i)
+				if end < 0 {
+					return false
+				}
+				inner := s[i+1 : end]
+				// Split on first top-level comma — fallback is everything
+				// after it. Per CSS Variables §3 the fallback is itself a
+				// declaration value, so apply the same rules to it.
+				if commaIdx := findTopLevelComma(inner); commaIdx >= 0 {
+					fallback := strings.TrimSpace(inner[commaIdx+1:])
+					if fallback != "" && !isValidDeclarationValueTokens(fallback, true) {
+						return false
+					}
+				}
+				i = end + 1
+				continue
+			}
+			parenDepth++
+			i++
+		case ')':
+			if parenDepth == 0 {
+				return false
+			}
+			parenDepth--
+			i++
+		case '[':
+			bracketDepth++
+			i++
+		case ']':
+			if bracketDepth == 0 {
+				return false
+			}
+			bracketDepth--
+			i++
+		case '{':
+			braceDepth++
+			i++
+		case '}':
+			if braceDepth == 0 {
+				return false
+			}
+			braceDepth--
+			i++
+		case ';':
+			if topLevel && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				return false
+			}
+			i++
+		case '!':
+			if topLevel && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				return false
+			}
+			i++
+		case '<':
+			// CDO token `<!--` is a single token per CSS Syntax §4.3.4 and is
+			// permitted in a custom-property value (its `!` is part of the
+			// CDO, not a standalone delim-token, so the top-level `!` ban
+			// doesn't apply). Skip past it as a unit.
+			if i+3 < len(s) && s[i+1] == '!' && s[i+2] == '-' && s[i+3] == '-' {
+				i += 4
+				continue
+			}
+			i++
+		case '-':
+			// CDC token `-->` is a single token. Skip as a unit.
+			if i+2 < len(s) && s[i+1] == '-' && s[i+2] == '>' {
+				i += 3
+				continue
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	if inString != 0 || parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
+		return false
+	}
+	return true
+}
+
+// isVarFunctionAt reports whether the `(` at position openIdx is preceded by
+// the function name `var`, with a word boundary before it so that identifiers
+// like `bar` or `myvar` don't match. Case-sensitive to match the existing
+// var()-resolution convention (resolveVarReferences) in style.go.
+func isVarFunctionAt(s string, openIdx int) bool {
+	if openIdx < 3 {
+		return false
+	}
+	if s[openIdx-3:openIdx] != "var" {
+		return false
+	}
+	if openIdx == 3 {
+		return true
+	}
+	prev := s[openIdx-4]
+	// Word boundary: any non-ident char qualifies.
+	if (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+		(prev >= '0' && prev <= '9') || prev == '_' || prev == '-' || prev >= 0x80 {
+		return false
+	}
+	return true
+}
+
+// matchClosingParen returns the index of the matching `)` for the `(` at
+// position openIdx, honoring nested parens and quoted strings. Returns -1 if
+// no match is found.
+func matchClosingParen(s string, openIdx int) int {
+	depth := 0
+	inString := byte(0)
+	for i := openIdx; i < len(s); i++ {
+		ch := s[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inString = ch
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// findTopLevelComma finds the index of the first comma at paren/bracket/brace
+// depth 0 (and outside strings). Returns -1 if none.
+func findTopLevelComma(s string) int {
+	inString := byte(0)
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inString = ch
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case ',':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // ParseSelector parses a CSS selector string into a Selector struct.

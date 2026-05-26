@@ -80,15 +80,109 @@ func (s *Style) Get(property string) (string, bool) {
 	if !ok {
 		return val, ok
 	}
+	hadVar := strings.Contains(val, "var(")
 	// Resolve var() references in the value
-	if strings.Contains(val, "var(") {
+	if hadVar {
 		val = s.resolveVarReferences(val)
 	}
 	// Resolve env() references in the value
 	if strings.Contains(val, "env(") {
 		val = resolveEnvValue(val)
 	}
+	// CSS Variables §3 "Invalid at Computed Value Time" (IACVT): when a
+	// property's declared value contained a var() reference and the
+	// substituted result is not a valid value for that property, the
+	// declaration must be treated as invalid at computed-value time. For
+	// inherited properties this means use the inherited value; for
+	// non-inherited, the initial value. Mirrors Blink's
+	// CSSVariableResolver::ResolveVariableReferences IACVT path at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// We can only IACVT-gate properties whose validator we have. Today that's
+	// color-typed properties — the existing isValidColorValue gate. Report
+	// "no value" by returning ok=false so the inheritance pass in
+	// ApplyInheritedProperties / resolveInheritValues falls back to the
+	// parent's computed value (for inherited properties) or the property's
+	// initial value (for non-inherited).
+	if hadVar && isColorProperty(property) {
+		if !isResolvedColorValue(val) {
+			return "", false
+		}
+	}
 	return val, ok
+}
+
+// isResolvedColorValue reports whether the post-substitution value parses as
+// a CSS color or is one of the always-valid keywords. This is the
+// substitution-time complement to isValidColorValue: by this point any
+// var()/env() reference has been substituted, so we can run ParseColor.
+//
+// Keyword comparison is ASCII case-insensitive (CSS Syntax §6: identifiers
+// are matched ASCII-case-insensitively). strings.ToLower would Unicode-fold
+// "İ" (U+0130) to "i" and falsely match "İnitial" as the `initial` keyword;
+// asciiToLower preserves non-ASCII bytes as-is.
+func isResolvedColorValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	lower := asciiToLower(trimmed)
+	if lower == "currentcolor" {
+		return true
+	}
+	if lower == "inherit" || lower == "initial" || lower == "unset" ||
+		lower == "revert" || lower == "revert-layer" {
+		return true
+	}
+	_, ok := ParseColor(trimmed)
+	return ok
+}
+
+// containsVarReferenceTo reports whether value contains a `var(<name>` token
+// (case-sensitive, name matched as a whole word). Used by resolveVarReferences
+// to detect a single-property self-cycle before recursing into the value.
+func containsVarReferenceTo(value, name string) bool {
+	idx := 0
+	for {
+		i := strings.Index(value[idx:], "var(")
+		if i < 0 {
+			return false
+		}
+		j := idx + i + 4
+		// Skip whitespace.
+		for j < len(value) && (value[j] == ' ' || value[j] == '\t' || value[j] == '\n' || value[j] == '\r' || value[j] == '\f') {
+			j++
+		}
+		end := j + len(name)
+		if end <= len(value) && value[j:end] == name {
+			// Check that the next byte is not an ident-continuation char,
+			// so we don't match `var(--ab)` for name="--a".
+			if end == len(value) {
+				return true
+			}
+			next := value[end]
+			if !isIdentContinue(next) {
+				return true
+			}
+		}
+		idx = idx + i + 4
+	}
+}
+
+// asciiToLower lowercases A-Z to a-z but leaves all other bytes (including
+// non-ASCII UTF-8 sequences) untouched. Used for ASCII-case-insensitive CSS
+// keyword matching where Unicode case folding would over-match.
+func asciiToLower(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // resolveVarReferences resolves CSS var() function references in a value string.
@@ -130,18 +224,64 @@ func (s *Style) resolveVarReferences(value string) string {
 			fallback = strings.TrimSpace(content[commaIdx+1:])
 		}
 
-		// Look up the custom property (bypass Get to avoid recursion)
+		// Look up the custom property (bypass Get to avoid recursion).
+		// The empty-string sentinel means the property is set to the
+		// guaranteed-invalid value (CSS Custom Properties §3) — treat as
+		// "not defined" so the fallback is used per CSS Variables §3.
+		//
+		// Self-reference cycle (CSS Variables §3 Cycles): if the property's
+		// own value contains a var() pointing back at itself, the property is
+		// in a cycle and resolves to the guaranteed-invalid value, which
+		// triggers fallback selection. Mirrors Blink's
+		// CSSVariableResolver::ResolveVariableTokens cycle-set check at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. This catches the
+		// single-property self-cycle (`--a: var(--a)`); multi-property cycles
+		// like a→b→a are not yet detected (out of scope for Theme 1).
 		resolved := ""
-		if propVal, ok := s.Properties[varName]; ok {
-			resolved = propVal
+		if propVal, ok := s.Properties[varName]; ok && propVal != "" {
+			if !containsVarReferenceTo(propVal, varName) {
+				resolved = propVal
+			} else if fallback != "" {
+				resolved = fallback
+			}
 		} else if fallback != "" {
 			resolved = fallback
 		}
 
-		// Replace var(...) with the resolved value
-		value = value[:idx] + resolved + value[end+1:]
+		// Per CSS Variables §3, var() substitution is at the TOKEN level —
+		// not the string level. When the byte immediately after the var()
+		// reference is an ident-continuation character, naive string
+		// concatenation would fuse the resolved value's trailing token with
+		// the following ident (e.g. `var(--b)red` with --b=orange becoming
+		// "orangered" — a valid but wrong color). Insert a single space
+		// between the resolved value and a trailing ident-continuation byte
+		// to preserve the token boundary. Same on the leading side, though
+		// CSS rarely emits an ident immediately before `var(` since `var`
+		// itself is an ident; the leading guard handles edge cases like
+		// `xvar(--b)` which our isVarFunctionAt rejects anyway, so the
+		// trailing guard is the load-bearing one for tests 14/53/54/55.
+		var sb strings.Builder
+		sb.WriteString(value[:idx])
+		if resolved != "" && idx > 0 && isIdentContinue(value[idx-1]) {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(resolved)
+		if resolved != "" && end+1 < len(value) && isIdentContinue(value[end+1]) {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(value[end+1:])
+		value = sb.String()
 	}
 	return value
+}
+
+// isIdentContinue reports whether b is a byte that can appear inside a CSS
+// ident-token (letter, digit, hyphen, underscore, or any non-ASCII leading
+// byte). Used by var() substitution to preserve token boundaries when
+// concatenating the resolved value with surrounding source text.
+func isIdentContinue(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') || b == '-' || b == '_' || b >= 0x80
 }
 
 // resolveEnvValue replaces env(variable-name) and env(variable-name, fallback)
@@ -1834,6 +1974,14 @@ func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 			value = stripped
 		}
 
+		// CSS Custom Properties §2 / §3: validate name + value (mirrors the
+		// rule-parser gate in parseDeclarations).
+		if strings.HasPrefix(property, "--") {
+			if !isValidCustomPropertyName(property) || !isValidCustomPropertyValue(value) {
+				continue
+			}
+		}
+
 		// Phase 2: Expand shorthand properties
 		expandShorthand(style, property, value)
 	}
@@ -2707,14 +2855,40 @@ func snapshotForAllRevert(s *Style) allShorthandRevertSnapshot {
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSnapshot) {
 	for prop, val := range s.Properties {
+		isCustom := strings.HasPrefix(prop, "--")
 		switch val {
 		case "initial":
+			if isCustom {
+				// CSS Custom Properties §3 (Initial Value): the initial value
+				// of any custom property is the guaranteed-invalid value. Per
+				// CSS Variables §3, a var() reference to a guaranteed-invalid
+				// custom property triggers IACVT and uses the var()'s
+				// fallback. Store an empty string sentinel so:
+				//   - resolveVarReferences sees the empty value and uses the
+				//     fallback when one is supplied;
+				//   - the explicit-initial declaration blocks the regular
+				//     custom-property inheritance pass (which would otherwise
+				//     copy the parent's value over this child's intent).
+				// Mirrors Blink's CSSCustomPropertyDeclaration with value
+				// type kInitial at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+				s.Set(prop, "")
+				continue
+			}
 			if init, ok := nonDefaultInitialValues[prop]; ok {
 				s.Set(prop, init)
 			} else {
 				delete(s.Properties, prop)
 			}
 		case "unset":
+			if isCustom {
+				// CSS Custom Properties §2.2: custom properties are inherited
+				// by default. `unset` on an inheritable property behaves as
+				// `inherit`. Rewrite to "inherit" so resolveInheritValues (or
+				// the post-cascade custom-property inheritance copy in
+				// ApplyInheritedProperties) does the actual lookup.
+				s.Set(prop, "inherit")
+				continue
+			}
 			if inheritableProperties[prop] {
 				s.Set(prop, "inherit")
 			} else if init, ok := nonDefaultInitialValues[prop]; ok {
