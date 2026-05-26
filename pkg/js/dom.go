@@ -362,6 +362,20 @@ func (e *elementAccessor) Get(key string) goja.Value {
 	case "src":
 		src, _ := e.node.GetAttribute("src")
 		return vm.ToValue(src)
+	case "dir":
+		// HTMLElement.dir IDL attribute (HTML §3.2.6) reflects the
+		// "dir" content attribute, restricted to the canonical keyword
+		// set {ltr, rtl, auto} — any other authored value is exposed
+		// as the empty string. Mirrors Blink's HTMLElement::dir()
+		// (third_party/blink/renderer/core/html/html_element.cc @
+		// 4883d11fef4a).
+		dirAttr, _ := e.node.GetAttribute("dir")
+		switch strings.ToLower(strings.TrimSpace(dirAttr)) {
+		case "ltr", "rtl", "auto":
+			return vm.ToValue(strings.ToLower(strings.TrimSpace(dirAttr)))
+		default:
+			return vm.ToValue("")
+		}
 	case "splitText":
 		// Text.splitText(offset): splits the text node at offset, returns the new node.
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
@@ -702,6 +716,16 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		e.node.Attributes["src"] = val.String()
 		return true
+	case "dir":
+		// HTMLElement.dir setter: reflects to the "dir" content
+		// attribute verbatim (the IDL setter does not normalize —
+		// invalid values are stored as-is; the getter is what filters
+		// them). Mirrors Blink HTMLElement::setDir().
+		if e.node.Attributes == nil {
+			e.node.Attributes = make(map[string]string)
+		}
+		e.node.Attributes["dir"] = val.String()
+		return true
 	case "onload":
 		// Store element-level onload callback so the engine can fire it after
 		// iframes (and other resources) have been loaded during layout.
@@ -718,7 +742,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
 	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
-		"textContent", "innerHTML", "outerHTML", "src", "splitText", "data", "appendData",
+		"textContent", "innerHTML", "outerHTML", "src", "dir", "splitText", "data", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
@@ -746,6 +770,7 @@ func (e *elementAccessor) Keys() []string {
 	return []string{
 		"tagName", "nodeName", "nodeType", "nodeValue", "data", "id", "className",
 		"textContent", "innerHTML", "outerHTML",
+		"src", "dir",
 		"splitText", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",

@@ -2147,6 +2147,15 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	//   direction: ltr/rtl
 	//   unicode-bidi: isolate (or isolate-override for <bdo>)
 	// As a presentational hint, author CSS can override these values.
+	//
+	// dir="auto" is resolved per HTML §3.2.6 "auto directionality" by
+	// scanning descendant text for the first character with a strong
+	// Unicode bidi class (L → ltr; R or AL → rtl). The shared
+	// elementDirectionality helper (matcher.go) implements that walk and
+	// also handles ancestor fallback when no strong character is found,
+	// matching Blink's HTMLElement::ResolveAutoDirectionality
+	// (third_party/blink/renderer/core/html/html_element.cc @
+	// 4883d11fef4a).
 	if dirAttr, ok := node.GetAttribute("dir"); ok {
 		dirAttr = strings.ToLower(strings.TrimSpace(dirAttr))
 		switch dirAttr {
@@ -2155,8 +2164,11 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		case "ltr":
 			style.Set("direction", "ltr")
 		case "auto":
-			// TODO: implement first-strong heuristic (UAX#9 P2/P3)
-			style.Set("direction", "ltr")
+			if elementDirectionality(node) == DirectionRTL {
+				style.Set("direction", "rtl")
+			} else {
+				style.Set("direction", "ltr")
+			}
 		}
 		if dirAttr == "rtl" || dirAttr == "ltr" || dirAttr == "auto" {
 			if node.TagName == "bdo" {

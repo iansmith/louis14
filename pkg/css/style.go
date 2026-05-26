@@ -10699,9 +10699,16 @@ func ApplyHTMLDirAttribute(node *html.Node, style *Style) {
 	case "ltr":
 		style.Set("direction", "ltr")
 	case "auto":
-		// dir="auto" determines direction from first strong character.
-		// For now, default to ltr (full implementation would inspect text content).
-		style.Set("direction", "ltr")
+		// dir="auto" is resolved per HTML §3.2.6 by scanning the
+		// element's descendant text for the first character with a
+		// strong Unicode bidi class. The shared elementDirectionality
+		// helper (matcher.go) walks ancestors when no strong character
+		// is found, matching the spec's "parent fallback" rule.
+		if elementDirectionality(node) == DirectionRTL {
+			style.Set("direction", "rtl")
+		} else {
+			style.Set("direction", "ltr")
+		}
 	}
 
 	// Per HTML spec, dir attribute also implies unicode-bidi.

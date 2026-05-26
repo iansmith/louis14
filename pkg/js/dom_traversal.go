@@ -1,6 +1,8 @@
 package js
 
 import (
+	"strings"
+
 	"louis14/pkg/html"
 
 	"github.com/dop251/goja"
@@ -151,6 +153,36 @@ func registerDocumentProperties(ctx *domContext, docObj *goja.Object, doc *html.
 		docObj.Set("head", ctx.elementProxy(headNode))
 	} else {
 		docObj.Set("head", goja.Null())
+	}
+
+	// Set document.dir accessor: reflects to the documentElement's
+	// `dir` attribute. Per HTML §3.2.6 "Document.dir IDL attribute", the
+	// getter returns the documentElement's dir if {ltr,rtl,auto},
+	// otherwise the empty string; the setter writes the value verbatim
+	// onto documentElement's dir attribute. Mirrors Blink's
+	// Document::dir() / Document::setDir() (core/dom/document.cc @
+	// 4883d11fef4a).
+	if htmlNode != nil {
+		getter := ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			dirAttr, _ := htmlNode.GetAttribute("dir")
+			switch strings.ToLower(strings.TrimSpace(dirAttr)) {
+			case "ltr", "rtl", "auto":
+				return ctx.vm.ToValue(strings.ToLower(strings.TrimSpace(dirAttr)))
+			default:
+				return ctx.vm.ToValue("")
+			}
+		})
+		setter := ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 {
+				return goja.Undefined()
+			}
+			if htmlNode.Attributes == nil {
+				htmlNode.Attributes = make(map[string]string)
+			}
+			htmlNode.Attributes["dir"] = call.Arguments[0].String()
+			return goja.Undefined()
+		})
+		_ = docObj.DefineAccessorProperty("dir", getter, setter, goja.FLAG_TRUE, goja.FLAG_TRUE)
 	}
 
 	// Set document.body
