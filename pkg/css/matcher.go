@@ -3,6 +3,8 @@ package css
 import (
 	"strings"
 
+	xbidi "golang.org/x/text/unicode/bidi"
+
 	"louis14/pkg/html"
 )
 
@@ -405,11 +407,23 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 }
 
 // elementDirectionality returns the element's directionality per the HTML
-// "directionality of an element" algorithm, restricted to the static cases:
-// explicit `dir=ltr`/`dir=rtl` attribute, otherwise inherit from parent
-// element, otherwise default to LTR. The `dir=auto` case (first-strong-Unicode
-// over text content) is not implemented here and is treated as no explicit
-// directionality, deferring to ancestor inheritance.
+// "directionality of an element" algorithm
+// (https://html.spec.whatwg.org/#the-directionality):
+//
+//  1. If the element has a `dir` attribute of `ltr` or `rtl`, use it.
+//  2. If the element has `dir=auto`, derive direction from a first-strong-
+//     directional-character scan over descendant text content (HTML
+//     "auto directionality" algorithm). If no strong character is found,
+//     the element's own directionality is the parent's directionality (or
+//     LTR as document default).
+//  3. Otherwise (no `dir`, or an invalid value), inherit from the parent
+//     element; document default is LTR.
+//
+// Mirrors Blink's Element::CachedDirectionality / ResolveAutoDirectionality
+// (third_party/blink/renderer/core/dom/element.cc @ 4883d11fef4a). Without
+// the per-element cache and invalidation graph Blink keeps — louis14's static
+// renderer recomputes per :dir() query, which is correct but O(descendants)
+// per match. For the WPT selectors corpus this is fine.
 func elementDirectionality(node *html.Node) Direction {
 	for n := node; n != nil; n = n.Parent {
 		if n.Type != html.ElementNode {
@@ -424,10 +438,66 @@ func elementDirectionality(node *html.Node) Direction {
 			return DirectionLTR
 		case "rtl":
 			return DirectionRTL
+		case "auto":
+			if dir, found := autoDirectionality(n); found {
+				return dir
+			}
+			// No strong-direction character found: continue walking
+			// ancestors; if none give an answer, default LTR.
 		}
-		// "auto" or invalid values: fall through to inherit from ancestor.
+		// Invalid values (e.g. "foopy"): inherit from ancestor.
 	}
 	return DirectionLTR
+}
+
+// autoDirectionality scans the element's descendant text content for the
+// first character with a strong Unicode bidi class (L, R, or AL) and returns
+// the corresponding direction. Per HTML "auto directionality" algorithm
+// (https://html.spec.whatwg.org/#auto-directionality), descendant subtrees
+// rooted at a `bdi`, `script`, `style`, `textarea` element, or any element
+// that itself has a `dir` attribute (other than the starting element)
+// are skipped. Returns (_, false) if no strong character is found.
+//
+// Mirrors Blink's HTMLElement::ResolveAutoDirectionality and the bidi-class
+// walk in core/html/canvas/text_metrics.cc-derived helpers (Blink @
+// 4883d11fef4a). Uses golang.org/x/text/unicode/bidi for the class lookup.
+func autoDirectionality(root *html.Node) (Direction, bool) {
+	var walk func(n *html.Node, isRoot bool) (Direction, bool)
+	walk = func(n *html.Node, isRoot bool) (Direction, bool) {
+		if n.Type == html.TextNode {
+			for _, r := range n.Text {
+				props, _ := xbidi.LookupRune(r)
+				switch props.Class() {
+				case xbidi.L:
+					return DirectionLTR, true
+				case xbidi.R, xbidi.AL:
+					return DirectionRTL, true
+				}
+			}
+			return DirectionLTR, false
+		}
+		if n.Type != html.ElementNode {
+			return DirectionLTR, false
+		}
+		if !isRoot {
+			// Skip descendant subtrees that contribute their own
+			// directionality boundary (HTML spec).
+			switch n.TagName {
+			case "bdi", "script", "style", "textarea":
+				return DirectionLTR, false
+			}
+			if _, has := n.GetAttribute("dir"); has {
+				return DirectionLTR, false
+			}
+		}
+		for _, c := range n.Children {
+			if dir, found := walk(c, false); found {
+				return dir, true
+			}
+		}
+		return DirectionLTR, false
+	}
+	return walk(root, true)
 }
 
 // isNthChild returns true if the node is the nth element child (1-based).

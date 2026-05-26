@@ -423,6 +423,76 @@ func TestDirPseudoClass(t *testing.T) {
 	}
 }
 
+// TestDirPseudoClass_Auto covers the HTML "auto directionality" algorithm:
+// `dir=auto` walks descendant text and uses the first character with a
+// strong Unicode bidi class (L → ltr; R or AL → rtl). Descendant subtrees
+// rooted at <bdi>/<script>/<style>/<textarea> or at any element with its
+// own dir attribute are excluded from the scan.
+func TestDirPseudoClass_Auto(t *testing.T) {
+	mkElem := func(parent *html.Node, tag string, attrs map[string]string) *html.Node {
+		n := &html.Node{Type: html.ElementNode, TagName: tag}
+		if attrs != nil {
+			n.Attributes = map[string]string{}
+			for k, v := range attrs {
+				n.Attributes[k] = v
+			}
+		}
+		if parent != nil {
+			n.Parent = parent
+			parent.Children = append(parent.Children, n)
+		}
+		return n
+	}
+	mkText := func(parent *html.Node, text string) *html.Node {
+		n := &html.Node{Type: html.TextNode, Text: text, Parent: parent}
+		if parent != nil {
+			parent.Children = append(parent.Children, n)
+		}
+		return n
+	}
+
+	// div1 dir=auto > "a"  → ltr (L strong character)
+	div1 := mkElem(nil, "div", map[string]string{"dir": "auto"})
+	mkText(div1, "a")
+	// div2 dir=auto > "ת" (Hebrew tav, RTL)  → rtl
+	div2 := mkElem(nil, "div", map[string]string{"dir": "auto"})
+	mkText(div2, "ת")
+	// div3 dir=auto > [div3_1 dir=rtl > "ת"] [text "a"]  → ltr
+	// (div3_1 has its own dir, so it's skipped; "a" provides the strong L)
+	div3 := mkElem(nil, "div", map[string]string{"dir": "auto"})
+	d31 := mkElem(div3, "div", map[string]string{"dir": "rtl"})
+	mkText(d31, "ת")
+	mkText(div3, "a")
+	// div4 dir=auto > <bdi>"a"</bdi> > "ת"  → rtl
+	// (the <bdi> subtree is skipped, the trailing tav is the first strong)
+	div4 := mkElem(nil, "div", map[string]string{"dir": "auto"})
+	bdi := mkElem(div4, "bdi", nil)
+	mkText(bdi, "a")
+	mkText(div4, "ת")
+	// div5 dir=auto with only whitespace → falls back to parent (none) → ltr
+	div5 := mkElem(nil, "div", map[string]string{"dir": "auto"})
+	mkText(div5, "   \n\t")
+
+	cases := []struct {
+		name string
+		node *html.Node
+		want Direction
+	}{
+		{"auto-strong-L", div1, DirectionLTR},
+		{"auto-strong-R", div2, DirectionRTL},
+		{"auto-skip-dir-subtree", div3, DirectionLTR},
+		{"auto-skip-bdi-subtree", div4, DirectionRTL},
+		{"auto-whitespace-only", div5, DirectionLTR},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := elementDirectionality(tc.node); got != tc.want {
+				t.Errorf("elementDirectionality = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMatchesIsWithPseudoElement guards the contextually-invalid rule from
 // CSS Selectors 4 + CSS Nesting: an :is() or :where() that contains a pseudo-
 // element argument must not match real elements. This is what makes the WPT
