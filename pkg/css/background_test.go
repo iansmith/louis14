@@ -116,27 +116,32 @@ func TestExpandBackgroundShorthand_ColorOnly(t *testing.T) {
 func TestGetBackgroundRepeat(t *testing.T) {
 	tests := []struct {
 		value string
-		want  BackgroundRepeatType
+		want  BackgroundRepeat
 	}{
-		{"no-repeat", BackgroundRepeatNoRepeat},
-		{"repeat-x", BackgroundRepeatRepeatX},
-		{"repeat-y", BackgroundRepeatRepeatY},
-		{"repeat", BackgroundRepeatRepeat},
+		{"no-repeat", BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatNoRepeat}},
+		{"repeat-x", BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatNoRepeat}},
+		{"repeat-y", BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatRepeat}},
+		{"repeat", BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}},
+		{"space", BackgroundRepeat{X: BackgroundRepeatSpace, Y: BackgroundRepeatSpace}},
+		{"round", BackgroundRepeat{X: BackgroundRepeatRound, Y: BackgroundRepeatRound}},
+		{"space round", BackgroundRepeat{X: BackgroundRepeatSpace, Y: BackgroundRepeatRound}},
+		{"no-repeat space", BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatSpace}},
 	}
 
 	for _, tt := range tests {
 		s := NewStyle()
 		s.Set("background-repeat", tt.value)
 		if got := s.GetBackgroundRepeat(); got != tt.want {
-			t.Errorf("GetBackgroundRepeat() for %q = %q, want %q", tt.value, got, tt.want)
+			t.Errorf("GetBackgroundRepeat() for %q = %+v, want %+v", tt.value, got, tt.want)
 		}
 	}
 }
 
 func TestGetBackgroundRepeat_Default(t *testing.T) {
 	s := NewStyle()
-	if got := s.GetBackgroundRepeat(); got != BackgroundRepeatRepeat {
-		t.Errorf("default GetBackgroundRepeat() = %q, want repeat", got)
+	want := BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
+	if got := s.GetBackgroundRepeat(); got != want {
+		t.Errorf("default GetBackgroundRepeat() = %+v, want %+v", got, want)
 	}
 }
 

@@ -3822,9 +3822,13 @@ func expandBackgroundProperty(style *Style, value string) {
 		parts := splitBackgroundPositionTokens(remaining)
 		var positionTokens []string
 		var boxValues []string
+		// Per CSS Backgrounds 3 §3.10 shorthand, <repeat-style> may be one
+		// or two axis keywords. Collect consecutive repeat keywords and
+		// join them so longhand parsing sees the full per-layer value.
+		var repeatTokens []string
 		for _, part := range parts {
-			if part == "no-repeat" || part == "repeat" || part == "repeat-x" || part == "repeat-y" {
-				repeats[li] = part
+			if isAxisRepeatToken(part) || part == "repeat-x" || part == "repeat-y" {
+				repeatTokens = append(repeatTokens, part)
 			} else if part == "border-box" || part == "padding-box" || part == "content-box" {
 				boxValues = append(boxValues, part)
 			} else if _, ok := ParseColor(part); ok {
@@ -3848,6 +3852,16 @@ func expandBackgroundProperty(style *Style, value string) {
 			} else if part == "fixed" || part == "scroll" || part == "local" {
 				style.Set("background-attachment", part)
 			}
+		}
+
+		// Up to two axis keywords form a <repeat-style>; the "repeat-x" /
+		// "repeat-y" shorthand tokens are single-token only.
+		if len(repeatTokens) > 0 {
+			n := len(repeatTokens)
+			if n > 2 {
+				n = 2
+			}
+			repeats[li] = strings.Join(repeatTokens[:n], " ")
 		}
 
 		if len(boxValues) >= 1 {
@@ -8130,7 +8144,7 @@ type FillLayer struct {
 
 	Image      *CSSImageValue // typed url() ref, nil = none (LOU-138 phase 7)
 	Gradient   string         // raw gradient string, empty = none
-	Repeat     BackgroundRepeatType
+	Repeat     BackgroundRepeat
 	Position   BackgroundPosition
 	Size       BackgroundSize
 	Origin     BackgroundOriginType
@@ -8178,7 +8192,7 @@ func (fl *FillLayer) FillUnsetProperties() {
 	}
 	for cur := fl; cur != nil; cur = cur.Next {
 		if !cur.RepeatSet {
-			cur.Repeat = BackgroundRepeatRepeat
+			cur.Repeat = BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
 		}
 		if !cur.PositionSet {
 			cur.Position = BackgroundPosition{}
@@ -8220,7 +8234,11 @@ func (fl *FillLayer) cullEmpty() *FillLayer {
 	return fl
 }
 
-// BackgroundRepeatType represents background-repeat values
+// BackgroundRepeatType represents a per-axis background-repeat value.
+// Mirrors Blink's EFillRepeat (kNoRepeatFill / kRepeatFill / kRoundFill /
+// kSpaceFill) at third_party/blink/renderer/core/style/style_background_data.h
+// @ 4883d11fef. The two-value shorthand (e.g. "repeat-x" / "space round") is
+// expanded into BackgroundRepeat.X and BackgroundRepeat.Y.
 type BackgroundRepeatType string
 
 const (
@@ -8228,7 +8246,80 @@ const (
 	BackgroundRepeatNoRepeat BackgroundRepeatType = "no-repeat"
 	BackgroundRepeatRepeatX  BackgroundRepeatType = "repeat-x"
 	BackgroundRepeatRepeatY  BackgroundRepeatType = "repeat-y"
+	BackgroundRepeatSpace    BackgroundRepeatType = "space"
+	BackgroundRepeatRound    BackgroundRepeatType = "round"
 )
+
+// BackgroundRepeat holds the per-axis background-repeat values after
+// shorthand expansion. Each axis is one of repeat/no-repeat/space/round.
+type BackgroundRepeat struct {
+	X BackgroundRepeatType
+	Y BackgroundRepeatType
+}
+
+// ExpandRepeatShorthand turns a one- or two-value background-repeat token
+// list into per-axis values.
+//   - "repeat-x" → (repeat, no-repeat)
+//   - "repeat-y" → (no-repeat, repeat)
+//   - single value v → (v, v)
+//   - "v1 v2"   → (v1, v2)
+// Returns the default (repeat, repeat) for an unrecognized first token.
+func ExpandRepeatShorthand(val string) BackgroundRepeat {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
+	}
+	parts := strings.Fields(val)
+	if len(parts) == 0 {
+		return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
+	}
+	first, ok := parseAxisRepeatKeyword(parts[0])
+	if !ok {
+		// Handle the single-token shorthands first.
+		switch strings.ToLower(parts[0]) {
+		case "repeat-x":
+			return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatNoRepeat}
+		case "repeat-y":
+			return BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatRepeat}
+		}
+		return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
+	}
+	if len(parts) == 1 {
+		// "repeat-x" / "repeat-y" already handled above; single axis keyword
+		// applies to both axes.
+		return BackgroundRepeat{X: first, Y: first}
+	}
+	second, ok := parseAxisRepeatKeyword(parts[1])
+	if !ok {
+		return BackgroundRepeat{X: first, Y: first}
+	}
+	return BackgroundRepeat{X: first, Y: second}
+}
+
+// isAxisRepeatToken returns true if val is one of the per-axis repeat
+// keywords (repeat / no-repeat / space / round). Used by the background
+// shorthand tokenizer.
+func isAxisRepeatToken(val string) bool {
+	_, ok := parseAxisRepeatKeyword(val)
+	return ok
+}
+
+// parseAxisRepeatKeyword parses a single per-axis repeat keyword.
+// Accepts repeat / no-repeat / space / round (not the repeat-x / repeat-y
+// shorthand tokens — those are expanded by ExpandRepeatShorthand).
+func parseAxisRepeatKeyword(val string) (BackgroundRepeatType, bool) {
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "repeat":
+		return BackgroundRepeatRepeat, true
+	case "no-repeat":
+		return BackgroundRepeatNoRepeat, true
+	case "space":
+		return BackgroundRepeatSpace, true
+	case "round":
+		return BackgroundRepeatRound, true
+	}
+	return BackgroundRepeatRepeat, false
+}
 
 // BackgroundAttachmentType represents the background-attachment property value.
 type BackgroundAttachmentType string
@@ -8254,19 +8345,15 @@ func (s *Style) GetBackgroundAttachment() BackgroundAttachmentType {
 	return BackgroundAttachmentScroll
 }
 
-// GetBackgroundRepeat returns the background-repeat value (default: repeat)
-func (s *Style) GetBackgroundRepeat() BackgroundRepeatType {
+// GetBackgroundRepeat returns the per-axis background-repeat value
+// (default: repeat on both axes). Accepts the full CSS Backgrounds 3 §3.5
+// shorthand: single keyword, two keywords (x then y), or "repeat-x" /
+// "repeat-y".
+func (s *Style) GetBackgroundRepeat() BackgroundRepeat {
 	if val, ok := s.Get("background-repeat"); ok {
-		switch val {
-		case "no-repeat":
-			return BackgroundRepeatNoRepeat
-		case "repeat-x":
-			return BackgroundRepeatRepeatX
-		case "repeat-y":
-			return BackgroundRepeatRepeatY
-		}
+		return ExpandRepeatShorthand(val)
 	}
-	return BackgroundRepeatRepeat
+	return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
 }
 
 // BackgroundPosition represents background-position x,y values.
@@ -8633,19 +8720,39 @@ func splitCommaSeparated(s string) []string {
 	return parts
 }
 
-// parseRepeatValue parses a single background-repeat value.
-func parseRepeatValue(val string) (BackgroundRepeatType, bool) {
-	switch strings.TrimSpace(val) {
-	case "no-repeat":
-		return BackgroundRepeatNoRepeat, true
-	case "repeat-x":
-		return BackgroundRepeatRepeatX, true
-	case "repeat-y":
-		return BackgroundRepeatRepeatY, true
-	case "repeat":
-		return BackgroundRepeatRepeat, true
+// parseRepeatValue parses a single per-layer background-repeat value.
+// The value may be one or two axis keywords (e.g. "repeat", "space round"),
+// or the "repeat-x" / "repeat-y" shorthand. Returns the expanded per-axis
+// pair and whether the value was a valid background-repeat token.
+func parseRepeatValue(val string) (BackgroundRepeat, bool) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}, false
 	}
-	return BackgroundRepeatRepeat, false
+	parts := strings.Fields(val)
+	if len(parts) == 0 {
+		return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}, false
+	}
+	// Validate every token before accepting (so unknown tokens don't
+	// silently fall through to "repeat repeat").
+	if len(parts) == 1 {
+		switch strings.ToLower(parts[0]) {
+		case "repeat-x", "repeat-y":
+			return ExpandRepeatShorthand(val), true
+		}
+		if _, ok := parseAxisRepeatKeyword(parts[0]); !ok {
+			return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}, false
+		}
+		return ExpandRepeatShorthand(val), true
+	}
+	// len(parts) >= 2: both tokens must be axis keywords (not the
+	// repeat-x / repeat-y shorthands, which are single-token only).
+	for _, p := range parts[:2] {
+		if _, ok := parseAxisRepeatKeyword(p); !ok {
+			return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}, false
+		}
+	}
+	return ExpandRepeatShorthand(val), true
 }
 
 // parseSizeValue parses a single background-size value.
