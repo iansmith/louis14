@@ -385,7 +385,75 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	// runs of inline-level children.
 	lin.children = b.maybeWrapAnonymousBlocks(rawChildren, style)
 
+	// CSS Pseudo 4 §3.2: a ::first-line pseudo-element on an ancestor block
+	// applies to the first formatted line of that block, even when the actual
+	// inline content lives inside descendant in-flow blocks. Propagate the
+	// stored FirstLineStyle DOWN the first-in-flow-block chain so the
+	// innermost block that does inline layout sees it on its own
+	// LayoutInputNode. Mirrors Blink's FirstLineStyleIterator
+	// (`core/css/first_line_style_iterator.cc` @ 4883d11fef) which walks the
+	// ancestor chain at paint time; louis14 pushes the equivalent state down
+	// at build time so inline_layout.applyFirstLineStyles can keep operating
+	// on the bla.node it already has.
+	if lin.FirstLineStyle != nil {
+		b.propagateFirstLineToFirstInFlowBlock(lin)
+	}
+
 	return lin
+}
+
+// propagateFirstLineToFirstInFlowBlock copies parent.FirstLineStyle to the
+// first in-flow block-level descendant on the chain, recursively, until we
+// reach a block that itself contains inline content. Out-of-flow / floated
+// children are skipped (they don't host the first formatted line of the
+// ancestor). Stops descending if a descendant already has its own
+// FirstLineStyle (more specific match wins via the cascade).
+func (b *LayoutTreeBuilder) propagateFirstLineToFirstInFlowBlock(parent *LayoutInputNode) {
+	if parent == nil || parent.FirstLineStyle == nil {
+		return
+	}
+	for _, child := range parent.children {
+		if child == nil {
+			continue
+		}
+		// Skip out-of-flow / floats — they don't host the first formatted
+		// line of the ancestor's block-flow.
+		if isOutOfFlowOrFloat(child) {
+			continue
+		}
+		// Whitespace-only text between block siblings is normally collapsed
+		// out before paint (CSS 2.1 §9.2.2.1). It does not consume the first
+		// formatted line. Skip it for first-line propagation so we keep
+		// walking to the actual first in-flow block child.
+		if child.IsText() {
+			if strings.TrimSpace(child.TextContent()) == "" {
+				continue
+			}
+			// Non-whitespace inline content lives directly in this block:
+			// the first line is this block's responsibility, no further
+			// propagation needed.
+			return
+		}
+		s := child.Style()
+		if s == nil {
+			continue
+		}
+		if !isBlockLevel(child) {
+			// Inline-level element in this block-flow: the first line is
+			// in this block container's own inline-layout pass.
+			return
+		}
+		// First in-flow block-level descendant. Propagate if it has no
+		// FirstLineStyle of its own (cascade specificity: a descendant's
+		// own ::first-line rules win and we never overwrite them).
+		if child.FirstLineStyle == nil {
+			child.FirstLineStyle = parent.FirstLineStyle
+			b.propagateFirstLineToFirstInFlowBlock(child)
+		}
+		// Only the FIRST in-flow block child can carry the ancestor's
+		// first formatted line.
+		return
+	}
 }
 
 // expandContentsChildren returns the layout-tree children produced by a
