@@ -102,6 +102,47 @@ func TestSupportsCondition(t *testing.T) {
 		// Bare `not` outside parens — required by spec
 		{"bare not unknown", "not (foo: bar)", true},
 		{"bare not known", "not (margin: 0)", false},
+
+		// selector() function — CSS Conditional 5 §2.5
+		{"selector(compound)", "selector(a:link.class#ident)", true},
+		{"selector(pseudo-element)", "selector(::before)", true},
+		{"selector(unknown pseudo-element)", "selector(::-webkit-unknown-pseudo)", false},
+		{"selector(known modern pseudo)", "selector(input::file-selector-button)", true},
+		{"selector(details-content)", "selector(input::details-content)", true},
+		{"selector(::picker)", "selector(::picker)", true},
+		{"selector(::placeholder)", "selector(::placeholder)", true},
+		{"selector(:is(.a))", "selector(:is(.a))", true},
+		{"selector(:where(.a))", "selector(:where(.a))", true},
+		{"selector(:has(.a))", "selector(:has(.a))", true},
+		{"selector(:not(.a))", "selector(:not(.a))", true},
+		// :is/:where/:not/:has are UNFORGIVING in @supports context — an
+		// unknown inner selector invalidates the whole functional pseudo
+		// (mirrors Blink's CSSSelectorParser kSupportsCondition mode).
+		{"selector(:is(:foo, .a))", "selector(:is(:foo, .a))", false},
+		{"selector(:where(:foo, .a))", "selector(:where(:foo, .a))", false},
+		{"selector(:has(:foo, .a))", "selector(:has(:foo, .a))", false},
+		{"selector(:not(:foo, .a))", "selector(:not(:foo, .a))", false},
+		// at-supports-selector-004: selector() takes a single complex-selector,
+		// not a list. Comma at top level invalidates.
+		{"selector(div, div)", "selector(div, div)", false},
+
+		// font-format() / font-tech() — CSS Conditional 5 §2.7/2.8
+		{"font-format(opentype)", "font-format(opentype)", true},
+		{"font-format(TrueType)", "font-format(TrueType)", true},
+		{"font-format(Woff)", "font-format(Woff)", true},
+		{"font-format(xyzzy)", "font-format(xyzzy)", false},
+		{"font-format()", "font-format()", false},
+		// String argument is not a keyword — invalid per spec.
+		{"font-format(\"opentype\")", "font-format(\"opentype\")", false},
+		// Multiple args invalidate.
+		{"font-format(truetype opentype)", "font-format(truetype opentype)", false},
+		{"font-format(truetype, opentype)", "font-format(truetype, opentype)", false},
+
+		{"font-tech(features-opentype)", "font-tech(features-opentype)", true},
+		{"font-tech(color-COLRv0)", "font-tech(color-COLRv0)", true},
+		{"font-tech(xyzzy)", "font-tech(xyzzy)", false},
+		{"font-tech()", "font-tech()", false},
+		{"font-tech(\"features-opentype\")", "font-tech(\"features-opentype\")", false},
 	}
 
 	for _, tc := range cases {
