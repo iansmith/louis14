@@ -675,6 +675,19 @@ func (mla *MulticolLayoutAlgorithm) Layout() *LayoutResult {
 			blockCursor += rowBlockAdvance
 			totalColumnsRendered += columnsPlaced
 
+			// column-fill:auto + spanner: once any row encountered a spanner,
+			// subsequent rows must also balance — but ONLY when the multicol has
+			// auto height (no explicit block-size constraint). For fixed-height
+			// multicol + column-fill:auto + spanner, post-spanner content is NOT
+			// balanced (per WPT no-balancing-after-column-span); each post-spanner
+			// row fills to the remaining row height sequentially.
+			// Mirrors Blink's HasKnownFragmentainerBlockSize gate in
+			// column_layout_algorithm.cc — when block-size is auto the algorithm
+			// must balance to determine row heights even after a spanner.
+			if spannerPath != nil && !balanceColumns && !hasExplicitBlock {
+				balanceColumns = true
+			}
+
 			walker.Next()
 
 			if spannerPath == nil {
@@ -2142,6 +2155,18 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		// fragments overflowing leaves at the column boundary (Phase 12b leaf
 		// fragmentation), even though we don't force the column fragment size.
 		b = b.SetFragmentainerBlockSize(colBlockSize).
+			SetFragmentainerOffset(0)
+	} else {
+		// Indefinite fragmentainer size: column-fill:auto with auto column-height
+		// (no max-height constraint). The child still has block fragmentation
+		// (so spanner detection works), but no fragmentainer boundary to break at.
+		// FragmentainerBlockSize defaults to 0 on the builder; without an explicit
+		// Indefinite set, downstream code (block_layout.go's overflow check at
+		// `blockCursor > fragEnd`) treats fragEnd as 0 and breaks every child past
+		// the first. Mirrors Blink's column_layout_algorithm.cc:1567 setting
+		// fragmentainer_block_size = kIndefiniteSize for the initial column-
+		// balancing pass.
+		b = b.SetFragmentainerBlockSize(Indefinite).
 			SetFragmentainerOffset(0)
 	}
 
