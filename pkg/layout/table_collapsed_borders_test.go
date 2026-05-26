@@ -138,3 +138,41 @@ func TestResolveBorderConflict_SubpixelFloor(t *testing.T) {
 		t.Errorf("subpixel-001: floor(5)=5 > floor(4.95)=4, expected table green wins; got %+v", got2.color)
 	}
 }
+
+// TestReadBorderEdge_FloorsSubpixelWidth verifies that border widths are
+// floored to integer pixels at the readBorderEdge boundary, matching Blink's
+// collapsed-border model (table_borders.h BorderWidth → LayoutUnit(int
+// BorderTopWidth()) at Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Required by WPT subpixel-collapsed-borders-003 (campaign-3 C27): the test
+// renders a single-cell table with cell border 5px green vs table border
+// 5.95px red. The reference renders the same shape with cell border 1px red
+// vs table border 5.95px green. Both must produce a 62-or-60-wide visual
+// box. Without flooring, the reference picks up 5.95 (table wins by
+// width), the test picks 5 (cell wins on floor-tie), and the resulting
+// cell border-boxes differ by 2 pixels.
+func TestReadBorderEdge_FloorsSubpixelWidth(t *testing.T) {
+	cases := []struct {
+		cssWidth string
+		want     float64
+	}{
+		{"5.95px", 5},
+		{"5px", 5},
+		{"4.95px", 4},
+		{"1px", 1},
+		{"0.5px", 0}, // floors to 0; CSS thin-line preservation is a paint-level concern, not collapsed-border conflict input
+	}
+	for _, tc := range cases {
+		t.Run(tc.cssWidth, func(t *testing.T) {
+			s := css.NewStyle()
+			s.Set("border-top-style", "solid")
+			s.Set("border-top-width", tc.cssWidth)
+			s.Set("border-top-color", "black")
+			got := readBorderEdge(s, "top")
+			if got.width != tc.want {
+				t.Errorf("readBorderEdge(%q) width = %v, want %v",
+					tc.cssWidth, got.width, tc.want)
+			}
+		})
+	}
+}
