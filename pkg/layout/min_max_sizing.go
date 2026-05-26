@@ -741,6 +741,40 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	cols, _ := style.GetGridTemplateColumnsWithNames()
 	_, colGap := style.GetGridGap()
 
+	// Implicit-track expansion for `grid-auto-flow: column` auto-placement.
+	// When the container has no explicit template-columns AND items are auto-
+	// placed via `grid-auto-flow: column`, each item creates one implicit
+	// column track using `grid-auto-columns`. Without this expansion, the
+	// max-content of a grid like `width: max-content; grid-auto-columns: 1fr;
+	// grid-auto-flow: column` collapses to 0 because no template tracks exist
+	// to absorb item contributions. Mirrors Blink's
+	// GridLayoutAlgorithm::ComputeMinMaxSizes which folds implicit tracks
+	// into the intrinsic size computation. @ SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	autoFlow := style.GetGridAutoFlow()
+	autoCols := style.GetGridAutoColumns()
+	if len(cols) == 0 && autoFlow == "column" && autoCols != nil {
+		// Count auto-placed in-flow items along the column axis.
+		implicitCount := 0
+		for _, c := range node.Children() {
+			if c.IsText() {
+				continue
+			}
+			cs := c.Style()
+			if cs == nil || cs.GetDisplay() == css.DisplayNone {
+				continue
+			}
+			pos := cs.GetPosition()
+			if pos == css.PositionAbsolute || pos == css.PositionFixed {
+				continue
+			}
+			implicitCount++
+		}
+		for j := 0; j < implicitCount; j++ {
+			cols = append(cols, *autoCols)
+		}
+	}
+
 	// Gather items so auto/intrinsic tracks can be resolved from item sizes.
 	items := node.Children()
 	hasItem := false
@@ -840,7 +874,15 @@ func measureGridMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 			minSum += maxAutoMin
 			maxSum += maxAutoMax
 		case t.Fr > 0:
-			// fr tracks contribute 0 to intrinsic sizes.
+			// CSS Grid §12.7.1: when the container is being sized under a
+			// max-content constraint, each flexible track contributes the
+			// max-content size of items occupying it (divided by the fr
+			// factor). For min-content sizing, fr tracks contribute their
+			// base size (0 here, since there's no minmax minimum). Without
+			// this contribution, a grid like
+			// `width: max-content; grid-auto-columns: 1fr` collapses to 0
+			// width, breaking spec-correct intrinsic sizing of grid items.
+			maxSum += maxAutoMax
 		case t.Percent > 0:
 			// Percentages resolve to 0 when no outer size is known.
 		}

@@ -164,11 +164,20 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		// Compute the inline size available to this item (sum of spanned columns + gaps).
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
 
+		// CSS Box Alignment 3 §6.1: stretch only applies when the box has
+		// no explicit size in the relevant axis. A grid item with an
+		// explicit inline-size (e.g. width:100px) must NOT be stretched to
+		// the track size — Blink mirrors this by only setting
+		// kFixedInlineSize when justify-self resolves to stretch AND the
+		// item's inline-size is auto. Without this guard, a flex container
+		// child of a grid with `width:100px` gets force-resized to the
+		// track width, breaking the grid-container-as-flex-item tests.
+		stretchInline := gla.shouldStretchInline(item.style, wdm)
 		childSpace := ConstraintSpace{
 			AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: Indefinite}),
 			PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: Indefinite}),
 			PercentageResolutionInlineSize: itemInline,
-			IsFixedInlineSize:              true,
+			IsFixedInlineSize:              stretchInline,
 			WritingDirection:               wdm,
 		}
 		itemLayouts[i] = layoutElement(gla.ctx, item.node, childSpace)
@@ -251,11 +260,15 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			if availBlock < 0 {
 				availBlock = 0
 			}
+			// CSS Box Alignment 3 §6.1: stretch only applies to auto sizes.
+			// Match the first-pass guard so an item with explicit width keeps
+			// its width on the re-layout pass too.
+			stretchInline := gla.shouldStretchInline(item.style, wdm)
 			childSpace := ConstraintSpace{
 				AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}),
 				PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}),
 				PercentageResolutionInlineSize: itemInline,
-				IsFixedInlineSize:              true,
+				IsFixedInlineSize:              stretchInline,
 				IsFixedBlockSize:               selfAlign == "stretch" || selfAlign == "normal",
 				WritingDirection:               wdm,
 			}
@@ -971,6 +984,32 @@ func (gla *GridLayoutAlgorithm) getJustifySelf(itemStyle *css.Style) string {
 		return v
 	}
 	return "stretch"
+}
+
+// shouldStretchInline returns true when the grid item should be stretched
+// to its track's inline-size — i.e. when justify-self resolves to stretch
+// AND the item has no explicit inline-size. Per CSS Box Alignment 3 §6.1,
+// stretch only applies when the box has no explicit size in the relevant
+// axis. Blink mirrors this in
+// third_party/blink/renderer/core/layout/grid/grid_layout_algorithm.cc
+// where the per-item constraint space only sets kFixedInlineSize under
+// the same conditions (justify-self stretch on an auto-sized item).
+func (gla *GridLayoutAlgorithm) shouldStretchInline(itemStyle *css.Style, wdm WritingDirectionMode) bool {
+	if itemStyle == nil {
+		return true
+	}
+	justify := gla.getJustifySelf(itemStyle)
+	if justify != "stretch" && justify != "normal" {
+		return false
+	}
+	inlineProp := "width"
+	if wdm.IsVertical() {
+		inlineProp = "height"
+	}
+	if v, ok := itemStyle.Get(inlineProp); ok && v != "" && v != "auto" {
+		return false
+	}
+	return true
 }
 
 // alignOffset computes offset for alignment within available space.
