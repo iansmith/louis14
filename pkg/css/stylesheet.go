@@ -4,7 +4,20 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
+
+// anonymousLayerCounter assigns a unique synthetic name to each anonymous
+// `@layer { ... }` block. Per CSS Cascade 5 §6.2 each anonymous layer is its
+// own distinct layer (not merged with other anonymous siblings, and not
+// merged with unlayered rules). The synthetic name is opaque — it only has
+// to be unique and to sort in source order. The leading `#` is invalid in
+// author-declared layer names (which are CSS identifiers), so a synthetic
+// name cannot collide with one an author wrote. Mirrors Blink's
+// CSSAtRuleLayerBlockRule path where each anonymous block creates its own
+// CascadeLayer instance — third_party/blink/renderer/core/css/layer_*.cc
+// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+var anonymousLayerCounter atomic.Uint64
 
 // Phase 3: CSS stylesheet structures
 
@@ -927,6 +940,17 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string) ([]Rule, []stri
 	// Extract layer name (may be empty for anonymous layer)
 	layerName := strings.TrimSpace(rest[:bracePos])
 
+	// CSS Cascade 5 §6.2: each anonymous `@layer { ... }` block is its own
+	// distinct cascade layer, not merged with other anonymous blocks or
+	// with the unlayered context. Mint a unique synthetic name so the
+	// cascade sort and revert-layer snapshot logic in cascade.go can
+	// treat each anonymous block as its own priority bucket. The `#`
+	// prefix cannot appear in an author-declared layer name (which is a
+	// CSS ident), so the synthetic name is collision-free.
+	if layerName == "" {
+		layerName = fmt.Sprintf("#anon-%d", anonymousLayerCounter.Add(1))
+	}
+
 	// Extract inner CSS (between outermost { and last })
 	innerStart := strings.Index(ruleStr, "{") + 1
 	innerEnd := strings.LastIndex(ruleStr, "}")
@@ -965,7 +989,9 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string) ([]Rule, []stri
 		}
 	}
 
-	// Record this layer name
+	// Record this layer name. Synthetic anonymous names are also recorded
+	// (layerName was reassigned above) so the stylesheet's LayerOrder
+	// reflects source-order priority across anonymous + named blocks alike.
 	if layerName != "" {
 		layerNames = append(layerNames, layerName)
 	}

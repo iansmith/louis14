@@ -421,7 +421,8 @@ func buildLayerOrder(stylesheets []*Stylesheet) []string {
 // layerPriority returns the cascade priority of a rule based on its layer name.
 // Rules in earlier layers get lower priority values (they lose to later layers).
 // Unlayered rules (layerName == "") get priority = len(layerOrder) (highest priority).
-// Anonymous layer rules ("") treated as unlayered for simplicity.
+// Anonymous @layer blocks get a synthetic non-empty name in parseLayerRule —
+// they are NEVER treated as unlayered (CSS Cascade 5 §6.2).
 func layerPriority(layerName string, layerOrder []string) int {
 	if layerName == "" {
 		// Unlayered rules win over any layered rule
@@ -434,6 +435,28 @@ func layerPriority(layerName string, layerOrder []string) int {
 	}
 	// Unknown layer name: treat as last declared layer (just before unlayered)
 	return len(layerOrder) - 1
+}
+
+// importantLayerPriority returns the cascade priority of an !important rule
+// per CSS Cascade 5 §6.4.1 step 4: the layer order is REVERSED for the
+// important origin. Earliest-declared layer takes the HIGHEST important
+// precedence; unlayered/important sits at the BOTTOM of the important
+// bucket.
+//
+// We compose this from layerPriority by mapping:
+//   - unlayered (layerPriority == len(layerOrder)) → 0 (lowest important).
+//   - layer at index i (layerPriority == i)        → len(layerOrder) - i
+//     (so earliest declared layer i=0 becomes the highest, and the latest
+//     declared layer i=N-1 becomes 1, just above unlayered).
+//
+// Mirrors Blink's CascadePriority::GetImportance ordering at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func importantLayerPriority(layerName string, layerOrder []string) int {
+	if layerName == "" {
+		return 0
+	}
+	normalPri := layerPriority(layerName, layerOrder)
+	return len(layerOrder) - normalPri
 }
 
 // ComputeStyle computes the final style for a node by applying the cascade.
@@ -492,17 +515,38 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// privacy. Mirrors Blink's StyleResolverState IsVisitedDependentProperty
 	// gating at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 	//
-	// CSS Cascade 5 §6.1.3 (`revert-layer`): track the state of finalStyle at
-	// the boundary between cascade layers so a `revert-layer` declaration can
-	// roll back to the previous layer's value. We snapshot just before
-	// crossing into a new layer (i.e. when the next rule has a different
-	// effective layer priority than the previous rule).
+	// CSS Cascade 5 §6.1.3 (`revert-layer`): each cascade layer needs its
+	// own start-of-layer snapshot, AND any `revert-layer` declaration left
+	// behind by a layer's rules must be resolved against THAT layer's
+	// snapshot before crossing into the next layer. Otherwise the next
+	// layer's snapshot captures the literal `revert-layer` sentinel rather
+	// than the cascaded value the spec wants. The fixup is invariant for
+	// the chained pattern in revert-layer-007 where consecutive layers
+	// each contain `revert-layer`.
+	//
+	// The per-layer snapshots are ALSO recorded in `layerSnapshots` keyed
+	// by the rule's LayerName so the !important pass below — which iterates
+	// in REVERSED layer order — can resolve revert-layer against the same
+	// "start of layer L in declaration order" baseline. CSS Cascade 5's
+	// revert-layer semantics ignore the importance-pass reversal: an
+	// !important `revert-layer` in layer L still rolls back to the
+	// declaration-order predecessor's value, not to the next-lower
+	// important-pass layer (revert-layer-005).
 	layerSnap := snapshotForAllRevert(finalStyle)
+	layerSnapshots := make(map[string]allShorthandRevertSnapshot)
 	currentLayerPriority := -1
 	for _, rule := range allRules {
 		rulePriority := layerPriority(rule.LayerName, layerOrder)
 		if rulePriority != currentLayerPriority {
+			// Crossing a layer boundary: resolve revert-layer against the
+			// snapshot of the layer we're LEAVING, then take a fresh
+			// snapshot for the layer we're ENTERING and stash it under
+			// the entering layer's name.
+			if currentLayerPriority != -1 {
+				resolveRevertLayerOnly(finalStyle, revertSnap, layerSnap)
+			}
 			layerSnap = snapshotForAllRevert(finalStyle)
+			layerSnapshots[rule.LayerName] = layerSnap
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
@@ -522,12 +566,65 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 		}
 	}
+	// Final layer's revert-layer entries — resolve against the snapshot of
+	// the last layer iterated. resolveCSSWideKeywords below still handles
+	// any leftover entries (e.g. revert-layer in inline styles or where no
+	// layer was active) using the same snapshot.
+	if currentLayerPriority != -1 {
+		resolveRevertLayerOnly(finalStyle, revertSnap, layerSnap)
+	}
 
-	// Apply !important declarations (second pass). `all` runs before other
-	// !important longhands in the same rule for the same source-order reason.
+	// Apply !important declarations (second pass). CSS Cascade 5 §6.4.1
+	// step 4: the layer order is REVERSED for the important origin —
+	// declarations in the earliest-declared layer have the HIGHEST
+	// important precedence, and unlayered/important sits at the BOTTOM of
+	// the important bucket. Within a layer the normal specificity order
+	// still applies.
+	//
+	// `revert-layer` inside !important still references the
+	// declaration-order predecessor layer's value (NOT the next-lower
+	// layer in the importance-reversed order). We re-use the per-layer
+	// snapshots `layerSnapshots` captured during the normal pass above —
+	// each entry is the cascade state at the start of that layer's
+	// declaration-order processing, which is exactly what revert-layer
+	// (in either pass) should restore. Mirrors Blink's
+	// CSSRevertLayerValue::Resolve at SHA 4883d11fef which looks up the
+	// declaration-layer snapshot regardless of which pass is active.
+	importantRules := make([]Rule, 0, len(allRules))
 	for _, rule := range allRules {
-		if rule.Important == nil {
-			continue
+		if len(rule.Important) > 0 {
+			importantRules = append(importantRules, rule)
+		}
+	}
+	sort.SliceStable(importantRules, func(i, j int) bool {
+		pi := importantLayerPriority(importantRules[i].LayerName, layerOrder)
+		pj := importantLayerPriority(importantRules[j].LayerName, layerOrder)
+		if pi != pj {
+			return pi < pj
+		}
+		return importantRules[i].Selector.Specificity < importantRules[j].Selector.Specificity
+	})
+	currentImportantLayerPri := -1
+	var currentImportantLayerSnap allShorthandRevertSnapshot
+	flushImportantLayer := func() {
+		if currentImportantLayerSnap != nil {
+			resolveRevertLayerOnly(finalStyle, revertSnap, currentImportantLayerSnap)
+		}
+	}
+	for _, rule := range importantRules {
+		rulePri := importantLayerPriority(rule.LayerName, layerOrder)
+		if rulePri != currentImportantLayerPri {
+			flushImportantLayer()
+			// Look up the start-of-layer snapshot captured during the
+			// normal pass. Fall back to the post-normal-pass state for
+			// the unlayered/important bucket (no entry was recorded for
+			// "" if there were no unlayered normal rules).
+			snap, ok := layerSnapshots[rule.LayerName]
+			if !ok {
+				snap = snapshotForAllRevert(finalStyle)
+			}
+			currentImportantLayerSnap = snap
+			currentImportantLayerPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if rule.Important["all"] {
@@ -546,16 +643,27 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			}
 		}
 	}
+	flushImportantLayer()
 
-	// Inline styles have highest specificity (specificity = 1000)
+	// Inline styles have highest specificity (specificity = 1000).
+	// CSS Cascade 5 §6.4.1 step 3 places the style-attribute origin between
+	// the unlayered author bucket and the !important author bucket. For
+	// `revert-layer` purposes (CSS Cascade 5 §6.1.3) it is its own
+	// cascade-layer-like origin, so we snapshot the cascade state
+	// IMMEDIATELY before applying inline declarations — revert-layer in
+	// inline styles then rolls back to that pre-inline state, restoring
+	// the unlayered/layered author value the stylesheets produced
+	// (revert-layer-009).
 	// Note: inline !important would override stylesheet !important, but we don't track that yet
 	if styleAttr, ok := node.GetAttribute("style"); ok {
 		inlineStyle := ParseInlineStyle(styleAttr, ctx)
+		preInlineSnap := snapshotForAllRevert(finalStyle)
 		for property, value := range inlineStyle.Properties {
 			if !importantProps[property] {
 				finalStyle.Set(property, value)
 			}
 		}
+		resolveRevertLayerOnly(finalStyle, revertSnap, preInlineSnap)
 	}
 
 	// CSS Cascade 4 §6.1.2 / §6.1.3 / Cascade 5 §6.1.3: resolve the CSS-wide
@@ -816,9 +924,13 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// ComputeStyle). For pseudo-elements there's no UA + presentational pass
 	// — the inheritance-only initialisation above is the closest analog —
 	// so this snapshot is the inherited-only baseline. `revert-layer` uses
-	// per-layer snapshots captured during iteration.
+	// per-layer snapshots captured during iteration; layerSnapshots is
+	// populated during the normal pass and reused by the !important pass
+	// (CSS Cascade 5 §6.1.3 — see the matching block in ComputeStyle for
+	// the full rationale).
 	pseudoOriginSnap := snapshotForAllRevert(finalStyle)
 	pseudoLayerSnap := snapshotForAllRevert(finalStyle)
+	pseudoLayerSnapshots := make(map[string]allShorthandRevertSnapshot)
 	currentLayerPriority := -1
 
 	// Apply rules in order (normal declarations first). Within a rule, `all`
@@ -830,7 +942,11 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	for _, rule := range allRules {
 		rulePriority := layerPriority(rule.LayerName, layerOrder2)
 		if rulePriority != currentLayerPriority {
+			if currentLayerPriority != -1 {
+				resolveRevertLayerOnly(finalStyle, pseudoOriginSnap, pseudoLayerSnap)
+			}
 			pseudoLayerSnap = snapshotForAllRevert(finalStyle)
+			pseudoLayerSnapshots[rule.LayerName] = pseudoLayerSnap
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
@@ -853,11 +969,45 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
 		}
 	}
+	if currentLayerPriority != -1 {
+		resolveRevertLayerOnly(finalStyle, pseudoOriginSnap, pseudoLayerSnap)
+	}
 
-	// Apply !important declarations (second pass, in specificity order)
+	// Apply !important declarations in REVERSED layer order per CSS Cascade
+	// 5 §6.4.1 step 4. Reuse the normal-pass per-layer snapshots for any
+	// revert-layer encountered (declaration-order semantics — see the
+	// matching block in ComputeStyle).
+	pseudoImportantRules := make([]Rule, 0, len(allRules))
 	for _, rule := range allRules {
-		if rule.Important == nil {
-			continue
+		if len(rule.Important) > 0 {
+			pseudoImportantRules = append(pseudoImportantRules, rule)
+		}
+	}
+	sort.SliceStable(pseudoImportantRules, func(i, j int) bool {
+		pi := importantLayerPriority(pseudoImportantRules[i].LayerName, layerOrder2)
+		pj := importantLayerPriority(pseudoImportantRules[j].LayerName, layerOrder2)
+		if pi != pj {
+			return pi < pj
+		}
+		return pseudoImportantRules[i].Selector.Specificity < pseudoImportantRules[j].Selector.Specificity
+	})
+	pseudoCurrentImportantPri := -1
+	var pseudoCurrentImportantSnap allShorthandRevertSnapshot
+	pseudoFlushImportant := func() {
+		if pseudoCurrentImportantSnap != nil {
+			resolveRevertLayerOnly(finalStyle, pseudoOriginSnap, pseudoCurrentImportantSnap)
+		}
+	}
+	for _, rule := range pseudoImportantRules {
+		rulePri := importantLayerPriority(rule.LayerName, layerOrder2)
+		if rulePri != pseudoCurrentImportantPri {
+			pseudoFlushImportant()
+			snap, ok := pseudoLayerSnapshots[rule.LayerName]
+			if !ok {
+				snap = snapshotForAllRevert(finalStyle)
+			}
+			pseudoCurrentImportantSnap = snap
+			pseudoCurrentImportantPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
 		if rule.Important["all"] {
@@ -881,6 +1031,7 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			}
 		}
 	}
+	pseudoFlushImportant()
 
 	// CSS Pseudo-4 §4.4: the ::marker pseudo-element only accepts the
 	// marker-allowed property subset, and the UA stylesheet sets specific
