@@ -625,6 +625,23 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.FontFeatures = parseFontFeatureSettings(ffs)
 	}
 
+	// CSS Fonts 4 §6.2 font-kerning: only `none` is observable on top of
+	// HarfBuzz defaults — `auto` and `normal` both leave the kern feature on
+	// (HarfBuzz enables kern for horizontal text by default). When `none`,
+	// push `kern=0` (and `vkrn=0` for vertical writing modes) AFTER any
+	// font-feature-settings entries so the explicit property wins per §7
+	// "Resolution of font feature values" (font-* properties override
+	// font-feature-settings). Mirrors Blink's
+	// HarfBuzzShaper SetFontFeatures path
+	// (third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.cc)
+	// where FontDescription::Kerning()==kNoneKerning emits kern=0/vkrn=0.
+	if s.GetFontKerning() == css.FontKerningNone {
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'k', 'e', 'r', 'n'}, Value: 0},
+			textshape.FontFeature{Tag: [4]byte{'v', 'k', 'r', 'n'}, Value: 0},
+		)
+	}
+
 	// Text emphasis marks.
 	isHorizontal := !box.IsVerticalText && !box.IsSidewaysRL && !box.IsSidewaysLR
 	if mark := s.GetTextEmphasisMark(isHorizontal); mark != "" {

@@ -1612,6 +1612,7 @@ var supportedCSSProperties = map[string]struct{}{
 	"color": {},
 	"font":  {}, "font-family": {}, "font-size": {}, "font-style": {},
 	"font-weight": {}, "font-variant": {}, "font-stretch": {},
+	"font-kerning": {}, "font-feature-settings": {},
 	"line-height": {}, "letter-spacing": {}, "word-spacing": {},
 	"text-align": {}, "text-decoration": {}, "text-decoration-line": {},
 	"text-decoration-color": {}, "text-decoration-style": {}, "text-decoration-thickness": {},

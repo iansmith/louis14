@@ -4947,6 +4947,35 @@ func (s *Style) GetFontVariantLigatures() string {
 	return v
 }
 
+// FontKerning enumerates the three CSS Fonts 4 §6.2 font-kerning values.
+// Mirrors Blink's FontDescription::Kerning enum
+// (third_party/blink/renderer/platform/fonts/font_description.h, kAuto/kNormal/kNone
+// at Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+type FontKerning string
+
+const (
+	FontKerningAuto   FontKerning = "auto"
+	FontKerningNormal FontKerning = "normal"
+	FontKerningNone   FontKerning = "none"
+)
+
+// GetFontKerning returns the font-kerning property value.
+// Per CSS Fonts 4 §6.2 the default is `auto`, which UAs implement as
+// `normal` for proportional fonts (HarfBuzz default = kern on). Only the
+// explicit `none` keyword has observable effect in louis14 today; it pushes
+// `kern=0`/`vkrn=0` into the shaper feature list.
+func (s *Style) GetFontKerning() FontKerning {
+	v, _ := s.Get("font-kerning")
+	switch strings.TrimSpace(strings.ToLower(v)) {
+	case string(FontKerningNone):
+		return FontKerningNone
+	case string(FontKerningNormal):
+		return FontKerningNormal
+	default:
+		return FontKerningAuto
+	}
+}
+
 // GetFontSynthesis returns the font-synthesis value as a struct indicating
 // which synthesis types are allowed.
 // Default allows weight and style synthesis (but not small-caps).

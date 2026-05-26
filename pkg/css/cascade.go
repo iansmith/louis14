@@ -1247,7 +1247,7 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
-	"font-feature-settings": true,
+	"font-feature-settings": true, "font-kerning": true,
 	// NOTE: text-decoration is intentionally NOT inherited (CSS Text Decor 3
 	// §2). Instead, ResolveAppliedTextDecorations accumulates an
 	// []AppliedTextDecoration vector from parent → child. See
