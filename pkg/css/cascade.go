@@ -758,8 +758,10 @@ func ComputePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	for _, stylesheet := range stylesheets {
 		for _, rule := range stylesheet.Rules {
 			// Phase 22: Check media query (Kleene 3-valued — apply only when
-			// the result is definitely true; Unknown does not apply).
-			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
+			// the result is definitely true; Unknown does not apply). Combines
+			// the rule's @media wrapper with any @import-level media-query-list
+			// (CSS Cascade 4 §3.1).
+			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
 
@@ -1005,7 +1007,7 @@ func HasFirstLetterRules(node *html.Node, stylesheets []*Stylesheet, viewportWid
 			if rule.Selector.PseudoElement != "first-letter" {
 				continue
 			}
-			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
+			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
 			if MatchesSelector(node, rule.Selector) {
@@ -1024,7 +1026,7 @@ func HasFirstLineRules(node *html.Node, stylesheets []*Stylesheet, viewportWidth
 			if rule.Selector.PseudoElement != "first-line" {
 				continue
 			}
-			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
+			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
 			if MatchesSelector(node, rule.Selector) {
@@ -1047,7 +1049,7 @@ func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []
 					continue
 				}
 			}
-			if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
+			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
 			if pseudo == pseudoElement {

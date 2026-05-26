@@ -66,6 +66,17 @@ type Rule struct {
 	MediaQuery     *MediaQuery       // Phase 22: Optional media query wrapper
 	ContainerQuery *ContainerQuery   // Optional @container query wrapper
 	LayerName      string            // @layer name (empty = unlayered)
+
+	// ImportMediaQueries carries the comma-separated media-query-list from a
+	// conditional `@import url(...) <media-query-list>;` that brought this
+	// rule into the importing sheet. Nil/empty when the rule was not imported
+	// or the @import had no media-query suffix. Multiple entries combine
+	// with OR (CSS Cascade 4 §3.1 "conditional import"); each entry uses
+	// Kleene 3-valued AND internally. The list is evaluated at apply time
+	// AND-combined with rule.MediaQuery (the inner `@media` wrapper, if any),
+	// mirroring Blink's `CSSImportRule::ApplyRule` chained media check at
+	// third_party/blink/renderer/core/css/css_import_rule.cc @ 4883d11f.
+	ImportMediaQueries []*MediaQuery
 }
 
 // MediaQueryResult mirrors Blink's KleeneValue
@@ -1094,6 +1105,57 @@ func parseMediaQuery(mediaStr string) *MediaQuery {
 	}
 
 	return mq
+}
+
+// parseMediaQueryList parses a comma-separated media-query-list
+// (CSS Media Queries 4 §2.1) into one *MediaQuery per branch. Used by
+// the conditional `@import url(...) <media-query-list>` form. Whitespace-only
+// or empty input returns an empty slice. Each branch is parsed with
+// parseMediaQuery so that unknown features/types preserve Kleene 3-valued
+// semantics at evaluation time.
+func parseMediaQueryList(s string) []*MediaQuery {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	branches := splitMediaQueryListBranches(s)
+	out := make([]*MediaQuery, 0, len(branches))
+	for _, branch := range branches {
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			continue
+		}
+		out = append(out, parseMediaQuery(branch))
+	}
+	return out
+}
+
+// splitMediaQueryListBranches splits a media-query-list by top-level commas
+// (CSS Media Queries 4 §2.1). Commas inside parenthesized media features are
+// ignored. Mirrors the comma-OR split in Blink's
+// `MediaQueryParser::ParseMediaQuerySet` at
+// third_party/blink/renderer/core/css/parser/media_query_parser.cc @ 4883d11f.
+func splitMediaQueryListBranches(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
 }
 
 // splitMediaConditions splits a media query condition string by " and " at paren depth 0.
@@ -2190,6 +2252,43 @@ func EvaluateMediaQuery(mq *MediaQuery, viewportWidth, viewportHeight float64) M
 	return applyMediaRestrictor(mq.Restrictor, exprResult)
 }
 
+// EvaluateMediaQueryList returns the Kleene 3-valued result of evaluating a
+// comma-separated media-query-list (CSS Media Queries 4 §2.1), used by the
+// conditional `@import url(...) <media-query-list>` form (CSS Cascade 4 §3.1).
+// The branches are combined with OR using Kleene logic — True absorbs;
+// otherwise Unknown propagates. An empty/nil list means "no condition" and
+// evaluates to True (the unconditional @import case). Mirrors Blink's
+// `MediaQuerySet::HasMediaQueries` + `MediaQueryEvaluator::Eval` over each
+// branch at third_party/blink/renderer/core/css/media_query_set.cc and
+// media_query_evaluator.cc @ 4883d11f.
+func EvaluateMediaQueryList(list []*MediaQuery, viewportWidth, viewportHeight float64) MediaQueryResult {
+	if len(list) == 0 {
+		return MediaQueryTrue
+	}
+	result := MediaQueryFalse
+	for _, mq := range list {
+		r := EvaluateMediaQuery(mq, viewportWidth, viewportHeight)
+		result = mediaOr(result, r)
+		if result == MediaQueryTrue {
+			return MediaQueryTrue // True absorbs in OR.
+		}
+	}
+	return result
+}
+
+// RuleMediaApplies returns whether a rule's combined media gating evaluates
+// to definitely-true at the given viewport. Combines the @import-level
+// media-query-list (OR-of-MQs) AND-with the @media-level single MediaQuery,
+// mirroring Blink's `CSSImportRule::ApplyRule` chained check at
+// third_party/blink/renderer/core/css/css_import_rule.cc @ 4883d11f.
+// Per CSS Media Queries 4 §3.1, the result is Kleene 3-valued and only a
+// definitely-True result causes the rule to apply.
+func RuleMediaApplies(rule *Rule, viewportWidth, viewportHeight float64) bool {
+	importResult := EvaluateMediaQueryList(rule.ImportMediaQueries, viewportWidth, viewportHeight)
+	mediaResult := EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight)
+	return mediaAnd(importResult, mediaResult) == MediaQueryTrue
+}
+
 // applyMediaRestrictor mirrors Blink's ApplyRestrictor() in
 // third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f.
 // The "not" restrictor swaps True↔False but leaves Unknown unchanged.
@@ -2206,6 +2305,17 @@ func applyMediaRestrictor(r MediaQueryRestrictor, v MediaQueryResult) MediaQuery
 		return MediaQueryTrue
 	}
 	return MediaQueryUnknown
+}
+
+// mediaOr is Kleene OR: T∨X=T, F∨X=X, U∨U=U, U∨F=U.
+func mediaOr(a, b MediaQueryResult) MediaQueryResult {
+	if a == MediaQueryTrue || b == MediaQueryTrue {
+		return MediaQueryTrue
+	}
+	if a == MediaQueryUnknown || b == MediaQueryUnknown {
+		return MediaQueryUnknown
+	}
+	return MediaQueryFalse
 }
 
 // mediaAnd is Kleene AND: F∧X=F, T∧X=X, U∧U=U, U∧T=U, U∧F=F.
