@@ -808,6 +808,18 @@ func parseMediaRule(ruleStr string) []Rule {
 			rules = append(rules, nestedRules...)
 			continue
 		}
+		// Handle @supports nested inside @media — required by at-supports-002.
+		// The @media constraint propagates onto every rule the @supports
+		// expansion produces, mirroring Blink's StyleRuleMedia containing
+		// StyleRuleSupports.
+		if strings.HasPrefix(innerTrimmed, "@supports") {
+			supportsRules := parseSupportsRule(innerRuleStr)
+			for i := range supportsRules {
+				supportsRules[i].MediaQuery = mediaQuery
+			}
+			rules = append(rules, supportsRules...)
+			continue
+		}
 		// Use parseRules (plural) to handle comma-separated selector groups
 		parsedRules, err := parseRules(innerRuleStr)
 		if err != nil {
@@ -1133,6 +1145,18 @@ func parseSupportsRule(ruleStr string) []Rule {
 	innerRules := splitRules(innerCSS)
 	var rules []Rule
 	for _, inner := range innerRules {
+		innerTrimmed := strings.TrimSpace(inner)
+		// Handle @media nested inside @supports — required by at-supports-003.
+		// Mirrors Blink's StyleRuleSupports containing StyleRuleMedia.
+		if strings.HasPrefix(innerTrimmed, "@media") {
+			rules = append(rules, parseMediaRule(inner)...)
+			continue
+		}
+		// Handle nested @supports inside @supports.
+		if strings.HasPrefix(innerTrimmed, "@supports") {
+			rules = append(rules, parseSupportsRule(inner)...)
+			continue
+		}
 		parsedRules, err := parseRules(inner)
 		if err != nil {
 			continue
@@ -1142,81 +1166,262 @@ func parseSupportsRule(ruleStr string) []Rule {
 	return rules
 }
 
+// evaluateSupportsCondition evaluates a CSS @supports condition string per
+// CSS Conditional Rules 3 §6.4. Mirrors Blink's
+// CSSSupportsParser::ConsumeSupportsCondition() in
+// third_party/blink/renderer/core/css/parser/css_supports_parser.cc
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Grammar:
+//
+//	<supports-condition> = not <supports-in-parens>
+//	                     | <supports-in-parens> [ and <supports-in-parens> ]*
+//	                     | <supports-in-parens> [ or <supports-in-parens> ]*
+//	<supports-in-parens> = ( <supports-condition> )
+//	                     | <supports-feature>
+//	                     | <general-enclosed>
+//	<supports-feature>   = <supports-decl> | <supports-selector-fn> | ...
+//	<supports-decl>      = ( <declaration> )
+//
+// Unlike Blink, louis14 currently does not implement selector()/font-format()/
+// font-tech()/at-rule() supports-feature functions — those are out-of-scope
+// for W8.19. All function-tokens fall through to <general-enclosed>, which
+// per spec evaluates to false (kUnsupported in Blink terms).
 func evaluateSupportsCondition(condition string) bool {
-	condition = strings.TrimSpace(condition)
-
-	// Handle "not" prefix
-	if strings.HasPrefix(condition, "not ") {
-		inner := strings.TrimSpace(condition[4:])
-		return !evaluateSupportsCondition(inner)
+	res, rest := consumeSupportsCondition(condition)
+	if strings.TrimSpace(rest) != "" {
+		// Trailing garbage means the condition didn't fully parse.
+		return false
 	}
-	if strings.HasPrefix(condition, "not(") {
-		inner := strings.TrimSpace(condition[3:])
-		return !evaluateSupportsCondition(inner)
-	}
-
-	// Handle parenthesized condition
-	if strings.HasPrefix(condition, "(") && strings.HasSuffix(condition, ")") {
-		inner := condition[1 : len(condition)-1]
-
-		// Check for "and" / "or" compositions
-		// Look for ") and (" or ") or (" patterns
-		if andParts := splitSupportsOperator(condition, " and "); len(andParts) > 1 {
-			for _, part := range andParts {
-				if !evaluateSupportsCondition(strings.TrimSpace(part)) {
-					return false
-				}
-			}
-			return true
-		}
-		if orParts := splitSupportsOperator(condition, " or "); len(orParts) > 1 {
-			for _, part := range orParts {
-				if evaluateSupportsCondition(strings.TrimSpace(part)) {
-					return true
-				}
-			}
-			return false
-		}
-
-		// Simple property: value check
-		colonIdx := strings.Index(inner, ":")
-		if colonIdx > 0 {
-			property := strings.TrimSpace(inner[:colonIdx])
-			value := strings.TrimSpace(inner[colonIdx+1:])
-			return isSupportedPropertyValue(property, value)
-		}
-
-		// Could be a nested condition
-		return evaluateSupportsCondition(inner)
-	}
-
-	return false
+	return res == supportsTrue
 }
 
-func splitSupportsOperator(s string, op string) []string {
-	// Split on operator while respecting parentheses depth
-	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
+// supportsResult mirrors Blink's three-valued Result enum
+// (kSupported / kUnsupported / kParseFailure). Parse-failure surfaces upward
+// so an outer wrapper can decide whether the overall condition is invalid.
+type supportsResult int
+
+const (
+	supportsParseFailure supportsResult = iota
+	supportsFalse
+	supportsTrue
+)
+
+// consumeSupportsCondition parses a <supports-condition> and returns the
+// boolean result plus any unconsumed trailing input. Whitespace at the front
+// is consumed; trailing whitespace after a successful consume is also eaten.
+func consumeSupportsCondition(s string) (supportsResult, string) {
+	s = trimLeadingWS(s)
+	// `not <supports-in-parens>` — the keyword `not` must be a standalone
+	// identifier, not a function-token (`not(`). Per CSS Syntax, `not(` is a
+	// <function-token> and falls into <general-enclosed> instead.
+	if rest, ok := consumeKeyword(s, "not"); ok {
+		res, after := consumeSupportsInParens(trimLeadingWS(rest))
+		if res == supportsParseFailure {
+			return supportsParseFailure, s
 		}
-		if depth == 0 && i+len(op) <= len(s) && s[i:i+len(op)] == op {
-			parts = append(parts, s[start:i])
-			start = i + len(op)
-			i += len(op) - 1
-		}
+		return notResult(res), trimLeadingWS(after)
 	}
-	parts = append(parts, s[start:])
-	return parts
+
+	res, rest := consumeSupportsInParens(s)
+	if res == supportsParseFailure {
+		return supportsParseFailure, s
+	}
+	rest = trimLeadingWS(rest)
+
+	// Decide chain operator based on what follows. Mixing `and`/`or` at the
+	// same level is a syntax error per spec; we stick to whichever appears
+	// first and stop if the chain breaks.
+	if after, ok := consumeKeyword(rest, "and"); ok {
+		for {
+			next, tail := consumeSupportsInParens(trimLeadingWS(after))
+			if next == supportsParseFailure {
+				return supportsParseFailure, s
+			}
+			res = andResult(res, next)
+			rest = trimLeadingWS(tail)
+			var more bool
+			after, more = consumeKeyword(rest, "and")
+			if !more {
+				break
+			}
+		}
+		return res, rest
+	}
+	if after, ok := consumeKeyword(rest, "or"); ok {
+		for {
+			next, tail := consumeSupportsInParens(trimLeadingWS(after))
+			if next == supportsParseFailure {
+				return supportsParseFailure, s
+			}
+			res = orResult(res, next)
+			rest = trimLeadingWS(tail)
+			var more bool
+			after, more = consumeKeyword(rest, "or")
+			if !more {
+				break
+			}
+		}
+		return res, rest
+	}
+
+	return res, rest
 }
 
-func isSupportedPropertyValue(property, value string) bool {
-	// For certain properties, validate the value too
+// consumeSupportsInParens parses <supports-in-parens>. Returns the result
+// plus the rest of the input after the consumed token.
+//
+// Per spec the production accepts three alternatives:
+//
+//  1. `( <supports-condition> )` — a nested grouping.
+//  2. `<supports-feature>` — currently only <supports-decl>, since selector(),
+//     font-format(), font-tech(), and at-rule() functional notations are not
+//     implemented (W8.19 scope guard).
+//  3. `<general-enclosed>` — any function-token whose body tokenizes, OR any
+//     parenthesized block whose body doesn't otherwise parse. Always
+//     evaluates to false (kUnsupported in Blink).
+func consumeSupportsInParens(s string) (supportsResult, string) {
+	s = trimLeadingWS(s)
+	if strings.HasPrefix(s, "(") {
+		body, after, ok := consumeBalancedParens(s)
+		if !ok {
+			return supportsParseFailure, s
+		}
+		inner := strings.TrimSpace(body)
+
+		// First try as `( <supports-condition> )` — a nested grouping.
+		if strings.HasPrefix(inner, "(") || hasLeadingKeyword(inner, "not") {
+			res, rest := consumeSupportsCondition(inner)
+			if res != supportsParseFailure && strings.TrimSpace(rest) == "" {
+				return res, after
+			}
+			// Fall through to <general-enclosed> if it didn't fully parse.
+		}
+
+		// Then as `<supports-decl>`.
+		if res, ok := consumeSupportsDecl(inner); ok {
+			if res {
+				return supportsTrue, after
+			}
+			return supportsFalse, after
+		}
+
+		// Otherwise treat the parenthesized block as <general-enclosed>:
+		// consumed but unsupported.
+		return supportsFalse, after
+	}
+
+	// Function-token form: ident followed by `(` — falls into
+	// <general-enclosed>. Includes the unimplemented `selector(...)`,
+	// `font-format(...)`, `font-tech(...)`, etc. Evaluates to false.
+	if after, ok := consumeGeneralEnclosedFunction(s); ok {
+		return supportsFalse, after
+	}
+
+	return supportsParseFailure, s
+}
+
+// consumeGeneralEnclosedFunction consumes a function-token form
+// `ident( <any> )` from the head of s and returns (rest, true) on success.
+// Per CSS Conditional 3 §6.4 / Blink's CSSSupportsParser::ConsumeGeneralEnclosed,
+// any well-formed function call qualifies even if the function name is
+// unknown — the supports-result is just kUnsupported.
+func consumeGeneralEnclosedFunction(s string) (string, bool) {
+	// Read ident.
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		isExtra := c == '-' || c == '_'
+		if i == 0 {
+			if !isAlpha && !isExtra {
+				return s, false
+			}
+		} else {
+			if !isAlpha && !isDigit && !isExtra {
+				break
+			}
+		}
+		i++
+	}
+	if i == 0 || i >= len(s) || s[i] != '(' {
+		return s, false
+	}
+	_, after, ok := consumeBalancedParens(s[i:])
+	if !ok {
+		return s, false
+	}
+	return after, true
+}
+
+// consumeSupportsDecl reports whether inner is a valid <declaration> for
+// @supports purposes. Returns (resultBool, parsedOK).
+//
+//   - parsedOK is false if the content doesn't even tokenize as a declaration
+//     (no colon, empty property, trailing semicolon, etc.). The caller then
+//     treats the wrapping parens as <general-enclosed>.
+//   - resultBool is true if the declaration is "supported" (known property OR
+//     a custom property `--*`, with a non-empty value that parses to at least
+//     one valid longhand). False for unknown properties.
+//
+// Per CSS Syntax §5.4.6: a declaration is `<ident-token> S* : S* <component-
+// value>+ ['!' <important>]`. A trailing semicolon means the input contains
+// MORE than one declaration — invalid as a single <supports-decl>.
+func consumeSupportsDecl(inner string) (result bool, ok bool) {
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return false, false
+	}
+	colon := strings.Index(inner, ":")
+	if colon <= 0 {
+		return false, false
+	}
+	property := strings.TrimSpace(inner[:colon])
+	value := strings.TrimSpace(inner[colon+1:])
+	if property == "" || value == "" {
+		return false, false
+	}
+	// Property name must be a valid <ident-token>: starts with letter or '-'.
+	if !isValidPropertyIdent(property) {
+		return false, false
+	}
+	// A trailing semicolon means the input is multiple declarations chained,
+	// not a single <declaration>. Per at-supports-039 this must be invalid.
+	if strings.HasSuffix(value, ";") {
+		return false, false
+	}
+
+	// Custom properties (`--foo`) are always supported per CSS Variables 1
+	// §2.1: "Custom properties are not subject to the same restrictions as
+	// ordinary CSS properties." Blink mirrors this: any --* with a non-empty
+	// value succeeds in CSSSupportsParser.
+	if strings.HasPrefix(property, "--") {
+		return true, true
+	}
+
+	// Strip optional `!important` (or any `!<ident>` flag) from the value to
+	// validate the property:value pair itself. The spec considers the
+	// declaration supported iff the UA recognizes it; `!important` is part of
+	// the declaration's outer syntax but doesn't affect supports semantics.
+	if bang := strings.Index(value, "!"); bang >= 0 {
+		bare := strings.TrimSpace(value[:bang])
+		if bare == "" {
+			return false, false
+		}
+		value = bare
+	}
+
+	return isSupportedDeclaration(property, value), true
+}
+
+// isSupportedDeclaration reports whether the given property:value pair is
+// recognized by the UA. Used by @supports.
+func isSupportedDeclaration(property, value string) bool {
+	if !isSupportedCSSProperty(property) {
+		return false
+	}
+	// For properties with limited keyword grammars, validate the value.
 	switch property {
 	case "display":
 		validDisplay := map[string]bool{
@@ -1232,42 +1437,306 @@ func isSupportedPropertyValue(property, value string) bool {
 			"-webkit-box": true, "-webkit-inline-box": true,
 			"-webkit-flex": true, "-webkit-inline-flex": true,
 		}
-		return validDisplay[value]
+		return validDisplay[strings.ToLower(value)]
 	case "position":
 		validPosition := map[string]bool{
 			"static": true, "relative": true, "absolute": true,
 			"fixed": true, "sticky": true,
 		}
-		return validPosition[value]
-	default:
-		// For other properties, just check if the property is known
-		return isSupportedCSSProperty(property)
+		return validPosition[strings.ToLower(value)]
 	}
+	// For other recognized properties, accept any non-empty value (the spec
+	// only requires "if the user agent supports the property:value pair"; we
+	// take a permissive interpretation matching Blink's behavior of treating
+	// most properties as accepting any syntactically-valid <declaration-value>).
+	return true
 }
 
+// isSupportedCSSProperty returns true for properties louis14 recognizes for
+// @supports purposes. This is intentionally broader than the set we actually
+// implement layout for — `(margin: 0)` should evaluate true even if a
+// particular margin computation isn't fully supported.
 func isSupportedCSSProperty(property string) bool {
-	supported := map[string]bool{
-		"display": true, "position": true, "float": true, "clear": true,
-		"width": true, "height": true, "min-width": true, "max-width": true,
-		"min-height": true, "max-height": true,
-		"margin": true, "margin-top": true, "margin-right": true,
-		"margin-bottom": true, "margin-left": true,
-		"padding": true, "padding-top": true, "padding-right": true,
-		"padding-bottom": true, "padding-left": true,
-		"border": true, "border-radius": true,
-		"background": true, "background-color": true, "background-image": true,
-		"color": true, "font-size": true, "font-family": true, "font-weight": true,
-		"flex": true, "flex-direction": true, "flex-wrap": true,
-		"grid": true, "grid-template-columns": true, "grid-template-rows": true,
-		"transform": true, "opacity": true, "overflow": true,
-		"z-index": true, "box-shadow": true, "box-sizing": true,
-		"text-align": true, "text-decoration": true, "text-transform": true,
-		"vertical-align": true, "line-height": true, "white-space": true,
-		"visibility": true, "clip-path": true, "filter": true,
-		"aspect-ratio": true, "column-count": true,
-		"justify-content": true, "align-items": true,
+	p := strings.ToLower(property)
+	// Custom properties — always supported.
+	if strings.HasPrefix(p, "--") {
+		return true
 	}
-	return supported[property]
+	if _, ok := supportedCSSProperties[p]; ok {
+		return true
+	}
+	return false
+}
+
+// supportedCSSProperties enumerates the CSS properties louis14 considers
+// "known" for @supports evaluation. Pulled from the union of properties
+// recognized by expandShorthand, the cascade, parseDeclarations validators,
+// and common longhands. Add to this list as new properties get implemented.
+var supportedCSSProperties = map[string]struct{}{
+	// Box model
+	"width": {}, "height": {}, "min-width": {}, "max-width": {},
+	"min-height": {}, "max-height": {},
+	"margin": {}, "margin-top": {}, "margin-right": {}, "margin-bottom": {}, "margin-left": {},
+	"margin-inline": {}, "margin-block": {},
+	"margin-inline-start": {}, "margin-inline-end": {},
+	"margin-block-start": {}, "margin-block-end": {},
+	"padding": {}, "padding-top": {}, "padding-right": {}, "padding-bottom": {}, "padding-left": {},
+	"padding-inline": {}, "padding-block": {},
+	"padding-inline-start": {}, "padding-inline-end": {},
+	"padding-block-start": {}, "padding-block-end": {},
+	"box-sizing": {},
+	// Borders
+	"border": {}, "border-top": {}, "border-right": {}, "border-bottom": {}, "border-left": {},
+	"border-width": {}, "border-style": {}, "border-color": {},
+	"border-top-width": {}, "border-right-width": {}, "border-bottom-width": {}, "border-left-width": {},
+	"border-top-style": {}, "border-right-style": {}, "border-bottom-style": {}, "border-left-style": {},
+	"border-top-color": {}, "border-right-color": {}, "border-bottom-color": {}, "border-left-color": {},
+	"border-radius":          {},
+	"border-top-left-radius": {}, "border-top-right-radius": {},
+	"border-bottom-left-radius": {}, "border-bottom-right-radius": {},
+	"border-inline": {}, "border-block": {},
+	"border-inline-start": {}, "border-inline-end": {},
+	// Background
+	"background": {}, "background-color": {}, "background-image": {},
+	"background-repeat": {}, "background-position": {}, "background-attachment": {},
+	"background-size": {}, "background-clip": {}, "background-origin": {},
+	// Color / typography
+	"color": {},
+	"font":  {}, "font-family": {}, "font-size": {}, "font-style": {},
+	"font-weight": {}, "font-variant": {}, "font-stretch": {},
+	"line-height": {}, "letter-spacing": {}, "word-spacing": {},
+	"text-align": {}, "text-decoration": {}, "text-decoration-line": {},
+	"text-decoration-color": {}, "text-decoration-style": {}, "text-decoration-thickness": {},
+	"text-emphasis": {}, "text-emphasis-color": {}, "text-emphasis-style": {}, "text-emphasis-position": {},
+	"text-indent": {}, "text-transform": {}, "text-shadow": {}, "text-overflow": {},
+	"white-space": {}, "word-break": {}, "word-wrap": {}, "overflow-wrap": {},
+	"writing-mode": {}, "direction": {}, "unicode-bidi": {},
+	// Layout
+	"display":          {},
+	"position":         {},
+	"top":              {},
+	"right":            {},
+	"bottom":           {},
+	"left":             {},
+	"float":            {},
+	"clear":            {},
+	"z-index":          {},
+	"visibility":       {},
+	"overflow":         {},
+	"overflow-x":       {},
+	"overflow-y":       {},
+	"vertical-align":   {},
+	"aspect-ratio":     {},
+	"opacity":          {},
+	"transform":        {},
+	"transform-origin": {},
+	"filter":           {},
+	"clip":             {},
+	"clip-path":        {},
+	"will-change":      {},
+	"isolation":        {},
+	// Flexbox
+	"flex": {}, "flex-direction": {}, "flex-wrap": {}, "flex-flow": {},
+	"flex-grow": {}, "flex-shrink": {}, "flex-basis": {},
+	"order": {}, "gap": {}, "row-gap": {}, "column-gap": {},
+	"justify-content": {}, "justify-items": {}, "justify-self": {},
+	"align-items": {}, "align-self": {}, "align-content": {},
+	"place-items": {}, "place-self": {}, "place-content": {},
+	// Grid
+	"grid":                  {},
+	"grid-template":         {},
+	"grid-template-columns": {}, "grid-template-rows": {}, "grid-template-areas": {},
+	"grid-auto-columns": {}, "grid-auto-rows": {}, "grid-auto-flow": {},
+	"grid-area": {}, "grid-column": {}, "grid-row": {},
+	"grid-column-start": {}, "grid-column-end": {},
+	"grid-row-start": {}, "grid-row-end": {},
+	// Lists, tables
+	"list-style": {}, "list-style-type": {}, "list-style-position": {}, "list-style-image": {},
+	"table-layout":    {},
+	"border-collapse": {},
+	"border-spacing":  {},
+	"caption-side":    {},
+	"empty-cells":     {},
+	// Effects
+	"box-shadow": {},
+	"outline":    {}, "outline-width": {}, "outline-style": {}, "outline-color": {}, "outline-offset": {},
+	// Multicol — column-gap is listed under Flexbox above
+	"column-count": {}, "column-width": {}, "columns": {},
+	"column-rule":       {},
+	"column-rule-width": {}, "column-rule-style": {}, "column-rule-color": {},
+	"column-span":       {},
+	"column-fill":       {},
+	"break-before":      {},
+	"break-after":       {},
+	"break-inside":      {},
+	"page-break-before": {}, "page-break-after": {}, "page-break-inside": {},
+	// Animations / transitions
+	"transition": {}, "transition-property": {}, "transition-duration": {},
+	"transition-timing-function": {}, "transition-delay": {},
+	"animation": {}, "animation-name": {}, "animation-duration": {},
+	"animation-timing-function": {}, "animation-delay": {},
+	"animation-iteration-count": {}, "animation-direction": {},
+	"animation-fill-mode": {}, "animation-play-state": {},
+	// Misc
+	"content":           {},
+	"counter-reset":     {},
+	"counter-increment": {},
+	"quotes":            {},
+	"cursor":            {},
+	"pointer-events":    {},
+	"user-select":       {},
+	"resize":            {},
+	"scroll-behavior":   {},
+	// CSS3 sizing keywords / logical props
+	"inline-size":     {},
+	"block-size":      {},
+	"min-inline-size": {},
+	"max-inline-size": {},
+	"min-block-size":  {},
+	"max-block-size":  {},
+	// Ruby
+	"ruby-position": {}, "ruby-align": {}, "ruby-merge": {},
+	// Tables (logical edges)
+	"all": {},
+}
+
+// trimLeadingWS removes ASCII whitespace from the head of s, matching the
+// CSS whitespace set (space, tab, LF, CR, FF).
+func trimLeadingWS(s string) string {
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' {
+			i++
+			continue
+		}
+		break
+	}
+	return s[i:]
+}
+
+// consumeKeyword consumes the ASCII-case-insensitive ident `kw` from the front
+// of s if it appears as a standalone identifier (not part of a longer ident
+// or function token). Returns (rest-after-keyword, ok).
+func consumeKeyword(s, kw string) (string, bool) {
+	if len(s) < len(kw) {
+		return s, false
+	}
+	if !strings.EqualFold(s[:len(kw)], kw) {
+		return s, false
+	}
+	// Must be followed by something that breaks the ident — whitespace, `(`
+	// is NOT acceptable (would be `kw(` = function-token, not ident `kw`).
+	if len(s) == len(kw) {
+		return s[len(kw):], true
+	}
+	next := s[len(kw)]
+	if next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '\f' {
+		return s[len(kw):], true
+	}
+	// Anything else (alpha/digit/`(`/`-`/`_`) makes this a different token.
+	return s, false
+}
+
+// hasLeadingKeyword reports whether s starts with `kw` as a standalone ident.
+func hasLeadingKeyword(s, kw string) bool {
+	_, ok := consumeKeyword(s, kw)
+	return ok
+}
+
+// consumeBalancedParens, given input starting with `(`, returns the contents
+// between the opening `(` and its matching closing `)`, the rest of the
+// input after that `)`, and ok=true. If parens don't balance, returns ok=false.
+func consumeBalancedParens(s string) (body, rest string, ok bool) {
+	if len(s) == 0 || s[0] != '(' {
+		return "", s, false
+	}
+	depth := 0
+	inString := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[1:i], s[i+1:], true
+			}
+		}
+	}
+	return "", s, false
+}
+
+// isValidPropertyIdent reports whether s is a valid CSS ident-start for a
+// property name. Accepts letter, `-`, or `_` first; subsequent chars must be
+// letter/digit/`-`/`_`. (Numeric leading char rejected per CSS Syntax §4.3.)
+func isValidPropertyIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		isExtra := c == '-' || c == '_'
+		if i == 0 {
+			if !isAlpha && !isExtra {
+				return false
+			}
+		} else {
+			if !isAlpha && !isDigit && !isExtra {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// notResult applies the `not` operator to a supports-result.
+func notResult(r supportsResult) supportsResult {
+	switch r {
+	case supportsTrue:
+		return supportsFalse
+	case supportsFalse:
+		return supportsTrue
+	}
+	return r
+}
+
+// andResult applies the `and` operator. Per spec, `and` short-circuits to
+// false if either operand is false; otherwise true.
+func andResult(a, b supportsResult) supportsResult {
+	if a == supportsParseFailure || b == supportsParseFailure {
+		return supportsParseFailure
+	}
+	if a == supportsFalse || b == supportsFalse {
+		return supportsFalse
+	}
+	return supportsTrue
+}
+
+// orResult applies the `or` operator. True if either operand is true.
+func orResult(a, b supportsResult) supportsResult {
+	if a == supportsParseFailure || b == supportsParseFailure {
+		return supportsParseFailure
+	}
+	if a == supportsTrue || b == supportsTrue {
+		return supportsTrue
+	}
+	return supportsFalse
 }
 
 // findTopLevelPseudoElement returns the byte index of the first occurrence of
