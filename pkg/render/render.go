@@ -1681,19 +1681,55 @@ func hasBorderRadius(layer *PaintLayer) bool {
 }
 
 // overflowClipRadii returns the elliptical radii to use when drawing the
-// overflow clip path for `layer`. When `overflow-clip-margin` shifts the
-// clip edge outward from the padding-box, the corners outset via the same
-// cubic-shadow-shape formula used by `box-shadow` (CSS Backgrounds 3
-// §3.2 "Shadow Shape"), per CSS Overflow 4 §3.2's reference to that
-// formula. When no clip-margin is active the border-box radii are
-// returned unchanged.
+// overflow clip path for `layer`. CSS Overflow 4 §3.2 specifies that the
+// overflow clip edge "is shaped in the corners exactly the same way as an
+// outer box-shadow with a spread radius of the same cumulative offset
+// from the box's border edge", referring to the CSS Backgrounds 3 §5.4
+// shadow shape formula.
+//
+// For positive (outward) offsets, the border-box border-radius is outset
+// via the cubic shadow-shape formula. For negative offsets (clip edge
+// inside the border-box, e.g. overflow-clip-margin: content-box with no
+// length), the radius shrinks linearly via `Inset` (matches the inner
+// rounded rectangle used elsewhere for border-clipping). When no
+// clip-margin is active the border-box radii are returned unchanged.
 func overflowClipRadii(layer *PaintLayer) css.EllipticalRadii {
 	if !layer.HasClipMargin {
 		return layer.BorderRadius
 	}
-	// ClipMargin = [Top, Right, Bottom, Left]; positive grows outward.
 	top, right, bottom, left := layer.ClipMargin[0], layer.ClipMargin[1], layer.ClipMargin[2], layer.ClipMargin[3]
-	return layer.BorderRadius.OutsetForBoxShadow(top, right, bottom, left)
+	// Cumulative offsets can be positive (outward) or negative (inward) on
+	// a per-side basis. The shadow-shape outset formula expects positive
+	// outward spreads; for inward sides we shrink via the inner-radius
+	// formula (Inset) by the absolute value.
+	radii := layer.BorderRadius
+	if top < 0 || right < 0 || bottom < 0 || left < 0 {
+		insTop := 0.0
+		insRight := 0.0
+		insBottom := 0.0
+		insLeft := 0.0
+		if top < 0 {
+			insTop = -top
+			top = 0
+		}
+		if right < 0 {
+			insRight = -right
+			right = 0
+		}
+		if bottom < 0 {
+			insBottom = -bottom
+			bottom = 0
+		}
+		if left < 0 {
+			insLeft = -left
+			left = 0
+		}
+		radii = radii.Inset(insTop, insRight, insBottom, insLeft)
+	}
+	if top == 0 && right == 0 && bottom == 0 && left == 0 {
+		return radii
+	}
+	return radii.OutsetForBoxShadow(top, right, bottom, left)
 }
 
 // buildRoundedRectPath traces a rounded rectangle path using CubicTo for
