@@ -1,32 +1,24 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <title>CSS Test: transform rotate(180deg) flips element</title>
-  <link rel="help" href="http://www.w3.org/TR/css-transforms-1/#funcdef-rotate" />
-  <link rel="match" href="transform-rotate-001-ref.html" />
-  <meta name="assert" content="rotate(180deg) visually flips an element 180 degrees around its center" />
-  <style>
-  .container {
-    width: 100px;
-    height: 100px;
-    overflow: hidden;
-  }
-  .box {
-    width: 100px;
-    height: 100px;
-    transform: rotate(180deg);
-  }
-  .top { height: 50px; background: green; }
-  .bottom { height: 50px; background: blue; }
-  </style>
-</head>
-<body>
-  <p>Test passes if the blue half is on top and green half is on bottom.</p>
-  <div class="container">
-    <div class="box">
-      <div class="top"></div>
-      <div class="bottom"></div>
-    </div>
-  </div>
-</body>
+  <head>
+    <title>CSS Test (Transforms): rotate(45deg) rotate(360deg)</title>
+    <link rel="author" title="Keith Schwarz" href="mailto:keith@keithschwarz.com">
+    <link rel="author" title="Aryeh Gregor" href="mailto:ayg@aryeh.name">
+    <link rel="help" href="http://www.w3.org/TR/css-transforms-1/#two-d-transform-functions">
+    <link rel="help" href="http://www.w3.org/TR/css-transforms-1/#funcdef-transform-rotate">
+    <meta name="assert" content="This is part of a series of tests that check
+    that various combinations of rotate() with different units are equivalent
+    to rotate(45deg).">
+    <link rel="match" href="transform-rotate-001-ref.html">
+    <style>
+      div {
+        transform: rotate(45deg) rotate(360deg);
+        width: 100px;
+        height: 100px;
+      }
+    </style>
+  </head>
+  <body>
+    <div>Test Text</div>
+  </body>
 </html>

@@ -7475,37 +7475,16 @@ func parseTransformValue(val string) (float64, bool, bool) {
 	return 0, false, false
 }
 
-// parseAngle parses an angle value (deg, rad, turn)
+// parseAngle parses an angle value and returns degrees, or nil on failure.
+// Accepts the four CSS Values 3 §6.2 angle units: deg, grad, rad, turn
+// (case-insensitive). Delegates to parseAngleValue (gradient.go) so transform
+// and gradient angle parsing share one strict unit table.
 func parseAngle(val string) *float64 {
-	val = strings.TrimSpace(val)
-
-	// Degrees
-	if strings.HasSuffix(val, "deg") {
-		degStr := strings.TrimSuffix(val, "deg")
-		if deg, err := strconv.ParseFloat(degStr, 64); err == nil {
-			return &deg
-		}
+	deg, ok := parseAngleValue(val)
+	if !ok {
+		return nil
 	}
-
-	// Radians
-	if strings.HasSuffix(val, "rad") {
-		radStr := strings.TrimSuffix(val, "rad")
-		if rad, err := strconv.ParseFloat(radStr, 64); err == nil {
-			deg := rad * 180 / 3.14159265359
-			return &deg
-		}
-	}
-
-	// Turns
-	if strings.HasSuffix(val, "turn") {
-		turnStr := strings.TrimSuffix(val, "turn")
-		if turn, err := strconv.ParseFloat(turnStr, 64); err == nil {
-			deg := turn * 360
-			return &deg
-		}
-	}
-
-	return nil
+	return &deg
 }
 
 // TransformOrigin represents the transform-origin property
