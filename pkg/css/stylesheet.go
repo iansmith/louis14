@@ -784,7 +784,14 @@ func parseRule(ruleStr string) (Rule, error) {
 	}, nil
 }
 
-// Phase 22: parseMediaRule parses a @media rule and returns its inner rules
+// Phase 22: parseMediaRule parses a @media rule and returns its inner rules.
+// When the media query is a comma-separated media-query-list
+// (CSS Media Queries 4 §2.1, e.g. `@media (color-gamut: srgb), not (color-
+// gamut: srgb)`), the rule is duplicated once per branch so each branch is
+// gated by its own MediaQuery and the implicit OR is encoded by emitting
+// multiple copies — if any branch evaluates True the rule applies. Mirrors
+// Blink's StyleRuleMedia carrying a MediaQuerySet of multiple MediaQueries
+// at third_party/blink/renderer/core/css/style_rule_media.h @ 4883d11f.
 func parseMediaRule(ruleStr string) []Rule {
 	rules := make([]Rule, 0)
 
@@ -794,9 +801,16 @@ func parseMediaRule(ruleStr string) []Rule {
 		return rules
 	}
 
-	// Extract media query string: @media (conditions)
+	// Extract media query string: @media (conditions). Parse as a comma-
+	// separated media-query-list so each branch becomes one MediaQuery; OR
+	// semantics across branches are realized by duplicating inner rules per
+	// branch below. Empty list (bare `@media {`) falls back to a single
+	// default-True MediaQuery so the inner rules remain emitted.
 	mediaStr := strings.TrimSpace(ruleStr[:bracePos])
-	mediaQuery := parseMediaQuery(mediaStr)
+	mediaQueries := parseMediaQueryList(strings.TrimSpace(strings.TrimPrefix(mediaStr, "@media")))
+	if len(mediaQueries) == 0 {
+		mediaQueries = []*MediaQuery{parseMediaQuery(mediaStr)}
+	}
 
 	// Extract inner CSS (between outermost { and })
 	innerStart := bracePos + 1
@@ -825,10 +839,12 @@ func parseMediaRule(ruleStr string) []Rule {
 		// StyleRuleSupports.
 		if strings.HasPrefix(innerTrimmed, "@supports") {
 			supportsRules := parseSupportsRule(innerRuleStr)
-			for i := range supportsRules {
-				supportsRules[i].MediaQuery = mediaQuery
+			for _, mq := range mediaQueries {
+				for _, sr := range supportsRules {
+					sr.MediaQuery = mq
+					rules = append(rules, sr)
+				}
 			}
-			rules = append(rules, supportsRules...)
 			continue
 		}
 		// Use parseRules (plural) to handle comma-separated selector groups
@@ -836,10 +852,14 @@ func parseMediaRule(ruleStr string) []Rule {
 		if err != nil {
 			continue
 		}
-		// Attach media query to all resulting rules
-		for _, rule := range parsedRules {
-			rule.MediaQuery = mediaQuery
-			rules = append(rules, rule)
+		// Attach media query to all resulting rules. For a comma-separated
+		// media-query-list, emit one copy per branch — Kleene OR is realized
+		// by per-branch evaluation at apply time.
+		for _, mq := range mediaQueries {
+			for _, rule := range parsedRules {
+				rule.MediaQuery = mq
+				rules = append(rules, rule)
+			}
 		}
 	}
 
@@ -2417,9 +2437,21 @@ func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight f
 		"max-device-width", "max-device-height":
 		return MediaQueryTrue
 
-	// color-gamut — report srgb support
+	// color-gamut — Media Queries 4 §4.8. louis14 renders sRGB output, so
+	// `srgb` matches and the wider gamuts (`p3`, `rec2020`) do not. Returning
+	// definite True/False (not Unknown) is required so that the `not (color-
+	// gamut: X)` branch in the `(X), not (X)` OR pattern (mq-gamut-001/002/
+	// 004) flips cleanly under Kleene `not`. Mirrors Blink's
+	// MediaQueryEvaluator::EvalColorGamut at
+	// third_party/blink/renderer/core/css/media_query_evaluator.cc @ 4883d11f.
 	case "color-gamut":
-		return boolToResult(value == "srgb" || value == "")
+		switch value {
+		case "", "srgb":
+			return MediaQueryTrue
+		case "p3", "rec2020":
+			return MediaQueryFalse
+		}
+		return MediaQueryUnknown
 
 	// dynamic-range — report standard
 	case "dynamic-range":
@@ -2442,6 +2474,36 @@ func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight f
 	// grid — not a grid device (bitmap display)
 	case "grid":
 		return boolToResult(value == "0" || value == "")
+
+	// aspect-ratio / device-aspect-ratio — Media Queries 4 §4.6/§4.7.
+	// louis14 treats device-aspect-ratio identically to aspect-ratio because
+	// the static renderer has no device pixel concept distinct from the
+	// viewport. Comparison uses cross-multiplication (vw*den vs vh*num) to
+	// avoid float drift and to handle 0/0 correctly: per the spec note in
+	// aspect-ratio-004 / device-aspect-ratio-002, `0/0` is the "infinity"
+	// special case where both sides of `min`/`max` collapse to 0 OP 0 and
+	// always match. Mirrors Blink's CompareAspectRatioValue + EvalAspectRatio
+	// at third_party/blink/renderer/core/css/media_query_evaluator.cc @
+	// 4883d11f.
+	case "aspect-ratio", "min-aspect-ratio", "max-aspect-ratio",
+		"device-aspect-ratio", "min-device-aspect-ratio", "max-device-aspect-ratio":
+		if viewportHeight <= 0 {
+			return MediaQueryUnknown
+		}
+		num, den, ok := parseRatio(cond.Value)
+		if !ok {
+			return MediaQueryUnknown
+		}
+		vwDen := viewportWidth * den
+		vhNum := viewportHeight * num
+		switch feature {
+		case "min-aspect-ratio", "min-device-aspect-ratio":
+			return boolToResult(vwDen >= vhNum)
+		case "max-aspect-ratio", "max-device-aspect-ratio":
+			return boolToResult(vwDen <= vhNum)
+		case "aspect-ratio", "device-aspect-ratio":
+			return boolToResult(vwDen == vhNum)
+		}
 
 	case "min-width", "max-width", "min-height", "max-height", "width", "height":
 		numVal, unit := parseMediaLength(cond.Value)
@@ -2471,6 +2533,38 @@ func evaluateMediaCondition(cond MediaCondition, viewportWidth, viewportHeight f
 	// False — important so that `not (unknown)` stays Unknown rather than
 	// flipping to True.
 	return MediaQueryUnknown
+}
+
+// parseRatio parses a <ratio> per CSS Values 4 §4.5.6 / Media Queries 4 §4.6:
+// either `<number> / <number>` or a bare `<number>` (denominator defaults to
+// 1). Whitespace around the slash is allowed. Returns numerator, denominator,
+// ok. Negative values are rejected. The degenerate `0/0` case is rewritten to
+// `1/0` per the aspect-ratio-004 / device-aspect-ratio-002 / -004 spec note —
+// "0/0 is converted into 1/0" (infinity) — so that cross-multiplication in
+// the aspect-ratio comparison yields the spec-mandated min=never / max=always
+// behavior. Mirrors Blink's CSSRatioValue parse + MediaQueryExpValue::Ratio()
+// at third_party/blink/renderer/core/css/parser/media_query_parser.cc @
+// 4883d11f.
+func parseRatio(val string) (num, den float64, ok bool) {
+	val = strings.TrimSpace(val)
+	parts := strings.SplitN(val, "/", 2)
+	n, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil || n < 0 {
+		return 0, 0, false
+	}
+	if len(parts) == 1 {
+		return n, 1, true
+	}
+	d, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil || d < 0 {
+		return 0, 0, false
+	}
+	// "0/0" → "1/0" (infinity) per Media Queries 4 spec note carried in the
+	// WPT aspect-ratio-004 / device-aspect-ratio-002 / -004 assertions.
+	if n == 0 && d == 0 {
+		n = 1
+	}
+	return n, d, true
 }
 
 // Phase 22: parseMediaLength parses a length value and returns value and unit
