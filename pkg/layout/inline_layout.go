@@ -107,7 +107,8 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 		}
 		display := style.GetDisplay()
 		if display != css.DisplayInline && display != css.DisplayInlineBlock &&
-			display != css.DisplayInlineFlex && display != css.DisplayInlineTable &&
+			display != css.DisplayInlineFlex && display != css.DisplayInlineGrid &&
+			display != css.DisplayInlineTable &&
 			display != css.DisplayInlineListItem &&
 			// css-ruby Phase 2 (LOU-155): `display: ruby` and
 			// `display: ruby-text` are inline-level — they're the
