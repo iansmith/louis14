@@ -2811,6 +2811,28 @@ func parseSelector(selectorStr string) Selector {
 				specificity += maxSpec
 			} else if strings.HasPrefix(pc, "where(") {
 				// :where() has zero specificity
+			} else if strings.HasPrefix(pc, "nth-child(") || strings.HasPrefix(pc, "nth-last-child(") {
+				// Per CSS Selectors 4 §17, `:nth-child(An+B of S)` adds the
+				// pseudo-class's own 10 (class-tier) plus the maximum
+				// specificity of any branch in the `of` selector list S.
+				// Bare `:nth-child(An+B)` (no `of`) just adds the 10.
+				specificity += 10
+				var arg string
+				if strings.HasPrefix(pc, "nth-child(") {
+					arg = pc[len("nth-child(") : len(pc)-1]
+				} else {
+					arg = pc[len("nth-last-child(") : len(pc)-1]
+				}
+				if _, ofSel, hasOf := splitNthChildArg(arg); hasOf {
+					maxSpec := 0
+					for _, sel := range splitSelectorGroup(ofSel) {
+						innerSel := parseSelector(strings.TrimSpace(sel))
+						if innerSel.Specificity > maxSpec {
+							maxSpec = innerSel.Specificity
+						}
+					}
+					specificity += maxSpec
+				}
 			} else {
 				specificity += 10
 			}
@@ -2925,6 +2947,22 @@ func parseSelectorPart(s string) SelectorPart {
 			j++
 		}
 		part.Element = strings.ToLower(s[i:j])
+		// Normalize namespace-prefixed element selectors. Per CSS Selectors 4
+		// §6.1, an unprefixed type selector implicitly matches the default
+		// namespace; `ns|tag` restricts to namespace `ns`. louis14 does not
+		// track XML namespaces — the synthetic root + body never carry one
+		// — so `*|tag` (any-namespace tag) and `|tag` (no-namespace tag)
+		// both collapse to the bare tag, and `*|*` to `*`. This matches the
+		// behaviour authors get without an `@namespace` rule, which is the
+		// only case the WPT selectors corpus exercises.
+		if idx := strings.Index(part.Element, "|"); idx >= 0 {
+			local := part.Element[idx+1:]
+			if local == "" || local == "*" {
+				part.Element = "*"
+			} else {
+				part.Element = local
+			}
+		}
 		i = j
 	}
 

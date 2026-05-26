@@ -236,7 +236,11 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		return len(node.Children) == 0
 	case strings.HasPrefix(pc, "nth-child("):
 		arg := pc[len("nth-child(") : len(pc)-1] // strip "nth-child(" and ")"
-		return matchesNthChild(node, arg)
+		anb, ofSel, hasOf := splitNthChildArg(arg)
+		if hasOf {
+			return matchesNthChildOf(node, anb, ofSel, false)
+		}
+		return matchesNthChild(node, anb)
 	case strings.HasPrefix(pc, "not("):
 		arg := pc[len("not(") : len(pc)-1] // strip "not(" and ")"
 		// Split by comma (paren-aware) to support selector lists: :not(A, B, C)
@@ -372,8 +376,12 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 		return matchesAnPlusB(posFromEnd, arg)
 	case strings.HasPrefix(pc, "nth-last-child("):
 		arg := pc[len("nth-last-child(") : len(pc)-1]
+		anb, ofSel, hasOf := splitNthChildArg(arg)
+		if hasOf {
+			return matchesNthChildOf(node, anb, ofSel, true)
+		}
 		posFromEnd := totalElementChildren(node) - nthChildIndex(node) + 1
-		return matchesAnPlusB(posFromEnd, arg)
+		return matchesAnPlusB(posFromEnd, anb)
 	case pc == "enabled":
 		return isFormElement(node) && !hasAttribute(node, "disabled")
 	case pc == "disabled":
@@ -555,6 +563,188 @@ func matchesNthChild(node *html.Node, arg string) bool {
 	}
 	// a < 0: match when diff <= 0 and divisible
 	return diff <= 0 && diff%a == 0
+}
+
+// splitNthChildArg parses a :nth-child / :nth-last-child argument into the
+// An+B portion and the optional ` of <complex-selector-list>` portion, per
+// CSS Selectors 4 §6.6.1. Mirrors the parser branch in Blink's
+// CSSSelectorParser::ConsumeNth() at third_party/blink/renderer/core/css/
+// parser/css_selector_parser.cc @ 4883d11fef4a, which extracts an optional
+// selector_list payload on the pseudo-class CSSSelector.
+//
+// The `of` keyword is a CSS identifier token, so the split must respect
+// token boundaries: an `of` that is part of a longer identifier (e.g.
+// `software`) is NOT the keyword, but `of.x`, `of[x]`, `of#x`, `of:x` and
+// `of *` are all valid splits because `.`/`[`/`#`/`:`/whitespace ends the
+// identifier. The boundary before `of` must be whitespace or one of the
+// An+B terminators (digit/`n`/`+`/`-`) because the only legal token
+// preceding `of` per the grammar is a complete <an+b>.
+//
+// Returns (anPlusB, ofSelectorList, hasOf). When hasOf is false, ofSelectorList
+// is empty and the caller should run the existing An+B-only path.
+func splitNthChildArg(arg string) (string, string, bool) {
+	depth := 0
+	inString := byte(0)
+	for i := 0; i < len(arg); i++ {
+		ch := arg[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(arg) {
+				i++
+			} else if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = ch
+			continue
+		}
+		if ch == '(' || ch == '[' {
+			depth++
+			continue
+		}
+		if ch == ')' || ch == ']' {
+			depth--
+			continue
+		}
+		if depth != 0 {
+			continue
+		}
+		// Match the keyword `of` at this position. The character before must
+		// be a non-identifier (whitespace OK; digit/`n`/`+`/`-` from An+B OK
+		// only if separated by whitespace per the grammar — but in practice
+		// stripCSSComments emits a space and authors write `2n+1 of`, so we
+		// require whitespace on the left). The character after must end the
+		// identifier (whitespace or selector-start char or end).
+		if i+1 >= len(arg) || (arg[i] != 'o' && arg[i] != 'O') {
+			continue
+		}
+		if arg[i+1] != 'f' && arg[i+1] != 'F' {
+			continue
+		}
+		// Left boundary: must be whitespace.
+		if i == 0 {
+			continue
+		}
+		left := arg[i-1]
+		if left != ' ' && left != '\t' && left != '\n' && left != '\f' && left != '\r' {
+			continue
+		}
+		// Right boundary: end-of-string, whitespace, or selector-start char.
+		if i+2 >= len(arg) {
+			continue // bare `of` with nothing after — malformed, skip.
+		}
+		right := arg[i+2]
+		if !isNthOfRightBoundary(right) {
+			continue
+		}
+		anb := strings.TrimSpace(arg[:i])
+		ofSel := strings.TrimSpace(arg[i+2:])
+		if anb == "" || ofSel == "" {
+			return arg, "", false
+		}
+		return anb, ofSel, true
+	}
+	return arg, "", false
+}
+
+// isNthOfRightBoundary reports whether ch can legally follow the `of`
+// keyword in `:nth-child(An+B of S)`. CSS Syntax §4 ends an identifier on
+// whitespace OR any non-ident code point; the legal selector-start
+// characters after `of` are whitespace and any selector token start
+// (`.`/`#`/`[`/`:`/`*`/alpha/`(`).
+func isNthOfRightBoundary(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\f', '\r':
+		return true
+	case '.', '#', '[', ':', '*', '(':
+		return true
+	}
+	// Alpha — start of a tag-name selector like `target`.
+	if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+		return true
+	}
+	return false
+}
+
+// matchesNthChildOf implements `:nth-child(An+B of S)` and
+// `:nth-last-child(An+B of S)` per CSS Selectors 4 §6.6.1. Mirrors Blink's
+// SelectorChecker::CheckPseudoNthChild() at third_party/blink/renderer/core/
+// css/selector_checker.cc @ 4883d11fef4a, which filters siblings by S
+// BEFORE computing the index, rather than post-filtering the candidate.
+//
+// Semantics:
+//  1. The candidate node must itself match the selector list S.
+//  2. Among its element siblings, only those matching S contribute to the
+//     index count. The candidate's 1-based position in that filtered list
+//     (from start for nth-child, from end for nth-last-child) is checked
+//     against An+B.
+//
+// S is a comma-separated complex-selector-list; a sibling matches S if it
+// matches ANY branch. Pseudo-elements in S are disallowed by the grammar;
+// any branch containing one is treated as a parse error (the branch never
+// matches) — Blink's CSSSelectorParser rejects them at parse time, which
+// has the same effect.
+func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool) bool {
+	branches := splitSelectorGroup(ofSel)
+	parsedBranches := make([]Selector, 0, len(branches))
+	for _, b := range branches {
+		b = strings.TrimSpace(b)
+		if b == "" {
+			continue
+		}
+		// Per spec, pseudo-elements are not allowed inside the `of` list.
+		// A branch containing one never matches anything.
+		if containsPseudoElementArg([]string{b}) {
+			continue
+		}
+		parsedBranches = append(parsedBranches, ParseSelector(b))
+	}
+	if len(parsedBranches) == 0 {
+		return false
+	}
+	// Candidate must itself match S.
+	if !matchesAnyBranch(node, parsedBranches) {
+		return false
+	}
+	if node.Parent == nil {
+		return matchesAnPlusB(1, anb)
+	}
+	// Collect filtered siblings in tree order, find candidate's position.
+	pos := 0
+	count := 0
+	for _, c := range node.Parent.Children {
+		if c.Type != html.ElementNode {
+			continue
+		}
+		if !matchesAnyBranch(c, parsedBranches) {
+			continue
+		}
+		count++
+		if c == node {
+			pos = count
+		}
+	}
+	if pos == 0 {
+		return false
+	}
+	idx := pos
+	if fromEnd {
+		idx = count - pos + 1
+	}
+	return matchesAnPlusB(idx, anb)
+}
+
+// matchesAnyBranch reports whether node matches any of the parsed complex
+// selectors. Each branch is matched as a full complex selector (combinators
+// resolved by walking ancestors/siblings), not just the rightmost compound.
+func matchesAnyBranch(node *html.Node, branches []Selector) bool {
+	for i := range branches {
+		if MatchesSelector(node, branches[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 // nthChildIndex returns the 1-based index of node among element siblings.
