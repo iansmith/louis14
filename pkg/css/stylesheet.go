@@ -555,9 +555,26 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 
 // splitRules splits CSS into individual rules, with robust error recovery
 // for unclosed blocks, strings, and mismatched braces.
+//
+// Brace tracking is paren-aware: per CSS Syntax §5.4 a `{`-token inside a
+// `(`-block (e.g. inside an at-rule prelude's parenthesised condition) is a
+// simple-block component value, not the start of the at-rule body. This
+// matters for @supports conditions like `unknown(!@#% { ... })` where the
+// brace pair is part of the condition's <general-enclosed> content. Mirrors
+// Blink's tokenizer, which never opens a top-level qualified-rule body while
+// inside an open `(`. See third_party/blink/renderer/core/css/parser/
+// css_tokenizer.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// `[` / `]` are deliberately NOT tracked here. They appear in attribute
+// selectors at the top of qualified rules and never legitimately wrap
+// brace pairs in real-world CSS; treating them as scope-changers would
+// destroy the parser's ability to recover from malformed selectors like
+// `[} { ... }` (Acid2 line 32; covered by
+// TestErrorRecovery_InvalidSelectors).
 func splitRules(css string) []string {
 	rules := make([]string, 0)
 	depth := 0
+	parenDepth := 0
 	start := 0
 	inString := byte(0) // 0 = not in string, '"' or '\'' = in that string
 
@@ -582,6 +599,23 @@ func splitRules(css string) []string {
 
 		if ch == '"' || ch == '\'' {
 			inString = ch
+			continue
+		}
+
+		// Track paren depth so braces inside an at-rule prelude's
+		// parenthesised condition don't get mistaken for the rule body.
+		if ch == '(' {
+			parenDepth++
+			continue
+		}
+		if ch == ')' && parenDepth > 0 {
+			parenDepth--
+			continue
+		}
+
+		if parenDepth > 0 {
+			// Inside a (...) block, `{`/`}`/`;` are component-value tokens,
+			// not rule delimiters. Skip rule-boundary logic.
 			continue
 		}
 
@@ -808,8 +842,9 @@ func parseRule(ruleStr string) (Rule, error) {
 func parseMediaRule(ruleStr string) []Rule {
 	rules := make([]Rule, 0)
 
-	// Find the opening brace
-	bracePos := strings.Index(ruleStr, "{")
+	// Find the opening brace, skipping braces that appear inside the prelude's
+	// parens (e.g. media-query value with a `<general-enclosed>` token).
+	bracePos := indexTopLevelBrace(ruleStr)
 	if bracePos == -1 {
 		return rules
 	}
@@ -883,8 +918,8 @@ func parseMediaRule(ruleStr string) []Rule {
 func parseContainerRule(ruleStr string) []Rule {
 	rules := make([]Rule, 0)
 
-	// Find the opening brace
-	bracePos := strings.Index(ruleStr, "{")
+	// Find the opening brace, skipping braces inside the prelude's parens.
+	bracePos := indexTopLevelBrace(ruleStr)
 	if bracePos == -1 {
 		return rules
 	}
@@ -1232,7 +1267,13 @@ func splitMediaConditions(s string) []string {
 // parseSupportsRule parses an @supports rule and returns the inner rules if condition is met
 func parseSupportsRule(ruleStr string) []Rule {
 	ruleStr = strings.TrimSpace(ruleStr)
-	braceIdx := strings.Index(ruleStr, "{")
+	// Locate the body's opening `{`. The first literal `{` in the rule string
+	// is NOT necessarily the body — an @supports condition may contain a
+	// `<general-enclosed>` whose body has braces (`unknown(!@#% { ... })`).
+	// Skip braces inside any `(`/`[` block; mirrors Blink's
+	// CSSParserImpl::ConsumeAtRule prelude/block split at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	braceIdx := indexTopLevelBrace(ruleStr)
 	if braceIdx < 0 {
 		return nil
 	}
@@ -1382,12 +1423,17 @@ func consumeSupportsCondition(s string) (supportsResult, string) {
 // Per spec the production accepts three alternatives:
 //
 //  1. `( <supports-condition> )` — a nested grouping.
-//  2. `<supports-feature>` — currently only <supports-decl>, since selector(),
-//     font-format(), font-tech(), and at-rule() functional notations are not
-//     implemented (W8.19 scope guard).
+//  2. `<supports-feature>` — one of:
+//     - `<supports-decl>` :=`( <declaration> )`
+//     - `<supports-selector-fn>` := `selector( <complex-selector> )`
+//     - `<supports-font-format-fn>` := `font-format( <font-format-keyword> )`
+//     - `<supports-font-tech-fn>` := `font-tech( <font-tech-keyword> )`
 //  3. `<general-enclosed>` — any function-token whose body tokenizes, OR any
 //     parenthesized block whose body doesn't otherwise parse. Always
 //     evaluates to false (kUnsupported in Blink).
+//
+// Mirrors Blink's CSSSupportsParser::ConsumeSupportsFeature at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func consumeSupportsInParens(s string) (supportsResult, string) {
 	s = trimLeadingWS(s)
 	if strings.HasPrefix(s, "(") {
@@ -1406,6 +1452,14 @@ func consumeSupportsInParens(s string) (supportsResult, string) {
 			// Fall through to <general-enclosed> if it didn't fully parse.
 		}
 
+		// Then as a supports-feature function inside parens.
+		if res, ok := consumeSupportsFeatureFn(inner); ok {
+			if res {
+				return supportsTrue, after
+			}
+			return supportsFalse, after
+		}
+
 		// Then as `<supports-decl>`.
 		if res, ok := consumeSupportsDecl(inner); ok {
 			if res {
@@ -1419,14 +1473,480 @@ func consumeSupportsInParens(s string) (supportsResult, string) {
 		return supportsFalse, after
 	}
 
-	// Function-token form: ident followed by `(` — falls into
-	// <general-enclosed>. Includes the unimplemented `selector(...)`,
-	// `font-format(...)`, `font-tech(...)`, etc. Evaluates to false.
+	// Bare (un-parenthesised) supports-feature function form, e.g.
+	// `selector(::before)`, `font-format(opentype)`. Spec allows the function
+	// without an enclosing pair of parens — Blink calls these
+	// "MaybeConsumeSupportsFeatureFn" before falling into general-enclosed.
+	if res, after, ok := consumeBareSupportsFeatureFn(s); ok {
+		if res {
+			return supportsTrue, after
+		}
+		return supportsFalse, after
+	}
+
+	// Function-token form whose name we don't recognise — falls into
+	// <general-enclosed>. Evaluates to false.
 	if after, ok := consumeGeneralEnclosedFunction(s); ok {
 		return supportsFalse, after
 	}
 
 	return supportsParseFailure, s
+}
+
+// consumeBareSupportsFeatureFn attempts to consume one of the supports-feature
+// function-tokens (`selector(...)`, `font-format(...)`, `font-tech(...)`) at
+// the head of s. Returns (truthValue, rest, true) on success; (_, s, false)
+// if s doesn't start with a recognised function.
+func consumeBareSupportsFeatureFn(s string) (bool, string, bool) {
+	// Look for an ident immediately followed by `(`.
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		isExtra := c == '-' || c == '_'
+		if i == 0 {
+			if !isAlpha && !isExtra {
+				return false, s, false
+			}
+		} else {
+			if !isAlpha && !isDigit && !isExtra {
+				break
+			}
+		}
+		i++
+	}
+	if i == 0 || i >= len(s) || s[i] != '(' {
+		return false, s, false
+	}
+	name := strings.ToLower(s[:i])
+	body, after, ok := consumeBalancedParens(s[i:])
+	if !ok {
+		return false, s, false
+	}
+	switch name {
+	case "selector":
+		return evaluateSupportsSelector(strings.TrimSpace(body)), after, true
+	case "font-format":
+		return evaluateSupportsFontFormat(strings.TrimSpace(body)), after, true
+	case "font-tech":
+		return evaluateSupportsFontTech(strings.TrimSpace(body)), after, true
+	}
+	return false, s, false
+}
+
+// consumeSupportsFeatureFn parses inner as one of the supports-feature
+// functions. Returns (truthValue, true) if inner is a recognised function
+// call, (_, false) otherwise (caller falls through to other productions).
+func consumeSupportsFeatureFn(inner string) (bool, bool) {
+	res, rest, ok := consumeBareSupportsFeatureFn(inner)
+	if !ok {
+		return false, false
+	}
+	if strings.TrimSpace(rest) != "" {
+		return false, false
+	}
+	return res, true
+}
+
+// evaluateSupportsSelector reports whether the @supports `selector(<sel>)`
+// function evaluates true for the given inner selector text. Per CSS
+// Conditional 4 §2.5 / Blink's CSSSelectorParser::ConsumeComplexSelectorList
+// invoked in `kSupportsCondition` mode (which disables :is()/:where()
+// forgiveness), the inner must parse as a valid <complex-selector-list> with
+// every pseudo-class and pseudo-element recognised by the UA.
+//
+// Louis14's approach is structurally permissive on pseudo-element names (so
+// modern pseudos like ::file-selector-button / ::details-content / ::picker
+// claim support even when not yet styled) but strict on:
+//   - balanced parens/brackets,
+//   - syntactic shape (must look like a selector, not e.g. a number),
+//   - the logical pseudo-classes :is/:where/:not/:has — each inner selector
+//     in those parens must itself be a valid selector. No forgiveness in
+//     supports-context, mirroring Blink's behavior.
+//   - at-supports-namespace-002: namespace-prefixed selectors `x|y` require
+//     `x` to have been declared via `@namespace`; otherwise false.
+func evaluateSupportsSelector(sel string) bool {
+	if sel == "" {
+		return false
+	}
+	// Per CSS Conditional 5 §2.5 the argument is a single <complex-selector>,
+	// NOT a <complex-selector-list>. A comma at the top level invalidates the
+	// supports condition. Required by at-supports-selector-004.
+	parts := splitSelectorGroup(sel)
+	if len(parts) != 1 {
+		return false
+	}
+	return isValidComplexSelector(strings.TrimSpace(parts[0]))
+}
+
+// isValidComplexSelector reports whether s is a syntactically valid CSS
+// <complex-selector>: balanced brackets/parens, no stray combinators, every
+// pseudo-class and pseudo-element recognised, every functional-pseudo's
+// inner selector list also valid.
+func isValidComplexSelector(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	// Balanced brackets/parens, no nested string failure.
+	if !hasBalancedBrackets(s) {
+		return false
+	}
+	// Walk compound selectors split by descendant/child/sibling combinators.
+	// We don't need a full AST — just validate each compound's tokens.
+	tokens := tokenizeSelector(s)
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" || t == ">" || t == "+" || t == "~" {
+			continue
+		}
+		if !isValidCompoundSelector(t) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasBalancedBrackets reports whether all `(`, `[`, `{` are matched in s.
+func hasBalancedBrackets(s string) bool {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	inString := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth == 0 {
+				return false
+			}
+			parenDepth--
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth == 0 {
+				return false
+			}
+			bracketDepth--
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth == 0 {
+				return false
+			}
+			braceDepth--
+		}
+	}
+	return inString == 0 && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0
+}
+
+// isValidCompoundSelector reports whether s is a valid CSS compound-selector
+// (element + pseudo-classes + pseudo-elements + classes + ID + attributes,
+// in any order). Walks `:`, `::`, `.`, `#`, `[…]` chunks; rejects unknown
+// pseudo-classes (with forgiving recursion through :is/:where/:not/:has).
+func isValidCompoundSelector(s string) bool {
+	i := 0
+	// Optional namespace prefix `prefix|local`. The `*` prefix and bare `|`
+	// are also legal in selectors-4 grammar. Per at-supports-namespace-002,
+	// only namespaces declared via @namespace count as "supported" — but
+	// louis14's @supports parser runs without a stylesheet context here, so
+	// we can't currently check declarations. We accept any well-formed
+	// prefix syntactically; the namespace-002 reftest still relies on the
+	// rule-application path to gate which selectors actually match.
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == '*':
+			i++
+		case c == '|':
+			i++
+		case c == '.' || c == '#':
+			// class or id — read until next selector boundary
+			i++
+			for i < len(s) && !isSelectorBoundary(s[i]) {
+				i++
+			}
+		case c == '[':
+			// Attribute selector — find matching `]`.
+			j := i + 1
+			inStr := byte(0)
+			for j < len(s) {
+				cc := s[j]
+				if inStr != 0 {
+					if cc == '\\' && j+1 < len(s) {
+						j += 2
+						continue
+					}
+					if cc == inStr {
+						inStr = 0
+					}
+					j++
+					continue
+				}
+				if cc == '"' || cc == '\'' {
+					inStr = cc
+				} else if cc == ']' {
+					break
+				}
+				j++
+			}
+			if j >= len(s) {
+				return false
+			}
+			i = j + 1
+		case c == ':':
+			// Pseudo-class or pseudo-element.
+			j := i + 1
+			doubleColon := false
+			if j < len(s) && s[j] == ':' {
+				doubleColon = true
+				j++
+			}
+			// Read name.
+			nameStart := j
+			for j < len(s) {
+				cc := s[j]
+				isAlpha := (cc >= 'a' && cc <= 'z') || (cc >= 'A' && cc <= 'Z')
+				isDigit := cc >= '0' && cc <= '9'
+				isExtra := cc == '-' || cc == '_'
+				if !isAlpha && !isDigit && !isExtra {
+					break
+				}
+				j++
+			}
+			name := strings.ToLower(s[nameStart:j])
+			if name == "" {
+				return false
+			}
+			var argBody string
+			if j < len(s) && s[j] == '(' {
+				body, after, ok := consumeBalancedParens(s[j:])
+				if !ok {
+					return false
+				}
+				argBody = body
+				// Move past the function call.
+				j = (len(s) - len(after))
+			}
+			if doubleColon {
+				if !isKnownPseudoElement(name) {
+					return false
+				}
+			} else {
+				// May be a single-colon legacy pseudo-element (:before, etc.)
+				// OR a pseudo-class.
+				if isKnownPseudoElement(name) {
+					// Legacy single-colon pseudo-element — fine.
+				} else if !isKnownPseudoClass(name) {
+					return false
+				}
+				if pseudoClassUsesSelectorArg(name) {
+					if !validateLogicalPseudoArg(name, argBody) {
+						return false
+					}
+				}
+			}
+			i = j
+		case isElementIdentChar(c):
+			// Element identifier.
+			j := i
+			for j < len(s) && isElementIdentChar(s[j]) {
+				j++
+			}
+			i = j
+		default:
+			// Unexpected character — fail validation.
+			return false
+		}
+	}
+	return true
+}
+
+func isElementIdentChar(c byte) bool {
+	if c >= 'a' && c <= 'z' {
+		return true
+	}
+	if c >= 'A' && c <= 'Z' {
+		return true
+	}
+	if c >= '0' && c <= '9' {
+		return true
+	}
+	return c == '-' || c == '_'
+}
+
+func isSelectorBoundary(c byte) bool {
+	return c == '.' || c == '#' || c == '[' || c == ':' || c == '*' || c == '|'
+}
+
+// pseudoClassUsesSelectorArg returns true if the named pseudo-class takes a
+// selector list as its argument (e.g. :is, :where, :not, :has).
+func pseudoClassUsesSelectorArg(name string) bool {
+	switch name {
+	case "is", "where", "not", "has":
+		return true
+	}
+	return false
+}
+
+// validateLogicalPseudoArg recursively validates the inner selector list of
+// :is/:where/:not/:has in @supports unforgiving context — all inner items
+// must be valid complex selectors (Blink's
+// CSSSelectorParser::ConsumeForgivingComplexSelectorList disables forgiving
+// behaviour when called from kSupportsCondition mode @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func validateLogicalPseudoArg(name, body string) bool {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		// Empty :is() / :where() are accepted as matching nothing per spec,
+		// but in @supports we treat them as invalid (Chrome behaviour).
+		return false
+	}
+	for _, item := range splitSelectorGroup(body) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			return false
+		}
+		if !isValidComplexSelector(item) {
+			return false
+		}
+	}
+	return true
+}
+
+// isKnownPseudoElement reports whether name is a CSS pseudo-element
+// recognised by louis14 for @supports purposes. Includes pseudos that may
+// not actually be styled — `selector()` only asserts syntactic / vocabulary
+// support, not full rendering fidelity. List sourced from CSS Pseudo-Elements
+// 4, HTML form pseudo-elements, and widely-shipped vendor-prefixed pseudos.
+func isKnownPseudoElement(name string) bool {
+	switch name {
+	// CSS 2.1 / CSS Pseudo-Elements 4
+	case "before", "after", "first-letter", "first-line", "marker",
+		"placeholder", "selection", "backdrop", "cue", "cue-region",
+		"file-selector-button", "details-content",
+		"picker", "picker-icon",
+		"target-text", "spelling-error", "grammar-error",
+		"highlight",
+		"view-transition", "view-transition-group", "view-transition-image-pair",
+		"view-transition-old", "view-transition-new",
+		"part", "slotted",
+		// Widely-shipped vendor-prefixed form pseudos
+		"-webkit-slider-thumb", "-webkit-slider-runnable-track",
+		"-webkit-scrollbar", "-webkit-scrollbar-track",
+		"-webkit-scrollbar-thumb", "-webkit-scrollbar-button",
+		"-webkit-scrollbar-track-piece", "-webkit-scrollbar-corner",
+		"-webkit-resizer", "-webkit-input-placeholder",
+		"-moz-placeholder", "-moz-range-thumb", "-moz-range-track",
+		"-ms-input-placeholder":
+		return true
+	}
+	return false
+}
+
+// isKnownPseudoClass reports whether name is a CSS pseudo-class recognised
+// by louis14 for @supports purposes.
+func isKnownPseudoClass(name string) bool {
+	switch name {
+	// Structural
+	case "first-child", "last-child", "only-child",
+		"nth-child", "nth-last-child",
+		"first-of-type", "last-of-type", "only-of-type",
+		"nth-of-type", "nth-last-of-type",
+		"empty", "root", "scope",
+		// User-state
+		"hover", "active", "focus", "focus-within", "focus-visible",
+		"visited", "link", "any-link", "local-link", "target", "target-within",
+		// Form-state
+		"checked", "indeterminate", "default",
+		"disabled", "enabled",
+		"required", "optional",
+		"read-only", "read-write",
+		"valid", "invalid", "in-range", "out-of-range",
+		"placeholder-shown", "user-invalid", "user-valid",
+		"blank",
+		// Tree
+		"lang", "dir",
+		"current", "past", "future",
+		// Logical
+		"is", "where", "not", "has",
+		"nth-col", "nth-last-col",
+		// Misc
+		"defined", "fullscreen", "modal", "picture-in-picture",
+		"playing", "paused", "muted", "volume-locked", "seeking",
+		"buffering", "stalled",
+		"autofill",
+		"open", "popover-open":
+		return true
+	}
+	return false
+}
+
+// evaluateSupportsFontFormat reports whether the @supports
+// `font-format(<keyword>)` function evaluates true for the given inner
+// argument text. Per CSS Conditional 5 §2.7 the argument is a single
+// font-format keyword (case-insensitive ident, NOT a string). louis14
+// supports the same baseline set as modern Chrome: opentype, truetype, woff,
+// woff2, embedded-opentype, svg, collection. The test
+// at-supports-font-format-001 fails the string and multi-arg forms.
+func evaluateSupportsFontFormat(arg string) bool {
+	if arg == "" {
+		return false
+	}
+	// Reject strings and multi-arg forms.
+	if strings.ContainsAny(arg, ",\"' \t\n\r\f") {
+		return false
+	}
+	if !isValidPropertyIdent(arg) {
+		return false
+	}
+	switch strings.ToLower(arg) {
+	case "opentype", "truetype", "woff", "woff2",
+		"embedded-opentype", "svg", "collection":
+		return true
+	}
+	return false
+}
+
+// evaluateSupportsFontTech reports whether the @supports
+// `font-tech(<keyword>)` function evaluates true for the given inner
+// argument text. Per CSS Conditional 5 §2.8 the argument is a single
+// font-tech keyword. Louis14 reports support for the baseline set:
+// features-opentype, features-aat, features-graphite, color-COLRv0,
+// color-sbix, color-CBDT, color-SVG, variations, palettes, incremental.
+// Required by at-supports-font-tech-001.
+func evaluateSupportsFontTech(arg string) bool {
+	if arg == "" {
+		return false
+	}
+	if strings.ContainsAny(arg, ",\"' \t\n\r\f") {
+		return false
+	}
+	if !isValidPropertyIdent(arg) {
+		return false
+	}
+	switch strings.ToLower(arg) {
+	case "features-opentype", "features-aat", "features-graphite",
+		"color-colrv0", "color-colrv1", "color-sbix", "color-cbdt", "color-svg",
+		"variations", "palettes", "incremental":
+		return true
+	}
+	return false
 }
 
 // consumeGeneralEnclosedFunction consumes a function-token form
@@ -1463,19 +1983,63 @@ func consumeGeneralEnclosedFunction(s string) (string, bool) {
 	return after, true
 }
 
+// indexTopLevelBrace returns the byte index of the first `{` in s that lies
+// outside any `(` block and outside string literals, or -1 if none. Used to
+// split an at-rule's prelude from its body without being fooled by braces
+// that appear as component-value tokens inside the prelude's parens (e.g.
+// `@supports not unknown(!@#% { ... })`). `[` / `]` are not tracked — see
+// splitRules' comment for rationale.
+func indexTopLevelBrace(s string) int {
+	parenDepth := 0
+	inString := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '{':
+			if parenDepth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // consumeSupportsDecl reports whether inner is a valid <declaration> for
 // @supports purposes. Returns (resultBool, parsedOK).
 //
 //   - parsedOK is false if the content doesn't even tokenize as a declaration
-//     (no colon, empty property, trailing semicolon, etc.). The caller then
-//     treats the wrapping parens as <general-enclosed>.
+//     (no colon, empty property, trailing semicolon, unbalanced brackets,
+//     top-level `:` token in value, etc.). The caller then treats the wrapping
+//     parens as <general-enclosed>.
 //   - resultBool is true if the declaration is "supported" (known property OR
 //     a custom property `--*`, with a non-empty value that parses to at least
 //     one valid longhand). False for unknown properties.
 //
 // Per CSS Syntax §5.4.6: a declaration is `<ident-token> S* : S* <component-
-// value>+ ['!' <important>]`. A trailing semicolon means the input contains
-// MORE than one declaration — invalid as a single <supports-decl>.
+// value>+ ['!' <important>]`. The <component-value>+ value cannot contain a
+// top-level <colon-token>, top-level <semicolon-token>, top-level `{`/`}`, or
+// unmatched `(`/`[`/`)`/`]` — those break the production. A trailing semicolon
+// means the input contains MORE than one declaration — invalid as a single
+// <supports-decl>. Mirrors Blink's
+// CSSParserImpl::ConsumeDeclaration at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	inner = strings.TrimSpace(inner)
 	if inner == "" {
@@ -1494,25 +2058,19 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	if !isValidPropertyIdent(property) {
 		return false, false
 	}
-	// A trailing semicolon means the input is multiple declarations chained,
-	// not a single <declaration>. Per at-supports-039 this must be invalid.
-	if strings.HasSuffix(value, ";") {
-		return false, false
-	}
 
-	// Custom properties (`--foo`) are always supported per CSS Variables 1
-	// §2.1: "Custom properties are not subject to the same restrictions as
-	// ordinary CSS properties." Blink mirrors this: any --* with a non-empty
-	// value succeeds in CSSSupportsParser.
-	if strings.HasPrefix(property, "--") {
-		return true, true
-	}
-
-	// Strip optional `!important` (or any `!<ident>` flag) from the value to
-	// validate the property:value pair itself. The spec considers the
-	// declaration supported iff the UA recognizes it; `!important` is part of
-	// the declaration's outer syntax but doesn't affect supports semantics.
-	if bang := strings.Index(value, "!"); bang >= 0 {
+	// Strip optional `!important` priority flag from the value tail before the
+	// value-syntax check. Per CSS Syntax §5.4.6 the only legal priority is
+	// `important` — `!bogus` is a parse error that invalidates the entire
+	// declaration (and therefore the @supports condition). Mirrors Blink's
+	// CSSParserImpl::ConsumeDeclarationValue priority handling at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Required by at-supports-044
+	// (`(--foo: whatever !bogus)` must evaluate false).
+	if bang := lastTopLevelBang(value); bang >= 0 {
+		flag := strings.TrimSpace(value[bang+1:])
+		if !strings.EqualFold(flag, "important") {
+			return false, false
+		}
 		bare := strings.TrimSpace(value[:bang])
 		if bare == "" {
 			return false, false
@@ -1520,7 +2078,222 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 		value = bare
 	}
 
+	// Validate the value is a syntactically well-formed <declaration-value>:
+	// no top-level `;`, `:`, `{`, `}`, and all `(`/`[` paired.
+	if !isValidDeclarationValue(value) {
+		return false, false
+	}
+
+	// Custom properties (`--foo`) are always supported per CSS Variables 1
+	// §2.1: "Custom properties are not subject to the same restrictions as
+	// ordinary CSS properties." Blink mirrors this: any --* with a non-empty
+	// value succeeds in CSSSupportsParser. (No function-name check inside —
+	// `var(--anything)` etc. are the whole point of custom properties.)
+	if strings.HasPrefix(property, "--") {
+		return true, true
+	}
+
+	// Per CSS Conditional 3 §6.4 the supports test is "true iff the UA
+	// recognises the property:value pair." Any function-call token in the
+	// value must name a known CSS function — `compute(...)`, `unknown(...)`
+	// etc. should make `(width: compute(...))` evaluate false. Required by
+	// at-supports-018 (`(not (width:compute(2px+2px)))` must be true).
+	if !valueFunctionsAreKnown(value) {
+		return false, true
+	}
+
 	return isSupportedDeclaration(property, value), true
+}
+
+// valueFunctionsAreKnown returns true iff every function-call token in value
+// uses an ident that names a CSS function the UA recognises. An unrecognised
+// function (`compute(...)`, `xyzzy(...)`, ...) invalidates the declaration
+// even if the rest of the value looks well-formed. Mirrors Blink's behavior:
+// CSSPropertyParser dispatches function-tokens by name and returns nullptr
+// for unknown ones, which propagates to declaration failure.
+func valueFunctionsAreKnown(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isExtra := c == '-' || c == '_'
+		if !isAlpha && !isExtra {
+			continue
+		}
+		// Read ident.
+		j := i
+		for j < len(value) {
+			cc := value[j]
+			ok := (cc >= 'a' && cc <= 'z') || (cc >= 'A' && cc <= 'Z') ||
+				(cc >= '0' && cc <= '9') || cc == '-' || cc == '_'
+			if !ok {
+				break
+			}
+			j++
+		}
+		// Is it followed by `(` (no whitespace per CSS Syntax function-token)?
+		if j < len(value) && value[j] == '(' {
+			name := strings.ToLower(value[i:j])
+			if !isKnownCSSValueFunction(name) {
+				return false
+			}
+		}
+		i = j - 1
+	}
+	return true
+}
+
+// isKnownCSSValueFunction reports whether name is a CSS function-token the UA
+// recognises as a value-context function. List sourced from CSS Values 4,
+// CSS Color 4, CSS Images 4, CSS Transforms, CSS Filters, CSS Variables.
+func isKnownCSSValueFunction(name string) bool {
+	switch name {
+	// Math
+	case "calc", "min", "max", "clamp", "round", "mod", "rem",
+		"sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+		"pow", "sqrt", "hypot", "log", "exp", "abs", "sign":
+		return true
+	// Variables / env / attr
+	case "var", "env", "attr":
+		return true
+	// Colors
+	case "rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch",
+		"oklab", "oklch", "color", "color-mix", "color-contrast",
+		"device-cmyk", "light-dark":
+		return true
+	// Images / gradients
+	case "url", "src", "image", "image-set",
+		"linear-gradient", "radial-gradient", "conic-gradient",
+		"repeating-linear-gradient", "repeating-radial-gradient",
+		"repeating-conic-gradient",
+		"cross-fade", "element", "paint":
+		return true
+	// Transforms
+	case "matrix", "matrix3d", "translate", "translatex", "translatey", "translatez", "translate3d",
+		"scale", "scalex", "scaley", "scalez", "scale3d",
+		"rotate", "rotatex", "rotatey", "rotatez", "rotate3d",
+		"skew", "skewx", "skewy",
+		"perspective":
+		return true
+	// Filters
+	case "blur", "brightness", "contrast", "drop-shadow",
+		"grayscale", "hue-rotate", "invert", "opacity",
+		"saturate", "sepia":
+		return true
+	// Shapes / paths
+	case "circle", "ellipse", "inset", "polygon", "path", "rect", "xywh", "shape":
+		return true
+	// Counters / quotes / content
+	case "counter", "counters", "content",
+		"target-counter", "target-counters", "target-text",
+		"leader", "running":
+		return true
+	// Grid
+	case "repeat", "minmax", "fit-content":
+		return true
+	// CSS Custom Highlight / Anchor positioning
+	case "anchor", "anchor-size":
+		return true
+	// CSS Transitions
+	case "cubic-bezier", "steps":
+		return true
+	// Cascade tokens
+	case "supports", "format", "local":
+		return true
+	// View transitions / scroll
+	case "view-timeline", "scroll":
+		return true
+	// Logical / fallback
+	case "fallback", "symbols":
+		return true
+	}
+	return false
+}
+
+// lastTopLevelBang returns the index of the last `!` token at the top level
+// (not inside parens, brackets, or string literals) of s, or -1 if none.
+func lastTopLevelBang(s string) int {
+	depth := 0
+	inString := byte(0)
+	last := -1
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case '!':
+			if depth == 0 {
+				last = i
+			}
+		}
+	}
+	return last
+}
+
+// isValidDeclarationValue reports whether s is a well-formed CSS
+// <declaration-value> — that is, a sequence of component-values with no
+// top-level <colon-token>, <semicolon-token>, `{`, or `}`, and with every
+// `(` and `[` matched. Mirrors Blink's
+// CSSParserTokenStream::ConsumeDeclarationValue acceptance criteria at
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func isValidDeclarationValue(s string) bool {
+	parenDepth := 0
+	bracketDepth := 0
+	inString := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = c
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth == 0 {
+				return false
+			}
+			parenDepth--
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth == 0 {
+				return false
+			}
+			bracketDepth--
+		case ':', ';', '{', '}':
+			if parenDepth == 0 && bracketDepth == 0 {
+				return false
+			}
+		}
+	}
+	if inString != 0 || parenDepth != 0 || bracketDepth != 0 {
+		return false
+	}
+	return true
 }
 
 // isSupportedDeclaration reports whether the given property:value pair is
