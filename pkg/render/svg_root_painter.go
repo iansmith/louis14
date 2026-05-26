@@ -62,12 +62,23 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	r.dc.Push()
 	defer r.dc.Pop()
 
-	// Clip the SVG content to its viewport rect. SVG 2 §3.5: overflow
-	// on the outermost <svg> defaults to hidden in the UA stylesheet.
-	// Mirrors Blink's SVGRootPainter::PaintReplaced clip rect.
-	r.dc.DrawRectangle(originX, originY,
-		root.ContainerSize.Width, root.ContainerSize.Height)
-	r.dc.Clip()
+	// SVG 2 §3.5: the outermost <svg> is always clipped to its viewport
+	// (the UA stylesheet sets overflow:hidden on the SVG element).
+	// When `overflow-clip-margin` is set, the standard CSS-overflow
+	// paint path in `paintLayer` is enabled for SVG roots and that path
+	// installs the expanded clip — we must NOT install a second
+	// viewport clip here (it would clip back to the SVG content rect
+	// and silently undo the outward margin). When no margin is set,
+	// the CSS-overflow path is bypassed (the SVG outer clip is then
+	// pixel-snapped relative to the SVG's box origin, which can drift
+	// 1px from the SVG content paint origin) and we install the
+	// SVG-side viewport clip in unsnapped coords to match the content
+	// paint.
+	if !layer.HasClipMargin {
+		r.dc.DrawRectangle(originX, originY,
+			root.ContainerSize.Width, root.ContainerSize.Height)
+		r.dc.Clip()
+	}
 
 	r.dc.Translate(originX, originY)
 	t := root.LocalToBorderBoxTransform

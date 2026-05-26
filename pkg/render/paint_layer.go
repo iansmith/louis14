@@ -67,12 +67,28 @@ type PaintLayer struct {
 	ClipY    bool       // true if Y axis is clipped (overflow-y != visible)
 	ClipRect [4]float64 // x, y, w, h of padding box
 
-	// Overflow-clip-margin outward expansion per side (CSS Overflow 3 §3.2),
-	// indexed [Top, Right, Bottom, Left]. Combines the visual-box selection
-	// (offset from padding-box to content/padding/border-box edge) with the
-	// optional <length> grow. Zero when overflow-clip-margin is not applied.
-	HasClipMargin bool
-	ClipMargin    [4]float64
+	// Overflow-clip-margin geometry (CSS Overflow 3 §3.2).
+	//
+	// The clip path is built in two steps, mirroring Blink's
+	// `PhysicalBoxFragment::OverflowClipMarginOutsets` (Chromium @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) + the rounded clip
+	// computation in `BoxPainterBase`:
+	//
+	//   1. Choose the visual-box: border-box, padding-box, or
+	//      content-box. The visual-box's rounded radii are the
+	//      border-box radii **linearly shrunk** by the per-side
+	//      inset (`ClipMarginVisualBoxInset` — always ≥ 0, in CSS
+	//      px). For border-box the inset is zero on every side.
+	//
+	//   2. Outward-expand the visual-box rect by `ClipMarginLength`
+	//      on every side, and outward-expand the visual-box's
+	//      radii by `ClipMarginLength` using the CSS Backgrounds 3
+	//      §5.4 shadow-shape cubic formula.
+	//
+	// Zero/false when overflow-clip-margin is not applied.
+	HasClipMargin            bool
+	ClipMarginVisualBoxInset [4]float64
+	ClipMarginLength         float64
 
 	// CSS clip: rect() (purely physical, per CSS Writing Modes §7.6):
 	HasCSSClip  bool
@@ -293,6 +309,26 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
+	// SVG roots are always clipped per Blink's
+	// `LayoutSVGRoot::ComputeOverflowClipAxes` (Chromium @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) — "svg document roots
+	// are always clipped". For an inline <svg> with no
+	// overflow-clip-margin we still let `paintSVGRoot`'s own viewport
+	// clip do the job (avoiding a duplicate pixel-snapped CSS clip
+	// that can shift by 1px relative to the SVG content origin, which
+	// is unsnapped). But when `overflow-clip-margin` is set, the SVG
+	// must go through the standard CSS-overflow paint path — that is
+	// the only path that consults the margin. We trigger that path
+	// here by forcing clipX/clipY true when the SVG carries the
+	// property.
+	isSVGRootNode := box.Node != nil && box.Node.TagName == "svg"
+	if isSVGRootNode {
+		if _, ok := s.GetOverflowClipMargin(); ok {
+			clipX = true
+			clipY = true
+		}
+	}
+
 	// No multicol-container clip special case. Blink's UpdateFromStyle
 	// computes HasNonVisibleOverflow purely from (!IsOverflowVisibleAlongBothAxes()
 	// || ShouldApplyPaintContainment()) && RespectsCSSOverflow(). There is no
@@ -328,12 +364,23 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// paint containment, AND the box is NOT a scroll container (i.e.
 		// no axis is scroll/auto/hidden). Blink's LayoutBox::OverflowClipRect
 		// honors overflow_clip_margin only on the non-scroll clip path.
+		//
+		// SVG roots count as clip (not scroll) for this purpose: per Blink's
+		// `LayoutSVGRoot::ComputeOverflowClipAxes`, an SVG root is always
+		// clipped on both axes (UA behavior, not the cascaded `overflow`
+		// value), so overflow-clip-margin set on the SVG applies. The
+		// outer clip path is enabled only when the SVG actually has
+		// `overflow-clip-margin` set — see the `isSVGRootNode` block
+		// above for the rationale.
 		isScrollContainer := overflowX == css.OverflowScroll || overflowX == css.OverflowAuto || overflowX == css.OverflowHidden ||
 			overflowY == css.OverflowScroll || overflowY == css.OverflowAuto || overflowY == css.OverflowHidden
+		if isSVGRootNode {
+			isScrollContainer = false
+		}
 		applyMargin := false
 		marginBox := css.OverflowClipMarginPaddingBox
 		var marginLength float64
-		if !isScrollContainer && (overflowX == css.OverflowClip || overflowY == css.OverflowClip || hasPaintContain) {
+		if !isScrollContainer && (overflowX == css.OverflowClip || overflowY == css.OverflowClip || hasPaintContain || isSVGRootNode) {
 			if m, ok := s.GetOverflowClipMargin(); ok {
 				applyMargin = true
 				marginBox = m.Box
@@ -342,15 +389,13 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 
 		var padX, padY, clipW, clipH float64
-		// Per-side outward offset from the border-edge to the clip edge
-		// (positive = outward). Used both to size the clip rect and to
-		// outset border-radii via the CSS Backgrounds 3 §5.4 shadow shape
-		// cubic formula (CSS Overflow 4 §3.2). When the chosen box is
-		// inside the border-edge (content-box / padding-box, no length)
-		// the offset is negative; the radii are then computed for a rect
-		// strictly inside the border-box, which `OutsetForBoxShadow`'s
-		// adjustment formula already handles by clamping.
-		var edgeTop, edgeRight, edgeBottom, edgeLeft float64
+		// visualBoxInset records, per side, the linear shrink from the
+		// border-box to the chosen visual-box (always ≥ 0). The clip
+		// rect's geometry is `visual_box outset by marginLength on every
+		// side`. The corresponding border-radius is `border_box_radii
+		// .Inset(visualBoxInset) .OutsetForBoxShadow(marginLength,...)` —
+		// computed lazily by overflowClipRadii.
+		var visualBoxInset [4]float64 // [Top, Right, Bottom, Left]
 		switch {
 		case forceBorderBoxClip:
 			// CSS Tables 3 §5.4.1 forces a border-box clip irrespective of
@@ -362,23 +407,26 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		case applyMargin:
 			switch marginBox {
 			case css.OverflowClipMarginContentBox:
-				edgeTop = -box.Border.Top - box.Padding.Top
-				edgeRight = -box.Border.Right - box.Padding.Right
-				edgeBottom = -box.Border.Bottom - box.Padding.Bottom
-				edgeLeft = -box.Border.Left - box.Padding.Left
+				visualBoxInset = [4]float64{
+					box.Border.Top + box.Padding.Top,
+					box.Border.Right + box.Padding.Right,
+					box.Border.Bottom + box.Padding.Bottom,
+					box.Border.Left + box.Padding.Left,
+				}
 			case css.OverflowClipMarginPaddingBox:
-				edgeTop = -box.Border.Top
-				edgeRight = -box.Border.Right
-				edgeBottom = -box.Border.Bottom
-				edgeLeft = -box.Border.Left
+				visualBoxInset = [4]float64{
+					box.Border.Top, box.Border.Right,
+					box.Border.Bottom, box.Border.Left,
+				}
 			case css.OverflowClipMarginBorderBox:
-				// All edge offsets stay 0 — the clip edge is the
-				// border-edge itself.
+				// All insets stay 0 — clip edge starts at the border edge.
 			}
-			edgeTop += marginLength
-			edgeRight += marginLength
-			edgeBottom += marginLength
-			edgeLeft += marginLength
+			// Per-side outward offset from the border-edge to the clip edge
+			// (positive = outward, negative = inward).
+			edgeTop := -visualBoxInset[0] + marginLength
+			edgeRight := -visualBoxInset[1] + marginLength
+			edgeBottom := -visualBoxInset[2] + marginLength
+			edgeLeft := -visualBoxInset[3] + marginLength
 			padX = box.X - edgeLeft
 			padY = box.Y - edgeTop
 			clipW = box.Width + edgeLeft + edgeRight
@@ -410,13 +458,17 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 
 		layer.ClipRect = [4]float64{padX, padY, clipW, clipH}
-		// Stash the per-side outward border-edge offsets so the renderer
-		// can outset border-radii via the shadow-shape formula. Only
-		// non-zero positive offsets trigger the outset path; negative
-		// offsets (clip edge inside the border-box, e.g. content-box clip
-		// margin with no length) are handled separately if needed.
-		layer.ClipMargin = [4]float64{edgeTop, edgeRight, edgeBottom, edgeLeft}
-		layer.HasClipMargin = applyMargin && (edgeTop != 0 || edgeRight != 0 || edgeBottom != 0 || edgeLeft != 0)
+		// Stash the visual-box selection and outward length so
+		// overflowClipRadii can chain Inset (linear shrink to the visual
+		// box's radii) with OutsetForBoxShadow (cubic outset by the
+		// margin length), matching Blink's
+		// `ContouredBorderGeometry::PixelSnappedContouredBorder` ⇒
+		// `OverflowClipMarginOutsets` flow.
+		layer.ClipMarginVisualBoxInset = visualBoxInset
+		layer.ClipMarginLength = marginLength
+		layer.HasClipMargin = applyMargin && (visualBoxInset[0] != 0 ||
+			visualBoxInset[1] != 0 || visualBoxInset[2] != 0 ||
+			visualBoxInset[3] != 0 || marginLength != 0)
 	}
 
 	// CSS clip: rect() — applies to absolutely positioned elements (CSS 2.1 §11.1.2).

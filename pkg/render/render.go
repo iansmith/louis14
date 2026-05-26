@@ -1616,6 +1616,17 @@ func isAtomicInlineForPaint(layer *PaintLayer) bool {
 	if layer.Box.IsFlexItem() {
 		return true
 	}
+	// Inline <svg> is a CSS replaced element (Blink's
+	// LayoutSVGRoot : LayoutReplaced @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	// Replaced elements paint atomically at CSS 2.1 Appendix E step 5 —
+	// background/border, then content — and the SVG root's UA viewport
+	// clip needs to wrap the SVG content paint. Routing inline <svg>
+	// through paintLayer ensures the standard CSS-clip path (which is
+	// what `overflow-clip-margin` rides on) is established before
+	// paintSVGRoot draws the SVG subtree.
+	if isInlineSVGLayer(layer) {
+		return true
+	}
 	return false
 }
 
@@ -1740,49 +1751,50 @@ func hasBorderRadius(layer *PaintLayer) bool {
 // from the box's border edge", referring to the CSS Backgrounds 3 §5.4
 // shadow shape formula.
 //
-// For positive (outward) offsets, the border-box border-radius is outset
-// via the cubic shadow-shape formula. For negative offsets (clip edge
-// inside the border-box, e.g. overflow-clip-margin: content-box with no
-// length), the radius shrinks linearly via `Inset` (matches the inner
-// rounded rectangle used elsewhere for border-clipping). When no
-// clip-margin is active the border-box radii are returned unchanged.
+// Blink's actual implementation (verified at Chromium @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f via
+// `PhysicalBoxFragment::OverflowClipMarginOutsets` +
+// `BoxPainterBase` rounded-clip construction) builds the radii in two
+// steps:
+//
+//  1. **Inset** the border-box radii by the visual-box's per-side
+//     distance from the border-edge (linear shrink — same shrink
+//     used by `RoundedInnerRectForLineStyle` for inner border-radius).
+//     For border-box the inset is zero on every side; for padding-box
+//     the inset equals the border widths; for content-box it equals
+//     border + padding.
+//
+//  2. **Outset** those visual-box radii outward by `ClipMarginLength`
+//     using the CSS Backgrounds 3 §5.4 shadow-shape cubic formula
+//     (`OutsetForBoxShadow`). The length is a single non-negative
+//     scalar in the spec, applied equally on every side.
+//
+// Order matters: step 1 first reduces each radius to the visual-box's
+// radius (which can be zero when the inset >= radius), and step 2 then
+// applies the cubic correction `r + s·(1 + (r/s − 1)³)` for r < s.
+// This is what produces, e.g., 27.5 for a TR corner of 15 on a
+// `padding-box 20px` clip with a 5px border, instead of the naive
+// border-edge sum 15 + 15 = 30 the previous implementation produced.
+//
+// When no clip-margin is active the border-box radii are returned
+// unchanged.
 func overflowClipRadii(layer *PaintLayer) css.EllipticalRadii {
 	if !layer.HasClipMargin {
 		return layer.BorderRadius
 	}
-	top, right, bottom, left := layer.ClipMargin[0], layer.ClipMargin[1], layer.ClipMargin[2], layer.ClipMargin[3]
-	// Cumulative offsets can be positive (outward) or negative (inward) on
-	// a per-side basis. The shadow-shape outset formula expects positive
-	// outward spreads; for inward sides we shrink via the inner-radius
-	// formula (Inset) by the absolute value.
-	radii := layer.BorderRadius
-	if top < 0 || right < 0 || bottom < 0 || left < 0 {
-		insTop := 0.0
-		insRight := 0.0
-		insBottom := 0.0
-		insLeft := 0.0
-		if top < 0 {
-			insTop = -top
-			top = 0
-		}
-		if right < 0 {
-			insRight = -right
-			right = 0
-		}
-		if bottom < 0 {
-			insBottom = -bottom
-			bottom = 0
-		}
-		if left < 0 {
-			insLeft = -left
-			left = 0
-		}
-		radii = radii.Inset(insTop, insRight, insBottom, insLeft)
-	}
-	if top == 0 && right == 0 && bottom == 0 && left == 0 {
+	// Step 1: linear inset to the chosen visual-box's radii.
+	radii := layer.BorderRadius.Inset(
+		layer.ClipMarginVisualBoxInset[0],
+		layer.ClipMarginVisualBoxInset[1],
+		layer.ClipMarginVisualBoxInset[2],
+		layer.ClipMarginVisualBoxInset[3],
+	)
+	// Step 2: cubic outset by the margin length on every side.
+	if layer.ClipMarginLength == 0 {
 		return radii
 	}
-	return radii.OutsetForBoxShadow(top, right, bottom, left)
+	s := layer.ClipMarginLength
+	return radii.OutsetForBoxShadow(s, s, s, s)
 }
 
 // buildRoundedRectPath traces a rounded rectangle path using CubicTo for
