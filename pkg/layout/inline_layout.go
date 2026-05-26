@@ -1360,12 +1360,13 @@ func createLineBoxEx(
 	var residualSpanStack []*InlineItem
 	{
 		type spanEntry struct {
-			item            *InlineItem
-			style           *css.Style
-			node            *html.Node
-			borderStart     float64
-			isFirstFragment bool
-			isLastFragment  bool
+			item             *InlineItem
+			style            *css.Style
+			node             *html.Node
+			borderStart      float64
+			isFirstFragment  bool
+			isLastFragment   bool
+			cumulativeVAOffs float64 // sum of vertical-align: <length> from this span + all open ancestor spans
 		}
 		var spanStack []spanEntry
 		emit := func(span spanEntry, endPos float64) {
@@ -1438,9 +1439,14 @@ func createLineBoxEx(
 				offset := span.style.GetPositionOffsetResolved(cbPhysicalSize.Width, cbPhysicalSize.Height)
 				bgFrag.RelativeOffset = computeRelativeOffset(offset, wdm)
 			}
+			// CSS 2.1 §10.8.1: vertical-align: <length> on an inline element
+			// shifts the inline box (including its background) up by the
+			// offset, matching the shift applied to its text children. Use
+			// the cumulative offset so nested spans stack correctly.
+			spanBlockOffset := -blockOverhang - span.cumulativeVAOffs
 			lineBuilder.AddChild(bgFrag, LogicalOffset{
 				InlineOffset: fragStart,
-				BlockOffset:  -blockOverhang,
+				BlockOffset:  spanBlockOffset,
 			})
 		}
 
@@ -1451,13 +1457,18 @@ func createLineBoxEx(
 			if item == nil || item.Style == nil {
 				continue
 			}
+			parentCum := 0.0
+			if n := len(spanStack); n > 0 {
+				parentCum = spanStack[n-1].cumulativeVAOffs
+			}
 			spanStack = append(spanStack, spanEntry{
-				item:            item,
-				style:           item.Style,
-				node:            item.Node,
-				borderStart:     alignOffset,
-				isFirstFragment: false,
-				isLastFragment:  false,
+				item:             item,
+				style:            item.Style,
+				node:             item.Node,
+				borderStart:      alignOffset,
+				isFirstFragment:  false,
+				isLastFragment:   false,
+				cumulativeVAOffs: parentCum + item.Style.GetVerticalAlignOffset(),
 			})
 		}
 
@@ -1466,13 +1477,18 @@ func createLineBoxEx(
 			switch r.Item.Type {
 			case InlineItemOpenTag:
 				if r.Item.Style != nil {
+					parentCum := 0.0
+					if n := len(spanStack); n > 0 {
+						parentCum = spanStack[n-1].cumulativeVAOffs
+					}
 					spanStack = append(spanStack, spanEntry{
-						item:            r.Item,
-						style:           r.Item.Style,
-						node:            r.Item.Node,
-						borderStart:     trackPos + r.Margins.InlineStart,
-						isFirstFragment: r.Item.IsFirstFragment,
-						isLastFragment:  r.Item.IsLastFragment,
+						item:             r.Item,
+						style:            r.Item.Style,
+						node:             r.Item.Node,
+						borderStart:      trackPos + r.Margins.InlineStart,
+						isFirstFragment:  r.Item.IsFirstFragment,
+						isLastFragment:   r.Item.IsLastFragment,
+						cumulativeVAOffs: parentCum + r.Item.Style.GetVerticalAlignOffset(),
 					})
 				}
 			case InlineItemCloseTag:
@@ -1518,6 +1534,27 @@ func createLineBoxEx(
 		rootDesc float64
 	}
 	var vaStack []vaFrame
+	// CSS 2.1 §10.8.1: vertical-align: <length> on an inline element raises
+	// its inline box (background + descendant text) by the offset within the
+	// parent's line. Only applies when the element is encountered as an
+	// OpenTag in the inline flow — when the element IS the inline formatting
+	// context root (e.g. a flex item span carrying its own text), its
+	// vertical-align does not affect its own content (CSS Flexbox §4 — flex
+	// items do not honor vertical-align). Tracked as a sum so nested spans
+	// with length offsets accumulate.
+	var vaLengthOffset float64
+	var vaLengthStack []float64
+	// Pre-populate vaLengthStack with spans opened on prior lines so their
+	// length offsets continue to affect this line's descendant fragments.
+	for _, item := range enteringSpanStack {
+		if item == nil || item.Style == nil {
+			vaLengthStack = append(vaLengthStack, 0)
+			continue
+		}
+		off := item.Style.GetVerticalAlignOffset()
+		vaLengthStack = append(vaLengthStack, off)
+		vaLengthOffset += off
+	}
 	// inlineBoxAsDesc computes an inline box's ascent/descent contribution the
 	// same way computeLineMetricsEx does for an OpenTag: font ascent/descent
 	// plus half-leading from line-height. Used to derive subtree-root metrics.
@@ -1554,6 +1591,11 @@ func createLineBoxEx(
 					a, d := inlineBoxAsDesc(r.Item.Style)
 					vaStack = append(vaStack, vaFrame{vAlign: va, rootAsc: a, rootDesc: d})
 				}
+				// Push the span's length offset onto the cumulative stack so
+				// descendant text/atomic-inline fragments inherit the shift.
+				off := r.Item.Style.GetVerticalAlignOffset()
+				vaLengthStack = append(vaLengthStack, off)
+				vaLengthOffset += off
 			}
 		case InlineItemCloseTag:
 			if r.Item.Style != nil {
@@ -1562,6 +1604,10 @@ func createLineBoxEx(
 					if n := len(vaStack); n > 0 {
 						vaStack = vaStack[:n-1]
 					}
+				}
+				if n := len(vaLengthStack); n > 0 {
+					vaLengthOffset -= vaLengthStack[n-1]
+					vaLengthStack = vaLengthStack[:n-1]
 				}
 			}
 		case InlineItemText:
@@ -1619,6 +1665,16 @@ func createLineBoxEx(
 				blockPos = rootAsc - ascent
 			case css.VerticalAlignBottom:
 				blockPos = lineHeight - rootDesc - ascent
+			}
+
+			// CSS 2.1 §10.8.1: vertical-align: <length> on an enclosing inline
+			// span raises descendant text by the (cumulative) length offset.
+			// Sourced from vaLengthOffset (only spans opened in the inline flow
+			// contribute), so flex items / block containers whose own
+			// vertical-align is on the formatting-context root do not shift
+			// their own content. Mirrors Blink's InlineBoxState::ApplyBaselineShift.
+			if vaLengthOffset != 0 {
+				blockPos -= vaLengthOffset
 			}
 
 			// Use parent element as Node so the renderer can access styles.
@@ -1743,6 +1799,12 @@ func createLineBoxEx(
 					if blockPos < 0 {
 						blockPos = 0
 					}
+				case css.VerticalAlignMiddle:
+					// CSS 2.1 §10.8.1: Center the margin-box vertically within the
+					// line box. Mirrors the lineHeight-relative pattern used by
+					// VerticalAlignBottom above (same WPT line-construction).
+					marginBoxSize := blockSize + r.Margins.BlockStart + r.Margins.BlockEnd
+					blockPos = (lineHeight-marginBoxSize)/2 + r.Margins.BlockStart
 				default:
 					// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
 					// align inline-block so its baseline sits at the line's maxAscent.
@@ -1803,6 +1865,17 @@ func createLineBoxEx(
 						// Default: bottom-align to baseline.
 						blockPos = maxAscent - blockSize
 					}
+				}
+				// CSS 2.1 §10.8.1: vertical-align: <length> shifts the atomic
+				// inline up (positive) or down (negative) by its own offset
+				// plus any cumulative offset from enclosing inline spans.
+				// Mirrors Blink's InlineBoxState::ApplyBaselineShift.
+				totalLengthOffset := vaLengthOffset
+				if r.Item.Style != nil {
+					totalLengthOffset += r.Item.Style.GetVerticalAlignOffset()
+				}
+				if totalLengthOffset != 0 {
+					blockPos -= totalLengthOffset
 				}
 				if blockPos < 0 {
 					blockPos = 0
