@@ -321,7 +321,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 
 	// CSS 2.1 §12.1: Generate ::before pseudo-element.
 	if beforeNode := b.createPseudoElement(node, style, "before"); beforeNode != nil {
-		rawChildren = append(rawChildren, beforeNode)
+		rawChildren = append(rawChildren, unboxPseudoIfContents(beforeNode)...)
 	}
 
 	for _, child := range node.Children {
@@ -349,11 +349,19 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 			// were resolved with the contents element as DOM parent). Here
 			// we simply expand the contents element's own children into the
 			// current layout-child list, recursing through nested contents.
-			// Out of scope (per W2.6 plan): ::before/::after on contents,
-			// ::first-letter / ::first-line, form controls, shadow DOM.
-			// Mirrors Blink's LayoutObjectIsNeeded() returning false for
-			// display:contents (third_party/blink/renderer/core/dom/element.cc).
+			// ::before/::after on the contents element are also generated;
+			// see expandContentsChildren. Mirrors Blink's
+			// LayoutObjectIsNeeded() returning false for display:contents
+			// (third_party/blink/renderer/core/dom/element.cc @
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 			if childStyle.GetDisplay() == css.DisplayContents {
+				// CSS Display 3 §3.1 "Unboxing in HTML": replaced /
+				// form-control / SVG-only elements ignore
+				// display:contents and behave as display:none in
+				// louis14's element model.
+				if displayContentsBehavesAsNone(child.TagName) {
+					continue
+				}
 				rawChildren = append(rawChildren, b.expandContentsChildren(child)...)
 				continue
 			}
@@ -367,7 +375,7 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 
 	// CSS 2.1 §12.1: Generate ::after pseudo-element.
 	if afterNode := b.createPseudoElement(node, style, "after"); afterNode != nil {
-		rawChildren = append(rawChildren, afterNode)
+		rawChildren = append(rawChildren, unboxPseudoIfContents(afterNode)...)
 	}
 
 	// CSS 2.1 §9.2.1.1: If an inline element contains a block-level box,
@@ -456,10 +464,68 @@ func (b *LayoutTreeBuilder) propagateFirstLineToFirstInFlowBlock(parent *LayoutI
 	}
 }
 
+// unboxPseudoIfContents implements CSS Display 3 §3 for pseudo-elements:
+// if a generated ::before / ::after pseudo has computed `display: contents`,
+// its own box is suppressed and its content participates in layout as if
+// directly attached to the originating element's effective parent. The
+// children have already been resolved against the pseudo's style by
+// createPseudoElement, so we can simply expose them.
+//
+// Tested by display-contents-before-after-002.html (the pseudo has
+// `display: contents; border: 100px solid red`; the border must NOT be
+// rendered) and display-contents-before-after-003.html (flex item
+// membership of the pseudo's text content).
+func unboxPseudoIfContents(pseudo *LayoutInputNode) []*LayoutInputNode {
+	if pseudo == nil {
+		return nil
+	}
+	if pseudo.style != nil && pseudo.style.GetDisplay() == css.DisplayContents {
+		return pseudo.children
+	}
+	return []*LayoutInputNode{pseudo}
+}
+
+// displayContentsBehavesAsNone reports whether an HTML element with
+// `display: contents` should be treated as `display: none` instead of
+// unboxing. Per CSS Display 3 §3.1 "Effect on the box tree" + the
+// "Unboxing in HTML" appendix, certain replaced / form-control / SVG
+// elements ignore `display: contents`; in louis14 (which does not yet
+// host the underlying element-specific renderers) the simplest faithful
+// behavior is to treat the contents value as `display: none` so neither
+// the element nor its children produce boxes.
+//
+// The list mirrors Blink at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// — see `LayoutTreeBuilderTraversal::DisplayContentsAffectsAncestors`
+// callers in `core/html/html_element.cc` and
+// `core/dom/element.cc::LayoutObjectIsNeeded`. Elements that DO unbox
+// (and therefore are NOT in this list) include `<button>`, `<details>`,
+// `<summary>`, `<fieldset>`, `<legend>` — these are tested by
+// display-contents-button.html, -details.html, -fieldset*.html.
+func displayContentsBehavesAsNone(tagName string) bool {
+	switch tagName {
+	case "br", "wbr",
+		"meter", "progress",
+		"canvas",
+		"embed", "object",
+		"audio", "video",
+		"iframe", "frame", "frameset",
+		"img",
+		"input", "textarea", "select",
+		"applet":
+		return true
+	}
+	return false
+}
+
 // expandContentsChildren returns the layout-tree children produced by a
 // `display: contents` element. Per CSS Display 3 §3.2 the contents element
 // itself generates no box; its DOM children participate in layout as if
-// they were direct children of the contents element's parent.
+// they were direct children of the contents element's parent. Its
+// `::before` and `::after` pseudo-elements DO generate boxes, and they
+// appear as the contents element's first and last children in the
+// effective layout tree (CSS Display 3 §3 — the contents element is
+// "replaced in the box tree by its contents (including pseudo-elements
+// such as `::before` and `::after`)").
 //
 // Inherited properties on the contents element still propagate: text
 // children use the contents element's computed style as their style
@@ -472,14 +538,38 @@ func (b *LayoutTreeBuilder) propagateFirstLineToFirstInFlowBlock(parent *LayoutI
 // Nested `display: contents` elements expand recursively. Display:none
 // children are filtered out, matching the main buildNode loop.
 //
+// Counter / quote scopes: the contents element participates in the
+// counter scope tree (the CountersAttachmentContext tracks it as a
+// "display:contents" node so RemoveStaleCounters can walk through it,
+// see pkg/css/counters_attachment_context.go). We Enter/Leave the
+// scope around its expansion so any `counter-reset` / `counter-increment`
+// on the contents element is honored by its ::before/::after content().
+//
 // Mirrors Blink's behavior in `LayoutTreeBuilderForElement` where a
 // display:contents element is not given a LayoutObject; its children
-// are attached to the grandparent. See
+// (and its pseudo-elements) are attached to the grandparent. See
 // third_party/blink/renderer/core/dom/layout_tree_builder.cc and
-// third_party/blink/renderer/core/dom/element.cc::LayoutObjectIsNeeded.
+// third_party/blink/renderer/core/dom/element.cc::LayoutObjectIsNeeded
+// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*LayoutInputNode {
 	contentsStyle := b.styles[contents]
 	var out []*LayoutInputNode
+
+	// Enter the contents element's counter scope before expanding so any
+	// counter-reset / counter-increment it declares is visible to its
+	// pseudo-elements' content() reads. The scope is left after expansion.
+	if contentsStyle != nil {
+		b.counterCtx.EnterObject(contents, contentsStyle)
+		defer b.counterCtx.LeaveObject(contents, contentsStyle)
+	}
+
+	// CSS 2.1 §12.1 / CSS Display 3 §3: generate ::before for the contents
+	// element. The pseudo-element belongs to the contents element and lives
+	// at the contents element's slot in the effective box tree.
+	if beforeNode := b.createPseudoElement(contents, contentsStyle, "before"); beforeNode != nil {
+		out = append(out, unboxPseudoIfContents(beforeNode)...)
+	}
+
 	for _, child := range contents.Children {
 		switch child.Type {
 		case html.TextNode:
@@ -496,6 +586,12 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 				continue
 			}
 			if childStyle.GetDisplay() == css.DisplayContents {
+				// CSS Display 3 §3.1 "Unboxing in HTML": certain HTML
+				// elements (replaced + most form controls + SVG-only)
+				// ignore display:contents and behave as display:none.
+				if displayContentsBehavesAsNone(child.TagName) {
+					continue
+				}
 				out = append(out, b.expandContentsChildren(child)...)
 				continue
 			}
@@ -505,6 +601,12 @@ func (b *LayoutTreeBuilder) expandContentsChildren(contents *html.Node) []*Layou
 			continue
 		}
 	}
+
+	// CSS 2.1 §12.1: generate ::after for the contents element.
+	if afterNode := b.createPseudoElement(contents, contentsStyle, "after"); afterNode != nil {
+		out = append(out, unboxPseudoIfContents(afterNode)...)
+	}
+
 	return out
 }
 

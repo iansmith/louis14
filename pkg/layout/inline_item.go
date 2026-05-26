@@ -447,6 +447,28 @@ func collectTextNode(
 		return
 	}
 
+	// CSS 2.1 §16.6.1 `pre-line`: collapse runs of spaces/tabs into a
+	// single space but PRESERVE source-text newlines. The HTML parser
+	// collapses newlines into spaces in node.Text (per HTML 13.2.5.34
+	// "After head" insertion mode whitespace handling), so we have to
+	// substitute node.RawText to see the original newlines. The
+	// per-rune collapseSpaces loop below then handles the
+	// space-collapse + newline-as-control-break decisions correctly.
+	// Mirrors Blink's InlineItemsBuilder which always reads from the
+	// pre-collapse text storage (`text_content_` is built from the
+	// original source) and applies CSS white-space rules at item-
+	// collection time. See core/layout/inline/inline_items_builder.cc
+	// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	whiteSpaceHint := "normal"
+	if parentStyle != nil {
+		if ws, ok := parentStyle.Get("white-space"); ok {
+			whiteSpaceHint = ws
+		}
+	}
+	if whiteSpaceHint == "pre-line" && node.RawText != "" {
+		content = node.RawText
+	}
+
 	// CSS Ruby — forced breaks inside `<rt>` (or any descendant) are
 	// rewritten to spaces at item-collection time so the existing
 	// whitespace-handling branches below never emit InlineItemControl
