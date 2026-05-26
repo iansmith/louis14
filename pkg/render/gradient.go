@@ -102,10 +102,8 @@ func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok
 		if arg == "" {
 			continue
 		}
-		stop, stopOk := parseColorStop(arg)
-		if stopOk {
-			stops = append(stops, stop)
-		}
+		expanded := parseColorStops(arg)
+		stops = append(stops, expanded...)
 	}
 
 	if len(stops) < 2 {
@@ -114,33 +112,72 @@ func parseLinearGradient(val string) (angleDeg float64, stops []gradientStop, ok
 	return angleDeg, stops, true, repeating
 }
 
-// parseColorStop parses a color stop like "green 25px", "red 50%", "#ff0000".
-func parseColorStop(s string) (gradientStop, bool) {
+// parseColorStops parses a color stop token, returning one or two
+// gradientStop entries. CSS Images 4 §3.4.2 allows a single color stop to
+// carry two positions ("blue 0% 50%"), which is shorthand for two adjacent
+// stops with the same color at the two positions.
+//
+// Blink reference: third_party/blink/renderer/core/css/css_gradient_value.cc
+// (Chromium @ 4883d11fef) — `CSSGradientValue::AddStops` emits a second
+// CSSGradientColorStop when the parser supplies a second position.
+func parseColorStops(s string) []gradientStop {
 	s = strings.TrimSpace(s)
-
 	colorStr, posStr := splitColorAndPosition(s)
 	colorStr = strings.TrimSpace(colorStr)
 	posStr = strings.TrimSpace(posStr)
 
 	c, colorOk := css.ParseColor(colorStr)
 	if !colorOk {
-		return gradientStop{}, false
+		return nil
 	}
-
-	stop := gradientStop{
+	base := gradientStop{
 		r: float64(c.R) / 255.0,
 		g: float64(c.G) / 255.0,
 		b: float64(c.B) / 255.0,
 		a: c.A,
 	}
-	if posStr != "" {
-		if pos, posOk, isPct := parseStopPosition(posStr); posOk {
-			stop.pos = pos
-			stop.posIsSet = true
-			stop.isPercent = isPct
+	if posStr == "" {
+		return []gradientStop{base}
+	}
+
+	// Try to split posStr into two position tokens. We split on whitespace
+	// and accept either one or two tokens; anything else falls back to
+	// treating the whole token as a single position (existing behavior).
+	posTokens := strings.Fields(posStr)
+	if len(posTokens) == 2 {
+		p1, ok1, pct1 := parseStopPosition(posTokens[0])
+		p2, ok2, pct2 := parseStopPosition(posTokens[1])
+		if ok1 && ok2 {
+			s1 := base
+			s1.pos = p1
+			s1.posIsSet = true
+			s1.isPercent = pct1
+			s2 := base
+			s2.pos = p2
+			s2.posIsSet = true
+			s2.isPercent = pct2
+			return []gradientStop{s1, s2}
 		}
 	}
-	return stop, true
+
+	if pos, ok, isPct := parseStopPosition(posStr); ok {
+		base.pos = pos
+		base.posIsSet = true
+		base.isPercent = isPct
+	}
+	return []gradientStop{base}
+}
+
+// parseColorStop parses a single color stop like "green 25px", "red 50%",
+// "#ff0000". Multi-position stops ("blue 0% 50%") are handled by the plural
+// parseColorStops; this single-stop helper is retained for backwards
+// compatibility with call sites that don't yet handle stop expansion.
+func parseColorStop(s string) (gradientStop, bool) {
+	stops := parseColorStops(s)
+	if len(stops) == 0 {
+		return gradientStop{}, false
+	}
+	return stops[0], true
 }
 
 // splitColorAndPosition splits "green 25px" into ("green", "25px").
@@ -262,6 +299,21 @@ func resolveStopPositions(stops []gradientStop, lineLen float64) {
 		}
 		i = j
 	}
+
+	// CSS Images 3 §3.4: enforce monotonic non-decreasing positions. If a
+	// stop's position is less than the largest position seen so far, clamp
+	// it up to that position. This handles e.g.
+	// `linear-gradient(yellow, blue 70%, green 0)` where the bare `0` must
+	// be clamped to blue's 70%.
+	//
+	// Blink reference: third_party/blink/renderer/core/css/css_gradient_value.cc
+	// `CSSGradientValue::AddStops` performs this same clamp after position
+	// resolution (Chromium @ 4883d11fef).
+	for k := 1; k < n; k++ {
+		if stops[k].pos < stops[k-1].pos {
+			stops[k].pos = stops[k-1].pos
+		}
+	}
 }
 
 // interpolateGradientColor returns the color at a given pixel position along the gradient line.
@@ -356,7 +408,13 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 		resolveStopPositions(stops, lineLen)
 		repeatLen = stops[len(stops)-1].pos - stops[0].pos
 		if repeatLen <= 0 {
-			// Degenerate: all stops at same position → use last stop color.
+			// Degenerate: all stops collapsed to a single position.
+			// CSS Images 3 §3.4: when the gradient line has zero length,
+			// the gradient renders as a solid color equal to the last
+			// color stop's color (Blink css_gradient_value.cc handling
+			// of degenerate repeating gradients @ 4883d11fef).
+			last := stops[len(stops)-1]
+			r.fillSolidGradient(last, x, y, w, h)
 			return
 		}
 	}
@@ -504,4 +562,49 @@ func blendGradientPixel(img *image.RGBA, px, py int, c color.RGBA) {
 		B: uint8(sb + uint32(d.B)*inv/255),
 		A: uint8(sa + uint32(d.A)*inv/255),
 	})
+}
+
+// fillSolidGradient fills the box [x,y,w,h] with a single color derived from
+// a gradient stop. Used for degenerate gradients (e.g. all stops at the same
+// position) per CSS Images 3 §3.4. Respects active clip bounds and uses the
+// same straight-alpha → premultiplied compositing path as the normal
+// gradient painter.
+func (r *Renderer) fillSolidGradient(s gradientStop, x, y, w, h float64) {
+	x0 := int(math.Round(x))
+	y0 := int(math.Round(y))
+	x1 := int(math.Round(x + w))
+	y1 := int(math.Round(y + h))
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+	clipMinX, clipMinY, clipMaxX, clipMaxY := r.activeClipBounds()
+	if x0 < clipMinX {
+		x0 = clipMinX
+	}
+	if y0 < clipMinY {
+		y0 = clipMinY
+	}
+	if x1 > clipMaxX {
+		x1 = clipMaxX
+	}
+	if y1 > clipMaxY {
+		y1 = clipMaxY
+	}
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+	c := color.RGBA{
+		R: uint8(clamp01(s.r) * 255),
+		G: uint8(clamp01(s.g) * 255),
+		B: uint8(clamp01(s.b) * 255),
+		A: uint8(clamp01(s.a) * 255),
+	}
+	if c.A == 0 {
+		return
+	}
+	for py := y0; py < y1; py++ {
+		for px := x0; px < x1; px++ {
+			blendGradientPixel(r.target, px, py, c)
+		}
+	}
 }
