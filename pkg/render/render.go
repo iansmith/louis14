@@ -1421,7 +1421,13 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 			r.drawOutsetBoxShadows(layer)
 		}
 		r.drawBackground(layer)
-		r.drawBorders(layer)
+		// Collapsed table cell borders paint in their own phase AFTER
+		// descendants (see paintCollapsedBordersAfterDescendants). The
+		// background and box shadows still belong here so descendants
+		// paint above them in the normal way.
+		if !layer.IsCollapsedBorderCell {
+			r.drawBorders(layer)
+		}
 		if len(layer.BoxShadows) > 0 {
 			r.drawInsetBoxShadows(layer)
 		}
@@ -1562,6 +1568,15 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	}
 
 	r.paintDescendantsPhase(child, phase)
+
+	// CSS Tables 3 collapsed-borders paint phase: cell borders paint
+	// AFTER all descendant content so a positioned background inside the
+	// cell can't overpaint the (shared) border. Run during PhaseForeground
+	// only — PhaseBackground would re-introduce the before-descendants
+	// ordering we are deliberately deferring.
+	if phase == PhaseForeground && child.IsCollapsedBorderCell && !child.EmptyCellHide {
+		r.drawBorders(child)
+	}
 
 	if clipping {
 		r.popClipRect()

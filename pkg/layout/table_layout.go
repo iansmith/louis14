@@ -2,6 +2,7 @@ package layout
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"louis14/pkg/css"
@@ -2013,7 +2014,12 @@ func readBorderEdge(s *css.Style, side string) borderEdgeInfo {
 			info.style = css.BorderStyleDashed
 		case "dotted":
 			info.style = css.BorderStyleDotted
-		case "none", "hidden":
+		case "none", "hidden", "outset", "inset", "ridge", "groove":
+			// Preserve the literal style string for CSS 2.1 §17.6.2.1
+			// border-conflict precedence. borderStylePrecedence() decodes
+			// the full nine-style ordering; collapsing outset/inset/ridge/
+			// groove to "solid" here would lose precedence information and
+			// cause cell borders to incorrectly tie/win against table borders.
 			info.style = css.BorderStyle(sv)
 		default:
 			info.style = css.BorderStyleSolid
@@ -2096,11 +2102,16 @@ func resolveBorderConflict(a, b borderEdgeInfo, startCellWins bool) borderEdgeIn
 		return a
 	}
 
-	// Rule 3: wider wins.
-	if a.width > b.width {
+	// Rule 3: wider wins. Compare floor-to-integer-pixel widths so subpixel
+	// border widths only beat smaller integer widths (CSS Tables 3 conflict
+	// resolution + WPT subpixel-collapsed-borders-001/003). E.g. table 5.95px
+	// vs cell 5px both floor to 5 and tie; cell then wins by Rule 5.
+	aFloor := math.Floor(a.width)
+	bFloor := math.Floor(b.width)
+	if aFloor > bFloor {
 		return a
 	}
-	if b.width > a.width {
+	if bFloor > aFloor {
 		return b
 	}
 

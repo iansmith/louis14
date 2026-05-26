@@ -1258,6 +1258,11 @@ var inheritableProperties = map[string]bool{
 	"direction": true, "letter-spacing": true, "word-spacing": true,
 	"cursor": true, "writing-mode": true, "text-orientation": true,
 	"empty-cells": true,
+	// CSS 2.1 §17.6: border-collapse is inherited (table → cell). Paint
+	// uses the cell's own GetBorderCollapse() to decide empty-cells
+	// suppression and other collapsed-only behavior, so it must see the
+	// value cascaded from the parent <table>.
+	"border-collapse": true,
 	// CSS Text 3 inherited properties:
 	"word-break": true, "overflow-wrap": true, "hyphens": true,
 	"line-break": true, "tab-size": true,
