@@ -9518,18 +9518,38 @@ func (s *Style) GetBorderImageSlice() BorderImageSlice {
 // GetBorderImageWidth returns the 4 border-image-width values in pixels.
 // Values can be <number> (multiplier of border-width), <length>, or auto.
 // borderWidths is [top, right, bottom, left] in pixels.
+//
+// Per the CSS shorthand expansion rules, the 1/2/3 value forms are first
+// expanded into the 4-value form, and only then is each number multiplied
+// by the corresponding border-width. The previous in-place expansion
+// (multiply then copy vals[0]) silently dropped the per-side multiplier
+// when border widths differed.
 func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
 	v, ok := s.Get("border-image-width")
 	if !ok || strings.TrimSpace(v) == "" {
 		return borderWidths // default = border-width values
 	}
-	v = strings.TrimSpace(v)
-	parts := strings.Fields(v)
+	parts := strings.Fields(strings.TrimSpace(v))
+	if len(parts) == 0 {
+		return borderWidths
+	}
+	if len(parts) > 4 {
+		parts = parts[:4]
+	}
+	// Expand to 4 values per CSS shorthand expansion rules.
+	var four [4]string
+	switch len(parts) {
+	case 1:
+		four = [4]string{parts[0], parts[0], parts[0], parts[0]}
+	case 2:
+		four = [4]string{parts[0], parts[1], parts[0], parts[1]}
+	case 3:
+		four = [4]string{parts[0], parts[1], parts[2], parts[1]}
+	case 4:
+		four = [4]string{parts[0], parts[1], parts[2], parts[3]}
+	}
 	var vals [4]float64
-	for i, p := range parts {
-		if i >= 4 {
-			break
-		}
+	for i, p := range four {
 		if p == "auto" {
 			vals[i] = borderWidths[i]
 		} else if strings.HasSuffix(p, "px") {
@@ -9541,16 +9561,53 @@ func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
 			vals[i] = f * borderWidths[i]
 		}
 	}
+	return vals
+}
+
+// GetBorderImageOutset returns the 4 border-image-outset values in pixels.
+// Per CSS Backgrounds 3 §6.2: values can be <length> (px) or <number>
+// (multiplier of the corresponding border-width). The painted area is
+// extended outward by these amounts; the layout box is not affected.
+// borderWidths is [top, right, bottom, left] in pixels.
+//
+// Per the CSS shorthand expansion rules, the 1/2/3 value forms are first
+// expanded into the 4-value form (so a single number maps to all four
+// sides), and only then is each number multiplied by the corresponding
+// border-width.
+func (s *Style) GetBorderImageOutset(borderWidths [4]float64) [4]float64 {
+	v, ok := s.Get("border-image-outset")
+	if !ok || strings.TrimSpace(v) == "" {
+		return [4]float64{} // initial: 0 on all sides
+	}
+	parts := strings.Fields(strings.TrimSpace(v))
+	if len(parts) == 0 {
+		return [4]float64{}
+	}
+	if len(parts) > 4 {
+		parts = parts[:4]
+	}
+	// Expand to 4 values per CSS shorthand expansion rules.
+	var four [4]string
 	switch len(parts) {
 	case 1:
-		vals[1] = vals[0]
-		vals[2] = vals[0]
-		vals[3] = vals[0]
+		four = [4]string{parts[0], parts[0], parts[0], parts[0]}
 	case 2:
-		vals[2] = vals[0]
-		vals[3] = vals[1]
+		four = [4]string{parts[0], parts[1], parts[0], parts[1]}
 	case 3:
-		vals[3] = vals[1]
+		four = [4]string{parts[0], parts[1], parts[2], parts[1]}
+	case 4:
+		four = [4]string{parts[0], parts[1], parts[2], parts[3]}
+	}
+	var vals [4]float64
+	for i, p := range four {
+		if strings.HasSuffix(p, "px") {
+			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
+			vals[i] = f
+		} else {
+			// Unit-less number = multiplier of corresponding border-width.
+			f, _ := strconv.ParseFloat(p, 64)
+			vals[i] = f * borderWidths[i]
+		}
 	}
 	return vals
 }

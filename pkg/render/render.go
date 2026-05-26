@@ -2392,6 +2392,15 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 	box := layer.Box
 	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
 
+	// Border-image-outset extends the painted area outside the border box
+	// per CSS Backgrounds 3 §6.2. Layout box is unchanged; only the area
+	// the 9-slice image is drawn into grows.
+	outset := layer.BorderImageOutset // [top, right, bottom, left]
+	x -= outset[3]
+	y -= outset[0]
+	w += outset[1] + outset[3]
+	h += outset[0] + outset[2]
+
 	// Border-image-width determines the area occupied by border slices.
 	biW := layer.BorderImageWidth // [top, right, bottom, left]
 

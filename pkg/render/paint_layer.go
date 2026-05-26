@@ -98,6 +98,7 @@ type PaintLayer struct {
 	BorderImageSlice  css.BorderImageSlice // 4 slice values + fill flag
 	BorderImageWidth  [4]float64           // top, right, bottom, left (px)
 	BorderImageRepeat [2]string            // [horizontal, vertical]: stretch/repeat/round/space
+	BorderImageOutset [4]float64           // top, right, bottom, left (px); extends paint area outside border box
 
 	// Box shadows (outset and inset):
 	BoxShadows []css.BoxShadow
@@ -473,6 +474,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			bwArr := [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
 			layer.BorderImageWidth = s.GetBorderImageWidth(bwArr)
 			layer.BorderImageRepeat = s.GetBorderImageRepeat()
+			layer.BorderImageOutset = s.GetBorderImageOutset(bwArr)
 		}
 	}
 

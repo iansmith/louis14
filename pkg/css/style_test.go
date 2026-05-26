@@ -501,3 +501,65 @@ func TestGetTextEmphasisLineLogicalOver_BlinkCollapseTable(t *testing.T) {
 		}
 	}
 }
+
+// TestGetBorderImageOutset verifies the border-image-outset parser per CSS
+// Backgrounds 3 §6.2. Values can be <length-percentage>{1,4} or <number>{1,4};
+// numbers are multipliers of the corresponding border-width.
+func TestGetBorderImageOutset(t *testing.T) {
+	cases := []struct {
+		name         string
+		raw          string
+		borderWidths [4]float64
+		want         [4]float64
+	}{
+		{
+			name: "unset returns zeros",
+			raw:  "",
+			want: [4]float64{0, 0, 0, 0},
+		},
+		{
+			name: "single px value applies to all four",
+			raw:  "10px",
+			want: [4]float64{10, 10, 10, 10},
+		},
+		{
+			name: "single number multiplies border-width on each side",
+			raw:  "2",
+			borderWidths: [4]float64{5, 6, 7, 8},
+			want:         [4]float64{10, 12, 14, 16},
+		},
+		{
+			name: "two values: vertical, horizontal",
+			raw:  "10px 20px",
+			want: [4]float64{10, 20, 10, 20},
+		},
+		{
+			name: "three values: top, horizontal, bottom",
+			raw:  "10px 20px 30px",
+			want: [4]float64{10, 20, 30, 20},
+		},
+		{
+			name: "four values: top, right, bottom, left",
+			raw:  "50px 10px 50px 100px",
+			want: [4]float64{50, 10, 50, 100},
+		},
+		{
+			name:         "mixed numbers and lengths (003 spec)",
+			raw:          "1 6 11 1",
+			borderWidths: [4]float64{10, 10, 10, 10},
+			want:         [4]float64{10, 60, 110, 10},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := NewStyle()
+			if c.raw != "" {
+				s.Set("border-image-outset", c.raw)
+			}
+			got := s.GetBorderImageOutset(c.borderWidths)
+			if got != c.want {
+				t.Errorf("GetBorderImageOutset(%q) = %v, want %v", c.raw, got, c.want)
+			}
+		})
+	}
+}
