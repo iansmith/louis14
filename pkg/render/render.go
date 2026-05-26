@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
@@ -4322,6 +4323,52 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 	r.dc.DrawImage(buf, dx, dy)
 }
 
+// isDecorationSkippableSpace reports whether a rune counts as a "space" for
+// the text-decoration-skip-spaces property (CSS Text Decor L4). Includes
+// ASCII whitespace plus the Unicode space characters U+00A0, U+1680,
+// U+2000-U+200A, U+202F, U+205F, U+3000 — the cohort tested by the WPT
+// `text-decoration-skip-spaces-*` reftests.
+func isDecorationSkippableSpace(ch rune) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r',
+		0x00A0, // NBSP
+		0x1680, // OGHAM SPACE MARK
+		0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
+		0x2006, 0x2007, 0x2008, 0x2009, 0x200A,
+		0x202F, // NARROW NO-BREAK SPACE
+		0x205F, // MEDIUM MATHEMATICAL SPACE
+		0x3000: // IDEOGRAPHIC SPACE
+		return true
+	}
+	return false
+}
+
+// leadingWhitespacePrefix returns the longest prefix of text consisting of
+// runes that isDecorationSkippableSpace accepts.
+func leadingWhitespacePrefix(text string) string {
+	for i, ch := range text {
+		if !isDecorationSkippableSpace(ch) {
+			return text[:i]
+		}
+	}
+	return text
+}
+
+// trailingWhitespaceSuffix returns the longest suffix of text consisting of
+// runes that isDecorationSkippableSpace accepts.
+func trailingWhitespaceSuffix(text string) string {
+	endByte := len(text)
+	for i := len(text); i > 0; {
+		ch, size := utf8.DecodeLastRuneInString(text[:i])
+		if !isDecorationSkippableSpace(ch) {
+			return text[endByte:]
+		}
+		i -= size
+		endByte = i
+	}
+	return text
+}
+
 // drawTextDecoration renders underline, overline, or line-through decoration
 // lines for non-vertical, non-sideways text.
 //
@@ -4340,13 +4387,59 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	descent := float64(metrics.Descent) / 64.0
 	textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
 
+	// CSS Text Decor 4 §"text-decoration-skip-spaces-property": when
+	// `text-decoration-skip-spaces` enables skipping at the start/end of the
+	// line, the decoration line does not paint over leading/trailing
+	// whitespace characters. Layout doesn't currently pass line-start /
+	// line-end flags to the painter, so we apply a conservative heuristic:
+	// suppress the leading/trailing whitespace WIDTH whenever the text run
+	// HAS leading/trailing whitespace. This works for the dominant case
+	// where each text fragment corresponds to a contiguous shaped run, and
+	// the leading/trailing whitespace either is the boundary OR is collapsed
+	// at the start/end of an inline context (white-space:pre and friends).
+	// Inter-word whitespace remains underlined because it's interior to the
+	// run.
+	//
+	// To avoid sub-pixel drift between measuring the prefix in isolation
+	// versus in context (HarfBuzz shaping can produce slightly different
+	// advances), the leading-width is derived as
+	//   textWidth - measure(text-without-leading-ws)
+	// so the prefix's contribution matches the in-context advance exactly.
+	// The trailing-width is computed the same way against the head segment.
+	var skipStartWidth, skipEndWidth float64
+	if box != nil && box.Style != nil && text != "" {
+		skip := box.Style.GetTextDecorationSkipSpaces()
+		if skip.SkipStart {
+			leading := leadingWhitespacePrefix(text)
+			if leading != "" && leading != text {
+				tail := text[len(leading):]
+				tailWidth := r.measureTextStr(tail, fontID, layer.FontFeatures)
+				skipStartWidth = textWidth - tailWidth
+				if skipStartWidth < 0 {
+					skipStartWidth = 0
+				}
+			}
+		}
+		if skip.SkipEnd {
+			trailing := trailingWhitespaceSuffix(text)
+			if trailing != "" && trailing != text {
+				head := text[:len(text)-len(trailing)]
+				headWidth := r.measureTextStr(head, fontID, layer.FontFeatures)
+				skipEndWidth = textWidth - headWidth
+				if skipEndWidth < 0 {
+					skipEndWidth = 0
+				}
+			}
+		}
+	}
+
 	if len(layer.AppliedTextDecorations) > 0 {
 		// TODO: pass the font's underline-thickness metric here once it's
 		// plumbed through textshape.FontMetrics; 0 makes from-font fall back
 		// to auto (which is correct, just lossy).
 		info := newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
 		for _, td := range layer.AppliedTextDecorations {
-			r.drawOneAppliedTextDecoration(td, info, box, textWidth)
+			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth)
 		}
 		return
 	}
@@ -4369,18 +4462,23 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 
 	thickness := layer.TextDecorationThickness
 
+	legacyXStart := box.X + skipStartWidth
+	legacyXEnd := box.X + textWidth - skipEndWidth
+	if legacyXEnd <= legacyXStart {
+		return
+	}
 	switch layer.TextDecorationStyle {
 	case "dashed":
-		r.drawDashedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+		r.drawDashedLine(legacyXStart, lineY, legacyXEnd, lineY, thickness)
 	case "dotted":
-		r.drawDottedLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+		r.drawDottedLine(legacyXStart, lineY, legacyXEnd, lineY, thickness)
 	case "double":
-		r.drawDoubleLine(box.X, lineY, box.X+textWidth, lineY, thickness)
+		r.drawDoubleLine(legacyXStart, lineY, legacyXEnd, lineY, thickness)
 	case "wavy":
-		r.drawWavyLine(box.X, lineY, textWidth, thickness)
+		r.drawWavyLine(legacyXStart, lineY, legacyXEnd-legacyXStart, thickness)
 	default: // "solid"
-		r.dc.MoveTo(box.X, lineY)
-		r.dc.LineTo(box.X+textWidth, lineY)
+		r.dc.MoveTo(legacyXStart, lineY)
+		r.dc.LineTo(legacyXEnd, lineY)
 		r.dc.Stroke()
 	}
 }
@@ -4393,7 +4491,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 //
 // td.Color is already resolved at cascade time per CSS Text Decor 3 §2 — no
 // currentcolor substitution needed here.
-func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth float64) {
+func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth, skipStartWidth, skipEndWidth float64) {
 	if td.Lines.IsNone() {
 		return
 	}
@@ -4419,6 +4517,21 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	} else {
 		logicalStart = box.X + td.Inset.InlineStart
 		logicalEnd = box.X + textWidth - td.Inset.InlineEnd
+	}
+	// text-decoration-skip-spaces: trim leading/trailing whitespace widths
+	// from the decoration extent. Applied after inset so a negative inset
+	// (extension) does not extend through skipped whitespace. For the
+	// HasDecoratingBox case only the relevant edge is trimmed — interior
+	// fragments don't carry leading/trailing space at the boundary.
+	if skipStartWidth > 0 {
+		if !td.HasDecoratingBox || td.IsFirstFragment {
+			logicalStart += skipStartWidth
+		}
+	}
+	if skipEndWidth > 0 {
+		if !td.HasDecoratingBox || td.IsLastFragment {
+			logicalEnd -= skipEndWidth
+		}
 	}
 	if logicalEnd <= logicalStart {
 		return

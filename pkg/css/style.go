@@ -2762,7 +2762,8 @@ var cssLonghandProperties = []string{
 	"line-height", "text-align", "text-align-last", "text-indent",
 	"text-transform", "text-decoration-line", "text-decoration-style",
 	"text-decoration-color", "text-decoration-thickness",
-	"text-decoration-inset", "text-underline-offset", "text-overflow",
+	"text-decoration-inset", "text-decoration-skip-spaces",
+	"text-underline-offset", "text-overflow",
 	"text-shadow", "text-wrap", "text-emphasis-color",
 	"text-emphasis-style", "text-emphasis-position",
 	"letter-spacing", "word-spacing", "white-space",
@@ -11350,6 +11351,53 @@ func (s *Style) GetTextDecorationInset() TextDecorationInset {
 		}
 	}
 	return TextDecorationInset{}
+}
+
+// TextDecorationSkipSpaces is the resolved text-decoration-skip-spaces value
+// for an element. SkipStart/SkipEnd indicate whether decoration painting
+// should skip leading/trailing whitespace at the start/end of the line.
+// Mirrors CSS Text Decor L4 §"text-decoration-skip-spaces-property".
+// Blink at the pinned SHA still implements the L3 behavior (always skip at
+// line edges); louis14 follows the same default so existing browser tests
+// match.
+type TextDecorationSkipSpaces struct {
+	SkipStart bool
+	SkipEnd   bool
+}
+
+// GetTextDecorationSkipSpaces returns the resolved text-decoration-skip-spaces
+// value for this element. Per CSS Text Decor L4 the syntax is
+// `none | all | <[ start || end || space-all ]>`. Initial per L4 is `none`,
+// but louis14 (matching Blink's L3-compatible behavior) treats an unset value
+// as `start end` so existing WPT tests pass without explicit overrides.
+func (s *Style) GetTextDecorationSkipSpaces() TextDecorationSkipSpaces {
+	val, ok := s.Get("text-decoration-skip-spaces")
+	if !ok {
+		// Default mirrors Blink/Firefox at SHA 4883d11f: leading/trailing
+		// spaces on a line do not get an underline. WPT test stylesheets
+		// for skip-spaces note explicitly: "Theoretically not needed, as
+		// that's the default behavior per L3".
+		return TextDecorationSkipSpaces{SkipStart: true, SkipEnd: true}
+	}
+	v := strings.TrimSpace(strings.ToLower(val))
+	switch v {
+	case "", "auto":
+		return TextDecorationSkipSpaces{SkipStart: true, SkipEnd: true}
+	case "none":
+		return TextDecorationSkipSpaces{}
+	case "all":
+		return TextDecorationSkipSpaces{SkipStart: true, SkipEnd: true}
+	}
+	var out TextDecorationSkipSpaces
+	for _, tok := range strings.Fields(v) {
+		switch tok {
+		case "start":
+			out.SkipStart = true
+		case "end":
+			out.SkipEnd = true
+		}
+	}
+	return out
 }
 
 // computeOwnTextDecorationContribution returns the element's own contribution
