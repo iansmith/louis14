@@ -992,11 +992,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// InlineLayoutAlgorithm::CreateLine using FirstLineStyle for the root
 		// inline-box metrics.
 		strutStyle := bla.style
+		var firstLineBgStyle *css.Style
 		if isFirstLineForBox {
 			strutStyle = mergeFirstLineStyle(bla.style, bla.node.FirstLineStyle)
+			firstLineBgStyle = bla.node.FirstLineStyle
 		}
 		lineFragment, lineHeight, lineAscent, residualStack := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, strutStyle, openInlineStack,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, cbPhys, strutStyle, openInlineStack, firstLineBgStyle,
 		)
 		openInlineStack = residualStack
 
@@ -1119,7 +1121,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 }
 
 // firstLineAllowedProperties lists the CSS properties that ::first-line is
-// allowed to override (CSS Pseudo-Elements Level 4 §3).
+// allowed to override. Per CSS Pseudo-Elements Level 4 §3.2.1 the spec
+// allow-list covers font/color/background/decoration/spacing/transform/
+// vertical-align. Blink (and Firefox) additionally honor `opacity` on
+// ::first-line — see `core/style/computed_style.cc::ApplyFirstLineStyle`
+// @ 4883d11fef and the WPT test css-pseudo/first-line-opacity-001.html
+// which depends on it.
 var firstLineAllowedProperties = []string{
 	// Font properties
 	"font-family", "font-size", "font-style", "font-weight",
@@ -1137,6 +1144,9 @@ var firstLineAllowedProperties = []string{
 	"text-transform",
 	// Vertical align (for inline)
 	"vertical-align",
+	// Blink/Firefox extension: opacity on ::first-line. CSS Pseudo 4 omits
+	// it from the allow-list, but every shipping engine honors it.
+	"opacity",
 }
 
 // mergeFirstLineStyle returns base with the allowed ::first-line properties
@@ -1262,7 +1272,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil)
+	frag, h, a, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), PhysicalSize{}, nil, nil, nil)
 	return frag, h, a
 }
 
@@ -1289,6 +1299,7 @@ func createLineBoxEx(
 	cbPhysicalSize PhysicalSize,
 	parentStyle *css.Style,
 	enteringSpanStack []*InlineItem,
+	firstLineStyle *css.Style,
 ) (*PhysicalFragment, float64, float64, []*InlineItem) { // returns (fragment, lineHeight, maxAscent, residualSpanStack)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle)
@@ -1388,6 +1399,31 @@ func createLineBoxEx(
 	// construction below; paint_layer reads Box.AppliedTextDecorations in
 	// preference to Style.GetAppliedTextDecorations() when non-nil.
 	decoratingBoxMetadata := computeDecoratingBoxMetadataPerLine(line, alignOffset, enteringSpanStack)
+
+	// CSS Pseudo 4 §3.2: ::first-line background paints behind the first
+	// formatted line. Emit BEFORE inline span backgrounds and text fragments
+	// so it lands at the bottom of the line's paint stack. Mirrors Blink's
+	// `PaintFirstLineBackground` (`core/paint/box_painter.cc` @ 4883d11fef)
+	// which paints the line-box-wide (originating block's content area width)
+	// background in the BackgroundPhase. Engines diverge on extent — Blink/
+	// WebKit paint line-box-wide, Firefox paints line-content-wide; louis14
+	// follows Blink so `<p>` ::first-line bg matches `<p>` element bg for
+	// one-line content, which is what users tend to expect.
+	if firstLineStyle != nil && hasVisibleInlinePaint(firstLineStyle) {
+		bgFrag := &PhysicalFragment{
+			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
+				InlineSize: availableInline,
+				BlockSize:  lineHeight,
+			}, wdm.WM)),
+			Type:             FragmentBox,
+			Style:            firstLineStyle,
+			WritingDirection: wdm,
+		}
+		lineBuilder.AddChild(bgFrag, LogicalOffset{
+			InlineOffset: 0,
+			BlockOffset:  0,
+		})
+	}
 
 	// Step 3a: Pre-pass — generate background/border fragments for inline spans.
 	// These are added FIRST so they paint behind content (CSS 2.1 Appendix E).
