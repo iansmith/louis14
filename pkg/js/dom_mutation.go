@@ -39,6 +39,11 @@ func (e *elementAccessor) removeChildFn() func(call goja.FunctionCall) goja.Valu
 		if child == nil {
 			panic(e.ctx.vm.NewTypeError("Failed to execute 'removeChild': parameter is not a Node"))
 		}
+		// Blur focus if the focused element is inside the about-to-be-removed
+		// subtree. Must run BEFORE detach so the ancestor-walk in
+		// SetFocusedElement can reach the still-attached ancestors and
+		// clear their HasFocusWithin bits.
+		e.ctx.doc.NotifyNodeDetached(child)
 		removed := e.node.RemoveChild(child)
 		if removed == nil {
 			panic(e.ctx.vm.NewTypeError("Failed to execute 'removeChild': The node to be removed is not a child of this node"))
@@ -68,6 +73,11 @@ func (e *elementAccessor) insertBeforeFn() func(call goja.FunctionCall) goja.Val
 
 // setInnerHTML parses the HTML string and replaces the node's children.
 func (e *elementAccessor) setInnerHTML(htmlStr string) {
+	// Blur focus if any existing child contains the focused element — those
+	// children are about to be detached.
+	for _, c := range e.node.Children {
+		e.ctx.doc.NotifyNodeDetached(c)
+	}
 	// Clear existing children
 	e.node.Children = nil
 
@@ -220,6 +230,7 @@ func (e *elementAccessor) replaceWithFn() func(call goja.FunctionCall) goja.Valu
 			parent.InsertBefore(node, e.node)
 		}
 		// Remove this node
+		e.ctx.doc.NotifyNodeDetached(e.node)
 		parent.RemoveChild(e.node)
 		return goja.Undefined()
 	}
@@ -240,6 +251,7 @@ func (e *elementAccessor) replaceChildFn() func(call goja.FunctionCall) goja.Val
 			newChild.Parent.RemoveChild(newChild)
 		}
 		e.node.InsertBefore(newChild, oldChild)
+		e.ctx.doc.NotifyNodeDetached(oldChild)
 		e.node.RemoveChild(oldChild)
 		return e.ctx.elementProxy(oldChild)
 	}
@@ -248,6 +260,10 @@ func (e *elementAccessor) replaceChildFn() func(call goja.FunctionCall) goja.Val
 // replaceChildrenFn returns a JS function for element.replaceChildren(...nodes).
 func (e *elementAccessor) replaceChildrenFn() func(call goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
+		// Blur focus if any of the about-to-be-removed children contains it.
+		for _, c := range e.node.Children {
+			e.ctx.doc.NotifyNodeDetached(c)
+		}
 		// Clear all children
 		e.node.Children = nil
 
