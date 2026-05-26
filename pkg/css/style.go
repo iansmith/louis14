@@ -27,6 +27,24 @@ type Style struct {
 	ViewportHeight float64 // Viewport height in pixels (for vh/vmin/vmax units)
 	ChWidth        float64 // Measured advance width of "0" in the element's font (0 = use heuristic)
 
+	// UsedFontSize is the post-`font-size-adjust` font-size in pixels; 0 is a
+	// valid value (font-size-adjust: 0 — glyphs collapse to invisible). Read
+	// UsedFontSizeSet to distinguish "not yet computed" from "intentionally
+	// zero". CSS Fonts 5 §1.7: the used font-size becomes
+	//   specified_size * (adjust_value / first_font.actual_aspect_ratio)
+	// when font-size-adjust is set to a <number>. All font-relative units on
+	// this element (em, ex, ch, …) resolve against the used font-size; child
+	// elements still inherit the *computed* (pre-adjust) size for their own
+	// em resolution per Fonts 5. Mirrors Blink's `FontDescription::EffectiveSize`
+	// at third_party/blink/renderer/platform/fonts/font_description.cc.
+	UsedFontSize    float64
+	UsedFontSizeSet bool
+
+	// XHeight is the measured x-height in pixels of the element's font at the
+	// used font-size (0 = not measured; ex unit then falls back to 0.5em).
+	// Populated by the same layout-time pass that fills ChWidth.
+	XHeight float64
+
 	// BaseDir is the owning document's BaseDir, propagated by the cascade
 	// (see ApplyStylesToDocument). Used by inline `style=""` parsing in
 	// cascade.go (via NewParserContext(s.BaseDir)) and as the cross-
@@ -59,11 +77,14 @@ func NewStyle() *Style {
 // Clone returns a deep copy of this Style with all properties copied.
 func (s *Style) Clone() *Style {
 	dst := &Style{
-		Properties:     make(map[string]string, len(s.Properties)),
-		ViewportWidth:  s.ViewportWidth,
-		ViewportHeight: s.ViewportHeight,
-		ChWidth:        s.ChWidth,
-		BaseDir:        s.BaseDir,
+		Properties:      make(map[string]string, len(s.Properties)),
+		ViewportWidth:   s.ViewportWidth,
+		ViewportHeight:  s.ViewportHeight,
+		ChWidth:         s.ChWidth,
+		UsedFontSize:    s.UsedFontSize,
+		UsedFontSizeSet: s.UsedFontSizeSet,
+		XHeight:         s.XHeight,
+		BaseDir:         s.BaseDir,
 	}
 	for k, v := range s.Properties {
 		dst.Properties[k] = v
@@ -398,7 +419,7 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())
+	return parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight)
 }
 
 // chScale returns the ch unit multiplier relative to fontSize for this style's font.
@@ -639,12 +660,17 @@ func evalClamp(argsStr string, fontSize, vw, vh float64) (float64, bool) {
 // ParseLengthFull parses a length value with em, rem, and viewport unit support.
 // Uses a default ch multiplier of 0.5em (horizontal writing mode approximation).
 func ParseLengthFull(val string, fontSize, viewportWidth, viewportHeight float64) (float64, bool) {
-	return parseLengthFullWithCh(val, fontSize, viewportWidth, viewportHeight, 0.5)
+	return parseLengthFullWithCh(val, fontSize, viewportWidth, viewportHeight, 0.5, 0)
 }
 
 // parseLengthFullWithCh is the internal implementation that accepts a custom ch multiplier.
 // chScale is the multiplier for the ch unit relative to fontSize (0.5 for horizontal, 1.0 for vertical).
-func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, chScale float64) (float64, bool) {
+// xHeight is the measured x-height in pixels for the ex unit (0 = use 0.5em heuristic).
+// Mirrors Blink's `LengthValue::ToCSSValue` font-relative branch in
+// third_party/blink/renderer/core/css/css_to_length_conversion_data.cc at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which sources the ex unit from
+// FontMetrics::XHeight rather than a fixed em fraction.
+func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, chScale, xHeight float64) (float64, bool) {
 	val = strings.TrimSpace(val)
 	// Resolve env() variables before any other parsing
 	if strings.Contains(val, "env(") {
@@ -661,7 +687,7 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 	if strings.HasPrefix(val, "clamp(") && strings.HasSuffix(val, ")") {
 		return evalClamp(val[6:len(val)-1], fontSize, viewportWidth, viewportHeight)
 	}
-	// Handle calc() expressions — pass full context so ch/vw/vh units resolve correctly.
+	// Handle calc() expressions — pass full context so ch/vw/vh/ex units resolve correctly.
 	if strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") {
 		expr := val[5 : len(val)-1] // strip "calc(" and ")"
 		ctx := calcContext{
@@ -669,6 +695,7 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 			viewportWidth:  viewportWidth,
 			viewportHeight: viewportHeight,
 			chScale:        chScale,
+			xHeight:        xHeight,
 		}
 		result, ok := evalCalcFull(expr, ctx)
 		if ok {
@@ -803,12 +830,18 @@ func parseLengthFullWithCh(val string, fontSize, viewportWidth, viewportHeight, 
 		}
 		return num * fontSize * chScale, true
 	}
-	// ex unit: x-height of the current font, approximately 0.5em.
+	// ex unit: x-height of the current font (CSS Values 4 §6.1.1). Measured
+	// per-font and threaded through xHeight; fall back to a 0.5em heuristic
+	// when no measurement is available (e.g. for callers that don't have a
+	// Style in hand, like ParseLengthFull).
 	if strings.HasSuffix(val, "ex") {
 		numStr := strings.TrimSuffix(val, "ex")
 		num, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
 		if err != nil {
 			return 0, false
+		}
+		if xHeight > 0 {
+			return num * xHeight, true
 		}
 		return num * fontSize * 0.5, true
 	}
@@ -925,6 +958,9 @@ type calcContext struct {
 	viewportWidth  float64
 	viewportHeight float64
 	chScale        float64
+	// xHeight is the element's measured x-height in pixels for the ex unit
+	// (0 = caller has no measurement; ex falls back to 0.5em).
+	xHeight float64
 	// percentResolvesToZero, when true, causes percent tokens to resolve to 0
 	// instead of failing the parse. Mirrors Blink's intrinsic-sizing behavior
 	// where text-indent's percentage is treated as 0 (third_party/blink/
@@ -1059,8 +1095,8 @@ func parseCalcAtom(tokens []string, pos int, ctx calcContext) (calcResult, bool)
 			return calcResult{value: num * ctx.percentBase / 100, pos: pos + 1}, true
 		}
 	}
-	// Parse as a length value using full context (viewport, ch scale)
-	val, ok := parseLengthFullWithCh(token, ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight, ctx.chScale)
+	// Parse as a length value using full context (viewport, ch scale, x-height)
+	val, ok := parseLengthFullWithCh(token, ctx.fontSize, ctx.viewportWidth, ctx.viewportHeight, ctx.chScale, ctx.xHeight)
 	if ok {
 		return calcResult{value: val, pos: pos + 1}, true
 	}
@@ -1648,8 +1684,8 @@ func (s *Style) parseBorderRadiusFirstWithRef(property string, refLen float64) f
 
 	// Two-value syntax: "25px 0" or "50px -25px" — check both components.
 	if len(parts) == 2 {
-		rx := parseBorderRadiusComponent(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), refLen)
-		ry := parseBorderRadiusComponent(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), refLen)
+		rx := parseBorderRadiusComponent(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, refLen)
+		ry := parseBorderRadiusComponent(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, refLen)
 		// If either component is zero or negative, the corner is sharp.
 		// Negative values make the declaration invalid per CSS spec.
 		if rx <= 0 || ry <= 0 {
@@ -1666,7 +1702,7 @@ func (s *Style) parseBorderRadiusFirstWithRef(property string, refLen float64) f
 		}
 		return r
 	}
-	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 		if r <= 0 {
 			return 0
 		}
@@ -1679,7 +1715,7 @@ func (s *Style) parseBorderRadiusFirstWithRef(property string, refLen float64) f
 // Returns a negative value for invalid/negative inputs so callers can detect it.
 // For calc() with %, percent terms resolve against refLen (the relevant box
 // dimension — width for Rx, height for Ry).
-func parseBorderRadiusComponent(val string, fontSize, vw, vh, chScale, refLen float64) float64 {
+func parseBorderRadiusComponent(val string, fontSize, vw, vh, chScale, xHeight, refLen float64) float64 {
 	val = strings.TrimSpace(val)
 	if pct, ok := ParsePercentage(val); ok {
 		return pct / 100 * refLen
@@ -1692,12 +1728,13 @@ func parseBorderRadiusComponent(val string, fontSize, vw, vh, chScale, refLen fl
 			viewportWidth:  vw,
 			viewportHeight: vh,
 			chScale:        chScale,
+			xHeight:        xHeight,
 		}
 		if r, ok := evalCalcFull(val[5:len(val)-1], ctx); ok {
 			return r
 		}
 	}
-	if r, ok := parseLengthFullWithCh(val, fontSize, vw, vh, chScale); ok {
+	if r, ok := parseLengthFullWithCh(val, fontSize, vw, vh, chScale, xHeight); ok {
 		return r
 	}
 	return -1 // unparseable = invalid
@@ -1749,20 +1786,20 @@ func (s *Style) parseBorderRadiusElliptical(property string) EllipticalRadius {
 		return EllipticalRadius{}
 	}
 	// Try as single value first
-	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+	if r, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 		return EllipticalRadius{r, r}
 	}
 	// Two-value syntax: "75px 50px" or "calc(...) calc(...)" (paren-aware).
 	parts := splitShorthandParts(val)
 	var result EllipticalRadius
 	if len(parts) >= 1 {
-		if r, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+		if r, ok := parseLengthFullWithCh(parts[0], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 			result.Rx = r
 			result.Ry = r // default same
 		}
 	}
 	if len(parts) >= 2 {
-		if r, ok := parseLengthFullWithCh(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+		if r, ok := parseLengthFullWithCh(parts[1], s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 			result.Ry = r
 		}
 	}
@@ -1793,11 +1830,11 @@ func (s *Style) GetBorderRadiiResolved(boxWidth, boxHeight float64) EllipticalRa
 	if !anySet {
 		// Fall back to shorthand border-radius
 		if val, ok := s.Get("border-radius"); ok {
-			rx := parseBorderRadiusComponent(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), boxWidth)
+			rx := parseBorderRadiusComponent(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, boxWidth)
 			if rx > 0 {
 				// Single-value shorthand: same Rx and Ry
 				// For percentage, Ry resolves against height
-				ry := parseBorderRadiusComponent(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), boxHeight)
+				ry := parseBorderRadiusComponent(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, boxHeight)
 				if ry > 0 {
 					e := EllipticalRadius{rx, ry}
 					return EllipticalRadii{e, e, e, e}
@@ -1819,12 +1856,12 @@ func (s *Style) parseBorderRadiusEllipticalResolved(property string, boxWidth, b
 	parts := splitShorthandParts(val)
 
 	fs := s.GetFontSize()
-	vw, vh, ch := s.ViewportWidth, s.ViewportHeight, s.chScale()
+	vw, vh, ch, xh := s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight
 
 	if len(parts) == 2 {
 		// Two-value syntax: "25px 50%" or "50px -25px"
-		rx := parseBorderRadiusComponent(parts[0], fs, vw, vh, ch, boxWidth)
-		ry := parseBorderRadiusComponent(parts[1], fs, vw, vh, ch, boxHeight)
+		rx := parseBorderRadiusComponent(parts[0], fs, vw, vh, ch, xh, boxWidth)
+		ry := parseBorderRadiusComponent(parts[1], fs, vw, vh, ch, xh, boxHeight)
 		// If either component is zero or negative, corner is sharp
 		if rx <= 0 || ry <= 0 {
 			return EllipticalRadius{}
@@ -1833,8 +1870,8 @@ func (s *Style) parseBorderRadiusEllipticalResolved(property string, boxWidth, b
 	}
 
 	// Single value: resolves against both dimensions
-	rx := parseBorderRadiusComponent(val, fs, vw, vh, ch, boxWidth)
-	ry := parseBorderRadiusComponent(val, fs, vw, vh, ch, boxHeight)
+	rx := parseBorderRadiusComponent(val, fs, vw, vh, ch, xh, boxWidth)
+	ry := parseBorderRadiusComponent(val, fs, vw, vh, ch, xh, boxHeight)
 	if rx <= 0 || ry <= 0 {
 		return EllipticalRadius{}
 	}
@@ -1930,7 +1967,7 @@ func (s *Style) resolveLengthOrPercent(property string, reference float64) (floa
 			return result, true
 		}
 	}
-	if length, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+	if length, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 		return length, true
 	}
 	if pct, ok := ParsePercentage(val); ok {
@@ -3295,7 +3332,7 @@ func (s *Style) GetColumnRuleWidth() float64 {
 		case "thick":
 			return 5
 		}
-		if px, ok2 := parseLengthFullWithCh(v, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok2 {
+		if px, ok2 := parseLengthFullWithCh(v, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok2 {
 			return px
 		}
 	}
@@ -3392,7 +3429,7 @@ func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 // GetOutlineOffset returns the outline-offset in pixels (default: 0).
 func (s *Style) GetOutlineOffset() float64 {
 	if val, ok := s.Get("outline-offset"); ok {
-		if px, ok2 := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok2 {
+		if px, ok2 := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok2 {
 			return px
 		}
 	}
@@ -4739,7 +4776,17 @@ func ParseColor(colorStr string) (Color, bool) {
 
 // Phase 6: Text rendering helpers
 
-// GetFontSize returns the font-size in pixels (default: 16px)
+// GetFontSize returns the *computed* (specified) font-size in pixels — the
+// post-cascade value, BEFORE the `font-size-adjust` used-size adjustment.
+// CSS box geometry (em-based margins, line-height, ch unit base, …) resolves
+// against this value per Blink's observed behavior: only glyph rendering
+// scales to the used size, while line boxes, margins, and inherited
+// em resolution stay anchored to the specified size. Mirrors Blink's
+// `FontDescription::SpecifiedSize()` at
+// third_party/blink/renderer/platform/fonts/font_description.h @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// Default: 16px when font-size is unset or invalid.
 func (s *Style) GetFontSize() float64 {
 	val, ok := s.Get("font-size")
 	if !ok {
@@ -4756,6 +4803,24 @@ func (s *Style) GetFontSize() float64 {
 		return size
 	}
 	return 16.0
+}
+
+// GetUsedFontSize returns the *used* font-size in pixels — the specified
+// size with CSS Fonts 5 §1.7 `font-size-adjust` applied. Returns
+// [GetFontSize] when font-size-adjust is `none` or the layout-time
+// metric pass has not yet populated UsedFontSize. Glyph rasterization
+// and text shaping should pass this value to the shaper; box geometry
+// stays on [GetFontSize] (see that accessor's contract).
+//
+// Mirrors Blink's `FontDescription::EffectiveSize()` in
+// third_party/blink/renderer/platform/fonts/font_description.cc @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, called from
+// `Font::DrawText` to source the shaper's font size.
+func (s *Style) GetUsedFontSize() float64 {
+	if s.UsedFontSizeSet {
+		return s.UsedFontSize
+	}
+	return s.GetFontSize()
 }
 
 // GetColor returns the text color (default: black)
@@ -5063,20 +5128,100 @@ func (s *Style) GetFontSynthesis() FontSynthesis {
 	}
 }
 
-// GetFontSizeAdjust returns the font-size-adjust value, or -1 if "none" or unset.
-// font-size-adjust preserves the aspect ratio (x-height/font-size) relative to a
-// reference font. Parsed for compatibility; full effect requires per-font x-height data.
-func (s *Style) GetFontSizeAdjust() float64 {
-	v, _ := s.Get("font-size-adjust")
+// FontSizeAdjustMetric identifies which font metric `font-size-adjust` is
+// keyed off of. Mirrors Blink's `FontSizeAdjust::Metric` enum in
+// third_party/blink/renderer/platform/fonts/font_size_adjust.h at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Default is ex-height.
+type FontSizeAdjustMetric int
+
+const (
+	FontSizeAdjustExHeight  FontSizeAdjustMetric = iota // x-height / font-size (default)
+	FontSizeAdjustCapHeight                             // cap-height / font-size
+	FontSizeAdjustChWidth                               // 0-glyph advance width / font-size
+	FontSizeAdjustIcWidth                               // 水-glyph advance width / font-size
+	FontSizeAdjustIcHeight                              // 水-glyph advance height / font-size
+)
+
+// FontSizeAdjust is the typed CSS Fonts 5 §1.7 `font-size-adjust` value.
+// Grammar: `none | [ ex-height | cap-height | ch-width | ic-width | ic-height ]?
+// [ from-font | <number> ]`.
+//
+// - None=true: property is `none` or unset; no adjustment applied.
+// - FromFont=true: the value comes from the first font's actual aspect ratio
+//   at runtime (no-op adjustment, but tracked for serialization).
+// - Otherwise the used font-size becomes
+//   specified_size * (Value / first_font.actual_aspect_ratio(Metric)).
+type FontSizeAdjust struct {
+	None     bool
+	FromFont bool
+	Metric   FontSizeAdjustMetric
+	Value    float64
+}
+
+// IsActive reports whether the adjust value should scale the used font-size.
+// `none` and `from-font` are non-scaling (from-font matches the first font's
+// own aspect, yielding a no-op factor).
+func (a FontSizeAdjust) IsActive() bool {
+	return !a.None && !a.FromFont
+}
+
+// GetFontSizeAdjust parses the computed `font-size-adjust` value into the
+// typed form. Returns `{None: true}` for unset or `none`. Invalid values
+// also map to `{None: true}` per the cascade contract.
+func (s *Style) GetFontSizeAdjust() FontSizeAdjust {
+	v, ok := s.Get("font-size-adjust")
+	if !ok {
+		return FontSizeAdjust{None: true}
+	}
 	v = strings.TrimSpace(v)
 	if v == "" || v == "none" {
-		return -1
+		return FontSizeAdjust{None: true}
 	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return -1
+	metric := FontSizeAdjustExHeight
+	rest := v
+	for _, name := range []struct {
+		token  string
+		metric FontSizeAdjustMetric
+	}{
+		{"ex-height", FontSizeAdjustExHeight},
+		{"cap-height", FontSizeAdjustCapHeight},
+		{"ch-width", FontSizeAdjustChWidth},
+		{"ic-width", FontSizeAdjustIcWidth},
+		{"ic-height", FontSizeAdjustIcHeight},
+	} {
+		if strings.HasPrefix(rest, name.token) {
+			after := strings.TrimSpace(rest[len(name.token):])
+			if after != rest {
+				metric = name.metric
+				rest = after
+				break
+			}
+		}
 	}
-	return f
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return FontSizeAdjust{None: true}
+	}
+	if rest == "from-font" {
+		return FontSizeAdjust{FromFont: true, Metric: metric}
+	}
+	// Number, percentage, or calc() expression evaluating to <number>.
+	// CSS Fonts 5 §1.7 grammar restricts the value to `<number>` / `from-font`;
+	// calc() expressions are accepted because the spec defers to CSS Values 4
+	// for `<number>` resolution (calc() that resolves to a number is valid).
+	if strings.HasPrefix(rest, "calc(") && strings.HasSuffix(rest, ")") {
+		// Reuse the calc evaluator with no length context — only arithmetic on
+		// unitless numbers is meaningful for font-size-adjust.
+		if f, ok := evalCalcFull(rest[5:len(rest)-1], calcContext{}); ok && f >= 0 {
+			return FontSizeAdjust{Metric: metric, Value: f}
+		}
+		return FontSizeAdjust{None: true}
+	}
+	f, err := strconv.ParseFloat(rest, 64)
+	if err != nil || f < 0 {
+		return FontSizeAdjust{None: true}
+	}
+	return FontSizeAdjust{Metric: metric, Value: f}
 }
 
 // GetFontOpticalSizing returns whether optical sizing is enabled.
@@ -5508,7 +5653,7 @@ func (s *Style) GetOverflowClipMargin() (OverflowClipMargin, bool) {
 			if sawLength {
 				return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
 			}
-			length, parsed := parseLengthFullWithCh(tok, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale())
+			length, parsed := parseLengthFullWithCh(tok, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight)
 			if !parsed || length < 0 {
 				return OverflowClipMargin{Box: OverflowClipMarginPaddingBox}, false
 			}
@@ -6270,7 +6415,7 @@ func (s *Style) GetLineHeight() float64 {
 	}
 	// Try as a standard CSS length first (px, em, etc.)
 	// Use writing-mode-aware ch scale for vertical writing modes.
-	if lh, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+	if lh, ok := parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 		return lh
 	}
 	// Try as a unitless multiplier (e.g., "1.5" means 1.5 × font-size)
@@ -6804,7 +6949,7 @@ func (s *Style) GetFlexBasisValue() FlexBasisValue {
 		expr := basis[5 : len(basis)-1]
 		return FlexBasisValue{IsCalc: true, CalcExpr: expr, FontSize: s.GetFontSize()}
 	}
-	if length, ok := parseLengthFullWithCh(basis, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+	if length, ok := parseLengthFullWithCh(basis, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 		// CSS Flexbox §7.3.3: flex-basis does not accept negative lengths
 		if length < 0 {
 			return FlexBasisValue{IsAuto: true}
@@ -6821,7 +6966,7 @@ func (s *Style) GetFlexBasis() float64 {
 		if basis == "auto" || basis == "content" {
 			return -1
 		}
-		if length, ok := parseLengthFullWithCh(basis, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale()); ok {
+		if length, ok := parseLengthFullWithCh(basis, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight); ok {
 			return length
 		}
 	}
@@ -8220,16 +8365,16 @@ func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) 
 	}
 	parts := splitShorthandParts(val)
 	fs := s.GetFontSize()
-	vw, vh, ch := s.ViewportWidth, s.ViewportHeight, s.chScale()
+	vw, vh, ch, xh := s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight
 	x := 0.5 * boxW
 	y := 0.5 * boxH
 	if len(parts) == 1 {
 		// Single value: y-keyword applies to vertical axis (x defaults to center);
 		// anything else applies to horizontal axis (y defaults to center).
 		if isVerticalKeyword(parts[0]) {
-			y = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, boxH)
+			y = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, xh, boxH)
 		} else {
-			x = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, boxW)
+			x = resolveOriginAxisKeywordOrLength(parts[0], fs, vw, vh, ch, xh, boxW)
 		}
 		return x, y
 	}
@@ -8240,8 +8385,8 @@ func (s *Style) ResolveTransformOriginPx(boxW, boxH float64) (float64, float64) 
 		if isVerticalKeyword(first) && isHorizontalKeyword(second) {
 			first, second = second, first
 		}
-		x = resolveOriginAxisKeywordOrLength(first, fs, vw, vh, ch, boxW)
-		y = resolveOriginAxisKeywordOrLength(second, fs, vw, vh, ch, boxH)
+		x = resolveOriginAxisKeywordOrLength(first, fs, vw, vh, ch, xh, boxW)
+		y = resolveOriginAxisKeywordOrLength(second, fs, vw, vh, ch, xh, boxH)
 	}
 	return x, y
 }
@@ -8268,7 +8413,7 @@ func isVerticalKeyword(val string) bool {
 // component to absolute pixels along the given axis. boxLen is the box's
 // extent in this axis. Accepts left/top (= 0), right/bottom (= boxLen),
 // center (= 0.5*boxLen), percent, length, and calc() (including calc with %).
-func resolveOriginAxisKeywordOrLength(val string, fontSize, vw, vh, chScale, boxLen float64) float64 {
+func resolveOriginAxisKeywordOrLength(val string, fontSize, vw, vh, chScale, xHeight, boxLen float64) float64 {
 	val = strings.TrimSpace(val)
 	switch val {
 	case "left", "top":
@@ -8292,13 +8437,14 @@ func resolveOriginAxisKeywordOrLength(val string, fontSize, vw, vh, chScale, box
 			viewportWidth:  vw,
 			viewportHeight: vh,
 			chScale:        chScale,
+			xHeight:        xHeight,
 		}
 		if r, ok := evalCalcFull(val[5:len(val)-1], ctx); ok {
 			return r
 		}
 	}
 	// Plain length / calc() without percent.
-	if length, ok := parseLengthFullWithCh(val, fontSize, vw, vh, chScale); ok {
+	if length, ok := parseLengthFullWithCh(val, fontSize, vw, vh, chScale, xHeight); ok {
 		return length
 	}
 	return 0.5 * boxLen // Default to center on parse failure

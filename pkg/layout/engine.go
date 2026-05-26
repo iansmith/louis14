@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"math"
+
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/images"
@@ -511,22 +513,52 @@ func bidiMirror(r rune) rune {
 	return r
 }
 
-// computeChWidths measures the actual advance width of "0" for each style's
-// font and stores it on the Style. This makes the CSS ch unit resolve using
-// real font metrics instead of a fixed heuristic.
+// computeChWidths measures per-font metrics needed to resolve CSS font-
+// relative units (ex, ch) and applies CSS Fonts 5 §1.7 `font-size-adjust`
+// to produce a used font-size. Populates `ChWidth`, `XHeight`, and
+// `UsedFontSize` on every Style.
+//
+// Mirrors Blink's `FontDescription::EffectiveSize()` (font_description.cc) and
+// `FontMetrics::XHeight()` (font_metrics.h) at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: the used font-size is computed by
+// scaling the specified size by `adjust_value / actual_aspect_ratio_of_first
+// _available_font`, then ex/ch are sourced from the used-size font's metrics
+// so font-dependent CSS units track the visible glyph size.
 func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
-	// Cache ch width per (fontPath, fontSize) to avoid redundant measurements.
+	// Per-font metric cache keyed by (path, sizeRounded). Sub-pixel size jitter
+	// is rare; rounding stabilises the cache for tests rendering many elements
+	// at one size.
 	type fontKey struct {
 		path     string
-		fontSize float64
+		fontSize int32
 	}
-	cache := make(map[fontKey]float64)
+	type fontMetrics struct {
+		chWidth float64
+		xHeight float64
+		capHght float64
+	}
+	cache := make(map[fontKey]fontMetrics)
+
+	measure := func(fontPath string, fontSize float64) fontMetrics {
+		k := fontKey{path: fontPath, fontSize: int32(math.Round(fontSize))}
+		if m, ok := cache[k]; ok {
+			return m
+		}
+		chLU, _ := text.MeasureText("0", fontSize, fontPath)
+		m := fontMetrics{
+			chWidth: chLU.Float64(),
+			xHeight: text.FontXHeightFromFont(fontSize, fontPath),
+			capHght: text.FontCapHeightFromFont(fontSize, fontPath),
+		}
+		cache[k] = m
+		return m
+	}
 
 	for _, style := range styles {
 		if style == nil {
 			continue
 		}
-		fontSize := style.GetFontSize()
+		specifiedSize := style.GetFontSize()
 		family, _ := style.Get("font-family")
 		bold := style.GetFontWeight() == css.FontWeightBold
 		italic := style.GetFontStyle() == css.FontStyleItalic
@@ -535,13 +567,74 @@ func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
 		synth := style.GetFontSynthesis()
 		fontPath := fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
 
-		key := fontKey{path: fontPath, fontSize: fontSize}
-		ch, ok := cache[key]
-		if !ok {
-			chLU, _ := text.MeasureText("0", fontSize, fontPath)
-			ch = chLU.Float64()
-			cache[key] = ch
+		// Measure metrics at the specified size so we can read the first font's
+		// actual aspect ratio for font-size-adjust resolution.
+		baseMetrics := measure(fontPath, specifiedSize)
+
+		// CSS Fonts 5 §1.7: derive the used font-size from font-size-adjust.
+		// `none` and `from-font` leave the used size equal to the specified
+		// size (from-font matches the first font's own aspect → factor 1).
+		usedSize := specifiedSize
+		adjust := style.GetFontSizeAdjust()
+		if adjust.IsActive() && specifiedSize > 0 {
+			actualRatio := firstFontAspectRatio(adjust.Metric, baseMetrics, specifiedSize, fontPath)
+			if actualRatio > 0 {
+				usedSize = specifiedSize * adjust.Value / actualRatio
+			} else {
+				// Spec: when the first font lacks the requested metric, the used
+				// size is undefined; clamp to 0 to match Blink's behavior of
+				// hiding the glyphs (matches font-size-adjust-zero-* refs).
+				usedSize = 0
+			}
 		}
-		style.ChWidth = ch
+
+		usedMetrics := baseMetrics
+		if usedSize != specifiedSize {
+			usedMetrics = measure(fontPath, usedSize)
+		}
+
+		style.UsedFontSize = usedSize
+		style.UsedFontSizeSet = true
+		style.ChWidth = usedMetrics.chWidth
+		style.XHeight = usedMetrics.xHeight
+	}
+}
+
+// firstFontAspectRatio returns the first available font's actual aspect ratio
+// for the requested font-size-adjust metric (CSS Fonts 5 §1.7). Returns 0 when
+// the font has no usable value for the metric — callers treat that as a
+// zero-sized used font-size.
+func firstFontAspectRatio(metric css.FontSizeAdjustMetric, m struct {
+	chWidth float64
+	xHeight float64
+	capHght float64
+}, fontSize float64, fontPath string) float64 {
+	if fontSize <= 0 {
+		return 0
+	}
+	switch metric {
+	case css.FontSizeAdjustCapHeight:
+		return m.capHght / fontSize
+	case css.FontSizeAdjustChWidth:
+		return m.chWidth / fontSize
+	case css.FontSizeAdjustIcWidth, css.FontSizeAdjustIcHeight:
+		// CSS Fonts 5 §1.7: ic-width / ic-height use the advance width or
+		// height of the U+6C34 (水) glyph. Mirror Blink's behavior: the metric
+		// is sourced from the same fontPath; when 水 isn't present (e.g. Ahem),
+		// the metric is undefined and the spec calls for the user agent to
+		// behave as if `font-size-adjust: none` — Blink resolves the ratio to
+		// 0 which clamps the used size to 0. We follow Blink.
+		w, h := text.MeasureText("水", fontSize, fontPath)
+		wf, hf := w.Float64(), h.Float64()
+		if wf == 0 || hf == 0 {
+			return 0
+		}
+		if metric == css.FontSizeAdjustIcWidth {
+			return wf / fontSize
+		}
+		return hf / fontSize
+	default:
+		// ex-height (default)
+		return m.xHeight / fontSize
 	}
 }

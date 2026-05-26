@@ -133,13 +133,13 @@ type PaintLayer struct {
 	OutlineOffset float64
 
 	// Text:
-	TextColor       css.Color
-	FontSize        float64
-	FontBold        bool
-	FontItalic      bool
-	FontMono        bool
-	FontAhem        bool
-	FontFamily      string
+	TextColor  css.Color
+	FontSize   float64
+	FontBold   bool
+	FontItalic bool
+	FontMono   bool
+	FontAhem   bool
+	FontFamily string
 	// font-synthesis-* gates (CSS Fonts 4 §6.6). When false, the font
 	// fallback path must not pick a bold/italic variant of a different
 	// physical family to "synthesize" the requested weight/style. See
@@ -149,13 +149,13 @@ type PaintLayer struct {
 	FontSynthesisWeight    bool
 	FontSynthesisStyle     bool
 	FontSynthesisSmallCaps bool
-	LetterSpacing   float64
-	WordSpacing     float64
-	TabSize         float64 // tab-size value (character count or px)
-	TabSizeIsLength bool    // true = px length, false = character count
-	IsVerticalText  bool
-	IsSidewaysLR    bool
-	IsSidewaysRL    bool
+	LetterSpacing          float64
+	WordSpacing            float64
+	TabSize                float64 // tab-size value (character count or px)
+	TabSizeIsLength        bool    // true = px length, false = character count
+	IsVerticalText         bool
+	IsSidewaysLR           bool
+	IsSidewaysRL           bool
 
 	// Text decoration (underline, overline, line-through):
 	TextDecoration          css.TextDecoration
@@ -640,10 +640,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		}
 	}
 
-	// Text.
+	// Text. The paint layer rasterizes glyphs at the *used* font-size so
+	// `font-size-adjust` (CSS Fonts 5 §1.7) reaches the shaper. The 0 →
+	// 16 clamp below is **disabled when the used size is genuinely 0**
+	// (`font-size-adjust: 0` collapses glyphs); only negative or NaN-shaped
+	// values fall back to 16.
 	layer.TextColor = currentColor // default: currentColor
-	layer.FontSize = s.GetFontSize()
-	if layer.FontSize <= 0 {
+	layer.FontSize = s.GetUsedFontSize()
+	if layer.FontSize < 0 {
 		layer.FontSize = 16
 	}
 	layer.FontBold = s.GetFontWeight() == css.FontWeightBold
