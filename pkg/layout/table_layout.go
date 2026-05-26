@@ -1182,8 +1182,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		borderBoxBlock = geom.BorderBoxSize.BlockSize
 	}
 
+	// Inline-size floor mirroring the block-size floor above: when a parent
+	// algorithm has already fixed the table's inline-size (e.g. a grid item
+	// with default `justify-self: normal` resolving to stretch), the table's
+	// own column-width sum is only a floor — the table must still fill the
+	// parent's pre-resolved track size so the container's own borders /
+	// background line up with the cell. Mirrors Blink's TableLayoutAlgorithm
+	// honoring the kFixedInlineSize flag when it derives the final
+	// border-box inline size.
+	borderBoxInline := contentInlineSize + geom.InlineBorderPadding()
+	if tla.space.IsFixedInlineSize && geom.BorderBoxSize.InlineSize > borderBoxInline {
+		borderBoxInline = geom.BorderBoxSize.InlineSize
+	}
+
 	builder.SetSize(LogicalSize{
-		InlineSize: contentInlineSize + geom.InlineBorderPadding(),
+		InlineSize: borderBoxInline,
 		BlockSize:  borderBoxBlock,
 	})
 
