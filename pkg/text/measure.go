@@ -254,6 +254,25 @@ func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
 }
 
 // FontPathForFamily returns the font path for a CSS font-family string.
+//
+// CSS Fonts 3 §5.4: when matching the declared family list fails completely
+// (no name in the list resolves to a real face), the UA must fall back to the
+// *initial value* of font-family — not to whatever font happens to be the
+// FontConfig's default. Louis14's UA initial value is "serif" (set on the root
+// in pkg/css/cascade.go applyUserAgentStyles), which maps to Liberation Serif.
+// Mirroring Blink: third_party/blink/renderer/platform/fonts/font_selector.cc
+// final fallback dispatches to the platform default ("Times New Roman"/serif)
+// rather than to an arbitrary registered face.
+//
+// Exceptions:
+//   - When the declared family is the Ahem test font (caller signals via
+//     ahem=true, set by [css.Style.IsAhemFamily]), the WPT test suite expects
+//     Ahem itself — route to fc.Ahem via fc.FontPath.
+//   - Same for the "monospace" generic (mono=true via
+//     [css.Style.IsMonospaceFamily]) — route to fc.Monospace.
+//
+// fc.FontPath is also the final safety net for non-CSS callers (bare
+// text.MeasureText with no FontConfig serif binding).
 func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem bool) string {
 	families := parseFontFamilyList(family)
 	for _, fam := range families {
@@ -263,6 +282,16 @@ func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem b
 			}
 		}
 		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
+			return path
+		}
+	}
+	// Matching failed (either nothing in the list resolved, or the list was
+	// effectively empty after quote/whitespace stripping). Per spec, fall
+	// back to the UA initial value (serif). Skip for ahem/mono so those
+	// test-font / generic-family requests stay routed to fc.Ahem /
+	// fc.Monospace via fc.FontPath.
+	if !ahem && !mono {
+		if path := fc.resolveBuiltinFamily("serif", bold, italic); path != "" {
 			return path
 		}
 	}
