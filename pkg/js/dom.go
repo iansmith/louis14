@@ -538,6 +538,7 @@ func (e *elementAccessor) Get(key string) goja.Value {
 	case "remove":
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			if e.node.Parent != nil {
+				e.ctx.doc.NotifyNodeDetached(e.node)
 				e.node.Parent.RemoveChild(e.node)
 			}
 			return goja.Undefined()
@@ -639,6 +640,33 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		// Layout-flush idiom: scripts access these to force a synchronous layout.
 		// We return 0; the actual value is not used by tests that call these.
 		return vm.ToValue(0)
+
+	case "focus":
+		// HTMLElement.focus(): make this element the document's focused
+		// element. Mirrors Blink's Element::Focus → Document::SetFocusedElement
+		// (third_party/blink/renderer/core/dom/element.cc Focus(), then
+		// document.cc SetFocusedElement). Selectors 4 §9.4: focus on a
+		// descendant flips :focus-within true on all ancestors via the bit
+		// chain SetFocusedElement maintains. We accept the call on any element
+		// — the spec actually restricts focusability (tabindex, form controls,
+		// contenteditable, hyperlinks-with-href), but in a static reftest
+		// engine the test author has already asserted the element is
+		// focusable by calling .focus() on it.
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if e.ctx.doc != nil {
+				e.ctx.doc.SetFocusedElement(e.node)
+			}
+			return goja.Undefined()
+		})
+	case "blur":
+		// HTMLElement.blur(): clear focus if this element is currently focused.
+		// Mirrors Blink's Element::blur → Document::SetFocusedElement(nullptr).
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if e.ctx.doc != nil && e.ctx.doc.FocusedElement == e.node {
+				e.ctx.doc.SetFocusedElement(nil)
+			}
+			return goja.Undefined()
+		})
 	}
 	return goja.Undefined()
 }
@@ -703,7 +731,8 @@ func (e *elementAccessor) Has(key string) bool {
 		"cloneNode", "contains", "hasChildNodes",
 		"getElementsByTagName", "getElementsByClassName",
 		"onload",
-		"contentDocument", "contentWindow":
+		"contentDocument", "contentWindow",
+		"focus", "blur":
 		return true
 	}
 	return false
@@ -731,6 +760,7 @@ func (e *elementAccessor) Keys() []string {
 		"getElementsByTagName", "getElementsByClassName",
 		"onload",
 		"contentDocument", "contentWindow",
+		"focus", "blur",
 	}
 }
 

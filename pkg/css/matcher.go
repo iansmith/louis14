@@ -251,9 +251,15 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 			}
 		}
 		return true // Element doesn't match any → passes :not()
-	case pc == "hover", pc == "focus", pc == "active":
+	case pc == "hover", pc == "active":
 		// Dynamic pseudo-classes never match in a static renderer
 		return false
+	case pc == "focus":
+		// Mirrors Blink's SelectorChecker::CheckPseudoFocus, which consults
+		// the per-Element IsFocused bit maintained by
+		// Document::SetFocusedElement. louis14 sets that bit via the JS
+		// Element.focus() binding in pkg/js/dom.go.
+		return node.IsFocused
 	case pc == "visited":
 		// :visited reflects browsing history, which a static renderer has no
 		// general model for — so an arbitrary link is treated as unvisited.
@@ -272,9 +278,21 @@ func matchesPseudoClass(node *html.Node, pc string) bool {
 			return strings.TrimSpace(href) == ""
 		}
 		return false
-	case pc == "focus-visible", pc == "focus-within":
-		// Focus pseudo-classes: no focus state in static renderer
+	case pc == "focus-visible":
+		// :focus-visible matches when the UA decides the focus indicator
+		// should be drawn. In a static reftest engine driven only by JS
+		// Element.focus(), the UA never has a heuristic input to mark focus
+		// as "visible" (no keyboard tab, no script-focus-after-key-event
+		// signal). Match nothing — same conservative answer Blink gives
+		// when there's no keyboard input modality.
 		return false
+	case pc == "focus-within":
+		// Mirrors Blink's SelectorChecker::CheckPseudoFocusWithin, which
+		// consults the per-Element HasFocusWithin bit maintained by
+		// Document::SetFocusedElement walking up from the focused element.
+		// louis14 sets that bit via the JS Element.focus() binding which
+		// calls Document.SetFocusedElement.
+		return node.HasFocusWithin
 	case pc == "target":
 		// :target matches element with matching URL fragment — not available in static renderer
 		return false

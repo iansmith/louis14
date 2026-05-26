@@ -17,6 +17,21 @@ type Node struct {
 	// NestedDocument is set on <iframe> and <object> nodes after layout to
 	// retain the parsed sub-document. This allows JS to access iframe.contentDocument.
 	NestedDocument *Document
+
+	// IsFocused is true when this element is the document's currently focused
+	// element. Mirrors Blink's per-Element focus bit, maintained by the focus
+	// pathway (Document::SetFocusedElement). Consulted by the CSS matcher for
+	// :focus and :focus-within. In louis14 it is set by the JS
+	// Element.focus() binding in pkg/js/dom.go and cleared on the previously
+	// focused element.
+	IsFocused bool
+
+	// HasFocusWithin is true when this element OR any of its descendants has
+	// IsFocused set. Mirrors Blink's per-Element HasFocusWithin() bit
+	// (Element::HasFocusWithin), updated by SetFocusedElement walking up from
+	// the new focused element and walking up from the old one to clear. Lets
+	// :focus-within evaluate O(1) during selector matching.
+	HasFocusWithin bool
 }
 
 type NodeType int
@@ -77,6 +92,13 @@ type Document struct {
 	// type is []*css.StyleSheetContents.
 	ParsedStylesheetsCache any
 
+	// FocusedElement is the element currently holding document focus, or nil
+	// if no element is focused. Mirrors Blink's Document::FocusedElement().
+	// Maintained by SetFocusedElement (defined as a method on *Document
+	// below), which also walks the ancestor chain to keep IsFocused /
+	// HasFocusWithin bits coherent.
+	FocusedElement *Node
+
 	// CSSResourceFetcher is the per-document fetcher used by pkg/css to
 	// resolve `@import` targets at CSS-parse time. Mirrors Blink's
 	// `Document::Fetcher()`, which `StyleRuleImport::NotifyFinished`
@@ -100,6 +122,56 @@ func NewDocument() *Document {
 		},
 		Stylesheets: make([]StylesheetSource, 0),
 		Scripts:     make([]string, 0),
+	}
+}
+
+// NotifyNodeDetached must be called by DOM mutation paths (JS removeChild,
+// replaceChild, replaceWith, etc.) after a subtree has been removed from
+// the document tree. If the document's focused element is anywhere inside
+// the removed subtree, focus is cleared — this matches Blink's behavior
+// in Document::NodeChildrenWillBeRemoved/NodeWillBeRemoved, which blur
+// the focused element when its ancestor chain breaks. Cheap: the walk is
+// bounded by the removed subtree, and skipped entirely when no element
+// is currently focused.
+func (d *Document) NotifyNodeDetached(removed *Node) {
+	if d == nil || d.FocusedElement == nil || removed == nil {
+		return
+	}
+	if removed.Contains(d.FocusedElement) {
+		d.SetFocusedElement(nil)
+	}
+}
+
+// SetFocusedElement makes node the document's currently focused element,
+// or clears focus if node is nil. Mirrors Blink's
+// Document::SetFocusedElement: the old focused element and all its
+// ancestors get their IsFocused / HasFocusWithin bits cleared, then the
+// new focused element and all its ancestors get them set. Per Selectors 4
+// §9.4 :focus-within propagates up regardless of containing block, so the
+// walk uses the DOM parent chain. The synthetic "document" root node
+// itself is not marked.
+//
+// A non-element node is ignored (matching the spec: only elements can be
+// focused).
+func (d *Document) SetFocusedElement(node *Node) {
+	if node != nil && node.Type != ElementNode {
+		return
+	}
+	if d.FocusedElement == node {
+		return
+	}
+	if old := d.FocusedElement; old != nil {
+		old.IsFocused = false
+		for a := old; a != nil && a.TagName != "document"; a = a.Parent {
+			a.HasFocusWithin = false
+		}
+	}
+	d.FocusedElement = node
+	if node != nil {
+		node.IsFocused = true
+		for a := node; a != nil && a.TagName != "document"; a = a.Parent {
+			a.HasFocusWithin = true
+		}
 	}
 }
 
