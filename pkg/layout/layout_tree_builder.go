@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
@@ -1448,6 +1450,112 @@ func (b *LayoutTreeBuilder) applyFirstLetterSplit(
 	return b.splitFirstLetter(children, node, flStyle)
 }
 
+// isFirstLetterPunctuation reports whether r is a punctuation character that
+// should be included in the ::first-letter pseudo-element per CSS Pseudo-4 §3.2.
+// Mirrors Blink's IsPunctuationForFirstLetter (Ps/Pe/Pi/Pf/Po). Go's
+// unicode.IsPunct also returns true for Pd (Punctuation Dash) and Pc
+// (Punctuation Connector), which matches the broader spec wording "P*" and
+// is consistent with WPT tests such as first-letter-punctuation-and-space
+// (leading em-dash). Blink reference: third_party/blink/renderer/core/dom/
+// first_letter_pseudo_element.cc @ Chromium 4883d11fef.
+func isFirstLetterPunctuation(r rune) bool {
+	return unicode.IsPunct(r)
+}
+
+// isFirstLetterSpace reports whether r is whitespace skipped by the
+// ::first-letter algorithm. Mirrors Blink's IsSpaceForFirstLetter (ASCII
+// space/tab/newline/CR + U+00A0 NO-BREAK SPACE).
+func isFirstLetterSpace(r rune) bool {
+	switch r {
+	case ' ', '\t', '\n', '\r', ' ':
+		return true
+	}
+	return false
+}
+
+// firstLetterGraphemeLen returns the byte length of the grapheme cluster
+// starting at text[0]: one base rune followed by zero or more combining marks
+// (Unicode category M*). This is the minimal cluster definition used by
+// Blink's LengthOfGraphemeCluster for the ::first-letter algorithm — enough
+// to keep base + combining marks together in tests like first-letter-004.
+func firstLetterGraphemeLen(text string) int {
+	if len(text) == 0 {
+		return 0
+	}
+	_, n := utf8.DecodeRuneInString(text)
+	for n < len(text) {
+		r, sz := utf8.DecodeRuneInString(text[n:])
+		if !unicode.IsMark(r) {
+			break
+		}
+		n += sz
+	}
+	return n
+}
+
+// firstLetterLength returns the byte length of the leading typographic letter
+// unit in text per CSS Pseudo-4 §3.2 — leading whitespace, then optional
+// leading punctuation grapheme clusters, then one non-punctuation grapheme
+// cluster (the letter), then trailing punctuation grapheme clusters. Returns
+// (skipped, length) where skipped is the byte count of leading whitespace and
+// length is the byte count of the first-letter unit starting at skipped.
+// Returns (0, 0) if no first-letter unit is found in text.
+//
+// Mirrors Blink's FirstLetterPseudoElement::FirstLetterLength at Chromium
+// 4883d11fef. The cross-text-node punctuation accumulation (Punctuation::kSeen)
+// is omitted: we operate on one text node at a time per the louis14 layout
+// builder.
+func firstLetterLength(text string) (skipped, length int) {
+	// Skip leading whitespace.
+	for skipped < len(text) {
+		r, sz := utf8.DecodeRuneInString(text[skipped:])
+		if !isFirstLetterSpace(r) {
+			break
+		}
+		skipped += sz
+	}
+	if skipped == len(text) {
+		return 0, 0
+	}
+
+	// Consume leading punctuation grapheme clusters.
+	pos := skipped
+	for pos < len(text) {
+		r, _ := utf8.DecodeRuneInString(text[pos:])
+		if !isFirstLetterPunctuation(r) {
+			break
+		}
+		pos += firstLetterGraphemeLen(text[pos:])
+	}
+
+	// If only punctuation was found, this text node has no first-letter unit.
+	// Blink would set Punctuation::kSeen and continue scanning the next text
+	// node; we don't model that yet, so abort.
+	if pos == len(text) {
+		return 0, 0
+	}
+
+	// After leading punctuation, whitespace breaks the first-letter unit.
+	r, _ := utf8.DecodeRuneInString(text[pos:])
+	if isFirstLetterSpace(r) {
+		return 0, 0
+	}
+
+	// Consume one grapheme cluster as the letter.
+	pos += firstLetterGraphemeLen(text[pos:])
+
+	// Consume trailing punctuation grapheme clusters.
+	for pos < len(text) {
+		r, _ := utf8.DecodeRuneInString(text[pos:])
+		if !isFirstLetterPunctuation(r) {
+			break
+		}
+		pos += firstLetterGraphemeLen(text[pos:])
+	}
+
+	return skipped, pos - skipped
+}
+
 // splitFirstLetter walks children to find the first text character and wraps
 // it in a synthetic inline span with the first-letter style.
 func (b *LayoutTreeBuilder) splitFirstLetter(
@@ -1458,20 +1566,11 @@ func (b *LayoutTreeBuilder) splitFirstLetter(
 			continue
 		}
 		text := child.TextContent()
-		// Find first non-whitespace character.
-		idx := strings.IndexFunc(text, func(r rune) bool {
-			return r != ' ' && r != '\t' && r != '\n' && r != '\r'
-		})
-		if idx < 0 {
+		idx, letterLen := firstLetterLength(text)
+		if letterLen == 0 {
 			continue
 		}
-		// Find where the first letter ends (just take the first rune).
-		letterEnd := idx
-		for _, r := range text[idx:] {
-			_ = r
-			letterEnd += len(string(r))
-			break
-		}
+		letterEnd := idx + letterLen
 
 		letter := text[idx:letterEnd]
 		rest := text[letterEnd:]
