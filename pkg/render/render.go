@@ -1374,6 +1374,13 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	// Step 3: Descendant block backgrounds (non-self-painting subtree).
 	r.paintDescendantsPhase(layer, PhaseBackground)
 
+	// Collapsed table-cell border paints inside the background phase,
+	// after descendant backgrounds. paintLayerContent reaches the cell
+	// when it is its own stacking context (e.g. position: relative);
+	// paintDescendantPhase reaches non-SC cells. Both delegate to the
+	// same helper so the spec ordering stays in one place.
+	r.paintCollapsedTableCellBorder(layer)
+
 	// Step 4: Floats (each runs its own full phase loop).
 	r.paintDescendantsPhase(layer, PhaseFloat)
 
@@ -1569,13 +1576,12 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 
 	r.paintDescendantsPhase(child, phase)
 
-	// CSS Tables 3 collapsed-borders paint phase: cell borders paint
-	// AFTER all descendant content so a positioned background inside the
-	// cell can't overpaint the (shared) border. Run during PhaseForeground
-	// only — PhaseBackground would re-introduce the before-descendants
-	// ordering we are deliberately deferring.
-	if phase == PhaseForeground && child.IsCollapsedBorderCell && !child.EmptyCellHide {
-		r.drawBorders(child)
+	// Collapsed table-cell border. See paintCollapsedTableCellBorder
+	// for the spec ordering. Gated on PhaseBackground so we only fire
+	// once per cell per layout pass (paintDescendantPhase is called
+	// once per phase).
+	if phase == PhaseBackground {
+		r.paintCollapsedTableCellBorder(child)
 	}
 
 	if clipping {
@@ -3157,6 +3163,24 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 	}
 
 	return true
+}
+
+// paintCollapsedTableCellBorder paints a collapsed table cell's border
+// in its CSS Tables 3 paint phase: inside the background phase, after
+// descendant backgrounds (so a child's CSS background can't overpaint
+// the shared border) but before the foreground phase (so an inline-block
+// descendant's foreground — e.g. a `background: green` painted as part
+// of its own atomic-inline phase loop — paints above the collapsed
+// border). Mirrors Blink's TablePainter::PaintCollapsedBorders ordering
+// inside PaintPhase::kBlockBackground at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. WPT
+// collapsed-border-paint-001 asserts the latter; -paint-phase-002
+// asserts the former.
+func (r *Renderer) paintCollapsedTableCellBorder(layer *PaintLayer) {
+	if !layer.IsCollapsedBorderCell || layer.EmptyCellHide {
+		return
+	}
+	r.drawBorders(layer)
 }
 
 // drawBorders draws all four borders of the layer's box (pre-computed styles/colors).

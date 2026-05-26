@@ -359,6 +359,17 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		return vm.ToValue(cls)
 	case "textContent":
 		return vm.ToValue(getTextContent(e.node))
+	case "innerText":
+		// HTML Standard innerText (https://html.spec.whatwg.org/#the-innertext-idl-attribute)
+		// is CSS-aware (collapses whitespace per CSS rendering, skips
+		// display:none subtrees, etc.). For the assignment side that WPT
+		// reftests rely on the simple form ("td.innerText = 'X'"),
+		// behaving like textContent is observably correct: both replace
+		// children with a single text node. The read side falls back to
+		// the textContent serialization, which is close enough for the
+		// reftests we currently care about; a CSS-aware implementation
+		// can land later when a test demands it.
+		return vm.ToValue(getTextContent(e.node))
 	case "src":
 		src, _ := e.node.GetAttribute("src")
 		return vm.ToValue(src)
@@ -648,6 +659,13 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 	case "textContent":
 		setTextContent(e.node, val.String())
 		return true
+	case "innerText":
+		// See the getter comment above. Assigning innerText replaces all
+		// children with a single text node containing the assigned value,
+		// matching the simple "td.innerText = 'X'" pattern that WPT
+		// dynamic-DOM reftests use to populate cells.
+		setTextContent(e.node, val.String())
+		return true
 	case "className":
 		if e.node.Attributes == nil {
 			e.node.Attributes = make(map[string]string)
@@ -690,7 +708,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
 	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
-		"textContent", "innerHTML", "outerHTML", "src", "splitText", "data", "appendData",
+		"textContent", "innerText", "innerHTML", "outerHTML", "src", "splitText", "data", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
 		"appendChild", "removeChild", "insertBefore",
@@ -716,7 +734,7 @@ func (e *elementAccessor) Delete(key string) bool {
 func (e *elementAccessor) Keys() []string {
 	return []string{
 		"tagName", "nodeName", "nodeType", "nodeValue", "data", "id", "className",
-		"textContent", "innerHTML", "outerHTML",
+		"textContent", "innerText", "innerHTML", "outerHTML",
 		"splitText", "appendData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",
