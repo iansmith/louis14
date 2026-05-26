@@ -213,6 +213,15 @@ type PaintLayer struct {
 	// (CSS 2.1 §17.6.1.1, only in separate border model).
 	EmptyCellHide bool
 
+	// IsCollapsedBorderCell marks a table cell whose table is in
+	// border-collapse: collapse mode. Per CSS Tables 3 / CSS 2.1 Appendix E,
+	// collapsed table borders paint in a dedicated phase AFTER cell
+	// foreground content, so descendants (e.g. a positioned background)
+	// cannot overpaint the border. Mirrors Blink's PaintPhase::kTable
+	// CollapsedBorders dispatch in TablePainter (table_painters.cc,
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	IsCollapsedBorderCell bool
+
 	// Column rules (for multicol containers):
 	IsMulticol      bool
 	ColumnCount     int     // number of columns actually rendered
@@ -800,6 +809,18 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		len(box.Children) == 0 &&
 		box.Node != nil && isCellNodeEmpty(box.Node) {
 		layer.EmptyCellHide = true
+	}
+
+	// border-collapse: collapse — defer cell border paint to after descendants
+	// so cell content can't overpaint the (shared) border. CSS 2.1 §17.6.2
+	// + CSS Tables 3 collapsed-borders paint phase; matches Blink's
+	// TablePainter::PaintCollapsedBorders ordering. The flag is set on the
+	// cell itself; the paint pipeline reads it to skip drawBorders during
+	// the cell's own paintSelfDecorations and instead invokes drawBorders
+	// after the cell's foreground walk completes.
+	if s.GetDisplay() == css.DisplayTableCell &&
+		s.GetBorderCollapse() == css.BorderCollapseCollapse {
+		layer.IsCollapsedBorderCell = true
 	}
 
 	return layer
