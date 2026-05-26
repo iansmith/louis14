@@ -24,9 +24,9 @@ import (
 //   * RemoveCounterIfAncestorExists can drop a reset entry on
 //     LeaveObject if its ancestor counter is still in scope.
 //
-// In Phase 1 the context handles counter-reset / counter-increment;
-// counter-set is a Phase 2 extension (the bitmask Type already encodes
-// it). list-item / reversed semantics arrive in Phases 3-4.
+// The context handles counter-reset, counter-increment, and
+// counter-set (CSS Lists 3 §propdef-counter-set). list-item /
+// reversed semantics arrive in a later phase.
 //
 // References (verified at the pinned SHA):
 //   * Header — CounterEntry, CounterStack, CounterInheritanceTable,
@@ -59,8 +59,9 @@ func (t CounterType) IsSetOrReset() bool {
 
 // CounterEntry mirrors Blink CounterEntry { layout_object, value }.
 // Origin is the originating DOM/pseudo node; nil entries serve as
-// style-containment boundaries (Phase 2+ feature, but the slot is
-// present so GetCounterValues can stop at them).
+// style-containment boundaries pushed by EnterStyleContainmentScope
+// (CSS Contain 1 §3.3). UpdateCounterValue and RemoveStaleCounters
+// stop at boundaries; GetCounterValues skips them.
 //
 // EnterOrder is the monotonically increasing index at which Origin's
 // EnterObject was called. It is used by CreateCounter to identify
@@ -148,9 +149,9 @@ type CounterDirective struct {
 // counter-directive on this element, merge per name into a single
 // CounterDirective (bitmask + combined value, per Blink's
 // DetermineCounterTypeAndValue / CounterDirectives::CombinedValue),
-// then call ProcessCounter once per name. Phase 1 reads counter-reset
-// and counter-increment; Phase 2 adds counter-set; Phase 3 adds the
-// list-item implicit increment.
+// then call ProcessCounter once per name. Currently reads counter-reset,
+// counter-increment, and counter-set; the list-item implicit increment
+// arrives in a later phase.
 //
 // If the element has `contain: style` (style containment), pushes a
 // style-containment boundary onto every counter stack AFTER processing
