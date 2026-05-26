@@ -3899,6 +3899,13 @@ func parseDeclarations(declStr string) DeclarationResult {
 					continue
 				}
 			}
+			if k == "font-family" {
+				normalized, ok := normalizeAndValidateFontFamily(v)
+				if !ok {
+					continue
+				}
+				v = normalized
+			}
 			result.Declarations[k] = v
 			if isImportant {
 				result.Important[k] = true
@@ -4037,6 +4044,198 @@ func isValidSingleImageLayer(layer string) bool {
 		strings.HasPrefix(lower, "repeating-conic-gradient(") {
 		_, ok := GetGradient(layer)
 		return ok
+	}
+	return false
+}
+
+// normalizeAndValidateFontFamily validates a `font-family` longhand value and
+// returns its canonical form, or `ok=false` if the value violates CSS Fonts 3
+// §3.1 / CSS Syntax 3 §4.3.10 / CSS 2.1 §15.3 grammar:
+//
+//   - <family-name> = <string> | <custom-ident>+
+//   - A <custom-ident> in an unquoted family-name cannot begin with a digit,
+//     a `-` followed by a digit, or be a pure numeric token.
+//   - A quoted string cannot appear adjacent to an unquoted identifier in the
+//     same comma entry (`"foo" bar` is invalid syntax).
+//   - System-font keywords (`caption`, `icon`, `menu`, `message-box`,
+//     `small-caption`, `status-bar`) are reserved for the `font` shorthand and
+//     are not valid <family-name> values.
+//   - CSS-wide keywords (`initial`, `inherit`, `unset`, `revert`,
+//     `revert-layer`) are reserved at the longhand value level — they reach
+//     this validator as the entire trimmed value, never as one entry in a
+//     comma list.
+//   - Generic-family keywords (`serif`, `sans-serif`, `monospace`, `cursive`,
+//     `fantasy`, `system-ui`, etc.) ARE valid family-name entries and pass.
+//
+// If any comma entry fails the gate, the whole declaration is invalid and the
+// caller must discard it (so an earlier valid `font-family` is preserved).
+// Whitespace runs inside an unquoted entry are condensed to a single space
+// (CSS Fonts 3 §3.1 normative note).
+//
+// Mirrors Blink at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f:
+//   - third_party/blink/renderer/core/css/parser/css_property_parser_helpers.cc
+//     (ConsumeFamilyName / ConcatenateFamilyName)
+//   - third_party/blink/renderer/core/css/parser/css_parser_idioms.cc
+//     (IsCSSWideKeyword / system-font keyword gating)
+//   - third_party/blink/renderer/core/css/properties/longhands/font_family.cc
+//     (ParseSingleValue rejects system-font keywords in the longhand path)
+func normalizeAndValidateFontFamily(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+	// CSS-wide keywords reach the longhand value verbatim and are resolved at
+	// cascade time. They are valid as the entire value but never as one entry
+	// in a comma list.
+	lower := strings.ToLower(trimmed)
+	switch lower {
+	case "inherit", "initial", "unset", "revert", "revert-layer":
+		return trimmed, true
+	}
+	// var() references defer to runtime substitution.
+	if strings.Contains(trimmed, "var(") {
+		return trimmed, true
+	}
+	entries := splitTopLevelCommas(trimmed)
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		canon, ok := normalizeFontFamilyEntry(entry)
+		if !ok {
+			return "", false
+		}
+		out = append(out, canon)
+	}
+	return strings.Join(out, ", "), true
+}
+
+// normalizeFontFamilyEntry validates and canonicalizes a single comma entry
+// from a font-family list. See normalizeAndValidateFontFamily for the grammar.
+func normalizeFontFamilyEntry(entry string) (string, bool) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return "", false
+	}
+	// Quoted string entry: must be entirely enclosed in matching quotes with
+	// nothing trailing (`"foo" bar` is the canonical invalid form per test
+	// font-family-name-021).
+	if entry[0] == '"' || entry[0] == '\'' {
+		quote := entry[0]
+		// Walk the string body; the closing quote must terminate the entry.
+		i := 1
+		for i < len(entry) {
+			c := entry[i]
+			if c == '\\' && i+1 < len(entry) {
+				// Skip escaped character.
+				i += 2
+				continue
+			}
+			if c == quote {
+				break
+			}
+			i++
+		}
+		if i >= len(entry) || entry[i] != quote {
+			return "", false
+		}
+		// Everything after the closing quote must be whitespace.
+		for j := i + 1; j < len(entry); j++ {
+			if entry[j] != ' ' && entry[j] != '\t' && entry[j] != '\n' && entry[j] != '\r' && entry[j] != '\f' {
+				return "", false
+			}
+		}
+		return entry[:i+1], true
+	}
+	// Unquoted entry: a non-empty sequence of CSS identifiers separated by
+	// whitespace. Validate each token and condense whitespace.
+	//
+	// Tokenize on CSS-spec whitespace ONLY (U+0009/0x0A/0x0C/0x0D/0x20 per
+	// CSS Syntax 3 §3.2), NOT Unicode whitespace. The fullwidth ideographic
+	// space U+3000, for example, is a regular ident code point and stays part
+	// of the family name — it's load-bearing for the Japanese localized
+	// `ＣＳＳテスト　フォント名` test (font-family-name-010).
+	tokens := splitCSSWhitespace(entry)
+	if len(tokens) == 0 {
+		return "", false
+	}
+	for _, t := range tokens {
+		if !isValidFamilyNameIdentifier(t) {
+			return "", false
+		}
+	}
+	// System-font keywords are reserved for the `font` shorthand — reject any
+	// unquoted entry whose FIRST token is one of them, regardless of what
+	// follows (matches Blink font_family.cc ParseSingleValue behavior and
+	// covers tests font-family-name-022 and font-family-name-024).
+	if isSystemFontKeyword(strings.ToLower(tokens[0])) {
+		return "", false
+	}
+	return strings.Join(tokens, " "), true
+}
+
+// splitCSSWhitespace splits s on CSS-spec whitespace runs (U+0009, U+000A,
+// U+000C, U+000D, U+0020 per CSS Syntax 3 §3.2). Unicode whitespace beyond
+// that set (e.g. U+3000 IDEOGRAPHIC SPACE, U+00A0 NO-BREAK SPACE) is NOT a
+// CSS whitespace code point and stays part of the surrounding token.
+func splitCSSWhitespace(s string) []string {
+	isCSSWS := func(c byte) bool {
+		return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+	}
+	var out []string
+	start := -1
+	for i := 0; i < len(s); i++ {
+		if isCSSWS(s[i]) {
+			if start >= 0 {
+				out = append(out, s[start:i])
+				start = -1
+			}
+		} else if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		out = append(out, s[start:])
+	}
+	return out
+}
+
+// isValidFamilyNameIdentifier reports whether tok is a syntactically valid
+// CSS identifier in the context of an unquoted family-name token.
+//
+// Per CSS Syntax 3 §4.3.10 a custom-ident cannot start with a digit or with
+// `-` followed by a digit. A pure numeric token (`400`, `12px`-like prefix)
+// is therefore not a valid identifier — it would tokenize as a <number> or
+// <dimension>, not an <ident>. Mirrors Blink's css_parser_idioms.cc
+// IsValidCustomIdentifier / CSSTokenizer ident classification at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func isValidFamilyNameIdentifier(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	// First-codepoint gate. CSS identifier start: letter (a-z, A-Z),
+	// underscore, non-ASCII, or `\<escape>`. NOT digit, NOT `-` followed by
+	// digit, NOT bare `-` alone.
+	r := tok[0]
+	switch {
+	case r == '-':
+		if len(tok) == 1 {
+			return false
+		}
+		if tok[1] >= '0' && tok[1] <= '9' {
+			return false
+		}
+	case r >= '0' && r <= '9':
+		return false
+	}
+	return true
+}
+
+// isSystemFontKeyword reports whether lowered is one of the CSS 2.1 §15.3
+// system-font keywords reserved for the `font` shorthand. These keywords are
+// not valid as a family-name entry on the longhand `font-family` property.
+func isSystemFontKeyword(lowered string) bool {
+	switch lowered {
+	case "caption", "icon", "menu", "message-box", "small-caption", "status-bar":
+		return true
 	}
 	return false
 }
