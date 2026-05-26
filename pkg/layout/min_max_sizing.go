@@ -333,6 +333,20 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		}
 	}
 
+	// CSS Text §7.1: text-indent contributes to the intrinsic inline-size of
+	// the first line. For intrinsic sizing, percentage components resolve to
+	// zero (CSS Values §10.2 / Blink InlineNode::ComputeMinMaxSizes treats
+	// HasPercent() text-indent as 0). Length and calc() length portions
+	// contribute their resolved value. Apply to both min and max content,
+	// since text-indent is always applied to the first formatted line.
+	if nodeStyle := node.Style(); nodeStyle != nil {
+		indent := nodeStyle.ResolveTextIndentIntrinsic()
+		if indent != 0 {
+			minContent += indent
+			maxContent += indent
+		}
+	}
+
 	return MinMaxSizes{MinContent: minContent, MaxContent: maxContent}
 }
 

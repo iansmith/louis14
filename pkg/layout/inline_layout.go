@@ -471,14 +471,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	}
 
 	// CSS 2.1 §16.1: text-indent offsets the first line of a block container.
+	// CSS Values §10.2: calc() with percent is resolved against the containing
+	// block's inline-size, same as bare-percent text-indent.
 	textIndent := 0.0
 	if bla.style != nil {
-		if v, ok := bla.style.GetLength("text-indent"); ok {
-			textIndent = v
-		} else if pct, ok := bla.style.GetPercentage("text-indent"); ok {
-			textIndent = layoutunit.ResolvePercent(
-				layoutunit.FromFloat64Round(contentInlineSize), pct).Float64()
-		}
+		textIndent = bla.style.ResolveTextIndent(contentInlineSize)
 	}
 
 	// Phase 3: Break into lines and create line box fragments.
