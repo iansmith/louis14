@@ -2456,11 +2456,20 @@ func expandAllShorthand(style *Style, value string) {
 			} else {
 				delete(style.Properties, prop)
 			}
-		case "revert", "revert-layer":
-			// resolveAllRevertValues (run post-cascade in ComputeStyle) will
-			// replace this sentinel with the UA-snapshot value if there was
-			// one, or delete the property otherwise.
+		case "revert":
+			// Post-cascade resolveCSSWideKeywords replaces this sentinel with
+			// the UA + presentational-attribute snapshot value (or deletes
+			// the property if there was none). Mirrors CSS Cascade 4 §6.1.2.
 			style.Set(prop, "revert")
+		case "revert-layer":
+			// CSS Cascade 5 §6.1.3: `revert-layer` is distinct from `revert`
+			// — it rolls back to the start of the current cascade layer, not
+			// to the previous origin. Preserve the sentinel literally so the
+			// per-layer resolveRevertLayerOnly pass in ComputeStyle uses the
+			// correct snapshot. Collapsing it to "revert" here (the previous
+			// bug) made `all: revert-layer` equivalent to `all: revert` and
+			// broke revert-layer-003.
+			style.Set(prop, "revert-layer")
 		}
 	}
 }
@@ -2540,19 +2549,19 @@ func shorthandProducesVisitedLonghand(property string) bool {
 // set (including non-color longhands reset by `all`) are dropped from
 // `:visited` rules to preserve user-browsing-history privacy.
 var visitedAllowedProperties = map[string]bool{
-	"color":                  true,
-	"background-color":       true,
-	"border-top-color":       true,
-	"border-right-color":     true,
-	"border-bottom-color":    true,
-	"border-left-color":      true,
-	"outline-color":          true,
-	"column-rule-color":      true,
-	"text-decoration-color":  true,
-	"text-emphasis-color":    true,
-	"caret-color":            true,
-	"fill":                   true,
-	"stroke":                 true,
+	"color":                 true,
+	"background-color":      true,
+	"border-top-color":      true,
+	"border-right-color":    true,
+	"border-bottom-color":   true,
+	"border-left-color":     true,
+	"outline-color":         true,
+	"column-rule-color":     true,
+	"text-decoration-color": true,
+	"text-emphasis-color":   true,
+	"caret-color":           true,
+	"fill":                  true,
+	"stroke":                true,
 }
 
 // selectorMatchesVisited reports whether any part of the given selector
@@ -2737,6 +2746,37 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				delete(s.Properties, prop)
 			}
 		}
+	}
+}
+
+// resolveRevertLayerOnly rolls back any property currently holding the
+// literal `revert-layer` sentinel to the value captured in `layerSnap`
+// (start-of-layer baseline). Falls back to `originSnap` (UA + presentational
+// attribute baseline) when the property was not present at the layer
+// boundary, mirroring CSS Cascade 5 §6.1.3's "as if the property had not
+// been declared in this layer" semantics — when there was nothing to revert
+// to within layers, `revert-layer` reduces to `revert`.
+//
+// Called at each cascade-layer boundary in ComputeStyle so chained
+// revert-layer across layers (revert-layer-007) and revert-layer-into-
+// previous-layer scenarios (revert-layer-001 / -003 / -005) resolve to
+// the layer's cascaded value, not to a downstream layer's literal
+// `revert-layer` sentinel. Mirrors Blink's per-layer
+// CascadeResolver::ResolveRevertLayer pass at SHA 4883d11fef.
+func resolveRevertLayerOnly(s *Style, originSnap, layerSnap allShorthandRevertSnapshot) {
+	for prop, val := range s.Properties {
+		if val != "revert-layer" {
+			continue
+		}
+		if snapVal, ok := layerSnap[prop]; ok && snapVal != "revert-layer" {
+			s.Set(prop, snapVal)
+			continue
+		}
+		if snapVal, ok := originSnap[prop]; ok {
+			s.Set(prop, snapVal)
+			continue
+		}
+		delete(s.Properties, prop)
 	}
 }
 

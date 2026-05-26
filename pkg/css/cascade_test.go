@@ -396,3 +396,100 @@ func TestEquivalentInlineDisplay(t *testing.T) {
 		}
 	}
 }
+
+// CSS Cascade 5 §6.2 + §6.1.3: each anonymous @layer block is its own
+// distinct layer, and revert-layer rolls back to the value the property
+// held at the start of the current layer.
+func TestComputeStyle_RevertLayer_AnonymousLayers(t *testing.T) {
+	stylesheet, _ := ParseStylesheet(`
+		@layer { #target { background-color: green; } }
+		@layer { #target { background-color: red; background-color: revert-layer; } }
+	`, nil)
+	if len(stylesheet.LayerOrder) != 2 {
+		t.Fatalf("expected 2 anonymous layers in LayerOrder, got %d: %v",
+			len(stylesheet.LayerOrder), stylesheet.LayerOrder)
+	}
+	stylesheets := []*Stylesheet{stylesheet}
+	node := &html.Node{
+		Type:       html.ElementNode,
+		TagName:    "div",
+		Attributes: map[string]string{"id": "target"},
+	}
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
+	if bg, _ := style.Get("background-color"); bg != "green" {
+		t.Errorf("expected background-color=green (revert-layer to first @layer), got %q", bg)
+	}
+}
+
+// CSS Cascade 5 §6.1.3 + §6.4.1: !important revert-layer also rolls back to
+// the declaration-order predecessor layer's value (revert-layer-005). The
+// !important layer ordering is reversed for cascade precedence, but the
+// revert-layer snapshot is still the declaration-order one.
+func TestComputeStyle_RevertLayer_ImportantPreservesDeclarationOrder(t *testing.T) {
+	stylesheet, _ := ParseStylesheet(`
+		@layer { #target { background-color: green; } }
+		@layer { #target {
+			background-color: red;
+			background-color: red !important;
+			background-color: revert-layer !important;
+		} }
+		@layer { #target {
+			background-color: red;
+			background-color: red !important;
+		} }
+	`, nil)
+	stylesheets := []*Stylesheet{stylesheet}
+	node := &html.Node{
+		Type:       html.ElementNode,
+		TagName:    "div",
+		Attributes: map[string]string{"id": "target"},
+	}
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
+	if bg, _ := style.Get("background-color"); bg != "green" {
+		t.Errorf("expected background-color=green (important revert-layer should revert to first @layer), got %q", bg)
+	}
+}
+
+// CSS Cascade 5 §6.1.3: revert-layer inside an inline `style` attribute
+// rolls back to the pre-inline cascaded value (revert-layer-009).
+func TestComputeStyle_RevertLayer_InlineStyle(t *testing.T) {
+	stylesheet, _ := ParseStylesheet(`
+		#target { background-color: green; }
+	`, nil)
+	stylesheets := []*Stylesheet{stylesheet}
+	node := &html.Node{
+		Type:    html.ElementNode,
+		TagName: "div",
+		Attributes: map[string]string{
+			"id":    "target",
+			"style": "background-color: red; background-color: revert-layer",
+		},
+	}
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
+	if bg, _ := style.Get("background-color"); bg != "green" {
+		t.Errorf("expected background-color=green (revert-layer in inline style), got %q", bg)
+	}
+}
+
+// CSS Cascade 5 §6.1.3: chained revert-layer across multiple layers must
+// resolve transitively — each layer's revert-layer should restore the
+// previous layer's RESOLVED value, not the literal sentinel
+// (revert-layer-007).
+func TestComputeStyle_RevertLayer_ChainedAcrossLayers(t *testing.T) {
+	stylesheet, _ := ParseStylesheet(`
+		@layer { #target { background-color: green; } }
+		@layer { #target { background-color: red; background-color: revert-layer; } }
+		@layer { #target { background-color: red; background-color: revert-layer; } }
+		@layer { #target { background-color: red; background-color: revert-layer; } }
+	`, nil)
+	stylesheets := []*Stylesheet{stylesheet}
+	node := &html.Node{
+		Type:       html.ElementNode,
+		TagName:    "div",
+		Attributes: map[string]string{"id": "target"},
+	}
+	style := ComputeStyle(node, stylesheets, 800, 600, nil)
+	if bg, _ := style.Get("background-color"); bg != "green" {
+		t.Errorf("expected background-color=green (chained revert-layer), got %q", bg)
+	}
+}
