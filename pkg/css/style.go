@@ -9555,6 +9555,46 @@ func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
 	return vals
 }
 
+// GetBorderImageOutset returns the 4 border-image-outset values in pixels.
+// Per CSS Backgrounds 3 §6.2: values can be <length> (px) or <number>
+// (multiplier of the corresponding border-width). The painted area is
+// extended outward by these amounts; the layout box is not affected.
+// borderWidths is [top, right, bottom, left] in pixels.
+func (s *Style) GetBorderImageOutset(borderWidths [4]float64) [4]float64 {
+	v, ok := s.Get("border-image-outset")
+	if !ok || strings.TrimSpace(v) == "" {
+		return [4]float64{} // initial: 0 on all sides
+	}
+	v = strings.TrimSpace(v)
+	parts := strings.Fields(v)
+	var vals [4]float64
+	for i, p := range parts {
+		if i >= 4 {
+			break
+		}
+		if strings.HasSuffix(p, "px") {
+			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
+			vals[i] = f
+		} else {
+			// Unit-less number = multiplier of corresponding border-width.
+			f, _ := strconv.ParseFloat(p, 64)
+			vals[i] = f * borderWidths[i]
+		}
+	}
+	switch len(parts) {
+	case 1:
+		vals[1] = vals[0]
+		vals[2] = vals[0]
+		vals[3] = vals[0]
+	case 2:
+		vals[2] = vals[0]
+		vals[3] = vals[1]
+	case 3:
+		vals[3] = vals[1]
+	}
+	return vals
+}
+
 // GetBorderImageRepeat returns the repeat keywords [horizontal, vertical].
 func (s *Style) GetBorderImageRepeat() [2]string {
 	v, ok := s.Get("border-image-repeat")
