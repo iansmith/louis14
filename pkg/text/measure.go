@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"louis14/pkg/geometry/layoutunit"
+	"louis14/pkg/text/csstest"
 
 	"mazarin/textshape"
 )
@@ -53,6 +54,7 @@ func getLayout() textshape.TextLayout {
 	if sharedLayout == nil {
 		sharedProvider = textshape.NewDirectGlyphProvider(defaultFontsDir())
 		sharedLayout = textshape.NewTextLayoutWithProvider(sharedProvider)
+		registerVendoredFonts(sharedProvider)
 	}
 	return sharedLayout
 }
@@ -67,8 +69,19 @@ func CurrentProvider() textshape.GlyphProvider {
 	if sharedProvider == nil {
 		sharedProvider = textshape.NewDirectGlyphProvider(defaultFontsDir())
 		sharedLayout = textshape.NewTextLayoutWithProvider(sharedProvider)
+		registerVendoredFonts(sharedProvider)
 	}
 	return sharedProvider
+}
+
+// registerVendoredFonts hooks the in-tree vendored WPT test font sets into
+// the shared GlyphProvider. Replaces the legacy "install fonts system-wide"
+// dance for the WPT CSSTest reftests in pkg/visualtest. Wired into the
+// lazy-init paths so the registration happens exactly once, before any
+// caller observes the provider — and after the provider exists so
+// RegisterBuffer has somewhere to write.
+func registerVendoredFonts(p textshape.GlyphProvider) {
+	csstest.Register(p)
 }
 
 // SetTextLayout sets the shared TextLayout used for all text measurement.
@@ -283,6 +296,18 @@ func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) stri
 		return liberationSerifPath(dir, bold, italic)
 	case "courier", "courier new", "liberation mono", "monospace":
 		return atkinsonMonoPath(dir, bold, italic)
+	}
+	// CSSTest vendored faces (pkg/text/csstest). Each registered family is
+	// matched case-insensitively per CSS Fonts 3 §3.1 ("Font family names are
+	// case-insensitive"). The synthetic path's basename, after
+	// FontPathToFamilyVariant strips the extension, round-trips back to the
+	// registered family string (the name has no `-` so the suffix-based
+	// variant parser treats the whole basename as the family — a "Bold"
+	// suffix inside a CSS family name must stay part of the family).
+	for _, name := range csstest.Names() {
+		if strings.EqualFold(family, name) {
+			return filepath.Join(dir, name+".ttf")
+		}
 	}
 	return ""
 }
