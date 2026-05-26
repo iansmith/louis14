@@ -32,9 +32,16 @@ type bufferEntry struct {
 // `<family>-<Variant>.ttf`) so existing path-based call sites (FontPathToFamilyVariant,
 // openFont) round-trip cleanly. The synthetic path is never opened from disk —
 // the GlyphProvider's registered map intercepts the family+variant lookup first.
+//
+// `declaredFamilies` records families that were named in @font-face rules even
+// when the actual fetch failed. This lets the font matching algorithm
+// distinguish "family was declared but unloaded" (a real face that's
+// unavailable — synthesis is forbidden when font-synthesis-* is none) from
+// "family was never declared" (system fallback — natural face selection).
 type FontRegistry struct {
-	mu      sync.Mutex
-	entries []bufferEntry
+	mu               sync.Mutex
+	entries          []bufferEntry
+	declaredFamilies map[string]struct{}
 }
 
 // NewFontRegistry creates a new FontRegistry.
@@ -50,6 +57,18 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	if fetcher == nil {
 		return "", fmt.Errorf("no font fetcher available")
 	}
+
+	// Record the declared family before attempting the fetch. Even if the
+	// fetch fails, the family was named by a @font-face rule and the font
+	// matching algorithm must treat lookups for it as a webfont request, not
+	// a system fallback. This is what gates font-synthesis-none correctly
+	// when the declared face fails to load.
+	fr.mu.Lock()
+	if fr.declaredFamilies == nil {
+		fr.declaredFamilies = make(map[string]struct{})
+	}
+	fr.declaredFamilies[strings.ToLower(family)] = struct{}{}
+	fr.mu.Unlock()
 
 	data, err := fetcher(srcURL)
 	if err != nil {
@@ -85,6 +104,19 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	}
 
 	return syntheticFontPath(family, variant), nil
+}
+
+// IsDeclared returns true if any @font-face rule named this family — even if
+// the underlying fetch failed. Used by font matching to distinguish a missing
+// webfont (synthesis-eligible) from a system family (synthesis-irrelevant).
+func (fr *FontRegistry) IsDeclared(family string) bool {
+	if fr == nil {
+		return false
+	}
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	_, ok := fr.declaredFamilies[strings.ToLower(family)]
+	return ok
 }
 
 // Lookup returns the synthetic path for a font matching the given family,

@@ -274,11 +274,57 @@ func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
 // fc.FontPath is also the final safety net for non-CSS callers (bare
 // text.MeasureText with no FontConfig serif binding).
 func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem bool) string {
+	return fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, true, true)
+}
+
+// FontPathForFamilyWithSynthesis is FontPathForFamily plus per-aspect
+// font-synthesis gates per CSS Fonts 4 §6.6.
+//
+// When a named family was declared via @font-face (Registry.IsDeclared true)
+// but the actual face for the requested weight/style isn't available — either
+// the registered face only has a different variant, or the fetch failed
+// entirely — the spec treats any bold/italic file we'd pull from a fallback
+// family as "synthesis". font-synthesis-weight: none and font-synthesis-style:
+// none forbid that, so we suppress the corresponding flag before falling
+// through to the UA default.
+//
+// When the requested family was never declared (e.g. a generic family like
+// `serif` or an unknown system family like `ui-serif`), the UA default's
+// native bold/italic is *not* synthesis, so the gates do not apply. Mirrors
+// Blink's font_description.cc `SynthesisAllowed*` predicates at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which gate the synthetic-bold /
+// 12° skew application based on whether the matched face came from a real
+// declaration that lacked the requested variant.
+//
+// Spec: https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
+func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic, mono, ahem, synthBold, synthItalic bool) string {
 	families := parseFontFamilyList(family)
+	suppressBold := false
+	suppressItalic := false
 	for _, fam := range families {
 		if fc.Registry != nil {
+			// Registry.Lookup returns the matched variant's path; when the
+			// requested weight/style isn't registered for this family, the
+			// fallback loop inside Lookup returns *any* variant of the same
+			// family. That fallback is already a form of in-family
+			// "synthesis suppression" — louis14 doesn't apply a synthetic-
+			// bold stroke, so the returned regular face is rendered as-is
+			// regardless of the synthesis flag.
 			if path := fc.Registry.Lookup(fam, bold, italic); path != "" {
 				return path
+			}
+			// Family was named by @font-face but its fetch failed entirely.
+			// Falling through to the next family / UA default would mean
+			// "synthesizing" the requested variant via a different physical
+			// face. CSS Fonts 4 §6.6: suppress that selection when
+			// font-synthesis-weight / font-synthesis-style is none.
+			if fc.Registry.IsDeclared(fam) {
+				if bold && !synthBold {
+					suppressBold = true
+				}
+				if italic && !synthItalic {
+					suppressItalic = true
+				}
 			}
 		}
 		if path := fc.resolveBuiltinFamily(fam, bold, italic); path != "" {
@@ -286,16 +332,25 @@ func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem b
 		}
 	}
 	// Matching failed (either nothing in the list resolved, or the list was
-	// effectively empty after quote/whitespace stripping). Per spec, fall
-	// back to the UA initial value (serif). Skip for ahem/mono so those
-	// test-font / generic-family requests stay routed to fc.Ahem /
-	// fc.Monospace via fc.FontPath.
+	// effectively empty after quote/whitespace stripping). Per CSS Fonts 3 §5.4
+	// (C22), fall back to the UA initial value (serif). Skip for ahem/mono so
+	// those test-font / generic-family requests stay routed to fc.Ahem /
+	// fc.Monospace via fc.FontPath. Apply font-synthesis suppression (C04)
+	// before delegating to the platform default path.
+	fallbackBold := bold
+	fallbackItalic := italic
+	if suppressBold {
+		fallbackBold = false
+	}
+	if suppressItalic {
+		fallbackItalic = false
+	}
 	if !ahem && !mono {
-		if path := fc.resolveBuiltinFamily("serif", bold, italic); path != "" {
+		if path := fc.resolveBuiltinFamily("serif", fallbackBold, fallbackItalic); path != "" {
 			return path
 		}
 	}
-	return fc.FontPath(bold, italic, mono, ahem)
+	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
 }
 
 func parseFontFamilyList(raw string) []string {

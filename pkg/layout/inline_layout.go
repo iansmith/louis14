@@ -1129,9 +1129,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 // @ 4883d11fef and the WPT test css-pseudo/first-line-opacity-001.html
 // which depends on it.
 var firstLineAllowedProperties = []string{
-	// Font properties
+	// Font properties (CSS Pseudo-Elements 4 §7.1.1: all font-* properties
+	// apply to ::first-line, including the four font-synthesis-* longhands
+	// from CSS Fonts 4 §6.6).
 	"font-family", "font-size", "font-style", "font-weight",
 	"font-variant", "font-stretch", "font",
+	"font-variant-caps", "font-variant-ligatures", "font-variant-numeric",
+	"font-feature-settings", "font-optical-sizing", "font-size-adjust",
+	"font-synthesis-weight", "font-synthesis-style",
+	"font-synthesis-small-caps", "font-synthesis-position",
 	// Color and background
 	"color", "background", "background-color", "background-image",
 	"background-repeat", "background-position", "background-attachment",

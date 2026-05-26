@@ -1258,6 +1258,10 @@ var inheritableProperties = map[string]bool{
 	"color": true, "font-family": true, "font-size": true,
 	"font-style": true, "font-weight": true, "font-variant": true,
 	"font-feature-settings": true, "font-kerning": true,
+	// CSS Fonts 4 §6.6: each font-synthesis-* longhand is inherited.
+	// https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
+	"font-synthesis-weight": true, "font-synthesis-style": true,
+	"font-synthesis-small-caps": true, "font-synthesis-position": true,
 	// NOTE: text-decoration is intentionally NOT inherited (CSS Text Decor 3
 	// §2). Instead, ResolveAppliedTextDecorations accumulates an
 	// []AppliedTextDecoration vector from parent → child. See
