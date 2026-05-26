@@ -5758,6 +5758,24 @@ func (s *Style) HasInlineSizeContainment() bool {
 	return strings.Contains(v, "inline-size")
 }
 
+// HasStyleContainment returns true if the element has style containment.
+// This is set by contain: style, contain: content, or contain: strict,
+// as well as space-separated combinations like "layout style". Mirrors
+// Blink ComputedStyle::ContainsStyle (computed_style.h at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) and CSS Contain 1 §3.3 —
+// style containment establishes a fresh counter scope and quote depth
+// for the contained element's subtree.
+func (s *Style) HasStyleContainment() bool {
+	v := s.GetContain()
+	if v == "none" {
+		return false
+	}
+	if v == "strict" || v == "content" {
+		return true
+	}
+	return strings.Contains(v, "style")
+}
+
 // HasAnyContainment returns true if the element has any form of containment.
 func (s *Style) HasAnyContainment() bool {
 	v := s.GetContain()

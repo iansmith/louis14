@@ -31,6 +31,18 @@ type LayoutTreeBuilder struct {
 	counterCtx *css.CountersAttachmentContext
 
 	quoteDepth int // nesting depth for open-quote/close-quote
+
+	// quoteDepthSaved is the stack of saved depths used to implement
+	// CSS Contain 1 §3.3 style-containment for quotes. On entering a
+	// style-contained element we push the current quoteDepth; on
+	// leaving we restore it. This matches Blink's effect (the
+	// contained subtree's quote nesting cannot escape the boundary)
+	// without porting the full StyleContainmentScopeTree from
+	// third_party/blink/renderer/core/css/style_containment_scope.cc
+	// @ 4883d11fef — that tree exists for dynamic invalidation; for
+	// our static layout pass, save/restore is sufficient because we
+	// process quotes in document order in a single traversal.
+	quoteDepthSaved []int
 }
 
 // BuildLayoutTree creates the layout tree rooted at the given DOM node.
@@ -231,9 +243,27 @@ func (b *LayoutTreeBuilder) buildNode(node *html.Node) *LayoutInputNode {
 	// Pre-order traversal: must run BEFORE recursing into children so
 	// the children see this element's counter directives in scope.
 	// LeaveObject is invoked after children are built (below).
+	//
+	// CSS Contain 1 §3.3 style containment: the contained element's
+	// own counter directives apply to the OUTER scope (so ::before /
+	// ::after can read them), then a sentinel is pushed before
+	// descending into real descendants. Quote nesting depth is
+	// save/restored across the boundary so changes inside don't leak
+	// out. Counter sentinel push/pop lives in EnterObject /
+	// LeaveObject; quote save/restore lives here because quotes are
+	// emitted by the layout-tree builder (open-quote / close-quote
+	// resolution in createPseudoElement), not by the counter context.
 	if style != nil {
 		b.counterCtx.EnterObject(node, style)
 		defer b.counterCtx.LeaveObject(node, style)
+		if style.HasStyleContainment() {
+			b.quoteDepthSaved = append(b.quoteDepthSaved, b.quoteDepth)
+			defer func() {
+				n := len(b.quoteDepthSaved)
+				b.quoteDepth = b.quoteDepthSaved[n-1]
+				b.quoteDepthSaved = b.quoteDepthSaved[:n-1]
+			}()
+		}
 	}
 
 	// CSS Pseudo-4 §4.2: Compute ::marker style for list items,

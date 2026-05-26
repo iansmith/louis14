@@ -152,6 +152,15 @@ type CounterDirective struct {
 // and counter-increment; Phase 2 adds counter-set; Phase 3 adds the
 // list-item implicit increment.
 //
+// If the element has `contain: style` (style containment), pushes a
+// style-containment boundary onto every counter stack AFTER processing
+// the element's own directives. Per Blink (counters_attachment_context.cc
+// EnterObject @ 4883d11fef): "Doing it after counters creation as the
+// element itself is not included in the style containment scope." This
+// means the contained element's own ::before/::after can still observe
+// the counters the element declared, but real descendants see a fresh
+// counter scope.
+//
 // Stamps `node`'s entry order so CreateCounter can identify
 // previous-sibling relationships in layout-tree order.
 func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
@@ -171,19 +180,27 @@ func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
 	for _, d := range parseCounterDirectives(style) {
 		c.ProcessCounter(node, d)
 	}
+	if style.HasStyleContainment() {
+		c.EnterStyleContainmentScope()
+	}
 }
 
-// LeaveObject runs the Blink LeaveObject step: for every counter the
-// element reset, pop the entry if an ancestor entry of the same
-// counter is still in scope (RemoveCounterIfAncestorExists).
-// Increment-only / set-only entries are not pushed by this element so
-// they don't need popping here. Releases the entry-order stamp last
-// — leaving the map entry around until siblings have entered would
-// only matter if a left node could appear later in document order,
-// which never happens in a pre-order traversal.
+// LeaveObject runs the Blink LeaveObject step: pop the style-containment
+// boundary first (mirroring Blink's reverse-of-EnterObject order), then
+// for every counter the element reset, pop the entry if an ancestor
+// entry of the same counter is still in scope
+// (RemoveCounterIfAncestorExists). Increment-only / set-only entries
+// are not pushed by this element so they don't need popping here.
+// Releases the entry-order stamp last — leaving the map entry around
+// until siblings have entered would only matter if a left node could
+// appear later in document order, which never happens in a pre-order
+// traversal.
 func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 	if node == nil || style == nil {
 		return
+	}
+	if style.HasStyleContainment() {
+		c.LeaveStyleContainmentScope()
 	}
 	for _, d := range parseCounterDirectives(style) {
 		if d.Type.IsReset() {
@@ -195,6 +212,39 @@ func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 	// nodes that have already exited their own subtree. Clearing on
 	// LeaveObject would lose that information. (Memory grows O(N)
 	// for the tree; acceptable for layout-tree builds.)
+}
+
+// EnterStyleContainmentScope mirrors Blink's
+// CountersAttachmentContext::EnterStyleContainmentScope @
+// 4883d11fef counters_attachment_context.cc:636. It pushes a
+// nil-origin sentinel onto every existing counter stack. The sentinel
+// causes UpdateCounterValue to create a NEW counter on the writing
+// element (rather than mutating an existing entry across the
+// boundary), and causes RemoveStaleCounters to stop walking. Counter
+// reads via GetCounterValues SKIP the sentinel rather than stopping
+// at it — the boundary gates writes, not reads.
+func (c *CountersAttachmentContext) EnterStyleContainmentScope() {
+	for _, stack := range c.table {
+		*stack = append(*stack, nil)
+	}
+}
+
+// LeaveStyleContainmentScope mirrors Blink's
+// CountersAttachmentContext::LeaveStyleContainmentScope @
+// 4883d11fef counters_attachment_context.cc:646. For each counter
+// stack it pops every entry above the topmost nil sentinel, then pops
+// the sentinel itself. Entries created INSIDE the containment scope
+// (after the matching EnterStyleContainmentScope) are discarded;
+// entries below the sentinel remain.
+func (c *CountersAttachmentContext) LeaveStyleContainmentScope() {
+	for _, stack := range c.table {
+		for len(*stack) > 0 && (*stack)[len(*stack)-1] != nil {
+			*stack = (*stack)[:len(*stack)-1]
+		}
+		if len(*stack) > 0 && (*stack)[len(*stack)-1] == nil {
+			*stack = (*stack)[:len(*stack)-1]
+		}
+	}
 }
 
 // ProcessCounter mirrors Blink ProcessCounter:
@@ -388,8 +438,16 @@ func (c *CountersAttachmentContext) GetCounterValues(node *html.Node, name strin
 	var values []int
 	for i := len(*stack) - 1; i >= 0; i-- {
 		entry := (*stack)[i]
-		if entry == nil { // containment boundary
-			break
+		if entry == nil {
+			// Style containment boundary: counter() and counters() can
+			// CROSS the boundary — Blink's GetCounterValues skips
+			// nullptrs with `continue` for non-page counters. The
+			// boundary's job is to gate WRITES (UpdateCounterValue
+			// treats a boundary as "stack empty" and creates a new
+			// counter on the writer), not READS. See
+			// counters_attachment_context.cc lines 360-378 at
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+			continue
 		}
 		values = append(values, entry.Value)
 		if onlyLast {
@@ -443,27 +501,27 @@ func saturatingAddInt32(current, value int) int {
 	return sum
 }
 
-// parseCounterDirectives reads counter-reset and counter-increment
-// off a Style and returns one CounterDirective per counter NAME,
-// matching Blink's CounterDirectiveMap shape. Multiple directives on
-// the same name OR their type bits together and combine values per
-// Blink's CounterDirectives::CombinedValue (reset_value +
-// increment_value, saturated to int32). Phase 2 will fold counter-set
-// into the same map and apply set-overrides-reset+increment
-// precedence. The reversed(name) form on counter-reset is parsed and
-// the Reversed flag preserved, but it has no semantic effect until
-// Phase 4.
+// parseCounterDirectives reads counter-reset, counter-increment, and
+// counter-set off a Style and returns one CounterDirective per counter
+// NAME, matching Blink's CounterDirectiveMap shape. Multiple directives
+// on the same name OR their type bits together and combine values per
+// Blink's CounterDirectives::CombinedValue (counter_directives.h:113 @
+// 4883d11fef): counter-set overrides everything else; otherwise it's
+// reset_value + increment_value (saturated). The reversed(name) form
+// on counter-reset is parsed and the Reversed flag preserved, but it
+// has no semantic effect until Phase 4.
 func parseCounterDirectives(style *Style) []CounterDirective {
 	// Use a name-keyed accumulator so two declarations on the same
 	// counter (e.g. counter-reset:c 98 + counter-increment:c 1)
 	// merge into one CounterDirective with type=reset|increment and
 	// value=99 — matching Blink CombinedValue exactly.
 	type accum struct {
-		hasReset, hasIncrement bool
-		resetValue             int
-		incrementValue         int
-		reversed               bool
-		order                  int
+		hasReset, hasIncrement, hasSet bool
+		resetValue                     int
+		incrementValue                 int
+		setValue                       int
+		reversed                       bool
+		order                          int
 	}
 	byName := make(map[string]*accum)
 	order := 0
@@ -502,6 +560,16 @@ func parseCounterDirectives(style *Style) []CounterDirective {
 			a.incrementValue = p.value
 		}
 	}
+	if raw, ok := style.Get("counter-set"); ok {
+		// counter-set default value is 0 (per CSS Lists 3
+		// §propdef-counter-set: "If <integer> is omitted ... default
+		// to 0").
+		for _, p := range parseCounterPropertyList(raw, 0) {
+			a := track(p.name)
+			a.hasSet = true
+			a.setValue = p.value
+		}
+	}
 
 	// Emit in insertion order so callers see deterministic ordering.
 	out := make([]CounterDirective, 0, len(byName))
@@ -529,11 +597,16 @@ func parseCounterDirectives(style *Style) []CounterDirective {
 		if e.a.hasIncrement {
 			t |= CounterIncrementType
 		}
-		// Blink CombinedValue for reset+increment is the saturated
-		// sum; for reset-only it's reset_value; for increment-only
-		// it's increment_value.
+		if e.a.hasSet {
+			t |= CounterSetType
+		}
+		// Blink CombinedValue (counter_directives.h:113 @ 4883d11fef):
+		// counter-set overrides everything else; otherwise it's
+		// reset_value + increment_value (saturated).
 		var value int
 		switch {
+		case e.a.hasSet:
+			value = e.a.setValue
 		case e.a.hasReset && e.a.hasIncrement:
 			value = saturatingAddInt32(e.a.resetValue, e.a.incrementValue)
 		case e.a.hasReset:

@@ -1110,6 +1110,13 @@ var inheritableProperties = map[string]bool{
 	// CSS Text 3 inherited properties:
 	"word-break": true, "overflow-wrap": true, "hyphens": true,
 	"line-break": true, "tab-size": true,
+	// CSS Generated Content L3 §3.2 `quotes` is inherited; the
+	// open-quote/close-quote pair lookup in pseudo-element content
+	// reads `quotes` off the originating element, which must see the
+	// ancestor declaration (the css-contain quote-scoping tests set
+	// `quotes` on the container and observe open-quote behavior on
+	// descendant pseudo-elements).
+	"quotes": true,
 }
 
 // ApplyInheritedProperties copies inheritable properties from parent if not set on child.
