@@ -797,8 +797,10 @@ func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 		}
 
 		// Phase 22: Check media query first (Kleene 3-valued — apply only when
-		// the result is definitely true; Unknown does not apply).
-		if EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight) != MediaQueryTrue {
+		// the result is definitely true; Unknown does not apply). Combines
+		// the rule's @media wrapper with any @import-level media-query-list
+		// (CSS Cascade 4 §3.1).
+		if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 			continue
 		}
 
