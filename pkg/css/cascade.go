@@ -1143,6 +1143,25 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 		}
 	}
 
+	// CSS Custom Properties (--*) inherit by default (CSS Custom Properties §2.2).
+	// Custom-property inheritance must run BEFORE inheritableProperties because
+	// any inheritable property whose declared value contains a var() reference
+	// needs the child's custom-property table populated to resolve correctly.
+	// Otherwise a span with `color: var(--a)` whose --a was unset and is being
+	// reinherited from the body would see an empty --a at color-resolution
+	// time, trigger IACVT, and fall back to the *parent's* `color` (which may
+	// not be the intended value). Order swap mirrors Blink's StyleResolver
+	// processing custom properties first in
+	// CSSPropertyValueSet::FilterPropertiesAndCustomProperties at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	for prop, val := range parentStyle.Properties {
+		if strings.HasPrefix(prop, "--") {
+			if _, hasOwn := style.Properties[prop]; !hasOwn {
+				style.Properties[prop] = val
+			}
+		}
+	}
+
 	for prop := range inheritableProperties {
 		if _, hasOwn := style.Get(prop); !hasOwn {
 			if parentVal, ok := parentStyle.Get(prop); ok {
@@ -1155,15 +1174,6 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 				if prop == "writing-mode" {
 					style.Set("_writing-mode-inherited", "true")
 				}
-			}
-		}
-	}
-
-	// CSS Custom Properties (--*) inherit by default (CSS Custom Properties §2.2)
-	for prop, val := range parentStyle.Properties {
-		if strings.HasPrefix(prop, "--") {
-			if _, hasOwn := style.Properties[prop]; !hasOwn {
-				style.Properties[prop] = val
 			}
 		}
 	}
