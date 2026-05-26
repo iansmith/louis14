@@ -4178,6 +4178,74 @@ func parseColorFunction(s string) (uint8, uint8, uint8, uint8, bool) {
 	return clampU8(r), clampU8(g), clampU8(b), clampU8(alpha), true
 }
 
+// systemColors holds RGB values for CSS Color 4 §9 system colors (light theme).
+//
+// Blink reference: `third_party/blink/renderer/platform/theme/web_theme_engine_default.cc`
+// (`WebThemeEngineDefault::GetSystemColor`, Chromium @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). The UA picks the actual RGB; the
+// values below mirror Blink's light-theme defaults. Tests only require that
+// every deprecated alias resolves to the SAME RGB as its modern equivalent
+// (CSS Color 4 §10), which is guaranteed by routing both through this single
+// map via `deprecatedSystemColorAliases`.
+//
+// Keys are lowercase (CSS ident keywords are ASCII case-insensitive).
+var systemColors = map[string]Color{
+	"accentcolor":      {0, 95, 204, 1.0},
+	"accentcolortext":  {255, 255, 255, 1.0},
+	"activetext":       {255, 0, 0, 1.0},
+	"buttonborder":     {118, 118, 118, 1.0},
+	"buttonface":       {239, 239, 239, 1.0},
+	"buttontext":       {0, 0, 0, 1.0},
+	"canvas":           {255, 255, 255, 1.0},
+	"canvastext":       {0, 0, 0, 1.0},
+	"field":            {255, 255, 255, 1.0},
+	"fieldtext":        {0, 0, 0, 1.0},
+	"graytext":         {128, 128, 128, 1.0},
+	"highlight":        {180, 213, 255, 1.0},
+	"highlighttext":    {0, 0, 0, 1.0},
+	"linktext":         {0, 0, 238, 1.0},
+	"mark":             {255, 255, 0, 1.0},
+	"marktext":         {0, 0, 0, 1.0},
+	"selecteditem":     {180, 213, 255, 1.0},
+	"selecteditemtext": {0, 0, 0, 1.0},
+	"visitedtext":      {85, 26, 139, 1.0},
+}
+
+// deprecatedSystemColorAliases maps the 23 deprecated CSS2 system colors
+// to their modern CSS Color 4 §9 equivalents per CSS Color 4 §10
+// (https://drafts.csswg.org/css-color-4/#deprecated-system-colors).
+//
+// Blink reference: `third_party/blink/renderer/core/css/css_system_color.cc`
+// (alias table, Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+//
+// Keys are lowercase (CSS ident keywords are ASCII case-insensitive); each
+// value MUST exist as a key in `systemColors`.
+var deprecatedSystemColorAliases = map[string]string{
+	"activeborder":        "buttonborder",
+	"activecaption":       "canvas",
+	"appworkspace":        "canvas",
+	"background":          "canvas",
+	"buttonhighlight":     "buttonface",
+	"buttonshadow":        "buttonface",
+	"captiontext":         "canvastext",
+	"inactiveborder":      "buttonborder",
+	"inactivecaption":     "canvas",
+	"inactivecaptiontext": "graytext",
+	"infobackground":      "canvas",
+	"infotext":            "canvastext",
+	"menu":                "canvas",
+	"menutext":            "canvastext",
+	"scrollbar":           "canvas",
+	"threeddarkshadow":    "buttonborder",
+	"threedface":          "buttonface",
+	"threedhighlight":     "buttonborder",
+	"threedlightshadow":   "buttonborder",
+	"threedshadow":        "buttonborder",
+	"window":              "canvas",
+	"windowframe":         "buttonborder",
+	"windowtext":          "canvastext",
+}
+
 func ParseColor(colorStr string) (Color, bool) {
 	colorStr = strings.TrimSpace(colorStr)
 
@@ -4464,8 +4532,27 @@ func ParseColor(colorStr string) (Color, bool) {
 		"mistyrose":      {255, 228, 225, 1.0},
 		"antiquewhite":   {250, 235, 215, 1.0},
 	}
-	color, ok := namedColors[colorStr]
-	return color, ok
+	if color, ok := namedColors[colorStr]; ok {
+		return color, true
+	}
+
+	// CSS Color 4 §9 system colors (modern) and §10 deprecated aliases.
+	// Aliases resolve to a modern name first, then to its RGB. Both paths
+	// share the single `systemColors` map so deprecated → modern always
+	// produces the same Color value as the modern keyword (the contract
+	// the deprecated-sameas-* WPT reftests verify).
+	//
+	// Blink reference: `core/css/properties/longhands/color.cc`
+	// `ColorPropertyFunctions::ApplyValue` resolves the keyword via
+	// `ColorFromCSSValue` and then `WebThemeEngine::GetSystemColor`
+	// (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	if modern, ok := deprecatedSystemColorAliases[colorStr]; ok {
+		colorStr = modern
+	}
+	if color, ok := systemColors[colorStr]; ok {
+		return color, true
+	}
+	return Color{}, false
 }
 
 // Phase 6: Text rendering helpers
