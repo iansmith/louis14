@@ -205,6 +205,15 @@ type PaintLayer struct {
 	TransformOrigin [2]float64 // resolved to px: (origin-x, origin-y)
 	HasTransform    bool
 
+	// HasTransformPaint is true when this layer participates in transform
+	// paint semantics — either it has an actual `transform` (HasTransform)
+	// or it has any `will-change: transform`-class property. Per CSS
+	// Transforms 1 §6, both make `background-attachment: fixed` on
+	// descendants degrade to `scroll`. Mirrors Blink's
+	// HasWillChangeAnyTransformProperty() ∪ HasTransform() check in
+	// background_image_geometry.cc @ 4883d11fef.
+	HasTransformPaint bool
+
 	// CSS Filters:
 	Filters   []css.FilterFunction
 	HasFilter bool
@@ -773,6 +782,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 		if len(individualTransforms) > 0 || len(transforms) > 0 {
 			layer.HasTransform = true
+			layer.HasTransformPaint = true
 			// ResolveTransformOriginPx handles length, percent, and calc()
 			// (including calc-with-percent) relative to the border box.
 			ox, oy := s.ResolveTransformOriginPx(box.Width, box.Height)
@@ -795,6 +805,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			// Compose: individual properties first, then shorthand.
 			layer.Transforms = append(individualTransforms, resolved...)
 		}
+	}
+
+	// `will-change: transform` (or any will-change-any-transform-property
+	// member) creates a transform paint context per CSS Will Change 1 §3:
+	// for descendant fixed-attachment backgrounds it acts like a transform,
+	// degrading them to scroll. This mirrors Blink's
+	// HasWillChangeAnyTransformProperty() check in
+	// background_image_geometry.cc @ 4883d11fef.
+	if s.HasWillChangeAnyTransformProperty() {
+		layer.HasTransformPaint = true
 	}
 
 	// CSS Filters.

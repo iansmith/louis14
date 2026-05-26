@@ -79,6 +79,22 @@ type Renderer struct {
 	// instead of calling dc.Clear() which blanks the entire host DC.
 	// Set by RenderEmbedded; cleared on entry to Render.
 	embeddedViewport struct{ W, H float64 }
+
+	// transformDepth counts the active stack of layer transforms (including
+	// `will-change: transform`) wrapping the current paint operation. Per
+	// CSS Transforms 1 §6, when this counter is > 0, `background-attachment:
+	// fixed` on a non-canvas layer degrades to `scroll` (the element is no
+	// longer fixed to the viewport). Mirrors Blink's
+	// FixedBackgroundPaintsInLocalCoordinates check in
+	// background_image_geometry.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	transformDepth int
+
+	// canvasBgPaintedLayer, when non-nil, marks the PaintLayer whose canvas
+	// background was painted out-of-transform by paintLayerCanvasBackground.
+	// drawBackground compares against this pointer to skip the in-transform
+	// repaint that would otherwise rotate/scale the canvas bg with the
+	// layer's own transform. Reset to nil after the layer's paint completes.
+	canvasBgPaintedLayer *PaintLayer
 }
 
 // clipRect represents an active clip rectangle.
@@ -630,10 +646,24 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS Transforms 1 §6 / CSS Backgrounds 3 §3.13: the canvas background
+	// (root or propagated body bg) is owned by the root canvas, NOT the
+	// layer that supplies it. A `transform` on the body or root element must
+	// NOT transform the canvas bg. Paint the canvas bg BEFORE pushing the
+	// layer transform; drawBackground will short-circuit on the layer it
+	// already painted so we don't double-paint inside the transformed dc.
+	// Mirrors Blink's ViewPainter::PaintRootGroup which paints the canvas
+	// bg before the root element's transform-property scope at
+	// view_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	r.paintLayerCanvasBackground(layer)
+
 	// Apply CSS transform if present (wraps around opacity handling).
 	if layer.HasTransform {
 		r.dc.Push()
 		r.applyTransforms(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
 	}
 
 	if layer.Opacity < 1.0 {
@@ -645,9 +675,38 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		r.paintLayerContent(layer)
 	}
 
+	if layer.HasTransformPaint {
+		r.transformDepth--
+	}
 	if layer.HasTransform {
 		r.dc.Pop()
 	}
+	if r.canvasBgPaintedLayer == layer {
+		r.canvasBgPaintedLayer = nil
+	}
+}
+
+// paintLayerCanvasBackground paints the canvas-propagated background (color
+// + image + gradient) outside the layer's transform context. Per CSS
+// Transforms 1 §6 and Backgrounds 3 §3.13, the canvas background belongs to
+// the root canvas in viewport coordinates and must not be transformed with
+// the body/root element. After painting, drawBackground will skip this
+// layer's bg so it isn't redrawn (and transformed) inside paintLayerContent.
+func (r *Renderer) paintLayerCanvasBackground(layer *PaintLayer) {
+	if layer == nil || !layer.PaintsCanvasBackground {
+		return
+	}
+	// Mark before painting so drawBackground (called from paintSelfDecorations
+	// nested below paintLayerContent) skips the in-transform repaint. The
+	// out-of-transform call below paints both bg-color and bg-image via the
+	// canvas-bg branch (PaintsCanvasBackground extends the paint area to the
+	// viewport). The companion fillCanvasWithBackground at paintCanvasBackground
+	// already pre-fills the bg-color for the case where there is no layer to
+	// paint (e.g. before the layer tree exists); the double-paint is harmless
+	// for opaque colors and the in-transform repaint is the actual bug we
+	// are eliminating here.
+	r.drawBackground(layer)
+	r.canvasBgPaintedLayer = layer
 }
 
 // paintLayerWithMask renders the entire layer subtree into an offscreen buffer,
@@ -687,12 +746,18 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 		r.dc.Push()
 		r.applyTransforms(layer)
 	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
 	if layer.Opacity < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
 		r.dc.PopGroupWithAlpha(layer.Opacity)
 	} else {
 		r.paintLayerContent(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth--
 	}
 	if layer.HasTransform {
 		r.dc.Pop()
@@ -750,7 +815,13 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 					r.dc.Push()
 					r.applyTransforms(layer)
 				}
+				if layer.HasTransformPaint {
+					r.transformDepth++
+				}
 				r.paintLayerContent(layer)
+				if layer.HasTransformPaint {
+					r.transformDepth--
+				}
 				if layer.HasTransform {
 					r.dc.Pop()
 				}
@@ -993,12 +1064,18 @@ func (r *Renderer) paintLayerContentWithEffects(layer *PaintLayer) {
 		r.dc.Push()
 		r.applyTransforms(layer)
 	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
 	if layer.Opacity < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
 		r.dc.PopGroupWithAlpha(layer.Opacity)
 	} else {
 		r.paintLayerContent(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth--
 	}
 	if layer.HasTransform {
 		r.dc.Pop()
@@ -1131,12 +1208,18 @@ func (r *Renderer) paintLayerWithBlend(layer *PaintLayer) {
 		r.dc.Push()
 		r.applyTransforms(layer)
 	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
 	if layer.Opacity < 1.0 {
 		r.dc.PushGroup()
 		r.paintLayerContent(layer)
 		r.dc.PopGroupWithAlpha(layer.Opacity)
 	} else {
 		r.paintLayerContent(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth--
 	}
 	if layer.HasTransform {
 		r.dc.Pop()
@@ -1944,7 +2027,18 @@ func backgroundClipRadii(layer *PaintLayer) css.EllipticalRadii {
 // drawBackground paints the layer's background color and image layers (pre-computed).
 // Layers are painted bottom-to-top (Blink's IterateFillLayersInReverseOrder).
 // Background-color is painted only with the bottommost layer.
+//
+// Canvas-bg short circuit: when paintLayerCanvasBackground has already
+// painted this layer's bg outside the layer's transform (per CSS Transforms
+// 1 §6), skip the in-transform repaint so the bg isn't rotated/scaled with
+// the body/root element.
 func (r *Renderer) drawBackground(layer *PaintLayer) {
+	if layer.PaintsCanvasBackground && r.canvasBgPaintedLayer == layer {
+		// paintLayerCanvasBackground already painted this layer's bg
+		// outside the transform. The in-transform repaint would rotate/
+		// scale the canvas bg with the body/root element — skip it.
+		return
+	}
 	sx, sy, sw, sh := r.backgroundClipRect(layer)
 	radii := backgroundClipRadii(layer)
 	hasRadius := !radii.IsZero()
@@ -2021,9 +2115,13 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 				}
 			} else {
 				// For fixed attachment, draw the gradient over the viewport
-				// but clip to the element's background-clip area.
+				// but clip to the element's background-clip area. Per CSS
+				// Transforms 1 §6, a non-canvas layer with any ancestor
+				// transform paint context degrades fixed to scroll.
 				gradX, gradY, gradW, gradH := lx, ly, lw, lh
-				if bg.Attachment == css.BackgroundAttachmentFixed {
+				gradFixed := bg.Attachment == css.BackgroundAttachmentFixed &&
+					(layer.PaintsCanvasBackground || r.transformDepth == 0)
+				if gradFixed {
 					bounds := r.target.Bounds()
 					gradX = float64(bounds.Min.X)
 					gradY = float64(bounds.Min.Y)
@@ -2098,7 +2196,16 @@ func (r *Renderer) drawBackgroundImageLayer(layer *PaintLayer, bg *css.FillLayer
 	//   were specified on the body element" — but since it's promoted to
 	//   the root, the positioning area is the root's, not body's)
 	// - Any element with attachment:fixed → positioning area = viewport
+	//
+	// CSS Transforms 1 §6 fallback: for a non-canvas layer, when the layer
+	// itself or any of its ancestors has a transform paint context, the
+	// `fixed` value is treated as `scroll` (positioning area = element's
+	// own box). The transformDepth counter includes the current layer's
+	// transform (paintLayer increments BEFORE calling paintLayerContent).
 	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
+	if isFixed && !layer.PaintsCanvasBackground && r.transformDepth > 0 {
+		isFixed = false
+	}
 	// For promoted body backgrounds, use the root element's box for positioning.
 	posBox := box
 	if layer.CanvasBackgroundRootBox != nil {
@@ -2399,7 +2506,12 @@ func tilePositions(repeat css.BackgroundRepeatType, originStart, originLen, tile
 func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 	box := layer.Box
 
+	// Per CSS Transforms 1 §6, a non-canvas layer with any ancestor
+	// transform paint context degrades `fixed` to `scroll`.
 	isFixed := bg.Attachment == css.BackgroundAttachmentFixed
+	if isFixed && !layer.PaintsCanvasBackground && r.transformDepth > 0 {
+		isFixed = false
+	}
 	posBox := box
 	if layer.CanvasBackgroundRootBox != nil {
 		posBox = layer.CanvasBackgroundRootBox
