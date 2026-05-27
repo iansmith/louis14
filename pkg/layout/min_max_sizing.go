@@ -60,8 +60,16 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// percentage block-size resolves to a definite value and an aspect ratio
 	// transfers it to the inline dimension. ComputeReplacedSize handles
 	// this correctly, so replaced elements always go through that path below.
+	//
+	// Also skip the fast path when the inline-size is a percentage: per CSS
+	// Sizing 3 §5.1, percentage sizes are treated as auto when computing
+	// intrinsic sizes — the percentage cannot resolve circularly against a
+	// not-yet-determined container size, so the element contributes its
+	// content-based intrinsic sizes instead. Mirrors Blink's
+	// LayoutBox::ComputeIntrinsicLogicalWidths gate which bypasses
+	// HasPercentLogicalWidth() entries.
 	isReplaced := node.DOMNode != nil && IsReplacedElement(node.DOMNode)
-	if !isReplaced {
+	if !isReplaced && !hasPercentLogicalWidth(style, wdm) {
 		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
@@ -292,6 +300,13 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm, space.PercentageResolutionInlineSize)
 		if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
 			blockForPct = bs.Float64()
+		} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite &&
+			space.AvailableSize.BlockSize.Float64() >= 0 {
+			content := space.AvailableSize.BlockSize.Float64() - nodeGeom.BlockBorderPadding()
+			if content < 0 {
+				content = 0
+			}
+			blockForPct = content
 		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
 			blockForPct = space.PercentageResolutionSize.BlockSize.Float64()
 		}
@@ -1016,6 +1031,20 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 		nodeGeom := ComputeFragmentGeometry(nodeStyle, parentWDM, space.PercentageResolutionInlineSize)
 		if bs, ok := ResolveBlockSize(nodeStyle, parentWDM, space, nodeGeom); ok {
 			nodeBlockSize = bs.Float64()
+		} else if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite &&
+			space.AvailableSize.BlockSize.Float64() >= 0 {
+			// Parent algorithm (OOF, flex) fixed the block-size via IsFixedBlockSize.
+			// The fixed available block-size IS the node's used block-size and
+			// supersedes the containing block's PercentageResolutionSize.BlockSize
+			// for descendant percentage resolution. Without this, an abspos with
+			// top/bottom-derived block-size would propagate the CB's height
+			// (CSS 2.1 §10.5 says percentages resolve against the abspos's own
+			// height once it is definite).
+			content := space.AvailableSize.BlockSize.Float64() - nodeGeom.BlockBorderPadding()
+			if content < 0 {
+				content = 0
+			}
+			nodeBlockSize = content
 		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
 			// Parent provided a definite block percentage resolution size
 			// (e.g., from a flex item's explicit cross-size). Propagate it.

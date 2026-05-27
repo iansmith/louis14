@@ -2221,9 +2221,25 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			if ar.IsSet {
 				var itemCrossContent float64
 				var hasItemCross bool
+				// Per CSS Flexbox §9.8 + CSS Sizing 3 §5.1: when the container's
+				// cross-size is definite, the item's percentage cross-size
+				// resolves against the container's content cross-size. Without
+				// this basis, `height: 50%` would resolve to 0, suppressing the
+				// aspect-ratio transfer that derives the main-size.
+				crossPctBlock := float64(Indefinite)
+				crossAvailBlock := float64(Indefinite)
+				if mainIsItemInline && hasDefiniteCross {
+					crossPctBlock = containerCrossSize
+					crossAvailBlock = containerCrossSize
+				}
+				// IsBlockSizeIndefinite() checks BlockSize < 0. Use the
+				// Indefinite sentinel (-1) explicitly when there is no
+				// definite basis, so a percentage like `height: 100%`
+				// does NOT resolve to 0 (the float64 zero value).
+				crossPctResSize := LogicalSize{InlineSize: contentInlineSize, BlockSize: crossPctBlock}
 				crossItemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-					SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-					SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+					SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: crossAvailBlock}).
+					SetPercentageResolutionSize(crossPctResSize).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					Build()
 				if mainIsItemInline {
