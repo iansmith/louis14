@@ -232,6 +232,20 @@ type PaintLayer struct {
 	// CSS mix-blend-mode:
 	BlendMode css.MixBlendMode
 
+	// HasBlendingDescendant is true when this stacking-context layer
+	// contains a descendant with `mix-blend-mode != normal` somewhere in
+	// its subtree (bounded by inner stacking contexts that themselves
+	// carry the flag — the flag propagates UP only to the nearest
+	// ancestor stacking context). Per CSS Compositing 1 §8, the parent
+	// group of a blended element is treated as an isolated group: the
+	// renderer paints this layer into an offscreen buffer initialised to
+	// transparent black so the descendant's blend can see the parent's
+	// painted area as backdrop without leaking the ancestor canvas
+	// underneath. Mirrors Blink's PaintLayer::HasNonIsolatedDescendant
+	// WithBlendMode tracking at paint_layer.cc @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	HasBlendingDescendant bool
+
 	// PaintsCanvasBackground is true for the root element (or body when
 	// background propagates). Per CSS 2.1 §14.2, the root element's background
 	// paints the entire canvas, not just its own box.
@@ -1128,6 +1142,15 @@ func buildPaintSubtree(box *layout.Box, parentLayer, currentSC *PaintLayer) {
 
 		childLayer := newPaintLayer(child)
 		isPositioned := child.Position != css.PositionStatic && child.Position != ""
+
+		// CSS Compositing 1 §8: a blended element's parent group is treated as
+		// an isolated group. Mark the nearest ancestor stacking context so
+		// paintLayer can promote it to an offscreen isolation buffer; the
+		// blender then composites against the parent's painted content rather
+		// than the canvas underneath the SC.
+		if childLayer.BlendMode != css.MixBlendModeNormal && childLayer.BlendMode != "" {
+			currentSC.HasBlendingDescendant = true
+		}
 
 		// CSS Flexbox §4.3: Flex items with explicit z-index create stacking
 		// contexts even if position is static. They participate in the nearest

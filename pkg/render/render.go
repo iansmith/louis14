@@ -788,6 +788,21 @@ func (r *Renderer) paintLayer(layer *PaintLayer) {
 		return
 	}
 
+	// CSS Compositing 1 §8: a stacking context that contains a blended
+	// descendant must be rendered as an isolated group — into an offscreen
+	// buffer initialised to transparent black — before being alpha-
+	// composited onto the canvas. Inside the isolation buffer the blended
+	// descendant sees the parent group's own painted content (and only
+	// that) as its backdrop, so overflow past the parent's painted area
+	// blends against transparent (which per Compositing 1 §10.3 reduces to
+	// the source colour) rather than against the canvas underneath.
+	// Mirrors Blink's PaintLayer isolation promotion at paint_layer.cc @
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if layer.HasBlendingDescendant {
+		r.paintLayerIsolated(layer)
+		return
+	}
+
 	// CSS Transforms 1 §6 / CSS Backgrounds 3 §3.13: the canvas background
 	// (root or propagated body bg) is owned by the root canvas, NOT the
 	// layer that supplies it. A `transform` on the body or root element must
@@ -1391,6 +1406,114 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 	r.dc.Clip()
 	r.dc.DrawImage(out, region.Min.X, region.Min.Y)
 	r.dc.Pop()
+}
+
+// paintLayerIsolated renders a stacking-context layer's full subtree into an
+// offscreen buffer initialised to transparent black, then alpha-composites
+// the buffer onto r.target with normal (source-over) compositing. The buffer
+// is sized to cover both the layer's own box and the union of all descendant
+// border boxes, so an overflowing blended descendant still paints its full
+// extent inside the isolation group.
+//
+// This is the implementation of CSS Compositing 1 §8's "parent group" rule:
+// when a layer contains a descendant with mix-blend-mode != normal, that
+// descendant's blend operates against the parent group's painted content
+// (the contents of this isolation buffer), not against whatever the canvas
+// already holds underneath the parent group. Where the blender overflows
+// past the parent's painted area, the backdrop within the buffer is
+// transparent black, and Compositing 1 §10.3 reduces the blend operation to
+// the source colour — exactly what reftests like
+// mix-blend-mode-overflowing-child and mix-blend-mode-parent-with-border-
+// radius assert.
+//
+// Mirrors Blink's PaintLayer isolation step (paint_layer_painter.cc /
+// paint_layer.cc) at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (r *Renderer) paintLayerIsolated(layer *PaintLayer) {
+	box := layer.Box
+	if box == nil {
+		r.paintLayerContent(layer)
+		return
+	}
+
+	// Buffer extent: the layer's own border box unioned with the
+	// subtree's border boxes so an overflowing blended descendant is
+	// fully captured. Matches paintLayerWithFilter's sourceExtent
+	// pattern.
+	selfBounds := image.Rect(
+		int(math.Floor(box.X)),
+		int(math.Floor(box.Y)),
+		int(math.Ceil(box.X+box.Width)),
+		int(math.Ceil(box.Y+box.Height)),
+	)
+	extent := selfBounds.Union(subtreeBorderBoxBounds(box))
+	bx, by := extent.Min.X, extent.Min.Y
+	bw, bh := extent.Dx(), extent.Dy()
+	if bw <= 0 || bh <= 0 || bw > 8000 || bh > 8000 {
+		// Buffer would be empty or unreasonably large — fall back to a
+		// non-isolated paint. Better to mispaint the blend than to OOM.
+		r.paintLayerContentDirect(layer)
+		return
+	}
+
+	// Render the layer subtree into the buffer (transparent black init).
+	// The buffer is created with world-coordinate bounds so r.target
+	// pixel addressing inside the isolation matches the addressing used
+	// against the outer canvas. paintLayerWithBlend and other pixel-
+	// level writers compute dst offsets via (dy - dstBounds.Min.Y) and
+	// (dx - dstBounds.Min.X), so a zero-origin buffer would mis-locate
+	// the blender's output by (-bx, -by). Mazarin's NewChildContext
+	// honours arbitrary bounds; no additional Translate is required.
+	buf := image.NewRGBA(image.Rect(bx, by, bx+bw, by+bh))
+	origDC := r.dc
+	origTarget := r.target
+	childDC := origDC.NewChildContext(buf)
+	r.dc = childDC
+	r.target = buf
+
+	r.paintLayerContentDirect(layer)
+
+	// Restore original DC and alpha-composite the isolated buffer onto
+	// r.target with source-over (DrawImage).
+	r.dc = origDC
+	r.target = origTarget
+	r.dc.DrawImage(buf, bx, by)
+}
+
+// paintLayerContentDirect runs the canvas-background + transform + opacity
+// wrapping that paintLayer normally applies before reaching
+// paintLayerContent, but without the early-return branches for
+// mask/filter/blend-mode/isolation. It is used by paintLayerIsolated to
+// drive a layer's full paint into an offscreen buffer; the mask / filter /
+// blend-mode / isolation branches do not apply when the layer itself does
+// not own those effects.
+func (r *Renderer) paintLayerContentDirect(layer *PaintLayer) {
+	r.paintLayerCanvasBackground(layer)
+
+	if layer.HasTransform {
+		r.dc.Push()
+		r.applyTransforms(layer)
+	}
+	if layer.HasTransformPaint {
+		r.transformDepth++
+	}
+
+	if layer.Opacity < 1.0 {
+		r.dc.PushGroup()
+		r.paintLayerContent(layer)
+		r.dc.PopGroupWithAlpha(layer.Opacity)
+	} else {
+		r.paintLayerContent(layer)
+	}
+
+	if layer.HasTransformPaint {
+		r.transformDepth--
+	}
+	if layer.HasTransform {
+		r.dc.Pop()
+	}
+	if r.canvasBgPaintedLayer == layer {
+		r.canvasBgPaintedLayer = nil
+	}
 }
 
 // paintLayerWithBlend renders the entire layer subtree into an offscreen
