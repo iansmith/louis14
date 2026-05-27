@@ -401,6 +401,34 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	wdm := space.WritingDirection
 	geom := ComputeFragmentGeometry(style, wdm)
 
+	// CSS Contain 1 §4.2: size containment treats the element as if it had
+	// no in-flow content, so the content-based min/max contributions used by
+	// flex §4.5's automatic minimum size collapse to 0 — `min-width` /
+	// `max-width` clamps below still apply. Mirrors the same short-circuit
+	// in ComputeMinMaxSizes (this file :99) and Blink's
+	// `length_utils.cc :: CalculateMinMaxSizesIgnoringChildren` at SHA
+	// 4883d11fef.
+	if style.HasSizeContainment() || style.HasInlineSizeContainment() {
+		var result MinMaxSizes
+		minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
+		if result.MinContent < minInline {
+			result.MinContent = minInline
+		}
+		if result.MaxContent < minInline {
+			result.MaxContent = minInline
+		}
+		if maxInlineLU, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+			maxInline := maxInlineLU.Float64()
+			if result.MinContent > maxInline {
+				result.MinContent = maxInline
+			}
+			if result.MaxContent > maxInline {
+				result.MaxContent = maxInline
+			}
+		}
+		return result
+	}
+
 	// Replaced elements use ComputeReplacedSize for content-based sizing.
 	if node.DOMNode != nil && IsReplacedElement(node.DOMNode) {
 		inlineSize, _ := ComputeReplacedSize(ctx, node, style, space)

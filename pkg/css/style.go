@@ -7054,9 +7054,15 @@ func (s *Style) HasPaintContainment() bool {
 	return strings.Contains(v, "paint")
 }
 
-// HasSizeContainment returns true if the element has size containment.
-// This is set by contain: size or contain: strict,
+// HasSizeContainment returns true if the element has full (both-axis)
+// size containment. This is set by `contain: size` or `contain: strict`,
 // as well as space-separated combinations like "layout paint size".
+// Notably, `contain: inline-size` does NOT enable full size containment;
+// that case is reported by HasInlineSizeContainment() instead.
+//
+// Mirrors Blink's ComputedStyle::ContainsSize() (computed_style.h at SHA
+// 4883d11fef): the `kContainsSize` bit is set by the `size` token,
+// distinct from `kContainsInlineSize` which is set by `inline-size`.
 func (s *Style) HasSizeContainment() bool {
 	v := s.GetContain()
 	if v == "none" || v == "content" {
@@ -7065,7 +7071,14 @@ func (s *Style) HasSizeContainment() bool {
 	if v == "strict" {
 		return true
 	}
-	return strings.Contains(v, "size")
+	// Tokenize and look for the standalone `size` keyword; `inline-size`
+	// must not match (substring search would falsely succeed).
+	for _, tok := range strings.Fields(v) {
+		if tok == "size" {
+			return true
+		}
+	}
+	return false
 }
 
 // HasInlineSizeContainment returns true if the element has inline-size containment.
