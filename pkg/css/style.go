@@ -511,6 +511,13 @@ func (s *Style) GetLength(property string) (float64, bool) {
 	return parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize)
 }
 
+// GetLengthForVal parses a CSS length string using this style's font metrics
+// and viewport dimensions. Equivalent to GetLength but accepts a raw value
+// string rather than a property name. Used for resolving fit-content() arguments.
+func (s *Style) GetLengthForVal(val string) (float64, bool) {
+	return parseLengthFullWithCh(val, s.GetFontSize(), s.ViewportWidth, s.ViewportHeight, s.chScale(), s.XHeight, s.CapHeight, s.LhSize)
+}
+
 // chScale returns the ch unit multiplier relative to fontSize for this style's font.
 // CSS Values §6.1: ch is the advance measure of "0" in the inline axis.
 // Per CSS Writing Modes §7.5 and Blink's IsHorizontalTypographicMode():
@@ -1064,6 +1071,41 @@ func IsCalcWithPercent(val string) bool {
 	val = strings.TrimSpace(val)
 	return strings.HasPrefix(val, "calc(") && strings.HasSuffix(val, ")") &&
 		strings.Contains(val, "%")
+}
+
+// IsFitContentFunction returns true if val is fit-content(<length-percentage>),
+// i.e., the functional form with an argument. This is distinct from the bare
+// keyword "fit-content" (shrink-to-fit). Mirrors CSS Sizing 3 §5.1.5.
+//
+// Examples that return true:  "fit-content(100px)", "fit-content(50%)"
+// Examples that return false: "fit-content" (bare keyword), "min-content"
+func IsFitContentFunction(val string) bool {
+	val = strings.TrimSpace(val)
+	return strings.HasPrefix(val, "fit-content(") && strings.HasSuffix(val, ")")
+}
+
+// ParseFitContentArg extracts the argument string from a fit-content(<L>) value.
+// Returns the trimmed inner argument and true if val is a fit-content() function;
+// otherwise returns ("", false).
+func ParseFitContentArg(val string) (string, bool) {
+	val = strings.TrimSpace(val)
+	if !strings.HasPrefix(val, "fit-content(") || !strings.HasSuffix(val, ")") {
+		return "", false
+	}
+	inner := strings.TrimSpace(val[len("fit-content(") : len(val)-1])
+	return inner, true
+}
+
+// FitContentArgHasPercent returns true if the argument of a fit-content(<L>)
+// value contains a percentage term (bare "%" or calc-with-%). Used to detect
+// cyclic-percentage arguments that must be treated differently during intrinsic
+// size contribution computation (CSS Sizing 3 §5.1.5).
+func FitContentArgHasPercent(val string) bool {
+	inner, ok := ParseFitContentArg(val)
+	if !ok {
+		return false
+	}
+	return strings.Contains(inner, "%")
 }
 
 // calcContext holds all parameters needed to resolve values inside calc() expressions.
