@@ -13185,6 +13185,40 @@ func (s *Style) GetTextDecorationSkipSpaces() TextDecorationSkipSpaces {
 	return out
 }
 
+// TextDecorationSkipInk represents the resolved text-decoration-skip-ink value.
+// CSS Text Decor 4 §1.1.5 defines two values:
+//   - auto (default): the decoration line skips over the glyph extents of
+//     under/overlines (not line-through).
+//   - none: the decoration line paints straight through, ignoring glyphs.
+//
+// Mirrors Blink's `ETextDecorationSkipInk` enum at
+// `third_party/blink/renderer/core/style/computed_style_constants.h`
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type TextDecorationSkipInk int
+
+const (
+	// TextDecorationSkipInkAuto is the default — skip over glyph extents.
+	TextDecorationSkipInkAuto TextDecorationSkipInk = iota
+	// TextDecorationSkipInkNone disables the skip; decoration paints through glyphs.
+	TextDecorationSkipInkNone
+)
+
+// GetTextDecorationSkipInk returns the resolved text-decoration-skip-ink value.
+// Per CSS Text Decor 4 §1.1.5 the initial value is `auto`.
+func (s *Style) GetTextDecorationSkipInk() TextDecorationSkipInk {
+	val, ok := s.Get("text-decoration-skip-ink")
+	if !ok {
+		return TextDecorationSkipInkAuto
+	}
+	switch strings.TrimSpace(strings.ToLower(val)) {
+	case "none":
+		return TextDecorationSkipInkNone
+	case "auto", "":
+		return TextDecorationSkipInkAuto
+	}
+	return TextDecorationSkipInkAuto
+}
+
 // computeOwnTextDecorationContribution returns the element's own contribution
 // to its AppliedTextDecorations vector — i.e. the `AppliedTextDecoration` that
 // would be *appended* to the parent's resolved vector, if any. Returns false

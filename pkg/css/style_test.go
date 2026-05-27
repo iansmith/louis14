@@ -563,3 +563,31 @@ func TestGetBorderImageOutset(t *testing.T) {
 		})
 	}
 }
+
+func TestGetTextDecorationSkipInk(t *testing.T) {
+	cases := []struct {
+		raw  string
+		set  bool
+		want TextDecorationSkipInk
+	}{
+		{set: false, want: TextDecorationSkipInkAuto},        // unset → auto
+		{raw: "auto", set: true, want: TextDecorationSkipInkAuto},
+		{raw: "AUTO", set: true, want: TextDecorationSkipInkAuto},
+		{raw: "none", set: true, want: TextDecorationSkipInkNone},
+		{raw: "None", set: true, want: TextDecorationSkipInkNone},
+		{raw: "", set: true, want: TextDecorationSkipInkAuto},
+		{raw: "garbage", set: true, want: TextDecorationSkipInkAuto},
+	}
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			s := NewStyle()
+			if c.set {
+				s.Set("text-decoration-skip-ink", c.raw)
+			}
+			got := s.GetTextDecorationSkipInk()
+			if got != c.want {
+				t.Errorf("GetTextDecorationSkipInk(%q) = %v, want %v", c.raw, got, c.want)
+			}
+		})
+	}
+}
