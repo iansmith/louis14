@@ -598,6 +598,12 @@ func computeChWidths(styles map[*html.Node]*css.Style, fc text.FontConfig) {
 		style.UsedFontSizeSet = true
 		style.ChWidth = usedMetrics.chWidth
 		style.XHeight = usedMetrics.xHeight
+		style.CapHeight = usedMetrics.capHght
+		// LhSize: computed line-height in pixels. CSS Values 4 §6.1: the lh
+		// unit equals the element's computed line-height. Mirrors Blink's
+		// LineHeightSize::Lh() in css_to_length_conversion_data.cc at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		style.LhSize = style.GetLineHeight()
 	}
 }
 
