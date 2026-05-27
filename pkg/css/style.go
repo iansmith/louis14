@@ -12667,13 +12667,17 @@ const (
 )
 
 // TextDecorationThickness is the resolved thickness for one AppliedTextDecoration.
-// Kind=Length carries Value (pixels) when ValueIsPercent is false, or a percentage
-// (0..100) when ValueIsPercent is true. Mirrors Blink's `TextDecorationThickness`
-// value type (lines_/style_ siblings in applied_text_decoration.h:46).
+// Kind=Length carries Value in absolute pixels: percentages are resolved at
+// cascade time against the computed (pre-`font-size-adjust`) font-size — see
+// GetTextDecorationThicknessResolved. ValueIsPercent is deprecated post-C55
+// and always false on values returned by this package; the field is retained
+// to avoid an exported-symbol structural change (CLAUDE.md §4).
+// Mirrors Blink's `TextDecorationThickness` value type (lines_/style_ siblings
+// in applied_text_decoration.h:46 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 type TextDecorationThickness struct {
 	Kind           TextDecorationThicknessKind
 	Value          float64
-	ValueIsPercent bool
+	ValueIsPercent bool // deprecated; always false post-C55 (percent resolved at cascade)
 }
 
 // TextDecorationInset is the resolved text-decoration-inset value for an
@@ -12822,17 +12826,17 @@ func (s *Style) GetTextDecorationThicknessResolved() TextDecorationThickness {
 	case "from-font":
 		return TextDecorationThickness{Kind: TextDecorationThicknessFromFont}
 	}
-	// Percentage?
-	if strings.HasSuffix(v, "%") {
-		if pct, ok := ParsePercentage(v); ok {
-			return TextDecorationThickness{
-				Kind:           TextDecorationThicknessLength,
-				Value:          pct,
-				ValueIsPercent: true,
-			}
-		}
-	}
-	// Length or calc() — calc() with % terms resolves against font-size here.
+	// Length, percent, or calc() — all resolve to absolute pixels here against
+	// the element's *computed* (pre-`font-size-adjust`) font-size. Mirrors
+	// Blink's `text_decoration_info.cc::ComputeDecorationThickness` @ SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: it calls
+	// `FloatValueForLength(thickness_length, used_font.UsedSize())` where
+	// `UsedSize() = ComputedSize() * text_fit_scaling_factor_` and
+	// `ComputedSize()` is the specified size adjusted for minimum-font-size
+	// and zoom only — NOT for `font-size-adjust`. Storing percent unresolved
+	// and resolving against `GetUsedFontSize()` at paint time (the post-adjust
+	// size) drifts under CSS Fonts 5 §1.7.3 (test:
+	// text-decoration-thickness-percent-001 with `font-size-adjust: 0.25/1.25`).
 	if l, ok := ParseLengthOrPercentageFontRelative(val, s.GetFontSize()); ok {
 		return TextDecorationThickness{
 			Kind:  TextDecorationThicknessLength,

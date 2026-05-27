@@ -46,17 +46,22 @@ func newTextDecorationInfo(box *layout.Box, width, fontSize, ascent, descent, un
 
 // computeThickness resolves an AppliedTextDecoration's thickness to a pixel
 // value. Mirrors Blink's `ComputeDecorationThickness` free function at
-// core/paint/text_decoration_info.cc:67-88 (SHA 4883d11f).
+// core/paint/text_decoration_info.cc:65-83 (SHA 4883d11f).
 //
 //	auto       → fontSize / 10
 //	from-font  → font's underline-thickness metric; fall back to auto if 0
 //	length     → raw pixels, then roundf
-//	percent    → percent of fontSize, then roundf
 //
-// Per Blink's outer ComputeThickness wrapper (cc:274-293), the final value is
+// Percentages are resolved at cascade time against the computed (pre-
+// `font-size-adjust`) font-size — see GetTextDecorationThicknessResolved.
+// This matches Blink's call to FloatValueForLength against `used_font.UsedSize()`
+// = `ComputedSize() * text_fit_scaling_factor_`, where ComputedSize is the
+// specified size with min-font-size + zoom but NOT `font-size-adjust`.
+//
+// Per Blink's outer ComputeThickness wrapper (cc:272-295), the final value is
 // floored at 1px for non-SVG text.
 func (t textDecorationInfo) computeThickness(td css.AppliedTextDecoration) float64 {
-	// Blink's auto formula is `fontSize/10` (text_decoration_info.cc:67-88 @
+	// Blink's auto formula is `fontSize/10` (text_decoration_info.cc:65-83 @
 	// SHA 4883d11f). louis14's pre-port renderer used a hardcoded 1.0 instead;
 	// WPT references in css-text-decor were authored against that 1.0
 	// baseline. Keeping 1.0 here preserves the pre-existing pixel-exact
@@ -74,13 +79,7 @@ func (t textDecorationInfo) computeThickness(td css.AppliedTextDecoration) float
 		}
 		return autoThickness
 	case css.TextDecorationThicknessLength:
-		var px float64
-		if td.Thickness.ValueIsPercent {
-			px = td.Thickness.Value / 100.0 * t.fontSize
-		} else {
-			px = td.Thickness.Value
-		}
-		return math.Max(1.0, math.Round(px))
+		return math.Max(1.0, math.Round(td.Thickness.Value))
 	}
 	return math.Max(1.0, autoThickness)
 }
