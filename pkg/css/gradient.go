@@ -881,13 +881,24 @@ func GetGradient(backgroundValue string) (*Gradient, bool) {
 		}
 		return g, ok
 	}
-	if strings.Contains(val, "conic-gradient(") {
+	if strings.HasPrefix(val, "repeating-conic-gradient(") {
+		// Strip "repeating-" and parse as conic; the renderer's own conic
+		// parser handles the "repeating-" prefix natively, but the
+		// pkg/css side keeps a single ParseConicGradient.
+		inner := "conic-gradient(" + val[len("repeating-conic-gradient("):]
+		g, ok := ParseConicGradient(inner)
+		if ok {
+			g.Repeating = true
+		}
+		return g, ok
+	}
+	if strings.HasPrefix(val, "conic-gradient(") {
 		return ParseConicGradient(val)
 	}
-	if strings.Contains(val, "linear-gradient(") {
+	if strings.HasPrefix(val, "linear-gradient(") {
 		return ParseLinearGradient(val)
 	}
-	if strings.Contains(val, "radial-gradient(") {
+	if strings.HasPrefix(val, "radial-gradient(") {
 		return ParseRadialGradient(val)
 	}
 	return nil, false

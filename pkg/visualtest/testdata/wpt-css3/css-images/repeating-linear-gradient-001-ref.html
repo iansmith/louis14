@@ -17,8 +17,15 @@
     </style>
 </head>
 <body>
+    <!--
+      Stripes alternate starting with WHITE at the top because the test
+      uses `0deg` which is equivalent to `to top`: the gradient line
+      starts at the bottom of the box (pos=0 = green 0px..20px) and ends
+      at the top (pos=200px → mod cycle 40 = white 20px..40px). Per CSS
+      Images 3 §3.1 and Blink's EndPointsFromAngle in
+      core/css/css_gradient_value.cc @ 4883d11fef.
+    -->
     <div class="box">
-        <div class="stripe g"></div>
         <div class="stripe w"></div>
         <div class="stripe g"></div>
         <div class="stripe w"></div>
@@ -28,6 +35,7 @@
         <div class="stripe w"></div>
         <div class="stripe g"></div>
         <div class="stripe w"></div>
+        <div class="stripe g"></div>
     </div>
 </body>
 </html>
