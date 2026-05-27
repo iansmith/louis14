@@ -2452,6 +2452,45 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		}
 	}
 
+	// HTML5 list counter presentational hints (HTML §6.4.6, §6.4.7):
+	//
+	// <ol reversed>   → counter-reset: reversed(list-item)
+	//   CSS counter-reset for list-item uses the CSS Lists auto-initial algorithm
+	//   (CountUsage / computeReversedCounterInitial) to count items in scope,
+	//   matching Blink's list rendering. The `start` attribute is IGNORED for
+	//   the CSS counter when `reversed` is present — the CSS spec mandates
+	//   the auto-initial computation, not the HTML `start` value.
+	//
+	// <ol start="N">  → counter-reset: list-item N   (no reversed attribute)
+	//   The `start` attribute sets the list-item counter to an explicit N.
+	//   Overrides any UA stylesheet value; CSS can further override it.
+	//
+	// <li value="N">  → counter-set: list-item N
+	//   The `value` attribute jumps the counter to N at this item.
+	//
+	// These presentational hints run before author CSS, so author `counter-reset`
+	// rules override them. Only applied to the specific elements; not inherited.
+	switch node.TagName {
+	case "ol":
+		_, hasReversed := node.GetAttribute("reversed")
+		startVal, hasStart := node.GetAttribute("start")
+		if hasReversed {
+			// reversed(list-item) without explicit integer: let the CSS auto-initial
+			// algorithm compute the initial value from the scope.
+			style.Set("counter-reset", "reversed(list-item)")
+		} else if hasStart {
+			if _, err := strconv.Atoi(startVal); err == nil {
+				style.Set("counter-reset", "list-item "+startVal)
+			}
+		}
+	case "li":
+		if val, ok := node.GetAttribute("value"); ok {
+			if _, err := strconv.Atoi(val); err == nil {
+				style.Set("counter-set", "list-item "+val)
+			}
+		}
+	}
+
 	// <img> border attribute
 	if node.TagName == "img" {
 		if val, ok := node.GetAttribute("border"); ok {
