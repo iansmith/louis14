@@ -164,6 +164,23 @@ type PaintLayer struct {
 	IsSidewaysRL            bool
 	IsWritingModeVerticalLR bool // vertical-lr + mixed text-orientation (IsSidewaysRL also true)
 
+	// IsUprightVertical is true when the writing mode is vertical-rl or vertical-lr
+	// AND text-orientation is not "sideways". This is the louis14 analogue of Blink's
+	// `GetFontBaseline() == kCentralBaseline` check used by ResolveUnderlinePosition()
+	// at third_party/blink/renderer/core/paint/text_decoration_info.cc:13-39 @ SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	//
+	// Per CSS Text Decor 3 §3.5, `text-underline-position: left | right` keywords
+	// apply ONLY in upright/mixed vertical writing modes (central-baseline). In
+	// sideways writing modes (horizontal typographic mode after rotation), `left`
+	// and `right` MUST be ignored and the rotation-direction default applies.
+	//
+	// Note: louis14 collapses vertical-{rl,lr}+mixed into IsSidewaysRL=true at
+	// engine.go:374, so this flag is what distinguishes those cases from true
+	// sideways writing modes (writing-mode: sideways-*) and from vertical modes
+	// with explicit text-orientation: sideways.
+	IsUprightVertical bool
+
 	// Text decoration (underline, overline, line-through):
 	TextDecoration          css.TextDecoration
 	TextDecorationColor     css.Color // defaults to TextColor (currentColor)
@@ -768,6 +785,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.IsSidewaysLR = box.IsSidewaysLR
 	layer.IsSidewaysRL = box.IsSidewaysRL
 	layer.IsWritingModeVerticalLR = box.IsWritingModeVerticalLR
+	// IsUprightVertical: vertical-rl/vertical-lr writing modes that retain a
+	// central baseline (text-orientation != "sideways"). Gates the
+	// text-underline-position: left|right handling in the sideways-rotated
+	// decoration painter — sideways-* and vertical+sideways must IGNORE those
+	// keywords per CSS Text Decor 3 §3.5.
+	{
+		wm, _ := s.Get("writing-mode")
+		to, _ := s.Get("text-orientation")
+		layer.IsUprightVertical = (wm == "vertical-rl" || wm == "vertical-lr") && to != "sideways"
+	}
 
 	// Text decoration (CSS Text Decor 3 §2 — AppliedTextDecoration vector).
 	// The new accumulated vector supersedes the legacy single-enum fields when

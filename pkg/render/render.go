@@ -4827,6 +4827,73 @@ func (r *Renderer) familyDeclaredViaFontFace(family string) bool {
 	return false
 }
 
+// shouldFlipUnderlineAndOverline reports whether the underline/overline
+// bits on this run's AppliedTextDecorations must be swapped before painting.
+// Mirrors Blink's `flip_underline_and_overline_` logic at
+// third_party/blink/renderer/core/paint/text_decoration_info.cc:223-237
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which keys on:
+//
+//	original_underline_position_ == ResolvedUnderlinePosition::kOver
+//
+// Per CSS Text Decor 3 §3.5: `text-underline-position: left|right` names a
+// physical side, but the underline must always stay on the LINE-RELATIVE
+// under-side of the text content. If the named physical side IS the over-
+// side (relative to the inline-axis), the underline/overline lines swap
+// sides so the underline still ends up on the under-side.
+//
+// For central-baseline vertical runs (IsUprightVertical), non-CJK:
+//   - `position:right` triggers a flip in vertical-rl (RIGHT = over-side,
+//     because block-start direction is RIGHT in vertical-rl) but NOT in
+//     vertical-lr (RIGHT = under-side, since block-end direction is RIGHT).
+//   - `position:left` triggers a flip in vertical-lr (LEFT = over-side)
+//     but NOT in vertical-rl (LEFT = under-side).
+//
+// CJK script flipping (the "default = kOver" case for ja/zh/ko in vertical
+// modes) is NOT YET implemented because lang plumbing isn't done — see
+// sidewaysUnderlineGoesRight's CJK note.
+func shouldFlipUnderlineAndOverline(layer *PaintLayer) bool {
+	if !layer.IsUprightVertical {
+		return false
+	}
+	pos := layer.TextUnderlinePosition
+	// `position:right` is the over-side in vertical-rl (and only there).
+	if strings.Contains(pos, "right") && !layer.IsWritingModeVerticalLR {
+		return true
+	}
+	// `position:left` is the over-side in vertical-lr (and only there).
+	if strings.Contains(pos, "left") && layer.IsWritingModeVerticalLR {
+		return true
+	}
+	return false
+}
+
+// flipUnderlineOverlineBits returns a copy of decorations with the underline
+// and overline bits swapped on each entry's Lines bitfield. Used when
+// shouldFlipUnderlineAndOverline() reports true to mirror Blink's
+// `std::swap(decoration.has_underline, decoration.has_overline)` at
+// text_decoration_info.cc:233 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func flipUnderlineOverlineBits(decorations []css.AppliedTextDecoration) []css.AppliedTextDecoration {
+	if len(decorations) == 0 {
+		return decorations
+	}
+	out := make([]css.AppliedTextDecoration, len(decorations))
+	for i, td := range decorations {
+		out[i] = td
+		hasUnder := td.Lines.Has(css.TextDecorationLineUnderline)
+		hasOver := td.Lines.Has(css.TextDecorationLineOverline)
+		// Clear both bits, then set them according to the swapped values.
+		lines := td.Lines &^ (css.TextDecorationLineUnderline | css.TextDecorationLineOverline)
+		if hasOver {
+			lines |= css.TextDecorationLineUnderline
+		}
+		if hasUnder {
+			lines |= css.TextDecorationLineOverline
+		}
+		out[i].Lines = lines
+	}
+	return out
+}
+
 // sidewaysUnderlineGoesRight reports whether the underline for a rotated
 // (IsSidewaysRL or IsSidewaysLR) text run should paint on the physical RIGHT
 // side of the line column. Per CSS Text Decor 4 §3.3:
@@ -4837,23 +4904,47 @@ func (r *Renderer) familyDeclaredViaFontFace(family string) bool {
 //     "below baseline" mapped to physical -X). CCW rotation (sideways-lr)
 //     puts it on physical RIGHT.
 //
-//   - `text-underline-position: right` (or any value containing "right"):
-//     forces physical RIGHT regardless of rotation.
-//
-//   - `text-underline-position: left`: forces physical LEFT.
+//   - `text-underline-position: right` / `left`: per CSS Text Decor 3 §3.5
+//     these keywords apply ONLY in upright/mixed vertical writing modes
+//     (central-baseline). In sideways modes the line is laid out horizontally
+//     and the entire line column is then rotated by the canvas, so left/right
+//     are spec'd to have no effect — the underline stays on the rotated-
+//     baseline's natural under-side. Mirrors Blink's gating on
+//     GetFontBaseline() == kCentralBaseline in ResolveUnderlinePosition() at
+//     third_party/blink/renderer/core/paint/text_decoration_info.cc:13-39
+//     @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
 // louis14 doesn't yet type the property; the raw string lives on
 // PaintLayer.TextUnderlinePosition and we do substring-contains checks here.
-// Mirrors Blink's writing-mode-aware ResolveUnderlinePosition() at
-// third_party/blink/renderer/core/paint/text_decoration_info.cc:13-39
-// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// The IsUprightVertical guard distinguishes "true sideways" (sideways-rl /
+// sideways-lr / vertical-*+text-orientation:sideways) from "central-baseline
+// vertical" (vertical-rl / vertical-lr with mixed or upright text-orientation),
+// because louis14 collapses the latter into IsSidewaysRL=true at engine.go:374.
 func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 	pos := layer.TextUnderlinePosition
-	if strings.Contains(pos, "right") {
-		return true
-	}
-	if strings.Contains(pos, "left") {
-		return false
+	if layer.IsUprightVertical {
+		// Central-baseline vertical: left/right keywords ARE applied to
+		// select the physical side of the inline-axis run. Mirrors Blink's
+		// ResolveUnderlinePosition() for non-CJK + central-baseline:
+		//   - kLeft (or auto) → kUnder (block-end side; LEFT in vertical-rl,
+		//     RIGHT in vertical-lr because IsSidewaysRL is set with
+		//     IsWritingModeVerticalLR=true). For our caller (which only
+		//     cares about LEFT vs RIGHT physically), kUnder in vertical-rl
+		//     is LEFT, in vertical-lr is RIGHT.
+		//   - kRight → kOver, then flip_underline_and_overline_=true
+		//     swaps the lines so underline_position becomes kUnder.
+		//     After the swap, the underline still ends up on the kUnder
+		//     side. So even with `right`, the final underline placement
+		//     after the swap is the kUnder side (LEFT in vertical-rl).
+		//
+		// The flip is applied in shouldFlipUnderlineAndOverline + the
+		// caller's flipUnderlineOverlineBits call; sidewaysUnderlineGoesRight
+		// returns the post-flip placement.
+		if strings.Contains(pos, "left") || strings.Contains(pos, "right") {
+			// Both resolve (post-flip if needed) to the kUnder side.
+			// kUnder in vertical-rl = LEFT, in vertical-lr = RIGHT.
+			return layer.IsWritingModeVerticalLR
+		}
 	}
 	// `under` keyword: follows block-end direction.
 	//   vertical-rl / sideways-rl: block-end = LEFT (block progresses to left).
@@ -4861,8 +4952,8 @@ func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 	if strings.Contains(pos, "under") {
 		return layer.IsWritingModeVerticalLR || layer.IsSidewaysLR
 	}
-	// auto / from-font (without left/right) / empty: follow rotation direction.
-	// CCW (IsSidewaysLR) → RIGHT; CW (everything else) → LEFT.
+	// auto / from-font / empty (and left|right when ignored): follow rotation
+	// direction. CCW (IsSidewaysLR) → RIGHT; CW (everything else) → LEFT.
 	//
 	// Note: CSS Text Decor 3 §3.5 specifies a CJK-language flip for the
 	// "auto" default (underline moves to the over-side for ja/ko/zh in
@@ -4964,6 +5055,20 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		metrics := r.dc.GetFontMetrics(fontID)
 		descent := float64(metrics.Descent) / 64.0
 		textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
+
+		// CSS Text Decor 3 §3.5: for non-CJK upright/mixed vertical text,
+		// `text-underline-position: right` resolves to kOver, which in Blink
+		// triggers flip_underline_and_overline_ — the underline/overline bits
+		// on each AppliedTextDecoration are swapped, then the underline is
+		// painted at the kUnder side. Mirrors text_decoration_info.cc:223-237
+		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. We apply the swap to
+		// a local copy and substitute it on the layer for the duration of the
+		// sideways paint so the downstream painters see the flipped lines.
+		if shouldFlipUnderlineAndOverline(layer) && len(layer.AppliedTextDecorations) > 0 {
+			origDecorations := layer.AppliedTextDecorations
+			layer.AppliedTextDecorations = flipUnderlineOverlineBits(origDecorations)
+			defer func() { layer.AppliedTextDecorations = origDecorations }()
+		}
 
 		hasDecor := len(layer.AppliedTextDecorations) > 0 || (layer.TextDecoration != css.TextDecorationNone && layer.TextDecoration != "")
 
