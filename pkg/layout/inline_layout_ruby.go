@@ -129,7 +129,11 @@ func emitSubLineTextFragments(
 				ascent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(r.Item.Style, fonts)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+				// CSS Fonts 4 §6.1: same as createLineBoxEx text path — use native
+				// ascent for per-item placement so the glyph lands at blockBaseline -
+				// nativeAscent, not blockBaseline - overriddenAscent. The override
+				// affects line-box sizing (strut), not glyph positioning within the box.
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
 			}
 			blockPos := blockBaseline - ascent
 

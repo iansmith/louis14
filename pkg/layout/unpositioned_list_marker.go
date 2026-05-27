@@ -72,7 +72,7 @@ func (m *UnpositionedListMarker) markerFontAscent(ctx *LayoutContext) int {
 		return 0
 	}
 	fontPath := resolveFontPath(style, ctx.FontConfig)
-	return int(text.FontAscentFromFont(style.GetFontSize(), fontPath))
+	return int(text.FontAscentFromFont(style.GetFontSize(), fontPath, ctx.FontConfig.Registry))
 }
 
 // Layout lays the marker box out for size and first-line baseline, caching the

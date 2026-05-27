@@ -585,17 +585,27 @@ func MeasureTextVertical(text string, fontSize float64, bold, italic, mono, ahem
 // FontAscent returns the font ascent in pixels for the given style.
 func FontAscent(fontSize float64, bold, italic, mono, ahem bool) float64 {
 	fontPath := DefaultFontConfig().FontPath(bold, italic, mono, ahem)
-	return FontAscentFromFont(fontSize, fontPath)
+	return FontAscentFromFont(fontSize, fontPath, nil)
 }
 
 // FontAscentFromFont returns the font ascent in pixels for the given font path,
 // rounded to the nearest integer. Matches Blink's int_ascent_ (lroundf in
 // SimpleFontData::PlatformInit) so the strut/leading math produces integer-aligned
 // line-box heights and stacked block containers don't accumulate sub-pixel drift.
-func FontAscentFromFont(fontSize float64, fontPath string) float64 {
+//
+// reg is the optional FontRegistry for looking up CSS Fonts 4 ascent-override
+// values. nil is safe and leaves the native metric unchanged.
+func FontAscentFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return math.Round(fontSize * 0.8)
+	}
+	if reg != nil {
+		if mo := reg.MetricsOverrideForPath(fontPath); mo.Ascent != nil {
+			// CSS Fonts 4 §6.1: ascent = ratio × fontSize, then integer-rounded
+			// (mirrors Blink's PlatformInit int_ascent_ = lroundf(ascent_override × size)).
+			return math.Round(*mo.Ascent * fontSize)
+		}
 	}
 	return math.Round(float64(m.Ascent) / 64.0)
 }
@@ -603,10 +613,18 @@ func FontAscentFromFont(fontSize float64, fontPath string) float64 {
 // FontDescentFromFont returns the font descent in pixels for the given font path,
 // rounded to the nearest integer (positive value). See FontAscentFromFont for
 // the rationale on integer rounding.
-func FontDescentFromFont(fontSize float64, fontPath string) float64 {
+//
+// reg is the optional FontRegistry for looking up CSS Fonts 4 descent-override
+// values. nil is safe and leaves the native metric unchanged.
+func FontDescentFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return math.Round(fontSize * 0.2)
+	}
+	if reg != nil {
+		if mo := reg.MetricsOverrideForPath(fontPath); mo.Descent != nil {
+			return math.Round(*mo.Descent * fontSize)
+		}
 	}
 	return math.Round(float64(m.Descent) / 64.0)
 }
@@ -623,20 +641,37 @@ func FontDescentFromFont(fontSize float64, fontPath string) float64 {
 // path (e.g. ruby annotation positioning, where layout-vs-render
 // rounding mismatch surfaces as a visible 1px gap; see LOU-161
 // findings.md).
-func FontTypoAscentFromFont(fontSize float64, fontPath string) float64 {
+//
+// reg is the optional FontRegistry for looking up CSS Fonts 4 ascent-override
+// values. nil is safe and leaves the native metric unchanged.
+func FontTypoAscentFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return fontSize * 0.8
+	}
+	if reg != nil {
+		if mo := reg.MetricsOverrideForPath(fontPath); mo.Ascent != nil {
+			// Unrounded: mirrors Blink's float_ascent_ = ascent_override × size.
+			return *mo.Ascent * fontSize
+		}
 	}
 	return float64(m.Ascent) / 64.0
 }
 
 // FontTypoDescentFromFont returns the unrounded font typo descent in pixels.
 // See FontTypoAscentFromFont for the rationale.
-func FontTypoDescentFromFont(fontSize float64, fontPath string) float64 {
+//
+// reg is the optional FontRegistry for looking up CSS Fonts 4 descent-override
+// values. nil is safe and leaves the native metric unchanged.
+func FontTypoDescentFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return fontSize * 0.2
+	}
+	if reg != nil {
+		if mo := reg.MetricsOverrideForPath(fontPath); mo.Descent != nil {
+			return *mo.Descent * fontSize
+		}
 	}
 	return float64(m.Descent) / 64.0
 }
@@ -645,10 +680,40 @@ func FontTypoDescentFromFont(fontSize float64, fontPath string) float64 {
 // CSS line-height: normal. Returns the unrounded m.Height so line-height:normal
 // matches the font's intrinsic spacing exactly; integer rounding is applied at
 // the strut sites (via FontAscent/Descent) where it matters for line-box layout.
-func FontHeightFromFont(fontSize float64, fontPath string) float64 {
+//
+// reg is the optional FontRegistry for looking up CSS Fonts 4 line-gap-override
+// values. nil is safe and leaves the native metric unchanged.
+func FontHeightFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return fontSize * 1.2
+	}
+	if reg != nil {
+		mo := reg.MetricsOverrideForPath(fontPath)
+		// CSS Fonts 4 §6.3: line-gap-override replaces the OS/2 line gap.
+		// Height = Ascent + Descent + LineGap. Any of ascent/descent/line-gap
+		// may be individually overridden; derive each piece and sum.
+		// Mirrors Blink's PlatformInit: line_gap = *metrics_override.line_gap_override × size.
+		if mo.Ascent != nil || mo.Descent != nil || mo.LineGap != nil {
+			var ascent, descent, lineGap float64
+			if mo.Ascent != nil {
+				ascent = *mo.Ascent * fontSize
+			} else {
+				ascent = float64(m.Ascent) / 64.0
+			}
+			if mo.Descent != nil {
+				descent = *mo.Descent * fontSize
+			} else {
+				descent = float64(m.Descent) / 64.0
+			}
+			if mo.LineGap != nil {
+				lineGap = *mo.LineGap * fontSize
+			} else {
+				// Native line gap = Height - Ascent - Descent.
+				lineGap = float64(m.Height)/64.0 - float64(m.Ascent)/64.0 - float64(m.Descent)/64.0
+			}
+			return ascent + descent + lineGap
+		}
 	}
 	return float64(m.Height) / 64.0
 }

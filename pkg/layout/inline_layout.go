@@ -1666,13 +1666,13 @@ func createLineBoxEx(
 			asc, desc = fs/2, fs/2
 		} else {
 			fontPath := resolveFontPath(style, fonts)
-			asc = alignmentAscentFromFont(sidewaysVLR, fs, fontPath)
-			desc = alignmentDescentFromFont(sidewaysVLR, fs, fontPath)
+			asc = alignmentAscentFromFont(sidewaysVLR, fs, fontPath, fonts.Registry)
+			desc = alignmentDescentFromFont(sidewaysVLR, fs, fontPath, fonts.Registry)
 		}
 		lineHt := style.GetLineHeight()
 		if style.IsLineHeightNormal() && !centralBaseline {
 			fontPath := resolveFontPath(style, fonts)
-			lineHt = text.FontHeightFromFont(fs, fontPath)
+			lineHt = text.FontHeightFromFont(fs, fontPath, fonts.Registry)
 		}
 		halfLeading := (lineHt - (asc + desc)) / 2
 		asc += halfLeading
@@ -1737,7 +1737,15 @@ func createLineBoxEx(
 				ascent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(rStyle, fonts)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+				// CSS Fonts 4 §6.1-§6.3: ascent-override affects the strut (line-box
+				// height) but NOT the per-item placement within the line. The renderer
+				// draws the glyph at box.Y + nativeAscent; if we used the overridden
+				// ascent here, blockPos = maxAscent - overriddenAscent would shift the
+				// fragment up, making the glyph land at a different visual position
+				// than the reference. Pass nil so the native font ascent is used for
+				// positioning, matching Blink's text_fragment_painter.cc paint path
+				// which reads metrics.Ascent from the underlying font data directly.
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
 			}
 
 			// Default: baseline-align the text fragment so its baseline sits
@@ -2039,21 +2047,25 @@ func needsSidewaysVLRBaselineSwap(wdm WritingDirectionMode, centralBaseline bool
 // alignmentAscentFromFont returns the distance from the line's block-start to
 // the alphabetic baseline for a font. When swap is true (VLR+sideways per
 // needsSidewaysVLRBaselineSwap), this returns the typographic descent.
-func alignmentAscentFromFont(swap bool, fontSize float64, fontPath string) float64 {
+// reg is passed through to FontAscentFromFont / FontDescentFromFont for
+// CSS Fonts 4 metric-override support.
+func alignmentAscentFromFont(swap bool, fontSize float64, fontPath string, reg *text.FontRegistry) float64 {
 	if swap {
-		return text.FontDescentFromFont(fontSize, fontPath)
+		return text.FontDescentFromFont(fontSize, fontPath, reg)
 	}
-	return text.FontAscentFromFont(fontSize, fontPath)
+	return text.FontAscentFromFont(fontSize, fontPath, reg)
 }
 
 // alignmentDescentFromFont returns the distance from the alphabetic baseline
 // to the line's block-end for a font. When swap is true, this returns the
 // typographic ascent.
-func alignmentDescentFromFont(swap bool, fontSize float64, fontPath string) float64 {
+// reg is passed through to FontAscentFromFont / FontDescentFromFont for
+// CSS Fonts 4 metric-override support.
+func alignmentDescentFromFont(swap bool, fontSize float64, fontPath string, reg *text.FontRegistry) float64 {
 	if swap {
-		return text.FontAscentFromFont(fontSize, fontPath)
+		return text.FontAscentFromFont(fontSize, fontPath, reg)
 	}
-	return text.FontDescentFromFont(fontSize, fontPath)
+	return text.FontDescentFromFont(fontSize, fontPath, reg)
 }
 
 // computeLineMetrics is the backward-compatible wrapper that uses wdm.UsesCentralBaseline().
@@ -2087,8 +2099,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			strutDescent = fontSize / 2
 		} else {
 			fontPath := resolveFontPath(parentStyle, fonts)
-			strutAscent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
-			strutDescent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
+			strutAscent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
+			strutDescent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 		}
 		// CSS 2.1 §10.8.1: line-height: normal uses the font's recommended
 		// line height rather than a fixed 1.2× multiplier. This ensures the
@@ -2096,7 +2108,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		lineHt := parentStyle.GetLineHeight()
 		if parentStyle.IsLineHeightNormal() && !centralBaseline {
 			fontPath := resolveFontPath(parentStyle, fonts)
-			lineHt = text.FontHeightFromFont(fontSize, fontPath)
+			lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 		}
 		// CSS 2.1 §10.8.1: half-leading is allowed to be negative when
 		// line-height < ascent+descent. Mirror Blink (font_height.cc::AddLeading
@@ -2150,8 +2162,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(rStyle, fonts)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
-				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
+				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
@@ -2159,7 +2171,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			lineHt := rStyle.GetLineHeight()
 			if rStyle.IsLineHeightNormal() && !centralBaseline {
 				fontPath := resolveFontPath(rStyle, fonts)
-				lineHt = text.FontHeightFromFont(fontSize, fontPath)
+				lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 			}
 			halfLeading := (lineHt - (ascent + descent)) / 2
 			ascent += halfLeading
@@ -2198,8 +2210,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(rStyle, fonts)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
-				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
+				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			}
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
@@ -2208,7 +2220,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				lineHt := rStyle.GetLineHeight()
 				if rStyle.IsLineHeightNormal() && !centralBaseline {
 					fontPath := resolveFontPath(rStyle, fonts)
-					lineHt = text.FontHeightFromFont(fontSize, fontPath)
+					lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 				}
 				halfLeading := (lineHt - (ascent + descent)) / 2
 				ascent += halfLeading
@@ -2244,13 +2256,13 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = fontSize / 2
 			} else {
 				fontPath := resolveFontPath(rStyle, fonts)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
-				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath)
+				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
+				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			}
 			lineHt := rStyle.GetLineHeight()
 			if rStyle.IsLineHeightNormal() && !centralBaseline {
 				fontPath := resolveFontPath(rStyle, fonts)
-				lineHt = text.FontHeightFromFont(fontSize, fontPath)
+				lineHt = text.FontHeightFromFont(fontSize, fontPath, fonts.Registry)
 			}
 			halfLeading := (lineHt - (ascent + descent)) / 2
 			ascent += halfLeading
