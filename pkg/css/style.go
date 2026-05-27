@@ -10550,15 +10550,25 @@ func (s *Style) GetBorderImageSlice() BorderImageSlice {
 }
 
 // GetBorderImageWidth returns the 4 border-image-width values in pixels.
-// Values can be <number> (multiplier of border-width), <length>, or auto.
-// borderWidths is [top, right, bottom, left] in pixels.
+// Values can be <number> (multiplier of border-width), <length>,
+// <percentage>, or auto.
+//
+// borderWidths is [top, right, bottom, left] in pixels (used for <number>
+// and 'auto'). borderBoxW/borderBoxH are the border-box dimensions used to
+// resolve <percentage> values, per CSS Backgrounds 3 §6.3: "Percentages
+// refer to the size of the border image area: the width of the area for
+// horizontal offsets, the height for vertical offsets." Top and bottom
+// (index 0, 2) are vertical offsets → percentage of height; left and right
+// (index 1, 3) are horizontal offsets → percentage of width. Mirrors
+// Blink's ResolveAsLength in nine_piece_image_grid.cc at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
 // Per the CSS shorthand expansion rules, the 1/2/3 value forms are first
 // expanded into the 4-value form, and only then is each number multiplied
 // by the corresponding border-width. The previous in-place expansion
 // (multiply then copy vals[0]) silently dropped the per-side multiplier
 // when border widths differed.
-func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
+func (s *Style) GetBorderImageWidth(borderWidths [4]float64, borderBoxW, borderBoxH float64) [4]float64 {
 	v, ok := s.Get("border-image-width")
 	if !ok || strings.TrimSpace(v) == "" {
 		return borderWidths // default = border-width values
@@ -10582,14 +10592,20 @@ func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
 	case 4:
 		four = [4]string{parts[0], parts[1], parts[2], parts[3]}
 	}
+	// Reference axis size for percentage resolution: [top, right, bottom, left].
+	refDim := [4]float64{borderBoxH, borderBoxW, borderBoxH, borderBoxW}
 	var vals [4]float64
 	for i, p := range four {
-		if p == "auto" {
+		switch {
+		case p == "auto":
 			vals[i] = borderWidths[i]
-		} else if strings.HasSuffix(p, "px") {
+		case strings.HasSuffix(p, "px"):
 			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
 			vals[i] = f
-		} else {
+		case strings.HasSuffix(p, "%"):
+			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "%"), 64)
+			vals[i] = f * refDim[i] / 100
+		default:
 			// number = multiplier of corresponding border-width
 			f, _ := strconv.ParseFloat(p, 64)
 			vals[i] = f * borderWidths[i]

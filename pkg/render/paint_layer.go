@@ -621,9 +621,18 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			layer.BorderImageSource = &css.CSSImageValue{Data: css.URLData{Relative: url, Absolute: url}}
 			layer.BorderImageSlice = s.GetBorderImageSlice()
 			bwArr := [4]float64{box.Border.Top, box.Border.Right, box.Border.Bottom, box.Border.Left}
-			layer.BorderImageWidth = s.GetBorderImageWidth(bwArr)
-			layer.BorderImageRepeat = s.GetBorderImageRepeat()
 			layer.BorderImageOutset = s.GetBorderImageOutset(bwArr)
+			// Per CSS Backgrounds 3 §6.3, border-image-width <percentage>
+			// resolves against the border image area's relevant dimension
+			// (top/bottom against height, left/right against width). The
+			// border image area is the border-box extended outward by
+			// border-image-outset on each side. Mirrors Blink's
+			// BorderImageLength::ResolveAsLength at SHA
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+			areaW := box.Width + layer.BorderImageOutset[1] + layer.BorderImageOutset[3]
+			areaH := box.Height + layer.BorderImageOutset[0] + layer.BorderImageOutset[2]
+			layer.BorderImageWidth = s.GetBorderImageWidth(bwArr, areaW, areaH)
+			layer.BorderImageRepeat = s.GetBorderImageRepeat()
 		}
 	}
 
