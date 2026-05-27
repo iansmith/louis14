@@ -120,6 +120,7 @@ type PaintLayer struct {
 	BorderImageSource *css.CSSImageValue   // url() value; nil = none (LOU-138 phase 7.3)
 	BorderImageSlice  css.BorderImageSlice // 4 slice values + fill flag
 	BorderImageWidth  [4]float64           // top, right, bottom, left (px)
+	BorderImageWidthAuto [4]bool           // true for sides where 'auto' was specified (resolved at paint time per CSS Backgrounds 3 §6.3)
 	BorderImageRepeat [2]string            // [horizontal, vertical]: stretch/repeat/round/space
 	BorderImageOutset [4]float64           // top, right, bottom, left (px); extends paint area outside border box
 
@@ -631,7 +632,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			areaW := box.Width + layer.BorderImageOutset[1] + layer.BorderImageOutset[3]
 			areaH := box.Height + layer.BorderImageOutset[0] + layer.BorderImageOutset[2]
-			layer.BorderImageWidth = s.GetBorderImageWidth(bwArr, areaW, areaH)
+			layer.BorderImageWidth, layer.BorderImageWidthAuto = s.GetBorderImageWidth(bwArr, areaW, areaH)
 			layer.BorderImageRepeat = s.GetBorderImageRepeat()
 		}
 	}

@@ -3495,7 +3495,7 @@ func (r *Renderer) drawBorderImage(box *layout.Box) {
 	// border-image-width determines how wide the image regions are.
 	// Percentage values resolve against the border-box dimensions
 	// (height for top/bottom, width for left/right).
-	imgWidths := box.Style.GetBorderImageWidth(borderWidths, box.Width, box.Height)
+	imgWidths, _ := box.Style.GetBorderImageWidth(borderWidths, box.Width, box.Height)
 	topW := imgWidths[0]
 	rightW := imgWidths[1]
 	bottomW := imgWidths[2]

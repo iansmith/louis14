@@ -3184,6 +3184,27 @@ func (r *Renderer) drawBorderImage(layer *PaintLayer) bool {
 		sliceLeft = int(math.Round(slice.Left))
 	}
 
+	// Resolve 'auto' border-image-width per CSS Backgrounds 3 §6.3 and Blink's
+	// BorderImageLength::ResolveAsLength at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: 'auto' uses the intrinsic
+	// dimension of the corresponding slice (in source pixels), interpreted as
+	// CSS px. For top/bottom that's sliceTop/sliceBottom; for left/right that's
+	// sliceLeft/sliceRight. The fallback path when the image lacks an intrinsic
+	// dimension (kept as the corresponding border-width) was already set in
+	// GetBorderImageWidth, so we only override when the slice is non-zero.
+	if layer.BorderImageWidthAuto[0] && sliceTop > 0 {
+		biW[0] = float64(sliceTop)
+	}
+	if layer.BorderImageWidthAuto[1] && sliceRight > 0 {
+		biW[1] = float64(sliceRight)
+	}
+	if layer.BorderImageWidthAuto[2] && sliceBottom > 0 {
+		biW[2] = float64(sliceBottom)
+	}
+	if layer.BorderImageWidthAuto[3] && sliceLeft > 0 {
+		biW[3] = float64(sliceLeft)
+	}
+
 	// Clamp slices to image dimensions.
 	if sliceTop > imgH {
 		sliceTop = imgH

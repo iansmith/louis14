@@ -10568,14 +10568,14 @@ func (s *Style) GetBorderImageSlice() BorderImageSlice {
 // by the corresponding border-width. The previous in-place expansion
 // (multiply then copy vals[0]) silently dropped the per-side multiplier
 // when border widths differed.
-func (s *Style) GetBorderImageWidth(borderWidths [4]float64, borderBoxW, borderBoxH float64) [4]float64 {
+func (s *Style) GetBorderImageWidth(borderWidths [4]float64, borderBoxW, borderBoxH float64) (vals [4]float64, isAuto [4]bool) {
 	v, ok := s.Get("border-image-width")
 	if !ok || strings.TrimSpace(v) == "" {
-		return borderWidths // default = border-width values
+		return borderWidths, [4]bool{} // default = border-width values
 	}
 	parts := strings.Fields(strings.TrimSpace(v))
 	if len(parts) == 0 {
-		return borderWidths
+		return borderWidths, [4]bool{}
 	}
 	if len(parts) > 4 {
 		parts = parts[:4]
@@ -10594,11 +10594,16 @@ func (s *Style) GetBorderImageWidth(borderWidths [4]float64, borderBoxW, borderB
 	}
 	// Reference axis size for percentage resolution: [top, right, bottom, left].
 	refDim := [4]float64{borderBoxH, borderBoxW, borderBoxH, borderBoxW}
-	var vals [4]float64
 	for i, p := range four {
 		switch {
 		case p == "auto":
+			// Per CSS Backgrounds 3 §6.3: 'auto' uses the intrinsic dimension
+			// of the corresponding image slice. Caller resolves this at paint
+			// time once the image is loaded; we set a placeholder equal to the
+			// corresponding border-width as the fallback for "image lacks the
+			// required intrinsic dimension" per spec.
 			vals[i] = borderWidths[i]
+			isAuto[i] = true
 		case strings.HasSuffix(p, "px"):
 			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
 			vals[i] = f
@@ -10611,7 +10616,7 @@ func (s *Style) GetBorderImageWidth(borderWidths [4]float64, borderBoxW, borderB
 			vals[i] = f * borderWidths[i]
 		}
 	}
-	return vals
+	return vals, isAuto
 }
 
 // GetBorderImageOutset returns the 4 border-image-outset values in pixels.
