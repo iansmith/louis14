@@ -1371,8 +1371,28 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		colBreakToken := nextColToken
 		inlineOffset := 0.0
 
+		// CSS Multicol L2 §4.2.6 `column-wrap:nowrap` mode (including the
+		// `auto` resolution to `nowrap`): columns may extend past
+		// `column-count` along the inline axis (overflowing the multicol
+		// box) because no row-wrap is allowed. The inner per-column loop
+		// must continue placing columns until content is consumed
+		// (break-token goes nil). Each column must have a definite
+		// block-size so layout makes progress per column; otherwise the
+		// classic L1 balance algorithm constrains content into `column-
+		// count` columns and the cap remains. Mirrors Blink's behavior at
+		// `4883d11fef` where `ColumnLayoutAlgorithm::LayoutLine` does not
+		// cap by `used_column_count` when `!ShouldWrapColumns()` and each
+		// column has a known block-size.
+		// Balance is conceptually inactive when column-height is non-auto:
+		// the switch above takes the `!hasAutoColumnHeight()` branch, which
+		// bypasses the balance estimate and uses the explicit column height.
+		// So the gate excludes balance only when it is actually controlling
+		// the column block-size (balanceColumns && hasAutoColumnHeight).
+		balanceControlsColumnHeight := balanceColumns && mla.hasAutoColumnHeight()
+		noWrapMode := !mla.shouldWrapColumns() && !balanceControlsColumnHeight && colBlockSize != Indefinite
+
 		// Inner per-column loop.
-		for col := 0; col < numCols || colBlockSize == Indefinite; col++ {
+		for col := 0; col < numCols || colBlockSize == Indefinite || noWrapMode; col++ {
 			// IsInsideBalancedColumns is true only when the balance algorithm
 			// actually determined the column height (not when column-height is
 			// explicit). Prevents fragment background extension (Change 3) from
@@ -1474,7 +1494,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			if colBreakToken == nil {
 				if mla.space.HasBlockFragmentation && rowHasDeferredOOFs {
 					inlineOffset += usedColWidth + gap
-					if col+1 >= numCols {
+					if !noWrapMode && col+1 >= numCols {
 						break
 					}
 					continue
@@ -1483,7 +1503,7 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 			}
 			inlineOffset += usedColWidth + gap
 
-			if col+1 >= numCols {
+			if !noWrapMode && col+1 >= numCols {
 				break
 			}
 		}
@@ -1506,9 +1526,11 @@ func (mla *MulticolLayoutAlgorithm) layoutLine(
 		// Accept when no violations, column count within limit, and either
 		// content fully fits (no remaining break token) or a spanner was hit
 		// (in which case this row is done regardless).
+		// In nowrap mode, the column-count cap does not apply (CSS Multicol
+		// L2 §4.2.6) — columns extend inline as needed.
 		lastHasSpanner := lastInnerResult != nil && lastInnerResult.ColumnSpannerPath != nil
 		if !hasViolatingBreak &&
-			actualColumnCount <= numCols &&
+			(noWrapMode || actualColumnCount <= numCols) &&
 			(colBreakToken == nil || lastHasSpanner) {
 			break
 		}
