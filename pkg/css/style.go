@@ -2568,17 +2568,46 @@ func expandShorthand(style *Style, property, value string) {
 		// Normalize vendor-prefixed size keywords before storing
 		style.Set(property, normalizeVendorPrefixedValue(value))
 	case "border-image":
-		// border-image shorthand: <source> [<slice> [ / <width> [ / <outset> ]] ] <repeat>
-		// We split on "/" to separate source+slice from width from outset+repeat.
-		// Find the source (url() or gradient function) first.
+		// border-image shorthand per CSS Backgrounds 3 §6.6:
+		//   <source> [<slice>{1,4}[/<width>{1,4}[/<outset>{1,4}]]?]? <repeat>{1,2}?
+		// Every omitted longhand resets to its initial value per the CSS
+		// shorthand resolution rule. The <repeat> keywords (stretch | repeat |
+		// round | space) terminate the last whitespace-separated section.
+		// Mirrors Blink's CSSBorderImageShorthand parser at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		v := strings.TrimSpace(value)
-		// Split into slash-separated parts (but be careful of slashes inside parens)
+		// Reset all longhands to initial; the assignments below override
+		// whichever components the value supplies.
+		style.Set("border-image-source", "none")
+		style.Set("border-image-slice", "100%")
+		style.Set("border-image-width", "1")
+		style.Set("border-image-outset", "0")
+		style.Set("border-image-repeat", "stretch")
+		// Split into slash-separated parts (but be careful of slashes inside parens).
 		slashParts := splitBorderImageSlashes(v)
-		// First part contains source, possibly followed by slice
+		// extractRepeat splits trailing repeat keywords off a slash-section's
+		// trailing whitespace-separated tokens.
+		isRepeatKw := func(s string) bool {
+			switch s {
+			case "stretch", "repeat", "round", "space":
+				return true
+			}
+			return false
+		}
+		extractRepeat := func(section string) (prefix, repeatStr string) {
+			fields := strings.Fields(section)
+			n := len(fields)
+			for n > 0 && isRepeatKw(fields[n-1]) {
+				n--
+			}
+			if n == len(fields) {
+				return section, ""
+			}
+			return strings.Join(fields[:n], " "), strings.Join(fields[n:], " ")
+		}
+		var repeatStr string
 		if len(slashParts) >= 1 {
 			firstPart := strings.TrimSpace(slashParts[0])
-			// Identify where the source image ends and slice begins.
-			// Source is a url() or *-gradient(...) function.
 			srcEnd := findBorderImageSourceEnd(firstPart)
 			src := strings.TrimSpace(firstPart[:srcEnd])
 			rest := strings.TrimSpace(firstPart[srcEnd:])
@@ -2586,23 +2615,39 @@ func expandShorthand(style *Style, property, value string) {
 				src = "none"
 			}
 			style.Set("border-image-source", src)
-			if rest != "" {
+			if len(slashParts) == 1 {
+				// No slashes: trailing tokens may be the repeat keyword(s).
+				slice, rep := extractRepeat(rest)
+				if rep != "" {
+					repeatStr = rep
+				}
+				if slice != "" {
+					style.Set("border-image-slice", slice)
+				}
+			} else if rest != "" {
 				style.Set("border-image-slice", rest)
 			}
 		}
-		if len(slashParts) >= 2 {
+		if len(slashParts) == 2 {
+			widthSec, rep := extractRepeat(strings.TrimSpace(slashParts[1]))
+			if rep != "" {
+				repeatStr = rep
+			}
+			if widthSec != "" {
+				style.Set("border-image-width", widthSec)
+			}
+		} else if len(slashParts) >= 3 {
 			style.Set("border-image-width", strings.TrimSpace(slashParts[1]))
+			outsetSec, rep := extractRepeat(strings.TrimSpace(slashParts[2]))
+			if rep != "" {
+				repeatStr = rep
+			}
+			if outsetSec != "" {
+				style.Set("border-image-outset", outsetSec)
+			}
 		}
-		if len(slashParts) >= 3 {
-			// Could be "outset repeat" or just "outset"
-			last := strings.TrimSpace(slashParts[2])
-			parts := strings.Fields(last)
-			if len(parts) >= 1 {
-				style.Set("border-image-outset", parts[0])
-			}
-			if len(parts) >= 2 {
-				style.Set("border-image-repeat", strings.Join(parts[1:], " "))
-			}
+		if repeatStr != "" {
+			style.Set("border-image-repeat", repeatStr)
 		}
 	case "text-decoration":
 		// CSS Text Decor 4 §2.6: text-decoration is a shorthand for:
@@ -11124,22 +11169,32 @@ func (s *Style) GetBorderImageSlice() BorderImageSlice {
 }
 
 // GetBorderImageWidth returns the 4 border-image-width values in pixels.
-// Values can be <number> (multiplier of border-width), <length>, or auto.
-// borderWidths is [top, right, bottom, left] in pixels.
+// Values can be <number> (multiplier of border-width), <length>,
+// <percentage>, or auto.
+//
+// borderWidths is [top, right, bottom, left] in pixels (used for <number>
+// and 'auto'). borderBoxW/borderBoxH are the border-box dimensions used to
+// resolve <percentage> values, per CSS Backgrounds 3 §6.3: "Percentages
+// refer to the size of the border image area: the width of the area for
+// horizontal offsets, the height for vertical offsets." Top and bottom
+// (index 0, 2) are vertical offsets → percentage of height; left and right
+// (index 1, 3) are horizontal offsets → percentage of width. Mirrors
+// Blink's ResolveAsLength in nine_piece_image_grid.cc at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
 // Per the CSS shorthand expansion rules, the 1/2/3 value forms are first
 // expanded into the 4-value form, and only then is each number multiplied
 // by the corresponding border-width. The previous in-place expansion
 // (multiply then copy vals[0]) silently dropped the per-side multiplier
 // when border widths differed.
-func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
+func (s *Style) GetBorderImageWidth(borderWidths [4]float64, borderBoxW, borderBoxH float64) (vals [4]float64, isAuto [4]bool) {
 	v, ok := s.Get("border-image-width")
 	if !ok || strings.TrimSpace(v) == "" {
-		return borderWidths // default = border-width values
+		return borderWidths, [4]bool{} // default = border-width values
 	}
 	parts := strings.Fields(strings.TrimSpace(v))
 	if len(parts) == 0 {
-		return borderWidths
+		return borderWidths, [4]bool{}
 	}
 	if len(parts) > 4 {
 		parts = parts[:4]
@@ -11156,20 +11211,31 @@ func (s *Style) GetBorderImageWidth(borderWidths [4]float64) [4]float64 {
 	case 4:
 		four = [4]string{parts[0], parts[1], parts[2], parts[3]}
 	}
-	var vals [4]float64
+	// Reference axis size for percentage resolution: [top, right, bottom, left].
+	refDim := [4]float64{borderBoxH, borderBoxW, borderBoxH, borderBoxW}
 	for i, p := range four {
-		if p == "auto" {
+		switch {
+		case p == "auto":
+			// Per CSS Backgrounds 3 §6.3: 'auto' uses the intrinsic dimension
+			// of the corresponding image slice. Caller resolves this at paint
+			// time once the image is loaded; we set a placeholder equal to the
+			// corresponding border-width as the fallback for "image lacks the
+			// required intrinsic dimension" per spec.
 			vals[i] = borderWidths[i]
-		} else if strings.HasSuffix(p, "px") {
+			isAuto[i] = true
+		case strings.HasSuffix(p, "px"):
 			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "px"), 64)
 			vals[i] = f
-		} else {
+		case strings.HasSuffix(p, "%"):
+			f, _ := strconv.ParseFloat(strings.TrimSuffix(p, "%"), 64)
+			vals[i] = f * refDim[i] / 100
+		default:
 			// number = multiplier of corresponding border-width
 			f, _ := strconv.ParseFloat(p, 64)
 			vals[i] = f * borderWidths[i]
 		}
 	}
-	return vals
+	return vals, isAuto
 }
 
 // GetBorderImageOutset returns the 4 border-image-outset values in pixels.
