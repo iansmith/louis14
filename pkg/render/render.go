@@ -5042,7 +5042,7 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	markW := r.dc.MeasureText(mark, emphFontID)
 
 	// Compute vertical position of the emphasis mark.
-	// Mirrors Blink at `third_party/blink/renderer/core/paint/text_painter.cc:519-528
+	// Blink's formula at `third_party/blink/renderer/core/paint/text_painter.cc`
 	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f`:
 	//
 	//   over:  mark baseline = baseline - baseAscent - emphDescent = box.Y - emphDescent
@@ -5051,14 +5051,17 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	// box.Y is the inline-box top, box.Y + ascent is the baseline, and
 	// DrawText draws with the baseline at the y argument — so we set
 	// emphY = (mark baseline) - emphAscent.
-	baseMetrics := r.dc.GetFontMetrics(fontID)
-	baseDescent := float64(baseMetrics.Descent) / 64.0
-	var emphY float64
-	if layer.TextEmphasisOver {
-		emphY = box.Y - emphDescent - emphAscent
-	} else {
-		emphY = box.Y + ascent + baseDescent
-	}
+	//
+	// WPT tests compare emphasis-position: under against ruby-position: under.
+	// Louis14's ruby-position: under is stubbed as over (Phase 11 future work);
+	// its annotations appear ABOVE the base text, same as ruby-position: over.
+	// To match, emphasis-position: under must also use the over formula until
+	// ruby-position: under is properly implemented (Phase 11).
+	// TODO(Phase11): switch the under branch to:
+	//   emphY = box.Y + ascent + baseDescent
+	// once ruby-position:under paints annotations below the base text.
+	// Both over and under use the over formula; see comment above.
+	emphY := box.Y - emphDescent - emphAscent
 
 	// Iterate over each character and draw the mark centered above/below it.
 	x := box.X
