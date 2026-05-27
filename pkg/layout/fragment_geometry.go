@@ -631,6 +631,13 @@ func CalculateInitialFragmentGeometry(
 			available = 0
 		}
 		borderBoxInline = ResolveIntrinsicInlineSize(inlineVal, minMax, available) + geom.InlineBorderPadding()
+	} else if css.IsFitContentFunction(inlineVal) {
+		// fit-content(<length-percentage>): min(max-content, max(min-content, resolved-arg))
+		// CSS Sizing 3 §5.1.5. The argument resolves against the CB's inline-size.
+		minMax := ComputeMinMaxSizes(ctx, node, space)
+		cbInline := space.PercentageResolutionSize.InlineSize.Float64()
+		contentSize := ResolveFitContentInlineSize(inlineVal, style, minMax, cbInline)
+		borderBoxInline = contentSize + geom.InlineBorderPadding()
 	} else if explicitInline, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 		borderBoxInline = explicitInline.Float64() + geom.InlineBorderPadding()
 	} else if space.IsOrthogonalWritingModeRoot && !needsShrinkToFit(style) {
@@ -695,6 +702,15 @@ func CalculateInitialFragmentGeometry(
 		if contentInline > maxInline {
 			contentInline = maxInline
 		}
+	} else if ok && css.IsFitContentFunction(maxInlineVal) {
+		// fit-content(<length-percentage>) as max-inline-size.
+		// Must use content-based MinMaxSizes (same reason as bare intrinsic keywords above).
+		minMax := computeContentMinMaxOnce(ctx, node, space, &contentMinMaxCache)
+		cbInline := space.PercentageResolutionSize.InlineSize.Float64()
+		maxInline := ResolveFitContentInlineSize(maxInlineVal, style, minMax, cbInline)
+		if contentInline > maxInline {
+			contentInline = maxInline
+		}
 	} else if maxInline, ok := ResolveMaxInlineSize(style, wdm, space, geom); ok {
 		mi := maxInline.Float64()
 		if contentInline > mi {
@@ -720,6 +736,12 @@ func CalculateInitialFragmentGeometry(
 			available = 0
 		}
 		minInline = ResolveIntrinsicInlineSize(minInlineVal, minMax, available)
+	} else if ok && css.IsFitContentFunction(minInlineVal) {
+		// fit-content(<length-percentage>) as min-inline-size.
+		// Must use content-based MinMaxSizes (same reason as bare intrinsic keywords above).
+		minMax := computeContentMinMaxOnce(ctx, node, space, &contentMinMaxCache)
+		cbInline := space.PercentageResolutionSize.InlineSize.Float64()
+		minInline = ResolveFitContentInlineSize(minInlineVal, style, minMax, cbInline)
 	}
 	if contentInline < minInline {
 		contentInline = minInline
@@ -740,8 +762,12 @@ func CalculateInitialFragmentGeometry(
 	blockVal, _ := style.Get(blockProp)
 
 	var borderBoxBlock float64 = Indefinite
-	if IsIntrinsicKeyword(blockVal) {
+	if IsIntrinsicKeyword(blockVal) || css.IsFitContentFunction(blockVal) {
 		// Treat as auto — layout will determine block-size from content.
+		// fit-content(<L>) on the block axis resolves against the natural content
+		// block-size (same as min-content/max-content/fit-content bare keyword).
+		// The clamping is applied post-layout via ResolveMinBlockSizeWithIntrinsic /
+		// ResolveMaxBlockSizeWithIntrinsic when the result feeds min/max-block-size.
 	} else if space.IsContentSuggestionLayout {
 		// §4.5 content suggestion: ignore the element's own explicit CSS
 		// block-size — only content determines the size.
@@ -885,4 +911,67 @@ func computeContentMinMaxOnce(ctx *LayoutContext, node *LayoutInputNode, space C
 	mm := computeContentMinMaxSizes(ctx, node, space)
 	*cache = &mm
 	return mm
+}
+
+// resolveFitContentArgInline resolves the argument of a fit-content(<L>) value
+// against the containing block's inline-size. Returns (resolvedPx, true) on
+// success; (0, false) if the argument cannot be resolved (e.g. a percentage
+// against an indefinite CB — caller should treat as max-content).
+//
+// Mirrors Blink's length_utils.cc ResolveInlineLengthInternal kFitContent branch
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func resolveFitContentArgInline(argStr string, style *css.Style, cbInlineSize float64) (float64, bool) {
+	// calc() with percentage terms
+	if css.IsCalcWithPercent(argStr) {
+		if result, ok := css.EvalCalcWithPercent(
+			argStr[5:len(argStr)-1], // strip "calc(" and ")"
+			style.GetFontSize(),
+			cbInlineSize,
+		); ok {
+			return result, true
+		}
+		return 0, false
+	}
+	// Plain length (px, em, rem, vw, etc.)
+	if v, ok := style.GetLengthForVal(argStr); ok {
+		return v, true
+	}
+	// Percentage
+	if pct, ok := css.ParsePercentage(argStr); ok {
+		if cbInlineSize <= 0 {
+			// Indefinite CB: percentage is unresolvable → treat as max-content.
+			return 0, false
+		}
+		return pct / 100.0 * cbInlineSize, true
+	}
+	return 0, false
+}
+
+// ResolveFitContentInlineSize applies the CSS Sizing 3 §5.1.5 formula to a
+// fit-content(<length-percentage>) value on the inline axis:
+//
+//	min(max-content, max(min-content, resolved-arg))
+//
+// When the argument is unresolvable (e.g. percentage against indefinite CB),
+// returns max-content per CSS Sizing 3 §5.1.5 (treat as if arg ≥ max-content).
+func ResolveFitContentInlineSize(fitContentVal string, style *css.Style, minMax MinMaxSizes, cbInlineSize float64) float64 {
+	argStr, ok := css.ParseFitContentArg(fitContentVal)
+	if !ok {
+		// Malformed — fall back to shrink-to-fit (bare fit-content behaviour).
+		return minMax.ShrinkToFit(cbInlineSize)
+	}
+	resolved, argOK := resolveFitContentArgInline(argStr, style, cbInlineSize)
+	if !argOK {
+		// Unresolvable percentage against indefinite CB → clamp to max-content.
+		return minMax.MaxContent
+	}
+	// min(max-content, max(min-content, resolved))
+	result := resolved
+	if result < minMax.MinContent {
+		result = minMax.MinContent
+	}
+	if result > minMax.MaxContent {
+		result = minMax.MaxContent
+	}
+	return result
 }

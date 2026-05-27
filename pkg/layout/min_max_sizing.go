@@ -68,8 +68,54 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	// content-based intrinsic sizes instead. Mirrors Blink's
 	// LayoutBox::ComputeIntrinsicLogicalWidths gate which bypasses
 	// HasPercentLogicalWidth() entries.
+	// Skip the explicit-inline-size fast path when min-width or max-width uses
+	// fit-content(<non-percentage-length>): the formula needs the content-based
+	// min/max intrinsic sizes to evaluate correctly, which the fast path bypasses.
+	fitContentMinMaxNeedsContent := fitContentMinMaxRequiresContentSizes(style, wdm)
+
 	isReplaced := node.DOMNode != nil && IsReplacedElement(node.DOMNode)
-	if !isReplaced && !hasPercentLogicalWidth(style, wdm) {
+
+	// Fast path with fit-content() min/max: when the element has an explicit
+	// inline-size (width) AND min-width or max-width uses fit-content(<L>), we
+	// need content-based intrinsic sizes to evaluate the formula, but the base
+	// result is still the explicit inline-size (as in the normal fast path).
+	//
+	// CSS Sizing 3 §5.1.5: for a box with fit-content() on min/max-size, the
+	// contribution is max(min_constraint, min(max_constraint, explicit_width)).
+	if !isReplaced && !hasPercentLogicalWidth(style, wdm) && fitContentMinMaxNeedsContent {
+		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
+			explicitInline := explicitInlineLU.Float64()
+			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
+			// Measure content min/max to evaluate fit-content() constraints.
+			contentMM := measureNodeContentMinMax(node, ctx, style, wdm, space)
+			// Apply fit-content() constraints using content-based sizes, then
+			// standard min/max-width constraints.
+			applyFitContentMinMaxWithContentSizes(style, wdm, &result, contentMM)
+			// Also apply regular (non-fit-content) min/max constraints.
+			minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
+			if result.MinContent < minInline {
+				result.MinContent = minInline
+			}
+			if result.MaxContent < minInline {
+				result.MaxContent = minInline
+			}
+			if maxInlineLU, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
+				maxInline := maxInlineLU.Float64()
+				if result.MinContent > maxInline {
+					result.MinContent = maxInline
+				}
+				if result.MaxContent > maxInline {
+					result.MaxContent = maxInline
+				}
+			}
+			return result
+		}
+		// No explicit inline-size: fall through to full content measurement.
+		// The full path below will call applyIntrinsicKeywordMinMax which
+		// handles fit-content() constraints using the measured content min/max.
+	}
+
+	if !isReplaced && !hasPercentLogicalWidth(style, wdm) && !fitContentMinMaxNeedsContent {
 		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
@@ -201,6 +247,26 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 		}
 	}
 
+	// Apply fit-content(<length-percentage>) as the inline-size when set.
+	// CSS Sizing 3 §5.1.5: used size = min(max-content, max(min-content, resolved-arg)).
+	// Cyclic-percentage arguments (where the % would reference the element's own
+	// not-yet-known size) are treated per intrinsic-contribution rules:
+	//   • min-content contribution: treat % as 0  → result = content min-content
+	//   • max-content contribution: treat % as ∞  → result = content max-content
+	// In both cases the raw content {MinContent, MaxContent} is correct — no
+	// clamping is applied. Only non-percentage lengths are clamped.
+	inlinePropForFitContent := "width"
+	if wdm.IsVertical() {
+		inlinePropForFitContent = "height"
+	}
+	if inlineVal, ok := style.Get(inlinePropForFitContent); ok && css.IsFitContentFunction(inlineVal) && !css.FitContentArgHasPercent(inlineVal) {
+		// Non-cyclic fixed-length argument: apply formula to both min and max contributions.
+		cbInline := space.PercentageResolutionSize.InlineSize.Float64()
+		clamped := ResolveFitContentInlineSize(inlineVal, style, result, cbInline)
+		result.MinContent = clamped
+		result.MaxContent = clamped
+	}
+
 	// Apply min/max inline-size constraints (all content-box).
 	minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
 	if result.MinContent < minInline {
@@ -226,6 +292,32 @@ func ComputeMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space Constra
 	return result
 }
 
+// fitContentMinMaxRequiresContentSizes returns true when min-width or max-width
+// uses fit-content(<L>) (with either a fixed-length or percentage argument). In
+// all cases the formula needs the content-based intrinsic min/max, so the
+// explicit-inline-size fast path must be skipped and the full content measurement
+// must run first.
+//
+// For percentage arguments: the percentage is cyclic during intrinsic sizing, so
+// it resolves as 0 (for the min-content contribution) per CSS Sizing 3 §5.1.5,
+// making the effective constraint = content min-content. We still need the
+// content min-content to compute that.
+func fitContentMinMaxRequiresContentSizes(style *css.Style, wdm WritingDirectionMode) bool {
+	minProp := "min-width"
+	maxProp := "max-width"
+	if wdm.IsVertical() {
+		minProp = "min-height"
+		maxProp = "max-height"
+	}
+	if v, ok := style.Get(minProp); ok && css.IsFitContentFunction(v) {
+		return true
+	}
+	if v, ok := style.Get(maxProp); ok && css.IsFitContentFunction(v) {
+		return true
+	}
+	return false
+}
+
 // resolveIntrinsicInlineKeyword checks if a CSS property (min-width, max-width, etc.)
 // is an intrinsic sizing keyword and returns the resolved value.
 // For min-content → result.MinContent, max-content → result.MaxContent,
@@ -248,8 +340,16 @@ func resolveIntrinsicInlineKeyword(style *css.Style, wdm WritingDirectionMode, p
 }
 
 // applyIntrinsicKeywordMinMax applies intrinsic keyword min/max inline-size
-// constraints (min-content, max-content, fit-content) to computed min/max sizes.
-// This handles the cases that ResolveMinInlineSize/ResolveMaxInlineSize miss.
+// constraints (min-content, max-content, fit-content, and fit-content(<L>)) to
+// computed min/max sizes. This handles the cases that
+// ResolveMinInlineSize/ResolveMaxInlineSize miss.
+//
+// For fit-content(<length-percentage>) on min/max-width: the formula
+// min(max-content, max(min-content, resolved-arg)) uses result.MinContent and
+// result.MaxContent as the element's content-based intrinsic sizes. Cyclic
+// percentage arguments (where the % is unresolvable during intrinsic sizing) are
+// skipped — leaving the contribution unchanged mirrors the CSS Sizing 3 §5.1.5
+// cyclic-percentage rule.
 func applyIntrinsicKeywordMinMax(style *css.Style, wdm WritingDirectionMode, result *MinMaxSizes) {
 	minProp := "min-width"
 	maxProp := "max-width"
@@ -265,9 +365,92 @@ func applyIntrinsicKeywordMinMax(style *css.Style, wdm WritingDirectionMode, res
 		if result.MaxContent < minVal {
 			result.MaxContent = minVal
 		}
+	} else if v, ok2 := style.Get(minProp); ok2 && css.IsFitContentFunction(v) && !css.FitContentArgHasPercent(v) {
+		// fit-content(<fixed-length>) on min-width: compute formula against content sizes.
+		// cbInlineSize is 0 here (intrinsic context); the arg is a fixed length so
+		// ResolveFitContentInlineSize resolves it via style's font metrics, not CB%.
+		minVal := ResolveFitContentInlineSize(v, style, *result, 0)
+		if result.MinContent < minVal {
+			result.MinContent = minVal
+		}
+		if result.MaxContent < minVal {
+			result.MaxContent = minVal
+		}
 	}
 	// max-width: <intrinsic> acts as a cap.
 	if maxVal, ok := resolveIntrinsicInlineKeyword(style, wdm, maxProp, *result); ok {
+		if result.MinContent > maxVal {
+			result.MinContent = maxVal
+		}
+		if result.MaxContent > maxVal {
+			result.MaxContent = maxVal
+		}
+	} else if v, ok2 := style.Get(maxProp); ok2 && css.IsFitContentFunction(v) && !css.FitContentArgHasPercent(v) {
+		// fit-content(<fixed-length>) on max-width: compute formula against content sizes.
+		maxVal := ResolveFitContentInlineSize(v, style, *result, 0)
+		if result.MinContent > maxVal {
+			result.MinContent = maxVal
+		}
+		if result.MaxContent > maxVal {
+			result.MaxContent = maxVal
+		}
+	}
+}
+
+// measureNodeContentMinMax measures the content-based min/max intrinsic sizes
+// of a node (ignoring its own declared inline-size, min-width, and max-width).
+// Used to evaluate fit-content() constraints which need the children's sizes.
+func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) MinMaxSizes {
+	display := style.GetDisplay()
+	if display == css.DisplayFlex || display == css.DisplayInlineFlex {
+		return measureFlexMinMax(node, ctx, space)
+	} else if display == css.DisplayGrid || display == css.DisplayInlineGrid {
+		return measureGridMinMax(node, ctx, space)
+	} else if hasOnlyInlineChildren(node) {
+		return measureInlineMinMax(node, ctx, space)
+	}
+	return measureBlockMinMax(node, ctx, space)
+}
+
+// applyFitContentMinMaxWithContentSizes applies fit-content(<L>) constraints on
+// min-width and max-width to result. contentMM is the element's content-based
+// min/max intrinsic sizes (used by the formula); result is the declared-size
+// base (e.g., {explicit_width, explicit_width}).
+//
+// Non-percentage arguments are evaluated using the formula
+// min(max-content, max(min-content, resolved-arg)) against contentMM.
+// Cyclic-percentage arguments are treated as min-content (for min-width) or
+// max-content (for max-width) per CSS Sizing 3 §5.1.5.
+func applyFitContentMinMaxWithContentSizes(style *css.Style, wdm WritingDirectionMode, result *MinMaxSizes, contentMM MinMaxSizes) {
+	minProp := "min-width"
+	maxProp := "max-width"
+	if wdm.IsVertical() {
+		minProp = "min-height"
+		maxProp = "max-height"
+	}
+	if v, ok := style.Get(minProp); ok && css.IsFitContentFunction(v) {
+		var minVal float64
+		if css.FitContentArgHasPercent(v) {
+			// Cyclic percentage: treat as fit-content(0) = min-content of content.
+			minVal = contentMM.MinContent
+		} else {
+			minVal = ResolveFitContentInlineSize(v, style, contentMM, 0)
+		}
+		if result.MinContent < minVal {
+			result.MinContent = minVal
+		}
+		if result.MaxContent < minVal {
+			result.MaxContent = minVal
+		}
+	}
+	if v, ok := style.Get(maxProp); ok && css.IsFitContentFunction(v) {
+		var maxVal float64
+		if css.FitContentArgHasPercent(v) {
+			// Cyclic percentage: treat as fit-content(∞) = max-content of content.
+			maxVal = contentMM.MaxContent
+		} else {
+			maxVal = ResolveFitContentInlineSize(v, style, contentMM, 0)
+		}
 		if result.MinContent > maxVal {
 			result.MinContent = maxVal
 		}
