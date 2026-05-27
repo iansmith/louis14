@@ -5790,11 +5790,23 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// overflows the fragment. Clamp uses box.Width (layout-time) to match
 	// the layout-time DecoratingBoxOffsetX / Width values; clamping by paint-
 	// time textWidth would leak sub-pixel drift between adjacent fragments.
+	//
+	// Interior left edge: ceil to the next integer pixel boundary. When
+	// adjacent fragments share a sub-pixel boundary (e.g. xEnd=467.5 for
+	// fragment N, xStart=467.5 for fragment N+1), the sharp-pixel rasterizer
+	// gives non-zero coverage to pixel 467 for BOTH rects. Ceiling the
+	// interior left edge prevents the later-painted fragment from overwriting
+	// a child element's decoration that was painted on top of the earlier
+	// fragment's decoration at that same pixel. The previous fragment's right
+	// edge already covers the pixel (its coverage is clamped at box.X +
+	// box.Width ≤ xEnd_ceil), so no visual gap is introduced. Blink avoids
+	// this entirely by painting each decorating box's line in one rect rather
+	// than per fragment; ceil is the louis14-specific equivalent.
 	xStart := logicalStart
 	xEnd := logicalEnd
 	if td.HasDecoratingBox {
 		if !td.IsFirstFragment && box.X > xStart {
-			xStart = box.X
+			xStart = math.Ceil(box.X)
 		}
 		if !td.IsLastFragment && box.X+box.Width < xEnd {
 			xEnd = box.X + box.Width
