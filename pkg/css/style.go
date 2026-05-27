@@ -4013,7 +4013,7 @@ func expandBackgroundProperty(style *Style, value string) {
 		// Extract color functions before field-splitting
 		colorFound := false
 		colorValue := ""
-		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "lab(", "hwb(", "color-mix(", "color("} {
+		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "oklab(", "lab(", "hwb(", "color-mix(", "color("} {
 			if idx := strings.Index(remaining, prefix); idx >= 0 {
 				depth := 0
 				end := -1
@@ -4245,6 +4245,21 @@ func parseSpaceSeparatedRGB(inner string) (Color, bool) {
 	return Color{uint8(r), uint8(g), uint8(b), alpha}, true
 }
 
+// clampLab clamps a Lab/OKLab/LCH/OKLCH Lightness component to its declared
+// range, mirroring CSS Color 4 §13 "all values must be clamped to the limits
+// expected by their colorspace". Required by the lab-l-over-100-* and
+// oklab-l-almost-* WPT reftests: `lab(150 ...)` must render identically to
+// `lab(100 ...)`, and `oklab(0.0001% ...)` must collapse to `oklab(0 ...)`.
+func clampLab(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
 // parseLabComponent parses a Lab a/b component.
 // Can be a raw number (-125 to 125) or a percentage (-100% to 100% of maxVal).
 func parseLabComponent(s string, maxVal float64) float64 {
@@ -4364,8 +4379,24 @@ func hslToColor(h, s, l, a float64) Color {
 }
 
 // parseColorFunction parses a CSS color() function and returns RGBA uint8 components.
-// Supports color spaces: srgb, display-p3, a98-rgb, rec2020, xyz-d65.
-// Format: color(colorspace r g b) or color(colorspace r g b / alpha)
+// Supports the eight predefined CSS Color 4 §10 color spaces:
+//   - srgb / srgb-linear
+//   - display-p3 / display-p3-linear
+//   - a98-rgb / rec2020 / rec2020-linear
+//   - prophoto-rgb (D50 white point)
+//   - xyz / xyz-d50 / xyz-d65
+//
+// Format: color(<colorspace> r g b) or color(<colorspace> r g b / alpha).
+// Per CSS Color 4 §6.5, each numeric component may be either a <number> in
+// the colorspace's native range (typically 0..1) or a <percentage> mapping
+// 0%..100% to that same native range.
+//
+// Mirrors Blink's `CSSColorFunctionParser::ConsumeFunctionalSyntaxColor()`
+// dispatch on the colorspace keyword
+// (`third_party/blink/renderer/core/css/properties/css_color_function_parser.cc`
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Matrix math is consolidated in
+// `pkg/css/colorspace.go`, mirroring Blink's consolidation in
+// `platform/graphics/color.cc` + `gfx::` color layer.
 func parseColorFunction(s string) (uint8, uint8, uint8, uint8, bool) {
 	start := strings.Index(s, "(")
 	end := strings.LastIndex(s, ")")
@@ -4380,29 +4411,47 @@ func parseColorFunction(s string) (uint8, uint8, uint8, uint8, bool) {
 	}
 
 	colorSpace := strings.ToLower(parts[0])
-	var r, g, b float64
-	fmt.Sscanf(parts[1], "%f", &r)
-	fmt.Sscanf(parts[2], "%f", &g)
-	fmt.Sscanf(parts[3], "%f", &b)
+	// Per CSS Color 4 §6.5: a component is either a <number> in the
+	// colorspace's native unit range (0..1 for all predefined spaces) or a
+	// <percentage> mapping 0%..100% to that same range. parseLabComponent
+	// implements the percent-or-number rule with `maxVal` as the percent
+	// reference — for predefined RGB/XYZ spaces the reference is 1.0.
+	r := parseLabComponent(parts[1], 1.0)
+	g := parseLabComponent(parts[2], 1.0)
+	b := parseLabComponent(parts[3], 1.0)
 
-	// Convert to sRGB based on the color space
+	// Convert to sRGB based on the color space. Out-of-gamut sources go
+	// through CSS Color 4 §13.3 OkLCh chroma-reduction gamut mapping; for
+	// in-gamut sources the gamut-map helper is identity. Mirrors Blink's
+	// `Color::ConvertToColorSpace()` → `IsBakedGamutMappingEnabled()` path
+	// (`platform/graphics/color.cc` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	switch colorSpace {
 	case "srgb":
-		// Already sRGB — just clamp
-		r = colorClamp01(r)
-		g = colorClamp01(g)
-		b = colorClamp01(b)
+		// sRGB source is already gamma-encoded. Linearise so the gamut-map
+		// step can decide chroma reduction on the linear-light triple, then
+		// re-encode via gamutMapLinearSRGB.
+		r, g, b = gamutMapLinearSRGB(sRGBToLinear(r), sRGBToLinear(g), sRGBToLinear(b))
+	case "srgb-linear":
+		r, g, b = srgbLinearToSRGB(r, g, b)
 	case "display-p3":
 		r, g, b = p3ToSRGB(r, g, b)
+	case "display-p3-linear":
+		r, g, b = displayP3LinearToSRGB(r, g, b)
 	case "a98-rgb":
 		r, g, b = a98RGBToSRGB(r, g, b)
 	case "rec2020":
 		r, g, b = rec2020ToSRGB(r, g, b)
+	case "rec2020-linear":
+		r, g, b = rec2020LinearToSRGB(r, g, b)
+	case "prophoto-rgb":
+		r, g, b = prophotoRGBToSRGB(r, g, b)
 	case "xyz-d65":
 		r, g, b = xyzD65ToSRGB(r, g, b)
 	case "xyz", "xyz-d50":
-		// Approximate: treat as xyz-d65 (close enough for rendering)
-		r, g, b = xyzD65ToSRGB(r, g, b)
+		// CSS Color 4 §10: bare `xyz` is an alias for `xyz-d50`. Both
+		// require Bradford chromatic adaptation D50→D65 before the
+		// XYZ-D65 → sRGB matrix step.
+		r, g, b = xyzD50ToSRGB(r, g, b)
 	default:
 		return 0, 0, 0, 255, false
 	}
@@ -4557,13 +4606,14 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 	}
 
-	// Handle lab() format: lab(L a b) or lab(L a b / alpha)
-	// L is 0-100 or 0%-100%, a is -125 to 125, b is -125 to 125
+	// Handle lab() format: lab(L a b) or lab(L a b / alpha) — CSS Color 4 §8.
+	// L is <number 0..100> or <percentage 0%..100%>; a/b are <number ±125> or
+	// <percentage ±100%> mapping to ±125. L is clamped to [0,100] per §13.
 	if strings.HasPrefix(colorStr, "lab(") && strings.HasSuffix(colorStr, ")") {
 		inner := colorStr[4 : len(colorStr)-1]
 		parts, alpha := parseSpaceSeparatedColorArgs(inner)
 		if len(parts) >= 3 {
-			L := parseColorFloat01(parts[0], 100.0) * 100.0
+			L := clampLab(parseLabComponent(parts[0], 100.0), 0, 100)
 			a := parseLabComponent(parts[1], 125.0)
 			bLab := parseLabComponent(parts[2], 125.0)
 			r, g, b := labToRGB(L, a, bLab)
@@ -4576,14 +4626,36 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 	}
 
-	// Handle oklch() format: oklch(L C H) or oklch(L C H / alpha)
-	// L is 0-1 or 0%-100%, C is 0-0.4, H is 0-360
+	// Handle oklab() format: oklab(L a b) or oklab(L a b / alpha) — CSS Color 4 §8.
+	// L is <number 0..1> or <percentage 0%..100%>; a/b are <number ±0.4> or
+	// <percentage ±100%> mapping to ±0.4. L is clamped to [0,1] per §13.
+	if strings.HasPrefix(colorStr, "oklab(") && strings.HasSuffix(colorStr, ")") {
+		inner := colorStr[6 : len(colorStr)-1]
+		parts, alpha := parseSpaceSeparatedColorArgs(inner)
+		if len(parts) >= 3 {
+			L := clampLab(parseLabComponent(parts[0], 1.0), 0, 1)
+			a := parseLabComponent(parts[1], 0.4)
+			bLab := parseLabComponent(parts[2], 0.4)
+			r, g, b := oklabToSRGB(L, a, bLab)
+			return Color{
+				R: uint8(math.Round(r * 255)),
+				G: uint8(math.Round(g * 255)),
+				B: uint8(math.Round(b * 255)),
+				A: alpha,
+			}, true
+		}
+	}
+
+	// Handle oklch() format: oklch(L C H) or oklch(L C H / alpha) — CSS Color 4 §9.
+	// L is <number 0..1> or <percentage 0%..100%>; C is <number 0..0.4> or
+	// <percentage 0%..100%> mapping to 0..0.4; H is <angle> or <number> in degrees.
+	// L is clamped to [0,1] per §13; negative C is clamped to 0.
 	if strings.HasPrefix(colorStr, "oklch(") && strings.HasSuffix(colorStr, ")") {
 		inner := colorStr[6 : len(colorStr)-1]
 		parts, alpha := parseSpaceSeparatedColorArgs(inner)
 		if len(parts) >= 3 {
-			L := parseColorFloat01(parts[0], 1.0)
-			C := parseColorFloat01(parts[1], 0.4)
+			L := clampLab(parseLabComponent(parts[0], 1.0), 0, 1)
+			C := math.Max(0, parseLabComponent(parts[1], 0.4))
 			H := parseHueDegrees(parts[2])
 			r, g, b := oklchToRGB(L, C, H)
 			return Color{
@@ -4595,14 +4667,16 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 	}
 
-	// Handle lch() format: lch(L C H) or lch(L C H / alpha)
-	// L is 0-100, C is 0-230, H is 0-360
+	// Handle lch() format: lch(L C H) or lch(L C H / alpha) — CSS Color 4 §9.
+	// L is <number 0..100> or <percentage 0%..100%>; C is <number 0..150> or
+	// <percentage 0%..100%> mapping to 0..150; H is <angle> or <number>.
+	// L is clamped to [0,100] per §13; negative C is clamped to 0.
 	if strings.HasPrefix(colorStr, "lch(") && strings.HasSuffix(colorStr, ")") {
 		inner := colorStr[4 : len(colorStr)-1]
 		parts, alpha := parseSpaceSeparatedColorArgs(inner)
 		if len(parts) >= 3 {
-			L := parseColorFloat01(parts[0], 100.0)
-			C := parseColorFloat01(parts[1], 230.0)
+			L := clampLab(parseLabComponent(parts[0], 100.0), 0, 100)
+			C := math.Max(0, parseLabComponent(parts[1], 150.0))
 			H := parseHueDegrees(parts[2])
 			r, g, b := lchToRGB(L, C, H)
 			return Color{
@@ -5168,11 +5242,11 @@ const (
 // Grammar: `none | [ ex-height | cap-height | ch-width | ic-width | ic-height ]?
 // [ from-font | <number> ]`.
 //
-// - None=true: property is `none` or unset; no adjustment applied.
-// - FromFont=true: the value comes from the first font's actual aspect ratio
-//   at runtime (no-op adjustment, but tracked for serialization).
-// - Otherwise the used font-size becomes
-//   specified_size * (Value / first_font.actual_aspect_ratio(Metric)).
+//   - None=true: property is `none` or unset; no adjustment applied.
+//   - FromFont=true: the value comes from the first font's actual aspect ratio
+//     at runtime (no-op adjustment, but tracked for serialization).
+//   - Otherwise the used font-size becomes
+//     specified_size * (Value / first_font.actual_aspect_ratio(Metric)).
 type FontSizeAdjust struct {
 	None     bool
 	FromFont bool
@@ -5867,7 +5941,8 @@ func tokenizeRespectingParens(s string) []string {
 func isColor(s string) bool {
 	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") ||
 		strings.HasPrefix(s, "oklch(") || strings.HasPrefix(s, "lch(") ||
-		strings.HasPrefix(s, "lab(") || strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
+		strings.HasPrefix(s, "oklab(") || strings.HasPrefix(s, "lab(") ||
+		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
 		strings.HasPrefix(s, "color(") {
 		return true
 	}
@@ -8871,6 +8946,7 @@ type BackgroundRepeat struct {
 //   - "repeat-y" → (no-repeat, repeat)
 //   - single value v → (v, v)
 //   - "v1 v2"   → (v1, v2)
+//
 // Returns the default (repeat, repeat) for an unrecognized first token.
 func ExpandRepeatShorthand(val string) BackgroundRepeat {
 	val = strings.TrimSpace(val)

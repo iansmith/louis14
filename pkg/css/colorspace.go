@@ -9,11 +9,19 @@ import (
 // colorspace.go — OKLCH, LCH, HWB color space conversions + color-mix()
 
 // linearToSRGB applies sRGB gamma correction to a linear light value.
+// Sign-preserving inverse of sRGBToLinear; same rationale as that helper.
 func linearToSRGB(c float64) float64 {
-	if c <= 0.0031308 {
-		return 12.92 * c
+	abs := math.Abs(c)
+	var enc float64
+	if abs <= 0.0031308 {
+		enc = 12.92 * abs
+	} else {
+		enc = 1.055*math.Pow(abs, 1.0/2.4) - 0.055
 	}
-	return 1.055*math.Pow(c, 1.0/2.4) - 0.055
+	if c < 0 {
+		return -enc
+	}
+	return enc
 }
 
 // colorClamp01 clamps a float64 to [0, 1].
@@ -27,36 +35,98 @@ func colorClamp01(x float64) float64 {
 	return x
 }
 
-// oklchToRGB converts OKLCH color to sRGB [0,1] values.
-// L = lightness [0,1], C = chroma [0,~0.4], H = hue [0,360 degrees]
-func oklchToRGB(L, C, H float64) (r, g, b float64) {
-	// Step 1: OKLCH to OKLab
-	hRad := H * math.Pi / 180
-	a := C * math.Cos(hRad)
-	bLab := C * math.Sin(hRad)
-
-	// Step 2: OKLab to linear sRGB via OKLab matrices
-	// OKLab to LMS (cube root space)
+// oklabToLinearSRGB converts OKLab (L, a, b) to linear-light sRGB without
+// any clamping or gamma encoding. Pulled out so gamut-mapping (CSS Color 4
+// §13.3) can evaluate in-gamut-ness on the linear-light triple before the
+// transfer function is applied. Mirrors the matrix half of
+// `Color::ConvertToColorSpace()` in Blink's `platform/graphics/color.cc`
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func oklabToLinearSRGB(L, a, bLab float64) (r, g, b float64) {
 	l_ := L + 0.3963377774*a + 0.2158037573*bLab
 	m_ := L - 0.1055613458*a - 0.0638541728*bLab
 	s_ := L - 0.0894841775*a - 1.2914855480*bLab
 
-	// Cube to get LMS
 	l := l_ * l_ * l_
 	m := m_ * m_ * m_
 	s := s_ * s_ * s_
 
-	// Step 3: LMS to linear sRGB
 	r = +4.0767416621*l - 3.3077115913*m + 0.2309699292*s
 	g = -1.2684380046*l + 2.6097574011*m - 0.3413193965*s
 	b = -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
+	return
+}
 
-	// Step 4: Gamma correction (linear to sRGB)
-	r = linearToSRGB(r)
-	g = linearToSRGB(g)
-	b = linearToSRGB(b)
+// oklchToRGB converts OKLCh color to sRGB [0,1] values with CSS Color 4 §13.3
+// gamut mapping for out-of-gamut sources. Mirrors Blink's gamut-mapping path
+// (`IsBakedGamutMappingEnabled()` → OkLCh binary-search chroma reduction in
+// the `gfx::` color management layer called from `color.cc` @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func oklchToRGB(L, C, H float64) (r, g, b float64) {
+	hRad := H * math.Pi / 180
+	a := C * math.Cos(hRad)
+	bLab := C * math.Sin(hRad)
+	return gamutMapLinearSRGB(oklabToLinearSRGB(L, a, bLab))
+}
 
-	return colorClamp01(r), colorClamp01(g), colorClamp01(b)
+// linearSRGBInGamut reports whether a linear-sRGB triple is inside the
+// [-epsilon, 1+epsilon] cube. Per CSS Color 4 §13.2 we allow a small epsilon
+// to absorb floating-point round-trip noise.
+func linearSRGBInGamut(r, g, b float64) bool {
+	const eps = 1e-6
+	return r >= -eps && r <= 1+eps && g >= -eps && g <= 1+eps && b >= -eps && b <= 1+eps
+}
+
+// gamutMapLinearSRGB takes a linear-light sRGB triple (possibly out of
+// gamut), applies CSS Color 4 §13.3 OkLCh gamut mapping if needed, and
+// returns the gamma-encoded sRGB result clamped to [0,1]. This is the single
+// tail used by every modern color-space conversion in this file so the
+// gamut-mapping behavior is shared instead of duplicated per-space.
+func gamutMapLinearSRGB(rl, gl, bl float64) (r, g, b float64) {
+	if linearSRGBInGamut(rl, gl, bl) {
+		return colorClamp01(linearToSRGB(rl)), colorClamp01(linearToSRGB(gl)), colorClamp01(linearToSRGB(bl))
+	}
+	L, a, bLab := linearSRGBToOklab(rl, gl, bl)
+	if L <= 0 {
+		return 0, 0, 0
+	}
+	if L >= 1 {
+		return 1, 1, 1
+	}
+	C := math.Sqrt(a*a + bLab*bLab)
+	hRad := math.Atan2(bLab, a)
+	rl, gl, bl = gamutMapOklch(L, C, hRad)
+	return colorClamp01(linearToSRGB(rl)), colorClamp01(linearToSRGB(gl)), colorClamp01(linearToSRGB(bl))
+}
+
+// gamutMapOklch implements CSS Color 4 §13.3 "Gamut Mapping" by binary-search
+// chroma reduction in OkLCh space until the OkLab triple maps into sRGB.
+// Mirrors Blink's `gfx::` OkLCh gamut-map helper (binary search bounded by
+// 25 iterations, JND threshold 0.02 in OkLCh) — see `color.cc`
+// `IsBakedGamutMappingEnabled()` dispatch @
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func gamutMapOklch(L, C float64, hRad float64) (r, g, b float64) {
+	if C <= 0 {
+		// Achromatic and still out-of-gamut means our matrix produced a
+		// floating-point noise excursion; clip the matrix output.
+		rl, gl, bl := oklabToLinearSRGB(L, 0, 0)
+		return colorClamp01(rl), colorClamp01(gl), colorClamp01(bl)
+	}
+	lo, hi := 0.0, C
+	for i := 0; i < 25; i++ {
+		mid := (lo + hi) / 2
+		a := mid * math.Cos(hRad)
+		bLab := mid * math.Sin(hRad)
+		rl, gl, bl := oklabToLinearSRGB(L, a, bLab)
+		if linearSRGBInGamut(rl, gl, bl) {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	a := lo * math.Cos(hRad)
+	bLab := lo * math.Sin(hRad)
+	rl, gl, bl := oklabToLinearSRGB(L, a, bLab)
+	return colorClamp01(rl), colorClamp01(gl), colorClamp01(bl)
 }
 
 // labF is the CIE Lab reverse transfer function (f^{-1}).
@@ -68,12 +138,12 @@ func labF(t float64) float64 {
 	return 3 * delta * delta * (t - 4.0/29.0)
 }
 
-// labToRGB converts CIE Lab color to sRGB [0,1] values.
-// L = lightness [0,100], a = green-red [-125,125], b = blue-yellow [-125,125]
-// Conversion chain: Lab → XYZ-D50 → XYZ-D65 → linear-sRGB → sRGB
-func labToRGB(L, a, bLab float64) (r, g, b float64) {
-	// Lab to XYZ-D50
-	// D50 illuminant: Xn=0.96422, Yn=1.0, Zn=0.82521
+// labToLinearSRGB converts CIE Lab (L 0..100, a/b ±125) to linear-light
+// sRGB without clamping. Chain: Lab → XYZ-D50 → XYZ-D65 (Bradford) → linear
+// sRGB matrix. Mirrors `Color::ToSRGB()` in Blink's
+// `platform/graphics/color.cc` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func labToLinearSRGB(L, a, bLab float64) (r, g, b float64) {
+	// Lab to XYZ-D50; D50 illuminant Xn=0.96422, Yn=1.0, Zn=0.82521.
 	fy := (L + 16) / 116
 	fx := a/500 + fy
 	fz := fy - bLab/200
@@ -82,17 +152,38 @@ func labToRGB(L, a, bLab float64) (r, g, b float64) {
 	y := labF(fy) * 1.0
 	z := labF(fz) * 0.82521
 
-	// Chromatic adaptation: D50 → D65 (Bradford method)
-	xd65 := 0.9555766*x + -0.0230393*y + 0.0631636*z
-	yd65 := -0.0282895*x + 1.0099416*y + 0.0210077*z
-	zd65 := 0.0122982*x + -0.0204830*y + 1.3299098*z
+	// Bradford D50 → D65.
+	xd65, yd65, zd65 := bradfordD50ToD65(x, y, z)
 
-	// XYZ D65 to linear sRGB
-	rl := 3.2406254*xd65 - 1.5372080*yd65 - 0.4986286*zd65
-	gl := -0.9689307*xd65 + 1.8757561*yd65 + 0.0415175*zd65
-	bl := 0.0557101*xd65 - 0.2040211*yd65 + 1.0569959*zd65
+	// XYZ D65 → linear sRGB.
+	r = 3.2406254*xd65 - 1.5372080*yd65 - 0.4986286*zd65
+	g = -0.9689307*xd65 + 1.8757561*yd65 + 0.0415175*zd65
+	b = 0.0557101*xd65 - 0.2040211*yd65 + 1.0569959*zd65
+	return
+}
 
-	return colorClamp01(linearToSRGB(rl)), colorClamp01(linearToSRGB(gl)), colorClamp01(linearToSRGB(bl))
+// linearSRGBToOklab converts linear-light sRGB to OKLab. Used as the bridge
+// for routing Lab/LCh source colors through OkLCh gamut mapping per CSS
+// Color 4 §13.3.
+func linearSRGBToOklab(r, g, b float64) (float64, float64, float64) {
+	l := 0.4122214708*r + 0.5363325363*g + 0.0514459929*b
+	m := 0.2119034982*r + 0.6806995451*g + 0.1073969566*b
+	s := 0.0883024619*r + 0.2817188376*g + 0.6299787005*b
+
+	l_ := math.Cbrt(l)
+	m_ := math.Cbrt(m)
+	s_ := math.Cbrt(s)
+
+	L := 0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_
+	A := 1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_
+	B := 0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+	return L, A, B
+}
+
+// labToRGB converts CIE Lab to sRGB [0,1] with OkLCh-based gamut mapping for
+// out-of-gamut sources (CSS Color 4 §13.3).
+func labToRGB(L, a, bLab float64) (r, g, b float64) {
+	return gamutMapLinearSRGB(labToLinearSRGB(L, a, bLab))
 }
 
 // lchToRGB converts CIELCh color to sRGB [0,1] values.
@@ -151,43 +242,24 @@ func hslHueToRGB(H float64) (r, g, b float64) {
 	return
 }
 
-// srgbToOKLab converts sRGB [0,1] to OKLab (L, a, b).
+// srgbToOKLab converts gamma-encoded sRGB [0,1] to OKLab (L, a, b) by
+// linearising then composing with linearSRGBToOklab. Single shared definition
+// of the matrices avoids a duplicate-constants source-of-truth violation.
 func srgbToOKLab(r, g, b float64) (float64, float64, float64) {
-	lr := sRGBToLinear(r)
-	lg := sRGBToLinear(g)
-	lb := sRGBToLinear(b)
-
-	// linear sRGB to LMS
-	l := 0.4122214708*lr + 0.5363325363*lg + 0.0514459929*lb
-	m := 0.2119034982*lr + 0.6806995451*lg + 0.1073969566*lb
-	s := 0.0883024619*lr + 0.2817188376*lg + 0.6299787005*lb
-
-	// cube root
-	l_ := math.Cbrt(l)
-	m_ := math.Cbrt(m)
-	s_ := math.Cbrt(s)
-
-	L := 0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_
-	A := 1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_
-	B := 0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
-	return L, A, B
+	return linearSRGBToOklab(sRGBToLinear(r), sRGBToLinear(g), sRGBToLinear(b))
 }
 
-// oklabToSRGB converts OKLab (L, a, b) to sRGB [0,1].
+// oklabToSRGB converts OKLab (L, a, b) to sRGB [0,1] with gamut mapping for
+// out-of-gamut sources (CSS Color 4 §13.3). Routes through OkLCh polar form
+// so the binary-search chroma reduction shares a single implementation with
+// oklchToRGB.
 func oklabToSRGB(L, a, bLab float64) (float64, float64, float64) {
-	l_ := L + 0.3963377774*a + 0.2158037573*bLab
-	m_ := L - 0.1055613458*a - 0.0638541728*bLab
-	s_ := L - 0.0894841775*a - 1.2914855480*bLab
-
-	l := l_ * l_ * l_
-	m := m_ * m_ * m_
-	s := s_ * s_ * s_
-
-	r := +4.0767416621*l - 3.3077115913*m + 0.2309699292*s
-	g := -1.2684380046*l + 2.6097574011*m - 0.3413193965*s
-	b := -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
-
-	return colorClamp01(linearToSRGB(r)), colorClamp01(linearToSRGB(g)), colorClamp01(linearToSRGB(b))
+	C := math.Sqrt(a*a + bLab*bLab)
+	H := math.Atan2(bLab, a) * 180 / math.Pi
+	if H < 0 {
+		H += 360
+	}
+	return oklchToRGB(L, C, H)
 }
 
 // parseColorMix parses a color-mix() CSS function and returns the mixed Color.
@@ -419,90 +491,184 @@ func parseColorWithPercent(s string) (Color, float64) {
 }
 
 // sRGBToLinear converts an sRGB gamma-encoded value to linear light.
+// Sign-preserving for out-of-gamut inputs (CSS Color 4 §17.1): the piecewise
+// transfer mirrors itself across zero so the round trip is well-defined for
+// the `color(srgb -0.5 1.2 0)`-style overshoots that appear in WPT reftests.
 func sRGBToLinear(c float64) float64 {
-	if c <= 0.04045 {
-		return c / 12.92
+	abs := math.Abs(c)
+	var lin float64
+	if abs <= 0.04045 {
+		lin = abs / 12.92
+	} else {
+		lin = math.Pow((abs+0.055)/1.055, 2.4)
 	}
-	return math.Pow((c+0.055)/1.055, 2.4)
+	if c < 0 {
+		return -lin
+	}
+	return lin
 }
 
 // p3ToSRGB converts Display P3 color (0-1 values) to sRGB (0-1 values).
-// Display P3 uses the same gamma as sRGB but different primaries.
+// Display P3 uses the same gamma as sRGB but different primaries. Routes
+// through gamutMapLinearSRGB so wide-gamut sources like display-p3 pure
+// green produce the §13.3 chroma-reduced sRGB rather than naive per-channel
+// clipping.
 func p3ToSRGB(r, g, b float64) (float64, float64, float64) {
-	// Linearize from P3 gamma (same encoding as sRGB)
-	lr := sRGBToLinear(colorClamp01(r))
-	lg := sRGBToLinear(colorClamp01(g))
-	lb := sRGBToLinear(colorClamp01(b))
+	// Linearize from P3 gamma (same transfer function as sRGB).
+	lr := sRGBToLinear(r)
+	lg := sRGBToLinear(g)
+	lb := sRGBToLinear(b)
 
-	// Display P3 to XYZ D65 matrix
-	x := 0.4865709*lr + 0.2656677*lg + 0.1982173*lb
-	y := 0.2289746*lr + 0.6917385*lg + 0.0792869*lb
-	z := 0.0000000*lr + 0.0451134*lg + 1.0439444*lb
-
-	// XYZ D65 to linear sRGB
-	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
-	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
-	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
-
-	// Apply sRGB gamma
-	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+	// Display P3 (linear) → XYZ D65 → linear sRGB shares the same matrix
+	// chain as displayP3LinearToSRGB; reuse to avoid duplicating constants.
+	return displayP3LinearToSRGB(lr, lg, lb)
 }
 
-// a98RGBToSRGB converts Adobe RGB (1998) color (0-1 values) to sRGB (0-1 values).
+// a98RGBToSRGB converts Adobe RGB (1998) color (0-1 values) to sRGB (0-1
+// values) with §13.3 gamut mapping. Linearises via gamma 2.19921875 per CSS
+// Color 4 §17.3, then reuses the linear-Display-P3 matrix chain... no, A98
+// uses its own primaries — keep its matrix but route the tail through
+// xyzD65ToSRGB which now does gamut mapping.
 func a98RGBToSRGB(r, g, b float64) (float64, float64, float64) {
-	// Linearize from A98-RGB gamma (2.2)
-	lr := math.Pow(colorClamp01(r), 2.2)
-	lg := math.Pow(colorClamp01(g), 2.2)
-	lb := math.Pow(colorClamp01(b), 2.2)
+	// Sign-preserving gamma 563/256 ≈ 2.19921875 per CSS Color 4 §17.3.
+	a98Linear := func(c float64) float64 {
+		if c < 0 {
+			return -math.Pow(-c, 563.0/256.0)
+		}
+		return math.Pow(c, 563.0/256.0)
+	}
+	lr := a98Linear(r)
+	lg := a98Linear(g)
+	lb := a98Linear(b)
 
-	// A98-RGB to XYZ D65 matrix
+	// A98-RGB to XYZ D65 matrix.
 	x := 0.5766690*lr + 0.1855582*lg + 0.1882286*lb
 	y := 0.2973450*lr + 0.6273635*lg + 0.0752915*lb
 	z := 0.0270314*lr + 0.0706872*lg + 0.9911085*lb
-
-	// XYZ D65 to linear sRGB
-	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
-	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
-	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
-
-	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+	return xyzD65ToSRGB(x, y, z)
 }
 
-// rec2020ToSRGB converts Rec.2020 color (0-1 values) to sRGB (0-1 values).
+// rec2020ToSRGB converts Rec.2020 color (0-1 values) to sRGB (0-1 values)
+// with §13.3 gamut mapping. Linearises via the BT.2020 piecewise transfer
+// per CSS Color 4 §17.5.
 func rec2020ToSRGB(r, g, b float64) (float64, float64, float64) {
-	// Linearize from Rec.2020 gamma (approximately 2.2 for simplified version)
 	rec2020Linear := func(c float64) float64 {
-		c = colorClamp01(c)
-		alpha := 1.09929682680944
-		beta := 0.018053968510807
-		if c < beta*4.5 {
-			return c / 4.5
+		const alpha = 1.09929682680944
+		const beta = 0.018053968510807
+		abs := math.Abs(c)
+		var lin float64
+		if abs < beta*4.5 {
+			lin = abs / 4.5
+		} else {
+			lin = math.Pow((abs+alpha-1)/alpha, 1/0.45)
 		}
-		return math.Pow((c+alpha-1)/alpha, 1/0.45)
+		if c < 0 {
+			return -lin
+		}
+		return lin
 	}
 	lr := rec2020Linear(r)
 	lg := rec2020Linear(g)
 	lb := rec2020Linear(b)
-
-	// Rec.2020 to XYZ D65 matrix
-	x := 0.6369580*lr + 0.1446169*lg + 0.1688810*lb
-	y := 0.2627002*lr + 0.6779981*lg + 0.0593017*lb
-	z := 0.0000000*lr + 0.0280727*lg + 1.0609851*lb
-
-	// XYZ D65 to linear sRGB
-	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
-	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
-	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
-
-	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+	return rec2020LinearToSRGB(lr, lg, lb)
 }
 
-// xyzD65ToSRGB converts CIE XYZ D65 color to sRGB (0-1 values).
-func xyzD65ToSRGB(x, y, z float64) (float64, float64, float64) {
-	// XYZ D65 to linear sRGB
+// xyzD65ToLinearSRGB converts CIE XYZ D65 to linear-light sRGB without any
+// clamping or gamut mapping. Callers compose with gamutMapLinearSRGB for the
+// final §13.3-aware sRGB output.
+func xyzD65ToLinearSRGB(x, y, z float64) (float64, float64, float64) {
 	sr := 3.2406254*x - 1.5372080*y - 0.4986286*z
 	sg := -0.9689307*x + 1.8757561*y + 0.0415175*z
 	sb := 0.0557101*x - 0.2040211*y + 1.0569959*z
+	return sr, sg, sb
+}
 
-	return colorClamp01(linearToSRGB(sr)), colorClamp01(linearToSRGB(sg)), colorClamp01(linearToSRGB(sb))
+// xyzD65ToSRGB converts CIE XYZ D65 to gamma-encoded sRGB (0-1 values) with
+// §13.3 OkLCh gamut mapping for out-of-gamut sources.
+func xyzD65ToSRGB(x, y, z float64) (float64, float64, float64) {
+	return gamutMapLinearSRGB(xyzD65ToLinearSRGB(x, y, z))
+}
+
+// bradfordD50ToD65 applies the Bradford chromatic adaptation transform to
+// convert XYZ values from a D50 illuminant to a D65 illuminant. Matrix per
+// CSS Color 4 §17.7 (https://drafts.csswg.org/css-color-4/#color-conversion-code).
+//
+// Blink reference (Chromium @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
+// `third_party/blink/renderer/platform/graphics/color.cc` — `ToXYZD50` /
+// `ExportAsXYZD50Floats` route every wide-gamut conversion through this
+// transform; matrix coefficients are sourced from the upstream `gfx::` color
+// management layer.
+func bradfordD50ToD65(x, y, z float64) (float64, float64, float64) {
+	x2 := 0.9554734527042182*x + -0.023098536874261423*y + 0.0632593086610217*z
+	y2 := -0.028369706963208136*x + 1.0099954580058226*y + 0.021041398966942022*z
+	z2 := 0.012314001688319899*x + -0.020507696433477912*y + 1.3303659366080753*z
+	return x2, y2, z2
+}
+
+// xyzD50ToSRGB converts CIE XYZ D50 color to sRGB (0-1 values) via Bradford
+// chromatic adaptation to D65, then the standard XYZ-D65 → sRGB chain.
+// Used for the predefined `xyz-d50` and `prophoto-rgb` color spaces, both of
+// which are anchored to a D50 white point per CSS Color 4 §17.4 / §17.7.
+func xyzD50ToSRGB(x, y, z float64) (float64, float64, float64) {
+	xd65, yd65, zd65 := bradfordD50ToD65(x, y, z)
+	return xyzD65ToSRGB(xd65, yd65, zd65)
+}
+
+// srgbLinearToSRGB converts a linear-light sRGB triple to gamma-encoded sRGB
+// (0-1 values) with §13.3 OkLCh gamut mapping. The matrix step is identity
+// (same primaries as sRGB); only the transfer function differs. CSS Color 4
+// §10 `srgb-linear` keyword.
+func srgbLinearToSRGB(r, g, b float64) (float64, float64, float64) {
+	return gamutMapLinearSRGB(r, g, b)
+}
+
+// displayP3LinearToSRGB converts linear-light Display P3 to sRGB (0-1 values).
+// Uses the Display P3 → XYZ D65 matrix (same as p3ToSRGB) but skips the
+// input transfer function. CSS Color 4 §17.2.
+func displayP3LinearToSRGB(r, g, b float64) (float64, float64, float64) {
+	// Display P3 (linear) to XYZ D65 matrix
+	x := 0.4865709*r + 0.2656677*g + 0.1982173*b
+	y := 0.2289746*r + 0.6917385*g + 0.0792869*b
+	z := 0.0000000*r + 0.0451134*g + 1.0439444*b
+	return xyzD65ToSRGB(x, y, z)
+}
+
+// rec2020LinearToSRGB converts linear-light Rec.2020 to sRGB (0-1 values).
+// Skips Rec.2020's input transfer function. CSS Color 4 §17.5.
+func rec2020LinearToSRGB(r, g, b float64) (float64, float64, float64) {
+	x := 0.6369580*r + 0.1446169*g + 0.1688810*b
+	y := 0.2627002*r + 0.6779981*g + 0.0593017*b
+	z := 0.0000000*r + 0.0280727*g + 1.0609851*b
+	return xyzD65ToSRGB(x, y, z)
+}
+
+// prophotoRGBToSRGB converts ProPhoto RGB (D50 white point) to sRGB
+// (0-1 values). ProPhoto uses a piecewise transfer function (CSS Color 4
+// §17.4): t = 1/512; if v < 16/512 then v/16, else v^1.8. Then matrix
+// linear-ProPhoto → XYZ D50, then Bradford D50→D65, then XYZ→sRGB.
+func prophotoRGBToSRGB(r, g, b float64) (float64, float64, float64) {
+	prophotoToLinear := func(c float64) float64 {
+		// Sign-preserve to support negative inputs (out-of-gamut), per spec.
+		abs := math.Abs(c)
+		var lin float64
+		if abs < 16.0/512.0 {
+			lin = abs / 16.0
+		} else {
+			lin = math.Pow(abs, 1.8)
+		}
+		if c < 0 {
+			return -lin
+		}
+		return lin
+	}
+	lr := prophotoToLinear(r)
+	lg := prophotoToLinear(g)
+	lb := prophotoToLinear(b)
+
+	// linear ProPhoto-RGB → XYZ D50 (CSS Color 4 §17.4)
+	x := 0.7977666449006423*lr + 0.13518129740053308*lg + 0.0313477828234366*lb
+	y := 0.2880748288194013*lr + 0.7118352342418731*lg + 0.00008993693872564*lb
+	z := 0.0*lr + 0.0*lg + 0.8251046025104602*lb
+
+	return xyzD50ToSRGB(x, y, z)
 }
