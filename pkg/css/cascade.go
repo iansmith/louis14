@@ -705,10 +705,281 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	finalStyle.ViewportWidth = viewportWidth
 	finalStyle.ViewportHeight = viewportHeight
 
+	// CSS Values 5 §11.5: resolve typed attr() references in property values.
+	// attr() in non-content properties (e.g. background-color, width) must be
+	// substituted at cascade time because Style.Get() does not have element access.
+	// This mirrors Blink's StyleCascade::ResolveAttr() in style_cascade.cc at
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which reads the element's
+	// attribute and substitutes the typed value into the property's token list.
+	resolveAttrReferences(node, finalStyle)
+
 	return finalStyle
 }
 
 // ApplyStylesToDocument applies stylesheets to all nodes in the document
+// resolveAttrReferences resolves CSS Values 5 §11.5 typed attr() references
+// in all property values of style for the given node. Typed attr() appears in
+// non-content properties such as background-color, width, color, etc. and must
+// be resolved at cascade time because Style.Get() has no element access.
+//
+// Mirrors Blink's StyleCascade::ResolveAttr() in style_cascade.cc which reads
+// the element attribute, parses it as the declared type, and substitutes the
+// result (or fallback) into the property's token list at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// For each property whose stored value contains "attr(", this function calls
+// resolveAttrInValue() to substitute the attribute value and rewrites the
+// property in-place. Properties without attr() are not touched.
+//
+// Scope: typed attr() only. The legacy content: attr(name) path is handled
+// separately in ParseContentValues / layout_tree_builder.go.
+func resolveAttrReferences(node *html.Node, style *Style) {
+	if node == nil || node.Type != html.ElementNode {
+		return
+	}
+	for prop, val := range style.Properties {
+		if strings.Contains(val, "attr(") {
+			resolved := resolveAttrInValue(val, node)
+			if resolved != val {
+				style.Properties[prop] = resolved
+			}
+		}
+	}
+}
+
+// resolveAttrInValue resolves all attr() function calls in a CSS property value
+// string, using element attributes for substitution. Handles:
+//
+//   - attr(<name> type(<color>))              — typed color
+//   - attr(<name> type(<length>))             — typed length
+//   - attr(<name> type(<number>))             — typed number
+//   - attr(<name> type(<integer>))            — typed integer
+//   - attr(<name> type(<percentage>))         — typed percentage
+//   - attr(<name> type(<length-percentage>))  — typed length or percentage
+//   - attr(<name>)                            — no type → string (skip for non-content)
+//   - attr(<name> type(<type>), <fallback>)   — with fallback
+//
+// Resolution rules (CSS Values 5 §11.5):
+//  1. Read the attribute from the element.
+//  2. If absent → use fallback. If fallback absent → property becomes invalid (leave as-is).
+//  3. If present → try to parse as the specified type. Success → substitute.
+//     Failure → use fallback. If fallback absent → property becomes invalid (leave as-is).
+//
+// Returns the value with attr() calls substituted. If any attr() cannot be
+// resolved (absent attribute + no fallback), the original token is left in place
+// so the property becomes invalid at computed-value time (IACVT-like behavior).
+func resolveAttrInValue(value string, node *html.Node) string {
+	for iter := 0; iter < 20; iter++ {
+		// Find the next "attr(" occurrence.
+		idx := indexAttrFunction(value)
+		if idx < 0 {
+			break
+		}
+		// Find the matching closing paren.
+		openParen := idx + 4
+		closeIdx := matchClosingParen(value, openParen)
+		if closeIdx < 0 {
+			break // malformed
+		}
+		inner := strings.TrimSpace(value[openParen+1 : closeIdx])
+
+		// Parse the attr() arguments: <name> [type(<type>)]? [, <fallback>]?
+		attrName, attrType, fallbackRaw := parseAttrArgs(inner)
+
+		// Read the attribute value from the element.
+		attrVal, attrPresent := "", false
+		if node.Attributes != nil {
+			attrVal, attrPresent = node.Attributes[attrName]
+		}
+
+		// Resolve to a CSS token.
+		var substituted string
+		var ok bool
+		if attrPresent {
+			substituted, ok = resolveAttrTyped(attrVal, attrType)
+		}
+		if !ok {
+			// Attribute absent or failed type parse → try fallback.
+			if fallbackRaw == "" {
+				// No fallback: leave the attr() in place so the property is
+				// treated as invalid (the caller can see attr() remained).
+				// Advance past this token to avoid infinite loop.
+				value = value[:idx] + value[closeIdx+1:]
+				continue
+			}
+			substituted = strings.TrimSpace(fallbackRaw)
+		}
+
+		// Reconstruct the value with the substitution.
+		var sb strings.Builder
+		sb.WriteString(value[:idx])
+		sb.WriteString(substituted)
+		sb.WriteString(value[closeIdx+1:])
+		value = sb.String()
+	}
+	return value
+}
+
+// indexAttrFunction returns the byte index of the first "attr(" (case-insensitive)
+// in s that is NOT immediately preceded by an ident-continue byte (word boundary),
+// or -1 if not found.
+func indexAttrFunction(s string) int {
+	lower := strings.ToLower(s)
+	start := 0
+	for {
+		i := strings.Index(lower[start:], "attr(")
+		if i < 0 {
+			return -1
+		}
+		absIdx := start + i
+		// Word boundary check: byte before 'a' must not be ident-continue.
+		if absIdx > 0 {
+			prev := s[absIdx-1]
+			if (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+				(prev >= '0' && prev <= '9') || prev == '_' || prev == '-' || prev >= 0x80 {
+				start = absIdx + 5
+				continue
+			}
+		}
+		return absIdx
+	}
+}
+
+// parseAttrArgs parses the inner content of attr(…): returns the attribute
+// name, the type string (e.g. "<color>", "<length>", "string"), and the raw
+// fallback text (everything after the first top-level comma, or "" if absent).
+//
+// Handles:
+//
+//	"data-foo"                          → name="data-foo", type="string", fallback=""
+//	"data-foo type(<color>)"            → name="data-foo", type="<color>", fallback=""
+//	"data-foo type(<length>), 100px"    → name="data-foo", type="<length>", fallback="100px"
+//	"data-foo type(<color>), green"     → name="data-foo", type="<color>", fallback="green"
+func parseAttrArgs(inner string) (name, attrType, fallback string) {
+	// Split at the first top-level comma.
+	commaIdx := findCommaOutsideParens(inner)
+	namePart := inner
+	if commaIdx >= 0 {
+		namePart = strings.TrimSpace(inner[:commaIdx])
+		fallback = strings.TrimSpace(inner[commaIdx+1:])
+	}
+	// namePart is "<attrname>" or "<attrname> type(<type>)".
+	// Split on whitespace.
+	spaceIdx := strings.IndexByte(namePart, ' ')
+	if spaceIdx < 0 {
+		return strings.TrimSpace(namePart), "string", fallback
+	}
+	name = strings.TrimSpace(namePart[:spaceIdx])
+	rest := strings.TrimSpace(namePart[spaceIdx+1:])
+	// rest should be "type(<type>)" — extract the inner type token.
+	lrest := strings.ToLower(rest)
+	if strings.HasPrefix(lrest, "type(") && strings.HasSuffix(rest, ")") {
+		attrType = strings.TrimSpace(rest[5 : len(rest)-1])
+	} else {
+		// Unknown syntax — treat as string type.
+		attrType = "string"
+	}
+	return name, attrType, fallback
+}
+
+// resolveAttrTyped parses attrVal as the CSS type named by attrType and returns
+// the resolved CSS token string. Returns ("", false) if the value cannot be
+// parsed as the requested type.
+//
+// Supported types (CSS Values 5 §11.5):
+//
+//	"<color>"             — parses as a CSS color; returns normalized color if valid.
+//	"<length>"            — parses as a CSS length with unit; must not be a bare number.
+//	"<percentage>"        — parses as a CSS percentage (number%).
+//	"<number>"            — parses as a CSS number (integer or decimal).
+//	"<integer>"           — parses as a CSS integer (whole number only).
+//	"<length-percentage>" — parses as a CSS length or percentage.
+//	"string"              — always valid; returns attrVal as-is.
+//
+// All other type tokens return ("", false) (unsupported type → fallback).
+func resolveAttrTyped(attrVal, attrType string) (string, bool) {
+	v := strings.TrimSpace(attrVal)
+	switch strings.ToLower(attrType) {
+	case "string", "":
+		// String type: attr value is used as-is.
+		return v, true
+	case "<color>":
+		// Must parse as a CSS color.
+		if _, ok := ParseColor(v); ok {
+			return v, true
+		}
+		return "", false
+	case "<length>":
+		// Must parse as a CSS length with a unit (bare number is NOT a valid length).
+		// CSS Values 4 §6.1.2: a <length> requires a unit unless the value is 0.
+		return validateCSSLength(v)
+	case "<percentage>":
+		return validateCSSPercentage(v)
+	case "<length-percentage>":
+		if resolved, ok := validateCSSLength(v); ok {
+			return resolved, true
+		}
+		return validateCSSPercentage(v)
+	case "<number>":
+		return validateCSSNumber(v)
+	case "<integer>":
+		return validateCSSInteger(v)
+	default:
+		// Unsupported type — return failure so fallback is used.
+		return "", false
+	}
+}
+
+// validateCSSLength checks whether v is a valid CSS <length>. Returns the value
+// as-is if valid, else ("", false). A bare integer/float without a unit is only
+// valid as a length if the value is exactly 0 (CSS Values 4 §6.2).
+func validateCSSLength(v string) (string, bool) {
+	if v == "0" {
+		return "0px", true
+	}
+	// Must end in a recognized length unit.
+	units := []string{"px", "em", "rem", "ex", "ch", "vw", "vh", "vmin", "vmax",
+		"cm", "mm", "in", "pt", "pc", "Q", "lh", "rlh", "svh", "svw", "dvh", "dvw", "lvh", "lvw"}
+	lower := strings.ToLower(v)
+	for _, u := range units {
+		if strings.HasSuffix(lower, u) {
+			numStr := v[:len(v)-len(u)]
+			if _, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64); err == nil {
+				return v, true
+			}
+		}
+	}
+	return "", false
+}
+
+// validateCSSPercentage checks whether v is a valid CSS <percentage>.
+func validateCSSPercentage(v string) (string, bool) {
+	if !strings.HasSuffix(v, "%") {
+		return "", false
+	}
+	numStr := strings.TrimSpace(v[:len(v)-1])
+	if _, err := strconv.ParseFloat(numStr, 64); err == nil {
+		return v, true
+	}
+	return "", false
+}
+
+// validateCSSNumber checks whether v is a valid CSS <number> (integer or decimal).
+func validateCSSNumber(v string) (string, bool) {
+	if _, err := strconv.ParseFloat(v, 64); err == nil {
+		return v, true
+	}
+	return "", false
+}
+
+// validateCSSInteger checks whether v is a valid CSS <integer>.
+func validateCSSInteger(v string) (string, bool) {
+	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return v, true
+	}
+	return "", false
+}
+
 // Phase 22: Added viewport dimensions for media query evaluation
 func ApplyStylesToDocument(doc *html.Document, viewportWidth, viewportHeight float64) map[*html.Node]*Style {
 	styles := make(map[*html.Node]*Style)

@@ -1055,10 +1055,17 @@ func (b *LayoutTreeBuilder) createPseudoElement(
 			vals := b.counterCtx.GetCounterValues(pseudoNode, cv.Value, false)
 			pendingText.WriteString(formatCounterValues(vals, cv.Separator, cv.Style))
 		case "attr":
+			// CSS Values 5 §11.5: read the named attribute; if absent use Fallback.
+			// Legacy CSS2.1 form: attr(name) → empty string if absent.
+			// New form: attr(name, fallback) → cv.Fallback if absent.
+			attrVal, attrPresent := "", false
 			if node.Attributes != nil {
-				if attrVal, ok := node.Attributes[cv.Value]; ok {
-					pendingText.WriteString(attrVal)
-				}
+				attrVal, attrPresent = node.Attributes[cv.Value]
+			}
+			if attrPresent {
+				pendingText.WriteString(attrVal)
+			} else if cv.Fallback != "" {
+				pendingText.WriteString(cv.Fallback)
 			}
 		case "open-quote":
 			idx := b.quoteDepth * 2

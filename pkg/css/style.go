@@ -712,7 +712,10 @@ func parseMathArg(s string, fontSize, vw, vh float64) (float64, bool) {
 
 func evalMinMax(argsStr, mode string, fontSize, vw, vh float64) (float64, bool) {
 	args := splitCSSFunctionArgs(argsStr)
-	if len(args) < 2 {
+	// CSS Values 4 §10.3: min() and max() accept one or more arguments.
+	// A single-argument form (e.g. max(200px)) is valid and resolves to
+	// that single value.
+	if len(args) < 1 {
 		return 0, false
 	}
 	result, ok := parseMathArg(args[0], fontSize, vw, vh)
@@ -2279,6 +2282,28 @@ func expandShorthand(style *Style, property, value string) {
 			return
 		}
 		// For "background", let expandBackgroundProperty handle it (has its own var() check)
+	}
+	// CSS Values 5 §11.5: if value contains a typed attr() function, defer
+	// shorthand expansion. attr() is resolved at cascade time via
+	// resolveAttrReferences, which substitutes the element's attribute value
+	// into the property. For shorthands, store the raw value in the most
+	// natural longhand and let resolveAttrReferences rewrite it.
+	if containsAttrFunction(value) {
+		switch property {
+		case "background":
+			// background: attr(name type(<color>)) → defer to background-color
+			style.Set("background-color", value)
+			return
+		case "color", "background-color", "width", "height", "min-width", "max-width",
+			"min-height", "max-height", "margin", "padding", "border-width",
+			"margin-top", "margin-right", "margin-bottom", "margin-left",
+			"padding-top", "padding-right", "padding-bottom", "padding-left",
+			"top", "right", "bottom", "left", "font-size", "line-height",
+			"letter-spacing", "word-spacing", "opacity":
+			// Longhands: store as-is; resolveAttrReferences will substitute.
+			style.Set(property, value)
+			return
+		}
 	}
 	switch property {
 	case "margin":
@@ -4118,6 +4143,12 @@ func expandBackgroundProperty(style *Style, value string) {
 	// If value contains var(), defer expansion (case-insensitive per CSS
 	// Syntax §4.3.10).
 	if containsVarFunction(value) {
+		style.Set("background-color", value)
+		return
+	}
+	// If value contains attr(), defer expansion. resolveAttrReferences will
+	// substitute the attribute value at cascade time (CSS Values 5 §11.5).
+	if containsAttrFunction(value) {
 		style.Set("background-color", value)
 		return
 	}
@@ -7928,6 +7959,12 @@ type ContentValue struct {
 	// For "counter" and the non-counter Types it is unused.
 	Separator string
 
+	// Fallback is the fallback value for "attr" when the attribute is absent.
+	// CSS Values 5 §11.5: attr(<name>, <fallback>) — if the attribute is missing
+	// or empty, use Fallback instead. Empty string means no fallback (attribute
+	// absent → empty string per CSS2.1 legacy; CSS Values 5 allows explicit fallback).
+	Fallback string
+
 	// Style is the optional <counter-style> argument for "counter" or
 	// "counters". Empty means UA default ("decimal"). Phase 1 captures
 	// it but does not consume it; Phase 5 will resolve via CounterStyle.
@@ -8089,7 +8126,16 @@ func ParseContentValues(raw string) []ContentValue {
 						Style:     style,
 					})
 				case "attr":
-					values = append(values, ContentValue{Type: "attr", Value: arg})
+					// CSS Values 5 §11.5: attr(<name> [<type>]?, <fallback>?)
+					// The legacy CSS2.1 form is attr(<name>) — no type or fallback.
+					// Newer form: attr(<name> type(<type>), <fallback>) or
+					// attr(<name>, <fallback>) — split at the first top-level comma.
+					attrName, attrFallback := parseAttrNameAndFallback(arg)
+					values = append(values, ContentValue{
+						Type:     "attr",
+						Value:    attrName,
+						Fallback: attrFallback,
+					})
 				}
 				raw = raw[end:]
 				continue
@@ -8126,6 +8172,55 @@ func ParseContentValues(raw string) []ContentValue {
 	}
 
 	return values
+}
+
+// parseAttrNameAndFallback parses the argument string inside attr(…) for use
+// in the CSS content property (CSS Values 5 §11.5 legacy/no-type form).
+//
+// Forms handled:
+//
+//	attr(name)                     → name="name", fallback="" (hasFallback=false)
+//	attr(name, "fallback text")    → name="name", fallback="fallback text", hasFallback=true
+//	attr(name, invalid-ident)      → name="name", fallback="", hasFallback=false (non-string ident is invalid for string-type content)
+//	attr(name type(<type>), ...)   → name="name" (type portion stripped), fallback if present
+//
+// The typed attr() extension (type(<type>)) is stripped for the content-property
+// path since content attr() always resolves to a string regardless of type.
+// Type-aware resolution for non-content properties is handled in resolveAttrInValue.
+//
+// CSS Values 5 §11.5: for string-type attr() (the content property default),
+// the fallback MUST be a <string> (quoted). An unquoted identifier is not a
+// valid string fallback and is treated as if no fallback were provided.
+func parseAttrNameAndFallback(arg string) (name, fallback string) {
+	arg = strings.TrimSpace(arg)
+	// Split at the first top-level comma (separates name[+type] from fallback).
+	commaIdx := findCommaOutsideParens(arg)
+	rawName := arg
+	rawFallback := ""
+	hasFallback := false
+	if commaIdx >= 0 {
+		rawName = strings.TrimSpace(arg[:commaIdx])
+		rawFallback = strings.TrimSpace(arg[commaIdx+1:])
+		hasFallback = true
+	}
+	// Strip type annotation from the name part: "name type(<type>)" → "name".
+	// The type keyword is separated by whitespace.
+	if idx := strings.IndexByte(rawName, ' '); idx >= 0 {
+		rawName = strings.TrimSpace(rawName[:idx])
+	}
+	if !hasFallback {
+		return rawName, ""
+	}
+	// Fallback must be a <string> (quoted) for string-type content attr.
+	// An unquoted identifier fallback is invalid for the string type and resolves to empty.
+	if len(rawFallback) >= 2 {
+		if (rawFallback[0] == '"' && rawFallback[len(rawFallback)-1] == '"') ||
+			(rawFallback[0] == '\'' && rawFallback[len(rawFallback)-1] == '\'') {
+			return rawName, rawFallback[1 : len(rawFallback)-1]
+		}
+	}
+	// Non-quoted fallback: invalid for string type → treat as no usable fallback.
+	return rawName, ""
 }
 
 // splitCounterArgs splits a counter()/counters() argument string at
