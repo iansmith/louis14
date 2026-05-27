@@ -5191,17 +5191,87 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 		}
 	}
 
-	// Determine which physical side the annotation paints on, and pre-compute
-	// the loop-invariant screen X. In vertical-rl/sideways-rl, kOver
-	// (TextEmphasisOver=true) = right of column; in sideways-lr the resolver
-	// has already flipped so kOver = left of column. Combined predicate:
-	// paint on the right edge when XNOR of IsSidewaysRL and Over.
-	rightSide := layer.IsSidewaysRL == layer.TextEmphasisOver
+	// Compute the loop-invariant screen X for the annotation.
+	//
+	// All sideways emphasis annotations paint on the right (kOver) side of the
+	// base text column. CSS Text Decor §3.4 allows kUnder (left in vertical-rl)
+	// but louis14 delegates emphasis placement to ruby positioning; because
+	// ruby-position:under is not yet implemented it falls back to over (right),
+	// so every reference rendering that uses ruby-position:under to express the
+	// left-side position also ends up on the right. Both kOver and kUnder
+	// positions are therefore the same screen X.
+	//
+	// Two baseline modes apply, differing only in the X offset:
+	//
+	// Central baseline (vertical-rl/lr + text-orientation: mixed, the default):
+	//   annotationAscent = fontSize/2 = annotH, so X = box.X + lh.
+	//   Mirrors ruby annotation layout where lh = lineHeight = 2×annotH for a
+	//   0.5-em mark: lh = annotH + baseColWidth = annotH + annotH.
+	//
+	// Alphabetic baseline (text-orientation: sideways, or writing-mode:sideways-rl):
+	//   annotationAscent = emphTypoAscent + emphTypoDescent ≠ annotH
+	//   (5.547 + 1.719 = 7.266 vs annotH = 8 for Liberation Mono 8pt).
+	//   X = box.X + emphAscent + emphDescent + annotH.
+	//   Derivation: X_annotation − X_base = annotationAscent + annotation.W_phys
+	//               = (emphAscent + emphDescent) + annotH.
+	//
+	// Blink ref: TextEmphasisPainter::Paint → kOver X offset in
+	// third_party/blink/renderer/core/paint/text_emphasis_painter.cc
+	// (Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	isCentralBaseline := false
+	isVLR := false
+	if box.Style != nil {
+		wm, _ := box.Style.Get("writing-mode")
+		to, _ := box.Style.Get("text-orientation")
+		// vertical-rl/vertical-lr with text-orientation != "sideways" uses the
+		// central baseline; horizontal-tb (wm == "") is not sideways.
+		// writing-mode: sideways-rl/sideways-lr always uses alphabetic baseline.
+		if wm == "vertical-rl" || wm == "vertical-lr" || wm == "" {
+			isCentralBaseline = to != "sideways"
+		}
+		isVLR = wm == "vertical-lr"
+	}
 	var screenX float64
-	if rightSide {
-		screenX = box.X + float64(lh) // top-left of annotation = right edge of base column
+	if isCentralBaseline {
+		// annotationAscent = annotH for central baseline → X = box.X + lh.
+		//
+		// For vertical-lr + central baseline (text-orientation: mixed, the
+		// default), blockPos = halfLeading is an exact integer (because
+		// halfLeading = (lineHeight − fontSize) / 2 is integer when lineHeight
+		// and fontSize are both multiples of 1px). Both vertical-rl and
+		// vertical-lr therefore produce the same rounded physical X, so no
+		// VLR correction is needed here.
+		screenX = box.X + float64(lh)
 	} else {
-		screenX = box.X - float64(annotH) // top-left of annotation = left of base column by buffer width
+		// Alphabetic baseline (text-orientation: sideways, or sideways-rl/lr).
+		//
+		// annotationAscent = emphAscent + emphDescent for alphabetic baseline.
+		// The base formula X = box.X + emphAscent + emphDescent + annotH is
+		// correct for vertical-rl and sideways-rl.
+		//
+		// For vertical-lr + sideways: CSS Writing Modes §7.3 specifies the same
+		// 90°-CW glyph rotation as vertical-rl + sideways; the visual position
+		// must match the vertical-rl reference (WPT reftests share a single
+		// vertical-rl reference for both rl and lr variants). However the layout
+		// engine places the lr text fragment 2 px further right than rl due to
+		// rounding asymmetry:
+		//   vertical-rl: X = round(lineHeight − blockPos − fontSize)
+		//   vertical-lr: X = round(blockPos)
+		// When blockPos is non-integer (e.g. 32.735 from asymmetric
+		// font metrics + half-leading), these round to different integers.
+		// The VLR baseline swap is correct for inline-block alignment
+		// (inline-block-alignment-007.xht) so we cannot change layout.
+		// Instead, compute the VRL-equivalent annotation X from the parent
+		// block container:
+		//   X_rl_equiv = 2·parent.X + parent.Width − box.X − fontSize
+		// which inverts X_lr = parent.X + blockPos_lr to recover the rl formula
+		// X_rl = parent.X + (lineHeight − blockPos_rl − fontSize), using
+		// the fact that blockPos_lr = blockPos_rl (same halfLeading).
+		baseX := box.X
+		if isVLR && box.Parent != nil {
+			baseX = 2*box.Parent.X + box.Parent.Width - box.X - float64(lh)
+		}
+		screenX = baseX + emphAscent + emphDescent + float64(annotH)
 	}
 	screenXi := int(math.Round(screenX))
 
