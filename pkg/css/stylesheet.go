@@ -158,6 +158,14 @@ type FontFaceRule struct {
 	Format string       // "truetype", "opentype", "woff", "woff2", or ""
 	Weight string       // font-weight value (e.g. "bold", "400", "700")
 	Style  string       // font-style value (e.g. "italic", "normal")
+
+	// CSS Fonts 4 §6.1-§6.3 metric overrides. nil means "normal" (use the
+	// font's native OS/2 metric). Non-nil stores the ratio (percent / 100) so
+	// 100% → 1.0, 50% → 0.5. Mirrors Blink's FontMetricsOverride struct
+	// (platform/fonts/font_metrics_override.h @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	AscentOverride  *float64 // ascent-override descriptor value
+	DescentOverride *float64 // descent-override descriptor value
+	LineGapOverride *float64 // line-gap-override descriptor value
 }
 
 // KeyframeRule represents a single keyframe stop in a @keyframes rule.
@@ -2851,6 +2859,12 @@ var supportedCSSProperties = map[string]struct{}{
 	"ruby-position": {}, "ruby-align": {}, "ruby-merge": {},
 	// Tables (logical edges)
 	"all": {},
+	// @font-face metric override descriptors (CSS Fonts 4 §6.1-§6.3).
+	// Listed here so @supports (ascent-override: 100%) evaluates correctly
+	// now that louis14 parses and applies these descriptors.
+	"ascent-override":  {},
+	"descent-override": {},
+	"line-gap-override": {},
 }
 
 // trimLeadingWS removes ASCII whitespace from the head of s, matching the
@@ -5085,6 +5099,12 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 			ff.Weight = val
 		case "font-style":
 			ff.Style = val
+		case "ascent-override":
+			ff.AscentOverride = parseFontMetricOverride(val)
+		case "descent-override":
+			ff.DescentOverride = parseFontMetricOverride(val)
+		case "line-gap-override":
+			ff.LineGapOverride = parseFontMetricOverride(val)
 		}
 	}
 
@@ -5092,6 +5112,34 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 		return nil
 	}
 	return ff
+}
+
+// parseFontMetricOverride parses a CSS Fonts 4 §6.1-§6.3 metric-override
+// descriptor value: `normal | <percentage [0,∞)>`. Returns nil for "normal"
+// or any non-parseable / negative value. Returns a pointer to (percent / 100)
+// for a non-negative percentage. Mirrors Blink's ConvertFontMetricOverrideValue
+// in core/css/font_face.cc and ConsumeFontMetricOverride in
+// core/css/parser/at_rule_descriptor_parser.cc at
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func parseFontMetricOverride(val string) *float64 {
+	val = strings.TrimSpace(val)
+	if strings.EqualFold(val, "normal") {
+		return nil
+	}
+	if !strings.HasSuffix(val, "%") {
+		return nil
+	}
+	numStr := strings.TrimSuffix(val, "%")
+	var pct float64
+	if _, err := fmt.Sscanf(numStr, "%f", &pct); err != nil {
+		return nil
+	}
+	if pct < 0 {
+		// Negative percentages are out-of-range per spec — silently drop.
+		return nil
+	}
+	ratio := pct / 100.0
+	return &ratio
 }
 
 // parseKeyframesRule parses a @keyframes or @-webkit-keyframes rule.

@@ -11,6 +11,18 @@ import (
 // FontFetcher fetches font data from a URL.
 type FontFetcher func(url string) ([]byte, error)
 
+// MetricsOverride holds CSS Fonts 4 §6.1-§6.3 metric overrides for a
+// @font-face rule. nil fields mean "normal" (use the font's native metric).
+// Non-nil fields store the override ratio (percent / 100): 100% → 1.0.
+// Mirrors Blink's FontMetricsOverride struct in
+// platform/fonts/font_metrics_override.h @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type MetricsOverride struct {
+	Ascent  *float64 // ascent-override ratio, or nil for native
+	Descent *float64 // descent-override ratio, or nil for native
+	LineGap *float64 // line-gap-override ratio, or nil for native
+}
+
 // bufferEntry stores a fetched @font-face buffer keyed by (family, weight, style).
 // Lookup matches against family/weight/style; the buffer is registered with the
 // underlying [textshape.GlyphProvider] via [FontRegistry.ApplyTo] so layout-time
@@ -42,6 +54,16 @@ type FontRegistry struct {
 	mu               sync.Mutex
 	entries          []bufferEntry
 	declaredFamilies map[string]struct{}
+	// overridesByPath maps a synthetic font path (returned by RegisterFontFace)
+	// to its metric overrides. Keyed by path so the existing fontIDCache —
+	// which is also keyed by (path, size) — is completely unaffected; the
+	// override layer sits above openFont, not inside it.
+	overridesByPath map[string]MetricsOverride
+	// overridesByFamily maps a lowercased family name to metric overrides for
+	// the fallback case where the font URL fetch failed but a local/system font
+	// is used. MetricsOverrideForPath falls back to this map when no path match
+	// is found, after extracting the family from the font path.
+	overridesByFamily map[string]MetricsOverride
 }
 
 // NewFontRegistry creates a new FontRegistry.
@@ -95,15 +117,88 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	})
 	fr.mu.Unlock()
 
+	// Use lowercase family throughout: bufferEntry.Family is already lowercased,
+	// syntheticFontPath must match what Lookup() returns (which calls
+	// syntheticFontPath(e.Family, ...) with the lowercased entry family), and
+	// RegisterBuffer must use the same case so FontPathToFamilyVariant can
+	// round-trip the path back to the provider's registered family. Consistent
+	// lowercase prevents MetricsOverrideForPath misses and OpenFont lookup
+	// failures when the caller's family name has a capital letter (e.g. "Ahem").
+	lowerFamily := strings.ToLower(family)
+
 	// Register the buffer with the shared GlyphProvider. Both layout-time
 	// measurement (via getLayout) and paint-time rendering (via the
 	// renderer's DrawContext, which reuses CurrentProvider) see the same
 	// `registered` map, so a single registration is enough.
-	if err := CurrentProvider().RegisterBuffer(family, variant, data); err != nil {
-		return "", fmt.Errorf("RegisterBuffer(%s): %w", family, err)
+	if err := CurrentProvider().RegisterBuffer(lowerFamily, variant, data); err != nil {
+		return "", fmt.Errorf("RegisterBuffer(%s): %w", lowerFamily, err)
 	}
 
-	return syntheticFontPath(family, variant), nil
+	return syntheticFontPath(lowerFamily, variant), nil
+}
+
+// SetFontFaceOverride stores metric overrides for a synthetic font path.
+// Must be called after RegisterFontFace with the path it returned.
+// A zero MetricsOverride (all-nil fields) is a no-op. Mirrors the
+// MetricsOverriddenFontData factory path in Blink's SimpleFontData —
+// applying overrides at font-data creation time rather than at metric-
+// query time (simple_font_data.cc:253-257 @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (fr *FontRegistry) SetFontFaceOverride(path string, mo MetricsOverride) {
+	if mo.Ascent == nil && mo.Descent == nil && mo.LineGap == nil {
+		return
+	}
+	fr.mu.Lock()
+	if fr.overridesByPath == nil {
+		fr.overridesByPath = make(map[string]MetricsOverride)
+	}
+	fr.overridesByPath[path] = mo
+	fr.mu.Unlock()
+}
+
+// SetFontFamilyOverride stores metric overrides keyed by family name (lowercase).
+// Used when RegisterFontFace fails (URL unavailable) but a local/system font
+// serves the family — ensures the override is applied even when the fontPath
+// is the system path rather than the synthetic web-font path.
+func (fr *FontRegistry) SetFontFamilyOverride(family string, mo MetricsOverride) {
+	if mo.Ascent == nil && mo.Descent == nil && mo.LineGap == nil {
+		return
+	}
+	lf := strings.ToLower(family)
+	fr.mu.Lock()
+	if fr.overridesByFamily == nil {
+		fr.overridesByFamily = make(map[string]MetricsOverride)
+	}
+	fr.overridesByFamily[lf] = mo
+	fr.mu.Unlock()
+}
+
+// MetricsOverrideForPath returns the MetricsOverride stored for path, or a
+// zero MetricsOverride (all-nil fields) if none was registered. Used by the
+// Font*FromFont family in measure.go to intercept metric values above openFont.
+//
+// When no path-keyed override is found, falls back to a family-keyed lookup
+// using the family name extracted from the path (e.g. "ahem" from
+// "/.../fonts/Ahem.ttf"). This covers the case where the @font-face URL fetch
+// failed and the system font is used instead of the synthetic web-font path.
+func (fr *FontRegistry) MetricsOverrideForPath(path string) MetricsOverride {
+	if fr == nil {
+		return MetricsOverride{}
+	}
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	if mo, ok := fr.overridesByPath[path]; ok {
+		return mo
+	}
+	// Fallback: look up by family extracted from the path. Supports the case
+	// where the @font-face fetch failed and the system font path is used.
+	if fr.overridesByFamily != nil {
+		family, _ := FontPathToFamilyVariant(path)
+		if mo, ok := fr.overridesByFamily[strings.ToLower(family)]; ok {
+			return mo
+		}
+	}
+	return MetricsOverride{}
 }
 
 // IsDeclared returns true if any @font-face rule named this family — even if

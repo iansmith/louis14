@@ -240,8 +240,22 @@ func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
 		if face.Src == nil {
 			continue
 		}
-		if _, err := registry.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, fontFetcher); err != nil {
+		hasOverride := face.AscentOverride != nil || face.DescentOverride != nil || face.LineGapOverride != nil
+		mo := text.MetricsOverride{
+			Ascent:  face.AscentOverride,
+			Descent: face.DescentOverride,
+			LineGap: face.LineGapOverride,
+		}
+		path, err := registry.RegisterFontFace(face.Family, face.Src.Data.Absolute, face.Format, face.Weight, face.Style, fontFetcher)
+		if err != nil {
 			log.Printf("font-face: %v", err)
+			if hasOverride {
+				registry.SetFontFamilyOverride(face.Family, mo)
+			}
+			continue
+		}
+		if hasOverride {
+			registry.SetFontFaceOverride(path, mo)
 		}
 	}
 

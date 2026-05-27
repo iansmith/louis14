@@ -43,7 +43,12 @@ func baseFontAscentFromSubLine(
 			asc = fontSize / 2
 		} else {
 			fontPath := resolveFontPath(r.Item.Style, fonts)
-			asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath)
+			// CSS Fonts 4 §6.1: base font ascent for annotation placement uses the
+			// native (non-overridden) ascent. The override grows the line box's
+			// strut ascent (maxAscent), and annotationBlockTop is computed relative
+			// to that grown maxAscent. Using overridden baseFontAsc here would
+			// double-count the override delta and push the annotation into the base.
+			asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
 		}
 		if asc > maxAscent {
 			maxAscent = asc
@@ -97,8 +102,8 @@ func annotationEmHeightFromSubLine(
 			d = fontSize / 2
 		} else {
 			fontPath := resolveFontPath(r.Item.Style, fonts)
-			a = text.FontTypoAscentFromFont(fontSize, fontPath)
-			d = text.FontTypoDescentFromFont(fontSize, fontPath)
+			a = text.FontTypoAscentFromFont(fontSize, fontPath, fonts.Registry)
+			d = text.FontTypoDescentFromFont(fontSize, fontPath, fonts.Registry)
 			if sidewaysVLR {
 				a, d = d, a
 			}
