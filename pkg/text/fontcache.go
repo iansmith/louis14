@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"louis14/pkg/css"
 	"mazarin/textshape"
 )
 
@@ -15,6 +16,14 @@ type FontFetcher func(url string) ([]byte, error)
 // Lookup matches against family/weight/style; the buffer is registered with the
 // underlying [textshape.GlyphProvider] via [FontRegistry.ApplyTo] so layout-time
 // and render-time text shaping can resolve the font without filesystem I/O.
+//
+// `Style` is the @font-face's declared font-style verbatim — `"normal"`,
+// `"italic"`, or `"oblique"`. Distinguishing italic from oblique is required
+// to implement CSS Fonts 4 §6.6 `font-synthesis-style: oblique-only`, which
+// must block italic→oblique fallback at the matcher. The mazzy variant slot
+// (`Variant`) still folds italic + oblique into the same italic-variant
+// bucket because mazzy `textshape.BoolsToVariant` exposes only italic vs
+// normal; the verbatim `Style` field is louis14's distinguishing axis.
 type bufferEntry struct {
 	Family  string
 	Weight  string
@@ -83,13 +92,14 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 		data = decompressed
 	}
 
-	variant := textshape.BoolsToVariant(normalizeWeight(weight) == "bold", normalizeStyle(style) == "italic")
+	verbatimStyle := normalizeStyleVerbatim(style)
+	variant := textshape.BoolsToVariant(normalizeWeight(weight) == "bold", verbatimStyle != "normal")
 
 	fr.mu.Lock()
 	fr.entries = append(fr.entries, bufferEntry{
 		Family:  strings.ToLower(family),
 		Weight:  normalizeWeight(weight),
-		Style:   normalizeStyle(style),
+		Style:   verbatimStyle,
 		Variant: variant,
 		Data:    data,
 	})
@@ -121,7 +131,30 @@ func (fr *FontRegistry) IsDeclared(family string) bool {
 
 // Lookup returns the synthetic path for a font matching the given family,
 // weight, and style. Returns "" if no match is found.
+//
+// Equivalent to [LookupWithPolicy] with `synthStyle = css.FontSynthesisStyleAuto`
+// — i.e. italic↔oblique fallback is allowed per CSS Fonts 4 §6.6 default.
 func (fr *FontRegistry) Lookup(family string, bold, italic bool) string {
+	return fr.LookupWithPolicy(family, bold, italic, css.FontSynthesisStyleAuto)
+}
+
+// LookupWithPolicy returns the synthetic path for a font matching the given
+// family, weight, and style, respecting the CSS Fonts 4 §6.6
+// `font-synthesis-style` policy at the matcher.
+//
+//	auto         — italic↔oblique substitution allowed (matches Blink at SHA
+//	               4883d11fef4a8713e32cd582ecef6dc5457c8c3f, where
+//	               FontSelectionAlgorithm::StyleDistance treats italic/oblique
+//	               as a continuous range above kItalicThreshold).
+//	none         — same as auto for matcher purposes (none forbids 12° skew
+//	               synthesis only, not face substitution; §6.6 spec).
+//	oblique-only — italic request must NOT match an oblique-declared face;
+//	               fall through to the family's normal face (or no match).
+//	               No Blink analog at the pinned SHA — implemented per spec
+//	               directly.
+//
+// Returns "" if no match is found.
+func (fr *FontRegistry) LookupWithPolicy(family string, bold, italic bool, synthStyle css.FontSynthesisStyleValue) string {
 	if fr == nil {
 		return ""
 	}
@@ -133,15 +166,51 @@ func (fr *FontRegistry) Lookup(family string, bold, italic bool) string {
 	if bold {
 		targetWeight = "bold"
 	}
-	targetStyle := "normal"
+
+	// Exact (family, weight, style) match. For italic requests, an explicit
+	// `font-style: italic` @font-face always wins over an oblique one
+	// regardless of policy.
 	if italic {
-		targetStyle = "italic"
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == "italic" {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+	} else {
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == "normal" {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
 	}
 
-	for _, e := range fr.entries {
-		if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == targetStyle {
-			return syntheticFontPath(e.Family, e.Variant)
+	// Italic requested + no italic-declared face. Consider oblique fallback
+	// unless policy forbids substitution.
+	if italic && synthStyle != css.FontSynthesisStyleObliqueOnly {
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Weight == targetWeight && e.Style == "oblique" {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
 		}
+	}
+
+	// Family-only fallback: return *any* entry for this family. Under
+	// `oblique-only` we must still skip oblique entries on an italic request
+	// — otherwise the family-only fallback would silently re-enable the
+	// italic→oblique substitution we just blocked. Prefer a normal-style
+	// entry; if none, accept any non-oblique entry.
+	if italic && synthStyle == css.FontSynthesisStyleObliqueOnly {
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Style == "normal" {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+		for _, e := range fr.entries {
+			if e.Family == lowerFamily && e.Style != "oblique" {
+				return syntheticFontPath(e.Family, e.Variant)
+			}
+		}
+		return ""
 	}
 	for _, e := range fr.entries {
 		if e.Family == lowerFamily {
@@ -187,11 +256,22 @@ func normalizeWeight(w string) string {
 	}
 }
 
-// normalizeStyle converts CSS font-style values to "normal" or "italic".
-func normalizeStyle(s string) string {
-	s = strings.TrimSpace(s)
+// normalizeStyleVerbatim canonicalizes a CSS @font-face `font-style`
+// descriptor to one of `"normal"`, `"italic"`, or `"oblique"`. Unlike the
+// shaping-time `BoolsToVariant` axis, this keeps italic and oblique
+// distinct so the matcher can implement CSS Fonts 4 §6.6
+// `font-synthesis-style: oblique-only` (block italic→oblique substitution).
+// Anything else collapses to `"normal"` (we don't yet honor angle-bearing
+// oblique declarations like `oblique 30deg`).
+func normalizeStyleVerbatim(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	// Tolerate `oblique <angle>` syntax — anything starting with `oblique`
+	// is treated as `oblique` for matcher purposes.
+	if strings.HasPrefix(s, "oblique") {
+		return "oblique"
+	}
 	switch s {
-	case "italic", "oblique":
+	case "italic":
 		return "italic"
 	default:
 		return "normal"
