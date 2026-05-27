@@ -50,6 +50,9 @@ func (p *mockSVGFilterPrimitive) SpecularConstant() float64            { return 
 func (p *mockSVGFilterPrimitive) SpecularExponent() float64            { return 1 }
 func (p *mockSVGFilterPrimitive) KernelUnitLength() (float64, float64) { return 1, 1 }
 func (p *mockSVGFilterPrimitive) LightSource() LightSource             { return nil }
+func (p *mockSVGFilterPrimitive) ResolveImageSource(filterRegion, subregion image.Rectangle) (*image.RGBA, image.Rectangle, bool) {
+	return nil, image.Rectangle{}, false
+}
 
 // TestResolvePrimitiveSubregion_UserSpaceOnUseAnchoredAtUserOrigin
 // covers the canonical bucket-J failure: an SVG inline in HTML body

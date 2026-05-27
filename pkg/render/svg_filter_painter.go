@@ -97,11 +97,14 @@ func (sp *svgShapePainter) paintWithSVGFilter(filter *svg.SVGResourceFilter) {
 	// Per SVG Filter Effects 1 §15.4 primitive subregion attributes
 	// in userSpaceOnUse mode are user-coordinate-system lengths.
 	adapter := &svgFilterElementAdapter{
-		filter:          filter,
-		filterRegion:    region,
-		referenceBox:    referenceBox,
-		userSpaceOrigin: image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
-		space:           space,
+		filter:             filter,
+		filterRegion:       region,
+		referenceBox:       referenceBox,
+		userSpaceOrigin:    image.Point{X: int(math.Round(userOriginF.X)), Y: int(math.Round(userOriginF.Y))},
+		space:              space,
+		resources:          sp.ctx.Resources,
+		imageFetcher:       sp.ctx.Renderer.imageFetcher,
+		externalSVGFetcher: sp.ctx.Renderer.externalSVGFetcher,
 	}
 	builder := filters.NewSVGFilterBuilder(space)
 	graph := builder.BuildGraph(adapter)
@@ -381,6 +384,7 @@ func (sp *svgShapePainter) paintWithFilterChain(ops []css.FilterFunction) bool {
 		ReferenceBox:       referenceBox,
 		Resources:          sp.ctx.Resources,
 		ExternalSVGFetcher: sp.ctx.Renderer.externalSVGFetcher,
+		ImageFetcher:       sp.ctx.Renderer.imageFetcher,
 	}
 	graph := builder.BuildFilterEffect(ops)
 	if graph == nil {

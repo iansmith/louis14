@@ -85,6 +85,21 @@ type SVGFilterPrimitive interface {
 	// or nil when no light-source child is present (the lighting
 	// primitive then produces transparent black per spec).
 	LightSource() LightSource
+
+	// ResolveImageSource returns a pre-rasterised premultiplied RGBA
+	// for an `<feImage>` primitive given the filter region and the
+	// primitive's resolved subregion (both in absolute device pixels).
+	// Returns a nil image for primitives that aren't feImage or for an
+	// feImage whose href can't be resolved (matches the spec's
+	// "transparent black" fallback for unresolved tspan / use references
+	// and missing external resources). Mirrors Blink
+	// FEImage::CreateImageFilter's dispatch between
+	// CreateImageFilterForLayoutObject (internal `href="#id"`) and the
+	// fetched image bitmap path (external href).
+	//
+	// Only consulted inside the `feimage` builder case; other primitive
+	// adapters may return (nil, image.Rectangle{}, false).
+	ResolveImageSource(filterRegion, subregion image.Rectangle) (img *image.RGBA, target image.Rectangle, preserveAspectRatioNone bool)
 }
 
 // SVGFilterElement is the abstract view of a `<filter>` element the
@@ -325,12 +340,13 @@ func (b *SVGFilterBuilder) BuildGraph(elt SVGFilterElement) *Filter {
 			eff.SetOriginTainted()
 		}
 		// Apply the primitive subregion clip if x/y/width/height are
-		// set. For FEFlood we already pushed Subregion into the effect
-		// itself (the flood uses it as the fill rect, not just a
-		// clip), so don't double-wrap. For all other primitives the
-		// subregion is a generic post-evaluation clip per SVG Filter
-		// Effects 1 §15.7 "Filter primitive subregion".
-		if prim.TagName() != "feflood" {
+		// set. For FEFlood / FEImage we already pushed Subregion into
+		// the effect itself (FEFlood uses it as the fill rect, FEImage
+		// as the target rect for the source image), so don't
+		// double-wrap. For all other primitives the subregion is a
+		// generic post-evaluation clip per SVG Filter Effects 1 §15.7
+		// "Filter primitive subregion".
+		if prim.TagName() != "feflood" && prim.TagName() != "feimage" {
 			if sub := resolvePrimitiveSubregion(elt, prim); !sub.Empty() {
 				wrapped := NewSubregionClippedEffect(eff, sub)
 				// Subregion wrapper carries the same tainted bit
@@ -370,6 +386,24 @@ func (b *SVGFilterBuilder) buildOnePrimitive(elt SVGFilterElement, prim SVGFilte
 		r, g, bb, a := prim.FloodColor()
 		fe := NewFEFlood(b.space, r, g, bb, a)
 		fe.Subregion = resolvePrimitiveSubregion(elt, prim)
+		return fe
+	case "feimage":
+		// Per Filter Effects 1 §15.18: feImage is a leaf primitive
+		// whose output is an image, sourced from `href` (or
+		// `xlink:href`). The subregion attributes (x/y/width/height) on
+		// feImage define the rect into which the image is rendered
+		// inside the filter region; the parent filter's region is the
+		// containing canvas.
+		//
+		// resolvePrimitiveSubregion returns the empty rect when no
+		// subregion attributes were supplied — in that case the spec
+		// defaults to the full filter region, which FEImage.ApplyEffect
+		// already does internally via its TargetRect.Empty() fallback.
+		// Mirrors Blink SVGFEImageElement::Build's pass of the resolved
+		// subregion through to the FEImage constructor.
+		sub := resolvePrimitiveSubregion(elt, prim)
+		src, target, parNone := prim.ResolveImageSource(elt.FilterRegion(), sub)
+		fe := NewFEImage(b.space, src, target, parNone)
 		return fe
 	case "fegaussianblur":
 		in := b.resolveInputAttr(prim, "in")

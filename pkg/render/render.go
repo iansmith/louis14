@@ -1196,6 +1196,7 @@ func (r *Renderer) paintLayerWithFilter(layer *PaintLayer) {
 		CurrentColor:       layer.TextColor,
 		Resources:          r.lookupSVGResources(),
 		ExternalSVGFetcher: r.externalSVGFetcher,
+		ImageFetcher:       r.imageFetcher,
 	}
 	filter := builder.BuildFilterEffect(layer.Filters)
 	if filter == nil {
@@ -1365,6 +1366,7 @@ func (r *Renderer) applyBackdropFilter(layer *PaintLayer) {
 		CurrentColor:       layer.TextColor,
 		Resources:          r.lookupSVGResources(),
 		ExternalSVGFetcher: r.externalSVGFetcher,
+		ImageFetcher:       r.imageFetcher,
 	}
 	filter := builder.BuildFilterEffect(layer.BackdropFilters)
 	if filter == nil {
