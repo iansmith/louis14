@@ -2362,7 +2362,7 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 		// Custom-property values still need the var() name + fallback shape
 		// check because a malformed `var(1px)` inside a custom-property
 		// declaration is also a parse error per CSS Variables §3.
-		if strings.Contains(value, "var(") && hasInvalidVarReference(value) {
+		if containsVarFunction(value) && hasInvalidVarReference(value) {
 			return false, true
 		}
 		return true, true
@@ -2417,7 +2417,7 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	// Blink's CSSSupportsParser::ConsumeSupportsDecl path which routes through
 	// CSSParserImpl::ConsumeDeclaration and inherits its var() validation at
 	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	if strings.Contains(value, "var(") && hasInvalidVarReference(value) {
+	if containsVarFunction(value) && hasInvalidVarReference(value) {
 		return false, true
 	}
 
@@ -3956,8 +3956,16 @@ func parseDeclarations(declStr string) DeclarationResult {
 			value = rawValue
 		}
 
-		// Skip declarations with empty property or value
-		if property == "" || value == "" {
+		// Skip declarations with empty property. An empty value is rejected
+		// for non-custom properties, but CSS Custom Properties §3 explicitly
+		// permits the empty token list — `--a: ;` declares the custom
+		// property and sets it to the empty value (a valid substitution
+		// target that resolves to nothing in var() expansion). Required by
+		// `variable-declaration-26` and `variable-reference-03`.
+		if property == "" {
+			continue
+		}
+		if value == "" && !strings.HasPrefix(rawProperty, "--") {
 			continue
 		}
 
@@ -4025,6 +4033,18 @@ func parseDeclarations(declStr string) DeclarationResult {
 			if !isValidCustomPropertyName(rawProperty) || !isValidCustomPropertyValue(rawValue) {
 				continue
 			}
+			// CSS Custom Properties §3 permits the empty token list (`--a: ;`)
+			// as a custom-property value, distinct from the guaranteed-invalid
+			// value sentinel installed when `--a: initial` cascades (style.go
+			// resolveCSSWideKeywords stores "" for that case). Tag explicit
+			// empty user values with a single whitespace-token so var()
+			// resolution substitutes whitespace tokens rather than triggering
+			// the guaranteed-invalid → fallback / IACVT path. Required by
+			// variable-reference-03 / variable-declaration-26.
+			if value == "" {
+				value = " "
+				rawValue = " "
+			}
 		}
 
 		// CSS Variables §3: a var() reference's first argument must itself be a
@@ -4034,7 +4054,7 @@ func parseDeclarations(declStr string) DeclarationResult {
 		// overwrite an earlier valid declaration. Use the RAW (pre-unescape)
 		// form so escape sequences inside the name (e.g. `var(--foo\27 d, …)`)
 		// validate against the source tokens, not the unescaped string.
-		if strings.Contains(rawValue, "var(") && hasInvalidVarReference(rawValue) {
+		if containsVarFunction(rawValue) && hasInvalidVarReference(rawValue) {
 			continue
 		}
 
@@ -4071,6 +4091,13 @@ func parseDeclarations(declStr string) DeclarationResult {
 		// the cascade's CSSProperty(kAll)::ApplyValue at SHA
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		if property == "all" {
+			// Within one declaration block, !important declarations beat
+			// non-important ones regardless of source order (CSS Cascade 4
+			// §8.3). Skip the write when a later non-important declaration
+			// would otherwise overwrite an earlier important one.
+			if !isImportant && result.Important["all"] {
+				continue
+			}
 			result.Declarations["all"] = value
 			if isImportant {
 				result.Important["all"] = true
@@ -4100,6 +4127,15 @@ func parseDeclarations(declStr string) DeclarationResult {
 					continue
 				}
 				v = normalized
+			}
+			// Within one declaration block, an !important declaration beats
+			// a later non-important one (CSS Cascade 4 §8.3). Skip the write
+			// so the earlier important value survives. Mirrors Blink's
+			// StyleRule::SetProperty at SHA
+			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which short-circuits
+			// the property set when the existing entry is already important.
+			if !isImportant && result.Important[k] {
+				continue
 			}
 			result.Declarations[k] = v
 			if isImportant {
@@ -4155,8 +4191,9 @@ func isValidColorValue(value string) bool {
 		lower == "revert" || lower == "revert-layer" {
 		return true
 	}
-	// var() references are resolved later — always valid at parse time
-	if strings.Contains(value, "var(") {
+	// var() references are resolved later — always valid at parse time.
+	// Case-insensitive (CSS Syntax §4.3.10) so `VAR(--a)` defers identically.
+	if containsVarFunction(value) {
 		return true
 	}
 	_, ok := ParseColor(value)
@@ -4189,8 +4226,9 @@ func isValidImageValue(value string) bool {
 	if trimmed == "" {
 		return false
 	}
-	// var() references are resolved later — always valid at parse time.
-	if strings.Contains(trimmed, "var(") {
+	// var() references are resolved later — always valid at parse time
+	// (case-insensitive per CSS Syntax §4.3.10).
+	if containsVarFunction(trimmed) {
 		return true
 	}
 	lower := strings.ToLower(trimmed)
@@ -4287,8 +4325,9 @@ func normalizeAndValidateFontFamily(value string) (string, bool) {
 	case "inherit", "initial", "unset", "revert", "revert-layer":
 		return trimmed, true
 	}
-	// var() references defer to runtime substitution.
-	if strings.Contains(trimmed, "var(") {
+	// var() references defer to runtime substitution
+	// (case-insensitive per CSS Syntax §4.3.10).
+	if containsVarFunction(trimmed) {
 		return trimmed, true
 	}
 	entries := splitTopLevelCommas(trimmed)
@@ -4595,7 +4634,13 @@ func hasInvalidVarReference(value string) bool {
 func isValidCustomPropertyValue(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return false
+		// CSS Custom Properties §3 explicitly permits the empty token list
+		// as a custom-property value (the "guaranteed-invalid" sentinel
+		// written `--a: ;`). Returning true here lets parseDeclarations
+		// accept the declaration; var() substitution then handles the
+		// empty-list semantics at computed-value time. Required by
+		// `variable-declaration-26` and `variable-reference-03`.
+		return true
 	}
 	return isValidDeclarationValueTokens(value, true)
 }
@@ -4718,13 +4763,13 @@ func isValidDeclarationValueTokens(s string, topLevel bool) bool {
 
 // isVarFunctionAt reports whether the `(` at position openIdx is preceded by
 // the function name `var`, with a word boundary before it so that identifiers
-// like `bar` or `myvar` don't match. Case-sensitive to match the existing
-// var()-resolution convention (resolveVarReferences) in style.go.
+// like `bar` or `myvar` don't match. Function-token names are ASCII case-
+// insensitive per CSS Syntax §4.3.10, so `VAR(`, `Var(`, etc. all match.
 func isVarFunctionAt(s string, openIdx int) bool {
 	if openIdx < 3 {
 		return false
 	}
-	if s[openIdx-3:openIdx] != "var" {
+	if !strings.EqualFold(s[openIdx-3:openIdx], "var") {
 		return false
 	}
 	if openIdx == 3 {
@@ -4737,6 +4782,27 @@ func isVarFunctionAt(s string, openIdx int) bool {
 		return false
 	}
 	return true
+}
+
+// containsVarFunction reports whether s contains a `var(` function-token in
+// any case. CSS Syntax §4.3.10: function-token identifiers are ASCII case-
+// insensitive, so `VAR(`, `Var(`, etc. must register the same as `var(`.
+// Single-source-of-truth replacement for `strings.Contains(value, "var(")`.
+func containsVarFunction(s string) bool {
+	return indexVarFunction(s) >= 0
+}
+
+// indexVarFunction returns the byte index of the first `v`/`V` of a `var(`
+// function-token in s (so callers can read the open-paren at index+3), or
+// -1 if none. Companion to containsVarFunction; also case-insensitive per
+// CSS Syntax §4.3.10.
+func indexVarFunction(s string) int {
+	for i := 3; i < len(s); i++ {
+		if s[i] == '(' && isVarFunctionAt(s, i) {
+			return i - 3
+		}
+	}
+	return -1
 }
 
 // matchClosingParen returns the index of the matching `)` for the `(` at

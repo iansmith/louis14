@@ -101,30 +101,33 @@ func (s *Style) Get(property string) (string, bool) {
 	if !ok {
 		return val, ok
 	}
-	hadVar := strings.Contains(val, "var(")
+	hadVar := containsVarFunction(val)
+	varResolutionFailed := false
 	// Resolve var() references in the value
 	if hadVar {
-		val = s.resolveVarReferences(val)
+		val, varResolutionFailed = s.resolveVarsWithStatus(val)
 	}
 	// Resolve env() references in the value
 	if strings.Contains(val, "env(") {
 		val = resolveEnvValue(val)
 	}
 	// CSS Variables §3 "Invalid at Computed Value Time" (IACVT): when a
-	// property's declared value contained a var() reference and the
-	// substituted result is not a valid value for that property, the
-	// declaration must be treated as invalid at computed-value time. For
-	// inherited properties this means use the inherited value; for
-	// non-inherited, the initial value. Mirrors Blink's
+	// property's declared value contained a var() reference that failed to
+	// resolve (the referenced custom property is undefined OR cyclic AND no
+	// fallback was supplied), the entire declaration is invalid at computed
+	// value time. The property must fall back to its inherited value (for
+	// inherited props) or initial value (for non-inherited). Mirrors Blink's
 	// CSSVariableResolver::ResolveVariableReferences IACVT path at SHA
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	//
-	// We can only IACVT-gate properties whose validator we have. Today that's
-	// color-typed properties — the existing isValidColorValue gate. Report
-	// "no value" by returning ok=false so the inheritance pass in
-	// ApplyInheritedProperties / resolveInheritValues falls back to the
-	// parent's computed value (for inherited properties) or the property's
-	// initial value (for non-inherited).
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Returning ok=false routes
+	// the lookup through ApplyInheritedProperties / resolveInheritValues.
+	if varResolutionFailed {
+		return "", false
+	}
+	// IACVT also fires when the substituted result is not a syntactically
+	// valid value for the property — e.g. `color: var(--non-color)` where
+	// --non-color is `10px`. We can only IACVT-gate properties whose
+	// validator we have. Today that's color-typed properties — the existing
+	// isResolvedColorValue gate.
 	if hadVar && isColorProperty(property) {
 		if !isResolvedColorValue(val) {
 			return "", false
@@ -206,13 +209,30 @@ func asciiToLower(s string) string {
 	return b.String()
 }
 
-// resolveVarReferences resolves CSS var() function references in a value string.
-// Supports var(--name) and var(--name, fallback) syntax with nested var() in fallbacks.
+// resolveVarReferences resolves CSS var() function references in a value
+// string. Supports var(--name) and var(--name, fallback) syntax with nested
+// var() in fallbacks. Function-token name match is ASCII case-insensitive
+// per CSS Syntax §4.3.10. Convenience wrapper around resolveVarsWithStatus
+// that discards the IACVT flag — callers needing IACVT awareness (color /
+// background-color / etc. in Get) use the underlying helper directly.
 func (s *Style) resolveVarReferences(value string) string {
-	// Limit recursion depth to prevent infinite loops
+	resolved, _ := s.resolveVarsWithStatus(value)
+	return resolved
+}
+
+// resolveVarsWithStatus performs var() substitution and reports whether any
+// var() reference resolved to the empty string with no usable fallback. Per
+// CSS Variables 1 §3, such an unresolved reference makes the entire enclosing
+// property invalid at computed-value time (IACVT) — even if the surrounding
+// tokens happen to combine into a syntactically valid value. Mirrors Blink's
+// CSSVariableResolver::ResolveVariableReferences which propagates a
+// "resolution_failed" signal up through the substitution loop at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+func (s *Style) resolveVarsWithStatus(value string) (string, bool) {
+	iacvt := false
 	for depth := 0; depth < 10; depth++ {
-		idx := strings.Index(value, "var(")
-		if idx == -1 {
+		idx := indexVarFunction(value)
+		if idx < 0 {
 			break
 		}
 
@@ -240,15 +260,23 @@ func (s *Style) resolveVarReferences(value string) string {
 		// Split on first comma (separating property name from fallback)
 		varName := content
 		fallback := ""
+		hasFallback := false
 		if commaIdx := findCommaOutsideParens(content); commaIdx >= 0 {
 			varName = strings.TrimSpace(content[:commaIdx])
 			fallback = strings.TrimSpace(content[commaIdx+1:])
+			hasFallback = true
 		}
 
 		// Look up the custom property (bypass Get to avoid recursion).
-		// The empty-string sentinel means the property is set to the
-		// guaranteed-invalid value (CSS Custom Properties §3) — treat as
-		// "not defined" so the fallback is used per CSS Variables §3.
+		// The empty-string sentinel ("") encodes the guaranteed-invalid
+		// value installed when a `--x: initial` (or `:unset` on a non-
+		// inheritable custom property) is cascaded. Treat that exactly like
+		// "not defined" so var() picks up the fallback per CSS Variables 1
+		// §3.1. The explicit empty user form `--x: ;` is stored as a single
+		// space token rather than "" by the declaration parser (see
+		// parseDeclarations), so its substitution falls into the
+		// non-empty branch and yields whitespace tokens — required by
+		// variable-reference-03.
 		//
 		// Self-reference cycle (CSS Variables §3 Cycles): if the property's
 		// own value contains a var() pointing back at itself, the property is
@@ -258,15 +286,28 @@ func (s *Style) resolveVarReferences(value string) string {
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. This catches the
 		// single-property self-cycle (`--a: var(--a)`); multi-property cycles
 		// like a→b→a are not yet detected (out of scope for Theme 1).
+		//
+		// Three substitution outcomes per CSS Variables 1 §3:
+		//   (a) Custom property defined to a non-empty, non-cyclic token list
+		//       → substitute its tokens directly.
+		//   (b) Custom property absent / guaranteed-invalid sentinel / cyclic,
+		//       AND a fallback was provided → substitute the fallback.
+		//   (c) Custom property absent / guaranteed-invalid sentinel / cyclic,
+		//       AND no fallback was provided → the entire declaration is
+		//       invalid at computed-value time. Signal iacvt up to Get so the
+		//       property falls back to its inherited / initial value
+		//       (variable-reference-02, variable-declaration-43/46).
 		resolved := ""
-		if propVal, ok := s.Properties[varName]; ok && propVal != "" {
-			if !containsVarReferenceTo(propVal, varName) {
-				resolved = propVal
-			} else if fallback != "" {
-				resolved = fallback
-			}
-		} else if fallback != "" {
+		propVal, propOK := s.Properties[varName]
+		propCyclic := propOK && containsVarReferenceTo(propVal, varName)
+		propUsable := propOK && propVal != "" && !propCyclic
+		switch {
+		case propUsable:
+			resolved = propVal
+		case hasFallback:
 			resolved = fallback
+		default:
+			iacvt = true
 		}
 
 		// Per CSS Variables §3, var() substitution is at the TOKEN level —
@@ -293,7 +334,7 @@ func (s *Style) resolveVarReferences(value string) string {
 		sb.WriteString(value[end+1:])
 		value = sb.String()
 	}
-	return value
+	return value, iacvt
 }
 
 // isIdentContinue reports whether b is a byte that can appear inside a CSS
@@ -2101,8 +2142,9 @@ func expandShorthand(style *Style, property, value string) {
 		return
 	}
 	// If value contains var(), skip shorthand expansion for most properties
-	// (var() will be resolved later when the property is read)
-	if strings.Contains(value, "var(") {
+	// (var() will be resolved later when the property is read).
+	// Case-insensitive per CSS Syntax §4.3.10.
+	if containsVarFunction(value) {
 		switch property {
 		case "margin", "padding", "border", "border-top", "border-right",
 			"border-bottom", "border-left", "border-width", "border-style",
@@ -2528,7 +2570,7 @@ func expandShorthand(style *Style, property, value string) {
 				style.Set(lh, trimmed)
 			}
 		default:
-			if strings.Contains(value, "var(") {
+			if containsVarFunction(value) {
 				style.Set("animation", value)
 			} else {
 				expandAnimationShorthand(style, value)
@@ -3903,8 +3945,9 @@ func expandFontProperty(style *Style, value string) {
 // Handles comma-separated layers: each layer parsed independently, longhands
 // stored as comma-joined strings.
 func expandBackgroundProperty(style *Style, value string) {
-	// If value contains var(), defer expansion
-	if strings.Contains(value, "var(") {
+	// If value contains var(), defer expansion (case-insensitive per CSS
+	// Syntax §4.3.10).
+	if containsVarFunction(value) {
 		style.Set("background-color", value)
 		return
 	}
