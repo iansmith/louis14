@@ -1270,110 +1270,196 @@ func (b *LayoutTreeBuilder) precomputeReversedCounterInitials(node *html.Node, s
 }
 
 // computeReversedCounterInitial scans the DOM scope of a reversed(name)
-// counter-reset on resetNode and returns the auto-count initial value.
+// counter-reset on resetNode and returns the auto-count initial value
+// per CSS Lists 3 §4.1 "Instantiating Counters":
 //
-// The scope of the reset at resetNode is: resetNode's descendants, then
-// resetNode's following siblings (and their descendants), stopping each
-// branch when a counter-reset: name (reversed or not) is encountered
-// deeper in the tree (a nested reset creates a new scope).
+//	num = 0
+//	lastNonZeroIncrementNegated = 0
+//	for each el (in tree order) that increments or sets `name` in scope:
+//	    incrementNegated = -el.counterIncrement(name)
+//	                       or 1 if el is display:list-item and `name`
+//	                       is list-item with no explicit counter-increment
+//	    if incrementNegated != 0:
+//	        lastNonZeroIncrementNegated = incrementNegated
+//	    if el sets `name` with counter-set:
+//	        num += el.counterSet(name)
+//	        break
+//	    num += incrementNegated
+//	num += lastNonZeroIncrementNegated
+//	return num
 //
-// For each element in scope with counter-increment: name (or, for
-// "list-item", with display:list-item), the increment value is
-// collected. The initial is then: -(S + L) where S is the sum of all
-// increments and L is the last increment value. This formula ensures the
-// last item in the scope displays as 1 (or its absolute value) when all
-// items use the default decrement step.
+// The scope of resetNode is: resetNode itself (its explicit increments
+// and ::before/::after pseudos, but NOT the implicit list-item decrement
+// since that's applied to the resetNode at runtime via the auto-reversed
+// path in buildNode), then its descendants (skipping subtrees that have
+// a nested counter-reset for the same name), then its following siblings
+// (with their descendants), stopping at a sibling counter-reset.
 //
-// Mirrors Blink CounterNode::CountUsage() in
-// third_party/blink/renderer/core/layout/counter_node.cc @ 4883d11fef.
+// Mirrors Blink CountersAttachmentContext::CalculateInitialValueForReversed
+// in third_party/blink/renderer/core/css/counters_attachment_context.cc
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, with one louis14 divergence:
+// display:list-item (and display:inline-list-item) on any element induces
+// the implicit list-item increment for the initial-value scan (Blink uses
+// IsA<HTMLLIElement> strictly; louis14 follows the spec letter so
+// <span class="li"> style="display:list-item" is counted —
+// see counter-reset-reversed-list-item.html).
 func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, name string) int {
-	var increments []int
+	initialValue := 0
+	lastNonZeroIncrementNegated := 0
 
-	// Recursive scan helper.
-	// visits node's subtree in document order. Returns true to continue
-	// at the caller level, false if a new scope was encountered (stop
-	// this branch).
-	var scanSubtree func(n *html.Node, isReset bool)
-	scanSubtree = func(n *html.Node, isReset bool) {
+	// processStyle accumulates one visit's contribution. Returns true if
+	// the walk should stop (counter-set for `name` encountered).
+	//
+	// listItemImplicit indicates whether this style's element induces the
+	// implicit list-item +1 (display:list-item + counter `list-item`).
+	// Only the element-level visit passes true; pseudo-element styles do
+	// not get the implicit list-item bump (Blink: pseudo-elements are not
+	// HTMLLIElement; louis14 mirrors by passing false for pseudos).
+	processStyle := func(st *css.Style, listItemImplicit bool) bool {
+		if st == nil {
+			return false
+		}
+		incNeg := 0
+		if v, found := counterIncrementValue(st, name); found {
+			incNeg = -v
+		} else if name == "list-item" && listItemImplicit {
+			// Implicit list-item bump for display:list-item elements
+			// without an explicit counter-increment (CSS Lists 3 §6.1).
+			incNeg = 1
+		}
+		if incNeg != 0 {
+			lastNonZeroIncrementNegated = incNeg
+		}
+		if sv, found := counterSetValue(st, name); found {
+			initialValue += sv
+			return true
+		}
+		initialValue += incNeg
+		return false
+	}
+
+	// listItemImplicitOf reports whether `st` induces the list-item
+	// implicit increment (display:list-item or display:inline-list-item).
+	listItemImplicitOf := func(st *css.Style) bool {
+		if st == nil {
+			return false
+		}
+		d := st.GetDisplay()
+		return d == css.DisplayListItem || d == css.DisplayInlineListItem
+	}
+
+	// visit handles one descendant or sibling element in pre-order: the
+	// element itself, then its ::before pseudo, then its DOM children
+	// (recursive), then its ::after pseudo. A descendant counter-reset
+	// for the same name terminates that branch. Returns true if a hard
+	// stop (counter-set) was hit and the entire walk must end.
+	var visit func(n *html.Node) bool
+	visit = func(n *html.Node) bool {
 		if n == nil || n.Type != html.ElementNode {
-			return
+			return false
 		}
 		st := b.styles[n]
 
 		// display:none elements generate no box and do not participate
 		// in counter scoping (CSS Lists 3 §counters-without-boxes).
 		if st != nil && st.GetDisplay() == css.DisplayNone {
-			return
+			return false
 		}
 
-		// Check for a counter-reset on this element (creates a new scope).
-		// If this is the resetNode itself, skip the scope check (it IS
-		// the origin of the scope). For any other descendant/sibling that
-		// resets the same counter, stop scanning that branch.
-		if !isReset {
-			if hasCounterReset(st, name) {
-				return // new scope — stop this branch
+		// A nested counter-reset of the same name terminates this branch
+		// (Blink: NextSkippingChildren on IsReset where parent differs).
+		if hasCounterReset(st, name) {
+			return false
+		}
+
+		// Visit the element itself.
+		if processStyle(st, listItemImplicitOf(st)) {
+			return true
+		}
+
+		// ::before pseudo-element (layout-tree child appearing before
+		// real children).
+		if ps := b.computePseudoStyleForScan(n, st, "before"); ps != nil {
+			if processStyle(ps, false) {
+				return true
 			}
 		}
 
-		// Collect counter-increment contributions from this element's
-		// own style and from its ::before / ::after pseudos.
-		b.collectIncrements(n, st, name, &increments)
-
-		// Recurse into children (excluding following siblings — those
-		// are handled by the caller).
+		// Real DOM children, in document order.
 		for _, child := range n.Children {
 			if child.Type == html.ElementNode {
-				scanSubtree(child, false)
+				if visit(child) {
+					return true
+				}
+			}
+		}
+
+		// ::after pseudo-element.
+		if ps := b.computePseudoStyleForScan(n, st, "after"); ps != nil {
+			if processStyle(ps, false) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Phase 0: resetNode's OWN contribution. The CSS Lists 3 §counter-scope
+	// rule says the scope "starts at the first element ... that
+	// instantiates that counter" — so resetNode is in its own scope.
+	// We process resetNode's explicit counter-increment AND counter-set
+	// (counter-set on the resetNode itself stops the walk), but NOT the
+	// implicit list-item bump (the runtime list-item decrement is applied
+	// separately to the resetNode in buildNode and would double-count).
+	resetSt := b.styles[resetNode]
+	stopped := false
+	if resetSt != nil {
+		if v, found := counterIncrementValue(resetSt, name); found {
+			incNeg := -v
+			if incNeg != 0 {
+				lastNonZeroIncrementNegated = incNeg
+			}
+			initialValue += incNeg
+		}
+		if sv, found := counterSetValue(resetSt, name); found {
+			initialValue += sv
+			stopped = true
+		}
+	}
+	if !stopped {
+		if ps := b.computePseudoStyleForScan(resetNode, resetSt, "before"); ps != nil {
+			if processStyle(ps, false) {
+				stopped = true
 			}
 		}
 	}
 
-	// Phase 0: collect the reset element's own counter-increment (explicit
-	// only — NOT the implicit list-item decrement) and its ::before / ::after
-	// pseudo-element increments.
-	//
-	// Pseudo-elements are layout-tree children of the reset element but not
-	// DOM children. They participate in the reversed-counter scope just like
-	// DOM descendants (Blink CounterNode::CountUsage traverses the layout
-	// tree and includes pseudo-elements). We compute their styles on demand
-	// here, before the layout tree has been built.
-	//
-	// The reset element's own implicit list-item decrement is excluded: the
-	// formula accounts only for counters that are already visible as
-	// CombinedValue participants in EnterObject; the implicit decrement is
-	// NOT part of counter-increment in the style (so it's not in CombinedValue
-	// either). Verified against counter-reset-reversed-list-item.html.
-	{
-		resetSt := b.styles[resetNode]
-		// Explicit counter-increment on the reset element itself.
-		// Skip zero values (they don't affect the start value).
-		if resetSt != nil {
-			if v, found := counterIncrementValue(resetSt, name); found && v != 0 {
-				increments = append(increments, v)
-			}
-		}
-		// ::before and ::after pseudo-elements.
-		for _, pseudo := range []string{"before", "after"} {
-			ps := b.computePseudoStyleForScan(resetNode, resetSt, pseudo)
-			if ps == nil {
-				continue
-			}
-			if v, found := counterIncrementValue(ps, name); found && v != 0 {
-				increments = append(increments, v)
+	// Phase 1: resetNode's DOM descendants in document order.
+	if !stopped {
+		for _, child := range resetNode.Children {
+			if child.Type == html.ElementNode {
+				if visit(child) {
+					stopped = true
+					break
+				}
 			}
 		}
 	}
 
-	// Phase 1: scan resetNode's OWN descendants.
-	for _, child := range resetNode.Children {
-		if child.Type == html.ElementNode {
-			scanSubtree(child, false)
+	// resetNode's ::after pseudo (after descendants, before following siblings).
+	if !stopped {
+		if ps := b.computePseudoStyleForScan(resetNode, resetSt, "after"); ps != nil {
+			if processStyle(ps, false) {
+				stopped = true
+			}
 		}
 	}
 
-	// Phase 2: scan resetNode's following siblings and their subtrees.
-	if resetNode.Parent != nil {
+	// Phase 2: resetNode's following siblings. A following sibling that
+	// has a counter-reset for the same name at the SAME parent ends the
+	// entire scope (per CSS Lists 3 §counter-scope: "it does not include
+	// any elements in the scope of a counter with the same name created
+	// by a counter-reset on a later sibling").
+	if !stopped && resetNode.Parent != nil {
 		seenReset := false
 		for _, sib := range resetNode.Parent.Children {
 			if sib == resetNode {
@@ -1383,88 +1469,77 @@ func (b *LayoutTreeBuilder) computeReversedCounterInitial(resetNode *html.Node, 
 			if !seenReset {
 				continue
 			}
-			// sib is a following sibling.
+			if sib.Type != html.ElementNode {
+				continue
+			}
 			sibSt := b.styles[sib]
-			if sib.Type == html.ElementNode {
-				// display:none following siblings don't generate boxes and
-				// don't participate in counter scoping.
-				if sibSt != nil && sibSt.GetDisplay() == css.DisplayNone {
-					continue
-				}
-				// A following sibling that resets the same counter ends
-				// the outer scope for that sibling and beyond.
-				if hasCounterReset(sibSt, name) {
-					break
-				}
-				b.collectIncrements(sib, sibSt, name, &increments)
-				for _, child := range sib.Children {
-					if child.Type == html.ElementNode {
-						scanSubtree(child, false)
-					}
-				}
+			if sibSt != nil && sibSt.GetDisplay() == css.DisplayNone {
+				continue
+			}
+			if hasCounterReset(sibSt, name) {
+				break
+			}
+			if visit(sib) {
+				stopped = true
+				break
 			}
 		}
 	}
 
-	if len(increments) == 0 {
-		return 0
-	}
-	sum := 0
-	for _, v := range increments {
-		sum += v
-	}
-	last := increments[len(increments)-1]
-	return -(sum + last)
+	// Final pass per the spec: add lastNonZeroIncrementNegated once.
+	initialValue += lastNonZeroIncrementNegated
+	return initialValue
 }
 
-// collectIncrements appends counter-increment values for counter name
-// from element n (and its ::before/::after pseudos) to out. For the
-// special name "list-item", a display:list-item element contributes -1
-// (the implicit reversed decrement). Pseudo-element styles are computed
-// on demand via ComputePseudoElementStyle.
-func (b *LayoutTreeBuilder) collectIncrements(n *html.Node, st *css.Style, name string, out *[]int) {
-	if n == nil || n.Type != html.ElementNode {
-		return
+// counterSetValue returns the set value for counter name from a style's
+// counter-set property, and whether it was found. Mirrors Blink's
+// CounterDirectives::SetValue accessor.
+func counterSetValue(st *css.Style, name string) (int, bool) {
+	if st == nil {
+		return 0, false
 	}
-	// For list-item elements in the reversed scope scan, the effective
-	// increment is the EXPLICIT counter-increment if present, otherwise
-	// the implicit -1 (Blink: CounterNode::CountUsage uses the
-	// CombinedValue which includes explicit increments over implicit).
-	// Zero-valued explicit increments are excluded (CSS Lists 3: "a
-	// zero-valued counter-increment does not affect the counter start value").
-	if name == "list-item" && st != nil && (st.GetDisplay() == css.DisplayListItem || st.GetDisplay() == css.DisplayInlineListItem) {
-		if v, found := counterIncrementValue(st, name); found {
-			if v != 0 {
-				*out = append(*out, v)
+	raw, ok := st.Get("counter-set")
+	if !ok {
+		return 0, false
+	}
+	// counter-set default value is 0 when no integer follows the name
+	// (CSS Lists 3 §propdef-counter-set).
+	for _, tok := range tokenizeCounterSet(raw) {
+		if tok.name == name {
+			return tok.value, true
+		}
+	}
+	return 0, false
+}
+
+// tokenizeCounterSet parses a counter-set value string into (name, value)
+// pairs. Default value is 0 when no integer follows (CSS Lists 3
+// §propdef-counter-set).
+func tokenizeCounterSet(raw string) []counterNameValue {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "none" {
+		return nil
+	}
+	parts := strings.Fields(raw)
+	var out []counterNameValue
+	for i := 0; i < len(parts); i++ {
+		name := parts[i]
+		val := 0
+		if i+1 < len(parts) {
+			if n, err := strconv.Atoi(parts[i+1]); err == nil {
+				val = n
+				i++
 			}
-		} else {
-			*out = append(*out, -1)
 		}
-		return
+		out = append(out, counterNameValue{name: name, value: val})
 	}
-	// Explicit counter-increment on the element itself. Skip zero values
-	// (CSS Lists 3: zero-valued increments do not affect the reversed counter
-	// start value, i.e. they don't count towards -(S+L)).
-	if st != nil {
-		if v, found := counterIncrementValue(st, name); found && v != 0 {
-			*out = append(*out, v)
-		}
-	}
-	// ::before and ::after may also carry counter-increment.
-	for _, pseudo := range []string{"before", "after"} {
-		ps := b.computePseudoStyleForScan(n, st, pseudo)
-		if ps == nil {
-			continue
-		}
-		if v, found := counterIncrementValue(ps, name); found && v != 0 {
-			*out = append(*out, v)
-		}
-	}
+	return out
 }
 
 // computePseudoStyleForScan returns the computed pseudo-element style for
 // n::pseudo if CSS rules match, or nil if no matching rules exist.
-// Used by collectIncrements during the reversed-counter scope scan.
+// Used by computeReversedCounterInitial to inspect pseudo-element
+// directives during the reversed-counter scope scan.
 func (b *LayoutTreeBuilder) computePseudoStyleForScan(n *html.Node, parentSt *css.Style, pseudo string) *css.Style {
 	if len(b.stylesheets) == 0 || parentSt == nil {
 		return nil
