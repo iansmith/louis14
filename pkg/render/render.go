@@ -568,6 +568,71 @@ func canPropagateBackground(box *layout.Box) bool {
 	return !box.Style.HasAnyContainment()
 }
 
+// IsViewportDefiningBody reports whether the given box is the BODY element
+// whose `overflow` property propagates to the viewport per CSS Overflow 3 §3.3
+// ("Overflow viewport propagation").
+//
+// Mirrors Blink's `Document::ViewportDefiningElement()` at chromium
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// (third_party/blink/renderer/core/dom/document.h). Blink consults this lazily
+// at consumer sites (`LayoutView::CalculateScrollbarModes`,
+// `ViewPainter::PaintRootElementGroup`); louis14 mirrors that pattern by
+// querying it at paint-layer construction.
+//
+// The body's overflow propagates iff:
+//  1. The box's parent is the root element (i.e. <html>).
+//  2. The root element's overflow is `visible` on both axes (else root keeps
+//     its own overflow on the viewport per spec rule 1).
+//  3. Neither root nor body has any form of CSS containment (per CSS Contain
+//     1/2 §3 — containment disables canvas-machinery propagation).
+//  4. The box's DOM node is the FIRST body element in the root's DOM-children
+//     (per HTML spec's `Document.body`). The first DOM body is the ONLY
+//     candidate — if that body has `display: none` and therefore generates no
+//     box, propagation is disabled entirely (the second body does NOT inherit
+//     candidacy). Mirrors Blink's `Document::body()` → `ViewportDefiningElement`
+//     fallback path.
+//
+// When this returns true, callers should treat the body's own `overflow` as
+// `visible` (no body-local clip) — the actual overflow is owned by the
+// viewport instead.
+func IsViewportDefiningBody(box *layout.Box) bool {
+	if box == nil || box.Node == nil || box.Node.TagName != "body" {
+		return false
+	}
+	parent := box.Parent
+	if parent == nil || parent.Node == nil || parent.Node.TagName != "html" {
+		return false
+	}
+	// Spec rule 1: root must have overflow:visible on both axes for body to
+	// be the viewport-defining element. If root has non-visible overflow, the
+	// root is itself the viewport-defining element.
+	if parent.Style != nil {
+		if parent.Style.GetOverflowX() != css.OverflowVisible ||
+			parent.Style.GetOverflowY() != css.OverflowVisible {
+			return false
+		}
+	}
+	// CSS Contain 1/2 §3: containment on root or body suppresses propagation.
+	if !canPropagateBackground(parent) || !canPropagateBackground(box) {
+		return false
+	}
+	// Per HTML spec, `Document.body` is the FIRST body element in DOM order
+	// among the root's children — regardless of display. Walk the DOM tree
+	// (not the box tree, which omits display:none) so that a display:none
+	// first body disables propagation entirely.
+	domParent := box.Node.Parent
+	if domParent == nil {
+		return false
+	}
+	for _, sibling := range domParent.Children {
+		if sibling == nil || sibling.TagName != "body" {
+			continue
+		}
+		return sibling == box.Node
+	}
+	return false
+}
+
 // hasBackground returns true if a box has a visible background
 // (non-transparent background-color or a background-image/gradient).
 func (r *Renderer) hasBackground(box *layout.Box) bool {

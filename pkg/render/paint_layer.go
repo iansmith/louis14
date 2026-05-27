@@ -322,6 +322,18 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// a box may clip in one axis but not the other.
 	overflowX := s.GetOverflowX()
 	overflowY := s.GetOverflowY()
+
+	// CSS Overflow 3 §3.3: when the BODY is the viewport-defining element
+	// (root has overflow:visible, no containment, body is first body that
+	// generates a box), the body's `overflow` propagates to the viewport
+	// and the body's OWN paint pass uses `overflow: visible` (no body-local
+	// clip). Mirrors Blink's `Document::ViewportDefiningElement()` query
+	// consumed by `ViewPainter::PaintRootElementGroup` at chromium
+	// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if IsViewportDefiningBody(box) {
+		overflowX = css.OverflowVisible
+		overflowY = css.OverflowVisible
+	}
 	hasPaintContain := s.HasPaintContainment()
 	isClippedAxis := func(o css.OverflowType) bool {
 		return o == css.OverflowHidden || o == css.OverflowScroll || o == css.OverflowAuto || o == css.OverflowClip
