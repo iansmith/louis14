@@ -3986,7 +3986,7 @@ func expandBackgroundProperty(style *Style, value string) {
 
 		// Extract gradient function
 		if images[li] == "" {
-			for _, gradPrefix := range []string{"repeating-linear-gradient(", "repeating-radial-gradient(", "conic-gradient(", "linear-gradient(", "radial-gradient("} {
+			for _, gradPrefix := range []string{"repeating-linear-gradient(", "repeating-radial-gradient(", "repeating-conic-gradient(", "conic-gradient(", "linear-gradient(", "radial-gradient("} {
 				if idx := strings.Index(remaining, gradPrefix); idx >= 0 {
 					depth := 0
 					gradEnd := -1
@@ -9560,7 +9560,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 // isGradient returns true if the value looks like a CSS gradient function.
 func isGradient(val string) bool {
 	lower := strings.ToLower(strings.TrimSpace(val))
-	for _, prefix := range []string{"linear-gradient(", "radial-gradient(", "repeating-linear-gradient(", "repeating-radial-gradient(", "conic-gradient("} {
+	for _, prefix := range []string{"linear-gradient(", "radial-gradient(", "repeating-linear-gradient(", "repeating-radial-gradient(", "conic-gradient(", "repeating-conic-gradient("} {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}

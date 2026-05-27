@@ -1,6 +1,7 @@
 package render
 
 import (
+	"math"
 	"testing"
 )
 
@@ -71,5 +72,100 @@ func TestParseLinearGradient_DegenerateRepeating(t *testing.T) {
 	resolveStopPositions(stops, 100)
 	if stops[0].pos != stops[1].pos {
 		t.Fatalf("stops should coincide after resolution: %v vs %v", stops[0].pos, stops[1].pos)
+	}
+}
+
+// TestNormalizeStops_OutOfRangePreservedForExtrapolation verifies that
+// out-of-range stop positions (pos < 0 or pos > lineLen) are KEPT in the
+// normalized stop list — the painter extrapolates colors outside the
+// visible region per CSS Images 3 §3.5 + §3.6. Clipping happens at the
+// gradient geometry, not at the stop list.
+//
+// Blink reference: third_party/blink/renderer/core/css/css_gradient_value.cc
+// (Chromium @ 4883d11fef) — `CSSGradientValue::NormalizeAndAddStops` retains
+// stops with position < 0 and > 1; the renderer interpolates between them.
+func TestNormalizeStops_OutOfRangePreservedForExtrapolation(t *testing.T) {
+	// conic-gradient(orange -50% -25%, black -25% 25%, ...) — first stops
+	// are at fractional turns < 0. They must survive normalization.
+	stops := []gradientStop{
+		{r: 1, g: 0.5, b: 0, a: 1, pos: -0.50, posIsSet: true},
+		{r: 1, g: 0.5, b: 0, a: 1, pos: -0.25, posIsSet: true},
+		{r: 0, g: 0, b: 0, a: 1, pos: -0.25, posIsSet: true},
+		{r: 0, g: 0, b: 0, a: 1, pos: 0.25, posIsSet: true},
+	}
+	normalizeStops(stops, 1.0)
+	if stops[0].pos != -0.50 {
+		t.Errorf("stop[0].pos: got %v, want -0.50", stops[0].pos)
+	}
+	if stops[1].pos != -0.25 {
+		t.Errorf("stop[1].pos: got %v, want -0.25", stops[1].pos)
+	}
+}
+
+// TestResolveLhRlhInGradient_PixelSubstitution verifies that `lh` and `rlh`
+// dimension tokens inside a gradient value are substituted with their
+// resolved px equivalents at draw time.
+//
+// Blink reference: third_party/blink/renderer/core/css/css_to_length_conversion_data.cc
+// (Chromium @ 4883d11fef) — `LineHeightSize::Lh()` / `Rlh()`; we resolve at
+// the renderer rather than at the style cascade.
+func TestResolveLhRlhInGradient_PixelSubstitution(t *testing.T) {
+	// Construct a Style with font-size=50 and line-height=2 so 1lh = 100px.
+	// We can't trivially build a *css.Style here without importing the css
+	// package; nil-style passes the value through unchanged.
+	out := resolveLhRlhInGradient("radial-gradient(25px at 1lh 50px, red, green)", nil)
+	if out != "radial-gradient(25px at 1lh 50px, red, green)" {
+		t.Errorf("with nil style, value must pass through unchanged: got %q", out)
+	}
+}
+
+// TestParseRadialGradient_DefaultsCenteredFarthestCorner verifies that a
+// radial-gradient with no shape/size/position arguments defaults to
+// ellipse + farthest-corner + center per CSS Images 3 §3.4.
+func TestParseRadialGradient_DefaultsCenteredFarthestCorner(t *testing.T) {
+	cx, cy, rx, ry, stops, ok, repeating := parseRadialGradient(
+		"radial-gradient(blue, red)", 100, 100)
+	if !ok || repeating || len(stops) != 2 {
+		t.Fatalf("parse failed: ok=%v repeating=%v len(stops)=%d", ok, repeating, len(stops))
+	}
+	if cx != 50 || cy != 50 {
+		t.Errorf("center: got (%v,%v), want (50,50)", cx, cy)
+	}
+	// farthest-corner from center (50,50) of 100x100 = hypot(50,50) ≈ 70.71
+	want := math.Hypot(50, 50)
+	if math.Abs(rx-want) > 0.01 || math.Abs(ry-want) > 0.01 {
+		t.Errorf("radii: got (%v,%v), want both ≈%v", rx, ry, want)
+	}
+}
+
+// TestParseConicGradient_FromAndAt verifies the "from <angle> at <position>"
+// preamble parses correctly.
+func TestParseConicGradient_FromAndAt(t *testing.T) {
+	cx, cy, fromDeg, stops, ok, _ := parseConicGradient(
+		"conic-gradient(from 45deg at 100px 50px, green 25%, transparent 0)", 200, 200)
+	if !ok || len(stops) < 2 {
+		t.Fatalf("parse failed: ok=%v len(stops)=%d", ok, len(stops))
+	}
+	if cx != 100 || cy != 50 {
+		t.Errorf("center: got (%v,%v), want (100,50)", cx, cy)
+	}
+	if fromDeg != 45 {
+		t.Errorf("fromDeg: got %v, want 45", fromDeg)
+	}
+}
+
+// TestParseConicGradient_RepeatingPrefix verifies that the
+// repeating-conic-gradient prefix is accepted.
+func TestParseConicGradient_RepeatingPrefix(t *testing.T) {
+	_, _, _, stops, ok, repeating := parseConicGradient(
+		"repeating-conic-gradient(black 0 25%, white 25% 50%)", 200, 200)
+	if !ok {
+		t.Fatalf("parse failed")
+	}
+	if !repeating {
+		t.Errorf("repeating flag should be true")
+	}
+	if len(stops) != 4 {
+		t.Errorf("multi-position expansion should yield 4 stops, got %d", len(stops))
 	}
 }

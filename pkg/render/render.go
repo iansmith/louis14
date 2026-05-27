@@ -2484,16 +2484,16 @@ func (r *Renderer) drawBackground(layer *PaintLayer) {
 						r.dc.DrawRectangle(lx, ly, lw, lh)
 					}
 					r.dc.Clip()
-					r.drawLinearGradient(bg.Gradient, gradX, gradY, gradW, gradH)
+					r.drawGradient(bg.Gradient, gradX, gradY, gradW, gradH, layer.Box.Style)
 					r.dc.Pop()
 				} else if lHasRadius {
 					r.dc.Push()
 					r.buildRoundedRectPath(lx, ly, lw, lh, lRadii)
 					r.dc.Clip()
-					r.drawLinearGradient(bg.Gradient, gradX, gradY, gradW, gradH)
+					r.drawGradient(bg.Gradient, gradX, gradY, gradW, gradH, layer.Box.Style)
 					r.dc.Pop()
 				} else {
-					r.drawLinearGradient(bg.Gradient, gradX, gradY, gradW, gradH)
+					r.drawGradient(bg.Gradient, gradX, gradY, gradW, gradH, layer.Box.Style)
 				}
 			}
 		}
@@ -2994,7 +2994,7 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 		(bg.Repeat.Y == css.BackgroundRepeatSpace ||
 			bg.Repeat.Y == css.BackgroundRepeatNoRepeat) {
 		lx, ly, lw, lh := backgroundClipRectForClip(box, bg.Clip)
-		r.drawLinearGradient(bg.Gradient, lx, ly, lw, lh)
+		r.drawGradient(bg.Gradient, lx, ly, lw, lh, layer.Box.Style)
 		return
 	}
 
@@ -3006,7 +3006,7 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 	r.pushClipRect(lx, ly, lw, lh)
 	for _, ty := range ys {
 		for _, tx := range xs {
-			r.drawLinearGradient(bg.Gradient, float64(tx), float64(ty), tileW, tileH)
+			r.drawGradient(bg.Gradient, float64(tx), float64(ty), tileW, tileH, layer.Box.Style)
 		}
 	}
 	r.popClipRect()
