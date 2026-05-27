@@ -3828,6 +3828,100 @@ func (r *Renderer) paintCollapsedTableCellBorder(layer *PaintLayer) {
 		return
 	}
 	r.drawBorders(layer)
+	r.drawCollapsedBorderOutwardStrips(layer)
+}
+
+// drawCollapsedBorderOutwardStrips paints the per-side outward strips for
+// a border-collapse:collapse table cell whose neighbor on that side is
+// missing from the grid. CSS 2.1 §17.6.3 / CSS Tables 3 §4.2: the
+// collapsed border for each cell-edge grid line paints centered on the
+// grid line with the full winning width. When the neighbor cell exists,
+// each side paints its half inside its own border-box and the two halves
+// meet at the grid line. When the neighbor is missing (e.g. JS removed
+// the cell), the live cell's drawBorders still paints only the inside
+// half against its border-box; the spec-mandated outside half is painted
+// here as an additive strip just OUTSIDE the cell's border-box on the
+// open side.
+//
+// Mirrors the painted extent of Blink's TablePainter::PaintCollapsedBorders
+// (third_party/blink/renderer/core/paint/table_painters.cc:356-362 @
+// Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Blink walks a
+// per-edge grid at the table level; louis14 currently paints collapsed
+// borders per cell, so we recover the same final pixels via this outward
+// strip rather than restructuring the paint dispatch.
+//
+// CollapsedBorderOutwardExtension is indexed [top, right, bottom, left]
+// to match drawBorders. The strip's color and style mirror the cell's
+// own border on the same side — both sides of the grid line carry the
+// same winning style/color from resolveBorderConflict.
+func (r *Renderer) drawCollapsedBorderOutwardStrips(layer *PaintLayer) {
+	if !layer.IsCollapsedBorderCell {
+		return
+	}
+	ext := layer.CollapsedBorderOutwardExtension
+	if ext[0] == 0 && ext[1] == 0 && ext[2] == 0 && ext[3] == 0 {
+		return
+	}
+	box := layer.Box
+	if box == nil {
+		return
+	}
+
+	// Pixel-snapped cell border-box outer corners — same convention as
+	// drawBorders so the strip aligns precisely with the cell's painted
+	// inside half.
+	x, y, w, h := pixelSnap(box.X, box.Y, box.Width, box.Height)
+	outerLeft, outerTop := x, y
+	outerRight, outerBottom := x+w, y+h
+
+	// Top strip: just above the cell's top edge.
+	if ext[0] > 0 && layer.BorderStyles[0] != css.BorderStyleNone {
+		if c := layer.BorderColors[0]; c.A > 0 {
+			r.setColor(c)
+			r.dc.MoveTo(outerLeft, outerTop-ext[0])
+			r.dc.LineTo(outerRight, outerTop-ext[0])
+			r.dc.LineTo(outerRight, outerTop)
+			r.dc.LineTo(outerLeft, outerTop)
+			r.dc.ClosePath()
+			r.dc.Fill()
+		}
+	}
+	// Right strip: just outside the cell's right edge.
+	if ext[1] > 0 && layer.BorderStyles[1] != css.BorderStyleNone {
+		if c := layer.BorderColors[1]; c.A > 0 {
+			r.setColor(c)
+			r.dc.MoveTo(outerRight, outerTop)
+			r.dc.LineTo(outerRight+ext[1], outerTop)
+			r.dc.LineTo(outerRight+ext[1], outerBottom)
+			r.dc.LineTo(outerRight, outerBottom)
+			r.dc.ClosePath()
+			r.dc.Fill()
+		}
+	}
+	// Bottom strip: just below the cell's bottom edge.
+	if ext[2] > 0 && layer.BorderStyles[2] != css.BorderStyleNone {
+		if c := layer.BorderColors[2]; c.A > 0 {
+			r.setColor(c)
+			r.dc.MoveTo(outerLeft, outerBottom)
+			r.dc.LineTo(outerRight, outerBottom)
+			r.dc.LineTo(outerRight, outerBottom+ext[2])
+			r.dc.LineTo(outerLeft, outerBottom+ext[2])
+			r.dc.ClosePath()
+			r.dc.Fill()
+		}
+	}
+	// Left strip: just outside the cell's left edge.
+	if ext[3] > 0 && layer.BorderStyles[3] != css.BorderStyleNone {
+		if c := layer.BorderColors[3]; c.A > 0 {
+			r.setColor(c)
+			r.dc.MoveTo(outerLeft-ext[3], outerTop)
+			r.dc.LineTo(outerLeft, outerTop)
+			r.dc.LineTo(outerLeft, outerBottom)
+			r.dc.LineTo(outerLeft-ext[3], outerBottom)
+			r.dc.ClosePath()
+			r.dc.Fill()
+		}
+	}
 }
 
 // drawBorders draws all four borders of the layer's box (pre-computed styles/colors).

@@ -117,12 +117,12 @@ type PaintLayer struct {
 	BorderRadius css.EllipticalRadii // TopLeft, TopRight, BottomRight, BottomLeft (elliptical)
 
 	// Border image (9-slice): replaces regular border drawing when source is set.
-	BorderImageSource *css.CSSImageValue   // url() value; nil = none (LOU-138 phase 7.3)
-	BorderImageSlice  css.BorderImageSlice // 4 slice values + fill flag
-	BorderImageWidth  [4]float64           // top, right, bottom, left (px)
-	BorderImageWidthAuto [4]bool           // true for sides where 'auto' was specified (resolved at paint time per CSS Backgrounds 3 §6.3)
-	BorderImageRepeat [2]string            // [horizontal, vertical]: stretch/repeat/round/space
-	BorderImageOutset [4]float64           // top, right, bottom, left (px); extends paint area outside border box
+	BorderImageSource    *css.CSSImageValue   // url() value; nil = none (LOU-138 phase 7.3)
+	BorderImageSlice     css.BorderImageSlice // 4 slice values + fill flag
+	BorderImageWidth     [4]float64           // top, right, bottom, left (px)
+	BorderImageWidthAuto [4]bool              // true for sides where 'auto' was specified (resolved at paint time per CSS Backgrounds 3 §6.3)
+	BorderImageRepeat    [2]string            // [horizontal, vertical]: stretch/repeat/round/space
+	BorderImageOutset    [4]float64           // top, right, bottom, left (px); extends paint area outside border box
 
 	// Box shadows (outset and inset):
 	BoxShadows []css.BoxShadow
@@ -270,6 +270,23 @@ type PaintLayer struct {
 	// CollapsedBorders dispatch in TablePainter (table_painters.cc,
 	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	IsCollapsedBorderCell bool
+
+	// CollapsedBorderOutwardExtension carries the per-physical-side width
+	// (px) of the collapsed-border "outside half" that this cell must
+	// paint as an additive outward strip — its neighbor on that side is
+	// missing from the grid (cell removed, or table outer edge with no
+	// element border to share), so the live cell carries the part of the
+	// collapsed border that would otherwise sit on the missing neighbor's
+	// painted half.
+	//
+	// Indexed [top, right, bottom, left] (matches drawBorders index order).
+	// Forwarded from layout.Box.CollapsedBorderOutwardExtension. Consumed
+	// by paintCollapsedTableCellBorder in pkg/render/render.go.
+	//
+	// Spec: CSS 2.1 §17.6.3 / CSS Tables 3 §4.2. Blink reference:
+	// TablePainter::PaintCollapsedBorders @ table_painters.cc:356-362
+	// (Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	CollapsedBorderOutwardExtension [4]float64
 
 	// Column rules (for multicol containers):
 	IsMulticol      bool
@@ -935,6 +952,12 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		s.GetBorderCollapse() == css.BorderCollapseCollapse {
 		layer.IsCollapsedBorderCell = true
 	}
+	// Forward the missing-neighbor outward-strip widths produced by table
+	// layout (CSS 2.1 §17.6.3; Blink table_painters.cc:356-362 @ SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Non-zero only for
+	// border-collapse:collapse cells with a missing neighbor on that
+	// side; zero array on every other layer.
+	layer.CollapsedBorderOutwardExtension = box.CollapsedBorderOutwardExtension
 
 	return layer
 }

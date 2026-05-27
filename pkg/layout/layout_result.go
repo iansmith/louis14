@@ -335,6 +335,33 @@ type PhysicalFragment struct {
 	// single-fragment inlines. Mirrors Blink's InlinePaintContext per-paint
 	// decoration list (inline_paint_context.h:20-26 @ SHA 4883d11f).
 	AppliedTextDecorations []css.AppliedTextDecoration
+
+	// CollapsedBorderOutwardExtension is set on border-collapse:collapse
+	// table-cell fragments whose neighbor cell on a given physical side is
+	// missing from the grid (cell removed, or no element-level border to
+	// share at the table outer edge). For each side [top, right, bottom,
+	// left] the value is the px of the collapsed border's "outside half"
+	// — the spec-mandated paint that extends beyond the cell's border-box
+	// per CSS 2.1 §17.6.3 / CSS Tables 3 §4.2.
+	//
+	// The cell's own drawBorders paints the inside half (half the winning
+	// width, stored on the cloned cell style). When this field is
+	// non-zero on side s, paintCollapsedTableCellBorder additionally
+	// paints an outward strip of width [s] just outside the cell's
+	// border-box on that side, so the combined visual is the full
+	// collapsed border centered on the cell-edge grid line.
+	//
+	// Blink reference: TablePainter::PaintCollapsedBorders @
+	// table_painters.cc:356-362 (Chromium SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Where louis14 differs —
+	// Blink paints all collapsed borders at the table level from a grid;
+	// louis14 paints them per cell — we recover the same painted extent
+	// via this additive outward strip.
+	//
+	// Indexing matches drawBorders: [0]=top, [1]=right, [2]=bottom,
+	// [3]=left. All zero on the common case (every neighbor exists or
+	// border-collapse:separate).
+	CollapsedBorderOutwardExtension [4]float64
 }
 
 // ChildLink is a positioned child within a parent fragment.
