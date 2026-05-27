@@ -4013,7 +4013,7 @@ func expandBackgroundProperty(style *Style, value string) {
 		// Extract color functions before field-splitting
 		colorFound := false
 		colorValue := ""
-		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "lab(", "hwb(", "color-mix(", "color("} {
+		for _, prefix := range []string{"rgba(", "rgb(", "hsla(", "hsl(", "oklch(", "lch(", "oklab(", "lab(", "hwb(", "color-mix(", "color("} {
 			if idx := strings.Index(remaining, prefix); idx >= 0 {
 				depth := 0
 				end := -1
@@ -4245,6 +4245,21 @@ func parseSpaceSeparatedRGB(inner string) (Color, bool) {
 	return Color{uint8(r), uint8(g), uint8(b), alpha}, true
 }
 
+// clampLab clamps a Lab/OKLab/LCH/OKLCH Lightness component to its declared
+// range, mirroring CSS Color 4 §13 "all values must be clamped to the limits
+// expected by their colorspace". Required by the lab-l-over-100-* and
+// oklab-l-almost-* WPT reftests: `lab(150 ...)` must render identically to
+// `lab(100 ...)`, and `oklab(0.0001% ...)` must collapse to `oklab(0 ...)`.
+func clampLab(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
 // parseLabComponent parses a Lab a/b component.
 // Can be a raw number (-125 to 125) or a percentage (-100% to 100% of maxVal).
 func parseLabComponent(s string, maxVal float64) float64 {
@@ -4364,8 +4379,24 @@ func hslToColor(h, s, l, a float64) Color {
 }
 
 // parseColorFunction parses a CSS color() function and returns RGBA uint8 components.
-// Supports color spaces: srgb, display-p3, a98-rgb, rec2020, xyz-d65.
-// Format: color(colorspace r g b) or color(colorspace r g b / alpha)
+// Supports the eight predefined CSS Color 4 §10 color spaces:
+//   - srgb / srgb-linear
+//   - display-p3 / display-p3-linear
+//   - a98-rgb / rec2020 / rec2020-linear
+//   - prophoto-rgb (D50 white point)
+//   - xyz / xyz-d50 / xyz-d65
+//
+// Format: color(<colorspace> r g b) or color(<colorspace> r g b / alpha).
+// Per CSS Color 4 §6.5, each numeric component may be either a <number> in
+// the colorspace's native range (typically 0..1) or a <percentage> mapping
+// 0%..100% to that same native range.
+//
+// Mirrors Blink's `CSSColorFunctionParser::ConsumeFunctionalSyntaxColor()`
+// dispatch on the colorspace keyword
+// (`third_party/blink/renderer/core/css/properties/css_color_function_parser.cc`
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). Matrix math is consolidated in
+// `pkg/css/colorspace.go`, mirroring Blink's consolidation in
+// `platform/graphics/color.cc` + `gfx::` color layer.
 func parseColorFunction(s string) (uint8, uint8, uint8, uint8, bool) {
 	start := strings.Index(s, "(")
 	end := strings.LastIndex(s, ")")
@@ -4380,29 +4411,49 @@ func parseColorFunction(s string) (uint8, uint8, uint8, uint8, bool) {
 	}
 
 	colorSpace := strings.ToLower(parts[0])
-	var r, g, b float64
-	fmt.Sscanf(parts[1], "%f", &r)
-	fmt.Sscanf(parts[2], "%f", &g)
-	fmt.Sscanf(parts[3], "%f", &b)
+	// Per CSS Color 4 §6.5: a component is either a <number> in the
+	// colorspace's native unit range (0..1 for all predefined spaces) or a
+	// <percentage> mapping 0%..100% to that same range. parseLabComponent
+	// implements the percent-or-number rule with `maxVal` as the percent
+	// reference — for predefined RGB/XYZ spaces the reference is 1.0.
+	r := parseLabComponent(parts[1], 1.0)
+	g := parseLabComponent(parts[2], 1.0)
+	b := parseLabComponent(parts[3], 1.0)
 
-	// Convert to sRGB based on the color space
+	// Convert to sRGB based on the color space. Out-of-gamut sources go
+	// through CSS Color 4 §13.3 OkLCh chroma-reduction gamut mapping; for
+	// in-gamut sources the gamut-map helper is identity. Mirrors Blink's
+	// `Color::ConvertToColorSpace()` → `IsBakedGamutMappingEnabled()` path
+	// (`platform/graphics/color.cc` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 	switch colorSpace {
 	case "srgb":
-		// Already sRGB — just clamp
-		r = colorClamp01(r)
-		g = colorClamp01(g)
-		b = colorClamp01(b)
+		// sRGB source is already gamma-encoded. Linearise so the gamut-map
+		// step can decide chroma reduction on the linear-light triple, then
+		// re-encode via gamutMapLinearSRGB.
+		r, g, b = gamutMapLinearSRGB(sRGBToLinear(r), sRGBToLinear(g), sRGBToLinear(b))
+	case "srgb-linear":
+		r, g, b = srgbLinearToSRGB(r, g, b)
 	case "display-p3":
 		r, g, b = p3ToSRGB(r, g, b)
+	case "display-p3-linear":
+		r, g, b = displayP3LinearToSRGB(r, g, b)
 	case "a98-rgb":
 		r, g, b = a98RGBToSRGB(r, g, b)
 	case "rec2020":
 		r, g, b = rec2020ToSRGB(r, g, b)
-	case "xyz-d65":
+	case "rec2020-linear":
+		r, g, b = rec2020LinearToSRGB(r, g, b)
+	case "prophoto-rgb":
+		r, g, b = prophotoRGBToSRGB(r, g, b)
+	case "xyz", "xyz-d65":
+		// CSS Color 4 §10: bare `xyz` is an alias for `xyz-d65` (NOT d50).
+		// "When unprefixed, the predefined xyz space is defined relative
+		// to the CIE D65 white point."
 		r, g, b = xyzD65ToSRGB(r, g, b)
-	case "xyz", "xyz-d50":
-		// Approximate: treat as xyz-d65 (close enough for rendering)
-		r, g, b = xyzD65ToSRGB(r, g, b)
+	case "xyz-d50":
+		// xyz-d50 requires Bradford chromatic adaptation D50→D65 before
+		// the XYZ-D65 → sRGB matrix step.
+		r, g, b = xyzD50ToSRGB(r, g, b)
 	default:
 		return 0, 0, 0, 255, false
 	}
@@ -4487,12 +4538,508 @@ var deprecatedSystemColorAliases = map[string]string{
 	"windowtext":          "canvastext",
 }
 
+// ParseColorWithCurrentColor parses a CSS color value with a known currentColor.
+// Used to resolve `currentcolor` and CSS Color 5 §4 relative-color syntax
+// (`<func>(from currentColor ...)`) where the base color is the element's
+// computed `color` value. Mirrors Blink's `CSSRelativeColorValue::Resolve()`
+// path (`third_party/blink/renderer/core/css/css_relative_color_value.cc`
+// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), which materialises the base
+// color at use-time and binds its components into the relative-color
+// expression environment.
+func ParseColorWithCurrentColor(colorStr string, currentColor Color) (Color, bool) {
+	colorStr = strings.TrimSpace(colorStr)
+	if strings.EqualFold(colorStr, "currentcolor") {
+		return currentColor, true
+	}
+	if c, ok := parseRelativeColor(colorStr, currentColor); ok {
+		return c, true
+	}
+	return ParseColor(colorStr)
+}
+
+// parseRelativeColor attempts to parse a CSS Color 5 §4 relative-color form
+// `<func>(from <base> <c1> <c2> <c3> [/ <alpha>])`. Returns (color, true) on
+// success; (_, false) if the input isn't a relative-color form. The `base`
+// can be `currentcolor` (resolved via currentColor argument) or any color
+// literal accepted by ParseColor.
+//
+// Component bindings per function (CSS Color 5 §4.1 "Resolving Components"):
+//   - rgb / rgba — r, g, b (0..255, surfaced as 0..1 fractions of 255)
+//   - hsl / hsla — h (deg), s (0..1), l (0..1)
+//   - hwb — h (deg), w (0..1), b (0..1)
+//   - lab — l (0..100), a, b (±125)
+//   - lch — l (0..100), c (0..150), h (deg)
+//   - oklab — l (0..1), a, b (±0.4)
+//   - oklch — l (0..1), c (0..0.4), h (deg)
+//   - color(<space> ...) — r, g, b (0..1) for RGB-like spaces; x, y, z for xyz-*
+//
+// Each remaining token is either the bound identifier (which substitutes the
+// base component's value) or a literal number / percentage / angle. The
+// resulting concrete color expression is fed back through ParseColor so the
+// percent semantics and gamut mapping match the absolute-form path exactly.
+func parseRelativeColor(colorStr string, currentColor Color) (Color, bool) {
+	lower := strings.ToLower(colorStr)
+	openIdx := strings.Index(lower, "(")
+	if openIdx <= 0 || !strings.HasSuffix(lower, ")") {
+		return Color{}, false
+	}
+	funcName := strings.TrimSpace(lower[:openIdx])
+	inner := strings.TrimSpace(colorStr[openIdx+1 : len(colorStr)-1])
+
+	// Must begin with `from <base>` (case-insensitive `from` keyword).
+	innerLower := strings.ToLower(inner)
+	if !strings.HasPrefix(innerLower, "from ") && !strings.HasPrefix(innerLower, "from\t") {
+		return Color{}, false
+	}
+	inner = strings.TrimSpace(inner[4:])
+
+	// For `color()`, the next token is the color-space identifier; for the
+	// other functional forms, the base color follows `from` directly.
+	var space string
+	if funcName == "color" {
+		// Pattern: `<base> <space> c1 c2 c3 [/ alpha]`. The base may itself
+		// be a function call with internal spaces (e.g. `rgb(1 2 3)`), so we
+		// must skip balanced parens when locating the next whitespace.
+		baseEnd := findTopLevelSpace(inner)
+		if baseEnd < 0 {
+			return Color{}, false
+		}
+		baseStr := strings.TrimSpace(inner[:baseEnd])
+		rest := strings.TrimSpace(inner[baseEnd:])
+		spaceEnd := findTopLevelSpace(rest)
+		if spaceEnd < 0 {
+			return Color{}, false
+		}
+		space = strings.ToLower(strings.TrimSpace(rest[:spaceEnd]))
+		components := strings.TrimSpace(rest[spaceEnd:])
+		return resolveRelativeComponents(funcName, space, baseStr, components, currentColor)
+	}
+
+	// rgb/hsl/hwb/lab/lch/oklab/oklch all have shape `<base> c1 c2 c3 [/ a]`.
+	baseEnd := findTopLevelSpace(inner)
+	if baseEnd < 0 {
+		return Color{}, false
+	}
+	baseStr := strings.TrimSpace(inner[:baseEnd])
+	components := strings.TrimSpace(inner[baseEnd:])
+	return resolveRelativeComponents(funcName, "", baseStr, components, currentColor)
+}
+
+// findTopLevelSpace returns the index of the first ASCII whitespace character
+// in s that is NOT nested inside parentheses, or -1 if none.
+func findTopLevelSpace(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ' ', '\t', '\n', '\r':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// resolveRelativeComponents materialises the base color, decomposes it into
+// the named function's component bindings, then rebuilds the color string by
+// substituting component identifiers with concrete numbers and forwarding to
+// ParseColor.
+func resolveRelativeComponents(funcName, space, baseStr, components string, currentColor Color) (Color, bool) {
+	var base Color
+	if strings.EqualFold(baseStr, "currentcolor") {
+		base = currentColor
+	} else if c, ok := ParseColor(baseStr); ok {
+		base = c
+	} else {
+		return Color{}, false
+	}
+
+	// Decompose base color into the function's native components. Each entry
+	// in compMap maps the bound identifier (e.g. "r" / "l" / "h") to its
+	// formatted literal in the syntax that ParseColor expects (e.g. "0.5",
+	// "120deg"). Alpha is bound as "alpha" via the slash position; we surface
+	// the base alpha for the slash-substitution case.
+	compMap, ok := relativeComponentBindings(funcName, space, base)
+	if !ok {
+		return Color{}, false
+	}
+
+	// Substitute component idents in the token list and rebuild the
+	// concrete-form color string. The substituted output is what ParseColor
+	// would have accepted as the absolute form, so percent-or-number,
+	// gamut mapping, and angle handling all flow through one code path.
+	rebuilt, ok := substituteRelativeComponents(funcName, space, components, compMap)
+	if !ok {
+		return Color{}, false
+	}
+	return ParseColor(rebuilt)
+}
+
+// relativeComponentBindings returns a map from component identifier (lowercase
+// single letter or `alpha`) to its serialised numeric literal for the given
+// function/space, sourced from the base color. The output literals are in the
+// syntax the absolute form accepts (numbers for fractions, "<n>deg" for
+// angles) so the substituted string round-trips through ParseColor.
+func relativeComponentBindings(funcName, space string, base Color) (map[string]string, bool) {
+	r := float64(base.R) / 255.0
+	g := float64(base.G) / 255.0
+	b := float64(base.B) / 255.0
+	alpha := fmt.Sprintf("%g", base.A)
+
+	switch funcName {
+	case "rgb", "rgba":
+		return map[string]string{
+			"r":     fmt.Sprintf("%d", base.R),
+			"g":     fmt.Sprintf("%d", base.G),
+			"b":     fmt.Sprintf("%d", base.B),
+			"alpha": alpha,
+		}, true
+	case "hsl", "hsla":
+		h, s, l := rgbToHSL(r, g, b)
+		return map[string]string{
+			"h":     fmt.Sprintf("%gdeg", h),
+			"s":     fmt.Sprintf("%g%%", s*100),
+			"l":     fmt.Sprintf("%g%%", l*100),
+			"alpha": alpha,
+		}, true
+	case "hwb":
+		// HWB is derived from HSV: W = min(R,G,B), B = 1 - max(R,G,B).
+		hue, _, _ := rgbToHSL(r, g, b)
+		w := math.Min(r, math.Min(g, b))
+		bl := 1 - math.Max(r, math.Max(g, b))
+		return map[string]string{
+			"h":     fmt.Sprintf("%gdeg", hue),
+			"w":     fmt.Sprintf("%g%%", w*100),
+			"b":     fmt.Sprintf("%g%%", bl*100),
+			"alpha": alpha,
+		}, true
+	case "lab":
+		// sRGB → linear → XYZ-D65 → Bradford → XYZ-D50 → Lab.
+		L, a, bLab := srgbToLab(r, g, b)
+		return map[string]string{
+			"l":     fmt.Sprintf("%g", L),
+			"a":     fmt.Sprintf("%g", a),
+			"b":     fmt.Sprintf("%g", bLab),
+			"alpha": alpha,
+		}, true
+	case "lch":
+		L, a, bLab := srgbToLab(r, g, b)
+		C := math.Sqrt(a*a + bLab*bLab)
+		h := math.Atan2(bLab, a) * 180 / math.Pi
+		if h < 0 {
+			h += 360
+		}
+		return map[string]string{
+			"l":     fmt.Sprintf("%g", L),
+			"c":     fmt.Sprintf("%g", C),
+			"h":     fmt.Sprintf("%gdeg", h),
+			"alpha": alpha,
+		}, true
+	case "oklab":
+		L, a, bLab := srgbToOKLab(r, g, b)
+		return map[string]string{
+			"l":     fmt.Sprintf("%g", L),
+			"a":     fmt.Sprintf("%g", a),
+			"b":     fmt.Sprintf("%g", bLab),
+			"alpha": alpha,
+		}, true
+	case "oklch":
+		L, a, bLab := srgbToOKLab(r, g, b)
+		C := math.Sqrt(a*a + bLab*bLab)
+		h := math.Atan2(bLab, a) * 180 / math.Pi
+		if h < 0 {
+			h += 360
+		}
+		return map[string]string{
+			"l":     fmt.Sprintf("%g", L),
+			"c":     fmt.Sprintf("%g", C),
+			"h":     fmt.Sprintf("%gdeg", h),
+			"alpha": alpha,
+		}, true
+	case "color":
+		// Decompose sRGB into the requested predefined space's native
+		// components. Only the RGB-like spaces and xyz-d50/d65 appear in the
+		// failing reftests; for each we round-trip through XYZ-D65.
+		lr := sRGBToLinear(r)
+		lg := sRGBToLinear(g)
+		lb := sRGBToLinear(b)
+		// XYZ-D65 of base.
+		x := 0.4124564*lr + 0.3575761*lg + 0.1804375*lb
+		y := 0.2126729*lr + 0.7151522*lg + 0.0721750*lb
+		z := 0.0193339*lr + 0.1191920*lg + 0.9503041*lb
+		switch space {
+		case "srgb":
+			return map[string]string{
+				"r":     fmt.Sprintf("%g", r),
+				"g":     fmt.Sprintf("%g", g),
+				"b":     fmt.Sprintf("%g", b),
+				"alpha": alpha,
+			}, true
+		case "srgb-linear":
+			return map[string]string{
+				"r":     fmt.Sprintf("%g", lr),
+				"g":     fmt.Sprintf("%g", lg),
+				"b":     fmt.Sprintf("%g", lb),
+				"alpha": alpha,
+			}, true
+		case "display-p3":
+			// linear sRGB → XYZ-D65 → display-p3 (linear) → gamma.
+			pr, pg, pb := xyzD65ToDisplayP3(x, y, z)
+			return map[string]string{
+				"r":     fmt.Sprintf("%g", linearToSRGB(pr)),
+				"g":     fmt.Sprintf("%g", linearToSRGB(pg)),
+				"b":     fmt.Sprintf("%g", linearToSRGB(pb)),
+				"alpha": alpha,
+			}, true
+		case "a98-rgb":
+			pr, pg, pb := xyzD65ToA98RGB(x, y, z)
+			return map[string]string{
+				"r":     fmt.Sprintf("%g", math.Pow(math.Max(0, pr), 256.0/563.0)),
+				"g":     fmt.Sprintf("%g", math.Pow(math.Max(0, pg), 256.0/563.0)),
+				"b":     fmt.Sprintf("%g", math.Pow(math.Max(0, pb), 256.0/563.0)),
+				"alpha": alpha,
+			}, true
+		case "rec2020":
+			pr, pg, pb := xyzD65ToRec2020Linear(x, y, z)
+			return map[string]string{
+				"r":     fmt.Sprintf("%g", rec2020LinearToGamma(pr)),
+				"g":     fmt.Sprintf("%g", rec2020LinearToGamma(pg)),
+				"b":     fmt.Sprintf("%g", rec2020LinearToGamma(pb)),
+				"alpha": alpha,
+			}, true
+		case "prophoto-rgb":
+			xd50, yd50, zd50 := bradfordD65ToD50(x, y, z)
+			pr, pg, pb := xyzD50ToProphotoRGBLinear(xd50, yd50, zd50)
+			return map[string]string{
+				"r":     fmt.Sprintf("%g", prophotoLinearToGamma(pr)),
+				"g":     fmt.Sprintf("%g", prophotoLinearToGamma(pg)),
+				"b":     fmt.Sprintf("%g", prophotoLinearToGamma(pb)),
+				"alpha": alpha,
+			}, true
+		case "xyz-d50":
+			xd50, yd50, zd50 := bradfordD65ToD50(x, y, z)
+			return map[string]string{
+				"x":     fmt.Sprintf("%g", xd50),
+				"y":     fmt.Sprintf("%g", yd50),
+				"z":     fmt.Sprintf("%g", zd50),
+				"alpha": alpha,
+			}, true
+		case "xyz", "xyz-d65":
+			// `xyz` is an alias for `xyz-d65` per CSS Color 4 §10.
+			return map[string]string{
+				"x":     fmt.Sprintf("%g", x),
+				"y":     fmt.Sprintf("%g", y),
+				"z":     fmt.Sprintf("%g", z),
+				"alpha": alpha,
+			}, true
+		}
+	}
+	return nil, false
+}
+
+// substituteRelativeComponents replaces bound component identifiers (whole
+// tokens like `r`, `l`, `h`) inside the components string with their
+// numeric literals from compMap, leaving literal numbers/percentages/angles
+// untouched. Returns the rebuilt absolute-form color string ready for
+// ParseColor.
+func substituteRelativeComponents(funcName, space, components string, compMap map[string]string) (string, bool) {
+	// Split on top-level whitespace and `/`, keeping the slash as a separator.
+	tokens := splitRelativeTokens(components)
+	for i, tok := range tokens {
+		if tok == "/" {
+			continue
+		}
+		key := strings.ToLower(tok)
+		if v, ok := compMap[key]; ok {
+			tokens[i] = v
+			continue
+		}
+		// `none` (CSS Color 4 missing component) → 0 for now. The failing
+		// reftests don't use `none` substitution.
+		if key == "none" {
+			tokens[i] = "0"
+			continue
+		}
+	}
+	var inner strings.Builder
+	if funcName == "color" {
+		inner.WriteString(space)
+		inner.WriteByte(' ')
+	}
+	inner.WriteString(strings.Join(tokens, " "))
+	return funcName + "(" + inner.String() + ")", true
+}
+
+// splitRelativeTokens splits a relative-color component list on whitespace
+// and `/`, preserving `/` as its own token. Tokens may themselves contain
+// parens (e.g. `calc(...)`); balance is tracked so internal whitespace
+// doesn't split a calc expression.
+func splitRelativeTokens(s string) []string {
+	var tokens []string
+	depth := 0
+	start := 0
+	flush := func(end int) {
+		if end > start {
+			t := strings.TrimSpace(s[start:end])
+			if t != "" {
+				tokens = append(tokens, t)
+			}
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ' ', '\t', '\n', '\r':
+			if depth == 0 {
+				flush(i)
+				start = i + 1
+			}
+		case '/':
+			if depth == 0 {
+				flush(i)
+				tokens = append(tokens, "/")
+				start = i + 1
+			}
+		}
+	}
+	flush(len(s))
+	return tokens
+}
+
+// srgbToLab converts gamma-encoded sRGB [0,1] to CIE Lab (L 0..100, a/b ±125).
+// Used by relative-color decomposition; pairs with labToRGB in colorspace.go.
+func srgbToLab(r, g, b float64) (float64, float64, float64) {
+	lr := sRGBToLinear(r)
+	lg := sRGBToLinear(g)
+	lb := sRGBToLinear(b)
+	// linear sRGB → XYZ D65.
+	x := 0.4124564*lr + 0.3575761*lg + 0.1804375*lb
+	y := 0.2126729*lr + 0.7151522*lg + 0.0721750*lb
+	z := 0.0193339*lr + 0.1191920*lg + 0.9503041*lb
+	// Bradford D65 → D50.
+	xd, yd, zd := bradfordD65ToD50(x, y, z)
+	// Normalise by D50 reference white.
+	const xn, yn, zn = 0.96422, 1.0, 0.82521
+	fx := labFInv(xd / xn)
+	fy := labFInv(yd / yn)
+	fz := labFInv(zd / zn)
+	L := 116*fy - 16
+	a := 500 * (fx - fy)
+	bLab := 200 * (fy - fz)
+	return L, a, bLab
+}
+
+// labFInv is the forward CIE Lab transfer function f (the inverse of labF in
+// colorspace.go). Named `Inv` because it's the inverse of the `labF` used in
+// the Lab→XYZ direction.
+func labFInv(t float64) float64 {
+	const delta = 6.0 / 29.0
+	if t > delta*delta*delta {
+		return math.Cbrt(t)
+	}
+	return t/(3*delta*delta) + 4.0/29.0
+}
+
+// bradfordD65ToD50 is the inverse of bradfordD50ToD65 in colorspace.go.
+func bradfordD65ToD50(x, y, z float64) (float64, float64, float64) {
+	x2 := 1.0479298208405488*x + 0.022946793341019088*y + -0.05019222954313557*z
+	y2 := 0.029627815688159344*x + 0.990434484573249*y + -0.01707382502938514*z
+	z2 := -0.009243058152591178*x + 0.015055144896577895*y + 0.7518742899580008*z
+	return x2, y2, z2
+}
+
+// xyzD65ToDisplayP3 converts XYZ D65 to linear-light Display P3 via the
+// inverse of the display-p3 → XYZ-D65 matrix.
+func xyzD65ToDisplayP3(x, y, z float64) (float64, float64, float64) {
+	r := 2.493497*x + -0.931384*y + -0.402711*z
+	g := -0.829489*x + 1.762664*y + 0.023625*z
+	b := 0.035846*x + -0.076172*y + 0.956885*z
+	return r, g, b
+}
+
+// xyzD65ToA98RGB converts XYZ D65 to linear A98-RGB.
+func xyzD65ToA98RGB(x, y, z float64) (float64, float64, float64) {
+	r := 2.0415879*x + -0.5650070*y + -0.3447314*z
+	g := -0.9692436*x + 1.8759675*y + 0.0415551*z
+	b := 0.0134443*x + -0.1183624*y + 1.0151750*z
+	return r, g, b
+}
+
+// xyzD65ToRec2020Linear converts XYZ D65 to linear Rec.2020.
+func xyzD65ToRec2020Linear(x, y, z float64) (float64, float64, float64) {
+	r := 1.7166512*x + -0.3556708*y + -0.2533663*z
+	g := -0.6666844*x + 1.6164812*y + 0.0157685*z
+	b := 0.0176399*x + -0.0427706*y + 0.9421031*z
+	return r, g, b
+}
+
+// rec2020LinearToGamma applies the Rec.2020 transfer function to a linear-
+// light value. Sign-preserving for out-of-gamut inputs.
+func rec2020LinearToGamma(c float64) float64 {
+	const alpha = 1.09929682680944
+	const beta = 0.018053968510807
+	abs := math.Abs(c)
+	var enc float64
+	if abs < beta {
+		enc = 4.5 * abs
+	} else {
+		enc = alpha*math.Pow(abs, 0.45) - (alpha - 1)
+	}
+	if c < 0 {
+		return -enc
+	}
+	return enc
+}
+
+// xyzD50ToProphotoRGBLinear converts XYZ D50 to linear ProPhoto-RGB.
+func xyzD50ToProphotoRGBLinear(x, y, z float64) (float64, float64, float64) {
+	r := 1.3457989731028281*x + -0.25558010007997534*y + -0.05110628506753401*z
+	g := -0.5446224939028347*x + 1.5082327413132781*y + 0.02053603239147973*z
+	b := 0.0*x + 0.0*y + 1.2119675456389454*z
+	return r, g, b
+}
+
+// prophotoLinearToGamma applies the ProPhoto transfer function to a linear-
+// light value. Sign-preserving. Threshold per CSS Color 4 §17.4: linear
+// values below Et = 1/512 use a linear segment; above, the standard 1.8
+// gamma. The inverse threshold (used by prophotoToLinear in colorspace.go)
+// is 16 * Et = 1/32 in encoded-value space.
+func prophotoLinearToGamma(c float64) float64 {
+	const et = 1.0 / 512.0
+	abs := math.Abs(c)
+	var enc float64
+	if abs < et {
+		enc = abs * 16
+	} else {
+		enc = math.Pow(abs, 1.0/1.8)
+	}
+	if c < 0 {
+		return -enc
+	}
+	return enc
+}
+
 func ParseColor(colorStr string) (Color, bool) {
 	colorStr = strings.TrimSpace(colorStr)
 
 	// Reject quoted values — CSS color values are never strings
 	if strings.HasPrefix(colorStr, "'") || strings.HasPrefix(colorStr, "\"") {
 		return Color{}, false
+	}
+
+	// CSS Color 5 §4 relative-color form `<func>(from <base> ...)`. Only
+	// resolvable here when the base is itself a literal color (not
+	// `currentcolor`); the late-resolution path for currentColor lives in
+	// paint_layer.go via ParseColorWithCurrentColor.
+	if c, ok := parseRelativeColor(colorStr, Color{}); ok {
+		return c, true
 	}
 
 	colorStr = strings.ToLower(colorStr)
@@ -4557,13 +5104,14 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 	}
 
-	// Handle lab() format: lab(L a b) or lab(L a b / alpha)
-	// L is 0-100 or 0%-100%, a is -125 to 125, b is -125 to 125
+	// Handle lab() format: lab(L a b) or lab(L a b / alpha) — CSS Color 4 §8.
+	// L is <number 0..100> or <percentage 0%..100%>; a/b are <number ±125> or
+	// <percentage ±100%> mapping to ±125. L is clamped to [0,100] per §13.
 	if strings.HasPrefix(colorStr, "lab(") && strings.HasSuffix(colorStr, ")") {
 		inner := colorStr[4 : len(colorStr)-1]
 		parts, alpha := parseSpaceSeparatedColorArgs(inner)
 		if len(parts) >= 3 {
-			L := parseColorFloat01(parts[0], 100.0) * 100.0
+			L := clampLab(parseLabComponent(parts[0], 100.0), 0, 100)
 			a := parseLabComponent(parts[1], 125.0)
 			bLab := parseLabComponent(parts[2], 125.0)
 			r, g, b := labToRGB(L, a, bLab)
@@ -4576,14 +5124,36 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 	}
 
-	// Handle oklch() format: oklch(L C H) or oklch(L C H / alpha)
-	// L is 0-1 or 0%-100%, C is 0-0.4, H is 0-360
+	// Handle oklab() format: oklab(L a b) or oklab(L a b / alpha) — CSS Color 4 §8.
+	// L is <number 0..1> or <percentage 0%..100%>; a/b are <number ±0.4> or
+	// <percentage ±100%> mapping to ±0.4. L is clamped to [0,1] per §13.
+	if strings.HasPrefix(colorStr, "oklab(") && strings.HasSuffix(colorStr, ")") {
+		inner := colorStr[6 : len(colorStr)-1]
+		parts, alpha := parseSpaceSeparatedColorArgs(inner)
+		if len(parts) >= 3 {
+			L := clampLab(parseLabComponent(parts[0], 1.0), 0, 1)
+			a := parseLabComponent(parts[1], 0.4)
+			bLab := parseLabComponent(parts[2], 0.4)
+			r, g, b := oklabToSRGB(L, a, bLab)
+			return Color{
+				R: uint8(math.Round(r * 255)),
+				G: uint8(math.Round(g * 255)),
+				B: uint8(math.Round(b * 255)),
+				A: alpha,
+			}, true
+		}
+	}
+
+	// Handle oklch() format: oklch(L C H) or oklch(L C H / alpha) — CSS Color 4 §9.
+	// L is <number 0..1> or <percentage 0%..100%>; C is <number 0..0.4> or
+	// <percentage 0%..100%> mapping to 0..0.4; H is <angle> or <number> in degrees.
+	// L is clamped to [0,1] per §13; negative C is clamped to 0.
 	if strings.HasPrefix(colorStr, "oklch(") && strings.HasSuffix(colorStr, ")") {
 		inner := colorStr[6 : len(colorStr)-1]
 		parts, alpha := parseSpaceSeparatedColorArgs(inner)
 		if len(parts) >= 3 {
-			L := parseColorFloat01(parts[0], 1.0)
-			C := parseColorFloat01(parts[1], 0.4)
+			L := clampLab(parseLabComponent(parts[0], 1.0), 0, 1)
+			C := math.Max(0, parseLabComponent(parts[1], 0.4))
 			H := parseHueDegrees(parts[2])
 			r, g, b := oklchToRGB(L, C, H)
 			return Color{
@@ -4595,14 +5165,16 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 	}
 
-	// Handle lch() format: lch(L C H) or lch(L C H / alpha)
-	// L is 0-100, C is 0-230, H is 0-360
+	// Handle lch() format: lch(L C H) or lch(L C H / alpha) — CSS Color 4 §9.
+	// L is <number 0..100> or <percentage 0%..100%>; C is <number 0..150> or
+	// <percentage 0%..100%> mapping to 0..150; H is <angle> or <number>.
+	// L is clamped to [0,100] per §13; negative C is clamped to 0.
 	if strings.HasPrefix(colorStr, "lch(") && strings.HasSuffix(colorStr, ")") {
 		inner := colorStr[4 : len(colorStr)-1]
 		parts, alpha := parseSpaceSeparatedColorArgs(inner)
 		if len(parts) >= 3 {
-			L := parseColorFloat01(parts[0], 100.0)
-			C := parseColorFloat01(parts[1], 230.0)
+			L := clampLab(parseLabComponent(parts[0], 100.0), 0, 100)
+			C := math.Max(0, parseLabComponent(parts[1], 150.0))
 			H := parseHueDegrees(parts[2])
 			r, g, b := lchToRGB(L, C, H)
 			return Color{
@@ -5168,11 +5740,11 @@ const (
 // Grammar: `none | [ ex-height | cap-height | ch-width | ic-width | ic-height ]?
 // [ from-font | <number> ]`.
 //
-// - None=true: property is `none` or unset; no adjustment applied.
-// - FromFont=true: the value comes from the first font's actual aspect ratio
-//   at runtime (no-op adjustment, but tracked for serialization).
-// - Otherwise the used font-size becomes
-//   specified_size * (Value / first_font.actual_aspect_ratio(Metric)).
+//   - None=true: property is `none` or unset; no adjustment applied.
+//   - FromFont=true: the value comes from the first font's actual aspect ratio
+//     at runtime (no-op adjustment, but tracked for serialization).
+//   - Otherwise the used font-size becomes
+//     specified_size * (Value / first_font.actual_aspect_ratio(Metric)).
 type FontSizeAdjust struct {
 	None     bool
 	FromFont bool
@@ -5867,7 +6439,8 @@ func tokenizeRespectingParens(s string) []string {
 func isColor(s string) bool {
 	if strings.HasPrefix(s, "#") || strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") ||
 		strings.HasPrefix(s, "oklch(") || strings.HasPrefix(s, "lch(") ||
-		strings.HasPrefix(s, "lab(") || strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
+		strings.HasPrefix(s, "oklab(") || strings.HasPrefix(s, "lab(") ||
+		strings.HasPrefix(s, "hwb(") || strings.HasPrefix(s, "color-mix(") ||
 		strings.HasPrefix(s, "color(") {
 		return true
 	}
@@ -8871,6 +9444,7 @@ type BackgroundRepeat struct {
 //   - "repeat-y" → (no-repeat, repeat)
 //   - single value v → (v, v)
 //   - "v1 v2"   → (v1, v2)
+//
 // Returns the default (repeat, repeat) for an unrecognized first token.
 func ExpandRepeatShorthand(val string) BackgroundRepeat {
 	val = strings.TrimSpace(val)
