@@ -5,6 +5,8 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/layout"
+
+	"mazarin/textshape"
 )
 
 func styleWithPos(pos string) *css.Style {
@@ -202,5 +204,67 @@ func TestBuildPaintTree_ClipRect(t *testing.T) {
 	if layer.ClipRect[0] != wantX || layer.ClipRect[1] != wantY ||
 		layer.ClipRect[2] != wantW || layer.ClipRect[3] != wantH {
 		t.Fatalf("ClipRect = %v, want [%v %v %v %v]", layer.ClipRect, wantX, wantY, wantW, wantH)
+	}
+}
+
+// hasFeature reports whether feats contains the given OpenType feature tag
+// with the given value. Used by the font-variant-caps emission tests below.
+func hasFeature(feats []textshape.FontFeature, tag string, value uint32) bool {
+	if len(tag) != 4 {
+		return false
+	}
+	var key [4]byte
+	copy(key[:], tag)
+	for _, f := range feats {
+		if f.Tag == key && f.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFontVariantCaps_EmitsNativeFeatures_RegardlessOfSynthesisGate verifies
+// the CSS Fonts 4 §6.6 separation: the OpenType caps feature tags (smcp,
+// c2sc, pcap, c2pc, unic, titl) are emitted purely from font-variant-caps,
+// independent of font-synthesis-small-caps. Mirrors Blink's
+// CapsFeatureSettingsScopedOverlay in
+// third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.cc at
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, where feature emission is
+// driven by FontDescription::VariantCaps() only; synthesis is consulted
+// at the synth-font selection site (OpenTypeCapsSupport::SyntheticSmallCapsAllowed),
+// not at feature emission.
+func TestFontVariantCaps_EmitsNativeFeatures_RegardlessOfSynthesisGate(t *testing.T) {
+	cases := []struct {
+		caps         string
+		synthAllowed bool
+		wantTags     []string
+	}{
+		{"small-caps", true, []string{"smcp"}},
+		{"small-caps", false, []string{"smcp"}}, // synthesis disabled must NOT suppress native smcp
+		{"all-small-caps", true, []string{"smcp", "c2sc"}},
+		{"all-small-caps", false, []string{"smcp", "c2sc"}},
+		{"petite-caps", true, []string{"pcap"}},
+		{"all-petite-caps", true, []string{"pcap", "c2pc"}},
+		{"unicase", true, []string{"unic"}},
+		{"titling-caps", true, []string{"titl"}},
+		{"normal", true, nil},
+	}
+	for _, tc := range cases {
+		s := css.NewStyle()
+		s.Properties["font-variant-caps"] = tc.caps
+		if !tc.synthAllowed {
+			s.Properties["font-synthesis-small-caps"] = "none"
+		}
+		root := &layout.Box{Style: s}
+		layer := BuildPaintTree(root)
+		for _, tag := range tc.wantTags {
+			if !hasFeature(layer.FontFeatures, tag, 1) {
+				t.Errorf("caps=%q synthAllowed=%v: want %s=1 in FontFeatures, got %+v",
+					tc.caps, tc.synthAllowed, tag, layer.FontFeatures)
+			}
+		}
+		if tc.caps == "normal" && len(layer.FontFeatures) != 0 {
+			t.Errorf("caps=normal: want no caps features emitted, got %+v", layer.FontFeatures)
+		}
 	}
 }

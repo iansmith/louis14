@@ -141,14 +141,19 @@ type PaintLayer struct {
 	FontMono   bool
 	FontAhem   bool
 	FontFamily string
-	// font-synthesis-* gates (CSS Fonts 4 §6.6). When false, the font
-	// fallback path must not pick a bold/italic variant of a different
-	// physical family to "synthesize" the requested weight/style. See
+	// font-synthesis-* gates (CSS Fonts 4 §6.6). When `Weight` is false the
+	// font fallback path must not pick a bold variant of a different
+	// physical family to "synthesize" weight. `Style` carries the
+	// three-valued css.FontSynthesisStyleValue enum (auto / none /
+	// oblique-only) — none forbids cross-family italic fallback, oblique-only
+	// forbids italic↔oblique substitution at the matcher (and still allows
+	// skew on a true oblique face). See
 	// text.FontConfig.FontPathForFamilyWithSynthesis. FontSynthesisSmallCaps
-	// gates render.drawTextSmallCaps: when false, font-variant-caps:
-	// small-caps must not be synthesized by scaling lowercase glyphs.
+	// gates the synthesize-caps fallback in render.drawTextSmallCaps; native
+	// OpenType `smcp`/`c2sc` features are emitted unconditionally below in
+	// the font-feature-settings block.
 	FontSynthesisWeight    bool
-	FontSynthesisStyle     bool
+	FontSynthesisStyle     css.FontSynthesisStyleValue
 	FontSynthesisSmallCaps bool
 	LetterSpacing          float64
 	WordSpacing            float64
@@ -734,6 +739,49 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// CSS font-feature-settings.
 	if ffs, ok := s.Get("font-feature-settings"); ok && ffs != "normal" && ffs != "" {
 		layer.FontFeatures = parseFontFeatureSettings(ffs)
+	}
+
+	// CSS Fonts 4 §6.7 font-variant-caps: emit the corresponding OpenType
+	// feature tags so a font carrying native small-caps / petite-caps /
+	// unicase / titling-caps glyphs activates them. Emission is unconditional
+	// on font-synthesis-small-caps — §6.6 makes font-synthesis-small-caps
+	// gate only the *synthesized* fallback (drawTextSmallCaps), not the
+	// font's native feature. Mirrors Blink's
+	// CapsFeatureSettingsScopedOverlay in
+	// third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.cc
+	// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which is constructed
+	// from FontDescription::VariantCaps() alone; synthesis is consulted only
+	// at the synth-font selection site (OpenTypeCapsSupport::
+	// SyntheticSmallCapsAllowed), never at feature emission. Appended AFTER
+	// font-feature-settings so the high-level property wins per CSS Fonts 4
+	// §7 "Resolution of font feature values".
+	switch layer.FontVariantCaps {
+	case "small-caps":
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'s', 'm', 'c', 'p'}, Value: 1},
+		)
+	case "all-small-caps":
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'s', 'm', 'c', 'p'}, Value: 1},
+			textshape.FontFeature{Tag: [4]byte{'c', '2', 's', 'c'}, Value: 1},
+		)
+	case "petite-caps":
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'p', 'c', 'a', 'p'}, Value: 1},
+		)
+	case "all-petite-caps":
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'p', 'c', 'a', 'p'}, Value: 1},
+			textshape.FontFeature{Tag: [4]byte{'c', '2', 'p', 'c'}, Value: 1},
+		)
+	case "unicase":
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'u', 'n', 'i', 'c'}, Value: 1},
+		)
+	case "titling-caps":
+		layer.FontFeatures = append(layer.FontFeatures,
+			textshape.FontFeature{Tag: [4]byte{'t', 'i', 't', 'l'}, Value: 1},
+		)
 	}
 
 	// CSS Fonts 4 §6.2 font-kerning: only `none` is observable on top of

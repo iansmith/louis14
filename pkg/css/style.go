@@ -5806,37 +5806,78 @@ func (s *Style) GetFontKerning() FontKerning {
 	}
 }
 
+// FontSynthesisStyleValue enumerates the three CSS Fonts 4 §6.6
+// font-synthesis-style values. Blink at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
+// has only `auto` / `none` (FontSynthesisStyle enum in font_description.h);
+// `oblique-only` is louis14-only (no Blink analog at this SHA) and is
+// implemented per spec directly:
+//
+//	auto         — UA may synthesize via 12° skew AND substitute italic↔oblique
+//	               at the matcher.
+//	none         — UA may NOT synthesize via skew. Substitution still allowed.
+//	oblique-only — UA may synthesize via skew on an oblique face, but may NOT
+//	               substitute italic↔oblique at the matcher. Italic request +
+//	               only-oblique family → falls through to normal face.
+type FontSynthesisStyleValue int
+
+const (
+	FontSynthesisStyleAuto FontSynthesisStyleValue = iota
+	FontSynthesisStyleNone
+	FontSynthesisStyleObliqueOnly
+)
+
+// SkewAllowed reports whether the UA may synthesize italic via 12° skew on a
+// non-italic face under this policy. Both `auto` and `oblique-only` permit
+// skew synthesis (the spec gates skew application on whether the active face
+// is oblique-capable, separately from matcher fallback). `none` forbids skew.
+func (v FontSynthesisStyleValue) SkewAllowed() bool {
+	return v != FontSynthesisStyleNone
+}
+
 // FontSynthesis enumerates which synthesis types the UA is permitted to apply.
-// Each field is `true` when the corresponding longhand resolves to `auto`
-// (UA may synthesize) and `false` when it resolves to `none` (UA must not
-// synthesize that aspect). The shape mirrors Blink's `FontDescription`
-// `Synthesis*` flag accessors at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// `Weight`, `SmallCaps`, and `Position` are `true` when the corresponding
+// longhand resolves to `auto` and `false` for `none`, mirroring Blink's
+// two-valued `Synthesis*` flag accessors at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. `Style` carries the three-valued
+// CSS Fonts 4 enum (Blink has no analog at this SHA — see
+// FontSynthesisStyleValue).
 type FontSynthesis struct {
 	Weight    bool
-	Style     bool
+	Style     FontSynthesisStyleValue
 	SmallCaps bool
 	Position  bool
 }
 
 // GetFontSynthesis returns which font-synthesis aspects the UA may apply, per
-// CSS Fonts 4 §6.6 (each longhand is `auto` | `none`, initial `auto`).
+// CSS Fonts 4 §6.6. `font-synthesis-weight`/`-small-caps`/`-position` are
+// `auto`|`none` (initial `auto`); `font-synthesis-style` is
+// `auto`|`none`|`oblique-only` (initial `auto`).
 // Reads the four longhands populated by `expandFontSynthesisShorthand`;
-// falls back to the initial value `auto` for any longhand not set on this
-// style (which happens for the root element when no font-synthesis rule
-// applied — inheritance brings the resolved value down to children).
+// falls back to the initial value for any longhand not set on this style
+// (which happens for the root element when no font-synthesis rule applied —
+// inheritance brings the resolved value down to children).
 func (s *Style) GetFontSynthesis() FontSynthesis {
-	read := func(prop string) bool {
+	readBool := func(prop string) bool {
 		v, ok := s.Get(prop)
 		if !ok {
 			return true // initial: auto → allowed
 		}
 		return strings.TrimSpace(strings.ToLower(v)) != "none"
 	}
+	style := FontSynthesisStyleAuto
+	if v, ok := s.Get("font-synthesis-style"); ok {
+		switch strings.TrimSpace(strings.ToLower(v)) {
+		case "none":
+			style = FontSynthesisStyleNone
+		case "oblique-only":
+			style = FontSynthesisStyleObliqueOnly
+		}
+	}
 	return FontSynthesis{
-		Weight:    read("font-synthesis-weight"),
-		Style:     read("font-synthesis-style"),
-		SmallCaps: read("font-synthesis-small-caps"),
-		Position:  read("font-synthesis-position"),
+		Weight:    readBool("font-synthesis-weight"),
+		Style:     style,
+		SmallCaps: readBool("font-synthesis-small-caps"),
+		Position:  readBool("font-synthesis-position"),
 	}
 }
 

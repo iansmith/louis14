@@ -11,6 +11,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/text/csstest"
 
@@ -274,7 +275,7 @@ func (fc FontConfig) FontPath(bold, italic, mono, ahem bool) string {
 // fc.FontPath is also the final safety net for non-CSS callers (bare
 // text.MeasureText with no FontConfig serif binding).
 func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem bool) string {
-	return fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, true, true)
+	return fc.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, true, css.FontSynthesisStyleAuto)
 }
 
 // FontPathForFamilyWithSynthesis is FontPathForFamily plus per-aspect
@@ -288,6 +289,12 @@ func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem b
 // none forbid that, so we suppress the corresponding flag before falling
 // through to the UA default.
 //
+// `synthStyle` carries the three-valued CSS Fonts 4
+// `font-synthesis-style` policy (auto / none / oblique-only). It controls
+// both the in-family italic→oblique substitution (Registry.LookupWithPolicy)
+// and the fallback-family suppression (none and oblique-only both forbid
+// pulling italic glyphs from a different family).
+//
 // When the requested family was never declared (e.g. a generic family like
 // `serif` or an unknown system family like `ui-serif`), the UA default's
 // native bold/italic is *not* synthesis, so the gates do not apply. Mirrors
@@ -297,32 +304,37 @@ func (fc FontConfig) FontPathForFamily(family string, bold, italic, mono, ahem b
 // declaration that lacked the requested variant.
 //
 // Spec: https://drafts.csswg.org/css-fonts-4/#font-synthesis-weight
-func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic, mono, ahem, synthBold, synthItalic bool) string {
-	families := parseFontFamilyList(family)
+func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic, mono, ahem, synthBold bool, synthStyle css.FontSynthesisStyleValue) string {
+	families := ParseFontFamilyList(family)
 	suppressBold := false
 	suppressItalic := false
 	for _, fam := range families {
 		if fc.Registry != nil {
-			// Registry.Lookup returns the matched variant's path; when the
-			// requested weight/style isn't registered for this family, the
-			// fallback loop inside Lookup returns *any* variant of the same
-			// family. That fallback is already a form of in-family
-			// "synthesis suppression" — louis14 doesn't apply a synthetic-
-			// bold stroke, so the returned regular face is rendered as-is
-			// regardless of the synthesis flag.
-			if path := fc.Registry.Lookup(fam, bold, italic); path != "" {
+			// Registry.LookupWithPolicy returns the matched variant's path;
+			// when the requested weight/style isn't registered for this
+			// family, the policy-aware fallback inside Lookup applies (for
+			// italic + oblique-only: skip oblique entries; otherwise
+			// italic↔oblique substitution is allowed). The family-only
+			// fallback there is already a form of in-family "synthesis
+			// suppression" — louis14 doesn't apply a synthetic-bold stroke,
+			// so the returned regular face is rendered as-is regardless of
+			// the synthesis flag.
+			if path := fc.Registry.LookupWithPolicy(fam, bold, italic, synthStyle); path != "" {
 				return path
 			}
 			// Family was named by @font-face but its fetch failed entirely.
 			// Falling through to the next family / UA default would mean
 			// "synthesizing" the requested variant via a different physical
 			// face. CSS Fonts 4 §6.6: suppress that selection when
-			// font-synthesis-weight / font-synthesis-style is none.
+			// font-synthesis-weight / font-synthesis-style is none. The
+			// `oblique-only` policy doesn't carry into cross-family fallback
+			// suppression — that gate is about cross-family synthesis, not
+			// in-family substitution.
 			if fc.Registry.IsDeclared(fam) {
 				if bold && !synthBold {
 					suppressBold = true
 				}
-				if italic && !synthItalic {
+				if italic && synthStyle == css.FontSynthesisStyleNone {
 					suppressItalic = true
 				}
 			}
@@ -353,7 +365,10 @@ func (fc FontConfig) FontPathForFamilyWithSynthesis(family string, bold, italic,
 	return fc.FontPath(fallbackBold, fallbackItalic, mono, ahem)
 }
 
-func parseFontFamilyList(raw string) []string {
+// ParseFontFamilyList splits a CSS `font-family` value into individual
+// family names, stripping the surrounding quotes from each entry. Empty
+// entries are dropped.
+func ParseFontFamilyList(raw string) []string {
 	var families []string
 	for _, part := range strings.Split(raw, ",") {
 		fam := strings.TrimSpace(part)

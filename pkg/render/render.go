@@ -4650,6 +4650,24 @@ func (r *Renderer) measureTextStr(text string, fontID int32, features []textshap
 	return r.dc.MeasureText(text, fontID)
 }
 
+// familyDeclaredViaFontFace reports whether any family name in the CSS
+// `font-family` list was declared via @font-face — i.e. resolves through
+// the FontRegistry rather than a UA built-in or system fallback. Used as
+// the louis14 heuristic for "the active face may carry native OpenType
+// features" (small-caps GSUB lookups) when deciding whether to also run
+// the synthesized small-caps fallback.
+func (r *Renderer) familyDeclaredViaFontFace(family string) bool {
+	if r.fonts.Registry == nil {
+		return false
+	}
+	for _, fam := range text.ParseFontFamilyList(family) {
+		if r.fonts.Registry.IsDeclared(fam) {
+			return true
+		}
+	}
+	return false
+}
+
 // drawText paints text content using pre-computed font/color properties.
 func (r *Renderer) drawText(layer *PaintLayer) {
 	box := layer.Box
@@ -4768,15 +4786,29 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		r.drawTextShadows(layer, text, box, fontID, ascent)
 	}
 
-	// CSS font-variant-caps: small-caps / all-small-caps — synthesize small
-	// capitals by drawing lowercase (or all) letters as uppercase glyphs at a
-	// reduced font size (~70% of normal).  The baseline stays aligned.
-	// CSS Fonts 4 §6.6: font-synthesis-small-caps: none forbids the UA from
-	// synthesizing small-caps glyphs; if the active face doesn't have a real
-	// small-caps variant, we must render the lowercase letters as-is.
-	// Mirrors Blink's gate at font_description.cc::SynthesisAllowedSmallCaps
-	// (SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	if (layer.FontVariantCaps == "small-caps" || layer.FontVariantCaps == "all-small-caps") && layer.FontSynthesisSmallCaps {
+	// CSS font-variant-caps: small-caps / all-small-caps. When the active
+	// face carries native `smcp`/`c2sc` glyphs (emitted as feature tags in
+	// paint_layer.go), HarfBuzz substitutes them during shaping and the
+	// regular drawText path renders correctly. We only need the synthesized
+	// scale-lowercase-to-uppercase fallback (drawTextSmallCaps) when:
+	//   (a) the synthesis is permitted (font-synthesis-small-caps != none), AND
+	//   (b) the active face has no native small-caps support.
+	//
+	// Heuristic for (b): a face that resolved through the @font-face
+	// FontRegistry is treated as "may have native smcp" (defer to feature
+	// emission); a face from the UA built-in defaults is treated as "no
+	// native smcp" (synthesize). This handles the WPT
+	// font-synthesis-small-caps-not-applied fixture (Exo-DemiBold via
+	// @font-face) without needing a per-fontID GSUB probe. CSS Fonts 4 §6.6
+	// mirrors Blink's gate at
+	// platform/fonts/opentype/open_type_caps_support.cc::SyntheticSmallCapsAllowed
+	// (SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), which checks only the
+	// synthesis flag — Blink's NeedsSyntheticFont() then consults a real
+	// per-font GSUB lookup. The louis14 heuristic is a conservative stand-in
+	// that avoids double-application of native + synthesized small-caps.
+	wantsCaps := layer.FontVariantCaps == "small-caps" || layer.FontVariantCaps == "all-small-caps"
+	familyFromRegistry := r.familyDeclaredViaFontFace(layer.FontFamily)
+	if wantsCaps && layer.FontSynthesisSmallCaps && !familyFromRegistry {
 		r.drawTextSmallCaps(layer, text, box, fontPath, fontID, ascent)
 	} else if strings.Contains(text, "\t") {
 		// CSS Text 3 §4.2: tab characters advance to the next tab stop.
