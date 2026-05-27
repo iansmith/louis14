@@ -587,12 +587,19 @@ func parseViewportWidth(content string) int {
 // stripCDATA removes XHTML CDATA markers from style content.
 // XHTML documents wrap CSS in <![CDATA[ ... ]]> sections.
 func stripCDATA(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "<![CDATA[") {
-		s = s[len("<![CDATA["):]
+	// CDATA delimiters may be surrounded by whitespace inside the
+	// rawtext block; trim ONLY enough whitespace to find them, not the
+	// trailing whitespace of the actual content (CSS Syntax §4.3.5
+	// distinguishes a string clipped by newline `<bad-string-token>` from
+	// one clipped by raw EOF `<string-token>`, so the trailing newline is
+	// semantically significant — see variable-reference-032).
+	leading := strings.TrimLeft(s, " \t\n\r\f")
+	if strings.HasPrefix(leading, "<![CDATA[") {
+		s = leading[len("<![CDATA["):]
 	}
-	if strings.HasSuffix(s, "]]>") {
-		s = s[:len(s)-len("]]>")]
+	trailing := strings.TrimRight(s, " \t\n\r\f")
+	if strings.HasSuffix(trailing, "]]>") {
+		s = trailing[:len(trailing)-len("]]>")]
 	}
 	return s
 }

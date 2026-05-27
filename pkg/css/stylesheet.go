@@ -793,12 +793,16 @@ func splitRules(css string) []string {
 		}
 	}
 
-	// CSS Syntax Level 3 §9 (error handling): at EOF, treat any open block as
-	// if it were closed. This handles CDATA-wrapped stylesheets where the
-	// trailing "]]>" stands in for the closing "}". Real browsers apply this
-	// recovery; Blink's CSS parser does the same via its tokenizer.
-	if depth > 0 && start < len(css) && strings.TrimSpace(css[start:]) != "" {
-		synthesized := css[start:] + strings.Repeat("}", depth)
+	// CSS Syntax Level 3 §9 (error handling): at EOF, treat any open block,
+	// function, or simple-block as if it were closed. closeUnmatchedTokens
+	// closes inside-out so an unclosed function token nested inside an
+	// unclosed block gets `)` BEFORE `}` — necessary for cases like
+	// `p { color: var(--a` (variable-reference-025 etc.), where the rule
+	// `{` is still open while a `var(` is also open. A naive
+	// `strings.Repeat("}", depth)` would put the `}` inside the function
+	// call, corrupting the rule body.
+	if (depth > 0 || parenDepth > 0) && start < len(css) && strings.TrimSpace(css[start:]) != "" {
+		synthesized := closeUnmatchedTokens(css[start:])
 		rules = append(rules, synthesized)
 	}
 	return rules
@@ -3828,6 +3832,8 @@ func splitDeclarationParts(declStr string) []string {
 	start := 0
 	inString := byte(0)
 	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
 
 	for i := 0; i < len(declStr); i++ {
 		ch := declStr[i]
@@ -3843,15 +3849,41 @@ func splitDeclarationParts(declStr string) []string {
 			inString = ch
 			continue
 		}
-		if ch == '(' {
+		// CSS Syntax §5.4.6: a `<declaration-value>` may contain any
+		// `<simple-block>` (parens, brackets, OR braces) and a `<function>`
+		// (which is parens-delimited). A top-level `;` inside any of those
+		// is a component-value token, not a declaration terminator. Tracking
+		// all three depths lets `color: [;]`, `color: { ; }`, and
+		// `var(--a, ;)` survive declaration splitting intact — required by
+		// variable-reference-18 / variable-reference-19 and the various
+		// `;` in fallback / simple-block tests.
+		switch ch {
+		case '(':
 			parenDepth++
 			continue
-		}
-		if ch == ')' && parenDepth > 0 {
-			parenDepth--
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+			continue
+		case '[':
+			bracketDepth++
+			continue
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			continue
+		case '{':
+			braceDepth++
+			continue
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
 			continue
 		}
-		if ch == ';' && parenDepth == 0 {
+		if ch == ';' && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
 			parts = append(parts, declStr[start:i])
 			start = i + 1
 		}
@@ -3944,6 +3976,16 @@ func parseDeclarations(declStr string) DeclarationResult {
 
 		rawProperty := strings.TrimSpace(part[:colonPos])
 		rawValue := strings.TrimSpace(part[colonPos+1:])
+
+		// CSS Syntax §3.2 / §4.3.7: when the input stream ends inside a
+		// function, simple-block, or string, the tokenizer emits an EOF
+		// token that the parser treats as an implicit close. The same
+		// rules apply when a declaration value is the last byte of the
+		// stylesheet — `color: var(--a` must parse as `color: var(--a)`.
+		// Append synthesized closing tokens so downstream validators see
+		// well-formed input. Required by variable-reference-025/026/027/
+		// 028/029/033/035 (the "implicitly closed due to EOF" suite).
+		rawValue = closeUnmatchedTokens(rawValue)
 
 		// Unescape CSS escape sequences in both property and value
 		property := unescapeCSS(rawProperty)
@@ -4782,6 +4824,110 @@ func isVarFunctionAt(s string, openIdx int) bool {
 		return false
 	}
 	return true
+}
+
+// closeUnmatchedTokens appends synthesized closing tokens for any unmatched
+// `(`, `[`, or `{` in s, so downstream validators see a well-formed token
+// stream. Mirrors CSS Syntax §3.2: when input ends inside a function or
+// simple-block, the tokenizer emits an implicit EOF that the parser treats
+// as a close.
+//
+// Crucially, an unterminated string is NOT recovered here. Per CSS Syntax
+// §4.3.5 a string clipped by EOF (or by a raw newline before the closing
+// quote) becomes a `<bad-string-token>`, which is a parse error that
+// invalidates the entire declaration. Auto-closing a bad-string-token
+// would mask that invalidity (variable-reference-032 — fallback `var(--a,
+// "` MUST stay invalid so the earlier `color: green` survives). Likewise
+// `url(...)` with an unterminated body becomes a `<bad-url-token>`
+// (variable-reference-034) — we leave the unclosed paren in place when
+// it's part of a url() so hasInvalidVarReference / isValidImageValue
+// still see the parse error.
+//
+// Tracks open delimiters on a stack so nested structures are closed
+// inside-out — `var(--a, [` is recovered as `var(--a, [])` not
+// `var(--a, ])`.
+func closeUnmatchedTokens(s string) string {
+	stack := make([]byte, 0, 4)
+	inString := byte(0)
+	stringHasNewline := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inString != 0 {
+			if ch == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if ch == '\n' || ch == '\r' || ch == '\f' {
+				// CSS Syntax §4.3.5: a raw newline inside a string ends the
+				// string-token as a `<bad-string-token>`. The string is
+				// closed at the newline and the parser must treat the token
+				// as a parse error.
+				stringHasNewline = true
+				inString = 0
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inString = ch
+		case '(':
+			stack = append(stack, ')')
+		case '[':
+			stack = append(stack, ']')
+		case '{':
+			stack = append(stack, '}')
+		case ')', ']', '}':
+			if len(stack) > 0 && stack[len(stack)-1] == ch {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	// Unterminated string at EOF: CSS Syntax §4.3.5 distinguishes this
+	// case from a string broken by a raw newline. An EOF-terminated string
+	// returns a regular `<string-token>` (whose value is the consumed
+	// characters); only a newline-terminated string returns a
+	// `<bad-string-token>`. We mirror that: EOF-terminated → synthesize
+	// the closing quote so downstream sees a valid string;
+	// newline-terminated → leave the bad token in place. Required by
+	// variable-reference-033 (EOF-close, fallback valid, var resolves) vs
+	// variable-reference-032 (newline-broken string, fallback invalid).
+	if inString != 0 && !stringHasNewline {
+		closed := append([]byte(s), inString)
+		return closeUnmatchedTokens(string(closed))
+	}
+	if inString != 0 {
+		// Bad-string-token: leave the bad token in place but still close
+		// any block-level `{` so the surrounding rule regains a proper
+		// boundary. `(` / `[` pushed after the bad token are inside it
+		// and don't need separate closing in the output stream.
+		var b strings.Builder
+		b.Grow(len(s) + len(stack))
+		b.WriteString(s)
+		closed := 0
+		for _, c := range stack {
+			if c == '}' {
+				closed++
+			}
+		}
+		for i := 0; i < closed; i++ {
+			b.WriteByte('}')
+		}
+		return b.String()
+	}
+	if len(stack) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + len(stack))
+	b.WriteString(s)
+	for i := len(stack) - 1; i >= 0; i-- {
+		b.WriteByte(stack[i])
+	}
+	return b.String()
 }
 
 // containsVarFunction reports whether s contains a `var(` function-token in
