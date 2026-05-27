@@ -123,6 +123,36 @@ func (s *Style) Get(property string) (string, bool) {
 	if varResolutionFailed {
 		return "", false
 	}
+	// CSS-wide keywords that survive var() substitution are resolved at
+	// computed-value time AFTER the substitution per CSS Variables 1 §3.2:
+	// `var(--foo, unset)` first substitutes (yielding `unset`), then the
+	// wide keyword is processed in the usual cascade path.
+	//
+	// We only handle the keyword forms that route through inheritance:
+	//   - `inherit`: copy the parent's computed value. Returning ok=false
+	//     lets ApplyInheritedProperties do the copy.
+	//   - `unset` on an inherited property (custom properties + most
+	//     typography props): behave as `inherit`.
+	// `initial` / `unset` on a non-inherited property is left in place so
+	// the property keeps its initial-value semantics at the call site
+	// (e.g. `color: initial` reaches GetTextColor as the literal `initial`
+	// which the painter resolves to the canvas-text initial). Required by
+	// wide-keyword-fallback-002 (`--color: var(--foo, unset)` must
+	// inherit the parent's --color).
+	if hadVar {
+		trimmed := strings.TrimSpace(val)
+		lower := asciiToLower(trimmed)
+		isCustom := strings.HasPrefix(property, "--")
+		isInherited := isCustom || inheritableProperties[property]
+		switch lower {
+		case "inherit":
+			return "", false
+		case "unset":
+			if isInherited {
+				return "", false
+			}
+		}
+	}
 	// IACVT also fires when the substituted result is not a syntactically
 	// valid value for the property — e.g. `color: var(--non-color)` where
 	// --non-color is `10px`. We can only IACVT-gate properties whose
