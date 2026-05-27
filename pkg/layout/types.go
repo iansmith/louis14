@@ -51,6 +51,14 @@ type Box struct {
 	// line is rotated 90° CW (like horizontal text read by tilting head right).
 	IsSidewaysRL bool
 
+	// IsWritingModeVerticalLR is true when the CSS writing-mode property is
+	// vertical-lr AND text-orientation is mixed (so IsSidewaysRL is also set).
+	// This flag distinguishes vertical-lr from vertical-rl in the sideways
+	// rotation path, where both write modes set IsSidewaysRL=true for mixed
+	// text-orientation. Decoration painters use this to place the underline on
+	// the correct physical side (right for vertical-lr, left for vertical-rl).
+	IsWritingModeVerticalLR bool
+
 	// Inline fragment tracking.
 	IsFirstFragment bool
 	IsLastFragment  bool
