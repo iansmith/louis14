@@ -283,9 +283,13 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	// Resolve the node's own definite block-size for percentage resolution.
 	// This allows children with percentage heights (e.g., img { height: 100% })
 	// to resolve against the containing block's height.
+	//
+	// Pass the percentage resolution inline-size so percent padding (CSS 2.1
+	// §8.4) is subtracted correctly when box-sizing:border-box; see the
+	// matching comment in measureBlockMinMax for the rationale.
 	blockForPct := Indefinite
 	if nodeStyle := node.Style(); nodeStyle != nil {
-		nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm)
+		nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm, space.PercentageResolutionInlineSize)
 		if bs, ok := ResolveBlockSize(nodeStyle, wdm, space, nodeGeom); ok {
 			blockForPct = bs.Float64()
 		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {
@@ -1003,7 +1007,13 @@ func measureBlockMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constra
 	// inside a div with explicit height).
 	nodeBlockSize := Indefinite
 	if nodeStyle := node.Style(); nodeStyle != nil {
-		nodeGeom := ComputeFragmentGeometry(nodeStyle, parentWDM)
+		// Pass the percentage resolution inline-size so that percent padding
+		// (which resolves against the containing block's inline-size per CSS
+		// 2.1 §8.4) is subtracted from the node's resolved block-size when
+		// box-sizing:border-box. Without this, padding:100% on a
+		// border-box element under intrinsic sizing leaks into the resolved
+		// content block-size, miscomputing descendants' percentage heights.
+		nodeGeom := ComputeFragmentGeometry(nodeStyle, parentWDM, space.PercentageResolutionInlineSize)
 		if bs, ok := ResolveBlockSize(nodeStyle, parentWDM, space, nodeGeom); ok {
 			nodeBlockSize = bs.Float64()
 		} else if space.PercentageResolutionSize.BlockSize.Float64() > 0 {

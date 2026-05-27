@@ -421,11 +421,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		lineAvailBlock, hasExplicitBlock, explicitBlockSize)
 
 	lineSpace := ConstraintSpace{
-		AvailableSize:                oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
-		PercentageResolutionSize:     oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}),
-		WritingDirection:             wdm,
-		ExclusionSpace:               exclusionSpace,
-		OrthogonalFallbackInlineSize: bla.space.OrthogonalFallbackInlineSize,
+		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
+		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}),
+		PercentageResolutionInlineSize: contentInlineSize,
+		WritingDirection:               wdm,
+		ExclusionSpace:                 exclusionSpace,
+		OrthogonalFallbackInlineSize:   bla.space.OrthogonalFallbackInlineSize,
 		OrthogonalFallbackBlockSize: computeOrthogonalFallbackBlockForChildren(
 			bla.style, wdm, bla.space, geomForPct, bla.ctx,
 			hasExplicitBlock, explicitBlockSize),
