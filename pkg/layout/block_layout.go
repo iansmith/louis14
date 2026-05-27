@@ -445,7 +445,20 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// The abs-pos element's in-flow position would be after the resolved margin, just
 				// like the next in-flow sibling. CSS §10.6.4: static position uses the hypothetical
 				// in-flow position.
+				//
+				// Phase 25 (C38): when the CB is itself fragmented (this BLA is a continuation),
+				// `blockCursor` is fragment-LOCAL (resets to 0 at the start of each fragment).
+				// For the deferred OOF-fragmentation drain at the outer multicol — which slices
+				// the OOF across CB fragments using stitched-CB-relative coords — we need the
+				// static position in CB-STITCHED coords. Add the incoming break token's
+				// ConsumedBlockSize so the captured offset cumulates across CB fragments.
+				// Non-resumed passes (`incomingBreakToken == nil`) contribute 0 — no behavioral
+				// change. Mirrors Blink's static-position capture which uses
+				// stitched coords throughout (block_layout_algorithm.cc).
 				staticBlockOffset := blockCursor + prevMarginStrut.Resolve()
+				if incomingBreakToken != nil {
+					staticBlockOffset += incomingBreakToken.ConsumedBlockSize.Float64()
+				}
 
 				// Static inline offset: block-level abspos gets inline-start (0).
 				// Inline-level abspos (display:inline/inline-*) in a block FC would
