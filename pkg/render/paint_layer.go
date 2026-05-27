@@ -863,7 +863,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// Blink's gate in paint_property_tree_builder.cc:1310 (NeedsTransform,
 	// :1299-:1319) at SHA 4883d11fef — `if (!object.IsBox()) return false;`
 	// short-circuits transform consideration for non-atomic inlines.
-	if layout.IsTransformableBox(s, box.Node) {
+	//
+	// Text-fragment pseudo-boxes (box.Text != "") share their parent
+	// element's *css.Style pointer. Reading the parent's transform here
+	// would double-apply it — the parent element's own PaintLayer already
+	// consumed the transform. Mirrors Blink's LayoutText which has no
+	// TransformPropertyTreeNode. Same suppression pattern as background-color
+	// above (line 594: `if box.Text == ""`).
+	if layout.IsTransformableBox(s, box.Node) && box.Text == "" {
 		// Collect individual transform properties.
 		var individualTransforms []css.Transform
 		if tx, ty, txPct, tyPct, ok := s.GetIndividualTranslate(); ok {
