@@ -192,14 +192,23 @@ type Stylesheet struct {
 	CounterStyles []CounterStyleRule        // @counter-style rules
 }
 
-// stripCSSComments removes all /* ... */ and <!-- ... --> comments from CSS source,
-// while preserving string literals (comments inside strings are not stripped).
-// <!-- ... --> is the "HTML comment" syntax historically used in <style> tags to hide
-// CSS from ancient browsers; CSS parsers treat them as CDO/CDC tokens (whitespace-like).
+// stripCSSComments removes all /* ... */ comments from CSS source, while
+// preserving string literals (comments inside strings are not stripped).
 //
 // Each comment is replaced with a single space so that adjacent tokens
 // don't fuse together — e.g. `rgb(10/* x */175)` becomes `rgb(10 175)`,
 // matching CSS Syntax §4 where comments act as token-stream whitespace.
+//
+// CDO `<!--` and CDC `-->` are NOT treated as comment delimiters here. Per
+// CSS Syntax §4.3.4 they are individual tokens (CDO-token / CDC-token); the
+// HTML-style "<!-- ... -->" hiding pattern works only because §5.4.1 tells
+// `parse-a-stylesheet` to discard these tokens at top level (handled later
+// by splitRules + at-rule dispatch). Inside a rule body or at-rule prelude
+// they remain valid declaration-value component-values (CSS Variables 1 §3,
+// `variable-supports-018` / `variable-supports-050` / `variable-supports-051`).
+// Mirrors Blink's CSSTokenizer::ConsumeToken behavior at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which never bridges between CDO
+// and CDC — they are emitted as solo tokens regardless of context.
 func stripCSSComments(css string) string {
 	var b strings.Builder
 	b.Grow(len(css))
@@ -237,22 +246,80 @@ func stripCSSComments(css string) string {
 				i++
 			}
 			// If we reached end of input, the comment was unterminated — just stop
-		} else if i+3 < len(css) && css[i] == '<' && css[i+1] == '!' && css[i+2] == '-' && css[i+3] == '-' {
-			// CSS CDO token: skip <!-- ... --> (HTML comment in CSS).
-			// Mirror /*...*/ behavior — emit a single space.
-			b.WriteByte(' ')
-			i += 4
-			for i < len(css) {
-				if i+2 < len(css) && css[i] == '-' && css[i+1] == '-' && css[i+2] == '>' {
-					i += 3
-					break
-				}
-				i++
-			}
 		} else {
 			b.WriteByte(css[i])
 			i++
 		}
+	}
+	return b.String()
+}
+
+// stripTopLevelCDOTokens replaces CDO `<!--` and CDC `-->` tokens with a
+// single space when they appear at the top level of the stylesheet (outside
+// any `{ ... }`, `( ... )`, `[ ... ]`, or string literal). Inside any of
+// those, CDO/CDC are valid component-values and must be preserved verbatim.
+// Mirrors Blink's CSSParserImpl::ParseSheet at SHA
+// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which only discards CDO/CDC at
+// stylesheet top level.
+func stripTopLevelCDOTokens(css string) string {
+	var b strings.Builder
+	b.Grow(len(css))
+	i := 0
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := byte(0)
+	for i < len(css) {
+		ch := css[i]
+		if inString != 0 {
+			b.WriteByte(ch)
+			if ch == '\\' && i+1 < len(css) {
+				i++
+				b.WriteByte(css[i])
+			} else if ch == inString {
+				inString = 0
+			}
+			i++
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inString = ch
+			b.WriteByte(ch)
+			i++
+			continue
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		}
+		topLevel := braceDepth == 0 && parenDepth == 0 && bracketDepth == 0
+		if topLevel && ch == '<' && i+3 < len(css) && css[i+1] == '!' && css[i+2] == '-' && css[i+3] == '-' {
+			b.WriteByte(' ')
+			i += 4
+			continue
+		}
+		if topLevel && ch == '-' && i+2 < len(css) && css[i+1] == '-' && css[i+2] == '>' {
+			b.WriteByte(' ')
+			i += 3
+			continue
+		}
+		b.WriteByte(ch)
+		i++
 	}
 	return b.String()
 }
@@ -459,6 +526,17 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 
 	// Strip comments before parsing
 	css = stripCSSComments(css)
+
+	// CSS Syntax §5.4.1 `parse-a-stylesheet` discards CDO and CDC tokens at
+	// the top level — this is how the legacy `<style><!-- ... --></style>`
+	// HTML-comment-hiding pattern still parses on modern UAs. We must NOT
+	// strip these tokens inside any block / function / string, because there
+	// CDO/CDC are component-values (CSS Variables 1 §3,
+	// `variable-supports-018` / `variable-supports-050` /
+	// `variable-supports-051`). Mirrors Blink's CSSParserImpl::ParseSheet
+	// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f which discards
+	// CDOToken / CDCToken between top-level rules.
+	css = stripTopLevelCDOTokens(css)
 
 	// Resolve every `url(...)` token against ctx.BaseDir BEFORE any further
 	// processing. Equivalent to threading CollectUrlData through every
@@ -2233,11 +2311,68 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	}
 	property := strings.TrimSpace(inner[:colon])
 	value := strings.TrimSpace(inner[colon+1:])
-	if property == "" || value == "" {
+	if property == "" {
 		return false, false
 	}
-	// Property name must be a valid <ident-token>: starts with letter or '-'.
+
+	// Custom-property declarations (`--*: ...`) have their own validation
+	// path: the name must be a valid <custom-property-name> (escape-aware,
+	// rejects the bare `--`), and the value is a <declaration-value> which
+	// CSS Custom Properties §3 explicitly permits to be empty (a white-space-
+	// only value declares the guaranteed-invalid value). Custom properties
+	// are always "supported" once well-formed — Blink's
+	// CSSSupportsParser::ConsumeSupportsDecl returns true unconditionally
+	// for any `--name` that parses as a declaration at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Use the RAW property text so
+	// escape-aware validation can resolve `--\61` to a legal name.
+	if strings.HasPrefix(property, "--") {
+		if !isValidCustomPropertyName(property) {
+			return false, false
+		}
+		// Strip `!important` priority before validating the declaration
+		// value. Custom-property declarations accept the same priority
+		// annotation as any other declaration (CSS Custom Properties §3,
+		// Blink's CSSVariableParser::ConsumeUnparsedDeclaration handles the
+		// priority strip before the token-stream check at SHA
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). variable-supports-046
+		// (`--a: var(--b) !important`) requires this.
+		if bang := lastTopLevelBang(value); bang >= 0 {
+			flag := strings.TrimSpace(value[bang+1:])
+			if !strings.EqualFold(flag, "important") {
+				return false, false
+			}
+			value = strings.TrimSpace(value[:bang])
+			// Double-!important is malformed (variable-supports-049,
+			// `var(--b) !important !important`).
+			if lastTopLevelBang(value) >= 0 {
+				return false, false
+			}
+		}
+		if value == "" {
+			// CSS Custom Properties §3: an empty declaration value is legal
+			// and represents the guaranteed-invalid value. The `@supports`
+			// rule still returns true for this shape (Blink's
+			// CSSVariableParser::ConsumeUnparsedDeclaration accepts the
+			// empty token list at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+			return true, true
+		}
+		if !isValidCustomPropertyValue(value) {
+			return false, true
+		}
+		// Custom-property values still need the var() name + fallback shape
+		// check because a malformed `var(1px)` inside a custom-property
+		// declaration is also a parse error per CSS Variables §3.
+		if strings.Contains(value, "var(") && hasInvalidVarReference(value) {
+			return false, true
+		}
+		return true, true
+	}
+
+	// Non-custom property name must be a valid <ident-token>.
 	if !isValidPropertyIdent(property) {
+		return false, false
+	}
+	if value == "" {
 		return false, false
 	}
 
@@ -2257,22 +2392,33 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 		if bare == "" {
 			return false, false
 		}
+		// A second top-level `!` after stripping `!important` is a malformed
+		// duplicate priority annotation — reject (variable-supports-017,
+		// `var(--a) !important !important`).
+		if lastTopLevelBang(bare) >= 0 {
+			return false, false
+		}
 		value = bare
 	}
 
 	// Validate the value is a syntactically well-formed <declaration-value>:
-	// no top-level `;`, `:`, `{`, `}`, and all `(`/`[` paired.
+	// no top-level `;` / `:`, and all `(`/`[`/`{` paired. (`{...}` blocks are
+	// allowed at top level — CSS Syntax §5.4.6 permits any `<simple-block>` as
+	// a `<component-value>`, so test cases like
+	// `@supports (color: { [ var(--a) ] })` must parse as a single block.)
 	if !isValidDeclarationValue(value) {
 		return false, false
 	}
 
-	// Custom properties (`--foo`) are always supported per CSS Variables 1
-	// §2.1: "Custom properties are not subject to the same restrictions as
-	// ordinary CSS properties." Blink mirrors this: any --* with a non-empty
-	// value succeeds in CSSSupportsParser. (No function-name check inside —
-	// `var(--anything)` etc. are the whole point of custom properties.)
-	if strings.HasPrefix(property, "--") {
-		return true, true
+	// CSS Variables §3 declaration-value rules also apply inside @supports:
+	// any var() reference whose name is malformed (`var(1px)`) or whose
+	// fallback contains a top-level `;` / bare `!` makes the wrapping
+	// declaration invalid → the @supports condition evaluates false. Mirrors
+	// Blink's CSSSupportsParser::ConsumeSupportsDecl path which routes through
+	// CSSParserImpl::ConsumeDeclaration and inherits its var() validation at
+	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+	if strings.Contains(value, "var(") && hasInvalidVarReference(value) {
+		return false, true
 	}
 
 	// Per CSS Conditional 3 §6.4 the supports test is "true iff the UA
@@ -2392,7 +2538,8 @@ func isKnownCSSValueFunction(name string) bool {
 }
 
 // lastTopLevelBang returns the index of the last `!` token at the top level
-// (not inside parens, brackets, or string literals) of s, or -1 if none.
+// (not inside parens, brackets, braces, or string literals, and not part of a
+// CDO `<!--` token per CSS Syntax §4.3.4) of s, or -1 if none.
 func lastTopLevelBang(s string) int {
 	depth := 0
 	inString := byte(0)
@@ -2412,9 +2559,16 @@ func lastTopLevelBang(s string) int {
 		switch c {
 		case '"', '\'':
 			inString = c
-		case '(', '[':
+		case '<':
+			// CSS Syntax §4.3.4: `<!--` is a single CDO-token. The `!` inside
+			// is part of the token, not a delim, so it must not register as a
+			// top-level `!` (otherwise `<!important` patterns get rejected).
+			if i+3 < len(s) && s[i+1] == '!' && s[i+2] == '-' && s[i+3] == '-' {
+				i += 3
+			}
+		case '(', '[', '{':
 			depth++
-		case ')', ']':
+		case ')', ']', '}':
 			if depth > 0 {
 				depth--
 			}
@@ -2428,14 +2582,18 @@ func lastTopLevelBang(s string) int {
 }
 
 // isValidDeclarationValue reports whether s is a well-formed CSS
-// <declaration-value> — that is, a sequence of component-values with no
-// top-level <colon-token>, <semicolon-token>, `{`, or `}`, and with every
-// `(` and `[` matched. Mirrors Blink's
+// <declaration-value> — a sequence of component-values with no top-level
+// <colon-token> or <semicolon-token>, and with every `(`, `[`, and `{`
+// matched. Per CSS Syntax §5.4.6 a `<simple-block>` (parens, brackets, OR
+// braces) is itself a `<component-value>`, so balanced top-level `{...}` is
+// permitted — e.g. `@supports (color: { [ var(--a) ] })` parses as a single
+// brace-block component-value. Mirrors Blink's
 // CSSParserTokenStream::ConsumeDeclarationValue acceptance criteria at
 // SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func isValidDeclarationValue(s string) bool {
 	parenDepth := 0
 	bracketDepth := 0
+	braceDepth := 0
 	inString := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -2452,6 +2610,20 @@ func isValidDeclarationValue(s string) bool {
 		switch c {
 		case '"', '\'':
 			inString = c
+		case '<':
+			// CSS Syntax §4.3.4: `<!--` is a single CDO-token; consume it as a
+			// unit so the `!` inside isn't treated as a delim. CDO tokens are
+			// legal in declaration-value context (variable-supports-018 /
+			// variable-supports-050).
+			if i+3 < len(s) && s[i+1] == '!' && s[i+2] == '-' && s[i+3] == '-' {
+				i += 3
+			}
+		case '-':
+			// CSS Syntax §4.3.4: `-->` is a single CDC-token; same treatment
+			// as CDO (variable-supports-051).
+			if i+2 < len(s) && s[i+1] == '-' && s[i+2] == '>' {
+				i += 2
+			}
 		case '(':
 			parenDepth++
 		case ')':
@@ -2466,13 +2638,20 @@ func isValidDeclarationValue(s string) bool {
 				return false
 			}
 			bracketDepth--
-		case ':', ';', '{', '}':
-			if parenDepth == 0 && bracketDepth == 0 {
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth == 0 {
+				return false
+			}
+			braceDepth--
+		case ':', ';':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
 				return false
 			}
 		}
 	}
-	if inString != 0 || parenDepth != 0 || bracketDepth != 0 {
+	if inString != 0 || parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
 		return false
 	}
 	return true
@@ -3788,25 +3967,41 @@ func parseDeclarations(declStr string) DeclarationResult {
 			continue
 		}
 
-		// Handle !important: strip it if valid, reject if malformed.
+		// Handle !important: strip it if valid, reject if malformed. The `!`
+		// search MUST be top-level — `!` tokens inside function calls (e.g.
+		// `var(--a, !)`) or simple-blocks (e.g. `(!)`, `[!]`) are part of the
+		// declaration value, not the priority annotation. Using a naive
+		// `strings.Index` would treat `var(--a,(!))` as having a malformed
+		// `!important` and reject the entire declaration, contrary to CSS
+		// Syntax §5.4.6 (priority annotation only fires when `!important`
+		// appears at the top level of the value). Mirrors Blink's
+		// CSSParserImpl::ConsumeImportantAnnotationIfPresent token-stream
+		// scan at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		//
 		// Apply the same strip to rawValue so downstream custom-property
 		// validation doesn't see the priority suffix as a top-level `!`
 		// token. `rawValue` differs from `value` only in unescaped sequences
 		// (escapes can't appear inside the !important suffix), so the same
 		// suffix-locator works for both.
 		isImportant := false
-		if strings.Contains(value, "!") {
-			bangIdx := strings.Index(value, "!")
+		if bangIdx := lastTopLevelBang(value); bangIdx >= 0 {
 			afterBang := strings.TrimSpace(value[bangIdx+1:])
 			if strings.EqualFold(afterBang, "important") {
 				value = strings.TrimSpace(value[:bangIdx])
 				isImportant = true
+				// After stripping one `!important`, any remaining top-level
+				// `!` is a malformed second priority annotation — reject the
+				// entire declaration (e.g. `var(--b) !important !important`).
+				if lastTopLevelBang(value) >= 0 {
+					continue
+				}
 			} else {
-				// Invalid use of ! (e.g., "red ! error") — reject entire declaration
+				// Invalid use of ! at top level (e.g., "red ! error") —
+				// reject entire declaration.
 				continue
 			}
 		}
-		if rawBangIdx := strings.LastIndex(rawValue, "!"); rawBangIdx >= 0 {
+		if rawBangIdx := lastTopLevelBang(rawValue); rawBangIdx >= 0 {
 			afterRawBang := strings.TrimSpace(rawValue[rawBangIdx+1:])
 			if strings.EqualFold(afterRawBang, "important") {
 				rawValue = strings.TrimSpace(rawValue[:rawBangIdx])
@@ -4312,16 +4507,21 @@ func isValidCustomPropertyName(name string) bool {
 }
 
 // hasInvalidVarReference reports whether value contains any var() function
-// call whose custom-property-name argument (the substring before the first
-// top-level comma inside the var() parens) is not a valid custom-property
-// name per isValidCustomPropertyName.
+// call that violates the CSS Variables §3 production:
 //
-// Per CSS Variables §3 the var() notation's first argument MUST be a valid
-// <custom-property-name>; otherwise the var() reference is a parse error and
-// the entire declaration containing it is invalid. Mirrors Blink's
-// CSSVariableParser::ConsumeVariableReference at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which fails fast on a malformed
-// name token before the rest of the value is considered.
+//  1. The first argument (the substring before the first top-level comma
+//     inside the var() parens) MUST be a valid <custom-property-name>.
+//  2. The fallback (everything after the first comma) MUST itself be a valid
+//     <declaration-value> — i.e. no top-level <semicolon-token>, no top-level
+//     bare <delim-token> `!`, and all brackets balanced. The fallback is
+//     declared as `<declaration-value>?` in the grammar, so it inherits the
+//     same shape rules a custom-property value follows.
+//
+// Either violation makes the entire enclosing declaration invalid at parse
+// time and the parser must discard it. Mirrors Blink's
+// CSSVariableParser::ConsumeVariableReference + ConsumeUnparsedDeclaration
+// at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which fail fast on a
+// malformed name token AND validate the fallback's token stream in one pass.
 func hasInvalidVarReference(value string) bool {
 	inString := byte(0)
 	for i := 0; i < len(value); i++ {
@@ -4355,10 +4555,13 @@ func hasInvalidVarReference(value string) bool {
 			if !isValidCustomPropertyName(name) {
 				return true
 			}
-			// Recurse into the fallback to catch nested var() with bad names.
+			// Validate the fallback as a <declaration-value>: top-level `;`
+			// and top-level bare `!` are illegal (CSS Variables §3). The
+			// existing custom-property token walker enforces these rules and
+			// recurses into nested var() fallbacks for free.
 			if commaIdx := findTopLevelComma(inner); commaIdx >= 0 {
 				fallback := strings.TrimSpace(inner[commaIdx+1:])
-				if fallback != "" && hasInvalidVarReference(fallback) {
+				if fallback != "" && !isValidDeclarationValueTokens(fallback, true) {
 					return true
 				}
 			}
