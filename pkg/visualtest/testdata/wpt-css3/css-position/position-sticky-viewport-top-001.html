@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: position:sticky at top of viewport pushes element down to top offset</title>
+    <link rel="match" href="position-sticky-viewport-top-001-ref.html"/>
+    <meta name="assert" content="A sticky element at the very top of the viewport (y=0) with top:20px is pushed down to y=20px at scroll position 0, when the containing block is tall enough to allow it."/>
+    <link rel="help" href="https://drafts.csswg.org/css-position-3/#sticky-pos"/>
+    <style>
+        body { margin: 0; background: white; height: 400px; }
+        /* The sticky element's in-flow position is y=0 (top of body).
+           With top:20px and scroll=0, the sticky constraint pushes it
+           to y=20px. The containing block (body, 400px) is large enough
+           to allow the push. The in-flow slot at y=0..50 remains (white space below
+           is rendered under the pushed element). */
+        .sticky {
+            position: sticky;
+            top: 20px;
+            background: green;
+            height: 50px;
+            width: 100%;
+        }
+        /* Spacer ensures containing block height is sufficient. */
+        .spacer {
+            height: 300px;
+        }
+    </style>
+</head>
+<body>
+    <div class="sticky"></div>
+    <div class="spacer"></div>
+</body>
+</html>
