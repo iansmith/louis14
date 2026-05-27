@@ -157,30 +157,64 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS 2.1 §10.6.2: if height is auto and there is an intrinsic ratio, use it.
 	// CSS Containment: size containment overrides intrinsic sizing — treat as 0.
 	hasSizeContain := bla.style != nil && bla.style.HasSizeContainment()
-	if !hasSizeContain && bla.node.DOMNode != nil && IsReplacedElement(bla.node.DOMNode) {
-		// Check if inline-size is explicitly set. ResolveInlineSize returns false
-		// for auto/unset, which is when we should use the intrinsic inline-size.
-		_, explicitInlineOK := ResolveInlineSize(bla.style, wdm, bla.space, geom)
-		if !explicitInlineOK && !bla.space.IsFixedInlineSize {
-			// CSS 2.1 §10.3.2: replaced elements with auto width use intrinsic width.
-			inlineSize, _ := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
-			if inlineSize > 0 {
-				// CSS Sizing 4 §6.3 / CSS 2.1 §10.3.2: when block-size is fixed
-				// by the parent (e.g., flex aspect-ratio stretch) and the element
-				// has an aspect ratio, inline-size is transferred from the cross
-				// axis via the ratio. In that case ComputeReplacedSize's value may
-				// exceed the shrink-to-fit intrinsic contentInlineSize — use it.
-				blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
-				if inlineSize < contentInlineSize || blockFixed {
-					contentInlineSize = inlineSize
+	isReplaced := bla.node.DOMNode != nil && IsReplacedElement(bla.node.DOMNode)
+	if isReplaced {
+		if hasSizeContain {
+			// CSS Contain 1 §4.2: under size containment, a replaced element's
+			// intrinsic dimensions are treated as 0. ComputeFragmentGeometry
+			// already collapses intrinsic-keyword widths (`min-content` /
+			// `max-content` / `fit-content`) to 0 via the ComputeMinMaxSizes
+			// short-circuit at min_max_sizing.go:99 (and applies `min-width`
+			// afterward). The only case still landing on parent-fill here is
+			// `width: auto`, which the geometry pass at fragment_geometry.go:666
+			// fills with the available size. Override that branch to 0; leave
+			// the geometry-resolved value alone for explicit / intrinsic-keyword
+			// widths so `min-width` / `max-width` clamps survive.
+			//
+			// Mirrors Blink's `LayoutReplaced::ComputeNaturalSizingInfo` contract
+			// (layout_replaced.cc, `DCHECK(!ShouldApplySizeContainment())` at
+			// SHA 4883d11fef): callers must short-circuit before computing
+			// natural dimensions when size containment applies.
+			widthIsAuto := isAutoOrUnsetInline(bla.style, wdm)
+			if widthIsAuto && !bla.space.IsFixedInlineSize {
+				contentInlineSize = 0
+				// Re-apply min-width if set, since the auto branch in
+				// ComputeFragmentGeometry chose available-size before any
+				// min-inline clamp.
+				minInline := ResolveMinInlineSize(bla.style, wdm, bla.space, geom).Float64()
+				if contentInlineSize < minInline {
+					contentInlineSize = minInline
 				}
 			}
-		}
-		if !hasExplicitBlock {
-			_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
-			if blockSize > 0 {
-				explicitBlockSize = blockSize
+			if !hasExplicitBlock {
+				explicitBlockSize = 0
 				hasExplicitBlock = true
+			}
+		} else {
+			// Check if inline-size is explicitly set. ResolveInlineSize returns false
+			// for auto/unset, which is when we should use the intrinsic inline-size.
+			_, explicitInlineOK := ResolveInlineSize(bla.style, wdm, bla.space, geom)
+			if !explicitInlineOK && !bla.space.IsFixedInlineSize {
+				// CSS 2.1 §10.3.2: replaced elements with auto width use intrinsic width.
+				inlineSize, _ := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+				if inlineSize > 0 {
+					// CSS Sizing 4 §6.3 / CSS 2.1 §10.3.2: when block-size is fixed
+					// by the parent (e.g., flex aspect-ratio stretch) and the element
+					// has an aspect ratio, inline-size is transferred from the cross
+					// axis via the ratio. In that case ComputeReplacedSize's value may
+					// exceed the shrink-to-fit intrinsic contentInlineSize — use it.
+					blockFixed := bla.space.IsFixedBlockSize && !bla.space.IsFixedBlockSizeIndefinite
+					if inlineSize < contentInlineSize || blockFixed {
+						contentInlineSize = inlineSize
+					}
+				}
+			}
+			if !hasExplicitBlock {
+				_, blockSize := ComputeReplacedSize(bla.ctx, bla.node, bla.style, bla.space)
+				if blockSize > 0 {
+					explicitBlockSize = blockSize
+					hasExplicitBlock = true
+				}
 			}
 		}
 	}
@@ -2810,6 +2844,27 @@ func (bla *BlockLayoutAlgorithm) positionListMarkerWithoutLineBoxes(
 	}
 	marker.AddToBoxWithoutLineBoxes(bla.ctx, markerResult, builder, intrinsicBlockSize)
 	builder.ClearUnpositionedListMarker()
+}
+
+// isAutoOrUnsetInline reports whether the style's inline-size property
+// (`width` in horizontal writing modes, `height` in vertical) is `auto`,
+// the empty string, or genuinely unset. Used by the size-containment
+// path to distinguish "fill parent" (auto) from intrinsic-keyword or
+// explicit-length cases, where the geometry pass already produced the
+// correct value before this code re-evaluates it.
+func isAutoOrUnsetInline(style *css.Style, wdm WritingDirectionMode) bool {
+	if style == nil {
+		return true
+	}
+	prop := "width"
+	if wdm.IsVertical() {
+		prop = "height"
+	}
+	v, ok := style.Get(prop)
+	if !ok {
+		return true
+	}
+	return v == "" || v == "auto"
 }
 
 func needsShrinkToFit(style *css.Style) bool {
