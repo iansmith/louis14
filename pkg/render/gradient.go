@@ -432,20 +432,20 @@ func (r *Renderer) drawLinearGradient(gradVal string, x, y, w, h float64) {
 	}
 
 	// Clip drawing bounds to the active clip region (overflow:hidden, CSS clip).
-	// The gg context's clip doesn't affect direct pixel writes, so we enforce
-	// clip bounds ourselves.
-	clipMinX, clipMinY, clipMaxX, clipMaxY := r.activeClipBounds()
-	if x0 < clipMinX {
-		x0 = clipMinX
+	// Direct pixel writes bypass mazzy's rasterizer, so we read mazzy's clip
+	// bounds via DrawContext.ClipBounds() and enforce them on the write loop.
+	clipB := r.dc.ClipBounds()
+	if x0 < clipB.Min.X {
+		x0 = clipB.Min.X
 	}
-	if y0 < clipMinY {
-		y0 = clipMinY
+	if y0 < clipB.Min.Y {
+		y0 = clipB.Min.Y
 	}
-	if x1 > clipMaxX {
-		x1 = clipMaxX
+	if x1 > clipB.Max.X {
+		x1 = clipB.Max.X
 	}
-	if y1 > clipMaxY {
-		y1 = clipMaxY
+	if y1 > clipB.Max.Y {
+		y1 = clipB.Max.Y
 	}
 	if x0 >= x1 || y0 >= y1 {
 		return
@@ -577,18 +577,18 @@ func (r *Renderer) fillSolidGradient(s gradientStop, x, y, w, h float64) {
 	if x0 >= x1 || y0 >= y1 {
 		return
 	}
-	clipMinX, clipMinY, clipMaxX, clipMaxY := r.activeClipBounds()
-	if x0 < clipMinX {
-		x0 = clipMinX
+	clipB := r.dc.ClipBounds()
+	if x0 < clipB.Min.X {
+		x0 = clipB.Min.X
 	}
-	if y0 < clipMinY {
-		y0 = clipMinY
+	if y0 < clipB.Min.Y {
+		y0 = clipB.Min.Y
 	}
-	if x1 > clipMaxX {
-		x1 = clipMaxX
+	if x1 > clipB.Max.X {
+		x1 = clipB.Max.X
 	}
-	if y1 > clipMaxY {
-		y1 = clipMaxY
+	if y1 > clipB.Max.Y {
+		y1 = clipB.Max.Y
 	}
 	if x0 >= x1 || y0 >= y1 {
 		return
@@ -1212,18 +1212,18 @@ func (r *Renderer) drawRadialGradient(gradVal string, x, y, w, h float64) {
 	if x0 >= x1 || y0 >= y1 {
 		return
 	}
-	clipMinX, clipMinY, clipMaxX, clipMaxY := r.activeClipBounds()
-	if x0 < clipMinX {
-		x0 = clipMinX
+	clipB := r.dc.ClipBounds()
+	if x0 < clipB.Min.X {
+		x0 = clipB.Min.X
 	}
-	if y0 < clipMinY {
-		y0 = clipMinY
+	if y0 < clipB.Min.Y {
+		y0 = clipB.Min.Y
 	}
-	if x1 > clipMaxX {
-		x1 = clipMaxX
+	if x1 > clipB.Max.X {
+		x1 = clipB.Max.X
 	}
-	if y1 > clipMaxY {
-		y1 = clipMaxY
+	if y1 > clipB.Max.Y {
+		y1 = clipB.Max.Y
 	}
 	if x0 >= x1 || y0 >= y1 {
 		return
@@ -1494,18 +1494,18 @@ func (r *Renderer) drawConicGradient(gradVal string, x, y, w, h float64) {
 	if x0 >= x1 || y0 >= y1 {
 		return
 	}
-	clipMinX, clipMinY, clipMaxX, clipMaxY := r.activeClipBounds()
-	if x0 < clipMinX {
-		x0 = clipMinX
+	clipB := r.dc.ClipBounds()
+	if x0 < clipB.Min.X {
+		x0 = clipB.Min.X
 	}
-	if y0 < clipMinY {
-		y0 = clipMinY
+	if y0 < clipB.Min.Y {
+		y0 = clipB.Min.Y
 	}
-	if x1 > clipMaxX {
-		x1 = clipMaxX
+	if x1 > clipB.Max.X {
+		x1 = clipB.Max.X
 	}
-	if y1 > clipMaxY {
-		y1 = clipMaxY
+	if y1 > clipB.Max.Y {
+		y1 = clipB.Max.Y
 	}
 	if x0 >= x1 || y0 >= y1 {
 		return

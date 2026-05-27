@@ -67,11 +67,6 @@ type Renderer struct {
 	// Custom @counter-style rules, keyed by name.
 	counterStyles map[string]css.CounterStyleRule
 
-	// clipStack tracks active overflow:hidden clip rectangles. Gradient rendering
-	// writes directly to the pixel buffer (bypassing the gg context's clip), so
-	// we maintain our own clip bounds to intersect with during direct pixel writes.
-	clipStack []clipRect
-
 	// embeddedViewport, when non-zero, signals that the renderer is painting
 	// inside a host DrawContext that owns more area than just the HTML viewport
 	// (e.g. mancini's WebInteractor inside a larger app). In that mode the
@@ -104,11 +99,6 @@ type Renderer struct {
 	// in-transform repaint on the body layer during the standard paint
 	// walk. Cleared when the owning paintLayer call finishes.
 	canvasBgPaintedDescendants map[*PaintLayer]struct{}
-}
-
-// clipRect represents an active clip rectangle.
-type clipRect struct {
-	x, y, w, h float64
 }
 
 // newProvider returns the shared GlyphProvider used by both layout-time
@@ -194,48 +184,6 @@ func (r *Renderer) SetExternalSVGFetcher(fetcher func(uri string) ([]byte, error
 // SetScrollY sets the vertical scroll offset.
 func (r *Renderer) SetScrollY(scrollY float64) {
 	r.scrollY = scrollY
-}
-
-// pushClipRect pushes a clip rectangle onto the stack. Direct pixel-writing
-// operations (like gradient rendering) must respect these bounds.
-func (r *Renderer) pushClipRect(x, y, w, h float64) {
-	r.clipStack = append(r.clipStack, clipRect{x, y, w, h})
-}
-
-// popClipRect removes the most recent clip rectangle from the stack.
-func (r *Renderer) popClipRect() {
-	if len(r.clipStack) > 0 {
-		r.clipStack = r.clipStack[:len(r.clipStack)-1]
-	}
-}
-
-// activeClipBounds returns the intersection of all active clip rectangles.
-// Returns the image bounds if no clips are active.
-func (r *Renderer) activeClipBounds() (x0, y0, x1, y1 int) {
-	bounds := r.target.Bounds()
-	fx0 := float64(bounds.Min.X)
-	fy0 := float64(bounds.Min.Y)
-	fx1 := float64(bounds.Max.X)
-	fy1 := float64(bounds.Max.Y)
-	for _, c := range r.clipStack {
-		cx0 := c.x
-		cy0 := c.y
-		cx1 := c.x + c.w
-		cy1 := c.y + c.h
-		if cx0 > fx0 {
-			fx0 = cx0
-		}
-		if cy0 > fy0 {
-			fy0 = cy0
-		}
-		if cx1 < fx1 {
-			fx1 = cx1
-		}
-		if cy1 < fy1 {
-			fy1 = cy1
-		}
-	}
-	return int(math.Round(fx0)), int(math.Round(fy0)), int(math.Round(fx1)), int(math.Round(fy1))
 }
 
 // SetCounterStyles registers custom @counter-style rules for list marker rendering.
@@ -1752,7 +1700,6 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 			layer.CSSClipRect[2], layer.CSSClipRect[3])
 		r.dc.DrawRectangle(cx, cy, cw, ch)
 		r.dc.Clip()
-		r.pushClipRect(cx, cy, cw, ch)
 	}
 
 	// CSS clip-path: clips all content to a shape.
@@ -1784,8 +1731,6 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
 		}
 		r.dc.Clip()
-		// Push clip bounds for direct pixel writers (gradient renderer).
-		r.pushClipRect(ox, oy, ow, oh)
 	}
 
 	// Step 2: Negative z-index stacking contexts.
@@ -1823,7 +1768,6 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	if clipping {
-		r.popClipRect()
 		r.dc.Pop()
 	}
 
@@ -1832,7 +1776,6 @@ func (r *Renderer) paintLayerContent(layer *PaintLayer) {
 	}
 
 	if cssClipping {
-		r.popClipRect()
 		r.dc.Pop()
 	}
 }
@@ -1993,7 +1936,6 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 			r.dc.DrawRectangle(ox, oy, ow, oh)
 		}
 		r.dc.Clip()
-		r.pushClipRect(ox, oy, ow, oh)
 	}
 
 	r.paintDescendantsPhase(child, phase)
@@ -2007,7 +1949,6 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 	}
 
 	if clipping {
-		r.popClipRect()
 		r.dc.Pop()
 	}
 }
@@ -2998,18 +2939,23 @@ func (r *Renderer) drawTiledGradient(layer *PaintLayer, bg *css.FillLayer) {
 		return
 	}
 
-	// Push a clip rect so tiles overflowing the layer-clip area don't
-	// paint past the box edges. Image tiling already clips per-tile via
-	// the dst* bounds; gradient tiling lacks that fast-path, so we add an
-	// explicit clip-bounds push for the duration of the tile loop.
+	// Tighten the active clip to the background-clip area so tiles
+	// overflowing the layer-clip area don't paint past the box edges.
+	// Image tiling already clips per-tile via the dst* bounds; gradient
+	// tiling lacks that fast-path, so we push a real clip on mazzy for the
+	// duration of the tile loop. drawGradient reads r.dc.ClipBounds()
+	// for its direct-pixel write bounds and picks up the tighter region
+	// automatically.
 	lx, ly, lw, lh := backgroundClipRectForClip(box, bg.Clip)
-	r.pushClipRect(lx, ly, lw, lh)
+	r.dc.Push()
+	r.dc.DrawRectangle(lx, ly, lw, lh)
+	r.dc.Clip()
 	for _, ty := range ys {
 		for _, tx := range xs {
 			r.drawGradient(bg.Gradient, float64(tx), float64(ty), tileW, tileH, layer.Box.Style)
 		}
 	}
-	r.popClipRect()
+	r.dc.Pop()
 }
 
 // drawImage paints an <img> element with object-fit and object-position support.
