@@ -73,6 +73,7 @@ type CounterEntry struct {
 	Origin     *html.Node
 	Value      int
 	EnterOrder uint64
+	Reversed   bool // true when created by counter-reset: reversed(name)
 }
 
 // counterStack is a stack of CounterEntry pointers, innermost last.
@@ -109,15 +110,91 @@ type CountersAttachmentContext struct {
 	// resolving ancestry (mirrors Blink LayoutTreeBuilderTraversal
 	// ::LayoutParent which transparently skips display:contents).
 	displayContents map[*html.Node]bool
+
+	// reversedInitials maps (node, counterName) to the computed
+	// auto-initial value for a reversed(name) counter-reset. The
+	// layout-tree builder populates this via SetReversedCounterInitial
+	// before EnterObject is called for the resetting element. See
+	// computeReversedCounterInitial in layout_tree_builder.go.
+	reversedInitials map[*html.Node]map[string]int
 }
 
 // NewCountersAttachmentContext returns an empty context.
 func NewCountersAttachmentContext() *CountersAttachmentContext {
 	return &CountersAttachmentContext{
-		table:           make(CounterInheritanceTable),
-		enterOrder:      make(map[*html.Node]uint64),
-		displayContents: make(map[*html.Node]bool),
+		table:            make(CounterInheritanceTable),
+		enterOrder:       make(map[*html.Node]uint64),
+		displayContents:  make(map[*html.Node]bool),
+		reversedInitials: make(map[*html.Node]map[string]int),
 	}
+}
+
+// IsCounterReversed reports whether the innermost in-scope entry for name was
+// created by a counter-reset: reversed(name) declaration. Called by the
+// layout-tree builder to decide whether to apply the implicit list-item -1
+// decrement (reversed list items count downward, normal list items count up).
+func (c *CountersAttachmentContext) IsCounterReversed(name string) bool {
+	stack := c.table[name]
+	if stack == nil || len(*stack) == 0 {
+		return false
+	}
+	for i := len(*stack) - 1; i >= 0; i-- {
+		top := (*stack)[i]
+		if top == nil {
+			continue // style containment boundary — skip
+		}
+		return top.Reversed
+	}
+	return false
+}
+
+// HasAutoReversedCounter reports whether node has a reversed(name)
+// counter-reset WITHOUT an explicit integer (i.e. the auto-count initial
+// was computed and stored by SetReversedCounterInitial). Used by
+// buildNode to decide whether to skip the implicit list-item -1 on the
+// reset element itself (the auto-initial already factors in that the
+// reset element defines the scope boundary; explicit-initial counters
+// do not, so they still get the -1 applied).
+func (c *CountersAttachmentContext) HasAutoReversedCounter(node *html.Node, name string) bool {
+	m := c.reversedInitials[node]
+	if m == nil {
+		return false
+	}
+	_, ok := m[name]
+	return ok
+}
+
+// IsCounterInScope reports whether the named counter has been explicitly
+// established in the counter context (i.e. via counter-reset, counter-set,
+// or counter-increment) and is currently in scope for node. Returns false
+// when the counter is absent or when only the default "[]int{0}" fallback
+// applies. Used by the layout-tree builder to decide whether to use the
+// counter-context value or fall back to DOM-sibling counting for list-item.
+func (c *CountersAttachmentContext) IsCounterInScope(node *html.Node, name string) bool {
+	c.RemoveStaleCounters(node, name)
+	stack := c.table[name]
+	if stack == nil || len(*stack) == 0 {
+		return false
+	}
+	for i := len(*stack) - 1; i >= 0; i-- {
+		if (*stack)[i] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// SetReversedCounterInitial records the auto-computed initial value for
+// a reversed(name) counter-reset on node, for use by EnterObject when
+// the counter-reset has no explicit integer. Called by the layout-tree
+// builder's computeReversedCounterInitial before EnterObject.
+func (c *CountersAttachmentContext) SetReversedCounterInitial(node *html.Node, name string, value int) {
+	m := c.reversedInitials[node]
+	if m == nil {
+		m = make(map[string]int)
+		c.reversedInitials[node] = m
+	}
+	m[name] = value
 }
 
 // SetAttachmentRootIsDocumentElement marks the root as the document
@@ -178,7 +255,7 @@ func (c *CountersAttachmentContext) EnterObject(node *html.Node, style *Style) {
 	if disp, ok := style.Get("display"); ok && strings.EqualFold(strings.TrimSpace(disp), "contents") {
 		c.displayContents[node] = true
 	}
-	for _, d := range parseCounterDirectives(style) {
+	for _, d := range c.parseCounterDirectives(node, style) {
 		c.ProcessCounter(node, d)
 	}
 	if style.HasStyleContainment() {
@@ -203,7 +280,7 @@ func (c *CountersAttachmentContext) LeaveObject(node *html.Node, style *Style) {
 	if style.HasStyleContainment() {
 		c.LeaveStyleContainmentScope()
 	}
-	for _, d := range parseCounterDirectives(style) {
+	for _, d := range c.parseCounterDirectives(node, style) {
 		if d.Type.IsReset() {
 			c.RemoveCounterIfAncestorExists(node, d.Name)
 		}
@@ -265,7 +342,7 @@ func (c *CountersAttachmentContext) LeaveStyleContainmentScope() {
 func (c *CountersAttachmentContext) ProcessCounter(node *html.Node, d CounterDirective) {
 	c.RemoveStaleCounters(node, d.Name)
 	if d.Type.IsReset() {
-		c.CreateCounter(node, d.Name, d.Value)
+		c.CreateCounter(node, d.Name, d.Value, d.Reversed)
 		return
 	}
 	c.UpdateCounterValue(node, d.Name, d.Type, d.Value)
@@ -284,7 +361,7 @@ func (c *CountersAttachmentContext) ProcessCounter(node *html.Node, d CounterDir
 // includes ::before/::marker/::after pseudo-elements between or
 // around real DOM children. Two siblings share the same parent and
 // the one with the smaller EnterObject stamp is earlier.
-func (c *CountersAttachmentContext) CreateCounter(node *html.Node, name string, value int) {
+func (c *CountersAttachmentContext) CreateCounter(node *html.Node, name string, value int, reversed bool) {
 	stack := c.table[name]
 	if stack == nil {
 		stack = &counterStack{}
@@ -300,6 +377,7 @@ func (c *CountersAttachmentContext) CreateCounter(node *html.Node, name string, 
 		Origin:     node,
 		Value:      value,
 		EnterOrder: c.enterCounter,
+		Reversed:   reversed,
 	})
 }
 
@@ -317,7 +395,7 @@ func (c *CountersAttachmentContext) UpdateCounterValue(node *html.Node, name str
 		// Implicit instantiation: push a synthetic reset of 0 owned
 		// by the entering element, then update it (Blink: stack
 		// empty / boundary => CreateCounter then update).
-		c.CreateCounter(node, name, 0)
+		c.CreateCounter(node, name, 0, false)
 		stack = c.table[name]
 	}
 	top := (*stack)[len(*stack)-1]
@@ -391,6 +469,15 @@ func (c *CountersAttachmentContext) RemoveCounterIfAncestorExists(node *html.Nod
 	}
 	// Only pop the leaving entry if it was pushed by *this* element.
 	if top.Origin != node {
+		return
+	}
+	// Reversed counters extend their scope to following siblings; they must NOT
+	// be popped when their parent has an outer counter, because the reversed
+	// counter's auto-initial already accounts for those following siblings'
+	// contributions, and those siblings must observe the reversed counter's
+	// running value (not the outer counter's original value). See
+	// counter-reset-reversed-siblings-003.html.
+	if top.Reversed {
 		return
 	}
 	// Condition 1: previous entry's origin is an ancestor of node.
@@ -508,10 +595,13 @@ func saturatingAddInt32(current, value int) int {
 // on the same name OR their type bits together and combine values per
 // Blink's CounterDirectives::CombinedValue (counter_directives.h:113 @
 // 4883d11fef): counter-set overrides everything else; otherwise it's
-// reset_value + increment_value (saturated). The reversed(name) form
-// on counter-reset is parsed and the Reversed flag preserved, but it
-// has no semantic effect until Phase 4.
-func parseCounterDirectives(style *Style) []CounterDirective {
+// reset_value + increment_value (saturated). For reversed(name) without
+// an explicit integer, the initial value is looked up from
+// c.reversedInitials[node][name] (populated by SetReversedCounterInitial
+// before EnterObject is called for the resetting element). This mirrors
+// Blink CounterNode::IsReversed() + CountUsage() in counter_node.cc @
+// 4883d11fef.
+func (c *CountersAttachmentContext) parseCounterDirectives(node *html.Node, style *Style) []CounterDirective {
 	// Use a name-keyed accumulator so two declarations on the same
 	// counter (e.g. counter-reset:c 98 + counter-increment:c 1)
 	// merge into one CounterDirective with type=reset|increment and
@@ -541,16 +631,21 @@ func parseCounterDirectives(style *Style) []CounterDirective {
 			a := track(p.name)
 			a.hasReset = true
 			a.resetValue = p.value
-			// Phase 4 will compute the initial value via
-			// CalculateInitialValueForReversed when this flag is
-			// set. Phase 1 still pushes a 0-valued reset so the
-			// counter exists in scope (which keeps tests that mix
-			// `counter-reset: reversed(foo)` with explicit
-			// `counter-increment` directives at least seeing a
-			// stable counter — Phase 4 will overlay the correct
-			// initial value).
 			if p.reversed {
 				a.reversed = true
+				// When no explicit integer was given, use the
+				// auto-count initial computed by the layout builder
+				// (SetReversedCounterInitial / computeReversedCounterInitial
+				// in layout_tree_builder.go). Mirrors Blink's
+				// CounterNode::CountUsage() in counter_node.cc @
+				// 4883d11fef.
+				if !p.hasExplicitValue {
+					if m := c.reversedInitials[node]; m != nil {
+						if v, ok := m[p.name]; ok {
+							a.resetValue = v
+						}
+					}
+				}
 			}
 		}
 	}
@@ -625,12 +720,15 @@ func parseCounterDirectives(style *Style) []CounterDirective {
 	return out
 }
 
-// parsedCounterProperty captures one (name, value, reversed) tuple
-// from a counter-reset or counter-increment property value.
+// parsedCounterProperty captures one (name, value, reversed, hasExplicitValue)
+// tuple from a counter-reset or counter-increment property value.
+// hasExplicitValue distinguishes `reversed(name) 0` (explicit zero) from
+// `reversed(name)` (omitted integer, which triggers auto-count for reversed).
 type parsedCounterProperty struct {
-	name     string
-	value    int
-	reversed bool
+	name             string
+	value            int
+	reversed         bool
+	hasExplicitValue bool
 }
 
 // parseCounterPropertyList parses "name [int]?  name [int]?  ..."
@@ -660,16 +758,19 @@ func parseCounterPropertyList(raw string, defaultVal int) []parsedCounterPropert
 			continue
 		}
 		value := defaultVal
+		hasExplicit := false
 		if i+1 < len(tokens) {
 			if n, err := strconv.Atoi(tokens[i+1]); err == nil {
 				value = n
+				hasExplicit = true
 				i++
 			}
 		}
 		out = append(out, parsedCounterProperty{
-			name:     name,
-			value:    value,
-			reversed: reversed,
+			name:             name,
+			value:            value,
+			reversed:         reversed,
+			hasExplicitValue: hasExplicit,
 		})
 	}
 	return out
@@ -836,4 +937,24 @@ func domChildrenOrder(a, b *html.Node) bool {
 		}
 	}
 	return false
+}
+
+// ParseReversedCounterResets returns the counter names from a
+// counter-reset value string that use the reversed() form WITHOUT an
+// explicit integer. These are the counters whose auto-count initial value
+// must be computed by the layout builder before EnterObject.
+//
+// Called by layout_tree_builder.go precomputeReversedCounterInitials.
+func ParseReversedCounterResets(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "none" {
+		return nil
+	}
+	var out []string
+	for _, p := range parseCounterPropertyList(raw, 0) {
+		if p.reversed && !p.hasExplicitValue {
+			out = append(out, p.name)
+		}
+	}
+	return out
 }
