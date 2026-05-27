@@ -1252,7 +1252,23 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					// fragmentainer space. When parent box overflows
 					// (`desired > space_left`) the parent needs to self-break,
 					// so IsAtBlockEnd is NOT set — see test 006 spanner-3.
-					if childResult.BreakToken != nil && hasExplicitBlock {
+					//
+					// LOU-multicol-nested (C51) gate: skip when this BLA's
+					// explicitBlockSize was synthesized from
+					// IsBlockSizeOverride (e.g. anonymous multicol column
+					// wrapper). In that case the "explicit" size is the
+					// per-fragment column slot height the parent multicol
+					// forced on us, NOT the box's CSS declared total height.
+					// Treating it as a CSS-declared size triggers IsAtBlockEnd
+					// at the column boundary even though the column wrapper
+					// still has more content for the next column — the
+					// resumed fragment then gets zero-clamped by 3.5.B and
+					// the multicol algorithm sees an empty column.
+					// Mirrors Blink's FinishFragmentation, which reads
+					// `box_block_size_` from the wrapper's CSS, not from the
+					// ConstraintSpace fragmentainer override.
+					if childResult.BreakToken != nil && hasExplicitBlock &&
+						!bla.space.IsBlockSizeOverride {
 						spaceLeft := bla.space.FragmentainerBlockSize - bla.space.FragmentainerOffset
 						if spaceLeft < 0 {
 							spaceLeft = 0
