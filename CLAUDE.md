@@ -148,6 +148,7 @@ ln -sfn /Users/iansmith/mazzy "$WORKTREE/../mazzy"
 
 Agents working in a worktree must also:
 
-- Anchor every absolute file-tool path under the worktree root, NOT `/Users/iansmith/louis14/...`. Edit/Write take absolute paths and have no default base; unqualified `/Users/iansmith/louis14/...` writes to the orchestrator's tree, silently no-op'ing the worktree.
-- Receive the worktree root explicitly in their brief.
-- Run `pwd` + `git rev-parse --show-toplevel` as a sanity check at start; if either reports `/Users/iansmith/louis14`, stop.
+- **HARD RULE — never write to the orchestrator tree.** Every absolute path passed to Edit / Write / NotebookEdit / `>`-redirect / `sed -i` / `mv` / `cp` / `gofmt -w` / `go build -o` MUST start with `/Users/iansmith/louis14/.claude/worktrees/agent-<HASH>/`, never `/Users/iansmith/louis14/<anything>`. The two paths look almost identical but are completely separate trees; an Edit at the bare orchestrator path is a silent no-op for the agent's branch (branch will have zero commits) but contaminates the orchestrator's `git status` and may leak into another agent's commit. **This violation has happened twice — campaign-3 (15 min lost) and campaign-4 C45 (entire 95-line implementation discarded).** The strengthened HARD RULE block at the top of `docs/campaign2/C00-rules.md` AGENT RULES is the canonical statement; every launch prompt MUST paste that block verbatim.
+- Receive the worktree root explicitly in the launch brief (a `WORKTREE_ROOT=<exact-path>` line).
+- Run the mandatory startup check (verify `pwd` resolves to a `.claude/worktrees/agent-*` path) and the mandatory pre-commit check (`git -C /Users/iansmith/louis14 status --porcelain` must come back unchanged from agent-start state) per the AGENT RULES block.
+- DONE block MUST include the agent's `WORKTREE_ROOT=` value and `git log --oneline -5` output so the orchestrator can verify the work actually committed on the agent's branch.
