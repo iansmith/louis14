@@ -152,13 +152,13 @@ type PaintLayer struct {
 	// gates the synthesize-caps fallback in render.drawTextSmallCaps; native
 	// OpenType `smcp`/`c2sc` features are emitted unconditionally below in
 	// the font-feature-settings block.
-	FontSynthesisWeight    bool
-	FontSynthesisStyle     css.FontSynthesisStyleValue
-	FontSynthesisSmallCaps bool
-	LetterSpacing          float64
-	WordSpacing            float64
-	TabSize                float64 // tab-size value (character count or px)
-	TabSizeIsLength        bool    // true = px length, false = character count
+	FontSynthesisWeight     bool
+	FontSynthesisStyle      css.FontSynthesisStyleValue
+	FontSynthesisSmallCaps  bool
+	LetterSpacing           float64
+	WordSpacing             float64
+	TabSize                 float64 // tab-size value (character count or px)
+	TabSizeIsLength         bool    // true = px length, false = character count
 	IsVerticalText          bool
 	IsSidewaysLR            bool
 	IsSidewaysRL            bool
@@ -170,6 +170,29 @@ type PaintLayer struct {
 	TextDecorationThickness float64   // defaults to ~1px
 	TextDecorationStyle     string    // solid, double, dotted, dashed, wavy
 	TextUnderlineOffset     float64   // additional offset for underline (px); 0 = auto/default
+
+	// TextUnderlinePosition is the raw CSS text-underline-position value
+	// (auto / under / left / right / from-font, space-separated combinations
+	// like "from-font right"). Used by the vertical text-decoration painters
+	// to flip the under-side between physical LEFT and RIGHT independently
+	// of the writing-mode's natural under-direction. Per CSS Text Decor 4 §3.3,
+	// `left` / `right` override the writing-mode-derived under-side; `auto`
+	// follows the rotated baseline's under direction (LEFT after CW rotation,
+	// RIGHT after CCW). louis14 keeps the raw string here because the parser
+	// doesn't yet type the property; consumers do substring-contains checks
+	// for "left"/"right"/"under".
+	TextUnderlinePosition string
+
+	// TextLangIsCJK is reserved for an eventual HTML `lang` attribute
+	// plumbing pass. Per CSS Text Decor 3 §3.5, CJK convention flips the
+	// default underline direction in vertical writing modes (the "auto"
+	// underline moves to the over-side, and the overline flips to the
+	// under-side). louis14 doesn't yet thread the `lang` attribute through
+	// styling; `font-language-override` is NOT a usable proxy because the
+	// text-underline-position-vertical-ja WPT reference declares `"JAN"`
+	// while explicitly setting lang="en", so reading the override would
+	// mis-classify the reference. Stays unset until lang plumbing lands.
+	TextLangIsCJK bool
 
 	// AppliedTextDecorations is the accumulated CSS Text Decor 3 vector for
 	// this element (mirrors Blink's `AppliedTextDecorationVector` on
@@ -764,6 +787,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
 	layer.TextDecorationStyle = s.GetTextDecorationStyle()
 	layer.TextUnderlineOffset = s.GetTextUnderlineOffset()
+	// text-underline-position is not yet typed in louis14's css pkg; pull the
+	// raw cascaded string so vertical painters can detect explicit `left` /
+	// `right` overrides without needing a full typed property.
+	if tup, ok := s.Get("text-underline-position"); ok {
+		layer.TextUnderlinePosition = tup
+	}
+	// CJK language hint (TextLangIsCJK) is reserved for the eventual lang-
+	// attribute plumbing (CSS Text Decor 3 §3.5). Currently unset; see
+	// sidewaysUnderlineGoesRight for the rationale on why `font-language-
+	// override` is not a usable proxy.
 	layer.TextShadows = s.GetTextShadow()
 	layer.FontVariantCaps = s.GetFontVariantCaps()
 
