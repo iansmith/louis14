@@ -373,6 +373,11 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 			}
 			if to != "upright" {
 				box.IsSidewaysRL = true
+				// Track when the original CSS writing-mode was vertical-lr so
+				// decoration painters can place the underline on the correct side.
+				// Both vertical-rl and vertical-lr with mixed text-orientation end
+				// up with IsSidewaysRL=true; IsWritingModeVerticalLR disambiguates.
+				box.IsWritingModeVerticalLR = frag.WritingDirection.WM == WritingModeVerticalLR
 			}
 		}
 	}

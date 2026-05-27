@@ -159,9 +159,10 @@ type PaintLayer struct {
 	WordSpacing            float64
 	TabSize                float64 // tab-size value (character count or px)
 	TabSizeIsLength        bool    // true = px length, false = character count
-	IsVerticalText         bool
-	IsSidewaysLR           bool
-	IsSidewaysRL           bool
+	IsVerticalText          bool
+	IsSidewaysLR            bool
+	IsSidewaysRL            bool
+	IsWritingModeVerticalLR bool // vertical-lr + mixed text-orientation (IsSidewaysRL also true)
 
 	// Text decoration (underline, overline, line-through):
 	TextDecoration          css.TextDecoration
@@ -734,6 +735,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	layer.IsVerticalText = box.IsVerticalText
 	layer.IsSidewaysLR = box.IsSidewaysLR
 	layer.IsSidewaysRL = box.IsSidewaysRL
+	layer.IsWritingModeVerticalLR = box.IsWritingModeVerticalLR
 
 	// Text decoration (CSS Text Decor 3 §2 — AppliedTextDecoration vector).
 	// The new accumulated vector supersedes the legacy single-enum fields when

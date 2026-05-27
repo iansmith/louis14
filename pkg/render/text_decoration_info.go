@@ -7,19 +7,49 @@ import (
 	"louis14/pkg/layout"
 )
 
+// decorationAxis selects which physical axis carries the inline (line-extent)
+// direction and which carries the block (offset) direction.
+// Mirrors the conceptual two-component LineRelativeOffset { line_left,
+// line_over } from Blink's line_relative_rect.h:41-66 @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type decorationAxis int8
+
+const (
+	// decorationAxisHorizontal: inline = X axis, block = Y axis (normal LTR/RTL).
+	decorationAxisHorizontal decorationAxis = iota
+	// decorationAxisVertical: inline = Y axis, block = X axis (vertical-rl/-lr).
+	decorationAxisVertical
+)
+
+// blockUnderDir indicates which physical direction is "toward block-end"
+// (the canonical under/alphabetic-baseline side). Mirrors the axis-swap
+// encoded in Blink's ComputeRelativeToPhysicalTransform (WritingMode) at
+// line_relative_rect.cc:18-50 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+type blockUnderDir int8
+
+const (
+	blockUnderDown  blockUnderDir = iota // horizontal-tb: under = +Y (downward)
+	blockUnderLeft                       // vertical-rl:   under = -X (leftward)
+	blockUnderRight                      // vertical-lr:   under = +X (rightward)
+)
+
 // textDecorationInfo is the geometry helper for painting one or more
 // AppliedTextDecoration entries on a single text run. Mirrors Blink's
 // `TextDecorationInfo` class — see core/paint/text_decoration_info.{h,cc} at
 // Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
-// Constructed once per text run by drawTextDecoration; methods are pure and
-// safe to call repeatedly for each AppliedTextDecoration on the run.
+// Constructed once per text run by drawTextDecoration (horizontal) or
+// newVerticalTextDecorationInfo (upright vertical). Methods are pure and safe
+// to call repeatedly for each AppliedTextDecoration on the run.
 //
-// Horizontal LTR writing only — vertical/sideways modes will need a separate
-// constructor that swaps the axis.
+// Blink doesn't carry an axis field — its caller rotates the canvas via
+// ConcatCTM (text_fragment_painter.cc:1002-1009 @ SHA 4883d11fef); all
+// geometry is then identical to horizontal. louis14 lacks canvas rotation,
+// so axis + blockUnderDir are louis14-specific scaffolding on the EXISTING
+// struct rather than a parallel verticalTextDecorationInfo type.
 type textDecorationInfo struct {
 	box      *layout.Box
-	width    float64 // measured text width
+	width    float64 // measured text advance along the INLINE axis
 	fontSize float64 // used font-size in pixels
 	ascent   float64 // font ascent in pixels (from baseline)
 	descent  float64 // font descent in pixels (from baseline; non-negative)
@@ -28,6 +58,12 @@ type textDecorationInfo struct {
 	// metric, used when text-decoration-thickness: from-font. Zero means the
 	// metric was not available — fall back to auto.
 	underlineThicknessFromFont float64
+
+	// axis and underDir encode the writing-mode axis swap for vertical-rl/-lr.
+	// Horizontal LTR: axis=decorationAxisHorizontal, underDir=blockUnderDown.
+	// These are the default zero values — newTextDecorationInfo sets neither.
+	axis     decorationAxis
+	underDir blockUnderDir
 }
 
 // newTextDecorationInfo constructs the geometry helper for a single text run.
@@ -41,6 +77,32 @@ func newTextDecorationInfo(box *layout.Box, width, fontSize, ascent, descent, un
 		ascent:                     ascent,
 		descent:                    math.Abs(descent),
 		underlineThicknessFromFont: underlineThicknessFromFont,
+		// axis=decorationAxisHorizontal, underDir=blockUnderDown are zero values.
+	}
+}
+
+// newVerticalTextDecorationInfo constructs the geometry helper for an upright
+// vertical text run (writing-mode: vertical-rl or vertical-lr).
+//
+// length is the text extent along the INLINE axis — for vertical modes this is
+// the physical height of the text column (number of characters × fontSize).
+// axis is set to decorationAxisVertical; underDir encodes which physical X
+// direction is "toward block-end" (left for vertical-rl, right for vertical-lr).
+//
+// No Blink analog for this constructor: Blink handles the axis swap by
+// rotating the canvas (ConcatCTM at text_fragment_painter.cc:1002-1009 @
+// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). louis14's equivalent is
+// carrying the axis flag on the struct and using perpendicular compute methods.
+func newVerticalTextDecorationInfo(box *layout.Box, length, fontSize, ascent, descent, underlineThicknessFromFont float64, dir blockUnderDir) textDecorationInfo {
+	return textDecorationInfo{
+		box:                        box,
+		width:                      length, // inline extent = physical height for vertical
+		fontSize:                   fontSize,
+		ascent:                     ascent,
+		descent:                    math.Abs(descent),
+		underlineThicknessFromFont: underlineThicknessFromFont,
+		axis:                       decorationAxisVertical,
+		underDir:                   dir,
 	}
 }
 
@@ -125,6 +187,58 @@ func (t textDecorationInfo) computeOverlineLineY() float64 {
 func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
 	_ = thickness
 	return t.box.Y + t.ascent*0.65
+}
+
+// computeUnderlinePerpX returns the perpendicular physical X coordinate of the
+// underline stroke for an upright vertical text run (axis=decorationAxisVertical).
+//
+// In vertical-rl the underline paints on the physical LEFT side (block-end):
+//   perpX = box.X - descentGap - td.UnderlineOffset
+// In vertical-lr the underline paints on the physical RIGHT side (block-end):
+//   perpX = box.X + box.Width + descentGap + td.UnderlineOffset
+//
+// descentGap mirrors the horizontal `descent*0.25` term in computeUnderlineLineY.
+// td.UnderlineOffset is already resolved to pixels at cascade time.
+//
+// CSS Text Decoration 4 §3 + CSS Writing Modes 4 §6: "under" = block-end.
+// Conceptually mirrors Blink's TextDecorationOffset::ComputeUnderlineOffset()
+// (cited in text_decoration_info.cc:259-273 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+func (t textDecorationInfo) computeUnderlinePerpX(td css.AppliedTextDecoration) float64 {
+	descentGap := t.descent * 0.25
+	switch t.underDir {
+	case blockUnderLeft: // vertical-rl: under = left
+		return t.box.X - descentGap - td.UnderlineOffset
+	case blockUnderRight: // vertical-lr: under = right
+		return t.box.X + t.box.Width + descentGap + td.UnderlineOffset
+	}
+	// Should not be reached for vertical mode; fall back to horizontal.
+	return t.computeUnderlineLineY(td)
+}
+
+// computeOverlinePerpX returns the perpendicular physical X coordinate of the
+// overline stroke for an upright vertical text run. Overline sits at block-start.
+//
+// For vertical-rl (block-start = right): perpX = box.X + box.Width
+// For vertical-lr (block-start = left):  perpX = box.X
+func (t textDecorationInfo) computeOverlinePerpX() float64 {
+	switch t.underDir {
+	case blockUnderLeft: // vertical-rl: block-start = right
+		return t.box.X + t.box.Width
+	case blockUnderRight: // vertical-lr: block-start = left
+		return t.box.X
+	}
+	return t.computeOverlineLineY()
+}
+
+// computeLineThroughPerpX returns the perpendicular physical X coordinate for
+// a line-through stroke in upright vertical text. Line-through passes through
+// the center of the character column (midpoint of block axis).
+//
+// For vertical-rl and vertical-lr both: perpX = box.X + box.Width/2
+// (center of the glyph column). Mirrors Blink's ComputeLineThroughLineData
+// which places the rect center at 2*ascent/3 horizontally (for horizontal text).
+func (t textDecorationInfo) computeLineThroughPerpX() float64 {
+	return t.box.X + t.box.Width/2.0
 }
 
 // doubleOffset returns the gap (in pixels) between the two strokes of a

@@ -4863,8 +4863,69 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			return
 		}
 
+		// Strategy A: paint decorations into the off-screen buffer before
+		// rotation. The buffer is in horizontal coords; decoration geometry is
+		// computed against a virtual box offset to the text position within the buffer.
+		// After 90° CW rotation, buffer srcY maps to physical X = blit.X + (lhExt-1-srcY).
+		//
+		// Thick decorations can extend beyond the nominal line height. The buffer is
+		// enlarged and the blit position adjusted so text glyphs land correctly:
+		//
+		//   vertical-rl (+ mixed): underline = physical LEFT → srcY > lh.
+		//     Extend buffer below (decorExt rows). Shift blitX left by decorExt.
+		//     Physical X of srcY=lh → blitX + lhExt-1-lh = box.X - 1 (left of text).
+		//
+		//   vertical-lr (+ mixed): underline = physical RIGHT → srcY < 0.
+		//     Extend buffer above (topExt rows). Text painted at srcY=topExt.
+		//     blitX = box.X (unchanged). Physical X of srcY=topExt-1 → box.X + lh
+		//     (just right of text column).
+		//
+		// Mirrors Blink's ConcatCTM(*rotation) at
+		// third_party/blink/renderer/core/paint/text_fragment_painter.cc:1002-1009
+		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		metrics := r.dc.GetFontMetrics(fontID)
+		descent := float64(metrics.Descent) / 64.0
+		textWidth := r.measureTextStr(text, fontID, layer.FontFeatures)
+
+		hasDecor := len(layer.AppliedTextDecorations) > 0 || (layer.TextDecoration != css.TextDecorationNone && layer.TextDecoration != "")
+
+		// decorExt: extra rows added BELOW text (vertical-rl path; underline → left).
+		// topExt:   extra rows added ABOVE text (vertical-lr path; underline → right).
+		// textOff:  srcY offset where text glyph baseline sits = topExt (0 for vertical-rl).
+		decorExt := 0
+		topExt := 0
+
+		if hasDecor && len(layer.AppliedTextDecorations) > 0 {
+			virtualBox := &layout.Box{X: 0, Y: 0, Width: float64(ta), Height: float64(lh)}
+			tmpInfo := newTextDecorationInfo(virtualBox, textWidth, layer.FontSize, ascent, descent, 0)
+			for _, td := range layer.AppliedTextDecorations {
+				if !td.Lines.Has(css.TextDecorationLineUnderline) {
+					continue
+				}
+				th := int(math.Ceil(tmpInfo.computeThickness(td)))
+				if layer.IsWritingModeVerticalLR {
+					// vertical-lr: underline is on the RIGHT → sits above text in buffer.
+					// gap is the same descent*0.25 term as the horizontal underline formula.
+					gap := int(math.Ceil(descent * 0.25))
+					needed := gap + th
+					if needed > topExt {
+						topExt = needed
+					}
+				} else {
+					// vertical-rl (and sideways-rl): underline is on the LEFT → sits below text.
+					end := int(math.Ceil(tmpInfo.computeUnderlineLineY(td))) + th
+					if end > lh && end-lh > decorExt {
+						decorExt = end - lh
+					}
+				}
+			}
+		}
+
+		lhExt := lh + decorExt + topExt // enlarged buffer height
+		textOff := topExt               // srcY where text glyph top lands
+
 		// Draw horizontal text into an off-screen buffer.
-		src := image.NewRGBA(image.Rect(0, 0, ta, lh))
+		src := image.NewRGBA(image.Rect(0, 0, ta, lhExt))
 		childDC := r.dc.NewChildContext(src)
 		childDC.SetColor(color.RGBA{
 			R: layer.TextColor.R,
@@ -4873,22 +4934,62 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			A: uint8(layer.TextColor.A * 255),
 		})
 		if len(layer.FontFeatures) > 0 {
-			childDC.DrawTextWithFeatures(text, fontID, 0, ascent, layer.FontFeatures)
+			childDC.DrawTextWithFeatures(text, fontID, 0, ascent+float64(textOff), layer.FontFeatures)
 		} else {
-			childDC.DrawText(text, fontID, 0, ascent)
+			childDC.DrawText(text, fontID, 0, ascent+float64(textOff))
 		}
 
-		// Rotate pixels 90° into destination (lh × ta) buffer.
-		rot := image.NewRGBA(image.Rect(0, 0, lh, ta))
-		for y := 0; y < lh; y++ {
+		// Paint decorations into the buffer (Strategy A). Temporarily swap r.dc
+		// for childDC so drawTextDecoration writes into src via childDC.
+		// Mirrors Blink's ConcatCTM(*rotation) approach — decorations are painted
+		// in the pre-rotation frame so pixels rotate with the glyphs.
+		//
+		// For vertical-lr (underline → physical RIGHT), the underline sits
+		// ABOVE the text in the buffer (srcY < textOff). The decoration geometry
+		// is inverted relative to vertical-rl: underline srcY = topExt - gap - thickness,
+		// growing downward toward textOff. We compute a per-decoration virtual
+		// box Y such that computeUnderlineLineY returns the correct srcY:
+		//   virtualBox.Y + ascent + descent*0.25 + offset = topExt - gap - thickness
+		//   virtualBox.Y = topExt - gap - thickness - ascent - descent*0.25 - offset
+		// This is recomputed per decoration since thickness varies.
+		if hasDecor {
+			origDC := r.dc
+			r.dc = childDC
+			if layer.IsWritingModeVerticalLR && len(layer.AppliedTextDecorations) > 0 {
+				// vertical-lr: paint decorations at the inverted srcY positions so
+				// after CW rotation they appear on the physical RIGHT side.
+				gap := descent * 0.25
+				for _, td := range layer.AppliedTextDecorations {
+					if td.Lines.IsNone() {
+						continue
+					}
+					info := newTextDecorationInfo(&layout.Box{X: 0, Width: float64(ta)}, textWidth, layer.FontSize, ascent, descent, 0)
+					th := info.computeThickness(td)
+					// Compute box.Y such that computeUnderlineLineY = topExt - gap - th.
+					// This ensures the bottom of the underline rect (srcY=topExt-gap-th+th = topExt-gap)
+					// maps after CW rotation to physical X = blitX + lhExt-1-(topExt-gap) = blitX + lh-1+gap ≈ box_right_edge.
+					boxY := float64(topExt) - gap - th - ascent - gap - td.UnderlineOffset
+					vbox := &layout.Box{X: 0, Y: boxY, Width: float64(ta), Height: float64(lhExt)}
+					r.drawOneAppliedTextDecoration(td, newTextDecorationInfo(vbox, textWidth, layer.FontSize, ascent, descent, 0), vbox, textWidth, 0, 0)
+				}
+			} else {
+				virtualBox := &layout.Box{X: 0, Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
+				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent)
+			}
+			r.dc = origDC
+		}
+
+		// Rotate pixels 90° into destination (lhExt × ta) buffer.
+		rot := image.NewRGBA(image.Rect(0, 0, lhExt, ta))
+		for y := 0; y < lhExt; y++ {
 			for x := 0; x < ta; x++ {
 				c := src.RGBAAt(x, y)
 				if c.A == 0 {
 					continue
 				}
 				if layer.IsSidewaysRL {
-					// 90° CW: (x,y) → (lh-1-y, x)
-					rot.SetRGBA(lh-1-y, x, c)
+					// 90° CW: (x,y) → (lhExt-1-y, x)
+					rot.SetRGBA(lhExt-1-y, x, c)
 				} else {
 					// 90° CCW: (x,y) → (y, ta-1-x)
 					rot.SetRGBA(y, ta-1-x, c)
@@ -4896,7 +4997,12 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			}
 		}
 
-		r.dc.DrawImage(rot, int(math.Round(box.X)), int(math.Round(box.Y)))
+		// Blit at (box.X - decorExt, box.Y):
+		//   vertical-rl: shift left by decorExt so the right side of the rotated
+		//     buffer (srcY=0 → physical rightmost) aligns with the text right edge.
+		//   vertical-lr: no shift needed (topExt rows map to the right side via CW rotation).
+		blitX := int(math.Round(box.X)) - decorExt
+		r.dc.DrawImage(rot, blitX, int(math.Round(box.Y)))
 
 		// Per-character emphasis marks: each mark renders as its own small
 		// rotated off-screen buffer at the annotation-equivalent screen
@@ -4931,6 +5037,11 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 				y += layer.LetterSpacing
 			}
 		}
+		// Paint text decorations for upright vertical text (Strategy B).
+		// Mirrors Blink's writing-mode dispatch at
+		// third_party/blink/renderer/core/paint/text_fragment_painter.cc:609-618
+		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		r.drawVerticalTextDecoration(layer, text, box, fontID, ascent)
 		return
 	}
 
@@ -5899,6 +6010,136 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 			r.dc.Stroke()
 		}
 	}
+}
+
+// drawVerticalTextDecoration paints underline, overline, or line-through for
+// upright vertical text (writing-mode: vertical-rl or vertical-lr with
+// text-orientation: upright). This is Strategy B from the C54 plan.
+//
+// For upright vertical text, the inline axis is physical-Y and the block axis
+// is physical-X. The decoration is a VERTICAL rect (full height of the text
+// column, some perpendicular X coordinate). Mirrors the writing-mode dispatch at
+// third_party/blink/renderer/core/paint/text_fragment_painter.cc:609-618
+// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+//
+// The box passed in is the physical bounding box of the upright vertical run.
+// box.Width is the line height (physical block extent). box.Height is the
+// text column height (physical inline extent).
+func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64) {
+	if len(layer.AppliedTextDecorations) == 0 &&
+		(layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "") {
+		return
+	}
+
+	metrics := r.dc.GetFontMetrics(fontID)
+	descent := float64(metrics.Descent) / 64.0
+
+	// The inline extent = number of characters × fontSize + letterSpacing.
+	// This is the physical HEIGHT of the vertical text column.
+	nChars := utf8.RuneCountInString(text)
+	inlineLen := float64(nChars) * layer.FontSize
+	if layer.LetterSpacing != 0 {
+		inlineLen += float64(nChars) * layer.LetterSpacing
+	}
+
+	// Determine which physical X direction is "under" (block-end) based on
+	// the writing mode. For vertical-rl, under = left; for vertical-lr, under = right.
+	// Since louis14 represents vertical-lr with IsSidewaysRL=true for mixed text
+	// orientation (engine.go:362-368), pure upright vertical (IsVerticalText &&
+	// !IsSidewaysRL && !IsSidewaysLR) does not distinguish rl vs lr at paint time.
+	// Default: blockUnderLeft (vertical-rl convention). This is the conventional
+	// "under" for upright CJK text which is the primary use case for IsVerticalText.
+	dir := blockUnderLeft
+
+	info := newVerticalTextDecorationInfo(box, inlineLen, layer.FontSize, ascent, descent, 0, dir)
+
+	if len(layer.AppliedTextDecorations) > 0 {
+		for _, td := range layer.AppliedTextDecorations {
+			r.drawOneAppliedVerticalDecoration(td, info)
+		}
+		return
+	}
+
+	// Legacy single-decoration fallback.
+	thickness := math.Max(1.0, math.Round(layer.TextDecorationThickness))
+	r.setColor(layer.TextDecorationColor)
+
+	var rectLeft float64
+	switch layer.TextDecoration {
+	case css.TextDecorationUnderline:
+		perpX := info.computeUnderlinePerpX(css.AppliedTextDecoration{
+			UnderlineOffset: layer.TextUnderlineOffset,
+		})
+		rectLeft = vertDecorationRectLeft(perpX, thickness, dir)
+	case css.TextDecorationOverline:
+		perpX := info.computeOverlinePerpX()
+		// Overline is on block-start = opposite side from underDir.
+		overDir := blockUnderRight
+		if dir == blockUnderRight {
+			overDir = blockUnderLeft
+		}
+		rectLeft = vertDecorationRectLeft(perpX, thickness, overDir)
+	case css.TextDecorationLineThrough:
+		perpX := info.computeLineThroughPerpX()
+		rectLeft = perpX - thickness/2
+	default:
+		return
+	}
+	r.dc.DrawRectangle(rectLeft, box.Y, thickness, inlineLen)
+	r.dc.Fill()
+}
+
+// drawOneAppliedVerticalDecoration paints a single AppliedTextDecoration entry
+// for an upright vertical text run. Perpendicular coordinate (physical X) is
+// derived from textDecorationInfo with axis=decorationAxisVertical.
+func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration, info textDecorationInfo) {
+	if td.Lines.IsNone() {
+		return
+	}
+	thickness := info.computeThickness(td)
+	r.setColor(td.Color)
+
+	lineStart := info.box.Y
+	inlineLen := info.width
+
+	if td.Lines.Has(css.TextDecorationLineUnderline) {
+		perpX := info.computeUnderlinePerpX(td)
+		rectLeft := vertDecorationRectLeft(perpX, thickness, info.underDir)
+		r.dc.DrawRectangle(rectLeft, lineStart, thickness, inlineLen)
+		r.dc.Fill()
+	}
+	if td.Lines.Has(css.TextDecorationLineOverline) {
+		perpX := info.computeOverlinePerpX()
+		// Overline is on block-start = opposite side from underDir.
+		overDir := blockUnderRight
+		if info.underDir == blockUnderRight {
+			overDir = blockUnderLeft
+		}
+		rectLeft := vertDecorationRectLeft(perpX, thickness, overDir)
+		r.dc.DrawRectangle(rectLeft, lineStart, thickness, inlineLen)
+		r.dc.Fill()
+	}
+	if td.Lines.Has(css.TextDecorationLineLineThrough) {
+		perpX := info.computeLineThroughPerpX()
+		rectLeft := perpX - thickness/2
+		r.dc.DrawRectangle(rectLeft, lineStart, thickness, inlineLen)
+		r.dc.Fill()
+	}
+}
+
+// vertDecorationRectLeft computes the left X edge of a vertical decoration rect.
+//
+// perpX is the "inner edge" coordinate — the edge of the decoration nearest to
+// the text glyph column:
+//   - blockUnderLeft (vertical-rl, under=left): inner edge at the LEFT of text,
+//     decoration extends further LEFT → rectLeft = perpX - thickness
+//   - blockUnderRight (vertical-lr, under=right): inner edge at the RIGHT of text,
+//     decoration extends further RIGHT → rectLeft = perpX
+func vertDecorationRectLeft(perpX, thickness float64, dir blockUnderDir) float64 {
+	if dir == blockUnderLeft {
+		return perpX - thickness
+	}
+	return perpX
 }
 
 // wrapIntoPeriod returns v's canonical representative in [0, period). math.Mod
