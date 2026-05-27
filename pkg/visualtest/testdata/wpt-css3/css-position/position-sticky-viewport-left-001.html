@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Test: position:sticky with left offset at x=0 pushes element right</title>
+    <link rel="match" href="position-sticky-viewport-left-001-ref.html"/>
+    <meta name="assert" content="A sticky element at the very left of the viewport (x=0) with left:30px is pushed right to x=30px at scroll position 0."/>
+    <link rel="help" href="https://drafts.csswg.org/css-position-3/#sticky-pos"/>
+    <style>
+        body { margin: 0; background: white; width: 400px; }
+        .container {
+            position: relative;
+            width: 400px;
+            height: 100px;
+        }
+        /* The sticky element's in-flow position is x=0 (left edge).
+           With left:30px and scroll=0, the sticky constraint pushes it
+           to x=30px. Width is 50px so it doesn't overflow. */
+        .sticky {
+            position: sticky;
+            left: 30px;
+            background: green;
+            height: 50px;
+            width: 50px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sticky"></div>
+    </div>
+</body>
+</html>

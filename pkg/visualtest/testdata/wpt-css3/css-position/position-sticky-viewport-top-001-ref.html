@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Reftest Reference: sticky element pushed to top:20px</title>
+    <style>
+        body { margin: 0; background: white; height: 400px; }
+        /* Matches the visual of a sticky element at top:20px:
+           - 20px white gap (y=0..20, sticky's in-flow slot)
+           - 50px green (y=20..70, sticky's painted position)
+           - white space below (y=70..350, spacer after overlap)
+           The spacer below is 280px because the sticky covers
+           the top 20px of the in-flow spacer (50+300-70=280). */
+        .spacer-top {
+            height: 20px;
+        }
+        .block {
+            background: green;
+            height: 50px;
+            width: 100%;
+        }
+        .spacer-bottom {
+            height: 280px;
+        }
+    </style>
+</head>
+<body>
+    <div class="spacer-top"></div>
+    <div class="block"></div>
+    <div class="spacer-bottom"></div>
+</body>
+</html>

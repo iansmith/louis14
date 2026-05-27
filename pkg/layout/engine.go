@@ -136,6 +136,13 @@ func (le *LayoutEngine) Layout(doc *html.Document) []*Box {
 	}
 	rootBox := fragmentToBox(result.Fragment, nil, rootOffsetX, rootOffsetY)
 
+	// Phase 8: Apply sticky offsets. Louis14 is a static renderer (scroll=0);
+	// sticky elements that are above their top/left inset threshold are pushed
+	// into the viewport. Mirrors Blink's StickyPositionScrollingConstraints
+	// computation, applied post-layout because absolute positions are not known
+	// until the full box tree is built.
+	applyStickyOffsets(rootBox, le.viewport.width, le.viewport.height)
+
 	le.lastStyles = computedStyles
 	le.lastNodeBoxes = buildNodeBoxIndex([]*Box{rootBox})
 
@@ -436,6 +443,176 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 	}
 
 	return box
+}
+
+// stickyScrollport holds the scrollport rect for a sticky scroll container.
+// At scroll=0, the scrollport top-left is (0,0) for any scroll container.
+type stickyScrollport struct {
+	x, y, width, height float64
+}
+
+// isScrollContainer returns true if the box establishes a scroll container,
+// i.e., has overflow: auto or overflow: scroll on either axis.
+// Per CSS Overflow 3, only auto/scroll create scroll containers; hidden/clip do not.
+func isScrollContainer(box *Box) bool {
+	if box.Style == nil {
+		return false
+	}
+	isScroll := func(o css.OverflowType) bool {
+		return o == css.OverflowAuto || o == css.OverflowScroll
+	}
+	return isScroll(box.Style.GetOverflowX()) || isScroll(box.Style.GetOverflowY())
+}
+
+// stickyContainingBlock returns the bounds of the element's sticky containing
+// block — the nearest block ancestor that is not the scroll container.
+// Per CSS Position 3 §6.3, the sticky containing block is the padding-box of
+// the nearest block-level proper ancestor of the sticky element (not the scroll
+// container itself). We approximate this as the parent box's content area.
+func stickyContainingBlock(box *Box) (x, y, width, height float64) {
+	p := box.Parent
+	if p == nil {
+		return 0, 0, 0, 0
+	}
+	// CB is the parent's padding-box (border-box minus border).
+	cbX := p.X + p.Border.Left
+	cbY := p.Y + p.Border.Top
+	cbW := p.Width - p.Border.Left - p.Border.Right
+	cbH := p.Height - p.Border.Top - p.Border.Bottom
+	return cbX, cbY, cbW, cbH
+}
+
+// computeStickyOffset computes the sticky push delta (dx, dy) for a sticky box
+// within its scroll container's scrollport. At scroll=0, the scrollport's
+// top-left is at (spX, spY) in document coordinates.
+//
+// Mirrors Blink's StickyPositionScrollingConstraints::ComputeStickyOffset @
+// third_party/blink/renderer/core/paint/sticky_position_scrolling_constraints.cc
+// (Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f), simplified for scroll=0.
+func computeStickyOffset(box *Box, sp stickyScrollport) (dx, dy float64) {
+	if box.Style == nil {
+		return 0, 0
+	}
+	off := box.Style.GetPositionOffsetResolved(sp.width, sp.height)
+
+	cbX, cbY, cbW, cbH := stickyContainingBlock(box)
+
+	// Top constraint: push down if element's top edge is above (spY + top inset).
+	if off.HasTop {
+		threshold := sp.y + off.Top
+		if box.Y < threshold {
+			// Clamp: cannot push element below containing block's bottom edge.
+			maxDY := (cbY + cbH) - (box.Y + box.Height)
+			if maxDY < 0 {
+				maxDY = 0
+			}
+			dy = math.Min(threshold-box.Y, maxDY)
+		}
+	}
+
+	// Bottom constraint: push up if element's bottom edge is below
+	// (spY + spHeight - bottom inset). Bottom constraint is applied after top.
+	if off.HasBottom {
+		threshold := sp.y + sp.height - off.Bottom
+		elemBottom := box.Y + dy + box.Height
+		if elemBottom > threshold {
+			// Clamp: top constraint takes priority; cannot push above CB top.
+			minDY := cbY - box.Y
+			if minDY > 0 {
+				minDY = 0
+			}
+			dy = math.Max(dy-(elemBottom-threshold), minDY)
+		}
+	}
+
+	// Left constraint: push right if element's left edge is left of (spX + left inset).
+	if off.HasLeft {
+		threshold := sp.x + off.Left
+		if box.X < threshold {
+			maxDX := (cbX + cbW) - (box.X + box.Width)
+			if maxDX < 0 {
+				maxDX = 0
+			}
+			dx = math.Min(threshold-box.X, maxDX)
+		}
+	}
+
+	// Right constraint: push left if element's right edge is right of
+	// (spX + spWidth - right inset). Right constraint is applied after left.
+	if off.HasRight {
+		threshold := sp.x + sp.width - off.Right
+		elemRight := box.X + dx + box.Width
+		if elemRight > threshold {
+			minDX := cbX - box.X
+			if minDX > 0 {
+				minDX = 0
+			}
+			dx = math.Max(dx-(elemRight-threshold), minDX)
+		}
+	}
+
+	return dx, dy
+}
+
+// shiftBox recursively shifts a box and all its descendants by (dx, dy).
+func shiftBox(box *Box, dx, dy float64) {
+	if box == nil {
+		return
+	}
+	box.X += dx
+	box.Y += dy
+	for _, child := range box.Children {
+		shiftBox(child, dx, dy)
+	}
+}
+
+// applyStickyOffsets walks the box tree and applies sticky positioning offsets
+// for a static (scroll=0) renderer. The scroll container is the nearest
+// overflow:auto/scroll ancestor, or the viewport if none exists.
+//
+// This mirrors Blink's paint-time sticky offset application from
+// PaintLayer::ApplyTransform (paint_layer.cc), adapted for post-layout box-tree
+// traversal in louis14's static rendering model.
+func applyStickyOffsets(box *Box, viewportWidth, viewportHeight float64) {
+	applyStickyOffsetsWithScrollport(box, stickyScrollport{
+		x:      0,
+		y:      0,
+		width:  viewportWidth,
+		height: viewportHeight,
+	})
+}
+
+// applyStickyOffsetsWithScrollport recursively walks the box tree, passing the
+// nearest scroll container's scrollport to sticky descendants.
+func applyStickyOffsetsWithScrollport(box *Box, scrollport stickyScrollport) {
+	if box == nil {
+		return
+	}
+
+	// Apply sticky offset to this element before processing children.
+	if box.Position == css.PositionSticky {
+		dx, dy := computeStickyOffset(box, scrollport)
+		if dx != 0 || dy != 0 {
+			shiftBox(box, dx, dy)
+		}
+	}
+
+	// Determine scrollport for children. If this box is a scroll container,
+	// the children's sticky scrollport is this box's content area (at scroll=0).
+	childScrollport := scrollport
+	if isScrollContainer(box) {
+		// Content area: border-box minus border and padding.
+		childScrollport = stickyScrollport{
+			x:      box.X + box.Border.Left + box.Padding.Left,
+			y:      box.Y + box.Border.Top + box.Padding.Top,
+			width:  box.Width - box.Border.Left - box.Border.Right - box.Padding.Left - box.Padding.Right,
+			height: box.Height - box.Border.Top - box.Border.Bottom - box.Padding.Top - box.Padding.Bottom,
+		}
+	}
+
+	for _, child := range box.Children {
+		applyStickyOffsetsWithScrollport(child, childScrollport)
+	}
 }
 
 // reverseAndMirrorRunes returns s with its Unicode code points reversed and
