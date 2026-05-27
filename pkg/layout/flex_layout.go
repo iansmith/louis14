@@ -2221,9 +2221,25 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			if ar.IsSet {
 				var itemCrossContent float64
 				var hasItemCross bool
+				// Per CSS Flexbox §9.8 + CSS Sizing 3 §5.1: when the container's
+				// cross-size is definite, the item's percentage cross-size
+				// resolves against the container's content cross-size. Without
+				// this basis, `height: 50%` would resolve to 0, suppressing the
+				// aspect-ratio transfer that derives the main-size.
+				crossPctBlock := float64(Indefinite)
+				crossAvailBlock := float64(Indefinite)
+				if mainIsItemInline && hasDefiniteCross {
+					crossPctBlock = containerCrossSize
+					crossAvailBlock = containerCrossSize
+				}
+				// IsBlockSizeIndefinite() checks BlockSize < 0. Use the
+				// Indefinite sentinel (-1) explicitly when there is no
+				// definite basis, so a percentage like `height: 100%`
+				// does NOT resolve to 0 (the float64 zero value).
+				crossPctResSize := LogicalSize{InlineSize: contentInlineSize, BlockSize: crossPctBlock}
 				crossItemSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-					SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-					SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+					SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: crossAvailBlock}).
+					SetPercentageResolutionSize(crossPctResSize).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					Build()
 				if mainIsItemInline {
@@ -2864,9 +2880,20 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	// CSS Flexbox §9.8: When the item will be stretched, its cross-size is
 	// treated as definite. Pass it as PercentageResolutionSize.BlockSize so
 	// descendants with percentage heights can resolve against it.
+	//
+	// Per CSS Sizing 3 §5.1 + Blink's BuildSpaceForFlexBasis at SHA
+	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: when the container's cross
+	// size is definite, the container's cross-size also serves as the
+	// percentage resolution basis for any item that has an explicit
+	// percentage cross-size (so the item's own `height: 50%` can resolve to
+	// a definite value, and `measureBlockMinMax` then propagates that
+	// resolved cross-size to descendants). Mirror Blink's
+	// FlexLayoutAlgorithm::BuildSpaceForFlexBasis.
 	pctBlock := float64(0)
 	if stretchedCrossForBasis != Indefinite {
 		pctBlock = stretchedCrossForBasis
+	} else if hasDefiniteCross && fla.hasExplicitPercentCrossSize(style, parentWDM, isRow) {
+		pctBlock = containerCrossSize
 	}
 	csb := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
@@ -4630,6 +4657,34 @@ func (fla *FlexLayoutAlgorithm) hasExplicitCrossSize(style *css.Style, wdm Writi
 	}
 	if _, ok := style.GetLength(prop); ok {
 		return true
+	}
+	if _, ok := style.GetPercentage(prop); ok {
+		return true
+	}
+	return false
+}
+
+// hasExplicitPercentCrossSize reports whether the item has a percentage
+// (as opposed to length) value on its cross-axis size property. Used to
+// decide whether to propagate the container's cross-size as the percentage
+// resolution basis (CSS Flexbox §9.8 + CSS Sizing 3 §5.1).
+func (fla *FlexLayoutAlgorithm) hasExplicitPercentCrossSize(style *css.Style, wdm WritingDirectionMode, isRow bool) bool {
+	if style == nil {
+		return false
+	}
+	var prop string
+	if isRow {
+		if wdm.IsVertical() {
+			prop = "width"
+		} else {
+			prop = "height"
+		}
+	} else {
+		if wdm.IsVertical() {
+			prop = "height"
+		} else {
+			prop = "width"
+		}
 	}
 	if _, ok := style.GetPercentage(prop); ok {
 		return true
