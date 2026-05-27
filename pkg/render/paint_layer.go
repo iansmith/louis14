@@ -203,6 +203,15 @@ type PaintLayer struct {
 	// it supersedes the legacy single-decoration fields above.
 	AppliedTextDecorations []css.AppliedTextDecoration
 
+	// TextDecorationSkipInk is the resolved text-decoration-skip-ink property
+	// (CSS Text Decor 4 §1.1.5). When auto (the default), the decoration line
+	// is interrupted where it would otherwise cross over a glyph's extent.
+	// Lives on PaintLayer so the sideways (Strategy A) and upright (Strategy B)
+	// paint paths can read it without depending on `box.Style` — the sideways
+	// path paints into an off-screen buffer with a synthetic virtual box that
+	// has no Style attached.
+	TextDecorationSkipInk css.TextDecorationSkipInk
+
 	// Text shadows:
 	TextShadows []css.TextShadow
 
@@ -786,6 +795,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
 	layer.TextDecorationStyle = s.GetTextDecorationStyle()
+	layer.TextDecorationSkipInk = s.GetTextDecorationSkipInk()
 	layer.TextUnderlineOffset = s.GetTextUnderlineOffset()
 	// text-underline-position is not yet typed in louis14's css pkg; pull the
 	// raw cascaded string so vertical painters can detect explicit `left` /

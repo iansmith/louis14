@@ -2767,6 +2767,7 @@ var supportedCSSProperties = map[string]struct{}{
 	"line-height": {}, "letter-spacing": {}, "word-spacing": {},
 	"text-align": {}, "text-decoration": {}, "text-decoration-line": {},
 	"text-decoration-color": {}, "text-decoration-style": {}, "text-decoration-thickness": {},
+	"text-decoration-skip-ink": {},
 	"text-emphasis": {}, "text-emphasis-color": {}, "text-emphasis-style": {}, "text-emphasis-position": {},
 	"text-indent": {}, "text-transform": {}, "text-shadow": {}, "text-overflow": {},
 	"white-space": {}, "word-break": {}, "word-wrap": {}, "overflow-wrap": {},
